@@ -52,6 +52,22 @@ function errorText(value: unknown): string {
 }
 
 /**
+ * Build the run summary that Paperclip may auto-post as an issue comment.
+ *
+ * Kimi emits many intermediate assistant content lines during a multi-step
+ * agent loop ("Let me check…", tool plans, etc.). Joining all of them produced
+ * 50k+ character issue dumps. Prefer the last non-empty assistant content —
+ * typically the final board-facing wrap-up after the last tool turn.
+ */
+export function buildKimiRunSummary(assistantContents: string[]): string {
+  for (let i = assistantContents.length - 1; i >= 0; i -= 1) {
+    const text = (assistantContents[i] ?? "").trim();
+    if (text) return text;
+  }
+  return "";
+}
+
+/**
  * Parse `kimi -p ... --output-format stream-json` stdout.
  *
  * Verified event shapes (kimi 0.27.0):
@@ -121,7 +137,7 @@ export function parseKimiJsonl(stdout: string): ParsedKimiJsonl {
 
   return {
     sessionId,
-    summary: textParts.join("\n\n").trim(),
+    summary: buildKimiRunSummary(textParts),
     toolCalls,
     toolResults,
     errorMessage,

@@ -2447,6 +2447,26 @@ async function emitRuntimeEvent(
   }
 }
 
+/**
+ * Build the short run summary that Paperclip may auto-post as an issue comment
+ * when the agent leaves no comment of its own.
+ *
+ * Prefer the last non-empty *output* segment after a tool call. Intermediate
+ * "let me check…" narration between tools must not become a 50k-char dump.
+ * Thought-stream text is never included (callers must not push it into segments).
+ */
+export function buildAcpxRunSummary(input: {
+  outputSegments: string[];
+  fallback?: string | null;
+}): string {
+  for (let i = input.outputSegments.length - 1; i >= 0; i -= 1) {
+    const text = (input.outputSegments[i] ?? "").trim();
+    if (text) return text;
+  }
+  const fallback = (input.fallback ?? "").trim();
+  return fallback;
+}
+
 function resultErrorMessage(result: AcpRuntimeTurnResult): string | null {
   if (result.status !== "failed") return null;
   return result.error.message;
@@ -3399,7 +3419,15 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
     let controller: AbortController | null = null;
     let timeout: NodeJS.Timeout | null = null;
     let timedOut = false;
-    const textParts: string[] = [];
+    // Output text only (never thought stream). Segment boundaries are tool starts
+    // so multi-step narration is not glued into one auto-comment dump.
+    const outputSegments: string[] = [];
+    let currentOutputChunk: string[] = [];
+    const flushOutputSegment = () => {
+      if (currentOutputChunk.length === 0) return;
+      outputSegments.push(currentOutputChunk.join(""));
+      currentOutputChunk = [];
+    };
     let eventBreakdown: AcpRuntimeUsageBreakdown | null = null;
     let eventCostUsd: number | null = null;
     try {
@@ -3428,13 +3456,23 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       };
       const toolTitles = new Map<string, string>();
       for await (const event of turn.events) {
-        if (event.type === "text_delta") textParts.push(event.text);
+        if (event.type === "text_delta") {
+          // Thought stream stays in the live transcript via emitRuntimeEvent, but
+          // must not enter the run summary that Paperclip may auto-post as a comment.
+          if (event.stream !== "thought") {
+            currentOutputChunk.push(event.text);
+          }
+        } else if (event.type === "tool_call" && event.status === "pending") {
+          // New tool invocation ends the prior assistant narration segment.
+          flushOutputSegment();
+        }
         if (event.type === "status" && event.tag === "usage_update") {
           eventBreakdown = event.breakdown ?? eventBreakdown;
           eventCostUsd = usdCostAmount(event.cost) ?? eventCostUsd;
         }
         await emitRuntimeEvent(ctx, event, toolTitles);
       }
+      flushOutputSegment();
       const terminal = await turn.result;
       if (timeout) clearTimeout(timeout);
       // Read usage before the close/warm-handle paths below can discard state.
@@ -3556,7 +3594,10 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             ? { cumulativeCostUsd: turnUsage.cumulativeCostUsd }
             : {}),
         },
-        summary: textParts.join("").trim() || terminalStopReason || terminal.status,
+        summary: buildAcpxRunSummary({
+          outputSegments,
+          fallback: terminalStopReason || terminal.status,
+        }),
         clearSession,
       };
     } catch (err) {

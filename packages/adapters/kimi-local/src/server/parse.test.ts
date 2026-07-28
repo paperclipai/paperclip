@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  buildKimiRunSummary,
   detectKimiAuthRequired,
   extractKimiRuntimeEvents,
   isKimiSessionUnrecoverableError,
@@ -93,13 +94,21 @@ describe("parseKimiJsonl", () => {
     expect(parseKimiJsonl(stdout).sessionId).toBe("session_abc");
   });
 
-  it("joins multiple assistant messages with blank lines", () => {
+  it("uses only the last assistant content as the run summary", () => {
+    // Intermediate "thinking out loud" lines must not be auto-posted as issue comments.
     const stdout = [
-      '{"role":"assistant","content":"first"}',
-      '{"role":"assistant","content":"second"}',
+      '{"role":"assistant","content":"Let me get oriented and check the PRs…"}',
+      '{"role":"assistant","tool_calls":[{"type":"function","id":"t1","function":{"name":"Bash","arguments":"{}"}}]}',
+      '{"role":"tool","tool_call_id":"t1","content":"ok"}',
+      '{"role":"assistant","content":"## Update\\n\\n- Merged PR #25\\n- Burn-in continues"}',
     ].join("\n");
 
-    expect(parseKimiJsonl(stdout).summary).toBe("first\n\nsecond");
+    expect(parseKimiJsonl(stdout).summary).toBe("## Update\n\n- Merged PR #25\n- Burn-in continues");
+  });
+
+  it("buildKimiRunSummary picks the last non-empty message", () => {
+    expect(buildKimiRunSummary(["first", "second", ""])).toBe("second");
+    expect(buildKimiRunSummary([])).toBe("");
   });
 
   it("skips malformed lines without failing the parse", () => {
