@@ -54,6 +54,8 @@ export interface AgentCapsuleProps
   extends Omit<React.HTMLAttributes<HTMLDivElement>, "color"> {
   /** Lifecycle state of the agent the capsule represents. */
   state: AgentCapsuleState;
+  /** Agent identity for the brand-gradient evidence attribute. */
+  agentName?: string;
   /** Brand agent-gradient index (1–{@link AGENT_GRADIENT_COUNT}). Wraps if out of range. */
   gradient?: number;
   /** Size preset, or an explicit `{ width, height }` in pixels (keep height ≥ 2× width). */
@@ -72,6 +74,7 @@ function normalizeGradient(gradient: number): number {
 
 export function AgentCapsule({
   state,
+  agentName,
   gradient = 1,
   size = "md",
   glow = "green",
@@ -83,14 +86,17 @@ export function AgentCapsule({
   const dims = typeof size === "string" ? SIZE_PRESETS[size] : size;
   const idx = normalizeGradient(gradient);
   const fill = `linear-gradient(to bottom, var(--agent-${idx}a), var(--agent-${idx}b))`;
+  const label = ariaLabel ?? STATE_ARIA[state];
+  const capsuleName = agentName ?? label;
 
   return (
     <div
       role="img"
-      aria-label={ariaLabel ?? STATE_ARIA[state]}
+      aria-label={label}
       data-state={state}
       data-gradient={idx}
       data-glow={glow}
+      data-agent-capsule={state === "online" ? capsuleName : undefined}
       className={cn(
         "agent-cap relative isolate mx-auto overflow-hidden rounded-full bg-transparent",
         state === "online" && (glow === "blue" ? "agent-cap-online-blue" : "agent-cap-online"),
@@ -121,6 +127,7 @@ export function AgentCapsule({
       {state === "online" ? (
         <span
           aria-hidden="true"
+          data-agent-capsule={capsuleName}
           className="agent-cap-liquid absolute inset-x-0 bottom-0 block h-full"
           style={{ background: fill }}
         />

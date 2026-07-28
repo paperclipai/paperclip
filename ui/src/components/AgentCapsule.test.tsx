@@ -66,6 +66,13 @@ describe("AgentCapsule", () => {
     expect(cap.dataset.gradient).toBe("5");
   });
 
+  it("marks the gradient layer as a named agent capsule", () => {
+    const cap = render(<AgentCapsule state="online" gradient={5} agentName="Forge" />);
+    const liquid = cap.querySelector(".agent-cap-liquid") as HTMLElement;
+    expect(cap.dataset.agentCapsule).toBe("Forge");
+    expect(liquid.dataset.agentCapsule).toBe("Forge");
+  });
+
   it("uses the blue online glow when glow='blue'", () => {
     const cap = render(<AgentCapsule state="online" gradient={5} glow="blue" />);
     expect(cap.className).toContain("agent-cap-online-blue");

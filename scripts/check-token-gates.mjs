@@ -72,7 +72,7 @@ import { fileURLToPath } from "node:url";
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = resolve(__dirname, "..");
 const UI_SRC = resolve(REPO_ROOT, "ui/src");
-const SCAN_DIRS = ["components", "pages"];
+const SCAN_DIRS = ["components", "deck-product-flow", "pages"];
 const CSS_PATH = resolve(UI_SRC, "index.css");
 
 // ── Allowlist parsing ────────────────────────────────────────────────────

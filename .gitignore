@@ -62,6 +62,10 @@ tests/storybook-visual/.snapshots/
 tests/storybook-visual/baseline-review/
 tests/storybook-visual/test-results/
 tests/storybook-visual/playwright-report/
+tests/deck-product-flow/test-results/
+tests/deck-product-flow/playwright-report/
+ui/deck-product-flow-static/
+ui/deck-product-flow-captures/
 .superset/
 .superpowers/
 .claude/worktrees/
