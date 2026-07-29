@@ -1941,30 +1941,6 @@ export function authorizationService(db: Db) {
       });
     }
 
-    const issueUnblockOwnerAction =
-      input.action === "issue:comment" ||
-      (input.action === "issue:mutate" && scopeBoolean(input.scope, "allowIssueUnblockOwner"));
-    if (
-      trustResolution.kind === "standard" &&
-      issueUnblockOwnerAction &&
-      input.resource.type === "issue" &&
-      input.resource.issueId
-    ) {
-      const issue = await loadIssue(input.resource.issueId);
-      if (
-        issue?.companyId === companyId &&
-        issue.status === "blocked" &&
-        issueUnblockOwnerAgentId(issue.unblockDescriptor) === actorAgentId
-      ) {
-        return allow({
-          action: input.action,
-          reason: "allow_issue_unblock_owner",
-          explanation: "Allowed because the actor is the current persisted unblock owner.",
-        });
-      }
-    }
-
-
     if (input.action === "inbox:manage") {
       if (!isSimpleAssignableAgentStatus(actorAgent.status)) {
         return deny({
@@ -2206,6 +2182,28 @@ export function authorizationService(db: Db) {
         return allowIssueMentionGrant(input.action);
       }
       if (visibleIssueWriteDecision) return visibleIssueWriteDecision;
+    }
+    const issueUnblockOwnerAction =
+      input.action === "issue:comment" ||
+      (input.action === "issue:mutate" && scopeBoolean(input.scope, "allowIssueUnblockOwner"));
+    if (
+      trustResolution.kind === "standard" &&
+      issueUnblockOwnerAction &&
+      input.resource.type === "issue" &&
+      input.resource.issueId
+    ) {
+      const issue = await loadIssue(input.resource.issueId);
+      if (
+        issue?.companyId === companyId &&
+        issue.status === "blocked" &&
+        issueUnblockOwnerAgentId(issue.unblockDescriptor) === actorAgentId
+      ) {
+        return allow({
+          action: input.action,
+          reason: "allow_issue_unblock_owner",
+          explanation: "Allowed because the actor is the current persisted unblock owner.",
+        });
+      }
     }
     if (
       input.action === "agent_config:update" &&

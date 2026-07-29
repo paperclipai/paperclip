@@ -1500,6 +1500,46 @@ describeEmbeddedPostgres("authorization service", () => {
     });
   });
 
+  it("preserves assignee authority when the assignee is also the unblock owner", async () => {
+    const company = await createCompany(db, "IssueAssigneeUnblockOwner");
+    const assigneeAgent = await createAgent(db, company.id, { role: "engineer" });
+    const issue = await createIssue(db, company.id, {
+      title: "Blocked issue owned by its assignee",
+      status: "blocked",
+      assigneeAgentId: assigneeAgent.id,
+      unblockDescriptor: {
+        owner: { agentId: assigneeAgent.id },
+        action: "Complete the unblock action",
+      },
+    });
+    const authorization = authorizationService(db);
+    const resource = {
+      type: "issue",
+      companyId: company.id,
+      issueId: issue.id,
+      projectId: issue.projectId,
+      assigneeAgentId: issue.assigneeAgentId,
+      status: issue.status,
+    } as const;
+
+    for (const action of ["issue:comment", "issue:mutate"] as const) {
+      await expect(authorization.decide({
+        actor: {
+          type: "agent",
+          agentId: assigneeAgent.id,
+          companyId: company.id,
+          source: "agent_key",
+        },
+        action,
+        resource,
+        scope: action === "issue:mutate" ? { allowIssueUnblockOwner: true } : null,
+      })).resolves.toMatchObject({
+        allowed: true,
+        reason: "allow_self",
+      });
+    }
+  });
+
   it("allows only the persisted unblock owner to comment on and mutate a blocked assigned issue", async () => {
     const company = await createCompany(db, "IssueUnblockOwner");
     const assigneeAgent = await createAgent(db, company.id, { role: "engineer" });
