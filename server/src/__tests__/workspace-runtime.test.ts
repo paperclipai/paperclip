@@ -50,9 +50,11 @@ import {
   writeLocalServiceRegistryRecord,
 } from "../services/local-service-supervisor.ts";
 import {
+  buildWorkspaceRealizationRecord,
   buildWorkspaceRealizationRequest,
   readWorkspaceRealizationRequest,
 } from "../services/workspace-realization.ts";
+import type { Environment, EnvironmentLease } from "@paperclipai/shared";
 import { resolvePaperclipConfigPath } from "../paths.ts";
 import type { WorkspaceOperation } from "@paperclipai/shared";
 import type { WorkspaceOperationRecorder } from "../services/workspace-operations.ts";
@@ -6259,6 +6261,82 @@ describe("workspace realization request additionalSources", () => {
       JSON.parse(JSON.stringify(request)),
     );
     expect(roundTripped?.additionalSources).toEqual(request.additionalSources);
+  });
+
+  it("exposes additionalSources on the realization record so targets receive the paths", () => {
+    const workspace = buildRealizedWorkspace({
+      additionalWorkspaces: [
+        {
+          cwd: "/managed/project-b",
+          projectId: "project-b",
+          workspaceId: "workspace-b",
+          repoUrl: "https://example.test/b.git",
+          repoRef: "release",
+        },
+      ],
+    });
+
+    const request = buildWorkspaceRealizationRequest({
+      adapterType: "codex",
+      companyId: "company-1",
+      environmentId: "environment-1",
+      executionWorkspaceId: "execution-workspace-1",
+      issueId: "issue-1",
+      heartbeatRunId: "run-1",
+      requestedMode: "shared_workspace",
+      workspace,
+      workspaceConfig: null,
+    });
+
+    const now = new Date(0);
+    const environment: Environment = {
+      id: "environment-1",
+      name: "local",
+      description: null,
+      driver: "local",
+      status: "active",
+      config: {},
+      envVars: {},
+      metadata: null,
+      createdAt: now,
+      updatedAt: now,
+    };
+    const lease: EnvironmentLease = {
+      id: "lease-1",
+      companyId: "company-1",
+      environmentId: "environment-1",
+      executionWorkspaceId: "execution-workspace-1",
+      issueId: "issue-1",
+      heartbeatRunId: "run-1",
+      status: "active",
+      leasePolicy: "ephemeral",
+      provider: "local",
+      providerLeaseId: null,
+      acquiredAt: now,
+      lastUsedAt: now,
+      expiresAt: null,
+      releasedAt: null,
+      failureReason: null,
+      cleanupStatus: null,
+      metadata: null,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    const record = buildWorkspaceRealizationRecord({ environment, lease, request });
+
+    // The record carries the resolved referenced-project path so the execution target can expose it.
+    expect(record.additional).toEqual([
+      {
+        path: "/managed/project-b",
+        projectId: "project-b",
+        projectWorkspaceId: "workspace-b",
+        repoUrl: "https://example.test/b.git",
+        repoRef: "release",
+      },
+    ]);
+    // The anchor stays scalar and unchanged alongside the new plural field.
+    expect(record.local.path).toBe("/anchor");
   });
 
   it("reads a legacy request without additionalSources as an empty array", () => {

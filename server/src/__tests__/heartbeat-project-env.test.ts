@@ -7,8 +7,10 @@ import {
   LOW_TRUST_REVIEW_PRESET,
   applyRunScopedMentionedSkillKeys,
   extractMentionedSkillIdsFromSources,
+  resolveAdditionalProjectWorkspace,
   resolveAdditionalRunWorkspaces,
   resolveExecutionRunAdapterConfig,
+  type ResolveAdditionalProjectWorkspaceDeps,
   type ResolveAdditionalRunWorkspacesOptions,
   type ResolvedAdditionalWorkspace,
   type RunReferencedProject,
@@ -869,6 +871,105 @@ describe("resolveAdditionalRunWorkspaces", () => {
     expect(result.warnings).toHaveLength(1);
     expect(result.warnings[0]).toContain("project-a");
     expect(result.warnings[0]).toContain("clone exploded");
+  });
+});
+
+describe("resolveAdditionalProjectWorkspace", () => {
+  const companyId = "company-1";
+
+  function referencedProject(projectId: string): RunReferencedProject {
+    return { projectId, project: { id: projectId } as RunReferencedProject["project"] };
+  }
+
+  type WorkspaceRow = Awaited<ReturnType<ResolveAdditionalProjectWorkspaceDeps["loadProjectWorkspaceRows"]>>[number];
+
+  function workspaceRow(overrides: Partial<WorkspaceRow>): WorkspaceRow {
+    return { id: "workspace-x", cwd: null, repoUrl: null, repoRef: null, ...overrides } as WorkspaceRow;
+  }
+
+  // Build deps whose managed and configured resolvers are pure, so no database or filesystem runs.
+  function buildDeps(
+    overrides: Partial<ResolveAdditionalProjectWorkspaceDeps>,
+  ): ResolveAdditionalProjectWorkspaceDeps {
+    return {
+      loadProjectWorkspaceRows: async () => [],
+      resolveConfiguredOrManagedProjectCwd: async (input) => ({ cwd: input.cwd ?? "/unset", warning: null }),
+      ensureManagedProjectWorkspace: async (input) => ({
+        cwd: `/managed/${input.projectId}`,
+        warning: null,
+      }),
+      directoryExists: async () => true,
+      ...overrides,
+    };
+  }
+
+  it("uses the managed-directory fallback when the project has no workspace rows", async () => {
+    let ensuredRepoUrl: string | null | undefined;
+    const deps = buildDeps({
+      loadProjectWorkspaceRows: async () => [],
+      ensureManagedProjectWorkspace: async (input) => {
+        ensuredRepoUrl = input.repoUrl;
+        return { cwd: `/managed/${input.projectId}`, warning: null };
+      },
+    });
+
+    const result = await resolveAdditionalProjectWorkspace({ companyId, project: referencedProject("project-b") }, deps);
+
+    expect(result).toEqual({
+      cwd: "/managed/project-b",
+      projectId: "project-b",
+      workspaceId: null,
+      repoUrl: null,
+      repoRef: null,
+    });
+    expect(ensuredRepoUrl).toBeNull();
+  });
+
+  it("returns the first workspace row whose directory exists", async () => {
+    const deps = buildDeps({
+      loadProjectWorkspaceRows: async () => [
+        workspaceRow({ id: "ws-1", cwd: "/checkout/a", repoUrl: "https://example.test/a.git", repoRef: "main" }),
+      ],
+      resolveConfiguredOrManagedProjectCwd: async (input) => ({ cwd: input.cwd ?? "/unset", warning: null }),
+      directoryExists: async (cwd) => cwd === "/checkout/a",
+    });
+
+    const result = await resolveAdditionalProjectWorkspace({ companyId, project: referencedProject("project-a") }, deps);
+
+    expect(result).toEqual({
+      cwd: "/checkout/a",
+      projectId: "project-a",
+      workspaceId: "ws-1",
+      repoUrl: "https://example.test/a.git",
+      repoRef: "main",
+    });
+  });
+
+  it("clones into the managed directory when configured rows point at missing paths", async () => {
+    let ensuredRepoUrl: string | null | undefined;
+    const deps = buildDeps({
+      loadProjectWorkspaceRows: async () => [
+        workspaceRow({ id: "ws-1", cwd: "/checkout/missing", repoUrl: "https://example.test/a.git", repoRef: "release" }),
+      ],
+      resolveConfiguredOrManagedProjectCwd: async (input) => ({ cwd: input.cwd ?? "/unset", warning: null }),
+      directoryExists: async () => false,
+      ensureManagedProjectWorkspace: async (input) => {
+        ensuredRepoUrl = input.repoUrl;
+        return { cwd: `/managed/${input.projectId}`, warning: null };
+      },
+    });
+
+    const result = await resolveAdditionalProjectWorkspace({ companyId, project: referencedProject("project-a") }, deps);
+
+    expect(result).toEqual({
+      cwd: "/managed/project-a",
+      projectId: "project-a",
+      workspaceId: "ws-1",
+      repoUrl: "https://example.test/a.git",
+      repoRef: "release",
+    });
+    // The fallback clone reuses the repository URL from the first configured workspace row.
+    expect(ensuredRepoUrl).toBe("https://example.test/a.git");
   });
 });
 

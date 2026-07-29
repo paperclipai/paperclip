@@ -373,6 +373,20 @@ export interface WorkspaceRealizationRecord {
     branchName: string | null;
     worktreePath: string | null;
   };
+  /**
+   * Realized read-only referenced (mentioned) project workspaces for this run, one per authorized
+   * additional source in the request. This field carries each resolved path to the execution
+   * target so the target can expose the referenced trees to the agent. It is additive and
+   * backward-compatible: it defaults to an empty array for legacy records and for the anchor-only
+   * path.
+   */
+  additional?: Array<{
+    path: string;
+    projectId: string | null;
+    projectWorkspaceId: string | null;
+    repoUrl: string | null;
+    repoRef: string | null;
+  }>;
   remote: {
     path: string | null;
     host?: string | null;

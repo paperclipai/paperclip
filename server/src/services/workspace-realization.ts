@@ -254,6 +254,13 @@ export function buildWorkspaceRealizationRecord(input: {
       branchName: input.request.source.branchName,
       worktreePath: input.request.source.worktreePath,
     },
+    additional: (input.request.additionalSources ?? []).map((additional) => ({
+      path: additional.localPath,
+      projectId: additional.projectId,
+      projectWorkspaceId: additional.projectWorkspaceId,
+      repoUrl: additional.repoUrl,
+      repoRef: additional.repoRef,
+    })),
     remote: {
       path: remotePath,
       ...(host ? { host } : {}),

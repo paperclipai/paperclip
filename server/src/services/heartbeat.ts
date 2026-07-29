@@ -1416,35 +1416,69 @@ async function resolveConfiguredOrManagedProjectCwd(input: {
 }
 
 /**
+ * Side-effecting dependencies for {@link resolveAdditionalProjectWorkspace}. The caller injects
+ * the real database, filesystem, and managed-checkout helpers. A test injects fakes to exercise
+ * the resolution logic without a database or filesystem.
+ */
+export interface ResolveAdditionalProjectWorkspaceDeps {
+  loadProjectWorkspaceRows: (
+    companyId: string,
+    projectId: string,
+  ) => Promise<Array<typeof projectWorkspaces.$inferSelect>>;
+  resolveConfiguredOrManagedProjectCwd: typeof resolveConfiguredOrManagedProjectCwd;
+  ensureManagedProjectWorkspace: typeof ensureManagedProjectWorkspace;
+  directoryExists: (cwd: string) => Promise<boolean>;
+}
+
+/** Build the real dependencies for {@link resolveAdditionalProjectWorkspace}. */
+function defaultAdditionalProjectWorkspaceDeps(db: Db): ResolveAdditionalProjectWorkspaceDeps {
+  return {
+    loadProjectWorkspaceRows: (companyId, projectId) =>
+      db
+        .select()
+        .from(projectWorkspaces)
+        .where(and(eq(projectWorkspaces.companyId, companyId), eq(projectWorkspaces.projectId, projectId)))
+        .orderBy(asc(projectWorkspaces.createdAt), asc(projectWorkspaces.id)),
+    resolveConfiguredOrManagedProjectCwd,
+    ensureManagedProjectWorkspace,
+    directoryExists: (cwd) =>
+      fs
+        .stat(cwd)
+        .then((stats) => stats.isDirectory())
+        .catch(() => false),
+  };
+}
+
+/**
  * Resolve one authorized referenced project to its own workspace cwd. Each additional project
  * lands in its own managed checkout directory, never nested inside the anchor's worktree (the
- * directory isolation invariant lives in {@link resolveManagedProjectWorkspaceDir}). It throws
- * when the project has no usable workspace directory, so the caller can drop only that project.
+ * directory isolation invariant lives in {@link resolveManagedProjectWorkspaceDir}).
+ *
+ * When no configured workspace row resolves to an existing directory, this function falls back to
+ * the managed checkout directory for the project, the same fallback the anchor path uses. A
+ * project without any `projectWorkspaces` row therefore stays available in its own managed
+ * directory instead of dropping out of the run. The fallback clones the repository when a
+ * workspace row supplies a repository URL. It throws only when the managed checkout cannot be
+ * prepared (for example, a clone failure), so the caller can drop only that project.
  */
-async function resolveAdditionalProjectWorkspace(input: {
-  db: Db;
-  companyId: string;
-  project: RunReferencedProject;
-}): Promise<ResolvedAdditionalWorkspace> {
+export async function resolveAdditionalProjectWorkspace(
+  input: {
+    companyId: string;
+    project: RunReferencedProject;
+  },
+  deps: ResolveAdditionalProjectWorkspaceDeps,
+): Promise<ResolvedAdditionalWorkspace> {
   const { companyId } = input;
   const projectId = input.project.projectId;
-  const workspaceRows = await input.db
-    .select()
-    .from(projectWorkspaces)
-    .where(and(eq(projectWorkspaces.companyId, companyId), eq(projectWorkspaces.projectId, projectId)))
-    .orderBy(asc(projectWorkspaces.createdAt), asc(projectWorkspaces.id));
+  const workspaceRows = await deps.loadProjectWorkspaceRows(companyId, projectId);
   for (const workspace of workspaceRows) {
-    const { cwd } = await resolveConfiguredOrManagedProjectCwd({
+    const { cwd } = await deps.resolveConfiguredOrManagedProjectCwd({
       companyId,
       projectId,
       cwd: workspace.cwd,
       repoUrl: workspace.repoUrl,
     });
-    const cwdExists = await fs
-      .stat(cwd)
-      .then((stats) => stats.isDirectory())
-      .catch(() => false);
-    if (cwdExists) {
+    if (await deps.directoryExists(cwd)) {
       return {
         cwd,
         projectId,
@@ -1454,7 +1488,19 @@ async function resolveAdditionalProjectWorkspace(input: {
       };
     }
   }
-  throw new Error(`No available workspace directory was found for referenced project ${projectId}.`);
+  const fallbackRow = workspaceRows[0] ?? null;
+  const managed = await deps.ensureManagedProjectWorkspace({
+    companyId,
+    projectId,
+    repoUrl: fallbackRow ? readNonEmptyString(fallbackRow.repoUrl) : null,
+  });
+  return {
+    cwd: managed.cwd,
+    projectId,
+    workspaceId: fallbackRow?.id ?? null,
+    repoUrl: fallbackRow?.repoUrl ?? null,
+    repoRef: fallbackRow?.repoRef ?? null,
+  };
 }
 
 type WorkspaceValidationFailureLike = WorkspaceValidationFailure | {
@@ -7952,7 +7998,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         projects: projectService(db),
         access: authorizationService(db),
         resolveProjectWorkspace: (project) =>
-          resolveAdditionalProjectWorkspace({ db, companyId: agent.companyId, project }),
+          resolveAdditionalProjectWorkspace(
+            { companyId: agent.companyId, project },
+            defaultAdditionalProjectWorkspaceDeps(db),
+          ),
       },
     );
 
