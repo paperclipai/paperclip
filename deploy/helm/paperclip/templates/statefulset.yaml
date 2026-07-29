@@ -47,9 +47,12 @@ spec:
             - -c
             - |
               set -eu
-              BASE={{ .Values.persistence.mountPath | quote }}
-              INSTANCE_ID={{ .Values.env.instanceId | quote }}
-              INST="${BASE}/instances/${INSTANCE_ID}"
+              # BASE and INSTANCE_ID arrive through the env below rather than
+              # being templated into this script. Helm's `quote` only escapes
+              # quotes and backslashes, so a value holding $(...) or backticks
+              # would still be substituted by the shell; env values are not
+              # shell-interpreted at all.
+              INST="${PAPERCLIP_BASE_PATH}/instances/${PAPERCLIP_INSTANCE_ID}"
               mkdir -p "${INST}/secrets"
               # Write the seed through verbatim. The server reads this file with
               # readFileSync(path, "utf8") and, when it generates the key itself,
@@ -60,21 +63,25 @@ spec:
                 printf '%s' "${PAPERCLIP_MASTER_KEY_SEED}" > "${INST}/secrets/master.key"
                 chmod 0600 "${INST}/secrets/master.key"
               fi
-          {{- /* secret.yaml only writes masterKey into the Secret it renders
-                 itself, so referencing the key against a user-supplied
-                 existingSecret would wedge the pod on an unresolvable
-                 secretKeyRef. The seed script tolerates the var being unset. */}}
-          {{- if and .Values.secret.masterKey (not .Values.secret.existingSecret) }}
           env:
+            - name: PAPERCLIP_BASE_PATH
+              value: {{ .Values.persistence.mountPath | quote }}
+            - name: PAPERCLIP_INSTANCE_ID
+              value: {{ .Values.env.instanceId | quote }}
+            {{- /* secret.yaml only writes masterKey into the Secret it renders
+                   itself, so referencing the key against a user-supplied
+                   existingSecret would wedge the pod on an unresolvable
+                   secretKeyRef. The seed script tolerates the var being unset. */}}
+            {{- if and .Values.secret.masterKey (not .Values.secret.existingSecret) }}
             - name: PAPERCLIP_MASTER_KEY_SEED
               valueFrom:
                 secretKeyRef:
                   name: {{ include "paperclip.secretName" . }}
                   key: masterKey
-          {{- end }}
+            {{- end }}
           volumeMounts:
             - name: data
-              mountPath: {{ .Values.persistence.mountPath }}
+              mountPath: {{ .Values.persistence.mountPath | quote }}
       containers:
         - name: paperclip
           image: {{ include "paperclip.image" . }}
@@ -125,7 +132,7 @@ spec:
             {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:
             - name: data
-              mountPath: {{ .Values.persistence.mountPath }}
+              mountPath: {{ .Values.persistence.mountPath | quote }}
       {{- with .Values.nodeSelector }}
       nodeSelector:
         {{- toYaml . | nindent 8 }}

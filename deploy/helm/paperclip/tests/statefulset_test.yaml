@@ -50,8 +50,17 @@ tests:
       secret.masterKey: c2VlZA==
       secret.existingSecret: my-external-secret
     asserts:
-      - notExists:
+      - notContains:
           path: spec.template.spec.initContainers[0].env
+          content:
+            name: PAPERCLIP_MASTER_KEY_SEED
+            valueFrom:
+              secretKeyRef:
+                name: my-external-secret
+                key: masterKey
+      - lengthEqual:
+          path: spec.template.spec.initContainers[0].env
+          count: 2
 
   # The server reads master.key as utf8 and writes base64 text when it
   # generates the key itself, so the seed must land in the file unchanged.
@@ -65,10 +74,24 @@ tests:
           path: spec.template.spec.initContainers[0].command[2]
           pattern: "base64 -d"
 
-  - it: quotes instanceId before interpolating it into the seed script
+  # Helm's `quote` escapes quotes and backslashes but not $() or backticks, so
+  # a templated value would still be command-substituted by the shell. These
+  # values must reach the script through env, which is never shell-interpreted.
+  - it: never templates instanceId or mountPath into the seed script
     set:
-      env.instanceId: 'ev il"; touch /pwned; #'
+      env.instanceId: "$(touch /pwned)"
+      persistence.mountPath: "/paperclip$(touch /pwned2)"
     asserts:
-      - matchRegex:
+      - notMatchRegex:
           path: spec.template.spec.initContainers[0].command[2]
-          pattern: 'INSTANCE_ID="ev il\\"; touch /pwned; #"'
+          pattern: "touch /pwned"
+      - contains:
+          path: spec.template.spec.initContainers[0].env
+          content:
+            name: PAPERCLIP_INSTANCE_ID
+            value: "$(touch /pwned)"
+      - contains:
+          path: spec.template.spec.initContainers[0].env
+          content:
+            name: PAPERCLIP_BASE_PATH
+            value: "/paperclip$(touch /pwned2)"
