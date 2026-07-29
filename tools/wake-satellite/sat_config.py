@@ -30,7 +30,10 @@ FOLLOWUP_MIN_SPEECH_FRAMES = 3  # ~0,24 s zusammenhängende Sprache nötig (kein
 PLAYBACK_COOLDOWN_SEC = 1.0
 MAX_HISTORY_MESSAGES = 16
 
-HOMEPOD_DEVICE = "Homepod Studio"
+# macOS bündelt AirPlay-Ausgaben unter dem einen CoreAudio-Gerät "AirPlay",
+# das an das zuletzt gewählte AirPlay-Ziel (hier: HomePod Studio) routet. Ein
+# per-Gerätename "Homepod Studio" existiert nicht als Ausgabegerät.
+HOMEPOD_DEVICE = "AirPlay"
 TTS_FORMAT = "mp3_44100_128"
 
 # Antwort-LLM: Mistral-Small-24B (Q4) resident auf der RTX Pro 6000 (ctx 8192)
