@@ -5317,6 +5317,35 @@ function buildUndeliveredIssueMonitorRearmAt(now: Date, nextCheckAt: string | nu
   return parsed.getTime() > minimumFuture.getTime() ? parsed : minimumFuture;
 }
 
+function isUniqueConstraintConflict(error: unknown, constraintName: string) {
+  const queue: unknown[] = [error];
+  const seen = new Set<unknown>();
+  let hasUniqueCode = false;
+  let hasConstraint = false;
+  const messages: string[] = [];
+
+  while (queue.length > 0) {
+    const candidate = queue.shift();
+    if (!candidate || typeof candidate !== "object" || seen.has(candidate)) continue;
+    seen.add(candidate);
+    const typed = candidate as {
+      code?: string;
+      constraint?: string;
+      constraint_name?: string;
+      cause?: unknown;
+      message?: string;
+    };
+    if (typed.code === "23505") hasUniqueCode = true;
+    if (typed.constraint === constraintName || typed.constraint_name === constraintName) hasConstraint = true;
+    if (typed.message) messages.push(typed.message);
+    if (typed.cause) queue.push(typed.cause);
+  }
+
+  const message = messages.join("\n");
+  return (hasUniqueCode || message.includes("duplicate key value violates unique constraint")) &&
+    (hasConstraint || message.includes(constraintName));
+}
+
 function normalizeResumeParamsForAdapter(
   adapterType: string | null | undefined,
   params: Record<string, unknown> | null | undefined,
@@ -6525,6 +6554,161 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return Object.keys(patch).length > 0 ? patch : null;
   }
 
+  async function rearmIssueMonitorAfterFailedDispatch(input: {
+    issueId: string;
+    companyId: string;
+    now: Date;
+    nextCheckAt: string | null | undefined;
+    deliveredAttemptCount: number | null | undefined;
+    reason: string;
+    runId: string | null;
+    agentId: string | null;
+  }) {
+    const issue = await db
+      .select(issueMonitorDispatchColumns)
+      .from(issues)
+      .where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.companyId)))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (!issue) return false;
+
+    const monitorState = parseIssueExecutionState(issue.executionState)?.monitor ?? null;
+    if (!monitorState || monitorState.status !== "triggered") return false;
+    if (issue.monitorNextCheckAt) return false;
+    if (!["in_progress", "in_review"].includes(issue.status)) return false;
+    if (monitorState.kind === "external_service") return false;
+
+    const patch = rearmUndeliveredIssueMonitorPatch({
+      issue,
+      now: input.now,
+      nextCheckAt: input.nextCheckAt,
+      deliveredAttemptCount: input.deliveredAttemptCount,
+    });
+    if (Object.keys(patch).length === 0) return false;
+
+    await db
+      .update(issues)
+      .set({
+        ...patch,
+        updatedAt: input.now,
+      })
+      .where(eq(issues.id, issue.id));
+
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: "system",
+      actorId: "heartbeat_scheduler",
+      agentId: input.agentId,
+      runId: input.runId,
+      action: "issue.monitor_rearmed",
+      entityType: "issue",
+      entityId: issue.id,
+      details: {
+        identifier: issue.identifier,
+        previousNextCheckAt: input.nextCheckAt ?? null,
+        rearmedNextCheckAt:
+          "monitorNextCheckAt" in patch && patch.monitorNextCheckAt instanceof Date
+            ? patch.monitorNextCheckAt.toISOString()
+            : null,
+        attemptedAttemptCount: input.deliveredAttemptCount ?? issue.monitorAttemptCount ?? null,
+        restoredAttemptCount: "monitorAttemptCount" in patch ? patch.monitorAttemptCount ?? null : null,
+        notes: issue.monitorNotes ?? null,
+        source: "scheduled",
+        reason: input.reason,
+      },
+    });
+
+    return true;
+  }
+
+  async function reconcileStrandedTriggeredIssueMonitors(now = new Date()) {
+    const strandedThreshold = new Date(now.getTime() - 5 * 60 * 1000);
+    const candidates = await db
+      .select(issueMonitorDispatchColumns)
+      .from(issues)
+      .innerJoin(companies, eq(companies.id, issues.companyId))
+      .where(
+        and(
+          eq(companies.status, "active"),
+          isNull(issues.monitorNextCheckAt),
+          isNull(issues.assigneeUserId),
+          sql`${issues.assigneeAgentId} is not null`,
+          inArray(issues.status, ["in_progress", "in_review"]),
+          sql`${issues.monitorLastTriggeredAt} is not null`,
+          lte(issues.monitorLastTriggeredAt, strandedThreshold),
+        ),
+      )
+      .orderBy(asc(issues.monitorLastTriggeredAt), asc(issues.updatedAt))
+      .limit(50);
+
+    let rearmedCount = 0;
+
+    for (const candidate of candidates) {
+      const monitorState = parseIssueExecutionState(candidate.executionState)?.monitor ?? null;
+      if (!monitorState || monitorState.status !== "triggered") continue;
+      if (monitorState.kind === "external_service") continue;
+
+      const [activeRun, pendingInteraction, pendingApproval, dependencyReadiness] = await Promise.all([
+        db
+          .select({ id: heartbeatRuns.id })
+          .from(heartbeatRuns)
+          .where(
+            and(
+              eq(heartbeatRuns.companyId, candidate.companyId),
+              inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]),
+              sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${candidate.id}`,
+            ),
+          )
+          .limit(1)
+          .then((rows) => rows[0] ?? null),
+        db
+          .select({ id: issueThreadInteractions.id })
+          .from(issueThreadInteractions)
+          .where(
+            and(
+              eq(issueThreadInteractions.companyId, candidate.companyId),
+              eq(issueThreadInteractions.issueId, candidate.id),
+              eq(issueThreadInteractions.status, "pending"),
+            ),
+          )
+          .limit(1)
+          .then((rows) => rows[0] ?? null),
+        db
+          .select({ id: issueApprovals.approvalId })
+          .from(issueApprovals)
+          .innerJoin(approvals, eq(issueApprovals.approvalId, approvals.id))
+          .where(
+            and(
+              eq(issueApprovals.companyId, candidate.companyId),
+              eq(issueApprovals.issueId, candidate.id),
+              inArray(approvals.status, ["pending", "revision_requested"]),
+            ),
+          )
+          .limit(1)
+          .then((rows) => rows[0] ?? null),
+        issuesSvc.listDependencyReadiness(candidate.companyId, [candidate.id]).then((rows) => rows.get(candidate.id) ?? null),
+      ]);
+
+      if (activeRun || pendingInteraction || pendingApproval || (dependencyReadiness && !dependencyReadiness.isDependencyReady)) {
+        continue;
+      }
+
+      const rearmed = await rearmIssueMonitorAfterFailedDispatch({
+        issueId: candidate.id,
+        companyId: candidate.companyId,
+        now,
+        nextCheckAt: candidate.monitorLastTriggeredAt?.toISOString() ?? null,
+        deliveredAttemptCount: candidate.monitorAttemptCount,
+        reason: "stranded_triggered_monitor_reconciled",
+        runId: null,
+        agentId: null,
+      });
+      if (rearmed) rearmedCount += 1;
+    }
+
+    return { checked: candidates.length, rearmed: rearmedCount };
+  }
+
   async function findOpenIssueMonitorRecoveryIssue(claimed: IssueMonitorDispatchRow) {
     return db
       .select()
@@ -6869,10 +7053,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         },
       });
 
-      const deliveredRunIssueId = deliveredRun
-        ? readNonEmptyString(parseObject(deliveredRun.contextSnapshot).issueId)
+      const finalDeliveredRun = deliveredRun ? await getRun(deliveredRun.id) : null;
+      const deliveredRunIssueId = finalDeliveredRun
+        ? readNonEmptyString(parseObject(finalDeliveredRun.contextSnapshot).issueId)
         : claimed.id;
-      const consumedByTargetIssue = deliveredRunIssueId === claimed.id;
+      const deliveredRunActive = finalDeliveredRun
+        ? EXECUTION_PATH_HEARTBEAT_RUN_STATUSES.includes(
+            finalDeliveredRun.status as (typeof EXECUTION_PATH_HEARTBEAT_RUN_STATUSES)[number],
+          )
+        : false;
+      const consumedByTargetIssue = deliveredRunIssueId === claimed.id && (deliveredRun ? deliveredRunActive : true);
       const issueMonitorPatch = consumedByTargetIssue
         ? buildIssueMonitorTriggeredPatch({
             issue: claimed,
@@ -6915,8 +7105,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             }
           : {
               identifier: claimed.identifier,
-              previousNextCheckAt: scheduledAtIso,
-              rearmedNextCheckAt:
+            previousNextCheckAt: scheduledAtIso,
+            rearmedNextCheckAt:
                 "monitorNextCheckAt" in issueMonitorPatch && issueMonitorPatch.monitorNextCheckAt instanceof Date
                   ? issueMonitorPatch.monitorNextCheckAt.toISOString()
                   : null,
@@ -6925,7 +7115,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               notes: claimed.monitorNotes ?? null,
               ...monitorMetadata,
               source: input.activitySource,
-              reason: "undelivered_foreign_issue_carrier",
+              reason: deliveredRun && !deliveredRunActive
+                ? "claim_failed_backoff"
+                : "undelivered_foreign_issue_carrier",
             },
       });
 
@@ -11081,24 +11273,58 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const claimedWakeReason = readNonEmptyString(claimedContext.wakeReason);
     if (claimedIssueId && claimedWakeReason !== "source_scoped_recovery_action") {
       const claimedAgent = await getAgent(claimed.agentId);
-      await db
-        .update(issues)
-        .set({
-          executionRunId: claimed.id,
-          executionAgentNameKey: normalizeAgentNameKey(claimedAgent?.name),
-          executionLockedAt: claimedAt,
-          updatedAt: claimedAt,
-        })
-        .where(
-          and(
-            eq(issues.id, claimedIssueId),
-            eq(issues.companyId, claimed.companyId),
-            // Mention/context runs can touch an issue, but only the current assignee
-            // owns the issue execution lock shown as the active run.
-            eq(issues.assigneeAgentId, claimed.agentId),
-            or(isNull(issues.executionRunId), eq(issues.executionRunId, claimed.id)),
-          ),
-        );
+      try {
+        await db
+          .update(issues)
+          .set({
+            executionRunId: claimed.id,
+            executionAgentNameKey: normalizeAgentNameKey(claimedAgent?.name),
+            executionLockedAt: claimedAt,
+            updatedAt: claimedAt,
+          })
+          .where(
+            and(
+              eq(issues.id, claimedIssueId),
+              eq(issues.companyId, claimed.companyId),
+              // Mention/context runs can touch an issue, but only the current assignee
+              // owns the issue execution lock shown as the active run.
+              eq(issues.assigneeAgentId, claimed.agentId),
+              or(isNull(issues.executionRunId), eq(issues.executionRunId, claimed.id)),
+            ),
+          );
+      } catch (error) {
+        if (claimedWakeReason !== "issue_monitor_due") throw error;
+
+        const now = new Date();
+        const failureMessage = isUniqueConstraintConflict(error, "issues_open_routine_execution_uq")
+          ? "Issue monitor wake claim failed because another open routine-execution issue already holds the execution lock invariant"
+          : "Issue monitor wake claim failed before execution could start";
+
+        await setRunStatus(claimed.id, "failed", {
+          error: failureMessage,
+          errorCode: "issue_monitor_claim_failed",
+          finishedAt: now,
+        });
+        await setWakeupStatus(claimed.wakeupRequestId, "failed", {
+          finishedAt: now,
+          error: failureMessage,
+        });
+
+        await appendRunEvent(claimed, await nextRunEventSeq(claimed.id), {
+          eventType: "lifecycle",
+          stream: "system",
+          level: "warn",
+          message: failureMessage,
+          payload: {
+            issueId: claimedIssueId,
+            constraint: isUniqueConstraintConflict(error, "issues_open_routine_execution_uq")
+              ? "issues_open_routine_execution_uq"
+              : null,
+          },
+        });
+
+        return null;
+      }
     }
 
     return claimed;
@@ -17526,11 +17752,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
 
       const issueMonitors = await tickDueIssueMonitors(now);
+      const strandedIssueMonitors = await reconcileStrandedTriggeredIssueMonitors(now);
 
       return {
-        checked: checked + issueMonitors.checked,
+        checked: checked + issueMonitors.checked + strandedIssueMonitors.checked,
         enqueued: enqueued + issueMonitors.triggered,
-        skipped: skipped + issueMonitors.skipped,
+        skipped: skipped + issueMonitors.skipped + strandedIssueMonitors.rearmed,
       };
     },
 
