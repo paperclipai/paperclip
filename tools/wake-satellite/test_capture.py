@@ -34,6 +34,18 @@ def test_wait_for_speech_false_after_window():
     assert capture.wait_for_speech(iter([quiet(), quiet(), quiet()]), window_frames=3) is False
 
 
+def test_wait_for_speech_min_run_ignores_single_blip():
+    # Ein einzelner lauter Frame (Knacks) reicht bei min_run=3 nicht.
+    assert capture.wait_for_speech(iter([quiet(), loud(), quiet(), quiet()]),
+                                   window_frames=10, min_run=3) is False
+
+
+def test_wait_for_speech_min_run_true_on_sustained():
+    # Drei zusammenhängende laute Frames lösen aus.
+    assert capture.wait_for_speech(iter([quiet(), loud(), loud(), loud(), quiet()]),
+                                   window_frames=10, min_run=3) is True
+
+
 def test_frames_to_wav_roundtrip(tmp_path):
     path = str(tmp_path / "a.wav")
     capture.frames_to_wav([loud(), loud()], path)

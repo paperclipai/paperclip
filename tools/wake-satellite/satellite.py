@@ -88,7 +88,8 @@ def handle_interaction(frames, deps, tenant=None, history=None):
               "| text='{}'".format(len(recorded) * sat_config.FRAME_SAMPLES / sat_config.SAMPLE_RATE,
                                     t1 - t0, result["kind"], t2 - t1, t3 - t2, (text or "")[:50]),
               flush=True)
-        if not capture.wait_for_speech(frames, window_frames=sat_config.FOLLOWUP_WINDOW_FRAMES):
+        if not capture.wait_for_speech(frames, window_frames=sat_config.FOLLOWUP_WINDOW_FRAMES,
+                                       min_run=sat_config.FOLLOWUP_MIN_SPEECH_FRAMES):
             break
     return history
 

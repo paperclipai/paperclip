@@ -39,12 +39,20 @@ def record_until_silence(frames, *, silence_rms=SILENCE_RMS,
     return collected
 
 
-def wait_for_speech(frames, *, window_frames, silence_rms=SILENCE_RMS):
+def wait_for_speech(frames, *, window_frames, silence_rms=SILENCE_RMS, min_run=1):
+    """True, sobald innerhalb von `window_frames` Frames `min_run` aufeinander-
+    folgende laute Frames auftreten (gegen Fehlauslösung durch kurze Geräusche);
+    sonst False. min_run=1 = jeder laute Frame genügt (altes Verhalten)."""
+    run = 0
     for i, frame in enumerate(frames):
         if i >= window_frames:
             return False
         if _rms(frame) >= silence_rms:
-            return True
+            run += 1
+            if run >= min_run:
+                return True
+        else:
+            run = 0
     return False
 
 

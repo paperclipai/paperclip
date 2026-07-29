@@ -21,8 +21,12 @@ FRAME_SAMPLES = 1280
 # nicht am Anfang abgeschnitten wird (Wake-Erkennungs-Latenz + Bestätigungston).
 PREROLL_SEC = 1.2
 PREROLL_FRAMES = int(PREROLL_SEC * SAMPLE_RATE / FRAME_SAMPLES)  # ~15
-FOLLOWUP_WINDOW_SEC = 6
-FOLLOWUP_WINDOW_FRAMES = int(FOLLOWUP_WINDOW_SEC * SAMPLE_RATE / FRAME_SAMPLES)  # 75
+# Nachfrage-Fenster ohne Wake-Word: kurz + streng, damit am Schreibtisch nicht
+# jedes Nebengespräch aufgeschnappt wird. Nur eine zügige, kurz anhaltende
+# Anschlussfrage direkt nach Jarvis' Antwort löst eine weitere Runde aus.
+FOLLOWUP_WINDOW_SEC = 2.5
+FOLLOWUP_WINDOW_FRAMES = int(FOLLOWUP_WINDOW_SEC * SAMPLE_RATE / FRAME_SAMPLES)  # ~31
+FOLLOWUP_MIN_SPEECH_FRAMES = 3  # ~0,24 s zusammenhängende Sprache nötig (kein kurzer Knacks)
 PLAYBACK_COOLDOWN_SEC = 1.0
 MAX_HISTORY_MESSAGES = 16
 

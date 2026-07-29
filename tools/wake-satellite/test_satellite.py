@@ -39,7 +39,7 @@ def test_followup_window_triggers_second_turn(monkeypatch):
     # Nachfrage-Fenster 2: nur Stille -> Ende.
     frames = iter(
         [loud(), quiet(), quiet(), quiet(), quiet(), quiet(), quiet(), quiet(), quiet(), quiet(), quiet()]  # Runde 1 (hang=10)
-        + [loud()]                                                                                          # Nachfrage 1: Sprache!
+        + [loud(), loud(), loud()]                                                                          # Nachfrage 1: anhaltende Sprache (min_run=3)
         + [loud(), quiet(), quiet(), quiet(), quiet(), quiet(), quiet(), quiet(), quiet(), quiet(), quiet()]  # Runde 2
         + [quiet()] * sat_config.FOLLOWUP_WINDOW_FRAMES                                                      # Nachfrage 2: leer
     )
