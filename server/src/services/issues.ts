@@ -6571,6 +6571,9 @@ export function issueService(db: Db) {
         actorUserId?: string | null;
         expectedCheckoutRunId?: string | null;
         expectedExecutionRunId?: string | null;
+        expectedStatus?: typeof issues.$inferSelect.status;
+        expectedAssigneeAgentId?: string | null;
+        expectedAssigneeUserId?: string | null;
       },
       dbOrTx: any = db,
     ) => {
@@ -6588,6 +6591,9 @@ export function issueService(db: Db) {
         actorUserId,
         expectedCheckoutRunId,
         expectedExecutionRunId,
+        expectedStatus,
+        expectedAssigneeAgentId,
+        expectedAssigneeUserId,
         ...issueData
       } = data;
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
@@ -6758,6 +6764,17 @@ export function issueService(db: Db) {
                 : expectedExecutionRunId === null
                   ? isNull(issues.executionRunId)
                   : eq(issues.executionRunId, expectedExecutionRunId),
+              expectedStatus === undefined ? undefined : eq(issues.status, expectedStatus),
+              expectedAssigneeAgentId === undefined
+                ? undefined
+                : expectedAssigneeAgentId === null
+                  ? isNull(issues.assigneeAgentId)
+                  : eq(issues.assigneeAgentId, expectedAssigneeAgentId),
+              expectedAssigneeUserId === undefined
+                ? undefined
+                : expectedAssigneeUserId === null
+                  ? isNull(issues.assigneeUserId)
+                  : eq(issues.assigneeUserId, expectedAssigneeUserId),
             ),
           )
           .returning()

@@ -136,8 +136,10 @@ same-company run. This includes generic timer or on-demand runs whose original
 context snapshot did not name the issue before checkout. A persisted `running`
 row with no live execution is first failed by orphan-run recovery; its terminal
 status then makes the link eligible for stale-lock cleanup. Stranded escalation
-compares both link values at its mutation boundary, so a checkout acquired
-during reconciliation is not overwritten.
+locks the issue row and commits its recovery-action mutation with the issue
+transition in one transaction. The transition compares the source status,
+assignees, and both run links, so a checkout or terminal transition acquired
+during reconciliation is not overwritten and cannot inherit a recovery attempt.
 
 Paperclip already clears stale execution locks and can adopt some stale checkout locks when the original run is gone.
 

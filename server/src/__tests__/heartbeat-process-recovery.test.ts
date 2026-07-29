@@ -115,6 +115,8 @@ import {
   SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY,
   SUCCESSFUL_RUN_MISSING_STATE_REASON,
 } from "../services/recovery/index.ts";
+import { recoveryService } from "../services/recovery/service.ts";
+import { issueService } from "../services/issues.ts";
 import {
   UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON,
   UNMANAGED_BACKGROUND_TASK_STOP_REASON,
@@ -5219,9 +5221,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(issue?.executionRunId).not.toBe(timerRunId);
   });
 
-  it.each(["new", "existing"] as const)(
-    "does not overwrite a generic timer checkout or leak a %s recovery action during stranded escalation",
-    async (recoveryActionState) => {
+  it("keeps two reconcilers from leaking recovery mutations when a generic timer checkout wins", async () => {
     const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
       status: "in_progress",
       runStatus: "succeeded",
@@ -5246,112 +5246,157 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       startedAt: now,
       updatedAt: now,
     });
-    if (recoveryActionState === "existing") {
-      await db.insert(issueRecoveryActions).values({
-        companyId,
-        sourceIssueId: issueId,
-        kind: "stranded_assigned_issue",
-        status: "active",
-        ownerType: "agent",
-        ownerAgentId: agentId,
-        previousOwnerAgentId: agentId,
-        returnOwnerAgentId: agentId,
-        cause: "stranded_assigned_issue",
-        fingerprint: `preexisting:${issueId}`,
-        evidence: { sentinel: "preserve-me" },
-        nextAction: "Preserve the pre-existing recovery action.",
-        wakePolicy: { type: "wake_owner" },
-        attemptCount: 3,
-        lastAttemptAt: now,
-      });
-    }
-    await db.execute(sql`
-      create or replace function test_link_timer_run_during_recovery()
-      returns trigger
-      language plpgsql
-      as $$
-      begin
-        update issues
-        set
-          checkout_run_id = (
-            select id from heartbeat_runs
-            where company_id = new.company_id
-              and trigger_detail = 'test_recovery_lock_race'
-            limit 1
-          ),
-          execution_run_id = (
-            select id from heartbeat_runs
-            where company_id = new.company_id
-              and trigger_detail = 'test_recovery_lock_race'
-            limit 1
-          )
-        where id = new.source_issue_id;
-        return new;
-      end;
-      $$;
-    `);
-    await db.execute(sql`
-      create trigger test_link_timer_run_during_recovery
-      after insert or update on issue_recovery_actions
-      for each row execute function test_link_timer_run_during_recovery();
-    `);
+    await db.insert(issueRecoveryActions).values({
+      companyId,
+      sourceIssueId: issueId,
+      kind: "stranded_assigned_issue",
+      status: "active",
+      ownerType: "agent",
+      ownerAgentId: agentId,
+      previousOwnerAgentId: agentId,
+      returnOwnerAgentId: agentId,
+      cause: "stranded_assigned_issue",
+      fingerprint: `preexisting:${issueId}`,
+      evidence: { sentinel: "preserve-me" },
+      nextAction: "Preserve the pre-existing recovery action.",
+      wakePolicy: { type: "wake_owner" },
+      attemptCount: 3,
+      lastAttemptAt: now,
+    });
 
-    try {
-      const heartbeat = heartbeatService(db);
-      const result = await heartbeat.reconcileStrandedAssignedIssues();
+    let arrivals = 0;
+    let releaseMutation!: () => void;
+    let allReconcilersReady!: () => void;
+    const mutationReleased = new Promise<void>((resolve) => {
+      releaseMutation = resolve;
+    });
+    const reconcilersReady = new Promise<void>((resolve) => {
+      allReconcilersReady = resolve;
+    });
+    const beforeStrandedEscalationMutation = async () => {
+      arrivals += 1;
+      if (arrivals === 2) allReconcilersReady();
+      await mutationReleased;
+    };
+    const enqueueWakeup = async () => null;
+    const reconcilerA = recoveryService(db, { enqueueWakeup, beforeStrandedEscalationMutation });
+    const reconcilerB = recoveryService(db, { enqueueWakeup, beforeStrandedEscalationMutation });
 
-      expect(result.escalated).toBe(0);
-      expect(result.issueIds).toEqual([]);
+    const reconciliationA = reconcilerA.reconcileStrandedAssignedIssues();
+    const reconciliationB = reconcilerB.reconcileStrandedAssignedIssues();
+    await reconcilersReady;
+    const checkedOut = await issueService(db).checkout(
+      issueId,
+      agentId,
+      ["in_progress"],
+      timerRunId,
+    );
+    expect(checkedOut).toMatchObject({
+      status: "in_progress",
+      checkoutRunId: timerRunId,
+      executionRunId: timerRunId,
+    });
+    releaseMutation();
 
-      const issue = await db
-        .select()
-        .from(issues)
-        .where(eq(issues.id, issueId))
-        .then((rows) => rows[0] ?? null);
-      expect(issue).toMatchObject({
-        status: "in_progress",
-        assigneeAgentId: agentId,
-        checkoutRunId: timerRunId,
-        executionRunId: timerRunId,
-      });
+    const [resultA, resultB] = await Promise.all([reconciliationA, reconciliationB]);
+    expect(resultA.escalated).toBe(0);
+    expect(resultB.escalated).toBe(0);
 
-      const recoveryActions = await db
-        .select()
-        .from(issueRecoveryActions)
-        .where(eq(issueRecoveryActions.sourceIssueId, issueId));
-      if (recoveryActionState === "new") {
-        expect(recoveryActions).toEqual([]);
-      } else {
-        expect(recoveryActions).toHaveLength(1);
-        expect(recoveryActions[0]).toMatchObject({
-          status: "active",
-          attemptCount: 3,
-          fingerprint: `preexisting:${issueId}`,
-          evidence: { sentinel: "preserve-me" },
-        });
-      }
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue).toMatchObject({
+      status: "in_progress",
+      assigneeAgentId: agentId,
+      checkoutRunId: timerRunId,
+      executionRunId: timerRunId,
+    });
 
-      const recoveryWakes = await db
+    const recoveryActions = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, issueId));
+    expect(recoveryActions).toHaveLength(1);
+    expect(recoveryActions[0]).toMatchObject({
+      status: "active",
+      attemptCount: 3,
+      fingerprint: `preexisting:${issueId}`,
+      evidence: { sentinel: "preserve-me" },
+    });
+    expect(
+      await db
         .select()
         .from(agentWakeupRequests)
-        .where(eq(agentWakeupRequests.reason, "source_scoped_recovery_action"));
-      expect(recoveryWakes).toEqual([]);
+        .where(eq(agentWakeupRequests.reason, "source_scoped_recovery_action")),
+    ).toEqual([]);
+    expect(await db.select().from(issueComments).where(eq(issueComments.issueId, issueId))).toEqual([]);
+    expect(await db.select().from(activityLog).where(eq(activityLog.entityId, issueId))).toEqual([]);
+  });
 
-      const comments = await db
-        .select()
-        .from(issueComments)
-        .where(eq(issueComments.issueId, issueId));
-      expect(comments).toEqual([]);
+  it("preserves a concurrent terminal transition with null run links and no recovery side effects", async () => {
+    const { companyId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "succeeded",
+      retryReason: "issue_continuation_needed",
+      runSource: "issue.productive_terminal_continuation_recovery",
+      livenessState: "advanced",
+    });
 
-      const activity = await db
+    let releaseMutation!: () => void;
+    let reconcilerReady!: () => void;
+    const mutationReleased = new Promise<void>((resolve) => {
+      releaseMutation = resolve;
+    });
+    const ready = new Promise<void>((resolve) => {
+      reconcilerReady = resolve;
+    });
+    const reconciler = recoveryService(db, {
+      enqueueWakeup: async () => null,
+      beforeStrandedEscalationMutation: async () => {
+        reconcilerReady();
+        await mutationReleased;
+      },
+    });
+
+    const reconciliation = reconciler.reconcileStrandedAssignedIssues();
+    await ready;
+    const terminal = await issueService(db).update(issueId, { status: "done" });
+    expect(terminal).toMatchObject({
+      status: "done",
+      checkoutRunId: null,
+      executionRunId: null,
+    });
+    releaseMutation();
+
+    const result = await reconciliation;
+    expect(result.escalated).toBe(0);
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue).toMatchObject({
+      status: "done",
+      checkoutRunId: null,
+      executionRunId: null,
+    });
+    expect(issue?.completedAt).not.toBeNull();
+    expect(
+      await db
         .select()
-        .from(activityLog)
-        .where(eq(activityLog.entityId, issueId));
-      expect(activity).toEqual([]);
-    } finally {
-      await db.execute(sql`drop trigger if exists test_link_timer_run_during_recovery on issue_recovery_actions`);
-      await db.execute(sql`drop function if exists test_link_timer_run_during_recovery()`);
-    }
+        .from(issueRecoveryActions)
+        .where(eq(issueRecoveryActions.sourceIssueId, issueId)),
+    ).toEqual([]);
+    expect(
+      await db
+        .select()
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.reason, "source_scoped_recovery_action")),
+    ).toEqual([]);
+    expect(await db.select().from(issueComments).where(eq(issueComments.issueId, issueId))).toEqual([]);
+    expect(await db.select().from(activityLog).where(eq(activityLog.entityId, issueId))).toEqual([]);
   });
 
   it("does not reblock a generic timer checkout acquired while the recovery wake is enqueued", async () => {
