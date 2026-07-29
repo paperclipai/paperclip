@@ -866,8 +866,37 @@ export const LIVE_EVENT_TYPES = [
   "plugin.ui.updated",
   "plugin.worker.crashed",
   "plugin.worker.restarted",
+  "channel.message.created",
+  "channel.message.updated",
+  "channel.member.updated",
 ] as const;
 export type LiveEventType = (typeof LIVE_EVENT_TYPES)[number];
+
+export const CHANNEL_KINDS = ["project", "public", "private", "dm", "group_dm"] as const;
+export type ChannelKind = (typeof CHANNEL_KINDS)[number];
+
+export const CHANNEL_MEMBER_ROLES = ["member", "admin"] as const;
+export type ChannelMemberRole = (typeof CHANNEL_MEMBER_ROLES)[number];
+
+export const CHANNEL_MESSAGE_TYPES = ["user", "agent", "system", "status", "card"] as const;
+export type ChannelMessageType = (typeof CHANNEL_MESSAGE_TYPES)[number];
+
+export const CHANNEL_CARD_KINDS = [
+  "task",
+  "run",
+  "artifact",
+  "questions",
+  "document",
+  "confirmation",
+  "approval",
+  "suggest_tasks",
+  "note",
+  "stub",
+] as const;
+export type ChannelCardKind = (typeof CHANNEL_CARD_KINDS)[number];
+
+export const CHANNEL_WORK_MODES = ["ask", "plan", "work"] as const;
+export type ChannelWorkMode = (typeof CHANNEL_WORK_MODES)[number];
 
 export const PRINCIPAL_TYPES = ["user", "agent"] as const;
 export type PrincipalType = (typeof PRINCIPAL_TYPES)[number];

@@ -36,6 +36,7 @@ export const updateCompanySchema = createCompanySchema
     brandColor: brandColorSchema,
     logoAssetId: logoAssetIdSchema,
     attachmentMaxBytes: attachmentMaxBytesSchema.optional(),
+    channelsEnabled: z.boolean().optional(),
   });
 
 export type UpdateCompany = z.infer<typeof updateCompanySchema>;
