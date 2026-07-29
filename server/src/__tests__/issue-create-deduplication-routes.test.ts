@@ -110,12 +110,16 @@ describeEmbeddedPostgres("issue create deduplication routes", () => {
     return parent;
   }
 
-  async function seedAgent(companyId: string, reportsTo: string | null = null) {
+  async function seedAgent(
+    companyId: string,
+    reportsTo: string | null = null,
+    status: "active" | "paused" = "active",
+  ) {
     const [agent] = await db.insert(agents).values({
       companyId,
       name: "Unblock owner",
       role: "manager",
-      status: "active",
+      status,
       adapterType: "process",
       adapterConfig: {},
       runtimeConfig: {},
@@ -265,6 +269,33 @@ describeEmbeddedPostgres("issue create deduplication routes", () => {
       payload: intent.payload,
       idempotencyKey: intent.idempotencyKey,
     });
+  });
+
+  it("rejects a non-invokable unblock owner before blocked root creation", async () => {
+    const companyId = await seedCompany();
+    const pausedOwner = await seedAgent(companyId, null, "paused");
+    const app = createApp({
+      blockedOwnerEnqueueWakeup: async () => {
+        throw new Error("scheduler must not be called");
+      },
+    });
+
+    const response = await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({
+        title: "Paused owner blocked root",
+        status: "blocked",
+        priority: "medium",
+        unblockDescriptor: {
+          owner: { agentId: pausedOwner.id },
+          action: "Review the unblock request",
+        },
+      })
+      .expect(422);
+
+    expect(response.body.error).toBe("Unblock owner agent must be invokable");
+    expect(await db.select().from(issues)).toHaveLength(0);
+    expect(await db.select().from(agentWakeupRequests)).toHaveLength(0);
   });
 
   it("does not let an unrelated agent repair a deduplicated blocked root", async () => {
