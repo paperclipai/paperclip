@@ -686,6 +686,7 @@ function buildLivenessOriginalIssueComment(finding: IssueLivenessFinding, escala
 export function recoveryService(db: Db, deps: {
   enqueueWakeup: RecoveryWakeup;
   beforeStrandedEscalationMutation?: () => Promise<void>;
+  beforeStrandedPostWakeReblockMutation?: () => Promise<void>;
 }) {
   const issuesSvc = issueService(db);
   const recoveryActionsSvc = issueRecoveryActionService(db);
@@ -3477,6 +3478,7 @@ export function recoveryService(db: Db, deps: {
         currentIssue.assigneeAgentId === recoveryAction.ownerAgentId &&
         currentIssue.assigneeUserId === input.issue.assigneeUserId
       ) {
+        await deps.beforeStrandedPostWakeReblockMutation?.();
         const reblocked = await issuesSvc.update(input.issue.id, {
           status: "blocked",
           blockedByIssueIds: blockerIds,

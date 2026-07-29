@@ -1137,17 +1137,26 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(comments[0]?.body).toContain("Recovery action:");
   });
 
-  it("preserves a null-link terminal transition that lands while the recovery wake is enqueued", async () => {
+  it("preserves a null-link terminal transition after the post-wake snapshot", async () => {
     const { managerId, coderId, sourceIssue } = await seedCompany();
     await db.update(agents).set({ status: "paused" }).where(eq(agents.id, managerId));
     const enqueueWakeup = vi.fn(async () => {
       await db
         .update(issues)
-        .set({ status: "done", checkoutRunId: null, executionRunId: null })
+        .set({ status: "in_progress", checkoutRunId: null, executionRunId: null })
         .where(eq(issues.id, sourceIssue.id));
       return null;
     });
-    const recovery = recoveryService(db, { enqueueWakeup });
+    const beforeStrandedPostWakeReblockMutation = vi.fn(async () => {
+      await db
+        .update(issues)
+        .set({ status: "done", checkoutRunId: null, executionRunId: null })
+        .where(eq(issues.id, sourceIssue.id));
+    });
+    const recovery = recoveryService(db, {
+      enqueueWakeup,
+      beforeStrandedPostWakeReblockMutation,
+    });
 
     await recovery.escalateStrandedAssignedIssue({
       issue: sourceIssue,
@@ -1174,13 +1183,41 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       checkoutRunId: null,
       executionRunId: null,
     });
+    const actionRows = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, sourceIssue.id));
+    expect(actionRows).toHaveLength(1);
+    expect(actionRows[0]?.attemptCount).toBe(1);
     expect(enqueueWakeup).toHaveBeenCalledTimes(1);
+    expect(beforeStrandedPostWakeReblockMutation).toHaveBeenCalledTimes(1);
+    expect(
+      await db.select().from(issueComments).where(eq(issueComments.issueId, sourceIssue.id)),
+    ).toHaveLength(1);
+    expect(
+      await db.select().from(activityLog).where(eq(activityLog.entityId, sourceIssue.id)),
+    ).toHaveLength(1);
+    expect(
+      await db.select().from(issueRelations).where(eq(issueRelations.relatedIssueId, sourceIssue.id)),
+    ).toHaveLength(0);
   });
 
-  it("preserves a null-link reassignment that lands while the recovery wake is enqueued", async () => {
+  it("preserves a null-link reassignment after the post-wake snapshot", async () => {
     const { managerId, coderId, sourceIssue } = await seedCompany();
     await db.update(agents).set({ status: "paused" }).where(eq(agents.id, managerId));
     const enqueueWakeup = vi.fn(async () => {
+      await db
+        .update(issues)
+        .set({
+          status: "in_progress",
+          assigneeAgentId: coderId,
+          checkoutRunId: null,
+          executionRunId: null,
+        })
+        .where(eq(issues.id, sourceIssue.id));
+      return null;
+    });
+    const beforeStrandedPostWakeReblockMutation = vi.fn(async () => {
       await db
         .update(issues)
         .set({
@@ -1190,9 +1227,11 @@ describeEmbeddedPostgres("issue recovery actions", () => {
           executionRunId: null,
         })
         .where(eq(issues.id, sourceIssue.id));
-      return null;
     });
-    const recovery = recoveryService(db, { enqueueWakeup });
+    const recovery = recoveryService(db, {
+      enqueueWakeup,
+      beforeStrandedPostWakeReblockMutation,
+    });
 
     await recovery.escalateStrandedAssignedIssue({
       issue: sourceIssue,
@@ -1219,7 +1258,23 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       checkoutRunId: null,
       executionRunId: null,
     });
+    const actionRows = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, sourceIssue.id));
+    expect(actionRows).toHaveLength(1);
+    expect(actionRows[0]?.attemptCount).toBe(1);
     expect(enqueueWakeup).toHaveBeenCalledTimes(1);
+    expect(beforeStrandedPostWakeReblockMutation).toHaveBeenCalledTimes(1);
+    expect(
+      await db.select().from(issueComments).where(eq(issueComments.issueId, sourceIssue.id)),
+    ).toHaveLength(1);
+    expect(
+      await db.select().from(activityLog).where(eq(activityLog.entityId, sourceIssue.id)),
+    ).toHaveLength(1);
+    expect(
+      await db.select().from(issueRelations).where(eq(issueRelations.relatedIssueId, sourceIssue.id)),
+    ).toHaveLength(0);
   });
 
   it("does not create nested recovery artifacts when issue-backed fallback work itself fails", async () => {
