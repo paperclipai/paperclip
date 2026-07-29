@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { readFileSync } from "node:fs";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
@@ -50,6 +51,16 @@ if (!embeddedPostgresSupport.supported) {
     `Skipping embedded Postgres wake idempotency tests on this host: ${embeddedPostgresSupport.reason ?? "unsupported environment"}`,
   );
 }
+
+// The migration is read rather than restated so this test cannot drift away
+// from what actually runs against an existing database.
+const MIGRATION_STEPS = readFileSync(
+  new URL("../../../packages/db/src/migrations/0196_agent_wakeup_idempotency_key_unique.sql", import.meta.url),
+  "utf8",
+)
+  .split("--> statement-breakpoint")
+  .map((step) => step.trim())
+  .filter(Boolean);
 
 describeEmbeddedPostgres("agent wakeup idempotency keys", () => {
   let db!: ReturnType<typeof createDb>;
@@ -234,5 +245,73 @@ describeEmbeddedPostgres("agent wakeup idempotency keys", () => {
     await db.insert(agentWakeupRequests).values({ ...row, status: "skipped", finishedAt: new Date() });
     const rows = await wakeRowsWithKey(idempotencyKey);
     expect(rows).toHaveLength(2);
+  });
+
+  // A database that already ran the race carries duplicate keys, and a
+  // duplicate may still own a live queued run. The migration must not leave
+  // that run unclaimable: releasing the key (rather than rewriting the row's
+  // status) keeps it outside the index through every later transition.
+  it("leaves a collapsed duplicate's run claimable after the migration", async () => {
+    await seedCompanyAndAgent();
+    const idempotencyKey = `wake-idempotency-migration:${randomUUID()}`;
+    const survivorId = randomUUID();
+    const duplicateId = randomUUID();
+
+    // Recreate the pre-migration state: the index does not exist yet, so two
+    // wakes can hold the same key, each with its own queued run.
+    await db.execute(sql`drop index "agent_wakeup_requests_company_idempotency_key_uq"`);
+    await db.insert(agentWakeupRequests).values([
+      {
+        id: survivorId,
+        companyId,
+        agentId,
+        source: "automation",
+        triggerDetail: "system",
+        reason: "wake_idempotency_test",
+        status: "queued",
+        idempotencyKey,
+        runId: randomUUID(),
+      },
+      {
+        id: duplicateId,
+        companyId,
+        agentId,
+        source: "automation",
+        triggerDetail: "system",
+        reason: "wake_idempotency_test",
+        status: "queued",
+        idempotencyKey,
+        runId: randomUUID(),
+      },
+    ]);
+
+    for (const step of MIGRATION_STEPS) {
+      await db.execute(sql.raw(step));
+    }
+
+    const rows = await db
+      .select({
+        id: agentWakeupRequests.id,
+        status: agentWakeupRequests.status,
+        idempotencyKey: agentWakeupRequests.idempotencyKey,
+        error: agentWakeupRequests.error,
+      })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.companyId, companyId));
+    const survivor = rows.find((row) => row.id === survivorId)!;
+    const duplicate = rows.find((row) => row.id === duplicateId)!;
+
+    expect(survivor.idempotencyKey).toBe(idempotencyKey);
+    expect(duplicate.idempotencyKey).toBeNull();
+    expect(duplicate.error).toContain(idempotencyKey);
+    // The duplicate's run is untouched, so it can still be claimed.
+    expect(duplicate.status).toBe("queued");
+
+    await expect(
+      db
+        .update(agentWakeupRequests)
+        .set({ status: "claimed", claimedAt: new Date() })
+        .where(eq(agentWakeupRequests.id, duplicateId)),
+    ).resolves.toBeDefined();
   });
 });

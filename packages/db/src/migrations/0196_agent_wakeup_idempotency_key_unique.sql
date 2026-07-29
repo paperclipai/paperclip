@@ -12,10 +12,17 @@
 -- one was skipped would silently drop work, which is worse than a duplicate
 -- run.
 --
--- Step 1: collapse any pre-existing duplicates so the index below can be
+-- Step 1: resolve any pre-existing duplicates so the index below can be
 -- created. Keep one row per (company_id, idempotency_key) -- preferring one
--- that actually carries a run -- and mark the rest coalesced, which is what
--- they always were: a second request for a wake that had already happened.
+-- that actually carries a run -- and release the key on the rest, recording
+-- the released value in `error`.
+--
+-- Only the key is touched. Status and run linkage are left exactly as they
+-- are, because a duplicate wake may still own a live queued run: rewriting its
+-- status would either lie about that run or, worse, let the row re-enter the
+-- index on its next lifecycle transition (queued -> claimed) and make the
+-- claim fail with a unique violation. A row with a NULL key is outside the
+-- partial index for good, whatever it does next.
 WITH ranked AS (
   SELECT
     id,
@@ -29,10 +36,12 @@ WITH ranked AS (
 )
 UPDATE agent_wakeup_requests
 SET
-  status = 'coalesced',
-  coalesced_count = coalesced_count + 1,
-  finished_at = COALESCE(finished_at, now()),
-  error = COALESCE(error, 'Collapsed by migration 0196: duplicate idempotency_key'),
+  idempotency_key = NULL,
+  error = COALESCE(
+    error,
+    'Migration 0196 released duplicate idempotency_key ' || idempotency_key
+      || '; the surviving wake for that key keeps it'
+  ),
   updated_at = now()
 WHERE id IN (SELECT id FROM ranked WHERE rn > 1);
 --> statement-breakpoint
