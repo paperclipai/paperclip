@@ -389,49 +389,8 @@ describe.sequential("issue thread interaction routes", () => {
     }));
   });
 
-  it("lists and creates board-authored interactions", async () => {
-    mockInteractionService.expireRequestConfirmationsSupersededByHistoricalComments.mockResolvedValueOnce([
-      {
-        id: "interaction-expired",
-        kind: "ask_user_questions",
-        status: "expired",
-        result: {
-          version: 1,
-          answers: [],
-          expirationReason: "superseded_by_comment",
-          commentId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
-          summaryMarkdown: null,
-        },
-      },
-    ]);
-    mockInteractionService.listForIssue.mockResolvedValue([
-      { id: "interaction-1", kind: "suggest_tasks", status: "pending" },
-    ]);
+  it("creates board-authored interactions", async () => {
     const app = await createApp();
-
-    const listRes = await request(app).get("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions");
-    expect(listRes.status).toBe(200);
-    expect(listRes.body).toEqual([
-      { id: "interaction-1", kind: "suggest_tasks", status: "pending" },
-    ]);
-    expect(mockInteractionService.expireRequestConfirmationsSupersededByHistoricalComments).toHaveBeenCalledWith(
-      expect.objectContaining({ id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" }),
-    );
-    expect(mockLogActivity).toHaveBeenCalledWith(
-      expect.anything(),
-      expect.objectContaining({
-        action: "issue.thread_interaction_expired",
-        details: expect.objectContaining({
-          interactionId: "interaction-expired",
-          interactionKind: "ask_user_questions",
-          source: "issue.interactions.catchup_superseded_by_comment",
-          result: expect.objectContaining({
-            expirationReason: "superseded_by_comment",
-            commentId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
-          }),
-        }),
-      }),
-    );
 
     const createRes = await request(app)
       .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions")

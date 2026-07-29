@@ -101,6 +101,7 @@ import { validate } from "../middleware/validate.js";
 import * as serviceIndex from "../services/index.js";
 import {
   accessService,
+  activityService,
   agentService,
   companySkillService,
   companyService,
@@ -134,6 +135,7 @@ import {
 } from "../services/task-watchdog-scope.js";
 import type { TaskWatchdogServiceDeps, taskWatchdogService } from "../services/task-watchdogs.js";
 import { logger } from "../middleware/logger.js";
+import { privateJsonEtag } from "../middleware/private-json-etag.js";
 import { conflict, forbidden, HttpError, notFound, unauthorized, unprocessable } from "../errors.js";
 import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
 import {
@@ -2589,6 +2591,7 @@ export function issueRoutes(
 ) {
   const router = Router();
   const svc = issueService(db);
+  const activitySvc = activityService(db);
   const access = accessService(db);
   const heartbeat = heartbeatService(db, {
     pluginWorkerManager: opts.pluginWorkerManager,
@@ -2616,6 +2619,130 @@ export function issueRoutes(
   const decisionTrainingSvc = decisionTrainingService(db);
   const issueReferencesSvc = issueReferenceService(db);
   const issueThreadInteractionsSvc = issueThreadInteractionService(db);
+  const issueReadMemo = new Map<string, { expiresAt: number; value: Promise<Awaited<ReturnType<typeof svc.getById>>> }>();
+  const issueReadDecisionMemo = new Map<string, { expiresAt: number; value: Promise<Awaited<ReturnType<typeof decideIssueAccess>>> }>();
+  const issueReadMemoTtlMs = 100;
+
+  async function buildIssueDetailResponse(req: Request, issue: Awaited<ReturnType<typeof svc.getById>> & {}) {
+    const inboxArchiveFieldsPromise = req.actor.type === "board" && req.actor.userId
+      ? svc.getActiveInboxArchiveFields(issue, req.actor.userId)
+      : Promise.resolve({});
+    const [
+      { project, goal },
+      ancestors,
+      mentionedProjectIds,
+      documentPayload,
+      relations,
+      blockerAttention,
+      productivityReview,
+      referenceSummary,
+      successfulRunHandoffStates,
+      scheduledRetry,
+      activeRecoveryAction,
+      linkedCases,
+      inboxArchiveFields,
+    ] = await Promise.all([
+      resolveIssueProjectAndGoal(issue),
+      svc.getAncestors(issue.id),
+      svc.findMentionedProjectIds(issue.id, { includeCommentBodies: false }),
+      documentsSvc.getIssueDocumentPayload(issue),
+      svc.getRelationSummaries(issue.id),
+      svc.listBlockerAttention(issue.companyId, [issue]).then((map) => map.get(issue.id) ?? null),
+      svc.listProductivityReviews(issue.companyId, [issue.id]).then((map) => map.get(issue.id) ?? null),
+      issueReferencesSvc.listIssueReferenceSummary(issue.id),
+      listSuccessfulRunHandoffStates(db, issue.companyId, [issue.id]),
+      svc.getCurrentScheduledRetry(issue.id),
+      recoveryActionsSvc.getActiveForIssue(issue.companyId, issue.id),
+      listIssueLinkedCases(db, issue.companyId, issue.id),
+      inboxArchiveFieldsPromise,
+    ]);
+    const recoveryActionsByRelationIssue = await relationRecoveryActionMap(
+      recoveryActionsSvc,
+      issue.companyId,
+      relations,
+    );
+    const relationsWithRecoveryActions = withRecoveryActionsOnRelationSummaries(
+      relations,
+      recoveryActionsByRelationIssue,
+    );
+    const revalidatedActiveRecoveryAction = await revalidateActiveSourceRecoveryForRead({
+      issue,
+      trigger: "read_projection",
+      actor: getActorInfo(req),
+      activeRecoveryAction,
+    });
+    const [mentionedProjects, currentExecutionWorkspace, workProducts] = await Promise.all([
+      mentionedProjectIds.length > 0
+        ? projectsSvc.listByIds(issue.companyId, mentionedProjectIds)
+        : Promise.resolve([]),
+      issue.executionWorkspaceId
+        ? executionWorkspacesSvc.getById(issue.executionWorkspaceId)
+        : Promise.resolve(null),
+      workProductsSvc.listForIssue(issue.id),
+    ]);
+
+    return {
+      ...issue,
+      ...inboxArchiveFields,
+      goalId: goal?.id ?? issue.goalId,
+      ancestors,
+      ...(blockerAttention ? { blockerAttention } : {}),
+      productivityReview,
+      successfulRunHandoff: successfulRunHandoffStates.get(issue.id) ?? null,
+      scheduledRetry,
+      activeRecoveryAction: revalidatedActiveRecoveryAction,
+      blockedBy: relationsWithRecoveryActions.blockedBy,
+      blocks: relationsWithRecoveryActions.blocks,
+      relatedWork: referenceSummary,
+      referencedIssueIdentifiers: referenceSummary.outbound.map((item) => item.issue.identifier ?? item.issue.id),
+      ...documentPayload,
+      project: compactIssueProject(project),
+      goal: goal ?? null,
+      mentionedProjects,
+      currentExecutionWorkspace: compactIssueExecutionWorkspace(currentExecutionWorkspace),
+      workProducts,
+      linkedCases,
+    };
+  }
+
+  function issueReadActorKey(req: Request) {
+    return JSON.stringify({
+      type: req.actor.type,
+      source: req.actor.source,
+      userId: req.actor.userId ?? null,
+      agentId: req.actor.agentId ?? null,
+      keyId: req.actor.keyId ?? null,
+      keyScope: req.actor.keyScope ?? null,
+      companyId: req.actor.companyId ?? null,
+      companyIds: req.actor.companyIds ?? null,
+      memberships: req.actor.memberships ?? null,
+      isInstanceAdmin: req.actor.isInstanceAdmin ?? null,
+      onBehalfOfUserId: req.actor.onBehalfOfUserId ?? null,
+      onBehalfOfMemberships: req.actor.onBehalfOfMemberships ?? null,
+    });
+  }
+
+  function getIssueById(req: Request, id: string) {
+    if (req.method !== "GET") return svc.getById(id);
+    const key = `${issueReadActorKey(req)}:${id}`;
+    const now = Date.now();
+    const cached = issueReadMemo.get(key);
+    if (cached && cached.expiresAt > now) return cached.value;
+    const value = svc.getById(id);
+    issueReadMemo.set(key, { expiresAt: now + issueReadMemoTtlMs, value });
+    void value.catch(() => issueReadMemo.delete(key));
+    return value;
+  }
+
+  const issueDetailEtag = privateJsonEtag();
+  router.use((req, res, next) => {
+    if (/^\/issues\/[^/]+(?:\/|$)/.test(req.path)) {
+      issueDetailEtag(req, res, next);
+      return;
+    }
+    next();
+  });
+
   const taskWatchdogFactory: TaskWatchdogServiceFactory | undefined = Object.prototype.hasOwnProperty.call(
     serviceIndex,
     "taskWatchdogService",
@@ -3453,7 +3580,17 @@ export function issueRoutes(
   }
 
   async function assertIssueReadAllowed(req: Request, res: Response, issue: Parameters<typeof decideIssueAccess>[1]) {
-    const decision = await decideIssueAccess(req, issue, "issue:read");
+    const key = `${issueReadActorKey(req)}:${issue.id}:${issue.companyId}:${issue.projectId ?? ""}:${issue.parentId ?? ""}:${issue.assigneeAgentId ?? ""}:${issue.assigneeUserId ?? ""}:${issue.status}`;
+    const now = Date.now();
+    const cached = issueReadDecisionMemo.get(key);
+    const value = cached && cached.expiresAt > now
+      ? cached.value
+      : decideIssueAccess(req, issue, "issue:read");
+    if (!cached || cached.expiresAt <= now) {
+      issueReadDecisionMemo.set(key, { expiresAt: now + issueReadMemoTtlMs, value });
+      void value.catch(() => issueReadDecisionMemo.delete(key));
+    }
+    const decision = await value;
     if (decision.allowed) return true;
     res.status(403).json({ error: "Issue is outside this actor's authorization boundary" });
     return false;
@@ -5139,7 +5276,7 @@ export function issueRoutes(
 
   router.get("/issues/:id/heartbeat-context", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    const issue = await getAccessibleResource(req, res, getIssueById(req, id), "Issue not found");
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
 
@@ -5289,7 +5426,7 @@ export function issueRoutes(
 
   router.get("/issues/:id/diagnostics/blockers", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    const issue = await getAccessibleResource(req, res, getIssueById(req, id), "Issue not found");
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
 
@@ -5320,7 +5457,7 @@ export function issueRoutes(
 
   router.get("/issues/:id/diagnostics/wakes", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    const issue = await getAccessibleResource(req, res, getIssueById(req, id), "Issue not found");
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
 
@@ -5365,7 +5502,7 @@ export function issueRoutes(
 
   router.get("/issues/:id/diagnostics/subtree", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    const issue = await getAccessibleResource(req, res, getIssueById(req, id), "Issue not found");
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
 
@@ -5414,91 +5551,44 @@ export function issueRoutes(
   });
 
   router.get("/issues/:id", async (req, res) => {
+    const requestStartedAt = performance.now();
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    const issue = await getAccessibleResource(req, res, getIssueById(req, id), "Issue not found");
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
-    const inboxArchiveFieldsPromise = req.actor.type === "board" && req.actor.userId
-      ? svc.getActiveInboxArchiveFields(issue, req.actor.userId)
-      : Promise.resolve({});
-    const [
-      { project, goal },
-      ancestors,
-      mentionedProjectIds,
-      documentPayload,
-      relations,
-      blockerAttention,
-      productivityReview,
-      referenceSummary,
-      successfulRunHandoffStates,
-      scheduledRetry,
-      activeRecoveryAction,
-      linkedCases,
-      inboxArchiveFields,
-    ] = await Promise.all([
-      resolveIssueProjectAndGoal(issue),
-      svc.getAncestors(issue.id),
-      svc.findMentionedProjectIds(issue.id, { includeCommentBodies: false }),
-      documentsSvc.getIssueDocumentPayload(issue),
-      svc.getRelationSummaries(issue.id),
-      svc.listBlockerAttention(issue.companyId, [issue]).then((map) => map.get(issue.id) ?? null),
-      svc.listProductivityReviews(issue.companyId, [issue.id]).then((map) => map.get(issue.id) ?? null),
-      issueReferencesSvc.listIssueReferenceSummary(issue.id),
-      listSuccessfulRunHandoffStates(db, issue.companyId, [issue.id]),
-      svc.getCurrentScheduledRetry(issue.id),
-      recoveryActionsSvc.getActiveForIssue(issue.companyId, issue.id),
-      listIssueLinkedCases(db, issue.companyId, issue.id),
-      inboxArchiveFieldsPromise,
+    res.setHeader("Server-Timing", `paperclip_issue;dur=${(performance.now() - requestStartedAt).toFixed(1)}`);
+    res.json(await buildIssueDetailResponse(req, issue));
+  });
+
+  router.get("/issues/:id/view", async (req, res) => {
+    const requestStartedAt = performance.now();
+    const id = req.params.id as string;
+    const issue = await getAccessibleResource(req, res, getIssueById(req, id), "Issue not found");
+    if (!issue) return;
+    if (!(await assertIssueReadAllowed(req, res, issue))) return;
+
+    const [detail, comments, interactions, attachments, workProducts, rawChildIssues, runs] = await Promise.all([
+      buildIssueDetailResponse(req, issue),
+      svc.listComments(issue.id, { order: "desc", limit: 50 }),
+      issueThreadInteractionsSvc.listForIssue(issue.id),
+      svc.listAttachments(issue.id).then((rows) => rows.map(withContentPath)),
+      workProductsSvc.listForIssue(issue.id),
+      svc.list(issue.companyId, { descendantOf: issue.id, includeBlockedBy: true }),
+      activitySvc.runsForIssue(issue.companyId, issue.id),
     ]);
-    const recoveryActionsByRelationIssue = await relationRecoveryActionMap(
-      recoveryActionsSvc,
-      issue.companyId,
-      relations,
-    );
-    const relationsWithRecoveryActions = withRecoveryActionsOnRelationSummaries(
-      relations,
-      recoveryActionsByRelationIssue,
-    );
-    const revalidatedActiveRecoveryAction = await revalidateActiveSourceRecoveryForRead({
-      issue,
-      trigger: "read_projection",
-      actor: getActorInfo(req),
-      activeRecoveryAction,
-    });
-    const mentionedProjects = mentionedProjectIds.length > 0
-      ? await projectsSvc.listByIds(issue.companyId, mentionedProjectIds)
-      : [];
-    const currentExecutionWorkspace = issue.executionWorkspaceId
-      ? await executionWorkspacesSvc.getById(issue.executionWorkspaceId)
-      : null;
-    const workProducts = await workProductsSvc.listForIssue(issue.id);
-    res.json({
-      ...issue,
-      ...inboxArchiveFields,
-      goalId: goal?.id ?? issue.goalId,
-      ancestors,
-      ...(blockerAttention ? { blockerAttention } : {}),
-      productivityReview,
-      successfulRunHandoff: successfulRunHandoffStates.get(issue.id) ?? null,
-      scheduledRetry,
-      activeRecoveryAction: revalidatedActiveRecoveryAction,
-      blockedBy: relationsWithRecoveryActions.blockedBy,
-      blocks: relationsWithRecoveryActions.blocks,
-      relatedWork: referenceSummary,
-      referencedIssueIdentifiers: referenceSummary.outbound.map((item) => item.issue.identifier ?? item.issue.id),
-      ...documentPayload,
-      project: compactIssueProject(project),
-      goal: goal ?? null,
-      mentionedProjects,
-      currentExecutionWorkspace: compactIssueExecutionWorkspace(currentExecutionWorkspace),
-      workProducts,
-      linkedCases,
-    });
+    const childIssues = await actorCanReadCompanyScope(req, issue.companyId)
+      ? rawChildIssues
+      : await filterIssuesForActor(req, rawChildIssues);
+    const liveRuns = runs.filter((run) => run.status === "queued" || run.status === "running");
+    const activeRun = liveRuns.find((run) => run.runId === issue.executionRunId) ?? liveRuns[0] ?? null;
+
+    res.setHeader("Server-Timing", `paperclip_issue_view;dur=${(performance.now() - requestStartedAt).toFixed(1)}`);
+    res.json({ detail, comments, interactions, attachments, workProducts, childIssues, runs, liveRuns, activeRun });
   });
 
   router.get("/issues/:id/watchdog", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    const issue = await getAccessibleResource(req, res, getIssueById(req, id), "Issue not found");
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
     res.json(await taskWatchdogsSvc.getActiveForIssue(issue.companyId, issue.id));
@@ -5506,7 +5596,7 @@ export function issueRoutes(
 
   router.put("/issues/:id/watchdog", validate(upsertIssueWatchdogSchema), async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    const issue = await getAccessibleResource(req, res, getIssueById(req, id), "Issue not found");
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
@@ -5547,7 +5637,7 @@ export function issueRoutes(
 
   router.delete("/issues/:id/watchdog", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    const issue = await getAccessibleResource(req, res, getIssueById(req, id), "Issue not found");
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
     if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
@@ -5584,7 +5674,7 @@ export function issueRoutes(
 
   router.get("/issues/:id/recovery-actions", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    const issue = await getAccessibleResource(req, res, getIssueById(req, id), "Issue not found");
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
     const active = await revalidateActiveSourceRecoveryForRead({
@@ -5780,7 +5870,7 @@ export function issueRoutes(
 
   router.get("/issues/:id/work-products", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    const issue = await getAccessibleResource(req, res, getIssueById(req, id), "Issue not found");
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
     const workProducts = await workProductsSvc.listForIssue(issue.id);
@@ -5789,7 +5879,7 @@ export function issueRoutes(
 
   router.get("/issues/:id/external-objects", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    const issue = await getAccessibleResource(req, res, getIssueById(req, id), "Issue not found");
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
     const objects = await externalObjectsSvc.listForIssue(issue.id);
@@ -5798,7 +5888,7 @@ export function issueRoutes(
 
   router.get("/issues/:id/external-object-summary", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    const issue = await getAccessibleResource(req, res, getIssueById(req, id), "Issue not found");
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
     const summary = await externalObjectsSvc.getIssueSummary(issue.id);
@@ -5859,7 +5949,7 @@ export function issueRoutes(
 
   router.get("/issues/:id/documents", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    const issue = await getAccessibleResource(req, res, getIssueById(req, id), "Issue not found");
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
     const docs = await documentsSvc.listIssueDocuments(issue.id, {
@@ -6950,7 +7040,7 @@ export function issueRoutes(
 
   router.get("/issues/:id/approvals", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    const issue = await getAccessibleResource(req, res, getIssueById(req, id), "Issue not found");
     if (!issue) return;
     if (await assertLowTrustControlPlaneDenied(req, res, issue.companyId, issue)) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
@@ -9211,7 +9301,7 @@ export function issueRoutes(
 
   router.get("/issues/:id/comments", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    const issue = await getAccessibleResource(req, res, getIssueById(req, id), "Issue not found");
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
     const afterCommentId =
@@ -9242,30 +9332,10 @@ export function issueRoutes(
 
   router.get("/issues/:id/interactions", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    const issue = await getAccessibleResource(req, res, getIssueById(req, id), "Issue not found");
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
-    const actor = getActorInfo(req);
-    const interactionSvc = issueThreadInteractionService(db);
-    const supersededInteractions = await interactionSvc.expireRequestConfirmationsSupersededByHistoricalComments(issue);
-    await logExpiredRequestConfirmations({
-      issue,
-      interactions: supersededInteractions,
-      actor,
-      source: "issue.interactions.catchup_superseded_by_comment",
-    });
-    const closedIssueInteractions = await interactionSvc.expirePendingInteractionsForTerminalIssue(issue, {
-      agentId: actor.agentId,
-      userId: actor.actorType === "user" ? actor.actorId : null,
-    });
-    await logExpiredRequestConfirmations({
-      issue,
-      interactions: closedIssueInteractions,
-      actor,
-      source: "issue.interactions.catchup_issue_closed",
-    });
-
-    const interactions = await interactionSvc.listForIssue(id);
+    const interactions = await issueThreadInteractionService(db).listForIssue(id);
     res.json(interactions);
   });
 
@@ -10699,7 +10769,7 @@ export function issueRoutes(
 
   router.get("/issues/:id/attachments", async (req, res) => {
     const issueId = req.params.id as string;
-    const issue = await getAccessibleResource(req, res, svc.getById(issueId), "Issue not found");
+    const issue = await getAccessibleResource(req, res, getIssueById(req, issueId), "Issue not found");
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
     const attachments = await svc.listAttachments(issueId);

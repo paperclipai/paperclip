@@ -50,6 +50,7 @@ function challengeStatusForRow(row: typeof cliAuthChallenges.$inferSelect): CliA
 }
 
 export function boardAuthService(db: Db) {
+  const touchedBoardApiKeys = new Map<string, number>();
   async function resolveBoardAccess(userId: string) {
     const [user, memberships, adminRole] = await Promise.all([
       db
@@ -147,7 +148,15 @@ export function boardAuthService(db: Db) {
   }
 
   async function touchBoardApiKey(id: string) {
-    await db.update(boardApiKeys).set({ lastUsedAt: new Date() }).where(eq(boardApiKeys.id, id));
+    const nowMs = Date.now();
+    if ((touchedBoardApiKeys.get(id) ?? 0) > nowMs - 60_000) return;
+    touchedBoardApiKeys.set(id, nowMs);
+    try {
+      await db.update(boardApiKeys).set({ lastUsedAt: new Date() }).where(eq(boardApiKeys.id, id));
+    } catch (error) {
+      touchedBoardApiKeys.delete(id);
+      throw error;
+    }
   }
 
   async function revokeBoardApiKey(id: string) {

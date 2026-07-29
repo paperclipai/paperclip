@@ -1,10 +1,18 @@
-import type { QueryClient } from "@tanstack/react-query";
-import type { Issue } from "@paperclipai/shared";
+import type { InfiniteData, QueryClient } from "@tanstack/react-query";
+import type { Issue, IssueComment } from "@paperclipai/shared";
 import { issuesApi } from "@/api/issues";
 import { queryKeys } from "@/lib/queryKeys";
+import { getNextIssueCommentPageParam, ISSUE_COMMENT_PAGE_SIZE } from "@/lib/optimistic-issue-comments";
 
 const ISSUE_DETAIL_QUERY_PREFIX = ["issues", "detail"] as const;
 export const ISSUE_DETAIL_STALE_TIME_MS = 60_000;
+/**
+ * Freshness window for a prefetched first comments page. Matches the global
+ * query staleTime so a warm navigation that arrives within the window renders
+ * the seeded comments without an immediate refetch (no loading state), while a
+ * later revisit still revalidates in the background.
+ */
+export const ISSUE_COMMENTS_PREFETCH_STALE_TIME_MS = 30_000;
 
 function isNonEmptyString(value: unknown): value is string {
   return typeof value === "string" && value.length > 0;
@@ -109,8 +117,26 @@ export async function fetchIssueDetail(
   issueRef: string,
   options?: { signal?: AbortSignal },
 ): Promise<Issue> {
-  const issue = options ? await issuesApi.get(issueRef, options) : await issuesApi.get(issueRef);
-  return seedIssueDetailCache(queryClient, issue, { issueRef });
+  const view = options ? await issuesApi.getView(issueRef, options) : await issuesApi.getView(issueRef);
+  const issue = seedIssueDetailCache(queryClient, view.detail, { issueRef });
+  const refs = collectIssueRefs(issueRef, issue);
+  for (const ref of refs) {
+    queryClient.setQueryData<InfiniteData<typeof view.comments, string | null>>(
+      queryKeys.issues.comments(ref),
+      { pages: [view.comments], pageParams: [null] },
+    );
+    queryClient.setQueryData(queryKeys.issues.interactions(ref), view.interactions);
+    queryClient.setQueryData(queryKeys.issues.attachments(ref), view.attachments);
+    queryClient.setQueryData(queryKeys.issues.workProducts(ref), view.workProducts);
+    queryClient.setQueryData(queryKeys.issues.runs(ref), view.runs);
+    queryClient.setQueryData(queryKeys.issues.liveRuns(ref), view.liveRuns);
+    queryClient.setQueryData(queryKeys.issues.activeRun(ref), view.activeRun);
+  }
+  queryClient.setQueryData(
+    queryKeys.issues.listByDescendantRoot(issue.companyId, issue.id),
+    view.childIssues,
+  );
+  return issue;
 }
 
 export function getIssueDetailQueryOptions(
@@ -143,4 +169,50 @@ export function prefetchIssueDetail(
     queryFn: () => fetchIssueDetail(queryClient, issueRef),
     staleTime: ISSUE_DETAIL_STALE_TIME_MS,
   });
+}
+
+/**
+ * Warm the first page of the issue-detail comment feed under the exact infinite
+ * query key IssueDetail mounts, so a subsequent navigation paints comments from
+ * cache instead of waiting on a fetch. Keyed by issue ref and always background
+ * revalidated by the mounted query, so it never surfaces stale cross-issue data.
+ *
+ * `prefetchInfiniteQuery` respects `staleTime`: if the comments cache is already
+ * fresh (e.g. seeded by the aggregate `getView` fetch), this is a no-op and does
+ * not issue a redundant request.
+ */
+export function prefetchIssueComments(queryClient: QueryClient, issueRef: string) {
+  return queryClient.prefetchInfiniteQuery({
+    queryKey: queryKeys.issues.comments(issueRef),
+    queryFn: ({ pageParam }: { pageParam: string | null }) =>
+      issuesApi.listComments(issueRef, {
+        order: "desc",
+        limit: ISSUE_COMMENT_PAGE_SIZE,
+        ...(pageParam ? { after: pageParam } : {}),
+      }),
+    initialPageParam: null as string | null,
+    getNextPageParam: (lastPage: IssueComment[]) =>
+      getNextIssueCommentPageParam(lastPage, ISSUE_COMMENT_PAGE_SIZE),
+    staleTime: ISSUE_COMMENTS_PREFETCH_STALE_TIME_MS,
+    pages: 1,
+  });
+}
+
+/**
+ * Prefetch everything the issue-detail first paint needs — the detail snapshot
+ * and the first comments page — for instant warm navigation from a list row.
+ * Seeds the full list-row snapshot when provided so the header + description
+ * paint immediately with no loading state.
+ */
+export function prefetchIssueDetailForNavigation(
+  queryClient: QueryClient,
+  issueRef: string,
+  options?: {
+    issue?: Issue | null;
+  },
+) {
+  return Promise.all([
+    prefetchIssueDetail(queryClient, issueRef, options),
+    prefetchIssueComments(queryClient, issueRef),
+  ]);
 }

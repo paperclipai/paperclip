@@ -39,7 +39,7 @@ import {
   rememberIssueDetailLocationState,
 } from "../lib/issueDetailBreadcrumb";
 import { resolveIssueActiveRun, shouldTrackIssueActiveRun } from "../lib/issueActiveRun";
-import { getIssueDetailQueryOptions } from "../lib/issueDetailCache";
+import { getIssueDetailQueryOptions, ISSUE_DETAIL_STALE_TIME_MS } from "../lib/issueDetailCache";
 import {
   beginLocalInboxArchive,
   boundLocalInboxArchive,
@@ -66,6 +66,7 @@ import {
   createOptimisticIssueComment,
   flattenIssueCommentPages,
   getNextIssueCommentPageParam,
+  ISSUE_COMMENT_PAGE_SIZE,
   isQueuedIssueComment,
   loadRemainingIssueCommentPages,
   matchesIssueRef,
@@ -249,7 +250,6 @@ type IssueDetailComment = (IssueComment | OptimisticIssueComment) & {
 };
 
 const FEEDBACK_TERMS_URL = import.meta.env.VITE_FEEDBACK_TERMS_URL?.trim() || "https://paperclip.ing/tos";
-const ISSUE_COMMENT_PAGE_SIZE = 50;
 const ISSUE_COMMENT_AUTOLOAD_LIMIT = ISSUE_COMMENT_PAGE_SIZE * 3;
 const JUMP_TO_LATEST_MAX_COMMENT_PAGES = 10;
 const TREE_CONTROL_MODE_LABEL: Record<IssueTreeControlMode, string> = {
@@ -1030,7 +1030,8 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   const { data: liveRuns } = useQuery({
     queryKey: queryKeys.issues.liveRuns(issueId),
     queryFn: () => heartbeatsApi.liveRunsForIssue(issueId),
-    refetchInterval: 3000,
+    staleTime: ISSUE_DETAIL_STALE_TIME_MS,
+    refetchInterval: false,
     placeholderData: keepPreviousDataForSameQueryTail<LiveRunForIssue[]>(issueId),
   });
   const resolvedLiveRuns = liveRuns ?? [];
@@ -1039,7 +1040,8 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     queryKey: queryKeys.issues.activeRun(issueId),
     queryFn: () => heartbeatsApi.activeRunForIssue(issueId),
     enabled: !!executionRunId || issueStatus === "in_progress",
-    refetchInterval: liveRunCount > 0 ? false : 3000,
+    staleTime: ISSUE_DETAIL_STALE_TIME_MS,
+    refetchInterval: false,
     placeholderData: keepPreviousDataForSameQueryTail<ActiveRunForIssue | null>(issueId),
   });
   const resolvedActiveRun = useMemo(
@@ -1050,7 +1052,8 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   const { data: linkedRuns } = useQuery({
     queryKey: queryKeys.issues.runs(issueId),
     queryFn: () => activityApi.runsForIssue(issueId),
-    refetchInterval: hasLiveRuns ? 5000 : false,
+    staleTime: ISSUE_DETAIL_STALE_TIME_MS,
+    refetchInterval: false,
     placeholderData: keepPreviousDataForSameQueryTail<RunForIssue[]>(issueId),
   });
   const resolvedActivity = activity ?? [];
@@ -1577,6 +1580,7 @@ export function IssueDetail() {
       } : null,
     }),
     enabled: !!issueId,
+    staleTime: ISSUE_DETAIL_STALE_TIME_MS,
   });
   const resolvedCompanyId = issue?.companyId ?? selectedCompanyId;
   const externalObjectsState = useIssueExternalObjects(issue?.id ?? null);
@@ -1602,7 +1606,8 @@ export function IssueDetail() {
         limit: ISSUE_COMMENT_PAGE_SIZE,
         ...(pageParam ? { after: pageParam } : {}),
       }),
-    enabled: !!issueId,
+    enabled: !!issue,
+    staleTime: ISSUE_DETAIL_STALE_TIME_MS,
     initialPageParam: null as string | null,
     getNextPageParam: (lastPage) =>
       getNextIssueCommentPageParam(lastPage, ISSUE_COMMENT_PAGE_SIZE),
@@ -1627,29 +1632,33 @@ export function IssueDetail() {
   const { data: interactions = [] } = useQuery({
     queryKey: queryKeys.issues.interactions(issueId!),
     queryFn: () => issuesApi.listInteractions(issueId!),
-    enabled: !!issueId,
+    enabled: !!issue,
+    staleTime: ISSUE_DETAIL_STALE_TIME_MS,
     placeholderData: keepPreviousDataForSameQueryTail<IssueThreadInteraction[]>(issueId ?? "pending"),
   });
 
   const { data: attachments, isLoading: attachmentsLoading } = useQuery({
     queryKey: queryKeys.issues.attachments(issueId!),
     queryFn: () => issuesApi.listAttachments(issueId!),
-    enabled: !!issueId,
+    enabled: !!issue,
+    staleTime: ISSUE_DETAIL_STALE_TIME_MS,
     placeholderData: keepPreviousDataForSameQueryTail<IssueAttachment[]>(issueId ?? "pending"),
   });
 
   const { data: workProducts } = useQuery({
     queryKey: queryKeys.issues.workProducts(issueId!),
     queryFn: () => issuesApi.listWorkProducts(issueId!),
-    enabled: !!issueId,
+    enabled: !!issue,
+    staleTime: ISSUE_DETAIL_STALE_TIME_MS,
     placeholderData: keepPreviousDataForSameQueryTail<IssueWorkProduct[]>(issueId ?? "pending"),
   });
 
   const { data: liveRunCount = 0 } = useQuery<LiveRunForIssue[], Error, number>({
     queryKey: queryKeys.issues.liveRuns(issueId!),
     queryFn: () => heartbeatsApi.liveRunsForIssue(issueId!),
-    enabled: !!issueId,
-    refetchInterval: 3000,
+    enabled: !!issue,
+    staleTime: ISSUE_DETAIL_STALE_TIME_MS,
+    refetchInterval: false,
     select: (runs) => runs.length,
     placeholderData: keepPreviousDataForSameQueryTail<LiveRunForIssue[]>(issueId ?? "pending"),
   });
@@ -1657,8 +1666,9 @@ export function IssueDetail() {
   const { data: hasActiveRun = false } = useQuery<ActiveRunForIssue | null, Error, boolean>({
     queryKey: queryKeys.issues.activeRun(issueId!),
     queryFn: () => heartbeatsApi.activeRunForIssue(issueId!),
-    enabled: !!issueId && (!!issue?.executionRunId || issue?.status === "in_progress"),
-    refetchInterval: liveRunCount > 0 ? false : 3000,
+    enabled: !!issue && (!!issue.executionRunId || issue.status === "in_progress"),
+    staleTime: ISSUE_DETAIL_STALE_TIME_MS,
+    refetchInterval: false,
     select: (run) => !!run,
     placeholderData: keepPreviousDataForSameQueryTail<ActiveRunForIssue | null>(issueId ?? "pending"),
   });
@@ -1681,6 +1691,7 @@ export function IssueDetail() {
         : ["issues", "parent", "pending"],
     queryFn: () => issuesApi.list(resolvedCompanyId!, { descendantOf: issue!.id, includeBlockedBy: true }),
     enabled: !!resolvedCompanyId && !!issue?.id,
+    staleTime: ISSUE_DETAIL_STALE_TIME_MS,
     placeholderData: keepPreviousDataForSameQueryTail<Issue[]>(issue?.id ?? "pending"),
   });
   const {
