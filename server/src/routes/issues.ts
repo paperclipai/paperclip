@@ -136,6 +136,7 @@ import {
 import type { TaskWatchdogServiceDeps, taskWatchdogService } from "../services/task-watchdogs.js";
 import { logger } from "../middleware/logger.js";
 import { privateJsonEtag } from "../middleware/private-json-etag.js";
+import { memoizePromise, type PromiseMemoEntry } from "../lib/bounded-ttl-promise-memo.js";
 import { conflict, forbidden, HttpError, notFound, unauthorized, unprocessable } from "../errors.js";
 import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
 import {
@@ -2618,9 +2619,10 @@ export function issueRoutes(
   const decisionTrainingSvc = decisionTrainingService(db);
   const issueReferencesSvc = issueReferenceService(db);
   const issueThreadInteractionsSvc = issueThreadInteractionService(db);
-  const issueReadMemo = new Map<string, { expiresAt: number; value: Promise<Awaited<ReturnType<typeof svc.getById>>> }>();
-  const issueReadDecisionMemo = new Map<string, { expiresAt: number; value: Promise<Awaited<ReturnType<typeof decideIssueAccess>>> }>();
+  const issueReadMemo = new Map<string, PromiseMemoEntry<Awaited<ReturnType<typeof svc.getById>>>>();
+  const issueReadDecisionMemo = new Map<string, PromiseMemoEntry<Awaited<ReturnType<typeof decideIssueAccess>>>>();
   const issueReadMemoTtlMs = 100;
+  const issueReadMemoMaxEntries = 1_000;
 
   async function buildIssueDetailResponse(req: Request, issue: Awaited<ReturnType<typeof svc.getById>> & {}) {
     const inboxArchiveFieldsPromise = req.actor.type === "board" && req.actor.userId
@@ -2723,14 +2725,13 @@ export function issueRoutes(
 
   function getIssueById(req: Request, id: string) {
     if (req.method !== "GET") return svc.getById(id);
-    const key = `${issueReadActorKey(req)}:${id}`;
-    const now = Date.now();
-    const cached = issueReadMemo.get(key);
-    if (cached && cached.expiresAt > now) return cached.value;
-    const value = svc.getById(id);
-    issueReadMemo.set(key, { expiresAt: now + issueReadMemoTtlMs, value });
-    void value.catch(() => issueReadMemo.delete(key));
-    return value;
+    return memoizePromise({
+      cache: issueReadMemo,
+      key: `${issueReadActorKey(req)}:${id}`,
+      ttlMs: issueReadMemoTtlMs,
+      maxEntries: issueReadMemoMaxEntries,
+      load: () => svc.getById(id),
+    });
   }
 
   const issueDetailEtag = privateJsonEtag();
@@ -3580,15 +3581,13 @@ export function issueRoutes(
 
   async function assertIssueReadAllowed(req: Request, res: Response, issue: Parameters<typeof decideIssueAccess>[1]) {
     const key = `${issueReadActorKey(req)}:${issue.id}:${issue.companyId}:${issue.projectId ?? ""}:${issue.parentId ?? ""}:${issue.assigneeAgentId ?? ""}:${issue.assigneeUserId ?? ""}:${issue.status}`;
-    const now = Date.now();
-    const cached = issueReadDecisionMemo.get(key);
-    const value = cached && cached.expiresAt > now
-      ? cached.value
-      : decideIssueAccess(req, issue, "issue:read");
-    if (!cached || cached.expiresAt <= now) {
-      issueReadDecisionMemo.set(key, { expiresAt: now + issueReadMemoTtlMs, value });
-      void value.catch(() => issueReadDecisionMemo.delete(key));
-    }
+    const value = memoizePromise({
+      cache: issueReadDecisionMemo,
+      key,
+      ttlMs: issueReadMemoTtlMs,
+      maxEntries: issueReadMemoMaxEntries,
+      load: () => decideIssueAccess(req, issue, "issue:read"),
+    });
     const decision = await value;
     if (decision.allowed) return true;
     res.status(403).json({ error: "Issue is outside this actor's authorization boundary" });
