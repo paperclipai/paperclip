@@ -2154,9 +2154,12 @@ type ManagedMcpGatewayRunConfig = {
 };
 
 function paperclipApiBaseUrl(): string {
-  const configured = readNonEmptyString(process.env.PAPERCLIP_API_URL);
+  const configured = readNonEmptyString(process.env.PAPERCLIP_RUNTIME_API_URL)
+    ?? readNonEmptyString(process.env.PAPERCLIP_API_URL);
   if (!configured) {
-    throw new Error("PAPERCLIP_API_URL is required to deliver managed runtime MCP servers");
+    throw new Error(
+      "PAPERCLIP_RUNTIME_API_URL or PAPERCLIP_API_URL is required to deliver managed runtime MCP servers",
+    );
   }
   return configured.replace(/\/+$/, "").replace(/\/api$/, "");
 }
