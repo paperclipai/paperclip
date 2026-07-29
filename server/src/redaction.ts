@@ -13,6 +13,8 @@ const JSON_SECRET_FIELD_TEXT_RE =
 const ESCAPED_JSON_SECRET_FIELD_TEXT_RE =
   /((?:\\")?(?:api[-_]?key|access[-_]?token|auth(?:_?token)?|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring)(?:\\")?\s*:\s*(?:\\"))[^\\\r\n]+((?:\\"))/gi;
 export const REDACTED_EVENT_VALUE = "***REDACTED***";
+const TEXT_SECRET_ASSIGNMENT_RE =
+  /((?:api[-_]?key|access[-_]?token|auth(?:_?token)?|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring)\s*[:=]\s*["']?)[^\s"'`]+/gi;
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
@@ -94,10 +96,8 @@ export function redactEventPayload(payload: Record<string, unknown> | null): Rec
 }
 
 export function redactSensitiveText(input: string): string {
-  return redactCommandText(
-    input
-      .replace(JSON_SECRET_FIELD_TEXT_RE, `$1${REDACTED_EVENT_VALUE}$2`)
-      .replace(ESCAPED_JSON_SECRET_FIELD_TEXT_RE, `$1${REDACTED_EVENT_VALUE}$2`),
-    REDACTED_EVENT_VALUE,
-  );
+  return redactCommandText(input, REDACTED_EVENT_VALUE)
+    .replace(JSON_SECRET_FIELD_TEXT_RE, `$1${REDACTED_EVENT_VALUE}$2`)
+    .replace(ESCAPED_JSON_SECRET_FIELD_TEXT_RE, `$1${REDACTED_EVENT_VALUE}$2`)
+    .replace(TEXT_SECRET_ASSIGNMENT_RE, `$1${REDACTED_EVENT_VALUE}`);
 }

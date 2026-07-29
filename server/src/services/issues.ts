@@ -53,6 +53,7 @@ import { mergeExecutionWorkspaceConfig } from "./execution-workspaces.js";
 import { buildInitialIssueMonitorFields, normalizeIssueExecutionPolicy } from "./issue-execution-policy.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { redactCurrentUserText } from "../log-redaction.js";
+import { redactSensitiveText } from "../redaction.js";
 import { resolveIssueGoalId, resolveNextIssueGoalId } from "./issue-goal-fallback.js";
 import { getDefaultCompanyGoal } from "./goals.js";
 import {
@@ -2682,6 +2683,13 @@ export function issueService(db: Db) {
         inheritExecutionWorkspaceFromIssueId,
         ...issueData
       } = data;
+      // Issue text is indexed, included in wake payloads, and copied into activity
+      // summaries. Redact before persistence so sensitive environment expansions
+      // cannot propagate through any of those surfaces.
+      issueData.title = redactSensitiveText(issueData.title);
+      if (typeof issueData.description === "string") {
+        issueData.description = redactSensitiveText(issueData.description);
+      }
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
       if (!isolatedWorkspacesEnabled) {
         delete issueData.executionWorkspaceId;
@@ -2929,6 +2937,12 @@ export function issueService(db: Db) {
         actorUserId,
         ...issueData
       } = data;
+      if (typeof issueData.title === "string") {
+        issueData.title = redactSensitiveText(issueData.title);
+      }
+      if (typeof issueData.description === "string") {
+        issueData.description = redactSensitiveText(issueData.description);
+      }
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
       if (!isolatedWorkspacesEnabled) {
         delete issueData.executionWorkspaceId;
@@ -3735,7 +3749,7 @@ export function issueService(db: Db) {
       const currentUserRedactionOptions = {
         enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
       };
-      const redactedBody = redactCurrentUserText(body, currentUserRedactionOptions);
+      const redactedBody = redactSensitiveText(redactCurrentUserText(body, currentUserRedactionOptions));
       const [comment] = await db
         .insert(issueComments)
         .values({

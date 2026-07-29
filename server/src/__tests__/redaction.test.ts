@@ -85,6 +85,13 @@ describe("redaction", () => {
     expect(result).not.toContain(jwt);
   });
 
+  it("redacts secret-looking environment assignments in issue-style prose", () => {
+    const result = redactSensitiveText("Investigation notes: PAPERCLIP_API_KEY: test-only-sensitive-value");
+
+    expect(result).toContain(REDACTED_EVENT_VALUE);
+    expect(result).not.toContain("test-only-sensitive-value");
+  });
+
   it("redacts inline secrets from command metadata without hiding safe command text", () => {
     const input = {
       command: "custom-acp --token ghp_example_secret env OPENAI_API_KEY=sk-live-example custom-acp",
