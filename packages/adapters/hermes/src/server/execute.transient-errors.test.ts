@@ -126,6 +126,19 @@ describe("hermes-local transient provider failure classification", () => {
     expect(result.resultJson).not.toHaveProperty("errorFamily");
   });
 
+  it("does not classify a transient-looking stderr diagnostic before an unrelated terminal error", async () => {
+    childResult.current.stderr = [
+      "API call failed after 3 retries: HTTP 503: Service unavailable",
+      "Fatal: invalid local Hermes configuration",
+    ].join("\n");
+
+    const result = await execute(makeCtx() as any);
+
+    expect(result.errorCode).toBeUndefined();
+    expect(result.errorFamily).toBeUndefined();
+    expect(result.resultJson).not.toHaveProperty("errorFamily");
+  });
+
   it("does not classify a deterministic 429 quota response as transient", async () => {
     childResult.current.stdout =
       "API call failed after 3 retries: HTTP 429: Monthly quota exhausted; upgrade your plan\n";
