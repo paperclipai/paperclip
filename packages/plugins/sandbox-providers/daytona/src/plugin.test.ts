@@ -1099,13 +1099,14 @@ describe("Daytona sandbox provider plugin", () => {
 
     expect(sandbox.process.executeCommand).toHaveBeenCalledTimes(1);
     const [command, cwdArg, envArg, timeoutArg] = sandbox.process.executeCommand.mock.calls[0] as [string, unknown, unknown, number];
-    expect(command).toMatch(/\/etc\/profile/);
-    expect(command).toMatch(/"\$HOME\/\.profile"/);
-    expect(command).toMatch(/cd '\/workspace'/);
+    expect(command).not.toMatch(/\/etc\/profile/);
+    expect(command).not.toMatch(/"\$HOME\/\.profile"/);
+    expect(command).not.toMatch(/nvm\.sh/);
+    expect(command).toMatch(/^cd '\/workspace'/);
     expect(command).toMatch(/&& env GIT_TERMINAL_PROMPT='0' GCM_INTERACTIVE='Never' GIT_ASKPASS='echo' SSH_ASKPASS='echo' SSH_ASKPASS_REQUIRE='force' FOO='bar' 'printf' 'hello'$/);
     expect(command).not.toMatch(/(?:^|&& )exec /);
-    // cwd/env are baked into the login-shell command itself; we pass undefined
-    // to the SDK so it doesn't run the cd before profile sourcing.
+    // cwd/env are baked into the command itself; we pass undefined to the SDK
+    // so its own cwd argument does not run before the caller env is applied.
     expect(cwdArg).toBeUndefined();
     expect(envArg).toBeUndefined();
     expect(timeoutArg).toBe(1);
@@ -1181,8 +1182,9 @@ describe("Daytona sandbox provider plugin", () => {
       1,
     );
     const [command] = sandbox.process.executeCommand.mock.calls[0] as [string];
-    expect(command).toMatch(/\/etc\/profile/);
-    expect(command).toMatch(/cd '\/workspace'/);
+    expect(command).not.toMatch(/\/etc\/profile/);
+    expect(command).not.toMatch(/nvm\.sh/);
+    expect(command).toMatch(/^cd '\/workspace'/);
     expect(command).toMatch(/env .* 'cat' < '\/tmp\/paperclip-stdin-/);
     expect(command).not.toMatch(/(?:^|&& )exec /);
     expect(sandbox.fs.deleteFile).toHaveBeenCalledWith(expect.stringMatching(/^\/tmp\/paperclip-stdin-/));
@@ -1307,37 +1309,11 @@ describe("Daytona sandbox provider plugin", () => {
     expect(result?.stderr).toMatch(/unreachable|credentials/i);
   });
 
-  // ─── No-profile fast path (A2) ─────────────────────────────────────────────
-  // The opt-in `noProfile` flag sheds the ~600 ms login-shell profile/nvm
-  // sourcing for command classes whose binary resolves on the default PATH
-  // (file-sync `tar`/`base64`/`mkdir`/`mv`), while every other exec surface
-  // (env prefix, cwd, quoting, stdin, durationMs) is preserved byte-for-byte.
-  it("test_no_profile_fast_path_omits_profile_sourcing", async () => {
-    process.env.DAYTONA_API_KEY = "host-key";
-    const sandbox = createMockSandbox();
-    mockGet.mockResolvedValue(sandbox);
-
-    await plugin.definition.onEnvironmentExecute?.({
-      driverKey: "daytona",
-      companyId: "company-1",
-      environmentId: "env-1",
-      config: { timeoutMs: 300000, reuseLease: false },
-      lease: { providerLeaseId: "sandbox-123", metadata: {} },
-      command: "tar",
-      args: ["-xf", "/workspace/upload.tar", "-C", "/workspace"],
-      cwd: "/workspace",
-      noProfile: true,
-      timeoutMs: 1000,
-    });
-
-    const [command] = sandbox.process.executeCommand.mock.calls[0] as [string];
-    expect(command).not.toMatch(/\/etc\/profile/);
-    expect(command).not.toMatch(/nvm\.sh/);
-    expect(command).not.toMatch(/NVM_DIR/);
-    expect(command).not.toMatch(/\.bash_profile/);
-  });
-
-  it("test_no_profile_fast_path_preserves_env_cwd_and_duration", async () => {
+  // ─── Exec command shape ────────────────────────────────────────────────────
+  // The wrapper runs the command on the sandbox default PATH. It sources no
+  // login profile and no `nvm.sh`, while every other exec surface (env prefix,
+  // cwd, quoting, stdin, durationMs) stays intact.
+  it("test_exec_command_preserves_env_cwd_and_duration", async () => {
     process.env.DAYTONA_API_KEY = "host-key";
     const sandbox = createMockSandbox();
     sandbox.process.executeCommand.mockResolvedValue({
@@ -1357,14 +1333,12 @@ describe("Daytona sandbox provider plugin", () => {
       args: ["-d"],
       cwd: "/workspace",
       env: { FOO: "bar" },
-      noProfile: true,
       timeoutMs: 1000,
     });
 
     const [command] = sandbox.process.executeCommand.mock.calls[0] as [string];
-    // The full exec surface is preserved on the fast path — only profile sourcing
-    // is dropped. The command must still start with the `cd` (no profile lines
-    // ahead of it) and carry the env prefix and noninteractive git defaults.
+    // The command starts with the `cd` (no profile lines ahead of it) and
+    // carries the env prefix and the noninteractive git defaults.
     expect(command).toMatch(/^cd '\/workspace' && env /);
     expect(command).toMatch(/GIT_TERMINAL_PROMPT='0'/);
     expect(command).toMatch(/FOO='bar' 'base64' '-d'$/);
@@ -1373,13 +1347,13 @@ describe("Daytona sandbox provider plugin", () => {
     expect(typeof (result!.metadata as Record<string, unknown>)?.durationMs).toBe("number");
   });
 
-  it("test_default_path_still_sources_profile", async () => {
+  it("test_exec_command_omits_profile_and_nvm_sourcing", async () => {
     process.env.DAYTONA_API_KEY = "host-key";
     const sandbox = createMockSandbox();
     mockGet.mockResolvedValue(sandbox);
 
-    // No `noProfile` flag: the fail-safe default must still source the login
-    // profile so node-launching execs resolve their nvm/profile PATH.
+    // A node-launching exec resolves on the sandbox default PATH, so the
+    // wrapper sources no login profile and no `nvm.sh`.
     await plugin.definition.onEnvironmentExecute?.({
       driverKey: "daytona",
       companyId: "company-1",
@@ -1393,8 +1367,9 @@ describe("Daytona sandbox provider plugin", () => {
     });
 
     const [command] = sandbox.process.executeCommand.mock.calls[0] as [string];
-    expect(command).toMatch(/\/etc\/profile/);
-    expect(command).toMatch(/nvm\.sh/);
+    expect(command).not.toMatch(/\/etc\/profile/);
+    expect(command).not.toMatch(/nvm\.sh/);
+    expect(command).not.toMatch(/NVM_DIR/);
   });
 
   // ─── Per-lease started-sandbox handle cache ────────────────────────────────

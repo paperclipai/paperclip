@@ -170,6 +170,41 @@ describe("ssh env-lab fixture", () => {
     await stopSshEnvLabFixture(statePath);
   }, SSH_FIXTURE_TEST_TIMEOUT_MS);
 
+  it("builds a remote script that sources no login profile and no nvm", async () => {
+    const target = await buildSshSpawnTarget({
+      spec: {
+        host: "ssh.example.test",
+        port: 22,
+        username: "ssh-user",
+        remoteCwd: "/srv/paperclip/workspace",
+        remoteWorkspacePath: "/srv/paperclip/workspace",
+        privateKey: null,
+        knownHosts: null,
+        strictHostKeyChecking: true,
+      },
+      command: "node",
+      args: ["--version"],
+      env: { FOO: "bar" },
+    });
+
+    // The remote script rides the last ssh argument. The remote host supplies a
+    // ready PATH, so the wrapper sources no profile and no `nvm.sh`.
+    const remoteScript = String(target.args.at(-1) ?? "");
+    expect(remoteScript).not.toContain("nvm.sh");
+    expect(remoteScript).not.toContain("NVM_DIR");
+    expect(remoteScript).not.toContain(".profile");
+    expect(remoteScript).not.toContain(".bash_profile");
+    expect(remoteScript).not.toContain(".zprofile");
+    // The last ssh argument wraps the script as `sh -c '...'`, so the inner
+    // quotes are escaped. Assert the command still runs: cd, env, and the argv.
+    expect(remoteScript).toContain("cd ");
+    expect(remoteScript).toContain("/srv/paperclip/workspace");
+    expect(remoteScript).toContain("exec env ");
+    expect(remoteScript).toContain("node");
+    expect(remoteScript).toContain("--version");
+    await target.cleanup();
+  });
+
   it("rejects invalid environment variable keys when constructing SSH spawn targets", async () => {
     await expect(
       buildSshSpawnTarget({

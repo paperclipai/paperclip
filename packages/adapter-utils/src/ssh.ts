@@ -1166,15 +1166,12 @@ export async function runSshCommand(
       }
     }
 
-    // Mirror buildSshSpawnTarget: source login profiles first, then run
-    // `env KEY=VAL cmd` so user-supplied identity overrides win over anything
-    // a profile re-exports. Without this, a remote profile that resets HOME
-    // / NVM_DIR / etc. would silently undo the explicit env passed in here.
+    // Mirror buildSshSpawnTarget: run `env KEY=VAL cmd` so user-supplied
+    // identity overrides win over anything the remote command re-exports. The
+    // script sources no login profile and no `nvm.sh`; the remote host supplies
+    // a ready PATH.
     const envArgs = envEntries.map(([key, value]) => `${key}=${shellQuote(value)}`);
     const remoteScript = [
-      'if [ -f "$HOME/.profile" ]; then . "$HOME/.profile" >/dev/null 2>&1 || true; fi',
-      'if [ -f "$HOME/.bash_profile" ]; then . "$HOME/.bash_profile" >/dev/null 2>&1 || true; fi',
-      'if [ -f "$HOME/.zprofile" ]; then . "$HOME/.zprofile" >/dev/null 2>&1 || true; fi',
       envArgs.length > 0
         ? `exec env ${envArgs.join(" ")} sh -c ${shellQuote(remoteCommand)}`
         : `exec sh -c ${shellQuote(remoteCommand)}`,
@@ -1223,12 +1220,10 @@ export async function buildSshSpawnTarget(input: {
     .filter((entry): entry is [string, string] => typeof entry[1] === "string")
     .map(([key, value]) => `${key}=${shellQuote(value)}`);
   const remoteCommandParts = [shellQuote(input.command), ...input.args.map((arg) => shellQuote(arg))].join(" ");
+  // Run `env KEY=VAL cmd` so user-supplied identity overrides win. The script
+  // sources no login profile and no `nvm.sh`; the remote host supplies a ready
+  // PATH for the command.
   const remoteScript = [
-    'if [ -f "$HOME/.profile" ]; then . "$HOME/.profile" >/dev/null 2>&1 || true; fi',
-    'if [ -f "$HOME/.bash_profile" ]; then . "$HOME/.bash_profile" >/dev/null 2>&1 || true; fi',
-    'if [ -f "$HOME/.zprofile" ]; then . "$HOME/.zprofile" >/dev/null 2>&1 || true; fi',
-    'export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"',
-    '[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh" >/dev/null 2>&1 || true',
     `cd ${shellQuote(input.spec.remoteCwd)}`,
     envArgs.length > 0
       ? `exec env ${envArgs.join(" ")} ${remoteCommandParts}`
