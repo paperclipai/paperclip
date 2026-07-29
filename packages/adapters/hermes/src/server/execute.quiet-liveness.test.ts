@@ -44,7 +44,7 @@ function makeCtx(quiet: boolean) {
       },
       onLog,
       onMeta: vi.fn(async () => undefined),
-      onSpawn: vi.fn(async () => undefined),
+      onSpawn: vi.fn(async (): Promise<void> => undefined),
     },
     onLog,
   };
@@ -105,6 +105,42 @@ describe("hermes-local quiet-mode liveness", () => {
     expect(onLog.mock.calls.filter(([, chunk]) =>
       typeof chunk === "string" && chunk.includes("[hermes] alive:"),
     )).toHaveLength(heartbeatCountAfterExit);
+  });
+
+  it("does not start a phantom heartbeat after execution finishes before onSpawn resolves", async () => {
+    let releaseOnSpawn!: () => void;
+    const { ctx, onLog } = makeCtx(true);
+    ctx.onSpawn = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          releaseOnSpawn = resolve;
+        }),
+    );
+    runChildProcessMock.mockImplementation(async (_runId, _command, _args, options) => {
+      void options.onSpawn?.({
+        pid: 12345,
+        processGroupId: 12345,
+        startedAt: new Date().toISOString(),
+      });
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: "Completed quickly.\nsession_id: quiet-session-2\n",
+        stderr: "",
+      };
+    });
+
+    const result = await execute(ctx as any);
+    expect(result.sessionParams).toEqual({ sessionId: "quiet-session-2" });
+
+    releaseOnSpawn();
+    await Promise.resolve();
+    await vi.advanceTimersByTimeAsync(30_000);
+
+    expect(onLog.mock.calls.some(([, chunk]) =>
+      typeof chunk === "string" && chunk.includes("[hermes] alive:"),
+    )).toBe(false);
   });
 
   it("does not start alive heartbeats or change session capture in legacy mode", async () => {
