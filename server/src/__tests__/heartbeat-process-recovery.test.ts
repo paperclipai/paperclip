@@ -1144,7 +1144,12 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .then((rows) => rows.map((row) => row.blockerIssueId));
   }
 
-  async function seedQueuedIssueRunFixture() {
+  async function seedQueuedIssueRunFixture(input?: {
+    adapterType?: string;
+    adapterConfig?: Record<string, unknown>;
+    runtimeConfig?: Record<string, unknown>;
+    defaultEnvironmentId?: string | null;
+  }) {
     const companyId = randomUUID();
     const agentId = randomUUID();
     const runId = randomUUID();
@@ -1167,14 +1172,15 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       name: "CodexCoder",
       role: "engineer",
       status: "idle",
-      adapterType: "codex_local",
-      adapterConfig: {},
-      runtimeConfig: {
+      adapterType: input?.adapterType ?? "codex_local",
+      adapterConfig: input?.adapterConfig ?? {},
+      runtimeConfig: input?.runtimeConfig ?? {
         heartbeat: {
           wakeOnDemand: true,
           maxConcurrentRuns: 1,
         },
       },
+      defaultEnvironmentId: input?.defaultEnvironmentId ?? null,
       permissions: {},
     });
 
@@ -1301,6 +1307,47 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     const result = await heartbeat.reapOrphanedRuns({
       now: new Date("2026-03-19T00:16:00.000Z"),
+    });
+    expect(result).toEqual({ reaped: 0, runIds: [] });
+
+    const run = await heartbeat.getRun(runId);
+    expect(run).toMatchObject({
+      id: runId,
+      status: "running",
+      errorCode: null,
+      processPid: null,
+      processGroupId: null,
+    });
+
+    const wakeup = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, wakeupRequestId))
+      .then((rows) => rows[0] ?? null);
+    expect(wakeup?.status).toBe("claimed");
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.checkoutRunId).toBe(runId);
+    expect(issue?.executionRunId).toBe(runId);
+  });
+
+  it("does not reap a stale zero-pid local run under the startup-equivalent stale threshold", async () => {
+    const now = new Date("2026-03-19T00:00:00.000Z");
+    const { runId, wakeupRequestId, issueId } = await seedRunFixture({
+      now,
+      updatedAt: now,
+      processPid: null,
+      processGroupId: null,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns({
+      now: new Date("2026-03-19T00:16:00.000Z"),
+      staleThresholdMs: 5 * 60 * 1000,
     });
     expect(result).toEqual({ reaped: 0, runIds: [] });
 
@@ -1465,6 +1512,59 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     );
     // Terminal run cleanup releases the checkout lock so future checkout 409s only mean a live owner exists.
     expect(checkoutReleasedIssue?.checkoutRunId).toBeNull();
+  });
+
+  it("reaps a stale dead-pid local run under the startup-equivalent stale threshold", async () => {
+    const now = new Date("2026-03-19T00:00:00.000Z");
+    const { agentId, runId, issueId } = await seedRunFixture({
+      now,
+      updatedAt: now,
+      agentStatus: "idle",
+      processPid: 999_999_999,
+      contextSnapshot: {
+        modelProfile: "cheap",
+        allowDeliverableWork: false,
+        allowDocumentUpdates: false,
+        resumeRequiresNormalModel: true,
+      },
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns({
+      now: new Date("2026-03-19T00:16:00.000Z"),
+      staleThresholdMs: 5 * 60 * 1000,
+    });
+    expect(result).toEqual({ reaped: 1, runIds: [runId] });
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(2);
+
+    const failedRun = runs.find((row) => row.id === runId);
+    const retryRun = runs.find((row) => row.retryOfRunId === runId);
+    expect(failedRun).toMatchObject({
+      id: runId,
+      status: "failed",
+      errorCode: "process_lost",
+    });
+    expect(retryRun).toMatchObject({
+      retryOfRunId: runId,
+      processLossRetryCount: 1,
+    });
+
+    const issue = await waitForValue(async () =>
+      db
+        .select()
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => {
+          const row = rows[0] ?? null;
+          return row?.checkoutRunId === null ? row : null;
+        }),
+    );
+    expect([retryRun?.id ?? null, null]).toContain(issue?.executionRunId ?? null);
   });
 
   it("restores one lost monitor dispatch before escalating a second process loss", async () => {
@@ -2133,6 +2233,162 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .then((rows) => rows[0] ?? null);
     expect(lease?.status).toBe("failed");
     expect(lease?.releasedAt).toBeTruthy();
+  });
+
+  it("reaps lease-less local runs with no process metadata after the orphan-silence threshold", async () => {
+    const now = new Date("2026-03-19T00:20:00.000Z");
+    const staleAt = new Date("2026-03-19T00:00:00.000Z");
+    const { agentId, runId, issueId, wakeupRequestId } = await seedRunFixture({
+      adapterType: "claude_local",
+      agentStatus: "idle",
+      processPid: null,
+      processGroupId: null,
+      now: staleAt,
+      updatedAt: staleAt,
+      createdAt: staleAt,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns({ staleThresholdMs: 1, now });
+    expect(result).toEqual({ reaped: 1, runIds: [runId] });
+
+    const failedRun = await heartbeat.getRun(runId);
+    expect(failedRun).toMatchObject({
+      status: "failed",
+      errorCode: "process_lost",
+      processPid: null,
+      processGroupId: null,
+      error: "Process lost -- run never acquired an environment lease before exceeding the orphan-silence threshold",
+    });
+
+    const retryRuns = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.retryOfRunId, runId)));
+    expect(retryRuns).toHaveLength(0);
+
+    const wakeup = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, wakeupRequestId))
+      .then((rows) => rows[0] ?? null);
+    expect(wakeup?.status).toBe("failed");
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.executionRunId).toBeNull();
+  });
+
+  it("keeps active-lease local runs with no process metadata protected on the periodic path", async () => {
+    const now = new Date("2026-03-19T00:20:00.000Z");
+    const staleAt = new Date("2026-03-19T00:00:00.000Z");
+    const { runId, issueId, companyId } = await seedRunFixture({
+      adapterType: "claude_local",
+      agentStatus: "idle",
+      processPid: null,
+      processGroupId: null,
+      now: staleAt,
+      updatedAt: staleAt,
+      createdAt: staleAt,
+    });
+    const { leaseId } = await seedEnvironmentLeaseFixture({
+      companyId,
+      runId,
+      issueId,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns({ staleThresholdMs: 1, now });
+    expect(result).toEqual({ reaped: 0, runIds: [] });
+
+    const activeRun = await heartbeat.getRun(runId);
+    expect(activeRun?.status).toBe("running");
+    expect(activeRun?.errorCode).toBeNull();
+
+    const lease = await db
+      .select()
+      .from(environmentLeases)
+      .where(eq(environmentLeases.id, leaseId))
+      .then((rows) => rows[0] ?? null);
+    expect(lease?.status).toBe("active");
+  });
+
+  it("can reach a real running claude_local state with an active lease before any process metadata is recorded", async () => {
+    const environmentId = randomUUID();
+    let releaseAdapter: (() => void) | null = null;
+    const adapterStarted = new Promise<void>((resolve) => {
+      mockAdapterExecute.mockImplementationOnce(async () => {
+        resolve();
+        await new Promise<void>((release) => {
+          releaseAdapter = release;
+        });
+        return {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          errorMessage: null,
+          summary: "Lease-backed local run completed.",
+          provider: "test",
+          model: "test-model",
+        };
+      });
+    });
+
+    const { companyId, runId } = await seedQueuedIssueRunFixture({
+      adapterType: "claude_local",
+      defaultEnvironmentId: environmentId,
+      runtimeConfig: {
+        heartbeat: {
+          wakeOnDemand: true,
+          maxConcurrentRuns: 1,
+        },
+      },
+    });
+    await db.insert(environments).values({
+      id: environmentId,
+      companyId,
+      name: "Local",
+      driver: "local",
+      status: "active",
+      config: {},
+      metadata: null,
+      createdAt: new Date("2026-03-19T00:00:00.000Z"),
+      updatedAt: new Date("2026-03-19T00:00:00.000Z"),
+    });
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.resumeQueuedRuns();
+    await Promise.race([
+      adapterStarted,
+      new Promise<never>((_, reject) => {
+        setTimeout(() => reject(new Error("Timed out waiting for claude_local execution to start")), 3_000);
+      }),
+    ]);
+
+    const activeRun = await waitForValue(async () => {
+      const row = await heartbeat.getRun(runId);
+      return row?.status === "running" ? row : null;
+    }, 3_000);
+    expect(activeRun?.processPid).toBeNull();
+    expect(activeRun?.processGroupId).toBeNull();
+
+    const activeLeases = await waitForValue(async () => {
+      const rows = await db
+        .select()
+        .from(environmentLeases)
+        .where(eq(environmentLeases.heartbeatRunId, runId));
+      return rows.some((row) => row.status === "active") ? rows : null;
+    }, 3_000);
+    expect(activeLeases).toHaveLength(1);
+    expect(activeLeases?.[0]?.status).toBe("active");
+
+    if (!releaseAdapter) throw new Error("Adapter release handle was not captured");
+    releaseAdapter();
+    const settledRun = await waitForRunToSettle(heartbeat, runId, 5_000);
+    expect(settledRun?.status).toBe("succeeded");
   });
 
   it.skipIf(process.platform === "win32")("reaps orphaned descendant process groups when the parent pid is already gone", async () => {
