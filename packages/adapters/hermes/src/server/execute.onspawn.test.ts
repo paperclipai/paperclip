@@ -81,6 +81,12 @@ function makeCtx(overrides: Record<string, unknown> = {}) {
 describe("hermes-local adapter onSpawn forwarding", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    process.env.PAPERCLIP_API_URL = "https://paperclip.quote-to-invoice.ai";
+    process.env.PAPERCLIP_RUNTIME_API_URL = "https://paperclip.quote-to-invoice.ai";
+    process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = JSON.stringify([
+      "https://paperclip.quote-to-invoice.ai",
+      "http://127.0.0.1:3100",
+    ]);
   });
 
   it("forwards ctx.onSpawn to runChildProcess", async () => {
@@ -102,6 +108,23 @@ describe("hermes-local adapter onSpawn forwarding", () => {
     const lastCall = mocked.mock.calls[mocked.mock.calls.length - 1];
     const opts = lastCall[3] as Record<string, unknown>;
     expect(opts.onSpawn).toBe(onSpawn);
+  });
+
+  it("prefers the loopback Paperclip API URL in the child env", async () => {
+    const { ctx } = makeCtx();
+
+    try {
+      await execute(ctx as any);
+    } catch {
+      // We only care about the env passed to runChildProcess.
+    }
+
+    const mocked = vi.mocked(serverUtils.runChildProcess);
+    expect(mocked.mock.calls.length).toBeGreaterThan(0);
+    const lastCall = mocked.mock.calls[mocked.mock.calls.length - 1];
+    const opts = lastCall[3] as { env: Record<string, string> };
+    expect(opts.env.PAPERCLIP_API_URL).toBe("http://127.0.0.1:3100");
+    expect(opts.env.PAPERCLIP_RUNTIME_API_URL).toBe("http://127.0.0.1:3100");
   });
 
   it("runChildProcess opts type includes onSpawn", () => {

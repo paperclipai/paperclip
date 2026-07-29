@@ -460,7 +460,7 @@ export async function execute(
   const env: Record<string, string> = {
     ...(process.env as Record<string, string>),
     ...(userEnv && typeof userEnv === "object" ? userEnv : {}),
-    ...buildPaperclipEnv(ctx.agent),
+    ...buildPaperclipEnv(ctx.agent, { preferLocalUrl: true }),
   };
 
   if (ctx.runId) env.PAPERCLIP_RUN_ID = ctx.runId;
