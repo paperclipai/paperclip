@@ -798,6 +798,59 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(fp(rotatedKey)).not.toBe(fp(withKey));
   });
 
+  it("busts the session fingerprint when the referenced-project set or pinned checkout changes", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const cwd = path.join(root, "workspace");
+    const baseConfig = { agentCommand: "node ./fake-acp.js", stateDir };
+
+    // A compatible resume reuses the already-staged referenced-project trees, so
+    // the fingerprint must fold in the referenced-project set. Otherwise a resume
+    // reuses a stale tree after the set or a project's pinned checkout changes.
+    const withReferenced = (additional: unknown[]) => ({
+      context: {
+        taskId: "issue-1",
+        wakeReason: "issue_assigned",
+        paperclipWorkspace: { cwd, realization: { additional } },
+      },
+    });
+    const projectA = {
+      path: "/host/project-a",
+      projectId: "a",
+      projectWorkspaceId: "ws-a",
+      repoUrl: "https://example.test/a.git",
+      repoRef: "ref-a-1",
+    };
+    const projectB = {
+      path: "/host/project-b",
+      projectId: "b",
+      projectWorkspaceId: "ws-b",
+      repoUrl: "https://example.test/b.git",
+      repoRef: "ref-b-1",
+    };
+
+    const one = await runExecutor(baseConfig, withReferenced([projectA]));
+    const two = await runExecutor(baseConfig, withReferenced([projectA, projectB]));
+    const reordered = await runExecutor(baseConfig, withReferenced([projectB, projectA]));
+    const repointed = await runExecutor(
+      baseConfig,
+      withReferenced([projectA, { ...projectB, repoRef: "ref-b-2" }]),
+    );
+
+    const fp = (r: { result: { sessionParams?: unknown } }) =>
+      (r.result.sessionParams as { configFingerprint?: string } | undefined)?.configFingerprint;
+
+    // Adding a referenced project changes the set identity, so the fingerprint
+    // busts and the next launch stages the current set.
+    expect(fp(one)).toBeDefined();
+    expect(fp(two)).not.toBe(fp(one));
+    // The identity depends on the set, not the order the records arrive in.
+    expect(fp(reordered)).toBe(fp(two));
+    // Re-pinning one project's checkout ref busts the fingerprint, so the resume
+    // re-stages instead of reusing a stale tree.
+    expect(fp(repointed)).not.toBe(fp(two));
+  });
+
   it("shapes ACPX session env for remote execution identities", async () => {
     const root = await makeTempRoot();
     const localCwd = path.join(root, "local");

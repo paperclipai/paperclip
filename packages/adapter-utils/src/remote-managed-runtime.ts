@@ -181,6 +181,9 @@ export async function prepareRemoteManagedRuntime(input: {
   for (const source of input.additionalSources ?? []) {
     const { localPath, projectId } = source;
     try {
+      if (!path.posix.isAbsolute(localPath)) {
+        throw new Error(`additional source localPath is not an absolute path: ${localPath}`);
+      }
       if (
         projectId.length === 0 ||
         projectId.includes("/") ||

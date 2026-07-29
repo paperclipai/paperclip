@@ -146,4 +146,41 @@ describe("remote managed runtime", () => {
       remoteDir: "/app/.paperclip-runtime/codex/project-second",
     }));
   });
+
+  it("skips an additional project whose localPath is not absolute", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-remote-runtime-relative-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    const healthyDir = path.join(rootDir, "referenced-healthy");
+    await mkdir(workspaceDir, { recursive: true });
+
+    const prepared = await prepareRemoteManagedRuntime({
+      spec: {
+        host: "127.0.0.1",
+        port: 2222,
+        username: "fixture",
+        remoteWorkspacePath: "/app",
+        remoteCwd: "/app",
+        privateKey: "PRIVATE KEY",
+        knownHosts: "KNOWN HOSTS",
+        strictHostKeyChecking: true,
+      },
+      runId: "run-relative",
+      adapterKey: "codex",
+      workspaceLocalDir: workspaceDir,
+      workspaceRemoteDir: "/app",
+      syncWorkspace: false,
+      additionalSources: [
+        { localPath: "relative/referenced", projectId: "relative" },
+        { localPath: healthyDir, projectId: "healthy" },
+      ],
+    });
+
+    // The relative-path project never reaches the transfer and is skipped; the
+    // absolute-path project still stages.
+    expect(Object.keys(prepared.additionalSourceDirs)).toEqual(["healthy"]);
+    expect(syncDirectoryToSsh).not.toHaveBeenCalledWith(expect.objectContaining({
+      localDir: "relative/referenced",
+    }));
+  });
 });
