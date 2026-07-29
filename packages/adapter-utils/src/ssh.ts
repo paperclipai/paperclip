@@ -54,21 +54,16 @@ export function createSshCommandManagedRuntimeRunner(input: {
       const cwd = commandInput.cwd?.trim() || defaultCwd;
       const envEntries = Object.entries(commandInput.env ?? {})
         .filter((entry): entry is [string, string] => typeof entry[1] === "string");
-      const envPrefix = envEntries.length > 0
-        ? `env ${envEntries.map(([key, value]) => `${key}=${shellQuote(value)}`).join(" ")} `
-        : "";
-      const exportPrefix = envEntries.length > 0
-        ? envEntries.map(([key, value]) => `export ${key}=${shellQuote(value)};`).join(" ") + " "
-        : "";
       const commandScript = command === "sh" || command === "bash"
         ? (args[0] === "-c" || args[0] === "-lc") && typeof args[1] === "string"
-          ? `${exportPrefix}${args[1]}`
-          : `${envPrefix}exec ${[shellQuote(command), ...args.map((arg) => shellQuote(arg))].join(" ")}`
-        : `${envPrefix}exec ${[shellQuote(command), ...args.map((arg) => shellQuote(arg))].join(" ")}`;
+          ? args[1]
+          : `exec ${[shellQuote(command), ...args.map((arg) => shellQuote(arg))].join(" ")}`
+        : `exec ${[shellQuote(command), ...args.map((arg) => shellQuote(arg))].join(" ")}`;
       const remoteCommand = `cd ${shellQuote(cwd)} && ${commandScript}`;
 
       try {
         const result = await runSshCommand(input.spec, remoteCommand, {
+          env: Object.fromEntries(envEntries),
           stdin: commandInput.stdin,
           timeoutMs: commandInput.timeoutMs,
           maxBuffer: maxBufferBytes,
@@ -1172,31 +1167,67 @@ export async function runSshCommand(
     // / NVM_DIR / etc. would silently undo the explicit env passed in here.
     const envArgs = envEntries.map(([key, value]) => `${key}=${shellQuote(value)}`);
     const remoteScript = [
+      "#!/bin/sh",
       'if [ -f "$HOME/.profile" ]; then . "$HOME/.profile" >/dev/null 2>&1 || true; fi',
       'if [ -f "$HOME/.bash_profile" ]; then . "$HOME/.bash_profile" >/dev/null 2>&1 || true; fi',
       'if [ -f "$HOME/.zprofile" ]; then . "$HOME/.zprofile" >/dev/null 2>&1 || true; fi',
       envArgs.length > 0
         ? `exec env ${envArgs.join(" ")} sh -c ${shellQuote(remoteCommand)}`
         : `exec sh -c ${shellQuote(remoteCommand)}`,
-    ].join(" && ");
+    ].join("\n");
+    const remoteLauncher = envArgs.length > 0
+      ? `/tmp/paperclip-ssh-command-${randomUUID()}`
+      : null;
+
+    if (remoteLauncher) {
+      const uploadArgs = [
+        ...auth.args,
+        "-p",
+        String(config.port),
+        `${config.username}@${config.host}`,
+        `umask 077; cat > ${shellQuote(remoteLauncher)}; chmod 700 ${shellQuote(remoteLauncher)}`,
+      ];
+      await spawnText("ssh", uploadArgs, {
+        stdin: remoteScript,
+        timeout: options.timeoutMs ?? 15_000,
+        maxBuffer: 16 * 1024,
+      });
+    }
 
     sshArgs.push(
       "-p",
       String(config.port),
       `${config.username}@${config.host}`,
-      `sh -c ${shellQuote(remoteScript)}`,
+      remoteLauncher
+        ? `exec sh ${shellQuote(remoteLauncher)}`
+        : `sh -c ${shellQuote(remoteScript)}`,
     );
 
-    return options.stdin != null
-      ? await spawnText("ssh", sshArgs, {
-          stdin: options.stdin,
-          timeout: options.timeoutMs ?? 15_000,
-          maxBuffer: options.maxBuffer ?? 1024 * 128,
-        })
-      : await execFileText("ssh", sshArgs, {
-          timeout: options.timeoutMs ?? 15_000,
-          maxBuffer: options.maxBuffer ?? 1024 * 128,
+    try {
+      return options.stdin != null
+        ? await spawnText("ssh", sshArgs, {
+            stdin: options.stdin,
+            timeout: options.timeoutMs ?? 15_000,
+            maxBuffer: options.maxBuffer ?? 1024 * 128,
+          })
+        : await execFileText("ssh", sshArgs, {
+            timeout: options.timeoutMs ?? 15_000,
+            maxBuffer: options.maxBuffer ?? 1024 * 128,
+          });
+    } finally {
+      if (remoteLauncher) {
+        const removeArgs = [
+          ...auth.args,
+          "-p",
+          String(config.port),
+          `${config.username}@${config.host}`,
+          `rm -f -- ${shellQuote(remoteLauncher)}`,
+        ];
+        await execFileText("ssh", removeArgs, { timeout: 15_000, maxBuffer: 16 * 1024 }).catch((error) => {
+          console.warn(`[paperclip] Failed to remove remote SSH launcher ${remoteLauncher}: ${error instanceof Error ? error.message : String(error)}`);
         });
+      }
+    }
   } finally {
     await cleanup();
   }
@@ -1224,6 +1255,7 @@ export async function buildSshSpawnTarget(input: {
     .map(([key, value]) => `${key}=${shellQuote(value)}`);
   const remoteCommandParts = [shellQuote(input.command), ...input.args.map((arg) => shellQuote(arg))].join(" ");
   const remoteScript = [
+    "#!/bin/sh",
     'if [ -f "$HOME/.profile" ]; then . "$HOME/.profile" >/dev/null 2>&1 || true; fi',
     'if [ -f "$HOME/.bash_profile" ]; then . "$HOME/.bash_profile" >/dev/null 2>&1 || true; fi',
     'if [ -f "$HOME/.zprofile" ]; then . "$HOME/.zprofile" >/dev/null 2>&1 || true; fi',
@@ -1233,19 +1265,47 @@ export async function buildSshSpawnTarget(input: {
     envArgs.length > 0
       ? `exec env ${envArgs.join(" ")} ${remoteCommandParts}`
       : `exec ${remoteCommandParts}`,
-  ].join(" && ");
+  ].join("\n");
+  const remoteLauncher = envArgs.length > 0
+    ? `/tmp/paperclip-ssh-launch-${randomUUID()}`
+    : null;
+
+  if (remoteLauncher) {
+    try {
+      await runSshCommand(
+        input.spec,
+        `umask 077; cat > ${shellQuote(remoteLauncher)}; chmod 700 ${shellQuote(remoteLauncher)}`,
+        { stdin: remoteScript, timeoutMs: 15_000, maxBuffer: 16 * 1024 },
+      );
+    } catch (error) {
+      await auth.cleanup();
+      throw error;
+    }
+  }
 
   sshArgs.push(
     "-p",
     String(input.spec.port),
     `${input.spec.username}@${input.spec.host}`,
-    `sh -c ${shellQuote(remoteScript)}`,
+    remoteLauncher
+      ? `exec sh ${shellQuote(remoteLauncher)}`
+      : `sh -c ${shellQuote(remoteScript)}`,
   );
 
   return {
     command: "ssh",
     args: sshArgs,
-    cleanup: auth.cleanup,
+    cleanup: async () => {
+      if (remoteLauncher) {
+        await runSshCommand(input.spec, `rm -f -- ${shellQuote(remoteLauncher)}`, {
+          timeoutMs: 15_000,
+          maxBuffer: 16 * 1024,
+        }).catch((error) => {
+          console.warn(`[paperclip] Failed to remove remote SSH launcher ${remoteLauncher}: ${error instanceof Error ? error.message : String(error)}`);
+        });
+      }
+      await auth.cleanup();
+    },
   };
 }
 

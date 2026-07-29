@@ -6,6 +6,7 @@ import { afterEach, describe, expect, it } from "vitest";
 import {
   buildSshSpawnTarget,
   buildSshEnvLabFixtureConfig,
+  createSshCommandManagedRuntimeRunner,
   getSshEnvLabSupport,
   prepareWorkspaceForSshExecution,
   readSshEnvLabFixtureStatus,
@@ -191,6 +192,102 @@ describe("ssh env-lab fixture", () => {
       }),
     ).rejects.toThrow("Invalid SSH environment variable key: BAD KEY");
   });
+
+  it("does not create a remote launcher for spawn targets without environment variables", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-fixture-"));
+    cleanupDirs.push(rootDir);
+    const statePath = path.join(rootDir, "state.json");
+    const started = await startSshEnvLabFixtureOrSkip(statePath, "SSH env-lab fixture test");
+    if (!started) return;
+    const config = await buildSshEnvLabFixtureConfig(started);
+    const target = await buildSshSpawnTarget({
+      spec: { ...config, remoteCwd: started.workspaceDir },
+      command: "printf",
+      args: ["launcher-free"],
+      env: {},
+    });
+
+    expect(target.args.join(" ")).not.toContain("paperclip-ssh-launch-");
+    const result = await new Promise<string>((resolve, reject) => {
+      execFile(target.command, target.args, (error, stdout) => {
+        if (error) reject(error);
+        else resolve(stdout);
+      });
+    });
+    expect(result).toBe("launcher-free");
+    await target.cleanup();
+  }, SSH_FIXTURE_TEST_TIMEOUT_MS);
+
+  it("passes managed runtime environment through secure transport", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-fixture-"));
+    cleanupDirs.push(rootDir);
+    const statePath = path.join(rootDir, "state.json");
+    const started = await startSshEnvLabFixtureOrSkip(statePath, "SSH env-lab fixture test");
+    if (!started) return;
+    const config = await buildSshEnvLabFixtureConfig(started);
+    const sentinel = "paperclip-managed-runtime-secret-sentinel";
+    const runner = createSshCommandManagedRuntimeRunner({
+      spec: { ...config, remoteCwd: started.workspaceDir },
+    });
+    const result = await runner.execute({
+      command: "sh",
+      args: ["-c", 'printf "%s" "$SSH_MANAGED_SECRET_SENTINEL"'],
+      cwd: started.workspaceDir,
+      env: { SSH_MANAGED_SECRET_SENTINEL: sentinel },
+    });
+
+    expect(result.exitCode).toBe(0);
+    expect(result.stdout).toBe(sentinel);
+    const launchers = await runSshCommand(
+      config,
+      "find /tmp -maxdepth 1 \\( -name 'paperclip-ssh-command-*' -o -name 'paperclip-ssh-launch-*' \\) -print",
+    );
+    expect(launchers.stdout).toBe("");
+  }, SSH_FIXTURE_TEST_TIMEOUT_MS);
+
+  it("passes command environment through secure transport", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-fixture-"));
+    cleanupDirs.push(rootDir);
+    const statePath = path.join(rootDir, "state.json");
+    const started = await startSshEnvLabFixtureOrSkip(statePath, "SSH env-lab fixture test");
+    if (!started) return;
+    const config = await buildSshEnvLabFixtureConfig(started);
+    const sentinel = "paperclip-run-command-secret-sentinel";
+    const result = await runSshCommand(config, 'printf "%s:%s" "$SSH_COMMAND_SECRET_SENTINEL" "$(cat)"', {
+      env: { SSH_COMMAND_SECRET_SENTINEL: sentinel },
+      stdin: "stdin-payload",
+      timeoutMs: 30_000,
+    });
+
+    expect(result.stdout).toBe(`${sentinel}:stdin-payload`);
+  }, SSH_FIXTURE_TEST_TIMEOUT_MS);
+
+  it("keeps remote environment secrets out of SSH argv", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-fixture-"));
+    cleanupDirs.push(rootDir);
+    const statePath = path.join(rootDir, "state.json");
+    const started = await startSshEnvLabFixtureOrSkip(statePath, "SSH env-lab fixture test");
+    if (!started) return;
+    const config = await buildSshEnvLabFixtureConfig(started);
+    const sentinel = "paperclip-ssh-argv-secret-sentinel";
+    const target = await buildSshSpawnTarget({
+      spec: { ...config, remoteCwd: started.workspaceDir },
+      command: "sh",
+      args: ["-c", 'printf "%s" "$SSH_ARGV_SECRET_SENTINEL"'],
+      env: { SSH_ARGV_SECRET_SENTINEL: sentinel },
+    });
+
+    expect(target.args.join(" ")).not.toContain(sentinel);
+    expect(target.args.at(-1)).toMatch(/^exec sh '\/tmp\/paperclip-ssh-launch-/);
+    const result = await new Promise<string>((resolve, reject) => {
+      execFile(target.command, target.args, (error, stdout) => {
+        if (error) reject(error);
+        else resolve(stdout);
+      });
+    });
+    expect(result).toBe(sentinel);
+    await target.cleanup();
+  }, SSH_FIXTURE_TEST_TIMEOUT_MS);
 
   it("syncs a local directory into the remote fixture workspace", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-ssh-fixture-"));

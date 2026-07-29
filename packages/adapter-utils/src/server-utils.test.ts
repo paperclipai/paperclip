@@ -74,7 +74,7 @@ describe("buildInvocationEnvForLogs", () => {
 });
 
 describe("sanitizeSshRemoteEnv", () => {
-  it("drops inherited host shell identity variables for SSH remote execution", () => {
+  it("drops inherited host variables outside the remote compatibility allowlist", () => {
     expect(
       sanitizeSshRemoteEnv(
         {
@@ -83,6 +83,7 @@ describe("sanitizeSshRemoteEnv", () => {
           NVM_DIR: "/Users/local/.nvm",
           TMPDIR: "/var/folders/local/T",
           XDG_CONFIG_HOME: "/Users/local/.config",
+          PAPERCLIP_HOST_SECRET_SENTINEL: "must-not-cross-host-boundary",
           SAFE_VALUE: "visible",
         },
         {
@@ -91,10 +92,30 @@ describe("sanitizeSshRemoteEnv", () => {
           NVM_DIR: "/Users/local/.nvm",
           TMPDIR: "/var/folders/local/T",
           XDG_CONFIG_HOME: "/Users/local/.config",
+          PAPERCLIP_HOST_SECRET_SENTINEL: "must-not-cross-host-boundary",
+          SAFE_VALUE: "visible",
+        },
+      ),
+    ).toEqual({});
+  });
+
+  it("preserves inherited credentials named by the remote compatibility allowlist", () => {
+    expect(
+      sanitizeSshRemoteEnv(
+        {
+          OPENAI_API_KEY: "sentinel-openai-key",
+          GITHUB_TOKEN: "sentinel-github-token",
+          UNLISTED_API_KEY: "sentinel-unlisted-key",
+        },
+        {
+          OPENAI_API_KEY: "sentinel-openai-key",
+          GITHUB_TOKEN: "sentinel-github-token",
+          UNLISTED_API_KEY: "sentinel-unlisted-key",
         },
       ),
     ).toEqual({
-      SAFE_VALUE: "visible",
+      OPENAI_API_KEY: "sentinel-openai-key",
+      GITHUB_TOKEN: "sentinel-github-token",
     });
   });
 
