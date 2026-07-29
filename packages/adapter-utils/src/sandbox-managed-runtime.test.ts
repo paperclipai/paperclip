@@ -2,7 +2,7 @@ import { promises as fsPromises } from "node:fs";
 import { lstat, mkdir, mkdtemp, readFile, readdir, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { execFile as execFileCallback } from "node:child_process";
+import { execFile as execFileCallback, spawn } from "node:child_process";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { resetLocalGitIndexToHead } from "./git-workspace-sync.js";
@@ -14,6 +14,11 @@ import {
   type SandboxSyncOperation,
   type SandboxSyncResult,
 } from "./sandbox-managed-runtime.js";
+import {
+  prepareCommandManagedRuntime,
+  type CommandManagedRuntimeRunner,
+} from "./command-managed-runtime.js";
+import type { RunProcessResult } from "./server-utils.js";
 
 function toArrayBuffer(bytes: Buffer): ArrayBuffer {
   return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
@@ -1489,5 +1494,98 @@ describe("sandbox managed runtime", () => {
     expect(coreSource).not.toMatch(/codex/i);
     expect(coreSource).not.toMatch(/auth\.json/i);
     expect(coreSource).not.toMatch(/merge-extract|merge-decision/i);
+  });
+
+  // End-to-end: drive the WHOLE prepare path — `prepareCommandManagedRuntime`
+  // building the client, syncing the anchor workspace, then staging the
+  // referenced projects — through a runner that runs real shell commands on the
+  // host filesystem (host FS stands in for the sandbox FS). The runner exposes no
+  // native syncIn, so staging rides the base64/tar fallback, the same transport a
+  // provider without native sync uses. In production the kill-switch
+  // `PAPERCLIP_MULTI_PROJECT_WORKSPACE_SYNC` gates whether run prep resolves any
+  // referenced projects (OFF ⇒ none reach this layer). Enable it in-test only to
+  // model the ON scenario, and prove multi-project isolation plus one-failure
+  // isolation end-to-end.
+  it("stages multiple referenced projects into isolated sandbox dirs end-to-end, skipping a failing source", async () => {
+    const flagKey = "PAPERCLIP_MULTI_PROJECT_WORKSPACE_SYNC";
+    const priorFlag = process.env[flagKey];
+    process.env[flagKey] = "1";
+    try {
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-e2e-additional-"));
+      cleanupDirs.push(rootDir);
+
+      const localWorkspaceDir = path.join(rootDir, "local-workspace");
+      const remoteWorkspaceDir = path.join(rootDir, "remote-workspace");
+      await mkdir(localWorkspaceDir, { recursive: true });
+      await mkdir(remoteWorkspaceDir, { recursive: true });
+      await writeFile(path.join(localWorkspaceDir, "README.md"), "anchor content\n", "utf8");
+
+      // Two real referenced-project checkouts (one with a nested file) plus a
+      // deliberately-missing source between them.
+      const first = path.join(rootDir, "referenced-first");
+      const second = path.join(rootDir, "referenced-second");
+      await mkdir(path.join(first, "docs"), { recursive: true });
+      await mkdir(second, { recursive: true });
+      await writeFile(path.join(first, "docs", "guide.md"), "first guide\n", "utf8");
+      await writeFile(path.join(second, "notes.md"), "second notes\n", "utf8");
+
+      const runner: CommandManagedRuntimeRunner = {
+        execute: (input) =>
+          new Promise<RunProcessResult>((resolve) => {
+            const startedAt = new Date().toISOString();
+            const command =
+              input.command === "sh" ? "/bin/sh" : input.command === "bash" ? "/bin/bash" : input.command;
+            const child = spawn(command, input.args ?? [], { cwd: input.cwd, env: { ...process.env, ...input.env } });
+            let stdout = "";
+            let stderr = "";
+            child.stdout.on("data", (chunk) => { stdout += chunk.toString("utf8"); });
+            child.stderr.on("data", (chunk) => { stderr += chunk.toString("utf8"); });
+            child.on("error", () => resolve({ exitCode: 127, signal: null, timedOut: false, stdout, stderr, pid: null, startedAt }));
+            child.on("close", (code) => resolve({ exitCode: code ?? 0, signal: null, timedOut: false, stdout, stderr, pid: child.pid ?? null, startedAt }));
+            if (input.stdin != null) child.stdin.write(input.stdin);
+            child.stdin.end();
+          }),
+      };
+
+      const prepared = await prepareCommandManagedRuntime({
+        runner,
+        spec: { remoteCwd: remoteWorkspaceDir, timeoutMs: 30_000 },
+        adapterKey: "test-adapter",
+        workspaceLocalDir: localWorkspaceDir,
+        additionalSources: [
+          { localPath: first, projectId: "proj-first" },
+          { localPath: path.join(rootDir, "referenced-missing"), projectId: "proj-missing" },
+          { localPath: second, projectId: "proj-second" },
+        ],
+      });
+
+      const runtimeRootDir = path.posix.join(remoteWorkspaceDir, ".paperclip-runtime", "test-adapter");
+
+      // The anchor workspace synced normally and stays byte-identical.
+      await expect(readFile(path.join(remoteWorkspaceDir, "README.md"), "utf8")).resolves.toBe("anchor content\n");
+
+      // Each healthy referenced project landed in its OWN isolated dir; the
+      // missing one is skipped, not fatal.
+      expect(Object.keys(prepared.additionalSourceDirs).sort()).toEqual(["proj-first", "proj-second"]);
+      expect(prepared.additionalSourceDirs["proj-first"]).toBe(path.posix.join(runtimeRootDir, "project-proj-first"));
+      expect(prepared.additionalSourceDirs["proj-second"]).toBe(path.posix.join(runtimeRootDir, "project-proj-second"));
+      expect(prepared.additionalSourceDirs["proj-missing"]).toBeUndefined();
+
+      await expect(readFile(path.join(prepared.additionalSourceDirs["proj-first"], "docs", "guide.md"), "utf8"))
+        .resolves.toBe("first guide\n");
+      await expect(readFile(path.join(prepared.additionalSourceDirs["proj-second"], "notes.md"), "utf8"))
+        .resolves.toBe("second notes\n");
+
+      // Neither project's tree leaked into the anchor workspace or into the other
+      // project's dir.
+      await expect(readFile(path.join(remoteWorkspaceDir, "notes.md"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(readFile(path.join(prepared.additionalSourceDirs["proj-first"], "notes.md"), "utf8")).rejects
+        .toMatchObject({ code: "ENOENT" });
+      await expect(readFile(path.join(runtimeRootDir, "project-proj-missing"), "utf8")).rejects
+        .toMatchObject({ code: "ENOENT" });
+    } finally {
+      if (priorFlag === undefined) delete process.env[flagKey];
+      else process.env[flagKey] = priorFlag;
+    }
   });
 });

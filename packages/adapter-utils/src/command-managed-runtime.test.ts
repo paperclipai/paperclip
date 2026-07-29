@@ -303,6 +303,59 @@ describe("command managed runtime", () => {
     );
   });
 
+  it("stages each additional project into an isolated dir on the base64/tar transport, one failure skipped", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-command-runtime-additional-"));
+    cleanupDirs.push(rootDir);
+
+    const localWorkspaceDir = path.join(rootDir, "local-workspace");
+    const remoteWorkspaceDir = path.join(rootDir, "remote-workspace");
+    await mkdir(localWorkspaceDir, { recursive: true });
+    await mkdir(remoteWorkspaceDir, { recursive: true });
+    await writeFile(path.join(localWorkspaceDir, "README.md"), "anchor\n", "utf8");
+
+    const goodOne = path.join(rootDir, "src-one");
+    const goodTwo = path.join(rootDir, "src-two");
+    await mkdir(goodOne, { recursive: true });
+    await mkdir(path.join(goodTwo, "nested"), { recursive: true });
+    await writeFile(path.join(goodOne, "one.txt"), "one body\n", "utf8");
+    await writeFile(path.join(goodTwo, "nested", "two.txt"), "two body\n", "utf8");
+
+    // The `makeSpawnRunner` runner exposes no native syncIn, so staging rides the
+    // base64/tar fallback. The middle source points at a missing directory, so
+    // its tar build fails; failure isolation skips only it.
+    const { runner } = makeSpawnRunner();
+    const prepared = await prepareCommandManagedRuntime({
+      runner,
+      spec: {
+        remoteCwd: remoteWorkspaceDir,
+        timeoutMs: 30_000,
+      },
+      adapterKey: "claude",
+      workspaceLocalDir: localWorkspaceDir,
+      additionalSources: [
+        { localPath: goodOne, projectId: "one" },
+        { localPath: path.join(rootDir, "missing"), projectId: "broken" },
+        { localPath: goodTwo, projectId: "two" },
+      ],
+    });
+
+    const runtimeRootDir = path.posix.join(remoteWorkspaceDir, ".paperclip-runtime", "claude");
+    expect(Object.keys(prepared.additionalSourceDirs).sort()).toEqual(["one", "two"]);
+    expect(prepared.additionalSourceDirs.one).toBe(path.posix.join(runtimeRootDir, "project-one"));
+    expect(prepared.additionalSourceDirs.two).toBe(path.posix.join(runtimeRootDir, "project-two"));
+    expect(prepared.additionalSourceDirs.broken).toBeUndefined();
+
+    // Each healthy project's tree materialized in its OWN dir (nested files kept).
+    await expect(readFile(path.join(prepared.additionalSourceDirs.one, "one.txt"), "utf8")).resolves.toBe("one body\n");
+    await expect(readFile(path.join(prepared.additionalSourceDirs.two, "nested", "two.txt"), "utf8")).resolves.toBe(
+      "two body\n",
+    );
+    // The broken project's dir was never created.
+    await expect(readFile(path.join(runtimeRootDir, "project-broken"), "utf8")).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  });
+
   it("keeps adapter detection on the profile-backed shell path", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-command-runtime-detect-"));
     cleanupDirs.push(rootDir);

@@ -14,6 +14,8 @@ import {
   prepareRemoteManagedRuntime,
   remoteExecutionSessionMatches,
 } from "./remote-managed-runtime.js";
+import type { SandboxAdditionalSource } from "./sandbox-managed-runtime.js";
+export type { SandboxAdditionalSource } from "./sandbox-managed-runtime.js";
 import {
   createCommandManagedSandboxCallbackBridgeQueueClient,
   createSandboxCallbackBridgeAsset,
@@ -114,6 +116,12 @@ export interface PreparedAdapterExecutionTargetRuntime {
   workspaceRemoteDir: string | null;
   runtimeRootDir: string | null;
   assetDirs: Record<string, string>;
+  /**
+   * Remote directory of each additional (referenced) project that staged
+   * successfully, keyed by `projectId`. Empty for a local target or when no
+   * additional sources were requested.
+   */
+  additionalSourceDirs: Record<string, string>;
   restoreWorkspace(onProgress?: RuntimeProgressSink): Promise<void>;
 }
 
@@ -1107,6 +1115,8 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
   workspaceExclude?: string[];
   preserveAbsentOnRestore?: string[];
   assets?: AdapterManagedRuntimeAsset[];
+  /** Referenced (additional) projects to stage into the sandbox as plain, read-only trees. */
+  additionalSources?: SandboxAdditionalSource[];
   installCommand?: string | null;
   /** When provided alongside `installCommand`, skip the install if the binary is already on PATH. */
   detectCommand?: string | null;
@@ -1124,6 +1134,7 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
       workspaceRemoteDir: null,
       runtimeRootDir: null,
       assetDirs: {},
+      additionalSourceDirs: {},
       restoreWorkspace: async () => {},
     };
   }
@@ -1137,6 +1148,7 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
       workspaceRemoteDir: input.workspaceRemoteDir,
       syncWorkspace: input.syncWorkspace,
       assets: input.assets,
+      additionalSources: input.additionalSources,
       onProgress: input.onProgress,
     });
     return {
@@ -1144,6 +1156,7 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
       workspaceRemoteDir: prepared.workspaceRemoteDir,
       runtimeRootDir: prepared.runtimeRootDir,
       assetDirs: prepared.assetDirs,
+      additionalSourceDirs: prepared.additionalSourceDirs,
       restoreWorkspace: prepared.restoreWorkspace,
     };
   }
@@ -1167,6 +1180,7 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
     workspaceExclude: input.workspaceExclude,
     preserveAbsentOnRestore: input.preserveAbsentOnRestore,
     assets: input.assets,
+    additionalSources: input.additionalSources,
     installCommand: input.installCommand,
     detectCommand: input.detectCommand,
     onProgress: input.onProgress,
@@ -1177,6 +1191,7 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
     workspaceRemoteDir: prepared.workspaceRemoteDir,
     runtimeRootDir: prepared.runtimeRootDir,
     assetDirs: prepared.assetDirs,
+    additionalSourceDirs: prepared.additionalSourceDirs,
     restoreWorkspace: prepared.restoreWorkspace,
   };
 }
