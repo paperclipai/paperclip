@@ -7635,7 +7635,12 @@ export function issueService(db: Db) {
         .set({ updatedAt: new Date() })
         .where(eq(issues.id, issueId));
 
-      if (authorType === "user" && actor.userId && !createdByRunId) {
+      if (
+        authorType === "user" &&
+        actor.userId &&
+        actor.userId !== "board-concierge" &&
+        !createdByRunId
+      ) {
         const { issueThreadInteractionService } = await import("./issue-thread-interactions.js");
         const expiredInteractions = await issueThreadInteractionService(dbOrTx)
           .expireRequestConfirmationsSupersededByComment(
