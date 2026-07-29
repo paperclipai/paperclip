@@ -203,6 +203,7 @@ export function AgentActionButtons({
   const { pushToast } = useToastActions();
   const [moreOpen, setMoreOpen] = useState(false);
   const [pauseConfirmOpen, setPauseConfirmOpen] = useState(false);
+  const [terminateConfirmOpen, setTerminateConfirmOpen] = useState(false);
 
   const resolvedCompanyId = companyId ?? agent.companyId;
   const canonicalAgentRef = agentRouteRef(agent);
@@ -365,6 +366,25 @@ export function AgentActionButtons({
           </AlertDialogContent>
         </AlertDialog>
       )}
+      <AlertDialog open={terminateConfirmOpen} onOpenChange={setTerminateConfirmOpen}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>Terminate {agent.name}?</AlertDialogTitle>
+            <AlertDialogDescription>
+              This permanently terminates the agent and cannot be undone.
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogAction
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+              onClick={() => agentAction.mutate("terminate")}
+            >
+              Terminate
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
       {showStatus && (
         <span className="hidden sm:inline">
           <AgentStatusBadge status={agent.status} />
@@ -414,8 +434,8 @@ export function AgentActionButtons({
             <button
               className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-destructive"
               onClick={() => {
-                agentAction.mutate("terminate");
                 setMoreOpen(false);
+                setTerminateConfirmOpen(true);
               }}
             >
               <Trash2 className="h-3 w-3" />

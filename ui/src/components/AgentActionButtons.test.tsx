@@ -108,6 +108,7 @@ describe("AgentActionButtons", () => {
     mockAgentsApi.pause.mockResolvedValue(makeAgent({ status: "paused" }));
     mockAgentsApi.resume.mockResolvedValue(makeAgent({ status: "idle" }));
     mockAgentsApi.invoke.mockResolvedValue({ id: "run-1" });
+    mockAgentsApi.terminate.mockResolvedValue(makeAgent({ status: "terminated" }));
     mockAgentsApi.resetSession.mockResolvedValue(undefined);
   });
 
@@ -174,5 +175,32 @@ describe("AgentActionButtons", () => {
 
     expect(container.textContent).toContain("Pause");
     expect(container.textContent).not.toContain("Clear error");
+  });
+
+  it("requires confirmation before terminating an agent", async () => {
+    render(makeAgent());
+    await flushReact();
+
+    await act(async () => {
+      container.querySelector<HTMLButtonElement>('[aria-label="Open actions for Alpha Agent"]')?.click();
+    });
+    await flushReact();
+
+    await act(async () => {
+      [...document.body.querySelectorAll("button")]
+        .find((button) => button.textContent?.trim() === "Terminate")
+        ?.click();
+    });
+    await flushReact();
+
+    expect(mockAgentsApi.terminate).not.toHaveBeenCalled();
+    expect(document.body.textContent).toContain("Terminate Alpha Agent?");
+
+    await act(async () => {
+      document.body.querySelector<HTMLButtonElement>('[data-slot="alert-dialog-action"]')?.click();
+    });
+    await flushReact();
+
+    expect(mockAgentsApi.terminate).toHaveBeenCalledWith("agent-1", "company-1");
   });
 });
