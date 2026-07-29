@@ -851,6 +851,52 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(fp(repointed)).not.toBe(fp(two));
   });
 
+  it("busts the session fingerprint when referenced-project files change at the same host path", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const cwd = path.join(root, "workspace");
+    const projectDir = path.join(root, "project-a");
+    await fs.mkdir(path.join(projectDir, "src"), { recursive: true });
+    await fs.writeFile(path.join(projectDir, "src", "index.ts"), "export const value = 1;\n");
+    const baseConfig = { agentCommand: "node ./fake-acp.js", stateDir };
+
+    // Same host path and same metadata across runs. Only the file bytes change,
+    // which mirrors a branch that moved or a re-checkout in place. The metadata
+    // identity stays constant, so without the content signature a compatible
+    // resume would reuse a stale staged tree.
+    const referencedProject = {
+      path: projectDir,
+      projectId: "a",
+      projectWorkspaceId: "ws-a",
+      repoUrl: "https://example.test/a.git",
+      repoRef: "main",
+    };
+    const withProject = () => ({
+      context: {
+        taskId: "issue-1",
+        wakeReason: "issue_assigned",
+        paperclipWorkspace: { cwd, realization: { additional: [referencedProject] } },
+      },
+    });
+    const fp = (r: { result: { sessionParams?: unknown } }) =>
+      (r.result.sessionParams as { configFingerprint?: string } | undefined)?.configFingerprint;
+
+    const before = await runExecutor(baseConfig, withProject());
+    // Change the tree content and its size while the host path and metadata stay
+    // identical.
+    await fs.writeFile(path.join(projectDir, "src", "index.ts"), "export const value = 2; // changed\n");
+    const afterEdit = await runExecutor(baseConfig, withProject());
+    // Add a new file to the tree.
+    await fs.writeFile(path.join(projectDir, "src", "extra.ts"), "export const extra = true;\n");
+    const afterAdd = await runExecutor(baseConfig, withProject());
+
+    expect(fp(before)).toBeDefined();
+    // A content-only edit busts the fingerprint, so the resume re-stages.
+    expect(fp(afterEdit)).not.toBe(fp(before));
+    // A new file in the tree busts the fingerprint too.
+    expect(fp(afterAdd)).not.toBe(fp(afterEdit));
+  });
+
   it("shapes ACPX session env for remote execution identities", async () => {
     const root = await makeTempRoot();
     const localCwd = path.join(root, "local");

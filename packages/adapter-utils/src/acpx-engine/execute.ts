@@ -419,6 +419,47 @@ function shortHash(value: unknown): string {
   return createHash("sha256").update(stableJson(value)).digest("hex").slice(0, 16);
 }
 
+/**
+ * Content signature of a referenced-project host tree for the session fingerprint.
+ *
+ * The staged-runtime cache reuses an already-staged referenced-project tree on a
+ * compatible resume and does not re-sync it. Referenced-project metadata (id, host
+ * path, workspace id, repo url, pinned ref) can stay identical while the files at
+ * that host path change: a branch moved to a new commit, a re-checkout in place, or
+ * a dirty worktree. So the metadata identity alone lets a resume serve a stale tree.
+ * This signature folds the tree's own content state into the identity.
+ *
+ * The walk reads only directory entries and file stats — each entry's relative path,
+ * size, and modification time. It never reads file bytes. A file add, remove, or
+ * edit changes the signature, so the fingerprint busts and the next launch stages
+ * the current tree. On a read error the function returns a stable marker, so the
+ * fingerprint does not churn while staging surfaces the real error. The walk runs
+ * only when the run carries referenced projects (the multi-project sync path).
+ */
+async function referencedSourceContentSignature(localPath: string): Promise<string> {
+  const entries: Array<[string, number, number]> = [];
+  const walk = async (relative: string): Promise<void> => {
+    const current = relative ? path.join(localPath, relative) : localPath;
+    const dirents = await fs.readdir(current, { withFileTypes: true });
+    dirents.sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0));
+    for (const dirent of dirents) {
+      const next = relative ? path.posix.join(relative, dirent.name) : dirent.name;
+      if (dirent.isDirectory()) {
+        await walk(next);
+        continue;
+      }
+      const stats = await fs.lstat(path.join(localPath, next));
+      entries.push([next, stats.size, stats.mtimeMs]);
+    }
+  };
+  try {
+    await walk("");
+  } catch (error) {
+    return `unreadable:${String(error)}`;
+  }
+  return shortHash(entries);
+}
+
 function defaultPaperclipInstanceDir(): string {
   const home = process.env.PAPERCLIP_HOME?.trim() || path.join(os.homedir(), ".paperclip");
   const instanceId = process.env.PAPERCLIP_INSTANCE_ID?.trim() || "default";
@@ -1298,7 +1339,7 @@ async function buildRuntime(input: {
   // pinned checkout changes. Without this, a resume reuses a stale staged tree.
   // Fold in each project's id, host path, workspace id, and pinned ref; sort by
   // projectId so the identity depends on the set, not the record order.
-  const additionalSourcesIdentity = additionalSourceRecords
+  const additionalSourcesIdentityBase = additionalSourceRecords
     .map((entry) => ({
       projectId: asString(entry.projectId, ""),
       localPath: asString(entry.path, ""),
@@ -1308,6 +1349,15 @@ async function buildRuntime(input: {
     }))
     .filter((entry) => entry.localPath.length > 0 && entry.projectId.length > 0)
     .sort((a, b) => (a.projectId < b.projectId ? -1 : a.projectId > b.projectId ? 1 : 0));
+  // Metadata alone does not change on a content-only checkout change (same host
+  // path and pinned ref, new file bytes). Fold in each tree's content signature so
+  // a file add, remove, or edit busts the fingerprint and the resume re-stages.
+  const additionalSourcesIdentity = await Promise.all(
+    additionalSourcesIdentityBase.map(async (entry) => ({
+      ...entry,
+      contentSignature: await referencedSourceContentSignature(entry.localPath),
+    })),
+  );
   const executionTarget = readAdapterExecutionTarget({
     executionTarget: input.ctx.executionTarget,
     legacyRemoteExecution: input.ctx.executionTransport?.remoteExecution,
