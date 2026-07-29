@@ -21,6 +21,7 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { heartbeatService } from "../services/heartbeat.ts";
 import { runningProcesses } from "../adapters/index.ts";
+import { withBuiltInAgentMarker } from "../services/built-in-agent-metadata.ts";
 
 const mockAdapterExecute = vi.hoisted(() =>
   vi.fn(async () => ({
@@ -236,6 +237,90 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
     const completed = await waitForRun(db, run!.id);
     expect(completed?.responsibleUserId).toBe(ownerUserId);
     expect(completed?.responsibleUserId).not.toBe(creatorUserId);
+  });
+
+  it("runs built-in agents with system attribution when no responsible user exists", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Agent-only company",
+      issuePrefix: `A${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Reflection Coach",
+      role: "general",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { wakeOnDemand: true } },
+      permissions: {},
+      metadata: withBuiltInAgentMarker(null, { key: "reflection-coach", featureKeys: ["reflection-coach"] }),
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Review recent trajectories",
+      status: "todo",
+      assigneeAgentId: agentId,
+    });
+
+    const run = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId },
+      requestedByActorType: "system",
+      contextSnapshot: { issueId, taskId: issueId, wakeReason: "issue_assigned" },
+    });
+
+    expect(run).not.toBeNull();
+    const completed = await waitForRun(db, run!.id);
+    expect(completed?.status).toBe("succeeded");
+    expect(completed?.responsibleUserId).toBeNull();
+  });
+
+  it("preserves an explicit manual user for built-in agent runs", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const userId = `manual-${randomUUID()}`;
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Manual built-in company",
+      issuePrefix: `M${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Summarizer",
+      role: "general",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { wakeOnDemand: true } },
+      permissions: {},
+      metadata: withBuiltInAgentMarker(null, { key: "summarizer", featureKeys: ["summarizer"] }),
+    });
+
+    const run = await heartbeat.wakeup(agentId, {
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      requestedByActorType: "user",
+      requestedByActorId: userId,
+      contextSnapshot: {
+        routineRun: { source: "manual" },
+        wakeReason: "issue_assigned",
+      },
+    });
+
+    expect(run).not.toBeNull();
+    const completed = await waitForRun(db, run!.id);
+    expect(completed?.status).toBe("succeeded");
+    expect(completed?.responsibleUserId).toBe(userId);
   });
 
   it("fails automated issue dispatch instead of falling back to the issue creator when no default exists", async () => {

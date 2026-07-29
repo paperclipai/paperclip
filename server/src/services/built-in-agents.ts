@@ -153,14 +153,14 @@ const FALLBACK_REFLECTION_COACH_INSTRUCTIONS = [
   "",
   "You are Paperclip's built-in Reflection Coach.",
   "Review recent agent execution records, identify evidence-backed improvement patterns, and propose the smallest durable instruction, skill, or tool-description change.",
-  "Do not apply changes in the same run. Present a reviewable diff and wait for the required Paperclip issue-thread approval before any follow-up applies it.",
+  "Do not apply changes in the same run. Complete proposal-only work without a human participant, then use a separate agent-owned follow-up task and accepted Paperclip issue-thread confirmation before applying anything.",
   "",
 ].join("\n");
 
 const FALLBACK_REFLECTION_COACH_ROUTINE = [
   "Review recent agent work for coaching opportunities.",
   "",
-  "Select recent target agents, inspect their work history and current instructions, then propose small, review-gated improvements that would prevent repeated misses.",
+  "Select recent target agents, inspect their work history and current instructions, then complete proposal-only work agent-only. Apply changes only from a separate agent-owned follow-up with an accepted confirmation.",
   "",
 ].join("\n");
 
@@ -187,9 +187,9 @@ const FALLBACK_SUMMARIZER_INSTRUCTIONS = [
 ].join("\n");
 
 const FALLBACK_SUMMARIZER_ROUTINE = [
-  "Regenerate summary slots whose scope has changed since their last revision.",
+  "Regenerate one explicitly named summary slot from materialized scopeKind, scopeId, and slotKey values.",
   "",
-  "Paused by default; spends no tokens until an operator enables the schedule or runs it manually. Read-and-report only — the only write is the summary revision.",
+  "Paused by default; spends no tokens until an operator runs it with a concrete target. Read-and-report only — the only write is the summary revision.",
   "",
 ].join("\n");
 
@@ -346,7 +346,7 @@ const DEFINITIONS = validateBuiltInAgentDefinitions([
     allowedAdapterTypes: ["claude_local", "codex_local", "gemini_local", "opencode_local", "process"],
     defaultBudgetMonthlyCents: 0,
     bundle: {
-      stockVersion: "2026-07-08",
+      stockVersion: "2026-07-29",
       instructions: {
         entryFile: "AGENTS.md",
         files: {
@@ -418,7 +418,7 @@ const DEFINITIONS = validateBuiltInAgentDefinitions([
     },
     defaultBudgetMonthlyCents: 0,
     bundle: {
-      stockVersion: "2026-07-15",
+      stockVersion: "2026-07-29",
       instructions: {
         entryFile: "AGENTS.md",
         files: {
@@ -436,33 +436,25 @@ const DEFINITIONS = validateBuiltInAgentDefinitions([
       },
       routine: {
         routineKey: "refresh-stale-summaries",
-        title: "Refresh stale summary slots",
+        title: "Refresh {{scopeKind}} summary slot {{slotKey}}",
         description: SUMMARIZER_ROUTINE,
         status: "paused",
         priority: "medium",
         concurrencyPolicy: "coalesce_if_active",
         catchUpPolicy: "skip_missed",
         variables: [
-          { name: "staleAfterHours", label: "Refresh slots older than (hours)", type: "number", defaultValue: 24, required: true, options: [] },
-          { name: "maxSlots", label: "Max slots to refresh per run", type: "number", defaultValue: 10, required: true, options: [] },
           {
-            name: "scopeKinds",
-            label: "Scope kinds to include",
+            name: "scopeKind",
+            label: "Summary scope kind",
             type: "select",
-            defaultValue: "all",
+            defaultValue: null,
             required: true,
-            options: ["all", "project", "workspaces_overview", "project_workspace"],
+            options: ["project", "workspaces_overview", "project_workspace"],
           },
+          { name: "scopeId", label: "Scope id", type: "text", defaultValue: null, required: false, options: [] },
+          { name: "slotKey", label: "Summary slot key", type: "text", defaultValue: "status", required: true, options: [] },
         ],
-        triggers: [
-          {
-            kind: "schedule",
-            label: "Daily stale-summary refresh",
-            enabled: false,
-            cronExpression: "0 8 * * *",
-            timezone: "UTC",
-          },
-        ],
+        triggers: [],
       },
     },
   },
@@ -1343,7 +1335,8 @@ export function builtInAgentService(db: Db) {
       .from(routineTriggers)
       .where(eq(routineTriggers.routineId, nextRoutine.id))
       .then((rows) => rows as RoutineTrigger[]);
-    const firstSchedule = currentTriggers.find((trigger) => trigger.kind === "schedule");
+    const scheduleTriggers = currentTriggers.filter((trigger) => trigger.kind === "schedule");
+    const [firstSchedule, ...extraSchedules] = scheduleTriggers;
     const stockTrigger = routine.triggers[0];
     if (stockTrigger && firstSchedule) {
       await routineSvc.updateTrigger(firstSchedule.id, {
@@ -1360,6 +1353,10 @@ export function builtInAgentService(db: Db) {
         cronExpression: stockTrigger.cronExpression,
         timezone: stockTrigger.timezone,
       }, actor);
+    }
+    const removedSchedules = stockTrigger ? extraSchedules : scheduleTriggers;
+    for (const trigger of removedSchedules) {
+      await routineSvc.deleteTrigger(trigger.id, actor);
     }
     await logActivity(db, {
       companyId: agent.companyId,

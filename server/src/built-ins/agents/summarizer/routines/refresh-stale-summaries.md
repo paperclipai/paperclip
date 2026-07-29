@@ -1,7 +1,7 @@
 ---
 routineKey: refresh-stale-summaries
-title: Refresh stale summary slots
-description: Bounded, paused-by-default sweep that regenerates summary slots whose underlying scope has changed since the last revision. Spends no tokens until an operator enables its schedule or runs it manually. Read-and-report only — it never mutates issues, workspaces, or code.
+title: Refresh {{scopeKind}} summary slot {{slotKey}}
+description: Bounded, paused-by-default refresh of one explicitly named summary slot. Spends no tokens until an operator runs it with scopeKind, scopeId, and slotKey. Read-and-report only — it never mutates issues, workspaces, or code.
 assigneeRef:
   resourceKind: agent
   resourceKey: summarizer
@@ -10,49 +10,41 @@ priority: medium
 concurrencyPolicy: coalesce_if_active
 catchUpPolicy: skip_missed
 variables:
-  - name: staleAfterHours
-    label: Refresh slots older than (hours)
-    type: number
-    defaultValue: 24
-    required: false
-    options: []
-  - name: maxSlots
-    label: Max slots to refresh per run
-    type: number
-    defaultValue: 10
-    required: false
-    options: []
-  - name: scopeKinds
-    label: Scope kinds to include
+  - name: scopeKind
+    label: Summary scope kind
     type: select
-    defaultValue: all
-    required: false
+    defaultValue: null
+    required: true
     options:
-      - all
       - project
       - workspaces_overview
       - project_workspace
-triggers:
-  - kind: schedule
-    label: Daily stale-summary refresh
-    enabled: false
-    cronExpression: "0 8 * * *"
-    timezone: UTC
-    signingMode: none
-    replayWindowSec: 0
+  - name: scopeId
+    label: Scope id (omit only for workspaces_overview)
+    type: string
+    defaultValue: null
+    required: false
+    options: []
+  - name: slotKey
+    label: Summary slot key
+    type: string
+    defaultValue: status
+    required: true
+    options: []
+triggers: []
 issueTemplate:
   surfaceVisibility: normal
 ---
 
-# Refresh stale summary slots
+# Refresh one summary slot
 
-This routine is **paused by default** and spends no tokens until an operator enables its schedule or triggers a manual run. The first release of the Summarizer is manual-generation-first; this routine exists so operators can opt into scheduled refreshes without background spend by default.
+This routine is **paused by default** and spends no tokens until an operator triggers a manual run with a concrete summary-slot target.
 
 ## What this run must do
 
-1. Select summary slots whose scope has changed since their last revision and whose `lastGeneratedAt` is older than `{{staleAfterHours}}` hours. Restrict to `{{scopeKinds}}` when a specific kind is chosen. Cap the set at `{{maxSlots}}`, most-stale first.
-2. For each selected slot, run the `summarize-status` skill as the operating procedure: read the current revision, read the company-scoped state you need to understand where things are, and write one new Markdown revision back to the slot.
-3. Skip slots with no meaningful change since their last revision — do not spend tokens rewriting an unchanged summary.
+1. Work only on `scopeKind={{scopeKind}}`, `scopeId={{scopeId}}`, `slotKey={{slotKey}}`. These values are materialized into the issue and wake context; do not infer or broaden them.
+2. Run the `summarize-status` skill as the operating procedure: read the current revision, read the company-scoped state needed for that one scope, and write one new Markdown revision back to the slot.
+3. If the scope has no meaningful change since its last revision, close the issue with an unchanged result instead of rewriting the summary.
 
 ## Hard limits for this routine
 
@@ -63,4 +55,4 @@ This routine is **paused by default** and spends no tokens until an operator ena
 
 ## Output
 
-A single bounded routine issue that links the slots refreshed this run, plus a summary comment listing: scopes summarized, revisions written, slots skipped as unchanged, and any slot that could not be read (with the unblock owner).
+A single bounded routine issue for the named slot, plus a summary comment listing the scope, revision written or unchanged result, and any read failure with its unblock owner.

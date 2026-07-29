@@ -77,12 +77,14 @@ import {
 import { queueIssueAssignmentWakeup, type IssueAssignmentWakeupDeps } from "./issue-assignment-wakeup.js";
 import { logActivity } from "./activity-log.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
+import { readBuiltInAgentMarker } from "./built-in-agent-metadata.js";
 
 const OPEN_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"];
 const LIVE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"];
 const TERMINAL_ISSUE_STATUSES = new Set(["done", "cancelled"]);
 const MAX_CATCH_UP_RUNS = 25;
 const MAX_ROUTINE_REVISIONS = 100;
+const SUMMARIZER_BUILT_IN_KEY = "summarizer";
 const ACTIVITY_GATE_IGNORED_ACTIONS = [
   "issue.read_marked",
   "issue.read_unmarked",
@@ -453,6 +455,43 @@ function mergeRoutineRunPayload(
       ...variables,
     },
   };
+}
+
+interface RoutineRunContext {
+  routineId: string;
+  routineRunId?: string;
+  source: "schedule" | "manual" | "api" | "webhook";
+  variables: Record<string, string | number | boolean>;
+  target: {
+    companyId: string;
+    projectId: string | null;
+    projectWorkspaceId: string | null;
+    goalId: string | null;
+    parentIssueId: string | null;
+    assigneeAgentId: string;
+    executionWorkspaceId: string | null;
+  };
+}
+
+function appendRoutineRunContext(description: string, context: RoutineRunContext) {
+  return [
+    description,
+    "## Routine run context",
+    "",
+    "The following bounded values and target scope were materialized by Paperclip for this run:",
+    "",
+    "```json",
+    JSON.stringify(context, null, 2),
+    "```",
+  ].filter((part) => part.length > 0).join("\n\n");
+}
+
+function hasSummarySlotTarget(variables: Record<string, string | number | boolean>) {
+  const scopeKind = typeof variables.scopeKind === "string" ? variables.scopeKind.trim() : "";
+  const slotKey = typeof variables.slotKey === "string" ? variables.slotKey.trim() : "";
+  const scopeId = typeof variables.scopeId === "string" ? variables.scopeId.trim() : "";
+  if (!scopeKind || !slotKey) return false;
+  return scopeKind === "workspaces_overview" || Boolean(scopeId);
 }
 
 function normalizeRoutineDispatchFingerprintValue(value: unknown): unknown {
@@ -1630,11 +1669,10 @@ export function routineService(
   }) {
     const projectId = input.projectId ?? input.routine.projectId ?? null;
     const projectWorkspaceId = input.projectWorkspaceId ?? null;
-    const assigneeAgentId = input.assigneeAgentId ?? input.routine.assigneeAgentId ?? null;
-    if (!assigneeAgentId) {
+    const requestedAssigneeAgentId = input.assigneeAgentId ?? input.routine.assigneeAgentId ?? null;
+    if (!requestedAssigneeAgentId) {
       throw unprocessable("Default agent required");
     }
-    await assertAssignableAgent(db, input.routine.companyId, assigneeAgentId, { kind: "routine" });
     const automaticVariables: Record<string, string | number | boolean> = {};
     if (input.executionWorkspaceId && routineUsesWorkspaceBranch(input.routine)) {
       const workspace = await db
@@ -1659,12 +1697,56 @@ export function routineService(
       ...input,
       automaticVariables,
     });
+    const requestedAssignee = await db
+      .select({ id: agents.id, metadata: agents.metadata })
+      .from(agents)
+      .where(and(eq(agents.companyId, input.routine.companyId), eq(agents.id, requestedAssigneeAgentId)))
+      .then((rows) => rows[0] ?? null);
+    let assigneeAgentId = requestedAssigneeAgentId;
+    if (readBuiltInAgentMarker(requestedAssignee?.metadata)?.key === SUMMARIZER_BUILT_IN_KEY && !hasSummarySlotTarget(resolvedVariables)) {
+      const staffEngineers = await db
+        .select({ id: agents.id, name: agents.name, title: agents.title })
+        .from(agents)
+        .where(and(
+          eq(agents.companyId, input.routine.companyId),
+          not(inArray(agents.status, ["paused", "pending_approval", "terminated"])),
+        ))
+        .then((rows) => rows.filter((row) =>
+          row.name.trim().toLowerCase() === "staff engineer" || row.title?.trim().toLowerCase() === "staff engineer"
+        ));
+      if (staffEngineers.length !== 1) {
+        throw unprocessable(
+          "Summarizer routines require scopeKind, scopeId, and slotKey; route company-wide reporting to a single active Staff Engineer",
+          {
+            code: "summarizer_scope_required",
+            requestedAssigneeAgentId,
+            staffEngineerCandidateIds: staffEngineers.map((agent) => agent.id),
+          },
+        );
+      }
+      assigneeAgentId = staffEngineers[0]!.id;
+    }
+    await assertAssignableAgent(db, input.routine.companyId, assigneeAgentId, { kind: "routine" });
     const allVariables = { ...getBuiltinRoutineVariableValues(), ...automaticVariables, ...resolvedVariables };
     const title = interpolateRoutineTemplate(input.routine.title, allVariables) ?? input.routine.title;
     const baseDescription = interpolateRoutineTemplate(input.routine.description, allVariables);
     const description = [baseDescription, input.descriptionAppendix]
       .filter((part): part is string => Boolean(part && part.trim()))
       .join("\n\n");
+    const routineRunContext: RoutineRunContext = {
+      routineId: input.routine.id,
+      source: input.source,
+      variables: { ...automaticVariables, ...resolvedVariables },
+      target: {
+        companyId: input.routine.companyId,
+        projectId,
+        projectWorkspaceId,
+        goalId: input.routine.goalId ?? null,
+        parentIssueId: input.routine.parentIssueId ?? null,
+        assigneeAgentId,
+        executionWorkspaceId: input.executionWorkspaceId ?? null,
+      },
+    };
     const triggerPayload = mergeRoutineRunPayload(input.payload, { ...automaticVariables, ...resolvedVariables });
     const managedRoutineBinding = await getManagedRoutineBinding(input.routine);
     const managedIssueTemplate = readManagedRoutineIssueTemplate(managedRoutineBinding?.defaultsJson);
@@ -1796,7 +1878,10 @@ export function routineService(
             goalId: input.routine.goalId,
             parentId: input.routine.parentIssueId,
             title,
-            description,
+            description: appendRoutineRunContext(description, {
+              ...routineRunContext,
+              routineRunId: createdRun.id,
+            }),
             status: "todo",
             priority: input.routine.priority,
             assigneeAgentId,
@@ -1863,7 +1948,26 @@ export function routineService(
           reason: "issue_assigned",
           mutation: "create",
           contextSource: "routine.dispatch",
-          requestedByActorType: input.source === "schedule" ? "system" : undefined,
+          requestedByActorType: input.source === "schedule"
+            ? "system"
+            : input.actor?.userId
+              ? "user"
+              : input.actor?.agentId
+                ? "agent"
+                : undefined,
+          requestedByActorId: input.actor?.userId ?? input.actor?.agentId ?? null,
+          payload: {
+            routineRun: {
+              ...routineRunContext,
+              routineRunId: createdRun.id,
+            },
+          },
+          contextSnapshot: {
+            routineRun: {
+              ...routineRunContext,
+              routineRunId: createdRun.id,
+            },
+          },
           rethrowOnError: true,
         });
         const updated = await finalizeRun(createdRun.id, {

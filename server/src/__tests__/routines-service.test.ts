@@ -36,6 +36,7 @@ import { instanceSettingsService } from "../services/instance-settings.ts";
 import * as providerRegistry from "../secrets/provider-registry.ts";
 import { routineService } from "../services/routines.ts";
 import { secretService } from "../services/secrets.ts";
+import { withBuiltInAgentMarker } from "../services/built-in-agent-metadata.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -1013,24 +1014,30 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
 
     expect(run.status).toBe("issue_created");
     expect(run.linkedIssueId).toBeTruthy();
-    expect(wakeups).toEqual([
-      {
-        agentId,
-        opts: {
-          source: "assignment",
-          triggerDetail: "system",
-          reason: "issue_assigned",
-          payload: { issueId: run.linkedIssueId, mutation: "create" },
-          requestedByActorType: undefined,
-          requestedByActorId: null,
-          contextSnapshot: { issueId: run.linkedIssueId, source: "routine.dispatch" },
+    expect(wakeups).toHaveLength(1);
+    expect(wakeups[0]).toMatchObject({
+      agentId,
+      opts: {
+        source: "assignment",
+        triggerDetail: "system",
+        reason: "issue_assigned",
+        payload: {
+          issueId: run.linkedIssueId,
+          mutation: "create",
+          routineRun: { routineId: routine.id, routineRunId: run.id },
+        },
+        requestedByActorId: null,
+        contextSnapshot: {
+          issueId: run.linkedIssueId,
+          source: "routine.dispatch",
+          routineRun: { routineId: routine.id, routineRunId: run.id },
         },
       },
-    ]);
+    });
   });
 
   it("records the manual board runner on fresh routine issues so they appear in that user's inbox", async () => {
-    const { companyId, agentId, issueSvc, routine, svc } = await seedFixture();
+    const { companyId, agentId, issueSvc, routine, svc, wakeups } = await seedFixture();
     const userId = randomUUID();
 
     const run = await svc.runRoutine(routine.id, { source: "manual" }, { userId });
@@ -1051,6 +1058,14 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       assigneeAgentId: agentId,
       createdByUserId: userId,
       responsibleUserId: userId,
+    });
+    expect(wakeups).toHaveLength(1);
+    expect(wakeups[0]?.opts).toMatchObject({
+      requestedByActorType: "user",
+      requestedByActorId: userId,
+      contextSnapshot: {
+        routineRun: { source: "manual" },
+      },
     });
 
     const inboxIssues = await issueSvc.list(companyId, {
@@ -1395,7 +1410,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
   });
 
   it("interpolates routine variables into the execution issue and stores resolved values", async () => {
-    const { companyId, agentId, projectId, svc } = await seedFixture();
+    const { companyId, agentId, projectId, svc, wakeups } = await seedFixture();
     const variableRoutine = await svc.create(
       companyId,
       {
@@ -1435,13 +1450,98 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       .then((rows) => rows[0] ?? null);
 
     expect(storedIssue?.title).toBe("repo triage for paperclip");
-    expect(storedIssue?.description).toBe("Review paperclip for high bugs");
+    expect(storedIssue?.description).toContain("Review paperclip for high bugs");
+    expect(storedIssue?.description).toContain("## Routine run context");
+    expect(storedIssue?.description).toContain('"repo": "paperclip"');
+    expect(storedIssue?.description).toContain(`"projectId": "${projectId}"`);
     expect(storedRun?.triggerPayload).toEqual({
       variables: {
         repo: "paperclip",
         priority: "high",
       },
     });
+    expect(wakeups).toHaveLength(1);
+    expect(wakeups[0]?.opts.payload).toMatchObject({
+      routineRun: {
+        routineId: variableRoutine.id,
+        routineRunId: run.id,
+        variables: { repo: "paperclip", priority: "high" },
+        target: { projectId, assigneeAgentId: agentId },
+      },
+    });
+    expect(wakeups[0]?.opts.contextSnapshot).toMatchObject({
+      routineRun: {
+        routineRunId: run.id,
+        variables: { repo: "paperclip", priority: "high" },
+      },
+    });
+  });
+
+  it("routes non-slot Summarizer routines to the active Staff Engineer", async () => {
+    const { companyId, projectId, svc } = await seedFixture();
+    const summarizerId = randomUUID();
+    const staffEngineerId = randomUUID();
+    const pausedStaffEngineerId = randomUUID();
+    await db.insert(agents).values([
+      {
+        id: summarizerId,
+        companyId,
+        name: "Summarizer",
+        role: "general",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+        metadata: withBuiltInAgentMarker(null, { key: "summarizer", featureKeys: ["summarizer"] }),
+      },
+      {
+        id: staffEngineerId,
+        companyId,
+        name: "Staff Engineer",
+        title: "Staff Engineer",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: pausedStaffEngineerId,
+        companyId,
+        name: "Staff Engineer",
+        title: "Staff Engineer",
+        role: "engineer",
+        status: "paused",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+    const healthRoutine = await svc.create(companyId, {
+      projectId,
+      goalId: null,
+      parentIssueId: null,
+      title: "Daily company health report",
+      description: "Audit company-wide health and publish a report.",
+      assigneeAgentId: summarizerId,
+      priority: "medium",
+      status: "active",
+      concurrencyPolicy: "coalesce_if_active",
+      catchUpPolicy: "skip_missed",
+    }, {});
+
+    const run = await svc.runRoutine(healthRoutine.id, { source: "manual" });
+    const createdIssue = await db
+      .select({ assigneeAgentId: issues.assigneeAgentId, description: issues.description })
+      .from(issues)
+      .where(eq(issues.id, run.linkedIssueId!))
+      .then((rows) => rows[0] ?? null);
+
+    expect(createdIssue?.assigneeAgentId).toBe(staffEngineerId);
+    expect(createdIssue?.description).toContain(`"assigneeAgentId": "${staffEngineerId}"`);
   });
 
   it("infers capital-Date variables, preserves builtin date, and validates submitted date values", async () => {
@@ -1492,7 +1592,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       .then((rows) => rows[0] ?? null);
 
     expect(storedIssue?.title).toMatch(/^date check 2024-02-29 on \d{4}-\d{2}-\d{2}$/);
-    expect(storedIssue?.description).toBe("Range 2024-02-29 to 2024-03-01");
+    expect(storedIssue?.description).toContain("Range 2024-02-29 to 2024-03-01");
     expect(storedRun?.triggerPayload).toEqual({
       variables: {
         startDate: "2024-02-29",
@@ -1639,7 +1739,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       .then((rows) => rows[0] ?? null);
 
     expect(storedIssue?.title).toBe("Review pap-1634-routine-branch");
-    expect(storedIssue?.description).toBe("Use branch pap-1634-routine-branch");
+    expect(storedIssue?.description).toContain("Use branch pap-1634-routine-branch");
     expect(storedRun?.triggerPayload).toEqual({
       variables: {
         workspaceBranch: "pap-1634-routine-branch",

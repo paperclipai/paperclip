@@ -174,8 +174,23 @@ describeEmbeddedPostgres("built-in agents", () => {
     expect(summarizer).toMatchObject({
       defaultAdapterType: "claude_local",
       defaultAdapterConfig: { model: "claude-haiku-4-5" },
+      bundle: {
+        routine: {
+          title: "Refresh {{scopeKind}} summary slot {{slotKey}}",
+          variables: [
+            expect.objectContaining({ name: "scopeKind", required: true }),
+            expect.objectContaining({ name: "scopeId", required: false }),
+            expect.objectContaining({ name: "slotKey", defaultValue: "status" }),
+          ],
+          triggers: [],
+        },
+      },
     });
     expect(summarizer?.defaultRuntimeConfig).toBeUndefined();
+    const reflectionCoach = definitions.find((definition) => definition.key === "reflection-coach");
+    expect(reflectionCoach?.defaultInstructions).toContain("must not wait on a human participant");
+    expect(reflectionCoach?.defaultInstructions).toContain("Never add a user participant");
+    expect(reflectionCoach?.bundle?.routine?.description).toContain("Complete this proposal-only routine without waiting for a human participant");
     expect(() => validateBuiltInAgentDefinitions([
       {
         key: "briefs",
@@ -1212,19 +1227,38 @@ describeEmbeddedPostgres("built-in agents", () => {
       .from(routines)
       .where(and(eq(routines.companyId, companyId), eq(routines.assigneeAgentId, state.agentId!)));
     expect(routine).toMatchObject({
-      title: "Refresh stale summary slots",
+      title: "Refresh {{scopeKind}} summary slot {{slotKey}}",
       status: "paused",
       assigneeAgentId: state.agentId,
       originKind: "built_in_agent_bundle",
       originId: "summarizer:refresh-stale-summaries",
     });
-    const [trigger] = await db.select().from(routineTriggers).where(eq(routineTriggers.routineId, routine!.id));
-    expect(trigger).toMatchObject({
+    const triggerRows = await db.select().from(routineTriggers).where(eq(routineTriggers.routineId, routine!.id));
+    expect(triggerRows).toHaveLength(0);
+  });
+
+  it("removes legacy Summarizer schedules when resetting the manual-only routine", async () => {
+    const companyId = await seedCompany();
+    const builtIns = builtInAgentService(db);
+    const state = await builtIns.ensure(companyId, "summarizer");
+    const [routine] = await db
+      .select()
+      .from(routines)
+      .where(and(eq(routines.companyId, companyId), eq(routines.assigneeAgentId, state.agentId!)));
+    await db.insert(routineTriggers).values({
+      companyId,
+      routineId: routine!.id,
       kind: "schedule",
+      label: "Legacy daily stale-summary refresh",
       enabled: false,
       cronExpression: "0 8 * * *",
       timezone: "UTC",
     });
+
+    await builtIns.reset(companyId, "summarizer", { resources: ["routine"] });
+
+    const triggerRows = await db.select().from(routineTriggers).where(eq(routineTriggers.routineId, routine!.id));
+    expect(triggerRows).toHaveLength(0);
   });
 
   it("keeps the Summarizer not-configured until an adapter model is set", async () => {
