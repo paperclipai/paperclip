@@ -3734,6 +3734,86 @@ export function issueRoutes(
     return true;
   }
 
+  async function governedAgentConfirmationAcceptance(
+    req: Request,
+    res: Response,
+    issue: NonNullable<Awaited<ReturnType<typeof svc.getById>>>,
+    interaction: {
+      id: string;
+      kind: string;
+      continuationPolicy: string;
+      sourceRunId?: string | null;
+      createdByAgentId?: string | null;
+    },
+  ) {
+    if (req.actor.type !== "agent") {
+      assertBoard(req);
+      return null;
+    }
+    if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return false;
+    if (await assertLowTrustControlPlaneDenied(req, res, issue.companyId, issue)) return false;
+    const actorRunId = requireAgentRunId(req, res);
+    if (!actorRunId) return false;
+    if (
+      interaction.kind !== "request_confirmation" ||
+      interaction.continuationPolicy !== "wake_assignee_on_accept" ||
+      !interaction.sourceRunId ||
+      interaction.sourceRunId === actorRunId ||
+      !interaction.createdByAgentId ||
+      interaction.createdByAgentId === req.actor.agentId
+    ) {
+      res.status(403).json({ error: "Agent confirmation acceptance requires a previous-run agent-owned request_confirmation" });
+      return false;
+    }
+
+    const policy = normalizeIssueExecutionPolicy(issue.executionPolicy ?? null);
+    const agentOnlyPolicy = Boolean(
+      policy?.stages.length &&
+      policy.stages.every((stage) =>
+        stage.participants.length > 0 && stage.participants.every((participant) => participant.type === "agent")
+      ),
+    );
+    if (!policy || !agentOnlyPolicy) {
+      res.status(403).json({ error: "Agent confirmation acceptance requires an agent-only execution policy" });
+      return false;
+    }
+
+    const actor = getActorInfo(req);
+    const decisionBody = `Accepted governed request_confirmation ${interaction.id}`;
+    const transition = applyIssueExecutionPolicyTransition({
+      issue,
+      policy,
+      requestedStatus: "done",
+      requestedAssigneePatch: {},
+      actor: { agentId: actor.agentId ?? null, userId: null },
+      commentBody: decisionBody,
+    });
+    const completedState = parseIssueExecutionState(transition.patch.executionState);
+    if (
+      !transition.decision ||
+      transition.decision.stageType !== "approval" ||
+      transition.decision.outcome !== "approved" ||
+      completedState?.status !== "completed"
+    ) {
+      res.status(403).json({ error: "Only the final active agent approver can accept this confirmation" });
+      return false;
+    }
+    const decisionId = randomUUID();
+    return {
+      governedAcceptance: {
+        executionState: { ...completedState, lastDecisionId: decisionId },
+        decision: {
+          id: decisionId,
+          stageId: transition.decision.stageId,
+          stageType: transition.decision.stageType,
+          outcome: transition.decision.outcome,
+          body: transition.decision.body,
+          createdByRunId: actorRunId,
+        },
+      },
+    };
+  }
+
   async function assertIssueThreadInteractionWithdrawalAllowed(
     req: Request,
     res: Response,
@@ -9324,14 +9404,18 @@ export function issueRoutes(
       const interactionId = req.params.interactionId as string;
       const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
       if (!issue) return;
-      if (await rejectAgentIssueThreadInteractionResolution(req, res, issue)) return;
-      assertBoard(req);
-
       const actor = getActorInfo(req);
-      const { interaction, createdIssues, continuationIssue } = await issueThreadInteractionService(db).acceptInteraction(issue, interactionId, req.body, {
+      const interactionService = issueThreadInteractionService(db);
+      const pendingInteraction = await interactionService.getForIssue(issue, interactionId);
+      const governedAcceptance = await governedAgentConfirmationAcceptance(req, res, issue, pendingInteraction);
+      if (governedAcceptance === false) return;
+      const interactionActor = {
         agentId: actor.agentId,
         userId: actor.actorType === "user" ? actor.actorId : null,
-      });
+      };
+      const { interaction, createdIssues, continuationIssue } = governedAcceptance
+        ? await interactionService.acceptInteraction(issue, interactionId, req.body, interactionActor, governedAcceptance)
+        : await interactionService.acceptInteraction(issue, interactionId, req.body, interactionActor);
       const toolAction = interaction.payload && typeof interaction.payload === "object"
         ? (interaction.payload as { toolAction?: { actionRequestId?: unknown } }).toolAction
         : null;

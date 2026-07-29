@@ -1733,10 +1733,10 @@ export function routineService(
     const description = [baseDescription, input.descriptionAppendix]
       .filter((part): part is string => Boolean(part && part.trim()))
       .join("\n\n");
-    const routineRunContext: RoutineRunContext = {
+    const requestedRoutineRunContext: RoutineRunContext = {
       routineId: input.routine.id,
       source: input.source,
-      variables: { ...automaticVariables, ...resolvedVariables },
+      variables: allVariables,
       target: {
         companyId: input.routine.companyId,
         projectId,
@@ -1747,7 +1747,7 @@ export function routineService(
         executionWorkspaceId: input.executionWorkspaceId ?? null,
       },
     };
-    const triggerPayload = mergeRoutineRunPayload(input.payload, { ...automaticVariables, ...resolvedVariables });
+    const triggerPayload = mergeRoutineRunPayload(input.payload, allVariables);
     const managedRoutineBinding = await getManagedRoutineBinding(input.routine);
     const managedIssueTemplate = readManagedRoutineIssueTemplate(managedRoutineBinding?.defaultsJson);
     const issueOriginKind = managedIssueTemplate?.surfaceVisibility === "plugin_operation" && managedRoutineBinding
@@ -1878,10 +1878,7 @@ export function routineService(
             goalId: input.routine.goalId,
             parentId: input.routine.parentIssueId,
             title,
-            description: appendRoutineRunContext(description, {
-              ...routineRunContext,
-              routineRunId: createdRun.id,
-            }),
+            description,
             status: "todo",
             priority: input.routine.priority,
             assigneeAgentId,
@@ -1897,7 +1894,30 @@ export function routineService(
             executionWorkspaceId: input.executionWorkspaceId ?? null,
             executionWorkspacePreference: input.executionWorkspacePreference ?? null,
             executionWorkspaceSettings: input.executionWorkspaceSettings ?? null,
+            materializeCanonicalFields: (scope) => ({
+              description: appendRoutineRunContext(description, {
+                ...requestedRoutineRunContext,
+                routineRunId: createdRun.id,
+                target: {
+                  ...scope,
+                  assigneeAgentId: scope.assigneeAgentId ?? assigneeAgentId,
+                },
+              }),
+            }),
           });
+          const routineRunContext: RoutineRunContext = {
+            ...requestedRoutineRunContext,
+            routineRunId: createdRun.id,
+            target: {
+              companyId: createdIssue.companyId,
+              projectId: createdIssue.projectId ?? null,
+              projectWorkspaceId: createdIssue.projectWorkspaceId ?? null,
+              goalId: createdIssue.goalId ?? null,
+              parentIssueId: createdIssue.parentId ?? null,
+              assigneeAgentId: createdIssue.assigneeAgentId ?? assigneeAgentId,
+              executionWorkspaceId: createdIssue.executionWorkspaceId ?? null,
+            },
+          };
         } catch (error) {
           const isOpenExecutionConflict =
             !!error &&
@@ -1958,14 +1978,32 @@ export function routineService(
           requestedByActorId: input.actor?.userId ?? input.actor?.agentId ?? null,
           payload: {
             routineRun: {
-              ...routineRunContext,
+              ...requestedRoutineRunContext,
               routineRunId: createdRun.id,
+              target: {
+                companyId: createdIssue.companyId,
+                projectId: createdIssue.projectId ?? null,
+                projectWorkspaceId: createdIssue.projectWorkspaceId ?? null,
+                goalId: createdIssue.goalId ?? null,
+                parentIssueId: createdIssue.parentId ?? null,
+                assigneeAgentId: createdIssue.assigneeAgentId ?? assigneeAgentId,
+                executionWorkspaceId: createdIssue.executionWorkspaceId ?? null,
+              },
             },
           },
           contextSnapshot: {
             routineRun: {
-              ...routineRunContext,
+              ...requestedRoutineRunContext,
               routineRunId: createdRun.id,
+              target: {
+                companyId: createdIssue.companyId,
+                projectId: createdIssue.projectId ?? null,
+                projectWorkspaceId: createdIssue.projectWorkspaceId ?? null,
+                goalId: createdIssue.goalId ?? null,
+                parentIssueId: createdIssue.parentId ?? null,
+                assigneeAgentId: createdIssue.assigneeAgentId ?? assigneeAgentId,
+                executionWorkspaceId: createdIssue.executionWorkspaceId ?? null,
+              },
             },
           },
           rethrowOnError: true,

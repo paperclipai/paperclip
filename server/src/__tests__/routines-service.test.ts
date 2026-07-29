@@ -1454,8 +1454,9 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(storedIssue?.description).toContain("## Routine run context");
     expect(storedIssue?.description).toContain('"repo": "paperclip"');
     expect(storedIssue?.description).toContain(`"projectId": "${projectId}"`);
-    expect(storedRun?.triggerPayload).toEqual({
+    expect(storedRun?.triggerPayload).toMatchObject({
       variables: {
+        date: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/),
         repo: "paperclip",
         priority: "high",
       },
@@ -1465,7 +1466,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       routineRun: {
         routineId: variableRoutine.id,
         routineRunId: run.id,
-        variables: { repo: "paperclip", priority: "high" },
+        variables: { date: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/), repo: "paperclip", priority: "high" },
         target: { projectId, assigneeAgentId: agentId },
       },
     });
@@ -1593,8 +1594,9 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
 
     expect(storedIssue?.title).toMatch(/^date check 2024-02-29 on \d{4}-\d{2}-\d{2}$/);
     expect(storedIssue?.description).toContain("Range 2024-02-29 to 2024-03-01");
-    expect(storedRun?.triggerPayload).toEqual({
+    expect(storedRun?.triggerPayload).toMatchObject({
       variables: {
+        date: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/),
         startDate: "2024-02-29",
         endDate: "2024-03-01",
       },
@@ -1602,7 +1604,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
   });
 
   it("attaches the selected execution workspace to manually triggered routine issues", async () => {
-    const { companyId, projectId, routine, svc } = await seedFixture();
+    const { companyId, projectId, routine, svc, wakeups } = await seedFixture();
     const projectWorkspaceId = randomUUID();
     const executionWorkspaceId = randomUUID();
 
@@ -1650,6 +1652,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
         executionWorkspaceId: issues.executionWorkspaceId,
         executionWorkspacePreference: issues.executionWorkspacePreference,
         executionWorkspaceSettings: issues.executionWorkspaceSettings,
+        description: issues.description,
       })
       .from(issues)
       .where(eq(issues.id, run.linkedIssueId!))
@@ -1660,6 +1663,11 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       executionWorkspaceId,
       executionWorkspacePreference: "reuse_existing",
       executionWorkspaceSettings: { mode: "isolated_workspace" },
+      description: expect.stringContaining(`"projectWorkspaceId": "${projectWorkspaceId}"`),
+    });
+    expect(storedIssue?.description).toContain(`"executionWorkspaceId": "${executionWorkspaceId}"`);
+    expect(wakeups[0]?.opts.payload).toMatchObject({
+      routineRun: { target: { projectId, projectWorkspaceId, executionWorkspaceId } },
     });
   });
 
@@ -1740,8 +1748,9 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
 
     expect(storedIssue?.title).toBe("Review pap-1634-routine-branch");
     expect(storedIssue?.description).toContain("Use branch pap-1634-routine-branch");
-    expect(storedRun?.triggerPayload).toEqual({
+    expect(storedRun?.triggerPayload).toMatchObject({
       variables: {
+        date: expect.stringMatching(/^\d{4}-\d{2}-\d{2}$/),
         workspaceBranch: "pap-1634-routine-branch",
       },
     });

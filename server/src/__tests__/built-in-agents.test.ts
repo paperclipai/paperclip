@@ -1431,7 +1431,7 @@ describeEmbeddedPostgres("built-in agents", () => {
   it("gates Reflection Coach proposal mutations until an accepted follow-up apply step", async () => {
     const companyId = await seedCompany();
     const agentsSvc = agentService(db);
-    await agentsSvc.create(companyId, {
+    const reviewer = await agentsSvc.create(companyId, {
       name: "CEO",
       role: "ceo",
       status: "idle",
@@ -1481,7 +1481,7 @@ describeEmbeddedPostgres("built-in agents", () => {
       priority: "medium",
       identifier: `${issuePrefix(companyId)}-43`,
       issueNumber: 43,
-      assigneeUserId: "board-user",
+      assigneeAgentId: reviewer.id,
       createdByAgentId: coach.id,
     });
     const acceptedInstructions = `${originalInstructions}\nWhen finishing, name the exact verification command.\n`;
@@ -1521,7 +1521,7 @@ describeEmbeddedPostgres("built-in agents", () => {
       { id: proposalIssueId, companyId, goalId: null, projectId: null },
       acceptedProposal.id,
       {},
-      { userId: "board-user" },
+      { agentId: reviewer.id },
     );
 
     expect(accepted.interaction).toMatchObject({
@@ -1577,7 +1577,7 @@ describeEmbeddedPostgres("built-in agents", () => {
       { id: proposalIssueId, companyId },
       rejectedProposal.id,
       { reason: "Not the right rule." },
-      { userId: "board-user" },
+      { agentId: reviewer.id },
     );
 
     expect(rejected).toMatchObject({

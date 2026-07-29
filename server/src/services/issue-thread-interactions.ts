@@ -7,6 +7,7 @@ import {
   heartbeatRuns,
   issueComments,
   issueDocuments,
+  issueExecutionDecisions,
   issueThreadInteractions,
   issues,
   toolActionRequests,
@@ -74,6 +75,18 @@ type ResolvedInteractionResult = {
   interaction: IssueThreadInteraction;
   createdIssues: IssueWakeTarget[];
   continuationIssue?: IssueWakeTarget | null;
+};
+
+type GovernedConfirmationAcceptance = {
+  executionState: Record<string, unknown>;
+  decision: {
+    id: string;
+    stageId: string;
+    stageType: "review" | "approval";
+    outcome: "approved";
+    body: string;
+    createdByRunId: string;
+  };
 };
 
 type IssueThreadInteractionRow = typeof issueThreadInteractions.$inferSelect;
@@ -246,12 +259,18 @@ function shouldReturnAcceptedConfirmationToCreatorAgent(args: {
   actor: InteractionActor;
 }) {
   if (!isRequestConfirmationLikeKind(args.current.kind)) return false;
+  if (args.current.continuationPolicy !== "wake_assignee_on_accept") return false;
   if (!args.current.createdByAgentId) return false;
-  if (!args.actor.userId) return false;
-  if (!args.issue.assigneeUserId) return false;
-  if (args.issue.assigneeAgentId) return false;
   if (isTerminalIssueStatus(args.issue.status)) return false;
-  return true;
+  if (args.actor.userId) {
+    return Boolean(args.issue.assigneeUserId && !args.issue.assigneeAgentId);
+  }
+  return Boolean(
+    args.actor.agentId &&
+    args.actor.agentId !== args.current.createdByAgentId &&
+    args.issue.assigneeAgentId === args.actor.agentId &&
+    !args.issue.assigneeUserId
+  );
 }
 
 function shouldSupersedeInteractionOnUserComment(interaction: UserCommentSupersedableInteraction) {
@@ -1036,6 +1055,7 @@ export function issueThreadInteractionService(db: Db) {
     current: IssueThreadInteractionRow;
     input: AcceptIssueThreadInteraction;
     actor: InteractionActor;
+    governedAcceptance?: GovernedConfirmationAcceptance | null;
   }): Promise<{
     interaction: IssueThreadInteraction;
     continuationIssue: IssueWakeTarget | null;
@@ -1110,11 +1130,26 @@ export function issueThreadInteractionService(db: Db) {
           status: returnStatus,
           assigneeAgentId: args.current.createdByAgentId,
           assigneeUserId: null,
+          ...(args.governedAcceptance ? { executionState: args.governedAcceptance.executionState } : {}),
           actorAgentId: args.actor.agentId ?? null,
           actorUserId: args.actor.userId ?? null,
         }, tx);
 
         if (returnedIssue) {
+          if (args.governedAcceptance) {
+            await tx.insert(issueExecutionDecisions).values({
+              id: args.governedAcceptance.decision.id,
+              companyId: returnedIssue.companyId,
+              issueId: returnedIssue.id,
+              stageId: args.governedAcceptance.decision.stageId,
+              stageType: args.governedAcceptance.decision.stageType,
+              actorAgentId: args.actor.agentId ?? null,
+              actorUserId: null,
+              outcome: args.governedAcceptance.decision.outcome,
+              body: args.governedAcceptance.decision.body,
+              createdByRunId: args.governedAcceptance.decision.createdByRunId,
+            });
+          }
           continuationIssue = {
             id: returnedIssue.id,
             assigneeAgentId: returnedIssue.assigneeAgentId ?? null,
@@ -1334,6 +1369,7 @@ export function issueThreadInteractionService(db: Db) {
       interactionId: string,
       input: AcceptIssueThreadInteraction,
       actor: InteractionActor,
+      options: { governedAcceptance?: GovernedConfirmationAcceptance | null } = {},
     ): Promise<ResolvedInteractionResult> => {
       const data = acceptIssueThreadInteractionSchema.parse(input);
       const current = await getPendingInteractionForResolution({ issue, interactionId });
@@ -1350,6 +1386,7 @@ export function issueThreadInteractionService(db: Db) {
             current,
             input: data,
             actor,
+            governedAcceptance: options.governedAcceptance,
           });
           return {
             interaction: accepted.interaction,

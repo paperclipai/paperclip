@@ -608,6 +608,15 @@ type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId"> & {
   idempotencyKey?: string | null;
   allowDuplicate?: boolean;
   onDeduplicated?: (reason: "idempotency_key" | "recent_open_title") => void;
+  materializeCanonicalFields?: (scope: {
+    companyId: string;
+    projectId: string | null;
+    projectWorkspaceId: string | null;
+    goalId: string | null;
+    parentIssueId: string | null;
+    assigneeAgentId: string | null;
+    executionWorkspaceId: string | null;
+  }) => Pick<typeof issues.$inferInsert, "description">;
 };
 type IssueChildCreateInput = IssueCreateInput & {
   acceptanceCriteria?: string[];
@@ -6248,6 +6257,7 @@ export function issueService(db: Db) {
         idempotencyKey: rawIdempotencyKey,
         allowDuplicate,
         onDeduplicated,
+        materializeCanonicalFields,
         ...issueData
       } = data;
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
@@ -6484,17 +6494,28 @@ export function issueService(db: Db) {
           trustExplicitResponsibleUserId: trustExplicitResponsibleUserId === true,
         });
 
+        const resolvedGoalId = resolveIssueGoalId({
+          projectId: issueData.projectId,
+          goalId: issueData.goalId,
+          projectGoalId,
+          defaultGoalId: defaultCompanyGoal?.id ?? null,
+        });
+        const canonicalFields = materializeCanonicalFields?.({
+          companyId,
+          projectId: issueData.projectId ?? null,
+          projectWorkspaceId,
+          goalId: resolvedGoalId,
+          parentIssueId: issueData.parentId ?? null,
+          assigneeAgentId: issueData.assigneeAgentId ?? null,
+          executionWorkspaceId,
+        });
         const values = {
           ...issueData,
+          ...canonicalFields,
           responsibleUserId,
           requestDepth: clampIssueRequestDepth(issueData.requestDepth),
           originKind: issueData.originKind ?? "manual",
-          goalId: resolveIssueGoalId({
-            projectId: issueData.projectId,
-            goalId: issueData.goalId,
-            projectGoalId,
-            defaultGoalId: defaultCompanyGoal?.id ?? null,
-          }),
+          goalId: resolvedGoalId,
           ...(projectWorkspaceId ? { projectWorkspaceId } : {}),
           ...(executionWorkspaceId ? { executionWorkspaceId } : {}),
           ...(executionWorkspacePreference ? { executionWorkspacePreference } : {}),

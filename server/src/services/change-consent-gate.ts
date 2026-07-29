@@ -1,8 +1,9 @@
 import type { Db } from "@paperclipai/db";
-import { issueThreadInteractions } from "@paperclipai/db";
+import { issueThreadInteractions, issues } from "@paperclipai/db";
 import { and, desc, eq, or, sql } from "drizzle-orm";
 import type { RequestConfirmationPayload, RequestConfirmationResult } from "@paperclipai/shared";
 import { forbidden } from "../errors.js";
+import { normalizeIssueExecutionPolicy, parseIssueExecutionState } from "./issue-execution-policy.js";
 
 export const AGENT_PROFILE_CHANGE_CONSENT_FIELDS = ["name", "role", "title", "capabilities"] as const;
 
@@ -150,8 +151,12 @@ export function changeConsentGateService(db: Db) {
           sourceRunId: issueThreadInteractions.sourceRunId,
           payload: issueThreadInteractions.payload,
           result: issueThreadInteractions.result,
+          resolvedByAgentId: issueThreadInteractions.resolvedByAgentId,
+          issueExecutionPolicy: issues.executionPolicy,
+          issueExecutionState: issues.executionState,
         })
         .from(issueThreadInteractions)
+        .innerJoin(issues, eq(issues.id, issueThreadInteractions.issueId))
         .where(and(
           eq(issueThreadInteractions.companyId, input.companyId),
           eq(issueThreadInteractions.createdByAgentId, actorAgentId),
@@ -165,13 +170,22 @@ export function changeConsentGateService(db: Db) {
       const accepted = rows.find((row) => {
         const payload = row.payload as RequestConfirmationPayload;
         const result = row.result as RequestConfirmationResult | null;
+        const policy = normalizeIssueExecutionPolicy(row.issueExecutionPolicy);
+        const state = parseIssueExecutionState(row.issueExecutionState);
+        const agentOnlyPolicy = Boolean(
+          policy?.stages.length &&
+          policy.stages.every((stage) => stage.participants.length > 0 && stage.participants.every((participant) => participant.type === "agent")),
+        );
         return payload.target?.type === "custom"
           && queryTargetKeys.includes(payload.target.key)
           && result?.outcome === "accepted"
           && !requestConfirmationResultConsumed(result)
           && payloadHasDisplayedDiff(payload)
           && Boolean(row.sourceRunId)
-          && row.sourceRunId !== actorRunId;
+          && row.sourceRunId !== actorRunId
+          && Boolean(row.resolvedByAgentId)
+          && agentOnlyPolicy
+          && state?.status === "completed";
       });
 
       if (!accepted) {
