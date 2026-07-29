@@ -172,11 +172,16 @@ def respond(text, tenant, token, chat_model, history=None, source="per Telegram"
                 "answer": _do_issue(action["title"], action["description"], tenant, token)}
     if action["kind"] == "web":
         if not web_key:
-            # Ohne Key ist das Werkzeug nicht im Prompt — kommt trotzdem eines
-            # durch, muss die Antwort ehrlich sein und darf nicht leer werden
-            # (leerer Text = stumme Sprachausgabe).
+            # Kein Key im Aufruf — sei es, weil das Werkzeug grundsätzlich
+            # nicht eingerichtet ist, sei es, weil der Aufrufer (Wake-Satellit)
+            # es für die laufende Gesprächskette gesperrt hat (Vault-Daten
+            # dürfen nicht per Websuche nach draußen wandern). In beiden
+            # Fällen ist das Werkzeug nicht im Prompt — kommt trotzdem ein
+            # Token durch, muss die Antwort in beiden Fällen stimmen, ehrlich
+            # sein und darf nicht leer werden (leerer Text = stumme
+            # Sprachausgabe).
             return {"kind": "chat",
-                    "answer": "Dafür müsste ich ins Netz — das ist gerade nicht eingerichtet."}
+                    "answer": "Dafür kann ich gerade nicht ins Netz."}
         return {"kind": "web",
                 "answer": _do_web(messages, action["query"], chat_model, web_key)}
     return {"kind": "chat", "answer": _strip_control_lines(action["text"])}

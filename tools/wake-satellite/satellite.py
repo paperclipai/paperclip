@@ -69,6 +69,12 @@ def handle_interaction(frames, deps, tenant=None, history=None):
     tenant = tenant or sat_config.TENANT
     history = list(history or [])
     flush_mic = deps.get("flush_mic")
+    # Sobald eine Runde dieser Kette eine Vault-Antwort geliefert hat, landet
+    # der Fund im Gesprächsverlauf (`history`) — die Websuche wird für den
+    # Rest der Kette gesperrt, damit private Daten nicht per WEB: nach draußen
+    # wandern. Rein lokaler Merker: `main()` startet jede Kette ohne History,
+    # die Sperre wirkt also nie über ein erneutes "Hey Jarvis" hinaus.
+    web_locked_after_lookup = False
     for turn in range(sat_config.MAX_TURNS_PER_WAKE):
         recorded = capture.record_until_silence(frames)
         if not recorded:
@@ -76,11 +82,14 @@ def handle_interaction(frames, deps, tenant=None, history=None):
         t0 = time.monotonic()
         text = _transcribe(recorded, deps)
         t1 = time.monotonic()
+        web_key = None if web_locked_after_lookup else deps.get("web_key")
         result = jarvis_brain.respond(text, tenant, _resolve_token(deps),
                                       deps["chat_model"], history=history,
                                       source="per Sprache", voice_output=True,
-                                      web_key=deps.get("web_key"))
+                                      web_key=web_key)
         t2 = time.monotonic()
+        if result["kind"] == "lookup":
+            web_locked_after_lookup = True
         answer = result["answer"]
         if result["kind"] in ("chat", "lookup", "issue", "web"):
             history = _remember(history, text, answer)

@@ -246,7 +246,11 @@ def test_do_web_uses_short_timeouts(monkeypatch):
 def test_web_token_without_key_is_honest_not_silent(monkeypatch):
     # Ohne Key wird das Werkzeug nicht angeboten — setzt das Modell trotzdem
     # ein Token, darf es weder ausgeführt werden noch eine leere (= stumme)
-    # Antwort ergeben.
+    # Antwort ergeben. Kein Key kommt aus zwei Gründen: das Werkzeug ist
+    # grundsätzlich nicht eingerichtet, ODER der Aufrufer (Wake-Satellit) hat
+    # es für die laufende Kette gesperrt — der Antworttext muss in BEIDEN
+    # Fällen stimmen, deshalb keine Aussage über "eingerichtet/nicht
+    # eingerichtet".
     searched = []
     monkeypatch.setattr(jarvis_brain.llm, "chat",
                         lambda msgs, model=None: "WEB: Wetter Cottbus")
