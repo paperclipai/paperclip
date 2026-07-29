@@ -655,11 +655,14 @@ function isGitNetworkCommand(command: string, args: string[]): boolean {
   return false;
 }
 
-// Build the one-shot exec command. The Daytona reference image puts `node`,
-// `claude`, and the other CLIs on the PATH with a static line in
-// `/etc/profile.d/00-restore-env.sh`, so the wrapper does not need to source
-// `/etc/profile`, the rc files, or `nvm.sh` to resolve them. The sandbox owner
-// supplies the ready PATH; see the sandbox runtime requirements document.
+// Build the one-shot exec command. Daytona's `executeCommand` runs the script
+// in a non-login shell, so it does not source `/etc/profile` on its own. The
+// Daytona reference image puts `node`, `claude`, and the other CLIs on the PATH
+// through `/etc/profile.d/00-restore-env.sh`, which only `/etc/profile` sources.
+// So the wrapper sources the login profiles itself; a non-login shell is then
+// enough to resolve the CLIs. The wrapper no longer sources `nvm.sh`; the
+// sandbox image supplies `node` on the PATH. See the sandbox runtime
+// requirements document.
 function buildLoginShellScript(input: {
   command: string;
   args: string[];
@@ -688,7 +691,14 @@ function buildLoginShellScript(input: {
   const finalLine = envArgs.length > 0
     ? `env ${envArgs.join(" ")} ${redirectedCommand}`
     : redirectedCommand;
-  const lines: string[] = [];
+  const lines = [
+    'if [ -f /etc/profile ]; then . /etc/profile >/dev/null 2>&1 || true; fi',
+    'if [ -f "$HOME/.profile" ]; then . "$HOME/.profile" >/dev/null 2>&1 || true; fi',
+    // .bash_profile typically sources .bashrc itself; only source .bashrc
+    // directly when no .bash_profile exists to avoid double-running setup.
+    'if [ -f "$HOME/.bash_profile" ]; then . "$HOME/.bash_profile" >/dev/null 2>&1 || true; elif [ -f "$HOME/.bashrc" ]; then . "$HOME/.bashrc" >/dev/null 2>&1 || true; fi',
+    'if [ -f "$HOME/.zprofile" ]; then . "$HOME/.zprofile" >/dev/null 2>&1 || true; fi',
+  ];
   if (input.cwd) {
     lines.push(`cd ${shellQuote(input.cwd)}`);
   }
@@ -1144,9 +1154,10 @@ async function executeOneShot(
       stdinPath: stdinPath ?? undefined,
     });
 
-    // Pass cwd undefined: `buildLoginShellScript` already injects the `cd` when
-    // params.cwd is set. The wrapper no longer sources the login profile or
-    // `nvm.sh`, so the exec runs on the sandbox default PATH.
+    // Pass cwd undefined: `buildLoginShellScript` already injects the `cd` after
+    // it sources the login profiles, when params.cwd is set. The Daytona
+    // executor's own cwd argument runs before that profile sourcing, which is
+    // the wrong order (a profile could reset the caller env).
     // Time only the `executeCommand` REST round-trip so the caller can
     // attribute a step's exec time to the provider boundary through the
     // free-form `metadata.durationMs`.

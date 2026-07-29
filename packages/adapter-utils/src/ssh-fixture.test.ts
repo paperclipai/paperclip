@@ -170,7 +170,7 @@ describe("ssh env-lab fixture", () => {
     await stopSshEnvLabFixture(statePath);
   }, SSH_FIXTURE_TEST_TIMEOUT_MS);
 
-  it("builds a remote script that sources no login profile and no nvm", async () => {
+  it("builds a remote script that sources login profiles but no nvm", async () => {
     const target = await buildSshSpawnTarget({
       spec: {
         host: "ssh.example.test",
@@ -187,14 +187,16 @@ describe("ssh env-lab fixture", () => {
       env: { FOO: "bar" },
     });
 
-    // The remote script rides the last ssh argument. The remote host supplies a
-    // ready PATH, so the wrapper sources no profile and no `nvm.sh`.
+    // The remote script rides the last ssh argument. The SSH target is an
+    // operator-configured host that can expose `node` only through a login
+    // profile, so the wrapper sources the profiles. It no longer sources
+    // `nvm.sh`; a profile that adds nvm still runs.
     const remoteScript = String(target.args.at(-1) ?? "");
     expect(remoteScript).not.toContain("nvm.sh");
     expect(remoteScript).not.toContain("NVM_DIR");
-    expect(remoteScript).not.toContain(".profile");
-    expect(remoteScript).not.toContain(".bash_profile");
-    expect(remoteScript).not.toContain(".zprofile");
+    expect(remoteScript).toContain(".profile");
+    expect(remoteScript).toContain(".bash_profile");
+    expect(remoteScript).toContain(".zprofile");
     // The last ssh argument wraps the script as `sh -c '...'`, so the inner
     // quotes are escaped. Assert the command still runs: cd, env, and the argv.
     expect(remoteScript).toContain("cd ");

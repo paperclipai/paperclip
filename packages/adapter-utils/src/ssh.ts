@@ -1166,12 +1166,17 @@ export async function runSshCommand(
       }
     }
 
-    // Mirror buildSshSpawnTarget: run `env KEY=VAL cmd` so user-supplied
-    // identity overrides win over anything the remote command re-exports. The
-    // script sources no login profile and no `nvm.sh`; the remote host supplies
-    // a ready PATH.
+    // Mirror buildSshSpawnTarget: source the login profiles first, then run
+    // `env KEY=VAL cmd` so user-supplied identity overrides win over anything a
+    // profile re-exports. The SSH target is an operator-configured host, not a
+    // Paperclip sandbox image, so it can expose `node` or an agent CLI only
+    // through a login profile; a non-login SSH command would miss that PATH.
+    // The script no longer sources `nvm.sh`; a profile that adds nvm still runs.
     const envArgs = envEntries.map(([key, value]) => `${key}=${shellQuote(value)}`);
     const remoteScript = [
+      'if [ -f "$HOME/.profile" ]; then . "$HOME/.profile" >/dev/null 2>&1 || true; fi',
+      'if [ -f "$HOME/.bash_profile" ]; then . "$HOME/.bash_profile" >/dev/null 2>&1 || true; fi',
+      'if [ -f "$HOME/.zprofile" ]; then . "$HOME/.zprofile" >/dev/null 2>&1 || true; fi',
       envArgs.length > 0
         ? `exec env ${envArgs.join(" ")} sh -c ${shellQuote(remoteCommand)}`
         : `exec sh -c ${shellQuote(remoteCommand)}`,
@@ -1220,10 +1225,16 @@ export async function buildSshSpawnTarget(input: {
     .filter((entry): entry is [string, string] => typeof entry[1] === "string")
     .map(([key, value]) => `${key}=${shellQuote(value)}`);
   const remoteCommandParts = [shellQuote(input.command), ...input.args.map((arg) => shellQuote(arg))].join(" ");
-  // Run `env KEY=VAL cmd` so user-supplied identity overrides win. The script
-  // sources no login profile and no `nvm.sh`; the remote host supplies a ready
-  // PATH for the command.
+  // Source the login profiles first, then run `env KEY=VAL cmd` so
+  // user-supplied identity overrides win over anything a profile re-exports.
+  // The SSH target is an operator-configured host, not a Paperclip sandbox
+  // image, so it can expose `node` or an agent CLI only through a login
+  // profile; a non-login SSH command would miss that PATH. The script no
+  // longer sources `nvm.sh`; a profile that adds nvm still runs.
   const remoteScript = [
+    'if [ -f "$HOME/.profile" ]; then . "$HOME/.profile" >/dev/null 2>&1 || true; fi',
+    'if [ -f "$HOME/.bash_profile" ]; then . "$HOME/.bash_profile" >/dev/null 2>&1 || true; fi',
+    'if [ -f "$HOME/.zprofile" ]; then . "$HOME/.zprofile" >/dev/null 2>&1 || true; fi',
     `cd ${shellQuote(input.spec.remoteCwd)}`,
     envArgs.length > 0
       ? `exec env ${envArgs.join(" ")} ${remoteCommandParts}`

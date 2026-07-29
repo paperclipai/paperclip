@@ -1099,10 +1099,10 @@ describe("Daytona sandbox provider plugin", () => {
 
     expect(sandbox.process.executeCommand).toHaveBeenCalledTimes(1);
     const [command, cwdArg, envArg, timeoutArg] = sandbox.process.executeCommand.mock.calls[0] as [string, unknown, unknown, number];
-    expect(command).not.toMatch(/\/etc\/profile/);
-    expect(command).not.toMatch(/"\$HOME\/\.profile"/);
+    expect(command).toMatch(/\/etc\/profile/);
+    expect(command).toMatch(/"\$HOME\/\.profile"/);
     expect(command).not.toMatch(/nvm\.sh/);
-    expect(command).toMatch(/^cd '\/workspace'/);
+    expect(command).toMatch(/&& cd '\/workspace'/);
     expect(command).toMatch(/&& env GIT_TERMINAL_PROMPT='0' GCM_INTERACTIVE='Never' GIT_ASKPASS='echo' SSH_ASKPASS='echo' SSH_ASKPASS_REQUIRE='force' FOO='bar' 'printf' 'hello'$/);
     expect(command).not.toMatch(/(?:^|&& )exec /);
     // cwd/env are baked into the command itself; we pass undefined to the SDK
@@ -1182,9 +1182,9 @@ describe("Daytona sandbox provider plugin", () => {
       1,
     );
     const [command] = sandbox.process.executeCommand.mock.calls[0] as [string];
-    expect(command).not.toMatch(/\/etc\/profile/);
+    expect(command).toMatch(/\/etc\/profile/);
     expect(command).not.toMatch(/nvm\.sh/);
-    expect(command).toMatch(/^cd '\/workspace'/);
+    expect(command).toMatch(/&& cd '\/workspace'/);
     expect(command).toMatch(/env .* 'cat' < '\/tmp\/paperclip-stdin-/);
     expect(command).not.toMatch(/(?:^|&& )exec /);
     expect(sandbox.fs.deleteFile).toHaveBeenCalledWith(expect.stringMatching(/^\/tmp\/paperclip-stdin-/));
@@ -1310,9 +1310,10 @@ describe("Daytona sandbox provider plugin", () => {
   });
 
   // ─── Exec command shape ────────────────────────────────────────────────────
-  // The wrapper runs the command on the sandbox default PATH. It sources no
-  // login profile and no `nvm.sh`, while every other exec surface (env prefix,
-  // cwd, quoting, stdin, durationMs) stays intact.
+  // The wrapper sources the login profiles so `node` resolves on the reference
+  // image, then runs the command. It no longer sources `nvm.sh`, while every
+  // other exec surface (env prefix, cwd, quoting, stdin, durationMs) stays
+  // intact.
   it("test_exec_command_preserves_env_cwd_and_duration", async () => {
     process.env.DAYTONA_API_KEY = "host-key";
     const sandbox = createMockSandbox();
@@ -1337,23 +1338,26 @@ describe("Daytona sandbox provider plugin", () => {
     });
 
     const [command] = sandbox.process.executeCommand.mock.calls[0] as [string];
-    // The command starts with the `cd` (no profile lines ahead of it) and
-    // carries the env prefix and the noninteractive git defaults.
-    expect(command).toMatch(/^cd '\/workspace' && env /);
+    // The command sources the login profiles first, then runs the `cd` and the
+    // env prefix with the noninteractive git defaults.
+    expect(command).toMatch(/^if \[ -f \/etc\/profile \]/);
+    expect(command).toMatch(/&& cd '\/workspace' && env /);
     expect(command).toMatch(/GIT_TERMINAL_PROMPT='0'/);
     expect(command).toMatch(/FOO='bar' 'base64' '-d'$/);
-    expect(command).not.toMatch(/\/etc\/profile/);
-    // durationMs attribution is unchanged on the fast path.
+    expect(command).toMatch(/\/etc\/profile/);
+    expect(command).not.toMatch(/nvm\.sh/);
+    // durationMs attribution stays intact.
     expect(typeof (result!.metadata as Record<string, unknown>)?.durationMs).toBe("number");
   });
 
-  it("test_exec_command_omits_profile_and_nvm_sourcing", async () => {
+  it("test_exec_command_sources_profile_without_nvm", async () => {
     process.env.DAYTONA_API_KEY = "host-key";
     const sandbox = createMockSandbox();
     mockGet.mockResolvedValue(sandbox);
 
-    // A node-launching exec resolves on the sandbox default PATH, so the
-    // wrapper sources no login profile and no `nvm.sh`.
+    // A node-launching exec resolves `node` through the login profiles, which
+    // Daytona's non-login `executeCommand` shell does not source on its own. The
+    // wrapper sources the profiles but no longer sources `nvm.sh`.
     await plugin.definition.onEnvironmentExecute?.({
       driverKey: "daytona",
       companyId: "company-1",
@@ -1367,7 +1371,8 @@ describe("Daytona sandbox provider plugin", () => {
     });
 
     const [command] = sandbox.process.executeCommand.mock.calls[0] as [string];
-    expect(command).not.toMatch(/\/etc\/profile/);
+    expect(command).toMatch(/\/etc\/profile/);
+    expect(command).toMatch(/"\$HOME\/\.profile"/);
     expect(command).not.toMatch(/nvm\.sh/);
     expect(command).not.toMatch(/NVM_DIR/);
   });
