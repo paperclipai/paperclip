@@ -185,6 +185,50 @@ def test_web_tool_precedes_no_tool_paragraph_and_time_comes_last(monkeypatch):
     assert "\n\n\n" not in prompt
 
 
+def test_no_web_hint_present_without_key(monkeypatch):
+    # Fehlt der Web-Schlüssel -- egal ob grundsätzlich nicht eingerichtet
+    # oder per Sperre nach einem Vault-Zugriff für die laufende Kette
+    # gesperrt -- muss der System-Prompt einen expliziten Hinweis bekommen,
+    # dass für aktuelle Außenwelt-Themen kein Werkzeug da ist. Sonst greift
+    # ein kleines Modell ersatzweise zum Vault (Live-Bug: "das Wetter" wurde
+    # als LOOKUP an den Vault geschickt und las Kontaktdaten vor).
+    seen = {}
+    monkeypatch.setattr(jarvis_brain.llm, "chat",
+                        lambda msgs, model=None: seen.update(system=msgs[0]["content"]) or "ok")
+    jarvis_brain.respond("hi", TENANT, "tok", "m")
+    assert jarvis_brain.NO_WEB_HINT in seen["system"]
+    assert "WEB:" not in seen["system"]
+
+
+def test_no_web_hint_absent_with_key(monkeypatch):
+    # Mit Web-Schlüssel wird stattdessen das echte Werkzeug angeboten -- der
+    # Hinweis, dass keins da sei, wäre dann ein Widerspruch im Prompt.
+    seen = {}
+    monkeypatch.setattr(jarvis_brain.llm, "chat",
+                        lambda msgs, model=None: seen.update(system=msgs[0]["content"]) or "ok")
+    jarvis_brain.respond("hi", TENANT, "tok", "m", web_key="tvly-k")
+    assert jarvis_brain.WEB_TOOL_HINT in seen["system"]
+    assert jarvis_brain.NO_WEB_HINT not in seen["system"]
+
+
+def test_no_web_hint_precedes_no_tool_paragraph_and_time_comes_last(monkeypatch):
+    # Gleiche Positionslogik wie beim WEB_TOOL_HINT (siehe
+    # test_web_tool_precedes_no_tool_paragraph_and_time_comes_last): der
+    # Hinweis muss VOR dem "Brauchst du KEIN Werkzeug"-Absatz stehen und die
+    # Zeit ganz am Ende, sonst wirkt der Prompt widersprüchlich/unsortiert.
+    seen = {}
+    monkeypatch.setattr(jarvis_brain.llm, "chat",
+                        lambda msgs, model=None: seen.update(system=msgs[0]["content"]) or "ok")
+    jarvis_brain.respond("hi", TENANT, "tok", "m")
+    prompt = seen["system"]
+    hint_idx = prompt.index(jarvis_brain.NO_WEB_HINT.strip())
+    no_tool_idx = prompt.index("Brauchst du KEIN Werkzeug")
+    time_idx = prompt.index("Aktuelle Zeit:")
+    assert hint_idx < no_tool_idx < time_idx
+    # Absatzabstände sauber: weder doppelte noch fehlende Leerzeilen.
+    assert "\n\n\n" not in prompt
+
+
 def test_parse_control_recognises_web_token():
     assert jarvis_brain.parse_control("WEB: Wetter Cottbus morgen") == {
         "kind": "web", "query": "Wetter Cottbus morgen"}

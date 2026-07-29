@@ -114,6 +114,24 @@ WEB_TOOL_HINT = (
     "   Rate NIE bei solchen Fragen — such nach oder sag, dass du es nicht weißt."
 )
 
+# Ersatz für WEB_TOOL_HINT, wenn kein web_key übergeben wurde (Werkzeug nicht
+# eingerichtet ODER für die laufende Wake-Kette nach einem Vault-Zugriff
+# gesperrt, siehe respond()). Ohne diesen Hinweis fehlt dem Modell schlicht
+# das Werkzeug 3 aus der Liste — es greift dann ersatzweise zum einzig
+# verbliebenen Werkzeug (Vault-Lookup), auch für vault-fremde Themen wie
+# Wetter (Live-Befund: "das Wetter" wurde als LOOKUP gestellt, Antwort waren
+# fremde Kontaktdaten). Deshalb an derselben Stelle wie WEB_TOOL_HINT: nicht
+# als nummeriertes Werkzeug (es GIBT ja keins), aber mit derselben führenden
+# Leerzeile, damit der Absatzabstand zum Kopfteil gleich bleibt.
+NO_WEB_HINT = (
+    "\n\nWICHTIG: Für Wetter, Nachrichten, Verkehr, Öffnungszeiten, Preise "
+    "und andere aktuelle Themen der Außenwelt steht dir GERADE KEIN Werkzeug "
+    "zur Verfügung. Beantworte solche Fragen ehrlich in einem Satz mit "
+    "\"weiß ich nicht\" — rate nicht. Durchsuche dafür NIEMALS den Vault "
+    "(Werkzeug 1): der enthält ausschließlich private Unterlagen des Nutzers "
+    "(Kontakte, Adressen, Rechnungen) und niemals Wetter oder Nachrichten."
+)
+
 
 def _strip_control_lines(text):
     """Entfernt versehentlich eingestreute Steuer-Token-Zeilen (LOOKUP/ISSUE/
@@ -146,12 +164,18 @@ def respond(text, tenant, token, chat_model, history=None, source="per Telegram"
     if not text:
         return {"kind": "empty", "answer": "Nichts erkannt, bitte erneut."}
     hist = history or []
-    # Reihenfolge ist bewusst: WEB_TOOL_HINT (Werkzeug 3) muss VOR dem
-    # "Brauchst du KEIN Werkzeug"-Absatz stehen, sonst liest ein kleines
-    # Modell es nicht mehr als Teil der Werkzeugliste (Review-Befund).
+    # Reihenfolge ist bewusst: WEB_TOOL_HINT (Werkzeug 3) bzw. NO_WEB_HINT
+    # muss VOR dem "Brauchst du KEIN Werkzeug"-Absatz stehen, sonst liest ein
+    # kleines Modell es nicht mehr als Teil der Werkzeugliste (Review-Befund).
+    # Ohne web_key MUSS NO_WEB_HINT stehen (nicht einfach weglassen): sonst
+    # greift das Modell für vault-fremde Themen (Wetter etc.) ersatzweise zum
+    # Vault, weil es glaubt, das sei das einzig verbliebene Werkzeug
+    # (Live-Befund, siehe NO_WEB_HINT-Kommentar oben).
     system_content = SYSTEM_PROMPT_HEAD.format(name=first_name(tenant))
     if web_key:
         system_content += WEB_TOOL_HINT
+    else:
+        system_content += NO_WEB_HINT
     system_content += SYSTEM_PROMPT_TAIL
     system_content += TIME_HINT.format(format_now(now or datetime.datetime.now()))
     if voice_output:
