@@ -579,6 +579,16 @@ const activeRunExecutions = new Set<string>();
 // that must guarantee no run write is still in flight (graceful shutdown, and
 // tests tearing down a shared database) can await drainActiveRunExecutions().
 const activeRunExecutionPromises = new Set<Promise<void>>();
+// Routes dispatch a wakeup fire-and-forget (void heartbeat.wakeup(...)). The
+// wakeup promise stays pending through its asynchronous prologue, and it
+// resolves only after it inserts the queued run and registers the run
+// execution in activeRunExecutionPromises. Before that point neither
+// activeRunExecutionPromises nor the run table shows the pending run, so a
+// caller cannot observe the wake. Track each wakeup promise here — shared
+// across service instances like the two sets above — so drainActiveRunExecutions
+// can await a wake that is still before run registration. A caller that tears
+// down a shared database (a test afterEach) then cannot race a late wake.
+const activeWakeupPromises = new Set<Promise<unknown>>();
 const INLINE_BASE64_IMAGE_DATA_RE = /("type":"image","source":\{"type":"base64","data":")([A-Za-z0-9+/=]{1024,})(")/g;
 
 type RuntimeConfigSecretResolver = Pick<
@@ -12097,10 +12107,35 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   // before the parent promise settles, so we loop until the set is empty rather
   // than snapshotting once. Callers use this to guarantee no run is still
   // writing rows/events (graceful shutdown, deterministic test teardown).
+  //
+  // Await in-flight wakeup promises first. A wakeup resolves only after it
+  // registers its run execution, so a wake that is still before run registration
+  // is invisible to activeRunExecutionPromises alone. Awaiting the wakeup promise
+  // closes that window: once it settles, any run it dispatched is already in
+  // activeRunExecutionPromises, and the second await drains that run. A wakeup or
+  // a run can add more entries as it settles, so loop until both sets are empty.
   async function drainActiveRunExecutions() {
-    while (activeRunExecutionPromises.size > 0) {
+    while (activeWakeupPromises.size > 0 || activeRunExecutionPromises.size > 0) {
+      await Promise.allSettled([...activeWakeupPromises]);
       await Promise.all([...activeRunExecutionPromises]);
     }
+  }
+
+  // Public wakeup entry point. Callers dispatch it fire-and-forget, so register
+  // the promise in activeWakeupPromises before it starts its asynchronous
+  // prologue. drainActiveRunExecutions can then await a wake that is still before
+  // run registration. Internal callers reference enqueueWakeup directly and
+  // already await it, so they do not need this registration.
+  function trackWakeup(
+    agentId: string,
+    opts: WakeupOptions = {},
+  ): ReturnType<typeof enqueueWakeup> {
+    const promise = enqueueWakeup(agentId, opts);
+    activeWakeupPromises.add(promise);
+    void promise.catch(() => {}).finally(() => {
+      activeWakeupPromises.delete(promise);
+    });
+    return promise;
   }
 
   async function executeRun(runId: string) {
@@ -17256,7 +17291,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       triggerDetail: "manual" | "ping" | "callback" | "system" = "manual",
       actor?: { actorType?: "user" | "agent" | "system"; actorId?: string | null },
     ) =>
-      enqueueWakeup(agentId, {
+      trackWakeup(agentId, {
         source,
         triggerDetail,
         contextSnapshot,
@@ -17264,7 +17299,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         requestedByActorId: actor?.actorId ?? null,
       }),
 
-    wakeup: enqueueWakeup,
+    wakeup: trackWakeup,
     triggerIssueMonitor,
 
     reportRunActivity: clearDetachedRunWarning,
