@@ -93,22 +93,30 @@ export type ExecutionWorkspaceTargetSource = Pick<
 // project_primary, cloud_sandbox) still need a repository/provider ref check because they
 // can be backed by a repo checkout without using the worktree strategy. adapter_managed
 // providers are "remote_operator" targets even without a repoUrl, since the operator/sandbox
-// reference is the authoritative identity. Anything left without a repo, provider ref, or
-// cwd is genuinely unconfigured; everything else with neither a repo nor an operator ref but
-// with a cwd is treated as artifact-only (content exists, but it's not a tracked checkout).
+// reference is the authoritative identity. project_primary is the execution-workspace analog
+// of a project workspace's primary folder (it operates directly on shared/primary content
+// rather than an isolated worktree or sandbox), so — mirroring targetForProjectWorkspace's
+// isPrimary check — a project_primary workspace with no repository, no adapter-managed
+// provider, and no raw provider reference is genuinely unconfigured and must warn, even
+// though it will almost always still have a cwd. Non-primary strategies (e.g. cloud_sandbox)
+// without any of those are legitimately artifact-only by design and don't need a repair
+// prompt.
 export function targetForExecutionWorkspace(
   workspace: ExecutionWorkspaceTargetSource,
   repairHref: string,
 ): WorkspaceTargetProvenance {
   const hasRepository = workspace.strategyType === "git_worktree" || Boolean(workspace.repoUrl);
+  const isOperatorManaged = workspace.providerType === "adapter_managed";
+  const hasAnyReference = hasRepository || isOperatorManaged || Boolean(workspace.providerRef);
+  const configurationIncomplete = workspace.strategyType === "project_primary" && !hasAnyReference;
   return {
-    kind: hasRepository ? "repository" : workspace.providerType === "adapter_managed" ? "remote_operator" : "artifact_only",
+    kind: hasRepository ? "repository" : isOperatorManaged ? "remote_operator" : configurationIncomplete ? "unconfigured" : "artifact_only",
     authoritativePath: redactRemote(workspace.repoUrl ?? workspace.providerRef),
     checkoutRoot: workspace.cwd,
-    deliveryMethod: hasRepository ? "repository checkout" : workspace.providerType === "adapter_managed" ? "remote/operator" : "artifact-only",
+    deliveryMethod: hasRepository ? "repository checkout" : isOperatorManaged ? "remote/operator" : "artifact-only",
     fingerprint: null,
     lastAttestation: null,
-    configurationIncomplete: !hasRepository && workspace.providerType !== "adapter_managed" && !workspace.cwd,
+    configurationIncomplete,
     repairHref,
   };
 }

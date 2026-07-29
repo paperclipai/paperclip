@@ -343,6 +343,42 @@ describe("targetForExecutionWorkspace", () => {
     expect(target.configurationIncomplete).toBe(false);
   });
 
+  it("flags a project_primary workspace with no repository or provider reference as unconfigured, even though it has a cwd", () => {
+    // This is the standard shape for the default project_primary/local_fs execution
+    // workspace: it always has a cwd (the project's own folder), so a naive "has a cwd"
+    // check would wrongly treat it as configured artifact-only delivery and suppress the
+    // repair warning for a genuinely unversioned primary folder.
+    const target = targetForExecutionWorkspace(
+      {
+        strategyType: "project_primary",
+        repoUrl: null,
+        cwd: "/srv/paperclip/project",
+        providerType: "local_fs",
+        providerRef: null,
+      },
+      "/execution-workspaces/exec-1/configuration",
+    );
+
+    expect(target.kind).toBe("unconfigured");
+    expect(target.configurationIncomplete).toBe(true);
+  });
+
+  it("does not flag a non-primary strategy (e.g. cloud_sandbox) with no repo or provider ref as unconfigured", () => {
+    const target = targetForExecutionWorkspace(
+      {
+        strategyType: "cloud_sandbox",
+        repoUrl: null,
+        cwd: "/mnt/ephemeral/run-1",
+        providerType: "cloud_sandbox",
+        providerRef: null,
+      },
+      "/execution-workspaces/exec-1/configuration",
+    );
+
+    expect(target.kind).toBe("artifact_only");
+    expect(target.configurationIncomplete).toBe(false);
+  });
+
   it("redacts credentials from URL remotes but preserves opaque provider references", () => {
     const withCredentials = targetForExecutionWorkspace(
       {
