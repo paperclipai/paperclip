@@ -32,6 +32,28 @@ def test_voice_output_adds_number_spelling_hint(monkeypatch):
     assert "zweitausendsechsundzwanzig" in seen["system"]
 
 
+def test_voice_output_adds_brevity_hint(monkeypatch):
+    seen = {}
+    def fake_chat(msgs, model=None):
+        seen["system"] = msgs[0]["content"]
+        return "Kurze Antwort."
+    monkeypatch.setattr(jarvis_brain.llm, "chat", fake_chat)
+    # mit voice_output: Kürze-Vorgabe steckt im System-Prompt
+    jarvis_brain.respond("was steht im vault?", TENANT, "tok", "m", voice_output=True)
+    assert "zwei bis drei Sätze" in seen["system"]
+
+
+def test_no_voice_output_omits_brevity_hint(monkeypatch):
+    seen = {}
+    def fake_chat(msgs, model=None):
+        seen["system"] = msgs[0]["content"]
+        return "Lange Antwort."
+    monkeypatch.setattr(jarvis_brain.llm, "chat", fake_chat)
+    # ohne voice_output (Telegram-Weg): Kürze-Vorgabe fehlt, Antworten dürfen lang bleiben
+    jarvis_brain.respond("was steht im vault?", TENANT, "tok", "m")
+    assert "zwei bis drei Sätze" not in seen["system"]
+
+
 def test_chat_strips_trailing_stray_control_token(monkeypatch):
     # Manche Modelle antworten direkt UND hängen ein Steuer-Token ans Ende —
     # es darf nicht Teil der (vorgelesenen) Antwort werden.

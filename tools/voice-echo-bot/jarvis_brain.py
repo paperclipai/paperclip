@@ -102,7 +102,13 @@ VOICE_OUTPUT_HINT = (
     "dreißig\"; „2026\" -> „zweitausendsechsundzwanzig\"; „26.07.\" -> "
     "„sechsundzwanzigster Juli\"; „15 °C\" -> „fünfzehn Grad\"; „5 €\" -> „fünf "
     "Euro\". Lange Ziffernfolgen (Telefon, IBAN) in kleinen Gruppen ausschreiben "
-    "(z. B. „030 12 34\" -> „null drei null, zwölf, vierunddreißig\")."
+    "(z. B. „030 12 34\" -> „null drei null, zwölf, vierunddreißig\").\n\n"
+    "WICHTIG — Kürze: Fasse dich kurz, normalerweise zwei bis drei Sätze — "
+    "wer zuhört, kann nicht querlesen und muss die ganze Antwort abwarten. "
+    "Gibt es mehrere Treffer oder eine lange Liste, nenne nur das Wichtigste "
+    "und biete an, bei Bedarf gezielt nachzufragen, statt alles vorzulesen. "
+    "Keine Aufzählungen mit vielen Punkten, keine wörtlichen Zitate aus "
+    "langen Dokumenten."
 )
 
 WEB_TOOL_HINT = (
