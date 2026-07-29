@@ -97,7 +97,7 @@ describe("getIssueDetailQueryOptions", () => {
     queryClient.clear();
   });
 
-  it("preserves socket updates received while the aggregate view is loading", async () => {
+  it("preserves same-millisecond socket updates received while the aggregate view is loading", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-04-13T20:00:00.000Z"));
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
@@ -108,7 +108,6 @@ describe("getIssueDetailQueryOptions", () => {
     }));
 
     const pending = fetchIssueDetail(queryClient, "PAP-1442", { signal: new AbortController().signal });
-    vi.setSystemTime(new Date("2026-04-13T20:00:00.001Z"));
     queryClient.setQueryData(queryKeys.issues.interactions("PAP-1442"), [{ id: "socket-update" }]);
     resolveView({
       detail: issue,

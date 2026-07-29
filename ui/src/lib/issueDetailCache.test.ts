@@ -12,9 +12,23 @@ import { queryKeys } from "./queryKeys";
 
 vi.mock("@/api/issues", () => ({
   issuesApi: {
-    get: vi.fn(),
+    getView: vi.fn(),
   },
 }));
+
+function createIssueView(detail: Issue) {
+  return {
+    detail,
+    comments: [],
+    interactions: [],
+    attachments: [],
+    workProducts: [],
+    childIssues: [],
+    runs: [],
+    liveRuns: [],
+    activeRun: null,
+  };
+}
 
 function createIssue(overrides: Partial<Issue> = {}): Issue {
   return {
@@ -93,7 +107,7 @@ describe("issueDetailCache", () => {
 
     expect(getCachedIssueDetail(queryClient, issue.identifier)).toEqual(issue);
     expect(getCachedIssueDetail(queryClient, issue.id)).toEqual(issue);
-    expect(issuesApi.get).not.toHaveBeenCalled();
+    expect(issuesApi.getView).not.toHaveBeenCalled();
   });
 
   it("does not seed partial issue snapshots during prefetch", async () => {
@@ -105,11 +119,11 @@ describe("issueDetailCache", () => {
       status: issue.status,
       priority: issue.priority,
     } as Issue;
-    vi.mocked(issuesApi.get).mockResolvedValue(issue);
+    vi.mocked(issuesApi.getView).mockResolvedValue(createIssueView(issue));
 
     await prefetchIssueDetail(queryClient, issue.identifier!, { issue: partialIssue });
 
-    expect(issuesApi.get).toHaveBeenCalledWith(issue.identifier);
+    expect(issuesApi.getView).toHaveBeenCalledWith(issue.identifier);
     expect(getCachedIssueDetail(queryClient, issue.identifier)).toEqual(issue);
   });
 
@@ -131,7 +145,7 @@ describe("issueDetailCache", () => {
 
   it("hydrates both cache aliases from a fetched issue detail response", async () => {
     const issue = createIssue();
-    vi.mocked(issuesApi.get).mockResolvedValue(issue);
+    vi.mocked(issuesApi.getView).mockResolvedValue(createIssueView(issue));
 
     const result = await fetchIssueDetail(queryClient, issue.identifier!);
 

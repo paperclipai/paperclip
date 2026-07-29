@@ -2591,7 +2591,11 @@ export function issueRoutes(
 ) {
   const router = Router();
   const svc = issueService(db);
-  const activitySvc = activityService(db);
+  let activitySvc: ReturnType<typeof activityService> | null = null;
+  const getActivityService = () => {
+    activitySvc ??= activityService(db);
+    return activitySvc;
+  };
   const access = accessService(db);
   const heartbeat = heartbeatService(db, {
     pluginWorkerManager: opts.pluginWorkerManager,
@@ -5535,7 +5539,7 @@ export function issueRoutes(
       svc.listAttachments(issue.id).then((rows) => rows.map(withContentPath)),
       workProductsSvc.listForIssue(issue.id),
       svc.list(issue.companyId, { descendantOf: issue.id, includeBlockedBy: true }),
-      activitySvc.runsForIssue(issue.companyId, issue.id),
+      getActivityService().runsForIssue(issue.companyId, issue.id),
     ]);
     const childIssues = await actorCanReadCompanyScope(req, issue.companyId)
       ? rawChildIssues

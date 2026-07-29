@@ -122,7 +122,7 @@ export async function fetchIssueDetail(
   const issue = seedIssueDetailCache(queryClient, view.detail, { issueRef });
   const refs = collectIssueRefs(issueRef, issue);
   const hydrateIfNotUpdatedDuringRequest = <T>(queryKey: readonly unknown[], value: T) => {
-    if ((queryClient.getQueryState(queryKey)?.dataUpdatedAt ?? 0) > requestedAt) return;
+    if ((queryClient.getQueryState(queryKey)?.dataUpdatedAt ?? 0) >= requestedAt) return;
     queryClient.setQueryData(queryKey, value);
   };
   for (const ref of refs) {
