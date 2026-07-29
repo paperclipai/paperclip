@@ -61,6 +61,17 @@ def parse_control(raw):
     return {"kind": "chat", "text": text}
 
 
+VOICE_OUTPUT_HINT = (
+    "\n\nWICHTIG — Sprachausgabe: Deine Antwort wird laut vorgelesen. Schreibe "
+    "deshalb ALLE Zahlen, Uhrzeiten, Datumsangaben und Jahre als ausgeschriebene "
+    "deutsche Wörter, NIEMALS als Ziffern. Beispiele: „12:30\" -> „zwölf Uhr "
+    "dreißig\"; „2026\" -> „zweitausendsechsundzwanzig\"; „26.07.\" -> "
+    "„sechsundzwanzigster Juli\"; „15 °C\" -> „fünfzehn Grad\"; „5 €\" -> „fünf "
+    "Euro\". Lange Ziffernfolgen (Telefon, IBAN) in kleinen Gruppen ausschreiben "
+    "(z. B. „030 12 34\" -> „null drei null, zwölf, vierunddreißig\")."
+)
+
+
 def _strip_control_lines(text):
     """Entfernt versehentlich eingestreute Steuer-Token-Zeilen (LOOKUP/ISSUE)
     aus einer Chat-Antwort. Manche Modelle hängen so ein Token ans Ende, obwohl
@@ -70,12 +81,16 @@ def _strip_control_lines(text):
     return "\n".join(kept).strip()
 
 
-def respond(text, tenant, token, chat_model, history=None, source="per Telegram"):
+def respond(text, tenant, token, chat_model, history=None, source="per Telegram",
+            voice_output=False):
     text = (text or "").strip()
     if not text:
         return {"kind": "empty", "answer": "Nichts erkannt, bitte erneut."}
     hist = history or []
-    messages = ([{"role": "system", "content": SYSTEM_PROMPT.format(name=first_name(tenant))}]
+    system_content = SYSTEM_PROMPT.format(name=first_name(tenant))
+    if voice_output:
+        system_content += VOICE_OUTPUT_HINT
+    messages = ([{"role": "system", "content": system_content}]
                 + list(hist) + [{"role": "user", "content": text}])
     try:
         raw = llm.chat(messages, model=chat_model)

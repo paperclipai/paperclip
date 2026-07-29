@@ -17,6 +17,21 @@ def test_plain_chat(monkeypatch):
     assert r == {"kind": "chat", "answer": "Hallo Walter."}
 
 
+def test_voice_output_adds_number_spelling_hint(monkeypatch):
+    seen = {}
+    def fake_chat(msgs, model=None):
+        seen["system"] = msgs[0]["content"]
+        return "Es ist zwölf Uhr."
+    monkeypatch.setattr(jarvis_brain.llm, "chat", fake_chat)
+    # ohne voice_output: kein Hinweis
+    jarvis_brain.respond("wie spät?", TENANT, "tok", "m")
+    assert "Sprachausgabe" not in seen["system"]
+    # mit voice_output: Zahlen-Ausschreib-Hinweis im System-Prompt
+    jarvis_brain.respond("wie spät?", TENANT, "tok", "m", voice_output=True)
+    assert "Sprachausgabe" in seen["system"]
+    assert "zweitausendsechsundzwanzig" in seen["system"]
+
+
 def test_chat_strips_trailing_stray_control_token(monkeypatch):
     # Manche Modelle antworten direkt UND hängen ein Steuer-Token ans Ende —
     # es darf nicht Teil der (vorgelesenen) Antwort werden.

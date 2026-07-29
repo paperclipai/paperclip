@@ -77,7 +77,7 @@ def handle_interaction(frames, deps, tenant=None, history=None):
         t1 = time.monotonic()
         result = jarvis_brain.respond(text, tenant, _resolve_token(deps),
                                       deps["chat_model"], history=history,
-                                      source="per Sprache")
+                                      source="per Sprache", voice_output=True)
         t2 = time.monotonic()
         answer = result["answer"]
         if result["kind"] in ("chat", "lookup", "issue"):
