@@ -763,6 +763,33 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     });
   });
 
+  it("does not treat a cancelled blocker's retained monitor as a covered waiting path", async () => {
+    const { companyId, agentId } = await createCompany("PBMX");
+    const parentId = await insertIssue({ companyId, identifier: "PBMX-1", title: "Parent", status: "blocked" });
+    // Tree cancellation leaves monitorNextCheckAt/executionState in place, so this
+    // blocker still looks monitored. tickDueIssueMonitors only dispatches
+    // in_progress/in_review issues, so the monitor can never fire again.
+    const blockerId = await insertIssue({
+      companyId,
+      identifier: "PBMX-2",
+      title: "Cancelled blocker with retained monitor",
+      status: "cancelled",
+      assigneeAgentId: agentId,
+      monitorNextCheckAt: new Date(Date.now() + 60 * 60 * 1000),
+      executionState: monitorState({ timeoutAt: new Date(Date.now() + 24 * 60 * 60 * 1000) }),
+    });
+    await block({ companyId, blockerIssueId: blockerId, blockedIssueId: parentId });
+
+    const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+
+    expect(parent?.blockerAttention).toMatchObject({
+      state: "needs_attention",
+      coveredBlockerCount: 0,
+      attentionBlockerCount: 1,
+      sampleBlockerIdentifier: "PBMX-2",
+    });
+  });
+
   it("keeps a blocked issue without any blocker at needs_attention", async () => {
     const { companyId } = await createCompany("PBNB");
     const parentId = await insertIssue({ companyId, identifier: "PBNB-1", title: "Blocked with no blocker", status: "blocked" });

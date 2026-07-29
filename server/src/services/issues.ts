@@ -2501,8 +2501,14 @@ async function listIssueBlockerAttentionMap(
     }
   }
 
+  // A cancelled blocker keeps its monitor fields (tree cancellation does not clear
+  // monitorNextCheckAt), but the dispatcher only wakes in_progress/in_review issues
+  // (tickDueIssueMonitors), so none of those retained fields can still fire. The same
+  // holds for its pending interactions and approvals. Admitting a cancelled node here
+  // would report it as covered and hide exactly the dead wake path this map exists to
+  // surface — the assigneeUserId branch below already carries the same guard.
   const explicitWaitCandidateIds = [...nodesById.values()]
-    .filter((node) => node.status !== "done")
+    .filter((node) => node.status !== "done" && node.status !== "cancelled")
     .map((node) => node.id);
   const explicitWaitingIssueIds = new Set<string>();
   if (explicitWaitCandidateIds.length > 0) {
