@@ -11,6 +11,7 @@ import { collectLiveIssueIds } from "../lib/liveIssueIds";
 import { usePublishSharedQueryData, useSharedPollingQuery } from "@/hooks/useSharedPolling";
 import { queryKeys } from "../lib/queryKeys";
 import { createIssueDetailLocationState } from "../lib/issueDetailBreadcrumb";
+import { saveLastHomeSurface } from "../lib/home-surface";
 import { EmptyState } from "../components/EmptyState";
 import { IssuesList } from "../components/IssuesList";
 import { CircleDot } from "lucide-react";
@@ -130,6 +131,11 @@ export function Issues() {
   useEffect(() => {
     setBreadcrumbs([{ label: "Tasks" }]);
   }, [setBreadcrumbs]);
+
+  useEffect(() => {
+    if (!selectedCompanyId) return;
+    saveLastHomeSurface(selectedCompanyId, "tasks");
+  }, [selectedCompanyId]);
 
   const issuePageSize = workspaceIdFilter ? WORKSPACE_FILTER_ISSUE_LIMIT : ISSUES_PAGE_SIZE;
 

@@ -67,6 +67,10 @@ import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { parseObject } from "../adapters/utils.js";
 import {
+  syncChannelAfterIssueCreated,
+  syncChannelAfterIssueUpdated,
+} from "./channel-issue-hooks.js";
+import {
   hydrateSuccessfulRunHandoffLiveness,
   SUCCESSFUL_RUN_HANDOFF_LIVE_WAKE_STATUSES,
 } from "./successful-run-handoff-state.js";
@@ -606,6 +610,8 @@ type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId"> & {
   idempotencyKey?: string | null;
   allowDuplicate?: boolean;
   onDeduplicated?: (reason: "idempotency_key" | "recent_open_title") => void;
+  /** Channels own the root card for promote-from-message; skip the generic sync hook. */
+  skipChannelSync?: boolean;
 };
 type IssueChildCreateInput = IssueCreateInput & {
   acceptanceCriteria?: string[];
@@ -5821,6 +5827,7 @@ export function issueService(db: Db) {
         inheritStrategyOnly && !hasExplicitExecutionWorkspaceOverride
           ? buildPreRealizationExecutionWorkspaceSettings(parent.executionWorkspaceSettings)
           : null;
+      // Channel sync (child root + parent-thread link) runs from create via parentId.
       let child = await issueService(db).create(parent.companyId, {
         ...issueData,
         parentId: parent.id,
@@ -6150,6 +6157,7 @@ export function issueService(db: Db) {
         idempotencyKey: rawIdempotencyKey,
         allowDuplicate,
         onDeduplicated,
+        skipChannelSync,
         ...issueData
       } = data;
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
@@ -6461,6 +6469,19 @@ export function issueService(db: Db) {
         const [enriched] = await withIssueLabels(tx, [issue]);
         const [withRelations] = await withIssueRelationSummaries(companyId, [enriched], tx);
         return withRelations;
+      }).then(async (created) => {
+        if (!skipChannelSync && created) {
+          void syncChannelAfterIssueCreated(db, {
+            id: created.id,
+            companyId: created.companyId,
+            projectId: created.projectId ?? null,
+            title: created.title,
+            parentId: created.parentId ?? null,
+            assigneeAgentId: created.assigneeAgentId ?? null,
+            identifier: created.identifier ?? null,
+          });
+        }
+        return created;
       });
     },
 
@@ -6714,7 +6735,32 @@ export function issueService(db: Db) {
         return enriched;
       };
 
-      return dbOrTx === db ? db.transaction(runUpdate) : runUpdate(dbOrTx);
+      return dbOrTx === db
+        ? db.transaction(runUpdate).then(async (updated) => {
+            if (updated) {
+              void syncChannelAfterIssueUpdated(
+                db,
+                {
+                  id: existing.id,
+                  companyId: existing.companyId,
+                  projectId: existing.projectId ?? null,
+                  title: existing.title,
+                  assigneeAgentId: existing.assigneeAgentId ?? null,
+                  identifier: existing.identifier ?? null,
+                },
+                {
+                  id: updated.id,
+                  companyId: updated.companyId,
+                  projectId: updated.projectId ?? null,
+                  title: updated.title,
+                  assigneeAgentId: updated.assigneeAgentId ?? null,
+                  identifier: updated.identifier ?? null,
+                },
+              );
+            }
+            return updated;
+          })
+        : runUpdate(dbOrTx);
     },
 
     clearExecutionWorkspaceEnvironmentSelection: async (companyId: string, environmentId: string) => {

@@ -1,8 +1,8 @@
-import { Bot, CheckCircle2, MessageSquare, StickyNote, Terminal, User } from "lucide-react";
+import { Bot, CheckCircle2, CircleHelp, FileText, Link2, MessageSquare, StickyNote, Terminal, User } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
 import { timeAgo } from "@/lib/timeAgo";
-import type { ChannelMessage, ChannelWorkMode } from "@/api/channels";
+import type { ChannelCardKind, ChannelMessage, ChannelWorkMode } from "@/api/channels";
 
 export const CHANNEL_WORK_MODE_OPTIONS: Array<{
   mode: ChannelWorkMode;
@@ -72,6 +72,19 @@ export function WorkModeChip({ mode }: { mode: ChannelWorkMode }) {
   );
 }
 
+function hitlCardMeta(kind: ChannelCardKind | null): {
+  label: string;
+  Icon: typeof CircleHelp;
+} | null {
+  if (kind === "questions") return { label: "Questions", Icon: CircleHelp };
+  if (kind === "confirmation") return { label: "Confirmation", Icon: CheckCircle2 };
+  if (kind === "document") return { label: "Document", Icon: FileText };
+  if (kind === "approval") return { label: "Approval", Icon: CheckCircle2 };
+  if (kind === "suggest_tasks") return { label: "Suggested tasks", Icon: StickyNote };
+  if (kind === "stub") return { label: "Link", Icon: Link2 };
+  return null;
+}
+
 interface ChannelMessageItemProps {
   message: ChannelMessage;
   /** Root rows are clickable timeline entries; replies are plain thread lines. */
@@ -88,6 +101,8 @@ export function ChannelMessageItem({
 }: ChannelMessageItemProps) {
   const completed = variant === "root" && isCompletedRoot(message);
   const freeform = variant === "root" && isFreeformRoot(message);
+  const hitl = hitlCardMeta(message.cardKind);
+  const HitlIcon = hitl?.Icon;
 
   const body = (
     <div className="flex min-w-0 gap-2.5">
@@ -102,6 +117,15 @@ export function ChannelMessageItem({
           {message.issueIdentifier ? (
             <Badge variant="outline" className="px-1.5 text-(length:--text-nano) leading-none">
               {message.issueIdentifier}
+            </Badge>
+          ) : null}
+          {hitl && HitlIcon ? (
+            <Badge
+              variant="ghost"
+              className="gap-1 bg-muted px-1.5 text-(length:--text-nano) leading-none text-muted-foreground"
+            >
+              <HitlIcon className="h-3 w-3" />
+              {hitl.label}
             </Badge>
           ) : null}
           {freeform ? (
@@ -128,7 +152,8 @@ export function ChannelMessageItem({
         <p
           className={cn(
             "mt-0.5 whitespace-pre-wrap break-words text-sm leading-6",
-            completed || freeform ? "text-muted-foreground" : "text-foreground",
+            completed || freeform || hitl ? "text-muted-foreground" : "text-foreground",
+            hitl && "rounded-md border border-border/70 bg-muted/40 px-2.5 py-2",
           )}
         >
           {message.body}

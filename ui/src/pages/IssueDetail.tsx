@@ -88,6 +88,8 @@ import {
   type IssueChatComposerHandle,
   type IssueChatRunFinalizationAction,
 } from "../components/IssueChatThread";
+import { ChannelThreadPanel } from "./channels/ChannelThreadPanel";
+import { channelsApi } from "../api/channels";
 import { workModeMetaFor } from "../lib/work-mode-meta";
 import { IssueContinuationHandoff } from "../components/IssueContinuationHandoff";
 import { IssueAttachmentsSection } from "../components/IssueAttachmentsSection";
@@ -1022,6 +1024,16 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   linkCaseReferences,
 }: IssueDetailChatTabProps) {
   const ThreadComponent = IssueChatThread;
+  const { selectedCompany } = useCompany();
+  const channelsEnabled = selectedCompany?.channelsEnabled === true;
+
+  const channelRootQuery = useQuery({
+    queryKey: queryKeys.channels.issueRoot(companyId, issueId),
+    queryFn: () => channelsApi.getIssueRoot(companyId, issueId),
+    enabled: channelsEnabled && !!companyId && !!issueId && !!projectId,
+  });
+  const channelRoot = channelRootQuery.data ?? null;
+
   const { data: activity } = useQuery({
     queryKey: queryKeys.issues.activity(issueId),
     queryFn: () => activityApi.forIssue(issueId),
@@ -1156,6 +1168,23 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     () => extractIssueTimelineEvents(resolvedActivity),
     [resolvedActivity],
   );
+
+  // Channel-linked issues use the channel thread as the canonical discussion timeline.
+  if (channelRoot) {
+    return (
+      <div
+        data-testid="issue-channel-thread-embed"
+        className="h-(--sz-calc-30) min-h-96 overflow-hidden rounded-lg border border-border"
+      >
+        <ChannelThreadPanel
+          companyId={companyId}
+          channelId={channelRoot.channelId}
+          rootId={channelRoot.id}
+          embedded
+        />
+      </div>
+    );
+  }
 
   return (
     <div className="space-y-3">

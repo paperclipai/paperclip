@@ -276,6 +276,8 @@ export const queryKeys = {
     thread: (channelId: string, rootId: string) =>
       ["channels", "thread", channelId, rootId] as const,
     presence: (companyId: string) => ["channels", "presence", companyId] as const,
+    issueRoot: (companyId: string, issueId: string) =>
+      ["channels", "issue-root", companyId, issueId] as const,
   },
   artifacts: {
     list: (

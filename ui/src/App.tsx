@@ -88,6 +88,7 @@ import { NotFoundPage } from "./pages/NotFound";
 import { useCompany } from "./context/CompanyContext";
 import { useDialogActions, useDialogState } from "./context/DialogContext";
 import { loadLastInboxTab } from "./lib/inbox";
+import { resolveCompanyHomePath } from "./lib/home-surface";
 import {
   isOnboardingWizardActive,
   shouldRedirectCompanylessRouteToOnboarding,
@@ -445,7 +446,19 @@ function CompanyRootRedirect() {
     return <NoCompaniesStartPage />;
   }
 
-  return <Navigate to={`/${targetCompany.issuePrefix}/dashboard`} replace />;
+  return (
+    <Navigate
+      to={resolveCompanyHomePath({
+        companyId: targetCompany.id,
+        issuePrefix: targetCompany.issuePrefix,
+        channelsEnabled: targetCompany.channelsEnabled === true,
+        // New companies with channels on land in Channels; project presence is
+        // refined once the channels list loads (empty rooms still beat nowhere).
+        hasProject: targetCompany.channelsEnabled === true,
+      })}
+      replace
+    />
+  );
 }
 
 function UnprefixedBoardRedirect() {

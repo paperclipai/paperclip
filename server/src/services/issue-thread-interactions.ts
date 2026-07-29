@@ -49,6 +49,7 @@ import {
 } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { getTelemetryClient } from "../telemetry.js";
+import { syncChannelAfterInteractionCreated } from "./channel-issue-hooks.js";
 import { issueService, runWorkspaceIsFinalized } from "./issues.js";
 
 type InteractionActor = {
@@ -1199,7 +1200,16 @@ export function issueThreadInteractionService(db: Db) {
       }
 
       await touchIssue(db, issue.id);
-      return hydrateInteraction(created);
+      const hydrated = await hydrateInteraction(created);
+      void syncChannelAfterInteractionCreated(db, {
+        id: created.id,
+        companyId: created.companyId,
+        issueId: created.issueId,
+        kind: created.kind,
+        title: created.title,
+        summary: created.summary,
+      });
+      return hydrated;
     },
 
     acceptInteraction: async (

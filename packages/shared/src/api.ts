@@ -30,6 +30,7 @@ export const API = {
   channels: `${API_PREFIX}/companies/:companyId/channels`,
   channelDms: `${API_PREFIX}/companies/:companyId/channels/dm`,
   channelPresence: `${API_PREFIX}/companies/:companyId/channels/presence`,
+  channelIssueRoot: `${API_PREFIX}/companies/:companyId/channels/issues/:issueId/root`,
   channel: `${API_PREFIX}/companies/:companyId/channels/:channelId`,
   channelMessages: `${API_PREFIX}/companies/:companyId/channels/:channelId/messages`,
   channelMaterialize: `${API_PREFIX}/companies/:companyId/channels/:channelId/materialize`,

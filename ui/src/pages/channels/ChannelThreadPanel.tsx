@@ -8,11 +8,14 @@ import { queryKeys } from "@/lib/queryKeys";
 import { ChannelMessageItem } from "./ChannelMessageItem";
 
 interface ChannelThreadPanelProps {
+  companyId: string;
   channelId: string;
   rootId: string;
   /** Kept in sync with the channel timeline so the roots list refreshes on reply. */
-  includeCompleted: boolean;
-  onClose: () => void;
+  includeCompleted?: boolean;
+  /** When embedded in Issue Chat, hide the close affordance and use a quieter chrome. */
+  embedded?: boolean;
+  onClose?: () => void;
 }
 
 /**
@@ -20,9 +23,11 @@ interface ChannelThreadPanelProps {
  * (agent progress, HITL, human replies) and a reply composer.
  */
 export function ChannelThreadPanel({
+  companyId,
   channelId,
   rootId,
-  includeCompleted,
+  includeCompleted = false,
+  embedded = false,
   onClose,
 }: ChannelThreadPanelProps) {
   const queryClient = useQueryClient();
@@ -32,12 +37,12 @@ export function ChannelThreadPanel({
   const threadQueryKey = queryKeys.channels.thread(channelId, rootId);
   const { data: thread, isLoading, error } = useQuery({
     queryKey: threadQueryKey,
-    queryFn: () => channelsApi.listThread(channelId, rootId),
+    queryFn: () => channelsApi.listThread(companyId, channelId, rootId),
   });
 
   const postReply = useMutation({
     mutationFn: (body: string) =>
-      channelsApi.postMessage(channelId, {
+      channelsApi.postMessage(companyId, channelId, {
         body,
         threadRootId: rootId,
         // Replies inherit the root's mode; the toggle lives on the channel composer.
@@ -59,25 +64,33 @@ export function ChannelThreadPanel({
   return (
     <aside
       data-testid="channel-thread-panel"
-      className="flex h-full min-h-0 w-full flex-col border-l border-border bg-background"
+      className={
+        embedded
+          ? "flex h-full min-h-0 w-full flex-col bg-background"
+          : "flex h-full min-h-0 w-full flex-col border-l border-border bg-background"
+      }
     >
       <div className="flex shrink-0 items-center justify-between gap-2 border-b border-border px-4 py-3">
         <div className="min-w-0">
-          <h2 className="truncate text-sm font-semibold text-foreground">Thread</h2>
+          <h2 className="truncate text-sm font-semibold text-foreground">
+            {embedded ? "Channel thread" : "Thread"}
+          </h2>
           <p className="truncate text-(length:--text-micro) text-muted-foreground">
             {root?.issueIdentifier ?? "Updates on this task"}
           </p>
         </div>
-        <Button
-          type="button"
-          variant="ghost"
-          size="icon-sm"
-          className="text-muted-foreground"
-          aria-label="Close thread"
-          onClick={onClose}
-        >
-          <X className="h-4 w-4" />
-        </Button>
+        {!embedded && onClose ? (
+          <Button
+            type="button"
+            variant="ghost"
+            size="icon-sm"
+            className="text-muted-foreground"
+            aria-label="Close thread"
+            onClick={onClose}
+          >
+            <X className="h-4 w-4" />
+          </Button>
+        ) : null}
       </div>
 
       <div className="min-h-0 flex-1 overflow-y-auto">
@@ -122,10 +135,13 @@ export function ChannelThreadPanel({
           ref={composerRef}
           value={reply}
           onChange={setReply}
-          onSubmit={() => postReply.mutate(reply.trim())}
-          submitting={postReply.isPending}
-          placeholder="Reply to this thread…"
-          sendLabel="Send reply"
+          onSubmit={() => {
+            const body = reply.trim();
+            if (!body || postReply.isPending) return;
+            postReply.mutate(body);
+          }}
+          placeholder="Reply in thread…"
+          disabled={postReply.isPending}
         />
       </div>
     </aside>

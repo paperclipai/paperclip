@@ -564,23 +564,87 @@ export function channelService(db: Db, options: ChannelServiceOptions = {}) {
     agentIds: string[];
     authorType: PrincipalType | "system";
     authorId: string | null;
+    channelWorkMode?: ChannelWorkMode | null;
+    issueId?: string | null;
+    wakeReason?: string;
   }): Promise<void> {
+    const wakeReason = input.wakeReason ?? "channel_mention";
     for (const agentId of input.agentIds) {
       // A self-mention must not re-wake the author mid-run.
       if (input.authorType === "agent" && input.authorId === agentId) continue;
+
+      const busyRun = await db
+        .select({
+          runId: heartbeatRuns.id,
+          issueId: issues.id,
+          issueIdentifier: issues.identifier,
+          issueTitle: issues.title,
+        })
+        .from(heartbeatRuns)
+        .leftJoin(issues, eq(issues.executionRunId, heartbeatRuns.id))
+        .where(and(
+          eq(heartbeatRuns.companyId, input.companyId),
+          eq(heartbeatRuns.agentId, agentId),
+          inArray(heartbeatRuns.status, ["queued", "running"]),
+        ))
+        .orderBy(desc(heartbeatRuns.startedAt))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+
+      if (busyRun) {
+        const agentName = await db
+          .select({ name: agents.name })
+          .from(agents)
+          .where(eq(agents.id, agentId))
+          .then((rows) => rows[0]?.name ?? "Agent");
+        const busyLabel = busyRun.issueIdentifier
+          ?? busyRun.issueTitle
+          ?? busyRun.issueId
+          ?? "another task";
+        await postMessage({
+          companyId: input.companyId,
+          channelId: input.channelId,
+          authorType: "system",
+          authorId: null,
+          messageType: "system",
+          body: `${agentName} is busy on ${busyLabel} — your ping is queued.`,
+          threadRootId: input.threadRootId,
+          issueId: input.issueId ?? busyRun.issueId ?? null,
+          metadata: {
+            kind: "busy_mention_queued",
+            agentId,
+            busyRunId: busyRun.runId,
+            sourceMessageId: input.messageId,
+          },
+          wakeMentionedAgents: false,
+        });
+      }
+
       try {
+        const workMode = input.channelWorkMode === "plan"
+          ? "planning"
+          : input.channelWorkMode === "work"
+            ? "standard"
+            : input.channelWorkMode === "ask"
+              ? "ask"
+              : null;
         await wakeAgent(agentId, {
           source: "on_demand",
           triggerDetail: "system",
-          reason: "channel_mention",
+          reason: wakeReason,
           requestedByActorType: input.authorType === "system" ? "system" : input.authorType,
           requestedByActorId: input.authorId,
           contextSnapshot: {
-            wakeReason: "channel_mention",
+            wakeReason,
             wakeSource: "channel",
             channelId: input.channelId,
             channelMessageId: input.messageId,
             channelThreadRootId: input.threadRootId,
+            channelWorkMode: input.channelWorkMode ?? null,
+            // Ask mode rides the cheap model profile lane (plan decision).
+            ...(workMode === "ask" ? { modelProfile: "cheap" } : {}),
+            ...(workMode ? { preferredWorkMode: workMode } : {}),
+            ...(input.issueId ? { issueId: input.issueId } : {}),
           },
         });
       } catch (error) {
@@ -677,10 +741,263 @@ export function channelService(db: Db, options: ChannelServiceOptions = {}) {
         agentIds: mentionedAgentIds,
         authorType: input.authorType,
         authorId: input.authorId,
+        channelWorkMode: input.channelWorkMode ?? threadRoot?.channelWorkMode ?? null,
+        issueId: input.issueId ?? threadRoot?.issueId ?? null,
       });
     }
 
+    // Human message in an assignee's task thread wakes that agent (not agent↔agent chatter).
+    const threadIssueId = input.issueId ?? threadRoot?.issueId ?? null;
+    if (
+      input.wakeMentionedAgents !== false
+      && input.authorType === "user"
+      && threadRoot
+      && threadIssueId
+    ) {
+      const assigneeAgentId = await db
+        .select({ assigneeAgentId: issues.assigneeAgentId })
+        .from(issues)
+        .where(and(eq(issues.id, threadIssueId), eq(issues.companyId, input.companyId)))
+        .then((rows) => rows[0]?.assigneeAgentId ?? null);
+      if (assigneeAgentId && !mentionedAgentIds.includes(assigneeAgentId)) {
+        await wakeMentionedAgents({
+          companyId: input.companyId,
+          channelId: channel.id,
+          messageId: message.id,
+          threadRootId: threadRoot.id,
+          agentIds: [assigneeAgentId],
+          authorType: input.authorType,
+          authorId: input.authorId,
+          channelWorkMode: input.channelWorkMode ?? threadRoot.channelWorkMode ?? null,
+          issueId: threadIssueId,
+          wakeReason: "channel_thread_human",
+        });
+      }
+    }
+
     return message;
+  }
+
+  function cardKindForInteraction(kind: string): ChannelCardKind | null {
+    switch (kind) {
+      case "ask_user_questions":
+        return "questions";
+      case "request_confirmation":
+      case "request_checkbox_confirmation":
+      case "request_item_verdicts":
+        return "confirmation";
+      case "suggest_tasks":
+        return "suggest_tasks";
+      default:
+        return null;
+    }
+  }
+
+  /** Look up the canonical task root for an issue, if channels are in play. */
+  async function getTaskRootForIssue(
+    companyId: string,
+    issueId: string,
+  ): Promise<ChannelMessageRow | null> {
+    return db
+      .select()
+      .from(channelMessages)
+      .where(and(
+        eq(channelMessages.companyId, companyId),
+        eq(channelMessages.issueId, issueId),
+        eq(channelMessages.cardKind, "task"),
+        isNull(channelMessages.threadRootId),
+        isNull(channelMessages.deletedAt),
+      ))
+      .then((rows) => rows[0] ?? null);
+  }
+
+  /**
+   * Assign-time auto-add: if an agent somehow isn't a member of the project
+   * channel yet, join them when they first get work there.
+   */
+  async function ensureAgentMembershipForIssue(
+    companyId: string,
+    projectId: string,
+    agentId: string,
+  ): Promise<void> {
+    const channel = await ensureProjectChannel(companyId, projectId);
+    await addMembers(companyId, channel.id, [{ principalType: "agent", principalId: agentId }]);
+  }
+
+  /**
+   * Move a task's canonical root (+ thread replies) into the new project channel
+   * and leave a stub in the old channel pointing at the destination.
+   */
+  async function moveIssueToProject(input: {
+    companyId: string;
+    issueId: string;
+    title: string;
+    identifier?: string | null;
+    fromProjectId: string | null;
+    toProjectId: string | null;
+  }): Promise<ChannelMessageRow | null> {
+    const root = await getTaskRootForIssue(input.companyId, input.issueId);
+
+    // Newly projected: mint a root in the destination channel.
+    if (!root) {
+      if (!input.toProjectId) return null;
+      return ensureTaskRootMessage(input.companyId, {
+        id: input.issueId,
+        projectId: input.toProjectId,
+        title: input.title,
+      });
+    }
+
+    // Cleared project: leave the historical root where it is (board-only going forward).
+    if (!input.toProjectId) return root;
+
+    const fromChannelId = root.channelId;
+    const toChannel = await ensureProjectChannel(input.companyId, input.toProjectId);
+    if (toChannel.id === fromChannelId) return root;
+
+    const now = new Date();
+    await db
+      .update(channelMessages)
+      .set({ channelId: toChannel.id, updatedAt: now })
+      .where(and(
+        eq(channelMessages.channelId, fromChannelId),
+        or(
+          eq(channelMessages.id, root.id),
+          eq(channelMessages.threadRootId, root.id),
+        ),
+        isNull(channelMessages.deletedAt),
+      ));
+
+    const label = input.identifier ?? input.title;
+    await postMessage({
+      companyId: input.companyId,
+      channelId: fromChannelId,
+      authorType: "system",
+      authorId: null,
+      messageType: "card",
+      cardKind: "stub",
+      body: `Moved to #${toChannel.name} · ${label}`,
+      issueId: input.issueId,
+      metadata: {
+        movedToChannelId: toChannel.id,
+        movedRootMessageId: root.id,
+        fromProjectId: input.fromProjectId,
+        toProjectId: input.toProjectId,
+      },
+      wakeMentionedAgents: false,
+    });
+
+    publishLiveEvent({
+      companyId: input.companyId,
+      type: "channel.message.updated",
+      payload: {
+        channelId: toChannel.id,
+        messageId: root.id,
+        cardKind: "task",
+        movedFromChannelId: fromChannelId,
+      },
+    });
+
+    return { ...root, channelId: toChannel.id, updatedAt: now };
+  }
+
+  /**
+   * Child issues are new roots; also drop a link card into the parent thread so
+   * the breakdown stays visible without stuffing the whole tree into one thread.
+   */
+  async function linkChildIssueInParentThread(input: {
+    companyId: string;
+    parentIssueId: string;
+    child: {
+      id: string;
+      title: string;
+      identifier?: string | null;
+      projectId: string | null;
+    };
+  }): Promise<void> {
+    if (input.child.projectId) {
+      await ensureTaskRootMessage(input.companyId, {
+        id: input.child.id,
+        projectId: input.child.projectId,
+        title: input.child.title,
+      });
+    }
+
+    const parentRoot = await getTaskRootForIssue(input.companyId, input.parentIssueId);
+    if (!parentRoot) return;
+
+    const label = input.child.identifier
+      ? `${input.child.identifier} · ${input.child.title}`
+      : input.child.title;
+
+    await postMessage({
+      companyId: input.companyId,
+      channelId: parentRoot.channelId,
+      authorType: "system",
+      authorId: null,
+      messageType: "card",
+      cardKind: "stub",
+      body: `Created ${label}`,
+      threadRootId: parentRoot.id,
+      issueId: input.child.id,
+      metadata: {
+        linkedChildIssueId: input.child.id,
+        parentIssueId: input.parentIssueId,
+      },
+      wakeMentionedAgents: false,
+    });
+  }
+
+  /**
+   * Project HITL interactions as cards into the task thread. Source of truth
+   * remains issue_thread_interactions — this is a projection, not a copy.
+   */
+  async function postInteractionCard(input: {
+    companyId: string;
+    issueId: string;
+    interactionId: string;
+    kind: string;
+    title?: string | null;
+    summary?: string | null;
+  }): Promise<ChannelMessageRow | null> {
+    const cardKind = cardKindForInteraction(input.kind);
+    if (!cardKind) return null;
+
+    const root = await getTaskRootForIssue(input.companyId, input.issueId);
+    if (!root) return null;
+
+    const existing = await db
+      .select({ id: channelMessages.id })
+      .from(channelMessages)
+      .where(and(
+        eq(channelMessages.interactionId, input.interactionId),
+        isNull(channelMessages.deletedAt),
+      ))
+      .then((rows) => rows[0] ?? null);
+    if (existing) return null;
+
+    const body = input.title?.trim()
+      || input.summary?.trim()
+      || (cardKind === "questions"
+        ? "Questions for you"
+        : cardKind === "suggest_tasks"
+          ? "Suggested tasks"
+          : "Confirmation needed");
+
+    return postMessage({
+      companyId: input.companyId,
+      channelId: root.channelId,
+      authorType: "system",
+      authorId: null,
+      messageType: "card",
+      cardKind,
+      body,
+      threadRootId: root.id,
+      issueId: input.issueId,
+      interactionId: input.interactionId,
+      metadata: { interactionKind: input.kind },
+      wakeMentionedAgents: false,
+    });
   }
 
   /** Idempotently creates the root task card for an issue in its project channel. */
@@ -695,17 +1012,7 @@ export function channelService(db: Db, options: ChannelServiceOptions = {}) {
   ): Promise<ChannelMessageRow | null> {
     if (!issue.projectId) return null;
 
-    const existing = await db
-      .select()
-      .from(channelMessages)
-      .where(and(
-        eq(channelMessages.companyId, companyId),
-        eq(channelMessages.issueId, issue.id),
-        eq(channelMessages.cardKind, "task"),
-        isNull(channelMessages.threadRootId),
-        isNull(channelMessages.deletedAt),
-      ))
-      .then((rows) => rows[0] ?? null);
+    const existing = await getTaskRootForIssue(companyId, issue.id);
     if (existing) return existing;
 
     const channel = await ensureProjectChannel(companyId, issue.projectId);
@@ -890,6 +1197,8 @@ export function channelService(db: Db, options: ChannelServiceOptions = {}) {
     if (message.issueId) throw unprocessable("Message is already linked to an issue");
 
     const projectId = input.projectId ?? channel.projectId ?? null;
+    // This path owns the root card (promote in place / new root + stub). Skip the
+    // generic create hook so we don't race a second task root for the same issue.
     const issue = await issuesSvc.create(input.companyId, {
       title: input.title,
       description: message.body || null,
@@ -901,6 +1210,7 @@ export function channelService(db: Db, options: ChannelServiceOptions = {}) {
       createdByAgentId: input.actor.principalType === "agent" ? input.actor.principalId : null,
       originKind: "manual",
       originId: message.id,
+      skipChannelSync: true,
     });
 
     let rootMessage: ChannelMessageRow;
@@ -1059,6 +1369,11 @@ export function channelService(db: Db, options: ChannelServiceOptions = {}) {
     listThreadMessages,
     postMessage,
     ensureTaskRootMessage,
+    getTaskRootForIssue,
+    moveIssueToProject,
+    linkChildIssueInParentThread,
+    postInteractionCard,
+    ensureAgentMembershipForIssue,
     materializeProjectTaskRoots,
     markRead,
     updateMember,

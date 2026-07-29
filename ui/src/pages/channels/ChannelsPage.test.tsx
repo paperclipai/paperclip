@@ -28,6 +28,11 @@ const channelsApiMock = vi.hoisted(() => ({
   markRead: vi.fn(),
   postMessage: vi.fn(),
   enableChannels: vi.fn(),
+  materialize: vi.fn(),
+}));
+
+const attentionApiMock = vi.hoisted(() => ({
+  list: vi.fn(),
 }));
 
 vi.mock("@/context/CompanyContext", () => ({
@@ -40,6 +45,10 @@ vi.mock("@/context/BreadcrumbContext", () => ({
 }));
 
 vi.mock("@/api/channels", () => ({ channelsApi: channelsApiMock }));
+vi.mock("@/api/attention", () => ({ attentionApi: attentionApiMock }));
+vi.mock("@/lib/home-surface", () => ({
+  saveLastHomeSurface: vi.fn(),
+}));
 
 function sampleChannel(overrides: Partial<Channel> = {}): Channel {
   return {
@@ -145,10 +154,19 @@ describe("ChannelsPage", () => {
     };
     breadcrumbState.setBreadcrumbs.mockReset();
     for (const fn of Object.values(channelsApiMock)) fn.mockReset();
+    attentionApiMock.list.mockReset();
     channelsApiMock.list.mockResolvedValue([sampleChannel()]);
     channelsApiMock.listMessages.mockResolvedValue({ messages: [sampleMessage()], nextCursor: null });
     channelsApiMock.presence.mockResolvedValue([]);
     channelsApiMock.markRead.mockResolvedValue({ ok: true });
+    channelsApiMock.materialize.mockResolvedValue({ created: 0 });
+    attentionApiMock.list.mockResolvedValue({
+      companyId: "company-1",
+      generatedAt: "2026-07-01T00:00:00.000Z",
+      totalCount: 0,
+      countsBySourceKind: {},
+      items: [],
+    });
   });
 
   afterEach(() => {
@@ -164,7 +182,7 @@ describe("ChannelsPage", () => {
     expect(container.textContent).toContain("Draft the launch checklist");
     expect(container.textContent).toContain("PAP-42");
     expect(container.querySelector("[data-testid='chat-composer']")).not.toBeNull();
-    expect(channelsApiMock.listMessages).toHaveBeenCalledWith("channel-1", {
+    expect(channelsApiMock.listMessages).toHaveBeenCalledWith("company-1", "channel-1", {
       includeCompleted: false,
     });
   });

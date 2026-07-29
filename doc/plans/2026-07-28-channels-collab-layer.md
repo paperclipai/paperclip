@@ -1,7 +1,7 @@
 # Channels Collab Layer
 
 Date: 2026-07-28  
-Status: Implementation plan (active)
+Status: Implemented on `feat/channels-collab-layer` (worktree `/Users/jawad/Desktop/paperclip-channels`)
 
 ## Summary
 
@@ -31,6 +31,23 @@ Canonical detailed design: Cursor plan `channels_collab_layer` (grill decisions 
 
 - `companies.channels_enabled` boolean (default false; new companies set true)
 - `channels`, `channel_members`, `channel_messages` (see `packages/db/src/schema/channels.ts`)
+
+## Shipped surface
+
+- DB migration `0184`, shared contracts, channel API + live events
+- Project channel ensure on project create; lazy root materialize on open
+- Move-project + stub; child root + parent-thread link card
+- HITL interaction cards projected into task threads
+- Issue Chat embeds channel thread when a task root exists
+- Needs you rail (Attention SoT); remember-last home surface
+- Ask / Plan / Work composer modes in channel UI
+- Company-scoped channel API client paths
+
+## Follow-ups (not blocking the core contract)
+
+- Optional comment dual-write mirror for non-channel clients
+- Richer in-thread HITL resolve controls (today: cards + Decisions / WhatNeedsMe)
+- Adapter-level enforcement of `modelProfile: "cheap"` when the agent's cheap lane is configured
 
 ## Non-goals
 

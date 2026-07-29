@@ -22,12 +22,15 @@ import { queryKeys } from "@/lib/queryKeys";
 import { cn } from "@/lib/utils";
 import { timeAgo } from "@/lib/timeAgo";
 import { channelsApi, type Channel, type ChannelWorkMode } from "@/api/channels";
+import { attentionApi } from "@/api/attention";
+import { saveLastHomeSurface } from "@/lib/home-surface";
 import {
   CHANNEL_WORK_MODE_OPTIONS,
   ChannelMessageItem,
   composerToneForMode,
 } from "./ChannelMessageItem";
 import { ChannelThreadPanel } from "./ChannelThreadPanel";
+import type { AttentionItem } from "@paperclipai/shared";
 
 function channelIcon(channel: Channel) {
   if (channel.kind === "project") return Hash;
@@ -91,8 +94,9 @@ export function ChannelsPage() {
 
   const messagesQuery = useQuery({
     queryKey: queryKeys.channels.messages(channelId!, showCompleted),
-    queryFn: () => channelsApi.listMessages(channelId!, { includeCompleted: showCompleted }),
-    enabled: !!channelId && channelsEnabled,
+    queryFn: () =>
+      channelsApi.listMessages(selectedCompanyId!, channelId!, { includeCompleted: showCompleted }),
+    enabled: !!channelId && !!selectedCompanyId && channelsEnabled,
   });
 
   const presenceQuery = useQuery({
@@ -101,15 +105,22 @@ export function ChannelsPage() {
     enabled: !!selectedCompanyId && channelsEnabled,
   });
 
+  const attentionQuery = useQuery({
+    queryKey: queryKeys.attention(selectedCompanyId!),
+    queryFn: () => attentionApi.list(selectedCompanyId!),
+    enabled: !!selectedCompanyId && channelsEnabled,
+    refetchOnWindowFocus: true,
+  });
+
   // Opening a channel clears its unread dot. The read receipt is best-effort:
   // the timeline stays usable if the endpoint isn't live yet.
   useEffect(() => {
-    if (!channelId || !channelsEnabled) return;
+    if (!channelId || !channelsEnabled || !selectedCompanyId) return;
     let cancelled = false;
     void channelsApi
-      .markRead(channelId)
+      .markRead(selectedCompanyId, channelId)
       .then(() => {
-        if (cancelled || !selectedCompanyId) return;
+        if (cancelled) return;
         void queryClient.invalidateQueries({ queryKey: queryKeys.channels.list(selectedCompanyId) });
       })
       .catch(() => {});
@@ -117,6 +128,25 @@ export function ChannelsPage() {
       cancelled = true;
     };
   }, [channelId, channelsEnabled, queryClient, selectedCompanyId]);
+
+  // Remember last home surface so company root can restore Channels.
+  useEffect(() => {
+    if (!channelsEnabled || !selectedCompanyId) return;
+    saveLastHomeSurface(selectedCompanyId, "channels");
+  }, [channelsEnabled, selectedCompanyId]);
+
+  // Eager channels already exist; lazily materialize task roots on first open.
+  useEffect(() => {
+    if (!channelId || !selectedCompanyId || !channelsEnabled || !activeChannel) return;
+    if (activeChannel.kind !== "project") return;
+    void channelsApi.materialize(selectedCompanyId, channelId).then((result) => {
+      if (result.created > 0) {
+        void queryClient.invalidateQueries({
+          queryKey: queryKeys.channels.messages(channelId, showCompleted),
+        });
+      }
+    }).catch(() => {});
+  }, [activeChannel, channelId, channelsEnabled, queryClient, selectedCompanyId, showCompleted]);
 
   const enableChannelsMutation = useMutation({
     mutationFn: () => channelsApi.enableChannels(selectedCompanyId!, true),
@@ -127,7 +157,7 @@ export function ChannelsPage() {
 
   const postMessage = useMutation({
     mutationFn: (body: string) =>
-      channelsApi.postMessage(channelId!, { body, channelWorkMode: workMode }),
+      channelsApi.postMessage(selectedCompanyId!, channelId!, { body, channelWorkMode: workMode }),
     onSuccess: () => {
       setDraft("");
       void queryClient.invalidateQueries({
@@ -363,9 +393,10 @@ export function ChannelsPage() {
         </section>
 
         {/* Right: thread panel when open, otherwise the standing rail */}
-        {activeChannel && openThreadId ? (
+        {activeChannel && openThreadId && selectedCompanyId ? (
           <div className="hidden w-96 shrink-0 lg:block">
             <ChannelThreadPanel
+              companyId={selectedCompanyId}
               channelId={activeChannel.id}
               rootId={openThreadId}
               includeCompleted={showCompleted}
@@ -378,12 +409,41 @@ export function ChannelsPage() {
               <h2 className="mb-2 flex items-center gap-1.5 text-(length:--text-micro) font-semibold uppercase tracking-wide text-muted-foreground">
                 <Inbox className="h-3.5 w-3.5" />
                 Needs you
+                {(attentionQuery.data?.totalCount ?? 0) > 0 ? (
+                  <span className="rounded-sm bg-muted px-1 text-(length:--text-nano) text-foreground">
+                    {attentionQuery.data?.totalCount}
+                  </span>
+                ) : null}
               </h2>
-              {/* TODO(channels): render the Attention feed inline once the
-                  channels-scoped slice lands; Decisions is the same source. */}
-              <p className="text-(length:--text-micro) text-muted-foreground">
-                Approvals, questions, and blocked tasks waiting on a human.
-              </p>
+              {attentionQuery.isLoading ? (
+                <div className="flex justify-center py-3 text-muted-foreground">
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                </div>
+              ) : (attentionQuery.data?.items.length ?? 0) === 0 ? (
+                <p className="text-(length:--text-micro) text-muted-foreground">
+                  Nothing waiting on you right now.
+                </p>
+              ) : (
+                <ul className="flex flex-col gap-2">
+                  {(attentionQuery.data?.items ?? []).slice(0, 6).map((item: AttentionItem) => (
+                    <li key={item.id}>
+                      <Link
+                        to={item.subject.href ?? "/decisions"}
+                        className="block rounded-md border border-border/60 px-2.5 py-2 transition-colors hover:bg-accent/50"
+                      >
+                        <p className="line-clamp-2 text-(length:--text-compact) font-medium text-foreground">
+                          {item.subject.title ?? item.whyNow}
+                        </p>
+                        <p className="mt-0.5 truncate text-(length:--text-micro) text-muted-foreground">
+                          {item.relatedIssue?.identifier
+                            ?? item.project?.name
+                            ?? item.sourceKind.replaceAll("_", " ")}
+                        </p>
+                      </Link>
+                    </li>
+                  ))}
+                </ul>
+              )}
               <Button asChild variant="outline" size="sm" className="mt-2 w-full">
                 <Link to="/decisions">Open Decisions</Link>
               </Button>

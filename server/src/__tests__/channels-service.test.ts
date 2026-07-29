@@ -7,9 +7,12 @@ import {
   channels,
   companies,
   createDb,
+  heartbeatRuns,
+  issueThreadInteractions,
   issues,
   projects,
 } from "@paperclipai/db";
+import { eq } from "drizzle-orm";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -54,6 +57,9 @@ describeEmbeddedPostgres("channel service", () => {
     await db.delete(channelMessages);
     await db.delete(channelMembers);
     await db.delete(channels);
+    await db.delete(issueThreadInteractions);
+    await db.update(issues).set({ executionRunId: null });
+    await db.delete(heartbeatRuns);
     await db.delete(issues);
     await db.delete(projects);
     await db.delete(agents);
@@ -213,5 +219,199 @@ describeEmbeddedPostgres("channel service", () => {
 
     const after = await svc.listChannels(company.id, reader);
     expect(after.find((entry) => entry.id === channel.id)?.unreadCount).toBe(0);
+  });
+
+  it("moves a task root into the new project channel and leaves a stub", async () => {
+    const { company, project } = await seedCompany();
+    const destination = await db
+      .insert(projects)
+      .values({ companyId: company.id, name: "Orion" })
+      .returning()
+      .then((rows) => rows[0]);
+    const svc = channelService(db, { enqueueWakeup: async () => undefined });
+    const fromChannel = await svc.ensureProjectChannel(company.id, project.id, project.name);
+    const toChannel = await svc.ensureProjectChannel(company.id, destination.id, destination.name);
+
+    const issue = await db
+      .insert(issues)
+      .values({
+        companyId: company.id,
+        projectId: project.id,
+        title: "Auth fix",
+        status: "todo",
+        identifier: "PAP-88",
+      })
+      .returning()
+      .then((rows) => rows[0]);
+
+    const root = await svc.ensureTaskRootMessage(company.id, {
+      id: issue.id,
+      projectId: project.id,
+      title: issue.title,
+    });
+    expect(root?.channelId).toBe(fromChannel.id);
+
+    await svc.postMessage({
+      companyId: company.id,
+      channelId: fromChannel.id,
+      authorType: "user",
+      authorId: "user-1",
+      body: "working on it",
+      threadRootId: root!.id,
+      issueId: issue.id,
+    });
+
+    await svc.moveIssueToProject({
+      companyId: company.id,
+      issueId: issue.id,
+      title: issue.title,
+      identifier: issue.identifier,
+      fromProjectId: project.id,
+      toProjectId: destination.id,
+    });
+
+    const moved = await svc.getTaskRootForIssue(company.id, issue.id);
+    expect(moved?.channelId).toBe(toChannel.id);
+
+    const oldRoots = await svc.listRootMessages(fromChannel.id, { includeCompleted: true });
+    expect(oldRoots.messages.some((message) => message.cardKind === "stub")).toBe(true);
+
+    const thread = await svc.listThreadMessages(moved!.id);
+    expect(thread.messages).toHaveLength(1);
+    expect(thread.messages[0]?.body).toBe("working on it");
+  });
+
+  it("posts a child link card into the parent thread and mints a child root", async () => {
+    const { company, project } = await seedCompany();
+    const svc = channelService(db, { enqueueWakeup: async () => undefined });
+    await svc.ensureProjectChannel(company.id, project.id, project.name);
+
+    const [parent, child] = await db
+      .insert(issues)
+      .values([
+        { companyId: company.id, projectId: project.id, title: "Parent", status: "todo", identifier: "PAP-1" },
+        { companyId: company.id, projectId: project.id, title: "Child", status: "todo", identifier: "PAP-2" },
+      ])
+      .returning();
+
+    await svc.ensureTaskRootMessage(company.id, {
+      id: parent.id,
+      projectId: project.id,
+      title: parent.title,
+    });
+
+    await svc.linkChildIssueInParentThread({
+      companyId: company.id,
+      parentIssueId: parent.id,
+      child: {
+        id: child.id,
+        title: child.title,
+        identifier: child.identifier,
+        projectId: project.id,
+      },
+    });
+
+    const childRoot = await svc.getTaskRootForIssue(company.id, child.id);
+    expect(childRoot).not.toBeNull();
+
+    const parentRoot = await svc.getTaskRootForIssue(company.id, parent.id);
+    const thread = await svc.listThreadMessages(parentRoot!.id);
+    expect(thread.messages.some((message) => (
+      message.cardKind === "stub" && message.body.includes("PAP-2")
+    ))).toBe(true);
+  });
+
+  it("projects HITL interactions as thread cards", async () => {
+    const { company, project } = await seedCompany();
+    const svc = channelService(db, { enqueueWakeup: async () => undefined });
+    await svc.ensureProjectChannel(company.id, project.id, project.name);
+    const issue = await db
+      .insert(issues)
+      .values({ companyId: company.id, projectId: project.id, title: "Ask me", status: "todo" })
+      .returning()
+      .then((rows) => rows[0]);
+    const root = await svc.ensureTaskRootMessage(company.id, {
+      id: issue.id,
+      projectId: project.id,
+      title: issue.title,
+    });
+
+    const interaction = await db
+      .insert(issueThreadInteractions)
+      .values({
+        companyId: company.id,
+        issueId: issue.id,
+        kind: "ask_user_questions",
+        payload: { questions: [] },
+        title: "Which provider?",
+      })
+      .returning()
+      .then((rows) => rows[0]);
+
+    const card = await svc.postInteractionCard({
+      companyId: company.id,
+      issueId: issue.id,
+      interactionId: interaction.id,
+      kind: "ask_user_questions",
+      title: "Which provider?",
+    });
+    expect(card?.cardKind).toBe("questions");
+    expect(card?.threadRootId).toBe(root!.id);
+
+    // Idempotent on the same interaction id.
+    expect(await svc.postInteractionCard({
+      companyId: company.id,
+      issueId: issue.id,
+      interactionId: interaction.id,
+      kind: "ask_user_questions",
+      title: "Which provider?",
+    })).toBeNull();
+  });
+
+  it("posts a busy-mention system line when the agent is already running", async () => {
+    const { company, agent, project } = await seedCompany();
+    const svc = channelService(db, { enqueueWakeup: async () => undefined });
+    const channel = await svc.ensureProjectChannel(company.id, project.id, project.name);
+    const issue = await db
+      .insert(issues)
+      .values({
+        companyId: company.id,
+        projectId: project.id,
+        title: "Live work",
+        status: "in_progress",
+        identifier: "PAP-9",
+        assigneeAgentId: agent.id,
+      })
+      .returning()
+      .then((rows) => rows[0]);
+    const run = await db
+      .insert(heartbeatRuns)
+      .values({
+        companyId: company.id,
+        agentId: agent.id,
+        status: "running",
+        invocationSource: "on_demand",
+        triggerDetail: "manual",
+        startedAt: new Date(),
+      })
+      .returning()
+      .then((rows) => rows[0]);
+    await db.update(issues).set({ executionRunId: run.id }).where(eq(issues.id, issue.id));
+
+    await svc.postMessage({
+      companyId: company.id,
+      channelId: channel.id,
+      authorType: "user",
+      authorId: "user-1",
+      body: "@ada-lovelace ping",
+      channelWorkMode: "ask",
+    });
+
+    const roots = await svc.listRootMessages(channel.id, { includeCompleted: true });
+    expect(roots.messages.some((message) => (
+      message.messageType === "system"
+      && message.body.includes("busy on PAP-9")
+      && message.body.includes("queued")
+    ))).toBe(true);
   });
 });

@@ -20,6 +20,7 @@ import { usePublishSharedQueryData, useSharedPollingQuery } from "../hooks/useSh
 import { ActivityRow } from "../components/ActivityRow";
 import { Identity } from "../components/Identity";
 import { timeAgo } from "../lib/timeAgo";
+import { saveLastHomeSurface } from "../lib/home-surface";
 import { cn, formatCents } from "../lib/utils";
 import { Bot, CircleDot, DollarSign, ShieldCheck, LayoutDashboard, PauseCircle } from "lucide-react";
 import { ActiveAgentsPanel } from "../components/ActiveAgentsPanel";
@@ -55,6 +56,11 @@ export function Dashboard() {
   useEffect(() => {
     setBreadcrumbs([{ label: "Dashboard" }]);
   }, [setBreadcrumbs]);
+
+  useEffect(() => {
+    if (!selectedCompanyId) return;
+    saveLastHomeSurface(selectedCompanyId, "dashboard");
+  }, [selectedCompanyId]);
 
   const dashboardQueryKey = queryKeys.dashboard(selectedCompanyId!);
   const sharedDashboard = useSharedPollingQuery({

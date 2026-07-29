@@ -5,11 +5,6 @@ import { api, type RequestOptions } from "./client";
  * Channels collab layer (doc/plans/2026-07-28-channels-collab-layer.md).
  *
  * Project = channel, task = root message, updates = thread.
- *
- * TODO(channels): the canonical shapes already live in
- * `packages/shared/src/types/channel.ts` and `packages/shared/src/constants.ts`,
- * but are not re-exported from the package index yet. Swap these local mirrors
- * for `@paperclipai/shared` imports once the shared barrel exports them.
  */
 export type ChannelKind = "project" | "public" | "private" | "dm" | "group_dm";
 export type ChannelMemberRole = "member" | "admin";
@@ -44,6 +39,7 @@ export interface Channel {
   updatedAt: string;
   unreadCount?: number;
   muted?: boolean;
+  isMember?: boolean;
 }
 
 export interface ChannelMessage {
@@ -185,45 +181,53 @@ export const channelsApi = {
   createDm: (companyId: string, data: CreateDmChannelInput) =>
     api.post<Channel>(`/companies/${companyId}/channels/dm`, data),
 
-  get: (channelId: string, options?: RequestOptions) =>
-    api.get<Channel>(`/channels/${channelId}`, options),
+  get: (companyId: string, channelId: string, options?: RequestOptions) =>
+    api.get<Channel>(`/companies/${companyId}/channels/${channelId}`, options),
 
-  update: (channelId: string, data: UpdateChannelInput) =>
-    api.patch<Channel>(`/channels/${channelId}`, data),
+  update: (companyId: string, channelId: string, data: UpdateChannelInput) =>
+    api.patch<Channel>(`/companies/${companyId}/channels/${channelId}`, data),
 
   /** Root messages only — the channel timeline. */
   listMessages: async (
+    companyId: string,
     channelId: string,
     filters?: ChannelMessageListFilters,
     options?: RequestOptions,
   ): Promise<ChannelMessagePage> => {
     const raw = await api.get<ChannelMessagePage | ChannelMessage[]>(
-      `/channels/${channelId}/messages${messageListSearchParams(filters)}`,
+      `/companies/${companyId}/channels/${channelId}/messages${messageListSearchParams(filters)}`,
       options,
     );
     return toMessagePage(raw);
   },
 
   listThread: async (
+    companyId: string,
     channelId: string,
     rootId: string,
     options?: RequestOptions,
   ): Promise<ChannelThread> => {
     const raw = await api.get<ChannelThread | ChannelMessage[]>(
-      `/channels/${channelId}/messages/${rootId}/thread`,
+      `/companies/${companyId}/channels/${channelId}/messages/${rootId}/thread`,
       options,
     );
     return toThread(raw);
   },
 
-  postMessage: (channelId: string, data: PostChannelMessageInput) =>
-    api.post<ChannelMessage>(`/channels/${channelId}/messages`, data),
+  postMessage: (companyId: string, channelId: string, data: PostChannelMessageInput) =>
+    api.post<ChannelMessage>(`/companies/${companyId}/channels/${channelId}/messages`, data),
 
-  markRead: (channelId: string, messageId?: string) =>
-    api.post<{ ok: true }>(`/channels/${channelId}/read`, messageId ? { messageId } : {}),
+  markRead: (companyId: string, channelId: string, messageId?: string) =>
+    api.post(
+      `/companies/${companyId}/channels/${channelId}/read`,
+      messageId ? { messageId } : {},
+    ),
 
-  updateMember: (channelId: string, data: UpdateChannelMemberInput) =>
-    api.patch<{ muted: boolean; role: ChannelMemberRole }>(`/channels/${channelId}/members/me`, data),
+  updateMember: (companyId: string, channelId: string, data: UpdateChannelMemberInput) =>
+    api.patch(
+      `/companies/${companyId}/channels/${channelId}/member`,
+      data,
+    ),
 
   presence: async (
     companyId: string,
@@ -236,12 +240,29 @@ export const channelsApi = {
     return Array.isArray(raw) ? raw : (raw?.agents ?? []);
   },
 
+  /** Canonical task root for an issue, or null when the issue is board-only. */
+  getIssueRoot: (companyId: string, issueId: string, options?: RequestOptions) =>
+    api.get<ChannelMessage | null>(
+      `/companies/${companyId}/channels/issues/${issueId}/root`,
+      options,
+    ),
+
+  materialize: (companyId: string, channelId: string) =>
+    api.post<{ created: number }>(
+      `/companies/${companyId}/channels/${channelId}/materialize`,
+      {},
+    ),
+
   createIssueFromMessage: (
+    companyId: string,
     channelId: string,
     messageId: string,
     data: CreateIssueFromMessageInput,
   ) =>
-    api.post<ChannelMessage>(`/channels/${channelId}/messages/${messageId}/create-issue`, data),
+    api.post(
+      `/companies/${companyId}/channels/${channelId}/messages/${messageId}/issue`,
+      data,
+    ),
 
   /** Opt an existing company into the channels surface. */
   enableChannels: (companyId: string, enabled: boolean = true) =>

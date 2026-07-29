@@ -92,6 +92,18 @@ export function channelRoutes(db: Db) {
     res.json(await svc.listPresence(companyId));
   });
 
+  router.get("/companies/:companyId/channels/issues/:issueId/root", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const issueId = req.params.issueId as string;
+    assertCompanyAccess(req, companyId);
+    if (!(await svc.channelsEnabled(companyId))) {
+      res.json(null);
+      return;
+    }
+    const root = await svc.getTaskRootForIssue(companyId, issueId);
+    res.json(root);
+  });
+
   router.get("/companies/:companyId/channels/:channelId", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
