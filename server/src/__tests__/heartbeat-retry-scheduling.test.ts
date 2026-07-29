@@ -25,6 +25,7 @@ import {
 import { registerServerAdapter, unregisterServerAdapter } from "../adapters/index.ts";
 import {
   BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS,
+  CONSECUTIVE_IDENTICAL_FAILURE_PAUSE_THRESHOLD,
   INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
   INTERACTION_CONTINUATION_INFRA_WAKE_REASON,
   MAX_TURN_CONTINUATION_RETRY_REASON,
@@ -35,6 +36,13 @@ import {
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 const PROVIDER_QUOTA_TEST_ADAPTER = "provider_quota_test";
+const AUTH_FAILURE_TEST_ADAPTER = "auth_failure_test";
+const IDENTICAL_FAILURE_TEST_ADAPTER = "identical_failure_test";
+const IDENTICAL_FAILURE_TEST_ERROR_CODE = "stuck_failure_test";
+// Adapter that terminates its own agent mid-run to simulate an external
+// termination racing the storm-breaker pause. Its execute reads the mutable
+// target so a single registration serves every race test.
+const RACE_TERMINATE_TEST_ADAPTER = "race_terminate_test";
 
 if (!embeddedPostgresSupport.supported) {
   console.warn(
@@ -60,6 +68,12 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
   let db!: ReturnType<typeof createDb>;
   let heartbeat!: ReturnType<typeof heartbeatService>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+  // When set, RACE_TERMINATE_TEST_ADAPTER flips this agent to "terminated" while
+  // its run executes, then fails with the given errorCode. The heartbeat holds an
+  // in-memory agent snapshot from before execution, so the storm-breaker pause
+  // must rely on its UPDATE ... WHERE status guard (not the stale snapshot) to
+  // avoid resurrecting a terminated agent as paused.
+  let raceTerminateTarget: { agentId: string; errorCode: string } | null = null;
 
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-heartbeat-retry-scheduling-");
@@ -88,14 +102,78 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
         testedAt: new Date().toISOString(),
       }),
     });
+    registerServerAdapter({
+      type: IDENTICAL_FAILURE_TEST_ADAPTER,
+      execute: async () => ({
+        exitCode: 1,
+        signal: null,
+        timedOut: false,
+        errorMessage: "Same failure every run.",
+        errorCode: IDENTICAL_FAILURE_TEST_ERROR_CODE,
+        resultJson: {},
+      }),
+      testEnvironment: async () => ({
+        adapterType: IDENTICAL_FAILURE_TEST_ADAPTER,
+        status: "pass",
+        checks: [],
+        testedAt: new Date().toISOString(),
+      }),
+    });
+    registerServerAdapter({
+      type: AUTH_FAILURE_TEST_ADAPTER,
+      execute: async () => ({
+        exitCode: 1,
+        signal: null,
+        timedOut: false,
+        errorMessage: "Claude authentication required. Connect a provider credential.",
+        errorCode: "claude_auth_required",
+        resultJson: {},
+      }),
+      testEnvironment: async () => ({
+        adapterType: AUTH_FAILURE_TEST_ADAPTER,
+        status: "pass",
+        checks: [],
+        testedAt: new Date().toISOString(),
+      }),
+    });
+    registerServerAdapter({
+      type: RACE_TERMINATE_TEST_ADAPTER,
+      execute: async () => {
+        const target = raceTerminateTarget;
+        if (target) {
+          await db
+            .update(agents)
+            .set({ status: "terminated", updatedAt: new Date() })
+            .where(eq(agents.id, target.agentId));
+        }
+        return {
+          exitCode: 1,
+          signal: null,
+          timedOut: false,
+          errorMessage: "Failure racing an external termination.",
+          errorCode: target?.errorCode ?? "claude_auth_required",
+          resultJson: {},
+        };
+      },
+      testEnvironment: async () => ({
+        adapterType: RACE_TERMINATE_TEST_ADAPTER,
+        status: "pass",
+        checks: [],
+        testedAt: new Date().toISOString(),
+      }),
+    });
   }, 20_000);
 
   afterEach(async () => {
+    raceTerminateTarget = null;
     await cleanupRetryFixture();
   });
 
   afterAll(async () => {
     unregisterServerAdapter(PROVIDER_QUOTA_TEST_ADAPTER);
+    unregisterServerAdapter(AUTH_FAILURE_TEST_ADAPTER);
+    unregisterServerAdapter(IDENTICAL_FAILURE_TEST_ADAPTER);
+    unregisterServerAdapter(RACE_TERMINATE_TEST_ADAPTER);
     await tempDb?.cleanup();
   });
 
@@ -285,6 +363,315 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
         { timeout: 5_000, interval: 50 },
       )
       .toEqual({ status: "idle", errorReason: null });
+  });
+
+  it("pauses an agent whose run fails with a permanent auth error instead of re-running it", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Keyless Agent",
+      role: "engineer",
+      status: "idle",
+      adapterType: AUTH_FAILURE_TEST_ADAPTER,
+      adapterConfig: {},
+      runtimeConfig: {
+        heartbeat: {
+          wakeOnDemand: true,
+          maxConcurrentRuns: 1,
+        },
+      },
+      permissions: {},
+    });
+
+    const run = await heartbeat.invoke(agentId, "on_demand", {}, "manual");
+    expect(run).not.toBeNull();
+
+    const failedRun = await waitForRunToFinish(heartbeat, run!.id);
+    expect(failedRun?.status).toBe("failed");
+    expect(failedRun?.errorCode).toBe("claude_auth_required");
+
+    await expect
+      .poll(
+        () =>
+          db
+            .select({ status: agents.status })
+            .from(agents)
+            .where(eq(agents.id, agentId))
+            .then((rows) => rows[0]?.status ?? null),
+        { timeout: 5_000, interval: 50 },
+      )
+      .toBe("paused");
+
+    // No retry run is scheduled for a permanent auth failure.
+    const retryCount = await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.retryOfRunId, run!.id))
+      .then((rows) => rows.length);
+    expect(retryCount).toBe(0);
+
+    const pausedAgent = await db
+      .select({ pauseReason: agents.pauseReason })
+      .from(agents)
+      .where(eq(agents.id, agentId))
+      .then((rows) => rows[0] ?? null);
+    expect(pausedAgent?.pauseReason).toContain("Connect a model key");
+  });
+
+  async function seedIdenticalFailureFixture(input: {
+    companyId: string;
+    agentId: string;
+    priorRuns: Array<{ status: "failed" | "succeeded"; errorCode?: string | null }>;
+  }) {
+    await db.insert(companies).values({
+      id: input.companyId,
+      name: "Paperclip",
+      issuePrefix: `T${input.companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
+    });
+
+    await db.insert(agents).values({
+      id: input.agentId,
+      companyId: input.companyId,
+      name: "Stuck Agent",
+      role: "engineer",
+      status: "idle",
+      adapterType: IDENTICAL_FAILURE_TEST_ADAPTER,
+      adapterConfig: {},
+      runtimeConfig: {
+        heartbeat: {
+          wakeOnDemand: true,
+          maxConcurrentRuns: 1,
+        },
+      },
+      permissions: {},
+    });
+
+    // Oldest first; each row gets an older createdAt so the newly invoked run is
+    // always the most recent one.
+    const base = Date.now() - input.priorRuns.length * 60_000;
+    for (const [index, prior] of input.priorRuns.entries()) {
+      const at = new Date(base + index * 60_000);
+      await db.insert(heartbeatRuns).values({
+        id: randomUUID(),
+        companyId: input.companyId,
+        agentId: input.agentId,
+        invocationSource: "assignment",
+        status: prior.status,
+        error: prior.status === "failed" ? "Same failure every run." : null,
+        errorCode: prior.status === "failed" ? (prior.errorCode ?? IDENTICAL_FAILURE_TEST_ERROR_CODE) : null,
+        finishedAt: at,
+        resultJson: {},
+        contextSnapshot: {},
+        createdAt: at,
+        updatedAt: at,
+      });
+    }
+  }
+
+  it("pauses an agent after N consecutive failed runs with the same error code", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    await seedIdenticalFailureFixture({
+      companyId,
+      agentId,
+      priorRuns: Array.from(
+        { length: CONSECUTIVE_IDENTICAL_FAILURE_PAUSE_THRESHOLD - 1 },
+        () => ({ status: "failed" as const }),
+      ),
+    });
+
+    const run = await heartbeat.invoke(agentId, "on_demand", {}, "manual");
+    expect(run).not.toBeNull();
+
+    const failedRun = await waitForRunToFinish(heartbeat, run!.id);
+    expect(failedRun?.status).toBe("failed");
+    expect(failedRun?.errorCode).toBe(IDENTICAL_FAILURE_TEST_ERROR_CODE);
+
+    await expect
+      .poll(
+        () =>
+          db
+            .select({ status: agents.status })
+            .from(agents)
+            .where(eq(agents.id, agentId))
+            .then((rows) => rows[0]?.status ?? null),
+        { timeout: 5_000, interval: 50 },
+      )
+      .toBe("paused");
+
+    const pausedAgent = await db
+      .select({ pauseReason: agents.pauseReason })
+      .from(agents)
+      .where(eq(agents.id, agentId))
+      .then((rows) => rows[0] ?? null);
+    expect(pausedAgent?.pauseReason).toContain(IDENTICAL_FAILURE_TEST_ERROR_CODE);
+    expect(pausedAgent?.pauseReason).toContain("then resume");
+  });
+
+  it("does not pause an agent whose identical-failure streak is below the threshold", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    await seedIdenticalFailureFixture({
+      companyId,
+      agentId,
+      priorRuns: Array.from(
+        { length: CONSECUTIVE_IDENTICAL_FAILURE_PAUSE_THRESHOLD - 2 },
+        () => ({ status: "failed" as const }),
+      ),
+    });
+
+    const run = await heartbeat.invoke(agentId, "on_demand", {}, "manual");
+    expect(run).not.toBeNull();
+
+    const failedRun = await waitForRunToFinish(heartbeat, run!.id);
+    expect(failedRun?.status).toBe("failed");
+
+    // Give the finalize pipeline time to (wrongly) pause before asserting.
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    const agentStatus = await db
+      .select({ status: agents.status })
+      .from(agents)
+      .where(eq(agents.id, agentId))
+      .then((rows) => rows[0]?.status ?? null);
+    expect(agentStatus).not.toBe("paused");
+  });
+
+  it("does not pause an agent when a success or a different error code breaks the streak", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    await seedIdenticalFailureFixture({
+      companyId,
+      agentId,
+      priorRuns: [
+        { status: "failed" },
+        { status: "failed" },
+        { status: "succeeded" },
+        { status: "failed" },
+        { status: "failed", errorCode: "some_other_code" },
+      ],
+    });
+
+    const run = await heartbeat.invoke(agentId, "on_demand", {}, "manual");
+    expect(run).not.toBeNull();
+
+    const failedRun = await waitForRunToFinish(heartbeat, run!.id);
+    expect(failedRun?.status).toBe("failed");
+
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    const agentStatus = await db
+      .select({ status: agents.status })
+      .from(agents)
+      .where(eq(agents.id, agentId))
+      .then((rows) => rows[0]?.status ?? null);
+    expect(agentStatus).not.toBe("paused");
+  });
+
+  async function seedRaceTerminateAgent(companyId: string, agentId: string) {
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Race Agent",
+      role: "engineer",
+      status: "idle",
+      adapterType: RACE_TERMINATE_TEST_ADAPTER,
+      adapterConfig: {},
+      runtimeConfig: {
+        heartbeat: {
+          wakeOnDemand: true,
+          maxConcurrentRuns: 1,
+        },
+      },
+      permissions: {},
+    });
+  }
+
+  it("does not resurrect an externally-terminated agent as paused via the permanent-auth pause", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    await seedRaceTerminateAgent(companyId, agentId);
+    // The run's execute flips the agent to terminated; the heartbeat's in-memory
+    // snapshot still reads runnable, so only the UPDATE ... WHERE status guard
+    // prevents the permanent-auth pause from resurrecting it.
+    raceTerminateTarget = { agentId, errorCode: "claude_auth_required" };
+
+    const run = await heartbeat.invoke(agentId, "on_demand", {}, "manual");
+    expect(run).not.toBeNull();
+    const failedRun = await waitForRunToFinish(heartbeat, run!.id);
+    expect(failedRun?.status).toBe("failed");
+    expect(failedRun?.errorCode).toBe("claude_auth_required");
+
+    // Give the finalize pipeline time to (wrongly) flip the agent before asserting.
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    const finalAgent = await db
+      .select({ status: agents.status, pauseReason: agents.pauseReason })
+      .from(agents)
+      .where(eq(agents.id, agentId))
+      .then((rows) => rows[0] ?? null);
+    expect(finalAgent?.status).toBe("terminated");
+    expect(finalAgent?.pauseReason ?? null).toBeNull();
+  });
+
+  it("does not resurrect an externally-terminated agent as paused via the identical-failure storm breaker", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    await seedRaceTerminateAgent(companyId, agentId);
+
+    // Seed the streak so the incoming run is the Nth identical failure that would
+    // trip the storm breaker were the agent not concurrently terminated.
+    const base = Date.now() - CONSECUTIVE_IDENTICAL_FAILURE_PAUSE_THRESHOLD * 60_000;
+    for (let index = 0; index < CONSECUTIVE_IDENTICAL_FAILURE_PAUSE_THRESHOLD - 1; index++) {
+      const at = new Date(base + index * 60_000);
+      await db.insert(heartbeatRuns).values({
+        id: randomUUID(),
+        companyId,
+        agentId,
+        invocationSource: "assignment",
+        status: "failed",
+        error: "Same failure every run.",
+        errorCode: IDENTICAL_FAILURE_TEST_ERROR_CODE,
+        finishedAt: at,
+        resultJson: {},
+        contextSnapshot: {},
+        createdAt: at,
+        updatedAt: at,
+      });
+    }
+    raceTerminateTarget = { agentId, errorCode: IDENTICAL_FAILURE_TEST_ERROR_CODE };
+
+    const run = await heartbeat.invoke(agentId, "on_demand", {}, "manual");
+    expect(run).not.toBeNull();
+    const failedRun = await waitForRunToFinish(heartbeat, run!.id);
+    expect(failedRun?.status).toBe("failed");
+    expect(failedRun?.errorCode).toBe(IDENTICAL_FAILURE_TEST_ERROR_CODE);
+
+    await new Promise((resolve) => setTimeout(resolve, 700));
+    const finalAgent = await db
+      .select({ status: agents.status, pauseReason: agents.pauseReason })
+      .from(agents)
+      .where(eq(agents.id, agentId))
+      .then((rows) => rows[0] ?? null);
+    expect(finalAgent?.status).toBe("terminated");
+    expect(finalAgent?.pauseReason ?? null).toBeNull();
   });
 
   async function seedMaxTurnFixture(input?: {
