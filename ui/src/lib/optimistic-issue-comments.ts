@@ -1,5 +1,7 @@
 import type { Issue, IssueComment } from "@paperclipai/shared";
 
+export const ISSUE_COMMENT_PAGE_SIZE = 50;
+
 export interface IssueCommentReassignment {
   assigneeAgentId: string | null;
   assigneeUserId: string | null;

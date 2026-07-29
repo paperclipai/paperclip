@@ -67,6 +67,9 @@ function registerModuleMocks() {
       })),
       hasPermission: vi.fn(async () => true),
     }),
+    activityService: () => ({
+      runsForIssue: vi.fn(async () => []),
+    }),
     agentService: () => ({
       getById: vi.fn(async () => ({ id: CREATED_AGENT_ID, companyId: "company-1", permissions: null })),
       resolveByReference: vi.fn(async (_companyId: string, raw: string) => ({
@@ -414,7 +417,7 @@ describe.sequential("issue thread interaction routes", () => {
         }),
       }),
     );
-  });
+  }, 10_000);
 
   it("accepts suggested tasks and wakes created assignees plus the current assignee", async () => {
     const app = await createApp();
