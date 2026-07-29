@@ -4,11 +4,12 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { AcpRuntimeOptions } from "acpx/runtime";
 import type { AdapterRuntimeMcpAccess } from "@paperclipai/adapter-utils";
 import type { RuntimeStatusUpdate } from "../runtime-progress.js";
 import { DEFAULT_REMOTE_SANDBOX_ADAPTER_TIMEOUT_SEC } from "@paperclipai/adapter-utils/execution-target";
+import * as executionTarget from "../execution-target.js";
 import {
   createAcpxEngineExecutor,
   findAncestorBin,
@@ -970,6 +971,52 @@ describe("shared ACPX engine runtime behavior", () => {
     );
     expect(payloadEnv.PAPERCLIP_API_KEY).toBeTruthy();
     expect(payloadEnv.PAPERCLIP_API_KEY).not.toBe("real-run-jwt");
+  });
+
+  it("writes the preflight-selected Paperclip URL into the ACP wrapper env file", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const cwd = path.join(root, "worktree");
+    await fs.mkdir(cwd, { recursive: true });
+
+    const gatedApiUrl = "https://paperclip.quote-to-invoice.ai";
+    const reachableApiUrl = "http://127.0.0.1:3100";
+    process.env.PAPERCLIP_API_URL = gatedApiUrl;
+    process.env.PAPERCLIP_RUNTIME_API_URL = gatedApiUrl;
+    process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = JSON.stringify([gatedApiUrl, reachableApiUrl]);
+
+    vi.spyOn(executionTarget, "preparePaperclipControlPlaneEnvForAdapterRun").mockImplementation(async (input) => {
+      input.env.PAPERCLIP_API_URL = reachableApiUrl;
+      input.env.PAPERCLIP_RUNTIME_API_URL = reachableApiUrl;
+      return {
+        ok: true,
+        skipped: false,
+        changed: true,
+        url: reachableApiUrl,
+        attempts: [
+          {
+            url: reachableApiUrl,
+            status: 200,
+            contentType: "application/json",
+          },
+        ],
+        reasons: [],
+      };
+    });
+
+    await runExecutor({
+      agent: "custom",
+      agentCommand: "node ./fake-acp.js",
+      stateDir,
+      cwd,
+    });
+
+    const wrapperEnvFile = (await fs.readdir(path.join(stateDir, "wrappers"))).find((name) => name.endsWith(".env"));
+    expect(wrapperEnvFile).toBeTruthy();
+    const wrapperEnv = await fs.readFile(path.join(stateDir, "wrappers", wrapperEnvFile!), "utf8");
+    expect(wrapperEnv).toContain(`PAPERCLIP_API_URL='${reachableApiUrl}'`);
+    expect(wrapperEnv).toContain(`PAPERCLIP_RUNTIME_API_URL='${reachableApiUrl}'`);
+    expect(wrapperEnv).not.toContain(`PAPERCLIP_API_URL='${gatedApiUrl}'`);
   });
 
   it.skipIf(process.platform === "win32")("drops benign ACP nes/close cleanup stderr but keeps it in the run log", async () => {

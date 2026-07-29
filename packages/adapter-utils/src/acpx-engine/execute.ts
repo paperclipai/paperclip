@@ -1198,16 +1198,6 @@ async function buildRuntime(input: {
   }
   const childStderrDir = path.join(stateDir, "run-stderr");
   const childStderrLogPath = agentCommand ? path.join(childStderrDir, `${runId}.log`) : null;
-  const wrapper = agentCommand
-    ? await writeAgentWrapper({
-        stateDir,
-        acpxAgent,
-        agentCommandShell,
-        env,
-        childStderrDir,
-      })
-    : null;
-  const wrapperPath = wrapper?.wrapperPath ?? null;
   let paperclipBridge: AdapterExecutionTargetPaperclipBridgeHandle | null = null;
   if (
     executionTarget?.kind === "remote" &&
@@ -1266,6 +1256,16 @@ async function buildRuntime(input: {
       resultJson: { paperclipControlPlanePreflight: controlPlanePreflight },
     };
   }
+  const wrapper = agentCommand
+    ? await writeAgentWrapper({
+        stateDir,
+        acpxAgent,
+        agentCommandShell,
+        env,
+        childStderrDir,
+      })
+    : null;
+  const wrapperPath = wrapper?.wrapperPath ?? null;
   const runtimeEnv = Object.fromEntries(
     Object.entries(ensurePathInEnv({ ...process.env, ...env })).filter(
       (entry): entry is [string, string] => typeof entry[1] === "string",

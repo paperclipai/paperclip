@@ -2168,6 +2168,7 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
   return {
     env: {
       PAPERCLIP_API_URL: server.baseUrl,
+      PAPERCLIP_RUNTIME_API_URL: server.baseUrl,
       PAPERCLIP_API_KEY: bridgeToken,
       PAPERCLIP_API_BRIDGE_MODE: "queue_v1",
       PAPERCLIP_BRIDGE_QUEUE_DIR: queueDir,
