@@ -818,6 +818,51 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
     expect(wakeCountAfterExhaustion).toHaveLength(4);
   });
 
+  it("serializes concurrent wakeless backstop scans to one live wake and one run", async () => {
+    const { companyId, agentId, issueId } = await seedWakelessNonTerminalFixture();
+    const heartbeat = heartbeatService(db);
+
+    const [first, second] = await Promise.all([
+      heartbeat.reconcileIssueGraphLiveness(),
+      heartbeat.reconcileIssueGraphLiveness(),
+    ]);
+
+    const wakes = await db
+      .select({
+        id: agentWakeupRequests.id,
+        status: agentWakeupRequests.status,
+        idempotencyKey: agentWakeupRequests.idempotencyKey,
+        runId: agentWakeupRequests.runId,
+      })
+      .from(agentWakeupRequests)
+      .where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.agentId, agentId)))
+      .orderBy(agentWakeupRequests.requestedAt);
+    const runs = await db
+      .select({
+        id: heartbeatRuns.id,
+        wakeupRequestId: heartbeatRuns.wakeupRequestId,
+        status: heartbeatRuns.status,
+      })
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, agentId)))
+      .orderBy(heartbeatRuns.createdAt);
+
+    expect(wakes).toHaveLength(1);
+    expect(wakes[0]).toMatchObject({
+      status: "queued",
+      idempotencyKey: `non-terminal-wakeless:${issueId}:cold`,
+    });
+    expect(runs).toHaveLength(1);
+    expect(runs[0]).toMatchObject({
+      status: "queued",
+      wakeupRequestId: wakes[0]?.id,
+    });
+
+    expect(first.wakelessNonTerminalHealed + second.wakelessNonTerminalHealed).toBe(1);
+    expect(first.wakelessNonTerminalExistingWakeSkipped + second.wakelessNonTerminalExistingWakeSkipped).toBe(1);
+    expect(first.wakelessNonTerminalEnqueueFailed + second.wakelessNonTerminalEnqueueFailed).toBe(0);
+  });
+
   it("does not create recovery issues outside the configured lookback window", async () => {
     await enableAutoRecovery();
     const { companyId } = await seedBlockedChain({ outsideLookback: true });

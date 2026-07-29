@@ -17012,8 +17012,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             requestedByActorId: opts.requestedByActorId ?? null,
             idempotencyKey: opts.idempotencyKey ?? null,
           })
+          .onConflictDoNothing()
           .returning()
-          .then((rows) => rows[0]);
+          .then((rows) => rows[0] ?? null);
+
+        if (!wakeupRequest) {
+          return { kind: "duplicate" as const };
+        }
 
         const newRun = await tx
           .insert(heartbeatRuns)
@@ -17047,7 +17052,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         return { kind: "queued" as const, run: newRun };
       });
 
-      if (outcome.kind === "deferred" || outcome.kind === "skipped") return null;
+      if (outcome.kind === "deferred" || outcome.kind === "skipped" || outcome.kind === "duplicate") return null;
       if (outcome.kind === "coalesced") {
         await startNextQueuedRunForAgent(agent.id);
         return outcome.run;
@@ -17186,8 +17191,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           requestedByActorId: opts.requestedByActorId ?? null,
           idempotencyKey: opts.idempotencyKey ?? null,
         })
+        .onConflictDoNothing()
         .returning()
-        .then((rows) => rows[0]);
+        .then((rows) => rows[0] ?? null);
+
+      if (!wakeupRequest) {
+        return { kind: "duplicate" as const };
+      }
 
       const newRun = await tx
         .insert(heartbeatRuns)
@@ -17217,7 +17227,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       return { kind: "queued" as const, run: newRun };
     });
 
-    if (queueOutcome.kind === "skipped") return null;
+    if (queueOutcome.kind === "skipped" || queueOutcome.kind === "duplicate") return null;
     const newRun = queueOutcome.run;
 
     publishLiveEvent({

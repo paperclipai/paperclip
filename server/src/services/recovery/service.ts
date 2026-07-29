@@ -92,6 +92,7 @@ const RESOLVED_DEPENDENCY_WAKE_BACKSTOP_CANDIDATE_LIMIT = 500;
 const NON_TERMINAL_WAKELESS_WAKE_MAX_ATTEMPTS = 4;
 const NON_TERMINAL_WAKELESS_WAKE_BACKOFF_BASE_MS = 2 * 60_000;
 const NON_TERMINAL_WAKELESS_WAKE_BACKOFF_MAX_MS = 30 * 60_000;
+const LIVE_WAKEUP_REQUEST_STATUSES = ["queued", "claimed", "completed", "deferred_issue_execution"] as const;
 const SESSIONED_LOCAL_ADAPTERS = new Set([
   "claude_local",
   "codex_local",
@@ -697,6 +698,24 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   const instanceSettings = instanceSettingsService(db);
   const runLogStore = getRunLogStore();
   let resolvedDependencyWakeBackstopCandidateCursor: string | null = null;
+  const findExistingLiveWakeByIdempotencyKey = (input: {
+    companyId: string;
+    agentId: string;
+    idempotencyKey: string;
+  }) =>
+    db
+      .select({ id: agentWakeupRequests.id })
+      .from(agentWakeupRequests)
+      .where(
+        and(
+          eq(agentWakeupRequests.companyId, input.companyId),
+          eq(agentWakeupRequests.agentId, input.agentId),
+          eq(agentWakeupRequests.idempotencyKey, input.idempotencyKey),
+          inArray(agentWakeupRequests.status, LIVE_WAKEUP_REQUEST_STATUSES),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
 
   const getCurrentUserRedactionOptions = async () => ({
     enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
@@ -2522,19 +2541,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         issueId: candidate.id,
         rearmToken: latestSuccessfulRunIdByIssue.get(candidate.id),
       });
-      const existingWake = await db
-        .select({ id: agentWakeupRequests.id })
-        .from(agentWakeupRequests)
-        .where(
-          and(
-            eq(agentWakeupRequests.companyId, candidate.companyId),
-            eq(agentWakeupRequests.agentId, agentId),
-            eq(agentWakeupRequests.idempotencyKey, idempotencyKey),
-            inArray(agentWakeupRequests.status, ["queued", "claimed", "completed", "deferred_issue_execution"]),
-          ),
-        )
-        .limit(1)
-        .then((rows) => rows[0] ?? null);
+      const existingWake = await findExistingLiveWakeByIdempotencyKey({
+        companyId: candidate.companyId,
+        agentId,
+        idempotencyKey,
+      });
       if (existingWake) {
         result.existingWakeSkipped += 1;
         continue;
@@ -2585,6 +2596,14 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           },
         });
         if (!wake) {
+          if (await findExistingLiveWakeByIdempotencyKey({
+            companyId: candidate.companyId,
+            agentId,
+            idempotencyKey,
+          })) {
+            result.existingWakeSkipped += 1;
+            continue;
+          }
           result.enqueueFailed += 1;
           continue;
         }
@@ -5065,6 +5084,14 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             },
           });
           if (!wake) {
+            if (await findExistingLiveWakeByIdempotencyKey({
+              companyId,
+              agentId,
+              idempotencyKey,
+            })) {
+              result.existingWakeSkipped += 1;
+              continue;
+            }
             // enqueueWakeup returns null for normal deferred/skipped paths
             // such as disabled wake-on-demand or concurrency gating. That is
             // not an enqueue error, but the backstop still did not heal now.
