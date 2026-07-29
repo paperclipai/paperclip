@@ -534,10 +534,11 @@ export async function execute(
 
   const quietHeartbeatIntervalMs = 15_000;
   let quietHeartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  let quietHeartbeatClosed = false;
   let quietHeartbeatStartedAt = 0;
   let quietHeartbeatWrite = Promise.resolve();
   const startQuietHeartbeat = () => {
-    if (!useQuiet || quietHeartbeatTimer) return;
+    if (quietHeartbeatClosed || quietHeartbeatTimer) return;
     quietHeartbeatStartedAt = Date.now();
     quietHeartbeatTimer = setInterval(() => {
       const elapsedSeconds = Math.max(1, Math.round((Date.now() - quietHeartbeatStartedAt) / 1000));
@@ -565,6 +566,7 @@ export async function execute(
       onSpawn,
     });
   } finally {
+    quietHeartbeatClosed = true;
     if (quietHeartbeatTimer) clearInterval(quietHeartbeatTimer);
     await quietHeartbeatWrite;
   }
