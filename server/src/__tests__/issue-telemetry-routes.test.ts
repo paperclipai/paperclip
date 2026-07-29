@@ -81,6 +81,9 @@ function registerModuleMocks() {
       listForIssue: vi.fn(async () => []),
       expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
       expireStaleRequestConfirmationsForIssueDocument: vi.fn(async () => []),
+      // Mock-gap fill: the PATCH issue path expires pending interactions on
+      // stale issue state.
+      expirePendingInteractionsForStaleIssueState: vi.fn(async () => []),
     }),
     issueRecoveryActionService: () => ({
       getActiveForIssue: vi.fn(async () => null),

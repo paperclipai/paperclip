@@ -243,6 +243,8 @@ describeEmbeddedPostgres("issueThreadInteractionService telemetry", () => {
       companyId,
     }, {
       kind: "request_confirmation",
+      // Fork law: operator asks require an ASK/WHY/ACTION summary.
+      summary: "ASK: Approve this? WHY: Telemetry fixture needs a pending ask. ACTION: Reject it.",
       payload: {
         version: 1,
         prompt: "Approve this?",
@@ -285,6 +287,8 @@ describeEmbeddedPostgres("issueThreadInteractionService telemetry", () => {
     }, {
       kind: "ask_user_questions",
       continuationPolicy: "wake_assignee",
+      // Fork law: operator asks require an ASK/WHY/ACTION summary.
+      summary: "ASK: Choose the scope. WHY: Telemetry fixture needs pending questions. ACTION: Answer the scope question.",
       payload: {
         version: 1,
         questions: [
@@ -336,7 +340,11 @@ describeEmbeddedPostgres("issueThreadInteractionService telemetry", () => {
     expectNoRawInteractionIds(dimensions);
   });
 
-  it("emits expired question telemetry with zero answered question count", async () => {
+  it("does not comment-supersede a pending question ask, so no expired telemetry is emitted", async () => {
+    // OPERATOR RULING 2026-07-28: operator-facing asks are NEVER expired by a
+    // later user comment (silent-expiry protection) — the guard in
+    // issue-thread-interactions.ts carries a do-not-fix comment. The upstream
+    // expectation this test used to encode (expired + telemetry) is dead here.
     const { companyId, issueId } = await seedIssue("Expired question telemetry");
     const commentId = randomUUID();
 
@@ -346,6 +354,8 @@ describeEmbeddedPostgres("issueThreadInteractionService telemetry", () => {
     }, {
       kind: "ask_user_questions",
       continuationPolicy: "wake_assignee",
+      // Fork law: operator asks require an ASK/WHY/ACTION summary.
+      summary: "ASK: Choose the scope. WHY: Telemetry fixture needs a pending question. ACTION: Confirm it survives the comment sweep.",
       payload: {
         version: 1,
         questions: [
@@ -373,23 +383,16 @@ describeEmbeddedPostgres("issueThreadInteractionService telemetry", () => {
       userId: "local-board",
     });
 
-    expect(expired).toHaveLength(1);
-    const dimensions = lastInteractionResolvedDimensions();
-    expect(dimensions).toMatchObject({
-      interaction_kind: "ask_user_questions",
-      status: "expired",
-      resolved_by_kind: "user",
-      resolution_reason: "superseded_by_comment",
-      created_by_kind: "user",
-      continuation_policy: "wake_assignee",
-      target_type: "none",
-      question_count: 1,
-      answered_question_count: 0,
-    });
-    expectNoRawInteractionIds(dimensions);
+    expect(expired).toHaveLength(0);
+    const [row] = await db
+      .select()
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, created.id));
+    expect(row?.status).toBe("pending");
+    expect(telemetryMocks.track).not.toHaveBeenCalledWith("interaction.resolved", expect.any(Object));
   });
 
-  it("emits expired stale-target telemetry without stale target identifiers", async () => {
+  it("cancels stale-target asks without emitting resolved telemetry", async () => {
     const { companyId, issueId } = await seedIssue("Stale target telemetry");
     const documentId = randomUUID();
     const revisionId = randomUUID();
@@ -424,6 +427,8 @@ describeEmbeddedPostgres("issueThreadInteractionService telemetry", () => {
       companyId,
     }, {
       kind: "request_confirmation",
+      // Fork law: operator asks require an ASK/WHY/ACTION summary.
+      summary: "ASK: Approve the plan? WHY: Telemetry fixture needs a document-targeted ask. ACTION: Let it expire as stale.",
       payload: {
         version: 1,
         prompt: "Approve the plan?",
@@ -445,23 +450,23 @@ describeEmbeddedPostgres("issueThreadInteractionService telemetry", () => {
       companyId,
     }, null, {});
 
+    // Fork policy: stale-target asks are CANCELLED (optionally re-created
+    // against the current revision), not "expired", and the fork does not
+    // emit interaction.resolved telemetry for this administrative cleanup —
+    // upstream's expire+telemetry shape does not apply here.
     expect(expired).toHaveLength(1);
-    const dimensions = lastInteractionResolvedDimensions();
-    expect(dimensions).toMatchObject({
-      interaction_kind: "request_confirmation",
-      status: "expired",
-      resolved_by_kind: "system",
-      resolution_reason: "stale_target",
-      created_by_kind: "user",
-      continuation_policy: "none",
-      target_type: "issue_document",
+    expect(expired[0]).toMatchObject({
+      kind: "request_confirmation",
+      status: "cancelled",
+      result: expect.objectContaining({ outcome: "stale_target" }),
     });
-    expect(dimensions).not.toHaveProperty("staleTarget");
-    expect(dimensions).not.toHaveProperty("revisionId");
-    expectNoRawInteractionIds(dimensions);
+    expect(telemetryMocks.track).not.toHaveBeenCalledWith("interaction.resolved", expect.any(Object));
   });
 
-  it("emits superseded expiration telemetry without comment identifiers", async () => {
+  it("does not comment-supersede a pending confirmation ask, so no superseded telemetry is emitted", async () => {
+    // OPERATOR RULING 2026-07-28: operator-facing asks are NEVER expired by a
+    // later user comment — see the do-not-fix guard in
+    // issue-thread-interactions.ts. Upstream's expire+telemetry shape is dead.
     const { companyId, issueId } = await seedIssue("Superseded telemetry");
     const commentId = randomUUID();
 
@@ -470,6 +475,8 @@ describeEmbeddedPostgres("issueThreadInteractionService telemetry", () => {
       companyId,
     }, {
       kind: "request_confirmation",
+      // Fork law: operator asks require an ASK/WHY/ACTION summary.
+      summary: "ASK: Approve this plan? WHY: Telemetry fixture needs a pending ask. ACTION: Confirm it survives the comment sweep.",
       payload: {
         version: 1,
         prompt: "Approve this plan?",
@@ -489,17 +496,12 @@ describeEmbeddedPostgres("issueThreadInteractionService telemetry", () => {
       userId: "local-board",
     });
 
-    expect(expired).toHaveLength(1);
-    const dimensions = lastInteractionResolvedDimensions();
-    expect(dimensions).toMatchObject({
-      interaction_kind: "request_confirmation",
-      status: "expired",
-      resolved_by_kind: "user",
-      resolution_reason: "superseded_by_comment",
-      created_by_kind: "user",
-      target_type: "none",
-    });
-    expect(dimensions).not.toHaveProperty("commentId");
-    expectNoRawInteractionIds(dimensions);
+    expect(expired).toHaveLength(0);
+    const [row] = await db
+      .select()
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, created.id));
+    expect(row?.status).toBe("pending");
+    expect(telemetryMocks.track).not.toHaveBeenCalledWith("interaction.resolved", expect.any(Object));
   });
 });

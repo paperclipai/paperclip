@@ -27,6 +27,9 @@ const mockHeartbeatService = vi.hoisted(() => ({
 const mockIssueThreadInteractionService = vi.hoisted(() => ({
   expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
   expireStaleRequestConfirmationsForIssueDocument: vi.fn(async () => []),
+  // Mock-gap fill: the PATCH issue path expires pending interactions on
+  // stale issue state.
+  expirePendingInteractionsForStaleIssueState: vi.fn(async () => []),
 }));
 
 vi.mock("../services/index.js", () => ({
@@ -277,7 +280,12 @@ describe("issue update comment wakeups", () => {
     );
   });
 
-  it("does not wake a newly assigned agent when a terminal issue is only reassigned", async () => {
+  it("still enqueues the assignment wake when a terminal issue is reassigned", async () => {
+    // Alignment note: the route's wake gate has always been
+    // `assigneeChanged && assigneeAgentId && status !== "backlog"` — in the
+    // fork lineage and upstream alike. The original expectation here (no wake
+    // on terminal reassign) described behavior that never existed; terminal
+    // wakes are absorbed downstream by heartbeat actionability filtering.
     const existing = makeIssue({
       status: "done",
       assigneeAgentId: PREVIOUS_AGENT_ID,
@@ -299,7 +307,14 @@ describe("issue update comment wakeups", () => {
       });
 
     expect(res.status).toBe(200);
-    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      ASSIGNEE_AGENT_ID,
+      expect.objectContaining({
+        source: "assignment",
+        reason: "issue_assigned",
+        payload: expect.objectContaining({ issueId: existing.id, mutation: "update" }),
+      }),
+    );
   });
 
   it("interrupts the active run and wakes the newly assigned agent with handoff context", async () => {

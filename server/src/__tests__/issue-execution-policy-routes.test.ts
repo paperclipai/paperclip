@@ -79,6 +79,9 @@ function registerModuleMocks() {
         companyId: "company-1",
         permissions: null,
       })),
+      // Mock-gap fill: assignee resolution checks the fallback sister->primary
+      // relationship; null = no fallback lane, keep the given assignee.
+      getFallbackPrimaryRelationshipForSister: vi.fn(async () => null),
       resolveByReference: vi.fn(async (_companyId: string, reference: string) => ({
         ambiguous: false,
         agent: {

@@ -123,6 +123,17 @@ if (!embeddedPostgresSupport.supported) {
   );
 }
 
+// Fork policy (TSMC-18233, 2026-07-28): stranded escalation creates a visible
+// recovery-card issue alongside the source-scoped action, and assigning the
+// card enqueues its own wake. Tests below reason about the ACTION wakes, so
+// this filters the card-assignment wake out of the mock's call list.
+function actionWakeCalls(enqueueWakeup: { mock: { calls: unknown[][] } }) {
+  return enqueueWakeup.mock.calls.filter((call) => {
+    const opts = call[1] as { contextSnapshot?: { source?: string } } | undefined;
+    return opts?.contextSnapshot?.source !== "stranded_issue_recovery";
+  });
+}
+
 describeEmbeddedPostgres("issue recovery actions", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
   let db: ReturnType<typeof createDb>;
@@ -289,7 +300,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(action.attemptCount).toBe(3);
   });
 
-  it("escalates stranded assigned work into a source action instead of a recovery issue", async () => {
+  it("escalates stranded assigned work into a source action plus a visible recovery card", async () => {
     const { companyId, managerId, coderId, sourceIssue } = await seedCompany();
     const enqueueWakeup = vi.fn(async () => null);
     const recovery = recoveryService(db, { enqueueWakeup });
@@ -339,9 +350,10 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       .select()
       .from(issues)
       .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stranded_issue_recovery")));
-    expect(recoveryIssues).toHaveLength(0);
-    expect(enqueueWakeup).toHaveBeenCalledTimes(2);
-    expect(enqueueWakeup.mock.calls[0]?.[1]?.payload).toMatchObject({
+    expect(recoveryIssues).toHaveLength(1);
+    const actionWakes = actionWakeCalls(enqueueWakeup);
+    expect(actionWakes).toHaveLength(2);
+    expect((actionWakes[0]?.[1] as { payload?: unknown })?.payload).toMatchObject({
       issueId: sourceIssue.id,
       sourceIssueId: sourceIssue.id,
       recoveryCause: "stranded_assigned_issue",
@@ -837,7 +849,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       cause: "configuration_incomplete",
       recoveryIssueId: null,
     });
-    expect(enqueueWakeup).not.toHaveBeenCalled();
+    expect(actionWakeCalls(enqueueWakeup)).toHaveLength(0);
   });
 
   it("uses the default quota backoff when the provider does not state a reset time", async () => {
@@ -899,7 +911,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       cause: "configuration_incomplete",
       recoveryIssueId: null,
     });
-    expect(enqueueWakeup).not.toHaveBeenCalled();
+    expect(actionWakeCalls(enqueueWakeup)).toHaveLength(0);
   });
 
   it("does not classify stale configuration failures from a non-assignee run", async () => {
@@ -980,8 +992,9 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       attemptCount: 2,
     });
     expect(actionRows[0]?.evidence).toMatchObject({ latestRunId: secondLatestRun.id });
-    expect(enqueueWakeup).toHaveBeenCalledTimes(2);
-    expect(enqueueWakeup.mock.calls[1]?.[1]?.payload).toMatchObject({
+    const actionWakes = actionWakeCalls(enqueueWakeup);
+    expect(actionWakes).toHaveLength(2);
+    expect((actionWakes[1]?.[1] as { payload?: unknown })?.payload).toMatchObject({
       issueId: sourceIssue.id,
       sourceIssueId: sourceIssue.id,
       strandedRunId: secondLatestRun.id,
@@ -1082,7 +1095,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
 
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, sourceIssue.id));
     expect(comments.filter((comment) => comment.body.includes(`Recovery action: \`${actionRows[0]?.id}\``))).toHaveLength(1);
-    expect(enqueueWakeup).toHaveBeenCalledTimes(2);
+    expect(actionWakeCalls(enqueueWakeup)).toHaveLength(2);
     expect(enqueueWakeup).toHaveBeenCalledWith(
       expect.any(String),
       expect.objectContaining({
