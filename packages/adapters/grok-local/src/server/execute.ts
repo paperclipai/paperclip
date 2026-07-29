@@ -541,9 +541,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         timedOut: false,
         errorMessage: failed ? fallbackErrorMessage : null,
         usage: {
-          inputTokens: 0,
-          outputTokens: 0,
-          cachedInputTokens: 0,
+          inputTokens: attempt.parsed.inputTokens,
+          outputTokens: attempt.parsed.outputTokens,
+          cachedInputTokens: attempt.parsed.cachedInputTokens,
         },
         sessionId: resolvedSessionId,
         sessionParams: resolvedSessionParams,
@@ -552,7 +552,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         biller: billingType === "api" ? "xai" : "grok",
         model,
         billingType,
-        costUsd: null,
+        // Subscription billing (OAuth/SuperGrok) has no marginal dollar cost per run,
+        // so we only surface costUsd for metered API-key billing.
+        costUsd: billingType === "api" ? attempt.parsed.costUsd : null,
         resultJson: {
           stopReason: attempt.parsed.stopReason,
           requestId: attempt.parsed.requestId,

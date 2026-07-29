@@ -18,7 +18,30 @@ describe("parseGrokJsonl", () => {
       errorMessage: null,
       stopReason: "EndTurn",
       requestId: "req-1",
+      inputTokens: 0,
+      outputTokens: 0,
+      cachedInputTokens: 0,
+      costUsd: null,
     });
+  });
+
+  it("extracts token usage and cost from the end event", () => {
+    const parsed = parseGrokJsonl([
+      JSON.stringify({ type: "text", data: "hi" }),
+      JSON.stringify({
+        type: "end",
+        stopReason: "EndTurn",
+        sessionId: "sess-1",
+        requestId: "req-1",
+        usage: { input_tokens: 21560, output_tokens: 960, cache_read_input_tokens: 25216 },
+        total_cost_usd: 0.0564448,
+      }),
+    ].join("\n"));
+
+    expect(parsed.inputTokens).toBe(21560);
+    expect(parsed.outputTokens).toBe(960);
+    expect(parsed.cachedInputTokens).toBe(25216);
+    expect(parsed.costUsd).toBe(0.0564448);
   });
 
   it("reads structured error payloads", () => {
