@@ -431,7 +431,10 @@ describe("targetForExecutionWorkspace", () => {
     expect(filesystemRef.authoritativePath).toBe("/mnt/artifacts/run-42");
   });
 
-  it("redacts credentials from non-URL git remotes that fail URL parsing", () => {
+  it("redacts non-URL remotes that don't match a known-safe shape, even without a colon-before-@ pattern", () => {
+    // Opaque-path form: parses as a URL (scheme "oauth2:") but with no authority/host, so
+    // the WHATWG parser never decomposes userinfo — it would otherwise leak unchanged into
+    // pathname. Doesn't match the SCP/path/opaque-token allowlist either, so it's redacted.
     const nonUrlWithCredentials = targetForExecutionWorkspace(
       {
         strategyType: "project_primary",
@@ -443,6 +446,22 @@ describe("targetForExecutionWorkspace", () => {
       "/execution-workspaces/exec-1/configuration",
     );
     expect(nonUrlWithCredentials.authoritativePath).not.toContain("ghp_secrettoken");
-    expect(nonUrlWithCredentials.authoritativePath).toBe("(redacted)@gitlab.example.com/org/repo.git");
+    expect(nonUrlWithCredentials.authoritativePath).toBe("(redacted)");
+
+    // A bare secret token with no URL/SCP/path shape at all (e.g. mistakenly stored as a
+    // raw providerRef) also doesn't match the allowlist and must be redacted, not shown
+    // verbatim just because it "looks opaque."
+    const bareSecretLikeRef = targetForExecutionWorkspace(
+      {
+        strategyType: "adapter_managed",
+        repoUrl: null,
+        cwd: null,
+        providerType: "adapter_managed",
+        providerRef: "user:sk-live-abc123@internal-provider-host/workspace",
+      },
+      "/execution-workspaces/exec-1/configuration",
+    );
+    expect(bareSecretLikeRef.authoritativePath).not.toContain("sk-live-abc123");
+    expect(bareSecretLikeRef.authoritativePath).toBe("(redacted)");
   });
 });

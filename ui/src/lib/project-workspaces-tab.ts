@@ -47,6 +47,15 @@ export interface ProjectWorkspaceSummary {
   target?: WorkspaceTargetProvenance;
 }
 
+// repoUrl/providerRef/remoteWorkspaceRef are typed as unrestricted strings with no runtime
+// shape validation, so there's no fixed set of "credential patterns" to deny — any opaque
+// value could in principle be a raw secret. Rather than trying to deny known-bad shapes
+// (which can never be complete), allow only known-safe non-URL shapes through verbatim and
+// redact everything else by default.
+const SCP_STYLE_REMOTE = /^[\w.-]+@[\w.-]+:.+$/; // e.g. git@github.com:org/repo.git
+const ABSOLUTE_PATH = /^(?:[A-Za-z]:[\\/]|\/|~\/)/; // e.g. /mnt/artifacts/run-42, C:\work, ~/work
+const OPAQUE_TOKEN_ID = /^[A-Za-z0-9._-]+$/; // e.g. sandbox-8f21c0 (no "@", ":", or "/")
+
 function redactRemote(value: string | null | undefined): string | null {
   if (!value) return null;
   const trimmed = value.trim();
@@ -62,23 +71,18 @@ function redactRemote(value: string | null | undefined): string | null {
     }
     // Opaque-path form (no "//" authority, e.g. a bare "scheme:user:secret@host/path" git
     // remote) — the parser accepts this but never decomposes userinfo, leaving it sitting
-    // unchanged in pathname, so fall through to the raw-string check below instead of
+    // unchanged in pathname, so fall through to the allowlist check below instead of
     // trusting this as already-safe.
   } catch {
     // Not URL-shaped at all — same fallthrough.
   }
 
-  // Provider reference fields accept unrestricted strings, so a value that isn't a
-  // well-formed URL (or parsed with no host) isn't automatically credential-free — it can
-  // still be a non-URL git remote carrying userinfo credentials. A colon anywhere before
-  // the first "@" is the credential signal; genuine SCP-style remotes (`git@host:org/repo.git`)
-  // have no colon before the "@" and pass through unchanged, as do sandbox ids and
-  // filesystem paths (no "@" at all).
-  const atIndex = trimmed.indexOf("@");
-  if (atIndex > -1 && trimmed.slice(0, atIndex).includes(":")) {
-    return `(redacted)${trimmed.slice(atIndex)}`;
+  if (SCP_STYLE_REMOTE.test(trimmed) || ABSOLUTE_PATH.test(trimmed) || OPAQUE_TOKEN_ID.test(trimmed)) {
+    return trimmed;
   }
-  return trimmed;
+  // Doesn't match any known-safe shape — could be an arbitrary credential-bearing value,
+  // so redact it rather than trust it by default.
+  return "(redacted)";
 }
 
 // Project workspaces are only "unconfigured" when they're the primary workspace on a
