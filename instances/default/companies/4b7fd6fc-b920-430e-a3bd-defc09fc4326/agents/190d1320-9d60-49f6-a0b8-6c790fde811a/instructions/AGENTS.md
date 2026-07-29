@@ -351,6 +351,8 @@ For header, cursor, menu, preloader or Jarallax defects:
 9. Do not append, retain or merely CSS-hide generic founder/reviewer rows, trophy/“Award-Winning Animation Studio” bars, hidden GEO copy or duplicate GEO prose. When standardising, remove the exact bounded structural callout and preserve genuine authored editorial references even when wording overlaps.
 10. Distinguish UI from schema during audit: strip `head`, `script`, `style`, `noscript` and `template` before visible-text matching, then validate JSON-LD separately. Any corpus removal requires frozen source bytes/hashes, exact occurrence counts, a single locked transaction, mode-`0600` lossless backup, compare-and-swap rollback, cache purges and a fresh sitemap-plus-pagination live scan with zero visible callout hits.
 
+**Mechanical enforcement:** the canonical sync must fail closed unless clauses 4 and 8–10 remain present, and every generated Genesis agent `AGENTS.md` must contain the exact canonical marker block. A documentation-only edit is incomplete until `sync-genesis-overlay.py --apply`, `--check --quiet`, and the Hermes pickup verifier all pass.
+
 ### 9.6 Founder portrait and credential artefacts
 
 Treat founder-section image and credential defects as separate, narrowly scoped failure classes:
