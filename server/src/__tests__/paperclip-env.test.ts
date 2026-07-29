@@ -3,6 +3,7 @@ import { buildPaperclipEnv } from "../adapters/utils.js";
 
 const ORIGINAL_PAPERCLIP_RUNTIME_API_URL = process.env.PAPERCLIP_RUNTIME_API_URL;
 const ORIGINAL_PAPERCLIP_API_URL = process.env.PAPERCLIP_API_URL;
+const ORIGINAL_PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
 const ORIGINAL_PAPERCLIP_LISTEN_HOST = process.env.PAPERCLIP_LISTEN_HOST;
 const ORIGINAL_PAPERCLIP_LISTEN_PORT = process.env.PAPERCLIP_LISTEN_PORT;
 const ORIGINAL_HOST = process.env.HOST;
@@ -14,6 +15,12 @@ afterEach(() => {
 
   if (ORIGINAL_PAPERCLIP_API_URL === undefined) delete process.env.PAPERCLIP_API_URL;
   else process.env.PAPERCLIP_API_URL = ORIGINAL_PAPERCLIP_API_URL;
+
+  if (ORIGINAL_PAPERCLIP_RUNTIME_API_CANDIDATES_JSON === undefined) {
+    delete process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
+  } else {
+    process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = ORIGINAL_PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
+  }
 
   if (ORIGINAL_PAPERCLIP_LISTEN_HOST === undefined) delete process.env.PAPERCLIP_LISTEN_HOST;
   else process.env.PAPERCLIP_LISTEN_HOST = ORIGINAL_PAPERCLIP_LISTEN_HOST;
@@ -76,5 +83,34 @@ describe("buildPaperclipEnv", () => {
 
     expect(env.PAPERCLIP_API_URL).toBe("http://[::1]:3101");
     expect(env.PAPERCLIP_RUNTIME_API_URL).toBe("http://[::1]:3101");
+  });
+
+  it("prefers a loopback runtime candidate for local adapter runs when the configured URL is gated", () => {
+    process.env.PAPERCLIP_RUNTIME_API_URL = "https://paperclip.quote-to-invoice.ai";
+    process.env.PAPERCLIP_API_URL = "https://paperclip.quote-to-invoice.ai";
+    process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = JSON.stringify([
+      "https://paperclip.quote-to-invoice.ai",
+      "http://paperclip.quote-to-invoice.ai:3100",
+      "http://127.0.0.1:3100",
+    ]);
+
+    const env = buildPaperclipEnv({ id: "agent-1", companyId: "company-1" }, { preferLocalUrl: true });
+
+    expect(env.PAPERCLIP_API_URL).toBe("http://127.0.0.1:3100");
+    expect(env.PAPERCLIP_RUNTIME_API_URL).toBe("http://127.0.0.1:3100");
+  });
+
+  it("keeps the configured public URL when local preference is not requested", () => {
+    process.env.PAPERCLIP_RUNTIME_API_URL = "https://paperclip.quote-to-invoice.ai";
+    process.env.PAPERCLIP_API_URL = "https://paperclip.quote-to-invoice.ai";
+    process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = JSON.stringify([
+      "https://paperclip.quote-to-invoice.ai",
+      "http://127.0.0.1:3100",
+    ]);
+
+    const env = buildPaperclipEnv({ id: "agent-1", companyId: "company-1" });
+
+    expect(env.PAPERCLIP_API_URL).toBe("https://paperclip.quote-to-invoice.ai");
+    expect(env.PAPERCLIP_RUNTIME_API_URL).toBe("https://paperclip.quote-to-invoice.ai");
   });
 });

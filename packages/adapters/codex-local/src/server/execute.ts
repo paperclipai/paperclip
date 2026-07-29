@@ -572,7 +572,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     for (const note of preparedRuntimeConfig.notes) {
       await onLog("stdout", `[paperclip] ${note}\n`);
     }
-    const paperclipBaseEnv = buildPaperclipEnv(agent);
+    const paperclipBaseEnv = buildPaperclipEnv(agent, { preferLocalUrl: true });
     const runtimeMcpGateways = (ctx.runtimeMcp?.getServers() ?? []).map((server) => ({
       name: server.name,
       endpointPath: server.url,
