@@ -419,6 +419,23 @@ function shortHash(value: unknown): string {
   return createHash("sha256").update(stableJson(value)).digest("hex").slice(0, 16);
 }
 
+// Directory names the staging path never ships for a referenced project (heavy
+// build/cache output and git history). The content signature skips them so it
+// reflects only the staged tree and never reads their bytes. Keep this set equal
+// to the staging excludes in the sandbox and remote runtimes.
+const REFERENCED_SOURCE_SIGNATURE_SKIP_DIRS = new Set([
+  "node_modules",
+  "vendor",
+  "dist",
+  "build",
+  "out",
+  "coverage",
+  ".next",
+  ".turbo",
+  ".cache",
+  ".git",
+]);
+
 /**
  * Content signature of a referenced-project host tree for the session fingerprint.
  *
@@ -429,15 +446,19 @@ function shortHash(value: unknown): string {
  * a dirty worktree. So the metadata identity alone lets a resume serve a stale tree.
  * This signature folds the tree's own content state into the identity.
  *
- * The walk reads only directory entries and file stats — each entry's relative path,
- * size, and modification time. It never reads file bytes. A file add, remove, or
- * edit changes the signature, so the fingerprint busts and the next launch stages
- * the current tree. On a read error the function returns a stable marker, so the
- * fingerprint does not churn while staging surfaces the real error. The walk runs
- * only when the run carries referenced projects (the multi-project sync path).
+ * The walk reads each file's relative path and bytes and folds them into the hash.
+ * It reads bytes, not only file stats. A stat-only signature (size and modification
+ * time) collides when an edit keeps the byte length and the modification time — a
+ * re-checkout that restores the same size and timestamp. The byte hash busts on any
+ * content change, so the fingerprint busts and the next launch stages the current
+ * tree. The walk skips the heavy build, cache, and git directories the staging path
+ * never ships, and records a symlink by its target text without following it. On a
+ * read error the function returns a stable marker, so the fingerprint does not churn
+ * while staging surfaces the real error. The walk runs only when the run carries
+ * referenced projects (the multi-project sync path).
  */
 async function referencedSourceContentSignature(localPath: string): Promise<string> {
-  const entries: Array<[string, number, number]> = [];
+  const hash = createHash("sha256");
   const walk = async (relative: string): Promise<void> => {
     const current = relative ? path.join(localPath, relative) : localPath;
     const dirents = await fs.readdir(current, { withFileTypes: true });
@@ -445,11 +466,26 @@ async function referencedSourceContentSignature(localPath: string): Promise<stri
     for (const dirent of dirents) {
       const next = relative ? path.posix.join(relative, dirent.name) : dirent.name;
       if (dirent.isDirectory()) {
+        if (REFERENCED_SOURCE_SIGNATURE_SKIP_DIRS.has(dirent.name)) {
+          continue;
+        }
         await walk(next);
         continue;
       }
-      const stats = await fs.lstat(path.join(localPath, next));
-      entries.push([next, stats.size, stats.mtimeMs]);
+      const absolute = path.join(localPath, next);
+      const stats = await fs.lstat(absolute);
+      if (stats.isSymbolicLink()) {
+        const target = await fs.readlink(absolute);
+        hash.update(`symlink:${next}:${target}\n`);
+        continue;
+      }
+      if (!stats.isFile()) {
+        hash.update(`other:${next}:${stats.mode}\n`);
+        continue;
+      }
+      hash.update(`file:${next}:${stats.size}\n`);
+      hash.update(await fs.readFile(absolute));
+      hash.update("\n");
     }
   };
   try {
@@ -457,7 +493,7 @@ async function referencedSourceContentSignature(localPath: string): Promise<stri
   } catch (error) {
     return `unreadable:${String(error)}`;
   }
-  return shortHash(entries);
+  return hash.digest("hex").slice(0, 16);
 }
 
 function defaultPaperclipInstanceDir(): string {

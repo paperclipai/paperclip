@@ -897,6 +897,56 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(fp(afterAdd)).not.toBe(fp(afterEdit));
   });
 
+  it("busts the session fingerprint when referenced-project bytes change but size and mtime stay equal", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const cwd = path.join(root, "workspace");
+    const projectDir = path.join(root, "project-a");
+    const filePath = path.join(projectDir, "src", "index.ts");
+    await fs.mkdir(path.join(projectDir, "src"), { recursive: true });
+    // The two contents have the same byte length, so a stat-only signature (size
+    // and modification time) would collide once the modification time also matches.
+    const firstContent = "export const value = 1;\n";
+    const secondContent = "export const value = 2;\n";
+    expect(secondContent.length).toBe(firstContent.length);
+    await fs.writeFile(filePath, firstContent);
+
+    // A re-checkout can restore the same modification time, so pin it explicitly
+    // and reapply it after the edit. Only the file bytes change between runs.
+    const pinnedTime = new Date("2026-01-01T00:00:00.000Z");
+    await fs.utimes(filePath, pinnedTime, pinnedTime);
+
+    const referencedProject = {
+      path: projectDir,
+      projectId: "a",
+      projectWorkspaceId: "ws-a",
+      repoUrl: "https://example.test/a.git",
+      repoRef: "main",
+    };
+    const withProject = () => ({
+      context: {
+        taskId: "issue-1",
+        wakeReason: "issue_assigned",
+        paperclipWorkspace: { cwd, realization: { additional: [referencedProject] } },
+      },
+    });
+    const fp = (r: { result: { sessionParams?: unknown } }) =>
+      (r.result.sessionParams as { configFingerprint?: string } | undefined)?.configFingerprint;
+
+    const baseConfig = { agentCommand: "node ./fake-acp.js", stateDir };
+    const before = await runExecutor(baseConfig, withProject());
+    // Replace the bytes with an equal-length string and restore the same
+    // modification time, so path, size, and mtime all stay identical across the two runs.
+    await fs.writeFile(filePath, secondContent);
+    await fs.utimes(filePath, pinnedTime, pinnedTime);
+    const after = await runExecutor(baseConfig, withProject());
+
+    expect(fp(before)).toBeDefined();
+    // The content signature reads bytes, so an equal-size, equal-mtime edit busts
+    // the fingerprint and the resume re-stages instead of reusing a stale tree.
+    expect(fp(after)).not.toBe(fp(before));
+  });
+
   it("shapes ACPX session env for remote execution identities", async () => {
     const root = await makeTempRoot();
     const localCwd = path.join(root, "local");
