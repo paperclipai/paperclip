@@ -41,6 +41,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { parseWakePayloadFromMessage } from "./helpers/wake-message.js";
+import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
 import { errorHandler } from "../middleware/index.js";
 import { agentRoutes } from "../routes/agents.js";
 import { issueRoutes } from "../routes/issues.js";
@@ -77,29 +78,6 @@ function isHeartbeatCleanupFkError(error: unknown) {
     message.includes("activity_log_run_id_heartbeat_runs_id_fk") ||
     message.includes("heartbeat_runs_wakeup_request_id_agent_wakeup_requests_id_fk")
   );
-}
-
-// Await every background heartbeat run until the run table is quiescent. A route
-// dispatches a wakeup fire-and-forget (void heartbeat.wakeup(...) in
-// routes/issues.ts). Such a wakeup, or a run it dispatches, can write issues,
-// issue_comments, and heartbeat_runs rows during teardown and race the deletes
-// below (a heartbeat_runs delete deadlocks on the ON DELETE SET NULL cascade to
-// issues; an issue_comments insert breaks the later delete of issues).
-// drainActiveRunExecutions() awaits both in-flight wakeup promises and in-flight
-// run executions, so it now also waits for a wakeup that is still before run
-// registration. Re-check the run table after the drain as a backstop, and give a
-// late run a macrotask before the next attempt, until no run is queued or running.
-async function drainHeartbeatRunsToQuiescence(
-  db: Db,
-  heartbeat: ReturnType<typeof heartbeatService>,
-) {
-  for (let attempt = 0; attempt < 50; attempt += 1) {
-    await heartbeat.drainActiveRunExecutions();
-    const runs = await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns);
-    const hasPending = runs.some((run) => run.status === "queued" || run.status === "running");
-    if (!hasPending) return;
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
 }
 
 async function deleteHeartbeatRunsAndWakeupsAfterActivityLogDrains(db: Db) {
