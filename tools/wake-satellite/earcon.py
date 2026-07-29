@@ -34,3 +34,15 @@ def beep(path=DEFAULT_PATH):
         subprocess.run(["afplay", path], check=True, capture_output=True)
     except Exception:  # noqa: BLE001
         traceback.print_exc()
+
+
+def beep_async(path=DEFAULT_PATH):
+    """Wie beep(), aber NICHT blockierend: spielt den Ton im Hintergrund, damit
+    die Aufnahme sofort nach dem Wake-Wort startet und der Satzanfang nicht
+    abgeschnitten wird. Nie fatal."""
+    try:
+        ensure_wav(path)
+        subprocess.Popen(["afplay", path],
+                         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    except Exception:  # noqa: BLE001
+        traceback.print_exc()

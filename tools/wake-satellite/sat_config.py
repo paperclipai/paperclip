@@ -16,6 +16,11 @@ WAKE_MODELS = ["hey_jarvis"]
 
 SAMPLE_RATE = 16000
 FRAME_SAMPLES = 1280
+# Rollender Audio-Vorpuffer: die letzten ~1,2 s VOR dem Wake-Treffer werden
+# der Aufnahme vorangestellt, damit ein flüssig gesprochenes „Hey Jarvis, <Befehl>"
+# nicht am Anfang abgeschnitten wird (Wake-Erkennungs-Latenz + Bestätigungston).
+PREROLL_SEC = 1.2
+PREROLL_FRAMES = int(PREROLL_SEC * SAMPLE_RATE / FRAME_SAMPLES)  # ~15
 FOLLOWUP_WINDOW_SEC = 6
 FOLLOWUP_WINDOW_FRAMES = int(FOLLOWUP_WINDOW_SEC * SAMPLE_RATE / FRAME_SAMPLES)  # 75
 PLAYBACK_COOLDOWN_SEC = 1.0

@@ -108,18 +108,24 @@ def build_deps():
 
 def main():  # pragma: no cover — Hardware
     import sys
+    import itertools
+    from collections import deque
     print("wake-satellit „Hey Jarvis“ startet…", file=sys.stderr)
     deps = build_deps()
     detector = deps["detector"]
     mic = capture.MicStream()
     frames = iter(mic)
+    preroll = deque(maxlen=sat_config.PREROLL_FRAMES)
     while True:
         try:
             frame = next(frames)
+            preroll.append(frame)
             if detector.process(frame) is None:
                 continue
-            earcon.beep()
-            handle_interaction(frames, deps)   # verbraucht denselben Stream
+            earcon.beep_async()                # blockiert nicht -> kein Clipping
+            pre = list(preroll)                # ~1,2 s vor dem Treffer voranstellen
+            preroll.clear()
+            handle_interaction(itertools.chain(pre, frames), deps)
             detector.reset()
             time.sleep(sat_config.PLAYBACK_COOLDOWN_SEC)
         except Exception:  # noqa: BLE001

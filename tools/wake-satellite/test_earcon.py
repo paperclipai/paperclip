@@ -21,3 +21,17 @@ def test_beep_never_raises(monkeypatch, tmp_path):
     def boom(*a, **k): raise RuntimeError("afplay weg")
     monkeypatch.setattr(earcon.subprocess, "run", boom)
     earcon.beep(str(tmp_path / "beep.wav"))   # kein Throw
+
+
+def test_beep_async_is_non_blocking_and_never_raises(monkeypatch, tmp_path):
+    calls = {}
+    def fake_popen(args, **kwargs):
+        calls["args"] = args
+        return object()          # kein wait() -> nicht blockierend
+    monkeypatch.setattr(earcon.subprocess, "Popen", fake_popen)
+    earcon.beep_async(str(tmp_path / "beep.wav"))
+    assert calls["args"][0] == "afplay"
+
+    def boom(*a, **k): raise RuntimeError("afplay weg")
+    monkeypatch.setattr(earcon.subprocess, "Popen", boom)
+    earcon.beep_async(str(tmp_path / "beep.wav"))   # kein Throw
