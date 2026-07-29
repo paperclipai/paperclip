@@ -7,8 +7,14 @@ import {
   LOW_TRUST_REVIEW_PRESET,
   applyRunScopedMentionedSkillKeys,
   extractMentionedSkillIdsFromSources,
+  resolveAdditionalRunWorkspaces,
   resolveExecutionRunAdapterConfig,
+  type ResolveAdditionalRunWorkspacesOptions,
+  type ResolvedAdditionalWorkspace,
+  type RunReferencedProject,
 } from "../services/heartbeat.ts";
+import type { AuthorizationActor, AuthorizationDecision } from "../services/authorization.ts";
+import { resolveManagedProjectWorkspaceDir } from "../home-paths.ts";
 
 describe("resolveExecutionRunAdapterConfig", () => {
   it("overlays environment, project, and routine env on top of agent env and unions secret keys", async () => {
@@ -718,5 +724,173 @@ describe("applyRunScopedMentionedSkillKeys", () => {
         ],
       },
     });
+  });
+});
+
+describe("resolveAdditionalRunWorkspaces", () => {
+  const companyId = "company-1";
+  const issueId = "issue-1";
+
+  const allowDecision: AuthorizationDecision = {
+    allowed: true,
+    action: "project:read",
+    reason: "allow_company_agent",
+    explanation: "test allow",
+  };
+
+  // Build injectable dependencies. Every mentioned project is available and authorized by default.
+  function buildOptions(
+    overrides: Partial<ResolveAdditionalRunWorkspacesOptions> & { mentionedIds?: string[] },
+  ): ResolveAdditionalRunWorkspacesOptions {
+    const mentionedIds = overrides.mentionedIds ?? [];
+    const actor: AuthorizationActor = {
+      type: "agent",
+      agentId: "agent-1",
+      companyId,
+      source: "agent_key",
+    };
+    const issues: ResolveAdditionalRunWorkspacesOptions["issues"] = {
+      findMentionedProjectIds: async () => mentionedIds,
+    };
+    const projects: ResolveAdditionalRunWorkspacesOptions["projects"] = {
+      listByIds: async (_companyId, ids) =>
+        ids.map((id) => ({ id })) as unknown as Awaited<
+          ReturnType<ResolveAdditionalRunWorkspacesOptions["projects"]["listByIds"]>
+        >,
+    };
+    const access: ResolveAdditionalRunWorkspacesOptions["access"] = {
+      decide: async () => allowDecision,
+    };
+    const resolveProjectWorkspace = async (
+      project: RunReferencedProject,
+    ): Promise<ResolvedAdditionalWorkspace> => ({
+      cwd: `/managed/${project.projectId}`,
+      projectId: project.projectId,
+      workspaceId: `${project.projectId}-ws`,
+      repoUrl: null,
+      repoRef: null,
+    });
+    return {
+      enabled: true,
+      companyId,
+      actor,
+      issues,
+      projects,
+      access,
+      resolveProjectWorkspace,
+      ...overrides,
+    };
+  }
+
+  it("resolves additionalWorkspaces for each mentioned project when the sync flag is ON", async () => {
+    const options = buildOptions({ mentionedIds: ["project-a", "project-b"] });
+
+    const result = await resolveAdditionalRunWorkspaces(issueId, null, options);
+
+    expect(result.additionalWorkspaces).toEqual([
+      {
+        cwd: "/managed/project-a",
+        projectId: "project-a",
+        workspaceId: "project-a-ws",
+        repoUrl: null,
+        repoRef: null,
+      },
+      {
+        cwd: "/managed/project-b",
+        projectId: "project-b",
+        workspaceId: "project-b-ws",
+        repoUrl: null,
+        repoRef: null,
+      },
+    ]);
+    expect(result.warnings).toEqual([]);
+  });
+
+  it("returns empty additionalWorkspaces when the sync flag is OFF (anchor-only, unchanged)", async () => {
+    let mentionLookups = 0;
+    let workspaceResolves = 0;
+    const options = buildOptions({
+      enabled: false,
+      mentionedIds: ["project-a", "project-b"],
+      issues: {
+        findMentionedProjectIds: async () => {
+          mentionLookups += 1;
+          return ["project-a", "project-b"];
+        },
+      },
+      resolveProjectWorkspace: async (project) => {
+        workspaceResolves += 1;
+        return {
+          cwd: `/managed/${project.projectId}`,
+          projectId: project.projectId,
+          workspaceId: null,
+          repoUrl: null,
+          repoRef: null,
+        };
+      },
+    });
+
+    const result = await resolveAdditionalRunWorkspaces(issueId, null, options);
+
+    expect(result).toEqual({ additionalWorkspaces: [], warnings: [] });
+    // The flag-off path must be inert: no mention lookup and no workspace resolution run.
+    expect(mentionLookups).toBe(0);
+    expect(workspaceResolves).toBe(0);
+  });
+
+  it("isolates a failing mentioned-project clone with a warning, run still resolves", async () => {
+    const options = buildOptions({
+      mentionedIds: ["project-a", "project-b"],
+      resolveProjectWorkspace: async (project) => {
+        if (project.projectId === "project-a") {
+          throw new Error("clone exploded");
+        }
+        return {
+          cwd: `/managed/${project.projectId}`,
+          projectId: project.projectId,
+          workspaceId: null,
+          repoUrl: null,
+          repoRef: null,
+        };
+      },
+    });
+
+    const result = await resolveAdditionalRunWorkspaces(issueId, null, options);
+
+    expect(result.additionalWorkspaces).toEqual([
+      {
+        cwd: "/managed/project-b",
+        projectId: "project-b",
+        workspaceId: null,
+        repoUrl: null,
+        repoRef: null,
+      },
+    ]);
+    expect(result.warnings).toHaveLength(1);
+    expect(result.warnings[0]).toContain("project-a");
+    expect(result.warnings[0]).toContain("clone exploded");
+  });
+});
+
+describe("resolveManagedProjectWorkspaceDir isolation", () => {
+  it("resolves distinct, non-nested managed dirs for two projects", () => {
+    const companyId = "company-1";
+    const dirA = resolveManagedProjectWorkspaceDir({ companyId, projectId: "project-a", repoName: null });
+    const dirB = resolveManagedProjectWorkspaceDir({ companyId, projectId: "project-b", repoName: null });
+
+    expect(dirA).not.toBe(dirB);
+    // Neither directory is a path prefix of the other: append a separator so a shared leading
+    // string (for example "project-a" vs "project-ab") never reads as nesting.
+    expect(`${dirB}${path.sep}`.startsWith(`${dirA}${path.sep}`)).toBe(false);
+    expect(`${dirA}${path.sep}`.startsWith(`${dirB}${path.sep}`)).toBe(false);
+  });
+
+  it("keeps a project id that prefixes another project id in a sibling, non-nested dir", () => {
+    const companyId = "company-1";
+    const dir = resolveManagedProjectWorkspaceDir({ companyId, projectId: "project", repoName: null });
+    const dirLonger = resolveManagedProjectWorkspaceDir({ companyId, projectId: "project-extra", repoName: null });
+
+    expect(`${dirLonger}${path.sep}`.startsWith(`${dir}${path.sep}`)).toBe(false);
+    expect(`${dir}${path.sep}`.startsWith(`${dirLonger}${path.sep}`)).toBe(false);
   });
 });

@@ -1392,6 +1392,71 @@ async function ensureManagedProjectWorkspace(input: {
   }
 }
 
+/**
+ * Resolve one project workspace row to a usable cwd. The anchor path and each additional
+ * referenced project share this step: use the configured cwd when present, otherwise clone or
+ * create the managed checkout directory for the project. It throws only when the managed
+ * checkout cannot be prepared (for example, a clone failure).
+ */
+async function resolveConfiguredOrManagedProjectCwd(input: {
+  companyId: string;
+  projectId: string;
+  cwd: string | null;
+  repoUrl: string | null;
+}): Promise<{ cwd: string; warning: string | null }> {
+  const configuredCwd = readNonEmptyString(input.cwd);
+  if (configuredCwd && configuredCwd !== REPO_ONLY_CWD_SENTINEL) {
+    return { cwd: configuredCwd, warning: null };
+  }
+  return ensureManagedProjectWorkspace({
+    companyId: input.companyId,
+    projectId: input.projectId,
+    repoUrl: readNonEmptyString(input.repoUrl),
+  });
+}
+
+/**
+ * Resolve one authorized referenced project to its own workspace cwd. Each additional project
+ * lands in its own managed checkout directory, never nested inside the anchor's worktree (the
+ * directory isolation invariant lives in {@link resolveManagedProjectWorkspaceDir}). It throws
+ * when the project has no usable workspace directory, so the caller can drop only that project.
+ */
+async function resolveAdditionalProjectWorkspace(input: {
+  db: Db;
+  companyId: string;
+  project: RunReferencedProject;
+}): Promise<ResolvedAdditionalWorkspace> {
+  const { companyId } = input;
+  const projectId = input.project.projectId;
+  const workspaceRows = await input.db
+    .select()
+    .from(projectWorkspaces)
+    .where(and(eq(projectWorkspaces.companyId, companyId), eq(projectWorkspaces.projectId, projectId)))
+    .orderBy(asc(projectWorkspaces.createdAt), asc(projectWorkspaces.id));
+  for (const workspace of workspaceRows) {
+    const { cwd } = await resolveConfiguredOrManagedProjectCwd({
+      companyId,
+      projectId,
+      cwd: workspace.cwd,
+      repoUrl: workspace.repoUrl,
+    });
+    const cwdExists = await fs
+      .stat(cwd)
+      .then((stats) => stats.isDirectory())
+      .catch(() => false);
+    if (cwdExists) {
+      return {
+        cwd,
+        projectId,
+        workspaceId: workspace.id,
+        repoUrl: workspace.repoUrl,
+        repoRef: workspace.repoRef,
+      };
+    }
+  }
+  throw new Error(`No available workspace directory was found for referenced project ${projectId}.`);
+}
+
 type WorkspaceValidationFailureLike = WorkspaceValidationFailure | {
   code: typeof WORKSPACE_VALIDATION_FAILURE_CODE;
   resultJson: Record<string, unknown>;
@@ -2092,6 +2157,19 @@ export interface ModelProfileApplication {
   adapterConfig: Record<string, unknown> | null;
 }
 
+/**
+ * A single read-only referenced (mentioned) project workspace resolved for a run.
+ * The run materializes one entry per authorized additional project, each in its own
+ * managed checkout directory. See {@link resolveAdditionalRunWorkspaces}.
+ */
+export type ResolvedAdditionalWorkspace = {
+  cwd: string;
+  projectId: string;
+  workspaceId: string | null;
+  repoUrl: string | null;
+  repoRef: string | null;
+};
+
 export type ResolvedWorkspaceForRun = {
   cwd: string;
   source: "project_primary" | "task_session" | "agent_home";
@@ -2106,7 +2184,17 @@ export type ResolvedWorkspaceForRun = {
     repoRef: string | null;
   }>;
   warnings: string[];
+  /**
+   * Read-only referenced (mentioned) project workspaces for this run, one per authorized
+   * additional project. The array is empty unless the multi-project workspace-sync flag is on
+   * ({@link isMultiProjectWorkspaceSyncEnabled}); with the flag off the run resolves the anchor
+   * workspace only, exactly as before.
+   */
+  additionalWorkspaces: ResolvedAdditionalWorkspace[];
 };
+
+/** The anchor workspace shape, before the additional referenced workspaces are attached. */
+type ResolvedAnchorWorkspaceForRun = Omit<ResolvedWorkspaceForRun, "additionalWorkspaces">;
 
 type ProjectWorkspaceCandidate = {
   id: string;
@@ -2354,6 +2442,66 @@ export async function resolveRunReferencedProjects(
   }
 
   return { anchor, additional, warnings };
+}
+
+export interface ResolveAdditionalRunWorkspacesOptions {
+  /** Gate that mirrors {@link isMultiProjectWorkspaceSyncEnabled}. When false, the result is empty. */
+  enabled: boolean;
+  companyId: string;
+  /** The run actor; every additional project is authorized against this actor. */
+  actor: AuthorizationActor;
+  issues: Pick<ReturnType<typeof issueService>, "findMentionedProjectIds">;
+  projects: Pick<ReturnType<typeof projectService>, "listByIds">;
+  access: Pick<ReturnType<typeof authorizationService>, "decide">;
+  /** Resolve one authorized referenced project to its own workspace cwd (injectable for tests). */
+  resolveProjectWorkspace: (project: RunReferencedProject) => Promise<ResolvedAdditionalWorkspace>;
+  maxAdditionalProjects?: number;
+  maxCandidateEvaluations?: number;
+}
+
+/**
+ * Resolve the read-only referenced (mentioned) project workspaces for a run.
+ *
+ * The function is inert until the multi-project workspace-sync flag is on: when `enabled` is
+ * false (the production default) or there is no issue, it returns an empty result and performs
+ * no authorization or workspace work. When enabled, it authorizes the referenced set through
+ * {@link resolveRunReferencedProjects} and resolves each admitted project to its own cwd. Each
+ * project resolves in isolation: a per-project failure drops only that project and appends a
+ * warning, so one bad clone never aborts the run.
+ */
+export async function resolveAdditionalRunWorkspaces(
+  issueId: string | null,
+  anchorProjectId: string | null,
+  opts: ResolveAdditionalRunWorkspacesOptions,
+): Promise<{ additionalWorkspaces: ResolvedAdditionalWorkspace[]; warnings: string[] }> {
+  if (!opts.enabled || !issueId) {
+    return { additionalWorkspaces: [], warnings: [] };
+  }
+
+  const referenced = await resolveRunReferencedProjects(issueId, anchorProjectId, {
+    companyId: opts.companyId,
+    actor: opts.actor,
+    issues: opts.issues,
+    projects: opts.projects,
+    access: opts.access,
+    maxAdditionalProjects: opts.maxAdditionalProjects,
+    maxCandidateEvaluations: opts.maxCandidateEvaluations,
+  });
+
+  const additionalWorkspaces: ResolvedAdditionalWorkspace[] = [];
+  const warnings = [...referenced.warnings];
+  for (const project of referenced.additional) {
+    try {
+      additionalWorkspaces.push(await opts.resolveProjectWorkspace(project));
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      warnings.push(
+        `Referenced project ${project.projectId} was skipped because its workspace could not be prepared: ${reason}`,
+      );
+    }
+  }
+
+  return { additionalWorkspaces, warnings };
 }
 
 function readNonEmptyString(value: unknown): string | null {
@@ -7564,12 +7712,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     };
   }
 
-  async function resolveWorkspaceForRun(
+  async function resolveAnchorWorkspaceForRun(
     agent: typeof agents.$inferSelect,
     context: Record<string, unknown>,
     previousSessionParams: Record<string, unknown> | null,
     opts?: { useProjectWorkspace?: boolean | null },
-  ): Promise<ResolvedWorkspaceForRun> {
+  ): Promise<ResolvedAnchorWorkspaceForRun> {
     const issueId = readNonEmptyString(context.issueId) ?? readNonEmptyString(context.taskId);
     const contextProjectId = readNonEmptyString(context.projectId);
     const contextProjectWorkspaceId = readNonEmptyString(context.projectWorkspaceId);
@@ -7626,23 +7774,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           `Selected project workspace "${preferredProjectWorkspaceId}" is not available on this project.`;
       }
       for (const workspace of projectWorkspaceRows) {
-        let projectCwd = readNonEmptyString(workspace.cwd);
+        let projectCwd: string;
         let managedWorkspaceWarning: string | null = null;
-        if (!projectCwd || projectCwd === REPO_ONLY_CWD_SENTINEL) {
-          try {
-            const managedWorkspace = await ensureManagedProjectWorkspace({
-              companyId: agent.companyId,
-              projectId: workspaceProjectId ?? resolvedProjectId ?? workspace.projectId,
-              repoUrl: readNonEmptyString(workspace.repoUrl),
-            });
-            projectCwd = managedWorkspace.cwd;
-            managedWorkspaceWarning = managedWorkspace.warning;
-          } catch (error) {
-            if (preferredWorkspace?.id === workspace.id) {
-              preferredWorkspaceWarning = error instanceof Error ? error.message : String(error);
-            }
-            continue;
+        try {
+          const resolvedCwd = await resolveConfiguredOrManagedProjectCwd({
+            companyId: agent.companyId,
+            projectId: workspaceProjectId ?? resolvedProjectId ?? workspace.projectId,
+            cwd: workspace.cwd,
+            repoUrl: workspace.repoUrl,
+          });
+          projectCwd = resolvedCwd.cwd;
+          managedWorkspaceWarning = resolvedCwd.warning;
+        } catch (error) {
+          if (preferredWorkspace?.id === workspace.id) {
+            preferredWorkspaceWarning = error instanceof Error ? error.message : String(error);
           }
+          continue;
         }
         hasConfiguredProjectCwd = true;
         const projectCwdExists = await fs
@@ -7769,6 +7916,50 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       repoRef: null,
       workspaceHints,
       warnings,
+    };
+  }
+
+  /**
+   * Resolve the run workspace: the anchor workspace plus, when the multi-project workspace-sync
+   * flag is on, the read-only referenced (mentioned) project workspaces. With the flag off (the
+   * production default) the anchor path is unchanged and `additionalWorkspaces` is empty.
+   */
+  async function resolveWorkspaceForRun(
+    agent: typeof agents.$inferSelect,
+    context: Record<string, unknown>,
+    previousSessionParams: Record<string, unknown> | null,
+    opts?: { useProjectWorkspace?: boolean | null },
+  ): Promise<ResolvedWorkspaceForRun> {
+    const anchor = await resolveAnchorWorkspaceForRun(agent, context, previousSessionParams, opts);
+    if (!isMultiProjectWorkspaceSyncEnabled()) {
+      return { ...anchor, additionalWorkspaces: [] };
+    }
+
+    const issueId = readNonEmptyString(context.issueId) ?? readNonEmptyString(context.taskId);
+    const { additionalWorkspaces, warnings } = await resolveAdditionalRunWorkspaces(
+      issueId,
+      anchor.projectId,
+      {
+        enabled: true,
+        companyId: agent.companyId,
+        actor: {
+          type: "agent",
+          agentId: agent.id,
+          companyId: agent.companyId,
+          source: "agent_key",
+        },
+        issues: issueService(db),
+        projects: projectService(db),
+        access: authorizationService(db),
+        resolveProjectWorkspace: (project) =>
+          resolveAdditionalProjectWorkspace({ db, companyId: agent.companyId, project }),
+      },
+    );
+
+    return {
+      ...anchor,
+      additionalWorkspaces,
+      warnings: warnings.length > 0 ? [...anchor.warnings, ...warnings] : anchor.warnings,
     };
   }
 
@@ -12787,6 +12978,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       workspaceId: resolvedWorkspace.workspaceId,
       repoUrl: resolvedWorkspace.repoUrl,
       repoRef: resolvedWorkspace.repoRef,
+      additionalWorkspaces: resolvedWorkspace.additionalWorkspaces,
     } satisfies ExecutionWorkspaceInput;
     await assertGitWorktreeBaseWorkspaceReady({
       requestedExecutionWorkspaceMode,

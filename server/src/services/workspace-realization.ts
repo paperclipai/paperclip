@@ -37,7 +37,29 @@ function readPathAliases(value: unknown): Array<{ path: string; target: string }
   });
 }
 
-function readWorkspaceRealizationRequest(value: unknown): WorkspaceRealizationRequest | null {
+// Read the additional referenced (mentioned) project sources. Legacy payloads omit the field, so
+// this defaults to an empty array. Each source needs a localPath; entries without one are dropped.
+function readAdditionalSources(
+  value: unknown,
+): NonNullable<WorkspaceRealizationRequest["additionalSources"]> {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry) => {
+    const parsed = parseObject(entry);
+    const localPath = readString(parsed.localPath);
+    if (!localPath) return [];
+    return [
+      {
+        localPath,
+        projectId: readString(parsed.projectId),
+        projectWorkspaceId: readString(parsed.projectWorkspaceId),
+        repoUrl: readString(parsed.repoUrl),
+        repoRef: readString(parsed.repoRef),
+      },
+    ];
+  });
+}
+
+export function readWorkspaceRealizationRequest(value: unknown): WorkspaceRealizationRequest | null {
   const parsed = parseObject(value);
   if (parsed.version !== 1) return null;
   const source = parseObject(parsed.source);
@@ -72,6 +94,7 @@ function readWorkspaceRealizationRequest(value: unknown): WorkspaceRealizationRe
       branchName: readString(source.branchName),
       worktreePath: readString(source.worktreePath),
     },
+    additionalSources: readAdditionalSources(parsed.additionalSources),
     runtimeOverlay: {
       provisionCommand: readString(runtimeOverlay.provisionCommand),
       teardownCommand: readString(runtimeOverlay.teardownCommand),
@@ -114,6 +137,13 @@ export function buildWorkspaceRealizationRequest(input: {
       branchName: input.workspace.branchName,
       worktreePath: input.workspace.worktreePath,
     },
+    additionalSources: (input.workspace.additionalWorkspaces ?? []).map((additional) => ({
+      localPath: additional.cwd,
+      projectId: additional.projectId,
+      projectWorkspaceId: additional.workspaceId,
+      repoUrl: additional.repoUrl,
+      repoRef: additional.repoRef,
+    })),
     runtimeOverlay: {
       provisionCommand: input.workspaceConfig?.provisionCommand ?? null,
       teardownCommand: input.workspaceConfig?.teardownCommand ?? null,

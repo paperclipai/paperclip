@@ -45,6 +45,19 @@ export function resolveShell(): string {
   return shell;
 }
 
+/**
+ * A read-only referenced (mentioned) project workspace carried alongside the anchor. Additive and
+ * backward-compatible: it defaults to an empty array. Additional workspaces never get git-worktree
+ * realization; the anchor keeps the single scalar realization path.
+ */
+export interface ExecutionWorkspaceAdditionalInput {
+  cwd: string;
+  projectId: string;
+  workspaceId: string | null;
+  repoUrl: string | null;
+  repoRef: string | null;
+}
+
 export interface ExecutionWorkspaceInput {
   baseCwd: string;
   source: "project_primary" | "task_session" | "agent_home";
@@ -52,6 +65,7 @@ export interface ExecutionWorkspaceInput {
   workspaceId: string | null;
   repoUrl: string | null;
   repoRef: string | null;
+  additionalWorkspaces?: ExecutionWorkspaceAdditionalInput[];
 }
 
 export interface ExecutionWorkspaceIssueRef {
@@ -2932,6 +2946,7 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
     workspaceId: input.workspace.projectWorkspaceId ?? input.base.workspaceId,
     repoUrl: input.workspace.repoUrl ?? input.base.repoUrl,
     repoRef: input.workspace.baseRef ?? input.base.repoRef,
+    additionalWorkspaces: input.base.additionalWorkspaces ?? [],
     strategy,
     cwd,
     branchName: input.workspace.branchName ?? null,

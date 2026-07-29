@@ -330,6 +330,19 @@ export interface WorkspaceRealizationRequest {
     branchName: string | null;
     worktreePath: string | null;
   };
+  /**
+   * Read-only referenced (mentioned) project sources for this run, one per authorized additional
+   * project. Additive and backward-compatible: it defaults to an empty array for legacy payloads
+   * and for the anchor-only path. Additional sources are plain trees; they never get git-worktree
+   * realization (that stays the anchor-only path).
+   */
+  additionalSources?: Array<{
+    localPath: string;
+    projectId: string | null;
+    projectWorkspaceId: string | null;
+    repoUrl: string | null;
+    repoRef: string | null;
+  }>;
   runtimeOverlay: {
     provisionCommand: string | null;
     teardownCommand: string | null;
