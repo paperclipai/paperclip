@@ -3037,6 +3037,9 @@ export function issueRoutes(
 
       let acceptedWake = await findAcceptedWake();
       if (!acceptedWake) {
+        // Owner eligibility may legitimately change after the issue transaction commits.
+        // Heartbeat admission is the authoritative delivery check: a rejected/suppressed
+        // wake leaves the marker null so an idempotent replay or later PATCH can retry.
         await deliverAgentUnblockNotification({
           issue: { ...current, blockedOwnerNotifiedAt: null },
           wakeup: enqueueBlockedOwnerWakeup,

@@ -312,6 +312,40 @@ describeEmbeddedPostgres("issue create deduplication routes", () => {
     expect(await db.select().from(agentWakeupRequests)).toHaveLength(0);
   });
 
+  it("keeps a post-commit owner pause unnotified and recovers after resume", async () => {
+    const companyId = await seedCompany();
+    const owner = await seedAgent(companyId);
+    const acceptedWakeup = acceptedBlockedOwnerWakeup(companyId);
+    let attempts = 0;
+    const app = createApp({
+      blockedOwnerEnqueueWakeup: async (...args) => {
+        attempts += 1;
+        if (attempts === 1) {
+          await db.update(agents).set({ status: "paused", updatedAt: new Date() }).where(eq(agents.id, owner.id));
+          return null;
+        }
+        return acceptedWakeup(...args);
+      },
+    });
+    const payload = {
+      title: "Owner pauses after issue commit",
+      status: "blocked",
+      idempotencyKey: "owner-pauses-after-commit",
+      unblockDescriptor: { owner: { agentId: owner.id }, action: "Review the unblock request" },
+    };
+
+    const first = await request(app).post(`/api/companies/${companyId}/issues`).send(payload).expect(201);
+    expect(first.body.blockedOwnerNotifiedAt).toBeNull();
+    expect(await db.select().from(agentWakeupRequests)).toHaveLength(0);
+
+    await db.update(agents).set({ status: "active", updatedAt: new Date() }).where(eq(agents.id, owner.id));
+    const replay = await request(app).post(`/api/companies/${companyId}/issues`).send(payload).expect(200);
+    expect(replay.body.blockedOwnerNotifiedAt).toBeTypeOf("string");
+    expect(attempts).toBe(2);
+    expect(await db.select().from(issues)).toHaveLength(1);
+    expect(await db.select().from(agentWakeupRequests)).toHaveLength(1);
+  });
+
   it("does not let an unrelated agent repair a deduplicated blocked root", async () => {
     const companyId = await seedCompany();
     const owner = await seedAgent(companyId);
