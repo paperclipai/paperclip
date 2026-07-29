@@ -15,7 +15,7 @@ for f in wake.py capture.py playback.py earcon.py sat_config.py satellite.py; do
   cp "$SRC_SAT/$f" "$DEST/$f"
 done
 # Geteilte voice-echo-bot-Module (ein config.py, keine Kollision)
-for f in config.py llm.py vault_client.py paperclip_client.py transcribe.py tts.py jarvis_brain.py; do
+for f in config.py llm.py vault_client.py paperclip_client.py transcribe.py tts.py jarvis_brain.py web_search.py; do
   cp "$SRC_VCO/$f" "$DEST/$f"
 done
 # venv

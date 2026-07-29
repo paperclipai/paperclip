@@ -42,7 +42,7 @@ def test_single_turn_speaks_answer(monkeypatch):
     spoken = []
     monkeypatch.setattr(satellite.transcribe, "transcribe", lambda wav, model: "Wie spät?")
     monkeypatch.setattr(satellite.jarvis_brain, "respond",
-                        lambda text, tenant, token, model, history=None, source=None, voice_output=None: {"kind": "chat", "answer": "Kurz nach drei."})
+                        lambda text, tenant, token, model, history=None, source=None, voice_output=None, web_key=None: {"kind": "chat", "answer": "Kurz nach drei."})
     monkeypatch.setattr(satellite, "_speak", lambda text, deps: spoken.append(text))
     # 1 Runde Sprache, dann Nachfrage-Fenster leer -> Ende
     frames = iter([loud(), loud(), quiet(), quiet(), quiet(), quiet(), quiet(),
@@ -138,10 +138,34 @@ def test_token_callable_is_resolved(monkeypatch):
     seen = {}
     monkeypatch.setattr(satellite.transcribe, "transcribe", lambda wav, model: "hi")
     monkeypatch.setattr(satellite.jarvis_brain, "respond",
-                        lambda text, tenant, token, model, history=None, source=None, voice_output=None: seen.update(token=token) or {"kind": "chat", "answer": "ok"})
+                        lambda text, tenant, token, model, history=None, source=None, voice_output=None, web_key=None: seen.update(token=token) or {"kind": "chat", "answer": "ok"})
     monkeypatch.setattr(satellite, "_speak", lambda text, deps: None)
     deps = _deps()
     deps["token"] = lambda: "AUFGELÖST"
     frames = iter([loud()] + [quiet()] * 12 + [quiet()] * sat_config.FOLLOWUP_WINDOW_FRAMES)
     satellite.handle_interaction(frames, deps)
     assert seen["token"] == "AUFGELÖST"
+
+
+def test_web_answer_is_remembered(monkeypatch):
+    # Suchantworten gehören ins Gedächtnis, sonst laufen Nachfragen ins Leere.
+    monkeypatch.setattr(satellite.transcribe, "transcribe", lambda wav, model: "wetter?")
+    monkeypatch.setattr(satellite.jarvis_brain, "respond",
+                        lambda *a, **k: {"kind": "web", "answer": "Morgen 24 Grad."})
+    monkeypatch.setattr(satellite, "_speak", lambda text, deps: None)
+    frames = iter(_turn() + [quiet()] * sat_config.FOLLOWUP_WINDOW_FRAMES)
+    hist = satellite.handle_interaction(frames, _deps())
+    assert hist[-1] == {"role": "assistant", "content": "Morgen 24 Grad."}
+
+
+def test_web_key_is_passed_to_brain(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(satellite.transcribe, "transcribe", lambda wav, model: "wetter?")
+    monkeypatch.setattr(satellite.jarvis_brain, "respond",
+                        lambda *a, **k: seen.update(k) or {"kind": "chat", "answer": "ok"})
+    monkeypatch.setattr(satellite, "_speak", lambda text, deps: None)
+    deps = _deps()
+    deps["web_key"] = "tvly-k"
+    frames = iter(_turn() + [quiet()] * sat_config.FOLLOWUP_WINDOW_FRAMES)
+    satellite.handle_interaction(frames, deps)
+    assert seen["web_key"] == "tvly-k"

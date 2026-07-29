@@ -168,7 +168,8 @@ class BotApp:
         text = (text or "").strip()
         hist = self.history.get(chat_id, [])
         result = jarvis_brain.respond(text, tenant, self._token(),
-                                      self._chat_model(), history=hist)
+                                      self._chat_model(), history=hist,
+                                      web_key=self.cfg.get("web_key"))
         kind, answer = result["kind"], result["answer"]
         if kind in ("empty", "unparsed_ok", "unparsed_fail"):
             self.tg.send_message(chat_id, answer)
@@ -257,6 +258,7 @@ def build_app():
         "reply_mode_path": config.REPLY_MODE_PATH,
         "eleven_api_key": env.get("ELEVENLABS_API_KEY"),
         "chat_model": env.get("CHAT_MODEL") or llm.DEFAULT_MODEL,
+        "web_key": env.get("TAVILY_API_KEY"),
     }
     app = BotApp(Telegram(env["TELEGRAM_BOT_TOKEN"]), cfg)
     loaded = state.load_state(config.STATE_PATH)

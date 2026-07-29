@@ -78,10 +78,11 @@ def handle_interaction(frames, deps, tenant=None, history=None):
         t1 = time.monotonic()
         result = jarvis_brain.respond(text, tenant, _resolve_token(deps),
                                       deps["chat_model"], history=history,
-                                      source="per Sprache", voice_output=True)
+                                      source="per Sprache", voice_output=True,
+                                      web_key=deps.get("web_key"))
         t2 = time.monotonic()
         answer = result["answer"]
-        if result["kind"] in ("chat", "lookup", "issue"):
+        if result["kind"] in ("chat", "lookup", "issue", "web"):
             history = _remember(history, text, answer)
         _speak(answer, deps)
         if flush_mic:
@@ -110,6 +111,7 @@ def build_deps():
         "eleven_key": env.get("ELEVENLABS_API_KEY"),
         "chat_model": sat_config.CHAT_MODEL or env.get("CHAT_MODEL") or jarvis_brain.llm.DEFAULT_MODEL,
         "token": vco_config.load_paperclip_token,
+        "web_key": env.get("TAVILY_API_KEY"),
     }
 
 
