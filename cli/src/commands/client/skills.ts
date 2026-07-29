@@ -17,6 +17,7 @@ import { stdin as input, stdout as output } from "node:process";
 import { createInterface } from "node:readline/promises";
 import {
   addCommonClientOptions,
+  decodeUtf8Content,
   formatInlineRecord,
   handleCommandError,
   printOutput,
@@ -996,7 +997,7 @@ async function readStdin(): Promise<string> {
   for await (const chunk of process.stdin) {
     chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
   }
-  return Buffer.concat(chunks).toString("utf8");
+  return decodeUtf8Content(Buffer.concat(chunks), "stdin content");
 }
 
 async function confirmDangerousAction(yes: boolean | undefined, message: string): Promise<void> {

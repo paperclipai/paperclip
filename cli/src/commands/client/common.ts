@@ -136,24 +136,28 @@ export function apiPath(strings: TemplateStringsArray, ...values: Array<string |
 const strictUtf8Decoder = new TextDecoder("utf-8", { fatal: true });
 
 /**
- * Read a user-content file (comment/document/skill bodies) and refuse anything
- * that is not valid UTF-8. Decoding invalid bytes leniently would silently turn
- * every non-ASCII character into U+FFFD before upload, corrupting the stored
- * text permanently. The most common source is Windows PowerShell 5.1, whose
- * Set-Content/Out-File default to legacy ANSI code pages.
+ * Decode user-supplied content bytes (comment/document/skill bodies) and refuse
+ * anything that is not valid UTF-8. Decoding invalid bytes leniently would
+ * silently turn every non-ASCII character into U+FFFD before upload, corrupting
+ * the stored text permanently. The most common source is Windows PowerShell 5.1,
+ * whose Set-Content/Out-File default to legacy ANSI code pages.
  */
-export async function readUtf8ContentFile(filePath: string): Promise<string> {
-  const raw = await readFile(filePath);
+export function decodeUtf8Content(raw: Uint8Array, sourceLabel: string): string {
   try {
     return strictUtf8Decoder.decode(raw);
   } catch {
     throw new Error(
-      `${filePath} is not valid UTF-8. If the file was written on Windows, ` +
-        `PowerShell 5.1's Set-Content/Out-File default to a legacy ANSI code page; ` +
-        `re-save it as UTF-8 (e.g. "Set-Content -Encoding utf8") and retry. ` +
+      `${sourceLabel} is not valid UTF-8. If the content was produced on Windows, ` +
+        `PowerShell 5.1's Set-Content/Out-File and default pipe encodings use a legacy ANSI code page; ` +
+        `re-encode it as UTF-8 (e.g. "Set-Content -Encoding utf8") and retry. ` +
         `Refusing to upload it so non-ASCII characters are not permanently replaced with �.`,
     );
   }
+}
+
+/** Read a user-content file and strictly decode it as UTF-8 (see decodeUtf8Content). */
+export async function readUtf8ContentFile(filePath: string): Promise<string> {
+  return decodeUtf8Content(await readFile(filePath), filePath);
 }
 
 export function inferContentTypeFromPath(filePath: string): string | undefined {

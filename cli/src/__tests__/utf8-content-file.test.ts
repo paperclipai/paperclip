@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { readUtf8ContentFile } from "../commands/client/common.js";
+import { decodeUtf8Content, readUtf8ContentFile } from "../commands/client/common.js";
 
 const tempFiles: string[] = [];
 
@@ -46,5 +46,16 @@ describe("readUtf8ContentFile", () => {
   it("rejects UTF-16 files (BOM) rather than uploading mangled text", async () => {
     const filePath = tempFile(Buffer.from("﻿ação", "utf16le"));
     await expect(readUtf8ContentFile(filePath)).rejects.toThrow(/not valid UTF-8/);
+  });
+});
+
+describe("decodeUtf8Content", () => {
+  it("decodes valid UTF-8 buffers (stdin path)", () => {
+    expect(decodeUtf8Content(Buffer.from("ação — memória", "utf8"), "stdin content")).toBe("ação — memória");
+  });
+
+  it("rejects invalid UTF-8 buffers with the source label in the error", () => {
+    const cp1252 = Buffer.from([0x61, 0xe7, 0xe3, 0x6f]);
+    expect(() => decodeUtf8Content(cp1252, "stdin content")).toThrow(/stdin content is not valid UTF-8/);
   });
 });
