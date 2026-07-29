@@ -2619,10 +2619,6 @@ export function issueRoutes(
   const decisionTrainingSvc = decisionTrainingService(db);
   const issueReferencesSvc = issueReferenceService(db);
   const issueThreadInteractionsSvc = issueThreadInteractionService(db);
-  const issueReadMemo = new Map<string, { expiresAt: number; value: Promise<Awaited<ReturnType<typeof svc.getById>>> }>();
-  const issueReadDecisionMemo = new Map<string, { expiresAt: number; value: Promise<Awaited<ReturnType<typeof decideIssueAccess>>> }>();
-  const issueReadMemoTtlMs = 100;
-
   async function buildIssueDetailResponse(req: Request, issue: Awaited<ReturnType<typeof svc.getById>> & {}) {
     const inboxArchiveFieldsPromise = req.actor.type === "board" && req.actor.userId
       ? svc.getActiveInboxArchiveFields(issue, req.actor.userId)
@@ -2705,33 +2701,8 @@ export function issueRoutes(
     };
   }
 
-  function issueReadActorKey(req: Request) {
-    return JSON.stringify({
-      type: req.actor.type,
-      source: req.actor.source,
-      userId: req.actor.userId ?? null,
-      agentId: req.actor.agentId ?? null,
-      keyId: req.actor.keyId ?? null,
-      keyScope: req.actor.keyScope ?? null,
-      companyId: req.actor.companyId ?? null,
-      companyIds: req.actor.companyIds ?? null,
-      memberships: req.actor.memberships ?? null,
-      isInstanceAdmin: req.actor.isInstanceAdmin ?? null,
-      onBehalfOfUserId: req.actor.onBehalfOfUserId ?? null,
-      onBehalfOfMemberships: req.actor.onBehalfOfMemberships ?? null,
-    });
-  }
-
-  function getIssueById(req: Request, id: string) {
-    if (req.method !== "GET") return svc.getById(id);
-    const key = `${issueReadActorKey(req)}:${id}`;
-    const now = Date.now();
-    const cached = issueReadMemo.get(key);
-    if (cached && cached.expiresAt > now) return cached.value;
-    const value = svc.getById(id);
-    issueReadMemo.set(key, { expiresAt: now + issueReadMemoTtlMs, value });
-    void value.catch(() => issueReadMemo.delete(key));
-    return value;
+  function getIssueById(_req: Request, id: string) {
+    return svc.getById(id);
   }
 
   const issueDetailEtag = privateJsonEtag();
@@ -3580,17 +3551,7 @@ export function issueRoutes(
   }
 
   async function assertIssueReadAllowed(req: Request, res: Response, issue: Parameters<typeof decideIssueAccess>[1]) {
-    const key = `${issueReadActorKey(req)}:${issue.id}:${issue.companyId}:${issue.projectId ?? ""}:${issue.parentId ?? ""}:${issue.assigneeAgentId ?? ""}:${issue.assigneeUserId ?? ""}:${issue.status}`;
-    const now = Date.now();
-    const cached = issueReadDecisionMemo.get(key);
-    const value = cached && cached.expiresAt > now
-      ? cached.value
-      : decideIssueAccess(req, issue, "issue:read");
-    if (!cached || cached.expiresAt <= now) {
-      issueReadDecisionMemo.set(key, { expiresAt: now + issueReadMemoTtlMs, value });
-      void value.catch(() => issueReadDecisionMemo.delete(key));
-    }
-    const decision = await value;
+    const decision = await decideIssueAccess(req, issue, "issue:read");
     if (decision.allowed) return true;
     res.status(403).json({ error: "Issue is outside this actor's authorization boundary" });
     return false;

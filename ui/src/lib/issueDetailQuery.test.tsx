@@ -54,6 +54,7 @@ function makeIssue(overrides: Partial<Issue> = {}): Issue {
 
 describe("getIssueDetailQueryOptions", () => {
   afterEach(() => {
+    vi.useRealTimers();
     vi.clearAllMocks();
   });
 
@@ -93,6 +94,39 @@ describe("getIssueDetailQueryOptions", () => {
       pageParams: [null],
     });
 
+    queryClient.clear();
+  });
+
+  it("preserves socket updates received while the aggregate view is loading", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-04-13T20:00:00.000Z"));
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const issue = makeIssue();
+    let resolveView!: (view: Awaited<ReturnType<typeof issuesApi.getView>>) => void;
+    vi.mocked(issuesApi.getView).mockReturnValue(new Promise((resolve) => {
+      resolveView = resolve;
+    }));
+
+    const pending = fetchIssueDetail(queryClient, "PAP-1442", { signal: new AbortController().signal });
+    vi.setSystemTime(new Date("2026-04-13T20:00:00.001Z"));
+    queryClient.setQueryData(queryKeys.issues.interactions("PAP-1442"), [{ id: "socket-update" }]);
+    resolveView({
+      detail: issue,
+      comments: [],
+      interactions: [{ id: "aggregate-snapshot" }],
+      attachments: [],
+      workProducts: [],
+      childIssues: [],
+      runs: [],
+      liveRuns: [],
+      activeRun: null,
+    } as unknown as Awaited<ReturnType<typeof issuesApi.getView>>);
+
+    await pending;
+
+    expect(queryClient.getQueryData(queryKeys.issues.interactions("PAP-1442"))).toEqual([
+      { id: "socket-update" },
+    ]);
     queryClient.clear();
   });
 });

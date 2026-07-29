@@ -18,7 +18,7 @@ import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "./logger.js";
 import { boardAuthService } from "../services/board-auth.js";
 
-const cloudTenantWriteDebounce = new Map<string, number>();
+const cloudTenantWriteDebounces = new WeakMap<Db, Map<string, number>>();
 const CLOUD_TENANT_WRITE_DEBOUNCE_MS = 5_000;
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { ensureHumanRoleDefaultGrants } from "../services/principal-access-compatibility.js";
@@ -438,7 +438,13 @@ export async function resolveCloudTenantActor(db: Db, req: Request): Promise<Exp
   const now = new Date();
   const membershipRole = stackRole === "owner" || stackRole === "admin" ? "owner" : stackRole;
   const syncKey = [userId, userEmail, userName, stackId, stackRole, paperclipCompanyId ?? ""].join(":");
-  const shouldSync = (cloudTenantWriteDebounce.get(syncKey) ?? 0) <= now.getTime() - CLOUD_TENANT_WRITE_DEBOUNCE_MS;
+  const cloudTenantWriteDebounce = cloudTenantWriteDebounces.get(db) ?? new Map<string, number>();
+  cloudTenantWriteDebounces.set(db, cloudTenantWriteDebounce);
+  const debounceCutoff = now.getTime() - CLOUD_TENANT_WRITE_DEBOUNCE_MS;
+  for (const [key, lastSyncAt] of cloudTenantWriteDebounce) {
+    if (lastSyncAt <= debounceCutoff) cloudTenantWriteDebounce.delete(key);
+  }
+  const shouldSync = !cloudTenantWriteDebounce.has(syncKey);
   if (shouldSync) cloudTenantWriteDebounce.set(syncKey, now.getTime());
   let effectiveMembership: { companyId: string; membershipRole: string | null; status: string } = {
     companyId,

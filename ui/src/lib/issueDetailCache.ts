@@ -117,22 +117,27 @@ export async function fetchIssueDetail(
   issueRef: string,
   options?: { signal?: AbortSignal },
 ): Promise<Issue> {
+  const requestedAt = Date.now();
   const view = options ? await issuesApi.getView(issueRef, options) : await issuesApi.getView(issueRef);
   const issue = seedIssueDetailCache(queryClient, view.detail, { issueRef });
   const refs = collectIssueRefs(issueRef, issue);
+  const hydrateIfNotUpdatedDuringRequest = <T>(queryKey: readonly unknown[], value: T) => {
+    if ((queryClient.getQueryState(queryKey)?.dataUpdatedAt ?? 0) > requestedAt) return;
+    queryClient.setQueryData(queryKey, value);
+  };
   for (const ref of refs) {
-    queryClient.setQueryData<InfiniteData<typeof view.comments, string | null>>(
+    hydrateIfNotUpdatedDuringRequest<InfiniteData<typeof view.comments, string | null>>(
       queryKeys.issues.comments(ref),
       { pages: [view.comments], pageParams: [null] },
     );
-    queryClient.setQueryData(queryKeys.issues.interactions(ref), view.interactions);
-    queryClient.setQueryData(queryKeys.issues.attachments(ref), view.attachments);
-    queryClient.setQueryData(queryKeys.issues.workProducts(ref), view.workProducts);
-    queryClient.setQueryData(queryKeys.issues.runs(ref), view.runs);
-    queryClient.setQueryData(queryKeys.issues.liveRuns(ref), view.liveRuns);
-    queryClient.setQueryData(queryKeys.issues.activeRun(ref), view.activeRun);
+    hydrateIfNotUpdatedDuringRequest(queryKeys.issues.interactions(ref), view.interactions);
+    hydrateIfNotUpdatedDuringRequest(queryKeys.issues.attachments(ref), view.attachments);
+    hydrateIfNotUpdatedDuringRequest(queryKeys.issues.workProducts(ref), view.workProducts);
+    hydrateIfNotUpdatedDuringRequest(queryKeys.issues.runs(ref), view.runs);
+    hydrateIfNotUpdatedDuringRequest(queryKeys.issues.liveRuns(ref), view.liveRuns);
+    hydrateIfNotUpdatedDuringRequest(queryKeys.issues.activeRun(ref), view.activeRun);
   }
-  queryClient.setQueryData(
+  hydrateIfNotUpdatedDuringRequest(
     queryKeys.issues.listByDescendantRoot(issue.companyId, issue.id),
     view.childIssues,
   );

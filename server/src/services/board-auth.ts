@@ -149,7 +149,11 @@ export function boardAuthService(db: Db) {
 
   async function touchBoardApiKey(id: string) {
     const nowMs = Date.now();
-    if ((touchedBoardApiKeys.get(id) ?? 0) > nowMs - 60_000) return;
+    const debounceCutoff = nowMs - 60_000;
+    for (const [keyId, lastTouchedAt] of touchedBoardApiKeys) {
+      if (lastTouchedAt <= debounceCutoff) touchedBoardApiKeys.delete(keyId);
+    }
+    if (touchedBoardApiKeys.has(id)) return;
     touchedBoardApiKeys.set(id, nowMs);
     try {
       await db.update(boardApiKeys).set({ lastUsedAt: new Date() }).where(eq(boardApiKeys.id, id));
