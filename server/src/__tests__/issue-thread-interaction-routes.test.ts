@@ -99,9 +99,6 @@ function registerModuleMocks() {
       })),
       listCompanyIds: vi.fn(async () => ["company-1"]),
     }),
-    activityService: () => ({
-      runsForIssue: vi.fn(async () => []),
-    }),
     issueApprovalService: () => ({}),
     issueReferenceService: () => ({
       deleteDocumentSource: async () => undefined,

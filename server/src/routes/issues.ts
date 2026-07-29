@@ -2591,7 +2591,6 @@ export function issueRoutes(
 ) {
   const router = Router();
   const svc = issueService(db);
-  const activitySvc = activityService(db);
   const access = accessService(db);
   const heartbeat = heartbeatService(db, {
     pluginWorkerManager: opts.pluginWorkerManager,
@@ -5573,7 +5572,7 @@ export function issueRoutes(
       issueThreadInteractionsSvc.listForIssue(issue.id),
       svc.listAttachments(issue.id).then((rows) => rows.map(withContentPath)),
       svc.list(issue.companyId, { descendantOf: issue.id, includeBlockedBy: true }),
-      activitySvc.runsForIssue(issue.companyId, issue.id),
+      activityService(db).runsForIssue(issue.companyId, issue.id),
     ]);
     const workProducts = detail.workProducts;
     const childIssues = await actorCanReadCompanyScope(req, issue.companyId)
