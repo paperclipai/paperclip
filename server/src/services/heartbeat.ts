@@ -11134,6 +11134,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       },
     });
 
+    const agent = await getAgent(run.agentId);
+    if (agent) {
+      await scheduleBoundedRetryForRun(cancelled, agent, {
+        retryReason: "issue_dependencies_blocked",
+        wakeReason: "issue_blockers_resolved",
+        delayMs: 30_000,
+      });
+    }
+
     return cancelled;
   }
 
@@ -11345,6 +11354,37 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       message: staleness.reason,
       payload: staleness.details,
     });
+
+    if (staleness.errorCode === "issue_assignee_changed") {
+      const successorAgentId = readNonEmptyString(staleness.details.currentAssigneeAgentId);
+      if (successorAgentId) {
+        await enqueueWakeup(successorAgentId, {
+          source: "automation",
+          triggerDetail: "system",
+          reason: "issue_assigned",
+          payload: {
+            issueId,
+            staleQueuedRunId: run.id,
+            staleQueuedRunErrorCode: staleness.errorCode,
+          },
+          contextSnapshot: {
+            issueId,
+            wakeReason: "issue_assigned",
+            staleQueuedRunId: run.id,
+            staleQueuedRunErrorCode: staleness.errorCode,
+          },
+        });
+      }
+    } else if (staleness.errorCode === "issue_execution_lock_changed") {
+      const agent = await getAgent(run.agentId);
+      if (agent) {
+        await scheduleBoundedRetryForRun(cancelled, agent, {
+          retryReason: "issue_execution_lock_changed",
+          wakeReason: "issue_assigned",
+          delayMs: 1_000,
+        });
+      }
+    }
 
     return cancelled;
   }
