@@ -222,14 +222,18 @@ def test_web_token_without_key_is_honest_not_silent(monkeypatch):
 
 def test_web_token_after_vault_lookup_is_not_executed(monkeypatch):
     # Harte Sperre: in derselben Anfrage gewonnene Vault-Daten dürfen nicht in
-    # einen Suchbegriff wandern.
+    # einen Suchbegriff wandern. Das nachgereichte WEB:-Token steht hier
+    # bewusst als GESAMTE zweite Modellantwort (nicht auf einer zweiten
+    # Zeile hinter Klartext) — parse_control dispatcht nur die erste Zeile,
+    # ein Token weiter unten würde also so oder so nur gestrippt und könnte
+    # die Sperre nicht beweisen (siehe Review-Befund 2).
     searched = []
     calls = []
     def fake_chat(msgs, model=None):
         calls.append(msgs)
         if len(calls) == 1:
             return "LOOKUP kontakt: Jana Kostbar"
-        return "Sie wohnt in Cottbus.\nWEB: Wetter Cottbus"
+        return "WEB: Wetter Cottbus"
     monkeypatch.setattr(jarvis_brain.llm, "chat", fake_chat)
     monkeypatch.setattr(jarvis_brain.vault_client, "lookup",
                         lambda mode, query, vault=None: {"treffer": [{"inhalt": "Cottbus"}]})
@@ -239,4 +243,37 @@ def test_web_token_after_vault_lookup_is_not_executed(monkeypatch):
     assert searched == []                     # keine Suche ausgelöst
     assert r["kind"] == "lookup"
     assert "WEB:" not in r["answer"]          # Token gestrippt, nicht vorgelesen
-    assert r["answer"] == "Sie wohnt in Cottbus."
+    # Die zweite Modellantwort bestand NUR aus dem Token, nach dem Strippen
+    # bleibt nichts übrig — das darf keine leere (= stumme) Antwort ergeben
+    # (Review-Befund 1).
+    assert r["answer"] == jarvis_brain.EMPTY_TOOL_ANSWER
+
+
+def test_lookup_answer_never_empty_if_model_repeats_token(monkeypatch):
+    # Hält sich das Modell im Folge-Durchgang NICHT an "Gib KEIN Steuer-Token
+    # mehr aus" und besteht seine komplette Antwort nur aus einem (weiteren)
+    # Steuer-Token, raeumt _strip_control_lines() den Text vollstaendig leer.
+    # Das darf nie als Leerstring durchgereicht werden (stumme Sprachausgabe).
+    calls = []
+    def fake_chat(msgs, model=None):
+        calls.append(msgs)
+        return "LOOKUP kontakt: Jana"
+    monkeypatch.setattr(jarvis_brain.llm, "chat", fake_chat)
+    monkeypatch.setattr(jarvis_brain.vault_client, "lookup",
+                        lambda mode, query, vault=None: {"treffer": [{"tel": "123"}]})
+    r = jarvis_brain.respond("Nummer von Jana?", TENANT, "tok", "m")
+    assert r["kind"] == "lookup"
+    assert r["answer"] == jarvis_brain.EMPTY_TOOL_ANSWER
+    assert len(calls) == 2
+
+
+def test_web_answer_never_empty_if_model_repeats_token(monkeypatch):
+    # Gleicher Fall wie oben, aber für die Websuche: der Folge-Durchgang
+    # antwortet nur mit einem Steuer-Token statt mit Text.
+    monkeypatch.setattr(jarvis_brain.llm, "chat",
+                        lambda msgs, model=None: "WEB: Wetter Cottbus")
+    monkeypatch.setattr(jarvis_brain.web_search, "search",
+                        lambda q, key, **kw: {"query": q, "antwort": "", "treffer": []})
+    r = jarvis_brain.respond("wetter morgen?", TENANT, "tok", "m", web_key="tvly-k")
+    assert r["kind"] == "web"
+    assert r["answer"] == jarvis_brain.EMPTY_TOOL_ANSWER

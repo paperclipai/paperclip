@@ -116,6 +116,21 @@ def _strip_control_lines(text):
     return "\n".join(kept).strip()
 
 
+# Fester Ersatztext, falls nach dem Strippen nichts übrig bleibt: hält sich
+# das Modell im Folge-Durchgang NICHT an "Gib KEIN Steuer-Token mehr aus" und
+# besteht seine Antwort NUR aus einem (weiteren) Steuer-Token, würde
+# _strip_control_lines() einen Leerstring liefern. Bei der Sprachausgabe
+# heisst leerer Text: Jarvis schweigt — das schlechteste aller Verhalten,
+# also nie ungeprüft zurückgeben.
+EMPTY_TOOL_ANSWER = "⚠️ Habe dazu keine verwertbare Antwort bekommen, bitte gleich nochmal fragen."
+
+
+def _strip_or_fallback(text):
+    """Wie `_strip_control_lines`, garantiert aber nie einen Leerstring —
+    siehe `EMPTY_TOOL_ANSWER`."""
+    return _strip_control_lines(text) or EMPTY_TOOL_ANSWER
+
+
 def respond(text, tenant, token, chat_model, history=None, source="per Telegram",
             voice_output=False, now=None, web_key=None):
     text = (text or "").strip()
@@ -181,7 +196,7 @@ def _do_lookup(messages, mode, query, tenant, chat_model):
     # Nach einem Vault-Zugriff wird KEIN weiteres Werkzeug mehr ausgeführt:
     # in dieser Anfrage gewonnene Vault-Daten dürfen nicht nach draussen
     # (z.B. in einen Suchbegriff) wandern. Token werden nur entfernt.
-    return _strip_control_lines(answer)
+    return _strip_or_fallback(answer)
 
 
 def _do_web(messages, query, chat_model, api_key):
@@ -206,7 +221,7 @@ def _do_web(messages, query, chat_model, api_key):
     except llm.LlmError:
         traceback.print_exc()
         return "⚠️ Konnte das Suchergebnis nicht auswerten, bitte gleich nochmal."
-    return _strip_control_lines(answer)
+    return _strip_or_fallback(answer)
 
 
 def _do_issue(title, description, tenant, token):
