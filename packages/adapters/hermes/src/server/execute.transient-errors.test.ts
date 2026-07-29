@@ -89,12 +89,12 @@ describe("hermes-local transient provider failure classification", () => {
     "API call failed after 3 retries: HTTP 502: Bad gateway",
     "API call failed after 3 retries: HTTP 503: Service unavailable",
     "API call failed after 3 retries: HTTP 504: Gateway timeout",
-    "request failed: ECONNRESET",
-    "request failed: ETIMEDOUT",
-    "connection reset by peer",
-    "socket hang up",
-  ])("classifies transient provider signature: %s", async (transcript) => {
-    childResult.current.stderr = transcript;
+    "API call failed after 3 retries: request failed: ECONNRESET",
+    "API call failed after 3 retries: request failed: ETIMEDOUT",
+    "API call failed after 3 retries: connection reset by peer",
+    "API call failed after 3 retries: socket hang up",
+  ])("classifies transient signature: %s", async (message) => {
+    childResult.current.stdout = message;
 
     const result = await execute(makeCtx() as any);
 
@@ -104,6 +104,31 @@ describe("hermes-local transient provider failure classification", () => {
 
   it("does not classify an ordinary nonzero exit as transient", async () => {
     childResult.current.stderr = "Error: invalid tool configuration";
+
+    const result = await execute(makeCtx() as any);
+
+    expect(result.errorCode).toBeUndefined();
+    expect(result.errorFamily).toBeUndefined();
+    expect(result.resultJson).not.toHaveProperty("errorFamily");
+  });
+
+  it("does not classify transient-looking text quoted inside ordinary output", async () => {
+    childResult.current.stdout = [
+      "Tool output from a diagnostic file:",
+      "API call failed after 3 retries: HTTP 503: Service unavailable",
+      "The task then failed validation.",
+    ].join("\n");
+
+    const result = await execute(makeCtx() as any);
+
+    expect(result.errorCode).toBeUndefined();
+    expect(result.errorFamily).toBeUndefined();
+    expect(result.resultJson).not.toHaveProperty("errorFamily");
+  });
+
+  it("does not classify a deterministic 429 quota response as transient", async () => {
+    childResult.current.stdout =
+      "API call failed after 3 retries: HTTP 429: Monthly quota exhausted; upgrade your plan\n";
 
     const result = await execute(makeCtx() as any);
 

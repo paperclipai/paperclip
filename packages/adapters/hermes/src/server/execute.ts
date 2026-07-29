@@ -242,31 +242,31 @@ function classifyTransientProviderFailure(
   stdout: string,
   stderr: string,
 ): TransientProviderFailure | null {
-  const combined = `${stdout}\n${stderr}`.trim();
-  if (!combined) return null;
+  const stdoutFirstLine = stdout.trim().split(/\r?\n/, 1)[0]?.trim() ?? "";
+  const stderrFailureLine = stderr
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .find((line) => /^(?:Error:\s*)?API call failed after \d+ retries:/i.test(line));
+  const failureEnvelope =
+    (/^API call failed after \d+ retries:/i.test(stdoutFirstLine) ? stdoutFirstLine : null) ??
+    stderrFailureLine ??
+    null;
+  if (!failureEnvelope) return null;
 
-  const hasGatewayFailure = /\bHTTP(?:\/\d(?:\.\d)?)?\s+(?:502|503|504)\b/i.test(combined);
+  const hasGatewayFailure = /\bHTTP(?:\/\d(?:\.\d)?)?\s+(?:502|503|504)\b/i.test(failureEnvelope);
   const hasOverloadedRateLimit =
-    /\bHTTP(?:\/\d(?:\.\d)?)?\s+429\b/i.test(combined) &&
-    /engine is currently overloaded|API call failed after \d+ retries|try again later/i.test(combined);
+    /\bHTTP(?:\/\d(?:\.\d)?)?\s+429\b/i.test(failureEnvelope) &&
+    /\bengine is currently overloaded\b/i.test(failureEnvelope);
   const hasTransientTransportFailure =
-    /\b(?:ECONNRESET|ETIMEDOUT)\b|connection (?:was )?reset(?: by peer)?|socket hang up/i.test(combined);
+    /\b(?:ECONNRESET|ETIMEDOUT)\b|connection (?:was )?reset(?: by peer)?|socket hang up/i.test(
+      failureEnvelope,
+    );
 
   if (!hasGatewayFailure && !hasOverloadedRateLimit && !hasTransientTransportFailure) {
     return null;
   }
 
-  const errorMessage =
-    combined
-      .split("\n")
-      .map((line) => line.trim())
-      .find((line) =>
-        /\bHTTP(?:\/\d(?:\.\d)?)?\s+(?:429|502|503|504)\b|\b(?:ECONNRESET|ETIMEDOUT)\b|connection (?:was )?reset(?: by peer)?|socket hang up/i.test(
-          line,
-        ),
-      ) ?? "Hermes provider request failed transiently";
-
-  return { errorMessage };
+  return { errorMessage: failureEnvelope.replace(/^Error:\s*/i, "") };
 }
 
 // ---------------------------------------------------------------------------
