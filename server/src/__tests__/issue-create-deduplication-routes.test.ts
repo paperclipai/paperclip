@@ -298,6 +298,20 @@ describeEmbeddedPostgres("issue create deduplication routes", () => {
     expect(await db.select().from(agentWakeupRequests)).toHaveLength(0);
   });
 
+  it("revalidates unblock-owner invokability inside the create transaction", async () => {
+    const companyId = await seedCompany();
+    const pausedOwner = await seedAgent(companyId, null, "paused");
+
+    await expect(issueService(db).create(companyId, {
+      title: "Transactionally guarded blocked issue",
+      status: "blocked",
+      unblockDescriptor: { owner: { agentId: pausedOwner.id }, action: "Review the unblock request" },
+    })).rejects.toMatchObject({ status: 422 });
+
+    expect(await db.select().from(issues)).toHaveLength(0);
+    expect(await db.select().from(agentWakeupRequests)).toHaveLength(0);
+  });
+
   it("does not let an unrelated agent repair a deduplicated blocked root", async () => {
     const companyId = await seedCompany();
     const owner = await seedAgent(companyId);

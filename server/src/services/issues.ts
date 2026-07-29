@@ -59,6 +59,7 @@ import {
   clampIssueRequestDepth,
   extractAgentMentionIds,
   extractProjectMentionIds,
+  getAgentWorkEligibility,
   issueCommentAuthorTypeSchema,
   issueCommentMetadataSchema,
   issueCommentPresentationSchema,
@@ -4401,6 +4402,36 @@ export function issueService(db: Db) {
   const instanceSettings = instanceSettingsService(db);
   const treeControlSvc = issueTreeControlService(db);
 
+  async function assertBlockedCreateOwnerInvokable(
+    tx: Pick<Db, "select">,
+    companyId: string,
+    issueData: Record<string, unknown>,
+  ) {
+    if (issueData.status !== "blocked") return;
+    const descriptor = parseObject(issueData.unblockDescriptor);
+    const owner = parseObject(descriptor.owner);
+    const ownerAgentId = typeof owner.agentId === "string" ? owner.agentId.trim() : "";
+    if (!ownerAgentId) return;
+
+    const companyAgents = await tx
+      .select({
+        id: agents.id,
+        companyId: agents.companyId,
+        name: agents.name,
+        status: agents.status,
+        reportsTo: agents.reportsTo,
+      })
+      .from(agents)
+      .where(eq(agents.companyId, companyId))
+      .orderBy(asc(agents.id))
+      .for("update");
+    const ownerAgent = companyAgents.find((agent) => agent.id === ownerAgentId);
+    if (!ownerAgent) throw unprocessable("Unblock owner agent must belong to the issue company");
+    if (!getAgentWorkEligibility({ agent: ownerAgent, agents: companyAgents }).invokable) {
+      throw unprocessable("Unblock owner agent must be invokable");
+    }
+  }
+
   function normalizeCreateIssueTitle(title: string) {
     return title.trim().replace(/\s+/g, " ").toLowerCase();
   }
@@ -7066,6 +7097,7 @@ export function issueService(db: Db) {
         }
 
         await beforeCreate?.(tx);
+        await assertBlockedCreateOwnerInvokable(tx, companyId, issueData);
 
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, companyId);
         let projectWorkspaceId = issueData.projectWorkspaceId ?? null;
