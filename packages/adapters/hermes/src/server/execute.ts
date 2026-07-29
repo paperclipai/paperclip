@@ -234,6 +234,41 @@ interface ParsedOutput {
   errorMessage?: string;
 }
 
+interface TransientProviderFailure {
+  errorMessage: string;
+}
+
+function classifyTransientProviderFailure(
+  stdout: string,
+  stderr: string,
+): TransientProviderFailure | null {
+  const combined = `${stdout}\n${stderr}`.trim();
+  if (!combined) return null;
+
+  const hasGatewayFailure = /\bHTTP(?:\/\d(?:\.\d)?)?\s+(?:502|503|504)\b/i.test(combined);
+  const hasOverloadedRateLimit =
+    /\bHTTP(?:\/\d(?:\.\d)?)?\s+429\b/i.test(combined) &&
+    /engine is currently overloaded|API call failed after \d+ retries|try again later/i.test(combined);
+  const hasTransientTransportFailure =
+    /\b(?:ECONNRESET|ETIMEDOUT)\b|connection (?:was )?reset(?: by peer)?|socket hang up/i.test(combined);
+
+  if (!hasGatewayFailure && !hasOverloadedRateLimit && !hasTransientTransportFailure) {
+    return null;
+  }
+
+  const errorMessage =
+    combined
+      .split("\n")
+      .map((line) => line.trim())
+      .find((line) =>
+        /\bHTTP(?:\/\d(?:\.\d)?)?\s+(?:429|502|503|504)\b|\b(?:ECONNRESET|ETIMEDOUT)\b|connection (?:was )?reset(?: by peer)?|socket hang up/i.test(
+          line,
+        ),
+      ) ?? "Hermes provider request failed transiently";
+
+  return { errorMessage };
+}
+
 // ---------------------------------------------------------------------------
 // Response cleaning
 // ---------------------------------------------------------------------------
@@ -543,6 +578,10 @@ export async function execute(
 
   // ── Parse output ───────────────────────────────────────────────────────
   const parsed = parseHermesOutput(result.stdout || "", result.stderr || "");
+  const transientProviderFailure =
+    result.exitCode !== null && result.exitCode !== 0
+      ? classifyTransientProviderFailure(result.stdout || "", result.stderr || "")
+      : null;
 
   await ctx.onLog(
     "stdout",
@@ -567,6 +606,12 @@ export async function execute(
     executionResult.errorMessage = `Hermes exited with code ${result.exitCode}`;
   }
 
+  if (transientProviderFailure) {
+    executionResult.errorMessage = parsed.errorMessage ?? transientProviderFailure.errorMessage;
+    executionResult.errorCode = "hermes_transient_upstream";
+    executionResult.errorFamily = "transient_upstream";
+  }
+
   if (parsed.usage) {
     executionResult.usage = parsed.usage;
   }
@@ -586,6 +631,7 @@ export async function execute(
     session_id: parsed.sessionId || null,
     usage: parsed.usage || null,
     cost_usd: parsed.costUsd ?? null,
+    ...(transientProviderFailure ? { errorFamily: "transient_upstream" } : {}),
   };
 
   // Store session ID for next run
