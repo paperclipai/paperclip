@@ -2,6 +2,7 @@ export const REDACTED_COMMAND_TEXT_VALUE = "***REDACTED***";
 
 const SECRET_NAME_PATTERN =
   String.raw`[A-Za-z0-9_-]*(?:api[-_]?key|(?:access[-_]?|auth[-_]?)?token|token|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring)[A-Za-z0-9_-]*`;
+const SECRET_ENV_NAME_RE = new RegExp(`^${SECRET_NAME_PATTERN}$`, "i");
 
 const COMMAND_CLI_SECRET_OPTION_RE = new RegExp(
   String.raw`(\B-{1,2}${SECRET_NAME_PATTERN}(?:\s+|=)(["']?))[^\s"'` + "`" + String.raw`]+(\2)`,
@@ -55,4 +56,72 @@ export function redactCommandText(command: string, redactedValue = REDACTED_COMM
     .replace(COMMAND_OPENAI_KEY_RE, redactedValue)
     .replace(COMMAND_GITHUB_TOKEN_RE, redactedValue)
     .replace(COMMAND_JWT_RE, redactedValue);
+}
+
+export function redactCredentialText(
+  text: string,
+  env: Record<string, string> = {},
+  redactedValue = REDACTED_COMMAND_TEXT_VALUE,
+): string {
+  let redacted = redactCommandText(text, redactedValue);
+  const sensitiveValues = Object.entries(env)
+    .filter(([key, value]) => SECRET_ENV_NAME_RE.test(key) && value.length >= 4)
+    .map(([, value]) => value)
+    .sort((left, right) => right.length - left.length);
+
+  for (const value of sensitiveValues) {
+    redacted = redacted.split(value).join(redactedValue);
+  }
+  return redacted;
+}
+
+export interface CredentialTextRedactor {
+  redact: (chunk: string) => string;
+  flush: () => string;
+}
+
+export function createCredentialTextRedactor(
+  env: Record<string, string> = {},
+  redactedValue = REDACTED_COMMAND_TEXT_VALUE,
+): CredentialTextRedactor {
+  const sensitiveValues = Object.entries(env)
+    .filter(([key, value]) => SECRET_ENV_NAME_RE.test(key) && value.length >= 4)
+    .map(([, value]) => value)
+    .sort((left, right) => right.length - left.length);
+  const overlap = Math.max(0, ...sensitiveValues.map((value) => value.length - 1));
+  let pending = "";
+
+  return {
+    redact(chunk: string): string {
+      if (overlap === 0) return redactCredentialText(chunk, env, redactedValue);
+
+      const combined = pending + chunk;
+      const safeEnd = Math.max(0, combined.length - overlap);
+      let cursor = 0;
+      let plainStart = 0;
+      let redacted = "";
+
+      while (cursor < safeEnd) {
+        const sensitiveValue = sensitiveValues.find((value) => combined.startsWith(value, cursor));
+        if (!sensitiveValue) {
+          cursor += 1;
+          continue;
+        }
+
+        redacted += redactCommandText(combined.slice(plainStart, cursor), redactedValue);
+        redacted += redactedValue;
+        cursor += sensitiveValue.length;
+        plainStart = cursor;
+      }
+
+      redacted += redactCommandText(combined.slice(plainStart, cursor), redactedValue);
+      pending = combined.slice(cursor);
+      return redacted;
+    },
+    flush(): string {
+      const redacted = redactCredentialText(pending, env, redactedValue);
+      pending = "";
+      return redacted;
+    },
+  };
 }

@@ -6,6 +6,7 @@ import os from "node:os";
 import path from "node:path";
 import { Transform } from "node:stream";
 import type { CommandManagedRuntimeRunner } from "./command-managed-runtime.js";
+import { redactCredentialText } from "./command-redaction.js";
 import type { RunProcessResult } from "./server-utils.js";
 import type { DirectorySnapshot } from "./workspace-restore-merge.js";
 import { mergeDirectoryWithBaseline } from "./workspace-restore-merge.js";
@@ -54,27 +55,27 @@ export function createSshCommandManagedRuntimeRunner(input: {
       const cwd = commandInput.cwd?.trim() || defaultCwd;
       const envEntries = Object.entries(commandInput.env ?? {})
         .filter((entry): entry is [string, string] => typeof entry[1] === "string");
-      const envPrefix = envEntries.length > 0
-        ? `env ${envEntries.map(([key, value]) => `${key}=${shellQuote(value)}`).join(" ")} `
-        : "";
-      const exportPrefix = envEntries.length > 0
-        ? envEntries.map(([key, value]) => `export ${key}=${shellQuote(value)};`).join(" ") + " "
-        : "";
       const commandScript = command === "sh" || command === "bash"
         ? (args[0] === "-c" || args[0] === "-lc") && typeof args[1] === "string"
-          ? `${exportPrefix}${args[1]}`
-          : `${envPrefix}exec ${[shellQuote(command), ...args.map((arg) => shellQuote(arg))].join(" ")}`
-        : `${envPrefix}exec ${[shellQuote(command), ...args.map((arg) => shellQuote(arg))].join(" ")}`;
+          ? args[1]
+          : `exec ${[shellQuote(command), ...args.map((arg) => shellQuote(arg))].join(" ")}`
+        : `exec ${[shellQuote(command), ...args.map((arg) => shellQuote(arg))].join(" ")}`;
       const remoteCommand = `cd ${shellQuote(cwd)} && ${commandScript}`;
+      const commandEnv = Object.fromEntries(envEntries);
 
       try {
         const result = await runSshCommand(input.spec, remoteCommand, {
+          env: commandEnv,
           stdin: commandInput.stdin,
           timeoutMs: commandInput.timeoutMs,
           maxBuffer: maxBufferBytes,
         });
-        if (result.stdout) await commandInput.onLog?.("stdout", result.stdout);
-        if (result.stderr) await commandInput.onLog?.("stderr", result.stderr);
+        if (result.stdout) {
+          await commandInput.onLog?.("stdout", redactCredentialText(result.stdout, commandEnv));
+        }
+        if (result.stderr) {
+          await commandInput.onLog?.("stderr", redactCredentialText(result.stderr, commandEnv));
+        }
         return {
           exitCode: 0,
           signal: null,
@@ -98,8 +99,8 @@ export function createSshCommandManagedRuntimeRunner(input: {
           : error instanceof Error
             ? error.message
             : String(error);
-        if (stdout) await commandInput.onLog?.("stdout", stdout);
-        if (stderr) await commandInput.onLog?.("stderr", stderr);
+        if (stdout) await commandInput.onLog?.("stdout", redactCredentialText(stdout, commandEnv));
+        if (stderr) await commandInput.onLog?.("stderr", redactCredentialText(stderr, commandEnv));
         return {
           exitCode: typeof failure.code === "number" ? failure.code : null,
           signal: typeof failure.signal === "string" ? failure.signal : null,
@@ -152,6 +153,31 @@ export function shellQuote(value: string) {
 
 function isValidShellEnvKey(value: string) {
   return /^[A-Za-z_][A-Za-z0-9_]*$/.test(value);
+}
+
+function encodeSshEnvValue(value: string): string {
+  return [...Buffer.from(value, "utf8")]
+    .map((byte) => `\\${byte.toString(8).padStart(3, "0")}`)
+    .join("");
+}
+
+function buildSshEnvStdinPrefix(envEntries: Array<[string, string]>): string {
+  if (envEntries.length === 0) return "";
+  return `${envEntries.map(([key, value]) => `${key}\t${encodeSshEnvValue(value)}`).join("\n")}\n\n`;
+}
+
+function sshEnvBootstrapScript(): string {
+  return [
+    'paperclip_tab=$(printf "\\t")',
+    'while IFS="$paperclip_tab" read -r paperclip_env_key paperclip_env_encoded; do',
+    '  [ -n "$paperclip_env_key" ] || break',
+    '  paperclip_env_value=$(printf "%b_" "$paperclip_env_encoded") || exit 1',
+    '  paperclip_env_value=${paperclip_env_value%_}',
+    '  export "$paperclip_env_key=$paperclip_env_value"',
+    '  unset paperclip_env_value paperclip_env_encoded',
+    "done",
+    "unset paperclip_env_key paperclip_tab",
+  ].join("\n");
 }
 
 export function parseSshRemoteExecutionSpec(value: unknown): SshRemoteExecutionSpec | null {
@@ -1166,18 +1192,13 @@ export async function runSshCommand(
       }
     }
 
-    // Mirror buildSshSpawnTarget: source login profiles first, then run
-    // `env KEY=VAL cmd` so user-supplied identity overrides win over anything
-    // a profile re-exports. Without this, a remote profile that resets HOME
-    // / NVM_DIR / etc. would silently undo the explicit env passed in here.
-    const envArgs = envEntries.map(([key, value]) => `${key}=${shellQuote(value)}`);
+    const stdinPrefix = buildSshEnvStdinPrefix(envEntries);
     const remoteScript = [
       'if [ -f "$HOME/.profile" ]; then . "$HOME/.profile" >/dev/null 2>&1 || true; fi',
       'if [ -f "$HOME/.bash_profile" ]; then . "$HOME/.bash_profile" >/dev/null 2>&1 || true; fi',
       'if [ -f "$HOME/.zprofile" ]; then . "$HOME/.zprofile" >/dev/null 2>&1 || true; fi',
-      envArgs.length > 0
-        ? `exec env ${envArgs.join(" ")} sh -c ${shellQuote(remoteCommand)}`
-        : `exec sh -c ${shellQuote(remoteCommand)}`,
+      ...(envEntries.length > 0 ? [sshEnvBootstrapScript()] : []),
+      `exec sh -c ${shellQuote(remoteCommand)}`,
     ].join(" && ");
 
     sshArgs.push(
@@ -1187,9 +1208,9 @@ export async function runSshCommand(
       `sh -c ${shellQuote(remoteScript)}`,
     );
 
-    return options.stdin != null
+    return stdinPrefix || options.stdin != null
       ? await spawnText("ssh", sshArgs, {
-          stdin: options.stdin,
+          stdin: `${stdinPrefix}${options.stdin ?? ""}`,
           timeout: options.timeoutMs ?? 15_000,
           maxBuffer: options.maxBuffer ?? 1024 * 128,
         })
@@ -1210,6 +1231,7 @@ export async function buildSshSpawnTarget(input: {
 }): Promise<{
   command: string;
   args: string[];
+  stdinPrefix?: string;
   cleanup: () => Promise<void>;
 }> {
   for (const key of Object.keys(input.env)) {
@@ -1219,9 +1241,9 @@ export async function buildSshSpawnTarget(input: {
   }
   const auth = await createSshAuthArgs(input.spec);
   const sshArgs = [...auth.args];
-  const envArgs = Object.entries(input.env)
-    .filter((entry): entry is [string, string] => typeof entry[1] === "string")
-    .map(([key, value]) => `${key}=${shellQuote(value)}`);
+  const envEntries = Object.entries(input.env)
+    .filter((entry): entry is [string, string] => typeof entry[1] === "string");
+  const stdinPrefix = buildSshEnvStdinPrefix(envEntries);
   const remoteCommandParts = [shellQuote(input.command), ...input.args.map((arg) => shellQuote(arg))].join(" ");
   const remoteScript = [
     'if [ -f "$HOME/.profile" ]; then . "$HOME/.profile" >/dev/null 2>&1 || true; fi',
@@ -1230,9 +1252,8 @@ export async function buildSshSpawnTarget(input: {
     'export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"',
     '[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh" >/dev/null 2>&1 || true',
     `cd ${shellQuote(input.spec.remoteCwd)}`,
-    envArgs.length > 0
-      ? `exec env ${envArgs.join(" ")} ${remoteCommandParts}`
-      : `exec ${remoteCommandParts}`,
+    ...(envEntries.length > 0 ? [sshEnvBootstrapScript()] : []),
+    `exec ${remoteCommandParts}`,
   ].join(" && ");
 
   sshArgs.push(
@@ -1245,6 +1266,7 @@ export async function buildSshSpawnTarget(input: {
   return {
     command: "ssh",
     args: sshArgs,
+    ...(stdinPrefix ? { stdinPrefix } : {}),
     cleanup: auth.cleanup,
   };
 }
