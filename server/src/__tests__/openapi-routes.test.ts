@@ -68,6 +68,30 @@ const explicitOpenApiCoverageExclusions = new Set([
   "cases.ts",
   // Smoke lab routes are experimental and not yet represented in the public OpenAPI document.
   "smoke-lab.ts",
+  // Fork-only portfolio reporting routes (Mission Control intake);
+  // deliberately absent from the public OpenAPI document.
+  "portfolio.ts",
+]);
+
+// Fork-only operator endpoints (sprint activity windows, run controls,
+// company/adapter pauses, fallback-sister lanes, agent scorecard, emergency
+// stop). They live inside otherwise-covered route files but are deliberately
+// NOT part of the public OpenAPI document — they are local operator APIs.
+const forkOnlyRoutesNotInSpec = new Set([
+  "DELETE /api/companies/{companyId}/agent-fallback-sisters",
+  "DELETE /api/companies/{companyId}/pause",
+  "DELETE /api/instance/settings/run-controls/adapter-pauses/{adapterType}",
+  "DELETE /api/instance/settings/run-controls/pause",
+  "GET /api/companies/{companyId}/activity-window",
+  "GET /api/companies/{companyId}/agent-scorecard",
+  "GET /api/companies/{companyId}/emergency-stop",
+  "GET /api/instance/settings/run-controls",
+  "PATCH /api/companies/{companyId}/activity-window",
+  "PATCH /api/instance/settings/run-controls/concurrency",
+  "POST /api/companies/{companyId}/pause",
+  "POST /api/instance/settings/run-controls/adapter-pauses",
+  "POST /api/instance/settings/run-controls/pause",
+  "POST /api/issues/{id}/fallback-reassign",
 ]);
 
 function createApp() {
@@ -198,7 +222,9 @@ describe("openapi routes", () => {
     const { routes: actualRoutes, unknownRouteFiles } = loadActualRoutes();
     const { routes: specRoutes } = loadSpecRoutes();
 
-    const missingInSpec = [...actualRoutes].filter((route) => !specRoutes.has(route)).sort();
+    const missingInSpec = [...actualRoutes]
+      .filter((route) => !specRoutes.has(route) && !forkOnlyRoutesNotInSpec.has(route))
+      .sort();
     const extraInSpec = [...specRoutes].filter((route) => !actualRoutes.has(route)).sort();
 
     expect({ unknownRouteFiles, missingInSpec, extraInSpec }).toEqual({

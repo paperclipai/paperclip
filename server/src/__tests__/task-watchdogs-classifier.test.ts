@@ -65,24 +65,14 @@ describe("task watchdog subtree classifier", () => {
       }],
     });
 
-    expect(result.state).toBe("stopped");
-    if (result.state !== "stopped") return;
-    expect(result.stopFingerprint).toMatch(/^task_watchdog_stop:/);
-    expect(result.stoppedLeaves).toEqual([
-      expect.objectContaining({
-        issueId: childId,
-        status: "in_review",
-        pendingInteractionIds: ["interaction-1"],
-      }),
-    ]);
-    expect(result.stopSnapshot.waitsByIssueId).toEqual({
-      [childId]: {
-        pendingInteractionIds: ["interaction-1"],
-        pendingApprovalIds: [],
-      },
-    });
-    expect(result.pendingInteractionsByIssueId).toEqual({
-      [childId]: [{ id: "interaction-1", kind: "request_confirmation" }],
+    // Fork law (watchdog in_review shield): an in_review issue with pending
+    // interactions is a live waiting review path, never watchdog-triggered.
+    // The 2026-07-28 merge spliced upstream's opposite expectation ("stopped
+    // work that needs verification") into this fork test; the fork body is
+    // restored here.
+    expect(result).toMatchObject({
+      state: "live",
+      liveIssueIds: [childId],
     });
   });
 
@@ -113,11 +103,15 @@ describe("task watchdog subtree classifier", () => {
   });
 
   it("suppresses a shrink-only stopped state after a sibling completes", () => {
+    // Fixture note: the upstream version used an in_review child with a
+    // pending interaction, which the fork's in_review shield classifies as
+    // LIVE — a blocked child keeps the subtree stopped so the shrink-only
+    // suppression under test can actually run.
     const siblingId = "child-2";
     const initial = classify({
       issues: [
         issue({ status: "in_progress" }),
-        issue({ id: childId, parentId: sourceId, status: "in_review" }),
+        issue({ id: childId, parentId: sourceId, status: "blocked" }),
         issue({ id: siblingId, parentId: sourceId, status: "blocked" }),
       ],
       pendingInteractions: [{ companyId, issueId: childId, id: "interaction-1", status: "pending" }],
@@ -134,7 +128,7 @@ describe("task watchdog subtree classifier", () => {
       },
       issues: [
         issue({ status: "in_progress" }),
-        issue({ id: childId, parentId: sourceId, status: "in_review" }),
+        issue({ id: childId, parentId: sourceId, status: "blocked" }),
         issue({ id: siblingId, parentId: sourceId, status: "done" }),
       ],
       pendingInteractions: [{ companyId, issueId: childId, id: "interaction-1", status: "pending" }],
@@ -175,9 +169,13 @@ describe("task watchdog subtree classifier", () => {
   });
 
   it("includes waits on non-leaf issues in the material snapshot", () => {
+    // Fixture note: upstream used an in_review source, which the fork's
+    // in_review shield turns LIVE when it carries a pending approval. Waits
+    // are snapshotted for any non-terminal issue, so an in_progress source
+    // exercises the same non-leaf-waits behavior without tripping the shield.
     const initial = classify({
       issues: [
-        issue({ status: "in_review" }),
+        issue({ status: "in_progress" }),
         issue({ id: childId, parentId: sourceId, status: "blocked" }),
       ],
       pendingApprovals: [{ companyId, issueId: sourceId, id: "approval-1", status: "pending" }],
@@ -200,7 +198,7 @@ describe("task watchdog subtree classifier", () => {
         lastReviewedStopSnapshot: initial.stopSnapshot,
       },
       issues: [
-        issue({ status: "in_review" }),
+        issue({ status: "in_progress" }),
         issue({ id: childId, parentId: sourceId, status: "blocked" }),
       ],
       pendingApprovals: [{ companyId, issueId: sourceId, id: "approval-2", status: "pending" }],
@@ -254,9 +252,6 @@ describe("task watchdog subtree classifier", () => {
     });
 
     expect(changed.state).toBe("stopped");
-    expect(result).toMatchObject({
-      state: "live",
-      liveIssueIds: [childId],
   });
 
   it("suppresses an unchanged stopped fingerprint once the watchdog reviewed it", () => {

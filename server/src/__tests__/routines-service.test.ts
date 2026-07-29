@@ -647,7 +647,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     await expect(svc.evaluateActivityGate(projectRoutine, now)).resolves.toMatchObject({ fire: true });
   });
 
-  it("coalesces into an open routine issue even when the previous issue is idle", async () => {
+  it("treats an idle open routine issue as stranded and starts a fresh execution (TSMC-17398)", async () => {
     const { companyId, issueSvc, routine, svc } = await seedFixture();
     const previousRunId = randomUUID();
     const previousIssue = await issueSvc.create(companyId, {
@@ -674,13 +674,17 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       completedAt: new Date("2026-03-20T12:00:00.000Z"),
     });
 
+    // Fork policy (TSMC-17398): a non-terminal routine_execution issue with
+    // no live heartbeat behind it is STRANDED work, not an active execution
+    // anchor — it neither surfaces as the routine's active issue nor coalesces
+    // a new run. This test used to assert the opposite (idle-issue coalesce).
     const detailBefore = await svc.getDetail(routine.id);
-    expect(detailBefore?.activeIssue?.id).toBe(previousIssue.id);
+    expect(detailBefore?.activeIssue).toBeNull();
 
     const run = await svc.runRoutine(routine.id, { source: "manual" });
-    expect(run.status).toBe("coalesced");
-    expect(run.linkedIssueId).toBe(previousIssue.id);
-    expect(run.coalescedIntoRunId).toBe(previousRunId);
+    expect(run.status).toBe("issue_created");
+    expect(run.linkedIssueId).toBeTruthy();
+    expect(run.linkedIssueId).not.toBe(previousIssue.id);
 
     const routineIssues = await db
       .select({
@@ -690,8 +694,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       .from(issues)
       .where(eq(issues.originId, routine.id));
 
-    expect(routineIssues).toHaveLength(1);
-    expect(routineIssues[0]?.id).toBe(previousIssue.id);
+    expect(routineIssues.map((issue) => issue.id)).toContain(run.linkedIssueId);
   });
 
   it("creates draft routines without a project or default assignee", async () => {
@@ -1239,7 +1242,7 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(wakeupResolved).toBe(true);
   });
 
-  it("coalesces when the existing routine issue is open without requiring a live execution run", async () => {
+  it("does not coalesce into an open routine issue that lacks a live execution run (TSMC-17398)", async () => {
     const { companyId, issueSvc, routine, svc } = await seedFixture();
     const previousRunId = randomUUID();
     const previousIssue = await issueSvc.create(companyId, {
@@ -1265,21 +1268,23 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
       linkedIssueId: previousIssue.id,
     });
 
+    // Fork policy (TSMC-17398): an open routine issue WITHOUT a live
+    // execution run is stranded work, not a coalesce anchor. This test used
+    // to assert the opposite (open-issue coalesce without a live run).
     const detailBefore = await svc.getDetail(routine.id);
-    expect(detailBefore?.activeIssue?.id).toBe(previousIssue.id);
+    expect(detailBefore?.activeIssue).toBeNull();
 
     const run = await svc.runRoutine(routine.id, { source: "manual" });
-    expect(run.status).toBe("coalesced");
-    expect(run.linkedIssueId).toBe(previousIssue.id);
-    expect(run.coalescedIntoRunId).toBe(previousRunId);
+    expect(run.status).toBe("issue_created");
+    expect(run.linkedIssueId).toBeTruthy();
+    expect(run.linkedIssueId).not.toBe(previousIssue.id);
 
     const routineIssues = await db
       .select({ id: issues.id })
       .from(issues)
       .where(eq(issues.originId, routine.id));
 
-    expect(routineIssues).toHaveLength(1);
-    expect(routineIssues[0]?.id).toBe(previousIssue.id);
+    expect(routineIssues.map((issue) => issue.id)).toContain(run.linkedIssueId);
   });
 
   it("touches a coalesced routine issue for the manual runner's inbox", async () => {

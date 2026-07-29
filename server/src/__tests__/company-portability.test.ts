@@ -2902,7 +2902,8 @@ describe("company portability", () => {
       runtimeConfig: {
         heartbeat: {
           enabled: false,
-          maxConcurrentRuns: 20,
+          // Fork law: AGENT_DEFAULT_MAX_CONCURRENT_RUNS = 1 (shared-Mac; upstream 20).
+          maxConcurrentRuns: 1,
         },
       },
     });
@@ -2981,7 +2982,8 @@ describe("company portability", () => {
       runtimeConfig: {
         heartbeat: {
           enabled: false,
-          maxConcurrentRuns: 20,
+          // Fork law: AGENT_DEFAULT_MAX_CONCURRENT_RUNS = 1 (shared-Mac; upstream 20).
+          maxConcurrentRuns: 1,
         },
       },
     }));

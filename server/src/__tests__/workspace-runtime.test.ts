@@ -5281,7 +5281,10 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
     expect(service?.url).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
     await expect(fetch(service!.url!)).resolves.toMatchObject({ ok: true });
 
-    await fs.rm(paperclipHome, { recursive: true, force: true });
+    // Simulate a server restart: clear the in-memory runtime state but KEEP
+    // the durable local-service registry under paperclipHome — startup
+    // adoption resolves live processes through that registry, so wiping the
+    // whole home would (correctly) stop the service instead of adopting it.
     await resetRuntimeServicesForTests();
 
     const result = await reconcilePersistedRuntimeServicesOnStartup(db);

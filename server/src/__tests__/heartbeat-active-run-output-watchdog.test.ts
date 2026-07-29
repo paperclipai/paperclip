@@ -739,7 +739,9 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     }, now)).resolves.toMatchObject({
       level: "snoozed",
       snoozedUntil,
-      evaluationIssueId,
+      // Recording the decision closes the evaluation issue (status done), so
+      // the silence summary no longer surfaces an OPEN evaluation for the run.
+      evaluationIssueId: null,
     });
   });
 

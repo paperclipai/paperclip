@@ -186,7 +186,11 @@ describeEmbeddedPostgres("multilingual issue routes", () => {
     const heartbeatContextRes = await request(app).get("/api/issues/LNG-1/heartbeat-context");
     expect(heartbeatContextRes.status, JSON.stringify(heartbeatContextRes.body)).toBe(200);
     expect(heartbeatContextRes.body.issue.title).toBe(title);
-    expect(heartbeatContextRes.body.issue.description).toBe(description);
+    // The heartbeat context appends the PAPERCLIP_DISPOSITION contract footer
+    // to the description; the multilingual text must survive verbatim above it.
+    const contextDescription = heartbeatContextRes.body.issue.description as string;
+    expect(contextDescription.startsWith(description)).toBe(true);
+    expect(contextDescription).toContain("PAPERCLIP_DISPOSITION");
     expect(heartbeatContextRes.body.commentCursor.totalComments).toBe(2);
   });
 });

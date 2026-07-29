@@ -58,6 +58,16 @@ const {
     reconcileProductivityReviews: vi.fn(async () => ({ created: 0, updated: 0, failed: 0 })),
     sweepExpiredRuntimeStatuses: vi.fn(() => 0),
     tickTimers: vi.fn(async () => ({ checked: 0, enqueued: 0, skipped: 0 })),
+    // Mock-gap fills: newer scheduler-tick sweeps (fork activity-window
+    // session purge / closed-window termination, hung-run and stale-queue
+    // reapers, wakeup reaper); missing stubs kill the tick chain before the
+    // setup-session cleanup this suite asserts on.
+    sweepActivityWindowSessionPurges: vi.fn(async () => ({ purged: 0 })),
+    terminateRunsForClosedWindows: vi.fn(async () => ({ terminated: 0, runIds: [] })),
+    terminateHungRuns: vi.fn(async () => ({ terminated: 0, runIds: [] })),
+    reapStaleQueuedRuns: vi.fn(async () => ({ reaped: 0, runIds: [] })),
+    reapAgedTaskSessions: vi.fn(async () => ({ reaped: 0 })),
+    reapOrphanedWakeups: vi.fn(async () => ({ reaped: 0 })),
   };
   const heartbeatServiceFactoryMock = vi.fn(() => heartbeatServiceMock);
   const environmentCustomImagesServiceMock = {
@@ -66,6 +76,12 @@ const {
   const environmentCustomImagesServiceFactoryMock = vi.fn(() => environmentCustomImagesServiceMock);
   const routineServiceMock = {
     tickScheduledTriggers: vi.fn(async () => ({ triggered: 0 })),
+    // Mock-gap fills: the scheduler tick also sweeps superseded routine
+    // execution issues (TSMC-17398 follow-up) and reconciles webhook secret
+    // bindings; without these stubs the tick chain dies before the
+    // setup-session cleanup runs.
+    cancelSupersededRoutineExecutionIssues: vi.fn(async () => ({ cancelled: 0, issueIds: [] })),
+    reconcileWebhookSecretBindings: vi.fn(async () => ({ repaired: 0 })),
   };
   const routineServiceFactoryMock = vi.fn(() => routineServiceMock);
   const feedbackExportServiceMock = {
@@ -316,11 +332,15 @@ describe("startServer feedback export wiring", () => {
       suppressed: true,
       reason: "worktree_instance",
     });
-    let intervalCallback: (() => void) | null = null;
+    // Startup registers several intervals; capture and fire them all — the
+    // routine tick and the setup-session cleanup no longer share a single
+    // interval callback, and keeping only the last-registered one misses the
+    // cleanup loop.
+    const intervalCallbacks: Array<() => void> = [];
     const setIntervalSpy = vi
       .spyOn(globalThis, "setInterval")
       .mockImplementation(((callback: () => void) => {
-        intervalCallback = callback;
+        intervalCallbacks.push(callback);
         return 1 as unknown as ReturnType<typeof setInterval>;
       }) as typeof setInterval);
 
@@ -331,14 +351,16 @@ describe("startServer feedback export wiring", () => {
       expect(heartbeatServiceMock.tickTimers).not.toHaveBeenCalled();
       expect(environmentCustomImagesServiceMock.cleanupExpiredSetupSessions).toHaveBeenCalledTimes(1);
 
-      expect(intervalCallback).not.toBeNull();
-      intervalCallback?.();
-      await Promise.resolve();
-      await Promise.resolve();
+      expect(intervalCallbacks.length).toBeGreaterThan(0);
+      for (const intervalCallback of intervalCallbacks) intervalCallback();
+      // The tick body is a long async chain; wait for the cleanup call rather
+      // than assuming it lands within a fixed number of microtasks.
+      await vi.waitFor(() => {
+        expect(environmentCustomImagesServiceMock.cleanupExpiredSetupSessions).toHaveBeenCalledTimes(2);
+      });
 
       expect(heartbeatServiceMock.tickTimers).not.toHaveBeenCalled();
       expect(routineServiceMock.tickScheduledTriggers).toHaveBeenCalledTimes(1);
-      expect(environmentCustomImagesServiceMock.cleanupExpiredSetupSessions).toHaveBeenCalledTimes(2);
     } finally {
       setIntervalSpy.mockRestore();
     }

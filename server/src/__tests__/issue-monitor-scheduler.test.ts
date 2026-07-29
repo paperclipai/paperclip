@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { PROVIDER_QUOTA_MONITOR_SERVICE_NAME } from "@paperclipai/shared";
 import {
@@ -663,12 +663,15 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
 
     await heartbeat.tickTimers(new Date("2026-04-11T12:31:00.000Z"));
 
+    // seedFixture creates a fresh company per call, so scope the check to both
+    // companies — filtering on only the first could never observe the second
+    // fixture's recovery issue.
     const recoveryIssues = await db
       .select({ id: issues.id, originId: issues.originId })
       .from(issues)
       .where(
         and(
-          eq(issues.companyId, first.companyId),
+          inArray(issues.companyId, [first.companyId, second.companyId]),
           eq(issues.originKind, "stranded_issue_recovery"),
         ),
       );

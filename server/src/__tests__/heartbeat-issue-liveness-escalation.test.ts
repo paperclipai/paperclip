@@ -1261,7 +1261,10 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
 
     const immediateRetry = await heartbeat.reconcileIssueGraphLiveness();
     expect(immediateRetry.escalationsCreated).toBe(0);
-    expect(immediateRetry.skippedRateLimited).toBe(1);
+    // Fork behavior: a just-completed escalation is caught by the
+    // re-escalation COOLDOWN check, which runs before attempt rate limiting,
+    // so the skip is counted there rather than in skippedRateLimited.
+    expect(immediateRetry.skippedReescalationCooldown).toBe(1);
 
     const [activeAction] = await db
       .select()
@@ -1280,6 +1283,12 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
         lastAttemptAt: new Date(Date.now() - 24 * 60 * 60 * 1000),
       })
       .where(eq(issueRecoveryActions.id, activeAction!.id));
+    // Age the completed escalation past the re-escalation cooldown so the
+    // attempt-cap path (the subject of this test) is actually reachable.
+    await db
+      .update(issues)
+      .set({ updatedAt: new Date(Date.now() - 2 * 60 * 60 * 1000) })
+      .where(eq(issues.id, firstEscalation!.id));
 
     const cappedRetry = await heartbeat.reconcileIssueGraphLiveness();
     expect(cappedRetry.escalationsCreated).toBe(0);

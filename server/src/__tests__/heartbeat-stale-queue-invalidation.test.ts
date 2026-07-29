@@ -732,6 +732,9 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
   });
 
   it("skips wakes before queueing when per-agent daily cost cap is reached", async () => {
+    // This file never clears the shared adapter mock between tests, so the
+    // not-called assertion below needs a clean slate for THIS test's wake.
+    mockAdapterExecute.mockClear();
     const { companyId, agentId } = await seedCompanyAndAgent({
       heartbeatConfig: {
         maxDailyCostCents: 75,

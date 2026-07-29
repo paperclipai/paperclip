@@ -549,6 +549,9 @@ describeEmbeddedPostgres("status card routes", () => {
       priority: "medium",
       assigneeAgentId: summarizer.id,
       createdByUserId: "board-user",
+      // Fork entering-blocked gate: blocked requires unresolved blockers or an
+      // explicit external owner/action; this is the sanctioned no-link form.
+      description: "External owner: board-user\nExternal action: waiting on manual review.",
     });
     await db.update(statusCards).set({
       state: "active",
@@ -707,7 +710,12 @@ describeEmbeddedPostgres("status card routes", () => {
     expect(generationIssueId).toBeTruthy();
 
     // The setup run gets stuck and blocks the task instead of writing a summary.
-    await issueService(db).update(generationIssueId, { status: "blocked" });
+    // Fork entering-blocked gate: supply the sanctioned external owner/action
+    // note — a bare status flip to blocked is rejected with 422.
+    await issueService(db).update(generationIssueId, {
+      status: "blocked",
+      description: "External owner: board-user\nExternal action: waiting on manual setup input.",
+    });
 
     // The card releases its generation claim, so the tile stops spinning and the
     // board offers "Run now" again (generatingIssueId null → not "setup running").
