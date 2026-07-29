@@ -665,6 +665,7 @@ type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId"> & {
   idempotencyKey?: string | null;
   allowDuplicate?: boolean;
   onDeduplicated?: (reason: "idempotency_key" | "recent_open_title") => void;
+  beforeCreate?: (tx: Pick<Db, "select" | "execute">) => Promise<void>;
 };
 type IssueChildCreateInput = IssueCreateInput & {
   acceptanceCriteria?: string[];
@@ -672,6 +673,7 @@ type IssueChildCreateInput = IssueCreateInput & {
   executionWorkspaceInheritanceMode?: "linkage" | "strategy_only";
   actorAgentId?: string | null;
   actorUserId?: string | null;
+  authorizeDeduplicatedIssue?: (issue: typeof issues.$inferSelect) => Promise<void>;
 };
 type AcceptedPlanDecompositionInput = {
   acceptedPlanRevisionId: string;
@@ -6530,22 +6532,17 @@ export function issueService(db: Db) {
         .then((rows) => rows[0] ?? null);
       if (!parent) throw notFound("Parent issue not found");
 
-      const [{ childCount }] = await db
-        .select({ childCount: sql<number>`count(*)::int` })
-        .from(issues)
-        .where(and(eq(issues.companyId, parent.companyId), eq(issues.parentId, parent.id)));
-      if (childCount >= MAX_CHILD_ISSUES_CREATED_BY_HELPER) {
-        throw unprocessable(`Parent issue already has the maximum ${MAX_CHILD_ISSUES_CREATED_BY_HELPER} child issues for this helper`);
-      }
-
       const {
         acceptanceCriteria,
         blockParentUntilDone,
         executionWorkspaceInheritanceMode = "linkage",
         actorAgentId,
         actorUserId,
+        authorizeDeduplicatedIssue,
+        onDeduplicated,
         ...issueData
       } = data;
+      let deduplicated = false;
       const inheritStrategyOnly = executionWorkspaceInheritanceMode === "strategy_only";
       const hasExplicitExecutionWorkspaceOverride =
         issueData.executionWorkspaceId !== undefined ||
@@ -6573,7 +6570,26 @@ export function issueService(db: Db) {
         ...(inheritStrategyOnly
           ? { skipExecutionWorkspaceInheritance: true }
           : { inheritExecutionWorkspaceFromIssueId: parent.id }),
+        beforeCreate: async (tx) => {
+          const childCapGuardKey = `issue-create:child-cap:${parent.companyId}:${parent.id}`;
+          await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${childCapGuardKey}, 0))`);
+          const [{ childCount }] = await tx
+            .select({ childCount: sql<number>`count(*)::int` })
+            .from(issues)
+            .where(and(eq(issues.companyId, parent.companyId), eq(issues.parentId, parent.id)));
+          if (childCount >= MAX_CHILD_ISSUES_CREATED_BY_HELPER) {
+            throw unprocessable(`Parent issue already has the maximum ${MAX_CHILD_ISSUES_CREATED_BY_HELPER} child issues for this helper`);
+          }
+        },
+        onDeduplicated: (reason) => {
+          deduplicated = true;
+          onDeduplicated?.(reason);
+        },
       });
+
+      if (deduplicated) {
+        await authorizeDeduplicatedIssue?.(child);
+      }
 
       if (blockParentUntilDone) {
         const existingBlockers = await db
@@ -6884,6 +6900,7 @@ export function issueService(db: Db) {
         idempotencyKey: rawIdempotencyKey,
         allowDuplicate,
         onDeduplicated,
+        beforeCreate,
         ...issueData
       } = data;
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
@@ -6943,7 +6960,13 @@ export function issueService(db: Db) {
             ))
             .limit(1)
             .then((rows) => rows.map((row) => row.issues));
-          if (existingIssue) deduplicationReason = "idempotency_key";
+          if (existingIssue) {
+            const expectedParentId = issueData.parentId ?? null;
+            if ((existingIssue.parentId ?? null) !== expectedParentId) {
+              throw conflict("Idempotency key already belongs to an issue under a different parent");
+            }
+            deduplicationReason = "idempotency_key";
+          }
         }
         if (!existingIssue && allowDuplicate === false) {
           [existingIssue] = await tx
@@ -6973,6 +6996,8 @@ export function issueService(db: Db) {
           const [withRelations] = await withIssueRelationSummaries(companyId, [enriched], tx);
           return withRelations;
         }
+
+        await beforeCreate?.(tx);
 
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, companyId);
         let projectWorkspaceId = issueData.projectWorkspaceId ?? null;
@@ -7139,6 +7164,10 @@ export function issueService(db: Db) {
           issueNumber,
           identifier,
         } as typeof issues.$inferInsert;
+        if (values.status === "blocked" && !values.blockedTransitionAt) {
+          values.blockedTransitionAt = new Date();
+          values.blockedOwnerNotifiedAt = null;
+        }
         if (values.status === "in_progress" && !values.startedAt) {
           values.startedAt = new Date();
         }

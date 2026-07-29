@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import { MAX_ISSUE_REQUEST_DEPTH } from "../index.js";
 import {
   addIssueCommentSchema,
+  createAcceptedPlanDecompositionSchema,
+  createChildIssueSchema,
   createIssueSchema,
   issueBlockedInboxAttentionSchema,
   resolveIssueRecoveryActionSchema,
@@ -102,6 +104,17 @@ describe("issue validators", () => {
       status: "todo",
       unblockDescriptor: { owner: "board", action: "Review" },
     }).success).toBe(false);
+  });
+
+  it("keeps direct-child idempotency keys out of accepted-plan children", () => {
+    const idempotencyKey = "blocked-child-retry";
+    expect(createChildIssueSchema.parse({ title: "Direct child", idempotencyKey }).idempotencyKey)
+      .toBe(idempotencyKey);
+    const parsed = createAcceptedPlanDecompositionSchema.parse({
+      acceptedPlanRevisionId: "00000000-0000-4000-8000-000000000001",
+      children: [{ title: "Plan child", idempotencyKey }],
+    });
+    expect(parsed.children[0]).not.toHaveProperty("idempotencyKey");
   });
 
   it("rejects invalid task-scoped network egress CIDRs", () => {
