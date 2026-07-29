@@ -311,6 +311,8 @@ const WAKE_COMMENT_IDS_KEY = "wakeCommentIds";
 const PAPERCLIP_WAKE_PAYLOAD_KEY = "paperclipWake";
 const PAPERCLIP_HARNESS_CHECKOUT_KEY = "paperclipHarnessCheckedOut";
 const DETACHED_PROCESS_ERROR_CODE = "process_detached";
+const ORPHANED_RUN_DURABLE_ACTIVITY_GRACE_MS = 5 * 60 * 1000;
+const ORPHANED_RUN_SILENCE_SWEEP_THRESHOLD_MS = 15 * 60 * 1000;
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_INLINE_WAKE_COMMENTS = 8;
@@ -5142,7 +5144,13 @@ async function terminateHeartbeatRunProcess(input: {
 function buildProcessLossMessage(run: {
   processPid: number | null;
   processGroupId: number | null;
-}, options?: { descendantOnly?: boolean }) {
+}, options?: { descendantOnly?: boolean; forcedStop?: boolean }) {
+  if (options?.forcedStop && run.processPid) {
+    return `Process lost -- stale silent child pid ${run.processPid} exceeded the orphan-silence threshold and was terminated`;
+  }
+  if (options?.forcedStop && run.processGroupId) {
+    return `Process lost -- stale silent process group ${run.processGroupId} exceeded the orphan-silence threshold and was terminated`;
+  }
   if (options?.descendantOnly && run.processGroupId) {
     return `Process lost -- parent pid ${run.processPid ?? "unknown"} exited, but descendant process group ${run.processGroupId} was still alive and was terminated`;
   }
@@ -5153,6 +5161,20 @@ function buildProcessLossMessage(run: {
     return `Process lost -- process group ${run.processGroupId} is no longer running`;
   }
   return "Process lost -- server may have restarted";
+}
+
+function orphanedRunDurableActivityAt(run: Pick<
+  typeof heartbeatRuns.$inferSelect,
+  "lastOutputAt" | "updatedAt" | "startedAt" | "createdAt"
+>) {
+  return run.lastOutputAt ?? run.updatedAt ?? run.startedAt ?? run.createdAt;
+}
+
+function orphanedRunSilenceAgeMs(
+  run: Pick<typeof heartbeatRuns.$inferSelect, "lastOutputAt" | "updatedAt" | "startedAt" | "createdAt">,
+  now: Date,
+) {
+  return Math.max(0, now.getTime() - orphanedRunDurableActivityAt(run).getTime());
 }
 
 function readHotRestartAdoptionMetadata(resultJson: Record<string, unknown> | null | undefined) {
@@ -11672,9 +11694,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .then((rows) => rows[0] ?? null);
   }
 
-  async function reapOrphanedRuns(opts?: { staleThresholdMs?: number }) {
+  async function reapOrphanedRuns(opts?: { staleThresholdMs?: number; now?: Date }) {
     const staleThresholdMs = opts?.staleThresholdMs ?? 0;
-    const now = new Date();
+    const now = opts?.now ?? new Date();
+    const durableActivityGraceMs = staleThresholdMs > 0
+      ? staleThresholdMs
+      : ORPHANED_RUN_DURABLE_ACTIVITY_GRACE_MS;
+    const orphanSilenceSweepThresholdMs = Math.max(
+      ORPHANED_RUN_SILENCE_SWEEP_THRESHOLD_MS,
+      staleThresholdMs,
+    );
 
     // Find all runs stuck in "running" state (queued runs are legitimately waiting; resumeQueuedRuns handles them)
     const activeRuns = await db
@@ -11721,22 +11750,36 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
 
       const tracksLocalChild = isTrackedLocalChildProcessAdapter(adapterType);
-      if (tracksLocalChild && !run.processPid && !run.processGroupId) {
-        logger.warn(
-          { runId: run.id, adapterType },
-          "skipping orphan reap because local run has no process metadata to prove liveness loss",
-        );
-        continue;
+      const zeroProcessMetadata = tracksLocalChild && !run.processPid && !run.processGroupId;
+      const silenceAgeMs = orphanedRunSilenceAgeMs(run, now);
+      const hasRecentDurableActivity = silenceAgeMs < durableActivityGraceMs;
+      const exceededOrphanSilenceSweepThreshold = silenceAgeMs >= orphanSilenceSweepThresholdMs;
+      if (zeroProcessMetadata) {
+        if (hasRecentDurableActivity) {
+          logger.warn(
+            { runId: run.id, adapterType, silenceAgeMs, durableActivityGraceMs },
+            "skipping orphan reap because local run has no process metadata but durable activity is still fresh",
+          );
+          continue;
+        }
+        if (!exceededOrphanSilenceSweepThreshold) {
+          logger.warn(
+            { runId: run.id, adapterType, silenceAgeMs, orphanSilenceSweepThresholdMs },
+            "skipping orphan reap because local run has no process metadata and has not crossed the orphan-silence sweep threshold",
+          );
+          continue;
+        }
       }
       const processPidAlive = tracksLocalChild && run.processPid && isProcessAlive(run.processPid);
       const processGroupAlive = tracksLocalChild && run.processGroupId && isProcessGroupAlive(run.processGroupId);
       if (
         (processPidAlive || processGroupAlive) &&
-        readHotRestartAdoptionMetadata(parseObject(run.resultJson))
+        readHotRestartAdoptionMetadata(parseObject(run.resultJson)) &&
+        !exceededOrphanSilenceSweepThreshold
       ) {
         continue;
       }
-      if (processPidAlive) {
+      if (processPidAlive && !exceededOrphanSilenceSweepThreshold) {
         if (run.errorCode !== DETACHED_PROCESS_ERROR_CODE) {
           const detachedMessage = `Lost in-memory process handle, but child pid ${run.processPid} is still alive`;
           const detachedRun = await setRunStatus(run.id, "running", {
@@ -11759,8 +11802,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
 
       let descendantOnlyCleanup = false;
-      if (processGroupAlive) {
-        descendantOnlyCleanup = true;
+      let forcedStopForSilence = false;
+      if (processPidAlive || processGroupAlive) {
+        descendantOnlyCleanup = !processPidAlive && processGroupAlive;
+        forcedStopForSilence = exceededOrphanSilenceSweepThreshold;
         await terminateHeartbeatRunProcess({
           pid: run.processPid,
           processGroupId: run.processGroupId,
@@ -11783,7 +11828,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         (tracksLocalChild && (!!run.processPid || !!run.processGroupId)) ||
         monitorDispatchLostWithoutFutureWake
       );
-      const baseMessage = buildProcessLossMessage(run, descendantOnlyCleanup ? { descendantOnly: true } : undefined);
+      const baseMessage = buildProcessLossMessage(
+        run,
+        forcedStopForSilence
+          ? { forcedStop: true }
+          : descendantOnlyCleanup
+            ? { descendantOnly: true }
+            : undefined,
+      );
       const unmanagedBackgroundTaskEvidence = descendantOnlyCleanup
         ? {
           kind: "orphaned_process_group_cleanup",
