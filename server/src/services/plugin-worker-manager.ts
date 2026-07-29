@@ -61,7 +61,14 @@ import { logger } from "../middleware/logger.js";
 /** Default timeout for RPC calls in milliseconds. */
 const DEFAULT_RPC_TIMEOUT_MS = 30_000;
 
-/** Hard upper bound for any RPC timeout (15 minutes). Prevents unbounded waits. */
+/**
+ * Upper bound for the *default* RPC timeout path (15 minutes). Explicit
+ * caller-supplied timeouts are honored as-is: execute-class RPCs such as
+ * `environmentExecute` run entire sandboxed agent sessions in one call and
+ * their callers deliberately request multi-hour budgets (see
+ * `resolvePluginExecuteRpcTimeoutMs` in plugin-environment-driver.ts).
+ * Clamping those explicit budgets here killed long sandboxed runs mid-work.
+ */
 const MAX_RPC_TIMEOUT_MS = 15 * 60 * 1_000;
 
 /** Timeout for the initialize RPC call. */
@@ -152,6 +159,29 @@ export function formatWorkerFailureMessage(message: string, stderrExcerpt: strin
   if (!excerpt) return message;
   if (message.includes(excerpt)) return message;
   return `${message}\n\nWorker stderr:\n${excerpt}`;
+}
+
+/**
+ * Resolve the effective timeout for an RPC call.
+ *
+ * An explicit, positive, finite caller-supplied timeout is honored verbatim —
+ * callers that pass one (e.g. the environment driver for `environmentExecute`)
+ * own their budget, and independent inactivity/safety guards bound hung runs.
+ * Only the default path (no usable explicit timeout) is clamped to
+ * MAX_RPC_TIMEOUT_MS so ordinary plugin calls stay bounded.
+ */
+export function resolveRpcCallTimeoutMs(
+  explicitTimeoutMs: number | undefined,
+  defaultTimeoutMs: number,
+): number {
+  if (
+    explicitTimeoutMs !== undefined &&
+    Number.isFinite(explicitTimeoutMs) &&
+    explicitTimeoutMs > 0
+  ) {
+    return Math.trunc(explicitTimeoutMs);
+  }
+  return Math.min(defaultTimeoutMs, MAX_RPC_TIMEOUT_MS);
 }
 
 /**
@@ -1232,7 +1262,7 @@ export function createPluginWorkerHandle(
       }
 
       const id = nextRequestId++;
-      const timeout = Math.min(timeoutMs ?? rpcTimeoutMs, MAX_RPC_TIMEOUT_MS);
+      const timeout = resolveRpcCallTimeoutMs(timeoutMs, rpcTimeoutMs);
       const invocationScope = deriveInvocationScope(method, params);
       const invocation = invocationScope ? registerInvocation(invocationScope) : null;
 
@@ -1357,6 +1387,9 @@ export function createPluginWorkerHandle(
     notify(method: string, params: unknown) {
       if (status !== "running") return;
       const invocationScope = deriveInvocationScope(method, params);
+      // Notifications have no response to settle on, so the invocation scope
+      // is GC'd by TTL. Call-path invocations are registered without a TTL and
+      // cleared on settlement, so they survive arbitrarily long call timeouts.
       const invocation = invocationScope ? registerInvocation(invocationScope, MAX_RPC_TIMEOUT_MS) : null;
       try {
         sendMessage({
