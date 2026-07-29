@@ -95,7 +95,9 @@ describeEmbeddedPostgres("GET /companies/:companyId/agent-scorecard", () => {
       };
       next();
     });
-    app.use("/api", companyRoutes(db));
+    // Mount where the real app mounts companyRoutes (see the openapi coverage
+    // prefix map): /api/companies, not /api.
+    app.use("/api/companies", companyRoutes(db));
     app.use(errorHandler);
     return app;
   }
