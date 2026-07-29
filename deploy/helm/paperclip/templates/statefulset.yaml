@@ -48,10 +48,16 @@ spec:
             - |
               set -eu
               BASE={{ .Values.persistence.mountPath | quote }}
-              INST="${BASE}/instances/{{ .Values.env.instanceId }}"
+              INSTANCE_ID={{ .Values.env.instanceId | quote }}
+              INST="${BASE}/instances/${INSTANCE_ID}"
               mkdir -p "${INST}/secrets"
+              # Write the seed through verbatim. The server reads this file with
+              # readFileSync(path, "utf8") and, when it generates the key itself,
+              # writes `randomBytes(32).toString("base64")` as utf8 text. Decoding
+              # to raw binary here would leave bytes that do not survive the utf8
+              # read, and startup fails with an invalid-master-key error.
               if [ -n "${PAPERCLIP_MASTER_KEY_SEED:-}" ] && [ ! -f "${INST}/secrets/master.key" ]; then
-                printf '%s' "${PAPERCLIP_MASTER_KEY_SEED}" | base64 -d > "${INST}/secrets/master.key"
+                printf '%s' "${PAPERCLIP_MASTER_KEY_SEED}" > "${INST}/secrets/master.key"
                 chmod 0600 "${INST}/secrets/master.key"
               fi
           {{- /* secret.yaml only writes masterKey into the Secret it renders

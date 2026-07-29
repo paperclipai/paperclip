@@ -45,6 +45,13 @@ helm install paperclip deploy/helm/paperclip \
 
 `masterKey` is a base64-encoded seed written to `/paperclip/instances/<instanceId>/secrets/master.key` on first boot. Ignored on subsequent boots once the file exists on the PVC. Leave empty to let Paperclip generate its own.
 
+The seed is written to the key file verbatim, which is the same base64 text Paperclip writes when it generates the key itself — so generate it with `openssl rand -base64 32`:
+
+```sh
+helm install paperclip deploy/helm/paperclip \
+  --set secret.masterKey=$(openssl rand -base64 32)
+```
+
 ### Under GitOps
 
 The in-chart Secret is incompatible with any reconciler that re-renders templates (ArgoCD, Flux): `randAlphaNum` is non-deterministic, so each reconcile produces a new value, the app stays `OutOfSync`, and `selfHeal` thrashes pods. Create the Secret out-of-band and point the chart at it:

@@ -52,3 +52,23 @@ tests:
     asserts:
       - notExists:
           path: spec.template.spec.initContainers[0].env
+
+  # The server reads master.key as utf8 and writes base64 text when it
+  # generates the key itself, so the seed must land in the file unchanged.
+  # Decoding it to raw binary here yields bytes that do not survive that read.
+  - it: writes the master key seed without base64-decoding it
+    asserts:
+      - matchRegex:
+          path: spec.template.spec.initContainers[0].command[2]
+          pattern: 'printf ''%s'' "\$\{PAPERCLIP_MASTER_KEY_SEED\}" > '
+      - notMatchRegex:
+          path: spec.template.spec.initContainers[0].command[2]
+          pattern: "base64 -d"
+
+  - it: quotes instanceId before interpolating it into the seed script
+    set:
+      env.instanceId: 'ev il"; touch /pwned; #'
+    asserts:
+      - matchRegex:
+          path: spec.template.spec.initContainers[0].command[2]
+          pattern: 'INSTANCE_ID="ev il\\"; touch /pwned; #"'
