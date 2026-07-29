@@ -57,6 +57,7 @@ describe("hermes-local quiet-mode liveness", () => {
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
     vi.useRealTimers();
   });
 
@@ -141,6 +142,52 @@ describe("hermes-local quiet-mode liveness", () => {
     expect(onLog.mock.calls.some(([, chunk]) =>
       typeof chunk === "string" && chunk.includes("[hermes] alive:"),
     )).toBe(false);
+  });
+
+  it("reports heartbeat write failures without failing the child execution", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    let resolveChild!: (result: {
+      exitCode: number;
+      signal: null;
+      timedOut: boolean;
+      stdout: string;
+      stderr: string;
+    }) => void;
+    runChildProcessMock.mockImplementation(async (_runId, _command, _args, options) => {
+      await options.onSpawn?.({
+        pid: 12345,
+        processGroupId: 12345,
+        startedAt: new Date().toISOString(),
+      });
+      return await new Promise((resolve) => {
+        resolveChild = resolve;
+      });
+    });
+
+    const { ctx, onLog } = makeCtx(true);
+    onLog.mockImplementation(async (_stream, chunk) => {
+      if (chunk.includes("[hermes] alive:")) throw new Error("log store unavailable");
+    });
+    const execution = execute(ctx as any);
+    await vi.advanceTimersByTimeAsync(15_000);
+    resolveChild({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout: "Completed.\nsession_id: quiet-session-3\n",
+      stderr: "",
+    });
+
+    const result = await execution;
+
+    expect(result.exitCode).toBe(0);
+    expect(warn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        err: expect.any(Error),
+        runId: "test-run-quiet-liveness",
+      }),
+      "failed to append Hermes quiet heartbeat log",
+    );
   });
 
   it("does not start alive heartbeats or change session capture in legacy mode", async () => {
