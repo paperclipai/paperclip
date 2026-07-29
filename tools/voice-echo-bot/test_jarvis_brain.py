@@ -17,6 +17,17 @@ def test_plain_chat(monkeypatch):
     assert r == {"kind": "chat", "answer": "Hallo Walter."}
 
 
+def test_chat_strips_trailing_stray_control_token(monkeypatch):
+    # Manche Modelle antworten direkt UND hängen ein Steuer-Token ans Ende —
+    # es darf nicht Teil der (vorgelesenen) Antwort werden.
+    monkeypatch.setattr(jarvis_brain.llm, "chat",
+                        lambda msgs, model=None: "Ein Wake-Word aktiviert das Gerät.\nLOOKUP wissen: Was ist ein Wake-Word")
+    r = jarvis_brain.respond("was ist ein wake-word?", TENANT, "tok", "m")
+    assert r["kind"] == "chat"
+    assert r["answer"] == "Ein Wake-Word aktiviert das Gerät."
+    assert "LOOKUP" not in r["answer"]
+
+
 def test_lookup_two_rounds(monkeypatch):
     calls = []
     def fake_chat(msgs, model=None):

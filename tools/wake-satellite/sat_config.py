@@ -33,12 +33,12 @@ MAX_HISTORY_MESSAGES = 16
 HOMEPOD_DEVICE = "Homepod Studio"
 TTS_FORMAT = "mp3_44100_128"
 
-# Antwort-LLM: die QAT-gemma liegt resident auf der RTX Pro 6000 (der PII-
-# Classifier hält sie 24/7 warm) → konstant ~2 s statt der Mac-Variante
-# `google/gemma-4-12b`, die unter Studio-RAM-Contention verdrängt wird und
-# beim Nachladen 20 s+ reisst. Gleiche gemma-4-12b-Qualität. Nur der Satellit
-# nutzt sie; der Telegram-Jarvis bleibt auf seinem Env-/Default-Modell.
-CHAT_MODEL = "google/gemma-4-12b-qat"
+# Antwort-LLM: Mistral-Small-24B (Q4) resident auf der RTX Pro 6000 (ctx 8192)
+# → schnell (~1 s) UND deutlich bessere Antwortqualität als die 12B-gemma-qat.
+# Auf der RTX, damit es nicht unter Studio-RAM-Contention verdrängt wird. Nur
+# der Satellit nutzt es; der Telegram-Jarvis bleibt auf seinem Env-/Default-
+# Modell. Modell muss geladen sein: `lms load "<ID>" --context-length 8192`.
+CHAT_MODEL = "mistral-small-3.2-24b-instruct-2506@q4_k_m"
 
 # Mandant fest verdrahtet.
 TENANT = {

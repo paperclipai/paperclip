@@ -61,6 +61,15 @@ def parse_control(raw):
     return {"kind": "chat", "text": text}
 
 
+def _strip_control_lines(text):
+    """Entfernt versehentlich eingestreute Steuer-Token-Zeilen (LOOKUP/ISSUE)
+    aus einer Chat-Antwort. Manche Modelle hängen so ein Token ans Ende, obwohl
+    sie direkt geantwortet haben — ungefiltert würde es laut vorgelesen."""
+    kept = [ln for ln in (text or "").splitlines()
+            if not LOOKUP_RE.match(ln) and not ISSUE_RE.match(ln)]
+    return "\n".join(kept).strip()
+
+
 def respond(text, tenant, token, chat_model, history=None, source="per Telegram"):
     text = (text or "").strip()
     if not text:
@@ -80,7 +89,7 @@ def respond(text, tenant, token, chat_model, history=None, source="per Telegram"
     if action["kind"] == "issue":
         return {"kind": "issue",
                 "answer": _do_issue(action["title"], action["description"], tenant, token)}
-    return {"kind": "chat", "answer": action["text"]}
+    return {"kind": "chat", "answer": _strip_control_lines(action["text"])}
 
 
 def _do_lookup(messages, mode, query, tenant, chat_model):
@@ -108,7 +117,9 @@ def _do_lookup(messages, mode, query, tenant, chat_model):
         traceback.print_exc()
         return "⚠️ Konnte die Vault-Daten nicht auswerten, bitte gleich nochmal."
     follow_action = parse_control(answer)
-    return follow_action["text"] if follow_action["kind"] == "chat" else answer.strip()
+    if follow_action["kind"] == "chat":
+        return _strip_control_lines(follow_action["text"])
+    return answer.strip()
 
 
 def _do_issue(title, description, tenant, token):
