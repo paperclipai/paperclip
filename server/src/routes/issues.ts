@@ -5567,15 +5567,15 @@ export function issueRoutes(
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
 
-    const [detail, comments, interactions, attachments, workProducts, rawChildIssues, runs] = await Promise.all([
+    const [detail, comments, interactions, attachments, rawChildIssues, runs] = await Promise.all([
       buildIssueDetailResponse(req, issue),
       svc.listComments(issue.id, { order: "desc", limit: 50 }),
       issueThreadInteractionsSvc.listForIssue(issue.id),
       svc.listAttachments(issue.id).then((rows) => rows.map(withContentPath)),
-      workProductsSvc.listForIssue(issue.id),
       svc.list(issue.companyId, { descendantOf: issue.id, includeBlockedBy: true }),
       activitySvc.runsForIssue(issue.companyId, issue.id),
     ]);
+    const workProducts = detail.workProducts;
     const childIssues = await actorCanReadCompanyScope(req, issue.companyId)
       ? rawChildIssues
       : await filterIssuesForActor(req, rawChildIssues);

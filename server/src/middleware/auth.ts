@@ -473,7 +473,7 @@ export async function resolveCloudTenantActor(db: Db, req: Request): Promise<Exp
   // the BetterAuth session path, board API keys, and the authorization
   // service's own instanceUserRoles lookup — so actively purge them on every
   // trusted-header authentication instead of merely no longer inserting them.
-  if (shouldSync) await db
+  await db
     .delete(instanceUserRoles)
     .where(and(eq(instanceUserRoles.userId, userId), eq(instanceUserRoles.role, "instance_admin")));
 
