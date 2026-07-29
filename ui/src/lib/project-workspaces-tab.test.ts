@@ -464,4 +464,43 @@ describe("targetForExecutionWorkspace", () => {
     expect(bareSecretLikeRef.authoritativePath).not.toContain("sk-live-abc123");
     expect(bareSecretLikeRef.authoritativePath).toBe("(redacted)");
   });
+
+  it("only trusts an opaque bare-token shape verbatim when it comes from an adapter-managed provider", () => {
+    // A raw token-shaped providerRef on a *non*-adapter-managed provider isn't established
+    // as authoritative for anything (kind still resolves to artifact_only below), so it
+    // must not be trusted enough to render verbatim just because it happens to look like an
+    // opaque id — that shape is indistinguishable from an actual secret token.
+    const untrustedOpaqueRef = targetForExecutionWorkspace(
+      {
+        strategyType: "cloud_sandbox",
+        repoUrl: null,
+        cwd: "/mnt/ephemeral/run-1",
+        providerType: "cloud_sandbox",
+        providerRef: "ghp_looksLikeATokenButIsntAdapterManaged123",
+      },
+      "/execution-workspaces/exec-1/configuration",
+    );
+    expect(untrustedOpaqueRef.kind).toBe("artifact_only");
+    expect(untrustedOpaqueRef.authoritativePath).toBe("(redacted)");
+  });
+
+  it("does not mark a project_primary workspace configured from a non-adapter-managed providerRef alone", () => {
+    // Previously any truthy providerRef counted towards "has a reference" for the
+    // completeness check, even though `kind` only treats adapter_managed providerRefs as
+    // authoritative (remote_operator). That let a project_primary workspace with a stray,
+    // non-authoritative providerRef suppress the repair warning while still resolving to
+    // artifact_only — inconsistent and misleading.
+    const target = targetForExecutionWorkspace(
+      {
+        strategyType: "project_primary",
+        repoUrl: null,
+        cwd: "/srv/paperclip/project",
+        providerType: "local_fs",
+        providerRef: "some-stray-non-authoritative-ref",
+      },
+      "/execution-workspaces/exec-1/configuration",
+    );
+    expect(target.kind).toBe("unconfigured");
+    expect(target.configurationIncomplete).toBe(true);
+  });
 });

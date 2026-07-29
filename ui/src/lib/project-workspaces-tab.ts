@@ -54,9 +54,14 @@ export interface ProjectWorkspaceSummary {
 // redact everything else by default.
 const SCP_STYLE_REMOTE = /^[\w.-]+@[\w.-]+:.+$/; // e.g. git@github.com:org/repo.git
 const ABSOLUTE_PATH = /^(?:[A-Za-z]:[\\/]|\/|~\/)/; // e.g. /mnt/artifacts/run-42, C:\work, ~/work
-const OPAQUE_TOKEN_ID = /^[A-Za-z0-9._-]+$/; // e.g. sandbox-8f21c0 (no "@", ":", or "/")
+// A bare alnum/dash/dot/underscore string is structurally indistinguishable from a raw
+// secret token (e.g. a GitHub PAT) — shape alone can't vouch for it. Only trust this shape
+// verbatim when the caller confirms the value came from a platform-managed provider
+// reference (sandbox/environment ids the system itself generates), never from a
+// user-suppliable field like a plain repoUrl.
+const OPAQUE_TOKEN_ID = /^[A-Za-z0-9._-]+$/;
 
-function redactRemote(value: string | null | undefined): string | null {
+function redactRemote(value: string | null | undefined, options?: { allowOpaqueToken?: boolean }): string | null {
   if (!value) return null;
   const trimmed = value.trim();
   if (!trimmed) return null;
@@ -77,7 +82,10 @@ function redactRemote(value: string | null | undefined): string | null {
     // Not URL-shaped at all — same fallthrough.
   }
 
-  if (SCP_STYLE_REMOTE.test(trimmed) || ABSOLUTE_PATH.test(trimmed) || OPAQUE_TOKEN_ID.test(trimmed)) {
+  if (SCP_STYLE_REMOTE.test(trimmed) || ABSOLUTE_PATH.test(trimmed)) {
+    return trimmed;
+  }
+  if (options?.allowOpaqueToken && OPAQUE_TOKEN_ID.test(trimmed)) {
     return trimmed;
   }
   // Doesn't match any known-safe shape — could be an arbitrary credential-bearing value,
@@ -95,7 +103,9 @@ function targetForProjectWorkspace(workspace: ProjectWorkspace): WorkspaceTarget
   const configurationIncomplete = workspace.isPrimary && workspace.sourceType === "local_path" && !hasRemote;
   return {
     kind: hasRepository ? "repository" : workspace.sourceType === "remote_managed" ? "remote_operator" : configurationIncomplete ? "unconfigured" : "artifact_only",
-    authoritativePath: redactRemote(workspace.repoUrl ?? workspace.remoteWorkspaceRef),
+    authoritativePath: redactRemote(workspace.repoUrl ?? workspace.remoteWorkspaceRef, {
+      allowOpaqueToken: workspace.sourceType === "remote_managed",
+    }),
     checkoutRoot: workspace.cwd,
     deliveryMethod: workspace.sourceType === "remote_managed" ? "remote/operator" : hasRepository ? "repository checkout" : "artifact-only",
     fingerprint: null,
@@ -115,25 +125,28 @@ export type ExecutionWorkspaceTargetSource = Pick<
 // project_primary, cloud_sandbox) still need a repository/provider ref check because they
 // can be backed by a repo checkout without using the worktree strategy. adapter_managed
 // providers are "remote_operator" targets even without a repoUrl, since the operator/sandbox
-// reference is the authoritative identity. project_primary is the execution-workspace analog
-// of a project workspace's primary folder (it operates directly on shared/primary content
-// rather than an isolated worktree or sandbox), so — mirroring targetForProjectWorkspace's
-// isPrimary check — a project_primary workspace with no repository, no adapter-managed
-// provider, and no raw provider reference is genuinely unconfigured and must warn, even
-// though it will almost always still have a cwd. Non-primary strategies (e.g. cloud_sandbox)
-// without any of those are legitimately artifact-only by design and don't need a repair
-// prompt.
+// reference is the authoritative identity — a providerRef on any *other* provider type isn't
+// established as authoritative for anything (the `kind` derivation below doesn't treat it as
+// one), so it must not count towards "has a reference" either; otherwise a workspace can be
+// marked configured while `kind` still resolves to `artifact_only`, hiding the case the
+// completeness check exists to catch. project_primary is the execution-workspace analog of a
+// project workspace's primary folder (it operates directly on shared/primary content rather
+// than an isolated worktree or sandbox), so — mirroring targetForProjectWorkspace's isPrimary
+// check — a project_primary workspace with no repository and no adapter-managed provider is
+// genuinely unconfigured and must warn, even though it will almost always still have a cwd.
+// Non-primary strategies (e.g. cloud_sandbox) without either are legitimately artifact-only
+// by design and don't need a repair prompt.
 export function targetForExecutionWorkspace(
   workspace: ExecutionWorkspaceTargetSource,
   repairHref: string,
 ): WorkspaceTargetProvenance {
   const hasRepository = workspace.strategyType === "git_worktree" || Boolean(workspace.repoUrl);
   const isOperatorManaged = workspace.providerType === "adapter_managed";
-  const hasAnyReference = hasRepository || isOperatorManaged || Boolean(workspace.providerRef);
+  const hasAnyReference = hasRepository || isOperatorManaged;
   const configurationIncomplete = workspace.strategyType === "project_primary" && !hasAnyReference;
   return {
     kind: hasRepository ? "repository" : isOperatorManaged ? "remote_operator" : configurationIncomplete ? "unconfigured" : "artifact_only",
-    authoritativePath: redactRemote(workspace.repoUrl ?? workspace.providerRef),
+    authoritativePath: redactRemote(workspace.repoUrl ?? workspace.providerRef, { allowOpaqueToken: isOperatorManaged }),
     checkoutRoot: workspace.cwd,
     deliveryMethod: hasRepository ? "repository checkout" : isOperatorManaged ? "remote/operator" : "artifact-only",
     fingerprint: null,
