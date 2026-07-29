@@ -251,6 +251,10 @@ function listPaperclipControlPlaneCandidates(env: Record<string, string>): strin
       // Ignore malformed candidate lists and fall back to the primary env URL.
     }
   }
+  // Local adapter runs still need a loopback escape hatch when the exported
+  // public origin is behind an auth gateway and the runtime candidate list is
+  // missing a host-local callback URL.
+  push(resolveDefaultPaperclipApiUrl());
 
   return out;
 }
@@ -343,7 +347,7 @@ const run = async () => {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), timeoutMs);
     try {
-      const response = await fetch(candidate + "/api/agents/me", {
+      const response = await fetch(candidate + "/api/health", {
         method: "GET",
         headers: auth ? { authorization: "Bearer " + auth, accept: "application/json" } : { accept: "application/json" },
         redirect: "manual",
@@ -351,13 +355,28 @@ const run = async () => {
       });
       const location = response.headers.get("location");
       const contentType = response.headers.get("content-type");
+      let body = null;
+      if (contentType && contentType.toLowerCase().includes("application/json")) {
+        try {
+          body = await response.json();
+        } catch {
+          body = null;
+        }
+      }
       attempts.push({
         url: candidate,
         status: response.status,
         ...(location ? { location } : {}),
         ...(contentType ? { contentType } : {}),
       });
-      if (response.ok && contentType && contentType.toLowerCase().includes("application/json")) {
+      const healthOk =
+        body &&
+        typeof body === "object" &&
+        (
+          body.status === "ok" ||
+          body.ok === true
+        );
+      if (response.ok && contentType && contentType.toLowerCase().includes("application/json") && healthOk) {
         console.log(JSON.stringify({ ok: true, url: candidate, status: response.status, attempts }));
         return;
       }

@@ -38,6 +38,7 @@ describe("buildPaperclipEnv", () => {
     const env = buildPaperclipEnv({ id: "agent-1", companyId: "company-1" });
 
     expect(env.PAPERCLIP_API_URL).toBe("http://203.0.113.42:3102");
+    expect(env.PAPERCLIP_RUNTIME_API_URL).toBe("http://203.0.113.42:3102");
   });
 
   it("falls back to PAPERCLIP_API_URL when no runtime URL is configured", () => {
@@ -49,6 +50,7 @@ describe("buildPaperclipEnv", () => {
     const env = buildPaperclipEnv({ id: "agent-1", companyId: "company-1" });
 
     expect(env.PAPERCLIP_API_URL).toBe("http://localhost:4100");
+    expect(env.PAPERCLIP_RUNTIME_API_URL).toBe("http://localhost:4100");
   });
 
   it("uses runtime listen host/port when explicit URL is not set", () => {
@@ -61,6 +63,7 @@ describe("buildPaperclipEnv", () => {
     const env = buildPaperclipEnv({ id: "agent-1", companyId: "company-1" });
 
     expect(env.PAPERCLIP_API_URL).toBe("http://localhost:3101");
+    expect(env.PAPERCLIP_RUNTIME_API_URL).toBe("http://localhost:3101");
   });
 
   it("formats IPv6 hosts safely in fallback URL generation", () => {
@@ -72,5 +75,6 @@ describe("buildPaperclipEnv", () => {
     const env = buildPaperclipEnv({ id: "agent-1", companyId: "company-1" });
 
     expect(env.PAPERCLIP_API_URL).toBe("http://[::1]:3101");
+    expect(env.PAPERCLIP_RUNTIME_API_URL).toBe("http://[::1]:3101");
   });
 });

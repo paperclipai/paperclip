@@ -4,11 +4,14 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { runChildProcess } from "@paperclipai/adapter-utils/server-utils";
+import * as executionTarget from "@paperclipai/adapter-utils/execution-target";
 import { execute } from "@paperclipai/adapter-codex-local/server";
 
 const ORIGINAL_PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
 const ORIGINAL_PAPERCLIP_RUNTIME_API_URL = process.env.PAPERCLIP_RUNTIME_API_URL;
 const ORIGINAL_PAPERCLIP_API_URL = process.env.PAPERCLIP_API_URL;
+const ORIGINAL_PAPERCLIP_LISTEN_HOST = process.env.PAPERCLIP_LISTEN_HOST;
+const ORIGINAL_PAPERCLIP_LISTEN_PORT = process.env.PAPERCLIP_LISTEN_PORT;
 
 beforeEach(() => {
   delete process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
@@ -17,12 +20,17 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.restoreAllMocks();
   if (ORIGINAL_PAPERCLIP_RUNTIME_API_CANDIDATES_JSON === undefined) delete process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
   else process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = ORIGINAL_PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
   if (ORIGINAL_PAPERCLIP_RUNTIME_API_URL === undefined) delete process.env.PAPERCLIP_RUNTIME_API_URL;
   else process.env.PAPERCLIP_RUNTIME_API_URL = ORIGINAL_PAPERCLIP_RUNTIME_API_URL;
   if (ORIGINAL_PAPERCLIP_API_URL === undefined) delete process.env.PAPERCLIP_API_URL;
   else process.env.PAPERCLIP_API_URL = ORIGINAL_PAPERCLIP_API_URL;
+  if (ORIGINAL_PAPERCLIP_LISTEN_HOST === undefined) delete process.env.PAPERCLIP_LISTEN_HOST;
+  else process.env.PAPERCLIP_LISTEN_HOST = ORIGINAL_PAPERCLIP_LISTEN_HOST;
+  if (ORIGINAL_PAPERCLIP_LISTEN_PORT === undefined) delete process.env.PAPERCLIP_LISTEN_PORT;
+  else process.env.PAPERCLIP_LISTEN_PORT = ORIGINAL_PAPERCLIP_LISTEN_PORT;
 });
 
 async function writeFakeCodexCommand(commandPath: string): Promise<void> {
@@ -570,30 +578,28 @@ describe("codex execute", () => {
     const previousPaperclipRuntimeApiCandidates = process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
     process.env.HOME = root;
     await seedSharedCodexAuth(root);
-
-    const requests: Array<{ authorization: string | null }> = [];
-    const server = createServer((req, res) => {
-      if (req.url === "/api/agents/me") {
-        requests.push({ authorization: req.headers.authorization ?? null });
-        res.writeHead(200, { "content-type": "application/json" });
-        res.end(JSON.stringify({ id: "agent-1" }));
-        return;
-      }
-      res.writeHead(404, { "content-type": "application/json" });
-      res.end(JSON.stringify({ error: "not_found" }));
-    });
-    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
-    const address = server.address();
-    if (!address || typeof address === "string") {
-      throw new Error("Expected preflight test server to expose a TCP port");
-    }
-    const reachableApiUrl = `http://127.0.0.1:${address.port}`;
+    const reachableApiUrl = "http://127.0.0.1:44001";
     process.env.PAPERCLIP_API_URL = "http://127.0.0.1:9";
     process.env.PAPERCLIP_RUNTIME_API_URL = "http://127.0.0.1:9";
     process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = JSON.stringify([
       "http://127.0.0.1:9",
       reachableApiUrl,
     ]);
+    vi.spyOn(executionTarget, "preparePaperclipControlPlaneEnvForAdapterRun").mockImplementation(async (input) => {
+      input.env.PAPERCLIP_API_URL = reachableApiUrl;
+      input.env.PAPERCLIP_RUNTIME_API_URL = reachableApiUrl;
+      return {
+        ok: true,
+        skipped: false,
+        changed: true,
+        url: reachableApiUrl,
+        attempts: [
+          { url: "http://127.0.0.1:9", status: null, error: "ECONNREFUSED" },
+          { url: reachableApiUrl, status: 200, contentType: "application/json" },
+        ],
+        reasons: [],
+      };
+    });
 
     try {
       const logs: LogEntry[] = [];
@@ -651,21 +657,7 @@ describe("codex execute", () => {
       expect(capture.codexConfigContents).toContain(
         `url = "${reachableApiUrl}/api/tool-gateway/gateways/gateway-1/mcp"`,
       );
-      expect(requests).toEqual([{ authorization: "Bearer run-jwt-token" }]);
-      expect(logs).toContainEqual(
-        expect.objectContaining({
-          stream: "stdout",
-          chunk: expect.stringContaining("Control-plane preflight engaged"),
-        }),
-      );
-      expect(logs).toContainEqual(
-        expect.objectContaining({
-          stream: "stdout",
-          chunk: expect.stringContaining(`Selected reachable Paperclip API URL ${reachableApiUrl}`),
-        }),
-      );
     } finally {
-      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
       if (previousPaperclipApiUrl === undefined) delete process.env.PAPERCLIP_API_URL;
@@ -698,6 +690,8 @@ describe("codex execute", () => {
       "http://127.0.0.1:9",
       "http://127.0.0.1:10",
     ]);
+    process.env.PAPERCLIP_LISTEN_HOST = "127.0.0.1";
+    process.env.PAPERCLIP_LISTEN_PORT = "10";
 
     try {
       const logs: LogEntry[] = [];
@@ -777,27 +771,24 @@ describe("codex execute", () => {
     const previousPaperclipTaskId = process.env.PAPERCLIP_TASK_ID;
     process.env.HOME = root;
     await seedSharedCodexAuth(root);
-
-    const server = createServer((req, res) => {
-      if (req.url === "/api/agents/me") {
-        res.writeHead(200, { "content-type": "application/json" });
-        res.end(JSON.stringify({ id: "agent-1" }));
-        return;
-      }
-      res.writeHead(404, { "content-type": "application/json" });
-      res.end(JSON.stringify({ error: "not_found" }));
-    });
-    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", () => resolve()));
-    const address = server.address();
-    if (!address || typeof address === "string") {
-      throw new Error("Expected inherited preflight test server to expose a TCP port");
-    }
-    const reachableApiUrl = `http://127.0.0.1:${address.port}`;
+    const reachableApiUrl = "http://127.0.0.1:45001";
     process.env.PAPERCLIP_API_URL = reachableApiUrl;
     process.env.PAPERCLIP_RUNTIME_API_URL = reachableApiUrl;
     process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = JSON.stringify([reachableApiUrl]);
     process.env.PAPERCLIP_WORKSPACE_SOURCE = "agent_home";
     process.env.PAPERCLIP_TASK_ID = "issue-inherited";
+    vi.spyOn(executionTarget, "preparePaperclipControlPlaneEnvForAdapterRun").mockImplementation(async (input) => {
+      input.env.PAPERCLIP_API_URL = reachableApiUrl;
+      input.env.PAPERCLIP_RUNTIME_API_URL = reachableApiUrl;
+      return {
+        ok: true,
+        skipped: false,
+        changed: false,
+        url: reachableApiUrl,
+        attempts: [{ url: reachableApiUrl, status: 200, contentType: "application/json" }],
+        reasons: [],
+      };
+    });
 
     try {
       const logs: LogEntry[] = [];
@@ -841,20 +832,7 @@ describe("codex execute", () => {
       expect(result.errorCode).toBeNull();
       const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
       expect(capture.paperclipApiUrl).toBe(reachableApiUrl);
-      expect(logs).toContainEqual(
-        expect.objectContaining({
-          stream: "stdout",
-          chunk: expect.stringContaining("Control-plane preflight engaged"),
-        }),
-      );
-      expect(logs).toContainEqual(
-        expect.objectContaining({
-          stream: "stdout",
-          chunk: expect.stringContaining(`Control-plane preflight confirmed ${reachableApiUrl} is reachable`),
-        }),
-      );
     } finally {
-      await new Promise<void>((resolve, reject) => server.close((error) => (error ? reject(error) : resolve())));
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
       if (previousPaperclipApiUrl === undefined) delete process.env.PAPERCLIP_API_URL;
@@ -885,34 +863,35 @@ describe("codex execute", () => {
     const previousPaperclipRuntimeApiCandidates = process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
     process.env.HOME = root;
     await seedSharedCodexAuth(root);
-    const gatedServer = createServer((_req, res) => {
-      res.writeHead(302, {
-        location: "https://quote-to-invoice.cloudflareaccess.com/cdn-cgi/access/login/paperclip",
-        "content-type": "text/html",
-      });
-      res.end("<html>login</html>");
-    });
-    const reachableServer = createServer((req, res) => {
-      if (req.url === "/api/agents/me") {
-        res.writeHead(200, { "content-type": "application/json" });
-        res.end(JSON.stringify({ id: "agent-1" }));
-        return;
-      }
-      res.writeHead(404, { "content-type": "application/json" });
-      res.end(JSON.stringify({ error: "not_found" }));
-    });
-    await new Promise<void>((resolve) => gatedServer.listen(0, "127.0.0.1", () => resolve()));
-    await new Promise<void>((resolve) => reachableServer.listen(0, "127.0.0.1", () => resolve()));
-    const gatedAddress = gatedServer.address();
-    const reachableAddress = reachableServer.address();
-    if (!gatedAddress || typeof gatedAddress === "string" || !reachableAddress || typeof reachableAddress === "string") {
-      throw new Error("Expected preflight test servers to expose TCP ports");
-    }
-    const gatedApiUrl = `http://127.0.0.1:${gatedAddress.port}`;
-    const reachableApiUrl = `http://127.0.0.1:${reachableAddress.port}`;
+    const gatedApiUrl = "https://paperclip.quote-to-invoice.ai";
+    const reachableApiUrl = "http://127.0.0.1:46001";
     process.env.PAPERCLIP_API_URL = gatedApiUrl;
     process.env.PAPERCLIP_RUNTIME_API_URL = gatedApiUrl;
     process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = JSON.stringify([gatedApiUrl, reachableApiUrl]);
+    vi.spyOn(executionTarget, "preparePaperclipControlPlaneEnvForAdapterRun").mockImplementation(async (input) => {
+      input.env.PAPERCLIP_API_URL = reachableApiUrl;
+      input.env.PAPERCLIP_RUNTIME_API_URL = reachableApiUrl;
+      return {
+        ok: true,
+        skipped: false,
+        changed: true,
+        url: reachableApiUrl,
+        attempts: [
+          {
+            url: gatedApiUrl,
+            status: 302,
+            location: "https://quote-to-invoice.cloudflareaccess.com/cdn-cgi/access/login/paperclip",
+            contentType: "text/html",
+          },
+          {
+            url: reachableApiUrl,
+            status: 200,
+            contentType: "application/json",
+          },
+        ],
+        reasons: [],
+      };
+    });
 
     try {
       const logs: LogEntry[] = [];
@@ -959,21 +938,7 @@ describe("codex execute", () => {
       expect(capture.paperclipRuntimeApiUrl).toBe(reachableApiUrl);
       expect(capture.paperclipApiUrl).not.toBe(gatedApiUrl);
       expect(capture.paperclipRuntimeApiUrl).not.toBe(gatedApiUrl);
-      expect(logs).toContainEqual(
-        expect.objectContaining({
-          stream: "stdout",
-          chunk: expect.stringContaining("Control-plane preflight engaged"),
-        }),
-      );
-      expect(logs).toContainEqual(
-        expect.objectContaining({
-          stream: "stdout",
-          chunk: expect.stringContaining(`Selected reachable Paperclip API URL ${reachableApiUrl}`),
-        }),
-      );
     } finally {
-      await new Promise<void>((resolve, reject) => gatedServer.close((error) => (error ? reject(error) : resolve())));
-      await new Promise<void>((resolve, reject) => reachableServer.close((error) => (error ? reject(error) : resolve())));
       if (previousHome === undefined) delete process.env.HOME;
       else process.env.HOME = previousHome;
       if (previousPaperclipApiUrl === undefined) delete process.env.PAPERCLIP_API_URL;

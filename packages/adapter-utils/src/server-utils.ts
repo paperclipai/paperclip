@@ -1837,6 +1837,7 @@ export function buildPaperclipEnv(agent: { id: string; companyId: string }): Rec
     process.env.PAPERCLIP_API_URL ??
     `http://${runtimeHost}:${runtimePort}`;
   vars.PAPERCLIP_API_URL = apiUrl;
+  vars.PAPERCLIP_RUNTIME_API_URL = apiUrl;
   return vars;
 }
 
@@ -2058,7 +2059,6 @@ export function sanitizeInheritedPaperclipEnv(baseEnv: NodeJS.ProcessEnv): NodeJ
   const env: NodeJS.ProcessEnv = { ...baseEnv };
   for (const key of Object.keys(env)) {
     if (!key.startsWith("PAPERCLIP_")) continue;
-    if (key === "PAPERCLIP_RUNTIME_API_URL") continue;
     if (key === "PAPERCLIP_LISTEN_HOST") continue;
     if (key === "PAPERCLIP_LISTEN_PORT") continue;
     delete env[key];
