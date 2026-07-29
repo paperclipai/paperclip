@@ -1660,6 +1660,9 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     }, created.id, {}, { userId: "local-board" })).rejects.toThrow(
       "Interaction is no longer actionable because the issue is closed",
     );
+    await expect(interactionsSvc.withdrawInteraction({ id: issueId, companyId }, created.id, {}, {
+      userId: "local-board",
+    })).rejects.toThrow("Interaction is no longer actionable because the issue is closed");
   });
 
   it("does not supersede request confirmations for agent, system, or older user comments", async () => {
