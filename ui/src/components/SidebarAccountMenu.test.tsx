@@ -4,6 +4,7 @@ import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { queryKeys } from "../lib/queryKeys";
+import { setLocale } from "../i18n";
 import { SidebarAccountMenu } from "./SidebarAccountMenu";
 
 const mockAuthApi = vi.hoisted(() => ({
@@ -71,7 +72,8 @@ async function flushReact() {
 describe("SidebarAccountMenu", () => {
   let container: HTMLDivElement;
 
-  beforeEach(() => {
+  beforeEach(async () => {
+    await setLocale("en");
     container = document.createElement("div");
     document.body.appendChild(container);
     mockAuthApi.getSession.mockResolvedValue({
@@ -143,9 +145,12 @@ describe("SidebarAccountMenu", () => {
     const menuText = document.body.querySelector('[data-slot="popover-content"]')?.textContent ?? "";
     const docsPos = menuText.indexOf("Documentation");
     const feedbackPos = menuText.indexOf("Feedback");
+    const localePos = menuText.indexOf("Englishen");
     const themePos = menuText.indexOf("Switch to");
     expect(docsPos).toBeLessThan(feedbackPos);
-    expect(feedbackPos).toBeLessThan(themePos);
+    expect(feedbackPos).toBeLessThan(localePos);
+    expect(localePos).toBeLessThan(themePos);
+    expect(document.body.querySelector('button[aria-label="English (en)"]')).not.toBeNull();
 
     expect(document.body.textContent).toContain("Paperclip v1.2.3");
     expect(document.body.textContent).toContain("jane@example.com");

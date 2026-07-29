@@ -6,6 +6,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { queryKeys } from "../lib/queryKeys";
+import { setLocale } from "../i18n";
 import { AuthPage } from "./Auth";
 
 const getSessionMock = vi.hoisted(() => vi.fn());
@@ -82,7 +83,8 @@ function renderAuthPage(container: HTMLElement) {
 describe("AuthPage", () => {
   let container: HTMLDivElement;
 
-  beforeEach(() => {
+  beforeEach(async () => {
+    await setLocale("en");
     container = document.createElement("div");
     document.body.appendChild(container);
     getSessionMock.mockResolvedValue(null);
@@ -137,6 +139,8 @@ describe("AuthPage", () => {
     expect(emailInput.getAttribute("aria-required")).toBe("true");
     expect(passwordInput.required).toBe(true);
     expect(passwordInput.getAttribute("aria-required")).toBe("true");
+
+    expect(container.querySelector('button[title="English (en)"]')).not.toBeNull();
 
     // Programmatic labels.
     expect(container.querySelector('label[for="email"]')).not.toBeNull();

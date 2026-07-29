@@ -6,9 +6,9 @@ import { validateLocaleMessages } from "./locale-validation";
 
 describe("locale validation", () => {
   it("resolves English messages with key and default fallbacks", () => {
-    expect(t("app.noCompanies.title")).toBe(en.app.noCompanies.title);
-    expect(t("app.missing", { defaultValue: "Fallback" })).toBe("Fallback");
-    expect(t("app.missing")).toBe("app.missing");
+    expect(t("app.noCompanies.title", { lng: "en" })).toBe(en.app.noCompanies.title);
+    expect(t("app.missing", { lng: "en", defaultValue: "Fallback" })).toBe("Fallback");
+    expect(t("app.missing", { lng: "en" })).toBe("app.missing");
   });
 
   it("accepts registered locale files", () => {
