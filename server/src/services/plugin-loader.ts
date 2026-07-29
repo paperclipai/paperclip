@@ -363,7 +363,9 @@ export interface PluginLoadResult {
 export interface PluginLoadSingleOptions {
   /**
    * When false, activation failures are reported to the caller but do not
-   * transition the shared plugin row to `error`.
+   * transition the shared plugin row to `error`. Partially-registered local
+   * runtime state (worker process, scheduler/tool registrations) is still
+   * torn down in this process.
    */
   markErrorOnFailure?: boolean;
 }
@@ -2009,40 +2011,7 @@ export function pluginLoader(
         "plugin-loader: unloading single plugin",
       );
 
-      const {
-        workerManager,
-        eventBus,
-        jobScheduler,
-        toolDispatcher,
-      } = runtimeServices;
-
-      // 1. Unregister from job scheduler (cancels in-flight runs)
-      try {
-        await jobScheduler.unregisterPlugin(pluginId);
-      } catch (err) {
-        log.warn(
-          { pluginId, err: err instanceof Error ? err.message : String(err) },
-          "plugin-loader: failed to unregister from job scheduler (best-effort)",
-        );
-      }
-
-      // 2. Clear event subscriptions
-      eventBus.clearPlugin(pluginKey);
-
-      // 3. Unregister agent tools
-      toolDispatcher.unregisterPluginTools(pluginKey);
-
-      // 4. Stop the worker process
-      try {
-        if (workerManager.isRunning(pluginId)) {
-          await workerManager.stopWorker(pluginId);
-        }
-      } catch (err) {
-        log.warn(
-          { pluginId, err: err instanceof Error ? err.message : String(err) },
-          "plugin-loader: failed to stop worker during unload (best-effort)",
-        );
-      }
+      await teardownPluginRuntime(pluginId, pluginKey);
 
       log.info(
         { pluginId, pluginKey },
@@ -2074,6 +2043,58 @@ export function pluginLoader(
       log.info("plugin-loader: all plugins shut down");
     },
   };
+
+  // -------------------------------------------------------------------------
+  // Internal: teardownPluginRuntime — shared by unloadSingle and activation
+  // failure cleanup
+  // -------------------------------------------------------------------------
+
+  /**
+   * Tear down a plugin's runtime state in this process: scheduler
+   * registration, event subscriptions, agent tools, and the worker process.
+   * Does not touch the plugin's database row.
+   */
+  async function teardownPluginRuntime(
+    pluginId: string,
+    pluginKey: string,
+  ): Promise<void> {
+    if (!runtimeServices) return;
+
+    const {
+      workerManager,
+      eventBus,
+      jobScheduler,
+      toolDispatcher,
+    } = runtimeServices;
+
+    // 1. Unregister from job scheduler (cancels in-flight runs)
+    try {
+      await jobScheduler.unregisterPlugin(pluginId);
+    } catch (err) {
+      log.warn(
+        { pluginId, err: err instanceof Error ? err.message : String(err) },
+        "plugin-loader: failed to unregister from job scheduler (best-effort)",
+      );
+    }
+
+    // 2. Clear event subscriptions
+    eventBus.clearPlugin(pluginKey);
+
+    // 3. Unregister agent tools
+    toolDispatcher.unregisterPluginTools(pluginKey);
+
+    // 4. Stop the worker process
+    try {
+      if (workerManager.isRunning(pluginId)) {
+        await workerManager.stopWorker(pluginId);
+      }
+    } catch (err) {
+      log.warn(
+        { pluginId, err: err instanceof Error ? err.message : String(err) },
+        "plugin-loader: failed to stop worker during unload (best-effort)",
+      );
+    }
+  }
 
   // -------------------------------------------------------------------------
   // Internal: activatePlugin — shared logic for loadAll and loadSingle
@@ -2372,6 +2393,7 @@ export function pluginLoader(
       if (options.markErrorOnFailure) {
         // Mark the plugin as errored in the database so it is not retried
         // automatically on next startup without operator intervention.
+        // markError also deactivates the plugin runtime in this process.
         try {
           await lifecycleManager.markError(pluginId, `Activation failed: ${errorMessage}`);
         } catch (markErr) {
@@ -2381,6 +2403,22 @@ export function pluginLoader(
               err: markErr instanceof Error ? markErr.message : String(markErr),
             },
             "plugin-loader: failed to mark plugin as error after activation failure",
+          );
+        }
+      } else if (registered.worker) {
+        // The shared plugin row stays untouched, but this process spawned a
+        // worker before the failure — tear down the partially-registered
+        // runtime so a half-activated plugin does not linger locally.
+        try {
+          await teardownPluginRuntime(pluginId, pluginKey);
+        } catch (cleanupErr) {
+          log.warn(
+            {
+              pluginId,
+              pluginKey,
+              err: cleanupErr instanceof Error ? cleanupErr.message : String(cleanupErr),
+            },
+            "plugin-loader: failed to tear down partially-activated plugin runtime",
           );
         }
       }

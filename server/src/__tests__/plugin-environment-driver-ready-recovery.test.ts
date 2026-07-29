@@ -1,3 +1,6 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { PaperclipPluginManifestV1 } from "@paperclipai/shared";
 import { createManagedBundledPluginWorkerRecovery } from "../app.js";
@@ -8,6 +11,8 @@ import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 const mockRegistry = vi.hoisted(() => ({
   getById: vi.fn(),
   list: vi.fn(),
+  listConfigs: vi.fn(),
+  update: vi.fn(),
 }));
 
 vi.mock("../services/plugin-registry.js", () => ({
@@ -78,6 +83,8 @@ describe("listReadyPluginEnvironmentDrivers worker recovery", () => {
   beforeEach(() => {
     mockRegistry.getById.mockReset();
     mockRegistry.list.mockReset();
+    mockRegistry.listConfigs.mockReset();
+    mockRegistry.update.mockReset();
   });
 
   it("recovers a managed bundled provider that was installed by a sibling process after this process skipped it", async () => {
@@ -323,6 +330,87 @@ describe("listReadyPluginEnvironmentDrivers worker recovery", () => {
       error: expect.stringContaining("Package root not found"),
     });
     expect(lifecycleManager.markError).not.toHaveBeenCalled();
+  });
+
+  it("tears down partially-activated runtime state when error writes are suppressed", async () => {
+    const fixtureDir = fs.mkdtempSync(path.join(os.tmpdir(), "plugin-recovery-fixture-"));
+    try {
+      fs.writeFileSync(
+        path.join(fixtureDir, "package.json"),
+        JSON.stringify({
+          name: "@paperclipai/daytona-sandbox-provider",
+          version: "1.0.0",
+          paperclipPlugin: { manifest: "manifest.mjs" },
+        }),
+      );
+      fs.writeFileSync(
+        path.join(fixtureDir, "manifest.mjs"),
+        `export default ${JSON.stringify(manifest)};`,
+      );
+      fs.mkdirSync(path.join(fixtureDir, "dist"));
+      fs.writeFileSync(path.join(fixtureDir, "dist", "worker.js"), "");
+
+      const plugin = {
+        ...createPlugin("ready"),
+        packageName: "@paperclipai/daytona-sandbox-provider",
+        packagePath: fixtureDir,
+        version: "1.0.0",
+      };
+      mockRegistry.getById.mockResolvedValue(plugin);
+      mockRegistry.listConfigs.mockResolvedValue([]);
+      mockRegistry.update.mockResolvedValue(undefined);
+
+      const lifecycleManager = { markError: vi.fn().mockResolvedValue(undefined) };
+      const workerManager = {
+        startWorker: vi.fn().mockResolvedValue(undefined),
+        isRunning: vi.fn(() => true),
+        stopWorker: vi.fn().mockResolvedValue(undefined),
+      };
+      const eventBus = {
+        forPlugin: vi.fn(() => {
+          throw new Error("event bus offline");
+        }),
+        clearPlugin: vi.fn(),
+        subscriptionCount: vi.fn(() => 0),
+      };
+      const jobScheduler = { unregisterPlugin: vi.fn().mockResolvedValue(undefined) };
+      const toolDispatcher = { unregisterPluginTools: vi.fn(), registerPluginTools: vi.fn() };
+
+      const loader = pluginLoader(
+        {} as never,
+        {
+          enableLocalFilesystem: false,
+          enableNpmDiscovery: false,
+          localPluginDir: "__missing_plugin_dir__",
+        },
+        {
+          lifecycleManager,
+          workerManager,
+          eventBus,
+          jobScheduler,
+          jobStore: {},
+          toolDispatcher,
+          buildHostHandlers: vi.fn(() => ({})),
+          instanceInfo: {
+            instanceId: "test",
+            hostVersion: "0.0.0",
+          },
+        } as never,
+      );
+
+      await expect(loader.loadSingle(PLUGIN_ID, { markErrorOnFailure: false })).resolves.toMatchObject({
+        success: false,
+        error: expect.stringContaining("event bus offline"),
+      });
+
+      expect(lifecycleManager.markError).not.toHaveBeenCalled();
+      expect(jobScheduler.unregisterPlugin).toHaveBeenCalledWith(PLUGIN_ID);
+      expect(eventBus.clearPlugin).toHaveBeenCalledWith(PLUGIN_KEY);
+      expect(toolDispatcher.unregisterPluginTools).toHaveBeenCalledWith(PLUGIN_KEY);
+      expect(workerManager.stopWorker).toHaveBeenCalledWith(PLUGIN_ID);
+    } finally {
+      fs.rmSync(fixtureDir, { recursive: true, force: true });
+    }
   });
 
   it("bounds slow managed bundled recovery attempts without serial waits", async () => {
