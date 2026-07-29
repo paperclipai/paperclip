@@ -108,6 +108,63 @@ describe("hermes-local quiet-mode liveness", () => {
     )).toHaveLength(heartbeatCountAfterExit);
   });
 
+  it("serializes alive heartbeats behind in-flight child output", async () => {
+    let releaseChildLog!: () => void;
+    let resolveChild!: (result: {
+      exitCode: number;
+      signal: null;
+      timedOut: boolean;
+      stdout: string;
+      stderr: string;
+    }) => void;
+    const { ctx, onLog } = makeCtx(true);
+    onLog.mockImplementation(async (_stream, chunk) => {
+      if (chunk === "child output\n") {
+        await new Promise<void>((resolve) => {
+          releaseChildLog = resolve;
+        });
+      }
+    });
+    runChildProcessMock.mockImplementation(async (_runId, _command, _args, options) => {
+      await options.onSpawn?.({
+        pid: 12345,
+        processGroupId: 12345,
+        startedAt: new Date().toISOString(),
+      });
+      const childLog = options.onLog("stdout", "child output\n");
+      return await new Promise((resolve) => {
+        resolveChild = (result) => {
+          void childLog.then(() => resolve(result));
+        };
+      });
+    });
+
+    const execution = execute(ctx as any);
+    await vi.advanceTimersByTimeAsync(15_000);
+
+    try {
+      expect(onLog.mock.calls.some(([, chunk]) =>
+        typeof chunk === "string" && chunk.includes("[hermes] alive:"),
+      )).toBe(false);
+    } finally {
+      releaseChildLog();
+      resolveChild({
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: "Completed after child output.\nsession_id: quiet-session-ordered\n",
+        stderr: "",
+      });
+      await execution;
+    }
+
+    const orderedChunks = onLog.mock.calls
+      .map(([, chunk]) => chunk)
+      .filter((chunk) => chunk === "child output\n" || chunk.includes("[hermes] alive:"));
+    expect(orderedChunks[0]).toBe("child output\n");
+    expect(orderedChunks[1]).toContain("[hermes] alive:");
+  });
+
   it("does not start a phantom heartbeat after execution finishes before onSpawn resolves", async () => {
     let releaseOnSpawn!: () => void;
     const { ctx, onLog } = makeCtx(true);
