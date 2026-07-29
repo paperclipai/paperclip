@@ -1137,6 +1137,91 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(comments[0]?.body).toContain("Recovery action:");
   });
 
+  it("preserves a null-link terminal transition that lands while the recovery wake is enqueued", async () => {
+    const { managerId, coderId, sourceIssue } = await seedCompany();
+    await db.update(agents).set({ status: "paused" }).where(eq(agents.id, managerId));
+    const enqueueWakeup = vi.fn(async () => {
+      await db
+        .update(issues)
+        .set({ status: "done", checkoutRunId: null, executionRunId: null })
+        .where(eq(issues.id, sourceIssue.id));
+      return null;
+    });
+    const recovery = recoveryService(db, { enqueueWakeup });
+
+    await recovery.escalateStrandedAssignedIssue({
+      issue: sourceIssue,
+      previousStatus: "in_progress",
+      latestRun: {
+        id: randomUUID(),
+        agentId: coderId,
+        status: "failed",
+        error: "adapter failed",
+        errorCode: "adapter_failed",
+        contextSnapshot: { retryReason: "issue_continuation_needed" },
+        livenessState: "needs_followup",
+      },
+      comment: "Automatic continuation recovery failed.",
+    });
+
+    const [updatedIssue] = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, sourceIssue.id));
+    expect(updatedIssue).toMatchObject({
+      status: "done",
+      assigneeAgentId: coderId,
+      checkoutRunId: null,
+      executionRunId: null,
+    });
+    expect(enqueueWakeup).toHaveBeenCalledTimes(1);
+  });
+
+  it("preserves a null-link reassignment that lands while the recovery wake is enqueued", async () => {
+    const { managerId, coderId, sourceIssue } = await seedCompany();
+    await db.update(agents).set({ status: "paused" }).where(eq(agents.id, managerId));
+    const enqueueWakeup = vi.fn(async () => {
+      await db
+        .update(issues)
+        .set({
+          status: "in_progress",
+          assigneeAgentId: managerId,
+          checkoutRunId: null,
+          executionRunId: null,
+        })
+        .where(eq(issues.id, sourceIssue.id));
+      return null;
+    });
+    const recovery = recoveryService(db, { enqueueWakeup });
+
+    await recovery.escalateStrandedAssignedIssue({
+      issue: sourceIssue,
+      previousStatus: "in_progress",
+      latestRun: {
+        id: randomUUID(),
+        agentId: coderId,
+        status: "failed",
+        error: "adapter failed",
+        errorCode: "adapter_failed",
+        contextSnapshot: { retryReason: "issue_continuation_needed" },
+        livenessState: "needs_followup",
+      },
+      comment: "Automatic continuation recovery failed.",
+    });
+
+    const [updatedIssue] = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, sourceIssue.id));
+    expect(updatedIssue).toMatchObject({
+      status: "in_progress",
+      assigneeAgentId: managerId,
+      checkoutRunId: null,
+      executionRunId: null,
+    });
+    expect(enqueueWakeup).toHaveBeenCalledTimes(1);
+  });
+
   it("does not create nested recovery artifacts when issue-backed fallback work itself fails", async () => {
     const { companyId, managerId, sourceIssueId, prefix } = await seedCompany();
     const recoveryIssueId = randomUUID();

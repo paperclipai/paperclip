@@ -3258,11 +3258,31 @@ export function recoveryService(db: Db, deps: {
           .for("update")
           .limit(1)
           .then((rows) => rows[0] ?? null);
+        const activeRecoveryAction = lockedIssue
+          ? await recoveryActionsSvc.getActiveForIssue(
+            lockedIssue.companyId,
+            lockedIssue.id,
+            tx,
+          )
+          : null;
+        const matchesObservedIssue = Boolean(
+          lockedIssue &&
+          lockedIssue.status === input.issue.status &&
+          lockedIssue.assigneeAgentId === input.issue.assigneeAgentId &&
+          lockedIssue.assigneeUserId === input.issue.assigneeUserId
+        );
+        const matchesExistingRecoveryDisposition = Boolean(
+          lockedIssue &&
+          activeRecoveryAction &&
+          lockedIssue.status === "blocked" &&
+          lockedIssue.assigneeAgentId === (
+            activeRecoveryAction.ownerAgentId ?? input.issue.assigneeAgentId
+          ) &&
+          lockedIssue.assigneeUserId === input.issue.assigneeUserId
+        );
         if (
           !lockedIssue ||
-          lockedIssue.status !== input.issue.status ||
-          lockedIssue.assigneeAgentId !== input.issue.assigneeAgentId ||
-          lockedIssue.assigneeUserId !== input.issue.assigneeUserId
+          (!matchesObservedIssue && !matchesExistingRecoveryDisposition)
         ) {
           return null;
         }
@@ -3281,7 +3301,7 @@ export function recoveryService(db: Db, deps: {
           tx,
         );
         const recoveryAction = await ensureSourceScopedStrandedRecoveryAction({
-          issue: lockedIssue,
+          issue: input.issue,
           previousStatus: input.previousStatus,
           latestRun: input.latestRun,
           recoveryCause,
@@ -3440,14 +3460,22 @@ export function recoveryService(db: Db, deps: {
         .select({
           status: issues.status,
           assigneeAgentId: issues.assigneeAgentId,
+          assigneeUserId: issues.assigneeUserId,
+          checkoutRunId: issues.checkoutRunId,
+          executionRunId: issues.executionRunId,
         })
         .from(issues)
         .where(eq(issues.id, input.issue.id))
         .limit(1);
       if (
         currentIssue &&
-        (currentIssue.status !== "blocked" ||
-          currentIssue.assigneeAgentId !== recoveryAction.ownerAgentId)
+        currentIssue.checkoutRunId === null &&
+        currentIssue.executionRunId === null &&
+        currentIssue.status !== "blocked" &&
+        currentIssue.status !== "done" &&
+        currentIssue.status !== "cancelled" &&
+        currentIssue.assigneeAgentId === recoveryAction.ownerAgentId &&
+        currentIssue.assigneeUserId === input.issue.assigneeUserId
       ) {
         const reblocked = await issuesSvc.update(input.issue.id, {
           status: "blocked",
@@ -3455,6 +3483,9 @@ export function recoveryService(db: Db, deps: {
           assigneeAgentId: recoveryAction.ownerAgentId,
           expectedCheckoutRunId: null,
           expectedExecutionRunId: null,
+          expectedStatus: currentIssue.status,
+          expectedAssigneeAgentId: currentIssue.assigneeAgentId,
+          expectedAssigneeUserId: currentIssue.assigneeUserId,
         });
         if (reblocked) return reblocked;
       }

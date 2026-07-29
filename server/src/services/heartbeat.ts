@@ -15210,6 +15210,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         issue: promotionResult.issue,
         previousStatus: promotionResult.previousStatus as "todo" | "in_progress" | "in_review",
         latestRun: run,
+        expectedCheckoutRunId: null,
+        expectedExecutionRunId: null,
+        expectedStatus: promotionResult.issue.status as "todo" | "in_progress" | "in_review",
+        expectedAssigneeAgentId: promotionResult.issue.assigneeAgentId,
+        expectedAssigneeUserId: promotionResult.issue.assigneeUserId,
       });
       return;
     }

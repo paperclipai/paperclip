@@ -4957,6 +4957,134 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(comments[0]?.body).toContain("Next action:");
   });
 
+  it("does not overwrite a generic timer checkout acquired before direct recovery-issue escalation", async () => {
+    const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      retryReason: "issue_continuation_needed",
+    });
+    const sourceIssueId = randomUUID();
+    const timerRunId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const now = new Date("2026-03-19T00:06:00.000Z");
+
+    await db.insert(issues).values({
+      id: sourceIssueId,
+      companyId,
+      title: "Original source issue",
+      status: "blocked",
+      priority: "medium",
+      issueNumber: 2,
+      identifier: `${issuePrefix}-2`,
+    });
+    await db
+      .update(issues)
+      .set({
+        title: "Recover stalled issue from previous adapter failure",
+        parentId: sourceIssueId,
+        originKind: "stranded_issue_recovery",
+        originId: sourceIssueId,
+        originRunId: runId,
+        originFingerprint: [
+          "stranded_issue_recovery",
+          companyId,
+          sourceIssueId,
+          runId,
+        ].join(":"),
+      })
+      .where(eq(issues.id, issueId));
+    await db
+      .update(heartbeatRuns)
+      .set({
+        status: "running",
+        finishedAt: null,
+        error: null,
+        errorCode: null,
+        updatedAt: now,
+      })
+      .where(eq(heartbeatRuns.id, runId));
+    await db
+      .update(agentWakeupRequests)
+      .set({
+        status: "claimed",
+        finishedAt: null,
+        error: null,
+        updatedAt: now,
+      })
+      .where(eq(agentWakeupRequests.runId, runId));
+    await db.insert(heartbeatRuns).values({
+      id: timerRunId,
+      companyId,
+      agentId,
+      invocationSource: "timer",
+      triggerDetail: "test_direct_recovery_issue_checkout_race",
+      status: "running",
+      contextSnapshot: {
+        wakeReason: "heartbeat_timer",
+        source: "heartbeat_timer",
+      },
+      startedAt: now,
+      updatedAt: now,
+    });
+    await db.execute(sql`
+      create or replace function test_checkout_before_direct_recovery_escalation()
+      returns trigger
+      language plpgsql
+      as $$
+      begin
+        if old.id = ${sql.raw(`'${issueId}'::uuid`)}
+          and old.checkout_run_id = ${sql.raw(`'${runId}'::uuid`)}
+          and new.checkout_run_id is null
+        then
+          new.status := 'in_progress';
+          new.checkout_run_id := ${sql.raw(`'${timerRunId}'::uuid`)};
+          new.execution_run_id := ${sql.raw(`'${timerRunId}'::uuid`)};
+        end if;
+        return new;
+      end;
+      $$;
+    `);
+    await db.execute(sql`
+      create trigger test_checkout_before_direct_recovery_escalation
+      before update on issues
+      for each row execute function test_checkout_before_direct_recovery_escalation();
+    `);
+
+    try {
+      const heartbeat = heartbeatService(db);
+      await heartbeat.cancelRun(runId, "force direct recovery-issue escalation");
+
+      const issue = await db
+        .select()
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null);
+      expect(issue).toMatchObject({
+        status: "in_progress",
+        assigneeAgentId: agentId,
+        checkoutRunId: timerRunId,
+        executionRunId: timerRunId,
+      });
+      expect(
+        await db
+          .select()
+          .from(issueRecoveryActions)
+          .where(eq(issueRecoveryActions.sourceIssueId, issueId)),
+      ).toEqual([]);
+      expect(
+        await db
+          .select()
+          .from(agentWakeupRequests)
+          .where(eq(agentWakeupRequests.reason, "source_scoped_recovery_action")),
+      ).toEqual([]);
+      expect(await db.select().from(issueComments).where(eq(issueComments.issueId, issueId))).toEqual([]);
+      expect(await db.select().from(activityLog).where(eq(activityLog.entityId, issueId))).toEqual([]);
+    } finally {
+      await db.execute(sql`drop trigger if exists test_checkout_before_direct_recovery_escalation on issues`);
+      await db.execute(sql`drop function if exists test_checkout_before_direct_recovery_escalation()`);
+    }
+  });
+
   it("assigns open unassigned blockers back to their creator agent", async () => {
     const companyId = randomUUID();
     const creatorAgentId = randomUUID();
