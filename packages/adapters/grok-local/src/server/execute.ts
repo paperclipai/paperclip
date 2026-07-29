@@ -545,6 +545,10 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           outputTokens: attempt.parsed.outputTokens,
           cachedInputTokens: attempt.parsed.cachedInputTokens,
         },
+        // Each `--single` invocation reports usage for just that process, not
+        // a running total for the resumed session, so the server must not
+        // delta it against the previous run's usage.
+        usageBasis: "per_run",
         sessionId: resolvedSessionId,
         sessionParams: resolvedSessionParams,
         sessionDisplayId: resolvedSessionId,

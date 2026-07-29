@@ -138,6 +138,70 @@ describe("grok_local execute", () => {
     expect(logs.map((entry) => entry.chunk)).not.toEqual([]);
   });
 
+  it("reports real per-run token usage, marks it as per_run, and only surfaces cost for API billing", async () => {
+    const root = await makeTempRoot();
+
+    runProcessMock.mockImplementation(async () => ({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout: [
+        JSON.stringify({ type: "text", data: "done" }),
+        JSON.stringify({
+          type: "end",
+          stopReason: "EndTurn",
+          sessionId: "sess-1",
+          requestId: "req-1",
+          usage: { input_tokens: 2384, output_tokens: 261, cache_read_input_tokens: 23040 },
+          total_cost_usd: 0.013246,
+        }),
+      ].join("\n"),
+      stderr: "",
+    }));
+
+    const baseCtx: AdapterExecutionContext = {
+      runId: "run-1",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Grok Agent",
+        adapterType: "grok_local",
+        adapterConfig: {},
+      },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: { cwd: root },
+      context: {},
+      authToken: "run-token",
+      onLog: async () => {},
+    };
+
+    // Subscription billing (no XAI_API_KEY): token usage is populated, but
+    // there is no marginal dollar cost so costUsd stays null.
+    const subscriptionResult = await execute(baseCtx);
+    expect(subscriptionResult).toMatchObject({
+      usage: { inputTokens: 2384, outputTokens: 261, cachedInputTokens: 23040 },
+      usageBasis: "per_run",
+      billingType: "subscription",
+      costUsd: null,
+    });
+
+    // API-key billing: same token usage, plus the real dollar cost.
+    const previousApiKey = process.env.XAI_API_KEY;
+    process.env.XAI_API_KEY = "test-key";
+    try {
+      const apiResult = await execute(baseCtx);
+      expect(apiResult).toMatchObject({
+        usage: { inputTokens: 2384, outputTokens: 261, cachedInputTokens: 23040 },
+        usageBasis: "per_run",
+        billingType: "api",
+        costUsd: 0.013246,
+      });
+    } finally {
+      if (previousApiKey === undefined) delete process.env.XAI_API_KEY;
+      else process.env.XAI_API_KEY = previousApiKey;
+    }
+  });
+
   it("cleans up staged assets when setup fails before the Grok process starts", async () => {
     const root = await makeTempRoot();
     const instructionsPath = path.join(root, "managed", "AGENTS.md");
