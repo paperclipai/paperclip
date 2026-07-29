@@ -12,6 +12,32 @@ def _deps():
             "chat_model": "google/gemma-4-12b", "token": "tok"}
 
 
+def _turn():
+    """Eine Runde Sprache: ein lauter Frame, dann Stille bis zum hang-Deckel."""
+    return [loud()] + [quiet()] * 10
+
+
+def _sustained_followup():
+    """Anhaltende Sprache im Nachfrage-Fenster (min_run=3)."""
+    return [loud(), loud(), loud()]
+
+
+class FakeMic:
+    """Frame-Strom mit Rückstau-Semantik: `flush()` verwirft, was noch im Puffer
+    liegt — wie ein neu gestarteter Mikrofon-Stream."""
+    def __init__(self, backlog, live):
+        self.backlog, self.live = list(backlog), list(live)
+
+    def flush(self):
+        self.backlog = []
+
+    def __iter__(self):
+        while self.backlog:
+            yield self.backlog.pop(0)
+        while self.live:
+            yield self.live.pop(0)
+
+
 def test_single_turn_speaks_answer(monkeypatch):
     spoken = []
     monkeypatch.setattr(satellite.transcribe, "transcribe", lambda wav, model: "Wie spät?")
@@ -46,6 +72,36 @@ def test_followup_window_triggers_second_turn(monkeypatch):
     satellite.handle_interaction(frames, _deps())
     assert spoken == ["A1", "A2"]
     assert len(calls) == 2
+
+
+def test_followup_rounds_are_capped(monkeypatch):
+    # Ein Dauergespräch im Raum darf die Nachfrage-Schleife nicht endlos am
+    # Leben halten — sonst beantwortet Jarvis nach einem Wake-Wort alles.
+    monkeypatch.setattr(satellite.transcribe, "transcribe", lambda wav, model: "frage")
+    monkeypatch.setattr(satellite.jarvis_brain, "respond",
+                        lambda *a, **k: {"kind": "chat", "answer": "A"})
+    spoken = []
+    monkeypatch.setattr(satellite, "_speak", lambda text, deps: spoken.append(text))
+    frames = iter((_turn() + _sustained_followup()) * 10)
+    satellite.handle_interaction(frames, _deps())
+    assert len(spoken) == sat_config.MAX_TURNS_PER_WAKE
+
+
+def test_own_playback_backlog_does_not_trigger_followup(monkeypatch):
+    # Während der Wiedergabe läuft das Mikrofon weiter; der Rückstau enthält
+    # Jarvis' eigene Stimme (HomePod, AirPlay-Latenz). Der darf keine
+    # Folgerunde auslösen.
+    calls = []
+    monkeypatch.setattr(satellite.transcribe, "transcribe", lambda wav, model: "frage")
+    monkeypatch.setattr(satellite.jarvis_brain, "respond",
+                        lambda *a, **k: calls.append(1) or {"kind": "chat", "answer": "A"})
+    monkeypatch.setattr(satellite, "_speak", lambda text, deps: None)
+    mic = FakeMic(backlog=_turn() + [loud()] * 12,
+                  live=[quiet()] * sat_config.FOLLOWUP_WINDOW_FRAMES)
+    deps = _deps()
+    deps["flush_mic"] = mic.flush
+    satellite.handle_interaction(iter(mic), deps)
+    assert len(calls) == 1
 
 
 def test_empty_transcript_ends_without_speaking(monkeypatch):

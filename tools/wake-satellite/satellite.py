@@ -68,7 +68,8 @@ def _speak(text, deps):
 def handle_interaction(frames, deps, tenant=None, history=None):
     tenant = tenant or sat_config.TENANT
     history = list(history or [])
-    while True:
+    flush_mic = deps.get("flush_mic")
+    for turn in range(sat_config.MAX_TURNS_PER_WAKE):
         recorded = capture.record_until_silence(frames)
         if not recorded:
             break
@@ -83,10 +84,14 @@ def handle_interaction(frames, deps, tenant=None, history=None):
         if result["kind"] in ("chat", "lookup", "issue"):
             history = _remember(history, text, answer)
         _speak(answer, deps)
+        if flush_mic:
+            flush_mic()      # eigene Wiedergabe nicht als Nachfrage hören
         t3 = time.monotonic()
-        print("[timing] aufnahme={:.1f}s stt={:.1f}s llm({})={:.1f}s tts+play={:.1f}s "
-              "| text='{}'".format(len(recorded) * sat_config.FRAME_SAMPLES / sat_config.SAMPLE_RATE,
-                                    t1 - t0, result["kind"], t2 - t1, t3 - t2, (text or "")[:50]),
+        print("[timing] runde={}/{} aufnahme={:.1f}s stt={:.1f}s llm({})={:.1f}s "
+              "tts+play={:.1f}s | text='{}'".format(
+                  turn + 1, sat_config.MAX_TURNS_PER_WAKE,
+                  len(recorded) * sat_config.FRAME_SAMPLES / sat_config.SAMPLE_RATE,
+                  t1 - t0, result["kind"], t2 - t1, t3 - t2, (text or "")[:50]),
               flush=True)
         if not capture.wait_for_speech(frames, window_frames=sat_config.FOLLOWUP_WINDOW_FRAMES,
                                        min_run=sat_config.FOLLOWUP_MIN_SPEECH_FRAMES):
@@ -97,7 +102,8 @@ def handle_interaction(frames, deps, tenant=None, history=None):
 def build_deps():
     env = vco_config.load_env(vco_config.ENV_PATH)
     detector = wake.WakeDetector(sat_config.WAKE_MODELS, threshold=sat_config.WAKE_THRESHOLD,
-                                 inference_framework=sat_config.INFERENCE_FRAMEWORK)
+                                 inference_framework=sat_config.INFERENCE_FRAMEWORK,
+                                 required_hits=sat_config.WAKE_REQUIRED_HITS)
     return {
         "detector": detector,
         "whisper_model": os.path.expanduser(env["WHISPER_MODEL"]),
@@ -115,20 +121,25 @@ def main():  # pragma: no cover — Hardware
     deps = build_deps()
     detector = deps["detector"]
     mic = capture.MicStream()
+    deps["flush_mic"] = mic.flush
     frames = iter(mic)
     preroll = deque(maxlen=sat_config.PREROLL_FRAMES)
     while True:
         try:
             frame = next(frames)
             preroll.append(frame)
-            if detector.process(frame) is None:
+            hit = detector.process(frame)
+            if hit is None:
                 continue
+            print("[wake] {} score={:.2f}".format(*hit), flush=True)
             earcon.beep_async()                # blockiert nicht -> kein Clipping
             pre = list(preroll)                # ~1,2 s vor dem Treffer voranstellen
             preroll.clear()
             handle_interaction(itertools.chain(pre, frames), deps)
             detector.reset()
             time.sleep(sat_config.PLAYBACK_COOLDOWN_SEC)
+            mic.flush()          # Rückstau nicht in den Wake-Detektor spülen
+            preroll.clear()
         except Exception:  # noqa: BLE001
             traceback.print_exc()
             time.sleep(1)

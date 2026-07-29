@@ -13,6 +13,10 @@ WAKE_THRESHOLD = 0.5
 # Ressourcenordner, von wo der Kurzname aufgelöst wird.
 INFERENCE_FRAMEWORK = "onnx"
 WAKE_MODELS = ["hey_jarvis"]
+# Ein einzelner Frame über der Schwelle ist ein Ausreißer, kein Wake-Wort: ein
+# echtes „Hey Jarvis" liegt über mehrere 80-ms-Frames hinweg oben. Zwei Treffer
+# in Folge kosten 80 ms Latenz und sieben einen Großteil der Fehlalarme aus.
+WAKE_REQUIRED_HITS = 2
 
 SAMPLE_RATE = 16000
 FRAME_SAMPLES = 1280
@@ -27,6 +31,10 @@ PREROLL_FRAMES = int(PREROLL_SEC * SAMPLE_RATE / FRAME_SAMPLES)  # ~15
 FOLLOWUP_WINDOW_SEC = 2.5
 FOLLOWUP_WINDOW_FRAMES = int(FOLLOWUP_WINDOW_SEC * SAMPLE_RATE / FRAME_SAMPLES)  # ~31
 FOLLOWUP_MIN_SPEECH_FRAMES = 3  # ~0,24 s zusammenhängende Sprache nötig (kein kurzer Knacks)
+# Deckel für die Nachfrage-Kette: nach so vielen Antworten ist ohne erneutes
+# Wake-Wort Schluss. Ohne Deckel hält ein Gespräch im Raum die Schleife
+# beliebig lange am Leben und Jarvis beantwortet alles Gesagte.
+MAX_TURNS_PER_WAKE = 3
 PLAYBACK_COOLDOWN_SEC = 1.0
 MAX_HISTORY_MESSAGES = 16
 

@@ -26,6 +26,19 @@ def test_record_empty_when_only_silence():
     assert out == []
 
 
+def test_record_gives_up_when_speech_never_starts():
+    # Fehl-Wake ohne Folgesatz: ohne Deckel wartet die Aufnahme unbegrenzt und
+    # schnappt sich die nächstbeste Äußerung — auch Minuten später.
+    frames = iter([quiet()] * 10 + [loud()] * 5)
+    assert capture.record_until_silence(frames, max_start_frames=5) == []
+
+
+def test_record_still_starts_within_start_window():
+    frames = iter([quiet()] * 3 + [loud()] * 3 + [quiet()] * 3)
+    out = capture.record_until_silence(frames, max_start_frames=5, hang=2)
+    assert len(out) == 5     # 3 laute + 2 nachlaufende stille
+
+
 def test_wait_for_speech_true_on_first_loud():
     assert capture.wait_for_speech(iter([quiet(), loud(), quiet()]), window_frames=5) is True
 

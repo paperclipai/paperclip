@@ -12,6 +12,10 @@ FRAME_SAMPLES = 1280          # 80 ms @ 16 kHz
 SILENCE_RMS = 500
 SILENCE_HANG_FRAMES = 10      # ~0,8 s Stille beendet die Aufnahme
 MAX_RECORD_FRAMES = 150       # ~12 s Deckel
+# Deckel für das Warten auf den Sprachbeginn. Ohne ihn wartet eine Aufnahme
+# nach einem Fehl-Wake unbegrenzt und nimmt die nächstbeste Äußerung auf —
+# auch ein Nebengespräch Minuten später.
+MAX_START_FRAMES = 40         # ~3,2 s
 
 
 def _rms(frame):
@@ -21,16 +25,22 @@ def _rms(frame):
 
 
 def record_until_silence(frames, *, silence_rms=SILENCE_RMS,
-                         hang=SILENCE_HANG_FRAMES, max_frames=MAX_RECORD_FRAMES):
+                         hang=SILENCE_HANG_FRAMES, max_frames=MAX_RECORD_FRAMES,
+                         max_start_frames=MAX_START_FRAMES):
     collected = []
     started = False
     silent_run = 0
+    waited = 0
     for frame in frames:
         is_loud = _rms(frame) >= silence_rms
         if not started:
             if is_loud:
                 started = True
                 collected.append(frame)
+                continue
+            waited += 1
+            if waited >= max_start_frames:
+                break          # niemand spricht -> nichts aufnehmen
             continue
         collected.append(frame)
         silent_run = 0 if is_loud else silent_run + 1
@@ -78,6 +88,15 @@ class MicStream:  # pragma: no cover — Hardware
     def read(self):
         data, _ = self._stream.read(self._blocksize)
         return np.asarray(data, dtype=np.int16).reshape(-1)
+
+    def flush(self):
+        """Verwirft den aufgelaufenen Puffer-Rückstau (Stop/Start des Streams).
+
+        Während der Sprachausgabe wird der Stream sekundenlang nicht gelesen;
+        der Rückstau enthält dann Jarvis' eigene Stimme vom HomePod. Ohne
+        Flush deutet das Nachfrage-Fenster sie als Anschlussfrage."""
+        self._stream.stop()
+        self._stream.start()
 
     def __iter__(self):
         while True:
