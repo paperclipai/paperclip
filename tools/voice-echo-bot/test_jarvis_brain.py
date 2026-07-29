@@ -148,3 +148,95 @@ def test_time_is_read_per_call_not_frozen(monkeypatch):
     jarvis_brain.respond("b", TENANT, "tok", "m", now=datetime.datetime(2026, 7, 29, 17, 30))
     assert "09:00 Uhr" in seen[0]
     assert "17:30 Uhr" in seen[1]
+
+
+def test_web_tool_absent_from_prompt_without_key(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(jarvis_brain.llm, "chat",
+                        lambda msgs, model=None: seen.update(system=msgs[0]["content"]) or "ok")
+    jarvis_brain.respond("hi", TENANT, "tok", "m")
+    assert "WEB:" not in seen["system"]
+
+
+def test_web_tool_offered_with_key(monkeypatch):
+    seen = {}
+    monkeypatch.setattr(jarvis_brain.llm, "chat",
+                        lambda msgs, model=None: seen.update(system=msgs[0]["content"]) or "ok")
+    jarvis_brain.respond("hi", TENANT, "tok", "m", web_key="tvly-k")
+    assert "WEB:" in seen["system"]
+
+
+def test_parse_control_recognises_web_token():
+    assert jarvis_brain.parse_control("WEB: Wetter Cottbus morgen") == {
+        "kind": "web", "query": "Wetter Cottbus morgen"}
+    assert jarvis_brain.parse_control("  web :  Bahnstreik  ")["kind"] == "web"
+
+
+def test_web_search_result_is_answered(monkeypatch):
+    calls = []
+    def fake_chat(msgs, model=None):
+        calls.append(msgs)
+        return "WEB: Wetter Cottbus" if len(calls) == 1 else "Morgen 24 Grad, sonnig."
+    monkeypatch.setattr(jarvis_brain.llm, "chat", fake_chat)
+    monkeypatch.setattr(jarvis_brain.web_search, "search",
+                        lambda q, key, **kw: {"query": q, "antwort": "24 Grad", "treffer": []})
+    r = jarvis_brain.respond("wetter morgen?", TENANT, "tok", "m", web_key="tvly-k")
+    assert r == {"kind": "web", "answer": "Morgen 24 Grad, sonnig."}
+
+
+def test_web_search_failure_is_honest(monkeypatch):
+    def fake_chat(msgs, model=None):
+        return "WEB: Wetter"
+    monkeypatch.setattr(jarvis_brain.llm, "chat", fake_chat)
+    def boom(q, key, **kw):
+        raise jarvis_brain.web_search.WebSearchError("offline")
+    monkeypatch.setattr(jarvis_brain.web_search, "search", boom)
+    r = jarvis_brain.respond("wetter?", TENANT, "tok", "m", web_key="tvly-k")
+    assert r["kind"] == "web"
+    assert "nicht ins Netz" in r["answer"]
+
+
+def test_web_query_is_logged(monkeypatch, capsys):
+    monkeypatch.setattr(jarvis_brain.llm, "chat",
+                        lambda msgs, model=None: "WEB: Bahnstreik heute")
+    monkeypatch.setattr(jarvis_brain.web_search, "search",
+                        lambda q, key, **kw: {"query": q, "antwort": "", "treffer": []})
+    jarvis_brain.respond("gibt es streik?", TENANT, "tok", "m", web_key="tvly-k")
+    assert "[web] query='Bahnstreik heute'" in capsys.readouterr().out
+
+
+def test_web_token_without_key_is_honest_not_silent(monkeypatch):
+    # Ohne Key wird das Werkzeug nicht angeboten — setzt das Modell trotzdem
+    # ein Token, darf es weder ausgeführt werden noch eine leere (= stumme)
+    # Antwort ergeben.
+    searched = []
+    monkeypatch.setattr(jarvis_brain.llm, "chat",
+                        lambda msgs, model=None: "WEB: Wetter Cottbus")
+    monkeypatch.setattr(jarvis_brain.web_search, "search",
+                        lambda q, key, **kw: searched.append(q) or {})
+    r = jarvis_brain.respond("wetter?", TENANT, "tok", "m")
+    assert searched == []
+    assert r["answer"].strip()          # nicht stumm
+    assert "ins Netz" in r["answer"]
+
+
+def test_web_token_after_vault_lookup_is_not_executed(monkeypatch):
+    # Harte Sperre: in derselben Anfrage gewonnene Vault-Daten dürfen nicht in
+    # einen Suchbegriff wandern.
+    searched = []
+    calls = []
+    def fake_chat(msgs, model=None):
+        calls.append(msgs)
+        if len(calls) == 1:
+            return "LOOKUP kontakt: Jana Kostbar"
+        return "Sie wohnt in Cottbus.\nWEB: Wetter Cottbus"
+    monkeypatch.setattr(jarvis_brain.llm, "chat", fake_chat)
+    monkeypatch.setattr(jarvis_brain.vault_client, "lookup",
+                        lambda mode, query, vault=None: {"treffer": [{"inhalt": "Cottbus"}]})
+    monkeypatch.setattr(jarvis_brain.web_search, "search",
+                        lambda q, key, **kw: searched.append(q) or {"query": q, "antwort": "", "treffer": []})
+    r = jarvis_brain.respond("wo wohnt jana?", TENANT, "tok", "m", web_key="tvly-k")
+    assert searched == []                     # keine Suche ausgelöst
+    assert r["kind"] == "lookup"
+    assert "WEB:" not in r["answer"]          # Token gestrippt, nicht vorgelesen
+    assert r["answer"] == "Sie wohnt in Cottbus."

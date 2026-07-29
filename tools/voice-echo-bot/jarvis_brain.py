@@ -2,8 +2,10 @@
 """Jarvis' Antwort-Gehirn — geteilt zwischen Telegram-Bot und Wake-Satellit.
 
 Reine Logik: Text rein, {"kind","answer"} raus. Kein Telegram, kein Mikrofon.
-Kapselt System-Prompt, Steuer-Token-Parsing (LOOKUP/ISSUE) und die Werkzeug-
-Ausführung (Vault-Lookup, CEO-Issue, Unausgewertet-Notfall). stdlib only.
+Kapselt System-Prompt, Steuer-Token-Parsing (LOOKUP/ISSUE/WEB) und die
+Werkzeug-Ausführung (Vault-Lookup, CEO-Issue, Websuche, Unausgewertet-
+Notfall). Nach einem Vault-Lookup wird in derselben Anfrage kein weiteres
+Werkzeug mehr ausgeführt (Datenschutz-Sperre). stdlib only.
 """
 import datetime
 import json
@@ -12,13 +14,14 @@ import traceback
 
 import llm
 import vault_client
+import web_search
 from paperclip_client import create_issue, derive_title
 
 SYSTEM_PROMPT = (
     "Du bist Jarvis, der persönliche CEO-Draht von {name}. Du bist ein ganz "
     "normaler Chat-Assistent: antworte knapp, auf Deutsch, sprich {name} mit "
     "Vornamen an, keine Meta-Sätze (\"Als KI …\"), keine Floskeln.\n\n"
-    "Du hast zwei Werkzeuge. Brauchst du eines, gib in der ERSTEN Zeile GENAU "
+    "Du hast diese Werkzeuge. Brauchst du eines, gib in der ERSTEN Zeile GENAU "
     "EIN Steuer-Token aus (nichts davor, keine Anführungszeichen):\n\n"
     "1. Vault nachschlagen — für echte Daten (Telefonnummer, Adresse, E-Mail "
     "einer Person; Termine; frühere Mails; Wissens-/Business-Fragen):\n"
@@ -54,6 +57,7 @@ def format_now(now):
 LOOKUP_RE = re.compile(r"^\s*LOOKUP\s+(kontakt|termin|mail|wissen|dokument)\s*:\s*(.+)$",
                        re.IGNORECASE)
 ISSUE_RE = re.compile(r"^\s*ISSUE\s*:\s*(.+)$", re.IGNORECASE)
+WEB_RE = re.compile(r"^\s*WEB\s*:\s*(.+)$", re.IGNORECASE)
 
 
 def first_name(tenant):
@@ -76,6 +80,9 @@ def parse_control(raw):
         title = title.strip()
         desc = desc.strip() if sep else ""
         return {"kind": "issue", "title": title, "description": desc or title}
+    m = WEB_RE.match(first)
+    if m:
+        return {"kind": "web", "query": m.group(1).strip()}
     return {"kind": "chat", "text": text}
 
 
@@ -89,24 +96,36 @@ VOICE_OUTPUT_HINT = (
     "(z. B. „030 12 34\" -> „null drei null, zwölf, vierunddreißig\")."
 )
 
+WEB_TOOL_HINT = (
+    "\n\n3. Web durchsuchen — für alles, was du nicht wissen kannst, weil es "
+    "aktuell oder öffentlich ist (Wetter, Nachrichten, Verkehr, Öffnungszeiten, "
+    "Preise, Fakten von Webseiten):\n"
+    "   WEB: <suchbegriff>\n"
+    "   Beispiel: WEB: Wetter Cottbus morgen\n"
+    "   Rate NIE bei solchen Fragen — such nach oder sag, dass du es nicht weisst."
+)
+
 
 def _strip_control_lines(text):
-    """Entfernt versehentlich eingestreute Steuer-Token-Zeilen (LOOKUP/ISSUE)
-    aus einer Chat-Antwort. Manche Modelle hängen so ein Token ans Ende, obwohl
-    sie direkt geantwortet haben — ungefiltert würde es laut vorgelesen."""
+    """Entfernt versehentlich eingestreute Steuer-Token-Zeilen (LOOKUP/ISSUE/
+    WEB) aus einer Chat-Antwort. Manche Modelle hängen so ein Token ans Ende,
+    obwohl sie direkt geantwortet haben — ungefiltert würde es laut vorgelesen."""
     kept = [ln for ln in (text or "").splitlines()
-            if not LOOKUP_RE.match(ln) and not ISSUE_RE.match(ln)]
+            if not LOOKUP_RE.match(ln) and not ISSUE_RE.match(ln)
+            and not WEB_RE.match(ln)]
     return "\n".join(kept).strip()
 
 
 def respond(text, tenant, token, chat_model, history=None, source="per Telegram",
-            voice_output=False, now=None):
+            voice_output=False, now=None, web_key=None):
     text = (text or "").strip()
     if not text:
         return {"kind": "empty", "answer": "Nichts erkannt, bitte erneut."}
     hist = history or []
     system_content = SYSTEM_PROMPT.format(name=first_name(tenant))
     system_content += TIME_HINT.format(format_now(now or datetime.datetime.now()))
+    if web_key:
+        system_content += WEB_TOOL_HINT
     if voice_output:
         system_content += VOICE_OUTPUT_HINT
     messages = ([{"role": "system", "content": system_content}]
@@ -123,6 +142,15 @@ def respond(text, tenant, token, chat_model, history=None, source="per Telegram"
     if action["kind"] == "issue":
         return {"kind": "issue",
                 "answer": _do_issue(action["title"], action["description"], tenant, token)}
+    if action["kind"] == "web":
+        if not web_key:
+            # Ohne Key ist das Werkzeug nicht im Prompt — kommt trotzdem eines
+            # durch, muss die Antwort ehrlich sein und darf nicht leer werden
+            # (leerer Text = stumme Sprachausgabe).
+            return {"kind": "chat",
+                    "answer": "Dafür müsste ich ins Netz — das ist gerade nicht eingerichtet."}
+        return {"kind": "web",
+                "answer": _do_web(messages, action["query"], chat_model, web_key)}
     return {"kind": "chat", "answer": _strip_control_lines(action["text"])}
 
 
@@ -150,10 +178,35 @@ def _do_lookup(messages, mode, query, tenant, chat_model):
     except llm.LlmError:
         traceback.print_exc()
         return "⚠️ Konnte die Vault-Daten nicht auswerten, bitte gleich nochmal."
-    follow_action = parse_control(answer)
-    if follow_action["kind"] == "chat":
-        return _strip_control_lines(follow_action["text"])
-    return answer.strip()
+    # Nach einem Vault-Zugriff wird KEIN weiteres Werkzeug mehr ausgeführt:
+    # in dieser Anfrage gewonnene Vault-Daten dürfen nicht nach draussen
+    # (z.B. in einen Suchbegriff) wandern. Token werden nur entfernt.
+    return _strip_control_lines(answer)
+
+
+def _do_web(messages, query, chat_model, api_key):
+    print("[web] query='{}'".format((query or "").replace("\n", " ")[:120]),
+          flush=True)
+    try:
+        result = web_search.search(query, api_key)
+    except web_search.WebSearchError:
+        traceback.print_exc()
+        return "⚠️ Ich komme gerade nicht ins Netz."
+    context = json.dumps(result, ensure_ascii=False)[:4000]
+    followup = messages + [
+        {"role": "assistant", "content": "WEB: {}".format(query)},
+        {"role": "user", "content":
+            ("Web-Suchergebnis (JSON):\n{}\n\nBeantworte meine letzte Frage knapp "
+             "auf Deutsch mit diesen Daten. Ist nichts Passendes dabei, sag das "
+             "ehrlich. Nenne keine URLs. Gib KEIN Steuer-Token mehr aus."
+             ).format(context)},
+    ]
+    try:
+        answer = llm.chat(followup, model=chat_model)
+    except llm.LlmError:
+        traceback.print_exc()
+        return "⚠️ Konnte das Suchergebnis nicht auswerten, bitte gleich nochmal."
+    return _strip_control_lines(answer)
 
 
 def _do_issue(title, description, tenant, token):
