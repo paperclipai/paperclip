@@ -3741,11 +3741,16 @@ export function issueRoutes(
     interaction: {
       id: string;
       kind: string;
+      status: string;
       continuationPolicy: string;
       sourceRunId?: string | null;
       createdByAgentId?: string | null;
     },
   ) {
+    if (interaction.status !== "pending") {
+      res.status(409).json({ error: "Interaction has already been resolved" });
+      return false;
+    }
     if (req.actor.type !== "agent") {
       assertBoard(req);
       return null;

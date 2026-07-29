@@ -193,10 +193,11 @@ describeEmbeddedPostgres("system-attributed agent JWT issue authorization", () =
     expect(storedIssue?.executionState).toMatchObject({ status: "completed", lastDecisionOutcome: "approved" });
 
     const repeated = await request(app())
-      .post(`/api/issues//interactions//accept`)
+      .post(`/api/issues/${issueId}/interactions/${interactionId}/accept`)
       .set(auth)
       .send({});
-    expect(repeated.status).toBe(404);
+    expect(repeated.status).toBe(409);
+    expect(repeated.body).toEqual({ error: "Interaction has already been resolved" });
     const decisions = await db.select().from(issueExecutionDecisions).where(eq(issueExecutionDecisions.issueId, issueId));
     expect(decisions).toHaveLength(1);
 
