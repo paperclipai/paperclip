@@ -37,6 +37,7 @@ const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 const PROVIDER_QUOTA_TEST_ADAPTER = "provider_quota_test";
 const HERMES_TRANSIENT_TEST_ADAPTER = "hermes_transient_test";
+const HERMES_TRANSIENT_CODE_FALLBACK_TEST_ADAPTER = "hermes_transient_code_fallback_test";
 const UNCLASSIFIED_FAILURE_TEST_ADAPTER = "unclassified_failure_test";
 
 if (!embeddedPostgresSupport.supported) {
@@ -100,10 +101,29 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
         errorMessage:
           "API call failed after 3 retries: HTTP 429: The engine is currently overloaded, please try again later",
         errorCode: "hermes_transient_upstream",
-        resultJson: {},
+        errorFamily: "transient_upstream",
+        resultJson: { errorFamily: "transient_upstream" },
       }),
       testEnvironment: async () => ({
         adapterType: HERMES_TRANSIENT_TEST_ADAPTER,
+        status: "pass",
+        checks: [],
+        testedAt: new Date().toISOString(),
+      }),
+    });
+    registerServerAdapter({
+      type: HERMES_TRANSIENT_CODE_FALLBACK_TEST_ADAPTER,
+      execute: async () => ({
+        exitCode: 1,
+        signal: null,
+        timedOut: false,
+        errorMessage:
+          "API call failed after 3 retries: HTTP 429: The engine is currently overloaded, please try again later",
+        errorCode: "hermes_transient_upstream",
+        resultJson: {},
+      }),
+      testEnvironment: async () => ({
+        adapterType: HERMES_TRANSIENT_CODE_FALLBACK_TEST_ADAPTER,
         status: "pass",
         checks: [],
         testedAt: new Date().toISOString(),
@@ -141,6 +161,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
   afterAll(async () => {
     unregisterServerAdapter(PROVIDER_QUOTA_TEST_ADAPTER);
     unregisterServerAdapter(HERMES_TRANSIENT_TEST_ADAPTER);
+    unregisterServerAdapter(HERMES_TRANSIENT_CODE_FALLBACK_TEST_ADAPTER);
     unregisterServerAdapter(UNCLASSIFIED_FAILURE_TEST_ADAPTER);
     await tempDb?.cleanup();
   });
@@ -282,12 +303,33 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     expect(run).not.toBeNull();
     const failedRun = await waitForRunToFinish(heartbeat, run!.id);
     expect(failedRun?.status).toBe("failed");
-    return { agentId, runId: run!.id };
+    return { agentId, runId: run!.id, failedRun };
   }
 
   it("automatically schedules a bounded retry for Hermes transient upstream failures", async () => {
-    const { runId } = await invokeFailureAdapter(HERMES_TRANSIENT_TEST_ADAPTER);
+    const { runId, failedRun } = await invokeFailureAdapter(HERMES_TRANSIENT_TEST_ADAPTER);
 
+    expect(failedRun?.errorCode).toBe("hermes_transient_upstream");
+    expect(failedRun?.resultJson).toMatchObject({ errorFamily: "transient_upstream" });
+
+    await expect
+      .poll(
+        () =>
+          db
+            .select({ id: heartbeatRuns.id })
+            .from(heartbeatRuns)
+            .where(eq(heartbeatRuns.retryOfRunId, runId))
+            .then((rows) => rows.length),
+        { timeout: 5_000, interval: 50 },
+      )
+      .toBe(1);
+  });
+
+  it("keeps the Hermes transient error-code compatibility fallback retryable", async () => {
+    const { runId, failedRun } = await invokeFailureAdapter(HERMES_TRANSIENT_CODE_FALLBACK_TEST_ADAPTER);
+
+    expect(failedRun?.errorCode).toBe("hermes_transient_upstream");
+    expect(failedRun?.resultJson).not.toMatchObject({ errorFamily: "transient_upstream" });
     await expect
       .poll(
         () =>
