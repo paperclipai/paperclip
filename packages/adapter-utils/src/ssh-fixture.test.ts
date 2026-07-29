@@ -194,6 +194,9 @@ describe("ssh env-lab fixture", () => {
     const remoteScript = String(target.args.at(-1) ?? "");
     expect(remoteScript).not.toContain("nvm.sh");
     expect(remoteScript).not.toContain("NVM_DIR");
+    // Source /etc/profile so a host that exposes the PATH through
+    // /etc/profile.d scripts still resolves node and the agent CLI.
+    expect(remoteScript).toContain("/etc/profile");
     expect(remoteScript).toContain(".profile");
     expect(remoteScript).toContain(".bash_profile");
     expect(remoteScript).toContain(".zprofile");
