@@ -50,6 +50,9 @@ describe("paperclip MCP tools", () => {
     expect((init.headers as Record<string, string>)["X-Paperclip-Run-Id"]).toBe(
       "33333333-3333-3333-3333-333333333333",
     );
+    expect((init.headers as Record<string, string>)["X-Paperclip-Client"]).toMatch(
+      /^paperclip-mcp-server\/\d+\.\d+\.\d+/,
+    );
   });
 
   it("uses default company id for company-scoped list tools", async () => {

@@ -463,14 +463,14 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
     ),
     makeTool(
       "paperclipUpdateIssue",
-      "Patch an issue, optionally including a comment; include resume=true when intentionally requesting follow-up on resumable closed work",
+      "Patch an issue, optionally including a comment; include resume=true when intentionally requesting follow-up on resumable closed work. This is also the execution-policy review/approval stage decision route: submit {status: \"done\", comment} to approve or {status: \"in_progress\", comment} to request changes on an issue whose currentParticipant matches you — the server enforces currentStageType/currentParticipant/returnAssignee semantics and returns 422 for non-participants. For standalone board-approval records instead, use paperclipApprovalDecision.",
       updateIssueToolSchema,
       async ({ issueId, ...body }) =>
         client.requestJson("PATCH", `/issues/${encodeURIComponent(issueId)}`, { body }),
     ),
     makeTool(
       "paperclipCheckoutIssue",
-      "Checkout an issue for an agent",
+      "Checkout an issue for an agent. The harness normally checks out the wake issue already before this tool is available — you usually don't need to call this for the issue you were woken for. Default expectedStatuses ([\"todo\",\"backlog\",\"blocked\"]) already prevents stealing in_progress work from another agent; keep it unless you have a specific reason to override.",
       checkoutIssueToolSchema,
       async ({ issueId, agentId, expectedStatuses }) =>
         client.requestJson("POST", `/issues/${encodeURIComponent(issueId)}/checkout`, {
@@ -588,7 +588,7 @@ export function createToolDefinitions(client: PaperclipApiClient): ToolDefinitio
     ),
     makeTool(
       "paperclipApprovalDecision",
-      "Approve, reject, request revision, or resubmit an approval",
+      "Approve, reject, request revision, or resubmit a standalone board-approval record (POST /approvals/{id}/...). This does NOT drive execution-policy review stages on an issue — for a currentStageType/currentParticipant review-stage decision, use paperclipUpdateIssue with {status, comment} instead.",
       approvalDecisionSchema,
       async ({ approvalId, action, decisionNote, payloadJson }) => {
         const path =

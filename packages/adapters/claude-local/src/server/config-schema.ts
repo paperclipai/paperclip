@@ -68,6 +68,13 @@ export function getConfigSchema(): AdapterConfigSchema {
         hint: "Defaults to 0, which closes the ACP process after each run while retaining persistent session state.",
         meta: acpVisible,
       },
+      {
+        key: "paperclipMcpTools",
+        label: "Attach Paperclip MCP tools",
+        type: "toggle",
+        default: false,
+        hint: "Attaches @paperclipai/mcp-server as a native stdio MCP tool (checkout, comment, status update, approvals, interactions) using the run's existing credentials. Local execution targets only; off by default (AMC-4028 phase 1 opt-in).",
+      },
     ],
   };
 }
