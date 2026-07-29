@@ -22,6 +22,7 @@ import {
   AppWindow,
   MessagesSquare,
   GanttChartSquare,
+  Hash,
 } from "lucide-react";
 import { useState } from "react";
 import { useQuery } from "@tanstack/react-query";
@@ -209,6 +210,7 @@ export function Sidebar() {
             badgeTone={inboxBadge.failedRuns > 0 ? "danger" : "default"}
             alert={inboxBadge.failedRuns > 0}
           />
+          <SidebarNavItem to="/channels" label="Channels" icon={Hash} />
           {showDecisions ? (
             <SidebarNavItem
               to="/decisions"

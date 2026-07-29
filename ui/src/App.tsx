@@ -41,6 +41,7 @@ import { Inbox } from "./pages/Inbox";
 import { WhatNeedsMe } from "./pages/WhatNeedsMe";
 import { TrainingInspector, TrainingLibrary } from "./pages/Training";
 import { BoardChat } from "./pages/BoardChat";
+import { ChannelsPage } from "./pages/channels/ChannelsPage";
 import { CompanySettings } from "./pages/CompanySettings";
 import { CompanyEnvironments } from "./pages/CompanyEnvironments";
 import { CloudUpstream } from "./pages/CloudUpstream";
@@ -255,6 +256,8 @@ function boardRoutes() {
         <Route path="board-chat" element={<BoardChat />} />
         <Route path="artifacts" element={<Artifacts />} />
       </Route>
+      <Route path="channels" element={<ChannelsPage />} />
+      <Route path="channels/:channelId" element={<ChannelsPage />} />
       <Route path="decisions" element={<WhatNeedsMe />} />
       <Route path="training" element={<TrainingLibrary />} />
       <Route path="training/:id" element={<TrainingInspector />} />

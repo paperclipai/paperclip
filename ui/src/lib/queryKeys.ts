@@ -268,6 +268,15 @@ export const queryKeys = {
     list: (companyId: string) => ["goals", companyId] as const,
     detail: (id: string) => ["goals", "detail", id] as const,
   },
+  channels: {
+    list: (companyId: string) => ["channels", companyId] as const,
+    detail: (channelId: string) => ["channels", "detail", channelId] as const,
+    messages: (channelId: string, includeCompleted: boolean) =>
+      ["channels", "messages", channelId, includeCompleted] as const,
+    thread: (channelId: string, rootId: string) =>
+      ["channels", "thread", channelId, rootId] as const,
+    presence: (companyId: string) => ["channels", "presence", companyId] as const,
+  },
   artifacts: {
     list: (
       companyId: string,
