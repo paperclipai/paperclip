@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ExecutionWorkspace, Issue, Project, ProjectWorkspace, WorkspaceRuntimeService } from "@paperclipai/shared";
-import { buildProjectWorkspaceSummaries } from "./project-workspaces-tab";
+import { buildProjectWorkspaceSummaries, targetForExecutionWorkspace } from "./project-workspaces-tab";
 
 function createProjectWorkspace(overrides: Partial<ProjectWorkspace>): ProjectWorkspace {
   return {
@@ -319,5 +319,79 @@ describe("buildProjectWorkspaceSummaries", () => {
       primaryServiceUrlRunning: false,
       runningServiceCount: 0,
     });
+  });
+});
+
+describe("targetForExecutionWorkspace", () => {
+  it("classifies non-worktree strategies with a repoUrl as a repository target, not artifact-only", () => {
+    // Overview items and project_primary execution workspaces use strategyType "project_primary",
+    // but can still be backed by an authoritative repo checkout via repoUrl.
+    const target = targetForExecutionWorkspace(
+      {
+        strategyType: "project_primary",
+        repoUrl: "https://github.com/example/paperclip",
+        cwd: "/srv/paperclip/project",
+        providerType: "local_fs",
+        providerRef: null,
+      },
+      "/execution-workspaces/exec-1/configuration",
+    );
+
+    expect(target.kind).toBe("repository");
+    expect(target.deliveryMethod).toBe("repository checkout");
+    expect(target.authoritativePath).toBe("https://github.com/example/paperclip");
+    expect(target.configurationIncomplete).toBe(false);
+  });
+
+  it("redacts credentials from URL remotes but preserves opaque provider references", () => {
+    const withCredentials = targetForExecutionWorkspace(
+      {
+        strategyType: "project_primary",
+        repoUrl: "https://oauth2:ghp_secrettoken@github.com/example/private-repo.git",
+        cwd: "/repo",
+        providerType: "local_fs",
+        providerRef: null,
+      },
+      "/execution-workspaces/exec-1/configuration",
+    );
+    expect(withCredentials.authoritativePath).toBe("https://github.com/example/private-repo.git");
+    expect(withCredentials.authoritativePath).not.toContain("ghp_secrettoken");
+
+    const scpStyleRemote = targetForExecutionWorkspace(
+      {
+        strategyType: "project_primary",
+        repoUrl: "git@github.com:example/private-repo.git",
+        cwd: "/repo",
+        providerType: "local_fs",
+        providerRef: null,
+      },
+      "/execution-workspaces/exec-1/configuration",
+    );
+    expect(scpStyleRemote.authoritativePath).toBe("git@github.com:example/private-repo.git");
+
+    const sandboxRef = targetForExecutionWorkspace(
+      {
+        strategyType: "adapter_managed",
+        repoUrl: null,
+        cwd: null,
+        providerType: "adapter_managed",
+        providerRef: "sandbox-8f21c0",
+      },
+      "/execution-workspaces/exec-1/configuration",
+    );
+    expect(sandboxRef.kind).toBe("remote_operator");
+    expect(sandboxRef.authoritativePath).toBe("sandbox-8f21c0");
+
+    const filesystemRef = targetForExecutionWorkspace(
+      {
+        strategyType: "cloud_sandbox",
+        repoUrl: null,
+        cwd: "/mnt/artifacts/run-42",
+        providerType: "cloud_sandbox",
+        providerRef: "/mnt/artifacts/run-42",
+      },
+      "/execution-workspaces/exec-1/configuration",
+    );
+    expect(filesystemRef.authoritativePath).toBe("/mnt/artifacts/run-42");
   });
 });

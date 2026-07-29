@@ -96,6 +96,7 @@ function createSummary(overrides: Partial<ProjectWorkspaceSummary> = {}): Projec
     hasRuntimeConfig: overrides.hasRuntimeConfig ?? true,
     linkedIssueCount: overrides.linkedIssueCount ?? issues.length,
     issues,
+    target: overrides.target,
   };
 }
 

@@ -1,4 +1,4 @@
-import type { ExecutionWorkspace, Issue, Project } from "@paperclipai/shared";
+import type { ExecutionWorkspace, Issue, Project, ProjectWorkspace } from "@paperclipai/shared";
 
 type ProjectWorkspaceLike = Pick<Project, "workspaces" | "primaryWorkspace">;
 
@@ -49,14 +49,24 @@ export interface ProjectWorkspaceSummary {
 
 function redactRemote(value: string | null | undefined): string | null {
   if (!value) return null;
+  const trimmed = value.trim();
+  if (!trimmed) return null;
   try {
-    const url = new URL(value);
+    const url = new URL(trimmed);
+    // Only URL-shaped remotes can carry embedded credentials (https://user:pass@host/...);
+    // strip those, but keep query/hash out too since they can also carry tokens.
     return `${url.protocol}//${url.host}${url.pathname}`;
   } catch {
-    return "Configured remote (redacted)";
+    // Opaque provider references (sandbox IDs, SCP-style remotes like git@host:org/repo.git,
+    // filesystem paths) aren't URLs and carry no embedded credentials, so keep their identity.
+    return trimmed;
   }
 }
 
+// Project workspaces are only "unconfigured" when they're the primary workspace on a
+// local_path source with no remote declared — a project owner must still pick a target.
+// Non-primary local_path workspaces without a remote are treated as artifact-only, since
+// they're expected to hold generated/derived content rather than an authoritative checkout.
 function targetForProjectWorkspace(workspace: ProjectWorkspace): WorkspaceTargetProvenance {
   const hasRemote = Boolean(workspace.repoUrl || workspace.remoteWorkspaceRef);
   const hasRepository = workspace.sourceType === "git_repo" || (workspace.sourceType === "local_path" && hasRemote);
@@ -73,7 +83,23 @@ function targetForProjectWorkspace(workspace: ProjectWorkspace): WorkspaceTarget
   };
 }
 
-function targetForExecutionWorkspace(workspace: ExecutionWorkspace, repairHref: string): WorkspaceTargetProvenance {
+export type ExecutionWorkspaceTargetSource = Pick<
+  ExecutionWorkspace,
+  "strategyType" | "repoUrl" | "cwd" | "providerType" | "providerRef"
+>;
+
+// Execution workspaces derive "repository" from strategyType alone for git_worktree (the
+// worktree checkout root itself proves the target), but non-worktree strategies (e.g.
+// project_primary, cloud_sandbox) still need a repository/provider ref check because they
+// can be backed by a repo checkout without using the worktree strategy. adapter_managed
+// providers are "remote_operator" targets even without a repoUrl, since the operator/sandbox
+// reference is the authoritative identity. Anything left without a repo, provider ref, or
+// cwd is genuinely unconfigured; everything else with neither a repo nor an operator ref but
+// with a cwd is treated as artifact-only (content exists, but it's not a tracked checkout).
+export function targetForExecutionWorkspace(
+  workspace: ExecutionWorkspaceTargetSource,
+  repairHref: string,
+): WorkspaceTargetProvenance {
   const hasRepository = workspace.strategyType === "git_worktree" || Boolean(workspace.repoUrl);
   return {
     kind: hasRepository ? "repository" : workspace.providerType === "adapter_managed" ? "remote_operator" : "artifact_only",

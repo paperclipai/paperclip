@@ -9,7 +9,7 @@ import { ProjectWorkspacesContent } from "../components/ProjectWorkspacesContent
 import { PageSkeleton } from "../components/PageSkeleton";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useCompany } from "../context/CompanyContext";
-import type { ProjectWorkspaceSummary, WorkspaceTargetProvenance } from "../lib/project-workspaces-tab";
+import { targetForExecutionWorkspace, type ProjectWorkspaceSummary } from "../lib/project-workspaces-tab";
 import { queryKeys } from "../lib/queryKeys";
 import { projectRouteRef } from "../lib/utils";
 
@@ -23,16 +23,14 @@ type ProjectWorkspaceGroup = {
 };
 
 function overviewItemToSummary(item: WorkspaceOverviewItem): ProjectWorkspaceSummary {
-  const target: WorkspaceTargetProvenance = {
-    kind: item.strategyType === "git_worktree" ? "repository" : "artifact_only",
-    authoritativePath: null,
-    checkoutRoot: item.cwd,
-    deliveryMethod: item.strategyType === "git_worktree" ? "repository checkout" : "artifact-only",
-    fingerprint: null,
-    lastAttestation: null,
-    configurationIncomplete: false,
-    repairHref: `/execution-workspaces/${item.executionWorkspaceId}/configuration`,
-  };
+  // The cross-project overview only ever lists execution workspaces (kind is always
+  // "execution_workspace"), and the server now carries the same repoUrl/providerType/
+  // providerRef fields as the single-project ExecutionWorkspace shape, so provenance is
+  // derived with the same rules instead of guessing from strategyType alone.
+  const target = targetForExecutionWorkspace(
+    item,
+    `/execution-workspaces/${item.executionWorkspaceId}/configuration`,
+  );
   return {
     key: item.key,
     kind: item.kind,
