@@ -283,6 +283,12 @@ export type {
 } from "./document-annotation.js";
 export type { Project, ProjectBudgetSummary, ProjectCodebase, ProjectCodebaseOrigin, ProjectGoalRef, ProjectManagedByPlugin, ProjectWorkspace } from "./project.js";
 export type {
+  Channel,
+  ChannelMember,
+  ChannelMessage,
+  ChannelPresenceAgent,
+} from "./channel.js";
+export type {
   CompanySearchCountType,
   CompanySearchExtractIssueResult,
   CompanySearchExtractKind,

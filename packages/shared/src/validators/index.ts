@@ -331,6 +331,25 @@ export {
 } from "./agent.js";
 
 export {
+  createChannelSchema,
+  createDmChannelSchema,
+  updateChannelSchema,
+  postChannelMessageSchema,
+  createIssueFromChannelMessageSchema,
+  markChannelReadSchema,
+  updateChannelMemberSchema,
+  updateCompanyChannelsSchema,
+  type CreateChannel,
+  type CreateDmChannel,
+  type UpdateChannel,
+  type PostChannelMessage,
+  type CreateIssueFromChannelMessage,
+  type MarkChannelRead,
+  type UpdateChannelMember,
+  type UpdateCompanyChannels,
+} from "./channel.js";
+
+export {
   createProjectSchema,
   updateProjectSchema,
   createProjectWorkspaceSchema,

@@ -59,6 +59,16 @@ export {
   type ExternalObjectResolverSnapshot,
 } from "./external-objects.js";
 export { goalService } from "./goals.js";
+export {
+  channelService,
+  dmFingerprint,
+  extractMentionTokens,
+  slugifyChannelName,
+  type ChannelActor,
+  type ChannelServiceOptions,
+  type ChannelWithMembership,
+  type PostChannelMessageInput,
+} from "./channels.js";
 export { activityService, type ActivityFilters } from "./activity.js";
 export { workTimelineService, normalizeTimelineWindow } from "./work-timeline.js";
 export { attentionService } from "./attention.js";

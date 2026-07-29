@@ -38,6 +38,8 @@ import { environmentService } from "./environments.js";
 import { heartbeatService } from "./heartbeat.js";
 import { logActivity } from "./activity-log.js";
 import { builtInAgentService } from "./built-in-agents.js";
+import { channelService } from "./channels.js";
+import { logger } from "../middleware/logger.js";
 
 export interface CompanyActivityActor {
   actorType: "user" | "agent" | "system" | "plugin";
@@ -144,6 +146,7 @@ export function companyService(db: Db) {
     feedbackDataSharingConsentByUserId: companies.feedbackDataSharingConsentByUserId,
     feedbackDataSharingTermsVersion: companies.feedbackDataSharingTermsVersion,
     brandColor: companies.brandColor,
+    channelsEnabled: companies.channelsEnabled,
     logoAssetId: companyLogos.assetId,
     createdAt: companies.createdAt,
     updatedAt: companies.updatedAt,
@@ -267,9 +270,20 @@ export function companyService(db: Db) {
     },
 
     create: async (data: typeof companies.$inferInsert) => {
-      const created = await createCompanyWithUniquePrefix(data);
+      // New companies ship with channels on; existing companies opt in.
+      const created = await createCompanyWithUniquePrefix({
+        ...data,
+        channelsEnabled: data.channelsEnabled ?? true,
+      });
       await environmentsSvc.ensureLocalEnvironment(created.id);
       await builtInAgents.autoProvisionBundledAgents(created.id);
+      if (created.channelsEnabled) {
+        try {
+          await channelService(db).ensureGeneralChannel(created.id);
+        } catch (error) {
+          logger.warn({ err: error, companyId: created.id }, "failed to create general channel");
+        }
+      }
       const row = await getCompanyQuery(db)
         .where(eq(companies.id, created.id))
         .then((rows) => rows[0] ?? null);

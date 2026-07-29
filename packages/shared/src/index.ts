@@ -278,6 +278,11 @@ export {
   WAKEUP_TRIGGER_DETAILS,
   WAKEUP_REQUEST_STATUSES,
   LIVE_EVENT_TYPES,
+  CHANNEL_KINDS,
+  CHANNEL_MEMBER_ROLES,
+  CHANNEL_MESSAGE_TYPES,
+  CHANNEL_CARD_KINDS,
+  CHANNEL_WORK_MODES,
   PRINCIPAL_TYPES,
   MEMBERSHIP_STATUSES,
   COMPANY_MEMBERSHIP_ROLES,
@@ -458,6 +463,11 @@ export {
   type WakeupTriggerDetail,
   type WakeupRequestStatus,
   type LiveEventType,
+  type ChannelKind,
+  type ChannelMemberRole,
+  type ChannelMessageType,
+  type ChannelCardKind,
+  type ChannelWorkMode,
   type PrincipalType,
   type MembershipStatus,
   type CompanyMembershipRole,
@@ -2218,4 +2228,29 @@ export {
   type CreateEnvironmentCustomImageTerminalSessionToken,
   type EnvironmentCustomImageTerminalSessionToken,
 } from "./validators/environment-custom-images.js";
+
+export type {
+  Channel,
+  ChannelMember,
+  ChannelMessage,
+  ChannelPresenceAgent,
+} from "./types/channel.js";
+export {
+  createChannelSchema,
+  createDmChannelSchema,
+  updateChannelSchema,
+  postChannelMessageSchema,
+  createIssueFromChannelMessageSchema,
+  markChannelReadSchema,
+  updateChannelMemberSchema,
+  updateCompanyChannelsSchema,
+  type CreateChannel,
+  type CreateDmChannel,
+  type UpdateChannel,
+  type PostChannelMessage,
+  type CreateIssueFromChannelMessage,
+  type MarkChannelRead,
+  type UpdateChannelMember,
+  type UpdateCompanyChannels,
+} from "./validators/channel.js";
 export * from "./validators/skill-policy.js";

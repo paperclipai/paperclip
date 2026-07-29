@@ -32,6 +32,8 @@ import { listCurrentRuntimeServicesForProjectWorkspaces } from "./workspace-runt
 import { parseProjectExecutionWorkspacePolicy } from "./execution-workspace-policy.js";
 import { mergeProjectWorkspaceRuntimeConfig, readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
 import { resolveManagedProjectWorkspaceDir } from "../home-paths.js";
+import { channelService } from "./channels.js";
+import { logger } from "../middleware/logger.js";
 
 type ProjectRow = typeof projects.$inferSelect;
 type ProjectWorkspaceRow = typeof projectWorkspaces.$inferSelect;
@@ -540,6 +542,26 @@ async function ensureSinglePrimaryWorkspace(
     );
 }
 
+/**
+ * Project = channel. Channels are created eagerly with the project so the
+ * conversation surface exists before any task is materialized into it.
+ */
+async function ensureChannelForNewProject(
+  db: Db,
+  companyId: string,
+  projectId: string,
+  projectName: string,
+) {
+  try {
+    const channels = channelService(db);
+    if (!(await channels.channelsEnabled(companyId))) return;
+    await channels.ensureProjectChannel(companyId, projectId, projectName);
+  } catch (error) {
+    // Channels are an additive collaboration layer; never fail project creation on them.
+    logger.warn({ err: error, companyId, projectId }, "failed to create project channel");
+  }
+}
+
 export function projectService(db: Db) {
   const createProject = async (
     companyId: string,
@@ -569,6 +591,8 @@ export function projectService(db: Db) {
     if (ids && ids.length > 0) {
       await syncGoalLinks(db, row.id, companyId, ids);
     }
+
+    await ensureChannelForNewProject(db, companyId, row.id, row.name);
 
     const [withGoals] = await attachGoals(db, [row]);
     const [enriched] = withGoals ? await attachWorkspaces(db, [withGoals]) : [];

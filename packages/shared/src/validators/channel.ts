@@ -1,13 +1,12 @@
 import { z } from "zod";
 import {
   CHANNEL_CARD_KINDS,
-  CHANNEL_KINDS,
   CHANNEL_WORK_MODES,
   PRINCIPAL_TYPES,
 } from "../constants.js";
 
 export const createChannelSchema = z.object({
-  kind: z.enum(CHANNEL_KINDS).exclude(["dm", "group_dm", "project"]),
+  kind: z.enum(["public", "private"]),
   name: z.string().min(1).max(80),
   topic: z.string().max(500).nullable().optional(),
   slug: z
