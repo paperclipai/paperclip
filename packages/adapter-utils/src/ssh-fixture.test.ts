@@ -197,6 +197,9 @@ describe("ssh env-lab fixture", () => {
     expect(remoteScript).toContain(".profile");
     expect(remoteScript).toContain(".bash_profile");
     expect(remoteScript).toContain(".zprofile");
+    // Fall back to .bashrc when no .bash_profile exists, so a host that adds
+    // nvm in .bashrc still resolves node under a non-login SSH command.
+    expect(remoteScript).toContain(".bashrc");
     // The last ssh argument wraps the script as `sh -c '...'`, so the inner
     // quotes are escaped. Assert the command still runs: cd, env, and the argv.
     expect(remoteScript).toContain("cd ");
