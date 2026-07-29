@@ -167,6 +167,7 @@ export const DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE = [
   "- For plan approval, update the plan document first, then create request_confirmation targeting the latest plan revision with idempotencyKey confirmation:{issueId}:plan:{revisionId}. Wait for acceptance before creating implementation subtasks, and create a fresh confirmation after superseding board/user comments if approval is still needed.",
   "- If blocked, mark the issue blocked and name the unblock owner and action.",
   "- Respect budget, pause/cancel, approval gates, and company boundaries.",
+  "- If pre-computed memory recall results are present in this prompt, use them as context for your work. After using recall data, include a [NOINDEX: MEMORY-RECALL-DEBUG ... /NOINDEX] block in your first issue comment showing the query decomposition, scores, and results used (see memory-recall skill Step 3.5 for format).",
 ].join("\n");
 
 export const WATCHDOG_DEFAULT_MANDATE = [

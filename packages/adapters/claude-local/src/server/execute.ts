@@ -1,6 +1,8 @@
+import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
 import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
 import type { RunProcessResult } from "@paperclipai/adapter-utils/server-utils";
 import {
@@ -42,6 +44,7 @@ import {
   renderTemplate,
   renderPaperclipWakePrompt,
   isPaperclipRecoveryWakePayload,
+  normalizePaperclipWakePayload,
   rewriteWorkspaceCwdEnvVarsForExecution,
   shapePaperclipWorkspaceEnvForExecution,
   stringifyPaperclipWakePayload,
@@ -155,6 +158,56 @@ function isBedrockAuth(env: Record<string, string>): boolean {
 function resolveClaudeBillingType(env: Record<string, string>): "api" | "subscription" | "metered_api" {
   if (isBedrockAuth(env)) return "metered_api";
   return hasNonEmptyEnvValue(env, "ANTHROPIC_API_KEY") ? "api" : "subscription";
+}
+
+const execFileAsync = promisify(execFile);
+
+const PRECOMPUTED_RECALL_TIMEOUT_MS = 10_000;
+const PRECOMPUTED_RECALL_MAX_RESULTS = 5;
+
+async function precomputeMemoryRecall(input: {
+  issueTitle: string;
+  issueIdentifier: string | null;
+  onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+}): Promise<string> {
+  const { issueTitle, issueIdentifier, onLog } = input;
+  const keywords = issueTitle.replace(/[^\w\sáčďéěíňóřšťúůýžÁČĎÉĚÍŇÓŘŠŤÚŮÝŽ-]/g, " ").trim();
+  const query = [
+    `lex: ${keywords}`,
+    `vec: ${issueTitle}`,
+    `hyde: Informace relevantní k: ${issueTitle}`,
+  ].join("\n");
+  try {
+    const { stdout } = await execFileAsync("qmd", [
+      "query", query, "-c", "memory-v2",
+      "-n", String(PRECOMPUTED_RECALL_MAX_RESULTS),
+      "--no-rerank", "--no-expand", "--format", "json",
+    ], { timeout: PRECOMPUTED_RECALL_TIMEOUT_MS });
+    const results = JSON.parse(stdout);
+    if (!Array.isArray(results) || results.length === 0) return "";
+    const label = issueIdentifier ? `${issueIdentifier} ${issueTitle}` : issueTitle;
+    const lines = [
+      `Paperclip pre-computed memory recall for "${label}":`,
+      "",
+    ];
+    for (const r of results.slice(0, PRECOMPUTED_RECALL_MAX_RESULTS)) {
+      const snippet = typeof r.snippet === "string"
+        ? r.snippet.replace(/@@ .+? @@\n?/, "").trim().slice(0, 200)
+        : "";
+      lines.push(`- ${r.file ?? "(unknown)"}: ${r.title ?? "(no title)"}`);
+      if (snippet) lines.push(`  ${snippet}`);
+    }
+    lines.push(
+      "",
+      "Use these results as initial context. For deeper recall, invoke /memory-recall with a refined query.",
+      "After using recall data, include a [NOINDEX: MEMORY-RECALL-DEBUG ... /NOINDEX] block in your issue comment per the memory-recall skill Step 3.5.",
+    );
+    return lines.join("\n");
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    await onLog("stderr", `[paperclip] Pre-computed memory recall failed: ${msg}\n`);
+    return "";
+  }
 }
 
 async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<ClaudeRuntimeConfig> {
@@ -800,14 +853,29 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       : "";
   const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, { resumedSession: Boolean(sessionId) });
   const shouldUseResumeDeltaPrompt = Boolean(sessionId) && wakePrompt.length > 0;
-  const renderedPrompt = shouldUseResumeDeltaPrompt || isPaperclipRecoveryWakePayload(context.paperclipWake)
+  const isRecoveryWake = isPaperclipRecoveryWakePayload(context.paperclipWake);
+  const renderedPrompt = shouldUseResumeDeltaPrompt || isRecoveryWake
     ? ""
     : renderTemplate(promptTemplate, templateData);
   const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
   const taskContextNote = asString(context.paperclipTaskMarkdown, "").trim();
+
+  // Pre-compute memory recall for non-routine issues on fresh sessions.
+  let memoryRecallContext = "";
+  const normalizedWake = normalizePaperclipWakePayload(context.paperclipWake);
+  const issueTitle = normalizedWake?.issue?.title ?? null;
+  if (issueTitle && !sessionId && !isRecoveryWake) {
+    memoryRecallContext = await precomputeMemoryRecall({
+      issueTitle,
+      issueIdentifier: normalizedWake?.issue?.identifier ?? null,
+      onLog,
+    });
+  }
+
   const prompt = joinPromptSections([
     renderedBootstrapPrompt,
     wakePrompt,
+    memoryRecallContext,
     sessionHandoffNote,
     taskContextNote,
     renderedPrompt,
@@ -816,6 +884,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     promptChars: prompt.length,
     bootstrapPromptChars: renderedBootstrapPrompt.length,
     wakePromptChars: wakePrompt.length,
+    memoryRecallContextChars: memoryRecallContext.length,
     sessionHandoffChars: sessionHandoffNote.length,
     taskContextChars: taskContextNote.length,
     heartbeatPromptChars: renderedPrompt.length,

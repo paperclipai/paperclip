@@ -46,6 +46,8 @@ import {
   parseObject,
   readPaperclipRuntimeSkillEntries,
   readPaperclipIssueWorkModeFromContext,
+  isPaperclipRecoveryWakePayload,
+  normalizePaperclipWakePayload,
   renderPaperclipWakePrompt,
   renderTemplate,
   resolvePaperclipInstanceRootForAdapter,
@@ -1873,6 +1875,54 @@ function renderApiAccessNote(env: Record<string, string>): string {
   return lines.join("\n");
 }
 
+const PRECOMPUTED_RECALL_TIMEOUT_MS = 10_000;
+const PRECOMPUTED_RECALL_MAX_RESULTS = 5;
+
+async function precomputeMemoryRecall(input: {
+  issueTitle: string;
+  issueIdentifier: string | null;
+  onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+}): Promise<string> {
+  const { issueTitle, issueIdentifier, onLog } = input;
+  const keywords = issueTitle.replace(/[^\w\sáčďéěíňóřšťúůýžÁČĎÉĚÍŇÓŘŠŤÚŮÝŽ-]/g, " ").trim();
+  const query = [
+    `lex: ${keywords}`,
+    `vec: ${issueTitle}`,
+    `hyde: Informace relevantní k: ${issueTitle}`,
+  ].join("\n");
+  try {
+    const { stdout } = await execFileAsync("qmd", [
+      "query", query, "-c", "memory-v2",
+      "-n", String(PRECOMPUTED_RECALL_MAX_RESULTS),
+      "--no-rerank", "--no-expand", "--format", "json",
+    ], { timeout: PRECOMPUTED_RECALL_TIMEOUT_MS });
+    const results = JSON.parse(stdout);
+    if (!Array.isArray(results) || results.length === 0) return "";
+    const label = issueIdentifier ? `${issueIdentifier} ${issueTitle}` : issueTitle;
+    const lines = [
+      `Paperclip pre-computed memory recall for "${label}":`,
+      "",
+    ];
+    for (const r of results.slice(0, PRECOMPUTED_RECALL_MAX_RESULTS)) {
+      const snippet = typeof r.snippet === "string"
+        ? r.snippet.replace(/@@ .+? @@\n?/, "").trim().slice(0, 200)
+        : "";
+      lines.push(`- ${r.file ?? "(unknown)"}: ${r.title ?? "(no title)"}`);
+      if (snippet) lines.push(`  ${snippet}`);
+    }
+    lines.push(
+      "",
+      "Use these results as initial context. For deeper recall, invoke /memory-recall with a refined query.",
+      "After using recall data, include a [NOINDEX: MEMORY-RECALL-DEBUG ... /NOINDEX] block in your issue comment per the memory-recall skill Step 3.5.",
+    );
+    return lines.join("\n");
+  } catch (err: unknown) {
+    const msg = err instanceof Error ? err.message : String(err);
+    await onLog("stderr", `[paperclip] Pre-computed memory recall failed: ${msg}\n`);
+    return "";
+  }
+}
+
 async function buildPrompt(ctx: AdapterExecutionContext, resumedSession: boolean, env: Record<string, string>): Promise<{
   prompt: string;
   promptMetrics: Record<string, number>;
@@ -1921,16 +1971,30 @@ async function buildPrompt(ctx: AdapterExecutionContext, resumedSession: boolean
       : "";
   const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, { resumedSession });
   const shouldUseResumeDeltaPrompt = resumedSession && wakePrompt.length > 0;
+  const isRecoveryWake = isPaperclipRecoveryWakePayload(context.paperclipWake);
   const promptInstructionsPrefix = shouldUseResumeDeltaPrompt ? "" : instructionsPrefix;
   const renderedPrompt = shouldUseResumeDeltaPrompt ? "" : renderTemplate(promptTemplate, templateData);
   const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
   const taskContextNote = asString(context.paperclipTaskMarkdown, "").trim();
   const paperclipEnvNote = renderPaperclipEnvNote(env);
   const apiAccessNote = renderApiAccessNote(env);
+
+  let memoryRecallContext = "";
+  const normalizedWake = normalizePaperclipWakePayload(context.paperclipWake);
+  const issueTitle = normalizedWake?.issue?.title ?? null;
+  if (issueTitle && !resumedSession && !isRecoveryWake) {
+    memoryRecallContext = await precomputeMemoryRecall({
+      issueTitle,
+      issueIdentifier: normalizedWake?.issue?.identifier ?? null,
+      onLog,
+    });
+  }
+
   const prompt = joinPromptSections([
     promptInstructionsPrefix,
     renderedBootstrapPrompt,
     wakePrompt,
+    memoryRecallContext,
     sessionHandoffNote,
     taskContextNote,
     paperclipEnvNote,
@@ -1946,6 +2010,7 @@ async function buildPrompt(ctx: AdapterExecutionContext, resumedSession: boolean
       instructionsChars: promptInstructionsPrefix.length,
       bootstrapPromptChars: renderedBootstrapPrompt.length,
       wakePromptChars: wakePrompt.length,
+      memoryRecallContextChars: memoryRecallContext.length,
       sessionHandoffChars: sessionHandoffNote.length,
       taskContextChars: taskContextNote.length,
       runtimeNoteChars: paperclipEnvNote.length + apiAccessNote.length,
