@@ -136,7 +136,7 @@ import {
 import type { TaskWatchdogServiceDeps, taskWatchdogService } from "../services/task-watchdogs.js";
 import { logger } from "../middleware/logger.js";
 import { privateJsonEtag } from "../middleware/private-json-etag.js";
-import { memoizePromise, type PromiseMemoEntry } from "../lib/bounded-ttl-promise-memo.js";
+import { createRequestPromiseMemo } from "../lib/request-promise-memo.js";
 import { conflict, forbidden, HttpError, notFound, unauthorized, unprocessable } from "../errors.js";
 import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
 import {
@@ -2619,10 +2619,10 @@ export function issueRoutes(
   const decisionTrainingSvc = decisionTrainingService(db);
   const issueReferencesSvc = issueReferenceService(db);
   const issueThreadInteractionsSvc = issueThreadInteractionService(db);
-  const issueReadMemo = new Map<string, PromiseMemoEntry<Awaited<ReturnType<typeof svc.getById>>>>();
-  const issueReadDecisionMemo = new Map<string, PromiseMemoEntry<Awaited<ReturnType<typeof decideIssueAccess>>>>();
-  const issueReadMemoTtlMs = 100;
-  const issueReadMemoMaxEntries = 1_000;
+  const memoizeIssueRead = createRequestPromiseMemo<Request, Awaited<ReturnType<typeof svc.getById>>>({
+    shouldCache: (issue) => issue !== null,
+  });
+  const memoizeIssueReadDecision = createRequestPromiseMemo<Request, Awaited<ReturnType<typeof decideIssueAccess>>>();
 
   async function buildIssueDetailResponse(req: Request, issue: Awaited<ReturnType<typeof svc.getById>> & {}) {
     const inboxArchiveFieldsPromise = req.actor.type === "board" && req.actor.userId
@@ -2706,32 +2706,9 @@ export function issueRoutes(
     };
   }
 
-  function issueReadActorKey(req: Request) {
-    return JSON.stringify({
-      type: req.actor.type,
-      source: req.actor.source,
-      userId: req.actor.userId ?? null,
-      agentId: req.actor.agentId ?? null,
-      keyId: req.actor.keyId ?? null,
-      keyScope: req.actor.keyScope ?? null,
-      companyId: req.actor.companyId ?? null,
-      companyIds: req.actor.companyIds ?? null,
-      memberships: req.actor.memberships ?? null,
-      isInstanceAdmin: req.actor.isInstanceAdmin ?? null,
-      onBehalfOfUserId: req.actor.onBehalfOfUserId ?? null,
-      onBehalfOfMemberships: req.actor.onBehalfOfMemberships ?? null,
-    });
-  }
-
   function getIssueById(req: Request, id: string) {
     if (req.method !== "GET") return svc.getById(id);
-    return memoizePromise({
-      cache: issueReadMemo,
-      key: `${issueReadActorKey(req)}:${id}`,
-      ttlMs: issueReadMemoTtlMs,
-      maxEntries: issueReadMemoMaxEntries,
-      load: () => svc.getById(id),
-    });
+    return memoizeIssueRead(req, id, () => svc.getById(id));
   }
 
   const issueDetailEtag = privateJsonEtag();
@@ -3580,14 +3557,8 @@ export function issueRoutes(
   }
 
   async function assertIssueReadAllowed(req: Request, res: Response, issue: Parameters<typeof decideIssueAccess>[1]) {
-    const key = `${issueReadActorKey(req)}:${issue.id}:${issue.companyId}:${issue.projectId ?? ""}:${issue.parentId ?? ""}:${issue.assigneeAgentId ?? ""}:${issue.assigneeUserId ?? ""}:${issue.status}`;
-    const value = memoizePromise({
-      cache: issueReadDecisionMemo,
-      key,
-      ttlMs: issueReadMemoTtlMs,
-      maxEntries: issueReadMemoMaxEntries,
-      load: () => decideIssueAccess(req, issue, "issue:read"),
-    });
+    const key = `${issue.id}:${issue.companyId}:${issue.projectId ?? ""}:${issue.parentId ?? ""}:${issue.assigneeAgentId ?? ""}:${issue.assigneeUserId ?? ""}:${issue.status}`;
+    const value = memoizeIssueReadDecision(req, key, () => decideIssueAccess(req, issue, "issue:read"));
     const decision = await value;
     if (decision.allowed) return true;
     res.status(403).json({ error: "Issue is outside this actor's authorization boundary" });
