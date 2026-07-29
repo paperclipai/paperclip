@@ -495,6 +495,38 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
   it("returns null instead of throwing for malformed non-uuid issue refs", async () => {
     await expect(svc.getById("not-a-uuid")).resolves.toBeNull();
   });
+
+  it("redacts issue text before persisting creates, updates, and comments", async () => {
+    const companyId = randomUUID();
+    const inputValue = "test-only-sensitive-value";
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const created = await svc.create(companyId, {
+      title: `Create PAPERCLIP_API_KEY=${inputValue}`,
+      description: `Description OPENAI_API_KEY: ${inputValue}`,
+    });
+    await svc.update(created.id, {
+      title: `Update AUTH_TOKEN=${inputValue}`,
+      description: `Updated password: ${inputValue}`,
+    });
+    const comment = await svc.addComment(created.id, `Comment secret=${inputValue}`, {});
+    const [storedIssue] = await db.select().from(issues).where(eq(issues.id, created.id));
+    const [storedComment] = await db.select().from(issueComments).where(eq(issueComments.id, comment.id));
+
+    expect(storedIssue).toEqual(expect.objectContaining({
+      title: "Update AUTH_TOKEN=***REDACTED***",
+      description: "Updated password: ***REDACTED***",
+    }));
+    expect(storedComment?.body).toBe("Comment secret=***REDACTED***");
+    expect(JSON.stringify({ storedIssue, storedComment })).not.toContain(inputValue);
+  });
+
   it("filters issues by execution workspace id", async () => {
     const companyId = randomUUID();
     const projectId = randomUUID();
