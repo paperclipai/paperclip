@@ -512,24 +512,30 @@ export async function execute(
   // Hermes writes non-error noise to stderr (MCP init, INFO logs, etc).
   // Paperclip renders all stderr as red/error in the UI.
   // Wrap onLog to reclassify benign stderr lines as stdout.
-  const wrappedOnLog = async (stream: "stdout" | "stderr", chunk: string) => {
-    if (stream === "stderr") {
-      const trimmed = chunk.trimEnd();
-      // Benign patterns that should NOT appear as errors:
-      // - Structured log lines: [timestamp] INFO/DEBUG/WARN: ...
-      // - MCP server registration messages
-      // - Python import/site noise
-      const isBenign = /^\[?\d{4}[-/]\d{2}[-/]\d{2}T/.test(trimmed) || // structured timestamps
-        /^[A-Z]+:\s+(INFO|DEBUG|WARN|WARNING)\b/.test(trimmed) || // log levels
-        /Successfully registered all tools/.test(trimmed) ||
-        /MCP [Ss]erver/.test(trimmed) ||
-        /tool registered successfully/.test(trimmed) ||
-        /Application initialized/.test(trimmed);
-      if (isBenign) {
-        return ctx.onLog("stdout", chunk);
+  let adapterLogWrite: Promise<void> = Promise.resolve();
+  const wrappedOnLog = (stream: "stdout" | "stderr", chunk: string) => {
+    const write = adapterLogWrite.then(async () => {
+      if (stream === "stderr") {
+        const trimmed = chunk.trimEnd();
+        // Benign patterns that should NOT appear as errors:
+        // - Structured log lines: [timestamp] INFO/DEBUG/WARN: ...
+        // - MCP server registration messages
+        // - Python import/site noise
+        const isBenign = /^\[?\d{4}[-/]\d{2}[-/]\d{2}T/.test(trimmed) || // structured timestamps
+          /^[A-Z]+:\s+(INFO|DEBUG|WARN|WARNING)\b/.test(trimmed) || // log levels
+          /Successfully registered all tools/.test(trimmed) ||
+          /MCP [Ss]erver/.test(trimmed) ||
+          /tool registered successfully/.test(trimmed) ||
+          /Application initialized/.test(trimmed);
+        if (isBenign) {
+          await ctx.onLog("stdout", chunk);
+          return;
+        }
       }
-    }
-    return ctx.onLog(stream, chunk);
+      await ctx.onLog(stream, chunk);
+    });
+    adapterLogWrite = write.catch(() => undefined);
+    return write;
   };
 
   const quietHeartbeatIntervalMs = 15_000;
@@ -571,6 +577,7 @@ export async function execute(
     quietHeartbeatClosed = true;
     if (quietHeartbeatTimer) clearInterval(quietHeartbeatTimer);
     await quietHeartbeatWrite;
+    await adapterLogWrite;
   }
 
   // ── Parse output ───────────────────────────────────────────────────────
