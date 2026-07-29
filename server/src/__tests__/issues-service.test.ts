@@ -4168,6 +4168,100 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
       childIssueSummaryTruncated: false,
     });
   });
+
+  it("keeps terminal parent status truthful for direct children only", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    const parentId = randomUUID();
+    const openChildId = randomUUID();
+    const terminalChildId = randomUUID();
+    const grandchildId = randomUUID();
+    await db.insert(issues).values([
+      { id: parentId, companyId, identifier: "PAP-200", title: "Parent", status: "todo", priority: "medium" },
+      { id: openChildId, companyId, parentId, identifier: "PAP-201", title: "Open child", status: "blocked", priority: "medium" },
+      { id: terminalChildId, companyId, parentId, identifier: "PAP-202", title: "Terminal child", status: "done", priority: "medium" },
+      { id: grandchildId, companyId, parentId: terminalChildId, title: "Open grandchild", status: "todo", priority: "medium" },
+    ]);
+
+    for (const status of ["done", "cancelled"] as const) {
+      await expect(svc.update(parentId, { status })).rejects.toMatchObject({
+        status: 422,
+        details: expect.objectContaining({
+          code: "parent_has_open_children",
+          requestedStatus: status,
+          blockingChildIssueIds: [openChildId],
+          blockingChildIdentifiers: ["PAP-201"],
+        }),
+      });
+    }
+
+    await svc.update(openChildId, { status: "cancelled" });
+    await expect(svc.update(parentId, { status: "done" })).resolves.toMatchObject({
+      id: parentId,
+      status: "done",
+    });
+
+    const standalone = await svc.create(companyId, { title: "Childless", status: "todo" });
+    await expect(svc.update(standalone.id, { status: "cancelled" })).resolves.toMatchObject({
+      status: "cancelled",
+    });
+  });
+
+  it("rejects reopening or inserting a direct child under a terminal parent", async () => {
+    const companyId = randomUUID();
+    const parentId = randomUUID();
+    const childId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(issues).values([
+      { id: parentId, companyId, title: "Closed parent", status: "done", priority: "medium" },
+      { id: childId, companyId, parentId, title: "Closed child", status: "cancelled", priority: "medium" },
+    ]);
+
+    await expect(svc.update(childId, { status: "todo" })).rejects.toMatchObject({
+      status: 422,
+      details: expect.objectContaining({ code: "parent_has_open_children", issueId: parentId }),
+    });
+    await expect(svc.create(companyId, { parentId, title: "New child", status: "todo" })).rejects.toMatchObject({
+      status: 422,
+      details: expect.objectContaining({ code: "parent_has_open_children", issueId: parentId }),
+    });
+  });
+
+  it("serializes a parent close against a child reopen", async () => {
+    const companyId = randomUUID();
+    const parentId = randomUUID();
+    const childId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(issues).values([
+      { id: parentId, companyId, title: "Parent", status: "todo", priority: "medium" },
+      { id: childId, companyId, parentId, title: "Child", status: "cancelled", priority: "medium" },
+    ]);
+
+    const results = await Promise.allSettled([
+      svc.update(parentId, { status: "done" }),
+      svc.update(childId, { status: "todo" }),
+    ]);
+
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
+    const [parent, child] = await Promise.all([svc.getById(parentId), svc.getById(childId)]);
+    expect(parent?.status === "done" && child?.status !== "done" && child?.status !== "cancelled").toBe(false);
+  });
 });
 
 describeEmbeddedPostgres("issueService.create workspace inheritance", () => {

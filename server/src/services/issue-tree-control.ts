@@ -23,6 +23,10 @@ import {
 } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { finalizeSummarySlotsForTerminalIssue } from "./summary-slot-finalization.js";
+import {
+  assertIssueParentTerminalInvariant,
+  lockIssueParentTerminalInvariant,
+} from "./issue-parent-terminal-guard.js";
 
 type IssueRow = typeof issues.$inferSelect;
 type HoldRow = typeof issueTreeHolds.$inferSelect;
@@ -871,6 +875,8 @@ export function issueTreeControlService(db: Db) {
 
     const now = new Date();
     const updated = await db.transaction(async (tx) => {
+      await lockIssueParentTerminalInvariant(tx, companyId);
+      await assertIssueParentTerminalInvariant(tx, companyId, issueIds.map((id) => ({ id, status: "cancelled" })));
       const rows = await tx
         .update(issues)
         .set({
@@ -971,6 +977,12 @@ export function issueTreeControlService(db: Db) {
     const now = new Date();
     const releasedCancelHoldIds = activeCancelHolds.map((hold) => hold.id);
     const updatedIssues = await db.transaction(async (tx) => {
+      await lockIssueParentTerminalInvariant(tx, restoreHold.companyId);
+      await assertIssueParentTerminalInvariant(
+        tx,
+        restoreHold.companyId,
+        [...restoreStatusByIssueId].map(([id, status]) => ({ id, status })),
+      );
       const restored: TreeStatusUpdateResult["updatedIssues"] = [];
       for (const [status, issueIdsForStatus] of issueIdsByStatus) {
         if (issueIdsForStatus.length === 0) continue;

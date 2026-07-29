@@ -282,7 +282,7 @@ describeEmbeddedPostgres("issueTreeControlService", () => {
         id: rootIssueId,
         companyId,
         title: "Root",
-        status: "done",
+        status: "todo",
         priority: "medium",
         createdAt: new Date("2026-04-21T10:00:00.000Z"),
       },
@@ -322,20 +322,21 @@ describeEmbeddedPostgres("issueTreeControlService", () => {
       actor: { actorType: "user", actorId: "board-user", userId: "board-user" },
     });
     expect(cancel.preview.issues.map((issue) => [issue.id, issue.skipped, issue.skipReason])).toEqual([
-      [rootIssueId, true, "terminal_status"],
+      [rootIssueId, false, null],
       [runningChildId, false, null],
       [todoChildId, false, null],
       [doneChildId, true, "terminal_status"],
     ]);
 
     const cancelled = await svc.cancelIssueStatusesForHold(companyId, rootIssueId, cancel.hold.id);
-    expect(cancelled.updatedIssueIds.sort()).toEqual([runningChildId, todoChildId].sort());
+    expect(cancelled.updatedIssueIds.sort()).toEqual([rootIssueId, runningChildId, todoChildId].sort());
 
     const afterCancel = await db
       .select({ id: issues.id, status: issues.status })
       .from(issues)
-      .where(inArray(issues.id, [runningChildId, todoChildId, doneChildId]));
+      .where(inArray(issues.id, [rootIssueId, runningChildId, todoChildId, doneChildId]));
     expect(Object.fromEntries(afterCancel.map((issue) => [issue.id, issue.status]))).toMatchObject({
+      [rootIssueId]: "cancelled",
       [runningChildId]: "cancelled",
       [todoChildId]: "cancelled",
       [doneChildId]: "done",
@@ -348,7 +349,7 @@ describeEmbeddedPostgres("issueTreeControlService", () => {
 
     const restorePreview = await svc.preview(companyId, rootIssueId, { mode: "restore" });
     expect(restorePreview.issues.map((issue) => [issue.id, issue.skipped, issue.skipReason])).toEqual([
-      [rootIssueId, true, "not_cancelled"],
+      [rootIssueId, false, null],
       [runningChildId, false, null],
       [todoChildId, true, "changed_after_cancel"],
       [doneChildId, true, "not_cancelled"],
@@ -364,13 +365,14 @@ describeEmbeddedPostgres("issueTreeControlService", () => {
       reason: "resume useful work",
       actor: { actorType: "user", actorId: "board-user", userId: "board-user" },
     });
-    expect(restored.updatedIssueIds).toEqual([runningChildId]);
+    expect(restored.updatedIssueIds.sort()).toEqual([rootIssueId, runningChildId].sort());
 
     const afterRestore = await db
       .select({ id: issues.id, status: issues.status, checkoutRunId: issues.checkoutRunId, executionRunId: issues.executionRunId })
       .from(issues)
-      .where(inArray(issues.id, [runningChildId, todoChildId, doneChildId]));
+      .where(inArray(issues.id, [rootIssueId, runningChildId, todoChildId, doneChildId]));
     expect(Object.fromEntries(afterRestore.map((issue) => [issue.id, issue.status]))).toMatchObject({
+      [rootIssueId]: "todo",
       [runningChildId]: "todo",
       [todoChildId]: "blocked",
       [doneChildId]: "done",

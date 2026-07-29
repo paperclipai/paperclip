@@ -110,6 +110,11 @@ import { visibleIssueCondition } from "./issue-visibility.js";
 import { finalizeStatusCardsForStalledGeneration } from "./status-card-finalization.js";
 import { finalizeSummarySlotsForTerminalIssue } from "./summary-slot-finalization.js";
 import { logActivity } from "./activity-log.js";
+import {
+  assertIssueParentTerminalInvariant,
+  isTerminalIssueStatus,
+  lockIssueParentTerminalInvariant,
+} from "./issue-parent-terminal-guard.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
@@ -6503,6 +6508,15 @@ export function issueService(db: Db) {
           issueNumber,
           identifier,
         } as typeof issues.$inferInsert;
+        if (values.parentId || isTerminalIssueStatus(values.status ?? "backlog")) {
+          await lockIssueParentTerminalInvariant(tx, companyId);
+          await assertIssueParentTerminalInvariant(tx, companyId, [{
+            parentId: values.parentId ?? null,
+            status: values.status ?? "backlog",
+            identifier: values.identifier ?? null,
+            title: values.title,
+          }]);
+        }
         if (values.status === "in_progress" && !values.startedAt) {
           values.startedAt = new Date();
         }
@@ -6719,6 +6733,14 @@ export function issueService(db: Db) {
       }
 
       const runUpdate = async (tx: any) => {
+        if (issueData.parentId !== undefined || issueData.status !== undefined) {
+          await lockIssueParentTerminalInvariant(tx, existing.companyId);
+          await assertIssueParentTerminalInvariant(tx, existing.companyId, [{
+            id,
+            ...(issueData.parentId !== undefined ? { parentId: issueData.parentId } : {}),
+            ...(issueData.status !== undefined ? { status: issueData.status } : {}),
+          }]);
+        }
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, existing.companyId);
         const [currentProjectGoalId, nextProjectGoalId] = await Promise.all([
           getProjectDefaultGoalId(tx, existing.companyId, existing.projectId),
