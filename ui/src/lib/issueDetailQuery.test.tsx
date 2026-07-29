@@ -108,6 +108,10 @@ describe("getIssueDetailQueryOptions", () => {
     }));
 
     const pending = fetchIssueDetail(queryClient, "PAP-1442", { signal: new AbortController().signal });
+    queryClient.setQueryData(
+      queryKeys.issues.detail("PAP-1442"),
+      makeIssue({ executionRunId: "socket-run" }),
+    );
     queryClient.setQueryData(queryKeys.issues.interactions("PAP-1442"), [{ id: "socket-update" }]);
     resolveView({
       detail: issue,
@@ -123,6 +127,8 @@ describe("getIssueDetailQueryOptions", () => {
 
     await pending;
 
+    expect(queryClient.getQueryData<Issue>(queryKeys.issues.detail("PAP-1442"))?.executionRunId).toBe("socket-run");
+    expect(queryClient.getQueryData<Issue>(queryKeys.issues.detail("issue-1"))?.executionRunId).toBe("socket-run");
     expect(queryClient.getQueryData(queryKeys.issues.interactions("PAP-1442"))).toEqual([
       { id: "socket-update" },
     ]);

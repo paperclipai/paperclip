@@ -118,9 +118,31 @@ export async function fetchIssueDetail(
   options?: { signal?: AbortSignal },
 ): Promise<Issue> {
   const requestedAt = Date.now();
+  const cachedIssueBeforeRequest = getCachedIssueDetail(queryClient, issueRef);
+  const detailRefsBeforeRequest = collectIssueRefs(issueRef, cachedIssueBeforeRequest);
+  const detailStateBeforeRequest = new Map(detailRefsBeforeRequest.map((ref) => {
+    const queryKey = queryKeys.issues.detail(ref);
+    return [ref, {
+      data: queryClient.getQueryData<Issue>(queryKey),
+      dataUpdatedAt: queryClient.getQueryState(queryKey)?.dataUpdatedAt ?? 0,
+    }] as const;
+  }));
   const view = options ? await issuesApi.getView(issueRef, options) : await issuesApi.getView(issueRef);
-  const issue = seedIssueDetailCache(queryClient, view.detail, { issueRef });
-  const refs = collectIssueRefs(issueRef, issue);
+  const refs = collectIssueRefs(issueRef, view.detail);
+  const freshestLiveIssue = refs
+    .map((ref) => {
+      const queryKey = queryKeys.issues.detail(ref);
+      const data = queryClient.getQueryData<Issue>(queryKey);
+      const dataUpdatedAt = queryClient.getQueryState(queryKey)?.dataUpdatedAt ?? 0;
+      const before = detailStateBeforeRequest.get(ref);
+      const changedDuringRequest = data !== before?.data || dataUpdatedAt !== (before?.dataUpdatedAt ?? 0);
+      return isCompleteIssueSnapshot(data) && changedDuringRequest && dataUpdatedAt >= requestedAt
+        ? { data, dataUpdatedAt }
+        : null;
+    })
+    .filter((entry): entry is { data: Issue; dataUpdatedAt: number } => entry !== null)
+    .sort((left, right) => right.dataUpdatedAt - left.dataUpdatedAt)[0]?.data;
+  const issue = seedIssueDetailCache(queryClient, freshestLiveIssue ?? view.detail, { issueRef });
   const hydrateIfNotUpdatedDuringRequest = <T>(queryKey: readonly unknown[], value: T) => {
     if ((queryClient.getQueryState(queryKey)?.dataUpdatedAt ?? 0) >= requestedAt) return;
     queryClient.setQueryData(queryKey, value);
