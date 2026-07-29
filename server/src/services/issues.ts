@@ -7535,12 +7535,15 @@ export function issueService(db: Db) {
         // that existing issue idempotently instead of inserting a duplicate.
         // Scoped tightly (manual-only, same creator, same parent, exact title,
         // short window, active source) so legitimate re-creates are never lost.
+        // An explicit allowDuplicate=true bypasses this guard too — the
+        // documented contract of that flag is "duplicates are intended".
         const MANUAL_DUPLICATE_WINDOW_MS = 120_000;
         const resolvedOriginKind = issueData.originKind ?? "manual";
         const dedupeTitle = typeof issueData.title === "string" ? issueData.title : null;
         const dedupeCreatorAgentId = issueData.createdByAgentId ?? null;
         const dedupeCreatorUserId = issueData.createdByUserId ?? null;
         if (
+          allowDuplicate !== true &&
           resolvedOriginKind === "manual" &&
           dedupeTitle &&
           dedupeTitle.trim().length > 0 &&
