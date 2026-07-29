@@ -2272,10 +2272,19 @@ export type ResolvedWorkspaceForRun = {
    * workspace only, exactly as before.
    */
   additionalWorkspaces: ResolvedAdditionalWorkspace[];
+  /**
+   * Structured record of every referenced project that the run dropped or failed, paired with the
+   * layer that dropped it. Run preparation reads this to emit the requested-vs-synced observability
+   * log. The human-readable form of each drop already rides {@link ResolvedWorkspaceForRun.warnings}.
+   */
+  referencedProjectFailures: ReferencedProjectFailure[];
 };
 
 /** The anchor workspace shape, before the additional referenced workspaces are attached. */
-type ResolvedAnchorWorkspaceForRun = Omit<ResolvedWorkspaceForRun, "additionalWorkspaces">;
+type ResolvedAnchorWorkspaceForRun = Omit<
+  ResolvedWorkspaceForRun,
+  "additionalWorkspaces" | "referencedProjectFailures"
+>;
 
 /**
  * Build the plural workspace list that a run exposes to the agent through the
@@ -2319,17 +2328,40 @@ export function prioritizeProjectWorkspaceCandidatesForRun<T extends ProjectWork
 }
 
 /**
- * Environment flag (kill-switch, default OFF) that gates whether run preparation
+ * Environment flag (kill-switch, default ON) that gates whether run preparation
  * consumes the multi-project referenced-project set produced by
- * {@link resolveRunReferencedProjects}. While unset/off, a run materializes only the
- * anchor project's workspace exactly as before — the referenced set is inert.
+ * {@link resolveRunReferencedProjects}. The feature is live by default: an unset
+ * value resolves ON. An operator disables the feature with an explicit false
+ * value (`"false"`, `"0"`, `"off"`, or `""`). While off, a run materializes only
+ * the anchor project's workspace exactly as before — the referenced set is inert.
  */
 export const MULTI_PROJECT_WORKSPACE_SYNC_ENV = "PAPERCLIP_MULTI_PROJECT_WORKSPACE_SYNC";
+
+/**
+ * True when an environment value explicitly turns a flag off. An unset value is
+ * not false — the caller decides the unset default. This is the inverse of
+ * {@link isTruthyRuntimeEnvValue} for the kill-switch words plus the empty string.
+ */
+function isFalsyRuntimeEnvValue(value: string | undefined): boolean {
+  if (value === undefined) {
+    return false;
+  }
+  const normalized = value.trim().toLowerCase();
+  return (
+    normalized === "" ||
+    normalized === "false" ||
+    normalized === "0" ||
+    normalized === "off" ||
+    normalized === "no"
+  );
+}
 
 export function isMultiProjectWorkspaceSyncEnabled(
   env: Record<string, string | undefined> = process.env,
 ): boolean {
-  return isTruthyRuntimeEnvValue(env[MULTI_PROJECT_WORKSPACE_SYNC_ENV]);
+  // Default ON: an unset value is not false, so the feature is live unless an
+  // operator sets an explicit false value as the kill switch (rollback path).
+  return !isFalsyRuntimeEnvValue(env[MULTI_PROJECT_WORKSPACE_SYNC_ENV]);
 }
 
 /**
@@ -2374,6 +2406,23 @@ export interface RunReferencedProject {
   project: RunReferencedProjectRecord;
 }
 
+/**
+ * The layer that dropped or failed a referenced project. The run surfacing and the
+ * observability log both use these values as the per-failure reason:
+ * - `authorization`: the run actor is not authorized to read the project.
+ * - `resolution`: the project could not be brought into the run locally (unknown or
+ *   unavailable project, cap exceeded, or a workspace clone/prepare failure).
+ * - `staging`: the project resolved but failed to stage into the run sandbox (the
+ *   downstream remote path; see `sandbox-managed-runtime`).
+ */
+export type ReferencedProjectFailureReason = "authorization" | "resolution" | "staging";
+
+/** One referenced project that a run dropped or failed, with the layer that caused it. */
+export interface ReferencedProjectFailure {
+  projectId: string;
+  reason: ReferencedProjectFailureReason;
+}
+
 export interface ResolvedRunReferencedProjects {
   /** The anchor (primary) project — retains the existing git-worktree run path; never re-authorized here. */
   anchor: RunReferencedProject | null;
@@ -2381,6 +2430,8 @@ export interface ResolvedRunReferencedProjects {
   additional: RunReferencedProject[];
   /** Human-readable warnings for every referenced project that was dropped (unavailable, unauthorized, or capped). */
   warnings: string[];
+  /** Structured record of every dropped referenced project, paired with the layer that dropped it. */
+  failures: ReferencedProjectFailure[];
 }
 
 export interface ResolveRunReferencedProjectsOptions {
@@ -2430,6 +2481,7 @@ export async function resolveRunReferencedProjects(
 ): Promise<ResolvedRunReferencedProjects> {
   const { companyId, actor, issues, projects, access } = opts;
   const warnings: string[] = [];
+  const failures: ReferencedProjectFailure[] = [];
   const cap = Math.max(0, opts.maxAdditionalProjects ?? MAX_RUN_REFERENCED_ADDITIONAL_PROJECTS);
   // The evaluation cap bounds candidate hydration + authorization fan-out. It is always at least the
   // admitted cap so the admitted cap stays reachable in the normal (non-flood) case.
@@ -2485,6 +2537,7 @@ export async function resolveRunReferencedProjects(
       const project = byId.get(projectId);
       if (!project) {
         warnings.push(`Referenced project ${projectId} was skipped because it is not available in this company.`);
+        failures.push({ projectId, reason: "resolution" });
         continue;
       }
       availableCandidates.push({ projectId, project });
@@ -2538,6 +2591,7 @@ export async function resolveRunReferencedProjects(
 
     if (!allowed) {
       warnings.push(`Referenced project ${projectId} was skipped because it is not authorized for this run.`);
+      failures.push({ projectId, reason: "authorization" });
       continue;
     }
 
@@ -2560,7 +2614,20 @@ export async function resolveRunReferencedProjects(
     );
   }
 
-  return { anchor, additional, warnings };
+  // Record every capped or unevaluated candidate as a per-project resolution failure so the run
+  // surfacing and the observability log can reconcile requested against synced. The evaluated
+  // candidates past the admitted cap carry a known projectId; the candidates the fan-out cap
+  // dropped before hydration carry their id from the ordered mention set.
+  if (capReachedAtIndex !== null) {
+    for (let index = capReachedAtIndex; index < candidates.length; index++) {
+      failures.push({ projectId: candidates[index]!.projectId, reason: "resolution" });
+    }
+  }
+  for (const projectId of allCandidateIds.slice(hydrationCursor)) {
+    failures.push({ projectId, reason: "resolution" });
+  }
+
+  return { anchor, additional, warnings, failures };
 }
 
 export interface ResolveAdditionalRunWorkspacesOptions {
@@ -2599,9 +2666,13 @@ export async function resolveAdditionalRunWorkspaces(
   issueId: string | null,
   anchorProjectId: string | null,
   opts: ResolveAdditionalRunWorkspacesOptions,
-): Promise<{ additionalWorkspaces: ResolvedAdditionalWorkspace[]; warnings: string[] }> {
+): Promise<{
+  additionalWorkspaces: ResolvedAdditionalWorkspace[];
+  warnings: string[];
+  failures: ReferencedProjectFailure[];
+}> {
   if (!opts.enabled || !issueId) {
-    return { additionalWorkspaces: [], warnings: [] };
+    return { additionalWorkspaces: [], warnings: [], failures: [] };
   }
 
   // A referenced project realizes as a local directory only. A remote execution target (ssh,
@@ -2623,6 +2694,9 @@ export async function resolveAdditionalRunWorkspaces(
             "Referenced-project workspaces are available only on a local execution target. This run uses a remote execution target, so no referenced-project workspace was attached.",
           ]
         : [],
+      // The remote-skip notice is a general warning, not a per-project failure: the run drops the
+      // whole referenced set by design on a remote target, so it names no single project here.
+      failures: [],
     };
   }
 
@@ -2638,6 +2712,7 @@ export async function resolveAdditionalRunWorkspaces(
 
   const additionalWorkspaces: ResolvedAdditionalWorkspace[] = [];
   const warnings = [...referenced.warnings];
+  const failures = [...referenced.failures];
   for (const project of referenced.additional) {
     try {
       additionalWorkspaces.push(await opts.resolveProjectWorkspace(project));
@@ -2646,10 +2721,44 @@ export async function resolveAdditionalRunWorkspaces(
       warnings.push(
         `Referenced project ${project.projectId} was skipped because its workspace could not be prepared: ${reason}`,
       );
+      failures.push({ projectId: project.projectId, reason: "resolution" });
     }
   }
 
-  return { additionalWorkspaces, warnings };
+  return { additionalWorkspaces, warnings, failures };
+}
+
+/** Structured fields for the one requested-vs-synced observability log a run emits at run prep. */
+export interface ReferencedProjectRunObservability {
+  referenced_projects_requested: number;
+  referenced_projects_synced: number;
+  referenced_project_failures: Array<{
+    project_id: string;
+    reason: ReferencedProjectFailureReason;
+  }>;
+}
+
+/**
+ * Build the requested-vs-synced observability fields for a run's referenced-project set.
+ *
+ * A run requests one referenced project per authorized mention and syncs the projects that resolve.
+ * The requested count is the synced count plus every dropped project, so the two counts and the
+ * per-failure reasons together account for the whole referenced set. The human-readable warning for
+ * each drop rides the run's surfaced warnings channel; this function produces only the structured
+ * log fields, so a run emits exactly one line with a stable field shape.
+ */
+export function buildReferencedProjectRunObservability(input: {
+  syncedProjectIds: readonly string[];
+  failures: readonly ReferencedProjectFailure[];
+}): ReferencedProjectRunObservability {
+  return {
+    referenced_projects_requested: input.syncedProjectIds.length + input.failures.length,
+    referenced_projects_synced: input.syncedProjectIds.length,
+    referenced_project_failures: input.failures.map((failure) => ({
+      project_id: failure.projectId,
+      reason: failure.reason,
+    })),
+  };
 }
 
 function readNonEmptyString(value: unknown): string | null {
@@ -8080,11 +8189,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   ): Promise<ResolvedWorkspaceForRun> {
     const anchor = await resolveAnchorWorkspaceForRun(agent, context, previousSessionParams, opts);
     if (!isMultiProjectWorkspaceSyncEnabled()) {
-      return { ...anchor, additionalWorkspaces: [] };
+      return { ...anchor, additionalWorkspaces: [], referencedProjectFailures: [] };
     }
 
     const issueId = readNonEmptyString(context.issueId) ?? readNonEmptyString(context.taskId);
-    const { additionalWorkspaces, warnings } = await resolveAdditionalRunWorkspaces(
+    const { additionalWorkspaces, warnings, failures } = await resolveAdditionalRunWorkspaces(
       issueId,
       anchor.projectId,
       {
@@ -8111,6 +8220,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return {
       ...anchor,
       additionalWorkspaces,
+      referencedProjectFailures: failures,
       warnings: warnings.length > 0 ? [...anchor.warnings, ...warnings] : anchor.warnings,
     };
   }
@@ -13657,6 +13767,27 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       })(),
     };
     context.paperclipWorkspaces = buildRunWorkspaceHints(resolvedWorkspace);
+    // Emit exactly one requested-vs-synced observability line for the referenced-project set. A run
+    // with no referenced project stays silent, so this adds no noise to the anchor-only default. The
+    // per-drop human warning already rides `runtimeWorkspaceWarnings`; this line carries the counts
+    // and the per-failure reason for a partial sync.
+    const referencedProjectObservability = buildReferencedProjectRunObservability({
+      syncedProjectIds: resolvedWorkspace.additionalWorkspaces.map(
+        (additional) => additional.projectId,
+      ),
+      failures: resolvedWorkspace.referencedProjectFailures,
+    });
+    if (referencedProjectObservability.referenced_projects_requested > 0) {
+      logger.info(
+        {
+          runId: run.id,
+          companyId: agent.companyId,
+          issueId: issueRef?.id ?? null,
+          ...referencedProjectObservability,
+        },
+        "run referenced-project sync",
+      );
+    }
     // The wake payload is built before the execution workspace is resolved, so
     // attach the branch pin here; the shared wake-prompt renderer surfaces it as
     // a one-time "stay on this branch" hint on non-resumed sessions.

@@ -33,11 +33,15 @@ const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
 describe("multi-project workspace sync kill-switch", () => {
-  it("is OFF by default and enabled only by truthy env values", () => {
-    expect(isMultiProjectWorkspaceSyncEnabled({})).toBe(false);
+  it("is ON by default and disabled only by an explicit false env value", () => {
+    // Default ON: an unset value resolves the feature live (go-live default).
+    expect(isMultiProjectWorkspaceSyncEnabled({})).toBe(true);
+    // The kill switch: an explicit false value (the rollback path) disables it.
     expect(isMultiProjectWorkspaceSyncEnabled({ [MULTI_PROJECT_WORKSPACE_SYNC_ENV]: "" })).toBe(false);
     expect(isMultiProjectWorkspaceSyncEnabled({ [MULTI_PROJECT_WORKSPACE_SYNC_ENV]: "false" })).toBe(false);
     expect(isMultiProjectWorkspaceSyncEnabled({ [MULTI_PROJECT_WORKSPACE_SYNC_ENV]: "0" })).toBe(false);
+    expect(isMultiProjectWorkspaceSyncEnabled({ [MULTI_PROJECT_WORKSPACE_SYNC_ENV]: "off" })).toBe(false);
+    // Any other value keeps the feature on.
     expect(isMultiProjectWorkspaceSyncEnabled({ [MULTI_PROJECT_WORKSPACE_SYNC_ENV]: "true" })).toBe(true);
     expect(isMultiProjectWorkspaceSyncEnabled({ [MULTI_PROJECT_WORKSPACE_SYNC_ENV]: "1" })).toBe(true);
     expect(isMultiProjectWorkspaceSyncEnabled({ [MULTI_PROJECT_WORKSPACE_SYNC_ENV]: "on" })).toBe(true);
