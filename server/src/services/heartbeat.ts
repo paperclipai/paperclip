@@ -209,7 +209,7 @@ import {
   recoveryAssigneeAdapterOverrides,
   withRecoveryModelProfileHint,
 } from "./recovery/model-profile-hint.js";
-import { recoveryService } from "./recovery/service.js";
+import { classifyAdapterFailureForRecovery, recoveryService } from "./recovery/service.js";
 import { productivityReviewService } from "./productivity-review.js";
 import { resolveRequiredSuccessfulRunHandoffOnValidPath } from "./successful-run-handoff-state.js";
 import { taskWatchdogService } from "./task-watchdogs.js";
@@ -5297,7 +5297,9 @@ export function resolveSkillTestRunCompletionForHeartbeatOutcome(
 
 const HERMES_ADAPTER_TYPE = "hermes_local";
 const HERMES_SESSION_ID_REGEX = /^(?:\d{8}_\d{6}_[A-Za-z0-9_-]{4,}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$/;
-const UNDELIVERED_ISSUE_MONITOR_REARM_DELAY_MS = 60_000;
+const UNDELIVERED_ISSUE_MONITOR_REARM_DELAY_MS = 150_000;
+const ISSUE_MONITOR_FAILED_DISPATCH_REARM_MAX_DELAY_MS = 60 * 60 * 1000;
+const ISSUE_MONITOR_FAILED_DISPATCH_STREAK_LOOKBACK_LIMIT = 32;
 
 function requiresCanonicalSessionIds(adapterType: string | null | undefined) {
   return adapterType === HERMES_ADAPTER_TYPE;
@@ -5319,6 +5321,15 @@ function buildUndeliveredIssueMonitorRearmAt(now: Date, nextCheckAt: string | nu
   const parsed = new Date(scheduled);
   if (Number.isNaN(parsed.getTime())) return minimumFuture;
   return parsed.getTime() > minimumFuture.getTime() ? parsed : minimumFuture;
+}
+
+function computeIssueMonitorFailedDispatchBackoffDelayMs(consecutiveFailures: number) {
+  const normalizedFailures = Math.max(1, Math.floor(consecutiveFailures));
+  const multiplier = 2 ** Math.max(0, normalizedFailures - 1);
+  return Math.min(
+    UNDELIVERED_ISSUE_MONITOR_REARM_DELAY_MS * multiplier,
+    ISSUE_MONITOR_FAILED_DISPATCH_REARM_MAX_DELAY_MS,
+  );
 }
 
 function isUniqueConstraintConflict(error: unknown, constraintName: string) {
@@ -6527,7 +6538,71 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     });
   }
 
-  function buildTerminalIssueMonitorRearmPatch(input: {
+  async function countConsecutiveFailedIssueMonitorDispatches(input: {
+    companyId: string;
+    issueId: string;
+    agentId: string;
+  }) {
+    const recentRuns = await db
+      .select({
+        status: heartbeatRuns.status,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+      })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, input.companyId),
+          eq(heartbeatRuns.agentId, input.agentId),
+          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${input.issueId}`,
+        ),
+      )
+      .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
+      .limit(ISSUE_MONITOR_FAILED_DISPATCH_STREAK_LOOKBACK_LIMIT);
+
+    let streak = 0;
+    for (const row of recentRuns) {
+      const wakeReason = readNonEmptyString(parseObject(row.contextSnapshot).wakeReason);
+      if (wakeReason !== "issue_monitor_due") break;
+      if (row.status !== "failed") break;
+      streak += 1;
+    }
+
+    return Math.max(1, streak);
+  }
+
+  async function resolveFailedIssueMonitorRearmAt(input: {
+    issue: typeof issues.$inferSelect;
+    run: typeof heartbeatRuns.$inferSelect;
+    now: Date;
+  }) {
+    const transientRecovery = readTransientRecoveryContractFromRun(input.run);
+    if (
+      transientRecovery?.retryNotBefore &&
+      transientRecovery.retryNotBefore.getTime() > input.now.getTime()
+    ) {
+      return transientRecovery.retryNotBefore;
+    }
+
+    const classifiedRecovery = classifyAdapterFailureForRecovery(input.run, input.now);
+    if (
+      classifiedRecovery?.kind === "provider_quota" &&
+      classifiedRecovery.parsedResetTime &&
+      classifiedRecovery.retryAt.getTime() > input.now.getTime()
+    ) {
+      return classifiedRecovery.retryAt;
+    }
+
+    const consecutiveFailures = await countConsecutiveFailedIssueMonitorDispatches({
+      companyId: input.issue.companyId,
+      issueId: input.issue.id,
+      agentId: input.run.agentId,
+    });
+    return new Date(
+      input.now.getTime() + computeIssueMonitorFailedDispatchBackoffDelayMs(consecutiveFailures),
+    );
+  }
+
+  async function buildTerminalIssueMonitorRearmPatch(input: {
     issue: typeof issues.$inferSelect;
     run: typeof heartbeatRuns.$inferSelect;
     now: Date;
@@ -6545,13 +6620,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       0,
       (input.issue.monitorAttemptCount ?? monitorState.attemptCount ?? 1) - 1,
     );
+    const nextCheckAt = await resolveFailedIssueMonitorRearmAt(input);
     const patch = buildIssueMonitorRearmedPatch({
       issue: input.issue,
       policy: normalizeIssueExecutionPolicy(input.issue.executionPolicy ?? null),
-      nextCheckAt: buildUndeliveredIssueMonitorRearmAt(
-        input.now,
-        readNonEmptyString(runContext.nextCheckAt),
-      ),
+      nextCheckAt,
       attemptCount: currentAttemptCount,
     });
 
@@ -12043,18 +12116,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const hasRecentDurableActivity = silenceAgeMs < durableActivityGraceMs;
       const exceededOrphanSilenceSweepThreshold = silenceAgeMs >= orphanSilenceSweepThresholdMs;
       if (zeroProcessMetadata) {
-        if (hasActiveEnvironmentLease || !exceededOrphanSilenceSweepThreshold) {
+        if (!exceededOrphanSilenceSweepThreshold) {
           logger.warn(
-            hasActiveEnvironmentLease
-              ? { runId: run.id, adapterType, silenceAgeMs, orphanSilenceSweepThresholdMs, hasActiveEnvironmentLease }
-              : hasRecentDurableActivity
-                ? { runId: run.id, adapterType, silenceAgeMs, durableActivityGraceMs }
-                : { runId: run.id, adapterType, silenceAgeMs, orphanSilenceSweepThresholdMs },
-            hasActiveEnvironmentLease
-              ? "skipping orphan reap because local run has no process metadata but still holds an active environment lease"
-              : "skipping orphan reap because local run has no process metadata and cannot be classified from silence alone",
+            hasRecentDurableActivity
+              ? { runId: run.id, adapterType, silenceAgeMs, durableActivityGraceMs, hasActiveEnvironmentLease }
+              : { runId: run.id, adapterType, silenceAgeMs, orphanSilenceSweepThresholdMs, hasActiveEnvironmentLease },
+            "skipping orphan reap because local run has no process metadata and silence has not crossed the orphan threshold",
           );
           continue;
+        }
+        if (hasActiveEnvironmentLease) {
+          logger.warn(
+            { runId: run.id, adapterType, silenceAgeMs, orphanSilenceSweepThresholdMs, hasActiveEnvironmentLease },
+            "force-releasing active environment lease for stale local run with no process metadata before orphan reap",
+          );
         }
       }
       const processPidAlive = Boolean(
@@ -12178,7 +12253,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       });
 
       if (monitorIssue) {
-        const rearmPatch = buildTerminalIssueMonitorRearmPatch({
+        const rearmPatch = await buildTerminalIssueMonitorRearmPatch({
           issue: monitorIssue,
           run: finalizedRun,
           now,
@@ -14623,7 +14698,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               },
             });
           }
-        } else if (outcome === "failed" && readTransientRecoveryContractFromRun(livenessRun)) {
+        } else if (
+          outcome === "failed" &&
+          readTransientRecoveryContractFromRun(livenessRun) &&
+          readNonEmptyString(parseObject(livenessRun.contextSnapshot).wakeReason) !== "issue_monitor_due"
+        ) {
           await scheduleBoundedRetryForRun(livenessRun, agent);
         }
         const issueCommentPolicyResult = await finalizeIssueCommentPolicy(livenessRun, agent);
@@ -15472,7 +15551,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           .then((rows) => rows[0] ?? null);
       };
 
-      const terminalMonitorRearmPatch = buildTerminalIssueMonitorRearmPatch({
+      const terminalMonitorRearmPatch = await buildTerminalIssueMonitorRearmPatch({
         issue,
         run,
         now: new Date(),
@@ -17313,6 +17392,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     });
 
     if (cancelled) {
+      await releaseEnvironmentLeasesForRun({
+        runId: cancelled.id,
+        companyId: cancelled.companyId,
+        agentId: cancelled.agentId,
+        status: cancelled.status,
+        failureReason: cancelled.error ?? undefined,
+      });
       await appendRunEvent(cancelled, 1, {
         eventType: "lifecycle",
         stream: "system",
@@ -17336,7 +17422,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .where(and(eq(heartbeatRuns.agentId, agentId), inArray(heartbeatRuns.status, [...CANCELLABLE_HEARTBEAT_RUN_STATUSES])));
 
     for (const run of runs) {
-      await setRunStatus(run.id, "cancelled", {
+      const cancelled = await setRunStatus(run.id, "cancelled", {
         finishedAt: new Date(),
         error: reason,
         errorCode,
@@ -17348,6 +17434,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           }),
         } : {}),
       });
+      if (cancelled) {
+        await releaseEnvironmentLeasesForRun({
+          runId: cancelled.id,
+          companyId: cancelled.companyId,
+          agentId: cancelled.agentId,
+          status: cancelled.status,
+          failureReason: cancelled.error ?? undefined,
+        });
+      }
 
       await setWakeupStatus(run.wakeupRequestId, "cancelled", {
         finishedAt: new Date(),

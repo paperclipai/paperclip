@@ -599,19 +599,26 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     issueId: string;
     provider?: string;
   }) {
-    const environmentId = randomUUID();
+    const existingLocalEnvironment = await db
+      .select({ id: environments.id })
+      .from(environments)
+      .where(eq(environments.driver, "local"))
+      .then((rows) => rows[0] ?? null);
+    const environmentId = existingLocalEnvironment?.id ?? randomUUID();
     const leaseId = randomUUID();
     const now = new Date("2026-03-19T00:00:00.000Z");
 
-    await db.insert(environments).values({
-      id: environmentId,
-      companyId: input.companyId,
-      name: "Local test environment",
-      driver: "local",
-      status: "active",
-      config: {},
-      metadata: null,
-    });
+    if (!existingLocalEnvironment) {
+      await db.insert(environments).values({
+        id: environmentId,
+        companyId: input.companyId,
+        name: "Local test environment",
+        driver: "local",
+        status: "active",
+        config: {},
+        metadata: null,
+      });
+    }
 
     await db.insert(environmentLeases).values({
       id: leaseId,
@@ -2282,7 +2289,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(issue?.executionRunId).toBeNull();
   });
 
-  it("keeps active-lease local runs with no process metadata protected on the periodic path", async () => {
+  it("reaps stale active-lease local runs with no process metadata after the orphan-silence threshold", async () => {
     const now = new Date("2026-03-19T00:20:00.000Z");
     const staleAt = new Date("2026-03-19T00:00:00.000Z");
     const { runId, issueId, companyId } = await seedRunFixture({
@@ -2293,6 +2300,41 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       now: staleAt,
       updatedAt: staleAt,
       createdAt: staleAt,
+    });
+    const { leaseId } = await seedEnvironmentLeaseFixture({
+      companyId,
+      runId,
+      issueId,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns({ staleThresholdMs: 1, now });
+    expect(result).toEqual({ reaped: 1, runIds: [runId] });
+
+    const failedRun = await heartbeat.getRun(runId);
+    expect(failedRun?.status).toBe("failed");
+    expect(failedRun?.errorCode).toBe("process_lost");
+
+    const lease = await db
+      .select()
+      .from(environmentLeases)
+      .where(eq(environmentLeases.id, leaseId))
+      .then((rows) => rows[0] ?? null);
+    expect(lease?.status).toBe("failed");
+    expect(lease?.releasedAt).toBeTruthy();
+  });
+
+  it("keeps recent active-lease local runs with no process metadata protected until the orphan-silence threshold", async () => {
+    const now = new Date("2026-03-19T00:05:00.000Z");
+    const startedAt = new Date("2026-03-19T00:00:00.000Z");
+    const { runId, issueId, companyId } = await seedRunFixture({
+      adapterType: "claude_local",
+      agentStatus: "idle",
+      processPid: null,
+      processGroupId: null,
+      now: startedAt,
+      updatedAt: startedAt,
+      createdAt: startedAt,
     });
     const { leaseId } = await seedEnvironmentLeaseFixture({
       companyId,

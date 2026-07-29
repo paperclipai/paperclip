@@ -654,6 +654,153 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     expect(activity).toContain("issue.monitor_rearmed");
   }, 20_000);
 
+  it("re-arms provider quota monitor failures at the reported reset time and keeps the monitor visible", async () => {
+    const { issueId } = await seedFixture();
+    const heartbeat = createHeartbeat();
+    const retryNotBefore = new Date("2026-08-03T09:00:00.000Z");
+
+    mockAdapterExecute.mockImplementation(async () => ({
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      errorMessage: "You've hit your weekly limit · resets Aug 3 at 11am (Europe/Zurich)",
+      errorCode: "provider_quota",
+      errorFamily: "provider_quota",
+      retryNotBefore: retryNotBefore.toISOString(),
+      resultJson: {
+        errorFamily: "provider_quota",
+        retryNotBefore: retryNotBefore.toISOString(),
+        transientRetryNotBefore: retryNotBefore.toISOString(),
+        providerQuotaRetryNotBefore: retryNotBefore.toISOString(),
+      },
+      provider: "test",
+      model: "test-model",
+    }));
+
+    await heartbeat.tickTimers(new Date("2026-07-29T18:31:00.000Z"));
+    const run = await waitForIssueRunTerminalState(issueId);
+    const repairedIssue = await waitForMonitorRearm(issueId);
+
+    expect(run.status).toBe("failed");
+    expect(run.errorCode).toBe("provider_quota");
+    expect(repairedIssue.monitorNextCheckAt?.toISOString()).toBe(retryNotBefore.toISOString());
+    expect(normalizeIssueExecutionPolicy(repairedIssue.executionPolicy ?? null)?.monitor?.nextCheckAt).toBe(
+      retryNotBefore.toISOString(),
+    );
+    expect(parseIssueExecutionState(repairedIssue.executionState)?.monitor).toMatchObject({
+      status: "scheduled",
+      nextCheckAt: retryNotBefore.toISOString(),
+      attemptCount: 0,
+    });
+  }, 20_000);
+
+  it("backs off repeated failed monitor wakes for the same issue", async () => {
+    const { companyId, issueId, agentId } = await seedFixture();
+    const heartbeat = createHeartbeat();
+
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId,
+      agentId,
+      status: "failed",
+      invocationSource: "automation",
+      triggerDetail: "system",
+      error: "temporary upstream error",
+      errorCode: "adapter_failed",
+      contextSnapshot: {
+        issueId,
+        wakeReason: "issue_monitor_due",
+      },
+      createdAt: new Date("2026-07-29T18:20:00.000Z"),
+      updatedAt: new Date("2026-07-29T18:21:00.000Z"),
+      startedAt: new Date("2026-07-29T18:20:00.000Z"),
+      finishedAt: new Date("2026-07-29T18:21:00.000Z"),
+    });
+
+    mockAdapterExecute.mockImplementation(async () => ({
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      errorMessage: "temporary upstream error",
+      errorCode: "adapter_failed",
+      provider: "test",
+      model: "test-model",
+    }));
+
+    await heartbeat.tickTimers(new Date("2026-07-29T18:31:00.000Z"));
+    const run = await waitForIssueRunTerminalState(issueId);
+    const repairedIssue = await waitForMonitorRearm(issueId);
+    const backoffMs = repairedIssue.monitorNextCheckAt!.getTime() - run.finishedAt!.getTime();
+
+    expect(run.status).toBe("failed");
+    expect(backoffMs).toBeGreaterThanOrEqual(300_000 - 5_000);
+    expect(backoffMs).toBeLessThanOrEqual(300_000 + 5_000);
+    expect(normalizeIssueExecutionPolicy(repairedIssue.executionPolicy ?? null)?.monitor?.nextCheckAt).toBe(
+      repairedIssue.monitorNextCheckAt?.toISOString(),
+    );
+  }, 20_000);
+
+  it("resets monitor failure backoff after a successful monitor wake", async () => {
+    const { companyId, issueId, agentId } = await seedFixture();
+    const heartbeat = createHeartbeat();
+
+    await db.insert(heartbeatRuns).values([
+      {
+        id: randomUUID(),
+        companyId,
+        agentId,
+        status: "failed",
+        invocationSource: "automation",
+        triggerDetail: "system",
+        error: "temporary upstream error",
+        errorCode: "adapter_failed",
+        contextSnapshot: {
+          issueId,
+          wakeReason: "issue_monitor_due",
+        },
+        createdAt: new Date("2026-07-29T18:10:00.000Z"),
+        updatedAt: new Date("2026-07-29T18:11:00.000Z"),
+        startedAt: new Date("2026-07-29T18:10:00.000Z"),
+        finishedAt: new Date("2026-07-29T18:11:00.000Z"),
+      },
+      {
+        id: randomUUID(),
+        companyId,
+        agentId,
+        status: "succeeded",
+        invocationSource: "automation",
+        triggerDetail: "system",
+        contextSnapshot: {
+          issueId,
+          wakeReason: "issue_monitor_due",
+        },
+        createdAt: new Date("2026-07-29T18:20:00.000Z"),
+        updatedAt: new Date("2026-07-29T18:21:00.000Z"),
+        startedAt: new Date("2026-07-29T18:20:00.000Z"),
+        finishedAt: new Date("2026-07-29T18:21:00.000Z"),
+      },
+    ]);
+
+    mockAdapterExecute.mockImplementation(async () => ({
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      errorMessage: "temporary upstream error",
+      errorCode: "adapter_failed",
+      provider: "test",
+      model: "test-model",
+    }));
+
+    await heartbeat.tickTimers(new Date("2026-07-29T18:31:00.000Z"));
+    const run = await waitForIssueRunTerminalState(issueId);
+    const repairedIssue = await waitForMonitorRearm(issueId);
+    const backoffMs = repairedIssue.monitorNextCheckAt!.getTime() - run.finishedAt!.getTime();
+
+    expect(run.status).toBe("failed");
+    expect(backoffMs).toBeGreaterThanOrEqual(150_000 - 5_000);
+    expect(backoffMs).toBeLessThanOrEqual(150_000 + 5_000);
+  }, 20_000);
+
   it("clears exhausted monitors and queues bounded owner recovery instead of another due check", async () => {
     const { issueId, agentId } = await seedFixture({
       monitorAttemptCount: 1,

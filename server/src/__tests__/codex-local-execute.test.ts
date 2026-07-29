@@ -849,6 +849,96 @@ describe("codex execute", () => {
     }
   });
 
+  it("continues the Codex run when preflight reports probe infrastructure failure and exports the fail-open URL", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-preflight-fail-open-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "codex");
+    const capturePath = path.join(root, "capture.json");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeFakeCodexCommand(commandPath);
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+    await seedSharedCodexAuth(root);
+
+    const failOpenUrl = "http://127.0.0.1:3100";
+    vi.spyOn(executionTarget, "preparePaperclipControlPlaneEnvForAdapterRun").mockImplementation(async (input) => {
+      input.env.PAPERCLIP_API_URL = failOpenUrl;
+      input.env.PAPERCLIP_RUNTIME_API_URL = failOpenUrl;
+      await input.onLog?.(
+        "stdout",
+        `[paperclip] Control-plane preflight probe could not execute for this ${input.adapterLabel} run (probe_exit_null); continuing without preflight (fail-open -> ${failOpenUrl}).\n`,
+      );
+      return {
+        ok: true,
+        skipped: true,
+        changed: true,
+        url: failOpenUrl,
+        attempts: [
+          { url: "https://paperclip.quote-to-invoice.ai", status: null, error: "probe_exit_null" },
+          { url: failOpenUrl, status: null, error: "probe_exit_null" },
+        ],
+        reasons: ["probe_infra_failure"],
+      };
+    });
+
+    try {
+      const logs: LogEntry[] = [];
+      const result = await execute({
+        runId: "run-paperclip-preflight-fail-open",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Codex Coder",
+          adapterType: "codex_local",
+          adapterConfig: { engine: "cli" },
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          engine: "cli",
+          command: commandPath,
+          cwd: workspace,
+          env: {
+            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+          },
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {
+          taskId: "issue-1",
+          paperclipWorkspace: {
+            source: "agent_home",
+            cwd: workspace,
+          },
+        },
+        authToken: "run-jwt-token",
+        onLog: async (stream, chunk) => {
+          logs.push({ stream, chunk });
+        },
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.errorCode).toBeNull();
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
+      expect(capture.paperclipApiUrl).toBe(failOpenUrl);
+      expect(capture.paperclipRuntimeApiUrl).toBe(failOpenUrl);
+      expect(logs).toContainEqual(
+        expect.objectContaining({
+          stream: "stdout",
+          chunk: expect.stringContaining(`fail-open -> ${failOpenUrl}`),
+        }),
+      );
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("rejects a Cloudflare-style 302 candidate and exports a different JSON Paperclip API URL from fallback workspace runs", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-preflight-redirect-"));
     const workspace = path.join(root, "workspace");
