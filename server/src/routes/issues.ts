@@ -2990,6 +2990,7 @@ export function issueRoutes(
     ) {
       return issue;
     }
+    let deliveryError: unknown = null;
     const reconciled = await db.transaction(async (tx) => {
       await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${`blocked-owner:${issue.id}`}))`);
       const current = await tx
@@ -3040,11 +3041,15 @@ export function issueRoutes(
         // Owner eligibility may legitimately change after the issue transaction commits.
         // Heartbeat admission is the authoritative delivery check: a rejected/suppressed
         // wake leaves the marker null so an idempotent replay or later PATCH can retry.
-        await deliverAgentUnblockNotification({
-          issue: { ...current, blockedOwnerNotifiedAt: null },
-          wakeup: enqueueBlockedOwnerWakeup,
-          markNotified: async () => undefined,
-        });
+        try {
+          await deliverAgentUnblockNotification({
+            issue: { ...current, blockedOwnerNotifiedAt: null },
+            wakeup: enqueueBlockedOwnerWakeup,
+            markNotified: async () => undefined,
+          });
+        } catch (err) {
+          deliveryError = err;
+        }
         acceptedWake = await findAcceptedWake();
       }
       if (!acceptedWake) {
@@ -3082,6 +3087,7 @@ export function issueRoutes(
         .where(and(eq(issueRows.id, current.id), eq(issueRows.companyId, current.companyId)))
         .then((rows) => (rows[0] ?? current) as T);
     });
+    if (deliveryError && !reconciled.blockedOwnerNotifiedAt) throw deliveryError;
     return reconciled as T;
   }
 
@@ -8743,13 +8749,16 @@ export function issueRoutes(
         assertCreateUnblockOwnerAllowed(deduplicatedIssue.unblockDescriptor, parent.companyId, req.actor),
     });
     const reconcileChildNotification = async () => {
+      let deliveryFailed = false;
       try {
         issue = await deliverBlockedOwnerNotification(issue);
       } catch (err) {
+        deliveryFailed = true;
+        issue = { ...issue, blockedOwnerNotifiedAt: null };
         logger.warn({ err, issueId: issue.id }, "blocked child owner notification remains pending");
       }
       const owner = issue.unblockDescriptor?.owner;
-      return isProspectiveBlockedTransition(issue) &&
+      return deliveryFailed || isProspectiveBlockedTransition(issue) &&
         Boolean(owner && owner !== "board" && "agentId" in owner) &&
         !issue.blockedOwnerNotifiedAt;
     };
