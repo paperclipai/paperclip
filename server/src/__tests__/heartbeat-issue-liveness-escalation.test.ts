@@ -354,6 +354,53 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
     return { companyId, agentId, blockedIssueId, blockerIssueId, executionWorkspaceId };
   }
 
+  async function seedWakelessNonTerminalFixture(opts: {
+    status?: "todo" | "in_progress" | "in_review" | "blocked";
+  } = {}) {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const ownerUserId = randomUUID();
+    const issuePrefix = `W${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(companyMemberships).values({
+      companyId,
+      principalType: "user",
+      principalId: ownerUserId,
+      membershipRole: "owner",
+      status: "active",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Wakeless assignee",
+      role: "engineer",
+      status: "idle",
+      adapterType: "test_adapter",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Synthetic wakeless non-terminal issue",
+      status: opts.status ?? "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+
+    return { companyId, agentId, issueId };
+  }
+
   it("keeps liveness findings advisory when auto recovery is disabled", async () => {
     await instanceSettingsService(db).updateExperimental({
       enableIssueGraphLivenessAutoRecovery: false,
@@ -659,6 +706,116 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
       status: "skipped",
       reason: "heartbeat.wakeOnDemand.disabled",
     });
+  });
+
+  it("heals a wakeless non-terminal issue with a cold rearm token", async () => {
+    const { companyId, agentId, issueId } = await seedWakelessNonTerminalFixture();
+
+    const result = await heartbeatService(db).reconcileIssueGraphLiveness();
+
+    expect(result.wakelessNonTerminalHealed).toBe(1);
+    expect(result.wakelessNonTerminalIssueIds).toEqual([issueId]);
+
+    const wake = await db
+      .select({
+        reason: agentWakeupRequests.reason,
+        idempotencyKey: agentWakeupRequests.idempotencyKey,
+        payload: agentWakeupRequests.payload,
+      })
+      .from(agentWakeupRequests)
+      .where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.agentId, agentId)))
+      .orderBy(agentWakeupRequests.requestedAt)
+      .then((rows) => rows[0] ?? null);
+
+    expect(wake?.reason).toBe("non_terminal_wakeless_backstop");
+    expect(wake?.idempotencyKey).toBe(`non-terminal-wakeless:${issueId}:cold`);
+    expect(wake?.payload).toMatchObject({
+      issueId,
+      backstop: "non_terminal_wakeless",
+      wakelessWakeRearmToken: "cold",
+    });
+  });
+
+  it("re-arms the wakeless backstop after a successful run changes the epoch", async () => {
+    const { companyId, agentId, issueId } = await seedWakelessNonTerminalFixture();
+    await db.insert(agentWakeupRequests).values({
+      companyId,
+      agentId,
+      source: "automation",
+      triggerDetail: "system",
+      reason: "non_terminal_wakeless_backstop",
+      payload: {
+        issueId,
+        backstop: "non_terminal_wakeless",
+        wakelessWakeRearmToken: "cold",
+      },
+      status: "completed",
+      finishedAt: new Date(Date.now() - 5 * 60_000),
+      idempotencyKey: `non-terminal-wakeless:${issueId}:cold`,
+    });
+    const successfulRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: successfulRunId,
+      companyId,
+      agentId,
+      status: "succeeded",
+      contextSnapshot: { issueId },
+      finishedAt: new Date(Date.now() - 60_000),
+    });
+
+    const result = await heartbeatService(db).reconcileIssueGraphLiveness();
+
+    expect(result.wakelessNonTerminalHealed).toBe(1);
+
+    const wakes = await db
+      .select({
+        status: agentWakeupRequests.status,
+        idempotencyKey: agentWakeupRequests.idempotencyKey,
+      })
+      .from(agentWakeupRequests)
+      .where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.agentId, agentId)))
+      .orderBy(agentWakeupRequests.requestedAt);
+
+    expect(wakes).toHaveLength(2);
+    expect(wakes.map((wake) => wake.idempotencyKey)).toEqual([
+      `non-terminal-wakeless:${issueId}:cold`,
+      `non-terminal-wakeless:${issueId}:${successfulRunId}`,
+    ]);
+  });
+
+  it("caps wakeless failed retries per idempotency key", async () => {
+    const { companyId, agentId, issueId } = await seedWakelessNonTerminalFixture();
+    const idempotencyKey = `non-terminal-wakeless:${issueId}:cold`;
+    const historicalFailures = Array.from({ length: 4 }, (_, index) => ({
+      companyId,
+      agentId,
+      source: "automation" as const,
+      triggerDetail: "system" as const,
+      reason: "non_terminal_wakeless_backstop",
+      payload: {
+        issueId,
+        backstop: "non_terminal_wakeless",
+        wakelessWakeRearmToken: "cold",
+      },
+      status: "failed" as const,
+      error: `synthetic failure ${index + 1}`,
+      requestedAt: new Date(Date.now() - (index + 1) * 60_000),
+      finishedAt: new Date(Date.now() - (index + 1) * 60_000),
+      idempotencyKey,
+    }));
+    await db.insert(agentWakeupRequests).values(historicalFailures);
+
+    const result = await heartbeatService(db).reconcileIssueGraphLiveness();
+
+    expect(result.wakelessNonTerminalHealed).toBe(0);
+    expect(result.wakelessNonTerminalEnqueueFailed).toBe(0);
+    expect(result.wakelessNonTerminalIssueIds).toEqual([]);
+
+    const wakeCountAfterExhaustion = await db
+      .select({ id: agentWakeupRequests.id })
+      .from(agentWakeupRequests)
+      .where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.idempotencyKey, idempotencyKey)));
+    expect(wakeCountAfterExhaustion).toHaveLength(4);
   });
 
   it("does not create recovery issues outside the configured lookback window", async () => {
