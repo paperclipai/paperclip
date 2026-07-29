@@ -940,7 +940,7 @@ describe("resolveAdditionalProjectWorkspace", () => {
         cwd: `/managed/${input.projectId}`,
         warning: null,
       }),
-      directoryExists: async () => true,
+      directoryHasContents: async () => true,
       ...overrides,
     };
   }
@@ -967,8 +967,8 @@ describe("resolveAdditionalProjectWorkspace", () => {
     const deps = buildDeps({
       loadProjectWorkspaceRows: async () => [workspaceRow({ id: "ws-empty", cwd: null, repoUrl: null })],
       resolveConfiguredOrManagedProjectCwd: async (input) => ({ cwd: input.cwd ?? "/unset", warning: null }),
-      // directoryExists returns true for any path; the row must still be skipped before this runs.
-      directoryExists: async () => true,
+      // directoryHasContents returns true for any path; the row must still be skipped before this runs.
+      directoryHasContents: async () => true,
       ensureManagedProjectWorkspace: async (input) => {
         ensureCalls += 1;
         return { cwd: `/managed/${input.projectId}`, warning: null };
@@ -982,13 +982,36 @@ describe("resolveAdditionalProjectWorkspace", () => {
     expect(ensureCalls).toBe(0);
   });
 
-  it("returns the first workspace row whose directory exists", async () => {
+  it("throws when a configured checkout directory exists but has no content", async () => {
+    let ensureCalls = 0;
+    const deps = buildDeps({
+      loadProjectWorkspaceRows: async () => [
+        workspaceRow({ id: "ws-empty-dir", cwd: "/checkout/empty", repoUrl: null }),
+      ],
+      resolveConfiguredOrManagedProjectCwd: async (input) => ({ cwd: input.cwd ?? "/unset", warning: null }),
+      // The configured directory exists but holds no content, so it is not a realized workspace.
+      directoryHasContents: async () => false,
+      ensureManagedProjectWorkspace: async (input) => {
+        ensureCalls += 1;
+        return { cwd: `/managed/${input.projectId}`, warning: null };
+      },
+    });
+
+    await expect(
+      resolveAdditionalProjectWorkspace({ companyId, project: referencedProject("project-d") }, deps),
+    ).rejects.toThrow(/project-d/);
+    // An empty configured directory must not mask a missing workspace, and the row has no
+    // repository URL, so the managed fallback never runs.
+    expect(ensureCalls).toBe(0);
+  });
+
+  it("returns the first workspace row whose directory has content", async () => {
     const deps = buildDeps({
       loadProjectWorkspaceRows: async () => [
         workspaceRow({ id: "ws-1", cwd: "/checkout/a", repoUrl: "https://example.test/a.git", repoRef: "main" }),
       ],
       resolveConfiguredOrManagedProjectCwd: async (input) => ({ cwd: input.cwd ?? "/unset", warning: null }),
-      directoryExists: async (cwd) => cwd === "/checkout/a",
+      directoryHasContents: async (cwd) => cwd === "/checkout/a",
     });
 
     const result = await resolveAdditionalProjectWorkspace({ companyId, project: referencedProject("project-a") }, deps);
@@ -1009,7 +1032,7 @@ describe("resolveAdditionalProjectWorkspace", () => {
         workspaceRow({ id: "ws-1", cwd: "/checkout/missing", repoUrl: "https://example.test/a.git", repoRef: "release" }),
       ],
       resolveConfiguredOrManagedProjectCwd: async (input) => ({ cwd: input.cwd ?? "/unset", warning: null }),
-      directoryExists: async () => false,
+      directoryHasContents: async () => false,
       ensureManagedProjectWorkspace: async (input) => {
         ensuredRepoUrl = input.repoUrl;
         return { cwd: `/managed/${input.projectId}`, warning: null };

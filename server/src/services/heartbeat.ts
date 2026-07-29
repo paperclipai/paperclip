@@ -1427,7 +1427,7 @@ export interface ResolveAdditionalProjectWorkspaceDeps {
   ) => Promise<Array<typeof projectWorkspaces.$inferSelect>>;
   resolveConfiguredOrManagedProjectCwd: typeof resolveConfiguredOrManagedProjectCwd;
   ensureManagedProjectWorkspace: typeof ensureManagedProjectWorkspace;
-  directoryExists: (cwd: string) => Promise<boolean>;
+  directoryHasContents: (cwd: string) => Promise<boolean>;
 }
 
 /** Build the real dependencies for {@link resolveAdditionalProjectWorkspace}. */
@@ -1441,11 +1441,16 @@ function defaultAdditionalProjectWorkspaceDeps(db: Db): ResolveAdditionalProject
         .orderBy(asc(projectWorkspaces.createdAt), asc(projectWorkspaces.id)),
     resolveConfiguredOrManagedProjectCwd,
     ensureManagedProjectWorkspace,
-    directoryExists: (cwd) =>
-      fs
-        .stat(cwd)
-        .then((stats) => stats.isDirectory())
-        .catch(() => false),
+    // A realized workspace must hold real content. An empty directory gives the agent an empty
+    // referenced workspace, so treat an empty directory the same as a missing one.
+    directoryHasContents: async (cwd) => {
+      const stats = await fs.stat(cwd).catch(() => null);
+      if (!stats || !stats.isDirectory()) {
+        return false;
+      }
+      const entries = await fs.readdir(cwd).catch(() => [] as string[]);
+      return entries.length > 0;
+    },
   };
 }
 
@@ -1486,7 +1491,9 @@ export async function resolveAdditionalProjectWorkspace(
       cwd: workspace.cwd,
       repoUrl: workspace.repoUrl,
     });
-    if (await deps.directoryExists(cwd)) {
+    // A directory that exists but holds no content is not a realized workspace. Accept the row only
+    // when the resolved directory has real content, so an empty directory never masks a missing one.
+    if (await deps.directoryHasContents(cwd)) {
       return {
         cwd,
         projectId,
@@ -1496,7 +1503,7 @@ export async function resolveAdditionalProjectWorkspace(
       };
     }
   }
-  // No configured checkout resolved to an existing directory. Clone a managed checkout only from a
+  // No configured checkout resolved to a directory with content. Clone a managed checkout only from a
   // real source: the first workspace row that supplies a repository URL. Without a real source, do
   // not fabricate an empty managed directory and report success. Throw instead, so the caller drops
   // only this referenced project and adds a clear warning.
