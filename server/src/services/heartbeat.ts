@@ -2323,6 +2323,17 @@ export function isMultiProjectWorkspaceSyncEnabled(
 }
 
 /**
+ * True when an environment driver runs the workspace on a non-local target. The `ssh`, `sandbox`,
+ * and `plugin` drivers each realize the workspace off the host, so a host-local directory path is
+ * not present on the target. This mirrors the remote-transport classification in
+ * {@link buildWorkspaceRealizationRecord}. The `local` driver (and an unknown/absent driver) is
+ * treated as local.
+ */
+export function isRemoteExecutionEnvironmentDriver(driver: string | null | undefined): boolean {
+  return driver === "ssh" || driver === "sandbox" || driver === "plugin";
+}
+
+/**
  * Upper bound on how many additional (mentioned) projects a single run may materialize
  * beyond the anchor. Bounds the fan-out of per-project authorization and workspace prep.
  */
@@ -2555,6 +2566,13 @@ export interface ResolveAdditionalRunWorkspacesOptions {
   resolveProjectWorkspace: (project: RunReferencedProject) => Promise<ResolvedAdditionalWorkspace>;
   maxAdditionalProjects?: number;
   maxCandidateEvaluations?: number;
+  /**
+   * True when the run executes on a non-local target (ssh, sandbox, or plugin). A referenced
+   * project realizes as a local directory only, and a remote target has no path yet to receive
+   * that tree, so a resolved cwd would not exist on the target. When true, the function skips
+   * referenced-project authorization and workspace work and returns no additional workspaces.
+   */
+  executionTargetIsRemote?: boolean;
 }
 
 /**
@@ -2574,6 +2592,28 @@ export async function resolveAdditionalRunWorkspaces(
 ): Promise<{ additionalWorkspaces: ResolvedAdditionalWorkspace[]; warnings: string[] }> {
   if (!opts.enabled || !issueId) {
     return { additionalWorkspaces: [], warnings: [] };
+  }
+
+  // A referenced project realizes as a local directory only. A remote execution target (ssh,
+  // sandbox, or plugin) has no path yet to receive the referenced tree, so a resolved cwd would
+  // not exist on the target and the anchor-only remote sync never carries it across. Skip the
+  // referenced-project authorization and clone work on a remote target, so the run neither does
+  // work it must discard nor exposes an inaccessible referenced path to the agent. Warn only when
+  // the issue actually mentions a project, so a remote run without any referenced mention stays
+  // silent.
+  if (opts.executionTargetIsRemote) {
+    const mentionedIds = await opts.issues.findMentionedProjectIds(issueId, {
+      includeCommentBodies: true,
+    });
+    const hasReferencedMention = mentionedIds.some((projectId) => projectId !== anchorProjectId);
+    return {
+      additionalWorkspaces: [],
+      warnings: hasReferencedMention
+        ? [
+            "Referenced-project workspaces are available only on a local execution target. This run uses a remote execution target, so no referenced-project workspace was attached.",
+          ]
+        : [],
+    };
   }
 
   const referenced = await resolveRunReferencedProjects(issueId, anchorProjectId, {
@@ -8026,7 +8066,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     agent: typeof agents.$inferSelect,
     context: Record<string, unknown>,
     previousSessionParams: Record<string, unknown> | null,
-    opts?: { useProjectWorkspace?: boolean | null },
+    opts?: { useProjectWorkspace?: boolean | null; executionTargetIsRemote?: boolean },
   ): Promise<ResolvedWorkspaceForRun> {
     const anchor = await resolveAnchorWorkspaceForRun(agent, context, previousSessionParams, opts);
     if (!isMultiProjectWorkspaceSyncEnabled()) {
@@ -8039,6 +8079,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       anchor.projectId,
       {
         enabled: true,
+        executionTargetIsRemote: opts?.executionTargetIsRemote ?? false,
         companyId: agent.companyId,
         actor: {
           type: "agent",
@@ -13064,7 +13105,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           agent,
           context,
           previousSessionParams,
-          { useProjectWorkspace: requestedExecutionWorkspaceMode !== "agent_default" },
+          {
+            useProjectWorkspace: requestedExecutionWorkspaceMode !== "agent_default",
+            // Referenced-project workspaces attach on a local execution target only. Gate their
+            // resolution on the selected environment driver so a remote run never resolves a
+            // referenced path it cannot reach. This never changes the anchor workspace.
+            executionTargetIsRemote: isRemoteExecutionEnvironmentDriver(
+              selectedEnvironmentForConfig?.driver,
+            ),
+          },
         ),
     });
     const hostExecutionWorkspaceConfig = stripHostWorkspaceProvisionForLowTrustSandbox({

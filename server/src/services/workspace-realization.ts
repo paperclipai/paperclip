@@ -137,6 +137,12 @@ export function buildWorkspaceRealizationRequest(input: {
       branchName: input.workspace.branchName,
       worktreePath: input.workspace.worktreePath,
     },
+    // The additional (referenced) sources carry the read-only referenced-project workspaces. Run
+    // preparation resolves them for a local execution target only and exposes each local path to
+    // the agent through the workspace-hints channel (`PAPERCLIP_WORKSPACES_JSON`). A remote target
+    // never receives a referenced source: run preparation skips referenced-project resolution on a
+    // remote target, so this array is empty there. The `sync` block below therefore realizes only
+    // the anchor source; a remote-transport sync of the referenced trees is not implemented yet.
     additionalSources: (input.workspace.additionalWorkspaces ?? []).map((additional) => ({
       localPath: additional.cwd,
       projectId: additional.projectId,

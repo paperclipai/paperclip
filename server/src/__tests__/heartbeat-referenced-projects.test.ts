@@ -19,6 +19,7 @@ import { issueService } from "../services/issues.ts";
 import { projectService } from "../services/projects.ts";
 import {
   isMultiProjectWorkspaceSyncEnabled,
+  isRemoteExecutionEnvironmentDriver,
   MAX_RUN_REFERENCED_ADDITIONAL_PROJECTS,
   MAX_RUN_REFERENCED_CANDIDATE_EVALUATIONS,
   MULTI_PROJECT_WORKSPACE_SYNC_ENV,
@@ -40,6 +41,15 @@ describe("multi-project workspace sync kill-switch", () => {
     expect(isMultiProjectWorkspaceSyncEnabled({ [MULTI_PROJECT_WORKSPACE_SYNC_ENV]: "true" })).toBe(true);
     expect(isMultiProjectWorkspaceSyncEnabled({ [MULTI_PROJECT_WORKSPACE_SYNC_ENV]: "1" })).toBe(true);
     expect(isMultiProjectWorkspaceSyncEnabled({ [MULTI_PROJECT_WORKSPACE_SYNC_ENV]: "on" })).toBe(true);
+  });
+
+  it("classifies ssh, sandbox, and plugin drivers as remote and local/unknown as local", () => {
+    expect(isRemoteExecutionEnvironmentDriver("ssh")).toBe(true);
+    expect(isRemoteExecutionEnvironmentDriver("sandbox")).toBe(true);
+    expect(isRemoteExecutionEnvironmentDriver("plugin")).toBe(true);
+    expect(isRemoteExecutionEnvironmentDriver("local")).toBe(false);
+    expect(isRemoteExecutionEnvironmentDriver(null)).toBe(false);
+    expect(isRemoteExecutionEnvironmentDriver(undefined)).toBe(false);
   });
 });
 

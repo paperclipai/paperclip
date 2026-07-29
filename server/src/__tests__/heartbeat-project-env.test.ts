@@ -873,6 +873,51 @@ describe("resolveAdditionalRunWorkspaces", () => {
     expect(result.warnings[0]).toContain("project-a");
     expect(result.warnings[0]).toContain("clone exploded");
   });
+
+  it("skips referenced-project work on a remote target and warns when the issue mentions a project", async () => {
+    let mentionLookups = 0;
+    let workspaceResolves = 0;
+    const options = buildOptions({
+      executionTargetIsRemote: true,
+      mentionedIds: ["project-a", "project-b"],
+      issues: {
+        findMentionedProjectIds: async () => {
+          mentionLookups += 1;
+          return ["project-a", "project-b"];
+        },
+      },
+      resolveProjectWorkspace: async (project) => {
+        workspaceResolves += 1;
+        return {
+          cwd: `/managed/${project.projectId}`,
+          projectId: project.projectId,
+          workspaceId: null,
+          repoUrl: null,
+          repoRef: null,
+        };
+      },
+    });
+
+    const result = await resolveAdditionalRunWorkspaces(issueId, null, options);
+
+    expect(result.additionalWorkspaces).toEqual([]);
+    expect(result.warnings).toHaveLength(1);
+    expect(result.warnings[0]).toContain("local execution target");
+    // The remote path must skip the per-project clone work whose result the target cannot receive.
+    expect(mentionLookups).toBe(1);
+    expect(workspaceResolves).toBe(0);
+  });
+
+  it("stays silent on a remote target when the issue mentions no referenced project", async () => {
+    const options = buildOptions({
+      executionTargetIsRemote: true,
+      mentionedIds: [],
+    });
+
+    const result = await resolveAdditionalRunWorkspaces(issueId, null, options);
+
+    expect(result).toEqual({ additionalWorkspaces: [], warnings: [] });
+  });
 });
 
 describe("buildRunWorkspaceHints", () => {
