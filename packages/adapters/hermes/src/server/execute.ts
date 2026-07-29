@@ -243,10 +243,12 @@ function classifyTransientProviderFailure(
   stderr: string,
 ): TransientProviderFailure | null {
   const stdoutFirstLine = stdout.trim().split(/\r?\n/, 1)[0]?.trim() ?? "";
-  const stderrFailureLine = stderr
-    .split(/\r?\n/)
-    .map((line) => line.trim())
-    .find((line) => /^(?:Error:\s*)?API call failed after \d+ retries:/i.test(line));
+  const stderrOutput = stderr.trim();
+  const stderrFailureLine = /^(?:Error:\s*)?API call failed after \d+ retries:[^\r\n]+$/i.test(
+    stderrOutput,
+  )
+    ? stderrOutput
+    : null;
   const failureEnvelope =
     (/^API call failed after \d+ retries:/i.test(stdoutFirstLine) ? stdoutFirstLine : null) ??
     stderrFailureLine ??
