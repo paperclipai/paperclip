@@ -544,6 +544,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       processLossRetryCount: input?.processLossRetryCount ?? 0,
       errorCode: input?.runErrorCode ?? null,
       error: input?.runError ?? null,
+      // createdAt must be pinned like startedAt/updatedAt: the stale-queued-run
+      // reaper filters on createdAt, and tests pass hardcoded `now` dates —
+      // a wall-clock default silently un-stales the run once real time passes
+      // the hardcoded date.
+      createdAt: now,
       startedAt: now,
       updatedAt: new Date("2026-03-19T00:00:00.000Z"),
     });
@@ -990,8 +995,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   async function expectSourceScopedStrandedRecoveryAction(input: {
     companyId: string;
     agentId: string;
-    previousOwnerAgentId?: string;
-    returnOwnerAgentId?: string;
     issueId: string;
     runId: string;
     previousStatus: "todo" | "in_progress" | "in_review";
@@ -1046,6 +1049,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       ...(input.kind === "missing_disposition" ? { minRefireIntervalMs: 60_000 } : {}),
     });
 
+    // Fork-policy pin (TSMC-18233, 2026-07-28): the visible stranded-recovery
+    // card creator was deliberately restored alongside the source-scoped
+    // action, so exactly one recovery card issue exists per stranded source.
     const recoveryIssues = await db
       .select()
       .from(issues)
@@ -1054,7 +1060,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         eq(issues.originKind, "stranded_issue_recovery"),
         eq(issues.originId, input.issueId),
       ));
-    expect(recoveryIssues).toHaveLength(0);
+    expect(recoveryIssues).toHaveLength(1);
+    // No status pin: the card is created as todo, but the live heartbeat in
+    // these tests can claim it and move it to in_progress before we read it.
+    expect(recoveryIssues[0]).toMatchObject({ parentId: input.issueId });
 
     const recoveryWakeup = await waitForValue(async () => {
       const wakeups = await db
@@ -7000,7 +7009,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         eq(issues.originKind, "stranded_issue_recovery"),
         eq(issues.originId, issueId),
       ));
-    expect(recoveries).toHaveLength(0);
+    // Fork-policy pin (TSMC-18233): the visible recovery card exists again, so
+    // the raced-creation guard is "exactly one card", not "no card".
+    expect(recoveries).toHaveLength(1);
     await expect(sourceBlockerIssueIds(companyId, issueId)).resolves.toEqual([]);
   });
 
@@ -7360,8 +7371,16 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       retryReason: "issue_continuation_needed",
     });
 
+    // Fork-policy pin (TSMC-18233): the restored recovery card adds its own
+    // runs on this agent, so count continuation retries structurally instead
+    // of pinning the total run count. The guard is: no further continuation
+    // of the source issue beyond the one being escalated.
     const followupRuns = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
-    expect(followupRuns).toHaveLength(2);
+    const continuationRetries = followupRuns.filter((row) => {
+      const ctx = row.contextSnapshot as Record<string, unknown> | null;
+      return ctx?.retryReason === "issue_continuation_needed" && row.id !== runId;
+    });
+    expect(continuationRetries).toHaveLength(0);
   });
 
   it("preserves a persisted issue monitor as the durable external-wait path", async () => {
@@ -7505,7 +7524,17 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .select()
       .from(agentWakeupRequests)
       .where(and(eq(agentWakeupRequests.companyId, companyId), inArray(agentWakeupRequests.status, ["queued", "deferred_issue_execution"])));
-    expect(liveWakeups).toHaveLength(0);
+    // Fork-policy pin: these quota codes are NON_RETRYABLE escalations, and
+    // escalation wakes the recovery owner (source-scoped action wake_owner
+    // policy, cheap/status_only) and assigns the restored TSMC-18233 recovery
+    // card. The quota guard is that no CONTINUATION of the source issue gets
+    // scheduled — tolerate the recovery wakes, nothing else.
+    const nonRecoveryWakeups = liveWakeups.filter((wakeup) => {
+      const payload = wakeup.payload as Record<string, unknown> | null;
+      if (payload?.sourceIssueId !== issueId) return true;
+      return wakeup.reason !== "source_scoped_recovery_action" && wakeup.reason !== "issue_assigned";
+    });
+    expect(nonRecoveryWakeups).toHaveLength(0);
 
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
     expect(comments).toHaveLength(1);

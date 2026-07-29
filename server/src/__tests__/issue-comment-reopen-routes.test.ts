@@ -73,6 +73,9 @@ const mockRoutineService = vi.hoisted(() => ({
 const mockIssueThreadInteractionService = vi.hoisted(() => ({
   expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
   expireStaleRequestConfirmationsForIssueDocument: vi.fn(async () => []),
+  // Mock-gap fill: the PATCH issue path expires pending interactions when
+  // issue state goes stale; the route feeds the result to activity logging.
+  expirePendingInteractionsForStaleIssueState: vi.fn(async () => []),
 }));
 const mockIssueRecoveryActionService = vi.hoisted(() => ({
   getActiveForIssue: vi.fn(async () => null),
