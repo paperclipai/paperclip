@@ -166,6 +166,25 @@ def test_web_tool_offered_with_key(monkeypatch):
     assert "WEB:" in seen["system"]
 
 
+def test_web_tool_precedes_no_tool_paragraph_and_time_comes_last(monkeypatch):
+    # Review-Befund: Werkzeug 3 (WEB_TOOL_HINT) muss VOR dem "Brauchst du
+    # KEIN Werkzeug"-Absatz stehen, sonst liest ein kleines Modell Punkt 3
+    # nicht mehr als Teil der Werkzeugliste und setzt bei "wie wird morgen
+    # das Wetter?" kein WEB:-Token. Prüft echte Positionen im String
+    # (.index()), nicht nur, dass die Bestandteile irgendwo vorkommen.
+    seen = {}
+    monkeypatch.setattr(jarvis_brain.llm, "chat",
+                        lambda msgs, model=None: seen.update(system=msgs[0]["content"]) or "ok")
+    jarvis_brain.respond("hi", TENANT, "tok", "m", web_key="tvly-k")
+    prompt = seen["system"]
+    web_idx = prompt.index("3. Web durchsuchen")
+    no_tool_idx = prompt.index("Brauchst du KEIN Werkzeug")
+    time_idx = prompt.index("Aktuelle Zeit:")
+    assert web_idx < no_tool_idx < time_idx
+    # Absatzabstände sauber: weder doppelte noch fehlende Leerzeilen.
+    assert "\n\n\n" not in prompt
+
+
 def test_parse_control_recognises_web_token():
     assert jarvis_brain.parse_control("WEB: Wetter Cottbus morgen") == {
         "kind": "web", "query": "Wetter Cottbus morgen"}
@@ -174,7 +193,7 @@ def test_parse_control_recognises_web_token():
 
 def test_web_search_result_is_answered(monkeypatch):
     calls = []
-    def fake_chat(msgs, model=None):
+    def fake_chat(msgs, model=None, **kw):
         calls.append(msgs)
         return "WEB: Wetter Cottbus" if len(calls) == 1 else "Morgen 24 Grad, sonnig."
     monkeypatch.setattr(jarvis_brain.llm, "chat", fake_chat)
@@ -198,11 +217,30 @@ def test_web_search_failure_is_honest(monkeypatch):
 
 def test_web_query_is_logged(monkeypatch, capsys):
     monkeypatch.setattr(jarvis_brain.llm, "chat",
-                        lambda msgs, model=None: "WEB: Bahnstreik heute")
+                        lambda msgs, model=None, **kw: "WEB: Bahnstreik heute")
     monkeypatch.setattr(jarvis_brain.web_search, "search",
                         lambda q, key, **kw: {"query": q, "antwort": "", "treffer": []})
     jarvis_brain.respond("gibt es streik?", TENANT, "tok", "m", web_key="tvly-k")
     assert "[web] query='Bahnstreik heute'" in capsys.readouterr().out
+
+
+def test_do_web_uses_short_timeouts(monkeypatch):
+    # Im Sprachpfad wartet der Nutzer nach dem Bestätigungston stumm — Tavily
+    # und der Folge-LLM-Durchgang bekommen deshalb kürzere Timeouts als die
+    # Defaults (15s/90s), aber nur hier in _do_web, nicht global.
+    seen = {}
+    def fake_chat(msgs, model=None, **kw):
+        if "timeout" in kw:
+            seen["chat_timeout"] = kw["timeout"]
+        return "WEB: Wetter" if "chat_timeout" not in seen else "Alles trocken."
+    monkeypatch.setattr(jarvis_brain.llm, "chat", fake_chat)
+    def fake_search(q, key, **kw):
+        seen["search_timeout"] = kw.get("timeout")
+        return {"query": q, "antwort": "", "treffer": []}
+    monkeypatch.setattr(jarvis_brain.web_search, "search", fake_search)
+    jarvis_brain.respond("wetter?", TENANT, "tok", "m", web_key="tvly-k")
+    assert seen["search_timeout"] == 8
+    assert seen["chat_timeout"] == 30
 
 
 def test_web_token_without_key_is_honest_not_silent(monkeypatch):
@@ -271,7 +309,7 @@ def test_web_answer_never_empty_if_model_repeats_token(monkeypatch):
     # Gleicher Fall wie oben, aber für die Websuche: der Folge-Durchgang
     # antwortet nur mit einem Steuer-Token statt mit Text.
     monkeypatch.setattr(jarvis_brain.llm, "chat",
-                        lambda msgs, model=None: "WEB: Wetter Cottbus")
+                        lambda msgs, model=None, **kw: "WEB: Wetter Cottbus")
     monkeypatch.setattr(jarvis_brain.web_search, "search",
                         lambda q, key, **kw: {"query": q, "antwort": "", "treffer": []})
     r = jarvis_brain.respond("wetter morgen?", TENANT, "tok", "m", web_key="tvly-k")

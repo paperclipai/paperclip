@@ -106,6 +106,26 @@ class TestSearch(unittest.TestCase):
         with self.assertRaises(web_search.WebSearchError):
             web_search.search("x", "")
 
+    def test_top_level_list_instead_of_object_raises_websearcherror(self):
+        # Tavily antwortet normalerweise mit einem Objekt — kommt stattdessen
+        # (kaputt/verändert) eine Liste, darf das nicht wie ein leeres dict
+        # durchrutschen, sondern muss explizit als Fehler erkannt werden.
+        with mock.patch.object(web_search.urllib.request, "urlopen",
+                               return_value=_Resp([1, 2, 3])):
+            with self.assertRaises(web_search.WebSearchError):
+                web_search.search("x", "tvly-k")
+
+    def test_non_object_results_entries_are_skipped(self):
+        # Einzelne kaputte Treffer (None, Strings statt Objekten) dürfen die
+        # ganze Antwort nicht zum Absturz bringen — sie werden übersprungen,
+        # nur brauchbare Treffer bleiben übrig.
+        payload = {"query": "x", "answer": "",
+                  "results": [None, "kaputt", {"title": "ok", "content": "text"}]}
+        with mock.patch.object(web_search.urllib.request, "urlopen",
+                               return_value=_Resp(payload)):
+            out = web_search.search("x", "tvly-k")
+        self.assertEqual(out["treffer"], [{"titel": "ok", "inhalt": "text"}])
+
 
 if __name__ == "__main__":
     unittest.main()

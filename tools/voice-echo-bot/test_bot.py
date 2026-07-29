@@ -92,6 +92,20 @@ class TestTenantRouting(unittest.TestCase):
             app.handle_update(msg(1220010628, mid=9, text="Nummer von Max?"))
         vl.assert_called_once_with("kontakt", "Max", vault="clara")
 
+    def test_web_key_is_passed_to_brain(self):
+        # Tippfehler im Config-Schlüsselnamen dürfen nicht unbemerkt bleiben:
+        # self.cfg.get("web_key") liefert sonst still None und das Werkzeug
+        # wäre nie im System-Prompt (Pendant zu
+        # test_web_key_is_passed_to_brain im Wake-Satelliten).
+        tg = mock.MagicMock(); app = make_app(tg)
+        app.cfg["web_key"] = "tvly-k"
+        seen = {}
+        with mock.patch.object(bot.jarvis_brain, "respond",
+                               side_effect=lambda *a, **k: seen.update(k) or
+                                   {"kind": "chat", "answer": "ok"}):
+            app.handle_update(msg(8311805232, mid=9, text="wetter?"))
+        self.assertEqual(seen.get("web_key"), "tvly-k")
+
 class TestReplyModeCommands(unittest.TestCase):
     def _app(self):
         fd, p = tempfile.mkstemp(suffix=".json"); os.close(fd); os.unlink(p)

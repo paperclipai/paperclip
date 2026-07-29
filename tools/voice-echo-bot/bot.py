@@ -29,7 +29,7 @@ from telegram_api import Telegram
 from paperclip_client import (create_issue, derive_title, add_comment,
                               find_issue_by_identifier, list_issues, resolve_label_id)
 import jarvis_brain
-from jarvis_brain import SYSTEM_PROMPT, LOOKUP_RE, ISSUE_RE, parse_control
+from jarvis_brain import LOOKUP_RE, ISSUE_RE, parse_control
 
 IDENT_RE = re.compile(r"([A-Z]{2,5}-\d+)")
 

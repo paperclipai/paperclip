@@ -17,7 +17,10 @@ import vault_client
 import web_search
 from paperclip_client import create_issue, derive_title
 
-SYSTEM_PROMPT = (
+# Kopfteil des System-Prompts: Einleitung + Werkzeuge 1 (Vault) und 2 (Issue).
+# Wird in respond() um WEB_TOOL_HINT (Werkzeug 3, nur mit web_key) und danach
+# um SYSTEM_PROMPT_TAIL ergänzt — siehe dort für die Zusammensetzung.
+SYSTEM_PROMPT_HEAD = (
     "Du bist Jarvis, der persönliche CEO-Draht von {name}. Du bist ein ganz "
     "normaler Chat-Assistent: antworte knapp, auf Deutsch, sprich {name} mit "
     "Vornamen an, keine Meta-Sätze (\"Als KI …\"), keine Floskeln.\n\n"
@@ -32,8 +35,13 @@ SYSTEM_PROMPT = (
     "2. Aufgabe beim CEO anlegen — NUR wenn {name} dich ausdrücklich darum "
     "bittet (\"leg an\", \"erstelle einen Task\", \"kümmer dich um\"):\n"
     "   ISSUE: <titel> :: <beschreibung>\n"
-    "   Beispiel: ISSUE: DMARC einrichten :: DMARC für whitestag.ai konfigurieren.\n\n"
-    "Brauchst du KEIN Werkzeug, antworte einfach direkt als Chat-Text (kein "
+    "   Beispiel: ISSUE: DMARC einrichten :: DMARC für whitestag.ai konfigurieren."
+)
+
+# Schlussteil: folgt in respond() auf den Kopfteil bzw. (falls vorhanden) auf
+# WEB_TOOL_HINT — trägt daher die trennende Leerzeile selbst am Anfang.
+SYSTEM_PROMPT_TAIL = (
+    "\n\nBrauchst du KEIN Werkzeug, antworte einfach direkt als Chat-Text (kein "
     "Token). Frag nicht um Erlaubnis, ein Werkzeug zu nutzen — nutze es einfach."
 )
 
@@ -53,6 +61,7 @@ def format_now(now):
     return "{}, {}. {} {}, {:02d}:{:02d} Uhr".format(
         WEEKDAYS[now.weekday()], now.day, MONTHS[now.month - 1],
         now.year, now.hour, now.minute)
+
 
 LOOKUP_RE = re.compile(r"^\s*LOOKUP\s+(kontakt|termin|mail|wissen|dokument)\s*:\s*(.+)$",
                        re.IGNORECASE)
@@ -102,7 +111,7 @@ WEB_TOOL_HINT = (
     "Preise, Fakten von Webseiten):\n"
     "   WEB: <suchbegriff>\n"
     "   Beispiel: WEB: Wetter Cottbus morgen\n"
-    "   Rate NIE bei solchen Fragen — such nach oder sag, dass du es nicht weisst."
+    "   Rate NIE bei solchen Fragen — such nach oder sag, dass du es nicht weißt."
 )
 
 
@@ -137,10 +146,14 @@ def respond(text, tenant, token, chat_model, history=None, source="per Telegram"
     if not text:
         return {"kind": "empty", "answer": "Nichts erkannt, bitte erneut."}
     hist = history or []
-    system_content = SYSTEM_PROMPT.format(name=first_name(tenant))
-    system_content += TIME_HINT.format(format_now(now or datetime.datetime.now()))
+    # Reihenfolge ist bewusst: WEB_TOOL_HINT (Werkzeug 3) muss VOR dem
+    # "Brauchst du KEIN Werkzeug"-Absatz stehen, sonst liest ein kleines
+    # Modell es nicht mehr als Teil der Werkzeugliste (Review-Befund).
+    system_content = SYSTEM_PROMPT_HEAD.format(name=first_name(tenant))
     if web_key:
         system_content += WEB_TOOL_HINT
+    system_content += SYSTEM_PROMPT_TAIL
+    system_content += TIME_HINT.format(format_now(now or datetime.datetime.now()))
     if voice_output:
         system_content += VOICE_OUTPUT_HINT
     messages = ([{"role": "system", "content": system_content}]
@@ -202,8 +215,12 @@ def _do_lookup(messages, mode, query, tenant, chat_model):
 def _do_web(messages, query, chat_model, api_key):
     print("[web] query='{}'".format((query or "").replace("\n", " ")[:120]),
           flush=True)
+    # Kürzere Timeouts als beim Vault-Lookup: der Nutzer wartet im Sprachpfad
+    # nach dem Bestätigungston stumm, Tavily (extern, langsamer als der Vault)
+    # und der Folge-LLM-Durchgang sollen dafür nicht die vollen Defaults
+    # (15s/90s) ausreizen (Review-Befund).
     try:
-        result = web_search.search(query, api_key)
+        result = web_search.search(query, api_key, timeout=8)
     except web_search.WebSearchError:
         traceback.print_exc()
         return "⚠️ Ich komme gerade nicht ins Netz."
@@ -217,7 +234,7 @@ def _do_web(messages, query, chat_model, api_key):
              ).format(context)},
     ]
     try:
-        answer = llm.chat(followup, model=chat_model)
+        answer = llm.chat(followup, model=chat_model, timeout=30)
     except llm.LlmError:
         traceback.print_exc()
         return "⚠️ Konnte das Suchergebnis nicht auswerten, bitte gleich nochmal."
