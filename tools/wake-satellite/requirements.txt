@@ -1,5 +1,6 @@
 numpy>=1.26
 sounddevice>=0.4.6
+# openwakeword zieht onnxruntime als Backend automatisch mit. ONNX statt tflite,
+# weil `tflite_runtime` auf macOS arm64 kein Wheel hat (tensorflow liefert das
+# von openwakeword erwartete `tflite_runtime` NICHT).
 openwakeword>=0.6.0
-# tflite-Backend: auf macOS über tensorflow (tflite-runtime hat dort keine Wheels).
-tensorflow>=2.16 ; sys_platform == "darwin"

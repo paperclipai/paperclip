@@ -7,9 +7,8 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 SRC_SAT="$REPO_ROOT/tools/wake-satellite"
 SRC_VCO="$REPO_ROOT/tools/voice-echo-bot"
 DEST="$HOME/.paperclip/scripts/wake-satellite"
-MODEL_SRC="$REPO_ROOT/hey_jarvis_v0.1.tflite"
 
-mkdir -p "$DEST/models" "$HOME/.paperclip/logs"
+mkdir -p "$DEST" "$HOME/.paperclip/logs"
 
 # Satellit-Module
 for f in wake.py capture.py playback.py earcon.py sat_config.py satellite.py; do
@@ -19,9 +18,6 @@ done
 for f in config.py llm.py vault_client.py paperclip_client.py transcribe.py tts.py jarvis_brain.py; do
   cp "$SRC_VCO/$f" "$DEST/$f"
 done
-# Wake-Modell
-cp "$MODEL_SRC" "$DEST/models/hey_jarvis_v0.1.tflite"
-
 # venv
 if [ ! -d "$DEST/venv" ]; then
   python3 -m venv "$DEST/venv"
@@ -29,9 +25,13 @@ fi
 "$DEST/venv/bin/pip" install --upgrade pip
 "$DEST/venv/bin/pip" install -r "$SRC_SAT/requirements.txt"
 
+# openwakeword-Modelle laden (ONNX): Wakeword 'hey_jarvis' + Feature-Modelle
+# (melspectrogram/embedding) landen im openwakeword-Ressourcenordner.
+"$DEST/venv/bin/python3" -c "import openwakeword.utils as u; u.download_models(['hey_jarvis'])"
+
 # Modell-Ladbarkeit prüfen (scheitert früh statt im Crashloop)
 "$DEST/venv/bin/python3" -c "from openwakeword.model import Model; \
-Model(wakeword_models=['$DEST/models/hey_jarvis_v0.1.tflite'], inference_framework='tflite'); \
+Model(wakeword_models=['hey_jarvis'], inference_framework='onnx'); \
 print('openwakeword: Modell geladen ✓')"
 
 # LaunchAgent installieren

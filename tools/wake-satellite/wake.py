@@ -14,7 +14,7 @@ def _default_factory(**kwargs):
 
 class WakeDetector:
     def __init__(self, model_paths, threshold=DEFAULT_THRESHOLD,
-                 inference_framework="tflite", model_factory=None):
+                 inference_framework="onnx", model_factory=None):
         factory = model_factory or _default_factory
         self._model = factory(wakeword_models=list(model_paths),
                               inference_framework=inference_framework)

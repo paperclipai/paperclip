@@ -21,15 +21,22 @@ cd "…/Paperclip/tools/wake-satellite"
 ./deploy.sh
 ```
 
-Das Skript kopiert Satellit + geteilte Module + Wake-Modell nach
-`~/.paperclip/scripts/wake-satellite/`, baut das venv, prüft die
-Modell-Ladbarkeit und installiert den LaunchAgent.
+Das Skript kopiert Satellit + geteilte Module nach
+`~/.paperclip/scripts/wake-satellite/`, baut das venv, lädt via
+`openwakeword.download_models` die ONNX-Modelle, prüft die Modell-Ladbarkeit
+und installiert den LaunchAgent.
 
-### macOS-Hinweis zum tflite-Backend
+### Hinweis zum ONNX-Backend
 
-`openwakeword` braucht ein tflite-Backend. Auf macOS liefert `tensorflow`
-(in `requirements.txt`) das mit. Falls die Modell-Prüfung im Deploy fehlschlägt,
-im venv `pip install tensorflow` nachziehen und `deploy.sh` erneut laufen lassen.
+`openwakeword` lädt `.tflite`-Modelle ausschließlich über das eigenständige
+Paket `tflite_runtime` — auf macOS arm64 gibt es dafür kein pip-Wheel
+(`tensorflow` liefert dieses `tflite_runtime` NICHT mit). Der Satellit nutzt
+deshalb das **ONNX-Backend** (`onnxruntime`, kommt als openwakeword-
+Abhängigkeit automatisch mit). `hey_jarvis` ist ein offizielles openwakeword-
+Modell; `deploy.sh` lädt per `download_models(['hey_jarvis'])` die passenden
+`.onnx` (Wakeword + `melspectrogram`/`embedding`-Feature-Modelle) in den
+openwakeword-Ressourcenordner, von wo `sat_config.WAKE_MODELS = ["hey_jarvis"]`
+aufgelöst wird. Kein `tensorflow`, kein `tflite_runtime` nötig.
 
 ## Mikrofon-Freigabe (Pflicht, manuell)
 

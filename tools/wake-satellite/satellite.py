@@ -87,7 +87,8 @@ def handle_interaction(frames, deps, tenant=None, history=None):
 
 def build_deps():
     env = vco_config.load_env(vco_config.ENV_PATH)
-    detector = wake.WakeDetector(sat_config.WAKE_MODELS, threshold=sat_config.WAKE_THRESHOLD)
+    detector = wake.WakeDetector(sat_config.WAKE_MODELS, threshold=sat_config.WAKE_THRESHOLD,
+                                 inference_framework=sat_config.INFERENCE_FRAMEWORK)
     return {
         "detector": detector,
         "whisper_model": os.path.expanduser(env["WHISPER_MODEL"]),

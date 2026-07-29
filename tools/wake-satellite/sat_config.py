@@ -3,10 +3,16 @@
 import os
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-MODEL_PATH = os.path.join(BASE_DIR, "models", "hey_jarvis_v0.1.tflite")
 
 WAKE_THRESHOLD = 0.5
-WAKE_MODELS = [MODEL_PATH]
+# openwakeword lädt .tflite-Modelle nur über das eigenständige Paket
+# `tflite_runtime` — auf macOS arm64 gibt es dafür kein Wheel. Deshalb ONNX-
+# Backend (onnxruntime, kommt als openwakeword-Abhängigkeit mit). "hey_jarvis"
+# ist ein offizielles openwakeword-Modell; deploy.sh lädt via download_models
+# die passenden .onnx (Wakeword + Feature-Modelle) in den openwakeword-
+# Ressourcenordner, von wo der Kurzname aufgelöst wird.
+INFERENCE_FRAMEWORK = "onnx"
+WAKE_MODELS = ["hey_jarvis"]
 
 SAMPLE_RATE = 16000
 FRAME_SAMPLES = 1280
