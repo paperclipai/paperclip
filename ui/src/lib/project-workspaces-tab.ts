@@ -51,16 +51,34 @@ function redactRemote(value: string | null | undefined): string | null {
   if (!value) return null;
   const trimmed = value.trim();
   if (!trimmed) return null;
+
   try {
     const url = new URL(trimmed);
-    // Only URL-shaped remotes can carry embedded credentials (https://user:pass@host/...);
-    // strip those, but keep query/hash out too since they can also carry tokens.
-    return `${url.protocol}//${url.host}${url.pathname}`;
+    if (url.host) {
+      // A real authority component means the WHATWG parser already split out
+      // username/password separately from host; reconstructing protocol+host+pathname
+      // can't carry them forward.
+      return `${url.protocol}//${url.host}${url.pathname}`;
+    }
+    // Opaque-path form (no "//" authority, e.g. a bare "scheme:user:secret@host/path" git
+    // remote) — the parser accepts this but never decomposes userinfo, leaving it sitting
+    // unchanged in pathname, so fall through to the raw-string check below instead of
+    // trusting this as already-safe.
   } catch {
-    // Opaque provider references (sandbox IDs, SCP-style remotes like git@host:org/repo.git,
-    // filesystem paths) aren't URLs and carry no embedded credentials, so keep their identity.
-    return trimmed;
+    // Not URL-shaped at all — same fallthrough.
   }
+
+  // Provider reference fields accept unrestricted strings, so a value that isn't a
+  // well-formed URL (or parsed with no host) isn't automatically credential-free — it can
+  // still be a non-URL git remote carrying userinfo credentials. A colon anywhere before
+  // the first "@" is the credential signal; genuine SCP-style remotes (`git@host:org/repo.git`)
+  // have no colon before the "@" and pass through unchanged, as do sandbox ids and
+  // filesystem paths (no "@" at all).
+  const atIndex = trimmed.indexOf("@");
+  if (atIndex > -1 && trimmed.slice(0, atIndex).includes(":")) {
+    return `(redacted)${trimmed.slice(atIndex)}`;
+  }
+  return trimmed;
 }
 
 // Project workspaces are only "unconfigured" when they're the primary workspace on a

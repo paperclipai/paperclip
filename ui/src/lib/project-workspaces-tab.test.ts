@@ -430,4 +430,19 @@ describe("targetForExecutionWorkspace", () => {
     );
     expect(filesystemRef.authoritativePath).toBe("/mnt/artifacts/run-42");
   });
+
+  it("redacts credentials from non-URL git remotes that fail URL parsing", () => {
+    const nonUrlWithCredentials = targetForExecutionWorkspace(
+      {
+        strategyType: "project_primary",
+        repoUrl: "oauth2:ghp_secrettoken@gitlab.example.com/org/repo.git",
+        cwd: "/repo",
+        providerType: "local_fs",
+        providerRef: null,
+      },
+      "/execution-workspaces/exec-1/configuration",
+    );
+    expect(nonUrlWithCredentials.authoritativePath).not.toContain("ghp_secrettoken");
+    expect(nonUrlWithCredentials.authoritativePath).toBe("(redacted)@gitlab.example.com/org/repo.git");
+  });
 });
