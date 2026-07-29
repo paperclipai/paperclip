@@ -72,14 +72,22 @@ def handle_interaction(frames, deps, tenant=None, history=None):
         recorded = capture.record_until_silence(frames)
         if not recorded:
             break
+        t0 = time.monotonic()
         text = _transcribe(recorded, deps)
+        t1 = time.monotonic()
         result = jarvis_brain.respond(text, tenant, _resolve_token(deps),
                                       deps["chat_model"], history=history,
                                       source="per Sprache")
+        t2 = time.monotonic()
         answer = result["answer"]
         if result["kind"] in ("chat", "lookup", "issue"):
             history = _remember(history, text, answer)
         _speak(answer, deps)
+        t3 = time.monotonic()
+        print("[timing] aufnahme={:.1f}s stt={:.1f}s llm({})={:.1f}s tts+play={:.1f}s "
+              "| text='{}'".format(len(recorded) * sat_config.FRAME_SAMPLES / sat_config.SAMPLE_RATE,
+                                    t1 - t0, result["kind"], t2 - t1, t3 - t2, (text or "")[:50]),
+              flush=True)
         if not capture.wait_for_speech(frames, window_frames=sat_config.FOLLOWUP_WINDOW_FRAMES):
             break
     return history
@@ -93,7 +101,7 @@ def build_deps():
         "detector": detector,
         "whisper_model": os.path.expanduser(env["WHISPER_MODEL"]),
         "eleven_key": env.get("ELEVENLABS_API_KEY"),
-        "chat_model": env.get("CHAT_MODEL") or jarvis_brain.llm.DEFAULT_MODEL,
+        "chat_model": sat_config.CHAT_MODEL or env.get("CHAT_MODEL") or jarvis_brain.llm.DEFAULT_MODEL,
         "token": vco_config.load_paperclip_token,
     }
 
