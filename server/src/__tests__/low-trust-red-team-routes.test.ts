@@ -79,6 +79,30 @@ function isHeartbeatCleanupFkError(error: unknown) {
   );
 }
 
+// Await every background heartbeat run until the run table is quiescent. A route
+// dispatches a wakeup fire-and-forget (void heartbeat.wakeup(...) in
+// routes/issues.ts), so a run can insert its queued row and register in the
+// service after an earlier drain. drainActiveRunExecutions() alone awaits only
+// runs that are already registered. It cannot await a wakeup that is still in its
+// async prologue. Such a late run then writes issues, issue_comments, and
+// heartbeat_runs rows during teardown and races the deletes below (a
+// heartbeat_runs delete deadlocks on the ON DELETE SET NULL cascade to issues; an
+// issue_comments insert breaks the later delete of issues). Loop the drain, give
+// a pending wakeup a macrotask to reach registration, and re-check the run table
+// until no run is queued or running.
+async function drainHeartbeatRunsToQuiescence(
+  db: Db,
+  heartbeat: ReturnType<typeof heartbeatService>,
+) {
+  for (let attempt = 0; attempt < 50; attempt += 1) {
+    await heartbeat.drainActiveRunExecutions();
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const runs = await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns);
+    const hasPending = runs.some((run) => run.status === "queued" || run.status === "running");
+    if (!hasPending) return;
+  }
+}
+
 async function deleteHeartbeatRunsAndWakeupsAfterActivityLogDrains(db: Db) {
   for (let attempt = 0; attempt < 10; attempt += 1) {
     await db.delete(heartbeatRunEvents);
@@ -702,6 +726,11 @@ describeEmbeddedPostgres("low-trust red-team HTTP route regression suite", () =>
   }, 20_000);
 
   afterEach(async () => {
+    // Await every in-flight background heartbeat run to quiescence before the
+    // deletes below. A route dispatches a wakeup fire-and-forget, so a run can
+    // still be writing issues, issue_comments, and heartbeat_runs rows when
+    // teardown starts and would race the deletes.
+    await drainHeartbeatRunsToQuiescence(db, heartbeatService(db));
     await db.delete(issueThreadInteractions);
     await db.delete(issueApprovals);
     await db.delete(approvals);
