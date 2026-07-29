@@ -88,6 +88,8 @@ def validate_canonical_semantics(body: str) -> list[str]:
         "Do not append, retain or merely CSS-hide generic founder/reviewer rows",
         "strip `head`, `script`, `style`, `noscript` and `template` before visible-text matching",
         "fresh sitemap-plus-pagination live scan with zero visible callout hits",
+        "hero's existing `title3`/subtext field",
+        "wp yoast index --reindex --skip-confirmation --interval=0",
         "Mechanical enforcement:",
         "Never strip the letter `t` globally",
         "Compare deployed mu-plugin SHA-256 values",

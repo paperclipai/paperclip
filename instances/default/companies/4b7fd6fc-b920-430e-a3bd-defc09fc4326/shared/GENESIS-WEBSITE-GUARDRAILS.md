@@ -2,7 +2,7 @@
 
 **Status:** CANONICAL — every Genesis-touching Paperclip agent MUST read this file at the start of every run. The file lives in the company-wide `shared/` directory. Each agent's `AGENTS.md` also inlines the full body of this file at the top so the rules are physically present in the agent's prompt even if the agent didn't read the canonical path on disk.
 
-**Last updated:** 2026-07-29 (Headroom logo parity, visible GEO-bar standardisation, machine-readable GEO preservation)
+**Last updated:** 2026-07-29 (Headroom logo parity, visible GEO-bar standardisation, machine-readable GEO preservation, single-hero landing-page consistency)
 
 This document is intentionally one file so rules do not drift between `AGENTS.md`, `HEARTBEAT.md`, and per-role workflow docs. If a rule contradicts this file, **this file wins**. If you need to change a rule here, edit THIS file — do NOT edit the inlined copy in each agent's `AGENTS.md`. The inlined copy is generated from this canonical source.
 
@@ -343,8 +343,10 @@ For header, cursor, menu, preloader or Jarallax defects:
 8. Machine-readable GEO—not generic UI callouts—is the default contract: pages must remain indexable and semantically complete, appear in sitemap/canonical/hreflang, carry valid FAQ/Organisation/LocalBusiness schema where applicable, and explicitly allow relevant AI retrieval robots.
 9. Do not append, retain or merely CSS-hide generic founder/reviewer rows, trophy/“Award-Winning Animation Studio” bars, hidden GEO copy or duplicate GEO prose. When standardising, remove the exact bounded structural callout and preserve genuine authored editorial references even when wording overlaps.
 10. Distinguish UI from schema during audit: strip `head`, `script`, `style`, `noscript` and `template` before visible-text matching, then validate JSON-LD separately. Any corpus removal requires frozen source bytes/hashes, exact occurrence counts, a single locked transaction, mode-`0600` lossless backup, compare-and-swap rollback, cache purges and a fresh sitemap-plus-pagination live scan with zero visible callout hits.
+11. For archive, portfolio and Creative Lab landing pages, reuse the existing single hero: preserve exactly one prominent hero heading widget; put one concise, factual and brand-toned benefit statement—normally about 25–40 words—in the hero's existing `title3`/subtext field; and leave the adjacent presentation column free of detached SEO/GEO paragraph panels. Keep a healthy proof grid/gallery and terminal CTA byte-identical. Put longer verified discovery language in unique Yoast/OG metadata and use the visible project/media evidence plus Organisation-linked `CollectionPage` JSON-LD for machine context. Structured claims must match visible, supportable facts. Never add, retain or CSS-hide keyword essays, extra heading blocks or generic GEO bars.
+12. After any title, description or schema edit, database/postmeta success is not verification. Run `wp yoast index --reindex --skip-confirmation --interval=0`, then flush WordPress object cache, purge LiteSpeed and purge Cloudflare in that order. Verify the live rendered `<title>`, meta description, Open Graph description, canonical, robots and a `WebPage` + `CollectionPage` type in the JSON-LD graph on every affected page.
 
-**Mechanical enforcement:** the canonical sync must fail closed unless clauses 4 and 8–10 remain present, and every generated Genesis agent `AGENTS.md` must contain the exact canonical marker block. A documentation-only edit is incomplete until `sync-genesis-overlay.py --apply`, `--check --quiet`, and the Hermes pickup verifier all pass.
+**Mechanical enforcement:** the canonical sync must fail closed unless clauses 4 and 8–12 remain present, and every generated Genesis agent `AGENTS.md` must contain the exact canonical marker block. A documentation-only edit is incomplete until `sync-genesis-overlay.py --apply`, `--check --quiet`, and the Hermes pickup verifier all pass.
 
 ### 9.6 Founder portrait and credential artefacts
 
