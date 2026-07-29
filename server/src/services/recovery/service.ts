@@ -3457,7 +3457,7 @@ export function recoveryService(db: Db, deps: {
     });
 
     if (recoveryAction.ownerAgentId && recoveryAction.ownerAgentId === input.issue.assigneeAgentId) {
-      const [currentIssue] = await db
+      const [observedIssue] = await db
         .select({
           status: issues.status,
           assigneeAgentId: issues.assigneeAgentId,
@@ -3469,25 +3469,70 @@ export function recoveryService(db: Db, deps: {
         .where(eq(issues.id, input.issue.id))
         .limit(1);
       if (
-        currentIssue &&
-        currentIssue.checkoutRunId === null &&
-        currentIssue.executionRunId === null &&
-        currentIssue.status !== "blocked" &&
-        currentIssue.status !== "done" &&
-        currentIssue.status !== "cancelled" &&
-        currentIssue.assigneeAgentId === recoveryAction.ownerAgentId &&
-        currentIssue.assigneeUserId === input.issue.assigneeUserId
+        observedIssue &&
+        observedIssue.checkoutRunId === null &&
+        observedIssue.executionRunId === null &&
+        observedIssue.status !== "blocked" &&
+        observedIssue.status !== "done" &&
+        observedIssue.status !== "cancelled" &&
+        observedIssue.assigneeAgentId === recoveryAction.ownerAgentId &&
+        observedIssue.assigneeUserId === input.issue.assigneeUserId
       ) {
         await deps.beforeStrandedPostWakeReblockMutation?.();
-        const reblocked = await issuesSvc.update(input.issue.id, {
-          status: "blocked",
-          blockedByIssueIds: blockerIds,
-          assigneeAgentId: recoveryAction.ownerAgentId,
-          expectedCheckoutRunId: null,
-          expectedExecutionRunId: null,
-          expectedStatus: currentIssue.status,
-          expectedAssigneeAgentId: currentIssue.assigneeAgentId,
-          expectedAssigneeUserId: currentIssue.assigneeUserId,
+        const reblocked = await db.transaction(async (tx) => {
+          const [lockedIssue] = await tx
+            .select({
+              status: issues.status,
+              assigneeAgentId: issues.assigneeAgentId,
+              assigneeUserId: issues.assigneeUserId,
+              checkoutRunId: issues.checkoutRunId,
+              executionRunId: issues.executionRunId,
+            })
+            .from(issues)
+            .where(
+              and(
+                eq(issues.companyId, input.issue.companyId),
+                eq(issues.id, input.issue.id),
+              ),
+            )
+            .for("update")
+            .limit(1);
+          if (
+            !lockedIssue ||
+            lockedIssue.status !== observedIssue.status ||
+            lockedIssue.assigneeAgentId !== observedIssue.assigneeAgentId ||
+            lockedIssue.assigneeUserId !== observedIssue.assigneeUserId ||
+            lockedIssue.checkoutRunId !== observedIssue.checkoutRunId ||
+            lockedIssue.executionRunId !== observedIssue.executionRunId
+          ) {
+            return null;
+          }
+
+          const [lockedRecoveryAction] = await tx
+            .select({ id: issueRecoveryActions.id })
+            .from(issueRecoveryActions)
+            .where(
+              and(
+                eq(issueRecoveryActions.id, recoveryAction.id),
+                eq(issueRecoveryActions.companyId, input.issue.companyId),
+                eq(issueRecoveryActions.sourceIssueId, input.issue.id),
+                inArray(issueRecoveryActions.status, ["active", "escalated"]),
+              ),
+            )
+            .for("update")
+            .limit(1);
+          if (!lockedRecoveryAction) return null;
+
+          return issuesSvc.update(input.issue.id, {
+            status: "blocked",
+            blockedByIssueIds: blockerIds,
+            assigneeAgentId: recoveryAction.ownerAgentId,
+            expectedCheckoutRunId: lockedIssue.checkoutRunId,
+            expectedExecutionRunId: lockedIssue.executionRunId,
+            expectedStatus: lockedIssue.status,
+            expectedAssigneeAgentId: lockedIssue.assigneeAgentId,
+            expectedAssigneeUserId: lockedIssue.assigneeUserId,
+          }, tx);
         });
         if (reblocked) return reblocked;
       }
