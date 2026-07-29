@@ -2801,6 +2801,10 @@ export function issueRoutes(
       if (!target) {
         throw unprocessable("Unblock owner agent must belong to the issue company");
       }
+      const targetEligibility = getAgentWorkEligibility({ agent: target, agents: companyAgents });
+      if (!targetEligibility.invokable) {
+        throw unprocessable("Unblock owner agent must be invokable");
+      }
       if (actor.type === "agent" && actor.agentId !== owner.agentId) {
         const report = actor.agentId
           ? companyAgents.find((agent) => agent.id === actor.agentId)
@@ -2808,7 +2812,6 @@ export function issueRoutes(
         const reportEligibility = report
           ? getAgentWorkEligibility({ agent: report, agents: companyAgents })
           : null;
-        const targetEligibility = getAgentWorkEligibility({ agent: target, agents: companyAgents });
         const targetIsReportingLineManager = Boolean(
           reportEligibility?.invokable &&
           targetEligibility.invokable &&
