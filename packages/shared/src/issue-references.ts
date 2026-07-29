@@ -1,4 +1,4 @@
-export const ISSUE_REFERENCE_IDENTIFIER_RE = /^[A-Z][A-Z0-9]*-\d+$/;
+export const ISSUE_REFERENCE_IDENTIFIER_RE = /^[A-Z0-9][A-Z0-9]*-\d+$/;
 
 export interface IssueReferenceMatch {
   index: number;
