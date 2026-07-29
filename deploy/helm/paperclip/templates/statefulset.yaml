@@ -54,14 +54,18 @@ spec:
                 printf '%s' "${PAPERCLIP_MASTER_KEY_SEED}" | base64 -d > "${INST}/secrets/master.key"
                 chmod 0600 "${INST}/secrets/master.key"
               fi
+          {{- /* secret.yaml only writes masterKey into the Secret it renders
+                 itself, so referencing the key against a user-supplied
+                 existingSecret would wedge the pod on an unresolvable
+                 secretKeyRef. The seed script tolerates the var being unset. */}}
+          {{- if and .Values.secret.masterKey (not .Values.secret.existingSecret) }}
           env:
-            {{- if .Values.secret.masterKey }}
             - name: PAPERCLIP_MASTER_KEY_SEED
               valueFrom:
                 secretKeyRef:
                   name: {{ include "paperclip.secretName" . }}
                   key: masterKey
-            {{- end }}
+          {{- end }}
           volumeMounts:
             - name: data
               mountPath: {{ .Values.persistence.mountPath }}

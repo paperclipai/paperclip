@@ -21,7 +21,7 @@ permissions:
 # supersedes only the pending slot, so the image build that is already
 # running always finishes and publishes.
 concurrency:
-  group: docker-${{ inputs.ref || github.ref }}
+  group: docker-${{ github.ref }}
   cancel-in-progress: false
 
 jobs:
@@ -291,7 +291,9 @@ jobs:
           echo "count=${count}" >> "$GITHUB_OUTPUT"
 
       # Published under the same tag set with a `-cloud` suffix
-      # (sha-<short>-cloud, latest-cloud, <version>-cloud).
+      # (sha-<short>-cloud, latest-cloud, <version>-cloud). Mirrors the
+      # stock job's `inputs.ref` handling so a `workflow_call` release build
+      # publishes `<tag>-cloud` instead of overwriting `latest-cloud`.
       - name: Docker meta (cloud)
         id: meta-cloud
         uses: docker/metadata-action@v6
@@ -300,7 +302,8 @@ jobs:
           flavor: |
             suffix=-cloud,onlatest=true
           tags: |
-            type=raw,value=latest,enable={{is_default_branch}}
+            type=raw,value=latest,enable=${{ inputs.ref == '' && github.ref_type == 'branch' }}
+            type=raw,value=${{ inputs.ref }},enable=${{ inputs.ref != '' }}
             type=semver,pattern={{version}}
             type=semver,pattern={{major}}.{{minor}}
             type=sha

@@ -27,8 +27,25 @@ jobs:
       - name: helm lint
         run: helm lint deploy/helm/paperclip
 
+      # `helm plugin install <git url>` fails under Helm v4: it verifies plugin
+      # sources by default and the unittest repo publishes no provenance for
+      # the git source, so the install aborts. Rather than pass --verify=false
+      # and lose integrity checking entirely, fetch the pinned release tarball
+      # and check it against the published SHA256 — the same approach the
+      # helm-docs step below uses.
       - name: Install helm-unittest
-        run: helm plugin install https://github.com/helm-unittest/helm-unittest --version v1.1.0
+        run: |
+          set -euo pipefail
+          VERSION=v1.1.0
+          SHA256=3a8adc16a6d56cb2176b3668b4c4a3ec55130a8a8a52ae78804fd9b12ddf3418
+          TARBALL=helm-unittest-linux-amd64-${VERSION#v}.tgz
+          curl -fsSL -o "/tmp/${TARBALL}" \
+            "https://github.com/helm-unittest/helm-unittest/releases/download/${VERSION}/${TARBALL}"
+          echo "${SHA256}  /tmp/${TARBALL}" | sha256sum -c -
+          PLUGIN_DIR="$(helm env HELM_PLUGINS)/unittest"
+          mkdir -p "${PLUGIN_DIR}"
+          tar -xz -C "${PLUGIN_DIR}" -f "/tmp/${TARBALL}"
+          helm plugin list
 
       - name: helm unittest
         run: helm unittest deploy/helm/paperclip

@@ -28,3 +28,27 @@ tests:
           content:
             name: PAPERCLIP_ALLOWED_HOSTNAMES
             value: "127.0.0.1,foo.example.com"
+
+  - it: seeds the master key from the generated Secret when one is rendered
+    set:
+      secret.masterKey: c2VlZA==
+    asserts:
+      - contains:
+          path: spec.template.spec.initContainers[0].env
+          content:
+            name: PAPERCLIP_MASTER_KEY_SEED
+            valueFrom:
+              secretKeyRef:
+                name: paperclip-credentials
+                key: masterKey
+
+  # secret.yaml only writes `masterKey` into the Secret it renders itself, so
+  # referencing the key against a user-supplied Secret would leave the pod
+  # stuck on an unresolvable secretKeyRef.
+  - it: does not reference masterKey when an existing Secret is supplied
+    set:
+      secret.masterKey: c2VlZA==
+      secret.existingSecret: my-external-secret
+    asserts:
+      - notExists:
+          path: spec.template.spec.initContainers[0].env
