@@ -117,3 +117,34 @@ def test_unparsed_source_per_sprache(monkeypatch):
     monkeypatch.setattr(jarvis_brain, "create_issue", fake_create)
     jarvis_brain.respond("mach xyz", TENANT, "tok", "m", source="per Sprache")
     assert captured["description"].startswith("Von Walter per Sprache diktiert")
+
+
+def test_format_now_is_german_and_readable():
+    import datetime
+    stamp = jarvis_brain.format_now(datetime.datetime(2026, 7, 29, 15, 42))
+    assert stamp == "Mittwoch, 29. Juli 2026, 15:42 Uhr"
+
+
+def test_system_prompt_carries_current_time(monkeypatch):
+    import datetime
+    seen = {}
+    def fake_chat(msgs, model=None):
+        seen["system"] = msgs[0]["content"]
+        return "Es ist Viertel vor vier."
+    monkeypatch.setattr(jarvis_brain.llm, "chat", fake_chat)
+    jarvis_brain.respond("wie spät?", TENANT, "tok", "m",
+                         now=datetime.datetime(2026, 7, 29, 15, 42))
+    assert "Mittwoch, 29. Juli 2026, 15:42 Uhr" in seen["system"]
+
+
+def test_time_is_read_per_call_not_frozen(monkeypatch):
+    # Der Satellit ist ein Dauerprozess: eine beim Start eingefrorene Uhr wäre
+    # nur eine langsamere Form derselben Falschauskunft.
+    import datetime
+    seen = []
+    monkeypatch.setattr(jarvis_brain.llm, "chat",
+                        lambda msgs, model=None: seen.append(msgs[0]["content"]) or "ok")
+    jarvis_brain.respond("a", TENANT, "tok", "m", now=datetime.datetime(2026, 7, 29, 9, 0))
+    jarvis_brain.respond("b", TENANT, "tok", "m", now=datetime.datetime(2026, 7, 29, 17, 30))
+    assert "09:00 Uhr" in seen[0]
+    assert "17:30 Uhr" in seen[1]

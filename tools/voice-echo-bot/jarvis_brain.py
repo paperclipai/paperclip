@@ -5,6 +5,7 @@ Reine Logik: Text rein, {"kind","answer"} raus. Kein Telegram, kein Mikrofon.
 Kapselt System-Prompt, Steuer-Token-Parsing (LOOKUP/ISSUE) und die Werkzeug-
 Ausführung (Vault-Lookup, CEO-Issue, Unausgewertet-Notfall). stdlib only.
 """
+import datetime
 import json
 import re
 import traceback
@@ -32,6 +33,23 @@ SYSTEM_PROMPT = (
     "Brauchst du KEIN Werkzeug, antworte einfach direkt als Chat-Text (kein "
     "Token). Frag nicht um Erlaubnis, ein Werkzeug zu nutzen — nutze es einfach."
 )
+
+# Wochentage/Monate fest im Code: unter launchd ist die Locale typischerweise
+# "C", dann lieferte strftime("%A") englische Namen.
+WEEKDAYS = ("Montag", "Dienstag", "Mittwoch", "Donnerstag",
+            "Freitag", "Samstag", "Sonntag")
+MONTHS = ("Januar", "Februar", "März", "April", "Mai", "Juni", "Juli",
+          "August", "September", "Oktober", "November", "Dezember")
+
+TIME_HINT = ("\n\nAktuelle Zeit: {}. Nutze sie direkt für Fragen nach Uhrzeit, "
+             "Datum oder Wochentag — dafür brauchst du kein Werkzeug.")
+
+
+def format_now(now):
+    """Datum/Uhrzeit als deutscher Klartext für den System-Prompt."""
+    return "{}, {}. {} {}, {:02d}:{:02d} Uhr".format(
+        WEEKDAYS[now.weekday()], now.day, MONTHS[now.month - 1],
+        now.year, now.hour, now.minute)
 
 LOOKUP_RE = re.compile(r"^\s*LOOKUP\s+(kontakt|termin|mail|wissen|dokument)\s*:\s*(.+)$",
                        re.IGNORECASE)
@@ -82,12 +100,13 @@ def _strip_control_lines(text):
 
 
 def respond(text, tenant, token, chat_model, history=None, source="per Telegram",
-            voice_output=False):
+            voice_output=False, now=None):
     text = (text or "").strip()
     if not text:
         return {"kind": "empty", "answer": "Nichts erkannt, bitte erneut."}
     hist = history or []
     system_content = SYSTEM_PROMPT.format(name=first_name(tenant))
+    system_content += TIME_HINT.format(format_now(now or datetime.datetime.now()))
     if voice_output:
         system_content += VOICE_OUTPUT_HINT
     messages = ([{"role": "system", "content": system_content}]
