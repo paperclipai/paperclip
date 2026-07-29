@@ -63,13 +63,20 @@ const DEFAULT_RPC_TIMEOUT_MS = 30_000;
 
 /**
  * Upper bound for the *default* RPC timeout path (15 minutes). Explicit
- * caller-supplied timeouts are honored as-is: execute-class RPCs such as
- * `environmentExecute` run entire sandboxed agent sessions in one call and
+ * caller-supplied timeouts are not subject to this cap: execute-class RPCs such
+ * as `environmentExecute` run entire sandboxed agent sessions in one call and
  * their callers deliberately request multi-hour budgets (see
  * `resolvePluginExecuteRpcTimeoutMs` in plugin-environment-driver.ts).
  * Clamping those explicit budgets here killed long sandboxed runs mid-work.
  */
 const MAX_RPC_TIMEOUT_MS = 15 * 60 * 1_000;
+
+/**
+ * Maximum delay accepted by Node timers before Node clamps the timeout to 1ms.
+ * Keep accepted explicit RPC budgets inside this range before calling
+ * setTimeout, otherwise a huge timeout can expire almost immediately.
+ */
+const MAX_NODE_TIMER_TIMEOUT_MS = 2_147_483_647;
 
 /** Timeout for the initialize RPC call. */
 const INITIALIZE_TIMEOUT_MS = 15_000;
@@ -164,11 +171,12 @@ export function formatWorkerFailureMessage(message: string, stderrExcerpt: strin
 /**
  * Resolve the effective timeout for an RPC call.
  *
- * An explicit, positive, finite caller-supplied timeout is honored verbatim —
- * callers that pass one (e.g. the environment driver for `environmentExecute`)
- * own their budget, and independent inactivity/safety guards bound hung runs.
- * Only the default path (no usable explicit timeout) is clamped to
- * MAX_RPC_TIMEOUT_MS so ordinary plugin calls stay bounded.
+ * An explicit, positive, finite caller-supplied timeout bypasses the 15-minute
+ * RPC cap after normalization to Node's timer-safe integer range. Callers that
+ * pass one (e.g. the environment driver for `environmentExecute`) own their
+ * budget, and independent inactivity/safety guards bound hung runs. Only the
+ * default path (no usable explicit timeout) is clamped to MAX_RPC_TIMEOUT_MS so
+ * ordinary plugin calls stay bounded.
  */
 export function resolveRpcCallTimeoutMs(
   explicitTimeoutMs: number | undefined,
@@ -179,7 +187,7 @@ export function resolveRpcCallTimeoutMs(
     Number.isFinite(explicitTimeoutMs) &&
     explicitTimeoutMs > 0
   ) {
-    return Math.trunc(explicitTimeoutMs);
+    return Math.min(Math.max(Math.trunc(explicitTimeoutMs), 1), MAX_NODE_TIMER_TIMEOUT_MS);
   }
   return Math.min(defaultTimeoutMs, MAX_RPC_TIMEOUT_MS);
 }

@@ -38,6 +38,7 @@ const TEST_MANIFEST: PaperclipPluginManifestV1 = {
 
 describe("resolveRpcCallTimeoutMs", () => {
   const MAX_RPC_TIMEOUT_MS = 15 * 60 * 1_000;
+  const MAX_NODE_TIMER_TIMEOUT_MS = 2_147_483_647;
   const DEFAULT_RPC_TIMEOUT_MS = 30_000;
 
   it("honors an explicit timeout above the 15-minute default ceiling", () => {
@@ -58,6 +59,13 @@ describe("resolveRpcCallTimeoutMs", () => {
 
   it("truncates fractional explicit timeouts", () => {
     expect(resolveRpcCallTimeoutMs(1_000.9, DEFAULT_RPC_TIMEOUT_MS)).toBe(1_000);
+  });
+
+  it("normalizes explicit timeouts to Node's timer-safe range", () => {
+    expect(resolveRpcCallTimeoutMs(0.5, DEFAULT_RPC_TIMEOUT_MS)).toBe(1);
+    expect(resolveRpcCallTimeoutMs(MAX_NODE_TIMER_TIMEOUT_MS + 1, DEFAULT_RPC_TIMEOUT_MS)).toBe(
+      MAX_NODE_TIMER_TIMEOUT_MS,
+    );
   });
 
   it("uses the default timeout when no explicit timeout is provided", () => {
