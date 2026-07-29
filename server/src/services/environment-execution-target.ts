@@ -115,7 +115,6 @@ export async function resolveEnvironmentExecutionTarget(input: {
                 env: commandInput.env,
                 stdin: commandInput.stdin,
                 timeoutMs: commandInput.timeoutMs,
-                noProfile: commandInput.noProfile,
               });
               accumulateProviderDurations(result.metadata);
               if (result.stdout) await commandInput.onLog?.("stdout", result.stdout);

@@ -21,6 +21,11 @@ Container images for running coding-agent harnesses in sandboxed environments (f
 - tini (PID-1 init, ensures signal propagation)
 - Non-root user `paperclip` (uid/gid 1000)
 
+The NodeSource install puts `node` on the default `PATH`. The Paperclip runtime
+runs each command with that `PATH` and never sources a login profile. For the
+full exec-path contract, see
+`packages/plugins/sandbox-providers/SANDBOX-REQUIREMENTS.md`.
+
 **Paperclip Binaries:**
 - `/usr/local/bin/paperclip-agent-shim`: Go binary compiled from `tools/agent-shim/`. Reads `/run/paperclip/runtime-command.json` and `syscall.Exec`s the harness CLI.
 

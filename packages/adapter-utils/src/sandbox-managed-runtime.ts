@@ -207,7 +207,7 @@ export interface SandboxManagedRuntimeClient {
   ): Promise<Buffer | Uint8Array | ArrayBuffer>;
   listFiles(remotePath: string): Promise<string[]>;
   remove(remotePath: string): Promise<void>;
-  run(command: string, options: { timeoutMs: number; noProfile?: boolean }): Promise<void>;
+  run(command: string, options: { timeoutMs: number }): Promise<void>;
   /**
    * Optional native inbound transfer. Present only when the sandbox provider
    * advertises both `environmentSyncIn` and `environmentSyncOut`; otherwise the
