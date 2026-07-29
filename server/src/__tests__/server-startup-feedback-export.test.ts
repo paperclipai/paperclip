@@ -21,9 +21,14 @@ const {
   feedbackExportServiceMock,
   feedbackServiceFactoryMock,
   fakeServer,
+  bootstrapExecutionPolicyFromEnvMock,
   heartbeatServiceFactoryMock,
   heartbeatServiceMock,
   loadConfigMock,
+  reconcileBuiltInAgentsOnStartupMock,
+  reconcileCloudUpstreamRunsOnStartupMock,
+  reconcileCodexLocalManagedHomesOnStartupMock,
+  reconcilePersistedRuntimeServicesOnStartupMock,
   resolveHeartbeatSchedulingSuppressionMock,
   routineServiceFactoryMock,
   routineServiceMock,
@@ -76,6 +81,7 @@ const {
     flushPendingFeedbackTraces: vi.fn(async () => ({ attempted: 0, sent: 0, failed: 0 })),
   };
   const feedbackServiceFactoryMock = vi.fn(() => feedbackExportServiceMock);
+  const bootstrapExecutionPolicyFromEnvMock = vi.fn(async () => null);
   const fakeServer = {
     once: vi.fn().mockReturnThis(),
     off: vi.fn().mockReturnThis(),
@@ -86,8 +92,27 @@ const {
     close: vi.fn(),
   };
   const loadConfigMock = vi.fn();
+  const reconcileBuiltInAgentsOnStartupMock = vi.fn(async () => ({
+    scanned: 0,
+    reconciled: 0,
+    unknown: 0,
+    duplicates: 0,
+  }));
+  const reconcileCloudUpstreamRunsOnStartupMock = vi.fn(async () => ({ reconciled: 0 }));
+  const reconcileCodexLocalManagedHomesOnStartupMock = vi.fn(async () => ({
+    scanned: 0,
+    seeded: 0,
+    alreadySeeded: 0,
+    externalOverride: 0,
+    noManagedHome: 0,
+    sourceAuthMissing: 0,
+    failed: 0,
+    seededAgentIds: [],
+  }));
+  const reconcilePersistedRuntimeServicesOnStartupMock = vi.fn(async () => ({ reconciled: 0 }));
 
   return {
+    bootstrapExecutionPolicyFromEnvMock,
     createAppMock,
     createBetterAuthInstanceMock,
     createDbMock,
@@ -101,6 +126,10 @@ const {
     heartbeatServiceFactoryMock,
     heartbeatServiceMock,
     loadConfigMock,
+    reconcileBuiltInAgentsOnStartupMock,
+    reconcileCloudUpstreamRunsOnStartupMock,
+    reconcileCodexLocalManagedHomesOnStartupMock,
+    reconcilePersistedRuntimeServicesOnStartupMock,
     resolveHeartbeatSchedulingSuppressionMock,
     routineServiceFactoryMock,
     routineServiceMock,
@@ -216,7 +245,7 @@ vi.mock("../services/index.js", () => ({
     humanGrantsInserted: 0,
   })),
   feedbackService: feedbackServiceFactoryMock,
-  bootstrapExecutionPolicyFromEnv: vi.fn(async () => null),
+  bootstrapExecutionPolicyFromEnv: bootstrapExecutionPolicyFromEnvMock,
   environmentCustomImageService: environmentCustomImagesServiceFactoryMock,
   heartbeatService: heartbeatServiceFactoryMock,
   instanceSettingsService: vi.fn(() => ({
@@ -228,24 +257,10 @@ vi.mock("../services/index.js", () => ({
       },
     })),
   })),
-  reconcileCloudUpstreamRunsOnStartup: vi.fn(async () => ({ reconciled: 0 })),
-  reconcileCodexLocalManagedHomesOnStartup: vi.fn(async () => ({
-    scanned: 0,
-    seeded: 0,
-    alreadySeeded: 0,
-    externalOverride: 0,
-    noManagedHome: 0,
-    sourceAuthMissing: 0,
-    failed: 0,
-    seededAgentIds: [],
-  })),
-  reconcileBuiltInAgentsOnStartup: vi.fn(async () => ({
-    scanned: 0,
-    reconciled: 0,
-    unknown: 0,
-    duplicates: 0,
-  })),
-  reconcilePersistedRuntimeServicesOnStartup: vi.fn(async () => ({ reconciled: 0 })),
+  reconcileCloudUpstreamRunsOnStartup: reconcileCloudUpstreamRunsOnStartupMock,
+  reconcileCodexLocalManagedHomesOnStartup: reconcileCodexLocalManagedHomesOnStartupMock,
+  reconcileBuiltInAgentsOnStartup: reconcileBuiltInAgentsOnStartupMock,
+  reconcilePersistedRuntimeServicesOnStartup: reconcilePersistedRuntimeServicesOnStartupMock,
   resolveHeartbeatSchedulingSuppression: resolveHeartbeatSchedulingSuppressionMock,
   routineService: routineServiceFactoryMock,
   toolAccessService: vi.fn(() => ({
@@ -420,8 +435,8 @@ describe("startServer feedback export wiring", () => {
     }));
     detectPortMock.mockResolvedValueOnce(3101);
     resolveHeartbeatSchedulingSuppressionMock.mockReturnValue({
-      suppressed: true,
-      reason: "non_primary_runtime_instance",
+      suppressed: false,
+      reason: null,
     });
     const intervalCallbacks: Array<() => void> = [];
     const setIntervalSpy = vi
@@ -436,9 +451,17 @@ describe("startServer feedback export wiring", () => {
 
       expect(started.listenPort).toBe(3101);
       expect(process.env.PAPERCLIP_PRIMARY_RUNTIME_INSTANCE).toBe("false");
+      expect(bootstrapExecutionPolicyFromEnvMock).not.toHaveBeenCalled();
+      expect(reconcilePersistedRuntimeServicesOnStartupMock).not.toHaveBeenCalled();
+      expect(reconcileCloudUpstreamRunsOnStartupMock).not.toHaveBeenCalled();
+      expect(reconcileCodexLocalManagedHomesOnStartupMock).not.toHaveBeenCalled();
+      expect(reconcileBuiltInAgentsOnStartupMock).not.toHaveBeenCalled();
       expect(heartbeatServiceMock.reconcileHotRestartAdoption).not.toHaveBeenCalled();
       expect(heartbeatServiceMock.tickTimers).not.toHaveBeenCalled();
       expect(heartbeatServiceMock.reapOrphanedRuns).not.toHaveBeenCalled();
+      expect(heartbeatServiceMock.promoteDueScheduledRetries).not.toHaveBeenCalled();
+      expect(heartbeatServiceMock.resumeQueuedRuns).not.toHaveBeenCalled();
+      expect(heartbeatServiceMock.reconcileStrandedAssignedIssues).not.toHaveBeenCalled();
       expect(routineServiceMock.tickScheduledTriggers).not.toHaveBeenCalled();
       expect(environmentCustomImagesServiceMock.cleanupExpiredSetupSessions).not.toHaveBeenCalled();
       expect(intervalCallbacks.length).toBeGreaterThan(0);

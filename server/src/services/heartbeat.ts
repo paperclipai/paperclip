@@ -44,6 +44,7 @@ import {
   documentAnnotationComments,
   documentAnnotationThreads,
   documentRevisions,
+  environmentLeases,
   issueDocuments,
   executionWorkspaces,
   heartbeatRunEvents,
@@ -5144,7 +5145,10 @@ async function terminateHeartbeatRunProcess(input: {
 function buildProcessLossMessage(run: {
   processPid: number | null;
   processGroupId: number | null;
-}, options?: { descendantOnly?: boolean; forcedStop?: boolean }) {
+}, options?: { descendantOnly?: boolean; forcedStop?: boolean; leaseLessBeforeStart?: boolean }) {
+  if (options?.leaseLessBeforeStart) {
+    return "Process lost -- run never acquired an environment lease before exceeding the orphan-silence threshold";
+  }
   if (options?.forcedStop && run.processPid) {
     return `Process lost -- stale silent child pid ${run.processPid} exceeded the orphan-silence threshold and was terminated`;
   }
@@ -11332,6 +11336,49 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     issueId: string,
     staleness: Extract<QueuedRunStaleness, { stale: true }>,
   ) {
+    const readCurrentStaleWakeTargetAgentId = async () => {
+      const issue = await db
+        .select({
+          assigneeAgentId: issues.assigneeAgentId,
+          status: issues.status,
+          executionState: issues.executionState,
+        })
+        .from(issues)
+        .where(and(eq(issues.companyId, run.companyId), eq(issues.id, issueId)))
+        .then((rows) => rows[0] ?? null);
+      if (!issue) return null;
+
+      if (issue.status === "in_review") {
+        const executionState = parseIssueExecutionState(issue.executionState);
+        const currentParticipant = executionState?.status === "pending"
+          ? executionState.currentParticipant
+          : null;
+        if (currentParticipant?.type === "agent") {
+          return currentParticipant.agentId ?? null;
+        }
+      }
+
+      return issue.assigneeAgentId ?? null;
+    };
+    const enqueueCurrentIssueWake = async (targetAgentId: string | null) => {
+      if (!targetAgentId) return;
+      await enqueueWakeup(targetAgentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_assigned",
+        payload: {
+          issueId,
+          staleQueuedRunId: run.id,
+          staleQueuedRunErrorCode: staleness.errorCode,
+        },
+        contextSnapshot: {
+          issueId,
+          wakeReason: "issue_assigned",
+          staleQueuedRunId: run.id,
+          staleQueuedRunErrorCode: staleness.errorCode,
+        },
+      });
+    };
     const now = new Date();
     const cancelled = await setRunStatus(run.id, "cancelled", {
       finishedAt: now,
@@ -11377,34 +11424,32 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       payload: staleness.details,
     });
 
-    if (staleness.errorCode === "issue_assignee_changed") {
-      const successorAgentId = readNonEmptyString(staleness.details.currentAssigneeAgentId);
-      if (successorAgentId) {
-        await enqueueWakeup(successorAgentId, {
-          source: "automation",
-          triggerDetail: "system",
-          reason: "issue_assigned",
-          payload: {
-            issueId,
-            staleQueuedRunId: run.id,
-            staleQueuedRunErrorCode: staleness.errorCode,
-          },
-          contextSnapshot: {
-            issueId,
+    switch (staleness.errorCode) {
+      case "issue_not_found":
+      case "issue_terminal_status":
+        break;
+      case "issue_assignee_changed":
+        await enqueueCurrentIssueWake(readNonEmptyString(staleness.details.currentAssigneeAgentId) ?? null);
+        break;
+      case "issue_not_in_progress":
+      case "issue_review_participant_changed":
+      case "issue_continuation_waiting_on_review":
+        await enqueueCurrentIssueWake(await readCurrentStaleWakeTargetAgentId());
+        break;
+      case "issue_execution_lock_changed": {
+        const agent = await getAgent(run.agentId);
+        if (agent) {
+          await scheduleBoundedRetryForRun(cancelled, agent, {
+            retryReason: "issue_execution_lock_changed",
             wakeReason: "issue_assigned",
-            staleQueuedRunId: run.id,
-            staleQueuedRunErrorCode: staleness.errorCode,
-          },
-        });
+            delayMs: 1_000,
+          });
+        }
+        break;
       }
-    } else if (staleness.errorCode === "issue_execution_lock_changed") {
-      const agent = await getAgent(run.agentId);
-      if (agent) {
-        await scheduleBoundedRetryForRun(cancelled, agent, {
-          retryReason: "issue_execution_lock_changed",
-          wakeReason: "issue_assigned",
-          delayMs: 1_000,
-        });
+      default: {
+        const exhaustiveCheck: never = staleness.errorCode;
+        return exhaustiveCheck;
       }
     }
 
@@ -11737,6 +11782,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         issue.monitorNextCheckAt,
       ]),
     );
+    const activeRunIds = activeRuns.map(({ run }) => run.id);
+    const activeLeaseRunIds = activeRunIds.length > 0
+      ? new Set(
+        (await db
+          .select({ runId: environmentLeases.heartbeatRunId })
+          .from(environmentLeases)
+          .where(and(
+            inArray(environmentLeases.heartbeatRunId, activeRunIds),
+            eq(environmentLeases.status, "active"),
+          )))
+          .map((row) => row.runId),
+      )
+      : new Set<string>();
 
     const reaped: string[] = [];
 
@@ -11751,17 +11809,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
       const tracksLocalChild = isTrackedLocalChildProcessAdapter(adapterType);
       const zeroProcessMetadata = tracksLocalChild && !run.processPid && !run.processGroupId;
+      const hasActiveEnvironmentLease = activeLeaseRunIds.has(run.id);
       const silenceAgeMs = orphanedRunSilenceAgeMs(run, now);
       const hasRecentDurableActivity = silenceAgeMs < durableActivityGraceMs;
       const exceededOrphanSilenceSweepThreshold = silenceAgeMs >= orphanSilenceSweepThresholdMs;
       if (zeroProcessMetadata) {
-        logger.warn(
-          hasRecentDurableActivity
-            ? { runId: run.id, adapterType, silenceAgeMs, durableActivityGraceMs }
-            : { runId: run.id, adapterType, silenceAgeMs, orphanSilenceSweepThresholdMs },
-          "skipping orphan reap because local run has no process metadata and cannot be classified from silence alone",
-        );
-        continue;
+        if (hasActiveEnvironmentLease || !exceededOrphanSilenceSweepThreshold) {
+          logger.warn(
+            hasActiveEnvironmentLease
+              ? { runId: run.id, adapterType, silenceAgeMs, orphanSilenceSweepThresholdMs, hasActiveEnvironmentLease }
+              : hasRecentDurableActivity
+                ? { runId: run.id, adapterType, silenceAgeMs, durableActivityGraceMs }
+                : { runId: run.id, adapterType, silenceAgeMs, orphanSilenceSweepThresholdMs },
+            hasActiveEnvironmentLease
+              ? "skipping orphan reap because local run has no process metadata but still holds an active environment lease"
+              : "skipping orphan reap because local run has no process metadata and cannot be classified from silence alone",
+          );
+          continue;
+        }
       }
       const processPidAlive = Boolean(
         tracksLocalChild && run.processPid && isProcessAlive(run.processPid),
@@ -11826,7 +11891,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       );
       const baseMessage = buildProcessLossMessage(
         run,
-        forcedStopForSilence
+        zeroProcessMetadata
+          ? { leaseLessBeforeStart: true }
+          : forcedStopForSilence
           ? { forcedStop: true }
           : descendantOnlyCleanup
             ? { descendantOnly: true }
