@@ -76,6 +76,7 @@ describe("hermes-local transient provider failure classification", () => {
   it("classifies the captured engine-overload transcript", async () => {
     childResult.current.stdout =
       "API call failed after 3 retries: HTTP 429: The engine is currently overloaded, please try again later\n";
+    childResult.current.stderr = "session_id: 20260729_abcdef12\n";
 
     const result = await execute(makeCtx() as any);
 
@@ -144,6 +145,26 @@ describe("hermes-local transient provider failure classification", () => {
       "API call failed after 3 retries: HTTP 503: Service unavailable",
       "Fatal: invalid local Hermes configuration",
     ].join("\n");
+
+    const result = await execute(makeCtx() as any);
+
+    expect(result.errorCode).toBeUndefined();
+    expect(result.errorFamily).toBeUndefined();
+    expect(result.resultJson).not.toHaveProperty("errorFamily");
+  });
+
+  it.each([
+    {
+      stdout: "API call failed after 3 retries: HTTP 503: Service unavailable",
+      stderr: "Fatal: invalid local Hermes configuration",
+    },
+    {
+      stdout: "Fatal: invalid local Hermes configuration",
+      stderr: "API call failed after 3 retries: HTTP 503: Service unavailable",
+    },
+  ])("does not classify conflicting mixed-stream output: $stdout | $stderr", async ({ stdout, stderr }) => {
+    childResult.current.stdout = stdout;
+    childResult.current.stderr = stderr;
 
     const result = await execute(makeCtx() as any);
 

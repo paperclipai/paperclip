@@ -238,6 +238,14 @@ interface TransientProviderFailure {
   errorMessage: string;
 }
 
+function containsOnlyHermesSessionMetadata(output: string): boolean {
+  const lines = output
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  return lines.every((line) => /^(?:session_id|Session ID):\s*[A-Za-z0-9_-]+$/i.test(line));
+}
+
 function classifyTransientProviderFailure(
   stdout: string,
   stderr: string,
@@ -255,9 +263,11 @@ function classifyTransientProviderFailure(
     ? stderrOutput
     : null;
   const failureEnvelope =
-    stdoutFailureLine ??
-    stderrFailureLine ??
-    null;
+    stdoutFailureLine && containsOnlyHermesSessionMetadata(stderrOutput)
+      ? stdoutFailureLine
+      : stderrFailureLine && containsOnlyHermesSessionMetadata(stdoutOutput)
+        ? stderrFailureLine
+        : null;
   if (!failureEnvelope) return null;
 
   const hasGatewayFailure = /\bHTTP(?:\/\d(?:\.\d)?)?\s+(?:502|503|504)\b/i.test(failureEnvelope);
