@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, eq, sql } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
@@ -28,6 +28,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { heartbeatService } from "../services/heartbeat.ts";
+import { buildAgentUnblockWakeIntent } from "../services/routable-blocked.js";
 import { runningProcesses } from "../adapters/index.ts";
 
 const mockAdapterExecute = vi.hoisted(() =>
@@ -422,6 +423,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
   it("defers issue_blockers_resolved as a follow-up when the same issue is already running", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
+    const executionAgentId = randomUUID();
     const blockerId = randomUUID();
     const blockedIssueId = randomUUID();
     const activeRunId = randomUUID();
@@ -432,26 +434,39 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       issuePrefix: `D${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
     });
-    await db.insert(agents).values({
-      id: agentId,
-      companyId,
-      name: "CodexCoder",
-      role: "engineer",
-      status: "active",
-      adapterType: "codex_local",
-      adapterConfig: {},
-      runtimeConfig: {
-        heartbeat: {
-          wakeOnDemand: true,
-          maxConcurrentRuns: 1,
+    await db.insert(agents).values([
+      {
+        id: agentId,
+        companyId,
+        name: "CodexCoder",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {
+          heartbeat: {
+            wakeOnDemand: true,
+            maxConcurrentRuns: 1,
+          },
         },
+        permissions: {},
       },
-      permissions: {},
-    });
+      {
+        id: executionAgentId,
+        companyId,
+        name: "ActiveExecutor",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+        permissions: {},
+      },
+    ]);
     await db.insert(heartbeatRuns).values({
       id: activeRunId,
       companyId,
-      agentId,
+      agentId: executionAgentId,
       status: "running",
       invocationSource: "on_demand",
       contextSnapshot: {
@@ -463,8 +478,8 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       {
         id: blockerId,
         companyId,
-        title: "Completed prerequisite",
-        status: "done",
+        title: "Unresolved prerequisite",
+        status: "blocked",
         priority: "medium",
       },
       {
@@ -474,7 +489,11 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
         status: "blocked",
         priority: "medium",
         assigneeAgentId: agentId,
+        responsibleUserId: "responsible-user",
+        unblockDescriptor: { owner: { agentId }, action: "Review the unblock request" },
+        blockedTransitionAt: new Date(),
         executionRunId: activeRunId,
+        executionAgentNameKey: "activeexecutor",
         executionLockedAt: new Date(),
       },
     ]);
@@ -528,12 +547,87 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       }),
     ]);
 
+    const initialIssue = await db.select().from(issues).where(eq(issues.id, blockedIssueId)).then((rows) => rows[0]);
+    const firstOwnerIntent = buildAgentUnblockWakeIntent(initialIssue)!;
+    await expect(heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_unblock_requested",
+      payload: firstOwnerIntent.payload,
+      idempotencyKey: firstOwnerIntent.idempotencyKey,
+      contextSnapshot: {
+        issueId: blockedIssueId,
+        taskId: blockedIssueId,
+        wakeReason: "issue_unblock_requested",
+        intentFingerprint: firstOwnerIntent.intentFingerprint,
+      },
+    })).resolves.toBeNull();
+
+    await db
+      .update(issues)
+      .set({ unblockDescriptor: { owner: { agentId }, action: "Review the revised unblock request" } })
+      .where(eq(issues.id, blockedIssueId));
+    const revisedIssue = await db.select().from(issues).where(eq(issues.id, blockedIssueId)).then((rows) => rows[0]);
+    const secondOwnerIntent = buildAgentUnblockWakeIntent(revisedIssue)!;
+    await expect(heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_unblock_requested",
+      payload: secondOwnerIntent.payload,
+      idempotencyKey: secondOwnerIntent.idempotencyKey,
+      contextSnapshot: {
+        issueId: blockedIssueId,
+        taskId: blockedIssueId,
+        wakeReason: "issue_unblock_requested",
+        intentFingerprint: secondOwnerIntent.intentFingerprint,
+      },
+    })).resolves.toBeNull();
+
+    const ownerIntentKeys = [firstOwnerIntent.idempotencyKey, secondOwnerIntent.idempotencyKey];
+    let ownerWakeRequests = await db
+      .select({
+        status: agentWakeupRequests.status,
+        reason: agentWakeupRequests.reason,
+        idempotencyKey: agentWakeupRequests.idempotencyKey,
+      })
+      .from(agentWakeupRequests)
+      .where(inArray(agentWakeupRequests.idempotencyKey, ownerIntentKeys));
+    expect(ownerWakeRequests).toEqual(expect.arrayContaining(ownerIntentKeys.map((ownerIntentKey) =>
+      expect.objectContaining({
+        status: "deferred_issue_execution",
+        reason: "issue_execution_deferred",
+        idempotencyKey: ownerIntentKey,
+      }))));
+    expect(ownerWakeRequests).toHaveLength(2);
+
+    await db
+      .update(agentWakeupRequests)
+      .set({ status: "cancelled", finishedAt: new Date() })
+      .where(eq(agentWakeupRequests.idempotencyKey, idempotencyKey));
+    runningProcesses.delete(activeRunId);
+    await heartbeat.cancelRun(activeRunId, "release deferred owner intents");
+
+    const supersededAdvanced = await waitForCondition(async () => {
+      ownerWakeRequests = await db
+        .select({
+          status: agentWakeupRequests.status,
+          reason: agentWakeupRequests.reason,
+          idempotencyKey: agentWakeupRequests.idempotencyKey,
+        })
+        .from(agentWakeupRequests)
+        .where(inArray(agentWakeupRequests.idempotencyKey, ownerIntentKeys));
+      const first = ownerWakeRequests.find((row) => row.idempotencyKey === firstOwnerIntent.idempotencyKey);
+      const second = ownerWakeRequests.find((row) => row.idempotencyKey === secondOwnerIntent.idempotencyKey);
+      return first?.status === "skipped" && second?.status !== "deferred_issue_execution";
+    }, 10_000);
+    expect(supersededAdvanced, JSON.stringify(ownerWakeRequests)).toBe(true);
+
     runningProcesses.delete(activeRunId);
     await db
       .update(heartbeatRuns)
       .set({ status: "succeeded", finishedAt: new Date(), updatedAt: new Date() })
       .where(eq(heartbeatRuns.id, activeRunId));
-  });
+  }, 20_000);
 
   it("honors maxConcurrentRuns 1 by leaving a second assignment wake queued", async () => {
     const companyId = randomUUID();
@@ -735,6 +829,8 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
         priority: "medium",
         assigneeAgentId: agentId,
         responsibleUserId: "responsible-user",
+        unblockDescriptor: { owner: { agentId }, action: "Resolve the blocker" },
+        blockedTransitionAt: new Date(),
       },
       {
         id: readyIssueId,
@@ -886,6 +982,35 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     });
     expect(readyRun?.status).toBe("succeeded");
     expect(mockAdapterExecute.mock.calls.length).toBeGreaterThanOrEqual(1);
+
+    const currentBlockedIssue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, blockedIssueId))
+      .then((rows) => rows[0]);
+    const ownerIntent = buildAgentUnblockWakeIntent(currentBlockedIssue)!;
+    const ownerRun = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_unblock_requested",
+      payload: ownerIntent.payload,
+      idempotencyKey: ownerIntent.idempotencyKey,
+      contextSnapshot: {
+        issueId: blockedIssueId,
+        taskId: blockedIssueId,
+        wakeReason: "issue_unblock_requested",
+        intentFingerprint: ownerIntent.intentFingerprint,
+      },
+    });
+    expect(ownerRun).not.toBeNull();
+    const ownerRunCompleted = await waitForCondition(async () => {
+      const [requestRow] = await db
+        .select({ status: agentWakeupRequests.status })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.idempotencyKey, ownerIntent.idempotencyKey));
+      return requestRow?.status === "completed";
+    });
+    expect(ownerRunCompleted).toBe(true);
   });
 
   it("suppresses normal wakeups while allowing comment interaction wakes under a pause hold", async () => {
