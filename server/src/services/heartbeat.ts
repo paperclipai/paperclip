@@ -5465,9 +5465,12 @@ function isTruthyRuntimeEnvValue(value: string | undefined) {
 export function resolveHeartbeatSchedulingSuppression(
   env: Record<string, string | undefined> = process.env,
   overrides: { allowWorktreeRunExecution?: boolean } = {},
-): { suppressed: boolean; reason: "worktree_instance" | "database_restore_in_progress" | null } {
+): { suppressed: boolean; reason: "worktree_instance" | "database_restore_in_progress" | "non_primary_runtime_instance" | null } {
   if (isTruthyRuntimeEnvValue(env.PAPERCLIP_IN_WORKTREE) && !overrides.allowWorktreeRunExecution) {
     return { suppressed: true, reason: "worktree_instance" };
+  }
+  if (env.PAPERCLIP_PRIMARY_RUNTIME_INSTANCE === "false") {
+    return { suppressed: true, reason: "non_primary_runtime_instance" };
   }
   if (
     isTruthyRuntimeEnvValue(env.PAPERCLIP_DATABASE_RESTORE_IN_PROGRESS) ||
@@ -6448,8 +6451,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     ].join("\n");
   }
 
+  type IssueMonitorPatchableIssue = Parameters<typeof buildIssueMonitorRearmedPatch>[0]["issue"];
+
   function rearmUndeliveredIssueMonitorPatch(input: {
-    issue: typeof issues.$inferSelect;
+    issue: IssueMonitorPatchableIssue;
     now: Date;
     nextCheckAt: string | null | undefined;
     deliveredAttemptCount: number | null | undefined;
@@ -11676,6 +11681,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
 
       const tracksLocalChild = isTrackedLocalChildProcessAdapter(adapterType);
+      if (tracksLocalChild && !run.processPid && !run.processGroupId) {
+        logger.warn(
+          { runId: run.id, adapterType },
+          "skipping orphan reap because local run has no process metadata to prove liveness loss",
+        );
+        continue;
+      }
       const processPidAlive = tracksLocalChild && run.processPid && isProcessAlive(run.processPid);
       const processGroupAlive = tracksLocalChild && run.processGroupId && isProcessGroupAlive(run.processGroupId);
       if (

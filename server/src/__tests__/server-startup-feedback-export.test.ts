@@ -1,3 +1,5 @@
+import os from "node:os";
+import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const ORIGINAL_PAPERCLIP_API_URL = process.env.PAPERCLIP_API_URL;
@@ -5,6 +7,8 @@ const ORIGINAL_PAPERCLIP_RUNTIME_API_URL = process.env.PAPERCLIP_RUNTIME_API_URL
 const ORIGINAL_PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
 const ORIGINAL_PAPERCLIP_LISTEN_HOST = process.env.PAPERCLIP_LISTEN_HOST;
 const ORIGINAL_PAPERCLIP_LISTEN_PORT = process.env.PAPERCLIP_LISTEN_PORT;
+const ORIGINAL_PAPERCLIP_PRIMARY_RUNTIME_INSTANCE = process.env.PAPERCLIP_PRIMARY_RUNTIME_INSTANCE;
+const ORIGINAL_PAPERCLIP_RUNTIME_STARTUP_STATE_FILE = process.env.PAPERCLIP_RUNTIME_STARTUP_STATE_FILE;
 
 const {
   createAppMock,
@@ -142,6 +146,13 @@ function buildTestConfig(overrides: Record<string, unknown> = {}) {
     companyDeletionEnabled: false,
     ...overrides,
   };
+}
+
+function setWritableStartupStatePath() {
+  process.env.PAPERCLIP_RUNTIME_STARTUP_STATE_FILE = path.join(
+    os.tmpdir(),
+    "paperclip-runtime-startup-state.test.json",
+  );
 }
 
 vi.mock("node:http", () => ({
@@ -289,6 +300,7 @@ describe("startServer feedback export wiring", () => {
     createBetterAuthInstanceMock.mockReturnValue({});
     deriveAuthTrustedOriginsMock.mockReturnValue([]);
     process.env.BETTER_AUTH_SECRET = "test-secret";
+    setWritableStartupStatePath();
   });
 
   it("passes the feedback export service into createApp so pending traces flush in runtime", async () => {
@@ -375,6 +387,51 @@ describe("startServer feedback export wiring", () => {
     await startServer();
 
     expect(callOrder).toEqual(["adopt", "reap"]);
+  });
+
+  it("keeps a fallback-port runtime out of startup recovery and periodic background work", async () => {
+    loadConfigMock.mockReturnValue(buildTestConfig({
+      port: 3100,
+      heartbeatSchedulerEnabled: true,
+      heartbeatSchedulerIntervalMs: 30000,
+      databaseBackupEnabled: true,
+    }));
+    detectPortMock.mockResolvedValueOnce(3101);
+    resolveHeartbeatSchedulingSuppressionMock.mockReturnValue({
+      suppressed: true,
+      reason: "non_primary_runtime_instance",
+    });
+    const intervalCallbacks: Array<() => void> = [];
+    const setIntervalSpy = vi
+      .spyOn(globalThis, "setInterval")
+      .mockImplementation(((callback: () => void) => {
+        intervalCallbacks.push(callback);
+        return 1 as unknown as ReturnType<typeof setInterval>;
+      }) as typeof setInterval);
+
+    try {
+      const started = await startServer();
+
+      expect(started.listenPort).toBe(3101);
+      expect(process.env.PAPERCLIP_PRIMARY_RUNTIME_INSTANCE).toBe("false");
+      expect(heartbeatServiceMock.reconcileHotRestartAdoption).not.toHaveBeenCalled();
+      expect(heartbeatServiceMock.tickTimers).not.toHaveBeenCalled();
+      expect(heartbeatServiceMock.reapOrphanedRuns).not.toHaveBeenCalled();
+      expect(routineServiceMock.tickScheduledTriggers).not.toHaveBeenCalled();
+      expect(environmentCustomImagesServiceMock.cleanupExpiredSetupSessions).not.toHaveBeenCalled();
+      expect(intervalCallbacks.length).toBeGreaterThan(0);
+
+      intervalCallbacks.forEach((callback) => callback());
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(heartbeatServiceMock.tickTimers).not.toHaveBeenCalled();
+      expect(heartbeatServiceMock.reapOrphanedRuns).not.toHaveBeenCalled();
+      expect(routineServiceMock.tickScheduledTriggers).not.toHaveBeenCalled();
+      expect(environmentCustomImagesServiceMock.cleanupExpiredSetupSessions).not.toHaveBeenCalled();
+    } finally {
+      setIntervalSpy.mockRestore();
+    }
   });
 
   it("refuses authenticated public startup without an external database URL", async () => {
@@ -473,6 +530,7 @@ describe("startServer PAPERCLIP_API_URL handling", () => {
     loadConfigMock.mockReturnValue(buildTestConfig());
     process.env.BETTER_AUTH_SECRET = "test-secret";
     delete process.env.PAPERCLIP_API_URL;
+    setWritableStartupStatePath();
   });
 
   afterEach(() => {
@@ -493,6 +551,18 @@ describe("startServer PAPERCLIP_API_URL handling", () => {
 
     if (ORIGINAL_PAPERCLIP_LISTEN_PORT === undefined) delete process.env.PAPERCLIP_LISTEN_PORT;
     else process.env.PAPERCLIP_LISTEN_PORT = ORIGINAL_PAPERCLIP_LISTEN_PORT;
+
+    if (ORIGINAL_PAPERCLIP_PRIMARY_RUNTIME_INSTANCE === undefined) {
+      delete process.env.PAPERCLIP_PRIMARY_RUNTIME_INSTANCE;
+    } else {
+      process.env.PAPERCLIP_PRIMARY_RUNTIME_INSTANCE = ORIGINAL_PAPERCLIP_PRIMARY_RUNTIME_INSTANCE;
+    }
+
+    if (ORIGINAL_PAPERCLIP_RUNTIME_STARTUP_STATE_FILE === undefined) {
+      delete process.env.PAPERCLIP_RUNTIME_STARTUP_STATE_FILE;
+    } else {
+      process.env.PAPERCLIP_RUNTIME_STARTUP_STATE_FILE = ORIGINAL_PAPERCLIP_RUNTIME_STARTUP_STATE_FILE;
+    }
   });
 
   it("uses the externally set PAPERCLIP_API_URL when provided", async () => {
