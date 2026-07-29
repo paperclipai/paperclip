@@ -7721,6 +7721,7 @@ export function issueRoutes(
         : null;
     const {
       comment: commentBody,
+      doneExceptionReason,
       reviewRequest,
       reopen: reopenRequested,
       resume: resumeRequested,
@@ -8097,6 +8098,7 @@ export function issueRoutes(
             id,
             {
               ...updateFields,
+              ...(doneExceptionReason ? { doneExceptionReason } : {}),
               actorAgentId: actor.agentId ?? null,
               actorUserId: actor.actorType === "user" ? actor.actorId : null,
             },
@@ -8127,6 +8129,7 @@ export function issueRoutes(
         issue = await db.transaction(async (tx) => {
           const updated = await svc.update(id, {
             ...updateFields,
+            ...(doneExceptionReason ? { doneExceptionReason } : {}),
             actorAgentId: actor.agentId ?? null,
             actorUserId: actor.actorType === "user" ? actor.actorId : null,
           }, tx);
@@ -8137,6 +8140,7 @@ export function issueRoutes(
       } else {
         issue = await svc.update(id, {
           ...updateFields,
+          ...(doneExceptionReason ? { doneExceptionReason } : {}),
           actorAgentId: actor.agentId ?? null,
           actorUserId: actor.actorType === "user" ? actor.actorId : null,
         });
@@ -8335,6 +8339,7 @@ export function issueRoutes(
       details: {
         ...updateFields,
         identifier: issue.identifier,
+        ...(doneExceptionReason ? { doneExceptionReason } : {}),
         ...(commentBody ? { source: "comment" } : {}),
         ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true } : {}),
         ...(reopened ? { reopened: true, reopenedFrom: reopenFromStatus } : {}),

@@ -11,6 +11,7 @@ type IssueMutation = {
   status?: string;
   identifier?: string | null;
   title?: string;
+  doneExceptionReason?: string | null;
 };
 
 type Reader = Pick<Db, "select" | "execute">;
@@ -71,6 +72,7 @@ export async function assertIssueParentTerminalInvariant(
       status: mutation.status === undefined ? existing?.status ?? "backlog" : mutation.status,
       identifier: mutation.identifier === undefined ? existing?.identifier ?? null : mutation.identifier,
       title: mutation.title === undefined ? existing?.title ?? "" : mutation.title,
+      doneExceptionReason: mutation.doneExceptionReason?.trim() || null,
       hasParentIdPatch: mutation.parentId !== undefined,
       hasStatusPatch: mutation.status !== undefined,
       existing: existing ?? null,
@@ -140,6 +142,11 @@ export async function assertIssueParentTerminalInvariant(
     }
     const blockingChildren = [...effectiveChildren.values()].filter((child) => !isTerminal(child.status));
     if (blockingChildren.length === 0) continue;
+    const hasDoneException =
+      effectiveParentStatus === "done" &&
+      parentMutation?.hasStatusPatch === true &&
+      Boolean(parentMutation.doneExceptionReason);
+    if (hasDoneException) continue;
 
     const blockingChildRefs = blockingChildren.map(displayIssueRef);
     throw unprocessable(

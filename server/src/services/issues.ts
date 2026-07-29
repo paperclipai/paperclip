@@ -6583,6 +6583,7 @@ export function issueService(db: Db) {
         blockedByIssueIds?: string[];
         actorAgentId?: string | null;
         actorUserId?: string | null;
+        doneExceptionReason?: string | null;
       },
       dbOrTx: any = db,
     ) => {
@@ -6598,6 +6599,7 @@ export function issueService(db: Db) {
         blockedByIssueIds,
         actorAgentId,
         actorUserId,
+        doneExceptionReason,
         ...issueData
       } = data;
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
@@ -6739,6 +6741,7 @@ export function issueService(db: Db) {
             id,
             ...(issueData.parentId !== undefined ? { parentId: issueData.parentId } : {}),
             ...(issueData.status !== undefined ? { status: issueData.status } : {}),
+            ...(doneExceptionReason ? { doneExceptionReason } : {}),
           }]);
         }
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, existing.companyId);

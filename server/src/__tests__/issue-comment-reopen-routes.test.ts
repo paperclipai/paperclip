@@ -398,6 +398,42 @@ describe.sequential("issue comment reopen routes", () => {
     );
   });
 
+  it("passes an explicit done exception reason through and records it in the audit activity", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...makeIssue("todo"),
+      ...patch,
+    }));
+
+    const res = await request(await installActor(createApp()))
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({
+        status: "done",
+        doneExceptionReason: "Accepted risk for this release",
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({
+        status: "done",
+        doneExceptionReason: "Accepted risk for this release",
+        actorAgentId: null,
+        actorUserId: "local-board",
+      }),
+    );
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "issue.updated",
+        details: expect.objectContaining({
+          status: "done",
+          doneExceptionReason: "Accepted risk for this release",
+        }),
+      }),
+    );
+  });
+
   it("implicitly reopens closed issues via the PATCH comment path when reassigning to an agent", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("done"));
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({

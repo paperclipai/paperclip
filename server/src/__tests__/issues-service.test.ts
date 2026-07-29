@@ -4200,6 +4200,17 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
       });
     }
 
+    await expect(
+      svc.update(parentId, {
+        status: "done",
+        doneExceptionReason: "Accepted risk for this release",
+      }),
+    ).resolves.toMatchObject({
+      id: parentId,
+      status: "done",
+    });
+    await svc.update(parentId, { status: "todo" });
+
     await svc.update(openChildId, { status: "cancelled" });
     await expect(svc.update(parentId, { status: "done" })).resolves.toMatchObject({
       id: parentId,
