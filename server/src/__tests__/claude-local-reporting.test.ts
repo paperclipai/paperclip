@@ -40,7 +40,7 @@ async function setupExecuteEnv(root: string) {
 }
 
 describe("claude_local transient-upstream terminal reporting", () => {
-  it("reports transient upstream errors to onLog", async () => {
+  it("classifies out-of-extra-usage results as provider quota with the parsed reset time", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-report-transient-"));
     const { workspace, commandPath, restore } = await setupExecuteEnv(root);
     await writeFailingClaudeCommand(commandPath, {
@@ -63,11 +63,15 @@ describe("claude_local transient-upstream terminal reporting", () => {
     vi.setSystemTime(new Date(2026, 3, 22, 10, 15, 0));
 
     try {
-      await execute({
+      const result = await execute({
         runId: "run-claude-report",
         agent: { id: "agent-1", companyId: "co-1", name: "Test", adapterType: "claude_local", adapterConfig: {} },
         runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
         config: {
+          // These tests exercise the classic CLI result-event reporting path;
+          // the default engine is now "auto" (ACP preferred), which the fake
+          // print-JSON claude script cannot speak.
+          engine: "cli",
           command: commandPath,
           cwd: workspace,
           promptTemplate: "Do work.",
@@ -77,9 +81,12 @@ describe("claude_local transient-upstream terminal reporting", () => {
         onLog,
       });
 
-      const allLogs = logs.join("");
-      expect(allLogs).toContain("[paperclip] Detected transient upstream error (e.g. rate limit).");
-      expect(allLogs).toContain("Retry scheduled after 2026-04-22T21:00:00.000Z");
+      // Fork policy: "out of extra usage" is PROVIDER QUOTA (quota-wait
+      // recovery, c65ab09d9), which outranks the old transient-upstream
+      // classification this test used to assert. The reset time is still
+      // parsed (4pm America/Chicago on the mocked date = 21:00 UTC).
+      expect(result.errorCode).toBe("provider_quota");
+      expect(result.retryNotBefore).toBe("2026-04-22T21:00:00.000Z");
     } finally {
       vi.useRealTimers();
       restore();
@@ -112,6 +119,10 @@ describe("claude_local transient-upstream terminal reporting", () => {
         agent: { id: "agent-1", companyId: "co-1", name: "Test", adapterType: "claude_local", adapterConfig: {} },
         runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
         config: {
+          // These tests exercise the classic CLI result-event reporting path;
+          // the default engine is now "auto" (ACP preferred), which the fake
+          // print-JSON claude script cannot speak.
+          engine: "cli",
           command: commandPath,
           cwd: workspace,
           promptTemplate: "Do work.",
@@ -150,6 +161,10 @@ process.exit(1);
         agent: { id: "agent-1", companyId: "co-1", name: "Test", adapterType: "claude_local", adapterConfig: {} },
         runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
         config: {
+          // These tests exercise the classic CLI result-event reporting path;
+          // the default engine is now "auto" (ACP preferred), which the fake
+          // print-JSON claude script cannot speak.
+          engine: "cli",
           command: commandPath,
           cwd: workspace,
           promptTemplate: "Do work.",
@@ -168,7 +183,7 @@ process.exit(1);
     }
   });
 
-  it("reports session limit errors", async () => {
+  it("classifies session limit errors as provider quota", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-report-session-limit-"));
     const { workspace, commandPath, restore } = await setupExecuteEnv(root);
     const script = `#!/usr/bin/env node
@@ -189,6 +204,10 @@ process.exit(1);
         agent: { id: "agent-1", companyId: "co-1", name: "Test", adapterType: "claude_local", adapterConfig: {} },
         runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
         config: {
+          // These tests exercise the classic CLI result-event reporting path;
+          // the default engine is now "auto" (ACP preferred), which the fake
+          // print-JSON claude script cannot speak.
+          engine: "cli",
           command: commandPath,
           cwd: workspace,
           promptTemplate: "Do work.",
@@ -198,10 +217,11 @@ process.exit(1);
         onLog,
       });
 
-      // Currently this will likely fail because session limit is not yet classified in execute.ts
-      expect(result.errorCode).toBe("claude_session_limit");
-      const allLogs = logs.join("");
-      expect(allLogs).toContain("[paperclip] Detected session limit.");
+      // Fork policy: session-limit errors are PROVIDER QUOTA (quota-wait
+      // recovery). The old aspirational claude_session_limit code was never
+      // implemented; the quota classifier owns this class now.
+      expect(result.errorCode).toBe("provider_quota");
+      expect(result.errorFamily).toBe("provider_quota");
     } finally {
       restore();
       await fs.rm(root, { recursive: true, force: true });

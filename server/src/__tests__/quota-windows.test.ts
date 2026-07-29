@@ -214,8 +214,18 @@ describe("WHAM used_percent normalization via fetchCodexQuota", () => {
 
 describe("readClaudeToken", () => {
   const savedEnv = process.env.CLAUDE_CONFIG_DIR;
+  const savedPlatform = process.platform;
+
+  beforeEach(() => {
+    // readClaudeToken falls back to the macOS keychain (fork feature,
+    // f98fb4e79) after the credentials-file misses — on an operator Mac that
+    // returns the REAL token and breaks every "returns null" case below.
+    // Pretend we're not on darwin so the file-based contract stays testable.
+    Object.defineProperty(process, "platform", { value: "linux" });
+  });
 
   afterEach(() => {
+    Object.defineProperty(process, "platform", { value: savedPlatform });
     if (savedEnv === undefined) {
       delete process.env.CLAUDE_CONFIG_DIR;
     } else {

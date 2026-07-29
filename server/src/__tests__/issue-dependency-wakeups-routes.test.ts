@@ -16,6 +16,9 @@ const mockIssueService = vi.hoisted(() => ({
   listWakeableBlockedDependents: vi.fn(),
   getWakeableParentAfterChildCompletion: vi.fn(),
   findMentionedAgents: vi.fn(async () => []),
+  // Mock-gap fill: the PATCH path filters requested blockers down to the
+  // unresolved ones; these tests only exercise already-resolved blockers.
+  listUnresolvedBlockerIssueIds: vi.fn(async () => []),
 }));
 
 vi.mock("../services/index.js", () => ({
@@ -75,6 +78,9 @@ vi.mock("../services/index.js", () => ({
     listForIssue: vi.fn(async () => []),
     expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
     expireStaleRequestConfirmationsForIssueDocument: vi.fn(async () => []),
+    // Mock-gap fill: the PATCH issue path expires pending interactions on
+    // stale issue state.
+    expirePendingInteractionsForStaleIssueState: vi.fn(async () => []),
   }),
   issueService: () => mockIssueService,
   logActivity: vi.fn(async () => undefined),

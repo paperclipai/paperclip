@@ -52,6 +52,10 @@ async function seedCompany(
     issuePrefix,
     requireBoardApprovalForNewAgents: false,
     activityWindow: activityWindow ?? undefined,
+    // Fixture gap: run dispatch now requires a resolvable responsible user
+    // (422 responsible_user_unresolved otherwise); the company default is the
+    // last rung of the resolution ladder.
+    defaultResponsibleUserId: "responsible-user",
   });
   return companyId;
 }
