@@ -1289,7 +1289,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(wakeup?.status).toBe("claimed");
   });
 
-  it("reaps a stale zero-pid local run once silence crosses the orphan threshold", async () => {
+  it("does not reap a stale zero-pid local run when silence is the only signal", async () => {
     const now = new Date("2026-03-19T00:00:00.000Z");
     const { runId, wakeupRequestId, issueId } = await seedRunFixture({
       now,
@@ -1302,13 +1302,13 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const result = await heartbeat.reapOrphanedRuns({
       now: new Date("2026-03-19T00:16:00.000Z"),
     });
-    expect(result).toEqual({ reaped: 1, runIds: [runId] });
+    expect(result).toEqual({ reaped: 0, runIds: [] });
 
     const run = await heartbeat.getRun(runId);
     expect(run).toMatchObject({
       id: runId,
-      status: "failed",
-      errorCode: "process_lost",
+      status: "running",
+      errorCode: null,
       processPid: null,
       processGroupId: null,
     });
@@ -1318,18 +1318,18 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .from(agentWakeupRequests)
       .where(eq(agentWakeupRequests.id, wakeupRequestId))
       .then((rows) => rows[0] ?? null);
-    expect(wakeup?.status).toBe("failed");
+    expect(wakeup?.status).toBe("claimed");
 
     const issue = await db
       .select()
       .from(issues)
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0] ?? null);
-    expect(issue?.checkoutRunId).toBeNull();
-    expect(issue?.executionRunId).toBeNull();
+    expect(issue?.checkoutRunId).toBe(runId);
+    expect(issue?.executionRunId).toBe(runId);
   });
 
-  it("reaps a stale detached pid run once silence crosses the orphan threshold", async () => {
+  it("does not force-stop an alive pid run when silence crosses the orphan threshold", async () => {
     const child = spawnAliveProcess();
     childProcesses.add(child);
     expect(child.pid).toBeTypeOf("number");
@@ -1346,22 +1346,22 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const result = await heartbeat.reapOrphanedRuns({
       now: new Date("2026-03-19T00:16:00.000Z"),
     });
-    expect(result).toEqual({ reaped: 1, runIds: [runId] });
+    expect(result).toEqual({ reaped: 0, runIds: [] });
 
     const run = await heartbeat.getRun(runId);
     expect(run).toMatchObject({
       id: runId,
-      status: "failed",
-      errorCode: "process_lost",
+      status: "running",
+      errorCode: "process_detached",
     });
-    expect(run?.error).toContain("stale silent child pid");
+    expect(run?.error).toContain(String(child.pid));
 
     const wakeup = await db
       .select()
       .from(agentWakeupRequests)
       .where(eq(agentWakeupRequests.id, wakeupRequestId))
       .then((rows) => rows[0] ?? null);
-    expect(wakeup?.status).toBe("failed");
+    expect(wakeup?.status).toBe("claimed");
   });
 
   it("skips generic timer wakes without invoking an adapter when no assigned work is actionable", async () => {

@@ -11755,20 +11755,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const hasRecentDurableActivity = silenceAgeMs < durableActivityGraceMs;
       const exceededOrphanSilenceSweepThreshold = silenceAgeMs >= orphanSilenceSweepThresholdMs;
       if (zeroProcessMetadata) {
-        if (hasRecentDurableActivity) {
-          logger.warn(
-            { runId: run.id, adapterType, silenceAgeMs, durableActivityGraceMs },
-            "skipping orphan reap because local run has no process metadata but durable activity is still fresh",
-          );
-          continue;
-        }
-        if (!exceededOrphanSilenceSweepThreshold) {
-          logger.warn(
-            { runId: run.id, adapterType, silenceAgeMs, orphanSilenceSweepThresholdMs },
-            "skipping orphan reap because local run has no process metadata and has not crossed the orphan-silence sweep threshold",
-          );
-          continue;
-        }
+        logger.warn(
+          hasRecentDurableActivity
+            ? { runId: run.id, adapterType, silenceAgeMs, durableActivityGraceMs }
+            : { runId: run.id, adapterType, silenceAgeMs, orphanSilenceSweepThresholdMs },
+          "skipping orphan reap because local run has no process metadata and cannot be classified from silence alone",
+        );
+        continue;
       }
       const processPidAlive = tracksLocalChild && run.processPid && isProcessAlive(run.processPid);
       const processGroupAlive = tracksLocalChild && run.processGroupId && isProcessGroupAlive(run.processGroupId);
@@ -11779,7 +11772,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       ) {
         continue;
       }
-      if (processPidAlive && !exceededOrphanSilenceSweepThreshold) {
+      if (processPidAlive) {
         if (run.errorCode !== DETACHED_PROCESS_ERROR_CODE) {
           const detachedMessage = `Lost in-memory process handle, but child pid ${run.processPid} is still alive`;
           const detachedRun = await setRunStatus(run.id, "running", {
@@ -11805,7 +11798,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       let forcedStopForSilence = false;
       if (processPidAlive || processGroupAlive) {
         descendantOnlyCleanup = !processPidAlive && processGroupAlive;
-        forcedStopForSilence = exceededOrphanSilenceSweepThreshold;
         await terminateHeartbeatRunProcess({
           pid: run.processPid,
           processGroupId: run.processGroupId,
