@@ -532,14 +532,42 @@ export async function execute(
     return ctx.onLog(stream, chunk);
   };
 
-  const result = await runChildProcess(ctx.runId, hermesCmd, args, {
-    cwd,
-    env,
-    timeoutSec,
-    graceSec,
-    onLog: wrappedOnLog,
-    onSpawn: ctx.onSpawn,
-  });
+  const quietHeartbeatIntervalMs = 15_000;
+  let quietHeartbeatTimer: ReturnType<typeof setInterval> | null = null;
+  let quietHeartbeatStartedAt = 0;
+  let quietHeartbeatWrite = Promise.resolve();
+  const startQuietHeartbeat = () => {
+    if (!useQuiet || quietHeartbeatTimer) return;
+    quietHeartbeatStartedAt = Date.now();
+    quietHeartbeatTimer = setInterval(() => {
+      const elapsedSeconds = Math.max(1, Math.round((Date.now() - quietHeartbeatStartedAt) / 1000));
+      quietHeartbeatWrite = quietHeartbeatWrite
+        .then(() => wrappedOnLog("stdout", `[hermes] alive: ${elapsedSeconds}s\n`))
+        .catch(() => undefined);
+    }, quietHeartbeatIntervalMs);
+    quietHeartbeatTimer.unref?.();
+  };
+  const onSpawn = useQuiet
+    ? async (meta: { pid: number; processGroupId: number | null; startedAt: string }) => {
+        await ctx.onSpawn?.(meta);
+        startQuietHeartbeat();
+      }
+    : ctx.onSpawn;
+
+  let result: Awaited<ReturnType<typeof runChildProcess>>;
+  try {
+    result = await runChildProcess(ctx.runId, hermesCmd, args, {
+      cwd,
+      env,
+      timeoutSec,
+      graceSec,
+      onLog: wrappedOnLog,
+      onSpawn,
+    });
+  } finally {
+    if (quietHeartbeatTimer) clearInterval(quietHeartbeatTimer);
+    await quietHeartbeatWrite;
+  }
 
   // ── Parse output ───────────────────────────────────────────────────────
   const parsed = parseHermesOutput(result.stdout || "", result.stderr || "");

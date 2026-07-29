@@ -128,6 +128,8 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     ageMs: number;
     withOutput?: boolean;
     logChunk?: string;
+    quietHermes?: boolean;
+    processPid?: number | null;
     sourceStatus?: "in_progress" | "done" | "cancelled";
     sourceOriginKind?: string;
     sameRunTerminalEvidence?: "activity" | "comment";
@@ -169,8 +171,8 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
         role: "engineer",
         status: "running",
         reportsTo: managerId,
-        adapterType: "codex_local",
-        adapterConfig: {},
+        adapterType: opts.quietHermes ? "hermes_local" : "codex_local",
+        adapterConfig: opts.quietHermes ? { quiet: true } : {},
         runtimeConfig: {},
         permissions: {},
       },
@@ -199,6 +201,7 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
       triggerDetail: "system",
       startedAt,
       processStartedAt: startedAt,
+      processPid: opts.processPid ?? null,
       lastOutputAt,
       lastOutputSeq: opts.withOutput ? 3 : 0,
       lastOutputStream: opts.withOutput ? "stdout" : null,
@@ -286,6 +289,42 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
     });
     expect(evaluations[0]?.description).toContain("Decision Checklist");
     expect(evaluations[0]?.description).not.toContain("sk-test-secret-value");
+  });
+
+  it("treats a quiet Hermes run with a live child pid as working despite stale output", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, runId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+      quietHermes: true,
+      processPid: process.pid,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.scanSilentActiveRuns({ now, companyId });
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    const outputSilence = await heartbeat.buildRunOutputSilence(run!, now);
+
+    expect(result).toMatchObject({ created: 0, skipped: 1 });
+    expect(outputSilence).toMatchObject({ level: "ok", processAlive: true });
+  });
+
+  it("still treats a quiet Hermes run with a dead child pid as stalled", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, runId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+      quietHermes: true,
+      processPid: 2_000_000_000,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.scanSilentActiveRuns({ now, companyId });
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    const outputSilence = await heartbeat.buildRunOutputSilence(run!, now);
+
+    expect(result.created).toBe(1);
+    expect(outputSilence).toMatchObject({ level: "suspicious", processAlive: false });
   });
 
   it("redacts sensitive values from actual run-log evidence", async () => {
