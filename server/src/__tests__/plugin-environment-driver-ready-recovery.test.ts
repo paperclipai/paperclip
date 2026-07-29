@@ -285,6 +285,72 @@ describe("listReadyPluginEnvironmentDrivers worker recovery", () => {
     expect(drivers).toEqual([]);
   });
 
+  it("discards the dead handle a failed recovery attempt leaves behind so later requests retry", async () => {
+    const plugin = createPlugin("ready");
+    mockRegistry.list.mockResolvedValue([plugin]);
+
+    // Simulates the initialize-failure path: startWorker registers a handle,
+    // the worker dies during initialize, and no restart is scheduled — the
+    // crashed handle stays registered in the worker manager.
+    let handle: { status: string } | undefined;
+    let running = false;
+    const stopWorker = vi.fn(async () => {
+      handle = undefined;
+    });
+    const workerManager = {
+      isRunning: vi.fn(() => running),
+      getWorker: vi.fn(() => handle),
+      stopWorker,
+    } as unknown as PluginWorkerManager;
+
+    const loadSingle = vi.fn<PluginLoader["loadSingle"]>()
+      .mockImplementationOnce(async () => {
+        handle = { status: "crashed" };
+        throw new Error("Worker initialize failed");
+      })
+      .mockImplementationOnce(async () => {
+        handle = { status: "running" };
+        running = true;
+        return { plugin, success: true } as never;
+      });
+
+    const startWorker = createManagedBundledPluginWorkerRecovery({
+      managedBundledPluginKeys: [PLUGIN_KEY],
+      workerManager,
+      getLoader: () => ({ loadSingle }) as Pick<PluginLoader, "loadSingle">,
+    });
+
+    const firstDrivers = await listReadyPluginEnvironmentDrivers({
+      db: {} as never,
+      workerManager,
+      recoverMissingWorker: {
+        pluginKeys: [PLUGIN_KEY],
+        startWorker,
+      },
+    });
+
+    expect(firstDrivers).toEqual([]);
+    expect(stopWorker).toHaveBeenCalledWith(PLUGIN_ID);
+    expect(handle).toBeUndefined();
+
+    const secondDrivers = await listReadyPluginEnvironmentDrivers({
+      db: {} as never,
+      workerManager,
+      recoverMissingWorker: {
+        pluginKeys: [PLUGIN_KEY],
+        startWorker,
+      },
+    });
+
+    expect(loadSingle).toHaveBeenCalledTimes(2);
+    expect(secondDrivers).toEqual([
+      expect.objectContaining({
+        pluginId: PLUGIN_ID,
+        driverKey: "daytona",
+      }),
+    ]);
+  });
+
   it("lets callers suppress shared error-state writes on activation failure", async () => {
     const plugin = {
       ...createPlugin("ready"),

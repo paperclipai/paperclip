@@ -150,11 +150,36 @@ export function shouldEnablePrivateHostnameGuard(opts: {
 
 export function createManagedBundledPluginWorkerRecovery(input: {
   managedBundledPluginKeys: readonly string[];
-  workerManager: Pick<PluginWorkerManager, "getWorker" | "isRunning">;
+  workerManager: Pick<PluginWorkerManager, "getWorker" | "isRunning" | "stopWorker">;
   getLoader: () => Pick<PluginLoader, "loadSingle"> | null;
 }): (plugin: { id: string; pluginKey: string }) => Promise<boolean> {
   const recoverablePluginKeys = new Set(input.managedBundledPluginKeys);
   const inFlightStarts = new Map<string, Promise<boolean>>();
+
+  // A failed attempt can leave behind the dead handle it registered (e.g. the
+  // worker process died during initialize, which kills the process without
+  // scheduling a restart). No pre-existing handle survives to a recovery
+  // attempt — recovery only starts when getWorker() was empty — so discarding
+  // the dead handle lets a later capability request retry instead of being
+  // blocked by the handle-presence gate until the process restarts. Handles
+  // in starting/running/backoff states belong to the worker manager's own
+  // lifecycle and are left alone.
+  const discardDeadRecoveryHandle = async (plugin: { id: string; pluginKey: string }) => {
+    const handle = input.workerManager.getWorker(plugin.id);
+    if (!handle || (handle.status !== "crashed" && handle.status !== "stopped")) return;
+    try {
+      await input.workerManager.stopWorker(plugin.id);
+    } catch (err) {
+      logger.warn(
+        {
+          pluginId: plugin.id,
+          pluginKey: plugin.pluginKey,
+          err: err instanceof Error ? err.message : String(err),
+        },
+        "failed to discard dead plugin worker handle after recovery failure",
+      );
+    }
+  };
 
   return async (plugin) => {
     if (!recoverablePluginKeys.has(plugin.pluginKey)) return false;
@@ -174,7 +199,11 @@ export function createManagedBundledPluginWorkerRecovery(input: {
         const result = await loader.loadSingle(plugin.id, {
           markErrorOnFailure: false,
         });
-        return result.success === true || input.workerManager.isRunning(plugin.id);
+        if (result.success === true || input.workerManager.isRunning(plugin.id)) {
+          return true;
+        }
+        await discardDeadRecoveryHandle(plugin);
+        return false;
       } catch (err) {
         logger.warn(
           {
@@ -184,6 +213,7 @@ export function createManagedBundledPluginWorkerRecovery(input: {
           },
           "managed bundled plugin lazy worker recovery failed",
         );
+        await discardDeadRecoveryHandle(plugin);
         throw err;
       }
     })();
