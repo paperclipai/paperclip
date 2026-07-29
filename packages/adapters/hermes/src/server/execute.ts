@@ -544,7 +544,9 @@ export async function execute(
       const elapsedSeconds = Math.max(1, Math.round((Date.now() - quietHeartbeatStartedAt) / 1000));
       quietHeartbeatWrite = quietHeartbeatWrite
         .then(() => wrappedOnLog("stdout", `[hermes] alive: ${elapsedSeconds}s\n`))
-        .catch(() => undefined);
+        .catch((err) => {
+          console.warn({ err, runId: ctx.runId }, "failed to append Hermes quiet heartbeat log");
+        });
     }, quietHeartbeatIntervalMs);
     quietHeartbeatTimer.unref?.();
   };

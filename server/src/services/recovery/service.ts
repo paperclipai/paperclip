@@ -1322,26 +1322,32 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   async function readQuietHermesProcessAlive(companyId: string, runId: string): Promise<boolean | null> {
     const [record] = await db
       .select({
-        adapterType: agents.adapterType,
-        adapterConfig: agents.adapterConfig,
+        status: heartbeatRuns.status,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
         processPid: heartbeatRuns.processPid,
         processGroupId: heartbeatRuns.processGroupId,
       })
       .from(heartbeatRuns)
-      .innerJoin(agents, eq(agents.id, heartbeatRuns.agentId))
       .where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.companyId, companyId)))
       .limit(1);
+    const launchConfig = parseObject(parseObject(record?.contextSnapshot).paperclipAdapterExecution);
     if (
       !record ||
-      record.adapterType !== "hermes_local" ||
-      parseObject(record.adapterConfig).quiet !== true
+      record.status !== "running" ||
+      launchConfig.adapterType !== "hermes_local" ||
+      launchConfig.quiet !== true
     ) {
       return null;
     }
 
     const running = runningProcesses.get(runId);
-    const processPid = running?.child.pid ?? record.processPid;
-    const processGroupId = running?.processGroupId ?? record.processGroupId;
+    if (!running) {
+      return typeof record.processPid === "number" || typeof record.processGroupId === "number"
+        ? false
+        : null;
+    }
+    const processPid = running.child.pid;
+    const processGroupId = running.processGroupId;
     if (typeof processPid !== "number" && typeof processGroupId !== "number") return null;
     return (
       (typeof processPid === "number" && isPidAlive(processPid)) ||

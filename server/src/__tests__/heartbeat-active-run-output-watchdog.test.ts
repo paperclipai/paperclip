@@ -26,6 +26,7 @@ import {
 } from "../services/heartbeat.ts";
 import { recoveryService } from "../services/recovery/service.ts";
 import { getRunLogStore } from "../services/run-log-store.ts";
+import { runningProcesses } from "../adapters/utils.ts";
 
 const mockAdapterExecute = vi.hoisted(() =>
   vi.fn(async () => ({
@@ -108,6 +109,7 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
   }, 30_000);
 
   afterEach(async () => {
+    runningProcesses.clear();
     for (let attempt = 0; attempt < 100; attempt += 1) {
       const activeRuns = await db
         .select({ id: heartbeatRuns.id })
@@ -205,7 +207,13 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
       lastOutputAt,
       lastOutputSeq: opts.withOutput ? 3 : 0,
       lastOutputStream: opts.withOutput ? "stdout" : null,
-      contextSnapshot: { issueId },
+      contextSnapshot: {
+        issueId,
+        paperclipAdapterExecution: {
+          adapterType: opts.quietHermes ? "hermes_local" : "codex_local",
+          quiet: opts.quietHermes === true,
+        },
+      },
       stdoutExcerpt: "OPENAI_API_KEY=sk-test-secret-value should not leak",
       logBytes: 0,
     });
@@ -293,12 +301,21 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
 
   it("treats a quiet Hermes run with a live child pid as working despite stale output", async () => {
     const now = new Date("2026-04-22T20:00:00.000Z");
-    const { companyId, runId } = await seedRunningRun({
+    const { companyId, coderId, runId } = await seedRunningRun({
       now,
       ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
       quietHermes: true,
       processPid: process.pid,
     });
+    runningProcesses.set(runId, {
+      child: { pid: process.pid } as never,
+      graceSec: 5,
+      processGroupId: null,
+    });
+    await db
+      .update(agents)
+      .set({ adapterType: "codex_local", adapterConfig: {} })
+      .where(eq(agents.id, coderId));
     const heartbeat = heartbeatService(db);
 
     const result = await heartbeat.scanSilentActiveRuns({ now, companyId });
@@ -325,6 +342,50 @@ describeEmbeddedPostgres("active-run output watchdog", () => {
 
     expect(result.created).toBe(1);
     expect(outputSilence).toMatchObject({ level: "suspicious", processAlive: false });
+  });
+
+  it("does not trust a live raw pid without the identity-bound tracked child", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, runId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+      quietHermes: true,
+      processPid: process.pid,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.scanSilentActiveRuns({ now, companyId });
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    const outputSilence = await heartbeat.buildRunOutputSilence(run!, now);
+
+    expect(result.created).toBe(1);
+    expect(outputSilence).toMatchObject({ level: "suspicious", processAlive: false });
+  });
+
+  it("does not derive quiet mode from mutable current agent configuration", async () => {
+    const now = new Date("2026-04-22T20:00:00.000Z");
+    const { companyId, coderId, runId } = await seedRunningRun({
+      now,
+      ageMs: ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS + 60_000,
+      processPid: process.pid,
+    });
+    runningProcesses.set(runId, {
+      child: { pid: process.pid } as never,
+      graceSec: 5,
+      processGroupId: null,
+    });
+    await db
+      .update(agents)
+      .set({ adapterType: "hermes_local", adapterConfig: { quiet: true } })
+      .where(eq(agents.id, coderId));
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.scanSilentActiveRuns({ now, companyId });
+    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    const outputSilence = await heartbeat.buildRunOutputSilence(run!, now);
+
+    expect(result.created).toBe(1);
+    expect(outputSilence).toMatchObject({ level: "suspicious", processAlive: null });
   });
 
   it("redacts sensitive values from actual run-log evidence", async () => {
