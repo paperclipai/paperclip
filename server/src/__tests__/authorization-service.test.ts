@@ -1684,6 +1684,23 @@ describeEmbeddedPostgres("authorization service", () => {
       .resolves.toHaveLength(0);
 
     await db.update(issues).set({
+      unblockDescriptor: {
+        owner: { agentId: owner.id },
+        action: "Malformed owner action",
+        extra: true,
+      } as never,
+    }).where(eq(issues.id, issue.id));
+    await expect(svc.update(issue.id, { status: "todo" }, db, writeOptions)).resolves.toBeNull();
+    await expect(svc.addComment(
+      issue.id,
+      "Comment after descriptor became malformed",
+      { agentId: owner.id },
+      writeOptions,
+    )).rejects.toMatchObject({ status: 409 });
+    await expect(db.select().from(issueComments).where(eq(issueComments.issueId, issue.id)))
+      .resolves.toHaveLength(0);
+
+    await db.update(issues).set({
       status: "todo",
       unblockDescriptor: {
         owner: { agentId: owner.id },

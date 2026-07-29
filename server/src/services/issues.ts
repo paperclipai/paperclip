@@ -62,6 +62,7 @@ import {
   issueCommentAuthorTypeSchema,
   issueCommentMetadataSchema,
   issueCommentPresentationSchema,
+  issueUnblockDescriptorSchema,
   isUuidLike,
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
 } from "@paperclipai/shared";
@@ -519,6 +520,20 @@ export function deriveIssueCommentRunLogAttribution(
   }
 
   return derivedByCommentId;
+}
+
+function isStrictBlockedUnblockOwner(
+  issue: { status: string; unblockDescriptor: unknown } | null,
+  expectedOwnerAgentId: string,
+) {
+  if (!issue || issue.status !== "blocked") return false;
+  const parsed = issueUnblockDescriptorSchema.safeParse(issue.unblockDescriptor);
+  return Boolean(
+    parsed.success &&
+    typeof parsed.data.owner === "object" &&
+    "agentId" in parsed.data.owner &&
+    parsed.data.owner.agentId === expectedOwnerAgentId,
+  );
 }
 
 // Express's default `qs` parser binds repeated query keys to a `string[]`,
@@ -7722,6 +7737,10 @@ export function issueService(db: Db) {
             ? getIssueRelationSummaryMap(existing.companyId, [id], tx)
             : Promise.resolve(new Map<string, IssueRelationSummaryMap>()),
         ]);
+        const expectedOwnerAgentId = options?.expectedBlockedUnblockOwnerAgentId;
+        if (expectedOwnerAgentId) {
+          if (!isStrictBlockedUnblockOwner(receiptExisting, expectedOwnerAgentId)) return null;
+        }
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, existing.companyId);
         const [currentProjectGoalId, nextProjectGoalId] = await Promise.all([
           getProjectDefaultGoalId(tx, existing.companyId, existing.projectId),
@@ -7741,17 +7760,10 @@ export function issueService(db: Db) {
           projectGoalId: nextProjectGoalId,
           defaultGoalId: defaultCompanyGoal?.id ?? null,
         });
-        const updatePredicate = options?.expectedBlockedUnblockOwnerAgentId
-          ? and(
-              eq(issues.id, id),
-              eq(issues.status, "blocked"),
-              sql`${issues.unblockDescriptor}->'owner'->>'agentId' = ${options.expectedBlockedUnblockOwnerAgentId}`,
-            )
-          : eq(issues.id, id);
         const updated = await tx
           .update(issues)
           .set(patch)
-          .where(updatePredicate)
+          .where(eq(issues.id, id))
           .returning()
           .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
         if (!updated) return null;
@@ -8722,25 +8734,29 @@ export function issueService(db: Db) {
         const expectedOwnerAgentId = options?.expectedBlockedUnblockOwnerAgentId;
         const issue = expectedOwnerAgentId
           ? await executor
-              .update(issues)
-              .set({ updatedAt: new Date() })
-              .where(and(
-                eq(issues.id, issueId),
-                eq(issues.status, "blocked"),
-                sql`${issues.unblockDescriptor}->'owner'->>'agentId' = ${expectedOwnerAgentId}`,
-              ))
-              .returning({ companyId: issues.companyId })
-              .then((rows: Array<{ companyId: string }>) => rows[0] ?? null)
-          : await executor
-              .select({ companyId: issues.companyId })
+              .select({
+                companyId: issues.companyId,
+                status: issues.status,
+                unblockDescriptor: issues.unblockDescriptor,
+              })
               .from(issues)
               .where(eq(issues.id, issueId))
-              .then((rows: Array<{ companyId: string }>) => rows[0] ?? null);
+              .for("update")
+              .then((rows: Array<{ companyId: string; status: string; unblockDescriptor: unknown }>) => rows[0] ?? null)
+          : await executor
+              .select({
+                companyId: issues.companyId,
+                status: issues.status,
+                unblockDescriptor: issues.unblockDescriptor,
+              })
+              .from(issues)
+              .where(eq(issues.id, issueId))
+              .then((rows: Array<{ companyId: string; status: string; unblockDescriptor: unknown }>) => rows[0] ?? null);
 
-        if (!issue) {
-          if (expectedOwnerAgentId) throw conflict("Unblock owner authorization became stale");
-          throw notFound("Issue not found");
+        if (expectedOwnerAgentId && !isStrictBlockedUnblockOwner(issue, expectedOwnerAgentId)) {
+          throw conflict("Unblock owner authorization became stale");
         }
+        if (!issue) throw notFound("Issue not found");
 
         const currentUserRedactionOptions = {
           enabled: (await instanceSettings.getGeneral()).censorUsernameInLogs,
@@ -8791,13 +8807,10 @@ export function issueService(db: Db) {
           })
           .returning();
 
-        if (!expectedOwnerAgentId) {
-          // The conditional owner update above already records comment recency.
-          await executor
-            .update(issues)
-            .set({ updatedAt: new Date() })
-            .where(eq(issues.id, issueId));
-        }
+        await executor
+          .update(issues)
+          .set({ updatedAt: new Date() })
+          .where(eq(issues.id, issueId));
 
         if (
           authorType === "user" &&
