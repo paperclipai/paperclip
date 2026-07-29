@@ -875,6 +875,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     }
     if (controlPlanePreflight.url) {
       effectiveEnv.PAPERCLIP_API_URL = controlPlanePreflight.url;
+      effectiveEnv.PAPERCLIP_RUNTIME_API_URL = controlPlanePreflight.url;
       if (managedMcpGateways.length > 0) {
         const refreshedManagedMcp = await writeManagedCodexMcpConfig({
           codexHome: effectiveCodexHome,
