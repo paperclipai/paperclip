@@ -6,6 +6,7 @@ import { buildSkillMentionHref } from "@paperclipai/shared";
 import {
   LOW_TRUST_REVIEW_PRESET,
   applyRunScopedMentionedSkillKeys,
+  buildRunWorkspaceHints,
   extractMentionedSkillIdsFromSources,
   resolveAdditionalProjectWorkspace,
   resolveAdditionalRunWorkspaces,
@@ -871,6 +872,47 @@ describe("resolveAdditionalRunWorkspaces", () => {
     expect(result.warnings).toHaveLength(1);
     expect(result.warnings[0]).toContain("project-a");
     expect(result.warnings[0]).toContain("clone exploded");
+  });
+});
+
+describe("buildRunWorkspaceHints", () => {
+  const anchorHints = [
+    { workspaceId: "anchor-ws", cwd: "/anchor", repoUrl: "https://example.test/anchor.git", repoRef: "main" },
+  ];
+
+  it("returns only the anchor hints when no referenced project resolves (flag OFF, inert)", () => {
+    const hints = buildRunWorkspaceHints({ workspaceHints: anchorHints, additionalWorkspaces: [] });
+
+    expect(hints).toEqual(anchorHints);
+  });
+
+  it("appends each referenced project workspace so the agent sees its path", () => {
+    const hints = buildRunWorkspaceHints({
+      workspaceHints: anchorHints,
+      additionalWorkspaces: [
+        {
+          cwd: "/managed/project-b",
+          projectId: "project-b",
+          workspaceId: "project-b-ws",
+          repoUrl: "https://example.test/b.git",
+          repoRef: "main",
+        },
+        // A referenced project with no workspace row keeps its managed fallback path and a null workspaceId.
+        { cwd: "/managed/project-c", projectId: "project-c", workspaceId: null, repoUrl: null, repoRef: null },
+      ],
+    });
+
+    expect(hints).toEqual([
+      { workspaceId: "anchor-ws", cwd: "/anchor", repoUrl: "https://example.test/anchor.git", repoRef: "main" },
+      {
+        workspaceId: "project-b-ws",
+        cwd: "/managed/project-b",
+        repoUrl: "https://example.test/b.git",
+        repoRef: "main",
+        projectId: "project-b",
+      },
+      { workspaceId: null, cwd: "/managed/project-c", repoUrl: null, repoRef: null, projectId: "project-c" },
+    ]);
   });
 });
 

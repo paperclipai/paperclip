@@ -2242,6 +2242,33 @@ export type ResolvedWorkspaceForRun = {
 /** The anchor workspace shape, before the additional referenced workspaces are attached. */
 type ResolvedAnchorWorkspaceForRun = Omit<ResolvedWorkspaceForRun, "additionalWorkspaces">;
 
+/**
+ * Build the plural workspace list that a run exposes to the agent through the
+ * `PAPERCLIP_WORKSPACES_JSON` environment variable. The list joins the anchor
+ * project's alternative workspace rows with the read-only referenced (mentioned)
+ * project workspaces, so every execution target receives the referenced project
+ * paths through the same channel the run already uses for the anchor project.
+ *
+ * Each referenced entry carries its `projectId` so the agent can tell which
+ * mentioned project a path belongs to. The referenced set is empty unless the
+ * multi-project workspace-sync flag is on, so the exposed list is byte-for-byte
+ * unchanged in the production default.
+ */
+export function buildRunWorkspaceHints(
+  resolved: Pick<ResolvedWorkspaceForRun, "workspaceHints" | "additionalWorkspaces">,
+): Array<Record<string, unknown>> {
+  return [
+    ...resolved.workspaceHints,
+    ...resolved.additionalWorkspaces.map((additional) => ({
+      workspaceId: additional.workspaceId,
+      cwd: additional.cwd,
+      repoUrl: additional.repoUrl,
+      repoRef: additional.repoRef,
+      projectId: additional.projectId,
+    })),
+  ];
+}
+
 type ProjectWorkspaceCandidate = {
   id: string;
 };
@@ -13520,7 +13547,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         return home;
       })(),
     };
-    context.paperclipWorkspaces = resolvedWorkspace.workspaceHints;
+    context.paperclipWorkspaces = buildRunWorkspaceHints(resolvedWorkspace);
     // The wake payload is built before the execution workspace is resolved, so
     // attach the branch pin here; the shared wake-prompt renderer surfaces it as
     // a one-time "stay on this branch" hint on non-resumed sessions.
