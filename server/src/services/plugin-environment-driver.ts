@@ -143,8 +143,12 @@ export async function listReadyPluginEnvironmentDrivers(input: {
   const recoveryAttempts: Promise<boolean>[] = [];
 
   for (const plugin of readyPlugins) {
+    const hasSandboxProviderDriver = plugin.manifestJson.environmentDrivers?.some(
+      (driver) => driver.kind === "sandbox_provider",
+    ) ?? false;
     const canRecover =
-      !input.workerManager.isRunning(plugin.id)
+      hasSandboxProviderDriver
+      && !input.workerManager.isRunning(plugin.id)
       && recoverablePluginKeys.has(plugin.pluginKey)
       && !input.workerManager.getWorker(plugin.id);
     if (!canRecover || !input.recoverMissingWorker) continue;

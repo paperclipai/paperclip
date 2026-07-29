@@ -2,10 +2,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { PaperclipPluginManifestV1 } from "@paperclipai/shared";
 import { createManagedBundledPluginWorkerRecovery } from "../app.js";
 import { listReadyPluginEnvironmentDrivers } from "../services/plugin-environment-driver.js";
-import type { PluginLoader } from "../services/plugin-loader.js";
+import { pluginLoader, type PluginLoader } from "../services/plugin-loader.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 
 const mockRegistry = vi.hoisted(() => ({
+  getById: vi.fn(),
   list: vi.fn(),
 }));
 
@@ -75,6 +76,7 @@ function createDeferred<T = void>() {
 
 describe("listReadyPluginEnvironmentDrivers worker recovery", () => {
   beforeEach(() => {
+    mockRegistry.getById.mockReset();
     mockRegistry.list.mockReset();
   });
 
@@ -137,6 +139,35 @@ describe("listReadyPluginEnvironmentDrivers worker recovery", () => {
       workerManager: worker.workerManager,
       recoverMissingWorker: {
         pluginKeys: ["paperclip.kubernetes-sandbox-provider"],
+        startWorker,
+      },
+    });
+
+    expect(startWorker).not.toHaveBeenCalled();
+    expect(drivers).toEqual([]);
+  });
+
+  it("does not lazy-start managed bundled plugins without sandbox provider drivers", async () => {
+    const plugin = {
+      ...createPlugin("ready"),
+      manifestJson: {
+        ...manifest,
+        capabilities: [],
+        environmentDrivers: undefined,
+      },
+    };
+    mockRegistry.list.mockResolvedValue([plugin]);
+    const worker = createWorkerManager();
+    const startWorker = vi.fn(async () => {
+      worker.markRunning();
+      return true;
+    });
+
+    const drivers = await listReadyPluginEnvironmentDrivers({
+      db: {} as never,
+      workerManager: worker.workerManager,
+      recoverMissingWorker: {
+        pluginKeys: [PLUGIN_KEY],
         startWorker,
       },
     });
@@ -245,6 +276,53 @@ describe("listReadyPluginEnvironmentDrivers worker recovery", () => {
       markErrorOnFailure: false,
     });
     expect(drivers).toEqual([]);
+  });
+
+  it("lets callers suppress shared error-state writes on activation failure", async () => {
+    const plugin = {
+      ...createPlugin("ready"),
+      packageName: "@paperclipai/missing-sandbox-provider",
+      packagePath: null,
+      version: "1.0.0",
+    };
+    mockRegistry.getById.mockResolvedValue(plugin);
+    const lifecycleManager = {
+      markError: vi.fn().mockResolvedValue(undefined),
+    };
+    const loader = pluginLoader(
+      {} as never,
+      {
+        enableLocalFilesystem: false,
+        enableNpmDiscovery: false,
+        localPluginDir: "__missing_plugin_dir__",
+      },
+      {
+        lifecycleManager,
+        workerManager: {},
+        eventBus: {},
+        jobScheduler: {},
+        jobStore: {},
+        toolDispatcher: {},
+        buildHostHandlers: vi.fn(),
+        instanceInfo: {
+          instanceId: "test",
+          hostVersion: "0.0.0",
+        },
+      } as never,
+    );
+
+    await expect(loader.loadSingle(PLUGIN_ID)).resolves.toMatchObject({
+      success: false,
+      error: expect.stringContaining("Package root not found"),
+    });
+    expect(lifecycleManager.markError).toHaveBeenCalledTimes(1);
+
+    lifecycleManager.markError.mockClear();
+    await expect(loader.loadSingle(PLUGIN_ID, { markErrorOnFailure: false })).resolves.toMatchObject({
+      success: false,
+      error: expect.stringContaining("Package root not found"),
+    });
+    expect(lifecycleManager.markError).not.toHaveBeenCalled();
   });
 
   it("bounds slow managed bundled recovery attempts without serial waits", async () => {

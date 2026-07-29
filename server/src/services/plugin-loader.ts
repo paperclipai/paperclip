@@ -361,6 +361,10 @@ export interface PluginLoadResult {
 }
 
 export interface PluginLoadSingleOptions {
+  /**
+   * When false, activation failures are reported to the caller but do not
+   * transition the shared plugin row to `error`.
+   */
   markErrorOnFailure?: boolean;
 }
 
@@ -1945,6 +1949,7 @@ export function pluginLoader(
      * capabilities (tools, jobs, etc.).
      *
      * @param pluginId - The UUID of the plugin to load.
+     * @param options - Optional activation behavior overrides.
      * @returns A promise that resolves with the result of the activation.
      */
     async loadSingle(pluginId: string, options: PluginLoadSingleOptions = {}): Promise<PluginLoadResult> {
