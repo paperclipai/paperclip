@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
@@ -1053,7 +1053,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
       return run?.status === "cancelled";
     });
 
-    const [run, wakeup] = await Promise.all([
+    const [run, wakeup, successorWake, successorRun] = await Promise.all([
       db
         .select({
           status: heartbeatRuns.status,
@@ -1068,6 +1068,37 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
         .from(agentWakeupRequests)
         .where(eq(agentWakeupRequests.id, wakeupRequestId))
         .then((rows) => rows[0] ?? null),
+      db
+        .select({
+          id: agentWakeupRequests.id,
+          status: agentWakeupRequests.status,
+          reason: agentWakeupRequests.reason,
+          runId: agentWakeupRequests.runId,
+        })
+        .from(agentWakeupRequests)
+        .where(
+          and(
+            eq(agentWakeupRequests.agentId, replacementAgentId),
+            sql`${agentWakeupRequests.payload} ->> 'staleQueuedRunId' = ${runId}`,
+          ),
+        )
+        .orderBy(agentWakeupRequests.requestedAt)
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({
+          id: heartbeatRuns.id,
+          status: heartbeatRuns.status,
+          contextSnapshot: heartbeatRuns.contextSnapshot,
+        })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.agentId, replacementAgentId),
+            sql`${heartbeatRuns.contextSnapshot} ->> 'staleQueuedRunId' = ${runId}`,
+          ),
+        )
+        .orderBy(heartbeatRuns.createdAt)
+        .then((rows) => rows[0] ?? null),
     ]);
 
     expect(run?.status).toBe("cancelled");
@@ -1075,6 +1106,15 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect(run?.resultJson).toMatchObject({ stopReason: "issue_assignee_changed" });
     expect(wakeup?.status).toBe("skipped");
     expect(wakeup?.error).toContain("assignee changed");
+    expect(successorWake?.reason).toBe("issue_assigned");
+    expect(successorWake?.runId).toBe(successorRun?.id ?? null);
+    expect(["queued", "claimed", "running"]).toContain(successorWake?.status);
+    expect(["queued", "claimed", "running"]).toContain(successorRun?.status);
+    expect(successorRun?.contextSnapshot).toMatchObject({
+      issueId,
+      staleQueuedRunId: runId,
+      staleQueuedRunErrorCode: "issue_assignee_changed",
+    });
     expect(countExecuteCallsForRun(runId)).toBe(0);
   });
 
@@ -1244,7 +1284,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
       return run?.status === "cancelled";
     });
 
-    const [run, wakeup, issue] = await Promise.all([
+    const [run, wakeup, issue, successorWake, successorRun] = await Promise.all([
       db
         .select({
           status: heartbeatRuns.status,
@@ -1264,6 +1304,38 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
         .from(issues)
         .where(eq(issues.id, issueId))
         .then((rows) => rows[0] ?? null),
+      db
+        .select({
+          id: agentWakeupRequests.id,
+          status: agentWakeupRequests.status,
+          reason: agentWakeupRequests.reason,
+          runId: agentWakeupRequests.runId,
+        })
+        .from(agentWakeupRequests)
+        .where(
+          and(
+            eq(agentWakeupRequests.agentId, agentId),
+            sql`${agentWakeupRequests.payload} ->> 'retryOfRunId' = ${runId}`,
+          ),
+        )
+        .orderBy(agentWakeupRequests.requestedAt)
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({
+          id: heartbeatRuns.id,
+          status: heartbeatRuns.status,
+          scheduledRetryReason: heartbeatRuns.scheduledRetryReason,
+          contextSnapshot: heartbeatRuns.contextSnapshot,
+        })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.agentId, agentId),
+            eq(heartbeatRuns.retryOfRunId, runId),
+          ),
+        )
+        .orderBy(heartbeatRuns.createdAt)
+        .then((rows) => rows[0] ?? null),
     ]);
 
     expect(run?.status).toBe("cancelled");
@@ -1272,8 +1344,19 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect(wakeup?.status).toBe("skipped");
     expect(wakeup?.error).toContain("execution lock");
     expect(issue?.executionRunId).toBe(lockOwnerRunId);
+    expect(successorWake?.reason).toBe("issue_assigned");
+    expect(successorWake?.runId).toBe(successorRun?.id ?? null);
+    expect(["queued", "claimed"]).toContain(successorWake?.status);
+    expect(successorRun?.status).toBe("scheduled_retry");
+    expect(successorRun?.scheduledRetryReason).toBe("issue_execution_lock_changed");
+    expect(successorRun?.contextSnapshot).toMatchObject({
+      issueId,
+      retryOfRunId: runId,
+      wakeReason: "issue_assigned",
+      retryReason: "issue_execution_lock_changed",
+    });
     expect(countExecuteCallsForRun(runId)).toBe(0);
-  });
+  }, 15_000);
 
   it("cancels queued in_review runs when the current participant changes before the run starts", async () => {
     const { companyId, agentId } = await seedCompanyAndAgent();

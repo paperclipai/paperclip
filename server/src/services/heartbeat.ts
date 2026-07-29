@@ -5465,9 +5465,12 @@ function isTruthyRuntimeEnvValue(value: string | undefined) {
 export function resolveHeartbeatSchedulingSuppression(
   env: Record<string, string | undefined> = process.env,
   overrides: { allowWorktreeRunExecution?: boolean } = {},
-): { suppressed: boolean; reason: "worktree_instance" | "database_restore_in_progress" | null } {
+): { suppressed: boolean; reason: "worktree_instance" | "database_restore_in_progress" | "non_primary_runtime_instance" | null } {
   if (isTruthyRuntimeEnvValue(env.PAPERCLIP_IN_WORKTREE) && !overrides.allowWorktreeRunExecution) {
     return { suppressed: true, reason: "worktree_instance" };
+  }
+  if (env.PAPERCLIP_PRIMARY_RUNTIME_INSTANCE === "false") {
+    return { suppressed: true, reason: "non_primary_runtime_instance" };
   }
   if (
     isTruthyRuntimeEnvValue(env.PAPERCLIP_DATABASE_RESTORE_IN_PROGRESS) ||
@@ -6448,8 +6451,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     ].join("\n");
   }
 
+  type IssueMonitorPatchableIssue = Parameters<typeof buildIssueMonitorRearmedPatch>[0]["issue"];
+
   function rearmUndeliveredIssueMonitorPatch(input: {
-    issue: typeof issues.$inferSelect;
+    issue: IssueMonitorPatchableIssue;
     now: Date;
     nextCheckAt: string | null | undefined;
     deliveredAttemptCount: number | null | undefined;
@@ -11129,6 +11134,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       },
     });
 
+    const agent = await getAgent(run.agentId);
+    if (agent) {
+      await scheduleBoundedRetryForRun(cancelled, agent, {
+        retryReason: "issue_dependencies_blocked",
+        wakeReason: "issue_blockers_resolved",
+        delayMs: 30_000,
+      });
+    }
+
     return cancelled;
   }
 
@@ -11340,6 +11354,37 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       message: staleness.reason,
       payload: staleness.details,
     });
+
+    if (staleness.errorCode === "issue_assignee_changed") {
+      const successorAgentId = readNonEmptyString(staleness.details.currentAssigneeAgentId);
+      if (successorAgentId) {
+        await enqueueWakeup(successorAgentId, {
+          source: "automation",
+          triggerDetail: "system",
+          reason: "issue_assigned",
+          payload: {
+            issueId,
+            staleQueuedRunId: run.id,
+            staleQueuedRunErrorCode: staleness.errorCode,
+          },
+          contextSnapshot: {
+            issueId,
+            wakeReason: "issue_assigned",
+            staleQueuedRunId: run.id,
+            staleQueuedRunErrorCode: staleness.errorCode,
+          },
+        });
+      }
+    } else if (staleness.errorCode === "issue_execution_lock_changed") {
+      const agent = await getAgent(run.agentId);
+      if (agent) {
+        await scheduleBoundedRetryForRun(cancelled, agent, {
+          retryReason: "issue_execution_lock_changed",
+          wakeReason: "issue_assigned",
+          delayMs: 1_000,
+        });
+      }
+    }
 
     return cancelled;
   }
@@ -11676,6 +11721,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
 
       const tracksLocalChild = isTrackedLocalChildProcessAdapter(adapterType);
+      if (tracksLocalChild && !run.processPid) continue;
       const processPidAlive = tracksLocalChild && run.processPid && isProcessAlive(run.processPid);
       const processGroupAlive = tracksLocalChild && run.processGroupId && isProcessGroupAlive(run.processGroupId);
       if (
