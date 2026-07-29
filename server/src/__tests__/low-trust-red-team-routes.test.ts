@@ -1426,6 +1426,15 @@ describeEmbeddedPostgres("low-trust red-team HTTP route regression suite", () =>
         status: "succeeded",
         finishedAt: new Date("2026-05-14T12:02:00.000Z"),
       }).where(eq(heartbeatRuns.id, fixture.runs.standard.id));
+      // The fixture's second standard-agent run (standardReport) must also be
+      // terminal: under the fork's AGENT_DEFAULT_MAX_CONCURRENT_RUNS = 1 a
+      // leftover "running" row starves the on-demand wake's claim (slots = 0)
+      // and the gateway never receives the payload. Upstream's 20-slot default
+      // masks this, which is why the upstream-authored fixture never noticed.
+      await db.update(heartbeatRuns).set({
+        status: "succeeded",
+        finishedAt: new Date("2026-05-14T12:02:00.000Z"),
+      }).where(eq(heartbeatRuns.id, fixture.runs.standardReport.id));
 
       const run = await heartbeat.wakeup(fixture.agents.standard.id, {
         source: "automation",
