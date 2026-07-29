@@ -171,7 +171,9 @@ export function createManagedBundledPluginWorkerRecovery(input: {
       if (!loader) return false;
 
       try {
-        const result = await loader.loadSingle(plugin.id);
+        const result = await loader.loadSingle(plugin.id, {
+          markErrorOnFailure: false,
+        });
         return result.success === true || input.workerManager.isRunning(plugin.id);
       } catch (err) {
         logger.warn(

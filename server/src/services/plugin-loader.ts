@@ -360,6 +360,14 @@ export interface PluginLoadResult {
   };
 }
 
+export interface PluginLoadSingleOptions {
+  markErrorOnFailure?: boolean;
+}
+
+interface PluginActivateOptions {
+  markErrorOnFailure: boolean;
+}
+
 /**
  * Result of activating all ready plugins at server startup.
  */
@@ -540,7 +548,7 @@ export interface PluginLoader {
    *
    * @see PLUGIN_SPEC.md §8.3 — Install Process
    */
-  loadSingle(pluginId: string): Promise<PluginLoadResult>;
+  loadSingle(pluginId: string, options?: PluginLoadSingleOptions): Promise<PluginLoadResult>;
 
   /**
    * Deactivate a single plugin — stop its worker and unregister all
@@ -1939,7 +1947,7 @@ export function pluginLoader(
      * @param pluginId - The UUID of the plugin to load.
      * @returns A promise that resolves with the result of the activation.
      */
-    async loadSingle(pluginId: string): Promise<PluginLoadResult> {
+    async loadSingle(pluginId: string, options: PluginLoadSingleOptions = {}): Promise<PluginLoadResult> {
       if (!runtimeServices) {
         throw new Error(
           "Cannot loadSingle: no PluginRuntimeServices provided. " +
@@ -1975,7 +1983,9 @@ export function pluginLoader(
         );
       }
 
-      return activatePlugin(plugin);
+      return activatePlugin(plugin, {
+        markErrorOnFailure: options.markErrorOnFailure ?? true,
+      });
     },
 
     // -----------------------------------------------------------------------
@@ -2069,10 +2079,13 @@ export function pluginLoader(
    * sync jobs, register tools.
    *
    * This is the core orchestration logic shared by `loadAll()` and `loadSingle()`.
-   * Failures are caught and reported in the result; the plugin is marked as
-   * `error` in the database when activation fails.
+   * Failures are caught and reported in the result. By default the plugin is
+   * marked as `error` in the database when activation fails.
    */
-  async function activatePlugin(plugin: PluginRecord): Promise<PluginLoadResult> {
+  async function activatePlugin(
+    plugin: PluginRecord,
+    options: PluginActivateOptions = { markErrorOnFailure: true },
+  ): Promise<PluginLoadResult> {
     const pluginId = plugin.id;
     const pluginKey = plugin.pluginKey;
     let activePlugin = plugin;
@@ -2351,18 +2364,20 @@ export function pluginLoader(
         "plugin-loader: failed to activate plugin",
       );
 
-      // Mark the plugin as errored in the database so it is not retried
-      // automatically on next startup without operator intervention.
-      try {
-        await lifecycleManager.markError(pluginId, `Activation failed: ${errorMessage}`);
-      } catch (markErr) {
-        log.error(
-          {
-            pluginId,
-            err: markErr instanceof Error ? markErr.message : String(markErr),
-          },
-          "plugin-loader: failed to mark plugin as error after activation failure",
-        );
+      if (options.markErrorOnFailure) {
+        // Mark the plugin as errored in the database so it is not retried
+        // automatically on next startup without operator intervention.
+        try {
+          await lifecycleManager.markError(pluginId, `Activation failed: ${errorMessage}`);
+        } catch (markErr) {
+          log.error(
+            {
+              pluginId,
+              err: markErr instanceof Error ? markErr.message : String(markErr),
+            },
+            "plugin-loader: failed to mark plugin as error after activation failure",
+          );
+        }
       }
 
       return {

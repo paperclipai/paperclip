@@ -204,7 +204,9 @@ describe("listReadyPluginEnvironmentDrivers worker recovery", () => {
     const [firstDrivers, secondDrivers] = await Promise.all([first, second]);
 
     expect(loadSingle).toHaveBeenCalledTimes(1);
-    expect(loadSingle).toHaveBeenCalledWith(PLUGIN_ID);
+    expect(loadSingle).toHaveBeenCalledWith(PLUGIN_ID, {
+      markErrorOnFailure: false,
+    });
     expect(firstDrivers).toEqual([
       expect.objectContaining({
         pluginId: PLUGIN_ID,
@@ -212,6 +214,37 @@ describe("listReadyPluginEnvironmentDrivers worker recovery", () => {
       }),
     ]);
     expect(secondDrivers).toEqual(firstDrivers);
+  });
+
+  it("keeps request-time recovery failures process-local instead of marking shared plugin state errored", async () => {
+    const plugin = createPlugin("ready");
+    mockRegistry.list.mockResolvedValue([plugin]);
+    const worker = createWorkerManager();
+    const loadSingle = vi.fn(async () => ({
+      plugin,
+      success: false,
+      registered: { worker: false, eventSubscriptions: 0, jobs: 0, webhooks: 0, tools: 0 },
+      error: "local worker spawn failed",
+    }));
+    const startWorker = createManagedBundledPluginWorkerRecovery({
+      managedBundledPluginKeys: [PLUGIN_KEY],
+      workerManager: worker.workerManager,
+      getLoader: () => ({ loadSingle }) as Pick<PluginLoader, "loadSingle">,
+    });
+
+    const drivers = await listReadyPluginEnvironmentDrivers({
+      db: {} as never,
+      workerManager: worker.workerManager,
+      recoverMissingWorker: {
+        pluginKeys: [PLUGIN_KEY],
+        startWorker,
+      },
+    });
+
+    expect(loadSingle).toHaveBeenCalledWith(PLUGIN_ID, {
+      markErrorOnFailure: false,
+    });
+    expect(drivers).toEqual([]);
   });
 
   it("bounds slow managed bundled recovery attempts without serial waits", async () => {
