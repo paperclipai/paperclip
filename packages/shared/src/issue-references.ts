@@ -7,7 +7,7 @@ export interface IssueReferenceMatch {
   matchedText: string;
 }
 
-const ISSUE_REFERENCE_TOKEN_RE = /https?:\/\/[^\s<>()]+|\/[^\s<>()]+|[A-Z][A-Z0-9]*-\d+/gi;
+const ISSUE_REFERENCE_TOKEN_RE = /https?:\/\/[^\s<>()]+|\/[^\s<>()]+|[A-Z0-9][A-Z0-9]*-\d+/gi;
 
 function preserveNewlinesAsWhitespace(value: string) {
   return value.replace(/[^\n]/g, " ");
