@@ -104,6 +104,20 @@ describe("hermes-local adapter onSpawn forwarding", () => {
     expect(opts.onSpawn).toBe(onSpawn);
   });
 
+  it("launches Hermes from the runtime-provided execution workspace cwd", async () => {
+    const executionWorkspaceCwd = "/workspace/WPR2-pr-1542";
+    const { ctx } = makeCtx({ cwd: executionWorkspaceCwd, worktreeMode: true });
+
+    await execute(ctx as any);
+
+    const mocked = vi.mocked(serverUtils.runChildProcess);
+    const lastCall = mocked.mock.calls[mocked.mock.calls.length - 1];
+    const args = lastCall[2] as string[];
+    const opts = lastCall[3] as Record<string, unknown>;
+    expect(args).toContain("-w");
+    expect(opts.cwd).toBe(executionWorkspaceCwd);
+  });
+
   it("runChildProcess opts type includes onSpawn", () => {
     // Type-level assertion: if onSpawn were removed from the type,
     // this file would fail to compile. The runtime test above catches
