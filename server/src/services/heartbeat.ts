@@ -3051,7 +3051,7 @@ export function resolveRoutinePreflightEligibility(input: {
   if (!readNonEmptyString(input.routineRevisionId)) {
     return { eligible: false as const, reason: "routine_revision_not_pinned" };
   }
-  if ((readNonEmptyString(input.executionTargetKind) ?? "local") !== "local") {
+  if (readNonEmptyString(input.executionTargetKind) !== "local") {
     return { eligible: false as const, reason: "non_local_execution_target" };
   }
   if (input.trustPresetKind !== "standard") {

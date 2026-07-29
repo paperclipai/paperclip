@@ -161,6 +161,7 @@ function makeSnapshot(env: RoutineEnvConfig | null): RoutineRevisionSnapshotV1 {
       activityGateScope: "company",
       variables: [],
       env,
+      preflight: null,
     },
     triggers: [],
   };

@@ -101,6 +101,7 @@ function snapshotV1(overrides?: Partial<RoutineRevisionSnapshotV1["routine"]>): 
       activityGateScope: "company",
       variables: [],
       env: null,
+      preflight: null,
       ...overrides,
     },
     triggers: [],

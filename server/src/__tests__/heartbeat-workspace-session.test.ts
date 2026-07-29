@@ -1644,6 +1644,18 @@ describe("routine deterministic preflight", () => {
       authToken: "run-token",
     })).toEqual({ eligible: false, reason: "non_local_execution_target" });
 
+    for (const executionTargetKind of [null, undefined]) {
+      expect(resolveRoutinePreflightEligibility({
+        preflight,
+        routineId: "routine-1",
+        routineRevisionId: "revision-1",
+        issueId: "issue-1",
+        executionTargetKind,
+        trustPresetKind: "standard",
+        authToken: "run-token",
+      })).toEqual({ eligible: false, reason: "non_local_execution_target" });
+    }
+
     expect(resolveRoutinePreflightEligibility({
       preflight,
       routineId: "routine-1",
