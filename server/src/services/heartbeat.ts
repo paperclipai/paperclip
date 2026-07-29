@@ -11763,8 +11763,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         );
         continue;
       }
-      const processPidAlive = tracksLocalChild && run.processPid && isProcessAlive(run.processPid);
-      const processGroupAlive = tracksLocalChild && run.processGroupId && isProcessGroupAlive(run.processGroupId);
+      const processPidAlive = Boolean(
+        tracksLocalChild && run.processPid && isProcessAlive(run.processPid),
+      );
+      const processGroupAlive = Boolean(
+        tracksLocalChild && run.processGroupId && isProcessGroupAlive(run.processGroupId),
+      );
       if (
         (processPidAlive || processGroupAlive) &&
         readHotRestartAdoptionMetadata(parseObject(run.resultJson)) &&
