@@ -897,7 +897,7 @@ describe("buildRunWorkspaceHints", () => {
           repoUrl: "https://example.test/b.git",
           repoRef: "main",
         },
-        // A referenced project with no workspace row keeps its managed fallback path and a null workspaceId.
+        // The hint builder passes each field through unchanged, including a null workspaceId.
         { cwd: "/managed/project-c", projectId: "project-c", workspaceId: null, repoUrl: null, repoRef: null },
       ],
     });
@@ -945,26 +945,41 @@ describe("resolveAdditionalProjectWorkspace", () => {
     };
   }
 
-  it("uses the managed-directory fallback when the project has no workspace rows", async () => {
-    let ensuredRepoUrl: string | null | undefined;
+  it("throws instead of creating an empty managed directory when the project has no workspace rows", async () => {
+    let ensureCalls = 0;
     const deps = buildDeps({
       loadProjectWorkspaceRows: async () => [],
       ensureManagedProjectWorkspace: async (input) => {
-        ensuredRepoUrl = input.repoUrl;
+        ensureCalls += 1;
         return { cwd: `/managed/${input.projectId}`, warning: null };
       },
     });
 
-    const result = await resolveAdditionalProjectWorkspace({ companyId, project: referencedProject("project-b") }, deps);
+    await expect(
+      resolveAdditionalProjectWorkspace({ companyId, project: referencedProject("project-b") }, deps),
+    ).rejects.toThrow(/project-b/);
+    // The fallback must not fabricate an empty managed directory for a project with no real source.
+    expect(ensureCalls).toBe(0);
+  });
 
-    expect(result).toEqual({
-      cwd: "/managed/project-b",
-      projectId: "project-b",
-      workspaceId: null,
-      repoUrl: null,
-      repoRef: null,
+  it("throws when a workspace row supplies neither a checkout directory nor a repository URL", async () => {
+    let ensureCalls = 0;
+    const deps = buildDeps({
+      loadProjectWorkspaceRows: async () => [workspaceRow({ id: "ws-empty", cwd: null, repoUrl: null })],
+      resolveConfiguredOrManagedProjectCwd: async (input) => ({ cwd: input.cwd ?? "/unset", warning: null }),
+      // directoryExists returns true for any path; the row must still be skipped before this runs.
+      directoryExists: async () => true,
+      ensureManagedProjectWorkspace: async (input) => {
+        ensureCalls += 1;
+        return { cwd: `/managed/${input.projectId}`, warning: null };
+      },
     });
-    expect(ensuredRepoUrl).toBeNull();
+
+    await expect(
+      resolveAdditionalProjectWorkspace({ companyId, project: referencedProject("project-c") }, deps),
+    ).rejects.toThrow(/project-c/);
+    // The row without a real source neither resolves a checkout nor triggers a managed fallback.
+    expect(ensureCalls).toBe(0);
   });
 
   it("returns the first workspace row whose directory exists", async () => {

@@ -1454,12 +1454,13 @@ function defaultAdditionalProjectWorkspaceDeps(db: Db): ResolveAdditionalProject
  * lands in its own managed checkout directory, never nested inside the anchor's worktree (the
  * directory isolation invariant lives in {@link resolveManagedProjectWorkspaceDir}).
  *
- * When no configured workspace row resolves to an existing directory, this function falls back to
- * the managed checkout directory for the project, the same fallback the anchor path uses. A
- * project without any `projectWorkspaces` row therefore stays available in its own managed
- * directory instead of dropping out of the run. The fallback clones the repository when a
- * workspace row supplies a repository URL. It throws only when the managed checkout cannot be
- * prepared (for example, a clone failure), so the caller can drop only that project.
+ * A referenced project must resolve to a directory with real content. The function uses a
+ * configured checkout directory that exists, or clones a managed checkout from a workspace row
+ * that supplies a repository URL. When no row offers either, the function throws instead of
+ * creating an empty managed directory. An empty directory gives the agent an empty referenced
+ * workspace and hides the real cause. The caller catches the error and drops only that project.
+ * The function also throws when the managed checkout cannot be prepared (for example, a clone
+ * failure), so the caller can drop only that project.
  */
 export async function resolveAdditionalProjectWorkspace(
   input: {
@@ -1472,6 +1473,13 @@ export async function resolveAdditionalProjectWorkspace(
   const projectId = input.project.projectId;
   const workspaceRows = await deps.loadProjectWorkspaceRows(companyId, projectId);
   for (const workspace of workspaceRows) {
+    // A row realizes real content only through a configured checkout directory or a repository URL
+    // to clone. A row with neither can produce only an empty managed directory, so skip it here.
+    const configuredCwd = readNonEmptyString(workspace.cwd);
+    const hasConfiguredCwd = Boolean(configuredCwd) && configuredCwd !== REPO_ONLY_CWD_SENTINEL;
+    if (!hasConfiguredCwd && !readNonEmptyString(workspace.repoUrl)) {
+      continue;
+    }
     const { cwd } = await deps.resolveConfiguredOrManagedProjectCwd({
       companyId,
       projectId,
@@ -1488,18 +1496,28 @@ export async function resolveAdditionalProjectWorkspace(
       };
     }
   }
-  const fallbackRow = workspaceRows[0] ?? null;
+  // No configured checkout resolved to an existing directory. Clone a managed checkout only from a
+  // real source: the first workspace row that supplies a repository URL. Without a real source, do
+  // not fabricate an empty managed directory and report success. Throw instead, so the caller drops
+  // only this referenced project and adds a clear warning.
+  const fallbackRow = workspaceRows.find((row) => readNonEmptyString(row.repoUrl)) ?? null;
+  const fallbackRepoUrl = fallbackRow ? readNonEmptyString(fallbackRow.repoUrl) : null;
+  if (!fallbackRow || !fallbackRepoUrl) {
+    throw new Error(
+      `Referenced project ${projectId} has no workspace checkout or repository URL to realize.`,
+    );
+  }
   const managed = await deps.ensureManagedProjectWorkspace({
     companyId,
     projectId,
-    repoUrl: fallbackRow ? readNonEmptyString(fallbackRow.repoUrl) : null,
+    repoUrl: fallbackRepoUrl,
   });
   return {
     cwd: managed.cwd,
     projectId,
-    workspaceId: fallbackRow?.id ?? null,
-    repoUrl: fallbackRow?.repoUrl ?? null,
-    repoRef: fallbackRow?.repoRef ?? null,
+    workspaceId: fallbackRow.id,
+    repoUrl: fallbackRow.repoUrl,
+    repoRef: fallbackRow.repoRef,
   };
 }
 
