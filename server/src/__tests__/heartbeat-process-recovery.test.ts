@@ -1329,6 +1329,47 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(issue?.executionRunId).toBe(runId);
   });
 
+  it("does not reap a stale zero-pid local run under the startup-equivalent stale threshold", async () => {
+    const now = new Date("2026-03-19T00:00:00.000Z");
+    const { runId, wakeupRequestId, issueId } = await seedRunFixture({
+      now,
+      updatedAt: now,
+      processPid: null,
+      processGroupId: null,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns({
+      now: new Date("2026-03-19T00:16:00.000Z"),
+      staleThresholdMs: 5 * 60 * 1000,
+    });
+    expect(result).toEqual({ reaped: 0, runIds: [] });
+
+    const run = await heartbeat.getRun(runId);
+    expect(run).toMatchObject({
+      id: runId,
+      status: "running",
+      errorCode: null,
+      processPid: null,
+      processGroupId: null,
+    });
+
+    const wakeup = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, wakeupRequestId))
+      .then((rows) => rows[0] ?? null);
+    expect(wakeup?.status).toBe("claimed");
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.checkoutRunId).toBe(runId);
+    expect(issue?.executionRunId).toBe(runId);
+  });
+
   it("does not force-stop an alive pid run when silence crosses the orphan threshold", async () => {
     const child = spawnAliveProcess();
     childProcesses.add(child);
@@ -1465,6 +1506,59 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     );
     // Terminal run cleanup releases the checkout lock so future checkout 409s only mean a live owner exists.
     expect(checkoutReleasedIssue?.checkoutRunId).toBeNull();
+  });
+
+  it("reaps a stale dead-pid local run under the startup-equivalent stale threshold", async () => {
+    const now = new Date("2026-03-19T00:00:00.000Z");
+    const { agentId, runId, issueId } = await seedRunFixture({
+      now,
+      updatedAt: now,
+      agentStatus: "idle",
+      processPid: 999_999_999,
+      contextSnapshot: {
+        modelProfile: "cheap",
+        allowDeliverableWork: false,
+        allowDocumentUpdates: false,
+        resumeRequiresNormalModel: true,
+      },
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns({
+      now: new Date("2026-03-19T00:16:00.000Z"),
+      staleThresholdMs: 5 * 60 * 1000,
+    });
+    expect(result).toEqual({ reaped: 1, runIds: [runId] });
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(2);
+
+    const failedRun = runs.find((row) => row.id === runId);
+    const retryRun = runs.find((row) => row.retryOfRunId === runId);
+    expect(failedRun).toMatchObject({
+      id: runId,
+      status: "failed",
+      errorCode: "process_lost",
+    });
+    expect(retryRun).toMatchObject({
+      retryOfRunId: runId,
+      processLossRetryCount: 1,
+    });
+
+    const issue = await waitForValue(async () =>
+      db
+        .select()
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => {
+          const row = rows[0] ?? null;
+          return row?.checkoutRunId === null ? row : null;
+        }),
+    );
+    expect([retryRun?.id ?? null, null]).toContain(issue?.executionRunId ?? null);
   });
 
   it("restores one lost monitor dispatch before escalating a second process loss", async () => {

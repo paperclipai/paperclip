@@ -963,9 +963,12 @@ export async function startServer(): Promise<StartedServer> {
           logger.error({ err }, "startup hot-restart adoption reconciliation failed - continuing with orphan reaper");
         }
 
+        const startupOrphanReapStaleThresholdMs = 5 * 60 * 1000;
         for (let attempt = 1; attempt <= 2; attempt++) {
           try {
-            const result = await heartbeat.reapOrphanedRuns();
+            const result = await heartbeat.reapOrphanedRuns({
+              staleThresholdMs: startupOrphanReapStaleThresholdMs,
+            });
             logger.info(
               { reaped: result.reaped, runIds: result.runIds },
               "startup reap of orphaned heartbeat runs complete",

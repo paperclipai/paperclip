@@ -387,6 +387,28 @@ describe("startServer feedback export wiring", () => {
     await startServer();
 
     expect(callOrder).toEqual(["adopt", "reap"]);
+    expect(heartbeatServiceMock.reapOrphanedRuns).toHaveBeenCalledWith({
+      staleThresholdMs: 5 * 60 * 1000,
+    });
+  });
+
+  it("preserves the startup orphan-reap guard across retries", async () => {
+    loadConfigMock.mockReturnValue(buildTestConfig({
+      heartbeatSchedulerEnabled: true,
+      heartbeatSchedulerIntervalMs: 30000,
+    }));
+    heartbeatServiceMock.reapOrphanedRuns
+      .mockRejectedValueOnce(new Error("transient reap failure"))
+      .mockResolvedValueOnce({ reaped: 0, runIds: [] });
+
+    await startServer();
+
+    expect(heartbeatServiceMock.reapOrphanedRuns).toHaveBeenNthCalledWith(1, {
+      staleThresholdMs: 5 * 60 * 1000,
+    });
+    expect(heartbeatServiceMock.reapOrphanedRuns).toHaveBeenNthCalledWith(2, {
+      staleThresholdMs: 5 * 60 * 1000,
+    });
   });
 
   it("keeps a fallback-port runtime out of startup recovery and periodic background work", async () => {
