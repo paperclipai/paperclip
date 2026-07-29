@@ -824,6 +824,55 @@ describeEmbeddedPostgres("issue create deduplication routes", () => {
     expect(await db.select().from(agentWakeupRequests)).toHaveLength(1);
   });
 
+  it("keeps a replayed child notification pending when stale-marker repair throws", async () => {
+    const companyId = await seedCompany();
+    const parent = await seedParent(companyId);
+    const owner = await seedAgent(companyId);
+    const payload = {
+      title: "Retry a stale blocked child marker",
+      status: "blocked",
+      idempotencyKey: "run-1:stale-blocked-child",
+      unblockDescriptor: { owner: { agentId: owner.id }, action: "Review the child" },
+    };
+    const acceptedApp = createApp({ blockedOwnerEnqueueWakeup: acceptedBlockedOwnerWakeup(companyId) });
+    const created = await request(acceptedApp)
+      .post(`/api/issues/${parent.id}/children`)
+      .send(payload)
+      .expect(201);
+
+    await db
+      .update(agentWakeupRequests)
+      .set({ status: "failed", finishedAt: new Date() })
+      .where(eq(agentWakeupRequests.agentId, owner.id));
+    let attempts = 0;
+    const failingApp = createApp({
+      blockedOwnerEnqueueWakeup: async () => {
+        attempts += 1;
+        throw new Error("scheduler remains unavailable");
+      },
+    });
+
+    const replay = await request(failingApp)
+      .post(`/api/issues/${parent.id}/children`)
+      .send(payload)
+      .expect(202);
+
+    expect(replay.body).toMatchObject({
+      id: created.body.id,
+      deduplicated: true,
+      deduplicationReason: "idempotency_key",
+      notificationPending: true,
+      blockedOwnerNotifiedAt: null,
+    });
+    const persisted = await db
+      .select({ blockedOwnerNotifiedAt: issues.blockedOwnerNotifiedAt })
+      .from(issues)
+      .where(eq(issues.id, created.body.id))
+      .then((rows) => rows[0]);
+    expect(persisted?.blockedOwnerNotifiedAt).toBeNull();
+    expect(attempts).toBe(1);
+  });
+
   it("does not let a cross-parent child key mutate blocker relations", async () => {
     const companyId = await seedCompany();
     const owner = await seedAgent(companyId);
