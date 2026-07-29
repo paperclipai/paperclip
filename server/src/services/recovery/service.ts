@@ -31,7 +31,7 @@ import {
 import { parseObject, asBoolean, asNumber } from "../../adapters/utils.js";
 import { runningProcesses } from "../../adapters/index.js";
 import { visibleIssueCondition } from "../issue-visibility.js";
-import { forbidden, notFound } from "../../errors.js";
+import { HttpError, forbidden, notFound } from "../../errors.js";
 import { logger } from "../../middleware/logger.js";
 import { isPidAlive, isProcessGroupAlive, terminateLocalService } from "../local-service-supervisor.js";
 import { redactCurrentUserText } from "../../log-redaction.js";
@@ -5624,9 +5624,25 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
 
     const blockerIds = await existingBlockerIssueIds(sourceIssue.companyId, sourceIssue.id);
     if (!blockerIds.includes(recovery.id)) return false;
-    await issuesSvc.update(sourceIssue.id, {
-      blockedByIssueIds: blockerIds.filter((blockerId) => blockerId !== recovery.id),
-    });
+    const remainingBlockerIds = blockerIds.filter((blockerId) => blockerId !== recovery.id);
+    try {
+      await issuesSvc.update(sourceIssue.id, { blockedByIssueIds: remainingBlockerIds });
+    } catch (error) {
+      // Entering-blocked gate: when dropping the escalation blocker leaves a
+      // still-"blocked" source whose remaining blockers are all resolved (and
+      // no external owner/action sanctions the block), the bare relation patch
+      // is rejected with a 422 — and an uncaught throw here wedges the WHOLE
+      // liveness reconcile every cycle. All-blockers-resolved means the issue
+      // should not stay blocked, so release it to todo in the same patch,
+      // matching the dependency-resolution path.
+      if (!(error instanceof HttpError) || error.status !== 422 || sourceIssue.status !== "blocked") {
+        throw error;
+      }
+      await issuesSvc.update(sourceIssue.id, {
+        blockedByIssueIds: remainingBlockerIds,
+        status: "todo",
+      });
+    }
     return true;
   }
 
