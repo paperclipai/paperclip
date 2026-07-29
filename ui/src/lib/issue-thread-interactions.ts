@@ -178,6 +178,11 @@ export function getRequestConfirmationTargetHref({
 export function buildIssueThreadInteractionSummary(
   interaction: IssueThreadInteraction,
 ) {
+  const administrativeOutcome = interaction.result && "outcome" in interaction.result
+    ? interaction.result.outcome
+    : null;
+  if (administrativeOutcome === "withdrawn") return "Withdrawn interaction";
+  if (administrativeOutcome === "issue_closed") return "Expired when issue closed";
   if (interaction.kind === "suggest_tasks") {
     const count = interaction.payload.tasks.length;
     if (interaction.status === "accepted") {

@@ -2,6 +2,19 @@ import { describe, expect, it } from "vitest";
 import { buildCodexExecArgs } from "./codex-args.js";
 
 describe("buildCodexExecArgs", () => {
+  it("rewrites the legacy bare gpt-5.6 alias to gpt-5.6-sol and applies fast mode", () => {
+    const result = buildCodexExecArgs({
+      model: "gpt-5.6",
+      fastMode: true,
+    });
+
+    expect(result.model).toBe("gpt-5.6-sol");
+    expect(result.args).toContain("gpt-5.6-sol");
+    expect(result.args).not.toContain("gpt-5.6");
+    expect(result.fastModeApplied).toBe(true);
+    expect(result.fastModeIgnoredReason).toBeNull();
+  });
+
   it("enables Codex fast mode overrides for GPT-5.4", () => {
     const result = buildCodexExecArgs({
       model: "gpt-5.4",
@@ -89,22 +102,22 @@ describe("buildCodexExecArgs", () => {
     ]);
   });
 
-  it("ignores fast mode for unsupported models", () => {
+  it("ignores fast mode for known unsupported models", () => {
     const result = buildCodexExecArgs({
-      model: "gpt-5.3-codex-spark",
+      model: "gpt-5",
       fastMode: true,
     });
 
     expect(result.fastModeRequested).toBe(true);
     expect(result.fastModeApplied).toBe(false);
     expect(result.fastModeIgnoredReason).toContain(
-      "currently only supported on gpt-5.6, gpt-5.5, gpt-5.4 or manually configured model IDs",
+      "currently only supported on gpt-5.6-sol, gpt-5.6-terra, gpt-5.6-luna, gpt-5.5, gpt-5.4 or manually configured model IDs",
     );
     expect(result.args).toEqual([
       "exec",
       "--json",
       "--model",
-      "gpt-5.3-codex-spark",
+      "gpt-5",
       "-",
     ]);
   });

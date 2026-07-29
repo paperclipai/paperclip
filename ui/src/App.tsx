@@ -269,8 +269,10 @@ function boardRoutes() {
         <Route path="artifacts" element={<Artifacts />} />
       </Route>
       <Route path="decisions" element={<WhatNeedsMe />} />
-      <Route path="training" element={<TrainingLibrary />} />
-      <Route path="training/:id" element={<TrainingInspector />} />
+      <Route path="decisions/training" element={<TrainingLibrary />} />
+      <Route path="decisions/training/:id" element={<TrainingInspector />} />
+      <Route path="training" element={<Navigate to="/decisions/training" replace />} />
+      <Route path="training/:id" element={<LegacyTrainingRedirect />} />
       <Route path="inbox" element={<InboxRootRedirect />} />
       <Route path="inbox/mine" element={<Inbox />} />
       <Route path="inbox/recent" element={<Inbox />} />
@@ -296,6 +298,11 @@ function AppsConnectEntryRoute() {
 
 function InboxRootRedirect() {
   return <Navigate to={`/inbox/${loadLastInboxTab()}`} replace />;
+}
+
+function LegacyTrainingRedirect() {
+  const { id } = useParams<{ id: string }>();
+  return <Navigate to={id ? `/decisions/training/${id}` : "/decisions/training"} replace />;
 }
 
 function LegacySkillStudioRedirect() {

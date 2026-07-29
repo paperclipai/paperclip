@@ -17,6 +17,7 @@ import { isUuidLike, normalizeAgentApiKeyScope, type DeploymentMode } from "@pap
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "./logger.js";
 import { boardAuthService } from "../services/board-auth.js";
+import { instanceSettingsService } from "../services/instance-settings.js";
 import { ensureHumanRoleDefaultGrants } from "../services/principal-access-compatibility.js";
 import { forbidden, unprocessable } from "../errors.js";
 
@@ -379,13 +380,41 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
  * Whether this instance is managed by a Paperclip Cloud control plane.
  * When the tenant server token is configured, the control plane owns the
  * user/identity lifecycle for this instance: users arrive through trusted
- * headers (resolveCloudTenantActor) and are deliberately never granted
- * instance_admin. Surfaces that assume a self-hosted operator will claim
- * the instance (e.g. the first-admin bootstrap gate) should treat a
- * cloud-managed instance as already set up.
+ * headers (resolveCloudTenantActor) and are deliberately never granted the
+ * `instance_admin` DB role. The only elevation a cloud tenant can carry is
+ * computed per request at the trusted-header boundary (owner stack role +
+ * the `enableOwnerInstanceAdmin` flag) and floored by code on
+ * platform-owned surfaces. Surfaces that assume a self-hosted operator
+ * will claim the instance (e.g. the first-admin bootstrap gate) should
+ * treat a cloud-managed instance as already set up.
  */
 export function isCloudManagedInstance(): boolean {
   return Boolean(process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN?.trim());
+}
+
+/**
+ * Whether the trusted-header actor being resolved should carry computed
+ * instance-admin elevation: only the stack `owner` role elevates, and only
+ * while `enableOwnerInstanceAdmin` is enabled. The flag is resolved through
+ * the instance-settings service so the cloud managed-config overlay applies
+ * (the harness can turn elevation off fleet-wide without touching tenant
+ * DBs). Fails closed: a settings read error means no elevation.
+ */
+async function resolveOwnerInstanceAdmin(
+  db: Db,
+  stackRole: "owner" | "admin" | "member" | "support",
+): Promise<boolean> {
+  if (stackRole !== "owner") return false;
+  try {
+    const experimental = await instanceSettingsService(db).getExperimental();
+    return experimental.enableOwnerInstanceAdmin === true;
+  } catch (err) {
+    logger.warn(
+      { err },
+      "Failed to resolve enableOwnerInstanceAdmin for cloud tenant owner; treating elevation as disabled",
+    );
+    return false;
+  }
 }
 
 export async function resolveCloudTenantActor(db: Db, req: Request): Promise<Express.Request["actor"] | null> {
@@ -500,7 +529,12 @@ export async function resolveCloudTenantActor(db: Db, req: Request): Promise<Exp
       membershipRole: membership.membershipRole,
       status: membership.status,
     }],
-    isInstanceAdmin: false,
+    // Computed per request, never persisted: the stack owner is elevated to
+    // instance admin of their own dedicated instance only while the
+    // `enableOwnerInstanceAdmin` flag is on. Non-owner stack roles stay
+    // company-scoped. Turning the flag off de-elevates on the next request —
+    // there is no role row to clean up.
+    isInstanceAdmin: await resolveOwnerInstanceAdmin(db, stackRole),
     source: "cloud_tenant",
   };
 }

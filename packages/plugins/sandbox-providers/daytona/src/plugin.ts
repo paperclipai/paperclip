@@ -39,6 +39,42 @@ import type {
 } from "@paperclipai/plugin-sdk";
 import { performSyncIn, performSyncOut } from "./file-sync.js";
 
+// Injectable monotonic clock for provider-boundary timing (Open Q1). Defaults
+// to the real wall clock; `plugin.test.ts` overrides it via
+// `setDaytonaTimingClockForTest` so the measured `durationMs`/`getDurationMs`
+// are deterministic. The timing path never calls `Date.now()` directly.
+let timingNow: () => number = () => Date.now();
+
+/**
+ * Test seam: override the provider-timing clock and return a restore function.
+ * Not used in production, where the default wall clock always applies.
+ */
+export function setDaytonaTimingClockForTest(now: () => number): () => void {
+  const previous = timingNow;
+  timingNow = now;
+  return () => {
+    timingNow = previous;
+  };
+}
+
+// Injectable clock for the handle cache's freshness bookkeeping, deliberately
+// kept separate from the provider-timing clock so tests can advance virtual time
+// past a lease's auto-stop interval without perturbing the `getDurationMs` /
+// `durationMs` measurements that ride on `timingNow`.
+let handleFreshnessNow: () => number = () => Date.now();
+
+/**
+ * Test seam: override the handle-cache freshness clock and return a restore
+ * function. Not used in production, where the default wall clock always applies.
+ */
+export function setDaytonaHandleFreshnessClockForTest(now: () => number): () => void {
+  const previous = handleFreshnessNow;
+  handleFreshnessNow = now;
+  return () => {
+    handleFreshnessNow = previous;
+  };
+}
+
 interface DaytonaDriverConfig {
   apiKey: string | null;
   apiUrl: string | null;
@@ -630,6 +666,7 @@ function buildLoginShellScript(input: {
   cwd?: string;
   env?: Record<string, string>;
   stdinPath?: string;
+  noProfile?: boolean;
 }): string {
   const callerEnv = input.env ?? {};
   for (const key of Object.keys(callerEnv)) {
@@ -653,15 +690,20 @@ function buildLoginShellScript(input: {
   const finalLine = envArgs.length > 0
     ? `env ${envArgs.join(" ")} ${redirectedCommand}`
     : redirectedCommand;
+  const profileSourcingLines = input.noProfile === true
+    ? []
+    : [
+        'if [ -f /etc/profile ]; then . /etc/profile >/dev/null 2>&1 || true; fi',
+        'if [ -f "$HOME/.profile" ]; then . "$HOME/.profile" >/dev/null 2>&1 || true; fi',
+        // .bash_profile typically sources .bashrc itself; only source .bashrc
+        // directly when no .bash_profile exists to avoid double-running setup.
+        'if [ -f "$HOME/.bash_profile" ]; then . "$HOME/.bash_profile" >/dev/null 2>&1 || true; elif [ -f "$HOME/.bashrc" ]; then . "$HOME/.bashrc" >/dev/null 2>&1 || true; fi',
+        'if [ -f "$HOME/.zprofile" ]; then . "$HOME/.zprofile" >/dev/null 2>&1 || true; fi',
+        'export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"',
+        '[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh" >/dev/null 2>&1 || true',
+      ];
   const lines = [
-    'if [ -f /etc/profile ]; then . /etc/profile >/dev/null 2>&1 || true; fi',
-    'if [ -f "$HOME/.profile" ]; then . "$HOME/.profile" >/dev/null 2>&1 || true; fi',
-    // .bash_profile typically sources .bashrc itself; only source .bashrc
-    // directly when no .bash_profile exists to avoid double-running setup.
-    'if [ -f "$HOME/.bash_profile" ]; then . "$HOME/.bash_profile" >/dev/null 2>&1 || true; elif [ -f "$HOME/.bashrc" ]; then . "$HOME/.bashrc" >/dev/null 2>&1 || true; fi',
-    'if [ -f "$HOME/.zprofile" ]; then . "$HOME/.zprofile" >/dev/null 2>&1 || true; fi',
-    'export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"',
-    '[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh" >/dev/null 2>&1 || true',
+    ...profileSourcingLines,
   ];
   if (input.cwd) {
     lines.push(`cd ${shellQuote(input.cwd)}`);
@@ -705,20 +747,375 @@ async function createSandbox(
   return sandbox;
 }
 
-async function getSandbox(config: DaytonaDriverConfig, sandboxId: string): Promise<Sandbox> {
-  const client = createDaytonaClient(config);
-  return await client.get(sandboxId);
+// ─── Per-lease started-sandbox handle cache ──────────────────────────────────
+// Memoize the started Daytona `Sandbox` handle so repeated exec/sync/resume/
+// teardown calls on one lease skip the per-call `client.get(sandboxId)` REST
+// re-fetch (measured ~4,938 ms on `stage.sync`) and the client construction it
+// implies. The cache is process-memory only — no handle, API key, or credential
+// is ever persisted or logged (Stage-1 security review C6).
+//
+// Isolation is the whole game here: the cached object is an authenticated
+// compute handle, so a mis-keyed or un-evicted entry could run one lease/tenant's
+// commands inside another's sandbox. The guarantees below map 1:1 to the Stage-1
+// required-fix conditions:
+//   C1  Key by a NON-SECRET composite scope, never the bare providerLeaseId:
+//       {driverKey, companyId, environmentId, providerLeaseId, account}. The
+//       account discriminator is a hash of the resolved endpoint + credentials
+//       so two environments pointing at different Daytona accounts (or a rotated
+//       key) never collide — without storing the secret in the key.
+//   C2  Every read (cache hit AND resolved single-flight populate) asserts the
+//       handle's `sandbox.id === providerLeaseId`; a mismatch evicts and throws
+//       (fail closed) rather than serving the wrong sandbox.
+//   C4  Callers evict at every teardown hook. Populate rejections (NotFound,
+//       network, id mismatch) are never cached — they drop from the map so the
+//       next call re-fetches.
+//   C5  In-flight populate promises live under the composite key only; there is
+//       no fallback lookup by bare providerLeaseId, so lease A's in-flight
+//       promise can never be awaited for lease B.
+type SandboxScope = {
+  driverKey: string;
+  companyId: string;
+  environmentId: string;
+  providerLeaseId: string;
+  config: DaytonaDriverConfig;
+};
+
+// Non-secret provider/account fingerprint. Uses the *resolved* key (config or
+// DAYTONA_API_KEY env fallback) so an env-provided credential is still scoped,
+// but only its sha256 digest — never the key itself — enters the cache key (C1/C6).
+function sandboxAccountDiscriminator(config: DaytonaDriverConfig): string {
+  const resolvedApiKey = config.apiKey ?? process.env.DAYTONA_API_KEY?.trim() ?? null;
+  return createHash("sha256")
+    .update(stableStringify({
+      apiUrl: config.apiUrl,
+      target: config.target,
+      apiKey: resolvedApiKey,
+    }))
+    .digest("hex");
 }
 
-async function getSandboxOrNull(config: DaytonaDriverConfig, sandboxId: string): Promise<Sandbox | null> {
+function sandboxHandleCacheKey(scope: SandboxScope): string {
+  return stableStringify({
+    driverKey: scope.driverKey,
+    companyId: scope.companyId,
+    environmentId: scope.environmentId,
+    providerLeaseId: scope.providerLeaseId,
+    account: sandboxAccountDiscriminator(scope.config),
+  });
+}
+
+function assertHandleMatchesLease(sandbox: Sandbox, providerLeaseId: string): void {
+  // C2: a handle must never stand in for a different sandbox than the lease
+  // asked for. Belt-and-suspenders against a provider that returns a renamed or
+  // substituted sandbox, and against any future key collision.
+  if (sandbox.id !== providerLeaseId) {
+    throw new Error(
+      `Daytona sandbox handle mismatch: handle ${sandbox.id} does not belong to lease ${providerLeaseId}.`,
+    );
+  }
+}
+
+// A cached `Sandbox` carries the provider state captured when it was last
+// fetched/refreshed. Daytona auto-stops an idle sandbox after `autoStopInterval`
+// minutes, at which point that snapshot ("started") no longer matches reality
+// and `ensureSandboxStarted` would wrongly skip the restart, sending every
+// subsequent exec/sync at a stopped sandbox. Before reusing a handle that has
+// gone untouched for this fraction of the auto-stop interval we re-read the live
+// state so the restart decision is made against the truth. Reusing a handle for
+// an operation resets Daytona's idle clock, so an actively-used lease stays well
+// inside the window and never pays the refresh — only a lease resumed after an
+// idle gap does.
+const STALE_HANDLE_REFRESH_SAFETY_FRACTION = 0.5;
+
+function staleHandleRefreshThresholdMs(autoStopIntervalMinutes: number | null): number | null {
+  // Auto-stop disabled (0 / null): the provider never stops the sandbox out from
+  // under a live handle, so the started snapshot stays valid until we evict it
+  // and no refresh is warranted.
+  if (autoStopIntervalMinutes == null || autoStopIntervalMinutes <= 0) return null;
+  return Math.floor(autoStopIntervalMinutes * 60_000 * STALE_HANDLE_REFRESH_SAFETY_FRACTION);
+}
+
+type SandboxHandleCacheEntry = {
+  sandbox: Promise<Sandbox>;
+  // Last time we know the live state was accurate: set when the handle is
+  // fetched/refreshed and on every reuse (an operation follows, resetting the
+  // provider idle clock).
+  verifiedAtMs: number;
+};
+
+type SandboxLookupOptions = {
+  bypassTeardownGate?: boolean;
+};
+
+type SandboxHandleTeardownGate = {
+  promise: Promise<void>;
+  release: () => void;
+  refCount: number;
+};
+
+const sandboxHandleTeardownGates = (() => {
+  const gates = new Map<string, SandboxHandleTeardownGate>();
+
+  function begin(scope: SandboxScope): SandboxHandleTeardownGate {
+    const key = sandboxHandleCacheKey(scope);
+    const existing = gates.get(key);
+    if (existing) {
+      existing.refCount += 1;
+      return existing;
+    }
+    let release!: () => void;
+    const gate: SandboxHandleTeardownGate = {
+      promise: new Promise<void>((resolve) => {
+        release = resolve;
+      }),
+      release: () => release(),
+      refCount: 1,
+    };
+    gates.set(key, gate);
+    return gate;
+  }
+
+  function current(scope: SandboxScope): SandboxHandleTeardownGate | null {
+    return gates.get(sandboxHandleCacheKey(scope)) ?? null;
+  }
+
+  function end(scope: SandboxScope, gate: SandboxHandleTeardownGate): void {
+    const key = sandboxHandleCacheKey(scope);
+    gate.refCount -= 1;
+    if (gate.refCount > 0) return;
+    if (gates.get(key) === gate) {
+      gates.delete(key);
+    }
+    gate.release();
+  }
+
+  function reset(): void {
+    gates.clear();
+  }
+
+  return { begin, current, end, reset };
+})();
+
+type SandboxHandleActivityGate = {
+  promise: Promise<void>;
+  release: () => void;
+  refCount: number;
+};
+
+const sandboxHandleActivityGates = (() => {
+  const gates = new Map<string, SandboxHandleActivityGate>();
+
+  async function begin(scope: SandboxScope): Promise<SandboxHandleActivityGate> {
+    const key = sandboxHandleCacheKey(scope);
+    const existing = gates.get(key);
+    if (existing) {
+      existing.refCount += 1;
+      return existing;
+    }
+    let release!: () => void;
+    const gate: SandboxHandleActivityGate = {
+      promise: new Promise<void>((resolve) => {
+        release = resolve;
+      }),
+      release: () => release(),
+      refCount: 1,
+    };
+    gates.set(key, gate);
+    return gate;
+  }
+
+  async function waitForIdle(scope: SandboxScope): Promise<void> {
+    const gate = gates.get(sandboxHandleCacheKey(scope));
+    if (!gate) return;
+    await gate.promise;
+  }
+
+  function end(scope: SandboxScope, gate: SandboxHandleActivityGate): void {
+    const key = sandboxHandleCacheKey(scope);
+    gate.refCount -= 1;
+    if (gate.refCount > 0) return;
+    if (gates.get(key) === gate) {
+      gates.delete(key);
+    }
+    gate.release();
+  }
+
+  function reset(): void {
+    gates.clear();
+  }
+
+  return { begin, waitForIdle, end, reset };
+})();
+
+type SandboxLeaseAdmissionOptions = {
+  allowClosed?: boolean;
+};
+
+const sandboxHandleLeaseAdmissionStates = (() => {
+  const states = new Map<string, boolean>();
+
+  function key(scope: SandboxScope): string {
+    return sandboxHandleCacheKey(scope);
+  }
+
+  function open(scope: SandboxScope): void {
+    states.set(key(scope), false);
+  }
+
+  function close(scope: SandboxScope): void {
+    states.set(key(scope), true);
+  }
+
+  function isClosed(scope: SandboxScope): boolean {
+    return states.get(key(scope)) === true;
+  }
+
+  function reset(): void {
+    states.clear();
+  }
+
+  return { open, close, isClosed, reset };
+})();
+
+async function withSandboxActivityGate<T>(
+  scope: SandboxScope,
+  fn: () => Promise<T>,
+  options: SandboxLeaseAdmissionOptions = {},
+): Promise<T> {
+  while (true) {
+    if (!options.allowClosed && sandboxHandleLeaseAdmissionStates.isClosed(scope)) {
+      throw new Error(`Daytona sandbox lease ${scope.providerLeaseId} is no longer active.`);
+    }
+
+    const teardownGate = sandboxHandleTeardownGates.current(scope);
+    if (teardownGate) {
+      await teardownGate.promise;
+      if (!options.allowClosed && sandboxHandleLeaseAdmissionStates.isClosed(scope)) {
+        throw new Error(`Daytona sandbox lease ${scope.providerLeaseId} is no longer active.`);
+      }
+      continue;
+    }
+
+    const activityGate = await sandboxHandleActivityGates.begin(scope);
+    try {
+      // A teardown can still begin between the initial check above and the
+      // activity-gate admission. If that happens, back out and wait for the
+      // teardown to finish instead of proceeding into a race with cleanup.
+      if (sandboxHandleTeardownGates.current(scope)) {
+        continue;
+      }
+      if (!options.allowClosed && sandboxHandleLeaseAdmissionStates.isClosed(scope)) {
+        throw new Error(`Daytona sandbox lease ${scope.providerLeaseId} is no longer active.`);
+      }
+      return await fn();
+    } finally {
+      sandboxHandleActivityGates.end(scope, activityGate);
+    }
+  }
+}
+
+const sandboxHandleCache = (() => {
+  const entries = new Map<string, SandboxHandleCacheEntry>();
+
+  function markFresh(scope: SandboxScope): void {
+    const entry = entries.get(sandboxHandleCacheKey(scope));
+    if (entry) {
+      entry.verifiedAtMs = handleFreshnessNow();
+    }
+  }
+
+  async function get(scope: SandboxScope, options: SandboxLookupOptions = {}): Promise<Sandbox> {
+    const key = sandboxHandleCacheKey(scope);
+
+    const entry = entries.get(key);
+    if (entry) {
+      const sandbox = await entry.sandbox;
+      // Re-assert on every hit; evict + fail closed on any mismatch (C2).
+      try {
+        assertHandleMatchesLease(sandbox, scope.providerLeaseId);
+      } catch (error) {
+        entries.delete(key);
+        throw error;
+      }
+      // Refresh the live provider state if the handle may have been auto-stopped
+      // since we last confirmed it, so the cached `state` snapshot can't hide a
+      // provider-initiated stop from `ensureSandboxStarted`. A failed refresh
+      // means the handle is no longer trustworthy — evict and fail closed.
+      const thresholdMs = staleHandleRefreshThresholdMs(scope.config.autoStopInterval);
+      if (thresholdMs != null && handleFreshnessNow() - entry.verifiedAtMs >= thresholdMs) {
+        try {
+          await sandbox.refreshData();
+        } catch (error) {
+          entries.delete(key);
+          throw error;
+        }
+      }
+      return sandbox;
+    }
+    // Single-flight: the first miss stores the in-flight promise under the
+    // composite key so concurrent misses on the same lease share one `client.get`
+    // instead of double-fetching. The promise lives only under this key (C5).
+    const populate = (async () => {
+      const client = createDaytonaClient(scope.config);
+      const sandbox = await client.get(scope.providerLeaseId);
+      assertHandleMatchesLease(sandbox, scope.providerLeaseId);
+      return sandbox;
+    })();
+    const populated: SandboxHandleCacheEntry = { sandbox: populate, verifiedAtMs: handleFreshnessNow() };
+    entries.set(key, populated);
+    try {
+      const sandbox = await populate;
+      return sandbox;
+    } catch (error) {
+      // A rejected populate (NotFound, network, id mismatch) must never remain
+      // cached (C4/C5). Guard against clobbering a newer entry under the key.
+      if (entries.get(key) === populated) {
+        entries.delete(key);
+      }
+      throw error;
+    }
+  }
+
+  function clear(scope: SandboxScope): void {
+    entries.delete(sandboxHandleCacheKey(scope));
+  }
+
+  function reset(): void {
+    entries.clear();
+  }
+
+  return { get, clear, reset, markFresh };
+})();
+
+/**
+ * Test seam: clear the process-scoped handle cache between tests so a handle
+ * memoized under a reused composite key in one test never leaks into the next.
+ * Not used in production.
+ */
+export function __resetDaytonaSandboxHandleCacheForTest(): void {
+  sandboxHandleCache.reset();
+  sandboxHandleTeardownGates.reset();
+  sandboxHandleActivityGates.reset();
+  sandboxHandleLeaseAdmissionStates.reset();
+}
+
+async function getSandbox(scope: SandboxScope, options: SandboxLookupOptions = {}): Promise<Sandbox> {
+  return await sandboxHandleCache.get(scope, options);
+}
+
+async function getSandboxOrNull(scope: SandboxScope, options: SandboxLookupOptions = {}): Promise<Sandbox | null> {
   try {
-    return await getSandbox(config, sandboxId);
+    return await getSandbox(scope, options);
   } catch (error) {
     if (error instanceof DaytonaNotFoundError) {
       return null;
     }
     throw error;
   }
+}
+
+function evictSandboxHandle(scope: SandboxScope): void {
+  sandboxHandleCache.clear(scope);
 }
 
 // One-shot command execution via Daytona's `process.executeCommand`. The
@@ -743,6 +1140,13 @@ async function executeOneShot(
   const timeoutSeconds = toTimeoutSeconds(effectiveTimeoutMs);
   const stdinPath = params.stdin != null ? `/tmp/paperclip-stdin-${randomUUID()}` : null;
 
+  // Marks the start of the `executeCommand` REST round-trip. Hoisted out of the
+  // try so the timeout path below can still attribute the exec wall-time it spent
+  // before the SDK aborted — a slow failed exec is exactly what we want to
+  // measure. Stays null until we are about to call `executeCommand`, so a timeout
+  // during the earlier `uploadFile` step honestly reports no `durationMs`.
+  let execStart: number | null = null;
+
   try {
     if (stdinPath) {
       await sandbox.fs.uploadFile(Buffer.from(params.stdin ?? "", "utf8"), stdinPath, timeoutSeconds);
@@ -754,30 +1158,43 @@ async function executeOneShot(
       cwd: params.cwd,
       env: params.env,
       stdinPath: stdinPath ?? undefined,
+      noProfile: params.noProfile === true,
     });
 
     // Pass cwd undefined: `buildLoginShellScript` already injects `cd` after
     // profile sourcing when params.cwd is set, and the Daytona executor's own
     // cwd argument runs before our login-shell init, which is the wrong order
     // (env from .bashrc would override caller env).
+    // Time only the `executeCommand` REST round-trip (Open Q1) — the ~600ms
+    // login-shell wrapper — so the caller can attribute a step's exec time to
+    // the provider boundary via the free-form `metadata.durationMs`.
+    execStart = timingNow();
     const result = await sandbox.process.executeCommand(command, undefined, undefined, timeoutSeconds);
+    const durationMs = timingNow() - execStart;
 
     return {
       exitCode: typeof result.exitCode === "number" ? result.exitCode : 1,
       timedOut: false,
       stdout: result.result ?? result.artifacts?.stdout ?? "",
       stderr: "",
+      metadata: { durationMs },
     };
   } catch (error) {
     if (error instanceof DaytonaTimeoutError) {
       const timeoutMessage = gitNet
         ? `Git network operation timed out after ${Math.round(effectiveTimeoutMs / 1000)} s — the remote may be unreachable or noninteractive credentials are not configured.`
         : error.message.trim();
+      // Preserve provider-boundary exec attribution on the timeout path: if the
+      // SDK aborted the `executeCommand` call itself, report how long it ran
+      // before timing out so slow failed startup exec is attributed to the
+      // provider, not silently dropped.
+      const durationMs = execStart != null ? timingNow() - execStart : undefined;
       return {
         exitCode: null,
         timedOut: true,
         stdout: "",
         stderr: `${timeoutMessage}\n`,
+        ...(durationMs != null ? { metadata: { durationMs } } : {}),
       };
     }
     throw error;
@@ -914,6 +1331,13 @@ const plugin = definePlugin({
         config,
         timeoutSeconds: toTimeoutSeconds(config.timeoutMs),
       });
+      sandboxHandleLeaseAdmissionStates.open({
+        driverKey: params.driverKey,
+        companyId: params.companyId,
+        environmentId: params.environmentId,
+        providerLeaseId: sandbox.id,
+        config,
+      });
       return {
         providerLeaseId: sandbox.id,
         metadata: leaseMetadata({
@@ -935,14 +1359,26 @@ const plugin = definePlugin({
     params: PluginEnvironmentResumeLeaseParams,
   ): Promise<PluginEnvironmentLease> {
     const config = parseDriverConfig(params.config);
-    const sandbox = await getSandboxOrNull(config, params.providerLeaseId);
-    if (!sandbox) {
-      return { providerLeaseId: null, metadata: { expired: true } };
-    }
+    const scope: SandboxScope = {
+      driverKey: params.driverKey,
+      companyId: params.companyId,
+      environmentId: params.environmentId,
+      providerLeaseId: params.providerLeaseId,
+      config,
+    };
+    return await withSandboxActivityGate(scope, async () => {
+      const sandbox = await getSandboxOrNull(scope, { bypassTeardownGate: true });
+      if (!sandbox) {
+        return { providerLeaseId: null, metadata: { expired: true } };
+      }
 
-    await ensureSandboxStarted(sandbox, toTimeoutSeconds(config.timeoutMs));
-    try {
+      await ensureSandboxStarted(sandbox, toTimeoutSeconds(config.timeoutMs));
+      try {
       const remoteCwd = await resolveSandboxWorkingDirectory(sandbox);
+      // C3: a resumed lease must clear the workspace sentinel before it is
+      // trusted, even when the handle came from the cache. On any non-match we
+      // evict the cached handle and expire the lease so a stale/foreign sandbox
+      // is never reused on the subsequent (sentinel-skipping) exec path.
       const workspaceSentinel = await verifyWorkspaceSentinel({
         sandbox,
         remoteCwd,
@@ -950,9 +1386,12 @@ const plugin = definePlugin({
         timeoutSeconds: toTimeoutSeconds(config.timeoutMs),
       });
       if (workspaceSentinel.result !== "matched") {
+        evictSandboxHandle(scope);
         return { providerLeaseId: null, metadata: { expired: true, workspaceSentinel } };
       }
       const shellCommand = await detectSandboxShellCommand(sandbox, toTimeoutSeconds(config.timeoutMs));
+      sandboxHandleCache.markFresh(scope);
+      sandboxHandleLeaseAdmissionStates.open(scope);
       return {
         providerLeaseId: sandbox.id,
         metadata: leaseMetadata({
@@ -964,10 +1403,12 @@ const plugin = definePlugin({
           workspaceSentinel,
         }),
       };
-    } catch (error) {
-      await sandbox.delete(toTimeoutSeconds(config.timeoutMs)).catch(() => undefined);
-      throw error;
-    }
+      } catch (error) {
+        evictSandboxHandle(scope);
+        await sandbox.delete(toTimeoutSeconds(config.timeoutMs)).catch(() => undefined);
+        throw error;
+      }
+    }, { allowClosed: true });
   },
 
   async onEnvironmentReleaseLease(
@@ -975,43 +1416,63 @@ const plugin = definePlugin({
   ): Promise<void> {
     if (!params.providerLeaseId) return;
     const config = parseDriverConfig(params.config);
-    const sandbox = await getSandboxOrNull(config, params.providerLeaseId);
-    if (!sandbox) return;
+    const scope: SandboxScope = {
+      driverKey: params.driverKey,
+      companyId: params.companyId,
+      environmentId: params.environmentId,
+      providerLeaseId: params.providerLeaseId,
+      config,
+    };
+    // C4: the lease's handle must not outlive its teardown. A teardown gate
+    // blocks fresh cache reads while cleanup is in flight so overlapping
+    // exec/sync calls cannot reacquire the same sandbox mid-stop/delete.
+    const teardownGate = sandboxHandleTeardownGates.begin(scope);
+    sandboxHandleLeaseAdmissionStates.close(scope);
+    try {
+      const sandbox = await getSandboxOrNull(scope, { bypassTeardownGate: true });
+      if (!sandbox) return;
 
-    if (config.reuseLease) {
-      if (sandbox.state !== "stopped") {
+      evictSandboxHandle(scope);
+      await sandboxHandleActivityGates.waitForIdle(scope);
+
+      if (config.reuseLease) {
+        if (sandbox.state !== "stopped") {
+          try {
+            await sandbox.stop(toTimeoutSeconds(config.timeoutMs));
+          } catch (error) {
+            console.warn(
+              `Failed to stop Daytona sandbox during lease release: ${formatErrorMessage(error)}. Attempting delete instead.`,
+            );
+            await sandbox.delete(toTimeoutSeconds(config.timeoutMs)).catch((deleteError) => {
+              console.warn(
+                `Failed to delete Daytona sandbox after stop failure: ${formatErrorMessage(deleteError)}`,
+              );
+            });
+          }
+        }
+        return;
+      }
+
+      if (config.archiveOnRelease) {
         try {
-          await sandbox.stop(toTimeoutSeconds(config.timeoutMs));
+          if (sandbox.state !== "stopped") {
+            await sandbox.stop(toTimeoutSeconds(config.timeoutMs));
+          }
+          await sandbox.setAutoDeleteInterval(ARCHIVE_ON_RELEASE_AUTO_DELETE_MINUTES);
+          await sandbox.archive();
+          return;
         } catch (error) {
           console.warn(
-            `Failed to stop Daytona sandbox during lease release: ${formatErrorMessage(error)}. Attempting delete instead.`,
+            `Failed to archive Daytona sandbox during lease release: ${formatErrorMessage(error)}. Falling back to delete.`,
           );
-          await sandbox.delete(toTimeoutSeconds(config.timeoutMs)).catch((deleteError) => {
-            console.warn(
-              `Failed to delete Daytona sandbox after stop failure: ${formatErrorMessage(deleteError)}`,
-            );
-          });
         }
       }
-      return;
-    }
 
-    if (config.archiveOnRelease) {
-      try {
-        if (sandbox.state !== "stopped") {
-          await sandbox.stop(toTimeoutSeconds(config.timeoutMs));
-        }
-        await sandbox.setAutoDeleteInterval(ARCHIVE_ON_RELEASE_AUTO_DELETE_MINUTES);
-        await sandbox.archive();
-        return;
-      } catch (error) {
-        console.warn(
-          `Failed to archive Daytona sandbox during lease release: ${formatErrorMessage(error)}. Falling back to delete.`,
-        );
-      }
+      await sandbox.delete(toTimeoutSeconds(config.timeoutMs));
+    } finally {
+      sandboxHandleTeardownGates.end(scope, teardownGate);
+      evictSandboxHandle(scope);
     }
-
-    await sandbox.delete(toTimeoutSeconds(config.timeoutMs));
   },
 
   async onEnvironmentDestroyLease(
@@ -1019,9 +1480,28 @@ const plugin = definePlugin({
   ): Promise<void> {
     if (!params.providerLeaseId) return;
     const config = parseDriverConfig(params.config);
-    const sandbox = await getSandboxOrNull(config, params.providerLeaseId);
-    if (!sandbox) return;
-    await sandbox.delete(toTimeoutSeconds(config.timeoutMs));
+    const scope: SandboxScope = {
+      driverKey: params.driverKey,
+      companyId: params.companyId,
+      environmentId: params.environmentId,
+      providerLeaseId: params.providerLeaseId,
+      config,
+    };
+    // C4: the teardown gate blocks fresh cache reads while delete is in flight
+    // so overlapping exec/sync calls cannot reacquire the same sandbox mid-teardown.
+    const teardownGate = sandboxHandleTeardownGates.begin(scope);
+    sandboxHandleLeaseAdmissionStates.close(scope);
+    try {
+      const sandbox = await getSandboxOrNull(scope, { bypassTeardownGate: true });
+      if (!sandbox) return;
+
+      evictSandboxHandle(scope);
+      await sandboxHandleActivityGates.waitForIdle(scope);
+      await sandbox.delete(toTimeoutSeconds(config.timeoutMs));
+    } finally {
+      sandboxHandleTeardownGates.end(scope, teardownGate);
+      evictSandboxHandle(scope);
+    }
   },
 
   async onEnvironmentRealizeWorkspace(
@@ -1035,9 +1515,18 @@ const plugin = definePlugin({
         : params.workspace.remotePath ?? params.workspace.localPath ?? "/paperclip-workspace";
 
     if (params.lease.providerLeaseId) {
-      const sandbox = await getSandbox(config, params.lease.providerLeaseId);
-      await ensureSandboxStarted(sandbox, toTimeoutSeconds(config.timeoutMs));
-      await sandbox.fs.createFolder(remoteCwd, "755");
+      const scope: SandboxScope = {
+        driverKey: params.driverKey,
+        companyId: params.companyId,
+        environmentId: params.environmentId,
+        providerLeaseId: params.lease.providerLeaseId,
+        config,
+      };
+      await withSandboxActivityGate(scope, async () => {
+        const sandbox = await getSandbox(scope, { bypassTeardownGate: true });
+        await ensureSandboxStarted(sandbox, toTimeoutSeconds(config.timeoutMs));
+        await sandbox.fs.createFolder(remoteCwd, "755");
+      });
     }
 
     return {
@@ -1062,6 +1551,13 @@ const plugin = definePlugin({
         sandbox,
         resolveConnectionExpiresInMinutes(params.connectionExpiresInMinutes),
       );
+      sandboxHandleLeaseAdmissionStates.open({
+        driverKey: params.driverKey,
+        companyId: params.companyId,
+        environmentId: params.environmentId,
+        providerLeaseId: sandbox.id,
+        config,
+      });
       return {
         providerLeaseId: sandbox.id,
         status: "waiting_for_user",
@@ -1097,22 +1593,30 @@ const plugin = definePlugin({
         },
       };
     }
-    const sandbox = await getSandboxOrNull(config, params.providerLeaseId);
-    if (!sandbox) {
-      return {
-        providerLeaseId: null,
-        status: "missing",
-        connectionSummary: null,
-        connectionPayload: null,
-        metadata: {
-          provider: "daytona",
-          missing: true,
-        },
-      };
-    }
+    const scope = {
+      driverKey: params.driverKey,
+      companyId: params.companyId,
+      environmentId: params.environmentId,
+      providerLeaseId: params.providerLeaseId,
+      config,
+    };
+    return await withSandboxActivityGate(scope, async () => {
+      const sandbox = await getSandboxOrNull(scope, { bypassTeardownGate: true });
+      if (!sandbox) {
+        return {
+          providerLeaseId: null,
+          status: "missing",
+          connectionSummary: null,
+          connectionPayload: null,
+          metadata: {
+            provider: "daytona",
+            missing: true,
+          },
+        };
+      }
 
-    await ensureSandboxStarted(sandbox, toTimeoutSeconds(config.timeoutMs));
-    const remoteCwd = await resolveSandboxWorkingDirectory(sandbox);
+      await ensureSandboxStarted(sandbox, toTimeoutSeconds(config.timeoutMs));
+      const remoteCwd = await resolveSandboxWorkingDirectory(sandbox);
     const shellCommand = await detectSandboxShellCommand(sandbox, toTimeoutSeconds(config.timeoutMs));
     const connection = params.includeConnectionPayload === true
       ? await createSshConnection(sandbox, resolveConnectionExpiresInMinutes(params.connectionExpiresInMinutes))
@@ -1130,17 +1634,18 @@ const plugin = definePlugin({
           connectionPayload: null,
         };
 
-    return {
-      providerLeaseId: sandbox.id,
-      status: "waiting_for_user",
-      ...connection,
-      metadata: interactiveSetupMetadata({
-        config,
-        sandbox,
-        shellCommand,
-        remoteCwd,
-      }),
-    };
+      return {
+        providerLeaseId: sandbox.id,
+        status: "waiting_for_user",
+        ...connection,
+        metadata: interactiveSetupMetadata({
+          config,
+          sandbox,
+          shellCommand,
+          remoteCwd,
+        }),
+      };
+    });
   },
 
   async onEnvironmentCaptureTemplate(
@@ -1150,7 +1655,15 @@ const plugin = definePlugin({
     if (!params.providerLeaseId) {
       throw new Error("Cannot capture a Daytona template without a setup sandbox lease.");
     }
-    const sandbox = await getSandbox(config, params.providerLeaseId);
+    const scope = {
+      driverKey: params.driverKey,
+      companyId: params.companyId,
+      environmentId: params.environmentId,
+      providerLeaseId: params.providerLeaseId,
+      config,
+    };
+    return await withSandboxActivityGate(scope, async () => {
+      const sandbox = await getSandbox(scope, { bypassTeardownGate: true });
     const createSnapshot = (sandbox as DaytonaInteractiveSandbox)._experimental_createSnapshot;
     if (typeof createSnapshot !== "function") {
       throw new Error(
@@ -1165,20 +1678,21 @@ const plugin = definePlugin({
       ? Math.trunc(params.timeoutMs)
       : config.timeoutMs;
 
-    await createSnapshot.call(sandbox, templateRef, toTimeoutSeconds(timeoutMs));
+      await createSnapshot.call(sandbox, templateRef, toTimeoutSeconds(timeoutMs));
 
-    return {
-      templateKind: "snapshot",
-      templateRef,
-      metadata: {
-        provider: "daytona",
-        sandboxId: sandbox.id,
-        capturedAt: new Date().toISOString(),
-        sourceTemplateRefRedacted: Boolean(params.sourceTemplateRef),
-        previousTemplateRefRedacted: Boolean(params.previousTemplateRef),
-        timeoutMs,
-      },
-    };
+      return {
+        templateKind: "snapshot",
+        templateRef,
+        metadata: {
+          provider: "daytona",
+          sandboxId: sandbox.id,
+          capturedAt: new Date().toISOString(),
+          sourceTemplateRefRedacted: Boolean(params.sourceTemplateRef),
+          previousTemplateRefRedacted: Boolean(params.previousTemplateRef),
+          timeoutMs,
+        },
+      };
+    });
   },
 
   async onEnvironmentCancelInteractiveSetup(
@@ -1195,26 +1709,44 @@ const plugin = definePlugin({
         },
       };
     }
-    const sandbox = await getSandboxOrNull(config, params.providerLeaseId);
-    if (!sandbox) {
+    const scope: SandboxScope = {
+      driverKey: params.driverKey,
+      companyId: params.companyId,
+      environmentId: params.environmentId,
+      providerLeaseId: params.providerLeaseId,
+      config,
+    };
+    // C4: cancelling an interactive-setup lease deletes the sandbox, so the
+    // teardown gate blocks fresh cache reads while delete is in flight.
+    const teardownGate = sandboxHandleTeardownGates.begin(scope);
+    sandboxHandleLeaseAdmissionStates.close(scope);
+    try {
+      const sandbox = await getSandboxOrNull(scope, { bypassTeardownGate: true });
+      if (!sandbox) {
+        return {
+          status: "missing",
+          metadata: {
+            provider: "daytona",
+            missing: true,
+            reason: params.reason ?? null,
+          },
+        };
+      }
+      evictSandboxHandle(scope);
+      await sandboxHandleActivityGates.waitForIdle(scope);
+      await sandbox.delete(toTimeoutSeconds(config.timeoutMs));
       return {
-        status: "missing",
+        status: params.reason === "timed_out" ? "timed_out" : "cancelled",
         metadata: {
           provider: "daytona",
-          missing: true,
+          sandboxId: sandbox.id,
           reason: params.reason ?? null,
         },
       };
+    } finally {
+      sandboxHandleTeardownGates.end(scope, teardownGate);
+      evictSandboxHandle(scope);
     }
-    await sandbox.delete(toTimeoutSeconds(config.timeoutMs));
-    return {
-      status: params.reason === "timed_out" ? "timed_out" : "cancelled",
-      metadata: {
-        provider: "daytona",
-        sandboxId: sandbox.id,
-        reason: params.reason ?? null,
-      },
-    };
   },
 
   async onEnvironmentDeleteTemplate(
@@ -1256,9 +1788,47 @@ const plugin = definePlugin({
     }
 
     const config = parseDriverConfig(params.config);
-    const sandbox = await getSandbox(config, params.lease.providerLeaseId);
-    await ensureSandboxStarted(sandbox, toTimeoutSeconds(resolveTimeoutMs(params.timeoutMs, config)));
-    return await executeOneShot(sandbox, params, config);
+    const providerLeaseId = params.lease.providerLeaseId;
+    return await withSandboxActivityGate({
+      driverKey: params.driverKey,
+      companyId: params.companyId,
+      environmentId: params.environmentId,
+      providerLeaseId,
+      config,
+    }, async () => {
+      // Time the sandbox handle lookup (Open Q1) separately from the
+      // `executeCommand` round-trip so telemetry can split the per-call get cost
+      // from the exec cost. With the per-lease handle cache this collapses to ~0
+      // on a hit (no `client.get` REST round-trip), but the field stays present so
+      // `providerGetMs` remains observable — and still captures the occasional
+      // freshness refresh the cache issues after an idle gap. `ensureSandboxStarted`
+      // is a no-op for an already-started sandbox, so it is excluded from the get
+      // measurement.
+      const getStart = timingNow();
+      const sandbox = await getSandbox({
+        driverKey: params.driverKey,
+        companyId: params.companyId,
+        environmentId: params.environmentId,
+        providerLeaseId,
+        config,
+      }, { bypassTeardownGate: true });
+      const getDurationMs = timingNow() - getStart;
+      await ensureSandboxStarted(sandbox, toTimeoutSeconds(resolveTimeoutMs(params.timeoutMs, config)));
+      const result = await executeOneShot(sandbox, params, config);
+      if (!result.timedOut) {
+        sandboxHandleCache.markFresh({
+          driverKey: params.driverKey,
+          companyId: params.companyId,
+          environmentId: params.environmentId,
+          providerLeaseId,
+          config,
+        });
+      }
+      return {
+        ...result,
+        metadata: { ...(result.metadata ?? {}), getDurationMs },
+      };
+    });
   },
 
   // Opt-in native inbound transfer. Defining this hook (with onEnvironmentSyncOut)
@@ -1276,13 +1846,24 @@ const plugin = definePlugin({
     const config = parseDriverConfig(params.config);
     const remoteDir = resolveSyncRemoteDir(params.lease);
     const timeoutSeconds = toTimeoutSeconds(config.timeoutMs);
-    const sandbox = await getSandbox(config, params.lease.providerLeaseId);
-    await ensureSandboxStarted(sandbox, timeoutSeconds);
-    return await performSyncIn({
-      sandbox,
-      operations: params.operations,
-      remoteDir,
-      timeoutSeconds,
+    const scope = {
+      driverKey: params.driverKey,
+      companyId: params.companyId,
+      environmentId: params.environmentId,
+      providerLeaseId: params.lease.providerLeaseId,
+      config,
+    };
+    return await withSandboxActivityGate(scope, async () => {
+      const sandbox = await getSandbox(scope, { bypassTeardownGate: true });
+      await ensureSandboxStarted(sandbox, timeoutSeconds);
+      const result = await performSyncIn({
+        sandbox,
+        operations: params.operations,
+        remoteDir,
+        timeoutSeconds,
+      });
+      sandboxHandleCache.markFresh(scope);
+      return result;
     });
   },
 
@@ -1296,13 +1877,24 @@ const plugin = definePlugin({
     const config = parseDriverConfig(params.config);
     const remoteDir = resolveSyncRemoteDir(params.lease);
     const timeoutSeconds = toTimeoutSeconds(config.timeoutMs);
-    const sandbox = await getSandbox(config, params.lease.providerLeaseId);
-    await ensureSandboxStarted(sandbox, timeoutSeconds);
-    return await performSyncOut({
-      sandbox,
-      operations: params.operations,
-      remoteDir,
-      timeoutSeconds,
+    const scope = {
+      driverKey: params.driverKey,
+      companyId: params.companyId,
+      environmentId: params.environmentId,
+      providerLeaseId: params.lease.providerLeaseId,
+      config,
+    };
+    return await withSandboxActivityGate(scope, async () => {
+      const sandbox = await getSandbox(scope, { bypassTeardownGate: true });
+      await ensureSandboxStarted(sandbox, timeoutSeconds);
+      const result = await performSyncOut({
+        sandbox,
+        operations: params.operations,
+        remoteDir,
+        timeoutSeconds,
+      });
+      sandboxHandleCache.markFresh(scope);
+      return result;
     });
   },
 });

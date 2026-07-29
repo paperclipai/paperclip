@@ -1573,6 +1573,7 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   --sz-calc-1: calc(100% - 1.5rem); /* Extracted from ui/src/components/ActivityFeed.tsx (w-[calc(100%-1.5rem)]). */
   --sz-calc-2: calc(100% - 0.75rem); /* Extracted from ui/src/components/ActivityFeed.tsx (w-[calc(100%-0.75rem)]). */
   --sz-16rem: 16rem; /* Extracted from ui/src/components/ActivityFeed.tsx (max-w-[16rem]). */
+  --sz-20rem: 20rem; /* AgentSkillReleasePicker.tsx release menu width cap. */
   --sz-18px: 18px; /* Extracted from ui/src/components/ActivityFeed.tsx (p-[18px]). */
   --sz-44px: 44px; /* Extracted from ui/src/components/AgentConfigForm.tsx (min-h-[44px]). */
   --sz-88px: 88px; /* Extracted from ui/src/components/AgentConfigForm.tsx (min-h-[88px]). */

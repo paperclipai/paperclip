@@ -25,6 +25,7 @@ import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import {
   collectSecretRefPaths,
   isUuidSecretRef,
+  parseSecretRefBindingObject,
   readConfigValueAtPath,
   writeConfigValueAtPath,
 } from "./json-schema-secret-refs.js";
@@ -200,6 +201,25 @@ async function createEnvironmentSecret(input: {
   };
 }
 
+/**
+ * Secret pickers submit `{ type: "secret_ref", secretId, version }` binding
+ * objects for `format: "secret-ref"` fields, while persisted configs store the
+ * bare secret id. Collapse binding objects to the secret id so every consumer
+ * downstream deals with one shape. Sandbox provider references always resolve
+ * the latest version, so pinned bindings are rejected rather than silently
+ * resolved to a different version than the caller asked for.
+ */
+function canonicalizeSecretRefValue(value: unknown, path: string): unknown {
+  const binding = parseSecretRefBindingObject(value);
+  if (!binding) return value;
+  if (binding.version !== "latest") {
+    throw unprocessable(
+      `Secret binding at ${path} pins version ${binding.version}; sandbox provider secret references always resolve the latest version.`,
+    );
+  }
+  return binding.secretId;
+}
+
 async function persistConfigSecretRefs(input: {
   db: Db;
   companyId: string;
@@ -212,7 +232,7 @@ async function persistConfigSecretRefs(input: {
 }): Promise<Record<string, unknown>> {
   let nextConfig = { ...input.config };
   for (const path of collectSecretRefPaths(input.schema)) {
-    const rawValue = readConfigValueAtPath(nextConfig, path);
+    const rawValue = canonicalizeSecretRefValue(readConfigValueAtPath(nextConfig, path), path);
     if (typeof rawValue !== "string") continue;
     const trimmed = rawValue.trim();
     if (trimmed.length === 0) {
@@ -252,7 +272,7 @@ async function resolveConfigSecretRefsForRuntime(input: {
   const secrets = secretService(input.db);
   let nextConfig = { ...input.config };
   for (const path of collectSecretRefPaths(input.schema)) {
-    const current = readConfigValueAtPath(nextConfig, path);
+    const current = canonicalizeSecretRefValue(readConfigValueAtPath(nextConfig, path), path);
     if (typeof current !== "string") continue;
     const trimmed = current.trim();
     if (!isUuidSecretRef(trimmed)) continue;
@@ -291,7 +311,7 @@ async function resolveConfigSecretRefsForProbe(input: {
   const secrets = secretService(input.db);
   let nextConfig = { ...input.config };
   for (const path of collectSecretRefPaths(input.schema)) {
-    const current = readConfigValueAtPath(nextConfig, path);
+    const current = canonicalizeSecretRefValue(readConfigValueAtPath(nextConfig, path), path);
     if (typeof current !== "string") continue;
     const trimmed = current.trim();
     if (!isUuidSecretRef(trimmed)) continue;
@@ -332,6 +352,11 @@ export async function collectEnvironmentSecretRefs(input: {
     const refs: Array<{ secretId: string; configPath: string; versionSelector?: SecretVersionSelector }> = [];
     for (const path of collectSecretRefPaths(schema)) {
       const current = readConfigValueAtPath(parsed.config as Record<string, unknown>, path);
+      const binding = parseSecretRefBindingObject(current);
+      if (binding) {
+        refs.push({ secretId: binding.secretId, configPath: path, versionSelector: binding.version });
+        continue;
+      }
       if (typeof current === "string" && isUuidSecretRef(current.trim())) {
         refs.push({ secretId: current.trim(), configPath: path, versionSelector: "latest" });
       }
@@ -623,7 +648,7 @@ export async function resolveEnvironmentDriverConfigForRuntime(
     } else {
       for (const path of collectSecretRefPaths(schema)) {
         const current = readConfigValueAtPath(parsed.config as Record<string, unknown>, path);
-        if (typeof current === "string" && isUuidSecretRef(current.trim())) {
+        if (parseSecretRefBindingObject(current) || (typeof current === "string" && isUuidSecretRef(current.trim()))) {
           throw unprocessable("Runtime secret resolution requires a companyId context");
         }
       }

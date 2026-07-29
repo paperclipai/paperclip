@@ -155,6 +155,7 @@ import {
   patchInstanceSettingsSchema,
   issueGraphLivenessAutoRecoveryRequestSchema,
   // Resource memberships
+  updateDocumentResourceMembershipSchema,
   updateResourceMembershipSchema,
   // Document annotations
   createDocumentAnnotationCommentSchema,
@@ -164,6 +165,7 @@ import {
   createAcceptedPlanDecompositionSchema,
   resolveIssueRecoveryActionSchema,
   cancelIssueThreadInteractionSchema,
+  withdrawIssueThreadInteractionSchema,
   // Secret provider configs and remote import
   createSecretProviderConfigSchema,
   updateSecretProviderConfigSchema,
@@ -733,6 +735,7 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "POST /api/bootstrap/claim",
   "GET /api/companies/{companyId}/resource-memberships/me",
   "PUT /api/companies/{companyId}/resource-memberships/me/agents/{agentId}",
+  "PUT /api/companies/{companyId}/resource-memberships/me/documents/{documentId}",
   "PUT /api/companies/{companyId}/resource-memberships/me/projects/{projectId}",
   "GET /api/companies/{companyId}/secret-provider-configs",
   "POST /api/companies/{companyId}/secret-provider-configs",
@@ -5538,6 +5541,14 @@ registerCurrentRoute({
   summary: "Get issue cost summary",
 });
 
+registerCurrentRoute({
+  method: "put",
+  path: "/api/companies/{companyId}/resource-memberships/me/documents/{documentId}",
+  tags: ["resource-memberships"],
+  summary: "Star or unstar a document resource",
+  body: updateDocumentResourceMembershipSchema,
+});
+
 for (const route of [
   ["get", "/api/companies/{companyId}/resource-memberships/me", "List current user's resource memberships"],
   ["put", "/api/companies/{companyId}/resource-memberships/me/agents/{agentId}", "Join or leave an agent resource"],
@@ -5907,6 +5918,14 @@ registerCurrentRoute({
   tags: ["issues"],
   summary: "Cancel an issue question interaction or an agent-owned request confirmation",
   body: cancelIssueThreadInteractionSchema,
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/issues/{id}/interactions/{interactionId}/withdraw",
+  tags: ["issues"],
+  summary: "Withdraw a pending issue thread interaction",
+  body: withdrawIssueThreadInteractionSchema,
 });
 
 for (const route of [

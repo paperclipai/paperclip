@@ -159,6 +159,13 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     cloudDefault: false,
     selfHostedDefault: false,
   },
+  enableBetaSkills: {
+    title: "Beta skills",
+    description: "Allow agents to pin beta releases of the Paperclip core skill.",
+    tier: "preference",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
   enableSummaries: {
     title: "Summaries",
     description:
@@ -221,6 +228,14 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     tier: "managed",
     cloudDefault: true,
     selfHostedDefault: true,
+  },
+  enableOwnerInstanceAdmin: {
+    title: "Owner Instance Admin",
+    description:
+      "On cloud-managed instances, grant the stack owner instance-admin access to their own dedicated instance. Elevation is computed at the trusted-header auth boundary; no instance admin role rows are created. Inert on self-hosted instances.",
+    tier: "managed",
+    cloudDefault: true,
+    selfHostedDefault: false,
   },
   enableWorktreeRunExecution: {
     title: "Worktree Run Execution",

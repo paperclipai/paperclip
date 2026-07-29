@@ -31,6 +31,7 @@ import {
   acceptIssueThreadInteractionSchema,
   attachmentArtifactWorkProductMetadataSchema,
   cancelIssueThreadInteractionSchema,
+  withdrawIssueThreadInteractionSchema,
   companySearchExtractQuerySchema,
   companySearchQuerySchema,
   createIssueAttachmentMetadataSchema,
@@ -3730,6 +3731,41 @@ export function issueRoutes(
       return true;
     }
     res.status(403).json({ error: "Agent actors cannot resolve issue-thread interactions through this board-only route" });
+    return true;
+  }
+
+  async function assertIssueThreadInteractionWithdrawalAllowed(
+    req: Request,
+    res: Response,
+    issue: Parameters<typeof assertAgentIssueMutationAllowed>[2],
+    interaction: { createdByAgentId?: string | null },
+  ) {
+    if (req.actor.type !== "agent") {
+      assertBoard(req);
+      return true;
+    }
+    const actorAgentId = req.actor.agentId;
+    if (!actorAgentId || !requireAgentRunId(req, res)) return false;
+
+    const watchdogScope = await resolveTaskWatchdogMutationScope(db, req.actor);
+    if (watchdogScope.kind !== "none") {
+      res.status(403).json({ error: "Task-watchdog runs cannot withdraw issue-thread interactions" });
+      return false;
+    }
+    const boundaryDecision = await decideIssueAccess(req, issue, "issue:mutate");
+    if (!boundaryDecision.allowed) {
+      res.status(403).json({ error: "Issue is outside this actor's authorization boundary" });
+      return false;
+    }
+    if (await assertLowTrustControlPlaneDenied(req, res, issue.companyId, issue)) return false;
+
+    const isCreator = interaction.createdByAgentId === actorAgentId;
+    const isAssignee = issue.assigneeAgentId === actorAgentId;
+    if (!isCreator && !isAssignee) {
+      res.status(403).json({ error: "Only the interaction creator, current issue assignee, or a board user may withdraw it" });
+      return false;
+    }
+    if (isAssignee) return assertAgentIssueMutationAllowed(req, res, issue);
     return true;
   }
 
@@ -9211,12 +9247,22 @@ export function issueRoutes(
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
     const actor = getActorInfo(req);
     const interactionSvc = issueThreadInteractionService(db);
-    const expiredInteractions = await interactionSvc.expireRequestConfirmationsSupersededByHistoricalComments(issue);
+    const supersededInteractions = await interactionSvc.expireRequestConfirmationsSupersededByHistoricalComments(issue);
     await logExpiredRequestConfirmations({
       issue,
-      interactions: expiredInteractions,
+      interactions: supersededInteractions,
       actor,
       source: "issue.interactions.catchup_superseded_by_comment",
+    });
+    const closedIssueInteractions = await interactionSvc.expirePendingInteractionsForTerminalIssue(issue, {
+      agentId: actor.agentId,
+      userId: actor.actorType === "user" ? actor.actorId : null,
+    });
+    await logExpiredRequestConfirmations({
+      issue,
+      interactions: closedIssueInteractions,
+      actor,
+      source: "issue.interactions.catchup_issue_closed",
     });
 
     const interactions = await interactionSvc.listForIssue(id);
@@ -9582,6 +9628,55 @@ export function issueRoutes(
         });
       }
 
+      res.json(interaction);
+    },
+  );
+
+  router.post(
+    "/issues/:id/interactions/:interactionId/withdraw",
+    validate(withdrawIssueThreadInteractionSchema),
+    async (req, res) => {
+      const id = req.params.id as string;
+      const interactionId = req.params.interactionId as string;
+      const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+      if (!issue) return;
+
+      const interactionSvc = issueThreadInteractionService(db);
+      const current = await interactionSvc.getForIssue(issue, interactionId);
+      if (!(await assertIssueThreadInteractionWithdrawalAllowed(req, res, issue, current))) return;
+
+      const actor = getActorInfo(req);
+      const interaction = await interactionSvc.withdrawInteraction(issue, interactionId, req.body, {
+        agentId: actor.agentId,
+        userId: actor.actorType === "user" ? actor.actorId : null,
+      });
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
+        action: "issue.thread_interaction_withdrawn",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          interactionId: interaction.id,
+          interactionKind: interaction.kind,
+          interactionStatus: interaction.status,
+          reason: interaction.result && "reason" in interaction.result ? interaction.result.reason ?? null : null,
+        },
+      });
+
+      if (actor.agentId !== issue.assigneeAgentId) {
+        queueResolvedInteractionContinuationWakeup({
+          heartbeat,
+          issue,
+          interaction,
+          actor,
+          source: "issue.interaction.withdraw",
+        });
+      }
       res.json(interaction);
     },
   );

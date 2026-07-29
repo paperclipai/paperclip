@@ -2767,6 +2767,156 @@ describeEmbeddedPostgres("secretService", () => {
     expect(thrown instanceof Error ? thrown.message : String(thrown)).not.toContain("arn:aws");
   });
 
+  it("writes external reference rotations through the provider when a value is given", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const awsVault = await svc.createProviderConfig(companyId, {
+      provider: "aws_secrets_manager",
+      displayName: "AWS production",
+      config: { region: "us-east-1", namespace: "prod-use1" },
+    });
+    const externalRef = "arn:aws:secretsmanager:us-east-1:123456789012:secret:shared/neon-admin";
+    const secret = await svc.create(companyId, {
+      name: `external-${randomUUID()}`,
+      provider: "aws_secrets_manager",
+      providerConfigId: awsVault.id,
+      managedMode: "external_reference",
+      externalRef,
+    });
+
+    const writeSpy = vi
+      .spyOn(awsSecretsManagerProvider, "updateExternalSecretValue")
+      .mockResolvedValueOnce({
+        material: {
+          scheme: "aws_secrets_manager_v1",
+          secretId: externalRef,
+          versionId: null,
+          source: "external_reference",
+          lastWrittenVersionId: "aws-version-2",
+        },
+        valueSha256: "a".repeat(64),
+        fingerprintSha256: "a".repeat(64),
+        externalRef,
+        providerVersionRef: null,
+      });
+    const linkSpy = vi.spyOn(awsSecretsManagerProvider, "linkExternalSecret");
+
+    const rotated = await svc.rotate(secret.id, { value: "new-admin-key" }, { userId: "user-1" });
+
+    expect(writeSpy).toHaveBeenCalledTimes(1);
+    expect(writeSpy.mock.calls[0]?.[0]).toMatchObject({
+      externalRef,
+      value: "new-admin-key",
+    });
+    expect(linkSpy).not.toHaveBeenCalled();
+    expect(rotated.latestVersion).toBe(2);
+    expect(rotated.externalRef).toBe(externalRef);
+
+    const versions = await db
+      .select()
+      .from(companySecretVersions)
+      .where(eq(companySecretVersions.secretId, secret.id));
+    const current = versions.find((row) => row.status === "current");
+    expect(current?.version).toBe(2);
+    expect(current?.providerVersionRef).toBeNull();
+    expect(JSON.stringify(current)).not.toContain("new-admin-key");
+  });
+
+  it("restores the provider current version when external value rotation persistence fails", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const awsVault = await svc.createProviderConfig(companyId, {
+      provider: "aws_secrets_manager",
+      displayName: "AWS production",
+      config: { region: "us-east-1", namespace: "prod-use1" },
+    });
+    const externalRef = "arn:aws:secretsmanager:us-east-1:123456789012:secret:shared/rollback";
+    const secret = await svc.create(companyId, {
+      name: "External rollback",
+      key: "external-rollback",
+      provider: "aws_secrets_manager",
+      providerConfigId: awsVault.id,
+      managedMode: "external_reference",
+      externalRef,
+    });
+    const prepared = {
+      material: {
+        scheme: "aws_secrets_manager_v1",
+        secretId: externalRef,
+        versionId: null,
+        source: "external_reference",
+        lastWrittenVersionId: "aws-version-2",
+        previousCurrentVersionId: "aws-version-1",
+      },
+      valueSha256: "a".repeat(64),
+      fingerprintSha256: "a".repeat(64),
+      externalRef,
+      providerVersionRef: null,
+    };
+    vi.spyOn(awsSecretsManagerProvider, "updateExternalSecretValue").mockResolvedValueOnce(prepared);
+    const rollbackSpy = vi.spyOn(awsSecretsManagerProvider, "deleteOrArchive").mockResolvedValue();
+    vi.spyOn(db, "transaction").mockRejectedValueOnce(new Error("db rotate failed"));
+
+    await expect(svc.rotate(secret.id, { value: "new-value" })).rejects.toThrow(
+      "db rotate failed",
+    );
+
+    expect(rollbackSpy).toHaveBeenCalledWith(expect.objectContaining({
+      material: prepared.material,
+      externalRef,
+      mode: "archive",
+      providerConfig: expect.objectContaining({ id: awsVault.id }),
+      context: {
+        companyId,
+        secretKey: "external-rollback",
+        secretName: "External rollback",
+        version: 2,
+      },
+    }));
+  });
+
+  it("rejects external value rotations that also retarget or pin versions", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const awsVault = await svc.createProviderConfig(companyId, {
+      provider: "aws_secrets_manager",
+      displayName: "AWS production",
+      config: { region: "us-east-1", namespace: "prod-use1" },
+    });
+    const secret = await svc.create(companyId, {
+      name: `external-${randomUUID()}`,
+      provider: "aws_secrets_manager",
+      providerConfigId: awsVault.id,
+      managedMode: "external_reference",
+      externalRef: "arn:aws:secretsmanager:us-east-1:123456789012:secret:shared/neon-admin",
+    });
+
+    await expect(
+      svc.rotate(secret.id, {
+        value: "new-admin-key",
+        externalRef: "arn:aws:secretsmanager:us-east-1:123456789012:secret:shared/other",
+      }),
+    ).rejects.toThrow(/not both/);
+    await expect(
+      svc.rotate(secret.id, { value: "new-admin-key", providerVersionRef: "pinned-1" }),
+    ).rejects.toThrow(/cannot pin/i);
+  });
+
+  it("rejects external value rotations when the provider cannot write values", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const secret = await svc.create(companyId, {
+      name: `external-${randomUUID()}`,
+      provider: "vault",
+      managedMode: "external_reference",
+      externalRef: "kv/data/shared/neon-admin",
+    });
+
+    await expect(svc.rotate(secret.id, { value: "new-admin-key" })).rejects.toThrow(
+      /does not support writing values/,
+    );
+  });
+
   it("imports AWS remote references row-by-row without fetching plaintext", async () => {
     const companyId = await seedCompany();
     const svc = secretService(db);

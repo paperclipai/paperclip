@@ -28,6 +28,86 @@ describe("measureStartupStep", () => {
     expect(events[0]!.message).toBe("startup step: stage.sync (150ms)");
   });
 
+  it("includes the roundTrips delta in the payload when a round-trip reader is supplied", async () => {
+    let t = 0;
+    const now = () => t;
+    // Cumulative host→sandbox exec counter; the step performs 3 execs.
+    let execCount = 5;
+    const events: AdapterRuntimeEvent[] = [];
+    const onEvent = vi.fn(async (event: AdapterRuntimeEvent) => {
+      events.push(event);
+    });
+
+    await measureStartupStep({ onEvent }, now, "stage.sync", async () => {
+      t = 90;
+      execCount += 3;
+      return "ok";
+    }, { roundTrips: () => execCount });
+
+    expect(events[0]!.payload).toMatchObject({
+      step: "stage.sync",
+      durationMs: 90,
+      roundTrips: 3,
+    });
+  });
+
+  it("reports roundTrips: 0 for a step that performs no execs (reader supplied)", async () => {
+    const now = () => 0;
+    const events: AdapterRuntimeEvent[] = [];
+    const onEvent = vi.fn(async (event: AdapterRuntimeEvent) => {
+      events.push(event);
+    });
+
+    await measureStartupStep({ onEvent }, now, "workspace.resolve", async () => "ok", {
+      roundTrips: () => 7,
+    });
+
+    expect(events[0]!.payload).toMatchObject({ step: "workspace.resolve", roundTrips: 0 });
+  });
+
+  it("omits roundTrips from the payload when no reader is supplied", async () => {
+    const now = () => 0;
+    const events: AdapterRuntimeEvent[] = [];
+    const onEvent = vi.fn(async (event: AdapterRuntimeEvent) => {
+      events.push(event);
+    });
+
+    await measureStartupStep({ onEvent }, now, "workspace.resolve", async () => "ok");
+
+    expect(events[0]!.payload).not.toHaveProperty("roundTrips");
+  });
+
+  it("accumulates provider exec/get durations and merges extra fields into the payload", async () => {
+    let t = 0;
+    const now = () => t;
+    let execMs = 100;
+    let getMs = 40;
+    const events: AdapterRuntimeEvent[] = [];
+    const onEvent = vi.fn(async (event: AdapterRuntimeEvent) => {
+      events.push(event);
+    });
+
+    await measureStartupStep({ onEvent }, now, "acp.handshake", async () => {
+      t = 7000;
+      execMs += 600; // one provider executeCommand round-trip
+      getMs += 15; // one client.get re-fetch
+      return "handle";
+    }, {
+      providerExecMs: () => execMs,
+      providerGetMs: () => getMs,
+      extra: () => ({ createRuntimeMs: 12, ensureSessionMs: 6988 }),
+    });
+
+    expect(events[0]!.payload).toMatchObject({
+      step: "acp.handshake",
+      durationMs: 7000,
+      providerExecMs: 600,
+      providerGetMs: 15,
+      createRuntimeMs: 12,
+      ensureSessionMs: 6988,
+    });
+  });
+
   it("returns the wrapped fn result unchanged", async () => {
     const now = () => 0;
     const onEvent = vi.fn(async () => {});

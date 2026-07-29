@@ -1542,13 +1542,16 @@ export function authorizationService(db: Db) {
           explanation: "Allowed because the actor is the local implicit board.",
         });
       }
-      // cloud_tenant actors are company-scoped by contract and must never be
-      // elevated — not even via stale instance_admin rows left behind by
-      // deployments that ran the pre-hardening cloud_tenant path.
+      // A cloud_tenant actor's computed `isInstanceAdmin` flag is trusted: it
+      // can only be set by the attested trusted-header resolver (stack owner +
+      // `enableOwnerInstanceAdmin`). The `instance_user_roles` DB lookup stays
+      // excluded for cloud_tenant actors, so a stale or hand-inserted
+      // instance_admin row left behind by deployments that ran the
+      // pre-hardening cloud_tenant path still elevates nothing.
       if (
         !input.actor.ignoreInstanceAdmin &&
-        input.actor.source !== "cloud_tenant" &&
-        (input.actor.isInstanceAdmin || await isInstanceAdmin(input.actor.userId))
+        (input.actor.isInstanceAdmin ||
+          (input.actor.source !== "cloud_tenant" && await isInstanceAdmin(input.actor.userId)))
       ) {
         return allow({
           action: input.action,

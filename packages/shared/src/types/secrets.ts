@@ -128,6 +128,7 @@ export interface SecretProviderDescriptor {
   requiresExternalRef: boolean;
   supportsManagedValues?: boolean;
   supportsExternalReferences?: boolean;
+  supportsExternalValueWrites?: boolean;
   configured?: boolean;
 }
 

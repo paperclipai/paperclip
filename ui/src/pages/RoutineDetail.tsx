@@ -176,6 +176,8 @@ export function RoutineDetail() {
     priority: "medium",
     concurrencyPolicy: "coalesce_if_active",
     catchUpPolicy: "skip_missed",
+    activityGatePolicy: "always",
+    activityGateScope: "company",
     variables: [],
     env: null,
   });
@@ -268,6 +270,8 @@ export function RoutineDetail() {
             priority: routine.priority,
             concurrencyPolicy: routine.concurrencyPolicy,
             catchUpPolicy: routine.catchUpPolicy,
+            activityGatePolicy: routine.activityGatePolicy,
+            activityGateScope: routine.activityGateScope,
             variables: routine.variables,
             env: routine.env ?? null,
           }
@@ -295,6 +299,12 @@ export function RoutineDetail() {
     }
     if (editDraft.catchUpPolicy !== routineDefaults.catchUpPolicy) {
       result.push({ key: "catchUpPolicy", label: "the catch-up policy" });
+    }
+    if (editDraft.activityGatePolicy !== routineDefaults.activityGatePolicy) {
+      result.push({ key: "activityGatePolicy", label: "the advanced run policy" });
+    }
+    if (editDraft.activityGateScope !== routineDefaults.activityGateScope) {
+      result.push({ key: "activityGateScope", label: "the activity gate scope" });
     }
     if (JSON.stringify(editDraft.variables) !== JSON.stringify(routineDefaults.variables)) {
       result.push({ key: "variables", label: "the variables" });
@@ -652,6 +662,8 @@ export function RoutineDetail() {
         priority: response.routine.priority,
         concurrencyPolicy: response.routine.concurrencyPolicy,
         catchUpPolicy: response.routine.catchUpPolicy,
+        activityGatePolicy: response.routine.activityGatePolicy,
+        activityGateScope: response.routine.activityGateScope,
         variables: response.routine.variables as RoutineVariable[],
         env: (response.routine.env ?? null) as RoutineEnvConfig | null,
       });

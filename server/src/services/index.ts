@@ -116,9 +116,11 @@ export {
   managedFeatureKeySet,
   parseManagedConfigEnv,
   MANAGED_CONFIG_ENV_KEY,
+  type ManagedEnvironmentSpec,
   type ManagedInstanceConfig,
 } from "./managed-config.js";
 export { bootstrapExecutionPolicyFromEnv } from "./execution-policy-bootstrap.js";
+export { applyManagedEnvironments } from "./managed-environments.js";
 export { cloudUpstreamService, reconcileCloudUpstreamRunsOnStartup } from "./cloud-upstreams.js";
 export { companyPortabilityService } from "./company-portability.js";
 export { teamsCatalogService } from "./teams-catalog.js";

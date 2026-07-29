@@ -54,6 +54,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import type {
   PluginEnvironmentSyncResult,
+  PluginPostUploadCommand,
   PluginSyncFileMapping,
   PluginSyncOperation,
 } from "@paperclipai/plugin-sdk";
@@ -574,6 +575,70 @@ async function syncInDirectoryMapping(input: {
   });
 }
 
+/**
+ * Execute an operation's ordered `postUploadCommands` in the pod AFTER its files
+ * have landed (Phase 3 / Security Conditions C1–C4 + C7). Kubernetes is a native
+ * provider, and once the inbound-staging router stops diverting command-bearing
+ * (custom-provision) assets away from the native seam, a K8s deployment receives
+ * these operations — so it EXECUTES them symmetrically with Daytona rather than
+ * silently dropping them (C7 fail-open).
+ *
+ * Commands run in array order, fail-fast: the first non-zero exit or timeout throws
+ * and stops the rest (C4). Each `command` is executed VERBATIM: it rides as a
+ * positional argument (`$1`) to a fixed wrapper, run by `sh -c "$1"`, and is never
+ * string-concatenated into the wrapper — so the provider adds no shell fragment of
+ * its own (C1/C3), exactly as the generic fallback runs `sh -c <command>`. Before
+ * the command runs, the wrapper re-confines the command `cwd` under the workspace
+ * remote dir with the same realpath + `/proc/self/fd`-pinned open used for file
+ * placement (C2): a `..`, absolute-escape, or symlink-escape `cwd` is rejected
+ * fail-closed (exit 42) before the command runs, and the pin makes the confinement
+ * race-free against a post-resolve ancestor swap. `cwd` is validated lexically on
+ * the host first; when absent it defaults to the remote dir — never a process
+ * default cwd.
+ *
+ * Shared by the file- and directory-mapping paths: it runs once per operation,
+ * after every mapping of that operation has been placed.
+ */
+async function runPostUploadCommands(input: {
+  exec: PodStreamExec;
+  commands: PluginPostUploadCommand[];
+  remoteDir: string;
+  timeoutMs: number;
+}): Promise<void> {
+  const { exec, commands, remoteDir, timeoutMs } = input;
+  for (const command of commands) {
+    const cwd = command.cwd ?? remoteDir;
+    // C2 lexical guard on the host before the pod ever sees the cwd.
+    assertConfinedSandboxPath(remoteDir, cwd, "post-upload command cwd");
+    // The wrapper confines `cwd` ($1) through a realpath + /proc/self/fd pin, cd's
+    // into the pinned inode, then execs the VERBATIM command ($2). Both `cwd` and
+    // the command ride as positional parameters — the wrapper interpolates NEITHER
+    // into its own script text, so the command runs byte-for-byte as authored.
+    const wrapper = [
+      ...canonicalizerPreamble(shQuote(remoteDir)),
+      `_pc_real=$(_pc_resolve "$1") || { echo "ESCAPE" >&2; exit 42; };`,
+      `case "$_pc_real/" in "$_pc_root"/*) : ;; *) echo "ESCAPE" >&2; exit 42 ;; esac;`,
+      `exec 9<"$_pc_real" || { echo "open failed" >&2; exit 46; };`,
+      `_pc_fd_real=$(_pc_resolve /proc/self/fd/9) || { echo "ESCAPE" >&2; exit 42; };`,
+      `case "$_pc_fd_real/" in "$_pc_root"/*) : ;; *) echo "ESCAPE" >&2; exit 42 ;; esac;`,
+      `cd /proc/self/fd/9 || { echo "cd failed" >&2; exit 46; };`,
+      `exec /bin/sh -c "$2" pc-post-upload;`,
+    ].join("\n");
+    const commandTimeoutMs = command.timeoutMs ?? timeoutMs;
+    // Positional args: $0=pc-post-upload, $1=cwd, $2=the verbatim command string.
+    const result = await exec(["/bin/sh", "-c", wrapper, "pc-post-upload", cwd, command.command], {
+      timeoutMs: commandTimeoutMs,
+      maxStderrBytes: SYNC_STDERR_CAP_BYTES,
+    });
+    if (result.exitCode !== 0) {
+      const detail = (result.stderr || "").trim();
+      throw new Error(
+        `Kubernetes post-upload command failed (exit ${result.exitCode})${detail ? `: ${detail}` : ""}`,
+      );
+    }
+  }
+}
+
 export async function performSyncIn(input: {
   exec: PodStreamExec;
   operations: PluginSyncOperation[];
@@ -607,6 +672,16 @@ export async function performSyncIn(input: {
       filesTransferred += dirResult.filesTransferred;
       bytesTransferred += dirResult.bytesTransferred;
     }
+
+    // Run the operation's ordered post-upload commands AFTER every file/directory
+    // mapping of this operation has landed (Phase 3 / C1–C4 + C7). Absent/empty →
+    // no extra exec, byte-identical to a pre-contract operation.
+    await runPostUploadCommands({
+      exec: input.exec,
+      commands: operation.postUploadCommands ?? [],
+      remoteDir: input.remoteDir,
+      timeoutMs: input.timeoutMs,
+    });
 
     operations.push({ operationId: operation.operationId, filesTransferred, bytesTransferred });
   }

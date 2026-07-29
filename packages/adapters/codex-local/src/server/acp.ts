@@ -35,6 +35,7 @@ import {
   asString,
   parseObject,
 } from "@paperclipai/adapter-utils/server-utils";
+import { normalizeCodexModel } from "../index.js";
 import { classifyCodexAuthRefreshFailure } from "./parse.js";
 import { copyBackCodexAuth } from "./codex-auth-copyback.js";
 import { buildCodexAuthInboundProvision } from "./codex-auth-merge-scripts.js";
@@ -145,6 +146,11 @@ export function buildCodexAcpConfig(config: Record<string, unknown>): Record<str
     config.warmHandleIdleMs ??
     config.acpWarmHandleIdleMs ??
     DEFAULT_ACP_ENGINE_WARM_HANDLE_IDLE_MS;
+  // Rewrite legacy model aliases (e.g. bare gpt-5.6) to the concrete slug Codex has metadata for,
+  // so the ACP session config matches the CLI lane and avoids the fallback-metadata warning.
+  const normalizedModel = normalizeCodexModel(
+    typeof config.model === "string" ? config.model : "",
+  );
 
   return {
     ...config,
@@ -153,6 +159,7 @@ export function buildCodexAcpConfig(config: Record<string, unknown>): Record<str
     permissionMode,
     nonInteractivePermissions,
     warmHandleIdleMs,
+    ...(normalizedModel ? { model: normalizedModel } : {}),
     ...(agentCommand ? { agentCommand } : {}),
     ...(stateDir ? { stateDir } : {}),
   };

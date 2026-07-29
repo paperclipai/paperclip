@@ -53,6 +53,7 @@ describe("parseManagedConfigEnv", () => {
       catalogVersion: "2026.720.0",
       features: { enableApps: false, enablePipelines: true },
       plugins: { autoInstall: ["daytona", "kubernetes"] },
+      environments: [],
     });
   });
 
@@ -66,6 +67,7 @@ describe("parseManagedConfigEnv", () => {
       catalogVersion: "2026.720.0",
       features: {},
       plugins: { autoInstall: [] },
+      environments: [],
     });
   });
 
@@ -220,6 +222,115 @@ describe("parseManagedConfigEnv", () => {
         envWith(validDoc({ plugins: { autoInstall: ["daytona", "daytona"] } })),
       ),
     ).toThrow(/duplicate entry "daytona"/);
+  });
+});
+
+describe("parseManagedConfigEnv environments section", () => {
+  const entry = (overrides: Record<string, unknown> = {}) => ({
+    name: "Daytona",
+    provider: "daytona",
+    config: { target: "us" },
+    ...overrides,
+  });
+
+  it("defaults to an empty list when the section is absent (pre-section documents keep booting)", () => {
+    const config = parseManagedConfigEnv(envWith(validDoc()));
+    expect(config?.environments).toEqual([]);
+  });
+
+  it("parses a declared environment and freezes it", () => {
+    const config = parseManagedConfigEnv(
+      envWith(validDoc({ environments: [entry({ description: "Managed Daytona sandbox." })] })),
+    );
+    expect(config?.environments).toHaveLength(1);
+    const spec = config?.environments[0];
+    expect(spec?.name).toBe("Daytona");
+    expect(spec?.description).toBe("Managed Daytona sandbox.");
+    expect(spec?.provider).toBe("daytona");
+    expect(spec?.config).toEqual({ target: "us" });
+    expect(Object.isFrozen(config?.environments)).toBe(true);
+    expect(Object.isFrozen(spec)).toBe(true);
+    expect(Object.isFrozen(spec?.config)).toBe(true);
+  });
+
+  it("treats config and description as optional", () => {
+    const config = parseManagedConfigEnv(
+      envWith(validDoc({ environments: [{ name: "Daytona", provider: "daytona" }] })),
+    );
+    expect(config?.environments[0]?.config).toEqual({});
+    expect(config?.environments[0]?.description).toBeUndefined();
+  });
+
+  it("rejects a non-array section and non-object entries", () => {
+    expect(() =>
+      parseManagedConfigEnv(envWith(validDoc({ environments: {} }))),
+    ).toThrow(/"environments" must be an array/);
+    expect(() =>
+      parseManagedConfigEnv(envWith(validDoc({ environments: ["daytona"] }))),
+    ).toThrow(/"environments\[0\]" must be an object/);
+  });
+
+  it("rejects more than one entry (single managed sandbox slot)", () => {
+    expect(() =>
+      parseManagedConfigEnv(
+        envWith(validDoc({ environments: [entry(), entry({ name: "Other", provider: "kubernetes" })] })),
+      ),
+    ).toThrow(/at most one entry/);
+  });
+
+  it("rejects unknown entry keys", () => {
+    expect(() =>
+      parseManagedConfigEnv(envWith(validDoc({ environments: [entry({ envVars: {} })] }))),
+    ).toThrow(/unknown key "envVars"/);
+  });
+
+  it("rejects malformed names, descriptions, and providers", () => {
+    expect(() =>
+      parseManagedConfigEnv(envWith(validDoc({ environments: [entry({ name: "" })] }))),
+    ).toThrow(/"environments\[0\].name"/);
+    expect(() =>
+      parseManagedConfigEnv(envWith(validDoc({ environments: [entry({ name: " Daytona" })] }))),
+    ).toThrow(/"environments\[0\].name"/);
+    expect(() =>
+      parseManagedConfigEnv(envWith(validDoc({ environments: [entry({ description: " " })] }))),
+    ).toThrow(/"environments\[0\].description"/);
+    expect(() =>
+      parseManagedConfigEnv(envWith(validDoc({ environments: [entry({ provider: 7 })] }))),
+    ).toThrow(/"environments\[0\].provider"/);
+  });
+
+  it("rejects a provider that plugins.autoInstall does not provision", () => {
+    expect(() =>
+      parseManagedConfigEnv(envWith(validDoc({ environments: [entry({ provider: "modal" })] }))),
+    ).toThrow(/not in "plugins.autoInstall"/);
+  });
+
+  it("rejects a config that sets provider", () => {
+    expect(() =>
+      parseManagedConfigEnv(
+        envWith(validDoc({ environments: [entry({ config: { provider: "daytona" } })] })),
+      ),
+    ).toThrow(/must not set "provider"/);
+  });
+
+  it("rejects secret-bearing config keys at any depth (secrets travel as env vars)", () => {
+    expect(() =>
+      parseManagedConfigEnv(
+        envWith(validDoc({ environments: [entry({ config: { apiKey: "not-a-real-key" } })] })),
+      ),
+    ).toThrow(/looks secret-bearing/);
+    expect(() =>
+      parseManagedConfigEnv(
+        envWith(validDoc({ environments: [entry({ config: { auth: { accessToken: "t" } } })] })),
+      ),
+    ).toThrow(/auth.accessToken/);
+    expect(() =>
+      parseManagedConfigEnv(
+        envWith(
+          validDoc({ environments: [entry({ config: { adapters: [{ clientSecret: "s" }] } })] }),
+        ),
+      ),
+    ).toThrow(/adapters\[0\].clientSecret/);
   });
 });
 

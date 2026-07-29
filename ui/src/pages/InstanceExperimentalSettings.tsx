@@ -371,6 +371,7 @@ export function InstanceExperimentalSettings() {
   const enableCloudSync = experimentalQuery.data?.enableCloudSync === true;
   const enableExternalObjects = experimentalQuery.data?.enableExternalObjects === true;
   const enableBuiltInAgents = experimentalQuery.data?.enableBuiltInAgents === true;
+  const enableBetaSkills = experimentalQuery.data?.enableBetaSkills === true;
   const enableSummaries = experimentalQuery.data?.enableSummaries === true;
   const enableStatusCards = experimentalQuery.data?.enableStatusCards === true;
   const summariesManaged = managedKeys.enableSummaries?.managed === true;
@@ -557,6 +558,16 @@ export function InstanceExperimentalSettings() {
         disabled={toggleMutation.isPending}
         managed={managedKeys.enableBuiltInAgents}
         ariaLabel="Toggle built-in agents experimental setting"
+      />
+
+      <ExperimentalToggleCard
+        title="Beta skills"
+        description="Allow agents to pin beta releases of the Paperclip core skill. Disabling this returns every agent to the default live skill without removing saved pins."
+        checked={enableBetaSkills}
+        onCheckedChange={(checked) => toggleMutation.mutate({ enableBetaSkills: checked })}
+        disabled={toggleMutation.isPending}
+        managed={managedKeys.enableBetaSkills}
+        ariaLabel="Toggle beta skills experimental setting"
       />
 
       <ExperimentalToggleCard

@@ -59,6 +59,7 @@ export interface InstanceExperimentalSettings {
   enableExternalObjects: boolean;
   enableSmokeLab: boolean;
   enableBuiltInAgents: boolean;
+  enableBetaSkills: boolean;
   enableSummaries: boolean;
   enableStatusCards: boolean;
   enableDecisions: boolean;
@@ -68,6 +69,14 @@ export interface InstanceExperimentalSettings {
   enableIssueGraphLivenessAutoRecovery: boolean;
   enableWorkspaceBranchReconcileForward: boolean;
   enableWorkspaceDirtyQuarantineRepair: boolean;
+  /**
+   * On cloud-managed instances, grant the stack owner instance-admin access
+   * to their own dedicated instance. Elevation is computed per request at the
+   * trusted-header auth boundary (owner stack role + this flag); no
+   * `instance_user_roles` row is ever written. Inert on self-hosted
+   * instances, which have no trusted cloud tenant path.
+   */
+  enableOwnerInstanceAdmin: boolean;
   /**
    * Worktree preview instances (`PAPERCLIP_IN_WORKTREE=true`) suppress the
    * heartbeat run engine by default so previews never self-execute tasks. When
