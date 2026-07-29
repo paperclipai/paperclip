@@ -21,6 +21,7 @@ function makeCompany(overrides: Partial<Company>): Company {
     feedbackDataSharingConsentByUserId: null,
     feedbackDataSharingTermsVersion: null,
     brandColor: null,
+    channelsEnabled: false,
     logoAssetId: null,
     logoUrl: null,
     defaultResponsibleUserId: null,

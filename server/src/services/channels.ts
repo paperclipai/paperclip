@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, isNull, ne, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, ne, notInArray, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -99,20 +99,20 @@ export interface ChannelServiceOptions {
   ) => Promise<unknown>;
 }
 
-function encodeCursor(createdAt: Date, id: string): string {
-  return Buffer.from(`${createdAt.toISOString()}|${id}`, "utf8").toString("base64url");
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Cursors carry only the boundary message id. The `(created_at, id)` keyset is
+ * resolved in SQL so pagination is not skewed by the sub-millisecond precision
+ * that Postgres keeps but JavaScript `Date` cannot represent.
+ */
+function decodeCursor(cursor: string): string {
+  if (!UUID_RE.test(cursor)) throw badRequest("Invalid channel message cursor");
+  return cursor;
 }
 
-function decodeCursor(cursor: string): { createdAt: Date; id: string } {
-  const decoded = Buffer.from(cursor, "base64url").toString("utf8");
-  const separator = decoded.lastIndexOf("|");
-  const rawDate = separator === -1 ? "" : decoded.slice(0, separator);
-  const id = separator === -1 ? "" : decoded.slice(separator + 1);
-  const createdAt = new Date(rawDate);
-  if (!id || Number.isNaN(createdAt.getTime())) {
-    throw badRequest("Invalid channel message cursor");
-  }
-  return { createdAt, id };
+function keysetBoundary(messageId: string) {
+  return sql`(select "boundary"."created_at", "boundary"."id" from "channel_messages" as "boundary" where "boundary"."id" = ${messageId}::uuid)`;
 }
 
 function clampLimit(limit: number | undefined): number {
@@ -461,8 +461,8 @@ export function channelService(db: Db, options: ChannelServiceOptions = {}) {
     }
 
     if (pageOptions.cursor) {
-      const { createdAt, id } = decodeCursor(pageOptions.cursor);
-      conditions.push(sql`(${channelMessages.createdAt}, ${channelMessages.id}) < (${createdAt.toISOString()}::timestamptz, ${id}::uuid)`);
+      const boundaryId = decodeCursor(pageOptions.cursor);
+      conditions.push(sql`(${channelMessages.createdAt}, ${channelMessages.id}) < ${keysetBoundary(boundaryId)}`);
     }
 
     const rows = await db
@@ -487,7 +487,7 @@ export function channelService(db: Db, options: ChannelServiceOptions = {}) {
           issueStatus: row.issueStatus,
         }))
         .reverse(),
-      nextCursor: hasMore && oldest ? encodeCursor(oldest.message.createdAt, oldest.message.id) : null,
+      nextCursor: hasMore && oldest ? oldest.message.id : null,
     };
   }
 
@@ -502,8 +502,8 @@ export function channelService(db: Db, options: ChannelServiceOptions = {}) {
     ];
 
     if (pageOptions.cursor) {
-      const { createdAt, id } = decodeCursor(pageOptions.cursor);
-      conditions.push(sql`(${channelMessages.createdAt}, ${channelMessages.id}) > (${createdAt.toISOString()}::timestamptz, ${id}::uuid)`);
+      const boundaryId = decodeCursor(pageOptions.cursor);
+      conditions.push(sql`(${channelMessages.createdAt}, ${channelMessages.id}) > ${keysetBoundary(boundaryId)}`);
     }
 
     const rows = await db
@@ -525,7 +525,7 @@ export function channelService(db: Db, options: ChannelServiceOptions = {}) {
         issueTitle: row.issueTitle,
         issueStatus: row.issueStatus,
       })),
-      nextCursor: hasMore && newest ? encodeCursor(newest.message.createdAt, newest.message.id) : null,
+      nextCursor: hasMore && newest ? newest.message.id : null,
     };
   }
 
@@ -797,15 +797,18 @@ export function channelService(db: Db, options: ChannelServiceOptions = {}) {
     await requireChannel(companyId, channelId);
     await addMembers(companyId, channelId, [actor]);
 
-    let lastReadAt = new Date();
+    // Read the watermark straight out of the row so the stored timestamp keeps
+    // full Postgres precision; a JS `Date` roundtrip would leave the marked
+    // message itself looking unread.
+    let lastReadAt: Date | SQL<Date> = new Date();
     if (messageId) {
       const message = await db
-        .select({ createdAt: channelMessages.createdAt, channelId: channelMessages.channelId })
+        .select({ channelId: channelMessages.channelId })
         .from(channelMessages)
         .where(eq(channelMessages.id, messageId))
         .then((rows) => rows[0] ?? null);
       if (!message || message.channelId !== channelId) throw notFound("Message not found");
-      lastReadAt = message.createdAt;
+      lastReadAt = sql<Date>`(select "watermark"."created_at" from "channel_messages" as "watermark" where "watermark"."id" = ${messageId}::uuid)`;
     }
 
     const member = await db
