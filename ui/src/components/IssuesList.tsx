@@ -322,6 +322,16 @@ export function issueAgeSeparatorLabel(bucket: 1 | 2): string {
   return bucket === 1 ? "Older than a day" : "Older than a week";
 }
 
+export function issueAgeBucketsCrossed(
+  previousBucket: 0 | 1 | 2,
+  currentBucket: 0 | 1 | 2,
+): Array<1 | 2> {
+  const crossedBuckets: Array<1 | 2> = [];
+  if (previousBucket < 1 && currentBucket >= 1) crossedBuckets.push(1);
+  if (previousBucket < 2 && currentBucket >= 2) crossedBuckets.push(2);
+  return crossedBuckets;
+}
+
 // Only recency sorts (newest first) get date separators — for any other
 // sort/direction the boundaries would be meaningless.
 function issueDateSeparatorField(state: IssueViewState): "createdAt" | "updatedAt" | null {
@@ -2299,32 +2309,42 @@ export function IssuesList({
                           ) : undefined
                         )}
                       />
-                      {hasChildren && isExpanded && children.map((child) => renderIssueRow(child, depth + 1))}
                     </div>
                   );
                 };
 
                 const separatorField = issueDateSeparatorField(viewState);
+                const separatorNow = Date.now();
                 const nodes: ReactNode[] = [];
                 let prevBucket: 0 | 1 | 2 | null = null;
-                for (const issue of roots) {
-                  const node = renderIssueRow(issue, 0);
+                const appendIssueRow = (issue: Issue, depth: number) => {
+                  const node = renderIssueRow(issue, depth);
                   // Skip rows the render budget dropped so separators never
                   // dangle above an unrendered (or absent) row.
-                  if (node === null) continue;
+                  if (node === null) return;
                   if (separatorField) {
-                    const bucket = issueAgeBucket(issue[separatorField]);
-                    if (prevBucket !== null && bucket > prevBucket) {
+                    const bucket = issueAgeBucket(issue[separatorField], separatorNow);
+                    for (const crossedBucket of prevBucket === null
+                      ? []
+                      : issueAgeBucketsCrossed(prevBucket, bucket)) {
                       nodes.push(
                         <IssueDateSeparator
-                          key={`age-sep-${issue.id}`}
-                          label={issueAgeSeparatorLabel(bucket as 1 | 2)}
+                          key={`age-sep-${issue.id}-${crossedBucket}`}
+                          label={issueAgeSeparatorLabel(crossedBucket)}
                         />,
                       );
                     }
                     prevBucket = bucket;
                   }
                   nodes.push(node);
+                  if (!viewState.collapsedParents.includes(issue.id)) {
+                    for (const child of childMap.get(issue.id) ?? []) {
+                      appendIssueRow(child, depth + 1);
+                    }
+                  }
+                };
+                for (const issue of roots) {
+                  appendIssueRow(issue, 0);
                 }
                 return nodes;
               })()}
