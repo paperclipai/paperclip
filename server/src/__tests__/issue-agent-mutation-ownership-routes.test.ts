@@ -408,6 +408,39 @@ describe("agent issue mutation checkout ownership", () => {
     );
   });
 
+  it("redacts issue document text before handing it to persistence", async () => {
+    const inputValue = "test-only-sensitive-value";
+    mockDocumentService.upsertIssueDocument.mockResolvedValueOnce({
+      created: true,
+      document: {
+        id: "document-1",
+        key: "plan",
+        title: "PAPERCLIP_API_KEY=***REDACTED***",
+        format: "markdown",
+        body: "password: ***REDACTED***",
+        latestRevisionId: "revision-1",
+        latestRevisionNumber: 1,
+      },
+    });
+
+    const res = await request(await createApp(ownerActor()))
+      .put(`/api/issues/${issueId}/documents/plan`)
+      .send({
+        title: `PAPERCLIP_API_KEY=${inputValue}`,
+        format: "markdown",
+        body: `password: ${inputValue}`,
+        changeSummary: `token=${inputValue}`,
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockDocumentService.upsertIssueDocument).toHaveBeenCalledWith(expect.objectContaining({
+      title: "PAPERCLIP_API_KEY=***REDACTED***",
+      body: "password: ***REDACTED***",
+      changeSummary: "token=***REDACTED***",
+    }));
+    expect(JSON.stringify(res.body)).not.toContain(inputValue);
+  });
+
   it("preserves board mutations on active checkouts", async () => {
     const app = await createApp(boardActor());
 

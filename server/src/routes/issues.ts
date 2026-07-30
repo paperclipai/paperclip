@@ -1337,14 +1337,19 @@ export function issueRoutes(
     }
 
     const actor = getActorInfo(req);
+    const redactedDocumentInput = {
+      title: req.body.title == null ? null : redactSensitiveText(req.body.title),
+      body: redactSensitiveText(req.body.body),
+      changeSummary: req.body.changeSummary == null ? null : redactSensitiveText(req.body.changeSummary),
+    };
     const referenceSummaryBefore = await issueReferencesSvc.listIssueReferenceSummary(issue.id);
     const result = await documentsSvc.upsertIssueDocument({
       issueId: issue.id,
       key: keyParsed.data,
-      title: req.body.title ?? null,
+      title: redactedDocumentInput.title,
       format: req.body.format,
-      body: req.body.body,
-      changeSummary: req.body.changeSummary ?? null,
+      body: redactedDocumentInput.body,
+      changeSummary: redactedDocumentInput.changeSummary,
       baseRevisionId: req.body.baseRevisionId ?? null,
       createdByAgentId: actor.agentId ?? null,
       createdByUserId: actor.actorType === "user" ? actor.actorId : null,

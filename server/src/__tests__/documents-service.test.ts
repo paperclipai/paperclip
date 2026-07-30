@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { eq } from "drizzle-orm";
 import {
   companies,
   createDb,
@@ -111,5 +112,52 @@ describeEmbeddedPostgres("documentService system issue documents", () => {
       key: ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
       body: "# Handoff",
     }));
+  });
+
+  it("redacts document text before persistence and returned downstream payloads", async () => {
+    const { issueId } = await createIssueWithDocuments();
+    const inputValue = "test-only-sensitive-value";
+
+    const created = await svc.upsertIssueDocument({
+      issueId,
+      key: "security-notes",
+      title: `Credential PAPERCLIP_API_KEY=${inputValue}`,
+      format: "markdown",
+      body: `# Notes\n\nOPENAI_API_KEY: ${inputValue}\n\nOrdinary prose: follow up with the vendor.`,
+      changeSummary: `Added secret=${inputValue}`,
+    });
+    const updated = await svc.upsertIssueDocument({
+      issueId,
+      key: "security-notes",
+      title: `Updated AUTH_TOKEN=${inputValue}`,
+      format: "markdown",
+      body: `Updated password: ${inputValue}\n\nOrdinary prose: status is pending.`,
+      changeSummary: `Updated token=${inputValue}`,
+      baseRevisionId: created.document.latestRevisionId,
+    });
+
+    const storedDocument = await db
+      .select()
+      .from(documents)
+      .where(eq(documents.id, updated.document.id))
+      .then((rows) => rows[0]);
+    const storedRevisions = await db
+      .select()
+      .from(documentRevisions)
+      .where(eq(documentRevisions.documentId, updated.document.id));
+    const fetched = await svc.getIssueDocumentByKey(issueId, "security-notes");
+    const revisions = await svc.listIssueDocumentRevisions(issueId, "security-notes");
+
+    expect(updated.document).toEqual(expect.objectContaining({
+      title: "Updated AUTH_TOKEN=***REDACTED***",
+      body: "Updated password: ***REDACTED***\n\nOrdinary prose: status is pending.",
+    }));
+    expect(fetched).toEqual(expect.objectContaining({
+      title: updated.document.title,
+      body: updated.document.body,
+      latestRevisionId: updated.document.latestRevisionId,
+    }));
+    expect(JSON.stringify({ storedDocument, storedRevisions, fetched, revisions })).not.toContain(inputValue);
+    expect(JSON.stringify({ storedDocument, storedRevisions, fetched, revisions })).toContain("Ordinary prose: status is pending.");
   });
 });
