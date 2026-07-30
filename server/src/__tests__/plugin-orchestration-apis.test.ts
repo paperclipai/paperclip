@@ -189,6 +189,38 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
     ).rejects.toThrow("Plugin may only use originKind values under plugin:paperclip.missions");
   });
 
+  it("uses persisted redacted issue text in plugin update activity", async () => {
+    const { companyId } = await seedCompanyAndAgent();
+    const services = buildHostServices(db, "plugin-record-id", "paperclip.missions", createEventBusStub());
+    const issue = await services.issues.create({
+      companyId,
+      title: "Initial issue title",
+      description: "Initial issue description",
+    });
+    const sensitiveValue = "test-only-plugin-update-sensitive-value";
+
+    await services.issues.update({
+      companyId,
+      issueId: issue.id,
+      patch: {
+        title: `PAPERCLIP_API_KEY=${sensitiveValue}`,
+        description: `PAPERCLIP_API_KEY=${sensitiveValue}`,
+      },
+    });
+
+    const [activity] = await db
+      .select({ details: activityLog.details })
+      .from(activityLog)
+      .where(and(eq(activityLog.entityType, "issue"), eq(activityLog.entityId, issue.id), eq(activityLog.action, "issue.updated")));
+    const patch = (activity?.details as Record<string, unknown> | null)?.patch as Record<string, unknown> | undefined;
+
+    expect(patch).toMatchObject({
+      title: "PAPERCLIP_API_KEY=***REDACTED***",
+      description: "PAPERCLIP_API_KEY=***REDACTED***",
+    });
+    expect(JSON.stringify(activity)).not.toContain(sensitiveValue);
+  });
+
   it("asserts checkout ownership for run-scoped plugin actions", async () => {
     const { companyId, agentId } = await seedCompanyAndAgent();
     const issueId = randomUUID();

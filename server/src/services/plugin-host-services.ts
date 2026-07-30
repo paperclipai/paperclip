@@ -1077,6 +1077,12 @@ export function buildHostServices(
           actorAgentId,
           actorUserId,
         })) as Issue;
+        // The issue service redacts text before persistence. Reuse those
+        // persisted values for audit activity so a plugin's raw patch cannot
+        // bypass the same boundary through the live event or plugin event.
+        const activityPatch = { ...patch };
+        if (typeof patch.title === "string") activityPatch.title = updated.title;
+        if (typeof patch.description === "string") activityPatch.description = updated.description;
         await logPluginActivity({
           companyId,
           action: "issue.updated",
@@ -1085,7 +1091,7 @@ export function buildHostServices(
           actor: { actorAgentId, actorUserId, actorRunId },
           details: {
             identifier: updated.identifier,
-            patch,
+            patch: activityPatch,
             _previous: {
               status: existing.status,
               assigneeAgentId: existing.assigneeAgentId,
