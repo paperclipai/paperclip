@@ -9,11 +9,17 @@ export function isBlobStoreFilePath(filePath: string): boolean {
   return /(^|\/)blobs\/[^/]+$/.test(filePath);
 }
 
+const utf8 = new TextEncoder();
+
+// The server enforces its body limit on raw request bytes, so estimate each
+// entry the way it actually travels: JSON-escaped UTF-8 for text (multi-byte
+// characters and escape sequences both inflate past `String.length`), and the
+// base64 payload for blobs (always ASCII, one byte per character).
 function fileEntryInlineBytes(entry: CompanyPortabilityFileEntry): number {
-  return typeof entry === "string" ? entry.length : entry.data.length;
+  return typeof entry === "string" ? utf8.encode(JSON.stringify(entry)).length : entry.data.length;
 }
 
-/** Approximate JSON request size of an inline import: text lengths plus base64 payload lengths. */
+/** Approximate JSON request size of an inline import: JSON-escaped UTF-8 text bytes plus base64 payload lengths. */
 export function estimateInlineImportBytes(files: Record<string, CompanyPortabilityFileEntry>): number {
   let total = 0;
   for (const entry of Object.values(files)) {

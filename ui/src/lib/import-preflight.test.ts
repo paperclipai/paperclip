@@ -19,11 +19,19 @@ describe("import preflight", () => {
     expect(isBlobStoreFilePath("blobs/nested/file")).toBe(false);
   });
 
-  it("estimates inline bytes from text lengths and base64 payload lengths", () => {
+  it("estimates inline bytes from JSON-escaped text bytes and base64 payload lengths", () => {
     expect(estimateInlineImportBytes({
       "COMPANY.md": "12345",
       "blobs/abc": { encoding: "base64", data: "QUJDRA==", contentType: "application/octet-stream" },
-    })).toBe(5 + 8);
+    })).toBe(7 + 8); // "12345" serializes with surrounding quotes; base64 is counted as-is
+  });
+
+  it("counts UTF-8 bytes of serialized text, not UTF-16 code units", () => {
+    // Two CJK characters: String.length is 2, but each is 3 bytes of UTF-8,
+    // plus the surrounding JSON quotes the request body will carry.
+    expect(estimateInlineImportBytes({ "COMPANY.md": "汉字" })).toBe(6 + 2);
+    // A newline serializes as the two-character escape sequence \n.
+    expect(estimateInlineImportBytes({ "NOTES.md": "a\nb" })).toBe(4 + 2);
   });
 
   it("passes packages under the inline limit", () => {
