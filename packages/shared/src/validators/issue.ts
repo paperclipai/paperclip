@@ -467,6 +467,7 @@ const createIssueBaseSchema = z.object({
   harnessKind: z.enum(ISSUE_HARNESS_KINDS).optional().nullable(),
   priority: z.enum(ISSUE_PRIORITIES).optional().default("medium"),
   assigneeAgentId: z.string().uuid().optional().nullable(),
+  preserveFallbackSisterAssignee: z.boolean().optional().default(false),
   assigneeUserId: z.string().optional().nullable(),
   requestDepth: issueRequestDepthInputSchema.optional().default(0),
   createdByUserId: z.string().optional().nullable(),

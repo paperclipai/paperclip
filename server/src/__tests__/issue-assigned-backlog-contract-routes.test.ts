@@ -317,6 +317,68 @@ describe("assigned backlog creation contract", () => {
     );
   });
 
+  it("preserves direct fallback sister assignment when explicitly requested", async () => {
+    mockAgentService.getById.mockImplementation(async (id: string) => {
+      if (id === sisterAgentId) {
+        return {
+          id: sisterAgentId,
+          companyId: "company-1",
+          status: "idle",
+          orgChainHealth: { status: "healthy" },
+        };
+      }
+      if (id === primaryAgentId) {
+        return {
+          id: primaryAgentId,
+          companyId: "company-1",
+          status: "idle",
+          orgChainHealth: { status: "healthy" },
+        };
+      }
+      return null;
+    });
+    mockAgentService.getFallbackPrimaryRelationshipForSister.mockResolvedValue({
+      id: "relationship-1",
+      companyId: "company-1",
+      primaryAgentId,
+      sisterAgentId,
+      priority: 1,
+      createdBy: "seed",
+      createdAt: new Date("2026-07-17T12:00:00.000Z"),
+      revokedAt: null,
+    });
+
+    const res = await request(await createApp())
+      .post("/api/companies/company-1/issues")
+      .send({
+        title: "Benchmark fixture should keep sister",
+        assigneeAgentId: sisterAgentId,
+        preserveFallbackSisterAssignee: true,
+      });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        title: "Benchmark fixture should keep sister",
+        assigneeAgentId: sisterAgentId,
+        status: "todo",
+      }),
+    );
+    expect(mockIssueService.create.mock.calls[0]?.[1]).not.toHaveProperty("preserveFallbackSisterAssignee");
+    expect(res.body).toEqual(expect.objectContaining({
+      assigneeAgentId: sisterAgentId,
+      status: "todo",
+    }));
+    expect(mockWakeup).toHaveBeenCalledWith(
+      sisterAgentId,
+      expect.objectContaining({
+        source: "assignment",
+        reason: "issue_assigned",
+      }),
+    );
+  });
+
   it("does not let a parent-blocking assigned child become an unwoken backlog leaf by default", async () => {
     const res = await request(await createApp())
       .post("/api/issues/parent-1/children")

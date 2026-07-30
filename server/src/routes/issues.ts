@@ -5195,6 +5195,7 @@ export function issueRoutes(
   async function resolveActiveIssueAssigneeAgentReference(
     companyId: string,
     rawAssigneeAgentId: string | null | undefined,
+    options: { preserveFallbackSisterAssignee?: boolean } = {},
   ) {
     const normalizedAssigneeAgentId = await normalizeIssueAssigneeAgentReference(companyId, rawAssigneeAgentId);
     if (typeof normalizedAssigneeAgentId !== "string" || normalizedAssigneeAgentId.length === 0) {
@@ -5206,19 +5207,21 @@ export function issueRoutes(
       return normalizedAssigneeAgentId;
     }
 
-    const primaryRelationship = await agentsSvc.getFallbackPrimaryRelationshipForSister(
-      companyId,
-      assignee.id,
-    );
-    if (primaryRelationship) {
-      const primary = await agentsSvc.getById(primaryRelationship.primaryAgentId);
-      if (
-        primary
-        && primary.companyId === companyId
-        && isAgentStatusInvokable(primary.status)
-        && primary.orgChainHealth?.status !== "invalid_org_chain"
-      ) {
-        return primary.id;
+    if (options.preserveFallbackSisterAssignee !== true) {
+      const primaryRelationship = await agentsSvc.getFallbackPrimaryRelationshipForSister(
+        companyId,
+        assignee.id,
+      );
+      if (primaryRelationship) {
+        const primary = await agentsSvc.getById(primaryRelationship.primaryAgentId);
+        if (
+          primary
+          && primary.companyId === companyId
+          && isAgentStatusInvokable(primary.status)
+          && primary.orgChainHealth?.status !== "invalid_org_chain"
+        ) {
+          return primary.id;
+        }
       }
     }
 
@@ -7993,7 +7996,11 @@ export function issueRoutes(
       surface: "issues.create",
     });
     if (!sanitizedBody) return;
-    const { watchdogDiscovery: rawWatchdogDiscovery, ...rawCreateBody } = sanitizedBody;
+    const {
+      watchdogDiscovery: rawWatchdogDiscovery,
+      preserveFallbackSisterAssignee,
+      ...rawCreateBody
+    } = sanitizedBody;
     const watchdogDiscovery = normalizeWatchdogDiscovery(rawWatchdogDiscovery);
     const watchdogProductBugFollowUp = await resolveTaskWatchdogProductBugFollowUp(
       req,
@@ -8030,6 +8037,7 @@ export function issueRoutes(
     const normalizedAssigneeAgentId = await resolveActiveIssueAssigneeAgentReference(
       companyId,
       rawCreateBody.assigneeAgentId as string | null | undefined,
+      { preserveFallbackSisterAssignee: preserveFallbackSisterAssignee === true },
     );
     const actor = getActorInfo(req);
     const runWorkspaceInheritanceSourceIssueId = hasExplicitIssueWorkspaceCreateSelection(rawCreateBody)
@@ -8242,13 +8250,18 @@ export function issueRoutes(
       entityId: parent.id,
     });
     if (!sanitizedBody) return;
+    const {
+      preserveFallbackSisterAssignee,
+      ...sanitizedChildBody
+    } = sanitizedBody;
     // Local: paused primaries resolve to their active fallback sister.
     const normalizedAssigneeAgentId = await resolveActiveIssueAssigneeAgentReference(
       parent.companyId,
-      sanitizedBody.assigneeAgentId as string | null | undefined,
+      sanitizedChildBody.assigneeAgentId as string | null | undefined,
+      { preserveFallbackSisterAssignee: preserveFallbackSisterAssignee === true },
     );
     const createBody = {
-      ...sanitizedBody,
+      ...sanitizedChildBody,
       ...(normalizedAssigneeAgentId !== undefined ? { assigneeAgentId: normalizedAssigneeAgentId } : {}),
     };
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, parent, createBody))) return;
@@ -8419,13 +8432,18 @@ export function issueRoutes(
         entityId: sourceIssue.id,
       });
       if (!sanitizedChild) return;
+      const {
+        preserveFallbackSisterAssignee,
+        ...sanitizedChildBody
+      } = sanitizedChild;
       // Local: paused primaries resolve to their active fallback sister.
       const normalizedAssigneeAgentId = await resolveActiveIssueAssigneeAgentReference(
         sourceIssue.companyId,
-        sanitizedChild.assigneeAgentId as string | null | undefined,
+        sanitizedChildBody.assigneeAgentId as string | null | undefined,
+        { preserveFallbackSisterAssignee: preserveFallbackSisterAssignee === true },
       );
       const childBody = {
-        ...sanitizedChild,
+        ...sanitizedChildBody,
         ...(normalizedAssigneeAgentId !== undefined ? { assigneeAgentId: normalizedAssigneeAgentId } : {}),
       };
       requestedChildren.push(childBody);
@@ -8966,6 +8984,7 @@ export function issueRoutes(
     const normalizedAssigneeAgentId = await resolveActiveIssueAssigneeAgentReference(
       existing.companyId,
       req.body.assigneeAgentId as string | null | undefined,
+      { preserveFallbackSisterAssignee: req.body.preserveFallbackSisterAssignee === true },
     );
     const titleOrDescriptionChanged = req.body.title !== undefined || req.body.description !== undefined;
     const existingRelations =
@@ -8978,6 +8997,7 @@ export function issueRoutes(
       reopen: reopenRequested,
       resume: resumeRequested,
       interrupt: interruptRequested,
+      preserveFallbackSisterAssignee: _preserveFallbackSisterAssignee,
       hiddenAt: hiddenAtRaw,
       ...updateFields
     } = req.body;

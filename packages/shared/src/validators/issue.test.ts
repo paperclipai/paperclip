@@ -323,6 +323,18 @@ describe("issue validators", () => {
     }).status).toBe("backlog");
   });
 
+  it("accepts explicit fallback sister assignee preservation on create and update", () => {
+    expect(createIssueSchema.parse({
+      title: "Dedicated benchmark lane",
+      assigneeAgentId: "22222222-2222-4222-8222-222222222222",
+      preserveFallbackSisterAssignee: true,
+    }).preserveFallbackSisterAssignee).toBe(true);
+    expect(updateIssueSchema.parse({
+      assigneeAgentId: "22222222-2222-4222-8222-222222222222",
+      preserveFallbackSisterAssignee: true,
+    }).preserveFallbackSisterAssignee).toBe(true);
+  });
+
   it("defaults issue work mode to standard and accepts ask, planning, and skill_test", () => {
     expect(createIssueSchema.parse({ title: "Plan first" }).workMode).toBe("standard");
     expect(createIssueSchema.parse({ title: "Ask first", workMode: "ask" }).workMode).toBe("ask");
