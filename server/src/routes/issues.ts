@@ -3649,6 +3649,60 @@ export function issueRoutes(
     return true;
   }
 
+  /**
+   * Cross-assignee evidence comments: a non-assignee agent may append a
+   * comment (and nothing else) to another agent's issue when either
+   * (a) the caller's currently checked-out issue has a first-class link
+   *     (parent/child or blocks/blocked-by) to the target issue, or
+   * (b) the caller was explicitly @-mentioned on the target issue.
+   * The grant is append-only: reopen/resume/interrupt intents are
+   * suppressed by the caller, and the comment is badged + audited.
+   * Returns null when the standard ownership gate should apply.
+   */
+  async function evaluateCrossAssigneeEvidenceComment(
+    req: Request,
+    issue: {
+      id: string;
+      companyId: string;
+      projectId: string | null;
+      parentId: string | null;
+      status: string;
+      assigneeAgentId: string | null;
+      assigneeUserId: string | null;
+    },
+  ): Promise<{ trigger: "linked_checkout" | "mention"; viaIssueId: string | null } | null> {
+    if (req.actor.type !== "agent") return null;
+    const actorAgentId = req.actor.agentId;
+    if (!actorAgentId) return null;
+    if (!issue.assigneeAgentId || issue.assigneeAgentId === actorAgentId) return null;
+    try {
+      // Boundary pre-check uses issue:read: the evidence grant must stay inside
+      // the caller's authorization boundary, but cannot hinge on issue:mutate,
+      // which peer agents are denied by definition on another agent's issue.
+      const boundaryDecision = await decideIssueAccess(req, issue, "issue:read");
+      if (!boundaryDecision.allowed) return null;
+      const link = await svc.findCrossAssigneeEvidenceLink({
+        companyId: issue.companyId,
+        actorAgentId,
+        actorRunId: req.actor.runId?.trim() || null,
+        targetIssueId: issue.id,
+        targetParentId: issue.parentId,
+      });
+      if (link) return { trigger: "linked_checkout", viaIssueId: link.viaIssueId };
+      if (await svc.wasAgentMentionedOnIssue(issue.id, actorAgentId)) {
+        return { trigger: "mention", viaIssueId: null };
+      }
+    } catch (err) {
+      // Fail closed: any evaluation error falls back to the standard
+      // assignee-ownership gate instead of granting access.
+      logger.warn(
+        { err, issueId: issue.id, actorAgentId },
+        "failed to evaluate cross-assignee evidence comment eligibility",
+      );
+    }
+    return null;
+  }
+
   async function assertFreshTaskWatchdogSourceMutation(
     res: Response,
     scope: Awaited<ReturnType<typeof resolveTaskWatchdogMutationScope>>,
@@ -9969,7 +10023,10 @@ export function issueRoutes(
     const id = req.params.id as string;
     const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
     if (!issue) return;
-    const commentAccessDecision = await assertAgentIssueCommentAllowed(req, res, issue);
+    const crossAssigneeEvidence = await evaluateCrossAssigneeEvidenceComment(req, issue);
+    const commentAccessDecision = crossAssigneeEvidence
+      ? true
+      : await assertAgentIssueCommentAllowed(req, res, issue);
     if (!commentAccessDecision) return;
     if (!assertStructuredCommentFieldsAllowed(req, res, {
       presentation: req.body.presentation,
@@ -9982,9 +10039,15 @@ export function issueRoutes(
     }
 
     const actor = getActorInfo(req);
-    const reopenRequested = req.body.reopen === true;
-    const resumeRequested = req.body.resume === true;
-    const interruptRequested = req.body.interrupt === true;
+    // Cross-assignee evidence comments are append-only: reopen/resume/
+    // interrupt intents are suppressed so the comment can never change
+    // issue status, cancel runs, or resume scheduled retries.
+    const reopenRequested = !crossAssigneeEvidence && req.body.reopen === true;
+    const resumeRequested = !crossAssigneeEvidence && req.body.resume === true;
+    const interruptRequested = !crossAssigneeEvidence && req.body.interrupt === true;
+    const suppressedCrossAssigneeIntents = crossAssigneeEvidence
+      ? (["reopen", "resume", "interrupt"] as const).filter((intent) => req.body[intent] === true)
+      : [];
     const isClosed = isClosedIssueStatus(issue.status);
     const isBlocked = issue.status === "blocked";
     const crossIssueCommentOnlyGrant =
@@ -10003,7 +10066,8 @@ export function issueRoutes(
       req.actor.type === "agent" &&
       issue.assigneeAgentId !== null &&
       issue.assigneeAgentId !== req.actor.agentId &&
-      !crossIssueCommentOnlyGrant
+      !crossIssueCommentOnlyGrant &&
+      !crossAssigneeEvidence
     ) {
       if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
     }
@@ -10149,6 +10213,16 @@ export function issueRoutes(
       }
     }
 
+    const commentMetadata = crossAssigneeEvidence
+      ? {
+          version: 1,
+          crossAssignee: {
+            trigger: crossAssigneeEvidence.trigger,
+            viaIssueId: crossAssigneeEvidence.viaIssueId,
+          },
+        }
+      : req.body.metadata ?? null;
+
     const currentExecutionState = parseIssueExecutionState(currentIssue.executionState);
     const currentExecutionPolicy = normalizeIssueExecutionPolicy(currentIssue.executionPolicy ?? null);
     const shouldAutoApproveReviewComment =
@@ -10197,7 +10271,7 @@ export function issueRoutes(
       const commentOptions = {
         authorType: req.body.authorType ?? (actor.actorType === "agent" ? "agent" : "user"),
         presentation: req.body.presentation ?? null,
-        metadata: req.body.metadata ?? null,
+        metadata: commentMetadata,
         sourceTrust,
       };
       let txResult: { comment: Awaited<ReturnType<typeof svc.addComment>>; issue: NonNullable<Awaited<ReturnType<typeof svc.update>>> };
@@ -10282,7 +10356,7 @@ export function issueRoutes(
       }, {
         authorType: req.body.authorType ?? (actor.actorType === "agent" ? "agent" : "user"),
         presentation: req.body.presentation ?? null,
-        metadata: req.body.metadata ?? null,
+        metadata: commentMetadata,
         sourceTrust: await sourceTrustForActorWrite(currentIssue, actor),
       });
     }
@@ -10315,6 +10389,18 @@ export function issueRoutes(
         bodySnippet: comment.body.slice(0, 120),
         identifier: currentIssue.identifier,
         issueTitle: currentIssue.title,
+        ...(crossAssigneeEvidence
+          ? {
+              crossAssignee: true,
+              crossAssigneeTrigger: crossAssigneeEvidence.trigger,
+              ...(crossAssigneeEvidence.viaIssueId
+                ? { crossAssigneeViaIssueId: crossAssigneeEvidence.viaIssueId }
+                : {}),
+              ...(suppressedCrossAssigneeIntents.length > 0
+                ? { suppressedCrossAssigneeIntents: [...suppressedCrossAssigneeIntents] }
+                : {}),
+            }
+          : {}),
         ...(isDirectParentReportDecision(commentAccessDecision)
           ? { directParentReportGrant: true }
           : {}),

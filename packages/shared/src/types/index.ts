@@ -595,6 +595,7 @@ export type {
   IssueComment,
   IssueCommentDerivedAuthorSource,
   IssueCommentMetadata,
+  IssueCommentCrossAssigneeContext,
   IssueCommentMetadataSection,
   IssueCommentMetadataRow,
   IssueCommentMetadataTextRow,
