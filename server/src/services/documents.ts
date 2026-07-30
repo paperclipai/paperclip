@@ -63,9 +63,9 @@ function mapIssueDocumentRow(
     companyId: row.companyId,
     issueId: row.issueId,
     key: row.key,
-    title: row.title,
+    title: row.title == null ? null : redactSensitiveText(row.title),
     format: row.format,
-    ...(includeBody ? { body: row.latestBody } : {}),
+    ...(includeBody ? { body: redactSensitiveText(row.latestBody) } : {}),
     latestRevisionId: row.latestRevisionId ?? null,
     latestRevisionNumber: row.latestRevisionNumber,
     createdByAgentId: row.createdByAgentId,
@@ -128,7 +128,7 @@ export function documentService(db: Db) {
         legacyPlanDocument: legacyPlanBody
           ? {
               key: "plan" as const,
-              body: legacyPlanBody,
+              body: redactSensitiveText(legacyPlanBody),
               source: "issue_description" as const,
             }
           : null,
@@ -178,7 +178,13 @@ export function documentService(db: Db) {
         .innerJoin(documents, eq(issueDocuments.documentId, documents.id))
         .innerJoin(documentRevisions, eq(documentRevisions.documentId, documents.id))
         .where(and(eq(issueDocuments.issueId, issueId), eq(issueDocuments.key, key)))
-        .orderBy(desc(documentRevisions.revisionNumber));
+        .orderBy(desc(documentRevisions.revisionNumber))
+        .then((rows) => rows.map((row) => ({
+          ...row,
+          title: row.title == null ? null : redactSensitiveText(row.title),
+          body: redactSensitiveText(row.body),
+          changeSummary: row.changeSummary == null ? null : redactSensitiveText(row.changeSummary),
+        })));
     },
 
     upsertIssueDocument: async (input: {

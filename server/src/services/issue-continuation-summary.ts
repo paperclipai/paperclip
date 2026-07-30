@@ -1,5 +1,6 @@
 import { and, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
+import { redactSensitiveText } from "../redaction.js";
 import { documents, issueDocuments, issues } from "@paperclipai/db";
 import { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY } from "@paperclipai/shared";
 import { documentService } from "./documents.js";
@@ -216,8 +217,8 @@ export async function getIssueContinuationSummaryDocument(
   if (!row) return null;
   return {
     key: ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY,
-    title: row.title,
-    body: row.body,
+    title: row.title == null ? null : redactSensitiveText(row.title),
+    body: redactSensitiveText(row.body),
     latestRevisionId: row.latestRevisionId,
     latestRevisionNumber: row.latestRevisionNumber,
     updatedAt: row.updatedAt,

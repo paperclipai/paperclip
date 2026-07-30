@@ -160,4 +160,49 @@ describeEmbeddedPostgres("documentService system issue documents", () => {
     expect(JSON.stringify({ storedDocument, storedRevisions, fetched, revisions })).not.toContain(inputValue);
     expect(JSON.stringify({ storedDocument, storedRevisions, fetched, revisions })).toContain("Ordinary prose: status is pending.");
   });
+
+  it("redacts legacy document rows at every service output boundary", async () => {
+    const { issueId } = await createIssueWithDocuments();
+    const legacyValue = "test-only-legacy-sensitive-value";
+    const created = await svc.upsertIssueDocument({
+      issueId,
+      key: "security-notes",
+      title: "Safe title",
+      format: "markdown",
+      body: "Safe body",
+      changeSummary: "Safe summary",
+    });
+
+    await db
+      .update(documents)
+      .set({
+        title: `PAPERCLIP_API_KEY=${legacyValue}`,
+        latestBody: `password: ${legacyValue}`,
+      })
+      .where(eq(documents.id, created.document.id));
+    await db
+      .update(documentRevisions)
+      .set({
+        title: `AUTH_TOKEN=${legacyValue}`,
+        body: `token=${legacyValue}`,
+        changeSummary: `secret=${legacyValue}`,
+      })
+      .where(eq(documentRevisions.id, created.document.latestRevisionId));
+
+    const fetched = await svc.getIssueDocumentByKey(issueId, "security-notes");
+    const listed = await svc.listIssueDocuments(issueId);
+    const payload = await svc.getIssueDocumentPayload({ id: issueId, description: null });
+    const revisions = await svc.listIssueDocumentRevisions(issueId, "security-notes");
+
+    expect(JSON.stringify({ fetched, listed, payload, revisions })).not.toContain(legacyValue);
+    expect(fetched).toEqual(expect.objectContaining({
+      title: "PAPERCLIP_API_KEY=***REDACTED***",
+      body: "password: ***REDACTED***",
+    }));
+    expect(revisions[0]).toEqual(expect.objectContaining({
+      title: "AUTH_TOKEN=***REDACTED***",
+      body: "token=***REDACTED***",
+      changeSummary: "secret=***REDACTED***",
+    }));
+  });
 });

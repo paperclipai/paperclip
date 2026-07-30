@@ -10,6 +10,7 @@ import type {
 } from "@paperclipai/shared";
 import { extractIssueReferenceMatches } from "@paperclipai/shared";
 import { notFound } from "../errors.js";
+import { redactSensitiveText } from "../redaction.js";
 
 const SOURCE_KIND_ORDER: Record<IssueReferenceSourceKind, number> = {
   title: 0,
@@ -257,7 +258,7 @@ export function issueReferenceService(db: Db) {
       sourceKind: "document",
       sourceRecordId: document.documentId,
       documentKey: document.key,
-      text: document.body,
+      text: redactSensitiveText(document.body),
     }, dbOrTx);
   }
 
