@@ -660,6 +660,25 @@ describe("startServer PAPERCLIP_API_URL handling", () => {
     expect(process.env.PAPERCLIP_RUNTIME_API_URL).toBe("http://my-host.ts.net:3110");
   });
 
+  it("rewrites inherited loopback PAPERCLIP_API_URL to the selected listen port", async () => {
+    process.env.PAPERCLIP_API_URL = "http://127.0.0.1:3100";
+    process.env.PAPERCLIP_RUNTIME_API_URL = "http://127.0.0.1:3100";
+    loadConfigMock.mockReturnValueOnce(buildTestConfig({
+      port: 3100,
+    }));
+    detectPortMock.mockResolvedValueOnce(3110);
+
+    const started = await startServer();
+
+    expect(started.listenPort).toBe(3110);
+    expect(started.apiUrl).toBe("http://127.0.0.1:3110");
+    expect(process.env.PAPERCLIP_RUNTIME_API_URL).toBe("http://127.0.0.1:3110");
+    expect(process.env.PAPERCLIP_API_URL).toBe("http://127.0.0.1:3110");
+    expect(JSON.parse(process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON ?? "[]")).toEqual(
+      expect.arrayContaining(["http://127.0.0.1:3110"]),
+    );
+  });
+
   it("keeps no-port auth public URLs stable when detect-port selects a new port", async () => {
     loadConfigMock.mockReturnValueOnce(buildTestConfig({
       port: 3100,

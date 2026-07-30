@@ -309,6 +309,33 @@ export async function startServer(): Promise<StartedServer> {
       return rawUrl;
     }
   }
+
+  function shouldRewriteConfiguredApiUrlForRuntimePort(rawUrl: string | undefined, bindHost: string): boolean {
+    if (!rawUrl) return false;
+    try {
+      const parsed = new URL(rawUrl);
+      const hostname = parsed.hostname.trim().toLowerCase();
+      const normalizedBindHost = bindHost.trim().toLowerCase();
+      if (!hostname || !parsed.port) return false;
+      return (
+        hostname === "localhost" ||
+        hostname === "127.0.0.1" ||
+        hostname === "::1" ||
+        (normalizedBindHost.length > 0 && hostname === normalizedBindHost)
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  function normalizeUrlToOrigin(rawUrl: string | undefined): string | undefined {
+    if (!rawUrl) return undefined;
+    try {
+      return new URL(rawUrl).origin;
+    } catch {
+      return rawUrl;
+    }
+  }
   
   const LOCAL_BOARD_USER_ID = "local-board";
   const LOCAL_BOARD_USER_EMAIL = "local@paperclip.local";
@@ -791,7 +818,11 @@ export async function startServer(): Promise<StartedServer> {
     bindHost: runtimeListenHost,
     port: listenPort,
   });
-  const configuredApiUrl = process.env.PAPERCLIP_API_URL?.trim() || runtimeApiUrl;
+  const inheritedApiUrl = process.env.PAPERCLIP_API_URL?.trim();
+  const configuredApiUrl =
+    inheritedApiUrl && shouldRewriteConfiguredApiUrlForRuntimePort(inheritedApiUrl, runtimeListenHost)
+      ? normalizeUrlToOrigin(rewriteLocalUrlPort(inheritedApiUrl, listenPort)) ?? runtimeApiUrl
+      : inheritedApiUrl || runtimeApiUrl;
   const runtimeApiCandidates = buildRuntimeApiCandidateUrls({
     preferredApiUrl: configuredApiUrl,
     authPublicBaseUrl: config.authPublicBaseUrl ?? null,

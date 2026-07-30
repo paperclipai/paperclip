@@ -12116,20 +12116,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const hasRecentDurableActivity = silenceAgeMs < durableActivityGraceMs;
       const exceededOrphanSilenceSweepThreshold = silenceAgeMs >= orphanSilenceSweepThresholdMs;
       if (zeroProcessMetadata) {
-        if (!exceededOrphanSilenceSweepThreshold) {
+        if (hasActiveEnvironmentLease || !exceededOrphanSilenceSweepThreshold) {
           logger.warn(
-            hasRecentDurableActivity
-              ? { runId: run.id, adapterType, silenceAgeMs, durableActivityGraceMs, hasActiveEnvironmentLease }
-              : { runId: run.id, adapterType, silenceAgeMs, orphanSilenceSweepThresholdMs, hasActiveEnvironmentLease },
-            "skipping orphan reap because local run has no process metadata and silence has not crossed the orphan threshold",
+            hasActiveEnvironmentLease
+              ? { runId: run.id, adapterType, silenceAgeMs, orphanSilenceSweepThresholdMs, hasActiveEnvironmentLease }
+              : hasRecentDurableActivity
+                ? { runId: run.id, adapterType, silenceAgeMs, durableActivityGraceMs }
+                : { runId: run.id, adapterType, silenceAgeMs, orphanSilenceSweepThresholdMs },
+            hasActiveEnvironmentLease
+              ? "skipping orphan reap because local run has no process metadata but still holds an active environment lease"
+              : "skipping orphan reap because local run has no process metadata and cannot be classified from silence alone",
           );
           continue;
-        }
-        if (hasActiveEnvironmentLease) {
-          logger.warn(
-            { runId: run.id, adapterType, silenceAgeMs, orphanSilenceSweepThresholdMs, hasActiveEnvironmentLease },
-            "force-releasing active environment lease for stale local run with no process metadata before orphan reap",
-          );
         }
       }
       const processPidAlive = Boolean(

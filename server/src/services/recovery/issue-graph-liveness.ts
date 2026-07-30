@@ -200,11 +200,19 @@ export function hasExplicitExternalServiceWakeExemption(issue: IssueLivenessIssu
   const kind = policyMonitor?.kind ?? stateMonitor?.kind;
   if (kind !== "external_service") return false;
 
-  return Boolean(
+  const hasMonitorDescriptor = Boolean(
     readMonitorText(policyMonitor?.serviceName ?? stateMonitor?.serviceName) ||
     readMonitorText(policyMonitor?.externalRef ?? stateMonitor?.externalRef) ||
     readMonitorText(policyMonitor?.notes ?? stateMonitor?.notes),
   );
+  if (!hasMonitorDescriptor) return false;
+
+  const status = readMonitorText(stateMonitor?.status)?.toLowerCase();
+  if (status === "triggered" || status === "cleared") return false;
+  if (readMonitorText(stateMonitor?.clearReason) || readDateMs(stateMonitor?.clearedAt) !== null) return false;
+
+  const nowMs = Date.now();
+  return hasScheduledMonitorAt(issue, nowMs);
 }
 
 function readPrincipalAgentId(principal: unknown): string | null {

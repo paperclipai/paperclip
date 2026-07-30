@@ -2289,7 +2289,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(issue?.executionRunId).toBeNull();
   });
 
-  it("reaps stale active-lease local runs with no process metadata after the orphan-silence threshold", async () => {
+  it("keeps active-lease local runs with no process metadata protected on the periodic path", async () => {
     const now = new Date("2026-03-19T00:20:00.000Z");
     const staleAt = new Date("2026-03-19T00:00:00.000Z");
     const { runId, issueId, companyId } = await seedRunFixture({
@@ -2309,19 +2309,18 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const heartbeat = heartbeatService(db);
 
     const result = await heartbeat.reapOrphanedRuns({ staleThresholdMs: 1, now });
-    expect(result).toEqual({ reaped: 1, runIds: [runId] });
+    expect(result).toEqual({ reaped: 0, runIds: [] });
 
-    const failedRun = await heartbeat.getRun(runId);
-    expect(failedRun?.status).toBe("failed");
-    expect(failedRun?.errorCode).toBe("process_lost");
+    const activeRun = await heartbeat.getRun(runId);
+    expect(activeRun?.status).toBe("running");
+    expect(activeRun?.errorCode).toBeNull();
 
     const lease = await db
       .select()
       .from(environmentLeases)
       .where(eq(environmentLeases.id, leaseId))
       .then((rows) => rows[0] ?? null);
-    expect(lease?.status).toBe("failed");
-    expect(lease?.releasedAt).toBeTruthy();
+    expect(lease?.status).toBe("active");
   });
 
   it("keeps recent active-lease local runs with no process metadata protected until the orphan-silence threshold", async () => {
@@ -4704,8 +4703,28 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(issue?.assigneeAgentId).toBe(agentId);
   });
 
-  it("skips execution-review participant recovery when an in-review issue already has a typed pending reviewer", async () => {
-    const { companyId, agentId, issueId, runId } = await seedInReviewParticipantRunFixture();
+  it("skips execution-review participant recovery when a terminal generic reviewer run still points at a typed pending reviewer", async () => {
+    const { agentId, issueId, runId, wakeupRequestId } = await seedInReviewParticipantRunFixture({
+      wakeReason: "manual",
+    });
+    const finishedAt = new Date("2026-03-19T00:05:00.000Z");
+    await db
+      .update(heartbeatRuns)
+      .set({
+        status: "succeeded",
+        startedAt: new Date("2026-03-19T00:00:00.000Z"),
+        finishedAt,
+        updatedAt: finishedAt,
+      })
+      .where(eq(heartbeatRuns.id, runId));
+    await db
+      .update(agentWakeupRequests)
+      .set({
+        status: "completed",
+        finishedAt,
+        updatedAt: finishedAt,
+      })
+      .where(eq(agentWakeupRequests.id, wakeupRequestId));
     const heartbeat = heartbeatService(db);
 
     const result = await heartbeat.reconcileStrandedAssignedIssues();
@@ -4725,12 +4744,14 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .where(eq(heartbeatRuns.agentId, agentId));
     expect(reviewerRuns).toHaveLength(1);
     expect(reviewerRuns[0]?.id).toBe(runId);
+    expect(reviewerRuns[0]?.status).toBe("succeeded");
 
     const reviewerWakeups = await db
       .select()
       .from(agentWakeupRequests)
       .where(eq(agentWakeupRequests.agentId, agentId));
     expect(reviewerWakeups).toHaveLength(1);
+    expect(reviewerWakeups[0]?.status).toBe("completed");
     expect(
       reviewerWakeups.some((wakeup) => wakeup.reason === "execution_review_participant_recovery"),
     ).toBe(false);
