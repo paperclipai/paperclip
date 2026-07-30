@@ -20,11 +20,21 @@ index 243c9d13bcba520923b63adfddad75cf2d94362d..336a1699b80b9e99416f9da4346ca73e
  		current: state.current,
  		quote: state.quote,
  		escaping: true,
-@@ -3959,7 +3959,14 @@ var AcpClient = class {
+@@ -3959,7 +3959,24 @@ var AcpClient = class {
 -		this.attachAgentLifecycleObservers(child);
 +		this.attachAgentLifecycleObservers(child);
-+		if (this.options.onAgentSpawn && typeof child.pid === "number" && child.pid > 0) {
-+			await this.options.onAgentSpawn({ pid: child.pid, startedAt: this.agentStartedAt });
++		if (this.options.onAgentSpawn) {
++			try {
++				if (typeof child.pid !== "number" || child.pid <= 0) {
++					throw new Error("ACPX agent spawn did not expose a valid process id.");
++				}
++				await this.options.onAgentSpawn({ pid: child.pid, startedAt: this.agentStartedAt });
++			} catch (error) {
++				try {
++					child.kill("SIGKILL");
++				} catch {}
++				throw error;
++			}
 +		}
  		const startupStderr = [];
  		child.stderr.on("data", (chunk) => {
@@ -36,7 +46,7 @@ index 243c9d13bcba520923b63adfddad75cf2d94362d..336a1699b80b9e99416f9da4346ca73e
  			if (!this.options.verbose) return;
  			process.stderr.write(chunk);
  		});
-@@ -3994,7 +4001,7 @@ var AcpClient = class {
+@@ -3994,7 +4011,7 @@ var AcpClient = class {
  			geminiAcp: isGeminiAcpCommand(spawnCommand, args),
  			copilotAcp: isCopilotAcpCommand(spawnCommand, args),
  			claudeAcp: isClaudeAcpCommand(spawnCommand, args),
