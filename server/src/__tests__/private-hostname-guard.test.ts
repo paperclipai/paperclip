@@ -42,6 +42,12 @@ describe("privateHostnameGuard", () => {
     expect(res.status).toBe(200);
   });
 
+  it("allows the configured wildcard LAN bind hostname", async () => {
+    const app = createApp({ enabled: true, bindHost: "0.0.0.0" });
+    const res = await request(app).get("/api/health").set("Host", "0.0.0.0:3100");
+    expect(res.status).toBe(200);
+  });
+
   it("blocks unknown hostnames with remediation command", async () => {
     const app = createApp({ enabled: true, allowedHostnames: ["some-other-host"] });
     const res = await request(app).get("/api/health").set("Host", `${unknownHostname}:3100`);

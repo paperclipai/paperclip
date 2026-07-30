@@ -17,6 +17,12 @@ function withActor(actor: Request["actor"]) {
   });
   app.use(authenticatedApiGuard({ deploymentMode: "authenticated" }));
   app.get("/companies", (_req, res) => res.json({ ok: true }));
+  app.all("/invites/:token/{*path}", (_req, res) => res.json({ bootstrap: "invite" }));
+  app.get("/board-claim/:token", (_req, res) => res.json({ bootstrap: "board-claim" }));
+  app.all("/board-claim/:token/{*path}", (_req, res) => res.json({ bootstrap: "board-claim" }));
+  app.post("/cli-auth/challenges", (_req, res) => res.json({ bootstrap: "cli-auth" }));
+  app.all("/cli-auth/challenges/{*path}", (_req, res) => res.json({ bootstrap: "cli-auth" }));
+  app.post("/join-requests/:requestId/claim-api-key", (_req, res) => res.json({ bootstrap: "join-claim" }));
   app.use(errorHandler);
   return app;
 }
@@ -71,6 +77,18 @@ describe("authenticated agent-host rollout", () => {
 
     expect(res.status).toBe(200);
     expect(res.body).toEqual({ ok: true });
+  });
+
+  it.each([
+    ["get", "/invites/pcp_invite_token/onboarding"],
+    ["get", "/board-claim/claim-token"],
+    ["post", "/cli-auth/challenges"],
+    ["get", "/cli-auth/challenges/challenge-id"],
+    ["post", "/join-requests/request-id/claim-api-key"],
+  ] as const)("allows capability bootstrap endpoint %s %s to reach its route", async (method, path) => {
+    const res = await request(withActor({ type: "none", source: "none" }))[method](path);
+
+    expect(res.status).toBe(200);
   });
 
   it("defaults hosts to authenticated mode while preserving an explicit local-trusted override", () => {
