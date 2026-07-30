@@ -331,13 +331,36 @@ vi.mock("../components/ScrollToBottom", () => ({
 }));
 
 vi.mock("../components/StatusIcon", () => ({
-  StatusIcon: ({ status, blockerAttention }: { status: string; blockerAttention?: Issue["blockerAttention"] }) => (
-    <span data-status-icon-state={blockerAttention?.state}>{status}</span>
-  ),
+  StatusIcon: ({
+    status,
+    blockerAttention,
+    onChange,
+  }: {
+    status: string;
+    blockerAttention?: Issue["blockerAttention"];
+    onChange?: (status: string) => void;
+  }) => onChange ? (
+    <button
+      type="button"
+      aria-label={`Change status (current: ${status})`}
+      data-status-icon-state={blockerAttention?.state}
+      onClick={() => onChange("done")}
+    >
+      {status}
+    </button>
+  ) : <span data-status-icon-state={blockerAttention?.state}>{status}</span>,
 }));
 
 vi.mock("../components/PriorityIcon", () => ({
-  PriorityIcon: ({ priority }: { priority: string }) => <span>{priority}</span>,
+  PriorityIcon: ({ priority, onChange }: { priority: string; onChange?: (priority: string) => void }) => onChange ? (
+    <button
+      type="button"
+      aria-label={`Change priority (current: ${priority})`}
+      onClick={() => onChange("high")}
+    >
+      {priority}
+    </button>
+  ) : <span>{priority}</span>,
 }));
 
 vi.mock("../components/ApprovalCard", () => ({
@@ -1034,6 +1057,50 @@ describe("IssueDetail", () => {
         String(call[0]).includes("React has detected a change in the order of Hooks"),
       ),
     ).toBe(false);
+  });
+
+  it("updates status and priority from the task header controls", async () => {
+    const issue = createIssue({ status: "todo", priority: "medium" });
+    mockIssuesApi.get.mockResolvedValue(issue);
+    mockIssuesApi.update.mockImplementation(async (_issueId: string, data: Record<string, unknown>) => ({
+      ...issue,
+      ...data,
+    }));
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const statusButton = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Change status (current: todo)"]',
+    );
+    const priorityButton = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Change priority (current: medium)"]',
+    );
+    expect(statusButton).not.toBeNull();
+    expect(priorityButton).not.toBeNull();
+
+    await act(async () => {
+      statusButton!.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    });
+    await waitForAssertion(() => {
+      expect(mockIssuesApi.update).toHaveBeenCalledWith(issue.identifier, { status: "done" });
+    });
+
+    await act(async () => {
+      priorityButton!.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
+    });
+    await waitForAssertion(() => {
+      expect(mockIssuesApi.update).toHaveBeenCalledWith(issue.identifier, { priority: "high" });
+    });
+
+    mockIssuesApi.update.mockReset();
   });
 
   it("removes an inbox-origin archived issue from cached inbox variants before navigating back", async () => {
