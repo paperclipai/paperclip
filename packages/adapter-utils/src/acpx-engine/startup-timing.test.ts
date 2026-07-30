@@ -1,6 +1,49 @@
 import { describe, expect, it, vi } from "vitest";
 import type { AdapterRuntimeEvent } from "../types.js";
-import { measureStartupStep } from "./startup-timing.js";
+import type { StartupSpan, StartupTracer } from "./startup-timing.js";
+import { measureStartupStep, normalizeProviderFamily } from "./startup-timing.js";
+
+/**
+ * A recording span for the mock tracer. It captures the attribute set, the
+ * status, and the end count so a test can assert the emitted span shape.
+ */
+class MockSpan implements StartupSpan {
+  readonly attributes: Record<string, string | number | boolean> = {};
+  status: { code: number; message?: string } | undefined;
+  endCount = 0;
+
+  constructor(
+    readonly name: string,
+    initial: Record<string, string | number | boolean> | undefined,
+  ) {
+    if (initial) Object.assign(this.attributes, initial);
+  }
+
+  setAttribute(key: string, value: string | number | boolean): void {
+    this.attributes[key] = value;
+  }
+
+  setStatus(status: { code: number; message?: string }): void {
+    this.status = status;
+  }
+
+  end(): void {
+    this.endCount += 1;
+  }
+}
+
+/** A recording tracer that keeps every span it opens for assertions. */
+function makeMockTracer(): { tracer: StartupTracer; spans: MockSpan[] } {
+  const spans: MockSpan[] = [];
+  const tracer: StartupTracer = {
+    startSpan(name, options) {
+      const span = new MockSpan(name, options?.attributes);
+      spans.push(span);
+      return span;
+    },
+  };
+  return { tracer, spans };
+}
 
 describe("measureStartupStep", () => {
   it("emits one run.startup.step event with the step name and measured durationMs", async () => {
@@ -192,5 +235,166 @@ describe("measureStartupStep", () => {
         throw boom;
       }),
     ).rejects.toBe(boom);
+  });
+
+  it("opens one span and ends it once for a normal step", async () => {
+    const { tracer, spans } = makeMockTracer();
+    const onEvent = vi.fn(async () => {});
+
+    await measureStartupStep({ onEvent }, () => 0, "stage.sync", async () => "ok", {
+      tracer,
+    });
+
+    expect(spans).toHaveLength(1);
+    expect(spans[0]!.name).toBe("stage.sync");
+    expect(spans[0]!.attributes.step).toBe("stage.sync");
+    expect(spans[0]!.endCount).toBe(1);
+  });
+
+  it("ends the span and sets an error status when fn throws, then re-throws", async () => {
+    const { tracer, spans } = makeMockTracer();
+    const onEvent = vi.fn(async () => {});
+    const boom = new Error("step failed");
+
+    await expect(
+      measureStartupStep({ onEvent }, () => 0, "acp.handshake", async () => {
+        throw boom;
+      }, { tracer }),
+    ).rejects.toBe(boom);
+
+    expect(spans).toHaveLength(1);
+    expect(spans[0]!.endCount).toBe(1);
+    // SpanStatusCode.ERROR === 2 in @opentelemetry/api.
+    expect(spans[0]!.status?.code).toBe(2);
+  });
+
+  it("sets the same roundTrips / providerExecMs / providerGetMs deltas on the payload and the span", async () => {
+    let t = 0;
+    const now = () => t;
+    let execCount = 5;
+    let execMs = 100;
+    let getMs = 40;
+    const events: AdapterRuntimeEvent[] = [];
+    const onEvent = vi.fn(async (event: AdapterRuntimeEvent) => {
+      events.push(event);
+    });
+    const { tracer, spans } = makeMockTracer();
+
+    await measureStartupStep({ onEvent }, now, "stage.sync", async () => {
+      t = 90;
+      execCount += 3;
+      execMs += 600;
+      getMs += 15;
+      return "ok";
+    }, {
+      tracer,
+      roundTrips: () => execCount,
+      providerExecMs: () => execMs,
+      providerGetMs: () => getMs,
+    });
+
+    const payload = events[0]!.payload as Record<string, unknown>;
+    expect(payload.roundTrips).toBe(3);
+    expect(payload.providerExecMs).toBe(600);
+    expect(payload.providerGetMs).toBe(15);
+    // The span carries the identical deltas — one build block feeds both.
+    expect(spans[0]!.attributes.roundTrips).toBe(3);
+    expect(spans[0]!.attributes.providerExecMs).toBe(600);
+    expect(spans[0]!.attributes.providerGetMs).toBe(15);
+  });
+
+  it("sets no span attribute (and no payload field) when a reader returns undefined", async () => {
+    const events: AdapterRuntimeEvent[] = [];
+    const onEvent = vi.fn(async (event: AdapterRuntimeEvent) => {
+      events.push(event);
+    });
+    const { tracer, spans } = makeMockTracer();
+
+    await measureStartupStep({ onEvent }, () => 0, "workspace.resolve", async () => "ok", {
+      tracer,
+      // A reader may return undefined when the counter is unavailable. The guard
+      // must omit the attribute rather than emit NaN or 0.
+      roundTrips: () => undefined as unknown as number,
+      providerExecMs: () => undefined as unknown as number,
+    });
+
+    expect(spans[0]!.attributes).not.toHaveProperty("roundTrips");
+    expect(spans[0]!.attributes).not.toHaveProperty("providerExecMs");
+    expect(Object.values(spans[0]!.attributes).some((v) => Number.isNaN(v))).toBe(false);
+    const payload = events[0]!.payload as Record<string, unknown>;
+    expect(payload).not.toHaveProperty("roundTrips");
+    expect(payload).not.toHaveProperty("providerExecMs");
+  });
+
+  it("normalizes a plugin-backed provider key to plugin and keeps a built-in family as-is", async () => {
+    const onEvent = vi.fn(async () => {});
+
+    const custom = makeMockTracer();
+    await measureStartupStep({ onEvent }, () => 0, "stage.sync", async () => "ok", {
+      tracer: custom.tracer,
+      provider: "acme-cloud-runner",
+    });
+    expect(custom.spans[0]!.attributes.provider).toBe("plugin");
+
+    const builtIn = makeMockTracer();
+    await measureStartupStep({ onEvent }, () => 0, "stage.sync", async () => "ok", {
+      tracer: builtIn.tracer,
+      provider: "daytona",
+    });
+    expect(builtIn.spans[0]!.attributes.provider).toBe("daytona");
+  });
+
+  it("normalizeProviderFamily maps every non-built-in key to plugin", () => {
+    for (const key of ["daytona", "kubernetes", "e2b", "cloudflare", "exe-dev", "modal", "novita"]) {
+      expect(normalizeProviderFamily(key)).toBe(key);
+    }
+    for (const key of ["acme", "my-plugin", "", "DAYTONA", undefined]) {
+      expect(normalizeProviderFamily(key)).toBe("plugin");
+    }
+  });
+
+  it("emits exactly the allowlisted span-attribute key set and no command / path / ID / error-text key", async () => {
+    const onEvent = vi.fn(async () => {});
+    const { tracer, spans } = makeMockTracer();
+
+    await measureStartupStep({ onEvent }, () => 0, "acp.handshake", async () => "ok", {
+      tracer,
+      provider: "daytona",
+      roundTrips: () => 3,
+      providerExecMs: () => 600,
+      providerGetMs: () => 15,
+      // extra() carries caller-measured numbers into the EVENT payload only.
+      // It must never widen the span-attribute set.
+      extra: () => ({ createRuntimeMs: 12, ensureSessionMs: 6988 }),
+    });
+
+    expect(Object.keys(spans[0]!.attributes).sort()).toEqual(
+      ["provider", "providerExecMs", "providerGetMs", "roundTrips", "step"],
+    );
+    // extra() keys stay off the span.
+    expect(spans[0]!.attributes).not.toHaveProperty("createRuntimeMs");
+    expect(spans[0]!.attributes).not.toHaveProperty("ensureSessionMs");
+    // No free-form identifier / command / path key leaks in. The pattern uses
+    // no `i` flag, so the camelCase `Id` matches `runId` / `userId` but not the
+    // "id" inside the allowlisted `provider`.
+    for (const key of Object.keys(spans[0]!.attributes)) {
+      expect(key).not.toMatch(/command|args|env|stdout|stderr|path|url|repo|ref|branch|Id|_id|error|message/);
+    }
+  });
+
+  it("uses a no-op tracer by default so a call without a tracer changes nothing", async () => {
+    const events: AdapterRuntimeEvent[] = [];
+    const onEvent = vi.fn(async (event: AdapterRuntimeEvent) => {
+      events.push(event);
+    });
+
+    // No tracer supplied. The helper must still emit the event and return the
+    // value without throwing.
+    const result = await measureStartupStep({ onEvent }, () => 0, "stage.sync", async () => "ok", {
+      roundTrips: () => 3,
+    });
+
+    expect(result).toBe("ok");
+    expect(events[0]!.payload).toMatchObject({ step: "stage.sync" });
   });
 });
