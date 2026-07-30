@@ -2136,6 +2136,35 @@ describe("Daytona sandbox provider plugin", () => {
       expect(mockGet).toHaveBeenCalledTimes(2);
       expect(second.process.executeCommand).toHaveBeenCalledTimes(1);
     });
+
+    it("realizes the workspace from the acquire-seeded handle without a client.get", async () => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      const sandbox = createMockSandbox({ id: "sandbox-seed" });
+      mockCreate.mockResolvedValue(sandbox);
+
+      const base = { driverKey: "daytona", companyId: "company-1", environmentId: "env-1" };
+      const config = { image: "node:20", timeoutMs: 300000, reuseLease: false };
+
+      const lease = await plugin.definition.onEnvironmentAcquireLease?.({
+        ...base,
+        runId: "run-1",
+        config,
+      });
+      expect(lease?.providerLeaseId).toBe("sandbox-seed");
+
+      const realize = await plugin.definition.onEnvironmentRealizeWorkspace?.({
+        ...base,
+        lease: { providerLeaseId: lease!.providerLeaseId, metadata: lease!.metadata },
+        workspace: { remotePath: "/home/daytona/paperclip-workspace" },
+        config,
+      });
+
+      // Acquire seeded the handle under the exact scope realize reads, so realize
+      // reuses it and never pays a real REST re-fetch.
+      expect(mockGet).not.toHaveBeenCalled();
+      expect(sandbox.fs.createFolder).toHaveBeenCalledWith("/home/daytona/paperclip-workspace", "755");
+      expect(realize?.cwd).toBe("/home/daytona/paperclip-workspace");
+    });
   });
 });
 
@@ -3017,6 +3046,11 @@ describe("daytona native file-sync hooks", () => {
 
     // Same operation, now with an (empty) postUploadCommands array — must be
     // byte-identical: an absent/empty command list adds zero execs.
+    // Reset the process-scoped handle cache so the second operation fetches its
+    // own `withEmpty` handle. Both operations reuse the same providerLeaseId, so
+    // without this reset the cache serves the first `baseline` handle again and
+    // `withEmpty` records zero execs.
+    __resetDaytonaSandboxHandleCacheForTest();
     const withEmpty = createMockSandbox();
     mockGet.mockResolvedValue(withEmpty);
     await plugin.definition.onEnvironmentSyncIn?.({

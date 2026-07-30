@@ -1070,6 +1070,21 @@ const sandboxHandleCache = (() => {
     }
   }
 
+  // Seed the cache with a handle the caller already holds (e.g. the fresh handle
+  // from `createSandbox` on a cold acquire), so the next `get` under the same
+  // scope reuses it instead of paying a real `client.get`. The seed must land
+  // under the exact composite key the reader uses, or the reader misses and the
+  // saved round trip is lost. Assert the handle belongs to the lease so a caller
+  // that builds a wrong scope fails loudly here instead of caching a foreign
+  // handle.
+  function seed(scope: SandboxScope, sandbox: Sandbox): void {
+    assertHandleMatchesLease(sandbox, scope.providerLeaseId);
+    entries.set(sandboxHandleCacheKey(scope), {
+      sandbox: Promise.resolve(sandbox),
+      verifiedAtMs: handleFreshnessNow(),
+    });
+  }
+
   function clear(scope: SandboxScope): void {
     entries.delete(sandboxHandleCacheKey(scope));
   }
@@ -1078,7 +1093,7 @@ const sandboxHandleCache = (() => {
     entries.clear();
   }
 
-  return { get, clear, reset, markFresh };
+  return { get, seed, clear, reset, markFresh };
 })();
 
 /**
@@ -1331,6 +1346,19 @@ const plugin = definePlugin({
         providerLeaseId: sandbox.id,
         config,
       });
+      // Seed the handle cache with the fresh handle under the exact scope that
+      // `onEnvironmentRealizeWorkspace` reads (providerLeaseId === sandbox.id).
+      // Realize then reuses this handle instead of paying a real `client.get`.
+      sandboxHandleCache.seed(
+        {
+          driverKey: params.driverKey,
+          companyId: params.companyId,
+          environmentId: params.environmentId,
+          providerLeaseId: sandbox.id,
+          config,
+        },
+        sandbox,
+      );
       return {
         providerLeaseId: sandbox.id,
         metadata: leaseMetadata({
