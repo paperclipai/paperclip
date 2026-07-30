@@ -4132,6 +4132,78 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
   });
 
+  it("classifies a stranded under-target quota close as close_evidence_unmet", async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-close-evidence-recovery-"));
+    process.env.PAPERCLIP_WORK_PRODUCTS_DIR = tempRoot;
+
+    const { companyId, agentId, runId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "succeeded",
+      livenessState: "advanced",
+    });
+    await db
+      .update(issues)
+      .set({
+        closeContract: {
+          evidenceTarget: 4,
+          evidencePath: "TSMC-18567",
+        },
+      })
+      .where(eq(issues.id, issueId));
+    await db.insert(issueWorkProducts).values({
+      companyId,
+      issueId,
+      projectId: null,
+      executionWorkspaceId: null,
+      runtimeServiceId: null,
+      type: "artifact",
+      provider: "paperclip",
+      externalId: null,
+      title: "artifact-1",
+      url: null,
+      status: "active",
+      reviewState: "none",
+      isPrimary: false,
+      healthStatus: "unknown",
+      summary: null,
+      metadata: null,
+      createdByRunId: runId,
+    });
+    await fs.mkdir(path.join(tempRoot, "TSMC-18567"), { recursive: true });
+    await fs.writeFile(path.join(tempRoot, "TSMC-18567", "artifact-2.txt"), "two");
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.escalated).toBe(1);
+    expect(result.continuationRequeued).toBe(0);
+
+    const [action] = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, issueId));
+    expect(action).toMatchObject({
+      kind: "close_evidence_unmet",
+      cause: "close_evidence_unmet",
+      status: "active",
+      ownerAgentId: agentId,
+    });
+    expect(action?.evidence).toMatchObject({
+      latestRunId: runId,
+      latestRunStatus: "succeeded",
+      recoveryCause: "close_evidence_unmet",
+      closeEvidenceMeasuredCount: 2,
+      closeEvidenceTargetCount: 4,
+      closeEvidencePath: "TSMC-18567",
+    });
+    expect(action?.nextAction).toContain("2/4");
+
+    const sourceIssue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(sourceIssue?.status).toBe("blocked");
+
+    delete process.env.PAPERCLIP_WORK_PRODUCTS_DIR;
+    await fs.rm(tempRoot, { recursive: true, force: true });
+  });
+
   it("folds missing-disposition recovery instead of refiring after the finite attempt bound", async () => {
     const { companyId, agentId, runId, issueId } = await seedStrandedIssueFixture({
       status: "in_progress",

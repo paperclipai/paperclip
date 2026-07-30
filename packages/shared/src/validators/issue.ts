@@ -177,6 +177,24 @@ export const issueAssigneeAdapterOverridesSchema = z
   })
   .strict();
 
+const governedWorkProductsPathSchema = z
+  .string()
+  .trim()
+  .min(1)
+  .max(500)
+  .refine((value) => !value.startsWith("/") && !value.startsWith("\\"), "Evidence path must be work-products-relative")
+  .refine(
+    (value) => value.split(/[\\/]+/).every((part) => part.length > 0 && part !== "." && part !== ".."),
+    "Evidence path must stay within work-products",
+  );
+
+export const issueCloseContractSchema = z
+  .object({
+    evidenceTarget: z.number().int().positive().max(100000),
+    evidencePath: governedWorkProductsPathSchema,
+  })
+  .strict();
+
 const issueExecutionStagePrincipalBaseSchema = z.object({
   type: z.enum(["agent", "user"]),
   agentId: z.string().uuid().optional().nullable(),
@@ -474,6 +492,7 @@ const createIssueBaseSchema = z.object({
   responsibleUserId: z.string().optional().nullable(),
   billingCode: z.string().optional().nullable(),
   assigneeAdapterOverrides: issueAssigneeAdapterOverridesSchema.optional().nullable(),
+  closeContract: issueCloseContractSchema.optional().nullable(),
   executionPolicy: issueExecutionPolicySchema.optional().nullable(),
   executionWorkspaceId: z.string().uuid().optional().nullable(),
   executionWorkspacePreference: z.enum(ISSUE_EXECUTION_WORKSPACE_PREFERENCES).optional().nullable(),

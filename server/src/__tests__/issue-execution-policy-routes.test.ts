@@ -1,4 +1,7 @@
 import { execFileSync } from "node:child_process";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
@@ -432,6 +435,63 @@ describe("issue execution policy routes", () => {
         }),
       }),
     );
+  });
+
+  it("rejects done when close evidence stays under the governed target", async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "paperclip-close-evidence-"));
+    process.env.PAPERCLIP_WORK_PRODUCTS_DIR = tempRoot;
+    await mkdir(path.join(tempRoot, "TSMC-18567"), { recursive: true });
+    await writeFile(path.join(tempRoot, "TSMC-18567", "artifact-1.txt"), "one");
+    await mkdir(path.join(tempRoot, "TSMC-18567", "scratch-bin"), { recursive: true });
+    await writeFile(path.join(tempRoot, "TSMC-18567", "scratch-bin", "artifact-2.txt"), "excluded");
+
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_progress",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "TSMC-18567",
+      title: "Quota close contract",
+      closeContract: {
+        evidenceTarget: 4,
+        evidencePath: "TSMC-18567",
+      },
+      executionPolicy: null,
+      executionState: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.listAttachments.mockResolvedValue([{ id: "attachment-1", contentType: "image/png" }]);
+    mockWorkProductService.listForIssue.mockResolvedValue([{ id: "wp-1" }]);
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      companyId: "company-1",
+      runId: "run-1",
+    }))
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ status: "done" });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toContain("measured 3");
+    expect(res.body.details).toMatchObject({
+      code: "invalid_issue_disposition",
+      reason: "close_evidence_unmet",
+      measuredCount: 3,
+      targetCount: 4,
+      evidencePath: "TSMC-18567",
+      breakdown: {
+        attachments: 1,
+        workProducts: 1,
+        localFiles: 1,
+      },
+    });
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+
+    delete process.env.PAPERCLIP_WORK_PRODUCTS_DIR;
+    await rm(tempRoot, { recursive: true, force: true });
   });
 
   it("allows an agent-authored in_review transition with a scheduled monitor", async () => {

@@ -1408,6 +1408,13 @@
       "when": 1781902080000,
       "tag": "9007_agent_fallback_sisters",
       "breakpoints": true
+    },
+    {
+      "idx": 201,
+      "version": "7",
+      "when": 1785528600000,
+      "tag": "9008_issue_close_contract",
+      "breakpoints": true
     }
   ]
 }

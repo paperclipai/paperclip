@@ -157,6 +157,7 @@ import {
   SVG_CONTENT_TYPE,
 } from "../attachment-types.js";
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
+import { measureCloseEvidence } from "../services/issue-close-evidence.js";
 import {
   ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
   buildIssueBlockersResolvedWakeIdempotencyKey,
@@ -619,6 +620,40 @@ async function assertIssueDoneVerificationSatisfied(input: {
       await assertCommitVerificationRef(verificationRef.commit, issueIsPlatformClass(input.issue));
       return;
   }
+}
+
+async function assertIssueCloseEvidenceSatisfied(input: {
+  issue: { id: string; companyId: string; closeContract?: unknown };
+  nextStatus: string;
+  svc: ReturnType<typeof issueService>;
+  workProductsSvc: ReturnType<typeof workProductService>;
+}) {
+  if (input.nextStatus !== "done") return;
+
+  const [attachments, workProducts] = await Promise.all([
+    input.svc.listAttachments(input.issue.id),
+    input.workProductsSvc.listForIssue(input.issue.id),
+  ]);
+  const measurement = await measureCloseEvidence({
+    companyId: input.issue.companyId,
+    attachmentsCount: attachments.length,
+    workProductsCount: workProducts.length,
+    closeContract: input.issue.closeContract ?? null,
+  });
+  if (!measurement || measurement.measuredCount >= measurement.targetCount) return;
+
+  throw unprocessable(
+    `Issue cannot close until close evidence reaches ${measurement.targetCount}; measured ${measurement.measuredCount}.`,
+    {
+      code: "invalid_issue_disposition",
+      reason: "close_evidence_unmet",
+      measuredCount: measurement.measuredCount,
+      targetCount: measurement.targetCount,
+      evidencePath: measurement.closeContract.evidencePath,
+      localPath: measurement.localPath,
+      breakdown: measurement.breakdown,
+    },
+  );
 }
 
 async function hasTypedGateKeeperReviewPath(input: {
@@ -9348,6 +9383,12 @@ export function issueRoutes(
         : null,
       svc,
       documentsSvc,
+      workProductsSvc,
+    });
+    await assertIssueCloseEvidenceSatisfied({
+      issue: existing,
+      nextStatus,
+      svc,
       workProductsSvc,
     });
     if (enteringBlocked) {

@@ -24,6 +24,7 @@ import {
   issueRecoveryActions,
   issueRelations,
   issueThreadInteractions,
+  issueWorkProducts,
   issueLabels,
   issues,
   labels,
@@ -70,6 +71,7 @@ import {
   noticeMetadataReferencesRecoveryAction,
   type SuccessfulRunHandoffNotice,
 } from "./successful-run-handoff.js";
+import { measureCloseEvidence, type CloseEvidenceMeasurement } from "../issue-close-evidence.js";
 import {
   RECOVERY_ORIGIN_KINDS,
   buildIssueGraphLivenessLeafKey,
@@ -173,6 +175,7 @@ type LatestIssueRun = Pick<
 type SuccessfulLatestIssueRun = NonNullable<LatestIssueRun> & { status: "succeeded" };
 
 type StrandedRecoveryCause =
+  | "close_evidence_unmet"
   | "stranded_assigned_issue"
   | "process_lost"
   | "provider_quota"
@@ -3273,6 +3276,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
   function strandedRecoveryActionKind(cause: StrandedRecoveryCause) {
     return cause === SUCCESSFUL_RUN_MISSING_STATE_REASON
       ? "missing_disposition" as const
+      : cause === "close_evidence_unmet"
+        ? "close_evidence_unmet" as const
       : cause === "workspace_validation_failed"
         ? "workspace_validation" as const
       : cause === "configuration_incomplete"
@@ -3311,6 +3316,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     previousStatus: StrandedPreviousStatus;
     recoveryCause: StrandedRecoveryCause;
     successfulRunHandoffEvidence?: SuccessfulRunHandoffRecoveryEvidence | null;
+    closeEvidenceMeasurement?: CloseEvidenceMeasurement | null;
   }) {
     const context = parseObject(input.latestRun?.contextSnapshot);
     const workspaceValidation = input.recoveryCause === "workspace_validation_failed"
@@ -3331,6 +3337,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       missingDisposition: input.successfulRunHandoffEvidence?.missingDisposition ?? null,
       handoffAttempt: input.successfulRunHandoffEvidence?.handoffAttempt ?? null,
       maxHandoffAttempts: input.successfulRunHandoffEvidence?.maxHandoffAttempts ?? null,
+      closeEvidenceMeasuredCount: input.closeEvidenceMeasurement?.measuredCount ?? null,
+      closeEvidenceTargetCount: input.closeEvidenceMeasurement?.targetCount ?? null,
+      closeEvidencePath: input.closeEvidenceMeasurement?.closeContract.evidencePath ?? null,
       ...(workspaceValidation ? { workspaceValidation } : {}),
     };
   }
@@ -3342,6 +3351,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     recoveryCause?: StrandedRecoveryCause;
     recoveryOwnerAgentId?: string | null;
     successfulRunHandoffEvidence?: SuccessfulRunHandoffRecoveryEvidence | null;
+    closeEvidenceMeasurement?: CloseEvidenceMeasurement | null;
   }) {
     const recoveryCause = await resolveEffectiveStrandedRecoveryCause(
       input.issue,
@@ -3377,12 +3387,15 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           previousStatus: input.previousStatus,
           recoveryCause,
           successfulRunHandoffEvidence: input.successfulRunHandoffEvidence,
+          closeEvidenceMeasurement: input.closeEvidenceMeasurement,
         }),
         failureSummary: summarizeRunFailureForIssueComment(input.latestRun)?.trim() ?? null,
         routingFallbackReason: routing.routingFallbackReason,
       },
       nextAction: recoveryCause === SUCCESSFUL_RUN_MISSING_STATE_REASON
         ? "Choose and record a valid issue disposition without copying transcript content."
+        : recoveryCause === "close_evidence_unmet"
+          ? `Add governed-path evidence until the measured count reaches the target (${input.closeEvidenceMeasurement?.measuredCount ?? 0}/${input.closeEvidenceMeasurement?.targetCount ?? 0}).`
         : recoveryCause === "process_lost"
           ? "Retry the original assignee from durable progress without redoing completed steps."
         : recoveryCause === "provider_quota"
@@ -3461,7 +3474,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     action: Awaited<ReturnType<typeof recoveryActionsSvc.getActiveForIssue>> | null;
   }) {
     const action = input.action;
-    if (!action || action.kind !== "missing_disposition") return false;
+    if (!action || (action.kind !== "missing_disposition" && action.kind !== "close_evidence_unmet")) return false;
 
     if (input.issue.status !== "in_progress") {
       if (input.issue.status === "blocked") {
@@ -4068,6 +4081,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     recoveryCause?: StrandedRecoveryCause;
     recoveryOwnerAgentId?: string | null;
     successfulRunHandoffEvidence?: SuccessfulRunHandoffRecoveryEvidence | null;
+    closeEvidenceMeasurement?: CloseEvidenceMeasurement | null;
   }) {
 
     // Re-verify the current status to avoid overwriting a terminal state reached in a race.
@@ -4100,6 +4114,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       recoveryCause,
       recoveryOwnerAgentId: input.recoveryOwnerAgentId,
       successfulRunHandoffEvidence: input.successfulRunHandoffEvidence,
+      closeEvidenceMeasurement: input.closeEvidenceMeasurement,
     });
 
     // Restore call to ensure the visible stranded-recovery card (lost during source-scoped refactor).
@@ -5036,6 +5051,40 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           if (!isProductiveContinuationRun(successfulRun)) {
             result.successfulContinuationObserved += 1;
             result.skipped += 1;
+            continue;
+          }
+
+          const closeEvidenceMeasurement = await measureCloseEvidence({
+            companyId: issue.companyId,
+            attachmentsCount: await db
+              .select({ count: sql<number>`count(*)::int` })
+              .from(issueAttachments)
+              .where(eq(issueAttachments.issueId, issue.id))
+              .then((rows) => rows[0]?.count ?? 0),
+            workProductsCount: await db
+              .select({ count: sql<number>`count(*)::int` })
+              .from(issueWorkProducts)
+              .where(eq(issueWorkProducts.issueId, issue.id))
+              .then((rows) => rows[0]?.count ?? 0),
+            closeContract: issue.closeContract ?? null,
+          });
+          if (closeEvidenceMeasurement && closeEvidenceMeasurement.measuredCount < closeEvidenceMeasurement.targetCount) {
+            const updated = await escalateStrandedAssignedIssue({
+              issue,
+              previousStatus: "in_progress",
+              latestRun: successfulRun,
+              recoveryCause: "close_evidence_unmet",
+              closeEvidenceMeasurement,
+              comment:
+                "Paperclip detected a stranded close-evidence quota issue: the latest continuation succeeded but the issue still measures " +
+                `${closeEvidenceMeasurement.measuredCount}/${closeEvidenceMeasurement.targetCount} governed artifacts.`,
+            });
+            if (updated) {
+              result.escalated += 1;
+              result.issueIds.push(issue.id);
+            } else {
+              result.skipped += 1;
+            }
             continue;
           }
 

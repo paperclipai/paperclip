@@ -542,6 +542,7 @@ export type {
   Issue,
   IssueWorkMode,
   IssueAssigneeAdapterOverrides,
+  IssueCloseContract,
   IssueBlockerDiagnosticFlag,
   IssueBlockerDiagnosticIssueSummary,
   IssueBlockerDiagnosticNode,
