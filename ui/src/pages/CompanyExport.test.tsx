@@ -300,6 +300,26 @@ describe("CompanyExport", () => {
     expect(container.querySelector('[data-file-tree-path="tasks"]')?.className).toContain("opacity-50");
   });
 
+  it("shows the estimated download size and updates it when a category toggles off", async () => {
+    mockCompaniesApi.exportPreview.mockResolvedValue(buildRichExportPreviewResult());
+
+    await renderPage();
+
+    const sizeText = () =>
+      container.textContent?.match(/Exporting [\d,]+ of [\d,]+ files \(~([\d.]+ [KMGT]?B)\)/)?.[1] ?? null;
+
+    const initialSize = sizeText();
+    expect(initialSize).not.toBeNull();
+
+    await clickElement(categoryInput("tasks"));
+
+    expect(container.textContent).toContain("Exporting 4 of 6 files");
+    const toggledSize = sizeText();
+    expect(toggledSize).not.toBeNull();
+    // Dropping the one-off task and its blob shrinks the estimated zip.
+    expect(toggledSize).not.toBe(initialSize);
+  });
+
   it("renders the export fidelity panel with blocker and warning messages", async () => {
     mockCompaniesApi.exportFidelity.mockResolvedValue(buildFidelityReport([
       {

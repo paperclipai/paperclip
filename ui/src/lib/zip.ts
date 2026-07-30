@@ -309,3 +309,67 @@ export function createZipArchive(files: Record<string, CompanyPortabilityFileEnt
 
   return concatChunks([...localChunks, centralDirectory, endOfCentralDirectory]);
 }
+
+/**
+ * UTF-8 byte length of a string without allocating the encoded bytes.
+ * Matches TextEncoder exactly, including lone surrogates encoding as the
+ * 3-byte replacement character.
+ */
+function utf8ByteLength(text: string): number {
+  let bytes = 0;
+  for (let index = 0; index < text.length; index += 1) {
+    const code = text.charCodeAt(index);
+    if (code < 0x80) {
+      bytes += 1;
+    } else if (code < 0x800) {
+      bytes += 2;
+    } else if (code >= 0xd800 && code < 0xdc00 && index + 1 < text.length) {
+      const next = text.charCodeAt(index + 1);
+      if (next >= 0xdc00 && next < 0xe000) {
+        bytes += 4;
+        index += 1;
+      } else {
+        bytes += 3;
+      }
+    } else {
+      bytes += 3;
+    }
+  }
+  return bytes;
+}
+
+/**
+ * Decoded byte length of a base64 payload, mirroring atob's forgiving-base64
+ * handling in base64ToBytes: ASCII whitespace is stripped and trailing "="
+ * padding carries no data.
+ */
+function base64ByteLength(data: string): number {
+  const stripped = data.replace(/[\t\n\f\r ]+/g, "");
+  let end = stripped.length;
+  if (end > 0 && stripped[end - 1] === "=") end -= 1;
+  if (end > 0 && stripped[end - 1] === "=") end -= 1;
+  return Math.floor((end * 3) / 4);
+}
+
+/**
+ * Exact byte size of the archive createZipArchive(files, rootPath) would
+ * produce, without building it. Every entry is STOREd (never compressed), so
+ * the size is fully determined by the raw body bytes plus fixed overhead: per
+ * entry a 30-byte local file header and a 46-byte central-directory record
+ * (each followed by the archive path), and one 22-byte end-of-central-directory
+ * record. The writer emits no data descriptors, extra fields, or comments.
+ */
+export function estimateZipArchiveSize(
+  files: Record<string, CompanyPortabilityFileEntry>,
+  rootPath: string,
+): number {
+  const normalizedRoot = normalizeArchivePath(rootPath);
+  let size = 22;
+  for (const [relativePath, contents] of Object.entries(files)) {
+    const fileNameLength = utf8ByteLength(normalizeArchivePath(`${normalizedRoot}/${relativePath}`));
+    const bodyLength =
+      typeof contents === "string" ? utf8ByteLength(contents) : base64ByteLength(contents.data);
+    size += 30 + fileNameLength + bodyLength + 46 + fileNameLength;
+  }
+  return size;
+}

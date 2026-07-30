@@ -23,7 +23,8 @@ import { MarkdownBody } from "../components/MarkdownBody";
 import { toCompanyRelativePath } from "@/lib/company-routes";
 import { cn } from "../lib/utils";
 import { queryKeys } from "../lib/queryKeys";
-import { createZipArchive } from "../lib/zip";
+import { formatBytes } from "../lib/issue-output";
+import { createZipArchive, estimateZipArchiveSize } from "../lib/zip";
 import {
   type ExportCategoryKey,
   type ExportCategorySelection,
@@ -313,15 +314,31 @@ function paginateTaskNodes(
   return { nodes: result, totalTaskChildren, visibleTaskChildren };
 }
 
+/**
+ * Build the file map the zip download will contain: the exported files
+ * restricted to the selected set, preferring the client-side effective
+ * content (regenerated README.md, filtered .paperclip.yaml) when present.
+ * The download size estimate runs this same filter so the number shown
+ * matches what actually gets zipped.
+ */
+function filterExportForDownload(
+  files: Record<string, CompanyPortabilityFileEntry>,
+  selectedFiles: Set<string>,
+  effectiveFiles: Record<string, CompanyPortabilityFileEntry>,
+): Record<string, CompanyPortabilityFileEntry> {
+  const filteredFiles: Record<string, CompanyPortabilityFileEntry> = {};
+  for (const path of Object.keys(files)) {
+    if (selectedFiles.has(path)) filteredFiles[path] = effectiveFiles[path] ?? files[path]!;
+  }
+  return filteredFiles;
+}
+
 function downloadZip(
   exported: CompanyPortabilityExportResult,
   selectedFiles: Set<string>,
   effectiveFiles: Record<string, CompanyPortabilityFileEntry>,
 ) {
-  const filteredFiles: Record<string, CompanyPortabilityFileEntry> = {};
-  for (const [path] of Object.entries(exported.files)) {
-    if (selectedFiles.has(path)) filteredFiles[path] = effectiveFiles[path] ?? exported.files[path];
-  }
+  const filteredFiles = filterExportForDownload(exported.files, selectedFiles, effectiveFiles);
   const zipBytes = createZipArchive(filteredFiles, exported.rootPath);
   const zipBuffer = new ArrayBuffer(zipBytes.byteLength);
   new Uint8Array(zipBuffer).set(zipBytes);
@@ -841,6 +858,17 @@ export function CompanyExport() {
     return filtered;
   }, [exportData, checkedFiles, selectedCompany?.name]);
 
+  // The zip is STORE-only, so its size is exactly computable from the filtered
+  // file map. Depends only on the selection (not e.g. the tree search), so it
+  // recomputes per toggle change rather than per keystroke.
+  const estimatedZipBytes = useMemo(() => {
+    if (!exportData) return 0;
+    return estimateZipArchiveSize(
+      filterExportForDownload(exportData.files, checkedFiles, effectiveFiles),
+      exportData.rootPath,
+    );
+  }, [exportData, checkedFiles, effectiveFiles]);
+
   const totalFiles = useMemo(() => countFiles(tree), [tree]);
   const selectedCount = checkedFiles.size;
 
@@ -946,6 +974,7 @@ export function CompanyExport() {
             </span>
             <span className="text-muted-foreground">
               Exporting {selectedCount.toLocaleString()} of {totalFiles.toLocaleString()} file{totalFiles === 1 ? "" : "s"}
+              {selectedCount > 0 && ` (~${formatBytes(estimatedZipBytes)})`}
             </span>
             {warnings.length > 0 && (
               <span className="text-amber-500">
