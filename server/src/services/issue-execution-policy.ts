@@ -770,8 +770,6 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
         patch.status = "in_progress";
         Object.assign(patch, patchForPrincipal(existingState.returnAssignee));
         patch.executionState = buildChangesRequestedState(existingState, activeStage);
-        // This internal marker is created only after the active-participant check above.
-        patch.allowUnresolvedBlockerStageReturn = true;
         return {
           patch,
           decision: {

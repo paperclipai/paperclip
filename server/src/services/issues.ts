@@ -6573,7 +6573,6 @@ export function issueService(db: Db) {
         blockedByIssueIds?: string[];
         actorAgentId?: string | null;
         actorUserId?: string | null;
-        allowUnresolvedBlockerStageReturn?: boolean;
       },
       dbOrTx: any = db,
     ) => {
@@ -6589,7 +6588,6 @@ export function issueService(db: Db) {
         blockedByIssueIds,
         actorAgentId,
         actorUserId,
-        allowUnresolvedBlockerStageReturn,
         ...issueData
       } = data;
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
@@ -6655,8 +6653,7 @@ export function issueService(db: Db) {
           && nextAssigneeUserId === returnAssignee.userId
           && !nextAssigneeAgentId;
       const isAuthorizedBlockedStageReturn =
-        allowUnresolvedBlockerStageReturn === true
-        && blockedByIssueIds === undefined
+        blockedByIssueIds === undefined
         && existing.status === "in_review"
         && previousExecutionState?.status === "pending"
         && nextExecutionState?.status === "changes_requested"

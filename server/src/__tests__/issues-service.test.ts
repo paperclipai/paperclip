@@ -4172,7 +4172,6 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
       status: "in_progress",
       assigneeAgentId: returnAgentId,
       actorAgentId: qaAgentId,
-      allowUnresolvedBlockerStageReturn: true,
       executionState: {
         ...pendingExecutionState,
         status: "changes_requested",
