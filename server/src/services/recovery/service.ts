@@ -312,7 +312,9 @@ const CONTINUATION_RECOVERY_TRANSIENT_BASE_BACKOFF_MS = 60_000;
 export const PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS = 60 * 60 * 1000;
 
 const PROVIDER_QUOTA_ERROR_RE =
-  /(?:you(?:'|’)ve hit your usage limit|usage limit(?: reached| exceeded)?|provider quota|quota (?:limit )?exceeded|model (?:is )?at capacity)/i;
+  /(?:you(?:'|’)ve hit your (?:usage limit|(?:session|weekly) limit|monthly spend limit)|usage limit(?: reached| exceeded)?|weekly limit reached|provider quota|quota (?:limit )?exceeded|model (?:is )?at capacity)/i;
+const PROVIDER_QUOTA_RESET_DATE_RE =
+  /\bresets?\s+(?:at\s+)?(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\.?\s+(\d{1,2})(?:,\s*(\d{4}))?\s+at\s+(\d{1,2})(?::(\d{2}))?\s*([ap])\.?\s*m\.?(?:\s*\(([^)]+)\))?/i;
 const CONFIGURATION_INCOMPLETE_ERROR_RE =
   /(?:model_not_found|model [^\n]{0,120} not found|missing (?:api )?(?:key|credentials?)|credentials? (?:are |is )?missing|no (?:api )?(?:key|credentials?) (?:was |were )?(?:found|configured|provided)|api key (?:is )?(?:not set|unavailable))/i;
 
@@ -322,6 +324,69 @@ export type AdapterFailureRecoveryClassification =
   | null;
 
 function parseProviderQuotaClockReset(error: string, now: Date) {
+  const monthMatch = error.match(PROVIDER_QUOTA_RESET_DATE_RE);
+  if (monthMatch) {
+    const monthToken = (monthMatch[1] ?? "").toLowerCase();
+    const month = {
+      jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5,
+      jul: 6, aug: 7, sep: 8, sept: 8, oct: 9, nov: 10, dec: 11,
+    }[monthToken];
+    const day = Number.parseInt(monthMatch[2] ?? "", 10);
+    const year = Number.parseInt(monthMatch[3] ?? String(now.getUTCFullYear()), 10);
+    const hour12 = Number.parseInt(monthMatch[4] ?? "", 10);
+    const minute = Number.parseInt(monthMatch[5] ?? "0", 10);
+    const meridiem = (monthMatch[6] ?? "").toLowerCase();
+    const timeZone = (monthMatch[7] ?? "").trim();
+    if (
+      month != null &&
+      Number.isInteger(day) &&
+      day >= 1 &&
+      day <= 31 &&
+      Number.isInteger(year) &&
+      Number.isInteger(hour12) &&
+      hour12 >= 1 &&
+      hour12 <= 12 &&
+      Number.isInteger(minute) &&
+      minute >= 0 &&
+      minute <= 59 &&
+      timeZone
+    ) {
+      let hour = hour12 % 12;
+      if (meridiem === "p") hour += 12;
+      try {
+        const wallClock = (date: Date) => Object.fromEntries(
+          new Intl.DateTimeFormat("en-US", {
+            timeZone,
+            hourCycle: "h23",
+            year: "numeric",
+            month: "2-digit",
+            day: "2-digit",
+            hour: "2-digit",
+            minute: "2-digit",
+          }).formatToParts(date).map((part) => [part.type, part.value]),
+        );
+        let candidate = new Date(Date.UTC(year, month, day, hour, minute, 0, 0));
+        const targetMs = Date.UTC(year, month, day, hour, minute, 0, 0);
+        for (let attempt = 0; attempt < 4; attempt += 1) {
+          const actual = wallClock(candidate);
+          const actualMs = Date.UTC(
+            Number(actual.year),
+            Number(actual.month) - 1,
+            Number(actual.day),
+            Number(actual.hour),
+            Number(actual.minute),
+          );
+          const adjustment = targetMs - actualMs;
+          if (adjustment === 0) break;
+          candidate = new Date(candidate.getTime() + adjustment);
+        }
+        return candidate;
+      } catch {
+        return null;
+      }
+    }
+  }
+
   const match = error.match(
     /try again at\s+(\d{1,2})(?::(\d{2}))?\s*(?:([ap])\.?\s*m\.?)?(?:\s*\(([^)]+)\)|\s+([A-Z]{2,5}))?/i,
   );

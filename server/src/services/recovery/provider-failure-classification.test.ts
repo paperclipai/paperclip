@@ -35,6 +35,36 @@ describe("classifyAdapterFailureForRecovery", () => {
     });
   });
 
+  it("classifies Claude weekly limits and parses date-bearing reset times", () => {
+    const now = new Date("2026-07-29T19:00:00.000Z");
+    const classification = classifyAdapterFailureForRecovery({
+      errorCode: "adapter_failed",
+      error: "You've hit your weekly limit · resets Aug 3 at 11am (Europe/Zurich)",
+      resultJson: null,
+    }, now);
+
+    expect(classification).toEqual({
+      kind: "provider_quota",
+      retryAt: new Date("2026-08-03T09:00:00.000Z"),
+      parsedResetTime: true,
+    });
+  });
+
+  it("classifies Claude spend caps as provider quota without a reset time", () => {
+    const now = new Date("2026-07-30T00:10:38.000Z");
+    const classification = classifyAdapterFailureForRecovery({
+      errorCode: "adapter_failed",
+      error: "You've hit your monthly spend limit · raise it at claude.ai/settings/usage",
+      resultJson: null,
+    }, now);
+
+    expect(classification).toEqual({
+      kind: "provider_quota",
+      retryAt: new Date(now.getTime() + PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS),
+      parsedResetTime: false,
+    });
+  });
+
   it("treats timezone-less provider reset clocks as UTC", () => {
     const now = new Date("2026-07-15T20:00:00.000Z");
     const classification = classifyAdapterFailureForRecovery({
