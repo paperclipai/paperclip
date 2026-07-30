@@ -34,6 +34,13 @@ export {
   type CaseTypePipelineRef,
 } from "./pipeline-case-type.js";
 export {
+  deriveRateCardCents,
+  normalizeRateCardModelId,
+  resolveModelRate,
+  type ModelRate,
+  type RateCardTokens,
+} from "./model-rate-card.js";
+export {
   deriveResponsibleUser,
   deriveOriginatingActor,
   type ResponsibleUserAttribution,

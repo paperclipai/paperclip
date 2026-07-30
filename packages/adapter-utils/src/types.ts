@@ -32,6 +32,13 @@ export interface UsageSummary {
   inputTokens: number;
   outputTokens: number;
   cachedInputTokens?: number;
+  /**
+   * Prompt tokens billed at a cache-*write* premium (1.25x base input at the
+   * default 5-minute TTL). These must NOT be double-counted in `inputTokens`:
+   * producers report them here so the premium survives to the ledger, and
+   * `inputTokens` stays non-cache-creation input only.
+   */
+  cacheWriteTokens?: number;
 }
 
 export type AdapterBillingType =
