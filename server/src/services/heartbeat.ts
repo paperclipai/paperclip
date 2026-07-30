@@ -15230,7 +15230,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       recoveryAgent &&
       recoveryAgent.status !== "paused" &&
       recoveryAgent.status !== "terminated" &&
-      recoveryAgent.status !== "pending_approval";
+      recoveryAgent.status !== "pending_approval" &&
+      recoveryAgent.status !== "error";
     const recoverySessionBefore = recoveryAgentInvokable
       ? await resolveSessionBeforeForWakeup(recoveryAgent, taskKey)
       : null;
