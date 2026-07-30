@@ -640,6 +640,7 @@ type ImportMode = "board_full" | "agent_safe";
 type ImportBehaviorOptions = {
   mode?: ImportMode;
   sourceCompanyId?: string | null;
+  pauseAutomations?: boolean;
 };
 
 type AgentLike = {
@@ -2176,9 +2177,12 @@ async function buildSkillSourceEntry(skill: CompanySkill) {
 }
 
 function shouldReferenceSkillOnExport(skill: CompanySkill, expandReferencedSkills: boolean) {
-  if (expandReferencedSkills) return false;
   const metadata = isPlainRecord(skill.metadata) ? skill.metadata : null;
+  // Bundled Paperclip skills ship with every build and may contain executable
+  // scripts that import policy rejects when expanded; the target re-resolves
+  // them from its own catalog via the pinned reference stub instead.
   if (asString(metadata?.sourceKind) === "paperclip_bundled") return true;
+  if (expandReferencedSkills) return false;
   return skill.sourceType === "github" || skill.sourceType === "skills_sh" || skill.sourceType === "url";
 }
 
@@ -4425,6 +4429,8 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     }
 
     const sourceManifest = plan.source.manifest;
+    const pauseAutomations = options?.pauseAutomations === true;
+    const importedAutomationPausedAt = pauseAutomations ? new Date() : null;
     const warnings = [...plan.preview.warnings];
     const include = plan.include;
 
@@ -4593,6 +4599,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
 
       const resultAgents: CompanyPortabilityImportResult["agents"] = [];
       const resultProjects: CompanyPortabilityImportResult["projects"] = [];
+      const resultRoutines: CompanyPortabilityImportResult["routines"] = [];
       const importedSlugToAgentId = new Map<string, string>();
       const existingSlugToAgentId = new Map<string, string>();
       const preImportExistingSlugToAgentId = new Map<string, string>();
@@ -4700,9 +4707,19 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             permissions: manifestAgent.permissions,
             metadata: manifestAgent.metadata,
           };
+          const automationPausePatch = pauseAutomations
+            ? {
+                status: "paused",
+                pauseReason: "system",
+                pausedAt: importedAutomationPausedAt,
+              }
+            : {};
 
           if (planAgent.action === "update" && planAgent.existingAgentId) {
-            let updated = await agents.update(planAgent.existingAgentId, patch);
+            let updated = await agents.update(planAgent.existingAgentId, {
+              ...patch,
+              ...automationPausePatch,
+            });
             if (!updated) {
               warnings.push(`Skipped update for missing agent ${planAgent.existingAgentId}.`);
               resultAgents.push({
@@ -4747,10 +4764,10 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             continue;
           }
 
-          const createdStatus = "idle";
           let created = await agents.create(targetCompany.id, {
             ...patch,
-            status: createdStatus,
+            ...automationPausePatch,
+            status: pauseAutomations ? "paused" : "idle",
           });
           await access.ensureMembership(targetCompany.id, "agent", created.id, "member", "active");
           await access.setPrincipalPermission(
@@ -4776,7 +4793,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             manifestAgent.permissionGrants ?? [],
             actorUserId ?? null,
           );
-          agentStatusById.set(created.id, created.status ?? createdStatus);
+          agentStatusById.set(created.id, created.status ?? (pauseAutomations ? "paused" : "idle"));
           await secrets.syncEnvBindingsForTarget?.(
             targetCompany.id,
             { targetType: "agent", targetId: created.id },
@@ -5003,7 +5020,9 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
               priority: manifestIssue.priority && ISSUE_PRIORITIES.includes(manifestIssue.priority as any)
                 ? manifestIssue.priority as typeof ISSUE_PRIORITIES[number]
                 : "medium",
-              status: manifestIssue.status && ROUTINE_STATUSES.includes(manifestIssue.status as any)
+              status: pauseAutomations
+                ? "paused"
+                : manifestIssue.status && ROUTINE_STATUSES.includes(manifestIssue.status as any)
                 ? manifestIssue.status as typeof ROUTINE_STATUSES[number]
                 : "active",
               concurrencyPolicy:
@@ -5018,6 +5037,13 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             }, {
               agentId: null,
               userId: actorUserId ?? null,
+            });
+            resultRoutines.push({
+              slug: manifestIssue.slug,
+              id: createdRoutine.id,
+              action: "created",
+              title: createdRoutine.title,
+              status: createdRoutine.status,
             });
             for (const trigger of routineDefinition.triggers) {
               if (trigger.kind === "schedule") {
@@ -5120,6 +5146,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         },
         agents: resultAgents,
         projects: resultProjects,
+        routines: resultRoutines,
         envInputs: sourceManifest.envInputs ?? [],
         warnings,
       };

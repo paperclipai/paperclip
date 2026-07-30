@@ -5204,6 +5204,15 @@ registry.registerPath({
 });
 
 registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/export/fidelity",
+  tags: ["companies"],
+  summary: "Report company data that an export bundle does not include",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
   method: "post",
   path: "/api/companies/import/preview",
   tags: ["companies"],

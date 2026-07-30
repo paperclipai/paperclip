@@ -302,6 +302,7 @@ export interface CompanyPortabilityAdapterOverride {
 export interface CompanyPortabilityImportRequest extends CompanyPortabilityPreviewRequest {
   adapterOverrides?: Record<string, CompanyPortabilityAdapterOverride>;
   secretValues?: Record<string, string>;
+  pauseAutomations?: boolean;
 }
 
 export interface CompanyPortabilityImportResult {
@@ -323,6 +324,13 @@ export interface CompanyPortabilityImportResult {
     action: "created" | "updated" | "skipped";
     name: string;
     reason: string | null;
+  }[];
+  routines: {
+    slug: string;
+    id: string | null;
+    action: "created";
+    title: string;
+    status: string;
   }[];
   envInputs: CompanyPortabilityEnvInput[];
   warnings: string[];

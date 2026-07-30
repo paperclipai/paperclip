@@ -43,6 +43,10 @@ const mockFeedbackService = vi.hoisted(() => ({
   saveIssueVote: vi.fn(),
 }));
 
+const mockInstanceSettingsService = vi.hoisted(() => ({
+  getExperimental: vi.fn(),
+}));
+
 vi.mock("../services/access.js", () => ({
   accessService: () => mockAccessService,
 }));
@@ -79,6 +83,7 @@ vi.mock("../services/index.js", () => ({
   companyPortabilityService: () => mockCompanyPortabilityService,
   companyService: () => mockCompanyService,
   feedbackService: () => mockFeedbackService,
+  instanceSettingsService: () => mockInstanceSettingsService,
   logActivity: mockLogActivity,
 }));
 
@@ -91,6 +96,7 @@ function registerCompanyRouteMocks() {
     companyPortabilityService: () => mockCompanyPortabilityService,
     companyService: () => mockCompanyService,
     feedbackService: () => mockFeedbackService,
+    instanceSettingsService: () => mockInstanceSettingsService,
     logActivity: mockLogActivity,
   }));
 }
@@ -635,7 +641,7 @@ describe.sequential("company portability routes", () => {
     expect(accepted.body.statusUrl).toMatch(/^\/api\/companies\/import\/jobs\/tenant-import-/);
     expect(accepted.body.retryAfterMs).toBe(1000);
     await waitForCondition(() => mockCompanyPortabilityService.importBundle.mock.calls.length === 1, "import job start");
-    expect(mockCompanyPortabilityService.importBundle).toHaveBeenCalledWith(importRequest, "cloud-user-1");
+    expect(mockCompanyPortabilityService.importBundle).toHaveBeenCalledWith(importRequest, "cloud-user-1", { pauseAutomations: false });
     expect(mockLogActivity).not.toHaveBeenCalled();
 
     resolveImport(createImportResult("updated"));
@@ -721,10 +727,49 @@ describe.sequential("company portability routes", () => {
     expect(res.body.company.id).toBe(companyId);
     expect(res.body.company.action).toBe("created");
     expect(res.body.job).toBeUndefined();
-    expect(mockCompanyPortabilityService.importBundle).toHaveBeenCalledWith(importRequest, "cloud-user-1");
+    expect(mockCompanyPortabilityService.importBundle).toHaveBeenCalledWith(importRequest, "cloud-user-1", { pauseAutomations: false });
     expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
       action: "company.imported",
       companyId,
     }));
+  });
+
+  it.sequential("forwards pauseAutomations from the global import body to the portability service", async () => {
+    mockCompanyPortabilityService.importBundle.mockResolvedValueOnce(createImportResult("created"));
+    const app = await createApp(cloudTenantActor());
+
+    const res = await request(app)
+      .post("/api/companies/import")
+      .set(cloudHeaders)
+      .send({ ...importRequest, pauseAutomations: true });
+
+    expect(res.status).toBe(200);
+    expect(mockCompanyPortabilityService.importBundle).toHaveBeenCalledWith(
+      { ...importRequest, pauseAutomations: true },
+      "cloud-user-1",
+      { pauseAutomations: true },
+    );
+  });
+
+  it.sequential("forwards pauseAutomations from CEO-safe import apply bodies to the portability service", async () => {
+    mockCompanyPortabilityService.importBundle.mockResolvedValueOnce(createImportResult("created"));
+    const app = await createApp({
+      type: "agent",
+      agentId: ceoAgentId,
+      companyId,
+      source: "agent_key",
+      runId: "run-1",
+    });
+
+    const res = await request(app)
+      .post(`/api/companies/${companyId}/imports/apply`)
+      .send({ ...importRequest, pauseAutomations: true });
+
+    expect(res.status).toBe(200);
+    expect(mockCompanyPortabilityService.importBundle).toHaveBeenCalledWith(
+      { ...importRequest, pauseAutomations: true },
+      null,
+      { mode: "agent_safe", sourceCompanyId: companyId, pauseAutomations: true },
+    );
   });
 });

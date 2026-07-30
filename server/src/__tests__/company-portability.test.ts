@@ -2331,6 +2331,148 @@ describe("company portability", () => {
       replayWindowSec: 120,
     }), expect.any(Object));
     expect(issueSvc.create).not.toHaveBeenCalled();
+    expect(result.routines).toEqual([
+      { slug: "monday-review", id: "routine-created", action: "created", title: "Monday Review", status: "paused" },
+    ]);
+  });
+
+  it("pauses imported agents and routines when pauseAutomations is requested", async () => {
+    const portability = companyPortabilityService({} as any);
+
+    companySvc.create.mockResolvedValue({
+      id: "company-imported",
+      name: "Imported Paperclip",
+    });
+    accessSvc.ensureMembership.mockResolvedValue(undefined);
+    agentSvc.create.mockResolvedValue({
+      id: "agent-created",
+      name: "ClaudeCoder",
+      status: "paused",
+    });
+    projectSvc.create.mockResolvedValue({
+      id: "project-created",
+      name: "Launch",
+      urlKey: "launch",
+    });
+    agentSvc.list.mockResolvedValue([]);
+    projectSvc.list.mockResolvedValue([]);
+
+    const files = {
+      "COMPANY.md": ['---', 'schema: "agentcompanies/v1"', 'name: "Imported Paperclip"', "---", ""].join("\n"),
+      "agents/claudecoder/AGENTS.md": ['---', 'name: "ClaudeCoder"', "---", "", "You write code.", ""].join("\n"),
+      "projects/launch/PROJECT.md": ['---', 'name: "Launch"', "---", ""].join("\n"),
+      "tasks/monday-review/TASK.md": [
+        "---",
+        'name: "Monday Review"',
+        'project: "launch"',
+        'assignee: "claudecoder"',
+        "recurring: true",
+        "---",
+        "",
+        "Review pipeline health.",
+        "",
+      ].join("\n"),
+      ".paperclip.yaml": [
+        'schema: "paperclip/v1"',
+        "routines:",
+        "  monday-review:",
+        "    triggers:",
+        "      - kind: schedule",
+        '        cronExpression: "0 9 * * 1"',
+        '        timezone: "America/Chicago"',
+        "",
+      ].join("\n"),
+    };
+
+    const result = await portability.importBundle({
+      source: { type: "inline", rootPath: "paperclip-demo", files },
+      include: { company: true, agents: true, projects: true, issues: true, skills: false },
+      target: { mode: "new_company", newCompanyName: "Imported Paperclip" },
+      agents: "all",
+      collisionStrategy: "rename",
+    }, "user-1", { pauseAutomations: true });
+
+    expect(agentSvc.create).toHaveBeenCalledWith("company-imported", expect.objectContaining({
+      status: "paused",
+      pauseReason: "system",
+      pausedAt: expect.any(Date),
+    }));
+    expect(routineSvc.create).toHaveBeenCalledWith("company-imported", expect.objectContaining({
+      title: "Monday Review",
+      status: "paused",
+    }), expect.any(Object));
+    expect(result.routines).toEqual([
+      { slug: "monday-review", id: "routine-created", action: "created", title: "Monday Review", status: "paused" },
+    ]);
+  });
+
+  it("leaves imported agents and routines active when pauseAutomations is absent", async () => {
+    const portability = companyPortabilityService({} as any);
+
+    companySvc.create.mockResolvedValue({
+      id: "company-imported",
+      name: "Imported Paperclip",
+    });
+    accessSvc.ensureMembership.mockResolvedValue(undefined);
+    agentSvc.create.mockResolvedValue({
+      id: "agent-created",
+      name: "ClaudeCoder",
+    });
+    projectSvc.create.mockResolvedValue({
+      id: "project-created",
+      name: "Launch",
+      urlKey: "launch",
+    });
+    agentSvc.list.mockResolvedValue([]);
+    projectSvc.list.mockResolvedValue([]);
+
+    const files = {
+      "COMPANY.md": ['---', 'schema: "agentcompanies/v1"', 'name: "Imported Paperclip"', "---", ""].join("\n"),
+      "agents/claudecoder/AGENTS.md": ['---', 'name: "ClaudeCoder"', "---", "", "You write code.", ""].join("\n"),
+      "projects/launch/PROJECT.md": ['---', 'name: "Launch"', "---", ""].join("\n"),
+      "tasks/monday-review/TASK.md": [
+        "---",
+        'name: "Monday Review"',
+        'project: "launch"',
+        'assignee: "claudecoder"',
+        "recurring: true",
+        "---",
+        "",
+        "Review pipeline health.",
+        "",
+      ].join("\n"),
+      ".paperclip.yaml": [
+        'schema: "paperclip/v1"',
+        "routines:",
+        "  monday-review:",
+        "    triggers:",
+        "      - kind: schedule",
+        '        cronExpression: "0 9 * * 1"',
+        '        timezone: "America/Chicago"',
+        "",
+      ].join("\n"),
+    };
+
+    const result = await portability.importBundle({
+      source: { type: "inline", rootPath: "paperclip-demo", files },
+      include: { company: true, agents: true, projects: true, issues: true, skills: false },
+      target: { mode: "new_company", newCompanyName: "Imported Paperclip" },
+      agents: "all",
+      collisionStrategy: "rename",
+    }, "user-1");
+
+    expect(agentSvc.create).toHaveBeenCalledTimes(1);
+    const [, createdAgentInput] = agentSvc.create.mock.calls[0]!;
+    expect(createdAgentInput.status).toBe("idle");
+    expect(createdAgentInput.pauseReason).toBeUndefined();
+    expect(createdAgentInput.pausedAt).toBeUndefined();
+    expect(routineSvc.create).toHaveBeenCalledWith("company-imported", expect.objectContaining({
+      title: "Monday Review",
+      status: "active",
+    }), expect.any(Object));
+    expect(result.routines).toEqual([
+      { slug: "monday-review", id: "routine-created", action: "created", title: "Monday Review", status: "active" },
+    ]);
   });
 
   it("migrates legacy schedule.recurrence imports into routine triggers", async () => {
