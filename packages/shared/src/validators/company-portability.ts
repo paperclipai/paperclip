@@ -257,6 +257,12 @@ export const portabilitySourceSchema = z.discriminatedUnion("type", [
     type: z.literal("inline"),
     rootPath: z.string().min(1).optional().nullable(),
     files: z.record(z.string(), portabilityFileEntrySchema),
+    // Self-describing completeness count. The client sets this to
+    // `Object.keys(files).length`; the import path rejects the payload when the
+    // received file set is smaller, so a truncated or re-framed body fails
+    // closed instead of importing a fragment. Optional for backwards
+    // compatibility with callers that predate the check.
+    expectedFileCount: z.number().int().nonnegative().optional(),
   }),
   z.object({
     type: z.literal("github"),

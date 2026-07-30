@@ -171,6 +171,31 @@ function resolveImportMode(options?: ImportBehaviorOptions): ImportMode {
   return options?.mode ?? "board_full";
 }
 
+/**
+ * Reject an inline import whose received file set is smaller than the count the
+ * client declared. The bundle manifest and per-entry blob hashes seal each
+ * file's contents, but nothing else proves the *set* of files is whole: a
+ * truncated or proxy-re-framed body can parse into valid JSON with entries
+ * silently dropped. `expectedFileCount` is the client's assertion of how many
+ * files it sent, so a shortfall means the payload is incomplete and must fail
+ * closed instead of importing a fragment. A larger-than-declared set is not a
+ * truncation symptom and is left alone; the count is optional, so older callers
+ * that omit it are unaffected.
+ */
+function assertInlineSourceComplete(source: CompanyPortabilityImport["source"]) {
+  if (source.type !== "inline") return;
+  const expected = source.expectedFileCount;
+  if (expected == null) return;
+  const received = Object.keys(source.files).length;
+  if (received < expected) {
+    throw unprocessable(
+      `Import payload is incomplete: the request declared ${expected} file(s) but only ${received} arrived. `
+        + "The upload was likely truncated; retry the import.",
+      { code: "import_payload_incomplete", expectedFileCount: expected, receivedFileCount: received },
+    );
+  }
+}
+
 function resolveSkillConflictStrategy(mode: ImportMode, collisionStrategy: CompanyPortabilityCollisionStrategy) {
   if (mode === "board_full") return "replace" as const;
   return collisionStrategy === "skip" ? "skip" as const : "rename" as const;
@@ -4993,6 +5018,12 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     actorUserId: string | null | undefined,
     options?: ImportBehaviorOptions,
   ): Promise<CompanyPortabilityImportResult> {
+    // Fail closed before any preview or write work when an inline body arrived
+    // incomplete. A truncated or re-framed request can hand the parser a
+    // structurally valid JSON object with fewer files than the client sent;
+    // the declared count is the only signal that distinguishes it from a
+    // deliberately small bundle. Reject the fragment rather than importing it.
+    assertInlineSourceComplete(input.source);
     const mode = resolveImportMode(options);
     const plan = await buildPreview(input, options);
     if (plan.preview.errors.length > 0) {

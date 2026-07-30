@@ -1797,6 +1797,111 @@ describe("company portability", () => {
     expect(secretSvc.remove).toHaveBeenCalledWith("secret-created-for-failed-import");
   });
 
+  it("fails closed on an inline import that arrived with fewer files than declared", async () => {
+    const portability = companyPortabilityService({} as any);
+    agentSvc.list.mockResolvedValue([]);
+
+    // The client declared four files, but the body was truncated in transit and
+    // only three arrived. The import must reject the fragment before writing any
+    // rows — not create a company and import a partial bundle.
+    await expect(portability.importBundle({
+      source: {
+        type: "inline",
+        expectedFileCount: 4,
+        files: {
+          "COMPANY.md": [
+            "---",
+            "name: Import",
+            "includes:",
+            "  - agents/coder/AGENTS.md",
+            "---",
+            "",
+          ].join("\n"),
+          "agents/coder/AGENTS.md": [
+            "---",
+            "name: Coder",
+            "slug: coder",
+            "kind: agent",
+            "---",
+            "",
+            "# Coder",
+            "",
+          ].join("\n"),
+          ".paperclip.yaml": [
+            "schema: paperclip/v1",
+            "agents:",
+            "  coder:",
+            "    adapter:",
+            "      type: codex_local",
+            "      config: {}",
+            "",
+          ].join("\n"),
+        },
+      },
+      include: { company: true, agents: true, projects: false, issues: false },
+      target: { mode: "new_company", newCompanyName: "Imported" },
+      collisionStrategy: "rename",
+    }, "user-1")).rejects.toMatchObject({
+      status: 422,
+      details: { code: "import_payload_incomplete", expectedFileCount: 4, receivedFileCount: 3 },
+    });
+
+    expect(companySvc.create).not.toHaveBeenCalled();
+    expect(agentSvc.create).not.toHaveBeenCalled();
+  });
+
+  it("imports an inline bundle whose file count matches the declared count", async () => {
+    const portability = companyPortabilityService({} as any);
+    agentSvc.list.mockResolvedValue([]);
+    agentSvc.create.mockImplementation(async (_companyId: string, input: Record<string, unknown>) => ({
+      id: "agent-imported",
+      name: input.name,
+      adapterType: input.adapterType,
+      adapterConfig: input.adapterConfig,
+      status: input.status,
+    }));
+
+    const files = {
+      "COMPANY.md": [
+        "---",
+        "name: Import",
+        "includes:",
+        "  - agents/coder/AGENTS.md",
+        "---",
+        "",
+      ].join("\n"),
+      "agents/coder/AGENTS.md": [
+        "---",
+        "name: Coder",
+        "slug: coder",
+        "kind: agent",
+        "---",
+        "",
+        "# Coder",
+        "",
+      ].join("\n"),
+      ".paperclip.yaml": [
+        "schema: paperclip/v1",
+        "agents:",
+        "  coder:",
+        "    adapter:",
+        "      type: codex_local",
+        "      config: {}",
+        "",
+      ].join("\n"),
+    };
+
+    const result = await portability.importBundle({
+      source: { type: "inline", expectedFileCount: Object.keys(files).length, files },
+      include: { company: false, agents: true, projects: false, issues: false },
+      target: { mode: "existing_company", companyId: "company-1" },
+      collisionStrategy: "rename",
+    }, "user-1");
+
+    expect(result.company.id).toBe("company-1");
+    expect(agentSvc.create).toHaveBeenCalledTimes(1);
+  });
+
   it("reparents imported roots to pre-existing target managers before resolving imported hierarchy", async () => {
     const portability = companyPortabilityService({} as any);
     agentSvc.list.mockResolvedValue([
