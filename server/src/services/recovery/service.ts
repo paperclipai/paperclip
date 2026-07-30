@@ -2846,6 +2846,12 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     issue: typeof issues.$inferSelect;
     latestRun: LatestIssueRun;
     recoveryCause: StrandedRecoveryCause;
+    // The system comment (posted by the caller, or found already posted on
+    // an earlier attempt) that quotes any pending feedback stranded by the
+    // failure this recovery action is for. Threaded into the wake so the
+    // resumed agent is pointed directly at it instead of that content being
+    // discoverable only via an incidental full-thread read.
+    strandedFeedbackCommentId?: string | null;
   }) {
     if (input.recoveryCause === "provider_quota" && !input.action.ownerAgentId) return;
     if (input.recoveryCause === "configuration_incomplete") return;
@@ -2861,6 +2867,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         recoveryActionId: input.action.id,
         strandedRunId: input.latestRun?.id ?? null,
         recoveryCause: input.recoveryCause,
+        ...(input.strandedFeedbackCommentId ? { commentId: input.strandedFeedbackCommentId } : {}),
       }, "status_only"),
       requestedByActorType: "system",
       requestedByActorId: null,
@@ -2874,6 +2881,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         sourceIssueId: input.issue.id,
         strandedRunId: input.latestRun?.id ?? null,
         recoveryCause: input.recoveryCause,
+        ...(input.strandedFeedbackCommentId
+          ? { wakeCommentId: input.strandedFeedbackCommentId, commentId: input.strandedFeedbackCommentId }
+          : {}),
       }, "status_only"),
     });
   }
@@ -3227,10 +3237,17 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       recoveryAction.attemptCount === 1 ||
       input.recoveryCause === "workspace_validation_failed" ||
       input.recoveryCause === "configuration_incomplete";
+    // Tracks the comment carrying any stranded pending feedback quoted by
+    // `input.comment` (heartbeat.ts's buildWorkspaceValidationRecoveryComment
+    // / buildConfigurationIncompleteRecoveryComment), whether posted just now
+    // or on an earlier pass — so the recovery wake below can point the
+    // resumed agent directly at it instead of leaving it discoverable only
+    // via an incidental full-thread read.
+    let strandedFeedbackCommentId: string | null = null;
     if (shouldPostEscalationComment) {
       const escalationCommentMarker = `Recovery action: \`${recoveryAction.id}\``;
 
-      const hasEscalationComment = await db
+      const existingEscalationComment = await db
         .select({ id: issueComments.id, body: issueComments.body, metadata: issueComments.metadata })
         .from(issueComments)
         .where(
@@ -3241,12 +3258,12 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         )
         .orderBy(desc(issueComments.createdAt))
         .limit(50)
-        .then((rows) => rows.some((row) =>
+        .then((rows) => rows.find((row) =>
           (row.body ?? "").includes(escalationCommentMarker) ||
           noticeMetadataReferencesRecoveryAction(row.metadata, recoveryAction.id),
-        ));
+        ) ?? null);
 
-      if (!hasEscalationComment) {
+      if (!existingEscalationComment) {
         if (notice) {
           await issuesSvc.addComment(input.issue.id, notice.body, {}, {
             authorType: "system",
@@ -3254,10 +3271,13 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             metadata: notice.metadata,
           });
         } else {
-          await issuesSvc.addComment(input.issue.id, `${input.comment ?? ""}${recoveryLine}`, {}, {
+          const posted = await issuesSvc.addComment(input.issue.id, `${input.comment ?? ""}${recoveryLine}`, {}, {
             authorType: "system",
           });
+          strandedFeedbackCommentId = posted.id;
         }
+      } else if (!notice) {
+        strandedFeedbackCommentId = existingEscalationComment.id;
       }
     }
 
@@ -3302,6 +3322,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       issue: input.issue,
       latestRun: input.latestRun,
       recoveryCause,
+      strandedFeedbackCommentId,
     });
 
     if (recoveryAction.ownerAgentId && recoveryAction.ownerAgentId === input.issue.assigneeAgentId) {

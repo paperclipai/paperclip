@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
-import { and, asc, eq } from "drizzle-orm";
+import { and, asc, eq, sql } from "drizzle-orm";
 import { WebSocketServer } from "ws";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
@@ -12,9 +12,11 @@ import {
   issueComments,
   issues,
 } from "@paperclipai/db";
+import { LOW_TRUST_REVIEW_PRESET } from "@paperclipai/shared";
 import { runningProcesses } from "../adapters/index.js";
 import { heartbeatService } from "../services/heartbeat.ts";
 import { SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY } from "../services/recovery/index.ts";
+import { LOW_TRUST_QUARANTINED_BODY } from "../services/source-trust.ts";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -2062,4 +2064,1767 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       await gateway.close();
     }
   }, 20_000);
+
+  it("promotes a deferred wake parked on a sibling issue that the finalizing run held", async () => {
+    const gateway = await createControlledGatewayServer();
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const primaryIssueId = randomUUID();
+    const siblingIssueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const heartbeat = heartbeatService(db);
+
+    try {
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix,
+        requireBoardApprovalForNewAgents: false,
+        defaultResponsibleUserId: "responsible-user",
+      });
+
+      await db.insert(agents).values({
+        id: agentId,
+        companyId,
+        name: "Gateway Agent",
+        role: "engineer",
+        status: "idle",
+        adapterType: "openclaw_gateway",
+        adapterConfig: {
+          url: gateway.url,
+          headers: {
+            "x-openclaw-token": "gateway-token",
+          },
+          payloadTemplate: {
+            message: "wake now",
+          },
+          waitTimeoutMs: 2_000,
+        },
+        runtimeConfig: {},
+        permissions: {},
+      });
+
+      await db.insert(issues).values([
+        {
+          id: primaryIssueId,
+          companyId,
+          title: "Primary issue",
+          status: "todo",
+          priority: "medium",
+          responsibleUserId: "responsible-user",
+          assigneeAgentId: agentId,
+          issueNumber: 1,
+          identifier: `${issuePrefix}-1`,
+        },
+        {
+          id: siblingIssueId,
+          companyId,
+          title: "Sibling issue with a parked wake",
+          status: "in_progress",
+          priority: "medium",
+          responsibleUserId: "responsible-user",
+          assigneeAgentId: agentId,
+          issueNumber: 2,
+          identifier: `${issuePrefix}-2`,
+        },
+      ]);
+
+      const primaryComment = await db
+        .insert(issueComments)
+        .values({
+          companyId,
+          issueId: primaryIssueId,
+          authorUserId: "user-1",
+          body: "Start primary work",
+        })
+        .returning()
+        .then((rows) => rows[0]);
+      const firstRun = await heartbeat.wakeup(agentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_commented",
+        payload: { issueId: primaryIssueId, commentId: primaryComment.id },
+        contextSnapshot: {
+          issueId: primaryIssueId,
+          taskId: primaryIssueId,
+          commentId: primaryComment.id,
+          wakeReason: "issue_commented",
+        },
+        requestedByActorType: "user",
+        requestedByActorId: "user-1",
+      });
+
+      expect(firstRun).not.toBeNull();
+      await waitFor(() => gateway.getAgentPayloads().length === 1);
+
+      // The finalizing run also holds the sibling issue's execution lock — the
+      // shape produced when one run ends up referenced by multiple issues (e.g.
+      // enqueueWakeup's legacy-run fallback).
+      await db
+        .update(issues)
+        .set({
+          executionRunId: firstRun!.id,
+          executionAgentNameKey: "gateway agent",
+          executionLockedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(eq(issues.id, siblingIssueId));
+
+      const siblingComment = await db
+        .insert(issueComments)
+        .values({
+          companyId,
+          issueId: siblingIssueId,
+          authorUserId: "user-1",
+          body: "Please pick up the sibling issue next",
+        })
+        .returning()
+        .then((rows) => rows[0]);
+      const siblingWakeRun = await heartbeat.wakeup(agentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_commented",
+        payload: { issueId: siblingIssueId, commentId: siblingComment.id },
+        contextSnapshot: {
+          issueId: siblingIssueId,
+          taskId: siblingIssueId,
+          commentId: siblingComment.id,
+          wakeCommentId: siblingComment.id,
+          wakeReason: "issue_commented",
+        },
+        requestedByActorType: "user",
+        requestedByActorId: "user-1",
+      });
+
+      expect(siblingWakeRun).toBeNull();
+
+      const deferredWake = await db
+        .select()
+        .from(agentWakeupRequests)
+        .where(
+          and(
+            eq(agentWakeupRequests.companyId, companyId),
+            eq(agentWakeupRequests.agentId, agentId),
+            eq(agentWakeupRequests.status, "deferred_issue_execution"),
+          ),
+        )
+        .then((rows) => rows[0] ?? null);
+
+      expect(deferredWake).not.toBeNull();
+      expect(deferredWake?.payload).toMatchObject({ issueId: siblingIssueId });
+
+      await heartbeat.cancelRun(firstRun!.id);
+
+      // Finalizing the run must promote the wake parked on the sibling issue,
+      // not just wakes parked on the run's context issue.
+      const wakeAfterRelease = await db
+        .select()
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, deferredWake!.id))
+        .then((rows) => rows[0] ?? null);
+
+      expect(wakeAfterRelease?.reason).toBe("issue_execution_promoted");
+      expect(wakeAfterRelease?.status).not.toBe("deferred_issue_execution");
+      expect(wakeAfterRelease?.runId).not.toBeNull();
+
+      const promotedRun = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, wakeAfterRelease!.runId!))
+        .then((rows) => rows[0] ?? null);
+
+      expect(promotedRun?.agentId).toBe(agentId);
+      expect(promotedRun?.contextSnapshot).toMatchObject({ issueId: siblingIssueId });
+
+      await waitFor(() => gateway.getAgentPayloads().length === 2, 90_000);
+      await waitFor(async () => {
+        const run = await db
+          .select({ status: heartbeatRuns.status })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, wakeAfterRelease!.runId!))
+          .then((rows) => rows[0] ?? null);
+        return run?.status === "succeeded";
+      }, 90_000);
+
+      const promotedPayload = gateway.getAgentPayloads()[1] ?? {};
+      const promotedWake = parseWakePayloadFromMessage(promotedPayload.message);
+      expect(promotedWake).toMatchObject({
+        commentIds: [siblingComment.id],
+        latestCommentId: siblingComment.id,
+        issue: {
+          id: siblingIssueId,
+          identifier: `${issuePrefix}-2`,
+        },
+      });
+      expect(String(promotedPayload.message ?? "")).toContain("Please pick up the sibling issue next");
+    } finally {
+      gateway.releaseFirstWait();
+      await gateway.close();
+    }
+  }, 120_000);
+
+  it("promotes deferred wakes on the context issue and every sibling issue the run held", async () => {
+    const gateway = await createControlledGatewayServer();
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const primaryIssueId = randomUUID();
+    const siblingIssueBId = randomUUID();
+    const siblingIssueCId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const heartbeat = heartbeatService(db);
+
+    try {
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix,
+        requireBoardApprovalForNewAgents: false,
+        defaultResponsibleUserId: "responsible-user",
+      });
+
+      await db.insert(agents).values({
+        id: agentId,
+        companyId,
+        name: "Gateway Agent",
+        role: "engineer",
+        status: "idle",
+        adapterType: "openclaw_gateway",
+        adapterConfig: {
+          url: gateway.url,
+          headers: {
+            "x-openclaw-token": "gateway-token",
+          },
+          payloadTemplate: {
+            message: "wake now",
+          },
+          waitTimeoutMs: 2_000,
+        },
+        runtimeConfig: {},
+        permissions: {},
+      });
+
+      await db.insert(issues).values([
+        {
+          id: primaryIssueId,
+          companyId,
+          title: "Primary issue",
+          status: "todo",
+          priority: "medium",
+          responsibleUserId: "responsible-user",
+          assigneeAgentId: agentId,
+          issueNumber: 1,
+          identifier: `${issuePrefix}-1`,
+        },
+        {
+          id: siblingIssueBId,
+          companyId,
+          title: "First sibling issue",
+          status: "in_progress",
+          priority: "medium",
+          responsibleUserId: "responsible-user",
+          assigneeAgentId: agentId,
+          issueNumber: 2,
+          identifier: `${issuePrefix}-2`,
+        },
+        {
+          id: siblingIssueCId,
+          companyId,
+          title: "Second sibling issue",
+          status: "in_progress",
+          priority: "medium",
+          responsibleUserId: "responsible-user",
+          assigneeAgentId: agentId,
+          issueNumber: 3,
+          identifier: `${issuePrefix}-3`,
+        },
+      ]);
+
+      const primaryComment = await db
+        .insert(issueComments)
+        .values({
+          companyId,
+          issueId: primaryIssueId,
+          authorUserId: "user-1",
+          body: "Start primary work",
+        })
+        .returning()
+        .then((rows) => rows[0]);
+      const firstRun = await heartbeat.wakeup(agentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_commented",
+        payload: { issueId: primaryIssueId, commentId: primaryComment.id },
+        contextSnapshot: {
+          issueId: primaryIssueId,
+          taskId: primaryIssueId,
+          commentId: primaryComment.id,
+          wakeReason: "issue_commented",
+        },
+        requestedByActorType: "user",
+        requestedByActorId: "user-1",
+      });
+
+      expect(firstRun).not.toBeNull();
+      await waitFor(() => gateway.getAgentPayloads().length === 1);
+
+      // The finalizing run holds the execution lock on both sibling issues in
+      // addition to its own context issue.
+      await db
+        .update(issues)
+        .set({
+          executionRunId: firstRun!.id,
+          executionAgentNameKey: "gateway agent",
+          executionLockedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(eq(issues.id, siblingIssueBId));
+      await db
+        .update(issues)
+        .set({
+          executionRunId: firstRun!.id,
+          executionAgentNameKey: "gateway agent",
+          executionLockedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(eq(issues.id, siblingIssueCId));
+
+      // Park one deferred wake on each of the three issues the run holds.
+      const issueIdsInWakeOrder = [primaryIssueId, siblingIssueBId, siblingIssueCId];
+      for (const issueId of issueIdsInWakeOrder) {
+        const comment = await db
+          .insert(issueComments)
+          .values({
+            companyId,
+            issueId,
+            authorUserId: "user-1",
+            body: `Follow-up for ${issueId}`,
+          })
+          .returning()
+          .then((rows) => rows[0]);
+        const deferredRun = await heartbeat.wakeup(agentId, {
+          source: "automation",
+          triggerDetail: "system",
+          reason: "issue_commented",
+          payload: { issueId, commentId: comment.id },
+          contextSnapshot: {
+            issueId,
+            taskId: issueId,
+            commentId: comment.id,
+            wakeCommentId: comment.id,
+            wakeReason: "issue_commented",
+          },
+          requestedByActorType: "user",
+          requestedByActorId: "user-1",
+        });
+        expect(deferredRun).toBeNull();
+      }
+
+      const deferredWakes = await db
+        .select()
+        .from(agentWakeupRequests)
+        .where(
+          and(
+            eq(agentWakeupRequests.companyId, companyId),
+            eq(agentWakeupRequests.agentId, agentId),
+            eq(agentWakeupRequests.status, "deferred_issue_execution"),
+          ),
+        )
+        .orderBy(asc(agentWakeupRequests.requestedAt));
+
+      expect(deferredWakes).toHaveLength(3);
+      const wakeIdByIssueId = new Map(
+        deferredWakes.map((wake) => [
+          (wake.payload as Record<string, unknown>).issueId as string,
+          wake.id,
+        ]),
+      );
+      expect([...wakeIdByIssueId.keys()].sort()).toEqual([...issueIdsInWakeOrder].sort());
+
+      await heartbeat.cancelRun(firstRun!.id);
+
+      // Every parked wake must promote in the same finalization: the primary
+      // promotion must not skip the sibling drain, and the sibling drain must
+      // not stop at its first promotion.
+      const promotedRunIdByIssueId = new Map<string, string>();
+      for (const issueId of issueIdsInWakeOrder) {
+        const wakeAfterRelease = await db
+          .select()
+          .from(agentWakeupRequests)
+          .where(eq(agentWakeupRequests.id, wakeIdByIssueId.get(issueId)!))
+          .then((rows) => rows[0] ?? null);
+
+        expect(wakeAfterRelease?.reason).toBe("issue_execution_promoted");
+        expect(wakeAfterRelease?.status).not.toBe("deferred_issue_execution");
+        expect(wakeAfterRelease?.runId).not.toBeNull();
+
+        const promotedRun = await db
+          .select()
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, wakeAfterRelease!.runId!))
+          .then((rows) => rows[0] ?? null);
+        expect(promotedRun?.agentId).toBe(agentId);
+        expect(promotedRun?.contextSnapshot).toMatchObject({ issueId });
+        promotedRunIdByIssueId.set(issueId, wakeAfterRelease!.runId!);
+      }
+
+      await waitFor(async () => {
+        const runs = await db
+          .select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.agentId, agentId));
+        const statusesByRunId = new Map(runs.map((run) => [run.id, run.status]));
+        return issueIdsInWakeOrder.every(
+          (issueId) => statusesByRunId.get(promotedRunIdByIssueId.get(issueId)!) === "succeeded",
+        );
+      }, 90_000);
+    } finally {
+      gateway.releaseFirstWait();
+      await gateway.close();
+    }
+  }, 120_000);
+
+  it("promotes sibling deferred wakes when a workspace-validation failure parks the primary issue blocked", async () => {
+    const gateway = await createControlledGatewayServer();
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const primaryIssueId = randomUUID();
+    const siblingIssueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const heartbeat = heartbeatService(db);
+
+    try {
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix,
+        requireBoardApprovalForNewAgents: false,
+        defaultResponsibleUserId: "responsible-user",
+      });
+
+      await db.insert(agents).values({
+        id: agentId,
+        companyId,
+        name: "Gateway Agent",
+        role: "engineer",
+        status: "idle",
+        adapterType: "openclaw_gateway",
+        adapterConfig: {
+          url: gateway.url,
+          headers: {
+            "x-openclaw-token": "gateway-token",
+          },
+          payloadTemplate: {
+            message: "wake now",
+          },
+          waitTimeoutMs: 2_000,
+        },
+        runtimeConfig: {},
+        permissions: {},
+      });
+
+      await db.insert(issues).values([
+        {
+          id: primaryIssueId,
+          companyId,
+          title: "Primary issue with failing workspace",
+          status: "todo",
+          priority: "medium",
+          responsibleUserId: "responsible-user",
+          assigneeAgentId: agentId,
+          issueNumber: 1,
+          identifier: `${issuePrefix}-1`,
+        },
+        {
+          id: siblingIssueId,
+          companyId,
+          title: "Sibling issue parked behind the failing run",
+          status: "in_progress",
+          priority: "medium",
+          responsibleUserId: "responsible-user",
+          assigneeAgentId: agentId,
+          issueNumber: 2,
+          identifier: `${issuePrefix}-2`,
+        },
+      ]);
+
+      const primaryComment = await db
+        .insert(issueComments)
+        .values({
+          companyId,
+          issueId: primaryIssueId,
+          authorUserId: "user-1",
+          body: "Start primary work",
+        })
+        .returning()
+        .then((rows) => rows[0]);
+      const firstRun = await heartbeat.wakeup(agentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_commented",
+        payload: { issueId: primaryIssueId, commentId: primaryComment.id },
+        contextSnapshot: {
+          issueId: primaryIssueId,
+          taskId: primaryIssueId,
+          commentId: primaryComment.id,
+          wakeReason: "issue_commented",
+        },
+        requestedByActorType: "user",
+        requestedByActorId: "user-1",
+      });
+
+      expect(firstRun).not.toBeNull();
+      await waitFor(() => gateway.getAgentPayloads().length === 1);
+
+      await db
+        .update(issues)
+        .set({
+          executionRunId: firstRun!.id,
+          executionAgentNameKey: "gateway agent",
+          executionLockedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(eq(issues.id, siblingIssueId));
+
+      // Park one wake on the primary issue (must stay parked: the recovery flow
+      // owns that issue) and one on the sibling (must promote).
+      const primaryFollowupComment = await db
+        .insert(issueComments)
+        .values({
+          companyId,
+          issueId: primaryIssueId,
+          authorUserId: "user-1",
+          body: "Primary follow-up parked behind the running lock",
+        })
+        .returning()
+        .then((rows) => rows[0]);
+      const primaryDeferredRun = await heartbeat.wakeup(agentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_commented",
+        payload: { issueId: primaryIssueId, commentId: primaryFollowupComment.id },
+        contextSnapshot: {
+          issueId: primaryIssueId,
+          taskId: primaryIssueId,
+          commentId: primaryFollowupComment.id,
+          wakeCommentId: primaryFollowupComment.id,
+          wakeReason: "issue_commented",
+        },
+        requestedByActorType: "user",
+        requestedByActorId: "user-1",
+      });
+      expect(primaryDeferredRun).toBeNull();
+
+      const siblingComment = await db
+        .insert(issueComments)
+        .values({
+          companyId,
+          issueId: siblingIssueId,
+          authorUserId: "user-1",
+          body: "Sibling follow-up parked behind the failing run",
+        })
+        .returning()
+        .then((rows) => rows[0]);
+      const siblingWakeRun = await heartbeat.wakeup(agentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_commented",
+        payload: { issueId: siblingIssueId, commentId: siblingComment.id },
+        contextSnapshot: {
+          issueId: siblingIssueId,
+          taskId: siblingIssueId,
+          commentId: siblingComment.id,
+          wakeCommentId: siblingComment.id,
+          wakeReason: "issue_commented",
+        },
+        requestedByActorType: "user",
+        requestedByActorId: "user-1",
+      });
+      expect(siblingWakeRun).toBeNull();
+
+      const deferredWakes = await db
+        .select()
+        .from(agentWakeupRequests)
+        .where(
+          and(
+            eq(agentWakeupRequests.companyId, companyId),
+            eq(agentWakeupRequests.agentId, agentId),
+            eq(agentWakeupRequests.status, "deferred_issue_execution"),
+          ),
+        )
+        .orderBy(asc(agentWakeupRequests.requestedAt));
+      expect(deferredWakes).toHaveLength(2);
+      const primaryWake = deferredWakes.find(
+        (wake) => (wake.payload as Record<string, unknown>).issueId === primaryIssueId,
+      );
+      const siblingWake = deferredWakes.find(
+        (wake) => (wake.payload as Record<string, unknown>).issueId === siblingIssueId,
+      );
+      expect(primaryWake).not.toBeNull();
+      expect(siblingWake).not.toBeNull();
+
+      // Finalize the run as a workspace-validation failure, which routes the
+      // primary issue into the blocked-recovery branch.
+      await heartbeat.cancelRun(
+        firstRun!.id,
+        "workspace validation failed before dispatch",
+        { errorCode: "workspace_validation_failed" },
+      );
+
+      // The sibling's parked wake must promote even though the primary issue
+      // took the blocked-recovery return.
+      const siblingWakeAfterRelease = await db
+        .select()
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, siblingWake!.id))
+        .then((rows) => rows[0] ?? null);
+      expect(siblingWakeAfterRelease?.reason).toBe("issue_execution_promoted");
+      expect(siblingWakeAfterRelease?.status).not.toBe("deferred_issue_execution");
+      expect(siblingWakeAfterRelease?.runId).not.toBeNull();
+
+      const promotedRun = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, siblingWakeAfterRelease!.runId!))
+        .then((rows) => rows[0] ?? null);
+      expect(promotedRun?.agentId).toBe(agentId);
+      expect(promotedRun?.contextSnapshot).toMatchObject({ issueId: siblingIssueId });
+
+      // The primary issue still gets the blocked-recovery treatment. Its own
+      // parked wake is NOT promoted (that would race the recovery flow that
+      // now owns this issue's lifecycle) but must not be left dangling in
+      // `deferred_issue_execution` either, since nothing else ever transitions
+      // that status — it is explicitly terminalized as failed instead.
+      const primaryAfterRelease = await db
+        .select({ status: issues.status })
+        .from(issues)
+        .where(eq(issues.id, primaryIssueId))
+        .then((rows) => rows[0] ?? null);
+      expect(primaryAfterRelease?.status).toBe("blocked");
+
+      const primaryComments = await db
+        .select({ body: issueComments.body })
+        .from(issueComments)
+        .where(eq(issueComments.issueId, primaryIssueId));
+      expect(
+        primaryComments.some((comment) => comment.body.includes("issue workspace failed validation")),
+      ).toBe(true);
+
+      const primaryWakeAfterRelease = await db
+        .select()
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, primaryWake!.id))
+        .then((rows) => rows[0] ?? null);
+      expect(primaryWakeAfterRelease?.status).toBe("failed");
+      expect(primaryWakeAfterRelease?.status).not.toBe("deferred_issue_execution");
+      expect(primaryWakeAfterRelease?.finishedAt).not.toBeNull();
+      expect(primaryWakeAfterRelease?.error).toBeTruthy();
+
+      await waitFor(async () => {
+        const run = await db
+          .select({ status: heartbeatRuns.status })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, siblingWakeAfterRelease!.runId!))
+          .then((rows) => rows[0] ?? null);
+        return run?.status === "succeeded";
+      }, 90_000);
+    } finally {
+      gateway.releaseFirstWait();
+      await gateway.close();
+    }
+  }, 120_000);
+
+  it("terminalizes the primary issue's own deferred wake instead of stranding it when workspace validation fails", async () => {
+    const gateway = await createControlledGatewayServer();
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const primaryIssueId = randomUUID();
+    const siblingIssueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const heartbeat = heartbeatService(db);
+
+    try {
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix,
+        requireBoardApprovalForNewAgents: false,
+        defaultResponsibleUserId: "responsible-user",
+      });
+
+      await db.insert(agents).values({
+        id: agentId,
+        companyId,
+        name: "Gateway Agent",
+        role: "engineer",
+        status: "idle",
+        adapterType: "openclaw_gateway",
+        adapterConfig: {
+          url: gateway.url,
+          headers: {
+            "x-openclaw-token": "gateway-token",
+          },
+          payloadTemplate: {
+            message: "wake now",
+          },
+          waitTimeoutMs: 2_000,
+        },
+        runtimeConfig: {},
+        permissions: {},
+      });
+
+      // A sibling issue is included (held by the same run) purely as a
+      // regression guard: its wake must still promote normally in the same
+      // finalization that terminalizes the primary issue's own wake.
+      await db.insert(issues).values([
+        {
+          id: primaryIssueId,
+          companyId,
+          title: "Primary issue with only its own parked wake",
+          status: "todo",
+          priority: "medium",
+          responsibleUserId: "responsible-user",
+          assigneeAgentId: agentId,
+          issueNumber: 1,
+          identifier: `${issuePrefix}-1`,
+        },
+        {
+          id: siblingIssueId,
+          companyId,
+          title: "Sibling issue that must still promote",
+          status: "in_progress",
+          priority: "medium",
+          responsibleUserId: "responsible-user",
+          assigneeAgentId: agentId,
+          issueNumber: 2,
+          identifier: `${issuePrefix}-2`,
+        },
+      ]);
+
+      const primaryComment = await db
+        .insert(issueComments)
+        .values({
+          companyId,
+          issueId: primaryIssueId,
+          authorUserId: "user-1",
+          body: "Start primary work",
+        })
+        .returning()
+        .then((rows) => rows[0]);
+      const firstRun = await heartbeat.wakeup(agentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_commented",
+        payload: { issueId: primaryIssueId, commentId: primaryComment.id },
+        contextSnapshot: {
+          issueId: primaryIssueId,
+          taskId: primaryIssueId,
+          commentId: primaryComment.id,
+          wakeReason: "issue_commented",
+        },
+        requestedByActorType: "user",
+        requestedByActorId: "user-1",
+      });
+
+      expect(firstRun).not.toBeNull();
+      await waitFor(() => gateway.getAgentPayloads().length === 1);
+
+      await db
+        .update(issues)
+        .set({
+          executionRunId: firstRun!.id,
+          executionAgentNameKey: "gateway agent",
+          executionLockedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(eq(issues.id, siblingIssueId));
+
+      const primaryFollowupComment = await db
+        .insert(issueComments)
+        .values({
+          companyId,
+          issueId: primaryIssueId,
+          authorUserId: "user-1",
+          body: "Primary follow-up parked on its own issue",
+        })
+        .returning()
+        .then((rows) => rows[0]);
+      const primaryDeferredRun = await heartbeat.wakeup(agentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_commented",
+        payload: { issueId: primaryIssueId, commentId: primaryFollowupComment.id },
+        contextSnapshot: {
+          issueId: primaryIssueId,
+          taskId: primaryIssueId,
+          commentId: primaryFollowupComment.id,
+          wakeCommentId: primaryFollowupComment.id,
+          wakeReason: "issue_commented",
+        },
+        requestedByActorType: "user",
+        requestedByActorId: "user-1",
+      });
+      expect(primaryDeferredRun).toBeNull();
+
+      const siblingComment = await db
+        .insert(issueComments)
+        .values({
+          companyId,
+          issueId: siblingIssueId,
+          authorUserId: "user-1",
+          body: "Sibling follow-up must still promote",
+        })
+        .returning()
+        .then((rows) => rows[0]);
+      const siblingWakeRun = await heartbeat.wakeup(agentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_commented",
+        payload: { issueId: siblingIssueId, commentId: siblingComment.id },
+        contextSnapshot: {
+          issueId: siblingIssueId,
+          taskId: siblingIssueId,
+          commentId: siblingComment.id,
+          wakeCommentId: siblingComment.id,
+          wakeReason: "issue_commented",
+        },
+        requestedByActorType: "user",
+        requestedByActorId: "user-1",
+      });
+      expect(siblingWakeRun).toBeNull();
+
+      const deferredWakes = await db
+        .select()
+        .from(agentWakeupRequests)
+        .where(
+          and(
+            eq(agentWakeupRequests.companyId, companyId),
+            eq(agentWakeupRequests.agentId, agentId),
+            eq(agentWakeupRequests.status, "deferred_issue_execution"),
+          ),
+        )
+        .orderBy(asc(agentWakeupRequests.requestedAt));
+      expect(deferredWakes).toHaveLength(2);
+      const primaryWake = deferredWakes.find(
+        (wake) => (wake.payload as Record<string, unknown>).issueId === primaryIssueId,
+      );
+      const siblingWake = deferredWakes.find(
+        (wake) => (wake.payload as Record<string, unknown>).issueId === siblingIssueId,
+      );
+      expect(primaryWake).not.toBeNull();
+      expect(siblingWake).not.toBeNull();
+
+      await heartbeat.cancelRun(
+        firstRun!.id,
+        "workspace validation failed before dispatch",
+        { errorCode: "workspace_validation_failed" },
+      );
+
+      // The primary issue's own wake must transition to `failed` with a
+      // non-empty error, not sit stranded in `deferred_issue_execution`.
+      const primaryWakeAfterRelease = await db
+        .select()
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, primaryWake!.id))
+        .then((rows) => rows[0] ?? null);
+      expect(primaryWakeAfterRelease?.status).toBe("failed");
+      expect(primaryWakeAfterRelease?.status).not.toBe("deferred_issue_execution");
+      expect(primaryWakeAfterRelease?.finishedAt).not.toBeNull();
+      expect(primaryWakeAfterRelease?.error).toBeTruthy();
+      expect(primaryWakeAfterRelease?.error).toContain("Stranded by workspace/configuration validation failure");
+      // The primary issue's own wake must never be promoted — that would race
+      // the recovery flow that now owns this issue's lifecycle.
+      expect(primaryWakeAfterRelease?.reason).not.toBe("issue_execution_promoted");
+      expect(primaryWakeAfterRelease?.runId).toBeNull();
+
+      // The primary issue still gets the blocked-recovery treatment exactly
+      // as before this fix.
+      const primaryAfterRelease = await db
+        .select({ status: issues.status })
+        .from(issues)
+        .where(eq(issues.id, primaryIssueId))
+        .then((rows) => rows[0] ?? null);
+      expect(primaryAfterRelease?.status).toBe("blocked");
+
+      const primaryComments = await db
+        .select({ body: issueComments.body })
+        .from(issueComments)
+        .where(eq(issueComments.issueId, primaryIssueId));
+      expect(
+        primaryComments.some((comment) => comment.body.includes("issue workspace failed validation")),
+      ).toBe(true);
+
+      // Regression guard: the sibling's deferred wake in the same
+      // finalization must still promote normally.
+      const siblingWakeAfterRelease = await db
+        .select()
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, siblingWake!.id))
+        .then((rows) => rows[0] ?? null);
+      expect(siblingWakeAfterRelease?.reason).toBe("issue_execution_promoted");
+      expect(siblingWakeAfterRelease?.status).not.toBe("deferred_issue_execution");
+      expect(siblingWakeAfterRelease?.runId).not.toBeNull();
+
+      const promotedRun = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, siblingWakeAfterRelease!.runId!))
+        .then((rows) => rows[0] ?? null);
+      expect(promotedRun?.agentId).toBe(agentId);
+      expect(promotedRun?.contextSnapshot).toMatchObject({ issueId: siblingIssueId });
+
+      await waitFor(async () => {
+        const run = await db
+          .select({ status: heartbeatRuns.status })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, siblingWakeAfterRelease!.runId!))
+          .then((rows) => rows[0] ?? null);
+        return run?.status === "succeeded";
+      }, 90_000);
+    } finally {
+      gateway.releaseFirstWait();
+      await gateway.close();
+    }
+  }, 120_000);
+
+  it("quotes the pending comment content in the blocked-recovery comment when workspace validation fails", async () => {
+    const gateway = await createControlledGatewayServer();
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const primaryIssueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const heartbeat = heartbeatService(db);
+    const strandedFeedbackBody =
+      "Founder rejected this: the pricing copy on the landing page still says $99 instead of $79 — please fix before shipping.";
+
+    try {
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix,
+        requireBoardApprovalForNewAgents: false,
+        defaultResponsibleUserId: "responsible-user",
+      });
+
+      await db.insert(agents).values({
+        id: agentId,
+        companyId,
+        name: "Gateway Agent",
+        role: "engineer",
+        status: "idle",
+        adapterType: "openclaw_gateway",
+        adapterConfig: {
+          url: gateway.url,
+          headers: {
+            "x-openclaw-token": "gateway-token",
+          },
+          payloadTemplate: {
+            message: "wake now",
+          },
+          waitTimeoutMs: 2_000,
+        },
+        runtimeConfig: {},
+        permissions: {},
+      });
+
+      await db.insert(issues).values({
+        id: primaryIssueId,
+        companyId,
+        title: "Primary issue with a real pending comment",
+        status: "todo",
+        priority: "medium",
+        responsibleUserId: "responsible-user",
+        assigneeAgentId: agentId,
+        issueNumber: 1,
+        identifier: `${issuePrefix}-1`,
+      });
+
+      const primaryComment = await db
+        .insert(issueComments)
+        .values({
+          companyId,
+          issueId: primaryIssueId,
+          authorUserId: "user-1",
+          body: "Start primary work",
+        })
+        .returning()
+        .then((rows) => rows[0]);
+      const firstRun = await heartbeat.wakeup(agentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_commented",
+        payload: { issueId: primaryIssueId, commentId: primaryComment.id },
+        contextSnapshot: {
+          issueId: primaryIssueId,
+          taskId: primaryIssueId,
+          commentId: primaryComment.id,
+          wakeReason: "issue_commented",
+        },
+        requestedByActorType: "user",
+        requestedByActorId: "user-1",
+      });
+
+      expect(firstRun).not.toBeNull();
+      await waitFor(() => gateway.getAgentPayloads().length === 1);
+
+      // The stranded comment carries real, distinctive content — the thing a
+      // human would otherwise have to reconstruct from scratch (BRO-1501).
+      const strandedFeedbackComment = await db
+        .insert(issueComments)
+        .values({
+          companyId,
+          issueId: primaryIssueId,
+          authorUserId: "founder-user",
+          body: strandedFeedbackBody,
+        })
+        .returning()
+        .then((rows) => rows[0]);
+      const strandedDeferredRun = await heartbeat.wakeup(agentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_commented",
+        payload: { issueId: primaryIssueId, commentId: strandedFeedbackComment.id },
+        contextSnapshot: {
+          issueId: primaryIssueId,
+          taskId: primaryIssueId,
+          commentId: strandedFeedbackComment.id,
+          wakeCommentId: strandedFeedbackComment.id,
+          wakeReason: "issue_commented",
+        },
+        requestedByActorType: "user",
+        requestedByActorId: "founder-user",
+      });
+      expect(strandedDeferredRun).toBeNull();
+
+      const deferredWake = await db
+        .select()
+        .from(agentWakeupRequests)
+        .where(
+          and(
+            eq(agentWakeupRequests.companyId, companyId),
+            eq(agentWakeupRequests.agentId, agentId),
+            eq(agentWakeupRequests.status, "deferred_issue_execution"),
+          ),
+        )
+        .then((rows) => rows[0] ?? null);
+      expect(deferredWake).not.toBeNull();
+      expect(deferredWake?.payload).toMatchObject({ issueId: primaryIssueId });
+
+      // Finalize the run as a workspace-validation failure, which routes the
+      // primary issue into the blocked-recovery branch and fails out its own
+      // pending deferred wake (round 3's fix).
+      await heartbeat.cancelRun(
+        firstRun!.id,
+        "workspace validation failed before dispatch",
+        { errorCode: "workspace_validation_failed" },
+      );
+
+      // Round 3's behavior must still hold: the wake is terminalized, not
+      // left stranded in `deferred_issue_execution`.
+      const wakeAfterRelease = await db
+        .select()
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, deferredWake!.id))
+        .then((rows) => rows[0] ?? null);
+      expect(wakeAfterRelease?.status).toBe("failed");
+      expect(wakeAfterRelease?.status).not.toBe("deferred_issue_execution");
+      expect(wakeAfterRelease?.finishedAt).not.toBeNull();
+      expect(wakeAfterRelease?.error).toBeTruthy();
+
+      // Round 4: the blocked-recovery comment must quote the actual content
+      // of the stranded comment, not just the generic explanation.
+      const primaryAfterRelease = await db
+        .select({ status: issues.status })
+        .from(issues)
+        .where(eq(issues.id, primaryIssueId))
+        .then((rows) => rows[0] ?? null);
+      expect(primaryAfterRelease?.status).toBe("blocked");
+
+      const primaryComments = await db
+        .select({ body: issueComments.body })
+        .from(issueComments)
+        .where(eq(issueComments.issueId, primaryIssueId));
+      const recoveryComment = primaryComments.find((comment) =>
+        comment.body.includes("issue workspace failed validation"),
+      );
+      expect(recoveryComment).not.toBeUndefined();
+      expect(recoveryComment?.body).toContain("Pending feedback that could not be delivered");
+      expect(recoveryComment?.body).toContain(strandedFeedbackBody);
+    } finally {
+      gateway.releaseFirstWait();
+      await gateway.close();
+    }
+  }, 120_000);
+
+  it("points the recovery wake at the blocked-recovery comment instead of leaving the pending feedback undiscoverable", async () => {
+    // Greptile flagged that a workspace-validation recovery wake carries no
+    // pending-comment context, so a resumed agent could omit the stranded
+    // feedback entirely rather than merely needing to read the thread for
+    // it. The content itself was never lost (the previous test proves it's
+    // quoted verbatim into a real, permanent comment) -- but nothing pointed
+    // the resumed run at that comment. This asserts the recovery wake now
+    // carries a direct reference to it.
+    const gateway = await createControlledGatewayServer();
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const primaryIssueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const heartbeat = heartbeatService(db);
+    const strandedFeedbackBody =
+      "Founder rejected this: the pricing copy on the landing page still says $99 instead of $79 — please fix before shipping.";
+
+    try {
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix,
+        requireBoardApprovalForNewAgents: false,
+        defaultResponsibleUserId: "responsible-user",
+      });
+
+      await db.insert(agents).values({
+        id: agentId,
+        companyId,
+        name: "Gateway Agent",
+        role: "engineer",
+        status: "idle",
+        adapterType: "openclaw_gateway",
+        adapterConfig: {
+          url: gateway.url,
+          headers: { "x-openclaw-token": "gateway-token" },
+          payloadTemplate: { message: "wake now" },
+          waitTimeoutMs: 2_000,
+        },
+        runtimeConfig: {},
+        permissions: {},
+      });
+
+      await db.insert(issues).values({
+        id: primaryIssueId,
+        companyId,
+        title: "Primary issue with a real pending comment",
+        status: "todo",
+        priority: "medium",
+        responsibleUserId: "responsible-user",
+        assigneeAgentId: agentId,
+        issueNumber: 1,
+        identifier: `${issuePrefix}-1`,
+      });
+
+      const primaryComment = await db
+        .insert(issueComments)
+        .values({ companyId, issueId: primaryIssueId, authorUserId: "user-1", body: "Start primary work" })
+        .returning()
+        .then((rows) => rows[0]);
+      const firstRun = await heartbeat.wakeup(agentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_commented",
+        payload: { issueId: primaryIssueId, commentId: primaryComment.id },
+        contextSnapshot: {
+          issueId: primaryIssueId,
+          taskId: primaryIssueId,
+          commentId: primaryComment.id,
+          wakeReason: "issue_commented",
+        },
+        requestedByActorType: "user",
+        requestedByActorId: "user-1",
+      });
+      expect(firstRun).not.toBeNull();
+      await waitFor(() => gateway.getAgentPayloads().length === 1);
+
+      const strandedFeedbackComment = await db
+        .insert(issueComments)
+        .values({ companyId, issueId: primaryIssueId, authorUserId: "founder-user", body: strandedFeedbackBody })
+        .returning()
+        .then((rows) => rows[0]);
+      const strandedDeferredRun = await heartbeat.wakeup(agentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_commented",
+        payload: { issueId: primaryIssueId, commentId: strandedFeedbackComment.id },
+        contextSnapshot: {
+          issueId: primaryIssueId,
+          taskId: primaryIssueId,
+          commentId: strandedFeedbackComment.id,
+          wakeCommentId: strandedFeedbackComment.id,
+          wakeReason: "issue_commented",
+        },
+        requestedByActorType: "user",
+        requestedByActorId: "founder-user",
+      });
+      expect(strandedDeferredRun).toBeNull();
+
+      await heartbeat.cancelRun(
+        firstRun!.id,
+        "workspace validation failed before dispatch",
+        { errorCode: "workspace_validation_failed" },
+      );
+
+      const primaryAfterRelease = await db
+        .select({ status: issues.status })
+        .from(issues)
+        .where(eq(issues.id, primaryIssueId))
+        .then((rows) => rows[0] ?? null);
+      expect(primaryAfterRelease?.status).toBe("blocked");
+
+      const primaryComments = await db
+        .select({ id: issueComments.id, body: issueComments.body })
+        .from(issueComments)
+        .where(eq(issueComments.issueId, primaryIssueId));
+      const recoveryComment = primaryComments.find((comment) =>
+        comment.body.includes("issue workspace failed validation"),
+      );
+      expect(recoveryComment).not.toBeUndefined();
+      expect(recoveryComment?.body).toContain(strandedFeedbackBody);
+
+      const recoveryWake = await db
+        .select()
+        .from(agentWakeupRequests)
+        .where(
+          and(
+            eq(agentWakeupRequests.companyId, companyId),
+            eq(agentWakeupRequests.reason, "source_scoped_recovery_action"),
+            sql`${agentWakeupRequests.payload} ->> 'issueId' = ${primaryIssueId}`,
+          ),
+        )
+        .then((rows) => rows[0] ?? null);
+      expect(recoveryWake).not.toBeNull();
+      // agent_wakeup_requests only persists `payload`, not `contextSnapshot`
+      // (that gets folded into the run's own contextSnapshot once claimed) --
+      // payload.commentId is the same field deriveCommentId() falls back to,
+      // and is what confirms the reference actually reached the queued wake.
+      expect(recoveryWake?.payload).toMatchObject({ commentId: recoveryComment!.id });
+    } finally {
+      gateway.releaseFirstWait();
+      await gateway.close();
+    }
+  }, 120_000);
+
+  it("redacts a quarantined stranded comment's body instead of quoting it verbatim in the blocked-recovery comment", async () => {
+    const gateway = await createControlledGatewayServer();
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const primaryIssueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const heartbeat = heartbeatService(db);
+    const quarantinedFeedbackBody =
+      "This body must never reach the recovery comment verbatim — it is quarantined low-trust output.";
+
+    try {
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix,
+        requireBoardApprovalForNewAgents: false,
+        defaultResponsibleUserId: "responsible-user",
+      });
+
+      await db.insert(agents).values({
+        id: agentId,
+        companyId,
+        name: "Gateway Agent",
+        role: "engineer",
+        status: "idle",
+        adapterType: "openclaw_gateway",
+        adapterConfig: {
+          url: gateway.url,
+          headers: {
+            "x-openclaw-token": "gateway-token",
+          },
+          payloadTemplate: {
+            message: "wake now",
+          },
+          waitTimeoutMs: 2_000,
+        },
+        runtimeConfig: {},
+        permissions: {},
+      });
+
+      await db.insert(issues).values({
+        id: primaryIssueId,
+        companyId,
+        title: "Primary issue with a quarantined pending comment",
+        status: "todo",
+        priority: "medium",
+        responsibleUserId: "responsible-user",
+        assigneeAgentId: agentId,
+        issueNumber: 1,
+        identifier: `${issuePrefix}-1`,
+      });
+
+      const primaryComment = await db
+        .insert(issueComments)
+        .values({
+          companyId,
+          issueId: primaryIssueId,
+          authorUserId: "user-1",
+          body: "Start primary work",
+        })
+        .returning()
+        .then((rows) => rows[0]);
+      const firstRun = await heartbeat.wakeup(agentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_commented",
+        payload: { issueId: primaryIssueId, commentId: primaryComment.id },
+        contextSnapshot: {
+          issueId: primaryIssueId,
+          taskId: primaryIssueId,
+          commentId: primaryComment.id,
+          wakeReason: "issue_commented",
+        },
+        requestedByActorType: "user",
+        requestedByActorId: "user-1",
+      });
+
+      expect(firstRun).not.toBeNull();
+      await waitFor(() => gateway.getAgentPayloads().length === 1);
+
+      const quarantinedComment = await db
+        .insert(issueComments)
+        .values({
+          companyId,
+          issueId: primaryIssueId,
+          authorAgentId: agentId,
+          body: quarantinedFeedbackBody,
+          sourceTrust: {
+            preset: LOW_TRUST_REVIEW_PRESET,
+            disposition: "quarantined",
+            sourceIssueId: primaryIssueId,
+          },
+        })
+        .returning()
+        .then((rows) => rows[0]);
+      const quarantinedDeferredRun = await heartbeat.wakeup(agentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_commented",
+        payload: { issueId: primaryIssueId, commentId: quarantinedComment.id },
+        contextSnapshot: {
+          issueId: primaryIssueId,
+          taskId: primaryIssueId,
+          commentId: quarantinedComment.id,
+          wakeCommentId: quarantinedComment.id,
+          wakeReason: "issue_commented",
+        },
+        requestedByActorType: "agent",
+        requestedByActorId: agentId,
+      });
+      expect(quarantinedDeferredRun).toBeNull();
+
+      await heartbeat.cancelRun(
+        firstRun!.id,
+        "workspace validation failed before dispatch",
+        { errorCode: "workspace_validation_failed" },
+      );
+
+      const primaryAfterRelease = await db
+        .select({ status: issues.status })
+        .from(issues)
+        .where(eq(issues.id, primaryIssueId))
+        .then((rows) => rows[0] ?? null);
+      expect(primaryAfterRelease?.status).toBe("blocked");
+
+      const primaryComments = await db
+        .select({ body: issueComments.body })
+        .from(issueComments)
+        .where(eq(issueComments.issueId, primaryIssueId));
+      const recoveryComment = primaryComments.find((comment) =>
+        comment.body.includes("issue workspace failed validation"),
+      );
+      expect(recoveryComment).not.toBeUndefined();
+      // The real quarantined body must never appear, redacted or not.
+      expect(recoveryComment?.body).not.toContain(quarantinedFeedbackBody);
+      // Mirroring redactQuarantinedBodyForHigherTrust elsewhere in the file:
+      // the pending-feedback section still appears, but with the placeholder
+      // in place of the real content.
+      expect(recoveryComment?.body).toContain("Pending feedback that could not be delivered");
+      expect(recoveryComment?.body).toContain(LOW_TRUST_QUARANTINED_BODY);
+    } finally {
+      gateway.releaseFirstWait();
+      await gateway.close();
+    }
+  }, 120_000);
+
+  it("excludes a soft-deleted stranded comment from the blocked-recovery comment entirely", async () => {
+    const gateway = await createControlledGatewayServer();
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const primaryIssueId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const heartbeat = heartbeatService(db);
+    const deletedFeedbackBody = "This comment was deleted and must not be resurrected into a new comment.";
+
+    try {
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix,
+        requireBoardApprovalForNewAgents: false,
+        defaultResponsibleUserId: "responsible-user",
+      });
+
+      await db.insert(agents).values({
+        id: agentId,
+        companyId,
+        name: "Gateway Agent",
+        role: "engineer",
+        status: "idle",
+        adapterType: "openclaw_gateway",
+        adapterConfig: {
+          url: gateway.url,
+          headers: {
+            "x-openclaw-token": "gateway-token",
+          },
+          payloadTemplate: {
+            message: "wake now",
+          },
+          waitTimeoutMs: 2_000,
+        },
+        runtimeConfig: {},
+        permissions: {},
+      });
+
+      await db.insert(issues).values({
+        id: primaryIssueId,
+        companyId,
+        title: "Primary issue with a soft-deleted pending comment",
+        status: "todo",
+        priority: "medium",
+        responsibleUserId: "responsible-user",
+        assigneeAgentId: agentId,
+        issueNumber: 1,
+        identifier: `${issuePrefix}-1`,
+      });
+
+      const primaryComment = await db
+        .insert(issueComments)
+        .values({
+          companyId,
+          issueId: primaryIssueId,
+          authorUserId: "user-1",
+          body: "Start primary work",
+        })
+        .returning()
+        .then((rows) => rows[0]);
+      const firstRun = await heartbeat.wakeup(agentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_commented",
+        payload: { issueId: primaryIssueId, commentId: primaryComment.id },
+        contextSnapshot: {
+          issueId: primaryIssueId,
+          taskId: primaryIssueId,
+          commentId: primaryComment.id,
+          wakeReason: "issue_commented",
+        },
+        requestedByActorType: "user",
+        requestedByActorId: "user-1",
+      });
+
+      expect(firstRun).not.toBeNull();
+      await waitFor(() => gateway.getAgentPayloads().length === 1);
+
+      const deletedComment = await db
+        .insert(issueComments)
+        .values({
+          companyId,
+          issueId: primaryIssueId,
+          authorUserId: "user-1",
+          body: deletedFeedbackBody,
+          deletedAt: new Date(),
+          deletedByType: "user",
+          deletedByUserId: "user-1",
+        })
+        .returning()
+        .then((rows) => rows[0]);
+      const deletedDeferredRun = await heartbeat.wakeup(agentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_commented",
+        payload: { issueId: primaryIssueId, commentId: deletedComment.id },
+        contextSnapshot: {
+          issueId: primaryIssueId,
+          taskId: primaryIssueId,
+          commentId: deletedComment.id,
+          wakeCommentId: deletedComment.id,
+          wakeReason: "issue_commented",
+        },
+        requestedByActorType: "user",
+        requestedByActorId: "user-1",
+      });
+      expect(deletedDeferredRun).toBeNull();
+
+      await heartbeat.cancelRun(
+        firstRun!.id,
+        "workspace validation failed before dispatch",
+        { errorCode: "workspace_validation_failed" },
+      );
+
+      const primaryAfterRelease = await db
+        .select({ status: issues.status })
+        .from(issues)
+        .where(eq(issues.id, primaryIssueId))
+        .then((rows) => rows[0] ?? null);
+      expect(primaryAfterRelease?.status).toBe("blocked");
+
+      const primaryComments = await db
+        .select({ body: issueComments.body })
+        .from(issueComments)
+        .where(eq(issueComments.issueId, primaryIssueId));
+      const recoveryComment = primaryComments.find((comment) =>
+        comment.body.includes("issue workspace failed validation"),
+      );
+      expect(recoveryComment).not.toBeUndefined();
+      // A soft-deleted comment is excluded entirely: no placeholder, no
+      // pending-feedback section at all, since it was the only stranded
+      // comment on this issue.
+      expect(recoveryComment?.body).not.toContain(deletedFeedbackBody);
+      expect(recoveryComment?.body).not.toContain("Pending feedback that could not be delivered");
+    } finally {
+      gateway.releaseFirstWait();
+      await gateway.close();
+    }
+  }, 120_000);
+
+  it("drains sibling deferred wakes when the primary issue execution lock moved to a retry run", async () => {
+    const gateway = await createControlledGatewayServer();
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const retryAgentId = randomUUID();
+    const primaryIssueId = randomUUID();
+    const siblingIssueId = randomUUID();
+    const retryRunId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const heartbeat = heartbeatService(db);
+
+    try {
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix,
+        requireBoardApprovalForNewAgents: false,
+        defaultResponsibleUserId: "responsible-user",
+      });
+
+      await db.insert(agents).values([
+        {
+          id: agentId,
+          companyId,
+          name: "Gateway Agent",
+          role: "engineer",
+          status: "idle",
+          adapterType: "openclaw_gateway",
+          adapterConfig: {
+            url: gateway.url,
+            headers: {
+              "x-openclaw-token": "gateway-token",
+            },
+            payloadTemplate: {
+              message: "wake now",
+            },
+            waitTimeoutMs: 2_000,
+          },
+          runtimeConfig: {},
+          permissions: {},
+        },
+        {
+          id: retryAgentId,
+          companyId,
+          name: "Retry Agent",
+          role: "engineer",
+          status: "idle",
+          adapterType: "process",
+          adapterConfig: {},
+          runtimeConfig: {},
+          permissions: {},
+        },
+      ]);
+
+      await db.insert(issues).values([
+        {
+          id: primaryIssueId,
+          companyId,
+          title: "Primary issue repointed to retry",
+          status: "todo",
+          priority: "medium",
+          responsibleUserId: "responsible-user",
+          assigneeAgentId: agentId,
+          issueNumber: 1,
+          identifier: `${issuePrefix}-1`,
+        },
+        {
+          id: siblingIssueId,
+          companyId,
+          title: "Sibling issue must still drain",
+          status: "in_progress",
+          priority: "medium",
+          responsibleUserId: "responsible-user",
+          assigneeAgentId: agentId,
+          issueNumber: 2,
+          identifier: `${issuePrefix}-2`,
+        },
+      ]);
+
+      const primaryComment = await db
+        .insert(issueComments)
+        .values({
+          companyId,
+          issueId: primaryIssueId,
+          authorUserId: "user-1",
+          body: "Start primary work",
+        })
+        .returning()
+        .then((rows) => rows[0]);
+      const firstRun = await heartbeat.wakeup(agentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_commented",
+        payload: { issueId: primaryIssueId, commentId: primaryComment.id },
+        contextSnapshot: {
+          issueId: primaryIssueId,
+          taskId: primaryIssueId,
+          commentId: primaryComment.id,
+          wakeReason: "issue_commented",
+        },
+        requestedByActorType: "user",
+        requestedByActorId: "user-1",
+      });
+
+      expect(firstRun).not.toBeNull();
+      await waitFor(() => gateway.getAgentPayloads().length === 1);
+
+      await db
+        .update(issues)
+        .set({
+          executionRunId: firstRun!.id,
+          executionAgentNameKey: "gateway agent",
+          executionLockedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(eq(issues.id, siblingIssueId));
+
+      const siblingComment = await db
+        .insert(issueComments)
+        .values({
+          companyId,
+          issueId: siblingIssueId,
+          authorUserId: "user-1",
+          body: "Sibling follow-up parked behind the running lock",
+        })
+        .returning()
+        .then((rows) => rows[0]);
+      const siblingWakeRun = await heartbeat.wakeup(agentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_commented",
+        payload: { issueId: siblingIssueId, commentId: siblingComment.id },
+        contextSnapshot: {
+          issueId: siblingIssueId,
+          taskId: siblingIssueId,
+          commentId: siblingComment.id,
+          wakeCommentId: siblingComment.id,
+          wakeReason: "issue_commented",
+        },
+        requestedByActorType: "user",
+        requestedByActorId: "user-1",
+      });
+
+      expect(siblingWakeRun).toBeNull();
+
+      const deferredWake = await db
+        .select()
+        .from(agentWakeupRequests)
+        .where(
+          and(
+            eq(agentWakeupRequests.companyId, companyId),
+            eq(agentWakeupRequests.agentId, agentId),
+            eq(agentWakeupRequests.status, "deferred_issue_execution"),
+          ),
+        )
+        .then((rows) => rows[0] ?? null);
+
+      expect(deferredWake).not.toBeNull();
+      expect(deferredWake?.payload).toMatchObject({ issueId: siblingIssueId });
+
+      // Simulate a mid-finalization retry: the primary issue's execution lock
+      // now points at a queued retry run instead of the finalizing run.
+      await db.insert(heartbeatRuns).values({
+        id: retryRunId,
+        companyId,
+        agentId: retryAgentId,
+        invocationSource: "automation",
+        triggerDetail: "system",
+        status: "queued",
+        retryOfRunId: firstRun!.id,
+        contextSnapshot: {
+          issueId: primaryIssueId,
+          taskId: primaryIssueId,
+          wakeReason: "issue_continuation_needed",
+          retryOfRunId: firstRun!.id,
+        },
+      });
+      await db
+        .update(issues)
+        .set({
+          executionRunId: retryRunId,
+          executionAgentNameKey: "retry agent",
+          updatedAt: new Date(),
+        })
+        .where(eq(issues.id, primaryIssueId));
+
+      await heartbeat.cancelRun(firstRun!.id);
+
+      // The repointed primary must abort its own drain without stranding the
+      // sibling's parked wake.
+      const wakeAfterRelease = await db
+        .select()
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, deferredWake!.id))
+        .then((rows) => rows[0] ?? null);
+
+      expect(wakeAfterRelease?.reason).toBe("issue_execution_promoted");
+      expect(wakeAfterRelease?.status).not.toBe("deferred_issue_execution");
+      expect(wakeAfterRelease?.runId).not.toBeNull();
+
+      const promotedRun = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, wakeAfterRelease!.runId!))
+        .then((rows) => rows[0] ?? null);
+
+      expect(promotedRun?.agentId).toBe(agentId);
+      expect(promotedRun?.contextSnapshot).toMatchObject({ issueId: siblingIssueId });
+
+      // The retry run keeps the primary issue's execution lock untouched.
+      const primaryAfterRelease = await db
+        .select({
+          executionRunId: issues.executionRunId,
+          checkoutRunId: issues.checkoutRunId,
+        })
+        .from(issues)
+        .where(eq(issues.id, primaryIssueId))
+        .then((rows) => rows[0] ?? null);
+      expect(primaryAfterRelease?.executionRunId).toBe(retryRunId);
+
+      const retryRunAfterRelease = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, retryRunId))
+        .then((rows) => rows[0] ?? null);
+      expect(retryRunAfterRelease?.status).toBe("queued");
+
+      await waitFor(async () => {
+        const run = await db
+          .select({ status: heartbeatRuns.status })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, wakeAfterRelease!.runId!))
+          .then((rows) => rows[0] ?? null);
+        return run?.status === "succeeded";
+      }, 90_000);
+    } finally {
+      gateway.releaseFirstWait();
+      await gateway.close();
+    }
+  }, 120_000);
 });
