@@ -3703,9 +3703,18 @@ function normalizeBilledCostCents(costUsd: number | null | undefined, billingTyp
  * `rateCardCents` is the already-computed list-price figure for this row:
  * `null` means we have no published rate for the model (so the spend is real
  * but unquantifiable), while `0` means we priced it and it rounds below a cent.
+ *
+ * The status describes `cost_cents` - the cash on the row - not whatever
+ * estimate the CLI printed. A subscription run is the case that matters: the
+ * Claude Code CLI happily reports a rate-card `costUsd` (e.g. $2.35), but
+ * `normalizeBilledCostCents` zeroes it because nothing is metered. Reading the
+ * CLI figure here would stamp `reported` on a row whose cash is 0 by policy,
+ * and would disagree with the historical backfill, which only ever saw
+ * `cost_cents`. So the credibility test is on the billed cents.
  */
 export function resolveLedgerCostStatus(input: {
   costUsd: number | null | undefined;
+  billedCostCents?: number | null;
   inputTokens: number;
   cachedInputTokens: number;
   outputTokens: number;
@@ -3720,9 +3729,13 @@ export function resolveLedgerCostStatus(input: {
   // No tokens burned: there is nothing to price, so the provider's figure
   // (including a legitimate zero) stands as reported.
   if (!hasTokenUsage) return "reported";
-  const hasCredibleReportedCost =
-    typeof input.costUsd === "number" && Number.isFinite(input.costUsd) && input.costUsd > 0;
-  if (hasCredibleReportedCost) return "reported";
+  const billedCents =
+    typeof input.billedCostCents === "number" && Number.isFinite(input.billedCostCents)
+      ? input.billedCostCents
+      : typeof input.costUsd === "number" && Number.isFinite(input.costUsd)
+        ? Math.max(0, Math.round(input.costUsd * 100))
+        : 0;
+  if (billedCents > 0) return "reported";
   // Real tokens, no credible cost. Priced from the rate card if we can, and
   // loudly unpriced if we cannot - never a silent zero.
   return input.rateCardCents == null ? "unpriced" : "derived";
@@ -13340,6 +13353,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     );
     const costStatus = resolveLedgerCostStatus({
       costUsd: billedCostUsd,
+      billedCostCents: additionalCostCents,
       inputTokens,
       cachedInputTokens,
       outputTokens,
@@ -15763,6 +15777,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               ...(runRateCardCents != null ? { rateCardCents: runRateCardCents } : {}),
               costStatus: resolveLedgerCostStatus({
                 costUsd: cacheAdjustedCostUsd,
+                billedCostCents: normalizeBilledCostCents(
+                  cacheAdjustedCostUsd,
+                  normalizeLedgerBillingType(adapterResult.billingType),
+                ),
                 inputTokens: normalizedUsage?.inputTokens ?? 0,
                 cachedInputTokens: normalizedUsage?.cachedInputTokens ?? 0,
                 outputTokens: normalizedUsage?.outputTokens ?? 0,
