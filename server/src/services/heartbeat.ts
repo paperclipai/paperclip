@@ -12,6 +12,7 @@ import {
   PROVIDER_QUOTA_MONITOR_SERVICE_NAME,
   envBindingSchema,
   isEnvironmentDriverSupportedForAdapter,
+  routinePreflightSchema,
   type BillingType,
   type CostStatus,
   type EnvironmentLeaseStatus,
@@ -23,6 +24,7 @@ import {
   type IssueExecutionMonitorRecoveryPolicy,
   type ModelProfileKey,
   type RequestConfirmationResult,
+  type RoutinePreflight,
   type RoutineRevisionSnapshotV1,
   type RunLivenessState,
   type SourceTrustMetadata,
@@ -3677,6 +3679,87 @@ export function shouldResetTaskSessionForWake(
   return false;
 }
 
+export function resolveRoutinePreflightEligibility(input: {
+  preflight: RoutinePreflight | null | undefined;
+  routineId: string | null | undefined;
+  routineRevisionId: string | null | undefined;
+  issueId: string | null | undefined;
+  executionTargetKind: string | null | undefined;
+  trustPresetKind: TrustPresetResolution["kind"];
+  authToken: string | null | undefined;
+}) {
+  if (!input.preflight) {
+    return { eligible: false as const, reason: "not_configured" };
+  }
+  if (!readNonEmptyString(input.routineId) || !readNonEmptyString(input.issueId)) {
+    return { eligible: false as const, reason: "unverified_routine_execution" };
+  }
+  if (!readNonEmptyString(input.routineRevisionId)) {
+    return { eligible: false as const, reason: "routine_revision_not_pinned" };
+  }
+  if (readNonEmptyString(input.executionTargetKind) !== "local") {
+    return { eligible: false as const, reason: "non_local_execution_target" };
+  }
+  if (input.trustPresetKind !== "standard") {
+    return { eligible: false as const, reason: "non_standard_trust_preset" };
+  }
+  if (!readNonEmptyString(input.authToken)) {
+    return { eligible: false as const, reason: "run_auth_token_unavailable" };
+  }
+  return { eligible: true as const, reason: null };
+}
+
+export function resolveRoutinePreflightOutcome(input: {
+  executionResult: AdapterExecutionResult;
+  issueStatus: string | null | undefined;
+  routineId: string;
+  routineRevisionId: string;
+}) {
+  if (input.executionResult.timedOut) {
+    return { skipPrimaryAdapter: false as const, reason: "preflight_timed_out" };
+  }
+  if (
+    input.executionResult.exitCode !== 0 ||
+    input.executionResult.signal ||
+    input.executionResult.errorMessage
+  ) {
+    return { skipPrimaryAdapter: false as const, reason: "preflight_process_failed" };
+  }
+  if (input.issueStatus !== "done" && input.issueStatus !== "cancelled") {
+    return { skipPrimaryAdapter: false as const, reason: "execution_issue_not_terminal" };
+  }
+  return {
+    skipPrimaryAdapter: true as const,
+    reason: null,
+    adapterResult: {
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      usage: {
+        inputTokens: 0,
+        cachedInputTokens: 0,
+        outputTokens: 0,
+      },
+      usageBasis: "per_run" as const,
+      provider: "paperclip",
+      biller: "paperclip",
+      model: "routine-deterministic-preflight",
+      billingType: "unknown" as const,
+      costUsd: 0,
+      clearSession: true,
+      summary: "Routine deterministic preflight completed the execution issue; primary adapter skipped.",
+      resultJson: {
+        routinePreflight: {
+          skippedPrimaryAdapter: true,
+          routineId: input.routineId,
+          routineRevisionId: input.routineRevisionId,
+          issueStatus: input.issueStatus,
+        },
+      },
+    } satisfies AdapterExecutionResult,
+  };
+}
+
 function shouldRequireIssueCommentForWake(
   contextSnapshot: Record<string, unknown> | null | undefined,
 ) {
@@ -6715,7 +6798,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     issueContext: Awaited<ReturnType<typeof getIssueExecutionContext>> | null,
   ) {
     if (!issueContext || issueContext.originKind !== "routine_execution" || !issueContext.originId) {
-      return { routineId: null, env: null, responsibleUserId: null };
+      return {
+        routineId: null,
+        routineRevisionId: null,
+        env: null,
+        preflight: null,
+        responsibleUserId: null,
+      };
     }
 
     const routineRun = issueContext.originRunId
@@ -6752,9 +6841,25 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         .then((rows) => rows[0] ?? null);
       const snapshot = revision?.snapshot as RoutineRevisionSnapshotV1 | undefined;
       if (snapshot?.version === 1) {
+        const parsedPreflight =
+          snapshot.routine.preflight == null
+            ? null
+            : routinePreflightSchema.safeParse(snapshot.routine.preflight);
+        if (parsedPreflight && !parsedPreflight.success) {
+          logger.warn(
+            {
+              companyId,
+              routineId: issueContext.originId,
+              routineRevisionId: routineRun.routineRevisionId,
+            },
+            "routine revision contains invalid deterministic preflight config; primary adapter will run",
+          );
+        }
         return {
           routineId: issueContext.originId,
+          routineRevisionId: routineRun.routineRevisionId,
           env: snapshot.routine.env ?? null,
+          preflight: parsedPreflight?.success ? parsedPreflight.data : null,
           responsibleUserId: revision?.responsibleUserId ?? snapshot.routine.responsibleUserId ?? null,
         };
       }
@@ -6767,7 +6872,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .then((rows) => rows[0] ?? null);
     return {
       routineId: issueContext.originId,
+      routineRevisionId: routineRun?.routineRevisionId ?? null,
       env: routine?.env ?? null,
+      preflight: null,
       responsibleUserId: routineRun?.responsibleUserId ?? routine?.responsibleUserId ?? null,
     };
   }
@@ -11505,7 +11612,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       run,
       contextSnapshot: context,
       issueContext: issueId ? await getIssueExecutionContext(run.companyId, issueId) : null,
-      routineEnvContext: { routineId: null, env: null, responsibleUserId: null },
+      routineEnvContext: {
+        routineId: null,
+        routineRevisionId: null,
+        env: null,
+        preflight: null,
+        responsibleUserId: null,
+      },
     });
     const claimed = await db
       .update(heartbeatRuns)
@@ -14423,56 +14536,147 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         adapterFinalizeOutcome = status;
       };
 
-      let adapterResult: Awaited<ReturnType<typeof adapter.execute>>;
+      let adapterResult: AdapterExecutionResult | undefined;
       try {
-        const adapterContext = { ...context };
-        const runtimeMcpServers = await buildPaperclipRuntimeMcpServers({
-          db,
-          agent,
-          runId: run.id,
+        const routinePreflightEligibility = resolveRoutinePreflightEligibility({
+          preflight: routineEnvContext.preflight,
+          routineId: routineEnvContext.routineId,
+          routineRevisionId: routineEnvContext.routineRevisionId,
+          issueId: issueRef?.id,
+          executionTargetKind: executionTarget?.kind,
+          trustPresetKind: trustPreset.kind,
+          authToken,
         });
-        const runtimeMcp = createAdapterRuntimeMcpAccess(runtimeMcpServers);
-        const managedMcpConfig = await createManagedMcpRunConfig({
-          db,
-          agent,
-          runId: run.id,
-          config: runtimeConfig,
-          projectId: issueRef?.projectId ?? null,
-          issueId: issueRef?.id ?? null,
-        });
-        if (managedMcpConfig) {
-          adapterContext.paperclipManagedMcp = managedMcpConfig;
-        }
-        adapterResult = await adapter.execute({
-          runId: run.id,
-          agent,
-          runtime: runtimeForAdapter,
-          config: runtimeConfig,
-          context: adapterContext,
-          runtimeCommandSpec: adapter.getRuntimeCommandSpec?.(runtimeConfig) ?? null,
-          executionTarget,
-          executionTransport: remoteExecution
-            ? { remoteExecution: remoteExecution as unknown as Record<string, unknown> }
-            : undefined,
-          runtimeMcp,
-          onLog,
-          onMeta: onAdapterMeta,
-          onEvent: onAdapterEvent,
-          onRuntimeProgress: async (progress) => {
-            await recordCurrentHeartbeatRunRuntimeProgress(run, progress, issueId);
-          },
-          onSpawn: async (meta) => {
-            await persistRunProcessMetadata(run.id, {
-              pid: meta.pid,
-              processGroupId:
-                "processGroupId" in meta && typeof meta.processGroupId === "number"
-                  ? meta.processGroupId
-                  : null,
-              startedAt: meta.startedAt,
+        if (routineEnvContext.preflight && !routinePreflightEligibility.eligible) {
+          await onLog(
+            "stdout",
+            `[paperclip] Routine deterministic preflight unavailable (${routinePreflightEligibility.reason}); invoking primary adapter.\n`,
+          );
+        } else if (
+          routineEnvContext.preflight &&
+          routinePreflightEligibility.eligible &&
+          issueRef &&
+          routineEnvContext.routineId &&
+          routineEnvContext.routineRevisionId
+        ) {
+          try {
+            const preflightAdapter = getServerAdapter("process");
+            const preflightResult = await preflightAdapter.execute({
+              runId: run.id,
+              agent,
+              runtime: runtimeForAdapter,
+              config: {
+                command: routineEnvContext.preflight.command,
+                args: routineEnvContext.preflight.args,
+                cwd: routineEnvContext.preflight.cwd ?? executionWorkspace.cwd,
+                timeoutSec: routineEnvContext.preflight.timeoutSec,
+                graceSec: 5,
+                env: {
+                  ...parseObject(runtimeConfig.env),
+                  PAPERCLIP_TASK_ID: issueRef.id,
+                  PAPERCLIP_WAKE_REASON: readNonEmptyString(context.wakeReason) ?? "routine_execution",
+                  PAPERCLIP_ROUTINE_ID: routineEnvContext.routineId,
+                  PAPERCLIP_ROUTINE_REVISION_ID: routineEnvContext.routineRevisionId,
+                },
+              },
+              context: {
+                ...context,
+                routinePreflight: true,
+              },
+              runtimeCommandSpec: null,
+              executionTarget,
+              onLog,
+              onMeta: onAdapterMeta,
+              onEvent: onAdapterEvent,
+              onSpawn: async (meta) => {
+                await persistRunProcessMetadata(run.id, {
+                  pid: meta.pid,
+                  processGroupId:
+                    "processGroupId" in meta && typeof meta.processGroupId === "number"
+                      ? meta.processGroupId
+                      : null,
+                  startedAt: meta.startedAt,
+                });
+              },
+              authToken: authToken ?? undefined,
             });
-          },
-          authToken: authToken ?? undefined,
-        });
+            const refreshedIssue = await issuesSvc.getById(issueRef.id);
+            const preflightOutcome = resolveRoutinePreflightOutcome({
+              executionResult: preflightResult,
+              issueStatus: refreshedIssue?.status,
+              routineId: routineEnvContext.routineId,
+              routineRevisionId: routineEnvContext.routineRevisionId,
+            });
+            if (preflightOutcome.skipPrimaryAdapter) {
+              adapterResult = preflightOutcome.adapterResult;
+              await onLog(
+                "stdout",
+                "[paperclip] Routine deterministic preflight completed the execution issue; primary adapter skipped.\n",
+              );
+            } else {
+              await onLog(
+                "stderr",
+                `[paperclip] Routine deterministic preflight did not safely complete (${preflightOutcome.reason}); invoking primary adapter.\n`,
+              );
+            }
+          } catch (preflightErr) {
+            await onLog(
+              "stderr",
+              `[paperclip] Routine deterministic preflight failed (${preflightErr instanceof Error ? preflightErr.message : String(preflightErr)}); invoking primary adapter.\n`,
+            );
+          }
+        }
+
+        if (!adapterResult) {
+          const adapterContext = { ...context };
+          const runtimeMcpServers = await buildPaperclipRuntimeMcpServers({
+            db,
+            agent,
+            runId: run.id,
+          });
+          const runtimeMcp = createAdapterRuntimeMcpAccess(runtimeMcpServers);
+          const managedMcpConfig = await createManagedMcpRunConfig({
+            db,
+            agent,
+            runId: run.id,
+            config: runtimeConfig,
+            projectId: issueRef?.projectId ?? null,
+            issueId: issueRef?.id ?? null,
+          });
+          if (managedMcpConfig) {
+            adapterContext.paperclipManagedMcp = managedMcpConfig;
+          }
+          adapterResult = await adapter.execute({
+            runId: run.id,
+            agent,
+            runtime: runtimeForAdapter,
+            config: runtimeConfig,
+            context: adapterContext,
+            runtimeCommandSpec: adapter.getRuntimeCommandSpec?.(runtimeConfig) ?? null,
+            executionTarget,
+            executionTransport: remoteExecution
+              ? { remoteExecution: remoteExecution as unknown as Record<string, unknown> }
+              : undefined,
+            runtimeMcp,
+            onLog,
+            onMeta: onAdapterMeta,
+            onEvent: onAdapterEvent,
+            onRuntimeProgress: async (progress) => {
+              await recordCurrentHeartbeatRunRuntimeProgress(run, progress, issueId);
+            },
+            onSpawn: async (meta) => {
+              await persistRunProcessMetadata(run.id, {
+                pid: meta.pid,
+                processGroupId:
+                  "processGroupId" in meta && typeof meta.processGroupId === "number"
+                    ? meta.processGroupId
+                    : null,
+                startedAt: meta.startedAt,
+              });
+            },
+            authToken: authToken ?? undefined,
+          });
+        }
         // Adapter returned cleanly, which means its workspace-restore finally
         // block also ran without throwing. Record the workspace_finalize
         // barrier so dependents that share this executionWorkspace can wake.
@@ -14510,6 +14714,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             "failed to revoke heartbeat-run MCP gateway tokens",
           );
         }
+      }
+      if (!adapterResult) {
+        throw new Error("Heartbeat execution finished without an adapter result");
       }
       const adapterManagedRuntimeServices = adapterResult.runtimeServices
         ? await persistAdapterManagedRuntimeServices({

@@ -25,6 +25,8 @@ import {
   prioritizeProjectWorkspaceCandidatesForRun,
   parseSessionCompactionPolicy,
   provisionExecutionWorkspaceForFreshnessDecision,
+  resolveRoutinePreflightEligibility,
+  resolveRoutinePreflightOutcome,
   resolveExecutionWorkspaceConfigFreshness,
   resolveExecutionWorkspaceReuseRequestForIssue,
   resolveExecutionWorkspaceReuseProvisioningPolicy,
@@ -1600,6 +1602,139 @@ describe("shouldResetTaskSessionForWake", () => {
         wakeTriggerDetail: "callback",
       }),
     ).toBe(false);
+  });
+});
+
+describe("routine deterministic preflight", () => {
+  const preflight = {
+    command: "node",
+    args: ["/opt/paperclip/check.mjs"],
+    cwd: null,
+    timeoutSec: 30,
+  };
+
+  it("is eligible only for a revision-pinned local standard-trust routine execution", () => {
+    expect(resolveRoutinePreflightEligibility({
+      preflight,
+      routineId: "routine-1",
+      routineRevisionId: "revision-1",
+      issueId: "issue-1",
+      executionTargetKind: "local",
+      trustPresetKind: "standard",
+      authToken: "run-token",
+    })).toEqual({ eligible: true, reason: null });
+
+    expect(resolveRoutinePreflightEligibility({
+      preflight,
+      routineId: "routine-1",
+      routineRevisionId: null,
+      issueId: "issue-1",
+      executionTargetKind: "local",
+      trustPresetKind: "standard",
+      authToken: "run-token",
+    })).toEqual({ eligible: false, reason: "routine_revision_not_pinned" });
+
+    expect(resolveRoutinePreflightEligibility({
+      preflight,
+      routineId: "routine-1",
+      routineRevisionId: "revision-1",
+      issueId: "issue-1",
+      executionTargetKind: "kubernetes",
+      trustPresetKind: "standard",
+      authToken: "run-token",
+    })).toEqual({ eligible: false, reason: "non_local_execution_target" });
+
+    for (const executionTargetKind of [null, undefined]) {
+      expect(resolveRoutinePreflightEligibility({
+        preflight,
+        routineId: "routine-1",
+        routineRevisionId: "revision-1",
+        issueId: "issue-1",
+        executionTargetKind,
+        trustPresetKind: "standard",
+        authToken: "run-token",
+      })).toEqual({ eligible: false, reason: "non_local_execution_target" });
+    }
+
+    expect(resolveRoutinePreflightEligibility({
+      preflight,
+      routineId: "routine-1",
+      routineRevisionId: "revision-1",
+      issueId: "issue-1",
+      executionTargetKind: "local",
+      trustPresetKind: "low_trust_review",
+      authToken: "run-token",
+    })).toEqual({ eligible: false, reason: "non_standard_trust_preset" });
+  });
+
+  it("skips the primary adapter with zero usage only after the helper terminalizes the issue", () => {
+    const completed = resolveRoutinePreflightOutcome({
+      executionResult: {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+      },
+      issueStatus: "done",
+      routineId: "routine-1",
+      routineRevisionId: "revision-1",
+    });
+    expect(completed).toMatchObject({
+      skipPrimaryAdapter: true,
+      adapterResult: {
+        usage: {
+          inputTokens: 0,
+          cachedInputTokens: 0,
+          outputTokens: 0,
+        },
+        usageBasis: "per_run",
+        clearSession: true,
+      },
+    });
+
+    expect(resolveRoutinePreflightOutcome({
+      executionResult: {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+      },
+      issueStatus: "in_progress",
+      routineId: "routine-1",
+      routineRevisionId: "revision-1",
+    })).toEqual({
+      skipPrimaryAdapter: false,
+      reason: "execution_issue_not_terminal",
+    });
+  });
+
+  it("falls back to the primary adapter on preflight process failure", () => {
+    expect(resolveRoutinePreflightOutcome({
+      executionResult: {
+        exitCode: 1,
+        signal: null,
+        timedOut: false,
+        errorMessage: "Process exited with code 1",
+      },
+      issueStatus: "blocked",
+      routineId: "routine-1",
+      routineRevisionId: "revision-1",
+    })).toEqual({
+      skipPrimaryAdapter: false,
+      reason: "preflight_process_failed",
+    });
+
+    expect(resolveRoutinePreflightOutcome({
+      executionResult: {
+        exitCode: null,
+        signal: "SIGTERM",
+        timedOut: false,
+      },
+      issueStatus: "done",
+      routineId: "routine-1",
+      routineRevisionId: "revision-1",
+    })).toEqual({
+      skipPrimaryAdapter: false,
+      reason: "preflight_process_failed",
+    });
   });
 });
 

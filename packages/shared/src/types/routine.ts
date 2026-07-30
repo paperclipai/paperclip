@@ -69,6 +69,13 @@ export interface RoutineVariable {
 
 export type RoutineEnvConfig = Record<string, EnvBinding>;
 
+export interface RoutinePreflight {
+  command: string;
+  args: string[];
+  cwd: string | null;
+  timeoutSec: number;
+}
+
 export interface Routine {
   id: string;
   companyId: string;
@@ -89,6 +96,7 @@ export interface Routine {
   originId?: string | null;
   variables: RoutineVariable[];
   env?: RoutineEnvConfig | null;
+  preflight?: RoutinePreflight | null;
   latestRevisionId: string | null;
   latestRevisionNumber: number;
   createdByAgentId: string | null;
@@ -134,6 +142,7 @@ export interface RoutineRevisionSnapshotRoutineV1 {
   originId?: string | null;
   variables: RoutineVariable[];
   env: RoutineEnvConfig | null;
+  preflight: RoutinePreflight | null;
   responsibleUserId: string | null;
 }
 
