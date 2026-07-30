@@ -150,6 +150,7 @@ import {
   SVG_CONTENT_TYPE,
 } from "../attachment-types.js";
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
+import { resolveCreatedByRunId } from "../services/comment-run-id.js";
 import {
   ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
   buildIssueBlockersResolvedWakeIdempotencyKey,
@@ -6652,7 +6653,7 @@ export function issueRoutes(
             },
           },
           sourceTrust: promotionTrust,
-          createdByRunId: actor.runId ?? null,
+          createdByRunId: await resolveCreatedByRunId(tx, issue.companyId, actor.runId),
         })
         .returning()
         .then((rows) => rows[0] ?? null);
@@ -8114,7 +8115,7 @@ export function issueRoutes(
             actorUserId: actor.actorType === "user" ? actor.actorId : null,
             outcome: decision.outcome,
             body: decision.body,
-            createdByRunId: actor.runId ?? null,
+            createdByRunId: await resolveCreatedByRunId(tx, updated.companyId, actor.runId),
           });
 
           if (shouldRelayStop) {
@@ -10230,7 +10231,7 @@ export function issueRoutes(
               actorUserId: actor.actorType === "user" ? actor.actorId : null,
               outcome: transition.decision.outcome,
               body: transition.decision.body,
-              createdByRunId: actor.runId ?? null,
+              createdByRunId: await resolveCreatedByRunId(tx, updated.companyId, actor.runId),
             });
           }
 

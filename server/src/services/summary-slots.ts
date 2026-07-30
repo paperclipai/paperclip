@@ -1,5 +1,6 @@
 import { and, desc, eq, gte, inArray, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
+import { resolveCreatedByRunId } from "./comment-run-id.js";
 import {
   documentRevisions,
   documents,
@@ -630,7 +631,7 @@ export function summarySlotService(db: Db) {
             body: input.markdown,
             changeSummary: input.changeSummary ?? null,
             createdByAgentId: actor.agentId ?? null,
-            createdByRunId: actor.runId ?? null,
+            createdByRunId: await resolveCreatedByRunId(tx, sel.companyId, actor.runId),
             createdAt: now,
           })
           .returning();
@@ -674,7 +675,7 @@ export function summarySlotService(db: Db) {
             body: input.markdown,
             changeSummary: input.changeSummary ?? null,
             createdByAgentId: actor.agentId ?? null,
-            createdByRunId: actor.runId ?? null,
+            createdByRunId: await resolveCreatedByRunId(tx, sel.companyId, actor.runId),
             createdAt: now,
           })
           .returning();

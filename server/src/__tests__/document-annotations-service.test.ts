@@ -276,6 +276,46 @@ describeEmbeddedPostgres("documentAnnotationService", () => {
     await expect(db.select().from(documentAnnotationComments)).resolves.toHaveLength(0);
   });
 
+  it("resolves a stranded createdByRunId on annotation comment creation instead of 500-ing (#9489 sibling)", async () => {
+    // documentAnnotationComments.createdByRunId is FK-backed the same way
+    // issueComments.createdByRunId was in #9489 -- a client-forwarded run id
+    // that isn't a real row would previously hit the FK raw and 500. This
+    // proves the shared resolveCreatedByRunId helper now guards this site too.
+    const { issueId, document } = await createIssueWithDocument();
+
+    const nonUuidRunId = await annotations.createThread(
+      issueId,
+      "plan",
+      {
+        baseRevisionId: document.latestRevisionId!,
+        baseRevisionNumber: document.latestRevisionNumber,
+        selector: {
+          quote: { exact: "selected text", prefix: "Alpha ", suffix: " omega" },
+          position: { normalizedStart: 6, normalizedEnd: 19, markdownStart: 6, markdownEnd: 19 },
+        },
+        body: "Comment carrying a synthetic client run id",
+      },
+      { actorType: "user", actorId: "board-user", userId: "board-user", runId: "client-request-abc123" },
+    );
+    expect(nonUuidRunId.comments[0]!.createdByRunId).toBeNull();
+
+    const unknownUuidRunId = await annotations.createThread(
+      issueId,
+      "plan",
+      {
+        baseRevisionId: document.latestRevisionId!,
+        baseRevisionNumber: document.latestRevisionNumber,
+        selector: {
+          quote: { exact: "selected text", prefix: "Alpha ", suffix: " omega" },
+          position: { normalizedStart: 6, normalizedEnd: 19, markdownStart: 6, markdownEnd: 19 },
+        },
+        body: "Comment carrying a stale run id",
+      },
+      { actorType: "user", actorId: "board-user", userId: "board-user", runId: randomUUID() },
+    );
+    expect(unknownUuidRunId.comments[0]!.createdByRunId).toBeNull();
+  });
+
   it("does not report already-resolved empty threads as newly resolved during linked comment cleanup", async () => {
     const { companyId, issueId, document } = await createIssueWithDocument();
     const [issueComment] = await db
