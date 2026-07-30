@@ -1101,11 +1101,12 @@ describe("Daytona sandbox provider plugin", () => {
     const [command, cwdArg, envArg, timeoutArg] = sandbox.process.executeCommand.mock.calls[0] as [string, unknown, unknown, number];
     expect(command).toMatch(/\/etc\/profile/);
     expect(command).toMatch(/"\$HOME\/\.profile"/);
-    expect(command).toMatch(/cd '\/workspace'/);
+    expect(command).not.toMatch(/nvm\.sh/);
+    expect(command).toMatch(/&& cd '\/workspace'/);
     expect(command).toMatch(/&& env GIT_TERMINAL_PROMPT='0' GCM_INTERACTIVE='Never' GIT_ASKPASS='echo' SSH_ASKPASS='echo' SSH_ASKPASS_REQUIRE='force' FOO='bar' 'printf' 'hello'$/);
     expect(command).not.toMatch(/(?:^|&& )exec /);
-    // cwd/env are baked into the login-shell command itself; we pass undefined
-    // to the SDK so it doesn't run the cd before profile sourcing.
+    // cwd/env are baked into the command itself; we pass undefined to the SDK
+    // so its own cwd argument does not run before the caller env is applied.
     expect(cwdArg).toBeUndefined();
     expect(envArg).toBeUndefined();
     expect(timeoutArg).toBe(1);
@@ -1182,7 +1183,8 @@ describe("Daytona sandbox provider plugin", () => {
     );
     const [command] = sandbox.process.executeCommand.mock.calls[0] as [string];
     expect(command).toMatch(/\/etc\/profile/);
-    expect(command).toMatch(/cd '\/workspace'/);
+    expect(command).not.toMatch(/nvm\.sh/);
+    expect(command).toMatch(/&& cd '\/workspace'/);
     expect(command).toMatch(/env .* 'cat' < '\/tmp\/paperclip-stdin-/);
     expect(command).not.toMatch(/(?:^|&& )exec /);
     expect(sandbox.fs.deleteFile).toHaveBeenCalledWith(expect.stringMatching(/^\/tmp\/paperclip-stdin-/));
@@ -1307,37 +1309,12 @@ describe("Daytona sandbox provider plugin", () => {
     expect(result?.stderr).toMatch(/unreachable|credentials/i);
   });
 
-  // ─── No-profile fast path (A2) ─────────────────────────────────────────────
-  // The opt-in `noProfile` flag sheds the ~600 ms login-shell profile/nvm
-  // sourcing for command classes whose binary resolves on the default PATH
-  // (file-sync `tar`/`base64`/`mkdir`/`mv`), while every other exec surface
-  // (env prefix, cwd, quoting, stdin, durationMs) is preserved byte-for-byte.
-  it("test_no_profile_fast_path_omits_profile_sourcing", async () => {
-    process.env.DAYTONA_API_KEY = "host-key";
-    const sandbox = createMockSandbox();
-    mockGet.mockResolvedValue(sandbox);
-
-    await plugin.definition.onEnvironmentExecute?.({
-      driverKey: "daytona",
-      companyId: "company-1",
-      environmentId: "env-1",
-      config: { timeoutMs: 300000, reuseLease: false },
-      lease: { providerLeaseId: "sandbox-123", metadata: {} },
-      command: "tar",
-      args: ["-xf", "/workspace/upload.tar", "-C", "/workspace"],
-      cwd: "/workspace",
-      noProfile: true,
-      timeoutMs: 1000,
-    });
-
-    const [command] = sandbox.process.executeCommand.mock.calls[0] as [string];
-    expect(command).not.toMatch(/\/etc\/profile/);
-    expect(command).not.toMatch(/nvm\.sh/);
-    expect(command).not.toMatch(/NVM_DIR/);
-    expect(command).not.toMatch(/\.bash_profile/);
-  });
-
-  it("test_no_profile_fast_path_preserves_env_cwd_and_duration", async () => {
+  // ─── Exec command shape ────────────────────────────────────────────────────
+  // The wrapper sources the login profiles so `node` resolves on the reference
+  // image, then runs the command. It no longer sources `nvm.sh`, while every
+  // other exec surface (env prefix, cwd, quoting, stdin, durationMs) stays
+  // intact.
+  it("test_exec_command_preserves_env_cwd_and_duration", async () => {
     process.env.DAYTONA_API_KEY = "host-key";
     const sandbox = createMockSandbox();
     sandbox.process.executeCommand.mockResolvedValue({
@@ -1357,29 +1334,30 @@ describe("Daytona sandbox provider plugin", () => {
       args: ["-d"],
       cwd: "/workspace",
       env: { FOO: "bar" },
-      noProfile: true,
       timeoutMs: 1000,
     });
 
     const [command] = sandbox.process.executeCommand.mock.calls[0] as [string];
-    // The full exec surface is preserved on the fast path — only profile sourcing
-    // is dropped. The command must still start with the `cd` (no profile lines
-    // ahead of it) and carry the env prefix and noninteractive git defaults.
-    expect(command).toMatch(/^cd '\/workspace' && env /);
+    // The command sources the login profiles first, then runs the `cd` and the
+    // env prefix with the noninteractive git defaults.
+    expect(command).toMatch(/^if \[ -f \/etc\/profile \]/);
+    expect(command).toMatch(/&& cd '\/workspace' && env /);
     expect(command).toMatch(/GIT_TERMINAL_PROMPT='0'/);
     expect(command).toMatch(/FOO='bar' 'base64' '-d'$/);
-    expect(command).not.toMatch(/\/etc\/profile/);
-    // durationMs attribution is unchanged on the fast path.
+    expect(command).toMatch(/\/etc\/profile/);
+    expect(command).not.toMatch(/nvm\.sh/);
+    // durationMs attribution stays intact.
     expect(typeof (result!.metadata as Record<string, unknown>)?.durationMs).toBe("number");
   });
 
-  it("test_default_path_still_sources_profile", async () => {
+  it("test_exec_command_sources_profile_without_nvm", async () => {
     process.env.DAYTONA_API_KEY = "host-key";
     const sandbox = createMockSandbox();
     mockGet.mockResolvedValue(sandbox);
 
-    // No `noProfile` flag: the fail-safe default must still source the login
-    // profile so node-launching execs resolve their nvm/profile PATH.
+    // A node-launching exec resolves `node` through the login profiles, which
+    // Daytona's non-login `executeCommand` shell does not source on its own. The
+    // wrapper sources the profiles but no longer sources `nvm.sh`.
     await plugin.definition.onEnvironmentExecute?.({
       driverKey: "daytona",
       companyId: "company-1",
@@ -1394,7 +1372,9 @@ describe("Daytona sandbox provider plugin", () => {
 
     const [command] = sandbox.process.executeCommand.mock.calls[0] as [string];
     expect(command).toMatch(/\/etc\/profile/);
-    expect(command).toMatch(/nvm\.sh/);
+    expect(command).toMatch(/"\$HOME\/\.profile"/);
+    expect(command).not.toMatch(/nvm\.sh/);
+    expect(command).not.toMatch(/NVM_DIR/);
   });
 
   // ─── Per-lease started-sandbox handle cache ────────────────────────────────
@@ -2155,6 +2135,35 @@ describe("Daytona sandbox provider plugin", () => {
 
       expect(mockGet).toHaveBeenCalledTimes(2);
       expect(second.process.executeCommand).toHaveBeenCalledTimes(1);
+    });
+
+    it("realizes the workspace from the acquire-seeded handle without a client.get", async () => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      const sandbox = createMockSandbox({ id: "sandbox-seed" });
+      mockCreate.mockResolvedValue(sandbox);
+
+      const base = { driverKey: "daytona", companyId: "company-1", environmentId: "env-1" };
+      const config = { image: "node:20", timeoutMs: 300000, reuseLease: false };
+
+      const lease = await plugin.definition.onEnvironmentAcquireLease?.({
+        ...base,
+        runId: "run-1",
+        config,
+      });
+      expect(lease?.providerLeaseId).toBe("sandbox-seed");
+
+      const realize = await plugin.definition.onEnvironmentRealizeWorkspace?.({
+        ...base,
+        lease: { providerLeaseId: lease!.providerLeaseId, metadata: lease!.metadata },
+        workspace: { remotePath: "/home/daytona/paperclip-workspace" },
+        config,
+      });
+
+      // Acquire seeded the handle under the exact scope realize reads, so realize
+      // reuses it and never pays a real REST re-fetch.
+      expect(mockGet).not.toHaveBeenCalled();
+      expect(sandbox.fs.createFolder).toHaveBeenCalledWith("/home/daytona/paperclip-workspace", "755");
+      expect(realize?.cwd).toBe("/home/daytona/paperclip-workspace");
     });
   });
 });
@@ -2947,6 +2956,159 @@ describe("daytona native file-sync hooks", () => {
     ).toBe(false);
   });
 
+  // -------------------------------------------------------------------------
+  // Merged git-workspace operation. A git-backed workspace stage-sync rides ONE
+  // operation whose `files` carry the git-history tar and the workspace-overlay
+  // tar, with the two extract commands as ordered `postUploadCommands`. The
+  // operation shares one mkdir, one confine guard, one `uploadFiles`, and one
+  // rename exec.
+  // -------------------------------------------------------------------------
+
+  it("stages a merged git-workspace operation as one uploadFiles batch and one rename exec, both extracts in order", async () => {
+    const hostDir = await makeHostDir();
+    const gitTar = path.join(hostDir, "git-workspace.tar");
+    const overlayTar = path.join(hostDir, "workspace.tar");
+    await fs.writeFile(gitTar, "git-bytes");
+    await fs.writeFile(overlayTar, "overlay-bytes");
+    const runtimeDir = `${REMOTE_DIR}/.paperclip-runtime/adapter`;
+
+    const sandbox = createMockSandbox();
+    mockGet.mockResolvedValue(sandbox);
+
+    const gitExtract = "git-history-extract";
+    const overlayExtract = "workspace-overlay-extract";
+    const result = await plugin.definition.onEnvironmentSyncIn?.({
+      driverKey: "daytona",
+      companyId: "company-1",
+      environmentId: "env-1",
+      config: { timeoutMs: 300000, reuseLease: false },
+      lease: syncLease(),
+      operations: [
+        {
+          operationId: "merged-workspace",
+          files: [
+            { sourcePath: gitTar, targetPath: `${runtimeDir}/git-workspace-upload.tar`, kind: "file" },
+            { sourcePath: overlayTar, targetPath: `${runtimeDir}/workspace-upload.tar`, kind: "file" },
+          ],
+          postUploadCommands: [{ command: gitExtract }, { command: overlayExtract }],
+        },
+      ],
+    });
+
+    // One bulk upload carries BOTH tars; one rename exec promotes both temps.
+    expect(sandbox.fs.uploadFiles).toHaveBeenCalledTimes(1);
+    const [uploads] = sandbox.fs.uploadFiles.mock.calls[0] as [Array<{ source: string; destination: string }>];
+    expect(uploads).toHaveLength(2);
+    const mvCalls = sandbox.process.executeCommand.mock.calls.filter(([cmd]: [string]) =>
+      String(cmd).includes("mv -f"),
+    );
+    expect(mvCalls).toHaveLength(1);
+    expect(String(mvCalls[0][0]).match(/mv -f /g)).toHaveLength(2);
+
+    // Both extract commands ran, in array order, AFTER the upload (git first).
+    const orderOf = (cmd: string) => {
+      const idx = sandbox.process.executeCommand.mock.calls.findIndex(([c]: [string]) => c === cmd);
+      return sandbox.process.executeCommand.mock.invocationCallOrder[idx];
+    };
+    expect(orderOf(gitExtract)).toBeLessThan(orderOf(overlayExtract));
+    expect(sandbox.fs.uploadFiles.mock.invocationCallOrder[0]).toBeLessThan(orderOf(gitExtract));
+
+    expect(result).toEqual({
+      operations: [{
+        operationId: "merged-workspace",
+        filesTransferred: 2,
+        bytesTransferred: "git-bytes".length + "overlay-bytes".length,
+      }],
+    });
+  });
+
+  it("rejects a merged operation when either tar mapping target escapes the remote dir, before uploading", async () => {
+    const hostDir = await makeHostDir();
+    const gitTar = path.join(hostDir, "git-workspace.tar");
+    const overlayTar = path.join(hostDir, "workspace.tar");
+    await fs.writeFile(gitTar, "git-bytes");
+    await fs.writeFile(overlayTar, "overlay-bytes");
+    const runtimeDir = `${REMOTE_DIR}/.paperclip-runtime/adapter`;
+
+    const sandbox = createMockSandbox();
+    mockGet.mockResolvedValue(sandbox);
+
+    await expect(
+      plugin.definition.onEnvironmentSyncIn?.({
+        driverKey: "daytona",
+        companyId: "company-1",
+        environmentId: "env-1",
+        config: { timeoutMs: 300000, reuseLease: false },
+        lease: syncLease(),
+        operations: [
+          {
+            operationId: "merged-escape",
+            files: [
+              { sourcePath: gitTar, targetPath: `${runtimeDir}/git-workspace-upload.tar`, kind: "file" },
+              // The overlay mapping target escapes the workspace remote dir.
+              { sourcePath: overlayTar, targetPath: `${REMOTE_DIR}/../../etc/workspace-upload.tar`, kind: "file" },
+            ],
+            postUploadCommands: [{ command: "git-history-extract" }, { command: "workspace-overlay-extract" }],
+          },
+        ],
+      }),
+    ).rejects.toThrow(/escapes the workspace remote dir|not a confined absolute path/);
+
+    // Neither tar uploaded: the confine check on the escaping mapping trips first.
+    expect(sandbox.fs.uploadFiles).not.toHaveBeenCalled();
+  });
+
+  it("stops the overlay and remove-deleted commands when the git extract fails (merged operation fail-fast)", async () => {
+    const hostDir = await makeHostDir();
+    const gitTar = path.join(hostDir, "git-workspace.tar");
+    const overlayTar = path.join(hostDir, "workspace.tar");
+    await fs.writeFile(gitTar, "git-bytes");
+    await fs.writeFile(overlayTar, "overlay-bytes");
+    const runtimeDir = `${REMOTE_DIR}/.paperclip-runtime/adapter`;
+
+    const sandbox = createMockSandbox();
+    // The first (git-history) extract exits non-zero; every transfer/guard script
+    // stays green so the fail-fast loop is the only thing that can trip this test.
+    sandbox.process.executeCommand.mockImplementation(async (command: string) => {
+      if (command === "git-history-extract") {
+        return { exitCode: 5, result: "boom", artifacts: { stdout: "boom" } };
+      }
+      return { exitCode: 0, result: "", artifacts: { stdout: "" } };
+    });
+    mockGet.mockResolvedValue(sandbox);
+
+    await expect(
+      plugin.definition.onEnvironmentSyncIn?.({
+        driverKey: "daytona",
+        companyId: "company-1",
+        environmentId: "env-1",
+        config: { timeoutMs: 300000, reuseLease: false },
+        lease: syncLease(),
+        operations: [
+          {
+            operationId: "merged-failfast",
+            files: [
+              { sourcePath: gitTar, targetPath: `${runtimeDir}/git-workspace-upload.tar`, kind: "file" },
+              { sourcePath: overlayTar, targetPath: `${runtimeDir}/workspace-upload.tar`, kind: "file" },
+            ],
+            postUploadCommands: [
+              { command: "git-history-extract" },
+              { command: "workspace-overlay-extract" },
+              { command: "remove-deleted-paths" },
+            ],
+          },
+        ],
+      }),
+    ).rejects.toThrow(/post-upload command failed \(exit 5\)/);
+
+    // Fail-fast: the overlay extract and the remove-deleted command never ran.
+    const ran = (cmd: string) =>
+      sandbox.process.executeCommand.mock.calls.some(([c]: [string]) => c === cmd);
+    expect(ran("git-history-extract")).toBe(true);
+    expect(ran("workspace-overlay-extract")).toBe(false);
+    expect(ran("remove-deleted-paths")).toBe(false);
+  });
+
   it("rejects a post-upload command cwd that escapes the remote dir lexically, before any exec (C2)", async () => {
     const hostDir = await makeHostDir();
     const source = path.join(hostDir, "config.txt");
@@ -3037,6 +3199,11 @@ describe("daytona native file-sync hooks", () => {
 
     // Same operation, now with an (empty) postUploadCommands array — must be
     // byte-identical: an absent/empty command list adds zero execs.
+    // Reset the process-scoped handle cache so the second operation fetches its
+    // own `withEmpty` handle. Both operations reuse the same providerLeaseId, so
+    // without this reset the cache serves the first `baseline` handle again and
+    // `withEmpty` records zero execs.
+    __resetDaytonaSandboxHandleCacheForTest();
     const withEmpty = createMockSandbox();
     mockGet.mockResolvedValue(withEmpty);
     await plugin.definition.onEnvironmentSyncIn?.({

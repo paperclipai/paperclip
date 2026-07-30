@@ -37,7 +37,29 @@ function readPathAliases(value: unknown): Array<{ path: string; target: string }
   });
 }
 
-function readWorkspaceRealizationRequest(value: unknown): WorkspaceRealizationRequest | null {
+// Read the additional referenced (mentioned) project sources. Legacy payloads omit the field, so
+// this defaults to an empty array. Each source needs a localPath; entries without one are dropped.
+function readAdditionalSources(
+  value: unknown,
+): NonNullable<WorkspaceRealizationRequest["additionalSources"]> {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((entry) => {
+    const parsed = parseObject(entry);
+    const localPath = readString(parsed.localPath);
+    if (!localPath) return [];
+    return [
+      {
+        localPath,
+        projectId: readString(parsed.projectId),
+        projectWorkspaceId: readString(parsed.projectWorkspaceId),
+        repoUrl: readString(parsed.repoUrl),
+        repoRef: readString(parsed.repoRef),
+      },
+    ];
+  });
+}
+
+export function readWorkspaceRealizationRequest(value: unknown): WorkspaceRealizationRequest | null {
   const parsed = parseObject(value);
   if (parsed.version !== 1) return null;
   const source = parseObject(parsed.source);
@@ -72,6 +94,7 @@ function readWorkspaceRealizationRequest(value: unknown): WorkspaceRealizationRe
       branchName: readString(source.branchName),
       worktreePath: readString(source.worktreePath),
     },
+    additionalSources: readAdditionalSources(parsed.additionalSources),
     runtimeOverlay: {
       provisionCommand: readString(runtimeOverlay.provisionCommand),
       teardownCommand: readString(runtimeOverlay.teardownCommand),
@@ -114,6 +137,19 @@ export function buildWorkspaceRealizationRequest(input: {
       branchName: input.workspace.branchName,
       worktreePath: input.workspace.worktreePath,
     },
+    // The additional (referenced) sources carry the read-only referenced-project workspaces. Run
+    // preparation resolves them for a local execution target only and exposes each local path to
+    // the agent through the workspace-hints channel (`PAPERCLIP_WORKSPACES_JSON`). A remote target
+    // never receives a referenced source: run preparation skips referenced-project resolution on a
+    // remote target, so this array is empty there. The `sync` block below therefore realizes only
+    // the anchor source; a remote-transport sync of the referenced trees is not implemented yet.
+    additionalSources: (input.workspace.additionalWorkspaces ?? []).map((additional) => ({
+      localPath: additional.cwd,
+      projectId: additional.projectId,
+      projectWorkspaceId: additional.workspaceId,
+      repoUrl: additional.repoUrl,
+      repoRef: additional.repoRef,
+    })),
     runtimeOverlay: {
       provisionCommand: input.workspaceConfig?.provisionCommand ?? null,
       teardownCommand: input.workspaceConfig?.teardownCommand ?? null,
@@ -224,6 +260,13 @@ export function buildWorkspaceRealizationRecord(input: {
       branchName: input.request.source.branchName,
       worktreePath: input.request.source.worktreePath,
     },
+    additional: (input.request.additionalSources ?? []).map((additional) => ({
+      path: additional.localPath,
+      projectId: additional.projectId,
+      projectWorkspaceId: additional.projectWorkspaceId,
+      repoUrl: additional.repoUrl,
+      repoRef: additional.repoRef,
+    })),
     remote: {
       path: remotePath,
       ...(host ? { host } : {}),

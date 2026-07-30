@@ -1,3 +1,5 @@
+<!-- Write all pull request text in Simplified Technical English (ASD-STE100): short sentences, one instruction per sentence, simple approved vocabulary, and the active voice. -->
+
 ## Thinking Path
 
 <!--

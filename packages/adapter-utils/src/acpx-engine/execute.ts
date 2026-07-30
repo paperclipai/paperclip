@@ -28,6 +28,7 @@ import {
   type AdapterExecutionTargetTimeoutResolution,
   type AdapterManagedRuntimeAsset,
   type PreparedAdapterExecutionTargetRuntime,
+  type SandboxAdditionalSource,
 } from "@paperclipai/adapter-utils/execution-target";
 import {
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
@@ -416,6 +417,83 @@ function stableJson(value: unknown): string {
 
 function shortHash(value: unknown): string {
   return createHash("sha256").update(stableJson(value)).digest("hex").slice(0, 16);
+}
+
+// Directory names the staging path never ships for a referenced project (heavy
+// build/cache output and git history). The content signature skips them so it
+// reflects only the staged tree and never reads their bytes. Keep this set equal
+// to the staging excludes in the sandbox and remote runtimes.
+const REFERENCED_SOURCE_SIGNATURE_SKIP_DIRS = new Set([
+  "node_modules",
+  "vendor",
+  "dist",
+  "build",
+  "out",
+  "coverage",
+  ".next",
+  ".turbo",
+  ".cache",
+  ".git",
+]);
+
+/**
+ * Content signature of a referenced-project host tree for the session fingerprint.
+ *
+ * The staged-runtime cache reuses an already-staged referenced-project tree on a
+ * compatible resume and does not re-sync it. Referenced-project metadata (id, host
+ * path, workspace id, repo url, pinned ref) can stay identical while the files at
+ * that host path change: a branch moved to a new commit, a re-checkout in place, or
+ * a dirty worktree. So the metadata identity alone lets a resume serve a stale tree.
+ * This signature folds the tree's own content state into the identity.
+ *
+ * The walk reads each file's relative path and bytes and folds them into the hash.
+ * It reads bytes, not only file stats. A stat-only signature (size and modification
+ * time) collides when an edit keeps the byte length and the modification time — a
+ * re-checkout that restores the same size and timestamp. The byte hash busts on any
+ * content change, so the fingerprint busts and the next launch stages the current
+ * tree. The walk skips the heavy build, cache, and git directories the staging path
+ * never ships, and records a symlink by its target text without following it. On a
+ * read error the function returns a stable marker, so the fingerprint does not churn
+ * while staging surfaces the real error. The walk runs only when the run carries
+ * referenced projects (the multi-project sync path).
+ */
+async function referencedSourceContentSignature(localPath: string): Promise<string> {
+  const hash = createHash("sha256");
+  const walk = async (relative: string): Promise<void> => {
+    const current = relative ? path.join(localPath, relative) : localPath;
+    const dirents = await fs.readdir(current, { withFileTypes: true });
+    dirents.sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0));
+    for (const dirent of dirents) {
+      const next = relative ? path.posix.join(relative, dirent.name) : dirent.name;
+      if (dirent.isDirectory()) {
+        if (REFERENCED_SOURCE_SIGNATURE_SKIP_DIRS.has(dirent.name)) {
+          continue;
+        }
+        await walk(next);
+        continue;
+      }
+      const absolute = path.join(localPath, next);
+      const stats = await fs.lstat(absolute);
+      if (stats.isSymbolicLink()) {
+        const target = await fs.readlink(absolute);
+        hash.update(`symlink:${next}:${target}\n`);
+        continue;
+      }
+      if (!stats.isFile()) {
+        hash.update(`other:${next}:${stats.mode}\n`);
+        continue;
+      }
+      hash.update(`file:${next}:${stats.size}\n`);
+      hash.update(await fs.readFile(absolute));
+      hash.update("\n");
+    }
+  };
+  try {
+    await walk("");
+  } catch (error) {
+    return `unreadable:${String(error)}`;
+  }
+  return hash.digest("hex").slice(0, 16);
 }
 
 function defaultPaperclipInstanceDir(): string {
@@ -1209,6 +1287,11 @@ async function stageAcpRemoteRuntime(input: {
   workspaceRemoteDir?: string;
   timeoutSec: number;
   assets?: AdapterManagedRuntimeAsset[];
+  // Referenced (additional) projects to stage into the sandbox as plain,
+  // read-only trees alongside the anchor workspace. Empty unless run prep
+  // resolved referenced projects (gated upstream), so the anchor-only path is
+  // unchanged.
+  additionalSources?: SandboxAdditionalSource[];
   onLog: AdapterExecutionContext["onLog"];
   onRuntimeProgress: AdapterExecutionContext["onRuntimeProgress"];
 }): Promise<PreparedAdapterExecutionTargetRuntime> {
@@ -1224,6 +1307,9 @@ async function stageAcpRemoteRuntime(input: {
     workspaceLocalDir: input.workspaceLocalDir,
     ...(input.workspaceRemoteDir ? { workspaceRemoteDir: input.workspaceRemoteDir } : {}),
     ...(input.assets && input.assets.length > 0 ? { assets: input.assets } : {}),
+    ...(input.additionalSources && input.additionalSources.length > 0
+      ? { additionalSources: input.additionalSources }
+      : {}),
     onProgress: (line) => input.onLog("stdout", line),
     onRuntimeProgress: input.onRuntimeProgress,
   });
@@ -1271,6 +1357,43 @@ async function buildRuntime(input: {
   const useConfiguredInsteadOfAgentHome = workspaceSource === "agent_home" && configuredCwd.length > 0;
   const effectiveWorkspaceCwd = useConfiguredInsteadOfAgentHome ? "" : workspaceCwd;
   const cwd = effectiveWorkspaceCwd || configuredCwd || process.cwd();
+  // Referenced (additional) projects to stage into the sandbox alongside the
+  // anchor workspace, read from the workspace realization record. The list is
+  // empty unless run prep resolved referenced projects — gated upstream by the
+  // multi-project workspace-sync kill-switch — so the anchor-only path is
+  // unchanged.
+  const realizationContext = parseObject(workspaceContext.realization);
+  const additionalSourceRecords = (
+    Array.isArray(realizationContext.additional) ? realizationContext.additional : []
+  ).map((entry) => parseObject(entry));
+  const additionalSources: SandboxAdditionalSource[] = additionalSourceRecords
+    .map((entry) => ({ localPath: asString(entry.path, ""), projectId: asString(entry.projectId, "") }))
+    .filter((entry) => entry.localPath.length > 0 && entry.projectId.length > 0);
+  // Stable identity of the referenced-project set for the session fingerprint.
+  // The staged-runtime cache reuses already-staged referenced-project trees on a
+  // compatible resume, so the fingerprint must change when the set OR a project's
+  // pinned checkout changes. Without this, a resume reuses a stale staged tree.
+  // Fold in each project's id, host path, workspace id, and pinned ref; sort by
+  // projectId so the identity depends on the set, not the record order.
+  const additionalSourcesIdentityBase = additionalSourceRecords
+    .map((entry) => ({
+      projectId: asString(entry.projectId, ""),
+      localPath: asString(entry.path, ""),
+      projectWorkspaceId: asString(entry.projectWorkspaceId, ""),
+      repoUrl: asString(entry.repoUrl, ""),
+      repoRef: asString(entry.repoRef, ""),
+    }))
+    .filter((entry) => entry.localPath.length > 0 && entry.projectId.length > 0)
+    .sort((a, b) => (a.projectId < b.projectId ? -1 : a.projectId > b.projectId ? 1 : 0));
+  // Metadata alone does not change on a content-only checkout change (same host
+  // path and pinned ref, new file bytes). Fold in each tree's content signature so
+  // a file add, remove, or edit busts the fingerprint and the resume re-stages.
+  const additionalSourcesIdentity = await Promise.all(
+    additionalSourcesIdentityBase.map(async (entry) => ({
+      ...entry,
+      contentSignature: await referencedSourceContentSignature(entry.localPath),
+    })),
+  );
   const executionTarget = readAdapterExecutionTarget({
     executionTarget: input.ctx.executionTarget,
     legacyRemoteExecution: input.ctx.executionTransport?.remoteExecution,
@@ -1553,6 +1676,11 @@ async function buildRuntime(input: {
     requestedThinkingEffort,
     fastMode,
     remoteExecutionIdentity,
+    // Referenced-project set + pinned-checkout identity. A change here (a project
+    // added, removed, or re-pinned) invalidates a warm/resumable session so the
+    // next launch stages the current referenced-project trees instead of reusing
+    // a stale staged tree.
+    additionalSourcesIdentity,
     skillsIdentity,
     skillPromptInstructions,
     paperclipClaudeSettings: paperclipClaudeSettings
@@ -1681,6 +1809,7 @@ async function buildRuntime(input: {
           workspaceRemoteDir: sessionCwd,
           timeoutSec,
           assets,
+          additionalSources,
           onLog: input.ctx.onLog,
           onRuntimeProgress: input.ctx.onRuntimeProgress,
         });

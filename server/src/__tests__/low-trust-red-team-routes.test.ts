@@ -41,6 +41,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { parseWakePayloadFromMessage } from "./helpers/wake-message.js";
+import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
 import { errorHandler } from "../middleware/index.js";
 import { agentRoutes } from "../routes/agents.js";
 import { issueRoutes } from "../routes/issues.js";
@@ -702,6 +703,11 @@ describeEmbeddedPostgres("low-trust red-team HTTP route regression suite", () =>
   }, 20_000);
 
   afterEach(async () => {
+    // Await every in-flight background heartbeat run to quiescence before the
+    // deletes below. A route dispatches a wakeup fire-and-forget, so a run can
+    // still be writing issues, issue_comments, and heartbeat_runs rows when
+    // teardown starts and would race the deletes.
+    await drainHeartbeatRunsToQuiescence(db, heartbeatService(db));
     await db.delete(issueThreadInteractions);
     await db.delete(issueApprovals);
     await db.delete(approvals);
