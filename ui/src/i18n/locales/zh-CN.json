@@ -74,5 +74,20 @@
     "signedIn": "已登录",
     "localWorkspaceBoard": "本地工作区看板",
     "boardDefault": "看板"
+  },
+  "command": {
+    "inputPlaceholder": "搜索任务、智能体、项目……",
+    "noResultsFound": "未找到结果。",
+    "noQuickTaskMatches": "没有快速匹配的任务。按 ↵ 进行全局搜索，或继续输入以细化。",
+    "searchAllFor": "搜索全部：",
+    "openFullSearch": "打开完整搜索",
+    "searchGroup": "搜索",
+    "quickFilters": "快速筛选",
+    "pages": "页面",
+    "actions": "操作",
+    "createNewTask": "创建新任务",
+    "openFileInIssue": "在此问题中打开文件……",
+    "createNewAgent": "创建新智能体",
+    "createNewProject": "创建新项目"
   }
 }

@@ -74,5 +74,20 @@
     "signedIn": "Signed in",
     "localWorkspaceBoard": "Local workspace board",
     "boardDefault": "Board"
+  },
+  "command": {
+    "inputPlaceholder": "Search tasks, agents, projects...",
+    "noResultsFound": "No results found.",
+    "noQuickTaskMatches": "No quick task matches. Press ↵ to search all or keep typing to refine.",
+    "searchAllFor": "Search all for",
+    "openFullSearch": "open full search",
+    "searchGroup": "Search",
+    "quickFilters": "Quick filters",
+    "pages": "Pages",
+    "actions": "Actions",
+    "createNewTask": "Create new task",
+    "openFileInIssue": "Open file in this issue...",
+    "createNewAgent": "Create new agent",
+    "createNewProject": "Create new project"
   }
 }
