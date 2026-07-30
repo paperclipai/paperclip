@@ -436,7 +436,7 @@ describeEmbeddedPostgres("issue blocker attention", () => {
   it("treats an in_review leaf with a scheduled monitor as covered", async () => {
     const { companyId, agentId } = await createCompany("PBY");
     const parentId = await insertIssue({ companyId, identifier: "PBY-1", title: "Parent", status: "blocked" });
-    const nextCheckAt = "2026-07-31T14:00:00.000Z";
+    const nextCheckAt = new Date(Date.now() + 24 * 60 * 60 * 1000).toISOString();
     const reviewLeafId = await insertIssue({
       companyId,
       identifier: "PBY-2",
