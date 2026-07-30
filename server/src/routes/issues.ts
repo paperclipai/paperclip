@@ -2080,7 +2080,24 @@ async function queueResolvedInteractionContinuationWakeup(input: {
   newlyResolvedItemIds?: string[];
   idempotencyKey?: string | null;
 }) {
-  if (!input.issue.assigneeAgentId || isClosedIssueStatus(input.issue.status)) return;
+  const logSkipped = (reason: string) => logger.info({
+    issueId: input.issue.id,
+    issueStatus: input.issue.status,
+    interactionId: input.interaction.id,
+    interactionKind: input.interaction.kind,
+    interactionStatus: input.interaction.status,
+    continuationPolicy: input.interaction.continuationPolicy,
+    assigneeAgentId: input.issue.assigneeAgentId,
+    reason,
+  }, "interaction continuation wake skipped");
+  if (!input.issue.assigneeAgentId) {
+    logSkipped("issue_unassigned");
+    return;
+  }
+  if (isClosedIssueStatus(input.issue.status)) {
+    logSkipped("issue_terminal");
+    return;
+  }
 
   const reviewPathLost = input.issue.status === "in_review"
     && (await issueService(input.db)
@@ -2099,8 +2116,18 @@ async function queueResolvedInteractionContinuationWakeup(input: {
       input.interaction.continuationPolicy === "wake_assignee_on_accept"
       && input.interaction.status === "accepted"
     );
-  if (!continuationPolicyAllowsWake && !reviewPathLost) return;
-  if (input.interaction.status === "expired" && !reviewPathLost) return;
+  if (!continuationPolicyAllowsWake && !reviewPathLost) {
+    logSkipped(
+      input.interaction.continuationPolicy === "wake_assignee_on_accept"
+        ? "interaction_not_accepted"
+        : "continuation_policy_disabled",
+    );
+    return;
+  }
+  if (input.interaction.status === "expired" && !reviewPathLost) {
+    logSkipped("interaction_expired");
+    return;
+  }
   const reviewPathContext = reviewPathLost
     ? {
         reviewPathLost: true,
@@ -2134,88 +2161,68 @@ async function queueResolvedInteractionContinuationWakeup(input: {
           result: interactionResult,
         }
       : null;
-  void input.heartbeat.wakeup(input.issue.assigneeAgentId, {
-    source: "automation",
-    triggerDetail: "system",
-    reason: "issue_commented",
-    payload: {
+  try {
+    const run = await input.heartbeat.wakeup(input.issue.assigneeAgentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_commented",
+      payload: {
+        issueId: input.issue.id,
+        interactionId: input.interaction.id,
+        interactionKind: input.interaction.kind,
+        interactionStatus: input.interaction.status,
+        sourceCommentId: input.interaction.sourceCommentId ?? null,
+        sourceRunId: input.interaction.sourceRunId ?? null,
+        ...(planReviewInteraction ? { planReviewInteraction } : {}),
+        ...(checkboxSelection ? { checkboxSelection } : {}),
+        ...(toolAction ? { toolAction } : {}),
+        ...(secretProposal ? { secretProposal } : {}),
+        ...(itemVerdicts ? { itemVerdicts, newlyResolvedItemIds } : {}),
+        ...(reviewPathContext ?? {}),
+        mutation: "interaction",
+      },
+      idempotencyKey: input.idempotencyKey ?? `interaction:${input.interaction.id}:${input.interaction.status}`,
+      requestedByActorType: input.actor.actorType,
+      requestedByActorId: input.actor.actorId,
+      contextSnapshot: {
+        issueId: input.issue.id,
+        taskId: input.issue.id,
+        interactionId: input.interaction.id,
+        interactionKind: input.interaction.kind,
+        interactionStatus: input.interaction.status,
+        sourceCommentId: input.interaction.sourceCommentId ?? null,
+        sourceRunId: input.interaction.sourceRunId ?? null,
+        ...(planReviewInteraction ? { planReviewInteraction } : {}),
+        ...(checkboxSelection ? { checkboxSelection } : {}),
+        ...(toolAction ? { toolAction } : {}),
+        ...(secretProposal ? { secretProposal } : {}),
+        ...(itemVerdicts ? { itemVerdicts, newlyResolvedItemIds } : {}),
+        ...(reviewPathContext ?? {}),
+        wakeReason: "issue_commented",
+        source: input.source,
+        ...(forceFreshSession ? { forceFreshSession: true } : {}),
+        ...(workspaceRefreshReason ? { workspaceRefreshReason } : {}),
+      },
+    });
+    logger.info({
       issueId: input.issue.id,
       interactionId: input.interaction.id,
       interactionKind: input.interaction.kind,
       interactionStatus: input.interaction.status,
-      sourceCommentId: input.interaction.sourceCommentId ?? null,
-      sourceRunId: input.interaction.sourceRunId ?? null,
-      ...(planReviewInteraction ? { planReviewInteraction } : {}),
-      ...(checkboxSelection ? { checkboxSelection } : {}),
-      ...(toolAction ? { toolAction } : {}),
-      ...(secretProposal ? { secretProposal } : {}),
-      ...(itemVerdicts ? { itemVerdicts, newlyResolvedItemIds } : {}),
-      ...(reviewPathContext ?? {}),
-      mutation: "interaction",
-    },
-    idempotencyKey: input.idempotencyKey ?? `interaction:${input.interaction.id}:${input.interaction.status}`,
-    requestedByActorType: input.actor.actorType,
-    requestedByActorId: input.actor.actorId,
-    contextSnapshot: {
+      continuationPolicy: input.interaction.continuationPolicy,
+      reviewPathLost: Boolean(reviewPathLost),
+      agentId: input.issue.assigneeAgentId,
+      schedulerOutcome: run ? "run_returned" : "deferred_or_skipped",
+      runId: run?.id ?? null,
+    }, "interaction continuation wake scheduling completed");
+  } catch (err) {
+    logger.warn({
+      err,
       issueId: input.issue.id,
-      taskId: input.issue.id,
       interactionId: input.interaction.id,
-      interactionKind: input.interaction.kind,
-      interactionStatus: input.interaction.status,
-      sourceCommentId: input.interaction.sourceCommentId ?? null,
-      sourceRunId: input.interaction.sourceRunId ?? null,
-      ...(planReviewInteraction ? { planReviewInteraction } : {}),
-      ...(checkboxSelection ? { checkboxSelection } : {}),
-      ...(toolAction ? { toolAction } : {}),
-      ...(secretProposal ? { secretProposal } : {}),
-      ...(itemVerdicts ? { itemVerdicts, newlyResolvedItemIds } : {}),
-      ...(reviewPathContext ?? {}),
-      wakeReason: "issue_commented",
-      source: input.source,
-      ...(forceFreshSession ? { forceFreshSession: true } : {}),
-      ...(workspaceRefreshReason ? { workspaceRefreshReason } : {}),
-    },
-  }).catch((err) => logger.warn({
-    err,
-    issueId: input.issue.id,
-    interactionId: input.interaction.id,
-    agentId: input.issue.assigneeAgentId,
-  }, "failed to wake assignee on issue interaction resolution"));
-}
-
-function readCheckboxSelectionForWake(input: {
-  kind: string;
-  payload?: unknown;
-  result?: unknown;
-}) {
-  if (input.kind !== "request_checkbox_confirmation") return null;
-  const result = readObject(input.result);
-  if (result.outcome !== "accepted") return null;
-  const selectedOptionIds = Array.isArray(result.selectedOptionIds)
-    ? result.selectedOptionIds.filter((value): value is string => typeof value === "string" && value.length > 0)
-    : [];
-  const payload = readObject(input.payload);
-  const options = Array.isArray(payload.options)
-    ? payload.options
-        .map((value) => {
-          const option = readObject(value);
-          const id = readNonEmptyString(option.id);
-          if (!id) return null;
-          return {
-            id,
-            label: readNonEmptyString(option.label) ?? id,
-            description: readNonEmptyString(option.description),
-          };
-        })
-        .filter((value): value is { id: string; label: string; description: string | null } => Boolean(value))
-    : [];
-  const optionById = new Map(options.map((option) => [option.id, option]));
-
-  return {
-    prompt: readNonEmptyString(payload.prompt),
-    selectedOptionIds,
-    selectedOptions: selectedOptionIds.map((id) => optionById.get(id) ?? { id, label: id, description: null }),
-  };
+      agentId: input.issue.assigneeAgentId,
+    }, "failed to wake assignee on issue interaction resolution");
+  }
 }
 
 function diffExecutionParticipants(

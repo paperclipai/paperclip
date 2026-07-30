@@ -1002,13 +1002,52 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .then((rows) => Boolean(rows[0]));
   }
 
-  async function getLatestAcceptedContinuationInteraction(companyId: string, issueId: string) {
+  function readResolvedItemVerdictIds(result: unknown) {
+    if (!result || typeof result !== "object" || Array.isArray(result)) return [];
+    const items = (result as Record<string, unknown>).items;
+    if (!Array.isArray(items)) return [];
+    return [...new Set(items.flatMap((item) => {
+      if (!item || typeof item !== "object" || Array.isArray(item)) return [];
+      const row = item as Record<string, unknown>;
+      return typeof row.id === "string" && row.id.trim() && typeof row.verdict === "string"
+        ? [row.id.trim()]
+        : [];
+    }))];
+  }
+
+  function readLatestResolvedItemVerdictUserId(result: unknown) {
+    if (!result || typeof result !== "object" || Array.isArray(result)) return null;
+    const items = (result as Record<string, unknown>).items;
+    if (!Array.isArray(items)) return null;
+    let latest: { userId: string; resolvedAt: number } | null = null;
+    for (const item of items) {
+      if (!item || typeof item !== "object" || Array.isArray(item)) continue;
+      const row = item as Record<string, unknown>;
+      const userId = typeof row.resolvedByUserId === "string" ? row.resolvedByUserId.trim() : "";
+      if (!userId) continue;
+      const resolvedAt = row.resolvedAt instanceof Date
+        ? row.resolvedAt.getTime()
+        : typeof row.resolvedAt === "string"
+          ? Date.parse(row.resolvedAt)
+          : Number.NaN;
+      if (!latest) {
+        latest = { userId, resolvedAt: Number.isFinite(resolvedAt) ? resolvedAt : 0 };
+      } else if (Number.isFinite(resolvedAt) && resolvedAt >= latest.resolvedAt) {
+        latest = { userId, resolvedAt };
+      }
+    }
+    return latest?.userId ?? null;
+  }
+
+  async function getLatestResolvedContinuationInteraction(companyId: string, issueId: string) {
     return db
       .select({
         id: issueThreadInteractions.id,
         kind: issueThreadInteractions.kind,
         status: issueThreadInteractions.status,
         continuationPolicy: issueThreadInteractions.continuationPolicy,
+        result: issueThreadInteractions.result,
+        resolvedByUserId: issueThreadInteractions.resolvedByUserId,
         sourceRunId: issueThreadInteractions.sourceRunId,
         resolvedAt: issueThreadInteractions.resolvedAt,
         updatedAt: issueThreadInteractions.updatedAt,
@@ -1018,8 +1057,28 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         and(
           eq(issueThreadInteractions.companyId, companyId),
           eq(issueThreadInteractions.issueId, issueId),
-          eq(issueThreadInteractions.status, "accepted"),
-          inArray(issueThreadInteractions.continuationPolicy, ["wake_assignee", "wake_assignee_on_accept"]),
+          or(
+            and(
+              eq(issueThreadInteractions.continuationPolicy, "wake_assignee"),
+              inArray(issueThreadInteractions.status, [
+                "accepted",
+                "answered",
+                "rejected",
+                "cancelled",
+                "failed",
+              ]),
+            ),
+            and(
+              eq(issueThreadInteractions.continuationPolicy, "wake_assignee_on_accept"),
+              eq(issueThreadInteractions.status, "accepted"),
+            ),
+            and(
+              eq(issueThreadInteractions.kind, "request_item_verdicts"),
+              eq(issueThreadInteractions.status, "pending"),
+              eq(issueThreadInteractions.continuationPolicy, "wake_assignee"),
+              sql`${issueThreadInteractions.result} @> '{"items": [{}]}'::jsonb`,
+            ),
+          ),
         ),
       )
       .orderBy(desc(sql`coalesce(${issueThreadInteractions.resolvedAt}, ${issueThreadInteractions.updatedAt})`), desc(issueThreadInteractions.id))
@@ -3708,7 +3767,27 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         continue;
       }
 
-      if (await hasPendingWakeInteraction(issue.companyId, issue.id)) {
+      const resolvedContinuationInteraction = await getLatestResolvedContinuationInteraction(issue.companyId, issue.id);
+      const interactionResolvedAt = resolvedContinuationInteraction
+        ? resolvedContinuationInteraction.resolvedAt ?? resolvedContinuationInteraction.updatedAt
+        : null;
+      const successfulRunSinceResolution = resolvedContinuationInteraction && interactionResolvedAt && !pendingExecutionState
+        ? await hasSuccessfulIssueRunSince(
+          issue.companyId,
+          issue.id,
+          agentId,
+          interactionResolvedAt,
+          resolvedContinuationInteraction.id,
+        )
+        : false;
+      const hasMissingResolvedContinuation = Boolean(
+        resolvedContinuationInteraction
+        && interactionResolvedAt
+        && !pendingExecutionState
+        && !successfulRunSinceResolution,
+      );
+
+      if (await hasPendingWakeInteraction(issue.companyId, issue.id) && !hasMissingResolvedContinuation) {
         result.skipped += 1;
         continue;
       }
@@ -3798,19 +3877,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         }
       }
 
-      const acceptedContinuationInteraction = await getLatestAcceptedContinuationInteraction(issue.companyId, issue.id);
-      const acceptedInteractionResolvedAt = acceptedContinuationInteraction
-        ? acceptedContinuationInteraction.resolvedAt ?? acceptedContinuationInteraction.updatedAt
-        : null;
-      if (acceptedContinuationInteraction && acceptedInteractionResolvedAt && !pendingExecutionState) {
-        const successfulRunSinceResolution = await hasSuccessfulIssueRunSince(
-          issue.companyId,
-          issue.id,
-          agentId,
-          acceptedInteractionResolvedAt,
-          acceptedContinuationInteraction.id,
-        );
-
+      if (resolvedContinuationInteraction && interactionResolvedAt && !pendingExecutionState) {
         if (!successfulRunSinceResolution) {
           if (!agentInvokable) {
             result.skipped += 1;
@@ -3831,14 +3898,14 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             issue.companyId,
             issue.id,
             agentId,
-            acceptedInteractionResolvedAt,
+            interactionResolvedAt,
           );
           const { consecutive } = await summarizeRecentContinuationRetries(
             issue.companyId,
             issue.id,
             agentId,
             CONTINUATION_WAITING_ON_REVIEW_ERROR_CODE,
-            acceptedInteractionResolvedAt,
+            interactionResolvedAt,
           );
           if (consecutive >= INTERACTION_CONTINUATION_REQUEUE_MAX_ATTEMPTS && latestPostResolutionRun) {
             const resolved = await resolveContinuationWaitingOnReview(issue);
@@ -3853,7 +3920,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
               previousStatus: issue.status as StrandedPreviousStatus,
               latestRun: latestPostResolutionRun,
               comment:
-                `Paperclip stopped requeueing accepted interaction \`${acceptedContinuationInteraction.id}\` after ` +
+                `Paperclip stopped requeueing resolved interaction \`${resolvedContinuationInteraction.id}\` after ` +
                 `${consecutive} consecutive continuation wakes were cancelled while waiting on review. ` +
                 "Moving the issue to `blocked` so the missing execution path is visible for intervention.",
             });
@@ -3866,20 +3933,29 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             continue;
           }
 
+          const interactionResponsibleUserId =
+            resolvedContinuationInteraction.resolvedByUserId
+            ?? readLatestResolvedItemVerdictUserId(resolvedContinuationInteraction.result);
           const queued = await enqueueStrandedIssueRecovery({
             issueId: issue.id,
             agentId,
             reason: "issue_continuation_needed",
             retryReason: "issue_continuation_needed",
             source: "issue.interaction_continuation_recovery",
-            retryOfRunId: latestPostResolutionRun?.id ?? acceptedContinuationInteraction.sourceRunId ?? latestRun?.id ?? null,
+            retryOfRunId: latestPostResolutionRun?.id ?? resolvedContinuationInteraction.sourceRunId ?? latestRun?.id ?? null,
             extraContext: {
               mutation: "interaction",
-              interactionId: acceptedContinuationInteraction.id,
-              interactionKind: acceptedContinuationInteraction.kind,
-              interactionStatus: acceptedContinuationInteraction.status,
-              interactionContinuationPolicy: acceptedContinuationInteraction.continuationPolicy,
-              interactionResolvedAt: acceptedInteractionResolvedAt.toISOString(),
+              interactionId: resolvedContinuationInteraction.id,
+              interactionKind: resolvedContinuationInteraction.kind,
+              interactionStatus: resolvedContinuationInteraction.status,
+              interactionContinuationPolicy: resolvedContinuationInteraction.continuationPolicy,
+              interactionResolvedAt: interactionResolvedAt.toISOString(),
+              ...(interactionResponsibleUserId
+                ? { responsibleUserId: interactionResponsibleUserId }
+                : {}),
+              ...(resolvedContinuationInteraction.kind === "request_item_verdicts"
+                ? { newlyResolvedItemIds: readResolvedItemVerdictIds(resolvedContinuationInteraction.result) }
+                : {}),
             },
           });
           if (queued) {

@@ -781,6 +781,33 @@ describe.sequential("issue thread interaction routes", () => {
     );
   });
 
+  it("does not acknowledge an answer before its continuation wake is durably scheduled", async () => {
+    let resolveWakeup!: () => void;
+    mockHeartbeatService.wakeup.mockImplementationOnce(
+      () => new Promise<void>((resolve) => {
+        resolveWakeup = resolve;
+      }),
+    );
+    const app = await createApp();
+
+    const responsePromise = request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/interaction-2/respond")
+      .send({
+        answers: [{ questionId: "scope", optionIds: ["phase-1"] }],
+      })
+      .then((response) => response);
+
+    await vi.waitFor(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1));
+    const earlyOutcome = await Promise.race([
+      responsePromise.then(() => "responded" as const),
+      new Promise<"pending">((resolve) => setTimeout(() => resolve("pending"), 50)),
+    ]);
+    expect(earlyOutcome).toBe("pending");
+
+    resolveWakeup();
+    await expect(responsePromise).resolves.toMatchObject({ status: 200 });
+  }, 15_000);
+
   it("submits item verdicts and emits one continuation wake with resolved item ids", async () => {
     const app = await createApp();
 

@@ -451,7 +451,13 @@ const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS = BOUNDED_TRANSIENT_HEARTBE
 export const INTERACTION_CONTINUATION_INFRA_RETRY_REASON = "interaction_continuation_infra_retry";
 export const INTERACTION_CONTINUATION_INFRA_WAKE_REASON = "interaction_continuation_infra_retry";
 const INTERACTION_CONTINUATION_INFRA_MAX_ATTEMPTS = 3;
-const RESOLVED_INTERACTION_CONTINUATION_STATUSES = new Set(["accepted", "answered", "rejected"]);
+const RESOLVED_INTERACTION_CONTINUATION_STATUSES = new Set([
+  "accepted",
+  "answered",
+  "rejected",
+  "cancelled",
+  "failed",
+]);
 const WORKSPACE_VALIDATION_FAILURE_CODE = "workspace_validation_failed";
 const WORKSPACE_VALIDATION_RECOVERY_CAUSE = "workspace_validation_failed";
 const CONFIGURATION_INCOMPLETE_FAILURE_CODE = "configuration_incomplete";
@@ -664,7 +670,12 @@ function isResolvedInteractionContinuationWakeContext(contextSnapshot: unknown) 
   const interactionId = readNonEmptyString(context.interactionId);
   const interactionStatus = readNonEmptyString(context.interactionStatus);
   if (!interactionId || !interactionStatus) return false;
-  if (!RESOLVED_INTERACTION_CONTINUATION_STATUSES.has(interactionStatus)) return false;
+  const partialVerdictProgress =
+    interactionStatus === "pending"
+    && readNonEmptyString(context.interactionKind) === "request_item_verdicts"
+    && Array.isArray(context.newlyResolvedItemIds)
+    && context.newlyResolvedItemIds.some((id) => readNonEmptyString(id));
+  if (!partialVerdictProgress && !RESOLVED_INTERACTION_CONTINUATION_STATUSES.has(interactionStatus)) return false;
 
   const mutation = readNonEmptyString(context.mutation);
   const wakeReason = readNonEmptyString(context.wakeReason);
@@ -5290,6 +5301,7 @@ function shouldQueueFollowupForRunningIssueWake(input: {
   wakeCommentId: string | null;
 }) {
   if (input.wakeCommentId) return true;
+  if (isInteractionResolutionWakePayload(input.contextSnapshot)) return true;
   const wakeReason = readNonEmptyString(input.contextSnapshot?.wakeReason);
   return Boolean(wakeReason && RUNNING_ISSUE_WAKE_REASONS_REQUIRING_FOLLOWUP.has(wakeReason));
 }
@@ -5415,6 +5427,7 @@ function enrichWakeContextSnapshot(input: {
 }
 
 const INTERACTION_CONTINUATION_CONTEXT_KEYS = [
+  "mutation",
   "interactionId",
   "interactionKind",
   "interactionStatus",
@@ -5442,7 +5455,10 @@ function normalizeInteractionContinuationWakeContext(
   contextSnapshot: Record<string, unknown>,
   payload: Record<string, unknown> | null | undefined,
 ) {
-  if (isInteractionResolutionWakePayload(payload)) return;
+  if (isInteractionResolutionWakePayload(payload)) {
+    contextSnapshot.mutation = "interaction";
+    return;
+  }
   clearInteractionContinuationWakeContext(contextSnapshot);
 }
 

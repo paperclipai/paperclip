@@ -5729,6 +5729,173 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect((wakeup?.payload as Record<string, unknown> | null)?.issueId).toBe(issueId);
   });
 
+  it.each(["answered", "rejected", "cancelled", "failed"] as const)(
+    "recovers a resolved interaction whose continuation wake enqueue was dropped (%s)",
+    async (interactionStatus) => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const interactionId = randomUUID();
+    const resolvedAt = new Date("2026-03-19T00:05:00.000Z");
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      defaultResponsibleUserId: "responsible-user",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: `${interactionStatus} interaction whose wake enqueue was dropped`,
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      responsibleUserId: "responsible-user",
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId,
+      companyId,
+      issueId,
+      kind: interactionStatus === "answered" ? "request_user_input" : "request_confirmation",
+      status: interactionStatus,
+      continuationPolicy: "wake_assignee",
+      createdByAgentId: agentId,
+      resolvedByUserId: "responsible-user",
+      resolvedAt,
+      updatedAt: resolvedAt,
+      payload: { version: 1, prompt: "Which database?" },
+      result: interactionStatus === "answered" ? { version: 1, value: "Postgres" } : null,
+    });
+    await db.insert(issueThreadInteractions).values({
+      id: randomUUID(),
+      companyId,
+      issueId,
+      kind: "request_user_input",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      createdByAgentId: agentId,
+      payload: { version: 1, prompt: "Any other constraints?" },
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    expect(result.continuationRequeued).toBe(1);
+    expect(result.issueIds).toEqual([issueId]);
+
+    const run = await db
+      .select({ agentId: heartbeatRuns.agentId, contextSnapshot: heartbeatRuns.contextSnapshot })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId))
+      .then((rows) => rows[0] ?? null);
+    expect(run?.agentId).toBe(agentId);
+    expect(run?.contextSnapshot).toMatchObject({
+      issueId,
+      interactionId,
+      interactionStatus,
+      source: "issue.interaction_continuation_recovery",
+    });
+    },
+  );
+
+  it("recovers a partial item-verdict interaction whose continuation wake enqueue was dropped", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const interactionId = randomUUID();
+    const resolvedAt = new Date(Date.now() - 5 * 60_000);
+
+    await db.insert(companies).values({ id: companyId, name: "Partial verdict recovery co" });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "PartialVerdictRecoveryAgent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: { cwd: "/workspace" },
+      budgetMonthlyCents: 0,
+      spentMonthlyCents: 0,
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      issueNumber: 2_000_222,
+      identifier: "TEST-2000222",
+      title: "Partial item verdict wake was dropped",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      creatorAgentId: agentId,
+      createdAt: new Date(Date.now() - 10 * 60_000),
+      updatedAt: resolvedAt,
+    });
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId,
+      companyId,
+      issueId,
+      kind: "request_item_verdicts",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      createdByAgentId: agentId,
+      updatedAt: resolvedAt,
+      payload: {
+        version: 1,
+        prompt: "Review the proposed changes",
+        items: [
+          { id: "item-a", label: "Change A" },
+          { id: "item-b", label: "Change B" },
+        ],
+      },
+      result: {
+        version: 1,
+        items: [{
+          id: "item-a",
+          verdict: "approve",
+          resolvedByUserId: "local-board",
+          resolvedAt,
+        }],
+        complete: false,
+      },
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    expect(result.continuationRequeued).toBe(1);
+    expect(result.issueIds).toEqual([issueId]);
+
+    const run = await db
+      .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId))
+      .then((rows) => rows[0] ?? null);
+    expect(run).not.toBeNull();
+    expect(run?.contextSnapshot).toMatchObject({
+      mutation: "interaction",
+      interactionId,
+      interactionKind: "request_item_verdicts",
+      interactionStatus: "pending",
+      newlyResolvedItemIds: ["item-a"],
+    });
+  });
+
   // Scenario 3 (restart durability): a bounded continuation retry scheduled
   // before a server restart survives it. Promotion is DB-driven (scheduled_retry rows +
   // promoteDueScheduledRetries), not an in-memory setTimeout — so a brand-new heartbeat
