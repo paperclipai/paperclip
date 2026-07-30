@@ -4102,6 +4102,99 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     ).rejects.toMatchObject({ status: 422 });
   });
 
+  it("permits an active stage participant to return an issue while unresolved blockers remain", async () => {
+    const companyId = randomUUID();
+    const qaAgentId = randomUUID();
+    const returnAgentId = randomUUID();
+    const stageId = randomUUID();
+    const decisionId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values([
+      {
+        id: qaAgentId,
+        companyId,
+        name: "QAReviewer",
+        role: "qa",
+        status: "active",
+        adapterType: "claude_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: returnAgentId,
+        companyId,
+        name: "Engineer",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+
+    const blockerId = randomUUID();
+    const issueId = randomUUID();
+    const pendingExecutionState = {
+      status: "pending" as const,
+      currentStageId: stageId,
+      currentStageIndex: 0,
+      currentStageType: "review" as const,
+      currentParticipant: { type: "agent" as const, agentId: qaAgentId },
+      returnAssignee: { type: "agent" as const, agentId: returnAgentId },
+      reviewRequest: null,
+      completedStageIds: [],
+      lastDecisionId: null,
+      lastDecisionOutcome: null,
+      monitor: null,
+    };
+    await db.insert(issues).values([
+      { id: blockerId, companyId, title: "Blocker", status: "todo", priority: "high" },
+      {
+        id: issueId,
+        companyId,
+        title: "Issue under review",
+        status: "in_review",
+        priority: "high",
+        assigneeAgentId: qaAgentId,
+        executionState: pendingExecutionState,
+      },
+    ]);
+    await svc.update(issueId, { blockedByIssueIds: [blockerId] });
+
+    const updated = await svc.update(issueId, {
+      status: "in_progress",
+      assigneeAgentId: returnAgentId,
+      actorAgentId: qaAgentId,
+      allowUnresolvedBlockerStageReturn: true,
+      executionState: {
+        ...pendingExecutionState,
+        status: "changes_requested",
+        lastDecisionId: decisionId,
+        lastDecisionOutcome: "changes_requested",
+      },
+    });
+
+    expect(updated).toMatchObject({
+      status: "in_progress",
+      assigneeAgentId: returnAgentId,
+      executionState: {
+        status: "changes_requested",
+        lastDecisionId: decisionId,
+        lastDecisionOutcome: "changes_requested",
+      },
+    });
+    await expect(svc.getRelationSummaries(issueId)).resolves.toMatchObject({
+      blockedBy: [expect.objectContaining({ id: blockerId, status: "todo" })],
+    });
+  });
+
   it("wakes parents only when all direct children are terminal", async () => {
     const companyId = randomUUID();
     const assigneeAgentId = randomUUID();

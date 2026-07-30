@@ -416,6 +416,7 @@ describe("issue execution policy transitions", () => {
 
       expect(result.patch.status).toBe("in_progress");
       expect(result.patch.assigneeAgentId).toBe(coderAgentId);
+      expect(result.patch.allowUnresolvedBlockerStageReturn).toBe(true);
       expect(result.patch.executionState).toMatchObject({
         status: "changes_requested",
         currentStageType: "review",

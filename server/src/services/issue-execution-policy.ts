@@ -770,6 +770,7 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
         patch.status = "in_progress";
         Object.assign(patch, patchForPrincipal(existingState.returnAssignee));
         patch.executionState = buildChangesRequestedState(existingState, activeStage);
+        patch.allowUnresolvedBlockerStageReturn = true;
         return {
           patch,
           decision: {

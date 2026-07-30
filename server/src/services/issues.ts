@@ -6569,6 +6569,7 @@ export function issueService(db: Db) {
         blockedByIssueIds?: string[];
         actorAgentId?: string | null;
         actorUserId?: string | null;
+        allowUnresolvedBlockerStageReturn?: boolean;
       },
       dbOrTx: any = db,
     ) => {
@@ -6584,6 +6585,7 @@ export function issueService(db: Db) {
         blockedByIssueIds,
         actorAgentId,
         actorUserId,
+        allowUnresolvedBlockerStageReturn,
         ...issueData
       } = data;
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
@@ -6624,7 +6626,7 @@ export function issueService(db: Db) {
       if (patch.status === "in_progress" && !nextAssigneeAgentId && !nextAssigneeUserId) {
         throw unprocessable("in_progress issues require an assignee");
       }
-      if (patch.status === "in_progress") {
+      if (patch.status === "in_progress" && !allowUnresolvedBlockerStageReturn) {
         const unresolvedBlockerIssueIds = blockedByIssueIds !== undefined
           ? await listUnresolvedBlockerIssueIds(dbOrTx, existing.companyId, blockedByIssueIds)
           : (
