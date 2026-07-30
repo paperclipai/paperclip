@@ -6128,6 +6128,24 @@ export function resolveHeartbeatSchedulingSuppression(
   return { suppressed: false, reason: null };
 }
 
+/**
+ * Agent statuses that must never be treated as invokable by the automatic
+ * recovery path in releaseIssueExecutionAndPromote. An agent in one of these
+ * statuses is known to be unable to make progress right now, so re-queuing a
+ * run for it on the next unrelated issue event (a comment, a mention, a wake)
+ * would just repeat the same failure with no cooldown.
+ */
+export const RECOVERY_NON_INVOKABLE_AGENT_STATUSES = new Set<string>([
+  "paused",
+  "terminated",
+  "pending_approval",
+  "error",
+]);
+
+export function isAgentInvokableForRecovery(status: string | null | undefined): boolean {
+  return status != null && !RECOVERY_NON_INVOKABLE_AGENT_STATUSES.has(status);
+}
+
 export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) {
   const instanceSettings = instanceSettingsService(db);
   const getCurrentUserRedactionOptions = async () => ({
@@ -15227,11 +15245,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const taskKey = deriveTaskKeyWithHeartbeatFallback(runContext, null);
     const recoveryAgent = await getAgent(run.agentId);
     const recoveryAgentInvokable =
-      recoveryAgent &&
-      recoveryAgent.status !== "paused" &&
-      recoveryAgent.status !== "terminated" &&
-      recoveryAgent.status !== "pending_approval" &&
-      recoveryAgent.status !== "error";
+      recoveryAgent != null && isAgentInvokableForRecovery(recoveryAgent.status);
     const recoverySessionBefore = recoveryAgentInvokable
       ? await resolveSessionBeforeForWakeup(recoveryAgent, taskKey)
       : null;
