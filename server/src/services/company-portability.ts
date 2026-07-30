@@ -152,6 +152,11 @@ const DEFAULT_INCLUDE: CompanyPortabilityInclude = {
 };
 
 const DEFAULT_COLLISION_STRATEGY: CompanyPortabilityCollisionStrategy = "rename";
+// The bundle shape this build reads and writes. Bundles began declaring
+// their schemaVersion in the .paperclip.yaml extension at 6; undeclared
+// bundles are read as 5, the last unstamped shape.
+const BUNDLE_SCHEMA_VERSION = 6;
+const UNSTAMPED_BUNDLE_SCHEMA_VERSION = 5;
 const DEFAULT_IMPORTED_LABEL_COLOR = "#6366f1";
 // Blob entries are content-addressed by sha256; the store itself is
 // type-agnostic, so blob files always travel as opaque octet streams while
@@ -2846,6 +2851,13 @@ function buildManifestFromPackageFiles(
   const paperclipExtension = paperclipExtensionPath
     ? parseYamlFile(readPortableTextFile(normalizedFiles, paperclipExtensionPath) ?? "")
     : {};
+  const declaredSchemaVersion = asInteger(paperclipExtension.schemaVersion);
+  const bundleSchemaVersion = declaredSchemaVersion !== null && declaredSchemaVersion > 0
+    ? declaredSchemaVersion
+    : UNSTAMPED_BUNDLE_SCHEMA_VERSION;
+  if (bundleSchemaVersion > BUNDLE_SCHEMA_VERSION) {
+    throw unprocessable(`Company package declares schemaVersion ${bundleSchemaVersion}, which was produced by a newer Paperclip; this board reads up to schemaVersion ${BUNDLE_SCHEMA_VERSION}.`);
+  }
   const paperclipCompany = isPlainRecord(paperclipExtension.company) ? paperclipExtension.company : {};
   const paperclipSidebar = normalizePortableSidebarOrder(paperclipExtension.sidebar);
   const paperclipLabels = normalizePortableLabelDefinitions(paperclipExtension.labels);
@@ -2894,7 +2906,7 @@ function buildManifestFromPackageFiles(
   const skillPaths = Array.from(new Set([...referencedSkillPaths, ...discoveredSkillPaths])).sort();
 
   const manifest: CompanyPortabilityManifest = {
-    schemaVersion: 5,
+    schemaVersion: bundleSchemaVersion,
     generatedAt: new Date().toISOString(),
     source: opts?.sourceLabel ?? null,
     includes: {
@@ -3199,6 +3211,10 @@ function buildManifestFromPackageFiles(
     if (frontmatter.kind && frontmatter.kind !== "task") {
       warnings.push(`Task markdown ${taskPath} does not declare kind: task in frontmatter.`);
     }
+  }
+
+  if (bundleSchemaVersion < BUNDLE_SCHEMA_VERSION && manifest.issues.length > 0) {
+    warnings.push(`This package declares schemaVersion ${bundleSchemaVersion} and predates label, blocker, document, work product, monitor, and attachment transfer; that task data imports only if the bundle carries it.`);
   }
 
   manifest.envInputs = dedupeEnvInputs(manifest.envInputs);
@@ -4280,6 +4296,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     files[paperclipExtensionPath] = buildYamlFile(
       {
         schema: "paperclip/v1",
+        schemaVersion: BUNDLE_SCHEMA_VERSION,
         company: stripEmptyValues({
           brandColor: company.brandColor ?? null,
           logoPath: companyLogoPath,
@@ -4508,11 +4525,8 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           }
         }
         if (issue.recurring) {
-          if (!issue.projectSlug) {
-            errors.push(`Recurring task ${issue.slug} must declare a project to import as a routine.`);
-          }
           if (!issue.assigneeAgentSlug) {
-            errors.push(`Recurring task ${issue.slug} must declare an assignee to import as a routine.`);
+            warnings.push(`Recurring task ${issue.slug} has no assignee; the routine will stay paused until one is set.`);
           }
           const resolvedRoutine = resolvePortableRoutineDefinition(issue, parsed.frontmatter.schedule);
           warnings.push(...resolvedRoutine.warnings);
@@ -4819,6 +4833,18 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     const importedAutomationPausedAt = pauseAutomations ? new Date() : null;
     const warnings = [...plan.preview.warnings];
     const include = plan.include;
+
+    // Content-addressed blobs double as the bundle's tamper seal. Verify every
+    // blob before any row is written so a corrupted package cannot leave a
+    // partially imported company behind.
+    for (const [filePath, fileEntry] of Object.entries(plan.source.files)) {
+      if (!filePath.startsWith("blobs/")) continue;
+      const declaredSha = filePath.slice("blobs/".length);
+      const body = portableFileToBuffer(fileEntry, filePath);
+      if (sha256HexOfBytes(body) !== declaredSha) {
+        throw unprocessable(`Attachment blob ${filePath} does not match its declared sha256; the package is corrupted or was tampered with.`);
+      }
+    }
 
     let targetCompany: {
       id: string;
@@ -5433,8 +5459,11 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             warnings.push(`Task ${manifestIssue.slug} references workspace key ${manifestIssue.projectWorkspaceKey}, but that workspace was not imported.`);
           }
           if (manifestIssue.recurring) {
-            if (!projectId) {
-              throw unprocessable(`Recurring task ${manifestIssue.slug} is missing the project required to create a routine.`);
+            // Routines can legitimately exist without a project or assignee;
+            // routines.create accepts a null project and pauses an active
+            // routine that has no assignee to run it.
+            if (manifestIssue.projectSlug && !projectId) {
+              warnings.push(`Recurring task ${manifestIssue.slug} references project ${manifestIssue.projectSlug}, which was not imported; the routine was created without a project.`);
             }
             const resolvedRoutine = resolvePortableRoutineDefinition(manifestIssue, parsed?.frontmatter.schedule);
             if (resolvedRoutine.errors.length > 0) {
@@ -5482,6 +5511,9 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
               title: createdRoutine.title,
               status: createdRoutine.status,
             });
+            if (!assigneeAgentId) {
+              warnings.push(`Routine ${manifestIssue.slug} was imported without an assignee and will stay paused until one is set.`);
+            }
             for (const trigger of routineDefinition.triggers) {
               if (trigger.kind === "schedule") {
                 await routines.createTrigger(createdRoutine.id, {

@@ -2591,33 +2591,51 @@ describe("company portability", () => {
     expect(issueSvc.create).not.toHaveBeenCalled();
   });
 
-  it("flags recurring task imports that are missing routine-required fields", async () => {
+  it("imports recurring tasks without a project or assignee as paused routines", async () => {
     const portability = companyPortabilityService({} as any);
 
-    const preview = await portability.previewImport({
-      source: {
-        type: "inline",
-        rootPath: "paperclip-demo",
-        files: {
-          "COMPANY.md": ['---', 'schema: "agentcompanies/v1"', 'name: "Imported Paperclip"', "---", ""].join("\n"),
-          "tasks/monday-review/TASK.md": [
-            "---",
-            'name: "Monday Review"',
-            "recurring: true",
-            "---",
-            "",
-            "Review pipeline health.",
-            "",
-          ].join("\n"),
-        },
-      },
-      include: { company: true, agents: false, projects: false, issues: true, skills: false },
-      target: { mode: "new_company", newCompanyName: "Imported Paperclip" },
-      collisionStrategy: "rename",
+    companySvc.create.mockResolvedValue({
+      id: "company-imported",
+      name: "Imported Paperclip",
     });
+    accessSvc.ensureMembership.mockResolvedValue(undefined);
+    agentSvc.list.mockResolvedValue([]);
+    projectSvc.list.mockResolvedValue([]);
 
-    expect(preview.errors).toContain("Recurring task monday-review must declare a project to import as a routine.");
-    expect(preview.errors).toContain("Recurring task monday-review must declare an assignee to import as a routine.");
+    const files = {
+      "COMPANY.md": ['---', 'schema: "agentcompanies/v1"', 'name: "Imported Paperclip"', "---", ""].join("\n"),
+      "tasks/monday-review/TASK.md": [
+        "---",
+        'name: "Monday Review"',
+        "recurring: true",
+        "---",
+        "",
+        "Review pipeline health.",
+        "",
+      ].join("\n"),
+    };
+    const request = {
+      source: { type: "inline" as const, rootPath: "paperclip-demo", files },
+      include: { company: true, agents: false, projects: false, issues: true, skills: false },
+      target: { mode: "new_company" as const, newCompanyName: "Imported Paperclip" },
+      collisionStrategy: "rename" as const,
+    };
+
+    const preview = await portability.previewImport(request);
+    expect(preview.errors).toEqual([]);
+    expect(preview.warnings).toContain(
+      "Recurring task monday-review has no assignee; the routine will stay paused until one is set.",
+    );
+
+    const result = await portability.importBundle(request, "user-1");
+    expect(routineSvc.create).toHaveBeenCalledWith("company-imported", expect.objectContaining({
+      projectId: null,
+      assigneeAgentId: null,
+      title: "Monday Review",
+    }), expect.any(Object));
+    expect(result.warnings).toContain(
+      "Routine monday-review was imported without an assignee and will stay paused until one is set.",
+    );
   });
 
   it("imports a vendor-neutral package without .paperclip.yaml", async () => {
@@ -3403,6 +3421,9 @@ describe("company portability", () => {
     expect(extension).toContain('"#00ff00"');
     expect(extension).not.toContain("labelIds");
     expect(extension).not.toContain("label-a");
+    // Fresh exports declare the current bundle shape end-to-end.
+    expect(extension).toContain("schemaVersion: 6");
+    expect(exported.manifest.schemaVersion).toBe(6);
     expect(exported.manifest.labels).toEqual([
       { name: "bug", color: "#ff0000" },
       { name: "urgent", color: "#00ff00" },
@@ -3417,7 +3438,7 @@ describe("company portability", () => {
     issueSvc.create.mockResolvedValue({ id: "issue-imported", title: "Labelled task" });
     issueSvc.listLabels.mockResolvedValueOnce([]);
 
-    await portability.importBundle({
+    const result = await portability.importBundle({
       source: { type: "inline", rootPath: exported.rootPath, files: exported.files },
       include: { company: true, agents: false, projects: true, issues: true },
       target: { mode: "new_company", newCompanyName: "Imported" },
@@ -3425,6 +3446,7 @@ describe("company portability", () => {
       collisionStrategy: "rename",
     }, "user-1");
 
+    expect(result.warnings.some((warning) => warning.includes("predates"))).toBe(false);
     expect(issueSvc.createLabel).toHaveBeenCalledWith("company-imported", { name: "bug", color: "#ff0000" });
     expect(issueSvc.createLabel).toHaveBeenCalledWith("company-imported", { name: "urgent", color: "#00ff00" });
     expect(issueSvc.createLabel).toHaveBeenCalledTimes(2);
@@ -4084,6 +4106,10 @@ describe("company portability", () => {
       collisionStrategy: "rename",
     }, "user-1")).rejects.toThrow(/does not match its declared sha256/);
     expect(issueSvc.createAttachment).not.toHaveBeenCalled();
+    // Blob verification runs before any write, so a tampered package cannot
+    // leave a partially imported company behind.
+    expect(companySvc.create).not.toHaveBeenCalled();
+    expect(issueSvc.create).not.toHaveBeenCalled();
   });
 
   it("skips oversized and missing-blob attachments with warnings instead of failing", async () => {
@@ -4135,6 +4161,93 @@ describe("company portability", () => {
     expect(result.warnings).toContain(
       "Task pap-1 attachment big.bin was skipped because it exceeds this board's attachment size limit of 10 bytes.",
     );
+  });
+
+  function legacyPackageFiles(extensionLines: string[]) {
+    return {
+      "COMPANY.md": [
+        "---",
+        'schema: "agentcompanies/v1"',
+        'name: "Legacy Import"',
+        "---",
+        "",
+      ].join("\n"),
+      "tasks/kickoff/TASK.md": [
+        "---",
+        'name: "Kickoff"',
+        "---",
+        "",
+        "Legacy task.",
+        "",
+      ].join("\n"),
+      ".paperclip.yaml": [
+        'schema: "paperclip/v1"',
+        ...extensionLines,
+        "tasks:",
+        "  kickoff:",
+        '    status: "todo"',
+        "",
+      ].join("\n"),
+    };
+  }
+
+  it("imports unstamped v5 packages with an info warning about task data they predate", async () => {
+    const portability = companyPortabilityService({} as any);
+    const v5Warning =
+      "This package declares schemaVersion 5 and predates label, blocker, document, work product, monitor, and attachment transfer; that task data imports only if the bundle carries it.";
+
+    companySvc.create.mockResolvedValue({ id: "company-imported", name: "Legacy Import" });
+    accessSvc.ensureMembership.mockResolvedValue(undefined);
+    agentSvc.list.mockResolvedValue([]);
+    issueSvc.create.mockResolvedValue({ id: "issue-imported", title: "Kickoff", projectId: null });
+
+    const request = {
+      source: { type: "inline" as const, rootPath: "legacy-package", files: legacyPackageFiles([]) },
+      include: { company: true, agents: false, projects: false, issues: true },
+      target: { mode: "new_company" as const, newCompanyName: "Legacy Import" },
+      agents: "all" as const,
+      collisionStrategy: "rename" as const,
+    };
+
+    const preview = await portability.previewImport(request);
+    expect(preview.manifest.schemaVersion).toBe(5);
+    expect(preview.warnings).toContain(v5Warning);
+
+    const result = await portability.importBundle(request, "user-1");
+    expect(issueSvc.create).toHaveBeenCalledWith(
+      "company-imported",
+      expect.objectContaining({ title: "Kickoff" }),
+    );
+    expect(result.warnings).toContain(v5Warning);
+  });
+
+  it("keeps packages declaring schemaVersions below 5 importable", async () => {
+    const portability = companyPortabilityService({} as any);
+
+    const preview = await portability.previewImport({
+      source: { type: "inline", rootPath: "legacy-package", files: legacyPackageFiles(["schemaVersion: 1"]) },
+      include: { company: true, agents: false, projects: false, issues: true },
+      target: { mode: "new_company", newCompanyName: "Legacy Import" },
+      agents: "all",
+      collisionStrategy: "rename",
+    });
+
+    expect(preview.errors).toEqual([]);
+    expect(preview.manifest.schemaVersion).toBe(1);
+    expect(preview.warnings.some((warning) => warning.startsWith("This package declares schemaVersion 1"))).toBe(true);
+  });
+
+  it("rejects packages produced by a newer Paperclip", async () => {
+    const portability = companyPortabilityService({} as any);
+
+    await expect(portability.importBundle({
+      source: { type: "inline", rootPath: "future-package", files: legacyPackageFiles(["schemaVersion: 7"]) },
+      include: { company: true, agents: false, projects: false, issues: true },
+      target: { mode: "new_company", newCompanyName: "Future Import" },
+      agents: "all",
+      collisionStrategy: "rename",
+    }, "user-1")).rejects.toThrow(/newer Paperclip/);
+    expect(issueSvc.create).not.toHaveBeenCalled();
   });
 
   it("preserves issue comment presentation fields through export and import", async () => {
