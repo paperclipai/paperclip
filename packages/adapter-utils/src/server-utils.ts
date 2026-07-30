@@ -10,7 +10,7 @@ import {
 } from "./local-process-sandbox.js";
 import { buildSshSpawnTarget, type SshRemoteExecutionSpec } from "./ssh.js";
 import { redactCommandText } from "./command-redaction.js";
-import { parseCmdWrapperContent } from "./cmd-wrapper-resolution.js";
+import { parseCmdWrapperContent, isSafeResolvedExe } from "./cmd-wrapper-resolution.js";
 import type {
   AdapterSkillEntry,
   AdapterSkillSnapshot,
@@ -2230,15 +2230,24 @@ async function resolveSpawnTarget(
       if (exeRelativePath) {
         const dir = path.dirname(executable);
         const resolvedExe = path.resolve(dir, exeRelativePath);
-        try {
-          await fs.access(resolvedExe);
-          // Merge SET-based env overrides on top of the caller's sanitized env.
-          const mergedEnv = Object.keys(envOverrides).length > 0
-            ? { ...env, ...envOverrides }
-            : undefined;
-          return { command: resolvedExe, args, env: mergedEnv };
-        } catch {
-          // exe doesn't exist, fall through to cmd.exe wrapper
+        // Security: reject path traversal — the resolved exe must remain
+        // inside the same directory as the .cmd file. A malicious wrapper
+        // could embed `..\..\windows\system32\cmd.exe` to escape the
+        // expected directory and execute arbitrary binaries.
+        if (!isSafeResolvedExe(resolvedExe, dir)) {
+          // Attacker-controlled path escaped the .cmd directory; fall through
+          // to the safe cmd.exe wrapper path instead of spawning it directly.
+        } else {
+          try {
+            await fs.access(resolvedExe);
+            // Merge SET-based env overrides on top of the caller's sanitized env.
+            const mergedEnv = Object.keys(envOverrides).length > 0
+              ? { ...env, ...envOverrides }
+              : undefined;
+            return { command: resolvedExe, args, env: mergedEnv };
+          } catch {
+            // exe doesn't exist, fall through to cmd.exe wrapper
+          }
         }
       }
     } catch {

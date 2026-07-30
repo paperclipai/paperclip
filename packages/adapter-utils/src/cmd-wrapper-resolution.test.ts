@@ -4,6 +4,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 import {
   parseCmdWrapperContent,
+  isSafeResolvedExe,
   DP0_PATTERN_NPM,
   DP0_PATTERN_DIRECT,
   TILDE_PATTERN_NPM,
@@ -180,5 +181,50 @@ describe(".cmd wrapper resolution", () => {
     } finally {
       await fs.rm(tmpDir, { recursive: true, force: true });
     }
+  });
+});
+
+describe("isSafeResolvedExe", () => {
+  const base = "/home/user/.npm/bin";
+
+  it("allows an exe directly inside the base dir", () => {
+    expect(isSafeResolvedExe(`${base}/opencode.exe`, base)).toBe(true);
+  });
+
+  it("allows an exe in a sub-directory", () => {
+    expect(isSafeResolvedExe(`${base}/sub/tool.exe`, base)).toBe(true);
+  });
+
+  it("blocks a path traversal one level up", () => {
+    expect(isSafeResolvedExe("/home/user/evil.exe", base)).toBe(false);
+  });
+
+  it("blocks a deep path traversal to system32", () => {
+    expect(
+      isSafeResolvedExe("C:/Windows/System32/cmd.exe", base),
+    ).toBe(false);
+  });
+
+  it("blocks a sibling directory with matching prefix (no traversal via prefix trick)", () => {
+    // e.g. base=/foo/bar — sibling /foo/bar-evil must not pass
+    expect(isSafeResolvedExe("/home/user/.npm/bin-evil/tool.exe", base)).toBe(
+      false,
+    );
+  });
+
+  it("handles Windows backslash paths", () => {
+    const winBase = "C:\\Users\\user\\AppData\\npm";
+    expect(
+      isSafeResolvedExe(`${winBase}\\node_modules\\.bin\\opencode.exe`, winBase),
+    ).toBe(true);
+    expect(
+      isSafeResolvedExe("C:\\Windows\\System32\\cmd.exe", winBase),
+    ).toBe(false);
+  });
+
+  it("rejects a ../ traversal resolved path", () => {
+    // Simulates: path.resolve('/home/user/.npm/bin', '../../evil.exe')
+    // which resolves to '/home/user/evil.exe'
+    expect(isSafeResolvedExe("/home/user/evil.exe", base)).toBe(false);
   });
 });
