@@ -1137,7 +1137,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(comments[0]?.body).toContain("Recovery action:");
   });
 
-  // PLA-3727 / PLA-3680 gate 2. Recovery demotions used to write `blocked` with no blocker
+  // Recovery demotions used to write `blocked` with no blocker
   // edge and no unblock descriptor. Nothing reaches that shape — the liveness classifier
   // has no finding for it, and with no blocker edge `issue_blockers_resolved` can never
   // fire — so a 25-minute dependency outage stranded 35 issues for a full day.

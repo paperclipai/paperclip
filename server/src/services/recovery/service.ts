@@ -3148,7 +3148,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
    * candidate. The escalation comment's promise, "moving it to `blocked` so it is visible
    * for intervention", held for the human attention feed but not for any automated path.
    * That asymmetry is why a 25-minute dependency outage cost 35 stranded issues rather
-   * than 25 minutes (PLA-3680 / PLA-3727).
+   * than 25 minutes.
    *
    * Returns the `unblockDescriptor` a recovery demotion must attach so the resulting
    * `blocked` row names who can clear it: the recovery owner agent when there is one,

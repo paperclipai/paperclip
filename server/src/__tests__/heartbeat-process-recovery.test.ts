@@ -5550,7 +5550,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     }
   });
 
-  // PLA-3727 / PLA-3680 gate 2: terminal-run recovery used to demote issues to `blocked`
+  // Terminal-run recovery used to demote issues to `blocked`
   // with zero blocker edges and no unblock descriptor. Nothing can reach that shape — the
   // issue-graph liveness classifier only emits findings for the blocked-by-unassigned,
   // assigned-backlog, uninvokable-assignee, cancelled-blocker and review shapes — so the
