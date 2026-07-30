@@ -25,6 +25,15 @@ const TEXT_CLEAR_SECRET_COLON_RE =
   /((?:api[-_]?key|access[-_]?token|auth(?:_?token)?|authorization|bearer|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring)\s*:\s*["']?)[^\s"'`]+/gi;
 const TEXT_AMBIGUOUS_SECRET_COLON_RE =
   /(secret\s*:\s*["']?)(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9_]{20,}|[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}(?:\.[A-Za-z0-9_-]{8,})?|[A-Za-z0-9+/=_-]{32,})/gi;
+// A bare `Bearer` prefix is common in copied headers, but ordinary prose such
+// as "bearer tokens" must stay readable. Redact only a single opaque token:
+// a known provider shape, JWT, or 24+ character URL-safe/base64-like value.
+const TEXT_BARE_BEARER_CREDENTIAL_RE =
+  /(\bbearer\s+)(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9_]{20,}|[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}(?:\.[A-Za-z0-9_-]{8,})?|[A-Za-z0-9+/=_-]{24,})(?=$|[^A-Za-z0-9+/=_-])/gi;
+// Userinfo is credentials only when it includes a password (`user:password@`).
+// This deliberately leaves normal URLs, ports, and username-only URLs intact.
+const TEXT_URL_EMBEDDED_CREDENTIAL_RE =
+  /(\b[a-z][a-z0-9+.-]*:\/\/)[^\s/?#:@]+:[^\s/?#@]+@/gi;
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   if (typeof value !== "object" || value === null || Array.isArray(value)) return false;
@@ -112,5 +121,7 @@ export function redactSensitiveText(input: string): string {
     .replace(TEXT_ENV_SECRET_ASSIGNMENT_RE, `$1${REDACTED_EVENT_VALUE}`)
     .replace(TEXT_NAMED_SECRET_EQUALS_RE, `$1${REDACTED_EVENT_VALUE}`)
     .replace(TEXT_CLEAR_SECRET_COLON_RE, `$1${REDACTED_EVENT_VALUE}`)
-    .replace(TEXT_AMBIGUOUS_SECRET_COLON_RE, `$1${REDACTED_EVENT_VALUE}`);
+    .replace(TEXT_AMBIGUOUS_SECRET_COLON_RE, `$1${REDACTED_EVENT_VALUE}`)
+    .replace(TEXT_BARE_BEARER_CREDENTIAL_RE, `$1${REDACTED_EVENT_VALUE}`)
+    .replace(TEXT_URL_EMBEDDED_CREDENTIAL_RE, `$1${REDACTED_EVENT_VALUE}@`);
 }

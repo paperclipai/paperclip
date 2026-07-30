@@ -499,6 +499,8 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
   it("redacts issue text before persisting creates, updates, and comments", async () => {
     const companyId = randomUUID();
     const inputValue = "test-only-sensitive-value";
+    const bearerCredential = "A1b2C3d4E5f6G7h8I9j0K1l2";
+    const credentialUrl = "https://build-user:TestOnlyPass123@example.test/hooks";
 
     await db.insert(companies).values({
       id: companyId,
@@ -508,14 +510,14 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     });
 
     const created = await svc.create(companyId, {
-      title: `Create PAPERCLIP_API_KEY=${inputValue}`,
-      description: `Description OPENAI_API_KEY: ${inputValue}`,
+      title: `Create Bearer ${bearerCredential}`,
+      description: `Description callback ${credentialUrl}`,
     });
     await svc.update(created.id, {
       title: `Update AUTH_TOKEN=${inputValue}`,
       description: `Updated password: ${inputValue}`,
     });
-    const comment = await svc.addComment(created.id, `Comment secret=${inputValue}`, {});
+    const comment = await svc.addComment(created.id, `Comment Bearer ${bearerCredential} ${credentialUrl}`, {});
     const [storedIssue] = await db.select().from(issues).where(eq(issues.id, created.id));
     const [storedComment] = await db.select().from(issueComments).where(eq(issueComments.id, comment.id));
 
@@ -523,8 +525,11 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       title: "Update AUTH_TOKEN=***REDACTED***",
       description: "Updated password: ***REDACTED***",
     }));
-    expect(storedComment?.body).toBe("Comment secret=***REDACTED***");
+    expect(storedComment?.body).toBe("Comment Bearer ***REDACTED*** https://***REDACTED***@example.test/hooks");
     expect(JSON.stringify({ storedIssue, storedComment })).not.toContain(inputValue);
+    expect(JSON.stringify({ storedIssue, storedComment })).not.toContain(bearerCredential);
+    expect(JSON.stringify({ storedIssue, storedComment })).not.toContain("build-user");
+    expect(JSON.stringify({ storedIssue, storedComment })).not.toContain("TestOnlyPass123");
   });
 
   it("filters issues by execution workspace id", async () => {

@@ -268,21 +268,22 @@ describe("issue activity event routes", () => {
 
   it("redacts updated issue text before activity details are persisted or propagated", async () => {
     const issue = makeIssue();
-    const rawValue = "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6";
+    const bearerCredential = "A1b2C3d4E5f6G7h8I9j0K1l2";
+    const credentialUrl = "https://build-user:TestOnlyPass123@example.test/hooks";
     mockIssueService.getById.mockResolvedValue(issue);
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
       ...issue,
       ...patch,
-      title: "Updated PAPERCLIP_API_KEY=***REDACTED***",
-      description: "Updated secret: ***REDACTED***",
+      title: "Updated Bearer ***REDACTED***",
+      description: "Updated callback https://***REDACTED***@example.test/hooks",
       updatedAt: new Date(),
     }));
 
     const res = await request(await createApp())
       .patch(`/api/issues/${issue.id}`)
       .send({
-        title: `Updated PAPERCLIP_API_KEY=${rawValue}`,
-        description: `Updated secret: ${rawValue}`,
+        title: `Updated Bearer ${bearerCredential}`,
+        description: `Updated callback ${credentialUrl}`,
       });
 
     expect(res.status).toBe(200);
@@ -292,13 +293,15 @@ describe("issue activity event routes", () => {
         expect.objectContaining({
           action: "issue.updated",
           details: expect.objectContaining({
-            title: "Updated PAPERCLIP_API_KEY=***REDACTED***",
-            description: "Updated secret: ***REDACTED***",
+            title: "Updated Bearer ***REDACTED***",
+            description: "Updated callback https://***REDACTED***@example.test/hooks",
           }),
         }),
       );
     });
-    expect(JSON.stringify(mockLogActivity.mock.calls)).not.toContain(rawValue);
+    expect(JSON.stringify(mockLogActivity.mock.calls)).not.toContain(bearerCredential);
+    expect(JSON.stringify(mockLogActivity.mock.calls)).not.toContain("build-user");
+    expect(JSON.stringify(mockLogActivity.mock.calls)).not.toContain("TestOnlyPass123");
   });
 
   it("logs explicit reviewer and approver activity when execution policy participants change", async () => {
