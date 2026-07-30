@@ -37,6 +37,10 @@ export interface RunLogStore {
   ): Promise<number>;
   finalize(handle: RunLogHandle): Promise<RunLogFinalizeSummary>;
   read(handle: RunLogHandle, opts?: RunLogReadOptions): Promise<RunLogReadResult>;
+  // Optional so existing fakes/fixtures keep compiling: uploads every dirty
+  // in-flight mirror immediately (graceful-shutdown path). No-op when the
+  // in-flight mirror is not enabled.
+  flushInflightMirrors?(): Promise<void>;
 }
 
 function safeSegments(...segments: string[]) {
@@ -63,7 +67,16 @@ export interface DurableRunLogStoreOptions {
   // served from there on read whenever the local file is missing (e.g. the pod
   // rolled and wiped the emptyDir). When omitted, the store is local-only (the
   // historical behaviour: a restart loses the log).
-  s3?: { provider: StorageProvider; keyPrefix?: string };
+  s3?: {
+    provider: StorageProvider;
+    keyPrefix?: string;
+    // When > 0, ALSO mirror the still-running log to the same object key at
+    // most once per this interval (plus a flush hook for graceful shutdown),
+    // so a crash mid-run loses at most one interval's tail instead of the
+    // whole log. Off (undefined/0) preserves the historical finalize-only
+    // mirroring: no extra PUT traffic unless explicitly opted in.
+    inflightMirrorMs?: number;
+  };
 }
 
 // Run-log store with TRANSPARENT durability. The store id stays "local_file" so
@@ -75,13 +88,112 @@ export interface DurableRunLogStoreOptions {
 // for "Run log not found" after a deploy/restart (the /paperclip data dir is an
 // emptyDir in cloud_tenant mode -- persistence is disabled to avoid the
 // operator's privileged selinux-relabel init container in our hardened ns).
+//
+// Optionally (inflightMirrorMs > 0) the still-running log is ALSO mirrored to
+// the same key at a throttled cadence and flushed on graceful shutdown, so a
+// restart mid-run preserves the tail up to the last mirror instead of losing
+// the whole in-flight log. Finalize retires the in-flight bookkeeping (waiting
+// out any upload already on the wire) before writing the complete file, so a
+// stale partial can never overwrite a finalized log.
 export function createDurableRunLogStore(options: DurableRunLogStoreOptions): RunLogStore {
   const { basePath } = options;
   const s3 = options.s3;
   const s3Prefix = normalizeKeyPrefix(s3?.keyPrefix);
+  const inflightMirrorMs = s3?.inflightMirrorMs && s3.inflightMirrorMs > 0 ? s3.inflightMirrorMs : 0;
 
   function s3Key(logRef: string): string {
     return s3Prefix ? `${s3Prefix}/${logRef}` : logRef;
+  }
+
+  // In-flight mirror bookkeeping, keyed by logRef. The mirror uploads the
+  // CURRENT (partial) file to the SAME key finalize uses: readers already
+  // range-read that key, so a partial object is served exactly like a live
+  // tail, and finalize simply overwrites it with the complete file. One
+  // entry exists only between the first post-interval-eligible append and
+  // finalize.
+  interface InflightMirrorEntry {
+    dirty: boolean;
+    lastMirrorAt: number;
+    timer: NodeJS.Timeout | null;
+    upload: Promise<boolean> | null;
+  }
+  const inflightMirrors = new Map<string, InflightMirrorEntry>();
+
+  function mirrorInflightNow(logRef: string, entry: InflightMirrorEntry): Promise<boolean> {
+    entry.dirty = false;
+    const upload = (async () => {
+      const absPath = resolveWithin(basePath, logRef);
+      const stat = await fs.stat(absPath);
+      if (stat.size === 0) return true;
+      await s3!.provider.putObject({
+        objectKey: s3Key(logRef),
+        // Bound the stream to the stat'ed size: the run is still appending,
+        // and an unbounded stream that grows past stat.size would violate
+        // the declared contentLength and fail (or truncate) the upload.
+        // Bytes appended after the stat stay dirty and ride the next mirror.
+        body: createReadStream(absPath, { start: 0, end: stat.size - 1 }),
+        contentType: "application/x-ndjson",
+        contentLength: stat.size,
+      });
+      return true;
+    })().catch((err) => {
+      // Best-effort like the finalize mirror: a failing upload must never
+      // break the run, but a persistently broken mirror should be visible.
+      console.warn(
+        `[run-log-store] Failed to mirror in-flight run log to object storage (key: ${s3Key(logRef)}):`,
+        err,
+      );
+      // Re-dirty so the tail retries next interval even without new appends;
+      // the lastMirrorAt stamp below bounds retries to one per interval.
+      entry.dirty = true;
+      return false;
+    }).finally(() => {
+      // Stamp AFTER the attempt so a slow or failing endpoint self-throttles
+      // to one attempt per interval instead of hot-looping.
+      entry.lastMirrorAt = Date.now();
+      entry.upload = null;
+      if (entry.dirty) scheduleInflightMirror(logRef, entry);
+    });
+    entry.upload = upload;
+    return upload;
+  }
+
+  function scheduleInflightMirror(logRef: string, entry: InflightMirrorEntry): void {
+    if (entry.timer || entry.upload) return;
+    const delay = Math.max(0, inflightMirrorMs - (Date.now() - entry.lastMirrorAt));
+    entry.timer = setTimeout(() => {
+      entry.timer = null;
+      void mirrorInflightNow(logRef, entry);
+    }, delay);
+    // Never keep the process alive just to mirror a tail.
+    entry.timer.unref?.();
+  }
+
+  function noteInflightAppend(logRef: string): void {
+    if (!s3 || inflightMirrorMs <= 0) return;
+    let entry = inflightMirrors.get(logRef);
+    if (!entry) {
+      // First mirror lands one full interval after the first append: a run
+      // that finalizes sooner is covered by the finalize upload, and this
+      // keeps the steady-state cost at one PUT per interval per active run.
+      entry = { dirty: false, lastMirrorAt: Date.now(), timer: null, upload: null };
+      inflightMirrors.set(logRef, entry);
+    }
+    entry.dirty = true;
+    scheduleInflightMirror(logRef, entry);
+  }
+
+  async function retireInflightMirror(logRef: string): Promise<void> {
+    const entry = inflightMirrors.get(logRef);
+    if (!entry) return;
+    inflightMirrors.delete(logRef);
+    if (entry.timer) {
+      clearTimeout(entry.timer);
+      entry.timer = null;
+    }
+    // An upload still in flight could otherwise finish AFTER finalize's
+    // complete-file upload and overwrite it with a stale partial.
+    if (entry.upload) await entry.upload;
   }
 
   async function ensureDir(relativeDir: string) {
@@ -165,6 +277,7 @@ export function createDurableRunLogStore(options: DurableRunLogStoreOptions): Ru
       await ensureDir(relDir);
       const absPath = resolveWithin(basePath, relPath);
       await fs.writeFile(absPath, "", "utf8");
+      await retireInflightMirror(relPath);
       return { store: "local_file", logRef: relPath };
     },
 
@@ -182,11 +295,13 @@ export function createDurableRunLogStore(options: DurableRunLogStoreOptions): Ru
       });
       const persisted = `${line}\n`;
       await fs.appendFile(absPath, persisted, "utf8");
+      noteInflightAppend(handle.logRef);
       return Buffer.byteLength(persisted, "utf8");
     },
 
     async finalize(handle) {
       if (handle.store !== "local_file") return { bytes: 0, compressed: false };
+      await retireInflightMirror(handle.logRef);
       const absPath = resolveWithin(basePath, handle.logRef);
       const stat = await fs.stat(absPath).catch(() => null);
       if (!stat) throw notFound("Run log not found");
@@ -231,6 +346,39 @@ export function createDurableRunLogStore(options: DurableRunLogStoreOptions): Ru
       // Local file gone (pod rolled) -> serve from the S3 mirror if configured.
       return readS3Range(handle.logRef, offset, limitBytes);
     },
+
+    async flushInflightMirrors() {
+      if (!s3 || inflightMirrorMs <= 0) return;
+      const flushEntry = async (logRef: string, entry: InflightMirrorEntry) => {
+        // Loop until the entry is clean: an append that lands while an
+        // upload is on the wire re-dirties the entry, and its follow-up
+        // mirror sits on an unref'ed timer that would never fire once the
+        // process exits — so re-check after every await instead of trusting
+        // a single pass. A FAILED attempt ends the loop instead of retrying:
+        // hot-looping a down endpoint at shutdown would spin forever, and
+        // the flush is best-effort by design.
+        for (;;) {
+          if (entry.timer) {
+            clearTimeout(entry.timer);
+            entry.timer = null;
+          }
+          if (entry.upload) {
+            await entry.upload;
+            continue;
+          }
+          if (!entry.dirty) return;
+          const uploaded = await mirrorInflightNow(logRef, entry);
+          if (!uploaded) {
+            if (entry.timer) {
+              clearTimeout(entry.timer);
+              entry.timer = null;
+            }
+            return;
+          }
+        }
+      };
+      await Promise.all([...inflightMirrors].map(([logRef, entry]) => flushEntry(logRef, entry)));
+    },
   };
 }
 
@@ -239,7 +387,7 @@ export function createDurableRunLogStore(options: DurableRunLogStoreOptions): Ru
 // NOT redirect the product's workspace/file storage (smaller blast radius).
 // Unset RUN_LOG_S3_BUCKET -> no mirror -> local-only (safe degrade). Creds come
 // from the standard AWS_ACCESS_KEY_ID/AWS_SECRET_ACCESS_KEY chain.
-function resolveRunLogS3(): { provider: StorageProvider; keyPrefix?: string } | undefined {
+function resolveRunLogS3(): DurableRunLogStoreOptions["s3"] {
   const bucket = process.env.RUN_LOG_S3_BUCKET?.trim();
   if (!bucket) return undefined;
   const provider = createS3StorageProvider({
@@ -251,7 +399,16 @@ function resolveRunLogS3(): { provider: StorageProvider; keyPrefix?: string } | 
       ? process.env.RUN_LOG_S3_FORCE_PATH_STYLE === "true"
       : true, // Cubbit (and most S3-compatible endpoints) need path-style
   });
-  return { provider, keyPrefix: process.env.RUN_LOG_S3_PREFIX?.trim() || "run-logs" };
+  // Opt-in in-flight tail mirroring: at most one partial upload per interval
+  // per active run, so a crash loses at most one interval's tail. Unset/0
+  // keeps the historical finalize-only mirroring.
+  const inflightSeconds = Number.parseFloat(process.env.RUN_LOG_S3_INFLIGHT_MIRROR_SECONDS ?? "");
+  return {
+    provider,
+    keyPrefix: process.env.RUN_LOG_S3_PREFIX?.trim() || "run-logs",
+    inflightMirrorMs:
+      Number.isFinite(inflightSeconds) && inflightSeconds > 0 ? Math.round(inflightSeconds * 1000) : undefined,
+  };
 }
 
 let cachedStore: RunLogStore | null = null;
@@ -261,4 +418,12 @@ export function getRunLogStore() {
   const basePath = process.env.RUN_LOG_BASE_PATH ?? path.resolve(resolvePaperclipInstanceRoot(), "data", "run-logs");
   cachedStore = createDurableRunLogStore({ basePath, s3: resolveRunLogS3() });
   return cachedStore;
+}
+
+// Graceful-shutdown hook: upload every dirty in-flight run-log tail before
+// the process exits, so an orderly restart (deploy, SIGTERM) loses nothing
+// even for runs that never reach finalize. No-op when the store was never
+// created or in-flight mirroring is off.
+export async function flushInFlightRunLogMirrors(): Promise<void> {
+  await cachedStore?.flushInflightMirrors?.();
 }

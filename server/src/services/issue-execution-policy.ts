@@ -63,6 +63,7 @@ const PENDING_STATUS: IssueExecutionState["status"] = "pending";
 const CHANGES_REQUESTED_STATUS: IssueExecutionState["status"] = "changes_requested";
 const MONITOR_INVALID_MESSAGE = "Monitor can only be scheduled on issues assigned to an agent in in_progress or in_review";
 const MONITOR_BOUNDS_EXHAUSTED_MESSAGE = "Monitor bounds are already exhausted";
+const STAGE_DECISION_COMMENT_HINT = "Include the decision comment in the same PATCH request; prior comments are not considered.";
 export const REDACTED_ISSUE_MONITOR_EXTERNAL_REF = "[redacted]";
 
 function normalizeMonitorNotes(notes: string | null | undefined) {
@@ -708,7 +709,7 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
     if (principalsEqual(currentParticipant, actor)) {
       if (requestedStatus === "done") {
         if (!input.commentBody?.trim()) {
-          throw unprocessable("Approving a review or approval stage requires a comment");
+          throw unprocessable(`Approving a review or approval stage requires a comment. ${STAGE_DECISION_COMMENT_HINT}`);
         }
         const approvedState = buildCompletedState(existingState, activeStage);
         // Only stages after the stage being approved are advance candidates.
@@ -762,7 +763,7 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
 
       if (requestedStatus && requestedStatus !== "in_review") {
         if (!input.commentBody?.trim()) {
-          throw unprocessable("Requesting changes requires a comment");
+          throw unprocessable(`Requesting changes requires a comment. ${STAGE_DECISION_COMMENT_HINT}`);
         }
         if (!existingState?.returnAssignee) {
           throw unprocessable("This execution stage has no return assignee");
