@@ -90,12 +90,12 @@ function createDbState(input: {
   return { db, activity };
 }
 
-function createApp(db: any) {
+function createApp(db: any, deploymentMode: "authenticated" | "local_trusted" = "authenticated") {
   const app = express();
   app.use(express.json());
   app.use(
     actorMiddleware(db, {
-      deploymentMode: "authenticated",
+      deploymentMode,
       resolveSession: async () => null,
     }),
   );
@@ -282,6 +282,68 @@ describe("agent auth middleware", () => {
       type: "agent",
       runId,
       onBehalfOfUserId: "user-legacy",
+      source: "agent_jwt",
+    });
+  });
+
+  it("binds the synthetic local board as an active owner for local-trusted agent JWTs", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const { db } = createDbState({
+      agent: { id: agentId, companyId },
+      run: { id: runId, companyId, agentId, responsibleUserId: "local-board" },
+    });
+    const token = craftAgentJwtWithoutResponsibleClaim({
+      secret: process.env.PAPERCLIP_AGENT_JWT_SECRET!,
+      agentId,
+      companyId,
+      adapterType: "codex_local",
+      runId,
+    });
+
+    const res = await request(createApp(db, "local_trusted"))
+      .get("/actor")
+      .set("Authorization", `Bearer ${token}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      type: "agent",
+      onBehalfOfUserId: "local-board",
+      onBehalfOfMemberships: [{
+        companyId,
+        membershipRole: "owner",
+        status: "active",
+      }],
+      source: "agent_jwt",
+    });
+  });
+
+  it("does not synthesize local-board membership in authenticated mode", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const { db } = createDbState({
+      agent: { id: agentId, companyId },
+      run: { id: runId, companyId, agentId, responsibleUserId: "local-board" },
+    });
+    const token = craftAgentJwtWithoutResponsibleClaim({
+      secret: process.env.PAPERCLIP_AGENT_JWT_SECRET!,
+      agentId,
+      companyId,
+      adapterType: "codex_local",
+      runId,
+    });
+
+    const res = await request(createApp(db))
+      .get("/actor")
+      .set("Authorization", `Bearer ${token}`);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      type: "agent",
+      onBehalfOfUserId: "local-board",
+      onBehalfOfMemberships: [],
       source: "agent_jwt",
     });
   });

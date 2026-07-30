@@ -604,6 +604,43 @@ describeEmbeddedPostgres("authorization service", () => {
     });
   });
 
+  it.each(["issue:mutate", "issue:comment"] as const)(
+    "allows assigned agent %s on behalf of the synthetic local board",
+    async (action) => {
+      const company = await createCompany(db, `LocalBoard-${action}`);
+      const actorAgent = await createAgent(db, company.id, { role: "engineer" });
+      const issue = await createIssue(db, company.id, {
+        title: "Local trusted assigned issue",
+        assigneeAgentId: actorAgent.id,
+      });
+
+      await expect(authorizationService(db).decide({
+        actor: {
+          type: "agent",
+          agentId: actorAgent.id,
+          companyId: company.id,
+          onBehalfOfUserId: "local-board",
+          onBehalfOfMemberships: [{
+            companyId: company.id,
+            membershipRole: "owner",
+            status: "active",
+          }],
+          source: "agent_jwt",
+        },
+        action,
+        resource: {
+          type: "issue",
+          companyId: company.id,
+          issueId: issue.id,
+          assigneeAgentId: actorAgent.id,
+        },
+      })).resolves.toMatchObject({
+        allowed: true,
+        reason: "allow_self",
+      });
+    },
+  );
+
   it("keeps responsible-user issue mutations denied for viewer memberships", async () => {
     const company = await createCompany(db, "ResponsibleUserIssueViewerDenied");
     const actorAgent = await createAgent(db, company.id, { role: "engineer" });

@@ -49,9 +49,16 @@ async function resolveLegacyRunResponsibleUserId(
 
 async function loadResponsibleUserMemberships(
   db: Db,
-  input: { companyId: string; userId: string | null },
+  input: { companyId: string; userId: string | null; deploymentMode: DeploymentMode },
 ) {
   if (!input.userId) return [];
+  if (input.deploymentMode === "local_trusted" && input.userId === "local-board") {
+    return [{
+      companyId: input.companyId,
+      membershipRole: "owner",
+      status: "active",
+    }];
+  }
   const [user, memberships] = await Promise.all([
     db
       .select({ id: authUsers.id })
@@ -308,6 +315,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       const onBehalfOfMemberships = await loadResponsibleUserMemberships(db, {
         companyId: claims.company_id,
         userId: onBehalfOfUserId,
+        deploymentMode: opts.deploymentMode,
       });
 
       req.actor = {
@@ -366,6 +374,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       onBehalfOfMemberships: await loadResponsibleUserMemberships(db, {
         companyId: key.companyId,
         userId: responsibleUserId,
+        deploymentMode: opts.deploymentMode,
       }),
       runId: runIdHeader || undefined,
       source: "agent_key",
