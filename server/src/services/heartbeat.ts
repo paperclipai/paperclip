@@ -6543,10 +6543,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     companyId: string;
     issueId: string;
     agentId: string;
+    now: Date;
   }) {
     const recentRuns = await db
       .select({
+        id: heartbeatRuns.id,
         status: heartbeatRuns.status,
+        finishedAt: heartbeatRuns.finishedAt,
+        error: heartbeatRuns.error,
+        errorCode: heartbeatRuns.errorCode,
+        resultJson: heartbeatRuns.resultJson,
         contextSnapshot: heartbeatRuns.contextSnapshot,
       })
       .from(heartbeatRuns)
@@ -6628,6 +6634,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       companyId: input.issue.companyId,
       issueId: input.issue.id,
       agentId: input.run.agentId,
+      now: input.now,
     });
     return new Date(
       input.now.getTime() + computeIssueMonitorFailedDispatchBackoffDelayMs(consecutiveFailures),
