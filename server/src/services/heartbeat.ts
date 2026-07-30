@@ -2686,17 +2686,22 @@ export async function resolveAdditionalRunWorkspaces(
     const mentionedIds = await opts.issues.findMentionedProjectIds(issueId, {
       includeCommentBodies: true,
     });
-    const hasReferencedMention = mentionedIds.some((projectId) => projectId !== anchorProjectId);
+    // Each distinct non-anchor mention is a referenced project this remote run drops. A remote
+    // target has no path to receive the referenced tree, so the run drops the whole set at the
+    // staging layer. Record one failure per dropped project so the requested-vs-synced accounting
+    // counts the whole referenced set and the run still emits its structured sync log.
+    const droppedProjectIds = [
+      ...new Set(mentionedIds.filter((projectId) => projectId !== anchorProjectId)),
+    ];
     return {
       additionalWorkspaces: [],
-      warnings: hasReferencedMention
-        ? [
-            "Referenced-project workspaces are available only on a local execution target. This run uses a remote execution target, so no referenced-project workspace was attached.",
-          ]
-        : [],
-      // The remote-skip notice is a general warning, not a per-project failure: the run drops the
-      // whole referenced set by design on a remote target, so it names no single project here.
-      failures: [],
+      warnings:
+        droppedProjectIds.length > 0
+          ? [
+              "Referenced-project workspaces are available only on a local execution target. This run uses a remote execution target, so no referenced-project workspace was attached.",
+            ]
+          : [],
+      failures: droppedProjectIds.map((projectId) => ({ projectId, reason: "staging" as const })),
     };
   }
 

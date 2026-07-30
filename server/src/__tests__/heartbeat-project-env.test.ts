@@ -946,9 +946,29 @@ describe("resolveAdditionalRunWorkspaces", () => {
     expect(result.additionalWorkspaces).toEqual([]);
     expect(result.warnings).toHaveLength(1);
     expect(result.warnings[0]).toContain("local execution target");
+    // The remote path drops every referenced project at the staging layer. Each dropped project
+    // keeps a structured failure so the requested-vs-synced accounting counts the whole set and the
+    // run still emits its structured sync log.
+    expect(result.failures).toEqual([
+      { projectId: "project-a", reason: "staging" },
+      { projectId: "project-b", reason: "staging" },
+    ]);
     // The remote path must skip the per-project clone work whose result the target cannot receive.
     expect(mentionLookups).toBe(1);
     expect(workspaceResolves).toBe(0);
+  });
+
+  it("drops a duplicate remote referenced mention to a single staging failure and ignores the anchor", async () => {
+    const options = buildOptions({
+      executionTargetIsRemote: true,
+      mentionedIds: ["anchor-project", "project-a", "project-a"],
+    });
+
+    const result = await resolveAdditionalRunWorkspaces(issueId, "anchor-project", options);
+
+    // The anchor is not a referenced drop, and a repeated mention counts once.
+    expect(result.failures).toEqual([{ projectId: "project-a", reason: "staging" }]);
+    expect(result.warnings).toHaveLength(1);
   });
 
   it("stays silent on a remote target when the issue mentions no referenced project", async () => {
