@@ -50,5 +50,29 @@
     "addAgentToCompanyDesc": "再次运行引导，为此公司添加一个智能体和入门任务。",
     "addAgentButton": "添加智能体",
     "startOnboardingButton": "开始引导"
+  },
+  "mobileNav": {
+    "home": "主页",
+    "create": "新建",
+    "agents": "智能体"
+  },
+  "account": {
+    "openAccountMenu": "打开账户菜单",
+    "badgeAccount": "账户",
+    "badgeLocal": "本地",
+    "viewProfile": "查看个人资料",
+    "viewProfileDesc": "打开你的动态、任务与使用记录。",
+    "editProfile": "编辑个人资料",
+    "editProfileDesc": "更新显示名称与头像。",
+    "documentation": "文档",
+    "documentationDesc": "在新标签页打开 Paperclip 文档。",
+    "feedback": "反馈",
+    "feedbackDesc": "提交反馈或报告问题。",
+    "signingOut": "正在退出…",
+    "signOut": "退出登录",
+    "signOutDesc": "结束此浏览器会话。",
+    "signedIn": "已登录",
+    "localWorkspaceBoard": "本地工作区看板",
+    "boardDefault": "看板"
   }
 }

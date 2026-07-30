@@ -50,5 +50,29 @@
     "addAgentToCompanyDesc": "再次執行引導，為此公司新增一個智能體與入門任務。",
     "addAgentButton": "新增智能體",
     "startOnboardingButton": "開始引導"
+  },
+  "mobileNav": {
+    "home": "主頁",
+    "create": "新增",
+    "agents": "智能體"
+  },
+  "account": {
+    "openAccountMenu": "開啟帳戶選單",
+    "badgeAccount": "帳戶",
+    "badgeLocal": "本機",
+    "viewProfile": "查看個人資料",
+    "viewProfileDesc": "開啟您的動態、任務與使用記錄。",
+    "editProfile": "編輯個人資料",
+    "editProfileDesc": "更新顯示名稱與頭像。",
+    "documentation": "文件",
+    "documentationDesc": "於新分頁開啟 Paperclip 文件。",
+    "feedback": "意見回饋",
+    "feedbackDesc": "分享意見回饋或回報問題。",
+    "signingOut": "正在登出…",
+    "signOut": "登出",
+    "signOutDesc": "結束此瀏覽器工作階段。",
+    "signedIn": "已登入",
+    "localWorkspaceBoard": "本機工作區看板",
+    "boardDefault": "看板"
   }
 }

@@ -50,5 +50,29 @@
     "addAgentToCompanyDesc": "Run onboarding again to add an agent and a starter task for this company.",
     "addAgentButton": "Add Agent",
     "startOnboardingButton": "Start Onboarding"
+  },
+  "mobileNav": {
+    "home": "Home",
+    "create": "Create",
+    "agents": "Agents"
+  },
+  "account": {
+    "openAccountMenu": "Open account menu",
+    "badgeAccount": "Account",
+    "badgeLocal": "Local",
+    "viewProfile": "View profile",
+    "viewProfileDesc": "Open your activity, task, and usage ledger.",
+    "editProfile": "Edit profile",
+    "editProfileDesc": "Update your display name and avatar.",
+    "documentation": "Documentation",
+    "documentationDesc": "Open Paperclip docs in a new tab.",
+    "feedback": "Feedback",
+    "feedbackDesc": "Share feedback or report an issue.",
+    "signingOut": "Signing out...",
+    "signOut": "Sign out",
+    "signOutDesc": "End this browser session.",
+    "signedIn": "Signed in",
+    "localWorkspaceBoard": "Local workspace board",
+    "boardDefault": "Board"
   }
 }
