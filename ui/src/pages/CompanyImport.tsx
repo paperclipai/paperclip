@@ -12,7 +12,8 @@ import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useToastActions } from "../context/ToastContext";
 import { authApi } from "../api/auth";
-import { companiesApi } from "../api/companies";
+import { ApiError } from "../api/client";
+import { companiesApi, type CompanyImportJobAccepted } from "../api/companies";
 import { agentsApi } from "../api/agents";
 import { routinesApi } from "../api/routines";
 import { sidebarPreferencesApi } from "../api/sidebarPreferences";
@@ -57,6 +58,13 @@ import {
   stripBlobFiles,
 } from "../lib/import-preflight";
 import { getPortableFileDataUrl, getPortableFileText, isPortableImageFile } from "../lib/portable-files";
+import {
+  clearStoredImportJob,
+  importJobStorageKey,
+  readStoredImportJob,
+  waitForNextImportJobPoll,
+  writeStoredImportJob,
+} from "../lib/import-job-watch";
 import { Badge } from "@/components/ui/badge";
 
 // ── Import-specific helpers ───────────────────────────────────────────
@@ -676,6 +684,62 @@ async function readLocalPackageZip(file: File): Promise<{
   };
 }
 
+// ── Async import job flow ─────────────────────────────────────────────
+//
+// Imports run as server-side jobs: the submit returns 202 with a job id and
+// the page polls the status route until the job settles. The connection is
+// no longer load-bearing — a proxy timeout, network blip, or page reload
+// cannot kill the import, and the stored job id lets the page resume
+// watching. Jobs are held in server memory only, so an id the server no
+// longer knows (restart, retention expiry) polls as 404.
+
+/** A 409 on submit means this user's previous import is still running; adopt it instead of importing twice. */
+function runningImportJobFromError(err: unknown): CompanyImportJobAccepted | null {
+  if (!(err instanceof ApiError) || err.status !== 409) return null;
+  const body = err.body as { job?: { id?: unknown }; statusUrl?: unknown } | null;
+  const jobId = body?.job?.id;
+  if (typeof jobId !== "string" || jobId.length === 0) return null;
+  return {
+    job: { id: jobId, status: "running" },
+    statusUrl: typeof body?.statusUrl === "string" ? body.statusUrl : `/companies/import/jobs/${jobId}`,
+  };
+}
+
+/** Poll a job to a terminal state; resolves with the import result or throws the job's error. */
+async function watchImportJob(
+  jobId: string,
+  storageKey: string,
+): Promise<CompanyPortabilityImportResult> {
+  for (;;) {
+    let job: Awaited<ReturnType<typeof companiesApi.getImportJob>>["job"] | null = null;
+    try {
+      job = (await companiesApi.getImportJob(jobId)).job;
+    } catch (err) {
+      if (err instanceof ApiError && err.status === 404) {
+        clearStoredImportJob(storageKey);
+        throw new Error(
+          "The server no longer reports this import job — it may have restarted while the import ran.",
+        );
+      }
+      // Any other poll failure is treated as transient (network blip,
+      // dropped connection): the job keeps running server-side, so keep
+      // watching rather than reporting a failure that may not exist.
+    }
+    if (job?.status === "succeeded") {
+      clearStoredImportJob(storageKey);
+      if (!job.importResult) {
+        throw new Error("The import finished, but its result is no longer available.");
+      }
+      return job.importResult;
+    }
+    if (job?.status === "failed") {
+      clearStoredImportJob(storageKey);
+      throw new Error(job.error?.message ?? "Import failed on the server.");
+    }
+    await waitForNextImportJobPoll();
+  }
+}
+
 // ── Main page ─────────────────────────────────────────────────────────
 
 export function CompanyImport() {
@@ -737,6 +801,11 @@ export function CompanyImport() {
   const [activationFailures, setActivationFailures] = useState<Record<string, string>>({});
   const [isActivating, setIsActivating] = useState(false);
 
+  // A still-running job from a previous page load being re-attached to. While
+  // set, the page shows a "resume watching" panel instead of the stale form.
+  const [resumedWatchJobId, setResumedWatchJobId] = useState<string | null>(null);
+  const resumeAttemptedRef = useRef(false);
+
   // Fetch current company agents to find CEO adapter type
   const { data: companyAgents } = useQuery({
     queryKey: selectedCompanyId ? queryKeys.agents.list(selectedCompanyId) : ["agents", "none"],
@@ -763,7 +832,15 @@ export function CompanyImport() {
   function buildSource(): CompanyPortabilitySource | null {
     if (sourceMode === "local") {
       if (!localPackage) return null;
-      return { type: "inline", rootPath: localPackage.rootPath, files: localPackage.files };
+      // Declare how many files we are sending so the server can reject a
+      // truncated upload instead of importing a fragment (see the server-side
+      // completeness check in importBundle).
+      return {
+        type: "inline",
+        rootPath: localPackage.rootPath,
+        files: localPackage.files,
+        expectedFileCount: Object.keys(localPackage.files).length,
+      };
     }
     const url = importUrl.trim();
     if (!url) return null;
@@ -883,31 +960,64 @@ export function CompanyImport() {
     return selected.length > 0 ? selected : undefined;
   }
 
+  /** Storage key for the pending submission, scoped per company + package. */
+  function currentImportJobStorageKey(): string {
+    const packageName =
+      sourceMode === "local"
+        ? localPackage?.name ?? "package"
+        : importUrl.trim() || "package";
+    return importJobStorageKey(selectedCompanyId ?? "unknown-company", packageName);
+  }
+
   // Apply mutation. The preview the import was started from and the
   // submitted pause option ride along as the mutation variables so the
   // request and its callbacks never read state that a later edit replaced.
+  // The import runs as a server-side job: the mutation stays pending across
+  // the 202 submit and every poll, so the existing progress panel, error
+  // panel, and structural locks cover the whole job, not just one request.
   const importMutation = useMutation({
-    mutationFn: (variables: {
+    mutationFn: async (variables: {
       previewForImport: CompanyPortabilityPreviewResult | null;
       pauseAutomations: boolean;
+      /** Re-attach to a job stored by a previous page load instead of submitting. */
+      resume?: { jobId: string; storageKey: string };
     }) => {
+      if (variables.resume) {
+        return watchImportJob(variables.resume.jobId, variables.resume.storageKey);
+      }
       const source = buildSource();
       if (!source) throw new Error("No source configured.");
-      return companiesApi.importBundle({
-        source,
-        include: { company: true, agents: true, projects: true, issues: true },
-        target:
-          targetMode === "new"
-            ? { mode: "new_company", newCompanyName: newCompanyName || null }
-            : { mode: "existing_company", companyId: selectedCompanyId! },
-        collisionStrategy,
-        nameOverrides: buildFinalNameOverrides(),
-        selectedFiles: buildSelectedFiles(),
-        adapterOverrides: buildFinalAdapterOverrides(),
+      const storageKey = currentImportJobStorageKey();
+      let accepted: CompanyImportJobAccepted;
+      try {
+        accepted = await companiesApi.importBundleAsync({
+          source,
+          include: { company: true, agents: true, projects: true, issues: true },
+          target:
+            targetMode === "new"
+              ? { mode: "new_company", newCompanyName: newCompanyName || null }
+              : { mode: "existing_company", companyId: selectedCompanyId! },
+          collisionStrategy,
+          nameOverrides: buildFinalNameOverrides(),
+          selectedFiles: buildSelectedFiles(),
+          adapterOverrides: buildFinalAdapterOverrides(),
+          pauseAutomations: variables.pauseAutomations,
+        });
+      } catch (err) {
+        // 409: this user's previous import is still running. Adopt that job
+        // and watch it — never fire a second import.
+        const running = runningImportJobFromError(err);
+        if (!running) throw err;
+        accepted = running;
+      }
+      writeStoredImportJob(storageKey, {
+        jobId: accepted.job.id,
         pauseAutomations: variables.pauseAutomations,
       });
+      return watchImportJob(accepted.job.id, storageKey);
     },
     onSuccess: async (result, { previewForImport, pauseAutomations: submittedPauseAutomations }) => {
+      setResumedWatchJobId(null);
       await queryClient.invalidateQueries({ queryKey: queryKeys.companies.all });
       const importedCompany = await companiesApi.get(result.company.id);
       const refreshedSession = currentUserId
@@ -933,6 +1043,7 @@ export function CompanyImport() {
       });
     },
     onError: (err) => {
+      setResumedWatchJobId(null);
       pushToast({
         tone: "error",
         title: "Import failed",
@@ -940,6 +1051,23 @@ export function CompanyImport() {
       });
     },
   });
+
+  // On mount, re-attach to a job stored by a previous page load. This is what
+  // makes dropped connections and reloads harmless: the job kept running
+  // server-side, so resume watching it instead of showing the stale form.
+  const resumeImportWatch = importMutation.mutate;
+  useEffect(() => {
+    if (resumeAttemptedRef.current || !selectedCompanyId) return;
+    resumeAttemptedRef.current = true;
+    const stored = readStoredImportJob(selectedCompanyId);
+    if (!stored) return;
+    setResumedWatchJobId(stored.jobId);
+    resumeImportWatch({
+      previewForImport: null,
+      pauseAutomations: stored.pauseAutomations,
+      resume: { jobId: stored.jobId, storageKey: stored.storageKey },
+    });
+  }, [selectedCompanyId, resumeImportWatch]);
 
   // Any change to the import configuration supersedes the request a settled
   // progress/error panel describes, so it clears settled mutation state. A
@@ -1320,6 +1448,28 @@ export function CompanyImport() {
     );
   }
 
+  // Resuming a job from a previous page load: show a watch panel instead of
+  // the stale form. Cleared when the job settles (success renders the
+  // outcome above; failure returns to the form with an error toast).
+  if (resumedWatchJobId) {
+    return (
+      <div className="px-5 py-5 space-y-4">
+        <div>
+          <h2 className="text-base font-semibold">Resume watching import</h2>
+          <p className="text-xs text-muted-foreground mt-1">
+            An import you started earlier is still running on the server.
+          </p>
+        </div>
+        <div className="flex items-start gap-2 rounded-md border border-border bg-muted/30 px-3 py-2.5">
+          <Loader2 className="mt-0.5 h-3.5 w-3.5 shrink-0 animate-spin text-muted-foreground" />
+          <p className="text-xs text-muted-foreground">
+            Import running on the server — safe to keep waiting; reconnecting won&apos;t lose it.
+          </p>
+        </div>
+      </div>
+    );
+  }
+
   if (!selectedCompanyId) {
     return <EmptyState icon={Download} message="Select a company to import into." />;
   }
@@ -1613,7 +1763,8 @@ export function CompanyImport() {
             <div className="mx-5 mt-3 flex items-start gap-2 rounded-md border border-border bg-muted/30 px-3 py-2.5">
               <Loader2 className="mt-0.5 h-3.5 w-3.5 shrink-0 animate-spin text-muted-foreground" />
               <p className="text-xs text-muted-foreground">
-                Uploading and importing — large packages can take several minutes. Keep this page open.
+                Import running on the server — safe to keep waiting; reconnecting won&apos;t lose it.
+                Large packages can take several minutes.
               </p>
             </div>
           )}

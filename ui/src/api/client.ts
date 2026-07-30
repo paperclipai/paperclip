@@ -17,6 +17,8 @@ export class ApiError extends Error {
 export interface RequestOptions {
   /** Abort signal wired through to `fetch` and coalescing (per-caller). */
   signal?: AbortSignal;
+  /** Extra request headers (e.g. the async-import opt-in). Mutations only. */
+  headers?: Record<string, string>;
 }
 
 function abortError(): DOMException {
@@ -146,7 +148,12 @@ function isRequestOptions(value: unknown): value is RequestOptions {
 export const api = {
   get: <T>(path: string, options?: RequestOptions) => coalescedGet<T>(path, options),
   post: <T>(path: string, body: unknown, options?: RequestOptions) =>
-    request<T>(path, { method: "POST", body: JSON.stringify(body), signal: options?.signal }),
+    request<T>(path, {
+      method: "POST",
+      body: JSON.stringify(body),
+      signal: options?.signal,
+      ...(options?.headers ? { headers: options.headers } : {}),
+    }),
   postForm: <T>(path: string, body: FormData, options?: RequestOptions) =>
     request<T>(path, { method: "POST", body, signal: options?.signal }),
   put: <T>(path: string, body: unknown, options?: RequestOptions) =>

@@ -713,6 +713,7 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "POST /api/companies",
   "GET /api/companies/stats",
   "GET /api/companies/issues",
+  "GET /api/companies/import/jobs/{jobId}",
   "POST /api/board-claim/{token}/claim",
   "GET /api/cli-auth/me",
   "POST /api/companies/{companyId}/invites",
@@ -5225,8 +5226,19 @@ registry.registerPath({
   path: "/api/companies/import",
   tags: ["companies"],
   summary: "Apply a company import (legacy route)",
+  description:
+    "Board sessions and trusted Cloud tenants can opt into asynchronous processing with the " +
+    "`x-paperclip-cloud-async-import: 1` header: the server responds 202 with a job id and status " +
+    "URL instead of holding the connection open for the whole import. While a board actor already " +
+    "has an async job running, a resubmit returns 409 carrying the running job's id and status URL. " +
+    "Jobs are held in memory and are lost on restart.",
   request: { body: jsonBody(companyPortabilityImportSchema) },
-  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+  responses: {
+    200: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    409: { description: "An async import job is already running for this actor" },
+  },
 });
 
 // ─── Board claim & CLI auth ───────────────────────────────────────────────────
@@ -5473,8 +5485,21 @@ registerCurrentRoute({
   summary: "Revoke a board API key",
 });
 
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/import/jobs/{jobId}",
+  tags: ["companies"],
+  summary: "Get company import job status",
+  description:
+    "A job is readable only by the actor that created it — the board user or the trusted Cloud " +
+    "tenant identity from the async import submission. Any other caller gets the same 404 as an " +
+    "unknown id. Jobs are held in memory: they are dropped a few minutes after finishing and do " +
+    "not survive a server restart.",
+  request: { params: z.object({ jobId: z.string() }) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound },
+});
+
 for (const route of [
-  ["get", "/api/companies/import/jobs/{jobId}", "Get company import job status"],
   ["get", "/api/companies/{companyId}/search", "Search company data"],
   ["get", "/api/companies/{companyId}/search/extract", "Extract company search matches"],
   ["get", "/api/companies/{companyId}/issues/count", "Count issues in a company"],

@@ -4,6 +4,7 @@ import { and, count as countFn, eq } from "drizzle-orm";
 import { z } from "zod";
 import type { Db } from "@paperclipai/db";
 import { agents as agentsTable } from "@paperclipai/db";
+import type { CompanyPortabilityImportResult } from "@paperclipai/shared";
 import {
   DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION,
   companyArtifactsQuerySchema,
@@ -270,10 +271,15 @@ export function companyRoutes(db: Db, storage?: StorageService) {
   });
 
   router.get("/import/jobs/:jobId", async (req, res) => {
-    assertCloudTenantCaller(req);
+    // Board sessions and trusted Cloud tenants both poll here. A job is
+    // readable only by the actor key that created it; every other caller —
+    // like every unknown or expired id — gets the same 404, so job ids
+    // cannot be probed across users or tenants. Jobs live in memory only
+    // (see the async block below), so a restart also surfaces as this 404.
+    assertBoard(req);
     cleanupTerminalImportJobs(importJobs, importJobTerminalRetentionMs);
     const job = importJobs.get(req.params.jobId as string);
-    if (!job || job.cloudTenantKey !== cloudTenantRequestKey(req)) {
+    if (!job || job.actorKey !== importJobActorKey(req)) {
       res.status(404).json({ error: "Import job not found" });
       return;
     }
@@ -286,9 +292,29 @@ export function companyRoutes(db: Db, storage?: StorageService) {
     const actor = getActorInfo(req);
     const boardUserId = req.actor.type === "board" ? req.actor.userId : null;
     if (req.header("x-paperclip-cloud-async-import") === "1") {
-      assertCloudTenantCaller(req);
+      // Async job path. Two kinds of callers opt in:
+      //  - trusted Cloud tenants (original behavior, kept byte-identical),
+      //    keyed by their tenant identity headers;
+      //  - any other board session, keyed by its user id, so long imports
+      //    survive proxies cutting the connection while the server finishes.
+      // Jobs are held in memory only and are lost on restart — existing
+      // semantics; the status route above 404s unknown ids, so a client
+      // that can no longer see its job treats it as gone and resubmits.
       cleanupTerminalImportJobs(importJobs, importJobTerminalRetentionMs);
-      const job = createImportJob(cloudTenantRequestKey(req));
+      const isCloudTenant = req.actor.source === "cloud_tenant";
+      const actorKey = importJobActorKey(req);
+      if (!isCloudTenant) {
+        // One live import per board actor: while a job for this key is
+        // still running, resubmits get 409 carrying the running job's id
+        // and status URL so the client adopts it instead of importing the
+        // same bundle twice. Terminal jobs never block a resubmit.
+        const running = findRunningImportJob(importJobs, actorKey);
+        if (running) {
+          res.status(409).json(importJobConflictResponse(running));
+          return;
+        }
+      }
+      const job = createImportJob(actorKey, isCloudTenant ? "cloud_tenant" : "board");
       importJobs.set(job.id, job);
       const operation = async () => {
         const importBody = companyPortabilityImportSchema.parse(rawImportBody);
@@ -563,9 +589,18 @@ type CompanyImportResult = {
   warnings: unknown[];
 };
 
+type ImportJobActorKind = "cloud_tenant" | "board";
+
+/**
+ * In-memory only: import jobs do not survive a server restart, and terminal
+ * jobs are dropped after `importJobTerminalRetentionMs`. Both cases surface
+ * to pollers as the status route's 404 for an unknown id.
+ */
 interface ImportJobRecord {
   id: string;
-  cloudTenantKey: string;
+  /** Identity that created the job; the only key allowed to read it. */
+  actorKey: string;
+  actorKind: ImportJobActorKind;
   status: "running" | "succeeded" | "failed";
   createdAt: string;
   updatedAt: string;
@@ -577,6 +612,12 @@ interface ImportJobRecord {
     warningCount: number;
     companyAction: unknown;
   };
+  /**
+   * Full import result, retained for board-created jobs only so the import
+   * page can run the same success path as the synchronous response. Cloud
+   * tenant job responses keep their original summary-only shape.
+   */
+  fullResult?: CompanyPortabilityImportResult;
 }
 
 interface ImportedCompanyActivityContext {
@@ -587,12 +628,6 @@ interface ImportedCompanyActivityContext {
   include: unknown;
 }
 
-function assertCloudTenantCaller(req: Request) {
-  if (req.actor.source !== "cloud_tenant") {
-    throw forbidden("Trusted Cloud tenant access required");
-  }
-}
-
 function cloudTenantRequestKey(req: Request) {
   return [
     req.actor.userId ?? "",
@@ -601,20 +636,44 @@ function cloudTenantRequestKey(req: Request) {
   ].join(":");
 }
 
-function createImportJob(cloudTenantKey: string): ImportJobRecord {
+/**
+ * Identity a job is created under and authorized against. Cloud tenant
+ * callers keep their header-derived tenant key; every other board session is
+ * keyed by its user id. The distinct prefixes keep the two namespaces
+ * disjoint, so crafted tenant headers can never collide with a board key.
+ */
+function importJobActorKey(req: Request) {
+  if (req.actor.source === "cloud_tenant") {
+    return `cloud-tenant:${cloudTenantRequestKey(req)}`;
+  }
+  return `board:${req.actor.userId ?? "local-board"}`;
+}
+
+function createImportJob(actorKey: string, actorKind: ImportJobActorKind): ImportJobRecord {
   const now = new Date().toISOString();
   return {
-    id: `tenant-import-${randomUUID()}`,
-    cloudTenantKey,
+    // Cloud tenant job ids keep their original prefix; board jobs get their own.
+    id: `${actorKind === "cloud_tenant" ? "tenant-import" : "import"}-${randomUUID()}`,
+    actorKey,
+    actorKind,
     status: "running",
     createdAt: now,
     updatedAt: now,
   };
 }
 
+function findRunningImportJob(importJobs: Map<string, ImportJobRecord>, actorKey: string) {
+  for (const job of importJobs.values()) {
+    if (job.status === "running" && job.actorKey === actorKey) {
+      return job;
+    }
+  }
+  return undefined;
+}
+
 async function runImportJob(
   job: ImportJobRecord,
-  operation: () => Promise<CompanyImportResult>,
+  operation: () => Promise<CompanyPortabilityImportResult>,
 ) {
   try {
     const result = await operation();
@@ -628,6 +687,9 @@ async function runImportJob(
       warningCount: result.warnings.length,
       companyAction: result.company.action,
     };
+    if (job.actorKind === "board") {
+      job.fullResult = result;
+    }
   } catch (error) {
     const now = new Date().toISOString();
     job.status = "failed";
@@ -673,13 +735,30 @@ async function logImportedCompanyActivity(
   });
 }
 
+function importJobStatusUrl(job: ImportJobRecord) {
+  return `/api/companies/import/jobs/${encodeURIComponent(job.id)}`;
+}
+
 function importJobAcceptedResponse(job: ImportJobRecord) {
   return {
     job: {
       id: job.id,
       status: job.status,
     },
-    statusUrl: `/api/companies/import/jobs/${encodeURIComponent(job.id)}`,
+    statusUrl: importJobStatusUrl(job),
+    retryAfterMs: 1000,
+  };
+}
+
+/** 409 body for a duplicate submit: points at the job already running. */
+function importJobConflictResponse(job: ImportJobRecord) {
+  return {
+    error: "An import is already running for this account",
+    job: {
+      id: job.id,
+      status: job.status,
+    },
+    statusUrl: importJobStatusUrl(job),
     retryAfterMs: 1000,
   };
 }
@@ -695,6 +774,9 @@ function importJobResponse(job: ImportJobRecord) {
       ...(job.completedAt ? { completedAt: job.completedAt } : {}),
       ...(job.error ? { error: job.error } : {}),
       ...(job.result ? { result: job.result } : {}),
+      // Board jobs additionally carry the full import result (parity with
+      // the synchronous response); cloud tenant jobs never set it.
+      ...(job.fullResult ? { importResult: job.fullResult } : {}),
     },
     ...(isTerminal ? {} : { retryAfterMs: 1000 }),
   };

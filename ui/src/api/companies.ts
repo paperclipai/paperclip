@@ -14,6 +14,29 @@ import { api } from "./client";
 
 export type CompanyStats = Record<string, { agentCount: number; issueCount: number }>;
 
+export type CompanyImportJobState = "running" | "succeeded" | "failed";
+
+/** 202 body from the async opt-in on POST /companies/import (and the 409 body when a job is already running). */
+export interface CompanyImportJobAccepted {
+  job: { id: string; status: CompanyImportJobState };
+  statusUrl: string;
+  retryAfterMs?: number;
+}
+
+export interface CompanyImportJobStatus {
+  job: {
+    id: string;
+    status: CompanyImportJobState;
+    createdAt?: string;
+    updatedAt?: string;
+    completedAt?: string;
+    error?: { message: string };
+    /** Board-created jobs carry the full result for parity with the sync response. */
+    importResult?: CompanyPortabilityImportResult;
+  };
+  retryAfterMs?: number;
+}
+
 export const companiesApi = {
   list: () => api.get<Company[]>("/companies"),
   get: (companyId: string) => api.get<Company>(`/companies/${companyId}`),
@@ -61,4 +84,11 @@ export const companiesApi = {
     api.post<CompanyPortabilityPreviewResult>("/companies/import/preview", data),
   importBundle: (data: CompanyPortabilityImportRequest) =>
     api.post<CompanyPortabilityImportResult>("/companies/import", data),
+  /** Submit an import as a server-side job: 202 with a job id to poll, or 409 with the already-running job. */
+  importBundleAsync: (data: CompanyPortabilityImportRequest) =>
+    api.post<CompanyImportJobAccepted>("/companies/import", data, {
+      headers: { "x-paperclip-cloud-async-import": "1" },
+    }),
+  getImportJob: (jobId: string) =>
+    api.get<CompanyImportJobStatus>(`/companies/import/jobs/${encodeURIComponent(jobId)}`),
 };

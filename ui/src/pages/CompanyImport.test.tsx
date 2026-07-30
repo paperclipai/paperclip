@@ -5,11 +5,15 @@ import { createRoot, type Root } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { CompanyPortabilityImportResult, CompanyPortabilityPreviewResult } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ApiError } from "../api/client";
+import type { CompanyImportJobAccepted } from "../api/companies";
 import { CompanyImport } from "./CompanyImport";
 
 const mockCompaniesApi = vi.hoisted(() => ({
   importPreview: vi.fn(),
   importBundle: vi.fn(),
+  importBundleAsync: vi.fn(),
+  getImportJob: vi.fn(),
   get: vi.fn(),
 }));
 const mockAgentsApi = vi.hoisted(() => ({
@@ -32,6 +36,13 @@ const mockReadZipArchive = vi.hoisted(() => vi.fn());
 vi.mock("../api/companies", () => ({
   companiesApi: mockCompaniesApi,
 }));
+
+// Keep the real sessionStorage bookkeeping so reload-resume is exercised, but
+// make the poll delay instant so tests never wait the real 3s interval.
+vi.mock("../lib/import-job-watch", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("../lib/import-job-watch")>();
+  return { ...actual, waitForNextImportJobPoll: () => Promise.resolve() };
+});
 
 vi.mock("../lib/zip", () => ({
   readZipArchive: mockReadZipArchive,
@@ -102,6 +113,14 @@ async function flushReact() {
   });
 }
 
+// The async import runs submit → poll → onSuccess, several awaits deep. Drain a
+// handful of macrotask turns so the outcome/activation panels have committed.
+async function settle(times = 6) {
+  for (let index = 0; index < times; index += 1) {
+    await flushReact();
+  }
+}
+
 const previewFiles = {
   ".paperclip.yaml": 'schema: "paperclip/v1"\n',
   "agents/coder/AGENTS.md": "---\nname: Coder\n---\n\nYou write code.\n",
@@ -146,11 +165,20 @@ function buildImportResult(): CompanyPortabilityImportResult {
   };
 }
 
+function buildAccepted(id = "job-1"): CompanyImportJobAccepted {
+  return { job: { id, status: "running" }, statusUrl: `/companies/import/jobs/${id}` };
+}
+
+function buildSucceededJob(id = "job-1") {
+  return { job: { id, status: "succeeded" as const, importResult: buildImportResult() } };
+}
+
 describe("CompanyImport", () => {
   let container: HTMLDivElement;
   let root: Root | null = null;
 
   beforeEach(() => {
+    sessionStorage.clear();
     container = document.createElement("div");
     document.body.appendChild(container);
     mockAuthApi.getSession.mockResolvedValue({ user: { id: "user-1" } });
@@ -158,7 +186,10 @@ describe("CompanyImport", () => {
     mockAgentsApi.resume.mockResolvedValue({ id: "agent-1", status: "idle" });
     mockRoutinesApi.update.mockResolvedValue({ id: "routine-1", status: "active" });
     mockCompaniesApi.importPreview.mockResolvedValue(buildPreviewResult());
-    mockCompaniesApi.importBundle.mockResolvedValue(buildImportResult());
+    // Default async flow: the submit is accepted (202) and the first poll finds
+    // the job already finished with the full result. Individual tests override.
+    mockCompaniesApi.importBundleAsync.mockResolvedValue(buildAccepted());
+    mockCompaniesApi.getImportJob.mockResolvedValue(buildSucceededJob());
     mockCompaniesApi.get.mockResolvedValue({ id: "company-2", name: "Imported Test", issuePrefix: "IMP" });
     mockSidebarPreferencesApi.updateProjectOrder.mockResolvedValue(undefined);
   });
@@ -173,6 +204,7 @@ describe("CompanyImport", () => {
     }
     container.remove();
     document.body.innerHTML = "";
+    sessionStorage.clear();
     vi.clearAllMocks();
   });
 
@@ -232,14 +264,18 @@ describe("CompanyImport", () => {
     expect(pauseLabel?.querySelector<HTMLInputElement>('input[type="checkbox"]')?.checked).toBe(true);
 
     await clickButton((text) => text.startsWith("Import 3 file"));
+    await settle();
   }
 
-  it("shows the activation panel after import and activates selected agents and routines", async () => {
+  it("submits the import as an async job, then activates selected agents and routines", async () => {
     await renderPageAndImport();
 
-    expect(mockCompaniesApi.importBundle).toHaveBeenCalledWith(
+    expect(mockCompaniesApi.importBundleAsync).toHaveBeenCalledWith(
       expect.objectContaining({ pauseAutomations: true }),
     );
+    // The page polls the job it was handed and runs the same activation path
+    // the synchronous response used to drive.
+    expect(mockCompaniesApi.getImportJob).toHaveBeenCalledWith("job-1");
     expect(container.textContent).toContain("Import complete");
     expect(container.textContent).toContain("Activate imported agents and routines");
     expect(container.textContent).toContain("Coder");
@@ -267,7 +303,7 @@ describe("CompanyImport", () => {
     expect(mockPushToast).toHaveBeenCalledWith(expect.objectContaining({ tone: "error" }));
   });
 
-  it("blocks oversized local packages until attachments are dropped", async () => {
+  it("blocks oversized local packages and sends the declared file count once attachments are dropped", async () => {
     // A synthetic parsed package: the base64 blob payload alone exceeds the
     // inline import limit, so no real 60MB zip needs to be built.
     mockReadZipArchive.mockResolvedValue({
@@ -308,14 +344,21 @@ describe("CompanyImport", () => {
     expect(findButton((text) => text === "Preview import")?.disabled).toBe(false);
 
     await clickButton((text) => text === "Preview import");
+    // The button label reflects the preview's file count (3); the sent source
+    // is the local package, which is down to two files after the blob is
+    // dropped.
     await clickButton((text) => text.startsWith("Import 3 file"));
+    await settle();
 
-    expect(mockCompaniesApi.importBundle).toHaveBeenCalledTimes(1);
-    const request = mockCompaniesApi.importBundle.mock.calls[0]![0] as {
-      source: { type: string; files: Record<string, unknown> };
+    expect(mockCompaniesApi.importBundleAsync).toHaveBeenCalledTimes(1);
+    const request = mockCompaniesApi.importBundleAsync.mock.calls[0]![0] as {
+      source: { type: string; files: Record<string, unknown>; expectedFileCount?: number };
     };
     expect(request.source.type).toBe("inline");
     expect(Object.keys(request.source.files).sort()).toEqual([".paperclip.yaml", "COMPANY.md"]);
+    // The client declares the file count so the server can reject a truncated
+    // upload instead of importing a fragment.
+    expect(request.source.expectedFileCount).toBe(2);
   });
 
   it("explains the disabled preview button until a package is chosen", async () => {
@@ -380,8 +423,10 @@ describe("CompanyImport", () => {
   });
 
   it("shows a progress panel while the import runs and a durable error panel when it fails", async () => {
+    // The submit stays pending across the whole job, so the progress panel and
+    // structural locks cover it. Rejecting the submit surfaces the error panel.
     let rejectImport!: (err: Error) => void;
-    mockCompaniesApi.importBundle.mockImplementation(
+    mockCompaniesApi.importBundleAsync.mockImplementation(
       () =>
         new Promise((_resolve, reject) => {
           rejectImport = reject;
@@ -393,8 +438,8 @@ describe("CompanyImport", () => {
 
     await clickButton((text) => text.startsWith("Import 3 file"));
 
-    expect(container.textContent).toContain("Uploading and importing");
-    expect(container.textContent).toContain("Keep this page open.");
+    expect(container.textContent).toContain("Import running on the server");
+    expect(container.textContent).toContain("safe to keep waiting");
 
     // While the import runs, previewing and the structural package/settings
     // controls are locked (and explained), so nothing can replace or unmount
@@ -426,14 +471,14 @@ describe("CompanyImport", () => {
     });
     await flushReact();
 
-    expect(container.textContent).toContain("Uploading and importing");
+    expect(container.textContent).toContain("Import running on the server");
 
     await act(async () => {
       rejectImport(new Error("connection reset"));
     });
     await flushReact();
 
-    expect(container.textContent).not.toContain("Uploading and importing");
+    expect(container.textContent).not.toContain("Import running on the server");
     expect(container.textContent).toContain("Import failed: connection reset");
     expect(container.textContent).toContain("check the target company before retrying.");
     expect(mockPushToast).toHaveBeenCalledWith(expect.objectContaining({ tone: "error" }));
@@ -508,17 +553,19 @@ describe("CompanyImport", () => {
     expect(container.textContent).not.toContain("Import failed:");
 
     // The outcome reports the submitted pause option, not the live checkbox:
-    // a mid-flight toggle must not change what the completed import did.
-    let resolveImport!: (value: CompanyPortabilityImportResult) => void;
-    mockCompaniesApi.importBundle.mockImplementation(
+    // a mid-flight toggle must not change what the completed import did. The
+    // submit stays pending until we resolve it to the accepted job.
+    let resolveAccepted!: (value: CompanyImportJobAccepted) => void;
+    mockCompaniesApi.importBundleAsync.mockImplementation(
       () =>
         new Promise((resolve) => {
-          resolveImport = resolve;
+          resolveAccepted = resolve;
         }),
     );
+    mockCompaniesApi.getImportJob.mockResolvedValue(buildSucceededJob("job-final"));
     await clickButton((text) => text.startsWith("Import 3 file"));
 
-    expect(mockCompaniesApi.importBundle).toHaveBeenLastCalledWith(
+    expect(mockCompaniesApi.importBundleAsync).toHaveBeenLastCalledWith(
       expect.objectContaining({ pauseAutomations: false }),
     );
 
@@ -532,12 +579,79 @@ describe("CompanyImport", () => {
     await flushReact();
 
     await act(async () => {
-      resolveImport(buildImportResult());
+      resolveAccepted(buildAccepted("job-final"));
     });
-    await flushReact();
-    await flushReact();
+    await settle();
 
     expect(container.textContent).toContain("Import complete");
     expect(container.textContent).not.toContain("Activate imported agents and routines");
+  });
+
+  it("adopts the already-running job when the server reports a 409", async () => {
+    mockCompaniesApi.importBundleAsync.mockRejectedValueOnce(
+      new ApiError("An import is already running for this account", 409, {
+        job: { id: "job-existing", status: "running" },
+        statusUrl: "/companies/import/jobs/job-existing",
+      }),
+    );
+    mockCompaniesApi.getImportJob.mockResolvedValue(buildSucceededJob("job-existing"));
+
+    await renderPageAndImport();
+
+    // The duplicate submit adopts the running job from the 409 body and polls
+    // it instead of firing a second import.
+    expect(mockCompaniesApi.getImportJob).toHaveBeenCalledWith("job-existing");
+    expect(container.textContent).toContain("Import complete");
+    expect(container.textContent).toContain("Activate imported agents and routines");
+  });
+
+  it("surfaces a failed import job in the durable error panel", async () => {
+    mockCompaniesApi.getImportJob.mockResolvedValue({
+      job: { id: "job-1", status: "failed", error: { message: "blob mismatch" } },
+    });
+
+    await renderPage();
+    await enterGithubUrl();
+    await clickButton((text) => text === "Preview import");
+    await clickButton((text) => text.startsWith("Import 3 file"));
+    await settle();
+
+    expect(container.textContent).toContain("Import failed: blob mismatch");
+    expect(mockPushToast).toHaveBeenCalledWith(expect.objectContaining({ tone: "error" }));
+  });
+
+  it("resumes watching a stored import job on mount", async () => {
+    // A previous page load persisted a running job; reloading must resume
+    // watching it rather than showing the stale form.
+    sessionStorage.setItem(
+      "paperclip:company-import-job:company-1:acme/starter",
+      JSON.stringify({ jobId: "job-resume", pauseAutomations: false }),
+    );
+
+    let resolveFirstPoll!: (value: ReturnType<typeof buildSucceededJob>) => void;
+    mockCompaniesApi.getImportJob.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveFirstPoll = resolve;
+        }),
+    );
+
+    await renderPage();
+
+    // The resume panel is shown while the first poll is in flight, and no new
+    // submit was fired — the job is only being watched.
+    expect(container.textContent).toContain("Resume watching import");
+    expect(mockCompaniesApi.importBundleAsync).not.toHaveBeenCalled();
+    expect(mockCompaniesApi.getImportJob).toHaveBeenCalledWith("job-resume");
+
+    await act(async () => {
+      resolveFirstPoll(buildSucceededJob("job-resume"));
+    });
+    await settle();
+
+    expect(container.textContent).not.toContain("Resume watching import");
+    expect(container.textContent).toContain("Import complete");
+    // The stored entry is cleared once the job settles.
+    expect(sessionStorage.getItem("paperclip:company-import-job:company-1:acme/starter")).toBeNull();
   });
 });
