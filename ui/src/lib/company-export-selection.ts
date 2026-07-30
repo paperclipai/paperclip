@@ -1,12 +1,72 @@
 import type { CompanyPortabilityIssueManifestEntry } from "@paperclipai/shared";
 
-function isTaskPath(filePath: string): boolean {
-  return /(?:^|\/)tasks\//.test(filePath);
+/**
+ * Export selection is category-driven: instead of per-file checkboxes the
+ * export page exposes a small set of toggles, and the checked-file set is
+ * derived from them. Root-level files (README.md, COMPANY.md,
+ * .paperclip.yaml, images, company logo) always export and have no toggle.
+ */
+export type ExportCategoryKey =
+  | "agents"
+  | "projects"
+  | "skills"
+  | "routines"
+  | "tasks"
+  | "attachments";
+
+export type ExportCategorySelection = Record<ExportCategoryKey, boolean>;
+
+export type ExportSelectionIssue = Pick<
+  CompanyPortabilityIssueManifestEntry,
+  "path" | "recurring" | "attachments"
+>;
+
+export const EXPORT_CATEGORY_ORDER: ExportCategoryKey[] = [
+  "agents",
+  "projects",
+  "skills",
+  "routines",
+  "tasks",
+  "attachments",
+];
+
+export const EXPORT_CATEGORY_LABELS: Record<ExportCategoryKey, string> = {
+  agents: "Agents",
+  projects: "Projects",
+  skills: "Skills",
+  routines: "Routines",
+  tasks: "Tasks",
+  attachments: "Attachments",
+};
+
+/** Everything exports by default. */
+export function buildDefaultExportCategorySelection(): ExportCategorySelection {
+  return {
+    agents: true,
+    projects: true,
+    skills: true,
+    routines: true,
+    tasks: true,
+    attachments: true,
+  };
 }
 
-function buildRecurringTaskPrefixes(
-  issues: Array<Pick<CompanyPortabilityIssueManifestEntry, "path" | "recurring">>,
-): Set<string> {
+/**
+ * Attachment blobs only travel with the task (or routine) that references
+ * them — a blob without its owning task is an orphan the importer cannot
+ * attach. The Attachments toggle is therefore only meaningful while at
+ * least one of Tasks or Routines is still selected. Routines count because
+ * the bundle schema lets a recurring task manifest entry carry attachments
+ * (e.g. bundles that were imported and re-exported), even though natively
+ * exported routines emit only their TASK.md.
+ */
+export function isAttachmentsCategoryEnabled(
+  categories: Pick<ExportCategorySelection, "tasks" | "routines">,
+): boolean {
+  return categories.tasks || categories.routines;
+}
+
+function buildRecurringTaskPrefixes(issues: ExportSelectionIssue[]): Set<string> {
   const prefixes = new Set<string>();
 
   for (const issue of issues) {
@@ -33,24 +93,114 @@ function isRecurringTaskFile(filePath: string, recurringTaskPrefixes: Set<string
   return false;
 }
 
-export function buildInitialExportCheckedFiles(
-  filePaths: string[],
-  issues: Array<Pick<CompanyPortabilityIssueManifestEntry, "path" | "recurring">>,
-  previousCheckedFiles: Set<string>,
-): Set<string> {
-  const next = new Set<string>();
-  const recurringTaskPrefixes = buildRecurringTaskPrefixes(issues);
+/**
+ * Map each attachment blob sha to the kind of task that references it, so
+ * blob inclusion can follow its owning task's toggle.
+ */
+function buildAttachmentShaOwnership(issues: ExportSelectionIssue[]): {
+  recurring: Set<string>;
+  oneOff: Set<string>;
+} {
+  const recurring = new Set<string>();
+  const oneOff = new Set<string>();
 
-  for (const filePath of filePaths) {
-    if (previousCheckedFiles.has(filePath)) {
-      next.add(filePath);
-      continue;
-    }
-
-    if (!isTaskPath(filePath) || isRecurringTaskFile(filePath, recurringTaskPrefixes)) {
-      next.add(filePath);
+  for (const issue of issues) {
+    for (const attachment of issue.attachments ?? []) {
+      const sha = attachment.sha256.trim().toLowerCase();
+      if (!sha) continue;
+      (issue.recurring ? recurring : oneOff).add(sha);
     }
   }
 
-  return next;
+  return { recurring, oneOff };
+}
+
+/**
+ * Classify a bundle file path into its export category, or null for
+ * root-level files that always export (README.md, COMPANY.md,
+ * .paperclip.yaml, images, company logo).
+ */
+export function categorizeExportFile(
+  filePath: string,
+  recurringTaskPrefixes: Set<string>,
+): ExportCategoryKey | null {
+  if (filePath.startsWith("agents/")) return "agents";
+  if (filePath.startsWith("projects/")) return "projects";
+  if (filePath.startsWith("skills/")) return "skills";
+  if (filePath.startsWith("tasks/")) {
+    return isRecurringTaskFile(filePath, recurringTaskPrefixes) ? "routines" : "tasks";
+  }
+  if (filePath.startsWith("blobs/")) return "attachments";
+  return null;
+}
+
+/** Count bundle files per category (root always-exported files are not counted). */
+export function countExportFilesByCategory(
+  filePaths: string[],
+  issues: ExportSelectionIssue[],
+): Record<ExportCategoryKey, number> {
+  const recurringTaskPrefixes = buildRecurringTaskPrefixes(issues);
+  const counts: Record<ExportCategoryKey, number> = {
+    agents: 0,
+    projects: 0,
+    skills: 0,
+    routines: 0,
+    tasks: 0,
+    attachments: 0,
+  };
+  for (const filePath of filePaths) {
+    const category = categorizeExportFile(filePath, recurringTaskPrefixes);
+    if (category) counts[category] += 1;
+  }
+  return counts;
+}
+
+/**
+ * Compute the set of files the export will include for the given category
+ * selection. Pure: same inputs, same set. The Tasks/Routines → Attachments
+ * dependency is enforced here, so callers cannot produce orphan blobs even
+ * with an inconsistent selection.
+ */
+export function buildExportCheckedFiles(input: {
+  filePaths: string[];
+  issues: ExportSelectionIssue[];
+  categories: ExportCategorySelection;
+}): Set<string> {
+  const { filePaths, issues, categories } = input;
+  const recurringTaskPrefixes = buildRecurringTaskPrefixes(issues);
+  const blobOwnership = buildAttachmentShaOwnership(issues);
+  const attachmentsOn = categories.attachments && isAttachmentsCategoryEnabled(categories);
+
+  const checked = new Set<string>();
+  for (const filePath of filePaths) {
+    const category = categorizeExportFile(filePath, recurringTaskPrefixes);
+
+    if (category === null) {
+      // Root files always export.
+      checked.add(filePath);
+      continue;
+    }
+
+    if (category === "attachments") {
+      if (!attachmentsOn) continue;
+      const sha = filePath.slice("blobs/".length).trim().toLowerCase();
+      const ownedByRecurring = blobOwnership.recurring.has(sha);
+      const ownedByOneOff = blobOwnership.oneOff.has(sha);
+      if (!ownedByRecurring && !ownedByOneOff) {
+        // Unreferenced blob: no owning task to follow, gate on the
+        // attachments toggle alone (already dependent on tasks/routines).
+        checked.add(filePath);
+      } else if (
+        (ownedByOneOff && categories.tasks)
+        || (ownedByRecurring && categories.routines)
+      ) {
+        checked.add(filePath);
+      }
+      continue;
+    }
+
+    if (categories[category]) checked.add(filePath);
+  }
+
+  return checked;
 }

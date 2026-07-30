@@ -24,7 +24,16 @@ import { toCompanyRelativePath } from "@/lib/company-routes";
 import { cn } from "../lib/utils";
 import { queryKeys } from "../lib/queryKeys";
 import { createZipArchive } from "../lib/zip";
-import { buildInitialExportCheckedFiles } from "../lib/company-export-selection";
+import {
+  type ExportCategoryKey,
+  type ExportCategorySelection,
+  EXPORT_CATEGORY_LABELS,
+  EXPORT_CATEGORY_ORDER,
+  buildDefaultExportCategorySelection,
+  buildExportCheckedFiles,
+  countExportFilesByCategory,
+  isAttachmentsCategoryEnabled,
+} from "../lib/company-export-selection";
 import { useAgentOrder } from "../hooks/useAgentOrder";
 import { useProjectOrder } from "../hooks/useProjectOrder";
 import { buildPortableSidebarOrder } from "../lib/company-portability-sidebar";
@@ -36,6 +45,7 @@ import {
 } from "lucide-react";
 import {
   type FileTreeNode,
+  type FileTreeTone,
   type FrontmatterData,
   buildFileTree,
   countFiles,
@@ -248,36 +258,19 @@ function collectMatchedParentDirs(nodes: FileTreeNode[], query: string): Set<str
   return dirs;
 }
 
-/** Sort tree: checked files first, then unchecked */
-function sortByChecked(nodes: FileTreeNode[], checkedFiles: Set<string>): FileTreeNode[] {
-  return nodes.map((node) => {
-    if (node.kind === "dir") {
-      return { ...node, children: sortByChecked(node.children, checkedFiles) };
-    }
-    return node;
-  }).sort((a, b) => {
-    if (a.kind !== b.kind) return a.kind === "file" ? -1 : 1;
-    if (a.kind === "file" && b.kind === "file") {
-      const aChecked = checkedFiles.has(a.path);
-      const bChecked = checkedFiles.has(b.path);
-      if (aChecked !== bChecked) return aChecked ? -1 : 1;
-    }
-    return a.name.localeCompare(b.name);
-  });
-}
-
 const TASKS_PAGE_SIZE = 10;
 
 /**
  * Paginate children of `tasks/` directories: show up to `limit` entries,
- * but always include children that are checked or match the search query.
+ * but always include children that match the search query or contain the
+ * currently previewed file (so deep links stay visible).
  * Returns the paginated tree and the total count of task children.
  */
 function paginateTaskNodes(
   nodes: FileTreeNode[],
   limit: number,
-  checkedFiles: Set<string>,
   searchQuery: string,
+  selectedFile: string | null,
 ): { nodes: FileTreeNode[]; totalTaskChildren: number; visibleTaskChildren: number } {
   let totalTaskChildren = 0;
   let visibleTaskChildren = 0;
@@ -287,20 +280,20 @@ function paginateTaskNodes(
     if (node.kind === "dir" && node.name === "tasks") {
       totalTaskChildren = node.children.length;
 
-      // Partition children: pinned (checked or search-matched) vs rest
+      // Partition children: pinned (search-matched or previewed) vs rest
       const pinned: FileTreeNode[] = [];
       const rest: FileTreeNode[] = [];
       const lower = searchQuery.toLowerCase();
 
       for (const child of node.children) {
         const childFiles = collectAllPaths([child], "file");
-        const isChecked = [...childFiles].some((p) => checkedFiles.has(p));
+        const containsSelected = selectedFile !== null && childFiles.has(selectedFile);
         const isSearchMatch = searchQuery && (
           child.name.toLowerCase().includes(lower) ||
           child.path.toLowerCase().includes(lower) ||
           [...childFiles].some((p) => p.toLowerCase().includes(lower))
         );
-        if (isChecked || isSearchMatch) {
+        if (containsSelected || isSearchMatch) {
           pinned.push(child);
         } else {
           rest.push(child);
@@ -608,7 +601,7 @@ export function CompanyExport() {
   const [exportData, setExportData] = useState<CompanyPortabilityExportPreviewResult | null>(null);
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
   const [expandedDirs, setExpandedDirs] = useState<Set<string>>(new Set());
-  const [checkedFiles, setCheckedFiles] = useState<Set<string>>(new Set());
+  const [categories, setCategories] = useState<ExportCategorySelection>(buildDefaultExportCategorySelection);
   const [treeSearch, setTreeSearch] = useState("");
   const [taskLimit, setTaskLimit] = useState(TASKS_PAGE_SIZE);
   const savedExpandedRef = useRef<Set<string> | null>(null);
@@ -693,13 +686,6 @@ export function CompanyExport() {
       }),
     onSuccess: (result) => {
       setExportData(result);
-      setCheckedFiles((prev) =>
-        buildInitialExportCheckedFiles(
-          Object.keys(result.files),
-          result.manifest.issues,
-          prev,
-        ),
-      );
       // Expand top-level dirs (except tasks — collapsed by default)
       const tree = buildFileTree(result.files);
       const topDirs = new Set<string>();
@@ -771,17 +757,61 @@ export function CompanyExport() {
     [exportData],
   );
 
+  // The checked set is derived from the category toggles; the file tree is
+  // a pure browser on top of it.
+  const checkedFiles = useMemo(
+    () =>
+      exportData
+        ? buildExportCheckedFiles({
+            filePaths: Object.keys(exportData.files),
+            issues: exportData.manifest.issues,
+            categories,
+          })
+        : new Set<string>(),
+    [exportData, categories],
+  );
+
+  const categoryCounts = useMemo(
+    () =>
+      exportData
+        ? countExportFilesByCategory(Object.keys(exportData.files), exportData.manifest.issues)
+        : null,
+    [exportData],
+  );
+
   const { displayTree, totalTaskChildren, visibleTaskChildren } = useMemo(() => {
     let result = tree;
     if (treeSearch) result = filterTree(result, treeSearch);
-    result = sortByChecked(result, checkedFiles);
-    const paginated = paginateTaskNodes(result, taskLimit, checkedFiles, treeSearch);
+    const paginated = paginateTaskNodes(result, taskLimit, treeSearch, selectedFile);
     return {
       displayTree: paginated.nodes,
       totalTaskChildren: paginated.totalTaskChildren,
       visibleTaskChildren: paginated.visibleTaskChildren,
     };
-  }, [tree, treeSearch, checkedFiles, taskLimit]);
+  }, [tree, treeSearch, taskLimit, selectedFile]);
+
+  // Files the current toggles exclude render dimmed, so a toggle's effect is
+  // visible in the tree. Directories dim once none of their files export.
+  const fileTones = useMemo(() => {
+    const tones: Record<string, FileTreeTone | undefined> = {};
+
+    function walk(node: FileTreeNode): boolean {
+      if (node.kind === "file") {
+        const included = checkedFiles.has(node.path);
+        if (!included) tones[node.path] = "muted";
+        return included;
+      }
+      let anyIncluded = false;
+      for (const child of node.children) {
+        if (walk(child)) anyIncluded = true;
+      }
+      if (!anyIncluded) tones[node.path] = "muted";
+      return anyIncluded;
+    }
+
+    for (const node of tree) walk(node);
+    return tones;
+  }, [tree, checkedFiles]);
 
   // Recompute .paperclip.yaml and README.md content whenever checked files
   // change so the preview & download always reflect the current selection.
@@ -828,40 +858,8 @@ export function CompanyExport() {
     });
   }
 
-  function handleToggleCheck(path: string, kind: "file" | "dir") {
-    if (!exportData) return;
-    setCheckedFiles((prev) => {
-      const next = new Set(prev);
-      if (kind === "file") {
-        if (next.has(path)) next.delete(path);
-        else next.add(path);
-      } else {
-        // Find all child file paths under this dir
-        const dirTree = buildFileTree(exportData.files);
-        const findNode = (nodes: FileTreeNode[], target: string): FileTreeNode | null => {
-          for (const n of nodes) {
-            if (n.path === target) return n;
-            const found = findNode(n.children, target);
-            if (found) return found;
-          }
-          return null;
-        };
-        const dirNode = findNode(dirTree, path);
-        if (dirNode) {
-          const childFiles = collectAllPaths(dirNode.children, "file");
-          // Add the dir's own file children
-          for (const child of dirNode.children) {
-            if (child.kind === "file") childFiles.add(child.path);
-          }
-          const allChecked = [...childFiles].every((p) => next.has(p));
-          for (const f of childFiles) {
-            if (allChecked) next.delete(f);
-            else next.add(f);
-          }
-        }
-      }
-      return next;
-    });
+  function handleToggleCategory(key: ExportCategoryKey) {
+    setCategories((prev) => ({ ...prev, [key]: !prev[key] }));
   }
 
   function handleSearchChange(query: string) {
@@ -946,7 +944,7 @@ export function CompanyExport() {
               {selectedCompany?.name ?? "Company"} export
             </span>
             <span className="text-muted-foreground">
-              {selectedCount} / {totalFiles} file{totalFiles === 1 ? "" : "s"} selected
+              Exporting {selectedCount.toLocaleString()} of {totalFiles.toLocaleString()} file{totalFiles === 1 ? "" : "s"}
             </span>
             {warnings.length > 0 && (
               <span className="text-amber-500">
@@ -962,7 +960,7 @@ export function CompanyExport() {
             <Download className="mr-1.5 h-3.5 w-3.5" />
             {downloadMutation.isPending
               ? "Building export..."
-              : `Export ${selectedCount} file${selectedCount === 1 ? "" : "s"}`}
+              : `Export ${selectedCount.toLocaleString()} file${selectedCount === 1 ? "" : "s"}`}
           </Button>
         </div>
       </div>
@@ -1000,6 +998,42 @@ export function CompanyExport() {
           <div className="border-b border-border px-4 py-3 shrink-0">
             <h2 className="text-base font-semibold">Package files</h2>
           </div>
+          <div className="border-b border-border px-4 py-3 shrink-0">
+            <h3 className="mb-2 text-xs font-medium text-muted-foreground">What to include</h3>
+            <div className="grid grid-cols-2 gap-x-4 gap-y-1.5" role="group" aria-label="What to include">
+              {EXPORT_CATEGORY_ORDER.map((key) => {
+                const isAttachments = key === "attachments";
+                const disabled = isAttachments && !isAttachmentsCategoryEnabled(categories);
+                const checked = categories[key] && !disabled;
+                const count = categoryCounts?.[key] ?? 0;
+                return (
+                  <label
+                    key={key}
+                    className={cn(
+                      "flex items-center gap-2 text-sm",
+                      disabled ? "cursor-not-allowed opacity-50" : "cursor-pointer",
+                    )}
+                    title={
+                      disabled
+                        ? "Attachments travel with tasks and routines; re-enable one of them to include attachments."
+                        : undefined
+                    }
+                  >
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      disabled={disabled}
+                      onChange={() => handleToggleCategory(key)}
+                      className="accent-foreground"
+                      data-export-category={key}
+                    />
+                    <span className="min-w-0 truncate">{EXPORT_CATEGORY_LABELS[key]}</span>
+                    <span className="text-xs text-muted-foreground">{count.toLocaleString()}</span>
+                  </label>
+                );
+              })}
+            </div>
+          </div>
           <div className="border-b border-border px-3 py-2 shrink-0">
             <div className="flex items-center gap-2 rounded-md border border-border px-2 py-1">
               <Search className="h-3.5 w-3.5 text-muted-foreground shrink-0" />
@@ -1018,10 +1052,10 @@ export function CompanyExport() {
               nodes={displayTree}
               selectedFile={selectedFile}
               expandedDirs={expandedDirs}
-              checkedFiles={checkedFiles}
               onToggleDir={handleToggleDir}
               onSelectFile={selectFile}
-              onToggleCheck={handleToggleCheck}
+              fileTones={fileTones}
+              showCheckboxes={false}
               wrapLabels={false}
             />
             {totalTaskChildren > visibleTaskChildren && !treeSearch && (
