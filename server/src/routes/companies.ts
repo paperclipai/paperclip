@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { Router, type Request } from "express";
 import { and, count as countFn, eq } from "drizzle-orm";
 import { z } from "zod";
@@ -303,18 +303,30 @@ export function companyRoutes(db: Db, storage?: StorageService) {
       cleanupTerminalImportJobs(importJobs, importJobTerminalRetentionMs);
       const isCloudTenant = req.actor.source === "cloud_tenant";
       const actorKey = importJobActorKey(req);
+      const signature = importRequestSignature(rawImportBody);
       if (!isCloudTenant) {
-        // One live import per board actor: while a job for this key is
-        // still running, resubmits get 409 carrying the running job's id
-        // and status URL so the client adopts it instead of importing the
-        // same bundle twice. Terminal jobs never block a resubmit.
+        // One live import per board actor: while a job for this key is still
+        // running, a resubmit of the *same* import gets 409 carrying the
+        // running job's id and status URL so the client adopts it instead of
+        // importing the same bundle twice. A *different* import (another tab,
+        // another target) gets a 409 without a job to adopt, so the client
+        // surfaces it as an error rather than switching to the wrong result.
+        // Terminal jobs never block a resubmit.
         const running = findRunningImportJob(importJobs, actorKey);
         if (running) {
-          res.status(409).json(importJobConflictResponse(running));
+          if (running.signature === signature) {
+            res.status(409).json(importJobConflictResponse(running));
+          } else {
+            res.status(409).json(importAlreadyRunningResponse());
+          }
           return;
         }
       }
-      const job = createImportJob(actorKey, isCloudTenant ? "cloud_tenant" : "board");
+      const job = createImportJob(
+        actorKey,
+        isCloudTenant ? "cloud_tenant" : "board",
+        signature,
+      );
       importJobs.set(job.id, job);
       const operation = async () => {
         const importBody = companyPortabilityImportSchema.parse(rawImportBody);
@@ -601,6 +613,13 @@ interface ImportJobRecord {
   /** Identity that created the job; the only key allowed to read it. */
   actorKey: string;
   actorKind: ImportJobActorKind;
+  /**
+   * Fingerprint of the import request body. A resubmit is adopted (409 →
+   * watch the running job) only when it carries the same signature, so a
+   * *different* import from another tab is rejected instead of silently
+   * adopting an unrelated job (and its target). Board jobs only.
+   */
+  signature?: string;
   status: "running" | "succeeded" | "failed";
   createdAt: string;
   updatedAt: string;
@@ -649,17 +668,32 @@ function importJobActorKey(req: Request) {
   return `board:${req.actor.userId ?? "local-board"}`;
 }
 
-function createImportJob(actorKey: string, actorKind: ImportJobActorKind): ImportJobRecord {
+function createImportJob(
+  actorKey: string,
+  actorKind: ImportJobActorKind,
+  signature?: string,
+): ImportJobRecord {
   const now = new Date().toISOString();
   return {
     // Cloud tenant job ids keep their original prefix; board jobs get their own.
     id: `${actorKind === "cloud_tenant" ? "tenant-import" : "import"}-${randomUUID()}`,
     actorKey,
     actorKind,
+    signature,
     status: "running",
     createdAt: now,
     updatedAt: now,
   };
+}
+
+/**
+ * Stable fingerprint of an import request body. The same client resubmitting
+ * the same import produces a byte-identical body (no nonce/timestamp), so its
+ * signature matches; a different import differs. Used to tell a duplicate
+ * submit apart from a concurrent, unrelated import.
+ */
+function importRequestSignature(body: unknown): string {
+  return createHash("sha256").update(JSON.stringify(body) ?? "").digest("hex");
 }
 
 function findRunningImportJob(importJobs: Map<string, ImportJobRecord>, actorKey: string) {
@@ -747,6 +781,17 @@ function importJobAcceptedResponse(job: ImportJobRecord) {
     },
     statusUrl: importJobStatusUrl(job),
     retryAfterMs: 1000,
+  };
+}
+
+/**
+ * 409 body for a concurrent, *different* import while one is already running.
+ * Carries no job to adopt, so the client reports it as an error rather than
+ * watching (and switching to) an unrelated import's result.
+ */
+function importAlreadyRunningResponse() {
+  return {
+    error: "A different import is already running for this account. Wait for it to finish before starting another.",
   };
 }
 

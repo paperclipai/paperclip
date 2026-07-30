@@ -904,6 +904,38 @@ describe.sequential("company portability routes", () => {
     expect(otherUser.body.job.id).not.toBe(first.body.job.id);
   });
 
+  it.sequential(
+    "rejects a concurrent different import without adopting the running job",
+    async () => {
+      mockCompanyPortabilityService.importBundle.mockReturnValueOnce(new Promise(() => undefined));
+      const app = await createBoardApp();
+
+      const first = await request(app)
+        .post("/api/companies/import")
+        .set("x-paperclip-cloud-async-import", "1")
+        .set(TEST_USER_HEADER, "board-user-a")
+        .send(importRequest);
+
+      expect(first.status).toBe(202);
+
+      // Same user, a *different* import (another destination) while the first
+      // still runs. It must NOT adopt the first job — adopting would show the
+      // wrong result and switch to the wrong company — so the 409 carries no
+      // job to watch, and no second import starts.
+      const different = await request(app)
+        .post("/api/companies/import")
+        .set("x-paperclip-cloud-async-import", "1")
+        .set(TEST_USER_HEADER, "board-user-a")
+        .send({ ...importRequest, target: { mode: "new_company", newCompanyName: "A Different Destination" } });
+
+      expect(different.status).toBe(409);
+      expect(different.body.job).toBeUndefined();
+      expect(different.body.statusUrl).toBeUndefined();
+      expect(different.body.error).toMatch(/different import is already running/i);
+      expect(mockCompanyPortabilityService.importBundle).toHaveBeenCalledTimes(1);
+    },
+  );
+
   it.sequential("fails a board async import job when the bundle import throws", async () => {
     mockCompanyPortabilityService.importBundle.mockRejectedValueOnce(new Error("import payload is incomplete"));
     const app = await createBoardApp();

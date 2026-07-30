@@ -721,9 +721,25 @@ async function watchImportJob(
           "The server no longer reports this import job — it may have restarted while the import ran.",
         );
       }
+      if (
+        err instanceof ApiError
+        && err.status >= 400
+        && err.status < 500
+        && err.status !== 429
+      ) {
+        // A permanent client error (an expired board session, lost board
+        // access, or a bad request) will never recover by polling again, so
+        // stop instead of leaving the import locked in its running state.
+        // 429 (rate limited) and 5xx stay transient and fall through below.
+        clearStoredImportJob(storageKey);
+        throw new Error(
+          "The import status can no longer be read — your session may have expired. Reload and sign in to check on it.",
+        );
+      }
       // Any other poll failure is treated as transient (network blip,
-      // dropped connection): the job keeps running server-side, so keep
-      // watching rather than reporting a failure that may not exist.
+      // dropped connection, rate limit, or a 5xx): the job keeps running
+      // server-side, so keep watching rather than reporting a failure that
+      // may not exist.
     }
     if (job?.status === "succeeded") {
       clearStoredImportJob(storageKey);

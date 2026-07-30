@@ -620,6 +620,39 @@ describe("CompanyImport", () => {
     expect(mockPushToast).toHaveBeenCalledWith(expect.objectContaining({ tone: "error" }));
   });
 
+  it("terminates the import when polling hits a permanent auth error", async () => {
+    // A 403 (expired or revoked board session) will never recover by polling
+    // again, so the watch must stop and surface an error instead of leaving the
+    // import locked in its running state forever.
+    mockCompaniesApi.getImportJob.mockRejectedValue(
+      new ApiError("Board access required", 403, { error: "Board access required" }),
+    );
+
+    await renderPage();
+    await enterGithubUrl();
+    await clickButton((text) => text === "Preview import");
+    await clickButton((text) => text.startsWith("Import 3 file"));
+    await settle();
+
+    expect(container.textContent).not.toContain("Import running on the server");
+    expect(container.textContent).toContain("your session may have expired");
+    expect(mockPushToast).toHaveBeenCalledWith(expect.objectContaining({ tone: "error" }));
+  });
+
+  it("keeps watching through a transient poll failure", async () => {
+    // A one-off 5xx is transient: the job is still running server-side, so the
+    // watch must keep polling and settle on the eventual success rather than
+    // treating the blip as a terminal failure.
+    mockCompaniesApi.getImportJob
+      .mockRejectedValueOnce(new ApiError("upstream unavailable", 503, null))
+      .mockResolvedValue(buildSucceededJob("job-1"));
+
+    await renderPageAndImport();
+
+    expect(container.textContent).not.toContain("Import failed:");
+    expect(container.textContent).toContain("Import complete");
+  });
+
   it("resumes watching a stored import job on mount", async () => {
     // A previous page load persisted a running job; reloading must resume
     // watching it rather than showing the stale form.

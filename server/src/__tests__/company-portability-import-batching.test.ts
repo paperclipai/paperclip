@@ -18,7 +18,10 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { companyPortabilityService } from "../services/company-portability.js";
+import { workProductService } from "../services/work-products.js";
+import type { ImportIssueWorkProductRow } from "../services/import-write-types.js";
 import type { CompanyPortabilityFileEntry } from "@paperclipai/shared";
+import { randomUUID } from "node:crypto";
 
 // This suite proves the company-import writers batch their inserts: it runs a
 // real import against embedded Postgres and counts the SQL insert statements
@@ -265,6 +268,65 @@ describeEmbeddedPostgres("company import batches inserts", () => {
       .where(eq(issues.companyId, companyId));
     const uniqueIdentifiers = new Set(identifiers.map((row) => row.identifier));
     expect(uniqueIdentifiers.size).toBe(issueCount);
+  });
+
+  it("rolls back the whole work-product batch when a later chunk fails", async () => {
+    // Seed a real company + issue to hang work products off of.
+    const bundle = buildSyntheticBundle({ issueCount: 1, commentsPerIssue: 0, documentsPerIssue: 0 });
+    const portability = companyPortabilityService(db);
+    const seeded = await portability.importBundle(
+      {
+        source: { type: "inline", rootPath: bundle.rootPath, files: bundle.files },
+        include: { company: true, agents: false, projects: false, issues: true },
+        target: { mode: "new_company", newCompanyName: "Work Product Atomicity Co" },
+        collisionStrategy: "rename",
+      },
+      "user-work-product-atomicity",
+    );
+    const companyId = seeded.company.id;
+    const [issueRow] = await db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(eq(issues.companyId, companyId))
+      .limit(1);
+    expect(issueRow?.id).toBeTruthy();
+
+    const buildRow = (issueId: string, index: number): ImportIssueWorkProductRow => ({
+      companyId,
+      issueId,
+      projectId: null,
+      type: "pull_request",
+      provider: "github",
+      externalId: null,
+      title: `Work product ${index}`,
+      url: null,
+      status: "open",
+      reviewState: "none",
+      isPrimary: false,
+      healthStatus: "unknown",
+      summary: null,
+      metadata: null,
+      executionWorkspaceId: null,
+      runtimeServiceId: null,
+      createdByRunId: null,
+      sourceTrust: null,
+    });
+
+    // 501 rows span two chunks (chunk size is 500). The first 500 are valid;
+    // the 501st points at a non-existent issue so the *second* chunk's insert
+    // fails after the first chunk already ran. Without a wrapping transaction
+    // the first 500 would have committed; with it, nothing may persist.
+    const rows: ImportIssueWorkProductRow[] = [];
+    for (let i = 0; i < 500; i += 1) rows.push(buildRow(issueRow!.id, i));
+    rows.push(buildRow(randomUUID(), 500));
+
+    await expect(workProductService(db).createManyForImport(rows)).rejects.toThrow();
+
+    const [{ workProductRows }] = await db
+      .select({ workProductRows: sql<number>`count(*)::int` })
+      .from(issueWorkProducts)
+      .where(eq(issueWorkProducts.companyId, companyId));
+    expect(workProductRows).toBe(0);
   });
 
   const benchmark = process.env.PORTABILITY_IMPORT_BENCH === "1" ? it : it.skip;

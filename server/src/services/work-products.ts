@@ -148,7 +148,14 @@ export function workProductService(db: Db) {
         createdByRunId: row.createdByRunId ?? null,
         sourceTrust: row.sourceTrust ?? null,
       }));
-      await insertRowsInChunks(db, issueWorkProducts, values);
+      // Chunked writes are wrapped in a single transaction so a large import
+      // that spans multiple insert statements is atomic: if a later chunk
+      // fails, the earlier chunks roll back rather than leaving a partial
+      // prefix behind (which a retry would then duplicate). Mirrors the
+      // per-writer transaction the batched issue/document writers use.
+      await db.transaction(async (tx) => {
+        await insertRowsInChunks(tx, issueWorkProducts, values);
+      });
     },
 
     remove: async (id: string) => {
