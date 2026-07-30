@@ -1667,6 +1667,13 @@
       "when": 1788557575279,
       "tag": "0239_sturdy_santa_claus",
       "breakpoints": true
+    },
+    {
+      "idx": 240,
+      "version": "7",
+      "when": 1788600000000,
+      "tag": "0240_cost_event_rate_card",
+      "breakpoints": true
     }
   ]
 }

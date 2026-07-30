@@ -831,7 +831,15 @@ export const BILLING_TYPES = [
 ] as const;
 export type BillingType = (typeof BILLING_TYPES)[number];
 
-export const COST_STATUSES = ["reported", "unpriced"] as const;
+/**
+ * How a cost event's money figures were arrived at.
+ * - `reported`: the provider gave a credible cost, or there was no token usage.
+ * - `derived`: the provider gave no credible cost (null, or 0 alongside real
+ *   tokens), so `rate_card_cents` was computed from tokens at list price.
+ * - `unpriced`: real tokens, no credible provider cost, and no rate-card entry
+ *   for the model — the spend is real but unquantified. Never silently 0.
+ */
+export const COST_STATUSES = ["reported", "derived", "unpriced"] as const;
 export type CostStatus = (typeof COST_STATUSES)[number];
 
 export const FINANCE_EVENT_KINDS = [

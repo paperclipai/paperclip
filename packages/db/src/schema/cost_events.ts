@@ -25,7 +25,13 @@ export const costEvents = pgTable(
     inputTokens: integer("input_tokens").notNull().default(0),
     cachedInputTokens: integer("cached_input_tokens").notNull().default(0),
     outputTokens: integer("output_tokens").notNull().default(0),
+    // Prompt tokens billed at a cache-write premium. Tracked separately from
+    // inputTokens so the write premium is not lost, and not double-counted.
+    cacheWriteTokens: integer("cache_write_tokens").notNull().default(0),
+    // Cash actually billed. Stays 0 for subscription_included. Feeds budgets.
     costCents: integer("cost_cents").notNull(),
+    // Notional tokens x list-price figure. Never an invoice, never budget input.
+    rateCardCents: integer("rate_card_cents").notNull().default(0),
     occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
