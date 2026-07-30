@@ -1154,6 +1154,42 @@ describe("sandbox callback bridge", () => {
     ]);
   });
 
+  it("falls back to sequential makeDir when the queue client omits makeDirs", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-makedir-fallback-"));
+    cleanupDirs.push(rootDir);
+
+    const queueDir = path.posix.join(rootDir, "queue");
+    const directories = sandboxCallbackBridgeDirectories(queueDir);
+    const makeDir = vi.fn(async (_remotePath: string) => {});
+
+    // A queue client that predates the batched makeDirs method. The worker
+    // must still create every queue directory through sequential makeDir.
+    const worker = await startSandboxCallbackBridgeWorker({
+      client: {
+        makeDir,
+        listJsonFiles: async () => [],
+        readTextFile: async () => {
+          throw new Error("unexpected readTextFile");
+        },
+        writeTextFile: async () => {},
+        rename: async () => {},
+        remove: async () => {},
+      },
+      queueDir,
+      authorizeRequest: async () => null,
+      handleRequest: async () => ({ status: 200, body: "ok" }),
+    });
+
+    await worker.stop();
+
+    expect(makeDir.mock.calls.map((call) => call[0])).toEqual([
+      directories.rootDir,
+      directories.requestsDir,
+      directories.responsesDir,
+      directories.logsDir,
+    ]);
+  });
+
   it("runs one mkdir -p exec for makeDirs on the command-managed queue client", async () => {
     const runner = {
       execute: vi.fn(async (_input: { args?: string[] }) => ({
@@ -1173,7 +1209,9 @@ describe("sandbox callback bridge", () => {
       timeoutMs: 30_000,
     });
 
-    await client.makeDirs(["/workspace/a", "/workspace/b", "/workspace/c"]);
+    // The command-managed client always provides the batched makeDirs method.
+    expect(client.makeDirs).toBeDefined();
+    await client.makeDirs?.(["/workspace/a", "/workspace/b", "/workspace/c"]);
 
     expect(runner.execute).toHaveBeenCalledTimes(1);
     const call = runner.execute.mock.calls[0][0];
