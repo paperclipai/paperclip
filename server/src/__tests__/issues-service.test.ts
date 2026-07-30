@@ -4168,7 +4168,7 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     ]);
     await svc.update(issueId, { blockedByIssueIds: [blockerId] });
 
-    const updated = await svc.update(issueId, {
+    const changesRequestedUpdate = {
       status: "in_progress",
       assigneeAgentId: returnAgentId,
       actorAgentId: qaAgentId,
@@ -4179,7 +4179,24 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
         lastDecisionId: decisionId,
         lastDecisionOutcome: "changes_requested",
       },
-    });
+    } as const;
+    await expect(svc.update(issueId, {
+      ...changesRequestedUpdate,
+      actorAgentId: returnAgentId,
+    })).rejects.toMatchObject({ status: 422 });
+    await expect(svc.update(issueId, {
+      ...changesRequestedUpdate,
+      assigneeAgentId: qaAgentId,
+    })).rejects.toMatchObject({ status: 422 });
+    await expect(svc.update(issueId, {
+      ...changesRequestedUpdate,
+      executionState: {
+        ...changesRequestedUpdate.executionState,
+        currentStageId: randomUUID(),
+      },
+    })).rejects.toMatchObject({ status: 422 });
+
+    const updated = await svc.update(issueId, changesRequestedUpdate);
 
     expect(updated).toMatchObject({
       status: "in_progress",

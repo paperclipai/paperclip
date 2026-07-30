@@ -84,7 +84,11 @@ import {
   type ParsedExecutionWorkspaceMode,
 } from "./execution-workspace-policy.js";
 import { mergeExecutionWorkspaceConfig } from "./execution-workspaces.js";
-import { buildInitialIssueMonitorFields, normalizeIssueExecutionPolicy } from "./issue-execution-policy.js";
+import {
+  buildInitialIssueMonitorFields,
+  normalizeIssueExecutionPolicy,
+  parseIssueExecutionState,
+} from "./issue-execution-policy.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { redactSensitiveText } from "../redaction.js";
@@ -6626,7 +6630,44 @@ export function issueService(db: Db) {
       if (patch.status === "in_progress" && !nextAssigneeAgentId && !nextAssigneeUserId) {
         throw unprocessable("in_progress issues require an assignee");
       }
-      if (patch.status === "in_progress" && !allowUnresolvedBlockerStageReturn) {
+      const previousExecutionState = parseIssueExecutionState(existing.executionState);
+      const nextExecutionState = parseIssueExecutionState(issueData.executionState);
+      const currentParticipant = previousExecutionState?.currentParticipant ?? null;
+      const nextParticipant = nextExecutionState?.currentParticipant ?? null;
+      const returnAssignee = previousExecutionState?.returnAssignee ?? null;
+      const nextReturnAssignee = nextExecutionState?.returnAssignee ?? null;
+      const actorIsCurrentParticipant = currentParticipant?.type === "agent"
+        ? actorAgentId === currentParticipant.agentId
+        : currentParticipant?.type === "user" && actorUserId === currentParticipant.userId;
+      const participantIsPreserved = currentParticipant?.type === "agent"
+        ? nextParticipant?.type === "agent" && nextParticipant.agentId === currentParticipant.agentId
+        : currentParticipant?.type === "user"
+          && nextParticipant?.type === "user"
+          && nextParticipant.userId === currentParticipant.userId;
+      const returnAssigneeIsPreserved = returnAssignee?.type === "agent"
+        ? nextReturnAssignee?.type === "agent" && nextReturnAssignee.agentId === returnAssignee.agentId
+        : returnAssignee?.type === "user"
+          && nextReturnAssignee?.type === "user"
+          && nextReturnAssignee.userId === returnAssignee.userId;
+      const returnsToExecutionAssignee = returnAssignee?.type === "agent"
+        ? nextAssigneeAgentId === returnAssignee.agentId && !nextAssigneeUserId
+        : returnAssignee?.type === "user"
+          && nextAssigneeUserId === returnAssignee.userId
+          && !nextAssigneeAgentId;
+      const isAuthorizedBlockedStageReturn =
+        allowUnresolvedBlockerStageReturn === true
+        && blockedByIssueIds === undefined
+        && existing.status === "in_review"
+        && previousExecutionState?.status === "pending"
+        && nextExecutionState?.status === "changes_requested"
+        && nextExecutionState.currentStageId === previousExecutionState.currentStageId
+        && nextExecutionState.lastDecisionOutcome === "changes_requested"
+        && Boolean(nextExecutionState.lastDecisionId)
+        && actorIsCurrentParticipant
+        && participantIsPreserved
+        && returnAssigneeIsPreserved
+        && returnsToExecutionAssignee;
+      if (patch.status === "in_progress" && !isAuthorizedBlockedStageReturn) {
         const unresolvedBlockerIssueIds = blockedByIssueIds !== undefined
           ? await listUnresolvedBlockerIssueIds(dbOrTx, existing.companyId, blockedByIssueIds)
           : (
