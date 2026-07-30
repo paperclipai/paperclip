@@ -1571,7 +1571,9 @@ export function buildHostServices(
           details: {
             identifier: issue.identifier,
             documentKey: params.key,
-            title: params.title ?? null,
+            // The document service returns the persisted, redacted title. Do
+            // not propagate the plugin's raw input into activity details.
+            title: result.document.title ?? null,
             format: params.format ?? "markdown",
           },
         });
