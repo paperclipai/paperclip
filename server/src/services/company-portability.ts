@@ -35,6 +35,7 @@ import type {
 } from "@paperclipai/shared";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
+  BOARD_ONLY_AGENT_PERMISSION_KEYS,
   ISSUE_PRIORITIES,
   ISSUE_STATUSES,
   PROJECT_ICON_NAMES,
@@ -58,6 +59,7 @@ import {
 } from "@paperclipai/adapter-utils/server-utils";
 import { requireOpenCodeModelId } from "@paperclipai/adapter-opencode-local/server";
 import { findServerAdapter } from "../adapters/index.js";
+import { managerReportGrantScopeIsWellFormed } from "./manager-report-scope.js";
 import { forbidden, notFound, unprocessable } from "../errors.js";
 import { ghFetch, gitHubApiBase, resolveRawGitHubUrl } from "./github-fetch.js";
 import type { StorageService } from "../storage/types.js";
@@ -138,6 +140,9 @@ const DEFAULT_INCLUDE: CompanyPortabilityInclude = {
 
 const DEFAULT_COLLISION_STRATEGY: CompanyPortabilityCollisionStrategy = "rename";
 const IMPORT_FORBIDDEN_ADAPTER_TYPES = new Set(["process", "http"]);
+const AGENT_SAFE_FORBIDDEN_PERMISSION_KEYS = new Set<PermissionKey>(
+  BOARD_ONLY_AGENT_PERMISSION_KEYS,
+);
 const execFileAsync = promisify(execFile);
 let bundledSkillsCommitPromise: Promise<string | null> | null = null;
 
@@ -155,6 +160,17 @@ function collectAgentSafeImportPolicyErrors(
   include: CompanyPortabilityInclude,
 ) {
   const errors: string[] = [];
+  if (include.agents) {
+    for (const agent of manifest.agents) {
+      for (const grant of agent.permissionGrants) {
+        if (AGENT_SAFE_FORBIDDEN_PERMISSION_KEYS.has(grant.permissionKey)) {
+          errors.push(
+            `Safe import does not allow agent ${agent.slug} board-only permission grant ${grant.permissionKey}.`,
+          );
+        }
+      }
+    }
+  }
   if (include.projects) {
     for (const project of manifest.projects) {
       if (project.executionWorkspacePolicy !== null) {
@@ -561,6 +577,7 @@ type ResolvedSource = {
   manifest: CompanyPortabilityManifest;
   files: Record<string, CompanyPortabilityFileEntry>;
   warnings: string[];
+  errors: string[];
 };
 
 type MarkdownDoc = {
@@ -726,15 +743,29 @@ type PortableAgentPermissionGrant = CompanyPortabilityAgentManifestEntry["permis
 
 const VALID_PERMISSION_KEYS = new Set<PermissionKey>(PERMISSION_KEYS);
 
-function normalizePortablePermissionGrants(value: unknown): PortableAgentPermissionGrant[] {
+function normalizePortablePermissionGrants(
+  value: unknown,
+  errors: string[],
+  agentSlug: string,
+): PortableAgentPermissionGrant[] {
   if (!Array.isArray(value)) return [];
   return value.flatMap((entry): PortableAgentPermissionGrant[] => {
     if (!isPlainRecord(entry)) return [];
     const permissionKey = asString(entry.permissionKey);
     if (!permissionKey || !VALID_PERMISSION_KEYS.has(permissionKey as PermissionKey)) return [];
+    const rawScope = hasOwn(entry, "scope") ? entry.scope : null;
+    if (
+      permissionKey === "issues:manage_reports" &&
+      !managerReportGrantScopeIsWellFormed(rawScope)
+    ) {
+      errors.push(
+        `Agent ${agentSlug} permission issues:manage_reports has an unsupported or malformed scope.`,
+      );
+      return [];
+    }
     return [{
       permissionKey: permissionKey as PermissionKey,
-      scope: isPlainRecord(entry.scope) ? entry.scope : null,
+      scope: isPlainRecord(rawScope) ? rawScope : null,
     }];
   });
 }
@@ -2695,6 +2726,7 @@ function buildManifestFromPackageFiles(
   };
 
   const warnings: string[] = [];
+  const errors: string[] = [];
   if (manifest.company?.logoPath && !normalizedFiles[manifest.company.logoPath]) {
     warnings.push(`Referenced company logo file is missing from package: ${manifest.company.logoPath}`);
   }
@@ -2712,7 +2744,11 @@ function buildManifestFromPackageFiles(
     const extensionAdapter = isPlainRecord(extension.adapter) ? extension.adapter : null;
     const extensionRuntime = isPlainRecord(extension.runtime) ? extension.runtime : null;
     const extensionPermissions = isPlainRecord(extension.permissions) ? extension.permissions : null;
-    const extensionPermissionGrants = normalizePortablePermissionGrants(extension.permissionGrants);
+    const extensionPermissionGrants = normalizePortablePermissionGrants(
+      extension.permissionGrants,
+      errors,
+      slug,
+    );
     const extensionMetadata = isPlainRecord(extension.metadata) ? extension.metadata : null;
     const adapterConfig = isPlainRecord(extensionAdapter?.config)
       ? extensionAdapter.config
@@ -2953,6 +2989,7 @@ function buildManifestFromPackageFiles(
     manifest,
     files: normalizedFiles,
     warnings,
+    errors,
   };
 }
 
@@ -3406,9 +3443,19 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     const permissionGrantsByAgentId = new Map<string, PortableAgentPermissionGrant[]>();
     for (const row of agentPermissionGrantRows) {
       if (!VALID_PERMISSION_KEYS.has(row.permissionKey as PermissionKey)) continue;
+      const permissionKey = row.permissionKey as PermissionKey;
+      if (
+        permissionKey === "issues:manage_reports" &&
+        !managerReportGrantScopeIsWellFormed(row.scope)
+      ) {
+        warnings.push(
+          `Agent ${idToSlug.get(row.principalId) ?? row.principalId} permission issues:manage_reports was omitted from export because its scope is unsupported or malformed.`,
+        );
+        continue;
+      }
       const grants = permissionGrantsByAgentId.get(row.principalId) ?? [];
       grants.push({
-        permissionKey: row.permissionKey as PermissionKey,
+        permissionKey,
         scope: isPlainRecord(row.scope) ? row.scope : null,
       });
       permissionGrantsByAgentId.set(row.principalId, grants);
@@ -4027,7 +4074,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       throw unprocessable("Safe import routes do not allow replace collision strategy.");
     }
     const warnings = [...source.warnings];
-    const errors: string[] = [];
+    const errors: string[] = [...source.errors];
 
     if (include.company && !manifest.company) {
       errors.push("Manifest does not include company metadata.");

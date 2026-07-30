@@ -226,6 +226,7 @@ export const updateAgentPermissionsSchema = z.object({
   canCreateAgents: z.boolean(),
   canCreateSkills: z.boolean().optional(),
   canAssignTasks: z.boolean(),
+  canManageReports: z.boolean().optional(),
   trustPreset: trustPresetSchema.optional(),
   authorizationPolicy: trustAuthorizationPolicySchema.optional(),
 });

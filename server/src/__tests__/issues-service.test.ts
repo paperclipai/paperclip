@@ -5,6 +5,7 @@ import { sql } from "drizzle-orm";
 import {
   activityLog,
   agents,
+  companyMemberships,
   companies,
   createDb,
   documentRevisions,
@@ -23,6 +24,7 @@ import {
   issues,
   projectWorkspaces,
   projects,
+  principalPermissionGrants,
   workspaceOperations,
 } from "@paperclipai/db";
 import {
@@ -36,6 +38,7 @@ import {
   ISSUE_LIST_MAX_LIMIT,
   issueService,
 } from "../services/issues.ts";
+import { agentSubtreeRootIdsFromGrantScope } from "../services/authorization.ts";
 import {
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_CODE,
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_MESSAGE,
@@ -316,6 +319,8 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     await db.delete(projects);
     await db.delete(goals);
     await db.delete(heartbeatRuns);
+    await db.delete(principalPermissionGrants);
+    await db.delete(companyMemberships);
     await db.delete(agents);
     await db.delete(instanceSettings);
     await db.delete(companies);
@@ -354,6 +359,116 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       runtimeConfig: {},
       permissions: {},
     };
+  }
+
+  async function seedManagerReportActivation(
+    depth: "direct" | "deep" = "direct",
+    options: { projectScoped?: boolean; subtreeScoped?: boolean } = {},
+  ) {
+    const companyId = await seedAssignableAgentCompany();
+    const managerAgentId = randomUUID();
+    const middleAgentId = randomUUID();
+    const reportAgentId = randomUUID();
+    const issueId = randomUUID();
+    const projectId = options.projectScoped ? randomUUID() : null;
+    const otherProjectId = options.projectScoped ? randomUUID() : null;
+
+    await db.insert(agents).values([
+      agentRow(companyId, { id: managerAgentId, name: "ActivationManager" }),
+      ...(depth === "deep"
+        ? [agentRow(companyId, {
+            id: middleAgentId,
+            name: "ActivationMiddleManager",
+            reportsTo: managerAgentId,
+          })]
+        : []),
+      agentRow(companyId, {
+        id: reportAgentId,
+        name: "ActivationReport",
+        reportsTo: depth === "deep" ? middleAgentId : managerAgentId,
+      }),
+    ]);
+    if (projectId && otherProjectId) {
+      await db.insert(projects).values([
+        { id: projectId, companyId, name: "Activation project" },
+        { id: otherProjectId, companyId, name: "Other activation project" },
+      ]);
+    }
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Manager activation target",
+      status: "backlog",
+      priority: "medium",
+      projectId,
+      assigneeAgentId: reportAgentId,
+    });
+    await db.insert(companyMemberships).values({
+      companyId,
+      principalType: "agent",
+      principalId: managerAgentId,
+      status: "active",
+      membershipRole: "member",
+    });
+    const grantScope = options.projectScoped
+      ? { projectId }
+      : options.subtreeScoped
+        ? { subtreeRootAgentId: middleAgentId }
+        : null;
+    const grant = await db.insert(principalPermissionGrants).values({
+      companyId,
+      principalType: "agent",
+      principalId: managerAgentId,
+      permissionKey: "issues:manage_reports",
+      scope: grantScope,
+    }).returning().then((rows) => rows[0]!);
+
+    return {
+      companyId,
+      issueId,
+      managerAgentId,
+      middleAgentId,
+      reportAgentId,
+      projectId,
+      otherProjectId,
+      grant,
+    };
+  }
+
+  async function readManagerActivationSnapshot(issueId: string) {
+    return db
+      .select({
+        title: issues.title,
+        status: issues.status,
+        assigneeAgentId: issues.assigneeAgentId,
+        assigneeUserId: issues.assigneeUserId,
+        checkoutRunId: issues.checkoutRunId,
+        executionRunId: issues.executionRunId,
+        executionAgentNameKey: issues.executionAgentNameKey,
+        executionLockedAt: issues.executionLockedAt,
+        executionPolicy: issues.executionPolicy,
+        executionState: issues.executionState,
+        updatedAt: issues.updatedAt,
+      })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+  }
+
+  function activateManagerReport(fixture: Awaited<ReturnType<typeof seedManagerReportActivation>>) {
+    return svc.update(fixture.issueId, {
+      status: "todo",
+      managerReportActivation: {
+        expectedCompanyId: fixture.companyId,
+        expectedProjectId: fixture.projectId,
+        expectedParentIssueId: null,
+        expectedAssigneeAgentId: fixture.reportAgentId,
+        managerAgentId: fixture.managerAgentId,
+        grantId: fixture.grant.id,
+        grantScope: fixture.grant.scope ?? null,
+        grantSubtreeRootAgentIds: agentSubtreeRootIdsFromGrantScope(fixture.grant.scope),
+      },
+    });
   }
 
   it("rejects direct terminated assignees with structured conflict details", async () => {
@@ -558,6 +673,285 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
       assigneeAgentId,
       status: "todo",
     });
+  });
+
+  it.each([
+    ["direct", "direct", {}],
+    ["transitive", "deep", {}],
+    ["project-scoped", "direct", { projectScoped: true }],
+    ["subtree-scoped", "deep", { subtreeScoped: true }],
+  ] as const)("atomically activates a %s report's plain backlog issue", async (_label, depth, options) => {
+    const fixture = await seedManagerReportActivation(depth, options);
+
+    const updated = await activateManagerReport(fixture);
+
+    expect(updated).toMatchObject({
+      id: fixture.issueId,
+      status: "todo",
+      assigneeAgentId: fixture.reportAgentId,
+    });
+    await expect(readManagerActivationSnapshot(fixture.issueId)).resolves.toMatchObject({
+      status: "todo",
+      assigneeAgentId: fixture.reportAgentId,
+    });
+  });
+
+  it.each(["paused", "pending_approval", "terminated"] as const)(
+    "returns null without touching an issue assigned to a %s report",
+    async (status) => {
+      const fixture = await seedManagerReportActivation();
+      await db.update(agents)
+        .set({ status })
+        .where(eq(agents.id, fixture.reportAgentId));
+      const before = await readManagerActivationSnapshot(fixture.issueId);
+
+      await expect(activateManagerReport(fixture)).resolves.toBeNull();
+      await expect(readManagerActivationSnapshot(fixture.issueId)).resolves.toEqual(before);
+    },
+  );
+
+  it.each(["idle", "running", "error"] as const)(
+    "still activates an issue assigned to an invokable %s report",
+    async (status) => {
+      const fixture = await seedManagerReportActivation();
+      await db.update(agents)
+        .set({ status })
+        .where(eq(agents.id, fixture.reportAgentId));
+
+      await expect(activateManagerReport(fixture)).resolves.toMatchObject({
+        id: fixture.issueId,
+        status: "todo",
+        assigneeAgentId: fixture.reportAgentId,
+      });
+    },
+  );
+
+  it("returns null when manager report activation targets the manager's own backlog issue", async () => {
+    const fixture = await seedManagerReportActivation();
+    await db.update(issues)
+      .set({ assigneeAgentId: fixture.managerAgentId })
+      .where(eq(issues.id, fixture.issueId));
+    const before = await readManagerActivationSnapshot(fixture.issueId);
+
+    await expect(svc.update(fixture.issueId, {
+      status: "todo",
+      managerReportActivation: {
+        expectedCompanyId: fixture.companyId,
+        expectedProjectId: fixture.projectId,
+        expectedParentIssueId: null,
+        expectedAssigneeAgentId: fixture.managerAgentId,
+        managerAgentId: fixture.managerAgentId,
+        grantId: fixture.grant.id,
+        grantScope: fixture.grant.scope ?? null,
+        grantSubtreeRootAgentIds: agentSubtreeRootIdsFromGrantScope(fixture.grant.scope),
+      },
+    })).resolves.toBeNull();
+    await expect(readManagerActivationSnapshot(fixture.issueId)).resolves.toEqual(before);
+  });
+
+  it("returns null when the report's organization chain gains a terminated ancestor", async () => {
+    const fixture = await seedManagerReportActivation("deep");
+    await db.update(agents)
+      .set({ status: "terminated" })
+      .where(eq(agents.id, fixture.middleAgentId));
+    const before = await readManagerActivationSnapshot(fixture.issueId);
+
+    await expect(activateManagerReport(fixture)).resolves.toBeNull();
+    await expect(readManagerActivationSnapshot(fixture.issueId)).resolves.toEqual(before);
+  });
+
+  it("returns null when the report's organization chain becomes cyclic", async () => {
+    const fixture = await seedManagerReportActivation();
+    await db.update(agents)
+      .set({ reportsTo: fixture.reportAgentId })
+      .where(eq(agents.id, fixture.managerAgentId));
+    const before = await readManagerActivationSnapshot(fixture.issueId);
+
+    await expect(activateManagerReport(fixture)).resolves.toBeNull();
+    await expect(readManagerActivationSnapshot(fixture.issueId)).resolves.toEqual(before);
+  });
+
+  it("returns null when the report's organization chain crosses the company boundary", async () => {
+    const fixture = await seedManagerReportActivation();
+    const foreignCompanyId = await seedAssignableAgentCompany();
+    const foreignRootAgentId = randomUUID();
+    await db.insert(agents).values(agentRow(foreignCompanyId, {
+      id: foreignRootAgentId,
+      name: "Foreign root",
+    }));
+    await db.update(agents)
+      .set({ reportsTo: foreignRootAgentId })
+      .where(eq(agents.id, fixture.managerAgentId));
+    const before = await readManagerActivationSnapshot(fixture.issueId);
+
+    await expect(activateManagerReport(fixture)).resolves.toBeNull();
+    await expect(readManagerActivationSnapshot(fixture.issueId)).resolves.toEqual(before);
+  });
+
+  it.each([
+    "status",
+    "assignee",
+    "reporting line",
+  ] as const)("returns null without touching the issue when its %s changed before activation", async (changedField) => {
+    const fixture = await seedManagerReportActivation();
+
+    if (changedField === "status") {
+      await db.update(issues).set({ status: "blocked" }).where(eq(issues.id, fixture.issueId));
+    } else if (changedField === "assignee") {
+      const replacementAgentId = randomUUID();
+      await db.insert(agents).values(agentRow(fixture.companyId, {
+        id: replacementAgentId,
+        name: "ReplacementReport",
+        reportsTo: fixture.managerAgentId,
+      }));
+      await db.update(issues)
+        .set({ assigneeAgentId: replacementAgentId })
+        .where(eq(issues.id, fixture.issueId));
+    } else {
+      await db.update(agents)
+        .set({ reportsTo: null })
+        .where(eq(agents.id, fixture.reportAgentId));
+    }
+    const before = await readManagerActivationSnapshot(fixture.issueId);
+
+    await expect(activateManagerReport(fixture)).resolves.toBeNull();
+    await expect(readManagerActivationSnapshot(fixture.issueId)).resolves.toEqual(before);
+  });
+
+  it.each([
+    "checkout run",
+    "execution run",
+    "execution agent name",
+    "execution lock",
+    "execution policy",
+    "execution state",
+    "user assignee",
+  ] as const)("returns null without touching an issue with %s", async (activeState) => {
+    const fixture = await seedManagerReportActivation();
+    if (activeState === "checkout run" || activeState === "execution run") {
+      const runId = randomUUID();
+      await db.insert(heartbeatRuns).values({
+        id: runId,
+        companyId: fixture.companyId,
+        agentId: fixture.reportAgentId,
+        status: "running",
+        invocationSource: "manual",
+      });
+      if (activeState === "checkout run") {
+        await db.update(issues)
+          .set({ checkoutRunId: runId })
+          .where(eq(issues.id, fixture.issueId));
+      } else {
+        await db.update(issues)
+          .set({ executionRunId: runId })
+          .where(eq(issues.id, fixture.issueId));
+      }
+    } else if (activeState === "execution agent name") {
+      await db.update(issues)
+        .set({ executionAgentNameKey: "activationreport" })
+        .where(eq(issues.id, fixture.issueId));
+    } else if (activeState === "execution lock") {
+      await db.update(issues)
+        .set({ executionLockedAt: new Date() })
+        .where(eq(issues.id, fixture.issueId));
+    } else if (activeState === "execution policy") {
+      await db.update(issues)
+        .set({ executionPolicy: { stages: [] } })
+        .where(eq(issues.id, fixture.issueId));
+    } else {
+      await db.update(issues).set(
+        activeState === "execution state"
+          ? { executionState: { status: "pending" } }
+          : { assigneeUserId: "board-user" },
+      ).where(eq(issues.id, fixture.issueId));
+    }
+    const before = await readManagerActivationSnapshot(fixture.issueId);
+
+    await expect(activateManagerReport(fixture)).resolves.toBeNull();
+    await expect(readManagerActivationSnapshot(fixture.issueId)).resolves.toEqual(before);
+  });
+
+  it.each([
+    "grant revoked",
+    "grant scope changed",
+    "manager membership suspended",
+  ] as const)("returns null when %s after authorization", async (changedAuthority) => {
+    const fixture = await seedManagerReportActivation();
+    if (changedAuthority === "grant revoked") {
+      await db.delete(principalPermissionGrants)
+        .where(eq(principalPermissionGrants.id, fixture.grant.id));
+    } else if (changedAuthority === "grant scope changed") {
+      await db.update(principalPermissionGrants)
+        .set({
+          scope: { projectId: randomUUID() },
+          updatedAt: new Date(fixture.grant.updatedAt.getTime() + 1_000),
+        })
+        .where(eq(principalPermissionGrants.id, fixture.grant.id));
+    } else {
+      await db.update(companyMemberships)
+        .set({ status: "suspended" })
+        .where(eq(companyMemberships.principalId, fixture.managerAgentId));
+    }
+    const before = await readManagerActivationSnapshot(fixture.issueId);
+
+    await expect(activateManagerReport(fixture)).resolves.toBeNull();
+    await expect(readManagerActivationSnapshot(fixture.issueId)).resolves.toEqual(before);
+  });
+
+  it("returns null when the issue moves outside the authorized project", async () => {
+    const fixture = await seedManagerReportActivation("direct", { projectScoped: true });
+    await db.update(issues)
+      .set({ projectId: fixture.otherProjectId })
+      .where(eq(issues.id, fixture.issueId));
+    const before = await readManagerActivationSnapshot(fixture.issueId);
+
+    await expect(activateManagerReport(fixture)).resolves.toBeNull();
+    await expect(readManagerActivationSnapshot(fixture.issueId)).resolves.toEqual(before);
+  });
+
+  it("returns null when a report leaves the grant's scoped subtree", async () => {
+    const fixture = await seedManagerReportActivation("deep", { subtreeScoped: true });
+    const siblingBranchAgentId = randomUUID();
+    await db.insert(agents).values(agentRow(fixture.companyId, {
+      id: siblingBranchAgentId,
+      name: "Sibling activation branch",
+      reportsTo: fixture.managerAgentId,
+    }));
+    await db.update(agents)
+      .set({ reportsTo: siblingBranchAgentId })
+      .where(eq(agents.id, fixture.reportAgentId));
+    const before = await readManagerActivationSnapshot(fixture.issueId);
+
+    await expect(activateManagerReport(fixture)).resolves.toBeNull();
+    await expect(readManagerActivationSnapshot(fixture.issueId)).resolves.toEqual(before);
+  });
+
+  it.each([
+    ["title", { title: "Forbidden title change" }],
+    ["labels", { labelIds: [] }],
+    ["blockers", { blockedByIssueIds: [] }],
+  ] as const)("rejects extra %s fields from the manager report activation update", async (_label, extraPatch) => {
+    const fixture = await seedManagerReportActivation();
+    const before = await readManagerActivationSnapshot(fixture.issueId);
+
+    await expect(svc.update(fixture.issueId, {
+      status: "todo",
+      ...extraPatch,
+      managerReportActivation: {
+        expectedCompanyId: fixture.companyId,
+        expectedProjectId: fixture.projectId,
+        expectedParentIssueId: null,
+        expectedAssigneeAgentId: fixture.reportAgentId,
+        managerAgentId: fixture.managerAgentId,
+        grantId: fixture.grant.id,
+        grantScope: fixture.grant.scope ?? null,
+        grantSubtreeRootAgentIds: agentSubtreeRootIdsFromGrantScope(fixture.grant.scope),
+      },
+    })).rejects.toMatchObject({
+      status: 409,
+      message: "Manager report activation only permits a backlog-to-todo status update",
+    });
+    await expect(readManagerActivationSnapshot(fixture.issueId)).resolves.toEqual(before);
   });
 
   it("resolves only structured same-company agent mentions", async () => {

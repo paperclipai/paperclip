@@ -2704,6 +2704,10 @@ export function agentRoutes(
         res.status(403).json({ error: "Forbidden" });
         return;
       }
+      if (req.body.canManageReports !== undefined) {
+        res.status(403).json({ error: "Only board users can manage report issue authority" });
+        return;
+      }
       if (actorAgent.role !== "ceo") {
         res.status(403).json({ error: "Only CEO can manage permissions" });
         return;
@@ -2712,7 +2716,8 @@ export function agentRoutes(
       await assertBoardCanManageAgentsForCompany(req, existing.companyId);
     }
 
-    const agent = await svc.updatePermissions(id, req.body);
+    const { canManageReports, ...agentPermissions } = req.body;
+    const agent = await svc.updatePermissions(id, agentPermissions);
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
       return;
@@ -2729,6 +2734,31 @@ export function agentRoutes(
       effectiveCanAssignTasks,
       req.actor.type === "board" ? (req.actor.userId ?? null) : null,
     );
+    if (canManageReports === false) {
+      await access.setPrincipalPermission(
+        agent.companyId,
+        "agent",
+        agent.id,
+        "issues:manage_reports",
+        false,
+        req.actor.type === "board" ? (req.actor.userId ?? null) : null,
+      );
+    } else if (canManageReports === true) {
+      const existingReportGrant = (await access.listPrincipalGrants(agent.companyId, "agent", agent.id))
+        .some((grant) => grant.permissionKey === "issues:manage_reports");
+      if (!existingReportGrant) {
+        await access.setPrincipalPermission(
+          agent.companyId,
+          "agent",
+          agent.id,
+          "issues:manage_reports",
+          true,
+          req.actor.type === "board" ? (req.actor.userId ?? null) : null,
+        );
+      }
+    }
+
+    const agentDetail = await buildAgentDetail(agent);
 
     const actor = getActorInfo(req);
     await logActivity(db, {
@@ -2745,11 +2775,14 @@ export function agentRoutes(
         canCreateAgents: agent.permissions?.canCreateAgents ?? false,
         canCreateSkills: agent.permissions?.canCreateSkills ?? true,
         canAssignTasks: effectiveCanAssignTasks,
+        canManageReports: agentDetail.access.grants.some(
+          (grant) => grant.permissionKey === "issues:manage_reports",
+        ),
         trustPreset: agent.permissions?.trustPreset ?? "standard",
       },
     });
 
-    res.json(await buildAgentDetail(agent));
+    res.json(agentDetail);
   });
 
   router.patch("/agents/:id/instructions-path", validate(updateAgentInstructionsPathSchema), async (req, res) => {

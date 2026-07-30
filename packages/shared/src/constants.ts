@@ -934,6 +934,7 @@ export const PERMISSION_KEYS = [
   "tools:use",
   "tools:manage_runtime",
   "inbox:manage",
+  "issues:manage_reports",
   "users:invite",
   "users:manage_permissions",
   "tasks:assign",
@@ -943,6 +944,13 @@ export const PERMISSION_KEYS = [
   "joins:approve",
 ] as const;
 export type PermissionKey = (typeof PERMISSION_KEYS)[number];
+
+// Agent-controlled provisioning paths and agent-safe imports must not issue
+// these permissions. Authenticated board administration and board-full imports
+// may still issue or restore them.
+export const BOARD_ONLY_AGENT_PERMISSION_KEYS = [
+  "issues:manage_reports",
+] as const satisfies readonly PermissionKey[];
 
 export const TOOL_APPLICATION_TYPES = ["mcp_http", "mcp_stdio", "paperclip_plugin", "a2a"] as const;
 export type ToolApplicationType = (typeof TOOL_APPLICATION_TYPES)[number];

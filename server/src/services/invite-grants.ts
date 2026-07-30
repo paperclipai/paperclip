@@ -1,4 +1,7 @@
-import { PERMISSION_KEYS } from "@paperclipai/shared";
+import {
+  BOARD_ONLY_AGENT_PERMISSION_KEYS,
+  PERMISSION_KEYS,
+} from "@paperclipai/shared";
 import type { HumanCompanyMembershipRole } from "@paperclipai/shared";
 import { grantsForHumanRole } from "./company-member-roles.js";
 
@@ -37,13 +40,35 @@ export function grantsFromDefaults(
   return result;
 }
 
+const BOARD_ONLY_AGENT_PERMISSION_KEY_SET = new Set<string>(
+  BOARD_ONLY_AGENT_PERMISSION_KEYS,
+);
+
+export function boardOnlyAgentInviteGrantKeysFromDefaults(
+  defaultsPayload: Record<string, unknown> | null | undefined,
+): Array<(typeof BOARD_ONLY_AGENT_PERMISSION_KEYS)[number]> {
+  return Array.from(new Set(
+    grantsFromDefaults(defaultsPayload, "agent")
+      .map((grant) => grant.permissionKey)
+      .filter(
+        (permissionKey): permissionKey is (typeof BOARD_ONLY_AGENT_PERMISSION_KEYS)[number] =>
+          BOARD_ONLY_AGENT_PERMISSION_KEY_SET.has(permissionKey),
+      ),
+  ));
+}
+
 export function agentJoinGrantsFromDefaults(
   defaultsPayload: Record<string, unknown> | null | undefined
 ): Array<{
   permissionKey: (typeof PERMISSION_KEYS)[number];
   scope: Record<string, unknown> | null;
 }> {
-  const grants = grantsFromDefaults(defaultsPayload, "agent");
+  // Existing invites may predate a permission becoming board-only. Keep the
+  // approval path fail-safe by filtering it even though new invites are
+  // rejected before persistence by the route.
+  const grants = grantsFromDefaults(defaultsPayload, "agent").filter(
+    (grant) => !BOARD_ONLY_AGENT_PERMISSION_KEY_SET.has(grant.permissionKey),
+  );
   if (grants.some((grant) => grant.permissionKey === "tasks:assign")) {
     return grants;
   }

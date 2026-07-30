@@ -111,14 +111,14 @@ async function grantAgentPermission(
     status: "active",
     membershipRole: "member",
   });
-  await db.insert(principalPermissionGrants).values({
+  return db.insert(principalPermissionGrants).values({
     companyId,
     principalType: "agent",
     principalId: agentId,
     permissionKey,
     scope,
     grantedByUserId: null,
-  });
+  }).returning().then((rows) => rows[0]!);
 }
 
 async function createUser(
@@ -1131,6 +1131,345 @@ describeEmbeddedPostgres("authorization service", () => {
     })).resolves.toMatchObject({
       allowed: false,
       reason: "deny_unsupported_action",
+    });
+  });
+
+  it.each(["manager", "ceo"])("denies %s report activation without an explicit grant", async (role) => {
+    const company = await createCompany(db, "ManagerReportActivationNoGrant");
+    const managerAgent = await createAgent(db, company.id, { role });
+    const reportAgent = await createAgent(db, company.id, {
+      role: "engineer",
+      reportsTo: managerAgent.id,
+    });
+    const issue = await createIssue(db, company.id, {
+      title: "Report backlog issue without grant",
+      assigneeAgentId: reportAgent.id,
+    });
+    await db.insert(companyMemberships).values({
+      companyId: company.id,
+      principalType: "agent",
+      principalId: managerAgent.id,
+      status: "active",
+      membershipRole: "member",
+    });
+
+    await expect(authorizationService(db).decide({
+      actor: {
+        type: "agent",
+        agentId: managerAgent.id,
+        companyId: company.id,
+        source: "agent_key",
+      },
+      action: "issue:mutate",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        issueId: issue.id,
+        assigneeAgentId: reportAgent.id,
+      },
+      scope: {
+        managerReportActivation: true,
+        assigneeAgentId: reportAgent.id,
+      },
+    })).resolves.toMatchObject({
+      allowed: false,
+      reason: "deny_missing_grant",
+    });
+  });
+
+  it("allows explicitly granted activation for direct and transitive reports", async () => {
+    const company = await createCompany(db, "ManagerReportActivationSubtree");
+    const managerAgent = await createAgent(db, company.id, { role: "manager" });
+    const directReportAgent = await createAgent(db, company.id, {
+      role: "manager",
+      reportsTo: managerAgent.id,
+    });
+    const transitiveReportAgent = await createAgent(db, company.id, {
+      role: "engineer",
+      reportsTo: directReportAgent.id,
+    });
+    const directIssue = await createIssue(db, company.id, {
+      title: "Direct report backlog issue",
+      assigneeAgentId: directReportAgent.id,
+    });
+    const transitiveIssue = await createIssue(db, company.id, {
+      title: "Transitive report backlog issue",
+      assigneeAgentId: transitiveReportAgent.id,
+    });
+    const grant = await grantAgentPermission(db, company.id, managerAgent.id, "issues:manage_reports");
+    const authorization = authorizationService(db);
+    const actor = {
+      type: "agent" as const,
+      agentId: managerAgent.id,
+      companyId: company.id,
+      source: "agent_key" as const,
+    };
+
+    for (const issue of [directIssue, transitiveIssue]) {
+      await expect(authorization.decide({
+        actor,
+        action: "issue:mutate",
+        resource: {
+          type: "issue",
+          companyId: company.id,
+          issueId: issue.id,
+          assigneeAgentId: issue.assigneeAgentId,
+        },
+        scope: {
+          managerReportActivation: true,
+          assigneeAgentId: issue.assigneeAgentId,
+        },
+      })).resolves.toMatchObject({
+        allowed: true,
+        reason: "allow_explicit_grant",
+        grant: {
+          id: grant.id,
+          principalType: "agent",
+          principalId: managerAgent.id,
+          permissionKey: "issues:manage_reports",
+        },
+      });
+    }
+  });
+
+  it("enforces project and subtree constraints on report activation grants", async () => {
+    const company = await createCompany(db, "ManagerReportActivationScopedGrant");
+    const managerAgent = await createAgent(db, company.id, { role: "manager" });
+    const scopedBranchAgent = await createAgent(db, company.id, {
+      role: "manager",
+      reportsTo: managerAgent.id,
+    });
+    const scopedReportAgent = await createAgent(db, company.id, {
+      role: "engineer",
+      reportsTo: scopedBranchAgent.id,
+    });
+    const siblingReportAgent = await createAgent(db, company.id, {
+      role: "engineer",
+      reportsTo: managerAgent.id,
+    });
+    const allowedProject = await createProject(db, company.id, "ManagerActivationAllowed");
+    const deniedProject = await createProject(db, company.id, "ManagerActivationDenied");
+    const allowedIssue = await createIssue(db, company.id, {
+      title: "Scoped report issue",
+      projectId: allowedProject.id,
+      assigneeAgentId: scopedReportAgent.id,
+    });
+    const wrongProjectIssue = await createIssue(db, company.id, {
+      title: "Wrong project report issue",
+      projectId: deniedProject.id,
+      assigneeAgentId: scopedReportAgent.id,
+    });
+    const wrongSubtreeIssue = await createIssue(db, company.id, {
+      title: "Wrong subtree report issue",
+      projectId: allowedProject.id,
+      assigneeAgentId: siblingReportAgent.id,
+    });
+    const grant = await grantAgentPermission(
+      db,
+      company.id,
+      managerAgent.id,
+      "issues:manage_reports",
+      { projectId: allowedProject.id, subtreeRootAgentId: scopedBranchAgent.id },
+    );
+    const authorization = authorizationService(db);
+    const actor = {
+      type: "agent" as const,
+      agentId: managerAgent.id,
+      companyId: company.id,
+      source: "agent_key" as const,
+    };
+    const decide = (issue: typeof allowedIssue) => authorization.decide({
+      actor,
+      action: "issue:mutate",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        issueId: issue.id,
+        projectId: issue.projectId,
+        assigneeAgentId: issue.assigneeAgentId,
+      },
+      scope: {
+        managerReportActivation: true,
+        issueId: issue.id,
+        projectId: issue.projectId,
+        assigneeAgentId: issue.assigneeAgentId,
+      },
+    });
+
+    await expect(decide(allowedIssue)).resolves.toMatchObject({
+      allowed: true,
+      reason: "allow_explicit_grant",
+      grant: {
+        id: grant.id,
+        scope: {
+          projectId: allowedProject.id,
+          subtreeRootAgentId: scopedBranchAgent.id,
+        },
+      },
+    });
+    await expect(decide(wrongProjectIssue)).resolves.toMatchObject({
+      allowed: false,
+      reason: "deny_scope",
+    });
+    await expect(decide(wrongSubtreeIssue)).resolves.toMatchObject({
+      allowed: false,
+      reason: "deny_scope",
+    });
+  });
+
+  it("fails closed for malformed or unsupported report activation grant scopes", async () => {
+    const scopeFactories: Array<{
+      label: string;
+      build: (projectId: string, reportAgentId: string) => Record<string, unknown>;
+    }> = [
+      { label: "empty", build: () => ({}) },
+      { label: "unknown-only", build: (projectId) => ({ project: projectId }) },
+      { label: "malformed recognized value", build: () => ({ projectId: 42 }) },
+      { label: "partially malformed recognized list", build: (projectId) => ({ projectIds: [projectId, 42] }) },
+      { label: "empty allow target", build: () => ({ allow: ["project:"] }) },
+      {
+        label: "recognized constraint plus unknown constraint",
+        build: (projectId, reportAgentId) => ({
+          projectId,
+          intendedSubtreeRootAgentId: reportAgentId,
+        }),
+      },
+    ];
+
+    for (const scopeFactory of scopeFactories) {
+      const company = await createCompany(db, `ManagerReportMalformedScope-${scopeFactory.label}`);
+      const managerAgent = await createAgent(db, company.id, { role: "manager" });
+      const reportAgent = await createAgent(db, company.id, {
+        role: "engineer",
+        reportsTo: managerAgent.id,
+      });
+      const project = await createProject(db, company.id, scopeFactory.label);
+      const issue = await createIssue(db, company.id, {
+        projectId: project.id,
+        assigneeAgentId: reportAgent.id,
+      });
+      await grantAgentPermission(
+        db,
+        company.id,
+        managerAgent.id,
+        "issues:manage_reports",
+        scopeFactory.build(project.id, reportAgent.id),
+      );
+
+      await expect(authorizationService(db).decide({
+        actor: {
+          type: "agent",
+          agentId: managerAgent.id,
+          companyId: company.id,
+          source: "agent_key",
+        },
+        action: "issue:mutate",
+        resource: {
+          type: "issue",
+          companyId: company.id,
+          issueId: issue.id,
+          projectId: project.id,
+          assigneeAgentId: reportAgent.id,
+        },
+        scope: {
+          managerReportActivation: true,
+          issueId: issue.id,
+          projectId: project.id,
+          assigneeAgentId: reportAgent.id,
+        },
+      })).resolves.toMatchObject({
+        allowed: false,
+        reason: "deny_scope",
+        explanation: "Permission issues:manage_reports has an unsupported or malformed scope.",
+      });
+    }
+  });
+
+  it("keeps manager report activation outside the reporting subtree denied", async () => {
+    const company = await createCompany(db, "ManagerReportActivationOutsideSubtree");
+    const rootAgent = await createAgent(db, company.id, { role: "ceo" });
+    const managerAgent = await createAgent(db, company.id, {
+      role: "manager",
+      reportsTo: rootAgent.id,
+    });
+    const peerAgent = await createAgent(db, company.id, {
+      role: "manager",
+      reportsTo: rootAgent.id,
+    });
+    const unrelatedAgent = await createAgent(db, company.id, { role: "engineer" });
+    const peerIssue = await createIssue(db, company.id, {
+      title: "Peer backlog issue",
+      assigneeAgentId: peerAgent.id,
+    });
+    const unrelatedIssue = await createIssue(db, company.id, {
+      title: "Unrelated backlog issue",
+      assigneeAgentId: unrelatedAgent.id,
+    });
+    await grantAgentPermission(db, company.id, managerAgent.id, "issues:manage_reports");
+    const authorization = authorizationService(db);
+    const actor = {
+      type: "agent" as const,
+      agentId: managerAgent.id,
+      companyId: company.id,
+      source: "agent_key" as const,
+    };
+
+    for (const issue of [peerIssue, unrelatedIssue]) {
+      await expect(authorization.decide({
+        actor,
+        action: "issue:mutate",
+        resource: {
+          type: "issue",
+          companyId: company.id,
+          issueId: issue.id,
+          assigneeAgentId: issue.assigneeAgentId,
+        },
+        scope: {
+          managerReportActivation: true,
+          assigneeAgentId: issue.assigneeAgentId,
+        },
+      })).resolves.toMatchObject({
+        allowed: false,
+        reason: "deny_scope",
+        grant: {
+          principalType: "agent",
+          principalId: managerAgent.id,
+          permissionKey: "issues:manage_reports",
+        },
+      });
+    }
+  });
+
+  it("does not turn the report activation grant into general issue mutation authority", async () => {
+    const company = await createCompany(db, "ManagerReportActivationMutationBoundary");
+    const managerAgent = await createAgent(db, company.id, { role: "manager" });
+    const reportAgent = await createAgent(db, company.id, {
+      role: "engineer",
+      reportsTo: managerAgent.id,
+    });
+    const issue = await createIssue(db, company.id, {
+      title: "Report issue content remains protected",
+      assigneeAgentId: reportAgent.id,
+    });
+    await grantAgentPermission(db, company.id, managerAgent.id, "issues:manage_reports");
+
+    await expect(authorizationService(db).decide({
+      actor: {
+        type: "agent",
+        agentId: managerAgent.id,
+        companyId: company.id,
+        source: "agent_key",
+      },
+      action: "issue:mutate",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        issueId: issue.id,
+        assigneeAgentId: reportAgent.id,
+      },
+    })).resolves.toMatchObject({
+      allowed: false,
+      reason: "deny_missing_grant",
     });
   });
 

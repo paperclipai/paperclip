@@ -27,6 +27,7 @@ import {
   resolveCoreTrustPreset,
   type TrustPresetResolution,
 } from "./trust-preset-resolver.js";
+import { managerReportGrantScopeIsWellFormed } from "./manager-report-scope.js";
 import { logger } from "../middleware/logger.js";
 
 export type AuthorizationActor =
@@ -122,6 +123,7 @@ export type AuthorizationDecision = {
     | "deny_scope"
     | "deny_unsupported_action";
   grant?: {
+    id?: string;
     principalType: PrincipalType;
     principalId: string;
     permissionKey: PermissionKey;
@@ -401,19 +403,7 @@ async function scopeAllows(
     if (!scopeIncludesId(targetUserIds, requestedUserId)) return false;
   }
 
-  const subtreeRootAgentIds = [
-    ...scopeValuesForKeys(grantScope, [
-      "managerAgentId",
-      "managerAgentIds",
-      "managedSubtreeAgentId",
-      "managedSubtreeAgentIds",
-      "subtreeAgentId",
-      "subtreeAgentIds",
-      "subtreeRootAgentId",
-      "subtreeRootAgentIds",
-    ]),
-    ...prefixedScopeValues(grantScope, "subtree:"),
-  ];
+  const subtreeRootAgentIds = agentSubtreeRootIdsFromGrantScope(grantScope);
   if (subtreeRootAgentIds.length > 0) {
     constrained = true;
     if (!targetAssigneeAgentId) return false;
@@ -431,6 +421,25 @@ async function scopeAllows(
   // Unknown metadata keys do not constrain the grant. Recognized constraints
   // return false above when they fail to match the requested assignment scope.
   return !constrained ? true : constrained;
+}
+
+export function agentSubtreeRootIdsFromGrantScope(
+  grantScope: Record<string, unknown> | null | undefined,
+) {
+  if (!grantScope) return [];
+  return [
+    ...scopeValuesForKeys(grantScope, [
+      "managerAgentId",
+      "managerAgentIds",
+      "managedSubtreeAgentId",
+      "managedSubtreeAgentIds",
+      "subtreeAgentId",
+      "subtreeAgentIds",
+      "subtreeRootAgentId",
+      "subtreeRootAgentIds",
+    ]),
+    ...prefixedScopeValues(grantScope, "subtree:"),
+  ];
 }
 
 function allow(input: Omit<AuthorizationDecision, "allowed">): AuthorizationDecision {
@@ -679,6 +688,24 @@ export function authorizationService(db: Db) {
     }
 
     if (
+      input.permissionKey === "issues:manage_reports" &&
+      !managerReportGrantScopeIsWellFormed(grant.scope)
+    ) {
+      return deny({
+        action: input.action,
+        reason: "deny_scope",
+        explanation: "Permission issues:manage_reports has an unsupported or malformed scope.",
+        grant: {
+          id: grant.id,
+          principalType: input.principalType,
+          principalId: input.principalId,
+          permissionKey: input.permissionKey,
+          scope: grant.scope ?? null,
+        },
+      });
+    }
+
+    if (
       !(await scopeAllows(db, input.companyId, grant.scope, input.scope, {
         requireStructuredScope: input.permissionKey === "tasks:assign_scope",
       }))
@@ -688,6 +715,7 @@ export function authorizationService(db: Db) {
         reason: "deny_scope",
         explanation: `Permission ${input.permissionKey} does not cover the requested scope.`,
         grant: {
+          id: grant.id,
           principalType: input.principalType,
           principalId: input.principalId,
           permissionKey: input.permissionKey,
@@ -701,6 +729,7 @@ export function authorizationService(db: Db) {
       reason: "allow_explicit_grant",
       explanation: `Allowed by explicit grant ${input.permissionKey}.`,
       grant: {
+        id: grant.id,
         principalType: input.principalType,
         principalId: input.principalId,
         permissionKey: input.permissionKey,
@@ -1955,6 +1984,36 @@ export function authorizationService(db: Db) {
         reason: "allow_simple_company_member",
         explanation: "Allowed by simple mode company-wide task assignment default.",
       });
+    }
+
+    if (
+      input.action === "issue:mutate" &&
+      scopeBoolean(input.scope, "managerReportActivation")
+    ) {
+      const resource = input.resource.type === "issue" ? input.resource : null;
+      const targetAssigneeAgentId = resource?.assigneeAgentId ?? null;
+      const grantDecision = await decidePrincipalGrant({
+        companyId,
+        principalType: "agent",
+        principalId: actorAgentId,
+        action: input.action,
+        permissionKey: "issues:manage_reports",
+        scope: input.scope,
+      });
+      if (!grantDecision.allowed) return grantDecision;
+      if (
+        !targetAssigneeAgentId ||
+        targetAssigneeAgentId === actorAgentId ||
+        !(await isManagerOf(companyId, actorAgentId, targetAssigneeAgentId))
+      ) {
+        return deny({
+          action: input.action,
+          reason: "deny_scope",
+          explanation: "Permission issues:manage_reports only covers agents in the actor's reporting subtree.",
+          grant: grantDecision.grant,
+        });
+      }
+      return grantDecision;
     }
 
     if (input.action === "issue:comment" || input.action === "issue:mutate") {

@@ -167,7 +167,10 @@ import {
   ISSUE_WAKE_DIAGNOSTICS_MAX_WAKE_REQUESTS,
   readAcceptedPlanConfirmationTarget,
 } from "../services/issues.js";
-import { authorizationDeniedDetails } from "../services/authorization.js";
+import {
+  agentSubtreeRootIdsFromGrantScope,
+  authorizationDeniedDetails,
+} from "../services/authorization.js";
 import { environmentService } from "../services/environments.js";
 import { environmentRuntimeService } from "../services/environment-runtime.js";
 import { redactSensitiveText } from "../redaction.js";
@@ -200,6 +203,7 @@ import { externalObjectService } from "../services/external-objects.js";
 import { deliverAgentUnblockNotification } from "../services/routable-blocked.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
+const MANAGER_REPORT_ACTIVATION_PERMISSION = "issues:manage_reports" as const;
 const updateIssueRouteSchema = updateIssueSchema.extend({
   interrupt: z.boolean().optional(),
 });
@@ -3647,6 +3651,114 @@ export function issueRoutes(
       });
     }
     return true;
+  }
+
+  function isManagerReportActivationPatch(
+    issue: { status: string },
+    patch: Record<string, unknown>,
+  ) {
+    const requestedKeys = Object.keys(patch).filter((key) => patch[key] !== undefined);
+    return (
+      issue.status === "backlog" &&
+      patch.status === "todo" &&
+      requestedKeys.length === 1 &&
+      requestedKeys[0] === "status"
+    );
+  }
+
+  type IssuePatchMutationAuthority =
+    | { allowed: true; kind: "standard" }
+    | {
+        allowed: true;
+        kind: "manager_report_activation";
+        grant: {
+          id: string;
+          scope: Record<string, unknown> | null;
+        };
+      }
+    | { allowed: false; kind: "denied" };
+
+  async function assertAgentIssuePatchMutationAllowed(
+    req: Request,
+    res: Response,
+    issue: {
+      id: string;
+      companyId: string;
+      projectId: string | null;
+      parentId: string | null;
+      status: string;
+      assigneeAgentId: string | null;
+      assigneeUserId: string | null;
+    },
+    patch: Record<string, unknown>,
+  ): Promise<IssuePatchMutationAuthority> {
+    const actorAgentId = req.actor.type === "agent" ? req.actor.agentId : null;
+    if (
+      actorAgentId &&
+      issue.assigneeAgentId &&
+      issue.assigneeAgentId !== actorAgentId &&
+      isManagerReportActivationPatch(issue, patch)
+    ) {
+      const watchdogScope = await resolveTaskWatchdogMutationScope(db, req.actor);
+      if (watchdogScope.kind === "none") {
+        const decision = await access.decide({
+          actor: req.actor,
+          action: "issue:mutate",
+          resource: {
+            type: "issue",
+            companyId: issue.companyId,
+            issueId: issue.id,
+            projectId: issue.projectId,
+            parentIssueId: issue.parentId,
+            assigneeAgentId: issue.assigneeAgentId,
+            assigneeUserId: issue.assigneeUserId,
+            status: issue.status,
+          },
+          scope: {
+            managerReportActivation: true,
+            issueId: issue.id,
+            projectId: issue.projectId,
+            parentIssueId: issue.parentId,
+            assigneeAgentId: issue.assigneeAgentId,
+            assigneeUserId: issue.assigneeUserId,
+          },
+        });
+        if (
+          decision.allowed &&
+          decision.grant?.principalType === "agent" &&
+          decision.grant.principalId === actorAgentId &&
+          decision.grant.permissionKey === MANAGER_REPORT_ACTIVATION_PERMISSION &&
+          typeof decision.grant.id === "string"
+        ) {
+          return {
+            allowed: true,
+            kind: "manager_report_activation",
+            grant: {
+              id: decision.grant.id,
+              scope: decision.grant.scope,
+            },
+          };
+        }
+        res.status(403).json({
+          error: decision.allowed
+            ? `Missing permission: ${MANAGER_REPORT_ACTIVATION_PERMISSION}.`
+            : decision.explanation,
+          details: {
+            issueId: issue.id,
+            ...(decision.allowed
+              ? { reason: "deny_missing_grant" }
+              : authorizationDeniedDetails(decision)),
+            securityPrinciples: ["Least Privilege", "Complete Mediation", "Fail Securely"],
+          },
+        });
+        return { allowed: false, kind: "denied" };
+      }
+    }
+
+    const allowed = await assertAgentIssueMutationAllowed(req, res, issue);
+    return allowed
+      ? { allowed: true, kind: "standard" }
+      : { allowed: false, kind: "denied" };
   }
 
   async function assertFreshTaskWatchdogSourceMutation(
@@ -7704,7 +7816,13 @@ export function issueRoutes(
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
     if (!existing) return;
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
-    if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
+    const mutationAuthority = await assertAgentIssuePatchMutationAllowed(
+      req,
+      res,
+      existing,
+      req.body,
+    );
+    if (!mutationAuthority.allowed) return;
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, existing, req.body))) return;
 
     const actor = getActorInfo(req);
@@ -7950,6 +8068,20 @@ export function issueRoutes(
     }
     Object.assign(updateFields, transition.patch);
 
+    if (
+      mutationAuthority.kind === "manager_report_activation" &&
+      !isManagerReportActivationPatch(existing, updateFields)
+    ) {
+      res.status(409).json({
+        error: "Manager report activation requires an unchanged, plain backlog issue",
+        details: {
+          issueId: existing.id,
+          reason: "manager_report_activation_precondition_failed",
+        },
+      });
+      return;
+    }
+
     const nextStatus = updateFields.status ?? existing.status;
     if (updateFields.unblockDescriptor && nextStatus !== "blocked") {
       throw unprocessable("unblockDescriptor requires blocked status");
@@ -8088,6 +8220,20 @@ export function issueRoutes(
     const stopRelayResult: {
       value: Awaited<ReturnType<typeof svc.addStopRelayCommentIfNeeded>>;
     } = { value: null };
+    const managerReportActivation = mutationAuthority.kind === "manager_report_activation"
+      ? {
+          expectedCompanyId: existing.companyId,
+          expectedProjectId: existing.projectId,
+          expectedParentIssueId: existing.parentId,
+          expectedAssigneeAgentId: existing.assigneeAgentId!,
+          managerAgentId: actor.agentId!,
+          grantId: mutationAuthority.grant.id,
+          grantScope: mutationAuthority.grant.scope,
+          grantSubtreeRootAgentIds: agentSubtreeRootIdsFromGrantScope(
+            mutationAuthority.grant.scope,
+          ),
+        }
+      : undefined;
     let issue: Awaited<ReturnType<typeof svc.update>>;
     try {
       if (transition.decision && decisionId) {
@@ -8099,6 +8245,7 @@ export function issueRoutes(
               ...updateFields,
               actorAgentId: actor.agentId ?? null,
               actorUserId: actor.actorType === "user" ? actor.actorId : null,
+              ...(managerReportActivation ? { managerReportActivation } : {}),
             },
             tx,
           );
@@ -8129,6 +8276,7 @@ export function issueRoutes(
             ...updateFields,
             actorAgentId: actor.agentId ?? null,
             actorUserId: actor.actorType === "user" ? actor.actorId : null,
+            ...(managerReportActivation ? { managerReportActivation } : {}),
           }, tx);
           if (!updated) return null;
           stopRelayResult.value = await svc.addStopRelayCommentIfNeeded(updated, tx);
@@ -8139,6 +8287,7 @@ export function issueRoutes(
           ...updateFields,
           actorAgentId: actor.agentId ?? null,
           actorUserId: actor.actorType === "user" ? actor.actorId : null,
+          ...(managerReportActivation ? { managerReportActivation } : {}),
         });
       }
     } catch (err) {
@@ -8165,6 +8314,16 @@ export function issueRoutes(
       throw err;
     }
     if (!issue) {
+      if (mutationAuthority.kind === "manager_report_activation") {
+        res.status(409).json({
+          error: "Issue changed before manager report activation could be applied",
+          details: {
+            issueId: existing.id,
+            reason: "manager_report_activation_precondition_failed",
+          },
+        });
+        return;
+      }
       res.status(404).json({ error: "Issue not found" });
       return;
     }
@@ -8348,6 +8507,12 @@ export function issueRoutes(
         ...(interruptedRunId ? { interruptedRunId } : {}),
         ...(cancelledStatusRunId ? { cancelledStatusRunId } : {}),
         ...(workspaceChange ? { workspaceChange } : {}),
+        ...(mutationAuthority.kind === "manager_report_activation"
+          ? {
+              authorizationScope: "manager_report_activation",
+              permissionKey: MANAGER_REPORT_ACTIVATION_PERMISSION,
+            }
+          : {}),
         _previous: hasFieldChanges ? previous : undefined,
         ...summarizeIssueReferenceActivityDetails(
           updateReferenceDiff
