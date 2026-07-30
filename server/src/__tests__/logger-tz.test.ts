@@ -50,19 +50,30 @@ vi.mock("../home-paths.js", () => ({
 
 describe("logger translateTime respects TZ environment variable", () => {
   beforeEach(() => {
+    vi.resetModules();
+    vi.unstubAllEnvs();
     vi.clearAllMocks();
   });
 
   it("configures pino-pretty with SYS:HH:MM:ss so timestamps honour the TZ env var", async () => {
+    vi.stubEnv("NODE_ENV", "development");
     await import("../middleware/logger.js");
 
     expect(mockTransport).toHaveBeenCalledOnce();
-    const { targets } = mockTransport.mock.calls[0][0] as {
-      targets: Array<{ options: Record<string, unknown> }>;
+    const transport = mockTransport.mock.calls[0][0] as {
+      target: string;
+      options: Record<string, unknown>;
     };
-    for (const target of targets) {
-      expect(target.options.translateTime).toBe("SYS:HH:MM:ss");
-    }
+    expect(transport.target).toBe("pino-pretty");
+    expect(transport.options.translateTime).toBe("SYS:HH:MM:ss");
+  });
+
+  it("does not construct a pretty transport in production", async () => {
+    vi.stubEnv("NODE_ENV", "production");
+    await import("../middleware/logger.js");
+
+    expect(mockTransport).not.toHaveBeenCalled();
+    expect(mockPino).toHaveBeenCalledWith(expect.objectContaining({ level: "info" }));
   });
 
   it("SYS: prefix produces timezone-sensitive output: UTC epoch formats differently under UTC vs UTC+8", () => {

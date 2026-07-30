@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { and, eq } from "drizzle-orm";
 import {
   agents,
   authUsers,
@@ -601,6 +602,66 @@ describeEmbeddedPostgres("authorization service", () => {
     })).resolves.toMatchObject({
       allowed: true,
       reason: "allow_self",
+    });
+  });
+
+  it("rechecks responsible-user membership on a new request actor after revocation", async () => {
+    const company = await createCompany(db, "ResponsibleUserRevocation");
+    const actorAgent = await createAgent(db, company.id, { role: "engineer" });
+    const issue = await createIssue(db, company.id, {
+      title: "Assigned issue mutation after revocation",
+      assigneeAgentId: actorAgent.id,
+    });
+    const responsibleUserId = await createUser(db);
+    await db.insert(companyMemberships).values({
+      companyId: company.id,
+      principalType: "user",
+      principalId: responsibleUserId,
+      status: "active",
+      membershipRole: "operator",
+    });
+    const authz = authorizationService(db);
+    const resource = {
+      type: "issue" as const,
+      companyId: company.id,
+      issueId: issue.id,
+      assigneeAgentId: actorAgent.id,
+    };
+
+    await expect(authz.decide({
+      actor: {
+        type: "agent",
+        agentId: actorAgent.id,
+        companyId: company.id,
+        onBehalfOfUserId: responsibleUserId,
+        source: "agent_jwt",
+      },
+      action: "issue:mutate",
+      resource,
+    })).resolves.toMatchObject({ allowed: true });
+
+    await db
+      .update(companyMemberships)
+      .set({ status: "suspended" })
+      .where(and(
+        eq(companyMemberships.companyId, company.id),
+        eq(companyMemberships.principalType, "user"),
+        eq(companyMemberships.principalId, responsibleUserId),
+      ));
+
+    await expect(authz.decide({
+      actor: {
+        type: "agent",
+        agentId: actorAgent.id,
+        companyId: company.id,
+        onBehalfOfUserId: responsibleUserId,
+        source: "agent_jwt",
+      },
+      action: "issue:mutate",
+      resource,
+    })).resolves.toMatchObject({
+      allowed: false,
+      code: "RESPONSIBLE_USER_UNAVAILABLE",
     });
   });
 

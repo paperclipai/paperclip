@@ -1012,7 +1012,7 @@ export function issueThreadInteractionService(db: Db) {
   }
 
   async function getPendingInteractionForResolution(args: {
-    issue: { id: string; companyId: string };
+    issue: { id: string; companyId: string; status?: string };
     interactionId: string;
   }) {
     const current = await db
@@ -1025,10 +1025,19 @@ export function issueThreadInteractionService(db: Db) {
     if (current.companyId !== args.issue.companyId || current.issueId !== args.issue.id) {
       throw notFound("Interaction not found");
     }
+    if (args.issue.status && isTerminalIssueStatus(args.issue.status)) {
+      throw conflict("Interaction is no longer actionable because the issue is closed");
+    }
     if (current.status !== "pending") {
       throw conflict("Interaction has already been resolved");
     }
     return current;
+  }
+
+  function assertIssueOpenForInteractionResolution(issue: { id: string; companyId: string; status?: string }) {
+    if (issue.status && isTerminalIssueStatus(issue.status)) {
+      throw conflict("Interaction is no longer actionable because the issue is closed");
+    }
   }
 
   async function acceptRequestConfirmation(args: {
@@ -1188,13 +1197,29 @@ export function issueThreadInteractionService(db: Db) {
   return {
     getForIssue,
     listForIssue: async (issueId: string) => {
-      const rows = await db
-        .select()
-        .from(issueThreadInteractions)
-        .where(eq(issueThreadInteractions.issueId, issueId))
-        .orderBy(asc(issueThreadInteractions.createdAt), asc(issueThreadInteractions.id));
+      const [rows, issueStatus] = await Promise.all([
+        db
+          .select()
+          .from(issueThreadInteractions)
+          .where(eq(issueThreadInteractions.issueId, issueId))
+          .orderBy(asc(issueThreadInteractions.createdAt), asc(issueThreadInteractions.id)),
+        db
+          .select({ status: issues.status })
+          .from(issues)
+          .where(eq(issues.id, issueId))
+          .then((issueRows) => issueRows[0]?.status ?? null),
+      ]);
 
-      return rows.map((row) => hydrateInteraction(row));
+      return rows.map((row) => hydrateInteraction(
+        issueStatus && isTerminalIssueStatus(issueStatus) && row.status === "pending"
+          ? {
+              ...row,
+              status: "expired",
+              result: buildAdministrativeOutcomeResult(row, "issue_closed"),
+              resolvedAt: row.updatedAt,
+            }
+          : row,
+      ));
     },
 
     getById: async (interactionId: string) => {
@@ -1330,7 +1355,7 @@ export function issueThreadInteractionService(db: Db) {
     },
 
     acceptInteraction: async (
-      issue: { id: string; companyId: string; projectId: string | null; goalId: string | null },
+      issue: { id: string; companyId: string; projectId: string | null; goalId: string | null; status?: string },
       interactionId: string,
       input: AcceptIssueThreadInteraction,
       actor: InteractionActor,
@@ -1377,11 +1402,12 @@ export function issueThreadInteractionService(db: Db) {
     },
 
     acceptSuggestedTasks: async (
-      issue: { id: string; companyId: string; projectId: string | null; goalId: string | null },
+      issue: { id: string; companyId: string; projectId: string | null; goalId: string | null; status?: string },
       interactionId: string,
       input: AcceptIssueThreadInteraction,
       actor: InteractionActor,
     ) => {
+      assertIssueOpenForInteractionResolution(issue);
       const current = await db
         .select()
         .from(issueThreadInteractions)
@@ -1528,7 +1554,7 @@ export function issueThreadInteractionService(db: Db) {
     },
 
     rejectInteraction: async (
-      issue: { id: string; companyId: string },
+      issue: { id: string; companyId: string; status?: string },
       interactionId: string,
       input: RejectIssueThreadInteraction,
       actor: InteractionActor,
@@ -1552,11 +1578,12 @@ export function issueThreadInteractionService(db: Db) {
     },
 
     submitItemVerdicts: async (
-      issue: { id: string; companyId: string },
+      issue: { id: string; companyId: string; status?: string },
       interactionId: string,
       input: SubmitIssueThreadInteractionVerdicts,
       actor: InteractionActor,
     ): Promise<{ interaction: IssueThreadInteraction; newlyResolvedItemIds: string[] }> => {
+      assertIssueOpenForInteractionResolution(issue);
       const data = submitIssueThreadInteractionVerdictsSchema.parse(input);
       const submission = await db.transaction(async (tx) => {
         const current = await tx
@@ -1652,12 +1679,13 @@ export function issueThreadInteractionService(db: Db) {
     },
 
     rejectSuggestedTasks: async (
-      issue: { id: string; companyId: string },
+      issue: { id: string; companyId: string; status?: string },
       interactionId: string,
       input: RejectIssueThreadInteraction,
       actor: InteractionActor,
       current: IssueThreadInteractionRow,
     ) => {
+      assertIssueOpenForInteractionResolution(issue);
       if (current.companyId !== issue.companyId || current.issueId !== issue.id) {
         throw notFound("Interaction not found");
       }
@@ -1698,7 +1726,7 @@ export function issueThreadInteractionService(db: Db) {
     },
 
     expireRequestConfirmationsSupersededByComment: async (
-      issue: { id: string; companyId: string },
+      issue: { id: string; companyId: string; status?: string },
       comment: { id: string; createdAt: Date | string; authorUserId?: string | null; createdByRunId?: string | null },
       actor: InteractionActor,
     ) => {
@@ -2042,6 +2070,7 @@ export function issueThreadInteractionService(db: Db) {
       input: WithdrawIssueThreadInteraction,
       actor: InteractionActor,
     ) => {
+      assertIssueOpenForInteractionResolution(issue);
       const data = withdrawIssueThreadInteractionSchema.parse(input);
       const current = await db
         .select()
@@ -2108,11 +2137,12 @@ export function issueThreadInteractionService(db: Db) {
     },
 
     answerQuestions: async (
-      issue: { id: string; companyId: string },
+      issue: { id: string; companyId: string; status?: string },
       interactionId: string,
       input: RespondIssueThreadInteraction,
       actor: InteractionActor,
     ) => {
+      assertIssueOpenForInteractionResolution(issue);
       const current = await db
         .select()
         .from(issueThreadInteractions)
@@ -2167,11 +2197,12 @@ export function issueThreadInteractionService(db: Db) {
     },
 
     cancelQuestions: async (
-      issue: { id: string; companyId: string },
+      issue: { id: string; companyId: string; status?: string },
       interactionId: string,
       input: CancelIssueThreadInteraction,
       actor: InteractionActor,
     ) => {
+      assertIssueOpenForInteractionResolution(issue);
       const data = cancelIssueThreadInteractionSchema.parse(input);
       const current = await db
         .select()
