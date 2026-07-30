@@ -1137,6 +1137,70 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(comments[0]?.body).toContain("Recovery action:");
   });
 
+  // PLA-3727 / PLA-3680 gate 2. Recovery demotions used to write `blocked` with no blocker
+  // edge and no unblock descriptor. Nothing reaches that shape — the liveness classifier
+  // has no finding for it, and with no blocker edge `issue_blockers_resolved` can never
+  // fire — so a 25-minute dependency outage stranded 35 issues for a full day.
+  it("names an invokable owner on the unblock descriptor when recovery demotes a blocker-less issue", async () => {
+    const { coderId, managerId, sourceIssue } = await seedCompany();
+    const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
+
+    await recovery.escalateStrandedAssignedIssue({
+      issue: sourceIssue,
+      previousStatus: "in_progress",
+      latestRun: {
+        id: randomUUID(),
+        agentId: coderId,
+        status: "failed",
+        error: "adapter failed",
+        errorCode: "adapter_failed",
+        contextSnapshot: { retryReason: "issue_continuation_needed" },
+        livenessState: "needs_followup",
+      },
+    });
+
+    const [updated] = await db.select().from(issues).where(eq(issues.id, sourceIssue.id));
+    expect(updated?.status).toBe("blocked");
+    const descriptor = updated?.unblockDescriptor as
+      | { owner: "board" | { agentId: string } | { userId: string }; action: string }
+      | null;
+    expect(descriptor).toBeTruthy();
+    expect((descriptor?.action ?? "").trim().length).toBeGreaterThan(0);
+    // Recovery hands ownership up the manager ladder, so the descriptor names the manager
+    // it selected — not the stranded assignee, who has already failed to make progress.
+    expect(descriptor?.owner).toEqual({ agentId: managerId });
+  });
+
+  // A descriptor naming an agent who cannot be invoked is the same dead end wearing a
+  // label: the row reads as routed, but no wake can land on it. With no invokable
+  // candidate the descriptor must fall through to `board`, which is a real queue.
+  it("falls back to a board-owned unblock descriptor when no candidate owner is invokable", async () => {
+    const { companyId, coderId, sourceIssue } = await seedCompany();
+    await db.update(agents).set({ status: "paused" }).where(eq(agents.companyId, companyId));
+    const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
+
+    await recovery.escalateStrandedAssignedIssue({
+      issue: sourceIssue,
+      previousStatus: "in_progress",
+      latestRun: {
+        id: randomUUID(),
+        agentId: coderId,
+        status: "failed",
+        error: "adapter failed",
+        errorCode: "adapter_failed",
+        contextSnapshot: { retryReason: "issue_continuation_needed" },
+        livenessState: "needs_followup",
+      },
+    });
+
+    const [updated] = await db.select().from(issues).where(eq(issues.id, sourceIssue.id));
+    expect(updated?.status).toBe("blocked");
+    const descriptor = updated?.unblockDescriptor as
+      | { owner: "board" | { agentId: string } | { userId: string }; action: string }
+      | null;
+    expect(descriptor?.owner).toBe("board");
+  });
+
   it("does not create nested recovery artifacts when issue-backed fallback work itself fails", async () => {
     const { companyId, managerId, sourceIssueId, prefix } = await seedCompany();
     const recoveryIssueId = randomUUID();
