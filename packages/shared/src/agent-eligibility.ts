@@ -5,6 +5,7 @@ export type AgentEligibilityLifecycleReason =
   | "terminated"
   | "pending_approval"
   | "paused"
+  | "error"
   | "invalid_org_chain"
   | "unknown_status";
 
@@ -56,7 +57,7 @@ export interface AgentWorkEligibility {
 }
 
 const NON_ASSIGNABLE_AGENT_STATUSES = new Set<string>(["terminated", "pending_approval"]);
-const NON_INVOKABLE_AGENT_STATUSES = new Set<string>(["terminated", "pending_approval", "paused"]);
+const NON_INVOKABLE_AGENT_STATUSES = new Set<string>(["terminated", "pending_approval", "paused", "error"]);
 const ASSIGNABLE_AGENT_STATUSES = new Set<string>(["active", "paused", "idle", "running", "error"]);
 const INVOKABLE_AGENT_STATUSES = new Set<string>(["active", "idle", "running", "error"]);
 
@@ -216,7 +217,9 @@ export function getAgentWorkEligibility(input: {
         ? "pending_approval"
         : input.agent.status === "paused"
           ? "paused"
-          : "unknown_status"
+          : input.agent.status === "error"
+            ? "error"
+            : "unknown_status"
     : orgChainHealth.status === "invalid_org_chain"
       ? "invalid_org_chain"
       : "eligible";

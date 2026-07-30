@@ -41,7 +41,7 @@ describe("agent work eligibility", () => {
   it("blocks terminated and pending approval agents from assignment and invocation", () => {
     const manager = agent({ id: "manager-1", name: "CTO", status: "active", reportsTo: null });
 
-    for (const status of ["terminated", "pending_approval"]) {
+    for (const status of ["terminated", "pending_approval", "error"]) {
       const target = agent({ status });
       const eligibility = getAgentWorkEligibility({ agent: target, agents: [target, manager] });
 
