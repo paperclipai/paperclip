@@ -60,6 +60,28 @@ export interface CompanyPortabilityBlobManifestEntry {
   contentType: string;
 }
 
+export interface CompanyPortabilityEmbeddedAssetManifestEntry {
+  /**
+   * The asset id on the SOURCE board. Source ids are only meaningful as the
+   * rewrite key for the /api/assets/<assetId>/content references embedded in
+   * the bundle's markdown; the importer mints fresh asset ids and rewrites
+   * every reference to them.
+   */
+  assetId: string;
+  /** Content address of the image bytes in the bundle's blobs/ store. */
+  sha256: string;
+  contentType: string;
+  originalFilename: string | null;
+  /**
+   * Export categories whose files reference this asset ("agents",
+   * "projects", "skills", "tasks", "routines"), or "always" when an
+   * always-exported root file references it. Lets export selection follow
+   * the toggles of the referencing files. Absent entries are treated as
+   * always included.
+   */
+  ownedBy?: string[];
+}
+
 export interface CompanyPortabilityProjectManifestEntry {
   slug: string;
   name: string;
@@ -235,6 +257,7 @@ export interface CompanyPortabilityManifest {
   sidebar: CompanyPortabilitySidebarOrder | null;
   labels?: CompanyPortabilityLabelManifestEntry[];
   blobs?: CompanyPortabilityBlobManifestEntry[];
+  embeddedAssets?: CompanyPortabilityEmbeddedAssetManifestEntry[];
   agents: CompanyPortabilityAgentManifestEntry[];
   skills: CompanyPortabilitySkillManifestEntry[];
   projects: CompanyPortabilityProjectManifestEntry[];

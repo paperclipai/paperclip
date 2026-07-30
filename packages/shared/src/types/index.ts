@@ -816,6 +816,7 @@ export type {
   CompanyPortabilitySidebarOrder,
   CompanyPortabilityLabelManifestEntry,
   CompanyPortabilityBlobManifestEntry,
+  CompanyPortabilityEmbeddedAssetManifestEntry,
   CompanyPortabilityAgentManifestEntry,
   CompanyPortabilitySkillManifestEntry,
   CompanyPortabilityProjectManifestEntry,

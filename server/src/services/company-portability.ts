@@ -14,6 +14,7 @@ import {
 import type {
   CompanyPortabilityAgentManifestEntry,
   CompanyPortabilityBlobManifestEntry,
+  CompanyPortabilityEmbeddedAssetManifestEntry,
   CompanyPortabilityCollisionStrategy,
   CompanyPortabilityEnvInput,
   CompanyPortabilityExport,
@@ -955,6 +956,54 @@ function portableBlobPath(sha256: string) {
   return `blobs/${sha256}`;
 }
 
+// Markdown can embed company asset images by their serving URL. The uuid is
+// the asset row id; export ships the referenced bytes as blobs and import
+// rewrites each reference to the asset id it minted.
+const EMBEDDED_ASSET_URL_PATTERN = /\/api\/assets\/([0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})\/content/gi;
+
+function collectEmbeddedAssetIds(text: string): string[] {
+  const ids: string[] = [];
+  for (const match of text.matchAll(EMBEDDED_ASSET_URL_PATTERN)) {
+    ids.push(match[1]!.toLowerCase());
+  }
+  return ids;
+}
+
+export function rewriteEmbeddedAssetUrls(text: string, assetIdMap: Map<string, string>): string {
+  if (assetIdMap.size === 0) return text;
+  return text.replace(EMBEDDED_ASSET_URL_PATTERN, (match, assetId: string) => {
+    const mapped = assetIdMap.get(assetId.toLowerCase());
+    return mapped ? `/api/assets/${mapped}/content` : match;
+  });
+}
+
+function normalizePortableEmbeddedAssets(value: unknown): CompanyPortabilityEmbeddedAssetManifestEntry[] {
+  if (!Array.isArray(value)) return [];
+  const entries: CompanyPortabilityEmbeddedAssetManifestEntry[] = [];
+  const seen = new Set<string>();
+  for (const entry of value) {
+    if (!isPlainRecord(entry)) continue;
+    const assetId = asString(entry.assetId)?.toLowerCase() ?? null;
+    const sha256 = asString(entry.sha256)?.toLowerCase() ?? null;
+    if (!assetId || !sha256 || seen.has(assetId)) continue;
+    seen.add(assetId);
+    const ownedBy = Array.isArray(entry.ownedBy)
+      ? Array.from(new Set(entry.ownedBy.flatMap((owner) => {
+          const normalized = asString(owner);
+          return normalized ? [normalized] : [];
+        })))
+      : [];
+    entries.push({
+      assetId,
+      sha256,
+      contentType: asString(entry.contentType) ?? PORTABLE_BLOB_CONTENT_TYPE,
+      originalFilename: asString(entry.originalFilename),
+      ownedBy: ownedBy.length > 0 ? ownedBy : undefined,
+    });
+  }
+  return entries;
+}
+
 function normalizePortableBlobIndex(value: unknown): CompanyPortabilityBlobManifestEntry[] {
   if (!Array.isArray(value)) return [];
   const blobs: CompanyPortabilityBlobManifestEntry[] = [];
@@ -1886,7 +1935,12 @@ function sortAgentsBySidebarOrder<T extends { id: string; name: string; reportsT
   return sorted;
 }
 
-function filterPortableExtensionYaml(yaml: string, selectedFiles: Set<string>) {
+function filterPortableExtensionYaml(
+  yaml: string,
+  selectedFiles: Set<string>,
+  remainingFiles: Record<string, CompanyPortabilityFileEntry>,
+  extensionPath: string,
+) {
   const selected = collectSelectedExportSlugs(selectedFiles);
   const parsed = parseYamlFile(yaml);
   for (const section of ["agents", "projects", "tasks", "routines"] as const) {
@@ -1933,8 +1987,44 @@ function filterPortableExtensionYaml(yaml: string, selectedFiles: Set<string>) {
     }
   }
 
+  // Embedded-asset entries stay only while some remaining text file (or a
+  // remaining task's comments, which live in this yaml) still references
+  // their assetId; blobs owned solely by pruned entries drop below.
+  const keptEmbeddedAssetShas = new Set<string>();
+  if (Array.isArray(parsed.embeddedAssets)) {
+    const referencedAssetIds = new Set<string>();
+    for (const [filePath, content] of Object.entries(remainingFiles)) {
+      if (filePath === extensionPath || typeof content !== "string") continue;
+      for (const assetId of collectEmbeddedAssetIds(content)) {
+        referencedAssetIds.add(assetId);
+      }
+    }
+    const tasksSection = parsed.tasks;
+    if (isPlainRecord(tasksSection)) {
+      for (const entry of Object.values(tasksSection)) {
+        if (!isPlainRecord(entry)) continue;
+        for (const assetId of collectEmbeddedAssetIds(JSON.stringify(entry.comments ?? []))) {
+          referencedAssetIds.add(assetId);
+        }
+      }
+    }
+    const filteredEmbeddedAssets = parsed.embeddedAssets.filter((entry) => {
+      if (!isPlainRecord(entry)) return false;
+      const assetId = asString(entry.assetId)?.toLowerCase();
+      if (!assetId || !referencedAssetIds.has(assetId)) return false;
+      const sha256 = asString(entry.sha256)?.toLowerCase();
+      if (sha256) keptEmbeddedAssetShas.add(sha256);
+      return true;
+    });
+    if (filteredEmbeddedAssets.length > 0) {
+      parsed.embeddedAssets = filteredEmbeddedAssets;
+    } else {
+      delete parsed.embeddedAssets;
+    }
+  }
+
   if (Array.isArray(parsed.blobs)) {
-    const referencedBlobShas = new Set<string>();
+    const referencedBlobShas = new Set<string>(keptEmbeddedAssetShas);
     const tasksSection = parsed.tasks;
     if (isPlainRecord(tasksSection)) {
       for (const entry of Object.values(tasksSection)) {
@@ -1994,7 +2084,12 @@ function filterExportFiles(
 
   const extensionEntry = filtered[paperclipExtensionPath];
   if (selectedFiles.has(paperclipExtensionPath) && typeof extensionEntry === "string") {
-    filtered[paperclipExtensionPath] = filterPortableExtensionYaml(extensionEntry, selectedFiles);
+    filtered[paperclipExtensionPath] = filterPortableExtensionYaml(
+      extensionEntry,
+      selectedFiles,
+      filtered,
+      paperclipExtensionPath,
+    );
   }
 
   return filtered;
@@ -2862,6 +2957,7 @@ function buildManifestFromPackageFiles(
   const paperclipSidebar = normalizePortableSidebarOrder(paperclipExtension.sidebar);
   const paperclipLabels = normalizePortableLabelDefinitions(paperclipExtension.labels);
   const paperclipBlobs = normalizePortableBlobIndex(paperclipExtension.blobs);
+  const paperclipEmbeddedAssets = normalizePortableEmbeddedAssets(paperclipExtension.embeddedAssets);
   const paperclipAgents = isPlainRecord(paperclipExtension.agents) ? paperclipExtension.agents : {};
   const paperclipProjects = isPlainRecord(paperclipExtension.projects) ? paperclipExtension.projects : {};
   const paperclipTasks = isPlainRecord(paperclipExtension.tasks) ? paperclipExtension.tasks : {};
@@ -2946,6 +3042,7 @@ function buildManifestFromPackageFiles(
     sidebar: paperclipSidebar,
     labels: paperclipLabels,
     blobs: paperclipBlobs,
+    embeddedAssets: paperclipEmbeddedAssets,
     agents: [],
     skills: [],
     projects: [],
@@ -3214,7 +3311,7 @@ function buildManifestFromPackageFiles(
   }
 
   if (bundleSchemaVersion < BUNDLE_SCHEMA_VERSION && manifest.issues.length > 0) {
-    warnings.push(`This package declares schemaVersion ${bundleSchemaVersion} and predates label, blocker, document, work product, monitor, and attachment transfer; that task data imports only if the bundle carries it.`);
+    warnings.push(`This package declares schemaVersion ${bundleSchemaVersion} and predates label, blocker, document, work product, monitor, attachment, and embedded image transfer; that task data imports only if the bundle carries it.`);
   }
 
   manifest.envInputs = dedupeEnvInputs(manifest.envInputs);
@@ -4278,6 +4375,89 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       paperclipRoutinesOut[taskSlug] = isPlainRecord(extension) ? extension : {};
     }
 
+    // Exported markdown can embed company asset images as
+    // /api/assets/<id>/content references (issue descriptions and documents,
+    // agent instructions, comment bodies). Ship the referenced bytes as
+    // content-addressed blobs plus an embeddedAssets index so imports can
+    // recreate the assets and rewrite every reference. Each entry records
+    // which export categories reference it, so selection can follow the
+    // toggles of the referencing files.
+    const embeddedAssetOwners = new Map<string, Set<string>>();
+    const routineTaskSlugs = new Set(taskSlugByRoutineId.values());
+    const categorizeEmbeddedAssetOwner = (filePath: string) => {
+      if (filePath.startsWith("agents/")) return "agents";
+      if (filePath.startsWith("projects/")) return "projects";
+      if (filePath.startsWith("skills/")) return "skills";
+      const taskMatch = filePath.match(/^tasks\/([^/]+)\//);
+      if (taskMatch) return routineTaskSlugs.has(taskMatch[1]!) ? "routines" : "tasks";
+      return "always";
+    };
+    const noteEmbeddedAssetReference = (assetId: string, owner: string) => {
+      const owners = embeddedAssetOwners.get(assetId) ?? new Set<string>();
+      owners.add(owner);
+      embeddedAssetOwners.set(assetId, owners);
+    };
+    for (const [filePath, content] of Object.entries(files)) {
+      if (typeof content !== "string") continue;
+      for (const assetId of collectEmbeddedAssetIds(content)) {
+        noteEmbeddedAssetReference(assetId, categorizeEmbeddedAssetOwner(filePath));
+      }
+    }
+    // Comment bodies travel in the extension yaml rather than TASK.md, so
+    // scan the assembled task extension entries for their references too.
+    for (const extension of Object.values(paperclipTasksOut)) {
+      for (const assetId of collectEmbeddedAssetIds(JSON.stringify(extension.comments ?? []))) {
+        noteEmbeddedAssetReference(assetId, "tasks");
+      }
+    }
+
+    const embeddedAssetIndex: CompanyPortabilityEmbeddedAssetManifestEntry[] = [];
+    let unownedEmbeddedAssetRefCount = 0;
+    const referencedEmbeddedAssetIds = Array.from(embeddedAssetOwners.keys())
+      .sort((left, right) => left.localeCompare(right));
+    if (referencedEmbeddedAssetIds.length > 0 && !storage) {
+      warnings.push(`Skipped ${referencedEmbeddedAssetIds.length} embedded image asset${referencedEmbeddedAssetIds.length === 1 ? "" : "s"} because storage is unavailable.`);
+    } else if (storage) {
+      for (const assetId of referencedEmbeddedAssetIds) {
+        const asset = await assetRecords.getById(assetId);
+        // Embedded references only pull bytes for assets owned by the
+        // exporting company: a crafted URL naming another company's asset id
+        // must not leak that asset's bytes into the bundle.
+        if (!asset || asset.companyId !== companyId) {
+          unownedEmbeddedAssetRefCount += 1;
+          continue;
+        }
+        let body: Buffer;
+        try {
+          const object = await storage.getObject(companyId, asset.objectKey);
+          body = await streamToBuffer(object.stream);
+        } catch (err) {
+          warnings.push(`Skipped embedded image asset ${asset.originalFilename ?? assetId} because its stored object could not be read: ${err instanceof Error ? err.message : String(err)}`);
+          continue;
+        }
+        // Blobs are addressed by the hash of the bytes actually read; a
+        // stale asset-row hash loses to the recomputed one.
+        const sha256 = sha256HexOfBytes(body);
+        if (!exportedBlobs.has(sha256)) {
+          files[portableBlobPath(sha256)] = bufferToPortableBinaryFile(body, PORTABLE_BLOB_CONTENT_TYPE);
+          exportedBlobs.set(sha256, { sha256, byteSize: body.length, contentType: PORTABLE_BLOB_CONTENT_TYPE });
+        }
+        const owners = embeddedAssetOwners.get(assetId) ?? new Set<string>();
+        embeddedAssetIndex.push({
+          assetId,
+          sha256,
+          contentType: asset.contentType ?? PORTABLE_BLOB_CONTENT_TYPE,
+          originalFilename: asset.originalFilename ?? null,
+          ownedBy: Array.from(owners).sort((left, right) => left.localeCompare(right)),
+        });
+      }
+    }
+    if (unownedEmbeddedAssetRefCount > 0) {
+      warnings.push(unownedEmbeddedAssetRefCount === 1
+        ? "1 embedded image reference points at an asset that does not belong to this company or no longer exists; its image was not exported."
+        : `${unownedEmbeddedAssetRefCount} embedded image references point at assets that do not belong to this company or no longer exist; their images were not exported.`);
+    }
+
     const paperclipExtensionPath = ".paperclip.yaml";
     const exportedBlobIndex = Array.from(exportedBlobs.values())
       .sort((left, right) => left.sha256.localeCompare(right.sha256));
@@ -4310,6 +4490,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         sidebar: stripEmptyValues(sidebarOrder),
         labels: exportedLabels.length > 0 ? exportedLabels : undefined,
         blobs: exportedBlobIndex.length > 0 ? exportedBlobIndex : undefined,
+        embeddedAssets: embeddedAssetIndex.length > 0 ? embeddedAssetIndex : undefined,
         agents: Object.keys(paperclipAgents).length > 0 ? paperclipAgents : undefined,
         projects: Object.keys(paperclipProjects).length > 0 ? paperclipProjects : undefined,
         tasks: Object.keys(paperclipTasks).length > 0 ? paperclipTasks : undefined,
@@ -4842,7 +5023,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       const declaredSha = filePath.slice("blobs/".length);
       const body = portableFileToBuffer(fileEntry, filePath);
       if (sha256HexOfBytes(body) !== declaredSha) {
-        throw unprocessable(`Attachment blob ${filePath} does not match its declared sha256; the package is corrupted or was tampered with.`);
+        throw unprocessable(`Bundle blob ${filePath} does not match its declared sha256; the package is corrupted or was tampered with.`);
       }
     }
 
@@ -5009,6 +5190,54 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         }
       }
 
+      // Recreate embedded markdown image assets before any markdown is
+      // written, so issue descriptions, comments, documents, and agent
+      // instructions can be rewritten to the asset ids this board minted.
+      // References whose entry or blob cannot be imported keep their source
+      // ids and stay broken rather than pointing at the wrong asset.
+      const embeddedAssetIdMap = new Map<string, string>();
+      const manifestEmbeddedAssets = sourceManifest.embeddedAssets ?? [];
+      if (manifestEmbeddedAssets.length > 0) {
+        if (!storage) {
+          warnings.push(`Skipped ${manifestEmbeddedAssets.length} embedded image asset${manifestEmbeddedAssets.length === 1 ? "" : "s"} because storage is unavailable; their references were left unchanged.`);
+        } else {
+          for (const embeddedAsset of manifestEmbeddedAssets) {
+            const embeddedAssetLabel = embeddedAsset.originalFilename ?? embeddedAsset.assetId;
+            const blobPath = portableBlobPath(embeddedAsset.sha256);
+            const blobFile = plan.source.files[blobPath];
+            if (blobFile === undefined) {
+              warnings.push(`Embedded image asset ${embeddedAssetLabel} was skipped because its blob is missing from the package: ${blobPath}; its references were left unchanged.`);
+              continue;
+            }
+            // The pre-apply loop above already verified that every blobs/*
+            // entry hashes to its path, which this entry's sha256 derives.
+            const body = portableFileToBuffer(blobFile, blobPath);
+            try {
+              const stored = await storage.putFile({
+                companyId: targetCompany.id,
+                namespace: "assets/general",
+                originalFilename: embeddedAsset.originalFilename,
+                contentType: embeddedAsset.contentType,
+                body,
+              });
+              const createdAsset = await assetRecords.create(targetCompany.id, {
+                provider: stored.provider,
+                objectKey: stored.objectKey,
+                contentType: stored.contentType,
+                byteSize: stored.byteSize,
+                sha256: stored.sha256,
+                originalFilename: stored.originalFilename,
+                createdByAgentId: null,
+                createdByUserId: actorUserId ?? null,
+              });
+              embeddedAssetIdMap.set(embeddedAsset.assetId, createdAsset.id);
+            } catch (error) {
+              warnings.push(`Embedded image asset ${embeddedAssetLabel} could not be imported: ${error instanceof Error ? error.message : String(error)}; its references were left unchanged.`);
+            }
+          }
+        }
+      }
+
       const resultAgents: CompanyPortabilityImportResult["agents"] = [];
       const resultProjects: CompanyPortabilityImportResult["projects"] = [];
       const resultRoutines: CompanyPortabilityImportResult["routines"] = [];
@@ -5089,6 +5318,11 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           }
           if (!markdownRaw && !fallbackPromptTemplate) {
             warnings.push(`Missing AGENTS markdown for ${manifestAgent.slug}; imported with an empty managed bundle.`);
+          }
+          if (embeddedAssetIdMap.size > 0) {
+            for (const [relativePath, content] of Object.entries(bundleFiles)) {
+              bundleFiles[relativePath] = rewriteEmbeddedAssetUrls(content, embeddedAssetIdMap);
+            }
           }
 
           // Apply adapter overrides from request if present
@@ -5438,7 +5672,10 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         for (const manifestIssue of sourceManifest.issues) {
           const markdownRaw = readPortableTextFile(plan.source.files, manifestIssue.path);
           const parsed = markdownRaw ? parseFrontmatterMarkdown(markdownRaw) : null;
-          const description = parsed?.body || manifestIssue.description || null;
+          const rawDescription = parsed?.body || manifestIssue.description || null;
+          const description = rawDescription === null
+            ? null
+            : rewriteEmbeddedAssetUrls(rawDescription, embeddedAssetIdMap);
           const assigneeAgentId = resolveImportedAssigneeAgentId(
             manifestIssue.assigneeAgentSlug,
             importedSlugToAgentId,
@@ -5612,7 +5849,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
               : comment.authorType === "user" && actorUserId
                 ? "user"
                 : "system";
-            const createdComment = await issues.addComment(createdIssue.id, comment.body, {
+            const createdComment = await issues.addComment(createdIssue.id, rewriteEmbeddedAssetUrls(comment.body, embeddedAssetIdMap), {
               agentId: authorAgentId ?? undefined,
               userId: authorType === "user" ? actorUserId ?? undefined : undefined,
             }, {
@@ -5639,7 +5876,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
                 key: documentEntry.key,
                 title: documentEntry.title,
                 format: documentEntry.format,
-                body: documentBody,
+                body: rewriteEmbeddedAssetUrls(documentBody, embeddedAssetIdMap),
                 createdByUserId: actorUserId ?? null,
               });
             } catch (error) {

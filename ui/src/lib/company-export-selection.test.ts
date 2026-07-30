@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import {
   type ExportCategorySelection,
+  type ExportSelectionEmbeddedAsset,
   type ExportSelectionIssue,
   buildDefaultExportCategorySelection,
   buildExportCheckedFiles,
@@ -186,6 +187,101 @@ describe("buildExportCheckedFiles", () => {
         categories: selection({ tasks: false, routines: false }),
       }).has("blobs/orphan"),
     ).toBe(false);
+  });
+});
+
+describe("embedded asset blob ownership", () => {
+  const embeddedFilePaths = [
+    "COMPANY.md",
+    "agents/ceo/AGENT.md",
+    "tasks/one-off/TASK.md",
+    "blobs/embed-task",
+    "blobs/embed-agent",
+    "blobs/embed-root",
+  ];
+  const embeddedIssues: ExportSelectionIssue[] = [
+    { path: "tasks/one-off/TASK.md", recurring: false, attachments: [] },
+  ];
+  const embeddedAssets: ExportSelectionEmbeddedAsset[] = [
+    { sha256: "embed-task", ownedBy: ["tasks"] },
+    { sha256: "embed-agent", ownedBy: ["agents"] },
+    { sha256: "embed-root", ownedBy: ["always"] },
+  ];
+
+  function checkedEmbedded(overrides: Partial<ExportCategorySelection> = {}): Set<string> {
+    return buildExportCheckedFiles({
+      filePaths: embeddedFilePaths,
+      issues: embeddedIssues,
+      categories: selection(overrides),
+      embeddedAssets,
+    });
+  }
+
+  it("keeps embedded blobs while their owning category is selected", () => {
+    const checked = checkedEmbedded();
+    expect(checked.has("blobs/embed-task")).toBe(true);
+    expect(checked.has("blobs/embed-agent")).toBe(true);
+    expect(checked.has("blobs/embed-root")).toBe(true);
+  });
+
+  it("drops an embedded blob when all its owners are off, even with attachments on", () => {
+    const checked = checkedEmbedded({ tasks: false, attachments: true });
+    expect(checked.has("blobs/embed-task")).toBe(false);
+    expect(checked.has("blobs/embed-agent")).toBe(true);
+
+    const agentsOff = checkedEmbedded({ agents: false });
+    expect(agentsOff.has("blobs/embed-agent")).toBe(false);
+    expect(agentsOff.has("blobs/embed-task")).toBe(true);
+  });
+
+  it("keeps embedded blobs independently of the attachments toggle", () => {
+    const checked = checkedEmbedded({ attachments: false });
+    expect(checked.has("blobs/embed-task")).toBe(true);
+    expect(checked.has("blobs/embed-agent")).toBe(true);
+    expect(checked.has("blobs/embed-root")).toBe(true);
+  });
+
+  it("always keeps root-owned and ownerless embedded blobs", () => {
+    const checked = buildExportCheckedFiles({
+      filePaths: ["blobs/embed-root", "blobs/no-owner"],
+      issues: [],
+      categories: selection({
+        agents: false,
+        projects: false,
+        skills: false,
+        routines: false,
+        tasks: false,
+        attachments: false,
+      }),
+      embeddedAssets: [
+        { sha256: "embed-root", ownedBy: ["always"] },
+        { sha256: "no-owner" },
+      ],
+    });
+    expect(checked.has("blobs/embed-root")).toBe(true);
+    expect(checked.has("blobs/no-owner")).toBe(true);
+  });
+
+  it("lets a shared blob qualify through its attachment owner when its embedded owners are off", () => {
+    const issues: ExportSelectionIssue[] = [
+      { path: "tasks/one-off/TASK.md", recurring: false, attachments: [] },
+      { path: "tasks/weekly-report/TASK.md", recurring: true, attachments: [attachment("shared-sha")] },
+    ];
+    const checked = buildExportCheckedFiles({
+      filePaths: ["tasks/weekly-report/TASK.md", "blobs/shared-sha"],
+      issues,
+      categories: selection({ tasks: false }),
+      embeddedAssets: [{ sha256: "shared-sha", ownedBy: ["tasks"] }],
+    });
+    expect(checked.has("blobs/shared-sha")).toBe(true);
+
+    const bothOff = buildExportCheckedFiles({
+      filePaths: ["tasks/weekly-report/TASK.md", "blobs/shared-sha"],
+      issues,
+      categories: selection({ tasks: false, routines: false }),
+      embeddedAssets: [{ sha256: "shared-sha", ownedBy: ["tasks"] }],
+    });
+    expect(bothOff.has("blobs/shared-sha")).toBe(false);
   });
 });
 

@@ -3852,6 +3852,7 @@ describe("company portability", () => {
     "issues/issue-1/notes.bin": "png-bytes",
     "issues/issue-1/screenshot.png": "png-bytes",
     "issues/issue-1/big.bin": "twenty-byte-payload!",
+    "assets/general/embed.png": "embedded-image-bytes",
   };
 
   function sha256Of(content: string) {
@@ -4163,6 +4164,245 @@ describe("company portability", () => {
     );
   });
 
+  const EMBEDDED_ASSET_ID = "0f9a4c9e-1b2d-4e3f-8a5b-6c7d8e9f0a1b";
+  const embeddedAssetUrl = (assetId: string) => `/api/assets/${assetId}/content`;
+
+  function mockEmbeddedAssetExportSources(description?: string) {
+    projectSvc.list.mockResolvedValue([]);
+    projectSvc.listWorkspaces.mockResolvedValue([]);
+    issueSvc.list.mockResolvedValue([
+      {
+        id: "issue-1",
+        identifier: "PAP-1",
+        title: "Embedded image task",
+        description: description ?? `Intro\n\n![shot](${embeddedAssetUrl(EMBEDDED_ASSET_ID)})`,
+        projectId: null,
+        projectWorkspaceId: null,
+        assigneeAgentId: null,
+        status: "todo",
+        priority: "medium",
+        labelIds: [],
+        billingCode: null,
+        executionWorkspaceSettings: null,
+        assigneeAdapterOverrides: null,
+      },
+    ]);
+    issueSvc.listComments.mockResolvedValue([
+      {
+        id: "comment-1",
+        body: `Inline too: ![inline](${embeddedAssetUrl(EMBEDDED_ASSET_ID)})`,
+        authorType: "system",
+        authorAgentId: null,
+        presentation: null,
+        metadata: null,
+        createdAt: new Date("2026-06-01T00:00:00.000Z"),
+      },
+    ]);
+    documentSvc.listIssueDocuments.mockResolvedValue([
+      {
+        id: "document-1",
+        key: "spec",
+        title: "Spec",
+        format: "markdown",
+        body: `# Spec\n\n![shot](${embeddedAssetUrl(EMBEDDED_ASSET_ID)})`,
+      },
+    ]);
+    assetSvc.getById.mockImplementation(async (assetId: string) => (
+      assetId === EMBEDDED_ASSET_ID
+        ? {
+            id: EMBEDDED_ASSET_ID,
+            companyId: "company-1",
+            provider: "local_disk",
+            objectKey: "assets/general/embed.png",
+            contentType: "image/png",
+            byteSize: 20,
+            sha256: "stale-asset-row-hash",
+            originalFilename: "embed.png",
+          }
+        : null
+    ));
+  }
+
+  it("carries embedded asset images through export and import with rewritten references", async () => {
+    const storage = fakeAttachmentStorage();
+    const portability = companyPortabilityService({} as any, storage as any);
+    mockEmbeddedAssetExportSources();
+    const sha = sha256Of("embedded-image-bytes");
+
+    const exported = await portability.exportBundle("company-1", {
+      include: { company: true, agents: false, projects: false, issues: true },
+    });
+
+    // The description, a comment, and a document all reference the same
+    // asset, so the bundle holds one blob and one embeddedAssets entry.
+    expect(Object.keys(exported.files).filter((filePath) => filePath.startsWith("blobs/"))).toEqual([
+      `blobs/${sha}`,
+    ]);
+    expect(exported.files[`blobs/${sha}`]).toEqual({
+      encoding: "base64",
+      data: Buffer.from("embedded-image-bytes").toString("base64"),
+      contentType: "application/octet-stream",
+    });
+    expect(exported.manifest.blobs).toEqual([
+      { sha256: sha, byteSize: 20, contentType: "application/octet-stream" },
+    ]);
+    expect(exported.manifest.embeddedAssets).toEqual([
+      {
+        assetId: EMBEDDED_ASSET_ID,
+        sha256: sha,
+        contentType: "image/png",
+        originalFilename: "embed.png",
+        ownedBy: ["tasks"],
+      },
+    ]);
+
+    companySvc.create.mockResolvedValue({ id: "company-imported", name: "Imported", attachmentMaxBytes: null });
+    accessSvc.ensureMembership.mockResolvedValue(undefined);
+    agentSvc.list.mockResolvedValue([]);
+    issueSvc.create.mockResolvedValue({ id: "issue-imported", title: "Embedded image task", projectId: null });
+    assetSvc.create.mockResolvedValue({ id: "asset-imported-1" });
+
+    const result = await portability.importBundle({
+      source: { type: "inline", rootPath: exported.rootPath, files: exported.files },
+      include: { company: true, agents: false, projects: false, issues: true },
+      target: { mode: "new_company", newCompanyName: "Imported" },
+      agents: "all",
+      collisionStrategy: "rename",
+    }, "user-1");
+
+    // One asset row is recreated for the shared reference, from bytes that
+    // hash to the exported blob's address.
+    expect(storage.putFile).toHaveBeenCalledTimes(1);
+    expect(storage.putFile).toHaveBeenCalledWith(expect.objectContaining({
+      companyId: "company-imported",
+      namespace: "assets/general",
+      originalFilename: "embed.png",
+      contentType: "image/png",
+      body: Buffer.from("embedded-image-bytes"),
+    }));
+    expect(assetSvc.create).toHaveBeenCalledTimes(1);
+    expect(assetSvc.create).toHaveBeenCalledWith("company-imported", expect.objectContaining({
+      contentType: "image/png",
+      originalFilename: "embed.png",
+      sha256: sha,
+      createdByAgentId: null,
+      createdByUserId: "user-1",
+    }));
+
+    // Every reference now points at the minted asset id, not the source id.
+    const importedDescription = issueSvc.create.mock.calls[0]![1].description as string;
+    expect(importedDescription).toContain(embeddedAssetUrl("asset-imported-1"));
+    expect(importedDescription).not.toContain(EMBEDDED_ASSET_ID);
+    const importedCommentBody = issueSvc.addComment.mock.calls[0]![1] as string;
+    expect(importedCommentBody).toContain(embeddedAssetUrl("asset-imported-1"));
+    expect(importedCommentBody).not.toContain(EMBEDDED_ASSET_ID);
+    expect(documentSvc.upsertIssueDocument).toHaveBeenCalledWith(expect.objectContaining({
+      key: "spec",
+      body: expect.stringContaining(embeddedAssetUrl("asset-imported-1")),
+    }));
+    const importedDocumentBody = documentSvc.upsertIssueDocument.mock.calls[0]![0].body as string;
+    expect(importedDocumentBody).not.toContain(EMBEDDED_ASSET_ID);
+    expect(result.warnings.filter((warning) => warning.includes("embedded"))).toEqual([]);
+  });
+
+  it("skips embedded image references that are foreign or dangling with one aggregate warning", async () => {
+    const storage = fakeAttachmentStorage();
+    const portability = companyPortabilityService({} as any, storage as any);
+    const foreignAssetId = "aaaaaaaa-bbbb-4ccc-8ddd-eeeeeeeeeeee";
+    const missingAssetId = "12345678-1234-4123-8123-123456789abc";
+    mockEmbeddedAssetExportSources(
+      `![theirs](${embeddedAssetUrl(foreignAssetId)})\n\n![gone](${embeddedAssetUrl(missingAssetId)})`,
+    );
+    issueSvc.listComments.mockResolvedValue([]);
+    documentSvc.listIssueDocuments.mockResolvedValue([]);
+    // A crafted reference naming another company's asset id must not pull
+    // that asset's bytes into the bundle.
+    assetSvc.getById.mockImplementation(async (assetId: string) => (
+      assetId === foreignAssetId
+        ? {
+            id: foreignAssetId,
+            companyId: "company-2",
+            provider: "local_disk",
+            objectKey: "assets/general/secret.png",
+            contentType: "image/png",
+            byteSize: 6,
+            sha256: sha256Of("secret"),
+            originalFilename: "secret.png",
+          }
+        : null
+    ));
+
+    const exported = await portability.exportBundle("company-1", {
+      include: { company: true, agents: false, projects: false, issues: true },
+    });
+
+    expect(Object.keys(exported.files).some((filePath) => filePath.startsWith("blobs/"))).toBe(false);
+    expect(storage.getObject).not.toHaveBeenCalled();
+    expect(asTextFile(exported.files[".paperclip.yaml"])).not.toContain("embeddedAssets:");
+    expect(exported.manifest.embeddedAssets).toEqual([]);
+    expect(exported.warnings).toContain(
+      "2 embedded image references point at assets that do not belong to this company or no longer exist; their images were not exported.",
+    );
+  });
+
+  it("leaves embedded image references untouched when their blob is missing at import", async () => {
+    const storage = fakeAttachmentStorage();
+    const portability = companyPortabilityService({} as any, storage as any);
+    mockEmbeddedAssetExportSources();
+    const sha = sha256Of("embedded-image-bytes");
+
+    const exported = await portability.exportBundle("company-1", {
+      include: { company: true, agents: false, projects: false, issues: true },
+    });
+    delete exported.files[`blobs/${sha}`];
+
+    companySvc.create.mockResolvedValue({ id: "company-imported", name: "Imported", attachmentMaxBytes: null });
+    accessSvc.ensureMembership.mockResolvedValue(undefined);
+    agentSvc.list.mockResolvedValue([]);
+    issueSvc.create.mockResolvedValue({ id: "issue-imported", title: "Embedded image task", projectId: null });
+
+    const result = await portability.importBundle({
+      source: { type: "inline", rootPath: exported.rootPath, files: exported.files },
+      include: { company: true, agents: false, projects: false, issues: true },
+      target: { mode: "new_company", newCompanyName: "Imported" },
+      agents: "all",
+      collisionStrategy: "rename",
+    }, "user-1");
+
+    expect(assetSvc.create).not.toHaveBeenCalled();
+    expect(result.warnings).toContain(
+      `Embedded image asset embed.png was skipped because its blob is missing from the package: blobs/${sha}; its references were left unchanged.`,
+    );
+    const importedDescription = issueSvc.create.mock.calls[0]![1].description as string;
+    expect(importedDescription).toContain(embeddedAssetUrl(EMBEDDED_ASSET_ID));
+    const importedCommentBody = issueSvc.addComment.mock.calls[0]![1] as string;
+    expect(importedCommentBody).toContain(embeddedAssetUrl(EMBEDDED_ASSET_ID));
+  });
+
+  it("prunes embedded asset entries and blobs when the referencing files are excluded from the export selection", async () => {
+    const storage = fakeAttachmentStorage();
+    const portability = companyPortabilityService({} as any, storage as any);
+    mockEmbeddedAssetExportSources();
+    const sha = sha256Of("embedded-image-bytes");
+
+    const kept = await portability.exportBundle("company-1", {
+      include: { company: true, agents: false, projects: false, issues: true },
+      selectedFiles: ["COMPANY.md", ".paperclip.yaml", "tasks/pap-1/TASK.md", "tasks/pap-1/documents/spec.md", `blobs/${sha}`],
+    });
+    expect(asTextFile(kept.files[".paperclip.yaml"])).toContain("embeddedAssets:");
+    expect(kept.files[`blobs/${sha}`]).toBeDefined();
+
+    const pruned = await portability.exportBundle("company-1", {
+      include: { company: true, agents: false, projects: false, issues: true },
+      selectedFiles: ["COMPANY.md", ".paperclip.yaml"],
+    });
+    expect(Object.keys(pruned.files).some((filePath) => filePath.startsWith("blobs/"))).toBe(false);
+    const prunedYaml = asTextFile(pruned.files[".paperclip.yaml"]);
+    expect(prunedYaml).not.toContain("embeddedAssets:");
+    expect(prunedYaml).not.toContain("blobs:");
+    expect(pruned.manifest.embeddedAssets).toEqual([]);
+  });
+
   function legacyPackageFiles(extensionLines: string[]) {
     return {
       "COMPANY.md": [
@@ -4194,7 +4434,7 @@ describe("company portability", () => {
   it("imports unstamped v5 packages with an info warning about task data they predate", async () => {
     const portability = companyPortabilityService({} as any);
     const v5Warning =
-      "This package declares schemaVersion 5 and predates label, blocker, document, work product, monitor, and attachment transfer; that task data imports only if the bundle carries it.";
+      "This package declares schemaVersion 5 and predates label, blocker, document, work product, monitor, attachment, and embedded image transfer; that task data imports only if the bundle carries it.";
 
     companySvc.create.mockResolvedValue({ id: "company-imported", name: "Legacy Import" });
     accessSvc.ensureMembership.mockResolvedValue(undefined);

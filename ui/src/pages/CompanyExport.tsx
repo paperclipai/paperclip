@@ -766,6 +766,7 @@ export function CompanyExport() {
             filePaths: Object.keys(exportData.files),
             issues: exportData.manifest.issues,
             categories,
+            embeddedAssets: exportData.manifest.embeddedAssets ?? [],
           })
         : new Set<string>(),
     [exportData, categories],
