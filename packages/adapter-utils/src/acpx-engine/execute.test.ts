@@ -124,6 +124,7 @@ function buildRuntime() {
 async function runExecutor(
   config: Record<string, unknown>,
   options: {
+    runId?: string;
     context?: Record<string, unknown>;
     executionTransport?: Record<string, unknown>;
     authToken?: string;
@@ -150,7 +151,7 @@ async function runExecutor(
   });
 
   const result = await execute({
-    runId: "run-1",
+    runId: options.runId ?? "run-1",
     agent: {
       id: "agent-1",
       companyId: "company-1",
@@ -172,6 +173,14 @@ async function runExecutor(
 
   expect(result.exitCode).toBe(0);
   return { logs, meta, runtimeOptions, result };
+}
+
+async function listWrapperRunDirs(stateDir: string): Promise<string[]> {
+  return (await fs.readdir(path.join(stateDir, "wrappers"))).sort();
+}
+
+async function listWrapperFilesForRun(stateDir: string, runId: string): Promise<string[]> {
+  return (await fs.readdir(path.join(stateDir, "wrappers", runId))).sort();
 }
 
 describe("shared ACPX engine runtime behavior", () => {
@@ -664,20 +673,17 @@ describe("shared ACPX engine runtime behavior", () => {
       ...baseConfig,
       agent: "custom-a",
       env: { PAPERCLIP_API_KEY: "old-key" },
-    });
+    }, { runId: "run-a" });
     await runExecutor({
       ...baseConfig,
       agent: "custom-b",
       env: { PAPERCLIP_API_KEY: "new-key" },
-    });
+    }, { runId: "run-b" });
 
-    const wrappers = await fs.readdir(path.join(stateDir, "wrappers"));
-    expect(wrappers.filter((name) => name.endsWith(".sh"))).toHaveLength(2);
-    expect(wrappers.filter((name) => name.endsWith(".env"))).toHaveLength(2);
-    expect(wrappers.some((name) => name.startsWith("custom-a-"))).toBe(true);
-    expect(wrappers.some((name) => name.startsWith("custom-b-"))).toBe(true);
-    const wrapperPath = path.join(stateDir, "wrappers", wrappers.find((name) => name.startsWith("custom-b-") && name.endsWith(".sh"))!);
-    const envPath = path.join(stateDir, "wrappers", wrappers.find((name) => name.startsWith("custom-b-") && name.endsWith(".env"))!);
+    expect(await listWrapperRunDirs(stateDir)).toEqual(["run-a", "run-b"]);
+    const runBFiles = await listWrapperFilesForRun(stateDir, "run-b");
+    const wrapperPath = path.join(stateDir, "wrappers", "run-b", runBFiles.find((name) => name.startsWith("custom-b-") && name.endsWith(".sh"))!);
+    const envPath = path.join(stateDir, "wrappers", "run-b", runBFiles.find((name) => name.startsWith("custom-b-") && name.endsWith(".env"))!);
     const wrapper = await fs.readFile(wrapperPath, "utf8");
     const env = await fs.readFile(envPath, "utf8");
     expect((await fs.stat(envPath)).mode & 0o777).toBe(0o600);
@@ -729,10 +735,11 @@ describe("shared ACPX engine runtime behavior", () => {
       },
     );
 
-    const wrappers = await fs.readdir(path.join(stateDir, "wrappers"));
+    const wrappers = await listWrapperFilesForRun(stateDir, "run-1");
     const envPath = path.join(
       stateDir,
       "wrappers",
+      "run-1",
       wrappers.find((name) => name.endsWith(".env"))!,
     );
     const env = await fs.readFile(envPath, "utf8");
@@ -754,24 +761,27 @@ describe("shared ACPX engine runtime behavior", () => {
       ...baseConfig,
       agent: "custom-a",
       env: { PAPERCLIP_API_KEY: "old-key" },
-    });
+    }, { runId: "run-a" });
     const oldDate = new Date(Date.now() - 16 * 60 * 1000);
     await Promise.all(
-      (await fs.readdir(wrappersDir))
-        .filter((name) => name.startsWith("custom-a-"))
-        .map((name) => fs.utimes(path.join(wrappersDir, name), oldDate, oldDate)),
+      [path.join(wrappersDir, "run-a")]
+        .map(async (dir) => {
+          const files = await fs.readdir(dir);
+          await Promise.all(files.map((name) => fs.utimes(path.join(dir, name), oldDate, oldDate)));
+          await fs.utimes(dir, oldDate, oldDate);
+        }),
     );
 
     await runExecutor({
       ...baseConfig,
       agent: "custom-b",
       env: { PAPERCLIP_API_KEY: "new-key" },
-    });
+    }, { runId: "run-b" });
 
-    const wrappers = await fs.readdir(wrappersDir);
+    expect(await listWrapperRunDirs(stateDir)).toEqual(["run-b"]);
+    const wrappers = await listWrapperFilesForRun(stateDir, "run-b");
     expect(wrappers.filter((name) => name.endsWith(".sh"))).toHaveLength(1);
     expect(wrappers.filter((name) => name.endsWith(".env"))).toHaveLength(1);
-    expect(wrappers.some((name) => name.startsWith("custom-a-"))).toBe(false);
     expect(wrappers.some((name) => name.startsWith("custom-b-"))).toBe(true);
   });
 
@@ -787,13 +797,21 @@ describe("shared ACPX engine runtime behavior", () => {
     await runExecutor({
       ...baseConfig,
       env: { PAPERCLIP_API_KEY: "first-key" },
-    });
+    }, { runId: "run-a" });
     await runExecutor({
       ...baseConfig,
       env: { PAPERCLIP_API_KEY: "second-key" },
-    });
+    }, { runId: "run-b" });
 
-    const envFileNames = (await fs.readdir(path.join(stateDir, "wrappers"))).filter((name) => name.endsWith(".env"));
+    const envFileNames = (
+      await Promise.all(
+        (await listWrapperRunDirs(stateDir)).map(async (runId) =>
+          (await listWrapperFilesForRun(stateDir, runId)).map((name) => path.join(runId, name)),
+        ),
+      )
+    )
+      .flat()
+      .filter((name) => name.endsWith(".env"));
     expect(envFileNames).toHaveLength(2);
     const envFiles = await Promise.all(
       envFileNames.map(async (name) => fs.readFile(path.join(stateDir, "wrappers", name), "utf8")),
@@ -911,10 +929,10 @@ describe("shared ACPX engine runtime behavior", () => {
     // should not opt in to ACPX runtime verbose session-event logs.
     expect(verboseFlags.every((flag) => flag === false)).toBe(true);
 
-    const wrappers = await fs.readdir(path.join(stateDir, "wrappers"));
+    const wrappers = await listWrapperFilesForRun(stateDir, "run-stderr-1");
     const wrapperFile = wrappers.find((name) => name.endsWith(".sh"));
     expect(wrapperFile).toBeTruthy();
-    const wrapper = await fs.readFile(path.join(stateDir, "wrappers", wrapperFile!), "utf8");
+    const wrapper = await fs.readFile(path.join(stateDir, "wrappers", "run-stderr-1", wrapperFile!), "utf8");
     expect(wrapper).toContain("stderr_dir=");
     expect(wrapper).toContain("run-stderr");
     expect(wrapper).toContain("PAPERCLIP_RUN_ID");
@@ -1011,9 +1029,9 @@ describe("shared ACPX engine runtime behavior", () => {
       cwd,
     });
 
-    const wrapperEnvFile = (await fs.readdir(path.join(stateDir, "wrappers"))).find((name) => name.endsWith(".env"));
+    const wrapperEnvFile = (await listWrapperFilesForRun(stateDir, "run-1")).find((name) => name.endsWith(".env"));
     expect(wrapperEnvFile).toBeTruthy();
-    const wrapperEnv = await fs.readFile(path.join(stateDir, "wrappers", wrapperEnvFile!), "utf8");
+    const wrapperEnv = await fs.readFile(path.join(stateDir, "wrappers", "run-1", wrapperEnvFile!), "utf8");
     expect(wrapperEnv).toContain(`PAPERCLIP_API_URL='${reachableApiUrl}'`);
     expect(wrapperEnv).toContain(`PAPERCLIP_RUNTIME_API_URL='${reachableApiUrl}'`);
     expect(wrapperEnv).not.toContain(`PAPERCLIP_API_URL='${gatedApiUrl}'`);
@@ -1054,9 +1072,9 @@ describe("shared ACPX engine runtime behavior", () => {
     } as never);
 
     expect(result.exitCode).toBe(0);
-    const wrapperFile = (await fs.readdir(path.join(stateDir, "wrappers"))).find((name) => name.endsWith(".sh"));
+    const wrapperFile = (await listWrapperFilesForRun(stateDir, "run-nes-close-1")).find((name) => name.endsWith(".sh"));
     expect(wrapperFile).toBeTruthy();
-    const wrapperPath = path.join(stateDir, "wrappers", wrapperFile!);
+    const wrapperPath = path.join(stateDir, "wrappers", "run-nes-close-1", wrapperFile!);
 
     const { stderr } = await execFileAsync("bash", [wrapperPath], {
       env: { ...process.env, PAPERCLIP_RUN_ID: "run-nes-close-1" },
@@ -1564,11 +1582,38 @@ describe("gemini ACP flag selection", () => {
 
   async function readGeminiWrapperScript(stateDir: string): Promise<string> {
     const wrappersDir = path.join(stateDir, "wrappers");
-    const names = await fs.readdir(wrappersDir);
+    const runDirs = await fs.readdir(wrappersDir);
+    expect(runDirs).toHaveLength(1);
+    const names = await fs.readdir(path.join(wrappersDir, runDirs[0]!));
     const scriptName = names.find((name) => name.endsWith(".sh"));
     expect(scriptName).toBeTypeOf("string");
-    return fs.readFile(path.join(wrappersDir, scriptName!), "utf8");
+    return fs.readFile(path.join(wrappersDir, runDirs[0]!, scriptName!), "utf8");
   }
+
+  it("isolates wrapper files per run and prunes stale sibling run directories", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const staleRunDir = path.join(stateDir, "wrappers", "stale-run");
+    await fs.mkdir(staleRunDir, { recursive: true });
+    await fs.writeFile(path.join(staleRunDir, "codex-stale.sh"), "#!/usr/bin/env bash\n", { mode: 0o700 });
+    const staleTime = new Date(Date.now() - 16 * 60 * 1000);
+    await fs.utimes(staleRunDir, staleTime, staleTime);
+    await fs.utimes(path.join(staleRunDir, "codex-stale.sh"), staleTime, staleTime);
+
+    await runExecutor({
+      agent: "codex",
+      stateDir,
+      env: { HOME: path.join(root, "home") },
+    });
+
+    const wrappersRoot = path.join(stateDir, "wrappers");
+    const runDirs = await fs.readdir(wrappersRoot);
+    expect(runDirs).toEqual(["run-1"]);
+    const wrapperFiles = await fs.readdir(path.join(wrappersRoot, "run-1"));
+    expect(wrapperFiles.some((name) => name.endsWith(".sh"))).toBe(true);
+    expect(wrapperFiles.some((name) => name.endsWith(".env"))).toBe(true);
+    await expect(fs.access(staleRunDir)).rejects.toThrow();
+  });
 
   it("writes Claude wrappers against the resolved ACP entrypoint instead of the package-local .bin shim", async () => {
     const root = await makeTempRoot();

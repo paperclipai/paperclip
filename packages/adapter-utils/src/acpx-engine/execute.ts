@@ -900,13 +900,15 @@ async function writePaperclipClaudeSettings(input: {
 }
 
 async function writeAgentWrapper(input: {
+  runId: string;
   stateDir: string;
   acpxAgent: string;
   agentCommandShell: string;
   env: Record<string, string>;
   childStderrDir: string;
 }): Promise<{ wrapperPath: string; envFilePath: string }> {
-  const wrappersDir = path.join(input.stateDir, "wrappers");
+  const wrappersRootDir = path.join(input.stateDir, "wrappers");
+  const wrappersDir = path.join(wrappersRootDir, input.runId);
   await fs.mkdir(wrappersDir, { recursive: true });
   const envLines = Object.entries(input.env)
     .filter(([key]) => /^[A-Za-z_][A-Za-z0-9_]*$/.test(key))
@@ -951,24 +953,20 @@ async function writeAgentWrapper(input: {
     contents: script,
     mode: 0o700,
   });
-  await cleanupStaleAgentWrappers({
-    wrappersDir,
-    currentFileNames: new Set([path.basename(wrapperPath), path.basename(envFilePath)]),
-  });
+  await cleanupStaleAgentWrappers({ wrappersRootDir, currentRunId: input.runId });
   return { wrapperPath, envFilePath };
 }
 
-async function cleanupStaleAgentWrappers(input: { wrappersDir: string; currentFileNames: Set<string> }) {
-  const wrappers = await fs.readdir(input.wrappersDir).catch(() => []);
+async function cleanupStaleAgentWrappers(input: { wrappersRootDir: string; currentRunId: string }) {
+  const wrappers = await fs.readdir(input.wrappersRootDir).catch(() => []);
   const now = Date.now();
   await Promise.all(
     wrappers.map(async (name) => {
-      const isManagedWrapperFile = name.endsWith(".sh") || name.endsWith(".env");
-      if (!isManagedWrapperFile || input.currentFileNames.has(name)) return;
-      const wrapperPath = path.join(input.wrappersDir, name);
+      if (name === input.currentRunId) return;
+      const wrapperPath = path.join(input.wrappersRootDir, name);
       const stats = await fs.stat(wrapperPath).catch(() => null);
       if (!stats || now - stats.mtimeMs < WRAPPER_CLEANUP_RETENTION_MS) return;
-      await fs.rm(wrapperPath, { force: true });
+      await fs.rm(wrapperPath, { force: true, recursive: true });
     }),
   );
 }
@@ -1263,6 +1261,7 @@ async function buildRuntime(input: {
   }
   const wrapper = agentCommand
     ? await writeAgentWrapper({
+        runId,
         stateDir,
         acpxAgent,
         agentCommandShell,
