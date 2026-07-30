@@ -137,6 +137,8 @@ export interface IssueRewakeThrottleInput {
   hasNewIssueInputSinceLastRun: boolean;
 }
 
+export interface IssueFailedNoProgressStreakInput extends IssueRewakeThrottleInput {}
+
 export type IssueRewakeThrottleDecision =
   | { blocked: false; noProgressStreak: number }
   | {
@@ -152,6 +154,29 @@ export function computeIssueRewakeCooldownMs(noProgressStreak: number): number {
   // Guard the exponent so an absurd streak can't overflow into Infinity.
   const factor = 2 ** Math.min(doublings, 16);
   return Math.min(ISSUE_REWAKE_BASE_COOLDOWN_MS * factor, ISSUE_REWAKE_MAX_COOLDOWN_MS);
+}
+
+export function countConsecutiveFailedNoProgressRuns(input: IssueFailedNoProgressStreakInput): number {
+  const runs = input.recentTerminalRuns;
+  if (runs.length === 0) return 0;
+  if (input.hasNewIssueInputSinceLastRun) return 0;
+
+  let failedNoProgressStreak = 0;
+  for (const run of runs) {
+    if (!run.finishedAt) break;
+    const countedFailure =
+      run.status !== "succeeded" &&
+      classifyAdapterFailureForRecovery({
+        error: run.error,
+        errorCode: run.errorCode,
+        resultJson: run.resultJson,
+      }, input.now)?.kind === "provider_quota";
+    if (!countedFailure) break;
+    if (input.runIdsWithIssueProgress.has(run.id)) break;
+    failedNoProgressStreak += 1;
+  }
+
+  return failedNoProgressStreak;
 }
 
 export function evaluateIssueRewakeThrottle(input: IssueRewakeThrottleInput): IssueRewakeThrottleDecision {

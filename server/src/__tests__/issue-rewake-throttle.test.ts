@@ -1,6 +1,7 @@
 import fs from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
+  countConsecutiveFailedNoProgressRuns,
   ISSUE_REWAKE_BASE_COOLDOWN_MS,
   ISSUE_REWAKE_MAX_COOLDOWN_MS,
   ISSUE_REWAKE_NO_PROGRESS_THRESHOLD,
@@ -236,5 +237,130 @@ describe("evaluateIssueRewakeThrottle", () => {
       hasNewIssueInputSinceLastRun: true,
     });
     expect(decision).toEqual({ blocked: false, noProgressStreak: 0 });
+  });
+});
+
+describe("countConsecutiveFailedNoProgressRuns", () => {
+  it("counts interleaved failed provider-quota wakes regardless of wake reason", () => {
+    const recentTerminalRuns = [
+      runSample({
+        id: "r5",
+        status: "failed",
+        finishedSecondsAgo: 10,
+        errorCode: "provider_quota",
+        error: "monthly spend limit hit",
+      }),
+      runSample({
+        id: "r4",
+        status: "failed",
+        finishedSecondsAgo: 30,
+        errorCode: "provider_quota",
+        error: "monthly spend limit hit",
+      }),
+      runSample({
+        id: "r3",
+        status: "failed",
+        finishedSecondsAgo: 50,
+        errorCode: "provider_quota",
+        error: "monthly spend limit hit",
+      }),
+      runSample({
+        id: "r2",
+        status: "failed",
+        finishedSecondsAgo: 70,
+        errorCode: "provider_quota",
+        error: "monthly spend limit hit",
+      }),
+      runSample({
+        id: "r1",
+        status: "failed",
+        finishedSecondsAgo: 90,
+        errorCode: "provider_quota",
+        error: "monthly spend limit hit",
+      }),
+    ];
+
+    expect(
+      countConsecutiveFailedNoProgressRuns({
+        now: NOW,
+        recentTerminalRuns,
+        runIdsWithIssueProgress: new Set(),
+        hasNewIssueInputSinceLastRun: false,
+      }),
+    ).toBe(5);
+
+    expect(
+      evaluateIssueRewakeThrottle({
+        now: NOW,
+        recentTerminalRuns,
+        runIdsWithIssueProgress: new Set(),
+        hasNewIssueInputSinceLastRun: false,
+      }),
+    ).toMatchObject({ noProgressStreak: 5 });
+  });
+
+  it("resets to zero after a succeeded run", () => {
+    expect(
+      countConsecutiveFailedNoProgressRuns({
+        now: NOW,
+        recentTerminalRuns: [
+          runSample({ id: "r2", finishedSecondsAgo: 10 }),
+          runSample({
+            id: "r1",
+            status: "failed",
+            finishedSecondsAgo: 40,
+            errorCode: "provider_quota",
+            error: "monthly spend limit hit",
+          }),
+        ],
+        runIdsWithIssueProgress: new Set(),
+        hasNewIssueInputSinceLastRun: false,
+      }),
+    ).toBe(0);
+  });
+
+  it("resets to zero after issue-visible progress", () => {
+    expect(
+      countConsecutiveFailedNoProgressRuns({
+        now: NOW,
+        recentTerminalRuns: [
+          runSample({
+            id: "r2",
+            status: "failed",
+            finishedSecondsAgo: 10,
+            errorCode: "provider_quota",
+            error: "monthly spend limit hit",
+          }),
+          runSample({
+            id: "r1",
+            status: "failed",
+            finishedSecondsAgo: 40,
+            errorCode: "provider_quota",
+            error: "monthly spend limit hit",
+          }),
+        ],
+        runIdsWithIssueProgress: new Set(["r2"]),
+        hasNewIssueInputSinceLastRun: false,
+      }),
+    ).toBe(0);
+  });
+
+  it("resets to zero when new issue input arrived after the last run", () => {
+    expect(
+      countConsecutiveFailedNoProgressRuns({
+        now: NOW,
+        recentTerminalRuns: [
+          runSample({
+            id: "r1",
+            status: "failed",
+            finishedSecondsAgo: 10,
+            errorCode: "provider_quota",
+            error: "monthly spend limit hit",
+          }),
+        ],
+        runIdsWithIssueProgress: new Set(),
+        hasNewIssueInputSinceLastRun: true,
+      }),
+    ).toBe(0);
   });
 });

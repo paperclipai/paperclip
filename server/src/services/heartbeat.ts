@@ -110,6 +110,7 @@ import {
   type RunLivenessClassificationInput,
 } from "./run-liveness.js";
 import {
+  countConsecutiveFailedNoProgressRuns,
   ISSUE_NEW_INPUT_ACTIVITY_ACTIONS,
   ISSUE_PROGRESS_ACTIVITY_ACTIONS,
   ISSUE_REWAKE_LOOKBACK_MS,
@@ -6559,15 +6560,46 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
       .limit(ISSUE_MONITOR_FAILED_DISPATCH_STREAK_LOOKBACK_LIMIT);
 
-    let streak = 0;
-    for (const row of recentRuns) {
-      const wakeReason = readNonEmptyString(parseObject(row.contextSnapshot).wakeReason);
-      if (wakeReason !== "issue_monitor_due") break;
-      if (row.status !== "failed") break;
-      streak += 1;
-    }
+    const sampleRunIds = recentRuns.map((row) => row.id);
+    const progressRows = await db
+      .select({ runId: activityLog.runId })
+      .from(activityLog)
+      .where(
+        and(
+          eq(activityLog.companyId, input.companyId),
+          eq(activityLog.entityType, "issue"),
+          eq(activityLog.entityId, input.issueId),
+          inArray(activityLog.runId, sampleRunIds),
+          inArray(activityLog.action, ISSUE_PROGRESS_ACTIVITY_ACTIONS),
+        ),
+      );
+    const lastRunFinishedAt = recentRuns[0]?.finishedAt ?? null;
+    const newInputRows = lastRunFinishedAt
+      ? await db
+        .select({ id: activityLog.id })
+        .from(activityLog)
+        .where(
+          and(
+            eq(activityLog.companyId, input.companyId),
+            eq(activityLog.entityType, "issue"),
+            eq(activityLog.entityId, input.issueId),
+            gt(activityLog.createdAt, lastRunFinishedAt),
+            inArray(activityLog.action, ISSUE_NEW_INPUT_ACTIVITY_ACTIONS),
+          ),
+        )
+        .limit(1)
+      : [];
 
-    return Math.max(1, streak);
+    return countConsecutiveFailedNoProgressRuns({
+      now: input.now,
+      recentTerminalRuns: recentRuns,
+      runIdsWithIssueProgress: new Set(
+        progressRows
+          .map((row) => row.runId)
+          .filter((runId): runId is string => Boolean(runId)),
+      ),
+      hasNewIssueInputSinceLastRun: newInputRows.length > 0,
+    });
   }
 
   async function resolveFailedIssueMonitorRearmAt(input: {
@@ -12116,18 +12148,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const hasRecentDurableActivity = silenceAgeMs < durableActivityGraceMs;
       const exceededOrphanSilenceSweepThreshold = silenceAgeMs >= orphanSilenceSweepThresholdMs;
       if (zeroProcessMetadata) {
-        if (hasActiveEnvironmentLease || !exceededOrphanSilenceSweepThreshold) {
+        if (!exceededOrphanSilenceSweepThreshold) {
           logger.warn(
-            hasActiveEnvironmentLease
-              ? { runId: run.id, adapterType, silenceAgeMs, orphanSilenceSweepThresholdMs, hasActiveEnvironmentLease }
-              : hasRecentDurableActivity
-                ? { runId: run.id, adapterType, silenceAgeMs, durableActivityGraceMs }
-                : { runId: run.id, adapterType, silenceAgeMs, orphanSilenceSweepThresholdMs },
-            hasActiveEnvironmentLease
-              ? "skipping orphan reap because local run has no process metadata but still holds an active environment lease"
-              : "skipping orphan reap because local run has no process metadata and cannot be classified from silence alone",
+            hasRecentDurableActivity
+              ? { runId: run.id, adapterType, silenceAgeMs, durableActivityGraceMs, hasActiveEnvironmentLease }
+              : { runId: run.id, adapterType, silenceAgeMs, orphanSilenceSweepThresholdMs, hasActiveEnvironmentLease },
+            "skipping orphan reap because local run has no process metadata and silence has not crossed the orphan threshold",
           );
           continue;
+        }
+        if (hasActiveEnvironmentLease) {
+          logger.warn(
+            { runId: run.id, adapterType, silenceAgeMs, orphanSilenceSweepThresholdMs, hasActiveEnvironmentLease },
+            "force-releasing active environment lease for stale local run with no process metadata before orphan reap",
+          );
         }
       }
       const processPidAlive = Boolean(
