@@ -258,4 +258,27 @@ describeEmbeddedPostgres("documentService system issue documents", () => {
       changeSummary: "secret=***REDACTED***",
     }));
   });
+
+  it("redacts a legacy document title before returning it for deletion activity", async () => {
+    const { issueId } = await createIssueWithDocuments();
+    const legacyValue = "test-only-deleted-document-secret";
+    const created = await svc.upsertIssueDocument({
+      issueId,
+      key: "security-notes",
+      title: "Safe title",
+      format: "markdown",
+      body: "Safe body",
+    });
+    await db
+      .update(documents)
+      .set({ title: `PAPERCLIP_API_KEY=${legacyValue}` })
+      .where(eq(documents.id, created.document.id));
+
+    const removed = await svc.deleteIssueDocument(issueId, "security-notes");
+
+    expect(removed).toEqual(expect.objectContaining({
+      title: "PAPERCLIP_API_KEY=***REDACTED***",
+    }));
+    expect(JSON.stringify(removed)).not.toContain(legacyValue);
+  });
 });

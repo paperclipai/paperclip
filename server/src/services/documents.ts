@@ -494,9 +494,17 @@ export function documentService(db: Db) {
         await tx.delete(issueDocuments).where(eq(issueDocuments.documentId, existing.id));
         await tx.delete(documents).where(eq(documents.id, existing.id));
 
+        // This result is used to populate the deletion activity record after
+        // the transaction. Legacy rows may predate persistence redaction, so
+        // never let their raw title cross that activity boundary.
+        const redacted = redactIssueDocumentText({
+          title: existing.title,
+          body: existing.latestBody,
+        });
         return {
           ...existing,
-          body: existing.latestBody,
+          title: redacted.title,
+          body: redacted.body,
           latestRevisionId: existing.latestRevisionId ?? null,
         };
       });

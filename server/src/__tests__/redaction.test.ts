@@ -112,6 +112,14 @@ describe("redaction", () => {
     expect(ordinary).toBe("The bearer token flow is documented in the guide");
   });
 
+  it("preserves the Authorization Bearer header shape while redacting its credential", () => {
+    const credential = "test-only-bearer-credential";
+
+    expect(redactSensitiveText(`Authorization: Bearer ${credential}`)).toBe(
+      `Authorization: Bearer ${REDACTED_EVENT_VALUE}`,
+    );
+  });
+
   it("redacts URL userinfo credentials while preserving benign URLs", () => {
     const credentialUrl = "https://build-user:TestOnlyPass123@example.test/hooks?mode=sync";
     const redacted = redactSensitiveText(`Callback: ${credentialUrl}`);

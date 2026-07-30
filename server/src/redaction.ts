@@ -22,7 +22,12 @@ const TEXT_ENV_SECRET_ASSIGNMENT_RE =
 const TEXT_NAMED_SECRET_EQUALS_RE =
   /((?:api[-_]?key|access[-_]?token|auth(?:_?token)?|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring)\s*=\s*["']?)[^\s"'`]+/gi;
 const TEXT_CLEAR_SECRET_COLON_RE =
-  /((?:api[-_]?key|access[-_]?token|auth(?:_?token)?|authorization|bearer|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring)\s*:\s*["']?)[^\s"'`]+/gi;
+  /((?:api[-_]?key|access[-_]?token|auth(?:_?token)?|authorization(?!\s*:\s*bearer\b)|bearer|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring)\s*:\s*["']?)[^\s"'`]+/gi;
+// Handle copied Authorization headers before generic colon-form redaction.
+// Otherwise the generic matcher consumes only `Bearer`, leaving its credential
+// to a later matcher and corrupting the safe header representation.
+const TEXT_AUTHORIZATION_BEARER_HEADER_RE =
+  /(\bauthorization\s*:\s*bearer\s+)[^\s"'`]+/gi;
 const TEXT_AMBIGUOUS_SECRET_COLON_RE =
   /(secret\s*:\s*["']?)(?:sk-[A-Za-z0-9_-]{12,}|gh[pousr]_[A-Za-z0-9_]{20,}|[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}\.[A-Za-z0-9_-]{8,}(?:\.[A-Za-z0-9_-]{8,})?|[A-Za-z0-9+/=_-]{32,})/gi;
 // A bare `Bearer` prefix is common in copied headers, but ordinary prose such
@@ -120,6 +125,7 @@ export function redactSensitiveText(input: string): string {
     .replace(ESCAPED_JSON_SECRET_FIELD_TEXT_RE, `$1${REDACTED_EVENT_VALUE}$2`)
     .replace(TEXT_ENV_SECRET_ASSIGNMENT_RE, `$1${REDACTED_EVENT_VALUE}`)
     .replace(TEXT_NAMED_SECRET_EQUALS_RE, `$1${REDACTED_EVENT_VALUE}`)
+    .replace(TEXT_AUTHORIZATION_BEARER_HEADER_RE, `$1${REDACTED_EVENT_VALUE}`)
     .replace(TEXT_CLEAR_SECRET_COLON_RE, `$1${REDACTED_EVENT_VALUE}`)
     .replace(TEXT_AMBIGUOUS_SECRET_COLON_RE, `$1${REDACTED_EVENT_VALUE}`)
     .replace(TEXT_BARE_BEARER_CREDENTIAL_RE, `$1${REDACTED_EVENT_VALUE}`)
