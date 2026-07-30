@@ -8,10 +8,35 @@ Telegram-Bot `@whitestag_jarvis_bot`: Sprachnachricht → lokales Whisper → Be
 - `~/.paperclip/auth.json` (Paperclip-Board-Token, auto-renewt)
 - Homebrew: `whisper-cli`, `ffmpeg`
 
+## ⚠️ VOR DEM DEPLOY LESEN — Live-Stand weicht ab
+
+**Der laufende `bot.py` ist NICHT die Repo-Version.** Stand 2026-07-29:
+Live ~23 KB, Repo ~12 KB. Der Live-Bot importiert `jarvis_brain` gar nicht
+(er trägt `SYSTEM_PROMPT`, `LOOKUP_RE`, `ISSUE_RE` und `parse_control` inline)
+und enthält zusätzlich einen Präfix-Dispatcher für `academy_bridge` und
+`seo_gate` — beides gibt es im Repo nicht.
+
+**Das `rsync` unten überschreibt diesen Stand.** Folge: academy-auto und die
+seo-geo-Freigabe fallen still aus (keine Fehlermeldung, die Module bleiben als
+verwaiste Dateien liegen, weil ohne `--delete` kopiert wird).
+
+Vor jedem Deploy deshalb prüfen:
+
+```bash
+diff -rq tools/voice-echo-bot ~/.paperclip/scripts/voice-echo-bot \
+  --exclude=venv --exclude=__pycache__ --exclude='test_*'
+```
+
+Erscheinen Unterschiede, die nicht von der eigenen aktuellen Änderung stammen:
+**stoppen** und die beiden Versionen erst zusammenführen. Einzelne geteilte
+Module (`llm.py`, `vault_client.py`, `web_search.py`, …) lassen sich gezielt
+per `cp` nachziehen, ohne `bot.py` anzutasten.
+
 ## Deploy / Update
 ```bash
 mkdir -p ~/.paperclip/scripts/voice-echo-bot ~/.paperclip/logs
 # Alle Module ausser den Tests — llm/tts/vault_client etc. gehoeren dazu.
+# ACHTUNG: ueberschreibt den abweichenden Live-bot.py, siehe Warnung oben.
 rsync -a --exclude 'test_*.py' --exclude '__pycache__' \
    tools/voice-echo-bot/*.py ~/.paperclip/scripts/voice-echo-bot/
 sed "s|__HOME__|$HOME|g" tools/voice-echo-bot/de.whitestag.voice-echo-bot.plist \
