@@ -37,11 +37,17 @@ jobs:
       - name: Generate commitperclip token
         id: token
         run: |
-          TOKEN=$(node .github/scripts/get-bot-token.mjs)
+          if [ -n "$COMMITPERCLIP_KEY" ]; then
+            TOKEN=$(node .github/scripts/get-bot-token.mjs)
+          else
+            echo "COMMITPERCLIP_KEY unset; falling back to github.token (gate comments will post as github-actions[bot])"
+            TOKEN="$FALLBACK_TOKEN"
+          fi
           echo "::add-mask::$TOKEN"
           echo "value=$TOKEN" >> $GITHUB_OUTPUT
         env:
           COMMITPERCLIP_KEY: ${{ secrets.COMMITPERCLIP_KEY }}
+          FALLBACK_TOKEN: ${{ github.token }}
 
       - name: Run quality gates
         id: quality
