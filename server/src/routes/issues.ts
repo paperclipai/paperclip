@@ -1889,7 +1889,7 @@ function buildRequestItemVerdictsWakeIdempotencyKey(args: {
   return `request_item_verdicts:${args.issueId}:${args.interactionId}:${bucket}`;
 }
 
-function queueResolvedInteractionContinuationWakeup(input: {
+async function queueResolvedInteractionContinuationWakeup(input: {
   heartbeat: ReturnType<typeof heartbeatService>;
   issue: { id: string; assigneeAgentId: string | null; status: string };
   interaction: {
@@ -1909,16 +1909,42 @@ function queueResolvedInteractionContinuationWakeup(input: {
   newlyResolvedItemIds?: string[];
   idempotencyKey?: string | null;
 }) {
+  const logSkipped = (reason: string) => logger.info({
+    issueId: input.issue.id,
+    issueStatus: input.issue.status,
+    interactionId: input.interaction.id,
+    interactionKind: input.interaction.kind,
+    interactionStatus: input.interaction.status,
+    continuationPolicy: input.interaction.continuationPolicy,
+    assigneeAgentId: input.issue.assigneeAgentId,
+    reason,
+  }, "interaction continuation wake skipped");
   if (
     input.interaction.continuationPolicy !== "wake_assignee"
     && input.interaction.continuationPolicy !== "wake_assignee_on_accept"
-  ) return;
+  ) {
+    logSkipped("continuation_policy_disabled");
+    return;
+  }
   if (
     input.interaction.continuationPolicy === "wake_assignee_on_accept"
     && input.interaction.status !== "accepted"
-  ) return;
-  if (input.interaction.status === "expired") return;
-  if (!input.issue.assigneeAgentId || isClosedIssueStatus(input.issue.status)) return;
+  ) {
+    logSkipped("interaction_not_accepted");
+    return;
+  }
+  if (input.interaction.status === "expired") {
+    logSkipped("interaction_expired");
+    return;
+  }
+  if (!input.issue.assigneeAgentId) {
+    logSkipped("issue_unassigned");
+    return;
+  }
+  if (isClosedIssueStatus(input.issue.status)) {
+    logSkipped("issue_terminal");
+    return;
+  }
 
   const forceFreshSession = input.forceFreshSession === true;
   const workspaceRefreshReason = readNonEmptyString(input.workspaceRefreshReason);
@@ -1944,49 +1970,59 @@ function queueResolvedInteractionContinuationWakeup(input: {
           result: interactionResult,
         }
       : null;
-  void input.heartbeat.wakeup(input.issue.assigneeAgentId, {
-    source: "automation",
-    triggerDetail: "system",
-    reason: "issue_commented",
-    payload: {
+  try {
+    const run = await input.heartbeat.wakeup(input.issue.assigneeAgentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_commented",
+      payload: {
+        issueId: input.issue.id,
+        interactionId: input.interaction.id,
+        interactionKind: input.interaction.kind,
+        interactionStatus: input.interaction.status,
+        sourceCommentId: input.interaction.sourceCommentId ?? null,
+        sourceRunId: input.interaction.sourceRunId ?? null,
+        ...(planReviewInteraction ? { planReviewInteraction } : {}),
+        ...(checkboxSelection ? { checkboxSelection } : {}),
+        ...(toolAction ? { toolAction } : {}),
+        ...(itemVerdicts ? { itemVerdicts, newlyResolvedItemIds } : {}),
+        mutation: "interaction",
+      },
+      idempotencyKey: input.idempotencyKey ?? null,
+      requestedByActorType: input.actor.actorType,
+      requestedByActorId: input.actor.actorId,
+      contextSnapshot: {
+        issueId: input.issue.id,
+        taskId: input.issue.id,
+        interactionId: input.interaction.id,
+        interactionKind: input.interaction.kind,
+        interactionStatus: input.interaction.status,
+        sourceCommentId: input.interaction.sourceCommentId ?? null,
+        sourceRunId: input.interaction.sourceRunId ?? null,
+        ...(planReviewInteraction ? { planReviewInteraction } : {}),
+        ...(checkboxSelection ? { checkboxSelection } : {}),
+        ...(toolAction ? { toolAction } : {}),
+        ...(itemVerdicts ? { itemVerdicts, newlyResolvedItemIds } : {}),
+        source: input.source,
+        ...(forceFreshSession ? { forceFreshSession: true } : {}),
+        ...(workspaceRefreshReason ? { workspaceRefreshReason } : {}),
+      },
+    });
+    logger.info({
       issueId: input.issue.id,
       interactionId: input.interaction.id,
-      interactionKind: input.interaction.kind,
-      interactionStatus: input.interaction.status,
-      sourceCommentId: input.interaction.sourceCommentId ?? null,
-      sourceRunId: input.interaction.sourceRunId ?? null,
-      ...(planReviewInteraction ? { planReviewInteraction } : {}),
-      ...(checkboxSelection ? { checkboxSelection } : {}),
-      ...(toolAction ? { toolAction } : {}),
-      ...(itemVerdicts ? { itemVerdicts, newlyResolvedItemIds } : {}),
-      mutation: "interaction",
-    },
-    idempotencyKey: input.idempotencyKey ?? null,
-    requestedByActorType: input.actor.actorType,
-    requestedByActorId: input.actor.actorId,
-    contextSnapshot: {
+      agentId: input.issue.assigneeAgentId,
+      schedulerOutcome: run ? "run_returned" : "deferred_or_skipped",
+      runId: run?.id ?? null,
+    }, "interaction continuation wake scheduling completed");
+  } catch (err) {
+    logger.warn({
+      err,
       issueId: input.issue.id,
-      taskId: input.issue.id,
       interactionId: input.interaction.id,
-      interactionKind: input.interaction.kind,
-      interactionStatus: input.interaction.status,
-      sourceCommentId: input.interaction.sourceCommentId ?? null,
-      sourceRunId: input.interaction.sourceRunId ?? null,
-      ...(planReviewInteraction ? { planReviewInteraction } : {}),
-      ...(checkboxSelection ? { checkboxSelection } : {}),
-      ...(toolAction ? { toolAction } : {}),
-      ...(itemVerdicts ? { itemVerdicts, newlyResolvedItemIds } : {}),
-      wakeReason: "issue_commented",
-      source: input.source,
-      ...(forceFreshSession ? { forceFreshSession: true } : {}),
-      ...(workspaceRefreshReason ? { workspaceRefreshReason } : {}),
-    },
-  }).catch((err) => logger.warn({
-    err,
-    issueId: input.issue.id,
-    interactionId: input.interaction.id,
-    agentId: input.issue.assigneeAgentId,
-  }, "failed to wake assignee on issue interaction resolution"));
+      agentId: input.issue.assigneeAgentId,
+    }, "failed to wake assignee on issue interaction resolution");
+  }
 }
 
 function readCheckboxSelectionForWake(input: {
@@ -9516,7 +9552,7 @@ export function issueRoutes(
         interaction.status === "accepted" &&
         acceptedPlanTarget?.issueId === issue.id &&
         acceptedPlanTarget.key === "plan";
-      queueResolvedInteractionContinuationWakeup({
+      await queueResolvedInteractionContinuationWakeup({
         heartbeat,
         issue: continuationWakeIssue,
         interaction: continuationInteraction,
@@ -9572,7 +9608,7 @@ export function issueRoutes(
         },
       });
 
-      queueResolvedInteractionContinuationWakeup({
+      await queueResolvedInteractionContinuationWakeup({
         heartbeat,
         issue,
         interaction,
@@ -9622,7 +9658,7 @@ export function issueRoutes(
         },
       });
 
-      queueResolvedInteractionContinuationWakeup({
+      await queueResolvedInteractionContinuationWakeup({
         heartbeat,
         issue,
         interaction,
@@ -9683,7 +9719,7 @@ export function issueRoutes(
       });
 
       if (newlyResolvedItemIds.length > 0) {
-        queueResolvedInteractionContinuationWakeup({
+        await queueResolvedInteractionContinuationWakeup({
           heartbeat,
           issue,
           interaction,
@@ -9738,7 +9774,7 @@ export function issueRoutes(
       });
 
       if (actor.agentId !== issue.assigneeAgentId) {
-        queueResolvedInteractionContinuationWakeup({
+        await queueResolvedInteractionContinuationWakeup({
           heartbeat,
           issue,
           interaction,
@@ -9788,7 +9824,7 @@ export function issueRoutes(
         },
       });
 
-      queueResolvedInteractionContinuationWakeup({
+      await queueResolvedInteractionContinuationWakeup({
         heartbeat,
         issue,
         interaction,
