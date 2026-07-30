@@ -1039,7 +1039,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return latest?.userId ?? null;
   }
 
-  async function getLatestResolvedContinuationInteraction(companyId: string, issueId: string) {
+  async function listContinuationProgressInteractions(companyId: string, issueId: string) {
     return db
       .select({
         id: issueThreadInteractions.id,
@@ -1081,9 +1081,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           ),
         ),
       )
-      .orderBy(desc(sql`coalesce(${issueThreadInteractions.resolvedAt}, ${issueThreadInteractions.updatedAt})`), desc(issueThreadInteractions.id))
-      .limit(1)
-      .then((rows) => rows[0] ?? null);
+      .orderBy(asc(sql`coalesce(${issueThreadInteractions.resolvedAt}, ${issueThreadInteractions.updatedAt})`), asc(issueThreadInteractions.id));
   }
 
   async function hasSuccessfulIssueRunSince(
@@ -3767,19 +3765,30 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         continue;
       }
 
-      const resolvedContinuationInteraction = await getLatestResolvedContinuationInteraction(issue.companyId, issue.id);
-      const interactionResolvedAt = resolvedContinuationInteraction
-        ? resolvedContinuationInteraction.resolvedAt ?? resolvedContinuationInteraction.updatedAt
-        : null;
-      const successfulRunSinceResolution = resolvedContinuationInteraction && interactionResolvedAt && !pendingExecutionState
-        ? await hasSuccessfulIssueRunSince(
-          issue.companyId,
-          issue.id,
-          agentId,
-          interactionResolvedAt,
-          resolvedContinuationInteraction.id,
-        )
-        : false;
+      const continuationInteractions = await listContinuationProgressInteractions(issue.companyId, issue.id);
+      let resolvedContinuationInteraction: (typeof continuationInteractions)[number] | null = null;
+      let interactionResolvedAt: Date | null = null;
+      let successfulRunSinceResolution = false;
+      if (!pendingExecutionState) {
+        for (const interaction of continuationInteractions) {
+          const progressAt = interaction.resolvedAt ?? interaction.updatedAt;
+          const successful = await hasSuccessfulIssueRunSince(
+            issue.companyId,
+            issue.id,
+            agentId,
+            progressAt,
+            interaction.id,
+          );
+          if (successful) {
+            successfulRunSinceResolution = true;
+            continue;
+          }
+          resolvedContinuationInteraction = interaction;
+          interactionResolvedAt = progressAt;
+          successfulRunSinceResolution = false;
+          break;
+        }
+      }
       const hasMissingResolvedContinuation = Boolean(
         resolvedContinuationInteraction
         && interactionResolvedAt

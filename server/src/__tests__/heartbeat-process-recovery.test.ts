@@ -5792,6 +5792,45 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       createdByAgentId: agentId,
       payload: { version: 1, prompt: "Any other constraints?" },
     });
+    if (interactionStatus === "answered") {
+      const newerInteractionId = randomUUID();
+      const newerResolvedAt = new Date(resolvedAt.getTime() + 30_000);
+      await db.insert(issueThreadInteractions).values({
+        id: newerInteractionId,
+        companyId,
+        issueId,
+        kind: "request_user_input",
+        status: "answered",
+        continuationPolicy: "wake_assignee",
+        createdByAgentId: agentId,
+        resolvedByUserId: "responsible-user",
+        resolvedAt: newerResolvedAt,
+        updatedAt: newerResolvedAt,
+        payload: { version: 1, prompt: "Which cache?" },
+        result: { version: 1, value: "Redis" },
+      });
+      const newerRunAt = new Date(newerResolvedAt.getTime() + 1_000);
+      await db.insert(heartbeatRuns).values({
+        id: randomUUID(),
+        companyId,
+        agentId,
+        invocationSource: "on_demand",
+        triggerDetail: "system",
+        status: "succeeded",
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          mutation: "interaction",
+          interactionId: newerInteractionId,
+          interactionStatus: "answered",
+          wakeReason: "issue_commented",
+        },
+        startedAt: newerRunAt,
+        finishedAt: newerRunAt,
+        createdAt: newerRunAt,
+        updatedAt: newerRunAt,
+      });
+    }
 
     const heartbeat = heartbeatService(db);
     const result = await heartbeat.reconcileStrandedAssignedIssues();
@@ -5799,11 +5838,13 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(result.continuationRequeued).toBe(1);
     expect(result.issueIds).toEqual([issueId]);
 
-    const run = await db
+    const runs = await db
       .select({ agentId: heartbeatRuns.agentId, contextSnapshot: heartbeatRuns.contextSnapshot })
       .from(heartbeatRuns)
-      .where(eq(heartbeatRuns.agentId, agentId))
-      .then((rows) => rows[0] ?? null);
+      .where(eq(heartbeatRuns.agentId, agentId));
+    const run = runs.find(
+      (row) => (row.contextSnapshot as Record<string, unknown> | null)?.source === "issue.interaction_continuation_recovery",
+    );
     expect(run?.agentId).toBe(agentId);
     expect(run?.contextSnapshot).toMatchObject({
       issueId,
