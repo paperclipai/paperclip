@@ -99,6 +99,61 @@ describe("dev-runner worktree env bootstrap", () => {
     expect(env.PAPERCLIP_INSTANCE_ID).toBe("feature-worktree");
   });
 
+  it("replaces an inherited PAPERCLIP_CONFIG that points outside this worktree", () => {
+    // A dev runner launched from a shell that already exported the canonical
+    // instance's PAPERCLIP_CONFIG would otherwise run this worktree against a
+    // foreign config file while every other path came from the worktree env.
+    const root = createTempRoot("paperclip-dev-runner-worktree-inherited-config-");
+    const localConfigPath = path.join(root, ".paperclip", "config.json");
+    fs.mkdirSync(path.dirname(localConfigPath), { recursive: true });
+    fs.writeFileSync(path.join(root, ".git"), "gitdir: /tmp/paperclip/.git/worktrees/feature\n", "utf8");
+    fs.writeFileSync(localConfigPath, "{}\n", "utf8");
+    fs.writeFileSync(
+      resolveWorktreeEnvFilePath(root),
+      [
+        "PAPERCLIP_HOME=/tmp/paperclip-worktrees",
+        "PAPERCLIP_INSTANCE_ID=feature-worktree",
+        `PAPERCLIP_CONFIG=${localConfigPath}`,
+        "PAPERCLIP_IN_WORKTREE=true",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const env: NodeJS.ProcessEnv = {
+      PAPERCLIP_CONFIG: "/Users/someone/.paperclip/instances/default/config.json",
+      PAPERCLIP_INSTANCE_ID: "already-set",
+    };
+    bootstrapDevRunnerWorktreeEnv(root, env);
+
+    expect(env.PAPERCLIP_CONFIG).toBe(localConfigPath);
+    // Every other explicitly supplied value still wins, as before.
+    expect(env.PAPERCLIP_INSTANCE_ID).toBe("already-set");
+  });
+
+  it("keeps an inherited PAPERCLIP_CONFIG that already points inside this worktree", () => {
+    const root = createTempRoot("paperclip-dev-runner-worktree-local-config-");
+    const paperclipDir = path.join(root, ".paperclip");
+    const inheritedConfigPath = path.join(paperclipDir, "config.local.json");
+    fs.mkdirSync(paperclipDir, { recursive: true });
+    fs.writeFileSync(path.join(root, ".git"), "gitdir: /tmp/paperclip/.git/worktrees/feature\n", "utf8");
+    fs.writeFileSync(path.join(paperclipDir, "config.json"), "{}\n", "utf8");
+    fs.writeFileSync(
+      resolveWorktreeEnvFilePath(root),
+      [
+        `PAPERCLIP_CONFIG=${path.join(paperclipDir, "config.json")}`,
+        "PAPERCLIP_IN_WORKTREE=true",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const env: NodeJS.ProcessEnv = { PAPERCLIP_CONFIG: inheritedConfigPath };
+    bootstrapDevRunnerWorktreeEnv(root, env);
+
+    expect(env.PAPERCLIP_CONFIG).toBe(inheritedConfigPath);
+  });
+
   it("reports uninitialized linked worktrees so dev runner can fail fast", () => {
     const root = createTempRoot("paperclip-dev-runner-worktree-missing-");
     fs.writeFileSync(path.join(root, ".git"), "gitdir: /tmp/paperclip/.git/worktrees/feature\n", "utf8");

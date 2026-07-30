@@ -378,6 +378,9 @@ That repo-local env also sets:
 - `PAPERCLIP_WORKTREE_COLOR=<hex-color>`
 
 The server/UI use those values for worktree-specific branding such as the top banner and dynamically colored favicon.
+On startup the server also repairs a worktree's `.paperclip/config.json` and `.paperclip/.env` so they point at that worktree's isolated instance.
+That repair only ever writes inside the linked git worktree checkout it is running in, and it refuses (with a warning) any write aimed elsewhere.
+So exporting `PAPERCLIP_IN_WORKTREE=true` outside a provisioned worktree does nothing rather than rewriting another instance's config.
 Authenticated worktree servers also use the `PAPERCLIP_INSTANCE_ID` value to scope Better Auth cookie names.
 Browser cookies are shared by host rather than port, so this prevents logging into one `127.0.0.1:<port>` worktree from replacing another worktree server's session cookie.
 

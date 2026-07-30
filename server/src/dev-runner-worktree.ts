@@ -66,6 +66,33 @@ function resolveHomeAwarePath(value: string): string {
   return path.resolve(expandHomePrefix(value));
 }
 
+function isPathInside(candidatePath: string, rootPath: string): boolean {
+  const candidate = path.resolve(candidatePath);
+  const root = path.resolve(rootPath);
+  return candidate === root || candidate.startsWith(`${root}${path.sep}`);
+}
+
+/**
+ * Decide whether the worktree's own env entry has to outrank an inherited one.
+ *
+ * A dev runner started from a shell that already exported the canonical
+ * instance's `PAPERCLIP_CONFIG` would otherwise keep pointing at that config
+ * while the rest of the run uses this worktree's paths — the same split
+ * between destination and contents that let worktree repair rewrite a foreign
+ * config file. Only an inherited value from outside this checkout is replaced,
+ * and only by a value that points back inside it.
+ */
+function shouldOverrideInheritedEntry(
+  key: string,
+  inheritedValue: string,
+  worktreeValue: string,
+  rootDir: string,
+): boolean {
+  if (key !== "PAPERCLIP_CONFIG") return false;
+  if (isPathInside(resolveHomeAwarePath(inheritedValue), rootDir)) return false;
+  return isPathInside(resolveHomeAwarePath(worktreeValue), rootDir);
+}
+
 function resolveDefaultWorktreeHome(env: NodeJS.ProcessEnv): string {
   return path.resolve(expandHomePrefix(env.PAPERCLIP_WORKTREES_DIR?.trim() || "~/.paperclip-worktrees"));
 }
@@ -120,7 +147,10 @@ export function bootstrapDevRunnerWorktreeEnv(
     env,
   );
   for (const [key, value] of Object.entries(entries)) {
-    if (typeof env[key] === "string" && env[key]!.trim().length > 0) continue;
+    const inherited = env[key];
+    if (typeof inherited === "string" && inherited.trim().length > 0) {
+      if (!shouldOverrideInheritedEntry(key, inherited, value, rootDir)) continue;
+    }
     env[key] = value;
   }
 

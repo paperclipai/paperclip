@@ -2,7 +2,11 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import type { PaperclipConfig } from "@paperclipai/shared";
-import { resolvePaperclipConfigPath, resolvePaperclipEnvPath } from "./paths.js";
+import { isLinkedGitWorktreeCheckout } from "./dev-runner-worktree.js";
+
+const PAPERCLIP_WORKTREE_CONFIG_DIRNAME = ".paperclip";
+const PAPERCLIP_CONFIG_BASENAME = "config.json";
+const PAPERCLIP_ENV_FILENAME = ".env";
 
 function nonEmpty(value: string | null | undefined): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
@@ -92,6 +96,7 @@ function isPathInside(candidatePath: string, rootPath: string): boolean {
 }
 
 type WorktreeRuntimeContext = {
+  worktreeRoot: string;
   configPath: string;
   envPath: string;
   worktreeName: string;
@@ -189,23 +194,104 @@ function writeWorktreePortRegistry(homeDir: string, configPaths: Iterable<string
   fs.renameSync(temporaryPath, registryPath);
 }
 
+function resolveCheckoutRootForWorktreeConfigPath(configPath: string): string | null {
+  const configDir = path.dirname(path.resolve(configPath));
+  if (path.basename(configDir) !== PAPERCLIP_WORKTREE_CONFIG_DIRNAME) return null;
+  return path.dirname(configDir);
+}
+
+function findWorktreeCheckoutRootFromCwd(startDir: string): string | null {
+  let currentDir = path.resolve(startDir);
+
+  while (true) {
+    if (
+      fs.existsSync(path.resolve(currentDir, PAPERCLIP_WORKTREE_CONFIG_DIRNAME)) &&
+      isLinkedGitWorktreeCheckout(currentDir)
+    ) {
+      return currentDir;
+    }
+
+    const parentDir = path.resolve(currentDir, "..");
+    if (parentDir === currentDir) return null;
+    currentDir = parentDir;
+  }
+}
+
+function realPathOrSelf(targetPath: string): string {
+  try {
+    return fs.realpathSync(targetPath);
+  } catch {
+    return path.resolve(targetPath);
+  }
+}
+
+function resolveConfiguredWorktreeCheckoutRoot(
+  env: NodeJS.ProcessEnv,
+  overrideConfigPath?: string,
+): string | null {
+  const configuredConfigPath = nonEmpty(overrideConfigPath) ?? nonEmpty(env.PAPERCLIP_CONFIG);
+  if (!configuredConfigPath) return null;
+
+  const configuredRoot = resolveCheckoutRootForWorktreeConfigPath(
+    resolveHomeAwarePath(configuredConfigPath),
+  );
+  return configuredRoot && isLinkedGitWorktreeCheckout(configuredRoot) ? configuredRoot : null;
+}
+
+/**
+ * Resolve the checkout worktree repair is allowed to write into.
+ *
+ * The destination has to come from the same chain that decides the repaired
+ * *contents* — the linked git worktree checkout this process actually runs in.
+ * `resolvePaperclipConfigPath()` is deliberately not used here: it falls back
+ * to the canonical `<home>/instances/<id>/config.json` whenever cwd sits
+ * outside a worktree and `PAPERCLIP_CONFIG` is unset, which is how repair once
+ * rewrote a main instance with worktree contents.
+ */
+function resolveWorktreeCheckoutRoot(
+  env: NodeJS.ProcessEnv,
+  overrideConfigPath?: string,
+): string | null {
+  // The checkout this process actually runs in decides the destination. A
+  // configured path only fills in when cwd is outside every worktree — and
+  // even then only when it points at a linked worktree checkout, so a
+  // canonical or stale PAPERCLIP_CONFIG inherited from a parent process can
+  // never steer repair at a foreign instance.
+  const cwdCheckoutRoot = findWorktreeCheckoutRootFromCwd(process.cwd());
+  const configuredCheckoutRoot = resolveConfiguredWorktreeCheckoutRoot(env, overrideConfigPath);
+  if (!cwdCheckoutRoot) return configuredCheckoutRoot;
+
+  // Keep the configured spelling when it names the very checkout this process
+  // runs in, so repair does not rewrite `.env` just to swap a symlinked path
+  // for its resolved form.
+  if (
+    configuredCheckoutRoot &&
+    realPathOrSelf(configuredCheckoutRoot) === realPathOrSelf(cwdCheckoutRoot)
+  ) {
+    return configuredCheckoutRoot;
+  }
+
+  return cwdCheckoutRoot;
+}
+
 function resolveWorktreeRuntimeContext(
   env: NodeJS.ProcessEnv,
   overrideConfigPath?: string,
 ): WorktreeRuntimeContext | null {
   if (env.PAPERCLIP_IN_WORKTREE !== "true") return null;
 
-  const configPath = resolvePaperclipConfigPath(overrideConfigPath);
-  const envPath = resolvePaperclipEnvPath(configPath);
+  const worktreeRoot = resolveWorktreeCheckoutRoot(env, overrideConfigPath);
+  if (!worktreeRoot) return null;
+
+  const worktreeConfigDir = path.resolve(worktreeRoot, PAPERCLIP_WORKTREE_CONFIG_DIRNAME);
+  const configPath = path.resolve(worktreeConfigDir, PAPERCLIP_CONFIG_BASENAME);
+  const envPath = path.resolve(worktreeConfigDir, PAPERCLIP_ENV_FILENAME);
   const persistedEnv = readEnvEntries(envPath);
 
   // PAPERCLIP_IN_WORKTREE can leak in from a parent process or a sourced env
-  // file while config resolution still points at a non-worktree target (for
-  // example the default instance under <home>/instances/default). Only adopt
-  // a target as a worktree when its config sits in a `<root>/.paperclip/`
-  // layout and its own persisted env already declares it a worktree;
-  // otherwise the repair would rewrite main-instance config and env files.
-  if (path.basename(path.dirname(configPath)) !== ".paperclip") return null;
+  // file. Only adopt a checkout when its own persisted env already declares it
+  // a worktree; otherwise repair would rewrite a plain checkout's config and
+  // env files just because the ambient environment claimed a worktree run.
   if (persistedEnv.PAPERCLIP_IN_WORKTREE !== "true") return null;
 
   const persistedConfigPath = nonEmpty(persistedEnv.PAPERCLIP_CONFIG);
@@ -214,7 +300,6 @@ function resolveWorktreeRuntimeContext(
     path.resolve(expandHomePrefix(persistedConfigPath)) !== path.resolve(configPath) &&
     !fs.existsSync(resolveHomeAwarePath(persistedConfigPath));
   const stablePersistedEnv = persistedConfigLooksStale ? {} : persistedEnv;
-  const worktreeRoot = path.resolve(path.dirname(configPath), "..");
   const worktreeName =
     nonEmpty(stablePersistedEnv.PAPERCLIP_WORKTREE_NAME) ??
     nonEmpty(env.PAPERCLIP_WORKTREE_NAME) ??
@@ -232,6 +317,7 @@ function resolveWorktreeRuntimeContext(
   const instanceRoot = path.resolve(homeDir, "instances", instanceId);
 
   return {
+    worktreeRoot,
     configPath,
     envPath,
     worktreeName,
@@ -247,9 +333,38 @@ function resolveWorktreeRuntimeContext(
   };
 }
 
-function writeConfigFile(configPath: string, config: PaperclipConfig): void {
-  fs.mkdirSync(path.dirname(configPath), { recursive: true });
-  fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n", { mode: 0o600 });
+/**
+ * Last line of defence before repair touches the filesystem.
+ *
+ * Worktree repair may only ever write inside its own linked git worktree
+ * checkout. Whatever the ambient environment claims, a destination outside
+ * that checkout — a main checkout, or the canonical instance directory — is
+ * refused rather than written, so a leaked `PAPERCLIP_IN_WORKTREE` can never
+ * push worktree paths, ports or `PAPERCLIP_*` env entries into it.
+ */
+export function isWorktreeRepairWriteAllowed(worktreeRoot: string, targetPath: string): boolean {
+  return isPathInside(targetPath, worktreeRoot) && isLinkedGitWorktreeCheckout(worktreeRoot);
+}
+
+function writeWorktreeManagedFile(
+  context: WorktreeRuntimeContext,
+  targetPath: string,
+  contents: string,
+): boolean {
+  if (!isWorktreeRepairWriteAllowed(context.worktreeRoot, targetPath)) {
+    console.warn(
+      `Paperclip worktree repair refused to write ${targetPath}: it is not inside the linked git worktree checkout ${context.worktreeRoot}.`,
+    );
+    return false;
+  }
+
+  fs.mkdirSync(path.dirname(targetPath), { recursive: true });
+  fs.writeFileSync(targetPath, contents, { mode: 0o600 });
+  return true;
+}
+
+function writeWorktreeConfigFile(context: WorktreeRuntimeContext, config: PaperclipConfig): boolean {
+  return writeWorktreeManagedFile(context, context.configPath, `${JSON.stringify(config, null, 2)}\n`);
 }
 
 function resolveRepoManagedWorktreesRoot(worktreeRoot: string): string | null {
@@ -519,25 +634,28 @@ export function maybeRepairLegacyWorktreeConfigAndEnvFiles(): {
                 )
               : undefined;
 
-          selectedConfig = buildIsolatedWorktreeConfig(parsed, context, {
+          const isolatedConfig = buildIsolatedWorktreeConfig(parsed, context, {
             serverPort: selectedServerPort,
             databasePort: selectedDatabasePort,
           });
-          writeConfigFile(context.configPath, selectedConfig);
-          repairedConfig = true;
 
-          if (serverPortCollision || databasePortCollision) {
-            console.warn(
-              [
-                `Worktree port conflict detected for ${context.worktreeName}; updated and persisted workspace ports.`,
-                ...(serverPortCollision
-                  ? [`server: ${parsed.server.port} -> ${selectedServerPort}`]
-                  : []),
-                ...(databasePortCollision && parsed.database.mode === "embedded-postgres"
-                  ? [`database: ${parsed.database.embeddedPostgresPort} -> ${selectedDatabasePort}`]
-                  : []),
-              ].join(" "),
-            );
+          if (writeWorktreeConfigFile(context, isolatedConfig)) {
+            selectedConfig = isolatedConfig;
+            repairedConfig = true;
+
+            if (serverPortCollision || databasePortCollision) {
+              console.warn(
+                [
+                  `Worktree port conflict detected for ${context.worktreeName}; updated and persisted workspace ports.`,
+                  ...(serverPortCollision
+                    ? [`server: ${parsed.server.port} -> ${selectedServerPort}`]
+                    : []),
+                  ...(databasePortCollision && parsed.database.mode === "embedded-postgres"
+                    ? [`database: ${parsed.database.embeddedPostgresPort} -> ${selectedDatabasePort}`]
+                    : []),
+                ].join(" "),
+              );
+            }
           }
         }
 
@@ -572,14 +690,12 @@ export function maybeRepairLegacyWorktreeConfigAndEnvFiles(): {
     PAPERCLIP_WORKTREE_NAME: context.worktreeName,
   };
 
-  const repairedEnv = Object.entries(desiredEnvEntries).some(
+  const envNeedsRepair = Object.entries(desiredEnvEntries).some(
     ([key, value]) => existingEnvEntries[key] !== value,
   );
-
-  if (repairedEnv) {
-    fs.mkdirSync(path.dirname(context.envPath), { recursive: true });
-    fs.writeFileSync(context.envPath, formatEnvEntries(desiredEnvEntries), { mode: 0o600 });
-  }
+  const repairedEnv =
+    envNeedsRepair &&
+    writeWorktreeManagedFile(context, context.envPath, formatEnvEntries(desiredEnvEntries));
 
   return { repairedConfig, repairedEnv };
 }
@@ -606,6 +722,6 @@ export function maybePersistWorktreeRuntimePorts(input: {
   });
 
   if (changed) {
-    writeConfigFile(context.configPath, config);
+    writeWorktreeConfigFile(context, config);
   }
 }
