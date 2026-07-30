@@ -9,6 +9,7 @@ import type {
   CompanyPortabilityPreviewResult,
   UpdateCompanyBranding,
 } from "@paperclipai/shared";
+import type { ExportFidelityReport } from "@paperclipai/shared/portability-fidelity";
 import { api } from "./client";
 
 export type CompanyStats = Record<string, { agentCount: number; issueCount: number }>;
@@ -54,6 +55,8 @@ export const companiesApi = {
     data: CompanyPortabilityExportRequest,
   ) =>
     api.post<CompanyPortabilityExportPreviewResult>(`/companies/${companyId}/exports/preview`, data),
+  exportFidelity: (companyId: string) =>
+    api.get<ExportFidelityReport>(`/companies/${companyId}/export/fidelity`),
   importPreview: (data: CompanyPortabilityPreviewRequest) =>
     api.post<CompanyPortabilityPreviewResult>("/companies/import/preview", data),
   importBundle: (data: CompanyPortabilityImportRequest) =>

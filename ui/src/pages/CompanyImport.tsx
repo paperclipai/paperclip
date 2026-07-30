@@ -3,6 +3,7 @@ import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type {
   CompanyPortabilityCollisionStrategy,
   CompanyPortabilityFileEntry,
+  CompanyPortabilityImportResult,
   CompanyPortabilityPreviewResult,
   CompanyPortabilitySource,
   CompanyPortabilityAdapterOverride,
@@ -13,6 +14,7 @@ import { useToastActions } from "../context/ToastContext";
 import { authApi } from "../api/auth";
 import { companiesApi } from "../api/companies";
 import { agentsApi } from "../api/agents";
+import { routinesApi } from "../api/routines";
 import { sidebarPreferencesApi } from "../api/sidebarPreferences";
 import { queryKeys } from "../lib/queryKeys";
 import { getAgentOrderStorageKey, writeAgentOrder } from "../lib/agent-order";
@@ -386,6 +388,29 @@ async function applyImportedSidebarOrder(
   }
 }
 
+// ── Post-import activation ───────────────────────────────────────────
+
+interface ActivationItem {
+  key: string;
+  kind: "agent" | "routine";
+  id: string;
+  name: string;
+}
+
+/** Imported entries that landed paused and can be activated in place; entries without a result id (skipped etc.) are excluded */
+function buildActivationItems(result: CompanyPortabilityImportResult): ActivationItem[] {
+  const items: ActivationItem[] = [];
+  for (const agent of result.agents) {
+    if (!agent.id || agent.action === "skipped") continue;
+    items.push({ key: `agent:${agent.id}`, kind: "agent", id: agent.id, name: agent.name });
+  }
+  for (const routine of result.routines) {
+    if (!routine.id) continue;
+    items.push({ key: `routine:${routine.id}`, kind: "routine", id: routine.id, name: routine.title });
+  }
+  return items;
+}
+
 // ── Conflict resolution UI ───────────────────────────────────────────
 
 function ConflictResolutionList({
@@ -692,6 +717,18 @@ export function CompanyImport() {
   const [adapterExpandedSlugs, setAdapterExpandedSlugs] = useState<Set<string>>(new Set());
   const [adapterConfigValues, setAdapterConfigValues] = useState<Record<string, CreateConfigValues>>({});
 
+  // Post-import success / activation state
+  const [pauseAutomations, setPauseAutomations] = useState(true);
+  const [importOutcome, setImportOutcome] = useState<{
+    result: CompanyPortabilityImportResult;
+    dashboardPath: string;
+    pausedAutomations: boolean;
+  } | null>(null);
+  const [activationChecked, setActivationChecked] = useState<Set<string>>(new Set());
+  const [activatedKeys, setActivatedKeys] = useState<Set<string>>(new Set());
+  const [activationFailures, setActivationFailures] = useState<Record<string, string>>({});
+  const [isActivating, setIsActivating] = useState(false);
+
   // Fetch current company agents to find CEO adapter type
   const { data: companyAgents } = useQuery({
     queryKey: selectedCompanyId ? queryKeys.agents.list(selectedCompanyId) : ["agents", "none"],
@@ -709,10 +746,11 @@ export function CompanyImport() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: "Org Chart", href: "/org" },
+      { label: selectedCompany?.name ?? "Company", href: "/dashboard" },
+      { label: "Settings", href: "/company/settings" },
       { label: "Import" },
     ]);
-  }, [setBreadcrumbs]);
+  }, [selectedCompany?.name, setBreadcrumbs]);
 
   function buildSource(): CompanyPortabilitySource | null {
     if (sourceMode === "local") {
@@ -844,6 +882,7 @@ export function CompanyImport() {
         nameOverrides: buildFinalNameOverrides(),
         selectedFiles: buildSelectedFiles(),
         adapterOverrides: buildFinalAdapterOverrides(),
+        pauseAutomations,
       });
     },
     onSuccess: async (result) => {
@@ -862,13 +901,14 @@ export function CompanyImport() {
         ?? null;
       await applyImportedSidebarOrder(importPreview, result, sidebarOrderUserId);
       setSelectedCompanyId(importedCompany.id);
-      pushToast({
-        tone: "success",
-        title: "Import complete",
-        body: `${result.company.name}: ${result.agents.length} agent${result.agents.length === 1 ? "" : "s"} processed.`,
+      setActivationChecked(new Set(buildActivationItems(result).map((item) => item.key)));
+      setActivatedKeys(new Set());
+      setActivationFailures({});
+      setImportOutcome({
+        result,
+        dashboardPath: `/${importedCompany.issuePrefix}/dashboard`,
+        pausedAutomations: pauseAutomations,
       });
-      // Force a fresh dashboard load so newly imported agents are immediately visible.
-      window.location.assign(`/${importedCompany.issuePrefix}/dashboard`);
     },
     onError: (err) => {
       pushToast({
@@ -1048,6 +1088,46 @@ export function CompanyImport() {
     }));
   }
 
+  function handleToggleActivationItem(key: string) {
+    setActivationChecked((prev) => {
+      const next = new Set(prev);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
+      return next;
+    });
+  }
+
+  async function handleActivateSelected() {
+    if (!importOutcome || isActivating) return;
+    setIsActivating(true);
+    const nextActivated = new Set(activatedKeys);
+    const nextFailures: Record<string, string> = {};
+    for (const item of buildActivationItems(importOutcome.result)) {
+      if (!activationChecked.has(item.key) || nextActivated.has(item.key)) continue;
+      try {
+        if (item.kind === "agent") {
+          await agentsApi.resume(item.id);
+        } else {
+          await routinesApi.update(item.id, { status: "active" });
+        }
+        nextActivated.add(item.key);
+      } catch (err) {
+        nextFailures[item.key] = err instanceof Error ? err.message : "Activation failed.";
+      }
+    }
+    setActivatedKeys(nextActivated);
+    setActivationFailures(nextFailures);
+    setIsActivating(false);
+    const failureCount = Object.keys(nextFailures).length;
+    if (failureCount > 0) {
+      pushToast({
+        tone: "error",
+        title: "Some items were not activated",
+        body: `${failureCount} item${failureCount === 1 ? "" : "s"} failed to activate; the rest were activated.`,
+      });
+    }
+  }
+
   // Build the list of agents for adapter picking
   const adapterAgents = useMemo<AdapterPickerItem[]>(() => {
     if (!importPreview) return [];
@@ -1085,6 +1165,96 @@ export function CompanyImport() {
       })()
     : null;
   const selectedAction = selectedFile ? (actionMap.get(selectedFile) ?? null) : null;
+
+  if (importOutcome) {
+    const { result, dashboardPath } = importOutcome;
+    const activationItems = importOutcome.pausedAutomations ? buildActivationItems(result) : [];
+    const pendingCount = activationItems.filter(
+      (item) => activationChecked.has(item.key) && !activatedKeys.has(item.key),
+    ).length;
+    return (
+      <div className="px-5 py-5 space-y-4">
+        <div>
+          <h2 className="text-base font-semibold">Import complete</h2>
+          <p className="text-xs text-muted-foreground mt-1">
+            {result.company.name}: {result.agents.length} agent{result.agents.length === 1 ? "" : "s"},{" "}
+            {result.projects.length} project{result.projects.length === 1 ? "" : "s"}, and{" "}
+            {result.routines.length} routine{result.routines.length === 1 ? "" : "s"} processed.
+          </p>
+        </div>
+
+        {result.warnings.length > 0 && (
+          <div className="rounded-md border border-amber-500/30 bg-amber-500/5 px-4 py-3">
+            {result.warnings.map((w) => (
+              <div key={w} className="text-xs text-amber-500">{w}</div>
+            ))}
+          </div>
+        )}
+
+        {activationItems.length > 0 && (
+          <div className="rounded-md border border-border">
+            <div className="flex items-center gap-2 border-b border-border px-4 py-2.5">
+              <h3 className="text-sm font-medium">Activate imported agents and routines</h3>
+              <span className="text-xs text-muted-foreground">imported paused</span>
+            </div>
+            <div className="divide-y divide-border">
+              {activationItems.map((item) => {
+                const isActivated = activatedKeys.has(item.key);
+                const failure = activationFailures[item.key];
+                return (
+                  <label key={item.key} className="flex items-center gap-3 px-4 py-2.5 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={activationChecked.has(item.key)}
+                      disabled={isActivated || isActivating}
+                      onChange={() => handleToggleActivationItem(item.key)}
+                      className="accent-foreground"
+                    />
+                    <Badge variant="outline" className={cn(
+                      "text-(length:--text-nano) uppercase tracking-wide",
+                      item.kind === "agent"
+                        ? "text-blue-500 border-blue-500/30"
+                        : "text-purple-500 border-purple-500/30",
+                    )}>
+                      {item.kind}
+                    </Badge>
+                    <span className="min-w-0 flex-1 truncate">{item.name}</span>
+                    {isActivated ? (
+                      <span className="shrink-0 text-xs text-emerald-500">activated</span>
+                    ) : failure ? (
+                      <span className="shrink-0 text-xs text-destructive">failed: {failure}</span>
+                    ) : (
+                      <span className="shrink-0 text-xs text-muted-foreground">paused</span>
+                    )}
+                  </label>
+                );
+              })}
+            </div>
+            <div className="flex justify-end border-t border-border px-4 py-2.5">
+              <Button
+                size="sm"
+                onClick={() => void handleActivateSelected()}
+                disabled={isActivating || pendingCount === 0}
+              >
+                {isActivating ? "Activating..." : `Activate selected (${pendingCount})`}
+              </Button>
+            </div>
+          </div>
+        )}
+
+        {/* Force a fresh dashboard load so newly imported agents are immediately visible. */}
+        <div className="flex flex-wrap items-center gap-2">
+          <Button
+            size="sm"
+            variant="outline"
+            onClick={() => window.location.assign(dashboardPath)}
+          >
+            Go to dashboard
+          </Button>
+        </div>
+      </div>
+    );
+  }
 
   if (!selectedCompanyId) {
     return <EmptyState icon={Download} message="Select a company to import into." />;
@@ -1288,7 +1458,16 @@ export function CompanyImport() {
           />
 
           {/* Import button — below renames */}
-          <div className="mx-5 mt-3 flex flex-wrap justify-end gap-2">
+          <div className="mx-5 mt-3 flex flex-wrap items-center justify-end gap-3">
+            <label className="flex items-center gap-2 text-xs text-muted-foreground">
+              <input
+                type="checkbox"
+                checked={pauseAutomations}
+                onChange={(e) => setPauseAutomations(e.target.checked)}
+                className="accent-foreground"
+              />
+              Start imported agents and routines paused
+            </label>
             <Button
               size="sm"
               onClick={() => importMutation.mutate()}

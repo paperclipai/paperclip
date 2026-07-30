@@ -599,6 +599,11 @@ export function CompanyExport() {
     queryFn: () => projectsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
   });
+  const { data: fidelityReport } = useQuery({
+    queryKey: queryKeys.companies.exportFidelity(selectedCompanyId!),
+    queryFn: () => companiesApi.exportFidelity(selectedCompanyId!),
+    enabled: !!selectedCompanyId,
+  });
 
   const [exportData, setExportData] = useState<CompanyPortabilityExportPreviewResult | null>(null);
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
@@ -674,10 +679,11 @@ export function CompanyExport() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: "Org Chart", href: "/org" },
+      { label: selectedCompany?.name ?? "Company", href: "/dashboard" },
+      { label: "Settings", href: "/company/settings" },
       { label: "Export" },
     ]);
-  }, [setBreadcrumbs]);
+  }, [selectedCompany?.name, setBreadcrumbs]);
 
   const exportPreviewMutation = useMutation({
     mutationFn: () =>
@@ -966,6 +972,24 @@ export function CompanyExport() {
         <div className="mx-5 mt-3 rounded-md border border-amber-500/30 bg-amber-500/5 px-4 py-3">
           {warnings.map((w) => (
             <div key={w} className="text-xs text-amber-500">{w}</div>
+          ))}
+        </div>
+      )}
+
+      {/* Export fidelity: data the bundle will not carry */}
+      {fidelityReport && fidelityReport.warnings.length > 0 && (
+        <div className="mx-5 mt-3 rounded-md border border-amber-500/30 bg-amber-500/5 px-4 py-3">
+          <h3 className="mb-1.5 text-xs font-medium">Not included in this export</h3>
+          {fidelityReport.warnings.map((warning) => (
+            <div
+              key={warning.code}
+              className={cn(
+                "text-xs",
+                warning.severity === "blocker" ? "font-medium text-destructive" : "text-amber-500",
+              )}
+            >
+              {warning.message}
+            </div>
           ))}
         </div>
       )}
