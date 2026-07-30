@@ -2,6 +2,7 @@ import { spawn } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { and, desc, eq, inArray, isNull, lte, ne, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
+import { terminateLocalService } from "./local-service-supervisor.js";
 import {
   agents,
   approvals,
@@ -75,16 +76,22 @@ import {
   verifyToolArgumentsSignature,
 } from "./tool-content-guards.js";
 
-const DEFAULT_SESSION_TTL_MS = 15 * 60 * 1000;
-const MAX_SESSION_TTL_MS = 60 * 60 * 1000;
+// Self-hosted/local model providers behind a tool call (e.g. a cold-booting
+// vLLM instance) can take much longer than a hosted API to answer the first
+// request after sleep/wake. Deployments that front such a provider can raise
+// these ceilings via env vars; defaults are unchanged for everyone else.
+const DEFAULT_SESSION_TTL_MS = Number(process.env.TOOL_GATEWAY_SESSION_TTL_DEFAULT_MS) || 15 * 60 * 1000;
+const MAX_SESSION_TTL_MS = Number(process.env.TOOL_GATEWAY_SESSION_TTL_MAX_MS) || 60 * 60 * 1000;
 const DEFAULT_TOOL_TIMEOUT_MS = 10_000;
 // When a human approves a parked write, the server carries it out on their
 // behalf with no interactive caller left to raise `timeoutMs`. Remote write
 // providers (e.g. Zapier Google Sheets `add_row`) routinely take longer than
-// the 10s interactive default, so an approved action would otherwise abort with
-// `tool_timeout` even though the approval succeeded. Give approved executions
-// the full permitted headroom instead.
-const APPROVED_EXECUTION_TIMEOUT_MS = 60_000;
+// the 10s interactive default, so an approved action would otherwise abort
+// with `tool_timeout` even though the approval succeeded. Give approved
+// executions the full permitted headroom instead. This also doubles as the
+// ceiling any caller-supplied `timeoutMs` can be clamped to (see `timeoutMs()`
+// below) — deployments fronting a slow-to-cold-start provider can raise it.
+const APPROVED_EXECUTION_TIMEOUT_MS = Number(process.env.TOOL_GATEWAY_MAX_TOOL_TIMEOUT_MS) || 60_000;
 const MAX_REMOTE_MCP_RESPONSE_BYTES = 1_000_000;
 const ACTIVE_GATEWAY_RUN_STATUSES = new Set(["running"]);
 const uuidPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
@@ -440,7 +447,7 @@ function gatewaySessionFromRow(row: typeof toolGatewaySessions.$inferSelect): To
 
 function timeoutMs(value: number | undefined) {
   if (!Number.isFinite(value)) return DEFAULT_TOOL_TIMEOUT_MS;
-  return Math.max(1, Math.min(60_000, Math.floor(value ?? DEFAULT_TOOL_TIMEOUT_MS)));
+  return Math.max(1, Math.min(APPROVED_EXECUTION_TIMEOUT_MS, Math.floor(value ?? DEFAULT_TOOL_TIMEOUT_MS)));
 }
 
 function sessionTtlMs(value: number | undefined) {
@@ -1242,6 +1249,46 @@ export function createToolGatewayService(
     }
   }
 
+  // A revoked/expired gateway session can never be renewed (there is no
+  // session-refresh path), so a still-"running" run behind it can never make
+  // another tool call again. Left alone, its local adapter process (opencode,
+  // claude, etc.) just keeps retrying against the dead session forever —
+  // burning resources and blocking the run's concurrency slot indefinitely
+  // instead of failing loudly. Fail the run and kill its process here, once,
+  // the first time we notice its session has died.
+  async function terminateOrphanedRunOnDeadSession(row: typeof toolGatewaySessions.$inferSelect, reasonCode: string) {
+    const [candidate] = await db
+      .select({
+        status: heartbeatRuns.status,
+        processPid: heartbeatRuns.processPid,
+        processGroupId: heartbeatRuns.processGroupId,
+      })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, row.runId))
+      .limit(1);
+    if (!candidate || candidate.status !== "running") return;
+    const pid = candidate.processPid;
+    const processGroupId = candidate.processGroupId;
+    // Nothing to clean up (e.g. a session with no local adapter process
+    // behind it) -- leave the run's status alone.
+    if (typeof pid !== "number" && typeof processGroupId !== "number") return;
+
+    const now = new Date();
+    const [run] = await db
+      .update(heartbeatRuns)
+      .set({
+        status: "failed",
+        error: `Tool gateway session died (${reasonCode}) with no way to renew it; process terminated`,
+        errorCode: "tool_gateway_session_dead",
+        finishedAt: now,
+        updatedAt: now,
+      })
+      .where(and(eq(heartbeatRuns.id, row.runId), eq(heartbeatRuns.status, "running")))
+      .returning({ processPid: heartbeatRuns.processPid, processGroupId: heartbeatRuns.processGroupId });
+    if (!run) return;
+    await terminateLocalService({ pid: pid ?? processGroupId ?? 0, processGroupId });
+  }
+
   async function getActiveSession(
     sessionToken: string,
     namedGatewayProtocol?: {
@@ -1289,11 +1336,13 @@ export function createToolGatewayService(
 
     if (row.revokedAt) {
       await writeSessionAuthFailure(row, "session_revoked");
+      await terminateOrphanedRunOnDeadSession(row, "session_revoked");
       throw new ToolGatewayHttpError(401, "Tool gateway session is expired or invalid", "session_revoked");
     }
 
     if (row.expiresAt.getTime() <= Date.now()) {
       await writeSessionAuthFailure(row, "session_expired");
+      await terminateOrphanedRunOnDeadSession(row, "session_expired");
       throw new ToolGatewayHttpError(401, "Tool gateway session is expired or invalid", "session_expired");
     }
 
