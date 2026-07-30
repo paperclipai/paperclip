@@ -4,7 +4,13 @@ import { execFile } from "node:child_process";
 import path from "node:path";
 import { promisify } from "node:util";
 import { and, eq, inArray } from "drizzle-orm";
-import { builtInManagedResources, principalPermissionGrants, type Db } from "@paperclipai/db";
+import {
+  builtInManagedResources,
+  issueRelations,
+  issues as issuesTable,
+  principalPermissionGrants,
+  type Db,
+} from "@paperclipai/db";
 import type {
   CompanyPortabilityAgentManifestEntry,
   CompanyPortabilityCollisionStrategy,
@@ -25,6 +31,9 @@ import type {
   CompanyPortabilityProjectWorkspaceManifestEntry,
   CompanyPortabilityIssueRoutineManifestEntry,
   CompanyPortabilityIssueRoutineTriggerManifestEntry,
+  CompanyPortabilityIssueDocumentManifestEntry,
+  CompanyPortabilityIssueWorkProductManifestEntry,
+  CompanyPortabilityIssueMonitorManifestEntry,
   CompanyPortabilityIssueManifestEntry,
   CompanyPortabilitySidebarOrder,
   CompanyPortabilitySkillManifestEntry,
@@ -70,8 +79,10 @@ import { renderOrgChartPng, type OrgNode } from "../routes/org-chart-svg.js";
 import { companySkillService } from "./company-skills.js";
 import { companyService } from "./companies.js";
 import { validateCron } from "./cron.js";
+import { documentService } from "./documents.js";
 import { issueService } from "./issues.js";
 import { projectService } from "./projects.js";
+import { workProductService } from "./work-products.js";
 import { routineService } from "./routines.js";
 import { secretService } from "./secrets.js";
 import { getConfiguredSecretProvider } from "../secrets/configured-provider.js";
@@ -841,6 +852,90 @@ function readPortableIssueLabelNames(value: unknown): string[] {
     names.push(name);
   }
   return names;
+}
+
+function readPortableIssueBlockedBy(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const slugs: string[] = [];
+  const seen = new Set<string>();
+  for (const entry of value) {
+    const slug = asString(entry);
+    if (!slug || seen.has(slug)) continue;
+    seen.add(slug);
+    slugs.push(slug);
+  }
+  return slugs;
+}
+
+function normalizePortableIssueDocuments(
+  value: unknown,
+  warnings: string[],
+  sourceLabel: string,
+): CompanyPortabilityIssueDocumentManifestEntry[] {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) {
+    warnings.push(`${sourceLabel} documents were ignored because they are not an array.`);
+    return [];
+  }
+  const documents: CompanyPortabilityIssueDocumentManifestEntry[] = [];
+  const seenKeys = new Set<string>();
+  for (const [index, entry] of value.entries()) {
+    if (!isPlainRecord(entry)) {
+      warnings.push(`${sourceLabel} document ${index + 1} was ignored because it is not an object.`);
+      continue;
+    }
+    const key = asString(entry.key);
+    const documentPath = asString(entry.path);
+    if (!key || !documentPath) {
+      warnings.push(`${sourceLabel} document ${index + 1} was ignored because it is missing a key or path.`);
+      continue;
+    }
+    if (seenKeys.has(key)) continue;
+    seenKeys.add(key);
+    documents.push({
+      key,
+      title: asString(entry.title),
+      format: asString(entry.format) ?? "markdown",
+      path: normalizePortablePath(documentPath),
+    });
+  }
+  return documents;
+}
+
+function normalizePortableIssueWorkProducts(value: unknown): CompanyPortabilityIssueWorkProductManifestEntry[] {
+  if (!Array.isArray(value)) return [];
+  const workProducts: CompanyPortabilityIssueWorkProductManifestEntry[] = [];
+  for (const entry of value) {
+    if (!isPlainRecord(entry)) continue;
+    const type = asString(entry.type);
+    const provider = asString(entry.provider);
+    const title = asString(entry.title);
+    if (!type || !provider || !title) continue;
+    workProducts.push({
+      type,
+      provider,
+      externalId: asString(entry.externalId),
+      title,
+      url: asString(entry.url),
+      status: asString(entry.status) ?? "active",
+      reviewState: asString(entry.reviewState) ?? "none",
+      isPrimary: asBoolean(entry.isPrimary) ?? false,
+      healthStatus: asString(entry.healthStatus) ?? "unknown",
+      summary: asString(entry.summary),
+      metadata: isPlainRecord(entry.metadata) ? entry.metadata : null,
+    });
+  }
+  return workProducts;
+}
+
+function normalizePortableIssueMonitor(value: unknown): CompanyPortabilityIssueMonitorManifestEntry | null {
+  if (!isPlainRecord(value)) return null;
+  const monitor = {
+    notes: asString(value.notes),
+    scheduledBy: asString(value.scheduledBy),
+    hadSchedule: asBoolean(value.hadSchedule) ?? false,
+  };
+  return monitor.notes !== null || monitor.scheduledBy !== null || monitor.hadSchedule ? monitor : null;
 }
 
 function appendCodexImportArg(adapterConfig: Record<string, unknown>, arg: string) {
@@ -3006,6 +3101,10 @@ function buildManifestFromPackageFiles(
         ? extension.assigneeAdapterOverrides
         : null,
       comments: readPortableIssueComments(extension.comments, warnings, `Task ${slug}`),
+      blockedBy: readPortableIssueBlockedBy(extension.blockedBy),
+      documents: normalizePortableIssueDocuments(extension.documents, warnings, `Task ${slug}`),
+      workProducts: normalizePortableIssueWorkProducts(extension.workProducts),
+      monitor: normalizePortableIssueMonitor(extension.monitor),
       metadata: isPlainRecord(extension.metadata) ? extension.metadata : null,
     });
     if (frontmatter.kind && frontmatter.kind !== "task") {
@@ -3088,6 +3187,8 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
   const issues = issueService(db);
   const companySkills = companySkillService(db);
   const secrets = secretService(db);
+  const documentsSvc = documentService(db);
+  const workProductsSvc = workProductService(db);
   const strictSecretsMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true";
   const defaultSecretProvider = getConfiguredSecretProvider();
 
@@ -3862,6 +3963,8 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       }
     }
 
+    let unexportedBlockerEdgeCount = 0;
+    let unportableWorkProductRefCount = 0;
     for (const issue of selectedIssueRows) {
       const taskSlug = taskSlugByIssueId.get(issue.id)!;
       const projectSlug = issue.projectId ? (projectSlugById.get(issue.projectId) ?? null) : null;
@@ -3884,6 +3987,52 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         }
       }
       const comments = await issuesSvc.listComments(issue.id, { order: "asc" });
+      // Blocker edges travel by task slug; only edges with both endpoints in
+      // the export can be carried.
+      const relationSummaries = await issuesSvc.getRelationSummaries(issue.id);
+      const blockedBySlugs: string[] = [];
+      for (const blocker of relationSummaries.blockedBy) {
+        const blockerSlug = taskSlugByIssueId.get(blocker.id);
+        if (blockerSlug) {
+          blockedBySlugs.push(blockerSlug);
+        } else {
+          unexportedBlockerEdgeCount += 1;
+        }
+      }
+      blockedBySlugs.sort((left, right) => left.localeCompare(right));
+      unexportedBlockerEdgeCount += relationSummaries.blocks
+        .filter((blocked) => !taskSlugByIssueId.has(blocked.id))
+        .length;
+      const issueDocumentRows = await documentsSvc.listIssueDocuments(issue.id, { includeSystem: true });
+      const documentEntries = issueDocumentRows.map((document) => {
+        const documentPath = `tasks/${taskSlug}/documents/${document.key}.md`;
+        files[documentPath] = document.body ?? "";
+        return {
+          key: document.key,
+          title: document.title ?? null,
+          format: document.format,
+          path: documentPath,
+        };
+      });
+      const workProductRows = await workProductsSvc.listForIssue(issue.id);
+      const workProductEntries = workProductRows.map((workProduct) => {
+        if (workProduct.executionWorkspaceId || workProduct.runtimeServiceId || workProduct.createdByRunId) {
+          unportableWorkProductRefCount += 1;
+        }
+        return stripEmptyValues({
+          type: workProduct.type,
+          provider: workProduct.provider,
+          externalId: workProduct.externalId ?? null,
+          title: workProduct.title,
+          url: workProduct.url ?? null,
+          status: workProduct.status,
+          reviewState: workProduct.reviewState !== "none" ? workProduct.reviewState : undefined,
+          isPrimary: workProduct.isPrimary ? true : undefined,
+          healthStatus: workProduct.healthStatus !== "unknown" ? workProduct.healthStatus : undefined,
+          summary: workProduct.summary ?? null,
+          metadata: workProduct.metadata ?? null,
+        });
+      });
       files[taskPath] = buildMarkdown(
         {
           name: issue.title,
@@ -3919,8 +4068,25 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
                 : new Date(comment.createdAt).toISOString(),
             }))
           : undefined,
+        blockedBy: blockedBySlugs,
+        documents: documentEntries,
+        workProducts: workProductEntries,
+        monitor: {
+          notes: issue.monitorNotes ?? null,
+          scheduledBy: issue.monitorScheduledBy ?? null,
+          // Timestamps are not portable; the importer restores monitors
+          // un-armed, so only the fact that a check was scheduled travels.
+          hadSchedule: issue.monitorNextCheckAt != null ? true : undefined,
+        },
       });
       paperclipTasksOut[taskSlug] = isPlainRecord(extension) ? extension : {};
+    }
+
+    if (unexportedBlockerEdgeCount > 0) {
+      warnings.push(`${unexportedBlockerEdgeCount} blocker relation${unexportedBlockerEdgeCount === 1 ? " references a task" : "s reference tasks"} outside this export and ${unexportedBlockerEdgeCount === 1 ? "was" : "were"} not included.`);
+    }
+    if (unportableWorkProductRefCount > 0) {
+      warnings.push(`${unportableWorkProductRefCount} work product${unportableWorkProductRefCount === 1 ? " references" : "s reference"} execution workspaces or runs that are not portable; those references were omitted from the export.`);
     }
 
     for (const { workspaceId, taskSlugs } of unportableTaskWorkspaceRefs.values()) {
@@ -5102,6 +5268,10 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           }
         }
 
+        const importedIssueIdBySlug = new Map<string, string>();
+        const blockedByBySlug = new Map<string, string[]>();
+        let unarmedMonitorCount = 0;
+
         for (const manifestIssue of sourceManifest.issues) {
           const markdownRaw = readPortableTextFile(plan.source.files, manifestIssue.path);
           const parsed = markdownRaw ? parseFrontmatterMarkdown(markdownRaw) : null;
@@ -5280,6 +5450,122 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
               createdAt: comment.createdAt,
             });
           }
+          importedIssueIdBySlug.set(manifestIssue.slug, createdIssue.id);
+          if ((manifestIssue.blockedBy ?? []).length > 0) {
+            blockedByBySlug.set(manifestIssue.slug, manifestIssue.blockedBy ?? []);
+          }
+          for (const documentEntry of manifestIssue.documents ?? []) {
+            const documentBody = readPortableTextFile(plan.source.files, documentEntry.path);
+            if (documentBody === null) {
+              warnings.push(`Task ${manifestIssue.slug} document ${documentEntry.key} was skipped because its file is missing from the package: ${documentEntry.path}`);
+              continue;
+            }
+            try {
+              await documentsSvc.upsertIssueDocument({
+                issueId: createdIssue.id,
+                key: documentEntry.key,
+                title: documentEntry.title,
+                format: documentEntry.format,
+                body: documentBody,
+                createdByUserId: actorUserId ?? null,
+              });
+            } catch (error) {
+              warnings.push(`Task ${manifestIssue.slug} document ${documentEntry.key} could not be imported: ${error instanceof Error ? error.message : String(error)}`);
+            }
+          }
+          for (const workProductEntry of manifestIssue.workProducts ?? []) {
+            await workProductsSvc.createForIssue(createdIssue.id, targetCompany.id, {
+              projectId: createdIssue.projectId ?? projectId ?? null,
+              type: workProductEntry.type,
+              provider: workProductEntry.provider,
+              externalId: workProductEntry.externalId,
+              title: workProductEntry.title,
+              url: workProductEntry.url,
+              status: workProductEntry.status,
+              reviewState: workProductEntry.reviewState,
+              isPrimary: workProductEntry.isPrimary,
+              healthStatus: workProductEntry.healthStatus,
+              summary: workProductEntry.summary,
+              metadata: workProductEntry.metadata,
+              // Workspace/run references never travel across boards.
+              executionWorkspaceId: null,
+              runtimeServiceId: null,
+              createdByRunId: null,
+              sourceTrust: null,
+            });
+          }
+          if (manifestIssue.monitor) {
+            // Monitors land un-armed: notes and provenance are restored but
+            // monitorNextCheckAt stays NULL until an operator re-arms them.
+            if (manifestIssue.monitor.notes !== null || manifestIssue.monitor.scheduledBy !== null) {
+              await db
+                .update(issuesTable)
+                .set({
+                  monitorNotes: manifestIssue.monitor.notes,
+                  monitorScheduledBy: manifestIssue.monitor.scheduledBy,
+                })
+                .where(eq(issuesTable.id, createdIssue.id));
+            }
+            unarmedMonitorCount += 1;
+          }
+        }
+
+        if (blockedByBySlug.size > 0) {
+          const acceptedAdjacency = new Map<string, string[]>();
+          const wouldCreateBlockingCycle = (blockedIssueId: string, blockerIssueId: string) => {
+            // Mirrors assertNoBlockingCycles in the issues service: a cycle
+            // exists when the blocked issue already (transitively) blocks the
+            // prospective blocker.
+            const queue = [...(acceptedAdjacency.get(blockedIssueId) ?? [])];
+            const visited = new Set<string>([blockedIssueId]);
+            while (queue.length > 0) {
+              const current = queue.shift()!;
+              if (current === blockerIssueId) return true;
+              if (visited.has(current)) continue;
+              visited.add(current);
+              queue.push(...(acceptedAdjacency.get(current) ?? []));
+            }
+            return false;
+          };
+          const relationRows: Array<{ issueId: string; relatedIssueId: string }> = [];
+          for (const [slug, blockerSlugs] of blockedByBySlug) {
+            const blockedIssueId = importedIssueIdBySlug.get(slug);
+            if (!blockedIssueId) continue;
+            for (const blockerSlug of blockerSlugs) {
+              const blockerIssueId = importedIssueIdBySlug.get(blockerSlug);
+              if (!blockerIssueId) {
+                warnings.push(`Task ${slug} blocker ${blockerSlug} was skipped because that task was not imported.`);
+                continue;
+              }
+              if (blockerIssueId === blockedIssueId) continue;
+              if (wouldCreateBlockingCycle(blockedIssueId, blockerIssueId)) {
+                warnings.push(`Task ${slug} blocker ${blockerSlug} was skipped because it would create a blocking cycle.`);
+                continue;
+              }
+              const adjacency = acceptedAdjacency.get(blockerIssueId) ?? [];
+              adjacency.push(blockedIssueId);
+              acceptedAdjacency.set(blockerIssueId, adjacency);
+              relationRows.push({ issueId: blockerIssueId, relatedIssueId: blockedIssueId });
+            }
+          }
+          if (relationRows.length > 0) {
+            const relationCompanyId = targetCompany.id;
+            await db
+              .insert(issueRelations)
+              .values(relationRows.map((row) => ({
+                companyId: relationCompanyId,
+                issueId: row.issueId,
+                relatedIssueId: row.relatedIssueId,
+                type: "blocks" as const,
+                createdByAgentId: null,
+                createdByUserId: actorUserId ?? null,
+              })))
+              .onConflictDoNothing();
+          }
+        }
+
+        if (unarmedMonitorCount > 0) {
+          warnings.push(`${unarmedMonitorCount} monitor${unarmedMonitorCount === 1 ? " was" : "s were"} imported un-armed; re-arm ${unarmedMonitorCount === 1 ? "it" : "them"} from the task page to resume checks.`);
         }
       }
 

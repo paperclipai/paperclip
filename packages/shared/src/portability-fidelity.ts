@@ -32,14 +32,10 @@ export interface ExportFidelityReport {
 }
 
 const UNSUPPORTED_DATA_WARNINGS: ReadonlyArray<[code: string, countKey: keyof ExportFidelityCounts, label: string]> = [
-  ["issue_blockers_not_exported", "issueBlockerRelations", "issue blocker relation"],
-  ["issue_documents_not_exported", "issueDocuments", "issue document"],
-  ["work_products_not_exported", "issueWorkProducts", "issue work product"],
   ["attachments_not_exported", "issueAttachments", "issue attachment"],
   ["approvals_not_exported", "approvals", "approval"],
   ["cost_history_not_exported", "costEvents", "cost event"],
   ["activity_history_not_exported", "activityLogEntries", "activity log entry"],
-  ["monitors_not_exported", "issueMonitors", "issue monitor"],
 ];
 
 export function buildExportFidelityWarnings(counts: ExportFidelityCounts): PortabilityFidelityWarning[] {

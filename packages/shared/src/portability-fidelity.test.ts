@@ -23,35 +23,35 @@ describe("buildExportFidelityWarnings", () => {
     expect(buildExportFidelityWarnings(zeroCounts)).toEqual([]);
   });
 
-  it("emits no label warnings because labels travel in the bundle", () => {
-    expect(buildExportFidelityWarnings({ ...zeroCounts, labelDefinitions: 2, issueLabelReferences: 3 })).toEqual([]);
+  it("emits no warnings for data the bundle now carries", () => {
+    expect(buildExportFidelityWarnings({
+      ...zeroCounts,
+      labelDefinitions: 2,
+      issueLabelReferences: 3,
+      issueBlockerRelations: 2,
+      issueDocuments: 1,
+      issueWorkProducts: 3,
+      issueMonitors: 8,
+    })).toEqual([]);
   });
 
   it("emits one warning per unsupported data category with counts", () => {
     const warnings = buildExportFidelityWarnings({
       ...zeroCounts,
-      issueBlockerRelations: 2,
-      issueDocuments: 1,
-      issueWorkProducts: 3,
       issueAttachments: 4,
       approvals: 5,
       costEvents: 6,
       activityLogEntries: 7,
-      issueMonitors: 8,
     });
     expect(warnings.map((warning) => warning.code)).toEqual([
-      "issue_blockers_not_exported",
-      "issue_documents_not_exported",
-      "work_products_not_exported",
       "attachments_not_exported",
       "approvals_not_exported",
       "cost_history_not_exported",
       "activity_history_not_exported",
-      "monitors_not_exported",
     ]);
     expect(warnings.every((warning) => warning.severity === "warning")).toBe(true);
-    expect(warnings[0]?.message).toBe("2 issue blocker relations are not included in the export bundle.");
-    expect(warnings[1]?.message).toBe("1 issue document is not included in the export bundle.");
+    expect(warnings[0]?.message).toBe("4 issue attachments are not included in the export bundle.");
+    expect(warnings[1]?.message).toBe("5 approvals are not included in the export bundle.");
   });
 });
 

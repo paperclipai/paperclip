@@ -43,6 +43,17 @@ const issueSvc = {
   addComment: vi.fn(),
   listLabels: vi.fn(),
   createLabel: vi.fn(),
+  getRelationSummaries: vi.fn(),
+};
+
+const documentSvc = {
+  listIssueDocuments: vi.fn(),
+  upsertIssueDocument: vi.fn(),
+};
+
+const workProductSvc = {
+  listForIssue: vi.fn(),
+  createForIssue: vi.fn(),
 };
 
 const routineSvc = {
@@ -96,6 +107,18 @@ vi.mock("../services/projects.js", () => ({
 
 vi.mock("../services/issues.js", () => ({
   issueService: () => issueSvc,
+}));
+
+vi.mock("../services/documents.js", () => ({
+  documentService: () => documentSvc,
+  extractLegacyPlanBody: () => null,
+  mapIssueDocumentRow: (row: unknown) => row,
+  issueDocumentSelect: {},
+}));
+
+vi.mock("../services/work-products.js", () => ({
+  workProductService: () => workProductSvc,
+  toIssueWorkProduct: (row: unknown) => row,
 }));
 
 vi.mock("../services/routines.js", () => ({
@@ -253,6 +276,11 @@ describe("company portability", () => {
       name: data.name,
       color: data.color,
     }));
+    issueSvc.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
+    documentSvc.listIssueDocuments.mockResolvedValue([]);
+    documentSvc.upsertIssueDocument.mockResolvedValue({ created: true });
+    workProductSvc.listForIssue.mockResolvedValue([]);
+    workProductSvc.createForIssue.mockResolvedValue({ id: "work-product-imported" });
     routineSvc.list.mockResolvedValue([]);
     routineSvc.getDetail.mockImplementation(async (id: string) => {
       const rows = await routineSvc.list();
@@ -3515,6 +3543,281 @@ describe("company portability", () => {
     );
     expect(result.warnings).toContain(
       "Task kickoff dropped 2 label references because the bundle carries raw label ids that do not exist in the target company.",
+    );
+  });
+
+  function mockTaskFidelityExportSources() {
+    projectSvc.list.mockResolvedValue([]);
+    projectSvc.listWorkspaces.mockResolvedValue([]);
+    issueSvc.list.mockResolvedValue([
+      {
+        id: "issue-1",
+        identifier: "PAP-1",
+        title: "Alpha task",
+        description: "Carries documents, work products, and a monitor",
+        projectId: null,
+        projectWorkspaceId: null,
+        assigneeAgentId: null,
+        status: "todo",
+        priority: "high",
+        labelIds: [],
+        billingCode: null,
+        executionWorkspaceSettings: null,
+        assigneeAdapterOverrides: null,
+        monitorNotes: "Check deploy daily",
+        monitorScheduledBy: "agent",
+        monitorNextCheckAt: new Date("2026-07-01T00:00:00.000Z"),
+      },
+      {
+        id: "issue-2",
+        identifier: "PAP-2",
+        title: "Beta task",
+        description: "Blocked by Alpha",
+        projectId: null,
+        projectWorkspaceId: null,
+        assigneeAgentId: null,
+        status: "todo",
+        priority: "medium",
+        labelIds: [],
+        billingCode: null,
+        executionWorkspaceSettings: null,
+        assigneeAdapterOverrides: null,
+      },
+    ]);
+    const relationSummary = (id: string, identifier: string, title: string) => ({
+      id,
+      identifier,
+      title,
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: null,
+      assigneeUserId: null,
+    });
+    issueSvc.getRelationSummaries.mockImplementation(async (issueId: string) => {
+      if (issueId === "issue-1") {
+        return {
+          blockedBy: [relationSummary("issue-outside", "PAP-9", "Outside task")],
+          blocks: [relationSummary("issue-2", "PAP-2", "Beta task")],
+        };
+      }
+      if (issueId === "issue-2") {
+        return {
+          blockedBy: [relationSummary("issue-1", "PAP-1", "Alpha task")],
+          blocks: [],
+        };
+      }
+      return { blockedBy: [], blocks: [] };
+    });
+    documentSvc.listIssueDocuments.mockImplementation(async (issueId: string) => issueId === "issue-1"
+      ? [
+          {
+            id: "document-1",
+            companyId: "company-1",
+            issueId: "issue-1",
+            key: "spec",
+            title: "Spec",
+            format: "markdown",
+            body: "# Spec\n\nDetails.",
+            latestRevisionId: "revision-1",
+            latestRevisionNumber: 1,
+          },
+        ]
+      : []);
+    workProductSvc.listForIssue.mockImplementation(async (issueId: string) => issueId === "issue-1"
+      ? [
+          {
+            id: "work-product-1",
+            companyId: "company-1",
+            projectId: null,
+            issueId: "issue-1",
+            executionWorkspaceId: "ws-1",
+            runtimeServiceId: null,
+            type: "pull_request",
+            provider: "github",
+            externalId: "42",
+            title: "Fix bug",
+            url: "https://github.com/example/repo/pull/42",
+            status: "merged",
+            reviewState: "approved",
+            isPrimary: true,
+            healthStatus: "healthy",
+            summary: "Fixes the bug",
+            metadata: { repo: "example/repo" },
+            sourceTrust: null,
+            createdByRunId: "run-1",
+            createdAt: new Date("2026-06-01T00:00:00.000Z"),
+            updatedAt: new Date("2026-06-01T00:00:00.000Z"),
+          },
+        ]
+      : []);
+  }
+
+  function fakeImportDb() {
+    const insertedRelationValues: Array<Record<string, unknown>> = [];
+    const monitorUpdates: Array<Record<string, unknown>> = [];
+    const db = {
+      insert: () => ({
+        values: (rows: Array<Record<string, unknown>>) => ({
+          onConflictDoNothing: async () => {
+            insertedRelationValues.push(...rows);
+          },
+        }),
+      }),
+      update: () => ({
+        set: (patch: Record<string, unknown>) => ({
+          where: async () => {
+            monitorUpdates.push(patch);
+          },
+        }),
+      }),
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    } as any;
+    return { db, insertedRelationValues, monitorUpdates };
+  }
+
+  it("carries blockers, documents, work products, and monitors through export and import", async () => {
+    const { db, insertedRelationValues, monitorUpdates } = fakeImportDb();
+    const portability = companyPortabilityService(db);
+    mockTaskFidelityExportSources();
+
+    const exported = await portability.exportBundle("company-1", {
+      include: { company: true, agents: false, projects: false, issues: true },
+    });
+
+    expect(asTextFile(exported.files["tasks/pap-1/documents/spec.md"])).toBe("# Spec\n\nDetails.");
+    const extension = asTextFile(exported.files[".paperclip.yaml"]);
+    expect(extension).toContain("blockedBy:");
+    expect(extension).toContain('"pap-1"');
+    expect(extension).toContain("workProducts:");
+    expect(extension).toContain("monitor:");
+    expect(extension).toContain('"Check deploy daily"');
+    expect(extension).not.toContain("ws-1");
+    expect(extension).not.toContain("run-1");
+    expect(exported.warnings).toContain(
+      "1 blocker relation references a task outside this export and was not included.",
+    );
+    expect(exported.warnings).toContain(
+      "1 work product references execution workspaces or runs that are not portable; those references were omitted from the export.",
+    );
+    const alphaEntry = exported.manifest.issues.find((issue) => issue.slug === "pap-1");
+    const betaEntry = exported.manifest.issues.find((issue) => issue.slug === "pap-2");
+    expect(alphaEntry?.documents).toEqual([
+      { key: "spec", title: "Spec", format: "markdown", path: "tasks/pap-1/documents/spec.md" },
+    ]);
+    expect(alphaEntry?.workProducts).toEqual([
+      expect.objectContaining({
+        type: "pull_request",
+        provider: "github",
+        externalId: "42",
+        title: "Fix bug",
+        status: "merged",
+        reviewState: "approved",
+        isPrimary: true,
+        healthStatus: "healthy",
+      }),
+    ]);
+    expect(alphaEntry?.monitor).toEqual({
+      notes: "Check deploy daily",
+      scheduledBy: "agent",
+      hadSchedule: true,
+    });
+    expect(alphaEntry?.blockedBy).toEqual([]);
+    expect(betaEntry?.blockedBy).toEqual(["pap-1"]);
+
+    companySvc.create.mockResolvedValue({ id: "company-imported", name: "Imported" });
+    accessSvc.ensureMembership.mockResolvedValue(undefined);
+    agentSvc.list.mockResolvedValue([]);
+    issueSvc.create.mockImplementation(async (_companyId: string, input: Record<string, unknown>) => ({
+      id: input.title === "Alpha task" ? "issue-imported-1" : "issue-imported-2",
+      title: input.title,
+      projectId: null,
+    }));
+
+    const result = await portability.importBundle({
+      source: { type: "inline", rootPath: exported.rootPath, files: exported.files },
+      include: { company: true, agents: false, projects: false, issues: true },
+      target: { mode: "new_company", newCompanyName: "Imported" },
+      agents: "all",
+      collisionStrategy: "rename",
+    }, "user-1");
+
+    expect(documentSvc.upsertIssueDocument).toHaveBeenCalledWith({
+      issueId: "issue-imported-1",
+      key: "spec",
+      title: "Spec",
+      format: "markdown",
+      body: "# Spec\n\nDetails.",
+      createdByUserId: "user-1",
+    });
+    expect(workProductSvc.createForIssue).toHaveBeenCalledWith(
+      "issue-imported-1",
+      "company-imported",
+      expect.objectContaining({
+        type: "pull_request",
+        provider: "github",
+        externalId: "42",
+        title: "Fix bug",
+        status: "merged",
+        reviewState: "approved",
+        isPrimary: true,
+        healthStatus: "healthy",
+        executionWorkspaceId: null,
+        runtimeServiceId: null,
+        createdByRunId: null,
+        sourceTrust: null,
+      }),
+    );
+    expect(insertedRelationValues).toEqual([
+      {
+        companyId: "company-imported",
+        issueId: "issue-imported-1",
+        relatedIssueId: "issue-imported-2",
+        type: "blocks",
+        createdByAgentId: null,
+        createdByUserId: "user-1",
+      },
+    ]);
+    expect(monitorUpdates).toEqual([
+      { monitorNotes: "Check deploy daily", monitorScheduledBy: "agent" },
+    ]);
+    expect(result.warnings).toContain(
+      "1 monitor was imported un-armed; re-arm it from the task page to resume checks.",
+    );
+  });
+
+  it("skips blockers and documents of tasks excluded from the import selection", async () => {
+    const { db, insertedRelationValues } = fakeImportDb();
+    const portability = companyPortabilityService(db);
+    mockTaskFidelityExportSources();
+
+    const exported = await portability.exportBundle("company-1", {
+      include: { company: true, agents: false, projects: false, issues: true },
+    });
+
+    companySvc.create.mockResolvedValue({ id: "company-imported", name: "Imported" });
+    accessSvc.ensureMembership.mockResolvedValue(undefined);
+    agentSvc.list.mockResolvedValue([]);
+    issueSvc.create.mockResolvedValue({ id: "issue-imported-2", title: "Beta task", projectId: null });
+
+    const result = await portability.importBundle({
+      source: { type: "inline", rootPath: exported.rootPath, files: exported.files },
+      include: { company: true, agents: false, projects: false, issues: true },
+      target: { mode: "new_company", newCompanyName: "Imported" },
+      agents: "all",
+      collisionStrategy: "rename",
+      selectedFiles: ["COMPANY.md", ".paperclip.yaml", "tasks/pap-2/TASK.md"],
+    }, "user-1");
+
+    expect(issueSvc.create).toHaveBeenCalledTimes(1);
+    expect(issueSvc.create).toHaveBeenCalledWith(
+      "company-imported",
+      expect.objectContaining({ title: "Beta task" }),
+    );
+    expect(documentSvc.upsertIssueDocument).not.toHaveBeenCalled();
+    expect(workProductSvc.createForIssue).not.toHaveBeenCalled();
+    expect(insertedRelationValues).toEqual([]);
+    expect(result.warnings).toContain(
+      "Task pap-2 blocker pap-1 was skipped because that task was not imported.",
     );
   });
 

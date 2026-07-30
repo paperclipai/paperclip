@@ -156,6 +156,33 @@ export const portabilityIssueCommentManifestEntrySchema = z.object({
   createdAt: z.string().datetime().nullable(),
 });
 
+export const portabilityIssueDocumentManifestEntrySchema = z.object({
+  key: z.string().min(1),
+  title: z.string().nullable(),
+  format: z.string().min(1),
+  path: z.string().min(1),
+});
+
+export const portabilityIssueWorkProductManifestEntrySchema = z.object({
+  type: z.string().min(1),
+  provider: z.string().min(1),
+  externalId: z.string().nullable(),
+  title: z.string().min(1),
+  url: z.string().nullable(),
+  status: z.string().min(1),
+  reviewState: z.string().min(1),
+  isPrimary: z.boolean().default(false),
+  healthStatus: z.string().min(1),
+  summary: z.string().nullable(),
+  metadata: z.record(z.string(), z.unknown()).nullable(),
+});
+
+export const portabilityIssueMonitorManifestEntrySchema = z.object({
+  notes: z.string().nullable(),
+  scheduledBy: z.string().nullable(),
+  hadSchedule: z.boolean().default(false),
+});
+
 export const portabilityIssueManifestEntrySchema = z.object({
   slug: z.string().min(1),
   identifier: z.string().min(1).nullable(),
@@ -176,6 +203,10 @@ export const portabilityIssueManifestEntrySchema = z.object({
   executionWorkspaceSettings: z.record(z.string(), z.unknown()).nullable(),
   assigneeAdapterOverrides: z.record(z.string(), z.unknown()).nullable(),
   comments: z.array(portabilityIssueCommentManifestEntrySchema).default([]),
+  blockedBy: z.array(z.string().min(1)).default([]),
+  documents: z.array(portabilityIssueDocumentManifestEntrySchema).default([]),
+  workProducts: z.array(portabilityIssueWorkProductManifestEntrySchema).default([]),
+  monitor: portabilityIssueMonitorManifestEntrySchema.nullable().default(null),
   metadata: z.record(z.string(), z.unknown()).nullable(),
 });
 

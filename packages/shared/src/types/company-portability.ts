@@ -112,6 +112,33 @@ export interface CompanyPortabilityIssueCommentManifestEntry {
   createdAt: string | null;
 }
 
+export interface CompanyPortabilityIssueDocumentManifestEntry {
+  key: string;
+  title: string | null;
+  format: string;
+  path: string;
+}
+
+export interface CompanyPortabilityIssueWorkProductManifestEntry {
+  type: string;
+  provider: string;
+  externalId: string | null;
+  title: string;
+  url: string | null;
+  status: string;
+  reviewState: string;
+  isPrimary: boolean;
+  healthStatus: string;
+  summary: string | null;
+  metadata: Record<string, unknown> | null;
+}
+
+export interface CompanyPortabilityIssueMonitorManifestEntry {
+  notes: string | null;
+  scheduledBy: string | null;
+  hadSchedule: boolean;
+}
+
 export interface CompanyPortabilityIssueManifestEntry {
   slug: string;
   identifier: string | null;
@@ -132,6 +159,10 @@ export interface CompanyPortabilityIssueManifestEntry {
   executionWorkspaceSettings: Record<string, unknown> | null;
   assigneeAdapterOverrides: Record<string, unknown> | null;
   comments: CompanyPortabilityIssueCommentManifestEntry[];
+  blockedBy?: string[];
+  documents?: CompanyPortabilityIssueDocumentManifestEntry[];
+  workProducts?: CompanyPortabilityIssueWorkProductManifestEntry[];
+  monitor?: CompanyPortabilityIssueMonitorManifestEntry | null;
   metadata: Record<string, unknown> | null;
 }
 
