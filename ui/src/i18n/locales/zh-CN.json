@@ -40,5 +40,15 @@
     "decisionsBadge": "决策",
     "beta": "测试版",
     "company": "公司"
+  },
+  "onboarding": {
+    "createFirstCompanyTitle": "创建您的第一家公司",
+    "createAnotherCompanyTitle": "创建另一家公司",
+    "addAgentToCompanyTitle": "为 {{name}} 添加另一个智能体",
+    "createFirstCompanyDesc": "通过创建公司和您的第一个智能体开始。",
+    "createAnotherCompanyDesc": "再次运行引导以创建另一家公司并生成其首个智能体。",
+    "addAgentToCompanyDesc": "再次运行引导，为此公司添加一个智能体和入门任务。",
+    "addAgentButton": "添加智能体",
+    "startOnboardingButton": "开始引导"
   }
 }

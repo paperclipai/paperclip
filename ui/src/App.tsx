@@ -393,6 +393,7 @@ function legacyToolsRedirectTarget(tab?: string) {
 }
 
 function OnboardingRoutePage() {
+  const { t } = useTranslation();
   const { companies } = useCompany();
   const { openOnboarding } = useDialogActions();
   const { onboardingOpen, onboardingRouteDismissed } = useDialogState();
@@ -411,15 +412,15 @@ function OnboardingRoutePage() {
     : null;
 
   const title = matchedCompany
-    ? `Add another agent to ${matchedCompany.name}`
+    ? t("onboarding.addAgentToCompanyTitle", { name: matchedCompany.name })
     : companies.length > 0
-      ? "Create another company"
-      : "Create your first company";
+      ? t("onboarding.createAnotherCompanyTitle")
+      : t("onboarding.createFirstCompanyTitle");
   const description = matchedCompany
-    ? "Run onboarding again to add an agent and a starter task for this company."
+    ? t("onboarding.addAgentToCompanyDesc")
     : companies.length > 0
-      ? "Run onboarding again to create another company and seed its first agent."
-      : "Get started by creating a company and your first agent.";
+      ? t("onboarding.createAnotherCompanyDesc")
+      : t("onboarding.createFirstCompanyDesc");
 
   return (
     <div className="mx-auto max-w-xl py-10">
@@ -434,7 +435,7 @@ function OnboardingRoutePage() {
                 : openOnboarding()
             }
           >
-            {matchedCompany ? "Add Agent" : "Start Onboarding"}
+            {matchedCompany ? t("onboarding.addAgentButton") : t("onboarding.startOnboardingButton")}
           </Button>
         </div>
       </div>
