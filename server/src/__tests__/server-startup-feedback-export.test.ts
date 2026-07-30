@@ -219,7 +219,6 @@ vi.mock("../services/index.js", () => ({
       },
     })),
   })),
-  reconcileCloudUpstreamRunsOnStartup: vi.fn(async () => ({ reconciled: 0 })),
   reconcileCodexLocalManagedHomesOnStartup: vi.fn(async () => ({
     scanned: 0,
     seeded: 0,

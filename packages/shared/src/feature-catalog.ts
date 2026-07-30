@@ -127,14 +127,6 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     cloudDefault: false,
     selfHostedDefault: false,
   },
-  enableCloudSync: {
-    title: "Cloud Sync",
-    description:
-      "Show local Paperclip Cloud upstream connection, preview, push, retry, and activation review surfaces.",
-    tier: "managed",
-    cloudDefault: false,
-    selfHostedDefault: false,
-  },
   enableExternalObjects: {
     title: "External Objects",
     description:
