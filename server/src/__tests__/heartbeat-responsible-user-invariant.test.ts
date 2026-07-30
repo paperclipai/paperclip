@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
@@ -21,6 +21,7 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { heartbeatService } from "../services/heartbeat.ts";
 import { runningProcesses } from "../adapters/index.ts";
+import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
 
 const mockAdapterExecute = vi.hoisted(() =>
   vi.fn(async () => ({
@@ -91,15 +92,14 @@ describeEmbeddedPostgres("heartbeat responsible-user invariant", () => {
   afterEach(async () => {
     mockAdapterExecute.mockClear();
     runningProcesses.clear();
-    await new Promise((resolve) => setTimeout(resolve, 500));
-    for (let attempt = 0; attempt < 40; attempt += 1) {
-      const activeRuns = await db
-        .select()
-        .from(heartbeatRuns)
-        .where(inArray(heartbeatRuns.status, ["queued", "running"]));
-      if (activeRuns.length === 0) break;
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
+    // Await every in-flight background heartbeat run to quiescence before the
+    // deletes below. A wakeup claims a run and dispatches its execution
+    // fire-and-forget, and that run can dispatch a follow-up wakeup, so a run or
+    // wakeup can still write heartbeat_runs and issues rows when teardown starts
+    // and would race the deletes. The shared drain also awaits an in-flight
+    // wakeup that is still before run registration, which a plain run table
+    // status poll cannot see.
+    await drainHeartbeatRunsToQuiescence(db, heartbeat);
     await db.delete(issueComments);
     await db.delete(activityLog);
     await deleteHeartbeatRunsAfterEvents(db);

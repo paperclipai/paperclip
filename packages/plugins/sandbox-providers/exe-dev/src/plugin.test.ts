@@ -576,8 +576,12 @@ describe("exe.dev sandbox provider plugin", () => {
 
     expect(spawnMock).toHaveBeenCalledTimes(1);
     expect(spawnMock.mock.calls[0]?.[0]).toBe("ssh");
-    expect(String(spawnMock.mock.calls[0]?.[1]?.at(-1) ?? "")).toContain("/workspace");
-    expect(String(spawnMock.mock.calls[0]?.[1]?.at(-1) ?? "")).toContain("FOO='");
+    const remoteScript = String(spawnMock.mock.calls[0]?.[1]?.at(-1) ?? "");
+    expect(remoteScript).toContain("/workspace");
+    expect(remoteScript).toContain("FOO='");
+    // The wrapper sources no `nvm.sh`; the sandbox image supplies node on PATH.
+    expect(remoteScript).not.toContain("nvm.sh");
+    expect(remoteScript).not.toContain("NVM_DIR");
     const child = spawnMock.mock.results[0]?.value as MockChildProcess;
     expect(child.stdin.written).toBe("input-body");
     expect(child.stdin.ended).toBe(true);

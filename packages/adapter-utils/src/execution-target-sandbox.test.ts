@@ -194,6 +194,60 @@ describe("sandbox adapter execution targets", () => {
     });
   });
 
+  it("creates the process session directories only in the launch exec, not in upfront makeDir execs", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-process-session-makedir-"));
+    cleanupDirs.push(rootDir);
+    const childPath = path.join(rootDir, "noop-acp-child.mjs");
+    await writeFile(childPath, "process.stdin.on('data', () => {});\n", "utf8");
+
+    const delegate = createLocalSandboxRunner();
+    const execScripts: string[] = [];
+    const runner = {
+      execute: vi.fn(async (input: Parameters<typeof delegate.execute>[0]) => {
+        execScripts.push(input.args?.[1] ?? "");
+        return delegate.execute(input);
+      }),
+    };
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "local-test",
+      remoteCwd: rootDir,
+      timeoutMs: 30_000,
+      runner,
+    };
+
+    const bridge = await startAdapterExecutionTargetProcessSessionBridge({
+      runId: "run-process-session-makedir",
+      target,
+      runtimeRootDir: path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
+      adapterKey: "acpx",
+      command: process.execPath,
+      args: [childPath],
+      cwd: rootDir,
+      env: {},
+      timeoutSec: 5,
+      onLog: async () => {},
+    });
+    expect(bridge).not.toBeNull();
+
+    try {
+      // No standalone `mkdir -p '<dir>/stdin'` or `.../events` exec runs before launch.
+      const standaloneSessionDirExecs = execScripts.filter((script) =>
+        /^mkdir -p '[^']*\/(stdin|events)'\s*$/.test(script),
+      );
+      expect(standaloneSessionDirExecs).toEqual([]);
+
+      // The launch exec creates both directories in one `mkdir -p` line.
+      const launchExecs = execScripts.filter(
+        (script) => script.includes("nohup") && /mkdir -p [^\n]*\/stdin[^\n]*\/events/.test(script),
+      );
+      expect(launchExecs.length).toBe(1);
+    } finally {
+      await bridge?.stop();
+    }
+  });
+
   it("bridges bidirectional sandbox process sessions through a local ACPX-spawnable proxy", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-process-session-"));
     cleanupDirs.push(rootDir);

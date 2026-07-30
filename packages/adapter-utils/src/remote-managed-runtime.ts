@@ -7,9 +7,25 @@ import {
   restoreWorkspaceFromSshExecution,
   syncDirectoryToSsh,
 } from "./ssh.js";
-import type { SandboxManagedRuntimeAssetRestoreContext } from "./sandbox-managed-runtime.js";
+import type {
+  SandboxAdditionalSource,
+  SandboxManagedRuntimeAssetRestoreContext,
+} from "./sandbox-managed-runtime.js";
 import { captureDirectorySnapshot } from "./workspace-restore-merge.js";
 import type { RuntimeProgressSink } from "./runtime-progress.js";
+
+const REMOTE_ADDITIONAL_SOURCE_HEAVY_DIR_EXCLUDES = [
+  "node_modules",
+  "vendor",
+  "dist",
+  "build",
+  "out",
+  "coverage",
+  ".next",
+  ".turbo",
+  ".cache",
+  ".git",
+].flatMap((entry) => [entry, `${entry}/*`, `*/${entry}`, `*/${entry}/*`]);
 
 export interface RemoteManagedRuntimeAsset {
   key: string;
@@ -25,6 +41,12 @@ export interface PreparedRemoteManagedRuntime {
   workspaceRemoteDir: string;
   runtimeRootDir: string;
   assetDirs: Record<string, string>;
+  /**
+   * Remote directory of each additional (referenced) project that staged
+   * successfully, keyed by `projectId`. A project whose staging failed is
+   * absent (per-project failure isolation).
+   */
+  additionalSourceDirs: Record<string, string>;
   restoreWorkspace(onProgress?: RuntimeProgressSink): Promise<void>;
 }
 
@@ -86,6 +108,8 @@ export async function prepareRemoteManagedRuntime(input: {
   workspaceRemoteDir?: string;
   syncWorkspace?: boolean;
   assets?: RemoteManagedRuntimeAsset[];
+  /** Referenced (additional) projects to stage as plain, read-only trees. */
+  additionalSources?: SandboxAdditionalSource[];
   // Upload progress sink. Threaded for the byte-counting transport rewrite; the
   // child task wires it into the workspace/asset transfers.
   onProgress?: RuntimeProgressSink;
@@ -148,12 +172,50 @@ export async function prepareRemoteManagedRuntime(input: {
     throw error;
   }
 
+  // Stage each referenced (additional) project as a plain, read-only tree in its
+  // OWN isolated remote directory (`project-<projectId>`). Additional sources
+  // never get the anchor's git-history/overlay semantics. Per-project failure
+  // isolation: one project's failure logs a warning and is skipped; the run and
+  // the other projects continue (no workspace restore, unlike an asset failure).
+  const additionalSourceDirs: Record<string, string> = {};
+  for (const source of input.additionalSources ?? []) {
+    const { localPath, projectId } = source;
+    try {
+      if (!path.posix.isAbsolute(localPath)) {
+        throw new Error(`additional source localPath is not an absolute path: ${localPath}`);
+      }
+      if (
+        projectId.length === 0 ||
+        projectId.includes("/") ||
+        projectId.includes("\\") ||
+        projectId.includes("..")
+      ) {
+        throw new Error(`additional source projectId is not a simple path segment: ${projectId}`);
+      }
+      const remoteDir = path.posix.join(runtimeRootDir, `project-${projectId}`);
+      await syncDirectoryToSsh({
+        spec: input.spec,
+        localDir: localPath,
+        remoteDir,
+        exclude: REMOTE_ADDITIONAL_SOURCE_HEAVY_DIR_EXCLUDES,
+        onProgress: input.onProgress,
+        progressLabel: `project-${projectId}`,
+      });
+      additionalSourceDirs[projectId] = remoteDir;
+    } catch (error) {
+      console.warn(
+        `[paperclip] Failed to stage referenced project ${projectId}; skipping it. ${String(error)}`,
+      );
+    }
+  }
+
   return {
     spec: input.spec,
     workspaceLocalDir: input.workspaceLocalDir,
     workspaceRemoteDir,
     runtimeRootDir,
     assetDirs,
+    additionalSourceDirs,
     restoreWorkspace: async (onProgress?: RuntimeProgressSink) => {
       if (preparedWorkspace && baselineSnapshot) {
         await restoreWorkspaceFromSshExecution({

@@ -157,6 +157,8 @@ Bugs, docs improvements, and small targeted improvements are still the easiest p
 
 ## Writing a Good PR message
 
+Write all PR text in Simplified Technical English (ASD-STE100): use short sentences, one instruction per sentence, simple approved vocabulary, and the active voice.
+
 Your PR description must follow the [PR template](.github/PULL_REQUEST_TEMPLATE.md). All sections are required. The "thinking path" at the top explains from the top of the project down to what you fixed. E.g.:
 
 ### Thinking Path Example 1:
