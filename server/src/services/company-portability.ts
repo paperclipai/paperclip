@@ -64,6 +64,7 @@ import type { StorageService } from "../storage/types.js";
 import { accessService } from "./access.js";
 import { agentService } from "./agents.js";
 import { agentInstructionsService } from "./agent-instructions.js";
+import { approvalService } from "./approvals.js";
 import { assetService } from "./assets.js";
 import { generateReadme } from "./company-export-readme.js";
 import { renderOrgChartPng, type OrgNode } from "../routes/org-chart-svg.js";
@@ -3015,6 +3016,7 @@ export function parseGitHubSourceUrl(rawUrl: string) {
 
 export function companyPortabilityService(db: Db, storage?: StorageService) {
   const companies = companyService(db);
+  const approvals = approvalService(db);
   const agents = agentService(db);
   const assetRecords = assetService(db);
   const instructions = agentInstructionsService();
@@ -4631,6 +4633,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       }
 
       if (include.agents) {
+        const pendingHireApprovalAgents = new Map<string, Awaited<ReturnType<typeof agents.create>>>();
         for (const planAgent of plan.preview.plan.agentPlans) {
           const manifestAgent = plan.selectedAgents.find((agent) => agent.slug === planAgent.slug);
           if (!manifestAgent) continue;
@@ -4747,7 +4750,8 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             continue;
           }
 
-          const createdStatus = "idle";
+          const requiresApproval = Boolean(targetCompany.requireBoardApprovalForNewAgents);
+          const createdStatus = requiresApproval ? "pending_approval" : "idle";
           let created = await agents.create(targetCompany.id, {
             ...patch,
             status: createdStatus,
@@ -4766,7 +4770,15 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
               clearLegacyPromptTemplate: true,
               replaceExisting: true,
             });
-            created = await agents.update(created.id, { adapterConfig: materialized.adapterConfig }) ?? created;
+            created = await (
+              requiresApproval
+                ? agents.update(
+                    created.id,
+                    { adapterConfig: materialized.adapterConfig },
+                    { allowPendingApprovalConfigUpdate: true },
+                  )
+                : agents.update(created.id, { adapterConfig: materialized.adapterConfig })
+            ) ?? created;
           } catch (err) {
             warnings.push(`Failed to materialize instructions bundle for ${manifestAgent.slug}: ${err instanceof Error ? err.message : String(err)}`);
           }
@@ -4776,6 +4788,9 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             manifestAgent.permissionGrants ?? [],
             actorUserId ?? null,
           );
+          if (requiresApproval) {
+            pendingHireApprovalAgents.set(created.id, created);
+          }
           agentStatusById.set(created.id, created.status ?? createdStatus);
           await secrets.syncEnvBindingsForTarget?.(
             targetCompany.id,
@@ -4816,7 +4831,19 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
               : null);
           if (!managerId || managerId === agentId) continue;
           try {
-            await agents.update(agentId, { reportsTo: managerId });
+            const currentStatus = agentStatusById.get(agentId);
+            const updated = await (
+              currentStatus === "pending_approval"
+                ? agents.update(
+                    agentId,
+                    { reportsTo: managerId },
+                    { allowPendingApprovalConfigUpdate: true },
+                  )
+                : agents.update(agentId, { reportsTo: managerId })
+            );
+            if (updated && pendingHireApprovalAgents.has(agentId)) {
+              pendingHireApprovalAgents.set(agentId, updated);
+            }
           } catch {
             const managerRef =
               managerSlug
@@ -4824,6 +4851,36 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
               ?? manifestAgent.reportsToExistingAgentId;
             warnings.push(`Could not assign manager ${managerRef} for imported agent ${manifestAgent.slug}.`);
           }
+        }
+
+        // Approval payloads must describe the fully materialized agent,
+        // including managed instructions and reporting links.
+        for (const created of pendingHireApprovalAgents.values()) {
+          await approvals.create(targetCompany.id, {
+            type: "hire_agent",
+            requestedByAgentId: null,
+            requestedByUserId: actorUserId ?? null,
+            status: "pending",
+            payload: {
+              name: created.name,
+              role: created.role,
+              title: created.title,
+              icon: created.icon,
+              reportsTo: created.reportsTo,
+              capabilities: created.capabilities,
+              adapterType: created.adapterType,
+              adapterConfig: created.adapterConfig,
+              runtimeConfig: created.runtimeConfig,
+              permissions: created.permissions,
+              budgetMonthlyCents: created.budgetMonthlyCents,
+              metadata: created.metadata,
+              agentId: created.id,
+            },
+            decisionNote: null,
+            decidedByUserId: null,
+            decidedAt: null,
+            updatedAt: new Date(),
+          });
         }
       }
 
