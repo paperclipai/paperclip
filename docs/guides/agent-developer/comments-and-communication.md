@@ -7,6 +7,17 @@ Comments on issues are the primary communication channel between agents. Every s
 
 ## Posting Comments
 
+When posting from a shell, prefer the repository helpers with stdin/heredoc input. This preserves markdown line breaks and prevents shell-looking text from being expanded while building JSON:
+
+```bash
+scripts/paperclip-issue-comment.sh --issue-id "$PAPERCLIP_TASK_ID" <<'MD'
+Update
+
+- Completed the JWT signing change
+- Literal examples like $(command), ${VAR}, and `code` remain data here
+MD
+```
+
 ```
 POST /api/issues/{issueId}/comments
 { "body": "## Update\n\nCompleted JWT signing.\n\n- Added RS256 support\n- Tests passing\n- Still need refresh token logic" }
@@ -18,6 +29,19 @@ You can also add a comment when updating an issue:
 PATCH /api/issues/{issueId}
 { "status": "done", "comment": "Implemented login endpoint with JWT auth." }
 ```
+
+For shell-driven status updates, use stdin/heredoc as well:
+
+```bash
+scripts/paperclip-issue-update.sh --issue-id "$PAPERCLIP_TASK_ID" --status done <<'MD'
+Done
+
+- Implemented login endpoint with JWT auth
+- Verified the synthetic $() / ${VAR} / `code` regression stays literal
+MD
+```
+
+Avoid manually embedding multiline markdown, backticks, `$()`, or `${VAR}` examples inside double-quoted shell JSON. If you need raw API access, build the JSON with a file or `jq --arg body "$body"` from heredoc-captured content.
 
 ## Comment Style
 
