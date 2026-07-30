@@ -208,7 +208,7 @@ export function buildWorktreeConfig(input: {
       logDir: paths.logDir,
     },
     server: {
-      deploymentMode: source?.server.deploymentMode ?? "local_trusted",
+      deploymentMode: source?.server.deploymentMode ?? "authenticated",
       exposure: source?.server.exposure ?? "private",
       ...(source?.server.bind ? { bind: source.server.bind } : {}),
       ...(source?.server.customBindHost ? { customBindHost: source.server.customBindHost } : {}),

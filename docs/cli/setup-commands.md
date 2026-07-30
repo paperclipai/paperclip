@@ -37,7 +37,7 @@ If Paperclip is already configured, rerunning `onboard` keeps the existing confi
 
 First prompt:
 
-1. `Quickstart` (recommended): local defaults (embedded database, no LLM provider, local disk storage, default secrets)
+1. `Quickstart` (recommended): authenticated/private defaults for agent-hosting safety (embedded database, no LLM provider, local disk storage, default secrets)
 2. `Advanced setup`: full interactive configuration
 
 Start immediately after onboarding:
@@ -46,11 +46,13 @@ Start immediately after onboarding:
 pnpm paperclipai onboard --run
 ```
 
-Non-interactive defaults + immediate start (opens browser on server listen):
+Non-interactive authenticated defaults + immediate start (opens browser on server listen):
 
 ```sh
 pnpm paperclipai onboard --yes
 ```
+
+For an isolated single-user development box that does not run agent sandboxes, use `--bind loopback` to opt into `local_trusted`.
 
 On an existing install, `--yes` now preserves the current config and just starts Paperclip with that setup.
 

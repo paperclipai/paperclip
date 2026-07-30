@@ -46,7 +46,7 @@ export const loggingConfigSchema = z.object({
 });
 
 export const serverConfigSchema = z.object({
-  deploymentMode: z.enum(DEPLOYMENT_MODES).default("local_trusted"),
+  deploymentMode: z.enum(DEPLOYMENT_MODES).default("authenticated"),
   exposure: z.enum(DEPLOYMENT_EXPOSURES).default("private"),
   bind: z.enum(BIND_MODES).optional(),
   customBindHost: z.string().optional(),

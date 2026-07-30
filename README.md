@@ -320,11 +320,13 @@ npx paperclipai onboard --yes
 > npx --registry https://registry.npmjs.org paperclipai onboard --yes
 > ```
 
-That quickstart path now defaults to trusted local loopback mode for the fastest first run. To start in authenticated/private mode instead, choose a bind preset explicitly:
+That quickstart path defaults to authenticated/private mode for hosts that run agent sandboxes. For an isolated single-user development box, choose loopback explicitly:
 
 ```bash
+npx paperclipai onboard --yes --bind loopback
+# For a private-network agent host:
 npx paperclipai onboard --yes --bind lan
-# or:
+# Or a Tailscale-only agent host:
 npx paperclipai onboard --yes --bind tailnet
 ```
 

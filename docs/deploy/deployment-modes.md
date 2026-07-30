@@ -7,7 +7,7 @@ Paperclip supports two runtime modes with different security profiles. Reachabil
 
 ## `local_trusted`
 
-The default mode. Optimized for single-operator local use.
+An explicit mode for an isolated single-operator local box that does not host agent sandboxes.
 
 - **Host binding**: loopback only (localhost)
 - **Bind**: `loopback`
@@ -24,6 +24,8 @@ pnpm paperclipai onboard
 ## `authenticated`
 
 Login required. Supports two exposure policies.
+
+Authenticated mode is the default for agent-hosting hosts, including Framework Desktop fleet members. It requires an authenticated session or scoped bearer token for API access; `/api/health` remains a limited public liveness check.
 
 ### `authenticated` + `private`
 
