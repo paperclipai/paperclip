@@ -1,6 +1,9 @@
+import { mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const ASSIGNEE_AGENT_ID = "11111111-1111-4111-8111-111111111111";
 const PREVIOUS_AGENT_ID = "22222222-2222-4222-8222-222222222222";
@@ -220,6 +223,8 @@ function makeIssue(overrides: Record<string, unknown> = {}) {
 }
 
 describe("issue update comment wakeups", () => {
+  let tempDir: string | null = null;
+
   beforeEach(() => {
     vi.resetModules();
     vi.doUnmock("../routes/issues.js");
@@ -233,6 +238,32 @@ describe("issue update comment wakeups", () => {
     mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
     mockIssueService.getCurrentScheduledRetry.mockResolvedValue(null);
   });
+
+  afterEach(async () => {
+    delete process.env.TSKB_REGISTRY_PATH;
+    if (tempDir) {
+      await rm(tempDir, { recursive: true, force: true });
+      tempDir = null;
+    }
+  });
+
+  async function writeRegistry(ids: string[], options?: { ageHours?: number }) {
+    tempDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-tskb-registry-"));
+    const registryPath = path.join(tempDir, "ids.json");
+    const generatedAt = new Date(Date.now() - (options?.ageHours ?? 0) * 60 * 60 * 1000);
+    await writeFile(registryPath, JSON.stringify({
+      version: 1,
+      generatedAt: generatedAt.toISOString(),
+      canonicalIds: ids,
+      burnedIds: [],
+      resolvableIds: ids,
+    }));
+    if (options?.ageHours) {
+      await utimes(registryPath, generatedAt, generatedAt);
+    }
+    process.env.TSKB_REGISTRY_PATH = registryPath;
+    return registryPath;
+  }
 
   it("includes the new comment in assignment wakes from issue updates", async () => {
     const existing = makeIssue();
@@ -630,5 +661,262 @@ describe("issue update comment wakeups", () => {
         }),
       }),
     );
+  });
+
+  it("adds a warning comment on issue updates when the comment cites an unresolvable TSKB number", async () => {
+    const existing = makeIssue({
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null,
+      status: "in_progress",
+    });
+    const updated = { ...existing };
+    const registryPath = await writeRegistry(["0055"]);
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockResolvedValue(updated);
+    mockIssueService.addComment
+      .mockResolvedValueOnce({
+        id: "comment-user",
+        issueId: existing.id,
+        companyId: existing.companyId,
+        body: "please check TSKB9999",
+      })
+      .mockResolvedValueOnce({
+        id: "comment-warning",
+        issueId: existing.id,
+        companyId: existing.companyId,
+        body: "Write-time TSKB citation warning.",
+      });
+
+    const res = await request(await createApp())
+      .patch(`/api/issues/${existing.id}`)
+      .send({
+        comment: "please check TSKB9999",
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.addComment).toHaveBeenCalledTimes(2);
+    expect(mockIssueService.addComment).toHaveBeenNthCalledWith(
+      2,
+      existing.id,
+      expect.stringContaining("Issue comment: TSKB9999"),
+      { runId: null },
+      expect.objectContaining({
+        authorType: "system",
+        presentation: expect.objectContaining({
+          kind: "system_notice",
+          tone: "warning",
+          title: "Unresolved TSKB citation",
+        }),
+        metadata: expect.objectContaining({
+          sections: expect.arrayContaining([
+            expect.objectContaining({
+              title: "Registry",
+              rows: expect.arrayContaining([
+                expect.objectContaining({ label: "Path", value: registryPath }),
+              ]),
+            }),
+          ]),
+        }),
+      }),
+    );
+  });
+
+  it("adds a warning comment on issue updates when the description changes to an unresolvable TSKB number", async () => {
+    const existing = makeIssue({
+      description: "Old description",
+    });
+    const updated = makeIssue({
+      description: "Now cites TSKB9999",
+    });
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockResolvedValue(updated);
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-warning-description",
+      issueId: existing.id,
+      companyId: existing.companyId,
+      body: "Write-time TSKB citation warning.",
+    });
+    await writeRegistry(["0055"]);
+
+    const res = await request(await createApp())
+      .patch(`/api/issues/${existing.id}`)
+      .send({
+        description: "Now cites TSKB9999",
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.addComment).toHaveBeenCalledTimes(1);
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      existing.id,
+      expect.stringContaining("Issue description: TSKB9999"),
+      { runId: null },
+      expect.objectContaining({ authorType: "system" }),
+    );
+  });
+
+  it("fails open on issue updates when the cited TSKB number resolves, the flag is off, or the registry is stale", async () => {
+    const existing = makeIssue({
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null,
+      status: "in_progress",
+      description: "Old description",
+    });
+    const updated = { ...existing };
+    const updatedWithPhantomDescription = { ...existing, description: "Now cites TSKB9999" };
+
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockResolvedValue(updated);
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-user-clean",
+      issueId: existing.id,
+      companyId: existing.companyId,
+      body: "TSKB0055 is valid",
+    });
+
+    await writeRegistry(["0055"]);
+    let res = await request(await createApp())
+      .patch(`/api/issues/${existing.id}`)
+      .send({
+        comment: "TSKB0055 is valid",
+      });
+    expect(res.status).toBe(200);
+    expect(mockIssueService.addComment).toHaveBeenCalledTimes(1);
+
+    vi.clearAllMocks();
+    mockIssueService.findMentionedAgents.mockResolvedValue([]);
+    mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
+    mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
+    mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
+    mockIssueService.getCurrentScheduledRetry.mockResolvedValue(null);
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockResolvedValue(updatedWithPhantomDescription);
+
+    delete process.env.TSKB_REGISTRY_PATH;
+    res = await request(await createApp())
+      .patch(`/api/issues/${existing.id}`)
+      .send({
+        description: "Now cites TSKB9999",
+      });
+    expect(res.status).toBe(200);
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+
+    vi.clearAllMocks();
+    mockIssueService.findMentionedAgents.mockResolvedValue([]);
+    mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
+    mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
+    mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
+    mockIssueService.getCurrentScheduledRetry.mockResolvedValue(null);
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.update.mockResolvedValue(updatedWithPhantomDescription);
+
+    await writeRegistry(["0055"], { ageHours: 72 });
+    res = await request(await createApp())
+      .patch(`/api/issues/${existing.id}`)
+      .send({
+        description: "Now cites TSKB9999",
+      });
+    expect(res.status).toBe(200);
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  });
+
+  it("adds a warning comment on top-level issue comments when the body cites an unresolvable TSKB number", async () => {
+    const existing = makeIssue({
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null,
+      status: "in_progress",
+    });
+    const registryPath = await writeRegistry(["0055"]);
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.addComment
+      .mockResolvedValueOnce({
+        id: "comment-top-level",
+        issueId: existing.id,
+        companyId: existing.companyId,
+        body: "top-level cites TSKB9999",
+      })
+      .mockResolvedValueOnce({
+        id: "comment-warning-top-level",
+        issueId: existing.id,
+        companyId: existing.companyId,
+        body: "Write-time TSKB citation warning.",
+      });
+
+    const res = await request(await createApp())
+      .post(`/api/issues/${existing.id}/comments`)
+      .send({
+        body: "top-level cites TSKB9999",
+      });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.addComment).toHaveBeenCalledTimes(2);
+    expect(mockIssueService.addComment).toHaveBeenNthCalledWith(
+      2,
+      existing.id,
+      expect.stringContaining("Issue comment: TSKB9999"),
+      { runId: null },
+      expect.objectContaining({
+        authorType: "system",
+        metadata: expect.objectContaining({
+          sections: expect.arrayContaining([
+            expect.objectContaining({
+              title: "Registry",
+              rows: expect.arrayContaining([
+                expect.objectContaining({ label: "Path", value: registryPath }),
+              ]),
+            }),
+          ]),
+        }),
+      }),
+    );
+  });
+
+  it("fails open on top-level issue comments when the cite resolves or the registry is unavailable", async () => {
+    const existing = makeIssue({
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+      assigneeUserId: null,
+      status: "in_progress",
+    });
+    mockIssueService.getById.mockResolvedValue(existing);
+
+    await writeRegistry(["0055"]);
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-top-level-clean",
+      issueId: existing.id,
+      companyId: existing.companyId,
+      body: "top-level cites TSKB0055",
+    });
+
+    let res = await request(await createApp())
+      .post(`/api/issues/${existing.id}/comments`)
+      .send({
+        body: "top-level cites TSKB0055",
+      });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.addComment).toHaveBeenCalledTimes(1);
+
+    vi.clearAllMocks();
+    mockIssueService.findMentionedAgents.mockResolvedValue([]);
+    mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
+    mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
+    mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
+    mockIssueService.getCurrentScheduledRetry.mockResolvedValue(null);
+    mockIssueService.getById.mockResolvedValue(existing);
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-top-level-no-flag",
+      issueId: existing.id,
+      companyId: existing.companyId,
+      body: "top-level cites TSKB9999",
+    });
+    delete process.env.TSKB_REGISTRY_PATH;
+
+    res = await request(await createApp())
+      .post(`/api/issues/${existing.id}/comments`)
+      .send({
+        body: "top-level cites TSKB9999",
+      });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.addComment).toHaveBeenCalledTimes(1);
   });
 });

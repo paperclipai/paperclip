@@ -206,6 +206,11 @@ import {
 } from "../services/trust-preset-resolver.js";
 import { externalObjectService } from "../services/external-objects.js";
 import { deliverAgentUnblockNotification } from "../services/routable-blocked.js";
+import {
+  buildTskbCitationWarningComment,
+  type TskbCitationSource,
+  validateTskbCitations,
+} from "../services/tskb-citation-validation.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
 const execFile = promisify(execFileCb);
@@ -231,6 +236,49 @@ const promoteLowTrustOutputSchema = z.object({
   title: z.string().trim().min(1).max(200),
   summary: z.string().trim().min(1).max(8_000),
 });
+
+async function emitTskbCitationWarningIfNeeded(
+  deps: {
+    svc: ReturnType<typeof issueService>;
+    issueReferencesSvc: ReturnType<typeof issueReferenceService>;
+    externalObjectsSvc: ReturnType<typeof externalObjectService>;
+  },
+  input: {
+    issueId: string;
+    actorRunId?: string | null;
+    sources: readonly TskbCitationSource[];
+  },
+) {
+  try {
+    const warning = await validateTskbCitations(input.sources);
+    if (!warning) return null;
+    const rendered = buildTskbCitationWarningComment(warning);
+    const comment = await deps.svc.addComment(
+      input.issueId,
+      rendered.body,
+      { runId: input.actorRunId ?? null },
+      {
+        authorType: "system",
+        presentation: rendered.presentation,
+        metadata: rendered.metadata,
+      },
+    );
+    await deps.issueReferencesSvc.syncComment(comment.id);
+    await deps.externalObjectsSvc.syncCommentSafely(comment.id);
+    return comment;
+  } catch (err) {
+    logger.warn(
+      {
+        err,
+        issueId: input.issueId,
+        actorRunId: input.actorRunId ?? null,
+        sourceLabels: input.sources.map((source) => source.label),
+      },
+      "failed to emit TSKB citation warning",
+    );
+    return null;
+  }
+}
 
 async function listIssueLinkedCases(db: Db, companyId: string, issueId: string) {
   const rows = await db
@@ -8175,6 +8223,24 @@ export function issueRoutes(
       },
     });
 
+    await emitTskbCitationWarningIfNeeded(
+      {
+        svc,
+        issueReferencesSvc,
+        externalObjectsSvc,
+      },
+      {
+        issueId: issue.id,
+        actorRunId: actor.runId,
+        sources: [
+          {
+            label: "Issue description",
+            text: issue.description,
+          },
+        ],
+      },
+    );
+
     if (executionPolicy?.monitor) {
       await logActivity(db, {
         companyId,
@@ -9961,6 +10027,34 @@ export function issueRoutes(
           (item) => item.issue.identifier ?? item.issue.id,
         ),
       };
+    }
+
+    const issueUpdateCitationSources: TskbCitationSource[] = [];
+    if (commentBody) {
+      issueUpdateCitationSources.push({
+        label: "Issue comment",
+        text: commentBody,
+      });
+    }
+    if (typeof issue.description === "string" && issue.description !== existing.description) {
+      issueUpdateCitationSources.push({
+        label: "Issue description",
+        text: issue.description,
+      });
+    }
+    if (issueUpdateCitationSources.length > 0) {
+      await emitTskbCitationWarningIfNeeded(
+        {
+          svc,
+          issueReferencesSvc,
+          externalObjectsSvc,
+        },
+        {
+          issueId: issue.id,
+          actorRunId: actor.runId,
+          sources: issueUpdateCitationSources,
+        },
+      );
     }
 
     const assigneeChanged =
@@ -11756,6 +11850,24 @@ export function issueRoutes(
     const commentReferenceDiff = issueReferencesSvc.diffIssueReferenceSummary(
       commentReferenceSummaryBefore,
       commentReferenceSummaryAfter,
+    );
+
+    await emitTskbCitationWarningIfNeeded(
+      {
+        svc,
+        issueReferencesSvc,
+        externalObjectsSvc,
+      },
+      {
+        issueId: currentIssue.id,
+        actorRunId: actor.runId,
+        sources: [
+          {
+            label: "Issue comment",
+            text: comment.body,
+          },
+        ],
+      },
     );
 
     if (actor.runId) {

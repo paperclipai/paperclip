@@ -1,4 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { mkdtemp, rm, utimes, writeFile } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import express from "express";
 import request from "supertest";
 import { eq } from "drizzle-orm";
@@ -10,6 +13,7 @@ import {
   createDb,
   heartbeatRuns,
   issueCreateIdempotencyKeys,
+  issueComments,
   issues,
 } from "@paperclipai/db";
 import {
@@ -38,6 +42,7 @@ if (!embeddedPostgresSupport.supported) {
 describeEmbeddedPostgres("issue create deduplication routes", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+  let tempDir: string | null = null;
 
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issue-create-deduplication-routes-");
@@ -45,6 +50,12 @@ describeEmbeddedPostgres("issue create deduplication routes", () => {
   }, 20_000);
 
   afterEach(async () => {
+    delete process.env.TSKB_REGISTRY_PATH;
+    if (tempDir) {
+      await rm(tempDir, { recursive: true, force: true });
+      tempDir = null;
+    }
+    await db.delete(issueComments);
     await db.delete(activityLog);
     await db.delete(issueCreateIdempotencyKeys);
     await db.delete(issues);
@@ -85,6 +96,24 @@ describeEmbeddedPostgres("issue create deduplication routes", () => {
       priority: "medium",
     }).returning();
     return parent;
+  }
+
+  async function writeRegistry(ids: string[], options?: { ageHours?: number }) {
+    tempDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-tskb-registry-"));
+    const registryPath = path.join(tempDir, "ids.json");
+    const generatedAt = new Date(Date.now() - (options?.ageHours ?? 0) * 60 * 60 * 1000);
+    await writeFile(registryPath, JSON.stringify({
+      version: 1,
+      generatedAt: generatedAt.toISOString(),
+      canonicalIds: ids,
+      burnedIds: [],
+      resolvableIds: ids,
+    }));
+    if (options?.ageHours) {
+      await utimes(registryPath, generatedAt, generatedAt);
+    }
+    process.env.TSKB_REGISTRY_PATH = registryPath;
+    return registryPath;
   }
 
   it("replays the existing issue for the same company idempotency key", async () => {
@@ -321,5 +350,80 @@ describeEmbeddedPostgres("issue create deduplication routes", () => {
 
     expect(created.originKind).toBe("manual");
     expect(created.originRunId).toBe(runId);
+  });
+
+  it("adds a warning comment when issue creation cites an unresolvable TSKB number", async () => {
+    const companyId = await seedCompany();
+    const parent = await seedParent(companyId);
+    const app = createApp();
+    const registryPath = await writeRegistry(["0055"]);
+
+    const response = await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({
+        parentId: parent.id,
+        title: "Warn on phantom TSKB",
+        description: "This issue cites TSKB9999 and should warn.",
+      })
+      .expect(201);
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, response.body.id));
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.body).toContain("Write-time TSKB citation warning.");
+    expect(comments[0]?.body).toContain("Issue description: TSKB9999");
+    expect(comments[0]?.body).toContain(`Registry: ${registryPath}`);
+    expect(comments[0]?.presentation).toMatchObject({
+      kind: "system_notice",
+      tone: "warning",
+      title: "Unresolved TSKB citation",
+    });
+  });
+
+  it("stays silent on issue creation when the cited TSKB number resolves", async () => {
+    const companyId = await seedCompany();
+    const parent = await seedParent(companyId);
+    const app = createApp();
+    await writeRegistry(["0055"]);
+
+    const response = await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({
+        parentId: parent.id,
+        title: "Clean TSKB cite",
+        description: "This issue cites TSKB0055 and should stay clean.",
+      })
+      .expect(201);
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, response.body.id));
+    expect(comments).toHaveLength(0);
+  });
+
+  it("fails open on issue creation when the registry flag is off or stale", async () => {
+    const companyId = await seedCompany();
+    const parent = await seedParent(companyId);
+    const app = createApp();
+
+    const noFlag = await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({
+        parentId: parent.id,
+        title: "Flag off",
+        description: "TSKB9999 should not warn when the flag is off.",
+      })
+      .expect(201);
+    let comments = await db.select().from(issueComments).where(eq(issueComments.issueId, noFlag.body.id));
+    expect(comments).toHaveLength(0);
+
+    await writeRegistry(["0055"], { ageHours: 72 });
+    const stale = await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({
+        parentId: parent.id,
+        title: "Registry stale",
+        description: "TSKB9999 should not warn when the registry is stale.",
+      })
+      .expect(201);
+    comments = await db.select().from(issueComments).where(eq(issueComments.issueId, stale.body.id));
+    expect(comments).toHaveLength(0);
   });
 });
