@@ -20,6 +20,7 @@ export type HealthStatus = {
   deploymentMode?: "local_trusted" | "authenticated";
   deploymentExposure?: "private" | "public";
   authReady?: boolean;
+  paperclipOidcEnabled?: boolean;
   bootstrapStatus?: "ready" | "bootstrap_pending";
   bootstrapInviteActive?: boolean;
   features?: {

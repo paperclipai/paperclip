@@ -16,6 +16,7 @@ import {
 } from "../services/database-backup-health.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { serverVersion } from "../version.js";
+import { readPaperclipOidcConfig } from "../auth/paperclip-oidc.js";
 
 function shouldExposeFullHealthDetails(
   actorType: "none" | "board" | "agent" | null | undefined,
@@ -128,7 +129,7 @@ export function healthRoutes(
       res.json(
         exposeFullDetails
           ? { status: "ok", version: serverVersion, serverVersion: serverVersion, serverInfo }
-          : { status: "ok", deploymentMode: opts.deploymentMode },
+          : { status: "ok", deploymentMode: opts.deploymentMode, paperclipOidcEnabled: Boolean(readPaperclipOidcConfig()) },
       );
       return;
     }
@@ -210,6 +211,7 @@ export function healthRoutes(
         status: "ok",
         deploymentMode: opts.deploymentMode,
         deploymentExposure: opts.deploymentExposure,
+        paperclipOidcEnabled: Boolean(readPaperclipOidcConfig()),
         bootstrapStatus,
         bootstrapInviteActive,
         ...(redactedDatabaseBackup ? { databaseBackup: redactedDatabaseBackup } : {}),
@@ -226,6 +228,7 @@ export function healthRoutes(
       deploymentMode: opts.deploymentMode,
       deploymentExposure: opts.deploymentExposure,
       authReady: opts.authReady,
+      paperclipOidcEnabled: Boolean(readPaperclipOidcConfig()),
       bootstrapStatus,
       bootstrapInviteActive,
       features: {

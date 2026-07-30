@@ -283,6 +283,7 @@ describe("GET /health", () => {
       deploymentExposure: "public",
       bootstrapStatus: "ready",
       bootstrapInviteActive: false,
+      paperclipOidcEnabled: false,
       databaseBackup: {
         enabled: true,
         status: "warning",
@@ -339,6 +340,7 @@ describe("GET /health", () => {
       deploymentExposure: "public",
       bootstrapStatus: "ready",
       bootstrapInviteActive: false,
+      paperclipOidcEnabled: false,
     });
     expect(res.body.serverInfo).toBeUndefined();
   });
@@ -376,6 +378,7 @@ describe("GET /health", () => {
       deploymentExposure: "public",
       bootstrapStatus: "ready",
       bootstrapInviteActive: false,
+      paperclipOidcEnabled: false,
     });
     expect(res.body.serverInfo).toBeUndefined();
   });

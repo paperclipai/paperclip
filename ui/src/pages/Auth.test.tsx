@@ -11,14 +11,19 @@ import { AuthPage } from "./Auth";
 const getSessionMock = vi.hoisted(() => vi.fn());
 const signInEmailMock = vi.hoisted(() => vi.fn());
 const signUpEmailMock = vi.hoisted(() => vi.fn());
+const signInPaperclipIdMock = vi.hoisted(() => vi.fn());
+const getHealthMock = vi.hoisted(() => vi.fn());
 
 vi.mock("../api/auth", () => ({
   authApi: {
     getSession: () => getSessionMock(),
     signInEmail: (input: unknown) => signInEmailMock(input),
     signUpEmail: (input: unknown) => signUpEmailMock(input),
+    signInPaperclipId: (input: unknown) => signInPaperclipIdMock(input),
   },
 }));
+
+vi.mock("../api/health", () => ({ healthApi: { get: () => getHealthMock() } }));
 
 // The ASCII art animation drives a canvas/requestAnimationFrame loop that adds
 // nothing to these assertions, so stub it out.
@@ -88,6 +93,15 @@ describe("AuthPage", () => {
     getSessionMock.mockResolvedValue(null);
     signInEmailMock.mockResolvedValue(undefined);
     signUpEmailMock.mockResolvedValue(undefined);
+    signInPaperclipIdMock.mockResolvedValue(undefined);
+    getHealthMock.mockResolvedValue({ status: "ok", paperclipOidcEnabled: false });
+  });
+
+  it("shows Paperclip ID only when OIDC is configured", async () => {
+    getHealthMock.mockResolvedValueOnce({ status: "ok", paperclipOidcEnabled: true });
+    const { root } = await mount();
+    expect(Array.from(container.querySelectorAll("button")).some((button) => button.textContent === "Continue with Paperclip ID")).toBe(true);
+    await act(async () => root.unmount());
   });
 
   afterEach(() => {

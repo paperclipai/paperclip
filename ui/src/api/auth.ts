@@ -161,6 +161,24 @@ export const authApi = {
     await authPost("/sign-in/email", input);
   },
 
+  signInPaperclipId: async (input: { callbackURL: string }) => {
+    const payload = await authPost("/sign-in/paperclip-id", {
+      ...input,
+      errorCallbackURL: `/auth?next=${encodeURIComponent(input.callbackURL)}`,
+    }) as { url?: string };
+    if (!payload.url) throw new Error("Paperclip ID did not return a sign-in URL");
+    window.location.assign(payload.url);
+  },
+
+  linkPaperclipId: async (input: { callbackURL: string; password: string }) => {
+    const payload = await authPost("/link/paperclip-id", {
+      ...input,
+      errorCallbackURL: `/auth?next=${encodeURIComponent(input.callbackURL)}`,
+    }) as { url?: string };
+    if (!payload.url) throw new Error("Paperclip ID did not return a linking URL");
+    window.location.assign(payload.url);
+  },
+
   signUpEmail: async (input: { name: string; email: string; password: string }) => {
     await authPost("/sign-up/email", input);
   },

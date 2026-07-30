@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useNavigate, useSearchParams } from "@/lib/router";
 import { authApi } from "../api/auth";
+import { healthApi } from "../api/health";
 import { queryKeys } from "../lib/queryKeys";
 import { getRememberedInvitePath } from "../lib/invite-memory";
 import { Button } from "@/components/ui/button";
@@ -21,12 +22,18 @@ export function AuthPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [error, setError] = useState<string | null>(null);
+  const [paperclipOidcEnabled, setPaperclipOidcEnabled] = useState(false);
   const errorId = "auth-error";
 
   const nextPath = useMemo(
     () => searchParams.get("next") || getRememberedInvitePath() || "/",
     [searchParams],
   );
+  const oidcError = searchParams.get("oidcError");
+  const linkRequired = oidcError === "account_not_linked";
+  useEffect(() => {
+    void healthApi.get().then((health) => setPaperclipOidcEnabled(Boolean(health.paperclipOidcEnabled))).catch(() => undefined);
+  }, []);
   const { data: session, isLoading: isSessionLoading } = useQuery({
     queryKey: queryKeys.auth.session,
     queryFn: () => authApi.getSession(),
@@ -43,15 +50,21 @@ export function AuthPage() {
     mutationFn: async () => {
       if (mode === "sign_in") {
         await authApi.signInEmail({ email: email.trim(), password });
-        return;
+        if (linkRequired) {
+          await authApi.linkPaperclipId({ callbackURL: nextPath, password });
+          return true;
+        }
+        return false;
       }
       await authApi.signUpEmail({
         name: name.trim(),
         email: email.trim(),
         password,
       });
+      return false;
     },
-    onSuccess: async () => {
+    onSuccess: async (redirecting) => {
+      if (redirecting) return;
       setError(null);
       await queryClient.invalidateQueries({ queryKey: queryKeys.auth.session });
       await queryClient.invalidateQueries({ queryKey: queryKeys.health });
@@ -181,6 +194,24 @@ export function AuthPage() {
                   : "Create Account"}
             </Button>
           </form>
+
+          {mode === "sign_in" && paperclipOidcEnabled ? (
+            <div className="mt-4 space-y-2">
+              <Button
+                type="button"
+                variant="outline"
+                className="w-full"
+                onClick={() => void authApi.signInPaperclipId({ callbackURL: nextPath })}
+              >
+                Continue with Paperclip ID
+              </Button>
+              {linkRequired ? (
+                <p className="text-xs text-muted-foreground">
+                  Sign in with your local password once to confirm linking this verified Paperclip ID.
+                </p>
+              ) : null}
+            </div>
+          ) : null}
 
           <div className="mt-5 text-sm text-muted-foreground">
             {mode === "sign_in" ? "Need an account?" : "Already have an account?"}{" "}

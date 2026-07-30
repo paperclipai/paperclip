@@ -61,6 +61,25 @@ Paperclip now treats **bind** as a separate concern from auth:
 - explicit public URL required
 - stricter deployment checks and failures in doctor
 - Better Auth request rate limiting is on by default; set `PAPERCLIP_AUTH_RATE_LIMIT_ENABLED=false` only when an explicit front-door limiter covers the deployment
+
+### Optional Paperclip ID sign-in
+
+Self-hosted authenticated instances can add Paperclip ID as an OIDC login option while retaining local email/password authentication. Register this exact redirect URI in Paperclip ID (wildcards are not supported):
+
+```text
+https://your-instance.example/api/auth/oauth2/callback/paperclip-id
+```
+
+Then set and restart Paperclip:
+
+```sh
+PAPERCLIP_OIDC_ISSUER=https://id.paperclip.ing
+PAPERCLIP_OIDC_CLIENT_ID=<registered-client-id>
+PAPERCLIP_OIDC_CLIENT_SECRET=<registered-client-secret>
+PAPERCLIP_OIDC_SCOPES="openid profile email"
+```
+
+The login button remains hidden unless the issuer, client ID, and client secret are all configured. The flow uses authorization code with S256 PKCE, state, nonce, discovery/JWKS ID-token verification, and `(issuer, subject)` account binding. A verified Paperclip ID email that matches an existing local account is never linked silently: the user must sign in with the local password once and explicitly complete the link.
 - recommended bind is `loopback` behind a reverse proxy; direct `lan/custom` is advanced
 - local stdio MCP runtime slots fail closed by default; set `PAPERCLIP_TRUSTED_MCP_RUNTIME_HOST` only when a trusted worker/runtime host is configured to supervise those processes. Remote HTTP MCP remains the preferred public-hosted path.
 

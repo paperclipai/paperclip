@@ -1,6 +1,6 @@
 import type { Request, RequestHandler } from "express";
 import type { IncomingHttpHeaders } from "node:http";
-import { betterAuth, type Auth } from "better-auth";
+import { betterAuth, type Auth, type BetterAuthPlugin } from "better-auth";
 import { drizzleAdapter } from "better-auth/adapters/drizzle";
 import { toNodeHandler } from "better-auth/node";
 import type { Db } from "@paperclipai/db";
@@ -12,6 +12,7 @@ import {
 } from "@paperclipai/db";
 import type { Config } from "../config.js";
 import { resolvePaperclipInstanceId } from "../home-paths.js";
+import { paperclipOidc, readPaperclipOidcConfig } from "./paperclip-oidc.js";
 
 export type BetterAuthSessionUser = {
   id: string;
@@ -186,7 +187,12 @@ export function createBetterAuthInstance(db: Db, config: Config, trustedOrigins:
       override: process.env.PAPERCLIP_AUTH_RATE_LIMIT_ENABLED,
     }),
     advanced: buildBetterAuthAdvancedOptions({ disableSecureCookies }),
+    account: { accountLinking: { disableImplicitLinking: true } },
+    plugins: [] as BetterAuthPlugin[],
   };
+
+  const oidcConfig = readPaperclipOidcConfig();
+  if (oidcConfig) authConfig.plugins.push(paperclipOidc(oidcConfig, secret, db));
 
   if (!baseUrl) {
     delete (authConfig as { baseURL?: string }).baseURL;
