@@ -5,5 +5,40 @@
       "description": "Kom igång genom att skapa ett företag.",
       "newCompany": "Nytt företag"
     }
+  },
+  "common": {
+    "skipToMainContent": "Skip to Main Content",
+    "openSearch": "Open search",
+    "keepSidebarExpanded": "Keep sidebar expanded",
+    "expandSidebar": "Expand sidebar",
+    "collapseSidebar": "Collapse sidebar",
+    "newTask": "New Task"
+  },
+  "sidebar": {
+    "dashboard": "Dashboard",
+    "inbox": "Inbox",
+    "decisions": "Decisions",
+    "status": "Status",
+    "conferenceRoom": "Conference Room",
+    "work": "Work",
+    "tasks": "Tasks",
+    "cases": "Cases",
+    "routines": "Routines",
+    "pipelines": "Pipelines",
+    "goals": "Goals",
+    "artifacts": "Artifacts",
+    "skills": "Skills",
+    "workspaces": "Workspaces",
+    "projects": "Projects",
+    "org": "Org",
+    "apps": "Apps",
+    "timeline": "Timeline",
+    "costs": "Costs",
+    "activity": "Activity",
+    "settings": "Settings",
+    "unread": "unread",
+    "decisionsBadge": "decisions",
+    "beta": "beta",
+    "company": "Company"
   }
 }

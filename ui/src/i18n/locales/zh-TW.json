@@ -5,5 +5,40 @@
       "description": "從建立公司開始。",
       "newCompany": "新公司"
     }
+  },
+  "common": {
+    "skipToMainContent": "跳到主要內容",
+    "openSearch": "開啟搜尋",
+    "keepSidebarExpanded": "保持側欄展開",
+    "expandSidebar": "展開側欄",
+    "collapseSidebar": "收起側欄",
+    "newTask": "新增任務"
+  },
+  "sidebar": {
+    "dashboard": "儀表板",
+    "inbox": "收件匣",
+    "decisions": "決策",
+    "status": "狀態",
+    "conferenceRoom": "會議室",
+    "work": "工作",
+    "tasks": "任務",
+    "cases": "案例",
+    "routines": "例行任務",
+    "pipelines": "管線",
+    "goals": "目標",
+    "artifacts": "產物",
+    "skills": "技能",
+    "workspaces": "工作區",
+    "projects": "專案",
+    "org": "組織",
+    "apps": "應用程式",
+    "timeline": "時間軸",
+    "costs": "成本",
+    "activity": "動態",
+    "settings": "設定",
+    "unread": "未讀",
+    "decisionsBadge": "決策",
+    "beta": "測試版",
+    "company": "公司"
   }
 }

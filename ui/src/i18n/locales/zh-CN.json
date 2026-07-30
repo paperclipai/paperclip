@@ -5,5 +5,40 @@
       "description": "通过创建公司开始。",
       "newCompany": "新公司"
     }
+  },
+  "common": {
+    "skipToMainContent": "跳到主要内容",
+    "openSearch": "打开搜索",
+    "keepSidebarExpanded": "保持侧栏展开",
+    "expandSidebar": "展开侧栏",
+    "collapseSidebar": "收起侧栏",
+    "newTask": "新建任务"
+  },
+  "sidebar": {
+    "dashboard": "仪表盘",
+    "inbox": "收件箱",
+    "decisions": "决策",
+    "status": "状态",
+    "conferenceRoom": "会议室",
+    "work": "工作",
+    "tasks": "任务",
+    "cases": "案例",
+    "routines": "例行任务",
+    "pipelines": "流水线",
+    "goals": "目标",
+    "artifacts": "产物",
+    "skills": "技能",
+    "workspaces": "工作区",
+    "projects": "项目",
+    "org": "组织",
+    "apps": "应用",
+    "timeline": "时间线",
+    "costs": "成本",
+    "activity": "动态",
+    "settings": "设置",
+    "unread": "未读",
+    "decisionsBadge": "决策",
+    "beta": "测试版",
+    "company": "公司"
   }
 }
