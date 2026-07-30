@@ -1,4 +1,4 @@
-import { AlertTriangle, Clock, Pause, User, Wrench } from "lucide-react";
+import { AlertOctagon, AlertTriangle, Clock, Pause, User, Wrench, XCircle } from "lucide-react";
 import type { ComponentType } from "react";
 import type { IssueBlockedInboxSeverity } from "@paperclipai/shared";
 import { cn } from "../lib/utils";
@@ -19,6 +19,10 @@ interface BlockedReasonChipProps {
 type IconComponent = ComponentType<{ className?: string; "aria-hidden"?: boolean | "true" | "false" }>;
 
 const VARIANT_STYLES: Record<BlockedReasonVariant, string> = {
+  unresolved:
+    "border-red-400/70 bg-red-100 text-red-900 dark:border-red-500/40 dark:bg-red-500/15 dark:text-red-200",
+  cancelled_dependency:
+    "border-red-300/70 bg-red-50 text-red-800 dark:border-red-500/30 dark:bg-red-500/10 dark:text-red-300",
   needs_decision:
     "border-violet-300/70 bg-violet-50 text-violet-800 dark:border-violet-500/30 dark:bg-violet-500/10 dark:text-violet-300",
   recovery_required:
@@ -34,6 +38,8 @@ const VARIANT_STYLES: Record<BlockedReasonVariant, string> = {
 };
 
 const VARIANT_ICONS: Record<BlockedReasonVariant, IconComponent> = {
+  unresolved: AlertOctagon,
+  cancelled_dependency: XCircle,
   needs_decision: Clock,
   recovery_required: Wrench,
   stalled: AlertTriangle,

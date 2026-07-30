@@ -114,6 +114,25 @@ describe("blockedInbox", () => {
     }
   });
 
+  it("maps a cancelled dependency to the red cancelled_dependency variant, not needs_attention", () => {
+    expect(blockedReasonVariant("blocked_by_cancelled_issue")).toBe("cancelled_dependency");
+    expect(blockedVariantLabel("cancelled_dependency")).toBe("Cancelled dependency");
+  });
+
+  it("defaults an unknown/unclassified blocked reason to the red unresolved variant", () => {
+    // A stopped reason with no explicit mapping must never read like an ordinary
+    // dependency wait — it falls through to "No reason on record".
+    const unknown = "some_future_reason" as never;
+    expect(blockedReasonVariant(unknown)).toBe("unresolved");
+    expect(blockedReasonLabel(unknown)).toBe("No reason on record");
+    expect(blockedVariantLabel("unresolved")).toBe("No reason on record");
+  });
+
+  it("orders the red urgency variants (unresolved, cancelled_dependency) first", () => {
+    expect(BLOCKED_REASON_VARIANT_ORDER[0]).toBe("unresolved");
+    expect(BLOCKED_REASON_VARIANT_ORDER[1]).toBe("cancelled_dependency");
+  });
+
   it("ranks severity critical first and low last", () => {
     const order: IssueBlockedInboxSeverity[] = ["critical", "high", "medium", "low"];
     const ranks = order.map((s) => blockedSeverityRank(s));

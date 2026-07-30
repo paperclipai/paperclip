@@ -134,6 +134,10 @@ import { InlineEditor } from "@/components/InlineEditor";
 import { PageSkeleton } from "@/components/PageSkeleton";
 import { Identity } from "@/components/Identity";
 import { IssueReferencePill } from "@/components/IssueReferencePill";
+import { IssueBlockedNotice } from "@/components/IssueBlockedNotice";
+import { BlockedReasonChip } from "@/components/BlockedReasonChip";
+import { BLOCKED_REASON_VARIANT_ORDER, blockedReasonVariant } from "@/lib/blockedInbox";
+import type { IssueBlockedInboxReason } from "@paperclipai/shared";
 import { MembershipAction } from "@/components/MembershipAction";
 import { IssueOutputSection } from "@/components/issue-output/IssueOutputSection";
 import { EnvironmentVariablesEditor } from "@/components/environment-variables-editor";
@@ -364,6 +368,162 @@ function Swatch({ name, cssVar }: { name: string; cssVar: string }) {
         <p className="text-xs text-muted-foreground">{name}</p>
       </div>
     </div>
+  );
+}
+
+/* ------------------------------------------------------------------ */
+/*  Stopped-state surfacing                                            */
+/* ------------------------------------------------------------------ */
+
+/**
+ * Rendered source of truth for the operator "stopped" states: every state has
+ * one tone, one icon family, a heading, and a named owner + next action. State 6
+ * ("Stopped — no reason on record") is the odd-one-out (red accent + AlertOctagon)
+ * so a stale/blockerless stop pops instead of hiding among the calm waits.
+ */
+function StoppedStatesShowcase() {
+  const liveBlocker = {
+    id: "sg-live-1",
+    identifier: "TASK-801",
+    title: "Dependency being worked",
+    status: "in_progress" as const,
+    priority: "medium" as const,
+    assigneeAgentId: "agent-1",
+    assigneeUserId: null,
+  };
+  const queuedBlocker = {
+    id: "sg-queued-1",
+    identifier: "TASK-802",
+    title: "Queued dependency",
+    status: "todo" as const,
+    priority: "medium" as const,
+    assigneeAgentId: "agent-1",
+    assigneeUserId: null,
+  };
+  const reviewBlocker = {
+    id: "sg-review-1",
+    identifier: "TASK-803",
+    title: "Stalled review",
+    status: "in_review" as const,
+    priority: "medium" as const,
+    assigneeAgentId: "agent-1",
+    assigneeUserId: null,
+  };
+  const doneBlocker = {
+    id: "sg-done-1",
+    identifier: "TASK-804",
+    title: "live-tree hygiene",
+    status: "done" as const,
+    priority: "medium" as const,
+    assigneeAgentId: "agent-1",
+    assigneeUserId: null,
+  };
+  const cancelledBlocker = {
+    id: "sg-cancelled-1",
+    identifier: "TASK-805",
+    title: "dropped dependency",
+    status: "cancelled" as const,
+    priority: "medium" as const,
+    assigneeAgentId: null,
+    assigneeUserId: null,
+  };
+  const attention = (over: Record<string, unknown>) => ({
+    state: "none" as const,
+    reason: null,
+    unresolvedBlockerCount: 0,
+    coveredBlockerCount: 0,
+    stalledBlockerCount: 0,
+    attentionBlockerCount: 0,
+    sampleBlockerIdentifier: null,
+    sampleStalledBlockerIdentifier: null,
+    ...over,
+  });
+
+  return (
+    <>
+      <SubSection title="Detail notice — the six stopped states">
+        <div className="grid gap-4 md:grid-cols-2">
+          <div>
+            <p className="mb-1 text-xs font-medium text-muted-foreground">1 · Waiting on live work (blue)</p>
+            <IssueBlockedNotice
+              issueStatus="blocked"
+              liveIssueIds={new Set([liveBlocker.id])}
+              blockers={[liveBlocker]}
+              allBlockers={[doneBlocker, liveBlocker]}
+              blockerAttention={attention({ state: "covered", reason: "active_dependency", unresolvedBlockerCount: 1, coveredBlockerCount: 2 })}
+            />
+          </div>
+          <div>
+            <p className="mb-1 text-xs font-medium text-muted-foreground">2 · Waiting on a blocker (amber)</p>
+            <IssueBlockedNotice
+              issueStatus="blocked"
+              blockers={[queuedBlocker]}
+              allBlockers={[queuedBlocker]}
+              blockerAttention={attention({ state: "needs_attention", reason: "attention_required", unresolvedBlockerCount: 1, attentionBlockerCount: 1 })}
+            />
+          </div>
+          <div>
+            <p className="mb-1 text-xs font-medium text-muted-foreground">5 · Stalled in review (amber-strong)</p>
+            <IssueBlockedNotice
+              issueStatus="blocked"
+              blockers={[reviewBlocker]}
+              allBlockers={[reviewBlocker]}
+              blockerAttention={attention({ state: "stalled", reason: "stalled_review", unresolvedBlockerCount: 1, stalledBlockerCount: 1, sampleStalledBlockerIdentifier: "TASK-803" })}
+            />
+          </div>
+          <div>
+            <p className="mb-1 text-xs font-medium text-muted-foreground">6 · Stopped — no reason on record (red) — NEW</p>
+            <IssueBlockedNotice
+              issueStatus="blocked"
+              blockers={[]}
+              allBlockers={[]}
+              responsibleAgentName="Senior Planning Engineer Pro"
+              blockerAttention={attention({ state: "needs_attention", reason: "attention_required" })}
+            />
+          </div>
+        </div>
+      </SubSection>
+
+      <SubSection title="Terminal-blocker outcomes — done (Satisfied) + cancelled (unsatisfied)">
+        <div className="max-w-xl">
+          <IssueBlockedNotice
+            issueStatus="blocked"
+            blockers={[queuedBlocker]}
+            allBlockers={[queuedBlocker, doneBlocker, cancelledBlocker]}
+            blockerAttention={attention({ state: "needs_attention", reason: "attention_required", unresolvedBlockerCount: 1, attentionBlockerCount: 1 })}
+          />
+        </div>
+      </SubSection>
+
+      <SubSection title="Blocked-inbox reason chips (red urgency variants first)">
+        <p className="text-xs text-muted-foreground">
+          A cancelled dependency and any unclassified stop now read as red decisions, not calm amber waits.
+        </p>
+        <div className="flex flex-wrap items-center gap-2">
+          {(
+            [
+              "blocked_by_cancelled_issue",
+              "pending_board_decision",
+              "blocked_chain_stalled",
+              "blocked_by_unassigned_issue",
+              "open_recovery_issue",
+              "external_owner_action",
+              "blocked_by_uninvokable_assignee",
+            ] as IssueBlockedInboxReason[]
+          )
+            .slice()
+            .sort(
+              (a, b) =>
+                BLOCKED_REASON_VARIANT_ORDER.indexOf(blockedReasonVariant(a)) -
+                BLOCKED_REASON_VARIANT_ORDER.indexOf(blockedReasonVariant(b)),
+            )
+            .map((reason) => (
+              <BlockedReasonChip key={reason} reason={reason} severity="high" />
+            ))}
+          <BlockedReasonChip reason={"blocked_without_reason" as IssueBlockedInboxReason} severity="critical" />
+        </div>
+      </SubSection>
+    </>
   );
 }
 
@@ -694,6 +854,19 @@ export function DesignGuide() {
             <IssueReferencePill strikethrough issue={{ id: "demo-5", identifier: "PAP-202", title: "Removed (strikethrough)", status: "todo" }} />
           </div>
         </SubSection>
+      </Section>
+
+      {/* ============================================================ */}
+      {/*  STOPPED-STATE SURFACING                                     */}
+      {/* ============================================================ */}
+      <Section title="Stopped-state surfacing">
+        <p className="text-sm text-muted-foreground max-w-prose">
+          Why a task is stopped — and who moves it next — at a glance, without reading run logs.
+          Every state names an owner and a next action. A stale, blockerless <code className="font-mono">blocked</code>{" "}
+          posture (state 6) must never read like an ordinary dependency wait, so it is the odd one out:
+          a red accent + <code className="font-mono">AlertOctagon</code>.
+        </p>
+        <StoppedStatesShowcase />
       </Section>
 
       {/* ============================================================ */}
