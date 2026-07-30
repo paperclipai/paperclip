@@ -1378,8 +1378,9 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
     shellCommand,
   });
 
-  await client.makeDir(stdinDir);
-  await client.makeDir(eventsDir);
+  // The launch exec below re-creates stdinDir and eventsDir with one `mkdir -p`,
+  // and the remote script also creates them on start. No reader touches the two
+  // directories before the launch exec runs, so upfront makeDir execs are redundant.
   await syncProcessSessionRemoteScript({
     runner,
     remoteCwd: target.remoteCwd,
