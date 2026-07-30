@@ -8,29 +8,26 @@ import { HTTP_LOG_REDACT_PATHS } from "./http-log-redaction.js";
 import { shouldSilenceHttpSuccessLog } from "./http-log-policy.js";
 import { redactSensitive } from "./redact-sensitive.js";
 
-function resolveServerLogDir(): string {
-  const envOverride = process.env.PAPERCLIP_LOG_DIR?.trim();
-  if (envOverride) return resolveHomeAwarePath(envOverride);
-
-  const fileLogDir = readConfigFile()?.logging.logDir?.trim();
-  if (fileLogDir) return resolveHomeAwarePath(fileLogDir);
-
-  return resolveDefaultLogsDir();
-}
-
-const logDir = resolveServerLogDir();
-fs.mkdirSync(logDir, { recursive: true });
-
-const logFile = path.join(logDir, "server.log");
-
 const sharedOpts = {
   translateTime: "SYS:HH:MM:ss",
   ignore: "pid,hostname",
   singleLine: true,
 };
 
+function resolveServerLogDir(): string {
+  const envOverride = process.env.PAPERCLIP_LOG_DIR?.trim();
+  if (envOverride) return resolveHomeAwarePath(envOverride);
+  const fileLogDir = readConfigFile()?.logging.logDir?.trim();
+  if (fileLogDir) return resolveHomeAwarePath(fileLogDir);
+  return resolveDefaultLogsDir();
+}
+
+const logDir = resolveServerLogDir();
+fs.mkdirSync(logDir, { recursive: true });
+const logFile = path.join(logDir, "server.log");
+
 export const logger = pino({
-  level: "debug",
+  level: process.env.PAPERCLIP_LOG_LEVEL?.trim() || "debug",
   redact: [...HTTP_LOG_REDACT_PATHS],
 }, pino.transport({
   targets: [
