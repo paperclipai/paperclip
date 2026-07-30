@@ -814,6 +814,7 @@ export type {
   CompanyPortabilityFileEntry,
   CompanyPortabilityCompanyManifestEntry,
   CompanyPortabilitySidebarOrder,
+  CompanyPortabilityLabelManifestEntry,
   CompanyPortabilityAgentManifestEntry,
   CompanyPortabilitySkillManifestEntry,
   CompanyPortabilityProjectManifestEntry,

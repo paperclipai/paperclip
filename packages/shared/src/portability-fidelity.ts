@@ -44,24 +44,6 @@ const UNSUPPORTED_DATA_WARNINGS: ReadonlyArray<[code: string, countKey: keyof Ex
 
 export function buildExportFidelityWarnings(counts: ExportFidelityCounts): PortabilityFidelityWarning[] {
   const warnings: PortabilityFidelityWarning[] = [];
-  if (counts.issueLabelReferences > 0) {
-    warnings.push({
-      code: "labels_require_mapping",
-      severity: "blocker",
-      message:
-        `Importing this export will fail because ${counts.issueLabelReferences} issue label ` +
-        `${counts.issueLabelReferences === 1 ? "reference refers" : "references refer"} to label ` +
-        "definitions that are not included in the export bundle.",
-    });
-  } else if (counts.labelDefinitions > 0) {
-    warnings.push({
-      code: "label_definitions_not_exported",
-      severity: "warning",
-      message:
-        `${counts.labelDefinitions} label definition${counts.labelDefinitions === 1 ? " is" : "s are"} ` +
-        "not included in the export bundle.",
-    });
-  }
   for (const [code, countKey, label] of UNSUPPORTED_DATA_WARNINGS) {
     const rowCount = counts[countKey];
     if (rowCount <= 0) continue;

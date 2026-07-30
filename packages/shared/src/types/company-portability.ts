@@ -49,6 +49,11 @@ export interface CompanyPortabilitySidebarOrder {
   projects: string[];
 }
 
+export interface CompanyPortabilityLabelManifestEntry {
+  name: string;
+  color: string;
+}
+
 export interface CompanyPortabilityProjectManifestEntry {
   slug: string;
   name: string;
@@ -122,6 +127,7 @@ export interface CompanyPortabilityIssueManifestEntry {
   status: string | null;
   priority: string | null;
   labelIds: string[];
+  labelNames?: string[];
   billingCode: string | null;
   executionWorkspaceSettings: Record<string, unknown> | null;
   assigneeAdapterOverrides: Record<string, unknown> | null;
@@ -181,6 +187,7 @@ export interface CompanyPortabilityManifest {
   includes: CompanyPortabilityInclude;
   company: CompanyPortabilityCompanyManifestEntry | null;
   sidebar: CompanyPortabilitySidebarOrder | null;
+  labels?: CompanyPortabilityLabelManifestEntry[];
   agents: CompanyPortabilityAgentManifestEntry[];
   skills: CompanyPortabilitySkillManifestEntry[];
   projects: CompanyPortabilityProjectManifestEntry[];

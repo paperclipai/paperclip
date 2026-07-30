@@ -41,6 +41,8 @@ const issueSvc = {
   getByIdentifier: vi.fn(),
   create: vi.fn(),
   addComment: vi.fn(),
+  listLabels: vi.fn(),
+  createLabel: vi.fn(),
 };
 
 const routineSvc = {
@@ -244,6 +246,13 @@ describe("company portability", () => {
     issueSvc.list.mockResolvedValue([]);
     issueSvc.getById.mockResolvedValue(null);
     issueSvc.getByIdentifier.mockResolvedValue(null);
+    issueSvc.listLabels.mockResolvedValue([]);
+    issueSvc.createLabel.mockImplementation(async (_companyId: string, data: { name: string; color: string }) => ({
+      id: `label-created-${data.name}`,
+      companyId: "company-imported",
+      name: data.name,
+      color: data.color,
+    }));
     routineSvc.list.mockResolvedValue([]);
     routineSvc.getDetail.mockImplementation(async (id: string) => {
       const rows = await routineSvc.list();
@@ -3311,7 +3320,7 @@ describe("company portability", () => {
     expect(lastCreateInput.adapterConfig?.dangerouslyBypassApprovalsAndSandbox).toBeUndefined();
   });
 
-  it("preserves issue labelIds through export and import round-trip", async () => {
+  it("carries labels by name through export and import round-trip", async () => {
     const portability = companyPortabilityService({} as any);
 
     projectSvc.list.mockResolvedValue([
@@ -3344,15 +3353,28 @@ describe("company portability", () => {
         assigneeAdapterOverrides: null,
       },
     ]);
+    issueSvc.listLabels.mockResolvedValueOnce([
+      { id: "label-a", companyId: "company-1", name: "bug", color: "#ff0000" },
+      { id: "label-b", companyId: "company-1", name: "urgent", color: "#00ff00" },
+    ]);
 
     const exported = await portability.exportBundle("company-1", {
       include: { company: true, agents: false, projects: true, issues: true },
     });
 
     const extension = asTextFile(exported.files[".paperclip.yaml"]);
-    expect(extension).toContain("labelIds:");
-    expect(extension).toContain("label-a");
-    expect(extension).toContain("label-b");
+    expect(extension).toContain("labels:");
+    expect(extension).toContain('"bug"');
+    expect(extension).toContain('"urgent"');
+    expect(extension).toContain('"#ff0000"');
+    expect(extension).toContain('"#00ff00"');
+    expect(extension).not.toContain("labelIds");
+    expect(extension).not.toContain("label-a");
+    expect(exported.manifest.labels).toEqual([
+      { name: "bug", color: "#ff0000" },
+      { name: "urgent", color: "#00ff00" },
+    ]);
+    expect(exported.manifest.issues[0]?.labelNames).toEqual(["bug", "urgent"]);
 
     companySvc.create.mockResolvedValue({ id: "company-imported", name: "Imported" });
     accessSvc.ensureMembership.mockResolvedValue(undefined);
@@ -3360,6 +3382,7 @@ describe("company portability", () => {
     projectSvc.list.mockResolvedValue([]);
     projectSvc.create.mockResolvedValue({ id: "project-imported", name: "Launch", urlKey: "launch" });
     issueSvc.create.mockResolvedValue({ id: "issue-imported", title: "Labelled task" });
+    issueSvc.listLabels.mockResolvedValueOnce([]);
 
     await portability.importBundle({
       source: { type: "inline", rootPath: exported.rootPath, files: exported.files },
@@ -3369,11 +3392,129 @@ describe("company portability", () => {
       collisionStrategy: "rename",
     }, "user-1");
 
+    expect(issueSvc.createLabel).toHaveBeenCalledWith("company-imported", { name: "bug", color: "#ff0000" });
+    expect(issueSvc.createLabel).toHaveBeenCalledWith("company-imported", { name: "urgent", color: "#00ff00" });
+    expect(issueSvc.createLabel).toHaveBeenCalledTimes(2);
     expect(issueSvc.create).toHaveBeenCalledWith(
       "company-imported",
       expect.objectContaining({
-        labelIds: ["label-a", "label-b"],
+        labelIds: ["label-created-bug", "label-created-urgent"],
       }),
+    );
+  });
+
+  it("reuses existing target labels on name collision and keeps the target color", async () => {
+    const portability = companyPortabilityService({} as any);
+
+    projectSvc.list.mockResolvedValue([]);
+    projectSvc.listWorkspaces.mockResolvedValue([]);
+    issueSvc.list.mockResolvedValue([
+      {
+        id: "issue-1",
+        identifier: "PAP-1",
+        title: "Labelled task",
+        description: null,
+        projectId: null,
+        projectWorkspaceId: null,
+        assigneeAgentId: null,
+        status: "todo",
+        priority: "medium",
+        labelIds: ["label-a", "label-b"],
+        billingCode: null,
+        executionWorkspaceSettings: null,
+        assigneeAdapterOverrides: null,
+      },
+    ]);
+    issueSvc.listLabels.mockResolvedValueOnce([
+      { id: "label-a", companyId: "company-1", name: "bug", color: "#ff0000" },
+      { id: "label-b", companyId: "company-1", name: "urgent", color: "#00ff00" },
+    ]);
+
+    const exported = await portability.exportBundle("company-1", {
+      include: { company: true, agents: false, projects: false, issues: true },
+    });
+
+    agentSvc.list.mockResolvedValue([]);
+    issueSvc.create.mockResolvedValue({ id: "issue-imported", title: "Labelled task" });
+    // Import target already has a "bug" label with a different color.
+    issueSvc.listLabels.mockResolvedValueOnce([
+      { id: "target-bug", companyId: "company-1", name: "bug", color: "#123456" },
+    ]);
+
+    const result = await portability.importBundle({
+      source: { type: "inline", rootPath: exported.rootPath, files: exported.files },
+      include: { company: false, agents: false, projects: false, issues: true },
+      target: { mode: "existing_company", companyId: "company-1" },
+      agents: "all",
+      collisionStrategy: "rename",
+    }, "user-1");
+
+    expect(issueSvc.createLabel).toHaveBeenCalledTimes(1);
+    expect(issueSvc.createLabel).toHaveBeenCalledWith("company-1", { name: "urgent", color: "#00ff00" });
+    expect(issueSvc.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        labelIds: ["target-bug", "label-created-urgent"],
+      }),
+    );
+    expect(result.warnings).toContain(
+      "Existing label color was kept for bug; the imported bundle used different colors.",
+    );
+  });
+
+  it("drops unresolvable raw labelIds from old bundles with a warning instead of failing", async () => {
+    const portability = companyPortabilityService({} as any);
+
+    companySvc.create.mockResolvedValue({ id: "company-imported", name: "Legacy Import" });
+    accessSvc.ensureMembership.mockResolvedValue(undefined);
+    agentSvc.list.mockResolvedValue([]);
+    issueSvc.create.mockResolvedValue({ id: "issue-imported", title: "Kickoff" });
+
+    const result = await portability.importBundle({
+      source: {
+        type: "inline",
+        rootPath: "legacy-package",
+        files: {
+          "COMPANY.md": [
+            "---",
+            'schema: "agentcompanies/v1"',
+            'name: "Legacy Import"',
+            "---",
+            "",
+          ].join("\n"),
+          "tasks/kickoff/TASK.md": [
+            "---",
+            'name: "Kickoff"',
+            "---",
+            "",
+            "Legacy labelled task.",
+            "",
+          ].join("\n"),
+          ".paperclip.yaml": [
+            'schema: "paperclip/v1"',
+            "tasks:",
+            "  kickoff:",
+            '    status: "todo"',
+            "    labelIds:",
+            '      - "0a45b7de-9fb1-4c94-9c9d-3f61c2ab0001"',
+            '      - "0a45b7de-9fb1-4c94-9c9d-3f61c2ab0002"',
+            "",
+          ].join("\n"),
+        },
+      },
+      include: { company: true, agents: false, projects: false, issues: true },
+      target: { mode: "new_company", newCompanyName: "Legacy Import" },
+      agents: "all",
+      collisionStrategy: "rename",
+    }, "user-1");
+
+    expect(issueSvc.createLabel).not.toHaveBeenCalled();
+    expect(issueSvc.create).toHaveBeenCalledWith(
+      "company-imported",
+      expect.objectContaining({ labelIds: [] }),
+    );
+    expect(result.warnings).toContain(
+      "Task kickoff dropped 2 label references because the bundle carries raw label ids that do not exist in the target company.",
     );
   });
 

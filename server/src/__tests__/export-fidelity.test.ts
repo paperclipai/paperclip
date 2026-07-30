@@ -99,7 +99,10 @@ describeEmbeddedPostgres("export fidelity counts", () => {
     const report = buildExportFidelityReport(companyId, await collectExportFidelityCounts(db, companyId));
     expect(report.schema).toBe("paperclip-export-fidelity-v1");
     expect(report.companyId).toBe(companyId);
-    expect(report.warnings.map((warning) => warning.code)).toEqual(["labels_require_mapping"]);
+    // Labels travel in the bundle now, so their counts stay informational.
+    expect(report.counts.labelDefinitions).toBe(1);
+    expect(report.counts.issueLabelReferences).toBe(1);
+    expect(report.warnings).toEqual([]);
     expect(Date.parse(report.generatedAt)).not.toBeNaN();
   });
 

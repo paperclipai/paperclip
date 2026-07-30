@@ -137,6 +137,7 @@ const DEFAULT_INCLUDE: CompanyPortabilityInclude = {
 };
 
 const DEFAULT_COLLISION_STRATEGY: CompanyPortabilityCollisionStrategy = "rename";
+const DEFAULT_IMPORTED_LABEL_COLOR = "#6366f1";
 const IMPORT_FORBIDDEN_ADAPTER_TYPES = new Set(["process", "http"]);
 const execFileAsync = promisify(execFile);
 let bundledSkillsCommitPromise: Promise<string | null> | null = null;
@@ -804,6 +805,42 @@ function readPortableIssueComments(
     });
   }
   return comments;
+}
+
+function normalizePortableLabelDefinitions(value: unknown): Array<{ name: string; color: string }> {
+  const entries: Array<{ name: string; color: string }> = [];
+  const seen = new Set<string>();
+  const append = (nameValue: unknown, colorValue: unknown) => {
+    const name = asString(nameValue);
+    if (!name || seen.has(name)) return;
+    seen.add(name);
+    entries.push({ name, color: asString(colorValue) ?? DEFAULT_IMPORTED_LABEL_COLOR });
+  };
+  if (Array.isArray(value)) {
+    for (const entry of value) {
+      if (!isPlainRecord(entry)) continue;
+      append(entry.name, entry.color);
+    }
+  } else if (isPlainRecord(value)) {
+    // Tolerate a name -> { color } (or name -> color) map from hand-edited bundles.
+    for (const [name, entry] of Object.entries(value)) {
+      append(name, isPlainRecord(entry) ? entry.color : entry);
+    }
+  }
+  return entries.sort((left, right) => left.name.localeCompare(right.name));
+}
+
+function readPortableIssueLabelNames(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  const names: string[] = [];
+  const seen = new Set<string>();
+  for (const entry of value) {
+    const name = asString(entry);
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
+    names.push(name);
+  }
+  return names;
 }
 
 function appendCodexImportArg(adapterConfig: Record<string, unknown>, arg: string) {
@@ -1710,6 +1747,27 @@ function filterPortableExtensionYaml(yaml: string, selectedFiles: Set<string>) {
     }
   }
 
+  if (Array.isArray(parsed.labels)) {
+    const referencedLabelNames = new Set<string>();
+    const tasksSection = parsed.tasks;
+    if (isPlainRecord(tasksSection)) {
+      for (const entry of Object.values(tasksSection)) {
+        if (!isPlainRecord(entry)) continue;
+        for (const name of readPortableIssueLabelNames(entry.labels)) {
+          referencedLabelNames.add(name);
+        }
+      }
+    }
+    const filteredLabels = parsed.labels.filter(
+      (entry) => isPlainRecord(entry) && typeof entry.name === "string" && referencedLabelNames.has(entry.name.trim()),
+    );
+    if (filteredLabels.length > 0) {
+      parsed.labels = filteredLabels;
+    } else {
+      delete parsed.labels;
+    }
+  }
+
   const sidebarOrder = normalizePortableSidebarOrder(parsed.sidebar);
   if (sidebarOrder) {
     const filteredSidebar = stripEmptyValues({
@@ -2609,6 +2667,7 @@ function buildManifestFromPackageFiles(
     : {};
   const paperclipCompany = isPlainRecord(paperclipExtension.company) ? paperclipExtension.company : {};
   const paperclipSidebar = normalizePortableSidebarOrder(paperclipExtension.sidebar);
+  const paperclipLabels = normalizePortableLabelDefinitions(paperclipExtension.labels);
   const paperclipAgents = isPlainRecord(paperclipExtension.agents) ? paperclipExtension.agents : {};
   const paperclipProjects = isPlainRecord(paperclipExtension.projects) ? paperclipExtension.projects : {};
   const paperclipTasks = isPlainRecord(paperclipExtension.tasks) ? paperclipExtension.tasks : {};
@@ -2691,6 +2750,7 @@ function buildManifestFromPackageFiles(
         asString(paperclipCompany.feedbackDataSharingTermsVersion),
     },
     sidebar: paperclipSidebar,
+    labels: paperclipLabels,
     agents: [],
     skills: [],
     projects: [],
@@ -2937,6 +2997,7 @@ function buildManifestFromPackageFiles(
       labelIds: Array.isArray(extension.labelIds)
         ? extension.labelIds.filter((entry): entry is string => typeof entry === "string")
         : [],
+      labelNames: readPortableIssueLabelNames(extension.labels),
       billingCode: asString(extension.billingCode),
       executionWorkspaceSettings: isPlainRecord(extension.executionWorkspaceSettings)
         ? extension.executionWorkspaceSettings
@@ -3782,6 +3843,25 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
       paperclipProjectsOut[slug] = isPlainRecord(extension) ? extension : {};
     }
 
+    const referencedLabelIds = new Set<string>();
+    for (const issue of selectedIssueRows) {
+      for (const labelId of issue.labelIds ?? []) referencedLabelIds.add(labelId);
+    }
+    const labelNameById = new Map<string, string>();
+    const exportedLabels: Array<{ name: string; color: string }> = [];
+    if (referencedLabelIds.size > 0) {
+      for (const label of await issuesSvc.listLabels(companyId)) {
+        if (!referencedLabelIds.has(label.id)) continue;
+        labelNameById.set(label.id, label.name);
+        exportedLabels.push({ name: label.name, color: label.color });
+      }
+      exportedLabels.sort((left, right) => left.name.localeCompare(right.name));
+      const missingLabelIds = Array.from(referencedLabelIds).filter((labelId) => !labelNameById.has(labelId));
+      if (missingLabelIds.length > 0) {
+        warnings.push(`Skipped ${missingLabelIds.length} task label reference${missingLabelIds.length === 1 ? "" : "s"} whose label definitions no longer exist.`);
+      }
+    }
+
     for (const issue of selectedIssueRows) {
       const taskSlug = taskSlugByIssueId.get(issue.id)!;
       const projectSlug = issue.projectId ? (projectSlugById.get(issue.projectId) ?? null) : null;
@@ -3816,7 +3896,11 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         identifier: issue.identifier,
         status: issue.status,
         priority: issue.priority,
-        labelIds: issue.labelIds ?? undefined,
+        // Labels travel by name (their natural key); the bundle-level labels
+        // section carries the matching color definitions.
+        labels: (issue.labelIds ?? [])
+          .map((labelId) => labelNameById.get(labelId))
+          .filter((name): name is string => Boolean(name)),
         billingCode: issue.billingCode ?? null,
         projectWorkspaceKey: projectWorkspaceKey ?? undefined,
         executionWorkspaceSettings: issue.executionWorkspaceSettings ?? undefined,
@@ -3907,6 +3991,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           feedbackDataSharingTermsVersion: company.feedbackDataSharingTermsVersion ?? null,
         }),
         sidebar: stripEmptyValues(sidebarOrder),
+        labels: exportedLabels.length > 0 ? exportedLabels : undefined,
         agents: Object.keys(paperclipAgents).length > 0 ? paperclipAgents : undefined,
         projects: Object.keys(paperclipProjects).length > 0 ? paperclipProjects : undefined,
         tasks: Object.keys(paperclipTasks).length > 0 ? paperclipTasks : undefined,
@@ -4972,6 +5057,51 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
 
       if (include.issues) {
         const routines = routineService(db);
+
+        // Resolve label names against the target company before creating
+        // issues: reuse existing labels (the target's color wins) and create
+        // the rest from the bundle's definitions. Old bundles carry raw
+        // labelIds instead; those only survive when the id happens to exist
+        // in the target company.
+        const labelColorByName = new Map<string, string>();
+        for (const label of sourceManifest.labels ?? []) {
+          if (!labelColorByName.has(label.name)) labelColorByName.set(label.name, label.color);
+        }
+        const referencedLabelNames = new Set<string>();
+        let hasLegacyLabelIds = false;
+        for (const manifestIssue of sourceManifest.issues) {
+          if (manifestIssue.recurring) continue;
+          for (const name of manifestIssue.labelNames ?? []) referencedLabelNames.add(name);
+          if ((manifestIssue.labelIds ?? []).length > 0) hasLegacyLabelIds = true;
+        }
+        const labelIdByName = new Map<string, string>();
+        const existingTargetLabelIds = new Set<string>();
+        if (referencedLabelNames.size > 0 || hasLegacyLabelIds) {
+          const targetLabels = await issues.listLabels(targetCompany.id);
+          const targetLabelByName = new Map(targetLabels.map((label) => [label.name, label]));
+          for (const label of targetLabels) existingTargetLabelIds.add(label.id);
+          const keptColorNames: string[] = [];
+          for (const name of Array.from(referencedLabelNames).sort((left, right) => left.localeCompare(right))) {
+            const existing = targetLabelByName.get(name);
+            if (existing) {
+              labelIdByName.set(name, existing.id);
+              const exportedColor = labelColorByName.get(name);
+              if (exportedColor && exportedColor.toLowerCase() !== existing.color.toLowerCase()) {
+                keptColorNames.push(name);
+              }
+              continue;
+            }
+            const created = await issues.createLabel(targetCompany.id, {
+              name,
+              color: labelColorByName.get(name) ?? DEFAULT_IMPORTED_LABEL_COLOR,
+            });
+            labelIdByName.set(name, created.id);
+          }
+          if (keptColorNames.length > 0) {
+            warnings.push(`Existing label color${keptColorNames.length === 1 ? " was" : "s were"} kept for ${keptColorNames.join(", ")}; the imported bundle used different colors.`);
+          }
+        }
+
         for (const manifestIssue of sourceManifest.issues) {
           const markdownRaw = readPortableTextFile(plan.source.files, manifestIssue.path);
           const parsed = markdownRaw ? parseFrontmatterMarkdown(markdownRaw) : null;
@@ -5093,6 +5223,21 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             warnings.push(`Task ${manifestIssue.slug} was downgraded to todo because its assignee could not be imported as assignable work.`);
             issueStatus = "todo";
           }
+          const resolvedLabelIds: string[] = [];
+          for (const name of manifestIssue.labelNames ?? []) {
+            const labelId = labelIdByName.get(name);
+            if (labelId && !resolvedLabelIds.includes(labelId)) resolvedLabelIds.push(labelId);
+          }
+          const legacyLabelIds = manifestIssue.labelIds ?? [];
+          const unresolvedLegacyCount = legacyLabelIds.filter((labelId) => !existingTargetLabelIds.has(labelId)).length;
+          if (unresolvedLegacyCount > 0) {
+            warnings.push(`Task ${manifestIssue.slug} dropped ${unresolvedLegacyCount} label reference${unresolvedLegacyCount === 1 ? "" : "s"} because the bundle carries raw label ids that do not exist in the target company.`);
+          }
+          for (const labelId of legacyLabelIds) {
+            if (existingTargetLabelIds.has(labelId) && !resolvedLabelIds.includes(labelId)) {
+              resolvedLabelIds.push(labelId);
+            }
+          }
           const createdIssue = await issues.create(targetCompany.id, {
             projectId,
             projectWorkspaceId,
@@ -5106,7 +5251,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             billingCode: manifestIssue.billingCode,
             assigneeAdapterOverrides: manifestIssue.assigneeAdapterOverrides,
             executionWorkspaceSettings: manifestIssue.executionWorkspaceSettings,
-            labelIds: manifestIssue.labelIds ?? [],
+            labelIds: resolvedLabelIds,
           });
           for (const comment of manifestIssue.comments ?? []) {
             const authorAgentId = comment.authorType === "agent" && comment.authorAgentSlug

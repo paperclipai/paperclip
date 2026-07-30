@@ -57,6 +57,11 @@ export const portabilitySidebarOrderSchema = z.object({
   projects: z.array(z.string().min(1)).default([]),
 });
 
+export const portabilityLabelManifestEntrySchema = z.object({
+  name: z.string().min(1),
+  color: z.string().min(1),
+});
+
 export const portabilityAgentManifestEntrySchema = z.object({
   slug: z.string().min(1),
   name: z.string().min(1),
@@ -166,6 +171,7 @@ export const portabilityIssueManifestEntrySchema = z.object({
   status: z.string().nullable(),
   priority: z.string().nullable(),
   labelIds: z.array(z.string().min(1)).default([]),
+  labelNames: z.array(z.string().min(1)).default([]),
   billingCode: z.string().nullable(),
   executionWorkspaceSettings: z.record(z.string(), z.unknown()).nullable(),
   assigneeAdapterOverrides: z.record(z.string(), z.unknown()).nullable(),
@@ -191,6 +197,7 @@ export const portabilityManifestSchema = z.object({
   }),
   company: portabilityCompanyManifestEntrySchema.nullable(),
   sidebar: portabilitySidebarOrderSchema.nullable(),
+  labels: z.array(portabilityLabelManifestEntrySchema).default([]),
   agents: z.array(portabilityAgentManifestEntrySchema),
   skills: z.array(portabilitySkillManifestEntrySchema).default([]),
   projects: z.array(portabilityProjectManifestEntrySchema).default([]),

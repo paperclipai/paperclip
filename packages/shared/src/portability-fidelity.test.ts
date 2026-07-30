@@ -23,33 +23,8 @@ describe("buildExportFidelityWarnings", () => {
     expect(buildExportFidelityWarnings(zeroCounts)).toEqual([]);
   });
 
-  it("emits a blocker when issue label references would break import", () => {
-    const warnings = buildExportFidelityWarnings({ ...zeroCounts, labelDefinitions: 2, issueLabelReferences: 3 });
-    expect(warnings).toEqual([
-      {
-        code: "labels_require_mapping",
-        severity: "blocker",
-        message:
-          "Importing this export will fail because 3 issue label references refer to label " +
-          "definitions that are not included in the export bundle.",
-      },
-    ]);
-  });
-
-  it("uses singular wording for a single label reference", () => {
-    const warnings = buildExportFidelityWarnings({ ...zeroCounts, issueLabelReferences: 1 });
-    expect(warnings[0]?.message).toContain("1 issue label reference refers");
-  });
-
-  it("warns about unreferenced label definitions without blocking", () => {
-    const warnings = buildExportFidelityWarnings({ ...zeroCounts, labelDefinitions: 1 });
-    expect(warnings).toEqual([
-      {
-        code: "label_definitions_not_exported",
-        severity: "warning",
-        message: "1 label definition is not included in the export bundle.",
-      },
-    ]);
+  it("emits no label warnings because labels travel in the bundle", () => {
+    expect(buildExportFidelityWarnings({ ...zeroCounts, labelDefinitions: 2, issueLabelReferences: 3 })).toEqual([]);
   });
 
   it("emits one warning per unsupported data category with counts", () => {

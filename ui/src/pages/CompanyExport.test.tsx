@@ -170,9 +170,9 @@ describe("CompanyExport", () => {
   it("renders the export fidelity panel with blocker and warning messages", async () => {
     mockCompaniesApi.exportFidelity.mockResolvedValue(buildFidelityReport([
       {
-        code: "labels_require_mapping",
+        code: "bundle_incompatible",
         severity: "blocker",
-        message: "Importing this export will fail because 2 issue label references refer to label definitions that are not included in the export bundle.",
+        message: "Importing this export will fail because the bundle references data this board cannot restore.",
       },
       {
         code: "attachments_not_exported",
@@ -186,7 +186,7 @@ describe("CompanyExport", () => {
     expect(mockCompaniesApi.exportFidelity).toHaveBeenCalledWith("company-1");
     expect(container.textContent).toContain("Not included in this export");
     expect(container.textContent).toContain(
-      "Importing this export will fail because 2 issue label references refer to label definitions that are not included in the export bundle.",
+      "Importing this export will fail because the bundle references data this board cannot restore.",
     );
     expect(container.textContent).toContain("3 issue attachments are not included in the export bundle.");
   });
