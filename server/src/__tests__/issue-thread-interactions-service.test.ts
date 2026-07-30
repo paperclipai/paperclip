@@ -547,7 +547,7 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       userId: "local-board",
     });
 
-    const cancelled = await interactionsSvc.cancelQuestions({
+    const cancelled = await interactionsSvc.cancelInteraction({
       id: issueId,
       companyId,
     }, created.id, {
@@ -573,6 +573,73 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     }, {
       userId: "local-board",
     })).rejects.toThrow("Interaction has already been resolved");
+  });
+
+  it("retracts three stale agent-authored prompts while leaving the live prompt pending", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("Four-prompt queue hygiene");
+    const agentId = randomUUID();
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Queue hygiene agent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const created = [];
+    for (const prompt of ["Stale one?", "Stale two?", "Stale three?", "Live decision?"]) {
+      created.push(await interactionsSvc.create({
+        id: issueId,
+        companyId,
+      }, {
+        kind: "ask_user_questions",
+        continuationPolicy: "wake_assignee",
+        payload: {
+          version: 1,
+          questions: [{
+            id: "decision",
+            prompt,
+            selectionMode: "single",
+            options: [{ id: "continue", label: "Continue" }],
+          }],
+        },
+      }, {
+        agentId,
+      }));
+    }
+
+    for (const interaction of created.slice(0, 3)) {
+      await interactionsSvc.cancelInteraction({
+        id: issueId,
+        companyId,
+      }, interaction.id, {
+        reason: "Superseded by current issue state",
+      }, {
+        agentId,
+      });
+    }
+
+    const interactions = await interactionsSvc.listForIssue(issueId);
+    const pending = interactions.filter((interaction) => interaction.status === "pending");
+    const cancelled = interactions.filter((interaction) => interaction.status === "cancelled");
+
+    expect(pending.map((interaction) => interaction.id)).toEqual([created[3]!.id]);
+    expect(cancelled.map((interaction) => interaction.id)).toEqual(
+      created.slice(0, 3).map((interaction) => interaction.id),
+    );
+    expect(cancelled).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        createdByAgentId: agentId,
+        resolvedByAgentId: agentId,
+        result: expect.objectContaining({
+          cancellationReason: "Superseded by current issue state",
+        }),
+      }),
+    ]));
   });
 
   it("expires ask_user_questions interactions by default when a user comments after creation", async () => {

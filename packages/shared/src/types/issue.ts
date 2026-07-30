@@ -1156,7 +1156,7 @@ export interface RequestItemVerdictsPayload {
 
 export interface RequestConfirmationResult {
   version: 1;
-  outcome: "accepted" | "rejected" | "superseded_by_comment" | "stale_target";
+  outcome: "accepted" | "rejected" | "cancelled" | "superseded_by_comment" | "stale_target";
   reason?: string | null;
   commentId?: string | null;
   staleTarget?: RequestConfirmationTarget | null;
@@ -1191,6 +1191,7 @@ export interface RequestItemVerdictsResult {
   outcome: "resolved" | "superseded_by_comment" | "stale_target" | "cancelled";
   complete: boolean;
   items: RequestItemVerdictsResultItem[];
+  reason?: string | null;
   commentId?: string | null;
   staleTarget?: RequestConfirmationTarget | null;
 }

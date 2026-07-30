@@ -1905,7 +1905,7 @@ export function issueThreadInteractionService(db: Db) {
       return answered;
     },
 
-    cancelQuestions: async (
+    cancelInteraction: async (
       issue: { id: string; companyId: string },
       interactionId: string,
       input: CancelIssueThreadInteraction,
@@ -1922,25 +1922,51 @@ export function issueThreadInteractionService(db: Db) {
       if (current.companyId !== issue.companyId || current.issueId !== issue.id) {
         throw notFound("Interaction not found");
       }
-      if (current.kind !== "ask_user_questions") {
-        throw unprocessable("Only ask_user_questions interactions can be cancelled");
-      }
       if (current.status !== "pending") {
         throw conflict("Interaction has already been resolved");
       }
 
       const reason = data.reason?.trim() || null;
+      const result = current.kind === "ask_user_questions"
+        ? {
+            version: 1 as const,
+            answers: [],
+            cancelled: true as const,
+            cancellationReason: reason,
+            summaryMarkdown: null,
+          }
+        : current.kind === "suggest_tasks"
+          ? {
+              version: 1 as const,
+              createdTasks: [],
+              skippedClientKeys: current.payload && typeof current.payload === "object" && "tasks" in current.payload
+                && Array.isArray(current.payload.tasks)
+                ? current.payload.tasks.flatMap((task) => (
+                    task && typeof task === "object" && "clientKey" in task && typeof task.clientKey === "string"
+                      ? [task.clientKey]
+                      : []
+                  ))
+                : [],
+              rejectionReason: reason,
+            }
+          : current.kind === "request_item_verdicts"
+            ? {
+                version: 1 as const,
+                outcome: "cancelled" as const,
+                complete: false,
+                items: [],
+                reason,
+              }
+            : {
+                version: 1 as const,
+                outcome: "cancelled" as const,
+                reason,
+              };
       const [updated] = await db
         .update(issueThreadInteractions)
         .set({
           status: "cancelled",
-          result: {
-            version: 1,
-            answers: [],
-            cancelled: true,
-            cancellationReason: reason,
-            summaryMarkdown: null,
-          },
+          result,
           resolvedByAgentId: actor.agentId ?? null,
           resolvedByUserId: actor.userId ?? null,
           resolvedAt: new Date(),

@@ -9390,11 +9390,37 @@ export function issueRoutes(
       const interactionId = req.params.interactionId as string;
       const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
       if (!issue) return;
-      if (await rejectAgentIssueThreadInteractionResolution(req, res, issue)) return;
-      assertBoard(req);
 
       const actor = getActorInfo(req);
-      const interaction = await issueThreadInteractionService(db).cancelQuestions(issue, interactionId, req.body, {
+      const interactionSvc = issueThreadInteractionService(db);
+      if (req.actor.type === "agent") {
+        const agentRunId = requireAgentRunId(req, res);
+        if (!agentRunId) return;
+        if (
+          !(await assertTaskWatchdogIssueMutationAllowed(req, res, issue, { allowWatchdogIssue: false }))
+        ) {
+          return;
+        }
+        const current = await interactionSvc.getById(interactionId);
+        if (
+          !current
+          || current.companyId !== issue.companyId
+          || current.issueId !== issue.id
+        ) {
+          res.status(404).json({ error: "Interaction not found" });
+          return;
+        }
+        if (!actor.agentId || current.createdByAgentId !== actor.agentId) {
+          res.status(403).json({
+            error: "Agent actors can only cancel pending issue-thread interactions they authored",
+          });
+          return;
+        }
+      } else {
+        assertBoard(req);
+      }
+
+      const interaction = await interactionSvc.cancelInteraction(issue, interactionId, req.body, {
         agentId: actor.agentId,
         userId: actor.actorType === "user" ? actor.actorId : null,
       });
@@ -9413,10 +9439,8 @@ export function issueRoutes(
           interactionId: interaction.id,
           interactionKind: interaction.kind,
           interactionStatus: interaction.status,
-          cancellationReason:
-            interaction.kind === "ask_user_questions"
-              ? (interaction.result?.cancellationReason ?? null)
-              : null,
+          cancellationReason: req.body.reason?.trim() || null,
+          authoredByAgentId: interaction.createdByAgentId,
         },
       });
 
