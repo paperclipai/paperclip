@@ -217,6 +217,94 @@ async function runExecutor(
 }
 
 describe("shared ACPX engine runtime behavior", () => {
+  it("persists ACP agent process identity before prompting and reuses it for the next warm heartbeat", async () => {
+    const root = await makeTempRoot();
+    const startedAt = "2026-07-30T07:00:00.000Z";
+    const processPid = 43_210;
+    let runtimeCreateCount = 0;
+    let processIdentityPersisted = false;
+    let turnStartedBeforeProcessIdentity = false;
+    const warmHandles = new Map();
+    const execute = createAcpxEngineExecutor({
+      warmHandles,
+      createRuntime: (options) => {
+        runtimeCreateCount += 1;
+        const patchedOptions = options as AcpRuntimeOptions & {
+          onAgentSpawn?: (meta: { pid: number; startedAt: string }) => Promise<void>;
+        };
+        return {
+          ensureSession: async () => {
+            await patchedOptions.onAgentSpawn?.({ pid: processPid, startedAt });
+            return {
+              backendSessionId: "backend-session",
+              agentSessionId: "agent-session",
+              runtimeSessionName: "runtime-session",
+            };
+          },
+          startTurn: () => {
+            turnStartedBeforeProcessIdentity = !processIdentityPersisted;
+            return {
+              events: (async function* () {})(),
+              result: Promise.resolve({ status: "completed" as const, stopReason: "end_turn" }),
+              cancel: async () => {},
+            };
+          },
+          close: async () => {},
+        } as never;
+      },
+    });
+    const config = {
+      agent: "codex",
+      cwd: root,
+      stateDir: path.join(root, "state"),
+      warmHandleIdleMs: 60_000,
+    };
+    const context = {
+      taskId: "issue-1",
+      paperclipWorkspace: { cwd: root },
+    };
+    const firstOnSpawn = vi.fn(async (meta: unknown) => {
+      expect(meta).toEqual({ pid: processPid, processGroupId: null, startedAt });
+      processIdentityPersisted = true;
+    });
+    const first = await execute({
+      runId: "run-process-identity-1",
+      agent: { id: "agent-1", companyId: "company-1" },
+      runtime: {},
+      config,
+      context,
+      onLog: async () => {},
+      onMeta: async () => {},
+      onSpawn: firstOnSpawn,
+    } as never);
+
+    expect(first.exitCode).toBe(0);
+    expect(firstOnSpawn).toHaveBeenCalledOnce();
+    expect(turnStartedBeforeProcessIdentity).toBe(false);
+
+    processIdentityPersisted = false;
+    turnStartedBeforeProcessIdentity = false;
+    const secondOnSpawn = vi.fn(async (meta: unknown) => {
+      expect(meta).toEqual({ pid: processPid, processGroupId: null, startedAt });
+      processIdentityPersisted = true;
+    });
+    const second = await execute({
+      runId: "run-process-identity-2",
+      agent: { id: "agent-1", companyId: "company-1" },
+      runtime: { sessionParams: first.sessionParams },
+      config,
+      context,
+      onLog: async () => {},
+      onMeta: async () => {},
+      onSpawn: secondOnSpawn,
+    } as never);
+
+    expect(second.exitCode).toBe(0);
+    expect(runtimeCreateCount).toBe(1);
+    expect(secondOnSpawn).toHaveBeenCalledOnce();
+    expect(turnStartedBeforeProcessIdentity).toBe(false);
+  });
+
   it("sets Codex model, effort, and fast mode through CODEX_CONFIG without session config calls", async () => {
     const { configOptions, meta } = await runExecutor({
       agent: "codex",

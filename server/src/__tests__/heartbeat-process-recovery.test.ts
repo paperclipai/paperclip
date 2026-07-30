@@ -50,7 +50,7 @@ const mockTelemetryClient = vi.hoisted(() => ({ track: vi.fn() }));
 const mockTrackAgentFirstHeartbeat = vi.hoisted(() => vi.fn());
 const mockTerminateLocalService = vi.hoisted(() => vi.fn());
 const mockAdapterExecute = vi.hoisted(() =>
-  vi.fn(async () => ({
+  vi.fn(async (_input?: unknown) => ({
     exitCode: 0,
     signal: null,
     timedOut: false,
@@ -1487,6 +1487,118 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         ],
       });
     });
+  });
+
+  it("persists codex_local spawn identity before hot restart and never loses the live run for missing metadata", async () => {
+    let releaseAdapter: (() => void) | null = null;
+    let spawnedPid: number | null = null;
+    const adapterStarted = new Promise<void>((resolve) => {
+      mockAdapterExecute.mockImplementationOnce(async (rawInput?: unknown) => {
+        const input = rawInput as {
+          onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void>;
+        };
+        const child = spawnAliveProcess();
+        childProcesses.add(child);
+        if (!child.pid) throw new Error("Test codex_local child did not expose a pid");
+        spawnedPid = child.pid;
+        await input.onSpawn?.({
+          pid: child.pid,
+          processGroupId: null,
+          startedAt: new Date("2026-07-30T07:00:00.000Z").toISOString(),
+        });
+        resolve();
+        await new Promise<void>((release) => {
+          releaseAdapter = release;
+        });
+        return {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          errorMessage: null,
+          summary: "Codex run completed after hot restart adoption.",
+          provider: "test",
+          model: "test-model",
+        };
+      });
+    });
+    const { runId } = await seedRunFixture({
+      adapterType: "codex_local",
+      agentStatus: "idle",
+      runStatus: "queued",
+      processPid: null,
+      processGroupId: null,
+      includeIssue: false,
+    });
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeQueuedRuns();
+    await Promise.race([
+      adapterStarted,
+      new Promise<never>((_, reject) => {
+        setTimeout(() => reject(new Error("Timed out waiting for codex_local spawn identity")), 3_000);
+      }),
+    ]);
+
+    const running = await waitForValue(async () =>
+      db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => {
+          const row = rows[0] ?? null;
+          return row?.status === "running" && row.processPid ? row : null;
+        }),
+    );
+    expect(running).toMatchObject({
+      id: runId,
+      status: "running",
+      processPid: spawnedPid,
+      processGroupId: null,
+      processStartedAt: new Date("2026-07-30T07:00:00.000Z"),
+    });
+
+    await withTempPaperclipHome(async (home) => {
+      await writeHotRestartIntent({
+        previousServerPid: process.pid,
+        previousServerVersion: "old-version",
+        requestedAt: new Date("2026-07-30T07:01:00.000Z"),
+      });
+      await heartbeat.prepareHotRestartShutdown(
+        "SIGTERM",
+        new Date("2026-07-30T07:02:00.000Z"),
+      );
+
+      const adoption = await heartbeat.reconcileHotRestartAdoption(
+        new Date("2026-07-30T07:03:00.000Z"),
+      );
+      expect(adoption).toMatchObject({
+        mode: "reported",
+        adoptedRunIds: [runId],
+        finalizedWhileDownRunIds: [],
+        lostRunIds: [],
+      });
+      const report = JSON.parse(
+        await fs.readFile(resolveHotRestartReportPath(home), "utf8"),
+      ) as { runs?: Array<Record<string, unknown>> };
+      expect(report.runs).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            runId,
+            classification: "adopted",
+            reason: "process_pid_alive",
+          }),
+        ]),
+      );
+      expect(report.runs).not.toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({ runId, reason: "missing_process_metadata" }),
+        ]),
+      );
+    });
+
+    if (!releaseAdapter) throw new Error("Adapter release handle was not captured");
+    releaseAdapter();
+    const settled = await waitForRunToSettle(heartbeat, runId, 5_000);
+    expect(settled?.status).toBe("succeeded");
   });
 
   it("reports adopted hot-restart runs before startup reap can mark them process_lost", async () => {

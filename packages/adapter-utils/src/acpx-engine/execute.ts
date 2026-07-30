@@ -122,12 +122,24 @@ function flushChildStderr(state: ChildStderrState) {
   state.pendingLiveLine = "";
 }
 
-type AcpxRuntimeFactory = (options: AcpRuntimeOptions) => AcpRuntime;
+type AcpxAgentProcessIdentity = { pid: number; startedAt: string };
+
+type PaperclipAcpRuntimeOptions = AcpRuntimeOptions & {
+  onAgentSpawn?: (meta: AcpxAgentProcessIdentity) => Promise<void>;
+};
+
+type AcpxProcessIdentitySink = {
+  current: AdapterExecutionContext["onSpawn"];
+  latest: AcpxAgentProcessIdentity | null;
+};
+
+type AcpxRuntimeFactory = (options: PaperclipAcpRuntimeOptions) => AcpRuntime;
 
 export interface RuntimeCacheEntry {
   runtime: AcpRuntime;
   handle: AcpRuntimeHandle;
   childStderrState: ChildStderrState;
+  processIdentitySink: AcpxProcessIdentitySink;
   fingerprint: string;
   lastUsedAt: number;
   cleanupTimer?: NodeJS.Timeout;
@@ -2833,9 +2845,17 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
     const resumeSessionId = canResume ? asString(previousParams.acpSessionId, "") || undefined : undefined;
     const cached = canResume ? warmHandles.get(prepared.sessionKey) : undefined;
     const childStderrState = cached?.childStderrState ?? { logPath: null, pendingLiveLine: "" };
+    const processIdentitySink = cached?.processIdentitySink ?? {
+      current: ctx.onSpawn,
+      latest: null,
+    };
+    // ACPX runtimes can stay warm across heartbeat runs. Keep the callback
+    // target mutable so a later agent respawn records identity on the current
+    // heartbeat instead of the run that originally created the runtime.
+    processIdentitySink.current = ctx.onSpawn;
     flushChildStderr(childStderrState);
     childStderrState.logPath = prepared.childStderrLogPath;
-    const runtimeOptions: AcpRuntimeOptions = {
+    const runtimeOptions: PaperclipAcpRuntimeOptions = {
       cwd: prepared.cwd,
       // Host-only spawn cwd for the relay proxy on the remote process-session
       // lane; `undefined` elsewhere so acpx falls back to `cwd` (byte-identical).
@@ -2856,14 +2876,23 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       onAgentStderr: prepared.childStderrLogPath
         ? (chunk) => routeChildStderr(childStderrState, chunk)
         : undefined,
+      onAgentSpawn: async (meta) => {
+        processIdentitySink.latest = meta;
+        await processIdentitySink.current?.({
+          pid: meta.pid,
+          processGroupId: null,
+          startedAt: meta.startedAt,
+        });
+      },
     };
     // Open Q2: split the ~7s `acp.handshake` into the two in-repo-observable
     // sub-phases — the ACP runtime construction (`createRuntime`) vs the session
-    // establishment envelope (`ensureSession`). The finer spawn/`initialize`/
-    // `session/new` split lives inside external `acpx` and is gated on an
-    // upstream lifecycle hook (not bundled here). `createRuntime` runs once and
-    // only on a cold start; a warm-handle hit reuses `cached.runtime`, so
-    // `createRuntimeMs` stays undefined and the split reports nothing for it.
+    // establishment envelope (`ensureSession`). The patched spawn lifecycle
+    // hook records process identity, but the finer spawn/`initialize`/
+    // `session/new` timing split still lives inside external `acpx`.
+    // `createRuntime` runs once and only on a cold start; a warm-handle hit
+    // reuses `cached.runtime`, so `createRuntimeMs` stays undefined and the
+    // split reports nothing for it.
     let createRuntimeMs: number | undefined;
     let runtime: AcpRuntime;
     if (cached?.runtime) {
@@ -2943,6 +2972,16 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             }),
           });
         }
+      }
+      // A compatible warm handle reuses the already-running ACP agent and does
+      // not emit another spawn event. Persist its known identity on this run
+      // before the next prompt starts so every running heartbeat is adoptable.
+      if (handle && cached && processIdentitySink.latest && ctx.onSpawn) {
+        await ctx.onSpawn({
+          pid: processIdentitySink.latest.pid,
+          processGroupId: null,
+          startedAt: processIdentitySink.latest.startedAt,
+        });
       }
     } catch (err) {
       const { classified, message } = await emitAcpxFailure({
@@ -3153,6 +3192,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             runtime,
             handle: sessionHandle,
             childStderrState,
+            processIdentitySink,
             fingerprint: prepared.fingerprint,
             lastUsedAt: now(),
           };
