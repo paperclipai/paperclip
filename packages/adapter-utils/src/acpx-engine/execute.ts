@@ -2073,11 +2073,26 @@ async function applySessionConfigOptions(input: {
     throw new Error(message);
   }
   for (const option of options) {
-    await input.runtime.setConfigOption({
-      handle: input.handle,
-      key: option.key,
-      value: option.value,
-    });
+    try {
+      await input.runtime.setConfigOption({
+        handle: input.handle,
+        key: option.key,
+        value: option.value,
+      });
+    } catch (error) {
+      if (
+        option.key === "effort" &&
+        isAcpRuntimeError(error) &&
+        error.code === "ACP_BACKEND_UNSUPPORTED_CONTROL"
+      ) {
+        await input.onLog(
+          "stderr",
+          `[paperclip] ACPX ${input.prepared.acpxAgent} does not support the optional effort config; continuing without effort=${option.value}.\n`,
+        );
+        continue;
+      }
+      throw error;
+    }
     await input.onLog(
       "stdout",
       `[paperclip] Applied ACPX ${input.prepared.acpxAgent} config ${option.key}=${option.value}\n`,
