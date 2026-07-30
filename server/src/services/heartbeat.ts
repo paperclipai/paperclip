@@ -9829,7 +9829,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           sql`${heartbeatRuns.contextSnapshot} ->> 'errorFamily' = 'provider_quota'`,
         ),
         input.excludeRunId ? sql`${heartbeatRuns.id} <> ${input.excludeRunId}` : undefined,
-        sql`${retryNotBeforeExpr} > ${now}`,
+        sql`${retryNotBeforeExpr} > ${now.toISOString()}::timestamptz`,
         sql`case
           when ${agents.adapterType} = 'claude_local' then 'anthropic'
           when ${agents.adapterType} = 'codex_local' then 'openai'
