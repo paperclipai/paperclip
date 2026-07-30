@@ -1,5 +1,4 @@
 import { createHash, randomUUID } from "node:crypto";
-import { spawn } from "node:child_process";
 import { createServer, type IncomingMessage } from "node:http";
 import express from "express";
 import { and, eq } from "drizzle-orm";
@@ -3481,54 +3480,6 @@ rl.on("line", (line) => {
       .where(eq(toolAccessAuditEvents.action, "call_denied"));
     expect(dedicatedAudits).toHaveLength(3);
     expect(dedicatedAudits.every((event) => event.outcome === "denied")).toBe(true);
-  });
-
-  it("kills the run's local adapter process when its gateway session dies with no way to renew", async () => {
-    function isPidAlive(pid: number | null | undefined) {
-      if (typeof pid !== "number" || !Number.isInteger(pid) || pid <= 0) return false;
-      try {
-        process.kill(pid, 0);
-        return true;
-      } catch {
-        return false;
-      }
-    }
-    async function waitForPidExit(pid: number, timeoutMs = 2_000) {
-      const deadline = Date.now() + timeoutMs;
-      while (Date.now() < deadline) {
-        if (!isPidAlive(pid)) return true;
-        await new Promise((resolve) => setTimeout(resolve, 50));
-      }
-      return !isPidAlive(pid);
-    }
-
-    const company = await createCompany(db);
-    const agent = await createAgent(db, company.id);
-    const { run } = await createIssueAndRun(db, company.id, agent.id);
-    const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });
-    try {
-      expect(child.pid).toBeTruthy();
-      await db.update(heartbeatRuns).set({ processPid: child.pid }).where(eq(heartbeatRuns.id, run.id));
-
-      const gateway = createTestToolGatewayService(db);
-      const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
-      await db
-        .update(toolGatewaySessions)
-        .set({ expiresAt: new Date(Date.now() - 1_000), updatedAt: new Date() })
-        .where(eq(toolGatewaySessions.id, session.id));
-
-      await expect(gateway.listToolsForSession(session.token)).rejects.toMatchObject({
-        status: 401,
-        reasonCode: "session_expired",
-      });
-
-      expect(await waitForPidExit(child.pid!)).toBe(true);
-
-      const [updatedRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id));
-      expect(updatedRun).toMatchObject({ status: "failed", errorCode: "tool_gateway_session_dead" });
-    } finally {
-      if (isPidAlive(child.pid)) child.kill("SIGKILL");
-    }
   });
 
   it("cleans up expired durable sessions explicitly", async () => {

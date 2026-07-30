@@ -39,6 +39,7 @@ import {
   issues,
   projects,
   projectWorkspaces,
+  toolGatewaySessions,
   workspaceOperations,
 } from "@paperclipai/db";
 import {
@@ -591,6 +592,77 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     return { environmentId, leaseId };
   }
+
+  async function seedToolGatewaySessionFixture(input: {
+    companyId: string;
+    agentId: string;
+    runId: string;
+    expiresAt: Date;
+    revokedAt?: Date | null;
+  }) {
+    await db.insert(toolGatewaySessions).values({
+      id: randomUUID(),
+      companyId: input.companyId,
+      agentId: input.agentId,
+      runId: input.runId,
+      tokenHash: randomUUID(),
+      expiresAt: input.expiresAt,
+      revokedAt: input.revokedAt ?? null,
+    });
+  }
+
+  it("cancels a run and kills its process once its only tool-gateway session has expired", async () => {
+    const child = spawnAliveProcess();
+    childProcesses.add(child);
+    expect(child.pid).toBeTypeOf("number");
+
+    const { companyId, agentId, runId, issueId } = await seedRunFixture({
+      processPid: child.pid ?? null,
+      includeIssue: true,
+    });
+    await seedToolGatewaySessionFixture({
+      companyId,
+      agentId,
+      runId,
+      expiresAt: new Date(Date.now() - 1_000),
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reapDeadSessionRuns();
+    expect(result).toEqual({ reaped: 1, runIds: [runId] });
+
+    expect(await waitForPidExit(child.pid!)).toBe(true);
+
+    const run = await heartbeat.getRun(runId);
+    expect(run).toMatchObject({ status: "cancelled", errorCode: "tool_gateway_session_dead" });
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]);
+    expect(issue?.executionRunId).toBeNull();
+  });
+
+  it("leaves a run alone when its tool-gateway session is still live", async () => {
+    const child = spawnAliveProcess();
+    childProcesses.add(child);
+
+    const { companyId, agentId, runId } = await seedRunFixture({
+      processPid: child.pid ?? null,
+      includeIssue: false,
+    });
+    await seedToolGatewaySessionFixture({
+      companyId,
+      agentId,
+      runId,
+      expiresAt: new Date(Date.now() + 60 * 60 * 1000),
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reapDeadSessionRuns();
+    expect(result).toEqual({ reaped: 0, runIds: [] });
+
+    const run = await heartbeat.getRun(runId);
+    expect(run?.status).toBe("running");
+    expect(isPidAlive(child.pid)).toBe(true);
+  });
 
   it("does not reap active adapter executions started by another heartbeat service instance", async () => {
     let releaseAdapter: (() => void) | null = null;

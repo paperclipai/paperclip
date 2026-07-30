@@ -61,6 +61,7 @@ import {
   routineRevisions,
   routineRuns,
   routines,
+  toolGatewaySessions,
   toolMcpGateways,
   toolMcpGatewayTokens,
   toolConnections,
@@ -12316,6 +12317,52 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return { reaped: reaped.length, runIds: reaped };
   }
 
+  // A tool-gateway session has no renewal path -- once it's revoked or its
+  // TTL lapses, the run behind it can never make another tool call again.
+  // Left alone, its local adapter process just keeps retrying against the
+  // dead session forever (the client can't tell "your token needs a real
+  // OAuth refresh" apart from "your run is over"), burning resources and
+  // blocking the run's concurrency slot indefinitely instead of failing
+  // loudly. Cancel any such run through the normal cancellation path (which
+  // already terminates the tracked process via the in-memory handle when
+  // available, so it can't be tricked by a stale/reused pid) the first time
+  // we notice its session has died with nothing live to replace it.
+  async function reapDeadSessionRuns() {
+    const now = new Date();
+    const candidates = await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.status, "running"),
+          sql`exists (
+            select 1 from ${toolGatewaySessions}
+            where ${toolGatewaySessions.runId} = ${heartbeatRuns.id}
+          )`,
+          sql`not exists (
+            select 1 from ${toolGatewaySessions}
+            where ${toolGatewaySessions.runId} = ${heartbeatRuns.id}
+              and ${toolGatewaySessions.revokedAt} is null
+              and ${toolGatewaySessions.expiresAt} > ${now.toISOString()}::timestamptz
+          )`,
+        ),
+      )
+      .limit(100);
+
+    const reaped: string[] = [];
+    for (const { id } of candidates) {
+      const cancelled = await cancelRunInternal(id, "Tool gateway session died with no way to renew it", {
+        errorCode: "tool_gateway_session_dead",
+      });
+      if (cancelled) reaped.push(id);
+    }
+
+    if (reaped.length > 0) {
+      logger.warn({ reapedCount: reaped.length, runIds: reaped }, "reaped heartbeat runs with a dead tool-gateway session");
+    }
+    return { reaped: reaped.length, runIds: reaped };
+  }
+
   async function resumeQueuedRuns() {
     if ((await getSchedulingSuppression()).suppressed) return;
     const cutoff = await getWorktreeExecutionCutoff();
@@ -17785,6 +17832,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     prepareHotRestartShutdown,
     reconcileHotRestartAdoption,
     reapOrphanedRuns,
+    reapDeadSessionRuns,
     // Override-aware scheduling-suppression check (honors the worktree
     // run-execution experimental setting). Callers outside the service that
     // gate on suppression should prefer this over the env-only resolver.

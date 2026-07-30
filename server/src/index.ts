@@ -1021,6 +1021,11 @@ export async function startServer(): Promise<StartedServer> {
           logger.warn({ ...scanned }, "startup active-run output watchdog created review work");
         }
 
+        const deadSessionReaped = await heartbeat.reapDeadSessionRuns();
+        if (deadSessionReaped.reaped > 0) {
+          logger.warn({ ...deadSessionReaped }, "startup reap of heartbeat runs with a dead tool-gateway session");
+        }
+
         const swept = await heartbeat.sweepStaleIssueLocks();
         if (swept.cleared > 0) {
           logger.warn({ ...swept }, "startup stale-lock sweeper cleared issue locks");
@@ -1179,6 +1184,12 @@ export async function startServer(): Promise<StartedServer> {
               const scanned = await heartbeat.scanSilentActiveRuns();
               if (scanned.created > 0 || scanned.escalated > 0) {
                 logger.warn({ ...scanned }, "periodic active-run output watchdog created review work");
+              }
+            })
+            .then(async () => {
+              const reaped = await heartbeat.reapDeadSessionRuns();
+              if (reaped.reaped > 0) {
+                logger.warn({ ...reaped }, "reaped heartbeat runs with a dead tool-gateway session");
               }
             })
             .then(async () => {

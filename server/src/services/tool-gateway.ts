@@ -2,7 +2,6 @@ import { spawn } from "node:child_process";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
 import { and, desc, eq, inArray, isNull, lte, ne, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { terminateLocalService } from "./local-service-supervisor.js";
 import {
   agents,
   approvals,
@@ -1249,46 +1248,6 @@ export function createToolGatewayService(
     }
   }
 
-  // A revoked/expired gateway session can never be renewed (there is no
-  // session-refresh path), so a still-"running" run behind it can never make
-  // another tool call again. Left alone, its local adapter process (opencode,
-  // claude, etc.) just keeps retrying against the dead session forever —
-  // burning resources and blocking the run's concurrency slot indefinitely
-  // instead of failing loudly. Fail the run and kill its process here, once,
-  // the first time we notice its session has died.
-  async function terminateOrphanedRunOnDeadSession(row: typeof toolGatewaySessions.$inferSelect, reasonCode: string) {
-    const [candidate] = await db
-      .select({
-        status: heartbeatRuns.status,
-        processPid: heartbeatRuns.processPid,
-        processGroupId: heartbeatRuns.processGroupId,
-      })
-      .from(heartbeatRuns)
-      .where(eq(heartbeatRuns.id, row.runId))
-      .limit(1);
-    if (!candidate || candidate.status !== "running") return;
-    const pid = candidate.processPid;
-    const processGroupId = candidate.processGroupId;
-    // Nothing to clean up (e.g. a session with no local adapter process
-    // behind it) -- leave the run's status alone.
-    if (typeof pid !== "number" && typeof processGroupId !== "number") return;
-
-    const now = new Date();
-    const [run] = await db
-      .update(heartbeatRuns)
-      .set({
-        status: "failed",
-        error: `Tool gateway session died (${reasonCode}) with no way to renew it; process terminated`,
-        errorCode: "tool_gateway_session_dead",
-        finishedAt: now,
-        updatedAt: now,
-      })
-      .where(and(eq(heartbeatRuns.id, row.runId), eq(heartbeatRuns.status, "running")))
-      .returning({ processPid: heartbeatRuns.processPid, processGroupId: heartbeatRuns.processGroupId });
-    if (!run) return;
-    await terminateLocalService({ pid: pid ?? processGroupId ?? 0, processGroupId });
-  }
-
   async function getActiveSession(
     sessionToken: string,
     namedGatewayProtocol?: {
@@ -1336,13 +1295,11 @@ export function createToolGatewayService(
 
     if (row.revokedAt) {
       await writeSessionAuthFailure(row, "session_revoked");
-      await terminateOrphanedRunOnDeadSession(row, "session_revoked");
       throw new ToolGatewayHttpError(401, "Tool gateway session is expired or invalid", "session_revoked");
     }
 
     if (row.expiresAt.getTime() <= Date.now()) {
       await writeSessionAuthFailure(row, "session_expired");
-      await terminateOrphanedRunOnDeadSession(row, "session_expired");
       throw new ToolGatewayHttpError(401, "Tool gateway session is expired or invalid", "session_expired");
     }
 
