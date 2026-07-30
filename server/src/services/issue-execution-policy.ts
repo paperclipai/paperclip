@@ -1039,6 +1039,57 @@ export function buildIssueMonitorTriggeredPatch(input: {
   };
 }
 
+export function buildIssueMonitorRearmedPatch(input: {
+  issue: IssueLike;
+  policy: IssueExecutionPolicy | null;
+  nextCheckAt: Date;
+  attemptCount: number;
+}) {
+  const existingState = parseIssueExecutionState(input.issue.executionState);
+  const currentMonitorState = derivePersistedMonitorState({
+    issue: input.issue,
+    state: existingState,
+    policy: input.policy,
+  });
+  if (!currentMonitorState) return {};
+
+  const scheduledBy = currentMonitorState.scheduledBy === "board" ? "board" : "assignee";
+  const monitor: IssueExecutionMonitorPolicy = {
+    nextCheckAt: input.nextCheckAt.toISOString(),
+    notes: currentMonitorState.notes ?? null,
+    scheduledBy,
+    kind: currentMonitorState.kind ?? null,
+    serviceName: currentMonitorState.serviceName ?? null,
+    externalRef: currentMonitorState.externalRef ?? null,
+    timeoutAt: currentMonitorState.timeoutAt ?? null,
+    maxAttempts: currentMonitorState.maxAttempts ?? null,
+    recoveryPolicy: currentMonitorState.recoveryPolicy ?? null,
+  };
+  const basePolicy = input.policy ?? {
+    mode: "normal" as const,
+    commentRequired: true,
+    stages: [],
+  };
+  const nextMonitorState = buildScheduledMonitorState({
+    ...currentMonitorState,
+    attemptCount: input.attemptCount,
+  }, monitor);
+
+  return {
+    executionPolicy: {
+      ...basePolicy,
+      monitor,
+    } as Record<string, unknown>,
+    executionState: executionStateWithMonitor(existingState, nextMonitorState) as Record<string, unknown> | null,
+    monitorNextCheckAt: input.nextCheckAt,
+    monitorWakeRequestedAt: null,
+    monitorLastTriggeredAt: currentMonitorState.lastTriggeredAt ? new Date(currentMonitorState.lastTriggeredAt) : null,
+    monitorAttemptCount: input.attemptCount,
+    monitorNotes: nextMonitorState.notes,
+    monitorScheduledBy: nextMonitorState.scheduledBy,
+  };
+}
+
 export function buildIssueMonitorClearedPatch(input: {
   issue: IssueLike;
   policy: IssueExecutionPolicy | null;

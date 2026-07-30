@@ -336,7 +336,7 @@ function IssueChatLiveRunStatusLine({
   const currentStatusMessage = readCustomString(custom, "currentStatusMessage");
   const currentToolName = readCustomString(custom, "currentToolName");
   const lastAssistantSnippet = readCustomString(custom, "lastAssistantSnippet");
-  const lastEventAt = readCustomString(custom, "lastEventAt");
+  const lastEventAt = readCustomString(custom, "lastStreamEventAt") || readCustomString(custom, "lastEventAt");
   const lastEventAtMs = toTimestampOrNull(lastEventAt);
   const lastActivityElapsed = useLiveElapsed(lastEventAtMs, active);
   const lastActivityAgeMs = lastEventAtMs ? Date.now() - lastEventAtMs : null;
@@ -4310,6 +4310,7 @@ export function IssueChatThread({
         currentToolName: activeRun.currentToolName ?? null,
         lastAssistantSnippet: activeRun.lastAssistantSnippet ?? null,
         lastEventAt: toIsoString(activeRun.lastEventAt),
+        lastStreamEventAt: toIsoString(activeRun.lastStreamEventAt),
       });
     }
     return [...deduped.values()].sort((a, b) => new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime());

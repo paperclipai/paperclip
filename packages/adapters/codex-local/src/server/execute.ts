@@ -14,6 +14,7 @@ import {
   describeAdapterExecutionTarget,
   ensureAdapterExecutionTargetCommandResolvable,
   ensureAdapterExecutionTargetRuntimeCommandInstalled,
+  preparePaperclipControlPlaneEnvForAdapterRun,
   prepareAdapterExecutionTargetRuntime,
   readAdapterExecutionTarget,
   resolveAdapterExecutionTargetTimeoutSec,
@@ -166,6 +167,7 @@ function resolveCodexBiller(env: Record<string, string>, billingType: "api" | "s
   if (openAiCompatibleBiller === "openrouter") return "openrouter";
   return billingType === "subscription" ? "chatgpt" : openAiCompatibleBiller ?? "openai";
 }
+
 
 async function isLikelyPaperclipRepoRoot(candidate: string): Promise<boolean> {
   const [hasWorkspace, hasPackageJson, hasServerDir, hasAdapterUtilsDir] = await Promise.all([
@@ -471,7 +473,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   const workspaceContext = parseObject(context.paperclipWorkspace);
   const workspaceCwd = asString(workspaceContext.cwd, "");
-  const workspaceSource = asString(workspaceContext.source, "");
+  const inheritedWorkspaceSource = asString(process.env.PAPERCLIP_WORKSPACE_SOURCE, "");
+  const workspaceSource = asString(workspaceContext.source, "") || inheritedWorkspaceSource;
   const workspaceStrategy = asString(workspaceContext.strategy, "");
   const workspaceId = asString(workspaceContext.workspaceId, "");
   const workspaceRepoUrl = asString(workspaceContext.repoUrl, "");
@@ -585,7 +588,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     for (const note of preparedRuntimeConfig.notes) {
       await onLog("stdout", `[paperclip] ${note}\n`);
     }
-    const paperclipBaseEnv = buildPaperclipEnv(agent);
+    const paperclipBaseEnv = buildPaperclipEnv(agent, { preferLocalUrl: true });
     const runtimeMcpGateways = (ctx.runtimeMcp?.getServers() ?? []).map((server) => ({
       name: server.name,
       endpointPath: server.url,
@@ -695,7 +698,8 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     if (preparedExecutionTargetRuntime?.workspaceRemoteDir) {
       effectiveExecutionCwd = preparedExecutionTargetRuntime.workspaceRemoteDir;
     }
-    const runtimeExecutionTarget = overrideAdapterExecutionTargetRemoteCwd(executionTarget, effectiveExecutionCwd);
+    const runtimeExecutionTarget =
+      overrideAdapterExecutionTargetRemoteCwd(executionTarget, effectiveExecutionCwd) ?? null;
     const executionTargetIsSandbox =
       runtimeExecutionTarget?.kind === "remote" && runtimeExecutionTarget.transport === "sandbox";
     const restoreRemoteWorkspace = preparedExecutionTargetRuntime
@@ -850,6 +854,72 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         "stdout",
         `[paperclip] Confining Codex with ${scopes} scope.\n`,
       );
+    }
+    const controlPlanePreflight = await preparePaperclipControlPlaneEnvForAdapterRun({
+      adapterLabel: "Codex issue",
+      runId,
+      target: runtimeExecutionTarget,
+      cwd,
+      env,
+      timeoutSec,
+      graceSec,
+      localProcessSandbox,
+      onLog,
+    });
+    if (!controlPlanePreflight.ok) {
+      const attemptSummary =
+        controlPlanePreflight.attempts.length > 0
+          ? controlPlanePreflight.attempts
+              .slice(0, 4)
+              .map((attempt) => {
+                if (typeof attempt.status === "number") {
+                  const details = [attempt.contentType ?? null, attempt.location ?? null].filter(Boolean).join(", ");
+                  return details.length > 0
+                    ? `${attempt.url} -> HTTP ${attempt.status} (${details})`
+                    : `${attempt.url} -> HTTP ${attempt.status}`;
+                }
+                return `${attempt.url} -> ${attempt.error ?? "unavailable"}`;
+              })
+              .join("; ")
+          : "no Paperclip API candidates were exported to the Codex issue run";
+      await onLog(
+        "stdout",
+        `[paperclip] Control-plane preflight failed for this Codex issue run. Tried: ${attemptSummary}\n`,
+      );
+      return {
+        exitCode: 1,
+        signal: null,
+        timedOut: false,
+        errorMessage:
+          "Paperclip control-plane preflight failed for this Codex issue run. " +
+          `No reachable API URL worked from the execution environment. Tried: ${attemptSummary}`,
+        errorCode: "paperclip_control_plane_unreachable",
+        errorMeta: { attempts: controlPlanePreflight.attempts },
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        provider: "openai",
+        biller: resolveCodexBiller(effectiveEnv, billingType),
+        model,
+        billingType,
+        costUsd: null,
+        resultJson: { paperclipControlPlanePreflight: controlPlanePreflight },
+      };
+    }
+    if (controlPlanePreflight.url) {
+      effectiveEnv.PAPERCLIP_API_URL = controlPlanePreflight.url;
+      effectiveEnv.PAPERCLIP_RUNTIME_API_URL = controlPlanePreflight.url;
+      if (managedMcpGateways.length > 0) {
+        const refreshedManagedMcp = await writeManagedCodexMcpConfig({
+          codexHome: effectiveCodexHome,
+          apiBaseUrl: controlPlanePreflight.url,
+          gateways: managedMcpGateways,
+        });
+        await onLog(
+          "stdout",
+          `[paperclip] Rewrote managed MCP gateway base URL in ${refreshedManagedMcp.configPath}.\n`,
+        );
+      }
     }
     const runtimeEnv = Object.fromEntries(
       Object.entries(ensurePathInEnv(effectiveEnv)).filter(

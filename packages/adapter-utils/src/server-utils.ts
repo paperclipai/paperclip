@@ -1955,7 +1955,73 @@ export function buildInvocationEnvForLogs(
   return redactEnvForLogs(merged);
 }
 
-export function buildPaperclipEnv(agent: { id: string; companyId: string }): Record<string, string> {
+function normalizePaperclipApiOrigin(raw: string | null | undefined): string | null {
+  const trimmed = raw?.trim();
+  if (!trimmed) return null;
+  try {
+    return new URL(trimmed).origin;
+  } catch {
+    return null;
+  }
+}
+
+function isPrivateOrLoopbackPaperclipApiHost(hostname: string): boolean {
+  const host = hostname.trim().toLowerCase();
+  if (!host) return false;
+  if (host === "localhost" || host === "127.0.0.1" || host === "::1" || host.endsWith(".localhost")) {
+    return true;
+  }
+  if (/^127(?:\.\d{1,3}){3}$/.test(host)) return true;
+  if (/^10(?:\.\d{1,3}){3}$/.test(host)) return true;
+  if (/^192\.168(?:\.\d{1,3}){2}$/.test(host)) return true;
+  const match172 = host.match(/^172\.(\d{1,3})(?:\.\d{1,3}){2}$/);
+  if (match172) {
+    const secondOctet = Number.parseInt(match172[1] ?? "", 10);
+    if (Number.isFinite(secondOctet) && secondOctet >= 16 && secondOctet <= 31) {
+      return true;
+    }
+  }
+  if (host.startsWith("fd") || host.startsWith("fc")) return true;
+  return false;
+}
+
+function isPrivateOrLoopbackPaperclipApiOrigin(origin: string): boolean {
+  try {
+    return isPrivateOrLoopbackPaperclipApiHost(new URL(origin).hostname);
+  } catch {
+    return false;
+  }
+}
+
+function selectLocalPaperclipApiUrl(rawApiUrl: string): string {
+  const current = normalizePaperclipApiOrigin(rawApiUrl);
+  if (current && isPrivateOrLoopbackPaperclipApiOrigin(current)) {
+    return current;
+  }
+  const rawCandidates = process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON?.trim();
+  if (rawCandidates) {
+    try {
+      const parsed = JSON.parse(rawCandidates);
+      if (Array.isArray(parsed)) {
+        for (const candidate of parsed) {
+          if (typeof candidate !== "string") continue;
+          const origin = normalizePaperclipApiOrigin(candidate);
+          if (origin && isPrivateOrLoopbackPaperclipApiOrigin(origin)) {
+            return origin;
+          }
+        }
+      }
+    } catch {
+      // Ignore malformed candidate lists and keep the configured API URL.
+    }
+  }
+  return current ?? rawApiUrl;
+}
+
+export function buildPaperclipEnv(
+  agent: { id: string; companyId: string },
+  options: { preferLocalUrl?: boolean } = {},
+): Record<string, string> {
   const resolveHostForUrl = (rawHost: string): string => {
     const host = rawHost.trim();
     if (!host || host === "0.0.0.0" || host === "::") return "localhost";
@@ -1974,7 +2040,9 @@ export function buildPaperclipEnv(agent: { id: string; companyId: string }): Rec
     process.env.PAPERCLIP_RUNTIME_API_URL ??
     process.env.PAPERCLIP_API_URL ??
     `http://${runtimeHost}:${runtimePort}`;
-  vars.PAPERCLIP_API_URL = apiUrl;
+  const deliveredApiUrl = options.preferLocalUrl ? selectLocalPaperclipApiUrl(apiUrl) : apiUrl;
+  vars.PAPERCLIP_API_URL = deliveredApiUrl;
+  vars.PAPERCLIP_RUNTIME_API_URL = deliveredApiUrl;
   return vars;
 }
 
@@ -2199,7 +2267,6 @@ export function sanitizeInheritedPaperclipEnv(baseEnv: NodeJS.ProcessEnv): NodeJ
   delete env.PAPERCLIPAI_CMD;
   for (const key of Object.keys(env)) {
     if (!key.startsWith("PAPERCLIP_")) continue;
-    if (key === "PAPERCLIP_RUNTIME_API_URL") continue;
     if (key === "PAPERCLIP_LISTEN_HOST") continue;
     if (key === "PAPERCLIP_LISTEN_PORT") continue;
     delete env[key];

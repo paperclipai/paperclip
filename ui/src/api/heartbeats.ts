@@ -41,6 +41,7 @@ export interface ActiveRunForIssue {
   currentToolName?: string | null;
   lastAssistantSnippet?: string | null;
   lastEventAt?: string | Date | null;
+  lastStreamEventAt?: string | Date | null;
 }
 
 export interface LiveRunForIssue {
@@ -70,6 +71,7 @@ export interface LiveRunForIssue {
   currentToolName?: string | null;
   lastAssistantSnippet?: string | null;
   lastEventAt?: string | null;
+  lastStreamEventAt?: string | null;
 }
 
 export interface WatchdogDecisionInput {

@@ -153,7 +153,10 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
           }
         : { type: "none", source: "none" };
 
-    const runIdHeader = req.header("x-paperclip-run-id");
+    const runIdHeaderRaw = req.header("x-paperclip-run-id");
+    // heartbeat_runs.id is a uuid column; a non-uuid run id would make every
+    // downstream run lookup throw at the database layer and 500 the request.
+    const runIdHeader = isUuidLike(runIdHeaderRaw) ? runIdHeaderRaw : undefined;
 
     const authHeader = req.header("authorization");
     if (!authHeader?.toLowerCase().startsWith("bearer ")) {

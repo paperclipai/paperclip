@@ -144,16 +144,19 @@ function buildNpmRuntimeCommandSpec(
   config: Record<string, unknown>,
   fallbackCommand: string,
   packageName: string,
+  requireEffortSupport = false,
 ): AdapterRuntimeCommandSpec {
   const command = readConfiguredCommand(config, fallbackCommand);
   const canSelfInstall = !hasPathSeparator(command) && command === fallbackCommand;
   const installLine = buildSandboxNpmInstallCommand(packageName);
+  const installCommandBase = requireEffortSupport
+    ? `if ! command -v ${shellQuote(command)} >/dev/null 2>&1 ||` +
+        ` ! ${shellQuote(command)} --help 2>&1 | grep -q -- "--effort"; then ${installLine}; fi`
+    : `if ! command -v ${shellQuote(command)} >/dev/null 2>&1; then ${installLine}; fi`;
   return {
     command,
-    detectCommand: command,
-    installCommand: canSelfInstall
-      ? `if ! command -v ${shellQuote(command)} >/dev/null 2>&1; then ${installLine}; fi`
-      : null,
+    detectCommand: canSelfInstall && !requireEffortSupport ? command : null,
+    installCommand: canSelfInstall ? installCommandBase : null,
   };
 }
 
@@ -206,7 +209,7 @@ const claudeLocalAdapter: ServerAdapterModule = {
   instructionsPathKey: "instructionsFilePath",
   requiresMaterializedRuntimeSkills: false,
   getRuntimeCommandSpec: (config) =>
-    buildNpmRuntimeCommandSpec(config, "claude", "@anthropic-ai/claude-code"),
+    buildNpmRuntimeCommandSpec(config, "claude", "@anthropic-ai/claude-code", true),
   agentConfigurationDoc: claudeAgentConfigurationDoc,
   getConfigSchema: getClaudeConfigSchema,
   getQuotaWindows: claudeGetQuotaWindows,

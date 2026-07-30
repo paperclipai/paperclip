@@ -5,13 +5,15 @@ import {
   asStringArray,
   parseObject,
   buildPaperclipEnv,
-  isForbiddenConfigEnvKey,
-  isPaperclipRuntimeEnvKey,
   buildInvocationEnvForLogs,
   ensurePathInEnv,
   resolveCommandForLogs,
   runChildProcess,
 } from "../utils.js";
+import {
+  preparePaperclipControlPlaneEnvForAdapterRun,
+  readAdapterExecutionTarget,
+} from "@paperclipai/adapter-utils/execution-target";
 
 export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
   const { runId, agent, config, onLog, onMeta, authToken } = ctx;
@@ -22,23 +24,50 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const cwd = asString(config.cwd, process.cwd());
   const envConfig = parseObject(config.env);
   const env: Record<string, string> = {
-    ...buildPaperclipEnv(agent),
+    ...buildPaperclipEnv(agent, { preferLocalUrl: true }),
   };
   for (const [k, v] of Object.entries(envConfig)) {
-    if (typeof v !== "string") continue;
-    // Runtime PAPERCLIP_* always wins over config, and PAPERCLIP_API_KEY is
-    // never accepted from config — the harness-minted run token is the only
-    // source. Other PAPERCLIP_* keys Paperclip did not assign flow through.
-    if (isForbiddenConfigEnvKey(k)) continue;
-    if (isPaperclipRuntimeEnvKey(k) && k in env) continue;
-    env[k] = v;
+    if (typeof v === "string") env[k] = v;
   }
   env.PAPERCLIP_RUN_ID = runId;
-  if (authToken) env.PAPERCLIP_API_KEY = authToken;
-  // runtimeEnv is only used to resolve the command path and log HOME below;
-  // the child env is built inside runChildProcess from
-  // sanitizeInheritedPaperclipEnv(process.env) + env, so a PAPERCLIP_API_KEY
-  // on the server process never reaches the child.
+  if (authToken && !env.PAPERCLIP_API_KEY?.trim()) env.PAPERCLIP_API_KEY = authToken;
+  const controlPlanePreflight = await preparePaperclipControlPlaneEnvForAdapterRun({
+    adapterLabel: "process",
+    runId,
+    target: readAdapterExecutionTarget({}),
+    cwd,
+    env,
+    timeoutSec: asNumber(config.timeoutSec, 0),
+    graceSec: asNumber(config.graceSec, 15),
+    onLog,
+  });
+  if (!controlPlanePreflight.ok) {
+    const attemptSummary =
+      controlPlanePreflight.attempts.length > 0
+        ? controlPlanePreflight.attempts
+            .slice(0, 4)
+            .map((attempt) => {
+              if (typeof attempt.status === "number") {
+                const details = [attempt.contentType ?? null, attempt.location ?? null].filter(Boolean).join(", ");
+                return details.length > 0
+                  ? `${attempt.url} -> HTTP ${attempt.status} (${details})`
+                  : `${attempt.url} -> HTTP ${attempt.status}`;
+              }
+              return `${attempt.url} -> ${attempt.error ?? "unavailable"}`;
+            })
+            .join("; ")
+        : "no Paperclip API candidates were exported to the process run";
+    return {
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      errorMessage:
+        "Paperclip control-plane preflight failed for this process run. " +
+        `No reachable API URL worked from the execution environment. Tried: ${attemptSummary}`,
+      errorCode: "paperclip_control_plane_unreachable",
+      resultJson: { paperclipControlPlanePreflight: controlPlanePreflight },
+    };
+  }
   const runtimeEnv = ensurePathInEnv({ ...process.env, ...env });
   const resolvedCommand = await resolveCommandForLogs(command, cwd, runtimeEnv);
   const loggedEnv = buildInvocationEnvForLogs(env, {
@@ -46,7 +75,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     includeRuntimeKeys: ["HOME"],
     resolvedCommand,
   });
-
   const timeoutSec = asNumber(config.timeoutSec, 0);
   const graceSec = asNumber(config.graceSec, 15);
 

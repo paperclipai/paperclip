@@ -1,9 +1,37 @@
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { createServer } from "node:http";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { runChildProcess } from "@paperclipai/adapter-utils/server-utils";
+import * as executionTarget from "@paperclipai/adapter-utils/execution-target";
 import { execute } from "@paperclipai/adapter-codex-local/server";
+
+const ORIGINAL_PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
+const ORIGINAL_PAPERCLIP_RUNTIME_API_URL = process.env.PAPERCLIP_RUNTIME_API_URL;
+const ORIGINAL_PAPERCLIP_API_URL = process.env.PAPERCLIP_API_URL;
+const ORIGINAL_PAPERCLIP_LISTEN_HOST = process.env.PAPERCLIP_LISTEN_HOST;
+const ORIGINAL_PAPERCLIP_LISTEN_PORT = process.env.PAPERCLIP_LISTEN_PORT;
+
+beforeEach(() => {
+  delete process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
+  delete process.env.PAPERCLIP_RUNTIME_API_URL;
+  delete process.env.PAPERCLIP_API_URL;
+});
+
+afterEach(() => {
+  vi.restoreAllMocks();
+  if (ORIGINAL_PAPERCLIP_RUNTIME_API_CANDIDATES_JSON === undefined) delete process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
+  else process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = ORIGINAL_PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
+  if (ORIGINAL_PAPERCLIP_RUNTIME_API_URL === undefined) delete process.env.PAPERCLIP_RUNTIME_API_URL;
+  else process.env.PAPERCLIP_RUNTIME_API_URL = ORIGINAL_PAPERCLIP_RUNTIME_API_URL;
+  if (ORIGINAL_PAPERCLIP_API_URL === undefined) delete process.env.PAPERCLIP_API_URL;
+  else process.env.PAPERCLIP_API_URL = ORIGINAL_PAPERCLIP_API_URL;
+  if (ORIGINAL_PAPERCLIP_LISTEN_HOST === undefined) delete process.env.PAPERCLIP_LISTEN_HOST;
+  else process.env.PAPERCLIP_LISTEN_HOST = ORIGINAL_PAPERCLIP_LISTEN_HOST;
+  if (ORIGINAL_PAPERCLIP_LISTEN_PORT === undefined) delete process.env.PAPERCLIP_LISTEN_PORT;
+  else process.env.PAPERCLIP_LISTEN_PORT = ORIGINAL_PAPERCLIP_LISTEN_PORT;
+});
 
 async function writeFakeCodexCommand(commandPath: string): Promise<void> {
   const script = `#!/usr/bin/env node
@@ -19,6 +47,7 @@ const payload = {
     : null,
   paperclipWakePayloadJson: process.env.PAPERCLIP_WAKE_PAYLOAD_JSON || null,
   paperclipApiUrl: process.env.PAPERCLIP_API_URL || null,
+  paperclipRuntimeApiUrl: process.env.PAPERCLIP_RUNTIME_API_URL || null,
   paperclipApiKey: process.env.PAPERCLIP_API_KEY || null,
   paperclipApiBridgeMode: process.env.PAPERCLIP_API_BRIDGE_MODE || null,
   paperclipEnvKeys: Object.keys(process.env)
@@ -52,6 +81,7 @@ type CapturePayload = {
   codexConfigContents?: string | null;
   paperclipWakePayloadJson: string | null;
   paperclipApiUrl?: string | null;
+  paperclipRuntimeApiUrl?: string | null;
   paperclipApiKey?: string | null;
   paperclipApiBridgeMode?: string | null;
   paperclipEnvKeys: string[];
@@ -257,8 +287,6 @@ describe("codex execute", () => {
     const previousCodexHome = process.env.CODEX_HOME;
     process.env.HOME = root;
     process.env.PAPERCLIP_HOME = paperclipHome;
-    process.env.PAPERCLIP_API_URL = "http://paperclip.local:3100";
-    process.env.PAPERCLIP_RUNTIME_API_URL = "http://paperclip.local:3100";
     process.env.CODEX_HOME = sharedCodexHome;
 
     try {
@@ -532,6 +560,483 @@ describe("codex execute", () => {
       else process.env.HOME = previousHome;
       if (previousPath === undefined) delete process.env.PATH;
       else process.env.PATH = previousPath;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("selects a reachable Paperclip API URL for issue-run preflight and rewrites managed MCP base URLs", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-preflight-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "codex");
+    const capturePath = path.join(root, "capture.json");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeFakeCodexCommand(commandPath);
+
+    const previousHome = process.env.HOME;
+    const previousPaperclipApiUrl = process.env.PAPERCLIP_API_URL;
+    const previousPaperclipRuntimeApiUrl = process.env.PAPERCLIP_RUNTIME_API_URL;
+    const previousPaperclipRuntimeApiCandidates = process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
+    process.env.HOME = root;
+    await seedSharedCodexAuth(root);
+    const reachableApiUrl = "http://127.0.0.1:44001";
+    process.env.PAPERCLIP_API_URL = "http://127.0.0.1:9";
+    process.env.PAPERCLIP_RUNTIME_API_URL = "http://127.0.0.1:9";
+    process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = JSON.stringify([
+      "http://127.0.0.1:9",
+      reachableApiUrl,
+    ]);
+    vi.spyOn(executionTarget, "preparePaperclipControlPlaneEnvForAdapterRun").mockImplementation(async (input) => {
+      input.env.PAPERCLIP_API_URL = reachableApiUrl;
+      input.env.PAPERCLIP_RUNTIME_API_URL = reachableApiUrl;
+      return {
+        ok: true,
+        skipped: false,
+        changed: true,
+        url: reachableApiUrl,
+        attempts: [
+          { url: "http://127.0.0.1:9", status: null, error: "ECONNREFUSED" },
+          { url: reachableApiUrl, status: 200, contentType: "application/json" },
+        ],
+        reasons: [],
+      };
+    });
+
+    try {
+      const logs: LogEntry[] = [];
+      const result = await execute({
+        runId: "run-paperclip-preflight",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Codex Coder",
+          adapterType: "codex_local",
+          adapterConfig: { engine: "cli" },
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          engine: "cli",
+          command: commandPath,
+          cwd: workspace,
+          env: {
+            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+          },
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        runtimeMcp: {
+          getServers: () => [
+            {
+              name: "github",
+              url: "/api/tool-gateway/gateways/gateway-1/mcp",
+              token: "pcgw_secret-managed-token",
+              connectionId: "connection-github",
+            },
+          ],
+        },
+        context: {
+          taskId: "issue-1",
+          paperclipWorkspace: {
+            source: "agent_home",
+            cwd: workspace,
+          },
+        },
+        authToken: "run-jwt-token",
+        onLog: async (stream, chunk) => {
+          logs.push({ stream, chunk });
+        },
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.errorCode).toBeNull();
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
+      expect(capture.paperclipApiUrl).toBe(reachableApiUrl);
+      expect(capture.codexConfigContents).toContain(
+        `url = "${reachableApiUrl}/api/tool-gateway/gateways/gateway-1/mcp"`,
+      );
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      if (previousPaperclipApiUrl === undefined) delete process.env.PAPERCLIP_API_URL;
+      else process.env.PAPERCLIP_API_URL = previousPaperclipApiUrl;
+      if (previousPaperclipRuntimeApiUrl === undefined) delete process.env.PAPERCLIP_RUNTIME_API_URL;
+      else process.env.PAPERCLIP_RUNTIME_API_URL = previousPaperclipRuntimeApiUrl;
+      if (previousPaperclipRuntimeApiCandidates === undefined) delete process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
+      else process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = previousPaperclipRuntimeApiCandidates;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("fails fast when no Paperclip API candidate is reachable for an issue run", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-preflight-fail-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "codex");
+    const capturePath = path.join(root, "capture.json");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeFakeCodexCommand(commandPath);
+
+    const previousHome = process.env.HOME;
+    const previousPaperclipApiUrl = process.env.PAPERCLIP_API_URL;
+    const previousPaperclipRuntimeApiUrl = process.env.PAPERCLIP_RUNTIME_API_URL;
+    const previousPaperclipRuntimeApiCandidates = process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
+    process.env.HOME = root;
+    await seedSharedCodexAuth(root);
+    process.env.PAPERCLIP_API_URL = "http://127.0.0.1:9";
+    process.env.PAPERCLIP_RUNTIME_API_URL = "http://127.0.0.1:9";
+    process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = JSON.stringify([
+      "http://127.0.0.1:9",
+      "http://127.0.0.1:10",
+    ]);
+    process.env.PAPERCLIP_LISTEN_HOST = "127.0.0.1";
+    process.env.PAPERCLIP_LISTEN_PORT = "10";
+
+    try {
+      const logs: LogEntry[] = [];
+      const result = await execute({
+        runId: "run-paperclip-preflight-fail",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Codex Coder",
+          adapterType: "codex_local",
+          adapterConfig: { engine: "cli" },
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          engine: "cli",
+          command: commandPath,
+          cwd: workspace,
+          env: {
+            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+          },
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {
+          taskId: "issue-1",
+          paperclipWorkspace: {
+            source: "agent_home",
+            cwd: workspace,
+          },
+        },
+        authToken: "run-jwt-token",
+        onLog: async (stream, chunk) => {
+          logs.push({ stream, chunk });
+        },
+      });
+
+      expect(result.exitCode).toBe(1);
+      expect(result.errorCode).toBe("paperclip_control_plane_unreachable");
+      expect(result.errorMessage).toContain("Paperclip control-plane preflight failed");
+      await expect(fs.readFile(capturePath, "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+      expect(logs).toContainEqual(
+        expect.objectContaining({
+          stream: "stdout",
+          chunk: expect.stringContaining("Control-plane preflight failed"),
+        }),
+      );
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      if (previousPaperclipApiUrl === undefined) delete process.env.PAPERCLIP_API_URL;
+      else process.env.PAPERCLIP_API_URL = previousPaperclipApiUrl;
+      if (previousPaperclipRuntimeApiUrl === undefined) delete process.env.PAPERCLIP_RUNTIME_API_URL;
+      else process.env.PAPERCLIP_RUNTIME_API_URL = previousPaperclipRuntimeApiUrl;
+      if (previousPaperclipRuntimeApiCandidates === undefined) delete process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
+      else process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = previousPaperclipRuntimeApiCandidates;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("engages issue-run preflight from inherited fallback-workspace env when workspace context is incomplete", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-preflight-inherited-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "codex");
+    const capturePath = path.join(root, "capture.json");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeFakeCodexCommand(commandPath);
+
+    const previousHome = process.env.HOME;
+    const previousPaperclipApiUrl = process.env.PAPERCLIP_API_URL;
+    const previousPaperclipRuntimeApiUrl = process.env.PAPERCLIP_RUNTIME_API_URL;
+    const previousPaperclipRuntimeApiCandidates = process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
+    const previousPaperclipWorkspaceSource = process.env.PAPERCLIP_WORKSPACE_SOURCE;
+    const previousPaperclipTaskId = process.env.PAPERCLIP_TASK_ID;
+    process.env.HOME = root;
+    await seedSharedCodexAuth(root);
+    const reachableApiUrl = "http://127.0.0.1:45001";
+    process.env.PAPERCLIP_API_URL = reachableApiUrl;
+    process.env.PAPERCLIP_RUNTIME_API_URL = reachableApiUrl;
+    process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = JSON.stringify([reachableApiUrl]);
+    process.env.PAPERCLIP_WORKSPACE_SOURCE = "agent_home";
+    process.env.PAPERCLIP_TASK_ID = "issue-inherited";
+    vi.spyOn(executionTarget, "preparePaperclipControlPlaneEnvForAdapterRun").mockImplementation(async (input) => {
+      input.env.PAPERCLIP_API_URL = reachableApiUrl;
+      input.env.PAPERCLIP_RUNTIME_API_URL = reachableApiUrl;
+      return {
+        ok: true,
+        skipped: false,
+        changed: false,
+        url: reachableApiUrl,
+        attempts: [{ url: reachableApiUrl, status: 200, contentType: "application/json" }],
+        reasons: [],
+      };
+    });
+
+    try {
+      const logs: LogEntry[] = [];
+      const result = await execute({
+        runId: "run-paperclip-preflight-inherited",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Codex Coder",
+          adapterType: "codex_local",
+          adapterConfig: { engine: "cli" },
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          engine: "cli",
+          command: commandPath,
+          cwd: workspace,
+          env: {
+            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+          },
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {
+          taskId: "issue-inherited",
+          paperclipWorkspace: {
+            cwd: workspace,
+          },
+        },
+        authToken: "run-jwt-token",
+        onLog: async (stream, chunk) => {
+          logs.push({ stream, chunk });
+        },
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.errorCode).toBeNull();
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
+      expect(capture.paperclipApiUrl).toBe(reachableApiUrl);
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      if (previousPaperclipApiUrl === undefined) delete process.env.PAPERCLIP_API_URL;
+      else process.env.PAPERCLIP_API_URL = previousPaperclipApiUrl;
+      if (previousPaperclipRuntimeApiUrl === undefined) delete process.env.PAPERCLIP_RUNTIME_API_URL;
+      else process.env.PAPERCLIP_RUNTIME_API_URL = previousPaperclipRuntimeApiUrl;
+      if (previousPaperclipRuntimeApiCandidates === undefined) delete process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
+      else process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = previousPaperclipRuntimeApiCandidates;
+      if (previousPaperclipWorkspaceSource === undefined) delete process.env.PAPERCLIP_WORKSPACE_SOURCE;
+      else process.env.PAPERCLIP_WORKSPACE_SOURCE = previousPaperclipWorkspaceSource;
+      if (previousPaperclipTaskId === undefined) delete process.env.PAPERCLIP_TASK_ID;
+      else process.env.PAPERCLIP_TASK_ID = previousPaperclipTaskId;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("continues the Codex run when preflight reports probe infrastructure failure and exports the fail-open URL", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-preflight-fail-open-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "codex");
+    const capturePath = path.join(root, "capture.json");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeFakeCodexCommand(commandPath);
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+    await seedSharedCodexAuth(root);
+
+    const failOpenUrl = "http://127.0.0.1:3100";
+    vi.spyOn(executionTarget, "preparePaperclipControlPlaneEnvForAdapterRun").mockImplementation(async (input) => {
+      input.env.PAPERCLIP_API_URL = failOpenUrl;
+      input.env.PAPERCLIP_RUNTIME_API_URL = failOpenUrl;
+      await input.onLog?.(
+        "stdout",
+        `[paperclip] Control-plane preflight probe could not execute for this ${input.adapterLabel} run (probe_exit_null); continuing without preflight (fail-open -> ${failOpenUrl}).\n`,
+      );
+      return {
+        ok: true,
+        skipped: true,
+        changed: true,
+        url: failOpenUrl,
+        attempts: [
+          { url: "https://paperclip.quote-to-invoice.ai", status: null, error: "probe_exit_null" },
+          { url: failOpenUrl, status: null, error: "probe_exit_null" },
+        ],
+        reasons: ["probe_infra_failure"],
+      };
+    });
+
+    try {
+      const logs: LogEntry[] = [];
+      const result = await execute({
+        runId: "run-paperclip-preflight-fail-open",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Codex Coder",
+          adapterType: "codex_local",
+          adapterConfig: { engine: "cli" },
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          engine: "cli",
+          command: commandPath,
+          cwd: workspace,
+          env: {
+            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+          },
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {
+          taskId: "issue-1",
+          paperclipWorkspace: {
+            source: "agent_home",
+            cwd: workspace,
+          },
+        },
+        authToken: "run-jwt-token",
+        onLog: async (stream, chunk) => {
+          logs.push({ stream, chunk });
+        },
+      });
+
+      expect(result.exitCode).toBe(0);
+      expect(result.errorCode).toBeNull();
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
+      expect(capture.paperclipApiUrl).toBe(failOpenUrl);
+      expect(capture.paperclipRuntimeApiUrl).toBe(failOpenUrl);
+      expect(logs).toContainEqual(
+        expect.objectContaining({
+          stream: "stdout",
+          chunk: expect.stringContaining(`fail-open -> ${failOpenUrl}`),
+        }),
+      );
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects a Cloudflare-style 302 candidate and exports a different JSON Paperclip API URL from fallback workspace runs", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-codex-execute-preflight-redirect-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "codex");
+    const capturePath = path.join(root, "capture.json");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeFakeCodexCommand(commandPath);
+
+    const previousHome = process.env.HOME;
+    const previousPaperclipApiUrl = process.env.PAPERCLIP_API_URL;
+    const previousPaperclipRuntimeApiUrl = process.env.PAPERCLIP_RUNTIME_API_URL;
+    const previousPaperclipRuntimeApiCandidates = process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
+    process.env.HOME = root;
+    await seedSharedCodexAuth(root);
+    const gatedApiUrl = "https://paperclip.quote-to-invoice.ai";
+    const reachableApiUrl = "http://127.0.0.1:46001";
+    process.env.PAPERCLIP_API_URL = gatedApiUrl;
+    process.env.PAPERCLIP_RUNTIME_API_URL = gatedApiUrl;
+    process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = JSON.stringify([gatedApiUrl, reachableApiUrl]);
+    vi.spyOn(executionTarget, "preparePaperclipControlPlaneEnvForAdapterRun").mockImplementation(async (input) => {
+      input.env.PAPERCLIP_API_URL = reachableApiUrl;
+      input.env.PAPERCLIP_RUNTIME_API_URL = reachableApiUrl;
+      return {
+        ok: true,
+        skipped: false,
+        changed: true,
+        url: reachableApiUrl,
+        attempts: [
+          {
+            url: gatedApiUrl,
+            status: 302,
+            location: "https://quote-to-invoice.cloudflareaccess.com/cdn-cgi/access/login/paperclip",
+            contentType: "text/html",
+          },
+          {
+            url: reachableApiUrl,
+            status: 200,
+            contentType: "application/json",
+          },
+        ],
+        reasons: [],
+      };
+    });
+
+    try {
+      const logs: LogEntry[] = [];
+      const result = await execute({
+        runId: "run-paperclip-preflight-redirect",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Codex Coder",
+          adapterType: "codex_local",
+          adapterConfig: { engine: "cli" },
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          engine: "cli",
+          command: commandPath,
+          cwd: workspace,
+          env: {
+            PAPERCLIP_TEST_CAPTURE_PATH: capturePath,
+          },
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {
+          taskId: "issue-1",
+          paperclipWorkspace: {
+            source: "heartbeat.claude_codex_fallback",
+            cwd: workspace,
+          },
+        },
+        authToken: "run-jwt-token",
+        onLog: async (stream, chunk) => {
+          logs.push({ stream, chunk });
+        },
+      });
+
+      expect(result.exitCode).toBe(0);
+      const capture = JSON.parse(await fs.readFile(capturePath, "utf8")) as CapturePayload;
+      expect(capture.paperclipApiUrl).toBe(reachableApiUrl);
+      expect(capture.paperclipRuntimeApiUrl).toBe(reachableApiUrl);
+      expect(capture.paperclipApiUrl).not.toBe(gatedApiUrl);
+      expect(capture.paperclipRuntimeApiUrl).not.toBe(gatedApiUrl);
+    } finally {
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      if (previousPaperclipApiUrl === undefined) delete process.env.PAPERCLIP_API_URL;
+      else process.env.PAPERCLIP_API_URL = previousPaperclipApiUrl;
+      if (previousPaperclipRuntimeApiUrl === undefined) delete process.env.PAPERCLIP_RUNTIME_API_URL;
+      else process.env.PAPERCLIP_RUNTIME_API_URL = previousPaperclipRuntimeApiUrl;
+      if (previousPaperclipRuntimeApiCandidates === undefined) delete process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
+      else process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = previousPaperclipRuntimeApiCandidates;
       await fs.rm(root, { recursive: true, force: true });
     }
   });

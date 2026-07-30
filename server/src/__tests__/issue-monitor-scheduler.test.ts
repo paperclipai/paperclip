@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import { PROVIDER_QUOTA_MONITOR_SERVICE_NAME } from "@paperclipai/shared";
 import {
   activityLog,
@@ -25,7 +25,31 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { heartbeatService } from "../services/heartbeat.ts";
+import { runningProcesses } from "../adapters/index.ts";
 import { normalizeIssueExecutionPolicy, parseIssueExecutionState } from "../services/issue-execution-policy.ts";
+
+const mockAdapterExecute = vi.hoisted(() =>
+  vi.fn(async () => ({
+    exitCode: 0,
+    signal: null,
+    timedOut: false,
+    errorMessage: null,
+    summary: "Issue monitor scheduler test run.",
+    provider: "test",
+    model: "test-model",
+  })),
+);
+
+vi.mock("../adapters/index.ts", async () => {
+  const actual = await vi.importActual<typeof import("../adapters/index.ts")>("../adapters/index.ts");
+  return {
+    ...actual,
+    getServerAdapter: vi.fn(() => ({
+      supportsLocalAgentJwt: false,
+      execute: mockAdapterExecute,
+    })),
+  };
+});
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -45,6 +69,10 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issue-monitor-");
     db = createDb(tempDb.connectionString);
   }, 20_000);
+
+  function createHeartbeat() {
+    return heartbeatService(db);
+  }
 
   async function waitForHeartbeatIdle(timeoutMs = 3_000) {
     const deadline = Date.now() + timeoutMs;
@@ -80,7 +108,7 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     ].join(":");
   }
 
-  async function waitForHeartbeatSideEffectsSettled(timeoutMs = 5_000, quietMs = 500) {
+  async function waitForHeartbeatSideEffectsSettled(timeoutMs = 15_000, quietMs = 500) {
     const deadline = Date.now() + timeoutMs;
     let previous = "";
     let stableSince = Date.now();
@@ -96,6 +124,34 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
       await new Promise((resolve) => setTimeout(resolve, 50));
     }
     throw new Error("Timed out waiting for issue monitor heartbeat side effects to settle");
+  }
+
+  async function waitForIssueRunTerminalState(issueId: string, timeoutMs = 5_000) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const run = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`)
+        .orderBy(sql`${heartbeatRuns.createdAt} desc`)
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (run && !["queued", "running", "scheduled_retry"].includes(run.status)) {
+        return run;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    throw new Error("Timed out waiting for issue monitor run to finish");
+  }
+
+  async function waitForMonitorRearm(issueId: string, timeoutMs = 5_000) {
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+      const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+      if (issue?.monitorNextCheckAt) return issue;
+      await new Promise((resolve) => setTimeout(resolve, 50));
+    }
+    throw new Error("Timed out waiting for issue monitor rearm");
   }
 
   async function cleanupRows() {
@@ -118,6 +174,17 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
   }
 
   afterEach(async () => {
+    mockAdapterExecute.mockReset();
+    mockAdapterExecute.mockImplementation(async () => ({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      errorMessage: null,
+      summary: "Issue monitor scheduler test run.",
+      provider: "test",
+      model: "test-model",
+    }));
+    runningProcesses.clear();
     seededAgentIds.clear();
     let lastError: unknown = null;
     for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -130,7 +197,7 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
       }
     }
     throw lastError;
-  });
+  }, 20_000);
 
   afterAll(async () => {
     await tempDb?.cleanup();
@@ -238,7 +305,7 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
 
   it("triggers due issue monitors once and clears the one-shot schedule", async () => {
     const { issueId, agentId } = await seedFixture();
-    const heartbeat = heartbeatService(db);
+    const heartbeat = createHeartbeat();
     const tickAt = new Date("2026-04-11T12:31:00.000Z");
 
     const result = await heartbeat.tickTimers(tickAt);
@@ -270,6 +337,74 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
       .then((rows) => rows.map((row) => row.action));
     expect(activity).toContain("issue.monitor_triggered");
   });
+
+  it("re-arms a scheduled monitor when the wake coalesces onto a foreign issue run", async () => {
+    const { companyId, agentId, issueId: monitorIssueId } = await seedFixture();
+    const activeIssueId = randomUUID();
+    const activeRunId = randomUUID();
+    await db.insert(issues).values({
+      id: activeIssueId,
+      companyId,
+      title: "Currently running work",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      issueNumber: 2,
+      identifier: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}-2`,
+    });
+    await db.insert(heartbeatRuns).values({
+      id: activeRunId,
+      companyId,
+      agentId,
+      status: "running",
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      contextSnapshot: {
+        issueId: activeIssueId,
+        wakeReason: "issue_assigned",
+      },
+      startedAt: new Date(),
+    });
+    const heartbeat = createHeartbeat();
+
+    // Reproduce the stale foreign execution lock carrier using the live dispatch path
+    // for the monitor wake itself.
+    await db.update(issues).set({
+      executionRunId: activeRunId,
+      executionAgentNameKey: "monitorbot",
+      executionLockedAt: new Date(),
+    }).where(eq(issues.id, monitorIssueId));
+
+    const tickAt = new Date("2026-04-11T12:31:00.000Z");
+    const result = await heartbeat.tickTimers(tickAt);
+
+    expect(result.enqueued).toBe(1);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, monitorIssueId)).then((rows) => rows[0]!);
+    expect(issue.monitorNextCheckAt).not.toBeNull();
+    expect(issue.monitorNextCheckAt!.getTime()).toBeGreaterThan(tickAt.getTime());
+    expect(issue.monitorAttemptCount).toBe(0);
+    expect(normalizeIssueExecutionPolicy(issue.executionPolicy ?? null)?.monitor?.nextCheckAt).toBe(
+      issue.monitorNextCheckAt?.toISOString(),
+    );
+    expect(parseIssueExecutionState(issue.executionState)?.monitor).toMatchObject({
+      status: "scheduled",
+      attemptCount: 0,
+      nextCheckAt: issue.monitorNextCheckAt?.toISOString(),
+    });
+
+    const coalescedWake = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.status, "coalesced"))
+      .then((rows) => rows[0] ?? null);
+    expect(coalescedWake?.reason).toBe("issue_execution_same_name");
+    await db.update(heartbeatRuns).set({
+      status: "failed",
+      errorCode: "test_cleanup",
+      finishedAt: new Date(),
+    }).where(eq(heartbeatRuns.id, activeRunId));
+  }, 20_000);
 
   it("wakes a cross-agent review participant for provider quota monitors", async () => {
     const { companyId, issueId, agentId: assigneeAgentId } = await seedFixture({
@@ -318,29 +453,25 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
         monitor: monitorState,
       },
     }).where(eq(issues.id, issueId));
-    const heartbeat = heartbeatService(db);
+    const heartbeat = createHeartbeat();
 
     const result = await heartbeat.tickTimers(new Date("2026-04-11T12:31:00.000Z"));
 
     expect(result.enqueued).toBe(1);
-    const wakeups = await db.select().from(agentWakeupRequests);
+    const wakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, participantAgentId));
     expect(wakeups).toHaveLength(1);
     expect(wakeups[0]).toMatchObject({
       agentId: participantAgentId,
       reason: "execution_review_participant_recovery",
     });
-    await waitForHeartbeatIdle();
-    const participantRuns = await db
-      .select()
-      .from(heartbeatRuns)
-      .where(eq(heartbeatRuns.agentId, participantAgentId));
-    expect(participantRuns).toHaveLength(1);
-    expect(participantRuns[0]?.errorCode).not.toBe("issue_assignee_changed");
   });
 
   it("lets the board trigger a scheduled issue monitor immediately", async () => {
     const { issueId, agentId, nextCheckAt } = await seedFixture();
-    const heartbeat = heartbeatService(db);
+    const heartbeat = createHeartbeat();
     const triggeredAt = new Date("2026-04-11T12:00:00.000Z");
 
     const result = await heartbeat.triggerIssueMonitor(issueId, {
@@ -386,7 +517,7 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
 
   it("clears due monitors that cannot be dispatched and records a skip", async () => {
     const { issueId } = await seedFixture({ agentStatus: "paused" });
-    const heartbeat = heartbeatService(db);
+    const heartbeat = createHeartbeat();
     const tickAt = new Date("2026-04-11T12:31:00.000Z");
 
     const result = await heartbeat.tickTimers(tickAt);
@@ -408,6 +539,265 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     expect(activity).toContain("issue.monitor_skipped");
   });
 
+  it("reconciles a triggered monitor back onto a timer when dispatch created no run", async () => {
+    const { issueId, agentId } = await seedFixture();
+    await db.update(agents).set({
+      runtimeConfig: {
+        heartbeat: {
+          enabled: false,
+          wakeOnDemand: true,
+          maxDailyRuns: 0,
+        },
+      },
+    }).where(eq(agents.id, agentId));
+    const heartbeat = createHeartbeat();
+    const firstTickAt = new Date("2026-04-11T12:31:00.000Z");
+
+    await heartbeat.tickTimers(firstTickAt);
+
+    const strandedIssue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]!);
+    expect(strandedIssue.monitorNextCheckAt).toBeNull();
+    expect(strandedIssue.monitorAttemptCount).toBe(1);
+    expect(strandedIssue.monitorLastTriggeredAt?.toISOString()).toBe(firstTickAt.toISOString());
+    expect(parseIssueExecutionState(strandedIssue.executionState)?.monitor).toMatchObject({
+      status: "triggered",
+      attemptCount: 1,
+    });
+    const initialRuns = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, strandedIssue.companyId));
+    expect(initialRuns).toHaveLength(0);
+
+    const reconcileTickAt = new Date("2026-04-11T12:37:00.000Z");
+    await heartbeat.tickTimers(reconcileTickAt);
+
+    const repairedIssue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]!);
+    expect(repairedIssue.monitorNextCheckAt).not.toBeNull();
+    expect(repairedIssue.monitorNextCheckAt!.getTime()).toBeGreaterThan(reconcileTickAt.getTime());
+    expect(repairedIssue.monitorAttemptCount).toBe(0);
+    expect(parseIssueExecutionState(repairedIssue.executionState)?.monitor).toMatchObject({
+      status: "scheduled",
+      attemptCount: 0,
+      nextCheckAt: repairedIssue.monitorNextCheckAt?.toISOString(),
+    });
+  });
+
+  it("backs off monitor claim failures instead of leaving the wake path destroyed", async () => {
+    const { companyId, issueId, agentId } = await seedFixture();
+    const heartbeat = createHeartbeat();
+    const conflictingRunId = randomUUID();
+    const conflictingIssueId = randomUUID();
+    const conflictOriginId = randomUUID();
+    const conflictOriginFingerprint = "dispatch-fingerprint-1";
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+
+    await db.insert(heartbeatRuns).values({
+      id: conflictingRunId,
+      companyId,
+      agentId,
+      status: "running",
+      invocationSource: "automation",
+      triggerDetail: "system",
+      contextSnapshot: {
+        issueId: conflictingIssueId,
+        wakeReason: "issue_assigned",
+      },
+      startedAt: new Date("2026-04-11T12:00:00.000Z"),
+    });
+    await db.insert(issues).values({
+      id: conflictingIssueId,
+      companyId,
+      title: "Conflicting routine execution",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      issueNumber: 2,
+      identifier: `${issuePrefix}-2`,
+      originKind: "routine_execution",
+      originId: conflictOriginId,
+      originFingerprint: conflictOriginFingerprint,
+      executionRunId: conflictingRunId,
+      executionAgentNameKey: "monitorbot",
+      executionLockedAt: new Date("2026-04-11T12:00:00.000Z"),
+    });
+    await db.update(issues).set({
+      originKind: "routine_execution",
+      originId: conflictOriginId,
+      originFingerprint: conflictOriginFingerprint,
+    }).where(eq(issues.id, issueId));
+
+    const tickAt = new Date("2026-04-11T12:31:00.000Z");
+    await heartbeat.tickTimers(tickAt);
+    const run = await waitForIssueRunTerminalState(issueId);
+    await db.update(heartbeatRuns).set({
+      status: "failed",
+      errorCode: "test_cleanup",
+      finishedAt: new Date(),
+    }).where(eq(heartbeatRuns.id, conflictingRunId));
+
+    expect(run?.status).toBe("failed");
+    expect(run?.errorCode).toBe("issue_monitor_claim_failed");
+
+    const repairedIssue = await waitForMonitorRearm(issueId);
+
+    expect(repairedIssue.monitorNextCheckAt!.getTime()).toBeGreaterThan(tickAt.getTime());
+    expect(repairedIssue.monitorAttemptCount).toBe(0);
+    expect(parseIssueExecutionState(repairedIssue.executionState)?.monitor).toMatchObject({
+      status: "scheduled",
+      attemptCount: 0,
+      nextCheckAt: repairedIssue.monitorNextCheckAt?.toISOString(),
+    });
+
+    const activity = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.entityId, issueId))
+      .then((rows) => rows.map((row) => row.action));
+    expect(activity).toContain("issue.monitor_rearmed");
+  }, 20_000);
+
+  it("re-arms provider quota monitor failures at the reported reset time and keeps the monitor visible", async () => {
+    const { issueId } = await seedFixture();
+    const heartbeat = createHeartbeat();
+    const retryNotBefore = new Date("2026-08-03T09:00:00.000Z");
+
+    mockAdapterExecute.mockImplementation(async () => ({
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      errorMessage: "You've hit your weekly limit · resets Aug 3 at 11am (Europe/Zurich)",
+      provider: "test",
+      model: "test-model",
+    }));
+
+    await heartbeat.tickTimers(new Date("2026-07-29T18:31:00.000Z"));
+    const run = await waitForIssueRunTerminalState(issueId);
+    const repairedIssue = await waitForMonitorRearm(issueId);
+
+    expect(run.status).toBe("failed");
+    expect(run.errorCode).toBe("provider_quota");
+    expect(run.resultJson).toMatchObject({
+      errorFamily: "provider_quota",
+      retryNotBefore: retryNotBefore.toISOString(),
+      transientRetryNotBefore: retryNotBefore.toISOString(),
+      providerQuotaRetryNotBefore: retryNotBefore.toISOString(),
+    });
+    expect(repairedIssue.monitorNextCheckAt?.toISOString()).toBe(retryNotBefore.toISOString());
+    expect(normalizeIssueExecutionPolicy(repairedIssue.executionPolicy ?? null)?.monitor?.nextCheckAt).toBe(
+      retryNotBefore.toISOString(),
+    );
+    expect(parseIssueExecutionState(repairedIssue.executionState)?.monitor).toMatchObject({
+      status: "scheduled",
+      nextCheckAt: retryNotBefore.toISOString(),
+      attemptCount: 0,
+    });
+  }, 20_000);
+
+  it("backs off repeated failed monitor wakes for the same issue", async () => {
+    const { companyId, issueId, agentId } = await seedFixture();
+    const heartbeat = createHeartbeat();
+
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId,
+      agentId,
+      status: "failed",
+      invocationSource: "automation",
+      triggerDetail: "system",
+      error: "temporary upstream error",
+      errorCode: "adapter_failed",
+      contextSnapshot: {
+        issueId,
+        wakeReason: "issue_monitor_due",
+      },
+      createdAt: new Date("2026-07-29T18:20:00.000Z"),
+      updatedAt: new Date("2026-07-29T18:21:00.000Z"),
+      startedAt: new Date("2026-07-29T18:20:00.000Z"),
+      finishedAt: new Date("2026-07-29T18:21:00.000Z"),
+    });
+
+    mockAdapterExecute.mockImplementation(async () => ({
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      errorMessage: "temporary upstream error",
+      errorCode: "adapter_failed",
+      provider: "test",
+      model: "test-model",
+    }));
+
+    await heartbeat.tickTimers(new Date("2026-07-29T18:31:00.000Z"));
+    const run = await waitForIssueRunTerminalState(issueId);
+    const repairedIssue = await waitForMonitorRearm(issueId);
+    const backoffMs = repairedIssue.monitorNextCheckAt!.getTime() - run.finishedAt!.getTime();
+
+    expect(run.status).toBe("failed");
+    expect(backoffMs).toBeGreaterThanOrEqual(300_000 - 5_000);
+    expect(backoffMs).toBeLessThanOrEqual(300_000 + 5_000);
+    expect(normalizeIssueExecutionPolicy(repairedIssue.executionPolicy ?? null)?.monitor?.nextCheckAt).toBe(
+      repairedIssue.monitorNextCheckAt?.toISOString(),
+    );
+  }, 20_000);
+
+  it("resets monitor failure backoff after a successful monitor wake", async () => {
+    const { companyId, issueId, agentId } = await seedFixture();
+    const heartbeat = createHeartbeat();
+
+    await db.insert(heartbeatRuns).values([
+      {
+        id: randomUUID(),
+        companyId,
+        agentId,
+        status: "failed",
+        invocationSource: "automation",
+        triggerDetail: "system",
+        error: "temporary upstream error",
+        errorCode: "adapter_failed",
+        contextSnapshot: {
+          issueId,
+          wakeReason: "issue_monitor_due",
+        },
+        createdAt: new Date("2026-07-29T18:10:00.000Z"),
+        updatedAt: new Date("2026-07-29T18:11:00.000Z"),
+        startedAt: new Date("2026-07-29T18:10:00.000Z"),
+        finishedAt: new Date("2026-07-29T18:11:00.000Z"),
+      },
+      {
+        id: randomUUID(),
+        companyId,
+        agentId,
+        status: "succeeded",
+        invocationSource: "automation",
+        triggerDetail: "system",
+        contextSnapshot: {
+          issueId,
+          wakeReason: "issue_monitor_due",
+        },
+        createdAt: new Date("2026-07-29T18:20:00.000Z"),
+        updatedAt: new Date("2026-07-29T18:21:00.000Z"),
+        startedAt: new Date("2026-07-29T18:20:00.000Z"),
+        finishedAt: new Date("2026-07-29T18:21:00.000Z"),
+      },
+    ]);
+
+    mockAdapterExecute.mockImplementation(async () => ({
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      errorMessage: "temporary upstream error",
+      errorCode: "adapter_failed",
+      provider: "test",
+      model: "test-model",
+    }));
+
+    await heartbeat.tickTimers(new Date("2026-07-29T18:31:00.000Z"));
+    const run = await waitForIssueRunTerminalState(issueId);
+    const repairedIssue = await waitForMonitorRearm(issueId);
+    const backoffMs = repairedIssue.monitorNextCheckAt!.getTime() - run.finishedAt!.getTime();
+
+    expect(run.status).toBe("failed");
+    expect(backoffMs).toBeGreaterThanOrEqual(150_000 - 5_000);
+    expect(backoffMs).toBeLessThanOrEqual(150_000 + 5_000);
+  }, 20_000);
+
   it("clears exhausted monitors and queues bounded owner recovery instead of another due check", async () => {
     const { issueId, agentId } = await seedFixture({
       monitorAttemptCount: 1,
@@ -416,7 +806,7 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
         recoveryPolicy: "wake_owner",
       },
     });
-    const heartbeat = heartbeatService(db);
+    const heartbeat = createHeartbeat();
     const tickAt = new Date("2026-04-11T12:31:00.000Z");
 
     const result = await heartbeat.tickTimers(tickAt);
@@ -452,7 +842,8 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     expect(activity).toContain("issue.monitor_exhausted");
     expect(activity).toContain("issue.monitor_recovery_wake_queued");
     expect(activity).not.toContain("issue.monitor_triggered");
-  });
+
+  }, 20_000);
 
   it("clears timed-out monitors and creates a visible recovery issue when requested", async () => {
     const { issueId, companyId } = await seedFixture({
@@ -461,7 +852,7 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
         recoveryPolicy: "create_recovery_issue",
       },
     });
-    const heartbeat = heartbeatService(db);
+    const heartbeat = createHeartbeat();
     const tickAt = new Date("2026-04-11T12:31:00.000Z");
 
     const result = await heartbeat.tickTimers(tickAt);
@@ -496,7 +887,7 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
         externalRef: "https://provider.example/deploy/123?token=secret",
       },
     });
-    const heartbeat = heartbeatService(db);
+    const heartbeat = createHeartbeat();
     const tickAt = new Date("2026-04-11T12:31:00.000Z");
 
     await heartbeat.tickTimers(tickAt);

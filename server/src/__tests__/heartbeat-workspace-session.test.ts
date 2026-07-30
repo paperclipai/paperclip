@@ -2211,6 +2211,43 @@ describe("buildExplicitResumeSessionOverride", () => {
     });
   });
 
+  it("preserves Paperclip config fingerprint metadata when reusing saved task session params", async () => {
+    const metadata = await buildSessionConfigMetadata();
+
+    const result = buildExplicitResumeSessionOverride({
+      resumeFromRunId: "run-1",
+      resumeRunSessionIdBefore: "session-before",
+      resumeRunSessionIdAfter: "session-after",
+      taskSession: {
+        sessionParamsJson: {
+          sessionId: "session-after",
+          cwd: "/tmp/project",
+          __paperclipConfiguredModel: "gpt-5.4-mini",
+          __paperclipConfigFingerprint: metadata.fingerprint,
+          __paperclipConfigFingerprintVersion: metadata.version,
+          __paperclipConfigCategories: metadata.categories,
+          __paperclipConfigCategoryFingerprints: metadata.categoryFingerprints,
+        },
+        sessionDisplayId: "session-after",
+        lastRunId: "run-1",
+      },
+      sessionCodec: codexSessionCodec,
+    });
+
+    expect(result).toEqual({
+      sessionDisplayId: "session-after",
+      sessionParams: {
+        sessionId: "session-after",
+        cwd: "/tmp/project",
+        __paperclipConfiguredModel: "gpt-5.4-mini",
+        __paperclipConfigFingerprint: metadata.fingerprint,
+        __paperclipConfigFingerprintVersion: metadata.version,
+        __paperclipConfigCategories: metadata.categories,
+        __paperclipConfigCategoryFingerprints: metadata.categoryFingerprints,
+      },
+    });
+  });
+
   it("falls back to the selected run session id when no matching task session params are available", () => {
     const result = buildExplicitResumeSessionOverride({
       resumeFromRunId: "run-1",

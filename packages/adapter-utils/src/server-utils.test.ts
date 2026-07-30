@@ -443,6 +443,40 @@ describe("runChildProcess", () => {
     expect(finishedAt - startedAt).toBeGreaterThanOrEqual(spawnDelayMs);
   });
 
+  it("does not leak an inherited PAPERCLIP_RUNTIME_API_URL into the spawned child env", async () => {
+    const previousRuntimeApiUrl = process.env.PAPERCLIP_RUNTIME_API_URL;
+    process.env.PAPERCLIP_RUNTIME_API_URL = "https://stale.example.test";
+
+    try {
+      const result = await runChildProcess(
+        randomUUID(),
+        process.execPath,
+        [
+          "-e",
+          "process.stdout.write(JSON.stringify({api: process.env.PAPERCLIP_API_URL || null, runtime: process.env.PAPERCLIP_RUNTIME_API_URL || null}));",
+        ],
+        {
+          cwd: process.cwd(),
+          env: {
+            PAPERCLIP_API_URL: "http://127.0.0.1:3100",
+          },
+          timeoutSec: 5,
+          graceSec: 1,
+          onLog: async () => {},
+        },
+      );
+
+      expect(result.exitCode).toBe(0);
+      expect(JSON.parse(result.stdout)).toEqual({
+        api: "http://127.0.0.1:3100",
+        runtime: null,
+      });
+    } finally {
+      if (previousRuntimeApiUrl === undefined) delete process.env.PAPERCLIP_RUNTIME_API_URL;
+      else process.env.PAPERCLIP_RUNTIME_API_URL = previousRuntimeApiUrl;
+    }
+  });
+
   it.skipIf(process.platform === "win32")("kills descendant processes on timeout via the process group", async () => {
     let descendantPid: number | null = null;
 

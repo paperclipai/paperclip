@@ -7,6 +7,10 @@ import { withRecoveryModelProfileHint } from "./model-profile-hint.js";
 export const FINISH_SUCCESSFUL_RUN_HANDOFF_REASON = "finish_successful_run_handoff";
 export const SUCCESSFUL_RUN_MISSING_STATE_REASON = "successful_run_missing_state";
 export const DEFAULT_MAX_SUCCESSFUL_RUN_HANDOFF_ATTEMPTS = 1;
+export const SUCCESSFUL_RUN_HANDOFF_SETTLE_WINDOW_MS = Math.max(
+  0,
+  Number(process.env.SUCCESSFUL_RUN_HANDOFF_SETTLE_WINDOW_MS) || 20 * 60 * 1000,
+);
 export const SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY =
   "Paperclip needs a disposition before this issue can continue.";
 export const SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_NOTICE_BODY =
@@ -372,6 +376,21 @@ function isProductiveSuccessfulRun(input: {
   return Boolean(input.detectedProgressSummary);
 }
 
+function successfulRunHandoffSettleAnchor(run: Pick<HeartbeatRunRow, "finishedAt" | "updatedAt" | "startedAt">) {
+  return run.finishedAt ?? run.updatedAt ?? run.startedAt ?? null;
+}
+
+export function isSuccessfulRunHandoffInsideSettleWindow(
+  run: Pick<HeartbeatRunRow, "status" | "contextSnapshot" | "finishedAt" | "updatedAt" | "startedAt">,
+  nowMs = Date.now(),
+) {
+  if (run.status !== "succeeded") return false;
+  if (isCorrectiveHandoffRun(run as HeartbeatRunRow)) return false;
+  const anchor = successfulRunHandoffSettleAnchor(run);
+  if (!(anchor instanceof Date)) return false;
+  return nowMs - anchor.getTime() < SUCCESSFUL_RUN_HANDOFF_SETTLE_WINDOW_MS;
+}
+
 export function buildSuccessfulRunHandoffInstruction(input: {
   issueIdentifier: string | null;
   issueTitle: string;
@@ -458,6 +477,7 @@ export function decideSuccessfulRunHandoff(input: {
   hasPendingInteractionOrApproval: boolean;
   hasPersistedMonitor: boolean;
   hasExplicitBlockerPath: boolean;
+  hasOpenChildPath?: boolean;
   hasOpenRecoveryIssue: boolean;
   hasPauseHold: boolean;
   hasActiveRoutineContinuation: boolean;
@@ -493,6 +513,9 @@ export function decideSuccessfulRunHandoff(input: {
   if (!isProductiveSuccessfulRun(input)) {
     return { kind: "skip", reason: "successful run did not produce handoff-relevant progress" };
   }
+  if (isSuccessfulRunHandoffInsideSettleWindow(run)) {
+    return { kind: "skip", reason: "successful run is still inside the handoff settle window" };
+  }
   if (input.hasActiveExecutionPath) return { kind: "skip", reason: "issue already has an active execution path" };
   if (input.hasQueuedWake) return { kind: "skip", reason: "issue already has a queued or deferred wake" };
   if (input.hasPendingInteractionOrApproval) {
@@ -500,6 +523,7 @@ export function decideSuccessfulRunHandoff(input: {
   }
   if (input.hasPersistedMonitor) return { kind: "skip", reason: "persisted issue monitor owns the next action" };
   if (input.hasExplicitBlockerPath) return { kind: "skip", reason: "explicit blocker path owns the next action" };
+  if (input.hasOpenChildPath) return { kind: "skip", reason: "open child work already owns the next action" };
   if (input.hasOpenRecoveryIssue) return { kind: "skip", reason: "open recovery issue owns the ambiguity" };
   if (input.hasPauseHold) return { kind: "skip", reason: "issue is under an active pause hold" };
   if (input.budgetBlocked) return { kind: "skip", reason: "budget hard stop blocks corrective wake" };

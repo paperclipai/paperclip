@@ -803,6 +803,34 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
+  it("allows mentioned peer agents to post comments when their run context points at a foreign-assigned issue without a supervisory marker", async () => {
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: input.action === "issue:comment",
+      action: input.action,
+      reason: input.action === "issue:comment" ? "allow_issue_mention_grant" : "deny_missing_grant",
+      explanation:
+        input.action === "issue:comment"
+          ? "Allowed by a mention-scoped issue comment grant."
+          : "Missing permission.",
+    }));
+
+    const app = await createApp(
+      peerActor(),
+      createRunContextDb({ issueId, taskId: issueId }, peerAgentId, peerActor().runId),
+    );
+    const res = await request(app)
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "Mention wake still works." });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      issueId,
+      "Mention wake still works.",
+      expect.any(Object),
+      expect.any(Object),
+    );
+  });
+
   it("rejects non-mentioned peer agents from posting comments", async () => {
     mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
       allowed: input.action === "issue:read",
@@ -2075,6 +2103,194 @@ describe("agent issue mutation checkout ownership", () => {
 
       expect(res.status, JSON.stringify(res.body)).toBe(403);
       expect(res.body.error).toBe("Task-watchdog run context is not backed by an active persisted watchdog.");
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+    });
+  });
+
+  describe("supervisory descendant normalization scope", () => {
+    const supervisorIssueId = "99999999-9999-4999-8999-999999999999";
+    const childIssueId = issueId;
+
+    function denyCrossAgentMutationBoundary() {
+      mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+        allowed: input.action === "company_scope:read" || input.action === "issue:read",
+        action: input.action,
+        reason:
+          input.action === "company_scope:read" || input.action === "issue:read"
+            ? "allow_explicit_grant"
+            : "deny_missing_grant",
+        explanation: "Supervisory normalization test boundary default.",
+      }));
+    }
+
+    function createSupervisoryDb(options: {
+      supervisorIssueId?: string;
+      targetParentId?: string | null;
+      supervisorAssigneeAgentId?: string | null;
+      runIssueId?: string | null;
+    } = {}) {
+      const runIssueId = options.runIssueId ?? (options.supervisorIssueId ?? supervisorIssueId);
+      const supervisorId = options.supervisorIssueId ?? supervisorIssueId;
+      const supervisorAssigneeAgentId = options.supervisorAssigneeAgentId ?? peerAgentId;
+      const targetParentId = options.targetParentId === undefined ? supervisorId : options.targetParentId;
+      const runRows = [{
+        id: peerActor().runId,
+        companyId,
+        agentId: peerAgentId,
+        contextSnapshot: {
+          issueId: runIssueId,
+          supervisoryNormalization: { supervisorIssueId: runIssueId },
+        },
+      }];
+      let ancestryCallCount = 0;
+
+      const rowsForSelection = (selection: Record<string, unknown>) => {
+        const keys = Object.keys(selection);
+        if (keys.includes("entityId")) return [];
+        if (keys.includes("contextSnapshot")) return runRows;
+        if (keys.includes("identifier") && keys.includes("assigneeAgentId")) {
+          return [{
+            id: supervisorId,
+            companyId,
+            identifier: "SUP-1",
+            assigneeAgentId: supervisorAssigneeAgentId,
+          }];
+        }
+        if (keys.includes("parentId")) {
+          const row = ancestryCallCount % 2 === 0
+            ? {
+                id: childIssueId,
+                companyId,
+                parentId: targetParentId,
+              }
+            : {
+                id: supervisorId,
+                companyId,
+                parentId: null,
+              };
+          ancestryCallCount += 1;
+          return [row];
+        }
+        if (keys.includes("agentCompanyId")) return runRows;
+        return [{ id: peerAgentId, companyId, permissions: {}, role: "engineer", reportsTo: null }];
+      };
+
+      const buildQuery = (selection: Record<string, unknown>) => {
+        const whereResult = {
+          orderBy: vi.fn(async () => []),
+          then: async (resolve: (rows: unknown[]) => unknown) => resolve(rowsForSelection(selection)),
+        };
+        const query = {
+          innerJoin: vi.fn(() => query),
+          where: vi.fn(() => whereResult),
+        };
+        return query;
+      };
+
+      return {
+        transaction: async (callback: (tx: Record<string, never>) => Promise<unknown>) => callback({}),
+        select: vi.fn((selection: Record<string, unknown> = {}) => ({
+          from: vi.fn(() => buildQuery(selection)),
+        })),
+      };
+    }
+
+    it("lets a supervising parent run normalize descendant status and blockers across assignee boundaries", async () => {
+      denyCrossAgentMutationBoundary();
+      mockIssueService.getById.mockResolvedValue(makeIssue({
+        id: childIssueId,
+        assigneeAgentId: ownerAgentId,
+        parentId: supervisorIssueId,
+      }));
+      mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
+      mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+        ...makeIssue({ id: childIssueId, assigneeAgentId: ownerAgentId, parentId: supervisorIssueId }),
+        ...patch,
+      }));
+
+      const app = await createApp(peerActor(), createSupervisoryDb());
+      const res = await request(app)
+        .patch(`/api/issues/${childIssueId}`)
+        .send({ status: "blocked", blockedByIssueIds: [] });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(mockIssueService.update).toHaveBeenCalledWith(
+        childIssueId,
+        expect.objectContaining({ status: "blocked", blockedByIssueIds: [], actorAgentId: peerAgentId }),
+      );
+    });
+
+    it("lets a supervising parent run add an explanatory descendant comment", async () => {
+      denyCrossAgentMutationBoundary();
+      mockIssueService.getById.mockResolvedValue(makeIssue({
+        id: childIssueId,
+        assigneeAgentId: ownerAgentId,
+        parentId: supervisorIssueId,
+      }));
+      mockIssueService.addComment.mockResolvedValue({
+        id: "12121212-1212-4212-8212-121212121212",
+        body: "Supervisor normalization note",
+      });
+
+      const app = await createApp(peerActor(), createSupervisoryDb());
+      const res = await request(app)
+        .post(`/api/issues/${childIssueId}/comments`)
+        .send({ body: "Supervisor normalization note" });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(201);
+      expect(mockIssueService.addComment).toHaveBeenCalledWith(
+        childIssueId,
+        "Supervisor normalization note",
+        expect.objectContaining({ agentId: peerAgentId, runId: peerActor().runId }),
+        expect.any(Object),
+      );
+    });
+
+    it("still denies cross-assignee updates outside the supervising subtree", async () => {
+      denyCrossAgentMutationBoundary();
+      mockIssueService.getById.mockResolvedValue(makeIssue({
+        id: childIssueId,
+        assigneeAgentId: ownerAgentId,
+        parentId: null,
+      }));
+
+      const app = await createApp(
+        peerActor(),
+        createSupervisoryDb({ targetParentId: null }),
+      );
+      const res = await request(app)
+        .patch(`/api/issues/${childIssueId}`)
+        .send({ status: "blocked" });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(403);
+      expect(res.body.error).toBe("Issue is outside this actor's authorization boundary");
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+    });
+
+    it("denies supervisory scope from changing assignees or execution policy", async () => {
+      denyCrossAgentMutationBoundary();
+      mockIssueService.getById.mockResolvedValue(makeIssue({
+        id: childIssueId,
+        assigneeAgentId: ownerAgentId,
+        parentId: supervisorIssueId,
+      }));
+
+      const app = await createApp(peerActor(), createSupervisoryDb());
+      const assigneeRes = await request(app)
+        .patch(`/api/issues/${childIssueId}`)
+        .send({ assigneeAgentId: peerAgentId });
+      expect(assigneeRes.status, JSON.stringify(assigneeRes.body)).toBe(403);
+      expect(assigneeRes.body.error).toBe(
+        "Supervisory normalization only allows descendant status changes, blocker updates, and explanatory comments.",
+      );
+
+      const policyRes = await request(app)
+        .patch(`/api/issues/${childIssueId}`)
+        .send({ executionPolicy: { review: { participants: [{ type: "agent", id: peerAgentId }] } } });
+      expect(policyRes.status, JSON.stringify(policyRes.body)).toBe(403);
+      expect(policyRes.body.error).toBe(
+        "Supervisory normalization only allows descendant status changes, blocker updates, and explanatory comments.",
+      );
       expect(mockIssueService.update).not.toHaveBeenCalled();
     });
   });

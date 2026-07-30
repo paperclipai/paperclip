@@ -245,6 +245,141 @@ describeEmbeddedPostgres("applyPendingMigrations", () => {
   );
 
   it(
+    "coalesces duplicate live wake idempotency rows before replaying migration 0182",
+    async () => {
+      const connectionString = await createTempDatabase();
+
+      const sql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        const liveWakeIdempotencyHash = await migrationHash("0197_agent_wakeup_live_idempotency.sql");
+
+        await sql.unsafe(`
+          DROP INDEX IF EXISTS "agent_wakeup_requests_live_idempotency_uq"
+        `);
+        await sql.unsafe(
+          `DELETE FROM "drizzle"."__drizzle_migrations" WHERE hash = '${liveWakeIdempotencyHash}'`,
+        );
+
+        await sql.unsafe(`
+          INSERT INTO "companies" ("id", "name", "issue_prefix", "created_at", "updated_at")
+          VALUES (
+            '00000000-0000-0000-0000-000000000310',
+            'Wake Dedup Co',
+            'WDU182',
+            '2026-01-01T00:00:00.000Z',
+            '2026-01-01T00:00:00.000Z'
+          )
+          ON CONFLICT ("id") DO NOTHING
+        `);
+        await sql.unsafe(`
+          INSERT INTO "agents" ("id", "company_id", "name", "role", "adapter_type", "created_at", "updated_at")
+          VALUES (
+            '00000000-0000-0000-0000-000000000311',
+            '00000000-0000-0000-0000-000000000310',
+            'Wake Dedup Agent',
+            'general',
+            'process',
+            '2026-01-01T00:00:00.000Z',
+            '2026-01-01T00:00:00.000Z'
+          )
+          ON CONFLICT ("id") DO NOTHING
+        `);
+        await sql.unsafe(`
+          INSERT INTO "agent_wakeup_requests" (
+            "id",
+            "company_id",
+            "agent_id",
+            "source",
+            "status",
+            "idempotency_key",
+            "requested_at",
+            "finished_at",
+            "created_at",
+            "updated_at"
+          )
+          VALUES
+            (
+              '00000000-0000-0000-0000-000000000312',
+              '00000000-0000-0000-0000-000000000310',
+              '00000000-0000-0000-0000-000000000311',
+              'system',
+              'completed',
+              'duplicate-live-wake-key',
+              '2026-07-01T10:00:00.000Z',
+              '2026-07-01T10:01:00.000Z',
+              '2026-07-01T10:00:00.000Z',
+              '2026-07-01T10:01:00.000Z'
+            ),
+            (
+              '00000000-0000-0000-0000-000000000313',
+              '00000000-0000-0000-0000-000000000310',
+              '00000000-0000-0000-0000-000000000311',
+              'system',
+              'completed',
+              'duplicate-live-wake-key',
+              '2026-07-01T10:02:00.000Z',
+              '2026-07-01T10:03:00.000Z',
+              '2026-07-01T10:02:00.000Z',
+              '2026-07-01T10:03:00.000Z'
+            )
+        `);
+      } finally {
+        await sql.end();
+      }
+
+      const pendingState = await inspectMigrations(connectionString);
+      expect(pendingState).toMatchObject({
+        status: "needsMigrations",
+        pendingMigrations: ["0197_agent_wakeup_live_idempotency.sql"],
+        reason: "pending-migrations",
+      });
+
+      await applyPendingMigrations(connectionString);
+
+      const finalState = await inspectMigrations(connectionString);
+      expect(finalState.status).toBe("upToDate");
+
+      const verifySql = postgres(connectionString, { max: 1, onnotice: () => {} });
+      try {
+        const rows = await verifySql.unsafe<{
+          id: string;
+          status: string;
+          coalesced_count: number;
+          error: string | null;
+        }[]>(`
+          SELECT "id", "status", "coalesced_count", "error"
+          FROM "agent_wakeup_requests"
+          WHERE "company_id" = '00000000-0000-0000-0000-000000000310'
+            AND "agent_id" = '00000000-0000-0000-0000-000000000311'
+            AND "idempotency_key" = 'duplicate-live-wake-key'
+          ORDER BY "created_at" ASC, "id" ASC
+        `);
+        expect(rows).toHaveLength(2);
+        expect(rows[0]).toMatchObject({
+          id: "00000000-0000-0000-0000-000000000312",
+          status: "completed",
+          coalesced_count: 1,
+        });
+        expect(rows[1].status).toBe("coalesced");
+        expect(rows[1].error).toContain("0197_agent_wakeup_live_idempotency.sql coalesced");
+
+        const liveRows = await verifySql.unsafe<{ count: string }[]>(`
+          SELECT count(*)::text AS count
+          FROM "agent_wakeup_requests"
+          WHERE "company_id" = '00000000-0000-0000-0000-000000000310'
+            AND "agent_id" = '00000000-0000-0000-0000-000000000311'
+            AND "idempotency_key" = 'duplicate-live-wake-key'
+            AND "status" in ('queued', 'claimed', 'completed', 'deferred_issue_execution')
+        `);
+        expect(liveRows[0]?.count).toBe("1");
+      } finally {
+        await verifySql.end();
+      }
+    },
+    20_000,
+  );
+
+  it(
     "enforces a unique board_api_keys.key_hash after migration 0044",
     async () => {
       const connectionString = await createTempDatabase();

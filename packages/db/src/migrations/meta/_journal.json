@@ -1367,5 +1367,13 @@
       "tag": "0196_drop_cloud_upstream_tables",
       "breakpoints": true
     }
+,
+    {
+      "idx": 197,
+      "version": "7",
+      "when": 1784319000000,
+      "tag": "0197_agent_wakeup_live_idempotency",
+      "breakpoints": true
+    }
   ]
 }

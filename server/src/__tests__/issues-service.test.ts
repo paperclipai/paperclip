@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { asc, eq } from "drizzle-orm";
+import { and, asc, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { sql } from "drizzle-orm";
 import {
@@ -3773,7 +3773,7 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
       expect.objectContaining({
         id: blockedIssueId,
         assigneeAgentId,
-        blockerIssueIds: expect.arrayContaining([blockerA, blockerB]),
+        blockerIssueIds: [blockerA],
       }),
     ]);
   });
@@ -4003,12 +4003,13 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
 
     await expect(svc.getDependencyReadiness(blockedId)).resolves.toMatchObject({
       issueId: blockedId,
-      blockerIssueIds: [blockerId],
+      blockerIssueIds: [],
       unresolvedBlockerIssueIds: [],
       unresolvedBlockerCount: 0,
       allBlockersDone: true,
       isDependencyReady: true,
     });
+    await expect(svc.getById(blockedId)).resolves.toMatchObject({ status: "todo" });
   });
 
   it("unblocks a source issue when a liveness escalation recovery issue is marked done", async () => {
@@ -4055,6 +4056,99 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     await expect(svc.getRelationSummaries(sourceIssueId)).resolves.toMatchObject({
       blockedBy: [],
     });
+  });
+
+  it("auto-prunes a cancelled blocker and reopens blocked dependents when no blockers remain", async () => {
+    const companyId = randomUUID();
+    const assigneeAgentId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: assigneeAgentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const blockerId = randomUUID();
+    const blockedId = randomUUID();
+    await db.insert(issues).values([
+      { id: blockerId, companyId, title: "Cancelled blocker", status: "blocked", priority: "medium" },
+      {
+        id: blockedId,
+        companyId,
+        title: "Blocked dependent",
+        status: "blocked",
+        priority: "medium",
+        assigneeAgentId,
+      },
+    ]);
+    await svc.update(blockedId, { blockedByIssueIds: [blockerId] });
+
+    await svc.update(blockerId, { status: "cancelled" });
+
+    await expect(svc.getRelationSummaries(blockedId)).resolves.toMatchObject({ blockedBy: [] });
+    await expect(svc.getById(blockedId)).resolves.toMatchObject({ status: "todo" });
+    const blockerUpdateActivities = await db
+      .select({ action: activityLog.action, details: activityLog.details })
+      .from(activityLog)
+      .where(and(eq(activityLog.companyId, companyId), eq(activityLog.entityId, blockedId), eq(activityLog.action, "issue.blockers_updated")));
+    expect(blockerUpdateActivities).toEqual([
+      expect.objectContaining({
+        details: expect.objectContaining({
+          autoPrunedByTerminalBlocker: true,
+          resolvedBlockerIssueId: blockerId,
+          resolvedBlockerStatus: "cancelled",
+          reopenedToTodo: true,
+        }),
+      }),
+    ]);
+  });
+
+  it("defers blocker auto-prune for done blockers until workspace finalization succeeds", async () => {
+    const {
+      companyId,
+      executionWorkspaceId,
+      blockerId,
+      dependentId,
+    } = await seedSharedWorkspaceDependency();
+
+    await db.insert(workspaceOperations).values({
+      companyId,
+      executionWorkspaceId,
+      issueId: blockerId,
+      phase: "worktree_prepare",
+      status: "succeeded",
+      startedAt: new Date("2026-05-23T22:00:00.000Z"),
+    });
+
+    await expect(svc.getRelationSummaries(dependentId)).resolves.toMatchObject({
+      blockedBy: [expect.objectContaining({ id: blockerId })],
+    });
+    await expect(svc.getById(dependentId)).resolves.toMatchObject({ status: "blocked" });
+
+    await db.insert(workspaceOperations).values({
+      companyId,
+      executionWorkspaceId,
+      issueId: blockerId,
+      phase: "workspace_finalize",
+      status: "succeeded",
+      startedAt: new Date("2026-05-23T22:05:00.000Z"),
+    });
+
+    await svc.resolveTerminalBlockerDependents(blockerId);
+
+    await expect(svc.getRelationSummaries(dependentId)).resolves.toMatchObject({ blockedBy: [] });
+    await expect(svc.getById(dependentId)).resolves.toMatchObject({ status: "todo" });
   });
 
   it("rejects execution when unresolved blockers remain", async () => {

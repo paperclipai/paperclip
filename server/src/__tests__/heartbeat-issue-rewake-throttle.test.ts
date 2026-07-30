@@ -158,6 +158,9 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
     status?: string;
     finishedSecondsAgo: number;
     startedSecondsAgo?: number;
+    error?: string | null;
+    errorCode?: string | null;
+    resultJson?: Record<string, unknown> | null;
   }) {
     const runId = randomUUID();
     const finishedAt = new Date(Date.now() - input.finishedSecondsAgo * 1000);
@@ -170,10 +173,13 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
       agentId: input.agentId,
       invocationSource: "assignment",
       status: input.status ?? "succeeded",
+      error: input.error ?? null,
+      errorCode: input.errorCode ?? null,
       responsibleUserId: "responsible-user",
       createdAt: startedAt,
       startedAt,
       finishedAt,
+      resultJson: input.resultJson ?? null,
       contextSnapshot: { issueId: input.issueId, wakeReason: "issue_assigned" },
     });
     return runId;
@@ -263,12 +269,61 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
     expect(commentWake).not.toBeNull();
   });
 
-  it("does not throttle the wake that follows a failed run", async () => {
+  it("throttles repeated provider-quota failures across throttled wake reasons", async () => {
+    const { companyId, agentId, issueId } = await seedCompanyAgentIssue();
+
+    await seedTerminalRun({
+      companyId,
+      agentId,
+      issueId,
+      status: "failed",
+      finishedSecondsAgo: 40,
+      errorCode: "provider_quota",
+      error: "You've hit your weekly limit · resets Aug 3 at 11am (Europe/Zurich)",
+      resultJson: {
+        errorFamily: "provider_quota",
+        retryNotBefore: "2026-08-03T09:00:00.000Z",
+        transientRetryNotBefore: "2026-08-03T09:00:00.000Z",
+        providerQuotaRetryNotBefore: "2026-08-03T09:00:00.000Z",
+      },
+    });
+    await seedTerminalRun({
+      companyId,
+      agentId,
+      issueId,
+      status: "failed",
+      finishedSecondsAgo: 10,
+      errorCode: "provider_quota",
+      error: "You've hit your monthly spend limit · raise it at claude.ai/settings/usage",
+    });
+
+    const wake = await heartbeat.wakeup(agentId, {
+      source: "recovery",
+      triggerDetail: "system",
+      reason: "source_scoped_recovery_action",
+      payload: { issueId },
+      contextSnapshot: { issueId, wakeReason: "source_scoped_recovery_action" },
+      requestedByActorType: "system",
+      requestedByActorId: "test",
+    });
+    expect(wake).toBeNull();
+    expect((await latestWakeRequest(agentId))?.reason).toBe("issue_rewake_throttled");
+  });
+
+  it("does not throttle the wake that follows a non-provider failed run", async () => {
     const { companyId, agentId, issueId } = await seedCompanyAgentIssue();
 
     await seedTerminalRun({ companyId, agentId, issueId, finishedSecondsAgo: 70 });
     await seedTerminalRun({ companyId, agentId, issueId, finishedSecondsAgo: 40 });
-    await seedTerminalRun({ companyId, agentId, issueId, status: "failed", finishedSecondsAgo: 10 });
+    await seedTerminalRun({
+      companyId,
+      agentId,
+      issueId,
+      status: "failed",
+      finishedSecondsAgo: 10,
+      errorCode: "process_lost",
+      error: "child exited",
+    });
 
     const recoveryWake = await assignmentWake(agentId, issueId);
     expect(recoveryWake).not.toBeNull();

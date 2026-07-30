@@ -19,6 +19,9 @@ import { heartbeatService } from "../services/heartbeat.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+const ORIGINAL_PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
+const ORIGINAL_PAPERCLIP_RUNTIME_API_URL = process.env.PAPERCLIP_RUNTIME_API_URL;
+const ORIGINAL_PAPERCLIP_API_URL = process.env.PAPERCLIP_API_URL;
 
 if (!embeddedPostgresSupport.supported) {
   console.warn(
@@ -66,6 +69,9 @@ describeEmbeddedPostgres("heartbeat local environment lifecycle", () => {
   let previousAgentJwtSecret: string | undefined;
 
   beforeAll(async () => {
+    delete process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
+    delete process.env.PAPERCLIP_RUNTIME_API_URL;
+    delete process.env.PAPERCLIP_API_URL;
     previousAgentJwtSecret = process.env.PAPERCLIP_AGENT_JWT_SECRET;
     process.env.PAPERCLIP_AGENT_JWT_SECRET = "heartbeat-local-environment-test-secret";
     tempDb = await startEmbeddedPostgresTestDatabase("heartbeat-local-environment-");
@@ -91,6 +97,21 @@ describeEmbeddedPostgres("heartbeat local environment lifecycle", () => {
 
   afterAll(async () => {
     await tempDb?.cleanup();
+    if (ORIGINAL_PAPERCLIP_RUNTIME_API_CANDIDATES_JSON === undefined) {
+      delete process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
+    } else {
+      process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = ORIGINAL_PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
+    }
+    if (ORIGINAL_PAPERCLIP_RUNTIME_API_URL === undefined) {
+      delete process.env.PAPERCLIP_RUNTIME_API_URL;
+    } else {
+      process.env.PAPERCLIP_RUNTIME_API_URL = ORIGINAL_PAPERCLIP_RUNTIME_API_URL;
+    }
+    if (ORIGINAL_PAPERCLIP_API_URL === undefined) {
+      delete process.env.PAPERCLIP_API_URL;
+    } else {
+      process.env.PAPERCLIP_API_URL = ORIGINAL_PAPERCLIP_API_URL;
+    }
     if (previousAgentJwtSecret === undefined) {
       delete process.env.PAPERCLIP_AGENT_JWT_SECRET;
     } else {
@@ -213,5 +234,66 @@ describeEmbeddedPostgres("heartbeat local environment lifecycle", () => {
       apiKeyPresent: true,
     });
     expect(captured.apiUrl).toEqual(expect.stringMatching(/^https?:\/\//));
+  });
+
+  it("delivers a loopback Paperclip API URL to local process agents when the exported primary URL is gated", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const tempDir = await mkdtemp(join(tmpdir(), "paperclip-process-env-loopback-"));
+    const envPath = join(tempDir, "env.json");
+
+    process.env.PAPERCLIP_API_URL = "https://paperclip.quote-to-invoice.ai";
+    process.env.PAPERCLIP_RUNTIME_API_URL = "https://paperclip.quote-to-invoice.ai";
+    process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = JSON.stringify([
+      "https://paperclip.quote-to-invoice.ai",
+      "http://paperclip.quote-to-invoice.ai:3100",
+      "http://127.0.0.1:3100",
+    ]);
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "ProcessAgent",
+      role: "engineer",
+      status: "idle",
+      adapterType: "process",
+      adapterConfig: {
+        command: process.execPath,
+        args: [
+          "-e",
+          [
+            "const fs = require('node:fs');",
+            `fs.writeFileSync(${JSON.stringify(envPath)}, JSON.stringify({`,
+            "apiUrl: process.env.PAPERCLIP_API_URL ?? null,",
+            "runtimeApiUrl: process.env.PAPERCLIP_RUNTIME_API_URL ?? null,",
+            "}));",
+          ].join(" "),
+        ],
+      },
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const heartbeat = heartbeatService(db);
+    const queued = await heartbeat.invoke(agentId, "on_demand", {}, "manual");
+    expect(queued).not.toBeNull();
+
+    const finished = await waitForRunToFinish(heartbeat, queued!.id);
+    expect(finished?.status).toBe("succeeded");
+
+    const captured = JSON.parse(await readFile(envPath, "utf8")) as Record<string, unknown>;
+    expect(captured).toMatchObject({
+      apiUrl: "http://127.0.0.1:3100",
+      runtimeApiUrl: "http://127.0.0.1:3100",
+    });
   });
 });

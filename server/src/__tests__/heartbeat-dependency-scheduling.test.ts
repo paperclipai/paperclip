@@ -838,7 +838,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       return run?.status === "succeeded";
     });
 
-    const [blockedRun, blockedWakeup, blockedIssue, readyRun] = await Promise.all([
+    const [blockedRun, blockedWakeup, blockedIssue, readyRun, retryWakeup, retryRun] = await Promise.all([
       db
         .select({
           status: heartbeatRuns.status,
@@ -871,6 +871,38 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
         .from(heartbeatRuns)
         .where(eq(heartbeatRuns.id, readyRunId))
         .then((rows) => rows[0] ?? null),
+      db
+        .select({
+          status: agentWakeupRequests.status,
+          reason: agentWakeupRequests.reason,
+          runId: agentWakeupRequests.runId,
+        })
+        .from(agentWakeupRequests)
+        .where(
+          and(
+            eq(agentWakeupRequests.agentId, agentId),
+            eq(agentWakeupRequests.reason, "issue_blockers_resolved"),
+            sql`${agentWakeupRequests.payload} ->> 'retryOfRunId' = ${blockedRunId}`,
+          ),
+        )
+        .orderBy(agentWakeupRequests.requestedAt)
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({
+          id: heartbeatRuns.id,
+          status: heartbeatRuns.status,
+          scheduledRetryReason: heartbeatRuns.scheduledRetryReason,
+          contextSnapshot: heartbeatRuns.contextSnapshot,
+        })
+        .from(heartbeatRuns)
+        .where(
+          and(
+            eq(heartbeatRuns.agentId, agentId),
+            eq(heartbeatRuns.retryOfRunId, blockedRunId),
+          ),
+        )
+        .orderBy(heartbeatRuns.createdAt)
+        .then((rows) => rows[0] ?? null),
     ]);
 
     expect(blockedRun?.status).toBe("cancelled");
@@ -883,6 +915,19 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       executionRunId: null,
       executionAgentNameKey: null,
       executionLockedAt: null,
+    });
+    expect(retryWakeup).toMatchObject({
+      status: "queued",
+      reason: "issue_blockers_resolved",
+      runId: retryRun?.id ?? null,
+    });
+    expect(retryRun?.status).toBe("scheduled_retry");
+    expect(retryRun?.scheduledRetryReason).toBe("issue_dependencies_blocked");
+    expect(retryRun?.contextSnapshot).toMatchObject({
+      issueId: blockedIssueId,
+      retryOfRunId: blockedRunId,
+      wakeReason: "issue_blockers_resolved",
+      retryReason: "issue_dependencies_blocked",
     });
     expect(readyRun?.status).toBe("succeeded");
     expect(mockAdapterExecute.mock.calls.length).toBeGreaterThanOrEqual(1);

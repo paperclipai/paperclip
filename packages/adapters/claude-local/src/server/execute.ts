@@ -14,6 +14,7 @@ import {
   describeAdapterExecutionTarget,
   ensureAdapterExecutionTargetCommandResolvable,
   ensureAdapterExecutionTargetRuntimeCommandInstalled,
+  preparePaperclipControlPlaneEnvForAdapterRun,
   prepareAdapterExecutionTargetRuntime,
   readAdapterExecutionTarget,
   resolveAdapterExecutionTargetTimeoutSec,
@@ -36,13 +37,10 @@ import {
   buildInvocationEnvForLogs,
   ensureAbsoluteDirectory,
   ensurePathInEnv,
-  isForbiddenConfigEnvKey,
-  isPaperclipRuntimeEnvKey,
   refreshPaperclipWorkspaceEnvForExecution,
   renderTemplate,
   renderPaperclipWakePrompt,
   isPaperclipRecoveryWakePayload,
-  selectPaperclipTaskMarkdown,
   rewriteWorkspaceCwdEnvVarsForExecution,
   shapePaperclipWorkspaceEnvForExecution,
   stringifyPaperclipWakePayload,
@@ -115,6 +113,41 @@ interface ClaudeRuntimeConfig {
   timeoutSec: number;
   graceSec: number;
   extraArgs: string[];
+}
+
+interface ExtractedEffortArg {
+  effortFromArgs: string;
+  argsWithoutEffort: string[];
+}
+
+function extractEffortFromExtraArgs(inputArgs: string[]): ExtractedEffortArg {
+  const argsWithoutEffort: string[] = [];
+  let effortFromArgs = "";
+
+  for (let index = 0; index < inputArgs.length; index += 1) {
+    const arg = inputArgs[index] ?? "";
+    if (arg === "--effort" && index + 1 < inputArgs.length) {
+      const next = inputArgs[index + 1];
+      if (!effortFromArgs && typeof next === "string" && !next.startsWith("--")) {
+        effortFromArgs = next;
+        index += 1;
+      }
+      continue;
+    }
+    if (arg === "--effort") {
+      continue;
+    }
+    if (arg.startsWith("--effort=")) {
+      const candidate = arg.slice("--effort=".length);
+      if (!effortFromArgs && candidate.length > 0) {
+        effortFromArgs = candidate;
+      }
+      continue;
+    }
+    argsWithoutEffort.push(arg);
+  }
+
+  return { effortFromArgs, argsWithoutEffort };
 }
 
 export function claudeSessionCwdMatchesExecutionTarget(input: {
@@ -205,7 +238,9 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
   await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
 
   const envConfig = parseObject(config.env);
-  const env: Record<string, string> = { ...buildPaperclipEnv(agent) };
+  const hasExplicitApiKey =
+    typeof envConfig.PAPERCLIP_API_KEY === "string" && envConfig.PAPERCLIP_API_KEY.trim().length > 0;
+  const env: Record<string, string> = { ...buildPaperclipEnv(agent, { preferLocalUrl: true }) };
   env.PAPERCLIP_RUN_ID = runId;
 
   const wakeTaskId =
@@ -288,16 +323,10 @@ async function buildClaudeRuntimeConfig(input: ClaudeExecutionInput): Promise<Cl
     executionTargetIsRemote,
   });
   for (const [key, value] of Object.entries(shapedEnvConfig)) {
-    if (typeof value !== "string") continue;
-    // Runtime PAPERCLIP_* always wins over config, and PAPERCLIP_API_KEY is
-    // never accepted from config — the harness-minted run token is the only
-    // source. Other PAPERCLIP_* keys Paperclip did not assign flow through.
-    if (isForbiddenConfigEnvKey(key)) continue;
-    if (isPaperclipRuntimeEnvKey(key) && key in env) continue;
-    env[key] = value;
+    if (typeof value === "string") env[key] = value;
   }
 
-  if (authToken) {
+  if (!hasExplicitApiKey && authToken) {
     env.PAPERCLIP_API_KEY = authToken;
   }
 
@@ -422,7 +451,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
   );
   const model = asString(config.model, "");
-  const effort = asString(config.effort, "");
+  const effort = asString(config.effort, "").trim();
   const chrome = asBoolean(config.chrome, false);
   const maxTurns = asNumber(config.maxTurnsPerRun, 0);
   const dangerouslySkipPermissions = asBoolean(config.dangerouslySkipPermissions, true);
@@ -471,6 +500,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   } = runtimeConfig;
   let loggedEnv = initialLoggedEnv;
   let effectiveExecutionCwd = adapterExecutionTargetRemoteCwd(executionTarget, cwd);
+  const extraArgsConfig = extractEffortFromExtraArgs(extraArgs);
+  const configuredEffort = effort || extraArgsConfig.effortFromArgs;
+  const sanitizedExtraArgs = extraArgsConfig.argsWithoutEffort;
   const terminalResultCleanupGraceMs = Math.max(
     0,
     asNumber(config.terminalResultCleanupGraceMs, 5_000),
@@ -543,10 +575,6 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           homeDir: filesystemScope ? path.dirname(sharedClaudeConfigDir) : null,
           networkScope,
           networkAllowlist: parseLocalProcessNetworkAllowlist(config.networkAllowlist),
-          networkTrustedUrls: [
-            env.PAPERCLIP_API_URL,
-            ...runtimeMcpServers.map((server) => server.url),
-          ].filter((value): value is string => typeof value === "string" && value.length > 0),
           command: asString(config.filesystemSandboxCommand, "bwrap"),
         }
       : null;
@@ -700,8 +728,54 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       }
     }
   }
-  let effectiveEffort = effort;
-  if (executionTargetIsSandbox && effort) {
+  const controlPlanePreflight = await preparePaperclipControlPlaneEnvForAdapterRun({
+    adapterLabel: "Claude issue",
+    runId,
+    target: runtimeExecutionTarget,
+    cwd,
+    env,
+    timeoutSec,
+    graceSec,
+    localProcessSandbox,
+    onLog,
+  });
+  if (!controlPlanePreflight.ok) {
+    const attemptSummary =
+      controlPlanePreflight.attempts.length > 0
+        ? controlPlanePreflight.attempts
+            .slice(0, 4)
+            .map((attempt) => {
+              if (typeof attempt.status === "number") {
+                const details = [attempt.contentType ?? null, attempt.location ?? null].filter(Boolean).join(", ");
+                return details.length > 0
+                  ? `${attempt.url} -> HTTP ${attempt.status} (${details})`
+                  : `${attempt.url} -> HTTP ${attempt.status}`;
+              }
+              return `${attempt.url} -> ${attempt.error ?? "unavailable"}`;
+            })
+            .join("; ")
+        : "no Paperclip API candidates were exported to the Claude issue run";
+    return {
+      exitCode: 1,
+      signal: null,
+      timedOut: false,
+      errorMessage:
+        "Paperclip control-plane preflight failed for this Claude issue run. " +
+        `No reachable API URL worked from the execution environment. Tried: ${attemptSummary}`,
+      errorCode: "paperclip_control_plane_unreachable",
+      errorMeta: { attempts: controlPlanePreflight.attempts },
+      sessionId: null,
+      sessionParams: null,
+      sessionDisplayId: null,
+      provider: "anthropic",
+      model,
+      billingType,
+      costUsd: null,
+      resultJson: { paperclipControlPlanePreflight: controlPlanePreflight },
+    };
+  }
+  let effectiveEffort = configuredEffort;
+  if (executionTargetIsSandbox && effectiveEffort) {
     const supportsEffort = await claudeCommandSupportsEffortFlag({
       runId,
       command,
@@ -711,11 +785,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       timeoutSec,
       graceSec,
     });
-    if (supportsEffort === false) {
+    if (supportsEffort !== true) {
       effectiveEffort = "";
       await onLog(
         "stderr",
-        `[paperclip] Claude CLI in the sandbox does not advertise --effort; omitting configured effort "${effort}". Upgrade the sandbox CLI/image to restore reasoning-effort control.\n`,
+        `[paperclip] Claude CLI does not advertise --effort; omitting configured reasoning effort. ` +
+          `Upgrade the CLI/runtime image to restore reasoning-effort control.\n`,
       );
     }
   }
@@ -803,18 +878,13 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     !sessionId && bootstrapPromptTemplate.trim().length > 0
       ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
       : "";
-  const taskContextNote = selectPaperclipTaskMarkdown(context, { resumedSession: Boolean(sessionId) });
-  const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, {
-    resumedSession: Boolean(sessionId),
-    // The task-context markdown is the authoritative brief on this lane; keep
-    // the wake prompt's description copy out so the prompt carries it once.
-    suppressIssueDescription: taskContextNote.length > 0,
-  });
+  const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, { resumedSession: Boolean(sessionId) });
   const shouldUseResumeDeltaPrompt = Boolean(sessionId) && wakePrompt.length > 0;
   const renderedPrompt = shouldUseResumeDeltaPrompt || isPaperclipRecoveryWakePayload(context.paperclipWake)
     ? ""
     : renderTemplate(promptTemplate, templateData);
   const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
+  const taskContextNote = asString(context.paperclipTaskMarkdown, "").trim();
   const prompt = joinPromptSections([
     renderedBootstrapPrompt,
     wakePrompt,
@@ -860,7 +930,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       args.push("--mcp-config", effectiveMcpConfigPath, "--strict-mcp-config");
     }
     args.push("--add-dir", effectivePromptBundleAddDir);
-    if (extraArgs.length > 0) args.push(...extraArgs);
+    if (sanitizedExtraArgs.length > 0) args.push(...sanitizedExtraArgs);
     return args;
   };
 

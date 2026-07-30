@@ -16,11 +16,13 @@
  * a comment wake, fresh issue activity, an explicit resume, forceFreshSession,
  * or an event-carrying wake reason — bypasses the throttle entirely.
  *
- * Server-side recovery retries (process-loss retries, missing-comment
- * follow-ups) insert their runs directly and never pass through this gate, so
- * crash recovery stays immediate; only repeated no-op re-invocations slow
- * down.
+ * Repeated terminal provider-cap failures are different: they are already a
+ * classified wait condition, so hammering the same issue again buys no new
+ * information. Those failed runs count toward the streak even though they are
+ * not `succeeded`; process-loss and other transient infra failures still break
+ * the streak and retry immediately.
  */
+import { classifyAdapterFailureForRecovery } from "./recovery/service.js";
 
 /** Consecutive no-progress runs required before the cooldown engages. */
 export const ISSUE_REWAKE_NO_PROGRESS_THRESHOLD = 2;
@@ -47,7 +49,9 @@ export const THROTTLED_ISSUE_REWAKE_REASONS: ReadonlySet<string> = new Set([
   "issue_assigned",
   "issue_continuation_needed",
   "issue_assignment_recovery",
-  "issue_graph_liveness_backstop",
+  "non_terminal_wakeless_backstop",
+  "source_scoped_recovery_action",
+  "missing_issue_comment",
 ]);
 
 /**
@@ -118,6 +122,9 @@ export interface RecentIssueRunSample {
   id: string;
   status: string;
   finishedAt: Date | null;
+  error: string | null;
+  errorCode: string | null;
+  resultJson: unknown;
 }
 
 export interface IssueRewakeThrottleInput {
@@ -129,6 +136,8 @@ export interface IssueRewakeThrottleInput {
   /** New issue input landed after the newest run finished. */
   hasNewIssueInputSinceLastRun: boolean;
 }
+
+export interface IssueFailedNoProgressStreakInput extends IssueRewakeThrottleInput {}
 
 export type IssueRewakeThrottleDecision =
   | { blocked: false; noProgressStreak: number }
@@ -147,6 +156,29 @@ export function computeIssueRewakeCooldownMs(noProgressStreak: number): number {
   return Math.min(ISSUE_REWAKE_BASE_COOLDOWN_MS * factor, ISSUE_REWAKE_MAX_COOLDOWN_MS);
 }
 
+export function countConsecutiveFailedNoProgressRuns(input: IssueFailedNoProgressStreakInput): number {
+  const runs = input.recentTerminalRuns;
+  if (runs.length === 0) return 0;
+  if (input.hasNewIssueInputSinceLastRun) return 0;
+
+  let failedNoProgressStreak = 0;
+  for (const run of runs) {
+    if (!run.finishedAt) break;
+    const countedFailure =
+      run.status !== "succeeded" &&
+      classifyAdapterFailureForRecovery({
+        error: run.error,
+        errorCode: run.errorCode,
+        resultJson: run.resultJson,
+      }, input.now)?.kind === "provider_quota";
+    if (!countedFailure) break;
+    if (input.runIdsWithIssueProgress.has(run.id)) break;
+    failedNoProgressStreak += 1;
+  }
+
+  return failedNoProgressStreak;
+}
+
 export function evaluateIssueRewakeThrottle(input: IssueRewakeThrottleInput): IssueRewakeThrottleDecision {
   const runs = input.recentTerminalRuns;
   if (runs.length === 0) return { blocked: false, noProgressStreak: 0 };
@@ -154,9 +186,15 @@ export function evaluateIssueRewakeThrottle(input: IssueRewakeThrottleInput): Is
 
   let noProgressStreak = 0;
   for (const run of runs) {
-    // A failed/cancelled/interrupted run breaks the streak: its follow-up is
-    // recovery, not a redundant re-poll, and must not be delayed.
-    if (run.status !== "succeeded" || !run.finishedAt) break;
+    if (!run.finishedAt) break;
+    const countedFailure =
+      run.status !== "succeeded" &&
+      classifyAdapterFailureForRecovery({
+        error: run.error,
+        errorCode: run.errorCode,
+        resultJson: run.resultJson,
+      }, input.now)?.kind === "provider_quota";
+    if (run.status !== "succeeded" && !countedFailure) break;
     if (input.runIdsWithIssueProgress.has(run.id)) break;
     noProgressStreak += 1;
   }

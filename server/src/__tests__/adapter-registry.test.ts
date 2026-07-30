@@ -297,14 +297,16 @@ describe("server adapter registry", () => {
   });
 
   it("wraps built-in npm runtime installs with the sandbox-aware install helper", () => {
-    const expectedClaudeInstall = `if ! command -v 'claude' >/dev/null 2>&1; then ${buildSandboxNpmInstallCommand("@anthropic-ai/claude-code")}; fi`;
+    const expectedClaudeInstall =
+      `if ! command -v 'claude' >/dev/null 2>&1 ||` +
+      ` ! 'claude' --help 2>&1 | grep -q -- "--effort"; then ${buildSandboxNpmInstallCommand("@anthropic-ai/claude-code")}; fi`;
     const expectedCodexInstall = `if ! command -v 'codex' >/dev/null 2>&1; then ${buildSandboxNpmInstallCommand("@openai/codex")}; fi`;
     const expectedGeminiInstall = `if ! command -v 'gemini' >/dev/null 2>&1; then ${buildSandboxNpmInstallCommand("@google/gemini-cli")}; fi`;
     const expectedOpenCodeInstall = `if ! command -v 'opencode' >/dev/null 2>&1; then ${buildSandboxNpmInstallCommand("opencode-ai")}; fi`;
 
     expect(findActiveServerAdapter("claude_local")?.getRuntimeCommandSpec?.({})).toEqual({
       command: "claude",
-      detectCommand: "claude",
+      detectCommand: null,
       installCommand: expectedClaudeInstall,
     });
     expect(findActiveServerAdapter("codex_local")?.getRuntimeCommandSpec?.({})).toEqual({

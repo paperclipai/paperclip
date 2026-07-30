@@ -124,6 +124,7 @@ export interface HeartbeatRun {
   currentToolName?: string | null;
   lastAssistantSnippet?: string | null;
   lastEventAt?: Date | string | null;
+  lastStreamEventAt?: Date | string | null;
 }
 
 /**

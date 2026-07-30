@@ -44,6 +44,7 @@ import {
   documentAnnotationComments,
   documentAnnotationThreads,
   documentRevisions,
+  environmentLeases,
   issueDocuments,
   executionWorkspaces,
   heartbeatRunEvents,
@@ -109,6 +110,7 @@ import {
   type RunLivenessClassificationInput,
 } from "./run-liveness.js";
 import {
+  countConsecutiveFailedNoProgressRuns,
   ISSUE_NEW_INPUT_ACTIVITY_ACTIONS,
   ISSUE_PROGRESS_ACTIVITY_ACTIONS,
   ISSUE_REWAKE_LOOKBACK_MS,
@@ -141,6 +143,7 @@ import { visibleIssueCondition } from "./issue-visibility.js";
 import { ISSUE_BLOCKERS_RESOLVED_WAKE_REASON } from "./issue-dependency-wakeups.js";
 import {
   buildIssueMonitorClearedPatch,
+  buildIssueMonitorRearmedPatch,
   buildIssueMonitorTriggeredPatch,
   normalizeIssueExecutionPolicy,
   parseIssueExecutionState,
@@ -210,7 +213,7 @@ import {
   recoveryAssigneeAdapterOverrides,
   withRecoveryModelProfileHint,
 } from "./recovery/model-profile-hint.js";
-import { recoveryService } from "./recovery/service.js";
+import { classifyAdapterFailureForRecovery, recoveryService } from "./recovery/service.js";
 import { productivityReviewService } from "./productivity-review.js";
 import { resolveRequiredSuccessfulRunHandoffOnValidPath } from "./successful-run-handoff-state.js";
 import { taskWatchdogService } from "./task-watchdogs.js";
@@ -322,6 +325,8 @@ const PAPERCLIP_WAKE_PAYLOAD_KEY = "paperclipWake";
 const PAPERCLIP_AGENT_MESSAGE_KEY = "paperclipAgentMessage";
 const PAPERCLIP_HARNESS_CHECKOUT_KEY = "paperclipHarnessCheckedOut";
 const DETACHED_PROCESS_ERROR_CODE = "process_detached";
+const ORPHANED_RUN_DURABLE_ACTIVITY_GRACE_MS = 5 * 60 * 1000;
+const ORPHANED_RUN_SILENCE_SWEEP_THRESHOLD_MS = 15 * 60 * 1000;
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_INLINE_WAKE_COMMENTS = 8;
@@ -478,6 +483,49 @@ function readTransientRecoveryContractFromRun(
         retryNotBefore: readTransientRetryNotBeforeFromRun(run),
       }
     : null;
+}
+
+const CLAUDE_CODEX_FALLBACK_ACTIVE_MARKER = "CLAUDE_CODEX_FALLBACK_ACTIVE";
+const CLAUDE_CODEX_FALLBACK_RETURN_STATUS = "todo" as const;
+
+function readClaudeCodexFallbackContract(
+  agent: Pick<typeof agents.$inferSelect, "adapterType" | "adapterConfig" | "runtimeConfig" | "metadata">,
+) {
+  if (agent.adapterType !== "claude_local") return null;
+
+  const adapterConfig = parseObject(agent.adapterConfig);
+  const runtimeConfig = parseObject(agent.runtimeConfig);
+  const metadata = parseObject(agent.metadata);
+  const candidates = [
+    parseObject(adapterConfig.claudeCodexFallback),
+    parseObject(runtimeConfig.claudeCodexFallback),
+    parseObject(metadata.claudeCodexFallback),
+  ];
+
+  for (const candidate of candidates) {
+    const fallbackAgentId = readNonEmptyString(candidate.fallbackAgentId);
+    if (!fallbackAgentId) continue;
+    return {
+      fallbackAgentId,
+      returnStatus: CLAUDE_CODEX_FALLBACK_RETURN_STATUS,
+    };
+  }
+
+  return null;
+}
+
+function buildClaudeCodexFallbackMarkerComment(input: {
+  intendedClaudeAgentId: string;
+  fallbackAgentId: string;
+  returnStatus: typeof CLAUDE_CODEX_FALLBACK_RETURN_STATUS;
+}) {
+  return [
+    CLAUDE_CODEX_FALLBACK_ACTIVE_MARKER,
+    "reason: claude_limit",
+    `intendedClaudeAgentId: ${input.intendedClaudeAgentId}`,
+    `fallbackAgentId: ${input.fallbackAgentId}`,
+    `returnStatus: ${input.returnStatus}`,
+  ].join("\n");
 }
 
 function isResolvedInteractionContinuationWakeContext(contextSnapshot: unknown) {
@@ -2790,9 +2838,12 @@ type ManagedMcpGatewayRunConfig = {
 };
 
 function paperclipApiBaseUrl(): string {
-  const configured = readNonEmptyString(process.env.PAPERCLIP_API_URL);
+  const configured = readNonEmptyString(process.env.PAPERCLIP_RUNTIME_API_URL)
+    ?? readNonEmptyString(process.env.PAPERCLIP_API_URL);
   if (!configured) {
-    throw new Error("PAPERCLIP_API_URL is required to deliver managed runtime MCP servers");
+    throw new Error(
+      "PAPERCLIP_RUNTIME_API_URL or PAPERCLIP_API_URL is required to deliver managed runtime MCP servers",
+    );
   }
   return configured.replace(/\/+$/, "").replace(/\/api$/, "");
 }
@@ -3404,13 +3455,19 @@ export function buildExplicitResumeSessionOverride(input: {
   const runSessionParams = requiresCanonicalSessionIds(input.adapterType)
     ? normalizeResumeParamsForAdapter(
         input.adapterType,
-        input.sessionCodec.deserialize(input.resumeRunSessionParams ?? null),
+        mergePaperclipSessionMetadataIntoSessionParams({
+          sessionParams: input.sessionCodec.deserialize(input.resumeRunSessionParams ?? null),
+          metadataSource: input.resumeRunSessionParams ?? null,
+        }),
       )
     : null;
   const runSessionDisplayId = truncateDisplayId(readNonEmptyString(runSessionParams?.sessionId));
   const taskSessionParams = normalizeResumeParamsForAdapter(
     input.adapterType,
-    input.sessionCodec.deserialize(input.taskSession?.sessionParamsJson ?? null),
+    mergePaperclipSessionMetadataIntoSessionParams({
+      sessionParams: input.sessionCodec.deserialize(input.taskSession?.sessionParamsJson ?? null),
+      metadataSource: input.taskSession?.sessionParamsJson ?? null,
+    }),
   );
   const taskSessionRawDisplayId = input.taskSession?.sessionDisplayId ?? null;
   const taskSessionDisplayId = truncateDisplayId(
@@ -5473,6 +5530,7 @@ function decorateHeartbeatRunRuntimeStatus<T extends HeartbeatRunRuntimeStatusRu
   currentToolName: string | null;
   lastAssistantSnippet: string | null;
   lastEventAt: Date | null;
+  lastStreamEventAt: Date | null;
 } {
   if (isHeartbeatRunTerminalStatus(run.status)) {
     clearHeartbeatRunRuntimeStatus(run.id);
@@ -5498,6 +5556,7 @@ function decorateHeartbeatRunRuntimeStatus<T extends HeartbeatRunRuntimeStatusRu
     currentToolName: currentStatus?.currentToolName ?? null,
     lastAssistantSnippet: currentStatus?.lastAssistantSnippet ?? null,
     lastEventAt: currentStatus?.lastEventAt ?? null,
+    lastStreamEventAt: currentStatus?.lastStreamEventAt ?? null,
   };
 }
 
@@ -5512,6 +5571,7 @@ function publishHeartbeatRunRuntimeProgress(status: {
   currentToolName?: string | null;
   lastAssistantSnippet?: string | null;
   lastEventAt?: Date | null;
+  lastStreamEventAt?: Date | null;
 }) {
   publishLiveEvent({
     companyId: status.companyId,
@@ -5525,6 +5585,7 @@ function publishHeartbeatRunRuntimeProgress(status: {
       currentToolName: status.currentToolName ?? null,
       lastAssistantSnippet: status.lastAssistantSnippet ?? null,
       lastEventAt: (status.lastEventAt ?? status.updatedAt).toISOString(),
+      lastStreamEventAt: (status.lastStreamEventAt ?? status.lastEventAt ?? status.updatedAt).toISOString(),
       updatedAt: status.updatedAt.toISOString(),
     },
   });
@@ -5546,6 +5607,7 @@ function recordHeartbeatRunRuntimeProgress(
     currentToolName: readNonEmptyString(update.currentToolName) ?? null,
     lastAssistantSnippet: readNonEmptyString(update.lastAssistantSnippet) ?? null,
     lastEventAt: update.lastEventAt ? new Date(update.lastEventAt) : new Date(),
+    lastStreamEventAt: update.lastStreamEventAt ? new Date(update.lastStreamEventAt) : null,
   });
   if (!status) return null;
 
@@ -5676,6 +5738,11 @@ export function buildPaperclipTaskMarkdown(input: {
   wakeComment?: {
     id: string;
     body: string;
+    authorType?: string | null;
+    author?: {
+      type?: string | null;
+      id?: string | null;
+    } | null;
   } | null;
   interaction?: {
     kind?: string | null;
@@ -5698,6 +5765,8 @@ export function buildPaperclipTaskMarkdown(input: {
   const issue = input.issue;
   const ancestors = (input.ancestors ?? []).slice(0, 6);
   const wakeComment = input.wakeComment ?? null;
+  const wakeCommentAuthorType =
+    wakeComment?.authorType ?? wakeComment?.author?.type ?? null;
   const acceptedPlanContinuation =
     !wakeComment &&
     (input.acceptedPlanContinuation || (
@@ -5770,7 +5839,11 @@ export function buildPaperclipTaskMarkdown(input: {
     }
   }
   if (wakeComment?.body.trim()) {
-    lines.push("", "Latest wake comment:", fenceTaskText(wakeComment.body.trim()));
+    lines.push("");
+    if (wakeCommentAuthorType) {
+      lines.push(`- Wake comment author type: ${quoteTaskScalar(wakeCommentAuthorType)}`);
+    }
+    lines.push("Latest wake comment:", fenceTaskText(wakeComment.body.trim()));
   }
   lines.push("", "Use this task context as the current assignment.");
   return lines.join("\n");
@@ -5819,7 +5892,16 @@ async function terminateHeartbeatRunProcess(input: {
 function buildProcessLossMessage(run: {
   processPid: number | null;
   processGroupId: number | null;
-}, options?: { descendantOnly?: boolean }) {
+}, options?: { descendantOnly?: boolean; forcedStop?: boolean; leaseLessBeforeStart?: boolean }) {
+  if (options?.leaseLessBeforeStart) {
+    return "Process lost -- run never acquired an environment lease before exceeding the orphan-silence threshold";
+  }
+  if (options?.forcedStop && run.processPid) {
+    return `Process lost -- stale silent child pid ${run.processPid} exceeded the orphan-silence threshold and was terminated`;
+  }
+  if (options?.forcedStop && run.processGroupId) {
+    return `Process lost -- stale silent process group ${run.processGroupId} exceeded the orphan-silence threshold and was terminated`;
+  }
   if (options?.descendantOnly && run.processGroupId) {
     return `Process lost -- parent pid ${run.processPid ?? "unknown"} exited, but descendant process group ${run.processGroupId} was still alive and was terminated`;
   }
@@ -5830,6 +5912,20 @@ function buildProcessLossMessage(run: {
     return `Process lost -- process group ${run.processGroupId} is no longer running`;
   }
   return "Process lost -- server may have restarted";
+}
+
+function orphanedRunDurableActivityAt(run: Pick<
+  typeof heartbeatRuns.$inferSelect,
+  "lastOutputAt" | "updatedAt" | "startedAt" | "createdAt"
+>) {
+  return run.lastOutputAt ?? run.updatedAt ?? run.startedAt ?? run.createdAt;
+}
+
+function orphanedRunSilenceAgeMs(
+  run: Pick<typeof heartbeatRuns.$inferSelect, "lastOutputAt" | "updatedAt" | "startedAt" | "createdAt">,
+  now: Date,
+) {
+  return Math.max(0, now.getTime() - orphanedRunDurableActivityAt(run).getTime());
 }
 
 function readHotRestartAdoptionMetadata(resultJson: Record<string, unknown> | null | undefined) {
@@ -5945,6 +6041,9 @@ export function resolveSkillTestRunCompletionForHeartbeatOutcome(
 
 const HERMES_ADAPTER_TYPE = "hermes_local";
 const HERMES_SESSION_ID_REGEX = /^(?:\d{8}_\d{6}_[A-Za-z0-9_-]{4,}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$/;
+const UNDELIVERED_ISSUE_MONITOR_REARM_DELAY_MS = 150_000;
+const ISSUE_MONITOR_FAILED_DISPATCH_REARM_MAX_DELAY_MS = 60 * 60 * 1000;
+const ISSUE_MONITOR_FAILED_DISPATCH_STREAK_LOOKBACK_LIMIT = 32;
 
 function requiresCanonicalSessionIds(adapterType: string | null | undefined) {
   return adapterType === HERMES_ADAPTER_TYPE;
@@ -5959,6 +6058,53 @@ function isCanonicalSessionIdForAdapter(
   return HERMES_SESSION_ID_REGEX.test(sessionId);
 }
 
+function buildUndeliveredIssueMonitorRearmAt(now: Date, nextCheckAt: string | null | undefined) {
+  const minimumFuture = new Date(now.getTime() + UNDELIVERED_ISSUE_MONITOR_REARM_DELAY_MS);
+  const scheduled = readNonEmptyString(nextCheckAt);
+  if (!scheduled) return minimumFuture;
+  const parsed = new Date(scheduled);
+  if (Number.isNaN(parsed.getTime())) return minimumFuture;
+  return parsed.getTime() > minimumFuture.getTime() ? parsed : minimumFuture;
+}
+
+function computeIssueMonitorFailedDispatchBackoffDelayMs(consecutiveFailures: number) {
+  const normalizedFailures = Math.max(1, Math.floor(consecutiveFailures));
+  const multiplier = 2 ** Math.max(0, normalizedFailures - 1);
+  return Math.min(
+    UNDELIVERED_ISSUE_MONITOR_REARM_DELAY_MS * multiplier,
+    ISSUE_MONITOR_FAILED_DISPATCH_REARM_MAX_DELAY_MS,
+  );
+}
+
+function isUniqueConstraintConflict(error: unknown, constraintName: string) {
+  const queue: unknown[] = [error];
+  const seen = new Set<unknown>();
+  let hasUniqueCode = false;
+  let hasConstraint = false;
+  const messages: string[] = [];
+
+  while (queue.length > 0) {
+    const candidate = queue.shift();
+    if (!candidate || typeof candidate !== "object" || seen.has(candidate)) continue;
+    seen.add(candidate);
+    const typed = candidate as {
+      code?: string;
+      constraint?: string;
+      constraint_name?: string;
+      cause?: unknown;
+      message?: string;
+    };
+    if (typed.code === "23505") hasUniqueCode = true;
+    if (typed.constraint === constraintName || typed.constraint_name === constraintName) hasConstraint = true;
+    if (typed.message) messages.push(typed.message);
+    if (typed.cause) queue.push(typed.cause);
+  }
+
+  const message = messages.join("\n");
+  return (hasUniqueCode || message.includes("duplicate key value violates unique constraint")) &&
+    (hasConstraint || message.includes(constraintName));
+}
+
 function normalizeResumeParamsForAdapter(
   adapterType: string | null | undefined,
   params: Record<string, unknown> | null | undefined,
@@ -5968,6 +6114,23 @@ function normalizeResumeParamsForAdapter(
   if (!requiresCanonicalSessionIds(adapterType)) return normalized;
   const sessionId = readNonEmptyString(normalized.sessionId);
   return isCanonicalSessionIdForAdapter(adapterType, sessionId) ? normalized : null;
+}
+
+function mergePaperclipSessionMetadataIntoSessionParams(input: {
+  sessionParams: Record<string, unknown> | null | undefined;
+  metadataSource: Record<string, unknown> | null | undefined;
+}) {
+  const normalized = normalizeSessionParams(input.sessionParams);
+  const source = input.metadataSource;
+  if (!source) return normalized;
+  const next = { ...(normalized ?? {}) };
+  let changed = false;
+  for (const key of PAPERCLIP_SESSION_METADATA_KEYS) {
+    if (!(key in source)) continue;
+    next[key] = source[key];
+    changed = true;
+  }
+  return changed ? next : normalized;
 }
 
 export function resolveNextSessionState(input: {
@@ -6115,9 +6278,12 @@ function isTruthyRuntimeEnvValue(value: string | undefined) {
 export function resolveHeartbeatSchedulingSuppression(
   env: Record<string, string | undefined> = process.env,
   overrides: { allowWorktreeRunExecution?: boolean } = {},
-): { suppressed: boolean; reason: "worktree_instance" | "database_restore_in_progress" | null } {
+): { suppressed: boolean; reason: "worktree_instance" | "database_restore_in_progress" | "non_primary_runtime_instance" | null } {
   if (isTruthyRuntimeEnvValue(env.PAPERCLIP_IN_WORKTREE) && !overrides.allowWorktreeRunExecution) {
     return { suppressed: true, reason: "worktree_instance" };
+  }
+  if (env.PAPERCLIP_PRIMARY_RUNTIME_INSTANCE === "false") {
+    return { suppressed: true, reason: "non_primary_runtime_instance" };
   }
   if (
     isTruthyRuntimeEnvValue(env.PAPERCLIP_DATABASE_RESTORE_IN_PROGRESS) ||
@@ -7098,6 +7264,310 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     ].join("\n");
   }
 
+  type IssueMonitorPatchableIssue = Parameters<typeof buildIssueMonitorRearmedPatch>[0]["issue"];
+
+  function rearmUndeliveredIssueMonitorPatch(input: {
+    issue: IssueMonitorPatchableIssue;
+    now: Date;
+    nextCheckAt: string | null | undefined;
+    deliveredAttemptCount: number | null | undefined;
+  }) {
+    const policy = normalizeIssueExecutionPolicy(input.issue.executionPolicy ?? null);
+    const currentAttemptCount = Math.max(0, (input.deliveredAttemptCount ?? input.issue.monitorAttemptCount ?? 1) - 1);
+    return buildIssueMonitorRearmedPatch({
+      issue: input.issue,
+      policy,
+      nextCheckAt: buildUndeliveredIssueMonitorRearmAt(input.now, input.nextCheckAt),
+      attemptCount: currentAttemptCount,
+    });
+  }
+
+  async function countConsecutiveFailedIssueMonitorDispatches(input: {
+    companyId: string;
+    issueId: string;
+    agentId: string;
+    now: Date;
+  }) {
+    const recentRuns = await db
+      .select({
+        id: heartbeatRuns.id,
+        status: heartbeatRuns.status,
+        finishedAt: heartbeatRuns.finishedAt,
+        error: heartbeatRuns.error,
+        errorCode: heartbeatRuns.errorCode,
+        resultJson: heartbeatRuns.resultJson,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+      })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, input.companyId),
+          eq(heartbeatRuns.agentId, input.agentId),
+          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${input.issueId}`,
+        ),
+      )
+      .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
+      .limit(ISSUE_MONITOR_FAILED_DISPATCH_STREAK_LOOKBACK_LIMIT);
+
+    const sampleRunIds = recentRuns.map((row) => row.id);
+    const progressRows = await db
+      .select({ runId: activityLog.runId })
+      .from(activityLog)
+      .where(
+        and(
+          eq(activityLog.companyId, input.companyId),
+          eq(activityLog.entityType, "issue"),
+          eq(activityLog.entityId, input.issueId),
+          inArray(activityLog.runId, sampleRunIds),
+          inArray(activityLog.action, ISSUE_PROGRESS_ACTIVITY_ACTIONS),
+        ),
+      );
+    const lastRunFinishedAt = recentRuns[0]?.finishedAt ?? null;
+    const newInputRows = lastRunFinishedAt
+      ? await db
+        .select({ id: activityLog.id })
+        .from(activityLog)
+        .where(
+          and(
+            eq(activityLog.companyId, input.companyId),
+            eq(activityLog.entityType, "issue"),
+            eq(activityLog.entityId, input.issueId),
+            gt(activityLog.createdAt, lastRunFinishedAt),
+            inArray(activityLog.action, ISSUE_NEW_INPUT_ACTIVITY_ACTIONS),
+          ),
+        )
+        .limit(1)
+      : [];
+
+    return countConsecutiveFailedNoProgressRuns({
+      now: input.now,
+      recentTerminalRuns: recentRuns,
+      runIdsWithIssueProgress: new Set(
+        progressRows
+          .map((row) => row.runId)
+          .filter((runId): runId is string => Boolean(runId)),
+      ),
+      hasNewIssueInputSinceLastRun: newInputRows.length > 0,
+    });
+  }
+
+  async function resolveFailedIssueMonitorRearmAt(input: {
+    issue: typeof issues.$inferSelect;
+    run: typeof heartbeatRuns.$inferSelect;
+    now: Date;
+  }) {
+    const transientRecovery = readTransientRecoveryContractFromRun(input.run);
+    if (
+      transientRecovery?.retryNotBefore &&
+      transientRecovery.retryNotBefore.getTime() > input.now.getTime()
+    ) {
+      return transientRecovery.retryNotBefore;
+    }
+
+    const classifiedRecovery = classifyAdapterFailureForRecovery(input.run, input.now);
+    if (
+      classifiedRecovery?.kind === "provider_quota" &&
+      classifiedRecovery.parsedResetTime &&
+      classifiedRecovery.retryAt.getTime() > input.now.getTime()
+    ) {
+      return classifiedRecovery.retryAt;
+    }
+
+    const consecutiveFailures = await countConsecutiveFailedIssueMonitorDispatches({
+      companyId: input.issue.companyId,
+      issueId: input.issue.id,
+      agentId: input.run.agentId,
+      now: input.now,
+    });
+    return new Date(
+      input.now.getTime() + computeIssueMonitorFailedDispatchBackoffDelayMs(consecutiveFailures),
+    );
+  }
+
+  async function buildTerminalIssueMonitorRearmPatch(input: {
+    issue: typeof issues.$inferSelect;
+    run: typeof heartbeatRuns.$inferSelect;
+    now: Date;
+  }) {
+    const runContext = parseObject(input.run.contextSnapshot);
+    if (readNonEmptyString(runContext.wakeReason) !== "issue_monitor_due") return null;
+    if (input.issue.monitorNextCheckAt) return null;
+    if (input.issue.status === "done" || input.issue.status === "cancelled") return null;
+
+    const monitorState = parseIssueExecutionState(input.issue.executionState)?.monitor ?? null;
+    if (!monitorState || monitorState.status !== "triggered") return null;
+    if (monitorState.kind === "external_service") return null;
+
+    const currentAttemptCount = Math.max(
+      0,
+      (input.issue.monitorAttemptCount ?? monitorState.attemptCount ?? 1) - 1,
+    );
+    const nextCheckAt = await resolveFailedIssueMonitorRearmAt(input);
+    const patch = buildIssueMonitorRearmedPatch({
+      issue: input.issue,
+      policy: normalizeIssueExecutionPolicy(input.issue.executionPolicy ?? null),
+      nextCheckAt,
+      attemptCount: currentAttemptCount,
+    });
+
+    return Object.keys(patch).length > 0 ? patch : null;
+  }
+
+  async function rearmIssueMonitorAfterFailedDispatch(input: {
+    issueId: string;
+    companyId: string;
+    now: Date;
+    nextCheckAt: string | null | undefined;
+    deliveredAttemptCount: number | null | undefined;
+    reason: string;
+    runId: string | null;
+    agentId: string | null;
+  }) {
+    const issue = await db
+      .select(issueMonitorDispatchColumns)
+      .from(issues)
+      .where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.companyId)))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (!issue) return false;
+
+    const monitorState = parseIssueExecutionState(issue.executionState)?.monitor ?? null;
+    if (!monitorState || monitorState.status !== "triggered") return false;
+    if (issue.monitorNextCheckAt) return false;
+    if (!["in_progress", "in_review"].includes(issue.status)) return false;
+    if (monitorState.kind === "external_service") return false;
+
+    const patch = rearmUndeliveredIssueMonitorPatch({
+      issue,
+      now: input.now,
+      nextCheckAt: input.nextCheckAt,
+      deliveredAttemptCount: input.deliveredAttemptCount,
+    });
+    if (Object.keys(patch).length === 0) return false;
+
+    await db
+      .update(issues)
+      .set({
+        ...patch,
+        updatedAt: input.now,
+      })
+      .where(eq(issues.id, issue.id));
+
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: "system",
+      actorId: "heartbeat_scheduler",
+      agentId: input.agentId,
+      runId: input.runId,
+      action: "issue.monitor_rearmed",
+      entityType: "issue",
+      entityId: issue.id,
+      details: {
+        identifier: issue.identifier,
+        previousNextCheckAt: input.nextCheckAt ?? null,
+        rearmedNextCheckAt:
+          "monitorNextCheckAt" in patch && patch.monitorNextCheckAt instanceof Date
+            ? patch.monitorNextCheckAt.toISOString()
+            : null,
+        attemptedAttemptCount: input.deliveredAttemptCount ?? issue.monitorAttemptCount ?? null,
+        restoredAttemptCount: "monitorAttemptCount" in patch ? patch.monitorAttemptCount ?? null : null,
+        notes: issue.monitorNotes ?? null,
+        source: "scheduled",
+        reason: input.reason,
+      },
+    });
+
+    return true;
+  }
+
+  async function reconcileStrandedTriggeredIssueMonitors(now = new Date()) {
+    const strandedThreshold = new Date(now.getTime() - 5 * 60 * 1000);
+    const candidates = await db
+      .select(issueMonitorDispatchColumns)
+      .from(issues)
+      .innerJoin(companies, eq(companies.id, issues.companyId))
+      .where(
+        and(
+          eq(companies.status, "active"),
+          isNull(issues.monitorNextCheckAt),
+          isNull(issues.assigneeUserId),
+          sql`${issues.assigneeAgentId} is not null`,
+          inArray(issues.status, ["in_progress", "in_review"]),
+          sql`${issues.monitorLastTriggeredAt} is not null`,
+          lte(issues.monitorLastTriggeredAt, strandedThreshold),
+        ),
+      )
+      .orderBy(asc(issues.monitorLastTriggeredAt), asc(issues.updatedAt))
+      .limit(50);
+
+    let rearmedCount = 0;
+
+    for (const candidate of candidates) {
+      const monitorState = parseIssueExecutionState(candidate.executionState)?.monitor ?? null;
+      if (!monitorState || monitorState.status !== "triggered") continue;
+      if (monitorState.kind === "external_service") continue;
+
+      const [activeRun, pendingInteraction, pendingApproval, dependencyReadiness] = await Promise.all([
+        db
+          .select({ id: heartbeatRuns.id })
+          .from(heartbeatRuns)
+          .where(
+            and(
+              eq(heartbeatRuns.companyId, candidate.companyId),
+              inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]),
+              sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${candidate.id}`,
+            ),
+          )
+          .limit(1)
+          .then((rows) => rows[0] ?? null),
+        db
+          .select({ id: issueThreadInteractions.id })
+          .from(issueThreadInteractions)
+          .where(
+            and(
+              eq(issueThreadInteractions.companyId, candidate.companyId),
+              eq(issueThreadInteractions.issueId, candidate.id),
+              eq(issueThreadInteractions.status, "pending"),
+            ),
+          )
+          .limit(1)
+          .then((rows) => rows[0] ?? null),
+        db
+          .select({ id: issueApprovals.approvalId })
+          .from(issueApprovals)
+          .innerJoin(approvals, eq(issueApprovals.approvalId, approvals.id))
+          .where(
+            and(
+              eq(issueApprovals.companyId, candidate.companyId),
+              eq(issueApprovals.issueId, candidate.id),
+              inArray(approvals.status, ["pending", "revision_requested"]),
+            ),
+          )
+          .limit(1)
+          .then((rows) => rows[0] ?? null),
+        issuesSvc.listDependencyReadiness(candidate.companyId, [candidate.id]).then((rows) => rows.get(candidate.id) ?? null),
+      ]);
+
+      if (activeRun || pendingInteraction || pendingApproval || (dependencyReadiness && !dependencyReadiness.isDependencyReady)) {
+        continue;
+      }
+
+      const rearmed = await rearmIssueMonitorAfterFailedDispatch({
+        issueId: candidate.id,
+        companyId: candidate.companyId,
+        now,
+        nextCheckAt: candidate.monitorLastTriggeredAt?.toISOString() ?? null,
+        deliveredAttemptCount: candidate.monitorAttemptCount,
+        reason: "stranded_triggered_monitor_reconciled",
+        runId: null,
+        agentId: null,
+      });
+      if (rearmed) rearmedCount += 1;
+    }
+
+    return { checked: candidates.length, rearmed: rearmedCount };
+  }
+
   async function findOpenIssueMonitorRecoveryIssue(claimed: IssueMonitorDispatchRow) {
     return db
       .select()
@@ -7413,7 +7883,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     try {
-      await enqueueWakeup(targetAgentId, {
+      const deliveredRun = await enqueueWakeup(targetAgentId, {
         source: input.source,
         triggerDetail: input.triggerDetail,
         reason: wakeReason,
@@ -7442,14 +7912,33 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         },
       });
 
-      await db
-        .update(issues)
-        .set({
-          ...buildIssueMonitorTriggeredPatch({
+      const finalDeliveredRun = deliveredRun ? await getRun(deliveredRun.id) : null;
+      const deliveredRunIssueId = finalDeliveredRun
+        ? readNonEmptyString(parseObject(finalDeliveredRun.contextSnapshot).issueId)
+        : claimed.id;
+      const deliveredRunActive = finalDeliveredRun
+        ? EXECUTION_PATH_HEARTBEAT_RUN_STATUSES.includes(
+            finalDeliveredRun.status as (typeof EXECUTION_PATH_HEARTBEAT_RUN_STATUSES)[number],
+          )
+        : false;
+      const consumedByTargetIssue = deliveredRunIssueId === claimed.id && (deliveredRun ? deliveredRunActive : true);
+      const issueMonitorPatch = consumedByTargetIssue
+        ? buildIssueMonitorTriggeredPatch({
             issue: claimed,
             policy,
             triggeredAt: input.now,
-          }),
+          })
+        : rearmUndeliveredIssueMonitorPatch({
+            issue: claimed,
+            now: input.now,
+            nextCheckAt: scheduledAtIso,
+            deliveredAttemptCount: nextAttemptCount,
+          });
+
+      await db
+        .update(issues)
+        .set({
+          ...issueMonitorPatch,
           updatedAt: new Date(),
         })
         .where(eq(issues.id, claimed.id));
@@ -7460,18 +7949,35 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         actorId: input.actorId,
         agentId: input.agentId,
         runId: input.runId,
-        action: "issue.monitor_triggered",
+        action: consumedByTargetIssue ? "issue.monitor_triggered" : "issue.monitor_rearmed",
         entityType: "issue",
         entityId: claimed.id,
-        details: {
-          identifier: claimed.identifier,
-          nextCheckAt: scheduledAtIso,
-          lastTriggeredAt: input.now.toISOString(),
-          attemptCount: nextAttemptCount,
-          notes: claimed.monitorNotes ?? null,
-          ...monitorMetadata,
-          source: input.activitySource,
-        },
+        details: consumedByTargetIssue
+          ? {
+              identifier: claimed.identifier,
+              nextCheckAt: scheduledAtIso,
+              lastTriggeredAt: input.now.toISOString(),
+              attemptCount: nextAttemptCount,
+              notes: claimed.monitorNotes ?? null,
+              ...monitorMetadata,
+              source: input.activitySource,
+            }
+          : {
+              identifier: claimed.identifier,
+            previousNextCheckAt: scheduledAtIso,
+            rearmedNextCheckAt:
+                "monitorNextCheckAt" in issueMonitorPatch && issueMonitorPatch.monitorNextCheckAt instanceof Date
+                  ? issueMonitorPatch.monitorNextCheckAt.toISOString()
+                  : null,
+              attemptedAttemptCount: nextAttemptCount,
+              restoredAttemptCount: claimed.monitorAttemptCount ?? 0,
+              notes: claimed.monitorNotes ?? null,
+              ...monitorMetadata,
+              source: input.activitySource,
+              reason: deliveredRun && !deliveredRunActive
+                ? "claim_failed_backoff"
+                : "undelivered_foreign_issue_carrier",
+            },
       });
 
       return { outcome: "triggered" as const };
@@ -8719,6 +9225,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       pendingInteraction,
       pendingApproval,
       explicitBlocker,
+      openChild,
       openRecoveryIssue,
       existingWake,
       budgetBlock,
@@ -8822,6 +9329,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           .where(
             and(
               eq(issues.companyId, issue.companyId),
+              eq(issues.parentId, issue.id),
+              isNull(issues.hiddenAt),
+              notInArray(issues.status, ["done", "cancelled"]),
+            ),
+          )
+          .limit(1)
+          .then((rows) => rows[0] ?? null)
+        : Promise.resolve(null),
+      issue
+        ? db
+          .select({ id: issues.id })
+          .from(issues)
+          .where(
+            and(
+              eq(issues.companyId, issue.companyId),
               inArray(issues.originKind, [
                 RECOVERY_ORIGIN_KINDS.strandedIssueRecovery,
                 RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation,
@@ -8879,6 +9401,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       hasPendingInteractionOrApproval: Boolean(pendingInteraction || pendingApproval),
       hasPersistedMonitor: Boolean(issue?.monitorNextCheckAt),
       hasExplicitBlockerPath: Boolean(explicitBlocker),
+      hasOpenChildPath: Boolean(openChild),
       hasOpenRecoveryIssue: Boolean(openRecoveryIssue),
       hasPauseHold: Boolean(pauseHold),
       hasActiveRoutineContinuation: Boolean(activeRoutineContinuation),
@@ -10288,6 +10811,102 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return { outcome: "promoted", run: promoted };
   }
 
+  async function reassignClaudeProviderQuotaIssueToCodexFallback(input: {
+    run: typeof heartbeatRuns.$inferSelect;
+    agent: typeof agents.$inferSelect;
+    issueId: string;
+    fallbackAgentId: string;
+    returnStatus: typeof CLAUDE_CODEX_FALLBACK_RETURN_STATUS;
+  }) {
+    const fallbackAgent = await getAgent(input.fallbackAgentId);
+    if (!fallbackAgent || fallbackAgent.companyId !== input.agent.companyId) return null;
+
+    const markerComment = buildClaudeCodexFallbackMarkerComment({
+      intendedClaudeAgentId: input.agent.id,
+      fallbackAgentId: input.fallbackAgentId,
+      returnStatus: input.returnStatus,
+    });
+
+    const reassignedIssue = await db.transaction(async (tx) => {
+      const lockedIssue = await tx
+        .select({
+          id: issues.id,
+          status: issues.status,
+          assigneeAgentId: issues.assigneeAgentId,
+        })
+        .from(issues)
+        .where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.run.companyId)))
+        .for("update")
+        .then((rows) => rows[0] ?? null);
+      if (!lockedIssue) return null;
+      if (lockedIssue.assigneeAgentId !== input.agent.id) return null;
+      if (lockedIssue.status === "done" || lockedIssue.status === "cancelled") return null;
+
+      await issuesSvc.addComment(
+        input.issueId,
+        markerComment,
+        { runId: input.run.id },
+        { authorType: "system" },
+        tx,
+      );
+
+      return issuesSvc.update(
+        input.issueId,
+        {
+          assigneeAgentId: input.fallbackAgentId,
+          status: input.returnStatus,
+          actorAgentId: input.agent.id,
+        },
+        tx,
+      );
+    });
+    if (!reassignedIssue) return null;
+
+    const wakeup = await enqueueWakeup(input.fallbackAgentId, {
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: {
+        issueId: input.issueId,
+        mutation: "update",
+        intendedClaudeAgentId: input.agent.id,
+        fallbackAgentId: input.fallbackAgentId,
+        returnStatus: input.returnStatus,
+      },
+      requestedByActorType: "system",
+      contextSnapshot: {
+        issueId: input.issueId,
+        source: "heartbeat.claude_codex_fallback",
+        wakeReason: "issue_assigned",
+        intendedClaudeAgentId: input.agent.id,
+        fallbackAgentId: input.fallbackAgentId,
+        returnStatus: input.returnStatus,
+      },
+    });
+
+    await appendRunEvent(input.run, await nextRunEventSeq(input.run.id), {
+      eventType: "lifecycle",
+      stream: "system",
+      level: "warn",
+      message: "Claude provider quota hit; reassigned issue to the configured Codex fallback owner",
+      payload: {
+        issueId: input.issueId,
+        intendedClaudeAgentId: input.agent.id,
+        fallbackAgentId: input.fallbackAgentId,
+        returnStatus: input.returnStatus,
+        fallbackRunId: wakeup?.id ?? null,
+      },
+    });
+
+    return {
+      outcome: "fallback_reassigned" as const,
+      issueId: input.issueId,
+      fallbackAgentId: input.fallbackAgentId,
+      returnStatus: input.returnStatus,
+      run: wakeup,
+    };
+  }
+
   async function scheduleBoundedRetryForRun(
     run: typeof heartbeatRuns.$inferSelect,
     agent: typeof agents.$inferSelect,
@@ -10330,6 +10949,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const transientRetryNotBefore = transientRecovery?.retryNotBefore ?? null;
     const contextSnapshot = parseObject(run.contextSnapshot);
     const issueId = readNonEmptyString(contextSnapshot.issueId);
+    const claudeCodexFallback =
+      retryReason === BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON &&
+      transientRecovery?.errorFamily === "provider_quota" &&
+      issueId
+        ? readClaudeCodexFallbackContract(agent)
+        : null;
+
+    const fallbackIssueId = issueId;
+    if (claudeCodexFallback && fallbackIssueId) {
+      const fallbackResult = await reassignClaudeProviderQuotaIssueToCodexFallback({
+        run,
+        agent,
+        issueId: fallbackIssueId,
+        fallbackAgentId: claudeCodexFallback.fallbackAgentId,
+        returnStatus: claudeCodexFallback.returnStatus,
+      });
+      if (fallbackResult) return fallbackResult;
+    }
 
     if (!baseSchedule) {
       await appendRunEvent(run, await nextRunEventSeq(run.id), {
@@ -11546,24 +12183,58 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const claimedWakeReason = readNonEmptyString(claimedContext.wakeReason);
     if (claimedIssueId && claimedWakeReason !== "source_scoped_recovery_action") {
       const claimedAgent = await getAgent(claimed.agentId);
-      await db
-        .update(issues)
-        .set({
-          executionRunId: claimed.id,
-          executionAgentNameKey: normalizeAgentNameKey(claimedAgent?.name),
-          executionLockedAt: claimedAt,
-          updatedAt: claimedAt,
-        })
-        .where(
-          and(
-            eq(issues.id, claimedIssueId),
-            eq(issues.companyId, claimed.companyId),
-            // Mention/context runs can touch an issue, but only the current assignee
-            // owns the issue execution lock shown as the active run.
-            eq(issues.assigneeAgentId, claimed.agentId),
-            or(isNull(issues.executionRunId), eq(issues.executionRunId, claimed.id)),
-          ),
-        );
+      try {
+        await db
+          .update(issues)
+          .set({
+            executionRunId: claimed.id,
+            executionAgentNameKey: normalizeAgentNameKey(claimedAgent?.name),
+            executionLockedAt: claimedAt,
+            updatedAt: claimedAt,
+          })
+          .where(
+            and(
+              eq(issues.id, claimedIssueId),
+              eq(issues.companyId, claimed.companyId),
+              // Mention/context runs can touch an issue, but only the current assignee
+              // owns the issue execution lock shown as the active run.
+              eq(issues.assigneeAgentId, claimed.agentId),
+              or(isNull(issues.executionRunId), eq(issues.executionRunId, claimed.id)),
+            ),
+          );
+      } catch (error) {
+        if (claimedWakeReason !== "issue_monitor_due") throw error;
+
+        const now = new Date();
+        const failureMessage = isUniqueConstraintConflict(error, "issues_open_routine_execution_uq")
+          ? "Issue monitor wake claim failed because another open routine-execution issue already holds the execution lock invariant"
+          : "Issue monitor wake claim failed before execution could start";
+
+        await setRunStatus(claimed.id, "failed", {
+          error: failureMessage,
+          errorCode: "issue_monitor_claim_failed",
+          finishedAt: now,
+        });
+        await setWakeupStatus(claimed.wakeupRequestId, "failed", {
+          finishedAt: now,
+          error: failureMessage,
+        });
+
+        await appendRunEvent(claimed, await nextRunEventSeq(claimed.id), {
+          eventType: "lifecycle",
+          stream: "system",
+          level: "warn",
+          message: failureMessage,
+          payload: {
+            issueId: claimedIssueId,
+            constraint: isUniqueConstraintConflict(error, "issues_open_routine_execution_uq")
+              ? "issues_open_routine_execution_uq"
+              : null,
+          },
+        });
+
+        return null;
+      }
     }
 
     return claimed;
@@ -11623,6 +12294,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         unresolvedBlockerIssueIds,
       },
     });
+
+    const agent = await getAgent(run.agentId);
+    if (agent) {
+      await scheduleBoundedRetryForRun(cancelled, agent, {
+        retryReason: "issue_dependencies_blocked",
+        wakeReason: "issue_blockers_resolved",
+        delayMs: 30_000,
+      });
+    }
 
     return cancelled;
   }
@@ -11791,6 +12471,49 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     issueId: string,
     staleness: Extract<QueuedRunStaleness, { stale: true }>,
   ) {
+    const readCurrentStaleWakeTargetAgentId = async () => {
+      const issue = await db
+        .select({
+          assigneeAgentId: issues.assigneeAgentId,
+          status: issues.status,
+          executionState: issues.executionState,
+        })
+        .from(issues)
+        .where(and(eq(issues.companyId, run.companyId), eq(issues.id, issueId)))
+        .then((rows) => rows[0] ?? null);
+      if (!issue) return null;
+
+      if (issue.status === "in_review") {
+        const executionState = parseIssueExecutionState(issue.executionState);
+        const currentParticipant = executionState?.status === "pending"
+          ? executionState.currentParticipant
+          : null;
+        if (currentParticipant?.type === "agent") {
+          return currentParticipant.agentId ?? null;
+        }
+      }
+
+      return issue.assigneeAgentId ?? null;
+    };
+    const enqueueCurrentIssueWake = async (targetAgentId: string | null) => {
+      if (!targetAgentId) return;
+      await enqueueWakeup(targetAgentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_assigned",
+        payload: {
+          issueId,
+          staleQueuedRunId: run.id,
+          staleQueuedRunErrorCode: staleness.errorCode,
+        },
+        contextSnapshot: {
+          issueId,
+          wakeReason: "issue_assigned",
+          staleQueuedRunId: run.id,
+          staleQueuedRunErrorCode: staleness.errorCode,
+        },
+      });
+    };
     const now = new Date();
     const cancelled = await setRunStatus(run.id, "cancelled", {
       finishedAt: now,
@@ -11835,6 +12558,35 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       message: staleness.reason,
       payload: staleness.details,
     });
+
+    switch (staleness.errorCode) {
+      case "issue_not_found":
+      case "issue_terminal_status":
+        break;
+      case "issue_assignee_changed":
+        await enqueueCurrentIssueWake(readNonEmptyString(staleness.details.currentAssigneeAgentId) ?? null);
+        break;
+      case "issue_not_in_progress":
+      case "issue_review_participant_changed":
+      case "issue_continuation_waiting_on_review":
+        await enqueueCurrentIssueWake(await readCurrentStaleWakeTargetAgentId());
+        break;
+      case "issue_execution_lock_changed": {
+        const agent = await getAgent(run.agentId);
+        if (agent) {
+          await scheduleBoundedRetryForRun(cancelled, agent, {
+            retryReason: "issue_execution_lock_changed",
+            wakeReason: "issue_assigned",
+            delayMs: 1_000,
+          });
+        }
+        break;
+      }
+      default: {
+        const exhaustiveCheck: never = staleness.errorCode;
+        return exhaustiveCheck;
+      }
+    }
 
     return cancelled;
   }
@@ -12122,9 +12874,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .then((rows) => rows[0] ?? null);
   }
 
-  async function reapOrphanedRuns(opts?: { staleThresholdMs?: number }) {
+  async function reapOrphanedRuns(opts?: { staleThresholdMs?: number; now?: Date }) {
     const staleThresholdMs = opts?.staleThresholdMs ?? 0;
-    const now = new Date();
+    const now = opts?.now ?? new Date();
+    const durableActivityGraceMs = staleThresholdMs > 0
+      ? staleThresholdMs
+      : ORPHANED_RUN_DURABLE_ACTIVITY_GRACE_MS;
+    const orphanSilenceSweepThresholdMs = Math.max(
+      ORPHANED_RUN_SILENCE_SWEEP_THRESHOLD_MS,
+      staleThresholdMs,
+    );
 
     // Find all runs stuck in "running" state (queued runs are legitimately waiting; resumeQueuedRuns handles them)
     const activeRuns = await db
@@ -12145,20 +12904,32 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }))];
     const monitorIssues = monitorIssueIds.length > 0
       ? await db
-        .select({
-          id: issues.id,
-          companyId: issues.companyId,
-          monitorNextCheckAt: issues.monitorNextCheckAt,
-        })
+        .select()
         .from(issues)
         .where(inArray(issues.id, monitorIssueIds))
       : [];
+    const monitorIssueByKey = new Map(
+      monitorIssues.map((issue) => [`${issue.companyId}:${issue.id}`, issue]),
+    );
     const monitorNextCheckAtByIssue = new Map(
       monitorIssues.map((issue) => [
         `${issue.companyId}:${issue.id}`,
         issue.monitorNextCheckAt,
       ]),
     );
+    const activeRunIds = activeRuns.map(({ run }) => run.id);
+    const activeLeaseRunIds = activeRunIds.length > 0
+      ? new Set(
+        (await db
+          .select({ runId: environmentLeases.heartbeatRunId })
+          .from(environmentLeases)
+          .where(and(
+            inArray(environmentLeases.heartbeatRunId, activeRunIds),
+            eq(environmentLeases.status, "active"),
+          )))
+          .map((row) => row.runId),
+      )
+      : new Set<string>();
 
     const reaped: string[] = [];
 
@@ -12172,11 +12943,38 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
 
       const tracksLocalChild = isTrackedLocalChildProcessAdapter(adapterType);
-      const processPidAlive = tracksLocalChild && run.processPid && isProcessAlive(run.processPid);
-      const processGroupAlive = tracksLocalChild && run.processGroupId && isProcessGroupAlive(run.processGroupId);
+      const zeroProcessMetadata = tracksLocalChild && !run.processPid && !run.processGroupId;
+      const hasActiveEnvironmentLease = activeLeaseRunIds.has(run.id);
+      const silenceAgeMs = orphanedRunSilenceAgeMs(run, now);
+      const hasRecentDurableActivity = silenceAgeMs < durableActivityGraceMs;
+      const exceededOrphanSilenceSweepThreshold = silenceAgeMs >= orphanSilenceSweepThresholdMs;
+      if (zeroProcessMetadata) {
+        if (!exceededOrphanSilenceSweepThreshold) {
+          logger.warn(
+            hasRecentDurableActivity
+              ? { runId: run.id, adapterType, silenceAgeMs, durableActivityGraceMs, hasActiveEnvironmentLease }
+              : { runId: run.id, adapterType, silenceAgeMs, orphanSilenceSweepThresholdMs, hasActiveEnvironmentLease },
+            "skipping orphan reap because local run has no process metadata and silence has not crossed the orphan threshold",
+          );
+          continue;
+        }
+        if (hasActiveEnvironmentLease) {
+          logger.warn(
+            { runId: run.id, adapterType, silenceAgeMs, orphanSilenceSweepThresholdMs, hasActiveEnvironmentLease },
+            "force-releasing active environment lease for stale local run with no process metadata before orphan reap",
+          );
+        }
+      }
+      const processPidAlive = Boolean(
+        tracksLocalChild && run.processPid && isProcessAlive(run.processPid),
+      );
+      const processGroupAlive = Boolean(
+        tracksLocalChild && run.processGroupId && isProcessGroupAlive(run.processGroupId),
+      );
       if (
         (processPidAlive || processGroupAlive) &&
-        readHotRestartAdoptionMetadata(parseObject(run.resultJson))
+        readHotRestartAdoptionMetadata(parseObject(run.resultJson)) &&
+        !exceededOrphanSilenceSweepThreshold
       ) {
         continue;
       }
@@ -12203,8 +13001,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
 
       let descendantOnlyCleanup = false;
-      if (processGroupAlive) {
-        descendantOnlyCleanup = true;
+      let forcedStopForSilence = false;
+      if (processPidAlive || processGroupAlive) {
+        descendantOnlyCleanup = !processPidAlive && processGroupAlive;
         await terminateHeartbeatRunProcess({
           pid: run.processPid,
           processGroupId: run.processGroupId,
@@ -12213,6 +13012,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
       const runContext = parseObject(run.contextSnapshot);
       const monitorIssueId = readNonEmptyString(runContext.issueId);
+      const monitorIssue = monitorIssueId
+        ? monitorIssueByKey.get(`${run.companyId}:${monitorIssueId}`) ?? null
+        : null;
       const monitorNextCheckAt = monitorIssueId
         ? monitorNextCheckAtByIssue.get(`${run.companyId}:${monitorIssueId}`)
         : undefined;
@@ -12224,7 +13026,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         (tracksLocalChild && (!!run.processPid || !!run.processGroupId)) ||
         monitorDispatchLostWithoutFutureWake
       );
-      const baseMessage = buildProcessLossMessage(run, descendantOnlyCleanup ? { descendantOnly: true } : undefined);
+      const baseMessage = buildProcessLossMessage(
+        run,
+        zeroProcessMetadata
+          ? { leaseLessBeforeStart: true }
+          : forcedStopForSilence
+          ? { forcedStop: true }
+          : descendantOnlyCleanup
+            ? { descendantOnly: true }
+            : undefined,
+      );
       const unmanagedBackgroundTaskEvidence = descendantOnlyCleanup
         ? {
           kind: "orphaned_process_group_cleanup",
@@ -12273,6 +13084,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         status: finalizedRun.status,
         failureReason: finalizedRun.error ?? undefined,
       });
+
+      if (monitorIssue) {
+        const rearmPatch = await buildTerminalIssueMonitorRearmPatch({
+          issue: monitorIssue,
+          run: finalizedRun,
+          now,
+        });
+        if (rearmPatch) {
+          await db
+            .update(issues)
+            .set({
+              ...rearmPatch,
+              updatedAt: now,
+            })
+            .where(eq(issues.id, monitorIssue.id));
+        }
+      }
 
       let retriedRun: typeof heartbeatRuns.$inferSelect | null = null;
       const retryAgent = await getAgent(run.agentId);
@@ -12802,11 +13630,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       ? await getTaskSession(agent.companyId, agent.id, agent.adapterType, taskKey)
       : null;
     const taskSessionDecodedParams = normalizeSessionParams(
-      sessionCodec.deserialize(taskSession?.sessionParamsJson ?? null),
+      mergePaperclipSessionMetadataIntoSessionParams({
+        sessionParams: sessionCodec.deserialize(taskSession?.sessionParamsJson ?? null),
+        metadataSource: taskSession?.sessionParamsJson ?? null,
+      }),
     );
     const explicitResumeSessionParams = normalizeResumeParamsForAdapter(
       agent.adapterType,
-      sessionCodec.deserialize(parseObject(context.resumeSessionParams)),
+      mergePaperclipSessionMetadataIntoSessionParams({
+        sessionParams: sessionCodec.deserialize(parseObject(context.resumeSessionParams)),
+        metadataSource: parseObject(context.resumeSessionParams),
+      }),
     );
     const explicitResumeSessionDisplayId = truncateDisplayId(
       readNonEmptyString(context.resumeSessionDisplayId) ??
@@ -14598,6 +15432,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 adapterResult.errorMessage ?? (outcome === "timed_out" ? "Timed out" : "Adapter failed"),
                 currentUserRedactionOptions,
               );
+      const derivedFailureRecovery =
+        outcome === "failed"
+          ? classifyAdapterFailureForRecovery({
+            error: runErrorMessage,
+            errorCode: adapterResult.errorCode ?? "adapter_failed",
+            resultJson: adapterResult.resultJson ?? null,
+          })
+          : null;
       const recordedResponsibleUserDenialCode =
         normalizeResponsibleUserDenialCode(latestRun?.errorCode);
       const runErrorCode =
@@ -14606,7 +15448,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           : outcome === "cancelled"
             ? (latestRun?.errorCode ?? "cancelled")
             : outcome === "failed"
-              ? (adapterResult.errorCode ?? recordedResponsibleUserDenialCode ?? "adapter_failed")
+              ? (
+                adapterResult.errorCode
+                ?? (derivedFailureRecovery?.kind === "provider_quota" ? "provider_quota" : null)
+                ?? recordedResponsibleUserDenialCode
+                ?? "adapter_failed"
+              )
               : null;
 
       let logSummary: { bytes: number; sha256?: string; compressed: boolean } | null = null;
@@ -14673,8 +15520,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 ...parseObject(adapterResult.resultJson),
                 configFreshness: configFreshnessResultMetadata,
               },
-              errorFamily: adapterResult.errorFamily ?? null,
-              retryNotBefore: adapterResult.retryNotBefore ?? null,
+              errorFamily:
+                adapterResult.errorFamily
+                ?? (derivedFailureRecovery?.kind === "provider_quota" ? "provider_quota" : null),
+              retryNotBefore:
+                adapterResult.retryNotBefore
+                ?? (
+                  derivedFailureRecovery?.kind === "provider_quota"
+                    ? derivedFailureRecovery.retryAt.toISOString()
+                    : null
+                ),
             }),
             modelProfileApplication,
           ),
@@ -14791,7 +15646,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               },
             });
           }
-        } else if (outcome === "failed" && readTransientRecoveryContractFromRun(livenessRun)) {
+        } else if (
+          outcome === "failed" &&
+          readTransientRecoveryContractFromRun(livenessRun) &&
+          readNonEmptyString(parseObject(livenessRun.contextSnapshot).wakeReason) !== "issue_monitor_due"
+        ) {
           await scheduleBoundedRetryForRun(livenessRun, agent);
         }
         const issueCommentPolicyResult = await finalizeIssueCommentPolicy(livenessRun, agent);
@@ -15621,21 +16480,44 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         };
       }
 
-      const findExistingExecutionPath = (agentId?: string | null) =>
-        tx
+      const findExistingExecutionPath = (agentId?: string | null) => {
+        const currentIssue = issue;
+        if (!currentIssue) return Promise.resolve(null);
+        return tx
           .select({ id: heartbeatRuns.id })
           .from(heartbeatRuns)
           .where(
             and(
-              eq(heartbeatRuns.companyId, issue.companyId),
+              eq(heartbeatRuns.companyId, currentIssue.companyId),
               inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]),
-              sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
+              sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${currentIssue.id}`,
               sql`${heartbeatRuns.id} <> ${run.id}`,
               agentId ? eq(heartbeatRuns.agentId, agentId) : sql`true`,
             ),
           )
           .limit(1)
           .then((rows) => rows[0] ?? null);
+      };
+
+      const terminalMonitorRearmPatch = await buildTerminalIssueMonitorRearmPatch({
+        issue,
+        run,
+        now: new Date(),
+      });
+      if (terminalMonitorRearmPatch) {
+        const rearmedIssue = await tx
+          .update(issues)
+          .set({
+            ...terminalMonitorRearmPatch,
+            updatedAt: new Date(),
+          })
+          .where(eq(issues.id, issue.id))
+          .returning()
+          .then((rows) => rows[0] ?? null);
+        if (rearmedIssue) {
+          issue = rearmedIssue;
+        }
+      }
 
       const issueHasPersistedMonitor = Boolean(issue.monitorNextCheckAt);
       const findExplicitBlockerPath = () =>
@@ -16300,6 +17182,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             assigneeAgentId: issues.assigneeAgentId,
             executionRunId: issues.executionRunId,
             executionAgentNameKey: issues.executionAgentNameKey,
+            executionPolicy: issues.executionPolicy,
+            executionState: issues.executionState,
+            monitorNextCheckAt: issues.monitorNextCheckAt,
+            monitorLastTriggeredAt: issues.monitorLastTriggeredAt,
+            monitorAttemptCount: issues.monitorAttemptCount,
+            monitorNotes: issues.monitorNotes,
+            monitorScheduledBy: issues.monitorScheduledBy,
             createdAt: issues.createdAt,
           })
           .from(issues)
@@ -16723,6 +17612,47 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
 
         if (activeExecutionRun) {
+          const activeExecutionRunIssueId = readNonEmptyString(parseObject(activeExecutionRun.contextSnapshot).issueId);
+          if (
+            readNonEmptyString(enrichedContextSnapshot.wakeReason) === "issue_monitor_due" &&
+            activeExecutionRunIssueId &&
+            activeExecutionRunIssueId !== issue.id
+          ) {
+            const rearmPatch = rearmUndeliveredIssueMonitorPatch({
+              issue,
+              now: new Date(),
+              nextCheckAt: readNonEmptyString(enrichedContextSnapshot.nextCheckAt),
+              deliveredAttemptCount: asNumber(enrichedContextSnapshot.monitorAttemptCount, NaN),
+            });
+            if (Object.keys(rearmPatch).length > 0) {
+              await tx
+                .update(issues)
+                .set({
+                  ...rearmPatch,
+                  updatedAt: new Date(),
+                })
+                .where(eq(issues.id, issue.id));
+            }
+
+            await tx.insert(agentWakeupRequests).values({
+              companyId: agent.companyId,
+              agentId,
+              source,
+              triggerDetail,
+              reason: "issue_execution_same_name",
+              payload,
+              status: "coalesced",
+              coalescedCount: 1,
+              requestedByActorType: opts.requestedByActorType ?? null,
+              requestedByActorId: opts.requestedByActorId ?? null,
+              idempotencyKey: opts.idempotencyKey ?? null,
+              runId: activeExecutionRun.id,
+              finishedAt: new Date(),
+            });
+
+            return { kind: "coalesced" as const, run: activeExecutionRun };
+          }
+
           const executionAgent = await tx
             .select({ name: agents.name })
             .from(agents)
@@ -16753,6 +17683,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             && !shouldQueueFollowupForRunningWake
             && availableActiveExecutionRun
           ) {
+            const existingRunIssueId = readNonEmptyString(parseObject(availableActiveExecutionRun.contextSnapshot).issueId);
             const mergedContextSnapshot = mergeCoalescedContextSnapshot(
               availableActiveExecutionRun.contextSnapshot,
               enrichedContextSnapshot,
@@ -16766,6 +17697,28 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               .where(eq(heartbeatRuns.id, availableActiveExecutionRun.id))
               .returning()
               .then((rows) => rows[0] ?? availableActiveExecutionRun);
+
+            const mergedRunIssueId = readNonEmptyString(parseObject(mergedRun.contextSnapshot).issueId);
+            if (
+              readNonEmptyString(enrichedContextSnapshot.wakeReason) === "issue_monitor_due" &&
+              (existingRunIssueId !== issue.id || mergedRunIssueId !== issue.id)
+            ) {
+              const rearmPatch = rearmUndeliveredIssueMonitorPatch({
+                issue,
+                now: new Date(),
+                nextCheckAt: readNonEmptyString(enrichedContextSnapshot.nextCheckAt),
+                deliveredAttemptCount: asNumber(enrichedContextSnapshot.monitorAttemptCount, NaN),
+              });
+              if (Object.keys(rearmPatch).length > 0) {
+                await tx
+                  .update(issues)
+                  .set({
+                    ...rearmPatch,
+                    updatedAt: new Date(),
+                  })
+                  .where(eq(issues.id, issue.id));
+              }
+            }
 
             await tx.insert(agentWakeupRequests).values({
               companyId: agent.companyId,
@@ -16872,6 +17825,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               id: heartbeatRuns.id,
               status: heartbeatRuns.status,
               finishedAt: heartbeatRuns.finishedAt,
+              error: heartbeatRuns.error,
+              errorCode: heartbeatRuns.errorCode,
+              resultJson: heartbeatRuns.resultJson,
             })
             .from(heartbeatRuns)
             .where(
@@ -17007,8 +17963,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             requestedByActorId: opts.requestedByActorId ?? null,
             idempotencyKey: opts.idempotencyKey ?? null,
           })
+          .onConflictDoNothing()
           .returning()
-          .then((rows) => rows[0]);
+          .then((rows) => rows[0] ?? null);
+
+        if (!wakeupRequest) {
+          return { kind: "duplicate" as const };
+        }
 
         const newRun = await tx
           .insert(heartbeatRuns)
@@ -17042,7 +18003,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         return { kind: "queued" as const, run: newRun };
       });
 
-      if (outcome.kind === "deferred" || outcome.kind === "skipped") return null;
+      if (outcome.kind === "deferred" || outcome.kind === "skipped" || outcome.kind === "duplicate") return null;
       if (outcome.kind === "coalesced") {
         await startNextQueuedRunForAgent(agent.id);
         return outcome.run;
@@ -17181,8 +18142,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           requestedByActorId: opts.requestedByActorId ?? null,
           idempotencyKey: opts.idempotencyKey ?? null,
         })
+        .onConflictDoNothing()
         .returning()
-        .then((rows) => rows[0]);
+        .then((rows) => rows[0] ?? null);
+
+      if (!wakeupRequest) {
+        return { kind: "duplicate" as const };
+      }
 
       const newRun = await tx
         .insert(heartbeatRuns)
@@ -17212,7 +18178,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       return { kind: "queued" as const, run: newRun };
     });
 
-    if (queueOutcome.kind === "skipped") return null;
+    if (queueOutcome.kind === "skipped" || queueOutcome.kind === "duplicate") return null;
     const newRun = queueOutcome.run;
 
     publishLiveEvent({
@@ -17387,6 +18353,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     });
 
     if (cancelled) {
+      await releaseEnvironmentLeasesForRun({
+        runId: cancelled.id,
+        companyId: cancelled.companyId,
+        agentId: cancelled.agentId,
+        status: cancelled.status,
+        failureReason: cancelled.error ?? undefined,
+      });
       await appendRunEvent(cancelled, 1, {
         eventType: "lifecycle",
         stream: "system",
@@ -17410,7 +18383,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .where(and(eq(heartbeatRuns.agentId, agentId), inArray(heartbeatRuns.status, [...CANCELLABLE_HEARTBEAT_RUN_STATUSES])));
 
     for (const run of runs) {
-      await setRunStatus(run.id, "cancelled", {
+      const cancelled = await setRunStatus(run.id, "cancelled", {
         finishedAt: new Date(),
         error: reason,
         errorCode,
@@ -17422,6 +18395,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           }),
         } : {}),
       });
+      if (cancelled) {
+        await releaseEnvironmentLeasesForRun({
+          runId: cancelled.id,
+          companyId: cancelled.companyId,
+          agentId: cancelled.agentId,
+          status: cancelled.status,
+          failureReason: cancelled.error ?? undefined,
+        });
+      }
 
       await setWakeupStatus(run.wakeupRequestId, "cancelled", {
         finishedAt: new Date(),
@@ -17894,11 +18876,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
 
       const issueMonitors = await tickDueIssueMonitors(now);
+      const strandedIssueMonitors = await reconcileStrandedTriggeredIssueMonitors(now);
 
       return {
-        checked: checked + issueMonitors.checked,
+        checked: checked + issueMonitors.checked + strandedIssueMonitors.checked,
         enqueued: enqueued + issueMonitors.triggered,
-        skipped: skipped + issueMonitors.skipped,
+        skipped: skipped + issueMonitors.skipped + strandedIssueMonitors.rearmed,
       };
     },
 

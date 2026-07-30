@@ -105,6 +105,10 @@ import {
   redactSuccessfulRunHandoffEvidence,
 } from "../services/heartbeat.ts";
 import {
+  normalizeIssueExecutionPolicy,
+  parseIssueExecutionState,
+} from "../services/issue-execution-policy.ts";
+import {
   readHotRestartIntent,
   resolveHotRestartReportPath,
   writeHotRestartIntent,
@@ -132,6 +136,40 @@ function spawnAliveProcess() {
   return spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], {
     stdio: "ignore",
   });
+}
+
+function buildTriggeredMonitorExecutionState(input?: {
+  kind?: "external_service" | null;
+  lastTriggeredAt?: string;
+}) {
+  return {
+    status: "idle",
+    currentStageId: null,
+    currentStageIndex: null,
+    currentStageType: null,
+    currentParticipant: null,
+    returnAssignee: null,
+    reviewRequest: null,
+    completedStageIds: [],
+    lastDecisionId: null,
+    lastDecisionOutcome: null,
+    monitor: {
+      status: "triggered",
+      nextCheckAt: null,
+      lastTriggeredAt: input?.lastTriggeredAt ?? "2026-03-19T00:00:00.000Z",
+      attemptCount: 1,
+      notes: "Check deploy",
+      scheduledBy: "assignee",
+      kind: input?.kind ?? null,
+      serviceName: input?.kind === "external_service" ? "launchd" : null,
+      externalRef: null,
+      timeoutAt: null,
+      maxAttempts: null,
+      recoveryPolicy: null,
+      clearedAt: null,
+      clearReason: null,
+    },
+  };
 }
 
 function isPidAlive(pid: number | null | undefined) {
@@ -469,13 +507,17 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     runErrorCode?: string | null;
     runError?: string | null;
     contextSnapshot?: Record<string, unknown>;
+    now?: Date;
+    updatedAt?: Date;
+    lastOutputAt?: Date | null;
+    createdAt?: Date;
   }) {
     const companyId = randomUUID();
     const agentId = randomUUID();
     const runId = randomUUID();
     const wakeupRequestId = randomUUID();
     const issueId = randomUUID();
-    const now = new Date("2026-03-19T00:00:00.000Z");
+    const now = input?.now ?? new Date("2026-03-19T00:00:00.000Z");
     const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
 
     await db.insert(companies).values({
@@ -528,7 +570,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       errorCode: input?.runErrorCode ?? null,
       error: input?.runError ?? null,
       startedAt: now,
-      updatedAt: new Date("2026-03-19T00:00:00.000Z"),
+      updatedAt: input?.updatedAt ?? now,
+      lastOutputAt: input?.lastOutputAt ?? null,
+      createdAt: input?.createdAt ?? now,
     });
 
     if (input?.includeIssue !== false) {
@@ -556,19 +600,26 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     issueId: string;
     provider?: string;
   }) {
-    const environmentId = randomUUID();
+    const existingLocalEnvironment = await db
+      .select({ id: environments.id })
+      .from(environments)
+      .where(eq(environments.driver, "local"))
+      .then((rows) => rows[0] ?? null);
+    const environmentId = existingLocalEnvironment?.id ?? randomUUID();
     const leaseId = randomUUID();
     const now = new Date("2026-03-19T00:00:00.000Z");
 
-    await db.insert(environments).values({
-      id: environmentId,
-      companyId: input.companyId,
-      name: "Local test environment",
-      driver: "local",
-      status: "active",
-      config: {},
-      metadata: null,
-    });
+    if (!existingLocalEnvironment) {
+      await db.insert(environments).values({
+        id: environmentId,
+        companyId: input.companyId,
+        name: "Local test environment",
+        driver: "local",
+        status: "active",
+        config: {},
+        metadata: null,
+      });
+    }
 
     await db.insert(environmentLeases).values({
       id: leaseId,
@@ -1101,7 +1152,12 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .then((rows) => rows.map((row) => row.blockerIssueId));
   }
 
-  async function seedQueuedIssueRunFixture() {
+  async function seedQueuedIssueRunFixture(input?: {
+    adapterType?: string;
+    adapterConfig?: Record<string, unknown>;
+    runtimeConfig?: Record<string, unknown>;
+    defaultEnvironmentId?: string | null;
+  }) {
     const companyId = randomUUID();
     const agentId = randomUUID();
     const runId = randomUUID();
@@ -1124,14 +1180,15 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       name: "CodexCoder",
       role: "engineer",
       status: "idle",
-      adapterType: "codex_local",
-      adapterConfig: {},
-      runtimeConfig: {
+      adapterType: input?.adapterType ?? "codex_local",
+      adapterConfig: input?.adapterConfig ?? {},
+      runtimeConfig: input?.runtimeConfig ?? {
         heartbeat: {
           wakeOnDemand: true,
           maxConcurrentRuns: 1,
         },
       },
+      defaultEnvironmentId: input?.defaultEnvironmentId ?? null,
       permissions: {},
     });
 
@@ -1190,18 +1247,169 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     childProcesses.add(child);
     expect(child.pid).toBeTypeOf("number");
 
+    const now = new Date("2026-03-19T00:00:00.000Z");
     const { runId, wakeupRequestId } = await seedRunFixture({
+      now,
+      updatedAt: now,
       processPid: child.pid ?? null,
       includeIssue: false,
     });
     const heartbeat = heartbeatService(db);
 
-    const result = await heartbeat.reapOrphanedRuns();
+    const result = await heartbeat.reapOrphanedRuns({ now });
     expect(result.reaped).toBe(0);
 
     const run = await heartbeat.getRun(runId);
     expect(run?.status).toBe("running");
     expect(run?.errorCode).toBe("process_detached");
+    expect(run?.error).toContain(String(child.pid));
+
+    const wakeup = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, wakeupRequestId))
+      .then((rows) => rows[0] ?? null);
+    expect(wakeup?.status).toBe("claimed");
+  });
+
+  it("keeps a recent zero-pid local run active while durable activity is still fresh", async () => {
+    const { runId, wakeupRequestId } = await seedRunFixture({
+      now: new Date("2026-03-19T00:00:00.000Z"),
+      updatedAt: new Date("2026-03-19T00:03:00.000Z"),
+      processPid: null,
+      processGroupId: null,
+      includeIssue: false,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns({
+      now: new Date("2026-03-19T00:04:00.000Z"),
+    });
+    expect(result).toEqual({ reaped: 0, runIds: [] });
+
+    const run = await heartbeat.getRun(runId);
+    expect(run).toMatchObject({
+      id: runId,
+      status: "running",
+      errorCode: null,
+      processPid: null,
+      processGroupId: null,
+    });
+
+    const wakeup = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, wakeupRequestId))
+      .then((rows) => rows[0] ?? null);
+    expect(wakeup?.status).toBe("claimed");
+  });
+
+  it("does not reap a stale zero-pid local run when silence is the only signal", async () => {
+    const now = new Date("2026-03-19T00:00:00.000Z");
+    const { runId, wakeupRequestId, issueId } = await seedRunFixture({
+      now,
+      updatedAt: now,
+      processPid: null,
+      processGroupId: null,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns({
+      now: new Date("2026-03-19T00:16:00.000Z"),
+    });
+    expect(result).toEqual({ reaped: 0, runIds: [] });
+
+    const run = await heartbeat.getRun(runId);
+    expect(run).toMatchObject({
+      id: runId,
+      status: "running",
+      errorCode: null,
+      processPid: null,
+      processGroupId: null,
+    });
+
+    const wakeup = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, wakeupRequestId))
+      .then((rows) => rows[0] ?? null);
+    expect(wakeup?.status).toBe("claimed");
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.checkoutRunId).toBe(runId);
+    expect(issue?.executionRunId).toBe(runId);
+  });
+
+  it("does not reap a stale zero-pid local run under the startup-equivalent stale threshold", async () => {
+    const now = new Date("2026-03-19T00:00:00.000Z");
+    const { runId, wakeupRequestId, issueId } = await seedRunFixture({
+      now,
+      updatedAt: now,
+      processPid: null,
+      processGroupId: null,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns({
+      now: new Date("2026-03-19T00:16:00.000Z"),
+      staleThresholdMs: 5 * 60 * 1000,
+    });
+    expect(result).toEqual({ reaped: 0, runIds: [] });
+
+    const run = await heartbeat.getRun(runId);
+    expect(run).toMatchObject({
+      id: runId,
+      status: "running",
+      errorCode: null,
+      processPid: null,
+      processGroupId: null,
+    });
+
+    const wakeup = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, wakeupRequestId))
+      .then((rows) => rows[0] ?? null);
+    expect(wakeup?.status).toBe("claimed");
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.checkoutRunId).toBe(runId);
+    expect(issue?.executionRunId).toBe(runId);
+  });
+
+  it("does not force-stop an alive pid run when silence crosses the orphan threshold", async () => {
+    const child = spawnAliveProcess();
+    childProcesses.add(child);
+    expect(child.pid).toBeTypeOf("number");
+
+    const now = new Date("2026-03-19T00:00:00.000Z");
+    const { runId, wakeupRequestId } = await seedRunFixture({
+      now,
+      updatedAt: now,
+      processPid: child.pid ?? null,
+      includeIssue: false,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns({
+      now: new Date("2026-03-19T00:16:00.000Z"),
+    });
+    expect(result).toEqual({ reaped: 0, runIds: [] });
+
+    const run = await heartbeat.getRun(runId);
+    expect(run).toMatchObject({
+      id: runId,
+      status: "running",
+      errorCode: "process_detached",
+    });
     expect(run?.error).toContain(String(child.pid));
 
     const wakeup = await db
@@ -1315,6 +1523,59 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(checkoutReleasedIssue?.checkoutRunId).toBeNull();
   });
 
+  it("reaps a stale dead-pid local run under the startup-equivalent stale threshold", async () => {
+    const now = new Date("2026-03-19T00:00:00.000Z");
+    const { agentId, runId, issueId } = await seedRunFixture({
+      now,
+      updatedAt: now,
+      agentStatus: "idle",
+      processPid: 999_999_999,
+      contextSnapshot: {
+        modelProfile: "cheap",
+        allowDeliverableWork: false,
+        allowDocumentUpdates: false,
+        resumeRequiresNormalModel: true,
+      },
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns({
+      now: new Date("2026-03-19T00:16:00.000Z"),
+      staleThresholdMs: 5 * 60 * 1000,
+    });
+    expect(result).toEqual({ reaped: 1, runIds: [runId] });
+
+    const runs = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(2);
+
+    const failedRun = runs.find((row) => row.id === runId);
+    const retryRun = runs.find((row) => row.retryOfRunId === runId);
+    expect(failedRun).toMatchObject({
+      id: runId,
+      status: "failed",
+      errorCode: "process_lost",
+    });
+    expect(retryRun).toMatchObject({
+      retryOfRunId: runId,
+      processLossRetryCount: 1,
+    });
+
+    const issue = await waitForValue(async () =>
+      db
+        .select()
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => {
+          const row = rows[0] ?? null;
+          return row?.checkoutRunId === null ? row : null;
+        }),
+    );
+    expect([retryRun?.id ?? null, null]).toContain(issue?.executionRunId ?? null);
+  });
+
   it("restores one lost monitor dispatch before escalating a second process loss", async () => {
     const { companyId, agentId, runId, issueId } = await seedRunFixture({
       adapterType: "openclaw_gateway",
@@ -1414,6 +1675,148 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .from(heartbeatRuns)
       .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.retryOfRunId, runId)));
     expect(retries).toHaveLength(0);
+  });
+
+  it("re-arms an unbounded in-progress monitor after a lost monitor dispatch", async () => {
+    const { companyId, agentId, runId, issueId } = await seedRunFixture({
+      adapterType: "openclaw_gateway",
+      agentStatus: "idle",
+      processPid: null,
+      processGroupId: null,
+      contextSnapshot: {
+        wakeReason: "issue_monitor_due",
+        nextCheckAt: "2026-03-19T00:00:00.000Z",
+      },
+    });
+    await db
+      .update(issues)
+      .set({
+        executionPolicy: null,
+        executionState: buildTriggeredMonitorExecutionState(),
+        monitorNextCheckAt: null,
+        monitorLastTriggeredAt: new Date("2026-03-19T00:00:00.000Z"),
+        monitorAttemptCount: 1,
+        monitorNotes: "Check deploy",
+        monitorScheduledBy: "assignee",
+      })
+      .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)));
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reapOrphanedRuns();
+
+    expect(result).toEqual({ reaped: 1, runIds: [runId] });
+
+    const issue = await waitForValue(async () =>
+      db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => {
+        const row = rows[0] ?? null;
+        return row?.monitorNextCheckAt ? row : null;
+      }),
+    );
+    expect(issue?.status).toBe("in_progress");
+    expect(issue?.monitorNextCheckAt?.getTime()).toBeGreaterThan(new Date("2026-03-19T00:00:00.000Z").getTime());
+    expect(issue?.monitorAttemptCount).toBe(0);
+    expect(normalizeIssueExecutionPolicy(issue?.executionPolicy ?? null)?.monitor?.nextCheckAt).toBe(
+      issue?.monitorNextCheckAt?.toISOString(),
+    );
+    expect(parseIssueExecutionState(issue?.executionState ?? null)?.monitor).toMatchObject({
+      status: "scheduled",
+      attemptCount: 0,
+      nextCheckAt: issue?.monitorNextCheckAt?.toISOString(),
+    });
+
+    const retryRun = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.retryOfRunId, runId)))
+      .then((rows) => rows[0] ?? null);
+    expect(retryRun).toMatchObject({
+      agentId,
+      processLossRetryCount: 1,
+    });
+  });
+
+  it("re-arms an unbounded in-review monitor after a lost monitor dispatch", async () => {
+    const { companyId, runId, issueId } = await seedRunFixture({
+      adapterType: "openclaw_gateway",
+      agentStatus: "idle",
+      processPid: null,
+      processGroupId: null,
+      contextSnapshot: {
+        wakeReason: "issue_monitor_due",
+        nextCheckAt: "2026-03-19T00:00:00.000Z",
+      },
+    });
+    await db
+      .update(issues)
+      .set({
+        status: "in_review",
+        executionPolicy: null,
+        executionState: buildTriggeredMonitorExecutionState(),
+        monitorNextCheckAt: null,
+        monitorLastTriggeredAt: new Date("2026-03-19T00:00:00.000Z"),
+        monitorAttemptCount: 1,
+        monitorNotes: "Check deploy",
+        monitorScheduledBy: "assignee",
+      })
+      .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)));
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reapOrphanedRuns();
+
+    expect(result).toEqual({ reaped: 1, runIds: [runId] });
+
+    const issue = await waitForValue(async () =>
+      db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => {
+        const row = rows[0] ?? null;
+        return row?.monitorNextCheckAt ? row : null;
+      }),
+    );
+    expect(issue?.status).toBe("in_review");
+    expect(issue?.monitorAttemptCount).toBe(0);
+    expect(parseIssueExecutionState(issue?.executionState ?? null)?.monitor).toMatchObject({
+      status: "scheduled",
+      attemptCount: 0,
+    });
+  });
+
+  it("does not re-arm explicit external-service monitors after a lost dispatch", async () => {
+    const { companyId, runId, issueId } = await seedRunFixture({
+      adapterType: "openclaw_gateway",
+      agentStatus: "idle",
+      processPid: null,
+      processGroupId: null,
+      contextSnapshot: {
+        wakeReason: "issue_monitor_due",
+        nextCheckAt: "2026-03-19T00:00:00.000Z",
+      },
+    });
+    await db
+      .update(issues)
+      .set({
+        executionPolicy: null,
+        executionState: buildTriggeredMonitorExecutionState({ kind: "external_service" }),
+        monitorNextCheckAt: null,
+        monitorLastTriggeredAt: new Date("2026-03-19T00:00:00.000Z"),
+        monitorAttemptCount: 1,
+        monitorNotes: "Check deploy",
+        monitorScheduledBy: "assignee",
+      })
+      .where(and(eq(issues.id, issueId), eq(issues.companyId, companyId)));
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reapOrphanedRuns();
+
+    expect(result).toEqual({ reaped: 1, runIds: [runId] });
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.monitorNextCheckAt).toBeNull();
+    expect(issue?.monitorAttemptCount).toBe(1);
+    expect(normalizeIssueExecutionPolicy(issue?.executionPolicy ?? null)?.monitor ?? null).toBeNull();
+    expect(parseIssueExecutionState(issue?.executionState ?? null)?.monitor).toMatchObject({
+      status: "triggered",
+      kind: "external_service",
+      attemptCount: 1,
+    });
   });
 
   async function withTempPaperclipHome<T>(fn: (home: string) => Promise<T>): Promise<T> {
@@ -1839,6 +2242,197 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .then((rows) => rows[0] ?? null);
     expect(lease?.status).toBe("failed");
     expect(lease?.releasedAt).toBeTruthy();
+  });
+
+  it("reaps lease-less local runs with no process metadata after the orphan-silence threshold", async () => {
+    const now = new Date("2026-03-19T00:20:00.000Z");
+    const staleAt = new Date("2026-03-19T00:00:00.000Z");
+    const { agentId, runId, issueId, wakeupRequestId } = await seedRunFixture({
+      adapterType: "claude_local",
+      agentStatus: "idle",
+      processPid: null,
+      processGroupId: null,
+      now: staleAt,
+      updatedAt: staleAt,
+      createdAt: staleAt,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns({ staleThresholdMs: 1, now });
+    expect(result).toEqual({ reaped: 1, runIds: [runId] });
+
+    const failedRun = await heartbeat.getRun(runId);
+    expect(failedRun).toMatchObject({
+      status: "failed",
+      errorCode: "process_lost",
+      processPid: null,
+      processGroupId: null,
+      error: "Process lost -- run never acquired an environment lease before exceeding the orphan-silence threshold",
+    });
+
+    const retryRuns = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.retryOfRunId, runId)));
+    expect(retryRuns).toHaveLength(0);
+
+    const wakeup = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, wakeupRequestId))
+      .then((rows) => rows[0] ?? null);
+    expect(wakeup?.status).toBe("failed");
+
+    const issue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issue?.executionRunId).toBeNull();
+  });
+
+  it("reaps stale active-lease local runs with no process metadata after the orphan-silence threshold", async () => {
+    const now = new Date("2026-03-19T00:20:00.000Z");
+    const staleAt = new Date("2026-03-19T00:00:00.000Z");
+    const { runId, issueId, companyId } = await seedRunFixture({
+      adapterType: "claude_local",
+      agentStatus: "idle",
+      processPid: null,
+      processGroupId: null,
+      now: staleAt,
+      updatedAt: staleAt,
+      createdAt: staleAt,
+    });
+    const { leaseId } = await seedEnvironmentLeaseFixture({
+      companyId,
+      runId,
+      issueId,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns({ staleThresholdMs: 1, now });
+    expect(result).toEqual({ reaped: 1, runIds: [runId] });
+
+    const failedRun = await heartbeat.getRun(runId);
+    expect(failedRun?.status).toBe("failed");
+    expect(failedRun?.errorCode).toBe("process_lost");
+
+    const lease = await db
+      .select()
+      .from(environmentLeases)
+      .where(eq(environmentLeases.id, leaseId))
+      .then((rows) => rows[0] ?? null);
+    expect(lease?.status).toBe("failed");
+    expect(lease?.releasedAt).toBeTruthy();
+  });
+
+  it("keeps recent active-lease local runs with no process metadata protected until the orphan-silence threshold", async () => {
+    const now = new Date("2026-03-19T00:05:00.000Z");
+    const startedAt = new Date("2026-03-19T00:00:00.000Z");
+    const { runId, issueId, companyId } = await seedRunFixture({
+      adapterType: "claude_local",
+      agentStatus: "idle",
+      processPid: null,
+      processGroupId: null,
+      now: startedAt,
+      updatedAt: startedAt,
+      createdAt: startedAt,
+    });
+    const { leaseId } = await seedEnvironmentLeaseFixture({
+      companyId,
+      runId,
+      issueId,
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reapOrphanedRuns({ staleThresholdMs: 1, now });
+    expect(result).toEqual({ reaped: 0, runIds: [] });
+
+    const activeRun = await heartbeat.getRun(runId);
+    expect(activeRun?.status).toBe("running");
+    expect(activeRun?.errorCode).toBeNull();
+
+    const lease = await db
+      .select()
+      .from(environmentLeases)
+      .where(eq(environmentLeases.id, leaseId))
+      .then((rows) => rows[0] ?? null);
+    expect(lease?.status).toBe("active");
+  });
+
+  it("can reach a real running claude_local state with an active lease before any process metadata is recorded", async () => {
+    const environmentId = randomUUID();
+    let releaseAdapter: (() => void) | null = null;
+    const adapterStarted = new Promise<void>((resolve) => {
+      mockAdapterExecute.mockImplementationOnce(async () => {
+        resolve();
+        await new Promise<void>((release) => {
+          releaseAdapter = release;
+        });
+        return {
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          errorMessage: null,
+          summary: "Lease-backed local run completed.",
+          provider: "test",
+          model: "test-model",
+        };
+      });
+    });
+
+    const { companyId, runId } = await seedQueuedIssueRunFixture({
+      adapterType: "claude_local",
+      defaultEnvironmentId: environmentId,
+      runtimeConfig: {
+        heartbeat: {
+          wakeOnDemand: true,
+          maxConcurrentRuns: 1,
+        },
+      },
+    });
+    await db.insert(environments).values({
+      id: environmentId,
+      companyId,
+      name: "Local",
+      driver: "local",
+      status: "active",
+      config: {},
+      metadata: null,
+      createdAt: new Date("2026-03-19T00:00:00.000Z"),
+      updatedAt: new Date("2026-03-19T00:00:00.000Z"),
+    });
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.resumeQueuedRuns();
+    await Promise.race([
+      adapterStarted,
+      new Promise<never>((_, reject) => {
+        setTimeout(() => reject(new Error("Timed out waiting for claude_local execution to start")), 3_000);
+      }),
+    ]);
+
+    const activeRun = await waitForValue(async () => {
+      const row = await heartbeat.getRun(runId);
+      return row?.status === "running" ? row : null;
+    }, 3_000);
+    expect(activeRun?.processPid).toBeNull();
+    expect(activeRun?.processGroupId).toBeNull();
+
+    const activeLeases = await waitForValue(async () => {
+      const rows = await db
+        .select()
+        .from(environmentLeases)
+        .where(eq(environmentLeases.heartbeatRunId, runId));
+      return rows.some((row) => row.status === "active") ? rows : null;
+    }, 3_000);
+    expect(activeLeases).toHaveLength(1);
+    expect(activeLeases?.[0]?.status).toBe("active");
+
+    if (!releaseAdapter) throw new Error("Adapter release handle was not captured");
+    releaseAdapter();
+    const settledRun = await waitForRunToSettle(heartbeat, runId, 5_000);
+    expect(settledRun?.status).toBe("succeeded");
   });
 
   it.skipIf(process.platform === "win32")("reaps orphaned descendant process groups when the parent pid is already gone", async () => {
@@ -2838,6 +3432,62 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(activity.some((event) => event.action === "issue.successful_run_handoff_required")).toBe(true);
   });
 
+  it("does not queue a finish-handoff wake when an open child already owns the next action", async () => {
+    const { companyId, agentId, runId, issueId } = await seedQueuedIssueRunFixture();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    mockAdapterExecute.mockImplementationOnce(async (ctx: { runId: string }) => {
+      await db.insert(issueComments).values({
+        companyId,
+        issueId,
+        authorAgentId: agentId,
+        createdByRunId: ctx.runId,
+        body: "Finished the umbrella pass and left the follow-up child lane to continue.",
+      });
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        errorMessage: null,
+        summary: "Finished the umbrella pass and left the follow-up child lane to continue.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+    await db.insert(issues).values({
+      id: randomUUID(),
+      companyId,
+      parentId: issueId,
+      title: "Follow-up child lane",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      issueNumber: 2,
+      identifier: `${issuePrefix}-2`,
+    });
+
+    const heartbeat = heartbeatService(db);
+
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId, 5_000);
+    await waitForHeartbeatIdle(db, 5_000);
+
+    const handoffWakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId));
+
+    expect(handoffWakeups.filter((wakeup) => wakeup.reason === "finish_successful_run_handoff")).toHaveLength(0);
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments.find((comment) => comment.body === SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY)).toBeUndefined();
+
+    const activity = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.entityId, issueId));
+    expect(activity.some((event) => event.action === "issue.successful_run_handoff_required")).toBe(false);
+  });
+
   it("requeues a missing-disposition handoff when the previous corrective wake was cancelled", async () => {
     const { companyId, agentId, runId, issueId } = await seedQueuedIssueRunFixture();
     const idempotencyKey = `finish_successful_run_handoff:${issueId}:${runId}:1`;
@@ -3206,6 +3856,111 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       latestRunStatus: "succeeded",
       missingDisposition: "clear_next_step",
     });
+  });
+
+  it("does not strand a freshly patched in-progress issue when the assignee already has another live run", async () => {
+    const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "succeeded",
+    });
+    await db
+      .update(heartbeatRuns)
+      .set({
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "finish_successful_run_handoff",
+          sourceRunId: randomUUID(),
+          resumeFromRunId: randomUUID(),
+          handoffRequired: true,
+          handoffReason: "successful_run_missing_state",
+          missingDisposition: "clear_next_step",
+          handoffAttempt: 1,
+          maxHandoffAttempts: 1,
+        },
+      })
+      .where(eq(heartbeatRuns.id, runId));
+    await db
+      .update(issues)
+      .set({
+        checkoutRunId: null,
+        executionRunId: null,
+        startedAt: new Date(),
+      })
+      .where(eq(issues.id, issueId));
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "running",
+      contextSnapshot: { issueId: randomUUID(), taskId: randomUUID(), wakeReason: "issue_assigned" },
+      startedAt: new Date(),
+      updatedAt: new Date(),
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.successfulRunHandoffEscalated).toBe(0);
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.escalated).toBe(0);
+    expect(result.skipped).toBe(1);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("in_progress");
+    const recoveryIssues = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stranded_issue_recovery")));
+    expect(recoveryIssues).toHaveLength(0);
+  });
+
+  it("does not strand a freshly patched in-progress issue during the post-transition grace window", async () => {
+    const { companyId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "succeeded",
+    });
+    await db
+      .update(heartbeatRuns)
+      .set({
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "finish_successful_run_handoff",
+          sourceRunId: randomUUID(),
+          resumeFromRunId: randomUUID(),
+          handoffRequired: true,
+          handoffReason: "successful_run_missing_state",
+          missingDisposition: "clear_next_step",
+          handoffAttempt: 1,
+          maxHandoffAttempts: 1,
+        },
+      })
+      .where(eq(heartbeatRuns.id, runId));
+    await db
+      .update(issues)
+      .set({
+        checkoutRunId: null,
+        executionRunId: null,
+        startedAt: new Date(),
+      })
+      .where(eq(issues.id, issueId));
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.successfulRunHandoffEscalated).toBe(0);
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.escalated).toBe(0);
+    expect(result.skipped).toBe(1);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("in_progress");
+    const recoveryIssues = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stranded_issue_recovery")));
+    expect(recoveryIssues).toHaveLength(0);
   });
 
   it("converts a continuation parked for review into a dependency wait on its open sub-tasks", async () => {
@@ -3989,6 +4744,60 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .then((rows) => rows[0] ?? null);
     expect(issue?.status).toBe("in_review");
     expect(issue?.assigneeAgentId).toBe(agentId);
+  });
+
+  it("skips execution-review participant recovery when a terminal generic reviewer run still points at a typed pending reviewer", async () => {
+    const { agentId, issueId, runId, wakeupRequestId } = await seedInReviewParticipantRunFixture({
+      wakeReason: "manual",
+    });
+    const finishedAt = new Date("2026-03-19T00:05:00.000Z");
+    await db
+      .update(heartbeatRuns)
+      .set({
+        status: "succeeded",
+        startedAt: new Date("2026-03-19T00:00:00.000Z"),
+        finishedAt,
+        updatedAt: finishedAt,
+      })
+      .where(eq(heartbeatRuns.id, runId));
+    await db
+      .update(agentWakeupRequests)
+      .set({
+        status: "completed",
+        finishedAt,
+        updatedAt: finishedAt,
+      })
+      .where(eq(agentWakeupRequests.id, wakeupRequestId));
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.reviewParticipantRequeued).toBe(0);
+    expect(result.escalated).toBe(0);
+    expect(result.issueIds).toEqual([]);
+
+    const recoveryActions = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, issueId));
+    expect(recoveryActions).toHaveLength(0);
+
+    const reviewerRuns = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(reviewerRuns).toHaveLength(1);
+    expect(reviewerRuns[0]?.id).toBe(runId);
+    expect(reviewerRuns[0]?.status).toBe("succeeded");
+
+    const reviewerWakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId));
+    expect(reviewerWakeups).toHaveLength(1);
+    expect(reviewerWakeups[0]?.status).toBe("completed");
+    expect(
+      reviewerWakeups.some((wakeup) => wakeup.reason === "execution_review_participant_recovery"),
+    ).toBe(false);
   });
 
   it("retries a pending execution-review participant once before blocking with a recovery action", async () => {

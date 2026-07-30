@@ -77,7 +77,10 @@ function renderApiAccessNote(env: Record<string, string>): string {
   return [
     "Paperclip API access note:",
     "Use shell commands with curl to make Paperclip API requests when needed.",
+    "Normalize the base URL before adding API paths:",
+    `  PAPERCLIP_API_BASE="\${PAPERCLIP_API_URL%/}"; PAPERCLIP_API_BASE="\${PAPERCLIP_API_BASE%/api}"`,
     "Include X-Paperclip-Run-Id on mutating requests.",
+    "Treat a text/html response body as a discarded write, usually caused by a login page or gateway.",
     "",
     "",
   ].join("\n");
@@ -242,7 +245,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
 
   try {
     const envConfig = parseObject(config.env);
-    const env: Record<string, string> = { ...buildPaperclipEnv(agent) };
+    const hasExplicitApiKey =
+      typeof envConfig.PAPERCLIP_API_KEY === "string" && envConfig.PAPERCLIP_API_KEY.trim().length > 0;
+    const env: Record<string, string> = { ...buildPaperclipEnv(agent, { preferLocalUrl: true }) };
     env.PAPERCLIP_RUN_ID = runId;
     const wakeTaskId =
       (typeof context.taskId === "string" && context.taskId.trim().length > 0 && context.taskId.trim()) ||
@@ -290,7 +295,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       executionTargetIsRemote,
       executionCwd: effectiveExecutionCwd,
     });
-    if (authToken) {
+    if (!hasExplicitApiKey && authToken) {
       env.PAPERCLIP_API_KEY = authToken;
     }
 

@@ -156,6 +156,10 @@ function readPositiveInteger(value: unknown): number | null {
   return typeof value === "number" && Number.isInteger(value) && value > 0 ? value : null;
 }
 
+function readMonitorText(value: unknown): string | null {
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
 function readDateMs(value: unknown): number | null {
   if (!(typeof value === "string" || value instanceof Date)) return null;
   const date = value instanceof Date ? value : new Date(value);
@@ -169,7 +173,7 @@ function monitorFromIssue(issue: IssueLivenessIssueInput) {
   return { policyMonitor, stateMonitor };
 }
 
-function hasScheduledMonitor(issue: IssueLivenessIssueInput, nowMs: number) {
+function hasScheduledMonitorAt(issue: IssueLivenessIssueInput, nowMs: number) {
   const nextCheckAtMs = readDateMs(issue.monitorNextCheckAt);
   if (nextCheckAtMs === null || nextCheckAtMs <= nowMs) return false;
 
@@ -183,6 +187,32 @@ function hasScheduledMonitor(issue: IssueLivenessIssueInput, nowMs: number) {
   if (maxAttempts !== null && attemptCount >= maxAttempts) return false;
 
   return true;
+}
+
+export function hasScheduledMonitor(issue: IssueLivenessIssueInput, now: Date | string = new Date()) {
+  const nowDate = now instanceof Date ? now : new Date(now);
+  const nowMs = Number.isNaN(nowDate.getTime()) ? Date.now() : nowDate.getTime();
+  return hasScheduledMonitorAt(issue, nowMs);
+}
+
+export function hasExplicitExternalServiceWakeExemption(issue: IssueLivenessIssueInput) {
+  const { policyMonitor, stateMonitor } = monitorFromIssue(issue);
+  const kind = policyMonitor?.kind ?? stateMonitor?.kind;
+  if (kind !== "external_service") return false;
+
+  const hasMonitorDescriptor = Boolean(
+    readMonitorText(policyMonitor?.serviceName ?? stateMonitor?.serviceName) ||
+    readMonitorText(policyMonitor?.externalRef ?? stateMonitor?.externalRef) ||
+    readMonitorText(policyMonitor?.notes ?? stateMonitor?.notes),
+  );
+  if (!hasMonitorDescriptor) return false;
+
+  const status = readMonitorText(stateMonitor?.status)?.toLowerCase();
+  if (status === "triggered" || status === "cleared") return false;
+  if (readMonitorText(stateMonitor?.clearReason) || readDateMs(stateMonitor?.clearedAt) !== null) return false;
+
+  const nowMs = Date.now();
+  return hasScheduledMonitorAt(issue, nowMs);
 }
 
 function readPrincipalAgentId(principal: unknown): string | null {
@@ -401,7 +431,7 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
 
   function hasExplicitWaitingPath(issue: IssueLivenessIssueInput) {
     return Boolean(issue.assigneeUserId) ||
-      hasScheduledMonitor(issue, nowMs) ||
+      hasScheduledMonitorAt(issue, nowMs) ||
       hasActiveExecutionPath(issue.companyId, issue.id, activeRuns, queuedWakeRequests) ||
       hasWaitingPath(issue.companyId, issue.id, pendingInteractions) ||
       hasWaitingPath(issue.companyId, issue.id, pendingApprovals) ||

@@ -87,6 +87,17 @@ describe("isClaudeTransientUpstreamError", () => {
     );
   });
 
+  it("classifies Claude weekly-limit windows and extracts a date-bearing retry time", () => {
+    const now = new Date("2026-07-29T19:00:00.000Z");
+    const errorMessage = "You've hit your weekly limit · resets Aug 3 at 11am (Europe/Zurich)";
+
+    expect(isClaudeProviderQuotaError({ errorMessage })).toBe(true);
+    expect(isClaudeTransientUpstreamError({ errorMessage })).toBe(false);
+    expect(extractClaudeRetryNotBefore({ errorMessage }, now)?.toISOString()).toBe(
+      "2026-08-03T09:00:00.000Z",
+    );
+  });
+
   it("classifies Anthropic API rate_limit_error and overloaded_error as transient", () => {
     expect(
       isClaudeTransientUpstreamError({
@@ -127,6 +138,16 @@ describe("isClaudeTransientUpstreamError", () => {
         errorMessage: "5-hour limit reached.",
       }),
     ).toBe(true);
+    expect(
+      isClaudeProviderQuotaError({
+        errorMessage: "You've hit your monthly spend limit · raise it at claude.ai/settings/usage",
+      }),
+    ).toBe(true);
+    expect(
+      extractClaudeRetryNotBefore({
+        errorMessage: "You've hit your monthly spend limit · raise it at claude.ai/settings/usage",
+      }),
+    ).toBeNull();
   });
 
   it("does not classify login/auth failures as transient", () => {

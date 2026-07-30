@@ -168,6 +168,37 @@ export interface AdapterExecutionTargetProcessSessionBridgeHandle {
   stop(): Promise<void>;
 }
 
+export interface PaperclipControlPlaneProbeAttempt {
+  url: string;
+  status: number | null;
+  location?: string;
+  contentType?: string;
+  error?: string;
+}
+
+export interface PaperclipControlPlaneProbeResult {
+  ok: boolean;
+  url?: string;
+  status?: number;
+  attempts: PaperclipControlPlaneProbeAttempt[];
+}
+
+export interface PreparePaperclipControlPlaneEnvResult {
+  ok: boolean;
+  skipped: boolean;
+  changed: boolean;
+  url: string | null;
+  attempts: PaperclipControlPlaneProbeAttempt[];
+  reasons: string[];
+}
+
+function applySelectedPaperclipApiUrl(env: Record<string, string>, url: string | null | undefined) {
+  const selectedUrl = normalizePaperclipApiOrigin(url) ?? url?.trim() ?? "";
+  if (!selectedUrl) return;
+  env.PAPERCLIP_API_URL = selectedUrl;
+  env.PAPERCLIP_RUNTIME_API_URL = selectedUrl;
+}
+
 export { sanitizeRemoteExecutionEnv } from "./remote-execution-env.js";
 
 // 4-hour wall-clock backstop for sandbox-backed adapter runs. This is a
@@ -178,6 +209,9 @@ export { sanitizeRemoteExecutionEnv } from "./remote-execution-env.js";
 // server/src/services/recovery/service.ts so healthy long runs are never
 // killed by the adapter before the watchdog would even consider them stuck.
 export const DEFAULT_REMOTE_SANDBOX_ADAPTER_TIMEOUT_SEC = 14_400;
+const PAPERCLIP_CONTROL_PLANE_PREFLIGHT_ENV = "PAPERCLIP_CONTROL_PLANE_PREFLIGHT_JSON";
+const PAPERCLIP_CONTROL_PLANE_PREFLIGHT_TIMEOUT_MS = 5_000;
+const PAPERCLIP_CONTROL_PLANE_PREFLIGHT_TIMEOUT_PADDING_MS = 1_000;
 
 function parseObject(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
@@ -207,6 +241,374 @@ function resolveDefaultPaperclipApiUrl(): string {
   // 3100 matches the default Paperclip dev server port when the runtime does not provide one.
   const runtimePort = process.env.PAPERCLIP_LISTEN_PORT ?? process.env.PORT ?? "3100";
   return `http://${runtimeHost}:${runtimePort}`;
+}
+
+function normalizePaperclipApiOrigin(raw: string | null | undefined): string | null {
+  const trimmed = raw?.trim();
+  if (!trimmed) return null;
+  try {
+    return new URL(trimmed).origin;
+  } catch {
+    return null;
+  }
+}
+
+function listPaperclipControlPlaneCandidates(env: Record<string, string>): string[] {
+  const out: string[] = [];
+  const seen = new Set<string>();
+  const push = (raw: string | null | undefined) => {
+    const origin = normalizePaperclipApiOrigin(raw);
+    if (!origin || seen.has(origin)) return;
+    seen.add(origin);
+    out.push(origin);
+  };
+
+  push(env.PAPERCLIP_API_URL);
+  push(process.env.PAPERCLIP_RUNTIME_API_URL);
+  const rawCandidates = process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON?.trim();
+  if (rawCandidates) {
+    try {
+      const parsed = JSON.parse(rawCandidates);
+      if (Array.isArray(parsed)) {
+        for (const candidate of parsed) {
+          if (typeof candidate === "string") push(candidate);
+        }
+      }
+    } catch {
+      // Ignore malformed candidate lists and fall back to the primary env URL.
+    }
+  }
+  // Local adapter runs still need a loopback escape hatch when the exported
+  // public origin is behind an auth gateway and the runtime candidate list is
+  // missing a host-local callback URL.
+  push(resolveDefaultPaperclipApiUrl());
+
+  return out;
+}
+
+function isPrivateOrLoopbackPaperclipApiHost(host: string): boolean {
+  const normalizedHost = host.trim().toLowerCase();
+  if (!normalizedHost) return false;
+  if (normalizedHost === "localhost" || normalizedHost.endsWith(".localhost")) return true;
+
+  const ipFamily = net.isIP(normalizedHost);
+  if (ipFamily === 4) {
+    const octets = normalizedHost.split(".").map((part) => Number(part));
+    if (octets.length !== 4 || octets.some((part) => !Number.isInteger(part))) return false;
+    if (octets[0] === 127) return true;
+    if (octets[0] === 10) return true;
+    if (octets[0] === 192 && octets[1] === 168) return true;
+    if (octets[0] === 172 && octets[1] >= 16 && octets[1] <= 31) return true;
+    return false;
+  }
+
+  if (ipFamily === 6) {
+    return normalizedHost === "::1";
+  }
+
+  return false;
+}
+
+function isPrivateOrLoopbackPaperclipApiOrigin(origin: string): boolean {
+  try {
+    return isPrivateOrLoopbackPaperclipApiHost(new URL(origin).hostname);
+  } catch {
+    return false;
+  }
+}
+
+function selectFailOpenPaperclipApiUrl(env: Record<string, string>): string | null {
+  const candidates = listPaperclipControlPlaneCandidates(env);
+  const current = normalizePaperclipApiOrigin(env.PAPERCLIP_API_URL);
+  if (current && isPrivateOrLoopbackPaperclipApiOrigin(current)) return current;
+  return candidates.find((candidate) => isPrivateOrLoopbackPaperclipApiOrigin(candidate)) ?? current ?? candidates[0] ?? null;
+}
+
+function computePaperclipControlPlaneProbeTimeoutSec(candidates: string[], configuredTimeoutSec: number): number {
+  const sequentialWorstCaseMs =
+    candidates.length * PAPERCLIP_CONTROL_PLANE_PREFLIGHT_TIMEOUT_MS +
+    PAPERCLIP_CONTROL_PLANE_PREFLIGHT_TIMEOUT_PADDING_MS;
+  const sequentialWorstCaseSec = Math.max(5, Math.ceil(sequentialWorstCaseMs / 1_000));
+  return configuredTimeoutSec > 0 ? Math.max(sequentialWorstCaseSec, configuredTimeoutSec) : sequentialWorstCaseSec;
+}
+
+function formatPaperclipControlPlaneAttemptSummary(attempt: PaperclipControlPlaneProbeAttempt): string {
+  if (typeof attempt.status === "number") {
+    const details = [attempt.contentType ?? null, attempt.location ?? null].filter(Boolean).join(", ");
+    return details.length > 0 ? `${attempt.url} -> HTTP ${attempt.status} (${details})` : `${attempt.url} -> HTTP ${attempt.status}`;
+  }
+  if (attempt.error) return `${attempt.url} -> ${attempt.error}`;
+  return `${attempt.url} -> unavailable`;
+}
+
+async function probePaperclipControlPlaneReachability(input: {
+  runId: string;
+  target: AdapterExecutionTarget | null | undefined;
+  cwd: string;
+  env: Record<string, string>;
+  timeoutSec: number;
+  graceSec: number;
+  localProcessSandbox: LocalProcessSandboxOptions | null;
+}): Promise<PaperclipControlPlaneProbeResult> {
+  const candidates = listPaperclipControlPlaneCandidates(input.env);
+  if (candidates.length === 0) {
+    return { ok: false, attempts: [] };
+  }
+  const probeTimeoutSec = computePaperclipControlPlaneProbeTimeoutSec(candidates, input.timeoutSec);
+
+  const probe = await runAdapterExecutionTargetProcess(
+    `${input.runId}:paperclip-preflight`,
+    input.target,
+    process.execPath,
+    [
+      "-e",
+      `
+const candidates = JSON.parse(process.env.${PAPERCLIP_CONTROL_PLANE_PREFLIGHT_ENV} || "[]");
+const auth = process.env.PAPERCLIP_API_KEY || "";
+const attempts = [];
+const timeoutMs = ${PAPERCLIP_CONTROL_PLANE_PREFLIGHT_TIMEOUT_MS};
+const normalize = (value) => String(value || "").replace(/\\/+$/, "");
+const run = async () => {
+  for (const rawCandidate of candidates) {
+    const candidate = normalize(rawCandidate);
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), timeoutMs);
+    try {
+      const response = await fetch(candidate + "/api/health", {
+        method: "GET",
+        headers: auth ? { authorization: "Bearer " + auth, accept: "application/json" } : { accept: "application/json" },
+        redirect: "manual",
+        signal: controller.signal,
+      });
+      const location = response.headers.get("location");
+      const contentType = response.headers.get("content-type");
+      let body = null;
+      if (contentType && contentType.toLowerCase().includes("application/json")) {
+        try {
+          body = await response.json();
+        } catch {
+          body = null;
+        }
+      }
+      attempts.push({
+        url: candidate,
+        status: response.status,
+        ...(location ? { location } : {}),
+        ...(contentType ? { contentType } : {}),
+      });
+      const healthOk =
+        body &&
+        typeof body === "object" &&
+        (
+          body.status === "ok" ||
+          body.ok === true
+        );
+      if (response.ok && contentType && contentType.toLowerCase().includes("application/json") && healthOk) {
+        console.log(JSON.stringify({ ok: true, url: candidate, status: response.status, attempts }));
+        return;
+      }
+    } catch (error) {
+      attempts.push({
+        url: candidate,
+        status: null,
+        error: error instanceof Error ? error.message : String(error),
+      });
+    } finally {
+      clearTimeout(timer);
+    }
+  }
+  console.log(JSON.stringify({ ok: false, attempts }));
+  process.exitCode = 19;
+};
+run().catch((error) => {
+  attempts.push({ url: "<probe>", status: null, error: error instanceof Error ? error.message : String(error) });
+  console.log(JSON.stringify({ ok: false, attempts }));
+  process.exitCode = 19;
+});
+      `.trim(),
+    ],
+    {
+      cwd: input.cwd,
+      env: {
+        ...input.env,
+        [PAPERCLIP_CONTROL_PLANE_PREFLIGHT_ENV]: JSON.stringify(candidates),
+      },
+      timeoutSec: probeTimeoutSec,
+      graceSec: Math.max(1, Math.min(input.graceSec, 5)),
+      onLog: async () => {},
+      localProcessSandbox: input.localProcessSandbox,
+    },
+  );
+
+  const lines = `${probe.stdout}\n${probe.stderr}`
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  for (let index = lines.length - 1; index >= 0; index -= 1) {
+    try {
+      const parsed = JSON.parse(lines[index] ?? "") as PaperclipControlPlaneProbeResult;
+      if (parsed && typeof parsed === "object" && Array.isArray(parsed.attempts)) {
+        return parsed;
+      }
+    } catch {
+      // Ignore non-JSON noise and keep scanning for the final probe payload.
+    }
+  }
+
+  const probeError =
+    probe.stderr
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .at(-1) ||
+    probe.stdout
+      .split(/\r?\n/)
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .at(-1) ||
+    (probe.signal ? `probe_signal_${probe.signal}` : `probe_exit_${probe.exitCode}`);
+
+  return {
+    ok: false,
+    attempts: candidates.map((url) => ({
+      url,
+      status: null,
+      error: probeError,
+    })),
+  };
+}
+
+export async function preparePaperclipControlPlaneEnvForAdapterRun(input: {
+  adapterLabel: string;
+  runId: string;
+  target: AdapterExecutionTarget | null | undefined;
+  cwd: string;
+  env: Record<string, string>;
+  timeoutSec: number;
+  graceSec: number;
+  localProcessSandbox?: LocalProcessSandboxOptions | null;
+  onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+}): Promise<PreparePaperclipControlPlaneEnvResult> {
+  const onLog = input.onLog ?? (async () => {});
+  const reasons: string[] = [];
+  const hasRuntimeApiConfiguration = Boolean(
+    process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON?.trim() ||
+      process.env.PAPERCLIP_RUNTIME_API_URL?.trim() ||
+      process.env.PAPERCLIP_API_URL?.trim(),
+  );
+  if (!input.env.PAPERCLIP_API_KEY?.trim()) reasons.push("missing_api_key");
+  if (!hasRuntimeApiConfiguration) reasons.push("runtime_api_origin_unconfigured");
+  if (input.env.PAPERCLIP_API_BRIDGE_MODE === "queue_v1") reasons.push("bridge_mode=queue_v1");
+  const candidateCount = listPaperclipControlPlaneCandidates(input.env).length;
+  if (candidateCount === 0) reasons.push("no_api_candidates");
+
+  if (reasons.length > 0) {
+    await onLog(
+      "stdout",
+      `[paperclip] Control-plane preflight skipped for this ${input.adapterLabel} run: ${reasons.join(", ")}.\n`,
+    );
+    return {
+      ok: true,
+      skipped: true,
+      changed: false,
+      url: input.env.PAPERCLIP_API_URL ?? null,
+      attempts: [],
+      reasons,
+    };
+  }
+
+  await onLog(
+    "stdout",
+    `[paperclip] Control-plane preflight engaged for this ${input.adapterLabel} run. candidates=${candidateCount}.\n`,
+  );
+
+  const preflight = await probePaperclipControlPlaneReachability({
+    runId: input.runId,
+    target: input.target,
+    cwd: input.cwd,
+    env: input.env,
+    timeoutSec: input.timeoutSec,
+    graceSec: input.graceSec,
+    localProcessSandbox: input.localProcessSandbox ?? null,
+  });
+
+  if (!preflight.ok || !preflight.url) {
+    // Distinguish "the API is unreachable" from "the probe process itself
+    // could not run" (spawn failure inside a sandbox target, killed by
+    // timeout, etc. — surfaces as the synthesized probe_exit_*/probe_signal_*
+    // error on every attempt). The latter proves nothing about reachability,
+    // and failing the run on it froze the whole fleet on 2026-07-28 while the
+    // control plane was fully healthy. Fail open: keep the previously
+    // configured API URL and let the real run proceed.
+    const probeInfraFailure =
+      preflight.attempts.length > 0 &&
+      preflight.attempts.every(
+        (attempt) =>
+          attempt.status === null &&
+          typeof attempt.error === "string" &&
+          (attempt.error.startsWith("probe_exit_") || attempt.error.startsWith("probe_signal_")),
+      );
+    if (probeInfraFailure) {
+      const previousUrl = normalizePaperclipApiOrigin(input.env.PAPERCLIP_API_URL) ?? input.env.PAPERCLIP_API_URL ?? null;
+      const failOpenUrl = selectFailOpenPaperclipApiUrl(input.env);
+      const changed = failOpenUrl !== previousUrl;
+      if (failOpenUrl) {
+        applySelectedPaperclipApiUrl(input.env, failOpenUrl);
+      }
+      await onLog(
+        "stdout",
+        `[paperclip] Control-plane preflight probe could not execute for this ${input.adapterLabel} run ` +
+          `(${preflight.attempts[0]?.error ?? "unknown"}); continuing without preflight ` +
+          (failOpenUrl
+            ? changed
+              ? `(fail-open -> ${failOpenUrl} instead of ${previousUrl ?? "unset"}).\n`
+              : `(fail-open -> ${failOpenUrl}).\n`
+            : "(fail-open).\n"),
+      );
+      return {
+        ok: true,
+        skipped: true,
+        changed,
+        url: failOpenUrl,
+        attempts: preflight.attempts,
+        reasons: ["probe_infra_failure"],
+      };
+    }
+    const attemptSummary =
+      preflight.attempts.length > 0
+        ? preflight.attempts.slice(0, 4).map(formatPaperclipControlPlaneAttemptSummary).join("; ")
+        : "no Paperclip API candidates were exported to this adapter run";
+    await onLog(
+      "stdout",
+      `[paperclip] Control-plane preflight failed for this ${input.adapterLabel} run. Tried: ${attemptSummary}\n`,
+    );
+    return {
+      ok: false,
+      skipped: false,
+      changed: false,
+      url: null,
+      attempts: preflight.attempts,
+      reasons: [],
+    };
+  }
+
+  const previousUrl = input.env.PAPERCLIP_API_URL ?? null;
+  const changed = preflight.url !== previousUrl;
+  applySelectedPaperclipApiUrl(input.env, preflight.url);
+  await onLog(
+    "stdout",
+    changed
+      ? `[paperclip] Selected reachable Paperclip API URL ${preflight.url} for this ${input.adapterLabel} run.\n`
+      : `[paperclip] Control-plane preflight confirmed ${preflight.url} is reachable for this ${input.adapterLabel} run.\n`,
+  );
+  return {
+    ok: true,
+    skipped: false,
+    changed,
+    url: preflight.url,
+    attempts: preflight.attempts,
+    reasons: [],
+  };
 }
 
 function isBridgeDebugEnabled(env: NodeJS.ProcessEnv): boolean {
@@ -1842,6 +2244,7 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
   return {
     env: {
       PAPERCLIP_API_URL: server.baseUrl,
+      PAPERCLIP_RUNTIME_API_URL: server.baseUrl,
       PAPERCLIP_API_KEY: bridgeToken,
       PAPERCLIP_API_BRIDGE_MODE: "queue_v1",
       PAPERCLIP_BRIDGE_QUEUE_DIR: queueDir,
