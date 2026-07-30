@@ -1112,6 +1112,15 @@ const sandboxHandleWritableDirs = (() => {
   // Record the parent directory of every `access: "rw"` mapping target. Skip
   // read-only mappings (`access` absent or `"ro"`). Read-only is the safe
   // default for an advisory signal.
+  //
+  // Caveat for a future consumer: a workspace, git-history, or asset mapping
+  // uploads a tar archive, so its `targetPath` is the staging archive under the
+  // runtime root, not the directory that the post-upload extract command fills.
+  // For those mappings this records the staging parent (the runtime root), not
+  // the final read-write destination. A consumer that binds these directories
+  // read-write must resolve the real destinations from the runtime preparation
+  // result (the workspace directory and each asset directory), not this set as
+  // is. The set stays a forward-looking signal until that consumer lands.
   function recordWritableTargets(scope: SandboxScope, operations: PluginSyncOperation[]): void {
     const key = sandboxHandleCacheKey(scope);
     for (const operation of operations) {
