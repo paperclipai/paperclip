@@ -92,6 +92,16 @@ describe("redaction", () => {
     expect(result).not.toContain("test-only-sensitive-value");
   });
 
+  it("preserves ordinary colon prose while redacting convincingly secret-shaped values", () => {
+    const ordinary = redactSensitiveText("Investigation notes: secret: follow up with the vendor");
+    const opaqueValue = "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6";
+    const secret = redactSensitiveText(`Investigation notes: secret: ${opaqueValue}`);
+
+    expect(ordinary).toBe("Investigation notes: secret: follow up with the vendor");
+    expect(secret).toContain(REDACTED_EVENT_VALUE);
+    expect(secret).not.toContain(opaqueValue);
+  });
+
   it("redacts inline secrets from command metadata without hiding safe command text", () => {
     const input = {
       command: "custom-acp --token ghp_example_secret env OPENAI_API_KEY=sk-live-example custom-acp",

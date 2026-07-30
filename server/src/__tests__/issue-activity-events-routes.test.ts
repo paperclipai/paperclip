@@ -266,6 +266,41 @@ describe("issue activity event routes", () => {
     });
   }, 15_000);
 
+  it("redacts updated issue text before activity details are persisted or propagated", async () => {
+    const issue = makeIssue();
+    const rawValue = "A1b2C3d4E5f6G7h8I9j0K1l2M3n4O5p6";
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      title: "Updated PAPERCLIP_API_KEY=***REDACTED***",
+      description: "Updated secret: ***REDACTED***",
+      updatedAt: new Date(),
+    }));
+
+    const res = await request(await createApp())
+      .patch(`/api/issues/${issue.id}`)
+      .send({
+        title: `Updated PAPERCLIP_API_KEY=${rawValue}`,
+        description: `Updated secret: ${rawValue}`,
+      });
+
+    expect(res.status).toBe(200);
+    await vi.waitFor(() => {
+      expect(mockLogActivity).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          action: "issue.updated",
+          details: expect.objectContaining({
+            title: "Updated PAPERCLIP_API_KEY=***REDACTED***",
+            description: "Updated secret: ***REDACTED***",
+          }),
+        }),
+      );
+    });
+    expect(JSON.stringify(mockLogActivity.mock.calls)).not.toContain(rawValue);
+  });
+
   it("logs explicit reviewer and approver activity when execution policy participants change", async () => {
     const existingPolicy = normalizeIssueExecutionPolicy({
       stages: [
