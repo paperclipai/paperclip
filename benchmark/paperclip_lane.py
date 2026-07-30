@@ -416,6 +416,10 @@ def run_case(task, model, cfg, timeout):
             "status": "todo" if requested_status == "blocked" else requested_status,
             "priority": "medium",
             "assigneeAgentId": agent_id,
+            # Dedicated bench agents can be registered as fallback sisters under the
+            # paused Bench-Manager. Preserve the requested sister here so the fixture
+            # executes on the model-specific lane instead of being normalized away.
+            "preserveFallbackSisterAssignee": True,
         }
         if project:
             body["projectId"] = project
