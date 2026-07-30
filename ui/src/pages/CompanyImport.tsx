@@ -48,6 +48,13 @@ import {
   FileTree,
 } from "../components/FileTree";
 import { readZipArchive } from "../lib/zip";
+import {
+  INLINE_IMPORT_MAX_BYTES,
+  buildInlineImportPreflight,
+  formatMegabytes,
+  isBlobStoreFilePath,
+  stripBlobFiles,
+} from "../lib/import-preflight";
 import { getPortableFileDataUrl, getPortableFileText, isPortableImageFile } from "../lib/portable-files";
 import { Badge } from "@/components/ui/badge";
 
@@ -1159,6 +1166,20 @@ export function CompanyImport() {
     sourceMode === "local" ? !!localPackage : importUrl.trim().length > 0;
   const hasErrors = importPreview ? importPreview.errors.length > 0 : false;
 
+  // Inline imports ship the parsed package as one JSON request; oversized
+  // local packages are blocked before any request is attempted.
+  const inlinePreflight = useMemo(
+    () => (sourceMode === "local" && localPackage ? buildInlineImportPreflight(localPackage.files) : null),
+    [sourceMode, localPackage],
+  );
+  const inlineImportBlocked = Boolean(inlinePreflight?.tooLarge);
+
+  function handleContinueWithoutAttachments() {
+    if (!localPackage) return;
+    setLocalPackage({ ...localPackage, files: stripBlobFiles(localPackage.files) });
+    setCheckedFiles((prev) => new Set([...prev].filter((filePath) => !isBlobStoreFilePath(filePath))));
+  }
+
   const previewContent = selectedFile && importPreview
     ? (() => {
         return importPreview.files[selectedFile] ?? null;
@@ -1330,6 +1351,20 @@ export function CompanyImport() {
                 {localZipHelpText}
               </p>
             )}
+            {inlinePreflight?.tooLarge && (
+              <div className="mt-3 space-y-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2.5">
+                <p className="text-xs text-amber-500">
+                  This package is about {formatMegabytes(inlinePreflight.estimatedBytes)} inline, which is
+                  larger than the {formatMegabytes(INLINE_IMPORT_MAX_BYTES)} browser import limit. Large
+                  packages need the CLI folder import today (paperclip company import).
+                </p>
+                {inlinePreflight.canDropAttachments && (
+                  <Button size="sm" variant="outline" onClick={handleContinueWithoutAttachments}>
+                    Continue without attachments
+                  </Button>
+                )}
+              </div>
+            )}
           </div>
         ) : (
           <Field
@@ -1403,7 +1438,7 @@ export function CompanyImport() {
             size="sm"
             variant="outline"
             onClick={() => previewMutation.mutate()}
-            disabled={previewMutation.isPending || !hasSource}
+            disabled={previewMutation.isPending || !hasSource || inlineImportBlocked}
           >
             {previewMutation.isPending ? "Previewing..." : "Preview import"}
           </Button>
@@ -1471,7 +1506,7 @@ export function CompanyImport() {
             <Button
               size="sm"
               onClick={() => importMutation.mutate()}
-              disabled={importMutation.isPending || hasErrors || selectedCount === 0}
+              disabled={importMutation.isPending || hasErrors || selectedCount === 0 || inlineImportBlocked}
             >
               <Download className="mr-1.5 h-3.5 w-3.5" />
               {importMutation.isPending

@@ -257,6 +257,51 @@ describe("createZipArchive", () => {
     });
   });
 
+  it("round-trips extensionless blobs/ entries as base64 octet streams", async () => {
+    const bytes = new Uint8Array([0x00, 0x01, 0x80, 0xfe, 0xff]);
+    const entry = {
+      encoding: "base64" as const,
+      data: Buffer.from(bytes).toString("base64"),
+      contentType: "application/octet-stream",
+    };
+    const archive = createZipArchive(
+      {
+        "COMPANY.md": "# Company\n",
+        "blobs/4f2d1c9a": entry,
+      },
+      "paperclip-demo",
+    );
+
+    await expect(readZipArchive(archive)).resolves.toEqual({
+      rootPath: "paperclip-demo",
+      files: {
+        "COMPANY.md": "# Company\n",
+        "blobs/4f2d1c9a": entry,
+      },
+    });
+  });
+
+  it("falls back to base64 for invalid UTF-8 bytes instead of mangling them", async () => {
+    const invalidUtf8 = new Uint8Array([0x68, 0x69, 0xff, 0xfe, 0xc0]);
+    const archive = createZipArchive(
+      {
+        "tasks/pap-1/raw-notes": {
+          encoding: "base64",
+          data: Buffer.from(invalidUtf8).toString("base64"),
+          contentType: null,
+        },
+      },
+      "paperclip-demo",
+    );
+
+    const result = await readZipArchive(archive);
+    expect(result.files["tasks/pap-1/raw-notes"]).toEqual({
+      encoding: "base64",
+      data: Buffer.from(invalidUtf8).toString("base64"),
+      contentType: "application/octet-stream",
+    });
+  });
+
   it("reads standard DEFLATE zip archives created outside Paperclip", async () => {
     const archive = createDeflatedZipArchive(
       {

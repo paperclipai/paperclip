@@ -175,9 +175,9 @@ describe("CompanyExport", () => {
         message: "Importing this export will fail because the bundle references data this board cannot restore.",
       },
       {
-        code: "attachments_not_exported",
+        code: "approvals_not_exported",
         severity: "warning",
-        message: "3 issue attachments are not included in the export bundle.",
+        message: "3 approvals are not included in the export bundle.",
       },
     ]));
 
@@ -188,7 +188,7 @@ describe("CompanyExport", () => {
     expect(container.textContent).toContain(
       "Importing this export will fail because the bundle references data this board cannot restore.",
     );
-    expect(container.textContent).toContain("3 issue attachments are not included in the export bundle.");
+    expect(container.textContent).toContain("3 approvals are not included in the export bundle.");
   });
 
   it("renders no fidelity panel when the report has no warnings", async () => {

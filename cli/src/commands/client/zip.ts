@@ -3,6 +3,9 @@ import path from "node:path";
 import type { CompanyPortabilityFileEntry } from "@paperclipai/shared";
 
 const textDecoder = new TextDecoder();
+// ignoreBOM keeps a leading BOM in the decoded text so text entries
+// re-encode to their original bytes; fatal surfaces invalid UTF-8.
+const strictTextDecoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
 export const binaryContentTypeByExtension: Record<string, string> = {
   ".gif": "image/gif",
@@ -46,14 +49,34 @@ function sharedArchiveRoot(paths: string[]) {
     : null;
 }
 
-function bytesToPortableFileEntry(pathValue: string, bytes: Uint8Array): CompanyPortabilityFileEntry {
+export function isBlobStorePath(pathValue: string) {
+  return /(^|\/)blobs\/[^/]+$/.test(normalizeArchivePath(pathValue));
+}
+
+function decodeStrictUtf8(bytes: Uint8Array): string | null {
+  let text: string;
+  try {
+    text = strictTextDecoder.decode(bytes);
+  } catch {
+    return null;
+  }
+  return Buffer.from(text, "utf8").equals(Buffer.from(bytes)) ? text : null;
+}
+
+export function bytesToPortableFileEntry(pathValue: string, bytes: Uint8Array): CompanyPortabilityFileEntry {
+  // Content-addressed blob entries are opaque bytes regardless of extension.
+  if (isBlobStorePath(pathValue)) {
+    return { encoding: "base64", data: Buffer.from(bytes).toString("base64"), contentType: "application/octet-stream" };
+  }
   const contentType = binaryContentTypeByExtension[path.extname(pathValue).toLowerCase()];
-  if (!contentType) return textDecoder.decode(bytes);
-  return {
-    encoding: "base64",
-    data: Buffer.from(bytes).toString("base64"),
-    contentType,
-  };
+  if (contentType) {
+    return { encoding: "base64", data: Buffer.from(bytes).toString("base64"), contentType };
+  }
+  const text = decodeStrictUtf8(bytes);
+  if (text !== null) return text;
+  // Bytes that are not valid UTF-8 must not be decoded lossily; fall back
+  // to base64 so they round-trip exactly.
+  return { encoding: "base64", data: Buffer.from(bytes).toString("base64"), contentType: "application/octet-stream" };
 }
 
 async function inflateZipEntry(compressionMethod: number, bytes: Uint8Array) {

@@ -54,6 +54,12 @@ export interface CompanyPortabilityLabelManifestEntry {
   color: string;
 }
 
+export interface CompanyPortabilityBlobManifestEntry {
+  sha256: string;
+  byteSize: number;
+  contentType: string;
+}
+
 export interface CompanyPortabilityProjectManifestEntry {
   slug: string;
   name: string;
@@ -139,6 +145,14 @@ export interface CompanyPortabilityIssueMonitorManifestEntry {
   hadSchedule: boolean;
 }
 
+export interface CompanyPortabilityIssueAttachmentManifestEntry {
+  sha256: string;
+  contentType: string;
+  originalFilename: string | null;
+  byteSize: number;
+  commentIndex: number | null;
+}
+
 export interface CompanyPortabilityIssueManifestEntry {
   slug: string;
   identifier: string | null;
@@ -163,6 +177,7 @@ export interface CompanyPortabilityIssueManifestEntry {
   documents?: CompanyPortabilityIssueDocumentManifestEntry[];
   workProducts?: CompanyPortabilityIssueWorkProductManifestEntry[];
   monitor?: CompanyPortabilityIssueMonitorManifestEntry | null;
+  attachments?: CompanyPortabilityIssueAttachmentManifestEntry[];
   metadata: Record<string, unknown> | null;
 }
 
@@ -219,6 +234,7 @@ export interface CompanyPortabilityManifest {
   company: CompanyPortabilityCompanyManifestEntry | null;
   sidebar: CompanyPortabilitySidebarOrder | null;
   labels?: CompanyPortabilityLabelManifestEntry[];
+  blobs?: CompanyPortabilityBlobManifestEntry[];
   agents: CompanyPortabilityAgentManifestEntry[];
   skills: CompanyPortabilitySkillManifestEntry[];
   projects: CompanyPortabilityProjectManifestEntry[];

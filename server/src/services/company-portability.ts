@@ -13,6 +13,7 @@ import {
 } from "@paperclipai/db";
 import type {
   CompanyPortabilityAgentManifestEntry,
+  CompanyPortabilityBlobManifestEntry,
   CompanyPortabilityCollisionStrategy,
   CompanyPortabilityEnvInput,
   CompanyPortabilityExport,
@@ -34,6 +35,7 @@ import type {
   CompanyPortabilityIssueDocumentManifestEntry,
   CompanyPortabilityIssueWorkProductManifestEntry,
   CompanyPortabilityIssueMonitorManifestEntry,
+  CompanyPortabilityIssueAttachmentManifestEntry,
   CompanyPortabilityIssueManifestEntry,
   CompanyPortabilitySidebarOrder,
   CompanyPortabilitySkillManifestEntry,
@@ -61,12 +63,14 @@ import {
   normalizeAgentUrlKey,
   PERMISSION_KEYS,
 } from "@paperclipai/shared";
+import { sha256HexOfBytes } from "@paperclipai/shared/portability-hash";
 import {
   readPaperclipSkillSyncPreference,
   writePaperclipSkillSyncPreference,
 } from "@paperclipai/adapter-utils/server-utils";
 import { requireOpenCodeModelId } from "@paperclipai/adapter-opencode-local/server";
 import { findServerAdapter } from "../adapters/index.js";
+import { normalizeIssueAttachmentMaxBytes } from "../attachment-types.js";
 import { forbidden, notFound, unprocessable } from "../errors.js";
 import { ghFetch, gitHubApiBase, resolveRawGitHubUrl } from "./github-fetch.js";
 import type { StorageService } from "../storage/types.js";
@@ -149,6 +153,10 @@ const DEFAULT_INCLUDE: CompanyPortabilityInclude = {
 
 const DEFAULT_COLLISION_STRATEGY: CompanyPortabilityCollisionStrategy = "rename";
 const DEFAULT_IMPORTED_LABEL_COLOR = "#6366f1";
+// Blob entries are content-addressed by sha256; the store itself is
+// type-agnostic, so blob files always travel as opaque octet streams while
+// each attachment entry carries the real content type.
+const PORTABLE_BLOB_CONTENT_TYPE = "application/octet-stream";
 const IMPORT_FORBIDDEN_ADAPTER_TYPES = new Set(["process", "http"]);
 const execFileAsync = promisify(execFile);
 let bundledSkillsCommitPromise: Promise<string | null> | null = null;
@@ -936,6 +944,63 @@ function normalizePortableIssueMonitor(value: unknown): CompanyPortabilityIssueM
     hadSchedule: asBoolean(value.hadSchedule) ?? false,
   };
   return monitor.notes !== null || monitor.scheduledBy !== null || monitor.hadSchedule ? monitor : null;
+}
+
+function portableBlobPath(sha256: string) {
+  return `blobs/${sha256}`;
+}
+
+function normalizePortableBlobIndex(value: unknown): CompanyPortabilityBlobManifestEntry[] {
+  if (!Array.isArray(value)) return [];
+  const blobs: CompanyPortabilityBlobManifestEntry[] = [];
+  const seen = new Set<string>();
+  for (const entry of value) {
+    if (!isPlainRecord(entry)) continue;
+    const sha256 = asString(entry.sha256)?.toLowerCase() ?? null;
+    const byteSize = asInteger(entry.byteSize);
+    if (!sha256 || seen.has(sha256) || byteSize === null || byteSize < 0) continue;
+    seen.add(sha256);
+    blobs.push({
+      sha256,
+      byteSize,
+      contentType: asString(entry.contentType) ?? PORTABLE_BLOB_CONTENT_TYPE,
+    });
+  }
+  return blobs;
+}
+
+function normalizePortableIssueAttachments(
+  value: unknown,
+  warnings: string[],
+  sourceLabel: string,
+): CompanyPortabilityIssueAttachmentManifestEntry[] {
+  if (value === undefined || value === null) return [];
+  if (!Array.isArray(value)) {
+    warnings.push(`${sourceLabel} attachments were ignored because they are not an array.`);
+    return [];
+  }
+  const attachments: CompanyPortabilityIssueAttachmentManifestEntry[] = [];
+  for (const [index, entry] of value.entries()) {
+    if (!isPlainRecord(entry)) {
+      warnings.push(`${sourceLabel} attachment ${index + 1} was ignored because it is not an object.`);
+      continue;
+    }
+    const sha256 = asString(entry.sha256)?.toLowerCase() ?? null;
+    if (!sha256) {
+      warnings.push(`${sourceLabel} attachment ${index + 1} was ignored because it has no sha256.`);
+      continue;
+    }
+    const byteSize = asInteger(entry.byteSize);
+    const commentIndex = asInteger(entry.commentIndex);
+    attachments.push({
+      sha256,
+      contentType: asString(entry.contentType) ?? PORTABLE_BLOB_CONTENT_TYPE,
+      originalFilename: asString(entry.originalFilename),
+      byteSize: byteSize !== null && byteSize >= 0 ? byteSize : 0,
+      commentIndex: commentIndex !== null && commentIndex >= 0 ? commentIndex : null,
+    });
+  }
+  return attachments;
 }
 
 function appendCodexImportArg(adapterConfig: Record<string, unknown>, arg: string) {
@@ -1863,6 +1928,27 @@ function filterPortableExtensionYaml(yaml: string, selectedFiles: Set<string>) {
     }
   }
 
+  if (Array.isArray(parsed.blobs)) {
+    const referencedBlobShas = new Set<string>();
+    const tasksSection = parsed.tasks;
+    if (isPlainRecord(tasksSection)) {
+      for (const entry of Object.values(tasksSection)) {
+        if (!isPlainRecord(entry)) continue;
+        for (const attachment of normalizePortableIssueAttachments(entry.attachments, [], "")) {
+          referencedBlobShas.add(attachment.sha256);
+        }
+      }
+    }
+    const filteredBlobs = parsed.blobs.filter(
+      (entry) => isPlainRecord(entry) && typeof entry.sha256 === "string" && referencedBlobShas.has(entry.sha256.trim().toLowerCase()),
+    );
+    if (filteredBlobs.length > 0) {
+      parsed.blobs = filteredBlobs;
+    } else {
+      delete parsed.blobs;
+    }
+  }
+
   const sidebarOrder = normalizePortableSidebarOrder(parsed.sidebar);
   if (sidebarOrder) {
     const filteredSidebar = stripEmptyValues({
@@ -2763,6 +2849,7 @@ function buildManifestFromPackageFiles(
   const paperclipCompany = isPlainRecord(paperclipExtension.company) ? paperclipExtension.company : {};
   const paperclipSidebar = normalizePortableSidebarOrder(paperclipExtension.sidebar);
   const paperclipLabels = normalizePortableLabelDefinitions(paperclipExtension.labels);
+  const paperclipBlobs = normalizePortableBlobIndex(paperclipExtension.blobs);
   const paperclipAgents = isPlainRecord(paperclipExtension.agents) ? paperclipExtension.agents : {};
   const paperclipProjects = isPlainRecord(paperclipExtension.projects) ? paperclipExtension.projects : {};
   const paperclipTasks = isPlainRecord(paperclipExtension.tasks) ? paperclipExtension.tasks : {};
@@ -2846,6 +2933,7 @@ function buildManifestFromPackageFiles(
     },
     sidebar: paperclipSidebar,
     labels: paperclipLabels,
+    blobs: paperclipBlobs,
     agents: [],
     skills: [],
     projects: [],
@@ -3105,6 +3193,7 @@ function buildManifestFromPackageFiles(
       documents: normalizePortableIssueDocuments(extension.documents, warnings, `Task ${slug}`),
       workProducts: normalizePortableIssueWorkProducts(extension.workProducts),
       monitor: normalizePortableIssueMonitor(extension.monitor),
+      attachments: normalizePortableIssueAttachments(extension.attachments, warnings, `Task ${slug}`),
       metadata: isPlainRecord(extension.metadata) ? extension.metadata : null,
     });
     if (frontmatter.kind && frontmatter.kind !== "task") {
@@ -3965,6 +4054,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
 
     let unexportedBlockerEdgeCount = 0;
     let unportableWorkProductRefCount = 0;
+    const exportedBlobs = new Map<string, CompanyPortabilityBlobManifestEntry>();
     for (const issue of selectedIssueRows) {
       const taskSlug = taskSlugByIssueId.get(issue.id)!;
       const projectSlug = issue.projectId ? (projectSlugById.get(issue.projectId) ?? null) : null;
@@ -4033,6 +4123,47 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
           metadata: workProduct.metadata ?? null,
         });
       });
+      // Attachment bytes travel as content-addressed blobs/<sha256> entries,
+      // deduped across the bundle; each per-task entry references its blob by
+      // hash and its comment by index into the exported comments array.
+      const attachmentRows = (await issuesSvc.listAttachments(issue.id))
+        .slice()
+        .sort((left, right) => new Date(left.createdAt).getTime() - new Date(right.createdAt).getTime());
+      const commentIndexById = new Map(comments.map((comment, index) => [comment.id, index] as const));
+      const attachmentEntries: Array<Record<string, unknown>> = [];
+      if (attachmentRows.length > 0 && !storage) {
+        warnings.push(`Skipped ${attachmentRows.length} attachment${attachmentRows.length === 1 ? "" : "s"} on task ${taskSlug} because storage is unavailable.`);
+      } else if (storage) {
+        for (const attachment of attachmentRows) {
+          let body: Buffer;
+          try {
+            const object = await storage.getObject(companyId, attachment.objectKey);
+            body = await streamToBuffer(object.stream);
+          } catch (err) {
+            warnings.push(`Skipped attachment ${attachment.originalFilename ?? attachment.sha256} on task ${taskSlug} because its stored object could not be read: ${err instanceof Error ? err.message : String(err)}`);
+            continue;
+          }
+          // Blobs are addressed by the hash of the bytes actually read; a
+          // stale asset-row hash loses to the recomputed one.
+          const sha256 = sha256HexOfBytes(body);
+          if (attachment.sha256 && attachment.sha256.toLowerCase() !== sha256) {
+            warnings.push(`Attachment ${attachment.originalFilename ?? attachment.sha256} on task ${taskSlug} was exported under its recomputed content hash because the stored hash did not match.`);
+          }
+          if (!exportedBlobs.has(sha256)) {
+            files[portableBlobPath(sha256)] = bufferToPortableBinaryFile(body, PORTABLE_BLOB_CONTENT_TYPE);
+            exportedBlobs.set(sha256, { sha256, byteSize: body.length, contentType: PORTABLE_BLOB_CONTENT_TYPE });
+          }
+          attachmentEntries.push({
+            sha256,
+            contentType: attachment.contentType ?? PORTABLE_BLOB_CONTENT_TYPE,
+            originalFilename: attachment.originalFilename ?? null,
+            byteSize: body.length,
+            commentIndex: attachment.issueCommentId != null
+              ? commentIndexById.get(attachment.issueCommentId) ?? null
+              : null,
+          });
+        }
+      }
       files[taskPath] = buildMarkdown(
         {
           name: issue.title,
@@ -4071,6 +4202,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         blockedBy: blockedBySlugs,
         documents: documentEntries,
         workProducts: workProductEntries,
+        attachments: attachmentEntries,
         monitor: {
           notes: issue.monitorNotes ?? null,
           scheduledBy: issue.monitorScheduledBy ?? null,
@@ -4131,6 +4263,8 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     }
 
     const paperclipExtensionPath = ".paperclip.yaml";
+    const exportedBlobIndex = Array.from(exportedBlobs.values())
+      .sort((left, right) => left.sha256.localeCompare(right.sha256));
     const paperclipAgents = Object.fromEntries(
       Object.entries(paperclipAgentsOut).filter(([, value]) => isPlainRecord(value) && Object.keys(value).length > 0),
     );
@@ -4158,6 +4292,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         }),
         sidebar: stripEmptyValues(sidebarOrder),
         labels: exportedLabels.length > 0 ? exportedLabels : undefined,
+        blobs: exportedBlobIndex.length > 0 ? exportedBlobIndex : undefined,
         agents: Object.keys(paperclipAgents).length > 0 ? paperclipAgents : undefined,
         projects: Object.keys(paperclipProjects).length > 0 ? paperclipProjects : undefined,
         tasks: Object.keys(paperclipTasks).length > 0 ? paperclipTasks : undefined,
@@ -5271,6 +5406,8 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         const importedIssueIdBySlug = new Map<string, string>();
         const blockedByBySlug = new Map<string, string[]>();
         let unarmedMonitorCount = 0;
+        let attachmentsSkippedNoStorage = 0;
+        const attachmentMaxBytes = normalizeIssueAttachmentMaxBytes(targetCompany.attachmentMaxBytes ?? null);
 
         for (const manifestIssue of sourceManifest.issues) {
           const markdownRaw = readPortableTextFile(plan.source.files, manifestIssue.path);
@@ -5423,6 +5560,9 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             executionWorkspaceSettings: manifestIssue.executionWorkspaceSettings,
             labelIds: resolvedLabelIds,
           });
+          // Created comment ids are captured positionally so attachment
+          // entries can resolve their commentIndex against them.
+          const createdCommentIds: Array<string | null> = [];
           for (const comment of manifestIssue.comments ?? []) {
             const authorAgentId = comment.authorType === "agent" && comment.authorAgentSlug
               ? importedSlugToAgentId.get(comment.authorAgentSlug)
@@ -5440,7 +5580,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
               : comment.authorType === "user" && actorUserId
                 ? "user"
                 : "system";
-            await issues.addComment(createdIssue.id, comment.body, {
+            const createdComment = await issues.addComment(createdIssue.id, comment.body, {
               agentId: authorAgentId ?? undefined,
               userId: authorType === "user" ? actorUserId ?? undefined : undefined,
             }, {
@@ -5449,6 +5589,7 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
               metadata: comment.metadata,
               createdAt: comment.createdAt,
             });
+            createdCommentIds.push(createdComment?.id ?? null);
           }
           importedIssueIdBySlug.set(manifestIssue.slug, createdIssue.id);
           if ((manifestIssue.blockedBy ?? []).length > 0) {
@@ -5508,6 +5649,59 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             }
             unarmedMonitorCount += 1;
           }
+          for (const attachmentEntry of manifestIssue.attachments ?? []) {
+            const attachmentLabel = attachmentEntry.originalFilename ?? attachmentEntry.sha256;
+            if (!storage) {
+              attachmentsSkippedNoStorage += 1;
+              continue;
+            }
+            const blobPath = portableBlobPath(attachmentEntry.sha256);
+            const blobFile = plan.source.files[blobPath];
+            if (blobFile === undefined) {
+              warnings.push(`Task ${manifestIssue.slug} attachment ${attachmentLabel} was skipped because its blob is missing from the package: ${blobPath}`);
+              continue;
+            }
+            const body = portableFileToBuffer(blobFile, blobPath);
+            // Content-addressed blobs double as the bundle's tamper seal:
+            // bytes that do not hash to their declared sha256 fail closed.
+            if (sha256HexOfBytes(body) !== attachmentEntry.sha256) {
+              throw unprocessable(`Attachment blob ${blobPath} does not match its declared sha256; the package is corrupted or was tampered with.`);
+            }
+            if (body.length > attachmentMaxBytes) {
+              warnings.push(`Task ${manifestIssue.slug} attachment ${attachmentLabel} was skipped because it exceeds this board's attachment size limit of ${attachmentMaxBytes} bytes.`);
+              continue;
+            }
+            let issueCommentId: string | null = null;
+            if (attachmentEntry.commentIndex !== null) {
+              issueCommentId = createdCommentIds[attachmentEntry.commentIndex] ?? null;
+              if (!issueCommentId) {
+                warnings.push(`Task ${manifestIssue.slug} attachment ${attachmentLabel} was imported at task scope because its comment reference could not be resolved.`);
+              }
+            }
+            try {
+              const stored = await storage.putFile({
+                companyId: targetCompany.id,
+                namespace: `issues/${createdIssue.id}`,
+                originalFilename: attachmentEntry.originalFilename,
+                contentType: attachmentEntry.contentType,
+                body,
+              });
+              await issues.createAttachment({
+                issueId: createdIssue.id,
+                issueCommentId,
+                provider: stored.provider,
+                objectKey: stored.objectKey,
+                contentType: stored.contentType,
+                byteSize: stored.byteSize,
+                sha256: stored.sha256,
+                originalFilename: stored.originalFilename,
+                createdByAgentId: null,
+                createdByUserId: actorUserId ?? null,
+              });
+            } catch (error) {
+              warnings.push(`Task ${manifestIssue.slug} attachment ${attachmentLabel} could not be imported: ${error instanceof Error ? error.message : String(error)}`);
+            }
+          }
         }
 
         if (blockedByBySlug.size > 0) {
@@ -5566,6 +5760,10 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
 
         if (unarmedMonitorCount > 0) {
           warnings.push(`${unarmedMonitorCount} monitor${unarmedMonitorCount === 1 ? " was" : "s were"} imported un-armed; re-arm ${unarmedMonitorCount === 1 ? "it" : "them"} from the task page to resume checks.`);
+        }
+
+        if (attachmentsSkippedNoStorage > 0) {
+          warnings.push(`Skipped ${attachmentsSkippedNoStorage} attachment${attachmentsSkippedNoStorage === 1 ? "" : "s"} because storage is unavailable.`);
         }
       }
 

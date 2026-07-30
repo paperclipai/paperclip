@@ -62,6 +62,12 @@ export const portabilityLabelManifestEntrySchema = z.object({
   color: z.string().min(1),
 });
 
+export const portabilityBlobManifestEntrySchema = z.object({
+  sha256: z.string().min(1),
+  byteSize: z.number().int().nonnegative(),
+  contentType: z.string().min(1),
+});
+
 export const portabilityAgentManifestEntrySchema = z.object({
   slug: z.string().min(1),
   name: z.string().min(1),
@@ -183,6 +189,14 @@ export const portabilityIssueMonitorManifestEntrySchema = z.object({
   hadSchedule: z.boolean().default(false),
 });
 
+export const portabilityIssueAttachmentManifestEntrySchema = z.object({
+  sha256: z.string().min(1),
+  contentType: z.string().min(1),
+  originalFilename: z.string().nullable(),
+  byteSize: z.number().int().nonnegative(),
+  commentIndex: z.number().int().nonnegative().nullable().default(null),
+});
+
 export const portabilityIssueManifestEntrySchema = z.object({
   slug: z.string().min(1),
   identifier: z.string().min(1).nullable(),
@@ -207,6 +221,7 @@ export const portabilityIssueManifestEntrySchema = z.object({
   documents: z.array(portabilityIssueDocumentManifestEntrySchema).default([]),
   workProducts: z.array(portabilityIssueWorkProductManifestEntrySchema).default([]),
   monitor: portabilityIssueMonitorManifestEntrySchema.nullable().default(null),
+  attachments: z.array(portabilityIssueAttachmentManifestEntrySchema).default([]),
   metadata: z.record(z.string(), z.unknown()).nullable(),
 });
 
@@ -229,6 +244,7 @@ export const portabilityManifestSchema = z.object({
   company: portabilityCompanyManifestEntrySchema.nullable(),
   sidebar: portabilitySidebarOrderSchema.nullable(),
   labels: z.array(portabilityLabelManifestEntrySchema).default([]),
+  blobs: z.array(portabilityBlobManifestEntrySchema).default([]),
   agents: z.array(portabilityAgentManifestEntrySchema),
   skills: z.array(portabilitySkillManifestEntrySchema).default([]),
   projects: z.array(portabilityProjectManifestEntrySchema).default([]),

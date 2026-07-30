@@ -31,6 +31,7 @@ describe("buildExportFidelityWarnings", () => {
       issueBlockerRelations: 2,
       issueDocuments: 1,
       issueWorkProducts: 3,
+      issueAttachments: 4,
       issueMonitors: 8,
     })).toEqual([]);
   });
@@ -38,20 +39,18 @@ describe("buildExportFidelityWarnings", () => {
   it("emits one warning per unsupported data category with counts", () => {
     const warnings = buildExportFidelityWarnings({
       ...zeroCounts,
-      issueAttachments: 4,
       approvals: 5,
       costEvents: 6,
       activityLogEntries: 7,
     });
     expect(warnings.map((warning) => warning.code)).toEqual([
-      "attachments_not_exported",
       "approvals_not_exported",
       "cost_history_not_exported",
       "activity_history_not_exported",
     ]);
     expect(warnings.every((warning) => warning.severity === "warning")).toBe(true);
-    expect(warnings[0]?.message).toBe("4 issue attachments are not included in the export bundle.");
-    expect(warnings[1]?.message).toBe("5 approvals are not included in the export bundle.");
+    expect(warnings[0]?.message).toBe("5 approvals are not included in the export bundle.");
+    expect(warnings[1]?.message).toBe("6 cost events are not included in the export bundle.");
   });
 });
 

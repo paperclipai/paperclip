@@ -27,9 +27,14 @@ const mockSidebarPreferencesApi = vi.hoisted(() => ({
 }));
 const mockPushToast = vi.hoisted(() => vi.fn());
 const mockSetSelectedCompanyId = vi.hoisted(() => vi.fn());
+const mockReadZipArchive = vi.hoisted(() => vi.fn());
 
 vi.mock("../api/companies", () => ({
   companiesApi: mockCompaniesApi,
+}));
+
+vi.mock("../lib/zip", () => ({
+  readZipArchive: mockReadZipArchive,
 }));
 
 vi.mock("../api/agents", () => ({
@@ -253,5 +258,64 @@ describe("CompanyImport", () => {
     expect(container.textContent).toContain("failed: resume exploded");
     expect(container.textContent).toContain("activated");
     expect(mockPushToast).toHaveBeenCalledWith(expect.objectContaining({ tone: "error" }));
+  });
+
+  it("blocks oversized local packages until attachments are dropped", async () => {
+    // A synthetic parsed package: the base64 blob payload alone exceeds the
+    // inline import limit, so no real 60MB zip needs to be built.
+    mockReadZipArchive.mockResolvedValue({
+      rootPath: "big-package",
+      files: {
+        "COMPANY.md": "---\nname: Big\n---\n",
+        ".paperclip.yaml": 'schema: "paperclip/v1"\n',
+        "blobs/4f2d1c9a": {
+          encoding: "base64",
+          data: "A".repeat(57 * 1024 * 1024),
+          contentType: "application/octet-stream",
+        },
+      },
+    });
+
+    root = createRoot(container);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    const currentRoot = root;
+    await act(async () => {
+      currentRoot.render(
+        <QueryClientProvider client={queryClient}>
+          <CompanyImport />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    await clickButton((text) => text.includes("Local zip"));
+
+    const fileInput = container.querySelector<HTMLInputElement>('input[type="file"]');
+    expect(fileInput).toBeTruthy();
+    const file = new File(["stub"], "big-package.zip", { type: "application/zip" });
+    Object.defineProperty(file, "arrayBuffer", { value: async () => new ArrayBuffer(0) });
+    Object.defineProperty(fileInput!, "files", { value: [file] });
+    await act(async () => {
+      fileInput!.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(container.textContent).toContain("CLI folder import");
+    expect(findButton((text) => text === "Preview import")?.disabled).toBe(true);
+
+    await clickButton((text) => text === "Continue without attachments");
+
+    expect(container.textContent).not.toContain("CLI folder import");
+    expect(findButton((text) => text === "Preview import")?.disabled).toBe(false);
+
+    await clickButton((text) => text === "Preview import");
+    await clickButton((text) => text.startsWith("Import 3 file"));
+
+    expect(mockCompaniesApi.importBundle).toHaveBeenCalledTimes(1);
+    const request = mockCompaniesApi.importBundle.mock.calls[0]![0] as {
+      source: { type: string; files: Record<string, unknown> };
+    };
+    expect(request.source.type).toBe("inline");
+    expect(Object.keys(request.source.files).sort()).toEqual([".paperclip.yaml", "COMPANY.md"]);
   });
 });

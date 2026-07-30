@@ -2,6 +2,9 @@ import type { CompanyPortabilityFileEntry } from "@paperclipai/shared";
 
 const textEncoder = new TextEncoder();
 const textDecoder = new TextDecoder();
+// ignoreBOM keeps a leading BOM in the decoded text so text entries
+// re-encode to their original bytes; fatal surfaces invalid UTF-8.
+const strictTextDecoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
 const crcTable = new Uint32Array(256);
 for (let i = 0; i < 256; i++) {
@@ -121,14 +124,39 @@ function base64ToBytes(base64: string) {
   return bytes;
 }
 
+function isBlobStorePath(pathValue: string) {
+  return /(^|\/)blobs\/[^/]+$/.test(normalizeArchivePath(pathValue));
+}
+
+function decodeStrictUtf8(bytes: Uint8Array): string | null {
+  let text: string;
+  try {
+    text = strictTextDecoder.decode(bytes);
+  } catch {
+    return null;
+  }
+  const reEncoded = textEncoder.encode(text);
+  if (reEncoded.length !== bytes.length) return null;
+  for (let index = 0; index < bytes.length; index += 1) {
+    if (reEncoded[index] !== bytes[index]) return null;
+  }
+  return text;
+}
+
 function bytesToPortableFileEntry(pathValue: string, bytes: Uint8Array): CompanyPortabilityFileEntry {
+  // Content-addressed blob entries are opaque bytes regardless of extension.
+  if (isBlobStorePath(pathValue)) {
+    return { encoding: "base64", data: bytesToBase64(bytes), contentType: "application/octet-stream" };
+  }
   const contentType = inferBinaryContentType(pathValue);
-  if (!contentType) return textDecoder.decode(bytes);
-  return {
-    encoding: "base64",
-    data: bytesToBase64(bytes),
-    contentType,
-  };
+  if (contentType) {
+    return { encoding: "base64", data: bytesToBase64(bytes), contentType };
+  }
+  const text = decodeStrictUtf8(bytes);
+  if (text !== null) return text;
+  // Bytes that are not valid UTF-8 must not be decoded lossily; fall back
+  // to base64 so they round-trip exactly.
+  return { encoding: "base64", data: bytesToBase64(bytes), contentType: "application/octet-stream" };
 }
 
 function portableFileEntryToBytes(entry: CompanyPortabilityFileEntry): Uint8Array {

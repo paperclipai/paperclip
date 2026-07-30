@@ -1,4 +1,5 @@
 import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
@@ -44,6 +45,8 @@ const issueSvc = {
   listLabels: vi.fn(),
   createLabel: vi.fn(),
   getRelationSummaries: vi.fn(),
+  listAttachments: vi.fn(),
+  createAttachment: vi.fn(),
 };
 
 const documentSvc = {
@@ -277,6 +280,8 @@ describe("company portability", () => {
       color: data.color,
     }));
     issueSvc.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
+    issueSvc.listAttachments.mockResolvedValue([]);
+    issueSvc.createAttachment.mockResolvedValue({ id: "attachment-imported" });
     documentSvc.listIssueDocuments.mockResolvedValue([]);
     documentSvc.upsertIssueDocument.mockResolvedValue({ created: true });
     workProductSvc.listForIssue.mockResolvedValue([]);
@@ -3818,6 +3823,317 @@ describe("company portability", () => {
     expect(insertedRelationValues).toEqual([]);
     expect(result.warnings).toContain(
       "Task pap-2 blocker pap-1 was skipped because that task was not imported.",
+    );
+  });
+
+  const attachmentBytesByObjectKey: Record<string, string> = {
+    "issues/issue-1/notes.bin": "png-bytes",
+    "issues/issue-1/screenshot.png": "png-bytes",
+    "issues/issue-1/big.bin": "twenty-byte-payload!",
+  };
+
+  function sha256Of(content: string) {
+    return createHash("sha256").update(content).digest("hex");
+  }
+
+  function fakeAttachmentStorage() {
+    return {
+      getObject: vi.fn().mockImplementation(async (_companyId: string, objectKey: string) => {
+        const content = attachmentBytesByObjectKey[objectKey];
+        if (content === undefined) throw new Error(`missing object ${objectKey}`);
+        return { stream: Readable.from([Buffer.from(content)]) };
+      }),
+      putFile: vi.fn().mockImplementation(async (input: {
+        originalFilename: string | null;
+        contentType: string;
+        body: Buffer;
+      }) => ({
+        provider: "local_disk",
+        objectKey: `stored/${input.originalFilename ?? "blob"}`,
+        contentType: input.contentType,
+        byteSize: input.body.length,
+        sha256: sha256Of(input.body.toString()),
+        originalFilename: input.originalFilename,
+      })),
+    };
+  }
+
+  function mockAttachmentExportSources(extraRows: Array<Record<string, unknown>> = []) {
+    projectSvc.list.mockResolvedValue([]);
+    projectSvc.listWorkspaces.mockResolvedValue([]);
+    issueSvc.list.mockResolvedValue([
+      {
+        id: "issue-1",
+        identifier: "PAP-1",
+        title: "Attachment task",
+        description: null,
+        projectId: null,
+        projectWorkspaceId: null,
+        assigneeAgentId: null,
+        status: "todo",
+        priority: "medium",
+        labelIds: [],
+        billingCode: null,
+        executionWorkspaceSettings: null,
+        assigneeAdapterOverrides: null,
+      },
+    ]);
+    issueSvc.listComments.mockResolvedValue([
+      {
+        id: "comment-1",
+        body: "First comment",
+        authorType: "system",
+        authorAgentId: null,
+        presentation: null,
+        metadata: null,
+        createdAt: new Date("2026-06-01T00:00:00.000Z"),
+      },
+      {
+        id: "comment-2",
+        body: "Screenshot attached",
+        authorType: "system",
+        authorAgentId: null,
+        presentation: null,
+        metadata: null,
+        createdAt: new Date("2026-06-02T00:00:00.000Z"),
+      },
+    ]);
+    // listAttachments returns newest-first like the real service; the export
+    // re-sorts chronologically.
+    issueSvc.listAttachments.mockResolvedValue([
+      {
+        id: "attachment-2",
+        issueId: "issue-1",
+        issueCommentId: "comment-2",
+        provider: "local_disk",
+        objectKey: "issues/issue-1/screenshot.png",
+        contentType: "image/png",
+        byteSize: 9,
+        sha256: sha256Of("png-bytes"),
+        originalFilename: "screenshot.png",
+        createdAt: new Date("2026-06-03T00:00:00.000Z"),
+      },
+      {
+        id: "attachment-1",
+        issueId: "issue-1",
+        issueCommentId: null,
+        provider: "local_disk",
+        objectKey: "issues/issue-1/notes.bin",
+        contentType: "application/octet-stream",
+        byteSize: 9,
+        sha256: "stale-asset-row-hash",
+        originalFilename: "notes.bin",
+        createdAt: new Date("2026-06-02T12:00:00.000Z"),
+      },
+      ...extraRows,
+    ]);
+  }
+
+  it("carries issue attachments as content-addressed blobs through export and import", async () => {
+    const storage = fakeAttachmentStorage();
+    const portability = companyPortabilityService({} as any, storage as any);
+    mockAttachmentExportSources();
+    const sha = sha256Of("png-bytes");
+
+    const exported = await portability.exportBundle("company-1", {
+      include: { company: true, agents: false, projects: false, issues: true },
+    });
+
+    // Both attachments share the same bytes, so the bundle holds one blob.
+    expect(Object.keys(exported.files).filter((filePath) => filePath.startsWith("blobs/"))).toEqual([
+      `blobs/${sha}`,
+    ]);
+    expect(exported.files[`blobs/${sha}`]).toEqual({
+      encoding: "base64",
+      data: Buffer.from("png-bytes").toString("base64"),
+      contentType: "application/octet-stream",
+    });
+    expect(exported.manifest.blobs).toEqual([
+      { sha256: sha, byteSize: 9, contentType: "application/octet-stream" },
+    ]);
+    const taskEntry = exported.manifest.issues.find((issue) => issue.slug === "pap-1");
+    expect(taskEntry?.attachments).toEqual([
+      {
+        sha256: sha,
+        contentType: "application/octet-stream",
+        originalFilename: "notes.bin",
+        byteSize: 9,
+        commentIndex: null,
+      },
+      {
+        sha256: sha,
+        contentType: "image/png",
+        originalFilename: "screenshot.png",
+        byteSize: 9,
+        commentIndex: 1,
+      },
+    ]);
+    expect(exported.warnings).toContain(
+      "Attachment notes.bin on task pap-1 was exported under its recomputed content hash because the stored hash did not match.",
+    );
+
+    companySvc.create.mockResolvedValue({ id: "company-imported", name: "Imported", attachmentMaxBytes: null });
+    accessSvc.ensureMembership.mockResolvedValue(undefined);
+    agentSvc.list.mockResolvedValue([]);
+    issueSvc.create.mockResolvedValue({ id: "issue-imported", title: "Attachment task", projectId: null });
+    issueSvc.addComment
+      .mockResolvedValueOnce({ id: "comment-imported-1" })
+      .mockResolvedValueOnce({ id: "comment-imported-2" });
+
+    const result = await portability.importBundle({
+      source: { type: "inline", rootPath: exported.rootPath, files: exported.files },
+      include: { company: true, agents: false, projects: false, issues: true },
+      target: { mode: "new_company", newCompanyName: "Imported" },
+      agents: "all",
+      collisionStrategy: "rename",
+    }, "user-1");
+
+    expect(storage.putFile).toHaveBeenCalledTimes(2);
+    expect(storage.putFile).toHaveBeenCalledWith(expect.objectContaining({
+      companyId: "company-imported",
+      namespace: "issues/issue-imported",
+      originalFilename: "screenshot.png",
+      contentType: "image/png",
+      body: Buffer.from("png-bytes"),
+    }));
+    expect(issueSvc.createAttachment).toHaveBeenCalledTimes(2);
+    expect(issueSvc.createAttachment).toHaveBeenCalledWith(expect.objectContaining({
+      issueId: "issue-imported",
+      issueCommentId: null,
+      originalFilename: "notes.bin",
+      contentType: "application/octet-stream",
+      sha256: sha,
+      byteSize: 9,
+      createdByUserId: "user-1",
+    }));
+    expect(issueSvc.createAttachment).toHaveBeenCalledWith(expect.objectContaining({
+      issueId: "issue-imported",
+      issueCommentId: "comment-imported-2",
+      originalFilename: "screenshot.png",
+      contentType: "image/png",
+    }));
+    expect(result.warnings.filter((warning) => warning.includes("attachment"))).toEqual([]);
+  });
+
+  it("skips attachment export with a per-task warning when storage is unavailable", async () => {
+    const portability = companyPortabilityService({} as any);
+    mockAttachmentExportSources();
+
+    const exported = await portability.exportBundle("company-1", {
+      include: { company: true, agents: false, projects: false, issues: true },
+    });
+
+    expect(exported.warnings).toContain(
+      "Skipped 2 attachments on task pap-1 because storage is unavailable.",
+    );
+    expect(Object.keys(exported.files).some((filePath) => filePath.startsWith("blobs/"))).toBe(false);
+    expect(asTextFile(exported.files[".paperclip.yaml"])).not.toContain("attachments:");
+  });
+
+  it("skips all attachment imports with one warning when the target has no storage", async () => {
+    const storage = fakeAttachmentStorage();
+    const exporting = companyPortabilityService({} as any, storage as any);
+    mockAttachmentExportSources();
+    const exported = await exporting.exportBundle("company-1", {
+      include: { company: true, agents: false, projects: false, issues: true },
+    });
+
+    const importing = companyPortabilityService({} as any);
+    companySvc.create.mockResolvedValue({ id: "company-imported", name: "Imported" });
+    accessSvc.ensureMembership.mockResolvedValue(undefined);
+    agentSvc.list.mockResolvedValue([]);
+    issueSvc.create.mockResolvedValue({ id: "issue-imported", title: "Attachment task", projectId: null });
+
+    const result = await importing.importBundle({
+      source: { type: "inline", rootPath: exported.rootPath, files: exported.files },
+      include: { company: true, agents: false, projects: false, issues: true },
+      target: { mode: "new_company", newCompanyName: "Imported" },
+      agents: "all",
+      collisionStrategy: "rename",
+    }, "user-1");
+
+    expect(issueSvc.createAttachment).not.toHaveBeenCalled();
+    expect(result.warnings).toContain("Skipped 2 attachments because storage is unavailable.");
+  });
+
+  it("fails closed when a bundle blob does not match its declared sha256", async () => {
+    const storage = fakeAttachmentStorage();
+    const portability = companyPortabilityService({} as any, storage as any);
+    mockAttachmentExportSources();
+    const sha = sha256Of("png-bytes");
+
+    const exported = await portability.exportBundle("company-1", {
+      include: { company: true, agents: false, projects: false, issues: true },
+    });
+    exported.files[`blobs/${sha}`] = {
+      encoding: "base64",
+      data: Buffer.from("tampered-bytes").toString("base64"),
+      contentType: "application/octet-stream",
+    };
+
+    companySvc.create.mockResolvedValue({ id: "company-imported", name: "Imported" });
+    accessSvc.ensureMembership.mockResolvedValue(undefined);
+    agentSvc.list.mockResolvedValue([]);
+    issueSvc.create.mockResolvedValue({ id: "issue-imported", title: "Attachment task", projectId: null });
+
+    await expect(portability.importBundle({
+      source: { type: "inline", rootPath: exported.rootPath, files: exported.files },
+      include: { company: true, agents: false, projects: false, issues: true },
+      target: { mode: "new_company", newCompanyName: "Imported" },
+      agents: "all",
+      collisionStrategy: "rename",
+    }, "user-1")).rejects.toThrow(/does not match its declared sha256/);
+    expect(issueSvc.createAttachment).not.toHaveBeenCalled();
+  });
+
+  it("skips oversized and missing-blob attachments with warnings instead of failing", async () => {
+    const storage = fakeAttachmentStorage();
+    const portability = companyPortabilityService({} as any, storage as any);
+    mockAttachmentExportSources([
+      {
+        id: "attachment-3",
+        issueId: "issue-1",
+        issueCommentId: null,
+        provider: "local_disk",
+        objectKey: "issues/issue-1/big.bin",
+        contentType: "application/octet-stream",
+        byteSize: 20,
+        sha256: sha256Of("twenty-byte-payload!"),
+        originalFilename: "big.bin",
+        createdAt: new Date("2026-06-04T00:00:00.000Z"),
+      },
+    ]);
+    const sha = sha256Of("png-bytes");
+
+    const exported = await portability.exportBundle("company-1", {
+      include: { company: true, agents: false, projects: false, issues: true },
+    });
+    delete exported.files[`blobs/${sha}`];
+
+    // The target company only accepts attachments up to 10 bytes.
+    companySvc.create.mockResolvedValue({ id: "company-imported", name: "Imported", attachmentMaxBytes: 10 });
+    companySvc.update.mockResolvedValue({ id: "company-imported", name: "Imported", attachmentMaxBytes: 10 });
+    accessSvc.ensureMembership.mockResolvedValue(undefined);
+    agentSvc.list.mockResolvedValue([]);
+    issueSvc.create.mockResolvedValue({ id: "issue-imported", title: "Attachment task", projectId: null });
+
+    const result = await portability.importBundle({
+      source: { type: "inline", rootPath: exported.rootPath, files: exported.files },
+      include: { company: true, agents: false, projects: false, issues: true },
+      target: { mode: "new_company", newCompanyName: "Imported" },
+      agents: "all",
+      collisionStrategy: "rename",
+    }, "user-1");
+
+    expect(issueSvc.createAttachment).not.toHaveBeenCalled();
+    expect(result.warnings).toContain(
+      `Task pap-1 attachment notes.bin was skipped because its blob is missing from the package: blobs/${sha}`,
+    );
+    expect(result.warnings).toContain(
+      `Task pap-1 attachment screenshot.png was skipped because its blob is missing from the package: blobs/${sha}`,
+    );
+    expect(result.warnings).toContain(
+      "Task pap-1 attachment big.bin was skipped because it exceeds this board's attachment size limit of 10 bytes.",
     );
   });
 
