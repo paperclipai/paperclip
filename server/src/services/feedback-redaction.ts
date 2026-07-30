@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { redactCurrentUserText } from "../log-redaction.js";
-import { sanitizeRecord } from "../redaction.js";
+import { redactSensitiveText, sanitizeRecord } from "../redaction.js";
 
 export type FeedbackRedactionState = {
   redactedFields: Set<string>;
@@ -114,6 +114,16 @@ export function sanitizeFeedbackText(
   if (output !== input) {
     recordField(state, fieldPath);
     increment(state, "current_user", 1);
+  }
+
+  // Keep feedback exports aligned with the common ingestion redactor. This
+  // covers durable text such as legacy document titles using env-style names
+  // (for example, prefixed uppercase API-key variables).
+  const commonRedacted = redactSensitiveText(output);
+  if (commonRedacted !== output) {
+    output = commonRedacted;
+    recordField(state, fieldPath);
+    increment(state, "common_text_secret", 1);
   }
 
   for (const pattern of FREE_TEXT_PATTERNS) {

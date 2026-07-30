@@ -508,7 +508,12 @@ describe("feedbackService.saveIssueVote", () => {
   });
 
   it("stores a trace record for document revision feedback targets", async () => {
-    const { issueId, revisionId } = await seedIssueWithAgentDocument();
+    const { companyId, issueId, revisionId } = await seedIssueWithAgentDocument();
+    const legacyValue = "test-only-legacy-document-title-value";
+    await db
+      .update(documents)
+      .set({ title: `PAPERCLIP_API_KEY=${legacyValue}` })
+      .where(eq(documents.companyId, companyId));
 
     const result = await svc.saveIssueVote({
       issueId,
@@ -537,8 +542,14 @@ describe("feedbackService.saveIssueVote", () => {
       type: "issue_document_revision",
       id: revisionId,
       documentKey: "plan",
+      documentTitle: "PAPERCLIP_API_KEY=***REDACTED***",
       revisionNumber: 1,
     });
+    const bundle = traces[0]?.payloadSnapshot?.bundle as Record<string, unknown> | null;
+    const primaryContent = bundle?.primaryContent as Record<string, unknown> | null;
+    expect(primaryContent?.documentTitle).toBe("PAPERCLIP_API_KEY=***REDACTED***");
+    expect(traces[0]?.targetSummary.documentTitle).toBe("PAPERCLIP_API_KEY=***REDACTED***");
+    expect(JSON.stringify(traces[0])).not.toContain(legacyValue);
   });
 
   it("stores a downvote reason and includes it in the trace payload", async () => {

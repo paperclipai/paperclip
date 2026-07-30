@@ -1025,7 +1025,14 @@ async function buildIssueContext(
       authorUserId: item.authorUserId,
       createdByRunId: item.createdByRunId,
       documentKey: item.documentKey,
-      documentTitle: item.documentTitle,
+      documentTitle: item.documentTitle
+        ? sanitizeFeedbackText(
+          item.documentTitle,
+          state,
+          `bundle.issueContext.items.${index}.documentTitle`,
+          MAX_EXCERPT_CHARS,
+        )
+        : null,
       revisionNumber: item.revisionNumber,
       targetPath: item.targetPath,
       body,
@@ -1041,7 +1048,7 @@ async function buildIssueContext(
     issue: {
       id: issue.id,
       identifier: issue.identifier,
-      title: issue.title,
+      title: sanitizeFeedbackText(issue.title, state, "bundle.issueContext.issue.title", MAX_EXCERPT_CHARS),
       projectId: issue.projectId,
       path: buildIssuePath(issue.identifier),
       descriptionExcerpt: descriptionExcerpt ? truncateExcerpt(descriptionExcerpt, MAX_DESCRIPTION_CHARS) : null,
@@ -1315,6 +1322,9 @@ async function buildPayloadArtifacts(
   },
 ) {
   const state = createFeedbackRedactionState();
+  const documentTitle = input.target.documentTitle
+    ? sanitizeFeedbackText(input.target.documentTitle, state, "bundle.primaryContent.documentTitle", MAX_EXCERPT_CHARS)
+    : null;
   const primaryBody = sanitizeFeedbackText(
     input.target.body,
     state,
@@ -1331,7 +1341,7 @@ async function buildPayloadArtifacts(
     createdByRunId: input.target.createdByRunId,
     documentId: input.target.documentId,
     documentKey: input.target.documentKey,
-    documentTitle: input.target.documentTitle,
+    documentTitle,
     revisionNumber: input.target.revisionNumber,
     targetPath: input.target.targetPath,
     body: primaryBody,
@@ -1344,7 +1354,7 @@ async function buildPayloadArtifacts(
     authorUserId: input.target.authorUserId,
     createdAt: input.target.createdAt,
     documentKey: input.target.documentKey,
-    documentTitle: input.target.documentTitle,
+    documentTitle,
     revisionNumber: input.target.revisionNumber,
   });
 
@@ -1362,7 +1372,10 @@ async function buildPayloadArtifacts(
       sharedWithLabs: input.sharedWithLabs,
       sharedAt: input.sharedWithLabs ? input.now.toISOString() : null,
     },
-    target: input.target.payloadTarget,
+    // Target metadata includes legacy document titles. Treat it as untrusted
+    // persisted text too, otherwise a pre-redaction title bypasses the body
+    // sanitizer and can be exported in the feedback envelope.
+    target: sanitizeFeedbackValue(input.target.payloadTarget, state, "target", MAX_EXCERPT_CHARS),
   } satisfies Record<string, unknown>;
 
   if (!input.sharedWithLabs) {
