@@ -101,7 +101,6 @@ import { validate } from "../middleware/validate.js";
 import * as serviceIndex from "../services/index.js";
 import {
   accessService,
-  activityService,
   agentService,
   companySkillService,
   companyService,
@@ -2623,88 +2622,6 @@ export function issueRoutes(
     shouldCache: (issue) => issue !== null,
   });
   const memoizeIssueReadDecision = createRequestPromiseMemo<Request, Awaited<ReturnType<typeof decideIssueAccess>>>();
-
-  async function buildIssueDetailResponse(req: Request, issue: Awaited<ReturnType<typeof svc.getById>> & {}) {
-    const inboxArchiveFieldsPromise = req.actor.type === "board" && req.actor.userId
-      ? svc.getActiveInboxArchiveFields(issue, req.actor.userId)
-      : Promise.resolve({});
-    const [
-      { project, goal },
-      ancestors,
-      mentionedProjectIds,
-      documentPayload,
-      relations,
-      blockerAttention,
-      productivityReview,
-      referenceSummary,
-      successfulRunHandoffStates,
-      scheduledRetry,
-      activeRecoveryAction,
-      linkedCases,
-      inboxArchiveFields,
-    ] = await Promise.all([
-      resolveIssueProjectAndGoal(issue),
-      svc.getAncestors(issue.id),
-      svc.findMentionedProjectIds(issue.id, { includeCommentBodies: false }),
-      documentsSvc.getIssueDocumentPayload(issue),
-      svc.getRelationSummaries(issue.id),
-      svc.listBlockerAttention(issue.companyId, [issue]).then((map) => map.get(issue.id) ?? null),
-      svc.listProductivityReviews(issue.companyId, [issue.id]).then((map) => map.get(issue.id) ?? null),
-      issueReferencesSvc.listIssueReferenceSummary(issue.id),
-      listSuccessfulRunHandoffStates(db, issue.companyId, [issue.id]),
-      svc.getCurrentScheduledRetry(issue.id),
-      recoveryActionsSvc.getActiveForIssue(issue.companyId, issue.id),
-      listIssueLinkedCases(db, issue.companyId, issue.id),
-      inboxArchiveFieldsPromise,
-    ]);
-    const recoveryActionsByRelationIssue = await relationRecoveryActionMap(
-      recoveryActionsSvc,
-      issue.companyId,
-      relations,
-    );
-    const relationsWithRecoveryActions = withRecoveryActionsOnRelationSummaries(
-      relations,
-      recoveryActionsByRelationIssue,
-    );
-    const revalidatedActiveRecoveryAction = await revalidateActiveSourceRecoveryForRead({
-      issue,
-      trigger: "read_projection",
-      actor: getActorInfo(req),
-      activeRecoveryAction,
-    });
-    const [mentionedProjects, currentExecutionWorkspace, workProducts] = await Promise.all([
-      mentionedProjectIds.length > 0
-        ? projectsSvc.listByIds(issue.companyId, mentionedProjectIds)
-        : Promise.resolve([]),
-      issue.executionWorkspaceId
-        ? executionWorkspacesSvc.getById(issue.executionWorkspaceId)
-        : Promise.resolve(null),
-      workProductsSvc.listForIssue(issue.id),
-    ]);
-
-    return {
-      ...issue,
-      ...inboxArchiveFields,
-      goalId: goal?.id ?? issue.goalId,
-      ancestors,
-      ...(blockerAttention ? { blockerAttention } : {}),
-      productivityReview,
-      successfulRunHandoff: successfulRunHandoffStates.get(issue.id) ?? null,
-      scheduledRetry,
-      activeRecoveryAction: revalidatedActiveRecoveryAction,
-      blockedBy: relationsWithRecoveryActions.blockedBy,
-      blocks: relationsWithRecoveryActions.blocks,
-      relatedWork: referenceSummary,
-      referencedIssueIdentifiers: referenceSummary.outbound.map((item) => item.issue.identifier ?? item.issue.id),
-      ...documentPayload,
-      project: compactIssueProject(project),
-      goal: goal ?? null,
-      mentionedProjects,
-      currentExecutionWorkspace: compactIssueExecutionWorkspace(currentExecutionWorkspace),
-      workProducts,
-      linkedCases,
-    };
-  }
 
   function getIssueById(req: Request, id: string) {
     if (req.method !== "GET") return svc.getById(id);
@@ -5520,39 +5437,86 @@ export function issueRoutes(
   });
 
   router.get("/issues/:id", async (req, res) => {
-    const requestStartedAt = performance.now();
     const id = req.params.id as string;
     const issue = await getAccessibleResource(req, res, getIssueById(req, id), "Issue not found");
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
-    res.setHeader("Server-Timing", `paperclip_issue;dur=${(performance.now() - requestStartedAt).toFixed(1)}`);
-    res.json(await buildIssueDetailResponse(req, issue));
-  });
-
-  router.get("/issues/:id/view", async (req, res) => {
-    const requestStartedAt = performance.now();
-    const id = req.params.id as string;
-    const issue = await getAccessibleResource(req, res, getIssueById(req, id), "Issue not found");
-    if (!issue) return;
-    if (!(await assertIssueReadAllowed(req, res, issue))) return;
-
-    const [detail, comments, interactions, attachments, rawChildIssues, runs] = await Promise.all([
-      buildIssueDetailResponse(req, issue),
-      svc.listComments(issue.id, { order: "desc", limit: 50 }),
-      issueThreadInteractionsSvc.listForIssue(issue.id),
-      svc.listAttachments(issue.id).then((rows) => rows.map(withContentPath)),
-      svc.list(issue.companyId, { descendantOf: issue.id, includeBlockedBy: true }),
-      activityService(db).runsForIssue(issue.companyId, issue.id),
+    const inboxArchiveFieldsPromise = req.actor.type === "board" && req.actor.userId
+      ? svc.getActiveInboxArchiveFields(issue, req.actor.userId)
+      : Promise.resolve({});
+    const [
+      { project, goal },
+      ancestors,
+      mentionedProjectIds,
+      documentPayload,
+      relations,
+      blockerAttention,
+      productivityReview,
+      referenceSummary,
+      successfulRunHandoffStates,
+      scheduledRetry,
+      activeRecoveryAction,
+      linkedCases,
+      inboxArchiveFields,
+    ] = await Promise.all([
+      resolveIssueProjectAndGoal(issue),
+      svc.getAncestors(issue.id),
+      svc.findMentionedProjectIds(issue.id, { includeCommentBodies: false }),
+      documentsSvc.getIssueDocumentPayload(issue),
+      svc.getRelationSummaries(issue.id),
+      svc.listBlockerAttention(issue.companyId, [issue]).then((map) => map.get(issue.id) ?? null),
+      svc.listProductivityReviews(issue.companyId, [issue.id]).then((map) => map.get(issue.id) ?? null),
+      issueReferencesSvc.listIssueReferenceSummary(issue.id),
+      listSuccessfulRunHandoffStates(db, issue.companyId, [issue.id]),
+      svc.getCurrentScheduledRetry(issue.id),
+      recoveryActionsSvc.getActiveForIssue(issue.companyId, issue.id),
+      listIssueLinkedCases(db, issue.companyId, issue.id),
+      inboxArchiveFieldsPromise,
     ]);
-    const workProducts = detail.workProducts;
-    const childIssues = await actorCanReadCompanyScope(req, issue.companyId)
-      ? rawChildIssues
-      : await filterIssuesForActor(req, rawChildIssues);
-    const liveRuns = runs.filter((run) => run.status === "queued" || run.status === "running");
-    const activeRun = liveRuns.find((run) => run.runId === issue.executionRunId) ?? liveRuns[0] ?? null;
-
-    res.setHeader("Server-Timing", `paperclip_issue_view;dur=${(performance.now() - requestStartedAt).toFixed(1)}`);
-    res.json({ detail, comments, interactions, attachments, workProducts, childIssues, runs, liveRuns, activeRun });
+    const recoveryActionsByRelationIssue = await relationRecoveryActionMap(
+      recoveryActionsSvc,
+      issue.companyId,
+      relations,
+    );
+    const relationsWithRecoveryActions = withRecoveryActionsOnRelationSummaries(
+      relations,
+      recoveryActionsByRelationIssue,
+    );
+    const revalidatedActiveRecoveryAction = await revalidateActiveSourceRecoveryForRead({
+      issue,
+      trigger: "read_projection",
+      actor: getActorInfo(req),
+      activeRecoveryAction,
+    });
+    const mentionedProjects = mentionedProjectIds.length > 0
+      ? await projectsSvc.listByIds(issue.companyId, mentionedProjectIds)
+      : [];
+    const currentExecutionWorkspace = issue.executionWorkspaceId
+      ? await executionWorkspacesSvc.getById(issue.executionWorkspaceId)
+      : null;
+    const workProducts = await workProductsSvc.listForIssue(issue.id);
+    res.json({
+      ...issue,
+      ...inboxArchiveFields,
+      goalId: goal?.id ?? issue.goalId,
+      ancestors,
+      ...(blockerAttention ? { blockerAttention } : {}),
+      productivityReview,
+      successfulRunHandoff: successfulRunHandoffStates.get(issue.id) ?? null,
+      scheduledRetry,
+      activeRecoveryAction: revalidatedActiveRecoveryAction,
+      blockedBy: relationsWithRecoveryActions.blockedBy,
+      blocks: relationsWithRecoveryActions.blocks,
+      relatedWork: referenceSummary,
+      referencedIssueIdentifiers: referenceSummary.outbound.map((item) => item.issue.identifier ?? item.issue.id),
+      ...documentPayload,
+      project: compactIssueProject(project),
+      goal: goal ?? null,
+      mentionedProjects,
+      currentExecutionWorkspace: compactIssueExecutionWorkspace(currentExecutionWorkspace),
+      workProducts,
+      linkedCases,
+    });
   });
 
   router.get("/issues/:id/watchdog", async (req, res) => {
@@ -5929,7 +5893,7 @@ export function issueRoutes(
 
   router.get("/issues/:id/documents/:key", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    const issue = await getAccessibleResource(req, res, getIssueById(req, id), "Issue not found");
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
     const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
@@ -5955,7 +5919,7 @@ export function issueRoutes(
 
   router.get("/issues/:id/documents/:key/annotations", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    const issue = await getAccessibleResource(req, res, getIssueById(req, id), "Issue not found");
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
     const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
@@ -6025,7 +5989,7 @@ export function issueRoutes(
 
   router.get("/issues/:id/documents/:key/annotations/:threadId", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    const issue = await getAccessibleResource(req, res, getIssueById(req, id), "Issue not found");
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
     const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
@@ -6358,7 +6322,7 @@ export function issueRoutes(
 
   router.get("/issues/:id/documents/:key/revisions", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    const issue = await getAccessibleResource(req, res, getIssueById(req, id), "Issue not found");
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
     const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
@@ -7501,7 +7465,7 @@ export function issueRoutes(
 
   router.get("/issues/:id/accepted-plan-decompositions", async (req, res) => {
     const sourceIssueId = req.params.id as string;
-    const sourceIssue = await getAccessibleResource(req, res, svc.getById(sourceIssueId), "Issue not found");
+    const sourceIssue = await getAccessibleResource(req, res, getIssueById(req, sourceIssueId), "Issue not found");
     if (!sourceIssue) return;
     const decompositions = await svc.listAcceptedPlanDecompositions(sourceIssue.id);
     res.json(decompositions);
@@ -9773,7 +9737,7 @@ export function issueRoutes(
   router.get("/issues/:id/comments/:commentId", async (req, res) => {
     const id = req.params.id as string;
     const commentId = req.params.commentId as string;
-    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    const issue = await getAccessibleResource(req, res, getIssueById(req, id), "Issue not found");
     if (!issue) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
     const comment = await svc.getComment(commentId);
@@ -9934,7 +9898,7 @@ export function issueRoutes(
 
   router.get("/issues/:id/feedback-votes", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    const issue = await getAccessibleResource(req, res, getIssueById(req, id), "Issue not found");
     if (!issue) return;
     if (req.actor.type !== "board") {
       res.status(403).json({ error: "Only board users can view feedback votes" });
@@ -9947,7 +9911,7 @@ export function issueRoutes(
 
   router.get("/issues/:id/feedback-traces", async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    const issue = await getAccessibleResource(req, res, getIssueById(req, id), "Issue not found");
     if (!issue) return;
     if (req.actor.type !== "board") {
       res.status(403).json({ error: "Only board users can view feedback traces" });
