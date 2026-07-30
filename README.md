@@ -415,7 +415,7 @@ See [doc/DEVELOPING.md](doc/DEVELOPING.md) for the full development guide.
 - ⚪ Self-Organization
 - ⚪ Automatic Organizational Learning
 - ⚪ CEO Chat
-- 🟡 Cloud deployments (multi-tenant isolation & local→cloud sync shipped)
+- 🟡 Cloud deployments (multi-tenant isolation & company Import/Export shipped)
 - ⚪ Desktop App
 - ⚪ Bring-your-own-ticket-system (Asana / Linear / Jira as on-ramps)
 - ⚪ Connected Apps (one-click integrations, e.g. Vercel)
