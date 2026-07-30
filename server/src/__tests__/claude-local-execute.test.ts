@@ -1355,6 +1355,70 @@ describe("claude execute", () => {
     }
   });
 
+  it("classifies Claude session-limit ACP/CLI text as provider quota with retry metadata", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-session-limit-"));
+    const workspace = path.join(root, "workspace");
+    const commandPath = path.join(root, "claude");
+    await fs.mkdir(workspace, { recursive: true });
+    await writeFailingClaudeCommand(commandPath, {
+      resultEvent: {
+        type: "result",
+        subtype: "error_during_execution",
+        session_id: "dddddddd-dddd-4ddd-8ddd-dddddddddddd",
+        is_error: true,
+        result: "You've hit your session limit · resets 1pm (America/Los_Angeles)",
+        errors: [{ type: "rate_limit_error", message: "You've hit your session limit · resets 1pm (America/Los_Angeles)" }],
+      },
+    });
+
+    const previousHome = process.env.HOME;
+    process.env.HOME = root;
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-30T15:30:00.000Z"));
+
+    try {
+      const result = await execute({
+        runId: "run-claude-session-limit",
+        agent: {
+          id: "agent-1",
+          companyId: "company-1",
+          name: "Claude Coder",
+          adapterType: "claude_local",
+          adapterConfig: { engine: "cli" },
+        },
+        runtime: {
+          sessionId: null,
+          sessionParams: null,
+          sessionDisplayId: null,
+          taskKey: null,
+        },
+        config: {
+          engine: "cli",
+          command: commandPath,
+          cwd: workspace,
+          promptTemplate: "Follow the paperclip heartbeat.",
+        },
+        context: {},
+        authToken: "run-jwt-token",
+        onLog: async () => {},
+      });
+
+      expect(result.exitCode).toBe(1);
+      expect(result.errorCode).toBe("provider_quota");
+      expect(result.errorFamily).toBe("provider_quota");
+      const expectedRetryNotBefore = "2026-07-30T20:00:00.000Z";
+      expect(result.retryNotBefore).toBe(expectedRetryNotBefore);
+      expect(result.resultJson?.retryNotBefore).toBe(expectedRetryNotBefore);
+      expect(result.resultJson?.providerQuotaRetryNotBefore).toBe(expectedRetryNotBefore);
+      expect(result.errorMessage ?? "").toContain("session limit");
+    } finally {
+      vi.useRealTimers();
+      if (previousHome === undefined) delete process.env.HOME;
+      else process.env.HOME = previousHome;
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("treats subtype=success results as successful even when the process exits nonzero", async () => {
     const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-claude-execute-success-subtype-"));
     const workspace = path.join(root, "workspace");

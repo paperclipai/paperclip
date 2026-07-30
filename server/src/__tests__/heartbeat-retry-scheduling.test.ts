@@ -265,6 +265,182 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       .toEqual({ status: "idle", errorReason: null });
   });
 
+  it("keeps a provider-quota scheduled retry parked before retry-not-before", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const wakeupRequestId = randomUUID();
+    const now = new Date("2026-07-30T15:30:00.000Z");
+    const retryNotBefore = "2026-07-30T20:00:00.000Z";
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "ClaudeCoder",
+      role: "engineer",
+      status: "active",
+      adapterType: "claude_local",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+      permissions: {},
+    });
+
+    await db.insert(agentWakeupRequests).values({
+      id: wakeupRequestId,
+      companyId,
+      agentId,
+      source: "automation",
+      triggerDetail: "system",
+      reason: "transient_failure_retry",
+      payload: {
+        errorFamily: "provider_quota",
+        providerQuotaRetryNotBefore: retryNotBefore,
+      },
+      status: "queued",
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      invocationSource: "automation",
+      triggerDetail: "system",
+      status: "scheduled_retry",
+      wakeupRequestId,
+      contextSnapshot: {
+        errorFamily: "provider_quota",
+        retryNotBefore,
+        providerQuotaRetryNotBefore: retryNotBefore,
+      },
+      retryOfRunId: randomUUID(),
+      scheduledRetryAt: new Date("2026-07-30T15:00:00.000Z"),
+      scheduledRetryAttempt: 1,
+      scheduledRetryReason: "transient_failure",
+      createdAt: new Date("2026-07-30T14:00:00.000Z"),
+      updatedAt: new Date("2026-07-30T14:00:00.000Z"),
+    });
+
+    const promoted = await heartbeat.promoteDueScheduledRetries(now);
+    expect(promoted).toEqual({ promoted: 0, runIds: [] });
+
+    const parked = await db
+      .select({ status: heartbeatRuns.status, scheduledRetryAt: heartbeatRuns.scheduledRetryAt })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+    expect(parked?.status).toBe("scheduled_retry");
+    expect(parked?.scheduledRetryAt?.toISOString()).toBe(retryNotBefore);
+
+    const event = await db
+      .select({ message: heartbeatRunEvents.message, payload: heartbeatRunEvents.payload })
+      .from(heartbeatRunEvents)
+      .where(eq(heartbeatRunEvents.runId, runId))
+      .then((rows) => rows[0] ?? null);
+    expect(event?.message).toContain("Provider quota circuit is open");
+    expect((event?.payload as Record<string, unknown> | null)?.providerQuotaRetryNotBefore).toBe(retryNotBefore);
+  });
+
+  it("parks fresh same-provider Claude queued runs while an Anthropic quota circuit is open", async () => {
+    const companyId = randomUUID();
+    const circuitAgentId = randomUUID();
+    const queuedAgentId = randomUUID();
+    const issueId = randomUUID();
+    const circuitRunId = randomUUID();
+    const retryNotBefore = "2026-07-30T20:00:00.000Z";
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
+    });
+
+    await db.insert(agents).values([
+      {
+        id: circuitAgentId,
+        companyId,
+        name: "Claude Circuit",
+        role: "engineer",
+        status: "active",
+        adapterType: "claude_local",
+        adapterConfig: {},
+        runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+        permissions: {},
+      },
+      {
+        id: queuedAgentId,
+        companyId,
+        name: "Claude Queued",
+        role: "engineer",
+        status: "active",
+        adapterType: "claude_local",
+        adapterConfig: { command: "claude-command-should-not-run" },
+        runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+        permissions: {},
+      },
+    ]);
+
+    await db.insert(heartbeatRuns).values({
+      id: circuitRunId,
+      companyId,
+      agentId: circuitAgentId,
+      invocationSource: "automation",
+      triggerDetail: "system",
+      status: "scheduled_retry",
+      contextSnapshot: {
+        errorFamily: "provider_quota",
+        retryNotBefore,
+        providerQuotaRetryNotBefore: retryNotBefore,
+      },
+      retryOfRunId: randomUUID(),
+      scheduledRetryAt: new Date(retryNotBefore),
+      scheduledRetryAttempt: 1,
+      scheduledRetryReason: "transient_failure",
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Fresh Claude work",
+      status: "todo",
+      priority: "critical",
+      assigneeAgentId: queuedAgentId,
+      responsibleUserId: "responsible-user",
+    });
+
+    const queued = await heartbeat.wakeup(queuedAgentId, {
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId },
+      contextSnapshot: { issueId, wakeReason: "issue_assigned", modelProfile: "cheap" },
+    });
+    expect(queued).not.toBeNull();
+
+    const row = await db
+      .select({ status: heartbeatRuns.status, contextSnapshot: heartbeatRuns.contextSnapshot })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, queued!.id))
+      .then((rows) => rows[0] ?? null);
+    expect(row?.status).toBe("queued");
+    expect((row?.contextSnapshot as Record<string, unknown> | null)?.modelProfile).toBe("cheap");
+
+    const runningRows = await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.status, "running")));
+    expect(runningRows).toEqual([]);
+  });
+
   async function seedMaxTurnFixture(input?: {
     companyId?: string;
     agentId?: string;

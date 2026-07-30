@@ -441,6 +441,17 @@ function readTransientRecoveryContractFromRun(
     : null;
 }
 
+function providerCircuitKeyForAdapterType(adapterType: string | null | undefined): string | null {
+  switch (adapterType) {
+    case "claude_local":
+      return "anthropic";
+    case "codex_local":
+      return "openai";
+    default:
+      return null;
+  }
+}
+
 function isResolvedInteractionContinuationWakeContext(contextSnapshot: unknown) {
   const context = parseObject(contextSnapshot);
   const interactionId = readNonEmptyString(context.interactionId);
@@ -8756,6 +8767,60 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
     }
 
+    const quotaCircuit = await findActiveProviderQuotaCircuit({
+      companyId: dueRun.companyId,
+      adapterType: agent.adapterType,
+      now,
+      excludeRunId: dueRun.id,
+    });
+    const ownProviderRetryNotBefore =
+      readHeartbeatRunErrorFamily(dueRun) === "provider_quota"
+        ? readTransientRetryNotBeforeFromRun(dueRun)
+        : null;
+    const effectiveCircuitRetryNotBefore =
+      ownProviderRetryNotBefore && ownProviderRetryNotBefore.getTime() > now.getTime()
+        ? {
+            provider: providerCircuitKeyForAdapterType(agent.adapterType) ?? "unknown",
+            runId: dueRun.id,
+            agentId: dueRun.agentId,
+            retryNotBefore: ownProviderRetryNotBefore,
+          }
+        : quotaCircuit;
+    const activeQuotaCircuit =
+      effectiveCircuitRetryNotBefore && effectiveCircuitRetryNotBefore.retryNotBefore.getTime() > now.getTime()
+        ? effectiveCircuitRetryNotBefore
+        : null;
+    if (activeQuotaCircuit) {
+      const parkedRetry =
+        !dueRun.scheduledRetryAt || new Date(dueRun.scheduledRetryAt).getTime() < activeQuotaCircuit.retryNotBefore.getTime()
+          ? await db
+            .update(heartbeatRuns)
+            .set({
+              scheduledRetryAt: activeQuotaCircuit.retryNotBefore,
+              updatedAt: now,
+            })
+            .where(and(eq(heartbeatRuns.id, dueRun.id), eq(heartbeatRuns.status, "scheduled_retry")))
+            .returning()
+            .then((rows) => rows[0] ?? dueRun)
+          : dueRun;
+      await appendRunEvent(dueRun, await nextRunEventSeq(dueRun.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "warn",
+        message: "Provider quota circuit is open; scheduled retry will remain parked until the provider reset window",
+        payload: {
+          provider: activeQuotaCircuit.provider,
+          circuitRunId: activeQuotaCircuit.runId,
+          circuitAgentId: activeQuotaCircuit.agentId,
+          providerQuotaRetryNotBefore: activeQuotaCircuit.retryNotBefore.toISOString(),
+          scheduledRetryAttempt: dueRun.scheduledRetryAttempt,
+          scheduledRetryAt: dueRun.scheduledRetryAt ? new Date(dueRun.scheduledRetryAt).toISOString() : null,
+          scheduledRetryReason: dueRun.scheduledRetryReason,
+        },
+      });
+      return { outcome: "not_promoted", run: parkedRetry };
+    }
+
     const promoted = await db
       .update(heartbeatRuns)
       .set({
@@ -9726,6 +9791,65 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     };
   }
 
+  async function findActiveProviderQuotaCircuit(input: {
+    companyId: string;
+    adapterType: string | null | undefined;
+    now?: Date;
+    excludeRunId?: string | null;
+  }) {
+    const provider = providerCircuitKeyForAdapterType(input.adapterType);
+    if (!provider) return null;
+
+    const now = input.now ?? new Date();
+    const retryNotBeforeExpr = sql<Date | null>`
+      nullif(coalesce(
+        ${heartbeatRuns.resultJson} ->> 'providerQuotaRetryNotBefore',
+        ${heartbeatRuns.resultJson} ->> 'retryNotBefore',
+        ${heartbeatRuns.contextSnapshot} ->> 'providerQuotaRetryNotBefore',
+        ${heartbeatRuns.contextSnapshot} ->> 'retryNotBefore',
+        ${heartbeatRuns.scheduledRetryAt}::text
+      ), '')::timestamptz
+    `;
+
+    const rows = await db
+      .select({
+        runId: heartbeatRuns.id,
+        agentId: heartbeatRuns.agentId,
+        retryNotBefore: retryNotBeforeExpr,
+        scheduledRetryAt: heartbeatRuns.scheduledRetryAt,
+      })
+      .from(heartbeatRuns)
+      .innerJoin(agents, eq(agents.id, heartbeatRuns.agentId))
+      .where(and(
+        eq(heartbeatRuns.companyId, input.companyId),
+        eq(heartbeatRuns.status, "scheduled_retry"),
+        or(
+          eq(heartbeatRuns.errorCode, "provider_quota"),
+          sql`${heartbeatRuns.resultJson} ->> 'errorFamily' = 'provider_quota'`,
+          sql`${heartbeatRuns.contextSnapshot} ->> 'errorFamily' = 'provider_quota'`,
+        ),
+        input.excludeRunId ? sql`${heartbeatRuns.id} <> ${input.excludeRunId}` : undefined,
+        sql`${retryNotBeforeExpr} > ${now}`,
+        sql`case
+          when ${agents.adapterType} = 'claude_local' then 'anthropic'
+          when ${agents.adapterType} = 'codex_local' then 'openai'
+          else null
+        end = ${provider}`,
+      ))
+      .orderBy(asc(retryNotBeforeExpr), asc(heartbeatRuns.createdAt))
+      .limit(1);
+
+    const circuit = rows[0] ?? null;
+    if (!circuit?.retryNotBefore) return null;
+    return {
+      provider,
+      runId: circuit.runId,
+      agentId: circuit.agentId,
+      retryNotBefore: new Date(circuit.retryNotBefore),
+      scheduledRetryAt: circuit.scheduledRetryAt ? new Date(circuit.scheduledRetryAt) : null,
+    };
+  }
+
   function normalizeOptionalNonNegativeInteger(value: unknown) {
     if (value === null || value === undefined || value === "") return null;
     const normalized = Math.floor(asNumber(value, 0));
@@ -9955,6 +10079,28 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     });
     if (dailyCapBlock) {
       await cancelQueuedRunForHeartbeatDailyCap(run, dailyCapBlock);
+      return null;
+    }
+
+    const providerCircuit = await findActiveProviderQuotaCircuit({
+      companyId: run.companyId,
+      adapterType: agent.adapterType,
+      excludeRunId: run.id,
+    });
+    if (providerCircuit) {
+      await appendRunEvent(run, await nextRunEventSeq(run.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "warn",
+        message: "Provider quota circuit is open; queued run remains parked until the provider reset window",
+        payload: {
+          provider: providerCircuit.provider,
+          circuitRunId: providerCircuit.runId,
+          circuitAgentId: providerCircuit.agentId,
+          providerQuotaRetryNotBefore: providerCircuit.retryNotBefore.toISOString(),
+          scheduledRetryAt: providerCircuit.scheduledRetryAt?.toISOString() ?? null,
+        },
+      });
       return null;
     }
 
