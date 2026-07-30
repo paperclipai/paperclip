@@ -8,6 +8,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { resetLocalGitIndexToHead } from "./git-workspace-sync.js";
 
 import {
+  assertSyncOperationsConfined,
   mirrorDirectory,
   prepareSandboxManagedRuntime,
   type SandboxManagedRuntimeClient,
@@ -443,9 +444,13 @@ describe("sandbox managed runtime", () => {
       "restore",
       "finalize",
     ]));
+    // Git history and workspace overlay sync as ONE merged operation, so a single
+    // transfer-progress event rides the config_sync (workspace) phase. The git_sync
+    // phase still emits its plain status message (asserted by the arrayContaining
+    // check above).
     expect(runtimeStatuses.some((status) => (
-      status.phase === "git_sync" &&
-      /^Syncing git history to sandbox: 100% \(\d+\.\d\/\d+\.\d MB\)$/.test(status.message)
+      status.phase === "config_sync" &&
+      /^Syncing workspace to sandbox: 100% \(\d+\.\d\/\d+\.\d MB\)$/.test(status.message)
     ))).toBe(true);
     expect(runtimeStatuses.some((status) => (
       status.phase === "export" &&
@@ -1342,21 +1347,18 @@ describe("sandbox managed runtime", () => {
     expect(directWrites).toEqual([]);
     expect(directRuns).toEqual([]);
 
-    // Two operations: git-workspace then workspace overlay. Each uploads a single
-    // tar as a `file` mapping and carries its extract as an ordered post-command.
-    expect(captured.length).toBeGreaterThanOrEqual(2);
-    const gitOp = captured.find((op) =>
-      op.files.some((mapping) => mapping.targetPath.endsWith("git-workspace-upload.tar")),
-    );
-    const workspaceOp = captured.find((op) =>
-      op.files.some((mapping) => mapping.targetPath.endsWith("workspace-upload.tar")),
-    );
-    expect(gitOp).toBeDefined();
-    expect(workspaceOp).toBeDefined();
-    expect(gitOp!.files.every((mapping) => mapping.kind === "file")).toBe(true);
-    // The git operation's post-upload command preserves `.paperclip-runtime` while
-    // replacing the rest of the tree (wipe-except-preserved), then untars.
-    const gitCommand = gitOp!.postUploadCommands![0].command;
+    // One merged operation carries BOTH the git-history and workspace-overlay tars
+    // as two `file` mappings, each with its extract as an ordered post-command.
+    expect(captured).toHaveLength(1);
+    const op = captured[0];
+    const byBase = (base: string) =>
+      op.files.find((mapping) => path.posix.basename(mapping.targetPath) === base);
+    expect(byBase("git-workspace-upload.tar")).toBeDefined();
+    expect(byBase("workspace-upload.tar")).toBeDefined();
+    expect(op.files.every((mapping) => mapping.kind === "file")).toBe(true);
+    // The first post-upload command extracts the git history and preserves
+    // `.paperclip-runtime` while replacing the rest of the tree (wipe-except-preserved).
+    const gitCommand = op.postUploadCommands![0].command;
     expect(gitCommand).toContain(".paperclip-runtime");
     expect(gitCommand).toContain("tar -xf");
 
@@ -1368,16 +1370,168 @@ describe("sandbox managed runtime", () => {
     expect(prepared.workspaceRemoteDir).toBe(remoteWorkspaceDir);
   });
 
-  // Regression lock: a representative `codex_local` start stages its inbound
-  // bytes — git history, workspace overlay, and the managed Codex `home` asset
-  // (auth.json merge) — as EXACTLY ONE `syncIn` operation each. Every inbound step
-  // is routed through `client.syncIn` (one native `uploadFiles` round-trip per
-  // operation, with the extract/merge carried as provider-executed
-  // `postUploadCommands`), with no separate custom-provision diversion. Assert
-  // the collapsed round-trip count so a future change that re-inlines a
-  // `writeFile`+`run` sequence — or fans one staging step across multiple
-  // operations — fails loudly here instead of silently regressing the start path.
-  it("collapses a representative codex_local start to one syncIn round-trip per inbound staging step", async () => {
+  it("issues one merged syncIn operation for a git-backed workspace stage-sync with two ordered extract commands", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-merged-git-"));
+    cleanupDirs.push(rootDir);
+    const sourceRepoDir = path.join(rootDir, "source-repo");
+    const localWorkspaceDir = path.join(rootDir, "local-workspace");
+    const remoteWorkspaceDir = path.join(rootDir, "remote-workspace");
+    await mkdir(sourceRepoDir, { recursive: true });
+    await git(sourceRepoDir, ["init"]);
+    await git(sourceRepoDir, ["checkout", "-b", "main"]);
+    await git(sourceRepoDir, ["config", "user.name", "Paperclip Test"]);
+    await git(sourceRepoDir, ["config", "user.email", "test@paperclip.dev"]);
+    await writeFile(path.join(sourceRepoDir, "tracked.txt"), "tracked\n", "utf8");
+    await git(sourceRepoDir, ["add", "tracked.txt"]);
+    await git(sourceRepoDir, ["commit", "-m", "base"]);
+    await git(sourceRepoDir, ["worktree", "add", "-b", "work", localWorkspaceDir, "HEAD"]);
+    // Pre-seed the sandbox with a `.paperclip-runtime` dir that MUST survive.
+    await mkdir(path.join(remoteWorkspaceDir, ".paperclip-runtime"), { recursive: true });
+    await writeFile(path.join(remoteWorkspaceDir, ".paperclip-runtime", "keep.txt"), "keep\n", "utf8");
+
+    const client: SandboxManagedRuntimeClient = {
+      makeDir: async (remotePath) => {
+        await mkdir(remotePath, { recursive: true });
+      },
+      writeFile: async (remotePath, bytes) => {
+        await mkdir(path.dirname(remotePath), { recursive: true });
+        await writeFile(remotePath, Buffer.from(bytes));
+      },
+      readFile: async (remotePath) => await readFile(remotePath),
+      listFiles: async () => [],
+      remove: async (remotePath) => {
+        await rm(remotePath, { recursive: true, force: true });
+      },
+      run: async (command) => {
+        await execFile("sh", ["-c", command], { maxBuffer: 32 * 1024 * 1024 });
+      },
+    };
+    const captured: SandboxSyncOperation[] = [];
+    attachNativeRecordingSyncIn(client, captured);
+    // Count how many times `syncIn` is invoked so the merge collapses the two
+    // workspace staging steps into a single native round trip.
+    let syncInCallCount = 0;
+    const recordingSyncIn = client.syncIn!;
+    client.syncIn = async (operations) => {
+      syncInCallCount += 1;
+      return recordingSyncIn(operations);
+    };
+
+    await prepareSandboxManagedRuntime({
+      spec: {
+        transport: "sandbox",
+        provider: "test",
+        sandboxId: "sandbox-1",
+        remoteCwd: remoteWorkspaceDir,
+        timeoutMs: 30_000,
+        apiKey: null,
+      },
+      adapterKey: "test-adapter",
+      client,
+      workspaceLocalDir: localWorkspaceDir,
+    });
+
+    // One `syncIn` call carrying exactly one operation for the whole workspace.
+    expect(syncInCallCount).toBe(1);
+    expect(captured).toHaveLength(1);
+    const op = captured[0];
+
+    // Both host tars ride the one operation as two `file` mappings.
+    const byBase = (base: string) =>
+      op.files.find((mapping) => path.posix.basename(mapping.targetPath) === base);
+    const gitMapping = byBase("git-workspace-upload.tar");
+    const overlayMapping = byBase("workspace-upload.tar");
+    expect(gitMapping).toBeDefined();
+    expect(overlayMapping).toBeDefined();
+    expect(op.files).toHaveLength(2);
+    expect(op.files.every((mapping) => mapping.kind === "file")).toBe(true);
+
+    // Both tar targets live under `.paperclip-runtime`, so the git extract's wipe
+    // (which preserves `.paperclip-runtime`) cannot delete the overlay tar before
+    // the overlay extract runs.
+    for (const mapping of op.files) {
+      expect(mapping.targetPath).toContain("/.paperclip-runtime/");
+    }
+
+    // Two ordered extract commands: git history first (wipe-except-preserved),
+    // overlay second (merge, no wipe). No deleted paths in this clean worktree.
+    const commands = op.postUploadCommands ?? [];
+    expect(commands).toHaveLength(2);
+    expect(commands[0].command).toContain("git-workspace-upload.tar");
+    expect(commands[0].command).toContain(".paperclip-runtime");
+    expect(commands[0].command).toContain("find ");
+    expect(commands[1].command).toContain("workspace-upload.tar");
+    expect(commands[1].command).not.toContain("git-workspace-upload.tar");
+    expect(commands[1].command).not.toContain("find ");
+
+    // The pre-seeded runtime dir survived and the workspace overlay applied.
+    await expect(
+      readFile(path.join(remoteWorkspaceDir, ".paperclip-runtime", "keep.txt"), "utf8"),
+    ).resolves.toBe("keep\n");
+    await expect(readFile(path.join(remoteWorkspaceDir, "tracked.txt"), "utf8")).resolves.toBe("tracked\n");
+  });
+
+  it("the merged workspace confine guard covers both tar mappings (escape in either trips it)", () => {
+    const runtimeRoot = "/home/daytona/paperclip-workspace/.paperclip-runtime/test-adapter";
+    const tempRoot = "/tmp/paperclip-sandbox-sync-abc";
+    const gitMapping = {
+      sourcePath: `${tempRoot}/git-workspace.tar`,
+      targetPath: `${runtimeRoot}/git-workspace-upload.tar`,
+      kind: "file" as const,
+    };
+    const overlayMapping = {
+      sourcePath: `${tempRoot}/workspace.tar`,
+      targetPath: `${runtimeRoot}/workspace-upload.tar`,
+      kind: "file" as const,
+    };
+    const roots = { sourceRoots: [tempRoot], targetRoots: [runtimeRoot] };
+
+    // A confined merged operation with both tar mappings passes the guard.
+    expect(() =>
+      assertSyncOperationsConfined(
+        [{ operationId: "merged", files: [gitMapping, overlayMapping] }],
+        roots,
+      ),
+    ).not.toThrow();
+
+    // A `..` target escape in the overlay mapping trips the guard, so the whole
+    // merged operation is rejected before any transfer.
+    expect(() =>
+      assertSyncOperationsConfined(
+        [{
+          operationId: "merged",
+          files: [
+            gitMapping,
+            { ...overlayMapping, targetPath: `${runtimeRoot}/../../etc/workspace-upload.tar` },
+          ],
+        }],
+        roots,
+      ),
+    ).toThrow(/escapes its confinement root|not a confined absolute path/);
+
+    // An absolute-path source escape in the git mapping trips the guard too.
+    expect(() =>
+      assertSyncOperationsConfined(
+        [{
+          operationId: "merged",
+          files: [{ ...gitMapping, sourcePath: "/etc/passwd" }, overlayMapping],
+        }],
+        roots,
+      ),
+    ).toThrow(/escapes its confinement root|not a confined absolute path/);
+  });
+
+  // Regression lock: a representative `codex_local` start stages its inbound bytes
+  // as TWO `syncIn` operations. The git-history and workspace-overlay tars share
+  // ONE merged operation (one native `uploadFiles` round-trip that carries both
+  // tars, with the two extract commands as ordered `postUploadCommands`); the
+  // managed Codex `home` asset (auth.json merge) is the second operation. Every
+  // inbound step is routed through `client.syncIn`, with no separate
+  // custom-provision diversion. Assert the collapsed round-trip count so a future
+  // change that re-inlines a `writeFile`+`run` sequence — or splits the merged
+  // workspace operation back into two — fails loudly here instead of silently
+  // regressing the start path.
+  it("collapses a representative codex_local start to two syncIn round-trips: one merged workspace op plus the asset op", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-sandbox-codex-roundtrip-"));
     cleanupDirs.push(rootDir);
     const sourceRepoDir = path.join(rootDir, "source-repo");
@@ -1385,7 +1539,7 @@ describe("sandbox managed runtime", () => {
     const remoteWorkspaceDir = path.join(rootDir, "remote-workspace");
     const homeDir = path.join(rootDir, "codex-home");
 
-    // Git-backed workspace → git history + workspace overlay are two staging steps.
+    // Git-backed workspace → git history + workspace overlay share one merged op.
     await mkdir(sourceRepoDir, { recursive: true });
     await git(sourceRepoDir, ["init"]);
     await git(sourceRepoDir, ["checkout", "-b", "main"]);
@@ -1458,30 +1612,31 @@ describe("sandbox managed runtime", () => {
     expect(directWrites).toEqual([]);
     expect(directRuns).toEqual([]);
 
-    // The collapsed count: exactly three inbound round-trips — git, workspace, home.
-    expect(captured).toHaveLength(3);
-    const gitOp = captured.find((op) =>
-      op.files.some((mapping) => mapping.targetPath.endsWith("git-workspace-upload.tar")),
-    );
-    const workspaceOp = captured.find((op) =>
-      op.files.some((mapping) => mapping.targetPath.endsWith("workspace-upload.tar")),
-    );
-    const homeOp = captured.find((op) =>
-      op.files.some((mapping) => mapping.targetPath.endsWith("home-upload.tar")),
-    );
-    expect(gitOp).toBeDefined();
+    // The collapsed count: exactly two inbound round-trips — the merged workspace
+    // op (git history + overlay) and the home asset op.
+    expect(captured).toHaveLength(2);
+    const hasBase = (op: SandboxSyncOperation, base: string) =>
+      op.files.some((mapping) => path.posix.basename(mapping.targetPath) === base);
+    const workspaceOp = captured.find((op) => hasBase(op, "workspace-upload.tar"));
+    const homeOp = captured.find((op) => hasBase(op, "home-upload.tar"));
     expect(workspaceOp).toBeDefined();
     expect(homeOp).toBeDefined();
+    // The merged workspace op carries BOTH the git-history and overlay tars, with
+    // both extract commands as ordered post-upload commands (git first, overlay
+    // second). The two tars ride one native uploadFiles round-trip.
+    expect(hasBase(workspaceOp!, "git-workspace-upload.tar")).toBe(true);
+    expect(workspaceOp!.files).toHaveLength(2);
+    expect((workspaceOp!.postUploadCommands ?? []).length).toBeGreaterThanOrEqual(2);
 
-    // Every operation is a single native uploadFiles (all `file` mappings) whose
+    // Every operation is a native uploadFiles (all `file` mappings) whose
     // extract/merge rides as an ordered provider-executed post-upload command.
     for (const op of captured) {
       expect(op.files.length).toBeGreaterThanOrEqual(1);
       expect(op.files.every((mapping) => mapping.kind === "file")).toBe(true);
       expect(op.postUploadCommands ?? []).not.toHaveLength(0);
     }
-    // Operation ids are distinct, so "3 operations" is 3 real round-trips.
-    expect(new Set(captured.map((op) => op.operationId)).size).toBe(3);
+    // Operation ids are distinct, so "2 operations" is 2 real round-trips.
+    expect(new Set(captured.map((op) => op.operationId)).size).toBe(2);
 
     // The credential asset actually materialized through the native seam.
     await expect(readFile(path.join(prepared.assetDirs.home, "auth.json"), "utf8"))

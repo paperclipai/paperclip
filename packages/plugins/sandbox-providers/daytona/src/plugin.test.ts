@@ -2956,6 +2956,159 @@ describe("daytona native file-sync hooks", () => {
     ).toBe(false);
   });
 
+  // -------------------------------------------------------------------------
+  // Merged git-workspace operation. A git-backed workspace stage-sync rides ONE
+  // operation whose `files` carry the git-history tar and the workspace-overlay
+  // tar, with the two extract commands as ordered `postUploadCommands`. The
+  // operation shares one mkdir, one confine guard, one `uploadFiles`, and one
+  // rename exec.
+  // -------------------------------------------------------------------------
+
+  it("stages a merged git-workspace operation as one uploadFiles batch and one rename exec, both extracts in order", async () => {
+    const hostDir = await makeHostDir();
+    const gitTar = path.join(hostDir, "git-workspace.tar");
+    const overlayTar = path.join(hostDir, "workspace.tar");
+    await fs.writeFile(gitTar, "git-bytes");
+    await fs.writeFile(overlayTar, "overlay-bytes");
+    const runtimeDir = `${REMOTE_DIR}/.paperclip-runtime/adapter`;
+
+    const sandbox = createMockSandbox();
+    mockGet.mockResolvedValue(sandbox);
+
+    const gitExtract = "git-history-extract";
+    const overlayExtract = "workspace-overlay-extract";
+    const result = await plugin.definition.onEnvironmentSyncIn?.({
+      driverKey: "daytona",
+      companyId: "company-1",
+      environmentId: "env-1",
+      config: { timeoutMs: 300000, reuseLease: false },
+      lease: syncLease(),
+      operations: [
+        {
+          operationId: "merged-workspace",
+          files: [
+            { sourcePath: gitTar, targetPath: `${runtimeDir}/git-workspace-upload.tar`, kind: "file" },
+            { sourcePath: overlayTar, targetPath: `${runtimeDir}/workspace-upload.tar`, kind: "file" },
+          ],
+          postUploadCommands: [{ command: gitExtract }, { command: overlayExtract }],
+        },
+      ],
+    });
+
+    // One bulk upload carries BOTH tars; one rename exec promotes both temps.
+    expect(sandbox.fs.uploadFiles).toHaveBeenCalledTimes(1);
+    const [uploads] = sandbox.fs.uploadFiles.mock.calls[0] as [Array<{ source: string; destination: string }>];
+    expect(uploads).toHaveLength(2);
+    const mvCalls = sandbox.process.executeCommand.mock.calls.filter(([cmd]: [string]) =>
+      String(cmd).includes("mv -f"),
+    );
+    expect(mvCalls).toHaveLength(1);
+    expect(String(mvCalls[0][0]).match(/mv -f /g)).toHaveLength(2);
+
+    // Both extract commands ran, in array order, AFTER the upload (git first).
+    const orderOf = (cmd: string) => {
+      const idx = sandbox.process.executeCommand.mock.calls.findIndex(([c]: [string]) => c === cmd);
+      return sandbox.process.executeCommand.mock.invocationCallOrder[idx];
+    };
+    expect(orderOf(gitExtract)).toBeLessThan(orderOf(overlayExtract));
+    expect(sandbox.fs.uploadFiles.mock.invocationCallOrder[0]).toBeLessThan(orderOf(gitExtract));
+
+    expect(result).toEqual({
+      operations: [{
+        operationId: "merged-workspace",
+        filesTransferred: 2,
+        bytesTransferred: "git-bytes".length + "overlay-bytes".length,
+      }],
+    });
+  });
+
+  it("rejects a merged operation when either tar mapping target escapes the remote dir, before uploading", async () => {
+    const hostDir = await makeHostDir();
+    const gitTar = path.join(hostDir, "git-workspace.tar");
+    const overlayTar = path.join(hostDir, "workspace.tar");
+    await fs.writeFile(gitTar, "git-bytes");
+    await fs.writeFile(overlayTar, "overlay-bytes");
+    const runtimeDir = `${REMOTE_DIR}/.paperclip-runtime/adapter`;
+
+    const sandbox = createMockSandbox();
+    mockGet.mockResolvedValue(sandbox);
+
+    await expect(
+      plugin.definition.onEnvironmentSyncIn?.({
+        driverKey: "daytona",
+        companyId: "company-1",
+        environmentId: "env-1",
+        config: { timeoutMs: 300000, reuseLease: false },
+        lease: syncLease(),
+        operations: [
+          {
+            operationId: "merged-escape",
+            files: [
+              { sourcePath: gitTar, targetPath: `${runtimeDir}/git-workspace-upload.tar`, kind: "file" },
+              // The overlay mapping target escapes the workspace remote dir.
+              { sourcePath: overlayTar, targetPath: `${REMOTE_DIR}/../../etc/workspace-upload.tar`, kind: "file" },
+            ],
+            postUploadCommands: [{ command: "git-history-extract" }, { command: "workspace-overlay-extract" }],
+          },
+        ],
+      }),
+    ).rejects.toThrow(/escapes the workspace remote dir|not a confined absolute path/);
+
+    // Neither tar uploaded: the confine check on the escaping mapping trips first.
+    expect(sandbox.fs.uploadFiles).not.toHaveBeenCalled();
+  });
+
+  it("stops the overlay and remove-deleted commands when the git extract fails (merged operation fail-fast)", async () => {
+    const hostDir = await makeHostDir();
+    const gitTar = path.join(hostDir, "git-workspace.tar");
+    const overlayTar = path.join(hostDir, "workspace.tar");
+    await fs.writeFile(gitTar, "git-bytes");
+    await fs.writeFile(overlayTar, "overlay-bytes");
+    const runtimeDir = `${REMOTE_DIR}/.paperclip-runtime/adapter`;
+
+    const sandbox = createMockSandbox();
+    // The first (git-history) extract exits non-zero; every transfer/guard script
+    // stays green so the fail-fast loop is the only thing that can trip this test.
+    sandbox.process.executeCommand.mockImplementation(async (command: string) => {
+      if (command === "git-history-extract") {
+        return { exitCode: 5, result: "boom", artifacts: { stdout: "boom" } };
+      }
+      return { exitCode: 0, result: "", artifacts: { stdout: "" } };
+    });
+    mockGet.mockResolvedValue(sandbox);
+
+    await expect(
+      plugin.definition.onEnvironmentSyncIn?.({
+        driverKey: "daytona",
+        companyId: "company-1",
+        environmentId: "env-1",
+        config: { timeoutMs: 300000, reuseLease: false },
+        lease: syncLease(),
+        operations: [
+          {
+            operationId: "merged-failfast",
+            files: [
+              { sourcePath: gitTar, targetPath: `${runtimeDir}/git-workspace-upload.tar`, kind: "file" },
+              { sourcePath: overlayTar, targetPath: `${runtimeDir}/workspace-upload.tar`, kind: "file" },
+            ],
+            postUploadCommands: [
+              { command: "git-history-extract" },
+              { command: "workspace-overlay-extract" },
+              { command: "remove-deleted-paths" },
+            ],
+          },
+        ],
+      }),
+    ).rejects.toThrow(/post-upload command failed \(exit 5\)/);
+
+    // Fail-fast: the overlay extract and the remove-deleted command never ran.
+    const ran = (cmd: string) =>
+      sandbox.process.executeCommand.mock.calls.some(([c]: [string]) => c === cmd);
+    expect(ran("git-history-extract")).toBe(true);
+    expect(ran("workspace-overlay-extract")).toBe(false);
+    expect(ran("remove-deleted-paths")).toBe(false);
+  });
+
   it("rejects a post-upload command cwd that escapes the remote dir lexically, before any exec (C2)", async () => {
     const hostDir = await makeHostDir();
     const source = path.join(hostDir, "config.txt");
