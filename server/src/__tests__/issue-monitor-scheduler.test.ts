@@ -664,15 +664,6 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
       signal: null,
       timedOut: false,
       errorMessage: "You've hit your weekly limit · resets Aug 3 at 11am (Europe/Zurich)",
-      errorCode: "provider_quota",
-      errorFamily: "provider_quota",
-      retryNotBefore: retryNotBefore.toISOString(),
-      resultJson: {
-        errorFamily: "provider_quota",
-        retryNotBefore: retryNotBefore.toISOString(),
-        transientRetryNotBefore: retryNotBefore.toISOString(),
-        providerQuotaRetryNotBefore: retryNotBefore.toISOString(),
-      },
       provider: "test",
       model: "test-model",
     }));
@@ -683,6 +674,12 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
 
     expect(run.status).toBe("failed");
     expect(run.errorCode).toBe("provider_quota");
+    expect(run.resultJson).toMatchObject({
+      errorFamily: "provider_quota",
+      retryNotBefore: retryNotBefore.toISOString(),
+      transientRetryNotBefore: retryNotBefore.toISOString(),
+      providerQuotaRetryNotBefore: retryNotBefore.toISOString(),
+    });
     expect(repairedIssue.monitorNextCheckAt?.toISOString()).toBe(retryNotBefore.toISOString());
     expect(normalizeIssueExecutionPolicy(repairedIssue.executionPolicy ?? null)?.monitor?.nextCheckAt).toBe(
       retryNotBefore.toISOString(),

@@ -14505,6 +14505,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 adapterResult.errorMessage ?? (outcome === "timed_out" ? "Timed out" : "Adapter failed"),
                 currentUserRedactionOptions,
               );
+      const derivedFailureRecovery =
+        outcome === "failed"
+          ? classifyAdapterFailureForRecovery({
+            error: runErrorMessage,
+            errorCode: adapterResult.errorCode ?? "adapter_failed",
+            resultJson: adapterResult.resultJson ?? null,
+          })
+          : null;
       const recordedResponsibleUserDenialCode =
         normalizeResponsibleUserDenialCode(latestRun?.errorCode);
       const runErrorCode =
@@ -14513,7 +14521,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           : outcome === "cancelled"
             ? (latestRun?.errorCode ?? "cancelled")
             : outcome === "failed"
-              ? (adapterResult.errorCode ?? recordedResponsibleUserDenialCode ?? "adapter_failed")
+              ? (
+                adapterResult.errorCode
+                ?? (derivedFailureRecovery?.kind === "provider_quota" ? "provider_quota" : null)
+                ?? recordedResponsibleUserDenialCode
+                ?? "adapter_failed"
+              )
               : null;
 
       let logSummary: { bytes: number; sha256?: string; compressed: boolean } | null = null;
@@ -14580,8 +14593,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 ...parseObject(adapterResult.resultJson),
                 configFreshness: configFreshnessResultMetadata,
               },
-              errorFamily: adapterResult.errorFamily ?? null,
-              retryNotBefore: adapterResult.retryNotBefore ?? null,
+              errorFamily:
+                adapterResult.errorFamily
+                ?? (derivedFailureRecovery?.kind === "provider_quota" ? "provider_quota" : null),
+              retryNotBefore:
+                adapterResult.retryNotBefore
+                ?? (
+                  derivedFailureRecovery?.kind === "provider_quota"
+                    ? derivedFailureRecovery.retryAt.toISOString()
+                    : null
+                ),
             }),
             modelProfileApplication,
           ),
@@ -16877,6 +16898,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               id: heartbeatRuns.id,
               status: heartbeatRuns.status,
               finishedAt: heartbeatRuns.finishedAt,
+              error: heartbeatRuns.error,
+              errorCode: heartbeatRuns.errorCode,
+              resultJson: heartbeatRuns.resultJson,
             })
             .from(heartbeatRuns)
             .where(

@@ -12,11 +12,28 @@ const URL_RE = /(https?:\/\/[^\s'"`<>()[\]{};,!?]+[^\s'"`<>()[\]{};,!.?:]+)/gi;
 const CLAUDE_TRANSIENT_UPSTREAM_RE =
   /(?:rate[-\s]?limit(?:ed)?|rate_limit_error|too\s+many\s+requests|\b429\b|overloaded(?:_error)?|server\s+overloaded|service\s+unavailable|\b503\b|\b529\b|high\s+demand|try\s+again\s+later|temporarily\s+unavailable|throttl(?:ed|ing)|throttlingexception|servicequotaexceededexception|out\s+of\s+extra\s+usage|extra\s+usage\b|claude\s+usage\s+limit\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|usage\s+limit\s+reached|usage\s+cap\s+reached)/i;
 const CLAUDE_PROVIDER_QUOTA_RE =
-  /(?:you(?:'|’)ve\s+hit\s+your\s+session\s+limit|session\s+limit\s+(?:reached|exceeded)|out\s+of\s+extra\s+usage|extra\s+usage\b|claude\s+usage\s+limit\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|usage\s+limit\s+reached|usage\s+cap\s+reached|servicequotaexceededexception)/i;
+  /(?:you(?:'|’)ve\s+hit\s+your\s+(?:(?:session|weekly)\s+limit|monthly\s+spend\s+limit)|\b\d+[-\s]?hour\s+limit\s+reached|session\s+limit\s+(?:reached|exceeded)|weekly\s+limit\s+reached|out\s+of\s+extra\s+usage|extra\s+usage\b|claude\s+usage\s+limit\s+reached|usage\s+limit\s+reached|usage\s+cap\s+reached|servicequotaexceededexception)/i;
 const CLAUDE_MODEL_NOT_FOUND_RE =
   /(?:\b404\b[\s\S]{0,120})?(?:model[\s_-]*(?:not[\s_-]*found|does not exist|unknown|invalid)|unknown[\s_-]*model)/i;
 const CLAUDE_EXTRA_USAGE_RESET_RE =
-  /(?:you(?:'|’)ve\s+hit\s+your\s+session\s+limit|session\s+limit\s+(?:reached|exceeded)|out\s+of\s+extra\s+usage|extra\s+usage|usage\s+limit\s+reached|usage\s+cap\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|claude\s+usage\s+limit\s+reached)[\s\S]{0,120}?\bresets?\s+(?:at\s+)?([^\n()]+?)(?:\s*\(([^)]+)\))?(?:[.!]|\n|$)/i;
+  /(?:you(?:'|’)ve\s+hit\s+your\s+(?:(?:session|weekly)\s+limit|monthly\s+spend\s+limit)|\b\d+[-\s]?hour\s+limit\s+reached|session\s+limit\s+(?:reached|exceeded)|weekly\s+limit\s+reached|out\s+of\s+extra\s+usage|extra\s+usage|usage\s+limit\s+reached|usage\s+cap\s+reached|claude\s+usage\s+limit\s+reached)[\s\S]{0,120}?\bresets?\s+(?:at\s+)?([^\n()]+?)(?:\s*\(([^)]+)\))?(?:[.!]|\n|$)/i;
+const CLAUDE_RESET_MONTH_RE =
+  /^(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\.?\s+(\d{1,2})(?:,\s*(\d{4}))?\s+at\s+(.+)$/i;
+const CLAUDE_MONTH_INDEX: Record<string, number> = {
+  jan: 1,
+  feb: 2,
+  mar: 3,
+  apr: 4,
+  may: 5,
+  jun: 6,
+  jul: 7,
+  aug: 8,
+  sep: 9,
+  sept: 9,
+  oct: 10,
+  nov: 11,
+  dec: 12,
+};
 
 /**
  * Sum the per-model usage ledger from a Claude CLI result event. The result
@@ -414,11 +431,7 @@ function nextClockTimeInTimeZone(input: {
   return retryAt;
 }
 
-function parseClaudeResetClockTime(clockText: string, now: Date, timeZoneHint?: string | null): Date | null {
-  const normalized = clockText.trim().replace(/\s+/g, " ");
-  const match = normalized.match(/^(\d{1,2})(?::(\d{2}))?\s*([ap])\.?\s*m\.?/i);
-  if (!match) return null;
-
+function parseClaudeResetClockParts(match: RegExpMatchArray): { hour24: number; minute: number } | null {
   const hour12 = Number.parseInt(match[1] ?? "", 10);
   const minute = Number.parseInt(match[2] ?? "0", 10);
   if (!Number.isInteger(hour12) || hour12 < 1 || hour12 > 12) return null;
@@ -426,21 +439,85 @@ function parseClaudeResetClockTime(clockText: string, now: Date, timeZoneHint?: 
 
   let hour24 = hour12 % 12;
   if ((match[3] ?? "").toLowerCase() === "p") hour24 += 12;
+  return { hour24, minute };
+}
+
+function parseClaudeResetClockTime(clockText: string, now: Date, timeZoneHint?: string | null): Date | null {
+  const normalized = clockText.trim().replace(/\s+/g, " ");
+  const match = normalized.match(/^(\d{1,2})(?::(\d{2}))?\s*([ap])\.?\s*m\.?/i);
+  if (!match) return null;
+
+  const parts = parseClaudeResetClockParts(match);
+  if (!parts) return null;
 
   if (timeZoneHint) {
     const explicitRetryAt = nextClockTimeInTimeZone({
       now,
-      hour: hour24,
-      minute,
+      hour: parts.hour24,
+      minute: parts.minute,
       timeZoneHint,
     });
     if (explicitRetryAt) return explicitRetryAt;
   }
 
   const retryAt = new Date(now);
-  retryAt.setHours(hour24, minute, 0, 0);
+  retryAt.setHours(parts.hour24, parts.minute, 0, 0);
   if (retryAt.getTime() <= now.getTime()) {
     retryAt.setDate(retryAt.getDate() + 1);
+  }
+  return retryAt;
+}
+
+function parseClaudeResetDateTime(resetText: string, now: Date, timeZoneHint?: string | null): Date | null {
+  const normalized = resetText.trim().replace(/\s+/g, " ");
+  const match = normalized.match(CLAUDE_RESET_MONTH_RE);
+  if (!match) return null;
+
+  const month = CLAUDE_MONTH_INDEX[(match[1] ?? "").toLowerCase()];
+  const day = Number.parseInt(match[2] ?? "", 10);
+  const explicitYear = match[3] ? Number.parseInt(match[3], 10) : null;
+  const timeMatch = (match[4] ?? "").trim().match(/^(\d{1,2})(?::(\d{2}))?\s*([ap])\.?\s*m\.?$/i);
+  if (!month || !Number.isInteger(day) || day < 1 || day > 31 || !timeMatch) return null;
+
+  const parts = parseClaudeResetClockParts(timeMatch);
+  if (!parts) return null;
+
+  const timeZone = normalizeResetTimeZone(timeZoneHint);
+  if (timeZone) {
+    const nowParts = readTimeZoneParts(now, timeZone);
+    let year = explicitYear ?? nowParts.year;
+    let retryAt = dateFromTimeZoneWallClock({
+      year,
+      month,
+      day,
+      hour: parts.hour24,
+      minute: parts.minute,
+      timeZone,
+    });
+    if (!retryAt) return null;
+    if (!explicitYear && retryAt.getTime() <= now.getTime()) {
+      year += 1;
+      retryAt = dateFromTimeZoneWallClock({
+        year,
+        month,
+        day,
+        hour: parts.hour24,
+        minute: parts.minute,
+        timeZone,
+      });
+    }
+    return retryAt;
+  }
+
+  let year = explicitYear ?? now.getFullYear();
+  let retryAt = new Date(now);
+  retryAt.setFullYear(year, month - 1, day);
+  retryAt.setHours(parts.hour24, parts.minute, 0, 0);
+  if (!explicitYear && retryAt.getTime() <= now.getTime()) {
+    year += 1;
+    retryAt = new Date(now);
+    retryAt.setFullYear(year, month - 1, day);
+    retryAt.setHours(parts.hour24, parts.minute, 0, 0);
   }
   return retryAt;
 }
@@ -457,7 +534,8 @@ export function extractClaudeRetryNotBefore(
   const haystack = buildClaudeTransientHaystack(input);
   const match = haystack.match(CLAUDE_EXTRA_USAGE_RESET_RE);
   if (!match) return null;
-  return parseClaudeResetClockTime(match[1] ?? "", now, match[2]);
+  return parseClaudeResetDateTime(match[1] ?? "", now, match[2])
+    ?? parseClaudeResetClockTime(match[1] ?? "", now, match[2]);
 }
 
 export function isClaudeTransientUpstreamError(input: {

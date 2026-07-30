@@ -1,8 +1,10 @@
+import fs from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   ISSUE_REWAKE_BASE_COOLDOWN_MS,
   ISSUE_REWAKE_MAX_COOLDOWN_MS,
   ISSUE_REWAKE_NO_PROGRESS_THRESHOLD,
+  THROTTLED_ISSUE_REWAKE_REASONS,
   computeIssueRewakeCooldownMs,
   evaluateIssueRewakeThrottle,
   isThrottleCandidateIssueRewake,
@@ -14,11 +16,17 @@ function runSample(input: {
   id: string;
   status?: string;
   finishedSecondsAgo: number;
+  error?: string | null;
+  errorCode?: string | null;
+  resultJson?: unknown;
 }) {
   return {
     id: input.id,
     status: input.status ?? "succeeded",
     finishedAt: new Date(NOW.getTime() - input.finishedSecondsAgo * 1000),
+    error: input.error ?? null,
+    errorCode: input.errorCode ?? null,
+    resultJson: input.resultJson ?? null,
   };
 }
 
@@ -35,7 +43,9 @@ describe("isThrottleCandidateIssueRewake", () => {
     expect(isThrottleCandidateIssueRewake({ ...base, reason: null })).toBe(true);
     expect(isThrottleCandidateIssueRewake({ ...base, reason: "issue_continuation_needed" })).toBe(true);
     expect(isThrottleCandidateIssueRewake({ ...base, reason: "issue_assignment_recovery" })).toBe(true);
-    expect(isThrottleCandidateIssueRewake({ ...base, reason: "issue_graph_liveness_backstop" })).toBe(true);
+    expect(isThrottleCandidateIssueRewake({ ...base, reason: "non_terminal_wakeless_backstop" })).toBe(true);
+    expect(isThrottleCandidateIssueRewake({ ...base, reason: "source_scoped_recovery_action" })).toBe(true);
+    expect(isThrottleCandidateIssueRewake({ ...base, reason: "missing_issue_comment" })).toBe(true);
   });
 
   it("never throttles wakes that carry new information or an explicit escalation", () => {
@@ -55,6 +65,20 @@ describe("isThrottleCandidateIssueRewake", () => {
       "run_liveness_continuation",
     ]) {
       expect(isThrottleCandidateIssueRewake({ ...base, reason })).toBe(false);
+    }
+  });
+
+  it("only names wake reasons that are emitted somewhere in server/src", () => {
+    const source = [
+      fs.readFileSync(new URL("../services/recovery/service.ts", import.meta.url), "utf8"),
+      fs.readFileSync(new URL("../services/heartbeat.ts", import.meta.url), "utf8"),
+      fs.readFileSync(new URL("../services/productivity-review.ts", import.meta.url), "utf8"),
+      fs.readFileSync(new URL("../services/routines.ts", import.meta.url), "utf8"),
+      fs.readFileSync(new URL("../routes/issues.ts", import.meta.url), "utf8"),
+    ].join("\n");
+
+    for (const reason of THROTTLED_ISSUE_REWAKE_REASONS) {
+      expect(source).toContain(`reason: "${reason}"`);
     }
   });
 });
@@ -156,11 +180,43 @@ describe("evaluateIssueRewakeThrottle", () => {
     expect(decision).toEqual({ blocked: false, noProgressStreak: 1 });
   });
 
-  it("does not delay recovery after a failed run", () => {
+  it("blocks repeated failed provider-quota runs", () => {
     const decision = evaluateIssueRewakeThrottle({
       now: NOW,
       recentTerminalRuns: [
-        runSample({ id: "r2", status: "failed", finishedSecondsAgo: 10 }),
+        runSample({
+          id: "r2",
+          status: "failed",
+          finishedSecondsAgo: 10,
+          errorCode: "provider_quota",
+          error: "You've hit your monthly spend limit · raise it at claude.ai/settings/usage",
+        }),
+        runSample({
+          id: "r1",
+          status: "failed",
+          finishedSecondsAgo: 40,
+          errorCode: "provider_quota",
+          error: "You've hit your weekly limit · resets Aug 3 at 11am (Europe/Zurich)",
+          resultJson: {
+            errorFamily: "provider_quota",
+            retryNotBefore: "2026-08-03T09:00:00.000Z",
+          },
+        }),
+      ],
+      runIdsWithIssueProgress: new Set(),
+      hasNewIssueInputSinceLastRun: false,
+    });
+    expect(decision.blocked).toBe(true);
+    if (decision.blocked) {
+      expect(decision.noProgressStreak).toBe(2);
+    }
+  });
+
+  it("does not delay recovery after a non-provider failed run", () => {
+    const decision = evaluateIssueRewakeThrottle({
+      now: NOW,
+      recentTerminalRuns: [
+        runSample({ id: "r2", status: "failed", finishedSecondsAgo: 10, errorCode: "process_lost", error: "child exited" }),
         runSample({ id: "r1", finishedSecondsAgo: 40 }),
       ],
       runIdsWithIssueProgress: new Set(),
