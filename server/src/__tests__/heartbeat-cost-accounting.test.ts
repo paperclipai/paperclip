@@ -156,6 +156,47 @@ describe("heartbeat cost accounting", () => {
     expect(resolveLedgerCostStatus({ costUsd: 0, ...tokens, rateCardCents })).toBe("derived");
   });
 
+  // The live-vs-backfill consistency bug found after the first deploy: post-fix
+  // rows were still landing as `reported` with cost_cents=0, because the Claude
+  // Code CLI *does* print a rate-card `total_cost_usd` (~$2.35) even on a
+  // subscription run, while `normalizeBilledCostCents` zeroes the cash. The
+  // backfill only ever saw cost_cents, so identical rows got two statuses.
+  describe("subscription runs classify off billed cash, not the CLI estimate", () => {
+    const tokens = {
+      inputTokens: 89,
+      cachedInputTokens: 2_590_877,
+      outputTokens: 17_718,
+      cacheWriteTokens: 61_202,
+    };
+
+    it("derives a subscription run whose billed cents are policy-zeroed", () => {
+      expect(resolveLedgerCostStatus({
+        costUsd: 2.3546145,
+        billedCostCents: 0,
+        ...tokens,
+        rateCardCents: 212,
+      })).toBe("derived");
+    });
+
+    it("still reports a metered run that actually billed cash", () => {
+      expect(resolveLedgerCostStatus({
+        costUsd: 2.3546145,
+        billedCostCents: 235,
+        ...tokens,
+        rateCardCents: 212,
+      })).toBe("reported");
+    });
+
+    it("marks an unlisted subscription model unpriced rather than reported", () => {
+      expect(resolveLedgerCostStatus({
+        costUsd: 2.3546145,
+        billedCostCents: 0,
+        ...tokens,
+        rateCardCents: null,
+      })).toBe("unpriced");
+    });
+  });
+
   it("still reports unpriced for an unlisted model on a subscription plan", () => {
     const tokens = { inputTokens: 5_000_000, cachedInputTokens: 0, outputTokens: 1_000_000 };
     const rateCardCents = deriveRateCardCents("some-unlisted-model", tokens);
