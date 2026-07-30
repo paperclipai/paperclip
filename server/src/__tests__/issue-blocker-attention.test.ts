@@ -99,7 +99,12 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     originKind?: string | null;
     originId?: string | null;
     originFingerprint?: string | null;
+    executionPolicy?: Record<string, unknown> | null;
     executionState?: Record<string, unknown> | null;
+    monitorNextCheckAt?: Date | null;
+    monitorAttemptCount?: number | null;
+    monitorNotes?: string | null;
+    monitorScheduledBy?: string | null;
     description?: string | null;
   }) {
     const id = input.id ?? randomUUID();
@@ -116,7 +121,12 @@ describeEmbeddedPostgres("issue blocker attention", () => {
       originKind: input.originKind ?? "manual",
       originId: input.originId ?? null,
       originFingerprint: input.originFingerprint ?? "default",
+      executionPolicy: input.executionPolicy ?? null,
       executionState: input.executionState ?? null,
+      monitorNextCheckAt: input.monitorNextCheckAt ?? null,
+      monitorAttemptCount: input.monitorAttemptCount ?? 0,
+      monitorNotes: input.monitorNotes ?? null,
+      monitorScheduledBy: input.monitorScheduledBy ?? null,
       description: input.description ?? null,
     });
     return id;
@@ -420,6 +430,74 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     expect(parent?.blockerAttention).toMatchObject({
       state: "covered",
       stalledBlockerCount: 0,
+    });
+  });
+
+  it("treats an in_review leaf with a scheduled monitor as covered", async () => {
+    const { companyId, agentId } = await createCompany("PBY");
+    const parentId = await insertIssue({ companyId, identifier: "PBY-1", title: "Parent", status: "blocked" });
+    const nextCheckAt = "2026-07-31T14:00:00.000Z";
+    const reviewLeafId = await insertIssue({
+      companyId,
+      identifier: "PBY-2",
+      title: "Monitor-backed review leaf",
+      status: "in_review",
+      assigneeAgentId: agentId,
+      executionPolicy: {
+        mode: "normal",
+        stages: [],
+        commentRequired: true,
+        monitor: {
+          nextCheckAt,
+          notes: "Check back tomorrow",
+          scheduledBy: "assignee",
+        },
+      },
+      executionState: {
+        status: "idle",
+        currentStageId: null,
+        currentStageIndex: null,
+        currentStageType: null,
+        currentParticipant: null,
+        returnAssignee: null,
+        reviewRequest: null,
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+        monitor: {
+          status: "scheduled",
+          nextCheckAt,
+          lastTriggeredAt: null,
+          attemptCount: 0,
+          notes: "Check back tomorrow",
+          scheduledBy: "assignee",
+          kind: null,
+          serviceName: null,
+          externalRef: null,
+          timeoutAt: null,
+          maxAttempts: null,
+          recoveryPolicy: null,
+          clearedAt: null,
+          clearReason: null,
+        },
+      },
+      monitorNextCheckAt: new Date(nextCheckAt),
+      monitorAttemptCount: 0,
+      monitorNotes: "Check back tomorrow",
+      monitorScheduledBy: "assignee",
+    });
+    await block({ companyId, blockerIssueId: reviewLeafId, blockedIssueId: parentId });
+
+    const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+
+    expect(parent?.blockerAttention).toMatchObject({
+      state: "covered",
+      reason: "active_dependency",
+      unresolvedBlockerCount: 1,
+      coveredBlockerCount: 1,
+      stalledBlockerCount: 0,
+      attentionBlockerCount: 0,
+      sampleBlockerIdentifier: "PBY-2",
     });
   });
 

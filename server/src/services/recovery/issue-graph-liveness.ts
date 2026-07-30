@@ -169,7 +169,7 @@ function monitorFromIssue(issue: IssueLivenessIssueInput) {
   return { policyMonitor, stateMonitor };
 }
 
-function hasScheduledMonitor(issue: IssueLivenessIssueInput, nowMs: number) {
+export function hasScheduledMonitorWaitingPath(issue: IssueLivenessIssueInput, nowMs: number) {
   const nextCheckAtMs = readDateMs(issue.monitorNextCheckAt);
   if (nextCheckAtMs === null || nextCheckAtMs <= nowMs) return false;
 
@@ -401,7 +401,7 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
 
   function hasExplicitWaitingPath(issue: IssueLivenessIssueInput) {
     return Boolean(issue.assigneeUserId) ||
-      hasScheduledMonitor(issue, nowMs) ||
+      hasScheduledMonitorWaitingPath(issue, nowMs) ||
       hasActiveExecutionPath(issue.companyId, issue.id, activeRuns, queuedWakeRequests) ||
       hasWaitingPath(issue.companyId, issue.id, pendingInteractions) ||
       hasWaitingPath(issue.companyId, issue.id, pendingApprovals) ||
