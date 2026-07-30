@@ -81,7 +81,7 @@ import {
   collapseDuplicatePendingHumanJoinRequests,
   findReusableHumanJoinRequest,
 } from "../lib/join-request-dedupe.js";
-import { assertAuthenticated, assertCompanyAccess } from "./authz.js";
+import { assertAuthenticated, assertCompanyAccess, getActorInfo } from "./authz.js";
 import {
   claimBoardOwnership,
   inspectBoardClaimChallenge
@@ -130,6 +130,31 @@ function tokenHashesMatch(left: string, right: string) {
     leftBytes.length === rightBytes.length &&
     timingSafeEqual(leftBytes, rightBytes)
   );
+}
+
+async function logBoardUserActivity(
+  db: Db,
+  boardAuth: ReturnType<typeof boardAuthService>,
+  actor: ReturnType<typeof getActorInfo>,
+  userId: string,
+  action: string,
+  details: Record<string, unknown> | null,
+) {
+  const accessSnapshot = await boardAuth.resolveBoardAccess(userId);
+  for (const companyId of accessSnapshot.companyIds) {
+    await logActivity(db, {
+      companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      agentId: actor.agentId,
+      runId: actor.runId,
+      agentApiKeyId: actor.agentApiKeyId,
+      action,
+      entityType: "user",
+      entityId: userId,
+      details,
+    });
+  }
 }
 
 function requestBaseUrl(req: Request) {
@@ -2690,9 +2715,14 @@ export function accessRoutes(
         "Board claim challenge expired. Restart server to generate a new one."
       );
     if (claimed.status === "claimed") {
+      const actor = getActorInfo(req);
+      const claimedUserId = claimed.claimedByUserId ?? req.actor.userId;
+      await logBoardUserActivity(db, boardAuth, actor, claimedUserId, "instance.board_claimed", {
+        claimSource: actor.actorSource,
+      });
       res.json({
         claimed: true,
-        userId: claimed.claimedByUserId ?? req.actor.userId
+        userId: claimedUserId
       });
       return;
     }
@@ -2721,6 +2751,11 @@ export function accessRoutes(
     if (claimed.status === "already_claimed") {
       throw conflict("Someone else has already claimed this instance");
     }
+
+    const actor = getActorInfo(req);
+    await logBoardUserActivity(db, boardAuth, actor, claimed.userId, "instance.first_admin_claimed", {
+      claimSource: actor.actorSource,
+    });
 
     res.json({ claimed: true, userId: claimed.userId });
   });
@@ -2794,6 +2829,7 @@ export function accessRoutes(
       );
 
       if (approved.status === "approved") {
+        const actor = getActorInfo(req);
         const companyIds = await boardAuth.resolveBoardActivityCompanyIds({
           userId,
           requestedCompanyId: approved.challenge.requestedCompanyId,
@@ -2802,8 +2838,11 @@ export function accessRoutes(
         for (const companyId of companyIds) {
           await logActivity(db, {
             companyId,
-            actorType: "user",
-            actorId: userId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            agentApiKeyId: actor.agentApiKeyId,
             action: "board_api_key.created",
             entityType: "user",
             entityId: userId,
@@ -2878,6 +2917,7 @@ export function accessRoutes(
         assertCompanyAccess(req, req.body.requestedCompanyId);
       }
 
+      const actor = getActorInfo(req);
       const key = await boardAuth.createNamedBoardApiKey({
         userId: req.actor.userId,
         name: req.body.name,
@@ -2891,8 +2931,11 @@ export function accessRoutes(
       for (const companyId of companyIds) {
         await logActivity(db, {
           companyId,
-          actorType: "user",
-          actorId: req.actor.userId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          agentApiKeyId: actor.agentApiKeyId,
           action: "board_api_key.created",
           entityType: "user",
           entityId: req.actor.userId,
@@ -2922,6 +2965,7 @@ export function accessRoutes(
     const revoked = await boardAuth.revokeBoardApiKey(key.id);
     if (!revoked) throw notFound("Board API key not found");
 
+    const actor = getActorInfo(req);
     const companyIds = await boardAuth.resolveBoardActivityCompanyIds({
       userId: req.actor.userId,
       boardApiKeyId: key.id,
@@ -2929,8 +2973,11 @@ export function accessRoutes(
     for (const companyId of companyIds) {
       await logActivity(db, {
         companyId,
-        actorType: "user",
-        actorId: req.actor.userId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
         action: "board_api_key.revoked",
         entityType: "user",
         entityId: req.actor.userId,
@@ -2954,6 +3001,7 @@ export function accessRoutes(
       req.actor.userId,
     );
     await boardAuth.revokeBoardApiKey(key.id);
+    const actor = getActorInfo(req);
     const companyIds = await boardAuth.resolveBoardActivityCompanyIds({
       userId: key.userId,
       boardApiKeyId: key.id,
@@ -2961,8 +3009,11 @@ export function accessRoutes(
     for (const companyId of companyIds) {
       await logActivity(db, {
         companyId,
-        actorType: "user",
-        actorId: key.userId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
         action: "board_api_key.revoked",
         entityType: "user",
         entityId: key.userId,

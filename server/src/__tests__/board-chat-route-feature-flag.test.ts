@@ -11,16 +11,26 @@ const mockIssueService = vi.hoisted(() => ({
   listComments: vi.fn(),
 }));
 const mockSpawn = vi.hoisted(() => vi.fn());
+const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
 
 vi.mock("../services/index.js", () => ({
   instanceSettingsService: () => ({ getExperimental: mockGetExperimental }),
   issueService: () => mockIssueService,
+  logActivity: mockLogActivity,
 }));
 
 vi.mock("node:child_process", () => ({ spawn: mockSpawn }));
 
 vi.mock("../routes/authz.js", () => ({
-  getActorInfo: () => ({ actorId: "user-1", agentId: null, runId: null }),
+  getActorInfo: () => ({
+    actorType: "user",
+    actorId: "user-1",
+    agentId: null,
+    runId: null,
+    agentApiKeyId: null,
+    actorSource: "session",
+    sessionId: "session-1",
+  }),
   assertCompanyAccess: () => {},
 }));
 
@@ -82,6 +92,10 @@ describe("POST /api/board/chat/stream feature flag guard (PAP-137)", () => {
 });
 
 describe("board-chat client disconnect", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
   function makeFakeProc() {
     const proc = new EventEmitter() as any;
     proc.stdout = new EventEmitter();
@@ -125,6 +139,72 @@ describe("board-chat client disconnect", () => {
     // Let the subprocess close handler run so the slot is released.
     fakeProc.exitCode = 143;
     fakeProc.emit("close", 143);
+    await pending;
+  });
+
+  it("logs requester and concierge response attribution around a completed chat", async () => {
+    mockGetExperimental.mockResolvedValue({ enableConferenceRoomChat: true });
+    mockIssueService.list.mockResolvedValue([
+      { id: "issue-1", title: "Board Operations", status: "todo" },
+    ]);
+    mockIssueService.addComment.mockResolvedValue({ id: "comment-1" });
+    mockIssueService.listComments.mockResolvedValue([]);
+    const fakeProc = makeFakeProc();
+    mockSpawn.mockReturnValue(fakeProc);
+    const app = await createApp();
+
+    const req = request(app)
+      .post("/api/board/chat/stream")
+      .send({ companyId: "company-1", message: "hello" });
+    const pending = req.then(
+      () => undefined,
+      () => undefined,
+    );
+
+    await vi.waitFor(() => expect(mockSpawn).toHaveBeenCalled());
+
+    fakeProc.stdout.emit("data", Buffer.from('{"type":"result","result":"Concierge reply"}\n'));
+    fakeProc.exitCode = 0;
+    fakeProc.emit("close", 0);
+    expect(mockIssueService.addComment).toHaveBeenNthCalledWith(1, "issue-1", "hello", {
+      agentId: undefined,
+      userId: "user-1",
+      runId: null,
+    });
+    await vi.waitFor(() => {
+      expect(mockIssueService.addComment).toHaveBeenNthCalledWith(2, "issue-1", "Concierge reply", {
+        userId: "board-concierge",
+      });
+    });
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "board_chat.requested",
+        actorType: "user",
+        actorId: "user-1",
+        details: expect.objectContaining({
+          requesterUserId: "user-1",
+          requesterSessionId: "session-1",
+        }),
+      }),
+    );
+    await vi.waitFor(() => {
+      expect(mockLogActivity).toHaveBeenCalledWith(
+        expect.anything(),
+        expect.objectContaining({
+          action: "board_chat.responded",
+          actorType: "system",
+          actorId: "board-concierge",
+          details: expect.objectContaining({
+            requesterUserId: "user-1",
+            requesterSessionId: "session-1",
+            responseLength: "Concierge reply".length,
+          }),
+        }),
+      );
+    });
+
+    req.abort();
     await pending;
   });
 });

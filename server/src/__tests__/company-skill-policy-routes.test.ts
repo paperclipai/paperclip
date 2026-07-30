@@ -73,6 +73,13 @@ describeEmbeddedPostgres("company skill policy routes", () => {
             companyIds: [],
             isInstanceAdmin: true,
           }
+        : actor === "board-anon"
+          ? {
+              type: "board",
+              source: "local_implicit",
+              companyIds: [],
+              isInstanceAdmin: true,
+            }
         : actor === "none"
           ? { type: "none", source: "none" }
           : {
@@ -149,6 +156,16 @@ describeEmbeddedPostgres("company skill policy routes", () => {
       }));
     await request(app)
       .post(`/companies/${companyId}/skill-policy/evaluate`)
+      .set("x-test-actor", "board-anon")
+      .send({ action: "skills.remove", resource: {} })
+      .expect(200)
+      .expect(({ body: responseBody }) => expect(responseBody).toMatchObject({
+        allowed: true,
+        reason: "policy_default",
+        matchedRuleId: null,
+      }));
+    await request(app)
+      .post(`/companies/${companyId}/skill-policy/evaluate`)
       .send({ action: "skills.remove", resource: {}, principal: { agentId } })
       .expect(403)
       .expect(({ body: responseBody }) => expect(responseBody.code).toBe("skill_policy_admin_required"));
@@ -163,6 +180,17 @@ describeEmbeddedPostgres("company skill policy routes", () => {
         companyId,
         action: "company.skill_policy_replaced",
         entityType: "company_skill_policy",
+      }),
+      expect.objectContaining({
+        companyId,
+        action: "company.skill_policy_evaluated",
+        entityType: "company_skill_policy",
+        details: expect.objectContaining({
+          evaluatedAction: "skills.remove",
+          principalId: "local-board",
+          crossPrincipal: false,
+          allowed: true,
+        }),
       }),
       expect.objectContaining({
         companyId,

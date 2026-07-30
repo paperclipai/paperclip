@@ -211,6 +211,14 @@ export function cloudUpstreamService(db: Db, options: { instanceId?: string } = 
       };
     },
 
+    getPendingConnectionCompanyId: async (pendingConnectionId: string): Promise<string> => {
+      const pending = await getConnectionRow(pendingConnectionId);
+      if (!pending.pendingState || !pending.pendingCodeVerifier || !pending.pendingRedirectUri || !pending.pendingTokenUrl) {
+        throw notFound("Pending cloud upstream connection was not found");
+      }
+      return pending.companyId;
+    },
+
     finishConnect: async (input: {
       pendingConnectionId: string;
       code: string;

@@ -238,6 +238,8 @@ describe.sequential("cli auth routes", () => {
       expect.objectContaining({
         companyId: "company-1",
         action: "board_api_key.created",
+        actorType: "user",
+        actorId: "user-1",
       }),
     );
   });
@@ -302,6 +304,8 @@ describe.sequential("cli auth routes", () => {
       expect.objectContaining({
         companyId: "company-z",
         action: "board_api_key.revoked",
+        actorType: "user",
+        actorId: "admin-2",
       }),
     );
   });
@@ -350,6 +354,8 @@ describe.sequential("cli auth routes", () => {
       expect.objectContaining({
         companyId: "11111111-1111-4111-8111-111111111111",
         action: "board_api_key.created",
+        actorType: "user",
+        actorId: "user-1",
         details: expect.objectContaining({ name: "external-admin" }),
       }),
     );
@@ -403,6 +409,8 @@ describe.sequential("cli auth routes", () => {
       expect.objectContaining({
         companyId: "company-1",
         action: "board_api_key.revoked",
+        actorType: "user",
+        actorId: "user-1",
       }),
     );
   });

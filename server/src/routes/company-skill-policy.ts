@@ -5,6 +5,7 @@ import { ZodError, type ZodSchema } from "zod";
 import { forbidden, HttpError, unprocessable } from "../errors.js";
 import { accessService } from "../services/access.js";
 import { companySkillPolicyService, type SkillPolicyPrincipal } from "../services/company-skill-policy.js";
+import { logActivity } from "../services/activity-log.js";
 import { assertCompanyAccess, getActorInfo } from "./authz.js";
 
 export function companySkillPolicyRoutes(db: Db) {
@@ -63,7 +64,11 @@ export function companySkillPolicyRoutes(db: Db) {
       return policies.resolveAgentPrincipal(companyId, req.actor.agentId);
     }
     if (req.actor.type === "board") {
-      return { type: "board", id: req.actor.userId ?? "board", role: "board" };
+      return {
+        type: "board",
+        id: req.actor.userId ?? (req.actor.source === "local_implicit" ? "local-board" : "board"),
+        role: "board",
+      };
     }
     throw forbidden("Authenticated company actor required", { code: "skill_authentication_required" });
   }
@@ -91,6 +96,7 @@ export function companySkillPolicyRoutes(db: Db) {
           actorId: actor.actorId,
           agentId: actor.agentId,
           runId: actor.runId,
+          agentApiKeyId: actor.agentApiKeyId,
         },
       }));
     },
@@ -107,6 +113,7 @@ export function companySkillPolicyRoutes(db: Db) {
         actorId: actor.actorId,
         agentId: actor.agentId,
         runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
       },
     }));
   });
@@ -124,12 +131,35 @@ export function companySkillPolicyRoutes(db: Db) {
       } else {
         principal = await currentPrincipal(req, companyId);
       }
-      res.json(await policies.evaluate({
+      const actor = getActorInfo(req);
+      const decision = await policies.evaluate({
         companyId,
         principal,
         action: req.body.action,
         resource: req.body.resource,
-      }));
+      });
+      await logActivity(db, {
+        companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
+        action: "company.skill_policy_evaluated",
+        entityType: "company_skill_policy",
+        entityId: companyId,
+        details: {
+          evaluatedAction: req.body.action,
+          principalType: principal.type,
+          principalId: principal.id,
+          targetAgentId: req.body.principal?.agentId ?? null,
+          crossPrincipal: Boolean(req.body.principal),
+          allowed: decision.allowed,
+          reason: decision.reason,
+          matchedRuleId: decision.matchedRuleId ?? null,
+        },
+      });
+      res.json(decision);
     },
   );
 
