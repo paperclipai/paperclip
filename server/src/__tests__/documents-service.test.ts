@@ -161,6 +161,59 @@ describeEmbeddedPostgres("documentService system issue documents", () => {
     expect(JSON.stringify({ storedDocument, storedRevisions, fetched, revisions })).toContain("Ordinary prose: status is pending.");
   });
 
+  it("redacts legacy revision text before restoring it into current document state", async () => {
+    const { issueId } = await createIssueWithDocuments();
+    const legacyValue = "test-only-restored-sensitive-value";
+    const created = await svc.upsertIssueDocument({
+      issueId,
+      key: "security-notes",
+      title: "Safe title",
+      format: "markdown",
+      body: "Safe body",
+    });
+
+    // Simulate a pre-redaction revision, then ensure a restore cannot copy it
+    // into the current document or a newly-created revision in plaintext.
+    await db
+      .update(documentRevisions)
+      .set({
+        title: `PAPERCLIP_API_KEY=${legacyValue}`,
+        body: `password: ${legacyValue}`,
+      })
+      .where(eq(documentRevisions.id, created.document.latestRevisionId));
+    const updated = await svc.upsertIssueDocument({
+      issueId,
+      key: "security-notes",
+      title: "Current safe title",
+      format: "markdown",
+      body: "Current safe body",
+      baseRevisionId: created.document.latestRevisionId,
+    });
+
+    const restored = await svc.restoreIssueDocumentRevision({
+      issueId,
+      key: "security-notes",
+      revisionId: created.document.latestRevisionId!,
+    });
+    const storedDocument = await db
+      .select()
+      .from(documents)
+      .where(eq(documents.id, restored.document.id))
+      .then((rows) => rows[0]);
+    const restoredRevision = await db
+      .select()
+      .from(documentRevisions)
+      .where(eq(documentRevisions.id, restored.document.latestRevisionId!))
+      .then((rows) => rows[0]);
+
+    expect(updated.document.latestRevisionId).not.toBe(restored.document.latestRevisionId);
+    expect(JSON.stringify({ restored, storedDocument, restoredRevision })).not.toContain(legacyValue);
+    expect(restored.document).toEqual(expect.objectContaining({
+      title: "PAPERCLIP_API_KEY=***REDACTED***",
+      body: "password: ***REDACTED***",
+    }));
+  });
+
   it("redacts legacy document rows at every service output boundary", async () => {
     const { issueId } = await createIssueWithDocuments();
     const legacyValue = "test-only-legacy-sensitive-value";
