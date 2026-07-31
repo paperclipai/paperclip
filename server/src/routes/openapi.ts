@@ -3875,6 +3875,15 @@ registerCurrentRoute({
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
 });
 
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/awaiting-human-interactions",
+  tags: ["inbox"],
+  summary: "List pending interactions waiting for a human response",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
+});
+
 // ─── Decision training ──────────────────────────────────────────────────────
 
 const decisionTrainingSourceKindSchema = z.enum(["interaction", "approval", "execution_decision"]);
