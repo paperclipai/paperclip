@@ -1602,7 +1602,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
       return run?.status === "cancelled";
     });
 
-    const [run, wakeup] = await Promise.all([
+    const [run, wakeup, successorWake] = await Promise.all([
       db
         .select({
           status: heartbeatRuns.status,
@@ -1617,6 +1617,19 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
         .from(agentWakeupRequests)
         .where(eq(agentWakeupRequests.id, wakeupRequestId))
         .then((rows) => rows[0] ?? null),
+      db
+        .select({
+          reason: agentWakeupRequests.reason,
+          payload: agentWakeupRequests.payload,
+        })
+        .from(agentWakeupRequests)
+        .where(
+          and(
+            eq(agentWakeupRequests.companyId, companyId),
+            sql`${agentWakeupRequests.payload} ->> 'staleQueuedRunId' = ${runId}`,
+          ),
+        )
+        .then((rows) => rows.find((row) => row.reason === "issue_assigned") ?? null),
     ]);
 
     expect(run?.status).toBe("cancelled");
@@ -1624,6 +1637,14 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect(run?.resultJson).toMatchObject({ stopReason: "issue_continuation_waiting_on_review" });
     expect(wakeup?.status).toBe("skipped");
     expect(wakeup?.error).toContain("continuation summary says the executor should wait");
+    expect(successorWake).toMatchObject({
+      reason: "issue_assigned",
+      payload: expect.objectContaining({
+        issueId,
+        staleQueuedRunId: runId,
+        staleQueuedRunErrorCode: "issue_continuation_waiting_on_review",
+      }),
+    });
     expect(countExecuteCallsForRun(runId)).toBe(0);
   });
 
