@@ -364,6 +364,14 @@ const SYSTEM_ISSUE_DOCUMENT_KEY_SET = new Set<string>(SYSTEM_ISSUE_DOCUMENT_KEYS
 export function isSystemIssueDocumentKey(key: string): key is SystemIssueDocumentKey {
   return SYSTEM_ISSUE_DOCUMENT_KEY_SET.has(key);
 }
+
+export const AGENT_FINALIZABLE_DOCUMENT_KEYS = ["plan-eng-review"] as const;
+export type AgentFinalizableDocumentKey = (typeof AGENT_FINALIZABLE_DOCUMENT_KEYS)[number];
+const AGENT_FINALIZABLE_DOCUMENT_KEY_SET = new Set<string>(AGENT_FINALIZABLE_DOCUMENT_KEYS);
+
+export function isAgentFinalizableDocumentKey(key: string): key is AgentFinalizableDocumentKey {
+  return AGENT_FINALIZABLE_DOCUMENT_KEY_SET.has(key);
+}
 export const ISSUE_REFERENCE_SOURCE_KINDS = ["title", "description", "comment", "document"] as const;
 export type IssueReferenceSourceKind = (typeof ISSUE_REFERENCE_SOURCE_KINDS)[number];
 

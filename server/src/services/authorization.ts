@@ -82,6 +82,7 @@ export type AuthorizationResource =
       originKind?: string | null;
       originId?: string | null;
       status?: string | null;
+      returnAssigneeAgentId?: string | null;
     };
 
 export type AuthorizationDecision = {
@@ -98,6 +99,7 @@ export type AuthorizationDecision = {
     | "allow_consented_change"
     | "allow_legacy_agent_creator"
     | "allow_issue_mention_grant"
+    | "allow_return_assignee_comment"
     | "allow_self"
     | "allow_company_agent"
     | "allow_company_member"
@@ -1732,6 +1734,16 @@ export function authorizationService(db: Db) {
           action: input.action,
           reason: "allow_self",
           explanation: "Allowed because the actor owns the assigned issue.",
+        });
+      }
+      if (
+        input.action === "issue:comment" &&
+        resource?.returnAssigneeAgentId === actorAgentId
+      ) {
+        return allow({
+          action: input.action,
+          reason: "allow_return_assignee_comment",
+          explanation: "Allowed because the actor is the designated return assignee for the current execution stage and may add corrective evidence.",
         });
       }
       if (!resource?.assigneeAgentId) {

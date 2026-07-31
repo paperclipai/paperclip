@@ -792,6 +792,46 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
+  it("allows the execution return assignee to post corrective comments after reassignment", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({
+      assigneeAgentId: peerAgentId,
+      executionState: {
+        status: "pending",
+        currentStageId: "99999999-9999-4999-8999-999999999999",
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: peerAgentId },
+        returnAssignee: { type: "agent", agentId: ownerAgentId },
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: "changes_requested",
+      },
+    }));
+    mockAccessService.decide.mockImplementation(async (input: { action: string; actor?: { agentId?: string }; resource?: { returnAssigneeAgentId?: string | null } }) => ({
+      allowed: input.action === "issue:read" || (input.action === "issue:comment" && input.actor?.agentId === ownerAgentId && input.resource?.returnAssigneeAgentId === ownerAgentId),
+      action: input.action,
+      reason: input.action === "issue:comment" ? "allow_return_assignee_comment" : "deny_missing_grant",
+      explanation: "Return-assignee comment access.",
+    }));
+
+    const res = await request(await createApp(ownerActor()))
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "I fixed the requested changes." });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      issueId,
+      "I fixed the requested changes.",
+      expect.any(Object),
+      expect.any(Object),
+    );
+
+    const outsider = await request(await createApp(peerActor({ agentId: "88888888-8888-4888-8888-888888888888" })))
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "I should still be denied." });
+    expect(outsider.status).toBe(403);
+  });
+
   it("rejects non-mentioned peer agents from posting comments", async () => {
     mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
       allowed: input.action === "issue:read",

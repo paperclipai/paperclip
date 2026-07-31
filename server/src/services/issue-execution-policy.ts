@@ -810,6 +810,10 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
     return { patch };
   }
 
+  if (existingState?.status === CHANGES_REQUESTED_STATUS && !input.commentBody?.trim()) {
+    throw unprocessable("Resubmitting after changes requested requires a comment describing what changed");
+  }
+
   let pendingStage =
     existingState?.status === CHANGES_REQUESTED_STATUS && currentStage
       ? currentStage
