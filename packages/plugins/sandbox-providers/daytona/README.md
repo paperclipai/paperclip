@@ -40,6 +40,77 @@ The driver wraps a sandbox command with an advisory bubblewrap (`bwrap`) wrapper
 - **The writable set is the workspace plus the read-write sync destinations.** The wrapper binds the workspace directory read-write as the baseline; the workspace is always durable. It adds the read-write sync destinations that a sync-in recorded for the same lease. The set deduplicates the directories. The baseline keeps a safe result even when the collected set is empty.
 - **The wrapper runs at execute time when the capability is present.** The driver wraps the command only when the lease reports `bwrapAvailable: true` and a uid/gid pair is known. It binds the workspace and the read-write sync destinations, keeps the root read-only for feedback, and re-binds the stdin file after the fresh `/tmp`. It runs the plain command when the capability or the uid/gid is missing. A wrap without a uid/gid would run as root and give the agent's files root ownership, so the driver keeps the plain command in that case.
 
+## Operator enablement (advisory bwrap)
+
+The advisory `bwrap` wrapper needs three run-time prerequisites on the image or
+snapshot. The repository does not build the Daytona image or snapshot. It
+references an external `image` or `snapshot`. So the three prerequisites are
+image facts, not code facts. The runtime only probes for the capability and
+degrades when the capability is absent.
+
+The wrapper is advisory, best-effort, and automatic. It adds no security. The
+ephemeral sandbox model stays the only security posture. A missing prerequisite
+degrades to the plain command. It never fails the lease. So the enablement below
+is optional. It gives the agent real-time feedback on a non-durable write. It
+does not change the security posture.
+
+The install and the sudoers change are environment provisioning at the image or
+snapshot layer. Route them to DevOps through the board. Do not run the steps
+from the runtime and do not commit a provisioning script to the repository.
+
+### 1. Install the `bubblewrap` package
+
+The repository does not state the Daytona base distribution. Confirm the
+distribution on the referenced image or snapshot first, then run the matching
+command:
+
+```bash
+# Debian/Ubuntu
+apt-get install -y bubblewrap
+# Alpine
+apk add bubblewrap
+# Fedora/RHEL
+dnf install -y bubblewrap
+```
+
+Confirm the binary path is `/usr/bin/bwrap` after the install.
+
+### 2. Add the passwordless sudoers rule
+
+The wrapper runs `bwrap` as root with `sudo -n`. Add this exact sudoers line.
+Use the real sandbox user name and the real `bwrap` path:
+
+```text
+<sandbox-user> ALL=(root) NOPASSWD: /usr/bin/bwrap
+```
+
+The `<sandbox-user>` is the account that the probe reads with `id -u` and
+`id -g`. The home directory is `/home/daytona`. Install the `sudo` package in
+the image or snapshot if it is absent.
+
+### 3. Allow an unprivileged user namespace
+
+The unprivileged user namespace is a host and kernel setting. On a Debian/Ubuntu
+host, set:
+
+```bash
+sysctl kernel.unprivileged_userns_clone=1
+```
+
+On other kernels, confirm `user.max_user_namespaces` is greater than zero.
+
+### 4. Verify the three prerequisites
+
+Run this exact command as the sandbox user:
+
+```bash
+sudo -n bwrap --unshare-user --uid 0 --gid 0 --ro-bind / / -- true
+```
+
+A zero exit code means all three prerequisites are met. A non-zero exit code
+means one prerequisite is missing. The wrapper then stays off and runs the plain
+command.
+
 ## Local development
 
 ```bash
