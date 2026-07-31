@@ -268,6 +268,121 @@ describe("deriveIssueCommentRunLogAttribution", () => {
   });
 });
 
+describeEmbeddedPostgres("issueService.hasIssueAssigneeAgentHandoffInRun", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-handoff-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(activityLog);
+    await db.delete(issues);
+    await db.delete(heartbeatRuns);
+    await db.delete(agents);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  it("finds an earlier same-run assignee handoff when a later update touched another field", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    const runId = randomUUID();
+    const previousAgentId = randomUUID();
+    const nextAgentId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values([
+      {
+        id: previousAgentId,
+        companyId,
+        name: "Previous",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: nextAgentId,
+        companyId,
+        name: "Next",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Handoff issue",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: nextAgentId,
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId: previousAgentId,
+      status: "running",
+    });
+    await db.insert(activityLog).values([
+      {
+        companyId,
+        actorType: "agent",
+        actorId: previousAgentId,
+        agentId: previousAgentId,
+        runId,
+        action: "issue.updated",
+        entityType: "issue",
+        entityId: issueId,
+        details: {
+          assigneeAgentId: nextAgentId,
+          _previous: { assigneeAgentId: previousAgentId },
+        },
+        createdAt: new Date("2026-07-03T10:00:00.000Z"),
+      },
+      {
+        companyId,
+        actorType: "agent",
+        actorId: previousAgentId,
+        agentId: previousAgentId,
+        runId,
+        action: "issue.updated",
+        entityType: "issue",
+        entityId: issueId,
+        details: {
+          status: "in_review",
+          _previous: { status: "in_progress" },
+        },
+        createdAt: new Date("2026-07-03T10:01:00.000Z"),
+      },
+    ]);
+
+    await expect(svc.hasIssueAssigneeAgentHandoffInRun({
+      issueId,
+      companyId,
+      runId,
+    })).resolves.toBe(true);
+  });
+});
+
 async function ensureIssueRelationsTable(db: ReturnType<typeof createDb>) {
   await db.execute(sql.raw(`
     CREATE TABLE IF NOT EXISTS "issue_relations" (
