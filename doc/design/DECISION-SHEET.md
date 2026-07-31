@@ -150,18 +150,25 @@ Per the proposed mock, the decision card eyebrow is now **decision kind · task 
 
 ## Standard task preview card (design session, Jul 29 2026)
 
-**`IssueQuicklookCard` restructured to the proposed mock, and this is now the app-wide standard** — every hover preview of a task renders it, so the same four facts appear in the same order everywhere:
+**`IssueQuicklookCard` restructured to the proposed mock, and this is now the app-wide standard** — every hover preview of a task renders it, so the same three rows appear in the same order everywhere:
 
-1. identity — status glyph · task key · project
+1. meta — status glyph · task key [· project] …………… last activity
 2. title
-3. state — status word · last activity
-4. summary — first lines of the description
+3. summary — first lines of the description
 
-Changes from the previous card: identity moves to the top and gains the project (a preview answers "which task is this?", and a title alone does not); the status glyph switches from `StatusIcon` to `StatusGlyph`, so the preview speaks the same status vocabulary as the flattened decision cards and the task list; state moves below the title and renders in `foreground` rather than muted, because it is the fact most likely to decide whether the reader opens the task; and the status word is sentence-cased ("In review", not "in review" or `in_review`).
+The meta row splits: identity left, recency pinned right. Identity leads because a preview answers "which task is this?", and a title alone does not. The status glyph switches from `StatusIcon` to `StatusGlyph`, so a preview speaks the same status vocabulary as the flattened decision cards and the task list.
+
+**Status carries no word of its own.** An earlier revision of this card gave status a line under the title ("In review · 1d ago", in `foreground`); the final mock removes it and moves the timestamp up into the meta row, leaving the glyph to be the status — which is what the glyph already is on task rows and decision cards. That leaves shape and colour as the only visual signal, so the glyph is passed a `title`, rendering as `role="img"` with the status as its accessible name. The status stays available to a screen reader without spending a line, and a test pins that (the glyph must carry it and the visible text must not).
+
+Three shapes the meta row holds, all specified by the mock:
+
+1. **no project** — glyph, key, timestamp hard right; no separator is rendered
+2. **project** — a "·", the tile and the name join the left group
+3. **truncation** — a long project name ellipsizes; the key and the timestamp are `shrink-0`, so the two facts that identify the task survive at any width. Verified live: with a 47-character project name the key and timestamp hold their exact widths (39.7px / 36.1px) and only the name clips.
 
 Two judgment calls:
 
 - **The project tile is untinted.** `ProjectTile` supports a colour, and the decision card's old chip used it, but a preview is a quiet surface and the project colour would be the loudest thing on it. The mock shows a neutral tile, and `IssueAncestorProject` carries neither colour nor icon — so following the mock costs nothing and needs no new data. If the tile should ever tint, that is a server-side field addition first.
-- **11px via `--text-micro`** for the identity and state lines, matching the mock, rather than minting a token for the mock's literal values.
+- **11px via `--text-micro`** for the meta row, matching the mock, rather than minting a token for the mock's literal values.
 
 The other consumer, `IssuesQuicklook` (project workspace linked issues), inherits the new card automatically — which is the point of standardising it.

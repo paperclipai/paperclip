@@ -218,34 +218,72 @@ describe("IssueLinkQuicklook", () => {
     expect(document.body.textContent).toContain("Quicklook title");
   });
 
-  // The card is the standard task preview for the whole app, so its four facts
-  // and their order are the contract, not incidental markup.
-  it("states identity, then title, then state, then summary", () => {
-    const trigger = renderQuicklook({
-      status: "in_review",
-      // The card reads only `name` off the project; the rest of `Project` is
-      // irrelevant here, so this stands in for a full record.
-      project: { id: "project-1", name: "Paperclip App" } as unknown as Issue["project"],
-    });
-
+  // The card is the standard task preview for the whole app, so its rows and
+  // their order are the contract, not incidental markup.
+  function openCard(trigger: HTMLAnchorElement) {
     act(() => {
       trigger.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
       vi.advanceTimersByTime(200);
     });
+    return document.querySelector('[data-slot="popover-content"]');
+  }
 
-    const card = document.querySelector('[data-slot="popover-content"]');
+  it("states identity, then title, then summary", () => {
+    const card = openCard(
+      renderQuicklook({
+        status: "in_review",
+        // The card reads only `name` off the project; the rest of `Project` is
+        // irrelevant here, so this stands in for a full record.
+        project: { id: "project-1", name: "Paperclip App" } as unknown as Issue["project"],
+      }),
+    );
     const text = card?.textContent ?? "";
+
     expect(text).toContain("PAP-1");
     expect(text).toContain("Paperclip App");
     expect(text).toContain("Quicklook title");
-    // Status reads as a word, sentence-cased — not "in_review" and not a chip.
-    expect(text).toContain("In review");
-    expect(text).not.toContain("in_review");
     expect(text).toContain("Quicklook description");
-
-    // Identity precedes the title; the state line follows it.
     expect(text.indexOf("PAP-1")).toBeLessThan(text.indexOf("Quicklook title"));
-    expect(text.indexOf("Quicklook title")).toBeLessThan(text.indexOf("In review"));
-    expect(text.indexOf("In review")).toBeLessThan(text.indexOf("Quicklook description"));
+    expect(text.indexOf("Quicklook title")).toBeLessThan(text.indexOf("Quicklook description"));
+  });
+
+  // Status is the glyph, with no word of its own — so it must survive as the
+  // glyph's accessible name rather than as shape and colour alone.
+  it("carries the status on the glyph instead of spending a line on it", () => {
+    const card = openCard(renderQuicklook({ status: "in_review" }));
+
+    const glyph = card?.querySelector('[role="img"]');
+    expect(glyph?.getAttribute("aria-label")).toBe("In review");
+
+    // The status must reach a screen reader but occupy no visible text. Drop
+    // the glyph (whose <title> counts toward textContent) and the word is gone.
+    const withoutGlyph = card?.cloneNode(true) as HTMLElement;
+    withoutGlyph.querySelector('[role="img"]')?.remove();
+    expect(withoutGlyph.textContent).not.toContain("In review");
+    expect(withoutGlyph.textContent).not.toContain("in_review");
+  });
+
+  it("shows no separator or project when the task has no project", () => {
+    const card = openCard(renderQuicklook());
+
+    expect(card?.querySelector('[data-testid="quicklook-project"]')).toBeNull();
+    expect(card?.textContent).not.toContain("·");
+  });
+
+  it("truncates a long project name but never the task key or the timestamp", () => {
+    const card = openCard(
+      renderQuicklook({
+        project: { id: "p1", name: "Really loooong project name" } as unknown as Issue["project"],
+      }),
+    );
+
+    const project = card?.querySelector('[data-testid="quicklook-project"]');
+    expect(project?.getAttribute("title")).toBe("Really loooong project name");
+    // The name is the only part allowed to give up width.
+    expect(project?.querySelector(".truncate")?.textContent).toBe("Really loooong project name");
+    expect(project?.getAttribute("class")).toContain("min-w-0");
+
+    const key = Array.from(card?.querySelectorAll("span") ?? []).find((s) => s.textContent === "PAP-1");
+    expect(key?.getAttribute("class")).toContain("shrink-0");
   });
 });

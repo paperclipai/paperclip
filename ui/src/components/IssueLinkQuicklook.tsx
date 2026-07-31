@@ -107,24 +107,28 @@ function statusLabel(status: string): string {
 
 /**
  * The standard task preview card. Every hover preview of a task in the app
- * renders this, so the same four facts appear in the same order everywhere:
+ * renders this, so the same three rows appear in the same order everywhere:
  *
- *   1. identity  — status glyph · task key · project
+ *   1. meta     — status glyph · task key [· project] .......... last activity
  *   2. title
- *   3. state     — status word · last activity
- *   4. summary   — first lines of the description
+ *   3. summary  — first lines of the description
  *
- * Identity leads because a preview is answering "which task is this?", and the
- * title alone does not answer it. State sits under the title rather than above
- * it so the title stays the first thing read, and it renders in `foreground`
- * rather than muted — it is the fact most likely to decide whether the reader
- * opens the task.
+ * The meta row splits: identity on the left, recency pinned right. Identity
+ * leads because a preview answers "which task is this?", and the title alone
+ * does not.
  *
- * The project tile is intentionally untinted. A preview is a quiet surface and
- * the project's colour would be the loudest thing on it; the tile plus the name
- * identify the project without competing with the status glyph. (`IssueAncestor
- * Project` carries no colour or icon anyway — matching the design mock here
- * costs nothing and needs no new data.)
+ * Status carries no word of its own — the glyph is the status, exactly as it is
+ * on task rows and decision cards. Because that leaves shape and colour as the
+ * only visual signal, the glyph is given a `title`, so it renders as
+ * `role="img"` with the status as its accessible name. The status stays
+ * available to a screen reader without spending a line on it.
+ *
+ * Three shapes the row must hold, per the design mock:
+ *   1. no project  — glyph, key, and the timestamp hard right
+ *   2. project     — a "·" and the project tile plus name join the left group
+ *   3. truncation  — a long project name ellipsizes; the key and the timestamp
+ *                    never do, so the two facts that identify the task survive
+ *                    at any width
  */
 export function IssueQuicklookCard({
   issue,
@@ -143,22 +147,28 @@ export function IssueQuicklookCard({
   return (
     <div className={cn("space-y-2", compact && "space-y-1.5")}>
       <div className="flex items-center gap-1">
-        <StatusGlyph status={issue.status} size="md" />
-        <span className="font-mono text-(length:--text-micro) text-muted-foreground">
-          {issue.identifier ?? issue.id.slice(0, 8)}
+        <div className="flex min-w-0 flex-1 items-center gap-1">
+          <StatusGlyph status={issue.status} size="md" title={statusLabel(issue.status)} />
+          <span className="shrink-0 font-mono text-(length:--text-micro) text-muted-foreground">
+            {issue.identifier ?? issue.id.slice(0, 8)}
+          </span>
+          {projectName ? (
+            <>
+              <QuicklookSeparator className="shrink-0 text-muted-foreground" />
+              <span
+                className="flex min-w-0 max-w-(--sz-12rem) flex-1 items-center gap-1 text-(length:--text-micro) text-muted-foreground"
+                title={projectName}
+                data-testid="quicklook-project"
+              >
+                <ProjectTile size="xs" />
+                <span className="truncate">{projectName}</span>
+              </span>
+            </>
+          ) : null}
+        </div>
+        <span className="shrink-0 text-(length:--text-micro) text-muted-foreground">
+          {timeAgo(new Date(issue.updatedAt))}
         </span>
-        {projectName ? (
-          <>
-            <QuicklookSeparator className="text-muted-foreground" />
-            <span
-              className="flex min-w-0 max-w-(--sz-12rem) items-center gap-1 text-(length:--text-micro) text-muted-foreground"
-              title={projectName}
-            >
-              <ProjectTile size="xs" />
-              <span className="truncate">{projectName}</span>
-            </span>
-          </>
-        ) : null}
       </div>
 
       <RouterDom.Link
@@ -168,12 +178,6 @@ export function IssueQuicklookCard({
       >
         {issue.title}
       </RouterDom.Link>
-
-      <div className="flex items-center gap-1 text-(length:--text-micro) text-foreground">
-        <span>{statusLabel(issue.status)}</span>
-        <QuicklookSeparator />
-        <span>{timeAgo(new Date(issue.updatedAt))}</span>
-      </div>
 
       {description ? (
         <p className="text-xs leading-5 text-muted-foreground [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:4] overflow-hidden">
