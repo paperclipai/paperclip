@@ -119,6 +119,45 @@ Use `--drain-required` only when the deploy intentionally requires the old termi
 
 A healthy guarded deploy must compare the report against `/api/health` (`version` or `serverVersion`) and treat any `lostRunIds` entry as a continuity failure that needs recovery before marking deployment complete.
 
+### Recovering a deploy blocked by missing process metadata
+
+If the currently installed version already has a running local-agent heartbeat
+whose `processPid` and `processGroupId` are both null, that pre-fix run cannot be
+made adoptable retroactively. Cross that version boundary once with the normal
+drain-and-retry path:
+
+```sh
+old_main_pid="$(systemctl show paperclip.service -p MainPID --value)"
+pnpm --filter @paperclipai/server exec tsx ../scripts/request-hot-restart.ts \
+  --server-pid "$old_main_pid" --drain-required
+systemctl restart paperclip.service
+```
+
+After the fixed server starts, wait for the replacement `codex_local` heartbeat
+to spawn, then confirm its run record has an identity (use an authenticated API
+request in authenticated mode):
+
+```sh
+PAPERCLIP_API_BASE="${PAPERCLIP_API_URL:-http://127.0.0.1:3100}"
+PAPERCLIP_API_BASE="${PAPERCLIP_API_BASE%/api}"
+curl -fsS "$PAPERCLIP_API_BASE/api/heartbeat-runs/$RUN_ID" \
+  | jq -e '.status == "running" and (.processPid != null or .processGroupId != null)'
+```
+
+The next continuity check should use the ordinary marker without
+`--drain-required`. After restart, require both an empty loss list and an
+explicit outcome for the run that was live before restart:
+
+```sh
+jq -e --arg run "$RUN_ID" \
+  '(.lostRunIds | length) == 0 and ((.adoptedRunIds + .finalizedWhileDownRunIds) | index($run) != null)' \
+  "$PAPERCLIP_HOME/hot-restart-report.json"
+```
+
+An alive child appears in `adoptedRunIds`; a child that completed during the
+restart window appears in `finalizedWhileDownRunIds`. Either is continuous. A
+`lostRunIds` entry remains a failed deploy and must not be waived.
+
 Tailscale/private-auth dev mode:
 
 ```sh
