@@ -780,6 +780,79 @@ describeEmbeddedPostgres("executionWorkspaceService.getCloseReadiness", () => {
     });
   }, 20_000);
 
+  it("keeps forward reconciliation fail-closed when the checked-out branch ref does not resolve either", async () => {
+    const repoRoot = await createTempRepo();
+    tempDirs.add(repoRoot);
+    const worktreePath = path.join(path.dirname(repoRoot), `paperclip-missing-both-refs-${randomUUID()}`);
+    tempDirs.add(worktreePath);
+
+    // An empty tree keeps the worktree clean even after its branch ref is
+    // deleted, so this exercises the adoption gate rather than cleanliness.
+    const emptyTreeSha = (await readGit(repoRoot, ["hash-object", "-t", "tree", "/dev/null"]))!;
+    const emptyCommitSha = (await readGit(repoRoot, ["commit-tree", emptyTreeSha, "-m", "empty base"]))!;
+    await runGit(repoRoot, ["branch", "empty-base", emptyCommitSha]);
+    await runGit(repoRoot, ["worktree", "add", "-b", "feature/current", worktreePath, "empty-base"]);
+    // Deleting the local ref while it is checked out leaves symbolic-ref still
+    // reporting the branch name even though nothing resolves to a commit.
+    await runGit(repoRoot, ["update-ref", "-d", "refs/heads/feature/current"]);
+
+    const companyId = randomUUID();
+    const projectId = randomUUID();
+    const issueId = randomUUID();
+    const executionWorkspaceId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: "PAP",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Missing both branch refs",
+      status: "in_progress",
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      projectId,
+      title: "Source task",
+      identifier: "PAP-126",
+      status: "blocked",
+      priority: "medium",
+    });
+    await db.insert(executionWorkspaces).values({
+      id: executionWorkspaceId,
+      companyId,
+      projectId,
+      sourceIssueId: issueId,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: "feature/never-created",
+      status: "idle",
+      providerType: "git_worktree",
+      cwd: worktreePath,
+      providerRef: worktreePath,
+      branchName: "feature/never-created",
+      baseRef: "main",
+    });
+
+    await expect(svc.reconcileExecutionWorkspaceBranch(executionWorkspaceId, {
+      mode: "forward",
+      reason: null,
+      actor: {
+        actorType: "user",
+        actorId: "local-board",
+        agentId: null,
+        runId: null,
+      },
+    })).rejects.toMatchObject({
+      status: 422,
+      message: expect.stringContaining("requires the recorded branch to be an ancestor"),
+    });
+  }, 20_000);
+
   it("quarantine_restore rescues dirty live-branch work, resolves recovery, and returns the source issue to todo", async () => {
     const repoRoot = await createTempRepo();
     tempDirs.add(repoRoot);
