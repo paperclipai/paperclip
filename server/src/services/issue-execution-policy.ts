@@ -327,11 +327,8 @@ export function stripMonitorFromExecutionPolicy(policy: IssueExecutionPolicy | n
   if (!policy) return null;
   if (!policy.monitor) return policy;
   if (policy.stages.length === 0) return null;
-  return {
-    mode: policy.mode,
-    commentRequired: policy.commentRequired,
-    stages: policy.stages,
-  };
+  const { monitor: _monitor, ...policyWithoutMonitor } = policy;
+  return policyWithoutMonitor;
 }
 
 export function setIssueExecutionPolicyMonitorScheduledBy(
