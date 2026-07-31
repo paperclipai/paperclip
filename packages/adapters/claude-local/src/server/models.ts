@@ -85,11 +85,41 @@ const BEDROCK_REGION_FAMILY_BY_REGION: Record<string, BedrockRegionFamily> = {
   "ap-northeast-1": "jp",
 };
 
+/**
+ * Regions that publish each family's profiles. This table decides whether to *reject* a model ID an
+ * operator typed, so it is deliberately wider than BEDROCK_MODELS_BY_FAMILY, which lists only IDs
+ * verified ACTIVE. `apac` appears here but not in the catalogue: its profiles exist, and are too old
+ * to serve a bundled default.
+ */
+const BEDROCK_FAMILY_REGION_PREFIXES: Record<string, readonly string[]> = {
+  us: ["us-"],
+  eu: ["eu-"],
+  au: ["ap-southeast-2", "ap-southeast-4"],
+  jp: ["ap-northeast-1", "ap-northeast-3"],
+  apac: ["ap-"],
+};
+
+function configuredAwsRegion(): string {
+  return (process.env.AWS_REGION?.trim() || process.env.AWS_DEFAULT_REGION?.trim() || "").toLowerCase();
+}
+
+let warnedAboutMissingRegion = false;
+
 function resolveBedrockRegionFamily(): BedrockRegionFamily {
-  const region = (process.env.AWS_REGION?.trim() || process.env.AWS_DEFAULT_REGION?.trim() || "")
-    .toLowerCase();
-  // No configured region: keep the previous default rather than guess.
-  if (!region) return "us";
+  const region = configuredAwsRegion();
+  // No configured region: keep the previous default rather than guess. Say so once, because the
+  // default is silent otherwise, and it offers US profiles to an operator who may have no US access.
+  if (!region) {
+    if (!warnedAboutMissingRegion) {
+      warnedAboutMissingRegion = true;
+      console.warn(
+        "[paperclip] Bedrock is enabled and no AWS_REGION or AWS_DEFAULT_REGION is set. " +
+          "Offering us.anthropic.* inference profiles, which only work from a us-* region. " +
+          "Set AWS_REGION if your Bedrock access is elsewhere.",
+      );
+    }
+    return "us";
+  }
   const mapped = BEDROCK_REGION_FAMILY_BY_REGION[region];
   if (mapped) return mapped;
   if (region.startsWith("us-")) return "us";
@@ -240,10 +270,37 @@ export async function refreshClaudeModels(): Promise<AdapterModel[]> {
 
 export function resetClaudeModelsCacheForTests() {
   cached = null;
+  warnedAboutMissingRegion = false;
 }
 
 /** Check whether a model ID is a Bedrock-native identifier (not an Anthropic API short name). */
 /** Bedrock model IDs use region-qualified prefixes (e.g. us.anthropic.*, eu.anthropic.*) or ARNs. */
 export function isBedrockModelId(model: string): boolean {
   return /^\w+\.anthropic\./.test(model) || model.startsWith("arn:aws:bedrock:");
+}
+
+/**
+ * Check whether a Bedrock model ID can resolve in the configured region. Bedrock does not accept an
+ * inference profile from another region family, so a `us.` profile configured in an EU-only
+ * deployment fails at run time. This lets setup reject it earlier, while the operator is still there
+ * to read the message.
+ *
+ * An ID is only rejected when this process knows the target region. A server that does not itself run
+ * Bedrock can still store setup for a worker that does, and that worker's region is not visible here,
+ * so such an ID is accepted. A family that is absent from the table above is also accepted, because
+ * an unknown family cannot be shown to be wrong.
+ */
+export function isBedrockModelUsableInConfiguredRegion(model: string): boolean {
+  if (!isBedrockModelId(model)) return false;
+  // A profile ARN names its own region, and the operator wrote that region out in full.
+  if (model.startsWith("arn:aws:bedrock:")) return true;
+  if (!isBedrockEnv()) return true;
+  const region = configuredAwsRegion();
+  if (!region) return true;
+  const family = /^([a-z0-9-]+)\.anthropic\./.exec(model.toLowerCase())?.[1];
+  // `global.` profiles are published in every region checked.
+  if (!family || family === "global") return true;
+  const prefixes = BEDROCK_FAMILY_REGION_PREFIXES[family];
+  if (!prefixes) return true;
+  return prefixes.some((prefix) => region.startsWith(prefix));
 }

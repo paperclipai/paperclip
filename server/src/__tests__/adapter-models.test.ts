@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { models as claudeFallbackModels } from "@paperclipai/adapter-claude-local";
-import { resetClaudeModelsCacheForTests } from "@paperclipai/adapter-claude-local/server";
+import {
+  isBedrockModelUsableInConfiguredRegion,
+  resetClaudeModelsCacheForTests,
+} from "@paperclipai/adapter-claude-local/server";
 import { models as codexFallbackModels } from "@paperclipai/adapter-codex-local";
 import { models as cursorFallbackModels } from "@paperclipai/adapter-cursor-local";
 import { models as opencodeFallbackModels } from "@paperclipai/adapter-opencode-local";
@@ -138,6 +141,69 @@ describe("adapter model listing", () => {
     expect(models.every((model) => model.id.startsWith("global.anthropic."))).toBe(true);
     // The bundled Summarizer default must be resolvable here, or onboarding still fails.
     expect(models.some((model) => model.id.includes("claude-haiku-4-5"))).toBe(true);
+  });
+
+  describe("Bedrock profile region check", () => {
+    it("rejects a profile from a family the configured region does not publish", () => {
+      process.env.CLAUDE_CODE_USE_BEDROCK = "1";
+      process.env.AWS_REGION = "us-east-1";
+
+      expect(isBedrockModelUsableInConfiguredRegion("eu.anthropic.claude-sonnet-5")).toBe(false);
+      expect(isBedrockModelUsableInConfiguredRegion("au.anthropic.claude-sonnet-5")).toBe(false);
+      expect(isBedrockModelUsableInConfiguredRegion("jp.anthropic.claude-opus-4-8")).toBe(false);
+    });
+
+    it("accepts a profile from the configured region's own family", () => {
+      process.env.CLAUDE_CODE_USE_BEDROCK = "1";
+      process.env.AWS_REGION = "eu-west-1";
+      expect(isBedrockModelUsableInConfiguredRegion("eu.anthropic.claude-sonnet-5")).toBe(true);
+
+      process.env.AWS_REGION = "ap-southeast-2";
+      expect(isBedrockModelUsableInConfiguredRegion("au.anthropic.claude-sonnet-5")).toBe(true);
+      // Sydney also publishes the older `apac.` profiles.
+      expect(isBedrockModelUsableInConfiguredRegion("apac.anthropic.claude-sonnet-4-20250514-v1:0")).toBe(true);
+    });
+
+    it("accepts global profiles and ARNs in any region", () => {
+      process.env.CLAUDE_CODE_USE_BEDROCK = "1";
+      process.env.AWS_REGION = "us-east-1";
+
+      // `global.` profiles are published in every region checked, and an ARN names its own region.
+      expect(isBedrockModelUsableInConfiguredRegion("global.anthropic.claude-sonnet-5")).toBe(true);
+      expect(
+        isBedrockModelUsableInConfiguredRegion(
+          "arn:aws:bedrock:eu-west-1:123456789012:application-inference-profile/abc123",
+        ),
+      ).toBe(true);
+    });
+
+    it("accepts any profile when this process has no region evidence", () => {
+      // No Bedrock env: this server may be storing setup for a worker whose region is unknown here.
+      process.env.AWS_REGION = "us-east-1";
+      expect(isBedrockModelUsableInConfiguredRegion("eu.anthropic.claude-sonnet-5")).toBe(true);
+
+      // Bedrock env, but no configured region to compare against.
+      process.env.CLAUDE_CODE_USE_BEDROCK = "1";
+      delete process.env.AWS_REGION;
+      expect(isBedrockModelUsableInConfiguredRegion("eu.anthropic.claude-sonnet-5")).toBe(true);
+    });
+
+    it("accepts an unrecognised family and rejects a non-Bedrock id", () => {
+      process.env.CLAUDE_CODE_USE_BEDROCK = "1";
+      process.env.AWS_REGION = "us-east-1";
+
+      // A family this build does not know about cannot be shown to be wrong.
+      expect(isBedrockModelUsableInConfiguredRegion("mx.anthropic.claude-sonnet-5")).toBe(true);
+      expect(isBedrockModelUsableInConfiguredRegion("claude-sonnet-5")).toBe(false);
+    });
+
+    it("reads AWS_DEFAULT_REGION when AWS_REGION is unset", () => {
+      process.env.CLAUDE_CODE_USE_BEDROCK = "1";
+      process.env.AWS_DEFAULT_REGION = "eu-west-1";
+
+      expect(isBedrockModelUsableInConfiguredRegion("eu.anthropic.claude-sonnet-5")).toBe(true);
+      expect(isBedrockModelUsableInConfiguredRegion("us.anthropic.claude-haiku-4-5-20251001-v1:0")).toBe(false);
+    });
   });
 
   it("loads claude models dynamically and merges fallback options", async () => {

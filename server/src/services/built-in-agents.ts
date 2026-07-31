@@ -22,7 +22,10 @@ import { companySkillService } from "./company-skills.js";
 import { routineService } from "./routines.js";
 import { accessService } from "./access.js";
 import { listAdapterModels } from "../adapters/registry.js";
-import { isBedrockModelId } from "@paperclipai/adapter-claude-local/server";
+import {
+  isBedrockModelId,
+  isBedrockModelUsableInConfiguredRegion,
+} from "@paperclipai/adapter-claude-local/server";
 
 export type BuiltInAgentStatus = "not_provisioned" | "pending_approval" | "needs_setup" | "ready" | "paused";
 
@@ -813,9 +816,24 @@ async function assertKnownBuiltInAgentModel(
   if (models.length === 0 || models.some((candidate) => candidate.id === model)) return;
 
   // Bedrock model IDs are region-qualified inference profiles, and the static catalogue cannot
-  // enumerate every region. The execution path already accepts any region-qualified ID, so
-  // accept one here too instead of rejecting a model that would run fine.
-  if (adapterType === "claude_local" && isBedrockModelId(model)) return;
+  // enumerate every region. The execution path already accepts any region-qualified ID, so accept
+  // one here too instead of rejecting a model that would run fine. A profile from a region family
+  // that the configured region does not publish is still rejected, because Bedrock cannot resolve it.
+  if (adapterType === "claude_local" && isBedrockModelId(model)) {
+    if (isBedrockModelUsableInConfiguredRegion(model)) return;
+    const region = process.env.AWS_REGION?.trim() || process.env.AWS_DEFAULT_REGION?.trim() || "";
+    throw unprocessable(
+      `Model "${model}" is a Bedrock inference profile for a different region, and this deployment uses ${region}.`,
+      {
+        code: "built_in_agent_model_region_mismatch",
+        key: definition.key,
+        adapterType,
+        model,
+        region,
+        availableModelIds: models.map((candidate) => candidate.id),
+      },
+    );
+  }
 
   throw unprocessable(`Model "${model}" is not available for adapter ${adapterType}.`, {
     code: "built_in_agent_model_unknown",

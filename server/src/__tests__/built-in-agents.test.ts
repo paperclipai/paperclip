@@ -457,7 +457,8 @@ describeEmbeddedPostgres("built-in agents", () => {
     const companyId = await seedCompany();
 
     // Bedrock inference-profile ids are region-scoped, so no static list can contain them all.
-    // The execution path accepts any region-qualified id, and setup must not be stricter.
+    // The execution path accepts any region-qualified id, and setup must not be stricter. This
+    // server runs no Bedrock env, so it cannot know the region the agent will run in.
     const state = await builtInAgentService(db).ensure(companyId, "summarizer", {
       adapterType: "claude_local",
       adapterConfig: { model: "eu.anthropic.claude-sonnet-5" },
@@ -468,6 +469,52 @@ describeEmbeddedPostgres("built-in agents", () => {
     const rows = await db.select().from(agents).where(eq(agents.companyId, companyId));
     expect(rows).toHaveLength(1);
     expect(rows[0]?.adapterConfig).toMatchObject({ model: "eu.anthropic.claude-sonnet-5" });
+  });
+
+  it("rejects a Bedrock profile from a region family the configured region does not publish", async () => {
+    process.env.CLAUDE_CODE_USE_BEDROCK = "1";
+    process.env.AWS_REGION = "us-east-1";
+    const companyId = await seedCompany();
+
+    // Bedrock cannot resolve an `eu.` profile from a US region. Rejecting it here gives the
+    // operator the error while they are still in setup, instead of at the agent's first run.
+    await expect(builtInAgentService(db).ensure(companyId, "summarizer", {
+      adapterType: "claude_local",
+      adapterConfig: { model: "eu.anthropic.claude-sonnet-5" },
+    })).rejects.toMatchObject({
+      status: 422,
+      details: {
+        code: "built_in_agent_model_region_mismatch",
+        adapterType: "claude_local",
+        model: "eu.anthropic.claude-sonnet-5",
+        region: "us-east-1",
+      },
+    });
+
+    const rows = await db.select().from(agents).where(eq(agents.companyId, companyId));
+    expect(rows).toHaveLength(0);
+  });
+
+  it("accepts Bedrock ids that the configured region cannot rule out", async () => {
+    process.env.CLAUDE_CODE_USE_BEDROCK = "1";
+    process.env.AWS_REGION = "us-east-1";
+
+    // A matching family, a `global.` profile published everywhere, and a full ARN naming its own
+    // region are all usable from us-east-1. Only a provable mismatch is rejected.
+    const accepted = [
+      "us.anthropic.claude-sonnet-4-5-20250929-v2:0",
+      "global.anthropic.claude-sonnet-5",
+      "arn:aws:bedrock:eu-west-1:123456789012:application-inference-profile/abc123",
+    ];
+
+    for (const model of accepted) {
+      const companyId = await seedCompany();
+      const state = await builtInAgentService(db).ensure(companyId, "summarizer", {
+        adapterType: "claude_local",
+        adapterConfig: { model },
+      });
+      expect(state.agent?.adapterConfig, model).toMatchObject({ model });
+    }
   });
 
   it("maps a bundled default alias onto a region-qualified Bedrock profile", async () => {

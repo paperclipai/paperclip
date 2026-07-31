@@ -4,6 +4,7 @@ export { getConfigSchema } from "./config-schema.js";
 export { listClaudeSkills, syncClaudeSkills } from "./skills.js";
 export {
   isBedrockModelId,
+  isBedrockModelUsableInConfiguredRegion,
   listClaudeModels,
   refreshClaudeModels,
   resetClaudeModelsCacheForTests,
