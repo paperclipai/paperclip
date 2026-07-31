@@ -14,7 +14,7 @@ def test_triage_and_pick_filters_then_ranks(tmp_path, monkeypatch):
         Candidate("tsc", "tsc:a.ts:5:TS1", "a.ts", 5, "err", 50),
         Candidate("todo", "todo:done:1", "b.ts", 1, "x", 10),
     ]
-    monkeypatch.setattr(pickmod, "scan_all", lambda cwd: cands)
+    monkeypatch.setattr(pickmod, "scan_all", lambda cwd, sources=None, github_repo=None: cands)
     # State: der todo:done:1-Kandidat ist erledigt -> muss rausgefiltert werden
     monkeypatch.setattr(pickmod, "load_state", lambda p: {"todo:done:1": {"attempts": 1, "last_status": "committed"}})
     seen = {}
@@ -30,7 +30,7 @@ def test_triage_and_pick_filters_then_ranks(tmp_path, monkeypatch):
 
 def test_triage_and_pick_none_when_no_fresh(tmp_path, monkeypatch):
     cfg = _cfg(tmp_path)
-    monkeypatch.setattr(pickmod, "scan_all", lambda cwd: [])
+    monkeypatch.setattr(pickmod, "scan_all", lambda cwd, sources=None, github_repo=None: [])
     monkeypatch.setattr(pickmod, "load_state", lambda p: {})
     called = {"rank": False}
     def fake_rank(fresh, baseline_red=False):

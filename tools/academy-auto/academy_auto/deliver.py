@@ -18,7 +18,7 @@ def deliver(cfg, deps) -> str:
         return "no_pending"
     if cfg.notify_mode == "milestone" and not is_milestone(rec, cfg.milestone_delta_threshold):
         return "skipped"
-    text = build_digest_from_pending(rec)
+    text = build_digest_from_pending(rec, label=cfg.github_repo)
     markup = build_reply_markup(rec.run_ts) if rec.has_change else None
     ok = deps.send(text, markup)
     # send gibt True/False zurück; None (Alt-Fakes) als Erfolg werten
@@ -27,14 +27,16 @@ def deliver(cfg, deps) -> str:
 
 def main() -> None:  # pragma: no cover - CLI/launchd
     from types import SimpleNamespace
-    from .config import Config
+    from .config import Config, TARGETS
     from . import pending, notify
-    cfg = Config.default()
     deps = SimpleNamespace(
         read_pending=pending.read_pending,
         send=lambda text, markup: notify.send_digest(text, reply_markup=markup),
     )
-    print(deliver(cfg, deps))
+    # Ein Zustell-Job für alle Läufe: jeder hat seine eigene pending.json, und
+    # ohne Änderung schickt `deliver` ohnehin nichts ("no_pending").
+    for target in TARGETS:
+        print(f"{target}: {deliver(Config.for_target(target), deps)}")
 
 
 if __name__ == "__main__":  # pragma: no cover

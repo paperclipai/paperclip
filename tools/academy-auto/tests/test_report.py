@@ -186,3 +186,13 @@ def test_digest_reports_an_automatic_revert():
     text = build_digest_from_pending(rec)
     assert "zurückgenommen" in text
     assert "Freigabe" not in text
+
+
+def test_digest_names_the_run_it_belongs_to():
+    """Beide Laeufe schicken in denselben Telegram-Chat — ohne Kennzeichnung
+    waere nicht erkennbar, ob die App oder die Website gemeint ist."""
+    from academy_auto.pending import PendingRecord
+    from academy_auto.report import build_digest_from_pending
+    rec = PendingRecord("t", "landed", "", "", "grün", "", False, 0, [], landed=["abc1234 X"])
+    text = build_digest_from_pending(rec, label="whitestagai/whitestag-academy-web")
+    assert "whitestag-academy-web" in text

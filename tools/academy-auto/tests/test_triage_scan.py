@@ -198,7 +198,7 @@ def test_scan_all_dedups_and_sorts(tmp_path, monkeypatch):
         Candidate("tsc", "tsc:a.ts:5:TS1", "a.ts", 5, "err", 50),
         Candidate("tsc", "tsc:a.ts:5:TS1", "a.ts", 5, "dup", 50)])
     monkeypatch.setattr(scanmod, "scan_lint", lambda root, runner=None: [])
-    monkeypatch.setattr(scanmod, "scan_issues", lambda runner=None: [
+    monkeypatch.setattr(scanmod, "scan_issues", lambda runner=None, repo=None: [
         Candidate("issue", "issue:9", "", 0, "Titel", 20)])
     out = scanmod.scan_all(tmp_path)
     keys = [c.key for c in out]
@@ -228,7 +228,7 @@ def test_scan_all_isolates_a_throwing_source(tmp_path, monkeypatch):
         raise RuntimeError("Quelle kaputt")
     monkeypatch.setattr(scanmod, "scan_tsc", boom)
     monkeypatch.setattr(scanmod, "scan_lint", lambda root, runner=None: [])
-    monkeypatch.setattr(scanmod, "scan_issues", lambda runner=None: [])
+    monkeypatch.setattr(scanmod, "scan_issues", lambda runner=None, repo=None: [])
     out = scanmod.scan_all(tmp_path)
     assert [c.key for c in out] == ["todo:a.ts:1"]  # kaputte tsc-Quelle reißt den Scan nicht mit
 
@@ -240,7 +240,7 @@ def test_scan_all_dedup_keeps_first(tmp_path, monkeypatch):
     monkeypatch.setattr(scanmod, "scan_skipped_tests", lambda root: [Candidate("todo","dup:1","a.ts",1,"zweiter",10)])
     monkeypatch.setattr(scanmod, "scan_tsc", lambda root, runner=None: [])
     monkeypatch.setattr(scanmod, "scan_lint", lambda root, runner=None: [])
-    monkeypatch.setattr(scanmod, "scan_issues", lambda runner=None: [])
+    monkeypatch.setattr(scanmod, "scan_issues", lambda runner=None, repo=None: [])
     out = scanmod.scan_all(tmp_path)
     assert len(out) == 1 and out[0].text == "ERSTER"  # erster gewinnt
 
@@ -279,3 +279,48 @@ def test_scan_issues_without_body_falls_back_to_title():
     gh_json = '[{"number":9,"title":"Nur Titel","labels":[],"body":""}]'
     c = scan_issues(runner=lambda *a, **k: _proc(stdout=gh_json, returncode=0))[0]
     assert c.text == "Nur Titel"
+
+
+def test_scan_all_honours_the_source_whitelist(tmp_path):
+    """Der Scanner darf nur Quellen abfragen, die das jeweilige Gate messen kann.
+
+    Fuer das Web-Repo gibt es weder tsc noch eslint — wuerden sie trotzdem
+    laufen, lieferten sie im besten Fall nichts und im schlechtesten
+    Kandidaten, die der Build nie als erledigt nachweisen kann (der 13->13-Bug
+    vom 31.07.).
+    """
+    from academy_auto.triage.scan import scan_all
+    (tmp_path / "a.ts").write_text("// TODO: irgendwas\n")
+    gerufen = []
+
+    def runner(cmd, **kwargs):
+        gerufen.append(" ".join(cmd))
+        class R:
+            returncode = 0
+            stdout = "[]"
+            stderr = ""
+        return R()
+
+    cands = scan_all(tmp_path, runner=runner, sources=("todo",))
+    assert [c.source for c in cands] == ["todo"]
+    assert not any("tsc" in c for c in gerufen)
+    assert not any("eslint" in c for c in gerufen)
+    assert not any("gh issue" in c for c in gerufen)
+
+
+def test_scan_all_defaults_to_every_source(tmp_path):
+    """Ohne Angabe bleibt das Verhalten wie bisher."""
+    from academy_auto.triage.scan import scan_all
+    gerufen = []
+
+    def runner(cmd, **kwargs):
+        gerufen.append(" ".join(cmd))
+        class R:
+            returncode = 0
+            stdout = "[]"
+            stderr = ""
+        return R()
+
+    scan_all(tmp_path, runner=runner)
+    assert any("tsc" in c for c in gerufen)
+    assert any("eslint" in c for c in gerufen)

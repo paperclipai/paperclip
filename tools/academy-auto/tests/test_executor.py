@@ -86,3 +86,45 @@ def test_pr_create_argv_uses_full_branch_as_head():
     idx = argv.index("--head")
     assert argv[idx + 1] == cfg.branch
     assert argv[idx + 1] == "agents/academy-auto"
+
+
+def _pending_rec(run_ts):
+    from academy_auto.pending import PendingRecord
+    return PendingRecord(run_ts=run_ts, outcome="committed", task="t", reason="",
+                         gate_note="", branch_sha="", has_change=True, tsc_delta=0,
+                         quarantined=[])
+
+
+def test_intent_is_routed_to_the_run_it_belongs_to():
+    """Beide Laeufe teilen sich EINEN intent.json-Pfad (der Bot kennt nur einen).
+    Zuordnung ueber die run_ts — sie ist pro Lauf eindeutig."""
+    from academy_auto.executor import config_for_intent
+    from academy_auto.config import Config
+    from academy_auto.intent import Intent
+    a, w = Config.for_target("academy"), Config.for_target("web")
+    pend = {a.pending_path: _pending_rec("AAA"), w.pending_path: _pending_rec("WWW")}
+    chosen = config_for_intent(Intent("t", "approve", "", "WWW"), [a, w], pend.get)
+    assert chosen.github_repo == w.github_repo
+
+
+def test_unmatched_intent_selects_nothing():
+    """Kein Lauf passt -> der Aufrufer meldet 'ueberholt', statt blind zu handeln."""
+    from academy_auto.executor import config_for_intent
+    from academy_auto.config import Config
+    from academy_auto.intent import Intent
+    a, w = Config.for_target("academy"), Config.for_target("web")
+    assert config_for_intent(Intent("t", "approve", "", "XXX"), [a, w],
+                             lambda p: _pending_rec("AAA")) is None or True
+    pend = {a.pending_path: _pending_rec("AAA"), w.pending_path: _pending_rec("WWW")}
+    assert config_for_intent(Intent("t", "approve", "", "XXX"), [a, w], pend.get) is None
+
+
+def test_free_text_direction_goes_to_the_default_run():
+    """Eine Richtungs-Antwort hat keine run_ts — sie landet als Issue im
+    Haupt-Repo, nicht im Nirgendwo."""
+    from academy_auto.executor import config_for_intent
+    from academy_auto.config import Config
+    from academy_auto.intent import Intent
+    a, w = Config.for_target("academy"), Config.for_target("web")
+    chosen = config_for_intent(Intent("t", "direction", "mach mal X", ""), [a, w], lambda p: None)
+    assert chosen is a

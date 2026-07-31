@@ -170,10 +170,10 @@ def _issue_text(issue) -> str:
     return f"{title} — {body}" if body else title
 
 
-def scan_issues(runner=subprocess.run) -> list[Candidate]:
+def scan_issues(runner=subprocess.run, repo=None) -> list[Candidate]:
     try:
         proc = runner(
-            ["gh", "issue", "list", "--repo", GITHUB_REPO, "--state", "open",
+            ["gh", "issue", "list", "--repo", repo or GITHUB_REPO, "--state", "open",
              "--json", "number,title,labels,body"],
             capture_output=True, text=True, check=False, timeout=SCAN_TIMEOUT,
         )
@@ -197,15 +197,31 @@ def scan_issues(runner=subprocess.run) -> list[Candidate]:
     return cands
 
 
-def scan_all(root, runner=subprocess.run) -> list[Candidate]:
+ALL_SOURCES = ("todo", "skip", "tsc", "lint", "issue")
+
+
+def scan_all(root, runner=subprocess.run, sources=None, github_repo=None) -> list[Candidate]:
+    """Kandidaten sammeln — nur aus den freigegebenen Quellen.
+
+    `sources` MUSS zum Gate des jeweiligen Laufs passen. Ein Kandidat, den das
+    Gate nicht messen kann, ist unerledigbar: der Lauf setzt ihn um, das Gate
+    sieht keinen Fortschritt und verwirft ihn — jede Nacht aufs Neue. Genau das
+    passierte am 31.07. mit lint-Verstoessen aus tests/, die `expo lint src`
+    nie gesehen hat.
+    """
+    allowed = tuple(sources) if sources is not None else ALL_SOURCES
+    by_source = {
+        "todo": lambda: scan_todos(root),
+        "skip": lambda: scan_skipped_tests(root),
+        "tsc": lambda: scan_tsc(root, runner=runner),
+        "lint": lambda: scan_lint(root, runner=runner),
+        "issue": lambda: scan_issues(runner=runner, repo=github_repo),
+    }
     collected: list[Candidate] = []
-    for fn in (
-        lambda: scan_todos(root),
-        lambda: scan_skipped_tests(root),
-        lambda: scan_tsc(root, runner=runner),
-        lambda: scan_lint(root, runner=runner),
-        lambda: scan_issues(runner=runner),
-    ):
+    for name in allowed:
+        fn = by_source.get(name)
+        if fn is None:
+            continue
         try:
             collected += fn()
         except Exception:

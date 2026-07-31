@@ -174,13 +174,16 @@ def _empty_gate():
 
 
 def main() -> None:  # pragma: no cover - CLI-Verdrahtung
+    from .config import TARGETS
     parser = argparse.ArgumentParser(description="Academy-Auto Phase A")
     parser.add_argument("task_prompt", nargs="?", default=None, help="Aufgabe (leer = Triage wählt selbst)")
+    parser.add_argument("--target", default="academy", choices=TARGETS,
+                        help="academy = Lern-App (ki-kompass), web = Marketing-Site")
     args = parser.parse_args()
 
     from . import worktree, gate, runner
 
-    cfg = Config.default()
+    cfg = Config.for_target(args.target)
     deps = _build_default_deps(worktree, gate, runner)
     result = run_once(cfg, args.task_prompt, deps)
     print(result.status)

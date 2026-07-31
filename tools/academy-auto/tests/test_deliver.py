@@ -4,7 +4,10 @@ from academy_auto.deliver import deliver, build_reply_markup
 
 
 def _cfg(mode="daily"):
-    return SimpleNamespace(pending_path="p", notify_mode=mode, milestone_delta_threshold=50)
+    # github_repo kennzeichnet im Digest, welcher Lauf gemeint ist — seit es
+    # zwei gibt (Lern-App und Marketing-Site) landen beide im selben Chat.
+    return SimpleNamespace(pending_path="p", notify_mode=mode, milestone_delta_threshold=50,
+                           github_repo="whitestagai/ki-kompass")
 
 
 def _deps(rec, sent):

@@ -1,6 +1,28 @@
-Academy-Auto Phase A (MVP) — lässt Claude Code eine vorgegebene Aufgabe an
-WHITESTAG.ACADEMY in einem isolierten Worktree umsetzen, prüft mit
-jest+tsc+lint und meldet den Stand als Jarvis-Digest.
+Academy-Auto — lässt Claude Code Aufgaben in einem isolierten Worktree
+umsetzen, prüft sie mit einem Gate und meldet den Stand als Jarvis-Digest.
+
+## Zwei Läufe
+
+| `--target` | Repo | Gate | Triage-Quellen | launchd |
+|---|---|---|---|---|
+| `academy` (Standard) | `whitestagai/ki-kompass` (Expo-App) | `npm test` + `npx tsc --noEmit` + `npm run lint` | todo, skip, tsc, lint, issue | 02:00 |
+| `web` | `whitestagai/whitestag-academy-web` (Astro-Site) | `npm run build` | todo, skip, issue | 03:00 |
+
+Beide haben **eigenen Worktree, eigene `pending.json`, eigenen Triage-State und
+eigene Flag-Dateien** — sie dürfen sich nichts teilen, sonst überschreiben sie
+sich gegenseitig.
+
+**Warum der Web-Lauf keine tsc/lint-Kandidaten anbietet:** sein Gate baut nur.
+Ein Kandidat, den das Gate nicht messen kann, ist unerledigbar — der Lauf setzt
+ihn um, sieht keinen Fortschritt und verwirft ihn, jede Nacht aufs Neue. Genau
+das passierte am 31.07. im `academy`-Lauf mit lint-Verstössen aus `tests/`,
+die `expo lint src` nie gesehen hat. `scan_sources` muss deshalb **immer** zu
+`gate_commands` passen.
+
+Der Telegram-Rückkanal teilt sich **einen** `intent.json`-Pfad (der Bot kennt
+nur einen). Zugeordnet wird über `ref_run_ts` — jeder Lauf schreibt einen
+eindeutigen Zeitstempel in seine `pending.json`. Passt keiner, meldet der
+Executor „überholt", statt im falschen Repo einen PR zu öffnen.
 
 ## Ausführen (manuell, Phase A)
 

@@ -1,6 +1,26 @@
 from __future__ import annotations
 
 
+def config_for_intent(intent, configs, read_pending):
+    """Welcher Lauf ist gemeint?
+
+    Der Bot kennt genau EINEN `intent.json`-Pfad — die Telegram-Callback-Daten
+    tragen kein Ziel. Zugeordnet wird deshalb über `ref_run_ts`: jeder Lauf
+    schreibt seine eigene `pending.json` mit einem eindeutigen Zeitstempel.
+    Passt keiner, gibt es None zurück und der Aufrufer meldet "überholt",
+    statt auf gut Glück im falschen Repo einen PR zu öffnen.
+
+    Freitext-Richtungen haben keine run_ts und gehen an den ersten (Haupt-)Lauf.
+    """
+    if intent.kind == "direction":
+        return configs[0] if configs else None
+    for cfg in configs:
+        rec = read_pending(cfg.pending_path)
+        if rec is not None and rec.run_ts == intent.ref_run_ts:
+            return cfg
+    return None
+
+
 def process_intent(cfg, deps) -> str:
     """Verarbeitet genau eine Intent-Datei. Fail-soft, idempotent (löscht am Ende)."""
     intent = deps.read_intent(cfg.intent_path)
@@ -77,9 +97,18 @@ def _create_issue_default(cfg, text):  # pragma: no cover
 
 def main() -> None:  # pragma: no cover - vom Bot per Subprozess angestoßen
     from types import SimpleNamespace
-    from .config import Config
+    from .config import Config, TARGETS
     from . import intent as intent_mod, pending, notify
-    cfg = Config.default()
+    # Alle Läufe teilen sich denselben intent.json-Pfad (der Bot kennt nur
+    # einen). Der Standard-Lauf legt ihn fest; zugeordnet wird über run_ts.
+    configs = [Config.for_target(t) for t in TARGETS]
+    shared_intent = configs[0].intent_path
+    parsed = intent_mod.read_intent(shared_intent)
+    cfg = configs[0]
+    if parsed is not None:
+        cfg = config_for_intent(parsed, configs, pending.read_pending) or configs[0]
+    # Der gewählte Lauf muss den geteilten intent-Pfad lesen, nicht seinen eigenen.
+    cfg = type(cfg)(**{**cfg.__dict__, "intent_path": shared_intent})
     deps = SimpleNamespace(
         read_intent=intent_mod.read_intent,
         read_pending=pending.read_pending,

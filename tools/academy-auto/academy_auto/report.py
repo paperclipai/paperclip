@@ -63,7 +63,7 @@ def build_nothing_digest(quarantined: list[str] | None = None) -> str:
     return "\n".join(lines)
 
 
-def build_digest_from_pending(rec) -> str:
+def build_digest_from_pending(rec, label: str = "") -> str:
     """Digest aus einem geparkten PendingRecord bauen (Zustell-Job 08:00).
 
     Im autonomen Regelbetrieb ist der Digest ein **Bericht**, keine Rückfrage:
@@ -71,10 +71,11 @@ def build_digest_from_pending(rec) -> str:
     wenn wirklich etwas auf eine Entscheidung wartet (gelbe Stufe).
     """
     landed = list(getattr(rec, "landed", []) or [])
+    kopf = f"🎓 Academy-Auto — Tagesstand ({label})" if label else "🎓 Academy-Auto — Tagesstand"
     if rec.outcome == "nothing_to_do" and not landed:
         return build_nothing_digest(rec.quarantined)
 
-    lines = ["🎓 Academy-Auto — Tagesstand", ""]
+    lines = [kopf, ""]
 
     if landed:
         lines.append(f"Automatisch gemergt: {len(landed)}")

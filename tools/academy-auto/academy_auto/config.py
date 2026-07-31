@@ -3,6 +3,10 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
+# Die Läufe, die es gibt. "academy" = die Lern-App (ki-kompass),
+# "web" = die Stufe-1-Marketing-Site (whitestag-academy-web).
+TARGETS = ("academy", "web")
+
 
 @dataclass(frozen=True)
 class Config:
@@ -28,9 +32,27 @@ class Config:
     github_repo: str
     auto_merge_max_lines: int
     auto_merge_path_prefixes: tuple[str, ...]
+    # Welche Triage-Quellen dieser Lauf anbieten darf. MUSS zu `gate_commands`
+    # passen: bietet der Scanner Arbeit an, die das Gate nicht misst, kann der
+    # Lauf sie nie als Fortschritt nachweisen und verwirft sie jede Nacht aufs
+    # Neue (live erlebt am 31.07. mit lint-Kandidaten aus tests/).
+    scan_sources: tuple[str, ...]
 
     @classmethod
     def default(cls) -> "Config":
+        """Der ki-kompass-Lauf. Bleibt der Standard — alles Bestehende hängt daran."""
+        return cls.for_target("academy")
+
+    @classmethod
+    def for_target(cls, target: str) -> "Config":
+        if target == "web":
+            return cls._web()
+        if target == "academy":
+            return cls._academy()
+        raise ValueError(f"unbekanntes Ziel: {target!r} (erlaubt: {', '.join(TARGETS)})")
+
+    @classmethod
+    def _academy(cls) -> "Config":
         home = Path.home()
         # Bewusst NICHT in CloudStorage/SynologyDrive: launchd-Prozesse haben dort
         # keinen Zugriff (git haengt dann unbegrenzt), und der Sync flippt Dateimodi.
@@ -109,4 +131,51 @@ class Config:
             intent_path=base / "intent.json",
             milestone_delta_threshold=50,
             github_repo="whitestagai/ki-kompass",
+            scan_sources=("todo", "skip", "tsc", "lint", "issue"),
+        )
+
+    @classmethod
+    def _web(cls) -> "Config":
+        """Die Stufe-1-Marketing-Site (Astro).
+
+        Eigenes Repo, eigener Worktree, eigener Zustand — die beiden Läufe
+        dürfen sich nichts teilen, sonst überschreiben sie sich gegenseitig
+        pending.json und Triage-State.
+        """
+        home = Path.home()
+        base_cfg = cls._academy()      # Sandbox-/Secret-Listen sind identisch
+        base = home / ".paperclip" / "academy-auto-web"
+        return cls(
+            academy_repo=home / "Developer" / "whitestag-academy-web",
+            worktree_path=home / ".academy-auto" / "worktree-web",
+            branch="agents/academy-auto",
+            base_branch="main",
+            # Kein --legacy-peer-deps: das Astro-Projekt hat keinen Peer-Konflikt
+            # (live mit `npm install` verifiziert).
+            npm_install_cmd=("npm", "ci"),
+            pause_flag=home / ".paperclip" / "academy-auto-web.pause",
+            dry_run_flag=home / ".paperclip" / "academy-auto-web.dryrun",
+            # Die Site hat (noch) keine Tests und kein eslint. Der Build ist der
+            # Beweis — und er hätte den Fehlschlag vom 31.07. sofort gefangen
+            # (fehlende Anführungszeichen im Layout-Import).
+            gate_commands=[["npm", "run", "build"]],
+            max_tasks_per_run=3,
+            max_diff_lines=800,
+            auto_merge_max_lines=300,
+            # Seiten, Komponenten, Layouts und Styles liegen alle unter src/.
+            # public/ (Bilder) und astro.config.mjs bleiben damit gelb.
+            auto_merge_path_prefixes=("src/",),
+            # Passend zum Gate: nur Quellen, deren Erledigung der Build auch
+            # nachweisen kann. tsc/lint gibt es hier nicht.
+            scan_sources=("todo", "skip", "issue"),
+            denied_globs=base_cfg.denied_globs,
+            triage_state_path=base / "triage-state.json",
+            secret_read_paths=base_cfg.secret_read_paths,
+            sandbox_write_paths=base_cfg.sandbox_write_paths,
+            protected_write_paths=base_cfg.protected_write_paths,
+            notify_mode="daily",
+            pending_path=base / "pending.json",
+            intent_path=base / "intent.json",
+            milestone_delta_threshold=50,
+            github_repo="whitestagai/whitestag-academy-web",
         )
