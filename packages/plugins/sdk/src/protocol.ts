@@ -703,6 +703,18 @@ export interface PluginSyncFileMapping {
    * sandbox stays the only security boundary.
    */
   access?: "rw" | "ro";
+  /**
+   * The sandbox directory that becomes read-write when `access` is `"rw"` and a
+   * post-upload command extracts `targetPath` into a different directory. A
+   * workspace, git-history, or asset mapping uploads a tar archive, so its
+   * `targetPath` is the staging archive under the runtime root, not the directory
+   * that the extract command fills. This field names that final destination
+   * directory, so a consumer records the real read-write destination, not the
+   * staging parent. When absent, the read-write destination is the parent
+   * directory of `targetPath`. This field is advisory and ignored when `access`
+   * is not `"rw"`.
+   */
+  writablePath?: string;
 }
 
 /**

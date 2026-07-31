@@ -1109,18 +1109,17 @@ const sandboxHandleCache = (() => {
 const sandboxHandleWritableDirs = (() => {
   const dirsByKey = new Map<string, Set<string>>();
 
-  // Record the parent directory of every `access: "rw"` mapping target. Skip
-  // read-only mappings (`access` absent or `"ro"`). Read-only is the safe
-  // default for an advisory signal.
+  // Record the read-write destination directory of every `access: "rw"`
+  // mapping. Skip read-only mappings (`access` absent or `"ro"`). Read-only is
+  // the safe default for an advisory signal.
   //
-  // Caveat for a future consumer: a workspace, git-history, or asset mapping
-  // uploads a tar archive, so its `targetPath` is the staging archive under the
-  // runtime root, not the directory that the post-upload extract command fills.
-  // For those mappings this records the staging parent (the runtime root), not
-  // the final read-write destination. A consumer that binds these directories
-  // read-write must resolve the real destinations from the runtime preparation
-  // result (the workspace directory and each asset directory), not this set as
-  // is. The set stays a forward-looking signal until that consumer lands.
+  // A workspace, git-history, or asset mapping uploads a tar archive, so its
+  // `targetPath` is the staging archive under the runtime root, not the directory
+  // that the post-upload extract command fills. For those mappings the author
+  // sets `writablePath` to the final destination directory, so this records the
+  // real read-write destination, not the staging parent. When `writablePath` is
+  // absent the mapping writes `targetPath` in place, so the parent directory of
+  // `targetPath` is the destination.
   function recordWritableTargets(scope: SandboxScope, operations: PluginSyncOperation[]): void {
     const key = sandboxHandleCacheKey(scope);
     for (const operation of operations) {
@@ -1131,7 +1130,7 @@ const sandboxHandleWritableDirs = (() => {
           dirs = new Set<string>();
           dirsByKey.set(key, dirs);
         }
-        dirs.add(path.posix.dirname(mapping.targetPath));
+        dirs.add(mapping.writablePath ?? path.posix.dirname(mapping.targetPath));
       }
     }
   }

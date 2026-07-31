@@ -1317,6 +1317,18 @@ describe("sandbox managed runtime", () => {
       `rm -rf ${q(path.posix.join(prepared.runtimeRootDir, "widget"))} && mkdir -p ${q(path.posix.join(prepared.runtimeRootDir, "widget"))}`,
     );
 
+    // The asset tar carries the asset directory as its read-write destination,
+    // because the extract command fills that directory, not the staging archive.
+    const assetTarMapping = assetOp!.files.find((mapping) => mapping.targetPath.endsWith("widget-upload.tar"));
+    expect(assetTarMapping?.access).toBe("rw");
+    expect(assetTarMapping?.writablePath).toBe(prepared.assetDirs.widget);
+
+    // The staged helper file is a read-only input that the command consumes, so
+    // it is `access: "ro"` and never joins the writable set.
+    const stageMapping = assetOp!.files.find((mapping) => mapping.targetPath.endsWith("widget-helper.sh"));
+    expect(stageMapping?.access).toBe("ro");
+    expect(stageMapping?.writablePath).toBeUndefined();
+
     // The asset actually materialized through the native seam.
     await expect(readFile(path.join(prepared.assetDirs.widget, "seed.txt"), "utf8")).resolves.toBe("seed\n");
   });
@@ -1739,6 +1751,16 @@ describe("sandbox managed runtime", () => {
     expect(findMapping("workspace-upload.tar")?.access).toBe("rw");
     expect(findMapping("git-workspace-upload.tar")?.access).toBe("rw");
     expect(findMapping("home-upload.tar")?.access).toBe("rw");
+
+    // Each tar mapping uploads a staging archive under the runtime root, so its
+    // `targetPath` is not the read-write destination. `writablePath` names the
+    // directory that the post-upload extract command fills: the workspace
+    // directory for the workspace and git tars, and the asset directory for the
+    // asset tar.
+    const remoteAssetDir = path.posix.join(remoteWorkspaceDir, ".paperclip-runtime", "test-adapter", "home");
+    expect(findMapping("workspace-upload.tar")?.writablePath).toBe(remoteWorkspaceDir);
+    expect(findMapping("git-workspace-upload.tar")?.writablePath).toBe(remoteWorkspaceDir);
+    expect(findMapping("home-upload.tar")?.writablePath).toBe(remoteAssetDir);
   });
 
   it("authors the advisory access intent ro on referenced-project inbound mappings", async () => {
