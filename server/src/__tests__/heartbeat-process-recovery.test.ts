@@ -112,6 +112,7 @@ import {
   resolveHotRestartReportPath,
   writeHotRestartIntent,
 } from "../services/hot-restart.ts";
+import { REVIEW_PARTICIPANT_PENDING_SUPPRESSION_MAX_AGE_MS } from "../services/recovery/service.ts";
 import { secretService } from "../services/secrets.ts";
 import {
   SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_NOTICE_BODY,
@@ -2272,7 +2273,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .select()
       .from(heartbeatRuns)
       .where(and(eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.retryOfRunId, runId)));
-    expect(retryRuns).toHaveLength(0);
+    expect(retryRuns).toHaveLength(1);
+    expect(["queued", "running"]).toContain(retryRuns[0]?.status);
+    expect((retryRuns[0]?.contextSnapshot as Record<string, unknown>)?.retryReason).toBe("issue_continuation_needed");
 
     const wakeup = await db
       .select()
@@ -2286,7 +2289,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .from(issues)
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0] ?? null);
-    expect(issue?.executionRunId).toBeNull();
+    expect(issue?.executionRunId).toBe(retryRuns[0]?.id);
   });
 
   it("reaps stale active-lease local runs with no process metadata after the orphan-silence threshold", async () => {
@@ -2379,9 +2382,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       });
     });
 
-    const { companyId, runId } = await seedQueuedIssueRunFixture({
+    const { companyId, agentId, runId } = await seedQueuedIssueRunFixture({
       adapterType: "claude_local",
-      defaultEnvironmentId: environmentId,
       runtimeConfig: {
         heartbeat: {
           wakeOnDemand: true,
@@ -2400,6 +2402,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       createdAt: new Date("2026-03-19T00:00:00.000Z"),
       updatedAt: new Date("2026-03-19T00:00:00.000Z"),
     });
+    await db
+      .update(agents)
+      .set({ defaultEnvironmentId: environmentId })
+      .where(eq(agents.id, agentId));
     const heartbeat = heartbeatService(db);
 
     await heartbeat.resumeQueuedRuns();
@@ -4704,11 +4710,12 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(issue?.assigneeAgentId).toBe(agentId);
   });
 
-  it("skips execution-review participant recovery when a terminal generic reviewer run still points at a typed pending reviewer", async () => {
-    const { agentId, issueId, runId, wakeupRequestId } = await seedInReviewParticipantRunFixture({
+  it("suppresses execution-review participant recovery within the named typed-reviewer bound on the terminal generic-reviewer path", async () => {
+    const { companyId, agentId, issueId, runId, wakeupRequestId } = await seedInReviewParticipantRunFixture({
       wakeReason: "manual",
     });
     const finishedAt = new Date("2026-03-19T00:05:00.000Z");
+    const freshPendingAt = new Date();
     await db
       .update(heartbeatRuns)
       .set({
@@ -4726,9 +4733,17 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         updatedAt: finishedAt,
       })
       .where(eq(agentWakeupRequests.id, wakeupRequestId));
+    await db
+      .update(issues)
+      .set({
+        executionLockedAt: freshPendingAt,
+        updatedAt: freshPendingAt,
+      })
+      .where(eq(issues.id, issueId));
     const heartbeat = heartbeatService(db);
 
     const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.reviewParticipantTypedPendingSkipped).toBe(1);
     expect(result.reviewParticipantRequeued).toBe(0);
     expect(result.escalated).toBe(0);
     expect(result.issueIds).toEqual([]);
@@ -4756,6 +4771,136 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(
       reviewerWakeups.some((wakeup) => wakeup.reason === "execution_review_participant_recovery"),
     ).toBe(false);
+  });
+
+  it("records the typed-reviewer suppression counter when a terminal generic reviewer run still points at a typed pending reviewer", async () => {
+    const { agentId, issueId, runId, wakeupRequestId } = await seedInReviewParticipantRunFixture({
+      wakeReason: "manual",
+    });
+    const finishedAt = new Date("2026-03-19T00:05:00.000Z");
+    const freshPendingAt = new Date();
+    await db
+      .update(heartbeatRuns)
+      .set({
+        status: "succeeded",
+        startedAt: new Date("2026-03-19T00:00:00.000Z"),
+        finishedAt,
+        updatedAt: finishedAt,
+      })
+      .where(eq(heartbeatRuns.id, runId));
+    await db
+      .update(agentWakeupRequests)
+      .set({
+        status: "completed",
+        finishedAt,
+        updatedAt: finishedAt,
+      })
+      .where(eq(agentWakeupRequests.id, wakeupRequestId));
+    await db
+      .update(issues)
+      .set({
+        executionLockedAt: freshPendingAt,
+        updatedAt: freshPendingAt,
+      })
+      .where(eq(issues.id, issueId));
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.reviewParticipantTypedPendingSkipped).toBe(1);
+    expect(result.reviewParticipantRequeued).toBe(0);
+    expect(result.escalated).toBe(0);
+    expect(result.issueIds).toEqual([]);
+
+    const recoveryActions = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, issueId));
+    expect(recoveryActions).toHaveLength(0);
+
+    const reviewerRuns = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId));
+    expect(reviewerRuns).toHaveLength(1);
+    expect(reviewerRuns[0]?.id).toBe(runId);
+    expect(reviewerRuns[0]?.status).toBe("succeeded");
+
+    const reviewerWakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, agentId));
+    expect(reviewerWakeups).toHaveLength(1);
+    expect(reviewerWakeups[0]?.status).toBe("completed");
+    expect(
+      reviewerWakeups.some((wakeup) => wakeup.reason === "execution_review_participant_recovery"),
+    ).toBe(false);
+  });
+
+  it("escalates a typed pending reviewer after the terminal-path suppression-age bound expires", async () => {
+    const { companyId, agentId, issueId, runId, wakeupRequestId } = await seedInReviewParticipantRunFixture({
+      wakeReason: "manual",
+    });
+    const staleAt = new Date(Date.now() - REVIEW_PARTICIPANT_PENDING_SUPPRESSION_MAX_AGE_MS - 5 * 60_000);
+    await db
+      .update(heartbeatRuns)
+      .set({
+        status: "succeeded",
+        startedAt: staleAt,
+        finishedAt: staleAt,
+        updatedAt: staleAt,
+      })
+      .where(eq(heartbeatRuns.id, runId));
+    await db
+      .update(agentWakeupRequests)
+      .set({
+        status: "completed",
+        finishedAt: staleAt,
+        updatedAt: staleAt,
+      })
+      .where(eq(agentWakeupRequests.id, wakeupRequestId));
+    await db
+      .update(issues)
+      .set({
+        executionLockedAt: staleAt,
+        updatedAt: staleAt,
+      })
+      .where(eq(issues.id, issueId));
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+    expect(result.reviewParticipantTypedPendingSkipped).toBe(0);
+    expect(result.reviewParticipantRequeued).toBe(0);
+    expect(result.escalated).toBe(1);
+    expect(result.issueIds).toEqual([issueId]);
+
+    const sourceIssue = await waitForValue(async () => {
+      const row = await db
+        .select()
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null);
+      return row?.status === "blocked" ? row : null;
+    });
+    expect(sourceIssue).toMatchObject({
+      status: "blocked",
+      assigneeAgentId: agentId,
+    });
+
+    const recoveryAction = await expectSourceScopedStrandedRecoveryAction({
+      companyId,
+      agentId,
+      issueId,
+      runId,
+      previousStatus: "in_review",
+      cause: "execution_review_participant_recovery",
+    });
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    const recoveryComment = comments.find((comment) =>
+      comment.body.includes("suppression is capped") &&
+      comment.body.includes(`Recovery action: \`${recoveryAction.id}\``),
+    );
+    expect(recoveryComment).toBeTruthy();
   });
 
   it("retries a pending execution-review participant once before blocking with a recovery action", async () => {

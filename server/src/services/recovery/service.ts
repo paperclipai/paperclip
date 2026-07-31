@@ -118,6 +118,10 @@ export const STRANDED_IN_PROGRESS_TRANSITION_GRACE_MS = Math.max(
   60_000,
   Number(process.env.STRANDED_IN_PROGRESS_TRANSITION_GRACE_MS) || 15 * 60 * 1000,
 );
+export const REVIEW_PARTICIPANT_PENDING_SUPPRESSION_MAX_AGE_MS = Math.max(
+  60_000,
+  Number(process.env.REVIEW_PARTICIPANT_PENDING_SUPPRESSION_MAX_AGE_MS) || 30 * 60 * 1000,
+);
 
 type RecoveryWakeupOptions = {
   source?: "timer" | "assignment" | "on_demand" | "automation";
@@ -262,6 +266,29 @@ function buildExecutionReviewParticipantUnavailableComment(latestRun: LatestIssu
     "Moving it to `blocked` with a source-scoped recovery action so the recovery owner can repair the reviewer runtime, " +
     "restore the review stage, or record an intentional manual resolution."
   );
+}
+
+function buildExecutionReviewParticipantSuppressionExpiredComment(
+  latestRun: LatestIssueRun,
+  pendingAgeMs: number,
+) {
+  const failureSummary = summarizeRunFailureForIssueComment(latestRun);
+  const boundedMinutes = Math.round(REVIEW_PARTICIPANT_PENDING_SUPPRESSION_MAX_AGE_MS / 60_000);
+  const ageMinutes = Math.max(1, Math.round(pendingAgeMs / 60_000));
+  return (
+    "Paperclip suppressed automatic recovery while the review stage still named a typed pending participant, " +
+    `but that suppression is capped at ${boundedMinutes} minute${boundedMinutes === 1 ? "" : "s"}. ` +
+    `The stage has remained pending for about ${ageMinutes} minute${ageMinutes === 1 ? "" : "s"} ` +
+    `with no completed decision, live reviewer run, or queued reviewer wake.${failureSummary ?? ""} ` +
+    "Moving it to `blocked` with a source-scoped recovery action so the recovery owner can restore the review stage " +
+    "or record an intentional manual resolution."
+  );
+}
+
+function getReviewParticipantPendingSuppressionAgeMs(issue: typeof issues.$inferSelect) {
+  const pendingSince = issue.executionLockedAt ?? issue.updatedAt ?? issue.createdAt ?? null;
+  if (!(pendingSince instanceof Date)) return null;
+  return Math.max(0, Date.now() - pendingSince.getTime());
 }
 
 function didAutomaticRecoveryFail(
@@ -3635,6 +3662,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       orphanBlockersAssigned: 0,
       successfulRunHandoffEscalated: 0,
       reviewParticipantRequeued: 0,
+      reviewParticipantTypedPendingSkipped: 0,
       escalated: 0,
       waitingOnReviewResolved: 0,
       recentProgressExempted: 0,
@@ -3845,7 +3873,33 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           hasTypedPendingReviewParticipant(pendingExecutionState) &&
           !isExecutionReviewParticipantRecoveryEligibleRun(participantLatestRun)
         ) {
-          result.skipped += 1;
+          const suppressionAgeMs = getReviewParticipantPendingSuppressionAgeMs(issue);
+          if (
+            suppressionAgeMs !== null &&
+            suppressionAgeMs <= REVIEW_PARTICIPANT_PENDING_SUPPRESSION_MAX_AGE_MS
+          ) {
+            result.reviewParticipantTypedPendingSkipped += 1;
+            result.skipped += 1;
+            continue;
+          }
+
+          const updated = await escalateStrandedAssignedIssue({
+            issue,
+            previousStatus: "in_review",
+            latestRun: participantLatestRun,
+            comment: buildExecutionReviewParticipantSuppressionExpiredComment(
+              participantLatestRun,
+              suppressionAgeMs ?? REVIEW_PARTICIPANT_PENDING_SUPPRESSION_MAX_AGE_MS,
+            ),
+            recoveryCause: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON,
+            recoveryOwnerAgentId: participantAgentId,
+          });
+          if (updated) {
+            result.escalated += 1;
+            result.issueIds.push(issue.id);
+          } else {
+            result.skipped += 1;
+          }
           continue;
         }
 
