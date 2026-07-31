@@ -8,10 +8,11 @@ This document states requirements. It does not state build steps.
 
 ## bwrap prerequisites (advisory, optional)
 
-The Daytona sandbox provider can wrap a command with an advisory bubblewrap
-(`bwrap`) wrapper. The wrapper is advisory, best-effort, and automatic. It adds
-no security. The ephemeral sandbox model stays the only security posture. A
-missing prerequisite degrades to the plain command. It never fails the lease.
+A sandbox provider can wrap a command with an advisory bubblewrap (`bwrap`)
+wrapper. The wrapper is advisory, best-effort, and automatic. It adds no
+security. The ephemeral sandbox model stays the only security posture. A missing
+prerequisite degrades to the plain command. It never fails the lease. Daytona is
+the current provider with bwrap support.
 
 The wrapper needs three run-time prerequisites. Each prerequisite is a fact of
 the image or snapshot, not a fact of the runtime code. The runtime does not
@@ -24,11 +25,12 @@ responsibility under the requirement-not-build contract above:
 - A passwordless `sudo` rule lets the sandbox user run `bwrap` as root.
 - The host and kernel allow an unprivileged user namespace.
 
-The Daytona provider README states the distro-specific install commands, the
-exact sudoers rule, the user-namespace setting, and the verification command.
-The install and the sudoers change are environment provisioning at the image or
-snapshot layer. Route them to DevOps through the board. Do not add a
-provisioning script to the repository.
+The owner supplies these prerequisites through the image or snapshot. The
+provider README states the distro-specific install commands, the exact sudoers
+rule, the user-namespace setting, and the verification command. The install and
+the sudoers change are environment provisioning at the image or snapshot layer.
+Route them to DevOps through the board. Do not add a provisioning script to the
+repository.
 
 ## Required on PATH
 
