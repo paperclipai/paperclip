@@ -99,8 +99,10 @@ const BEDROCK_FAMILY_REGION_PREFIXES: Record<string, readonly string[]> = {
   apac: ["ap-"],
 };
 
-function configuredAwsRegion(): string {
-  return (process.env.AWS_REGION?.trim() || process.env.AWS_DEFAULT_REGION?.trim() || "").toLowerCase();
+export type BedrockEnv = Record<string, string | undefined>;
+
+export function configuredAwsRegion(env: BedrockEnv = process.env): string {
+  return (env.AWS_REGION?.trim() || env.AWS_DEFAULT_REGION?.trim() || "").toLowerCase();
 }
 
 let warnedAboutMissingRegion = false;
@@ -133,12 +135,12 @@ function bedrockModelsForRegion(): AdapterModel[] {
 
 let cached: { keyFingerprint: string; baseUrl: string; expiresAt: number; models: AdapterModel[] } | null = null;
 
-function isBedrockEnv(): boolean {
+function isBedrockEnv(env: BedrockEnv = process.env): boolean {
   return (
-    process.env.CLAUDE_CODE_USE_BEDROCK === "1" ||
-    process.env.CLAUDE_CODE_USE_BEDROCK === "true" ||
-    (typeof process.env.ANTHROPIC_BEDROCK_BASE_URL === "string" &&
-      process.env.ANTHROPIC_BEDROCK_BASE_URL.trim().length > 0)
+    env.CLAUDE_CODE_USE_BEDROCK === "1" ||
+    env.CLAUDE_CODE_USE_BEDROCK === "true" ||
+    (typeof env.ANTHROPIC_BEDROCK_BASE_URL === "string" &&
+      env.ANTHROPIC_BEDROCK_BASE_URL.trim().length > 0)
   );
 }
 
@@ -280,22 +282,26 @@ export function isBedrockModelId(model: string): boolean {
 }
 
 /**
- * Check whether a Bedrock model ID can resolve in the configured region. Bedrock does not accept an
- * inference profile from another region family, so a `us.` profile configured in an EU-only
+ * Check whether a Bedrock model ID can resolve in the region `env` configures. Bedrock does not
+ * accept an inference profile from another region family, so a `us.` profile configured in an EU-only
  * deployment fails at run time. This lets setup reject it earlier, while the operator is still there
  * to read the message.
  *
- * An ID is only rejected when this process knows the target region. A server that does not itself run
+ * Pass the environment the model will run under, not this process's. An agent's `adapterConfig.env`
+ * overlays `process.env` at execution, so it can name a different region, and it is the one that
+ * decides whether the profile resolves.
+ *
+ * An ID is only rejected when `env` names the target region. A server that does not itself run
  * Bedrock can still store setup for a worker that does, and that worker's region is not visible here,
  * so such an ID is accepted. A family that is absent from the table above is also accepted, because
  * an unknown family cannot be shown to be wrong.
  */
-export function isBedrockModelUsableInConfiguredRegion(model: string): boolean {
+export function isBedrockModelUsableInConfiguredRegion(model: string, env: BedrockEnv = process.env): boolean {
   if (!isBedrockModelId(model)) return false;
   // A profile ARN names its own region, and the operator wrote that region out in full.
   if (model.startsWith("arn:aws:bedrock:")) return true;
-  if (!isBedrockEnv()) return true;
-  const region = configuredAwsRegion();
+  if (!isBedrockEnv(env)) return true;
+  const region = configuredAwsRegion(env);
   if (!region) return true;
   const family = /^([a-z0-9-]+)\.anthropic\./.exec(model.toLowerCase())?.[1];
   // `global.` profiles are published in every region checked.

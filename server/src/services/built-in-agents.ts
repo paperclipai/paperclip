@@ -23,8 +23,10 @@ import { routineService } from "./routines.js";
 import { accessService } from "./access.js";
 import { listAdapterModels } from "../adapters/registry.js";
 import {
+  configuredAwsRegion,
   isBedrockModelId,
   isBedrockModelUsableInConfiguredRegion,
+  type BedrockEnv,
 } from "@paperclipai/adapter-claude-local/server";
 
 export type BuiltInAgentStatus = "not_provisioned" | "pending_approval" | "needs_setup" | "ready" | "paused";
@@ -800,6 +802,18 @@ async function resolveBuiltInAgentProvisionInput(
   return { ...input, adapterConfig };
 }
 
+// The environment an agent will actually run under. The claude_local execution path spreads an
+// agent's `adapterConfig.env` over `process.env`, so an agent can name its own AWS region, and that
+// region is the one its model must resolve in.
+function adapterExecutionEnv(adapterConfig: unknown): BedrockEnv {
+  if (!isPlainRecord(adapterConfig) || !isPlainRecord(adapterConfig.env)) return process.env;
+  const overrides: BedrockEnv = {};
+  for (const [key, value] of Object.entries(adapterConfig.env)) {
+    if (typeof value === "string") overrides[key] = value;
+  }
+  return { ...process.env, ...overrides };
+}
+
 async function assertKnownBuiltInAgentModel(
   definition: BuiltInAgentDefinition,
   input: BuiltInAgentProvisionInput,
@@ -813,17 +827,21 @@ async function assertKnownBuiltInAgentModel(
   if (!model || !hasCompleteAdapterConfig(adapterType, adapterConfig)) return;
 
   const models = await listAdapterModels(adapterType);
-  if (models.length === 0 || models.some((candidate) => candidate.id === model)) return;
 
   // Bedrock model IDs are region-qualified inference profiles, and the static catalogue cannot
   // enumerate every region. The execution path already accepts any region-qualified ID, so accept
-  // one here too instead of rejecting a model that would run fine. A profile from a region family
-  // that the configured region does not publish is still rejected, because Bedrock cannot resolve it.
+  // one here too instead of rejecting a model that would run fine. Only a profile from a region
+  // family that the effective region does not publish is rejected, because Bedrock cannot resolve it.
+  //
+  // The region is checked before the catalogue, not after. The catalogue is built from this process's
+  // environment, which the agent's own `env` overrides at execution, so a listed ID is not evidence
+  // that the ID resolves where the agent will run.
   if (adapterType === "claude_local" && isBedrockModelId(model)) {
-    if (isBedrockModelUsableInConfiguredRegion(model)) return;
-    const region = process.env.AWS_REGION?.trim() || process.env.AWS_DEFAULT_REGION?.trim() || "";
+    const executionEnv = adapterExecutionEnv(adapterConfig);
+    if (isBedrockModelUsableInConfiguredRegion(model, executionEnv)) return;
+    const region = configuredAwsRegion(executionEnv);
     throw unprocessable(
-      `Model "${model}" is a Bedrock inference profile for a different region, and this deployment uses ${region}.`,
+      `Model "${model}" is a Bedrock inference profile for a different region, and this agent runs in ${region}.`,
       {
         code: "built_in_agent_model_region_mismatch",
         key: definition.key,
@@ -834,6 +852,8 @@ async function assertKnownBuiltInAgentModel(
       },
     );
   }
+
+  if (models.length === 0 || models.some((candidate) => candidate.id === model)) return;
 
   throw unprocessable(`Model "${model}" is not available for adapter ${adapterType}.`, {
     code: "built_in_agent_model_unknown",

@@ -197,6 +197,22 @@ describe("adapter model listing", () => {
       expect(isBedrockModelUsableInConfiguredRegion("claude-sonnet-5")).toBe(false);
     });
 
+    it("judges an explicit env instead of process.env", () => {
+      process.env.CLAUDE_CODE_USE_BEDROCK = "1";
+      process.env.AWS_REGION = "us-east-1";
+
+      // An agent's adapterConfig.env overlays process.env at execution, so the caller passes the
+      // environment the model will run under.
+      const agentEnv = { ...process.env, AWS_REGION: "eu-west-1" };
+      expect(isBedrockModelUsableInConfiguredRegion("eu.anthropic.claude-sonnet-5", agentEnv)).toBe(true);
+      expect(isBedrockModelUsableInConfiguredRegion("us.anthropic.claude-opus-4-6-v1", agentEnv)).toBe(false);
+
+      // An env that turns Bedrock off carries no region evidence at all.
+      expect(
+        isBedrockModelUsableInConfiguredRegion("eu.anthropic.claude-sonnet-5", { AWS_REGION: "us-east-1" }),
+      ).toBe(true);
+    });
+
     it("reads AWS_DEFAULT_REGION when AWS_REGION is unset", () => {
       process.env.CLAUDE_CODE_USE_BEDROCK = "1";
       process.env.AWS_DEFAULT_REGION = "eu-west-1";
