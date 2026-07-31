@@ -262,6 +262,8 @@ Fields:
   - One installed connector configuration (a provider MAY be installed multiple times per
     company, e.g. two Jira sites).
 - `companyId`, `projectId`, `goalId`, `issueId` (strings; `issueId` is the linked Paperclip issue)
+- `handoffHistory` (list of `{issueId, endedAt, cause}`; empty for a link that has never moved)
+  - Prior Paperclip issue associations retained when reopened work is handed to a follow-up.
 - `externalWorkspaceId`, `externalProjectId` (strings or null)
   - Provider container coordinates (team/project/board/database).
 - `externalTaskId`, `externalKey`, `externalUrl`
@@ -609,10 +611,16 @@ When the external task changes category:
   pending review/approval, and no blockers exist.
 - `terminal -> active` (reopen): if the linked issue is terminal, policy chooses between creating a
   follow-up Paperclip issue linked to the same external task (RECOMMENDED default) or reopening,
-  subject to host rules for resuming closed issues. Before a follow-up link becomes active, the
-  connector MUST transition the original link to `unlinked`. This handoff MUST be serialized and
-  retry-safe so the link-key invariant in Section 4.1.3 is never violated. The original link record
-  remains available for audit.
+  subject to host rules for resuming closed issues. The connector MUST create or find the follow-up
+  with a stable idempotency key while the existing link remains active. After the follow-up is
+  durably identified, it retargets that same `TaskLink` record to the follow-up and appends the old
+  `issueId` to `handoffHistory` in one record update. On the current plugin SDK, this is one
+  `ctx.entities.upsert` of the entity keyed by the external task, not an unlink plus a second entity
+  write; inbound processing is already serialized per task (Section 7.1.1). A crash before the
+  upsert leaves the old link active, and a retry reuses the idempotent follow-up. A crash after it
+  leaves the retargeted link active. This preserves the link-key invariant in Section 4.1.3 without
+  requiring a multi-record transaction, while `handoffHistory` retains the original association
+  for audit.
 
 External transitions MUST NOT directly set Paperclip issue status; they translate into host-level
 requests that respect checkout, approvals, blockers, budget stops, and execution policy.
@@ -1012,9 +1020,9 @@ on external_state_change(task) where link.runMode == symphony_compatible:
   issue = host.issue(link.issueId)
   if category == active and issue.status in {done, cancelled}:
       if reopen_policy == follow_up:
-          links.mark_unlinked(link, cause=reopen_handoff)       # serialized, retry-safe
-          issue = host.create_follow_up(issue, inherit_workspace=true)
-          link = links.create(task, issue, originSide=external) # new active link
+          issue = host.create_or_get_follow_up(
+              issue, inherit_workspace=true, idempotency_key=stable_key(task))
+          link = links.retarget(link, issue)  # one entity upsert: new issueId + handoffHistory
       else:
           issue = host.request_resume(issue)                    # normal host resume rules
   if category == active and issue.status == backlog:
