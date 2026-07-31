@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { inferIssueToolRequirements } from "../services/issue-capability-routing.ts";
 
 /**
- * Regression cover for 2026-07-25.
+ * Regression cover for 2026-07-25 (fences) + TSMC-18607 (prose demotion).
  *
  * `stripCodeFences` existed in issue-capability-routing.ts but was never called, so keyword
  * routing matched the RAW body — including quoted tool output. Any issue that merely QUOTED
@@ -17,9 +17,9 @@ import { inferIssueToolRequirements } from "../services/issue-capability-routing
  * silently overriding the caller's deliberate owner choice. Filing the bug report about it
  * took five attempts, because quoting these rules trips these rules.
  *
- * The distinction under test: text INSIDE a fence is data and must not route; the identical
- * text OUTSIDE a fence is intent and must still route. Both directions are asserted, so this
- * cannot be "fixed" by simply disabling the signal.
+ * Fences close the quoted-data half. TSMC-18607 demotes bare prose mentions of the same
+ * tokens to soft suggestions — so an unfenced Designer-Media *mention* is no longer a hard
+ * require either. Hard requires stay on explicit intent prefixes and labels only.
  */
 describe("issue capability routing — fenced code blocks are data, not routing intent", () => {
   it("does NOT require media toolsets for an agent name quoted inside a code fence", () => {
@@ -39,25 +39,32 @@ describe("issue capability routing — fenced code blocks are data, not routing 
 
     expect(result.requiresMediaTools).toBe(false);
     expect(result.requiredToolsets).toEqual([]);
+    expect(result.suggestsMediaTools).toBe(false);
+    expect(result.suggestedToolsets).toEqual([]);
   });
 
-  it("still requires media toolsets when the same name appears OUTSIDE a fence", () => {
+  it("bare Designer-Media outside a fence is a SOFT suggestion only (TSMC-18607)", () => {
     const result = inferIssueToolRequirements({
       title: "Produce the launch tiles",
       description: "Hand this to Designer-Media to generate the artwork.",
     });
 
-    expect(result.requiresMediaTools).toBe(true);
-    expect(result.requiredToolsets).toContain("image_gen");
+    // Pre-18607 this hard-required; post-18607 prose mentions must not 422 deliberate assignees.
+    expect(result.requiresMediaTools).toBe(false);
+    expect(result.requiredToolsets).toEqual([]);
+    expect(result.suggestsMediaTools).toBe(true);
+    expect(result.suggestedToolsets).toContain("image_gen");
+    expect(result.suggestedSignals.image_gen).toContain("mention:media_specialist");
   });
 
-  it("still honours an explicit toolset request outside a fence", () => {
+  it("still hard-requires on an explicit toolset request outside a fence", () => {
     const result = inferIssueToolRequirements({
       title: "Thumbnail pass",
       description: "requires: image_gen",
     });
 
     expect(result.requiredToolsets).toContain("image_gen");
+    expect(result.requiresMediaTools).toBe(true);
   });
 
   it("does not route on an explicit toolset request that is only quoted as an example", () => {
@@ -76,5 +83,6 @@ describe("issue capability routing — fenced code blocks are data, not routing 
     });
 
     expect(result.requiredToolsets).toEqual([]);
+    expect(result.suggestedToolsets).toEqual([]);
   });
 });

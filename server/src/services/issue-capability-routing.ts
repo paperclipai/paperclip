@@ -57,6 +57,13 @@ function addSignal(
   map.set(toolset, existing);
 }
 
+function signalsRecord(map: Map<RequiredIssueToolset, Set<string>>): Record<RequiredIssueToolset, string[]> {
+  return {
+    image_gen: [...(map.get("image_gen") ?? [])].sort(),
+    video_gen: [...(map.get("video_gen") ?? [])].sort(),
+  };
+}
+
 export type RequiredIssueToolset = "image_gen" | "video_gen";
 
 export interface IssueCapabilityRoutingInput {
@@ -67,9 +74,17 @@ export interface IssueCapabilityRoutingInput {
 }
 
 export interface IssueToolRequirements {
+  /** Hard requirements that 422 a deliberate non-capable assignee. */
   requiredToolsets: RequiredIssueToolset[];
   matchedSignals: Record<RequiredIssueToolset, string[]>;
   requiresMediaTools: boolean;
+  /**
+   * Soft prose/mention signals. Used for ranking/suggestion only — never force a 422.
+   * Bare `image_gen` / Designer-Media / "generate an image" prose lands here (TSMC-18607).
+   */
+  suggestedToolsets: RequiredIssueToolset[];
+  suggestedSignals: Record<RequiredIssueToolset, string[]>;
+  suggestsMediaTools: boolean;
 }
 
 export interface AgentCapabilityRoutingInput {
@@ -87,8 +102,27 @@ export interface NormalizedAgentToolCapabilities {
   isMediaSpecialist: boolean;
 }
 
+/**
+ * Infer hard tool requirements vs soft suggestions from issue text.
+ *
+ * Hard (422 on deliberate non-capable assignee):
+ *   - explicit intent prefixes: requires:/needs:/toolset:/required-skill: + image_gen|video_gen
+ *   - labels that name a media toolset/specialist (deliberate tags)
+ *
+ * Soft (suggestion only — does NOT 422):
+ *   - bare prose mentions of image_gen / video_gen / Designer-Media / grok-imagine
+ *   - bare "generate/create/render/edit an image|video" phrasing
+ *
+ * Fenced code blocks are stripped first (quoted data is not intent). Routine executions
+ * only honour explicit-intent body signals (labels still apply).
+ *
+ * Proven 2026-07-25/31: RCAs, postmortems, routing-guard cards, and recovery issues that
+ * merely DISCUSS media lanes were force-routed and 422'd non-media assignees. Half-closed
+ * by stripCodeFences; TSMC-18607 closes the prose half.
+ */
 export function inferIssueToolRequirements(input: IssueCapabilityRoutingInput): IssueToolRequirements {
-  const toolSignals = new Map<RequiredIssueToolset, Set<string>>();
+  const hardSignals = new Map<RequiredIssueToolset, Set<string>>();
+  const softSignals = new Map<RequiredIssueToolset, Set<string>>();
   const title = normalizeText(input.title);
   const description = normalizeText(input.description);
   // Strip fenced code blocks before keyword matching. stripCodeFences was written for exactly
@@ -105,57 +139,68 @@ export function inferIssueToolRequirements(input: IssueCapabilityRoutingInput): 
     .map((label) => label.trim())
     .filter((label) => label.length > 0);
 
+  // --- HARD: explicit intent prefixes only ---------------------------------
   if (/\b(?:requires|needs|toolset|required[-_\s]?skill)[:\s_-]+image[_ -]?gen\b/.test(body)) {
-    addSignal(toolSignals, "image_gen", "keyword:image_gen");
+    addSignal(hardSignals, "image_gen", "keyword:image_gen");
   }
   if (/\b(?:requires|needs|toolset|required[-_\s]?skill)[:\s_-]+video[_ -]?gen\b/.test(body)) {
-    addSignal(toolSignals, "video_gen", "keyword:video_gen");
+    addSignal(hardSignals, "video_gen", "keyword:video_gen");
   }
+
+  // --- SOFT: bare prose mentions (never 422 a deliberate assignee) ---------
+  // TSMC-18607: discussing media work on an RCA/postmortem/routing card must not force-route.
   if (!explicitOnlyForRoutineDispatch) {
     if (/\bimage[_ -]?gen\b/.test(body)) {
-      addSignal(toolSignals, "image_gen", "keyword:image_gen");
+      // Only soft when the same token was not already claimed as hard via explicit prefix.
+      if (!(hardSignals.get("image_gen")?.has("keyword:image_gen"))) {
+        addSignal(softSignals, "image_gen", "mention:image_gen");
+      }
     }
     if (/\bvideo[_ -]?gen\b/.test(body)) {
-      addSignal(toolSignals, "video_gen", "keyword:video_gen");
+      if (!(hardSignals.get("video_gen")?.has("keyword:video_gen"))) {
+        addSignal(softSignals, "video_gen", "mention:video_gen");
+      }
     }
     if (/\b(?:grok-imagine|designer[-_\s]?media)\b/.test(body)) {
-      addSignal(toolSignals, "image_gen", "keyword:media_specialist");
-      addSignal(toolSignals, "video_gen", "keyword:media_specialist");
+      addSignal(softSignals, "image_gen", "mention:media_specialist");
+      addSignal(softSignals, "video_gen", "mention:media_specialist");
     }
     if (/\b(?:generate|create|render|edit)\s+(?:an?\s+)?image\b/.test(body)) {
-      addSignal(toolSignals, "image_gen", "keyword:generate_image");
+      addSignal(softSignals, "image_gen", "mention:generate_image");
     }
     if (/\b(?:generate|create|render|edit)\s+(?:an?\s+)?video\b/.test(body)) {
-      addSignal(toolSignals, "video_gen", "keyword:generate_video");
+      addSignal(softSignals, "video_gen", "mention:generate_video");
     }
   }
 
+  // --- HARD: labels are deliberate tags ------------------------------------
   for (const labelName of labelNames) {
     const normalized = normalizeText(labelName);
     if (
       /\b(?:image[_ -]?gen|needs[:/_-]?image[_ -]?gen|requires[:/_-]?image[_ -]?gen|required[-_\s]?skill[:/_-]?image[_ -]?gen)\b/.test(normalized)
     ) {
-      addSignal(toolSignals, "image_gen", `label:${labelName}`);
+      addSignal(hardSignals, "image_gen", `label:${labelName}`);
     }
     if (
       /\b(?:video[_ -]?gen|needs[:/_-]?video[_ -]?gen|requires[:/_-]?video[_ -]?gen|required[-_\s]?skill[:/_-]?video[_ -]?gen)\b/.test(normalized)
     ) {
-      addSignal(toolSignals, "video_gen", `label:${labelName}`);
+      addSignal(hardSignals, "video_gen", `label:${labelName}`);
     }
     if (/\b(?:media|creative|grok-imagine|designer[-_\s]?media)\b/.test(normalized)) {
-      addSignal(toolSignals, "image_gen", `label:${labelName}`);
-      addSignal(toolSignals, "video_gen", `label:${labelName}`);
+      addSignal(hardSignals, "image_gen", `label:${labelName}`);
+      addSignal(hardSignals, "video_gen", `label:${labelName}`);
     }
   }
 
-  const requiredToolsets = [...toolSignals.keys()].sort();
+  const requiredToolsets = [...hardSignals.keys()].sort() as RequiredIssueToolset[];
+  const suggestedToolsets = [...softSignals.keys()].sort() as RequiredIssueToolset[];
   return {
     requiredToolsets,
-    matchedSignals: {
-      image_gen: [...(toolSignals.get("image_gen") ?? [])],
-      video_gen: [...(toolSignals.get("video_gen") ?? [])],
-    },
+    matchedSignals: signalsRecord(hardSignals),
     requiresMediaTools: requiredToolsets.length > 0,
+    suggestedToolsets,
+    suggestedSignals: signalsRecord(softSignals),
+    suggestsMediaTools: suggestedToolsets.length > 0,
   };
 }
 
@@ -234,8 +279,12 @@ export function compareAgentsByIssueToolRequirements(
   const rightExplicitScore = rightCapabilities.matchedSignals.some((signal) => signal.startsWith("toolset:")) ? 0 : 1;
   if (leftExplicitScore !== rightExplicitScore) return leftExplicitScore - rightExplicitScore;
 
-  const leftCoverage = requirements.requiredToolsets.filter((toolset) => leftCapabilities.toolsets.includes(toolset)).length;
-  const rightCoverage = requirements.requiredToolsets.filter((toolset) => rightCapabilities.toolsets.includes(toolset)).length;
+  // Prefer hard-requirement coverage first, then soft-suggestion coverage for ranking only.
+  const rankingToolsets = requirements.requiredToolsets.length > 0
+    ? requirements.requiredToolsets
+    : requirements.suggestedToolsets;
+  const leftCoverage = rankingToolsets.filter((toolset) => leftCapabilities.toolsets.includes(toolset)).length;
+  const rightCoverage = rankingToolsets.filter((toolset) => rightCapabilities.toolsets.includes(toolset)).length;
   if (leftCoverage !== rightCoverage) return rightCoverage - leftCoverage;
 
   return left.name.localeCompare(right.name) || left.id.localeCompare(right.id);
