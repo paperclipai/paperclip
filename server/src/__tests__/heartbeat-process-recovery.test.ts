@@ -1174,6 +1174,29 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       requireBoardApprovalForNewAgents: false,
     });
 
+    let defaultEnvironmentId = input?.defaultEnvironmentId ?? null;
+    if (defaultEnvironmentId) {
+      const existingLocalEnvironment = await db
+        .select({ id: environments.id })
+        .from(environments)
+        .where(eq(environments.driver, "local"))
+        .then((rows) => rows[0] ?? null);
+      if (existingLocalEnvironment) {
+        defaultEnvironmentId = existingLocalEnvironment.id;
+      } else {
+        await db.insert(environments).values({
+          id: defaultEnvironmentId,
+          name: "Local",
+          driver: "local",
+          status: "active",
+          config: {},
+          metadata: null,
+          createdAt: now,
+          updatedAt: now,
+        });
+      }
+    }
+
     await db.insert(agents).values({
       id: agentId,
       companyId,
@@ -1188,7 +1211,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
           maxConcurrentRuns: 1,
         },
       },
-      defaultEnvironmentId: input?.defaultEnvironmentId ?? null,
+      defaultEnvironmentId,
       permissions: {},
     });
 
@@ -2390,17 +2413,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
           maxConcurrentRuns: 1,
         },
       },
-    });
-    await db.insert(environments).values({
-      id: environmentId,
-      companyId,
-      name: "Local",
-      driver: "local",
-      status: "active",
-      config: {},
-      metadata: null,
-      createdAt: new Date("2026-03-19T00:00:00.000Z"),
-      updatedAt: new Date("2026-03-19T00:00:00.000Z"),
     });
     const heartbeat = heartbeatService(db);
 

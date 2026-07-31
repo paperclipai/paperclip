@@ -3745,6 +3745,50 @@ async function countBlockedInboxIssues(dbOrTx: any, companyId: string, filters?:
   }, 0);
 }
 
+type InboxArchiveAttributionRow = {
+  issueId: string;
+  archivedAt: Date;
+  archivedByActorType: "user" | "agent";
+  archivedByAgentId: string | null;
+  archivedByRunId: string | null;
+};
+
+async function inboxArchiveRowsForIssues(
+  dbOrTx: Db,
+  companyId: string,
+  userId: string,
+  issueIds: string[],
+): Promise<InboxArchiveAttributionRow[]> {
+  if (issueIds.length === 0) return [];
+  return dbOrTx
+    .select({
+      issueId: issueInboxArchives.issueId,
+      archivedAt: issueInboxArchives.archivedAt,
+      archivedByActorType: issueInboxArchives.archivedByActorType,
+      archivedByAgentId: issueInboxArchives.archivedByAgentId,
+      archivedByRunId: issueInboxArchives.archivedByRunId,
+    })
+    .from(issueInboxArchives)
+    .where(and(
+      eq(issueInboxArchives.companyId, companyId),
+      eq(issueInboxArchives.userId, userId),
+      inArray(issueInboxArchives.issueId, issueIds),
+    ));
+}
+
+function activeInboxArchiveFields(
+  archive: InboxArchiveAttributionRow | undefined,
+  lastActivityAt: Date,
+) {
+  if (!archive || archive.archivedAt.getTime() < lastActivityAt.getTime()) return {};
+  return {
+    archivedAt: archive.archivedAt,
+    archivedByActorType: archive.archivedByActorType,
+    archivedByAgentId: archive.archivedByAgentId,
+    archivedByRunId: archive.archivedByRunId,
+  };
+}
+
 export function issueService(db: Db) {
   const instanceSettings = instanceSettingsService(db);
   const treeControlSvc = issueTreeControlService(db);

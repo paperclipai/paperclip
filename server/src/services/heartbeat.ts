@@ -44,6 +44,7 @@ import {
   documentAnnotationComments,
   documentAnnotationThreads,
   documentRevisions,
+  environmentLeases,
   issueDocuments,
   executionWorkspaces,
   heartbeatRunEvents,
@@ -324,6 +325,8 @@ const PAPERCLIP_WAKE_PAYLOAD_KEY = "paperclipWake";
 const PAPERCLIP_AGENT_MESSAGE_KEY = "paperclipAgentMessage";
 const PAPERCLIP_HARNESS_CHECKOUT_KEY = "paperclipHarnessCheckedOut";
 const DETACHED_PROCESS_ERROR_CODE = "process_detached";
+const ORPHANED_RUN_DURABLE_ACTIVITY_GRACE_MS = 5 * 60 * 1000;
+const ORPHANED_RUN_SILENCE_SWEEP_THRESHOLD_MS = 15 * 60 * 1000;
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_INLINE_WAKE_COMMENTS = 8;
@@ -4764,23 +4767,6 @@ export function stripPaperclipSessionMetadataFromSessionParams(
   return next;
 }
 
-function mergePaperclipSessionMetadataIntoSessionParams(input: {
-  sessionParams: Record<string, unknown> | null | undefined;
-  metadataSource: Record<string, unknown> | null | undefined;
-}) {
-  const normalized = normalizeSessionParams(input.sessionParams);
-  const source = input.metadataSource;
-  if (!source) return normalized;
-  const next = { ...(normalized ?? {}) };
-  let changed = false;
-  for (const key of PAPERCLIP_SESSION_METADATA_KEYS) {
-    if (!(key in source)) continue;
-    next[key] = source[key];
-    changed = true;
-  }
-  return changed ? next : normalized;
-}
-
 export function resolveTaskSessionConfigFreshness(input: {
   hasTaskSession: boolean;
   configuredModel: string | null;
@@ -5907,7 +5893,16 @@ async function terminateHeartbeatRunProcess(input: {
 function buildProcessLossMessage(run: {
   processPid: number | null;
   processGroupId: number | null;
-}, options?: { descendantOnly?: boolean }) {
+}, options?: { descendantOnly?: boolean; forcedStop?: boolean; leaseLessBeforeStart?: boolean }) {
+  if (options?.leaseLessBeforeStart) {
+    return "Process lost -- run never acquired an environment lease before exceeding the orphan-silence threshold";
+  }
+  if (options?.forcedStop && run.processPid) {
+    return `Process lost -- stale silent child pid ${run.processPid} exceeded the orphan-silence threshold and was terminated`;
+  }
+  if (options?.forcedStop && run.processGroupId) {
+    return `Process lost -- stale silent process group ${run.processGroupId} exceeded the orphan-silence threshold and was terminated`;
+  }
   if (options?.descendantOnly && run.processGroupId) {
     return `Process lost -- parent pid ${run.processPid ?? "unknown"} exited, but descendant process group ${run.processGroupId} was still alive and was terminated`;
   }
@@ -5918,6 +5913,20 @@ function buildProcessLossMessage(run: {
     return `Process lost -- process group ${run.processGroupId} is no longer running`;
   }
   return "Process lost -- server may have restarted";
+}
+
+function orphanedRunDurableActivityAt(run: Pick<
+  typeof heartbeatRuns.$inferSelect,
+  "lastOutputAt" | "updatedAt" | "startedAt" | "createdAt"
+>) {
+  return run.lastOutputAt ?? run.updatedAt ?? run.startedAt ?? run.createdAt;
+}
+
+function orphanedRunSilenceAgeMs(
+  run: Pick<typeof heartbeatRuns.$inferSelect, "lastOutputAt" | "updatedAt" | "startedAt" | "createdAt">,
+  now: Date,
+) {
+  return Math.max(0, now.getTime() - orphanedRunDurableActivityAt(run).getTime());
 }
 
 function readHotRestartAdoptionMetadata(resultJson: Record<string, unknown> | null | undefined) {
@@ -6106,6 +6115,23 @@ function normalizeResumeParamsForAdapter(
   if (!requiresCanonicalSessionIds(adapterType)) return normalized;
   const sessionId = readNonEmptyString(normalized.sessionId);
   return isCanonicalSessionIdForAdapter(adapterType, sessionId) ? normalized : null;
+}
+
+function mergePaperclipSessionMetadataIntoSessionParams(input: {
+  sessionParams: Record<string, unknown> | null | undefined;
+  metadataSource: Record<string, unknown> | null | undefined;
+}) {
+  const normalized = normalizeSessionParams(input.sessionParams);
+  const source = input.metadataSource;
+  if (!source) return normalized;
+  const next = { ...(normalized ?? {}) };
+  let changed = false;
+  for (const key of PAPERCLIP_SESSION_METADATA_KEYS) {
+    if (!(key in source)) continue;
+    next[key] = source[key];
+    changed = true;
+  }
+  return changed ? next : normalized;
 }
 
 export function resolveNextSessionState(input: {
@@ -7262,9 +7288,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     issueId: string;
     agentId: string;
     now: Date;
-    currentRun: typeof heartbeatRuns.$inferSelect;
   }) {
-    const queriedRuns = await db
+    const recentRuns = await db
       .select({
         id: heartbeatRuns.id,
         status: heartbeatRuns.status,
@@ -7284,14 +7309,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       )
       .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
       .limit(ISSUE_MONITOR_FAILED_DISPATCH_STREAK_LOOKBACK_LIMIT);
-
-    // Release may run inside the transaction that finalized the current run,
-    // so the service-level query cannot always observe it yet. Seed the sample
-    // from the finalized run object and de-duplicate the database result.
-    const recentRuns = [
-      input.currentRun,
-      ...queriedRuns.filter((row) => row.id !== input.currentRun.id),
-    ].slice(0, ISSUE_MONITOR_FAILED_DISPATCH_STREAK_LOOKBACK_LIMIT);
 
     const sampleRunIds = recentRuns.map((row) => row.id);
     const progressRows = await db
@@ -7323,24 +7340,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         .limit(1)
       : [];
 
-    if (newInputRows.length > 0) return 1;
-
+    if (newInputRows.length > 0) return 0;
     const runIdsWithIssueProgress = new Set(
       progressRows
         .map((row) => row.runId)
         .filter((runId): runId is string => Boolean(runId)),
     );
-    let streak = 0;
-    for (const row of recentRuns) {
-      const wakeReason = readNonEmptyString(parseObject(row.contextSnapshot).wakeReason);
-      // Unrelated issue wakes can interleave with monitor dispatches. They neither
-      // extend nor reset the monitor-specific failure streak.
-      if (wakeReason !== "issue_monitor_due") continue;
-      if (row.status !== "failed" || runIdsWithIssueProgress.has(row.id)) break;
-      streak += 1;
+    let consecutiveFailures = 0;
+    for (const run of recentRuns) {
+      if (!run.finishedAt) break;
+      if (readNonEmptyString(parseObject(run.contextSnapshot).wakeReason) !== "issue_monitor_due") break;
+      if (!UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES.includes(
+        run.status as (typeof UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES)[number],
+      )) break;
+      if (runIdsWithIssueProgress.has(run.id)) break;
+      if (classifyAdapterFailureForRecovery(run, input.now)?.kind === "configuration_incomplete") break;
+      consecutiveFailures += 1;
     }
-
-    return Math.max(1, streak);
+    return consecutiveFailures;
   }
 
   async function resolveFailedIssueMonitorRearmAt(input: {
@@ -7370,7 +7387,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       issueId: input.issue.id,
       agentId: input.run.agentId,
       now: input.now,
-      currentRun: input.run,
     });
     return new Date(
       input.now.getTime() + computeIssueMonitorFailedDispatchBackoffDelayMs(consecutiveFailures),
@@ -7957,8 +7973,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             }
           : {
               identifier: claimed.identifier,
-              previousNextCheckAt: scheduledAtIso,
-              rearmedNextCheckAt:
+            previousNextCheckAt: scheduledAtIso,
+            rearmedNextCheckAt:
                 "monitorNextCheckAt" in issueMonitorPatch && issueMonitorPatch.monitorNextCheckAt instanceof Date
                   ? issueMonitorPatch.monitorNextCheckAt.toISOString()
                   : null,
@@ -9253,6 +9269,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               eq(agentWakeupRequests.companyId, issue.companyId),
               eq(agentWakeupRequests.agentId, run.agentId),
               inArray(agentWakeupRequests.status, ["queued", "deferred_issue_execution", "claimed"]),
+              sql`(${agentWakeupRequests.runId} is null or ${agentWakeupRequests.runId} <> ${run.id})`,
               sql`(
                 ${agentWakeupRequests.payload} ->> 'issueId' = ${issue.id}
                 or ${agentWakeupRequests.payload} ->> 'taskId' = ${issue.id}
@@ -9400,6 +9417,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       hasActiveRoutineContinuation: Boolean(activeRoutineContinuation),
       budgetBlocked: Boolean(budgetBlock),
       idempotentWakeExists: Boolean(existingWake),
+      enforceSettleWindow: false,
     });
 
     if (isSuccessfulRunHandoffValidPathSkip(decision) && issue) {
@@ -12464,6 +12482,49 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     issueId: string,
     staleness: Extract<QueuedRunStaleness, { stale: true }>,
   ) {
+    const readCurrentStaleWakeTargetAgentId = async () => {
+      const issue = await db
+        .select({
+          assigneeAgentId: issues.assigneeAgentId,
+          status: issues.status,
+          executionState: issues.executionState,
+        })
+        .from(issues)
+        .where(and(eq(issues.companyId, run.companyId), eq(issues.id, issueId)))
+        .then((rows) => rows[0] ?? null);
+      if (!issue) return null;
+
+      if (issue.status === "in_review") {
+        const executionState = parseIssueExecutionState(issue.executionState);
+        const currentParticipant = executionState?.status === "pending"
+          ? executionState.currentParticipant
+          : null;
+        if (currentParticipant?.type === "agent") {
+          return currentParticipant.agentId ?? null;
+        }
+      }
+
+      return issue.assigneeAgentId ?? null;
+    };
+    const enqueueCurrentIssueWake = async (targetAgentId: string | null) => {
+      if (!targetAgentId) return;
+      await enqueueWakeup(targetAgentId, {
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_assigned",
+        payload: {
+          issueId,
+          staleQueuedRunId: run.id,
+          staleQueuedRunErrorCode: staleness.errorCode,
+        },
+        contextSnapshot: {
+          issueId,
+          wakeReason: "issue_assigned",
+          staleQueuedRunId: run.id,
+          staleQueuedRunErrorCode: staleness.errorCode,
+        },
+      });
+    };
     const now = new Date();
     const cancelled = await setRunStatus(run.id, "cancelled", {
       finishedAt: now,
@@ -12509,34 +12570,32 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       payload: staleness.details,
     });
 
-    if (staleness.errorCode === "issue_assignee_changed") {
-      const successorAgentId = readNonEmptyString(staleness.details.currentAssigneeAgentId);
-      if (successorAgentId) {
-        await enqueueWakeup(successorAgentId, {
-          source: "automation",
-          triggerDetail: "system",
-          reason: "issue_assigned",
-          payload: {
-            issueId,
-            staleQueuedRunId: run.id,
-            staleQueuedRunErrorCode: staleness.errorCode,
-          },
-          contextSnapshot: {
-            issueId,
+    switch (staleness.errorCode) {
+      case "issue_not_found":
+      case "issue_terminal_status":
+        break;
+      case "issue_assignee_changed":
+        await enqueueCurrentIssueWake(readNonEmptyString(staleness.details.currentAssigneeAgentId) ?? null);
+        break;
+      case "issue_not_in_progress":
+      case "issue_review_participant_changed":
+      case "issue_continuation_waiting_on_review":
+        await enqueueCurrentIssueWake(await readCurrentStaleWakeTargetAgentId());
+        break;
+      case "issue_execution_lock_changed": {
+        const agent = await getAgent(run.agentId);
+        if (agent) {
+          await scheduleBoundedRetryForRun(cancelled, agent, {
+            retryReason: "issue_execution_lock_changed",
             wakeReason: "issue_assigned",
-            staleQueuedRunId: run.id,
-            staleQueuedRunErrorCode: staleness.errorCode,
-          },
-        });
+            delayMs: 1_000,
+          });
+        }
+        break;
       }
-    } else if (staleness.errorCode === "issue_execution_lock_changed") {
-      const agent = await getAgent(run.agentId);
-      if (agent) {
-        await scheduleBoundedRetryForRun(cancelled, agent, {
-          retryReason: "issue_execution_lock_changed",
-          wakeReason: "issue_assigned",
-          delayMs: 1_000,
-        });
+      default: {
+        const exhaustiveCheck: never = staleness.errorCode;
+        return exhaustiveCheck;
       }
     }
 
@@ -12826,9 +12885,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .then((rows) => rows[0] ?? null);
   }
 
-  async function reapOrphanedRuns(opts?: { staleThresholdMs?: number }) {
+  async function reapOrphanedRuns(opts?: { staleThresholdMs?: number; now?: Date }) {
     const staleThresholdMs = opts?.staleThresholdMs ?? 0;
-    const now = new Date();
+    const now = opts?.now ?? new Date();
+    const durableActivityGraceMs = staleThresholdMs > 0
+      ? staleThresholdMs
+      : ORPHANED_RUN_DURABLE_ACTIVITY_GRACE_MS;
+    const orphanSilenceSweepThresholdMs = Math.max(
+      ORPHANED_RUN_SILENCE_SWEEP_THRESHOLD_MS,
+      staleThresholdMs,
+    );
 
     // Find all runs stuck in "running" state (queued runs are legitimately waiting; resumeQueuedRuns handles them)
     const activeRuns = await db
@@ -12836,6 +12902,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         run: heartbeatRuns,
         adapterType: agents.adapterType,
         adapterConfig: agents.adapterConfig,
+        agentStatus: agents.status,
       })
       .from(heartbeatRuns)
       .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
@@ -12862,10 +12929,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         issue.monitorNextCheckAt,
       ]),
     );
+    const activeRunIds = activeRuns.map(({ run }) => run.id);
+    const activeLeaseRunIds = activeRunIds.length > 0
+      ? new Set(
+        (await db
+          .select({ runId: environmentLeases.heartbeatRunId })
+          .from(environmentLeases)
+          .where(and(
+            inArray(environmentLeases.heartbeatRunId, activeRunIds),
+            eq(environmentLeases.status, "active"),
+          )))
+          .map((row) => row.runId),
+      )
+      : new Set<string>();
 
     const reaped: string[] = [];
 
-    for (const { run, adapterType, adapterConfig } of activeRuns) {
+    for (const { run, adapterType, adapterConfig, agentStatus } of activeRuns) {
       if (runningProcesses.has(run.id) || activeRunExecutions.has(run.id)) continue;
 
       // Apply staleness threshold to avoid false positives
@@ -12875,15 +12955,41 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
 
       const tracksLocalChild = isTrackedLocalChildProcessAdapter(adapterType);
-      if (tracksLocalChild && !run.processPid && !run.processGroupId) {
-        logger.warn(
-          { runId: run.id, adapterType },
-          "skipping orphan reap because local run has no process metadata to prove liveness loss",
-        );
-        continue;
+      const zeroProcessMetadata = tracksLocalChild && !run.processPid && !run.processGroupId;
+      const hasActiveEnvironmentLease = activeLeaseRunIds.has(run.id);
+      const silenceAgeMs = orphanedRunSilenceAgeMs(run, now);
+      const hasRecentDurableActivity = silenceAgeMs < durableActivityGraceMs;
+      const exceededOrphanSilenceSweepThreshold = silenceAgeMs >= orphanSilenceSweepThresholdMs;
+      if (zeroProcessMetadata) {
+        if (agentStatus === "paused") {
+          logger.warn(
+            { runId: run.id, adapterType, silenceAgeMs, hasActiveEnvironmentLease },
+            "skipping orphan reap because the owning agent is paused and process loss is not independently proven",
+          );
+          continue;
+        }
+        if (!exceededOrphanSilenceSweepThreshold) {
+          logger.warn(
+            hasRecentDurableActivity
+              ? { runId: run.id, adapterType, silenceAgeMs, durableActivityGraceMs, hasActiveEnvironmentLease }
+              : { runId: run.id, adapterType, silenceAgeMs, orphanSilenceSweepThresholdMs, hasActiveEnvironmentLease },
+            "skipping orphan reap because local run has no process metadata and silence has not crossed the orphan threshold",
+          );
+          continue;
+        }
+        if (hasActiveEnvironmentLease) {
+          logger.warn(
+            { runId: run.id, adapterType, silenceAgeMs, orphanSilenceSweepThresholdMs, hasActiveEnvironmentLease },
+            "force-releasing active environment lease for stale local run with no process metadata before orphan reap",
+          );
+        }
       }
-      const processPidAlive = tracksLocalChild && run.processPid && isProcessAlive(run.processPid);
-      const processGroupAlive = tracksLocalChild && run.processGroupId && isProcessGroupAlive(run.processGroupId);
+      const processPidAlive = Boolean(
+        tracksLocalChild && run.processPid && isProcessAlive(run.processPid),
+      );
+      const processGroupAlive = Boolean(
+        tracksLocalChild && run.processGroupId && isProcessGroupAlive(run.processGroupId),
+      );
       if (
         (processPidAlive || processGroupAlive) &&
         readHotRestartAdoptionMetadata(parseObject(run.resultJson))
@@ -12913,8 +13019,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
 
       let descendantOnlyCleanup = false;
-      if (processGroupAlive) {
-        descendantOnlyCleanup = true;
+      let forcedStopForSilence = false;
+      if (processPidAlive || processGroupAlive) {
+        descendantOnlyCleanup = !processPidAlive && processGroupAlive;
         await terminateHeartbeatRunProcess({
           pid: run.processPid,
           processGroupId: run.processGroupId,
@@ -12937,7 +13044,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         (tracksLocalChild && (!!run.processPid || !!run.processGroupId)) ||
         monitorDispatchLostWithoutFutureWake
       );
-      const baseMessage = buildProcessLossMessage(run, descendantOnlyCleanup ? { descendantOnly: true } : undefined);
+      const baseMessage = buildProcessLossMessage(
+        run,
+        zeroProcessMetadata
+          ? { leaseLessBeforeStart: true }
+          : forcedStopForSilence
+          ? { forcedStop: true }
+          : descendantOnlyCleanup
+            ? { descendantOnly: true }
+            : undefined,
+      );
       const unmanagedBackgroundTaskEvidence = descendantOnlyCleanup
         ? {
           kind: "orphaned_process_group_cleanup",
@@ -13016,7 +13132,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
 
       if (!retriedRun) {
-        await releaseIssueExecutionAndPromote(finalizedRun);
+        await releaseIssueExecutionAndPromote(finalizedRun, {
+          suppressImmediateRecovery: zeroProcessMetadata,
+        });
       }
 
       await appendRunEvent(finalizedRun, await nextRunEventSeq(finalizedRun.id), {
@@ -15562,7 +15680,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
         const issueCommentPolicyResult = await finalizeIssueCommentPolicy(livenessRun, agent);
         await releaseIssueExecutionAndPromote(livenessRun);
-        await handleRunLivenessContinuation(livenessRun);
         await handleSuccessfulRunHandoff(
           issueCommentPolicyResult.outcome === "retry_queued" || issueCommentPolicyResult.outcome === "retry_exhausted"
             ? {
@@ -15572,6 +15689,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             : livenessRun,
           agent,
         );
+        await handleRunLivenessContinuation(livenessRun);
 
         // Dependency wake re-check: if this run's issue was marked done mid-run,
         // the route-time `issue_blockers_resolved` wake may have been gated by
@@ -17870,8 +17988,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             requestedByActorId: opts.requestedByActorId ?? null,
             idempotencyKey: opts.idempotencyKey ?? null,
           })
+          .onConflictDoNothing()
           .returning()
-          .then((rows) => rows[0]);
+          .then((rows) => rows[0] ?? null);
+
+        if (!wakeupRequest) {
+          return { kind: "duplicate" as const };
+        }
 
         const newRun = await tx
           .insert(heartbeatRuns)
@@ -17905,7 +18028,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         return { kind: "queued" as const, run: newRun };
       });
 
-      if (outcome.kind === "deferred" || outcome.kind === "skipped") return null;
+      if (outcome.kind === "deferred" || outcome.kind === "skipped" || outcome.kind === "duplicate") return null;
       if (outcome.kind === "coalesced") {
         await startNextQueuedRunForAgent(agent.id);
         return outcome.run;
@@ -18044,8 +18167,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           requestedByActorId: opts.requestedByActorId ?? null,
           idempotencyKey: opts.idempotencyKey ?? null,
         })
+        .onConflictDoNothing()
         .returning()
-        .then((rows) => rows[0]);
+        .then((rows) => rows[0] ?? null);
+
+      if (!wakeupRequest) {
+        return { kind: "duplicate" as const };
+      }
 
       const newRun = await tx
         .insert(heartbeatRuns)
@@ -18075,7 +18203,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       return { kind: "queued" as const, run: newRun };
     });
 
-    if (queueOutcome.kind === "skipped") return null;
+    if (queueOutcome.kind === "skipped" || queueOutcome.kind === "duplicate") return null;
     const newRun = queueOutcome.run;
 
     publishLiveEvent({
@@ -18250,6 +18378,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     });
 
     if (cancelled) {
+      await releaseEnvironmentLeasesForRun({
+        runId: cancelled.id,
+        companyId: cancelled.companyId,
+        agentId: cancelled.agentId,
+        status: cancelled.status,
+        failureReason: cancelled.error ?? undefined,
+      });
       await appendRunEvent(cancelled, 1, {
         eventType: "lifecycle",
         stream: "system",
@@ -18273,7 +18408,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .where(and(eq(heartbeatRuns.agentId, agentId), inArray(heartbeatRuns.status, [...CANCELLABLE_HEARTBEAT_RUN_STATUSES])));
 
     for (const run of runs) {
-      await setRunStatus(run.id, "cancelled", {
+      const cancelled = await setRunStatus(run.id, "cancelled", {
         finishedAt: new Date(),
         error: reason,
         errorCode,
@@ -18285,6 +18420,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           }),
         } : {}),
       });
+      if (cancelled) {
+        await releaseEnvironmentLeasesForRun({
+          runId: cancelled.id,
+          companyId: cancelled.companyId,
+          agentId: cancelled.agentId,
+          status: cancelled.status,
+          failureReason: cancelled.error ?? undefined,
+        });
+      }
 
       await setWakeupStatus(run.wakeupRequestId, "cancelled", {
         finishedAt: new Date(),

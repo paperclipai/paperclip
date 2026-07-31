@@ -56,12 +56,7 @@ import { getRunLogStore } from "../run-log-store.js";
 import {
   DEFAULT_MAX_SUCCESSFUL_RUN_HANDOFF_ATTEMPTS,
   FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
-  SUCCESSFUL_RUN_HANDOFF_SETTLE_WINDOW_MS,
   SUCCESSFUL_RUN_MISSING_STATE_REASON,
-  buildFinishSuccessfulRunHandoffIdempotencyKey,
-  decideSuccessfulRunHandoff,
-  findExistingFinishSuccessfulRunHandoffWake,
-  isSuccessfulRunHandoffInsideSettleWindow,
   buildSuccessfulRunHandoffExhaustedNotice,
   noticeMetadataReferencesRecoveryAction,
   type SuccessfulRunHandoffNotice,
@@ -118,6 +113,10 @@ export const STRANDED_RECENT_PROGRESS_EXEMPTION_MS = Math.max(
   60_000,
   Number(process.env.STRANDED_RECENT_PROGRESS_EXEMPTION_MS) || 30 * 60 * 1000,
 );
+export const STRANDED_IN_PROGRESS_TRANSITION_GRACE_MS = Math.max(
+  60_000,
+  Number(process.env.STRANDED_IN_PROGRESS_TRANSITION_GRACE_MS) || 15 * 60 * 1000,
+);
 
 type RecoveryWakeupOptions = {
   source?: "timer" | "assignment" | "on_demand" | "automation";
@@ -148,7 +147,15 @@ type ResolvedDependencyWakeBackstopOptions = {
 
 type LatestIssueRun = Pick<
   typeof heartbeatRuns.$inferSelect,
-  "id" | "agentId" | "status" | "error" | "errorCode" | "contextSnapshot" | "livenessState" | "startedAt" | "updatedAt" | "finishedAt"
+  | "id"
+  | "agentId"
+  | "status"
+  | "error"
+  | "errorCode"
+  | "contextSnapshot"
+  | "livenessState"
+  | "startedAt"
+  | "createdAt"
 > & {
   resultJson?: unknown;
 } | null;
@@ -363,6 +370,21 @@ function didAutomaticRecoveryFail(
 function isTerminalIssueRun(latestRun: LatestIssueRun) {
   if (!latestRun) return false;
   return TERMINAL_HEARTBEAT_RUN_STATUSES.has(latestRun.status);
+}
+
+function isExecutionReviewParticipantRecoveryEligibleRun(latestRun: LatestIssueRun) {
+  if (!latestRun) return false;
+  if (UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES.includes(
+    latestRun.status as (typeof UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES)[number],
+  )) return true;
+  const context = parseObject(latestRun.contextSnapshot);
+  const wakeReason = readNonEmptyString(context.wakeReason);
+  const retryReason = readNonEmptyString(context.retryReason);
+  return (
+    wakeReason === "execution_review_requested" ||
+    wakeReason === "execution_approval_requested" ||
+    retryReason === EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON
+  );
 }
 
 const TRANSIENT_INFRA_CONTINUATION_ERROR_CODES = new Set<string>([
@@ -892,6 +914,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         updatedAt: heartbeatRuns.updatedAt,
         finishedAt: heartbeatRuns.finishedAt,
         resultJson: heartbeatRuns.resultJson,
+        createdAt: heartbeatRuns.createdAt,
       })
       .from(heartbeatRuns)
       .where(
@@ -923,6 +946,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         updatedAt: heartbeatRuns.updatedAt,
         finishedAt: heartbeatRuns.finishedAt,
         resultJson: heartbeatRuns.resultJson,
+        createdAt: heartbeatRuns.createdAt,
       })
       .from(heartbeatRuns)
       .where(
@@ -1022,6 +1046,21 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return Boolean(run || deferredWake);
   }
 
+  async function hasAnyActiveExecutionRunForAgent(companyId: string, agentId: string) {
+    return db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, companyId),
+          eq(heartbeatRuns.agentId, agentId),
+          inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]),
+        ),
+      )
+      .limit(1)
+      .then((rows) => Boolean(rows[0]));
+  }
+
   async function hasPendingWakeInteraction(companyId: string, issueId: string) {
     return db
       .select({ id: issueThreadInteractions.id })
@@ -1075,72 +1114,27 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .then((rows) => Boolean(rows[0]));
   }
 
-  async function loadLatestSuccessfulRunIdByIssue(companyId: string, issueIds: string[]) {
-    const ids = [...new Set(issueIds.filter(Boolean))];
-    if (ids.length === 0) return new Map<string, string>();
+  async function wasTodoHandedBackDuringOrAfterLatestRun(
+    issue: typeof issues.$inferSelect,
+    latestRun: LatestIssueRun,
+  ) {
+    if (issue.status !== "todo" || latestRun?.status !== "succeeded") return false;
+    const runBeganAt = latestRun.startedAt ?? latestRun.createdAt;
 
-    const issueIdFromRun = sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`;
-    const rows = await db
-      .select({
-        issueId: issueIdFromRun,
-        runId: heartbeatRuns.id,
-      })
-      .from(heartbeatRuns)
+    return db
+      .select({ id: issueRecoveryActions.id })
+      .from(issueRecoveryActions)
       .where(
         and(
-          eq(heartbeatRuns.companyId, companyId),
-          eq(heartbeatRuns.status, "succeeded"),
-          inArray(issueIdFromRun, ids),
+          eq(issueRecoveryActions.companyId, issue.companyId),
+          eq(issueRecoveryActions.sourceIssueId, issue.id),
+          eq(issueRecoveryActions.status, "resolved"),
+          eq(issueRecoveryActions.outcome, "handed_back"),
+          gte(issueRecoveryActions.resolvedAt, runBeganAt),
         ),
       )
-      .orderBy(asc(issueIdFromRun), desc(heartbeatRuns.finishedAt), desc(heartbeatRuns.id));
-
-    const latestByIssueId = new Map<string, string>();
-    for (const row of rows) {
-      if (!row.issueId || latestByIssueId.has(row.issueId)) continue;
-      latestByIssueId.set(row.issueId, row.runId);
-    }
-    return latestByIssueId;
-  }
-
-  async function readNonTerminalWakelessWakeFailureState(input: {
-    companyId: string;
-    agentId: string;
-    idempotencyKey: string;
-  }) {
-    const rows = await db
-      .select({
-        status: agentWakeupRequests.status,
-        reason: agentWakeupRequests.reason,
-        requestedAt: agentWakeupRequests.requestedAt,
-        finishedAt: agentWakeupRequests.finishedAt,
-      })
-      .from(agentWakeupRequests)
-      .where(
-        and(
-          eq(agentWakeupRequests.companyId, input.companyId),
-          eq(agentWakeupRequests.agentId, input.agentId),
-          eq(agentWakeupRequests.idempotencyKey, input.idempotencyKey),
-        ),
-      )
-      .orderBy(desc(agentWakeupRequests.requestedAt), desc(agentWakeupRequests.id));
-
-    let consecutiveFailures = 0;
-    let latestFailureAt: Date | null = null;
-    for (const row of rows) {
-      const countsTowardFailureCap =
-        row.status === "failed" || (row.status === "skipped" && row.reason === "agent.not_invokable");
-      if (!countsTowardFailureCap) break;
-      consecutiveFailures += 1;
-      if (!latestFailureAt) latestFailureAt = row.finishedAt ?? row.requestedAt ?? null;
-    }
-
-    return {
-      consecutiveFailures,
-      latestFailureAt,
-      backoffMs: consecutiveFailures > 0 ? computeNonTerminalWakelessWakeBackoffMs(consecutiveFailures) : 0,
-      exhausted: consecutiveFailures >= NON_TERMINAL_WAKELESS_WAKE_MAX_ATTEMPTS,
-    };
+      .limit(1)
+      .then((rows) => Boolean(rows[0]));
   }
 
   async function hasQueuedIssueWake(companyId: string, issueId: string, agentId?: string | null) {
@@ -1224,6 +1218,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         updatedAt: heartbeatRuns.updatedAt,
         finishedAt: heartbeatRuns.finishedAt,
         resultJson: heartbeatRuns.resultJson,
+        createdAt: heartbeatRuns.createdAt,
       })
       .from(heartbeatRuns)
       .where(
@@ -1324,59 +1319,6 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     }
 
     return queued;
-  }
-
-  async function enqueueSuccessfulRunHandoffRecovery(
-    issue: typeof issues.$inferSelect,
-    agent: typeof agents.$inferSelect,
-    latestRun: NonNullable<LatestIssueRun>,
-  ) {
-    const idempotencyKey = buildFinishSuccessfulRunHandoffIdempotencyKey({
-      issueId: issue.id,
-      sourceRunId: latestRun.id,
-    });
-    const [existingWake, hasQueuedWake, budgetBlocked] = await Promise.all([
-      findExistingFinishSuccessfulRunHandoffWake(db, {
-        companyId: issue.companyId,
-        idempotencyKey,
-      }),
-      hasQueuedIssueWake(issue.companyId, issue.id, agent.id),
-      isInvocationBudgetBlocked(issue, agent.id),
-    ]);
-
-    const decision = decideSuccessfulRunHandoff({
-      run: latestRun as any,
-      issue,
-      agent,
-      livenessState: latestRun.livenessState as any,
-      detectedProgressSummary: null,
-      finalReport: null,
-      nextAction: null,
-      taskKey: issue.id,
-      hasActiveExecutionPath: false,
-      hasQueuedWake,
-      hasPendingInteractionOrApproval: false,
-      hasPersistedMonitor: Boolean(issue.monitorNextCheckAt),
-      hasExplicitBlockerPath: false,
-      hasOpenChildPath: false,
-      hasOpenRecoveryIssue: false,
-      hasPauseHold: false,
-      hasActiveRoutineContinuation: false,
-      budgetBlocked,
-      idempotentWakeExists: Boolean(existingWake),
-    });
-    if (decision.kind !== "enqueue") return null;
-
-    return deps.enqueueWakeup(decision.targetAgentId, {
-      source: "automation",
-      triggerDetail: "system",
-      reason: FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
-      payload: decision.payload,
-      contextSnapshot: decision.contextSnapshot,
-      idempotencyKey: decision.idempotencyKey,
-      requestedByActorType: "system",
-      requestedByActorId: "recovery",
-    });
   }
 
   async function enqueueInitialAssignedTodoDispatch(issue: typeof issues.$inferSelect, agentId: string) {
@@ -4096,6 +4038,20 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         continue;
       }
 
+      if (
+        issue.status === "in_progress" &&
+        !issue.checkoutRunId &&
+        !issue.executionRunId &&
+        (
+          (issue.startedAt instanceof Date &&
+            Date.now() - issue.startedAt.getTime() < STRANDED_IN_PROGRESS_TRANSITION_GRACE_MS) ||
+          await hasAnyActiveExecutionRunForAgent(issue.companyId, agentId)
+        )
+      ) {
+        result.skipped += 1;
+        continue;
+      }
+
       let latestRun = await getLatestIssueRun(issue.companyId, issue.id);
       if (latestRun?.status === "succeeded" && await hasPersistedDurableWaitPath(issue)) {
         result.skipped += 1;
@@ -4110,33 +4066,6 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         : latestRun;
       if (hasPendingProviderQuotaRecoveryMonitor(issue, providerQuotaMonitorRun, recoveryNow)) {
         result.skipped += 1;
-        continue;
-      }
-      if (
-        latestRun?.status === "succeeded" &&
-        isProductiveContinuationRun(latestRun) &&
-        !successfulRunHandoffRecoveryEvidence(latestRun)
-      ) {
-        if (isSuccessfulRunHandoffInsideSettleWindow(latestRun)) {
-          result.skipped += 1;
-          continue;
-        }
-
-        const queued = await enqueueSuccessfulRunHandoffRecovery(issue, agent, latestRun);
-        if (queued) {
-          result.continuationRequeued += 1;
-          result.issueIds.push(issue.id);
-        } else {
-          logger.debug(
-            {
-              issueId: issue.id,
-              runId: latestRun.id,
-              settleWindowMs: SUCCESSFUL_RUN_HANDOFF_SETTLE_WINDOW_MS,
-            },
-            "Skipped delayed successful-run handoff enqueue after settle window",
-          );
-          result.skipped += 1;
-        }
         continue;
       }
       if (isStrandedIssueRecoveryIssue(issue) && isUnsuccessfulTerminalIssueRun(latestRun)) {
@@ -4178,7 +4107,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           }
           result.skipped += 1;
           continue;
-        } else {
+        } else if (adapterFailureClassification.kind === "configuration_incomplete") {
           const updated = await escalateStrandedAssignedIssue({
             issue,
             previousStatus: issue.status as StrandedPreviousStatus,
@@ -4373,6 +4302,14 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           continue;
         }
 
+        if (
+          hasTypedPendingReviewParticipant(pendingExecutionState) &&
+          !isExecutionReviewParticipantRecoveryEligibleRun(participantLatestRun)
+        ) {
+          result.skipped += 1;
+          continue;
+        }
+
         if (!agentInvokable) {
           const updated = await escalateStrandedAssignedIssue({
             issue,
@@ -4464,7 +4401,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           continue;
         }
 
-        if (latestRun.status === "succeeded") {
+        if (
+          latestRun.status === "succeeded" &&
+          !(await wasTodoHandedBackDuringOrAfterLatestRun(issue, latestRun))
+        ) {
           result.skipped += 1;
           continue;
         }

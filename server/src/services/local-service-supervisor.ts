@@ -312,7 +312,7 @@ async function adoptLocalServiceFromPortOwner(input: {
 
   if (input.cwd) {
     const ownerCwd = await readLocalServiceProcessCwd(ownerPid);
-    if (!(await isLocalServiceRegistryCwdCompatible(ownerCwd, input.cwd))) {
+    if (!ownerCwd || !(await isLocalServiceProcessInWorkspace(ownerCwd, input.cwd))) {
       return null;
     }
   }

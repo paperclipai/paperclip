@@ -62,7 +62,6 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
   });
 
   it("provisions one gateway per installed connection and mints short-lived run tokens", async () => {
-    delete process.env.PAPERCLIP_RUNTIME_API_URL;
     process.env.PAPERCLIP_API_URL = "https://paperclip.example.test";
     const [company] = await db.insert(companies).values({
       name: `Runtime MCP ${randomUUID()}`,
@@ -184,8 +183,7 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
       companyId: company!.id,
       applicationId: application!.id,
       name: "Installed MCP",
-      uid: `test/${randomUUID()}`,
-      transport: "mcp_remote",
+      transport: "remote_http",
       status: "active",
       enabled: true,
       config: { url: "https://installed.example.test/mcp" },

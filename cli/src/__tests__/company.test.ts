@@ -110,14 +110,16 @@ describe("company CLI commands", () => {
 
     expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock).toHaveBeenCalledWith(
-      expect.stringMatching(/^http:\/\/paperclip\.test\/api\/companies\/[0-9a-f-]+$/),
+      `http://paperclip.test/api/companies/${COMPANY_ID}`,
       expect.objectContaining({ method: "GET" }),
     );
     expect(JSON.parse(String(logSpy.mock.calls[0]?.[0]))).toMatchObject({ id: COMPANY_ID, name: "Paperclip" });
   });
 
-  it("gets the current company from the resolved scoped company context when no board-wide listing is needed", async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse(company()));
+  it("gets the current company from agent authentication when no company context is set", async () => {
+    fetchMock
+      .mockResolvedValueOnce(jsonResponse({ id: "agent-1", companyId: COMPANY_ID }))
+      .mockResolvedValueOnce(jsonResponse(company()));
 
     await runCommand([
       "company",
@@ -129,18 +131,23 @@ describe("company CLI commands", () => {
       "--json",
     ]);
 
-    expect(fetchMock).toHaveBeenCalledTimes(1);
     expect(fetchMock).toHaveBeenNthCalledWith(
       1,
-      expect.stringMatching(/^http:\/\/paperclip\.test\/api\/companies\/[0-9a-f-]+$/),
+      "http://paperclip.test/api/agents/me",
+      expect.objectContaining({ method: "GET" }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      2,
+      `http://paperclip.test/api/companies/${COMPANY_ID}`,
       expect.objectContaining({ method: "GET" }),
     );
     expect(JSON.parse(String(logSpy.mock.calls[0]?.[0]))).toMatchObject({ id: COMPANY_ID, name: "Paperclip" });
   });
 
-  it("lists the scoped company directly when board-wide company listing is denied", async () => {
+  it("lists the scoped agent company when board-wide company listing is denied", async () => {
     fetchMock
       .mockResolvedValueOnce(jsonResponse({ error: "Board access required" }, 403))
+      .mockResolvedValueOnce(jsonResponse({ id: "agent-1", companyId: COMPANY_ID }))
       .mockResolvedValueOnce(jsonResponse(company()));
 
     await runCommand([
@@ -153,7 +160,6 @@ describe("company CLI commands", () => {
       "--json",
     ]);
 
-    expect(fetchMock).toHaveBeenCalledTimes(2);
     expect(fetchMock).toHaveBeenNthCalledWith(
       1,
       "http://paperclip.test/api/companies",
@@ -161,7 +167,12 @@ describe("company CLI commands", () => {
     );
     expect(fetchMock).toHaveBeenNthCalledWith(
       2,
-      expect.stringMatching(/^http:\/\/paperclip\.test\/api\/companies\/[0-9a-f-]+$/),
+      "http://paperclip.test/api/agents/me",
+      expect.objectContaining({ method: "GET" }),
+    );
+    expect(fetchMock).toHaveBeenNthCalledWith(
+      3,
+      `http://paperclip.test/api/companies/${COMPANY_ID}`,
       expect.objectContaining({ method: "GET" }),
     );
     expect(JSON.parse(String(logSpy.mock.calls[0]?.[0]))).toMatchObject([{ id: COMPANY_ID, name: "Paperclip" }]);
