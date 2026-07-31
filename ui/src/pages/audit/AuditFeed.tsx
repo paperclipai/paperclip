@@ -324,7 +324,9 @@ export function AuditFeed({ companyId, lockedAgentId, hideHeader }: AuditFeedPro
       document.body.appendChild(link);
       link.click();
       link.remove();
-      URL.revokeObjectURL(url);
+      // Browsers may read blob URLs lazily after click(), so keep the URL alive
+      // long enough for the download to start.
+      window.setTimeout(() => URL.revokeObjectURL(url), 5_000);
       pushToast({ title: "Audit exported", body: "Your CSV download has started.", tone: "success" });
     } catch (error) {
       pushToast({

@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
-import { sql } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
@@ -294,7 +294,9 @@ describePostgres("agent action audit routes", () => {
   });
 
   it("exports the audit feed as CSV and logs the export action", async () => {
-    const { company } = await seed();
+    const { company, issue, comment } = await seed();
+    await db.update(issues).set({ title: "=2+2" }).where(eq(issues.id, issue.id));
+    await db.update(issueComments).set({ body: "@SUM(A1)" }).where(eq(issueComments.id, comment.id));
     const app = await createApp(db, {
       type: "board", userId: "local-board", companyIds: [company.id], source: "local_implicit", isInstanceAdmin: false,
     });
@@ -309,8 +311,9 @@ describePostgres("agent action audit routes", () => {
     );
     // Three seeded activity rows → three CSV data rows (the export reads before it logs itself).
     expect(lines).toHaveLength(4);
-    // The comment excerpt from the enriched entity is present in the export.
-    expect(response.text).toContain("A useful comment excerpt for the audit feed.");
+    // User-controlled cells are preserved as text rather than executable formulas.
+    expect(response.text).toContain("'=2+2");
+    expect(response.text).toContain("'@SUM(A1)");
 
     // The export is itself recorded as an auditable action.
     const logged = (await db.select().from(activityLog)).filter((row) => row.action === "audit.exported");

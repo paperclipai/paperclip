@@ -101,6 +101,7 @@ describe("AuditFeed", () => {
   afterEach(() => {
     flushSync(() => root?.unmount());
     container.remove();
+    vi.restoreAllMocks();
     vi.clearAllMocks();
   });
 
@@ -182,12 +183,18 @@ describe("AuditFeed", () => {
     (URL as unknown as { createObjectURL: unknown }).createObjectURL = createUrl;
     (URL as unknown as { revokeObjectURL: unknown }).revokeObjectURL = revokeUrl;
     await render();
+    const setTimeoutSpy = vi.spyOn(window, "setTimeout");
 
     await clickButton("Export CSV");
     await flushReact();
 
     expect(exportCsvMock).toHaveBeenCalledWith("company-1", expect.any(Object));
     expect(createUrl).toHaveBeenCalled();
+    expect(revokeUrl).not.toHaveBeenCalled();
+    const deferredRevoke = setTimeoutSpy.mock.calls.find(([, delay]) => delay === 5_000)?.[0];
+    expect(deferredRevoke).toEqual(expect.any(Function));
+    deferredRevoke!();
+    expect(revokeUrl).toHaveBeenCalledWith("blob:mock");
     expect(pushToastMock).toHaveBeenCalledWith(expect.objectContaining({ tone: "success" }));
   });
 });

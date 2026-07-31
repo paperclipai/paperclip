@@ -14,6 +14,7 @@ import { logActivity } from "../services/activity-log.js";
 /** Max rows a single CSV export will stream (guards against runaway exports). */
 const AUDIT_CSV_EXPORT_MAX_ROWS = 10_000;
 const AUDIT_CSV_PAGE_SIZE = 200;
+const CSV_FORMULA_CHARS = /^[=+\-@\t\r]/;
 
 const AUDIT_CSV_COLUMNS = [
   "createdAt",
@@ -34,8 +35,11 @@ const AUDIT_CSV_COLUMNS = [
 function csvCell(value: unknown): string {
   if (value === null || value === undefined) return "";
   const str = value instanceof Date ? value.toISOString() : String(value);
+  // Prevent spreadsheet applications from interpreting user-controlled cells
+  // as formulas when an operator opens the export.
+  const safe = CSV_FORMULA_CHARS.test(str) ? `'${str}` : str;
   // Quote if the value contains a delimiter, quote, or newline; escape quotes by doubling.
-  return /[",\r\n]/.test(str) ? `"${str.replaceAll('"', '""')}"` : str;
+  return /[",\r\n]/.test(safe) ? `"${safe.replaceAll('"', '""')}"` : safe;
 }
 
 function readNested(value: unknown, ...keys: string[]): string | null {
@@ -232,7 +236,7 @@ export function activityRoutes(db: Db) {
       details: {
         format: "csv",
         rowCount: rows.length,
-        truncated: rows.length >= AUDIT_CSV_EXPORT_MAX_ROWS,
+        truncated: rows.length >= AUDIT_CSV_EXPORT_MAX_ROWS && Boolean(cursor),
         filters: {
           agentId: filters.agentId ?? null,
           responsibleUserId: filters.responsibleUserId ?? null,

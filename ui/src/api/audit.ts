@@ -1,7 +1,7 @@
 import { api } from "./client";
 
 /**
- * Agent audit API client (PAP-14464, Phase 3b).
+ * Agent audit API client.
  *
  * Consumes the unified read API shipped by Phase 2c
  * (`server/src/routes/activity.ts` → `services/agent-action-audit.ts`):
