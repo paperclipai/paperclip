@@ -211,6 +211,43 @@ describeEmbeddedPostgres("issue create deduplication routes", () => {
     });
   });
 
+  it("deduplicates legacy child creates without replaying child side effects", async () => {
+    const companyId = await seedCompany();
+    const parent = await seedParent(companyId);
+    const app = createApp();
+
+    const first = await request(app)
+      .post(`/api/issues/${parent.id}/children`)
+      .send({ title: "Prepare child release", idempotencyKey: "run-3:child-release" })
+      .expect(201);
+    const replay = await request(app)
+      .post(`/api/issues/${parent.id}/children`)
+      .send({
+        title: "Different retry payload",
+        idempotencyKey: "run-3:child-release",
+        allowDuplicate: true,
+      })
+      .expect(200);
+    const titleDuplicate = await request(app)
+      .post(`/api/issues/${parent.id}/children`)
+      .send({ title: "  prepare CHILD release  " })
+      .expect(200);
+
+    expect(replay.body).toMatchObject({
+      id: first.body.id,
+      deduplicated: true,
+      deduplicationReason: "idempotency_key",
+    });
+    expect(titleDuplicate.body).toMatchObject({
+      id: first.body.id,
+      deduplicated: true,
+      deduplicationReason: "recent_open_title",
+    });
+    expect(await db.select().from(issues).where(eq(issues.parentId, parent.id))).toHaveLength(1);
+    expect(await db.select().from(activityLog).where(eq(activityLog.action, "issue.child_created")))
+      .toHaveLength(1);
+  });
+
   it("allows an explicit duplicate create", async () => {
     const companyId = await seedCompany();
     const parent = await seedParent(companyId);
