@@ -665,6 +665,7 @@ export async function startServer(): Promise<StartedServer> {
     betterAuthHandler,
     resolveSession,
     pluginWorkerManager,
+    recoveryMode: config.recoveryMode,
   });
   const server = createServer(app as unknown as Parameters<typeof createServer>[0]);
 

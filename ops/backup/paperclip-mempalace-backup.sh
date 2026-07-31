@@ -7,7 +7,7 @@ set -euo pipefail
 
 DEST_DIR="${DEST_DIR:-/var/backups/paperclip-mempalace}"
 INSTANCE_DIR="${INSTANCE_DIR:-/home/beai-agent/.paperclip/instances/default}"
-PAPERCLIP_RELEASE_DIR="${PAPERCLIP_RELEASE_DIR:-/mnt/paperclipdata/paperclip-releases/paperclip-backup-restore-authority-v1}"
+PAPERCLIP_RELEASE_DIR="${PAPERCLIP_RELEASE_DIR:-/mnt/paperclipdata/paperclip-releases/paperclip-backup-restore-authority-v2}"
 PAPERCLIP_CONFIG="${PAPERCLIP_CONFIG:-$INSTANCE_DIR/config.json}"
 LOGICAL_BACKUP_DIR="${LOGICAL_BACKUP_DIR:-$INSTANCE_DIR/data/backups}"
 STORAGE_DIR="${STORAGE_DIR:-$INSTANCE_DIR/data/storage}"
@@ -163,6 +163,12 @@ gzip -t "$LOGICAL_BACKUP"
 BACKUP_SHA256="$(sha256sum "$LOGICAL_BACKUP" | awk '{print $1}')"
 LEDGER_SHA256="$(sha256sum "$COUNT_LEDGER" | awk '{print $1}')"
 BACKUP_SIZE_BYTES="$(stat -c %s "$LOGICAL_BACKUP")"
+CONFIG_SHA256="$(sha256sum "$PAPERCLIP_CONFIG" | awk '{print $1}')"
+KEY_SHA256="$(sha256sum "$MASTER_KEY" | awk '{print $1}')"
+CONFIG_SIZE_BYTES="$(stat -c %s "$PAPERCLIP_CONFIG")"
+KEY_SIZE_BYTES="$(stat -c %s "$MASTER_KEY")"
+KEY_MODE="$(stat -c %a "$MASTER_KEY")"
+[ "$KEY_MODE" = 600 ] || { echo "ERROR: master key permissions must be 0600, got $KEY_MODE" >&2; exit 1; }
 RESTORE_FOOTPRINT_BYTES="$(jq -er '.databaseSizeBytes | select(type == "number" and . >= 0 and floor == .)' "$COUNT_LEDGER")"
 jq -S -n \
   --arg backup_file "$(basename "$LOGICAL_BACKUP")" \
@@ -171,11 +177,21 @@ jq -S -n \
   --arg ledger_file "$(basename "$COUNT_LEDGER")" \
   --arg ledger_sha256 "$LEDGER_SHA256" \
   --argjson restore_footprint_bytes "$RESTORE_FOOTPRINT_BYTES" \
+  --arg config_file "$(basename "$PAPERCLIP_CONFIG")" \
+  --arg config_sha256 "$CONFIG_SHA256" \
+  --argjson config_size_bytes "$CONFIG_SIZE_BYTES" \
+  --arg key_file "$(basename "$MASTER_KEY")" \
+  --arg key_sha256 "$KEY_SHA256" \
+  --argjson key_size_bytes "$KEY_SIZE_BYTES" \
   '{
-    format: "paperclip-restore-authority-v1",
+    format: "paperclip-restore-authority-v2",
     backup: {file: $backup_file, sha256: $backup_sha256, sizeBytes: $backup_size_bytes},
     ledger: {file: $ledger_file, sha256: $ledger_sha256},
-    restoreFootprintBytes: $restore_footprint_bytes
+    restoreFootprintBytes: $restore_footprint_bytes,
+    recovery: {
+      config: {file: $config_file, sha256: $config_sha256, sizeBytes: $config_size_bytes},
+      masterKey: {file: $key_file, sha256: $key_sha256, sizeBytes: $key_size_bytes, requiredMode: "0600"}
+    }
   }' >"$RESTORE_MANIFEST.partial"
 mv -f -- "$RESTORE_MANIFEST.partial" "$RESTORE_MANIFEST"
 

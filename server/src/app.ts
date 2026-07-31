@@ -44,6 +44,7 @@ import {
 import { llmRoutes } from "./routes/llms.js";
 import { authRoutes } from "./routes/auth.js";
 import { assetRoutes } from "./routes/assets.js";
+import { releaseCandidateRoutes } from "./routes/release-candidates.js";
 import { releaseEvidenceRoutes } from "./routes/release-evidence.js";
 import { accessRoutes } from "./routes/access.js";
 import { pluginRoutes } from "./routes/plugins.js";
@@ -65,6 +66,7 @@ import { setPluginEventBus } from "./services/activity-log.js";
 import { createPluginDevWatcher } from "./services/plugin-dev-watcher.js";
 import { createPluginHostServiceCleanup } from "./services/plugin-host-service-cleanup.js";
 import { pluginRegistryService } from "./services/plugin-registry.js";
+import { startCeoIdlePacketScheduler } from "./services/ceo-idle-packets.js";
 import { createHostClientHandlers } from "@paperclipai/plugin-sdk";
 import type { BetterAuthSessionResult } from "./auth/better-auth.js";
 import { createCachedViteHtmlRenderer } from "./vite-html-renderer.js";
@@ -156,6 +158,7 @@ export async function createApp(
     pluginWorkerManager?: PluginWorkerManager;
     betterAuthHandler?: express.RequestHandler;
     resolveSession?: (req: ExpressRequest) => Promise<BetterAuthSessionResult | null>;
+    recoveryMode?: boolean;
   },
 ) {
   const app = express();
@@ -226,6 +229,7 @@ export async function createApp(
   api.use(teamsCatalogRoutes(db));
   api.use(agentRoutes(db, { pluginWorkerManager: workerManager }));
   api.use(assetRoutes(db, opts.storageService));
+  api.use(releaseCandidateRoutes(db, opts.storageService));
   api.use(releaseEvidenceRoutes(db, opts.storageService));
   api.use(projectRoutes(db));
   api.use(issueRoutes(db, opts.storageService, {
@@ -442,8 +446,11 @@ export async function createApp(
 
   app.use(errorHandler);
 
-  jobCoordinator.start();
-  scheduler.start();
+  if (!opts.recoveryMode) {
+    jobCoordinator.start();
+    scheduler.start();
+  }
+  const ceoIdlePacketScheduler = opts.recoveryMode ? null : startCeoIdlePacketScheduler(db);
   let feedbackExportShuttingDown = false;
   let feedbackExportTimer: ReturnType<typeof setInterval> | null = null;
   const disableFeedbackExportFlushes = () => {
@@ -467,13 +474,13 @@ export async function createApp(
     }
   };
 
-  feedbackExportTimer = opts.feedbackExportService
+  feedbackExportTimer = opts.feedbackExportService && !opts.recoveryMode
     ? setInterval(() => {
       void flushPendingFeedbackExports();
     }, FEEDBACK_EXPORT_FLUSH_INTERVAL_MS)
     : null;
   feedbackExportTimer?.unref?.();
-  if (opts.feedbackExportService) {
+  if (opts.feedbackExportService && !opts.recoveryMode) {
     void flushPendingFeedbackExports();
   }
   void toolDispatcher.initialize().catch((err) => {
@@ -541,7 +548,7 @@ export async function createApp(
       );
     }
   };
-  void ensureBundledKubernetesPlugin()
+  if (!opts.recoveryMode) void ensureBundledKubernetesPlugin()
     .then(() => loader.loadAll())
     .then((result) => {
     if (!result) return;
@@ -558,6 +565,7 @@ export async function createApp(
     if (appServicesShutdown) return;
     appServicesShutdown = true;
     disableFeedbackExportFlushes();
+    ceoIdlePacketScheduler?.stop();
     devWatcher?.close();
     viteHtmlRenderer?.dispose();
     hostServiceCleanup.disposeAll();

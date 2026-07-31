@@ -84,6 +84,7 @@ export interface Config {
   feedbackExportBackendUrl: string | undefined;
   feedbackExportBackendToken: string | undefined;
   heartbeatSchedulerEnabled: boolean;
+  recoveryMode: boolean;
   heartbeatSchedulerIntervalMs: number;
   companyDeletionEnabled: boolean;
   telemetryEnabled: boolean;
@@ -109,6 +110,7 @@ function detectTailnetBindHost(): string | undefined {
 }
 
 export function loadConfig(): Config {
+  const recoveryMode = process.env.PAPERCLIP_RECOVERY_MODE === "true";
   const fileConfig = readConfigFile();
   const fileDatabaseMode =
     (fileConfig?.database.mode === "postgres" ? "postgres" : "embedded-postgres") as DatabaseMode;
@@ -329,7 +331,8 @@ export function loadConfig(): Config {
     storageS3ForcePathStyle,
     feedbackExportBackendUrl,
     feedbackExportBackendToken,
-    heartbeatSchedulerEnabled: process.env.HEARTBEAT_SCHEDULER_ENABLED !== "false",
+    heartbeatSchedulerEnabled: !recoveryMode && process.env.HEARTBEAT_SCHEDULER_ENABLED !== "false",
+    recoveryMode,
     heartbeatSchedulerIntervalMs: Math.max(10000, Number(process.env.HEARTBEAT_SCHEDULER_INTERVAL_MS) || 30000),
     companyDeletionEnabled,
     telemetryEnabled: fileConfig?.telemetry?.enabled ?? true,

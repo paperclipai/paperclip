@@ -628,6 +628,8 @@ BACKUP_FILE=/var/backups/paperclip-mempalace/paperclip-host-YYYYMMDDTHHMMSSZ.sql
 COUNT_LEDGER=/var/backups/paperclip-mempalace/paperclip_mempalace_YYYYMMDDTHHMMSSZ.counts.json
 AUTHORITY_MANIFEST=/var/backups/paperclip-mempalace/paperclip_mempalace_YYYYMMDDTHHMMSSZ.restore.json
 AUTHORITY_MANIFEST_SHA256=<64-hex-sha256>
+RECOVERY_CONFIG=/path/extracted/from/archive/config.json
+RECOVERY_MASTER_KEY=/path/extracted/from/archive/master.key
 SAFETY_MARGIN_BYTES=2147483648
 
 mkdir -p "$RESTORE_HOME"
@@ -642,10 +644,20 @@ pnpm paperclipai db:restore \
   --authority-manifest "$AUTHORITY_MANIFEST" \
   --expected-manifest-sha256 "$AUTHORITY_MANIFEST_SHA256" \
   --count-ledger "$COUNT_LEDGER" \
+  --recovery-config "$RECOVERY_CONFIG" \
+  --recovery-master-key "$RECOVERY_MASTER_KEY" \
   --safety-margin-bytes "$SAFETY_MARGIN_BYTES" \
   --yes \
   --json
 ```
+
+The v2 authority manifest binds the logical backup, count ledger, backup-time
+`config.json`, and backup-time `secrets/master.key`. Keep the extracted recovery
+directory `0700`, config `0600`, and master key `0600`. Restore copies the key
+only to the isolated target, retains the old config there as non-runtime
+evidence, and decrypts every restored local-encrypted record in memory without
+printing or returning plaintext. The JSON result must include
+`secretDecryptionReady: true`; a mismatched key fails the command.
 
 The capacity threshold is the backup-time `pg_database_size` footprint recorded
 in the ledger plus the explicit 2 GiB safety margin above. Use `df -B1` to select
@@ -664,20 +676,25 @@ corepack pnpm --silent paperclipai db:table-counts \
   --json > /var/tmp/restored-table-counts.json
 ```
 
-Start the isolated instance and use its configured port for the health check:
+Start the isolated instance in recovery mode and use its configured port for
+the health check. Recovery mode disables agent/routine dispatch, plugin workers
+and scheduled jobs, CEO idle packets, and feedback-export background work:
 
 ```sh
-PAPERCLIP_INSTANCE_ID="$RESTORE_INSTANCE" \
+PAPERCLIP_RECOVERY_MODE=true HEARTBEAT_SCHEDULER_ENABLED=false \
+  PAPERCLIP_INSTANCE_ID="$RESTORE_INSTANCE" \
   pnpm paperclipai run --data-dir "$RESTORE_HOME"
 
 curl -fsS "http://127.0.0.1:$(jq -r '.server.port' \
   "$RESTORE_HOME/instances/$RESTORE_INSTANCE/config.json")/api/health"
 ```
 
-The restore only replaces database objects. Preserve and restore the separate
-`config.json`, `data/storage`, and `secrets/master.key` components from the host
-archive when performing a full disaster recovery. Never point the isolated
-config at the production database or storage paths.
+For disaster-recovery readiness, the supported gate is successful
+`db:restore --json` (parity plus secret decryption) and this HTTP database-health
+check while recovery mode is active. `/api/health` alone is not a
+secret-decryption readiness claim. Restore local storage separately under the
+isolated target; never point isolated config at production database or storage
+paths.
 
 Environment overrides:
 

@@ -17,8 +17,13 @@ new home on a filesystem whose available bytes have been checked; never target
 the live instance home or assume `/mnt/paperclipdata` has capacity. Each backup
 creates a deterministic table-name/count ledger and a restore-authority manifest
 that directly binds the logical-backup and ledger hashes. Restore requires the
-manifest's SHA-256, validates the recorded database footprint plus an explicit
+v2 manifest's SHA-256, validates the recorded database footprint plus an explicit
 2 GiB safety margin before `initdb`, and requires exact restored count parity.
+The manifest also binds backup-time config and master-key bytes; restore installs
+them only inside the isolated target and proves decryption without emitting
+secret content. Start validation with `PAPERCLIP_RECOVERY_MODE=true` so restored
+agent/routine and plugin schedulers cannot dispatch. Extracted recovery
+directories must be `0700`; config and key files must be `0600`.
 The complete command sequence and health check are documented under **Supported
 isolated restore** in `doc/DEVELOPING.md`. Operators do not invoke `psql`,
 `pg_restore`, `createdb`, or any other raw PostgreSQL command.

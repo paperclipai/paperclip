@@ -128,6 +128,8 @@ program
   .requiredOption("--authority-manifest <path>", "Manifest binding the backup, count ledger, and restore footprint")
   .requiredOption("--expected-manifest-sha256 <sha256>", "Require this restore-authority manifest SHA-256")
   .requiredOption("--count-ledger <path>", "Backup-time deterministic table name/count ledger")
+  .requiredOption("--recovery-config <path>", "Manifest-bound backup-time config (retained as non-runtime evidence)")
+  .requiredOption("--recovery-master-key <path>", "Manifest-bound backup-time local_encrypted master key")
   .option("--safety-margin-bytes <bytes>", "Free bytes required beyond the manifest restore footprint", "2147483648")
   .option("--allow-external-target", "Acknowledge that external PostgreSQL isolation cannot be verified", false)
   .option("-y, --yes", "Confirm replacement of database objects in the explicit target", false)

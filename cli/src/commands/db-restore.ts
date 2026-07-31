@@ -1,5 +1,5 @@
 import fs from "node:fs";
-import { createHash } from "node:crypto";
+import { createDecipheriv, createHash } from "node:crypto";
 import net from "node:net";
 import path from "node:path";
 import * as p from "@clack/prompts";
@@ -11,6 +11,8 @@ import {
   prepareEmbeddedPostgresNativeRuntime,
   runDatabaseRestore,
   runDatabaseTableCounts,
+  createDb,
+  companySecretVersions,
   type RunDatabaseTableCountsResult,
 } from "@paperclipai/db";
 import type { PaperclipConfig } from "../config/schema.js";
@@ -30,6 +32,8 @@ type DbRestoreOptions = DatabaseTargetOptions & {
   authorityManifest?: string;
   expectedManifestSha256?: string;
   countLedger?: string;
+  recoveryConfig?: string;
+  recoveryMasterKey?: string;
   safetyMarginBytes?: string;
   allowExternalTarget?: boolean;
   yes?: boolean;
@@ -48,10 +52,14 @@ type TableCountLedger = {
 };
 
 type RestoreAuthorityManifest = {
-  format: "paperclip-restore-authority-v1";
+  format: "paperclip-restore-authority-v2";
   backup: { file: string; sha256: string; sizeBytes: number };
   ledger: { file: string; sha256: string };
   restoreFootprintBytes: number;
+  recovery: {
+    config: { file: string; sha256: string; sizeBytes: number };
+    masterKey: { file: string; sha256: string; sizeBytes: number; requiredMode: "0600" };
+  };
 };
 
 const DEFAULT_RESTORE_SAFETY_MARGIN_BYTES = 2 * 1024 * 1024 * 1024;
@@ -356,7 +364,7 @@ function parseRestoreAuthorityManifest(filePath: string): RestoreAuthorityManife
   const backup = value.backup;
   const ledger = value.ledger;
   if (
-    value.format !== "paperclip-restore-authority-v1"
+    value.format !== "paperclip-restore-authority-v2"
     || !backup || typeof backup !== "object" || Array.isArray(backup)
     || !ledger || typeof ledger !== "object" || Array.isArray(ledger)
     || !isSafeByteCount(value.restoreFootprintBytes)
@@ -365,6 +373,18 @@ function parseRestoreAuthorityManifest(filePath: string): RestoreAuthorityManife
   }
   const backupValue = backup as Record<string, unknown>;
   const ledgerValue = ledger as Record<string, unknown>;
+  const recovery = value.recovery;
+  const recoveryValue = recovery && typeof recovery === "object" && !Array.isArray(recovery)
+    ? recovery as Record<string, unknown>
+    : null;
+  const recoveryConfig = recoveryValue?.config;
+  const recoveryMasterKey = recoveryValue?.masterKey;
+  const recoveryConfigValue = recoveryConfig && typeof recoveryConfig === "object" && !Array.isArray(recoveryConfig)
+    ? recoveryConfig as Record<string, unknown>
+    : null;
+  const recoveryMasterKeyValue = recoveryMasterKey && typeof recoveryMasterKey === "object" && !Array.isArray(recoveryMasterKey)
+    ? recoveryMasterKey as Record<string, unknown>
+    : null;
   if (
     typeof backupValue.file !== "string"
     || typeof backupValue.sha256 !== "string"
@@ -373,11 +393,20 @@ function parseRestoreAuthorityManifest(filePath: string): RestoreAuthorityManife
     || typeof ledgerValue.file !== "string"
     || typeof ledgerValue.sha256 !== "string"
     || !/^[a-f0-9]{64}$/.test(ledgerValue.sha256)
+    || typeof recoveryConfigValue?.file !== "string"
+    || typeof recoveryConfigValue.sha256 !== "string"
+    || !/^[a-f0-9]{64}$/.test(recoveryConfigValue.sha256)
+    || !isSafeByteCount(recoveryConfigValue.sizeBytes)
+    || typeof recoveryMasterKeyValue?.file !== "string"
+    || typeof recoveryMasterKeyValue.sha256 !== "string"
+    || !/^[a-f0-9]{64}$/.test(recoveryMasterKeyValue.sha256)
+    || !isSafeByteCount(recoveryMasterKeyValue.sizeBytes)
+    || recoveryMasterKeyValue.requiredMode !== "0600"
   ) {
     throw new Error(`Invalid restore-authority manifest at ${filePath}: invalid backup or ledger binding.`);
   }
   return {
-    format: "paperclip-restore-authority-v1",
+    format: "paperclip-restore-authority-v2",
     backup: {
       file: backupValue.file,
       sha256: backupValue.sha256,
@@ -385,6 +414,10 @@ function parseRestoreAuthorityManifest(filePath: string): RestoreAuthorityManife
     },
     ledger: { file: ledgerValue.file, sha256: ledgerValue.sha256 },
     restoreFootprintBytes: value.restoreFootprintBytes,
+    recovery: {
+      config: recoveryConfigValue as RestoreAuthorityManifest["recovery"]["config"],
+      masterKey: recoveryMasterKeyValue as RestoreAuthorityManifest["recovery"]["masterKey"],
+    },
   };
 }
 
@@ -435,6 +468,8 @@ export async function validateRestoreAuthority(input: {
   authorityManifest: string;
   expectedManifestSha256: string;
   countLedger: string;
+  recoveryConfig: string;
+  recoveryMasterKey: string;
 }): Promise<{ manifest: RestoreAuthorityManifest; ledger: TableCountLedger; manifestSha256: string }> {
   const manifestSha256 = await sha256File(input.authorityManifest);
   if (manifestSha256 !== input.expectedManifestSha256) {
@@ -450,9 +485,13 @@ export async function validateRestoreAuthority(input: {
   if (path.basename(input.countLedger) !== manifest.ledger.file) {
     throw new Error("Table-count ledger name does not match the restore-authority manifest. Target was not opened.");
   }
-  const [backupSha256, ledgerSha256] = await Promise.all([
+  const recoveryConfigStat = fs.statSync(input.recoveryConfig);
+  const recoveryMasterKeyStat = fs.statSync(input.recoveryMasterKey);
+  const [backupSha256, ledgerSha256, recoveryConfigSha256, recoveryMasterKeySha256] = await Promise.all([
     sha256File(input.backupFile),
     sha256File(input.countLedger),
+    sha256File(input.recoveryConfig),
+    sha256File(input.recoveryMasterKey),
   ]);
   if (backupSha256 !== manifest.backup.sha256) {
     throw new Error(`Backup SHA-256 does not match the restore-authority manifest. Target was not opened.`);
@@ -460,10 +499,77 @@ export async function validateRestoreAuthority(input: {
   if (ledgerSha256 !== manifest.ledger.sha256) {
     throw new Error(`Table-count ledger SHA-256 does not match the restore-authority manifest. Target was not opened.`);
   }
+  if (
+    path.basename(input.recoveryConfig) !== manifest.recovery.config.file
+    || recoveryConfigStat.size !== manifest.recovery.config.sizeBytes
+    || recoveryConfigSha256 !== manifest.recovery.config.sha256
+  ) {
+    throw new Error("Recovery config does not match the restore-authority manifest. Target was not opened.");
+  }
+  if (
+    path.basename(input.recoveryMasterKey) !== manifest.recovery.masterKey.file
+    || recoveryMasterKeyStat.size !== manifest.recovery.masterKey.sizeBytes
+    || recoveryMasterKeySha256 !== manifest.recovery.masterKey.sha256
+  ) {
+    throw new Error("Recovery master key does not match the restore-authority manifest. Target was not opened.");
+  }
   if (ledger.databaseSizeBytes !== manifest.restoreFootprintBytes) {
     throw new Error("Restore footprint does not match the manifest-bound table-count ledger. Target was not opened.");
   }
   return { manifest, ledger, manifestSha256 };
+}
+
+function decodeRecoveryMasterKey(raw: string): Buffer {
+  const trimmed = raw.trim();
+  const decoded = /^[A-Fa-f0-9]{64}$/.test(trimmed)
+    ? Buffer.from(trimmed, "hex")
+    : Buffer.from(trimmed, "base64");
+  if (decoded.length !== 32) throw new Error("Recovery master key is not valid 32-byte key material.");
+  return decoded;
+}
+
+export function assertSecretDecryptionReadiness(materials: Record<string, unknown>[], rawKey: string): number {
+  const key = decodeRecoveryMasterKey(rawKey);
+  let checked = 0;
+  for (const material of materials) {
+    if (material.scheme !== "local_encrypted_v1") continue;
+    if (typeof material.iv !== "string" || typeof material.tag !== "string" || typeof material.ciphertext !== "string") {
+      throw new Error("Secret-decryption readiness failed: invalid encrypted material.");
+    }
+    try {
+      const decipher = createDecipheriv("aes-256-gcm", key, Buffer.from(material.iv, "base64"));
+      decipher.setAuthTag(Buffer.from(material.tag, "base64"));
+      decipher.update(Buffer.from(material.ciphertext, "base64"));
+      decipher.final();
+      checked += 1;
+    } catch {
+      throw new Error("Secret-decryption readiness failed: recovery master key does not match restored encrypted records.");
+    }
+  }
+  return checked;
+}
+
+function installRecoveryArtifacts(input: {
+  config: PaperclipConfig;
+  configPath: string;
+  recoveryConfig: string;
+  recoveryMasterKey: string;
+}): { targetKeyPath: string; retainedConfigPath: string } {
+  if (input.config.secrets.provider !== "local_encrypted") {
+    throw new Error("Supported recovery currently requires the local_encrypted secrets provider.");
+  }
+  const targetKeyPath = resolveRuntimeLikePath(input.config.secrets.localEncrypted.keyFilePath, input.configPath);
+  const recoveryDir = path.resolve(path.dirname(input.configPath), "recovery");
+  const retainedConfigPath = path.resolve(recoveryDir, "backup-time-config.json");
+  fs.mkdirSync(path.dirname(targetKeyPath), { recursive: true, mode: 0o700 });
+  fs.mkdirSync(recoveryDir, { recursive: true, mode: 0o700 });
+  fs.copyFileSync(input.recoveryMasterKey, `${targetKeyPath}.partial`);
+  fs.chmodSync(`${targetKeyPath}.partial`, 0o600);
+  fs.renameSync(`${targetKeyPath}.partial`, targetKeyPath);
+  fs.copyFileSync(input.recoveryConfig, `${retainedConfigPath}.partial`);
+  fs.chmodSync(`${retainedConfigPath}.partial`, 0o600);
+  fs.renameSync(`${retainedConfigPath}.partial`, retainedConfigPath);
+  return { targetKeyPath, retainedConfigPath };
 }
 
 export async function dbRestoreCommand(opts: DbRestoreOptions): Promise<void> {
@@ -484,16 +590,22 @@ export async function dbRestoreCommand(opts: DbRestoreOptions): Promise<void> {
   const authorityManifest = nonEmpty(opts.authorityManifest);
   const expectedManifestSha256 = validateExpectedSha256(opts.expectedManifestSha256);
   const countLedger = nonEmpty(opts.countLedger);
-  if (!authorityManifest || !expectedManifestSha256 || !countLedger) {
+  const recoveryConfig = nonEmpty(opts.recoveryConfig);
+  const recoveryMasterKey = nonEmpty(opts.recoveryMasterKey);
+  if (!authorityManifest || !expectedManifestSha256 || !countLedger || !recoveryConfig || !recoveryMasterKey) {
     throw new Error(
-      "Restore requires --authority-manifest, --expected-manifest-sha256, and --count-ledger so integrity, parity, and capacity can fail closed.",
+      "Restore requires manifest-bound database, ledger, recovery config, and recovery master-key artifacts.",
     );
   }
   const resolvedAuthorityManifest = path.resolve(authorityManifest);
   const resolvedCountLedger = path.resolve(countLedger);
+  const resolvedRecoveryConfig = path.resolve(recoveryConfig);
+  const resolvedRecoveryMasterKey = path.resolve(recoveryMasterKey);
   for (const [label, candidate] of [
     ["Restore-authority manifest", resolvedAuthorityManifest],
     ["Table-count ledger", resolvedCountLedger],
+    ["Recovery config", resolvedRecoveryConfig],
+    ["Recovery master key", resolvedRecoveryMasterKey],
   ] as const) {
     if (!fs.existsSync(candidate) || !fs.statSync(candidate).isFile()) {
       throw new Error(`${label} file not found: ${candidate}`);
@@ -505,6 +617,8 @@ export async function dbRestoreCommand(opts: DbRestoreOptions): Promise<void> {
     authorityManifest: resolvedAuthorityManifest,
     expectedManifestSha256,
     countLedger: resolvedCountLedger,
+    recoveryConfig: resolvedRecoveryConfig,
+    recoveryMasterKey: resolvedRecoveryMasterKey,
   });
   const expectedSha256 = validateExpectedSha256(opts.expectedSha256);
   const backupSha256 = authority.manifest.backup.sha256;
@@ -551,6 +665,12 @@ export async function dbRestoreCommand(opts: DbRestoreOptions): Promise<void> {
     return;
   }
 
+  const installedRecovery = installRecoveryArtifacts({
+    ...targetConfig,
+    recoveryConfig: resolvedRecoveryConfig,
+    recoveryMasterKey: resolvedRecoveryMasterKey,
+  });
+
   const target = await openDatabaseTarget({
     ...targetConfig,
     requireStopped: true,
@@ -569,6 +689,12 @@ export async function dbRestoreCommand(opts: DbRestoreOptions): Promise<void> {
         "Restored table names/counts do not match the manifest-bound backup-time ledger.",
       );
     }
+    const readinessDb = createDb(target.connectionString);
+    const secretMaterials = await readinessDb.select({ material: companySecretVersions.material }).from(companySecretVersions);
+    const secretsChecked = assertSecretDecryptionReadiness(
+      secretMaterials.map((row) => row.material),
+      fs.readFileSync(installedRecovery.targetKeyPath, "utf8"),
+    );
     spinner.stop(`Restored ${tables.tables.length} table(s).`);
 
     if (opts.json) {
@@ -586,6 +712,9 @@ export async function dbRestoreCommand(opts: DbRestoreOptions): Promise<void> {
         configPath: targetConfig.configPath,
         connectionSource: target.source,
         tableCount: tables.tables.length,
+        secretsChecked,
+        secretDecryptionReady: true,
+        recoveryModeRequired: true,
       }, null, 2));
     }
     p.outro(pc.green("Restore completed; the temporary embedded target database was stopped."));
