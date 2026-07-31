@@ -1375,7 +1375,7 @@ export function IssuesList({
     const row = rootRef.current?.querySelector(
       `[data-issue-row-id="${escapeAttrValue(navKey.slice("issue:".length))}"]`,
     );
-    const link = row?.querySelector(":scope > [data-inbox-issue-link]");
+    const link = row?.querySelector("[data-inbox-issue-link]");
     return link instanceof HTMLElement ? link : null;
   }, []);
 
@@ -2147,13 +2147,7 @@ export function IssuesList({
                             </button>
                           ) : (
                             <span className="inline-flex items-center" onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}>
-                              <StatusIcon
-                                status={issue.status}
-                                size="md"
-                                blockerAttention={issue.blockerAttention}
-                                onChange={(s) => onUpdateIssue(issue.id, { status: s })}
-                                useNativeButtonTrigger={false}
-                              />
+                              <StatusIcon status={issue.status} size="md" blockerAttention={issue.blockerAttention} onChange={(s) => onUpdateIssue(issue.id, { status: s })} />
                             </span>
                           )
                         }
@@ -2180,13 +2174,7 @@ export function IssuesList({
                               checklistStepNumber={checklistStepNumber}
                               statusSlot={(
                                 <span className="inline-flex items-center" onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}>
-                                  <StatusIcon
-                                    status={issue.status}
-                                    size="md"
-                                    blockerAttention={issue.blockerAttention}
-                                    onChange={(s) => onUpdateIssue(issue.id, { status: s })}
-                                    useNativeButtonTrigger={false}
-                                  />
+                                  <StatusIcon status={issue.status} size="md" blockerAttention={issue.blockerAttention} onChange={(s) => onUpdateIssue(issue.id, { status: s })} />
                                 </span>
                               )}
                             />

@@ -17,11 +17,6 @@ interface StatusIconProps {
   onChange?: (status: string) => void;
   className?: string;
   showLabel?: boolean;
-  /**
-   * Use a native button for an editable icon. Disable only when the picker is
-   * already inside another interactive element, such as an issue-row link.
-   */
-  useNativeButtonTrigger?: boolean;
   /** Glyph size (PAP-243a). Default `md` (16px); lists/detail/mentions use `lg` (20px). */
   size?: StatusGlyphSize;
 }
@@ -80,15 +75,7 @@ function blockedAttentionLabel(blockerAttention: IssueBlockerAttention | null | 
  * glyph — the blocked shape recoloured blue — while the full blocked reason
  * still rides on the accessible label.
  */
-export function StatusIcon({
-  status,
-  blockerAttention,
-  onChange,
-  className,
-  showLabel,
-  useNativeButtonTrigger = true,
-  size = "md",
-}: StatusIconProps) {
+export function StatusIcon({ status, blockerAttention, onChange, className, showLabel, size = "md" }: StatusIconProps) {
   const [open, setOpen] = useState(false);
   const isCoveredBlocked = status === "blocked" && blockerAttention?.state === "covered";
   const ariaLabel = status === "blocked" ? blockedAttentionLabel(blockerAttention) : statusLabel(status);
@@ -123,7 +110,7 @@ export function StatusIcon({
       {glyph}
       <span className="text-sm">{statusLabel(status)}</span>
     </button>
-  ) : useNativeButtonTrigger ? (
+  ) : (
     <button
       type="button"
       data-slot="icon-button"
@@ -132,7 +119,7 @@ export function StatusIcon({
     >
       {glyph}
     </button>
-  ) : glyph;
+  );
 
   return (
     <Popover open={open} onOpenChange={setOpen}>
