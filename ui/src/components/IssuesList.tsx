@@ -2147,7 +2147,13 @@ export function IssuesList({
                             </button>
                           ) : (
                             <span className="inline-flex items-center" onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}>
-                              <StatusIcon status={issue.status} size="md" blockerAttention={issue.blockerAttention} onChange={(s) => onUpdateIssue(issue.id, { status: s })} />
+                              <StatusIcon
+                                status={issue.status}
+                                size="md"
+                                blockerAttention={issue.blockerAttention}
+                                onChange={(s) => onUpdateIssue(issue.id, { status: s })}
+                                useNativeButtonTrigger={false}
+                              />
                             </span>
                           )
                         }
@@ -2174,7 +2180,13 @@ export function IssuesList({
                               checklistStepNumber={checklistStepNumber}
                               statusSlot={(
                                 <span className="inline-flex items-center" onClick={(e) => { e.preventDefault(); e.stopPropagation(); }}>
-                                  <StatusIcon status={issue.status} size="md" blockerAttention={issue.blockerAttention} onChange={(s) => onUpdateIssue(issue.id, { status: s })} />
+                                  <StatusIcon
+                                    status={issue.status}
+                                    size="md"
+                                    blockerAttention={issue.blockerAttention}
+                                    onChange={(s) => onUpdateIssue(issue.id, { status: s })}
+                                    useNativeButtonTrigger={false}
+                                  />
                                 </span>
                               )}
                             />

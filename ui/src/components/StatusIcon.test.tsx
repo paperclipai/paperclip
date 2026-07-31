@@ -92,6 +92,15 @@ describe("StatusIcon", () => {
     expect(html).toContain('<button type="button"');
     expect(html).toContain('aria-label="Change status (current: Todo)"');
   });
+
+  it("avoids a nested native button when rendered inside an issue-row link", () => {
+    const html = renderToStaticMarkup(
+      <StatusIcon status="todo" onChange={() => {}} useNativeButtonTrigger={false} />,
+    );
+
+    expect(html).toContain('viewBox="0 0 24 24"');
+    expect(html).not.toContain("<button");
+  });
 });
 
 describe("StatusIcon — glyph size (PAP-243a)", () => {
