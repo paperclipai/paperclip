@@ -36,6 +36,12 @@ test("published packages preserve the patched ACPX runtime", () => {
   assert.equal(cliEsbuildConfig.external.includes("acpx"), false);
 });
 
+test("ACPX patch exempts session env keys from persisted snake_case policy", () => {
+  const patch = readFileSync(new URL("../patches/acpx@0.12.0.patch", import.meta.url), "utf8");
+  assert.match(patch, /"acpx\.session_options\.env"/);
+  assert.match(patch, /keyPath\.startsWith\(`\$\{mapPath\}\.`\)/);
+});
+
 test("bundled package staging materializes publishConfig entrypoints", () => {
   const staged = materializePublishManifest(adapterUtilsPackage);
 

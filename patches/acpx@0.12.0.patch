@@ -11,6 +11,19 @@ index 243c9d13bcba520923b63adfddad75cf2d94362d..336a1699b80b9e99416f9da4346ca73e
  const OPAQUE_VALUE_PATHS = /* @__PURE__ */ new Set([
  	"agent_capabilities",
  	"messages.Agent.content.ToolUse.input",
+@@ -1547,7 +1547,11 @@ function isAllowedKey(path, key) {
+ 	return false;
+ }
+ function shouldSkipKeyRule(path) {
+-	return MAP_OBJECT_PATHS.has(joinPath(path));
++	const keyPath = joinPath(path);
++	for (const mapPath of MAP_OBJECT_PATHS) {
++		if (keyPath === mapPath || keyPath.startsWith(`${mapPath}.`)) return true;
++	}
++	return false;
+ }
+ function shouldSkipDescend(path) {
+ 	return OPAQUE_VALUE_PATHS.has(joinPath(path)) || isToolResultOutputPath(path);
 @@ -2557,7 +2557,7 @@ function readCommandLineChar(state) {
  		escaping: false,
  		hasPart: true
