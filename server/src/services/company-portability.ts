@@ -7,7 +7,6 @@ import { and, eq, inArray } from "drizzle-orm";
 import {
   builtInManagedResources,
   issueRelations,
-  issues as issuesTable,
   principalPermissionGrants,
   type Db,
 } from "@paperclipai/db";
@@ -98,6 +97,13 @@ import {
 } from "./catalog-provenance.js";
 import { readBuiltInAgentMarker } from "./built-in-agent-metadata.js";
 import { normalizePortablePath } from "./portable-path.js";
+import type {
+  ImportIssueRow,
+  ImportIssueCommentRow,
+  ImportIssueDocumentRow,
+  ImportIssueWorkProductRow,
+  ImportIssueAttachmentRow,
+} from "./import-write-types.js";
 
 /** Build OrgNode tree from manifest agent list (slug + reportsToSlug). */
 function buildOrgTreeFromManifest(agents: CompanyPortabilityManifest["agents"]): OrgNode[] {
@@ -169,6 +175,31 @@ let bundledSkillsCommitPromise: Promise<string | null> | null = null;
 
 function resolveImportMode(options?: ImportBehaviorOptions): ImportMode {
   return options?.mode ?? "board_full";
+}
+
+/**
+ * Reject an inline import whose received file set is smaller than the count the
+ * client declared. The bundle manifest and per-entry blob hashes seal each
+ * file's contents, but nothing else proves the *set* of files is whole: a
+ * truncated or proxy-re-framed body can parse into valid JSON with entries
+ * silently dropped. `expectedFileCount` is the client's assertion of how many
+ * files it sent, so a shortfall means the payload is incomplete and must fail
+ * closed instead of importing a fragment. A larger-than-declared set is not a
+ * truncation symptom and is left alone; the count is optional, so older callers
+ * that omit it are unaffected.
+ */
+function assertInlineSourceComplete(source: CompanyPortabilityImport["source"]) {
+  if (source.type !== "inline") return;
+  const expected = source.expectedFileCount;
+  if (expected == null) return;
+  const received = Object.keys(source.files).length;
+  if (received < expected) {
+    throw unprocessable(
+      `Import payload is incomplete: the request declared ${expected} file(s) but only ${received} arrived. `
+        + "The upload was likely truncated; retry the import.",
+      { code: "import_payload_incomplete", expectedFileCount: expected, receivedFileCount: received },
+    );
+  }
 }
 
 function resolveSkillConflictStrategy(mode: ImportMode, collisionStrategy: CompanyPortabilityCollisionStrategy) {
@@ -4993,6 +5024,12 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
     actorUserId: string | null | undefined,
     options?: ImportBehaviorOptions,
   ): Promise<CompanyPortabilityImportResult> {
+    // Fail closed before any preview or write work when an inline body arrived
+    // incomplete. A truncated or re-framed request can hand the parser a
+    // structurally valid JSON object with fewer files than the client sent;
+    // the declared count is the only signal that distinguishes it from a
+    // deliberately small bundle. Reject the fragment rather than importing it.
+    assertInlineSourceComplete(input.source);
     const mode = resolveImportMode(options);
     const plan = await buildPreview(input, options);
     if (plan.preview.errors.length > 0) {
@@ -5669,6 +5706,17 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         let attachmentsSkippedNoStorage = 0;
         const attachmentMaxBytes = normalizeIssueAttachmentMaxBytes(targetCompany.attachmentMaxBytes ?? null);
 
+        // Import writes every issue and its children as a single batch instead
+        // of one network round-trip per row. The loop below resolves each
+        // manifest issue (ids pre-generated so children reference parents
+        // without waiting) and buffers the resulting rows; the buffers are
+        // flushed through the batched writers once resolution is complete.
+        const issueRows: ImportIssueRow[] = [];
+        const commentRows: ImportIssueCommentRow[] = [];
+        const documentRows: ImportIssueDocumentRow[] = [];
+        const workProductRows: ImportIssueWorkProductRow[] = [];
+        const attachmentRows: ImportIssueAttachmentRow[] = [];
+
         for (const manifestIssue of sourceManifest.issues) {
           const markdownRaw = readPortableTextFile(plan.source.files, manifestIssue.path);
           const parsed = markdownRaw ? parseFrontmatterMarkdown(markdownRaw) : null;
@@ -5814,21 +5862,10 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
               resolvedLabelIds.push(labelId);
             }
           }
-          const createdIssue = await issues.create(targetCompany.id, {
-            projectId,
-            projectWorkspaceId,
-            title: manifestIssue.title,
-            description,
-            assigneeAgentId,
-            status: issueStatus,
-            priority: manifestIssue.priority && ISSUE_PRIORITIES.includes(manifestIssue.priority as any)
-              ? manifestIssue.priority as typeof ISSUE_PRIORITIES[number]
-              : "medium",
-            billingCode: manifestIssue.billingCode,
-            assigneeAdapterOverrides: manifestIssue.assigneeAdapterOverrides,
-            executionWorkspaceSettings: manifestIssue.executionWorkspaceSettings,
-            labelIds: resolvedLabelIds,
-          });
+          // Pre-generate the issue id so this issue's comments, documents, and
+          // attachments can reference it without waiting on a per-issue insert
+          // round-trip. The row itself is buffered and flushed after the loop.
+          const issueId = randomUUID();
           // Created comment ids are captured positionally so attachment
           // entries can resolve their commentIndex against them.
           const createdCommentIds: Array<string | null> = [];
@@ -5849,18 +5886,22 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
               : comment.authorType === "user" && actorUserId
                 ? "user"
                 : "system";
-            const createdComment = await issues.addComment(createdIssue.id, rewriteEmbeddedAssetUrls(comment.body, embeddedAssetIdMap), {
-              agentId: authorAgentId ?? undefined,
-              userId: authorType === "user" ? actorUserId ?? undefined : undefined,
-            }, {
+            const commentId = randomUUID();
+            commentRows.push({
+              id: commentId,
+              companyId: targetCompany.id,
+              issueId,
+              body: rewriteEmbeddedAssetUrls(comment.body, embeddedAssetIdMap),
               authorType,
-              presentation: comment.presentation,
-              metadata: comment.metadata,
-              createdAt: comment.createdAt,
+              authorAgentId: authorAgentId ?? null,
+              authorUserId: authorType === "user" ? actorUserId ?? null : null,
+              presentation: comment.presentation ?? null,
+              metadata: comment.metadata ?? null,
+              createdAt: comment.createdAt ?? null,
             });
-            createdCommentIds.push(createdComment?.id ?? null);
+            createdCommentIds.push(commentId);
           }
-          importedIssueIdBySlug.set(manifestIssue.slug, createdIssue.id);
+          importedIssueIdBySlug.set(manifestIssue.slug, issueId);
           if ((manifestIssue.blockedBy ?? []).length > 0) {
             blockedByBySlug.set(manifestIssue.slug, manifestIssue.blockedBy ?? []);
           }
@@ -5870,33 +5911,35 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
               warnings.push(`Task ${manifestIssue.slug} document ${documentEntry.key} was skipped because its file is missing from the package: ${documentEntry.path}`);
               continue;
             }
-            try {
-              await documentsSvc.upsertIssueDocument({
-                issueId: createdIssue.id,
-                key: documentEntry.key,
-                title: documentEntry.title,
-                format: documentEntry.format,
-                body: rewriteEmbeddedAssetUrls(documentBody, embeddedAssetIdMap),
-                createdByUserId: actorUserId ?? null,
-              });
-            } catch (error) {
-              warnings.push(`Task ${manifestIssue.slug} document ${documentEntry.key} could not be imported: ${error instanceof Error ? error.message : String(error)}`);
-            }
+            documentRows.push({
+              companyId: targetCompany.id,
+              issueId,
+              key: documentEntry.key,
+              title: documentEntry.title,
+              format: documentEntry.format,
+              body: rewriteEmbeddedAssetUrls(documentBody, embeddedAssetIdMap),
+              createdByAgentId: null,
+              createdByUserId: actorUserId ?? null,
+              createdByRunId: null,
+              sourceTrust: null,
+            });
           }
           for (const workProductEntry of manifestIssue.workProducts ?? []) {
-            await workProductsSvc.createForIssue(createdIssue.id, targetCompany.id, {
-              projectId: createdIssue.projectId ?? projectId ?? null,
+            workProductRows.push({
+              companyId: targetCompany.id,
+              issueId,
+              projectId: projectId ?? null,
               type: workProductEntry.type,
               provider: workProductEntry.provider,
-              externalId: workProductEntry.externalId,
+              externalId: workProductEntry.externalId ?? null,
               title: workProductEntry.title,
-              url: workProductEntry.url,
+              url: workProductEntry.url ?? null,
               status: workProductEntry.status,
-              reviewState: workProductEntry.reviewState,
-              isPrimary: workProductEntry.isPrimary,
-              healthStatus: workProductEntry.healthStatus,
-              summary: workProductEntry.summary,
-              metadata: workProductEntry.metadata,
+              reviewState: workProductEntry.reviewState ?? "none",
+              isPrimary: workProductEntry.isPrimary ?? false,
+              healthStatus: workProductEntry.healthStatus ?? "unknown",
+              summary: workProductEntry.summary ?? null,
+              metadata: workProductEntry.metadata ?? null,
               // Workspace/run references never travel across boards.
               executionWorkspaceId: null,
               runtimeServiceId: null,
@@ -5904,17 +5947,15 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
               sourceTrust: null,
             });
           }
+          // Monitors land un-armed: notes and provenance are restored on the
+          // issue row itself but monitorNextCheckAt stays NULL until an operator
+          // re-arms them.
+          let monitorNotes: string | null = null;
+          let monitorScheduledBy: string | null = null;
           if (manifestIssue.monitor) {
-            // Monitors land un-armed: notes and provenance are restored but
-            // monitorNextCheckAt stays NULL until an operator re-arms them.
             if (manifestIssue.monitor.notes !== null || manifestIssue.monitor.scheduledBy !== null) {
-              await db
-                .update(issuesTable)
-                .set({
-                  monitorNotes: manifestIssue.monitor.notes,
-                  monitorScheduledBy: manifestIssue.monitor.scheduledBy,
-                })
-                .where(eq(issuesTable.id, createdIssue.id));
+              monitorNotes = manifestIssue.monitor.notes;
+              monitorScheduledBy = manifestIssue.monitor.scheduledBy;
             }
             unarmedMonitorCount += 1;
           }
@@ -5950,13 +5991,14 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
             try {
               const stored = await storage.putFile({
                 companyId: targetCompany.id,
-                namespace: `issues/${createdIssue.id}`,
+                namespace: `issues/${issueId}`,
                 originalFilename: attachmentEntry.originalFilename,
                 contentType: attachmentEntry.contentType,
                 body,
               });
-              await issues.createAttachment({
-                issueId: createdIssue.id,
+              attachmentRows.push({
+                companyId: targetCompany.id,
+                issueId,
                 issueCommentId,
                 provider: stored.provider,
                 objectKey: stored.objectKey,
@@ -5971,7 +6013,51 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
               warnings.push(`Task ${manifestIssue.slug} attachment ${attachmentLabel} could not be imported: ${error instanceof Error ? error.message : String(error)}`);
             }
           }
+          issueRows.push({
+            id: issueId,
+            ref: manifestIssue.slug,
+            projectId: projectId ?? null,
+            projectWorkspaceId: projectWorkspaceId ?? null,
+            title: manifestIssue.title,
+            description,
+            assigneeAgentId,
+            status: issueStatus,
+            priority: manifestIssue.priority && ISSUE_PRIORITIES.includes(manifestIssue.priority as any)
+              ? manifestIssue.priority as typeof ISSUE_PRIORITIES[number]
+              : "medium",
+            billingCode: manifestIssue.billingCode ?? null,
+            assigneeAdapterOverrides: manifestIssue.assigneeAdapterOverrides ?? null,
+            executionWorkspaceSettings: manifestIssue.executionWorkspaceSettings ?? null,
+            labelIds: resolvedLabelIds,
+            monitorNotes,
+            monitorScheduledBy,
+          });
         }
+
+        // Flush the buffered rows in dependency order: issues first (parents of
+        // every other row), then comments (attachments may reference them), then
+        // the remaining children. Each writer inserts in chunked multi-row
+        // statements, turning what used to be one round-trip per row into a
+        // handful per table. Empty buffers are skipped so an issues-free import
+        // (e.g. routines only) issues no writes at all.
+        if (issueRows.length > 0) await issues.importIssues(targetCompany.id, issueRows);
+        // Imported issues are historical work, not new inbox items. Seed a
+        // per-user inbox archive for the importing board user so a large import
+        // (a real 1,418-task company shipped every task to the inbox) does not
+        // flood it: the inbox "mine" query hides archived issues, and genuine
+        // new activity still resurfaces them. Agent/system imports (no board
+        // user) have no inbox to protect, so the seeding is skipped.
+        if (actorUserId && issueRows.length > 0) {
+          await issues.archiveImportedInbox(
+            targetCompany.id,
+            issueRows.map((row) => row.id),
+            actorUserId,
+          );
+        }
+        if (commentRows.length > 0) await issues.addImportedComments(commentRows);
+        if (documentRows.length > 0) await documentsSvc.createIssueDocumentsForImport(documentRows);
+        if (workProductRows.length > 0) await workProductsSvc.createManyForImport(workProductRows);
+        if (attachmentRows.length > 0) await issues.addImportedAttachments(attachmentRows);
 
         if (blockedByBySlug.size > 0) {
           const acceptedAdjacency = new Map<string, string[]>();

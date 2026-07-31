@@ -519,6 +519,11 @@ Recovery rule:
 
 This is a dispatch recovery, not a continuation recovery.
 
+Recovery hand-back is covered by the same liveness guarantee:
+
+- an `issue_recovery_action_restored` wake requested while the resolving recovery run is still active is persisted as a follow-up and dispatched only after that run exits, so it cannot be coalesced into the run that requested it
+- if that follow-up is nevertheless lost, the stranded-work backstop treats an assigned `todo` issue with a resolved `handed_back` recovery action from during or after its latest successful run as stranded and queues the bounded assignment recovery wake; the successful resolving run is not, by itself, evidence that the handed-back source work is live
+
 ### 9.2 Stranded assigned `in_progress`
 
 Example:

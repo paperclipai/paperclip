@@ -1437,7 +1437,7 @@ export function renderPaperclipWakePrompt(
   const recoveryInstruction = (() => {
     switch (recovery?.cause) {
       case "process_lost":
-        return `Your previous run on this issue was lost (${recovery.failureSummary ?? "no failure summary available"}). Try again — resume from durable progress; don't redo completed steps.`;
+        return `Your previous run on this issue was lost (${recovery.failureSummary ?? "no failure summary available"}). Try again — resume from durable progress; don't redo completed steps. Do not narrate the recovery in your next comment — at most one short sentence; lead with the work.`;
       case "successful_run_missing_state":
       case "successful_run_missing_issue_disposition":
         return "Your run completed but left no final disposition. Post a comment summarizing the state and set the correct disposition (`done` / `in_review` / `blocked` / `in_progress` with a live path). Do not start new work.";
@@ -1480,6 +1480,10 @@ export function renderPaperclipWakePrompt(
     ? [
         "Recovery contract: your job is to RECOVER this task, not to do the work. Do not produce the deliverable yourself.",
         `Cause-specific instruction: ${recoveryInstruction}`,
+        ...(recovery?.cause === "successful_run_missing_state" ||
+            recovery?.cause === "successful_run_missing_issue_disposition"
+          ? []
+          : ["Record the outcome in the resolve call's `resolutionNote`. Any comment you post on the source issue must be ≤3 lines (cause → what you did → hand-back). No headings, no run-by-run narrative."]),
         `Fallback preference order: (1) send back to ${originalAssigneeLabel} with a retry instruction; (2) fix the runtime/adapter/workspace problem, then send it back; (3) reassign to another agent with the right specialty; (4) convert to an explicit manual-review state for the board.`,
         "",
       ]
@@ -1510,6 +1514,9 @@ export function renderPaperclipWakePrompt(
             ? [`- routing fallback: ${recovery.routingFallbackReason}`]
             : []),
         ]
+      : []),
+    ...(normalized.reason === "issue_recovery_action_restored"
+      ? ["- instruction: Do not narrate the recovery in your next comment — at most one short sentence; lead with the work."]
       : []),
   ];
   const lines = resumedSession

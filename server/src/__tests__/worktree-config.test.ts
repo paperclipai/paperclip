@@ -101,6 +101,10 @@ function buildIsolatedConfig(instanceRoot: string, serverPort: number, databaseP
     database: {
       ...config.database,
       embeddedPostgresPort: databasePort,
+      backup: {
+        ...config.database.backup,
+        enabled: false,
+      },
     },
     server: {
       ...config.server,
@@ -155,6 +159,7 @@ describe("worktree config repair", () => {
     const instanceRoot = path.join(isolatedHome, "instances", "pap-884-ai-commits-component");
 
     expect(repairedConfig.database.embeddedPostgresDataDir).toBe(path.join(instanceRoot, "db"));
+    expect(repairedConfig.database.backup.enabled).toBe(false);
     expect(repairedConfig.database.backup.dir).toBe(path.join(instanceRoot, "data", "backups"));
     expect(repairedConfig.logging.logDir).toBe(path.join(instanceRoot, "logs"));
     expect(repairedConfig.storage.localDisk.baseDir).toBe(path.join(instanceRoot, "data", "storage"));
@@ -163,10 +168,64 @@ describe("worktree config repair", () => {
     expect(repairedEnv).toContain('PAPERCLIP_INSTANCE_ID="pap-884-ai-commits-component"');
     expect(repairedEnv).toContain(`PAPERCLIP_CONFIG=${JSON.stringify(await fs.realpath(configPath))}`);
     expect(repairedEnv).toContain(`PAPERCLIP_CONTEXT=${JSON.stringify(path.join(isolatedHome, "context.json"))}`);
-    expect(repairedEnv).toContain('PAPERCLIP_AGENT_JWT_SECRET="shared-secret"');
+    expect(repairedEnv).toContain('PAPERCLIP_DB_BACKUP_ENABLED="false"');
+    expect(repairedEnv).toContain("PAPERCLIP_AGENT_JWT_SECRET=shared-secret");
     expect(process.env.PAPERCLIP_HOME).toBe(isolatedHome);
     expect(process.env.PORT).toBe("3101");
     expect(process.env.PAPERCLIP_INSTANCE_ID).toBe("pap-884-ai-commits-component");
+    expect(process.env.PAPERCLIP_DB_BACKUP_ENABLED).toBe("false");
+  });
+
+  it("disables backups in an otherwise isolated existing worktree config", async () => {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-worktree-backup-migration-"));
+    const worktreeRoot = path.join(tempRoot, "disable-worktree-backups");
+    const paperclipDir = path.join(worktreeRoot, ".paperclip");
+    const configPath = path.join(paperclipDir, "config.json");
+    const envPath = path.join(paperclipDir, ".env");
+    const isolatedHome = path.join(tempRoot, ".paperclip-worktrees");
+    const instanceRoot = path.join(isolatedHome, "instances", "disable-worktree-backups");
+
+    await fs.mkdir(paperclipDir, { recursive: true });
+    const legacyIsolatedConfig = buildIsolatedConfig(instanceRoot, 3110, 54339);
+    legacyIsolatedConfig.database.backup.enabled = true;
+    await fs.writeFile(configPath, JSON.stringify(legacyIsolatedConfig, null, 2) + "\n", "utf8");
+    await fs.writeFile(
+      envPath,
+      [
+        "# Paperclip environment variables",
+        "# Keep this operator note during repair",
+        `PAPERCLIP_HOME=${JSON.stringify(isolatedHome)}`,
+        'PAPERCLIP_INSTANCE_ID="disable-worktree-backups"',
+        `PAPERCLIP_CONFIG=${JSON.stringify(configPath)}`,
+        'PAPERCLIP_DB_BACKUP_ENABLED="true" # managed worktree policy',
+        'PAPERCLIP_IN_WORKTREE="true"',
+        'PAPERCLIP_WORKTREE_NAME="disable-worktree-backups"',
+        "# Keep this trailing note too",
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    process.chdir(worktreeRoot);
+    process.env.PAPERCLIP_HOME = isolatedHome;
+    process.env.PAPERCLIP_INSTANCE_ID = "disable-worktree-backups";
+    process.env.PAPERCLIP_CONFIG = configPath;
+    process.env.PAPERCLIP_DB_BACKUP_ENABLED = "true";
+    process.env.PAPERCLIP_IN_WORKTREE = "true";
+    process.env.PAPERCLIP_WORKTREE_NAME = "disable-worktree-backups";
+
+    const result = maybeRepairLegacyWorktreeConfigAndEnvFiles();
+    const repairedConfig = JSON.parse(await fs.readFile(configPath, "utf8"));
+    const repairedEnv = await fs.readFile(envPath, "utf8");
+
+    expect(result).toEqual({ repairedConfig: true, repairedEnv: true });
+    expect(repairedConfig.database.backup.enabled).toBe(false);
+    expect(repairedEnv).toContain(
+      'PAPERCLIP_DB_BACKUP_ENABLED="false" # managed worktree policy',
+    );
+    expect(repairedEnv).toContain("# Keep this operator note during repair");
+    expect(repairedEnv).toContain("# Keep this trailing note too");
+    expect(process.env.PAPERCLIP_DB_BACKUP_ENABLED).toBe("false");
   });
 
   it("preserves an externally supplied PORT while repairing worktree config", async () => {
@@ -601,7 +660,7 @@ describe("worktree config repair", () => {
 
     expect(result).toEqual({
       repairedConfig: true,
-      repairedEnv: false,
+      repairedEnv: true,
     });
     expect(repairedConfig.database.embeddedPostgresDataDir).toBe(path.join(stableInstanceRoot, "db"));
     expect(repairedConfig.database.backup.dir).toBe(path.join(stableInstanceRoot, "data", "backups"));
@@ -611,6 +670,7 @@ describe("worktree config repair", () => {
       path.join(stableInstanceRoot, "secrets", "master.key"),
     );
     expect(repairedEnv).toContain(`PAPERCLIP_HOME=${JSON.stringify(isolatedHome)}`);
+    expect(repairedEnv).toContain('PAPERCLIP_DB_BACKUP_ENABLED="false"');
     expect(repairedEnv).not.toContain(`PAPERCLIP_HOME=${JSON.stringify(transientHome)}`);
     expect(process.env.PAPERCLIP_HOME).toBe(isolatedHome);
   });

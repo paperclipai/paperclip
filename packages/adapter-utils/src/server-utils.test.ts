@@ -1007,6 +1007,48 @@ describe("renderPaperclipWakePrompt", () => {
     expect(prompt).toContain("- recovery attempt: 2/3");
     expect(prompt).toContain("- next action: Restore the execution path.");
     expect(prompt).not.toContain("Execution contract: take concrete action");
+    if (cause === "successful_run_missing_state") {
+      expect(prompt).not.toContain("Any comment you post on the source issue must be ≤3 lines");
+    } else {
+      expect(prompt).toContain("Record the outcome in the resolve call's `resolutionNote`");
+      expect(prompt).toContain("Any comment you post on the source issue must be ≤3 lines");
+      expect(prompt).toContain("No headings, no run-by-run narrative.");
+    }
+  });
+
+  it("asks process-loss retries to lead with the work instead of narrating recovery", () => {
+    const prompt = renderPaperclipWakePrompt({
+      reason: "source_scoped_recovery_action",
+      issue: { id: "issue-1", identifier: "PAP-14092", title: "Recover work", status: "blocked" },
+      recovery: {
+        cause: "process_lost",
+        failureSummary: "adapter stopped",
+        originalAssignee: { id: "agent-1", name: "Coder" },
+        attemptCount: 1,
+        nextAction: "Restore the execution path.",
+      },
+      commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+      comments: [],
+      fallbackFetchNeeded: false,
+    });
+
+    expect(prompt).toContain(
+      "Do not narrate the recovery in your next comment — at most one short sentence; lead with the work.",
+    );
+  });
+
+  it("asks restored source owners to lead with work instead of narrating recovery", () => {
+    const prompt = renderPaperclipWakePrompt({
+      reason: "issue_recovery_action_restored",
+      issue: { id: "issue-1", identifier: "PAP-14092", title: "Continue work", status: "todo" },
+      commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+      comments: [],
+      fallbackFetchNeeded: false,
+    });
+
+    expect(prompt).toContain(
+      "Do not narrate the recovery in your next comment — at most one short sentence; lead with the work.",
+    );
   });
 
   it("keeps exactly one execution contract in a composed fresh heartbeat prompt", () => {

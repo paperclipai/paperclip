@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import type { Request } from "express";
+import { and, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { authUsers, companies, companyMemberships, instanceSettings, instanceUserRoles } from "@paperclipai/db";
 import { resolveCloudTenantActor } from "./auth.js";
@@ -7,11 +8,14 @@ import { resolveCloudTenantActor } from "./auth.js";
 // Minimal fake Drizzle Db: records every table passed to .insert() / .delete() and
 // supports the chained call shapes used by resolveCloudTenantActor (values /
 // onConflictDo* / returning().then() / delete().where()), plus the
-// select().from(instanceSettings).where().then() read the owner-elevation flag
-// resolution performs through instanceSettingsService. The chain is awaitable so
+// select().from(table).where() reads: instanceSettings for the owner-elevation
+// flag resolution through instanceSettingsService, and companyMemberships for
+// the user's own membership rows (rows configurable via membershipQueryRows,
+// where-conditions captured in selectWheres). The chain is awaitable so
 // directly-awaited statements resolve.
 function createFakeDb(options: {
   membershipRow?: { companyId: string; membershipRole: string; status: string };
+  membershipQueryRows?: Array<{ companyId: string; membershipRole: string | null; status: string }>;
   settingsRow?: Record<string, unknown> | null;
   selectThrows?: boolean;
 } = {}) {
@@ -31,6 +35,7 @@ function createFakeDb(options: {
       : options.settingsRow;
   const insertedTables: unknown[] = [];
   const deletedTables: unknown[] = [];
+  const selectWheres: Array<{ table: unknown; condition: unknown }> = [];
   const chain: Record<string, unknown> = {};
   chain.values = () => chain;
   chain.onConflictDoUpdate = () => chain;
@@ -51,15 +56,23 @@ function createFakeDb(options: {
       if (options.selectThrows) throw new Error("select unavailable");
       return {
         from: (table: unknown) => ({
-          where: () => ({
-            then: (resolve: (v: unknown) => unknown) =>
-              Promise.resolve(table === instanceSettings && settingsRow ? [settingsRow] : []).then(resolve),
-          }),
+          where: (condition: unknown) => {
+            selectWheres.push({ table, condition });
+            const rows =
+              table === instanceSettings && settingsRow
+                ? [settingsRow]
+                : table === companyMemberships
+                  ? (options.membershipQueryRows ?? [])
+                  : [];
+            return {
+              then: (resolve: (v: unknown) => unknown) => Promise.resolve(rows).then(resolve),
+            };
+          },
         }),
       };
     },
   } as unknown as Db;
-  return { db, insertedTables, deletedTables };
+  return { db, insertedTables, deletedTables, selectWheres };
 }
 
 function settingsRowWith(experimental: Record<string, unknown>) {
@@ -121,7 +134,7 @@ describe("resolveCloudTenantActor (shared-pool hardening)", () => {
     expect(insertedTables).not.toContain(instanceUserRoles);
   });
 
-  it("is scoped to exactly the one company from its stack", async () => {
+  it("stays scoped to exactly the stack's company when the user has no other membership rows", async () => {
     const { db } = createFakeDb();
     const actor = await resolveCloudTenantActor(db, fakeReq(VALID_HEADERS));
     expect(actor!.companyIds).toHaveLength(1);
@@ -163,6 +176,59 @@ describe("resolveCloudTenantActor (shared-pool hardening)", () => {
     );
     expect(actor!.isInstanceAdmin).toBe(false);
     expect(actor?.memberships?.[0]?.membershipRole).toBe("member");
+  });
+
+  describe("company membership union", () => {
+    // The primary company id is derived from the stack id; resolve it once
+    // through the same code path instead of duplicating the hash here.
+    async function resolvePrimaryCompanyId() {
+      const { db } = createFakeDb();
+      const actor = await resolveCloudTenantActor(db, fakeReq(VALID_HEADERS));
+      return actor!.companyIds![0]!;
+    }
+
+    it("unions the pinned primary with the user's own active membership rows, primary first and deduped", async () => {
+      const primaryCompanyId = await resolvePrimaryCompanyId();
+      const { db } = createFakeDb({
+        membershipQueryRows: [
+          // The user's own row for the primary company comes back from the
+          // query too — it must not appear twice.
+          { companyId: primaryCompanyId, membershipRole: "owner", status: "active" },
+          { companyId: "company-imported", membershipRole: "member", status: "active" },
+        ],
+      });
+      const actor = await resolveCloudTenantActor(db, fakeReq(VALID_HEADERS));
+      expect(actor!.companyIds).toEqual([primaryCompanyId, "company-imported"]);
+      expect(actor!.memberships).toEqual([
+        { companyId: primaryCompanyId, membershipRole: "owner", status: "active" },
+        { companyId: "company-imported", membershipRole: "member", status: "active" },
+      ]);
+    });
+
+    it("loads memberships with the session path's exact own-user active-status filter", async () => {
+      const { db, selectWheres } = createFakeDb();
+      await resolveCloudTenantActor(db, fakeReq(VALID_HEADERS));
+      const membershipSelects = selectWheres.filter((entry) => entry.table === companyMemberships);
+      expect(membershipSelects).toHaveLength(1);
+      // Rows for other users and rows in any non-active status are excluded
+      // by the query itself: the filter binds exactly this user id and the
+      // "active" status — the same condition the session path applies.
+      expect(membershipSelects[0]!.condition).toEqual(
+        and(
+          eq(companyMemberships.principalType, "user"),
+          eq(companyMemberships.principalId, "user-123"),
+          eq(companyMemberships.status, "active"),
+        ),
+      );
+    });
+
+    it("degrades to the primary company when the membership read fails", async () => {
+      const { db } = createFakeDb({ selectThrows: true });
+      const actor = await resolveCloudTenantActor(db, fakeReq(VALID_HEADERS));
+      expect(actor).not.toBeNull();
+      expect(actor!.companyIds).toHaveLength(1);
+      expect(actor!.memberships).toHaveLength(1);
+    });
   });
 
   describe("owner instance-admin elevation (enableOwnerInstanceAdmin)", () => {

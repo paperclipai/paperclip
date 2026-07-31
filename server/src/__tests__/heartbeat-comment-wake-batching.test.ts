@@ -295,6 +295,125 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
     expect(runs[0]?.id).toBe(runId);
   });
 
+  it("defers recovery hand-back wakes until the resolving run exits", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const runId = randomUUID();
+    const recoveryActionId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const heartbeat = heartbeatService(db);
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Recovery owner",
+      role: "engineer",
+      status: "running",
+      adapterType: "process",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "running",
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        wakeReason: "source_scoped_recovery_action",
+      },
+    });
+    runningProcesses.set(runId, {
+      child: {} as never,
+      graceSec: 0,
+      processGroupId: null,
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Resume handed-back work",
+      status: "todo",
+      priority: "medium",
+      responsibleUserId: "responsible-user",
+      assigneeAgentId: agentId,
+      executionRunId: runId,
+      executionAgentNameKey: "recovery-owner",
+      executionLockedAt: new Date(),
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+    });
+
+    const followupRun = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_recovery_action_restored",
+      payload: {
+        issueId,
+        recoveryActionId,
+        mutation: "recovery_action_resolution",
+      },
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        recoveryActionId,
+        wakeReason: "issue_recovery_action_restored",
+        source: "issue.recovery_action_resolution",
+      },
+      requestedByActorType: "agent",
+      requestedByActorId: agentId,
+    });
+
+    expect(followupRun).toBeNull();
+
+    const deferred = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(
+        and(
+          eq(agentWakeupRequests.companyId, companyId),
+          eq(agentWakeupRequests.agentId, agentId),
+          eq(agentWakeupRequests.status, "deferred_issue_execution"),
+        ),
+      )
+      .then((rows) => rows[0] ?? null);
+
+    expect(deferred).toMatchObject({
+      reason: "issue_execution_deferred",
+      runId: null,
+      payload: expect.objectContaining({
+        issueId,
+        recoveryActionId,
+        mutation: "recovery_action_resolution",
+      }),
+    });
+    expect((deferred?.payload as Record<string, unknown>)._paperclipWakeContext).toMatchObject({
+      issueId,
+      taskId: issueId,
+      recoveryActionId,
+      wakeReason: "issue_recovery_action_restored",
+      source: "issue.recovery_action_resolution",
+    });
+
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(1);
+    expect(runs[0]?.id).toBe(runId);
+  });
+
   it("batches deferred comment wakes and forwards the ordered batch to the next run", async () => {
     const gateway = await createControlledGatewayServer();
     const companyId = randomUUID();

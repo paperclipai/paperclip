@@ -299,6 +299,13 @@ export type CompanyPortabilitySource =
       type: "inline";
       rootPath?: string | null;
       files: Record<string, CompanyPortabilityFileEntry>;
+      /**
+       * Client-declared file count (`Object.keys(files).length`). The import
+       * path fails closed when the received file set is smaller, so a
+       * truncated inline body cannot import a fragment. Optional for callers
+       * that predate the check.
+       */
+      expectedFileCount?: number;
     }
   | {
       type: "github";

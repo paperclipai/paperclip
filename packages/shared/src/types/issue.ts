@@ -3,6 +3,7 @@ import type {
   IssueCommentMetadataRowType,
   IssueCommentPresentationKind,
   IssueCommentPresentationTone,
+  IssueCommentPresentationDensity,
   IssueExecutionMonitorClearReason,
   IssueExecutionMonitorKind,
   IssueExecutionMonitorRecoveryPolicy,
@@ -953,6 +954,7 @@ export interface IssueCommentPresentation {
   tone: IssueCommentPresentationTone;
   title?: string | null;
   detailsDefaultOpen: boolean;
+  density?: IssueCommentPresentationDensity;
 }
 
 export interface IssueThreadInteractionActorFields {

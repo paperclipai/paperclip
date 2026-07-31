@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "packageName": "@paperclipai/skills-catalog",
   "packageVersion": "0.3.1",
-  "generatedAt": "2026-07-24T18:19:49.696Z",
+  "generatedAt": "2026-07-28T22:35:25.645Z",
   "skills": [
     {
       "id": "paperclipai:bundled:docs:doc-maintenance",
@@ -484,6 +484,42 @@
         }
       ],
       "contentHash": "sha256:efe8ea89b552df95222609867c9c75f1b40e16f457d34e7e4a124f54daa33efa"
+    },
+    {
+      "id": "paperclipai:optional:content:simplified-english",
+      "key": "paperclipai/optional/content/simplified-english",
+      "kind": "optional",
+      "category": "content",
+      "slug": "simplified-english",
+      "name": "simplified-english",
+      "description": "Write user-facing comments, plans, and documents in ASD-STE100 Simplified Technical English — short, unambiguous sentences with approved words and one meaning each — so readers understand them the first time.",
+      "path": "catalog/optional/content/simplified-english",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "markdown_only",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "engineer",
+        "product",
+        "writer",
+        "devrel"
+      ],
+      "requires": [],
+      "tags": [
+        "writing",
+        "communication",
+        "clarity",
+        "style"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 1578,
+          "sha256": "a0f7385599873910e2fabf400346016a07dacbc7ece27c0e3616ae8fd94ebfbb"
+        }
+      ],
+      "contentHash": "sha256:642321f40d51e0125df05c6fbace49aeb07ec30392058756909c259c9c5eac6a"
     },
     {
       "id": "paperclipai:optional:finance:ramp",

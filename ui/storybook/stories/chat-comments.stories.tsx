@@ -887,6 +887,109 @@ function IssueThreadNoticeReview() {
   );
 }
 
+// PAP-15871 — compact recovery notices collapse to a single quiet row and
+// expand to the full SystemNotice card. `detailsDefaultOpen` seeds the expanded
+// state so both states are visible in a static screenshot.
+function compactRecoveryComments(expanded: boolean): IssueChatComment[] {
+  return [
+    createComment({
+      id: `comment-compact-harness-${expanded ? "open" : "closed"}`,
+      authorType: "system",
+      authorAgentId: null,
+      authorUserId: null,
+      runId: "run-recovery-source",
+      runAgentId: codexAgent.id,
+      body: "Recovery escalated this issue to the CTO after three stalled runs.",
+      presentation: {
+        kind: "system_notice",
+        tone: "warning",
+        title: "Recovery escalated to CTO",
+        detailsDefaultOpen: expanded,
+        density: "compact",
+      },
+      metadata: {
+        version: 1,
+        sourceRunId: "run-recovery-source",
+        sections: [
+          {
+            title: "Escalation",
+            rows: [
+              { type: "agent_link", label: "Owner", agentId: codexAgent.id, name: codexAgent.name },
+              { type: "run_link", label: "Last run", runId: "run-recovery-source", title: "process_lost" },
+              { type: "key_value", label: "Stalled attempts", value: "3" },
+            ],
+          },
+        ],
+      },
+      createdAt: new Date("2026-04-20T14:10:00.000Z"),
+    }),
+    createComment({
+      id: `comment-compact-agent-${expanded ? "open" : "closed"}`,
+      authorAgentId: codexAgent.id,
+      authorUserId: null,
+      runId: "run-recovery-owner",
+      runAgentId: codexAgent.id,
+      body: "Picked this back up after the wake — re-running the failing migration now.",
+      presentation: {
+        kind: "system_notice",
+        tone: "neutral",
+        title: "Recovery owner update",
+        detailsDefaultOpen: expanded,
+        density: "compact",
+      },
+      metadata: null,
+      createdAt: new Date("2026-04-20T14:12:00.000Z"),
+    }),
+  ];
+}
+
+function CompactRecoveryNoticeReview() {
+  return (
+    <div className="paperclip-story">
+      <main className="paperclip-story__inner max-w-4xl space-y-6">
+        <Section eyebrow="IssueChatThread" title="Compact recovery notices — collapsed">
+          <div className="rounded-lg border border-border bg-background/70 p-4">
+            <IssueChatThread
+              comments={compactRecoveryComments(false)}
+              timelineEvents={[]}
+              linkedRuns={[]}
+              liveRuns={[]}
+              companyId={companyId}
+              projectId={projectId}
+              issueStatus="in_progress"
+              agentMap={storybookAgentMap}
+              currentUserId={currentUserId}
+              userLabelMap={boardUserLabels}
+              onAdd={async () => {}}
+              enableLiveTranscriptPolling={false}
+              showJumpToLatest={false}
+            />
+          </div>
+        </Section>
+        <Section eyebrow="IssueChatThread" title="Compact recovery notices — expanded">
+          <div className="rounded-lg border border-border bg-background/70 p-4">
+            <IssueChatThread
+              comments={compactRecoveryComments(true)}
+              timelineEvents={[]}
+              linkedRuns={[]}
+              liveRuns={[]}
+              companyId={companyId}
+              projectId={projectId}
+              issueStatus="in_progress"
+              agentMap={storybookAgentMap}
+              currentUserId={currentUserId}
+              userLabelMap={boardUserLabels}
+              onAdd={async () => {}}
+              enableLiveTranscriptPolling={false}
+              showJumpToLatest={false}
+            />
+          </div>
+        </Section>
+      </main>
+    </div>
+  );
+}
+
 function ChatCommentsStories() {
   return (
     <div className="paperclip-story">
@@ -960,4 +1063,8 @@ export const IssueChatWithTimeline: Story = {
 
 export const IssueThreadNotices: Story = {
   render: () => <IssueThreadNoticeReview />,
+};
+
+export const CompactRecoveryNotices: Story = {
+  render: () => <CompactRecoveryNoticeReview />,
 };

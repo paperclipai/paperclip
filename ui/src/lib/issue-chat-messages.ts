@@ -493,11 +493,19 @@ function createCommentMessage(args: {
 }): ThreadMessage {
   const { comment, agentMap, currentUserId, userLabelMap, companyId, projectId } = args;
   const createdAt = toDate(comment.createdAt);
-  const isSystemNotice = comment.authorType === "system";
+  const isSystemAuthor = comment.authorType === "system";
+  // Presentation can route a comment to the system-notice renderer even when it
+  // is agent-authored (e.g. a recovery owner's short status update), letting it
+  // collapse like a system notice while keeping the real author's name/link.
+  // Comments without a presentation keep today's routing (graceful fallback for
+  // old data both directions).
+  const renderAsSystemNotice = isSystemAuthor || comment.presentation?.kind === "system_notice";
   const authorAgentId = effectiveCommentAuthorAgentId(comment);
-  const authorName = authorNameForComment(comment, agentMap, currentUserId, userLabelMap, { isSystemNotice });
+  const authorName = authorNameForComment(comment, agentMap, currentUserId, userLabelMap, {
+    isSystemNotice: isSystemAuthor,
+  });
   const custom = {
-    kind: isSystemNotice ? "system_notice" : "comment",
+    kind: renderAsSystemNotice ? "system_notice" : "comment",
     commentId: comment.id,
     anchorId: `comment-${comment.id}`,
     authorName,
@@ -525,7 +533,7 @@ function createCommentMessage(args: {
   };
   const contentText = comment.deletedAt ? "" : comment.body;
 
-  if (isSystemNotice) {
+  if (renderAsSystemNotice) {
     const message: ThreadSystemMessage = {
       id: comment.id,
       role: "system",

@@ -47,16 +47,22 @@ const issueSvc = {
   getRelationSummaries: vi.fn(),
   listAttachments: vi.fn(),
   createAttachment: vi.fn(),
+  importIssues: vi.fn(),
+  archiveImportedInbox: vi.fn(),
+  addImportedComments: vi.fn(),
+  addImportedAttachments: vi.fn(),
 };
 
 const documentSvc = {
   listIssueDocuments: vi.fn(),
   upsertIssueDocument: vi.fn(),
+  createIssueDocumentsForImport: vi.fn(),
 };
 
 const workProductSvc = {
   listForIssue: vi.fn(),
   createForIssue: vi.fn(),
+  createManyForImport: vi.fn(),
 };
 
 const routineSvc = {
@@ -1240,11 +1246,13 @@ describe("company portability", () => {
     expect(projectSvc.create).toHaveBeenCalledWith("company-imported", expect.objectContaining({
       icon: "rocket",
     }));
-    expect(issueSvc.create).toHaveBeenCalledWith("company-imported", expect.objectContaining({
-      projectId: "project-imported",
-      projectWorkspaceId: "workspace-imported",
-      title: "Write launch task",
-    }));
+    expect(issueSvc.importIssues).toHaveBeenCalledWith("company-imported", expect.arrayContaining([
+      expect.objectContaining({
+        projectId: "project-imported",
+        projectWorkspaceId: "workspace-imported",
+        title: "Write launch task",
+      }),
+    ]));
   });
 
   it("normalizes invalid imported project icon names to null", async () => {
@@ -1795,6 +1803,111 @@ describe("company portability", () => {
     }, "user-1")).rejects.toThrow("agent create failed");
 
     expect(secretSvc.remove).toHaveBeenCalledWith("secret-created-for-failed-import");
+  });
+
+  it("fails closed on an inline import that arrived with fewer files than declared", async () => {
+    const portability = companyPortabilityService({} as any);
+    agentSvc.list.mockResolvedValue([]);
+
+    // The client declared four files, but the body was truncated in transit and
+    // only three arrived. The import must reject the fragment before writing any
+    // rows — not create a company and import a partial bundle.
+    await expect(portability.importBundle({
+      source: {
+        type: "inline",
+        expectedFileCount: 4,
+        files: {
+          "COMPANY.md": [
+            "---",
+            "name: Import",
+            "includes:",
+            "  - agents/coder/AGENTS.md",
+            "---",
+            "",
+          ].join("\n"),
+          "agents/coder/AGENTS.md": [
+            "---",
+            "name: Coder",
+            "slug: coder",
+            "kind: agent",
+            "---",
+            "",
+            "# Coder",
+            "",
+          ].join("\n"),
+          ".paperclip.yaml": [
+            "schema: paperclip/v1",
+            "agents:",
+            "  coder:",
+            "    adapter:",
+            "      type: codex_local",
+            "      config: {}",
+            "",
+          ].join("\n"),
+        },
+      },
+      include: { company: true, agents: true, projects: false, issues: false },
+      target: { mode: "new_company", newCompanyName: "Imported" },
+      collisionStrategy: "rename",
+    }, "user-1")).rejects.toMatchObject({
+      status: 422,
+      details: { code: "import_payload_incomplete", expectedFileCount: 4, receivedFileCount: 3 },
+    });
+
+    expect(companySvc.create).not.toHaveBeenCalled();
+    expect(agentSvc.create).not.toHaveBeenCalled();
+  });
+
+  it("imports an inline bundle whose file count matches the declared count", async () => {
+    const portability = companyPortabilityService({} as any);
+    agentSvc.list.mockResolvedValue([]);
+    agentSvc.create.mockImplementation(async (_companyId: string, input: Record<string, unknown>) => ({
+      id: "agent-imported",
+      name: input.name,
+      adapterType: input.adapterType,
+      adapterConfig: input.adapterConfig,
+      status: input.status,
+    }));
+
+    const files = {
+      "COMPANY.md": [
+        "---",
+        "name: Import",
+        "includes:",
+        "  - agents/coder/AGENTS.md",
+        "---",
+        "",
+      ].join("\n"),
+      "agents/coder/AGENTS.md": [
+        "---",
+        "name: Coder",
+        "slug: coder",
+        "kind: agent",
+        "---",
+        "",
+        "# Coder",
+        "",
+      ].join("\n"),
+      ".paperclip.yaml": [
+        "schema: paperclip/v1",
+        "agents:",
+        "  coder:",
+        "    adapter:",
+        "      type: codex_local",
+        "      config: {}",
+        "",
+      ].join("\n"),
+    };
+
+    const result = await portability.importBundle({
+      source: { type: "inline", expectedFileCount: Object.keys(files).length, files },
+      include: { company: false, agents: true, projects: false, issues: false },
+      target: { mode: "existing_company", companyId: "company-1" },
+      collisionStrategy: "rename",
+    }, "user-1");
+
+    expect(result.company.id).toBe("company-1");
+    expect(agentSvc.create).toHaveBeenCalledTimes(1);
   });
 
   it("reparents imported roots to pre-existing target managers before resolving imported hierarchy", async () => {
@@ -2372,7 +2485,7 @@ describe("company portability", () => {
       signingMode: "hmac_sha256",
       replayWindowSec: 120,
     }), expect.any(Object));
-    expect(issueSvc.create).not.toHaveBeenCalled();
+    expect(issueSvc.importIssues).not.toHaveBeenCalled();
     expect(result.routines).toEqual([
       { slug: "monday-review", id: "routine-created", action: "created", title: "Monday Review", status: "paused" },
     ]);
@@ -2588,7 +2701,7 @@ describe("company portability", () => {
       cronExpression: "0 9 * * 1",
       timezone: "America/Chicago",
     }), expect.any(Object));
-    expect(issueSvc.create).not.toHaveBeenCalled();
+    expect(issueSvc.importIssues).not.toHaveBeenCalled();
   });
 
   it("imports recurring tasks without a project or assignee as paused routines", async () => {
@@ -3450,11 +3563,13 @@ describe("company portability", () => {
     expect(issueSvc.createLabel).toHaveBeenCalledWith("company-imported", { name: "bug", color: "#ff0000" });
     expect(issueSvc.createLabel).toHaveBeenCalledWith("company-imported", { name: "urgent", color: "#00ff00" });
     expect(issueSvc.createLabel).toHaveBeenCalledTimes(2);
-    expect(issueSvc.create).toHaveBeenCalledWith(
+    expect(issueSvc.importIssues).toHaveBeenCalledWith(
       "company-imported",
-      expect.objectContaining({
-        labelIds: ["label-created-bug", "label-created-urgent"],
-      }),
+      expect.arrayContaining([
+        expect.objectContaining({
+          labelIds: ["label-created-bug", "label-created-urgent"],
+        }),
+      ]),
     );
   });
 
@@ -3506,11 +3621,13 @@ describe("company portability", () => {
 
     expect(issueSvc.createLabel).toHaveBeenCalledTimes(1);
     expect(issueSvc.createLabel).toHaveBeenCalledWith("company-1", { name: "urgent", color: "#00ff00" });
-    expect(issueSvc.create).toHaveBeenCalledWith(
+    expect(issueSvc.importIssues).toHaveBeenCalledWith(
       "company-1",
-      expect.objectContaining({
-        labelIds: ["target-bug", "label-created-urgent"],
-      }),
+      expect.arrayContaining([
+        expect.objectContaining({
+          labelIds: ["target-bug", "label-created-urgent"],
+        }),
+      ]),
     );
     expect(result.warnings).toContain(
       "Existing label color was kept for bug; the imported bundle used different colors.",
@@ -3564,9 +3681,11 @@ describe("company portability", () => {
     }, "user-1");
 
     expect(issueSvc.createLabel).not.toHaveBeenCalled();
-    expect(issueSvc.create).toHaveBeenCalledWith(
+    expect(issueSvc.importIssues).toHaveBeenCalledWith(
       "company-imported",
-      expect.objectContaining({ labelIds: [] }),
+      expect.arrayContaining([
+        expect.objectContaining({ labelIds: [] }),
+      ]),
     );
     expect(result.warnings).toContain(
       "Task kickoff dropped 2 label references because the bundle carries raw label ids that do not exist in the target company.",
@@ -3754,11 +3873,6 @@ describe("company portability", () => {
     companySvc.create.mockResolvedValue({ id: "company-imported", name: "Imported" });
     accessSvc.ensureMembership.mockResolvedValue(undefined);
     agentSvc.list.mockResolvedValue([]);
-    issueSvc.create.mockImplementation(async (_companyId: string, input: Record<string, unknown>) => ({
-      id: input.title === "Alpha task" ? "issue-imported-1" : "issue-imported-2",
-      title: input.title,
-      projectId: null,
-    }));
 
     const result = await portability.importBundle({
       source: { type: "inline", rootPath: exported.rootPath, files: exported.files },
@@ -3768,45 +3882,67 @@ describe("company portability", () => {
       collisionStrategy: "rename",
     }, "user-1");
 
-    expect(documentSvc.upsertIssueDocument).toHaveBeenCalledWith({
-      issueId: "issue-imported-1",
-      key: "spec",
-      title: "Spec",
-      format: "markdown",
-      body: "# Spec\n\nDetails.",
-      createdByUserId: "user-1",
-    });
-    expect(workProductSvc.createForIssue).toHaveBeenCalledWith(
-      "issue-imported-1",
-      "company-imported",
-      expect.objectContaining({
-        type: "pull_request",
-        provider: "github",
-        externalId: "42",
-        title: "Fix bug",
-        status: "merged",
-        reviewState: "approved",
-        isPrimary: true,
-        healthStatus: "healthy",
-        executionWorkspaceId: null,
-        runtimeServiceId: null,
-        createdByRunId: null,
-        sourceTrust: null,
-      }),
+    // Ids are pre-generated by the batched importer; correlate them by title.
+    const importedIssues = issueSvc.importIssues.mock.calls[0]![1] as Array<{
+      id: string;
+      title: string;
+      monitorNotes: string | null;
+      monitorScheduledBy: string | null;
+    }>;
+    const alphaId = importedIssues.find((row) => row.title === "Alpha task")!.id;
+    const betaId = importedIssues.find((row) => row.title === "Beta task")!.id;
+
+    expect(documentSvc.createIssueDocumentsForImport).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({
+          issueId: alphaId,
+          key: "spec",
+          title: "Spec",
+          format: "markdown",
+          body: "# Spec\n\nDetails.",
+          createdByUserId: "user-1",
+        }),
+      ]),
+    );
+    expect(workProductSvc.createManyForImport).toHaveBeenCalledWith(
+      expect.arrayContaining([
+        expect.objectContaining({
+          issueId: alphaId,
+          companyId: "company-imported",
+          type: "pull_request",
+          provider: "github",
+          externalId: "42",
+          title: "Fix bug",
+          status: "merged",
+          reviewState: "approved",
+          isPrimary: true,
+          healthStatus: "healthy",
+          executionWorkspaceId: null,
+          runtimeServiceId: null,
+          createdByRunId: null,
+          sourceTrust: null,
+        }),
+      ]),
     );
     expect(insertedRelationValues).toEqual([
       {
         companyId: "company-imported",
-        issueId: "issue-imported-1",
-        relatedIssueId: "issue-imported-2",
+        issueId: alphaId,
+        relatedIssueId: betaId,
         type: "blocks",
         createdByAgentId: null,
         createdByUserId: "user-1",
       },
     ]);
-    expect(monitorUpdates).toEqual([
-      { monitorNotes: "Check deploy daily", monitorScheduledBy: "agent" },
-    ]);
+    // Monitor notes/provenance ride on the issue row itself now, so there is no
+    // separate post-insert update. The monitor still lands un-armed.
+    expect(monitorUpdates).toEqual([]);
+    expect(importedIssues.find((row) => row.title === "Alpha task")).toEqual(
+      expect.objectContaining({
+        monitorNotes: "Check deploy daily",
+        monitorScheduledBy: "agent",
+      }),
+    );
     expect(result.warnings).toContain(
       "1 monitor was imported un-armed; re-arm it from the task page to resume checks.",
     );
@@ -3835,13 +3971,15 @@ describe("company portability", () => {
       selectedFiles: ["COMPANY.md", ".paperclip.yaml", "tasks/pap-2/TASK.md"],
     }, "user-1");
 
-    expect(issueSvc.create).toHaveBeenCalledTimes(1);
-    expect(issueSvc.create).toHaveBeenCalledWith(
+    expect(issueSvc.importIssues.mock.calls[0]![1]).toHaveLength(1);
+    expect(issueSvc.importIssues).toHaveBeenCalledWith(
       "company-imported",
-      expect.objectContaining({ title: "Beta task" }),
+      expect.arrayContaining([
+        expect.objectContaining({ title: "Beta task" }),
+      ]),
     );
-    expect(documentSvc.upsertIssueDocument).not.toHaveBeenCalled();
-    expect(workProductSvc.createForIssue).not.toHaveBeenCalled();
+    expect(documentSvc.createIssueDocumentsForImport).not.toHaveBeenCalled();
+    expect(workProductSvc.createManyForImport).not.toHaveBeenCalled();
     expect(insertedRelationValues).toEqual([]);
     expect(result.warnings).toContain(
       "Task pap-2 blocker pap-1 was skipped because that task was not imported.",
@@ -3999,9 +4137,6 @@ describe("company portability", () => {
     accessSvc.ensureMembership.mockResolvedValue(undefined);
     agentSvc.list.mockResolvedValue([]);
     issueSvc.create.mockResolvedValue({ id: "issue-imported", title: "Attachment task", projectId: null });
-    issueSvc.addComment
-      .mockResolvedValueOnce({ id: "comment-imported-1" })
-      .mockResolvedValueOnce({ id: "comment-imported-2" });
 
     const result = await portability.importBundle({
       source: { type: "inline", rootPath: exported.rootPath, files: exported.files },
@@ -4011,30 +4146,40 @@ describe("company portability", () => {
       collisionStrategy: "rename",
     }, "user-1");
 
+    // Ids are pre-generated, so capture them to resolve the storage namespace
+    // and the comment-scoped attachment reference.
+    const importedIssueId = (issueSvc.importIssues.mock.calls[0]![1] as Array<{ id: string }>)[0]!.id;
+    const importedCommentIds = (issueSvc.addImportedComments.mock.calls[0]![0] as Array<{ id: string }>).map((row) => row.id);
+
     expect(storage.putFile).toHaveBeenCalledTimes(2);
     expect(storage.putFile).toHaveBeenCalledWith(expect.objectContaining({
       companyId: "company-imported",
-      namespace: "issues/issue-imported",
+      namespace: `issues/${importedIssueId}`,
       originalFilename: "screenshot.png",
       contentType: "image/png",
       body: Buffer.from("png-bytes"),
     }));
-    expect(issueSvc.createAttachment).toHaveBeenCalledTimes(2);
-    expect(issueSvc.createAttachment).toHaveBeenCalledWith(expect.objectContaining({
-      issueId: "issue-imported",
-      issueCommentId: null,
-      originalFilename: "notes.bin",
-      contentType: "application/octet-stream",
-      sha256: sha,
-      byteSize: 9,
-      createdByUserId: "user-1",
-    }));
-    expect(issueSvc.createAttachment).toHaveBeenCalledWith(expect.objectContaining({
-      issueId: "issue-imported",
-      issueCommentId: "comment-imported-2",
-      originalFilename: "screenshot.png",
-      contentType: "image/png",
-    }));
+    const attachmentRows = issueSvc.addImportedAttachments.mock.calls[0]![0] as Array<Record<string, unknown>>;
+    expect(attachmentRows).toHaveLength(2);
+    expect(issueSvc.addImportedAttachments).toHaveBeenCalledWith(expect.arrayContaining([
+      expect.objectContaining({
+        issueId: importedIssueId,
+        issueCommentId: null,
+        originalFilename: "notes.bin",
+        contentType: "application/octet-stream",
+        sha256: sha,
+        byteSize: 9,
+        createdByUserId: "user-1",
+      }),
+    ]));
+    expect(issueSvc.addImportedAttachments).toHaveBeenCalledWith(expect.arrayContaining([
+      expect.objectContaining({
+        issueId: importedIssueId,
+        issueCommentId: importedCommentIds[1],
+        originalFilename: "screenshot.png",
+        contentType: "image/png",
+      }),
+    ]));
     expect(result.warnings.filter((warning) => warning.includes("attachment"))).toEqual([]);
   });
 
@@ -4075,7 +4220,7 @@ describe("company portability", () => {
       collisionStrategy: "rename",
     }, "user-1");
 
-    expect(issueSvc.createAttachment).not.toHaveBeenCalled();
+    expect(issueSvc.addImportedAttachments).not.toHaveBeenCalled();
     expect(result.warnings).toContain("Skipped 2 attachments because storage is unavailable.");
   });
 
@@ -4106,11 +4251,11 @@ describe("company portability", () => {
       agents: "all",
       collisionStrategy: "rename",
     }, "user-1")).rejects.toThrow(/does not match its declared sha256/);
-    expect(issueSvc.createAttachment).not.toHaveBeenCalled();
+    expect(issueSvc.addImportedAttachments).not.toHaveBeenCalled();
     // Blob verification runs before any write, so a tampered package cannot
     // leave a partially imported company behind.
     expect(companySvc.create).not.toHaveBeenCalled();
-    expect(issueSvc.create).not.toHaveBeenCalled();
+    expect(issueSvc.importIssues).not.toHaveBeenCalled();
   });
 
   it("skips oversized and missing-blob attachments with warnings instead of failing", async () => {
@@ -4152,7 +4297,7 @@ describe("company portability", () => {
       collisionStrategy: "rename",
     }, "user-1");
 
-    expect(issueSvc.createAttachment).not.toHaveBeenCalled();
+    expect(issueSvc.addImportedAttachments).not.toHaveBeenCalled();
     expect(result.warnings).toContain(
       `Task pap-1 attachment notes.bin was skipped because its blob is missing from the package: blobs/${sha}`,
     );
@@ -4290,17 +4435,19 @@ describe("company portability", () => {
     }));
 
     // Every reference now points at the minted asset id, not the source id.
-    const importedDescription = issueSvc.create.mock.calls[0]![1].description as string;
+    const importedDescription = (issueSvc.importIssues.mock.calls[0]![1] as Array<{ description: string }>)[0]!.description;
     expect(importedDescription).toContain(embeddedAssetUrl("asset-imported-1"));
     expect(importedDescription).not.toContain(EMBEDDED_ASSET_ID);
-    const importedCommentBody = issueSvc.addComment.mock.calls[0]![1] as string;
+    const importedCommentBody = (issueSvc.addImportedComments.mock.calls[0]![0] as Array<{ body: string }>)[0]!.body;
     expect(importedCommentBody).toContain(embeddedAssetUrl("asset-imported-1"));
     expect(importedCommentBody).not.toContain(EMBEDDED_ASSET_ID);
-    expect(documentSvc.upsertIssueDocument).toHaveBeenCalledWith(expect.objectContaining({
-      key: "spec",
-      body: expect.stringContaining(embeddedAssetUrl("asset-imported-1")),
-    }));
-    const importedDocumentBody = documentSvc.upsertIssueDocument.mock.calls[0]![0].body as string;
+    expect(documentSvc.createIssueDocumentsForImport).toHaveBeenCalledWith(expect.arrayContaining([
+      expect.objectContaining({
+        key: "spec",
+        body: expect.stringContaining(embeddedAssetUrl("asset-imported-1")),
+      }),
+    ]));
+    const importedDocumentBody = (documentSvc.createIssueDocumentsForImport.mock.calls[0]![0] as Array<{ body: string }>)[0]!.body;
     expect(importedDocumentBody).not.toContain(EMBEDDED_ASSET_ID);
     expect(result.warnings.filter((warning) => warning.includes("embedded"))).toEqual([]);
   });
@@ -4373,9 +4520,9 @@ describe("company portability", () => {
     expect(result.warnings).toContain(
       `Embedded image asset embed.png was skipped because its blob is missing from the package: blobs/${sha}; its references were left unchanged.`,
     );
-    const importedDescription = issueSvc.create.mock.calls[0]![1].description as string;
+    const importedDescription = (issueSvc.importIssues.mock.calls[0]![1] as Array<{ description: string }>)[0]!.description;
     expect(importedDescription).toContain(embeddedAssetUrl(EMBEDDED_ASSET_ID));
-    const importedCommentBody = issueSvc.addComment.mock.calls[0]![1] as string;
+    const importedCommentBody = (issueSvc.addImportedComments.mock.calls[0]![0] as Array<{ body: string }>)[0]!.body;
     expect(importedCommentBody).toContain(embeddedAssetUrl(EMBEDDED_ASSET_ID));
   });
 
@@ -4454,9 +4601,11 @@ describe("company portability", () => {
     expect(preview.warnings).toContain(v5Warning);
 
     const result = await portability.importBundle(request, "user-1");
-    expect(issueSvc.create).toHaveBeenCalledWith(
+    expect(issueSvc.importIssues).toHaveBeenCalledWith(
       "company-imported",
-      expect.objectContaining({ title: "Kickoff" }),
+      expect.arrayContaining([
+        expect.objectContaining({ title: "Kickoff" }),
+      ]),
     );
     expect(result.warnings).toContain(v5Warning);
   });
@@ -4487,7 +4636,7 @@ describe("company portability", () => {
       agents: "all",
       collisionStrategy: "rename",
     }, "user-1")).rejects.toThrow(/newer Paperclip/);
-    expect(issueSvc.create).not.toHaveBeenCalled();
+    expect(issueSvc.importIssues).not.toHaveBeenCalled();
   });
 
   it("preserves issue comment presentation fields through export and import", async () => {
@@ -4556,17 +4705,17 @@ describe("company portability", () => {
       collisionStrategy: "rename",
     }, "user-1");
 
-    expect(issueSvc.addComment).toHaveBeenCalledWith(
-      "issue-imported",
-      "Paperclip needs a disposition before this issue can continue.",
-      { agentId: undefined, userId: undefined },
-      {
+    expect(issueSvc.addImportedComments).toHaveBeenCalledWith(expect.arrayContaining([
+      expect.objectContaining({
+        body: "Paperclip needs a disposition before this issue can continue.",
         authorType: "system",
+        authorAgentId: null,
+        authorUserId: null,
         presentation,
         metadata,
         createdAt: "2026-05-04T12:00:00.000Z",
-      },
-    );
+      }),
+    ]));
   });
 
   it("does not export raw comment author user ids", async () => {
@@ -4672,17 +4821,17 @@ describe("company portability", () => {
       collisionStrategy: "rename",
     }, null);
 
-    expect(issueSvc.addComment).toHaveBeenCalledWith(
-      "issue-imported",
-      "Need private follow-up.",
-      { agentId: undefined, userId: undefined },
-      {
+    expect(issueSvc.addImportedComments).toHaveBeenCalledWith(expect.arrayContaining([
+      expect.objectContaining({
+        body: "Need private follow-up.",
         authorType: "system",
+        authorAgentId: null,
+        authorUserId: null,
         presentation: null,
         metadata: null,
         createdAt: "2026-05-04T12:00:00.000Z",
-      },
-    );
+      }),
+    ]));
     expect(result.warnings).toContain(
       "Comment on task pap-1 was imported as a system comment because no importing user was available.",
     );
@@ -4938,7 +5087,7 @@ describe("company portability", () => {
       sourceCompanyId: "company-1",
     })).rejects.toThrow("Safe import does not allow task review executionWorkspaceSettings.");
 
-    expect(issueSvc.create).not.toHaveBeenCalled();
+    expect(issueSvc.importIssues).not.toHaveBeenCalled();
     expect(routineSvc.createTrigger).not.toHaveBeenCalled();
   });
 
@@ -5179,12 +5328,14 @@ describe("company portability", () => {
     expect(agentResult!.action).toBe("skipped");
 
     // Issue should still be created and reference the existing agent
-    expect(issueSvc.create).toHaveBeenCalled();
-    const issueCreateCall = issueSvc.create.mock.calls[0];
+    expect(issueSvc.importIssues).toHaveBeenCalled();
+    const issueImportCall = issueSvc.importIssues.mock.calls[0];
     // The assigneeAgentId should resolve to the existing agent via existingSlugToAgentId
-    expect(issueCreateCall[1]).toEqual(expect.objectContaining({
-      assigneeAgentId: "agent-1",
-    }));
+    expect(issueImportCall[1]).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        assigneeAgentId: "agent-1",
+      }),
+    ]));
   });
 
   it("handles a package with only skills (no agents or projects)", async () => {
