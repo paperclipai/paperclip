@@ -713,11 +713,12 @@ function runningImportJobFromError(err: unknown): CompanyImportJobAccepted | nul
  * Terminal outcome of watching an import job.
  *
  * - `completed` carries the full import result and drives the activation path.
- * - `completed-expired` is a *success* whose result we can no longer read: the
- *   job finished and wrote all its data, but its in-memory record expired (or
- *   the server restarted) before we polled it. The company id, when known,
- *   lets the page still navigate to the imported company. This is never a
- *   failure — the import succeeded.
+ * - `completed-expired` is a *server-confirmed* success whose full result we
+ *   can no longer read: the server reported the job `succeeded` but retained
+ *   only its compact summary — a cloud tenant job, or a board job whose full
+ *   in-memory result aged out. The company id lets the page still navigate to
+ *   the imported company. This is never a failure: the server confirmed the
+ *   import succeeded before we stopped being able to read the full result.
  */
 type CompanyImportWatchOutcome =
   | { status: "completed"; result: CompanyPortabilityImportResult }
@@ -728,25 +729,20 @@ async function watchImportJob(
   jobId: string,
   storageKey: string,
 ): Promise<CompanyImportWatchOutcome> {
-  // Track whether a poll ever saw the job at all. A 404 *after* we have seen it
-  // running (or succeeded) means it finished and its result aged out of server
-  // memory — a success we can no longer read, not a failure. A 404 on the very
-  // first poll means the id never existed, which stays a hard error. The last
-  // seen company id lets the expired-success path still navigate.
-  let seenRunning = false;
-  let lastKnownCompanyId: string | null = null;
   for (;;) {
     let job: Awaited<ReturnType<typeof companiesApi.getImportJob>>["job"] | null = null;
     try {
       job = (await companiesApi.getImportJob(jobId)).job;
     } catch (err) {
       if (err instanceof ApiError && err.status === 404) {
+        // The server has no record of this job. The retention sweep only drops
+        // jobs that have already *settled* (a running job is never removed), so
+        // a 404 while we are still watching means the in-memory record was lost
+        // to a restart mid-import — the import never reached a confirmed
+        // `succeeded` state and may not have finished. Report that honestly
+        // rather than masking a possibly-incomplete import as a success; the
+        // refreshed company list lets the user confirm what actually landed.
         clearStoredImportJob(storageKey);
-        if (seenRunning) {
-          // Seen running, now gone: the import completed and its result
-          // expired (retention window or a restart). Treat as a soft success.
-          return { status: "completed-expired", companyId: lastKnownCompanyId };
-        }
         throw new Error(
           "The server no longer reports this import job — it may have restarted while the import ran.",
         );
@@ -771,19 +767,15 @@ async function watchImportJob(
       // server-side, so keep watching rather than reporting a failure that
       // may not exist.
     }
-    if (job) {
-      seenRunning = true;
-      lastKnownCompanyId = job.result?.companyId ?? lastKnownCompanyId;
-    }
     if (job?.status === "succeeded") {
       clearStoredImportJob(storageKey);
       if (!job.importResult) {
-        // The job finished and wrote all its data, but the full result is not
-        // retained (a cloud tenant job, or a board job whose in-memory result
-        // aged out). Still a success — navigate by company id when we have it.
+        // The server confirmed success but retained only the compact summary
+        // (a cloud tenant job, or a board job whose full result aged out of
+        // memory). Still a success — navigate by the summary's company id.
         return {
           status: "completed-expired",
-          companyId: job.result?.companyId ?? lastKnownCompanyId,
+          companyId: job.result?.companyId ?? null,
         };
       }
       return { status: "completed", result: job.importResult };

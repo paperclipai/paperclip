@@ -659,13 +659,15 @@ describe("CompanyImport", () => {
     expect(container.textContent).toContain("Import complete");
   });
 
-  it("treats a completed-then-expired job as a soft success and refreshes the company list", async () => {
-    // The first poll finds the job running; the next poll 404s because its
-    // terminal result aged out of server memory. Seen-running-then-gone is a
-    // success we can no longer read — never a scary failure.
-    mockCompaniesApi.getImportJob
-      .mockResolvedValueOnce({ job: { id: "job-1", status: "running", result: { companyId: "company-2" } } })
-      .mockRejectedValue(new ApiError("Import job not found", 404, { error: "Import job not found" }));
+  it("treats a server-confirmed success without a full result as a soft success and refreshes the company list", async () => {
+    // The server reports the job `succeeded` but retains only the compact
+    // summary (a cloud tenant job, or a board job whose full in-memory result
+    // aged out): status is a confirmed success, `importResult` is gone, and the
+    // summary still carries the company id. That is a success we can no longer
+    // fully read — never a scary failure.
+    mockCompaniesApi.getImportJob.mockResolvedValue({
+      job: { id: "job-1", status: "succeeded", result: { companyId: "company-2" } },
+    });
 
     const invalidateSpy = vi.spyOn(QueryClient.prototype, "invalidateQueries");
     try {
@@ -678,7 +680,7 @@ describe("CompanyImport", () => {
       expect(mockPushToast).toHaveBeenCalledWith(expect.objectContaining({ tone: "success" }));
       // The company list is refreshed so the new company appears in the switcher.
       expect(invalidateSpy).toHaveBeenCalledWith(expect.objectContaining({ queryKey: ["companies"] }));
-      // The last-known company id still drives navigation into the import.
+      // The summary's company id still drives navigation into the import.
       expect(mockSetSelectedCompanyId).toHaveBeenCalledWith("company-2");
     } finally {
       invalidateSpy.mockRestore();
@@ -691,6 +693,28 @@ describe("CompanyImport", () => {
     mockCompaniesApi.getImportJob.mockRejectedValue(
       new ApiError("Import job not found", 404, { error: "Import job not found" }),
     );
+
+    await renderPage();
+    await enterGithubUrl();
+    await clickButton((text) => text === "Preview import");
+    await clickButton((text) => text.startsWith("Import 3 file"));
+    await settle();
+
+    expect(container.textContent).toContain("Import failed:");
+    expect(container.textContent).toContain("it may have restarted while the import ran");
+    expect(container.textContent).not.toContain("Import completed");
+    expect(mockPushToast).toHaveBeenCalledWith(expect.objectContaining({ tone: "error" }));
+  });
+
+  it("surfaces a running-then-gone job as an error because the server restarted mid-import", async () => {
+    // The first poll finds the job running; the next poll 404s. A running job is
+    // never dropped by the retention sweep (only settled jobs age out), so its
+    // disappearance means the server restarted mid-import — the import never
+    // reached a confirmed success and may not have finished. Report that
+    // honestly instead of masking a possibly-incomplete import as completed.
+    mockCompaniesApi.getImportJob
+      .mockResolvedValueOnce({ job: { id: "job-1", status: "running" } })
+      .mockRejectedValue(new ApiError("Import job not found", 404, { error: "Import job not found" }));
 
     await renderPage();
     await enterGithubUrl();
