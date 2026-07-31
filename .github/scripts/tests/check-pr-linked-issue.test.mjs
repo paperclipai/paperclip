@@ -1,5 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { checkLinkedIssue, hasInlineIssueDescription } from '../check-pr-linked-issue.mjs';
 
 // Existing tests with title parameter added (defaults to no prefix, so still required)
@@ -278,4 +280,64 @@ test('passes with inline enhancement description (4 template fields)', () => {
 
 test('hasInlineIssueDescription returns true for ≥3 enhancement fields', () => {
   assert.equal(hasInlineIssueDescription(ENHANCEMENT_INLINE_BODY), true);
+});
+
+// Empty default skeleton must fail. A label with only the bare "-" placeholder
+// under it is not filled, so it must not count toward the field minimum.
+const EMPTY_SKELETON_BODY = `
+**What happened?**
+-
+
+**Expected behavior:**
+-
+
+**Steps to reproduce:**
+-
+`;
+
+test('fails with an empty template skeleton (labels but no content)', () => {
+  const result = checkLinkedIssue(EMPTY_SKELETON_BODY, 'feat: something');
+  assert.equal(result.passed, false);
+  assert.ok(result.failures.length > 0);
+});
+
+test('hasInlineIssueDescription returns false for an empty skeleton', () => {
+  assert.equal(hasInlineIssueDescription(EMPTY_SKELETON_BODY), false);
+});
+
+// A filled bug skeleton in the bold-label form must pass, even with list-marker
+// content. This proves the fix does not reject real author content.
+const FILLED_BUG_SKELETON_BODY = `
+**What happened?**
+- The login button does nothing.
+
+**Expected behavior:**
+- The login button authenticates the user.
+
+**Steps to reproduce:**
+- Open the app, then click login.
+`;
+
+test('passes with a filled bug skeleton (three filled fields)', () => {
+  assert.equal(checkLinkedIssue(FILLED_BUG_SKELETON_BODY, 'feat: fix login').passed, true);
+});
+
+// The real .github/PULL_REQUEST_TEMPLATE.md, submitted unchanged, must fail the
+// gate. Its skeleton labels have no content and its example issue links live in
+// HTML comments, so neither the inline path nor the linked path may pass it.
+const PR_TEMPLATE_PATH = fileURLToPath(
+  new URL('../../PULL_REQUEST_TEMPLATE.md', import.meta.url)
+);
+
+test('fails with the unfilled default PR template body', () => {
+  const body = readFileSync(PR_TEMPLATE_PATH, 'utf8');
+  const result = checkLinkedIssue(body, 'feat: unfilled template');
+  assert.equal(result.passed, false);
+});
+
+// An issue link that appears only inside an HTML comment must not satisfy the
+// linked-issue check. The template ships such an example ("Fixes: #123").
+test('fails when the only issue link is inside an HTML comment', () => {
+  const body = '<!-- Example: Fixes: #123 -->\n\nSome prose with no real link.';
+  assert.equal(checkLinkedIssue(body, 'feat: commented link').passed, false);
 });

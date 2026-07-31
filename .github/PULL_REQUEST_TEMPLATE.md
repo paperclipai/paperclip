@@ -33,8 +33,10 @@
 
   (B) No issue exists — keep the ONE skeleton below that fits your change and
       fill in each field. Delete the other two skeletons. An automated check
-      reads the literal bold labels, not your prose. So you must keep at least
-      three of these labels, each alone on its own line, or the check fails.
+      reads the literal bold labels AND the content under each label. So you
+      must keep at least three of these labels, each alone on its own line,
+      and write real content under each. A label with only the bare "-"
+      placeholder does not count, and the check fails.
       Each skeleton matches one issue template:
         • Bug:     .github/ISSUE_TEMPLATE/bug_report.yml
         • Feature: .github/ISSUE_TEMPLATE/feature_request.yml
