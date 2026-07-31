@@ -112,7 +112,12 @@ export function buildExecutionPolicy(input: {
     });
   }
 
-  if (stages.length === 0 && !monitor) return null;
+  if (
+    stages.length === 0 &&
+    !monitor &&
+    !input.existingPolicy?.reviewPreset &&
+    !input.existingPolicy?.authorizationPolicy
+  ) return null;
 
   return {
     ...input.existingPolicy,

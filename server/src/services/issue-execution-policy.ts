@@ -326,8 +326,14 @@ function nextAssigneeIds(input: {
 export function stripMonitorFromExecutionPolicy(policy: IssueExecutionPolicy | null): IssueExecutionPolicy | null {
   if (!policy) return null;
   if (!policy.monitor) return policy;
-  if (policy.stages.length === 0) return null;
   const { monitor: _monitor, ...policyWithoutMonitor } = policy;
+  if (
+    policyWithoutMonitor.stages.length === 0 &&
+    !policyWithoutMonitor.reviewPreset &&
+    !policyWithoutMonitor.authorizationPolicy
+  ) {
+    return null;
+  }
   return policyWithoutMonitor;
 }
 
@@ -480,6 +486,24 @@ function nextPendingStageAfter(
   return policy.stages.find((stage, index) => index > completedIndex && !completed.has(stage.id)) ?? null;
 }
 
+function continuationPolicyForExecutionPending(
+  policy: IssueExecutionPolicy,
+  state: IssueExecutionState | null,
+) {
+  if (state?.status !== EXECUTION_PENDING_STATUS || state.continuationStageIds === undefined) {
+    return policy;
+  }
+  const stagesById = new Map(policy.stages.map((stage) => [stage.id, stage]));
+  const stages = state.continuationStageIds.map((stageId) => {
+    const stage = stagesById.get(stageId);
+    if (!stage) {
+      throw unprocessable("Execution policy changed while executor continuation was pending; reconcile the policy before completing");
+    }
+    return stage;
+  });
+  return { ...policy, stages };
+}
+
 function selectStageParticipant(
   stage: IssueExecutionStage,
   opts?: {
@@ -532,6 +556,7 @@ function buildCompletedState(previous: IssueExecutionState | null, currentStage:
 function buildExecutionPendingState(
   previous: IssueExecutionState,
   currentStage: IssueExecutionStage,
+  continuationStageIds: string[],
 ): IssueExecutionState {
   return {
     status: EXECUTION_PENDING_STATUS,
@@ -542,6 +567,7 @@ function buildExecutionPendingState(
     returnAssignee: previous.returnAssignee,
     reviewRequest: null,
     completedStageIds: Array.from(new Set([...previous.completedStageIds, currentStage.id])),
+    continuationStageIds,
     lastDecisionId: previous.lastDecisionId,
     lastDecisionOutcome: "approved",
     monitor: previous.monitor ?? null,
@@ -826,7 +852,12 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
           }
           patch.status = "in_progress";
           Object.assign(patch, patchForPrincipal(existingState.returnAssignee));
-          patch.executionState = buildExecutionPendingState(existingState, activeStage);
+          const activeStageIndex = input.policy.stages.findIndex((stage) => stage.id === activeStage.id);
+          patch.executionState = buildExecutionPendingState(
+            existingState,
+            activeStage,
+            input.policy.stages.slice(activeStageIndex + 1).map((stage) => stage.id),
+          );
           return {
             patch,
             decision: {
@@ -1020,13 +1051,18 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
     return { patch };
   }
 
+  const workflowPolicy = continuationPolicyForExecutionPending(input.policy, existingState);
   let pendingStage =
     existingState?.status === CHANGES_REQUESTED_STATUS && currentStage
       ? currentStage
-      : nextPendingStage(input.policy, existingState);
+      : nextPendingStage(workflowPolicy, existingState);
   if (!pendingStage) {
     if (requestedStatus === "done" && existingState?.status === EXECUTION_PENDING_STATUS) {
-      patch.executionState = { ...existingState, status: COMPLETED_STATUS };
+      patch.executionState = {
+        ...existingState,
+        status: COMPLETED_STATUS,
+        continuationStageIds: undefined,
+      };
     }
     return { patch };
   }
@@ -1043,7 +1079,7 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
   while (!participant && canAutoSkipPendingStage({ stage: pendingStage, returnAssignee, requestedStatus })) {
     skippedStageIds.push(pendingStage.id);
     pendingStage = nextPendingStage(
-      input.policy,
+      workflowPolicy,
       buildStateWithCompletedStages({
         previous: existingState,
         completedStageIds: skippedStageIds,
