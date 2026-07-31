@@ -108,6 +108,38 @@ describe("adapter model listing", () => {
     expect(models.every((model) => model.id.startsWith("us.anthropic."))).toBe(true);
   });
 
+  it("offers residency-specific profiles in regions that publish their own family", async () => {
+    process.env.CLAUDE_CODE_USE_BEDROCK = "1";
+    process.env.AWS_REGION = "ap-southeast-2";
+
+    const sydney = await listAdapterModels("claude_local");
+
+    expect(sydney.length).toBeGreaterThan(0);
+    expect(sydney.every((model) => model.id.startsWith("au.anthropic."))).toBe(true);
+
+    process.env.AWS_REGION = "ap-northeast-1";
+    resetClaudeModelsCacheForTests();
+    const tokyo = await listAdapterModels("claude_local");
+
+    expect(tokyo.length).toBeGreaterThan(0);
+    expect(tokyo.every((model) => model.id.startsWith("jp.anthropic."))).toBe(true);
+  });
+
+  it("falls back to global profiles in a configured region with no verified family", async () => {
+    process.env.CLAUDE_CODE_USE_BEDROCK = "1";
+    // Singapore publishes no current residency-specific family: `apac.` carries only Claude 3.x
+    // profiles, and us-prefixed profiles do not exist there at all.
+    process.env.AWS_REGION = "ap-southeast-1";
+
+    const models = await listAdapterModels("claude_local");
+
+    expect(models.length).toBeGreaterThan(0);
+    expect(models.some((model) => model.id.startsWith("us.anthropic."))).toBe(false);
+    expect(models.every((model) => model.id.startsWith("global.anthropic."))).toBe(true);
+    // The bundled Summarizer default must be resolvable here, or onboarding still fails.
+    expect(models.some((model) => model.id.includes("claude-haiku-4-5"))).toBe(true);
+  });
+
   it("loads claude models dynamically and merges fallback options", async () => {
     process.env.ANTHROPIC_API_KEY = "sk-ant-test";
     const fetchSpy = vi.spyOn(globalThis, "fetch").mockResolvedValue({

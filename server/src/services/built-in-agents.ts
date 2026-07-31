@@ -783,6 +783,20 @@ async function resolveDefaultAdapterConfig(
   return { ...adapterConfig, model: equivalent.id };
 }
 
+// Fill in a definition's bundled default so the caller stores the same model that validation
+// accepted. Callers must not pass the result to the `input.adapterConfig !== undefined` checks that
+// decide whether an operator supplied adapter setup, because a bundled default is not operator input.
+async function resolveBuiltInAgentProvisionInput(
+  definition: BuiltInAgentDefinition,
+  input: BuiltInAgentProvisionInput,
+): Promise<BuiltInAgentProvisionInput> {
+  if (input.adapterConfig || !definition.defaultAdapterConfig) return input;
+  const adapterType = input.adapterType ?? defaultAdapterType(definition);
+  const adapterConfig = await resolveDefaultAdapterConfig(adapterType, definition.defaultAdapterConfig);
+  if (adapterConfig === definition.defaultAdapterConfig) return input;
+  return { ...input, adapterConfig };
+}
+
 async function assertKnownBuiltInAgentModel(
   definition: BuiltInAgentDefinition,
   input: BuiltInAgentProvisionInput,
@@ -1766,7 +1780,12 @@ export function builtInAgentService(db: Db) {
     if (!company.requireBoardApprovalForNewAgents) {
       return { state: await ensure(companyId, key, input), approval: null };
     }
-    await assertKnownBuiltInAgentModel(definition, input);
+    // Resolve a bundled default model before validating it, so the pending row stores the profile
+    // that will actually run once the board approves the hire. The unresolved `input` still drives
+    // the "did the operator supply adapter setup?" checks below, which must not see a filled-in
+    // default as operator input.
+    const resolvedInput = await resolveBuiltInAgentProvisionInput(definition, input);
+    await assertKnownBuiltInAgentModel(definition, resolvedInput);
 
     const existing = await findSingleAgent(companyId, definition);
     if (existing) {
@@ -1818,7 +1837,7 @@ export function builtInAgentService(db: Db) {
     let pending: Agent;
     try {
       pending = await agentSvc.create(companyId, {
-        ...definitionPatch(definition, input),
+        ...definitionPatch(definition, resolvedInput),
         status: "pending_approval",
         reportsTo,
         metadata: builtInMetadata(definition),
