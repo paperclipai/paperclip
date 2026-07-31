@@ -2369,11 +2369,26 @@ describe("IssueProperties", () => {
   it("renders monitor controls and clears an existing monitor", async () => {
     const dateNowSpy = vi.spyOn(Date, "now").mockReturnValue(new Date("2026-04-11T10:00:00.000Z").getTime());
     const onUpdate = vi.fn();
+    const reviewPreset = {
+      id: "low_trust_review" as const,
+      version: 1 as const,
+      rawOutputDisposition: "quarantine" as const,
+    };
+    const authorizationPolicy = {
+      trustPreset: "low_trust_review" as const,
+      reviewPreset,
+      trustBoundary: {
+        mode: "low_trust_review" as const,
+        companyId: "company-1",
+      },
+    };
     const root = renderProperties(container, {
       issue: createIssue({
         status: "in_progress",
         assigneeAgentId: "agent-1",
         executionPolicy: createExecutionPolicy({
+          reviewPreset,
+          authorizationPolicy,
           monitor: {
             nextCheckAt: "2026-04-11T12:30:00.000Z",
             notes: "Check deployment",
@@ -2422,24 +2437,44 @@ describe("IssueProperties", () => {
     const inputs = Array.from(container.querySelectorAll("input"));
     const datetimeInput = inputs.find((input) => input.getAttribute("type") === "datetime-local");
     const textInput = inputs.find((input) => input.getAttribute("placeholder") === "What should the agent re-check?");
-    const clearButton = Array.from(container.querySelectorAll("button"))
-      .find((button) => button.textContent?.includes("Clear"));
+    const scheduleButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Schedule"));
 
     expect(datetimeInput).toBeTruthy();
     expect(textInput).toBeTruthy();
-    expect(clearButton).toBeTruthy();
+    expect(scheduleButton).toBeTruthy();
     expect(datetimeInput!.value).toBeTruthy();
     expect(textInput!.value).toBe("Check deployment");
 
     act(() => {
+      scheduleButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    expect(onUpdate).toHaveBeenLastCalledWith({
+      executionPolicy: expect.objectContaining({
+        reviewPreset,
+        authorizationPolicy,
+        monitor: expect.objectContaining({ notes: "Check deployment" }),
+      }),
+    });
+
+    await act(async () => {
+      monitorTrigger!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+    const clearButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Clear"));
+    expect(clearButton).toBeTruthy();
+    act(() => {
       clearButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
 
-    expect(onUpdate).toHaveBeenCalledWith({
+    expect(onUpdate).toHaveBeenLastCalledWith({
       executionPolicy: {
         mode: "normal",
         commentRequired: true,
         stages: [],
+        reviewPreset,
+        authorizationPolicy,
       },
     });
 

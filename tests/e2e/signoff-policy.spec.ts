@@ -558,7 +558,7 @@ test.describe("Signoff execution policy", () => {
     expect(advanceRes.status()).toBeGreaterThanOrEqual(400);
   });
 
-  test("review-only policy: reviewer approval completes execution", async () => {
+  test("review-only policy: reviewer approval returns to executor before completion", async () => {
     const issue = await createIssueWithPolicy(ctx, "Signoff review-only", [
       { type: "review", participants: [{ type: "agent", agentId: ctx.reviewer.agentId }] },
     ]);
@@ -571,13 +571,24 @@ test.describe("Signoff execution policy", () => {
     expect(doneRes.ok()).toBe(true);
     expect((await doneRes.json()).status).toBe("in_review");
 
-    // Reviewer approves → should complete immediately (no approval stage)
+    // Reviewer approves → returns to executor for post-review work
     const approveRes = await agentPatch(
       ctx.boardRequest, ctx.reviewer, issue.id,
       { status: "done", comment: "LGTM." },
     );
     expect(approveRes.ok()).toBe(true);
-    const doneIssue = await approveRes.json();
+    const approvedIssue = await approveRes.json();
+    expect(approvedIssue.status).toBe("in_progress");
+    expect(approvedIssue.assigneeAgentId).toBe(ctx.executor.agentId);
+    expect(approvedIssue.executionState.status).toBe("execution_pending");
+
+    // Executor completes the post-review work → execution closes
+    const completeRes = await agentCheckoutAndPatch(
+      ctx.boardRequest, ctx.executor, issue.id, ["in_progress"],
+      { status: "done", comment: "Post-review deployment complete." },
+    );
+    expect(completeRes.ok()).toBe(true);
+    const doneIssue = await completeRes.json();
     expect(doneIssue.status).toBe("done");
     expect(doneIssue.executionState.status).toBe("completed");
     expect(doneIssue.executionState.completedStageIds).toHaveLength(1);

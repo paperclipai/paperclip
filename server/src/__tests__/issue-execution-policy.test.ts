@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { applyIssueExecutionPolicyTransition, normalizeIssueExecutionPolicy, parseIssueExecutionState } from "../services/issue-execution-policy.ts";
+import {
+  applyIssueExecutionPolicyTransition,
+  normalizeIssueExecutionPolicy,
+  parseIssueExecutionState,
+  stripMonitorFromExecutionPolicy,
+} from "../services/issue-execution-policy.ts";
 import type { IssueExecutionPolicy, IssueExecutionState } from "@paperclipai/shared";
 
 const coderAgentId = "11111111-1111-4111-8111-111111111111";
@@ -133,6 +138,39 @@ describe("normalizeIssueExecutionPolicy", () => {
         notes: "Check deployment",
         scheduledBy: "assignee",
         externalRef: "[redacted]",
+      },
+    });
+  });
+
+  it("preserves stage-less authorization controls when removing a monitor", () => {
+    const reviewPreset = {
+      id: "low_trust_review" as const,
+      version: 1 as const,
+      rawOutputDisposition: "quarantine" as const,
+    };
+    const policy = normalizeIssueExecutionPolicy({
+      stages: [],
+      monitor: {
+        nextCheckAt: "2026-04-11T12:30:00.000Z",
+        notes: "Check deployment",
+      },
+      reviewPreset,
+      authorizationPolicy: {
+        trustPreset: "low_trust_review",
+        reviewPreset,
+        trustBoundary: {
+          mode: "low_trust_review",
+          companyId: coderAgentId,
+        },
+      },
+    });
+
+    expect(stripMonitorFromExecutionPolicy(policy)).toMatchObject({
+      stages: [],
+      reviewPreset,
+      authorizationPolicy: {
+        trustPreset: "low_trust_review",
+        trustBoundary: { companyId: coderAgentId },
       },
     });
   });
@@ -698,6 +736,7 @@ describe("issue execution policy transitions", () => {
         executionState: {
           status: "execution_pending",
           completedStageIds: [reviewStageId],
+          continuationStageIds: [],
           lastDecisionOutcome: "approved",
         },
       });
@@ -707,15 +746,17 @@ describe("issue execution policy transitions", () => {
         outcome: "approved",
       });
 
+      const regeneratedPolicy = reviewOnlyPolicy();
+      expect(regeneratedPolicy.stages[0].id).not.toBe(reviewStageId);
       const executionCompleted = applyIssueExecutionPolicyTransition({
         issue: {
           status: "in_progress",
           assigneeAgentId: coderAgentId,
           assigneeUserId: null,
-          executionPolicy: policy,
+          executionPolicy: regeneratedPolicy,
           executionState: approval.patch.executionState as IssueExecutionState,
         },
-        policy,
+        policy: regeneratedPolicy,
         requestedStatus: "done",
         requestedAssigneePatch: {},
         actor: { agentId: coderAgentId },

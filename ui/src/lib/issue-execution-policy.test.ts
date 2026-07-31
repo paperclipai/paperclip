@@ -127,6 +127,20 @@ describe("buildExecutionPolicy", () => {
       commentRequired: false,
       reviewPreset,
       authorizationPolicy,
+      stages: [
+        { type: "review", onApprove: "return_to_executor" },
+        { type: "approval" },
+      ],
+    });
+
+    expect(buildExecutionPolicy({
+      existingPolicy,
+      reviewerValues: [],
+      approverValues: [],
+    })).toMatchObject({
+      stages: [],
+      reviewPreset,
+      authorizationPolicy,
     });
   });
 });

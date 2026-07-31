@@ -1095,11 +1095,14 @@ export function IssueProperties({
       onUpdate({ executionPolicy: null });
       return;
     }
+    const { monitor: _monitor, ...policyWithoutMonitor } = basePolicy ?? issue.executionPolicy ?? {
+      mode: "normal" as const,
+      commentRequired: true,
+      stages: [],
+    };
     onUpdate({
       executionPolicy: {
-        mode: basePolicy?.mode ?? issue.executionPolicy?.mode ?? "normal",
-        commentRequired: true,
-        stages: basePolicy?.stages ?? [],
+        ...policyWithoutMonitor,
         ...(nextMonitor ? { monitor: nextMonitor } : {}),
       },
     });
