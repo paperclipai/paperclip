@@ -1,10 +1,12 @@
 import { createHash, randomUUID } from "node:crypto";
-import { Router, type Request } from "express";
+import express, { Router, type Request, type Response } from "express";
+import multer from "multer";
 import { and, count as countFn, eq } from "drizzle-orm";
 import { z } from "zod";
 import type { Db } from "@paperclipai/db";
 import { agents as agentsTable } from "@paperclipai/db";
 import type { CompanyPortabilityImportResult } from "@paperclipai/shared";
+import { readZipArchive } from "@paperclipai/shared/portability-zip";
 import {
   DEFAULT_FEEDBACK_DATA_SHARING_TERMS_VERSION,
   companyArtifactsQuerySchema,
@@ -18,7 +20,8 @@ import {
   updateCompanyBrandingSchema,
   updateCompanySchema,
 } from "@paperclipai/shared";
-import { badRequest, forbidden } from "../errors.js";
+import { badRequest, forbidden, unprocessable } from "../errors.js";
+import { PORTABLE_ZIP_UPLOAD_LIMIT_BYTES } from "../http/body-limits.js";
 import { validate } from "../middleware/validate.js";
 import {
   accessService,
@@ -36,6 +39,147 @@ import {
 import type { StorageService } from "../storage/types.js";
 import { assertBoard, assertCompanyAccess, assertInstanceAdmin, getActorInfo } from "./authz.js";
 import { COMPANY_IMPORT_ROUTE_PATH } from "./company-import-paths.js";
+
+// A company import can arrive one of two ways on the import + preview routes:
+//   • application/json — the original inline body `{ source, target, ... }`,
+//     kept byte-identical for CLI and programmatic callers; or
+//   • the raw compressed zip, either as multipart/form-data (a `package` file
+//     field plus a JSON `meta` field) or a bare application/zip body. The zip
+//     is a third of the inline size and already gzip-friendly, so it survives
+//     the browser → edge → harness-proxy → tenant chain that truncated the
+//     inflated inline JSON on large companies.
+// The zip is unzipped server-side into the exact `{ rootPath, files }` bundle
+// the inline source carries, then fed through the unchanged preview/import
+// logic, so import semantics are identical regardless of transport.
+const PORTABLE_ZIP_CONTENT_TYPES = ["application/zip", "application/x-zip-compressed"] as const;
+
+const zipPackageUpload = multer({
+  storage: multer.memoryStorage(),
+  limits: { fileSize: PORTABLE_ZIP_UPLOAD_LIMIT_BYTES, files: 1 },
+});
+
+const rawZipBodyParser = express.raw({
+  type: [...PORTABLE_ZIP_CONTENT_TYPES],
+  limit: PORTABLE_ZIP_UPLOAD_LIMIT_BYTES,
+});
+
+function requestContentType(req: Request) {
+  return (req.header("content-type") ?? "").toLowerCase();
+}
+
+function isMultipartImport(req: Request) {
+  return requestContentType(req).includes("multipart/form-data");
+}
+
+function isZipImport(req: Request) {
+  const contentType = requestContentType(req);
+  return PORTABLE_ZIP_CONTENT_TYPES.some((type) => contentType.includes(type));
+}
+
+function runMiddleware(
+  middleware: (req: Request, res: Response, next: (err?: unknown) => void) => void,
+  req: Request,
+  res: Response,
+) {
+  return new Promise<void>((resolve, reject) => {
+    middleware(req, res, (err?: unknown) => (err ? reject(err) : resolve()));
+  });
+}
+
+/**
+ * Parse the `meta` form/query field into the object the import schemas expect.
+ * A client-declared `source` is ignored — the source is always the uploaded
+ * zip — so a multipart caller only ships the other import fields (include,
+ * target, collisionStrategy, nameOverrides, selectedFiles, adapterOverrides,
+ * pauseAutomations, ...).
+ */
+function parseImportMeta(metaRaw: string | undefined): Record<string, unknown> {
+  if (metaRaw === undefined || metaRaw.trim().length === 0) return {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(metaRaw);
+  } catch {
+    throw badRequest("Import package metadata was not valid JSON.");
+  }
+  if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
+    throw badRequest("Import package metadata must be a JSON object.");
+  }
+  const { source: _ignoredSource, ...rest } = parsed as Record<string, unknown>;
+  return rest;
+}
+
+/**
+ * Resolve the object to hand the preview/import zod schemas. For a JSON request
+ * this is the inline body unchanged. For a multipart or application/zip request
+ * the uploaded zip is read into `{ rootPath, files }` and combined with the
+ * `meta` fields as `source = { type: "inline", rootPath, files }`. A truncated,
+ * corrupt, or empty zip fails closed with a 400/422 before anything is imported.
+ */
+async function resolveImportPayload(req: Request, res: Response): Promise<unknown> {
+  const multipart = isMultipartImport(req);
+  const rawZip = isZipImport(req);
+  if (!multipart && !rawZip) {
+    return req.body;
+  }
+
+  let zipBytes: Buffer | undefined;
+  let metaRaw: string | undefined;
+  if (multipart) {
+    try {
+      await runMiddleware(zipPackageUpload.single("package"), req, res);
+    } catch (error) {
+      if (error instanceof multer.MulterError) {
+        if (error.code === "LIMIT_FILE_SIZE") {
+          throw unprocessable(`Import package exceeds ${PORTABLE_ZIP_UPLOAD_LIMIT_BYTES} bytes`);
+        }
+        throw badRequest(error.message);
+      }
+      throw error;
+    }
+    const file = (req as Request & { file?: { buffer?: Buffer } }).file;
+    zipBytes = file?.buffer;
+    const metaField = (req.body as { meta?: unknown } | undefined)?.meta;
+    metaRaw = typeof metaField === "string" ? metaField : undefined;
+  } else {
+    try {
+      await runMiddleware(rawZipBodyParser, req, res);
+    } catch (error) {
+      throw badRequest(error instanceof Error ? error.message : "Invalid zip upload");
+    }
+    zipBytes = Buffer.isBuffer(req.body) ? req.body : undefined;
+    const metaQuery = req.query.meta;
+    metaRaw = typeof metaQuery === "string" ? metaQuery : undefined;
+  }
+
+  if (!zipBytes || zipBytes.length === 0) {
+    throw badRequest("Import package upload was empty.");
+  }
+  let archive: Awaited<ReturnType<typeof readZipArchive>>;
+  try {
+    archive = await readZipArchive(zipBytes);
+  } catch (error) {
+    throw badRequest(`Import package could not be read: ${errorMessage(error)}`);
+  }
+  if (Object.keys(archive.files).length === 0) {
+    throw badRequest("Import package contained no files.");
+  }
+  return {
+    ...parseImportMeta(metaRaw),
+    source: { type: "inline", rootPath: archive.rootPath, files: archive.files },
+  };
+}
+
+/**
+ * Async job opt-in. Cloud tenants set the `x-paperclip-cloud-async-import`
+ * header server-side (they are not a browser, so it is never stripped). Board
+ * browsers cannot use that header — the Cloud harness proxy strips every
+ * inbound `x-paperclip-cloud-*` header as anti-spoofing — so they opt in with
+ * the proxy-safe `?async=1` query parameter instead. Either signal enters the
+ * async path.
+ */
+function wantsAsyncImport(req: Request) {
+  return req.query.async === "1" || req.header("x-paperclip-cloud-async-import") === "1";
+}
 
 export function companyRoutes(db: Db, storage?: StorageService) {
   const router = Router();
@@ -264,7 +408,7 @@ export function companyRoutes(db: Db, storage?: StorageService) {
 
   router.post("/import/preview", async (req, res) => {
     assertBoard(req);
-    const body = companyPortabilityPreviewSchema.parse(req.body);
+    const body = companyPortabilityPreviewSchema.parse(await resolveImportPayload(req, res));
     assertImportTargetAccess(req, body.target);
     const preview = await portability.previewImport(body);
     res.json(preview);
@@ -288,10 +432,14 @@ export function companyRoutes(db: Db, storage?: StorageService) {
 
   router.post(COMPANY_IMPORT_ROUTE_PATH, async (req, res) => {
     assertBoard(req);
-    const rawImportBody: unknown = req.body;
+    // Resolve the request body up front: a JSON caller's inline body is used
+    // unchanged; a multipart/application-zip caller's uploaded zip is read into
+    // the same `{ source: { type: "inline", rootPath, files } }` bundle here,
+    // fast and in-memory, so the async job machinery below is transport-agnostic.
+    const rawImportBody: unknown = await resolveImportPayload(req, res);
     const actor = getActorInfo(req);
     const boardUserId = req.actor.type === "board" ? req.actor.userId : null;
-    if (req.header("x-paperclip-cloud-async-import") === "1") {
+    if (wantsAsyncImport(req)) {
       // Async job path. Two kinds of callers opt in:
       //  - trusted Cloud tenants (original behavior, kept byte-identical),
       //    keyed by their tenant identity headers;

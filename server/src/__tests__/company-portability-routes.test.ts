@@ -260,6 +260,79 @@ async function waitForImportJobStatusAs(
   throw new Error(`Timed out waiting for import job to reach ${status}`);
 }
 
+// A minimal STORE-only zip writer so the multipart/zip upload path can be
+// exercised end-to-end: the route unzips this into the same inline bundle an
+// application/json caller would send. Layout matches ui/src/lib/zip.ts (local
+// file headers, central directory, end-of-central-directory).
+function crc32(bytes: Uint8Array) {
+  let crc = 0xffffffff;
+  for (const byte of bytes) {
+    crc ^= byte;
+    for (let bit = 0; bit < 8; bit += 1) {
+      crc = (crc & 1) === 1 ? (crc >>> 1) ^ 0xedb88320 : crc >>> 1;
+    }
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function buildStoreZip(files: Record<string, string>, rootPath: string): Buffer {
+  const encoder = new TextEncoder();
+  const localChunks: Buffer[] = [];
+  const centralChunks: Buffer[] = [];
+  let localOffset = 0;
+  const entries = Object.entries(files);
+
+  for (const [relativePath, content] of entries) {
+    const fileName = encoder.encode(`${rootPath}/${relativePath}`);
+    const body = Buffer.from(encoder.encode(content));
+    const checksum = crc32(body);
+
+    const localHeader = Buffer.alloc(30 + fileName.length);
+    localHeader.writeUInt32LE(0x04034b50, 0);
+    localHeader.writeUInt16LE(20, 4);
+    localHeader.writeUInt16LE(0x0800, 6);
+    localHeader.writeUInt32LE(checksum, 14);
+    localHeader.writeUInt32LE(body.length, 18);
+    localHeader.writeUInt32LE(body.length, 22);
+    localHeader.writeUInt16LE(fileName.length, 26);
+    Buffer.from(fileName).copy(localHeader, 30);
+
+    const centralHeader = Buffer.alloc(46 + fileName.length);
+    centralHeader.writeUInt32LE(0x02014b50, 0);
+    centralHeader.writeUInt16LE(20, 4);
+    centralHeader.writeUInt16LE(20, 6);
+    centralHeader.writeUInt16LE(0x0800, 8);
+    centralHeader.writeUInt32LE(checksum, 16);
+    centralHeader.writeUInt32LE(body.length, 20);
+    centralHeader.writeUInt32LE(body.length, 24);
+    centralHeader.writeUInt16LE(fileName.length, 28);
+    centralHeader.writeUInt32LE(localOffset, 42);
+    Buffer.from(fileName).copy(centralHeader, 46);
+
+    localChunks.push(localHeader, body);
+    centralChunks.push(centralHeader);
+    localOffset += localHeader.length + body.length;
+  }
+
+  const centralDirectory = Buffer.concat(centralChunks);
+  const eocd = Buffer.alloc(22);
+  eocd.writeUInt32LE(0x06054b50, 0);
+  eocd.writeUInt16LE(entries.length, 8);
+  eocd.writeUInt16LE(entries.length, 10);
+  eocd.writeUInt32LE(centralDirectory.length, 12);
+  eocd.writeUInt32LE(localOffset, 16);
+
+  return Buffer.concat([...localChunks, centralDirectory, eocd]);
+}
+
+// The import fields a multipart caller ships as the JSON `meta` field: the same
+// object an inline caller sends, minus `source` (the source is the uploaded zip).
+const importMeta = {
+  include: importRequest.include,
+  target: importRequest.target,
+  collisionStrategy: importRequest.collisionStrategy,
+};
+
 describe.sequential("company portability routes", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -1006,5 +1079,137 @@ describe.sequential("company portability routes", () => {
       null,
       { mode: "agent_safe", sourceCompanyId: companyId, pauseAutomations: true },
     );
+  });
+
+  it.sequential("imports a company from a multipart zip upload, unzipping into the same inline bundle", async () => {
+    const app = await createBoardApp();
+    const files = { "COMPANY.md": "---\nname: Test\n---\n", "agents/ceo/AGENTS.md": "---\nname: CEO\n---\n" };
+    const zip = buildStoreZip(files, "paperclip");
+
+    const res = await request(app)
+      .post("/api/companies/import")
+      .set(TEST_USER_HEADER, "board-user-a")
+      .field("meta", JSON.stringify(importMeta))
+      .attach("package", zip, "paperclip-demo.zip");
+
+    expect(res.status).toBe(200);
+    expect(mockCompanyPortabilityService.importBundle).toHaveBeenCalledTimes(1);
+    const call = mockCompanyPortabilityService.importBundle.mock.calls[0]!;
+    // The uploaded zip is unzipped into the exact inline source the importer
+    // consumes; the other import fields ride along from the JSON meta field.
+    expect(call[0]).toEqual({ ...importMeta, source: { type: "inline", rootPath: "paperclip", files } });
+    expect(call[1]).toBe("board-user-a");
+    expect(call[2]).toEqual({ pauseAutomations: false });
+  });
+
+  it.sequential("previews a company from a multipart zip upload", async () => {
+    const app = await createBoardApp();
+    const files = { "COMPANY.md": "---\nname: Test\n---\n" };
+    const zip = buildStoreZip(files, "paperclip");
+
+    const res = await request(app)
+      .post("/api/companies/import/preview")
+      .set(TEST_USER_HEADER, "board-user-a")
+      .field("meta", JSON.stringify(importMeta))
+      .attach("package", zip, "paperclip-demo.zip");
+
+    expect(res.status).toBe(200);
+    expect(mockCompanyPortabilityService.previewImport).toHaveBeenCalledTimes(1);
+    const call = mockCompanyPortabilityService.previewImport.mock.calls[0]!;
+    expect(call[0]).toEqual({ ...importMeta, source: { type: "inline", rootPath: "paperclip", files } });
+  });
+
+  it.sequential("runs a multipart zip import as an async board job via ?async=1", async () => {
+    let resolveImport: (value: ReturnType<typeof createImportResult>) => void = () => undefined;
+    const pendingImport = new Promise<ReturnType<typeof createImportResult>>((resolve) => {
+      resolveImport = resolve;
+    });
+    mockCompanyPortabilityService.importBundle.mockReturnValueOnce(pendingImport);
+    const app = await createBoardApp();
+    const files = { "COMPANY.md": "---\nname: Test\n---\n" };
+    const zip = buildStoreZip(files, "paperclip");
+
+    const accepted = await request(app)
+      .post("/api/companies/import?async=1")
+      .set(TEST_USER_HEADER, "board-user-a")
+      .field("meta", JSON.stringify(importMeta))
+      .attach("package", zip, "paperclip-demo.zip");
+
+    expect(accepted.status).toBe(202);
+    expect(accepted.body.job.status).toBe("running");
+    expect(accepted.body.statusUrl).toMatch(/^\/api\/companies\/import\/jobs\/import-/);
+    await waitForCondition(
+      () => mockCompanyPortabilityService.importBundle.mock.calls.length === 1,
+      "multipart async import start",
+    );
+    expect(mockCompanyPortabilityService.importBundle.mock.calls[0]![0]).toEqual({
+      ...importMeta,
+      source: { type: "inline", rootPath: "paperclip", files },
+    });
+
+    const fullResult = createImportResult("created");
+    resolveImport(fullResult);
+    const succeeded = await waitForImportJobStatusAs(app, accepted.body.statusUrl, "succeeded", {
+      [TEST_USER_HEADER]: "board-user-a",
+    });
+    expect(succeeded.body.job.status).toBe("succeeded");
+    expect(succeeded.body.job.importResult).toEqual(fullResult);
+  });
+
+  it.sequential("engages the async path for board sessions via ?async=1, not the stripped cloud header", async () => {
+    mockCompanyPortabilityService.importBundle.mockReturnValueOnce(new Promise(() => undefined));
+    const app = await createBoardApp();
+
+    // The Cloud harness strips inbound x-paperclip-cloud-* headers, so a browser
+    // can only opt into async with the proxy-safe query parameter.
+    const accepted = await request(app)
+      .post("/api/companies/import?async=1")
+      .set(TEST_USER_HEADER, "board-user-a")
+      .send(importRequest);
+
+    expect(accepted.status).toBe(202);
+    expect(accepted.body.job.status).toBe("running");
+    expect(accepted.body.statusUrl).toMatch(/^\/api\/companies\/import\/jobs\/import-/);
+  });
+
+  it.sequential("keeps a board import synchronous when neither async signal is present", async () => {
+    const app = await createBoardApp();
+
+    const res = await request(app)
+      .post("/api/companies/import")
+      .set(TEST_USER_HEADER, "board-user-a")
+      .send(importRequest);
+
+    expect(res.status).toBe(200);
+    expect(res.body.company.id).toBe(companyId);
+  });
+
+  it.sequential("still engages the async path for cloud tenants via the x-paperclip-cloud-async-import header", async () => {
+    mockCompanyPortabilityService.importBundle.mockReturnValueOnce(new Promise(() => undefined));
+    const app = await createApp(cloudTenantActor());
+
+    const accepted = await request(app)
+      .post("/api/companies/import")
+      .set("x-paperclip-cloud-async-import", "1")
+      .set(cloudHeaders)
+      .send(importRequest);
+
+    expect(accepted.status).toBe(202);
+    expect(accepted.body.statusUrl).toMatch(/^\/api\/companies\/import\/jobs\/tenant-import-/);
+  });
+
+  it.sequential("rejects a truncated zip upload without importing anything", async () => {
+    const app = await createBoardApp();
+    const zip = buildStoreZip({ "COMPANY.md": "---\nname: Test\n---\n" }, "paperclip");
+    const truncated = zip.subarray(0, 40);
+
+    const res = await request(app)
+      .post("/api/companies/import")
+      .set(TEST_USER_HEADER, "board-user-a")
+      .field("meta", JSON.stringify(importMeta))
+      .attach("package", truncated, "paperclip-demo.zip");
+
+    expect(res.status).toBe(400);
+    expect(mockCompanyPortabilityService.importBundle).not.toHaveBeenCalled();
   });
 });

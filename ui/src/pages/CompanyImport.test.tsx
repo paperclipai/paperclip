@@ -11,8 +11,10 @@ import { CompanyImport } from "./CompanyImport";
 
 const mockCompaniesApi = vi.hoisted(() => ({
   importPreview: vi.fn(),
+  importPreviewPackage: vi.fn(),
   importBundle: vi.fn(),
   importBundleAsync: vi.fn(),
+  importBundlePackageAsync: vi.fn(),
   getImportJob: vi.fn(),
   get: vi.fn(),
 }));
@@ -186,9 +188,11 @@ describe("CompanyImport", () => {
     mockAgentsApi.resume.mockResolvedValue({ id: "agent-1", status: "idle" });
     mockRoutinesApi.update.mockResolvedValue({ id: "routine-1", status: "active" });
     mockCompaniesApi.importPreview.mockResolvedValue(buildPreviewResult());
+    mockCompaniesApi.importPreviewPackage.mockResolvedValue(buildPreviewResult());
     // Default async flow: the submit is accepted (202) and the first poll finds
     // the job already finished with the full result. Individual tests override.
     mockCompaniesApi.importBundleAsync.mockResolvedValue(buildAccepted());
+    mockCompaniesApi.importBundlePackageAsync.mockResolvedValue(buildAccepted());
     mockCompaniesApi.getImportJob.mockResolvedValue(buildSucceededJob());
     mockCompaniesApi.get.mockResolvedValue({ id: "company-2", name: "Imported Test", issuePrefix: "IMP" });
     mockSidebarPreferencesApi.updateProjectOrder.mockResolvedValue(undefined);
@@ -303,9 +307,10 @@ describe("CompanyImport", () => {
     expect(mockPushToast).toHaveBeenCalledWith(expect.objectContaining({ tone: "error" }));
   });
 
-  it("blocks oversized local packages and sends the declared file count once attachments are dropped", async () => {
-    // A synthetic parsed package: the base64 blob payload alone exceeds the
-    // inline import limit, so no real 60MB zip needs to be built.
+  it("uploads a local .zip as a multipart package and never blocks on inline size", async () => {
+    // Even a package whose inflated inline JSON would blow past the old browser
+    // limit uploads fine now: the raw compressed zip goes up as multipart and is
+    // unzipped server-side, so the inline-size ceiling no longer gates it.
     mockReadZipArchive.mockResolvedValue({
       rootPath: "big-package",
       files: {
@@ -325,7 +330,7 @@ describe("CompanyImport", () => {
 
     const fileInput = container.querySelector<HTMLInputElement>('input[type="file"]');
     expect(fileInput).toBeTruthy();
-    const file = new File(["stub"], "big-package.zip", { type: "application/zip" });
+    const file = new File(["stub-zip-bytes"], "big-package.zip", { type: "application/zip" });
     Object.defineProperty(file, "arrayBuffer", { value: async () => new ArrayBuffer(0) });
     Object.defineProperty(fileInput!, "files", { value: [file] });
     await act(async () => {
@@ -333,32 +338,33 @@ describe("CompanyImport", () => {
     });
     await flushReact();
 
-    expect(container.textContent).toContain("CLI folder import");
-    expect(container.textContent).toContain("Package too large for browser import");
-    expect(findButton((text) => text === "Preview import")?.disabled).toBe(true);
-
-    await clickButton((text) => text === "Continue without attachments");
-
-    expect(container.textContent).not.toContain("CLI folder import");
+    // The inline preflight no longer blocks the zip path.
     expect(container.textContent).not.toContain("Package too large for browser import");
+    expect(container.textContent).not.toContain("CLI folder import");
     expect(findButton((text) => text === "Preview import")?.disabled).toBe(false);
 
     await clickButton((text) => text === "Preview import");
-    // The button label reflects the preview's file count (3); the sent source
-    // is the local package, which is down to two files after the blob is
-    // dropped.
+    // The preview goes up as a multipart package (the raw File), not inline JSON.
+    expect(mockCompaniesApi.importPreviewPackage).toHaveBeenCalledTimes(1);
+    expect(mockCompaniesApi.importPreview).not.toHaveBeenCalled();
+    expect(mockCompaniesApi.importPreviewPackage.mock.calls[0]![0]).toBe(file);
+
     await clickButton((text) => text.startsWith("Import 3 file"));
     await settle();
 
-    expect(mockCompaniesApi.importBundleAsync).toHaveBeenCalledTimes(1);
-    const request = mockCompaniesApi.importBundleAsync.mock.calls[0]![0] as {
-      source: { type: string; files: Record<string, unknown>; expectedFileCount?: number };
-    };
-    expect(request.source.type).toBe("inline");
-    expect(Object.keys(request.source.files).sort()).toEqual([".paperclip.yaml", "COMPANY.md"]);
-    // The client declares the file count so the server can reject a truncated
-    // upload instead of importing a fragment.
-    expect(request.source.expectedFileCount).toBe(2);
+    // The apply also uploads the raw File as a multipart async job — never the
+    // inflated inline body that truncated in transit.
+    expect(mockCompaniesApi.importBundleAsync).not.toHaveBeenCalled();
+    expect(mockCompaniesApi.importBundlePackageAsync).toHaveBeenCalledTimes(1);
+    const [sentFile, meta] = mockCompaniesApi.importBundlePackageAsync.mock.calls[0]! as [
+      File,
+      { pauseAutomations: boolean; target: { mode: string } },
+    ];
+    expect(sentFile).toBe(file);
+    expect(sentFile.name).toBe("big-package.zip");
+    expect(meta.pauseAutomations).toBe(true);
+    // The bundle itself is never expanded into the request; only the raw zip travels.
+    expect(meta).not.toHaveProperty("source");
   });
 
   it("explains the disabled preview button until a package is chosen", async () => {

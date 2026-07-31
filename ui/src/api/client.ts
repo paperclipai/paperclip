@@ -155,7 +155,14 @@ export const api = {
       ...(options?.headers ? { headers: options.headers } : {}),
     }),
   postForm: <T>(path: string, body: FormData, options?: RequestOptions) =>
-    request<T>(path, { method: "POST", body, signal: options?.signal }),
+    request<T>(path, {
+      method: "POST",
+      body,
+      signal: options?.signal,
+      // Never set Content-Type here — the browser sets multipart/form-data with
+      // the boundary. Extra headers (e.g. an async opt-in) may still ride along.
+      ...(options?.headers ? { headers: options.headers } : {}),
+    }),
   put: <T>(path: string, body: unknown, options?: RequestOptions) =>
     request<T>(path, { method: "PUT", body: JSON.stringify(body), signal: options?.signal }),
   patch: <T>(path: string, body: unknown, options?: RequestOptions) =>

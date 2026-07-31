@@ -523,6 +523,40 @@ const jsonBody = (schema: z.ZodTypeAny) => ({
   required: true as const,
 });
 
+// The company import + preview routes accept the inline JSON body or the raw
+// company package as a compressed zip upload. Document both content types: the
+// JSON variant keeps its zod schema; the multipart variant carries the zip in a
+// `package` file field plus the other import fields as a JSON `meta` field.
+const importRequestBody = (schema: z.ZodTypeAny) => ({
+  content: {
+    "application/json": { schema },
+    "multipart/form-data": {
+      schema: {
+        type: "object",
+        properties: {
+          package: {
+            type: "string",
+            format: "binary",
+            description: "The company package as a compressed .zip.",
+          },
+          meta: {
+            type: "string",
+            description:
+              "JSON-encoded import fields (include, target, collisionStrategy, and, for " +
+              "the apply route, nameOverrides / selectedFiles / adapterOverrides / " +
+              "pauseAutomations). A `source` here is ignored — the source is the zip.",
+          },
+        },
+        required: ["package"],
+      },
+    },
+    "application/zip": {
+      schema: { type: "string", format: "binary" },
+    },
+  },
+  required: true as const,
+});
+
 const r = responses;
 
 const externalObjectSummariesBodySchema = z.object({
@@ -5239,8 +5273,15 @@ registry.registerPath({
   path: "/api/companies/import/preview",
   tags: ["companies"],
   summary: "Preview a company import (legacy route)",
-  request: { body: jsonBody(companyPortabilityPreviewSchema) },
-  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+  description:
+    "Accepts either the inline JSON body (`application/json`) or the raw company " +
+    "package uploaded as a compressed zip (`multipart/form-data` with a `package` " +
+    "file field plus a JSON `meta` field carrying the other import fields, or a bare " +
+    "`application/zip` body with the `meta` JSON in the `meta` query parameter). The " +
+    "zip is unzipped server-side into the same `{ source: { type: \"inline\", ... } }` " +
+    "bundle the JSON body carries.",
+  request: { body: importRequestBody(companyPortabilityPreviewSchema) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 422: r.unprocessable },
 });
 
 registry.registerPath({
@@ -5249,17 +5290,28 @@ registry.registerPath({
   tags: ["companies"],
   summary: "Apply a company import (legacy route)",
   description:
-    "Board sessions and trusted Cloud tenants can opt into asynchronous processing with the " +
-    "`x-paperclip-cloud-async-import: 1` header: the server responds 202 with a job id and status " +
-    "URL instead of holding the connection open for the whole import. While a board actor already " +
-    "has an async job running, a resubmit returns 409 carrying the running job's id and status URL. " +
-    "Jobs are held in memory and are lost on restart.",
-  request: { body: jsonBody(companyPortabilityImportSchema) },
+    "Accepts either the inline JSON body (`application/json`) or the raw company package " +
+    "uploaded as a compressed zip (`multipart/form-data` with a `package` file field plus a " +
+    "JSON `meta` field, or a bare `application/zip` body with the `meta` JSON in the `meta` " +
+    "query parameter); the zip is unzipped server-side into the same import bundle. " +
+    "Callers can opt into asynchronous processing: trusted Cloud tenants set the " +
+    "`x-paperclip-cloud-async-import: 1` header (browsers cannot — the Cloud harness proxy " +
+    "strips inbound `x-paperclip-cloud-*` headers), while board sessions use the proxy-safe " +
+    "`?async=1` query parameter. Either way the server responds 202 with a job id and status " +
+    "URL instead of holding the connection open for the whole import. While a board actor " +
+    "already has an async job running, a resubmit returns 409 carrying the running job's id " +
+    "and status URL. Jobs are held in memory and are lost on restart.",
+  request: {
+    query: z.object({ async: z.enum(["1"]).optional() }),
+    body: importRequestBody(companyPortabilityImportSchema),
+  },
   responses: {
     200: r.ok(),
+    202: { description: "Async import job accepted" },
     400: r.badRequest,
     401: r.unauthorized,
     409: { description: "An async import job is already running for this actor" },
+    422: r.unprocessable,
   },
 });
 

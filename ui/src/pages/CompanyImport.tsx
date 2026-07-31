@@ -50,13 +50,7 @@ import {
   FileTree,
 } from "../components/FileTree";
 import { readZipArchive } from "../lib/zip";
-import {
-  INLINE_IMPORT_MAX_BYTES,
-  buildInlineImportPreflight,
-  formatMegabytes,
-  isBlobStoreFilePath,
-  stripBlobFiles,
-} from "../lib/import-preflight";
+import { formatMegabytes } from "../lib/import-preflight";
 import { getPortableFileDataUrl, getPortableFileText, isPortableImageFile } from "../lib/portable-files";
 import {
   clearStoredImportJob,
@@ -667,6 +661,14 @@ function AdapterPickerList({
 
 async function readLocalPackageZip(file: File): Promise<{
   name: string;
+  /**
+   * The raw .zip File itself. Local imports upload this compressed file as
+   * multipart instead of inflating it into one large inline JSON body (which
+   * truncated in transit on big companies); the parsed `files` map below is
+   * kept only for the client-side preflight display and preview affordances.
+   */
+  file: File;
+  compressedBytes: number;
   rootPath: string | null;
   files: Record<string, CompanyPortabilityFileEntry>;
 }> {
@@ -679,6 +681,8 @@ async function readLocalPackageZip(file: File): Promise<{
   }
   return {
     name: file.name,
+    file,
+    compressedBytes: file.size,
     rootPath: archive.rootPath,
     files: archive.files,
   };
@@ -779,6 +783,8 @@ export function CompanyImport() {
   const [importUrl, setImportUrl] = useState("");
   const [localPackage, setLocalPackage] = useState<{
     name: string;
+    file: File;
+    compressedBytes: number;
     rootPath: string | null;
     files: Record<string, CompanyPortabilityFileEntry>;
   } | null>(null);
@@ -845,22 +851,27 @@ export function CompanyImport() {
     ]);
   }, [selectedCompany?.name, setBreadcrumbs]);
 
-  function buildSource(): CompanyPortabilitySource | null {
-    if (sourceMode === "local") {
-      if (!localPackage) return null;
-      // Declare how many files we are sending so the server can reject a
-      // truncated upload instead of importing a fragment (see the server-side
-      // completeness check in importBundle).
-      return {
-        type: "inline",
-        rootPath: localPackage.rootPath,
-        files: localPackage.files,
-        expectedFileCount: Object.keys(localPackage.files).length,
-      };
-    }
+  // The GitHub/URL source still travels inline (it is just a URL, so it never
+  // hits the inline-size ceiling). The local .zip source uploads its raw
+  // compressed file as multipart instead — see the preview/import mutations.
+  function buildGithubSource(): CompanyPortabilitySource | null {
     const url = importUrl.trim();
     if (!url) return null;
     return { type: "github", url };
+  }
+
+  // Import fields shared by preview and apply, and by both transports. The
+  // multipart zip upload ships these as a JSON `meta` field; the inline GitHub
+  // request spreads them alongside its `source`.
+  function buildImportMetaCommon() {
+    return {
+      include: { company: true, agents: true, projects: true, issues: true },
+      target:
+        targetMode === "new"
+          ? { mode: "new_company" as const, newCompanyName: newCompanyName || null }
+          : { mode: "existing_company" as const, companyId: selectedCompanyId! },
+      collisionStrategy,
+    };
   }
 
   // Monotonic id for preview requests. Structural configuration changes bump
@@ -873,17 +884,16 @@ export function CompanyImport() {
   // Preview mutation
   const previewMutation = useMutation({
     mutationFn: (_generation: number) => {
-      const source = buildSource();
+      const meta = buildImportMetaCommon();
+      if (sourceMode === "local") {
+        if (!localPackage) throw new Error("No source configured.");
+        // Upload the raw compressed zip; the server unzips it into the same
+        // inline bundle the importer consumes.
+        return companiesApi.importPreviewPackage(localPackage.file, meta);
+      }
+      const source = buildGithubSource();
       if (!source) throw new Error("No source configured.");
-      return companiesApi.importPreview({
-        source,
-        include: { company: true, agents: true, projects: true, issues: true },
-        target:
-          targetMode === "new"
-            ? { mode: "new_company", newCompanyName: newCompanyName || null }
-            : { mode: "existing_company", companyId: selectedCompanyId! },
-        collisionStrategy,
-      });
+      return companiesApi.importPreview({ source, ...meta });
     },
     onSuccess: (result, generation) => {
       if (generation !== previewGenerationRef.current) return;
@@ -1001,24 +1011,24 @@ export function CompanyImport() {
       if (variables.resume) {
         return watchImportJob(variables.resume.jobId, variables.resume.storageKey);
       }
-      const source = buildSource();
-      if (!source) throw new Error("No source configured.");
+      const meta = {
+        ...buildImportMetaCommon(),
+        nameOverrides: buildFinalNameOverrides(),
+        selectedFiles: buildSelectedFiles(),
+        adapterOverrides: buildFinalAdapterOverrides(),
+        pauseAutomations: variables.pauseAutomations,
+      };
+      const localFile = sourceMode === "local" ? localPackage?.file : null;
+      const githubSource = sourceMode === "local" ? null : buildGithubSource();
+      if (sourceMode === "local" ? !localFile : !githubSource) {
+        throw new Error("No source configured.");
+      }
       const storageKey = currentImportJobStorageKey();
       let accepted: CompanyImportJobAccepted;
       try {
-        accepted = await companiesApi.importBundleAsync({
-          source,
-          include: { company: true, agents: true, projects: true, issues: true },
-          target:
-            targetMode === "new"
-              ? { mode: "new_company", newCompanyName: newCompanyName || null }
-              : { mode: "existing_company", companyId: selectedCompanyId! },
-          collisionStrategy,
-          nameOverrides: buildFinalNameOverrides(),
-          selectedFiles: buildSelectedFiles(),
-          adapterOverrides: buildFinalAdapterOverrides(),
-          pauseAutomations: variables.pauseAutomations,
-        });
+        accepted = localFile
+          ? await companiesApi.importBundlePackageAsync(localFile, meta)
+          : await companiesApi.importBundleAsync({ source: githubSource!, ...meta });
       } catch (err) {
         // 409: this user's previous import is still running. Adopt that job
         // and watch it — never fire a second import.
@@ -1352,20 +1362,10 @@ export function CompanyImport() {
     sourceMode === "local" ? !!localPackage : importUrl.trim().length > 0;
   const hasErrors = importPreview ? importPreview.errors.length > 0 : false;
 
-  // Inline imports ship the parsed package as one JSON request; oversized
-  // local packages are blocked before any request is attempted.
-  const inlinePreflight = useMemo(
-    () => (sourceMode === "local" && localPackage ? buildInlineImportPreflight(localPackage.files) : null),
-    [sourceMode, localPackage],
-  );
-  const inlineImportBlocked = Boolean(inlinePreflight?.tooLarge);
-
-  function handleContinueWithoutAttachments() {
-    if (!localPackage) return;
-    resetMutationState();
-    setLocalPackage({ ...localPackage, files: stripBlobFiles(localPackage.files) });
-    setCheckedFiles((prev) => new Set([...prev].filter((filePath) => !isBlobStoreFilePath(filePath))));
-  }
+  // The local .zip uploads its raw compressed file as multipart and is unzipped
+  // server-side, so the old inline-size ceiling no longer gates it. Surface the
+  // compressed upload size instead of the inflated-JSON estimate.
+  const localCompressedBytes = sourceMode === "local" ? localPackage?.compressedBytes ?? null : null;
 
   const previewContent = selectedFile && importPreview
     ? (() => {
@@ -1555,6 +1555,7 @@ export function CompanyImport() {
                   {localPackage.name} with{" "}
                   {Object.keys(localPackage.files).length} file
                   {Object.keys(localPackage.files).length === 1 ? "" : "s"}
+                  {localCompressedBytes !== null ? ` (${formatMegabytes(localCompressedBytes)} zip)` : ""}
                 </span>
               )}
             </div>
@@ -1562,20 +1563,6 @@ export function CompanyImport() {
               <p className="mt-2 text-xs text-muted-foreground">
                 {localZipHelpText}
               </p>
-            )}
-            {inlinePreflight?.tooLarge && (
-              <div className="mt-3 space-y-2 rounded-md border border-amber-500/30 bg-amber-500/5 px-3 py-2.5">
-                <p className="text-xs text-amber-500">
-                  This package is about {formatMegabytes(inlinePreflight.estimatedBytes)} inline, which is
-                  larger than the {formatMegabytes(INLINE_IMPORT_MAX_BYTES)} browser import limit. Large
-                  packages need the CLI folder import today (paperclip company import).
-                </p>
-                {inlinePreflight.canDropAttachments && (
-                  <Button size="sm" variant="outline" onClick={handleContinueWithoutAttachments}>
-                    Continue without attachments
-                  </Button>
-                )}
-              </div>
             )}
           </div>
         ) : (
@@ -1657,7 +1644,7 @@ export function CompanyImport() {
             variant="outline"
             onClick={() => previewMutation.mutate(previewGenerationRef.current)}
             disabled={
-              previewMutation.isPending || importMutation.isPending || !hasSource || inlineImportBlocked
+              previewMutation.isPending || importMutation.isPending || !hasSource
             }
           >
             {previewMutation.isPending ? "Previewing..." : "Preview import"}
@@ -1672,18 +1659,13 @@ export function CompanyImport() {
               Import in progress — the package and settings unlock when it finishes.
             </span>
           )}
-          {inlineImportBlocked && (
-            <span className="text-xs text-amber-500">
-              Package too large for browser import — see the notice above.
-            </span>
-          )}
         </div>
         {previewMutation.isPending && (
           <div className="mt-3 flex items-start gap-2 rounded-md border border-border bg-muted/30 px-3 py-2.5">
             <Loader2 className="mt-0.5 h-3.5 w-3.5 shrink-0 animate-spin text-muted-foreground" />
             <p className="text-xs text-muted-foreground">
               Uploading and analyzing your package
-              {inlinePreflight ? ` (about ${formatMegabytes(inlinePreflight.estimatedBytes)})` : ""} — large
+              {localCompressedBytes !== null ? ` (${formatMegabytes(localCompressedBytes)} zip)` : ""} — large
               packages can take a few minutes. Keep this page open.
             </p>
           </div>
@@ -1767,7 +1749,7 @@ export function CompanyImport() {
             <Button
               size="sm"
               onClick={() => importMutation.mutate({ previewForImport: importPreview, pauseAutomations })}
-              disabled={importMutation.isPending || hasErrors || selectedCount === 0 || inlineImportBlocked}
+              disabled={importMutation.isPending || hasErrors || selectedCount === 0}
             >
               <Download className="mr-1.5 h-3.5 w-3.5" />
               {importMutation.isPending

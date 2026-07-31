@@ -14,6 +14,21 @@ import { api } from "./client";
 
 export type CompanyStats = Record<string, { agentCount: number; issueCount: number }>;
 
+/**
+ * Import fields for a zip package upload: everything the JSON request carries
+ * except `source` — the source is the uploaded zip, read server-side. Sent as a
+ * JSON-encoded `meta` form field alongside the raw `package` file.
+ */
+export type CompanyPortabilityPreviewMeta = Omit<CompanyPortabilityPreviewRequest, "source">;
+export type CompanyPortabilityImportMeta = Omit<CompanyPortabilityImportRequest, "source">;
+
+function importPackageForm(file: File, meta: CompanyPortabilityPreviewMeta | CompanyPortabilityImportMeta): FormData {
+  const form = new FormData();
+  form.append("package", file);
+  form.append("meta", JSON.stringify(meta));
+  return form;
+}
+
 export type CompanyImportJobState = "running" | "succeeded" | "failed";
 
 /** 202 body from the async opt-in on POST /companies/import (and the 409 body when a job is already running). */
@@ -82,13 +97,21 @@ export const companiesApi = {
     api.get<ExportFidelityReport>(`/companies/${companyId}/export/fidelity`),
   importPreview: (data: CompanyPortabilityPreviewRequest) =>
     api.post<CompanyPortabilityPreviewResult>("/companies/import/preview", data),
+  /** Preview a local .zip package by uploading the raw compressed zip as multipart. */
+  importPreviewPackage: (file: File, meta: CompanyPortabilityPreviewMeta) =>
+    api.postForm<CompanyPortabilityPreviewResult>("/companies/import/preview", importPackageForm(file, meta)),
   importBundle: (data: CompanyPortabilityImportRequest) =>
     api.post<CompanyPortabilityImportResult>("/companies/import", data),
-  /** Submit an import as a server-side job: 202 with a job id to poll, or 409 with the already-running job. */
+  // Submit an import as a server-side job: 202 with a job id to poll, or 409
+  // with the already-running job. Board sessions opt in with the proxy-safe
+  // `?async=1` query parameter — the Cloud harness strips the inbound
+  // `x-paperclip-cloud-*` header a browser would otherwise use, so that header
+  // never survives to engage the async path.
   importBundleAsync: (data: CompanyPortabilityImportRequest) =>
-    api.post<CompanyImportJobAccepted>("/companies/import", data, {
-      headers: { "x-paperclip-cloud-async-import": "1" },
-    }),
+    api.post<CompanyImportJobAccepted>("/companies/import?async=1", data),
+  /** Submit a local .zip package as an async import job by uploading the raw compressed zip as multipart. */
+  importBundlePackageAsync: (file: File, meta: CompanyPortabilityImportMeta) =>
+    api.postForm<CompanyImportJobAccepted>("/companies/import?async=1", importPackageForm(file, meta)),
   getImportJob: (jobId: string) =>
     api.get<CompanyImportJobStatus>(`/companies/import/jobs/${encodeURIComponent(jobId)}`),
 };
