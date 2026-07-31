@@ -72,9 +72,9 @@ function escapeRegExp(s) {
   return s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
-// A "label line" is a markdown heading (`## Label`) or a bolded/plain label on
-// its own line (`**Label**` / `Label:`). Content scanning stops at the next
-// label line, because that line starts a new field.
+// A generic "label line" is a markdown heading (`## Label`) or a bolded label on
+// its own line (`**Label**`). The content scan stops at a label line, because
+// that line starts a new field.
 const LABEL_LINE = /^\s*(?:#{1,6}\s+\S|(?:\*\*|__)[^*_].*(?:\*\*|__)\s*[:?]?\s*$)/;
 
 // Build the regex that matches one field label on its own line.
@@ -86,6 +86,21 @@ function labelLinePattern(label) {
     `^\\s*(?:#{1,6}\\s+|\\*\\*\\s*|__\\s*)?${esc}(?:\\s*[:?])?(?:\\s*\\*\\*|\\s*__)?\\s*$`,
     'i'
   );
+}
+
+// Every known field label from every template, precompiled. The generic
+// LABEL_LINE regex sees a heading or a bold label as a field boundary, but not a
+// plain "Label:" line. A skeleton of stacked plain labels needs each label to
+// act as a boundary. Without this list the scan reads the next label as
+// content, so it counts an empty field as filled.
+const KNOWN_LABEL_PATTERNS = Object.values(TEMPLATE_FIELDS)
+  .flat(2)
+  .map(labelLinePattern);
+
+// Return true if the line starts a new field. The line is a heading, a bold
+// label, or a plain line that equals a known field label.
+function isFieldBoundary(line) {
+  return LABEL_LINE.test(line) || KNOWN_LABEL_PATTERNS.some(p => p.test(line));
 }
 
 // Return true if the line holds real content, not a bare placeholder. The
@@ -109,7 +124,7 @@ function isFieldFilled(lines, variants) {
   for (let i = 0; i < lines.length; i += 1) {
     if (!patterns.some(p => p.test(lines[i]))) continue;
     for (let j = i + 1; j < lines.length; j += 1) {
-      if (LABEL_LINE.test(lines[j])) break; // next field starts here
+      if (isFieldBoundary(lines[j])) break; // next field starts here
       if (lineHasContent(lines[j])) return true;
     }
   }

@@ -322,6 +322,69 @@ test('passes with a filled bug skeleton (three filled fields)', () => {
   assert.equal(checkLinkedIssue(FILLED_BUG_SKELETON_BODY, 'feat: fix login').passed, true);
 });
 
+// Stacked plain labels with no content must fail. Each label sits on its own
+// line with the next label directly under it. The scan must treat the next
+// label as a field boundary, not as content, so every field stays empty.
+const STACKED_FEATURE_LABELS = `
+Problem or motivation:
+Proposed solution:
+Alternatives considered:
+Roadmap alignment:
+`;
+
+const STACKED_BUG_LABELS = `
+What happened?:
+Expected behavior:
+Steps to reproduce:
+Paperclip version:
+`;
+
+const STACKED_ENHANCEMENT_LABELS = `
+What existing behavior does this improve?
+Subsystem affected
+Current behavior
+Proposed behavior
+Reason and benefit
+`;
+
+const STACKED_DOCS_LABELS = `
+Issue type
+Where is the issue?
+What's wrong?
+Suggested fix
+`;
+
+test('fails with stacked plain feature labels and no content', () => {
+  assert.equal(checkLinkedIssue(STACKED_FEATURE_LABELS, 'feat: x').passed, false);
+});
+
+test('fails with stacked plain bug labels and no content', () => {
+  assert.equal(checkLinkedIssue(STACKED_BUG_LABELS, 'feat: x').passed, false);
+});
+
+test('fails with stacked plain enhancement labels and no content', () => {
+  assert.equal(checkLinkedIssue(STACKED_ENHANCEMENT_LABELS, 'feat: x').passed, false);
+});
+
+test('fails with stacked plain docs labels and no content', () => {
+  assert.equal(checkLinkedIssue(STACKED_DOCS_LABELS, 'feat: x').passed, false);
+});
+
+// A plain-label skeleton with real content under each label must still pass.
+// The boundary fix must not reject a field that has genuine content.
+const FILLED_PLAIN_FEATURE_LABELS = `
+Problem or motivation:
+- The gate rejects a good prose description.
+Proposed solution:
+- Copy the feature template labels into the PR body.
+Alternatives considered:
+- Lower the field threshold — rejected, it weakens the gate.
+`;
+
+test('passes with plain feature labels and real content under each', () => {
+  assert.equal(checkLinkedIssue(FILLED_PLAIN_FEATURE_LABELS, 'feat: inline feature').passed, true);
+});
+
 // The real .github/PULL_REQUEST_TEMPLATE.md, submitted unchanged, must fail the
 // gate. Its skeleton labels have no content and its example issue links live in
 // HTML comments, so neither the inline path nor the linked path may pass it.
