@@ -7,17 +7,19 @@ import {
   issueAttachments,
   issueComments,
   issueDocuments,
+  issueInboxArchives,
   issueLabels,
   issueRelations,
   issueWorkProducts,
   issues,
 } from "@paperclipai/db";
-import { eq, sql } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { companyPortabilityService } from "../services/company-portability.js";
+import { issueService } from "../services/issues.js";
 import { workProductService } from "../services/work-products.js";
 import type { ImportIssueWorkProductRow } from "../services/import-write-types.js";
 import type { CompanyPortabilityFileEntry } from "@paperclipai/shared";
@@ -194,6 +196,35 @@ function buildSyntheticBundle(options: SyntheticBundleOptions): {
   return { rootPath: "batching-bench", files };
 }
 
+/**
+ * Build a bundle whose every task carries a *user*-authored comment. On import,
+ * user comments are re-attributed to the importing user, so every issue becomes
+ * "touched by me" — the exact shape that used to flood the inbox after an
+ * import. The inbox seeding is what must keep them hidden.
+ */
+function buildTouchedIssuesBundle(issueCount: number): {
+  rootPath: string;
+  files: Record<string, CompanyPortabilityFileEntry>;
+} {
+  const files: Record<string, CompanyPortabilityFileEntry> = {};
+  files["COMPANY.md"] = ['---', 'schema: "agentcompanies/v1"', 'name: "Inbox Flood Co"', '---', '', 'Synthetic import bundle.', ''].join("\n");
+
+  const tasks: Record<string, unknown> = {};
+  for (let i = 1; i <= issueCount; i += 1) {
+    const slug = `task-${String(i).padStart(4, "0")}`;
+    files[`tasks/${slug}/TASK.md`] = ['---', `name: "Task ${i}"`, "kind: task", '---', '', `Body for task ${i}.`, ''].join("\n");
+    tasks[slug] = {
+      status: "todo",
+      priority: "medium",
+      comments: [{ body: `A human note on task ${i}.`, authorType: "user" }],
+      documents: [],
+    };
+  }
+
+  files[".paperclip.yaml"] = renderPaperclipYaml({ schemaVersion: 6, tasks });
+  return { rootPath: "inbox-flood", files };
+}
+
 describeEmbeddedPostgres("company import batches inserts", () => {
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
   let db!: ReturnType<typeof createDb>;
@@ -268,6 +299,76 @@ describeEmbeddedPostgres("company import batches inserts", () => {
       .where(eq(issues.companyId, companyId));
     const uniqueIdentifiers = new Set(identifiers.map((row) => row.identifier));
     expect(uniqueIdentifiers.size).toBe(issueCount);
+  });
+
+  it("keeps imported issues out of the importing user's inbox", async () => {
+    const importingUserId = "board-inbox-user";
+    const bundle = buildTouchedIssuesBundle(3);
+    const portability = companyPortabilityService(db);
+
+    const result = await portability.importBundle(
+      {
+        source: { type: "inline", rootPath: bundle.rootPath, files: bundle.files },
+        include: { company: true, agents: false, projects: false, issues: true },
+        target: { mode: "new_company", newCompanyName: "Inbox Flood Co" },
+        collisionStrategy: "rename",
+      },
+      importingUserId,
+    );
+    const companyId = result.company.id;
+
+    const importedIssues = await db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(eq(issues.companyId, companyId));
+    expect(importedIssues.length).toBe(3);
+    const importedIds = new Set(importedIssues.map((row) => row.id));
+
+    // Every imported issue is seeded with a per-user inbox archive, attributed
+    // to the importing board user (not an agent).
+    const archives = await db
+      .select({
+        issueId: issueInboxArchives.issueId,
+        archivedByActorType: issueInboxArchives.archivedByActorType,
+      })
+      .from(issueInboxArchives)
+      .where(and(
+        eq(issueInboxArchives.companyId, companyId),
+        eq(issueInboxArchives.userId, importingUserId),
+      ));
+    expect(new Set(archives.map((row) => row.issueId))).toEqual(importedIds);
+    expect(archives.every((row) => row.archivedByActorType === "user")).toBe(true);
+
+    const issuesSvc = issueService(db);
+
+    // Sanity: the imported issues really are "touched by me" (their user comment
+    // was re-attributed to the importing user), so without the archive filter
+    // they would all flood the inbox.
+    const touched = await issuesSvc.list(companyId, { touchedByUserId: importingUserId });
+    expect(new Set(touched.map((issue) => issue.id))).toEqual(importedIds);
+
+    // The inbox "mine" query (touched AND not inbox-archived) returns none of
+    // them — the seeding is load-bearing.
+    const mineInbox = await issuesSvc.list(companyId, {
+      touchedByUserId: importingUserId,
+      inboxArchivedByUserId: importingUserId,
+    });
+    expect(mineInbox.filter((issue) => importedIds.has(issue.id))).toEqual([]);
+
+    // Normal (non-import) creation is unaffected: an issue the same user creates
+    // after the import is not archived and shows up in their inbox.
+    const fresh = await issuesSvc.create(companyId, {
+      title: "Freshly created work",
+      status: "todo",
+      priority: "medium",
+      createdByUserId: importingUserId,
+    });
+    const mineAfterCreate = await issuesSvc.list(companyId, {
+      touchedByUserId: importingUserId,
+      inboxArchivedByUserId: importingUserId,
+    });
+    expect(mineAfterCreate.map((issue) => issue.id)).toContain(fresh.id);
+    expect(mineAfterCreate.filter((issue) => importedIds.has(issue.id))).toEqual([]);
   });
 
   it("rolls back the whole work-product batch when a later chunk fails", async () => {

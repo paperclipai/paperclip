@@ -191,7 +191,14 @@ export function companyRoutes(db: Db, storage?: StorageService) {
   const artifacts = companyArtifactsService(db, storage);
   const feedback = feedbackService(db);
   const importJobs = new Map<string, ImportJobRecord>();
-  const importJobTerminalRetentionMs = 5 * 60 * 1000;
+  // Terminal jobs are retained in memory for an hour after they settle. A long
+  // import can outlast a user stepping away, and dropping the completion after
+  // only a few minutes made a later poll 404 — surfacing a finished, fully
+  // written import as a scary failure. An hour is long enough to cover a real
+  // "walk away and come back" gap while keeping the map bounded, and it needs
+  // no new persistence (jobs remain in-memory-only; a restart still 404s, which
+  // the client now treats as a soft success once it has seen the job running).
+  const importJobTerminalRetentionMs = 60 * 60 * 1000;
 
   function parseBooleanQuery(value: unknown) {
     return value === true || value === "true" || value === "1";

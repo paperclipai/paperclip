@@ -46,6 +46,17 @@ export interface CompanyImportJobStatus {
     updatedAt?: string;
     completedAt?: string;
     error?: { message: string };
+    /**
+     * Summary retained for every terminal job (board and cloud tenant); carries
+     * the imported company id so the page can navigate even when the full
+     * `importResult` is no longer available.
+     */
+    result?: {
+      companyId: string;
+      agentCount?: number;
+      warningCount?: number;
+      companyAction?: unknown;
+    };
     /** Board-created jobs carry the full result for parity with the sync response. */
     importResult?: CompanyPortabilityImportResult;
   };

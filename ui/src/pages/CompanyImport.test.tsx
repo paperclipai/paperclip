@@ -659,6 +659,63 @@ describe("CompanyImport", () => {
     expect(container.textContent).toContain("Import complete");
   });
 
+  it("treats a completed-then-expired job as a soft success and refreshes the company list", async () => {
+    // The first poll finds the job running; the next poll 404s because its
+    // terminal result aged out of server memory. Seen-running-then-gone is a
+    // success we can no longer read — never a scary failure.
+    mockCompaniesApi.getImportJob
+      .mockResolvedValueOnce({ job: { id: "job-1", status: "running", result: { companyId: "company-2" } } })
+      .mockRejectedValue(new ApiError("Import job not found", 404, { error: "Import job not found" }));
+
+    const invalidateSpy = vi.spyOn(QueryClient.prototype, "invalidateQueries");
+    try {
+      await renderPageAndImport();
+
+      // Success-leaning panel, not the failure panel.
+      expect(container.textContent).toContain("Import completed");
+      expect(container.textContent).toContain("open it to view it");
+      expect(container.textContent).not.toContain("Import failed");
+      expect(mockPushToast).toHaveBeenCalledWith(expect.objectContaining({ tone: "success" }));
+      // The company list is refreshed so the new company appears in the switcher.
+      expect(invalidateSpy).toHaveBeenCalledWith(expect.objectContaining({ queryKey: ["companies"] }));
+      // The last-known company id still drives navigation into the import.
+      expect(mockSetSelectedCompanyId).toHaveBeenCalledWith("company-2");
+    } finally {
+      invalidateSpy.mockRestore();
+    }
+  });
+
+  it("surfaces a first-poll 404 as an error because the job never existed", async () => {
+    // A 404 on the very first poll — before the client ever saw the job
+    // running — means the id never existed. That stays a hard error.
+    mockCompaniesApi.getImportJob.mockRejectedValue(
+      new ApiError("Import job not found", 404, { error: "Import job not found" }),
+    );
+
+    await renderPage();
+    await enterGithubUrl();
+    await clickButton((text) => text === "Preview import");
+    await clickButton((text) => text.startsWith("Import 3 file"));
+    await settle();
+
+    expect(container.textContent).toContain("Import failed:");
+    expect(container.textContent).toContain("it may have restarted while the import ran");
+    expect(container.textContent).not.toContain("Import completed");
+    expect(mockPushToast).toHaveBeenCalledWith(expect.objectContaining({ tone: "error" }));
+  });
+
+  it("refreshes the company list on a full import success", async () => {
+    const invalidateSpy = vi.spyOn(QueryClient.prototype, "invalidateQueries");
+    try {
+      await renderPageAndImport();
+
+      expect(container.textContent).toContain("Import complete");
+      expect(invalidateSpy).toHaveBeenCalledWith(expect.objectContaining({ queryKey: ["companies"] }));
+    } finally {
+      invalidateSpy.mockRestore();
+    }
+  });
+
   it("resumes watching a stored import job on mount", async () => {
     // A previous page load persisted a running job; reloading must resume
     // watching it rather than showing the stale form.

@@ -48,6 +48,7 @@ const issueSvc = {
   listAttachments: vi.fn(),
   createAttachment: vi.fn(),
   importIssues: vi.fn(),
+  archiveImportedInbox: vi.fn(),
   addImportedComments: vi.fn(),
   addImportedAttachments: vi.fn(),
 };

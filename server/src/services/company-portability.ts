@@ -6041,6 +6041,19 @@ export function companyPortabilityService(db: Db, storage?: StorageService) {
         // handful per table. Empty buffers are skipped so an issues-free import
         // (e.g. routines only) issues no writes at all.
         if (issueRows.length > 0) await issues.importIssues(targetCompany.id, issueRows);
+        // Imported issues are historical work, not new inbox items. Seed a
+        // per-user inbox archive for the importing board user so a large import
+        // (a real 1,418-task company shipped every task to the inbox) does not
+        // flood it: the inbox "mine" query hides archived issues, and genuine
+        // new activity still resurfaces them. Agent/system imports (no board
+        // user) have no inbox to protect, so the seeding is skipped.
+        if (actorUserId && issueRows.length > 0) {
+          await issues.archiveImportedInbox(
+            targetCompany.id,
+            issueRows.map((row) => row.id),
+            actorUserId,
+          );
+        }
         if (commentRows.length > 0) await issues.addImportedComments(commentRows);
         if (documentRows.length > 0) await documentsSvc.createIssueDocumentsForImport(documentRows);
         if (workProductRows.length > 0) await workProductsSvc.createManyForImport(workProductRows);

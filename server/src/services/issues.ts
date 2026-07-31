@@ -5220,6 +5220,40 @@ export function issueService(db: Db) {
       return row;
     },
 
+    /**
+     * Seed inbox archives for a batch of freshly imported issues so a company
+     * import does not flood the importing user's inbox. Imported issues are
+     * historical work, not new inbox items, but the inbox "mine" query surfaces
+     * every touched-and-not-archived issue; a 1000-task import would otherwise
+     * bury the inbox. Seeding a per-user inbox archive keeps them hidden via
+     * `inboxVisibleForUserCondition`, while genuine new activity on an imported
+     * issue still resurfaces it. This runs only on import (mirroring how
+     * `pauseAutomations` threads an import-only suppression) and never touches
+     * normal issue creation. Rows carry the same "user"-attributed shape a
+     * manual inbox archive writes, batched to stay under Postgres bind limits.
+     */
+    archiveImportedInbox: async (
+      companyId: string,
+      issueIds: string[],
+      userId: string,
+      archivedAt: Date = new Date(),
+    ): Promise<void> => {
+      if (issueIds.length === 0) return;
+      const now = new Date();
+      const rows = issueIds.map((issueId) => ({
+        companyId,
+        issueId,
+        userId,
+        archivedByActorType: "user" as const,
+        archivedByAgentId: null,
+        archivedByRunId: null,
+        archivedAt,
+        createdAt: now,
+        updatedAt: now,
+      }));
+      await insertRowsInChunks(db, issueInboxArchives, rows);
+    },
+
     unarchiveInbox: async (companyId: string, issueId: string, userId: string) => {
       const [row] = await db
         .delete(issueInboxArchives)
