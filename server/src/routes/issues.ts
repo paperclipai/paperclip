@@ -147,6 +147,7 @@ import { assertEnvironmentSelectionForCompany } from "./environment-selection.js
 import { executionWorkspaceService as executionWorkspaceServiceDirect } from "../services/execution-workspaces.js";
 import { feedbackService } from "../services/feedback.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
+import { assertClosureAllowed } from "../services/closure-gate.js";
 import {
   ISSUE_BLOCKER_DIAGNOSTICS_MAX_BLOCKERS,
   ISSUE_WAKE_DIAGNOSTICS_LOOKBACK_DAYS,
@@ -7454,6 +7455,7 @@ export function issueRoutes(
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, existing, req.body))) return;
 
     const actor = getActorInfo(req);
+
     const isClosed = isClosedIssueStatus(existing.status);
     const isBlocked = existing.status === "blocked";
     const normalizedAssigneeAgentId = await normalizeIssueAssigneeAgentReference(
@@ -7476,6 +7478,32 @@ export function issueRoutes(
     } = req.body;
     const shouldCancelActiveRunForCancelledStatus =
       existing.status !== "cancelled" && updateFields.status === "cancelled";
+    const requestedClosureStatus = isClosedIssueStatus(updateFields.status) ? updateFields.status : null;
+    if (requestedClosureStatus && commentBody) {
+      const closureVerdict = assertClosureAllowed({
+        closureComment: commentBody,
+        issueTitle: existing.title,
+        issueDescription: existing.description ?? null,
+        knownUpstreamShas: [],
+      });
+      if (closureVerdict.ok && closureVerdict.reason === "no_code_escape_hatch") {
+        await logActivity(db, {
+          companyId: existing.companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          action: "issue.closure_gate.escape_hatch",
+          entityType: "issue",
+          entityId: existing.id,
+          details: {
+            kind: closureVerdict.kind,
+            requestedStatus: requestedClosureStatus,
+            source: "PATCH /api/issues/:id",
+          },
+        });
+      }
+    }
     if (resumeRequested === true && !commentBody) {
       res.status(400).json({ error: "Follow-up intent requires a comment" });
       return;
