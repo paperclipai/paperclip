@@ -52,6 +52,10 @@ import { authorizationService } from "./authorization.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
 import { finalizeSummarySlotsForTerminalIssue } from "./summary-slot-finalization.js";
 import {
+  assertIssueParentTerminalInvariant,
+  lockIssueParentTerminalInvariant,
+} from "./issue-parent-terminal-guard.js";
+import {
   formatPipelineCaseOutputContextMarkdown,
   pipelineCaseOutputsService,
   summarizePipelineCaseOutputsForContext,
@@ -4613,6 +4617,12 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
           ? effects.linkedAutomationIssueIds
           : [];
         if (issueIdsToCancel.length > 0) {
+          await lockIssueParentTerminalInvariant(tx, input.companyId);
+          await assertIssueParentTerminalInvariant(
+            tx,
+            input.companyId,
+            issueIdsToCancel.map((id) => ({ id, status: "cancelled" })),
+          );
           const cancelledIssues = await tx
             .update(issues)
             .set({ status: "cancelled", updatedAt: now })
