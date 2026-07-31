@@ -101,7 +101,7 @@ describeEmbeddedPostgres("sidebarBadgeService awaitingHuman", () => {
       status: "in_review",
       priority: "medium",
     });
-    await addInteraction(companyId, secondIssueId, { kind: "request_confirmation" });
+    await addInteraction(companyId, secondIssueId, { kind: "request_item_verdicts" });
     badges = await svc.get(companyId);
     expect(badges.awaitingHuman).toBe(2);
     expect(badges.inbox).toBe(2);
