@@ -483,10 +483,25 @@ else
   if [[ -e "$worktree_config_path" || -e "$worktree_env_path" ]]; then
     echo "Existing isolated Paperclip worktree config is stale for this host; regenerating." >&2
   fi
-  if paperclipai_command_available && run_isolated_worktree_init; then
-    :
+  if paperclipai_command_available; then
+    if run_isolated_worktree_init; then
+      :
+    else
+      init_exit_code=$?
+      if [[ "$init_exit_code" -eq 127 ]]; then
+        # Every CLI candidate was unusable (e.g. an unhealthy base install that
+        # the repair could not fix); degrade instead of stranding the run.
+        echo "No usable paperclipai CLI found; writing isolated fallback config without DB seeding." >&2
+        write_fallback_worktree_config
+      else
+        # A CLI that ran and failed signals a real problem; do not paper over
+        # it with an unseeded fallback config.
+        echo "paperclipai worktree init failed (exit $init_exit_code); failing provisioning instead of writing an unseeded fallback config." >&2
+        exit "$init_exit_code"
+      fi
+    fi
   else
-    echo "paperclipai worktree init unavailable or failed; writing isolated fallback config without DB seeding." >&2
+    echo "paperclipai worktree init unavailable; writing isolated fallback config without DB seeding." >&2
     write_fallback_worktree_config
   fi
 fi

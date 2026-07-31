@@ -190,14 +190,15 @@ exit 1
   );
 });
 
-test("a failed CLI init falls through to the fallback config instead of reporting success", () => {
+test("a failed CLI init fails provisioning instead of being masked as success", () => {
   // Regression test for the masked `return 0` after the init subshell: a CLI
-  // that passes the health check but fails `worktree init` must not leave the
-  // worktree with no config at all.
+  // that passes the health check but fails `worktree init` signals a real
+  // problem, so the script must propagate the failure rather than report
+  // success or write an unseeded fallback config over it.
   const baseCwd = makeBaseWorkspace({ helpExit: 0, initExit: 3 });
   const { result, worktreeCwd } = runProvision(baseCwd);
 
-  assert.equal(result.status, 0, result.stderr);
-  const config = readWorktreeConfig(worktreeCwd);
-  assert.equal(config.$meta.source, "configure");
+  assert.equal(result.status, 3, result.stderr);
+  assert.match(result.stderr, /fake worktree init failure/);
+  assert.ok(!fs.existsSync(path.join(worktreeCwd, ".paperclip", "config.json")));
 });
