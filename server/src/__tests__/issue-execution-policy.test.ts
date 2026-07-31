@@ -470,6 +470,72 @@ describe("issue execution policy transitions", () => {
       });
     });
 
+    it("preserves trust controls when a user executor handoff clears an invalid monitor", () => {
+      const securedPolicy = normalizeIssueExecutionPolicy({
+        monitor: {
+          nextCheckAt: "2026-08-01T12:30:00.000Z",
+          notes: "Check deployment",
+        },
+        reviewPreset: {
+          id: "low_trust_review",
+          version: 1,
+          rawOutputDisposition: "quarantine",
+        },
+        authorizationPolicy: {
+          trustPreset: "low_trust_review",
+          trustBoundary: {
+            mode: "low_trust_review",
+            companyId: coderAgentId,
+          },
+        },
+        stages: [
+          {
+            type: "review",
+            onApprove: "return_to_executor",
+            participants: [{ type: "agent", agentId: qaAgentId }],
+          },
+          {
+            type: "approval",
+            participants: [{ type: "agent", agentId: ctoAgentId }],
+          },
+        ],
+      })!;
+      const reviewStageId = securedPolicy.stages[0].id;
+
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_review",
+          assigneeAgentId: qaAgentId,
+          assigneeUserId: null,
+          executionPolicy: securedPolicy,
+          executionState: {
+            status: "pending",
+            currentStageId: reviewStageId,
+            currentStageIndex: 0,
+            currentStageType: "review",
+            currentParticipant: { type: "agent", agentId: qaAgentId },
+            returnAssignee: { type: "user", userId: ctoUserId },
+            completedStageIds: [],
+            lastDecisionId: null,
+            lastDecisionOutcome: null,
+          },
+        },
+        policy: securedPolicy,
+        actor: { agentId: qaAgentId },
+        requestedStatus: "done",
+        requestedAssigneePatch: {},
+        commentBody: "Source review approved",
+      });
+
+      expect(result.patch.status).toBe("in_progress");
+      expect(result.patch.assigneeUserId).toBe(ctoUserId);
+      expect(result.patch.executionPolicy).toMatchObject({
+        reviewPreset: securedPolicy.reviewPreset,
+        authorizationPolicy: securedPolicy.authorizationPolicy,
+      });
+      expect(result.patch.executionPolicy).not.toHaveProperty("monitor");
+    });
+
     it("completes a final stage when return_to_executor has no later stage", () => {
       const finalPolicy = makePolicy([
         {
