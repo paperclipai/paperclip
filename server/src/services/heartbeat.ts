@@ -2551,6 +2551,22 @@ interface WakeupOptions {
   requestedByActorType?: "user" | "agent" | "system";
   requestedByActorId?: string | null;
   contextSnapshot?: Record<string, unknown>;
+  currentIssueAssigneeGuard?: {
+    issueId: string;
+  };
+}
+
+export function shouldSuppressCurrentIssueAssigneeWake(
+  currentIssue: { assigneeAgentId: string | null; status: string } | null | undefined,
+  agentId: string,
+) {
+  return (
+    !currentIssue ||
+    currentIssue.assigneeAgentId !== agentId ||
+    currentIssue.status === "backlog" ||
+    currentIssue.status === "done" ||
+    currentIssue.status === "cancelled"
+  );
 }
 
 type UsageTotals = {
@@ -17542,6 +17558,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   }
 
   async function enqueueWakeup(agentId: string, opts: WakeupOptions = {}) {
+    if (opts.currentIssueAssigneeGuard) {
+      const [currentIssue] = await db
+        .select({
+          assigneeAgentId: issues.assigneeAgentId,
+          status: issues.status,
+        })
+        .from(issues)
+        .where(eq(issues.id, opts.currentIssueAssigneeGuard.issueId))
+        .limit(1);
+      if (shouldSuppressCurrentIssueAssigneeWake(currentIssue, agentId)) {
+        return null;
+      }
+    }
     const source = opts.source ?? "on_demand";
     const triggerDetail = opts.triggerDetail ?? null;
     const contextSnapshot: Record<string, unknown> = { ...(opts.contextSnapshot ?? {}) };

@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   resolveHeartbeatSchedulingSuppression,
   resolveSkillTestRunCompletionForHeartbeatOutcome,
+  shouldSuppressCurrentIssueAssigneeWake,
 } from "../services/heartbeat.ts";
 
 describe("heartbeat scheduling suppression", () => {
@@ -55,6 +56,22 @@ describe("heartbeat scheduling suppression", () => {
       suppressed: true,
       reason: "database_restore_in_progress",
     });
+  });
+
+  it("suppresses guarded wakeups after reassignment or terminal status", () => {
+    expect(shouldSuppressCurrentIssueAssigneeWake(null, "agent-1")).toBe(true);
+    expect(shouldSuppressCurrentIssueAssigneeWake({
+      assigneeAgentId: "agent-2",
+      status: "todo",
+    }, "agent-1")).toBe(true);
+    expect(shouldSuppressCurrentIssueAssigneeWake({
+      assigneeAgentId: "agent-1",
+      status: "done",
+    }, "agent-1")).toBe(true);
+    expect(shouldSuppressCurrentIssueAssigneeWake({
+      assigneeAgentId: "agent-1",
+      status: "todo",
+    }, "agent-1")).toBe(false);
   });
 
   it("maps unsuccessful heartbeat outcomes to terminal skill test run outcomes", () => {

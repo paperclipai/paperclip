@@ -10286,38 +10286,34 @@ export function issueRoutes(
       };
     }
 
+    const assigneeChanged =
+      issue.assigneeAgentId !== existing.assigneeAgentId || issue.assigneeUserId !== existing.assigneeUserId;
+    const statusChangedFromBacklog =
+      existing.status === "backlog" &&
+      issue.status !== "backlog" &&
+      req.body.status !== undefined;
+    const statusChangedFromClosedToTodo =
+      isClosedIssueStatus(existing.status) &&
+      issue.status === "todo" &&
+      req.body.status !== undefined;
+    const userResumedFromReviewToTodo =
+      actor.actorType === "user" &&
+      existing.status === "in_review" &&
+      issue.status === "todo" &&
+      req.body.status !== undefined;
+    const previousExecutionState = parseIssueExecutionState(existing.executionState);
+    const nextExecutionState = parseIssueExecutionState(issue.executionState);
+    const executionStageWakeup = buildExecutionStageWakeup({
+      issueId: issue.id,
+      previousState: previousExecutionState,
+      nextState: nextExecutionState,
+      interruptedRunId,
+      requestedByActorType: actor.actorType,
+      requestedByActorId: actor.actorId,
+    });
+
     // Merge all wakeups from this update into one enqueue per agent to avoid duplicate runs.
-    const committedIssue = issue;
     void (async () => {
-      const issue = isIssueUnblockOwner
-        ? await svc.getById(committedIssue.id)
-        : committedIssue;
-      if (!issue) return;
-      const assigneeChanged =
-        issue.assigneeAgentId !== existing.assigneeAgentId || issue.assigneeUserId !== existing.assigneeUserId;
-      const statusChangedFromBacklog =
-        existing.status === "backlog" &&
-        issue.status !== "backlog" &&
-        req.body.status !== undefined;
-      const statusChangedFromClosedToTodo =
-        isClosedIssueStatus(existing.status) &&
-        issue.status === "todo" &&
-        req.body.status !== undefined;
-      const userResumedFromReviewToTodo =
-        actor.actorType === "user" &&
-        existing.status === "in_review" &&
-        issue.status === "todo" &&
-        req.body.status !== undefined;
-      const previousExecutionState = parseIssueExecutionState(existing.executionState);
-      const nextExecutionState = parseIssueExecutionState(issue.executionState);
-      const executionStageWakeup = buildExecutionStageWakeup({
-        issueId: issue.id,
-        previousState: previousExecutionState,
-        nextState: nextExecutionState,
-        interruptedRunId,
-        requestedByActorType: actor.actorType,
-        requestedByActorId: actor.actorId,
-      });
       type WakeupRequest = NonNullable<Parameters<typeof heartbeat.wakeup>[1]>;
       type DependencyReadinessProvider = {
         getDependencyReadiness?: typeof svc.getDependencyReadiness;
@@ -10386,6 +10382,7 @@ export function issueRoutes(
           source: "assignment",
           triggerDetail: "system",
           reason: "issue_assigned",
+          ...(isIssueUnblockOwner ? { currentIssueAssigneeGuard: { issueId: issue.id } } : {}),
           payload: {
             issueId: issue.id,
             ...(comment ? { commentId: comment.id } : {}),
@@ -10425,6 +10422,7 @@ export function issueRoutes(
           source: "automation",
           triggerDetail: "system",
           reason: "issue_status_changed",
+          ...(isIssueUnblockOwner ? { currentIssueAssigneeGuard: { issueId: issue.id } } : {}),
           payload: {
             issueId: issue.id,
             mutation: "update",
@@ -10456,6 +10454,7 @@ export function issueRoutes(
             source: "automation",
             triggerDetail: "system",
             reason: reopened ? "issue_reopened_via_comment" : "issue_commented",
+            ...(isIssueUnblockOwner ? { currentIssueAssigneeGuard: { issueId: issue.id } } : {}),
             payload: {
               issueId: id,
               commentId: comment.id,
@@ -10655,31 +10654,7 @@ export function issueRoutes(
         }
       }
 
-      const assigneeDirectedReasons = new Set([
-        "issue_assigned",
-        "issue_status_changed",
-        "issue_commented",
-        "issue_reopened_via_comment",
-      ]);
       for (const { agentId, wakeup } of wakeups.values()) {
-        if (
-          isIssueUnblockOwner &&
-          typeof wakeup.reason === "string" &&
-          assigneeDirectedReasons.has(wakeup.reason) &&
-          wakeup.payload &&
-          typeof wakeup.payload === "object" &&
-          wakeup.payload.issueId === issue.id
-        ) {
-          const currentIssue = await svc.getById(issue.id);
-          if (
-            !currentIssue ||
-            currentIssue.assigneeAgentId !== agentId ||
-            currentIssue.status === "backlog" ||
-            isClosedIssueStatus(currentIssue.status)
-          ) {
-            continue;
-          }
-        }
         heartbeat
           .wakeup(agentId, wakeup)
           .then((wakeRun) => {
@@ -10723,7 +10698,6 @@ export function issueRoutes(
         res.status(409).json({ error: "Issue access changed after unblock-owner update; reload" });
         return;
       }
-      issue = responseIssue;
       issueResponse = { ...issueResponse, ...responseIssue };
     }
     const changes = issueResponse.changes ?? {};
@@ -12438,12 +12412,7 @@ export function issueRoutes(
     });
 
     // Merge all wakeups from this comment into one enqueue per agent to avoid duplicate runs.
-    const committedCommentIssue = currentIssue;
     void (async () => {
-      const currentIssue = isIssueUnblockOwnerComment
-        ? await svc.getById(committedCommentIssue.id)
-        : committedCommentIssue;
-      if (!currentIssue) return;
       type WakeupRequest = NonNullable<Parameters<typeof heartbeat.wakeup>[1]>;
       const wakeups = new Map<string, { agentId: string; wakeup: WakeupRequest }>();
       const addWakeup = (agentId: string, wakeup: WakeupRequest) => {
@@ -12532,6 +12501,9 @@ export function issueRoutes(
             source: "automation",
             triggerDetail: "system",
             reason: "issue_reopened_via_comment",
+            ...(isIssueUnblockOwnerComment
+              ? { currentIssueAssigneeGuard: { issueId: currentIssue.id } }
+              : {}),
             payload: {
               issueId: currentIssue.id,
               commentId: comment.id,
@@ -12559,6 +12531,9 @@ export function issueRoutes(
             source: "automation",
             triggerDetail: "system",
             reason: "issue_commented",
+            ...(isIssueUnblockOwnerComment
+              ? { currentIssueAssigneeGuard: { issueId: currentIssue.id } }
+              : {}),
             payload: {
               issueId: currentIssue.id,
               commentId: comment.id,
@@ -12598,7 +12573,7 @@ export function issueRoutes(
 
       let mentionedIds: string[] = [];
       try {
-        mentionedIds = await svc.findMentionedAgents(currentIssue.companyId, req.body.body);
+        mentionedIds = await svc.findMentionedAgents(issue.companyId, req.body.body);
       } catch (err) {
         logger.warn({ err, issueId: id }, "failed to resolve @-mentions");
       }
@@ -12682,25 +12657,7 @@ export function issueRoutes(
         }
       }
 
-      const assigneeDirectedReasons = new Set(["issue_commented", "issue_reopened_via_comment"]);
       for (const { agentId, wakeup } of wakeups.values()) {
-        if (
-          isIssueUnblockOwnerComment &&
-          typeof wakeup.reason === "string" &&
-          assigneeDirectedReasons.has(wakeup.reason) &&
-          wakeup.payload &&
-          typeof wakeup.payload === "object" &&
-          wakeup.payload.issueId === currentIssue.id
-        ) {
-          const latestIssue = await svc.getById(currentIssue.id);
-          if (
-            !latestIssue ||
-            latestIssue.assigneeAgentId !== agentId ||
-            isClosedIssueStatus(latestIssue.status)
-          ) {
-            continue;
-          }
-        }
         heartbeat
           .wakeup(agentId, wakeup)
           .then((wakeRun) => {
@@ -12739,7 +12696,6 @@ export function issueRoutes(
         res.status(409).json({ error: "Issue changed after unblock-owner comment; reload" });
         return;
       }
-      currentIssue = responseIssue;
     }
     res.status(201).json(comment);
   });
