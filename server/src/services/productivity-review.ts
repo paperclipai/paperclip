@@ -418,6 +418,21 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       .then((rows) => rows[0]?.count ?? 0);
   }
 
+  async function countActiveIssueRuns(companyId: string, agentId: string, issueId: string) {
+    return db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, companyId),
+          eq(heartbeatRuns.agentId, agentId),
+          issueRunScopeSql(issueId),
+          inArray(heartbeatRuns.status, [...ACTIVE_RUN_STATUSES]),
+        ),
+      )
+      .then((rows) => rows[0]?.count ?? 0);
+  }
+
   async function countIssueCommentsSince(companyId: string, issueId: string, agentId: string, since?: Date) {
     return db
       .select({ count: sql<number>`count(*)::int` })
@@ -489,6 +504,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
     const [
       runCountLastHour,
       runCountLastSixHours,
+      activeRunCount,
       assigneeRunCommentCount,
       assigneeRunCommentCountLastHour,
       assigneeRunCommentCountLastSixHours,
@@ -497,6 +513,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
     ] = await Promise.all([
       countIssueRunsSince(sourceIssue.companyId, sourceAgent.id, sourceIssue.id, oneHourAgo),
       countIssueRunsSince(sourceIssue.companyId, sourceAgent.id, sourceIssue.id, sixHoursAgo),
+      countActiveIssueRuns(sourceIssue.companyId, sourceAgent.id, sourceIssue.id),
       countIssueCommentsSince(sourceIssue.companyId, sourceIssue.id, sourceAgent.id),
       countIssueCommentsSince(sourceIssue.companyId, sourceIssue.id, sourceAgent.id, oneHourAgo),
       countIssueCommentsSince(sourceIssue.companyId, sourceIssue.id, sourceAgent.id, sixHoursAgo),
@@ -524,16 +541,18 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
         .then((rows) => rows[0] ?? { costCents: 0 }),
     ]);
 
-    const activeRunCount = latestRuns.filter((run) =>
-      ACTIVE_RUN_STATUSES.includes(run.status as (typeof ACTIVE_RUN_STATUSES)[number]),
-    ).length;
     const activeStartedAt = sourceIssue.startedAt ?? sourceIssue.executionLockedAt ?? null;
     const elapsedMs = sourceIssue.status === "in_progress" && activeStartedAt
       ? Math.max(0, now.getTime() - activeStartedAt.getTime())
       : null;
 
     const noComment = noCommentStreak >= thresholds.noCommentStreakRuns;
-    const longActive = elapsedMs !== null && elapsedMs >= thresholds.longActiveMs;
+    const isIdleMonitorWait =
+      sourceIssue.monitorNextCheckAt !== null &&
+      sourceIssue.monitorNextCheckAt.getTime() > now.getTime() &&
+      activeRunCount === 0 &&
+      sourceIssue.checkoutRunId === null;
+    const longActive = !isIdleMonitorWait && elapsedMs !== null && elapsedMs >= thresholds.longActiveMs;
     const highChurn =
       runCountLastHour >= thresholds.highChurnHourly ||
       assigneeRunCommentCountLastHour >= thresholds.highChurnHourly ||
