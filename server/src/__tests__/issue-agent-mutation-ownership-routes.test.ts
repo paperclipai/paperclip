@@ -880,7 +880,7 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
       ownerAgentId,
       expect.objectContaining({
-        reason: "issue_comment_mentioned",
+        reason: "issue_commented",
       }),
     );
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalledWith(

@@ -12421,18 +12421,15 @@ export function issueRoutes(
             ? wakeup.payload.issueId
             : currentIssue.id;
         const key = `${agentId}:${wakeIssueId}`;
-        const existing = wakeups.get(key);
-        if (
-          existing &&
-          !(
-            wakeup.reason === "issue_comment_mentioned" &&
-            Boolean(existing.wakeup.currentIssueAssigneeGuard)
-          )
-        ) {
-          return;
-        }
+        if (wakeups.has(key)) return;
         wakeups.set(key, { agentId, wakeup });
       };
+      let mentionedIds: string[] = [];
+      try {
+        mentionedIds = await svc.findMentionedAgents(issue.companyId, req.body.body);
+      } catch (err) {
+        logger.warn({ err, issueId: id }, "failed to resolve @-mentions");
+      }
       const addDependencyResolvedWakeup = async (input: {
         agentId: string;
         dependentIssueId: string;
@@ -12540,7 +12537,7 @@ export function issueRoutes(
             source: "automation",
             triggerDetail: "system",
             reason: "issue_commented",
-            ...(isIssueUnblockOwnerComment
+            ...(isIssueUnblockOwnerComment && !mentionedIds.includes(assigneeId)
               ? { currentIssueAssigneeGuard: { issueId: currentIssue.id } }
               : {}),
             payload: {
@@ -12578,13 +12575,6 @@ export function issueRoutes(
             },
           });
         }
-      }
-
-      let mentionedIds: string[] = [];
-      try {
-        mentionedIds = await svc.findMentionedAgents(issue.companyId, req.body.body);
-      } catch (err) {
-        logger.warn({ err, issueId: id }, "failed to resolve @-mentions");
       }
 
       for (const mentionedId of mentionedIds) {
