@@ -748,6 +748,25 @@ describe("issue execution policy transitions", () => {
 
       const regeneratedPolicy = reviewOnlyPolicy();
       expect(regeneratedPolicy.stages[0].id).not.toBe(reviewStageId);
+      const missingCursorState = {
+        ...(approval.patch.executionState as IssueExecutionState),
+      };
+      delete missingCursorState.continuationStageIds;
+      expect(() => applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_progress",
+          assigneeAgentId: coderAgentId,
+          assigneeUserId: null,
+          executionPolicy: regeneratedPolicy,
+          executionState: missingCursorState,
+        },
+        policy: regeneratedPolicy,
+        requestedStatus: "done",
+        requestedAssigneePatch: {},
+        actor: { agentId: coderAgentId },
+        commentBody: "Deployment complete.",
+      })).toThrow(/continuation cursor is missing/);
+
       const executionCompleted = applyIssueExecutionPolicyTransition({
         issue: {
           status: "in_progress",
