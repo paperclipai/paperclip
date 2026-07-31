@@ -2140,6 +2140,23 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       expect(sourceRun?.issueCommentStatus).toBe("satisfied");
       expect(sourceRun?.issueCommentSatisfiedByCommentId).not.toBeNull();
 
+      await waitFor(async () => {
+        const comments = await db
+          .select()
+          .from(issueComments)
+          .where(eq(issueComments.issueId, issueId));
+        const wakeups = await db
+          .select()
+          .from(agentWakeupRequests)
+          .where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.agentId, agentId)));
+
+        const hasHandoffComment = comments.some((comment) =>
+          comment.body === SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY
+        );
+        const hasHandoffWake = wakeups.some((wakeup) => wakeup.reason === "finish_successful_run_handoff");
+        return hasHandoffComment && hasHandoffWake;
+      });
+
       const comments = await db
         .select()
         .from(issueComments)
@@ -2149,7 +2166,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       expect(comments.some((comment) => comment.body === "Manual completion comment from the run.")).toBe(true);
       expect(comments.some((comment) =>
         comment.body === SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY
-      )).toBe(false);
+      )).toBe(true);
       expect(comments.every((comment) => !comment.body.startsWith("## Run summary"))).toBe(true);
 
       const wakeups = await db
@@ -2158,7 +2175,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         .where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.agentId, agentId)));
 
       expect(wakeups.some((wakeup) => wakeup.reason === "missing_issue_comment")).toBe(false);
-      expect(wakeups.some((wakeup) => wakeup.reason === "finish_successful_run_handoff")).toBe(false);
+      expect(wakeups.some((wakeup) => wakeup.reason === "finish_successful_run_handoff")).toBe(true);
     } finally {
       gateway.releaseFirstWait();
       await gateway.close();

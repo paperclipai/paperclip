@@ -463,6 +463,7 @@ export function decideSuccessfulRunHandoff(input: {
   hasActiveRoutineContinuation: boolean;
   budgetBlocked: boolean;
   idempotentWakeExists: boolean;
+  enforceSettleWindow?: boolean;
 }): SuccessfulRunHandoffDecision {
   const { run, issue, agent } = input;
 
@@ -492,6 +493,9 @@ export function decideSuccessfulRunHandoff(input: {
   }
   if (!isProductiveSuccessfulRun(input)) {
     return { kind: "skip", reason: "successful run did not produce handoff-relevant progress" };
+  }
+  if (input.enforceSettleWindow !== false && isSuccessfulRunHandoffInsideSettleWindow(run)) {
+    return { kind: "skip", reason: "successful run is still inside the handoff settle window" };
   }
   if (input.hasActiveExecutionPath) return { kind: "skip", reason: "issue already has an active execution path" };
   if (input.hasQueuedWake) return { kind: "skip", reason: "issue already has a queued or deferred wake" };

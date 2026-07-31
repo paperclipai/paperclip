@@ -1516,7 +1516,7 @@ describe("realizeExecutionWorkspace", () => {
         workspaceStrategy: {
           type: "git_worktree",
           branchTemplate: "{{issue.identifier}}-{{slug}}",
-          provisionCommand: "PAPERCLIP_SKIP_WORKTREE_CLI_INIT=true bash ./scripts/provision-worktree.sh",
+          provisionCommand: "bash ./scripts/provision-worktree.sh",
         },
       },
       issue: {
@@ -1596,7 +1596,7 @@ describe("realizeExecutionWorkspace", () => {
         workspaceStrategy: {
           type: "git_worktree",
           branchTemplate: "{{issue.identifier}}-{{slug}}",
-          provisionCommand: "PAPERCLIP_SKIP_WORKTREE_CLI_INIT=true bash ./scripts/provision-worktree.sh",
+          provisionCommand: "bash ./scripts/provision-worktree.sh",
         },
       },
       issue: {
@@ -1681,7 +1681,6 @@ describe("realizeExecutionWorkspace", () => {
           PATH: `${fakeBin}:${process.env.PATH ?? ""}`,
           PAPERCLIP_WORKSPACE_BASE_CWD: baseRoot,
           PAPERCLIP_WORKSPACE_CWD: worktreeRoot,
-          PAPERCLIP_SKIP_WORKTREE_CLI_INIT: "true",
         },
       });
 
@@ -1919,7 +1918,6 @@ describe("realizeExecutionWorkspace", () => {
           PATH: `${fakeBin}:${process.env.PATH ?? ""}`,
           PAPERCLIP_WORKSPACE_BASE_CWD: baseRoot,
           PAPERCLIP_WORKSPACE_CWD: worktreeRoot,
-          PAPERCLIP_SKIP_WORKTREE_CLI_INIT: "true",
         },
       });
 
@@ -2010,7 +2008,7 @@ describe("realizeExecutionWorkspace", () => {
         workspaceStrategy: {
           type: "git_worktree",
           branchTemplate: "{{issue.identifier}}-{{slug}}",
-          provisionCommand: "PAPERCLIP_SKIP_WORKTREE_CLI_INIT=true bash ./scripts/provision-worktree.sh",
+          provisionCommand: "bash ./scripts/provision-worktree.sh",
         },
       },
       issue: {
