@@ -490,8 +490,13 @@ function continuationPolicyForExecutionPending(
   policy: IssueExecutionPolicy,
   state: IssueExecutionState | null,
 ) {
-  if (state?.status !== EXECUTION_PENDING_STATUS || state.continuationStageIds === undefined) {
+  if (state?.status !== EXECUTION_PENDING_STATUS) {
     return policy;
+  }
+  if (!Array.isArray(state.continuationStageIds)) {
+    throw unprocessable(
+      "Execution continuation cursor is missing; reconcile the policy before completing",
+    );
   }
   const stagesById = new Map(policy.stages.map((stage) => [stage.id, stage]));
   const stages = state.continuationStageIds.map((stageId) => {
