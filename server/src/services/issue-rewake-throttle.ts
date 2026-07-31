@@ -16,11 +16,11 @@
  * a comment wake, fresh issue activity, an explicit resume, forceFreshSession,
  * or an event-carrying wake reason — bypasses the throttle entirely.
  *
- * Repeated terminal provider-cap failures are different: they are already a
- * classified wait condition, so hammering the same issue again buys no new
- * information. Those failed runs count toward the streak even though they are
- * not `succeeded`; process-loss and other transient infra failures still break
- * the streak and retry immediately.
+ * Repeated terminal adapter/process failures are different: once the recovery
+ * classifier recognizes them as quota or transient infrastructure, hammering
+ * the same issue again buys no new information. Those failed runs count toward
+ * the streak even though they are not `succeeded`; configuration blockers and
+ * unclassified failures still break the streak and retry immediately.
  */
 import { classifyAdapterFailureForRecovery } from "./recovery/service.js";
 
@@ -164,13 +164,14 @@ export function countConsecutiveFailedNoProgressRuns(input: IssueFailedNoProgres
   let failedNoProgressStreak = 0;
   for (const run of runs) {
     if (!run.finishedAt) break;
-    const countedFailure =
-      run.status !== "succeeded" &&
-      classifyAdapterFailureForRecovery({
-        error: run.error,
-        errorCode: run.errorCode,
-        resultJson: run.resultJson,
-      }, input.now)?.kind === "provider_quota";
+    const classification = run.status !== "succeeded"
+      ? classifyAdapterFailureForRecovery({
+          error: run.error,
+          errorCode: run.errorCode,
+          resultJson: run.resultJson,
+        }, input.now)
+      : null;
+    const countedFailure = classification != null && classification.kind !== "configuration_incomplete";
     if (!countedFailure) break;
     if (input.runIdsWithIssueProgress.has(run.id)) break;
     failedNoProgressStreak += 1;
@@ -184,16 +185,41 @@ export function evaluateIssueRewakeThrottle(input: IssueRewakeThrottleInput): Is
   if (runs.length === 0) return { blocked: false, noProgressStreak: 0 };
   if (input.hasNewIssueInputSinceLastRun) return { blocked: false, noProgressStreak: 0 };
 
+  const latestFailureClassification = runs[0]?.status !== "succeeded"
+    ? classifyAdapterFailureForRecovery({
+        error: runs[0]?.error ?? null,
+        errorCode: runs[0]?.errorCode ?? null,
+        resultJson: runs[0]?.resultJson ?? null,
+      }, input.now)
+    : null;
+  if (latestFailureClassification != null && latestFailureClassification.kind !== "configuration_incomplete") {
+    const noProgressStreak = countConsecutiveFailedNoProgressRuns(input);
+    if (noProgressStreak < ISSUE_REWAKE_NO_PROGRESS_THRESHOLD) {
+      return { blocked: false, noProgressStreak };
+    }
+
+    const lastRunFinishedAt = runs[0]?.finishedAt;
+    if (!lastRunFinishedAt) return { blocked: false, noProgressStreak };
+
+    const cooldownMs = computeIssueRewakeCooldownMs(noProgressStreak);
+    const nextAllowedAt = new Date(lastRunFinishedAt.getTime() + cooldownMs);
+    if (input.now.getTime() < nextAllowedAt.getTime()) {
+      return { blocked: true, noProgressStreak, cooldownMs, lastRunFinishedAt, nextAllowedAt };
+    }
+    return { blocked: false, noProgressStreak };
+  }
+
   let noProgressStreak = 0;
   for (const run of runs) {
     if (!run.finishedAt) break;
-    const countedFailure =
-      run.status !== "succeeded" &&
-      classifyAdapterFailureForRecovery({
-        error: run.error,
-        errorCode: run.errorCode,
-        resultJson: run.resultJson,
-      }, input.now)?.kind === "provider_quota";
+    const classification = run.status !== "succeeded"
+      ? classifyAdapterFailureForRecovery({
+          error: run.error,
+          errorCode: run.errorCode,
+          resultJson: run.resultJson,
+        }, input.now)
+      : null;
+    const countedFailure = classification != null && classification.kind !== "configuration_incomplete";
     if (run.status !== "succeeded" && !countedFailure) break;
     if (input.runIdsWithIssueProgress.has(run.id)) break;
     noProgressStreak += 1;

@@ -1,5 +1,8 @@
+import fs from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
+  ADAPTER_FAILURE_RECOVERY_ERROR_CODES,
+  INTENTIONALLY_UNCLASSIFIED_ADAPTER_FAILURE_ERROR_CODES,
   PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS,
   classifyAdapterFailureForRecovery,
 } from "./service.js";
@@ -121,5 +124,59 @@ describe("classifyAdapterFailureForRecovery", () => {
       error: "Workspace storage capacity limit reached.",
       resultJson: null,
     })).toBeNull();
+  });
+
+  it("classifies the emitted quota and transient retry families", () => {
+    expect(classifyAdapterFailureForRecovery({
+      errorCode: "acpx_turn_failed",
+      error: "You've hit your monthly spend limit · raise it at claude.ai/settings/usage",
+      resultJson: null,
+    })?.kind).toBe("provider_quota");
+
+    for (const errorCode of [
+      "acpx_turn_failed",
+      "acpx_session_init_failed",
+      "acpx_stream_idle_timeout",
+      "paperclip_control_plane_unreachable",
+      "process_lost",
+    ]) {
+      expect(classifyAdapterFailureForRecovery({
+        errorCode,
+        error: "synthetic emitted transient failure",
+        resultJson: null,
+      })).toEqual({ kind: "transient_infra" });
+    }
+  });
+
+  it("source-derives emitted failure codes and requires classification or explicit exclusion", () => {
+    const acpxSource = fs.readFileSync(
+      new URL("../../../../packages/adapter-utils/src/acpx-engine/execute.ts", import.meta.url),
+      "utf8",
+    );
+    const processSource = fs.readFileSync(new URL("../../adapters/process/execute.ts", import.meta.url), "utf8");
+    const heartbeatSource = fs.readFileSync(new URL("../heartbeat.ts", import.meta.url), "utf8");
+
+    const derivedCodes = new Set<string>();
+    for (const match of acpxSource.matchAll(/return "(acpx_[a-z_]+)"|errorCode:\s*"(acpx_[a-z_]+)"/g)) {
+      derivedCodes.add(match[1] ?? match[2] ?? "");
+    }
+    for (const match of processSource.matchAll(/errorCode:\s*"([a-z_]+)"/g)) {
+      derivedCodes.add(match[1] ?? "");
+    }
+    for (const match of heartbeatSource.matchAll(
+      /CONFIGURATION_INCOMPLETE_FAILURE_CODE = "([a-z_]+)"|if \(run\.errorCode === "(provider_quota)"\)|errorCode:\s*"(process_lost)"|\?\? "(adapter_failed)"/g,
+    )) {
+      derivedCodes.add(match[1] ?? match[2] ?? match[3] ?? match[4] ?? "");
+    }
+    derivedCodes.delete("");
+
+    expect(derivedCodes.size).toBeGreaterThan(0);
+    for (const errorCode of derivedCodes) {
+      expect(
+        ADAPTER_FAILURE_RECOVERY_ERROR_CODES.has(errorCode) ||
+          INTENTIONALLY_UNCLASSIFIED_ADAPTER_FAILURE_ERROR_CODES.has(errorCode),
+        `${errorCode} must be classified or intentionally excluded`,
+      ).toBe(true);
+    }
   });
 });

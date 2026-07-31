@@ -5324,7 +5324,7 @@ function buildUndeliveredIssueMonitorRearmAt(now: Date, nextCheckAt: string | nu
   return parsed.getTime() > minimumFuture.getTime() ? parsed : minimumFuture;
 }
 
-function computeIssueMonitorFailedDispatchBackoffDelayMs(consecutiveFailures: number) {
+export function computeIssueMonitorFailedDispatchBackoffDelayMs(consecutiveFailures: number) {
   const normalizedFailures = Math.max(1, Math.floor(consecutiveFailures));
   const multiplier = 2 ** Math.max(0, normalizedFailures - 1);
   return Math.min(

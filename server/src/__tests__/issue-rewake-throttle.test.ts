@@ -213,7 +213,7 @@ describe("evaluateIssueRewakeThrottle", () => {
     }
   });
 
-  it("does not delay recovery after a non-provider failed run", () => {
+  it("does not delay recovery after a single transient failed run", () => {
     const decision = evaluateIssueRewakeThrottle({
       now: NOW,
       recentTerminalRuns: [
@@ -223,7 +223,27 @@ describe("evaluateIssueRewakeThrottle", () => {
       runIdsWithIssueProgress: new Set(),
       hasNewIssueInputSinceLastRun: false,
     });
-    expect(decision).toEqual({ blocked: false, noProgressStreak: 0 });
+    expect(decision).toEqual({ blocked: false, noProgressStreak: 1 });
+  });
+
+  it("blocks a sustained burst of transient failed runs", () => {
+    const decision = evaluateIssueRewakeThrottle({
+      now: NOW,
+      recentTerminalRuns: [
+        runSample({ id: "r2", status: "failed", finishedSecondsAgo: 10, errorCode: "process_lost", error: "child exited" }),
+        runSample({
+          id: "r1",
+          status: "failed",
+          finishedSecondsAgo: 40,
+          errorCode: "paperclip_control_plane_unreachable",
+          error: "No reachable API URL worked from the execution environment.",
+        }),
+      ],
+      runIdsWithIssueProgress: new Set(),
+      hasNewIssueInputSinceLastRun: false,
+    });
+    expect(decision.blocked).toBe(true);
+    if (decision.blocked) expect(decision.noProgressStreak).toBe(2);
   });
 
   it("allows when new issue input landed after the last run", () => {
@@ -362,5 +382,25 @@ describe("countConsecutiveFailedNoProgressRuns", () => {
         hasNewIssueInputSinceLastRun: true,
       }),
     ).toBe(0);
+  });
+
+  it("proves error-code admission is the binding guard for transient failure streaks", () => {
+    const buildRuns = (errorCode: string) => [
+      runSample({ id: "r2", status: "failed", finishedSecondsAgo: 10, errorCode, error: "synthetic failure" }),
+      runSample({ id: "r1", status: "failed", finishedSecondsAgo: 40, errorCode, error: "synthetic failure" }),
+    ];
+
+    expect(countConsecutiveFailedNoProgressRuns({
+      now: NOW,
+      recentTerminalRuns: buildRuns("acpx_turn_failed"),
+      runIdsWithIssueProgress: new Set(),
+      hasNewIssueInputSinceLastRun: false,
+    })).toBe(2);
+    expect(countConsecutiveFailedNoProgressRuns({
+      now: NOW,
+      recentTerminalRuns: buildRuns("acpx_timeout"),
+      runIdsWithIssueProgress: new Set(),
+      hasNewIssueInputSinceLastRun: false,
+    })).toBe(0);
   });
 });
