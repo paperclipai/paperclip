@@ -31,12 +31,14 @@ Notes:
 
 ## Advisory bwrap wrapper
 
-The driver prepares an advisory bubblewrap (`bwrap`) wrapper for a sandbox command. The wrapper is advisory and best-effort. The driver does not wrap the command during execution yet. At lease time the driver probes the sandbox for the wrapper capability and records the result on the lease metadata. The command builder exists as a pure function. A later change wires the builder into command execution.
+The driver wraps a sandbox command with an advisory bubblewrap (`bwrap`) wrapper. The wrapper is advisory, best-effort, and automatic. At lease time the driver probes the sandbox for the wrapper capability and records the result on the lease metadata. At execute time the driver wraps the command when the capability is present. The command builder is a pure function.
 
 - **The wrapper adds no security.** The ephemeral sandbox stays the only security posture. The wrapper only gives an agent real-time feedback when the agent tries to change a file that the ephemeral sandbox will not keep.
 - **The read-only root is a feedback signal.** The wrapper binds the root as read-only (`--ro-bind / /`) and re-binds only the writable directories. A write to a path outside the writable set fails at once, so the agent learns the change is not durable.
 - **A capability probe records the wrapper capability.** No configuration field turns it on. At lease time the driver probes the sandbox for the end-to-end `bwrap` capability (`sudo -n bwrap` with a user namespace) and reads the sandbox user's uid and gid. It stores `bwrapAvailable`, `sandboxUid`, and `sandboxGid` on the lease metadata.
 - **The probe is best-effort.** A missing `bwrap` binary, a missing passwordless `sudo -n` rule, or a missing user namespace records `bwrapAvailable: false` and never fails the lease.
+- **The writable set is the workspace plus the read-write sync destinations.** The wrapper binds the workspace directory read-write as the baseline; the workspace is always durable. It adds the read-write sync destinations that a sync-in recorded for the same lease. The set deduplicates the directories. The baseline keeps a safe result even when the collected set is empty.
+- **The wrapper runs at execute time when the capability is present.** The driver wraps the command only when the lease reports `bwrapAvailable: true` and a uid/gid pair is known. It binds the workspace and the read-write sync destinations, keeps the root read-only for feedback, and re-binds the stdin file after the fresh `/tmp`. It runs the plain command when the capability or the uid/gid is missing. A wrap without a uid/gid would run as root and give the agent's files root ownership, so the driver keeps the plain command in that case.
 
 ## Local development
 

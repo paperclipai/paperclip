@@ -1196,6 +1196,179 @@ describe("Daytona sandbox provider plugin", () => {
     });
   });
 
+  it("wraps the command when the lease reports bwrap available and uid/gid known", async () => {
+    process.env.DAYTONA_API_KEY = "host-key";
+    const sandbox = createMockSandbox();
+    mockGet.mockResolvedValue(sandbox);
+
+    await plugin.definition.onEnvironmentExecute?.({
+      driverKey: "daytona",
+      companyId: "company-1",
+      environmentId: "env-1",
+      config: { timeoutMs: 300000, reuseLease: false },
+      lease: {
+        providerLeaseId: "sandbox-123",
+        metadata: {
+          remoteCwd: "/home/daytona/paperclip-workspace",
+          bwrapAvailable: true,
+          sandboxUid: 1000,
+          sandboxGid: 1000,
+        },
+      },
+      command: "printf",
+      args: ["hello"],
+      timeoutMs: 1000,
+    });
+
+    const [command] = sandbox.process.executeCommand.mock.calls[0] as [string];
+    // The wrapper runs `sudo -n bwrap`, re-enters the sandbox user through the
+    // user namespace, and binds the workspace directory read-write.
+    expect(command.startsWith("sudo -n bwrap")).toBe(true);
+    expect(command).toContain("--unshare-user --uid 1000 --gid 1000");
+    expect(command).toContain(
+      "--bind '/home/daytona/paperclip-workspace' '/home/daytona/paperclip-workspace'",
+    );
+    // The login-shell script still rides inside the wrapper through `sh -c`.
+    expect(command).toContain("/etc/profile");
+  });
+
+  it("binds collected rw sync directories", async () => {
+    process.env.DAYTONA_API_KEY = "host-key";
+    const remoteCwd = "/home/daytona/paperclip-workspace";
+    const collectedDir = `${remoteCwd}/data`;
+    const hostDir = await fs.mkdtemp(path.join(os.tmpdir(), "daytona-bwrap-test-"));
+    const source = path.join(hostDir, "in-place.txt");
+    await fs.writeFile(source, "bytes");
+    const sandbox = createMockSandbox();
+    mockGet.mockResolvedValue(sandbox);
+
+    const scopeParams = {
+      driverKey: "daytona",
+      companyId: "company-1",
+      environmentId: "env-1",
+      config: { timeoutMs: 300000, reuseLease: false },
+    };
+
+    // Record a read-write sync destination under the shared scope. The execute
+    // hook reads the same scope, so the wrapper must bind this directory too.
+    await plugin.definition.onEnvironmentSyncIn?.({
+      ...scopeParams,
+      lease: { providerLeaseId: "sandbox-123", metadata: { remoteCwd } },
+      operations: [
+        {
+          operationId: "sync-op-rw",
+          files: [
+            {
+              sourcePath: source,
+              targetPath: `${collectedDir}/in-place.txt`,
+              kind: "file" as const,
+              access: "rw" as const,
+            },
+          ],
+        },
+      ],
+    });
+    sandbox.process.executeCommand.mockClear();
+
+    await plugin.definition.onEnvironmentExecute?.({
+      ...scopeParams,
+      lease: {
+        providerLeaseId: "sandbox-123",
+        metadata: { remoteCwd, bwrapAvailable: true, sandboxUid: 1000, sandboxGid: 1000 },
+      },
+      command: "printf",
+      args: ["hello"],
+      timeoutMs: 1000,
+    });
+
+    const [command] = sandbox.process.executeCommand.mock.calls[0] as [string];
+    expect(command).toContain(`--bind '${collectedDir}' '${collectedDir}'`);
+    await fs.rm(hostDir, { recursive: true, force: true });
+  });
+
+  it("re-binds the stdin path when stdin is present and bwrap is available", async () => {
+    process.env.DAYTONA_API_KEY = "host-key";
+    const sandbox = createMockSandbox();
+    mockGet.mockResolvedValue(sandbox);
+
+    await plugin.definition.onEnvironmentExecute?.({
+      driverKey: "daytona",
+      companyId: "company-1",
+      environmentId: "env-1",
+      config: { timeoutMs: 300000, reuseLease: false },
+      lease: {
+        providerLeaseId: "sandbox-123",
+        metadata: {
+          remoteCwd: "/home/daytona/paperclip-workspace",
+          bwrapAvailable: true,
+          sandboxUid: 1000,
+          sandboxGid: 1000,
+        },
+      },
+      command: "cat",
+      args: [],
+      stdin: "input payload",
+      timeoutMs: 1000,
+    });
+
+    const stdinPath = sandbox.fs.uploadFile.mock.calls[0][1] as string;
+    expect(stdinPath).toMatch(/^\/tmp\/paperclip-stdin-/);
+    const [command] = sandbox.process.executeCommand.mock.calls[0] as [string];
+    // The `--tmpfs /tmp` flag hides the uploaded stdin file, so the wrapper must
+    // re-bind it read-only after the tmpfs.
+    expect(command).toContain(`--ro-bind '${stdinPath}' '${stdinPath}'`);
+  });
+
+  it("runs the plain command when bwrap is unavailable or uid/gid is unknown", async () => {
+    process.env.DAYTONA_API_KEY = "host-key";
+    const sandbox = createMockSandbox();
+    mockGet.mockResolvedValue(sandbox);
+
+    // Case 1: the probe reported bwrap unavailable.
+    await plugin.definition.onEnvironmentExecute?.({
+      driverKey: "daytona",
+      companyId: "company-1",
+      environmentId: "env-1",
+      config: { timeoutMs: 300000, reuseLease: false },
+      lease: {
+        providerLeaseId: "sandbox-123",
+        metadata: {
+          remoteCwd: "/home/daytona/paperclip-workspace",
+          bwrapAvailable: false,
+          sandboxUid: 1000,
+          sandboxGid: 1000,
+        },
+      },
+      command: "printf",
+      args: ["hello"],
+      timeoutMs: 1000,
+    });
+    expect((sandbox.process.executeCommand.mock.calls[0] as [string])[0]).not.toContain("bwrap");
+
+    // Case 2: bwrap is available but the uid/gid is unknown. A wrap without a
+    // uid/gid would run as root, so the seam keeps the plain command.
+    sandbox.process.executeCommand.mockClear();
+    await plugin.definition.onEnvironmentExecute?.({
+      driverKey: "daytona",
+      companyId: "company-1",
+      environmentId: "env-1",
+      config: { timeoutMs: 300000, reuseLease: false },
+      lease: {
+        providerLeaseId: "sandbox-123",
+        metadata: {
+          remoteCwd: "/home/daytona/paperclip-workspace",
+          bwrapAvailable: true,
+          sandboxUid: null,
+          sandboxGid: null,
+        },
+      },
+      command: "printf",
+      args: ["hello"],
+      timeoutMs: 1000,
+    });
+    expect((sandbox.process.executeCommand.mock.calls[0] as [string])[0]).not.toContain("bwrap");
+  });
+
   it("rejects invalid shell env keys before execution", async () => {
     process.env.DAYTONA_API_KEY = "host-key";
     const sandbox = createMockSandbox();
