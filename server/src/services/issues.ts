@@ -32,6 +32,7 @@ import {
   issueThreadInteractions,
   issues,
   labels,
+  principalPermissionGrants,
   projectWorkspaces,
   projects,
   workspaceOperations,
@@ -5433,6 +5434,12 @@ export function issueService(db: Db) {
       expectedUpdatedAt: Date | string;
       actor: AuthorizationActor;
       action: Extract<AuthorizationAction, "issue:comment" | "issue:mutate">;
+      assignment?: {
+        projectId: string | null;
+        parentIssueId: string | null;
+        assigneeAgentId: string | null;
+        assigneeUserId: string | null;
+      };
     },
     operation: (tx: any) => Promise<T>,
   ): Promise<T> {
@@ -5474,6 +5481,27 @@ export function issueService(db: Db) {
         throw conflict("Unblock owner authorization became stale");
       }
 
+      if (lockedIssue!.projectId) {
+        await tx
+          .select({ id: projects.id })
+          .from(projects)
+          .where(and(
+            eq(projects.id, lockedIssue!.projectId),
+            eq(projects.companyId, lockedIssue!.companyId),
+          ))
+          .for("update");
+      }
+      if (input.actor.runId) {
+        await tx
+          .select({ id: heartbeatRuns.id })
+          .from(heartbeatRuns)
+          .where(and(
+            eq(heartbeatRuns.id, input.actor.runId),
+            eq(heartbeatRuns.companyId, lockedIssue!.companyId),
+          ))
+          .for("update");
+      }
+
       const responsibleUserId = input.actor.onBehalfOfUserId?.trim();
       if (responsibleUserId) {
         await tx
@@ -5492,11 +5520,33 @@ export function issueService(db: Db) {
           .for("update");
       }
 
+      const grantPrincipals = [
+        and(
+          eq(principalPermissionGrants.principalType, "agent"),
+          eq(principalPermissionGrants.principalId, actorAgentId),
+        ),
+        ...(responsibleUserId
+          ? [and(
+              eq(principalPermissionGrants.principalType, "user"),
+              eq(principalPermissionGrants.principalId, responsibleUserId),
+            )]
+          : []),
+      ];
+      await tx
+        .select({ id: principalPermissionGrants.id })
+        .from(principalPermissionGrants)
+        .where(and(
+          eq(principalPermissionGrants.companyId, lockedIssue!.companyId),
+          or(...grantPrincipals),
+        ))
+        .for("update");
+
       const actor = { ...input.actor, onBehalfOfMemberships: undefined } as AuthorizationActor & {
         __responsibleUserSnapshotMemo?: unknown;
       };
       delete actor.__responsibleUserSnapshotMemo;
-      const decision = await authorizationService(tx as unknown as Db).decide({
+      const lockedAuthorization = authorizationService(tx as unknown as Db);
+      const decision = await lockedAuthorization.decide({
         actor,
         action: input.action,
         resource: {
@@ -5517,10 +5567,36 @@ export function issueService(db: Db) {
           assigneeUserId: lockedIssue!.assigneeUserId,
           allowIssueUnblockOwner: true,
           requireFreshResponsibleUser: true,
+          forceResponsibleUserEnforcement: true,
         },
       });
       if (!decision.allowed || decision.reason !== "allow_issue_unblock_owner") {
         throw conflict("Unblock owner authorization became stale");
+      }
+
+      if (input.assignment) {
+        const assignmentDecision = await lockedAuthorization.decide({
+          actor,
+          action: "tasks:assign",
+          resource: {
+            type: "issue",
+            companyId: lockedIssue!.companyId,
+            issueId: lockedIssue!.id,
+            projectId: input.assignment.projectId,
+            parentIssueId: input.assignment.parentIssueId,
+            assigneeAgentId: input.assignment.assigneeAgentId,
+            assigneeUserId: input.assignment.assigneeUserId,
+          },
+          scope: {
+            issueId: lockedIssue!.id,
+            ...input.assignment,
+            requireFreshResponsibleUser: true,
+            forceResponsibleUserEnforcement: true,
+          },
+        });
+        if (!assignmentDecision.allowed) {
+          throw conflict("Unblock owner assignment authorization became stale");
+        }
       }
 
       return operation(tx);

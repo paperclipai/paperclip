@@ -832,14 +832,23 @@ describe("agent issue mutation checkout ownership", () => {
   });
 
   it("binds unblock-owner comments to the current blocked owner at insert time", async () => {
-    mockIssueService.getById.mockResolvedValue(makeIssue({
+    const blockedIssue = makeIssue({
       status: "blocked",
       assigneeAgentId: ownerAgentId,
       unblockDescriptor: {
         owner: { agentId: peerAgentId },
         action: "Perform the unblock action",
       },
-    }));
+    });
+    const latestIssue = {
+      ...blockedIssue,
+      assigneeAgentId: "88888888-8888-4888-8888-888888888888",
+    };
+    mockIssueService.getById
+      .mockResolvedValueOnce(blockedIssue)
+      .mockResolvedValueOnce(blockedIssue)
+      .mockResolvedValueOnce(blockedIssue)
+      .mockResolvedValue(latestIssue);
     mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
       allowed: input.action === "issue:comment" || input.action === "issue:read",
       action: input.action,
@@ -866,6 +875,11 @@ describe("agent issue mutation checkout ownership", () => {
         actor: expect.objectContaining({ type: "agent", agentId: peerAgentId }),
       }),
       expect.any(Function),
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalledWith(
+      ownerAgentId,
+      expect.objectContaining({ reason: "issue_commented" }),
     );
   });
 
@@ -1682,7 +1696,7 @@ describe("agent issue mutation checkout ownership", () => {
     };
     mockIssueService.getById
       .mockResolvedValueOnce(blockedIssue)
-      .mockResolvedValueOnce(updatedIssue);
+      .mockResolvedValue(updatedIssue);
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
       ...updatedIssue,
       ...patch,
@@ -1754,7 +1768,7 @@ describe("agent issue mutation checkout ownership", () => {
     expect(res.body).toMatchObject({ status: "todo", assigneeAgentId: peerAgentId });
   });
 
-  it("uses the latest committed issue for unblock-owner responses and wake dispatch", async () => {
+  it("suppresses a stale owner wake after a post-reread reassignment", async () => {
     const latestAssigneeAgentId = "88888888-8888-4888-8888-888888888888";
     const blockedIssue = makeIssue({
       status: "blocked",
@@ -1778,6 +1792,8 @@ describe("agent issue mutation checkout ownership", () => {
     };
     mockIssueService.getById
       .mockResolvedValueOnce(blockedIssue)
+      .mockResolvedValueOnce(ownerResult)
+      .mockResolvedValueOnce(ownerResult)
       .mockResolvedValue(latestIssue);
     mockIssueService.update.mockResolvedValue(ownerResult);
     mockAgentService.resolveByReference.mockResolvedValue({
@@ -1808,12 +1824,9 @@ describe("agent issue mutation checkout ownership", () => {
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body).toMatchObject({ status: "todo", assigneeAgentId: latestAssigneeAgentId });
-    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalledWith(
       latestAssigneeAgentId,
-      expect.objectContaining({
-        reason: "issue_assigned",
-        payload: expect.objectContaining({ issueId }),
-      }),
+      expect.objectContaining({ reason: "issue_assigned" }),
     );
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalledWith(
       peerAgentId,
