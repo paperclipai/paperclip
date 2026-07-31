@@ -6458,7 +6458,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       return "timeout_exceeded";
     }
     const maxAttempts = input.monitor?.maxAttempts ?? null;
-    if (maxAttempts !== null && input.nextAttemptCount > maxAttempts) {
+    if (maxAttempts !== null && input.nextAttemptCount >= maxAttempts) {
       return "max_attempts_exhausted";
     }
     return null;

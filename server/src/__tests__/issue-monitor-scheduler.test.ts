@@ -26,7 +26,11 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { heartbeatService } from "../services/heartbeat.ts";
 import { runningProcesses } from "../adapters/index.ts";
-import { normalizeIssueExecutionPolicy, parseIssueExecutionState } from "../services/issue-execution-policy.ts";
+import {
+  applyIssueMonitorPolicyTransition,
+  normalizeIssueExecutionPolicy,
+  parseIssueExecutionState,
+} from "../services/issue-execution-policy.ts";
 
 const mockAdapterExecute = vi.hoisted(() =>
   vi.fn(async () => ({
@@ -799,13 +803,43 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
   }, 20_000);
 
   it("clears exhausted monitors and queues bounded owner recovery instead of another due check", async () => {
-    const { issueId, agentId } = await seedFixture({
-      monitorAttemptCount: 1,
+    const { issueId, agentId, nextCheckAt } = await seedFixture();
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]!);
+    const policy = normalizeIssueExecutionPolicy({
+      stages: [],
       monitor: {
+        nextCheckAt: nextCheckAt.toISOString(),
+        notes: "Check deploy",
+        scheduledBy: "assignee",
         maxAttempts: 1,
         recoveryPolicy: "wake_owner",
       },
+    })!;
+    const transition = applyIssueMonitorPolicyTransition({
+      issue: {
+        ...issue,
+        executionPolicy: null,
+        executionState: null,
+        monitorNextCheckAt: null,
+        monitorAttemptCount: 0,
+        monitorLastTriggeredAt: null,
+        monitorNotes: null,
+        monitorScheduledBy: null,
+      },
+      policy,
+      previousPolicy: null,
+      requestedAssigneePatch: {},
+      actor: { agentId },
+      monitorExplicitlyUpdated: true,
     });
+    await db
+      .update(issues)
+      .set({
+        executionPolicy: policy,
+        ...transition.patch,
+        monitorAttemptCount: 0,
+      })
+      .where(eq(issues.id, issueId));
     const heartbeat = createHeartbeat();
     const tickAt = new Date("2026-04-11T12:31:00.000Z");
 
@@ -814,9 +848,9 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     expect(result.enqueued).toBe(0);
     expect(result.skipped).toBe(1);
 
-    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]!);
-    expect(issue.monitorNextCheckAt).toBeNull();
-    expect(parseIssueExecutionState(issue.executionState)?.monitor).toMatchObject({
+    const exhaustedIssue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]!);
+    expect(exhaustedIssue.monitorNextCheckAt).toBeNull();
+    expect(parseIssueExecutionState(exhaustedIssue.executionState)?.monitor).toMatchObject({
       status: "cleared",
       clearReason: "max_attempts_exhausted",
     });

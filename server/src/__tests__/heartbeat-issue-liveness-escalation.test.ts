@@ -736,6 +736,72 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
     });
   });
 
+  it("uses the shared scheduled-monitor predicate before healing a wakeless issue", async () => {
+    const { companyId, agentId, issueId } = await seedWakelessNonTerminalFixture({ status: "blocked" });
+    const nextCheckAt = new Date(Date.now() + 60 * 60_000);
+    const monitorPolicy = {
+      mode: "normal",
+      commentRequired: true,
+      stages: [],
+      monitor: {
+        nextCheckAt: nextCheckAt.toISOString(),
+        scheduledBy: "assignee",
+        maxAttempts: 2,
+      },
+    };
+
+    await db
+      .update(issues)
+      .set({
+        executionPolicy: monitorPolicy,
+        executionState: {
+          status: "idle",
+          monitor: {
+            status: "scheduled",
+            nextCheckAt: nextCheckAt.toISOString(),
+            scheduledBy: "assignee",
+            attemptCount: 0,
+            maxAttempts: 2,
+          },
+        },
+        monitorNextCheckAt: nextCheckAt,
+        monitorAttemptCount: 0,
+      })
+      .where(eq(issues.id, issueId));
+
+    const scheduledResult = await heartbeatService(db).reconcileIssueGraphLiveness();
+
+    expect(scheduledResult.wakelessNonTerminalHealed).toBe(0);
+    expect(scheduledResult.wakelessNonTerminalMonitorSkipped).toBe(1);
+
+    await db
+      .update(issues)
+      .set({
+        executionState: {
+          status: "idle",
+          monitor: {
+            status: "scheduled",
+            nextCheckAt: nextCheckAt.toISOString(),
+            scheduledBy: "assignee",
+            attemptCount: 2,
+            maxAttempts: 2,
+          },
+        },
+        monitorAttemptCount: 2,
+      })
+      .where(eq(issues.id, issueId));
+
+    const exhaustedResult = await heartbeatService(db).reconcileIssueGraphLiveness();
+
+    expect(exhaustedResult.wakelessNonTerminalHealed).toBe(1);
+    const wake = await db
+      .select({ reason: agentWakeupRequests.reason })
+      .from(agentWakeupRequests)
+      .where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.agentId, agentId)))
+      .then((rows) => rows[0] ?? null);
+    expect(wake?.reason).toBe("non_terminal_wakeless_backstop");
+  });
+
   it("re-arms the wakeless backstop after a successful run changes the epoch", async () => {
     const { companyId, agentId, issueId } = await seedWakelessNonTerminalFixture();
     await db.insert(agentWakeupRequests).values({
