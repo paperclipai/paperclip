@@ -106,6 +106,7 @@ function makeIssue(status: "todo" | "done") {
     createdByUserId: "local-board",
     identifier: "PAP-1018",
     title: "Telemetry test",
+    description: "Kind: no-code",
   };
 }
 

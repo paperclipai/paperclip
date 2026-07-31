@@ -64,7 +64,8 @@ export type ClosureGateInput = {
 
 const FIX_SHA_PATTERN = /\bFix-SHA\s*:\s*`?([0-9a-f]{7,64})`?/gi;
 const KIND_DECL_PATTERN = /^\s*Kind\s*:\s*(no-code|data-only|ui-only)\s*$/im;
-const TITLE_PREFIX_PATTERN = /^\s*(?:\[[^\]]+\]\s*)+/;
+const TITLE_PREFIX_PATTERN = /^\s*(?:\[[^\[\]]+\]\s*)+/;
+const TITLE_PREFIX_TOKEN_PATTERN = /\[[^\[\]]+\]/g;
 
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
@@ -127,7 +128,12 @@ function titlePrefixAllowsNoCode(issueTitle: string): boolean {
   const prefix = extractTitlePrefix(issueTitle);
   if (!prefix) return false;
   for (const allowed of CLOSURE_GATE_TITLE_PREFIX_ALLOWLIST) {
-    if (prefix.includes(allowed)) return true;
+    if (prefix === allowed) return true;
+  }
+  for (const match of prefix.matchAll(TITLE_PREFIX_TOKEN_PATTERN)) {
+    if (CLOSURE_GATE_TITLE_PREFIX_ALLOWLIST.includes(match[0] as (typeof CLOSURE_GATE_TITLE_PREFIX_ALLOWLIST)[number])) {
+      return true;
+    }
   }
   return false;
 }
@@ -248,5 +254,44 @@ export function parseClosureFields(closureComment: string | null | undefined): {
     fixShas: longShas,
     shortPrefixes,
     kindMarker: extractKindMarker(text),
+  };
+}
+
+export type ResolvedClosureGateInput = {
+  /** Closure comment as posted on the PATCH body, or `null` when absent. */
+  closureComment: string | null;
+  /** Pending title (if non-empty after trim) wins over the persisted issue title. */
+  issueTitle: string;
+  /** Pending description (if provided as a string) wins over the persisted issue description. */
+  issueDescription: string | null;
+};
+
+/**
+ * Resolve the four inputs the closure gate needs from a PATCH body's pending
+ * fields and the existing issue row. The route must call this helper before
+ * invoking `assertClosureAllowed` so the gate sees:
+ *   - the body-renamed title (e.g. `[UI] Tweak copy`) rather than the stale
+ *     row title, so a same-PATCH rename-then-close takes the no-code hatch;
+ *   - the body-added description (e.g. `Kind: no-code\n...`) so a same-PATCH
+ *     exemption override applies;
+ *   - the closure comment verbatim (including whitespace-only comments),
+ *     so a commentless closure does not bypass the gate by short-circuiting
+ *     on the truthy-comment guard.
+ *
+ * The helper is pure and unit-testable. The route is responsible for any
+ * actor / authority validation; this helper only resolves text.
+ */
+export function resolveClosureGateInput(input: {
+  body: { title?: unknown; description?: unknown; comment?: unknown };
+  existing: { title: string; description: string | null };
+}): ResolvedClosureGateInput {
+  const pendingTitle = readNonEmptyString(input.body.title);
+  const pendingDescription =
+    typeof input.body.description === "string" ? input.body.description : null;
+  return {
+    closureComment:
+      typeof input.body.comment === "string" ? input.body.comment : null,
+    issueTitle: pendingTitle ?? input.existing.title,
+    issueDescription: pendingDescription ?? input.existing.description,
   };
 }

@@ -6,6 +6,7 @@ import {
   assertClosureAllowed,
   evaluateClosureGate,
   parseClosureFields,
+  resolveClosureGateInput,
 } from "../services/closure-gate.js";
 
 describe("closure-gate kind/title constants", () => {
@@ -88,6 +89,18 @@ describe("evaluateClosureGate — no-code escape hatch", () => {
       knownUpstreamShas: [],
     });
     expect(verdict).toEqual({ ok: true, reason: "no_code_escape_hatch", kind: "no-code" });
+  });
+
+  it("rejects allowlisted tokens nested inside a non-allowlisted title prefix", () => {
+    const verdict = evaluateClosureGate({
+      closureComment: "Closed without a Fix-SHA.",
+      issueTitle: "[inject [UI] hidden attack vector] Refactor middleware",
+      issueDescription: null,
+      knownUpstreamShas: [],
+    });
+    expect(verdict.ok).toBe(false);
+    if (verdict.ok) return;
+    expect(verdict.signal).toBe(CLOSURE_GATE_SIGNAL.FabricatedSha);
   });
 
   it("skips SHA verification when the description declares a `Kind:` even without a title prefix", () => {
@@ -313,5 +326,109 @@ describe("evaluateClosureGate — short-prefix safety (Signal D)", () => {
       knownUpstreamShas: ["0123456789"],
     });
     expect(verdict).toEqual({ ok: true, reason: "valid_fix_sha" });
+  });
+});
+
+describe("resolveClosureGateInput — pending body wins over persisted issue", () => {
+  it("uses the existing title when the body does not include one", () => {
+    const resolved = resolveClosureGateInput({
+      body: { comment: "Fix-SHA: 0123456789abcdef" },
+      existing: { title: "Refactor adapter", description: "Some description" },
+    });
+    expect(resolved.issueTitle).toBe("Refactor adapter");
+  });
+
+  it("honors a pending body title so renaming to [UI] then closing takes the escape hatch", () => {
+    const resolved = resolveClosureGateInput({
+      body: { title: "[UI] Tweak dashboard copy", comment: "Kind: no-code" },
+      existing: { title: "Refactor adapter", description: null },
+    });
+    expect(resolved.issueTitle).toBe("[UI] Tweak dashboard copy");
+  });
+
+  it("uses the existing description when the body does not include one (preserves Kind: declaration)", () => {
+    const resolved = resolveClosureGateInput({
+      body: { title: "Refactor adapter" },
+      existing: { title: "Refactor adapter", description: "Kind: data-only" },
+    });
+    expect(resolved.issueDescription).toBe("Kind: data-only");
+  });
+
+  it("honors a pending body description so a same-PATCH exemption override applies", () => {
+    const resolved = resolveClosureGateInput({
+      body: { description: "Kind: no-code\nNew notes.", comment: "Closing without code." },
+      existing: { title: "[DATA] Rotate secret", description: null },
+    });
+    expect(resolved.issueDescription).toBe("Kind: no-code\nNew notes.");
+  });
+
+  it("returns closureComment as null when the body has no comment field", () => {
+    const resolved = resolveClosureGateInput({
+      body: {},
+      existing: { title: "Refactor adapter", description: null },
+    });
+    expect(resolved.closureComment).toBeNull();
+  });
+
+  it("passes the closure comment through verbatim when present (including empty string)", () => {
+    const resolved = resolveClosureGateInput({
+      body: { comment: "   " },
+      existing: { title: "Refactor adapter", description: null },
+    });
+    expect(resolved.closureComment).toBe("   ");
+  });
+
+  it("rejects the pending title when it is whitespace-only (falls back to existing)", () => {
+    const resolved = resolveClosureGateInput({
+      body: { title: "   \n  ", comment: "Closing" },
+      existing: { title: "[UI] Polish", description: null },
+    });
+    expect(resolved.issueTitle).toBe("[UI] Polish");
+  });
+});
+
+describe("resolveClosureGateInput → evaluateClosureGate integration (route-equivalent behavior)", () => {
+  it("rejects a commentless closure on a non-exempt title (so the gate cannot be bypassed by omitting comment)", () => {
+    const resolved = resolveClosureGateInput({
+      body: {},
+      existing: { title: "Refactor adapter", description: null },
+    });
+    const verdict = evaluateClosureGate({
+      closureComment: resolved.closureComment,
+      issueTitle: resolved.issueTitle,
+      issueDescription: resolved.issueDescription,
+      knownUpstreamShas: [],
+    });
+    expect(verdict.ok).toBe(false);
+    if (verdict.ok) return;
+    expect(verdict.signal).toBe(CLOSURE_GATE_SIGNAL.FabricatedSha);
+  });
+
+  it("accepts a commentless closure when the body renames a non-exempt issue to an allowlist prefix", () => {
+    const resolved = resolveClosureGateInput({
+      body: { title: "[UI] Polish dashboard copy" },
+      existing: { title: "Refactor adapter", description: null },
+    });
+    const verdict = evaluateClosureGate({
+      closureComment: resolved.closureComment,
+      issueTitle: resolved.issueTitle,
+      issueDescription: resolved.issueDescription,
+      knownUpstreamShas: [],
+    });
+    expect(verdict).toEqual({ ok: true, reason: "no_code_escape_hatch", kind: "no-code" });
+  });
+
+  it("accepts a same-PATCH [DATA] closure when body adds Kind: no-code to the comment", () => {
+    const resolved = resolveClosureGateInput({
+      body: { comment: "Rotated the webhook secret.\n\nKind: no-code" },
+      existing: { title: "[DATA] Rotate Stripe webhook secret", description: null },
+    });
+    const verdict = evaluateClosureGate({
+      closureComment: resolved.closureComment,
+      issueTitle: resolved.issueTitle,
+      issueDescription: resolved.issueDescription,
+      knownUpstreamShas: [],
+    });
+    expect(verdict).toEqual({ ok: true, reason: "no_code_escape_hatch", kind: "no-code" });
   });
 });

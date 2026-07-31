@@ -351,7 +351,7 @@ describe("issue activity event routes", () => {
   });
 
   it("logs successful_run_handoff_resolved when an in_progress issue transitions to done with a pending required handoff", async () => {
-    const issue = { ...makeIssue(), status: "in_progress" };
+    const issue = { ...makeIssue(), status: "in_progress", description: "Kind: no-code" };
     mockIssueService.getById.mockResolvedValue(issue);
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
       ...issue,

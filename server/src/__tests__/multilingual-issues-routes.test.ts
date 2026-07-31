@@ -26,7 +26,7 @@ describeEmbeddedPostgres("multilingual issue routes", () => {
   let app!: ReturnType<typeof createApp>;
   let companyId!: string;
 
-  const title = "验证中文任务";
+  const title = "[DATA] 验证中文任务";
   const description = [
     "请用中文回复并保留上下文。",
     "日本語: 次の手順を書いてください。",

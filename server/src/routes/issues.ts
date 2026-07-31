@@ -147,7 +147,7 @@ import { assertEnvironmentSelectionForCompany } from "./environment-selection.js
 import { executionWorkspaceService as executionWorkspaceServiceDirect } from "../services/execution-workspaces.js";
 import { feedbackService } from "../services/feedback.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
-import { assertClosureAllowed } from "../services/closure-gate.js";
+import { assertClosureAllowed, resolveClosureGateInput } from "../services/closure-gate.js";
 import {
   ISSUE_BLOCKER_DIAGNOSTICS_MAX_BLOCKERS,
   ISSUE_WAKE_DIAGNOSTICS_LOOKBACK_DAYS,
@@ -7479,29 +7479,20 @@ export function issueRoutes(
     const shouldCancelActiveRunForCancelledStatus =
       existing.status !== "cancelled" && updateFields.status === "cancelled";
     const requestedClosureStatus = isClosedIssueStatus(updateFields.status) ? updateFields.status : null;
-    if (requestedClosureStatus && commentBody) {
+    let pendingClosureEscapeHatchAudit: string | null = null;
+    if (requestedClosureStatus) {
+      const resolved = resolveClosureGateInput({
+        body: req.body,
+        existing: { title: existing.title, description: existing.description ?? null },
+      });
       const closureVerdict = assertClosureAllowed({
-        closureComment: commentBody,
-        issueTitle: existing.title,
-        issueDescription: existing.description ?? null,
+        closureComment: resolved.closureComment,
+        issueTitle: resolved.issueTitle,
+        issueDescription: resolved.issueDescription,
         knownUpstreamShas: [],
       });
       if (closureVerdict.ok && closureVerdict.reason === "no_code_escape_hatch") {
-        await logActivity(db, {
-          companyId: existing.companyId,
-          actorType: actor.actorType,
-          actorId: actor.actorId,
-          agentId: actor.agentId,
-          runId: actor.runId,
-          action: "issue.closure_gate.escape_hatch",
-          entityType: "issue",
-          entityId: existing.id,
-          details: {
-            kind: closureVerdict.kind,
-            requestedStatus: requestedClosureStatus,
-            source: "PATCH /api/issues/:id",
-          },
-        });
+        pendingClosureEscapeHatchAudit = closureVerdict.kind;
       }
     }
     if (resumeRequested === true && !commentBody) {
@@ -7545,6 +7536,23 @@ export function issueRoutes(
       ))
     ) {
       return;
+    }
+    if (pendingClosureEscapeHatchAudit !== null) {
+      await logActivity(db, {
+        companyId: existing.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.closure_gate.escape_hatch",
+        entityType: "issue",
+        entityId: existing.id,
+        details: {
+          kind: pendingClosureEscapeHatchAudit,
+          requestedStatus: requestedClosureStatus,
+          source: "PATCH /api/issues/:id",
+        },
+      });
     }
     const scheduledRetryForHumanComment =
       shouldHumanCommentResumeInProgressScheduledRetry({
