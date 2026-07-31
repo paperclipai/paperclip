@@ -160,6 +160,14 @@ describe("AuditFeed", () => {
     expect(container.textContent).not.toContain("All agents");
   });
 
+  it("only offers action domains present in the agent-action feed", async () => {
+    await render();
+
+    await clickButton("All actions");
+    expect(document.body.textContent).toContain("Tasks");
+    expect(document.body.textContent).not.toContain("Audit exports");
+  });
+
   it("loads more when a cursor is returned", async () => {
     listAgentActionsMock.mockImplementation((_companyId: string, filters: { cursor?: string }) => {
       if (filters.cursor === "cursor-2") {

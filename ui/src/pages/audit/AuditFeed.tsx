@@ -40,7 +40,6 @@ const ACTION_DOMAINS: { value: string; label: string }[] = [
   { value: "tool_gateway.", label: "Tools" },
   { value: "cost.", label: "Costs" },
   { value: "company.", label: "Company" },
-  { value: "audit.", label: "Audit exports" },
 ];
 
 /** Entity types offered in the filter (server does an exact match). */
