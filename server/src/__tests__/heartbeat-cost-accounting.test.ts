@@ -112,7 +112,7 @@ describe("heartbeat cost accounting", () => {
     })).toBe("derived");
   });
 
-  // The PHA-1626 invariant. Subscription CLIs emit a numeric 0 rather than
+  // The core invariant. Subscription CLIs emit a numeric 0 rather than
   // null, which used to fall through to "reported" and made hundreds of
   // millions of real tokens indistinguishable from genuinely free work.
   describe("nonzero tokens with a $0 reported cost can never be 'reported'", () => {

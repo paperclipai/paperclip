@@ -111,7 +111,7 @@ describe("deriveRateCardCents", () => {
   });
 
   it("prices a realistic subscription run that the CLI reported as $0", () => {
-    // The PHA-1626 shape: hundreds of millions of tokens booked at zero cash.
+    // The bug this guards: hundreds of millions of tokens booked at zero cash.
     const derived = deriveRateCardCents("claude-opus-4-8", {
       inputTokens: 2_732_577,
       cachedInputTokens: 2_632_998,
