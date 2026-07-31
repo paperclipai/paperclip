@@ -2605,6 +2605,7 @@ describe.sequential("issue comment reopen routes", () => {
         returnAssignee: { type: "agent", agentId: executorAgentId },
         reviewRequest: null,
         completedStageIds: [policy.stages[0].id],
+        continuationStageIds: [],
         lastDecisionId: "cccccccc-cccc-4ccc-8ccc-cccccccccccc",
         lastDecisionOutcome: "approved",
       },
