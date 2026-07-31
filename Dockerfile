@@ -63,6 +63,10 @@ ARG USER_GID=1000
 # (the image has no .git, so the server cannot derive it at runtime). Empty for
 # local `docker build`, which just leaves the server on its normal fallbacks.
 ARG PAPERCLIP_BUILD_VERSION=""
+# The exact commit this image was built from, for the same reason: server-info
+# falls back to PAPERCLIP_BUILD_COMMIT when git is unavailable, which feeds the
+# /api/health `commit` field that deploy tooling verifies. Empty locally.
+ARG PAPERCLIP_BUILD_COMMIT=""
 WORKDIR /app
 COPY --chown=node:node --from=build /app /app
 RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/codex@latest opencode-ai @google/gemini-cli@latest \
@@ -83,6 +87,7 @@ ENV NODE_ENV=production \
   PAPERCLIP_HOME=/paperclip \
   PAPERCLIP_INSTANCE_ID=default \
   PAPERCLIP_BUILD_VERSION=${PAPERCLIP_BUILD_VERSION} \
+  PAPERCLIP_BUILD_COMMIT=${PAPERCLIP_BUILD_COMMIT} \
   USER_UID=${USER_UID} \
   USER_GID=${USER_GID} \
   PAPERCLIP_CONFIG=/paperclip/instances/default/config.json \

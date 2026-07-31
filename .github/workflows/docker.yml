@@ -148,6 +148,7 @@ jobs:
           target: production
           build-args: |
             PAPERCLIP_BUILD_VERSION=${{ steps.build-version.outputs.version }}
+            PAPERCLIP_BUILD_COMMIT=${{ github.sha }}
           platforms: linux/amd64,linux/arm64
           push: true
           cache-from: type=gha
@@ -295,6 +296,7 @@ jobs:
           build-args: |
             CLOUD_BUNDLED_PLUGINS=daytona
             PAPERCLIP_BUILD_VERSION=${{ steps.build-version.outputs.version }}
+            PAPERCLIP_BUILD_COMMIT=${{ github.sha }}
           platforms: linux/amd64,linux/arm64
           push: true
           cache-from: type=gha
