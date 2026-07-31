@@ -932,6 +932,22 @@ export function environmentRoutes(
     res.json(presentEnvironmentForRead(req, environment));
   });
 
+  router.get("/environments/:id/secret-refs", async (req, res) => {
+    assertCanAccessInstanceEnvironments(req);
+    const environment = await svc.getById(req.params.id as string);
+    if (!environment) {
+      res.status(404).json({ error: "Environment not found" });
+      return;
+    }
+    // Metadata only (name / status / owning company) — never secret values.
+    // Environments are instance-scoped while secrets are company-scoped, so
+    // the editor needs this to render refs whose secret a given company's
+    // picker cannot list. Gated by the same instance-level access check as
+    // environment editing.
+    const refs = await collectEnvironmentSecretRefs({ db, environment });
+    res.json({ refs: await secrets.describeSecretRefs(refs) });
+  });
+
   router.get("/environments/:id/leases", async (req, res) => {
     assertCanReadInstanceEnvironments(req);
     const environment = await svc.getById(req.params.id as string);

@@ -66,6 +66,7 @@ const mockSecretService = vi.hoisted(() => ({
   syncEnvBindingsForTarget: vi.fn(),
   syncSecretRefsForTarget: vi.fn(),
   replaceSecretRefsForInstanceTarget: vi.fn(),
+  describeSecretRefs: vi.fn(),
   remove: vi.fn(),
 }));
 const mockValidatePluginEnvironmentDriverConfig = vi.hoisted(() => vi.fn());
@@ -269,6 +270,8 @@ describe("environment routes", () => {
     mockSecretService.syncEnvBindingsForTarget.mockReset();
     mockSecretService.syncSecretRefsForTarget.mockReset();
     mockSecretService.replaceSecretRefsForInstanceTarget.mockReset();
+    mockSecretService.describeSecretRefs.mockReset();
+    mockSecretService.describeSecretRefs.mockResolvedValue([]);
     mockSecretService.remove.mockReset();
     mockSecretService.create.mockResolvedValue({
       id: "11111111-1111-1111-1111-111111111111",
@@ -1222,6 +1225,76 @@ describe("environment routes", () => {
     );
     expect(res.body.details).toEqual({ deleteBlockedReasons: ["instance_default"] });
     expect(mockEnvironmentService.removeIfDeletable).not.toHaveBeenCalled();
+  });
+
+  it("describes an environment's secret refs with owner metadata", async () => {
+    const secretId = "22222222-2222-2222-2222-222222222222";
+    mockEnvironmentService.getById.mockResolvedValue({
+      ...createEnvironment(),
+      id: "env-sandbox",
+      name: "Daytona",
+      driver: "sandbox" as const,
+      config: {
+        provider: "secure-plugin",
+        template: "base",
+        apiKey: secretId,
+        timeoutMs: 450000,
+        reuseLease: true,
+      },
+    });
+    mockSecretService.describeSecretRefs.mockResolvedValue([
+      {
+        configPath: "apiKey",
+        secretId,
+        name: "DAYTONA_API_KEY",
+        status: "active",
+        companyId: "company-2",
+        companyName: "Other Team",
+      },
+    ]);
+    const app = createApp({
+      type: "board",
+      userId: "admin-1",
+      source: "local_implicit",
+    });
+
+    const res = await request(app).get("/api/environments/env-sandbox/secret-refs");
+
+    expect(res.status).toBe(200);
+    expect(res.body.refs).toEqual([
+      {
+        configPath: "apiKey",
+        secretId,
+        name: "DAYTONA_API_KEY",
+        status: "active",
+        companyId: "company-2",
+        companyName: "Other Team",
+      },
+    ]);
+    expect(mockSecretService.describeSecretRefs).toHaveBeenCalledWith([
+      { secretId, configPath: "apiKey", versionSelector: "latest" },
+    ]);
+  });
+
+  it("denies secret-ref descriptors to agents without instance environment access", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      id: "agent-1",
+      companyId: "company-1",
+      role: "engineer",
+      permissions: { canCreateAgents: false },
+    });
+    mockAccessService.hasPermission.mockResolvedValue(false);
+    const app = createApp({
+      type: "agent",
+      agentId: "agent-1",
+      companyId: "company-1",
+      source: "agent_key",
+    });
+
+    const res = await request(app).get("/api/environments/env-1/secret-refs");
+
+    expect(res.status).toBe(403);
+    expect(mockSecretService.describeSecretRefs).not.toHaveBeenCalled();
   });
 
   it("clears environment selections and secret bindings across all companies when deleting an environment", async () => {

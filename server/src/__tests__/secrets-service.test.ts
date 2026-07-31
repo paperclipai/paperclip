@@ -286,6 +286,47 @@ describeEmbeddedPostgres("secretService", () => {
     expect(rows[0]?.companyId).toBe(companyA);
   });
 
+  it("describeSecretRefs names secrets across companies and omits unknown ids", async () => {
+    const companyA = await seedCompany("Alpha");
+    const companyB = await seedCompany("Beta");
+    const svc = secretService(db);
+    const secretA = await svc.create(companyA, {
+      name: "PROVIDER_KEY_A",
+      provider: "local_encrypted",
+      value: "a",
+    });
+    const secretB = await svc.create(companyB, {
+      name: "PROVIDER_KEY_B",
+      provider: "local_encrypted",
+      value: "b",
+    });
+
+    const described = await svc.describeSecretRefs([
+      { secretId: secretA.id, configPath: "apiKey" },
+      { secretId: secretB.id, configPath: "privateKeySecretRef" },
+      { secretId: randomUUID(), configPath: "token" },
+    ]);
+
+    expect(described).toEqual([
+      {
+        configPath: "apiKey",
+        secretId: secretA.id,
+        name: "PROVIDER_KEY_A",
+        status: "active",
+        companyId: companyA,
+        companyName: "Alpha",
+      },
+      {
+        configPath: "privateKeySecretRef",
+        secretId: secretB.id,
+        name: "PROVIDER_KEY_B",
+        status: "active",
+        companyId: companyB,
+        companyName: "Beta",
+      },
+    ]);
+  });
+
   it("prevents duplicate bindings for a target config path", async () => {
     const companyId = await seedCompany();
     const svc = secretService(db);

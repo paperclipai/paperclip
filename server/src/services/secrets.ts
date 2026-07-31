@@ -3,6 +3,7 @@ import { and, desc, eq, inArray, like, ne, notInArray, notLike, or, sql } from "
 import type { Db } from "@paperclipai/db";
 import {
   agents,
+  companies,
   companySecretBindings,
   companySecretProviderConfigs,
   companySecrets,
@@ -4118,6 +4119,48 @@ export function secretService(db: Db) {
         });
       }
       return normalizedRefs;
+     * Describe secret refs (id + config path) with the referenced secret's
+     * name, status, and owning company. Environments are instance-scoped
+     * while secrets are company-scoped, so an environment can legitimately
+     * reference a secret a given company's picker cannot list; this gives
+     * instance-level readers enough metadata to present such refs honestly.
+     * Returns names across companies — callers must sit behind an
+     * instance-level authorization gate. Never returns secret values.
+     */
+    describeSecretRefs: async (
+      refs: Array<{ secretId: string; configPath: string }>,
+    ): Promise<Array<{
+      configPath: string;
+      secretId: string;
+      name: string;
+      status: string;
+      companyId: string;
+      companyName: string | null;
+    }>> => {
+      if (refs.length === 0) return [];
+      const secretIds = [...new Set(refs.map((ref) => ref.secretId))];
+      const secretRows = await db
+        .select()
+        .from(companySecrets)
+        .where(inArray(companySecrets.id, secretIds));
+      const secretsById = new Map(secretRows.map((row) => [row.id, row]));
+      const companyIds = [...new Set(secretRows.map((row) => row.companyId))];
+      const companyRows = companyIds.length > 0
+        ? await db.select().from(companies).where(inArray(companies.id, companyIds))
+        : [];
+      const companyNamesById = new Map(companyRows.map((row) => [row.id, row.name]));
+      return refs.flatMap((ref) => {
+        const secret = secretsById.get(ref.secretId);
+        if (!secret) return [];
+        return [{
+          configPath: ref.configPath,
+          secretId: secret.id,
+          name: secret.name,
+          status: secret.status,
+          companyId: secret.companyId,
+          companyName: companyNamesById.get(secret.companyId) ?? null,
+        }];
+      });
     },
 
     listBindingCompanyIdsForTarget: async (
