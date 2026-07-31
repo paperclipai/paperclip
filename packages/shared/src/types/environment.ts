@@ -83,7 +83,7 @@ export interface Environment {
   updatedAt: Date;
 }
 
-export type EnvironmentDeleteBlockedReason = "managed_local" | "instance_default";
+export type EnvironmentDeleteBlockedReason = "managed_local" | "instance_default" | "active_runtime_use";
 
 export interface EnvironmentDeleteBlastRadius {
   environmentId: string;
