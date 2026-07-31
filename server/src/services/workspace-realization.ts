@@ -298,6 +298,14 @@ export function buildWorkspaceRealizationRecord(input: {
   };
 }
 
+/**
+ * Build the workspace-realization record from the run request. The server owns the record;
+ * a driver realize handler (built-in or plugin) returns only a realized cwd and provider
+ * metadata. Every `realizeWorkspace` exit must route through this helper, so the record carries
+ * the referenced (mentioned) project sources in `additional`. The adapter reads `additional` to
+ * stage each referenced tree into the target; a realize exit that returns a raw provider result
+ * without this helper drops the mentioned projects.
+ */
 export function buildWorkspaceRealizationRecordFromDriverInput(input: {
   environment: Environment;
   lease: EnvironmentLease;

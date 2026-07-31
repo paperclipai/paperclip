@@ -848,6 +848,82 @@ describeEmbeddedPostgres("environmentRuntimeService", () => {
     ]);
   });
 
+  it("builds the workspace-realization record with referenced sources for a built-in sandbox realize", async () => {
+    // The sandbox driver `realizeWorkspace` has two exits: a plugin-backed provider and a
+    // built-in provider. Both must build the same workspace-realization record, so the
+    // referenced (mentioned) project sources reach the adapter through `realization.additional`.
+    // The test above covers the plugin exit. This test covers the built-in exit (no provider
+    // plugin), so a regression on either exit fails a test.
+    const { companyId, environment, runId } = await seedEnvironment({
+      driver: "sandbox",
+      name: "Fake Sandbox Realize",
+      config: {
+        provider: "fake",
+        image: "ubuntu:24.04",
+        reuseLease: true,
+      },
+    });
+
+    const acquired = await runtime.acquireRunLease({
+      companyId,
+      environment,
+      issueId: null,
+      heartbeatRunId: runId,
+      persistedExecutionWorkspace: null,
+    });
+
+    const workspaceRealizationRequest = {
+      version: 1,
+      adapterType: "codex_local",
+      companyId,
+      environmentId: environment.id,
+      executionWorkspaceId: null,
+      issueId: null,
+      heartbeatRunId: runId,
+      requestedMode: "ephemeral",
+      source: {
+        kind: "project_primary",
+        localPath: "/tmp/anchor",
+        projectId: "anchor-project",
+        projectWorkspaceId: "anchor-workspace",
+        repoUrl: null,
+        repoRef: null,
+        strategy: "project_primary",
+        branchName: null,
+        worktreePath: null,
+      },
+      additionalSources: [
+        {
+          localPath: "/tmp/referenced-project",
+          projectId: "referenced-project-1",
+          projectWorkspaceId: "referenced-workspace-1",
+          repoUrl: null,
+          repoRef: null,
+        },
+      ],
+    };
+    const realized = await runtime.realizeWorkspace({
+      environment,
+      lease: acquired.lease,
+      workspace: {
+        localPath: "/tmp/anchor",
+        mode: "ephemeral",
+        metadata: { workspaceRealizationRequest },
+      },
+    });
+
+    // The built-in exit builds the record and carries the referenced source through `additional`,
+    // so the adapter can stage the mentioned project into the sandbox.
+    const realization = realized.metadata?.workspaceRealization as Record<string, unknown> | undefined;
+    expect(realization).toBeDefined();
+    expect(realization?.additional).toEqual([
+      expect.objectContaining({
+        path: "/tmp/referenced-project",
+        projectId: "referenced-project-1",
+      }),
+    ]);
+  });
+
   it("uses resolved secret-ref config for plugin-backed sandbox execute and release", async () => {
     const pluginId = randomUUID();
     const { companyId, environment: baseEnvironment, runId } = await seedEnvironment();

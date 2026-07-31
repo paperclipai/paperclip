@@ -638,6 +638,12 @@ export interface PluginEnvironmentRealizeWorkspaceParams extends PluginEnvironme
   };
 }
 
+/**
+ * A plugin `environmentRealizeWorkspace` handler returns only the realized cwd and provider
+ * metadata. The server, not the plugin, builds the full workspace-realization record from the run
+ * request and merges this cwd and metadata into it. Do not return a `workspaceRealization` record
+ * here; the server owns that record, so the referenced (mentioned) project sources reach the adapter.
+ */
 export interface PluginEnvironmentRealizeWorkspaceResult {
   cwd: string;
   metadata?: Record<string, unknown>;
