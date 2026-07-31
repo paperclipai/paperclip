@@ -778,7 +778,7 @@ pnpm paperclipai workspace runtime-service <execution-workspace-id> start --payl
 pnpm paperclipai workspace runtime-command <execution-workspace-id> run --payload-json '{...}'
 ```
 
-Before archiving an execution workspace, run `workspace close-readiness`. Archive it only when `state` is `ready` or `ready_with_warnings`; a `blocked` state makes the update return `409`. Archiving is the supported manual lifecycle close. It stops runtime services and performs allowed workspace cleanup.
+Before archiving an execution workspace, run `workspace close-readiness`. Archive it only when `state` is `ready` or `ready_with_warnings`; a `blocked` state makes the update return `409`. Archiving is the supported manual lifecycle close. It stops runtime services and performs allowed workspace cleanup. If cleanup fails, the update returns `500` and leaves the workspace closed with status `cleanup_failed`.
 
 ```sh
 pnpm paperclipai environment list --company-id <company-id>
