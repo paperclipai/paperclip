@@ -300,7 +300,21 @@ export interface PreparedSandboxManagedRuntime {
    * were requested.
    */
   additionalSourceDirs: Record<string, string>;
+  /**
+   * Each additional (referenced) project whose staging failed, paired with the
+   * failure message. Per-project failure isolation keeps one project's failure
+   * from aborting the run, so a failed project is absent from
+   * `additionalSourceDirs` and present here. Empty when every requested project
+   * staged, or when no additional sources were requested.
+   */
+  additionalSourceFailures: AdditionalSourceStagingFailure[];
   restoreWorkspace(onProgress?: RuntimeProgressSink): Promise<void>;
+}
+
+/** One additional (referenced) project that failed to stage into the sandbox. */
+export interface AdditionalSourceStagingFailure {
+  projectId: string;
+  error: string;
 }
 
 function asObject(value: unknown): Record<string, unknown> {
@@ -736,6 +750,10 @@ export async function prepareSandboxManagedRuntime(input: {
   // Remote directory of each additional (referenced) project that stages
   // successfully, keyed by projectId. A project that fails to stage is absent.
   const additionalSourceDirs: Record<string, string> = {};
+  // Each additional (referenced) project whose staging failed, paired with the
+  // failure message. Per-project failure isolation keeps the run and the other
+  // projects going; this list makes each failure a first-class, reported outcome.
+  const additionalSourceFailures: AdditionalSourceStagingFailure[] = [];
   // Additional projects stage as plain trees. Drop the heavy build/cache dirs a
   // reference tree does not need, and `.git` — additional sources never carry
   // git-history semantics (anchor-only).
@@ -999,9 +1017,13 @@ export async function prepareSandboxManagedRuntime(input: {
         });
         additionalSourceDirs[projectId] = remoteProjectDir;
       } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
         console.warn(
-          `[paperclip] Failed to stage referenced project ${projectId}; skipping it. ${String(error)}`,
+          `[paperclip] Failed to stage referenced project ${projectId}; skipping it. ${message}`,
         );
+        // Record the failure as a first-class per-project outcome so the run can count it in the
+        // requested-vs-synced accounting instead of losing it to a warning line.
+        additionalSourceFailures.push({ projectId, error: message });
       }
     }
   });
@@ -1017,6 +1039,7 @@ export async function prepareSandboxManagedRuntime(input: {
     runtimeRootDir,
     assetDirs,
     additionalSourceDirs,
+    additionalSourceFailures,
     restoreWorkspace: async (onProgress?: RuntimeProgressSink) => {
       const restoreSink = onProgress ?? input.onProgress;
       if (!syncWorkspace) {

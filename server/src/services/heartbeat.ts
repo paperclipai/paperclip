@@ -14583,6 +14583,37 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           );
         }
       }
+      // Reconcile the referenced-project set against the real remote staging outcome. A referenced
+      // project can pass authorization and clone locally at run prep, then fail to stage into the
+      // sandbox during execution. The run-prep observability above counts such a project as synced,
+      // so emit a second, stage-time line that counts each staging failure as a first-class
+      // `staging` failure. The synced set is the resolved referenced projects minus the ones that
+      // failed to stage. A run with no staging failure stays silent, so the anchor-only and
+      // fully-synced paths add no noise.
+      const referencedProjectStagingFailures = adapterResult.referencedProjectStagingFailures ?? [];
+      if (referencedProjectStagingFailures.length > 0) {
+        const stagingFailedProjectIds = new Set(
+          referencedProjectStagingFailures.map((failure) => failure.projectId),
+        );
+        const stagedProjectObservability = buildReferencedProjectRunObservability({
+          syncedProjectIds: resolvedWorkspace.additionalWorkspaces
+            .map((additional) => additional.projectId)
+            .filter((projectId) => !stagingFailedProjectIds.has(projectId)),
+          failures: referencedProjectStagingFailures.map((failure) => ({
+            projectId: failure.projectId,
+            reason: "staging" as const,
+          })),
+        });
+        logger.info(
+          {
+            runId: run.id,
+            companyId: agent.companyId,
+            issueId: issueRef?.id ?? null,
+            ...stagedProjectObservability,
+          },
+          "run referenced-project remote staging",
+        );
+      }
       const adapterManagedRuntimeServices = adapterResult.runtimeServices
         ? await persistAdapterManagedRuntimeServices({
             db,

@@ -2946,6 +2946,17 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       rootSpan.end(true);
       throw err;
     }
+    // Per-project staging outcomes for the referenced (mentioned) projects, surfaced back to the
+    // server on the run result. A referenced project that failed to stage into the sandbox is a
+    // first-class, counted failure in the requested-vs-synced observability, not only a warning. The
+    // list is empty on a local target, on a transport that does not stage referenced projects, or
+    // when every staged referenced project succeeded, so the spread adds the field only when there
+    // is a failure to report.
+    const referencedProjectStagingFailures = (
+      prepared.stagedRuntime?.additionalSourceFailures ?? []
+    ).map((failure) => ({ projectId: failure.projectId }));
+    const referencedProjectStagingFailuresField =
+      referencedProjectStagingFailures.length > 0 ? { referencedProjectStagingFailures } : {};
     // State the effective wall-clock timeout and its source up front so a
     // later timeout is diagnosable from the run log alone. Goes to stderr:
     // the acpx stdout log stream carries JSON acpx.* event payloads and must
@@ -3090,6 +3101,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         errorMessage: message,
         ...classified,
         ...billingFields,
+        ...referencedProjectStagingFailuresField,
         model: prepared.requestedModel || null,
         clearSession,
         resultJson: { phase: "ensure_session" },
@@ -3109,6 +3121,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         errorMessage: "ACPX did not return a runtime session handle.",
         errorCode: "acpx_runtime_error",
         ...billingFields,
+        ...referencedProjectStagingFailuresField,
         model: prepared.requestedModel || null,
         resultJson: { phase: "ensure_session" },
         summary: "ACPX did not return a runtime session handle.",
@@ -3152,6 +3165,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         errorMessage: message,
         ...classified,
         ...billingFields,
+        ...referencedProjectStagingFailuresField,
         model: prepared.requestedModel || null,
         clearSession,
         resultJson: {
@@ -3352,6 +3366,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         sessionParams: buildSessionParams({ prepared, handle: sessionHandle }),
         sessionDisplayId: sessionHandle.agentSessionId ?? sessionHandle.backendSessionId ?? sessionHandle.runtimeSessionName,
         ...billingFields,
+        ...referencedProjectStagingFailuresField,
         model: prepared.requestedModel || null,
         ...(turnUsage.usage ? { usage: turnUsage.usage, usageBasis: "per_run" as const } : {}),
         costUsd: turnUsage.costUsd,
@@ -3408,6 +3423,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         errorCode: timedOut ? "acpx_timeout" : classified.errorCode,
         errorMeta: classified.errorMeta,
         ...billingFields,
+        ...referencedProjectStagingFailuresField,
         model: prepared.requestedModel || null,
         clearSession: clearSession || timedOut,
         resultJson: { phase: "turn" },

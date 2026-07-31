@@ -14,8 +14,14 @@ import {
   prepareRemoteManagedRuntime,
   remoteExecutionSessionMatches,
 } from "./remote-managed-runtime.js";
-import type { SandboxAdditionalSource } from "./sandbox-managed-runtime.js";
-export type { SandboxAdditionalSource } from "./sandbox-managed-runtime.js";
+import type {
+  AdditionalSourceStagingFailure,
+  SandboxAdditionalSource,
+} from "./sandbox-managed-runtime.js";
+export type {
+  AdditionalSourceStagingFailure,
+  SandboxAdditionalSource,
+} from "./sandbox-managed-runtime.js";
 import {
   createCommandManagedSandboxCallbackBridgeQueueClient,
   createSandboxCallbackBridgeAsset,
@@ -122,6 +128,12 @@ export interface PreparedAdapterExecutionTargetRuntime {
    * additional sources were requested.
    */
   additionalSourceDirs: Record<string, string>;
+  /**
+   * Each additional (referenced) project whose staging failed, paired with the
+   * failure message. Empty for a local target, for a transport that does not
+   * stage referenced projects, or when every requested project staged.
+   */
+  additionalSourceFailures: AdditionalSourceStagingFailure[];
   restoreWorkspace(onProgress?: RuntimeProgressSink): Promise<void>;
 }
 
@@ -1135,6 +1147,7 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
       runtimeRootDir: null,
       assetDirs: {},
       additionalSourceDirs: {},
+      additionalSourceFailures: [],
       restoreWorkspace: async () => {},
     };
   }
@@ -1157,6 +1170,9 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
       runtimeRootDir: prepared.runtimeRootDir,
       assetDirs: prepared.assetDirs,
       additionalSourceDirs: prepared.additionalSourceDirs,
+      // The SSH transport does not stage referenced projects (it is out of scope), so it never
+      // reports a per-project staging failure.
+      additionalSourceFailures: [],
       restoreWorkspace: prepared.restoreWorkspace,
     };
   }
@@ -1192,6 +1208,7 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
     runtimeRootDir: prepared.runtimeRootDir,
     assetDirs: prepared.assetDirs,
     additionalSourceDirs: prepared.additionalSourceDirs,
+    additionalSourceFailures: prepared.additionalSourceFailures,
     restoreWorkspace: prepared.restoreWorkspace,
   };
 }
