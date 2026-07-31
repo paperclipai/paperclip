@@ -61,6 +61,20 @@ describe("structured mention vs plain text", () => {
     expect(bodyHasAgentMention(`hey ${qaMention}`)).toBe(true);
   });
 
+  it("resolves a safe bare handle when agent options make it unambiguous", () => {
+    const options = [{ agentId: QA_ID, name: "Quality Agent" }];
+    expect(extractAgentMentionIds("Please check @quality-agent", options)).toEqual([QA_ID]);
+    expect(bodyHasAgentMention("Please check @quality-agent", options)).toBe(true);
+  });
+
+  it("unions structured and safe bare mentions", () => {
+    const bareId = "22222222-2222-4222-8222-222222222222";
+    expect(extractAgentMentionIds(`${qaMention} then @ops-sol`, [
+      { agentId: QA_ID, name: "QA" },
+      { agentId: bareId, name: "Ops Sol" },
+    ])).toEqual([QA_ID, bareId]);
+  });
+
   it("treats a plain QA name as NOT a mention", () => {
     expect(bodyHasAgentMention("QA you take the screenshot")).toBe(false);
     expect(extractAgentMentionIds("ask QA to confirm")).toEqual([]);
@@ -135,6 +149,58 @@ describe("computeComposerHandoffPreview", () => {
     });
     expect(p.kind).toBe("notify_agent");
     expect(p.chip).toEqual({ kind: "agent", id: QA_ID });
+  });
+
+  it("previews every agent that a multi-mention comment will notify", () => {
+    const p = computeComposerHandoffPreview({
+      ...base,
+      reassignTarget: base.currentAssigneeValue,
+      bodyHasAgentMention: true,
+      mentionedAgentIds: [QA_ID, "agent-ops-2222"],
+    });
+    expect(p.kind).toBe("notify_agent");
+    expect(p.chips).toEqual([
+      { kind: "agent", id: QA_ID },
+      { kind: "agent", id: "agent-ops-2222" },
+    ]);
+  });
+
+  it("previews body mentions alongside an agent reassignment", () => {
+    const p = computeComposerHandoffPreview({
+      ...base,
+      reassignTarget: "agent:agent-next",
+      bodyHasAgentMention: true,
+      mentionedAgentIds: [QA_ID, "agent-next"],
+    });
+    expect(p.chips).toEqual([
+      { kind: "agent", id: "agent-next" },
+      { kind: "agent", id: QA_ID },
+    ]);
+  });
+
+  it("does not claim no agent wake when handing off to a user with body mentions", () => {
+    const p = computeComposerHandoffPreview({
+      ...base,
+      reassignTarget: "user:user-board",
+      bodyHasAgentMention: true,
+      mentionedAgentIds: [QA_ID],
+    });
+    expect(p.chips).toEqual([
+      { kind: "user", id: "user-board" },
+      { kind: "agent", id: QA_ID },
+    ]);
+    expect(p.suffix).toBeUndefined();
+  });
+
+  it("previews mention wakes when clearing the assignee", () => {
+    const p = computeComposerHandoffPreview({
+      ...base,
+      reassignTarget: "__none__",
+      bodyHasAgentMention: true,
+      mentionedAgentIds: [QA_ID],
+    });
+    expect(p.chips).toEqual([{ kind: "agent", id: QA_ID }]);
+    expect(p.text).not.toMatch(/no agent/i);
   });
 
   it("C. no reassign + plain name only = amber warning, no wake", () => {

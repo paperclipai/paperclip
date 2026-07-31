@@ -8823,11 +8823,14 @@ export function issueRoutes(
           });
         }
 
-        let mentionedIds: string[] = [];
-        try {
-          mentionedIds = await svc.findMentionedAgents(issue.companyId, commentBody);
-        } catch (err) {
-          logger.warn({ err, issueId: id }, "failed to resolve @-mentions");
+        let mentionedIds = comment.mentionedAgentIds;
+        if (!Array.isArray(mentionedIds)) {
+          try {
+            mentionedIds = await svc.findMentionedAgents(issue.companyId, commentBody);
+          } catch (err) {
+            logger.warn({ err, issueId: id }, "failed to resolve @-mentions");
+            mentionedIds = [];
+          }
         }
 
         for (const mentionedId of mentionedIds) {
@@ -10487,11 +10490,14 @@ export function issueRoutes(
         }
       }
 
-      let mentionedIds: string[] = [];
-      try {
-        mentionedIds = await svc.findMentionedAgents(issue.companyId, req.body.body);
-      } catch (err) {
-        logger.warn({ err, issueId: id }, "failed to resolve @-mentions");
+      let mentionedIds = comment.mentionedAgentIds;
+      if (!Array.isArray(mentionedIds)) {
+        try {
+          mentionedIds = await svc.findMentionedAgents(issue.companyId, req.body.body);
+        } catch (err) {
+          logger.warn({ err, issueId: id }, "failed to resolve @-mentions");
+          mentionedIds = [];
+        }
       }
 
       for (const mentionedId of mentionedIds) {
