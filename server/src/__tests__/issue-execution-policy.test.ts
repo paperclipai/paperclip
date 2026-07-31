@@ -599,8 +599,8 @@ describe("issue execution policy transitions", () => {
     const policy = reviewOnlyPolicy();
     const reviewStageId = policy.stages[0].id;
 
-    it("reviewer approval completes the policy", () => {
-      const result = applyIssueExecutionPolicyTransition({
+    it("reviewer approval returns to the executor before final completion", () => {
+      const approval = applyIssueExecutionPolicyTransition({
         issue: {
           status: "in_review",
           assigneeAgentId: qaAgentId,
@@ -625,15 +625,43 @@ describe("issue execution policy transitions", () => {
         commentBody: "LGTM",
       });
 
-      expect(result.patch.executionState).toMatchObject({
+      expect(approval.patch).toMatchObject({
+        status: "in_progress",
+        assigneeAgentId: coderAgentId,
+        assigneeUserId: null,
+        executionState: {
+          status: "execution_pending",
+          completedStageIds: [reviewStageId],
+          lastDecisionOutcome: "approved",
+        },
+      });
+      expect(approval.workflowControlledAssignment).toBe(true);
+      expect(approval.decision).toMatchObject({
+        stageType: "review",
+        outcome: "approved",
+      });
+
+      const executionCompleted = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_progress",
+          assigneeAgentId: coderAgentId,
+          assigneeUserId: null,
+          executionPolicy: policy,
+          executionState: approval.patch.executionState as IssueExecutionState,
+        },
+        policy,
+        requestedStatus: "done",
+        requestedAssigneePatch: {},
+        actor: { agentId: coderAgentId },
+        commentBody: "Deployment complete.",
+      });
+
+      expect(executionCompleted.patch.executionState).toMatchObject({
         status: "completed",
         completedStageIds: [reviewStageId],
         lastDecisionOutcome: "approved",
       });
-      expect(result.decision).toMatchObject({
-        stageType: "review",
-        outcome: "approved",
-      });
+      expect(executionCompleted.patch.status).toBeUndefined();
     });
   });
 
