@@ -5910,6 +5910,52 @@ export function normalizeSessionParams(params: Record<string, unknown> | null | 
 
 type RunSessionOutcome = "succeeded" | "interrupted" | "failed" | "cancelled" | "timed_out";
 
+export type TerminalCleanupFallbackStep = "wakeup" | "retry" | "issue_release" | "agent";
+
+export async function completeTerminalCleanupFallback(input: {
+  finalizeWakeup?: () => Promise<void>;
+  scheduleRetry?: () => Promise<void>;
+  releaseIssue?: (options: {
+    suppressImmediateRecovery: boolean;
+    suppressDeferredPromotion: boolean;
+  }) => Promise<void>;
+  finalizeAgent?: () => Promise<void>;
+  suppressRecoveryBeforeRetry?: boolean;
+  onError: (step: TerminalCleanupFallbackStep, error: unknown) => void;
+}) {
+  let suppressRecovery = input.suppressRecoveryBeforeRetry === true;
+  const attempt = async (
+    step: TerminalCleanupFallbackStep,
+    operation: (() => Promise<void>) | undefined,
+  ) => {
+    if (!operation) return;
+    try {
+      await operation();
+    } catch (error) {
+      if (step === "retry") suppressRecovery = true;
+      try {
+        input.onError(step, error);
+      } catch {
+        // Cleanup must not depend on its reporting path.
+      }
+    }
+  };
+
+  await attempt("wakeup", input.finalizeWakeup);
+  await attempt("retry", input.scheduleRetry);
+  const releaseIssue = input.releaseIssue;
+  await attempt(
+    "issue_release",
+    releaseIssue
+      ? () => releaseIssue({
+          suppressImmediateRecovery: suppressRecovery,
+          suppressDeferredPromotion: suppressRecovery,
+        })
+      : undefined,
+  );
+  await attempt("agent", input.finalizeAgent);
+}
+
 type SkillTestHeartbeatCompletion = {
   outcome: "failed" | "cancelled";
   error: string | null;
@@ -12605,6 +12651,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     activeRunExecutions.add(run.id);
     let runScratch: HeartbeatRunScratch | null = null;
+    let pendingTerminalCleanup: {
+      run: typeof heartbeatRuns.$inferSelect;
+      agent: typeof agents.$inferSelect;
+      outcome: RunSessionOutcome;
+      wakeupStatus: "completed" | "failed" | "cancelled" | "timed_out";
+      error: string | null;
+      failureReason: string | null;
+      keepIdleOnFailure: boolean;
+      retryOptions: Parameters<typeof scheduleBoundedRetryForRun>[2] | null;
+      retryAttempted: boolean;
+      retryCompleted: boolean;
+      wakeupFinalized: boolean;
+      issueReleased: boolean;
+      agentFinalized: boolean;
+    } | null = null;
 
     try {
     const agent = await getAgent(run.agentId);
@@ -14718,6 +14779,47 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
 
       let persistedRun = persistedRunWrite.run;
+      const cleanupRun = persistedRun ?? run;
+      const maxTurnCleanupPolicy =
+        outcome === "failed" && isMaxTurnExhaustionRun(cleanupRun)
+          ? parseMaxTurnContinuationPolicy(agent)
+          : null;
+      const retryOptions: Parameters<typeof scheduleBoundedRetryForRun>[2] | null =
+        maxTurnCleanupPolicy?.enabled
+          ? {
+              retryReason: MAX_TURN_CONTINUATION_RETRY_REASON,
+              wakeReason: MAX_TURN_CONTINUATION_WAKE_REASON,
+              maxAttempts: maxTurnCleanupPolicy.maxAttempts,
+              delayMs: maxTurnCleanupPolicy.delayMs,
+            }
+          : outcome === "failed" && readTransientRecoveryContractFromRun(cleanupRun)
+            ? {}
+            : null;
+      const terminalCleanup = {
+        run: cleanupRun,
+        agent,
+        outcome,
+        wakeupStatus:
+          outcome === "succeeded"
+            ? "completed" as const
+            : outcome === "cancelled"
+              ? "cancelled" as const
+              : outcome === "timed_out"
+                ? "timed_out" as const
+                : "failed" as const,
+        error: runErrorMessage,
+        failureReason: runErrorMessage,
+        keepIdleOnFailure:
+          outcome === "failed" &&
+          (persistedRun ? readHeartbeatRunErrorFamily(persistedRun) === "provider_quota" : runErrorCode === "provider_quota"),
+        retryOptions,
+        retryAttempted: false,
+        retryCompleted: false,
+        wakeupFinalized: false,
+        issueReleased: false,
+        agentFinalized: false,
+      };
+      pendingTerminalCleanup = terminalCleanup;
       if (persistedRun) {
         persistedRun = await classifyAndPersistRunLiveness(persistedRun, persistedResultJson) ?? persistedRun;
       }
@@ -14726,6 +14828,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         finishedAt: new Date(),
         error: runErrorMessage,
       });
+      terminalCleanup.wakeupFinalized = true;
 
       const finalizedRun = persistedRun ?? (await getRun(run.id));
       if (finalizedRun) {
@@ -14779,12 +14882,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         if (outcome === "failed" && isMaxTurnExhaustionRun(livenessRun)) {
           const policy = parseMaxTurnContinuationPolicy(agent);
           if (policy.enabled && policy.maxAttempts > 0) {
+            terminalCleanup.retryAttempted = true;
             await scheduleBoundedRetryForRun(livenessRun, agent, {
               retryReason: MAX_TURN_CONTINUATION_RETRY_REASON,
               wakeReason: MAX_TURN_CONTINUATION_WAKE_REASON,
               maxAttempts: policy.maxAttempts,
               delayMs: policy.delayMs,
             });
+            terminalCleanup.retryCompleted = true;
           } else {
             await appendRunEvent(livenessRun, await nextRunEventSeq(livenessRun.id), {
               eventType: "lifecycle",
@@ -14798,10 +14903,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             });
           }
         } else if (outcome === "failed" && readTransientRecoveryContractFromRun(livenessRun)) {
+          terminalCleanup.retryAttempted = true;
           await scheduleBoundedRetryForRun(livenessRun, agent);
+          terminalCleanup.retryCompleted = true;
         }
         const issueCommentPolicyResult = await finalizeIssueCommentPolicy(livenessRun, agent);
         await releaseIssueExecutionAndPromote(livenessRun);
+        terminalCleanup.issueReleased = true;
         await handleRunLivenessContinuation(livenessRun);
         await handleSuccessfulRunHandoff(
           issueCommentPolicyResult.outcome === "retry_queued" || issueCommentPolicyResult.outcome === "retry_exhausted"
@@ -14880,6 +14988,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             (finalizedRun ? readHeartbeatRunErrorFamily(finalizedRun) === "provider_quota" : runErrorCode === "provider_quota"),
         },
       );
+      terminalCleanup.agentFinalized = true;
     } catch (err) {
       const message = redactCurrentUserText(
         err instanceof Error ? err.message : "Unknown adapter failure",
@@ -14940,10 +15049,27 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
 
       const failedRun = failedRunWrite.run;
+      const terminalCleanup = {
+        run: failedRun ?? run,
+        agent,
+        outcome: "failed" as const,
+        wakeupStatus: "failed" as const,
+        error: message,
+        failureReason: message,
+        keepIdleOnFailure: false,
+        retryOptions: null,
+        retryAttempted: false,
+        retryCompleted: false,
+        wakeupFinalized: false,
+        issueReleased: false,
+        agentFinalized: false,
+      };
+      pendingTerminalCleanup = terminalCleanup;
       await setWakeupStatus(run.wakeupRequestId, "failed", {
         finishedAt: new Date(),
         error: message,
       });
+      terminalCleanup.wakeupFinalized = true;
 
       if (failedRun) {
         await appendRunEvent(failedRun, seq++, {
@@ -14973,6 +15099,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         }
         await scheduleInteractionContinuationInfrastructureRetryIfEligible(livenessRun, agent);
         await releaseIssueExecutionAndPromote(livenessRun);
+        terminalCleanup.issueReleased = true;
 
         await updateRuntimeState(agent, livenessRun, {
           exitCode: null,
@@ -15002,6 +15129,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
 
       await finalizeAgentStatus(agent.id, "failed", message);
+      terminalCleanup.agentFinalized = true;
     }
     } catch (outerErr) {
           // Setup code before adapter.execute threw (e.g. ensureRuntimeState, resolveWorkspaceForRun).
@@ -15104,6 +15232,59 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             await finalizeAgentStatus(run.agentId, "failed", message).catch(() => undefined);
           }
         } finally {
+          const terminalCleanup = pendingTerminalCleanup;
+          if (terminalCleanup) {
+            await completeTerminalCleanupFallback({
+              finalizeWakeup: !terminalCleanup.wakeupFinalized
+                ? async () => {
+                    await setWakeupStatus(run.wakeupRequestId, terminalCleanup.wakeupStatus, {
+                      finishedAt: new Date(),
+                      error: terminalCleanup.error,
+                    });
+                    terminalCleanup.wakeupFinalized = true;
+                  }
+                : undefined,
+              scheduleRetry:
+                terminalCleanup.retryOptions && !terminalCleanup.retryAttempted
+                  ? async () => {
+                      terminalCleanup.retryAttempted = true;
+                      await scheduleBoundedRetryForRun(
+                        terminalCleanup.run,
+                        terminalCleanup.agent,
+                        terminalCleanup.retryOptions ?? undefined,
+                      );
+                      terminalCleanup.retryCompleted = true;
+                    }
+                  : undefined,
+              suppressRecoveryBeforeRetry:
+                terminalCleanup.retryOptions !== null &&
+                terminalCleanup.retryAttempted &&
+                !terminalCleanup.retryCompleted,
+              releaseIssue: !terminalCleanup.issueReleased
+                ? async (options) => {
+                    await releaseIssueExecutionAndPromote(terminalCleanup.run, options);
+                    terminalCleanup.issueReleased = true;
+                  }
+                : undefined,
+              finalizeAgent: !terminalCleanup.agentFinalized
+                ? async () => {
+                    await finalizeAgentStatus(
+                      terminalCleanup.run.agentId,
+                      terminalCleanup.outcome,
+                      terminalCleanup.failureReason,
+                      { keepIdleOnFailure: terminalCleanup.keepIdleOnFailure },
+                    );
+                    terminalCleanup.agentFinalized = true;
+                  }
+                : undefined,
+              onError: (step, cleanupError) => {
+                logger.error(
+                  { err: cleanupError, runId: run.id, step },
+                  "terminal cleanup fallback step failed",
+                );
+              },
+            });
+          }
           const latestRun = await getRun(run.id).catch(() => null);
           await releaseEnvironmentLeasesForRun({
             runId: run.id,
@@ -15226,7 +15407,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
   async function releaseIssueExecutionAndPromote(
     run: typeof heartbeatRuns.$inferSelect,
-    options: { suppressImmediateRecovery?: boolean } = {},
+    options: {
+      suppressImmediateRecovery?: boolean;
+      suppressDeferredPromotion?: boolean;
+    } = {},
   ) {
     const runContext = parseObject(run.contextSnapshot);
     const contextIssueId = readNonEmptyString(runContext.issueId);
@@ -15368,19 +15552,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
 
       while (true) {
-        const deferred = await tx
-          .select()
-          .from(agentWakeupRequests)
-          .where(
-            and(
-              eq(agentWakeupRequests.companyId, issue.companyId),
-              eq(agentWakeupRequests.status, "deferred_issue_execution"),
-              sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issue.id}`,
-            ),
-          )
-          .orderBy(asc(agentWakeupRequests.requestedAt))
-          .limit(1)
-          .then((rows) => rows[0] ?? null);
+        const deferred = options.suppressDeferredPromotion
+          ? null
+          : await tx
+            .select()
+            .from(agentWakeupRequests)
+            .where(
+              and(
+                eq(agentWakeupRequests.companyId, issue.companyId),
+                eq(agentWakeupRequests.status, "deferred_issue_execution"),
+                sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issue.id}`,
+              ),
+            )
+            .orderBy(asc(agentWakeupRequests.requestedAt))
+            .limit(1)
+            .then((rows) => rows[0] ?? null);
 
         if (!deferred) break;
 
