@@ -27,12 +27,23 @@ import {
   DEFAULT_ACP_ENGINE_STREAM_IDLE_TIMEOUT_MS,
   DEFAULT_ACP_ENGINE_WARM_HANDLE_IDLE_MS,
 } from "@paperclipai/adapter-utils/acpx-engine/constants";
-import type { AcpxEngineExecutorOptions } from "@paperclipai/adapter-utils/acpx-engine/execute";
+import type {
+  AcpxEngineExecutorOptions,
+  AcpxRemoteManagedHomeContext,
+  AcpxRemoteManagedHomeResult,
+} from "@paperclipai/adapter-utils/acpx-engine/execute";
 import {
   asNumber,
   asString,
   parseObject,
 } from "@paperclipai/adapter-utils/server-utils";
+import { normalizeCodexModel } from "../index.js";
+import { copyBackCodexAuth } from "./codex-auth-copyback.js";
+import { buildCodexAuthInboundProvision } from "./codex-auth-merge-scripts.js";
+import {
+  resolveSharedCodexHomeDir,
+  stageCodexHomeForSync,
+} from "./codex-home.js";
 import { classifyCodexAuthRefreshFailure } from "./parse.js";
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
@@ -151,6 +162,9 @@ export function buildCodexAcpConfig(config: Record<string, unknown>): Record<str
     (DEFAULT_ACP_ENGINE_STREAM_IDLE_MAX_RETRIES > 0
       ? DEFAULT_ACP_ENGINE_STREAM_IDLE_MAX_RETRIES
       : DEFAULT_CODEX_ACP_STREAM_IDLE_MAX_RETRIES);
+  const normalizedModel = normalizeCodexModel(
+    typeof config.model === "string" ? config.model : "",
+  );
 
   return {
     ...config,
@@ -161,14 +175,80 @@ export function buildCodexAcpConfig(config: Record<string, unknown>): Record<str
     warmHandleIdleMs,
     streamIdleTimeoutMs,
     streamIdleMaxRetries,
+    ...(normalizedModel ? { model: normalizedModel } : {}),
     ...(agentCommand ? { agentCommand } : {}),
     ...(stateDir ? { stateDir } : {}),
+  };
+}
+
+async function prepareCodexRemoteManagedHome(
+  input: AcpxRemoteManagedHomeContext,
+): Promise<AcpxRemoteManagedHomeResult> {
+  const { env, runId, onLog } = input;
+  const effectiveCodexHome = env.CODEX_HOME;
+  if (!effectiveCodexHome) {
+    return { stagedRuntime: await input.stage([]) };
+  }
+  const stagedCodexHomeDir = await stageCodexHomeForSync(effectiveCodexHome, { runId });
+  let stagedRuntime;
+  try {
+    stagedRuntime = await input.stage([
+      {
+        key: "home",
+        localDir: stagedCodexHomeDir,
+        followSymlinks: true,
+        provision: buildCodexAuthInboundProvision(),
+        restore: async ({ assetDir, readFile }) =>
+          void (await copyBackCodexAuth({
+            readSandboxAuth: () => readFile(path.posix.join(assetDir, "auth.json")),
+            hostAuthPath: path.join(resolveSharedCodexHomeDir(process.env), "auth.json"),
+            log: (line) => onLog("stdout", `${line}\n`),
+          })),
+      },
+    ]);
+  } catch (err) {
+    await fs.rm(stagedCodexHomeDir, { recursive: true, force: true }).catch(() => {});
+    throw err;
+  }
+  env.CODEX_HOME =
+    stagedRuntime.assetDirs.home ??
+    path.posix.join(stagedRuntime.runtimeRootDir ?? "", "home");
+
+  return {
+    stagedRuntime,
+    teardown: async () => {
+      try {
+        await onLog(
+          "stdout",
+          "[paperclip] Restoring workspace changes and Codex auth from the sandbox.\n",
+        );
+        await stagedRuntime.restoreWorkspace((line) => onLog("stdout", line));
+      } catch (err) {
+        await onLog(
+          "stderr",
+          `[paperclip] Codex ACP teardown restore/copy-back failed: ${
+            err instanceof Error ? err.message : String(err)
+          }\n`,
+        );
+      }
+    },
+    disposeStaged: async () => {
+      await fs.rm(stagedCodexHomeDir, { recursive: true, force: true }).catch(async (error) => {
+        await onLog(
+          "stderr",
+          `[paperclip] Failed to remove staged Codex home "${stagedCodexHomeDir}": ${
+            error instanceof Error ? error.message : String(error)
+          }\n`,
+        );
+      });
+    },
   };
 }
 
 function withCodexAcpDefaults(options: CodexAcpExecutorOptions): AcpxEngineExecutorOptions {
   return {
     resolveBillingIdentity: resolveCodexAcpBillingIdentity,
+    prepareRemoteManagedHome: prepareCodexRemoteManagedHome,
     ...options,
     adapterType: "codex_local",
     moduleDir,

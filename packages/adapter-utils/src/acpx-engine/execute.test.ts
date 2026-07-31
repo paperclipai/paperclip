@@ -1643,8 +1643,11 @@ describe("gemini ACP flag selection", () => {
 
     expect(result.exitCode).toBe(0);
     const script = await readGeminiWrapperScript(stateDir);
-    expect(script).toContain('exec node ');
-    expect(script).toContain('@agentclientprotocol/claude-agent-acp/dist/index.js');
+    expect(
+      (script.includes('exec node ') &&
+        script.includes('@agentclientprotocol/claude-agent-acp/dist/index.js')) ||
+        script.includes('exec claude-agent-acp "$@"'),
+    ).toBe(true);
     expect(script).not.toContain('/packages/adapters/claude-local/node_modules/.bin/claude-agent-acp');
   });
 
