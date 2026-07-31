@@ -1267,6 +1267,110 @@ describeEmbeddedPostgres("authorization service", () => {
     });
   });
 
+  it("grants issue:checkout_review to a mentioned reviewer only while the issue is in review", async () => {
+    const company = await createCompany(db, "MentionCheckoutReview");
+    const assigneeAgent = await createAgent(db, company.id, { role: "engineer" });
+    const reviewerAgent = await createAgent(db, company.id, { role: "qa" });
+    const peerAgent = await createAgent(db, company.id, { role: "engineer" });
+    const issue = await createIssue(db, company.id, {
+      title: "Review takeover target",
+      assigneeAgentId: assigneeAgent.id,
+    });
+    await db.insert(issueComments).values({
+      companyId: company.id,
+      issueId: issue.id,
+      authorAgentId: assigneeAgent.id,
+      authorType: "agent",
+      body: `[@QA](agent://${reviewerAgent.id}) please verify and close this out.`,
+    });
+
+    const authorization = authorizationService(db);
+    const resourceWithStatus = (status: string) => ({
+      type: "issue",
+      companyId: company.id,
+      issueId: issue.id,
+      assigneeAgentId: assigneeAgent.id,
+      status,
+    } as const);
+
+    await expect(authorization.decide({
+      actor: { type: "agent", agentId: reviewerAgent.id, companyId: company.id, source: "agent_key" },
+      action: "issue:checkout_review",
+      resource: resourceWithStatus("in_review"),
+    })).resolves.toMatchObject({
+      allowed: true,
+      reason: "allow_issue_mention_grant",
+    });
+
+    await expect(authorization.decide({
+      actor: { type: "agent", agentId: reviewerAgent.id, companyId: company.id, source: "agent_key" },
+      action: "issue:checkout_review",
+      resource: resourceWithStatus("in_progress"),
+    })).resolves.toMatchObject({ allowed: false });
+
+    await expect(authorization.decide({
+      actor: { type: "agent", agentId: peerAgent.id, companyId: company.id, source: "agent_key" },
+      action: "issue:checkout_review",
+      resource: resourceWithStatus("in_review"),
+    })).resolves.toMatchObject({ allowed: false });
+
+    await expect(authorization.decide({
+      actor: { type: "agent", agentId: assigneeAgent.id, companyId: company.id, source: "agent_key" },
+      action: "issue:checkout_review",
+      resource: resourceWithStatus("in_review"),
+    })).resolves.toMatchObject({
+      allowed: true,
+      reason: "allow_self",
+    });
+  });
+
+  it("denies issue:checkout_review to low-trust agents even with a valid mention grant", async () => {
+    const company = await createCompany(db, "MentionCheckoutReviewLowTrust");
+    const allowedProject = await createProject(db, company.id, "ReviewTakeoverAllowed");
+    const assigneeAgent = await createAgent(db, company.id, { role: "engineer" });
+    const reviewerAgent = await createAgent(db, company.id, {
+      role: "qa",
+      permissions: {
+        trustPreset: LOW_TRUST_REVIEW_PRESET,
+        authorizationPolicy: {
+          trustBoundary: {
+            mode: LOW_TRUST_REVIEW_PRESET,
+            companyId: company.id,
+            projectIds: [allowedProject.id],
+          },
+        },
+      },
+    });
+    const issue = await createIssue(db, company.id, {
+      title: "Low-trust review takeover target",
+      projectId: allowedProject.id,
+      assigneeAgentId: assigneeAgent.id,
+    });
+    await db.insert(issueComments).values({
+      companyId: company.id,
+      issueId: issue.id,
+      authorAgentId: assigneeAgent.id,
+      authorType: "agent",
+      body: `[@QA](agent://${reviewerAgent.id}) please verify and close this out.`,
+    });
+
+    await expect(authorizationService(db).decide({
+      actor: { type: "agent", agentId: reviewerAgent.id, companyId: company.id, source: "agent_key" },
+      action: "issue:checkout_review",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        issueId: issue.id,
+        projectId: issue.projectId,
+        assigneeAgentId: assigneeAgent.id,
+        status: "in_review",
+      },
+    })).resolves.toMatchObject({
+      allowed: false,
+      reason: "deny_low_trust_boundary",
+    });
+  });
+
   it("does not grant mention-scoped issue access from self-authored or unauthorized-author comments", async () => {
     const company = await createCompany(db, "MentionCommentDenied");
     const allowedProject = await createProject(db, company.id, "MentionDeniedAllowed");
