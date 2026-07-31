@@ -133,6 +133,11 @@ export async function logActivity(db: Db, input: LogActivityInput) {
     ? redactCurrentUserValue(sanitizedDetails, currentUserRedactionOptions)
     : null;
   const responsibleUserId = await resolveResponsibleUserIdForActivity(db, input);
+  // activity_log.run_id is a uuid column with an FK to heartbeat_runs.id. Manual /
+  // non-heartbeat callers may send a synthetic X-Paperclip-Run-Id (e.g. "manual-<ts>"),
+  // which Postgres rejects at the cast and fails the whole insert. Drop non-uuid ids
+  // here; the original value is still emitted on the live event below.
+  const persistedRunId = input.runId && isUuidLike(input.runId) ? input.runId : null;
   await db.insert(activityLog).values({
     companyId: input.companyId,
     actorType: input.actorType,
@@ -141,7 +146,7 @@ export async function logActivity(db: Db, input: LogActivityInput) {
     entityType: input.entityType,
     entityId: input.entityId,
     agentId: input.agentId ?? null,
-    runId: input.runId ?? null,
+    runId: persistedRunId,
     responsibleUserId,
     details: redactedDetails,
   });
