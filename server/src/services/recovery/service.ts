@@ -4,9 +4,6 @@ import {
   DEFAULT_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
   MAX_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
   MIN_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
-  PROVIDER_QUOTA_MONITOR_SERVICE_NAME,
-  type IssueCommentMetadata,
-  type IssueCommentPresentation,
   type IssueGraphLivenessAutoRecoveryPreview,
   type IssueGraphLivenessAutoRecoveryPreviewItem,
 } from "@paperclipai/shared";
@@ -149,6 +146,8 @@ type LatestIssueRun = Pick<
   | "livenessState"
   | "startedAt"
   | "createdAt"
+  | "updatedAt"
+  | "finishedAt"
 > & {
   resultJson?: unknown;
 } | null;
@@ -268,7 +267,6 @@ function resolveStrandedRecoveryCause(
   }
   return "stranded_assigned_issue";
 }
-
 function readWorkspaceValidationPayload(latestRun: LatestIssueRun): Record<string, unknown> | null {
   const payload = parseObject(parseObject(latestRun?.resultJson).workspaceValidation);
   return Object.keys(payload).length > 0 ? payload : null;
@@ -354,7 +352,6 @@ function isTerminalIssueRun(latestRun: LatestIssueRun) {
 const TRANSIENT_INFRA_CONTINUATION_ERROR_CODES = new Set<string>([
   "adapter_failed",
   "codex_transient_upstream",
-  "codex_harness_crash",
   "claude_transient_upstream",
   "provider_quota",
   "timeout",
@@ -792,8 +789,6 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         contextSnapshot: heartbeatRuns.contextSnapshot,
         livenessState: heartbeatRuns.livenessState,
         resultJson: heartbeatRuns.resultJson,
-        startedAt: heartbeatRuns.startedAt,
-        createdAt: heartbeatRuns.createdAt,
       })
       .from(heartbeatRuns)
       .where(
@@ -822,8 +817,6 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         contextSnapshot: heartbeatRuns.contextSnapshot,
         livenessState: heartbeatRuns.livenessState,
         resultJson: heartbeatRuns.resultJson,
-        startedAt: heartbeatRuns.startedAt,
-        createdAt: heartbeatRuns.createdAt,
       })
       .from(heartbeatRuns)
       .where(
@@ -981,6 +974,72 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       )
       .limit(1)
       .then((rows) => Boolean(rows[0]));
+  async function loadLatestSuccessfulRunIdByIssue(companyId: string, issueIds: string[]) {
+    const ids = [...new Set(issueIds.filter(Boolean))];
+    if (ids.length === 0) return new Map<string, string>();
+
+    const issueIdFromRun = sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`;
+    const rows = await db
+      .select({
+        issueId: issueIdFromRun,
+        runId: heartbeatRuns.id,
+      })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, companyId),
+          eq(heartbeatRuns.status, "succeeded"),
+          inArray(issueIdFromRun, ids),
+        ),
+      )
+      .orderBy(asc(issueIdFromRun), desc(heartbeatRuns.finishedAt), desc(heartbeatRuns.id));
+
+    const latestByIssueId = new Map<string, string>();
+    for (const row of rows) {
+      if (!row.issueId || latestByIssueId.has(row.issueId)) continue;
+      latestByIssueId.set(row.issueId, row.runId);
+    }
+    return latestByIssueId;
+  }
+
+  async function readNonTerminalWakelessWakeFailureState(input: {
+    companyId: string;
+    agentId: string;
+    idempotencyKey: string;
+  }) {
+    const rows = await db
+      .select({
+        status: agentWakeupRequests.status,
+        reason: agentWakeupRequests.reason,
+        requestedAt: agentWakeupRequests.requestedAt,
+        finishedAt: agentWakeupRequests.finishedAt,
+      })
+      .from(agentWakeupRequests)
+      .where(
+        and(
+          eq(agentWakeupRequests.companyId, input.companyId),
+          eq(agentWakeupRequests.agentId, input.agentId),
+          eq(agentWakeupRequests.idempotencyKey, input.idempotencyKey),
+        ),
+      )
+      .orderBy(desc(agentWakeupRequests.requestedAt), desc(agentWakeupRequests.id));
+
+    let consecutiveFailures = 0;
+    let latestFailureAt: Date | null = null;
+    for (const row of rows) {
+      const countsTowardFailureCap =
+        row.status === "failed" || (row.status === "skipped" && row.reason === "agent.not_invokable");
+      if (!countsTowardFailureCap) break;
+      consecutiveFailures += 1;
+      if (!latestFailureAt) latestFailureAt = row.finishedAt ?? row.requestedAt ?? null;
+    }
+
+    return {
+      consecutiveFailures,
+      latestFailureAt,
+      backoffMs: consecutiveFailures > 0 ? computeNonTerminalWakelessWakeBackoffMs(consecutiveFailures) : 0,
+      exhausted: consecutiveFailures >= NON_TERMINAL_WAKELESS_WAKE_MAX_ATTEMPTS,
+    };
   }
 
   async function hasQueuedIssueWake(companyId: string, issueId: string, agentId?: string | null) {
@@ -1061,8 +1120,6 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         contextSnapshot: heartbeatRuns.contextSnapshot,
         livenessState: heartbeatRuns.livenessState,
         resultJson: heartbeatRuns.resultJson,
-        startedAt: heartbeatRuns.startedAt,
-        createdAt: heartbeatRuns.createdAt,
       })
       .from(heartbeatRuns)
       .where(
@@ -1163,6 +1220,59 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     }
 
     return queued;
+  }
+
+  async function enqueueSuccessfulRunHandoffRecovery(
+    issue: typeof issues.$inferSelect,
+    agent: typeof agents.$inferSelect,
+    latestRun: NonNullable<LatestIssueRun>,
+  ) {
+    const idempotencyKey = buildFinishSuccessfulRunHandoffIdempotencyKey({
+      issueId: issue.id,
+      sourceRunId: latestRun.id,
+    });
+    const [existingWake, hasQueuedWake, budgetBlocked] = await Promise.all([
+      findExistingFinishSuccessfulRunHandoffWake(db, {
+        companyId: issue.companyId,
+        idempotencyKey,
+      }),
+      hasQueuedIssueWake(issue.companyId, issue.id, agent.id),
+      isInvocationBudgetBlocked(issue, agent.id),
+    ]);
+
+    const decision = decideSuccessfulRunHandoff({
+      run: latestRun as any,
+      issue,
+      agent,
+      livenessState: latestRun.livenessState as any,
+      detectedProgressSummary: null,
+      taskKey: issue.id,
+      hasActiveExecutionPath: false,
+      hasQueuedWake,
+      hasPendingInteractionOrApproval: false,
+      hasPersistedMonitor: Boolean(issue.monitorNextCheckAt),
+      hasExplicitBlockerPath: false,
+      hasOpenChildPath: false,
+      hasOpenRecoveryIssue: false,
+      hasPauseHold: false,
+      hasActiveRoutineContinuation: false,
+      budgetBlocked,
+      idempotentWakeExists: Boolean(existingWake),
+      finalReport: null,
+      nextAction: null,
+    });
+    if (decision.kind !== "enqueue") return null;
+
+    return deps.enqueueWakeup(decision.targetAgentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
+      payload: decision.payload,
+      contextSnapshot: decision.contextSnapshot,
+      idempotencyKey: decision.idempotencyKey,
+      requestedByActorType: "system",
+      requestedByActorId: "recovery",
+    });
   }
 
   async function enqueueInitialAssignedTodoDispatch(issue: typeof issues.$inferSelect, agentId: string) {
@@ -3137,29 +3247,6 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         prefix,
       }),
       {},
-      {
-        authorType: "system",
-        presentation: compactRecoveryPresentation("Recovery: recovery attempt failed — remains blocked"),
-        metadata: {
-          version: 1,
-          sourceRunId: input.latestRun?.id ?? null,
-          sections: [{
-            title: "Recovery",
-            rows: [
-              { type: "key_value", label: "Cause", value: "recovery_issue_failed" },
-              { type: "key_value", label: "Previous status", value: input.previousStatus },
-              ...(input.latestRun
-                ? [{
-                    type: "run_link" as const,
-                    label: "Latest run",
-                    runId: input.latestRun.id,
-                    title: input.latestRun.status,
-                  }]
-                : []),
-            ],
-          }],
-        },
-      },
     );
 
     await logActivity(db, {
@@ -3253,25 +3340,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         "(It was paused because the latest run reported it was waiting for review/approval; " +
         "Paperclip turned that into a normal dependency wait instead of flagging it as stuck.)",
       {},
-      {
-        authorType: "system",
-        presentation: compactRecoveryPresentation("Recovery: waiting on dependencies — moved to blocked"),
-        metadata: {
-          version: 1,
-          sections: [{
-            title: "Recovery",
-            rows: [
-              { type: "key_value", label: "Cause", value: "continuation_waiting_on_review" },
-              { type: "key_value", label: "Previous status", value: issue.status },
-              {
-                type: "key_value",
-                label: "Blocking issues",
-                value: blockedByIssueIds.join(", ").slice(0, 2000),
-              },
-            ],
-          }],
-        },
-      },
+      { authorType: "system" },
     );
     await logActivity(db, {
       companyId: issue.companyId,
@@ -3392,8 +3461,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         .orderBy(desc(issueComments.createdAt))
         .limit(50)
         .then((rows) => rows.some((row) =>
-          noticeMetadataReferencesRecoveryAction(row.metadata, recoveryAction.id) ||
-          (row.body ?? "").includes(escalationCommentMarker),
+          (row.body ?? "").includes(escalationCommentMarker) ||
+          noticeMetadataReferencesRecoveryAction(row.metadata, recoveryAction.id),
         ));
 
       if (!hasEscalationComment) {
@@ -3406,17 +3475,6 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         } else {
           await issuesSvc.addComment(input.issue.id, `${input.comment ?? ""}${recoveryLine}`, {}, {
             authorType: "system",
-            presentation: compactRecoveryPresentation(
-              `Recovery: ${recoveryCauseTitle(recoveryCause)} — moved to blocked ` +
-              `(owner: ${recoveryOwner?.name ?? "board"})`,
-            ),
-            metadata: recoveryNoticeMetadata({
-              cause: recoveryCause,
-              latestRun: input.latestRun,
-              recoveryActionId: recoveryAction.id,
-              previousStatus: input.previousStatus,
-              recoveryOwner,
-            }),
           });
         }
       }
@@ -4038,10 +4096,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           continue;
         }
 
-        if (
-          latestRun.status === "succeeded" &&
-          !(await wasTodoHandedBackDuringOrAfterLatestRun(issue, latestRun))
-        ) {
+        if (latestRun.status === "succeeded") {
           result.skipped += 1;
           continue;
         }
