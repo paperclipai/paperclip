@@ -65,6 +65,34 @@ function useIsQuicklookOpen(id: symbol) {
  *  as the pointer crosses cards on its way somewhere else. */
 const QUICKLOOK_OPEN_DELAY_MS = 120;
 
+/**
+ * Distance from the quicklook's outer edge to its first column of text: the
+ * `p-3` padding in `QUICKLOOK_CONTENT_CLASS` (12px) plus the 1px border that
+ * `PopoverContent` draws. Both sit between the box edge and the content, so
+ * both have to be cancelled to line the text up with the trigger's.
+ */
+const QUICKLOOK_CONTENT_INSET_PX = 12 + 1;
+
+/** Shared shell for every surface that renders `IssueQuicklookCard`. */
+export const QUICKLOOK_CONTENT_CLASS = "w-72 p-3";
+
+/**
+ * Cancel the card's own inset along the align axis, so the preview lines up
+ * with the *text* that opened it rather than with that text's box.
+ *
+ * Radix aligns box to box: with `align="start"` the card's left edge meets the
+ * trigger's left edge, which leaves the card's text pushed right by its border
+ * and padding — visibly off against the task key above it. Pulling the box back
+ * by exactly that inset puts the card's first column of text on the same
+ * vertical line as the trigger's. `end` needs the mirror of it; `center` has no
+ * edge to line up with, so it gets nothing.
+ */
+export function quicklookAlignOffset(align: "start" | "center" | "end" = "start"): number {
+  if (align === "start") return -QUICKLOOK_CONTENT_INSET_PX;
+  if (align === "end") return QUICKLOOK_CONTENT_INSET_PX;
+  return 0;
+}
+
 export type IssueQuicklookIssue = Pick<Issue, "id" | "title" | "updatedAt"> & {
   identifier?: string | null;
   status: string;
@@ -389,9 +417,10 @@ export const IssueLinkQuicklook = React.forwardRef<
       </PopoverTrigger>
       <PopoverContent
         ref={contentRef}
-        className="w-72 p-3"
+        className={QUICKLOOK_CONTENT_CLASS}
         side={issueQuicklookSide}
         align={issueQuicklookAlign}
+        alignOffset={quicklookAlignOffset(issueQuicklookAlign)}
         onMouseEnter={openNow}
         onMouseLeave={close}
         // A preview must not move focus in either direction. Opening already

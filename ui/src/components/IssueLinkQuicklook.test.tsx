@@ -6,7 +6,7 @@ import { MemoryRouter } from "react-router-dom";
 import type { Issue } from "@paperclipai/shared";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { IssueLinkQuicklook } from "./IssueLinkQuicklook";
+import { IssueLinkQuicklook, QUICKLOOK_CONTENT_CLASS, quicklookAlignOffset } from "./IssueLinkQuicklook";
 
 const mockIssuesApiGet = vi.hoisted(() => vi.fn());
 
@@ -268,6 +268,19 @@ describe("IssueLinkQuicklook", () => {
 
     expect(card?.querySelector('[data-testid="quicklook-project"]')).toBeNull();
     expect(card?.textContent).not.toContain("·");
+  });
+
+  // Radix aligns box to box, so the card's own padding would leave its text
+  // inset from the trigger's. The offset cancels the padding in whichever
+  // direction the card is aligned.
+  it("offsets the card by its padding so its text lines up with the trigger", () => {
+    // 12px of `p-3` padding plus the 1px border PopoverContent draws.
+    expect(quicklookAlignOffset("start")).toBe(-13);
+    expect(quicklookAlignOffset("end")).toBe(13);
+    expect(quicklookAlignOffset("center")).toBe(0);
+    expect(quicklookAlignOffset()).toBe(quicklookAlignOffset("start"));
+    // The offset only holds while the shell keeps that padding.
+    expect(QUICKLOOK_CONTENT_CLASS).toContain("p-3");
   });
 
   it("truncates a long project name but never the task key or the timestamp", () => {

@@ -172,3 +172,13 @@ Two judgment calls:
 - **11px via `--text-micro`** for the meta row, matching the mock, rather than minting a token for the mock's literal values.
 
 The other consumer, `IssuesQuicklook` (project workspace linked issues), inherits the new card automatically — which is the point of standardising it.
+
+## Quicklook aligns to the trigger's text, not its box (design session, Jul 29 2026)
+
+Radix aligns box to box, so `align="start"` put the preview's *left edge* on the trigger's left edge — leaving the card's text pushed right by the card's own border and padding, and visibly out of line with the task key that opened it.
+
+`quicklookAlignOffset()` cancels that inset: **13px** — `p-3` (12px) plus the 1px border `PopoverContent` draws. Measured on the live card afterwards, the trigger's text sits at 353.61px and the card's glyph, title and description all sit at 353.50px — a 0.11px residual from the trigger's own sub-pixel position, i.e. aligned.
+
+The offset follows the align prop (`start` negative, `end` the mirror, `center` zero) rather than being hardcoded to one direction, and both surfaces that render the standard card — `IssueLinkQuicklook` and `IssuesQuicklook` — now share `QUICKLOOK_CONTENT_CLASS` and this helper, so the preview is positioned identically wherever it opens.
+
+The 13px is a derived constant with the border and padding written out as `12 + 1`, and a test asserts the shell still carries `p-3`, so the two cannot drift apart silently.
