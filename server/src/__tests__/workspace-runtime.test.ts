@@ -49,6 +49,12 @@ import {
   readLocalServicePortOwner,
   writeLocalServiceRegistryRecord,
 } from "../services/local-service-supervisor.ts";
+import {
+  buildWorkspaceRealizationRecord,
+  buildWorkspaceRealizationRequest,
+  readWorkspaceRealizationRequest,
+} from "../services/workspace-realization.ts";
+import type { Environment, EnvironmentLease } from "@paperclipai/shared";
 import { resolvePaperclipConfigPath } from "../paths.ts";
 import type { WorkspaceOperation } from "@paperclipai/shared";
 import type { WorkspaceOperationRecorder } from "../services/workspace-operations.ts";
@@ -6189,5 +6195,182 @@ describe("normalizeAdapterManagedRuntimeServices", () => {
       scopeId: "execution-workspace-1",
       executionWorkspaceId: "execution-workspace-1",
     });
+  });
+});
+
+describe("workspace realization request additionalSources", () => {
+  function buildRealizedWorkspace(
+    overrides: Partial<RealizedExecutionWorkspace> = {},
+  ): RealizedExecutionWorkspace {
+    return {
+      baseCwd: "/anchor",
+      source: "project_primary",
+      projectId: "project-anchor",
+      workspaceId: "workspace-anchor",
+      repoUrl: "https://example.test/anchor.git",
+      repoRef: "main",
+      strategy: "project_primary",
+      cwd: "/anchor",
+      branchName: null,
+      worktreePath: null,
+      warnings: [],
+      created: false,
+      ...overrides,
+    };
+  }
+
+  it("round-trips additionalSources through build/read realization request", () => {
+    const workspace = buildRealizedWorkspace({
+      additionalWorkspaces: [
+        {
+          cwd: "/managed/project-b",
+          projectId: "project-b",
+          workspaceId: "workspace-b",
+          repoUrl: "https://example.test/b.git",
+          repoRef: "release",
+        },
+      ],
+    });
+
+    const request = buildWorkspaceRealizationRequest({
+      adapterType: "codex",
+      companyId: "company-1",
+      environmentId: "environment-1",
+      executionWorkspaceId: "execution-workspace-1",
+      issueId: "issue-1",
+      heartbeatRunId: "run-1",
+      requestedMode: "shared_workspace",
+      workspace,
+      workspaceConfig: null,
+    });
+
+    expect(request.additionalSources).toEqual([
+      {
+        localPath: "/managed/project-b",
+        projectId: "project-b",
+        projectWorkspaceId: "workspace-b",
+        repoUrl: "https://example.test/b.git",
+        repoRef: "release",
+      },
+    ]);
+    // The anchor source stays scalar and unchanged alongside the new plural field.
+    expect(request.source.localPath).toBe("/anchor");
+
+    // A serialize/deserialize round-trip preserves additionalSources.
+    const roundTripped = readWorkspaceRealizationRequest(
+      JSON.parse(JSON.stringify(request)),
+    );
+    expect(roundTripped?.additionalSources).toEqual(request.additionalSources);
+  });
+
+  it("exposes additionalSources on the realization record so targets receive the paths", () => {
+    const workspace = buildRealizedWorkspace({
+      additionalWorkspaces: [
+        {
+          cwd: "/managed/project-b",
+          projectId: "project-b",
+          workspaceId: "workspace-b",
+          repoUrl: "https://example.test/b.git",
+          repoRef: "release",
+        },
+      ],
+    });
+
+    const request = buildWorkspaceRealizationRequest({
+      adapterType: "codex",
+      companyId: "company-1",
+      environmentId: "environment-1",
+      executionWorkspaceId: "execution-workspace-1",
+      issueId: "issue-1",
+      heartbeatRunId: "run-1",
+      requestedMode: "shared_workspace",
+      workspace,
+      workspaceConfig: null,
+    });
+
+    const now = new Date(0);
+    const environment: Environment = {
+      id: "environment-1",
+      name: "local",
+      description: null,
+      driver: "local",
+      status: "active",
+      config: {},
+      envVars: {},
+      metadata: null,
+      createdAt: now,
+      updatedAt: now,
+    };
+    const lease: EnvironmentLease = {
+      id: "lease-1",
+      companyId: "company-1",
+      environmentId: "environment-1",
+      executionWorkspaceId: "execution-workspace-1",
+      issueId: "issue-1",
+      heartbeatRunId: "run-1",
+      status: "active",
+      leasePolicy: "ephemeral",
+      provider: "local",
+      providerLeaseId: null,
+      acquiredAt: now,
+      lastUsedAt: now,
+      expiresAt: null,
+      releasedAt: null,
+      failureReason: null,
+      cleanupStatus: null,
+      metadata: null,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    const record = buildWorkspaceRealizationRecord({ environment, lease, request });
+
+    // The record carries the resolved referenced-project path so the execution target can expose it.
+    expect(record.additional).toEqual([
+      {
+        path: "/managed/project-b",
+        projectId: "project-b",
+        projectWorkspaceId: "workspace-b",
+        repoUrl: "https://example.test/b.git",
+        repoRef: "release",
+      },
+    ]);
+    // The anchor stays scalar and unchanged alongside the new plural field.
+    expect(record.local.path).toBe("/anchor");
+  });
+
+  it("reads a legacy request without additionalSources as an empty array", () => {
+    const legacyRequest = {
+      version: 1,
+      adapterType: "codex",
+      companyId: "company-1",
+      environmentId: "environment-1",
+      executionWorkspaceId: null,
+      issueId: null,
+      heartbeatRunId: "run-1",
+      requestedMode: null,
+      source: {
+        kind: "project_primary",
+        localPath: "/anchor",
+        projectId: null,
+        projectWorkspaceId: null,
+        repoUrl: null,
+        repoRef: null,
+        strategy: "project_primary",
+        branchName: null,
+        worktreePath: null,
+      },
+      runtimeOverlay: {
+        provisionCommand: null,
+        teardownCommand: null,
+        cleanupCommand: null,
+        workspaceRuntime: null,
+      },
+    };
+
+    const parsed = readWorkspaceRealizationRequest(legacyRequest);
+
+    expect(parsed).not.toBeNull();
+    expect(parsed?.additionalSources).toEqual([]);
   });
 });

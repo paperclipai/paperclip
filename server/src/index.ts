@@ -50,7 +50,6 @@ import {
   issueService,
   instanceSettingsService,
   reconcileBuiltInAgentsOnStartup,
-  reconcileCloudUpstreamRunsOnStartup,
   reconcileCodexLocalManagedHomesOnStartup,
   reconcilePersistedRuntimeServicesOnStartup,
   routineService,
@@ -73,6 +72,7 @@ import { maybePersistWorktreeRuntimePorts } from "./worktree-config.js";
 import { initTelemetry, getTelemetryClient } from "./telemetry.js";
 import { conflict } from "./errors.js";
 import { coordinateHeartbeatSchedulerShutdown } from "./shutdown.js";
+import { flushInFlightRunLogMirrors } from "./services/run-log-store.js";
 import type {
   InstanceDatabaseBackupRunResult,
   InstanceDatabaseBackupTrigger,
@@ -792,19 +792,6 @@ export async function startServer(): Promise<StartedServer> {
       logger.error({ err }, "startup reconciliation of persisted runtime services failed");
     });
 
-  void reconcileCloudUpstreamRunsOnStartup(db as any)
-    .then((result) => {
-      if (result.reconciled > 0) {
-        logger.warn(
-          { reconciled: result.reconciled },
-          "reconciled cloud upstream runs from a previous server process",
-        );
-      }
-    })
-    .catch((err) => {
-      logger.error({ err }, "startup reconciliation of cloud upstream runs failed");
-    });
-
   // Backfill auth.json into any already-isolated codex_local managed home that
   // was created by the #8272 isolation guard before the Phase 1 seeding fix.
   // Idempotent; the Phase 1 execute-time seeding covers new strandings.
@@ -1337,6 +1324,16 @@ export async function startServer(): Promise<StartedServer> {
         } catch (err) {
           logger.error({ err, signal }, "graceful heartbeat run drain failed");
         }
+      }
+
+      // Whatever the drain did not finalize (timed-out runs, the hot-restart
+      // skip path) still has a local-only tail when the in-flight run-log
+      // mirror is enabled; upload those tails now so an orderly restart
+      // never loses run output. No-op when the mirror is off.
+      try {
+        await flushInFlightRunLogMirrors();
+      } catch (err) {
+        logger.error({ err, signal }, "run-log in-flight mirror flush failed");
       }
 
       const appShutdown = (app as { locals?: { paperclipShutdown?: () => void } }).locals?.paperclipShutdown;

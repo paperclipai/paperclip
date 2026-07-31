@@ -28,6 +28,7 @@ import {
   type AdapterExecutionTargetTimeoutResolution,
   type AdapterManagedRuntimeAsset,
   type PreparedAdapterExecutionTargetRuntime,
+  type SandboxAdditionalSource,
 } from "@paperclipai/adapter-utils/execution-target";
 import {
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
@@ -82,7 +83,15 @@ import {
   DEFAULT_ACP_ENGINE_TIMEOUT_SEC,
   DEFAULT_ACP_ENGINE_WARM_HANDLE_IDLE_MS,
 } from "./constants.js";
-import { measureStartupStep, type StartupStepMeasureOptions } from "./startup-timing.js";
+import {
+  measureStartupStep,
+  NOOP_STARTUP_SPAN,
+  NOOP_STARTUP_TRACE_CONTEXT,
+  type StartupSpan,
+  type StartupSpanContext,
+  type StartupStepMeasureOptions,
+  type StartupTraceContext,
+} from "./startup-timing.js";
 import type { CommandManagedRuntimeRunner } from "../command-managed-runtime.js";
 
 const defaultModuleDir = path.dirname(fileURLToPath(import.meta.url));
@@ -416,6 +425,83 @@ function stableJson(value: unknown): string {
 
 function shortHash(value: unknown): string {
   return createHash("sha256").update(stableJson(value)).digest("hex").slice(0, 16);
+}
+
+// Directory names the staging path never ships for a referenced project (heavy
+// build/cache output and git history). The content signature skips them so it
+// reflects only the staged tree and never reads their bytes. Keep this set equal
+// to the staging excludes in the sandbox and remote runtimes.
+const REFERENCED_SOURCE_SIGNATURE_SKIP_DIRS = new Set([
+  "node_modules",
+  "vendor",
+  "dist",
+  "build",
+  "out",
+  "coverage",
+  ".next",
+  ".turbo",
+  ".cache",
+  ".git",
+]);
+
+/**
+ * Content signature of a referenced-project host tree for the session fingerprint.
+ *
+ * The staged-runtime cache reuses an already-staged referenced-project tree on a
+ * compatible resume and does not re-sync it. Referenced-project metadata (id, host
+ * path, workspace id, repo url, pinned ref) can stay identical while the files at
+ * that host path change: a branch moved to a new commit, a re-checkout in place, or
+ * a dirty worktree. So the metadata identity alone lets a resume serve a stale tree.
+ * This signature folds the tree's own content state into the identity.
+ *
+ * The walk reads each file's relative path and bytes and folds them into the hash.
+ * It reads bytes, not only file stats. A stat-only signature (size and modification
+ * time) collides when an edit keeps the byte length and the modification time — a
+ * re-checkout that restores the same size and timestamp. The byte hash busts on any
+ * content change, so the fingerprint busts and the next launch stages the current
+ * tree. The walk skips the heavy build, cache, and git directories the staging path
+ * never ships, and records a symlink by its target text without following it. On a
+ * read error the function returns a stable marker, so the fingerprint does not churn
+ * while staging surfaces the real error. The walk runs only when the run carries
+ * referenced projects (the multi-project sync path).
+ */
+async function referencedSourceContentSignature(localPath: string): Promise<string> {
+  const hash = createHash("sha256");
+  const walk = async (relative: string): Promise<void> => {
+    const current = relative ? path.join(localPath, relative) : localPath;
+    const dirents = await fs.readdir(current, { withFileTypes: true });
+    dirents.sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0));
+    for (const dirent of dirents) {
+      const next = relative ? path.posix.join(relative, dirent.name) : dirent.name;
+      if (dirent.isDirectory()) {
+        if (REFERENCED_SOURCE_SIGNATURE_SKIP_DIRS.has(dirent.name)) {
+          continue;
+        }
+        await walk(next);
+        continue;
+      }
+      const absolute = path.join(localPath, next);
+      const stats = await fs.lstat(absolute);
+      if (stats.isSymbolicLink()) {
+        const target = await fs.readlink(absolute);
+        hash.update(`symlink:${next}:${target}\n`);
+        continue;
+      }
+      if (!stats.isFile()) {
+        hash.update(`other:${next}:${stats.mode}\n`);
+        continue;
+      }
+      hash.update(`file:${next}:${stats.size}\n`);
+      hash.update(await fs.readFile(absolute));
+      hash.update("\n");
+    }
+  };
+  try {
+    await walk("");
+  } catch (error) {
+    return `unreadable:${String(error)}`;
+  }
+  return hash.digest("hex").slice(0, 16);
 }
 
 function defaultPaperclipInstanceDir(): string {
@@ -1209,6 +1295,11 @@ async function stageAcpRemoteRuntime(input: {
   workspaceRemoteDir?: string;
   timeoutSec: number;
   assets?: AdapterManagedRuntimeAsset[];
+  // Referenced (additional) projects to stage into the sandbox as plain,
+  // read-only trees alongside the anchor workspace. Empty unless run prep
+  // resolved referenced projects (gated upstream), so the anchor-only path is
+  // unchanged.
+  additionalSources?: SandboxAdditionalSource[];
   onLog: AdapterExecutionContext["onLog"];
   onRuntimeProgress: AdapterExecutionContext["onRuntimeProgress"];
 }): Promise<PreparedAdapterExecutionTargetRuntime> {
@@ -1224,6 +1315,9 @@ async function stageAcpRemoteRuntime(input: {
     workspaceLocalDir: input.workspaceLocalDir,
     ...(input.workspaceRemoteDir ? { workspaceRemoteDir: input.workspaceRemoteDir } : {}),
     ...(input.assets && input.assets.length > 0 ? { assets: input.assets } : {}),
+    ...(input.additionalSources && input.additionalSources.length > 0
+      ? { additionalSources: input.additionalSources }
+      : {}),
     onProgress: (line) => input.onLog("stdout", line),
     onRuntimeProgress: input.onRuntimeProgress,
   });
@@ -1249,6 +1343,10 @@ async function buildRuntime(input: {
   ctx: AdapterExecutionContext;
   engine: AcpxEngineSettings;
   deps: AcpxEngineExecutorOptions;
+  // The injected tracer plus the root-span parent-context token. Merged into
+  // every startup-step option set, so each boundary span parents to the one
+  // root span (`sandbox.startup`) that the executor opens.
+  spanParent: Pick<StartupStepMeasureOptions, "tracer" | "parentContext">;
 }): Promise<AcpxPreparedRuntime> {
   const { runId, agent, config, context, authToken } = input.ctx;
   // Injectable monotonic clock for per-step startup timing. Hoisted above the
@@ -1271,6 +1369,43 @@ async function buildRuntime(input: {
   const useConfiguredInsteadOfAgentHome = workspaceSource === "agent_home" && configuredCwd.length > 0;
   const effectiveWorkspaceCwd = useConfiguredInsteadOfAgentHome ? "" : workspaceCwd;
   const cwd = effectiveWorkspaceCwd || configuredCwd || process.cwd();
+  // Referenced (additional) projects to stage into the sandbox alongside the
+  // anchor workspace, read from the workspace realization record. The list is
+  // empty unless run prep resolved referenced projects — gated upstream by the
+  // multi-project workspace-sync kill-switch — so the anchor-only path is
+  // unchanged.
+  const realizationContext = parseObject(workspaceContext.realization);
+  const additionalSourceRecords = (
+    Array.isArray(realizationContext.additional) ? realizationContext.additional : []
+  ).map((entry) => parseObject(entry));
+  const additionalSources: SandboxAdditionalSource[] = additionalSourceRecords
+    .map((entry) => ({ localPath: asString(entry.path, ""), projectId: asString(entry.projectId, "") }))
+    .filter((entry) => entry.localPath.length > 0 && entry.projectId.length > 0);
+  // Stable identity of the referenced-project set for the session fingerprint.
+  // The staged-runtime cache reuses already-staged referenced-project trees on a
+  // compatible resume, so the fingerprint must change when the set OR a project's
+  // pinned checkout changes. Without this, a resume reuses a stale staged tree.
+  // Fold in each project's id, host path, workspace id, and pinned ref; sort by
+  // projectId so the identity depends on the set, not the record order.
+  const additionalSourcesIdentityBase = additionalSourceRecords
+    .map((entry) => ({
+      projectId: asString(entry.projectId, ""),
+      localPath: asString(entry.path, ""),
+      projectWorkspaceId: asString(entry.projectWorkspaceId, ""),
+      repoUrl: asString(entry.repoUrl, ""),
+      repoRef: asString(entry.repoRef, ""),
+    }))
+    .filter((entry) => entry.localPath.length > 0 && entry.projectId.length > 0)
+    .sort((a, b) => (a.projectId < b.projectId ? -1 : a.projectId > b.projectId ? 1 : 0));
+  // Metadata alone does not change on a content-only checkout change (same host
+  // path and pinned ref, new file bytes). Fold in each tree's content signature so
+  // a file add, remove, or edit busts the fingerprint and the resume re-stages.
+  const additionalSourcesIdentity = await Promise.all(
+    additionalSourcesIdentityBase.map(async (entry) => ({
+      ...entry,
+      contentSignature: await referencedSourceContentSignature(entry.localPath),
+    })),
+  );
   const executionTarget = readAdapterExecutionTarget({
     executionTarget: input.ctx.executionTarget,
     legacyRemoteExecution: input.ctx.executionTransport?.remoteExecution,
@@ -1287,17 +1422,23 @@ async function buildRuntime(input: {
   // and emits the per-step delta. Empty when there is no runner (local runs,
   // the runner-less ACP→CLI fallback, or an SSH runner that does not
   // instrument the seam), so those steps simply omit the fields.
-  const stepMetrics = buildStartupStepMetrics(
-    executionTarget?.kind === "remote" && executionTarget.transport === "sandbox"
-      ? executionTarget.runner
-      : undefined,
-  );
+  // Merge the injected tracer + root parent-context into every step option set,
+  // so each boundary span parents to the root span. With no injected trace
+  // context both fields are no-ops and the span path stays inert.
+  const stepMetrics: StartupStepMeasureOptions = {
+    ...buildStartupStepMetrics(
+      executionTarget?.kind === "remote" && executionTarget.transport === "sandbox"
+        ? executionTarget.runner
+        : undefined,
+    ),
+    ...input.spanParent,
+  };
   // The two bridge-start steps intentionally overlap, so their runner counters
   // would double-count each other if we sampled them here. Keep the shared
   // counter attribution on the sequential startup phases only; the concurrent
-  // bridge steps still emit duration telemetry, just not misleading per-step
-  // round-trip/provider deltas.
-  const concurrentBridgeStepMetrics: StartupStepMeasureOptions = {};
+  // bridge steps still emit duration telemetry (and a span), just not
+  // misleading per-step round-trip/provider deltas.
+  const concurrentBridgeStepMetrics: StartupStepMeasureOptions = { ...input.spanParent };
   const shapedWorkspaceEnv = shapePaperclipWorkspaceEnvForExecution({
     workspaceCwd: effectiveWorkspaceCwd,
     workspaceWorktreePath,
@@ -1553,6 +1694,11 @@ async function buildRuntime(input: {
     requestedThinkingEffort,
     fastMode,
     remoteExecutionIdentity,
+    // Referenced-project set + pinned-checkout identity. A change here (a project
+    // added, removed, or re-pinned) invalidates a warm/resumable session so the
+    // next launch stages the current referenced-project trees instead of reusing
+    // a stale staged tree.
+    additionalSourcesIdentity,
     skillsIdentity,
     skillPromptInstructions,
     paperclipClaudeSettings: paperclipClaudeSettings
@@ -1681,6 +1827,7 @@ async function buildRuntime(input: {
           workspaceRemoteDir: sessionCwd,
           timeoutSec,
           assets,
+          additionalSources,
           onLog: input.ctx.onLog,
           onRuntimeProgress: input.ctx.onRuntimeProgress,
         });
@@ -2658,6 +2805,54 @@ function warmHandleMatches(
   return entry !== undefined && entry.runtime === runtime && entry.handle === handle;
 }
 
+/** The stable name of the one root span for a sandbox bring-up. It is a fixed
+ * low-cardinality constant, never derived from run/user data. */
+const STARTUP_ROOT_SPAN_NAME = "sandbox.startup";
+
+/**
+ * Open the one root span for a sandbox bring-up and return its parent-context
+ * token plus a guarded `end`. The span parents every startup boundary span:
+ * the engine forwards `parentContext` to each `measureStartupStep` call. The
+ * `end` closure runs at most once (bring-up complete OR a bring-up failure) and
+ * swallows every tracer error, so observability never changes startup control
+ * flow. With no injected trace context, the tracer is a no-op and the span is
+ * a no-op.
+ */
+function openStartupRootSpan(tracing: StartupTraceContext): {
+  parentContext: StartupSpanContext;
+  end: (failed: boolean) => void;
+} {
+  let span: StartupSpan;
+  try {
+    span = tracing.tracer.startSpan(STARTUP_ROOT_SPAN_NAME);
+  } catch {
+    span = NOOP_STARTUP_SPAN;
+  }
+  let parentContext: StartupSpanContext;
+  try {
+    parentContext = tracing.contextWithSpan(span);
+  } catch {
+    parentContext = undefined;
+  }
+  let ended = false;
+  return {
+    parentContext,
+    end: (failed: boolean) => {
+      if (ended) return;
+      ended = true;
+      try {
+        // `2` is `SpanStatusCode.ERROR`. `adapter-utils` stays OTel-free, so it
+        // uses the numeric value that a real injected span reads as the error
+        // status.
+        if (failed) span.setStatus({ code: 2 });
+        span.end();
+      } catch {
+        // Observability must not change startup control flow.
+      }
+    },
+  };
+}
+
 export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
   const createRuntime = deps.createRuntime ?? createAcpRuntime;
   const now = deps.now ?? (() => Date.now());
@@ -2688,7 +2883,39 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       now,
       idleMs: warmIdleMs,
     });
-    const prepared = await buildRuntime({ ctx, engine, deps });
+    // The `sandbox.startup` span names a sandbox bring-up. It must not cover a
+    // local or SSH run: those runs have no sandbox, so they stay out of sandbox
+    // telemetry. Open the real root span only when the target is a remote
+    // sandbox; every other target forces the no-op trace context, so the whole
+    // startup span path stays inert regardless of the injected context.
+    const startupExecutionTarget = readAdapterExecutionTarget({
+      executionTarget: ctx.executionTarget,
+      legacyRemoteExecution: ctx.executionTransport?.remoteExecution,
+    });
+    const targetsRemoteSandbox =
+      startupExecutionTarget?.kind === "remote" && startupExecutionTarget.transport === "sandbox";
+    // Open the one root span for this bring-up. It spans `buildRuntime` through
+    // `acp.handshake`, so every startup boundary span parents to it. `spanParent`
+    // carries the injected tracer + the root parent-context token into each
+    // `measureStartupStep` call. With no injected trace context the whole path
+    // is a no-op. `endRootSpan` runs exactly once — at bring-up completion or on
+    // a bring-up failure.
+    const tracing =
+      targetsRemoteSandbox && ctx.startupTraceContext
+        ? ctx.startupTraceContext
+        : NOOP_STARTUP_TRACE_CONTEXT;
+    const rootSpan = openStartupRootSpan(tracing);
+    const spanParent: Pick<StartupStepMeasureOptions, "tracer" | "parentContext"> = {
+      tracer: tracing.tracer,
+      parentContext: rootSpan.parentContext,
+    };
+    let prepared: AcpxPreparedRuntime;
+    try {
+      prepared = await buildRuntime({ ctx, engine, deps, spanParent });
+    } catch (err) {
+      rootSpan.end(true);
+      throw err;
+    }
     // State the effective wall-clock timeout and its source up front so a
     // later timeout is diagnosable from the run log alone. Goes to stderr:
     // the acpx stdout log stream carries JSON acpx.* event payloads and must
@@ -2816,6 +3043,8 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         }
       }
     } catch (err) {
+      // Bring-up failed at the handshake — close the root span with error status.
+      rootSpan.end(true);
       const { classified, message } = await emitAcpxFailure({
         ctx,
         prepared,
@@ -2839,6 +3068,8 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
     }
 
     if (!handle) {
+      // Bring-up produced no session handle — close the root span with error status.
+      rootSpan.end(true);
       await discardStagedRuntime({ handles: stagedRuntimes, prepared });
       await cleanupRemoteBridges(prepared);
       return {
@@ -2853,6 +3084,10 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         summary: "ACPX did not return a runtime session handle.",
       };
     }
+    // Bring-up is complete: the session handle is established. Close the root
+    // span here, so it covers `buildRuntime` through `acp.handshake` and no
+    // further. The agent turn runs after and is out of the startup root's scope.
+    rootSpan.end(false);
     const sessionHandle = handle;
     try {
       await applySessionConfigOptions({

@@ -47,7 +47,10 @@ import {
 } from "../services/environment-config.js";
 import { probeEnvironment } from "../services/environment-probe.js";
 import { secretService } from "../services/secrets.js";
-import { listReadyPluginEnvironmentDrivers } from "../services/plugin-environment-driver.js";
+import {
+  listReadyPluginEnvironmentDrivers,
+  type ReadyPluginWorkerRecovery,
+} from "../services/plugin-environment-driver.js";
 import { getConfiguredSecretProvider } from "../secrets/configured-provider.js";
 import { assertBoardOrgAccess, getActorInfo } from "./authz.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
@@ -261,7 +264,10 @@ function assertNoClientPlatformProvisionedMarkers(metadata: unknown): void {
 
 export function environmentRoutes(
   db: Db,
-  options: { pluginWorkerManager?: PluginWorkerManager } = {},
+  options: {
+    pluginWorkerManager?: PluginWorkerManager;
+    recoverMissingPluginWorker?: ReadyPluginWorkerRecovery;
+  } = {},
 ) {
   const router = Router();
   const svc = environmentService(db);
@@ -602,6 +608,7 @@ export function environmentRoutes(
     const pluginDrivers = await listReadyPluginEnvironmentDrivers({
       db,
       workerManager: options.pluginWorkerManager,
+      recoverMissingWorker: options.recoverMissingPluginWorker,
     });
     res.json(getEnvironmentCapabilities(
       AGENT_ADAPTER_TYPES,

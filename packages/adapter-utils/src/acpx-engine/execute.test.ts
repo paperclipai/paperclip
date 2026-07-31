@@ -3,7 +3,7 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { AcpRuntimeOptions } from "acpx/runtime";
-import type { AdapterRuntimeMcpAccess } from "@paperclipai/adapter-utils";
+import type { AdapterExecutionContext, AdapterRuntimeMcpAccess } from "@paperclipai/adapter-utils";
 import {
   DEFAULT_REMOTE_SANDBOX_ADAPTER_TIMEOUT_SEC,
   prepareAdapterExecutionTargetRuntime,
@@ -167,6 +167,7 @@ async function runExecutor(
     executionTarget?: Record<string, unknown>;
     runtimeMcp?: AdapterRuntimeMcpAccess;
     prepareRemoteManagedHome?: AcpxEngineExecutorOptions["prepareRemoteManagedHome"];
+    startupTraceContext?: AdapterExecutionContext["startupTraceContext"];
   } = {},
 ) {
   const runtimeOptions: Record<string, unknown>[] = [];
@@ -201,6 +202,7 @@ async function runExecutor(
       authToken: options.authToken,
       executionTarget: options.executionTarget,
       runtimeMcp: options.runtimeMcp,
+      startupTraceContext: options.startupTraceContext,
       onLog: async (stream: "stdout" | "stderr", text: string) => {
         logs.push({ stream, text });
       },
@@ -215,6 +217,77 @@ async function runExecutor(
   expect(result.exitCode).toBe(0);
   return { logs, meta, events, runtimeOptions, configOptions, sessionInputs, result };
 }
+
+// A recording span, used only in tests. It captures the span name, the parent
+// span (resolved from the explicit parent-context token), the attribute map,
+// the terminal status, and whether the span ended. The engine treats it purely
+// through the structural `StartupSpan` contract.
+interface RecordingSpan {
+  name: string;
+  attributes: Record<string, string | number | boolean>;
+  parent: RecordingSpan | null;
+  status: { code: number } | null;
+  ended: boolean;
+  setAttribute(key: string, value: string | number | boolean): void;
+  setStatus(status: { code: number; message?: string }): void;
+  end(): void;
+}
+
+// Build an in-memory startup trace context that records every span. It models
+// the real OTel parenting contract: `startSpan(name, options, context)` reads
+// the parent from the explicit `context` token that `contextWithSpan` produced,
+// so a test asserts the exact parent of each child without an OTel package or
+// ambient async-context propagation.
+function createRecordingStartupTrace() {
+  const spans: RecordingSpan[] = [];
+  const traceContext = {
+    tracer: {
+      startSpan(
+        name: string,
+        options?: { attributes?: Record<string, string | number | boolean> },
+        context?: unknown,
+      ) {
+        const parent =
+          context && typeof context === "object" && "span" in context
+            ? ((context as { span: RecordingSpan }).span ?? null)
+            : null;
+        const span: RecordingSpan = {
+          name,
+          attributes: { ...(options?.attributes ?? {}) },
+          parent,
+          status: null,
+          ended: false,
+          setAttribute(key: string, value: string | number | boolean) {
+            span.attributes[key] = value;
+          },
+          setStatus(status: { code: number }) {
+            span.status = { code: status.code };
+          },
+          end() {
+            span.ended = true;
+          },
+        };
+        spans.push(span);
+        return span;
+      },
+    },
+    contextWithSpan(span: unknown) {
+      return { span };
+    },
+  } satisfies AdapterExecutionContext["startupTraceContext"];
+  return { traceContext, spans };
+}
+
+// The closed span-attribute allowlist for a sandbox-start span (Phase 2 + 3).
+// A test asserts every recorded attribute key is in this set, so a command,
+// path, id, or error-text key can never ride a span.
+const ALLOWED_STARTUP_SPAN_ATTRIBUTE_KEYS = new Set([
+  "step",
+  "provider",
+  "roundTrips",
+  "providerExecMs",
+  "providerGetMs",
+]);
 
 describe("shared ACPX engine runtime behavior", () => {
   it("sets Codex model, effort, and fast mode through CODEX_CONFIG without session config calls", async () => {
@@ -796,6 +869,155 @@ describe("shared ACPX engine runtime behavior", () => {
 
     expect(fp(withKey)).toBeDefined();
     expect(fp(rotatedKey)).not.toBe(fp(withKey));
+  });
+
+  it("busts the session fingerprint when the referenced-project set or pinned checkout changes", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const cwd = path.join(root, "workspace");
+    const baseConfig = { agentCommand: "node ./fake-acp.js", stateDir };
+
+    // A compatible resume reuses the already-staged referenced-project trees, so
+    // the fingerprint must fold in the referenced-project set. Otherwise a resume
+    // reuses a stale tree after the set or a project's pinned checkout changes.
+    const withReferenced = (additional: unknown[]) => ({
+      context: {
+        taskId: "issue-1",
+        wakeReason: "issue_assigned",
+        paperclipWorkspace: { cwd, realization: { additional } },
+      },
+    });
+    const projectA = {
+      path: "/host/project-a",
+      projectId: "a",
+      projectWorkspaceId: "ws-a",
+      repoUrl: "https://example.test/a.git",
+      repoRef: "ref-a-1",
+    };
+    const projectB = {
+      path: "/host/project-b",
+      projectId: "b",
+      projectWorkspaceId: "ws-b",
+      repoUrl: "https://example.test/b.git",
+      repoRef: "ref-b-1",
+    };
+
+    const one = await runExecutor(baseConfig, withReferenced([projectA]));
+    const two = await runExecutor(baseConfig, withReferenced([projectA, projectB]));
+    const reordered = await runExecutor(baseConfig, withReferenced([projectB, projectA]));
+    const repointed = await runExecutor(
+      baseConfig,
+      withReferenced([projectA, { ...projectB, repoRef: "ref-b-2" }]),
+    );
+
+    const fp = (r: { result: { sessionParams?: unknown } }) =>
+      (r.result.sessionParams as { configFingerprint?: string } | undefined)?.configFingerprint;
+
+    // Adding a referenced project changes the set identity, so the fingerprint
+    // busts and the next launch stages the current set.
+    expect(fp(one)).toBeDefined();
+    expect(fp(two)).not.toBe(fp(one));
+    // The identity depends on the set, not the order the records arrive in.
+    expect(fp(reordered)).toBe(fp(two));
+    // Re-pinning one project's checkout ref busts the fingerprint, so the resume
+    // re-stages instead of reusing a stale tree.
+    expect(fp(repointed)).not.toBe(fp(two));
+  });
+
+  it("busts the session fingerprint when referenced-project files change at the same host path", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const cwd = path.join(root, "workspace");
+    const projectDir = path.join(root, "project-a");
+    await fs.mkdir(path.join(projectDir, "src"), { recursive: true });
+    await fs.writeFile(path.join(projectDir, "src", "index.ts"), "export const value = 1;\n");
+    const baseConfig = { agentCommand: "node ./fake-acp.js", stateDir };
+
+    // Same host path and same metadata across runs. Only the file bytes change,
+    // which mirrors a branch that moved or a re-checkout in place. The metadata
+    // identity stays constant, so without the content signature a compatible
+    // resume would reuse a stale staged tree.
+    const referencedProject = {
+      path: projectDir,
+      projectId: "a",
+      projectWorkspaceId: "ws-a",
+      repoUrl: "https://example.test/a.git",
+      repoRef: "main",
+    };
+    const withProject = () => ({
+      context: {
+        taskId: "issue-1",
+        wakeReason: "issue_assigned",
+        paperclipWorkspace: { cwd, realization: { additional: [referencedProject] } },
+      },
+    });
+    const fp = (r: { result: { sessionParams?: unknown } }) =>
+      (r.result.sessionParams as { configFingerprint?: string } | undefined)?.configFingerprint;
+
+    const before = await runExecutor(baseConfig, withProject());
+    // Change the tree content and its size while the host path and metadata stay
+    // identical.
+    await fs.writeFile(path.join(projectDir, "src", "index.ts"), "export const value = 2; // changed\n");
+    const afterEdit = await runExecutor(baseConfig, withProject());
+    // Add a new file to the tree.
+    await fs.writeFile(path.join(projectDir, "src", "extra.ts"), "export const extra = true;\n");
+    const afterAdd = await runExecutor(baseConfig, withProject());
+
+    expect(fp(before)).toBeDefined();
+    // A content-only edit busts the fingerprint, so the resume re-stages.
+    expect(fp(afterEdit)).not.toBe(fp(before));
+    // A new file in the tree busts the fingerprint too.
+    expect(fp(afterAdd)).not.toBe(fp(afterEdit));
+  });
+
+  it("busts the session fingerprint when referenced-project bytes change but size and mtime stay equal", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const cwd = path.join(root, "workspace");
+    const projectDir = path.join(root, "project-a");
+    const filePath = path.join(projectDir, "src", "index.ts");
+    await fs.mkdir(path.join(projectDir, "src"), { recursive: true });
+    // The two contents have the same byte length, so a stat-only signature (size
+    // and modification time) would collide once the modification time also matches.
+    const firstContent = "export const value = 1;\n";
+    const secondContent = "export const value = 2;\n";
+    expect(secondContent.length).toBe(firstContent.length);
+    await fs.writeFile(filePath, firstContent);
+
+    // A re-checkout can restore the same modification time, so pin it explicitly
+    // and reapply it after the edit. Only the file bytes change between runs.
+    const pinnedTime = new Date("2026-01-01T00:00:00.000Z");
+    await fs.utimes(filePath, pinnedTime, pinnedTime);
+
+    const referencedProject = {
+      path: projectDir,
+      projectId: "a",
+      projectWorkspaceId: "ws-a",
+      repoUrl: "https://example.test/a.git",
+      repoRef: "main",
+    };
+    const withProject = () => ({
+      context: {
+        taskId: "issue-1",
+        wakeReason: "issue_assigned",
+        paperclipWorkspace: { cwd, realization: { additional: [referencedProject] } },
+      },
+    });
+    const fp = (r: { result: { sessionParams?: unknown } }) =>
+      (r.result.sessionParams as { configFingerprint?: string } | undefined)?.configFingerprint;
+
+    const baseConfig = { agentCommand: "node ./fake-acp.js", stateDir };
+    const before = await runExecutor(baseConfig, withProject());
+    // Replace the bytes with an equal-length string and restore the same
+    // modification time, so path, size, and mtime all stay identical across the two runs.
+    await fs.writeFile(filePath, secondContent);
+    await fs.utimes(filePath, pinnedTime, pinnedTime);
+    const after = await runExecutor(baseConfig, withProject());
+
+    expect(fp(before)).toBeDefined();
+    // The content signature reads bytes, so an equal-size, equal-mtime edit busts
+    // the fingerprint and the resume re-stages instead of reusing a stale tree.
+    expect(fp(after)).not.toBe(fp(before));
   });
 
   it("shapes ACPX session env for remote execution identities", async () => {
@@ -2777,6 +2999,226 @@ describe("ACPX engine remote session-lifecycle re-staging (PR 3: stage once / re
     expect(resultB.exitCode).toBe(0);
     expect(events).toContain("enter:run-b");
     expect(events).toContain("exit:run-b");
+  });
+});
+
+describe("ACPX engine sandbox-start spans (opt-in root + child parenting)", () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+  });
+
+  async function remoteSandboxTarget(root: string) {
+    const remoteCwd = path.join(root, "remote-workspace");
+    await fs.mkdir(remoteCwd, { recursive: true });
+    return {
+      kind: "remote",
+      transport: "sandbox",
+      // A plugin-backed key (not a built-in family). It must never ride a span
+      // as a raw attribute.
+      providerKey: "fake-plugin",
+      remoteCwd,
+      runner: createLocalSandboxRunner(),
+    };
+  }
+
+  it("emits one root span with a child span per bring-up boundary, each parented to the root", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const localCwd = path.join(root, "worktree");
+    const codexHome = path.join(root, "codex-home");
+    await fs.mkdir(localCwd, { recursive: true });
+    await fs.mkdir(codexHome, { recursive: true });
+    const executionTarget = await remoteSandboxTarget(root);
+    const { traceContext, spans } = createRecordingStartupTrace();
+
+    await runExecutor(
+      {
+        agent: "codex",
+        agentCommand: "node ./fake-acp.js",
+        stateDir,
+        cwd: localCwd,
+        env: { CODEX_HOME: codexHome },
+      },
+      { authToken: "real-run-jwt", executionTarget, startupTraceContext: traceContext },
+    );
+
+    // Exactly one root span, and it is the bring-up root.
+    const roots = spans.filter((span) => span.parent === null);
+    expect(roots).toHaveLength(1);
+    const rootSpan = roots[0]!;
+    expect(rootSpan.name).toBe("sandbox.startup");
+    expect(rootSpan.ended).toBe(true);
+
+    // A codex bring-up over the remote sandbox lane crosses all 7 boundaries.
+    const childNames = spans.filter((span) => span !== rootSpan).map((span) => span.name).sort();
+    expect(childNames).toEqual(
+      [
+        "acp.handshake",
+        "bridge.paperclip",
+        "bridge.process-session",
+        "codex-home.seed",
+        "skills.reconcile",
+        "stage.sync",
+        "workspace.resolve",
+      ],
+    );
+
+    // Every child parents to the one root and ends.
+    for (const span of spans) {
+      if (span === rootSpan) continue;
+      expect(span.parent, `span "${span.name}" must parent to the root`).toBe(rootSpan);
+      expect(span.ended, `span "${span.name}" must end`).toBe(true);
+    }
+  });
+
+  it("parents both concurrent bridge spans to the root (neither orphans)", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const localCwd = path.join(root, "worktree");
+    await fs.mkdir(localCwd, { recursive: true });
+    const executionTarget = await remoteSandboxTarget(root);
+    const { traceContext, spans } = createRecordingStartupTrace();
+
+    await runExecutor(
+      { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir, cwd: localCwd },
+      { authToken: "real-run-jwt", executionTarget, startupTraceContext: traceContext },
+    );
+
+    const rootSpan = spans.find((span) => span.name === "sandbox.startup" && span.parent === null);
+    expect(rootSpan).toBeTruthy();
+    const paperclip = spans.find((span) => span.name === "bridge.paperclip");
+    const processSession = spans.find((span) => span.name === "bridge.process-session");
+    expect(paperclip?.parent).toBe(rootSpan);
+    expect(processSession?.parent).toBe(rootSpan);
+  });
+
+  it("keeps every span attribute inside the closed allowlist (no command/path/id keys)", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const localCwd = path.join(root, "worktree");
+    await fs.mkdir(localCwd, { recursive: true });
+    const executionTarget = await remoteSandboxTarget(root);
+    const { traceContext, spans } = createRecordingStartupTrace();
+
+    await runExecutor(
+      { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir, cwd: localCwd },
+      { authToken: "real-run-jwt", executionTarget, startupTraceContext: traceContext },
+    );
+
+    expect(spans.length).toBeGreaterThan(0);
+    for (const span of spans) {
+      for (const [key, value] of Object.entries(span.attributes)) {
+        expect(
+          ALLOWED_STARTUP_SPAN_ATTRIBUTE_KEYS.has(key),
+          `span "${span.name}" set a non-allowlisted attribute "${key}"`,
+        ).toBe(true);
+        // No non-finite numeric attribute (no NaN, no Infinity).
+        if (typeof value === "number") {
+          expect(Number.isFinite(value), `attribute "${key}" must be finite`).toBe(true);
+        }
+      }
+    }
+  });
+
+  it("closes the root span with error status when the bring-up handshake fails", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const localCwd = path.join(root, "worktree");
+    await fs.mkdir(localCwd, { recursive: true });
+    const executionTarget = await remoteSandboxTarget(root);
+    const { traceContext, spans } = createRecordingStartupTrace();
+
+    const execute = createAcpxEngineExecutor({
+      createRuntime: () =>
+        ({
+          ensureSession: async () => {
+            throw new Error("handshake boom");
+          },
+          startTurn: () => ({
+            events: (async function* () {})(),
+            result: Promise.resolve({ status: "failed" }),
+            cancel: async () => {},
+          }),
+          setConfigOption: async () => {},
+          close: async () => {},
+        }) as never,
+    });
+
+    const result = await execute({
+      runId: "run-handshake-fail",
+      agent: { id: "agent-1", companyId: "company-1" },
+      runtime: {},
+      config: { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir, cwd: localCwd },
+      context: {},
+      authToken: "real-run-jwt",
+      executionTarget,
+      startupTraceContext: traceContext,
+      onLog: async () => {},
+      onMeta: async () => {},
+      onEvent: async () => {},
+    } as never);
+
+    expect(result.exitCode).toBe(1);
+    const rootSpan = spans.find((span) => span.name === "sandbox.startup" && span.parent === null);
+    expect(rootSpan).toBeTruthy();
+    expect(rootSpan!.ended).toBe(true);
+    // `2` is `SpanStatusCode.ERROR`.
+    expect(rootSpan!.status?.code).toBe(2);
+  });
+
+  it("opens no span and does not throw when no trace context is injected", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const localCwd = path.join(root, "worktree");
+    await fs.mkdir(localCwd, { recursive: true });
+    const executionTarget = await remoteSandboxTarget(root);
+
+    // runExecutor asserts exitCode 0 internally; the run must complete with no
+    // injected trace context (the default no-op path).
+    const { result } = await runExecutor(
+      { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir, cwd: localCwd },
+      { authToken: "real-run-jwt", executionTarget },
+    );
+    expect(result.exitCode).toBe(0);
+  });
+
+  it("opens no span for a local run, even when a trace context is injected", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const localCwd = path.join(root, "worktree");
+    await fs.mkdir(localCwd, { recursive: true });
+    const { traceContext, spans } = createRecordingStartupTrace();
+
+    // A local run has no execution target. The `sandbox.startup` span names a
+    // sandbox bring-up, so a local run must stay out of sandbox telemetry.
+    const { result } = await runExecutor(
+      { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir, cwd: localCwd },
+      { authToken: "real-run-jwt", startupTraceContext: traceContext },
+    );
+    expect(result.exitCode).toBe(0);
+    expect(spans).toHaveLength(0);
+  });
+
+  it("opens no span for an SSH run, even when a trace context is injected", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const localCwd = path.join(root, "worktree");
+    const remoteCwd = path.join(root, "remote-workspace");
+    await fs.mkdir(localCwd, { recursive: true });
+    const { traceContext, spans } = createRecordingStartupTrace();
+
+    // An SSH run is remote but is not a sandbox, so it also stays out of sandbox
+    // telemetry.
+    const { result } = await runExecutor(
+      { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir, cwd: localCwd },
+      {
+        authToken: "real-run-jwt",
+        executionTarget: { kind: "remote", transport: "ssh", remoteCwd },
+        startupTraceContext: traceContext,
+      },
+    );
+    expect(result.exitCode).toBe(0);
+    expect(spans).toHaveLength(0);
   });
 });
 

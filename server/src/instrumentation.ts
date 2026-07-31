@@ -26,10 +26,145 @@
 // exit via `shutdownInstrumentation()`, which index.ts awaits in its signal
 // handler before `process.exit`.
 
+import { createRequire } from "node:module";
+
 const endpoint = process.env.OTEL_EXPORTER_OTLP_ENDPOINT;
 
 let sdkShutdown: (() => Promise<void>) | null = null;
 let shutdownPromise: Promise<void> | null = null;
+
+/**
+ * A minimal, structural span/tracer surface. It is the subset of the
+ * `@opentelemetry/api` `Span` / `Tracer` shape that the startup timing seam
+ * calls. A real OTel tracer satisfies it. The no-op fallback below implements
+ * it too, so the caller never needs a null check.
+ */
+interface StartupTracerHandle {
+  startSpan(
+    name: string,
+    options?: unknown,
+  ): {
+    setAttribute(key: string, value: unknown): void;
+    setStatus(status: { code: number; message?: string }): void;
+    end(): void;
+  };
+}
+
+const NOOP_SPAN = {
+  setAttribute() {},
+  setStatus() {},
+  end() {},
+};
+
+/**
+ * The no-op tracer returned when `@opentelemetry/api` is absent or a lookup
+ * fails. It opens a span that does nothing, so startup tracing stays a no-op
+ * without an installed OTel package.
+ */
+const NOOP_TRACER: StartupTracerHandle = {
+  startSpan: () => NOOP_SPAN,
+};
+
+let tracerApiLoadFailed = false;
+
+/**
+ * Return a startup tracer. When `@opentelemetry/api` is installed, it returns
+ * `trace.getTracer(name)`. The `api` package itself returns a no-op tracer
+ * while no SDK is registered, so an unset endpoint still yields a safe no-op
+ * without loading any OTel SDK package. The api package loads lazily through
+ * `require`, so the module graph stays OTel-free until the first call. The
+ * accessor never throws: a load or lookup failure logs once and returns the
+ * local no-op tracer (fail open).
+ */
+export function getStartupTracer(name = "paperclip.startup"): StartupTracerHandle {
+  try {
+    const require = createRequire(import.meta.url);
+    const api = require("@opentelemetry/api") as {
+      trace?: { getTracer(n: string): StartupTracerHandle };
+    };
+    const tracer = api.trace?.getTracer(name);
+    return tracer ?? NOOP_TRACER;
+  } catch (err) {
+    if (!tracerApiLoadFailed) {
+      tracerApiLoadFailed = true;
+      // eslint-disable-next-line no-console
+      console.warn(
+        "[paperclip] @opentelemetry/api is not available; startup tracing uses a no-op tracer.",
+        err,
+      );
+    }
+    return NOOP_TRACER;
+  }
+}
+
+/**
+ * The injected tracer plus the one context helper the ACPX engine needs. The
+ * engine opens a root span, then builds a parent-context token from it through
+ * `contextWithSpan`, and forwards that token to each child span. The token
+ * comes from `trace.setSpan(context.active(), span)`, so the engine never
+ * imports `@opentelemetry/api`.
+ */
+export interface StartupTraceContextHandle {
+  readonly tracer: StartupTracerHandle;
+  contextWithSpan(span: unknown): unknown;
+}
+
+/**
+ * The no-op trace context returned when `@opentelemetry/api` is absent or a
+ * lookup fails. Its tracer is a no-op and it produces no parent token, so
+ * startup tracing stays a no-op without an installed OTel package.
+ */
+const NOOP_TRACE_CONTEXT: StartupTraceContextHandle = {
+  tracer: NOOP_TRACER,
+  contextWithSpan: () => undefined,
+};
+
+let traceContextApiLoadFailed = false;
+
+/**
+ * Return a startup trace context (tracer + root parent-context helper). When
+ * `@opentelemetry/api` is installed, the tracer is `trace.getTracer(name)` and
+ * `contextWithSpan(span)` returns `trace.setSpan(context.active(), span)`. The
+ * `api` package returns a no-op tracer while no SDK is registered, so an unset
+ * endpoint still yields a safe no-op. The `api` package loads lazily through
+ * `require`, so the module graph stays OTel-free until the first call. The
+ * accessor never throws: a load or lookup failure logs once and returns the
+ * local no-op trace context (fail open).
+ */
+export function getStartupTraceContext(name = "paperclip.startup"): StartupTraceContextHandle {
+  try {
+    const require = createRequire(import.meta.url);
+    const api = require("@opentelemetry/api") as {
+      trace?: {
+        getTracer(n: string): StartupTracerHandle;
+        setSpan(context: unknown, span: unknown): unknown;
+      };
+      context?: { active(): unknown };
+    };
+    const trace = api.trace;
+    const context = api.context;
+    if (!trace?.getTracer || !trace.setSpan || !context?.active) {
+      return NOOP_TRACE_CONTEXT;
+    }
+    const tracer = trace.getTracer(name);
+    return {
+      tracer,
+      // Keep the method calls on `trace` / `context` so the api singletons stay
+      // their own receiver.
+      contextWithSpan: (span: unknown) => trace.setSpan(context.active(), span),
+    };
+  } catch (err) {
+    if (!traceContextApiLoadFailed) {
+      traceContextApiLoadFailed = true;
+      // eslint-disable-next-line no-console
+      console.warn(
+        "[paperclip] @opentelemetry/api is not available; startup tracing uses a no-op trace context.",
+        err,
+      );
+    }
+    return NOOP_TRACE_CONTEXT;
+  }
+}
 
 /**
  * Resolves once the OTel SDK has started (or once bootstrap has failed and

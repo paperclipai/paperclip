@@ -4843,6 +4843,94 @@ describeEmbeddedPostgres("issueService.findMentionedProjectIds", () => {
       commentProjectId,
     ]);
   });
+
+  it("returns multiple same-company mentions in order, deduped", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    const firstProjectId = randomUUID();
+    const secondProjectId = randomUUID();
+    const thirdProjectId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(projects).values([
+      { id: firstProjectId, companyId, name: "First project", status: "in_progress" },
+      { id: secondProjectId, companyId, name: "Second project", status: "in_progress" },
+      { id: thirdProjectId, companyId, name: "Third project", status: "in_progress" },
+    ]);
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title:
+        `See [First](${buildProjectMentionHref(firstProjectId)}) and ` +
+        `[Second](${buildProjectMentionHref(secondProjectId)})`,
+      description: null,
+      status: "todo",
+      priority: "medium",
+    });
+
+    await db.insert(issueComments).values({
+      companyId,
+      issueId,
+      // Repeats the first mention (deduped) and introduces a third.
+      body:
+        `Also [First again](${buildProjectMentionHref(firstProjectId)}) and ` +
+        `[Third](${buildProjectMentionHref(thirdProjectId)})`,
+    });
+
+    expect(await svc.findMentionedProjectIds(issueId)).toEqual([
+      firstProjectId,
+      secondProjectId,
+      thirdProjectId,
+    ]);
+  });
+
+  it("filters out a mention from another company", async () => {
+    const companyId = randomUUID();
+    const foreignCompanyId = randomUUID();
+    const issueId = randomUUID();
+    const sameCompanyProjectId = randomUUID();
+    const foreignProjectId = randomUUID();
+
+    await db.insert(companies).values([
+      {
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      },
+      {
+        id: foreignCompanyId,
+        name: "Other company",
+        issuePrefix: `F${foreignCompanyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      },
+    ]);
+
+    await db.insert(projects).values([
+      { id: sameCompanyProjectId, companyId, name: "Same-company project", status: "in_progress" },
+      { id: foreignProjectId, companyId: foreignCompanyId, name: "Foreign project", status: "in_progress" },
+    ]);
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title:
+        `Ours [Same](${buildProjectMentionHref(sameCompanyProjectId)}) and ` +
+        `theirs [Foreign](${buildProjectMentionHref(foreignProjectId)})`,
+      description: null,
+      status: "todo",
+      priority: "medium",
+    });
+
+    expect(await svc.findMentionedProjectIds(issueId)).toEqual([sameCompanyProjectId]);
+  });
 });
 
 describeEmbeddedPostgres("issueService.clearExecutionRunIfTerminal", () => {

@@ -188,11 +188,6 @@ export interface EnvironmentDriverExecuteInput extends EnvironmentDriverLeaseInp
   env?: Record<string, string>;
   stdin?: string;
   timeoutMs?: number;
-  /**
-   * Skip login-shell profile sourcing for commands that already
-   * resolve on the sandbox default PATH.
-   */
-  noProfile?: boolean;
 }
 
 export interface EnvironmentDriverSyncInput extends EnvironmentDriverLeaseInput {
@@ -1283,7 +1278,6 @@ function createSandboxEnvironmentDriver(
             env: input.env,
             stdin: input.stdin,
             timeoutMs: input.timeoutMs,
-            noProfile: input.noProfile === true,
           }, resolvePluginExecuteRpcTimeoutMs({
             requestedTimeoutMs: input.timeoutMs,
             config: sanitizedConfig,
@@ -1744,7 +1738,6 @@ function createPluginEnvironmentDriver(
           env: input.env,
           stdin: input.stdin,
           timeoutMs: input.timeoutMs,
-          noProfile: input.noProfile === true,
         },
       });
     },

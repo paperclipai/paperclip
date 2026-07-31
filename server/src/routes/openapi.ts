@@ -110,6 +110,8 @@ import {
   companySkillImportSchema,
   companySkillProjectScanRequestSchema,
   companySkillProjectScanResultSchema,
+  companySkillRenameResultSchema,
+  companySkillRenameSchema,
   companySkillTestInputCreateSchema,
   companySkillTestInputUpdateSchema,
   companySkillTestRunCreateSchema,
@@ -521,6 +523,40 @@ const jsonBody = (schema: z.ZodTypeAny) => ({
   required: true as const,
 });
 
+// The company import + preview routes accept the inline JSON body or the raw
+// company package as a compressed zip upload. Document both content types: the
+// JSON variant keeps its zod schema; the multipart variant carries the zip in a
+// `package` file field plus the other import fields as a JSON `meta` field.
+const importRequestBody = (schema: z.ZodTypeAny) => ({
+  content: {
+    "application/json": { schema },
+    "multipart/form-data": {
+      schema: {
+        type: "object",
+        properties: {
+          package: {
+            type: "string",
+            format: "binary",
+            description: "The company package as a compressed .zip.",
+          },
+          meta: {
+            type: "string",
+            description:
+              "JSON-encoded import fields (include, target, collisionStrategy, and, for " +
+              "the apply route, nameOverrides / selectedFiles / adapterOverrides / " +
+              "pauseAutomations). A `source` here is ignored — the source is the zip.",
+          },
+        },
+        required: ["package"],
+      },
+    },
+    "application/zip": {
+      schema: { type: "string", format: "binary" },
+    },
+  },
+  required: true as const,
+});
+
 const r = responses;
 
 const externalObjectSummariesBodySchema = z.object({
@@ -704,7 +740,6 @@ const PUBLIC_OPERATIONS = new Set([
 const BOARD_ONLY_PREFIXES = [
   "/api/auth/",
   "/api/admin/",
-  "/api/cloud-upstreams",
   "/api/plugins",
   "/api/instance/",
 ];
@@ -714,6 +749,7 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "POST /api/companies",
   "GET /api/companies/stats",
   "GET /api/companies/issues",
+  "GET /api/companies/import/jobs/{jobId}",
   "POST /api/board-claim/{token}/claim",
   "GET /api/cli-auth/me",
   "POST /api/companies/{companyId}/invites",
@@ -4053,6 +4089,26 @@ registry.registerPath({
 
 registry.registerPath({
   method: "post",
+  path: "/api/companies/{companyId}/skills/{skillId}/rename",
+  tags: ["skills"],
+  summary: "Rename a managed company skill",
+  request: {
+    params: z.object({ companyId: z.string(), skillId: z.string() }),
+    body: jsonBody(companySkillRenameSchema),
+  },
+  responses: {
+    200: r.ok(companySkillRenameResultSchema),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+    422: r.unprocessable,
+  },
+});
+
+registry.registerPath({
+  method: "post",
   path: "/api/companies/{companyId}/skills",
   tags: ["skills"],
   summary: "Create a company skill",
@@ -5204,12 +5260,28 @@ registry.registerPath({
 });
 
 registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/export/fidelity",
+  tags: ["companies"],
+  summary: "Report company data that an export bundle does not include",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
   method: "post",
   path: "/api/companies/import/preview",
   tags: ["companies"],
   summary: "Preview a company import (legacy route)",
-  request: { body: jsonBody(companyPortabilityPreviewSchema) },
-  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+  description:
+    "Accepts either the inline JSON body (`application/json`) or the raw company " +
+    "package uploaded as a compressed zip (`multipart/form-data` with a `package` " +
+    "file field plus a JSON `meta` field carrying the other import fields, or a bare " +
+    "`application/zip` body with the `meta` JSON in the `meta` query parameter). The " +
+    "zip is unzipped server-side into the same `{ source: { type: \"inline\", ... } }` " +
+    "bundle the JSON body carries.",
+  request: { body: importRequestBody(companyPortabilityPreviewSchema) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 422: r.unprocessable },
 });
 
 registry.registerPath({
@@ -5217,8 +5289,30 @@ registry.registerPath({
   path: "/api/companies/import",
   tags: ["companies"],
   summary: "Apply a company import (legacy route)",
-  request: { body: jsonBody(companyPortabilityImportSchema) },
-  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+  description:
+    "Accepts either the inline JSON body (`application/json`) or the raw company package " +
+    "uploaded as a compressed zip (`multipart/form-data` with a `package` file field plus a " +
+    "JSON `meta` field, or a bare `application/zip` body with the `meta` JSON in the `meta` " +
+    "query parameter); the zip is unzipped server-side into the same import bundle. " +
+    "Callers can opt into asynchronous processing: trusted Cloud tenants set the " +
+    "`x-paperclip-cloud-async-import: 1` header (browsers cannot — the Cloud harness proxy " +
+    "strips inbound `x-paperclip-cloud-*` headers), while board sessions use the proxy-safe " +
+    "`?async=1` query parameter. Either way the server responds 202 with a job id and status " +
+    "URL instead of holding the connection open for the whole import. While a board actor " +
+    "already has an async job running, a resubmit returns 409 carrying the running job's id " +
+    "and status URL. Jobs are held in memory and are lost on restart.",
+  request: {
+    query: z.object({ async: z.enum(["1"]).optional() }),
+    body: importRequestBody(companyPortabilityImportSchema),
+  },
+  responses: {
+    200: r.ok(),
+    202: { description: "Async import job accepted" },
+    400: r.badRequest,
+    401: r.unauthorized,
+    409: { description: "An async import job is already running for this actor" },
+    422: r.unprocessable,
+  },
 });
 
 // ─── Board claim & CLI auth ───────────────────────────────────────────────────
@@ -5465,8 +5559,21 @@ registerCurrentRoute({
   summary: "Revoke a board API key",
 });
 
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/import/jobs/{jobId}",
+  tags: ["companies"],
+  summary: "Get company import job status",
+  description:
+    "A job is readable only by the actor that created it — the board user or the trusted Cloud " +
+    "tenant identity from the async import submission. Any other caller gets the same 404 as an " +
+    "unknown id. Jobs are held in memory: they are dropped a few minutes after finishing and do " +
+    "not survive a server restart.",
+  request: { params: z.object({ jobId: z.string() }) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound },
+});
+
 for (const route of [
-  ["get", "/api/companies/import/jobs/{jobId}", "Get company import job status"],
   ["get", "/api/companies/{companyId}/search", "Search company data"],
   ["get", "/api/companies/{companyId}/search/extract", "Extract company search matches"],
   ["get", "/api/companies/{companyId}/issues/count", "Count issues in a company"],
@@ -5562,93 +5669,6 @@ for (const route of [
     ...(route[0] === "put" ? { body: updateResourceMembershipSchema } : {}),
   });
 }
-
-const cloudCompanyQuerySchema = z.object({
-  companyId: z.string().min(1),
-});
-const cloudCompanyBodySchema = z.object({
-  companyId: z.string().min(1),
-});
-const cloudConnectStartSchema = z.object({
-  companyId: z.string().min(1),
-  remoteUrl: z.string().min(1),
-  redirectUri: z.string().min(1),
-});
-const cloudConnectFinishSchema = z.object({
-  pendingConnectionId: z.string().min(1),
-  code: z.string().min(1),
-  state: z.string().min(1),
-});
-const cloudPushRunSchema = cloudCompanyBodySchema.extend({
-  retryOfRunId: z.string().optional(),
-});
-const cloudPushRunActivationSchema = cloudCompanyBodySchema.extend({
-  entityType: z.enum(["agents", "routines", "monitors"]),
-});
-
-registerCurrentRoute({
-  method: "get",
-  path: "/api/cloud-upstreams",
-  tags: ["cloud-upstreams"],
-  summary: "List cloud upstream connections",
-  query: cloudCompanyQuerySchema,
-});
-
-registerCurrentRoute({
-  method: "post",
-  path: "/api/cloud-upstreams/connect/start",
-  tags: ["cloud-upstreams"],
-  summary: "Start a cloud upstream connection",
-  body: cloudConnectStartSchema,
-});
-
-registerCurrentRoute({
-  method: "post",
-  path: "/api/cloud-upstreams/connect/finish",
-  tags: ["cloud-upstreams"],
-  summary: "Finish a cloud upstream connection",
-  body: cloudConnectFinishSchema,
-});
-
-registerCurrentRoute({
-  method: "post",
-  path: "/api/cloud-upstreams/{connectionId}/push-runs/preview",
-  tags: ["cloud-upstreams"],
-  summary: "Preview a cloud upstream push run",
-  body: cloudCompanyBodySchema,
-});
-
-registerCurrentRoute({
-  method: "post",
-  path: "/api/cloud-upstreams/{connectionId}/push-runs",
-  tags: ["cloud-upstreams"],
-  summary: "Create a cloud upstream push run",
-  body: cloudPushRunSchema,
-});
-
-registerCurrentRoute({
-  method: "get",
-  path: "/api/cloud-upstreams/{connectionId}/push-runs/{runId}",
-  tags: ["cloud-upstreams"],
-  summary: "Get a cloud upstream push run",
-  query: cloudCompanyQuerySchema,
-});
-
-registerCurrentRoute({
-  method: "post",
-  path: "/api/cloud-upstreams/{connectionId}/push-runs/{runId}/cancel",
-  tags: ["cloud-upstreams"],
-  summary: "Cancel a cloud upstream push run",
-  body: cloudCompanyBodySchema,
-});
-
-registerCurrentRoute({
-  method: "post",
-  path: "/api/cloud-upstreams/{connectionId}/push-runs/{runId}/activation",
-  tags: ["cloud-upstreams"],
-  summary: "Activate cloud upstream push run entities",
-  body: cloudPushRunActivationSchema,
-});
 
 for (const route of [
   ["get", "/api/companies/{companyId}/secret-providers/health", "Check configured secret providers"],
