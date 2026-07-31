@@ -702,6 +702,7 @@ export async function resolveExecutionRunAdapterConfig(input: {
   responsibleUserId?: string | null;
   environmentId?: string | null;
   environmentEnv?: unknown;
+  environmentDriver?: string | null;
   projectId?: string | null;
   routineId?: string | null;
   executionRunConfig: Record<string, unknown>;
@@ -976,7 +977,13 @@ export async function resolveExecutionRunAdapterConfig(input: {
   // resolution so a per-agent OPENAI_API_KEY (plain or resolved secret) counts
   // as satisfying the credential. It shares the exact readiness predicate the
   // adapter uses at execute time, so the two cannot drift.
-  if ((input.adapterType ?? null) === "codex_local") {
+  //
+  // Sandbox-destined runs are exempt: the sandbox image may carry its own
+  // Codex login (`~/.codex/auth.json` baked in at image setup), which only the
+  // adapter can probe once the sandbox is up — and on managed cloud hosts a
+  // host-side login never exists at all. The adapter's execute-time gate
+  // remains the authority there; it probes the sandbox before failing.
+  if ((input.adapterType ?? null) === "codex_local" && (input.environmentDriver ?? null) !== "sandbox") {
     const resolvedEnv = parseObject(resolvedConfig.env);
     const readiness = await evaluateCodexCredentialReadiness({
       env: process.env,
@@ -13173,6 +13180,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       heartbeatRunId: run.id,
       environmentId: selectedEnvironmentForConfig?.id ?? null,
       environmentEnv: selectedEnvironmentForConfig?.envVars ?? null,
+      environmentDriver: selectedEnvironmentForConfig?.driver ?? null,
       projectId: projectContext?.id ?? null,
       routineId: routineEnvContext.routineId,
       responsibleUserId,

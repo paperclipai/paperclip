@@ -317,6 +317,66 @@ async function sandboxCodexAuthJsonExists(input: {
   }
 }
 
+/**
+ * Execute-time credential gate. A managed home with no host-side credentials
+ * is still launchable when the run targets a sandbox whose image carries its
+ * own Codex login (`~/.codex/auth.json` baked in during image setup): the
+ * inbound auth merge ships the credential-less host home and keeps the
+ * sandbox's credential, so the host is not a required credential source —
+ * on managed cloud hosts a local Codex login never exists at all. The
+ * sandbox is probed before the run is declared unlaunchable; non-sandbox
+ * targets keep the strict host-side requirement.
+ */
+export async function assertCodexCredentialsLaunchable(input: {
+  runId: string;
+  companyId: string;
+  configuredCodexHome: string | null;
+  configuredApiKey: string | null;
+  effectiveCodexHome: string;
+  target: MaybeResolvedExecutionTarget;
+  cwd: string;
+  env?: NodeJS.ProcessEnv;
+  onLog: AdapterExecutionContext["onLog"];
+}): Promise<void> {
+  const credentialReadiness = await evaluateCodexCredentialReadiness({
+    env: input.env ?? process.env,
+    companyId: input.companyId,
+    configuredCodexHome: input.configuredCodexHome,
+    configuredApiKey: input.configuredApiKey,
+  });
+  if (!credentialReadiness.managed || credentialReadiness.ready) return;
+
+  const targetIsSandbox =
+    input.target?.kind === "remote" && input.target.transport === "sandbox";
+  if (targetIsSandbox) {
+    const sandboxAuthJson = await sandboxCodexAuthJsonExists({
+      runId: input.runId,
+      target: input.target,
+      cwd: input.cwd,
+    });
+    if (sandboxAuthJson) {
+      await input.onLog(
+        "stdout",
+        `Using the sandbox's own Codex login; managed home "${input.effectiveCodexHome}" has no host credentials.\n`,
+      );
+      return;
+    }
+    throw new Error(
+      `no Codex credentials provisioned for managed home "${input.effectiveCodexHome}" ` +
+        `(no usable auth.json, OPENAI_API_KEY is empty, and the sandbox has no Codex login). ` +
+        `Use a sandbox image that is signed in to Codex, configure a per-agent OPENAI_API_KEY, ` +
+        `or sign in to Codex on the host with a ChatGPT subscription.`,
+    );
+  }
+
+  throw new Error(
+    `no Codex credentials provisioned for managed home "${input.effectiveCodexHome}" ` +
+      `(no usable auth.json and OPENAI_API_KEY is empty). ` +
+      `Sign in to Codex on the host with a ChatGPT subscription, or configure a per-agent ` +
+      `OPENAI_API_KEY.`,
+  );
+}
+
 async function emitSandboxAuthPrecedenceWarningIfNeeded(input: {
   runId: string;
   target: MaybeResolvedExecutionTarget;
@@ -542,28 +602,26 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const effectiveCodexHome = configuredCodexHome ?? defaultCodexHome;
   await fs.mkdir(effectiveCodexHome, { recursive: true });
 
-  // Never launch a managed CODEX_HOME with no credentials. Without auth.json and
-  // with OPENAI_API_KEY="" the provider rejects every request with
+  // Never launch a managed CODEX_HOME with no credentials. Without auth.json
+  // and with OPENAI_API_KEY="" the provider rejects every request with
   // "401 Missing bearer"; fail fast with a clear adapter error instead of
   // emitting unauthenticated calls. External overrides manage their own auth.
   // This is the execute-time backstop for the control plane's pre-dispatch
-  // configuration-incomplete gate (see server heartbeat) — both decide
-  // readiness through the same `evaluateCodexCredentialReadiness` predicate, so
-  // they cannot drift.
-  const credentialReadiness = await evaluateCodexCredentialReadiness({
-    env: process.env,
+  // configuration-incomplete gate (see server heartbeat); both decide host
+  // readiness through the same `evaluateCodexCredentialReadiness` predicate,
+  // and sandbox targets are additionally allowed to supply their own login
+  // (the pre-dispatch gate defers sandbox-destined runs here for exactly that
+  // probe).
+  await assertCodexCredentialsLaunchable({
+    runId,
     companyId: agent.companyId,
     configuredCodexHome,
     configuredApiKey: configuredOpenAiApiKey,
+    effectiveCodexHome,
+    target: executionTarget,
+    cwd,
+    onLog,
   });
-  if (credentialReadiness.managed && !credentialReadiness.ready) {
-    throw new Error(
-      `no Codex credentials provisioned for managed home "${effectiveCodexHome}" ` +
-        `(no usable auth.json and OPENAI_API_KEY is empty). ` +
-        `Sign in to Codex on the host with a ChatGPT subscription, or configure a per-agent ` +
-        `OPENAI_API_KEY.`,
-    );
-  }
   // Merge custom model providers (PAPERCLIP_CODEX_PROVIDERS) into the managed
   // CODEX_HOME's config.toml BEFORE the home is shipped to a remote execution
   // target, so both local and sandboxed Codex processes pick up the routing.
