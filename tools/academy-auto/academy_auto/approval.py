@@ -16,36 +16,33 @@ def _stdout(runner, cmd) -> str | None:
     return getattr(proc, "stdout", "") or ""
 
 
-def has_unapproved_commit(cfg, runner=subprocess.run) -> bool:
-    """Wartet auf dem Agenten-Branch ein Commit auf Walters Telegram-Freigabe?
+def has_unmerged_commit(cfg, runner=subprocess.run) -> bool:
+    """Liegt auf dem Agenten-Branch Arbeit, die noch nicht in `base_branch` ist?
 
-    Hintergrund: `prepare_worktree` startet jeden Lauf mit
-    `git reset --hard <base_branch>`. Das verschiebt den Branch-Zeiger und
-    macht einen noch nicht freigegebenen Commit unerreichbar (nur noch im
-    Reflog). Der normale Takt geht auf — 02:00 Lauf, 08:00 Digest, Entscheidung
-    am selben Tag —, aber jede Abweichung davon kostet die Arbeit.
+    Solange das zutrifft, darf kein neuer Lauf starten. Zwei Zustaende fallen
+    darunter, und beide sind gefaehrlich:
 
-    Erkennung in zwei Schritten:
-      1. Liegt ueberhaupt ein Commit ueber dem Basis-Branch?
-      2. Steht er schon auf origin? Der Executor pusht bei ✅ vor dem
-         `gh pr create`; gleiche SHA heisst also freigegeben. Der PR lebt dann
-         auf origin weiter, der lokale Reset ist harmlos.
+    1. **Noch nicht freigegeben.** `prepare_worktree` startet jeden Lauf mit
+       `git reset --hard <base_branch>`. Das verschiebt den Branch-Zeiger und
+       macht den Commit unerreichbar (nur noch im Reflog).
 
-    Fail-safe: jede unklare Antwort gilt als "offen". Eine ausgelassene Nacht
-    ist sichtbar (Log + der Digest wiederholt sich), ein vernichteter Commit
+    2. **Freigegeben, aber der PR ist noch offen.** Nach Walters ✅ steht der
+       Commit auf origin und `gh pr create` hat einen PR geoeffnet. Liefe jetzt
+       ein neuer Lauf, wuerde er vom zurueckgesetzten Branch aus committen —
+       und das `git push -f origin <branch>` des Executors bei der naechsten
+       Freigabe wuerde den **Inhalt des offenen PRs ersetzen**. Die freigegebene
+       Arbeit verschwaende aus dem PR.
+
+    Deshalb entscheidet allein `<base_branch>..<branch>`; der Push-Zustand ist
+    irrelevant. Erst der **Merge** gibt die Pipeline wieder frei — damit haengt
+    immer hoechstens ein offener Agenten-PR in der Luft.
+
+    Fail-safe: jede unklare git-Antwort gilt als "offen". Eine ausgelassene
+    Nacht ist sichtbar (Log + der Digest wiederholt sich), vernichtete Arbeit
     nicht.
     """
-    repo = str(cfg.academy_repo)
-
-    ahead = _stdout(runner, ["git", "-C", repo, "rev-list", "--count",
+    ahead = _stdout(runner, ["git", "-C", str(cfg.academy_repo), "rev-list", "--count",
                              f"{cfg.base_branch}..{cfg.branch}"])
     if ahead is None:
         return True
-    if ahead.strip() in ("", "0"):
-        return False
-
-    local = _stdout(runner, ["git", "-C", repo, "rev-parse", cfg.branch])
-    remote = _stdout(runner, ["git", "-C", repo, "rev-parse", f"origin/{cfg.branch}"])
-    if local is None or remote is None:
-        return True
-    return local.strip() != remote.strip()
+    return ahead.strip() not in ("", "0")

@@ -19,10 +19,13 @@ def run_once(cfg: Config, task_prompt, deps) -> RunReport:
     if cfg.pause_flag.exists():
         return RunReport(status="paused")
     # Vor allem anderen, insbesondere vor prepare_worktree: dessen
-    # `reset --hard <base_branch>` wuerde einen Commit, der noch auf Walters
-    # Telegram-✅ wartet, unerreichbar machen. Auch NICHT parken — pending.json
-    # traegt die run_ts, auf die die Buttons zeigen (executor prueft
-    # ref_run_ts); ein neuer Datensatz wuerde die Freigabe entwerten.
+    # `reset --hard <base_branch>` wuerde Arbeit vernichten, die noch nicht in
+    # main gelandet ist — sei es ein Commit, der auf Walters Telegram-✅ wartet,
+    # oder ein bereits freigegebener, dessen PR noch offen ist (dort wuerde das
+    # spaetere `git push -f` des Executors den PR-Inhalt ersetzen).
+    # Auch NICHT parken — pending.json traegt die run_ts, auf die die Buttons
+    # zeigen (executor prueft ref_run_ts); ein neuer Datensatz wuerde die
+    # Freigabe entwerten.
     if deps.awaiting_approval(cfg):
         return RunReport(status="awaiting_approval")
     try:
@@ -231,8 +234,8 @@ def _quarantined(cfg):
 
 
 def _awaiting_approval(cfg):  # pragma: no cover - echte git-Abfrage beim Deploy
-    from .approval import has_unapproved_commit
-    return has_unapproved_commit(cfg)
+    from .approval import has_unmerged_commit
+    return has_unmerged_commit(cfg)
 
 
 def _reset_worktree(cfg, cwd):  # pragma: no cover - echter Git-Reset beim Deploy
