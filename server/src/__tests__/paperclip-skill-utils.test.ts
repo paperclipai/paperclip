@@ -64,6 +64,15 @@ describe("paperclip skill utils", () => {
     await expect(fs.access(path.resolve("scripts/paperclip-upload-artifact.sh"))).rejects.toThrow();
   });
 
+  it("does not require internal co-author trailers in the installed Paperclip skill", async () => {
+    const skillBody = await fs.readFile(path.resolve("skills/paperclip/SKILL.md"), "utf8");
+
+    expect(skillBody).toContain("Public commit identity");
+    expect(skillBody).toContain("make public commits with no automation co-author trailer");
+    expect(skillBody).not.toContain("Co-Authored-By: Paperclip <noreply@paperclip.ing>");
+    expect(skillBody).not.toContain("MUST add EXACTLY");
+  });
+
   it("keeps the create-issue-interaction-ui guide as a maintainer-only skill", async () => {
     const skillPath = path.resolve(".agents/skills/create-issue-interaction-ui/SKILL.md");
     const skillBody = await fs.readFile(skillPath, "utf8");
