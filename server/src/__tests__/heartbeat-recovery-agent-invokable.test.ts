@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   RECOVERY_NON_INVOKABLE_AGENT_STATUSES,
   isAgentInvokableForRecovery,
-} from "../services/heartbeat.ts";
+} from "@paperclipai/shared";
 
 describe("isAgentInvokableForRecovery", () => {
   it("treats active-ish statuses as invokable", () => {

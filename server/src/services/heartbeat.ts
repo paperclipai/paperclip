@@ -244,7 +244,7 @@ import {
   UNMANAGED_BACKGROUND_TASK_STOP_REASON,
   writePaperclipSkillSyncPreference,
 } from "@paperclipai/adapter-utils/server-utils";
-import { extractSkillMentionIds, isUuidLike } from "@paperclipai/shared";
+import { extractSkillMentionIds, isAgentInvokableForRecovery, isUuidLike } from "@paperclipai/shared";
 import { evaluateCodexCredentialReadiness } from "@paperclipai/adapter-codex-local/server";
 import { environmentService } from "./environments.js";
 import { parseExecutionPolicyBootstrapEnv } from "./execution-policy-bootstrap.js";
@@ -6126,24 +6126,6 @@ export function resolveHeartbeatSchedulingSuppression(
     return { suppressed: true, reason: "database_restore_in_progress" };
   }
   return { suppressed: false, reason: null };
-}
-
-/**
- * Agent statuses that must never be treated as invokable by the automatic
- * recovery path in releaseIssueExecutionAndPromote. An agent in one of these
- * statuses is known to be unable to make progress right now, so re-queuing a
- * run for it on the next unrelated issue event (a comment, a mention, a wake)
- * would just repeat the same failure with no cooldown.
- */
-export const RECOVERY_NON_INVOKABLE_AGENT_STATUSES = new Set<string>([
-  "paused",
-  "terminated",
-  "pending_approval",
-  "error",
-]);
-
-export function isAgentInvokableForRecovery(status: string | null | undefined): boolean {
-  return status != null && !RECOVERY_NON_INVOKABLE_AGENT_STATUSES.has(status);
 }
 
 export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) {
