@@ -1,0 +1,75 @@
+{
+  "name": "@paperclipai/adapter-azure-openai",
+  "version": "0.1.0",
+  "description": "Paperclip adapter for Azure OpenAI and Azure AI Foundry serverless deployments (OpenAI-compatible /chat/completions with SSE streaming).",
+  "type": "module",
+  "license": "MIT",
+  "author": "Paperclip",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/paperclipai/paperclip",
+    "directory": "packages/adapters/azure-openai"
+  },
+  "bugs": {
+    "url": "https://github.com/paperclipai/paperclip/issues"
+  },
+  "homepage": "https://github.com/paperclipai/paperclip/tree/master/packages/adapters/azure-openai#readme",
+  "keywords": [
+    "paperclip",
+    "azure",
+    "azure-openai",
+    "azure-ai-foundry",
+    "adapter",
+    "orchestration"
+  ],
+  "exports": {
+    ".": "./src/index.ts",
+    "./server": "./src/server/index.ts",
+    "./ui-parser": "./ui-parser.cjs"
+  },
+  "paperclip": {
+    "adapterUiParser": "1.0.0"
+  },
+  "publishConfig": {
+    "access": "public",
+    "exports": {
+      ".": {
+        "types": "./dist/index.d.ts",
+        "import": "./dist/index.js"
+      },
+      "./server": {
+        "types": "./dist/server/index.d.ts",
+        "import": "./dist/server/index.js"
+      },
+      "./ui-parser": "./ui-parser.cjs"
+    },
+    "main": "./dist/index.js",
+    "types": "./dist/index.d.ts",
+    "provenance": true
+  },
+  "files": [
+    "dist",
+    "ui-parser.cjs",
+    "README.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "clean": "rm -rf dist",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@paperclipai/adapter-utils": "workspace:*"
+  },
+  "optionalDependencies": {
+    "@azure/identity": "^4.4.0"
+  },
+  "devDependencies": {
+    "@types/node": "^22.19.21",
+    "typescript": "^5.7.3",
+    "vitest": "^4.1.10"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  }
+}
