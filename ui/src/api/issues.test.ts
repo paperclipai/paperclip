@@ -109,4 +109,19 @@ describe("issuesApi.list", () => {
       },
     );
   });
+
+  it("posts delegated recovery to the source issue delegate endpoint", async () => {
+    await issuesApi.delegateRecoveryAction("issue-1", {
+      actionId: "00000000-0000-0000-0000-0000000000aa",
+      target: "ceo",
+    });
+
+    expect(mockApi.post).toHaveBeenCalledWith(
+      "/issues/issue-1/recovery-actions/delegate",
+      {
+        actionId: "00000000-0000-0000-0000-0000000000aa",
+        target: "ceo",
+      },
+    );
+  });
 });

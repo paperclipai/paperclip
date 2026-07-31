@@ -37,6 +37,13 @@ export type ResolveRecoveryActionResponse = {
   recoveryAction: IssueRecoveryAction;
 };
 
+export type DelegateRecoveryActionResponse = {
+  issue: Issue;
+  recoveryIssue: Issue;
+  recoveryAction: IssueRecoveryAction;
+  reused: boolean;
+};
+
 export type IssueListFilters = {
   attention?: "blocked";
   status?: string;
@@ -170,6 +177,8 @@ export const issuesApi = {
       resolutionNote?: string | null;
     },
   ) => api.post<ResolveRecoveryActionResponse>(`/issues/${id}/recovery-actions/resolve`, data),
+  delegateRecoveryAction: (id: string, data: { actionId: string; target: "ceo" }) =>
+    api.post<DelegateRecoveryActionResponse>(`/issues/${id}/recovery-actions/delegate`, data),
   previewTreeControl: (id: string, data: PreviewIssueTreeControl) =>
     api.post<IssueTreeControlPreview>(`/issues/${id}/tree-control/preview`, data),
   createTreeHold: (id: string, data: CreateIssueTreeHold) =>

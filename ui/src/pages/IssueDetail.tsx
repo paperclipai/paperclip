@@ -80,7 +80,7 @@ import {
 } from "../lib/optimistic-issue-comments";
 import { clearIssueExecutionRun, removeLiveRunById, upsertInterruptedRun } from "../lib/optimistic-issue-runs";
 import { useProjectOrder } from "../hooks/useProjectOrder";
-import { relativeTime, cn, formatDurationMs, formatTokens, visibleRunCostUsd } from "../lib/utils";
+import { relativeTime, cn, formatDurationMs, formatTokens, visibleRunCostUsd, issueUrl } from "../lib/utils";
 import { liveBlueBadge } from "../lib/status-colors";
 import { ApprovalCard } from "../components/ApprovalCard";
 import { InlineEditor } from "../components/InlineEditor";
@@ -2187,6 +2187,39 @@ export function IssueDetail() {
       }
     },
   });
+  const delegateRecoveryAction = useMutation({
+    mutationFn: (data: { actionId: string; target: "ceo" }) =>
+      issuesApi.delegateRecoveryAction(issueId!, data),
+    onSuccess: ({ issue: nextIssue, recoveryIssue, reused }) => {
+      const issueRefs = new Set<string>([issueId!, nextIssue.id]);
+      if (nextIssue.identifier) issueRefs.add(nextIssue.identifier);
+      mergeIssueResponseIntoCaches(issueRefs, nextIssue);
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.activity(issueId!) });
+      invalidateIssueCollections();
+      const recoveryRef = recoveryIssue.identifier ?? recoveryIssue.id;
+      pushToast({
+        title: "Delegated to the CEO",
+        body: reused
+          ? `Reused existing recovery task ${recoveryRef} and blocked this task on it.`
+          : `Created ${recoveryRef} and blocked this task on it.`,
+        tone: "success",
+        action: { label: "View task →", href: issueUrl(recoveryIssue) },
+      });
+    },
+    onError: (err) => {
+      pushToast({
+        title: "Delegation failed",
+        body: err instanceof Error ? err.message : "Unable to delegate this recovery to the CEO",
+        tone: "error",
+      });
+    },
+    onSettled: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.issues.detail(issueId!) });
+      if (selectedCompanyId) {
+        queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(selectedCompanyId) });
+      }
+    },
+  });
   const executeTreeControl = useMutation({
     mutationFn: async () => {
       if (treeControlMode === "resume") {
@@ -3679,6 +3712,9 @@ export function IssueDetail() {
       const actionId = activeRecoveryActionId;
       if (!actionId) return;
       switch (outcome) {
+        case "delegate_ceo":
+          delegateRecoveryAction.mutate({ actionId, target: "ceo" });
+          return;
         case "todo":
           void resolveRecoveryAction.mutateAsync({ actionId, outcome: "restored", sourceIssueStatus: "todo" });
           return;
@@ -3696,7 +3732,7 @@ export function IssueDetail() {
           return;
       }
     },
-    [activeRecoveryActionId, resolveRecoveryAction.mutateAsync],
+    [activeRecoveryActionId, resolveRecoveryAction.mutateAsync, delegateRecoveryAction.mutate],
   );
 
   // Action 3 (workspace_validation): one-click re-issue of the stalled task on a fresh isolated

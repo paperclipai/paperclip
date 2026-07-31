@@ -296,6 +296,82 @@ describe("IssueRecoveryActionCard", () => {
     expect(document.body.textContent).not.toContain("Mark blocked");
   });
 
+  it("offers 'Ask CEO to fix' first, with a Recommended pill, for manual-repair recovery", () => {
+    const onResolve = vi.fn();
+    const node = render(
+      <IssueRecoveryActionCard
+        action={buildAction({
+          kind: "workspace_validation",
+          cause: "workspace_validation_failed",
+          wakePolicy: { type: "manual_repair_required" },
+        })}
+        onResolve={onResolve}
+      />,
+    );
+    click(node.querySelector("[data-testid='recovery-action-resolve-trigger']"));
+
+    const delegate = document.body.querySelector("[data-testid='recovery-action-delegate-ceo']");
+    expect(delegate?.textContent).toContain("Ask CEO to fix");
+    expect(delegate?.textContent).toContain("Recommended");
+    expect(delegate?.textContent).toContain("Create a new task for the CEO instead of retrying.");
+
+    // It must render before the standard "Try again" option.
+    const buttons = [...document.body.querySelectorAll("button")];
+    const delegateIdx = buttons.findIndex((b) => b.getAttribute("data-testid") === "recovery-action-delegate-ceo");
+    const tryAgainIdx = buttons.findIndex((b) => b.textContent?.includes("Try again"));
+    expect(delegateIdx).toBeGreaterThanOrEqual(0);
+    expect(delegateIdx).toBeLessThan(tryAgainIdx);
+
+    click(delegate);
+    expect(onResolve).toHaveBeenCalledWith("delegate_ceo");
+  });
+
+  it("hides 'Ask CEO to fix' when the wake policy is not manual_repair_required", () => {
+    const node = render(
+      <IssueRecoveryActionCard
+        action={buildAction({ wakePolicy: { type: "wake_owner" } })}
+        onResolve={() => {}}
+      />,
+    );
+    click(node.querySelector("[data-testid='recovery-action-resolve-trigger']"));
+    expect(document.body.querySelector("[data-testid='recovery-action-delegate-ceo']")).toBeNull();
+    expect(document.body.textContent).not.toContain("Ask CEO to fix");
+  });
+
+  it("hides 'Ask CEO to fix' once the action has already been delegated", () => {
+    const node = render(
+      <IssueRecoveryActionCard
+        action={buildAction({
+          kind: "workspace_validation",
+          wakePolicy: { type: "manual_repair_required" },
+          recoveryIssueId: "00000000-0000-0000-0000-0000000000cc",
+          outcome: "delegated",
+        })}
+        onResolve={() => {}}
+      />,
+    );
+    click(node.querySelector("[data-testid='recovery-action-resolve-trigger']"));
+    expect(document.body.querySelector("[data-testid='recovery-action-delegate-ceo']")).toBeNull();
+  });
+
+  it("renders a persistent recovery-task link when recoveryIssueId is present", () => {
+    const node = render(
+      <IssueRecoveryActionCard
+        action={buildAction({
+          kind: "workspace_validation",
+          wakePolicy: { type: "manual_repair_required" },
+          recoveryIssueId: "00000000-0000-0000-0000-0000000000cc",
+          outcome: "delegated",
+        })}
+      />,
+    );
+    expect(node.textContent).toContain("Recovery task");
+    const link = [...node.querySelectorAll("a")].find((a) =>
+      a.getAttribute("href") === "/issues/00000000-0000-0000-0000-0000000000cc",
+    );
+    expect(link?.textContent).toContain("View recovery task");
+  });
+
   it("hides false-positive options unless canFalsePositive is set", () => {
     const first = render(
       <IssueRecoveryActionCard action={buildAction()} onResolve={() => {}} />,

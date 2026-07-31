@@ -44,6 +44,7 @@ export type ResolveIssueRecoveryActionInput = {
   kind?: IssueRecoveryActionKind | null;
   cause?: string | null;
   fingerprint?: string | null;
+  recoveryIssueId?: string | null;
   status: Extract<IssueRecoveryActionStatus, "resolved" | "cancelled">;
   outcome: IssueRecoveryActionOutcome;
   resolutionNote?: string | null;
@@ -158,6 +159,21 @@ export function issueRecoveryActionService(db: Db) {
       if (!result.has(row.sourceIssueId)) result.set(row.sourceIssueId, toReadModel(row));
     }
     return result;
+  }
+
+  async function getById(companyId: string, actionId: string): Promise<IssueRecoveryAction | null> {
+    const row = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(
+        and(
+          eq(issueRecoveryActions.companyId, companyId),
+          eq(issueRecoveryActions.id, actionId),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    return row ? toReadModel(row) : null;
   }
 
   async function retryUpsertSourceScoped(
@@ -287,6 +303,7 @@ export function issueRecoveryActionService(db: Db) {
       .update(issueRecoveryActions)
       .set({
         status: input.status,
+        ...(input.recoveryIssueId !== undefined ? { recoveryIssueId: input.recoveryIssueId } : {}),
         outcome: input.outcome,
         resolutionNote: input.resolutionNote ?? null,
         resolvedAt: now,
@@ -299,6 +316,7 @@ export function issueRecoveryActionService(db: Db) {
   }
 
   return {
+    getById,
     getActiveForIssue,
     listActiveForIssues,
     resolveActiveForIssue,
