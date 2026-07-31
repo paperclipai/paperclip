@@ -305,6 +305,10 @@ function resolveWorktreeRuntimeContext(
   };
 }
 
+export function isIsolatedWorktreeRuntimeConfigured(env: NodeJS.ProcessEnv = process.env): boolean {
+  return resolveWorktreeRuntimeContext(env) !== null;
+}
+
 function writeConfigFile(configPath: string, config: PaperclipConfig): void {
   fs.mkdirSync(path.dirname(configPath), { recursive: true });
   fs.writeFileSync(configPath, JSON.stringify(config, null, 2) + "\n", { mode: 0o600 });

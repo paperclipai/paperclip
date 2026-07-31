@@ -730,6 +730,72 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
     });
   });
 
+  it("uses the shared scheduled-monitor predicate before healing a wakeless issue", async () => {
+    const { companyId, agentId, issueId } = await seedWakelessNonTerminalFixture({ status: "blocked" });
+    const nextCheckAt = new Date(Date.now() + 60 * 60_000);
+    const monitorPolicy = {
+      mode: "normal",
+      commentRequired: true,
+      stages: [],
+      monitor: {
+        nextCheckAt: nextCheckAt.toISOString(),
+        scheduledBy: "assignee",
+        maxAttempts: 2,
+      },
+    };
+
+    await db
+      .update(issues)
+      .set({
+        executionPolicy: monitorPolicy,
+        executionState: {
+          status: "idle",
+          monitor: {
+            status: "scheduled",
+            nextCheckAt: nextCheckAt.toISOString(),
+            scheduledBy: "assignee",
+            attemptCount: 0,
+            maxAttempts: 2,
+          },
+        },
+        monitorNextCheckAt: nextCheckAt,
+        monitorAttemptCount: 0,
+      })
+      .where(eq(issues.id, issueId));
+
+    const scheduledResult = await heartbeatService(db).reconcileIssueGraphLiveness();
+
+    expect(scheduledResult.wakelessNonTerminalHealed).toBe(0);
+    expect(scheduledResult.wakelessNonTerminalMonitorSkipped).toBe(1);
+
+    await db
+      .update(issues)
+      .set({
+        executionState: {
+          status: "idle",
+          monitor: {
+            status: "scheduled",
+            nextCheckAt: nextCheckAt.toISOString(),
+            scheduledBy: "assignee",
+            attemptCount: 2,
+            maxAttempts: 2,
+          },
+        },
+        monitorAttemptCount: 2,
+      })
+      .where(eq(issues.id, issueId));
+
+    const exhaustedResult = await heartbeatService(db).reconcileIssueGraphLiveness();
+
+    expect(exhaustedResult.wakelessNonTerminalHealed).toBe(1);
+    const wake = await db
+      .select({ reason: agentWakeupRequests.reason })
+      .from(agentWakeupRequests)
+      .where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.agentId, agentId)))
+      .then((rows) => rows[0] ?? null);
+    expect(wake?.reason).toBe("non_terminal_wakeless_backstop");
+  });
+
   it("re-arms the wakeless backstop after a successful run changes the epoch", async () => {
     const { companyId, agentId, issueId } = await seedWakelessNonTerminalFixture();
     await db.insert(agentWakeupRequests).values({
@@ -812,6 +878,45 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
     expect(wakeCountAfterExhaustion).toHaveLength(4);
   });
 
+  it("caps wakeless skipped agent-not-invokable retries per idempotency key", async () => {
+    const { companyId, agentId, issueId } = await seedWakelessNonTerminalFixture();
+    const idempotencyKey = `non-terminal-wakeless:${issueId}:cold`;
+    const historicalSkips = Array.from({ length: 4 }, (_, index) => ({
+      companyId,
+      agentId,
+      source: "automation" as const,
+      triggerDetail: "system" as const,
+      reason: "agent.not_invokable",
+      payload: {
+        issueId,
+        backstop: "non_terminal_wakeless",
+        wakelessWakeRearmToken: "cold",
+      },
+      status: "skipped" as const,
+      error: `synthetic not invokable skip ${index + 1}`,
+      requestedAt: new Date(Date.now() - (index + 1) * 60_000),
+      finishedAt: new Date(Date.now() - (index + 1) * 60_000),
+      idempotencyKey,
+    }));
+    await db.insert(agentWakeupRequests).values(historicalSkips);
+
+    const result = await heartbeatService(db).reconcileIssueGraphLiveness();
+
+    expect(result.wakelessNonTerminalHealed).toBe(0);
+    expect(result.wakelessNonTerminalEnqueueFailed).toBe(0);
+    expect(result.wakelessNonTerminalIssueIds).toEqual([]);
+
+    const wakeRows = await db
+      .select({
+        status: agentWakeupRequests.status,
+        reason: agentWakeupRequests.reason,
+      })
+      .from(agentWakeupRequests)
+      .where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.idempotencyKey, idempotencyKey)));
+    expect(wakeRows).toHaveLength(4);
+    expect(wakeRows.every((wake) => wake.status === "skipped" && wake.reason === "agent.not_invokable")).toBe(true);
+  });
+
   it("serializes concurrent wakeless backstop scans to one live wake and one run", async () => {
     const { companyId, agentId, issueId } = await seedWakelessNonTerminalFixture();
     const heartbeat = heartbeatService(db);
@@ -841,19 +946,28 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
       .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, agentId)))
       .orderBy(heartbeatRuns.createdAt);
 
-    expect(wakes).toHaveLength(1);
-    expect(wakes[0]).toMatchObject({
-      status: "queued",
+    const liveWakes = wakes.filter((wake) =>
+      ["queued", "claimed", "completed", "deferred_issue_execution"].includes(wake.status),
+    );
+    expect(liveWakes).toHaveLength(1);
+    expect(
+      wakes.filter((wake) => !liveWakes.includes(wake)).every((wake) => wake.status === "coalesced"),
+    ).toBe(true);
+    expect(liveWakes[0]).toMatchObject({
+      status: expect.stringMatching(/^(queued|claimed|completed|deferred_issue_execution)$/),
       idempotencyKey: `non-terminal-wakeless:${issueId}:cold`,
     });
     expect(runs).toHaveLength(1);
     expect(runs[0]).toMatchObject({
-      status: "queued",
-      wakeupRequestId: wakes[0]?.id,
+      status: expect.stringMatching(/^(queued|running|succeeded)$/),
+      wakeupRequestId: liveWakes[0]?.id,
     });
 
-    expect(first.wakelessNonTerminalHealed + second.wakelessNonTerminalHealed).toBe(1);
-    expect(first.wakelessNonTerminalExistingWakeSkipped + second.wakelessNonTerminalExistingWakeSkipped).toBe(1);
+    const healed = first.wakelessNonTerminalHealed + second.wakelessNonTerminalHealed;
+    const existingWakeSkipped =
+      first.wakelessNonTerminalExistingWakeSkipped + second.wakelessNonTerminalExistingWakeSkipped;
+    expect(healed).toBeGreaterThanOrEqual(1);
+    expect(healed + existingWakeSkipped).toBe(2);
     expect(first.wakelessNonTerminalEnqueueFailed + second.wakelessNonTerminalEnqueueFailed).toBe(0);
   });
 

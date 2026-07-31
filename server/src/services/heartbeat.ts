@@ -6069,7 +6069,7 @@ function buildUndeliveredIssueMonitorRearmAt(now: Date, nextCheckAt: string | nu
   return parsed.getTime() > minimumFuture.getTime() ? parsed : minimumFuture;
 }
 
-function computeIssueMonitorFailedDispatchBackoffDelayMs(consecutiveFailures: number) {
+export function computeIssueMonitorFailedDispatchBackoffDelayMs(consecutiveFailures: number) {
   const normalizedFailures = Math.max(1, Math.floor(consecutiveFailures));
   const multiplier = 2 ** Math.max(0, normalizedFailures - 1);
   return Math.min(
@@ -7203,7 +7203,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       return "timeout_exceeded";
     }
     const maxAttempts = input.monitor?.maxAttempts ?? null;
-    if (maxAttempts !== null && input.nextAttemptCount > maxAttempts) {
+    if (maxAttempts !== null && input.nextAttemptCount >= maxAttempts) {
       return "max_attempts_exhausted";
     }
     return null;

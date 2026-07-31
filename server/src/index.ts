@@ -68,7 +68,10 @@ import { createPluginWorkerManager } from "./services/plugin-worker-manager.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
 import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
-import { maybePersistWorktreeRuntimePorts } from "./worktree-config.js";
+import {
+  isIsolatedWorktreeRuntimeConfigured,
+  maybePersistWorktreeRuntimePorts,
+} from "./worktree-config.js";
 import { initTelemetry, getTelemetryClient } from "./telemetry.js";
 import { conflict } from "./errors.js";
 import { coordinateHeartbeatSchedulerShutdown } from "./shutdown.js";
@@ -530,6 +533,24 @@ export async function startServer(): Promise<StartedServer> {
 
   const requestedListenPort = config.port;
   const listenPort = await detectPort(requestedListenPort);
+  const isIsolatedWorktreeRuntime = isIsolatedWorktreeRuntimeConfigured();
+  if (
+    config.deploymentMode === "authenticated"
+    && config.deploymentExposure === "public"
+    && listenPort !== requestedListenPort
+  ) {
+    throw new Error(
+      `authenticated public deployments require requested listen port ${requestedListenPort} to be available; refusing fallback to ${listenPort}`,
+    );
+  }
+  if (listenPort !== requestedListenPort && !isIsolatedWorktreeRuntime) {
+    throw new Error(
+      `requested listen port ${requestedListenPort} is already in use; refusing fallback to ${listenPort} ` +
+        "because this runtime is not configured as an isolated worktree instance",
+    );
+  }
+  const isPrimaryRuntimeInstance =
+    listenPort === requestedListenPort || isIsolatedWorktreeRuntime;
   if (config.authBaseUrlMode === "explicit" && config.authPublicBaseUrl) {
     config.authPublicBaseUrl = rewriteLocalUrlPort(config.authPublicBaseUrl, listenPort);
   }
