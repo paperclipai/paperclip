@@ -8113,9 +8113,10 @@ export function issueRoutes(
       !!existing.createdByUserId &&
       nextAssigneeUserId === existing.createdByUserId;
 
+    let assignmentScope: TaskAssignmentAuthorizationScope | null = null;
     if (assigneeWillChange && !transition.workflowControlledAssignment) {
       if (!isAgentReturningIssueToCreator) {
-        await assertCanAssignTasks(req, existing.companyId, {
+        assignmentScope = {
           issueId: existing.id,
           projectId: await resolveAssignmentProjectId({
             companyId: existing.companyId,
@@ -8131,7 +8132,8 @@ export function issueRoutes(
             : updateFields.parentId) as string | null | undefined,
           assigneeAgentId: nextAssigneeAgentId,
           assigneeUserId: nextAssigneeUserId,
-        });
+        };
+        await assertCanAssignTasks(req, existing.companyId, assignmentScope);
       }
     }
 
@@ -8169,6 +8171,14 @@ export function issueRoutes(
           expectedUpdatedAt: existing.updatedAt,
           actor: req.actor,
           action: "issue:mutate",
+          ...(assignmentScope ? {
+            assignment: {
+              projectId: assignmentScope.projectId ?? null,
+              parentIssueId: assignmentScope.parentIssueId ?? null,
+              assigneeAgentId: assignmentScope.assigneeAgentId ?? null,
+              assigneeUserId: assignmentScope.assigneeUserId ?? null,
+            },
+          } : {}),
         }, async (tx) => {
           const updated = await persistIssueUpdate({
             ...updateFields,
@@ -8485,12 +8495,13 @@ export function issueRoutes(
     });
 
     if (existing.status === "in_progress" && issue.status !== existing.status && issue.status !== "in_progress") {
-      await listSuccessfulRunHandoffStates(db, issue.companyId, [issue.id], { hydrateLiveness: false })
+      const resolvedIssue = issue;
+      await listSuccessfulRunHandoffStates(db, resolvedIssue.companyId, [resolvedIssue.id], { hydrateLiveness: false })
         .then(async (handoffStates) => {
-          const handoff = handoffStates.get(issue.id);
+          const handoff = handoffStates.get(resolvedIssue.id);
           if (handoff?.state !== "required") return;
           await logActivity(db, {
-            companyId: issue.companyId,
+            companyId: resolvedIssue.companyId,
             actorType: actor.actorType,
             actorId: actor.actorId,
             agentId: actor.agentId,
@@ -8498,17 +8509,17 @@ export function issueRoutes(
             agentApiKeyId: actor.agentApiKeyId,
             action: "issue.successful_run_handoff_resolved",
             entityType: "issue",
-            entityId: issue.id,
+            entityId: resolvedIssue.id,
             details: {
-              identifier: issue.identifier,
+              identifier: resolvedIssue.identifier,
               sourceRunId: handoff.sourceRunId,
               correctiveRunId: handoff.correctiveRunId,
-              resolvedByStatus: issue.status,
+              resolvedByStatus: resolvedIssue.status,
             },
           });
         })
         .catch((err) => {
-          logger.warn({ err, issueId: issue.id }, "failed to log successful run handoff resolution");
+          logger.warn({ err, issueId: resolvedIssue.id }, "failed to log successful run handoff resolution");
         });
     }
 
@@ -8771,29 +8782,33 @@ export function issueRoutes(
       };
     }
 
-    const assigneeChanged =
-      issue.assigneeAgentId !== existing.assigneeAgentId || issue.assigneeUserId !== existing.assigneeUserId;
-    const statusChangedFromBacklog =
-      existing.status === "backlog" &&
-      issue.status !== "backlog" &&
-      req.body.status !== undefined;
-    const statusChangedFromClosedToTodo =
-      isClosedIssueStatus(existing.status) &&
-      issue.status === "todo" &&
-      req.body.status !== undefined;
-    const previousExecutionState = parseIssueExecutionState(existing.executionState);
-    const nextExecutionState = parseIssueExecutionState(issue.executionState);
-    const executionStageWakeup = buildExecutionStageWakeup({
-      issueId: issue.id,
-      previousState: previousExecutionState,
-      nextState: nextExecutionState,
-      interruptedRunId,
-      requestedByActorType: actor.actorType,
-      requestedByActorId: actor.actorId,
-    });
-
     // Merge all wakeups from this update into one enqueue per agent to avoid duplicate runs.
+    const committedIssue = issue;
     void (async () => {
+      const issue = isIssueUnblockOwner
+        ? await svc.getById(committedIssue.id)
+        : committedIssue;
+      if (!issue) return;
+      const assigneeChanged =
+        issue.assigneeAgentId !== existing.assigneeAgentId || issue.assigneeUserId !== existing.assigneeUserId;
+      const statusChangedFromBacklog =
+        existing.status === "backlog" &&
+        issue.status !== "backlog" &&
+        req.body.status !== undefined;
+      const statusChangedFromClosedToTodo =
+        isClosedIssueStatus(existing.status) &&
+        issue.status === "todo" &&
+        req.body.status !== undefined;
+      const previousExecutionState = parseIssueExecutionState(existing.executionState);
+      const nextExecutionState = parseIssueExecutionState(issue.executionState);
+      const executionStageWakeup = buildExecutionStageWakeup({
+        issueId: issue.id,
+        previousState: previousExecutionState,
+        nextState: nextExecutionState,
+        interruptedRunId,
+        requestedByActorType: actor.actorType,
+        requestedByActorId: actor.actorId,
+      });
       type WakeupRequest = NonNullable<Parameters<typeof heartbeat.wakeup>[1]>;
       type DependencyReadinessProvider = {
         getDependencyReadiness?: typeof svc.getDependencyReadiness;
@@ -9099,7 +9114,31 @@ export function issueRoutes(
         }
       }
 
+      const assigneeDirectedReasons = new Set([
+        "issue_assigned",
+        "issue_status_changed",
+        "issue_commented",
+        "issue_reopened_via_comment",
+      ]);
       for (const { agentId, wakeup } of wakeups.values()) {
+        if (
+          isIssueUnblockOwner &&
+          typeof wakeup.reason === "string" &&
+          assigneeDirectedReasons.has(wakeup.reason) &&
+          wakeup.payload &&
+          typeof wakeup.payload === "object" &&
+          wakeup.payload.issueId === issue.id
+        ) {
+          const currentIssue = await svc.getById(issue.id);
+          if (
+            !currentIssue ||
+            currentIssue.assigneeAgentId !== agentId ||
+            currentIssue.status === "backlog" ||
+            isClosedIssueStatus(currentIssue.status)
+          ) {
+            continue;
+          }
+        }
         heartbeat
           .wakeup(agentId, wakeup)
           .then((wakeRun) => {
@@ -9132,6 +9171,20 @@ export function issueRoutes(
     })();
 
     await queueTaskWatchdogEvaluation(issue, actor.runId);
+    if (isIssueUnblockOwner) {
+      const responseIssue = await svc.getById(issue.id);
+      if (!responseIssue) {
+        res.status(409).json({ error: "Issue changed after unblock-owner update; reload and retry" });
+        return;
+      }
+      const responseAccess = await decideIssueAccess(req, responseIssue, "issue:read");
+      if (!responseAccess.allowed) {
+        res.status(409).json({ error: "Issue access changed after unblock-owner update; reload" });
+        return;
+      }
+      issue = responseIssue;
+      issueResponse = { ...issueResponse, ...responseIssue };
+    }
     res.json({ ...issueResponse, comment });
   });
 
@@ -10514,7 +10567,12 @@ export function issueRoutes(
     });
 
     // Merge all wakeups from this comment into one enqueue per agent to avoid duplicate runs.
+    const committedCommentIssue = currentIssue;
     void (async () => {
+      const currentIssue = isIssueUnblockOwnerComment
+        ? await svc.getById(committedCommentIssue.id)
+        : committedCommentIssue;
+      if (!currentIssue) return;
       type WakeupRequest = NonNullable<Parameters<typeof heartbeat.wakeup>[1]>;
       const wakeups = new Map<string, { agentId: string; wakeup: WakeupRequest }>();
       const addWakeup = (agentId: string, wakeup: WakeupRequest) => {
@@ -10641,7 +10699,7 @@ export function issueRoutes(
 
       let mentionedIds: string[] = [];
       try {
-        mentionedIds = await svc.findMentionedAgents(issue.companyId, req.body.body);
+        mentionedIds = await svc.findMentionedAgents(currentIssue.companyId, req.body.body);
       } catch (err) {
         logger.warn({ err, issueId: id }, "failed to resolve @-mentions");
       }
@@ -10715,7 +10773,25 @@ export function issueRoutes(
         }
       }
 
+      const assigneeDirectedReasons = new Set(["issue_commented", "issue_reopened_via_comment"]);
       for (const { agentId, wakeup } of wakeups.values()) {
+        if (
+          isIssueUnblockOwnerComment &&
+          typeof wakeup.reason === "string" &&
+          assigneeDirectedReasons.has(wakeup.reason) &&
+          wakeup.payload &&
+          typeof wakeup.payload === "object" &&
+          wakeup.payload.issueId === currentIssue.id
+        ) {
+          const latestIssue = await svc.getById(currentIssue.id);
+          if (
+            !latestIssue ||
+            latestIssue.assigneeAgentId !== agentId ||
+            isClosedIssueStatus(latestIssue.status)
+          ) {
+            continue;
+          }
+        }
         heartbeat
           .wakeup(agentId, wakeup)
           .then((wakeRun) => {
@@ -10748,6 +10824,14 @@ export function issueRoutes(
     })();
 
     await queueTaskWatchdogEvaluation(currentIssue, actor.runId);
+    if (isIssueUnblockOwnerComment) {
+      const responseIssue = await svc.getById(currentIssue.id);
+      if (!responseIssue) {
+        res.status(409).json({ error: "Issue changed after unblock-owner comment; reload" });
+        return;
+      }
+      currentIssue = responseIssue;
+    }
     res.status(201).json(comment);
   });
 

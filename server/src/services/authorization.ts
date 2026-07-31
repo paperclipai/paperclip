@@ -2197,8 +2197,11 @@ export function authorizationService(db: Db) {
       grant: userDecision.grant,
     });
 
+    const shadowMode =
+      responsibleUserAuthzShadowMode() &&
+      !scopeBoolean(input.scope, "forceResponsibleUserEnforcement");
     logger.warn({
-      authzMode: responsibleUserAuthzShadowMode() ? "shadow" : "enforce",
+      authzMode: shadowMode ? "shadow" : "enforce",
       code: denied.code,
       reason: userDecision.reason,
       action: input.action,
@@ -2208,7 +2211,7 @@ export function authorizationService(db: Db) {
       responsibleUserId,
     }, "responsible-user authorization intersection denied");
 
-    return responsibleUserAuthzShadowMode() ? agentDecision : denied;
+    return shadowMode ? agentDecision : denied;
   }
 
   async function decide(input: {
