@@ -575,6 +575,9 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           homeDir: filesystemScope ? path.dirname(sharedClaudeConfigDir) : null,
           networkScope,
           networkAllowlist: parseLocalProcessNetworkAllowlist(config.networkAllowlist),
+          networkTrustedUrls: [env.PAPERCLIP_RUNTIME_API_URL ?? env.PAPERCLIP_API_URL].filter(
+            (value): value is string => Boolean(value),
+          ),
           command: asString(config.filesystemSandboxCommand, "bwrap"),
         }
       : null;

@@ -269,27 +269,27 @@ printf '%s\\n' '{"type":"result","subtype":"success","session_id":"cursor-sessio
       commands: [] as string[],
     };
     const runner = {
-      execute: async (input: { command: string; args?: string[]; env?: Record<string, string> }) => {
+      execute: async (input: {
+        command: string;
+        args?: string[];
+        cwd?: string;
+        env?: Record<string, string>;
+        stdin?: string;
+        timeoutMs?: number;
+        onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
+        onSpawn?: (meta: { pid: number; startedAt: string }) => Promise<void>;
+      }) => {
         runnerState.commands.push(input.command);
-        if (input.command === "sh") {
-          return {
-            exitCode: 0,
-          signal: null,
-          timedOut: false,
-          stdout: "",
-          stderr: "",
-          pid: 555,
-          startedAt: new Date().toISOString(),
-        };
-        }
-
         return runChildProcess(`cursor-fresh-lease-${runnerState.commands.length}`, input.command, input.args ?? [], {
-          cwd: remoteWorkspace,
+          cwd: input.cwd ?? remoteWorkspace,
           env: input.env ?? {},
-          timeoutSec: 30,
+          stdin: input.stdin,
+          timeoutSec: Math.max(1, Math.ceil((input.timeoutMs ?? 30_000) / 1000)),
           graceSec: 5,
-          onLog: async () => {},
-          onSpawn: async () => {},
+          onLog: input.onLog ?? (async () => {}),
+          onSpawn: input.onSpawn
+            ? async (meta) => input.onSpawn?.({ pid: meta.pid, startedAt: meta.startedAt })
+            : undefined,
         });
       },
     };

@@ -1,4 +1,7 @@
 import { Command } from "commander";
+import { randomUUID } from "node:crypto";
+import os from "node:os";
+import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CompanyPortabilityPreviewResult } from "@paperclipai/shared";
 import {
@@ -74,6 +77,10 @@ describe("company CLI commands", () => {
     delete process.env.PAPERCLIP_API_URL;
     delete process.env.PAPERCLIP_API_KEY;
     delete process.env.PAPERCLIP_COMPANY_ID;
+    process.env.PAPERCLIP_CONTEXT = path.join(
+      os.tmpdir(),
+      `paperclip-company-test-context-${process.pid}-${randomUUID()}.json`,
+    );
     fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
     logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);

@@ -15,6 +15,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Issue } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IssueProperties } from "./IssueProperties";
+import { formatMonitorAbsolute } from "../lib/issue-monitor";
 import { queryKeys } from "../lib/queryKeys";
 
 const mockAgentsApi = vi.hoisted(() => ({
@@ -2085,7 +2086,9 @@ describe("IssueProperties", () => {
     }));
     await flush();
     expect(monitorRowText()).toContain("In 2h 12m");
-    expect(monitorRowText()).toContain("Today, 4:08 PM · Attempt 1");
+    expect(monitorRowText()).toContain(
+      `${formatMonitorAbsolute(baseMonitorState.nextCheckAt, {}, new Date(Date.now()))} · Attempt 1`,
+    );
 
     renderMonitor(createIssue({
       executionPolicy: createExecutionPolicy({ monitor: { ...baseMonitorState, nextCheckAt: "2026-07-17T18:08:00.000Z" } }),
@@ -2094,7 +2097,9 @@ describe("IssueProperties", () => {
     }));
     await flush();
     expect(monitorRowText()).toContain("In 2h 12m");
-    expect(monitorRowText()).toContain("Today, 4:08 PM");
+    expect(monitorRowText()).toContain(
+      formatMonitorAbsolute(baseMonitorState.nextCheckAt, {}, new Date(Date.now())),
+    );
 
     renderMonitor(createIssue({
       executionPolicy: createExecutionPolicy({ monitor: { ...baseMonitorState, serviceName: "vercel-deploy" } }),
@@ -2118,7 +2123,9 @@ describe("IssueProperties", () => {
     }));
     await flush();
     expect(monitorRowText()).toContain("Overdue by 18m");
-    expect(monitorRowText()).toContain("Today, 1:38 PM · fires on next tick");
+    expect(monitorRowText()).toContain(
+      `${formatMonitorAbsolute("2026-07-17T13:38:00.000Z", {}, new Date(Date.now()))} · fires on next tick`,
+    );
 
     renderMonitor(createIssue({
       executionPolicy: createExecutionPolicy(),

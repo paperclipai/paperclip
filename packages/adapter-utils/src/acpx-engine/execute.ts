@@ -15,14 +15,18 @@ import {
   adapterExecutionTargetSessionIdentity,
   formatAdapterExecutionTimeoutErrorMessage,
   formatAdapterExecutionTimeoutStartLogLine,
+  prepareAdapterExecutionTargetRuntime,
   preparePaperclipControlPlaneEnvForAdapterRun,
   readAdapterExecutionTarget,
   resolveAdapterExecutionTargetTimeout,
   startAdapterExecutionTargetPaperclipBridge,
   startAdapterExecutionTargetProcessSessionBridge,
+  type AdapterExecutionTarget,
+  type AdapterManagedRuntimeAsset,
   type AdapterExecutionTargetPaperclipBridgeHandle,
   type AdapterExecutionTargetProcessSessionBridgeHandle,
   type AdapterExecutionTargetTimeoutResolution,
+  type PreparedAdapterExecutionTargetRuntime,
 } from "@paperclipai/adapter-utils/execution-target";
 import {
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
@@ -44,6 +48,7 @@ import {
   resolvePaperclipInstanceRootForAdapter,
   resolvePaperclipDesiredSkillNames,
   removeMaintainerOnlySkillSymlinks,
+  selectPaperclipTaskMarkdown,
   rewriteWorkspaceCwdEnvVarsForExecution,
   shapePaperclipWorkspaceEnvForExecution,
   stringifyPaperclipWakePayload,
@@ -89,6 +94,7 @@ export interface RuntimeCacheEntry {
   fingerprint: string;
   lastUsedAt: number;
   cleanupTimer?: NodeJS.Timeout;
+  stagedRuntimeEntry?: StagedRuntimeCacheEntry | null;
 }
 
 interface AcpxEngineSettings {
@@ -107,9 +113,14 @@ export interface AcpxEngineExecutorOptions {
   createRuntime?: AcpxRuntimeFactory;
   now?: () => number;
   warmHandles?: Map<string, RuntimeCacheEntry>;
+  stagedRuntimes?: Map<string, StagedRuntimeCacheEntry>;
+  stagingLocks?: Map<string, Promise<unknown>>;
   adapterType?: string;
   moduleDir?: string;
   packageRootDir?: string;
+  prepareRemoteManagedHome?: (
+    input: AcpxRemoteManagedHomeContext,
+  ) => Promise<AcpxRemoteManagedHomeResult>;
   /**
    * Adapter-specific billing classification (provider/biller/billingType) for
    * cost-ledger attribution. Without it, results fall back to the opaque
@@ -118,6 +129,32 @@ export interface AcpxEngineExecutorOptions {
   resolveBillingIdentity?: (
     ctx: AdapterExecutionContext,
   ) => AcpxEngineBillingIdentity | null | Promise<AcpxEngineBillingIdentity | null>;
+}
+
+export interface AcpxRemoteManagedHomeContext {
+  runId: string;
+  companyId: string;
+  executionTarget: AdapterExecutionTarget;
+  workspaceLocalDir: string;
+  workspaceRemoteDir?: string;
+  timeoutSec: number;
+  config: Record<string, unknown>;
+  env: Record<string, string>;
+  onLog: AdapterExecutionContext["onLog"];
+  onRuntimeProgress?: AdapterExecutionContext["onRuntimeProgress"];
+  stage: (assets: AdapterManagedRuntimeAsset[]) => Promise<PreparedAdapterExecutionTargetRuntime>;
+}
+
+export interface AcpxRemoteManagedHomeResult {
+  stagedRuntime: PreparedAdapterExecutionTargetRuntime;
+  teardown?: () => Promise<void>;
+  disposeStaged?: () => Promise<void>;
+}
+
+export interface StagedRuntimeCacheEntry {
+  runtime: PreparedAdapterExecutionTargetRuntime;
+  teardown?: (() => Promise<void>) | undefined;
+  disposeStaged?: (() => Promise<void>) | undefined;
 }
 
 interface AcpxPreparedRuntime {
@@ -150,6 +187,8 @@ interface AcpxPreparedRuntime {
   paperclipClaudeSettings: PaperclipClaudeSettingsResult | null;
   mcpServers: NonNullable<AcpRuntimeOptions["mcpServers"]>;
   mcpIdentity: Array<{ name: string; url: string; connectionId: string }>;
+  stagedRuntimeEntry: StagedRuntimeCacheEntry | null;
+  wrapperRunDir: string | null;
 }
 
 const defaultWarmHandles = new Map<string, RuntimeCacheEntry>();
@@ -977,6 +1016,23 @@ async function cleanupStaleAgentWrappers(input: { wrappersRootDir: string; curre
   );
 }
 
+async function teardownStagedRuntime(
+  entry: StagedRuntimeCacheEntry | null,
+  onLog: AdapterExecutionContext["onLog"],
+): Promise<void> {
+  if (!entry) return;
+  if (entry.teardown) {
+    await entry.teardown();
+    return;
+  }
+  await entry.runtime.restoreWorkspace((line) => onLog("stdout", line));
+}
+
+async function disposeStagedRuntime(entry: StagedRuntimeCacheEntry | null): Promise<void> {
+  if (!entry?.disposeStaged) return;
+  await entry.disposeStaged();
+}
+
 function normalizeStreamIdleTimeoutMs(config: Record<string, unknown>): number {
   const value = asNumber(
     config.streamIdleTimeoutMs ?? config.acpStreamIdleTimeoutMs,
@@ -1005,6 +1061,7 @@ function formatAcpxStreamIdleTimeoutErrorMessage(elapsedMs: number): string {
 async function buildRuntime(input: {
   ctx: AdapterExecutionContext;
   engine: AcpxEngineSettings;
+  executorOptions: AcpxEngineExecutorOptions;
 }): Promise<AcpxPreparedRuntime | AdapterExecutionResult> {
   const { runId, agent, config, context, authToken } = input.ctx;
   const workspaceContext = parseObject(context.paperclipWorkspace);
@@ -1028,7 +1085,7 @@ async function buildRuntime(input: {
     legacyRemoteExecution: input.ctx.executionTransport?.remoteExecution,
   });
   const remoteExecutionIdentity = adapterExecutionTargetSessionIdentity(executionTarget);
-  const effectiveExecutionCwd =
+  let effectiveExecutionCwd =
     remoteExecutionIdentity && typeof remoteExecutionIdentity.remoteCwd === "string"
       ? remoteExecutionIdentity.remoteCwd
       : cwd;
@@ -1207,6 +1264,49 @@ async function buildRuntime(input: {
   }
   const childStderrDir = path.join(stateDir, "run-stderr");
   const childStderrLogPath = agentCommand ? path.join(childStderrDir, `${runId}.log`) : null;
+  let stagedRuntimeEntry: StagedRuntimeCacheEntry | null = null;
+  if (
+    executionTarget?.kind === "remote" &&
+    executionTarget.transport === "sandbox" &&
+    Boolean(executionTarget.runner) &&
+    agentCommandShell
+  ) {
+    const stage = async (assets: AdapterManagedRuntimeAsset[]) =>
+      await prepareAdapterExecutionTargetRuntime({
+        runId,
+        target: executionTarget,
+        adapterKey: input.engine.adapterType,
+        workspaceLocalDir: cwd,
+        workspaceRemoteDir: effectiveExecutionCwd,
+        timeoutSec,
+        assets,
+        onProgress: (line) => input.ctx.onLog("stdout", line),
+        onRuntimeProgress: input.ctx.onRuntimeProgress,
+      });
+    const staged = input.executorOptions.prepareRemoteManagedHome
+      ? await input.executorOptions.prepareRemoteManagedHome({
+          runId,
+          companyId: agent.companyId,
+          executionTarget,
+          workspaceLocalDir: cwd,
+          workspaceRemoteDir: effectiveExecutionCwd,
+          timeoutSec,
+          config,
+          env,
+          onLog: input.ctx.onLog,
+          onRuntimeProgress: input.ctx.onRuntimeProgress,
+          stage,
+        })
+      : { stagedRuntime: await stage([]) };
+    stagedRuntimeEntry = {
+      runtime: staged.stagedRuntime,
+      teardown: staged.teardown,
+      disposeStaged: staged.disposeStaged,
+    };
+    if (staged.stagedRuntime.workspaceRemoteDir) {
+      effectiveExecutionCwd = staged.stagedRuntime.workspaceRemoteDir;
+    }
+  }
   let paperclipBridge: AdapterExecutionTargetPaperclipBridgeHandle | null = null;
   if (
     executionTarget?.kind === "remote" &&
@@ -1217,7 +1317,7 @@ async function buildRuntime(input: {
     paperclipBridge = await startAdapterExecutionTargetPaperclipBridge({
       runId,
       target: { ...executionTarget, streamRunLogs: false },
-      runtimeRootDir: null,
+      runtimeRootDir: stagedRuntimeEntry?.runtime.runtimeRootDir ?? null,
       adapterKey: input.engine.adapterType,
       timeoutSec,
       hostApiToken: env.PAPERCLIP_API_KEY,
@@ -1291,7 +1391,7 @@ async function buildRuntime(input: {
         ? await startAdapterExecutionTargetProcessSessionBridge({
             runId,
             target: executionTarget,
-            runtimeRootDir: null,
+            runtimeRootDir: stagedRuntimeEntry?.runtime.runtimeRootDir ?? null,
             adapterKey: input.engine.adapterType,
             command: "sh",
             args: ["-lc", `exec ${agentCommandShell}`],
@@ -1342,7 +1442,7 @@ async function buildRuntime(input: {
   return {
     acpxAgent,
     mode,
-    cwd,
+    cwd: stagedRuntimeEntry?.runtime.workspaceRemoteDir ?? effectiveExecutionCwd,
     workspaceId,
     workspaceRepoUrl,
     workspaceRepoRef,
@@ -1372,6 +1472,8 @@ async function buildRuntime(input: {
     paperclipClaudeSettings,
     mcpServers,
     mcpIdentity,
+    stagedRuntimeEntry,
+    wrapperRunDir: wrapperPath ? path.dirname(wrapperPath) : null,
   };
 }
 
@@ -1447,11 +1549,27 @@ function shouldSkipUnsupportedResumeConfigOption(
   return unsupportedKeyPattern.test(message);
 }
 
-async function cleanupRemoteBridges(prepared: AcpxPreparedRuntime): Promise<void> {
+async function cleanupRunWrapper(wrapperRunDir: string | null): Promise<void> {
+  if (!wrapperRunDir) return;
+  const wrappersRootDir = path.dirname(wrapperRunDir);
+  await fs.rm(wrapperRunDir, { recursive: true, force: true });
+  await fs.rmdir(wrappersRootDir).catch((err: unknown) => {
+    const code = err instanceof Error && "code" in err ? err.code : null;
+    if (code !== "ENOENT" && code !== "ENOTEMPTY") throw err;
+  });
+}
+
+async function cleanupRemoteBridges(
+  prepared: AcpxPreparedRuntime,
+  options: { preserveWrapper?: boolean } = {},
+): Promise<void> {
   await Promise.allSettled([
     prepared.processSessionBridge?.stop(),
     prepared.paperclipBridge?.stop(),
   ]);
+  if (!options.preserveWrapper) {
+    await cleanupRunWrapper(prepared.wrapperRunDir);
+  }
 }
 
 function renderPaperclipEnvNote(env: Record<string, string>): string {
@@ -1537,12 +1655,15 @@ async function buildPrompt(ctx: AdapterExecutionContext, resumedSession: boolean
     !resumedSession && bootstrapPromptTemplate.trim().length > 0
       ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
       : "";
-  const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, { resumedSession });
+  const taskContextNote = selectPaperclipTaskMarkdown(context, { resumedSession });
+  const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, {
+    resumedSession,
+    suppressIssueDescription: taskContextNote.length > 0,
+  });
   const shouldUseResumeDeltaPrompt = resumedSession && wakePrompt.length > 0;
   const promptInstructionsPrefix = shouldUseResumeDeltaPrompt ? "" : instructionsPrefix;
   const renderedPrompt = shouldUseResumeDeltaPrompt ? "" : renderTemplate(promptTemplate, templateData);
   const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
-  const taskContextNote = asString(context.paperclipTaskMarkdown, "").trim();
   const paperclipEnvNote = renderPaperclipEnvNote(env);
   const apiAccessNote = renderApiAccessNote(env);
   const prompt = joinPromptSections([
@@ -1972,6 +2093,7 @@ async function closeWarmHandle(input: {
   entry: RuntimeCacheEntry;
   reason: string;
   discardPersistentState?: boolean;
+  stagedRuntimes?: Map<string, StagedRuntimeCacheEntry>;
 }) {
   if (input.handles.get(input.key) === input.entry) {
     input.handles.delete(input.key);
@@ -1982,6 +2104,9 @@ async function closeWarmHandle(input: {
     reason: input.reason,
     discardPersistentState: input.discardPersistentState ?? false,
   }).catch(() => {});
+  const stagedEntry = input.stagedRuntimes?.get(input.key) ?? input.entry.stagedRuntimeEntry ?? null;
+  if (input.stagedRuntimes) input.stagedRuntimes.delete(input.key);
+  await disposeStagedRuntime(stagedEntry).catch(() => {});
 }
 
 function scheduleIdleHandleCleanup(input: {
@@ -2027,6 +2152,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
   const createRuntime = deps.createRuntime ?? createAcpRuntime;
   const now = deps.now ?? (() => Date.now());
   const warmHandles = deps.warmHandles ?? defaultWarmHandles;
+  const stagedRuntimes = deps.stagedRuntimes ?? new Map<string, StagedRuntimeCacheEntry>();
   const engine = resolveEngineSettings(deps);
 
   return async function executeAcpxEngine(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult> {
@@ -2041,7 +2167,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       ...(billingIdentity?.biller ? { biller: billingIdentity.biller } : {}),
       billingType: billingIdentity?.billingType ?? ("unknown" as const),
     };
-    const prepared = await buildRuntime({ ctx, engine });
+    const prepared = await buildRuntime({ ctx, engine, executorOptions: deps });
     if (!isAcpxPreparedRuntime(prepared)) {
       return prepared;
     }
@@ -2119,6 +2245,9 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         err,
         phase: "ensure_session",
       });
+      await teardownStagedRuntime(prepared.stagedRuntimeEntry, ctx.onLog).catch(() => {});
+      await disposeStagedRuntime(prepared.stagedRuntimeEntry).catch(() => {});
+      stagedRuntimes.delete(prepared.sessionKey);
       await cleanupRemoteBridges(prepared);
       return {
         exitCode: 1,
@@ -2174,6 +2303,9 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         clearWarmHandleTimer(existing);
         warmHandles.delete(prepared.sessionKey);
       }
+      await teardownStagedRuntime(prepared.stagedRuntimeEntry, ctx.onLog).catch(() => {});
+      await disposeStagedRuntime(prepared.stagedRuntimeEntry).catch(() => {});
+      stagedRuntimes.delete(prepared.sessionKey);
       await cleanupRemoteBridges(prepared);
       return {
         exitCode: 1,
@@ -2379,6 +2511,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           eventBreakdown,
           eventCostUsd,
         });
+        let keepWarmStagedRuntime = false;
         if (terminal.status === "failed" || terminal.status === "cancelled" || timedOut || streamIdleTimedOut) {
           const existing = warmHandles.get(prepared.sessionKey);
           if (warmHandleMatches(existing, runtime, activeSessionHandle) && existing) {
@@ -2393,6 +2526,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
                     ? "paperclip stream idle timeout cleanup"
                     : `paperclip turn ${terminal.status}`,
               discardPersistentState: terminal.status === "cancelled" || timedOut || streamIdleTimedOut,
+              stagedRuntimes,
             });
           } else {
             await runtime.close({
@@ -2406,29 +2540,39 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
               discardPersistentState: terminal.status === "cancelled" || timedOut || streamIdleTimedOut,
             }).catch(() => {});
           }
-        } else if (prepared.mode === "persistent" && warmIdleMs > 0 && !prepared.processSessionBridge) {
-          const existing = warmHandles.get(prepared.sessionKey);
-          if (existing && !warmHandleMatches(existing, runtime, activeSessionHandle)) {
+        } else if (prepared.mode === "persistent") {
+          keepWarmStagedRuntime = true;
+          if (warmIdleMs > 0 && !prepared.processSessionBridge) {
+            const existing = warmHandles.get(prepared.sessionKey);
+            if (existing && !warmHandleMatches(existing, runtime, activeSessionHandle)) {
+              await runtime.close({
+                handle: activeSessionHandle,
+                reason: "paperclip duplicate warm handle cleanup",
+                discardPersistentState: false,
+              }).catch(() => {});
+            } else {
+              const entry: RuntimeCacheEntry = {
+                runtime,
+                handle: activeSessionHandle,
+                fingerprint: prepared.fingerprint,
+                lastUsedAt: now(),
+                stagedRuntimeEntry: prepared.stagedRuntimeEntry,
+              };
+              warmHandles.set(prepared.sessionKey, entry);
+              scheduleIdleHandleCleanup({
+                handles: warmHandles,
+                key: prepared.sessionKey,
+                entry,
+                idleMs: warmIdleMs,
+                now,
+              });
+            }
+          } else {
             await runtime.close({
               handle: activeSessionHandle,
-              reason: "paperclip duplicate warm handle cleanup",
+              reason: "paperclip completed turn cleanup",
               discardPersistentState: false,
             }).catch(() => {});
-          } else {
-            const entry: RuntimeCacheEntry = {
-              runtime,
-              handle: activeSessionHandle,
-              fingerprint: prepared.fingerprint,
-              lastUsedAt: now(),
-            };
-            warmHandles.set(prepared.sessionKey, entry);
-            scheduleIdleHandleCleanup({
-              handles: warmHandles,
-              key: prepared.sessionKey,
-              entry,
-              idleMs: warmIdleMs,
-              now,
-            });
           }
         } else {
           const existing = warmHandles.get(prepared.sessionKey);
@@ -2438,6 +2582,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
               key: prepared.sessionKey,
               entry: existing,
               reason: "paperclip completed turn cleanup",
+              stagedRuntimes,
             });
           } else {
             await runtime.close({
@@ -2460,6 +2605,9 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             stopReason: terminal.status === "failed" ? terminal.error.message : terminal.stopReason,
             message: finalStreamIdleMessage,
           });
+          await teardownStagedRuntime(prepared.stagedRuntimeEntry, ctx.onLog).catch(() => {});
+          await disposeStagedRuntime(prepared.stagedRuntimeEntry).catch(() => {});
+          stagedRuntimes.delete(prepared.sessionKey);
           await cleanupRemoteBridges(prepared);
           return {
             exitCode: 1,
@@ -2499,6 +2647,13 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           };
         }
 
+        await teardownStagedRuntime(prepared.stagedRuntimeEntry, ctx.onLog).catch(() => {});
+        if (keepWarmStagedRuntime && prepared.stagedRuntimeEntry) {
+          stagedRuntimes.set(prepared.sessionKey, prepared.stagedRuntimeEntry);
+        } else {
+          await disposeStagedRuntime(prepared.stagedRuntimeEntry).catch(() => {});
+          stagedRuntimes.delete(prepared.sessionKey);
+        }
         const errorMessage = timedOut
           ? formatAdapterExecutionTimeoutErrorMessage(prepared.timeoutResolution)
           : resultErrorMessage(terminal);
@@ -2509,7 +2664,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           stopReason: terminalStopReason,
           message: errorMessage,
         });
-        await cleanupRemoteBridges(prepared);
+        await cleanupRemoteBridges(prepared, { preserveWrapper: keepWarmStagedRuntime });
         return {
           exitCode: terminal.status === "completed" ? 0 : 1,
           signal: timedOut ? "SIGTERM" : null,
@@ -2580,6 +2735,9 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
           phase: "turn",
           messageOverride,
         });
+        await teardownStagedRuntime(prepared.stagedRuntimeEntry, ctx.onLog).catch(() => {});
+        await disposeStagedRuntime(prepared.stagedRuntimeEntry).catch(() => {});
+        stagedRuntimes.delete(prepared.sessionKey);
         await cleanupRemoteBridges(prepared);
         return {
           exitCode: 1,
