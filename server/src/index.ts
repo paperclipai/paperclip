@@ -72,6 +72,7 @@ import { maybePersistWorktreeRuntimePorts } from "./worktree-config.js";
 import { initTelemetry, getTelemetryClient } from "./telemetry.js";
 import { conflict } from "./errors.js";
 import {
+  adoptEmbeddedPostgres,
   coordinateEmbeddedPostgresShutdown,
   coordinateHeartbeatSchedulerShutdown,
   createShutdownLifecycleContext,
@@ -96,6 +97,7 @@ type BetterAuthSessionResult = {
 type EmbeddedPostgresInstance = {
   initialise(): Promise<void>;
   start(): Promise<void>;
+  adopt(): void;
   stop(): Promise<void>;
 };
 
@@ -105,6 +107,7 @@ type EmbeddedPostgresCtor = new (opts: {
   password: string;
   port: number;
   persistent: boolean;
+  autoShutdown?: boolean;
   initdbFlags?: string[];
   onLog?: (message: unknown) => void;
   onError?: (message: unknown) => void;
@@ -324,7 +327,7 @@ export async function startServer(): Promise<StartedServer> {
   let db;
   let pluginMigrationDb;
   let embeddedPostgres: EmbeddedPostgresInstance | null = null;
-  let embeddedPostgresStartedByThisProcess = false;
+  let stopOwnedEmbeddedPostgres: (() => Promise<void>) | null = null;
   let migrationSummary: MigrationSummary = "skipped";
   let activeDatabaseConnectionString: string;
   let resolvedEmbeddedPostgresPort: number | null = null;
@@ -388,6 +391,18 @@ export async function startServer(): Promise<StartedServer> {
         );
       }
     };
+
+    const createEmbeddedPostgres = (instancePort: number) => new EmbeddedPostgres({
+      databaseDir: dataDir,
+      user: "paperclip",
+      password: "paperclip",
+      port: instancePort,
+      persistent: true,
+      autoShutdown: false,
+      initdbFlags: ["--encoding=UTF8", "--locale=C", "--lc-messages=C"],
+      onLog: appendEmbeddedPostgresLog,
+      onError: appendEmbeddedPostgresLog,
+    });
   
     if (config.databaseMode === "postgres") {
       logger.warn("Database mode is postgres but no connection string was set; falling back to embedded PostgreSQL");
@@ -420,7 +435,9 @@ export async function startServer(): Promise<StartedServer> {
   
     const runningPid = getRunningPid();
     if (runningPid) {
-      logger.warn(`Embedded PostgreSQL already running; reusing existing process (pid=${runningPid}, port=${port})`);
+      embeddedPostgres = createEmbeddedPostgres(port);
+      stopOwnedEmbeddedPostgres = adoptEmbeddedPostgres(embeddedPostgres);
+      logger.warn(`Embedded PostgreSQL already running; adopting existing process (pid=${runningPid}, port=${port})`);
     } else {
       const configuredAdminConnectionString = `postgres://paperclip:paperclip@127.0.0.1:${configuredPort}/postgres`;
       try {
@@ -442,16 +459,7 @@ export async function startServer(): Promise<StartedServer> {
         }
         port = detectedPort;
         logger.info(`Using embedded PostgreSQL because no DATABASE_URL set (dataDir=${dataDir}, port=${port})`);
-        embeddedPostgres = new EmbeddedPostgres({
-          databaseDir: dataDir,
-          user: "paperclip",
-          password: "paperclip",
-          port,
-          persistent: true,
-          initdbFlags: ["--encoding=UTF8", "--locale=C", "--lc-messages=C"],
-          onLog: appendEmbeddedPostgresLog,
-          onError: appendEmbeddedPostgresLog,
-        });
+        embeddedPostgres = createEmbeddedPostgres(port);
 
         if (!clusterAlreadyInitialized) {
           try {
@@ -480,7 +488,7 @@ export async function startServer(): Promise<StartedServer> {
             recentLogs: logBuffer.getRecentLogs(),
           });
         }
-        embeddedPostgresStartedByThisProcess = true;
+        stopOwnedEmbeddedPostgres = () => embeddedPostgres!.stop();
       }
     }
   
@@ -1351,11 +1359,11 @@ export async function startServer(): Promise<StartedServer> {
       const appShutdown = (app as { locals?: { paperclipShutdown?: () => void } }).locals?.paperclipShutdown;
       appShutdown?.();
 
-      if (embeddedPostgres && embeddedPostgresStartedByThisProcess) {
+      if (stopOwnedEmbeddedPostgres) {
         try {
           const postgresShutdown = await coordinateEmbeddedPostgresShutdown({
-            startedByThisProcess: embeddedPostgresStartedByThisProcess,
-            stop: () => embeddedPostgres!.stop(),
+            ownedByThisProcess: true,
+            stop: stopOwnedEmbeddedPostgres,
             lifecycle: shutdownLifecycle,
           });
           if (postgresShutdown === "preserved_for_hot_restart") {

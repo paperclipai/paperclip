@@ -117,7 +117,7 @@ systemctl restart paperclip.service
 
 Use `--drain-required` only when the deploy intentionally requires the old terminate-and-retry behavior. Without that flag, the old server verifies that the marker targets its own PID, snapshots currently running heartbeat run IDs and child PIDs, and skips the shutdown drain so eligible detached local-agent processes can keep running. On startup the new server writes `$PAPERCLIP_HOME/hot-restart-report.json` with `previousServerPid`, `newServerPid`, `previousServerVersion`, `newServerVersion`, `adoptedRunIds`, `finalizedWhileDownRunIds`, `lostRunIds`, and per-run classifications before the normal orphan reaper runs.
 
-When the server owns embedded PostgreSQL, a validated hot restart also leaves that database process running. The replacement server reuses the same data directory and port before it reconciles the captured agent runs. Normal shutdowns still stop an embedded database that the server started.
+When the server owns embedded PostgreSQL, a validated hot restart leaves that database process running and opts out of the dependency's package-global signal hook. The replacement server adopts the same data directory and port, including responsibility for a later normal shutdown, before it reconciles the captured agent runs. Normal shutdowns stop either the originally started or adopted embedded database.
 
 A healthy guarded deploy must compare the report against `/api/health` (`version` or `serverVersion`) and treat any `lostRunIds` entry as a continuity failure that needs recovery before marking deployment complete.
 

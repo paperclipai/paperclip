@@ -1,11 +1,39 @@
+import { spawnSync } from "node:child_process";
+import { resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
+  adoptEmbeddedPostgres,
   coordinateEmbeddedPostgresShutdown,
   coordinateHeartbeatSchedulerShutdown,
   createShutdownLifecycleContext,
 } from "./shutdown.js";
 
 describe("coordinateEmbeddedPostgresShutdown", () => {
+  it("prevents the dependency signal hook from stopping an application-owned database", () => {
+    const child = spawnSync(
+      process.execPath,
+      [
+        "--input-type=module",
+        "--eval",
+        [
+          "const { default: EmbeddedPostgres } = await import('embedded-postgres');",
+          "const instance = new EmbeddedPostgres({ autoShutdown: false });",
+          "instance.stop = async () => console.log('UNCOMMANDED_DATABASE_STOP');",
+          "process.emit('SIGTERM');",
+          "setInterval(() => {}, 1_000);",
+        ].join("\n"),
+      ],
+      {
+        cwd: resolve(process.cwd(), "server"),
+        encoding: "utf8",
+        timeout: 5_000,
+      },
+    );
+
+    expect(child.error).toBeUndefined();
+    expect(child.stdout).not.toContain("UNCOMMANDED_DATABASE_STOP");
+  });
+
   it("preserves the database and active work for a validated hot restart", async () => {
     const activeWork = { transactionOpen: true, childRunAlive: true };
     const stop = vi.fn(async () => {
@@ -21,7 +49,7 @@ describe("coordinateEmbeddedPostgresShutdown", () => {
     });
 
     const result = await coordinateEmbeddedPostgresShutdown({
-      startedByThisProcess: true,
+      ownedByThisProcess: true,
       stop,
       lifecycle,
     });
@@ -43,7 +71,7 @@ describe("coordinateEmbeddedPostgresShutdown", () => {
     const stop = vi.fn(async () => undefined);
 
     const result = await coordinateEmbeddedPostgresShutdown({
-      startedByThisProcess: true,
+      ownedByThisProcess: true,
       stop,
       lifecycle: createShutdownLifecycleContext({
         signal: "SIGINT",
@@ -59,7 +87,7 @@ describe("coordinateEmbeddedPostgresShutdown", () => {
     const stop = vi.fn(async () => undefined);
 
     const result = await coordinateEmbeddedPostgresShutdown({
-      startedByThisProcess: false,
+      ownedByThisProcess: false,
       stop,
       lifecycle: createShutdownLifecycleContext({
         signal: "SIGTERM",
@@ -69,6 +97,38 @@ describe("coordinateEmbeddedPostgresShutdown", () => {
 
     expect(result).toBe("not_owned");
     expect(stop).not.toHaveBeenCalled();
+  });
+
+  it("transfers ownership so a replacement can stop the preserved database", async () => {
+    const originalStop = vi.fn(async () => undefined);
+    const replacement = {
+      adopt: vi.fn(),
+      stop: vi.fn(async () => undefined),
+    };
+
+    await coordinateEmbeddedPostgresShutdown({
+      ownedByThisProcess: true,
+      stop: originalStop,
+      lifecycle: createShutdownLifecycleContext({
+        signal: "SIGTERM",
+        hotRestart: { skipDrain: true },
+      }),
+    });
+
+    const stopAdoptedDatabase = adoptEmbeddedPostgres(replacement);
+    const result = await coordinateEmbeddedPostgresShutdown({
+      ownedByThisProcess: true,
+      stop: stopAdoptedDatabase,
+      lifecycle: createShutdownLifecycleContext({
+        signal: "SIGTERM",
+        hotRestart: null,
+      }),
+    });
+
+    expect(originalStop).not.toHaveBeenCalled();
+    expect(replacement.adopt).toHaveBeenCalledOnce();
+    expect(replacement.stop).toHaveBeenCalledOnce();
+    expect(result).toBe("stopped");
   });
 });
 

@@ -31,12 +31,20 @@ export function createShutdownLifecycleContext(input: {
   };
 }
 
+export function adoptEmbeddedPostgres(input: {
+  adopt: () => void;
+  stop: () => Promise<void>;
+}): () => Promise<void> {
+  input.adopt();
+  return () => input.stop();
+}
+
 export async function coordinateEmbeddedPostgresShutdown(input: {
-  startedByThisProcess: boolean;
+  ownedByThisProcess: boolean;
   stop: (() => Promise<void>) | null;
   lifecycle: ShutdownLifecycleContext;
 }): Promise<"not_owned" | "preserved_for_hot_restart" | "stopped"> {
-  if (!input.startedByThisProcess || !input.stop) return "not_owned";
+  if (!input.ownedByThisProcess || !input.stop) return "not_owned";
   if (input.lifecycle.preserveEmbeddedPostgres) return "preserved_for_hot_restart";
   await input.stop();
   return "stopped";
