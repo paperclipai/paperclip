@@ -5,5 +5,74 @@
       "description": "Kom i gang ved å opprette et selskap.",
       "newCompany": "Nytt selskap"
     }
+  },
+  "common": {
+    "skipToMainContent": "Skip to Main Content",
+    "openSearch": "Open search",
+    "keepSidebarExpanded": "Keep sidebar expanded",
+    "expandSidebar": "Expand sidebar",
+    "collapseSidebar": "Collapse sidebar",
+    "newTask": "New Task"
+  },
+  "sidebar": {
+    "dashboard": "Dashboard",
+    "inbox": "Inbox",
+    "decisions": "Decisions",
+    "status": "Status",
+    "conferenceRoom": "Conference Room",
+    "work": "Work",
+    "tasks": "Tasks",
+    "cases": "Cases",
+    "routines": "Routines",
+    "pipelines": "Pipelines",
+    "goals": "Goals",
+    "artifacts": "Artifacts",
+    "skills": "Skills",
+    "workspaces": "Workspaces",
+    "projects": "Projects",
+    "org": "Org",
+    "apps": "Apps",
+    "timeline": "Timeline",
+    "costs": "Costs",
+    "activity": "Activity",
+    "settings": "Settings",
+    "unread": "unread",
+    "decisionsBadge": "decisions",
+    "beta": "beta",
+    "company": "Company"
+  },
+  "onboarding": {
+    "createFirstCompanyTitle": "Create your first company",
+    "createAnotherCompanyTitle": "Create another company",
+    "addAgentToCompanyTitle": "Add another agent to {{name}}",
+    "createFirstCompanyDesc": "Get started by creating a company and your first agent.",
+    "createAnotherCompanyDesc": "Run onboarding again to create another company and seed its first agent.",
+    "addAgentToCompanyDesc": "Run onboarding again to add an agent and a starter task for this company.",
+    "addAgentButton": "Add Agent",
+    "startOnboardingButton": "Start Onboarding"
+  },
+  "mobileNav": {
+    "home": "Home",
+    "create": "Create",
+    "agents": "Agents"
+  },
+  "account": {
+    "openAccountMenu": "Open account menu",
+    "badgeAccount": "Account",
+    "badgeLocal": "Local",
+    "viewProfile": "View profile",
+    "viewProfileDesc": "Open your activity, task, and usage ledger.",
+    "editProfile": "Edit profile",
+    "editProfileDesc": "Update your display name and avatar.",
+    "documentation": "Documentation",
+    "documentationDesc": "Open Paperclip docs in a new tab.",
+    "feedback": "Feedback",
+    "feedbackDesc": "Share feedback or report an issue.",
+    "signingOut": "Signing out...",
+    "signOut": "Sign out",
+    "signOutDesc": "End this browser session.",
+    "signedIn": "Signed in",
+    "localWorkspaceBoard": "Local workspace board",
+    "boardDefault": "Board"
   }
 }
