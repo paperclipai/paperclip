@@ -1,6 +1,8 @@
 export { companyService } from "./companies.js";
 export { companyArtifactsService } from "./company-artifacts.js";
 export { companySearchService } from "./company-search.js";
+export { seoDocGovernanceService } from "./seo-doc-governance.js";
+export { createSeoDocGovernanceScheduler } from "./seo-doc-governance-scheduler.js";
 export { feedbackService } from "./feedback.js";
 export { companySkillService } from "./company-skills.js";
 export { agentService, deduplicateAgentName } from "./agents.js";

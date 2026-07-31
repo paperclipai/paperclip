@@ -58,6 +58,7 @@ import { logger } from "./middleware/logger.js";
 import { DEFAULT_LOCAL_PLUGIN_DIR, pluginLoader } from "./services/plugin-loader.js";
 import { createPluginWorkerManager, type PluginWorkerManager } from "./services/plugin-worker-manager.js";
 import { createPluginJobScheduler } from "./services/plugin-job-scheduler.js";
+import { createSeoDocGovernanceScheduler } from "./services/seo-doc-governance-scheduler.js";
 import { pluginJobStore } from "./services/plugin-job-store.js";
 import { createPluginToolDispatcher } from "./services/plugin-tool-dispatcher.js";
 import { pluginLifecycleManager } from "./services/plugin-lifecycle.js";
@@ -68,6 +69,7 @@ import { setPluginEventBus } from "./services/activity-log.js";
 import { createPluginDevWatcher } from "./services/plugin-dev-watcher.js";
 import { createPluginHostServiceCleanup } from "./services/plugin-host-service-cleanup.js";
 import { pluginRegistryService } from "./services/plugin-registry.js";
+import { heartbeatService } from "./services/heartbeat.js";
 import { createHostClientHandlers } from "@paperclipai/plugin-sdk";
 import type { BetterAuthSessionResult } from "./auth/better-auth.js";
 import { createCachedViteHtmlRenderer } from "./vite-html-renderer.js";
@@ -274,6 +276,8 @@ export async function createApp(
     jobStore,
     workerManager,
   });
+  const heartbeat = heartbeatService(db, { pluginWorkerManager: workerManager });
+  const seoDocGovernanceScheduler = createSeoDocGovernanceScheduler({ db, enqueueWakeup: heartbeat.wakeup });
   const toolDispatcher = createPluginToolDispatcher({
     workerManager,
     lifecycleManager: lifecycle,
@@ -454,6 +458,7 @@ export async function createApp(
 
   jobCoordinator.start();
   scheduler.start();
+  seoDocGovernanceScheduler.start();
   let feedbackExportShuttingDown = false;
   let feedbackExportTimer: ReturnType<typeof setInterval> | null = null;
   const disableFeedbackExportFlushes = () => {
@@ -570,6 +575,7 @@ export async function createApp(
     disableFeedbackExportFlushes();
     devWatcher?.close();
     viteHtmlRenderer?.dispose();
+    seoDocGovernanceScheduler.stop();
     hostServiceCleanup.disposeAll();
     hostServiceCleanup.teardown();
   };
