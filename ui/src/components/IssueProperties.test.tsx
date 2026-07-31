@@ -2078,6 +2078,12 @@ describe("IssueProperties", () => {
       });
     };
 
+    const expectedPrimaryAbsolute = formatMonitorAbsolute(
+      baseMonitorState.nextCheckAt,
+      {},
+      new Date("2026-07-17T13:56:00.000Z"),
+    );
+
     renderMonitor(createIssue({
       executionPolicy: createExecutionPolicy({ monitor: { ...baseMonitorState, serviceName: "vercel-deploy" } }),
       executionState: createExecutionState({ monitor: baseMonitorState }),
@@ -2111,6 +2117,12 @@ describe("IssueProperties", () => {
     await flush();
     expect(monitorRowText()).toContain("Due now");
     expect(monitorRowText()).toContain("checking momentarily…");
+
+    const expectedOverdueAbsolute = formatMonitorAbsolute(
+      "2026-07-17T13:38:00.000Z",
+      {},
+      new Date("2026-07-17T13:56:00.000Z"),
+    );
 
     renderMonitor(createIssue({
       executionPolicy: createExecutionPolicy({ monitor: { ...baseMonitorState, nextCheckAt: "2026-07-17T13:38:00.000Z" } }),

@@ -483,7 +483,7 @@ else
   if [[ -e "$worktree_config_path" || -e "$worktree_env_path" ]]; then
     echo "Existing isolated Paperclip worktree config is stale for this host; regenerating." >&2
   fi
-  if paperclipai_command_available; then
+  if [[ "${PAPERCLIP_SKIP_WORKTREE_CLI_INIT:-false}" != "true" ]] && paperclipai_command_available; then
     if run_isolated_worktree_init; then
       :
     else

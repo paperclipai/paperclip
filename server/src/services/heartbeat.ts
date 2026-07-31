@@ -4779,6 +4779,23 @@ export function stripPaperclipSessionMetadataFromSessionParams(
   return next;
 }
 
+function mergePaperclipSessionMetadataIntoSessionParams(input: {
+  sessionParams: Record<string, unknown> | null | undefined;
+  metadataSource: Record<string, unknown> | null | undefined;
+}) {
+  const normalized = normalizeSessionParams(input.sessionParams);
+  const source = input.metadataSource;
+  if (!source) return normalized;
+  const next = { ...(normalized ?? {}) };
+  let changed = false;
+  for (const key of PAPERCLIP_SESSION_METADATA_KEYS) {
+    if (!(key in source)) continue;
+    next[key] = source[key];
+    changed = true;
+  }
+  return changed ? next : normalized;
+}
+
 export function resolveTaskSessionConfigFreshness(input: {
   hasTaskSession: boolean;
   configuredModel: string | null;
@@ -7168,6 +7185,328 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     ].join("\n");
   }
 
+  type IssueMonitorPatchableIssue = Parameters<typeof buildIssueMonitorRearmedPatch>[0]["issue"];
+
+  function rearmUndeliveredIssueMonitorPatch(input: {
+    issue: IssueMonitorPatchableIssue;
+    now: Date;
+    nextCheckAt: string | null | undefined;
+    deliveredAttemptCount: number | null | undefined;
+  }) {
+    const policy = normalizeIssueExecutionPolicy(input.issue.executionPolicy ?? null);
+    const currentAttemptCount = Math.max(0, (input.deliveredAttemptCount ?? input.issue.monitorAttemptCount ?? 1) - 1);
+    return buildIssueMonitorRearmedPatch({
+      issue: input.issue,
+      policy,
+      nextCheckAt: buildUndeliveredIssueMonitorRearmAt(input.now, input.nextCheckAt),
+      attemptCount: currentAttemptCount,
+    });
+  }
+
+  async function countConsecutiveFailedIssueMonitorDispatches(input: {
+    companyId: string;
+    issueId: string;
+    agentId: string;
+    now: Date;
+    currentRun: typeof heartbeatRuns.$inferSelect;
+  }) {
+    const queriedRuns = await db
+      .select({
+        id: heartbeatRuns.id,
+        status: heartbeatRuns.status,
+        finishedAt: heartbeatRuns.finishedAt,
+        error: heartbeatRuns.error,
+        errorCode: heartbeatRuns.errorCode,
+        resultJson: heartbeatRuns.resultJson,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+      })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, input.companyId),
+          eq(heartbeatRuns.agentId, input.agentId),
+          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${input.issueId}`,
+        ),
+      )
+      .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
+      .limit(ISSUE_MONITOR_FAILED_DISPATCH_STREAK_LOOKBACK_LIMIT);
+
+    // Release may run inside the transaction that finalized the current run,
+    // so the service-level query cannot always observe it yet. Seed the sample
+    // from the finalized run object and de-duplicate the database result.
+    const recentRuns = [
+      input.currentRun,
+      ...queriedRuns.filter((row) => row.id !== input.currentRun.id),
+    ].slice(0, ISSUE_MONITOR_FAILED_DISPATCH_STREAK_LOOKBACK_LIMIT);
+
+    const sampleRunIds = recentRuns.map((row) => row.id);
+    const progressRows = await db
+      .select({ runId: activityLog.runId })
+      .from(activityLog)
+      .where(
+        and(
+          eq(activityLog.companyId, input.companyId),
+          eq(activityLog.entityType, "issue"),
+          eq(activityLog.entityId, input.issueId),
+          inArray(activityLog.runId, sampleRunIds),
+          inArray(activityLog.action, ISSUE_PROGRESS_ACTIVITY_ACTIONS),
+        ),
+      );
+    const lastRunFinishedAt = recentRuns[0]?.finishedAt ?? null;
+    const newInputRows = lastRunFinishedAt
+      ? await db
+        .select({ id: activityLog.id })
+        .from(activityLog)
+        .where(
+          and(
+            eq(activityLog.companyId, input.companyId),
+            eq(activityLog.entityType, "issue"),
+            eq(activityLog.entityId, input.issueId),
+            gt(activityLog.createdAt, lastRunFinishedAt),
+            inArray(activityLog.action, ISSUE_NEW_INPUT_ACTIVITY_ACTIONS),
+          ),
+        )
+        .limit(1)
+      : [];
+
+    if (newInputRows.length > 0) return 1;
+
+    const runIdsWithIssueProgress = new Set(
+      progressRows
+        .map((row) => row.runId)
+        .filter((runId): runId is string => Boolean(runId)),
+    );
+    let streak = 0;
+    for (const row of recentRuns) {
+      const wakeReason = readNonEmptyString(parseObject(row.contextSnapshot).wakeReason);
+      // Unrelated issue wakes can interleave with monitor dispatches. They neither
+      // extend nor reset the monitor-specific failure streak.
+      if (wakeReason !== "issue_monitor_due") continue;
+      if (row.status !== "failed" || runIdsWithIssueProgress.has(row.id)) break;
+      streak += 1;
+    }
+
+    return Math.max(1, streak);
+  }
+
+  async function resolveFailedIssueMonitorRearmAt(input: {
+    issue: typeof issues.$inferSelect;
+    run: typeof heartbeatRuns.$inferSelect;
+    now: Date;
+  }) {
+    const transientRecovery = readTransientRecoveryContractFromRun(input.run);
+    if (
+      transientRecovery?.retryNotBefore &&
+      transientRecovery.retryNotBefore.getTime() > input.now.getTime()
+    ) {
+      return transientRecovery.retryNotBefore;
+    }
+
+    const classifiedRecovery = classifyAdapterFailureForRecovery(input.run, input.now);
+    if (
+      classifiedRecovery?.kind === "provider_quota" &&
+      classifiedRecovery.parsedResetTime &&
+      classifiedRecovery.retryAt.getTime() > input.now.getTime()
+    ) {
+      return classifiedRecovery.retryAt;
+    }
+
+    const consecutiveFailures = await countConsecutiveFailedIssueMonitorDispatches({
+      companyId: input.issue.companyId,
+      issueId: input.issue.id,
+      agentId: input.run.agentId,
+      now: input.now,
+      currentRun: input.run,
+    });
+    return new Date(
+      input.now.getTime() + computeIssueMonitorFailedDispatchBackoffDelayMs(consecutiveFailures),
+    );
+  }
+
+  async function buildTerminalIssueMonitorRearmPatch(input: {
+    issue: typeof issues.$inferSelect;
+    run: typeof heartbeatRuns.$inferSelect;
+    now: Date;
+  }) {
+    const runContext = parseObject(input.run.contextSnapshot);
+    if (readNonEmptyString(runContext.wakeReason) !== "issue_monitor_due") return null;
+    if (input.issue.monitorNextCheckAt) return null;
+    if (input.issue.status === "done" || input.issue.status === "cancelled") return null;
+
+    const monitorState = parseIssueExecutionState(input.issue.executionState)?.monitor ?? null;
+    if (!monitorState || monitorState.status !== "triggered") return null;
+    if (monitorState.kind === "external_service") return null;
+
+    const currentAttemptCount = Math.max(
+      0,
+      (input.issue.monitorAttemptCount ?? monitorState.attemptCount ?? 1) - 1,
+    );
+    const nextCheckAt = await resolveFailedIssueMonitorRearmAt(input);
+    const patch = buildIssueMonitorRearmedPatch({
+      issue: input.issue,
+      policy: normalizeIssueExecutionPolicy(input.issue.executionPolicy ?? null),
+      nextCheckAt,
+      attemptCount: currentAttemptCount,
+    });
+
+    return Object.keys(patch).length > 0 ? patch : null;
+  }
+
+  async function rearmIssueMonitorAfterFailedDispatch(input: {
+    issueId: string;
+    companyId: string;
+    now: Date;
+    nextCheckAt: string | null | undefined;
+    deliveredAttemptCount: number | null | undefined;
+    reason: string;
+    runId: string | null;
+    agentId: string | null;
+  }) {
+    const issue = await db
+      .select(issueMonitorDispatchColumns)
+      .from(issues)
+      .where(and(eq(issues.id, input.issueId), eq(issues.companyId, input.companyId)))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (!issue) return false;
+
+    const monitorState = parseIssueExecutionState(issue.executionState)?.monitor ?? null;
+    if (!monitorState || monitorState.status !== "triggered") return false;
+    if (issue.monitorNextCheckAt) return false;
+    if (!["in_progress", "in_review"].includes(issue.status)) return false;
+    if (monitorState.kind === "external_service") return false;
+
+    const patch = rearmUndeliveredIssueMonitorPatch({
+      issue,
+      now: input.now,
+      nextCheckAt: input.nextCheckAt,
+      deliveredAttemptCount: input.deliveredAttemptCount,
+    });
+    if (Object.keys(patch).length === 0) return false;
+
+    await db
+      .update(issues)
+      .set({
+        ...patch,
+        updatedAt: input.now,
+      })
+      .where(eq(issues.id, issue.id));
+
+    await logActivity(db, {
+      companyId: issue.companyId,
+      actorType: "system",
+      actorId: "heartbeat_scheduler",
+      agentId: input.agentId,
+      runId: input.runId,
+      action: "issue.monitor_rearmed",
+      entityType: "issue",
+      entityId: issue.id,
+      details: {
+        identifier: issue.identifier,
+        previousNextCheckAt: input.nextCheckAt ?? null,
+        rearmedNextCheckAt:
+          "monitorNextCheckAt" in patch && patch.monitorNextCheckAt instanceof Date
+            ? patch.monitorNextCheckAt.toISOString()
+            : null,
+        attemptedAttemptCount: input.deliveredAttemptCount ?? issue.monitorAttemptCount ?? null,
+        restoredAttemptCount: "monitorAttemptCount" in patch ? patch.monitorAttemptCount ?? null : null,
+        notes: issue.monitorNotes ?? null,
+        source: "scheduled",
+        reason: input.reason,
+      },
+    });
+
+    return true;
+  }
+
+  async function reconcileStrandedTriggeredIssueMonitors(now = new Date()) {
+    const strandedThreshold = new Date(now.getTime() - 5 * 60 * 1000);
+    const candidates = await db
+      .select(issueMonitorDispatchColumns)
+      .from(issues)
+      .innerJoin(companies, eq(companies.id, issues.companyId))
+      .where(
+        and(
+          eq(companies.status, "active"),
+          isNull(issues.monitorNextCheckAt),
+          isNull(issues.assigneeUserId),
+          sql`${issues.assigneeAgentId} is not null`,
+          inArray(issues.status, ["in_progress", "in_review"]),
+          sql`${issues.monitorLastTriggeredAt} is not null`,
+          lte(issues.monitorLastTriggeredAt, strandedThreshold),
+        ),
+      )
+      .orderBy(asc(issues.monitorLastTriggeredAt), asc(issues.updatedAt))
+      .limit(50);
+
+    let rearmedCount = 0;
+
+    for (const candidate of candidates) {
+      const monitorState = parseIssueExecutionState(candidate.executionState)?.monitor ?? null;
+      if (!monitorState || monitorState.status !== "triggered") continue;
+      if (monitorState.kind === "external_service") continue;
+
+      const [activeRun, pendingInteraction, pendingApproval, dependencyReadiness] = await Promise.all([
+        db
+          .select({ id: heartbeatRuns.id })
+          .from(heartbeatRuns)
+          .where(
+            and(
+              eq(heartbeatRuns.companyId, candidate.companyId),
+              inArray(heartbeatRuns.status, [...EXECUTION_PATH_HEARTBEAT_RUN_STATUSES]),
+              sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${candidate.id}`,
+            ),
+          )
+          .limit(1)
+          .then((rows) => rows[0] ?? null),
+        db
+          .select({ id: issueThreadInteractions.id })
+          .from(issueThreadInteractions)
+          .where(
+            and(
+              eq(issueThreadInteractions.companyId, candidate.companyId),
+              eq(issueThreadInteractions.issueId, candidate.id),
+              eq(issueThreadInteractions.status, "pending"),
+            ),
+          )
+          .limit(1)
+          .then((rows) => rows[0] ?? null),
+        db
+          .select({ id: issueApprovals.approvalId })
+          .from(issueApprovals)
+          .innerJoin(approvals, eq(issueApprovals.approvalId, approvals.id))
+          .where(
+            and(
+              eq(issueApprovals.companyId, candidate.companyId),
+              eq(issueApprovals.issueId, candidate.id),
+              inArray(approvals.status, ["pending", "revision_requested"]),
+            ),
+          )
+          .limit(1)
+          .then((rows) => rows[0] ?? null),
+        issuesSvc.listDependencyReadiness(candidate.companyId, [candidate.id]).then((rows) => rows.get(candidate.id) ?? null),
+      ]);
+
+      if (activeRun || pendingInteraction || pendingApproval || (dependencyReadiness && !dependencyReadiness.isDependencyReady)) {
+        continue;
+      }
+
+      const rearmed = await rearmIssueMonitorAfterFailedDispatch({
+        issueId: candidate.id,
+        companyId: candidate.companyId,
+        now,
+        nextCheckAt: candidate.monitorLastTriggeredAt?.toISOString() ?? null,
+        deliveredAttemptCount: candidate.monitorAttemptCount,
+        reason: "stranded_triggered_monitor_reconciled",
+        runId: null,
+        agentId: null,
+      });
+      if (rearmed) rearmedCount += 1;
+    }
+
+    return { checked: candidates.length, rearmed: rearmedCount };
+  }
+
   async function findOpenIssueMonitorRecoveryIssue(claimed: IssueMonitorDispatchRow) {
     return db
       .select()
@@ -7533,15 +7872,32 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         action: "issue.monitor_triggered",
         entityType: "issue",
         entityId: claimed.id,
-        details: {
-          identifier: claimed.identifier,
-          nextCheckAt: scheduledAtIso,
-          lastTriggeredAt: input.now.toISOString(),
-          attemptCount: nextAttemptCount,
-          notes: claimed.monitorNotes ?? null,
-          ...monitorMetadata,
-          source: input.activitySource,
-        },
+        details: consumedByTargetIssue
+          ? {
+              identifier: claimed.identifier,
+              nextCheckAt: scheduledAtIso,
+              lastTriggeredAt: input.now.toISOString(),
+              attemptCount: nextAttemptCount,
+              notes: claimed.monitorNotes ?? null,
+              ...monitorMetadata,
+              source: input.activitySource,
+            }
+          : {
+              identifier: claimed.identifier,
+              previousNextCheckAt: scheduledAtIso,
+              rearmedNextCheckAt:
+                "monitorNextCheckAt" in issueMonitorPatch && issueMonitorPatch.monitorNextCheckAt instanceof Date
+                  ? issueMonitorPatch.monitorNextCheckAt.toISOString()
+                  : null,
+              attemptedAttemptCount: nextAttemptCount,
+              restoredAttemptCount: claimed.monitorAttemptCount ?? 0,
+              notes: claimed.monitorNotes ?? null,
+              ...monitorMetadata,
+              source: input.activitySource,
+              reason: deliveredRun && !deliveredRunActive
+                ? "claim_failed_backoff"
+                : "undelivered_foreign_issue_carrier",
+            },
       });
 
       return { outcome: "triggered" as const };
@@ -11979,6 +12335,37 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       payload: staleness.details,
     });
 
+    if (staleness.errorCode === "issue_assignee_changed") {
+      const successorAgentId = readNonEmptyString(staleness.details.currentAssigneeAgentId);
+      if (successorAgentId) {
+        await enqueueWakeup(successorAgentId, {
+          source: "automation",
+          triggerDetail: "system",
+          reason: "issue_assigned",
+          payload: {
+            issueId,
+            staleQueuedRunId: run.id,
+            staleQueuedRunErrorCode: staleness.errorCode,
+          },
+          contextSnapshot: {
+            issueId,
+            wakeReason: "issue_assigned",
+            staleQueuedRunId: run.id,
+            staleQueuedRunErrorCode: staleness.errorCode,
+          },
+        });
+      }
+    } else if (staleness.errorCode === "issue_execution_lock_changed") {
+      const agent = await getAgent(run.agentId);
+      if (agent) {
+        await scheduleBoundedRetryForRun(cancelled, agent, {
+          retryReason: "issue_execution_lock_changed",
+          wakeReason: "issue_assigned",
+          delayMs: 1_000,
+        });
+      }
+    }
+
     return cancelled;
   }
 
@@ -12315,6 +12702,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
 
       const tracksLocalChild = isTrackedLocalChildProcessAdapter(adapterType);
+      if (tracksLocalChild && !run.processPid && !run.processGroupId) {
+        logger.warn(
+          { runId: run.id, adapterType },
+          "skipping orphan reap because local run has no process metadata to prove liveness loss",
+        );
+        continue;
+      }
       const processPidAlive = tracksLocalChild && run.processPid && isProcessAlive(run.processPid);
       const processGroupAlive = tracksLocalChild && run.processGroupId && isProcessGroupAlive(run.processGroupId);
       if (
