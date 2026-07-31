@@ -3089,7 +3089,6 @@ async function listIssueBlockedInboxAttentionMap(
       .where(and(
         eq(issues.companyId, companyId),
         visibleIssueCondition(),
-        notInArray(issues.status, [...BLOCKED_INBOX_TERMINAL_STATUSES]),
       )),
     dbOrTx
       .select({
@@ -3133,7 +3132,7 @@ async function listIssueBlockedInboxAttentionMap(
       : dbOrTx
           .select({
             companyId: heartbeatRuns.companyId,
-            issueId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`,
+            issueId: sql<string | null>`coalesce(${heartbeatRuns.contextSnapshot} ->> 'issueId', ${heartbeatRuns.contextSnapshot} ->> 'taskId')`,
             agentId: heartbeatRuns.agentId,
             status: heartbeatRuns.status,
           })
@@ -3141,7 +3140,10 @@ async function listIssueBlockedInboxAttentionMap(
           .where(and(
             eq(heartbeatRuns.companyId, companyId),
             inArray(heartbeatRuns.status, [...BLOCKED_INBOX_ACTIVE_RUN_STATUSES]),
-            inArray(sql<string>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`, graphIssueIds),
+            inArray(
+              sql<string>`coalesce(${heartbeatRuns.contextSnapshot} ->> 'issueId', ${heartbeatRuns.contextSnapshot} ->> 'taskId')`,
+              graphIssueIds,
+            ),
           )),
     graphIssueIds.length === 0
       ? Promise.resolve([])
@@ -3164,7 +3166,7 @@ async function listIssueBlockedInboxAttentionMap(
       : dbOrTx
           .select({
             companyId: heartbeatRuns.companyId,
-            issueId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`,
+            issueId: sql<string | null>`coalesce(${heartbeatRuns.contextSnapshot} ->> 'issueId', ${heartbeatRuns.contextSnapshot} ->> 'taskId')`,
             agentId: heartbeatRuns.agentId,
             status: heartbeatRuns.status,
           })
@@ -3172,7 +3174,10 @@ async function listIssueBlockedInboxAttentionMap(
           .where(and(
             eq(heartbeatRuns.companyId, companyId),
             eq(heartbeatRuns.status, "scheduled_retry"),
-            inArray(sql<string>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`, graphIssueIds),
+            inArray(
+              sql<string>`coalesce(${heartbeatRuns.contextSnapshot} ->> 'issueId', ${heartbeatRuns.contextSnapshot} ->> 'taskId')`,
+              graphIssueIds,
+            ),
           )),
     graphIssueIds.length === 0
       ? Promise.resolve([])
@@ -3218,6 +3223,11 @@ async function listIssueBlockedInboxAttentionMap(
     issueId: row.issueId,
     status: "pending",
   }));
+  const issuesWithLiveExecution = new Set<string>([
+    ...(activeRunRows as Array<{ issueId: string | null }>),
+    ...(wakeRows as Array<{ issueId: string | null }>),
+    ...(scheduledRetryRows as Array<{ issueId: string | null }>),
+  ].flatMap((row) => row.issueId ? [row.issueId] : []));
 
   const openRecoveryIssues = graphIssues
     .filter((issue) => BLOCKED_INBOX_RECOVERY_ORIGIN_KINDS.includes(issue.originKind as typeof BLOCKED_INBOX_RECOVERY_ORIGIN_KINDS[number]))
@@ -3292,7 +3302,7 @@ async function listIssueBlockedInboxAttentionMap(
     }
     const source = issueRef(row);
     const handoff = handoffMap.get(row.id);
-    if (handoff && (handoff.required || handoff.state === "escalated")) {
+    if (handoff && !issuesWithLiveExecution.has(row.id) && (handoff.required || handoff.state === "escalated")) {
       result.set(row.id, attentionBase({
         state: "missing_disposition",
         reason: "missing_successful_run_disposition",
@@ -3733,50 +3743,6 @@ async function countBlockedInboxIssues(dbOrTx: any, companyId: string, filters?:
     ) return count;
     return count + 1;
   }, 0);
-}
-
-type InboxArchiveAttributionRow = {
-  issueId: string;
-  archivedAt: Date;
-  archivedByActorType: "user" | "agent";
-  archivedByAgentId: string | null;
-  archivedByRunId: string | null;
-};
-
-async function inboxArchiveRowsForIssues(
-  dbOrTx: Db,
-  companyId: string,
-  userId: string,
-  issueIds: string[],
-): Promise<InboxArchiveAttributionRow[]> {
-  if (issueIds.length === 0) return [];
-  return dbOrTx
-    .select({
-      issueId: issueInboxArchives.issueId,
-      archivedAt: issueInboxArchives.archivedAt,
-      archivedByActorType: issueInboxArchives.archivedByActorType,
-      archivedByAgentId: issueInboxArchives.archivedByAgentId,
-      archivedByRunId: issueInboxArchives.archivedByRunId,
-    })
-    .from(issueInboxArchives)
-    .where(and(
-      eq(issueInboxArchives.companyId, companyId),
-      eq(issueInboxArchives.userId, userId),
-      inArray(issueInboxArchives.issueId, issueIds),
-    ));
-}
-
-function activeInboxArchiveFields(
-  archive: InboxArchiveAttributionRow | undefined,
-  lastActivityAt: Date,
-) {
-  if (!archive || archive.archivedAt.getTime() < lastActivityAt.getTime()) return {};
-  return {
-    archivedAt: archive.archivedAt,
-    archivedByActorType: archive.archivedByActorType,
-    archivedByAgentId: archive.archivedByAgentId,
-    archivedByRunId: archive.archivedByRunId,
-  };
 }
 
 export function issueService(db: Db) {

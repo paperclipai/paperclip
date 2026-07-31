@@ -28,6 +28,7 @@ import {
 import {
   describeClaudeFailure,
   detectClaudeLoginRequired,
+  isClaudeProviderQuotaError,
   isClaudeTransientUpstreamError,
   parseClaudeStreamJson,
 } from "./parse.js";
@@ -473,14 +474,23 @@ export async function testEnvironment(
           stdout: probe.stdout,
           stderr: probe.stderr,
         });
+        const providerQuota = isClaudeProviderQuotaError({
+          parsed,
+          stdout: probe.stdout,
+          stderr: probe.stderr,
+        });
         checks.push(
-          transient
+          transient || providerQuota
             ? {
                 code: "claude_hello_probe_transient_upstream",
                 level: "warn",
-                message: "Claude hello probe hit a transient upstream error (rate limit or overload).",
+                message: providerQuota
+                  ? "Claude hello probe hit a temporary usage or quota limit."
+                  : "Claude hello probe hit a transient upstream error (rate limit or overload).",
                 ...(failureDetail ? { detail: failureDetail } : {}),
-                hint: "This is usually temporary. Wait a moment and re-run Test.",
+                hint: providerQuota
+                  ? "This lane is temporarily unavailable under the current Claude account limits. Wait for reset or retry with available quota."
+                  : "This is usually temporary. Wait a moment and re-run Test.",
               }
             : {
                 code: "claude_hello_probe_failed",
