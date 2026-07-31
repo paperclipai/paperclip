@@ -1708,7 +1708,7 @@ describeEmbeddedPostgres("authorization service", () => {
       type: "agent",
       agentId: owner.id,
       companyId: company.id,
-      source: "agent_key",
+      source: "agent_jwt",
     } as const;
 
     const runOwnerTransaction = <T>(
@@ -1911,7 +1911,7 @@ describeEmbeddedPostgres("authorization service", () => {
       type: "agent" as const,
       agentId: owner.id,
       companyId: company.id,
-      source: "agent_key" as const,
+      source: "agent_jwt" as const,
     };
     const assignment = {
       projectId: project.id,

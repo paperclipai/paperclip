@@ -4,6 +4,7 @@ import { and, asc, desc, eq, gt, gte, inArray, isNull, like, lt, ne, notInArray,
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
+  agentApiKeys,
   agentWakeupRequests,
   agents,
   authUsers,
@@ -65,6 +66,7 @@ import {
   issueCommentPresentationSchema,
   issueUnblockDescriptorSchema,
   isUuidLike,
+  normalizeAgentApiKeyScope,
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
 } from "@paperclipai/shared";
 import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
@@ -5479,6 +5481,35 @@ export function issueService(db: Db) {
         lockedOwner.status === "terminated"
       ) {
         throw conflict("Unblock owner authorization became stale");
+      }
+
+      if (input.actor.source === "agent_key") {
+        const keyId = input.actor.keyId?.trim();
+        if (!keyId) throw conflict("Unblock owner authorization became stale");
+        const lockedKey = await tx
+          .select({
+            id: agentApiKeys.id,
+            agentId: agentApiKeys.agentId,
+            companyId: agentApiKeys.companyId,
+            responsibleUserId: agentApiKeys.responsibleUserId,
+            scopeConfig: agentApiKeys.scopeConfig,
+            revokedAt: agentApiKeys.revokedAt,
+          })
+          .from(agentApiKeys)
+          .where(eq(agentApiKeys.id, keyId))
+          .for("update")
+          .then((rows) => rows[0] ?? null);
+        if (
+          !lockedKey ||
+          lockedKey.agentId !== actorAgentId ||
+          lockedKey.companyId !== lockedIssue!.companyId ||
+          lockedKey.revokedAt ||
+          lockedKey.responsibleUserId !== (input.actor.onBehalfOfUserId ?? null) ||
+          JSON.stringify(normalizeAgentApiKeyScope(lockedKey.scopeConfig)) !==
+            JSON.stringify(normalizeAgentApiKeyScope(input.actor.keyScope))
+        ) {
+          throw conflict("Unblock owner authorization became stale");
+        }
       }
 
       // Scoped assignment grants can depend on the company hierarchy, so lock
