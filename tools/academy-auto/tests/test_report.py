@@ -116,3 +116,26 @@ def test_build_digest_result_override_replaces_result_line():
     assert "TROCKENLAUF" in text
     assert "42 Zeilen" in text
     assert "kein grünes Gate" not in text
+
+
+def test_build_digest_from_pending_change():
+    from academy_auto.pending import PendingRecord
+    from academy_auto.report import build_digest_from_pending
+    rec = PendingRecord(
+        run_ts="2026-07-25T02:00:03", outcome="committed", task="Jest-Typen",
+        reason="17x impact", gate_note="Delta grün (658→12)", branch_sha="abc",
+        has_change=True, tsc_delta=646, quarantined=["tsc:foo:1:TS2593"],
+    )
+    text = build_digest_from_pending(rec)
+    assert "Academy-Auto" in text
+    assert "Jest-Typen" in text
+    assert "Delta grün (658→12)" in text
+    assert "Quarantäne" in text
+
+
+def test_build_digest_from_pending_nothing():
+    from academy_auto.pending import PendingRecord
+    from academy_auto.report import build_digest_from_pending
+    rec = PendingRecord("t", "nothing_to_do", "", "", "", "", False, 0, [])
+    text = build_digest_from_pending(rec)
+    assert "nichts Umsetzbares" in text

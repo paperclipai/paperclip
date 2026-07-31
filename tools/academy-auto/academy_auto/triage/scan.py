@@ -108,11 +108,27 @@ def scan_tsc(root, runner=subprocess.run) -> list[Candidate]:
     return cands
 
 
+# Der Scanner MUSS denselben Ausschnitt sehen wie das Gate, sonst bietet er
+# Arbeit an, die das Gate gar nicht messen kann.
+#
+# `npm run lint` (= `expo lint`, der Gate-Schritt) ruft eslint mit genau einem
+# Pfad auf: <root>/src — per EXPO_DEBUG verifiziert. Der Scanner lief dagegen
+# auf "." und fand zusaetzlich tests/ und supabase/ (25 statt 6 Dateien).
+# Folge am 31.07.: der Ranker waehlte import/first-Verstoesse in vier
+# tests/-Dateien, das Gate lintet tests/ ueberhaupt nicht, Ergebnis 13->13.
+LINT_SCAN_PATHS = ("src",)
+
+# Nur ESLint-FEHLER (severity 2). `measure_gate` zaehlt ausschliesslich Fehler;
+# eine behobene Warnung laesst die Gate-Zahl unveraendert, das Delta bleibt 0
+# und der Lauf wird verworfen. 97 der 103 Kandidaten waren solche Warnungen.
+LINT_ERROR_SEVERITY = 2
+
+
 def scan_lint(root, runner=subprocess.run, repo_root=None) -> list[Candidate]:
     base = repo_root if repo_root is not None else (str(root) if root is not None else "")
     try:
         proc = runner(
-            ["npx", "eslint", ".", "--format", "json"],
+            ["npx", "eslint", *LINT_SCAN_PATHS, "--format", "json"],
             cwd=str(root) if root is not None else None,
             capture_output=True, text=True, check=False, timeout=SCAN_TIMEOUT,
         )
@@ -129,6 +145,8 @@ def scan_lint(root, runner=subprocess.run, repo_root=None) -> list[Candidate]:
         abs_path = entry.get("filePath", "")
         rel = abs_path[len(base):].lstrip("/") if base and abs_path.startswith(base) else abs_path
         for m in entry.get("messages", []):
+            if m.get("severity", 0) < LINT_ERROR_SEVERITY:
+                continue  # Warnung: fuer das Gate unsichtbar, nicht anbieten
             ln = m.get("line", 0)
             rule = m.get("ruleId") or "unknown"
             cands.append(Candidate(

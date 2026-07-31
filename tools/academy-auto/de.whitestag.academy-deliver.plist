@@ -1,0 +1,27 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!-- Beim Deploy den HOME-Pfad ersetzen, falls abweichend (siehe README). -->
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key><string>de.whitestag.academy-deliver</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/zsh</string>
+        <string>/Users/walterschoenenbroecher.de/.paperclip/scripts/academy-auto/run-deliver.sh</string>
+    </array>
+    <key>WorkingDirectory</key><string>/Users/walterschoenenbroecher.de/.paperclip/scripts/academy-auto</string>
+    <key>EnvironmentVariables</key>
+    <dict>
+        <key>PATH</key><string>/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    </dict>
+    <key>StartCalendarInterval</key>
+    <dict>
+        <key>Hour</key><integer>8</integer>
+        <key>Minute</key><integer>0</integer>
+    </dict>
+    <key>RunAtLoad</key><false/>
+    <key>StandardOutPath</key><string>/Users/walterschoenenbroecher.de/.paperclip/logs/academy-deliver.log</string>
+    <key>StandardErrorPath</key><string>/Users/walterschoenenbroecher.de/.paperclip/logs/academy-deliver.log</string>
+</dict>
+</plist>

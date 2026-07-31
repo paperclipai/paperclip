@@ -188,6 +188,47 @@ def test_protected_write_paths_include_skills():
     assert any(p.endswith(".claude/skills") for p in cfg.protected_write_paths)
 
 
+def test_claude_state_file_is_writable():
+    """~/.claude.json muss schreibbar sein — sonst stirbt jeder Lauf an EPERM.
+
+    Die Allow-Regel fuer ~/.claude deckt nur das VERZEICHNIS ab; Claude Code
+    legt seinen Zustand aber in der Datei ~/.claude.json daneben ab. Ohne
+    eigene Regel greift (deny file-write*) und die CLI bricht mitten in der
+    Umsetzung ab: "API Error: EPERM ... open '/Users/<user>/.claude.json'".
+    """
+    cfg = Config.default()
+    for name in (".claude.json", ".claude.json.backup"):
+        target = os.path.realpath(str(Path.home() / name))
+        assert any(os.path.realpath(p) == target for p in cfg.sandbox_write_paths), \
+            f"{name} fehlt in sandbox_write_paths"
+
+
+@pytest.mark.skipif(shutil.which("sandbox-exec") is None, reason="sandbox-exec nicht verfügbar")
+def test_claude_state_file_really_writable(tmp_path):
+    """Gegenprobe im echten sandbox-exec: Datei neben dem erlaubten Ordner.
+
+    Bildet die Home-Lage nach — erlaubter Ordner `claude/`, daneben die Datei
+    `claude.json`. Ohne eigene Allow-Regel ist sie blockiert.
+    """
+    home = tmp_path / "home"
+    (home / "claude").mkdir(parents=True)
+    wt = tmp_path / "wt"; wt.mkdir()
+    cfg = Config(**{**Config.default().__dict__,
+                    "worktree_path": wt,
+                    "sandbox_write_paths": (str(home / "claude"), str(home / "claude.json")),
+                    "protected_write_paths": (),
+                    "secret_read_paths": ()})
+    profile = write_profile(cfg)
+    r = subprocess.run(
+        wrap_command(cfg, ["/bin/bash", "-c",
+                           f'echo state > "{home}/claude.json" 2>/dev/null && echo OK || echo BLOCKED'],
+                     str(profile)),
+        capture_output=True, text=True,
+    )
+    assert "OK" in r.stdout, "Datei neben dem erlaubten Ordner ist nicht schreibbar"
+    assert (home / "claude.json").read_text().strip() == "state"
+
+
 def test_worktree_not_inside_any_secret_read_path():
     """Der Worktree darf in KEINEM read-denied Pfad liegen.
 

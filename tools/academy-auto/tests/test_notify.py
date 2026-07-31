@@ -13,6 +13,25 @@ def test_read_env_value_missing_file(tmp_path):
     assert read_env_value(tmp_path / "gibtsnicht.env", "X") is None
 
 
+def test_read_env_value_strips_quotes(tmp_path):
+    # Regression: .env schreibt TOKEN="..." mit Quotes -> müssen weg,
+    # sonst wird die Telegram-URL kaputt (404) und der Digest kommt nie an.
+    p = tmp_path / "bot.env"
+    p.write_text('TELEGRAM_BOT_TOKEN="8757029765:XYZ"\nEINFACH=\'q\'\n')
+    assert read_env_value(p, "TELEGRAM_BOT_TOKEN") == "8757029765:XYZ"
+    assert read_env_value(p, "EINFACH") == "q"
+
+
+def test_send_telegram_false_on_ok_false():
+    # Regression: Telegram antwortet HTTP 200 auch bei {"ok":false} -> muss False sein.
+    class Resp:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self): return b'{"ok":false,"error_code":400,"description":"Bad Request"}'
+
+    assert send_telegram("x", "TOK", "1", opener=lambda req, timeout=None: Resp()) is False
+
+
 def test_resolve_chat_id_picks_whitestag_tenant(tmp_path):
     p = tmp_path / "tenants.json"
     p.write_text(json.dumps({
@@ -57,3 +76,23 @@ def test_send_digest_fail_soft_without_config(tmp_path):
     # weder env noch tenants vorhanden -> False, aber KEINE Exception
     assert send_digest("text", env_path=tmp_path / "a.env",
                        tenants_path=tmp_path / "b.json") is False
+
+
+def test_send_telegram_includes_reply_markup():
+    from academy_auto import notify
+    captured = {}
+
+    class FakeResp:
+        def __enter__(self): return self
+        def __exit__(self, *a): return False
+        def read(self): return b'{"ok":true}'
+
+    def fake_opener(req, timeout=0):
+        captured["data"] = req.data.decode()
+        return FakeResp()
+
+    ok = notify.send_telegram("hallo", "TOK", "123",
+                              reply_markup={"inline_keyboard": [[{"text": "✅", "callback_data": "x"}]]},
+                              opener=fake_opener)
+    assert ok is True
+    assert "reply_markup" in captured["data"]

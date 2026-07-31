@@ -21,3 +21,15 @@ def test_default_config_has_expected_invariants():
     assert isinstance(cfg.denied_globs, tuple)
     assert cfg.triage_state_path.name == "triage-state.json"
     assert isinstance(cfg.secret_read_paths, tuple)
+
+
+def test_default_has_communication_fields():
+    from academy_auto.config import Config
+    cfg = Config.default()
+    assert cfg.notify_mode == "daily"
+    assert cfg.pending_path.name == "pending.json"
+    assert cfg.intent_path.name == "intent.json"
+    assert cfg.milestone_delta_threshold == 50
+    assert cfg.github_repo == "whitestagai/ki-kompass"
+    # unter der bestehenden State-Basis ~/.paperclip/academy-auto/
+    assert cfg.pending_path.parent == cfg.triage_state_path.parent

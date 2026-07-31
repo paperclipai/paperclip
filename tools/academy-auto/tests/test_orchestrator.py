@@ -1,10 +1,11 @@
 from types import SimpleNamespace
 from academy_auto.config import Config
 from academy_auto.gate import GateMeasure, StepMeasure
+from academy_auto.pending import PendingRecord
 from academy_auto.runner import RunOutcome
 from academy_auto.orchestrator import run_once
 
-sent: list = []
+parked: list = []
 recorded: list = []
 resets: list = []
 
@@ -29,6 +30,7 @@ def _cfg(tmp_path, **over):
     base = dict(Config.default().__dict__)
     base["pause_flag"] = tmp_path / "kein.pause"
     base["dry_run_flag"] = tmp_path / "kein.dryrun"
+    base["pending_path"] = tmp_path / "pending.json"
     base.update(over)
     return Config(**base)
 
@@ -39,7 +41,9 @@ def base_deps(**over):
         measure_gate=lambda cfg, cwd: _measure(0),  # default: grün (Baseline und After)
         implement_task=lambda cfg, cwd, prompt: RunOutcome(ok=True, output="done"),
         commit_and_pr=lambda cfg, cwd, prompt: True,
-        send_digest=lambda text: sent.append(text),
+        branch_sha=lambda cfg, cwd: "deadbee",
+        now_ts=lambda: "2026-07-25T02:00:03",
+        park=lambda cfg, rec: parked.append(rec),
         count_diff_lines=lambda cfg, cwd: 10,
         list_changed_files=lambda cfg, cwd: ["src/App.tsx"],
         triage_and_pick=lambda cfg, cwd, baseline_red: None,
@@ -52,31 +56,35 @@ def base_deps(**over):
 
 
 def test_run_once_paused_when_flag_present(tmp_path):
-    global sent
-    sent = []
+    global parked
+    parked = []
     flag = tmp_path / "academy-auto.pause"
     flag.write_text("stop")
     cfg = _cfg(tmp_path, pause_flag=flag)
 
     report = run_once(cfg, "irgendeine Aufgabe", base_deps())
     assert report.status == "paused"
-    assert sent == []  # kein Digest, nichts passiert
+    assert parked == []  # nichts geparkt, nichts passiert
 
 
 def test_run_once_green_commits_and_reports(tmp_path):
-    global sent
-    sent = []
+    global parked
+    parked = []
     cfg = _cfg(tmp_path)
 
     report = run_once(cfg, "Login-Bug fixen", base_deps())
     assert report.status == "committed"
-    assert len(sent) == 1
-    assert "grün" in sent[0].lower()
+    assert len(parked) == 1
+    rec = parked[0]
+    assert isinstance(rec, PendingRecord)
+    assert rec.outcome == "committed"
+    assert rec.has_change is True
+    assert rec.branch_sha == "deadbee"
 
 
 def test_run_once_red_gate_discards_and_reports(tmp_path):
-    global sent
-    sent = []
+    global parked
+    parked = []
     cfg = _cfg(tmp_path)
     deps = base_deps(
         measure_gate=two_stage_measure(0, 3),  # grün Baseline, rotes After
@@ -84,13 +92,15 @@ def test_run_once_red_gate_discards_and_reports(tmp_path):
     )
     report = run_once(cfg, "Refactor", deps)
     assert report.status == "discarded"
-    assert len(sent) == 1
-    assert "rot" in sent[0].lower()
+    assert len(parked) == 1
+    assert parked[0].has_change is False
+    assert parked[0].tsc_delta == 0
+    assert "rot" in parked[0].gate_note.lower()
 
 
 def test_run_once_impl_failure_skips_gate_and_reports(tmp_path):
-    global sent
-    sent = []
+    global parked
+    parked = []
     cfg = _cfg(tmp_path)
     deps = base_deps(
         implement_task=lambda cfg, cwd, prompt: RunOutcome(ok=False, output="claude timeout"),
@@ -98,12 +108,14 @@ def test_run_once_impl_failure_skips_gate_and_reports(tmp_path):
     )
     report = run_once(cfg, "x", deps)
     assert report.status == "impl_failed"
-    assert len(sent) == 1
+    assert len(parked) == 1
+    assert parked[0].outcome == "impl_failed"
+    assert parked[0].has_change is False
 
 
 def test_run_once_diff_cap_exceeded_discards(tmp_path):
-    global sent
-    sent = []
+    global parked
+    parked = []
     cfg = _cfg(tmp_path)
     deps = base_deps(
         count_diff_lines=lambda cfg, cwd: 900,
@@ -111,13 +123,13 @@ def test_run_once_diff_cap_exceeded_discards(tmp_path):
     )
     report = run_once(cfg, "Riesenrefactor", deps)
     assert report.status == "discarded"
-    assert len(sent) == 1
-    assert "Cap" in sent[0]
+    assert len(parked) == 1
+    assert "Cap" in parked[0].gate_note
 
 
 def test_run_once_scope_violation_discards(tmp_path):
-    global sent
-    sent = []
+    global parked
+    parked = []
     cfg = _cfg(tmp_path)
     deps = base_deps(
         list_changed_files=lambda cfg, cwd: ["src/App.tsx", ".env"],
@@ -126,14 +138,14 @@ def test_run_once_scope_violation_discards(tmp_path):
     )
     report = run_once(cfg, "Aufgabe", deps)
     assert report.status == "discarded"
-    assert len(sent) == 1
-    assert "Scope" in sent[0]
-    assert ".env" in sent[0]
+    assert len(parked) == 1
+    assert "Scope" in parked[0].gate_note
+    assert ".env" in parked[0].gate_note
 
 
 def test_run_once_triage_mode_picks_and_commits(tmp_path):
-    global sent, recorded, resets
-    sent, recorded, resets = [], [], []
+    global parked, recorded, resets
+    parked, recorded, resets = [], [], []
     from academy_auto.triage.rank import Pick
     cfg = _cfg(tmp_path)
     deps = base_deps(triage_and_pick=lambda cfg, cwd, baseline_red: Pick("tsc:a.ts:5:TS1", "Fix a.ts:5", "prio"))
@@ -141,23 +153,25 @@ def test_run_once_triage_mode_picks_and_commits(tmp_path):
     assert report.status == "committed"
     assert recorded == [("tsc:a.ts:5:TS1", "committed")]
     assert resets == []  # bei committed kein Reset
-    assert any("prio" in s for s in sent)  # Grund im Digest
+    assert parked[0].reason == "prio"  # Grund im geparkten Datensatz
 
 
 def test_run_once_triage_nothing_to_do(tmp_path):
-    global sent, recorded, resets
-    sent, recorded, resets = [], [], []
+    global parked, recorded, resets
+    parked, recorded, resets = [], [], []
     cfg = _cfg(tmp_path)
     deps = base_deps(triage_and_pick=lambda cfg, cwd, baseline_red: None, quarantined=lambda cfg: ["todo:z.ts:3"])
     report = run_once(cfg, None, deps)
     assert report.status == "nothing_to_do"
     assert recorded == []
-    assert len(sent) == 1 and "todo:z.ts:3" in sent[0]
+    assert len(parked) == 1
+    assert parked[0].outcome == "nothing_to_do"
+    assert "todo:z.ts:3" in parked[0].quarantined
 
 
 def test_run_once_triage_discard_records_and_resets(tmp_path):
-    global sent, recorded, resets
-    sent, recorded, resets = [], [], []
+    global parked, recorded, resets
+    parked, recorded, resets = [], [], []
     from academy_auto.triage.rank import Pick
     cfg = _cfg(tmp_path)
     deps = base_deps(
@@ -172,8 +186,8 @@ def test_run_once_triage_discard_records_and_resets(tmp_path):
 
 
 def test_run_once_manual_prompt_skips_triage_and_recording(tmp_path):
-    global sent, recorded, resets
-    sent, recorded, resets = [], [], []
+    global parked, recorded, resets
+    parked, recorded, resets = [], [], []
     cfg = _cfg(tmp_path)
     deps = base_deps(triage_and_pick=lambda cfg, cwd, baseline_red: (_ for _ in ()).throw(AssertionError("Triage darf nicht laufen")))
     report = run_once(cfg, "manueller Auftrag", deps)  # String -> kein Triage
@@ -182,8 +196,8 @@ def test_run_once_manual_prompt_skips_triage_and_recording(tmp_path):
 
 
 def test_run_once_impl_fail_resets_worktree(tmp_path):
-    global sent, recorded, resets
-    sent, recorded, resets = [], [], []
+    global parked, recorded, resets
+    parked, recorded, resets = [], [], []
     cfg = _cfg(tmp_path)
     deps = base_deps(implement_task=lambda cfg, cwd, prompt: RunOutcome(ok=False, output="claude weg"))
     report = run_once(cfg, "manuell", deps)
@@ -192,26 +206,27 @@ def test_run_once_impl_fail_resets_worktree(tmp_path):
 
 
 def test_run_once_committed_digest_lists_quarantine(tmp_path):
-    global sent, recorded, resets
-    sent, recorded, resets = [], [], []
+    global parked, recorded, resets
+    parked, recorded, resets = [], [], []
     cfg = _cfg(tmp_path)
     deps = base_deps(quarantined=lambda cfg: ["todo:z.ts:9"])
     report = run_once(cfg, "manuell", deps)
     assert report.status == "committed"
-    assert any("todo:z.ts:9" in s for s in sent)  # Quarantäne auch im committed-Digest
+    assert "todo:z.ts:9" in parked[0].quarantined  # Quarantäne auch im geparkten Datensatz
 
 
 def test_run_once_green_baseline_absolute_pass_commits(tmp_path):
-    global sent, recorded, resets
-    sent, recorded, resets = [], [], []
+    global parked, recorded, resets
+    parked, recorded, resets = [], [], []
     cfg = _cfg(tmp_path)
     deps = base_deps(measure_gate=two_stage_measure(0, 0))  # grün → grün
     assert run_once(cfg, "manuell", deps).status == "committed"
+    assert parked[0].tsc_delta == 0
 
 
 def test_run_once_green_baseline_after_red_discards(tmp_path):
-    global sent, recorded, resets
-    sent, recorded, resets = [], [], []
+    global parked, recorded, resets
+    parked, recorded, resets = [], [], []
     cfg = _cfg(tmp_path)
     deps = base_deps(
         measure_gate=two_stage_measure(0, 2),  # grün → rot: neuer Fehler → discard
@@ -223,18 +238,19 @@ def test_run_once_green_baseline_after_red_discards(tmp_path):
 
 
 def test_run_once_red_baseline_delta_progress_commits(tmp_path):
-    global sent, recorded, resets
-    sent, recorded, resets = [], [], []
+    global parked, recorded, resets
+    parked, recorded, resets = [], [], []
     cfg = _cfg(tmp_path)
     deps = base_deps(measure_gate=two_stage_measure(5, 2))  # rot → weniger Fehler → Delta-Commit
     r = run_once(cfg, "manuell", deps)
     assert r.status == "committed"
-    assert any("Delta" in s for s in sent)
+    assert "Delta" in parked[0].gate_note
+    assert parked[0].tsc_delta == 3
 
 
 def test_run_once_red_baseline_no_progress_discards(tmp_path):
-    global sent, recorded, resets
-    sent, recorded, resets = [], [], []
+    global parked, recorded, resets
+    parked, recorded, resets = [], [], []
     cfg = _cfg(tmp_path)
     deps = base_deps(
         measure_gate=two_stage_measure(5, 5),  # rot → kein Fortschritt → discard
@@ -244,8 +260,8 @@ def test_run_once_red_baseline_no_progress_discards(tmp_path):
 
 
 def test_run_once_triage_receives_baseline_red(tmp_path):
-    global sent, recorded, resets
-    sent, recorded, resets = [], [], []
+    global parked, recorded, resets
+    parked, recorded, resets = [], [], []
     from academy_auto.triage.rank import Pick
     cfg = _cfg(tmp_path)
     seen = {}
@@ -259,60 +275,111 @@ def test_run_once_triage_receives_baseline_red(tmp_path):
     assert seen["red"] is True
 
 
-def test_run_once_dry_run_skips_commit_and_recording(tmp_path):
-    global sent, recorded, resets
-    sent, recorded, resets = [], [], []
-    from academy_auto.triage.rank import Pick
-    dry = tmp_path / "academy-auto.dryrun"
-    dry.write_text("")
-    cfg = _cfg(tmp_path, dry_run_flag=dry)
-    deps = base_deps(
-        triage_and_pick=lambda cfg, cwd, baseline_red: Pick("todo:b.ts:1", "b umsetzen", "grund"),
-        commit_and_pr=lambda cfg, cwd, prompt: (_ for _ in ()).throw(AssertionError("Trockenlauf darf NICHT committen")),
-    )
-    report = run_once(cfg, None, deps)
-    assert report.status == "dry_run"
-    assert recorded == []          # keine State-Verbuchung im Trockenlauf
-    assert len(resets) == 1        # Worktree zurückgesetzt
-    assert any("TROCKENLAUF" in s for s in sent)
-
-
 def test_run_once_commits_when_dry_run_flag_absent(tmp_path):
-    global sent, recorded, resets
-    sent, recorded, resets = [], [], []
+    global parked, recorded, resets
+    parked, recorded, resets = [], [], []
     cfg = _cfg(tmp_path)
     report = run_once(cfg, "manuell", base_deps())
     assert report.status == "committed"
 
 
+def test_run_once_green_change_commits_even_with_dry_run_flag_present(tmp_path):
+    """Der Trockenlauf-Sonderfall entfällt: das dry_run_flag bleibt als Feld
+    bestehen, hat aber keine Wirkung mehr — Sicherheitsnetz ist jetzt die
+    Freigabe (park), nicht mehr ein Reset des Worktrees."""
+    global parked, recorded, resets
+    parked, recorded, resets = [], [], []
+    from academy_auto.triage.rank import Pick
+    dry = tmp_path / "academy-auto.dryrun"
+    dry.write_text("")
+    cfg = _cfg(tmp_path, dry_run_flag=dry)
+    committed = []
+    deps = base_deps(
+        triage_and_pick=lambda cfg, cwd, baseline_red: Pick("todo:b.ts:1", "b umsetzen", "grund"),
+        commit_and_pr=lambda cfg, cwd, prompt: committed.append(prompt) or True,
+    )
+    report = run_once(cfg, None, deps)
+    assert report.status == "committed"
+    assert committed == ["b umsetzen"]
+    assert recorded == [("todo:b.ts:1", "committed")]
+    assert resets == []  # kein Reset — der Branch-Stand bleibt liegen
+    assert parked[0].has_change is True
+
+
 def test_run_once_top_level_error_is_caught(tmp_path):
-    global sent, recorded, resets
-    sent, recorded, resets = [], [], []
+    global parked, recorded, resets
+    parked, recorded, resets = [], [], []
     cfg = _cfg(tmp_path)
     deps = base_deps(prepare_worktree=lambda cfg: (_ for _ in ()).throw(RuntimeError("worktree kaputt")))
     report = run_once(cfg, "manuell", deps)
     assert report.status == "error"
-    assert len(sent) == 1 and "kaputt" in sent[0]
+    assert len(parked) == 1
+    assert parked[0].outcome == "error"
+    assert "kaputt" in parked[0].gate_note
 
 
 def test_pause_flag_wins_over_dry_run(tmp_path):
-    global sent, recorded, resets
-    sent, recorded, resets = [], [], []
+    global parked, recorded, resets
+    parked, recorded, resets = [], [], []
     pause = tmp_path / "p.pause"; pause.write_text("")
     dry = tmp_path / "d.dryrun"; dry.write_text("")
     cfg = _cfg(tmp_path, pause_flag=pause, dry_run_flag=dry)
     assert run_once(cfg, None, base_deps()).status == "paused"
-    assert sent == []
+    assert parked == []
 
 
 def test_impl_failed_digest_contains_error_output(tmp_path):
-    """Bei einem Nachtlauf ist der Digest die einzige Spur — die Fehlerausgabe muss rein."""
-    global sent, recorded, resets
-    sent, recorded, resets = [], [], []
+    """Bei einem Nachtlauf ist der geparkte Datensatz die einzige Spur — die Fehlerausgabe muss rein."""
+    global parked, recorded, resets
+    parked, recorded, resets = [], [], []
     cfg = _cfg(tmp_path)
     deps = base_deps(
         implement_task=lambda cfg, cwd, prompt: RunOutcome(ok=False, output="claude: EPERM auf /irgendwo"),
     )
     report = run_once(cfg, "manuell", deps)
     assert report.status == "impl_failed"
-    assert any("EPERM auf /irgendwo" in s for s in sent)
+    assert "EPERM auf /irgendwo" in parked[0].gate_note
+
+
+def test_green_change_parks_has_change(tmp_path):
+    from academy_auto.config import Config as _Config
+
+    def _gate(total):
+        # `ok=True` noetig: delta_decision() prueft seit dc27a586f (Timeout/
+        # Crash-Haertung) after.ok, was im Brief-Snippet noch fehlte.
+        return SimpleNamespace(total=total, passed=(total == 0), steps=[], ok=True)
+
+    def _seq_gate(totals):
+        it = iter(totals)
+        return lambda cfg, cwd: _gate(next(it))
+
+    def _deps(parked_list, **over):
+        base = dict(
+            prepare_worktree=lambda cfg: "/wt",
+            quarantined=lambda cfg: [],
+            measure_gate=lambda cfg, cwd: _gate(0),
+            triage_and_pick=lambda cfg, cwd, red: SimpleNamespace(
+                task_prompt="Tu was", reason="weil", chosen_key="k"),
+            implement_task=lambda cfg, cwd, p: SimpleNamespace(ok=True, output=""),
+            list_changed_files=lambda cfg, cwd: ["a.ts"],
+            count_diff_lines=lambda cfg, cwd: 3,
+            commit_and_pr=lambda cfg, cwd, p: True,
+            branch_sha=lambda cfg, cwd: "deadbee",
+            now_ts=lambda: "2026-07-25T02:00:03",
+            record_triage_outcome=lambda cfg, k, s: None,
+            reset_worktree=lambda cfg, cwd: None,
+            park=lambda cfg, rec: parked_list.append(rec),
+        )
+        base.update(over)
+        return SimpleNamespace(**base)
+
+    cfg = _Config.default()
+    # Baseline rot (10), After grün-er (0) -> delta positiv, Change bereit
+    parked_list = []
+    deps = _deps(parked_list, measure_gate=_seq_gate([10, 0]))
+    rep = run_once(cfg, None, deps)
+    assert rep.status == "committed"
+    assert len(parked_list) == 1
+    assert isinstance(parked_list[0], PendingRecord)
+    assert parked_list[0].has_change is True
+    assert parked_list[0].tsc_delta == 10

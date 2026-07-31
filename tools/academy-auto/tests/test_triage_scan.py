@@ -99,13 +99,48 @@ def test_scan_tsc_fail_soft_on_crash():
 def test_scan_lint_parses_json():
     lint_json = (
         '[{"filePath":"/repo/src/a.ts","messages":['
-        '{"line":4,"ruleId":"no-unused-vars","message":"x unused","severity":1}]}]'
+        '{"line":4,"ruleId":"no-unused-vars","message":"x unused","severity":2}]}]'
     )
     cands = scan_lint(None, runner=lambda *a, **k: _proc(stdout=lint_json, returncode=1), repo_root="/repo")
     assert len(cands) == 1
     c = cands[0]
     assert c.key == "lint:src/a.ts:4:no-unused-vars"
     assert c.source == "lint" and c.raw_priority == 45
+
+
+def test_scan_lint_skips_warnings():
+    """Warnungen (severity 1) sind fuer das Gate unsichtbar — nicht anbieten.
+
+    `measure_gate` zaehlt nur ESLint-FEHLER. Eine behobene Warnung aendert die
+    Gate-Zahl nicht, das Delta bleibt bei 0 und der Lauf wird verworfen. Live
+    am 31.07.: 97 der 103 Kandidaten waren Warnungen.
+    """
+    lint_json = (
+        '[{"filePath":"/repo/src/a.ts","messages":['
+        '{"line":4,"ruleId":"import/first","message":"nur Warnung","severity":1},'
+        '{"line":9,"ruleId":"react-hooks/immutability","message":"echter Fehler","severity":2}]}]'
+    )
+    cands = scan_lint(None, runner=lambda *a, **k: _proc(stdout=lint_json, returncode=1), repo_root="/repo")
+    assert [c.key for c in cands] == ["lint:src/a.ts:9:react-hooks/immutability"]
+
+
+def test_scan_lint_scopes_to_the_paths_the_gate_lints():
+    """Der Scanner muss denselben Ausschnitt sehen wie das Gate.
+
+    `npm run lint` (= `expo lint`) ruft eslint mit GENAU EINEM Pfad auf: <root>/src
+    (per EXPO_DEBUG verifiziert). Lief der Scanner auf ".", bot er Arbeit in
+    tests/ und supabase/ an, die das Gate gar nicht misst — Ergebnis war
+    zwangslaeufig "kein Fortschritt" (live 31.07.).
+    """
+    seen = {}
+
+    def spy(cmd, **kwargs):
+        seen["cmd"] = cmd
+        return _proc(stdout="[]", returncode=0)
+
+    scan_lint(None, runner=spy, repo_root="/repo")
+    assert "src" in seen["cmd"], f"eslint-Ziel nicht auf src eingegrenzt: {seen['cmd']}"
+    assert "." not in seen["cmd"], f"Scanner lintet weiterhin alles: {seen['cmd']}"
 
 
 def test_scan_lint_fail_soft_on_bad_json():

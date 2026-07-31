@@ -61,3 +61,26 @@ def build_nothing_digest(quarantined: list[str] | None = None) -> str:
     if quarantined:
         lines.append("Quarantäne (bitte anschauen): " + ", ".join(quarantined))
     return "\n".join(lines)
+
+
+def build_digest_from_pending(rec) -> str:
+    """Digest aus einem geparkten PendingRecord bauen (Zustell-Job 08:00)."""
+    if rec.outcome == "nothing_to_do":
+        return build_nothing_digest(rec.quarantined)
+    lines = ["🎓 Academy-Auto — Tagesstand", "", f"Aufgabe: {rec.task}"]
+    if rec.gate_note:
+        lines.append(f"Gate: {rec.gate_note}")
+    if rec.has_change:
+        lines.append("Ergebnis: Change liegt freigabebereit auf agents/academy-auto")
+    elif rec.outcome == "error":
+        lines.append("Ergebnis: Fehler im Nachtlauf")
+    else:
+        lines.append(f"Ergebnis: {rec.outcome}")
+    if rec.reason:
+        lines.append(f"Warum diese Aufgabe: {rec.reason}")
+    if rec.has_change:
+        lines.append("")
+        lines.append("Freigabe: ✅ PR öffnen · ❌ Verwerfen · ✍️ Richtung als Antwort schreiben")
+    if rec.quarantined:
+        lines.append("Quarantäne (bitte anschauen): " + ", ".join(rec.quarantined))
+    return "\n".join(lines)

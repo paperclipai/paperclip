@@ -21,6 +21,11 @@ class Config:
     secret_read_paths: tuple[str, ...]
     sandbox_write_paths: tuple[str, ...]
     protected_write_paths: tuple[str, ...]
+    notify_mode: str
+    pending_path: Path
+    intent_path: Path
+    milestone_delta_threshold: int
+    github_repo: str
 
     @classmethod
     def default(cls) -> "Config":
@@ -73,6 +78,13 @@ class Config:
                 "/private/tmp", "/private/var/folders",
                 str(home / ".npm"), str(home / "Library/Caches"),
                 str(home / ".cache"), str(home / ".expo"), str(home / ".claude"),
+                # Pflicht: Claude Code schreibt seinen Zustand in die DATEI
+                # ~/.claude.json neben dem Ordner ~/.claude. Die subpath-Regel
+                # auf den Ordner deckt sie NICHT ab — ohne diese beiden Eintraege
+                # bricht die CLI mitten in der Umsetzung mit
+                # "API Error: EPERM ... open '~/.claude.json'" ab (live belegt
+                # am 30.07.: Datei halb geaendert, Lauf tot, Gate rot).
+                str(home / ".claude.json"), str(home / ".claude.json.backup"),
             ),
             protected_write_paths=(
                 str(home / ".claude/settings.json"), str(home / ".claude/settings.local.json"),
@@ -81,4 +93,9 @@ class Config:
                 str(home / ".claude/commands"), str(home / ".claude/agents"),
                 str(home / ".claude/keybindings.json"),
             ),
+            notify_mode="daily",
+            pending_path=base / "pending.json",
+            intent_path=base / "intent.json",
+            milestone_delta_threshold=50,
+            github_repo="whitestagai/ki-kompass",
         )

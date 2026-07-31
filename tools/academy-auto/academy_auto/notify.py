@@ -18,7 +18,11 @@ def read_env_value(path, key: str):
                 continue
             k, _, v = line.partition("=")
             if k.strip() == key:
-                return v.strip()
+                v = v.strip()
+                # Umschließende Quotes strippen (die .env schreibt TOKEN="...")
+                if len(v) >= 2 and v[0] == v[-1] and v[0] in ("'", '"'):
+                    v = v[1:-1]
+                return v
     except OSError:
         return None
     return None
@@ -38,24 +42,30 @@ def resolve_chat_id(tenants_path, vault: str = "whitestag"):
     return None
 
 
-def send_telegram(text: str, token: str, chat_id: str, opener=urllib.request.urlopen) -> bool:
+def send_telegram(text: str, token: str, chat_id: str, reply_markup=None,
+                  opener=urllib.request.urlopen) -> bool:
     """Nachricht senden. Fail-soft: Fehler -> False, nie werfen."""
     try:
-        data = urllib.parse.urlencode({"chat_id": chat_id, "text": text}).encode()
+        fields = {"chat_id": chat_id, "text": text}
+        if reply_markup is not None:
+            fields["reply_markup"] = json.dumps(reply_markup)
+        data = urllib.parse.urlencode(fields).encode()
         req = urllib.request.Request(
             f"https://api.telegram.org/bot{token}/sendMessage", data=data
         )
-        with opener(req, timeout=30):
-            return True
+        with opener(req, timeout=30) as resp:
+            body = json.loads(resp.read().decode())
+            # Telegram antwortet HTTP 200 auch bei {"ok":false} -> Body prüfen
+            return bool(body.get("ok"))
     except Exception:
         return False
 
 
-def send_digest(text: str, env_path=ENV_PATH, tenants_path=TENANTS_PATH,
+def send_digest(text: str, reply_markup=None, env_path=ENV_PATH, tenants_path=TENANTS_PATH,
                 opener=urllib.request.urlopen) -> bool:
     """Digest an Walters Jarvis-Chat. Fail-soft — der Lauf darf daran nie scheitern."""
     token = read_env_value(env_path, "TELEGRAM_BOT_TOKEN")
     chat_id = resolve_chat_id(tenants_path)
     if not token or not chat_id:
         return False
-    return send_telegram(text, token, chat_id, opener=opener)
+    return send_telegram(text, token, chat_id, reply_markup=reply_markup, opener=opener)
