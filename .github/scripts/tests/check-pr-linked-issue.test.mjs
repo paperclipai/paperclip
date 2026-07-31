@@ -221,3 +221,61 @@ None.
 `;
   assert.equal(hasInlineIssueDescription(body), true);
 });
+
+// Prose-only description (no template labels) must fail. A good paragraph of
+// prose matches zero labels, so the gate rejects it.
+test('fails with a prose-only description that has no template labels', () => {
+  const body = `
+This pull request rewrites the retry loop so the worker gives up after five
+attempts instead of looping forever. The previous loop could hang a job when
+the upstream service was down. I also added a log line for each retry so an
+operator can see the backoff in the run output.
+`;
+  const result = checkLinkedIssue(body, 'feat: bounded retry');
+  assert.equal(result.passed, false);
+  assert.ok(result.failures.length > 0);
+});
+
+// The feature skeleton that .github/PULL_REQUEST_TEMPLATE.md ships must pass.
+// The labels use the bold-label-on-its-own-line form the gate accepts.
+const TEMPLATE_FEATURE_SKELETON_BODY = `
+**Problem or motivation:**
+- The gate rejects a good prose description.
+
+**Proposed solution:**
+- Ship a labeled skeleton in the PR template.
+
+**Alternatives considered:**
+- Lower the field threshold — rejected, it weakens the gate.
+`;
+
+test('passes with the PR-template feature skeleton (bold labels)', () => {
+  assert.equal(checkLinkedIssue(TEMPLATE_FEATURE_SKELETON_BODY, 'feat: pr template skeleton').passed, true);
+});
+
+// Enhancement template set (matches .github/ISSUE_TEMPLATE/enhancement.yml).
+const ENHANCEMENT_INLINE_BODY = `
+## What existing behavior does this improve?
+
+The board task list sort order.
+
+## Current behavior
+
+The list sorts by creation time only.
+
+## Proposed behavior
+
+The list sorts by priority, then creation time.
+
+## Reason and benefit
+
+Users miss high-priority tasks that were created early.
+`;
+
+test('passes with inline enhancement description (4 template fields)', () => {
+  assert.equal(checkLinkedIssue(ENHANCEMENT_INLINE_BODY, 'feat: sort by priority').passed, true);
+});
+
+test('hasInlineIssueDescription returns true for ≥3 enhancement fields', () => {
+  assert.equal(hasInlineIssueDescription(ENHANCEMENT_INLINE_BODY), true);
+});

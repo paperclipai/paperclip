@@ -47,6 +47,25 @@ const TEMPLATE_FIELDS = {
     ["Why this adapter is useful", "Why it's useful", 'Why useful', 'Use case'],
     ['How the agent is invoked', 'How it is invoked', "How it's invoked", 'Invocation'],
   ],
+  // Labels below match .github/ISSUE_TEMPLATE/enhancement.yml exactly.
+  enhancement: [
+    ['What existing behavior does this improve?', 'What existing behavior does this improve'],
+    ['Subsystem affected'],
+    ['Current behavior'],
+    ['Proposed behavior'],
+    ['Reason and benefit'],
+    ['Breaking changes'],
+  ],
+  // Labels below match .github/ISSUE_TEMPLATE/docs_issue.yml exactly. The
+  // template has 4 distinct fields, so it meets the 3-field minimum. A
+  // "docs"-prefixed PR skips this check; this set helps a non-"docs"-prefixed
+  // PR that describes a documentation issue inline.
+  docs: [
+    ['Issue type'],
+    ['Where is the issue?', 'Where is the issue'],
+    ["What's wrong?", "What's wrong"],
+    ['Suggested fix'],
+  ],
 };
 
 function escapeRegExp(s) {

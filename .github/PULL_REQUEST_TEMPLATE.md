@@ -19,10 +19,11 @@
 ## Linked Issues or Issue Description
 
 <!--
-  Required. Pick ONE of the following two paths:
+  Required. Pick ONE of the two paths below.
 
-  (A) Issue exists — tag each linked issue with `Fixes: #123`, `Closes #123`,
-      or `Refs #123`. Include duplicates and closely related issues too.
+  (A) Issue exists — replace the whole skeleton below with your issue links.
+      Tag each linked issue with `Fixes: #123`, `Closes #123`, or `Refs #123`.
+      Include duplicates and closely related issues too.
 
   Only reference PUBLIC GitHub issues/PRs here. Do NOT paste internal,
   instance-local Paperclip references — ticket ids like PAPA-123 / PAP-224,
@@ -30,8 +31,11 @@
   contributors cannot open them. See CONTRIBUTING.md → "No Internal Issue
   References".
 
-  (B) No issue exists — describe the underlying problem here, following the
-      relevant issue template so reviewers get the same fields:
+  (B) No issue exists — keep the ONE skeleton below that fits your change and
+      fill in each field. Delete the other two skeletons. An automated check
+      reads the literal bold labels, not your prose. So you must keep at least
+      three of these labels, each alone on its own line, or the check fails.
+      Each skeleton matches one issue template:
         • Bug:     .github/ISSUE_TEMPLATE/bug_report.yml
         • Feature: .github/ISSUE_TEMPLATE/feature_request.yml
         • Adapter: .github/ISSUE_TEMPLATE/adapter_request.yml
@@ -39,6 +43,37 @@
   See CONTRIBUTING.md → "Link Issues or Describe Them In-PR".
 -->
 
+<!-- Bug skeleton -->
+
+**What happened?**
+-
+
+**Expected behavior:**
+-
+
+**Steps to reproduce:**
+-
+
+<!-- Feature skeleton -->
+
+**Problem or motivation:**
+-
+
+**Proposed solution:**
+-
+
+**Alternatives considered:**
+-
+
+<!-- Adapter skeleton -->
+
+**Agent or provider:**
+-
+
+**Why this adapter is useful:**
+-
+
+**How the agent is invoked:**
 -
 
 ## What Changed
