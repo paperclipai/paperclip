@@ -238,21 +238,21 @@ operator can see the backoff in the run output.
   assert.ok(result.failures.length > 0);
 });
 
-// The feature skeleton that .github/PULL_REQUEST_TEMPLATE.md ships must pass.
+// An author who copies the feature template labels into the PR body must pass.
 // The labels use the bold-label-on-its-own-line form the gate accepts.
-const TEMPLATE_FEATURE_SKELETON_BODY = `
+const FEATURE_BOLD_LABEL_BODY = `
 **Problem or motivation:**
 - The gate rejects a good prose description.
 
 **Proposed solution:**
-- Ship a labeled skeleton in the PR template.
+- Copy the feature template labels into the PR body.
 
 **Alternatives considered:**
 - Lower the field threshold — rejected, it weakens the gate.
 `;
 
-test('passes with the PR-template feature skeleton (bold labels)', () => {
-  assert.equal(checkLinkedIssue(TEMPLATE_FEATURE_SKELETON_BODY, 'feat: pr template skeleton').passed, true);
+test('passes with the feature template labels (bold labels)', () => {
+  assert.equal(checkLinkedIssue(FEATURE_BOLD_LABEL_BODY, 'feat: inline feature description').passed, true);
 });
 
 // Enhancement template set (matches .github/ISSUE_TEMPLATE/enhancement.yml).
