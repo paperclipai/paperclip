@@ -1108,4 +1108,114 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       },
     });
   });
+
+  it("reserves a one-shot issue for its initial assignment and suppresses later comment wakes", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const oneShotIssueId = randomUUID();
+    const normalIssueId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CreativeLead",
+      role: "lead",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } },
+      permissions: {},
+    });
+    await db.insert(issues).values([
+      {
+        id: oneShotIssueId,
+        companyId,
+        title: "Exactly one smoke",
+        status: "todo",
+        priority: "high",
+        assigneeAgentId: agentId,
+        responsibleUserId: "responsible-user",
+        executionPolicy: { oneShot: { enabled: true } },
+      },
+      {
+        id: normalIssueId,
+        companyId,
+        title: "Normal comment wake",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: agentId,
+        responsibleUserId: "responsible-user",
+      },
+    ]);
+
+    const initialRun = await heartbeat.wakeup(agentId, {
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId: oneShotIssueId },
+      contextSnapshot: { issueId: oneShotIssueId, wakeReason: "issue_assigned" },
+      requestedByActorType: "user",
+      requestedByActorId: "board-user",
+    });
+    expect(initialRun).not.toBeNull();
+
+    const commentWake = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_commented",
+      payload: { issueId: oneShotIssueId, commentId: randomUUID() },
+      contextSnapshot: { issueId: oneShotIssueId, wakeReason: "issue_commented" },
+      requestedByActorType: "user",
+      requestedByActorId: "board-user",
+    });
+    expect(commentWake).toBeNull();
+
+    const oneShotRuns = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(heartbeatRuns)
+      .where(sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${oneShotIssueId}`)
+      .then((rows) => rows[0]?.count ?? 0);
+    expect(oneShotRuns).toBe(1);
+
+    const oneShotWakeups = await db
+      .select({ status: agentWakeupRequests.status, reason: agentWakeupRequests.reason })
+      .from(agentWakeupRequests)
+      .where(sql`${agentWakeupRequests.payload} ->> 'issueId' = ${oneShotIssueId}`)
+      .orderBy(agentWakeupRequests.requestedAt);
+    expect(oneShotWakeups).toEqual([
+      expect.objectContaining({ reason: "issue_assigned" }),
+      { status: "skipped", reason: "issue.one_shot_suppressed" },
+    ]);
+
+    const suppressionActivity = await db
+      .select({ action: activityLog.action, details: activityLog.details })
+      .from(activityLog)
+      .where(and(
+        eq(activityLog.entityId, oneShotIssueId),
+        eq(activityLog.action, "issue.one_shot_wakeup_suppressed"),
+      ))
+      .then((rows) => rows[0] ?? null);
+    expect(suppressionActivity).toMatchObject({
+      action: "issue.one_shot_wakeup_suppressed",
+      details: expect.objectContaining({ requestedReason: "issue_commented" }),
+    });
+
+    const normalCommentWake = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_commented",
+      payload: { issueId: normalIssueId, commentId: randomUUID() },
+      contextSnapshot: { issueId: normalIssueId, wakeReason: "issue_commented" },
+      requestedByActorType: "user",
+      requestedByActorId: "board-user",
+    });
+    expect(normalCommentWake).not.toBeNull();
+  });
 });
