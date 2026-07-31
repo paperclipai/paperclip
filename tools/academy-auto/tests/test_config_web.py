@@ -12,9 +12,18 @@ def test_web_target_points_at_the_astro_repo():
     assert cfg.github_repo == "whitestagai/whitestag-academy-web"
 
 
-def test_web_gate_is_the_astro_build():
-    """Die Site hat keine Tests und kein eslint — der Build ist der Beweis."""
-    assert Config.for_target("web").gate_commands == [["npm", "run", "build"]]
+def test_web_gate_ist_build_plus_sichtpruefung():
+    """Der Build allein reicht nicht: er sagt nur, dass Astro durchlaeuft.
+
+    Layout-Fehler bleiben dabei unsichtbar — `check:visual` fand auf Anhieb
+    446 px Leerraum und eine uebersprungene Ueberschriften-Ebene auf einer
+    Seite, die der Build fuer gruen hielt (Issue #12).
+    """
+    g = Config.for_target("web").gate_commands
+    assert ["npm", "run", "build"] in g
+    assert ["npm", "run", "check:visual"] in g
+    # Reihenfolge zaehlt: ohne dist/ kann die Sichtpruefung nichts messen.
+    assert g.index(["npm", "run", "build"]) < g.index(["npm", "run", "check:visual"])
 
 
 def test_web_scan_sources_match_the_gate():

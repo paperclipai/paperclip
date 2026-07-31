@@ -156,9 +156,14 @@ class Config:
             pause_flag=home / ".paperclip" / "academy-auto-web.pause",
             dry_run_flag=home / ".paperclip" / "academy-auto-web.dryrun",
             # Die Site hat (noch) keine Tests und kein eslint. Der Build ist der
-            # Beweis — und er hätte den Fehlschlag vom 31.07. sofort gefangen
-            # (fehlende Anführungszeichen im Layout-Import).
-            gate_commands=[["npm", "run", "build"]],
+            # erste Beweis — und er hätte den Fehlschlag vom 31.07. sofort
+            # gefangen (fehlende Anführungszeichen im Layout-Import).
+            # Der Build sagt aber NUR, dass Astro durchläuft. Layout-Fehler
+            # bleiben unsichtbar: `check:visual` misst je Seite bei 375/768/
+            # 1440 px horizontalen Überlauf, Leerraum, fehlende alt-Attribute
+            # und die Überschriftenhierarchie. Er fand auf Anhieb zwei echte
+            # Fehler, die der Build für grün hielt (Issue #12).
+            gate_commands=[["npm", "run", "build"], ["npm", "run", "check:visual"]],
             max_tasks_per_run=3,
             max_diff_lines=800,
             auto_merge_max_lines=300,
