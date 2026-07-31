@@ -12,6 +12,7 @@ import { assertBoard, assertBoardOrAgent, assertCompanyAccess, getActorInfo } fr
 import { ToolGatewayHttpError, type ToolGatewayService } from "../services/tool-gateway.js";
 import { forbidden, HttpError } from "../errors.js";
 import { accessService } from "../services/index.js";
+import { logRouteActivity } from "./activity-audit.js";
 
 const TOOL_GATEWAY_ACTIONS = [
   "tool_gateway.session_created",
@@ -817,6 +818,7 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
       });
 
       const last = visible.at(-1)?.row;
+      await logRouteActivity(db, req, { companyId, action: "tool.audit_read", entityType: "company", entityId: companyId, details: { limit } });
       res.json({
         events,
         nextCursor: hasMore && last ? encodeAuditCursor({ createdAt: last.createdAt, id: last.id }) : null,

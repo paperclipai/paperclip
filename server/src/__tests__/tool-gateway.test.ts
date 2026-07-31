@@ -3265,6 +3265,29 @@ rl.on("line", (line) => {
     ]);
   });
 
+  it("does not audit rejected tool gateway audit filters as successful reads", async () => {
+    const company = await createCompany(db);
+    const app = createGatewayRouteApp(db, createTestToolGatewayService(db), {
+      type: "board",
+      userId: "instance-admin",
+      source: "session",
+      companyIds: [company.id],
+      memberships: [{ companyId: company.id, membershipRole: "owner", status: "active" }],
+      isInstanceAdmin: true,
+    });
+
+    const response = await request(app)
+      .get("/api/tool-gateway/audit")
+      .query({ companyId: company.id, app: "not-a-uuid" });
+
+    expect(response.status).toBe(400);
+    const rows = await db
+      .select({ action: activityLog.action })
+      .from(activityLog)
+      .where(and(eq(activityLog.companyId, company.id), eq(activityLog.action, "tool.audit_read")));
+    expect(rows).toEqual([]);
+  });
+
   it("rejects durable sessions after the heartbeat run is no longer active", async () => {
     const company = await createCompany(db);
     const agent = await createAgent(db, company.id);
