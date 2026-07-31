@@ -85,8 +85,10 @@ Use the real sandbox user name and the real `bwrap` path:
 ```
 
 The `<sandbox-user>` is the account that the probe reads with `id -u` and
-`id -g`. The home directory is `/home/daytona`. Install the `sudo` package in
-the image or snapshot if it is absent.
+`id -g`. The driver resolves the sandbox work directory first, then the user
+home directory. It uses `/home/daytona` only as a fallback default when both
+are empty. Confirm the real home directory for your image or snapshot. Install
+the `sudo` package in the image or snapshot if it is absent.
 
 ### 3. Allow an unprivileged user namespace
 
