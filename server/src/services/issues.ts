@@ -7057,6 +7057,34 @@ export function issueService(db: Db) {
         if (existing.status !== updated.status) {
           if (updated.status === "done" || updated.status === "cancelled") {
             await finalizeSummarySlotsForTerminalIssue(tx, updated);
+            // Every terminal transition funnels through here, including direct
+            // service callers that never touch the HTTP routes, so pending
+            // interaction cards cannot outlive their issue. The dynamic import
+            // avoids the issue-service/interaction-service module cycle.
+            const { issueThreadInteractionService } = await import("./issue-thread-interactions.js");
+            const expiredInteractions = await issueThreadInteractionService(tx).expirePendingInteractionsForTerminalIssue(
+              updated,
+              { agentId: actorAgentId ?? null, userId: actorUserId ?? null },
+            );
+            for (const interaction of expiredInteractions) {
+              await logActivity(tx as unknown as Db, {
+                companyId: updated.companyId,
+                actorType: actorAgentId ? "agent" : actorUserId ? "user" : "system",
+                actorId: actorAgentId ?? actorUserId ?? "issue_service",
+                agentId: actorAgentId ?? null,
+                action: "issue.thread_interaction_expired",
+                entityType: "issue",
+                entityId: updated.id,
+                details: {
+                  identifier: updated.identifier ?? null,
+                  interactionId: interaction.id,
+                  interactionKind: interaction.kind,
+                  interactionStatus: interaction.status,
+                  source: "issue.status_transition.issue_closed",
+                  result: interaction.result ?? null,
+                },
+              });
+            }
           }
           // A status-card generation task that goes done/cancelled/blocked stops
           // making progress; release the card's generation claim so the board tile
