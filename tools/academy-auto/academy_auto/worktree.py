@@ -65,7 +65,15 @@ def prepare_worktree(cfg: Config, runner=subprocess.run) -> Path:
     wt = str(cfg.worktree_path)
 
     if _is_valid_worktree(cfg, runner):
-        runner(["git", "-C", wt, "reset", "--hard", cfg.base_branch],
+        # Auf den REMOTE-Stand zurücksetzen, nicht auf den lokalen Zeiger:
+        # `gh pr merge` in landing.py mergt auf GitHub, der lokale
+        # `main`-Zeiger wandert dabei NICHT mit. Ein Reset auf `main` würde den
+        # Worktree auf einen veralteten Baum stellen — der Implementierer sähe
+        # die eigene Arbeit der Vorrunde nicht und das Gate misst das Falsche.
+        # Live beobachtet am 31.07.: lokal b91044f, origin 85784ff.
+        runner(["git", "-C", wt, "fetch", "origin"],
+               check=False, capture_output=True, text=True, timeout=WORKTREE_TIMEOUT)
+        runner(["git", "-C", wt, "reset", "--hard", f"origin/{cfg.base_branch}"],
                check=True, capture_output=True, text=True, timeout=WORKTREE_TIMEOUT)
         runner(["git", "-C", wt, "clean", "-fd"],
                check=True, capture_output=True, text=True, timeout=WORKTREE_TIMEOUT)

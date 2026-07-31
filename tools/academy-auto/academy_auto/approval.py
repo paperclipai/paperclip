@@ -41,8 +41,14 @@ def has_unmerged_commit(cfg, runner=subprocess.run) -> bool:
     Nacht ist sichtbar (Log + der Digest wiederholt sich), vernichtete Arbeit
     nicht.
     """
-    ahead = _stdout(runner, ["git", "-C", str(cfg.academy_repo), "rev-list", "--count",
-                             f"{cfg.base_branch}..{cfg.branch}"])
+    repo = str(cfg.academy_repo)
+    # Gegen den REMOTE-Stand vergleichen: `gh pr merge` in landing.py mergt auf
+    # GitHub, der lokale `main`-Zeiger wandert dabei NICHT mit. Gegen den
+    # veralteten lokalen Stand gemessen blieben längst gemergte Commits ewig
+    # "offen" — die Sperre würde die Pipeline dauerhaft stilllegen.
+    _stdout(runner, ["git", "-C", repo, "fetch", "origin"])
+    ahead = _stdout(runner, ["git", "-C", repo, "rev-list", "--count",
+                             f"origin/{cfg.base_branch}..{cfg.branch}"])
     if ahead is None:
         return True
     return ahead.strip() not in ("", "0")

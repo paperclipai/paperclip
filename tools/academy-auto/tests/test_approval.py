@@ -54,13 +54,14 @@ def test_git_failure_is_treated_as_pending():
     assert has_unmerged_commit(_cfg(), runner=Git(ahead="1", fail_on=("rev-list",))) is True
 
 
-def test_origin_is_not_consulted():
-    """Der Push-Zustand ist irrelevant — nur `main..branch` entscheidet.
-    Spart einen git-Aufruf und schliesst die Luecke, dass 'gepusht' faelschlich
-    als 'erledigt' galt."""
+def test_push_state_does_not_enter_the_decision():
+    """Nur der Abstand zum Basis-Branch entscheidet. Der Push-Zustand des
+    Agenten-Branches wird NICHT abgefragt — 'gepusht' hiess frueher
+    faelschlich 'erledigt', obwohl der PR noch offen war und ein spaeteres
+    `push -f` seinen Inhalt ersetzt haette."""
     git = Git(ahead="1")
     has_unmerged_commit(_cfg(), runner=git)
-    assert not any("origin/" in c for c in git.calls)
+    assert not any("rev-parse" in c for c in git.calls)
 
 
 def test_check_never_mutates_the_tree():
@@ -68,3 +69,14 @@ def test_check_never_mutates_the_tree():
     git = Git(ahead="1")
     has_unmerged_commit(_cfg(), runner=git)
     assert not any("reset" in c or "clean" in c or "checkout" in c for c in git.calls)
+
+
+def test_lock_compares_against_the_remote_base():
+    """Gleiche Falle wie in prepare_worktree: `gh pr merge` bewegt den lokalen
+    main-Zeiger nicht. Verglichen mit dem veralteten lokalen Stand blieben
+    laengst gemergte Commits ewig 'offen' — die Pipeline waere dauerhaft
+    gesperrt."""
+    git = Git(ahead="0")
+    has_unmerged_commit(_cfg(), runner=git)
+    assert any("fetch" in c for c in git.calls)
+    assert any("origin/main.." in c for c in git.calls)

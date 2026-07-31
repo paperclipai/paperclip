@@ -127,3 +127,20 @@ def test_ensure_dependencies_uses_configured_install_cmd(tmp_path):
 
 def test_config_npm_install_cmd_default():
     assert Config.default().npm_install_cmd == ("npm", "ci", "--legacy-peer-deps")
+
+
+def test_reset_targets_the_remote_branch_not_the_stale_local_one(tmp_path):
+    """`gh pr merge` (landing.py) mergt auf GitHub — der LOKALE main-Zeiger
+    wandert dabei nicht mit. Ein Reset auf `main` setzt den Worktree deshalb
+    auf einen veralteten Stand zurueck: der Implementierer sieht die eigene
+    Arbeit der Vorrunde nicht mehr, und das Gate misst den falschen Baum.
+    Live beobachtet am 31.07. (Web-Lauf: lokal b91044f, origin 85784ff).
+    """
+    wt = tmp_path / "wt"; (wt / "node_modules").mkdir(parents=True)
+    (wt / "node_modules" / "x").write_text("1")
+    cfg = _cfg(tmp_path)
+    rec = Rec(worktree_valid=True)
+    prepare_worktree(cfg, runner=rec)
+    j = rec.joined()
+    assert any("fetch" in x for x in j), "ohne fetch ist auch origin/main veraltet"
+    assert any(f"reset --hard origin/{cfg.base_branch}" in x for x in j)
