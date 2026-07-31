@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 import os
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 
@@ -17,6 +17,10 @@ class PendingRecord:
     has_change: bool
     tsc_delta: int
     quarantined: list[str]
+    # Automatisch nach main gemergte Aufgaben dieses Laufs, je "<sha> <Aufgabe>".
+    # Default, damit `PendingRecord(**data)` auch aeltere pending.json-Dateien
+    # ohne dieses Feld noch liest.
+    landed: list[str] = field(default_factory=list)
 
 
 def write_pending(path: Path, rec: PendingRecord) -> None:

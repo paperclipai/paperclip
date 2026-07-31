@@ -9,6 +9,12 @@ parked: list = []
 recorded: list = []
 resets: list = []
 
+# base_deps liefert mit ["src/App.tsx"] eine GRUENE Aenderung — die wird seit
+# dem Auto-Merge-Umbau selbst gemergt. Diese Attrappe steht fuer den
+# erfolgreichen Merge.
+_LandOK = SimpleNamespace(ok=True, note="gemergt", merge_sha="abcdef1234",
+                          pr_url="", reverted=False)
+
 
 def _measure(total):
     # ein Schritt trägt den ganzen Fehler-Count
@@ -31,6 +37,10 @@ def _cfg(tmp_path, **over):
     base["pause_flag"] = tmp_path / "kein.pause"
     base["dry_run_flag"] = tmp_path / "kein.dryrun"
     base["pending_path"] = tmp_path / "pending.json"
+    # Diese Tests pruefen Gate, Scope-Zaun und Diff-Cap an EINER Aufgabe.
+    # Die Mehrfach-Schleife hat eigene Tests (_loop_deps) und wuerde hier nur
+    # die Gate-Attrappen leerlaufen lassen.
+    base["max_tasks_per_run"] = 1
     base.update(over)
     return Config(**base)
 
@@ -45,15 +55,106 @@ def base_deps(**over):
         now_ts=lambda: "2026-07-25T02:00:03",
         park=lambda cfg, rec: parked.append(rec),
         count_diff_lines=lambda cfg, cwd: 10,
-        list_changed_files=lambda cfg, cwd: ["src/App.tsx"],
+        # Bewusst eine GELBE Datei: diese Tests beschreiben die Strecke
+        # "committen und auf Freigabe warten" (Gate, Scope-Zaun, Diff-Cap,
+        # Parken). Seit dem Auto-Merge-Umbau ist das die gelbe Stufe — eine
+        # Datei unter src/ wuerde stattdessen selbst gemergt und die Aussage
+        # dieser Tests verschieben. Der gruene Pfad hat mit _loop_deps eigene.
+        list_changed_files=lambda cfg, cwd: ["package.json"],
         triage_and_pick=lambda cfg, cwd, baseline_red: None,
         record_triage_outcome=lambda cfg, key, status: recorded.append((key, status)),
         reset_worktree=lambda cfg, cwd: resets.append(cwd),
         quarantined=lambda cfg: [],
         awaiting_approval=lambda cfg: False,  # default: nichts wartet auf ✅
+        land=lambda cfg, cwd: _LandOK,
     )
     d.update(over)
     return SimpleNamespace(**d)
+
+
+def _loop_deps(parked_list, landings, picks, **over):
+    """deps fuer die Mehrfach-Aufgaben-Schleife. `picks` wird abgearbeitet;
+    ist die Liste leer, findet die Triage nichts mehr."""
+    from academy_auto.landing import LandResult
+    queue = list(picks)
+
+    def _pick(cfg, cwd, red):
+        if not queue:
+            return None
+        return SimpleNamespace(task_prompt=queue.pop(0), reason="weil", chosen_key="k")
+
+    def _land(cfg, cwd):
+        landings.append(cwd)
+        return LandResult(True, "gemergt", merge_sha="abcdef1234")
+
+    base = dict(
+        prepare_worktree=lambda cfg: "/wt",
+        quarantined=lambda cfg: [],
+        awaiting_approval=lambda cfg: False,
+        measure_gate=lambda cfg, cwd: _measure(0),
+        triage_and_pick=_pick,
+        implement_task=lambda cfg, cwd, p: RunOutcome(ok=True, output=""),
+        list_changed_files=lambda cfg, cwd: ["src/a.ts"],   # gruen
+        count_diff_lines=lambda cfg, cwd: 3,
+        commit_and_pr=lambda cfg, cwd, p: True,
+        branch_sha=lambda cfg, cwd: "deadbee",
+        now_ts=lambda: "2026-07-25T02:00:03",
+        record_triage_outcome=lambda cfg, k, s: None,
+        reset_worktree=lambda cfg, cwd: None,
+        park=lambda cfg, rec: parked_list.append(rec),
+        land=_land,
+    )
+    base.update(over)
+    return SimpleNamespace(**base)
+
+
+def test_green_tasks_are_merged_without_asking(tmp_path):
+    """Kern des autonomen Betriebs: gruene Arbeit landet selbst in main."""
+    parked_list, landings = [], []
+    cfg = _cfg(tmp_path, max_tasks_per_run=3)
+    rep = run_once(cfg, None, _loop_deps(parked_list, landings, ["A", "B"]))
+    assert rep.status == "landed"
+    assert len(landings) == 2
+    assert len(parked_list) == 1                      # genau EIN Digest-Datensatz
+    assert parked_list[0].has_change is False         # nichts wartet -> keine Buttons
+    assert len(parked_list[0].landed) == 2
+
+
+def test_task_cap_limits_a_runaway(tmp_path):
+    """Der Deckel begrenzt den Schaden, wenn der Ranker endlos Arbeit findet."""
+    parked_list, landings = [], []
+    cfg = _cfg(tmp_path, max_tasks_per_run=2)
+    run_once(cfg, None, _loop_deps(parked_list, landings, ["A", "B", "C", "D"]))
+    assert len(landings) == 2
+
+
+def test_yellow_change_stops_the_loop_and_asks(tmp_path):
+    """package.json ist gelb: nicht mergen, fragen — und danach ist der Branch
+    ohnehin blockiert, also darf keine weitere Aufgabe folgen."""
+    parked_list, landings = [], []
+    cfg = _cfg(tmp_path, max_tasks_per_run=3)
+    rep = run_once(cfg, None, _loop_deps(
+        parked_list, landings, ["A", "B"],
+        list_changed_files=lambda cfg, cwd: ["package.json"]))
+    assert rep.status == "committed"
+    assert landings == []                       # nichts automatisch gemergt
+    assert parked_list[0].has_change is True    # Buttons im Digest
+    assert "Freigabe" in parked_list[0].gate_note
+
+
+def test_failed_landing_stops_the_loop(tmp_path):
+    """Wenn ein Merge schiefging, koennte main instabil sein — nicht
+    weiterarbeiten, sondern melden."""
+    from academy_auto.landing import LandResult
+    parked_list, landings = [], []
+    cfg = _cfg(tmp_path, max_tasks_per_run=3)
+    rep = run_once(cfg, None, _loop_deps(
+        parked_list, landings, ["A", "B"],
+        land=lambda cfg, cwd: LandResult(False, "Gate auf main war rot — zurückgenommen",
+                                         reverted=True)))
+    assert rep.status == "land_failed"
+    assert parked_list[0].landed == []
+    assert "rot" in parked_list[0].gate_note
 
 
 def test_run_is_skipped_while_a_commit_awaits_approval(tmp_path):

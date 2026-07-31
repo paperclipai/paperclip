@@ -26,6 +26,8 @@ class Config:
     intent_path: Path
     milestone_delta_threshold: int
     github_repo: str
+    auto_merge_max_lines: int
+    auto_merge_path_prefixes: tuple[str, ...]
 
     @classmethod
     def default(cls) -> "Config":
@@ -52,8 +54,17 @@ class Config:
                 ["npx", "tsc", "--noEmit"],
                 ["npm", "run", "lint"],
             ],
-            max_tasks_per_run=1,
+            # Mehrere Aufgaben je Lauf: das Feld gab es seit Phase A, es wurde
+            # aber nirgends ausgewertet — der Lauf schaffte genau einen Krümel
+            # pro Nacht. Der Deckel begrenzt gleichzeitig den Schaden eines
+            # Ausreissers (max. 3 Merges pro Nacht).
+            max_tasks_per_run=3,
             max_diff_lines=800,
+            # Auto-Merge-Schwellen (siehe risk.py). Bewusst STRENGER als der
+            # allgemeine Diff-Cap: was ohne Rückfrage in main landet, soll klein
+            # und überschaubar sein. Alles Grössere geht als Freigabe an Walter.
+            auto_merge_max_lines=300,
+            auto_merge_path_prefixes=("src/", "tests/"),
             denied_globs=(
                 ".env", ".env.*", "*.env",
                 "*.pem", "*.key", "*.keystore", "*.jks", "*.p12", "*.p8",

@@ -68,8 +68,16 @@ def _build_prompt(candidates, baseline_red: bool) -> str:
     lines = [
         "Du bist Tech-Lead der WHITESTAG.ACADEMY-App (Expo/React Native).",
         "Wähle aus der Kandidatenliste GENAU EINE gut umsetzbare, klar abgegrenzte Aufgabe.",
-        "Meide zu große/riskante Aufgaben. Antworte AUSSCHLIESSLICH als JSON in einer Zeile:",
-        '{"chosen_key": "<key aus der Liste>", "task_prompt": "<konkreter Auftrag für den Entwickler>", "reason": "<kurze Begründung>"}',
+        "Meide zu große/riskante Aufgaben.",
+        "",
+        "WICHTIG — deine Aufgabe ist die AUSWAHL, nicht die Lösung:",
+        "Beschreibe in `task_prompt` nur das ZIEL und woran man erkennt, dass es",
+        "erreicht ist. Schreibe NICHT den Lösungsweg vor — keine konkreten",
+        "Funktionen, Hooks, Parameter oder Code-Zeilen. Wie es umgesetzt wird,",
+        "entscheidet der Entwickler, der den Code vor sich hat.",
+        "",
+        "Antworte AUSSCHLIESSLICH als JSON in einer Zeile:",
+        '{"chosen_key": "<key aus der Liste>", "task_prompt": "<Ziel + Abnahmekriterium, ohne Lösungsweg>", "reason": "<kurze Begründung>"}',
     ]
     if baseline_red:
         lines.append("HINWEIS: Die Baseline ist ROT (tsc/lint-Fehler). Bevorzuge eine Aufgabe, die das Gate grün macht.")

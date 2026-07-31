@@ -5,8 +5,12 @@ from academy_auto.config import Config
 def test_default_config_has_expected_invariants():
     cfg = Config.default()
     assert cfg.branch == "agents/academy-auto"
-    assert cfg.max_tasks_per_run == 1
+    assert cfg.max_tasks_per_run == 3
     assert cfg.max_diff_lines == 800
+    # Was ohne Rueckfrage nach main geht, muss kleiner sein als der
+    # allgemeine Diff-Cap — sonst waere der Cap die einzige Grenze.
+    assert cfg.auto_merge_max_lines < cfg.max_diff_lines
+    assert cfg.auto_merge_path_prefixes == ("src/", "tests/")
     assert cfg.pause_flag.name == "academy-auto.pause"
     assert cfg.dry_run_flag.name == "academy-auto.dryrun"
     assert cfg.worktree_path.name == "worktree"

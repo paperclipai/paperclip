@@ -130,6 +130,22 @@ def test_build_prompt_contains_issue_despite_many_tsc():
     assert "Onboarding-Screen" in prompt
 
 
+def test_prompt_forbids_prescribing_the_implementation():
+    """Der Ranker waehlt das WAS, nicht das WIE.
+
+    Am 30.07. schrieb haiku als Auftrag "fuege loadCertificate zur
+    Abhaengigkeitsliste hinzu" — ohne useCallback technisch falsch; der
+    Implementierer folgte und riss neun Tests. Ein winziges Modell darf einem
+    grossen keinen Loesungsweg diktieren, erst recht nicht, wenn das Ergebnis
+    automatisch gemergt wird.
+    """
+    from academy_auto.triage.rank import _build_prompt
+    prompt = _build_prompt([Candidate("issue", "issue:1", "", 0, "Irgendwas", 20)], baseline_red=False)
+    low = prompt.lower()
+    assert "nicht" in low and "lösungsweg" in low
+    assert "ziel" in low
+
+
 def test_ranker_is_pinned_to_haiku():
     """Der Ranker darf NICHT den CLI-Standard (opus) erben — das kostet jede Nacht unnoetig."""
     from academy_auto.triage.rank import RANK_CMD

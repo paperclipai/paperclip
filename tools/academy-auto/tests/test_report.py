@@ -139,3 +139,50 @@ def test_build_digest_from_pending_nothing():
     rec = PendingRecord("t", "nothing_to_do", "", "", "", "", False, 0, [])
     text = build_digest_from_pending(rec)
     assert "nichts Umsetzbares" in text
+
+
+def test_digest_reports_merged_work_without_asking():
+    """Autonomer Regelfall: es wurde gemergt, es gibt nichts zu druecken."""
+    from academy_auto.pending import PendingRecord
+    from academy_auto.report import build_digest_from_pending
+    rec = PendingRecord(
+        run_ts="t", outcome="landed", task="", reason="", gate_note="grün (absolut)",
+        branch_sha="", has_change=False, tsc_delta=0, quarantined=[],
+        landed=["abcdef1 Lint-Warnungen abräumen", "1234567 act()-Rauschen beheben"],
+    )
+    text = build_digest_from_pending(rec)
+    assert "2" in text
+    assert "abcdef1" in text
+    assert "Lint-Warnungen abräumen" in text
+    assert "Freigabe" not in text          # keine Knoepfe, nichts zu tun
+
+
+def test_digest_shows_both_merged_and_waiting():
+    """Gemischter Lauf: zwei gruene gemergt, eine gelbe wartet."""
+    from academy_auto.pending import PendingRecord
+    from academy_auto.report import build_digest_from_pending
+    rec = PendingRecord(
+        run_ts="t", outcome="committed", task="Expo auf 57 heben", reason="Sicherheit",
+        gate_note="grün (absolut)\nFreigabe nötig: beruehrt Build/Abhaengigkeiten: package.json",
+        branch_sha="abc", has_change=True, tsc_delta=0, quarantined=[],
+        landed=["abcdef1 Lint-Warnungen abräumen"],
+    )
+    text = build_digest_from_pending(rec)
+    assert "abcdef1" in text
+    assert "Expo auf 57 heben" in text
+    assert "Freigabe" in text              # hier gibt es etwas zu entscheiden
+
+
+def test_digest_reports_an_automatic_revert():
+    """Der Revert darf nicht im Rauschen untergehen — das ist der Fall, bei dem
+    Walter hinschauen muss, obwohl er nichts druecken soll."""
+    from academy_auto.pending import PendingRecord
+    from academy_auto.report import build_digest_from_pending
+    rec = PendingRecord(
+        run_ts="t", outcome="land_failed", task="Kaputte Aufgabe", reason="",
+        gate_note="Gate auf main war rot — Merge automatisch zurückgenommen",
+        branch_sha="", has_change=False, tsc_delta=0, quarantined=[], landed=[],
+    )
+    text = build_digest_from_pending(rec)
+    assert "zurückgenommen" in text
+    assert "Freigabe" not in text

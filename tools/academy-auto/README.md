@@ -42,6 +42,34 @@ Lauf von Hand (statt auf 02:00 zu warten):
 
     zsh ~/.paperclip/scripts/academy-auto/run-nightly.sh
 
+## Autonomer Betrieb: Risikostufen und Auto-Merge
+
+Der Lauf arbeitet bis zu `max_tasks_per_run` Aufgaben ab (Standard 3) und
+entscheidet je Aufgabe **deterministisch** — nicht per LLM —, ob sie ohne
+Rückfrage nach `main` darf (`risk.py`):
+
+| Stufe | Bedingung | Was passiert |
+|---|---|---|
+| **GRÜN** | ausschließlich `src/` und `tests/`, Diff ≤ `auto_merge_max_lines` (300) | push → PR → **merge**, dann weiter mit der nächsten Aufgabe |
+| **GELB** | Build/Abhängigkeiten (`package.json`, `tsconfig.json`, `app.json`, `eslint.config.js` …), Infrastruktur (`.github/`, `ios/`, `android/`, `scripts/`, `supabase/`), oder Diff > 300 | commit, **Lauf endet**, Telegram-✅ nötig |
+| **ROT** | Secrets, Signing-Keys, Supabase-Migrationen | schon vorher vom Scope-Zaun (`scope.py`) **verworfen**, nicht gefragt |
+
+Die gelbe Stufe beendet den Lauf, weil der Branch danach ohnehin durch die
+Freigabe-Sperre blockiert ist.
+
+**Sicherheitsnetz nach jedem Auto-Merge** (`landing.py`): der Worktree wird auf
+den frisch gemergten `main` zurückgesetzt und das Gate **dort erneut**
+gemessen. Rot → die ganze Spanne wird automatisch revertiert und gepusht.
+Nötig ist das, weil sich `main` zwischen Baseline und Merge bewegt haben kann
+(ein von Walter gemergter gelber PR, ein Handcommit): zwei je für sich grüne
+Änderungen können zusammen rot ergeben.
+
+Schlägt ein Merge fehl oder wird revertiert, endet der Lauf — der Zustand von
+`main` ist dann nicht mehr der, auf dem die Baseline stand.
+
+Der 08:00-Digest ist im Regelfall ein **Bericht** („Automatisch gemergt: 2 …"),
+keine Rückfrage. Knöpfe erscheinen nur, wenn wirklich etwas wartet.
+
 ## Freigabe-Sperre (`awaiting_approval`)
 
 Solange auf `agents/academy-auto` Arbeit liegt, die **noch nicht in `main`

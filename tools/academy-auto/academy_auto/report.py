@@ -64,18 +64,43 @@ def build_nothing_digest(quarantined: list[str] | None = None) -> str:
 
 
 def build_digest_from_pending(rec) -> str:
-    """Digest aus einem geparkten PendingRecord bauen (Zustell-Job 08:00)."""
-    if rec.outcome == "nothing_to_do":
+    """Digest aus einem geparkten PendingRecord bauen (Zustell-Job 08:00).
+
+    Im autonomen Regelbetrieb ist der Digest ein **Bericht**, keine Rückfrage:
+    er listet, was in der Nacht nach main gemergt wurde. Knöpfe erscheinen nur,
+    wenn wirklich etwas auf eine Entscheidung wartet (gelbe Stufe).
+    """
+    landed = list(getattr(rec, "landed", []) or [])
+    if rec.outcome == "nothing_to_do" and not landed:
         return build_nothing_digest(rec.quarantined)
-    lines = ["🎓 Academy-Auto — Tagesstand", "", f"Aufgabe: {rec.task}"]
+
+    lines = ["🎓 Academy-Auto — Tagesstand", ""]
+
+    if landed:
+        lines.append(f"Automatisch gemergt: {len(landed)}")
+        for entry in landed:
+            lines.append(f"  • {entry}")
+        lines.append("")
+
+    if rec.has_change:
+        lines.append(f"Wartet auf Freigabe: {rec.task}")
+    elif rec.task:
+        lines.append(f"Aufgabe: {rec.task}")
+
     if rec.gate_note:
         lines.append(f"Gate: {rec.gate_note}")
+
     if rec.has_change:
         lines.append("Ergebnis: Change liegt freigabebereit auf agents/academy-auto")
     elif rec.outcome == "error":
         lines.append("Ergebnis: Fehler im Nachtlauf")
+    elif rec.outcome == "land_failed":
+        lines.append("Ergebnis: Merge fehlgeschlagen — bitte anschauen")
+    elif rec.outcome == "landed":
+        lines.append("Ergebnis: alles gemergt, nichts zu tun")
     else:
         lines.append(f"Ergebnis: {rec.outcome}")
+
     if rec.reason:
         lines.append(f"Warum diese Aufgabe: {rec.reason}")
     if rec.has_change:

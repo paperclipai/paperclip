@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from .config import Config
 from .gate import delta_decision
 from .pending import PendingRecord
+from .risk import GREEN, classify
 from .scope import check_scope
 
 
@@ -43,85 +44,128 @@ def run_once(cfg: Config, task_prompt, deps) -> RunReport:
 
 
 def _run_once_inner(cfg: Config, task_prompt, deps) -> RunReport:
-    cwd = deps.prepare_worktree(cfg)
-    quar = deps.quarantined(cfg)
+    """Arbeitet bis zu `max_tasks_per_run` Aufgaben ab.
 
-    baseline = deps.measure_gate(cfg, cwd)
-    baseline_red = baseline.total > 0
+    Grüne Aufgaben (siehe risk.py) landen ohne Rückfrage in main; danach geht
+    es mit der nächsten weiter. Eine gelbe Aufgabe beendet den Lauf: sie wartet
+    auf Walters ✅, und solange sie auf dem Branch liegt, ist der ohnehin durch
+    die Freigabe-Sperre blockiert.
 
-    pick = None
-    if task_prompt is None:
-        pick = deps.triage_and_pick(cfg, cwd, baseline_red)
-        if pick is None:
-            deps.park(cfg, PendingRecord(
-                run_ts=deps.now_ts(), outcome="nothing_to_do", task="", reason="",
-                gate_note="", branch_sha="", has_change=False, tsc_delta=0,
-                quarantined=quar,
-            ))
-            return RunReport(status="nothing_to_do")
-        task_prompt = pick.task_prompt
-    reason = pick.reason if pick is not None else ""
+    Geparkt wird genau EINMAL, am Ende, als Zusammenfassung des ganzen Laufs —
+    pending.json ist die Grundlage des 08:00-Digests und trägt die run_ts, auf
+    die die Telegram-Buttons zeigen.
+    """
+    explicit = task_prompt is not None
+    rounds = 1 if explicit else max(1, cfg.max_tasks_per_run)
 
-    outcome = deps.implement_task(cfg, cwd, task_prompt)
-    if not outcome.ok:
-        # Fehlerausgabe mitschicken: bei einem Nachtlauf ist der geparkte
-        # Datensatz die einzige Spur, warum die Umsetzung scheiterte.
-        detail = (outcome.output or "").strip()[-600:] or "(keine Ausgabe)"
-        deps.park(cfg, PendingRecord(
-            run_ts=deps.now_ts(), outcome="impl_failed", task=task_prompt, reason=reason,
-            gate_note=f"Umsetzung fehlgeschlagen\nFehlerausgabe: {detail}",
-            branch_sha="", has_change=False, tsc_delta=0, quarantined=quar,
-        ))
-        return _finalize(deps, cfg, cwd, pick, "impl_failed")
+    landed: list[str] = []
+    cwd = None
+    status = "nothing_to_do"
+    pending_change = False
+    task = reason = note = ""
+    tsc_delta = 0
 
-    after = deps.measure_gate(cfg, cwd)
-    delta = delta_decision(baseline, after)
-    tsc_delta = baseline.total - after.total
-    if not delta.passed:
-        deps.park(cfg, PendingRecord(
-            run_ts=deps.now_ts(), outcome="discarded", task=task_prompt, reason=reason,
-            gate_note=delta.note, branch_sha="", has_change=False, tsc_delta=0,
-            quarantined=quar,
-        ))
-        return _finalize(deps, cfg, cwd, pick, "discarded")
+    for _ in range(rounds):
+        cwd = deps.prepare_worktree(cfg)
+        baseline = deps.measure_gate(cfg, cwd)
 
-    changed = deps.list_changed_files(cfg, cwd)
-    scope = check_scope(cfg, changed)
-    if not scope.ok:
-        note = delta.note + "\nScope-Verletzung: " + ", ".join(scope.violations)
-        deps.park(cfg, PendingRecord(
-            run_ts=deps.now_ts(), outcome="discarded", task=task_prompt, reason=reason,
-            gate_note=note, branch_sha="", has_change=False, tsc_delta=0,
-            quarantined=quar,
-        ))
-        return _finalize(deps, cfg, cwd, pick, "discarded")
+        pick = None
+        if explicit:
+            task, reason = task_prompt, ""
+        else:
+            pick = deps.triage_and_pick(cfg, cwd, baseline.total > 0)
+            if pick is None:
+                if not landed:
+                    status = "nothing_to_do"
+                    task = reason = note = ""
+                break
+            task, reason = pick.task_prompt, pick.reason
 
-    lines = deps.count_diff_lines(cfg, cwd)
-    if lines > cfg.max_diff_lines:
-        note = delta.note + f"\nDiff-Cap überschritten: {lines} > {cfg.max_diff_lines}"
-        deps.park(cfg, PendingRecord(
-            run_ts=deps.now_ts(), outcome="discarded", task=task_prompt, reason=reason,
-            gate_note=note, branch_sha="", has_change=False, tsc_delta=0,
-            quarantined=quar,
-        ))
-        return _finalize(deps, cfg, cwd, pick, "discarded")
+        outcome = deps.implement_task(cfg, cwd, task)
+        if not outcome.ok:
+            # Fehlerausgabe mitschicken: bei einem Nachtlauf ist der geparkte
+            # Datensatz die einzige Spur, warum die Umsetzung scheiterte.
+            detail = (outcome.output or "").strip()[-600:] or "(keine Ausgabe)"
+            status = "impl_failed"
+            note = f"Umsetzung fehlgeschlagen\nFehlerausgabe: {detail}"
+            _after_task(deps, cfg, cwd, pick, "impl_failed")
+            continue
 
-    run_ts = deps.now_ts()
-    deps.commit_and_pr(cfg, cwd, task_prompt)  # committet nur auf den Branch; PR erst bei Freigabe (executor.py)
+        after = deps.measure_gate(cfg, cwd)
+        delta = delta_decision(baseline, after)
+        note = delta.note
+        if not delta.passed:
+            status = "discarded"
+            _after_task(deps, cfg, cwd, pick, "discarded")
+            continue
+
+        changed = deps.list_changed_files(cfg, cwd)
+        scope = check_scope(cfg, changed)
+        if not scope.ok:
+            status = "discarded"
+            note = delta.note + "\nScope-Verletzung: " + ", ".join(scope.violations)
+            _after_task(deps, cfg, cwd, pick, "discarded")
+            continue
+
+        lines = deps.count_diff_lines(cfg, cwd)
+        if lines > cfg.max_diff_lines:
+            status = "discarded"
+            note = delta.note + f"\nDiff-Cap überschritten: {lines} > {cfg.max_diff_lines}"
+            _after_task(deps, cfg, cwd, pick, "discarded")
+            continue
+
+        deps.commit_and_pr(cfg, cwd, task)
+        risk = classify(cfg, changed, lines)
+
+        if risk.level != GREEN:
+            # Gelb: Branch bleibt stehen und wartet auf ✅. Weiterarbeiten ginge
+            # nicht — der nächste Lauf wäre durch die Freigabe-Sperre blockiert.
+            status = "committed"
+            pending_change = True
+            tsc_delta = baseline.total - after.total
+            note = delta.note + f"\nFreigabe nötig: {risk.reason}"
+            _after_task(deps, cfg, cwd, pick, "committed")
+            break
+
+        res = deps.land(cfg, cwd)
+        _after_task(deps, cfg, cwd, pick, "committed" if res.ok else "discarded")
+        if not res.ok:
+            # Merge schiefgegangen oder auf main rot und zurückgenommen: der
+            # Zustand von main ist nicht mehr der, auf dem die Baseline stand.
+            status = "land_failed"
+            note = res.note
+            break
+        landed.append(f"{res.merge_sha[:7]} {task}".strip())
+        status = "landed"
+
+    if pending_change:
+        outcome_name = "committed"
+    elif landed:
+        outcome_name = "landed"
+    else:
+        outcome_name = status
+
     deps.park(cfg, PendingRecord(
-        run_ts=run_ts, outcome="committed", task=task_prompt, reason=reason,
-        gate_note=delta.note, branch_sha=deps.branch_sha(cfg, cwd),
-        has_change=True, tsc_delta=tsc_delta, quarantined=quar,
+        run_ts=deps.now_ts(),
+        outcome=outcome_name,
+        task=task if (pending_change or not landed) else "",
+        reason=reason if (pending_change or not landed) else "",
+        gate_note=note,
+        branch_sha=deps.branch_sha(cfg, cwd) if pending_change else "",
+        has_change=pending_change,
+        tsc_delta=tsc_delta,
+        quarantined=deps.quarantined(cfg),
+        landed=landed,
     ))
-    return _finalize(deps, cfg, cwd, pick, "committed")
+    return RunReport(status=outcome_name if not pending_change else "committed")
 
 
-def _finalize(deps, cfg, cwd, pick, status) -> RunReport:
+def _after_task(deps, cfg, cwd, pick, status) -> None:
+    """Triage-Ergebnis festhalten und den Worktree für die nächste Runde säubern."""
     if pick is not None:
         deps.record_triage_outcome(cfg, pick.chosen_key, status)
     if status in ("impl_failed", "discarded"):
         deps.reset_worktree(cfg, cwd)
-    return RunReport(status=status)
 
 
 def _empty_gate():
@@ -159,6 +203,7 @@ def _build_default_deps(worktree, gate, runner):  # pragma: no cover
         reset_worktree=_reset_worktree,
         quarantined=_quarantined,
         awaiting_approval=_awaiting_approval,
+        land=_land,
     )
 
 
@@ -236,6 +281,11 @@ def _quarantined(cfg):
 def _awaiting_approval(cfg):  # pragma: no cover - echte git-Abfrage beim Deploy
     from .approval import has_unmerged_commit
     return has_unmerged_commit(cfg)
+
+
+def _land(cfg, cwd):  # pragma: no cover - echter push/gh-Aufruf beim Deploy
+    from .landing import land
+    return land(cfg, cwd)
 
 
 def _reset_worktree(cfg, cwd):  # pragma: no cover - echter Git-Reset beim Deploy
