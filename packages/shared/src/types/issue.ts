@@ -1173,6 +1173,7 @@ export interface RequestItemVerdictsPayload {
 export interface RequestConfirmationResult {
   version: 1;
   outcome: "accepted" | "rejected" | "superseded_by_comment" | "superseded_by_interaction" | "stale_target" | "withdrawn" | "issue_closed";
+  targetMutationApplied?: false;
   reason?: string | null;
   commentId?: string | null;
   staleTarget?: RequestConfirmationTarget | null;
