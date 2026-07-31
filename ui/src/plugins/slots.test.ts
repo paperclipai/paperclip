@@ -3,11 +3,13 @@
 import { createElement } from "react";
 import { flushSync } from "react-dom";
 import { createRoot, type Root } from "react-dom/client";
+import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, describe, expect, it } from "vitest";
 import {
   PluginSlotMount,
   _collectRegisterableExportNamesForTests,
   _resetPluginModuleLoader,
+  registerPluginReactComponent,
   registerPluginWebComponent,
   type ResolvedPluginSlot,
 } from "./slots";
@@ -83,5 +85,44 @@ describe("plugin slot export registration", () => {
 
     expect(container.textContent).not.toContain("Content Machine: Content");
     expect(container.querySelector("paperclip-test-sidebar")).not.toBeNull();
+  });
+
+  it("forwards host-provided component props to React slot components", () => {
+    const container = document.createElement("div");
+    document.body.appendChild(container);
+    const root = createRoot(container);
+    const queryClient = new QueryClient();
+    roots.push(root);
+    const payload = { title: "Open deployment deck" };
+    const slot: ResolvedPluginSlot = {
+      type: "approvalCard",
+      id: "approval-card",
+      displayName: "Approval Card",
+      exportName: "ApprovalCard",
+      pluginId: "approval-plugin",
+      pluginKey: "approval-plugin",
+      pluginDisplayName: "Approval Plugin",
+      pluginVersion: "1.0.0",
+    };
+
+    registerPluginReactComponent("approval-plugin", "ApprovalCard", ({ payload: receivedPayload }) => (
+      createElement("div", null, (receivedPayload as typeof payload).title)
+    ));
+
+    flushSync(() => {
+      root.render(
+        createElement(
+          QueryClientProvider,
+          { client: queryClient },
+          createElement(PluginSlotMount, {
+            slot,
+            context: { companyId: "company-1", companyPrefix: "PAP" },
+            componentProps: { payload },
+          }),
+        ),
+      );
+    });
+
+    expect(container.textContent).toContain("Open deployment deck");
   });
 });

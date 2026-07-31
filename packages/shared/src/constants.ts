@@ -1332,6 +1332,7 @@ export const PLUGIN_CAPABILITIES = [
   "ui.detailTab.register",
   "ui.dashboardWidget.register",
   "ui.commentAnnotation.register",
+  "ui.approval.register",
   "ui.action.register",
 ] as const;
 export type PluginCapability = (typeof PLUGIN_CAPABILITIES)[number];
@@ -1401,6 +1402,8 @@ export const PLUGIN_UI_SLOT_TYPES = [
   "contextMenuItem",
   "commentAnnotation",
   "commentContextMenuItem",
+  "approvalCard",
+  "approvalPayloadField",
   "settingsPage",
   "companySettingsPage",
 ] as const;

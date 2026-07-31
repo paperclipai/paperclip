@@ -218,6 +218,8 @@ Slot types describe where a component mounts. Most values also exist as launcher
 | `taskDetailView` | Entity | (task/issue context) |
 | `commentAnnotation` | Entity | `comment` |
 | `commentContextMenuItem` | Entity | `comment` |
+| `approvalCard` | Approval | — |
+| `approvalPayloadField` | Approval | — |
 | `projectSidebarItem` | Entity | `project` |
 | `toolbarButton` | Entity | varies by host surface |
 | `contextMenuItem` | Entity | varies by host surface |
@@ -285,6 +287,14 @@ A per-comment annotation region rendered below each individual comment in the is
 #### `commentContextMenuItem`
 
 A per-comment context menu item rendered in the "more" dropdown menu (⋮) on each comment in the issue detail timeline. Use this to add per-comment actions such as "Create sub-issue from comment", "Translate", "Flag for review", or custom plugin actions. Receives `PluginCommentContextMenuItemProps` with `context.entityId` set to the comment UUID, `context.entityType` set to `"comment"`, `context.parentEntityId` set to the parent issue UUID, `context.projectId` set to the issue's project (if any), and `context.companyPrefix` set to the active company slug. Plugins can open drawers, modals, or popovers scoped to that comment. The ⋮ menu button only appears on comments where at least one plugin renders visible content. Requires the `ui.action.register` capability.
+
+#### `approvalCard`
+
+An inline extension region rendered inside the approval decision card after the host-rendered payload summary. Use this for approval-specific rich sections such as typed artifact links, contextual checks, or compact decision-support UI. Receives `PluginApprovalCardProps` with `context.companyId` / `context.companyPrefix` plus direct `approval` and `payload` props. Requires the `ui.approval.register` capability.
+
+#### `approvalPayloadField`
+
+A smaller extension region rendered after the built-in approval payload fields. Use this when a plugin wants to add payload-specific fields while leaving the rest of the approval card unchanged. Receives `PluginApprovalPayloadFieldProps` with `context.companyId` / `context.companyPrefix` plus direct `approval` and `payload` props. Requires the `ui.approval.register` capability.
 
 ### Launcher actions and render options
 
@@ -373,6 +383,7 @@ Declare in `manifest.capabilities`. Grouped by scope:
 | | `ui.detailTab.register` |
 | | `ui.dashboardWidget.register` |
 | | `ui.commentAnnotation.register` |
+| | `ui.approval.register` |
 | | `ui.action.register` |
 
 Full list in code: import `PLUGIN_CAPABILITIES` from `@paperclipai/plugin-sdk`.
@@ -889,6 +900,8 @@ Each slot type receives a typed props object with `context: PluginHostContext`. 
 | `toolbarButton` | `PluginToolbarButtonProps` | `entityId: string`, `entityType: string` |
 | `commentAnnotation` | `PluginCommentAnnotationProps` | `entityId: string`, `entityType: "comment"`, `parentEntityId: string`, `projectId`, `companyPrefix` |
 | `commentContextMenuItem` | `PluginCommentContextMenuItemProps` | `entityId: string`, `entityType: "comment"`, `parentEntityId: string`, `projectId`, `companyPrefix` |
+| `approvalCard` | `PluginApprovalCardProps` | `approval`, `payload`, `companyPrefix` |
+| `approvalPayloadField` | `PluginApprovalPayloadFieldProps` | `approval`, `payload`, `companyPrefix` |
 | `projectSidebarItem` | `PluginProjectSidebarItemProps` | `entityId: string`, `entityType: "project"` |
 
 Example detail tab with entity context:

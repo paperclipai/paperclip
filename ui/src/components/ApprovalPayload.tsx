@@ -1,4 +1,6 @@
 import { UserPlus, Lightbulb, ShieldAlert, ShieldCheck } from "lucide-react";
+import type { Approval } from "@paperclipai/shared";
+import { PluginSlotOutlet } from "@/plugins/slots";
 import { formatCents } from "../lib/utils";
 
 export const typeLabel: Record<string, string> = {
@@ -233,15 +235,38 @@ export function ApprovalPayloadRenderer({
   type,
   payload,
   hidePrimaryTitle = false,
+  approval,
+  companyPrefix = null,
 }: {
   type: string;
   payload: Record<string, unknown>;
   hidePrimaryTitle?: boolean;
+  approval?: Approval | null;
+  companyPrefix?: string | null;
 }) {
-  if (type === "hire_agent") return <HireAgentPayload payload={payload} />;
-  if (type === "budget_override_required") return <BudgetOverridePayload payload={payload} />;
-  if (type === "request_board_approval") {
-    return <BoardApprovalPayload payload={payload} hideTitle={hidePrimaryTitle} />;
-  }
-  return <CeoStrategyPayload payload={payload} />;
+  const builtInPayload = (() => {
+    if (type === "hire_agent") return <HireAgentPayload payload={payload} />;
+    if (type === "budget_override_required") return <BudgetOverridePayload payload={payload} />;
+    if (type === "request_board_approval") {
+      return <BoardApprovalPayload payload={payload} hideTitle={hidePrimaryTitle} />;
+    }
+    return <CeoStrategyPayload payload={payload} />;
+  })();
+
+  return (
+    <>
+      {builtInPayload}
+      {approval ? (
+        <PluginSlotOutlet
+          slotTypes={["approvalPayloadField"]}
+          context={{
+            companyId: approval.companyId,
+            companyPrefix,
+          }}
+          componentProps={{ approval, payload }}
+          className="mt-3 space-y-3"
+        />
+      ) : null}
+    </>
+  );
 }

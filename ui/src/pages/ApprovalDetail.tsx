@@ -15,10 +15,11 @@ import { Textarea } from "@/components/ui/textarea";
 import { CheckCircle2, ChevronRight, Sparkles } from "lucide-react";
 import type { ApprovalComment } from "@paperclipai/shared";
 import { MarkdownBody } from "../components/MarkdownBody";
+import { PluginSlotOutlet } from "@/plugins/slots";
 
 export function ApprovalDetail() {
   const { approvalId } = useParams<{ approvalId: string }>();
-  const { selectedCompanyId, setSelectedCompanyId } = useCompany();
+  const { selectedCompanyId, selectedCompany, setSelectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const navigate = useNavigate();
   const [searchParams] = useSearchParams();
@@ -219,7 +220,21 @@ export function ApprovalDetail() {
               />
             </div>
           )}
-          <ApprovalPayloadRenderer type={approval.type} payload={payload} />
+          <ApprovalPayloadRenderer
+            type={approval.type}
+            payload={payload}
+            approval={approval}
+            companyPrefix={selectedCompany?.issuePrefix ?? null}
+          />
+          <PluginSlotOutlet
+            slotTypes={["approvalCard"]}
+            context={{
+              companyId: approval.companyId,
+              companyPrefix: selectedCompany?.issuePrefix ?? null,
+            }}
+            componentProps={{ approval, payload }}
+            className="mt-3 space-y-3"
+          />
           <button
             type="button"
             className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground transition-colors mt-2"
