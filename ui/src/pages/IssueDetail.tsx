@@ -1,4 +1,4 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent, type ReactNode, type Ref } from "react";
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ChangeEvent, type DragEvent, type ReactNode, type Ref } from "react";
 import { pickTextColorForPillBg } from "@/lib/color-contrast";
 import { Link, useLocation, useNavigate, useNavigationType, useParams } from "@/lib/router";
 import { useInfiniteQuery, useQuery, useMutation, useQueryClient, type InfiniteData, type QueryClient } from "@tanstack/react-query";
@@ -40,6 +40,15 @@ import {
 } from "../lib/issueDetailBreadcrumb";
 import { resolveIssueActiveRun, shouldTrackIssueActiveRun } from "../lib/issueActiveRun";
 import { getIssueDetailQueryOptions } from "../lib/issueDetailCache";
+import {
+  beginIssueDetailNavigation,
+  ISSUE_DETAIL_CONTENT_MEASURE,
+  ISSUE_DETAIL_CONTENT_PAINT_MARK,
+  ISSUE_DETAIL_HEADER_MEASURE,
+  ISSUE_DETAIL_HEADER_PAINT_MARK,
+  reportIssueDetailWebVitals,
+  scheduleIssueDetailPaintMeasure,
+} from "../lib/issue-detail-performance";
 import {
   beginLocalInboxArchive,
   boundLocalInboxArchive,
@@ -1618,6 +1627,25 @@ export function IssueDetail() {
     () => flattenIssueCommentPages(commentPages?.pages),
     [commentPages?.pages],
   );
+
+  useLayoutEffect(() => {
+    beginIssueDetailNavigation();
+  }, [issueId]);
+
+  useEffect(() => {
+    if (!(import.meta.env.DEV || import.meta.env.MODE === "qa")) return;
+    return reportIssueDetailWebVitals();
+  }, [issueId]);
+
+  useEffect(() => {
+    if (!issue) return;
+    scheduleIssueDetailPaintMeasure(ISSUE_DETAIL_HEADER_PAINT_MARK, ISSUE_DETAIL_HEADER_MEASURE);
+  }, [issue?.id]);
+
+  useEffect(() => {
+    if (!issue || commentsLoading) return;
+    scheduleIssueDetailPaintMeasure(ISSUE_DETAIL_CONTENT_PAINT_MARK, ISSUE_DETAIL_CONTENT_MEASURE);
+  }, [commentsLoading, issue?.id]);
   const shouldPrefetchOlderComments = useMemo(
     () =>
       shouldAutoloadOlderIssueComments({
@@ -4177,7 +4205,7 @@ export function IssueDetail() {
         </div>
       )}
 
-      <div className="space-y-3">
+      <div data-testid="issue-detail-header" className="space-y-3">
         <div className="flex items-center gap-2 min-w-0 flex-wrap">
           <StatusIcon
             status={issue.status}
@@ -4748,7 +4776,7 @@ export function IssueDetail() {
           ))}
         </TabsList>
 
-        <TabsContent value="chat">
+        <TabsContent data-testid="issue-detail-content" value="chat">
           {detailTab === "chat" ? (
             <IssueDetailChatTab
               issueId={issue.id}
