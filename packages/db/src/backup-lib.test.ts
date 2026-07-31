@@ -156,7 +156,6 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
           FROM "public"."backup_test_records"
         `);
         expect(counts[0]?.count).toBe(160);
-
         const sampleRows = await restoreSql.unsafe<{
           title: string;
           payload: string;
@@ -191,6 +190,47 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
       }
     },
     60_000,
+  );
+
+  it(
+    "captures table counts from the exact pg_dump snapshot despite later live-source mutation",
+    async () => {
+      const sourceConnectionString = await createTempDatabase();
+      const restoreConnectionString = await createSiblingDatabase(
+        sourceConnectionString,
+        "paperclip_snapshot_ledger_target",
+      );
+      const backupDir = createTempDir("paperclip-snapshot-ledger-");
+      const sourceSql = postgres(sourceConnectionString, { max: 1, onnotice: () => {} });
+      try {
+        await sourceSql.unsafe(`
+          CREATE TABLE public.snapshot_ledger_test (id integer PRIMARY KEY);
+          INSERT INTO public.snapshot_ledger_test (id) VALUES (1), (2);
+        `);
+        const result = await runDatabaseBackup({
+          connectionString: sourceConnectionString,
+          backupDir,
+          retention: { dailyDays: 7, weeklyWeeks: 4, monthlyMonths: 1 },
+          filenamePrefix: "paperclip-snapshot-ledger",
+          captureTableCounts: true,
+        });
+        expect(result.tableCounts?.tables).toContainEqual({
+          schema: "public",
+          table: "snapshot_ledger_test",
+          rowCount: 2,
+        });
+        await sourceSql`INSERT INTO public.snapshot_ledger_test (id) VALUES (3)`;
+        await runDatabaseRestore({
+          connectionString: restoreConnectionString,
+          backupFile: result.backupFile,
+        });
+        const restored = await runDatabaseTableCounts({ connectionString: restoreConnectionString });
+        expect(restored.tables).toEqual(result.tableCounts?.tables);
+      } finally {
+        await sourceSql.end();
+      }
+    },
+    30_000,
   );
 
   it(
@@ -464,6 +504,7 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
         const counts = await runDatabaseTableCounts({
           connectionString: restoreConnectionString,
         });
+        expect(counts.databaseSizeBytes).toBeGreaterThan(0);
         expect(counts.tables).toContainEqual({
           schema: "public",
           table: "restore_stream_test",

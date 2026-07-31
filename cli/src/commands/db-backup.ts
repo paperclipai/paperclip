@@ -1,3 +1,4 @@
+import fs from "node:fs";
 import path from "node:path";
 import * as p from "@clack/prompts";
 import pc from "picocolors";
@@ -15,6 +16,7 @@ type DbBackupOptions = {
   dir?: string;
   retentionDays?: number;
   filenamePrefix?: string;
+  ledgerFile?: string;
   json?: boolean;
 };
 
@@ -75,7 +77,22 @@ export async function dbBackupCommand(opts: DbBackupOptions): Promise<void> {
       backupDir,
       retention: { dailyDays: retentionDays, weeklyWeeks: 4, monthlyMonths: 1 },
       filenamePrefix,
+      captureTableCounts: Boolean(opts.ledgerFile),
     });
+    if (opts.ledgerFile) {
+      if (!result.tableCounts) {
+        throw new Error("Backup engine did not return snapshot-bound table counts.");
+      }
+      const ledgerFile = path.resolve(opts.ledgerFile);
+      const partial = `${ledgerFile}.partial`;
+      fs.mkdirSync(path.dirname(ledgerFile), { recursive: true });
+      fs.writeFileSync(partial, `${JSON.stringify({
+        format: "paperclip-table-count-ledger-v1",
+        databaseSizeBytes: result.tableCounts.databaseSizeBytes,
+        tables: result.tableCounts.tables,
+      }, null, 2)}\n`, { mode: 0o640 });
+      fs.renameSync(partial, ledgerFile);
+    }
     spinner.stop(`Backup saved: ${formatDatabaseBackupResult(result)}`);
 
     if (opts.json) {
@@ -88,6 +105,7 @@ export async function dbBackupCommand(opts: DbBackupOptions): Promise<void> {
             backupDir,
             retentionDays,
             connectionSource: connection.source,
+            ledgerFile: opts.ledgerFile ? path.resolve(opts.ledgerFile) : null,
           },
           null,
           2,

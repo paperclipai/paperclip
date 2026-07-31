@@ -613,17 +613,25 @@ pnpm db:backup
 
 `db:restore` is destructive inside its target database, so it never accepts the
 implicit default instance. Create a separate Paperclip home, stop that target if
-it is running, and name the target explicitly. The CLI verifies the backup hash
-before it opens the target, starts and stops an embedded target database for the
-restore, and refuses a running embedded target.
+it is running, and name the target explicitly. The CLI verifies the immutable
+restore-authority manifest, logical backup, and backup-time table-count ledger
+before it opens the target. It then validates target-filesystem capacity before
+database initialization, starts and stops the embedded target, restores it, and
+compares restored table names/counts with the manifest-bound ledger. It never
+compares an old snapshot with the later live source.
 
 ```sh
-RESTORE_HOME=/mnt/paperclipdata/paperclip-restore-qa
+RESTORE_HOME=/var/tmp/paperclip-restore-qa
 RESTORE_INSTANCE=recovery-check
 RESTORE_PORT=32189
 BACKUP_FILE=/var/backups/paperclip-mempalace/paperclip-host-YYYYMMDDTHHMMSSZ.sql.gz
-BACKUP_SHA256=<64-hex-sha256>
+COUNT_LEDGER=/var/backups/paperclip-mempalace/paperclip_mempalace_YYYYMMDDTHHMMSSZ.counts.json
+AUTHORITY_MANIFEST=/var/backups/paperclip-mempalace/paperclip_mempalace_YYYYMMDDTHHMMSSZ.restore.json
+AUTHORITY_MANIFEST_SHA256=<64-hex-sha256>
+SAFETY_MARGIN_BYTES=2147483648
 
+mkdir -p "$RESTORE_HOME"
+df -B1 "$RESTORE_HOME"
 PORT="$RESTORE_PORT" PAPERCLIP_INSTANCE_ID="$RESTORE_INSTANCE" \
   pnpm paperclipai onboard --data-dir "$RESTORE_HOME" --yes --no-start
 
@@ -631,29 +639,29 @@ pnpm paperclipai db:restore \
   --data-dir "$RESTORE_HOME" \
   --instance "$RESTORE_INSTANCE" \
   --backup-file "$BACKUP_FILE" \
-  --expected-sha256 "$BACKUP_SHA256" \
+  --authority-manifest "$AUTHORITY_MANIFEST" \
+  --expected-manifest-sha256 "$AUTHORITY_MANIFEST_SHA256" \
+  --count-ledger "$COUNT_LEDGER" \
+  --safety-margin-bytes "$SAFETY_MARGIN_BYTES" \
   --yes \
   --json
 ```
 
-External PostgreSQL targets require `--allow-external-target` because Paperclip
-cannot prove that an external database is isolated or that every writer is
-stopped. This override is not needed for the embedded isolated-target procedure
-above.
+The capacity threshold is the backup-time `pg_database_size` footprint recorded
+in the ledger plus the explicit 2 GiB safety margin above. Use `df -B1` to select
+a filesystem with sufficient headroom; do not assume `/mnt/paperclipdata` is
+safe. Restore currently fails closed for external PostgreSQL because the CLI
+cannot validate its target filesystem.
 
-Compare table names and row counts without printing row contents. Output is
-sorted by schema and table, so an exact `cmp` proves parity:
+For independent inspection, print restored table names and row counts without
+row contents. The restore command itself has already required exact equality
+with the manifest-bound backup-time ledger:
 
 ```sh
 corepack pnpm --silent paperclipai db:table-counts \
-  --config /path/to/source/config.json > /mnt/paperclipdata/source-table-counts.txt
-
-corepack pnpm --silent paperclipai db:table-counts \
   --data-dir "$RESTORE_HOME" \
-  --instance "$RESTORE_INSTANCE" > /mnt/paperclipdata/restored-table-counts.txt
-
-cmp /mnt/paperclipdata/source-table-counts.txt \
-  /mnt/paperclipdata/restored-table-counts.txt
+  --instance "$RESTORE_INSTANCE" \
+  --json > /var/tmp/restored-table-counts.json
 ```
 
 Start the isolated instance and use its configured port for the health check:

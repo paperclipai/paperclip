@@ -13,11 +13,15 @@ inventory and a SHA-256 sidecar manifest.
 ## QA restore path
 
 Use the candidate release's supported `paperclipai db:restore` command against a
-new home on `/mnt/paperclipdata`; never target the live instance home. The
-complete command sequence, hash guard, table-name/count comparison, and health
-check are documented under **Supported isolated restore** in
-`doc/DEVELOPING.md`. Operators do not invoke `psql`, `pg_restore`, `createdb`, or
-any other raw PostgreSQL command.
+new home on a filesystem whose available bytes have been checked; never target
+the live instance home or assume `/mnt/paperclipdata` has capacity. Each backup
+creates a deterministic table-name/count ledger and a restore-authority manifest
+that directly binds the logical-backup and ledger hashes. Restore requires the
+manifest's SHA-256, validates the recorded database footprint plus an explicit
+2 GiB safety margin before `initdb`, and requires exact restored count parity.
+The complete command sequence and health check are documented under **Supported
+isolated restore** in `doc/DEVELOPING.md`. Operators do not invoke `psql`,
+`pg_restore`, `createdb`, or any other raw PostgreSQL command.
 
 ## Promotion gate
 

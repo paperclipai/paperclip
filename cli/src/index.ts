@@ -111,6 +111,7 @@ program
   .option("--dir <path>", "Backup output directory (overrides config)")
   .option("--retention-days <days>", "Retention window used for pruning", (value) => Number(value))
   .option("--filename-prefix <prefix>", "Backup filename prefix", "paperclip")
+  .option("--ledger-file <path>", "Atomically write table counts from the exact pg_dump snapshot")
   .option("--json", "Print backup metadata as JSON")
   .action(async (opts) => {
     await dbBackupCommand(opts);
@@ -124,6 +125,10 @@ program
   .option("-d, --data-dir <path>", DATA_DIR_OPTION_HELP)
   .option("-i, --instance <id>", "Target instance id when used with --data-dir", "default")
   .option("--expected-sha256 <sha256>", "Require this backup SHA-256 before opening the target")
+  .requiredOption("--authority-manifest <path>", "Manifest binding the backup, count ledger, and restore footprint")
+  .requiredOption("--expected-manifest-sha256 <sha256>", "Require this restore-authority manifest SHA-256")
+  .requiredOption("--count-ledger <path>", "Backup-time deterministic table name/count ledger")
+  .option("--safety-margin-bytes <bytes>", "Free bytes required beyond the manifest restore footprint", "2147483648")
   .option("--allow-external-target", "Acknowledge that external PostgreSQL isolation cannot be verified", false)
   .option("-y, --yes", "Confirm replacement of database objects in the explicit target", false)
   .option("--json", "Print restore metadata as JSON")
@@ -137,6 +142,7 @@ program
   .option("-c, --config <path>", "Path to config file")
   .option("-d, --data-dir <path>", DATA_DIR_OPTION_HELP)
   .option("-i, --instance <id>", "Local instance id", "default")
+  .option("--ledger-file <path>", "Atomically write a deterministic backup-time count ledger")
   .option("--json", "Print stable JSON output")
   .action(async (opts) => {
     await dbTableCountsCommand(opts);

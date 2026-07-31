@@ -27,14 +27,34 @@ type DatabaseTargetOptions = {
 type DbRestoreOptions = DatabaseTargetOptions & {
   backupFile: string;
   expectedSha256?: string;
+  authorityManifest?: string;
+  expectedManifestSha256?: string;
+  countLedger?: string;
+  safetyMarginBytes?: string;
   allowExternalTarget?: boolean;
   yes?: boolean;
   json?: boolean;
 };
 
 type DbTableCountsOptions = DatabaseTargetOptions & {
+  ledgerFile?: string;
   json?: boolean;
 };
+
+type TableCountLedger = {
+  format: "paperclip-table-count-ledger-v1";
+  databaseSizeBytes: number;
+  tables: RunDatabaseTableCountsResult["tables"];
+};
+
+type RestoreAuthorityManifest = {
+  format: "paperclip-restore-authority-v1";
+  backup: { file: string; sha256: string; sizeBytes: number };
+  ledger: { file: string; sha256: string };
+  restoreFootprintBytes: number;
+};
+
+const DEFAULT_RESTORE_SAFETY_MARGIN_BYTES = 2 * 1024 * 1024 * 1024;
 
 type EmbeddedPostgresInstance = {
   initialise(): Promise<void>;
@@ -284,6 +304,168 @@ function validateExpectedSha256(value: string | undefined): string | null {
   return expected;
 }
 
+function readJsonObject(filePath: string, label: string): Record<string, unknown> {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(fs.readFileSync(filePath, "utf8"));
+  } catch (error) {
+    throw new Error(`Invalid ${label} JSON at ${filePath}: ${error instanceof Error ? error.message : String(error)}`);
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error(`Invalid ${label} at ${filePath}: expected a JSON object.`);
+  }
+  return parsed as Record<string, unknown>;
+}
+
+function isSafeByteCount(value: unknown): value is number {
+  return Number.isSafeInteger(value) && Number(value) >= 0;
+}
+
+function parseTableCountLedger(filePath: string): TableCountLedger {
+  const value = readJsonObject(filePath, "table-count ledger");
+  if (value.format !== "paperclip-table-count-ledger-v1" || !isSafeByteCount(value.databaseSizeBytes)) {
+    throw new Error(`Invalid table-count ledger at ${filePath}: unsupported format or databaseSizeBytes.`);
+  }
+  if (!Array.isArray(value.tables)) {
+    throw new Error(`Invalid table-count ledger at ${filePath}: tables must be an array.`);
+  }
+  const tables = value.tables.map((entry, index) => {
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) {
+      throw new Error(`Invalid table-count ledger at ${filePath}: tables[${index}] is not an object.`);
+    }
+    const row = entry as Record<string, unknown>;
+    if (typeof row.schema !== "string" || typeof row.table !== "string" || !isSafeByteCount(row.rowCount)) {
+      throw new Error(`Invalid table-count ledger at ${filePath}: tables[${index}] has invalid fields.`);
+    }
+    return { schema: row.schema, table: row.table, rowCount: row.rowCount };
+  });
+  const sorted = [...tables].sort((left, right) =>
+    left.schema.localeCompare(right.schema) || left.table.localeCompare(right.table));
+  if (JSON.stringify(tables) !== JSON.stringify(sorted)) {
+    throw new Error(`Invalid table-count ledger at ${filePath}: tables are not deterministically sorted.`);
+  }
+  return {
+    format: "paperclip-table-count-ledger-v1",
+    databaseSizeBytes: value.databaseSizeBytes,
+    tables,
+  };
+}
+
+function parseRestoreAuthorityManifest(filePath: string): RestoreAuthorityManifest {
+  const value = readJsonObject(filePath, "restore-authority manifest");
+  const backup = value.backup;
+  const ledger = value.ledger;
+  if (
+    value.format !== "paperclip-restore-authority-v1"
+    || !backup || typeof backup !== "object" || Array.isArray(backup)
+    || !ledger || typeof ledger !== "object" || Array.isArray(ledger)
+    || !isSafeByteCount(value.restoreFootprintBytes)
+  ) {
+    throw new Error(`Invalid restore-authority manifest at ${filePath}.`);
+  }
+  const backupValue = backup as Record<string, unknown>;
+  const ledgerValue = ledger as Record<string, unknown>;
+  if (
+    typeof backupValue.file !== "string"
+    || typeof backupValue.sha256 !== "string"
+    || !/^[a-f0-9]{64}$/.test(backupValue.sha256)
+    || !isSafeByteCount(backupValue.sizeBytes)
+    || typeof ledgerValue.file !== "string"
+    || typeof ledgerValue.sha256 !== "string"
+    || !/^[a-f0-9]{64}$/.test(ledgerValue.sha256)
+  ) {
+    throw new Error(`Invalid restore-authority manifest at ${filePath}: invalid backup or ledger binding.`);
+  }
+  return {
+    format: "paperclip-restore-authority-v1",
+    backup: {
+      file: backupValue.file,
+      sha256: backupValue.sha256,
+      sizeBytes: backupValue.sizeBytes,
+    },
+    ledger: { file: ledgerValue.file, sha256: ledgerValue.sha256 },
+    restoreFootprintBytes: value.restoreFootprintBytes,
+  };
+}
+
+function parseSafetyMarginBytes(raw: string | undefined): number {
+  const value = raw === undefined ? DEFAULT_RESTORE_SAFETY_MARGIN_BYTES : Number(raw);
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new Error("--safety-margin-bytes must be a positive safe integer.");
+  }
+  return value;
+}
+
+function nearestExistingPath(candidate: string): string {
+  let current = path.resolve(candidate);
+  while (!fs.existsSync(current)) {
+    const parent = path.dirname(current);
+    if (parent === current) throw new Error(`No existing filesystem ancestor for ${candidate}.`);
+    current = parent;
+  }
+  return current;
+}
+
+export function assertRestoreCapacity(input: {
+  databaseDir: string;
+  restoreFootprintBytes: number;
+  safetyMarginBytes: number;
+  availableBytes?: number;
+}): { filesystemPath: string; availableBytes: number; requiredBytes: number } {
+  const filesystemPath = nearestExistingPath(input.databaseDir);
+  const stat = input.availableBytes === undefined
+    ? fs.statfsSync(filesystemPath, { bigint: true })
+    : null;
+  const availableBytes = input.availableBytes
+    ?? Number((stat?.bavail ?? 0n) * (stat?.bsize ?? 0n));
+  const requiredBytes = input.restoreFootprintBytes + input.safetyMarginBytes;
+  if (!Number.isSafeInteger(availableBytes) || availableBytes < requiredBytes) {
+    throw new Error(
+      `Insufficient restore capacity on filesystem containing ${filesystemPath}: `
+      + `${availableBytes} bytes available; require ${input.restoreFootprintBytes} restore bytes `
+      + `plus ${input.safetyMarginBytes} safety-margin bytes (${requiredBytes} total). Target was not initialized.`,
+    );
+  }
+  return { filesystemPath, availableBytes, requiredBytes };
+}
+
+export async function validateRestoreAuthority(input: {
+  backupFile: string;
+  backupStat: fs.Stats;
+  authorityManifest: string;
+  expectedManifestSha256: string;
+  countLedger: string;
+}): Promise<{ manifest: RestoreAuthorityManifest; ledger: TableCountLedger; manifestSha256: string }> {
+  const manifestSha256 = await sha256File(input.authorityManifest);
+  if (manifestSha256 !== input.expectedManifestSha256) {
+    throw new Error(
+      `Restore-authority manifest SHA-256 mismatch: expected ${input.expectedManifestSha256}, got ${manifestSha256}. Target was not opened.`,
+    );
+  }
+  const manifest = parseRestoreAuthorityManifest(input.authorityManifest);
+  const ledger = parseTableCountLedger(input.countLedger);
+  if (path.basename(input.backupFile) !== manifest.backup.file || input.backupStat.size !== manifest.backup.sizeBytes) {
+    throw new Error("Backup file name or size does not match the restore-authority manifest. Target was not opened.");
+  }
+  if (path.basename(input.countLedger) !== manifest.ledger.file) {
+    throw new Error("Table-count ledger name does not match the restore-authority manifest. Target was not opened.");
+  }
+  const [backupSha256, ledgerSha256] = await Promise.all([
+    sha256File(input.backupFile),
+    sha256File(input.countLedger),
+  ]);
+  if (backupSha256 !== manifest.backup.sha256) {
+    throw new Error(`Backup SHA-256 does not match the restore-authority manifest. Target was not opened.`);
+  }
+  if (ledgerSha256 !== manifest.ledger.sha256) {
+    throw new Error(`Table-count ledger SHA-256 does not match the restore-authority manifest. Target was not opened.`);
+  }
+  if (ledger.databaseSizeBytes !== manifest.restoreFootprintBytes) {
+    throw new Error("Restore footprint does not match the manifest-bound table-count ledger. Target was not opened.");
+  }
+  return { manifest, ledger, manifestSha256 };
+}
+
 export async function dbRestoreCommand(opts: DbRestoreOptions): Promise<void> {
   printPaperclipCliBanner();
   p.intro(pc.bgCyan(pc.black(" paperclip db:restore ")));
@@ -299,8 +481,33 @@ export async function dbRestoreCommand(opts: DbRestoreOptions): Promise<void> {
   if (!backupStat?.isFile()) {
     throw new Error(`Backup file not found: ${backupFile}`);
   }
+  const authorityManifest = nonEmpty(opts.authorityManifest);
+  const expectedManifestSha256 = validateExpectedSha256(opts.expectedManifestSha256);
+  const countLedger = nonEmpty(opts.countLedger);
+  if (!authorityManifest || !expectedManifestSha256 || !countLedger) {
+    throw new Error(
+      "Restore requires --authority-manifest, --expected-manifest-sha256, and --count-ledger so integrity, parity, and capacity can fail closed.",
+    );
+  }
+  const resolvedAuthorityManifest = path.resolve(authorityManifest);
+  const resolvedCountLedger = path.resolve(countLedger);
+  for (const [label, candidate] of [
+    ["Restore-authority manifest", resolvedAuthorityManifest],
+    ["Table-count ledger", resolvedCountLedger],
+  ] as const) {
+    if (!fs.existsSync(candidate) || !fs.statSync(candidate).isFile()) {
+      throw new Error(`${label} file not found: ${candidate}`);
+    }
+  }
+  const authority = await validateRestoreAuthority({
+    backupFile,
+    backupStat,
+    authorityManifest: resolvedAuthorityManifest,
+    expectedManifestSha256,
+    countLedger: resolvedCountLedger,
+  });
   const expectedSha256 = validateExpectedSha256(opts.expectedSha256);
-  const backupSha256 = await sha256File(backupFile);
+  const backupSha256 = authority.manifest.backup.sha256;
   if (expectedSha256 && backupSha256 !== expectedSha256) {
     throw new Error(
       `Backup SHA-256 mismatch: expected ${expectedSha256}, got ${backupSha256}. Target was not opened.`,
@@ -309,9 +516,28 @@ export async function dbRestoreCommand(opts: DbRestoreOptions): Promise<void> {
 
   const targetConfig = resolveConfiguredTarget(opts);
   assertDataDirIsolation({ ...opts, ...targetConfig });
+  if (targetConfig.config.database.mode !== "embedded-postgres") {
+    throw new Error(
+      "Fail-closed restore capacity validation currently requires an embedded PostgreSQL target on a locally validated filesystem.",
+    );
+  }
+  const databaseDir = resolveRuntimeLikePath(
+    targetConfig.config.database.embeddedPostgresDataDir,
+    targetConfig.configPath,
+  );
+  const safetyMarginBytes = parseSafetyMarginBytes(opts.safetyMarginBytes);
+  const capacity = assertRestoreCapacity({
+    databaseDir,
+    restoreFootprintBytes: authority.manifest.restoreFootprintBytes,
+    safetyMarginBytes,
+  });
   p.log.message(pc.dim(`Target config: ${targetConfig.configPath}`));
   p.log.message(pc.dim(`Backup file: ${backupFile}`));
   p.log.message(pc.dim(`Backup SHA-256: ${backupSha256}`));
+  p.log.message(pc.dim(`Restore-authority manifest SHA-256: ${authority.manifestSha256}`));
+  p.log.message(pc.dim(
+    `Capacity: ${capacity.availableBytes} bytes available; ${capacity.requiredBytes} required on ${capacity.filesystemPath}`,
+  ));
 
   const confirmed = opts.yes
     ? true
@@ -338,6 +564,11 @@ export async function dbRestoreCommand(opts: DbRestoreOptions): Promise<void> {
       backupFile,
     });
     const tables = await runDatabaseTableCounts({ connectionString: target.connectionString });
+    if (JSON.stringify(tables.tables) !== JSON.stringify(authority.ledger.tables)) {
+      throw new Error(
+        "Restored table names/counts do not match the manifest-bound backup-time ledger.",
+      );
+    }
     spinner.stop(`Restored ${tables.tables.length} table(s).`);
 
     if (opts.json) {
@@ -345,6 +576,13 @@ export async function dbRestoreCommand(opts: DbRestoreOptions): Promise<void> {
         backupFile,
         backupSha256,
         backupSizeBytes: backupStat.size,
+        authorityManifest: resolvedAuthorityManifest,
+        authorityManifestSha256: authority.manifestSha256,
+        countLedger: resolvedCountLedger,
+        restoreFootprintBytes: authority.manifest.restoreFootprintBytes,
+        safetyMarginBytes,
+        capacityAvailableBytes: capacity.availableBytes,
+        capacityRequiredBytes: capacity.requiredBytes,
         configPath: targetConfig.configPath,
         connectionSource: target.source,
         tableCount: tables.tables.length,
@@ -374,10 +612,23 @@ export async function dbTableCountsCommand(opts: DbTableCountsOptions): Promise<
   });
   try {
     const result = await runDatabaseTableCounts({ connectionString: target.connectionString });
+    if (opts.ledgerFile) {
+      const ledgerFile = path.resolve(opts.ledgerFile);
+      const partial = `${ledgerFile}.partial`;
+      const ledger: TableCountLedger = {
+        format: "paperclip-table-count-ledger-v1",
+        databaseSizeBytes: result.databaseSizeBytes,
+        tables: result.tables,
+      };
+      fs.mkdirSync(path.dirname(ledgerFile), { recursive: true });
+      fs.writeFileSync(partial, `${JSON.stringify(ledger, null, 2)}\n`, { mode: 0o640 });
+      fs.renameSync(partial, ledgerFile);
+    }
     if (opts.json) {
       console.log(JSON.stringify({
         configPath: targetConfig.configPath,
         connectionSource: target.source,
+        databaseSizeBytes: result.databaseSizeBytes,
         tables: result.tables,
       }, null, 2));
     } else {

@@ -5,7 +5,7 @@ import { spawn } from "node:child_process";
 import { open as openFile } from "node:fs/promises";
 import { pipeline } from "node:stream/promises";
 import { createGunzip, createGzip } from "node:zlib";
-import postgres from "postgres";
+import postgres, { type Sql, type TransactionSql } from "postgres";
 
 export type BackupRetentionPolicy = {
   dailyDays: number;
@@ -28,12 +28,14 @@ export type RunDatabaseBackupOptions = {
   excludeTables?: string[];
   nullifyColumns?: Record<string, string[]>;
   backupEngine?: "auto" | "pg_dump" | "javascript";
+  captureTableCounts?: boolean;
 };
 
 export type RunDatabaseBackupResult = {
   backupFile: string;
   sizeBytes: number;
   prunedCount: number;
+  tableCounts?: RunDatabaseTableCountsResult;
 };
 
 export type RunDatabaseRestoreOptions = {
@@ -49,6 +51,7 @@ export type DatabaseTableCount = {
 };
 
 export type RunDatabaseTableCountsResult = {
+  databaseSizeBytes: number;
   tables: DatabaseTableCount[];
 };
 
@@ -325,6 +328,7 @@ async function runPgDumpBackup(opts: {
   connectionString: string;
   backupFile: string;
   connectTimeout: number;
+  snapshot?: string;
 }): Promise<void> {
   const pgDumpBin = process.env.PAPERCLIP_PG_DUMP_PATH || "pg_dump";
   const child = spawn(
@@ -336,6 +340,7 @@ async function runPgDumpBackup(opts: {
       "--if-exists",
       "--no-owner",
       "--no-privileges",
+      ...(opts.snapshot ? [`--snapshot=${opts.snapshot}`] : []),
     ],
     {
       stdio: ["ignore", "pipe", "pipe"],
@@ -354,6 +359,38 @@ async function runPgDumpBackup(opts: {
     pipeline(child.stdout, createGzip(), createWriteStream(opts.backupFile)),
     waitForChildExit(child, pgDumpBin),
   ]);
+}
+
+async function collectDatabaseTableCounts(
+  sql: Sql | TransactionSql,
+): Promise<RunDatabaseTableCountsResult> {
+  const sizeRows = await sql<{ size_bytes: string }[]>`
+    SELECT pg_database_size(current_database())::text AS size_bytes
+  `;
+  const databaseSizeBytes = Number(sizeRows[0]?.size_bytes ?? "");
+  if (!Number.isSafeInteger(databaseSizeBytes) || databaseSizeBytes < 0) {
+    throw new Error("PostgreSQL returned an invalid database footprint.");
+  }
+  const tables = await sql<TableDefinition[]>`
+    SELECT table_schema AS schema_name, table_name AS tablename
+    FROM information_schema.tables
+    WHERE table_type = 'BASE TABLE'
+      AND ${sql.unsafe(nonSystemSchemaPredicate("table_schema"))}
+    ORDER BY table_schema, table_name
+  `;
+  const counts: DatabaseTableCount[] = [];
+  for (const table of tables) {
+    const qualifiedTable = quoteQualifiedName(table.schema_name, table.tablename);
+    const rows = await sql.unsafe<{ row_count: number }[]>(
+      `SELECT count(*)::int AS row_count FROM ${qualifiedTable}`,
+    );
+    counts.push({
+      schema: table.schema_name,
+      table: table.tablename,
+      rowCount: rows[0]?.row_count ?? 0,
+    });
+  }
+  return { databaseSizeBytes, tables: counts };
 }
 
 async function restoreWithPsql(opts: RunDatabaseRestoreOptions, connectTimeout: number): Promise<void> {
@@ -552,25 +589,45 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
     if (backupEngine === "pg_dump" || (backupEngine === "auto" && canUsePgDump)) {
       await sql`SELECT 1`;
       try {
-        await closeSql();
-        await runPgDumpBackup({
-          connectionString: opts.connectionString,
-          backupFile,
-          connectTimeout,
-        });
+        let tableCounts: RunDatabaseTableCountsResult | undefined;
+        if (opts.captureTableCounts) {
+          await sql.begin("isolation level repeatable read read only", async (transaction) => {
+            const snapshotRows = await transaction<{ snapshot: string }[]>`
+              SELECT pg_export_snapshot() AS snapshot
+            `;
+            const snapshot = snapshotRows[0]?.snapshot;
+            if (!snapshot) throw new Error("PostgreSQL did not export a backup snapshot.");
+            tableCounts = await collectDatabaseTableCounts(transaction);
+            await runPgDumpBackup({
+              connectionString: opts.connectionString,
+              backupFile,
+              connectTimeout,
+              snapshot,
+            });
+          });
+        } else {
+          await closeSql();
+          await runPgDumpBackup({
+            connectionString: opts.connectionString,
+            backupFile,
+            connectTimeout,
+          });
+        }
         await writer.abort();
+        await closeSql();
         const sizeBytes = statSync(backupFile).size;
         const prunedCount = pruneOldBackups(opts.backupDir, retention, filenamePrefix);
         return {
           backupFile,
           sizeBytes,
           prunedCount,
+          tableCounts,
         };
       } catch (error) {
         if (existsSync(backupFile)) {
           try { unlinkSync(backupFile); } catch { /* ignore */ }
         }
-        if (backupEngine === "pg_dump") {
+        if (backupEngine === "pg_dump" || opts.captureTableCounts) {
           throw error;
         }
         sql = postgres(opts.connectionString, { max: 1, connect_timeout: connectTimeout });
@@ -1035,26 +1092,7 @@ export async function runDatabaseTableCounts(opts: {
   const connectTimeout = Math.max(1, Math.trunc(opts.connectTimeoutSeconds ?? 5));
   const sql = postgres(opts.connectionString, { max: 1, connect_timeout: connectTimeout });
   try {
-    const tables = await sql<TableDefinition[]>`
-      SELECT table_schema AS schema_name, table_name AS tablename
-      FROM information_schema.tables
-      WHERE table_type = 'BASE TABLE'
-        AND ${sql.unsafe(nonSystemSchemaPredicate("table_schema"))}
-      ORDER BY table_schema, table_name
-    `;
-    const counts: DatabaseTableCount[] = [];
-    for (const table of tables) {
-      const qualifiedTable = quoteQualifiedName(table.schema_name, table.tablename);
-      const rows = await sql.unsafe<{ row_count: number }[]>(
-        `SELECT count(*)::int AS row_count FROM ${qualifiedTable}`,
-      );
-      counts.push({
-        schema: table.schema_name,
-        table: table.tablename,
-        rowCount: rows[0]?.row_count ?? 0,
-      });
-    }
-    return { tables: counts };
+    return await collectDatabaseTableCounts(sql);
   } finally {
     await sql.end();
   }

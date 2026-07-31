@@ -7,7 +7,7 @@ set -euo pipefail
 
 DEST_DIR="${DEST_DIR:-/var/backups/paperclip-mempalace}"
 INSTANCE_DIR="${INSTANCE_DIR:-/home/beai-agent/.paperclip/instances/default}"
-PAPERCLIP_RELEASE_DIR="${PAPERCLIP_RELEASE_DIR:-/mnt/paperclipdata/paperclip-releases/paperclip-536d32f8d91b625bc6021e82bd9f26174cfb8aad}"
+PAPERCLIP_RELEASE_DIR="${PAPERCLIP_RELEASE_DIR:-/mnt/paperclipdata/paperclip-releases/paperclip-backup-restore-authority-v1}"
 PAPERCLIP_CONFIG="${PAPERCLIP_CONFIG:-$INSTANCE_DIR/config.json}"
 LOGICAL_BACKUP_DIR="${LOGICAL_BACKUP_DIR:-$INSTANCE_DIR/data/backups}"
 STORAGE_DIR="${STORAGE_DIR:-$INSTANCE_DIR/data/storage}"
@@ -62,8 +62,11 @@ run_retention() {
       printf 'would-delete %s\n' "$archive"
       [ -e "$base.sha256" ] && printf 'would-delete %s\n' "$base.sha256"
       [ -e "$base.inventory.txt" ] && printf 'would-delete %s\n' "$base.inventory.txt"
+      [ -e "$base.counts.json" ] && printf 'would-delete %s\n' "$base.counts.json"
+      [ -e "$base.restore.json" ] && printf 'would-delete %s\n' "$base.restore.json"
     else
-      rm -f -- "$archive" "$base.sha256" "$base.inventory.txt"
+      rm -f -- "$archive" "$base.sha256" "$base.inventory.txt" \
+        "$base.counts.json" "$base.restore.json"
       log "retention deleted $archive and matching sidecars"
     fi
   done < <(find "$DEST_DIR" -maxdepth 1 -type f -name 'paperclip_mempalace_*.tar.gz' -mtime "+$RETENTION_DAYS" -print0)
@@ -130,10 +133,13 @@ ARCHIVE="$DEST_DIR/paperclip_mempalace_${TS}.tar.gz"
 PARTIAL="$ARCHIVE.partial"
 INVENTORY="${ARCHIVE%.tar.gz}.inventory.txt"
 MANIFEST="${ARCHIVE%.tar.gz}.sha256"
+COUNT_LEDGER="${ARCHIVE%.tar.gz}.counts.json"
+RESTORE_MANIFEST="${ARCHIVE%.tar.gz}.restore.json"
 WORK_DIR="$(mktemp -d "$DEST_DIR/.paperclip-backup.${TS}.XXXXXX")"
 
 cleanup() {
   rm -f -- "$PARTIAL"
+  rm -f -- "$COUNT_LEDGER" "$RESTORE_MANIFEST" "$RESTORE_MANIFEST.partial"
   rm -rf -- "$WORK_DIR"
 }
 trap cleanup EXIT
@@ -144,6 +150,7 @@ corepack pnpm --dir "$PAPERCLIP_RELEASE_DIR" paperclipai db:backup \
   --dir "$LOGICAL_BACKUP_DIR" \
   --retention-days "$LOGICAL_RETENTION_DAYS" \
   --filename-prefix "$PREFIX" \
+  --ledger-file "$COUNT_LEDGER" \
   --json >"$WORK_DIR/db-backup.log"
 
 LOGICAL_BACKUP="$(find "$LOGICAL_BACKUP_DIR" -maxdepth 1 -type f -name "${PREFIX}-*.sql.gz" -print -quit)"
@@ -152,6 +159,25 @@ LOGICAL_BACKUP="$(find "$LOGICAL_BACKUP_DIR" -maxdepth 1 -type f -name "${PREFIX
   exit 1
 }
 gzip -t "$LOGICAL_BACKUP"
+
+BACKUP_SHA256="$(sha256sum "$LOGICAL_BACKUP" | awk '{print $1}')"
+LEDGER_SHA256="$(sha256sum "$COUNT_LEDGER" | awk '{print $1}')"
+BACKUP_SIZE_BYTES="$(stat -c %s "$LOGICAL_BACKUP")"
+RESTORE_FOOTPRINT_BYTES="$(jq -er '.databaseSizeBytes | select(type == "number" and . >= 0 and floor == .)' "$COUNT_LEDGER")"
+jq -S -n \
+  --arg backup_file "$(basename "$LOGICAL_BACKUP")" \
+  --arg backup_sha256 "$BACKUP_SHA256" \
+  --argjson backup_size_bytes "$BACKUP_SIZE_BYTES" \
+  --arg ledger_file "$(basename "$COUNT_LEDGER")" \
+  --arg ledger_sha256 "$LEDGER_SHA256" \
+  --argjson restore_footprint_bytes "$RESTORE_FOOTPRINT_BYTES" \
+  '{
+    format: "paperclip-restore-authority-v1",
+    backup: {file: $backup_file, sha256: $backup_sha256, sizeBytes: $backup_size_bytes},
+    ledger: {file: $ledger_file, sha256: $ledger_sha256},
+    restoreFootprintBytes: $restore_footprint_bytes
+  }' >"$RESTORE_MANIFEST.partial"
+mv -f -- "$RESTORE_MANIFEST.partial" "$RESTORE_MANIFEST"
 
 component_inventory() {
   local label path kind bytes entries
@@ -179,6 +205,8 @@ component_inventory() {
   component_inventory secrets_master_key "$MASTER_KEY"
   component_inventory local_storage "$STORAGE_DIR"
   component_inventory logical_database_backup "$LOGICAL_BACKUP"
+  component_inventory backup_time_count_ledger "$COUNT_LEDGER"
+  component_inventory restore_authority_manifest "$RESTORE_MANIFEST"
   [ ! -d "$MEMPALACE_HOME" ] || component_inventory mempalace_home "$MEMPALACE_HOME"
   [ ! -d "$MEMPALACE_VOLUME" ] || component_inventory mempalace_volume "$MEMPALACE_VOLUME"
 } >"$INVENTORY"
@@ -189,6 +217,8 @@ tar_args=(
   "${MASTER_KEY#/}"
   "${STORAGE_DIR#/}"
   "${LOGICAL_BACKUP#/}"
+  "${COUNT_LEDGER#/}"
+  "${RESTORE_MANIFEST#/}"
   "${INVENTORY#/}"
 )
 [ ! -d "$MEMPALACE_HOME" ] || tar_args+=("${MEMPALACE_HOME#/}")
@@ -201,13 +231,19 @@ mv -f -- "$PARTIAL" "$ARCHIVE"
 
 (
   cd "$DEST_DIR"
-  sha256sum "$(basename "$ARCHIVE")" "$(basename "$INVENTORY")" >"$(basename "$MANIFEST").partial"
+  sha256sum \
+    "$(basename "$ARCHIVE")" \
+    "$(basename "$INVENTORY")" \
+    "$(basename "$COUNT_LEDGER")" \
+    "$(basename "$RESTORE_MANIFEST")" >"$(basename "$MANIFEST").partial"
   mv -f -- "$(basename "$MANIFEST").partial" "$(basename "$MANIFEST")"
   sha256sum -c "$(basename "$MANIFEST")"
 )
 
-chown "$BACKUP_OWNER" "$ARCHIVE" "$INVENTORY" "$MANIFEST" "$LOGICAL_BACKUP"
-chmod 0640 "$ARCHIVE" "$INVENTORY" "$MANIFEST" "$LOGICAL_BACKUP"
+chown "$BACKUP_OWNER" "$ARCHIVE" "$INVENTORY" "$MANIFEST" "$COUNT_LEDGER" \
+  "$RESTORE_MANIFEST" "$LOGICAL_BACKUP"
+chmod 0640 "$ARCHIVE" "$INVENTORY" "$MANIFEST" "$COUNT_LEDGER" \
+  "$RESTORE_MANIFEST" "$LOGICAL_BACKUP"
 
 run_retention
 trap - EXIT
