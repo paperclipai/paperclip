@@ -203,102 +203,6 @@ describe("worker invocation scope propagation", () => {
           }
           resolve((response as { result?: unknown }).result);
         });
-
-        it("allows proactive callbacks to call the host without retaining the current invocation id", async () => {
-          const hostToWorker = new PassThrough();
-          const workerToHost = new PassThrough();
-          const hostReadline = createInterface({ input: workerToHost });
-          const pending = new Map<string, (response: JsonRpcResponse) => void>();
-          const seenInvocationIds: Array<string | null> = [];
-          let nextRequestId = 1;
-
-          const plugin = definePlugin({
-            async setup(ctx) {
-              ctx.data.register("probe", async () => {
-                const scoped = await ctx.companies.get("company-scoped");
-                const proactive = await ctx.runtime.runProactively(() => ctx.companies.get("company-proactive"));
-                return { scoped, proactive };
-              });
-            },
-          });
-
-          const worker = startWorkerRpcHost({
-            plugin,
-            stdin: hostToWorker,
-            stdout: workerToHost,
-          });
-
-          function callWorker(method: string, params: unknown, invocation?: PluginInvocationContext) {
-            const id = `host-${nextRequestId++}`;
-            const request = {
-              ...createRequest(method, params, id),
-              ...(invocation ? { paperclipInvocation: invocation } : {}),
-            };
-            const result = new Promise<unknown>((resolve, reject) => {
-              pending.set(id, (response) => {
-                if ("error" in response && response.error) {
-                  reject(new Error(response.error.message));
-                  return;
-                }
-                resolve((response as { result?: unknown }).result);
-              });
-            });
-            hostToWorker.write(serializeMessage(request));
-            return result;
-          }
-
-          hostReadline.on("line", (line) => {
-            const message = parseMessage(line);
-            if (isJsonRpcResponse(message)) {
-              pending.get(String(message.id))?.(message);
-              pending.delete(String(message.id));
-              return;
-            }
-
-            if (!isJsonRpcRequest(message)) return;
-            if (message.method !== "companies.get") return;
-
-            seenInvocationIds.push((message as { paperclipInvocationId?: string }).paperclipInvocationId ?? null);
-            hostToWorker.write(serializeMessage(createSuccessResponse(message.id, {
-              id: (message.params as { companyId?: string }).companyId,
-            })));
-          });
-
-          try {
-            await callWorker("initialize", {
-              manifest: {
-                id: "paperclip.proactive-scope-test",
-                apiVersion: 1,
-                version: "1.0.0",
-                displayName: "Proactive Scope Test",
-                description: "Scope test",
-                author: "Paperclip",
-                categories: ["automation"],
-                capabilities: ["companies.read"],
-                entrypoints: { worker: "dist/worker.js" },
-              },
-              config: {},
-              instanceInfo: { instanceId: "test", hostVersion: "0.0.0" },
-              apiVersion: 1,
-            });
-
-            await expect(callWorker(
-              "getData",
-              { key: "probe", companyId: "company-a", params: {} },
-              { id: "invocation-a", scope: { companyId: "company-a" } },
-            )).resolves.toEqual({
-              scoped: { id: "company-scoped" },
-              proactive: { id: "company-proactive" },
-            });
-
-            expect(seenInvocationIds).toEqual(["invocation-a", null]);
-          } finally {
-            worker.stop();
-            hostReadline.close();
-            hostToWorker.destroy();
-            workerToHost.destroy();
-          }
-        });
       });
       hostToWorker.write(serializeMessage(request));
       return result;
@@ -384,6 +288,102 @@ describe("worker invocation scope propagation", () => {
       await companyAExpectation;
 
       expect(nestedInvocationIds).toEqual(["invocation-b", "invocation-a"]);
+    } finally {
+      worker.stop();
+      hostReadline.close();
+      hostToWorker.destroy();
+      workerToHost.destroy();
+    }
+  });
+
+  it("allows proactive callbacks to call the host without retaining the current invocation id", async () => {
+    const hostToWorker = new PassThrough();
+    const workerToHost = new PassThrough();
+    const hostReadline = createInterface({ input: workerToHost });
+    const pending = new Map<string, (response: JsonRpcResponse) => void>();
+    const seenInvocationIds: Array<string | null> = [];
+    let nextRequestId = 1;
+
+    const plugin = definePlugin({
+      async setup(ctx) {
+        ctx.data.register("probe", async () => {
+          const scoped = await ctx.companies.get("company-scoped");
+          const proactive = await ctx.runtime.runProactively(() => ctx.companies.get("company-proactive"));
+          return { scoped, proactive };
+        });
+      },
+    });
+
+    const worker = startWorkerRpcHost({
+      plugin,
+      stdin: hostToWorker,
+      stdout: workerToHost,
+    });
+
+    function callWorker(method: string, params: unknown, invocation?: PluginInvocationContext) {
+      const id = `host-${nextRequestId++}`;
+      const request = {
+        ...createRequest(method, params, id),
+        ...(invocation ? { paperclipInvocation: invocation } : {}),
+      };
+      const result = new Promise<unknown>((resolve, reject) => {
+        pending.set(id, (response) => {
+          if ("error" in response && response.error) {
+            reject(new Error(response.error.message));
+            return;
+          }
+          resolve((response as { result?: unknown }).result);
+        });
+      });
+      hostToWorker.write(serializeMessage(request));
+      return result;
+    }
+
+    hostReadline.on("line", (line) => {
+      const message = parseMessage(line);
+      if (isJsonRpcResponse(message)) {
+        pending.get(String(message.id))?.(message);
+        pending.delete(String(message.id));
+        return;
+      }
+
+      if (!isJsonRpcRequest(message)) return;
+      if (message.method !== "companies.get") return;
+
+      seenInvocationIds.push((message as { paperclipInvocationId?: string }).paperclipInvocationId ?? null);
+      hostToWorker.write(serializeMessage(createSuccessResponse(message.id, {
+        id: (message.params as { companyId?: string }).companyId,
+      })));
+    });
+
+    try {
+      await callWorker("initialize", {
+        manifest: {
+          id: "paperclip.proactive-scope-test",
+          apiVersion: 1,
+          version: "1.0.0",
+          displayName: "Proactive Scope Test",
+          description: "Scope test",
+          author: "Paperclip",
+          categories: ["automation"],
+          capabilities: ["companies.read"],
+          entrypoints: { worker: "dist/worker.js" },
+        },
+        config: {},
+        instanceInfo: { instanceId: "test", hostVersion: "0.0.0" },
+        apiVersion: 1,
+      });
+
+      await expect(callWorker(
+        "getData",
+        { key: "probe", companyId: "company-a", params: {} },
+        { id: "invocation-a", scope: { companyId: "company-a" } },
+      )).resolves.toEqual({
+        scoped: { id: "company-scoped" },
+        proactive: { id: "company-proactive" },
+      });
+
+      expect(seenInvocationIds).toEqual(["invocation-a", null]);
     } finally {
       worker.stop();
       hostReadline.close();
