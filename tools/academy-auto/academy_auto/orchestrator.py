@@ -66,6 +66,12 @@ def _run_once_inner(cfg: Config, task_prompt, deps) -> RunReport:
     tsc_delta = 0
 
     for _ in range(rounds):
+      # Fehler EINER Aufgabe darf den Lauf beenden, aber nicht seine
+      # Zusammenfassung verschlucken: der geparkte Datensatz ist die einzige
+      # Spur des Nachtlaufs. Ohne diese Klammer landete der Fehler im
+      # Top-Level-Schutz von run_once, der `landed` nicht kennt — bereits
+      # gemergte Arbeit wäre aus dem Digest verschwunden (live am 31.07.).
+      try:
         cwd = deps.prepare_worktree(cfg)
         baseline = deps.measure_gate(cfg, cwd)
 
@@ -100,6 +106,17 @@ def _run_once_inner(cfg: Config, task_prompt, deps) -> RunReport:
             continue
 
         changed = deps.list_changed_files(cfg, cwd)
+        if not changed:
+            # Bei grüner Baseline besteht eine Änderung, die nichts ändert, das
+            # absolute Gate (0 == 0). Ohne diese Prüfung liefe sie in
+            # `git commit` und risse mit "nothing to commit" den ganzen Lauf ab.
+            # Als `discarded` gezählt, damit die Aufgabe nach zwei Versuchen in
+            # Quarantäne geht statt ewig wiederzukehren.
+            status = "discarded"
+            note = delta.note + "\nKeine Änderung — der Implementierer hat nichts geschrieben."
+            _after_task(deps, cfg, cwd, pick, "discarded")
+            continue
+
         scope = check_scope(cfg, changed)
         if not scope.ok:
             status = "discarded"
@@ -137,9 +154,18 @@ def _run_once_inner(cfg: Config, task_prompt, deps) -> RunReport:
             break
         landed.append(f"{res.merge_sha[:7]} {task}".strip())
         status = "landed"
+      except Exception as exc:
+        status = "error"
+        note = f"unerwarteter Fehler\n\n{exc}"
+        break
 
     if pending_change:
         outcome_name = "committed"
+    elif status in ("error", "land_failed"):
+        # Ein Fehlschlag überstimmt den Teilerfolg: der Digest muss ihn zeigen.
+        # Die bereits gemergte Arbeit geht trotzdem nicht verloren, sie steht
+        # weiter in `landed` und erscheint im Bericht.
+        outcome_name = status
     elif landed:
         outcome_name = "landed"
     else:

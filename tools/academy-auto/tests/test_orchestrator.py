@@ -516,3 +516,41 @@ def test_green_change_parks_has_change(tmp_path):
     assert isinstance(parked_list[0], PendingRecord)
     assert parked_list[0].has_change is True
     assert parked_list[0].tsc_delta == 10
+
+
+def test_no_op_implementation_is_discarded_not_committed(tmp_path):
+    """Bei gruener Baseline besteht eine Aenderung, die NICHTS aendert, das
+    absolute Gate (0 == 0). Frueher lief sie danach in `git commit` und riss
+    mit "nothing to commit" den ganzen Lauf ab (live am 31.07., Web-Lauf)."""
+    parked_list, landings, commits = [], [], []
+    cfg = _cfg(tmp_path, max_tasks_per_run=1)
+    rep = run_once(cfg, None, _loop_deps(
+        parked_list, landings, ["A"],
+        list_changed_files=lambda cfg, cwd: [],
+        count_diff_lines=lambda cfg, cwd: 0,
+        commit_and_pr=lambda cfg, cwd, p: commits.append(p) or True))
+    assert rep.status == "discarded"
+    assert commits == []          # gar nicht erst committen
+    assert landings == []
+
+
+def test_a_crashing_task_keeps_the_merges_of_this_run(tmp_path):
+    """Der Digest ist die einzige Spur des Nachtlaufs. Ein Fehler in Aufgabe 2
+    darf nicht verschweigen, dass Aufgabe 1 gemergt wurde."""
+    from academy_auto.landing import LandResult
+    parked_list, landings = [], []
+    ruf = {"n": 0}
+
+    def kaputt(cfg, cwd, prompt):
+        ruf["n"] += 1
+        if ruf["n"] > 1:
+            raise RuntimeError("nothing to commit")
+        return True
+
+    cfg = _cfg(tmp_path, max_tasks_per_run=3)
+    rep = run_once(cfg, None, _loop_deps(
+        parked_list, landings, ["A", "B", "C"], commit_and_pr=kaputt))
+    assert rep.status == "error"
+    assert len(parked_list) == 1
+    assert parked_list[0].landed == ["abcdef1 A"]   # Aufgabe 1 bleibt sichtbar
+    assert "nothing to commit" in parked_list[0].gate_note
