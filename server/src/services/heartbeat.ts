@@ -2377,6 +2377,41 @@ export function isRemoteExecutionEnvironmentDriver(driver: string | null | undef
 }
 
 /**
+ * Environment flag (kill-switch, default ON) that gates whether a *remote* run stages the
+ * referenced (mentioned) project set into the sandbox. This is a targeted rollback lever: it
+ * disables only the remote referenced-project path and never regresses the working local path.
+ * The master flag {@link MULTI_PROJECT_WORKSPACE_SYNC_ENV} is the blunt switch that kills both
+ * local and remote. The remote path runs when both the master flag and this remote flag are ON —
+ * the default state. An unset value resolves ON; an operator disables it with an explicit false
+ * value (`"false"`, `"0"`, `"off"`, `"no"`, or `""`). The OFF state fails closed: a remote run
+ * runs no referenced-project authorization or staging and reverts to the remote drop path.
+ */
+export const MULTI_PROJECT_WORKSPACE_SYNC_REMOTE_ENV =
+  "PAPERCLIP_MULTI_PROJECT_WORKSPACE_SYNC_REMOTE";
+
+export function isMultiProjectWorkspaceSyncRemoteEnabled(
+  env: Record<string, string | undefined> = process.env,
+): boolean {
+  // Default ON: an unset value is not false, so the remote path is live unless an operator sets
+  // an explicit false value as the targeted kill switch (rollback path).
+  return !isFalsyRuntimeEnvValue(env[MULTI_PROJECT_WORKSPACE_SYNC_REMOTE_ENV]);
+}
+
+/**
+ * True when an environment driver stages a multi-source remote workspace through the confined
+ * sandbox/command runtime. Only the `sandbox` driver asserts per-project confinement on the
+ * staging path (`assertSyncOperationsConfined` in `sandbox-managed-runtime`). The `ssh` driver
+ * stages without that guard, and the `plugin` driver does not route through the confined command
+ * runtime in the workspace-realization step, so both keep dropping referenced projects. A `local`
+ * (or unknown) driver is not remote and never reaches this check. This gate is intentionally
+ * narrower than {@link isRemoteExecutionEnvironmentDriver}: it names the one transport that
+ * confines each staged referenced tree.
+ */
+export function isConfinedRemoteStagingDriver(driver: string | null | undefined): boolean {
+  return driver === "sandbox";
+}
+
+/**
  * Upper bound on how many additional (mentioned) projects a single run may materialize
  * beyond the anchor. Bounds the fan-out of per-project authorization and workspace prep.
  */
@@ -2646,11 +2681,26 @@ export interface ResolveAdditionalRunWorkspacesOptions {
   maxCandidateEvaluations?: number;
   /**
    * True when the run executes on a non-local target (ssh, sandbox, or plugin). A referenced
-   * project realizes as a local directory only, and a remote target has no path yet to receive
-   * that tree, so a resolved cwd would not exist on the target. When true, the function skips
-   * referenced-project authorization and workspace work and returns no additional workspaces.
+   * project realizes as a local directory first. On a remote target that local tree reaches the
+   * agent only when a confined transport stages it into the sandbox and the remote flag is on
+   * (see `targetStagesConfined` and `remoteReferencedSyncEnabled`). Otherwise the run drops the
+   * whole referenced set and records it at the staging layer.
    */
   executionTargetIsRemote?: boolean;
+  /**
+   * True when the remote target stages each referenced tree through the confined sandbox/command
+   * runtime (the `sandbox` driver; see {@link isConfinedRemoteStagingDriver}). The gate opens the
+   * referenced-project path on a remote target only when this is true. The SSH transport and any
+   * unconfined transport keep dropping referenced projects. Ignored on a local target.
+   */
+  targetStagesConfined?: boolean;
+  /**
+   * The remote-only kill switch (default ON; see {@link isMultiProjectWorkspaceSyncRemoteEnabled}).
+   * When true, a confined remote target stages the referenced set. When false, a remote target
+   * fails closed: it runs no referenced-project authorization or staging and reverts to the remote
+   * drop path. Ignored on a local target.
+   */
+  remoteReferencedSyncEnabled?: boolean;
 }
 
 /**
@@ -2676,34 +2726,44 @@ export async function resolveAdditionalRunWorkspaces(
     return { additionalWorkspaces: [], warnings: [], failures: [] };
   }
 
-  // A referenced project realizes as a local directory only. A remote execution target (ssh,
-  // sandbox, or plugin) has no path yet to receive the referenced tree, so a resolved cwd would
-  // not exist on the target and the anchor-only remote sync never carries it across. Skip the
-  // referenced-project authorization and clone work on a remote target, so the run neither does
-  // work it must discard nor exposes an inaccessible referenced path to the agent. Warn only when
-  // the issue actually mentions a project, so a remote run without any referenced mention stays
-  // silent.
+  // A referenced project realizes as a local directory first. On a remote target the run carries
+  // that tree to the agent only when a confined transport stages it into the sandbox and the
+  // remote flag is on. The confined sandbox transport asserts per-project confinement on each
+  // staged tree (`assertSyncOperationsConfined` in `sandbox-managed-runtime`). The SSH transport
+  // does not, so it stays out of scope. When the remote flag is off the run fails closed. In every
+  // one of those drop cases the run neither does authorization or clone work it must discard nor
+  // exposes an inaccessible referenced path to the agent.
   if (opts.executionTargetIsRemote) {
-    const mentionedIds = await opts.issues.findMentionedProjectIds(issueId, {
-      includeCommentBodies: true,
-    });
-    // Each distinct non-anchor mention is a referenced project this remote run drops. A remote
-    // target has no path to receive the referenced tree, so the run drops the whole set at the
-    // staging layer. Record one failure per dropped project so the requested-vs-synced accounting
-    // counts the whole referenced set and the run still emits its structured sync log.
-    const droppedProjectIds = [
-      ...new Set(mentionedIds.filter((projectId) => projectId !== anchorProjectId)),
-    ];
-    return {
-      additionalWorkspaces: [],
-      warnings:
-        droppedProjectIds.length > 0
-          ? [
-              "Referenced-project workspaces are available only on a local execution target. This run uses a remote execution target, so no referenced-project workspace was attached.",
-            ]
-          : [],
-      failures: droppedProjectIds.map((projectId) => ({ projectId, reason: "staging" as const })),
-    };
+    const remoteReferencedSyncOpen =
+      (opts.remoteReferencedSyncEnabled ?? false) && (opts.targetStagesConfined ?? false);
+    if (!remoteReferencedSyncOpen) {
+      const mentionedIds = await opts.issues.findMentionedProjectIds(issueId, {
+        includeCommentBodies: true,
+      });
+      // Each distinct non-anchor mention is a referenced project this remote run drops. An SSH
+      // target (or the remote flag off) has no confined path to receive the referenced tree, so
+      // the run drops the whole set at the staging layer. Record one failure per dropped project
+      // so the requested-vs-synced accounting counts the whole referenced set and the run still
+      // emits its structured sync log. Warn only when the issue actually mentions a project, so a
+      // remote run without any referenced mention stays silent.
+      const droppedProjectIds = [
+        ...new Set(mentionedIds.filter((projectId) => projectId !== anchorProjectId)),
+      ];
+      return {
+        additionalWorkspaces: [],
+        warnings:
+          droppedProjectIds.length > 0
+            ? [
+                "Referenced-project workspaces are available only on a local execution target or a confined sandbox target. This run uses a different remote execution target, so no referenced-project workspace was attached.",
+              ]
+            : [],
+        failures: droppedProjectIds.map((projectId) => ({ projectId, reason: "staging" as const })),
+      };
+    }
+    // Fall through: a confined sandbox target with the remote flag on resolves and authorizes the
+    // referenced set exactly like a local target. The resolver is driver-agnostic; the confined
+    // sandbox transport downstream stages each admitted tree into its own `project-<projectId>`
+    // directory. The per-project `project:read` check below still runs against the run actor.
   }
 
   const referenced = await resolveRunReferencedProjects(issueId, anchorProjectId, {
@@ -8191,20 +8251,27 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     agent: typeof agents.$inferSelect,
     context: Record<string, unknown>,
     previousSessionParams: Record<string, unknown> | null,
-    opts?: { useProjectWorkspace?: boolean | null; executionTargetIsRemote?: boolean },
+    opts?: { useProjectWorkspace?: boolean | null; executionEnvironmentDriver?: string | null },
   ): Promise<ResolvedWorkspaceForRun> {
     const anchor = await resolveAnchorWorkspaceForRun(agent, context, previousSessionParams, opts);
     if (!isMultiProjectWorkspaceSyncEnabled()) {
       return { ...anchor, additionalWorkspaces: [], referencedProjectFailures: [] };
     }
 
+    // Derive the remote-transport facts from the selected environment driver. `executionTargetIsRemote`
+    // decides whether the referenced set needs the remote path at all; `targetStagesConfined` decides
+    // whether that remote target confines each staged tree (only the sandbox driver does). The remote
+    // flag is the targeted kill switch; with it off, a remote run fails closed.
+    const executionEnvironmentDriver = opts?.executionEnvironmentDriver ?? null;
     const issueId = readNonEmptyString(context.issueId) ?? readNonEmptyString(context.taskId);
     const { additionalWorkspaces, warnings, failures } = await resolveAdditionalRunWorkspaces(
       issueId,
       anchor.projectId,
       {
         enabled: true,
-        executionTargetIsRemote: opts?.executionTargetIsRemote ?? false,
+        executionTargetIsRemote: isRemoteExecutionEnvironmentDriver(executionEnvironmentDriver),
+        targetStagesConfined: isConfinedRemoteStagingDriver(executionEnvironmentDriver),
+        remoteReferencedSyncEnabled: isMultiProjectWorkspaceSyncRemoteEnabled(),
         companyId: agent.companyId,
         actor: {
           type: "agent",
@@ -13258,12 +13325,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           previousSessionParams,
           {
             useProjectWorkspace: requestedExecutionWorkspaceMode !== "agent_default",
-            // Referenced-project workspaces attach on a local execution target only. Gate their
-            // resolution on the selected environment driver so a remote run never resolves a
-            // referenced path it cannot reach. This never changes the anchor workspace.
-            executionTargetIsRemote: isRemoteExecutionEnvironmentDriver(
-              selectedEnvironmentForConfig?.driver,
-            ),
+            // Thread the selected environment driver so run-workspace resolution can tell a local
+            // target from a remote one, and a confined sandbox target from an unconfined remote
+            // target. A remote run resolves referenced projects only for the confined sandbox
+            // transport with the remote flag on. This never changes the anchor workspace.
+            executionEnvironmentDriver: selectedEnvironmentForConfig?.driver ?? null,
           },
         ),
     });
