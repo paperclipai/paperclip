@@ -29,6 +29,16 @@ if [ ! -f "$UI_DIST/index.html" ]; then
   exit 1
 fi
 
-rm -rf "$SERVER_UI_DIST"
-cp -r "$UI_DIST" "$SERVER_UI_DIST"
+STAGED_SERVER_UI_DIST="$(mktemp -d "$REPO_ROOT/server/.ui-dist-stage.XXXXXX")"
+PREVIOUS_SERVER_UI_DIST="$REPO_ROOT/server/.ui-dist-previous.$$"
+cleanup_staged_ui_dist() {
+  rm -rf "$STAGED_SERVER_UI_DIST" "$PREVIOUS_SERVER_UI_DIST" || true
+}
+trap cleanup_staged_ui_dist EXIT
+
+cp -R "$UI_DIST/." "$STAGED_SERVER_UI_DIST/"
+if [ -e "$SERVER_UI_DIST" ]; then
+  mv "$SERVER_UI_DIST" "$PREVIOUS_SERVER_UI_DIST"
+fi
+mv "$STAGED_SERVER_UI_DIST" "$SERVER_UI_DIST"
 echo "  -> Copied ui/dist to server/ui-dist"
