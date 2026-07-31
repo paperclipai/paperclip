@@ -495,6 +495,40 @@ describeEmbeddedPostgres("built-in agents", () => {
     expect(rows).toHaveLength(0);
   });
 
+  it("judges the region from the agent's own env, not the server's", async () => {
+    process.env.CLAUDE_CODE_USE_BEDROCK = "1";
+    process.env.AWS_REGION = "us-east-1";
+    const service = builtInAgentService(db);
+
+    // The claude_local execution path spreads adapterConfig.env over process.env, so this agent runs
+    // in eu-west-1 whatever the server is set to. Its eu. profile must be accepted, even though the
+    // server's own region would reject it, and even though the offered catalogue lists us. ids.
+    const euCompanyId = await seedCompany();
+    const state = await service.ensure(euCompanyId, "summarizer", {
+      adapterType: "claude_local",
+      adapterConfig: {
+        model: "eu.anthropic.claude-sonnet-5",
+        env: { AWS_REGION: "eu-west-1" },
+      },
+    });
+    expect(state.agent?.adapterConfig).toMatchObject({ model: "eu.anthropic.claude-sonnet-5" });
+
+    // The same override rejects a us. profile that the server's region would have accepted.
+    const usCompanyId = await seedCompany();
+    await expect(service.ensure(usCompanyId, "summarizer", {
+      adapterType: "claude_local",
+      adapterConfig: {
+        model: "us.anthropic.claude-haiku-4-5-20251001-v1:0",
+        env: { AWS_REGION: "eu-west-1" },
+      },
+    })).rejects.toMatchObject({
+      status: 422,
+      details: { code: "built_in_agent_model_region_mismatch", region: "eu-west-1" },
+    });
+
+    expect(await db.select().from(agents).where(eq(agents.companyId, usCompanyId))).toHaveLength(0);
+  });
+
   it("accepts Bedrock ids that the configured region cannot rule out", async () => {
     process.env.CLAUDE_CODE_USE_BEDROCK = "1";
     process.env.AWS_REGION = "us-east-1";
