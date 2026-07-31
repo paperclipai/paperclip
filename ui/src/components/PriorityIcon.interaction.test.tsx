@@ -41,13 +41,17 @@ describe("PriorityIcon picker", () => {
     );
     expect(trigger).not.toBeNull();
 
-    await act(async () => trigger?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    await act(async () => {
+      trigger?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
 
     const highOption = [...document.body.querySelectorAll<HTMLButtonElement>("button")]
       .find((button) => button.textContent?.trim() === "High");
     expect(highOption).not.toBeUndefined();
 
-    await act(async () => highOption?.dispatchEvent(new MouseEvent("click", { bubbles: true })));
+    await act(async () => {
+      highOption?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
     expect(onChange).toHaveBeenCalledOnce();
     expect(onChange).toHaveBeenCalledWith("high");
   });
