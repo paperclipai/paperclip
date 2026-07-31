@@ -854,15 +854,16 @@ describe("agent issue mutation checkout ownership", () => {
       reason: input.action === "issue:comment" ? "allow_issue_unblock_owner" : "allow_company_agent",
       explanation: "Allowed by the current unblock-owner grant.",
     }));
+    mockIssueService.findMentionedAgents.mockResolvedValue([ownerAgentId]);
 
     const res = await request(await createApp(peerActor()))
       .post(`/api/issues/${issueId}/comments`)
-      .send({ body: "The unblock action is complete." });
+      .send({ body: "The unblock action is complete, @owner." });
 
     expect(res.status, JSON.stringify(res.body)).toBe(201);
     expect(mockIssueService.addComment).toHaveBeenCalledWith(
       issueId,
-      "The unblock action is complete.",
+      "The unblock action is complete, @owner.",
       expect.any(Object),
       expect.any(Object),
       expect.any(Object),
@@ -879,9 +880,12 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
       ownerAgentId,
       expect.objectContaining({
-        reason: "issue_commented",
-        currentIssueAssigneeGuard: { issueId },
+        reason: "issue_comment_mentioned",
       }),
+    );
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalledWith(
+      ownerAgentId,
+      expect.objectContaining({ currentIssueAssigneeGuard: { issueId } }),
     );
   });
 

@@ -12421,7 +12421,16 @@ export function issueRoutes(
             ? wakeup.payload.issueId
             : currentIssue.id;
         const key = `${agentId}:${wakeIssueId}`;
-        if (wakeups.has(key)) return;
+        const existing = wakeups.get(key);
+        if (
+          existing &&
+          !(
+            wakeup.reason === "issue_comment_mentioned" &&
+            Boolean(existing.wakeup.currentIssueAssigneeGuard)
+          )
+        ) {
+          return;
+        }
         wakeups.set(key, { agentId, wakeup });
       };
       const addDependencyResolvedWakeup = async (input: {
