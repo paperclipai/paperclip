@@ -17,6 +17,10 @@ const routerMock = vi.hoisted(() => ({
   navigate: vi.fn(),
 }));
 
+const externalObjectMocks = vi.hoisted(() => ({
+  summaries: new Map(),
+}));
+
 const apiMocks = vi.hoisted(() => ({
   approvalsList: vi.fn(),
   joinRequestsList: vi.fn(),
@@ -123,6 +127,14 @@ vi.mock("../hooks/useInboxBadge", () => ({
     readItems: new Set(),
     markRead: vi.fn(),
     markUnread: vi.fn(),
+  }),
+}));
+
+vi.mock("../hooks/useIssueExternalObjects", () => ({
+  useIssueExternalObjectSummaries: () => ({
+    summaries: externalObjectMocks.summaries,
+    isLoading: false,
+    isReady: true,
   }),
 }));
 
@@ -255,6 +267,7 @@ function createJoinRequest(
 
 function resetInboxApiMocks() {
   for (const mock of Object.values(apiMocks)) mock.mockReset();
+  externalObjectMocks.summaries.clear();
   routerMock.location.pathname = "/";
   routerMock.location.search = "";
   routerMock.location.hash = "";
@@ -297,6 +310,38 @@ describe("Inbox toolbar", () => {
       clearLocalInboxArchive("company-1", issueId);
     }
     container.remove();
+  });
+
+  it("does not render external-object summaries in inbox rows", async () => {
+    routerMock.location.pathname = "/inbox/mine";
+    const issue = createIssue({ title: "Inbox row without external object column" });
+    apiMocks.issuesList.mockResolvedValue([issue]);
+    externalObjectMocks.summaries.set(issue.id, {
+      total: 1,
+      highestSeverity: "failed",
+      byStatusCategory: { failed: 1 },
+      objects: [],
+    });
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 0, gcTime: 0 } },
+    });
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Inbox />
+        </QueryClientProvider>,
+      );
+    });
+    await vi.waitFor(() => {
+      expect(container.textContent).toContain(issue.title);
+    });
+
+    expect(container.querySelector('[aria-label^="External objects:"]')).toBeNull();
+
+    act(() => root.unmount());
   });
 
   it("shows blocked toolbar controls on the Blocked tab", async () => {
@@ -483,16 +528,15 @@ describe("Inbox toolbar", () => {
 
     const rows = Array.from(container.querySelectorAll("[data-inbox-item]"));
     const rowFor = (text: string) => rows.find((row) => row.textContent?.includes(text));
-    const linkOf = (row: Element) => row.querySelector<HTMLAnchorElement>("a[data-inbox-issue-link]");
     const markReadButton = (row: Element) => row.querySelector('button[aria-label="Mark as read"]');
     // The empty spacer that reserves the chevron column on every leaf row.
     // Excludes the tree-guide span (`.self-stretch`), which only renders on
     // nested rows.
     const hasLeadingSpacer = (row: Element) =>
-      !!linkOf(row)?.querySelector("span.hidden.w-4.shrink-0.sm\\:block:not(.self-stretch)");
+      !!row.querySelector("span.hidden.w-4.shrink-0.sm\\:block:not(.self-stretch)");
     // The reserved leading dot slot, present on read AND unread rows.
     const dotSlot = (row: Element) =>
-      linkOf(row)?.querySelector('[data-testid="issue-row-unread-slot"]') ?? null;
+      row.querySelector('[data-testid="issue-row-unread-slot"]');
 
     const unreadRow = rowFor("Unread inbox row")!;
     const readRow = rowFor("Read inbox row")!;

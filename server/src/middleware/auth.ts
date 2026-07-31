@@ -17,6 +17,7 @@ import { isUuidLike, normalizeAgentApiKeyScope, type DeploymentMode } from "@pap
 import type { BetterAuthSessionResult } from "../auth/better-auth.js";
 import { logger } from "./logger.js";
 import { boardAuthService } from "../services/board-auth.js";
+import { instanceSettingsService } from "../services/instance-settings.js";
 import { ensureHumanRoleDefaultGrants } from "../services/principal-access-compatibility.js";
 import { forbidden, unprocessable } from "../errors.js";
 
@@ -75,6 +76,28 @@ async function loadResponsibleUserMemberships(
       ),
   ]);
   return user ? memberships : [];
+}
+
+/**
+ * The user's own active company memberships — the exact company scope a
+ * locally authenticated session actor carries. Shared by the session path
+ * and the Cloud trusted-header path so both resolve the same access set.
+ */
+async function loadActiveUserCompanyMemberships(db: Db, userId: string) {
+  return db
+    .select({
+      companyId: companyMemberships.companyId,
+      membershipRole: companyMemberships.membershipRole,
+      status: companyMemberships.status,
+    })
+    .from(companyMemberships)
+    .where(
+      and(
+        eq(companyMemberships.principalType, "user"),
+        eq(companyMemberships.principalId, userId),
+        eq(companyMemberships.status, "active"),
+      ),
+    );
 }
 
 async function auditAgentJwtRunHeaderMismatch(
@@ -184,20 +207,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
               .from(instanceUserRoles)
               .where(and(eq(instanceUserRoles.userId, userId), eq(instanceUserRoles.role, "instance_admin")))
               .then((rows) => rows[0] ?? null),
-            db
-              .select({
-                companyId: companyMemberships.companyId,
-                membershipRole: companyMemberships.membershipRole,
-                status: companyMemberships.status,
-              })
-              .from(companyMemberships)
-              .where(
-                and(
-                  eq(companyMemberships.principalType, "user"),
-                  eq(companyMemberships.principalId, userId),
-                  eq(companyMemberships.status, "active"),
-                ),
-              ),
+            loadActiveUserCompanyMemberships(db, userId),
           ]);
           req.actor = {
             type: "board",
@@ -379,13 +389,41 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
  * Whether this instance is managed by a Paperclip Cloud control plane.
  * When the tenant server token is configured, the control plane owns the
  * user/identity lifecycle for this instance: users arrive through trusted
- * headers (resolveCloudTenantActor) and are deliberately never granted
- * instance_admin. Surfaces that assume a self-hosted operator will claim
- * the instance (e.g. the first-admin bootstrap gate) should treat a
- * cloud-managed instance as already set up.
+ * headers (resolveCloudTenantActor) and are deliberately never granted the
+ * `instance_admin` DB role. The only elevation a cloud tenant can carry is
+ * computed per request at the trusted-header boundary (owner stack role +
+ * the `enableOwnerInstanceAdmin` flag) and floored by code on
+ * platform-owned surfaces. Surfaces that assume a self-hosted operator
+ * will claim the instance (e.g. the first-admin bootstrap gate) should
+ * treat a cloud-managed instance as already set up.
  */
 export function isCloudManagedInstance(): boolean {
   return Boolean(process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN?.trim());
+}
+
+/**
+ * Whether the trusted-header actor being resolved should carry computed
+ * instance-admin elevation: only the stack `owner` role elevates, and only
+ * while `enableOwnerInstanceAdmin` is enabled. The flag is resolved through
+ * the instance-settings service so the cloud managed-config overlay applies
+ * (the harness can turn elevation off fleet-wide without touching tenant
+ * DBs). Fails closed: a settings read error means no elevation.
+ */
+async function resolveOwnerInstanceAdmin(
+  db: Db,
+  stackRole: "owner" | "admin" | "member" | "support",
+): Promise<boolean> {
+  if (stackRole !== "owner") return false;
+  try {
+    const experimental = await instanceSettingsService(db).getExperimental();
+    return experimental.enableOwnerInstanceAdmin === true;
+  } catch (err) {
+    logger.warn(
+      { err },
+      "Failed to resolve enableOwnerInstanceAdmin for cloud tenant owner; treating elevation as disabled",
+    );
+    return false;
+  }
 }
 
 export async function resolveCloudTenantActor(db: Db, req: Request): Promise<Express.Request["actor"] | null> {
@@ -489,18 +527,48 @@ export async function resolveCloudTenantActor(db: Db, req: Request): Promise<Exp
     grantedByUserId: null,
   });
 
+  // The stack's seeded company is only where Cloud provisioned this user.
+  // Companies created afterwards on the instance (imports, in-app company
+  // creation) attach real membership rows for the user, so union those with
+  // the pinned primary — the same active-membership scope a locally
+  // authenticated session actor carries. Strictly this user's own rows; the
+  // membership-creating flows seed their own permission grants, so nothing
+  // needs seeding per request here. A read failure degrades to the pinned
+  // primary instead of blocking authentication, mirroring the fail-closed
+  // owner-elevation resolution below.
+  let additionalMemberships: { companyId: string; membershipRole: string | null; status: string }[] =
+    [];
+  try {
+    additionalMemberships = (await loadActiveUserCompanyMemberships(db, userId)).filter(
+      (row) => row.companyId !== companyId,
+    );
+  } catch (err) {
+    logger.warn(
+      { err, userId, stackId },
+      "Failed to load cloud tenant user's company memberships; scoping actor to the stack's primary company",
+    );
+  }
+
   return {
     type: "board",
     userId,
     userName,
     userEmail,
-    companyIds: [companyId],
-    memberships: [{
-      companyId,
-      membershipRole: membership.membershipRole,
-      status: membership.status,
-    }],
-    isInstanceAdmin: false,
+    companyIds: [companyId, ...additionalMemberships.map((row) => row.companyId)],
+    memberships: [
+      {
+        companyId,
+        membershipRole: membership.membershipRole,
+        status: membership.status,
+      },
+      ...additionalMemberships,
+    ],
+    // Computed per request, never persisted: the stack owner is elevated to
+    // instance admin of their own dedicated instance only while the
+    // `enableOwnerInstanceAdmin` flag is on. Non-owner stack roles stay
+    // company-scoped. Turning the flag off de-elevates on the next request —
+    // there is no role row to clean up.
+    isInstanceAdmin: await resolveOwnerInstanceAdmin(db, stackRole),
     source: "cloud_tenant",
   };
 }

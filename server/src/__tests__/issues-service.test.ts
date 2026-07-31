@@ -464,6 +464,64 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     });
   });
 
+  it("expires pending thread interactions on any service-level terminal transition", async () => {
+    const companyId = await seedAssignableAgentCompany();
+    const issue = await svc.create(companyId, {
+      title: "Close me with a pending card",
+      description: null,
+      status: "todo",
+      priority: "medium",
+    });
+    const interactionId = randomUUID();
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId,
+      companyId,
+      issueId: issue.id,
+      kind: "ask_user_questions",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      payload: {
+        version: 1,
+        questions: [{
+          id: "scope",
+          prompt: "Pick one",
+          selectionMode: "single",
+          options: [{ id: "a", label: "A" }],
+        }],
+      } as never,
+    });
+
+    // Direct service callers (tree control, recovery, pipelines, status cards)
+    // never pass through the HTTP routes, so the expiry must fire here.
+    const updated = await svc.update(issue.id, { status: "cancelled", actorUserId: "local-board" });
+    expect(updated?.status).toBe("cancelled");
+
+    const interaction = await db
+      .select()
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, interactionId))
+      .then((rows) => rows[0] ?? null);
+    expect(interaction).toMatchObject({
+      status: "expired",
+      resolvedByUserId: "local-board",
+    });
+    expect(interaction?.result).toMatchObject({ version: 1, outcome: "issue_closed" });
+    expect(interaction?.resolvedAt).not.toBeNull();
+
+    const logged = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.action, "issue.thread_interaction_expired"));
+    expect(logged).toHaveLength(1);
+    // details.source is dot-separated and trips the JWT-shaped redaction
+    // heuristic in sanitizeRecord, so assert the identifying fields instead.
+    expect(logged[0]?.details).toMatchObject({
+      interactionId,
+      interactionKind: "ask_user_questions",
+      interactionStatus: "expired",
+    });
+  });
+
   it("rejects moving an existing terminated assignment into progress without clearing it", async () => {
     const companyId = await seedAssignableAgentCompany();
     const assigneeAgentId = randomUUID();
@@ -4784,6 +4842,94 @@ describeEmbeddedPostgres("issueService.findMentionedProjectIds", () => {
       titleProjectId,
       commentProjectId,
     ]);
+  });
+
+  it("returns multiple same-company mentions in order, deduped", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    const firstProjectId = randomUUID();
+    const secondProjectId = randomUUID();
+    const thirdProjectId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(projects).values([
+      { id: firstProjectId, companyId, name: "First project", status: "in_progress" },
+      { id: secondProjectId, companyId, name: "Second project", status: "in_progress" },
+      { id: thirdProjectId, companyId, name: "Third project", status: "in_progress" },
+    ]);
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title:
+        `See [First](${buildProjectMentionHref(firstProjectId)}) and ` +
+        `[Second](${buildProjectMentionHref(secondProjectId)})`,
+      description: null,
+      status: "todo",
+      priority: "medium",
+    });
+
+    await db.insert(issueComments).values({
+      companyId,
+      issueId,
+      // Repeats the first mention (deduped) and introduces a third.
+      body:
+        `Also [First again](${buildProjectMentionHref(firstProjectId)}) and ` +
+        `[Third](${buildProjectMentionHref(thirdProjectId)})`,
+    });
+
+    expect(await svc.findMentionedProjectIds(issueId)).toEqual([
+      firstProjectId,
+      secondProjectId,
+      thirdProjectId,
+    ]);
+  });
+
+  it("filters out a mention from another company", async () => {
+    const companyId = randomUUID();
+    const foreignCompanyId = randomUUID();
+    const issueId = randomUUID();
+    const sameCompanyProjectId = randomUUID();
+    const foreignProjectId = randomUUID();
+
+    await db.insert(companies).values([
+      {
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      },
+      {
+        id: foreignCompanyId,
+        name: "Other company",
+        issuePrefix: `F${foreignCompanyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      },
+    ]);
+
+    await db.insert(projects).values([
+      { id: sameCompanyProjectId, companyId, name: "Same-company project", status: "in_progress" },
+      { id: foreignProjectId, companyId: foreignCompanyId, name: "Foreign project", status: "in_progress" },
+    ]);
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title:
+        `Ours [Same](${buildProjectMentionHref(sameCompanyProjectId)}) and ` +
+        `theirs [Foreign](${buildProjectMentionHref(foreignProjectId)})`,
+      description: null,
+      status: "todo",
+      priority: "medium",
+    });
+
+    expect(await svc.findMentionedProjectIds(issueId)).toEqual([sameCompanyProjectId]);
   });
 });
 

@@ -31,6 +31,7 @@ import {
   acceptIssueThreadInteractionSchema,
   attachmentArtifactWorkProductMetadataSchema,
   cancelIssueThreadInteractionSchema,
+  withdrawIssueThreadInteractionSchema,
   companySearchExtractQuerySchema,
   companySearchQuerySchema,
   createIssueAttachmentMetadataSchema,
@@ -87,6 +88,7 @@ import {
   type IssueWakeDiagnosticWakeRequest,
   type IssueWakeDiagnosticsResponse,
   type IssueRelationIssueSummary,
+  type IssueCommentPresentation,
   type IssueWatchdogDiscoveryKind,
   type ProjectWorkspace,
   type SourceTrustMetadata,
@@ -353,6 +355,13 @@ function noopTaskWatchdogService(): TaskWatchdogService {
         includedIssueIds: [],
         stopFingerprint: "task_watchdog_stop:unavailable",
         stoppedLeaves: [],
+        stopSnapshot: {
+          version: 2,
+          fingerprint: "task_watchdog_stop:unavailable",
+          materialLeaves: [],
+          waitsByIssueId: {},
+        },
+        pendingInteractionsByIssueId: {},
       },
     }),
   };
@@ -3730,6 +3739,41 @@ export function issueRoutes(
     return true;
   }
 
+  async function assertIssueThreadInteractionWithdrawalAllowed(
+    req: Request,
+    res: Response,
+    issue: Parameters<typeof assertAgentIssueMutationAllowed>[2],
+    interaction: { createdByAgentId?: string | null },
+  ) {
+    if (req.actor.type !== "agent") {
+      assertBoard(req);
+      return true;
+    }
+    const actorAgentId = req.actor.agentId;
+    if (!actorAgentId || !requireAgentRunId(req, res)) return false;
+
+    const watchdogScope = await resolveTaskWatchdogMutationScope(db, req.actor);
+    if (watchdogScope.kind !== "none") {
+      res.status(403).json({ error: "Task-watchdog runs cannot withdraw issue-thread interactions" });
+      return false;
+    }
+    const boundaryDecision = await decideIssueAccess(req, issue, "issue:mutate");
+    if (!boundaryDecision.allowed) {
+      res.status(403).json({ error: "Issue is outside this actor's authorization boundary" });
+      return false;
+    }
+    if (await assertLowTrustControlPlaneDenied(req, res, issue.companyId, issue)) return false;
+
+    const isCreator = interaction.createdByAgentId === actorAgentId;
+    const isAssignee = issue.assigneeAgentId === actorAgentId;
+    if (!isCreator && !isAssignee) {
+      res.status(403).json({ error: "Only the interaction creator, current issue assignee, or a board user may withdraw it" });
+      return false;
+    }
+    if (isAssignee) return assertAgentIssueMutationAllowed(req, res, issue);
+    return true;
+  }
+
   async function assertTaskWatchdogCreateIssueAllowed(
     req: Request,
     res: Response,
@@ -3994,6 +4038,53 @@ export function issueRoutes(
       .then((rows) => rows[0] ?? null);
     if (!run || run.companyId !== companyId || run.agentId !== req.actor.agentId) return null;
     return run;
+  }
+
+  function readObject(value: unknown): Record<string, unknown> {
+    return value && typeof value === "object" && !Array.isArray(value)
+      ? value as Record<string, unknown>
+      : {};
+  }
+
+  async function deriveRecoveryCommentPresentation(
+    req: Request,
+    companyId: string,
+    body: string,
+  ): Promise<IssueCommentPresentation | null> {
+    const run = await loadActorRunContext(req, companyId);
+    if (!run) return null;
+
+    const context = readObject(run.contextSnapshot);
+    const paperclipWake = readObject(context.paperclipWake);
+    const recovery = readObject(paperclipWake.recovery);
+    const wakeReason = typeof context.wakeReason === "string"
+      ? context.wakeReason
+      : typeof paperclipWake.reason === "string"
+        ? paperclipWake.reason
+        : null;
+    if (wakeReason !== "source_scoped_recovery_action") return null;
+
+    const recoveryCause = typeof context.recoveryCause === "string"
+      ? context.recoveryCause
+      : typeof recovery.cause === "string"
+        ? recovery.cause
+        : null;
+    if (
+      recoveryCause === "successful_run_missing_state" ||
+      recoveryCause === "successful_run_missing_issue_disposition"
+    ) {
+      return null;
+    }
+
+    const firstLine = body.split(/\r?\n/, 1)[0]?.trim() || "Recovery update";
+    const title = firstLine.length > 160 ? `${firstLine.slice(0, 159)}…` : firstLine;
+    return {
+      kind: "system_notice",
+      tone: "info",
+      title,
+      detailsDefaultOpen: false,
+      density: "compact",
+    };
   }
 
   async function assertCheapRecoveryIssueAssigneeProfileAllowed(
@@ -9229,12 +9320,22 @@ export function issueRoutes(
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
     const actor = getActorInfo(req);
     const interactionSvc = issueThreadInteractionService(db);
-    const expiredInteractions = await interactionSvc.expireRequestConfirmationsSupersededByHistoricalComments(issue);
+    const supersededInteractions = await interactionSvc.expireRequestConfirmationsSupersededByHistoricalComments(issue);
     await logExpiredRequestConfirmations({
       issue,
-      interactions: expiredInteractions,
+      interactions: supersededInteractions,
       actor,
       source: "issue.interactions.catchup_superseded_by_comment",
+    });
+    const closedIssueInteractions = await interactionSvc.expirePendingInteractionsForTerminalIssue(issue, {
+      agentId: actor.agentId,
+      userId: actor.actorType === "user" ? actor.actorId : null,
+    });
+    await logExpiredRequestConfirmations({
+      issue,
+      interactions: closedIssueInteractions,
+      actor,
+      source: "issue.interactions.catchup_issue_closed",
     });
 
     const interactions = await interactionSvc.listForIssue(id);
@@ -9605,6 +9706,55 @@ export function issueRoutes(
   );
 
   router.post(
+    "/issues/:id/interactions/:interactionId/withdraw",
+    validate(withdrawIssueThreadInteractionSchema),
+    async (req, res) => {
+      const id = req.params.id as string;
+      const interactionId = req.params.interactionId as string;
+      const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+      if (!issue) return;
+
+      const interactionSvc = issueThreadInteractionService(db);
+      const current = await interactionSvc.getForIssue(issue, interactionId);
+      if (!(await assertIssueThreadInteractionWithdrawalAllowed(req, res, issue, current))) return;
+
+      const actor = getActorInfo(req);
+      const interaction = await interactionSvc.withdrawInteraction(issue, interactionId, req.body, {
+        agentId: actor.agentId,
+        userId: actor.actorType === "user" ? actor.actorId : null,
+      });
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
+        action: "issue.thread_interaction_withdrawn",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          interactionId: interaction.id,
+          interactionKind: interaction.kind,
+          interactionStatus: interaction.status,
+          reason: interaction.result && "reason" in interaction.result ? interaction.result.reason ?? null : null,
+        },
+      });
+
+      if (actor.agentId !== issue.assigneeAgentId) {
+        queueResolvedInteractionContinuationWakeup({
+          heartbeat,
+          issue,
+          interaction,
+          actor,
+          source: "issue.interaction.withdraw",
+        });
+      }
+      res.json(interaction);
+    },
+  );
+
+  router.post(
     "/issues/:id/interactions/:interactionId/cancel",
     validate(cancelIssueThreadInteractionSchema),
     async (req, res) => {
@@ -9905,6 +10055,8 @@ export function issueRoutes(
     }
 
     const actor = getActorInfo(req);
+    const commentPresentation = req.body.presentation ??
+      await deriveRecoveryCommentPresentation(req, issue.companyId, req.body.body);
     const reopenRequested = req.body.reopen === true;
     const resumeRequested = req.body.resume === true;
     const interruptRequested = req.body.interrupt === true;
@@ -10119,7 +10271,7 @@ export function issueRoutes(
       const sourceTrust = await sourceTrustForActorWrite(currentIssue, actor);
       const commentOptions = {
         authorType: req.body.authorType ?? (actor.actorType === "agent" ? "agent" : "user"),
-        presentation: req.body.presentation ?? null,
+        presentation: commentPresentation,
         metadata: req.body.metadata ?? null,
         sourceTrust,
       };
@@ -10204,7 +10356,7 @@ export function issueRoutes(
         runId: actor.runId,
       }, {
         authorType: req.body.authorType ?? (actor.actorType === "agent" ? "agent" : "user"),
-        presentation: req.body.presentation ?? null,
+        presentation: commentPresentation,
         metadata: req.body.metadata ?? null,
         sourceTrust: await sourceTrustForActorWrite(currentIssue, actor),
       });

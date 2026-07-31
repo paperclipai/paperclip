@@ -159,6 +159,9 @@ export interface CompanySkillVersion {
   companySkillId: string;
   revisionNumber: number;
   label: string | null;
+  releaseId: string | null;
+  releaseName: string | null;
+  releasedAt: Date | null;
   fileInventory: CompanySkillVersionFileInventoryEntry[];
   authorAgentId: string | null;
   authorUserId: string | null;
@@ -242,6 +245,19 @@ export interface CompanySkillForkPrecheckResult {
   agentUsageCount: number;
   usedByAgents: CompanySkillUsageAgent[];
   existingForks: CompanySkillForkSummary[];
+}
+
+export interface CompanySkillRenameRequest {
+  name: string;
+  slug?: string | null;
+}
+
+export interface CompanySkillRenameResult {
+  skill: CompanySkill;
+  previousName: string;
+  previousSlug: string;
+  previousKey: string;
+  reassignments: CompanySkillForkReassignment[];
 }
 
 export interface CompanySkillUpdateRequest {

@@ -3606,6 +3606,27 @@ export function secretService(db: Db) {
         providerConfigId,
       });
       const nextVersion = secret.latestVersion + 1;
+      const externalValueWrite =
+        secret.managedMode === "external_reference" && Boolean(input.value?.trim());
+      if (externalValueWrite) {
+        const currentRef = secret.externalRef?.trim();
+        if (!currentRef) {
+          throw unprocessable("External reference secrets require externalRef");
+        }
+        if (input.externalRef?.trim() && input.externalRef.trim() !== currentRef) {
+          throw unprocessable(
+            "Provide either a new value or a new external reference, not both",
+          );
+        }
+        if (input.providerVersionRef?.trim()) {
+          throw unprocessable("Value updates cannot pin providerVersionRef");
+        }
+        if (!provider.updateExternalSecretValue) {
+          throw unprocessable(
+            `${provider.descriptor().label} does not support writing values to external reference secrets`,
+          );
+        }
+      }
       if (secret.managedMode === "external_reference" && !(input.externalRef ?? secret.externalRef)?.trim()) {
         throw unprocessable("External reference secrets require externalRef");
       }
@@ -3623,8 +3644,14 @@ export function secretService(db: Db) {
       };
       let prepared: PreparedSecretVersion;
       try {
-        prepared =
-          secret.managedMode === "external_reference"
+        prepared = externalValueWrite
+          ? await provider.updateExternalSecretValue!({
+              externalRef: secret.externalRef ?? "",
+              value: input.value ?? "",
+              providerConfig,
+              context: providerWriteContext,
+            })
+          : secret.managedMode === "external_reference"
             ? await provider.linkExternalSecret({
                 externalRef: input.externalRef ?? secret.externalRef ?? "",
                 providerVersionRef: input.providerVersionRef ?? null,
@@ -3660,7 +3687,7 @@ export function secretService(db: Db) {
           createdByUserId: actor?.userId ?? null,
         });
       } catch (error) {
-        if (secret.managedMode !== "external_reference") {
+        if (secret.managedMode !== "external_reference" || externalValueWrite) {
           await cleanupPreparedProviderWrite({
             provider,
             prepared,
@@ -3707,7 +3734,7 @@ export function secretService(db: Db) {
           return updated;
         });
       } catch (error) {
-        if (secret.managedMode !== "external_reference") {
+        if (secret.managedMode !== "external_reference" || externalValueWrite) {
           const cleaned = await cleanupPreparedProviderWrite({
             provider,
             prepared,

@@ -974,6 +974,9 @@ Resolved result (`RequestCheckboxConfirmationResult`):
 
 Other outcomes match `request_confirmation`:
 
+- `withdrawn` — `{ outcome: "withdrawn", reason }`. Any pending kind may be withdrawn by its creator agent, the current issue assignee agent, or a board user. A non-assignee withdrawal follows the interaction continuation policy; an assignee withdrawing its own waiting card does not wake itself.
+- `issue_closed` — `{ outcome: "issue_closed" }`. Transitioning the issue to `done` or `cancelled` expires all pending interactions without continuation wakes; listing a terminal issue also performs a catch-up sweep for historical residue.
+
 - `rejected` — `{ outcome: "rejected", reason, commentId }`. `selectedOptionIds` is absent.
 - `superseded_by_comment` — `{ outcome: "superseded_by_comment", commentId }`. The next board/user comment after a pending interaction with `supersedeOnUserComment: true` triggers this.
 - `stale_target` — `{ outcome: "stale_target", staleTarget }`. Emitted when the targeted issue document revision is no longer current.
@@ -1210,6 +1213,7 @@ Terminal states: `done`, `cancelled`
 | POST   | `/api/issues/:issueId/interactions/:interactionId/reject` | Reject suggested tasks or confirmation                                       |
 | POST   | `/api/issues/:issueId/interactions/:interactionId/respond` | Respond to structured questions                                             |
 | POST   | `/api/issues/:issueId/interactions/:interactionId/verdicts` | Submit partial item verdicts for `request_item_verdicts`                 |
+| POST   | `/api/issues/:issueId/interactions/:interactionId/withdraw` | Withdraw any pending interaction; optional `{ "reason": string }`; creator agent, current assignee agent, or board user |
 | GET    | `/api/issues/:issueId/documents`   | List issue documents                                                                     |
 | GET    | `/api/issues/:issueId/documents/:key` | Get issue document by key                                                            |
 | PUT    | `/api/issues/:issueId/documents/:key` | Create or update issue document (send `baseRevisionId` when updating)                |

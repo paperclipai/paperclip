@@ -9,6 +9,7 @@ import {
   issueDocuments,
   issueThreadInteractions,
   issues,
+  toolActionRequests,
 } from "@paperclipai/db";
 import { trackInteractionResolved } from "@paperclipai/shared/telemetry";
 import type {
@@ -29,6 +30,7 @@ import type {
   SuggestTasksInteraction,
   SuggestTasksResultCreatedTask,
   SubmitIssueThreadInteractionVerdicts,
+  WithdrawIssueThreadInteraction,
 } from "@paperclipai/shared";
 import {
   acceptIssueThreadInteractionSchema,
@@ -46,6 +48,7 @@ import {
   suggestTasksPayloadSchema,
   suggestTasksResultSchema,
   submitIssueThreadInteractionVerdictsSchema,
+  withdrawIssueThreadInteractionSchema,
 } from "@paperclipai/shared";
 import { z } from "zod";
 import { conflict, notFound, unprocessable } from "../errors.js";
@@ -343,6 +346,67 @@ function buildStaleTargetResult(
     outcome: "stale_target",
     staleTarget,
   } as const;
+}
+
+function buildAdministrativeOutcomeResult(
+  row: IssueThreadInteractionRow,
+  outcome: "withdrawn" | "issue_closed",
+  reason: string | null = null,
+) {
+  if (row.kind === "ask_user_questions") {
+    return { version: 1, outcome, reason, answers: [], summaryMarkdown: null } as const;
+  }
+  if (row.kind === "request_item_verdicts") {
+    const interaction = hydrateInteraction(row) as RequestItemVerdictsInteraction;
+    return {
+      version: 1,
+      outcome,
+      reason,
+      complete: false,
+      items: interaction.result?.items ?? [],
+    } satisfies RequestItemVerdictsResult;
+  }
+  return { version: 1, outcome, reason } as const;
+}
+
+// Rollback sentinel: the interaction was resolved by another actor between the
+// pending-rows read and the conditional update, so the enclosing transaction's
+// tool-action revocation must be undone.
+class InteractionResolvedConcurrentlyError extends Error {
+  constructor() {
+    super("Interaction was resolved concurrently");
+  }
+}
+
+// A request_confirmation card can govern a parked tool call via a linked
+// tool_action_requests row. Administrative resolutions (withdraw, terminal-issue
+// expiry) must settle that row too, or the parked call stays approvable under
+// its own one-hour lifecycle after its card is gone.
+async function resolveLinkedToolActionRequests(
+  db: Pick<Db, "update">,
+  interaction: Pick<IssueThreadInteractionRow, "id" | "companyId" | "kind">,
+  outcome: {
+    status: "expired" | "cancelled";
+    fromStatuses: Array<"pending" | "approved">;
+    actor: InteractionActor;
+    now: Date;
+  },
+) {
+  if (interaction.kind !== "request_confirmation") return;
+  await db
+    .update(toolActionRequests)
+    .set({
+      status: outcome.status,
+      resolvedByAgentId: outcome.actor.agentId ?? null,
+      resolvedByUserId: outcome.actor.userId ?? null,
+      resolvedAt: outcome.now,
+      updatedAt: outcome.now,
+    })
+    .where(and(
+      eq(toolActionRequests.companyId, interaction.companyId),
+      eq(toolActionRequests.interactionId, interaction.id),
+      inArray(toolActionRequests.status, outcome.fromStatuses),
+    ));
 }
 
 function resolveActorKind(interaction: Pick<IssueThreadInteraction, "resolvedByAgentId" | "resolvedByUserId">) {
@@ -900,6 +964,18 @@ export function issueThreadInteractionService(db: Db) {
       .then((rows) => rows[0] ?? null);
   }
 
+  async function getForIssue(issue: { id: string; companyId: string }, interactionId: string) {
+    const current = await db
+      .select()
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, interactionId))
+      .then((rows) => rows[0] ?? null);
+    if (!current || current.companyId !== issue.companyId || current.issueId !== issue.id) {
+      throw notFound("Interaction not found");
+    }
+    return hydrateInteraction(current);
+  }
+
   async function assertIssueWorkspaceFinalizedForAccept(args: {
     db: Pick<Db, "select">;
     issue: { id: string; companyId: string };
@@ -1110,6 +1186,7 @@ export function issueThreadInteractionService(db: Db) {
   }
 
   return {
+    getForIssue,
     listForIssue: async (issueId: string) => {
       const rows = await db
         .select()
@@ -1194,24 +1271,42 @@ export function issueThreadInteractionService(db: Db) {
 
       let created: IssueThreadInteractionRow;
       try {
-        [created] = await db
-          .insert(issueThreadInteractions)
-          .values({
-            companyId: issue.companyId,
-            issueId: issue.id,
-            kind: data.kind,
-            status: "pending",
-            continuationPolicy: data.continuationPolicy,
-            idempotencyKey: data.idempotencyKey ?? null,
-            sourceCommentId: data.sourceCommentId ?? null,
-            sourceRunId: data.sourceRunId ?? null,
-            title: data.title ?? null,
-            summary: data.summary ?? null,
-            createdByAgentId: actor.agentId ?? null,
-            createdByUserId: actor.userId ?? null,
-            payload: data.payload,
-          })
-          .returning();
+        // A terminal issue must not regain pending actionable cards. FOR SHARE
+        // on the issue row serializes this insert against the terminal status
+        // transition's row lock: either the close committed first and this
+        // read rejects the create, or the insert commits before the close
+        // proceeds and the close's expiry sweep collects the new row.
+        // Idempotent reuse above stays allowed so retries of a pre-close
+        // create keep returning the (by now expired) original.
+        created = await db.transaction(async (tx) => {
+          const [issueRow] = await tx
+            .select({ status: issues.status })
+            .from(issues)
+            .where(and(eq(issues.id, issue.id), eq(issues.companyId, issue.companyId)))
+            .for("share");
+          if (!issueRow || isTerminalIssueStatus(issueRow.status)) {
+            throw conflict("Cannot create an interaction on a closed issue");
+          }
+          const [row] = await tx
+            .insert(issueThreadInteractions)
+            .values({
+              companyId: issue.companyId,
+              issueId: issue.id,
+              kind: data.kind,
+              status: "pending",
+              continuationPolicy: data.continuationPolicy,
+              idempotencyKey: data.idempotencyKey ?? null,
+              sourceCommentId: data.sourceCommentId ?? null,
+              sourceRunId: data.sourceRunId ?? null,
+              title: data.title ?? null,
+              summary: data.summary ?? null,
+              createdByAgentId: actor.agentId ?? null,
+              createdByUserId: actor.userId ?? null,
+              payload: data.payload,
+            })
+            .returning();
+          return row;
+        });
       } catch (error) {
         if (!data.idempotencyKey || !isIssueThreadInteractionIdempotencyConflict(error)) {
           throw error;
@@ -1876,6 +1971,140 @@ export function issueThreadInteractionService(db: Db) {
         await emitResolvedInteractionsTelemetry(db, expired);
       }
       return expired;
+    },
+
+    expirePendingInteractionsForTerminalIssue: async (
+      issue: { id: string; companyId: string; status: string },
+      actor: InteractionActor = {},
+    ) => {
+      if (!isTerminalIssueStatus(issue.status)) return [];
+      const rows = await db
+        .select()
+        .from(issueThreadInteractions)
+        .where(and(
+          eq(issueThreadInteractions.companyId, issue.companyId),
+          eq(issueThreadInteractions.issueId, issue.id),
+          eq(issueThreadInteractions.status, "pending"),
+        ));
+      if (rows.length === 0) return [];
+
+      const now = new Date();
+      const expired: IssueThreadInteraction[] = [];
+      for (const row of rows) {
+        // Same ordering as withdrawal: revoke the linked tool action before
+        // resolving the card, inside one transaction. A concurrent gateway
+        // claim (approved -> executing) blocks on the revocation's row lock
+        // and then aborts; if the card was concurrently resolved instead, the
+        // no-row update below rolls the revocation back. A claim that already
+        // committed is in flight and cannot be recalled — the card still
+        // expires and the execution result lands on it via the gateway's
+        // lifecycle reflection.
+        const updated = await db.transaction(async (tx) => {
+          await resolveLinkedToolActionRequests(tx, row, {
+            status: "expired",
+            fromStatuses: ["pending", "approved"],
+            actor,
+            now,
+          });
+          const [resolved] = await tx
+            .update(issueThreadInteractions)
+            .set({
+              status: "expired",
+              result: buildAdministrativeOutcomeResult(row, "issue_closed"),
+              resolvedByAgentId: actor.agentId ?? null,
+              resolvedByUserId: actor.userId ?? null,
+              resolvedAt: now,
+              updatedAt: now,
+            })
+            .where(and(
+              eq(issueThreadInteractions.id, row.id),
+              eq(issueThreadInteractions.status, "pending"),
+            ))
+            .returning();
+          if (!resolved) throw new InteractionResolvedConcurrentlyError();
+          return resolved;
+        }).catch((err: unknown) => {
+          if (err instanceof InteractionResolvedConcurrentlyError) return null;
+          throw err;
+        });
+        if (updated) expired.push(hydrateInteraction(updated));
+      }
+      if (expired.length > 0) {
+        await touchIssue(db, issue.id);
+        await emitResolvedInteractionsTelemetry(db, expired);
+      }
+      return expired;
+    },
+
+    withdrawInteraction: async (
+      issue: { id: string; companyId: string },
+      interactionId: string,
+      input: WithdrawIssueThreadInteraction,
+      actor: InteractionActor,
+    ) => {
+      const data = withdrawIssueThreadInteractionSchema.parse(input);
+      const current = await db
+        .select()
+        .from(issueThreadInteractions)
+        .where(eq(issueThreadInteractions.id, interactionId))
+        .then((rows) => rows[0] ?? null);
+      if (!current || current.companyId !== issue.companyId || current.issueId !== issue.id) {
+        throw notFound("Interaction not found");
+      }
+      if (current.status !== "pending") throw conflict("Interaction has already been resolved");
+
+      const reason = data.reason?.trim() || null;
+      const now = new Date();
+      // One transaction, linked tool action first: revoking pending/approved
+      // requests before resolving the card means a concurrent gateway claim
+      // (approved -> executing) either loses to the revocation's row lock or
+      // is detected below and aborts the withdrawal; a concurrent card
+      // resolution rolls the revocation back via the status="pending" guard.
+      // "approved" is revoked too — the request can be approved from the tool
+      // review queue while the card is still pending, and an executable
+      // request must not outlive a withdrawn card.
+      const updated = await db.transaction(async (tx) => {
+        await resolveLinkedToolActionRequests(tx, current, {
+          status: "cancelled",
+          fromStatuses: ["pending", "approved"],
+          actor,
+          now,
+        });
+        if (current.kind === "request_confirmation") {
+          const active = await tx
+            .select({ id: toolActionRequests.id })
+            .from(toolActionRequests)
+            .where(and(
+              eq(toolActionRequests.companyId, current.companyId),
+              eq(toolActionRequests.interactionId, current.id),
+              inArray(toolActionRequests.status, ["executing", "executed"]),
+            ))
+            .then((rows) => rows[0] ?? null);
+          if (active) throw conflict("The linked tool action is already executing and can no longer be withdrawn");
+        }
+        const [row] = await tx
+          .update(issueThreadInteractions)
+          .set({
+            status: "cancelled",
+            result: buildAdministrativeOutcomeResult(current, "withdrawn", reason),
+            resolvedByAgentId: actor.agentId ?? null,
+            resolvedByUserId: actor.userId ?? null,
+            resolvedAt: now,
+            updatedAt: now,
+          })
+          .where(and(
+            eq(issueThreadInteractions.id, interactionId),
+            eq(issueThreadInteractions.status, "pending"),
+          ))
+          .returning();
+        if (!row) throw conflict("Interaction has already been resolved");
+        return row;
+      });
+
+      await touchIssue(db, issue.id);
+      const withdrawn = hydrateInteraction(updated);
+      await emitInteractionResolvedTelemetry(db, withdrawn);
+      return withdrawn;
     },
 
     answerQuestions: async (

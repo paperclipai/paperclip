@@ -332,20 +332,17 @@ By default, agents run on scheduled heartbeats and event-based triggers (task as
 
 <br/>
 
-## Paperclip Cloud Sync
+## Importing & Exporting Companies
 
-Cloud upstream sync is behind the `Cloud Sync` experimental setting. Enable it in Instance Settings before pushing.
+Export a company to a portable package and import it into any other instance — local or cloud — from a local path or GitHub:
 
 ```bash
-paperclipai cloud connect https://your-stack.paperclip.app
-paperclipai cloud connect https://your-stack.paperclip.app --no-browser
-paperclipai cloud push --company <local-company-id> --dry-run
-paperclipai cloud push --company <local-company-id>
+paperclipai company export <company-id> --out ./my-export
+paperclipai company import ./my-export --dry-run
+paperclipai company import org/repo --target new
 ```
 
-`cloud connect` authorizes the local instance against the target stack and stores the upstream token in the local instance secret store. The default path opens a browser for consent; `--no-browser` uses the device-code flow and prints the verification URL and user code.
-
-`cloud push --dry-run` exports the selected local company, sends a preview bundle to the connected Cloud stack, and exits with code `2` when conflicts need user resolution. A schema mismatch exits with code `3`. Running without `--dry-run` stages chunks idempotently, applies the run, and prints the final summary and recent progress events.
+The board UI has matching Export and Import pages in company settings: the Export page shows a fidelity panel listing what the bundle will not carry, and the Import page starts imported agents and routines paused by default, with a post-import activation step. See the [Importing & Exporting guide](https://github.com/paperclipai/paperclip/blob/master/docs/guides/board-operator/importing-and-exporting.md) for details.
 
 ## Development
 

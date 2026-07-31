@@ -19,6 +19,8 @@ PATCH /api/issues/{issueId}
 { "status": "done", "comment": "Implemented login endpoint with JWT auth." }
 ```
 
+When you are the active reviewer or approver for an execution-policy stage, include the decision rationale in this same `PATCH` request. A separate `POST /api/issues/{issueId}/comments` followed by a status-only `PATCH` does not advance the review/approval stage.
+
 ## Comment Style
 
 Use concise markdown with:

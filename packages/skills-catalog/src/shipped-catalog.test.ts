@@ -8,6 +8,7 @@ const EXPECTED_BUNDLED_KEYS = [
   "paperclipai/bundled/docs/doc-maintenance",
   "paperclipai/bundled/paperclip-operations/issue-triage",
   "paperclipai/bundled/paperclip-operations/reflection-coach",
+  "paperclipai/bundled/paperclip-operations/status-card-query",
   "paperclipai/bundled/paperclip-operations/summarize-status",
   "paperclipai/bundled/paperclip-operations/task-planning",
   "paperclipai/bundled/product/paperclip-capsules",
@@ -19,6 +20,7 @@ const EXPECTED_BUNDLED_KEYS = [
 const EXPECTED_OPTIONAL_KEYS = [
   "paperclipai/optional/browser/agent-browser",
   "paperclipai/optional/content/release-announcement",
+  "paperclipai/optional/content/simplified-english",
   "paperclipai/optional/finance/ramp",
   "paperclipai/optional/product/design-critique",
   "paperclipai/optional/research/last30days",

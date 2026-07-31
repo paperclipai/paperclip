@@ -9,7 +9,7 @@ import { useToastActions } from "../context/ToastContext";
 import { queryKeys } from "../lib/queryKeys";
 
 type MutationVariables = {
-  resourceType: ResourceMembershipResourceType;
+  resourceType: JoinableResourceType;
   resourceId: string;
   resourceName: string;
   /** Join / leave transition. Omit to only change the starred flag. */
@@ -18,19 +18,23 @@ type MutationVariables = {
   starred?: boolean;
 };
 
+type JoinableResourceType = Exclude<ResourceMembershipResourceType, "document">;
+
 function emptyMemberships(): ResourceMemberships {
   return {
     projectMemberships: {},
     agentMemberships: {},
     starredProjectIds: [],
     starredAgentIds: [],
+    starredDocumentIds: [],
     projectStarredAt: {},
     agentStarredAt: {},
+    documentStarredAt: {},
     updatedAt: null,
   };
 }
 
-function starKeys(resourceType: ResourceMembershipResourceType) {
+function starKeys(resourceType: JoinableResourceType) {
   return resourceType === "project"
     ? { ids: "starredProjectIds", at: "projectStarredAt", state: "projectMemberships" }
     : { ids: "starredAgentIds", at: "agentStarredAt", state: "agentMemberships" };
@@ -45,7 +49,7 @@ function starKeys(resourceType: ResourceMembershipResourceType) {
  */
 function applyMembershipChange(
   current: ResourceMemberships | undefined,
-  resourceType: ResourceMembershipResourceType,
+  resourceType: JoinableResourceType,
   resourceId: string,
   change: { state?: ResourceMembershipState; starred?: boolean },
 ): ResourceMemberships {
@@ -96,7 +100,7 @@ function applyMembershipChange(
 
 export function resourceMembershipState(
   memberships: ResourceMemberships | undefined,
-  resourceType: ResourceMembershipResourceType,
+  resourceType: JoinableResourceType,
   resourceId: string,
 ): ResourceMembershipState {
   const state = resourceType === "project"
@@ -113,7 +117,9 @@ export function isStarred(
 ): boolean {
   const ids = resourceType === "project"
     ? memberships?.starredProjectIds
-    : memberships?.starredAgentIds;
+    : resourceType === "agent"
+      ? memberships?.starredAgentIds
+      : memberships?.starredDocumentIds;
   return Array.isArray(ids) && ids.includes(resourceId);
 }
 
@@ -124,7 +130,9 @@ export function starredResourceIds(
 ): string[] {
   const ids = resourceType === "project"
     ? memberships?.starredProjectIds
-    : memberships?.starredAgentIds;
+    : resourceType === "agent"
+      ? memberships?.starredAgentIds
+      : memberships?.starredDocumentIds;
   return Array.isArray(ids) ? ids : [];
 }
 

@@ -613,6 +613,7 @@ export interface PluginEnvironmentAcquireLeaseParams extends PluginEnvironmentDr
    * per-run sandbox should use this to select the runtime image and per-run env.
    */
   adapterType?: string;
+  executionWorkspaceSettings?: Record<string, unknown> | null;
 }
 
 export interface PluginEnvironmentResumeLeaseParams extends PluginEnvironmentDriverBaseParams {
@@ -637,6 +638,12 @@ export interface PluginEnvironmentRealizeWorkspaceParams extends PluginEnvironme
   };
 }
 
+/**
+ * A plugin `environmentRealizeWorkspace` handler returns only the realized cwd and provider
+ * metadata. The server, not the plugin, builds the full workspace-realization record from the run
+ * request and merges this cwd and metadata into it. Do not return a `workspaceRealization` record
+ * here; the server owns that record, so the referenced (mentioned) project sources reach the adapter.
+ */
 export interface PluginEnvironmentRealizeWorkspaceResult {
   cwd: string;
   metadata?: Record<string, unknown>;
@@ -690,6 +697,65 @@ export interface PluginSyncFileMapping {
    * as links; `true` dereferences them to their target bytes. Mirrors tar's `-h`.
    */
   followSymlinks?: boolean;
+  /**
+   * Advisory read-write intent for the sandbox target. `"rw"` means the author
+   * expects the agent to change the bytes at the target and keep the change.
+   * `"ro"` means the target is a read-only tree. An absent value defaults to
+   * `"ro"` (read-only is the safe default for an advisory signal).
+   *
+   * This field is advisory metadata for an optional sandbox feedback wrapper. It
+   * does not change the transfer and adds no security. A provider may read it to
+   * bind the read-write targets read-write under the wrapper, but the ephemeral
+   * sandbox stays the only security boundary.
+   */
+  access?: "rw" | "ro";
+  /**
+   * The sandbox directory that becomes read-write when `access` is `"rw"` and a
+   * post-upload command extracts `targetPath` into a different directory. A
+   * workspace, git-history, or asset mapping uploads a tar archive, so its
+   * `targetPath` is the staging archive under the runtime root, not the directory
+   * that the extract command fills. This field names that final destination
+   * directory, so a consumer records the real read-write destination, not the
+   * staging parent. When absent, the read-write destination is the parent
+   * directory of `targetPath`. This field is advisory and ignored when `access`
+   * is not `"rw"`.
+   */
+  writablePath?: string;
+}
+
+/**
+ * A single control command run against the sandbox after a sync operation's
+ * files have landed. Ordered within {@link PluginSyncOperation.postUploadCommands}
+ * and executed in array order, fail-fast (the first non-zero exit or timeout
+ * aborts the operation).
+ *
+ * SECURITY — command origin (Stage-1 design review, condition C1). `command` is
+ * a **Paperclip/adapter-authored control operation**: it may be supplied ONLY by
+ * core/adapter code. No server route, issue/comment content, project/workspace
+ * file content, provider-plugin callback, or arbitrary adapter config may supply
+ * a raw `command` string, and any path embedded in it MUST be built by
+ * adapter/core helpers from already-confined paths and shell-quoted (C3). A
+ * provider MUST treat the command as **opaque**: it may execute or reject it, but
+ * MUST NOT rewrite, concatenate, or append provider-decided shell fragments to
+ * it.
+ */
+export interface PluginPostUploadCommand {
+  /**
+   * The opaque, adapter-authored shell command to run after upload. Executed
+   * verbatim by the provider (never rewritten/concatenated). See the security
+   * note above.
+   */
+  command: string;
+  /**
+   * Working directory for the command. When present, MUST be an absolute POSIX
+   * path confined under the operation's allowed sandbox target root (condition
+   * C2); providers re-validate it before exec. When absent, the provider
+   * defaults to the resolved sync remote/runtime root — never a process default
+   * cwd.
+   */
+  cwd?: string;
+  /** Optional per-command timeout in milliseconds. */
+  timeoutMs?: number;
 }
 
 /**
@@ -700,6 +766,13 @@ export interface PluginSyncFileMapping {
 export interface PluginSyncOperation {
   operationId: string;
   files: PluginSyncFileMapping[];
+  /**
+   * Optional ordered control commands run after this operation's files land, in
+   * array order, fail-fast. Absent means "no commands" — byte-identical to a
+   * pre-contract operation. See {@link PluginPostUploadCommand} for the command
+   * origin/confinement security contract (C1–C4).
+   */
+  postUploadCommands?: PluginPostUploadCommand[];
 }
 
 export interface PluginEnvironmentSyncInParams extends PluginEnvironmentDriverBaseParams {

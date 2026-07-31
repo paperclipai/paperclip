@@ -68,6 +68,7 @@ import {
   workspaceOperations,
 } from "@paperclipai/db";
 import { conflict, HttpError, notFound } from "../errors.js";
+import { getStartupTraceContext } from "../instrumentation.js";
 import { logger } from "../middleware/logger.js";
 import { publishLiveEvent } from "./live-events.js";
 import { normalizeResponsibleUserDenialCode } from "./responsible-user-denial-run-outcomes.js";
@@ -133,6 +134,8 @@ import {
   sanitizeRuntimeServiceBaseEnv,
 } from "./workspace-runtime.js";
 import { issueService } from "./issues.js";
+import { projectService } from "./projects.js";
+import { authorizationService, type AuthorizationActor } from "./authorization.js";
 import { createToolGatewayService } from "./tool-gateway.js";
 import { toolAccessService } from "./tool-access.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
@@ -174,6 +177,7 @@ import {
   resolveEffectiveWorkspaceStrategyType,
   resolveExecutionWorkspaceEnvironmentId,
   resolveExecutionWorkspaceMode,
+  selectEnvironmentExecutionWorkspaceSettings,
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_CODE,
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_MESSAGE,
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_REMEDIATION,
@@ -296,6 +300,14 @@ export function redactDetectedSuccessfulRunProgressSummaryForBoard(
   return redacted.length <= 280 ? redacted : `${redacted.slice(0, 277)}...`;
 }
 
+export function redactSuccessfulRunHandoffEvidence(
+  value: string | null,
+  currentUserRedactionOptions?: CurrentUserRedactionOptions,
+) {
+  if (!value) return null;
+  return redactSensitiveText(redactCurrentUserText(value, currentUserRedactionOptions));
+}
+
 const MAX_RUN_EVENT_PAYLOAD_OBJECT_KEYS = 100;
 const MAX_RUN_EVENT_PAYLOAD_DEPTH = 6;
 const HEARTBEAT_MAX_CONCURRENT_RUNS_DEFAULT = AGENT_DEFAULT_MAX_CONCURRENT_RUNS;
@@ -308,6 +320,7 @@ const LIVENESS_BOOKKEEPING_ACTIVITY_ACTIONS = [
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const WAKE_COMMENT_IDS_KEY = "wakeCommentIds";
 const PAPERCLIP_WAKE_PAYLOAD_KEY = "paperclipWake";
+const PAPERCLIP_AGENT_MESSAGE_KEY = "paperclipAgentMessage";
 const PAPERCLIP_HARNESS_CHECKOUT_KEY = "paperclipHarnessCheckedOut";
 const DETACHED_PROCESS_ERROR_CODE = "process_detached";
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
@@ -315,6 +328,8 @@ const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_INLINE_WAKE_COMMENTS = 8;
 const MAX_INLINE_WAKE_COMMENT_BODY_CHARS = 4_000;
 const MAX_INLINE_WAKE_COMMENT_BODY_TOTAL_CHARS = 12_000;
+const MAX_INLINE_WAKE_ISSUE_DESCRIPTION_CHARS = 12_000;
+const MAX_AGENT_SESSION_MESSAGE_CHARS = 12_000;
 const execFile = promisify(execFileCallback);
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const CANCELLABLE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
@@ -424,7 +439,11 @@ function readHeartbeatRunErrorFamily(
   if (run.errorCode === "provider_quota") {
     return "provider_quota";
   }
-  if (run.errorCode === "codex_transient_upstream" || run.errorCode === "claude_transient_upstream") {
+  if (
+    run.errorCode === "codex_transient_upstream" ||
+    run.errorCode === "claude_transient_upstream" ||
+    run.errorCode === "codex_harness_crash"
+  ) {
     return "transient_upstream";
   }
   return null;
@@ -525,6 +544,7 @@ function mergeAdapterRecoveryMetadata(input: {
 const RUNNING_ISSUE_WAKE_REASONS_REQUIRING_FOLLOWUP = new Set([
   "approval_approved",
   ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
+  "issue_recovery_action_restored",
 ]);
 const ISSUE_RESPONSIBLE_USER_WAKE_REASONS = new Set([
   "issue_assigned",
@@ -561,6 +581,16 @@ const activeRunExecutions = new Set<string>();
 // that must guarantee no run write is still in flight (graceful shutdown, and
 // tests tearing down a shared database) can await drainActiveRunExecutions().
 const activeRunExecutionPromises = new Set<Promise<void>>();
+// Routes dispatch a wakeup fire-and-forget (void heartbeat.wakeup(...)). The
+// wakeup promise stays pending through its asynchronous prologue, and it
+// resolves only after it inserts the queued run and registers the run
+// execution in activeRunExecutionPromises. Before that point neither
+// activeRunExecutionPromises nor the run table shows the pending run, so a
+// caller cannot observe the wake. Track each wakeup promise here — shared
+// across service instances like the two sets above — so drainActiveRunExecutions
+// can await a wake that is still before run registration. A caller that tears
+// down a shared database (a test afterEach) then cannot race a late wake.
+const activeWakeupPromises = new Set<Promise<unknown>>();
 const INLINE_BASE64_IMAGE_DATA_RE = /("type":"image","source":\{"type":"base64","data":")([A-Za-z0-9+/=]{1024,})(")/g;
 
 type RuntimeConfigSecretResolver = Pick<
@@ -1374,6 +1404,142 @@ async function ensureManagedProjectWorkspace(input: {
   }
 }
 
+/**
+ * Resolve one project workspace row to a usable cwd. The anchor path and each additional
+ * referenced project share this step: use the configured cwd when present, otherwise clone or
+ * create the managed checkout directory for the project. It throws only when the managed
+ * checkout cannot be prepared (for example, a clone failure).
+ */
+async function resolveConfiguredOrManagedProjectCwd(input: {
+  companyId: string;
+  projectId: string;
+  cwd: string | null;
+  repoUrl: string | null;
+}): Promise<{ cwd: string; warning: string | null }> {
+  const configuredCwd = readNonEmptyString(input.cwd);
+  if (configuredCwd && configuredCwd !== REPO_ONLY_CWD_SENTINEL) {
+    return { cwd: configuredCwd, warning: null };
+  }
+  return ensureManagedProjectWorkspace({
+    companyId: input.companyId,
+    projectId: input.projectId,
+    repoUrl: readNonEmptyString(input.repoUrl),
+  });
+}
+
+/**
+ * Side-effecting dependencies for {@link resolveAdditionalProjectWorkspace}. The caller injects
+ * the real database, filesystem, and managed-checkout helpers. A test injects fakes to exercise
+ * the resolution logic without a database or filesystem.
+ */
+export interface ResolveAdditionalProjectWorkspaceDeps {
+  loadProjectWorkspaceRows: (
+    companyId: string,
+    projectId: string,
+  ) => Promise<Array<typeof projectWorkspaces.$inferSelect>>;
+  resolveConfiguredOrManagedProjectCwd: typeof resolveConfiguredOrManagedProjectCwd;
+  ensureManagedProjectWorkspace: typeof ensureManagedProjectWorkspace;
+  directoryHasContents: (cwd: string) => Promise<boolean>;
+}
+
+/** Build the real dependencies for {@link resolveAdditionalProjectWorkspace}. */
+function defaultAdditionalProjectWorkspaceDeps(db: Db): ResolveAdditionalProjectWorkspaceDeps {
+  return {
+    loadProjectWorkspaceRows: (companyId, projectId) =>
+      db
+        .select()
+        .from(projectWorkspaces)
+        .where(and(eq(projectWorkspaces.companyId, companyId), eq(projectWorkspaces.projectId, projectId)))
+        .orderBy(asc(projectWorkspaces.createdAt), asc(projectWorkspaces.id)),
+    resolveConfiguredOrManagedProjectCwd,
+    ensureManagedProjectWorkspace,
+    // A realized workspace must hold real content. An empty directory gives the agent an empty
+    // referenced workspace, so treat an empty directory the same as a missing one.
+    directoryHasContents: async (cwd) => {
+      const stats = await fs.stat(cwd).catch(() => null);
+      if (!stats || !stats.isDirectory()) {
+        return false;
+      }
+      const entries = await fs.readdir(cwd).catch(() => [] as string[]);
+      return entries.length > 0;
+    },
+  };
+}
+
+/**
+ * Resolve one authorized referenced project to its own workspace cwd. Each additional project
+ * lands in its own managed checkout directory, never nested inside the anchor's worktree (the
+ * directory isolation invariant lives in {@link resolveManagedProjectWorkspaceDir}).
+ *
+ * A referenced project must resolve to a directory with real content. The function uses a
+ * configured checkout directory that exists, or clones a managed checkout from a workspace row
+ * that supplies a repository URL. When no row offers either, the function throws instead of
+ * creating an empty managed directory. An empty directory gives the agent an empty referenced
+ * workspace and hides the real cause. The caller catches the error and drops only that project.
+ * The function also throws when the managed checkout cannot be prepared (for example, a clone
+ * failure), so the caller can drop only that project.
+ */
+export async function resolveAdditionalProjectWorkspace(
+  input: {
+    companyId: string;
+    project: RunReferencedProject;
+  },
+  deps: ResolveAdditionalProjectWorkspaceDeps,
+): Promise<ResolvedAdditionalWorkspace> {
+  const { companyId } = input;
+  const projectId = input.project.projectId;
+  const workspaceRows = await deps.loadProjectWorkspaceRows(companyId, projectId);
+  for (const workspace of workspaceRows) {
+    // A row realizes real content only through a configured checkout directory or a repository URL
+    // to clone. A row with neither can produce only an empty managed directory, so skip it here.
+    const configuredCwd = readNonEmptyString(workspace.cwd);
+    const hasConfiguredCwd = Boolean(configuredCwd) && configuredCwd !== REPO_ONLY_CWD_SENTINEL;
+    if (!hasConfiguredCwd && !readNonEmptyString(workspace.repoUrl)) {
+      continue;
+    }
+    const { cwd } = await deps.resolveConfiguredOrManagedProjectCwd({
+      companyId,
+      projectId,
+      cwd: workspace.cwd,
+      repoUrl: workspace.repoUrl,
+    });
+    // A directory that exists but holds no content is not a realized workspace. Accept the row only
+    // when the resolved directory has real content, so an empty directory never masks a missing one.
+    if (await deps.directoryHasContents(cwd)) {
+      return {
+        cwd,
+        projectId,
+        workspaceId: workspace.id,
+        repoUrl: workspace.repoUrl,
+        repoRef: workspace.repoRef,
+      };
+    }
+  }
+  // No configured checkout resolved to a directory with content. Clone a managed checkout only from a
+  // real source: the first workspace row that supplies a repository URL. Without a real source, do
+  // not fabricate an empty managed directory and report success. Throw instead, so the caller drops
+  // only this referenced project and adds a clear warning.
+  const fallbackRow = workspaceRows.find((row) => readNonEmptyString(row.repoUrl)) ?? null;
+  const fallbackRepoUrl = fallbackRow ? readNonEmptyString(fallbackRow.repoUrl) : null;
+  if (!fallbackRow || !fallbackRepoUrl) {
+    throw new Error(
+      `Referenced project ${projectId} has no workspace checkout or repository URL to realize.`,
+    );
+  }
+  const managed = await deps.ensureManagedProjectWorkspace({
+    companyId,
+    projectId,
+    repoUrl: fallbackRepoUrl,
+  });
+  return {
+    cwd: managed.cwd,
+    projectId,
+    workspaceId: fallbackRow.id,
+    repoUrl: fallbackRow.repoUrl,
+    repoRef: fallbackRow.repoRef,
+  };
+}
+
 type WorkspaceValidationFailureLike = WorkspaceValidationFailure | {
   code: typeof WORKSPACE_VALIDATION_FAILURE_CODE;
   resultJson: Record<string, unknown>;
@@ -2074,6 +2240,19 @@ export interface ModelProfileApplication {
   adapterConfig: Record<string, unknown> | null;
 }
 
+/**
+ * A single read-only referenced (mentioned) project workspace resolved for a run.
+ * The run materializes one entry per authorized additional project, each in its own
+ * managed checkout directory. See {@link resolveAdditionalRunWorkspaces}.
+ */
+export type ResolvedAdditionalWorkspace = {
+  cwd: string;
+  projectId: string;
+  workspaceId: string | null;
+  repoUrl: string | null;
+  repoRef: string | null;
+};
+
 export type ResolvedWorkspaceForRun = {
   cwd: string;
   source: "project_primary" | "task_session" | "agent_home";
@@ -2088,7 +2267,53 @@ export type ResolvedWorkspaceForRun = {
     repoRef: string | null;
   }>;
   warnings: string[];
+  /**
+   * Read-only referenced (mentioned) project workspaces for this run, one per authorized
+   * additional project. The array is empty unless the multi-project workspace-sync flag is on
+   * ({@link isMultiProjectWorkspaceSyncEnabled}); with the flag off the run resolves the anchor
+   * workspace only, exactly as before.
+   */
+  additionalWorkspaces: ResolvedAdditionalWorkspace[];
+  /**
+   * Structured record of every referenced project that the run dropped or failed, paired with the
+   * layer that dropped it. Run preparation reads this to emit the requested-vs-synced observability
+   * log. The human-readable form of each drop already rides {@link ResolvedWorkspaceForRun.warnings}.
+   */
+  referencedProjectFailures: ReferencedProjectFailure[];
 };
+
+/** The anchor workspace shape, before the additional referenced workspaces are attached. */
+type ResolvedAnchorWorkspaceForRun = Omit<
+  ResolvedWorkspaceForRun,
+  "additionalWorkspaces" | "referencedProjectFailures"
+>;
+
+/**
+ * Build the plural workspace list that a run exposes to the agent through the
+ * `PAPERCLIP_WORKSPACES_JSON` environment variable. The list joins the anchor
+ * project's alternative workspace rows with the read-only referenced (mentioned)
+ * project workspaces, so every execution target receives the referenced project
+ * paths through the same channel the run already uses for the anchor project.
+ *
+ * Each referenced entry carries its `projectId` so the agent can tell which
+ * mentioned project a path belongs to. The referenced set is empty unless the
+ * multi-project workspace-sync flag is on, so the exposed list is byte-for-byte
+ * unchanged in the production default.
+ */
+export function buildRunWorkspaceHints(
+  resolved: Pick<ResolvedWorkspaceForRun, "workspaceHints" | "additionalWorkspaces">,
+): Array<Record<string, unknown>> {
+  return [
+    ...resolved.workspaceHints,
+    ...resolved.additionalWorkspaces.map((additional) => ({
+      workspaceId: additional.workspaceId,
+      cwd: additional.cwd,
+      repoUrl: additional.repoUrl,
+      repoRef: additional.repoRef,
+      projectId: additional.projectId,
+    })),
+  ];
+}
 
 type ProjectWorkspaceCandidate = {
   id: string;
@@ -2104,8 +2329,514 @@ export function prioritizeProjectWorkspaceCandidatesForRun<T extends ProjectWork
   return [rows[preferredIndex]!, ...rows.slice(0, preferredIndex), ...rows.slice(preferredIndex + 1)];
 }
 
+/**
+ * Environment flag (kill-switch, default ON) that gates whether run preparation
+ * consumes the multi-project referenced-project set produced by
+ * {@link resolveRunReferencedProjects}. The feature is live by default: an unset
+ * value resolves ON. An operator disables the feature with an explicit false
+ * value (`"false"`, `"0"`, `"off"`, or `""`). While off, a run materializes only
+ * the anchor project's workspace exactly as before — the referenced set is inert.
+ */
+export const MULTI_PROJECT_WORKSPACE_SYNC_ENV = "PAPERCLIP_MULTI_PROJECT_WORKSPACE_SYNC";
+
+/**
+ * True when an environment value explicitly turns a flag off. An unset value is
+ * not false — the caller decides the unset default. This is the inverse of
+ * {@link isTruthyRuntimeEnvValue} for the kill-switch words plus the empty string.
+ */
+function isFalsyRuntimeEnvValue(value: string | undefined): boolean {
+  if (value === undefined) {
+    return false;
+  }
+  const normalized = value.trim().toLowerCase();
+  return (
+    normalized === "" ||
+    normalized === "false" ||
+    normalized === "0" ||
+    normalized === "off" ||
+    normalized === "no"
+  );
+}
+
+export function isMultiProjectWorkspaceSyncEnabled(
+  env: Record<string, string | undefined> = process.env,
+): boolean {
+  // Default ON: an unset value is not false, so the feature is live unless an
+  // operator sets an explicit false value as the kill switch (rollback path).
+  return !isFalsyRuntimeEnvValue(env[MULTI_PROJECT_WORKSPACE_SYNC_ENV]);
+}
+
+/**
+ * True when an environment driver runs the workspace on a non-local target. The `ssh`, `sandbox`,
+ * and `plugin` drivers each realize the workspace off the host, so a host-local directory path is
+ * not present on the target. This mirrors the remote-transport classification in
+ * {@link buildWorkspaceRealizationRecord}. The `local` driver (and an unknown/absent driver) is
+ * treated as local.
+ */
+export function isRemoteExecutionEnvironmentDriver(driver: string | null | undefined): boolean {
+  return driver === "ssh" || driver === "sandbox" || driver === "plugin";
+}
+
+/**
+ * Environment flag (kill-switch, default ON) that gates whether a *remote* run stages the
+ * referenced (mentioned) project set into the sandbox. This is a targeted rollback lever: it
+ * disables only the remote referenced-project path and never regresses the working local path.
+ * The master flag {@link MULTI_PROJECT_WORKSPACE_SYNC_ENV} is the blunt switch that kills both
+ * local and remote. The remote path runs when both the master flag and this remote flag are ON —
+ * the default state. An unset value resolves ON; an operator disables it with an explicit false
+ * value (`"false"`, `"0"`, `"off"`, `"no"`, or `""`). The OFF state fails closed: a remote run
+ * runs no referenced-project authorization or staging and reverts to the remote drop path.
+ */
+export const MULTI_PROJECT_WORKSPACE_SYNC_REMOTE_ENV =
+  "PAPERCLIP_MULTI_PROJECT_WORKSPACE_SYNC_REMOTE";
+
+export function isMultiProjectWorkspaceSyncRemoteEnabled(
+  env: Record<string, string | undefined> = process.env,
+): boolean {
+  // Default ON: an unset value is not false, so the remote path is live unless an operator sets
+  // an explicit false value as the targeted kill switch (rollback path).
+  return !isFalsyRuntimeEnvValue(env[MULTI_PROJECT_WORKSPACE_SYNC_REMOTE_ENV]);
+}
+
+/**
+ * True when an environment driver stages a multi-source remote workspace through the confined
+ * sandbox/command runtime. Only the `sandbox` driver asserts per-project confinement on the
+ * staging path (`assertSyncOperationsConfined` in `sandbox-managed-runtime`). The `ssh` driver
+ * stages without that guard, and the `plugin` driver does not route through the confined command
+ * runtime in the workspace-realization step, so both keep dropping referenced projects. A `local`
+ * (or unknown) driver is not remote and never reaches this check. This gate is intentionally
+ * narrower than {@link isRemoteExecutionEnvironmentDriver}: it names the one transport that
+ * confines each staged referenced tree.
+ */
+export function isConfinedRemoteStagingDriver(driver: string | null | undefined): boolean {
+  return driver === "sandbox";
+}
+
+/**
+ * Upper bound on how many additional (mentioned) projects a single run may materialize
+ * beyond the anchor. Bounds the fan-out of per-project authorization and workspace prep.
+ */
+export const MAX_RUN_REFERENCED_ADDITIONAL_PROJECTS = 10;
+
+/**
+ * Upper bound on how many *available* (same-company, hydrated) candidate projects a single run will
+ * *authorize* before the admitted-project cap is applied.
+ *
+ * This is a fan-out guard distinct from {@link MAX_RUN_REFERENCED_ADDITIONAL_PROJECTS}:
+ * the admitted cap counts only projects that were successfully authorized, so on its own it
+ * does not bound how many `project:read` decisions a run performs — an adversarial same-company
+ * mention flood in which every candidate is denied would authorize every candidate before the
+ * admitted cap is ever reached. This limit caps the number of authorization decisions regardless of
+ * how many candidates are admitted, so denied mentions cannot force unbounded authorization work.
+ * Only available candidates count against it — unavailable mentions are filtered by the company-scoped
+ * hydration first and never consume an evaluation slot. It is always at least the admitted cap so the
+ * admitted cap remains reachable in the normal (non-flood) case.
+ */
+export const MAX_RUN_REFERENCED_CANDIDATE_EVALUATIONS = 50;
+
+type RunReferencedProjectRecord = Awaited<
+  ReturnType<ReturnType<typeof projectService>["listByIds"]>
+>[number];
+
+export interface RunReferencedProject {
+  projectId: string;
+  project: RunReferencedProjectRecord;
+}
+
+/**
+ * The layer that dropped or failed a referenced project. The run surfacing and the
+ * observability log both use these values as the per-failure reason:
+ * - `authorization`: the run actor is not authorized to read the project.
+ * - `resolution`: the project could not be brought into the run locally (unknown or
+ *   unavailable project, cap exceeded, or a workspace clone/prepare failure).
+ * - `staging`: the project resolved but failed to stage into the run sandbox (the
+ *   downstream remote path; see `sandbox-managed-runtime`).
+ */
+export type ReferencedProjectFailureReason = "authorization" | "resolution" | "staging";
+
+/** One referenced project that a run dropped or failed, with the layer that caused it. */
+export interface ReferencedProjectFailure {
+  projectId: string;
+  reason: ReferencedProjectFailureReason;
+}
+
+export interface ResolvedRunReferencedProjects {
+  /** The anchor (primary) project — retains the existing git-worktree run path; never re-authorized here. */
+  anchor: RunReferencedProject | null;
+  /** Additional read-only referenced projects that each passed per-project `project:read` authorization. */
+  additional: RunReferencedProject[];
+  /** Human-readable warnings for every referenced project that was dropped (unavailable, unauthorized, or capped). */
+  warnings: string[];
+  /** Structured record of every dropped referenced project, paired with the layer that dropped it. */
+  failures: ReferencedProjectFailure[];
+}
+
+export interface ResolveRunReferencedProjectsOptions {
+  companyId: string;
+  /** The run actor; every additional project is authorized against this actor. */
+  actor: AuthorizationActor;
+  issues: Pick<ReturnType<typeof issueService>, "findMentionedProjectIds">;
+  projects: Pick<ReturnType<typeof projectService>, "listByIds">;
+  access: Pick<ReturnType<typeof authorizationService>, "decide">;
+  /** Override the additional-project cap (defaults to {@link MAX_RUN_REFERENCED_ADDITIONAL_PROJECTS}). */
+  maxAdditionalProjects?: number;
+  /**
+   * Override the candidate authorization fan-out cap — the maximum number of *available* candidates
+   * that are authorized (defaults to {@link MAX_RUN_REFERENCED_CANDIDATE_EVALUATIONS}). Always
+   * effectively raised to at least the admitted-project cap so the admitted cap stays reachable.
+   */
+  maxCandidateEvaluations?: number;
+}
+
+/**
+ * Produce the deduped, company-scoped, per-project-authorized referenced-project set
+ * `[anchor, ...additional]` for a run.
+ *
+ * The anchor keeps its existing issue/run authorization path and is never re-authorized or
+ * inherited by the additional projects. Every additional (mentioned) project must independently
+ * pass a fail-closed `project:read` authorization check against the run actor before it is
+ * admitted — any non-`allowed` decision, company mismatch, missing/unknown project, or thrown
+ * authorization error drops the project and appends a warning (the run always continues).
+ *
+ * Candidate evaluation is bounded twice, independently: at most
+ * {@link ResolveRunReferencedProjectsOptions.maxCandidateEvaluations} *available* candidates are ever
+ * hydrated and authorized (a fan-out guard against an adversarial same-company mention flood of denied
+ * projects), and at most {@link ResolveRunReferencedProjectsOptions.maxAdditionalProjects} of those are
+ * admitted. The evaluation cap bounds hydration as well as authorization: candidates are hydrated and
+ * availability-filtered in mention order in bounded batches, and hydration stops as soon as the
+ * evaluation window is filled with available candidates (or the mention set is exhausted), so hydration
+ * never processes the complete mention set — its cost is bounded by the window, not by mention volume.
+ * Availability filtering still runs before a candidate consumes an evaluation slot, so an unavailable
+ * mention (foreign-company, deleted, or malformed id) never occupies a slot or displaces a later
+ * authorized project. Available candidates beyond the evaluation window are left un-hydrated and dropped
+ * with a warning, never triggering an authorization decision.
+ */
+export async function resolveRunReferencedProjects(
+  issueId: string,
+  anchorProjectId: string | null,
+  opts: ResolveRunReferencedProjectsOptions,
+): Promise<ResolvedRunReferencedProjects> {
+  const { companyId, actor, issues, projects, access } = opts;
+  const warnings: string[] = [];
+  const failures: ReferencedProjectFailure[] = [];
+  const cap = Math.max(0, opts.maxAdditionalProjects ?? MAX_RUN_REFERENCED_ADDITIONAL_PROJECTS);
+  // The evaluation cap bounds candidate hydration + authorization fan-out. It is always at least the
+  // admitted cap so the admitted cap stays reachable in the normal (non-flood) case.
+  const evaluationCap = Math.max(
+    cap,
+    opts.maxCandidateEvaluations ?? MAX_RUN_REFERENCED_CANDIDATE_EVALUATIONS,
+  );
+
+  // Company-scoped, deduped, order-preserving mention set (title + description + comment bodies).
+  // Run prep counts mentions in comments, so comment bodies are always included.
+  const mentionedIds = await issues.findMentionedProjectIds(issueId, { includeCommentBodies: true });
+
+  // Anchor wins: it keeps the full git-worktree path and is never re-authorized here, so drop it
+  // from the mention set. Preserve mention order while deduping the remaining candidates.
+  const allCandidateIds: string[] = [];
+  const seen = new Set<string>(anchorProjectId ? [anchorProjectId] : []);
+  for (const projectId of mentionedIds) {
+    if (seen.has(projectId)) continue;
+    seen.add(projectId);
+    allCandidateIds.push(projectId);
+  }
+
+  // Hydrate + availability-filter candidates in mention order, but never process more of the mention
+  // set than the evaluation window needs. Candidates are pulled in bounded batches sized to what the
+  // window still needs, and hydration stops as soon as `evaluationCap` *available* candidates are
+  // collected (or the mention set is exhausted). This bounds hydration by the evaluation window rather
+  // than by mention volume: an adversarial same-company mention flood can neither force an unbounded
+  // hydration query nor displace a later authorized project out of the window. `listByIds` filters by
+  // company, so each batch both fetches the records and performs availability filtering — a mention that
+  // did not resolve inside this company (foreign-company, deleted, or malformed id) is dropped here with
+  // a warning and never occupies an evaluation slot. The anchor is co-hydrated with the first batch (it
+  // was excluded from `allCandidateIds` above, so it never double-counts) and is never re-authorized.
+  const availableCandidates: RunReferencedProject[] = [];
+  let hydrationCursor = 0;
+  let anchorRecord: RunReferencedProjectRecord | null = null;
+  let anchorHydrated = false;
+  while (availableCandidates.length < evaluationCap && hydrationCursor < allCandidateIds.length) {
+    const need = evaluationCap - availableCandidates.length;
+    const batchCandidateIds = allCandidateIds.slice(hydrationCursor, hydrationCursor + need);
+    hydrationCursor += batchCandidateIds.length;
+
+    const hydrateIds =
+      !anchorHydrated && anchorProjectId ? [anchorProjectId, ...batchCandidateIds] : batchCandidateIds;
+    const hydrated = await projects.listByIds(companyId, hydrateIds);
+    const byId = new Map(hydrated.map((project) => [project.id, project]));
+
+    if (!anchorHydrated && anchorProjectId) {
+      anchorRecord = byId.get(anchorProjectId) ?? null;
+      anchorHydrated = true;
+    }
+
+    for (const projectId of batchCandidateIds) {
+      const project = byId.get(projectId);
+      if (!project) {
+        warnings.push(`Referenced project ${projectId} was skipped because it is not available in this company.`);
+        failures.push({ projectId, reason: "resolution" });
+        continue;
+      }
+      availableCandidates.push({ projectId, project });
+    }
+  }
+
+  // Hydrate the anchor on its own if the candidate loop never ran (no mentions to co-hydrate it with).
+  if (!anchorHydrated && anchorProjectId) {
+    const hydrated = await projects.listByIds(companyId, [anchorProjectId]);
+    anchorRecord = hydrated.find((project) => project.id === anchorProjectId) ?? null;
+    anchorHydrated = true;
+  }
+
+  const anchor: RunReferencedProject | null =
+    anchorRecord && anchorProjectId ? { projectId: anchorProjectId, project: anchorRecord } : null;
+
+  // The loop already bounds `availableCandidates` to at most `evaluationCap` entries. Any mentions left
+  // un-hydrated past the window (the fan-out cap dropped them before hydration/authorization) are
+  // surfaced as a warning after the admit loop below. Denied candidates still consume this window (each
+  // costs exactly one authorization decision, which is what the cap bounds); unavailable mentions,
+  // filtered above, do not.
+  const candidates = availableCandidates;
+  const unevaluatedCandidateCount = allCandidateIds.length - hydrationCursor;
+
+  // Admit candidates in mention order until the cap of successfully-authorized projects is reached.
+  // The cap bounds how many additional projects a run *materializes*, so it is counted against
+  // admitted projects only; denied mentions never use a slot.
+  const additional: RunReferencedProject[] = [];
+  let capReachedAtIndex: number | null = null;
+  for (let index = 0; index < candidates.length; index++) {
+    if (additional.length >= cap) {
+      capReachedAtIndex = index;
+      break;
+    }
+
+    const { projectId, project } = candidates[index]!;
+
+    let allowed = false;
+    try {
+      const decision = await access.decide({
+        actor,
+        action: "project:read",
+        resource: { type: "project", companyId, projectId },
+        scope: { projectId },
+      });
+      allowed = decision.allowed === true;
+    } catch {
+      // Fail-closed: an authorization error never admits a project.
+      allowed = false;
+    }
+
+    if (!allowed) {
+      warnings.push(`Referenced project ${projectId} was skipped because it is not authorized for this run.`);
+      failures.push({ projectId, reason: "authorization" });
+      continue;
+    }
+
+    additional.push({ projectId, project });
+  }
+
+  // Warn once if the admitted cap stopped us before every available candidate was considered. The
+  // skipped count includes both the still-unconsidered evaluated candidates and any available
+  // candidates that were dropped before evaluation by the fan-out cap above.
+  if (capReachedAtIndex !== null) {
+    const skipped = candidates.length - capReachedAtIndex + unevaluatedCandidateCount;
+    warnings.push(
+      `Only the first ${cap} referenced project(s) will be synced for this run; ${skipped} additional referenced project(s) were skipped.`,
+    );
+  } else if (unevaluatedCandidateCount > 0) {
+    // The admitted cap was never reached (e.g. a flood of denied mentions), but the evaluation
+    // fan-out cap dropped available candidates before they could be authorized.
+    warnings.push(
+      `Only the first ${evaluationCap} referenced mention(s) were evaluated for this run; ${unevaluatedCandidateCount} additional referenced mention(s) were skipped without evaluation.`,
+    );
+  }
+
+  // Record every capped or unevaluated candidate as a per-project resolution failure so the run
+  // surfacing and the observability log can reconcile requested against synced. The evaluated
+  // candidates past the admitted cap carry a known projectId; the candidates the fan-out cap
+  // dropped before hydration carry their id from the ordered mention set.
+  if (capReachedAtIndex !== null) {
+    for (let index = capReachedAtIndex; index < candidates.length; index++) {
+      failures.push({ projectId: candidates[index]!.projectId, reason: "resolution" });
+    }
+  }
+  for (const projectId of allCandidateIds.slice(hydrationCursor)) {
+    failures.push({ projectId, reason: "resolution" });
+  }
+
+  return { anchor, additional, warnings, failures };
+}
+
+export interface ResolveAdditionalRunWorkspacesOptions {
+  /** Gate that mirrors {@link isMultiProjectWorkspaceSyncEnabled}. When false, the result is empty. */
+  enabled: boolean;
+  companyId: string;
+  /** The run actor; every additional project is authorized against this actor. */
+  actor: AuthorizationActor;
+  issues: Pick<ReturnType<typeof issueService>, "findMentionedProjectIds">;
+  projects: Pick<ReturnType<typeof projectService>, "listByIds">;
+  access: Pick<ReturnType<typeof authorizationService>, "decide">;
+  /** Resolve one authorized referenced project to its own workspace cwd (injectable for tests). */
+  resolveProjectWorkspace: (project: RunReferencedProject) => Promise<ResolvedAdditionalWorkspace>;
+  maxAdditionalProjects?: number;
+  maxCandidateEvaluations?: number;
+  /**
+   * True when the run executes on a non-local target (ssh, sandbox, or plugin). A referenced
+   * project realizes as a local directory first. On a remote target that local tree reaches the
+   * agent only when a confined transport stages it into the sandbox and the remote flag is on
+   * (see `targetStagesConfined` and `remoteReferencedSyncEnabled`). Otherwise the run drops the
+   * whole referenced set and records it at the staging layer.
+   */
+  executionTargetIsRemote?: boolean;
+  /**
+   * True when the remote target stages each referenced tree through the confined sandbox/command
+   * runtime (the `sandbox` driver; see {@link isConfinedRemoteStagingDriver}). The gate opens the
+   * referenced-project path on a remote target only when this is true. The SSH transport and any
+   * unconfined transport keep dropping referenced projects. Ignored on a local target.
+   */
+  targetStagesConfined?: boolean;
+  /**
+   * The remote-only kill switch (default ON; see {@link isMultiProjectWorkspaceSyncRemoteEnabled}).
+   * When true, a confined remote target stages the referenced set. When false, a remote target
+   * fails closed: it runs no referenced-project authorization or staging and reverts to the remote
+   * drop path. Ignored on a local target.
+   */
+  remoteReferencedSyncEnabled?: boolean;
+}
+
+/**
+ * Resolve the read-only referenced (mentioned) project workspaces for a run.
+ *
+ * The function is inert until the multi-project workspace-sync flag is on: when `enabled` is
+ * false (the production default) or there is no issue, it returns an empty result and performs
+ * no authorization or workspace work. When enabled, it authorizes the referenced set through
+ * {@link resolveRunReferencedProjects} and resolves each admitted project to its own cwd. Each
+ * project resolves in isolation: a per-project failure drops only that project and appends a
+ * warning, so one bad clone never aborts the run.
+ */
+export async function resolveAdditionalRunWorkspaces(
+  issueId: string | null,
+  anchorProjectId: string | null,
+  opts: ResolveAdditionalRunWorkspacesOptions,
+): Promise<{
+  additionalWorkspaces: ResolvedAdditionalWorkspace[];
+  warnings: string[];
+  failures: ReferencedProjectFailure[];
+}> {
+  if (!opts.enabled || !issueId) {
+    return { additionalWorkspaces: [], warnings: [], failures: [] };
+  }
+
+  // A referenced project realizes as a local directory first. On a remote target the run carries
+  // that tree to the agent only when a confined transport stages it into the sandbox and the
+  // remote flag is on. The confined sandbox transport asserts per-project confinement on each
+  // staged tree (`assertSyncOperationsConfined` in `sandbox-managed-runtime`). The SSH transport
+  // does not, so it stays out of scope. When the remote flag is off the run fails closed. In every
+  // one of those drop cases the run neither does authorization or clone work it must discard nor
+  // exposes an inaccessible referenced path to the agent.
+  if (opts.executionTargetIsRemote) {
+    const remoteReferencedSyncOpen =
+      (opts.remoteReferencedSyncEnabled ?? false) && (opts.targetStagesConfined ?? false);
+    if (!remoteReferencedSyncOpen) {
+      const mentionedIds = await opts.issues.findMentionedProjectIds(issueId, {
+        includeCommentBodies: true,
+      });
+      // Each distinct non-anchor mention is a referenced project this remote run drops. An SSH
+      // target (or the remote flag off) has no confined path to receive the referenced tree, so
+      // the run drops the whole set at the staging layer. Record one failure per dropped project
+      // so the requested-vs-synced accounting counts the whole referenced set and the run still
+      // emits its structured sync log. Warn only when the issue actually mentions a project, so a
+      // remote run without any referenced mention stays silent.
+      const droppedProjectIds = [
+        ...new Set(mentionedIds.filter((projectId) => projectId !== anchorProjectId)),
+      ];
+      return {
+        additionalWorkspaces: [],
+        warnings:
+          droppedProjectIds.length > 0
+            ? [
+                "Referenced-project workspaces are available only on a local execution target or a confined sandbox target. This run uses a different remote execution target, so no referenced-project workspace was attached.",
+              ]
+            : [],
+        failures: droppedProjectIds.map((projectId) => ({ projectId, reason: "staging" as const })),
+      };
+    }
+    // Fall through: a confined sandbox target with the remote flag on resolves and authorizes the
+    // referenced set exactly like a local target. The resolver is driver-agnostic; the confined
+    // sandbox transport downstream stages each admitted tree into its own `project-<projectId>`
+    // directory. The per-project `project:read` check below still runs against the run actor.
+  }
+
+  const referenced = await resolveRunReferencedProjects(issueId, anchorProjectId, {
+    companyId: opts.companyId,
+    actor: opts.actor,
+    issues: opts.issues,
+    projects: opts.projects,
+    access: opts.access,
+    maxAdditionalProjects: opts.maxAdditionalProjects,
+    maxCandidateEvaluations: opts.maxCandidateEvaluations,
+  });
+
+  const additionalWorkspaces: ResolvedAdditionalWorkspace[] = [];
+  const warnings = [...referenced.warnings];
+  const failures = [...referenced.failures];
+  for (const project of referenced.additional) {
+    try {
+      additionalWorkspaces.push(await opts.resolveProjectWorkspace(project));
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      warnings.push(
+        `Referenced project ${project.projectId} was skipped because its workspace could not be prepared: ${reason}`,
+      );
+      failures.push({ projectId: project.projectId, reason: "resolution" });
+    }
+  }
+
+  return { additionalWorkspaces, warnings, failures };
+}
+
+/** Structured fields for the one requested-vs-synced observability log a run emits at run prep. */
+export interface ReferencedProjectRunObservability {
+  referenced_projects_requested: number;
+  referenced_projects_synced: number;
+  referenced_project_failures: Array<{
+    project_id: string;
+    reason: ReferencedProjectFailureReason;
+  }>;
+}
+
+/**
+ * Build the requested-vs-synced observability fields for a run's referenced-project set.
+ *
+ * A run requests one referenced project per authorized mention and syncs the projects that resolve.
+ * The requested count is the synced count plus every dropped project, so the two counts and the
+ * per-failure reasons together account for the whole referenced set. The human-readable warning for
+ * each drop rides the run's surfaced warnings channel; this function produces only the structured
+ * log fields, so a run emits exactly one line with a stable field shape.
+ */
+export function buildReferencedProjectRunObservability(input: {
+  syncedProjectIds: readonly string[];
+  failures: readonly ReferencedProjectFailure[];
+}): ReferencedProjectRunObservability {
+  return {
+    referenced_projects_requested: input.syncedProjectIds.length + input.failures.length,
+    referenced_projects_synced: input.syncedProjectIds.length,
+    referenced_project_failures: input.failures.map((failure) => ({
+      project_id: failure.projectId,
+      reason: failure.reason,
+    })),
+  };
+}
+
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+function sanitizeAgentSessionMessageText(value: unknown): string | null {
+  const text = readNonEmptyString(value);
+  if (!text) return null;
+  const redacted = redactSensitiveText(text).slice(0, MAX_AGENT_SESSION_MESSAGE_CHARS);
+  return redacted.trim().length > 0 ? redacted : null;
 }
 
 type ManagedMcpGatewayRunConfig = {
@@ -2964,10 +3695,9 @@ function deriveTaskKey(
  * Extended task key derivation that falls back to a stable synthetic key
  * for timer/heartbeat wakes. The synthetic key keeps the
  * `agentTaskSessions` row addressable across heartbeats so the row can be
- * cleared and re-keyed deterministically; it does NOT mean the prior
- * session is resumed. Since PF-4 (#4838), `heartbeat_timer` wakes always
- * go through `shouldResetTaskSessionForWake` and start a fresh session —
- * see `describeSessionResetReason` for the paired log message.
+ * cleared and re-keyed deterministically. Unscoped exploratory timer wakes
+ * still start fresh to avoid accumulating low-value inbox scans, while timer
+ * wakes scoped to a real issue reuse that issue's task session.
  *
  * The synthetic key is only used when:
  * - No explicit task/issue key exists in the context
@@ -2998,13 +3728,11 @@ export function shouldResetTaskSessionForWake(
     wakeReason === EXECUTION_REVIEW_PARTICIPANT_RECOVERY_WAKE_REASON ||
     wakeReason === "execution_approval_requested" ||
     wakeReason === "execution_changes_requested" ||
-    // PF-4: timer-driven wakes are exploratory ("any new work?"). They do not
-    // carry meaningful continuation state, so reusing the prior task session
-    // for repeated timer wakes accumulates low-value context and pushes the
-    // session toward the 64k compaction threshold (observed in CEO run
-    // 292a5fd1, where timer wakes repeatedly bloated a long-lived manager
-    // session). Reset on every timer wake so each interval starts fresh.
-    wakeReason === "heartbeat_timer"
+    // PF-4: unscoped timer wakes are exploratory ("any new work?") and should
+    // not accumulate low-value inbox scans. Issue-scoped timer wakes are
+    // continuation work, so reuse their task session to avoid paying the full
+    // session-start and re-orientation cost on every heartbeat.
+    (wakeReason === "heartbeat_timer" && !deriveTaskKey(contextSnapshot, null))
   ) {
     return true;
   }
@@ -3117,7 +3845,9 @@ export function describeSessionResetReason(
   if (wakeReason === "execution_changes_requested") return "wake reason is execution_changes_requested";
   // PF-4: paired with shouldResetTaskSessionForWake — keep the reason wording
   // explicit so run logs make session reuse/reset behavior legible.
-  if (wakeReason === "heartbeat_timer") return "wake reason is heartbeat_timer (timer-driven wake starts fresh)";
+  if (wakeReason === "heartbeat_timer" && !deriveTaskKey(contextSnapshot, null)) {
+    return "wake reason is heartbeat_timer (unscoped timer wake starts fresh)";
+  }
   return null;
 }
 
@@ -4394,6 +5124,7 @@ export async function buildPaperclipWakePayload(input: {
         id: string;
         identifier: string | null;
         title: string;
+        description: string | null;
         status: string;
         priority: string;
         workMode: string;
@@ -4408,6 +5139,8 @@ export async function buildPaperclipWakePayload(input: {
   const annotationCommentId = readNonEmptyString(input.contextSnapshot.annotationCommentId);
   const issueId = readNonEmptyString(input.contextSnapshot.issueId);
   const continuationSummary = input.continuationSummary ?? null;
+  const agentMessage = parseObject(input.contextSnapshot[PAPERCLIP_AGENT_MESSAGE_KEY]);
+  const agentMessageText = sanitizeAgentSessionMessageText(agentMessage.text);
   const issueSummary =
     input.issueSummary ??
     (issueId
@@ -4416,6 +5149,7 @@ export async function buildPaperclipWakePayload(input: {
             id: issues.id,
             identifier: issues.identifier,
             title: issues.title,
+            description: issues.description,
             status: issues.status,
             priority: issues.priority,
             workMode: issues.workMode,
@@ -4424,7 +5158,12 @@ export async function buildPaperclipWakePayload(input: {
           .where(and(eq(issues.id, issueId), eq(issues.companyId, input.companyId)))
           .then((rows) => rows[0] ?? null)
       : null);
-  if (commentIds.length === 0 && Object.keys(executionStage).length === 0 && !issueSummary) return null;
+  if (
+    commentIds.length === 0
+    && Object.keys(executionStage).length === 0
+    && !issueSummary
+    && !agentMessageText
+  ) return null;
 
   const commentRows =
     commentIds.length === 0
@@ -4456,6 +5195,12 @@ export async function buildPaperclipWakePayload(input: {
           );
 
   const commentsById = new Map(commentRows.map((comment) => [comment.id, comment]));
+  const issueDescription = issueSummary?.description ?? null;
+  const issueDescriptionTruncated =
+    issueDescription !== null && issueDescription.length > MAX_INLINE_WAKE_ISSUE_DESCRIPTION_CHARS;
+  const inlineIssueDescription = issueDescriptionTruncated
+    ? issueDescription.slice(0, MAX_INLINE_WAKE_ISSUE_DESCRIPTION_CHARS)
+    : issueDescription;
   const comments: Array<Record<string, unknown>> = [];
   let remainingBodyChars = MAX_INLINE_WAKE_COMMENT_BODY_TOTAL_CHARS;
   let truncated = false;
@@ -4582,7 +5327,7 @@ export async function buildPaperclipWakePayload(input: {
       interactionId,
     })
     : null;
-  const payloadTruncated = truncated || planReviewContext?.truncated === true;
+  const payloadTruncated = truncated || issueDescriptionTruncated || planReviewContext?.truncated === true;
   const recoveryActionId = readNonEmptyString(input.contextSnapshot.recoveryActionId);
   const recoveryCause = readNonEmptyString(input.contextSnapshot.recoveryCause);
   const recoveryAction = recoveryActionId
@@ -4627,9 +5372,19 @@ export async function buildPaperclipWakePayload(input: {
           id: issueSummary.id,
           identifier: issueSummary.identifier,
           title: issueSummary.title,
+          description: inlineIssueDescription,
+          descriptionTruncated: issueDescriptionTruncated,
           status: issueSummary.status,
           priority: issueSummary.priority,
           workMode: issueSummary.workMode,
+        }
+      : null,
+    agentMessage: agentMessageText
+      ? {
+          text: agentMessageText,
+          source: readNonEmptyString(agentMessage.source),
+          pluginKey: readNonEmptyString(agentMessage.pluginKey),
+          sessionId: readNonEmptyString(agentMessage.sessionId),
         }
       : null,
     childIssueSummaries: Array.isArray(input.contextSnapshot.childIssueSummaries)
@@ -4711,6 +5466,37 @@ function isHeartbeatRunTerminalStatus(
   return HEARTBEAT_RUN_TERMINAL_STATUSES.includes(
     status as (typeof HEARTBEAT_RUN_TERMINAL_STATUSES)[number],
   );
+}
+
+export function buildHeartbeatRunStatusLiveEventPayload(
+  run: Pick<
+    typeof heartbeatRuns.$inferSelect,
+    | "id"
+    | "agentId"
+    | "status"
+    | "invocationSource"
+    | "triggerDetail"
+    | "error"
+    | "errorCode"
+    | "startedAt"
+    | "finishedAt"
+    | "resultJson"
+  >,
+) {
+  return {
+    runId: run.id,
+    agentId: run.agentId,
+    status: run.status,
+    invocationSource: run.invocationSource,
+    triggerDetail: run.triggerDetail,
+    error: run.error ?? null,
+    errorCode: run.errorCode ?? null,
+    startedAt: run.startedAt ? new Date(run.startedAt).toISOString() : null,
+    finishedAt: run.finishedAt ? new Date(run.finishedAt).toISOString() : null,
+    finalText: isHeartbeatRunTerminalStatus(run.status)
+      ? buildHeartbeatRunIssueComment(parseObject(run.resultJson))
+      : null,
+  };
 }
 
 function isHeartbeatRunRuntimeStatusActive(status: string | null | undefined): boolean {
@@ -4958,6 +5744,9 @@ export function buildPaperclipTaskMarkdown(input: {
     status?: string | null;
   } | null;
   acceptedPlanContinuation?: boolean;
+  // false builds the compact variant used for resume deltas, where the session
+  // already received the description with the assignment.
+  includeDescription?: boolean;
 }) {
   const quoteTaskScalar = (value: string) => JSON.stringify(value);
   const fenceTaskText = (value: string) => {
@@ -5024,7 +5813,7 @@ export function buildPaperclipTaskMarkdown(input: {
         "Create child issues from the approved plan only. Do not write code or perform implementation work on the source issue.",
       );
     }
-    const description = issue.description?.trim();
+    const description = input.includeDescription === false ? "" : issue.description?.trim();
     if (description) {
       lines.push("", "Issue description:", fenceTaskText(description));
     }
@@ -7247,12 +8036,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     };
   }
 
-  async function resolveWorkspaceForRun(
+  async function resolveAnchorWorkspaceForRun(
     agent: typeof agents.$inferSelect,
     context: Record<string, unknown>,
     previousSessionParams: Record<string, unknown> | null,
     opts?: { useProjectWorkspace?: boolean | null },
-  ): Promise<ResolvedWorkspaceForRun> {
+  ): Promise<ResolvedAnchorWorkspaceForRun> {
     const issueId = readNonEmptyString(context.issueId) ?? readNonEmptyString(context.taskId);
     const contextProjectId = readNonEmptyString(context.projectId);
     const contextProjectWorkspaceId = readNonEmptyString(context.projectWorkspaceId);
@@ -7309,23 +8098,22 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           `Selected project workspace "${preferredProjectWorkspaceId}" is not available on this project.`;
       }
       for (const workspace of projectWorkspaceRows) {
-        let projectCwd = readNonEmptyString(workspace.cwd);
+        let projectCwd: string;
         let managedWorkspaceWarning: string | null = null;
-        if (!projectCwd || projectCwd === REPO_ONLY_CWD_SENTINEL) {
-          try {
-            const managedWorkspace = await ensureManagedProjectWorkspace({
-              companyId: agent.companyId,
-              projectId: workspaceProjectId ?? resolvedProjectId ?? workspace.projectId,
-              repoUrl: readNonEmptyString(workspace.repoUrl),
-            });
-            projectCwd = managedWorkspace.cwd;
-            managedWorkspaceWarning = managedWorkspace.warning;
-          } catch (error) {
-            if (preferredWorkspace?.id === workspace.id) {
-              preferredWorkspaceWarning = error instanceof Error ? error.message : String(error);
-            }
-            continue;
+        try {
+          const resolvedCwd = await resolveConfiguredOrManagedProjectCwd({
+            companyId: agent.companyId,
+            projectId: workspaceProjectId ?? resolvedProjectId ?? workspace.projectId,
+            cwd: workspace.cwd,
+            repoUrl: workspace.repoUrl,
+          });
+          projectCwd = resolvedCwd.cwd;
+          managedWorkspaceWarning = resolvedCwd.warning;
+        } catch (error) {
+          if (preferredWorkspace?.id === workspace.id) {
+            preferredWorkspaceWarning = error instanceof Error ? error.message : String(error);
           }
+          continue;
         }
         hasConfiguredProjectCwd = true;
         const projectCwdExists = await fs
@@ -7455,6 +8243,62 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     };
   }
 
+  /**
+   * Resolve the run workspace: the anchor workspace plus, when the multi-project workspace-sync
+   * flag is on, the read-only referenced (mentioned) project workspaces. With the flag off (the
+   * production default) the anchor path is unchanged and `additionalWorkspaces` is empty.
+   */
+  async function resolveWorkspaceForRun(
+    agent: typeof agents.$inferSelect,
+    context: Record<string, unknown>,
+    previousSessionParams: Record<string, unknown> | null,
+    opts?: { useProjectWorkspace?: boolean | null; executionEnvironmentDriver?: string | null },
+  ): Promise<ResolvedWorkspaceForRun> {
+    const anchor = await resolveAnchorWorkspaceForRun(agent, context, previousSessionParams, opts);
+    if (!isMultiProjectWorkspaceSyncEnabled()) {
+      return { ...anchor, additionalWorkspaces: [], referencedProjectFailures: [] };
+    }
+
+    // Derive the remote-transport facts from the selected environment driver. `executionTargetIsRemote`
+    // decides whether the referenced set needs the remote path at all; `targetStagesConfined` decides
+    // whether that remote target confines each staged tree (only the sandbox driver does). The remote
+    // flag is the targeted kill switch; with it off, a remote run fails closed.
+    const executionEnvironmentDriver = opts?.executionEnvironmentDriver ?? null;
+    const issueId = readNonEmptyString(context.issueId) ?? readNonEmptyString(context.taskId);
+    const { additionalWorkspaces, warnings, failures } = await resolveAdditionalRunWorkspaces(
+      issueId,
+      anchor.projectId,
+      {
+        enabled: true,
+        executionTargetIsRemote: isRemoteExecutionEnvironmentDriver(executionEnvironmentDriver),
+        targetStagesConfined: isConfinedRemoteStagingDriver(executionEnvironmentDriver),
+        remoteReferencedSyncEnabled: isMultiProjectWorkspaceSyncRemoteEnabled(),
+        companyId: agent.companyId,
+        actor: {
+          type: "agent",
+          agentId: agent.id,
+          companyId: agent.companyId,
+          source: "agent_key",
+        },
+        issues: issueService(db),
+        projects: projectService(db),
+        access: authorizationService(db),
+        resolveProjectWorkspace: (project) =>
+          resolveAdditionalProjectWorkspace(
+            { companyId: agent.companyId, project },
+            defaultAdditionalProjectWorkspaceDeps(db),
+          ),
+      },
+    );
+
+    return {
+      ...anchor,
+      additionalWorkspaces,
+      referencedProjectFailures: failures,
+      warnings: warnings.length > 0 ? [...anchor.warnings, ...warnings] : anchor.warnings,
+    };
+  }
+
   async function upsertTaskSession(input: {
     companyId: string;
     agentId: string;
@@ -7570,17 +8414,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       publishLiveEvent({
         companyId: updated.companyId,
         type: "heartbeat.run.status",
-        payload: {
-          runId: updated.id,
-          agentId: updated.agentId,
-          status: updated.status,
-          invocationSource: updated.invocationSource,
-          triggerDetail: updated.triggerDetail,
-          error: updated.error ?? null,
-          errorCode: updated.errorCode ?? null,
-          startedAt: updated.startedAt ? new Date(updated.startedAt).toISOString() : null,
-          finishedAt: updated.finishedAt ? new Date(updated.finishedAt).toISOString() : null,
-        },
+        payload: buildHeartbeatRunStatusLiveEventPayload(updated),
       });
       publishRunLifecyclePluginEvent(updated);
     }
@@ -7607,17 +8441,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       publishLiveEvent({
         companyId: updated.companyId,
         type: "heartbeat.run.status",
-        payload: {
-          runId: updated.id,
-          agentId: updated.agentId,
-          status: updated.status,
-          invocationSource: updated.invocationSource,
-          triggerDetail: updated.triggerDetail,
-          error: updated.error ?? null,
-          errorCode: updated.errorCode ?? null,
-          startedAt: updated.startedAt ? new Date(updated.startedAt).toISOString() : null,
-          finishedAt: updated.finishedAt ? new Date(updated.finishedAt).toISOString() : null,
-        },
+        payload: buildHeartbeatRunStatusLiveEventPayload(updated),
       });
       publishRunLifecyclePluginEvent(updated);
       return { run: updated, updated: true as const };
@@ -7855,7 +8679,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     };
   }
 
-  async function buildDetectedSuccessfulRunProgressSummary(run: typeof heartbeatRuns.$inferSelect) {
+  function buildDetectedSuccessfulRunProgressSummary(
+    run: typeof heartbeatRuns.$inferSelect,
+    currentUserRedactionOptions: CurrentUserRedactionOptions,
+  ) {
     const resultJson = parseObject(run.resultJson);
     const candidates = [
       hasUnmanagedBackgroundTaskEvidence(resultJson) ? UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON : null,
@@ -7869,7 +8696,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (!summary) return null;
     return redactDetectedSuccessfulRunProgressSummaryForBoard(
       summary,
-      await getCurrentUserRedactionOptions(),
+      currentUserRedactionOptions,
     );
   }
 
@@ -7918,6 +8745,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         companyId: issues.companyId,
         identifier: issues.identifier,
         title: issues.title,
+        description: issues.description,
         status: issues.status,
         assigneeAgentId: issues.assigneeAgentId,
         assigneeUserId: issues.assigneeUserId,
@@ -7935,7 +8763,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       })
       : null;
     const taskKey = deriveTaskKeyWithHeartbeatFallback(context, null);
-    const detectedProgressSummary = await buildDetectedSuccessfulRunProgressSummary(run);
+    const currentUserRedactionOptions = await getCurrentUserRedactionOptions();
+    const detectedProgressSummary = buildDetectedSuccessfulRunProgressSummary(
+      run,
+      currentUserRedactionOptions,
+    );
+    const resultJson = parseObject(run.resultJson);
+    const finalReport = redactSuccessfulRunHandoffEvidence(
+      [
+        readNonEmptyString(resultJson.summary),
+        readNonEmptyString(resultJson.result),
+        readNonEmptyString(resultJson.message),
+      ].find((value): value is string => Boolean(value)) ?? null,
+      currentUserRedactionOptions,
+    );
+    const nextAction = redactSuccessfulRunHandoffEvidence(
+      readNonEmptyString(run.nextAction),
+      currentUserRedactionOptions,
+    );
 
     const [
       activeExecutionPath,
@@ -8095,6 +8940,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       agent,
       livenessState: run.livenessState as RunLivenessState | null,
       detectedProgressSummary,
+      finalReport,
+      nextAction,
       taskKey,
       hasActiveExecutionPath: Boolean(activeExecutionPath),
       hasQueuedWake: Boolean(queuedWake),
@@ -11777,10 +12624,35 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   // before the parent promise settles, so we loop until the set is empty rather
   // than snapshotting once. Callers use this to guarantee no run is still
   // writing rows/events (graceful shutdown, deterministic test teardown).
+  //
+  // Await in-flight wakeup promises first. A wakeup resolves only after it
+  // registers its run execution, so a wake that is still before run registration
+  // is invisible to activeRunExecutionPromises alone. Awaiting the wakeup promise
+  // closes that window: once it settles, any run it dispatched is already in
+  // activeRunExecutionPromises, and the second await drains that run. A wakeup or
+  // a run can add more entries as it settles, so loop until both sets are empty.
   async function drainActiveRunExecutions() {
-    while (activeRunExecutionPromises.size > 0) {
+    while (activeWakeupPromises.size > 0 || activeRunExecutionPromises.size > 0) {
+      await Promise.allSettled([...activeWakeupPromises]);
       await Promise.all([...activeRunExecutionPromises]);
     }
+  }
+
+  // Public wakeup entry point. Callers dispatch it fire-and-forget, so register
+  // the promise in activeWakeupPromises before it starts its asynchronous
+  // prologue. drainActiveRunExecutions can then await a wake that is still before
+  // run registration. Internal callers reference enqueueWakeup directly and
+  // already await it, so they do not need this registration.
+  function trackWakeup(
+    agentId: string,
+    opts: WakeupOptions = {},
+  ): ReturnType<typeof enqueueWakeup> {
+    const promise = enqueueWakeup(agentId, opts);
+    activeWakeupPromises.add(promise);
+    void promise.catch(() => {}).finally(() => {
+      activeWakeupPromises.delete(promise);
+    });
+    return promise;
   }
 
   async function executeRun(runId: string) {
@@ -11893,9 +12765,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           )
         : null;
     const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
+    const parsedIssueExecutionWorkspaceSettings = parseIssueExecutionWorkspaceSettings(
+      issueContext?.executionWorkspaceSettings,
+    );
     const issueExecutionWorkspaceSettings = isolatedWorkspacesEnabled
-      ? parseIssueExecutionWorkspaceSettings(issueContext?.executionWorkspaceSettings)
+      ? parsedIssueExecutionWorkspaceSettings
       : null;
+    const environmentExecutionWorkspaceSettings = selectEnvironmentExecutionWorkspaceSettings(
+      parsedIssueExecutionWorkspaceSettings,
+      isolatedWorkspacesEnabled,
+    );
     const contextProjectId = readNonEmptyString(context.projectId);
     const executionProjectId = issueContext?.projectId ?? contextProjectId;
     const projectContext = executionProjectId
@@ -12075,6 +12954,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             id: issueRef.id,
             identifier: issueRef.identifier,
             title: issueRef.title,
+            description: issueContext?.description ?? null,
             status: issueRef.status,
             priority: issueRef.priority,
             workMode: issueRef.workMode,
@@ -12089,7 +12969,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     } else {
       delete context[PAPERCLIP_WAKE_PAYLOAD_KEY];
     }
-    const taskMarkdown = buildPaperclipTaskMarkdown({
+    const taskMarkdownInput = {
       issue: issueRef
         ? {
             id: issueRef.id,
@@ -12108,7 +12988,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       acceptedPlanContinuation:
         readNonEmptyString(context.workspaceRefreshReason) === "accepted_plan_confirmation"
         && Object.keys(parseObject(context.acceptedPlanWakeRouting)).length === 0,
-    });
+    };
+    const taskMarkdown = buildPaperclipTaskMarkdown(taskMarkdownInput);
+    const taskMarkdownCompact = buildPaperclipTaskMarkdown({ ...taskMarkdownInput, includeDescription: false });
     if (issueRef) {
       context.paperclipIssue = {
         id: issueRef.id,
@@ -12129,6 +13011,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       context.paperclipTaskMarkdown = taskMarkdown;
     } else {
       delete context.paperclipTaskMarkdown;
+    }
+    if (taskMarkdownCompact && taskMarkdownCompact !== taskMarkdown) {
+      context.paperclipTaskMarkdownCompact = taskMarkdownCompact;
+    } else {
+      delete context.paperclipTaskMarkdownCompact;
     }
     const requestedExecutionWorkspaceId = readNonEmptyString(issueRef?.executionWorkspaceId);
     const existingExecutionWorkspace =
@@ -12317,7 +13204,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     );
     const runtimeSkillPreference = readPaperclipSkillSyncPreference(effectiveResolvedConfig);
     const runtimeSkillEntries = await companySkills.listRuntimeSkillEntries(agent.companyId, {
-      versionSelections: skillVersionSelectionMap(runtimeSkillPreference.desiredSkillEntries),
+      versionSelections: skillVersionSelectionMap(runtimeSkillPreference.desiredSkillEntries, {
+        versionPinsEnabled: resolvedInstanceSettings.experimental.enableBetaSkills === true,
+      }),
     });
     let runtimeConfig: Record<string, unknown> = {
       ...effectiveResolvedConfig,
@@ -12435,7 +13324,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           agent,
           context,
           previousSessionParams,
-          { useProjectWorkspace: requestedExecutionWorkspaceMode !== "agent_default" },
+          {
+            useProjectWorkspace: requestedExecutionWorkspaceMode !== "agent_default",
+            // Thread the selected environment driver so run-workspace resolution can tell a local
+            // target from a remote one, and a confined sandbox target from an unconfined remote
+            // target. A remote run resolves referenced projects only for the confined sandbox
+            // transport with the remote flag on. This never changes the anchor workspace.
+            executionEnvironmentDriver: selectedEnvironmentForConfig?.driver ?? null,
+          },
         ),
     });
     const hostExecutionWorkspaceConfig = stripHostWorkspaceProvisionForLowTrustSandbox({
@@ -12450,6 +13346,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       workspaceId: resolvedWorkspace.workspaceId,
       repoUrl: resolvedWorkspace.repoUrl,
       repoRef: resolvedWorkspace.repoRef,
+      additionalWorkspaces: resolvedWorkspace.additionalWorkspaces,
     } satisfies ExecutionWorkspaceInput;
     await assertGitWorktreeBaseWorkspaceReady({
       requestedExecutionWorkspaceMode,
@@ -12775,6 +13672,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       heartbeatRunId: run.id,
       agentId: agent.id,
       persistedExecutionWorkspace,
+      executionWorkspaceSettings: environmentExecutionWorkspaceSettings,
     });
     const selectedEnvironment = acquiredEnvironment.environment;
     // Defense-in-depth: re-check the actually-acquired environment against the
@@ -12941,7 +13839,28 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         return home;
       })(),
     };
-    context.paperclipWorkspaces = resolvedWorkspace.workspaceHints;
+    context.paperclipWorkspaces = buildRunWorkspaceHints(resolvedWorkspace);
+    // Emit exactly one requested-vs-synced observability line for the referenced-project set. A run
+    // with no referenced project stays silent, so this adds no noise to the anchor-only default. The
+    // per-drop human warning already rides `runtimeWorkspaceWarnings`; this line carries the counts
+    // and the per-failure reason for a partial sync.
+    const referencedProjectObservability = buildReferencedProjectRunObservability({
+      syncedProjectIds: resolvedWorkspace.additionalWorkspaces.map(
+        (additional) => additional.projectId,
+      ),
+      failures: resolvedWorkspace.referencedProjectFailures,
+    });
+    if (referencedProjectObservability.referenced_projects_requested > 0) {
+      logger.info(
+        {
+          runId: run.id,
+          companyId: agent.companyId,
+          issueId: issueRef?.id ?? null,
+          ...referencedProjectObservability,
+        },
+        "run referenced-project sync",
+      );
+    }
     // The wake payload is built before the execution workspace is resolved, so
     // attach the branch pin here; the shared wake-prompt renderer surfaces it as
     // a one-time "stay on this branch" hint on non-resumed sessions.
@@ -13607,6 +14526,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           onLog,
           onMeta: onAdapterMeta,
           onEvent: onAdapterEvent,
+          // The endpoint-gated OpenTelemetry startup trace context. It is a
+          // no-op unless `OTEL_EXPORTER_OTLP_ENDPOINT` is set and the OTel
+          // packages are installed, so the sandbox-start span path stays inert
+          // by default.
+          startupTraceContext: getStartupTraceContext(),
           onRuntimeProgress: async (progress) => {
             await recordCurrentHeartbeatRunRuntimeProgress(run, progress, issueId);
           },
@@ -13659,6 +14583,37 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             "failed to revoke heartbeat-run MCP gateway tokens",
           );
         }
+      }
+      // Reconcile the referenced-project set against the real remote staging outcome. A referenced
+      // project can pass authorization and clone locally at run prep, then fail to stage into the
+      // sandbox during execution. The run-prep observability above counts such a project as synced,
+      // so emit a second, stage-time line that counts each staging failure as a first-class
+      // `staging` failure. The synced set is the resolved referenced projects minus the ones that
+      // failed to stage. A run with no staging failure stays silent, so the anchor-only and
+      // fully-synced paths add no noise.
+      const referencedProjectStagingFailures = adapterResult.referencedProjectStagingFailures ?? [];
+      if (referencedProjectStagingFailures.length > 0) {
+        const stagingFailedProjectIds = new Set(
+          referencedProjectStagingFailures.map((failure) => failure.projectId),
+        );
+        const stagedProjectObservability = buildReferencedProjectRunObservability({
+          syncedProjectIds: resolvedWorkspace.additionalWorkspaces
+            .map((additional) => additional.projectId)
+            .filter((projectId) => !stagingFailedProjectIds.has(projectId)),
+          failures: referencedProjectStagingFailures.map((failure) => ({
+            projectId: failure.projectId,
+            reason: "staging" as const,
+          })),
+        });
+        logger.info(
+          {
+            runId: run.id,
+            companyId: agent.companyId,
+            issueId: issueRef?.id ?? null,
+            ...stagedProjectObservability,
+          },
+          "run referenced-project remote staging",
+        );
       }
       const adapterManagedRuntimeServices = adapterResult.runtimeServices
         ? await persistAdapterManagedRuntimeServices({
@@ -16918,7 +17873,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       triggerDetail: "manual" | "ping" | "callback" | "system" = "manual",
       actor?: { actorType?: "user" | "agent" | "system"; actorId?: string | null },
     ) =>
-      enqueueWakeup(agentId, {
+      trackWakeup(agentId, {
         source,
         triggerDetail,
         contextSnapshot,
@@ -16926,7 +17881,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         requestedByActorId: actor?.actorId ?? null,
       }),
 
-    wakeup: enqueueWakeup,
+    wakeup: trackWakeup,
     triggerIssueMonitor,
 
     reportRunActivity: clearDetachedRunWarning,

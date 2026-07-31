@@ -1,5 +1,5 @@
 import { sql } from "drizzle-orm";
-import { index, integer, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
+import { index, integer, jsonb, pgTable, text, timestamp, uniqueIndex, uuid } from "drizzle-orm/pg-core";
 import { agents } from "./agents.js";
 import { companies } from "./companies.js";
 import { heartbeatRuns } from "./heartbeat_runs.js";
@@ -17,6 +17,8 @@ export const issueWatchdogs = pgTable(
     watchdogIssueId: uuid("watchdog_issue_id").references(() => issues.id, { onDelete: "set null" }),
     lastObservedFingerprint: text("last_observed_fingerprint"),
     lastReviewedFingerprint: text("last_reviewed_fingerprint"),
+    lastObservedStopSnapshot: jsonb("last_observed_stop_snapshot"),
+    lastReviewedStopSnapshot: jsonb("last_reviewed_stop_snapshot"),
     lastTriggeredAt: timestamp("last_triggered_at", { withTimezone: true }),
     lastCompletedAt: timestamp("last_completed_at", { withTimezone: true }),
     triggerCount: integer("trigger_count").notNull().default(0),

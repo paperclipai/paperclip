@@ -550,11 +550,54 @@
   animation: shimmer-text-slide 2.5s linear infinite;
 }
 
+.paperclip-thinking-icon {
+  transform-origin: 50% 50%;
+}
+
+@keyframes paperclip-thinking-draw {
+  0% {
+    stroke-dasharray: 0 85.717;
+    stroke-dashoffset: -85.717;
+    opacity: 1;
+    animation-timing-function: cubic-bezier(0.455, 0.03, 0.515, 0.955);
+  }
+  39.0625% {
+    stroke-dasharray: 85.717 85.717;
+    stroke-dashoffset: 0;
+    opacity: 1;
+    animation-timing-function: cubic-bezier(0.55, 0.055, 0.675, 0.19);
+  }
+  78.125% {
+    stroke-dasharray: 0 85.717;
+    stroke-dashoffset: 0;
+    opacity: 1;
+  }
+  78.225% {
+    opacity: 0;
+  }
+  100% {
+    stroke-dasharray: 0 85.717;
+    stroke-dashoffset: 0;
+    opacity: 0;
+  }
+}
+
+.paperclip-thinking-icon-path {
+  animation: paperclip-thinking-draw 1s linear infinite;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .shimmer-text {
     animation: none;
     -webkit-text-fill-color: unset;
     background: none;
+  }
+
+  .paperclip-thinking-icon-path {
+    animation: none;
+    opacity: 1;
+    stroke-dasharray: 85.717 85.717;
+    stroke-dashoffset: 0;
   }
 }
 
@@ -1573,6 +1616,7 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   --sz-calc-1: calc(100% - 1.5rem); /* Extracted from ui/src/components/ActivityFeed.tsx (w-[calc(100%-1.5rem)]). */
   --sz-calc-2: calc(100% - 0.75rem); /* Extracted from ui/src/components/ActivityFeed.tsx (w-[calc(100%-0.75rem)]). */
   --sz-16rem: 16rem; /* Extracted from ui/src/components/ActivityFeed.tsx (max-w-[16rem]). */
+  --sz-20rem: 20rem; /* AgentSkillReleasePicker.tsx release menu width cap. */
   --sz-18px: 18px; /* Extracted from ui/src/components/ActivityFeed.tsx (p-[18px]). */
   --sz-44px: 44px; /* Extracted from ui/src/components/AgentConfigForm.tsx (min-h-[44px]). */
   --sz-88px: 88px; /* Extracted from ui/src/components/AgentConfigForm.tsx (min-h-[88px]). */
@@ -1790,10 +1834,7 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   --gtc-17: 1fr auto; /* Extracted from ui/src/components/ui/card.tsx (grid-cols-[1fr_auto]). */
   --gtc-18: auto minmax(0,1fr) minmax(12rem,0.65fr); /* Extracted from ui/src/pages/AgentDetail.tsx (grid-cols-[auto_minmax(0,1fr)_minmax(12rem,0.65fr)]). */
   --gtc-19: 260px minmax(0,1fr); /* Extracted from ui/src/pages/AgentDetail.tsx (grid-cols-[260px_minmax(0,1fr)]). */
-  --gtc-20: 7rem 8rem 1fr; /* Extracted from ui/src/pages/CloudUpstream.tsx (grid-cols-[7rem_8rem_1fr]). */
-  --gtc-21: 1.25rem 12rem 1fr; /* Extracted from ui/src/pages/CloudUpstream.tsx (grid-cols-[1.25rem_12rem_1fr]). */
-  --gtc-22: 8rem 1fr 1fr 8rem; /* Extracted from ui/src/pages/CloudUpstream.tsx (grid-cols-[8rem_1fr_1fr_8rem]). */
-  --gtc-23: 8rem 1fr auto; /* Extracted from ui/src/pages/CloudUpstream.tsx (grid-cols-[8rem_1fr_auto]). */
+  /* --gtc-20 through --gtc-23 retired with the removed Cloud Upstream page. */
   --gtc-24: minmax(0,1.5fr) 120px 120px 180px; /* Extracted from ui/src/pages/CompanyAccess.tsx (grid-cols-[minmax(0,1.5fr)_120px_120px_180px]). */
   --gtc-25: 19rem minmax(0,1fr); /* Extracted from ui/src/pages/CompanyExport.tsx (grid-cols-[19rem_minmax(0,1fr)]). */
   --gtc-26: 7rem minmax(0,1fr); /* Extracted from ui/src/pages/CompanySkills.tsx (grid-cols-[7rem_minmax(0,1fr)]). */

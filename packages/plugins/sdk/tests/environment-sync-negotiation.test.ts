@@ -166,6 +166,66 @@ describe("environment sync verb negotiation", () => {
     }
   });
 
+  it("test_sync_in_forwards_post_upload_commands_to_plugin_hook", async () => {
+    // Phase 1 (PAP-3222): the optional ordered `postUploadCommands` must survive
+    // the host→worker JSON-RPC hop to `onEnvironmentSyncIn` UNCHANGED — same
+    // order, same fields — and an operation that omits the field must arrive with
+    // it `undefined` (byte-identical to a pre-contract operation).
+    const received: PluginEnvironmentSyncInParams["operations"][] = [];
+    const worker = startTestWorker(
+      definePlugin({
+        async setup() {},
+        async onEnvironmentSyncIn(params): Promise<PluginEnvironmentSyncResult> {
+          received.push(params.operations);
+          return {
+            operations: params.operations.map((op) => ({
+              operationId: op.operationId,
+              filesTransferred: op.files.length,
+              bytesTransferred: 0,
+            })),
+          };
+        },
+      }),
+    );
+    try {
+      await worker.callWorker("initialize", { manifest: MANIFEST, config: {}, databaseNamespace: null });
+      const inParams: PluginEnvironmentSyncInParams = {
+        driverKey: "sandbox",
+        companyId: "company",
+        environmentId: "env",
+        config: {},
+        lease: { providerLeaseId: "lease-1" },
+        operations: [
+          {
+            operationId: "op-with-commands",
+            files: [{ sourcePath: "/host/a", targetPath: "/remote/a", kind: "directory" }],
+            postUploadCommands: [
+              { command: "tar -xf /remote/a.tar -C /remote/a" },
+              { command: "merge-auth /remote/a", cwd: "/remote/a", timeoutMs: 30_000 },
+            ],
+          },
+          {
+            operationId: "op-without-commands",
+            files: [{ sourcePath: "/host/b", targetPath: "/remote/b", kind: "directory" }],
+          },
+        ],
+      };
+      await worker.callWorker<PluginEnvironmentSyncResult>("environmentSyncIn", inParams);
+
+      expect(received).toHaveLength(1);
+      const [withCommands, withoutCommands] = received[0];
+      // Present: forwarded unchanged, order preserved, no rewriting.
+      expect(withCommands.postUploadCommands).toEqual([
+        { command: "tar -xf /remote/a.tar -C /remote/a" },
+        { command: "merge-auth /remote/a", cwd: "/remote/a", timeoutMs: 30_000 },
+      ]);
+      // Absent: arrives undefined (backward compatible).
+      expect(withoutCommands.postUploadCommands).toBeUndefined();
+    } finally {
+      worker.stop();
+    }
+  });
+
   it("throws METHOD_NOT_IMPLEMENTED when the sync hooks are absent", async () => {
     const worker = startTestWorker(definePlugin({ async setup() {} }));
     try {

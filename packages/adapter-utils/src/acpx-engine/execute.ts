@@ -28,6 +28,7 @@ import {
   type AdapterExecutionTargetTimeoutResolution,
   type AdapterManagedRuntimeAsset,
   type PreparedAdapterExecutionTargetRuntime,
+  type SandboxAdditionalSource,
 } from "@paperclipai/adapter-utils/execution-target";
 import {
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
@@ -49,6 +50,7 @@ import {
   renderPaperclipWakePrompt,
   renderTemplate,
   resolvePaperclipInstanceRootForAdapter,
+  selectPaperclipTaskMarkdown,
   resolvePaperclipDesiredSkillNames,
   removeMaintainerOnlySkillSymlinks,
   rewriteWorkspaceCwdEnvVarsForExecution,
@@ -81,6 +83,16 @@ import {
   DEFAULT_ACP_ENGINE_TIMEOUT_SEC,
   DEFAULT_ACP_ENGINE_WARM_HANDLE_IDLE_MS,
 } from "./constants.js";
+import {
+  measureStartupStep,
+  NOOP_STARTUP_SPAN,
+  NOOP_STARTUP_TRACE_CONTEXT,
+  type StartupSpan,
+  type StartupSpanContext,
+  type StartupStepMeasureOptions,
+  type StartupTraceContext,
+} from "./startup-timing.js";
+import type { CommandManagedRuntimeRunner } from "../command-managed-runtime.js";
 
 const defaultModuleDir = path.dirname(fileURLToPath(import.meta.url));
 const PAPERCLIP_MANAGED_CODEX_SKILLS_MANIFEST = ".paperclip-managed-skills.json";
@@ -118,12 +130,24 @@ function flushChildStderr(state: ChildStderrState) {
   state.pendingLiveLine = "";
 }
 
-type AcpxRuntimeFactory = (options: AcpRuntimeOptions) => AcpRuntime;
+type AcpxAgentProcessIdentity = { pid: number; startedAt: string };
+
+type PaperclipAcpRuntimeOptions = AcpRuntimeOptions & {
+  onAgentSpawn?: (meta: AcpxAgentProcessIdentity) => Promise<void>;
+};
+
+type AcpxProcessIdentitySink = {
+  current: AdapterExecutionContext["onSpawn"];
+  latest: AcpxAgentProcessIdentity | null;
+};
+
+type AcpxRuntimeFactory = (options: PaperclipAcpRuntimeOptions) => AcpRuntime;
 
 export interface RuntimeCacheEntry {
   runtime: AcpRuntime;
   handle: AcpRuntimeHandle;
   childStderrState: ChildStderrState;
+  processIdentitySink: AcpxProcessIdentitySink;
   fingerprint: string;
   lastUsedAt: number;
   cleanupTimer?: NodeJS.Timeout;
@@ -318,6 +342,13 @@ interface AcpxPreparedRuntime {
   acpxAgent: string;
   mode: "persistent" | "oneshot";
   cwd: string;
+  // Host-only spawn cwd for the acpx runtime's host `spawn()` of the relay
+  // proxy on the remote process-session lane. On that lane `cwd` is the
+  // IN-SANDBOX `remoteCwd` (host-nonexistent), so the host proxy must `chdir`
+  // into a HOST-valid dir instead — the engine's host `cwd`. `undefined` on
+  // every other lane, where acpx falls back to `cwd` (byte-identical). It is
+  // deliberately NOT part of the session fingerprint / compat key.
+  hostSpawnCwd: string | undefined;
   workspaceId: string;
   workspaceRepoUrl: string;
   workspaceRepoRef: string;
@@ -372,6 +403,12 @@ interface AcpxPreparedRuntime {
   paperclipClaudeSettings: PaperclipClaudeSettingsResult | null;
   mcpServers: NonNullable<AcpRuntimeOptions["mcpServers"]>;
   mcpIdentity: Array<{ name: string; url: string; connectionId: string }>;
+  // Per-step round-trip / provider-duration readers sourced from the sandbox
+  // runner's counters (Open Q1). Empty for local runs and the runner-less
+  // fallback, where no host→sandbox exec seam exists. Threaded into the
+  // `acp.handshake` `measureStartupStep` call in the executor (the other six
+  // boundaries live inside `buildRuntime` and read it directly).
+  stepMetrics: StartupStepMeasureOptions;
 }
 
 const defaultWarmHandles = new Map<string, RuntimeCacheEntry>();
@@ -400,6 +437,83 @@ function stableJson(value: unknown): string {
 
 function shortHash(value: unknown): string {
   return createHash("sha256").update(stableJson(value)).digest("hex").slice(0, 16);
+}
+
+// Directory names the staging path never ships for a referenced project (heavy
+// build/cache output and git history). The content signature skips them so it
+// reflects only the staged tree and never reads their bytes. Keep this set equal
+// to the staging excludes in the sandbox and remote runtimes.
+const REFERENCED_SOURCE_SIGNATURE_SKIP_DIRS = new Set([
+  "node_modules",
+  "vendor",
+  "dist",
+  "build",
+  "out",
+  "coverage",
+  ".next",
+  ".turbo",
+  ".cache",
+  ".git",
+]);
+
+/**
+ * Content signature of a referenced-project host tree for the session fingerprint.
+ *
+ * The staged-runtime cache reuses an already-staged referenced-project tree on a
+ * compatible resume and does not re-sync it. Referenced-project metadata (id, host
+ * path, workspace id, repo url, pinned ref) can stay identical while the files at
+ * that host path change: a branch moved to a new commit, a re-checkout in place, or
+ * a dirty worktree. So the metadata identity alone lets a resume serve a stale tree.
+ * This signature folds the tree's own content state into the identity.
+ *
+ * The walk reads each file's relative path and bytes and folds them into the hash.
+ * It reads bytes, not only file stats. A stat-only signature (size and modification
+ * time) collides when an edit keeps the byte length and the modification time — a
+ * re-checkout that restores the same size and timestamp. The byte hash busts on any
+ * content change, so the fingerprint busts and the next launch stages the current
+ * tree. The walk skips the heavy build, cache, and git directories the staging path
+ * never ships, and records a symlink by its target text without following it. On a
+ * read error the function returns a stable marker, so the fingerprint does not churn
+ * while staging surfaces the real error. The walk runs only when the run carries
+ * referenced projects (the multi-project sync path).
+ */
+async function referencedSourceContentSignature(localPath: string): Promise<string> {
+  const hash = createHash("sha256");
+  const walk = async (relative: string): Promise<void> => {
+    const current = relative ? path.join(localPath, relative) : localPath;
+    const dirents = await fs.readdir(current, { withFileTypes: true });
+    dirents.sort((left, right) => (left.name < right.name ? -1 : left.name > right.name ? 1 : 0));
+    for (const dirent of dirents) {
+      const next = relative ? path.posix.join(relative, dirent.name) : dirent.name;
+      if (dirent.isDirectory()) {
+        if (REFERENCED_SOURCE_SIGNATURE_SKIP_DIRS.has(dirent.name)) {
+          continue;
+        }
+        await walk(next);
+        continue;
+      }
+      const absolute = path.join(localPath, next);
+      const stats = await fs.lstat(absolute);
+      if (stats.isSymbolicLink()) {
+        const target = await fs.readlink(absolute);
+        hash.update(`symlink:${next}:${target}\n`);
+        continue;
+      }
+      if (!stats.isFile()) {
+        hash.update(`other:${next}:${stats.mode}\n`);
+        continue;
+      }
+      hash.update(`file:${next}:${stats.size}\n`);
+      hash.update(await fs.readFile(absolute));
+      hash.update("\n");
+    }
+  };
+  try {
+    await walk("");
+  } catch (error) {
+    return `unreadable:${String(error)}`;
+  }
+  return hash.digest("hex").slice(0, 16);
 }
 
 function defaultPaperclipInstanceDir(): string {
@@ -822,7 +936,20 @@ async function prepareCodexSkillRuntime(input: {
   env: Record<string, string>;
   moduleDir: string;
   onLog: AdapterExecutionContext["onLog"];
+  // Step-timing seam: threaded from `buildRuntime` so the nested
+  // `skills.reconcile` boundary (step 3) can emit its own `run.startup.step`
+  // event at its call-site. Both optional — a caller without an event sink or
+  // clock is a plain no-op passthrough (the timing helper guards a missing
+  // `onEvent`), so the codex skill prep behaves identically when unmeasured.
+  onEvent?: AdapterExecutionContext["onEvent"];
+  now?: () => number;
+  // Round-trip / provider-duration readers for the nested `skills.reconcile`
+  // boundary (Open Q1). Threaded from `buildRuntime` so the step reports the
+  // same host→sandbox counters as its siblings (0 here — skill prep is
+  // host-only — which is itself the answer to "does this step exec?").
+  stepMetrics?: StartupStepMeasureOptions;
 }): Promise<{ identity: Record<string, unknown>; commandNotes: string[] }> {
+  const now = input.now ?? (() => Date.now());
   const envConfig = parseObject(input.config.env);
   const configuredCodexHome =
     typeof envConfig.CODEX_HOME === "string" && envConfig.CODEX_HOME.trim().length > 0
@@ -844,12 +971,17 @@ async function prepareCodexSkillRuntime(input: {
   const skillSetKey = await buildSkillSetKey({ skills: selectedSkills, label: "codex" });
   const skillsHome = path.join(effectiveCodexHome, "skills");
   await fs.mkdir(skillsHome, { recursive: true });
-  await reconcileManagedCodexSkills({
-    skillsHome,
-    allSkills,
-    selectedSkills,
-    onLog: input.onLog,
-  });
+  // Step 3 — skills.reconcile: nested inside the codex-home seed (step 2), so it
+  // emits its own boundary event at this call-site.
+  await measureStartupStep({ onEvent: input.onEvent }, now, "skills.reconcile", () =>
+    reconcileManagedCodexSkills({
+      skillsHome,
+      allSkills,
+      selectedSkills,
+      onLog: input.onLog,
+    }),
+    input.stepMetrics ?? {},
+  );
 
   for (const entry of selectedSkills) {
     const target = path.join(skillsHome, entry.runtimeName);
@@ -1175,6 +1307,11 @@ async function stageAcpRemoteRuntime(input: {
   workspaceRemoteDir?: string;
   timeoutSec: number;
   assets?: AdapterManagedRuntimeAsset[];
+  // Referenced (additional) projects to stage into the sandbox as plain,
+  // read-only trees alongside the anchor workspace. Empty unless run prep
+  // resolved referenced projects (gated upstream), so the anchor-only path is
+  // unchanged.
+  additionalSources?: SandboxAdditionalSource[];
   onLog: AdapterExecutionContext["onLog"];
   onRuntimeProgress: AdapterExecutionContext["onRuntimeProgress"];
 }): Promise<PreparedAdapterExecutionTargetRuntime> {
@@ -1190,17 +1327,44 @@ async function stageAcpRemoteRuntime(input: {
     workspaceLocalDir: input.workspaceLocalDir,
     ...(input.workspaceRemoteDir ? { workspaceRemoteDir: input.workspaceRemoteDir } : {}),
     ...(input.assets && input.assets.length > 0 ? { assets: input.assets } : {}),
+    ...(input.additionalSources && input.additionalSources.length > 0
+      ? { additionalSources: input.additionalSources }
+      : {}),
     onProgress: (line) => input.onLog("stdout", line),
     onRuntimeProgress: input.onRuntimeProgress,
   });
+}
+
+// Bind a startup-step round-trip/provider-duration reader set to a runner's
+// cumulative counters (Open Q1). Only the sandbox runner instruments the exec
+// seam, so a runner without `execCount` (SSH, or none) yields an empty option
+// set and the affected steps omit the fields entirely. Reader closures are
+// passed — not the runner — so `measureStartupStep` stays runner-agnostic.
+function buildStartupStepMetrics(
+  runner: CommandManagedRuntimeRunner | undefined,
+): StartupStepMeasureOptions {
+  if (!runner) return {};
+  return {
+    ...(runner.execCount ? { roundTrips: () => runner.execCount!() } : {}),
+    ...(runner.providerExecMs ? { providerExecMs: () => runner.providerExecMs!() } : {}),
+    ...(runner.providerGetMs ? { providerGetMs: () => runner.providerGetMs!() } : {}),
+  };
 }
 
 async function buildRuntime(input: {
   ctx: AdapterExecutionContext;
   engine: AcpxEngineSettings;
   deps: AcpxEngineExecutorOptions;
+  // The injected tracer plus the root-span parent-context token. Merged into
+  // every startup-step option set, so each boundary span parents to the one
+  // root span (`sandbox.startup`) that the executor opens.
+  spanParent: Pick<StartupStepMeasureOptions, "tracer" | "parentContext">;
 }): Promise<AcpxPreparedRuntime> {
   const { runId, agent, config, context, authToken } = input.ctx;
+  // Injectable monotonic clock for per-step startup timing. Hoisted above the
+  // first instrumented boundary (step 1 `workspace.resolve`, below) so every
+  // `measureStartupStep` call in this function shares one deterministic clock.
+  const nowMs = input.deps.now ?? (() => Date.now());
   const workspaceContext = parseObject(context.paperclipWorkspace);
   const secretsContext = parseObject(context.paperclipSecrets);
   const secretManifest = Array.isArray(secretsContext.manifest) ? secretsContext.manifest : [];
@@ -1217,6 +1381,52 @@ async function buildRuntime(input: {
   const useConfiguredInsteadOfAgentHome = workspaceSource === "agent_home" && configuredCwd.length > 0;
   const effectiveWorkspaceCwd = useConfiguredInsteadOfAgentHome ? "" : workspaceCwd;
   const cwd = effectiveWorkspaceCwd || configuredCwd || process.cwd();
+  // Referenced (additional) projects to stage into the sandbox alongside the
+  // anchor workspace, read from the workspace realization record. The list is
+  // empty unless run prep resolved referenced projects — gated upstream by the
+  // multi-project workspace-sync kill-switch — so the anchor-only path is
+  // unchanged.
+  const realizationContext = parseObject(workspaceContext.realization);
+  const additionalSourceRecords = (
+    Array.isArray(realizationContext.additional) ? realizationContext.additional : []
+  ).map((entry) => parseObject(entry));
+  const additionalSources: SandboxAdditionalSource[] = additionalSourceRecords
+    .map((entry) => ({ localPath: asString(entry.path, ""), projectId: asString(entry.projectId, "") }))
+    .filter((entry) => entry.localPath.length > 0 && entry.projectId.length > 0);
+  // Stable identity of the referenced-project set for the session fingerprint.
+  // The staged-runtime cache reuses already-staged referenced-project trees on a
+  // compatible resume, so the fingerprint must change when the set OR a project's
+  // pinned checkout changes. Without this, a resume reuses a stale staged tree.
+  // Fold in each project's id, host path, workspace id, and pinned ref; sort by
+  // projectId so the identity depends on the set, not the record order.
+  const additionalSourcesIdentityBase = additionalSourceRecords
+    .map((entry) => ({
+      projectId: asString(entry.projectId, ""),
+      localPath: asString(entry.path, ""),
+      projectWorkspaceId: asString(entry.projectWorkspaceId, ""),
+      repoUrl: asString(entry.repoUrl, ""),
+      repoRef: asString(entry.repoRef, ""),
+    }))
+    .filter((entry) => entry.localPath.length > 0 && entry.projectId.length > 0)
+    .sort((a, b) => (a.projectId < b.projectId ? -1 : a.projectId > b.projectId ? 1 : 0));
+  // Metadata alone does not change on a content-only checkout change (same host
+  // path and pinned ref, new file bytes). Fold in each tree's content signature so
+  // a file add, remove, or edit busts the fingerprint and the resume re-stages.
+  const additionalSourcesIdentity = await Promise.all(
+    additionalSourcesIdentityBase.map(async (entry) => ({
+      ...entry,
+      contentSignature: await referencedSourceContentSignature(entry.localPath),
+    })),
+  );
+  // Referenced-project workspace hints exposed to the agent through PAPERCLIP_WORKSPACES_JSON. The
+  // list joins the anchor project's alternative workspaces with the referenced (mentioned) projects.
+  // On the confined sandbox lane the run repoints each referenced hint at its staged directory after
+  // staging below. Empty unless run prep resolved referenced projects or alternative workspaces.
+  const workspaceHints = Array.isArray(context.paperclipWorkspaces)
+    ? context.paperclipWorkspaces.filter(
+        (value): value is Record<string, unknown> => typeof value === "object" && value !== null,
+      )
+    : [];
   const executionTarget = readAdapterExecutionTarget({
     executionTarget: input.ctx.executionTarget,
     legacyRemoteExecution: input.ctx.executionTransport?.remoteExecution,
@@ -1227,13 +1437,41 @@ async function buildRuntime(input: {
       ? remoteExecutionIdentity.remoteCwd
       : cwd;
   const executionTargetIsRemote = remoteExecutionIdentity !== null;
+  // Round-trip / provider-duration readers for per-step attribution (Open Q1),
+  // sourced from the sandbox runner's cumulative counters. `measureStartupStep`
+  // reads each as a `() => number` closure (never the runner itself, Risk R1)
+  // and emits the per-step delta. Empty when there is no runner (local runs,
+  // the runner-less ACP→CLI fallback, or an SSH runner that does not
+  // instrument the seam), so those steps simply omit the fields.
+  // Merge the injected tracer + root parent-context into every step option set,
+  // so each boundary span parents to the root span. With no injected trace
+  // context both fields are no-ops and the span path stays inert.
+  const stepMetrics: StartupStepMeasureOptions = {
+    ...buildStartupStepMetrics(
+      executionTarget?.kind === "remote" && executionTarget.transport === "sandbox"
+        ? executionTarget.runner
+        : undefined,
+    ),
+    ...input.spanParent,
+  };
+  // The two bridge-start steps intentionally overlap, so their runner counters
+  // would double-count each other if we sampled them here. Keep the shared
+  // counter attribution on the sequential startup phases only; the concurrent
+  // bridge steps still emit duration telemetry (and a span), just not
+  // misleading per-step round-trip/provider deltas.
+  const concurrentBridgeStepMetrics: StartupStepMeasureOptions = { ...input.spanParent };
   const shapedWorkspaceEnv = shapePaperclipWorkspaceEnvForExecution({
     workspaceCwd: effectiveWorkspaceCwd,
     workspaceWorktreePath,
     executionTargetIsRemote,
     executionCwd: effectiveExecutionCwd,
   });
-  await ensureAbsoluteDirectory(cwd, { createIfMissing: true });
+  // Step 1 — workspace.resolve: the workspace resolution/fallback chain closes
+  // here on the awaited directory materialization.
+  await measureStartupStep(input.ctx, nowMs, "workspace.resolve", () =>
+    ensureAbsoluteDirectory(cwd, { createIfMissing: true }),
+    stepMetrics,
+  );
 
   const acpxAgent = normalizeAgent(config);
   const mode = normalizeMode(config);
@@ -1381,13 +1619,22 @@ async function buildRuntime(input: {
       }, +${paperclipClaudeSettings.additionalDirectories.length} read root(s), +${paperclipClaudeSettings.allow.length} allow rule(s)).`,
     );
   } else if (acpxAgent === "codex") {
-    const preparedSkills = await prepareCodexSkillRuntime({
-      companyId: agent.companyId,
-      config,
-      env,
-      moduleDir: input.engine.moduleDir,
-      onLog: input.ctx.onLog,
-    });
+    // Step 2 — codex-home.seed: the codex managed-home + skills preparation.
+    // The nested skills.reconcile boundary (step 3) is timed inside via the
+    // threaded onEvent/now seam.
+    const preparedSkills = await measureStartupStep(input.ctx, nowMs, "codex-home.seed", () =>
+      prepareCodexSkillRuntime({
+        companyId: agent.companyId,
+        config,
+        env,
+        moduleDir: input.engine.moduleDir,
+        onLog: input.ctx.onLog,
+        onEvent: input.ctx.onEvent,
+        now: nowMs,
+        stepMetrics,
+      }),
+      stepMetrics,
+    );
     skillsIdentity = preparedSkills.identity;
     skillCommandNotes.push(...preparedSkills.commandNotes);
   } else if (acpxAgent === "gemini") {
@@ -1468,6 +1715,11 @@ async function buildRuntime(input: {
     requestedThinkingEffort,
     fastMode,
     remoteExecutionIdentity,
+    // Referenced-project set + pinned-checkout identity. A change here (a project
+    // added, removed, or re-pinned) invalidates a warm/resumable session so the
+    // next launch stages the current referenced-project trees instead of reusing
+    // a stale staged tree.
+    additionalSourcesIdentity,
     skillsIdentity,
     skillPromptInstructions,
     paperclipClaudeSettings: paperclipClaudeSettings
@@ -1527,7 +1779,6 @@ async function buildRuntime(input: {
   //     re-checks the cache before deciding).
   const stagedRuntimes = input.deps.stagedRuntimes ?? defaultStagedRuntimes;
   const stagingLocks = input.deps.stagingLocks ?? defaultStagingLocks;
-  const nowMs = input.deps.now ?? (() => Date.now());
   const previousParams = parseObject(input.ctx.runtime.sessionParams);
   const isCompatibleResume = isCompatibleSession(previousParams, {
     fingerprint,
@@ -1597,6 +1848,7 @@ async function buildRuntime(input: {
           workspaceRemoteDir: sessionCwd,
           timeoutSec,
           assets,
+          additionalSources,
           onLog: input.ctx.onLog,
           onRuntimeProgress: input.ctx.onRuntimeProgress,
         });
@@ -1605,29 +1857,42 @@ async function buildRuntime(input: {
       // verbatim on a later compatible resume. Add/change only — every seam sets
       // (never deletes) its home env var, so a set-based delta is complete.
       const envBeforeStage = { ...env };
-      let freshStagedRuntime: PreparedAdapterExecutionTargetRuntime;
-      let freshTeardown: (() => Promise<void>) | null = null;
-      let freshDispose: (() => Promise<void>) | null = null;
-      if (input.deps.prepareRemoteManagedHome) {
-        const seeded = await input.deps.prepareRemoteManagedHome({
-          acpxAgent,
-          companyId: agent.companyId,
-          runId,
-          config,
-          executionTarget: remoteTarget,
-          workspaceLocalDir: cwd,
-          timeoutSec,
-          env,
-          onLog: input.ctx.onLog,
-          onRuntimeProgress: input.ctx.onRuntimeProgress,
-          stage,
-        });
-        freshStagedRuntime = seeded.stagedRuntime;
-        freshTeardown = seeded.teardown ?? null;
-        freshDispose = seeded.disposeStaged ?? null;
-      } else {
-        freshStagedRuntime = await stage([]);
-      }
+      // Step 4 — stage.sync: ship the workspace (and, via the seam, the managed
+      // home) into the sandbox. Only fires on a fresh stage; a compatible resume
+      // that reuses an already-staged runtime skips this block entirely. The
+      // measured callback returns the staged result so the timing wrap does not
+      // disturb definite-assignment of the outer bindings.
+      const {
+        stagedRuntime: freshStagedRuntime,
+        teardown: freshTeardown,
+        dispose: freshDispose,
+      } = await measureStartupStep(input.ctx, nowMs, "stage.sync", async (): Promise<{
+        stagedRuntime: PreparedAdapterExecutionTargetRuntime;
+        teardown: (() => Promise<void>) | null;
+        dispose: (() => Promise<void>) | null;
+      }> => {
+        if (input.deps.prepareRemoteManagedHome) {
+          const seeded = await input.deps.prepareRemoteManagedHome({
+            acpxAgent,
+            companyId: agent.companyId,
+            runId,
+            config,
+            executionTarget: remoteTarget,
+            workspaceLocalDir: cwd,
+            timeoutSec,
+            env,
+            onLog: input.ctx.onLog,
+            onRuntimeProgress: input.ctx.onRuntimeProgress,
+            stage,
+          });
+          return {
+            stagedRuntime: seeded.stagedRuntime,
+            teardown: seeded.teardown ?? null,
+            dispose: seeded.disposeStaged ?? null,
+          };
+        }
+        return { stagedRuntime: await stage([]), teardown: null, dispose: null };
+      }, stepMetrics);
       const delta: Record<string, string> = {};
       for (const [key, value] of Object.entries(env)) {
         if (envBeforeStage[key] !== value) delta[key] = value;
@@ -1644,6 +1909,27 @@ async function buildRuntime(input: {
     remoteManagedHomeTeardown = staged.value.teardown;
     remoteStagingDispose = staged.value.dispose;
     remoteStagingEnvDelta = staged.value.envDelta;
+    // Publish the referenced-project workspace hints to the in-sandbox agent. The staged-directory
+    // map (`project-<projectId>`) is known only after staging above, so this runs here rather than
+    // with the initial workspace shaping. Each referenced hint repoints at its staged directory; a
+    // referenced hint whose project did not stage loses its cwd, so the agent never receives an
+    // unstaged path. Only the confined sandbox lane stages referenced trees, so only it publishes
+    // the hints; the local and runner-less lanes keep their env untouched. The set `env` write wins
+    // over an inherited value in the merged launch env.
+    const stagedProjectDirs = stagedRuntime?.additionalSourceDirs ?? {};
+    if (Object.keys(stagedProjectDirs).length > 0) {
+      const shapedHints = shapePaperclipWorkspaceEnvForExecution({
+        workspaceCwd: effectiveWorkspaceCwd,
+        workspaceWorktreePath,
+        workspaceHints,
+        executionTargetIsRemote,
+        executionCwd: effectiveExecutionCwd,
+        stagedProjectDirs,
+      }).workspaceHints;
+      if (shapedHints.length > 0) {
+        env.PAPERCLIP_WORKSPACES_JSON = JSON.stringify(shapedHints);
+      }
+    }
   }
   // Both bridge starts run under one try so a failure at EITHER — including the
   // paperclip callback bridge — fires the same abandon-path cleanup. The
@@ -1656,27 +1942,47 @@ async function buildRuntime(input: {
   let runtimeEnv: Record<string, string> = {};
   try {
     if (useRemoteProcessSession) {
-      paperclipBridge = await startAdapterExecutionTargetPaperclipBridge({
-        runId,
-        target: { ...executionTarget, streamRunLogs: false },
-        runtimeRootDir: stagedRuntime?.runtimeRootDir ?? null,
-        adapterKey: input.engine.adapterType,
-        timeoutSec,
-        hostApiToken: env.PAPERCLIP_API_KEY,
-        onLog: input.ctx.onLog,
-      });
-      if (paperclipBridge) {
-        Object.assign(env, paperclipBridge.env);
-        await input.ctx.onLog("stdout", "[paperclip] Sandbox ACP API callback bridge enabled for this run.\n");
-      }
-    }
-    runtimeEnv = Object.fromEntries(
-      Object.entries(ensurePathInEnv({ ...process.env, ...env })).filter(
-        (entry): entry is [string, string] => typeof entry[1] === "string",
-      ),
-    );
-    processSessionBridge = useRemoteProcessSession
-      ? await startAdapterExecutionTargetProcessSessionBridge({
+      // Steps 5 + 6 — bring up BOTH host-side sandbox bridges concurrently. Their
+      // remote subtrees are disjoint (`…/paperclip-bridge/…` vs
+      // `…/process-sessions/…`), so the env-INDEPENDENT setup of each overlaps,
+      // trending wall time from serial (~bridge.paperclip + ~bridge.process-session)
+      // toward ~max(the two). The ONE real dependency — the paperclip bridge's
+      // returned `env` must reach the process-session LAUNCH — is sequenced by
+      // `finalizeLaunchEnv`: the process-session bridge runs its env-independent
+      // dir/script setup first, then awaits that thunk right before its launch, so
+      // the launch always observes the merged paperclip env.
+      //
+      // Measurement caveat: both starts share ONE runner counter, so their
+      // overlapping `providerExecMs`/`roundTrips` deltas are approximate (the same
+      // caveat as `acp.handshake`). Both `run.startup.step` events still emit —
+      // `measureStartupStep` records them in a `finally`, even on a start failure.
+      const paperclipStart = measureStartupStep(input.ctx, nowMs, "bridge.paperclip", () =>
+        startAdapterExecutionTargetPaperclipBridge({
+          runId,
+          target: { ...executionTarget, streamRunLogs: false },
+          runtimeRootDir: stagedRuntime?.runtimeRootDir ?? null,
+          adapterKey: input.engine.adapterType,
+          timeoutSec,
+          hostApiToken: env.PAPERCLIP_API_KEY,
+          onLog: input.ctx.onLog,
+        }),
+        concurrentBridgeStepMetrics,
+      );
+      // The single sequencing point (paperclip `env` → process-session launch).
+      // Memoized so the merge + log + `runtimeEnv` build run EXACTLY once whether
+      // the process-session bridge consumes it at launch or we finalize it below.
+      let launchEnvPromise: Promise<Record<string, string>> | null = null;
+      const finalizeLaunchEnv = (): Promise<Record<string, string>> =>
+        (launchEnvPromise ??= (async () => {
+          const paperclip = await paperclipStart;
+          if (paperclip) {
+            Object.assign(env, paperclip.env);
+            await input.ctx.onLog("stdout", "[paperclip] Sandbox ACP API callback bridge enabled for this run.\n");
+          }
+          return (runtimeEnv = resolveRuntimeEnv(env));
+        })());
+      const processSessionStart = measureStartupStep(input.ctx, nowMs, "bridge.process-session", () =>
+        startAdapterExecutionTargetProcessSessionBridge({
           runId,
           target: executionTarget,
           runtimeRootDir: stagedRuntime?.runtimeRootDir ?? null,
@@ -1684,13 +1990,35 @@ async function buildRuntime(input: {
           command: "sh",
           args: ["-lc", `exec ${agentCommandShell}`],
           cwd: sessionCwd,
-          env: runtimeEnv,
+          // Deferred: the process-session bridge runs its env-independent setup,
+          // then calls this to get the launch env AFTER the paperclip env merge.
+          env: finalizeLaunchEnv,
           timeoutSec,
           onLog: input.ctx.onLog,
-        })
-      : null;
+        }),
+        concurrentBridgeStepMetrics,
+      );
+      // Settle BOTH starts (mirrors `cleanupRemoteBridges`' `Promise.allSettled`):
+      // collect whichever handles started plus the first failure. Both handles
+      // stay individually declared so the catch below can stop whichever started.
+      const started = await settleRemoteBridgeStarts(paperclipStart, processSessionStart);
+      paperclipBridge = started.paperclipBridge;
+      processSessionBridge = started.processSessionBridge;
+      if (started.failure) throw started.failure;
+      // Guarantee the paperclip env merge ran even if the process-session bridge
+      // returned without consuming the launch env (memoized ⇒ a no-op if it did).
+      await finalizeLaunchEnv();
+    } else {
+      // Local / runner-less lanes never start a bridge, but the returned prepared
+      // runtime and the log builder still read `runtimeEnv`.
+      runtimeEnv = resolveRuntimeEnv(env);
+    }
   } catch (err) {
-    await paperclipBridge?.stop().catch(() => {});
+    // On a partial concurrent bring-up failure, ONE bridge may have started while
+    // the other threw; `Promise.allSettled` stops whichever started so no live
+    // bridge leaks (mirrors `cleanupRemoteBridges`). Both handles are individually
+    // declared above, so either may be non-null here.
+    await Promise.allSettled([paperclipBridge?.stop(), processSessionBridge?.stop()]);
     // The staged home / copy-back teardown must run even if a bridge fails to
     // start after the workspace + managed home were already staged into the
     // sandbox, so a refreshed credential is copied back on this error path too.
@@ -1720,6 +2048,11 @@ async function buildRuntime(input: {
     // → the HOST cwd (`sessionCwd` resolves both). Every cwd-keyed session site
     // reads `prepared.cwd`, so binding it once here keeps them consistent.
     cwd: sessionCwd,
+    // Only the remote process-session lane needs the host proxy's `spawn()`
+    // `chdir` redirected off the in-sandbox `sessionCwd` and onto the host
+    // `cwd` (which is where the workspace was staged FROM, so it is host-valid).
+    // Every other lane leaves it `undefined` → acpx falls back to `cwd`.
+    hostSpawnCwd: useRemoteProcessSession ? cwd : undefined,
     workspaceId,
     workspaceRepoUrl,
     workspaceRepoRef,
@@ -1754,6 +2087,7 @@ async function buildRuntime(input: {
     paperclipClaudeSettings,
     mcpServers,
     mcpIdentity,
+    stepMetrics,
   };
 }
 
@@ -1809,6 +2143,54 @@ async function applySessionConfigOptions(input: {
       `[paperclip] Applied ACPX ${input.prepared.acpxAgent} config ${option.key}=${option.value}\n`,
     );
   }
+}
+
+/**
+ * Build the process-session launch env: the host env overlaid with the run's
+ * `env` (so the merged paperclip bridge vars win) and a guaranteed `PATH`,
+ * narrowed to string values. Shared by the remote concurrent bring-up and the
+ * local / runner-less lane so both resolve the runtime env identically.
+ */
+function resolveRuntimeEnv(env: Record<string, string>): Record<string, string> {
+  return Object.fromEntries(
+    Object.entries(ensurePathInEnv({ ...process.env, ...env })).filter(
+      (entry): entry is [string, string] => typeof entry[1] === "string",
+    ),
+  );
+}
+
+/**
+ * Bring up the two host-side sandbox bridges concurrently and settle both.
+ *
+ * Mirrors `cleanupRemoteBridges`' `Promise.allSettled` idiom (settle, not
+ * `Promise.all`): running BOTH starts to completion is what lets the caller STOP
+ * a bridge that DID start when its sibling threw — so a partial failure never
+ * leaks a live bridge. Returns whichever handles started plus the first failure
+ * (paperclip before process-session) for the caller to rethrow through the
+ * shared abandon path.
+ */
+async function settleRemoteBridgeStarts(
+  paperclipStart: Promise<AdapterExecutionTargetPaperclipBridgeHandle | null>,
+  processSessionStart: Promise<AdapterExecutionTargetProcessSessionBridgeHandle | null>,
+): Promise<{
+  paperclipBridge: AdapterExecutionTargetPaperclipBridgeHandle | null;
+  processSessionBridge: AdapterExecutionTargetProcessSessionBridgeHandle | null;
+  failure: unknown;
+}> {
+  const [paperclip, processSession] = await Promise.allSettled([
+    paperclipStart,
+    processSessionStart,
+  ]);
+  return {
+    paperclipBridge: paperclip.status === "fulfilled" ? paperclip.value : null,
+    processSessionBridge: processSession.status === "fulfilled" ? processSession.value : null,
+    failure:
+      paperclip.status === "rejected"
+        ? paperclip.reason
+        : processSession.status === "rejected"
+          ? processSession.reason
+          : null,
+  };
 }
 
 async function cleanupRemoteBridges(prepared: AcpxPreparedRuntime): Promise<void> {
@@ -1907,12 +2289,17 @@ async function buildPrompt(ctx: AdapterExecutionContext, resumedSession: boolean
     !resumedSession && bootstrapPromptTemplate.trim().length > 0
       ? renderTemplate(bootstrapPromptTemplate, templateData).trim()
       : "";
-  const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, { resumedSession });
+  const taskContextNote = selectPaperclipTaskMarkdown(context, { resumedSession });
+  const wakePrompt = renderPaperclipWakePrompt(context.paperclipWake, {
+    resumedSession,
+    // The task-context markdown is the authoritative brief on this lane; keep
+    // the wake prompt's description copy out so the prompt carries it once.
+    suppressIssueDescription: taskContextNote.length > 0,
+  });
   const shouldUseResumeDeltaPrompt = resumedSession && wakePrompt.length > 0;
   const promptInstructionsPrefix = shouldUseResumeDeltaPrompt ? "" : instructionsPrefix;
   const renderedPrompt = shouldUseResumeDeltaPrompt ? "" : renderTemplate(promptTemplate, templateData);
   const sessionHandoffNote = asString(context.paperclipSessionHandoffMarkdown, "").trim();
-  const taskContextNote = asString(context.paperclipTaskMarkdown, "").trim();
   const paperclipEnvNote = renderPaperclipEnvNote(env);
   const apiAccessNote = renderApiAccessNote(env);
   const prompt = joinPromptSections([
@@ -2460,6 +2847,54 @@ function warmHandleMatches(
   return entry !== undefined && entry.runtime === runtime && entry.handle === handle;
 }
 
+/** The stable name of the one root span for a sandbox bring-up. It is a fixed
+ * low-cardinality constant, never derived from run/user data. */
+const STARTUP_ROOT_SPAN_NAME = "sandbox.startup";
+
+/**
+ * Open the one root span for a sandbox bring-up and return its parent-context
+ * token plus a guarded `end`. The span parents every startup boundary span:
+ * the engine forwards `parentContext` to each `measureStartupStep` call. The
+ * `end` closure runs at most once (bring-up complete OR a bring-up failure) and
+ * swallows every tracer error, so observability never changes startup control
+ * flow. With no injected trace context, the tracer is a no-op and the span is
+ * a no-op.
+ */
+function openStartupRootSpan(tracing: StartupTraceContext): {
+  parentContext: StartupSpanContext;
+  end: (failed: boolean) => void;
+} {
+  let span: StartupSpan;
+  try {
+    span = tracing.tracer.startSpan(STARTUP_ROOT_SPAN_NAME);
+  } catch {
+    span = NOOP_STARTUP_SPAN;
+  }
+  let parentContext: StartupSpanContext;
+  try {
+    parentContext = tracing.contextWithSpan(span);
+  } catch {
+    parentContext = undefined;
+  }
+  let ended = false;
+  return {
+    parentContext,
+    end: (failed: boolean) => {
+      if (ended) return;
+      ended = true;
+      try {
+        // `2` is `SpanStatusCode.ERROR`. `adapter-utils` stays OTel-free, so it
+        // uses the numeric value that a real injected span reads as the error
+        // status.
+        if (failed) span.setStatus({ code: 2 });
+        span.end();
+      } catch {
+        // Observability must not change startup control flow.
+      }
+    },
+  };
+}
+
 export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
   const createRuntime = deps.createRuntime ?? createAcpRuntime;
   const now = deps.now ?? (() => Date.now());
@@ -2490,7 +2925,50 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       now,
       idleMs: warmIdleMs,
     });
-    const prepared = await buildRuntime({ ctx, engine, deps });
+    // The `sandbox.startup` span names a sandbox bring-up. It must not cover a
+    // local or SSH run: those runs have no sandbox, so they stay out of sandbox
+    // telemetry. Open the real root span only when the target is a remote
+    // sandbox; every other target forces the no-op trace context, so the whole
+    // startup span path stays inert regardless of the injected context.
+    const startupExecutionTarget = readAdapterExecutionTarget({
+      executionTarget: ctx.executionTarget,
+      legacyRemoteExecution: ctx.executionTransport?.remoteExecution,
+    });
+    const targetsRemoteSandbox =
+      startupExecutionTarget?.kind === "remote" && startupExecutionTarget.transport === "sandbox";
+    // Open the one root span for this bring-up. It spans `buildRuntime` through
+    // `acp.handshake`, so every startup boundary span parents to it. `spanParent`
+    // carries the injected tracer + the root parent-context token into each
+    // `measureStartupStep` call. With no injected trace context the whole path
+    // is a no-op. `endRootSpan` runs exactly once — at bring-up completion or on
+    // a bring-up failure.
+    const tracing =
+      targetsRemoteSandbox && ctx.startupTraceContext
+        ? ctx.startupTraceContext
+        : NOOP_STARTUP_TRACE_CONTEXT;
+    const rootSpan = openStartupRootSpan(tracing);
+    const spanParent: Pick<StartupStepMeasureOptions, "tracer" | "parentContext"> = {
+      tracer: tracing.tracer,
+      parentContext: rootSpan.parentContext,
+    };
+    let prepared: AcpxPreparedRuntime;
+    try {
+      prepared = await buildRuntime({ ctx, engine, deps, spanParent });
+    } catch (err) {
+      rootSpan.end(true);
+      throw err;
+    }
+    // Per-project staging outcomes for the referenced (mentioned) projects, surfaced back to the
+    // server on the run result. A referenced project that failed to stage into the sandbox is a
+    // first-class, counted failure in the requested-vs-synced observability, not only a warning. The
+    // list is empty on a local target, on a transport that does not stage referenced projects, or
+    // when every staged referenced project succeeded, so the spread adds the field only when there
+    // is a failure to report.
+    const referencedProjectStagingFailures = (
+      prepared.stagedRuntime?.additionalSourceFailures ?? []
+    ).map((failure) => ({ projectId: failure.projectId }));
+    const referencedProjectStagingFailuresField =
+      referencedProjectStagingFailures.length > 0 ? { referencedProjectStagingFailures } : {};
     // State the effective wall-clock timeout and its source up front so a
     // later timeout is diagnosable from the run log alone. Goes to stderr:
     // the acpx stdout log stream carries JSON acpx.* event payloads and must
@@ -2506,10 +2984,24 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
     const resumeSessionId = canResume ? asString(previousParams.acpSessionId, "") || undefined : undefined;
     const cached = canResume ? warmHandles.get(prepared.sessionKey) : undefined;
     const childStderrState = cached?.childStderrState ?? { logPath: null, pendingLiveLine: "" };
+    const processIdentitySink = cached?.processIdentitySink ?? {
+      current: ctx.onSpawn,
+      latest: null,
+    };
+    // ACPX runtimes can stay warm across heartbeat runs. Keep the callback
+    // target mutable so a later agent respawn records identity on the current
+    // heartbeat instead of the run that originally created the runtime.
+    processIdentitySink.current = ctx.onSpawn;
     flushChildStderr(childStderrState);
     childStderrState.logPath = prepared.childStderrLogPath;
-    const runtimeOptions: AcpRuntimeOptions = {
+    const runtimeOptions: PaperclipAcpRuntimeOptions = {
       cwd: prepared.cwd,
+      // Host-only spawn cwd for the relay proxy on the remote process-session
+      // lane; `undefined` elsewhere so acpx falls back to `cwd` (byte-identical).
+      // The advertised `session/new` cwd (`prepared.cwd` = `remoteCwd`) and the
+      // fingerprint / compat key are unaffected — this redirects ONLY the host
+      // `spawn()` `chdir`, not the in-sandbox data path.
+      spawnCwd: prepared.hostSpawnCwd,
       sessionStore: createRuntimeStore({ stateDir: prepared.stateDir }),
       agentRegistry: prepared.agentRegistry,
       permissionMode: prepared.permissionMode,
@@ -2523,8 +3015,32 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       onAgentStderr: prepared.childStderrLogPath
         ? (chunk) => routeChildStderr(childStderrState, chunk)
         : undefined,
+      onAgentSpawn: async (meta) => {
+        processIdentitySink.latest = meta;
+        await processIdentitySink.current?.({
+          pid: meta.pid,
+          processGroupId: null,
+          startedAt: meta.startedAt,
+        });
+      },
     };
-    const runtime = cached?.runtime ?? createRuntime(runtimeOptions);
+    // Open Q2: split the ~7s `acp.handshake` into the two in-repo-observable
+    // sub-phases — the ACP runtime construction (`createRuntime`) vs the session
+    // establishment envelope (`ensureSession`). The patched spawn lifecycle
+    // hook records process identity, but the finer spawn/`initialize`/
+    // `session/new` timing split still lives inside external `acpx`.
+    // `createRuntime` runs once and only on a cold start; a warm-handle hit
+    // reuses `cached.runtime`, so `createRuntimeMs` stays undefined and the
+    // split reports nothing for it.
+    let createRuntimeMs: number | undefined;
+    let runtime: AcpRuntime;
+    if (cached?.runtime) {
+      runtime = cached.runtime;
+    } else {
+      const createRuntimeStart = now();
+      runtime = createRuntime(runtimeOptions);
+      createRuntimeMs = now() - createRuntimeStart;
+    }
     if (cached) clearWarmHandleTimer(cached);
     if (!canResume && asString(previousParams.runtimeSessionName, "")) {
       await ctx.onLog(
@@ -2540,13 +3056,30 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
     try {
       if (!handle) {
         try {
-          handle = await runtime.ensureSession({
-            sessionKey: prepared.sessionKey,
-            agent: prepared.acpxAgent,
-            mode: prepared.mode,
-            cwd: prepared.cwd,
-            resumeSessionId,
-            sessionOptions: { env: prepared.env },
+          // Step 7 — acp.handshake: ACP session establishment (session/new or
+          // resume). A throwing handshake still reports its duration before the
+          // resume-retry path below runs. `roundTrips` is expected to be 0 (the
+          // ACP client is external, not the host exec seam); the payload also
+          // carries the createRuntime/ensureSession sub-split (Open Q2).
+          let ensureSessionMs: number | undefined;
+          handle = await measureStartupStep(ctx, now, "acp.handshake", async () => {
+            const ensureSessionStart = now();
+            const established = await runtime.ensureSession({
+              sessionKey: prepared.sessionKey,
+              agent: prepared.acpxAgent,
+              mode: prepared.mode,
+              cwd: prepared.cwd,
+              resumeSessionId,
+              sessionOptions: { env: prepared.env },
+            });
+            ensureSessionMs = now() - ensureSessionStart;
+            return established;
+          }, {
+            ...prepared.stepMetrics,
+            extra: () => ({
+              ...(createRuntimeMs !== undefined ? { createRuntimeMs } : {}),
+              ...(ensureSessionMs !== undefined ? { ensureSessionMs } : {}),
+            }),
           });
         } catch (err) {
           if (!resumeSessionId || !isResumeFailure(err)) throw err;
@@ -2556,16 +3089,42 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             "stdout",
             `[paperclip] ACPX resume session "${resumeSessionId}" is unavailable; retrying with a fresh session.\n`,
           );
-          handle = await runtime.ensureSession({
-            sessionKey: prepared.sessionKey,
-            agent: prepared.acpxAgent,
-            mode: prepared.mode,
-            cwd: prepared.cwd,
-            sessionOptions: { env: prepared.env },
+          // Fresh-session retry: the runtime was already constructed on the
+          // first attempt (never re-created), so this event reports only its
+          // own `ensureSessionMs` — no `createRuntimeMs`.
+          let retryEnsureSessionMs: number | undefined;
+          handle = await measureStartupStep(ctx, now, "acp.handshake", async () => {
+            const ensureSessionStart = now();
+            const established = await runtime.ensureSession({
+              sessionKey: prepared.sessionKey,
+              agent: prepared.acpxAgent,
+              mode: prepared.mode,
+              cwd: prepared.cwd,
+              sessionOptions: { env: prepared.env },
+            });
+            retryEnsureSessionMs = now() - ensureSessionStart;
+            return established;
+          }, {
+            ...prepared.stepMetrics,
+            extra: () => ({
+              ...(retryEnsureSessionMs !== undefined ? { ensureSessionMs: retryEnsureSessionMs } : {}),
+            }),
           });
         }
       }
+      // A compatible warm handle reuses the already-running ACP agent and does
+      // not emit another spawn event. Persist its known identity on this run
+      // before the next prompt starts so every running heartbeat is adoptable.
+      if (handle && cached && processIdentitySink.latest && ctx.onSpawn) {
+        await ctx.onSpawn({
+          pid: processIdentitySink.latest.pid,
+          processGroupId: null,
+          startedAt: processIdentitySink.latest.startedAt,
+        });
+      }
     } catch (err) {
+      // Bring-up failed at the handshake — close the root span with error status.
+      rootSpan.end(true);
       const { classified, message } = await emitAcpxFailure({
         ctx,
         prepared,
@@ -2581,6 +3140,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         errorMessage: message,
         ...classified,
         ...billingFields,
+        ...referencedProjectStagingFailuresField,
         model: prepared.requestedModel || null,
         clearSession,
         resultJson: { phase: "ensure_session" },
@@ -2589,6 +3149,8 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
     }
 
     if (!handle) {
+      // Bring-up produced no session handle — close the root span with error status.
+      rootSpan.end(true);
       await discardStagedRuntime({ handles: stagedRuntimes, prepared });
       await cleanupRemoteBridges(prepared);
       return {
@@ -2598,11 +3160,16 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         errorMessage: "ACPX did not return a runtime session handle.",
         errorCode: "acpx_runtime_error",
         ...billingFields,
+        ...referencedProjectStagingFailuresField,
         model: prepared.requestedModel || null,
         resultJson: { phase: "ensure_session" },
         summary: "ACPX did not return a runtime session handle.",
       };
     }
+    // Bring-up is complete: the session handle is established. Close the root
+    // span here, so it covers `buildRuntime` through `acp.handshake` and no
+    // further. The agent turn runs after and is out of the startup root's scope.
+    rootSpan.end(false);
     const sessionHandle = handle;
     try {
       await applySessionConfigOptions({
@@ -2637,6 +3204,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         errorMessage: message,
         ...classified,
         ...billingFields,
+        ...referencedProjectStagingFailuresField,
         model: prepared.requestedModel || null,
         clearSession,
         resultJson: {
@@ -2774,6 +3342,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
             runtime,
             handle: sessionHandle,
             childStderrState,
+            processIdentitySink,
             fingerprint: prepared.fingerprint,
             lastUsedAt: now(),
           };
@@ -2837,6 +3406,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         sessionParams: buildSessionParams({ prepared, handle: sessionHandle }),
         sessionDisplayId: sessionHandle.agentSessionId ?? sessionHandle.backendSessionId ?? sessionHandle.runtimeSessionName,
         ...billingFields,
+        ...referencedProjectStagingFailuresField,
         model: prepared.requestedModel || null,
         ...(turnUsage.usage ? { usage: turnUsage.usage, usageBasis: "per_run" as const } : {}),
         costUsd: turnUsage.costUsd,
@@ -2893,6 +3463,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         errorCode: timedOut ? "acpx_timeout" : classified.errorCode,
         errorMeta: classified.errorMeta,
         ...billingFields,
+        ...referencedProjectStagingFailuresField,
         model: prepared.requestedModel || null,
         clearSession: clearSession || timedOut,
         resultJson: { phase: "turn" },

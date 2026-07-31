@@ -3517,7 +3517,15 @@ rl.on("line", (line) => {
       "mcp-stdio-fixture:increment_counter",
       "mcp-stdio-fixture:runtime_status",
     ]);
-    const gateway = createTestToolGatewayService(db, { runtimeSupervisor: { idleTtlMs: 25 } });
+    // Drive idle-down off an injected clock so the assertions below do not
+    // depend on real wall-clock elapsing under 25ms (the source of the flake).
+    // The supervisor computes idleDeadlineAt = now() + idleTtlMs and reaps lazily
+    // on every listRuntimeSlots call, so a fixed clock keeps the slot alive until
+    // we deliberately advance past the TTL.
+    let clockMs = Date.now();
+    const gateway = createTestToolGatewayService(db, {
+      runtimeSupervisor: { idleTtlMs: 25, now: () => new Date(clockMs) },
+    });
     const session = await gateway.createSession({
       companyId: company.id,
       agentId: agent.id,
@@ -3540,6 +3548,7 @@ rl.on("line", (line) => {
     expect(firstData).toMatchObject({ lazyStarted: true, reusedRuntimeSlot: false, counter: 1 });
     expect(secondData).toMatchObject({ lazyStarted: false, reusedRuntimeSlot: true, counter: 1 });
     expect(secondData.slotId).toBe(firstData.slotId);
+    // Clock has not advanced past the deadline, so the slot is deterministically present.
     await expect(gateway.listRuntimeSlots(company.id)).resolves.toHaveLength(1);
     const [idleSlot] = await db.select().from(toolRuntimeSlots).where(eq(toolRuntimeSlots.companyId, company.id));
     expect(idleSlot).toMatchObject({
@@ -3554,7 +3563,8 @@ rl.on("line", (line) => {
       resourceLimits: expect.objectContaining({ memoryCeilingSupported: expect.any(Boolean) }),
     });
 
-    await new Promise((resolve) => setTimeout(resolve, 35));
+    // Advance the injected clock past the idle TTL to deterministically reap the slot.
+    clockMs += 35;
     await expect(gateway.listRuntimeSlots(company.id)).resolves.toEqual([]);
     const [stoppedSlot] = await db.select().from(toolRuntimeSlots).where(eq(toolRuntimeSlots.id, idleSlot.id));
     expect(stoppedSlot).toMatchObject({

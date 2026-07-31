@@ -102,12 +102,23 @@ export function StatusIcon({ status, blockerAttention, onChange, className, show
   }
 
   const trigger = showLabel ? (
-    <button className="inline-flex min-h-5 items-center gap-1.5 cursor-pointer hover:bg-accent/50 rounded px-1 -mx-1 py-0.5 transition-colors">
+    <button
+      type="button"
+      aria-label={`Change status (current: ${ariaLabel})`}
+      className="inline-flex min-h-5 items-center gap-1.5 cursor-pointer hover:bg-accent/50 rounded px-1 -mx-1 py-0.5 transition-colors"
+    >
       {glyph}
       <span className="text-sm">{statusLabel(status)}</span>
     </button>
   ) : (
-    glyph
+    <button
+      type="button"
+      data-slot="icon-button"
+      aria-label={`Change status (current: ${ariaLabel})`}
+      className="inline-flex cursor-pointer items-center justify-center rounded-sm focus-visible:outline-none focus-visible:ring-(length:--rad-3) focus-visible:ring-ring"
+    >
+      {glyph}
+    </button>
   );
 
   return (

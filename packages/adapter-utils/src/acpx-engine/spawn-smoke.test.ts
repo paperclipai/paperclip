@@ -1,3 +1,4 @@
+import { spawn } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -43,4 +44,32 @@ it("spawns a real Node ACP agent with per-session env on this platform", async (
   const stderr = await fs.readFile(path.join(stateDir, "run-stderr", "spawn-smoke.log"), "utf8");
   expect(stderr).toContain("nes/close");
   expect(stderr).toContain("paperclip-acp-echo-agent started");
+});
+
+it("captures the Node error shape for a host-invalid spawn cwd", async () => {
+  // Regression anchor for the primitive behind the remote-lane bug: a host
+  // `spawn()` whose `cwd` does not exist fails BEFORE `exec`, when libuv
+  // `chdir`s into it. The command itself (`process.execPath`) is valid, so the
+  // failure is unambiguously the missing cwd — the exact condition acpx hits
+  // when it host-spawns the relay proxy with the in-sandbox `remoteCwd`.
+  const missingCwd = path.join(os.tmpdir(), "paperclip-acpx-missing-spawn-cwd", "nested", "does-not-exist");
+
+  const err = await new Promise<NodeJS.ErrnoException>((resolve, reject) => {
+    const child = spawn(process.execPath, ["-e", "0"], {
+      cwd: missingCwd,
+      stdio: ["pipe", "pipe", "pipe"],
+    });
+    child.once("error", resolve);
+    child.once("spawn", () => {
+      child.kill("SIGKILL");
+      reject(new Error("expected spawn to fail with a host-invalid cwd, but it started"));
+    });
+  });
+
+  expect(err.code).toBe("ENOENT");
+  // libuv attributes the failed pre-`exec` `chdir` to the command spawn, not to
+  // the missing cwd — `syscall`/`path` point at the executable. This misdirection
+  // is precisely why the remote-lane failure was hard to diagnose.
+  expect(err.syscall).toBe(`spawn ${process.execPath}`);
+  expect(err.path).toBe(process.execPath);
 });

@@ -1,5 +1,5 @@
 import { ChangeEvent, useEffect, useState } from "react";
-import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   DEFAULT_COMPANY_ATTACHMENT_MAX_BYTES,
   MAX_COMPANY_ATTACHMENT_MAX_BYTES,
@@ -8,11 +8,10 @@ import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { companiesApi } from "../api/companies";
 import { assetsApi } from "../api/assets";
-import { instanceSettingsApi } from "../api/instanceSettings";
 import { queryKeys } from "../lib/queryKeys";
 import { Link } from "@/lib/router";
 import { Button } from "@/components/ui/button";
-import { Settings, CloudUpload, Download, Upload } from "lucide-react";
+import { Settings, Download, Upload } from "lucide-react";
 import { CompanyPatternIcon } from "../components/CompanyPatternIcon";
 import {
   Field,
@@ -31,10 +30,6 @@ export function CompanySettings() {
   } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
-  const { data: experimentalSettings } = useQuery({
-    queryKey: queryKeys.instance.experimentalSettings,
-    queryFn: () => instanceSettingsApi.getExperimental(),
-  });
   // General settings local state
   const [companyName, setCompanyName] = useState("");
   const [description, setDescription] = useState("");
@@ -58,7 +53,6 @@ export function CompanySettings() {
     Number.isInteger(attachmentMaxBytes)
     && attachmentMaxBytes >= BYTES_PER_MIB
     && attachmentMaxBytes <= MAX_COMPANY_ATTACHMENT_MAX_BYTES;
-  const cloudSyncEnabled = experimentalSettings?.enableCloudSync === true;
 
   const generalDirty =
     !!selectedCompany &&
@@ -373,19 +367,7 @@ export function CompanySettings() {
           Company Packages
         </div>
         <div className="rounded-md border border-border px-4 py-4">
-          <p className="text-sm text-muted-foreground">
-            Import and export have moved to dedicated pages accessible from the{" "}
-            <Link to="/org" className="underline hover:text-foreground">Org Chart</Link> header.
-          </p>
-          <div className="mt-3 flex flex-wrap items-center gap-2">
-            {cloudSyncEnabled ? (
-              <Button size="sm" asChild>
-                <Link to="/company/settings/cloud-upstream">
-                  <CloudUpload className="mr-1.5 h-3.5 w-3.5" />
-                  Send to Paperclip Cloud
-                </Link>
-              </Button>
-            ) : null}
+          <div className="flex flex-wrap items-center gap-2">
             <Button size="sm" variant="outline" asChild>
               <Link to="/company/export">
                 <Download className="mr-1.5 h-3.5 w-3.5" />

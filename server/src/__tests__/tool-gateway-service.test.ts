@@ -437,6 +437,43 @@ describeEmbeddedPostgres("tool gateway service", () => {
     expect(executionEvents).toHaveLength(1);
   });
 
+  it("refuses to execute an approved action after its issue closes", async () => {
+    const { company, agent, issue, run } = await createRunFixture(db);
+    await db.insert(toolPolicies).values({
+      companyId: company.id,
+      name: "Review note writes",
+      policyType: "require_approval",
+      selectors: { toolName: "mcp-remote-fixture:update_note" },
+    });
+    const gateway = createTestToolGatewayService(db);
+    const session = await gateway.createSession({ companyId: company.id, agentId: agent.id, runId: run.id });
+    const parameters = { noteId: "n1", body: "post-close body" };
+
+    await expect(gateway.executeTool({
+      sessionToken: session.token,
+      tool: "mcp-remote-fixture:update_note",
+      parameters,
+    })).rejects.toMatchObject({ reasonCode: "approval_required" });
+    const [actionRequest] = await db.select().from(toolActionRequests);
+    const now = new Date();
+    await db.update(toolActionRequests).set({ status: "approved", decidedAt: now, resolvedAt: now }).where(eq(toolActionRequests.id, actionRequest.id));
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, issue.id));
+
+    await expect(gateway.executeTool({
+      sessionToken: session.token,
+      tool: "mcp-remote-fixture:update_note",
+      parameters,
+    })).rejects.toMatchObject({ reasonCode: "action_issue_closed" });
+
+    const [settled] = await db.select().from(toolActionRequests).where(eq(toolActionRequests.id, actionRequest.id));
+    expect(settled?.status).toBe("expired");
+    const executionEvents = await db.select().from(toolCallEvents).where(and(
+      eq(toolCallEvents.actionRequestId, actionRequest.id),
+      eq(toolCallEvents.reasonCode, "approved_action_executed"),
+    ));
+    expect(executionEvents).toHaveLength(0);
+  });
+
   it("keeps pre-execute-on-approve approved requests inert", async () => {
     const { company, agent, run } = await createRunFixture(db);
     await db.insert(toolPolicies).values({

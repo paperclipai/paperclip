@@ -8,7 +8,7 @@ import { createIssueDetailPath, withIssueDetailHeaderSeed } from "@/lib/issueDet
 import {
   getIssueDetailQueryOptions,
   ISSUE_DETAIL_STALE_TIME_MS,
-  prefetchIssueDetail,
+  prefetchIssueDetailForNavigation,
 } from "@/lib/issueDetailCache";
 import { queryKeys } from "@/lib/queryKeys";
 import { cn } from "@/lib/utils";
@@ -209,7 +209,7 @@ export const IssueLinkQuicklook = React.forwardRef<
 
   const detailPath = createIssueDetailPath(issuePathId);
   const handlePrefetch = React.useCallback(() => {
-    void prefetchIssueDetail(queryClient, issuePathId, { issue: issuePrefetch });
+    void prefetchIssueDetailForNavigation(queryClient, issuePathId, { issue: issuePrefetch });
   }, [issuePathId, issuePrefetch, queryClient]);
   const link = (
     <RouterDom.Link

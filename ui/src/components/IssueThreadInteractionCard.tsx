@@ -192,6 +192,7 @@ function requestConfirmationResumeFailure(interaction: IssueThreadInteraction) {
 function planStatusClasses(
   status: IssueThreadInteraction["status"],
   resumeFailure?: ReturnType<typeof requestConfirmationResumeFailure>,
+  outcome?: string | null,
 ) {
   switch (status) {
     case "accepted":
@@ -215,7 +216,7 @@ function planStatusClasses(
       return {
         shell: "border-2 border-red-500/80 bg-transparent",
         badge: "border-red-500/60 bg-red-500/10 text-red-900 dark:bg-red-500/15 dark:text-red-100",
-        label: "Changes requested",
+        label: outcome === "withdrawn" ? "Withdrawn" : "Changes requested",
         Icon: XCircle,
       };
     case "failed":
@@ -1154,9 +1155,15 @@ function AskUserQuestionsCard({
         </div>
       ) : interaction.status === "cancelled" ? (
         <div className="rounded-2xl border border-rose-300/60 bg-rose-50/85 p-4 text-sm leading-6 text-rose-950 dark:border-rose-500/40 dark:bg-rose-500/10 dark:text-rose-100">
-          <div className="font-semibold">Question cancelled</div>
+          <div className="font-semibold">
+            {interaction.result?.outcome === "withdrawn"
+              ? questions.length === 1 ? "Question withdrawn" : "Questions withdrawn"
+              : "Question cancelled"}
+          </div>
           {interaction.result?.cancellationReason ? (
             <p className="mt-1">{interaction.result.cancellationReason}</p>
+          ) : interaction.result?.reason ? (
+            <p className="mt-1">{interaction.result.reason}</p>
           ) : (
             <p className="mt-1">No answer was recorded.</p>
           )}
@@ -1165,10 +1172,14 @@ function AskUserQuestionsCard({
         <div className="rounded-2xl border border-amber-300/70 bg-amber-50/85 p-4 text-sm leading-6 text-amber-950 dark:border-amber-500/40 dark:bg-amber-500/10 dark:text-amber-100">
           <div className="flex items-center gap-2 font-semibold">
             <AlertTriangle className="h-4 w-4" />
-            {questions.length === 1 ? "Question expired by comment" : "Questions expired by comment"}
+            {interaction.result?.outcome === "issue_closed"
+              ? questions.length === 1 ? "Question expired when issue closed" : "Questions expired when issue closed"
+              : questions.length === 1 ? "Question expired by comment" : "Questions expired by comment"}
           </div>
           <p className="mt-1">
-            A later board/user comment superseded this question request. Create a fresh request if answers are still needed.
+            {interaction.result?.outcome === "issue_closed"
+              ? "The issue was closed before these questions were answered."
+              : "A later board/user comment superseded this question request. Create a fresh request if answers are still needed."}
           </p>
           {interaction.result?.commentId ? (
             <a
@@ -1346,18 +1357,37 @@ function RequestConfirmationResolution({
     );
   }
 
+  if (interaction.status === "cancelled" && outcome === "withdrawn") {
+    return (
+      <div className="space-y-2">
+        <div className="flex flex-wrap items-center gap-2 text-sm leading-6 text-foreground">
+          <span className="font-medium">Withdrawn</span>
+          <RequestConfirmationTargetChip interaction={interaction} target={target} />
+        </div>
+        {interaction.result?.reason ? (
+          <div className="rounded-sm border-l-2 border-rose-500/70 bg-rose-500/10 px-3 py-2 text-sm leading-6 text-rose-900 dark:text-rose-100">
+            <MarkdownBody>{interaction.result.reason}</MarkdownBody>
+          </div>
+        ) : null}
+      </div>
+    );
+  }
+
   if (interaction.status === "expired") {
     const expiredByComment = outcome === "superseded_by_comment";
+    const expiredWithIssue = outcome === "issue_closed";
     const expiredByTargetChange = outcome === "stale_target";
     return (
       <div className="space-y-3 rounded-sm border border-amber-500/60 bg-amber-500/10 px-4 py-3 text-sm text-amber-900 dark:text-amber-100">
         <div className="text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-amber-700">
-          {expiredByComment ? "Expired by comment" : "Expired by target change"}
+          {expiredByComment ? "Expired by comment" : expiredWithIssue ? "Expired when issue closed" : "Expired by target change"}
         </div>
         <p className="leading-6">
           {expiredByComment
             ? "A board comment superseded this confirmation before it was resolved."
-            : "The requested target changed before this confirmation was resolved."}
+            : expiredWithIssue
+              ? "The issue was closed before this confirmation was resolved."
+              : "The requested target changed before this confirmation was resolved."}
         </p>
         {expiredByComment && interaction.result?.commentId ? (
           <Button asChild size="sm" variant="ghost" className="h-7 px-2 text-amber-950 hover:bg-amber-500/15 dark:text-amber-50">
@@ -3028,7 +3058,13 @@ export function IssueThreadInteractionCard({
       : null;
   const toolActionStyles = toolActionState ? toolActionStatusClasses(toolActionState) : null;
   const resumeFailure = requestConfirmationResumeFailure(interaction);
-  const planStyles = isPlan ? planStatusClasses(interaction.status, resumeFailure) : null;
+  const planStyles = isPlan
+    ? planStatusClasses(
+        interaction.status,
+        resumeFailure,
+        interaction.result && "outcome" in interaction.result ? interaction.result.outcome : null,
+      )
+    : null;
   const activeStyles = toolActionStyles ?? planStyles;
   const StatusIcon = activeStyles ? activeStyles.Icon : statusIcon(interaction.status);
   const iconSpin = toolActionStyles?.spin ?? false;

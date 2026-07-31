@@ -14,6 +14,14 @@ import {
   prepareRemoteManagedRuntime,
   remoteExecutionSessionMatches,
 } from "./remote-managed-runtime.js";
+import type {
+  AdditionalSourceStagingFailure,
+  SandboxAdditionalSource,
+} from "./sandbox-managed-runtime.js";
+export type {
+  AdditionalSourceStagingFailure,
+  SandboxAdditionalSource,
+} from "./sandbox-managed-runtime.js";
 import {
   createCommandManagedSandboxCallbackBridgeQueueClient,
   createSandboxCallbackBridgeAsset,
@@ -22,6 +30,7 @@ import {
   sandboxCallbackBridgeDirectories,
   startSandboxCallbackBridgeServer,
   startSandboxCallbackBridgeWorker,
+  syncRemoteTextFileWithHashSkip,
 } from "./sandbox-callback-bridge.js";
 import {
   createSandboxRunLogTailFactory,
@@ -42,13 +51,31 @@ import type { LocalProcessSandboxOptions } from "./local-process-sandbox.js";
 
 export type { RuntimeProgressSink } from "./runtime-progress.js";
 
-export interface AdapterLocalExecutionTarget {
+export type AdapterWorkspaceRealizationMode = "copy" | "in_place";
+
+export interface AdapterWorkspacePathAlias {
+  path: string;
+  target: string;
+}
+
+export interface AdapterWorkspaceRealization {
+  mode: AdapterWorkspaceRealizationMode;
+  authoritativeRoot: string;
+  pathAliases: AdapterWorkspacePathAlias[];
+  outboundRestorePaths: string[];
+}
+
+interface AdapterExecutionTargetWorkspaceMetadata {
+  workspaceRealization?: AdapterWorkspaceRealization | null;
+}
+
+export interface AdapterLocalExecutionTarget extends AdapterExecutionTargetWorkspaceMetadata {
   kind: "local";
   environmentId?: string | null;
   leaseId?: string | null;
 }
 
-export interface AdapterSshExecutionTarget {
+export interface AdapterSshExecutionTarget extends AdapterExecutionTargetWorkspaceMetadata {
   kind: "remote";
   transport: "ssh";
   environmentId?: string | null;
@@ -57,7 +84,7 @@ export interface AdapterSshExecutionTarget {
   spec: SshRemoteExecutionSpec;
 }
 
-export interface AdapterSandboxExecutionTarget {
+export interface AdapterSandboxExecutionTarget extends AdapterExecutionTargetWorkspaceMetadata {
   kind: "remote";
   transport: "sandbox";
   providerKey?: string | null;
@@ -95,6 +122,18 @@ export interface PreparedAdapterExecutionTargetRuntime {
   workspaceRemoteDir: string | null;
   runtimeRootDir: string | null;
   assetDirs: Record<string, string>;
+  /**
+   * Remote directory of each additional (referenced) project that staged
+   * successfully, keyed by `projectId`. Empty for a local target or when no
+   * additional sources were requested.
+   */
+  additionalSourceDirs: Record<string, string>;
+  /**
+   * Each additional (referenced) project whose staging failed, paired with the
+   * failure message. Empty for a local target, for a transport that does not
+   * stage referenced projects, or when every requested project staged.
+   */
+  additionalSourceFailures: AdditionalSourceStagingFailure[];
   restoreWorkspace(onProgress?: RuntimeProgressSink): Promise<void>;
 }
 
@@ -1084,9 +1123,12 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
   workspaceLocalDir: string;
   timeoutSec?: number;
   workspaceRemoteDir?: string;
+  syncWorkspace?: boolean;
   workspaceExclude?: string[];
   preserveAbsentOnRestore?: string[];
   assets?: AdapterManagedRuntimeAsset[];
+  /** Referenced (additional) projects to stage into the sandbox as plain, read-only trees. */
+  additionalSources?: SandboxAdditionalSource[];
   installCommand?: string | null;
   /** When provided alongside `installCommand`, skip the install if the binary is already on PATH. */
   detectCommand?: string | null;
@@ -1104,6 +1146,8 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
       workspaceRemoteDir: null,
       runtimeRootDir: null,
       assetDirs: {},
+      additionalSourceDirs: {},
+      additionalSourceFailures: [],
       restoreWorkspace: async () => {},
     };
   }
@@ -1115,7 +1159,9 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
       adapterKey: input.adapterKey,
       workspaceLocalDir: input.workspaceLocalDir,
       workspaceRemoteDir: input.workspaceRemoteDir,
+      syncWorkspace: input.syncWorkspace,
       assets: input.assets,
+      additionalSources: input.additionalSources,
       onProgress: input.onProgress,
     });
     return {
@@ -1123,6 +1169,10 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
       workspaceRemoteDir: prepared.workspaceRemoteDir,
       runtimeRootDir: prepared.runtimeRootDir,
       assetDirs: prepared.assetDirs,
+      additionalSourceDirs: prepared.additionalSourceDirs,
+      // The SSH transport does not stage referenced projects (it is out of scope), so it never
+      // reports a per-project staging failure.
+      additionalSourceFailures: [],
       restoreWorkspace: prepared.restoreWorkspace,
     };
   }
@@ -1142,9 +1192,11 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
     adapterKey: input.adapterKey,
     workspaceLocalDir: input.workspaceLocalDir,
     workspaceRemoteDir: input.workspaceRemoteDir,
+    syncWorkspace: input.syncWorkspace,
     workspaceExclude: input.workspaceExclude,
     preserveAbsentOnRestore: input.preserveAbsentOnRestore,
     assets: input.assets,
+    additionalSources: input.additionalSources,
     installCommand: input.installCommand,
     detectCommand: input.detectCommand,
     onProgress: input.onProgress,
@@ -1155,6 +1207,8 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
     workspaceRemoteDir: prepared.workspaceRemoteDir,
     runtimeRootDir: prepared.runtimeRootDir,
     assetDirs: prepared.assetDirs,
+    additionalSourceDirs: prepared.additionalSourceDirs,
+    additionalSourceFailures: prepared.additionalSourceFailures,
     restoreWorkspace: prepared.restoreWorkspace,
   };
 }
@@ -1237,11 +1291,33 @@ async function writeProcessSessionProxyScript(dir: string, port: number, token: 
   return proxyPath;
 }
 
+// Content-hash-skip the process-session remote script write, mirroring the
+// sandbox callback bridge entrypoint sha256 gate. The script is a static
+// Paperclip-authored `.mjs` that only changes when the build changes, so on a
+// warm start (same sandbox, script already present) the single sha-gate exec
+// skips the ~3-exec base64 upload entirely. `syncRemoteTextFileWithHashSkip`
+// fails loud on a check error rather than silently re-uploading.
 async function syncProcessSessionRemoteScript(input: {
-  client: ReturnType<typeof createCommandManagedSandboxCallbackBridgeQueueClient>;
+  runner: CommandManagedRuntimeRunner;
+  remoteCwd: string;
+  remoteScriptDir: string;
   remoteScriptPath: string;
-}): Promise<void> {
-  await input.client.writeTextFile(input.remoteScriptPath, getProcessSessionRemoteSource());
+  timeoutMs?: number | null;
+  shellCommand?: "bash" | "sh" | null;
+}): Promise<{ uploaded: boolean }> {
+  const { uploaded } = await syncRemoteTextFileWithHashSkip({
+    runner: input.runner,
+    remoteCwd: input.remoteCwd,
+    remoteDir: input.remoteScriptDir,
+    remotePath: input.remoteScriptPath,
+    body: getProcessSessionRemoteSource(),
+    label: "Process session remote script",
+    action: "sync process session remote script",
+    lockDir: path.posix.join(input.remoteScriptDir, ".paperclip-process-session-script.lock"),
+    timeoutMs: input.timeoutMs,
+    shellCommand: input.shellCommand,
+  });
+  return { uploaded };
 }
 
 async function readRemoteJsonFiles(input: {
@@ -1282,7 +1358,12 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
   command: string;
   args: string[];
   cwd: string;
-  env: Record<string, string>;
+  // The launch env is consumed ONLY when building the base64 `commandPayload`
+  // below — never during the env-INDEPENDENT dir/script setup. Accepting a
+  // resolver (in addition to a plain object) lets a caller overlap that setup
+  // with other work — e.g. starting the paperclip callback bridge — and hand the
+  // merged env in right before the launch.
+  env: Record<string, string> | (() => Promise<Record<string, string>>);
   timeoutSec?: number | null;
   onLog?: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
 }): Promise<AdapterExecutionTargetProcessSessionBridgeHandle | null> {
@@ -1314,15 +1395,27 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
     shellCommand,
   });
 
-  await client.makeDir(stdinDir);
-  await client.makeDir(eventsDir);
-  await syncProcessSessionRemoteScript({ client, remoteScriptPath });
+  // The launch exec below re-creates stdinDir and eventsDir with one `mkdir -p`,
+  // and the remote script also creates them on start. No reader touches the two
+  // directories before the launch exec runs, so upfront makeDir execs are redundant.
+  await syncProcessSessionRemoteScript({
+    runner,
+    remoteCwd: target.remoteCwd,
+    remoteScriptDir: bridgeRuntimeDir,
+    remoteScriptPath,
+    timeoutMs,
+    shellCommand,
+  });
 
+  // Resolve the launch env AFTER the env-independent setup above, so a caller
+  // can defer it until an upstream dependency (e.g. the paperclip bridge's env)
+  // is ready without blocking the dir/script setup.
+  const launchEnv = typeof input.env === "function" ? await input.env() : input.env;
   const commandPayload = Buffer.from(JSON.stringify({
     command: input.command,
     args: input.args,
     cwd: input.cwd || target.remoteCwd,
-    env: sanitizeRemoteExecutionEnv(input.env),
+    env: sanitizeRemoteExecutionEnv(launchEnv),
   }), "utf8").toString("base64");
 
   await onLog("stdout", `[paperclip] Starting ACP process session bridge in sandbox (${target.providerKey ?? "provider"}).\n`);

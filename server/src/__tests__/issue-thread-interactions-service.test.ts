@@ -892,6 +892,28 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     expect(rows[0]?.idempotencyKey).toBe("run-1:questionnaire");
   });
 
+  it("refuses to create an interaction on a closed issue", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("Closed issue create guard");
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, issueId));
+
+    await expect(interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "request_confirmation",
+      continuationPolicy: "wake_assignee",
+      payload: { version: 1, prompt: "Approve after close?" },
+    }, {
+      userId: "local-board",
+    })).rejects.toMatchObject({ status: 409 });
+
+    const rows = await db
+      .select()
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.issueId, issueId));
+    expect(rows).toHaveLength(0);
+  });
+
   it("accepts request_confirmation interactions without creating child issues", async () => {
     const companyId = randomUUID();
     const goalId = randomUUID();

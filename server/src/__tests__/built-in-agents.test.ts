@@ -3,7 +3,7 @@ import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import {
   activityLog,
   agentConfigRevisions,
@@ -27,7 +27,6 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { HttpError } from "../errors.ts";
 import { agentInstructionsService } from "../services/agent-instructions.ts";
 import { agentService } from "../services/agents.ts";
 import { approvalService } from "../services/approvals.ts";
@@ -44,6 +43,16 @@ import { issueThreadInteractionService } from "../services/issue-thread-interact
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
+
+const BUILT_IN_MARKER_UNIQUE_INDEX = "agents_company_built_in_agent_key_unique_idx";
+// Mirrors migration 0192. Used to drop/restore the partial unique index when a
+// test needs to simulate legacy duplicates that predate the constraint.
+const BUILT_IN_MARKER_UNIQUE_INDEX_DDL = `
+  CREATE UNIQUE INDEX IF NOT EXISTS "${BUILT_IN_MARKER_UNIQUE_INDEX}"
+    ON "agents" ("company_id", ((metadata -> 'paperclipBuiltInAgent' ->> 'key')))
+    WHERE (metadata -> 'paperclipBuiltInAgent' ->> 'key') IS NOT NULL
+      AND status <> 'terminated'
+`;
 
 function issuePrefix(id: string) {
   return `T${id.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
@@ -129,6 +138,9 @@ describeEmbeddedPostgres("built-in agents", () => {
     await db.delete(agents);
     await db.delete(budgetPolicies);
     await db.delete(companies);
+    // Some tests drop the built-in marker unique index to simulate legacy
+    // (pre-migration 0192) duplicates; restore it now that all rows are gone.
+    await db.execute(sql.raw(BUILT_IN_MARKER_UNIQUE_INDEX_DDL));
   });
 
   afterAll(async () => {
@@ -901,11 +913,16 @@ describeEmbeddedPostgres("built-in agents", () => {
     expect(readBuiltInAgentMarker(row?.metadata)).toEqual({ key: "briefs", featureKeys: ["briefs"] });
   });
 
-  it("reports duplicate active instances for a company/key", async () => {
-    const companyId = await seedCompany();
+  // Reproduce a company that already carries duplicate marked rows from before
+  // migration 0192 by dropping the unique index, inserting two active rows, and
+  // pairing a pending hire_agent approval with the newer one.
+  async function seedLegacyDuplicateBriefs(companyId: string) {
+    await db.execute(sql.raw(`DROP INDEX IF EXISTS "${BUILT_IN_MARKER_UNIQUE_INDEX}"`));
+    const olderId = randomUUID();
+    const newerId = randomUUID();
     await db.insert(agents).values([
       {
-        id: randomUUID(),
+        id: olderId,
         companyId,
         name: "Briefs One",
         role: "general",
@@ -914,12 +931,80 @@ describeEmbeddedPostgres("built-in agents", () => {
         adapterConfig: { model: "gpt-5.4" },
         runtimeConfig: {},
         permissions: {},
+        createdAt: new Date("2026-07-18T00:00:00.000Z"),
         metadata: withBuiltInAgentMarker({}, { key: "briefs", featureKeys: ["briefs"] }),
       },
       {
-        id: randomUUID(),
+        id: newerId,
         companyId,
         name: "Briefs Two",
+        role: "general",
+        status: "pending_approval",
+        adapterType: "codex_local",
+        adapterConfig: { model: "gpt-5.4" },
+        runtimeConfig: {},
+        permissions: {},
+        createdAt: new Date("2026-07-18T00:00:00.025Z"),
+        metadata: withBuiltInAgentMarker({}, { key: "briefs", featureKeys: ["briefs"] }),
+      },
+    ]);
+    const approval = await approvalService(db).create(companyId, {
+      type: "hire_agent",
+      requestedByAgentId: null,
+      requestedByUserId: null,
+      status: "pending",
+      payload: { agentId: newerId, sourceBuiltInAgentKey: "briefs", featureKeys: ["briefs"] },
+      decisionNote: null,
+      decidedByUserId: null,
+      decidedAt: null,
+      updatedAt: new Date(),
+    });
+    return { olderId, newerId, approvalId: approval!.id };
+  }
+
+  it("self-heals duplicate active instances, keeping the oldest and cancelling the newer's approval", async () => {
+    const companyId = await seedCompany();
+    const { olderId, newerId, approvalId } = await seedLegacyDuplicateBriefs(companyId);
+
+    // A plain read resolves the duplicate rather than throwing.
+    const state = await builtInAgentService(db).get(companyId, "briefs");
+    expect(state.agentId).toBe(olderId);
+
+    const rows = await db.select().from(agents).where(eq(agents.companyId, companyId));
+    const byId = new Map(rows.map((row) => [row.id, row]));
+    expect(byId.get(olderId)?.status).toBe("idle");
+    expect(byId.get(newerId)?.status).toBe("terminated");
+    expect(
+      rows.filter((row) => row.status !== "terminated" && readBuiltInAgentMarker(row.metadata)?.key === "briefs"),
+    ).toHaveLength(1);
+
+    const [approval] = await db.select().from(approvals).where(eq(approvals.id, approvalId));
+    expect(approval?.status).toBe("cancelled");
+  });
+
+  it("makes concurrent provisioning lose cleanly instead of creating duplicates", async () => {
+    const companyId = await seedCompany({ requireApproval: false });
+    const svc = builtInAgentService(db);
+
+    const [first, second] = await Promise.all([
+      svc.ensure(companyId, "briefs"),
+      svc.ensure(companyId, "briefs"),
+    ]);
+
+    expect(first.agentId).toBeTruthy();
+    expect(second.agentId).toBe(first.agentId);
+
+    const rows = await db.select().from(agents).where(eq(agents.companyId, companyId));
+    expect(
+      rows.filter((row) => row.status !== "terminated" && readBuiltInAgentMarker(row.metadata)?.key === "briefs"),
+    ).toHaveLength(1);
+
+    // The partial unique index now rejects any further active marked row.
+    await expect(
+      db.insert(agents).values({
+        id: randomUUID(),
+        companyId,
+        name: "Briefs Dupe",
         role: "general",
         status: "idle",
         adapterType: "codex_local",
@@ -927,16 +1012,74 @@ describeEmbeddedPostgres("built-in agents", () => {
         runtimeConfig: {},
         permissions: {},
         metadata: withBuiltInAgentMarker({}, { key: "briefs", featureKeys: ["briefs"] }),
+      }),
+    ).rejects.toMatchObject({
+      cause: {
+        code: "23505",
+        constraint_name: BUILT_IN_MARKER_UNIQUE_INDEX,
       },
+    });
+  });
+
+  it("makes concurrent board-gated provisioning resolve to a single pending agent and approval", async () => {
+    const companyId = await seedCompany({ requireApproval: true });
+    const svc = builtInAgentService(db);
+
+    const results = await Promise.all([
+      svc.provision(companyId, "briefs"),
+      svc.provision(companyId, "briefs"),
     ]);
 
-    await expect(builtInAgentService(db).ensure(companyId, "briefs")).rejects.toMatchObject({
-      status: 409,
-      details: {
-        code: "built_in_agent_duplicate_instance",
-        key: "briefs",
-      },
-    } satisfies Partial<HttpError>);
+    const agentIds = new Set(results.map((result) => result.state.agentId));
+    expect(agentIds.size).toBe(1);
+
+    const rows = await db.select().from(agents).where(eq(agents.companyId, companyId));
+    expect(
+      rows.filter((row) => row.status !== "terminated" && readBuiltInAgentMarker(row.metadata)?.key === "briefs"),
+    ).toHaveLength(1);
+
+    const openApprovals = await db
+      .select()
+      .from(approvals)
+      .where(and(eq(approvals.companyId, companyId), eq(approvals.status, "pending")));
+    const briefsApprovals = openApprovals.filter(
+      (row) => (row.payload as { sourceBuiltInAgentKey?: string } | null)?.sourceBuiltInAgentKey === "briefs",
+    );
+    expect(briefsApprovals).toHaveLength(1);
+    // The winner returns its freshly created approval; the loser returns the
+    // same approval or null (if it re-resolves before that row commits), never
+    // a second one.
+    expect(results.some((result) => result.approval?.id === briefsApprovals[0]!.id)).toBe(true);
+    for (const result of results) {
+      if (result.approval) {
+        expect(result.approval.id).toBe(briefsApprovals[0]!.id);
+      }
+    }
+  });
+
+  it("self-heals duplicates during startup reconciliation without aborting later companies", async () => {
+    const affectedCompanyId = await seedCompany({ requireApproval: false });
+    const { olderId, newerId } = await seedLegacyDuplicateBriefs(affectedCompanyId);
+    // A second company created after the affected one — previously skipped
+    // entirely because the duplicate error escaped the reconciliation loop.
+    const healthyCompanyId = await seedCompany({ requireApproval: false });
+
+    const result = await reconcileBuiltInAgentsOnStartup(db);
+    expect(result.companyFailures).toBe(0);
+
+    const affectedRows = await db.select().from(agents).where(eq(agents.companyId, affectedCompanyId));
+    const affectedById = new Map(affectedRows.map((row) => [row.id, row]));
+    expect(affectedById.get(olderId)?.status).toBe("idle");
+    expect(affectedById.get(newerId)?.status).toBe("terminated");
+    expect(
+      affectedRows.filter(
+        (row) => row.status !== "terminated" && readBuiltInAgentMarker(row.metadata)?.key === "briefs",
+      ),
+    ).toHaveLength(1);
+
+    // The company after the affected one still had its bundled agents provisioned.
+    const healthyCoach = await builtInAgentService(db).get(healthyCompanyId, "reflection-coach");
+    expect(healthyCoach.agentId).toBeTruthy();
   });
 
   it("automatically materializes the Reflection Coach bundle without enabling background work", async () => {

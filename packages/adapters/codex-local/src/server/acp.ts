@@ -35,6 +35,7 @@ import {
   asString,
   parseObject,
 } from "@paperclipai/adapter-utils/server-utils";
+import { normalizeCodexModel } from "../index.js";
 import { classifyCodexAuthRefreshFailure } from "./parse.js";
 import { copyBackCodexAuth } from "./codex-auth-copyback.js";
 import { buildCodexAuthInboundProvision } from "./codex-auth-merge-scripts.js";
@@ -81,6 +82,22 @@ export async function resolveCodexExecutionEngineForRun(
   input: CodexEngineResolutionInput,
 ): Promise<CodexEngineSelection> {
   const selection = normalizeEngine(input.config.engine);
+  const target = readAdapterExecutionTarget({
+    executionTarget: input.executionTarget,
+    legacyRemoteExecution: input.executionTransport?.remoteExecution,
+  });
+  if (target?.workspaceRealization?.mode === "in_place") {
+    if (selection.explicit && selection.engine === "acp") {
+      throw new Error("In-place workspace realization requires the Codex CLI engine; ACP archive staging is not supported.");
+    }
+    return {
+      engine: "cli",
+      explicit: selection.explicit,
+      ...(!selection.explicit
+        ? { fallbackReason: "In-place workspace realization must run without ACP archive staging." }
+        : {}),
+    };
+  }
   const filesystemScope = parseLocalProcessFilesystemScope(input.config.filesystemScope);
   const networkScope = parseLocalProcessNetworkScope(input.config.networkScope);
   if (filesystemScope || networkScope) {
@@ -129,6 +146,11 @@ export function buildCodexAcpConfig(config: Record<string, unknown>): Record<str
     config.warmHandleIdleMs ??
     config.acpWarmHandleIdleMs ??
     DEFAULT_ACP_ENGINE_WARM_HANDLE_IDLE_MS;
+  // Rewrite legacy model aliases (e.g. bare gpt-5.6) to the concrete slug Codex has metadata for,
+  // so the ACP session config matches the CLI lane and avoids the fallback-metadata warning.
+  const normalizedModel = normalizeCodexModel(
+    typeof config.model === "string" ? config.model : "",
+  );
 
   return {
     ...config,
@@ -137,6 +159,7 @@ export function buildCodexAcpConfig(config: Record<string, unknown>): Record<str
     permissionMode,
     nonInteractivePermissions,
     warmHandleIdleMs,
+    ...(normalizedModel ? { model: normalizedModel } : {}),
     ...(agentCommand ? { agentCommand } : {}),
     ...(stateDir ? { stateDir } : {}),
   };

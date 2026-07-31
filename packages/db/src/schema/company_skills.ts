@@ -9,6 +9,7 @@ import {
   integer,
   uniqueIndex,
 } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import type { CompanySkillFileInventoryEntry, CompanySkillSharingScope } from "@paperclipai/shared";
 import { agents } from "./agents.js";
 import { companies } from "./companies.js";
@@ -73,6 +74,9 @@ export const companySkillVersions = pgTable(
     companySkillId: uuid("company_skill_id").notNull().references(() => companySkills.id, { onDelete: "cascade" }),
     revisionNumber: integer("revision_number").notNull(),
     label: text("label"),
+    releaseId: text("release_id"),
+    releaseName: text("release_name"),
+    releasedAt: timestamp("released_at", { withTimezone: true }),
     fileInventory: jsonb("file_inventory").$type<CompanySkillVersionFileInventoryEntry[]>().notNull().default([]),
     authorAgentId: uuid("author_agent_id").references(() => agents.id, { onDelete: "set null" }),
     authorUserId: text("author_user_id"),
@@ -83,6 +87,9 @@ export const companySkillVersions = pgTable(
       table.companySkillId,
       table.revisionNumber,
     ),
+    companySkillReleaseUniqueIdx: uniqueIndex("company_skill_versions_skill_release_idx")
+      .on(table.companySkillId, table.releaseId)
+      .where(sql`${table.releaseId} is not null`),
     companySkillCreatedIdx: index("company_skill_versions_company_skill_created_idx").on(
       table.companyId,
       table.companySkillId,

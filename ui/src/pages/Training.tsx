@@ -14,6 +14,7 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
+import { decisionTrainingHref } from "@/lib/decisionTraining";
 import { queryKeys } from "@/lib/queryKeys";
 import { cn, formatDate, formatDateTime } from "@/lib/utils";
 
@@ -99,8 +100,8 @@ export function TrainingLibrary() {
     enabled: Boolean(selectedCompanyId),
   });
   const projectsQuery = useQuery({
-    queryKey: ["projects", selectedCompanyId],
-    queryFn: () => projectsApi.list(selectedCompanyId!),
+    queryKey: queryKeys.projects.list(selectedCompanyId ?? "", { includeArchived: true }),
+    queryFn: () => projectsApi.list(selectedCompanyId!, { includeArchived: true }),
     enabled: Boolean(selectedCompanyId),
   });
   const records = recordsQuery.data ?? [];
@@ -143,7 +144,7 @@ export function TrainingLibrary() {
           const projectName = projectNames.get(stringValue(issue, "projectId", "project_id") ?? "") ?? "No project";
           const edited = example.updatedAt !== example.createdAt;
           return (
-            <button key={example.id} type="button" onClick={() => navigate(`/training/${example.id}`)} className="grid w-full gap-3 border-t border-border px-4 py-4 text-left transition-colors first:border-t-0 hover:bg-muted/30 md:grid-cols-6 md:items-center md:gap-4">
+            <button key={example.id} type="button" onClick={() => navigate(decisionTrainingHref(example.id))} className="grid w-full gap-3 border-t border-border px-4 py-4 text-left transition-colors first:border-t-0 hover:bg-muted/30 md:grid-cols-6 md:items-center md:gap-4">
               <span className="min-w-0"><span className="block truncate text-sm font-medium">{decisionTitle(example, issueTitle)}</span><span className="mt-1 block truncate text-xs text-muted-foreground">{issueIdentifier} · {projectName} · {example.sourceKind.replaceAll("_", " ")}</span></span>
               <span className="text-sm capitalize">{outcomeLabel(example.decisionOutcome)}</span>
               <span className="font-mono text-xs text-muted-foreground">{example.snapshot.cutoff.commentCount} comments · {example.snapshot.runs.length} runs · {example.snapshot.code.commitSha?.slice(0, 9) ?? "no repo"}</span>
@@ -186,7 +187,7 @@ export function TrainingInspector() {
   useEffect(() => {
     if (example && !editing) setNotes(example.notes);
   }, [editing, example]);
-  useEffect(() => setBreadcrumbs([{ label: "Decisions", href: "/decisions" }, { label: "Training", href: "/training" }, { label: example ? decisionTitle(example) : "Example" }]), [example, setBreadcrumbs]);
+  useEffect(() => setBreadcrumbs([{ label: "Decisions", href: "/decisions" }, { label: "Training", href: decisionTrainingHref() }, { label: example ? decisionTitle(example) : "Example" }]), [example, setBreadcrumbs]);
   const saveMutation = useMutation({
     mutationFn: () => decisionTrainingApi.updateNotes(id, notes.trim()),
     onSuccess: (updated) => {
@@ -210,7 +211,7 @@ export function TrainingInspector() {
   const issueIdentifier = stringValue(example.snapshot.issue, "identifier") ?? example.issueId.slice(0, 8);
   return (
     <div className="mx-auto flex w-full max-w-7xl flex-col gap-6 px-4 py-6 sm:px-6">
-      <header className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between"><div className="min-w-0"><Button variant="ghost" size="sm" className="mb-2 -ml-2" onClick={() => navigate("/training")}><ArrowLeft className="size-4" /> Training</Button><h1 className="truncate text-xl font-bold">{decisionTitle(example)}</h1><p className="mt-1 text-sm text-muted-foreground">{issueIdentifier} · {outcomeLabel(example.decisionOutcome)} · cutoff {formatDateTime(example.cutoffAt)}</p></div><Button variant="outline" onClick={() => downloadExport(example.companyId)}><Download className="size-4" /> Export JSONL</Button></header>
+      <header className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between"><div className="min-w-0"><Button variant="ghost" size="sm" className="mb-2 -ml-2" onClick={() => navigate(decisionTrainingHref())}><ArrowLeft className="size-4" /> Training</Button><h1 className="truncate text-xl font-bold">{decisionTitle(example)}</h1><p className="mt-1 text-sm text-muted-foreground">{issueIdentifier} · {outcomeLabel(example.decisionOutcome)} · cutoff {formatDateTime(example.cutoffAt)}</p></div><Button variant="outline" onClick={() => downloadExport(example.companyId)}><Download className="size-4" /> Export JSONL</Button></header>
       <div className="grid gap-8 lg:grid-cols-2">
         <section><div className="mb-3 flex items-center justify-between"><div><h2 className="text-sm font-semibold">Training notes</h2><p className="mt-1 text-xs text-muted-foreground">Last edited {formatDateTime(example.updatedAt)} · edits are versioned</p></div>{!editing ? <Button variant="ghost" size="sm" onClick={() => setEditing(true)}>Edit</Button> : null}</div>{editing ? <div className="space-y-3"><Textarea value={notes} onChange={(event) => setNotes(event.target.value)} className="min-h-72" /><div className="flex justify-end gap-2"><Button variant="ghost" onClick={() => { setNotes(example.notes); setEditing(false); }}>Cancel</Button><Button onClick={() => saveMutation.mutate()} disabled={saveMutation.isPending || notes.trim() === example.notes}>Save notes</Button></div></div> : <p className="whitespace-pre-wrap text-sm leading-relaxed">{example.notes || "No notes recorded."}</p>}</section>
         <section className="min-w-0"><div className="mb-3 flex items-center justify-between"><h2 className="text-sm font-semibold">Frozen state</h2><span className="font-mono text-xs text-muted-foreground">read-only</span></div><Tabs defaultValue="thread"><TabsList variant="line" className="w-full justify-start overflow-x-auto"><TabsTrigger value="thread">Thread</TabsTrigger><TabsTrigger value="issue">Issue</TabsTrigger><TabsTrigger value="runs">Runs</TabsTrigger><TabsTrigger value="code">Code</TabsTrigger><TabsTrigger value="decision">Decision</TabsTrigger></TabsList><TabsContent value="thread"><TrainingThreadPanel example={example} liveComments={commentsQuery.data ?? []} /></TabsContent><TabsContent value="issue"><JsonPanel value={example.snapshot.issue} /></TabsContent><TabsContent value="runs"><JsonPanel value={example.snapshot.runs} /></TabsContent><TabsContent value="code"><JsonPanel value={example.snapshot.code} /></TabsContent><TabsContent value="decision"><JsonPanel value={example.snapshot.decision} /></TabsContent></Tabs></section>

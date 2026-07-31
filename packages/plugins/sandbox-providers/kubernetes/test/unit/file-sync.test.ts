@@ -559,3 +559,200 @@ describe("kubernetes onEnvironmentSyncOut (native single-exec transfer)", () => 
     await expect(fs.stat(target)).rejects.toThrow();
   });
 });
+
+// ---------------------------------------------------------------------------
+// Post-upload commands (Phase 3 / Security Conditions C1–C4 + C7). Kubernetes is
+// a native provider, so it EXECUTES an operation's ordered `postUploadCommands`
+// symmetrically with Daytona after `uploadFiles` — never silently dropping them
+// (C7). Each command runs in the pod over its own exec, fail-fast, with the `cwd`
+// re-confined under the workspace remote dir. The injected exec runs the real
+// host shell, so these assertions observe true command side-effects.
+// ---------------------------------------------------------------------------
+describe("kubernetes onEnvironmentSyncIn (post-upload commands)", () => {
+  it("runs post-upload commands in array order AFTER the upload, each verbatim as a positional arg", async () => {
+    const remoteDir = await makeTmp("k8s-sandbox-");
+    const host = await makeTmp("k8s-host-");
+    const src = path.join(host, "config.txt");
+    await fs.writeFile(src, "hello");
+
+    const { exec, calls } = makeRealExec();
+    await performSyncIn({
+      exec,
+      remoteDir,
+      timeoutMs: 30_000,
+      operations: [
+        {
+          operationId: "op-cmd",
+          files: [{ sourcePath: src, targetPath: path.join(remoteDir, "config.txt"), kind: "file" }],
+          // First command reads the just-uploaded file (proves upload-before-command);
+          // second appends (proves array order). cwd absent → the remote dir.
+          postUploadCommands: [
+            { command: "cat config.txt > out.txt" },
+            { command: "printf DONE >> out.txt" },
+          ],
+        },
+      ],
+    });
+
+    // Upload-before-commands AND order: out.txt is the first command's read of the
+    // uploaded bytes, then the second command's append.
+    expect(await fs.readFile(path.join(remoteDir, "out.txt"), "utf-8")).toBe("helloDONE");
+
+    // One exec for the transfer, then one exec per command (single-exec-per-command).
+    expect(calls).toHaveLength(3);
+    // C1/C3: each command rides as the FINAL positional argument, byte-for-byte
+    // unmutated — the provider concatenated no shell fragment onto it.
+    const cmdCalls = calls.filter((c) => c.command.includes("cat config.txt > out.txt") || c.command.includes("printf DONE >> out.txt"));
+    expect(cmdCalls).toHaveLength(2);
+    expect(cmdCalls[0].command[cmdCalls[0].command.length - 1]).toBe("cat config.txt > out.txt");
+    expect(cmdCalls[1].command[cmdCalls[1].command.length - 1]).toBe("printf DONE >> out.txt");
+    // Absent cwd defaults to the remote dir (the penultimate positional arg), never
+    // a process default cwd (C2).
+    expect(cmdCalls[0].command[cmdCalls[0].command.length - 2]).toBe(remoteDir);
+  });
+
+  it("runs a command in an explicit confined cwd", async () => {
+    const remoteDir = await makeTmp("k8s-sandbox-");
+    const host = await makeTmp("k8s-host-");
+    const src = path.join(host, "seed.txt");
+    await fs.writeFile(src, "x");
+    const subDir = path.join(remoteDir, "sub");
+
+    const { exec } = makeRealExec();
+    await performSyncIn({
+      exec,
+      remoteDir,
+      timeoutMs: 30_000,
+      operations: [
+        {
+          operationId: "op-cwd",
+          files: [{ sourcePath: src, targetPath: path.join(subDir, "seed.txt"), kind: "file" }],
+          postUploadCommands: [{ command: "pwd -P > where.txt", cwd: subDir }],
+        },
+      ],
+    });
+    // The command ran with its cwd = subDir: `where.txt` lands there (relative
+    // write), and its physical cwd (`pwd -P`) is the realpath of subDir.
+    expect((await fs.readFile(path.join(subDir, "where.txt"), "utf-8")).trim()).toBe(
+      await fs.realpath(subDir),
+    );
+  });
+
+  it("aborts the operation fail-loud on a non-zero post-upload command exit, skipping the remainder (C4)", async () => {
+    const remoteDir = await makeTmp("k8s-sandbox-");
+    const host = await makeTmp("k8s-host-");
+    const src = path.join(host, "config.txt");
+    await fs.writeFile(src, "hello");
+
+    const { exec } = makeRealExec();
+    await expect(
+      performSyncIn({
+        exec,
+        remoteDir,
+        timeoutMs: 30_000,
+        operations: [
+          {
+            operationId: "op-fail",
+            files: [{ sourcePath: src, targetPath: path.join(remoteDir, "config.txt"), kind: "file" }],
+            postUploadCommands: [
+              { command: "exit 3" },
+              { command: "touch should_not_exist.txt" },
+            ],
+          },
+        ],
+      }),
+    ).rejects.toThrow(/post-upload command failed \(exit 3\)/);
+    // Fail-fast: the command after the failing one never ran.
+    await expect(fs.stat(path.join(remoteDir, "should_not_exist.txt"))).rejects.toThrow();
+  });
+
+  it("rejects a post-upload command cwd that escapes the remote dir lexically, before any exec (C2)", async () => {
+    const remoteDir = await makeTmp("k8s-sandbox-");
+    const host = await makeTmp("k8s-host-");
+    const src = path.join(host, "config.txt");
+    await fs.writeFile(src, "hello");
+
+    for (const badCwd of [`${remoteDir}/../escape`, "/etc"]) {
+      const { exec, calls } = makeRealExec();
+      await expect(
+        performSyncIn({
+          exec,
+          remoteDir,
+          timeoutMs: 30_000,
+          operations: [
+            {
+              operationId: "op-escape",
+              files: [{ sourcePath: src, targetPath: path.join(remoteDir, "config.txt"), kind: "file" }],
+              postUploadCommands: [{ command: "touch pwned.txt", cwd: badCwd }],
+            },
+          ],
+        }),
+      ).rejects.toThrow(/escapes|not a confined/);
+      // Rejected before the command exec: only the transfer exec ran, no command.
+      expect(calls.some((c) => c.command.includes("touch pwned.txt"))).toBe(false);
+    }
+  });
+
+  it("rejects a post-upload command whose cwd resolves outside the root via a symlink (realpath guard, C2)", async () => {
+    const remoteDir = await makeTmp("k8s-sandbox-");
+    const host = await makeTmp("k8s-host-");
+    const outside = await makeTmp("k8s-outside-");
+    const src = path.join(host, "config.txt");
+    await fs.writeFile(src, "hello");
+    // A symlink LEXICALLY inside the root that resolves to an out-of-root dir.
+    await fs.symlink(outside, path.join(remoteDir, "evil"));
+    const cwd = path.join(remoteDir, "evil");
+
+    const { exec } = makeRealExec();
+    await expect(
+      performSyncIn({
+        exec,
+        remoteDir,
+        timeoutMs: 30_000,
+        operations: [
+          {
+            operationId: "op-symlink",
+            files: [{ sourcePath: src, targetPath: path.join(remoteDir, "config.txt"), kind: "file" }],
+            postUploadCommands: [{ command: "touch pwned.txt", cwd }],
+          },
+        ],
+      }),
+    ).rejects.toThrow(/ESCAPE|exit 42/);
+    // The command never ran through the symlink: nothing landed in the outside dir.
+    await expect(fs.stat(path.join(outside, "pwned.txt"))).rejects.toThrow();
+  });
+
+  it("issues no extra exec when an operation has no post-upload commands (backward-compat)", async () => {
+    const remoteDir = await makeTmp("k8s-sandbox-");
+    const host = await makeTmp("k8s-host-");
+    const src = path.join(host, "config.txt");
+    await fs.writeFile(src, "hello");
+
+    const { exec: baseExec, calls: baseCalls } = makeRealExec();
+    await performSyncIn({
+      exec: baseExec,
+      remoteDir,
+      timeoutMs: 30_000,
+      operations: [
+        { operationId: "op-plain", files: [{ sourcePath: src, targetPath: path.join(remoteDir, "config.txt"), kind: "file" }] },
+      ],
+    });
+
+    const { exec: emptyExec, calls: emptyCalls } = makeRealExec();
+    await performSyncIn({
+      exec: emptyExec,
+      remoteDir,
+      timeoutMs: 30_000,
+      operations: [
+        {
+          operationId: "op-plain",
+          files: [{ sourcePath: src, targetPath: path.join(remoteDir, "config.txt"), kind: "file" }],
+          postUploadCommands: [],
+        },
+      ],
+    });
+    // An absent/empty command list adds zero execs — byte-identical to today.
+    expect(emptyCalls).toHaveLength(baseCalls.length);
+    expect(emptyCalls).toHaveLength(1);
+  });
+});
