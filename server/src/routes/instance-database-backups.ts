@@ -4,7 +4,7 @@ import { forbidden } from "../errors.js";
 import { isCloudManagedInstance } from "../middleware/auth.js";
 import { assertInstanceAdmin } from "./authz.js";
 
-export type InstanceDatabaseBackupTrigger = "manual" | "scheduled";
+export type InstanceDatabaseBackupTrigger = "manual" | "scheduled" | "startup";
 
 export type InstanceDatabaseBackupRunResult = RunDatabaseBackupResult & {
   trigger: InstanceDatabaseBackupTrigger;
