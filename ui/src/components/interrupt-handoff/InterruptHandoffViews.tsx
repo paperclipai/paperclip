@@ -175,7 +175,11 @@ export function ComposerHandoffPreviewRow({
       aria-live="polite"
     >
       <span>{preview.text}</span>
-      {preview.chip ? <PreviewChip chip={preview.chip} resolvers={resolvers} /> : null}
+      {preview.chips?.length
+        ? preview.chips.map((chip) => <PreviewChip key={`${chip.kind}:${chip.id}`} chip={chip} resolvers={resolvers} />)
+        : preview.chip
+          ? <PreviewChip chip={preview.chip} resolvers={resolvers} />
+          : null}
       {preview.suffix ? <span>{preview.suffix}</span> : null}
     </div>
   );

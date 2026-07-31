@@ -3982,7 +3982,10 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
     }),
     [agentMap, currentUserId, userLabelMap],
   );
-  const mentionedAgentIds = useMemo(() => extractAgentMentionIds(body), [body]);
+  const mentionedAgentIds = useMemo(
+    () => extractAgentMentionIds(body, agentMentionOptions),
+    [body, agentMentionOptions],
+  );
   const plainNameCandidate = useMemo(
     () => (mentionedAgentIds.length > 0 ? null : findPlainAgentNameCandidate(body, agentMentionOptions)),
     [body, mentionedAgentIds, agentMentionOptions],
@@ -3995,6 +3998,7 @@ const IssueChatComposer = forwardRef<IssueChatComposerHandle, IssueChatComposerP
         hasActiveRun,
         bodyHasAgentMention: mentionedAgentIds.length > 0,
         mentionedAgentId: mentionedAgentIds[0] ?? null,
+        mentionedAgentIds,
         plainNameCandidate,
       }),
     [reassignTarget, currentAssigneeValue, hasActiveRun, mentionedAgentIds, plainNameCandidate],

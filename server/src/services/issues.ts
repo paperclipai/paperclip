@@ -58,7 +58,9 @@ import type {
 import {
   clampIssueRequestDepth,
   extractAgentMentionIds,
+  extractBareAgentMentionIds,
   extractProjectMentionIds,
+  getAgentWorkEligibility,
   issueCommentAuthorTypeSchema,
   issueCommentMetadataSchema,
   issueCommentPresentationSchema,
@@ -580,6 +582,10 @@ export interface IssueFilters {
 
 type IssueRow = typeof issues.$inferSelect;
 type IssueLabelRow = typeof labels.$inferSelect;
+type MentionAgentRow = Pick<
+  typeof agents.$inferSelect,
+  "id" | "companyId" | "name" | "reportsTo" | "status"
+>;
 type IssuePlanDecompositionRow = typeof issuePlanDecompositions.$inferSelect;
 type IssueActiveRunRow = {
   id: string;
@@ -4393,6 +4399,34 @@ async function countBlockedInboxIssues(dbOrTx: any, companyId: string, filters?:
     ) return count;
     return count + 1;
   }, 0);
+}
+
+async function resolveMentionedAgentIdsForComment(
+  dbOrTx: any,
+  companyId: string,
+  body: string,
+) {
+  const explicitAgentMentionIds = extractAgentMentionIds(body);
+  if (explicitAgentMentionIds.length === 0 && !body.includes("@")) return [];
+  const rows: MentionAgentRow[] = await dbOrTx.select({
+    id: agents.id,
+    companyId: agents.companyId,
+    name: agents.name,
+    reportsTo: agents.reportsTo,
+    status: agents.status,
+  }).from(agents).where(eq(agents.companyId, companyId));
+  const companyAgentIds = new Set(rows.map((agent) => agent.id));
+  const bareAgentMentionIds = extractBareAgentMentionIds(
+    body,
+    rows.filter((row) =>
+      row.status !== "terminated"
+      && row.status !== "pending_approval"
+      && getAgentWorkEligibility({ agent: row, agents: rows }).orgChainHealth.status !== "invalid_org_chain"),
+  );
+  return [...new Set([
+    ...explicitAgentMentionIds.filter((agentId) => companyAgentIds.has(agentId)),
+    ...bareAgentMentionIds,
+  ])];
 }
 
 export function issueService(db: Db) {
@@ -8726,6 +8760,11 @@ export function issueService(db: Db) {
       );
       assertIssueCommentAuthorTypeAllowed(actor, authorType);
       const presentation = issueCommentPresentationSchema.nullable().parse(options?.presentation ?? null);
+      const mentionedAgentIds = await resolveMentionedAgentIdsForComment(
+        dbOrTx,
+        issue.companyId,
+        redactedBody,
+      );
       const createdAt = options?.createdAt ? new Date(options.createdAt) : null;
       // Invalid/stale run ids must not 500 the insert — null out unknowns.
       const createdByRunId = await resolveCommentCreatedByRunId(dbOrTx, issue.companyId, actor.runId);
@@ -8759,6 +8798,7 @@ export function issueService(db: Db) {
           authorType,
           createdByRunId,
           body: redactedBody,
+          mentionedAgentIds,
           presentation,
           metadata,
           sourceTrust: options?.sourceTrust ?? null,
@@ -8966,13 +9006,7 @@ export function issueService(db: Db) {
       }),
 
     findMentionedAgents: async (companyId: string, body: string) => {
-      const explicitAgentMentionIds = extractAgentMentionIds(body);
-      if (explicitAgentMentionIds.length === 0) return [];
-
-      const rows = await db.select({ id: agents.id })
-        .from(agents).where(eq(agents.companyId, companyId));
-      const companyAgentIds = new Set(rows.map((agent) => agent.id));
-      return explicitAgentMentionIds.filter((agentId) => companyAgentIds.has(agentId));
+      return resolveMentionedAgentIdsForComment(db, companyId, body);
     },
 
     findMentionedProjectIds: async (

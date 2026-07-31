@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -20,7 +20,11 @@ import type {
   SkillTestAgentKeyScope,
   TaskBridgeAgentKeyScope,
 } from "@paperclipai/shared";
-import { LOW_TRUST_REVIEW_PRESET, extractAgentMentionIds, type LowTrustBoundary } from "@paperclipai/shared";
+import {
+  LOW_TRUST_REVIEW_PRESET,
+  extractAgentMentionIds,
+  type LowTrustBoundary,
+} from "@paperclipai/shared";
 import {
   LOW_TRUST_ISSUE_ANCESTRY_MAX_DEPTH,
   isIssueWithinLowTrustBoundary,
@@ -1327,6 +1331,7 @@ export function authorizationService(db: Db) {
       .select({
         id: issueComments.id,
         body: issueComments.body,
+        mentionedAgentIds: issueComments.mentionedAgentIds,
         authorAgentId: issueComments.authorAgentId,
         authorUserId: issueComments.authorUserId,
       })
@@ -1335,10 +1340,15 @@ export function authorizationService(db: Db) {
         eq(issueComments.companyId, input.companyId),
         eq(issueComments.issueId, input.issueId),
         isNull(issueComments.deletedAt),
-        sql`${issueComments.body} LIKE ${"%agent://" + input.actorAgentId + "%"}`,
+        or(
+          sql`${issueComments.body} LIKE ${"%agent://" + input.actorAgentId + "%"}`,
+          sql`${issueComments.mentionedAgentIds} @> ${JSON.stringify([input.actorAgentId])}::jsonb`,
+        ),
       ));
 
-    const mentionRows = rows.filter((row) => extractAgentMentionIds(row.body).includes(input.actorAgentId));
+    const mentionRows = rows.filter((row) => row.mentionedAgentIds == null
+      ? extractAgentMentionIds(row.body).includes(input.actorAgentId)
+      : row.mentionedAgentIds.includes(input.actorAgentId));
     const authorUserIds = [...new Set(mentionRows.flatMap((row) => row.authorUserId ? [row.authorUserId] : []))];
     const activeAuthorUserIds = new Set(
       authorUserIds.length === 0
