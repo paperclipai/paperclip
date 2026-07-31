@@ -37,7 +37,7 @@ Existing tiers already in index.css (~80+ tokens) — extraction maps to these o
 
 ## Enforcement (what "compliant" means for the extraction run)
 
-- **Zero visual change is proven, not promised:** Storybook visual snapshots are baselined before any refactor, and all snapshots match baseline after it. A change that alters rendered output must be intentional and human-approved.
+- **Zero visual change is proven, not promised:** Storybook visual snapshots are baselined before any refactor, and all snapshots match baseline after it. A change that alters rendered output must be intentional and human-approved. **Status note (Jul 13 2026):** snapshot proof is dormant as a per-change gate pending the baseline archive publication flow — everyday design changes verify via token gates + typecheck + ui vitest + live before/after screenshots instead (see doc/design/DECISION-SHEET.md "Per-change snapshot verification demoted to dormant").
 - **Baseline scope for Run 1:** the shared primitives in `ui/src/components/ui/` (each gets a story if missing — there are only ~24) plus the ~46 existing stories under `ui/storybook/stories/`. Do NOT attempt a story for every feature component (~277) in this run; full coverage is a later effort.
 - Mechanical rewrites (value extraction, renames) are done via committed codemod scripts in `scripts/`, not hand-edits — reviewable once, repeatable forever.
 - Token layer is the single source (`ui/src/index.css`, per above) consumed via CSS variables / Tailwind theme — never values copied into components.
