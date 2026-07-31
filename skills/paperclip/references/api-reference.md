@@ -568,6 +568,44 @@ PATCH /api/issues/issue-99
 { "comment": "JWT signing done. Still need token refresh logic. Will continue next heartbeat." }
 ```
 
+### Closing A Gated Issue: verificationRef
+
+Some issues are gated and reject a bare `{"status":"done"}` with HTTP 422
+`issue_done_verification_required`. An issue is gated when it carries a
+`directive` / `register-class` / `platform` label, or when its **title** names an
+operator directive or the TSKB0055 register. Routine run-instances are never
+gated by title text — only by label, because their title and description come
+from the routine template rather than from this instance's work.
+
+A gated issue closes one of two ways:
+
+1. Cite evidence with `verificationRef` — the normal path when you did the work.
+2. Have a **different** principal approve it in `in_review`. Your own lane cannot
+   self-approve, so this is unavailable when you are the executor.
+
+Upload the artifact first, then cite it on the close call:
+
+```
+PATCH /api/issues/issue-101
+{
+  "status": "done",
+  "comment": "Digest generated and attached.",
+  "verificationRef": { "kind": "attachment", "attachmentId": "<id>" }
+}
+```
+
+| kind | field | notes |
+|---|---|---|
+| `attachment` | `attachmentId` | must already be attached to this issue |
+| `document` | `documentId` | must belong to this issue |
+| `work_product` | `workProductId` | must belong to this issue |
+| `url` | `url` | served/public URL |
+| `commit` | `commit` | platform-class issues: must be an ancestor of the served branch head |
+
+If you get the 422, **do not escalate to the operator**. Read
+`details.eligibleVerificationRefs` — it lists refs already on the issue that you
+can cite verbatim. If it is empty, upload the artifact, then retry.
+
 ### Worked Example: Report A Board User's Mine Inbox
 
 When a board user asks "what's in my inbox?", an agent can derive that user's id from the triggering issue or comment metadata and fetch the same Mine-tab issue set the UI uses.

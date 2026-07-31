@@ -1,5 +1,5 @@
 import { execFileSync } from "node:child_process";
-import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import express from "express";
@@ -282,6 +282,63 @@ describe("issue execution policy routes", () => {
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
+  it("rejects done when close evidence stays under the governed target", async () => {
+    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "paperclip-close-evidence-route-"));
+    process.env.PAPERCLIP_WORK_PRODUCTS_DIR = tempRoot;
+    await mkdir(path.join(tempRoot, "TSMC-18567"), { recursive: true });
+    await writeFile(path.join(tempRoot, "TSMC-18567", "artifact-1.txt"), "one");
+    await mkdir(path.join(tempRoot, "TSMC-18567", "scratch-bin"), { recursive: true });
+    await writeFile(path.join(tempRoot, "TSMC-18567", "scratch-bin", "artifact-2.txt"), "excluded");
+
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_progress",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "TSMC-18567",
+      title: "Quota close contract",
+      closeContract: {
+        evidenceTarget: 4,
+        evidencePath: "TSMC-18567",
+      },
+      executionPolicy: null,
+      executionState: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.listAttachments.mockResolvedValue([{ id: "attachment-1", contentType: "image/png" }]);
+    mockWorkProductService.listForIssue.mockResolvedValue([{ id: "wp-1" }]);
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      companyId: "company-1",
+      runId: "run-1",
+    }))
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ status: "done" });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toContain("measured 3");
+    expect(res.body.details).toMatchObject({
+      code: "invalid_issue_disposition",
+      reason: "close_evidence_unmet",
+      measuredCount: 3,
+      targetCount: 4,
+      evidencePath: "TSMC-18567",
+      breakdown: {
+        attachments: 1,
+        workProducts: 1,
+        localFiles: 1,
+      },
+    });
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+
+    delete process.env.PAPERCLIP_WORK_PRODUCTS_DIR;
+    await rm(tempRoot, { recursive: true, force: true });
+  });
+
   it("accepts a gate-keeper assignee as a typed in_review path and still rejects non-gate-keepers", async () => {
     const issue = {
       id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
@@ -435,63 +492,6 @@ describe("issue execution policy routes", () => {
         }),
       }),
     );
-  });
-
-  it("rejects done when close evidence stays under the governed target", async () => {
-    const tempRoot = await mkdtemp(path.join(os.tmpdir(), "paperclip-close-evidence-"));
-    process.env.PAPERCLIP_WORK_PRODUCTS_DIR = tempRoot;
-    await mkdir(path.join(tempRoot, "TSMC-18567"), { recursive: true });
-    await writeFile(path.join(tempRoot, "TSMC-18567", "artifact-1.txt"), "one");
-    await mkdir(path.join(tempRoot, "TSMC-18567", "scratch-bin"), { recursive: true });
-    await writeFile(path.join(tempRoot, "TSMC-18567", "scratch-bin", "artifact-2.txt"), "excluded");
-
-    const issue = {
-      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
-      companyId: "company-1",
-      status: "in_progress",
-      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
-      assigneeUserId: null,
-      createdByUserId: "local-board",
-      identifier: "TSMC-18567",
-      title: "Quota close contract",
-      closeContract: {
-        evidenceTarget: 4,
-        evidencePath: "TSMC-18567",
-      },
-      executionPolicy: null,
-      executionState: null,
-    };
-    mockIssueService.getById.mockResolvedValue(issue);
-    mockIssueService.listAttachments.mockResolvedValue([{ id: "attachment-1", contentType: "image/png" }]);
-    mockWorkProductService.listForIssue.mockResolvedValue([{ id: "wp-1" }]);
-
-    const res = await request(await createApp({
-      type: "agent",
-      agentId: "33333333-3333-4333-8333-333333333333",
-      companyId: "company-1",
-      runId: "run-1",
-    }))
-      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
-      .send({ status: "done" });
-
-    expect(res.status).toBe(422);
-    expect(res.body.error).toContain("measured 3");
-    expect(res.body.details).toMatchObject({
-      code: "invalid_issue_disposition",
-      reason: "close_evidence_unmet",
-      measuredCount: 3,
-      targetCount: 4,
-      evidencePath: "TSMC-18567",
-      breakdown: {
-        attachments: 1,
-        workProducts: 1,
-        localFiles: 1,
-      },
-    });
-    expect(mockIssueService.update).not.toHaveBeenCalled();
-
-    delete process.env.PAPERCLIP_WORK_PRODUCTS_DIR;
-    await rm(tempRoot, { recursive: true, force: true });
   });
 
   it("allows an agent-authored in_review transition with a scheduled monitor", async () => {
@@ -680,6 +680,116 @@ describe("issue execution policy routes", () => {
         }),
       }),
     );
+  });
+
+  // TSMC-18626: the done gate classified off free text over title+description,
+  // so routine instances quoting the register in their standing template were
+  // gated as directive-class. Their executor is their only candidate reviewer,
+  // so they could never self-close and exited to the operator rail.
+  const gateFixture = (overrides: Record<string, unknown>) => ({
+    id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+    companyId: "company-1",
+    status: "in_progress",
+    assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+    assigneeUserId: null,
+    createdByUserId: "local-board",
+    identifier: "PAP-18626",
+    executionPolicy: null,
+    executionState: null,
+    labels: [],
+    originKind: "manual",
+    ...overrides,
+  });
+
+  const patchDone = async () =>
+    request(await createApp({
+      type: "agent",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      companyId: "company-1",
+      runId: "run-1",
+    }))
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ status: "done" });
+
+  const expectUngated = (issue: Record<string, unknown>) => {
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+  };
+
+  it("does not gate a routine instance whose standing template quotes the register", async () => {
+    expectUngated(gateFixture({
+      title: "Daily portfolio summary",
+      description: "Run the sweep. Respect operator directives and TSKB0055 register class discipline.",
+      originKind: "routine_execution",
+    }));
+
+    const res = await patchDone();
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalled();
+  });
+
+  it("still gates a routine instance carrying a directive label", async () => {
+    mockIssueService.getById.mockResolvedValue(gateFixture({
+      title: "Daily portfolio summary",
+      description: "Run the sweep.",
+      originKind: "routine_execution",
+      labels: [{ name: "directive" }],
+    }));
+
+    const res = await patchDone();
+
+    expect(res.status).toBe(422);
+    expect(res.body.details).toMatchObject({ code: "issue_done_verification_required" });
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("does not gate a manual issue whose directive text is description-only", async () => {
+    expectUngated(gateFixture({
+      title: "Board repair",
+      description: "Filed per operator directive 07-22; see the TSKB0055 register class entry.",
+    }));
+
+    const res = await patchDone();
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalled();
+  });
+
+  it("still gates a manual issue whose title names an operator directive", async () => {
+    mockIssueService.getById.mockResolvedValue(gateFixture({
+      title: "⛔ OPERATOR DIRECTIVE: enter-done verification",
+      description: "Platform bug fix.",
+    }));
+
+    const res = await patchDone();
+
+    expect(res.status).toBe(422);
+    expect(res.body.details).toMatchObject({ code: "issue_done_verification_required" });
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("names eligible verification refs in the rejection so the lane can retry instead of escalating", async () => {
+    mockIssueService.getById.mockResolvedValue(gateFixture({
+      title: "⛔ OPERATOR DIRECTIVE: enter-done verification",
+      description: "Platform bug fix.",
+    }));
+    mockIssueService.listAttachments.mockResolvedValue([
+      { id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb", contentType: "image/png" },
+    ]);
+
+    const res = await patchDone();
+
+    expect(res.status).toBe(422);
+    expect(res.body.details.eligibleVerificationRefs).toContainEqual({
+      kind: "attachment",
+      attachmentId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    });
+    expect(res.body.details.eligibleVerificationRefCount).toBe(1);
   });
 
   it("allows reviewer approval to move a directive-class issue to done without a verification ref", async () => {

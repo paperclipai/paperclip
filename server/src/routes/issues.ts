@@ -157,7 +157,6 @@ import {
   SVG_CONTENT_TYPE,
 } from "../attachment-types.js";
 import { queueIssueAssignmentWakeup } from "../services/issue-assignment-wakeup.js";
-import { measureCloseEvidence } from "../services/issue-close-evidence.js";
 import {
   ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
   buildIssueBlockersResolvedWakeIdempotencyKey,
@@ -191,6 +190,7 @@ import {
   redactIssueMonitorExternalRef,
   setIssueExecutionPolicyMonitorScheduledBy,
 } from "../services/issue-execution-policy.js";
+import { measureCloseEvidence } from "../services/issue-close-evidence.js";
 import { parseIssueExecutionWorkspaceSettings } from "../services/execution-workspace-policy.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import {
@@ -398,12 +398,25 @@ function issueRequiresVerifiedDone(issue: {
   title?: string | null;
   description?: string | null;
   labels?: Array<{ name?: string | null }> | null;
+  originKind?: string | null;
 }) {
   const labels = issueLabelNames(issue).map((label) => label.toLowerCase());
   if (labels.some((name) => DONE_VERIFICATION_LABEL_HINTS.some((hint) => name === hint || name.includes(hint)))) {
     return true;
   }
-  const haystack = `${issue.title ?? ""}\n${issue.description ?? ""}`.toLowerCase();
+  // TSMC-18626: the text route classifies off prose, so it must not read a
+  // routine's standing template. A routine instance inherits title and
+  // description from the routine definition — text describing the procedure
+  // ("respect operator directives", "TSKB0055 register class"), not the class
+  // of this instance's work. Reading it gated 758 issues portfolio-wide
+  // against 0 by label, and stranded self-executing routine lanes, whose only
+  // candidate reviewer is themselves. A routine that genuinely needs the gate
+  // is labelled into it.
+  if (issue.originKind === "routine_execution") return false;
+  // Descriptions quote the register on manual issues too (checklists, standing
+  // process text). Only the title is authored per-issue, so only the title
+  // carries a classification signal.
+  const haystack = (issue.title ?? "").toLowerCase();
   return haystack.includes("operator directive") || haystack.includes("register class") || haystack.includes("tskb0055");
 }
 
@@ -545,14 +558,47 @@ function hasIndependentReviewerApproval(input: {
   return !executionPrincipalsEqual(reviewerPrincipal, executorPrincipal);
 }
 
+const ELIGIBLE_VERIFICATION_REF_LIMIT = 20;
+
+// Best-effort: the caller is already on a failure path, so a lookup that throws
+// must not mask issue_done_verification_required with a 500.
+async function listEligibleVerificationRefs(input: {
+  issue: { id: string };
+  svc: ReturnType<typeof issueService>;
+  documentsSvc: ReturnType<typeof documentService>;
+  workProductsSvc: ReturnType<typeof workProductService>;
+}) {
+  const safe = async <T>(load: () => Promise<T[]>): Promise<T[]> => {
+    try {
+      return (await load()) ?? [];
+    } catch {
+      return [];
+    }
+  };
+  const [attachments, documents, workProducts] = await Promise.all([
+    safe(() => input.svc.listAttachments(input.issue.id)),
+    safe(() => input.documentsSvc.listIssueDocuments(input.issue.id, { includeSystem: true })),
+    safe(() => input.workProductsSvc.listForIssue(input.issue.id)),
+  ]);
+  const refs: IssueVerificationRef[] = [
+    ...attachments.map((attachment) => ({ kind: "attachment", attachmentId: attachment.id }) as IssueVerificationRef),
+    ...documents.map((document) => ({ kind: "document", documentId: document.id }) as IssueVerificationRef),
+    ...workProducts.map((workProduct) => ({ kind: "work_product", workProductId: workProduct.id }) as IssueVerificationRef),
+  ];
+  return { refs: refs.slice(0, ELIGIBLE_VERIFICATION_REF_LIMIT), total: refs.length };
+}
+
 async function assertIssueDoneVerificationSatisfied(input: {
   issue: {
     id: string;
+    companyId?: string;
     title?: string | null;
     description?: string | null;
     labels?: Array<{ name?: string | null }> | null;
     assigneeAgentId?: string | null;
     assigneeUserId?: string | null;
+    originKind?: string | null;
+    closeContract?: unknown;
     executionState?: unknown;
   };
   nextStatus: string;
@@ -572,12 +618,19 @@ async function assertIssueDoneVerificationSatisfied(input: {
   });
   const verificationRef = input.verificationRef;
   if (!verificationRef && !reviewerApproved) {
+    // TSMC-16051 specified "an explanatory error naming what evidence is
+    // missing". Naming only the accepted KINDS left lanes escalating to the
+    // operator with usable artifacts already on the issue, so list the refs
+    // they can cite verbatim.
+    const eligible = await listEligibleVerificationRefs(input);
     throw unprocessable(
       "Issue cannot enter done without verification evidence or independent reviewer acceptance",
       {
         code: "issue_done_verification_required",
         acceptedVerificationKinds: ["attachment", "document", "work_product", "url", "commit"],
         alternatives: ["verificationRef", "approved_in_review_by_different_actor"],
+        eligibleVerificationRefs: eligible.refs,
+        eligibleVerificationRefCount: eligible.total,
       },
     );
   }
