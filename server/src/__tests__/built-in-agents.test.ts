@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import path from "node:path";
-import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { and, eq, sql } from "drizzle-orm";
 import {
   activityLog,
@@ -121,6 +121,15 @@ describeEmbeddedPostgres("built-in agents", () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-built-in-agents-");
     db = createDb(tempDb.connectionString);
   }, 20_000);
+
+  // Keep the suite independent of the developer's AWS environment. These vars decide which model
+  // catalogue claude_local offers, and therefore how a bundled default model resolves.
+  beforeEach(() => {
+    delete process.env.CLAUDE_CODE_USE_BEDROCK;
+    delete process.env.ANTHROPIC_BEDROCK_BASE_URL;
+    delete process.env.AWS_REGION;
+    delete process.env.AWS_DEFAULT_REGION;
+  });
 
   afterEach(async () => {
     await db.delete(routineTriggers);
@@ -444,6 +453,38 @@ describeEmbeddedPostgres("built-in agents", () => {
     expect(rows).toHaveLength(0);
   });
 
+  it("accepts a region-qualified Bedrock model that the static catalogue cannot enumerate", async () => {
+    const companyId = await seedCompany();
+
+    // Bedrock inference-profile ids are region-scoped, so no static list can contain them all.
+    // The execution path accepts any region-qualified id, and setup must not be stricter.
+    const state = await builtInAgentService(db).ensure(companyId, "summarizer", {
+      adapterType: "claude_local",
+      adapterConfig: { model: "eu.anthropic.claude-sonnet-5" },
+    });
+
+    expect(state.agentId).toBeTruthy();
+
+    const rows = await db.select().from(agents).where(eq(agents.companyId, companyId));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.adapterConfig).toMatchObject({ model: "eu.anthropic.claude-sonnet-5" });
+  });
+
+  it("maps a bundled default alias onto a region-qualified Bedrock profile", async () => {
+    process.env.CLAUDE_CODE_USE_BEDROCK = "1";
+    process.env.AWS_REGION = "eu-west-1";
+    const companyId = await seedCompany();
+
+    // The Summarizer definition hardcodes the plain alias "claude-haiku-4-5", which does not exist
+    // as a Bedrock inference profile. Provisioning must resolve it, not reject it.
+    const state = await builtInAgentService(db).ensure(companyId, "summarizer");
+
+    expect(state.agent?.adapterType).toBe("claude_local");
+    expect(state.agent?.adapterConfig).toMatchObject({
+      model: "eu.anthropic.claude-haiku-4-5-20251001-v1:0",
+    });
+  });
+
   it("recovers an orphaned marked row instead of creating a duplicate", async () => {
     const companyId = await seedCompany();
     const orphanId = randomUUID();
@@ -636,7 +677,12 @@ describeEmbeddedPostgres("built-in agents", () => {
       "paperclipai/bundled/paperclip-operations/reflection-coach",
     );
 
-    const [routine] = await db.select().from(routines).where(eq(routines.companyId, companyId));
+    // The company can auto-provision more than one built-in with a routine, so scope the lookup
+    // to this agent. Selecting by company alone relies on unspecified row order.
+    const [routine] = await db
+      .select()
+      .from(routines)
+      .where(and(eq(routines.companyId, companyId), eq(routines.assigneeAgentId, state.agentId!)));
     expect(routine).toMatchObject({
       title: "Review recent agent trajectories for coaching proposals",
       status: "paused",
@@ -1134,7 +1180,12 @@ describeEmbeddedPostgres("built-in agents", () => {
     });
     expect(readPaperclipSkillSyncPreference(state.agent!.adapterConfig).desiredSkills).toContain(skill!.key);
 
-    const [routine] = await db.select().from(routines).where(eq(routines.companyId, companyId));
+    // The company can auto-provision more than one built-in with a routine, so scope the lookup
+    // to this agent. Selecting by company alone relies on unspecified row order.
+    const [routine] = await db
+      .select()
+      .from(routines)
+      .where(and(eq(routines.companyId, companyId), eq(routines.assigneeAgentId, state.agentId!)));
     expect(routine).toMatchObject({
       title: "Review recent agent trajectories for coaching proposals",
       status: "paused",

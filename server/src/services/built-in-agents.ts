@@ -22,6 +22,7 @@ import { companySkillService } from "./company-skills.js";
 import { routineService } from "./routines.js";
 import { accessService } from "./access.js";
 import { listAdapterModels } from "../adapters/registry.js";
+import { isBedrockModelId } from "@paperclipai/adapter-claude-local/server";
 
 export type BuiltInAgentStatus = "not_provisioned" | "pending_approval" | "needs_setup" | "ready" | "paused";
 
@@ -760,17 +761,47 @@ function definitionPatch(definition: BuiltInAgentDefinition, input: BuiltInAgent
   };
 }
 
+// A definition's bundled default model is a plain Anthropic alias (e.g. "claude-haiku-4-5").
+// Under Bedrock the adapter offers region-qualified inference-profile ids instead, which no static
+// default can name ahead of time. Map the alias onto the equivalent profile the adapter actually
+// offers rather than failing provisioning.
+async function resolveDefaultAdapterConfig(
+  adapterType: string | undefined,
+  adapterConfig: Record<string, unknown>,
+): Promise<Record<string, unknown>> {
+  if (!adapterType) return adapterConfig;
+  const model = typeof adapterConfig.model === "string" ? adapterConfig.model.trim() : "";
+  if (!model) return adapterConfig;
+
+  const available = await listAdapterModels(adapterType);
+  if (available.length === 0 || available.some((candidate) => candidate.id === model)) {
+    return adapterConfig;
+  }
+
+  const equivalent = available.find((candidate) => candidate.id.includes(model));
+  if (!equivalent) return adapterConfig;
+  return { ...adapterConfig, model: equivalent.id };
+}
+
 async function assertKnownBuiltInAgentModel(
   definition: BuiltInAgentDefinition,
   input: BuiltInAgentProvisionInput,
 ) {
   const adapterType = input.adapterType ?? defaultAdapterType(definition);
-  const adapterConfig = input.adapterConfig ?? definition.defaultAdapterConfig ?? {};
+  const adapterConfig = input.adapterConfig
+    ?? (definition.defaultAdapterConfig
+      ? await resolveDefaultAdapterConfig(adapterType, definition.defaultAdapterConfig)
+      : {});
   const model = typeof adapterConfig.model === "string" ? adapterConfig.model.trim() : "";
   if (!model || !hasCompleteAdapterConfig(adapterType, adapterConfig)) return;
 
   const models = await listAdapterModels(adapterType);
   if (models.length === 0 || models.some((candidate) => candidate.id === model)) return;
+
+  // Bedrock model IDs are region-qualified inference profiles, and the static catalogue cannot
+  // enumerate every region. The execution path already accepts any region-qualified ID, so
+  // accept one here too instead of rejecting a model that would run fine.
+  if (adapterType === "claude_local" && isBedrockModelId(model)) return;
 
   throw unprocessable(`Model "${model}" is not available for adapter ${adapterType}.`, {
     code: "built_in_agent_model_unknown",
@@ -888,7 +919,9 @@ export function builtInAgentService(db: Db) {
       return {
         ...input,
         adapterType: definition.defaultAdapterType,
-        adapterConfig: definition.defaultAdapterConfig ? { ...definition.defaultAdapterConfig } : undefined,
+        adapterConfig: definition.defaultAdapterConfig
+          ? await resolveDefaultAdapterConfig(definition.defaultAdapterType, { ...definition.defaultAdapterConfig })
+          : undefined,
       };
     }
     if (!definition.bundle) return input;

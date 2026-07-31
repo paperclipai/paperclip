@@ -23,6 +23,8 @@ describe("adapter model listing", () => {
     delete process.env.ANTHROPIC_BASE_URL;
     delete process.env.ANTHROPIC_BEDROCK_BASE_URL;
     delete process.env.CLAUDE_CODE_USE_BEDROCK;
+    delete process.env.AWS_REGION;
+    delete process.env.AWS_DEFAULT_REGION;
     delete process.env.PAPERCLIP_OPENCODE_COMMAND;
     resetClaudeModelsCacheForTests();
     resetCodexModelsCacheForTests();
@@ -70,6 +72,40 @@ describe("adapter model listing", () => {
     // Opus 5 is a current GA flagship and must be offered even when live discovery is unavailable.
     expect(models.some((model) => model.id === "claude-opus-5")).toBe(true);
     expect(fetchSpy).not.toHaveBeenCalled();
+  });
+
+  it("offers us-prefixed Bedrock inference profiles in a us region", async () => {
+    process.env.CLAUDE_CODE_USE_BEDROCK = "1";
+    process.env.AWS_REGION = "us-east-1";
+
+    const models = await listAdapterModels("claude_local");
+
+    expect(models.length).toBeGreaterThan(0);
+    expect(models.every((model) => model.id.startsWith("us.anthropic."))).toBe(true);
+  });
+
+  it("offers eu-prefixed Bedrock inference profiles in an eu region", async () => {
+    process.env.CLAUDE_CODE_USE_BEDROCK = "1";
+    process.env.AWS_REGION = "eu-west-1";
+
+    const models = await listAdapterModels("claude_local");
+
+    expect(models.length).toBeGreaterThan(0);
+    // Every offered profile must exist in the configured region, so none may be us-prefixed.
+    expect(models.some((model) => model.id.startsWith("us.anthropic."))).toBe(false);
+    expect(models.every((model) => model.id.startsWith("eu.anthropic."))).toBe(true);
+    expect(models.some((model) => model.id === "eu.anthropic.claude-sonnet-5")).toBe(true);
+    // Version suffixes diverge between families: Sonnet 4.5 is -v1:0 in eu, -v2:0 in us,
+    // so a prefix rewrite of the us catalogue would produce an invalid id here.
+    expect(models.some((model) => model.id === "eu.anthropic.claude-sonnet-4-5-20250929-v1:0")).toBe(true);
+  });
+
+  it("falls back to the us Bedrock catalogue when no region is configured", async () => {
+    process.env.CLAUDE_CODE_USE_BEDROCK = "1";
+
+    const models = await listAdapterModels("claude_local");
+
+    expect(models.every((model) => model.id.startsWith("us.anthropic."))).toBe(true);
   });
 
   it("loads claude models dynamically and merges fallback options", async () => {
