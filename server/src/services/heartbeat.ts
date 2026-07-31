@@ -17558,19 +17558,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   }
 
   async function enqueueWakeup(agentId: string, opts: WakeupOptions = {}) {
-    if (opts.currentIssueAssigneeGuard) {
-      const [currentIssue] = await db
-        .select({
-          assigneeAgentId: issues.assigneeAgentId,
-          status: issues.status,
-        })
-        .from(issues)
-        .where(eq(issues.id, opts.currentIssueAssigneeGuard.issueId))
-        .limit(1);
-      if (shouldSuppressCurrentIssueAssigneeWake(currentIssue, agentId)) {
-        return null;
-      }
-    }
     const source = opts.source ?? "on_demand";
     const triggerDetail = opts.triggerDetail ?? null;
     const contextSnapshot: Record<string, unknown> = { ...(opts.contextSnapshot ?? {}) };
@@ -17898,6 +17885,29 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             source,
             triggerDetail,
             reason: "issue_execution_issue_not_found",
+            payload,
+            status: "skipped",
+            requestedByActorType: opts.requestedByActorType ?? null,
+            requestedByActorId: opts.requestedByActorId ?? null,
+            idempotencyKey: opts.idempotencyKey ?? null,
+            finishedAt: new Date(),
+          });
+          return { kind: "skipped" as const };
+        }
+
+        if (
+          opts.currentIssueAssigneeGuard &&
+          (
+            opts.currentIssueAssigneeGuard.issueId !== issue.id ||
+            shouldSuppressCurrentIssueAssigneeWake(issue, agentId)
+          )
+        ) {
+          await tx.insert(agentWakeupRequests).values({
+            companyId: agent.companyId,
+            agentId,
+            source,
+            triggerDetail,
+            reason: "issue_assignee_guard_failed",
             payload,
             status: "skipped",
             requestedByActorType: opts.requestedByActorType ?? null,
