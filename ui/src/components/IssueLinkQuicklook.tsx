@@ -13,7 +13,8 @@ import {
 import { queryKeys } from "@/lib/queryKeys";
 import { cn } from "@/lib/utils";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
-import { StatusIcon } from "@/components/StatusIcon";
+import { StatusGlyph } from "@/components/StatusGlyph";
+import { ProjectTile } from "@/components/ProjectTile";
 
 /* ------------------------------------------------------------------ */
 /*  Single-flight quicklook store                                      */
@@ -89,6 +90,42 @@ function summarizeIssueDescription(description: string | null | undefined) {
   return summary.length > 180 ? `${summary.slice(0, 177).trimEnd()}...` : summary;
 }
 
+/** "·" between facts in the quicklook's meta and status lines. */
+function QuicklookSeparator({ className }: { className?: string }) {
+  return (
+    <span className={cn("text-xs", className)} aria-hidden>
+      ·
+    </span>
+  );
+}
+
+/** "in_review" -> "In review". The card states the status as a word, not a chip. */
+function statusLabel(status: string): string {
+  const words = status.replace(/_/g, " ");
+  return words.charAt(0).toUpperCase() + words.slice(1);
+}
+
+/**
+ * The standard task preview card. Every hover preview of a task in the app
+ * renders this, so the same four facts appear in the same order everywhere:
+ *
+ *   1. identity  — status glyph · task key · project
+ *   2. title
+ *   3. state     — status word · last activity
+ *   4. summary   — first lines of the description
+ *
+ * Identity leads because a preview is answering "which task is this?", and the
+ * title alone does not answer it. State sits under the title rather than above
+ * it so the title stays the first thing read, and it renders in `foreground`
+ * rather than muted — it is the fact most likely to decide whether the reader
+ * opens the task.
+ *
+ * The project tile is intentionally untinted. A preview is a quiet surface and
+ * the project's colour would be the loudest thing on it; the tile plus the name
+ * identify the project without competing with the status glyph. (`IssueAncestor
+ * Project` carries no colour or icon anyway — matching the design mock here
+ * costs nothing and needs no new data.)
+ */
 export function IssueQuicklookCard({
   issue,
   linkTo,
@@ -101,26 +138,43 @@ export function IssueQuicklookCard({
   compact?: boolean;
 }) {
   const description = useMemo(() => summarizeIssueDescription(issue.description), [issue.description]);
+  const projectName = issue.project?.name;
 
   return (
     <div className={cn("space-y-2", compact && "space-y-1.5")}>
-      <div className="flex items-start gap-2">
-        <StatusIcon status={issue.status} blockerAttention={issue.blockerAttention} className="mt-0.5 shrink-0" />
-        <RouterDom.Link
-          to={linkTo}
-          state={linkState ?? withIssueDetailHeaderSeed(null, issue)}
-          className="text-sm font-medium leading-snug hover:underline line-clamp-2"
-        >
-          {issue.title}
-        </RouterDom.Link>
+      <div className="flex items-center gap-1">
+        <StatusGlyph status={issue.status} size="md" />
+        <span className="font-mono text-(length:--text-micro) text-muted-foreground">
+          {issue.identifier ?? issue.id.slice(0, 8)}
+        </span>
+        {projectName ? (
+          <>
+            <QuicklookSeparator className="text-muted-foreground" />
+            <span
+              className="flex min-w-0 max-w-(--sz-12rem) items-center gap-1 text-(length:--text-micro) text-muted-foreground"
+              title={projectName}
+            >
+              <ProjectTile size="xs" />
+              <span className="truncate">{projectName}</span>
+            </span>
+          </>
+        ) : null}
       </div>
-      <div className="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
-        <span className="font-mono">{issue.identifier ?? issue.id.slice(0, 8)}</span>
-        <span>&middot;</span>
-        <span>{issue.status.replace(/_/g, " ")}</span>
-        <span>&middot;</span>
+
+      <RouterDom.Link
+        to={linkTo}
+        state={linkState ?? withIssueDetailHeaderSeed(null, issue)}
+        className="block text-sm font-medium leading-snug hover:underline line-clamp-2"
+      >
+        {issue.title}
+      </RouterDom.Link>
+
+      <div className="flex items-center gap-1 text-(length:--text-micro) text-foreground">
+        <span>{statusLabel(issue.status)}</span>
+        <QuicklookSeparator />
         <span>{timeAgo(new Date(issue.updatedAt))}</span>
       </div>
+
       {description ? (
         <p className="text-xs leading-5 text-muted-foreground [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:4] overflow-hidden">
           {description}

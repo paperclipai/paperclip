@@ -238,7 +238,11 @@ describe("AttentionQueueRow", () => {
     expect(links.some((a) => a.textContent?.includes("Hire agent: Research Analyst"))).toBe(false);
   });
 
-  it("renders project identity once without a filter button", () => {
+  // The eyebrow carries the decision kind and the task key only. Project
+  // identity was removed from the card: the queue is filtered and grouped by
+  // project from the toolbar, so repeating it on every row spent the eyebrow's
+  // width on a fact the operator had usually just chosen.
+  it("keeps project identity off the card", () => {
     render(
       <AttentionQueueRow
         item={buildItem({
@@ -251,13 +255,36 @@ describe("AttentionQueueRow", () => {
       />,
     );
 
-    const projectMeta = container?.querySelector('[data-testid="attention-project-meta"]');
-    expect(projectMeta?.textContent).toBe("Alpha");
-    expect(projectMeta?.querySelector("button")).toBeNull();
-    expect(projectMeta?.getAttribute("class")).not.toContain("border");
-    expect(projectMeta?.getAttribute("class")).not.toContain("bg-");
-    expect(container?.querySelector('button[title="Filter by Alpha"]')).toBeNull();
-    expect(container?.textContent?.match(/Alpha/g)).toHaveLength(1);
+    expect(container?.querySelector('[data-testid="attention-project-meta"]')).toBeNull();
+    expect(container?.textContent).not.toContain("Alpha");
+  });
+
+  it("separates eyebrow facts with a middle dot, not a slash", () => {
+    render(
+      <AttentionQueueRow
+        item={buildItem({
+          sourceKind: "blocker_attention",
+          subject: {
+            kind: "issue",
+            id: "i1",
+            companyId: "c1",
+            title: "Update primary paperclip instance",
+            identifier: "PAP-23",
+            status: "blocked",
+            href: "/PAP/issues/PAP-23",
+          },
+          relatedIssue: null,
+        })}
+        companyId="c1"
+        expanded={false}
+        onToggleExpand={noop}
+        onDismiss={noop}
+      />,
+    );
+
+    const eyebrow = container?.querySelector('[data-attention-row] > div');
+    expect(eyebrow?.textContent).toContain("·");
+    expect(eyebrow?.textContent).not.toContain("/");
   });
 
   // Regression: the meta breadcrumb used to read only `relatedIssue`, so rows

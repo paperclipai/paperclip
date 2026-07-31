@@ -139,3 +139,29 @@ Fixed by tracking how the selection was made and drawing the ring only for a key
 **The ring is deliberately kept for j/k navigation** rather than removed outright, which the literal request would imply. Those keys dismiss and snooze the selected row; with no indicator an operator would be firing destructive actions at an invisible target. Flagged to the user as the one place the card-level state survives, and it is theirs to remove if they want it gone there too.
 
 Focus states on everything inside a card are untouched: the See more/less toggle, decision verbs, the task key, the project link, evidence thumbnails and the row menu all keep their `focus-visible` rings.
+
+## Decision card eyebrow: project dropped, "·" separator (design session, Jul 29 2026)
+
+Per the proposed mock, the decision card eyebrow is now **decision kind · task key** and nothing else.
+
+**Project identity left the card.** It cost the eyebrow's width on every row to repeat a fact the operator has usually just chosen — the queue filters and groups by project from the toolbar — and it competed with the task key, which is the identifier an operator actually navigates by. The project is still one click away on the task itself.
+
+**The separator changed from "/" to "·".** The eyebrow started as a breadcrumb (kind / key / project), but with the project gone it is a flat list of two facts, not a hierarchy. A slash implies containment those two segments do not have; a middle dot just separates. `ProjectMeta` and its `ProjectTile` import were deleted from the row rather than left unused.
+
+## Standard task preview card (design session, Jul 29 2026)
+
+**`IssueQuicklookCard` restructured to the proposed mock, and this is now the app-wide standard** — every hover preview of a task renders it, so the same four facts appear in the same order everywhere:
+
+1. identity — status glyph · task key · project
+2. title
+3. state — status word · last activity
+4. summary — first lines of the description
+
+Changes from the previous card: identity moves to the top and gains the project (a preview answers "which task is this?", and a title alone does not); the status glyph switches from `StatusIcon` to `StatusGlyph`, so the preview speaks the same status vocabulary as the flattened decision cards and the task list; state moves below the title and renders in `foreground` rather than muted, because it is the fact most likely to decide whether the reader opens the task; and the status word is sentence-cased ("In review", not "in review" or `in_review`).
+
+Two judgment calls:
+
+- **The project tile is untinted.** `ProjectTile` supports a colour, and the decision card's old chip used it, but a preview is a quiet surface and the project colour would be the loudest thing on it. The mock shows a neutral tile, and `IssueAncestorProject` carries neither colour nor icon — so following the mock costs nothing and needs no new data. If the tile should ever tint, that is a server-side field addition first.
+- **11px via `--text-micro`** for the identity and state lines, matching the mock, rather than minting a token for the mock's literal values.
+
+The other consumer, `IssuesQuicklook` (project workspace linked issues), inherits the new card automatically — which is the point of standardising it.

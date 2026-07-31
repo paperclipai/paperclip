@@ -140,14 +140,14 @@ describe("IssueLinkQuicklook", () => {
   // trigger out from under a stationary pointer — expanding a decision row does
   // exactly that, stranding the card on screen. A pointer move anywhere clear of
   // both boxes now closes it.
-  function renderQuicklook() {
+  function renderQuicklook(issueOverrides: Partial<Issue> = {}) {
     act(() => {
       root.render(
         <QueryClientProvider client={queryClient}>
           <MemoryRouter>
             <IssueLinkQuicklook
               issuePathId="PAP-1"
-              issuePrefetch={createIssue()}
+              issuePrefetch={createIssue(issueOverrides)}
               to="/companies/company-1/issues/PAP-1"
             >
               PAP-1
@@ -216,5 +216,36 @@ describe("IssueLinkQuicklook", () => {
     movePointerTo(4000, 4000);
 
     expect(document.body.textContent).toContain("Quicklook title");
+  });
+
+  // The card is the standard task preview for the whole app, so its four facts
+  // and their order are the contract, not incidental markup.
+  it("states identity, then title, then state, then summary", () => {
+    const trigger = renderQuicklook({
+      status: "in_review",
+      // The card reads only `name` off the project; the rest of `Project` is
+      // irrelevant here, so this stands in for a full record.
+      project: { id: "project-1", name: "Paperclip App" } as unknown as Issue["project"],
+    });
+
+    act(() => {
+      trigger.dispatchEvent(new MouseEvent("mouseover", { bubbles: true }));
+      vi.advanceTimersByTime(200);
+    });
+
+    const card = document.querySelector('[data-slot="popover-content"]');
+    const text = card?.textContent ?? "";
+    expect(text).toContain("PAP-1");
+    expect(text).toContain("Paperclip App");
+    expect(text).toContain("Quicklook title");
+    // Status reads as a word, sentence-cased — not "in_review" and not a chip.
+    expect(text).toContain("In review");
+    expect(text).not.toContain("in_review");
+    expect(text).toContain("Quicklook description");
+
+    // Identity precedes the title; the state line follows it.
+    expect(text.indexOf("PAP-1")).toBeLessThan(text.indexOf("Quicklook title"));
+    expect(text.indexOf("Quicklook title")).toBeLessThan(text.indexOf("In review"));
+    expect(text.indexOf("In review")).toBeLessThan(text.indexOf("Quicklook description"));
   });
 });

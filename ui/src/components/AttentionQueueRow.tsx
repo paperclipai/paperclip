@@ -43,7 +43,6 @@ import {
   DropdownMenuTrigger,
 } from "./ui/dropdown-menu";
 import { AttentionInteractionResolver } from "./AttentionInteractionResolver";
-import { ProjectTile } from "./ProjectTile";
 
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
@@ -207,7 +206,7 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
           </span>
           {taskRef && (
             <>
-              <BreadcrumbSeparator />
+              <EyebrowSeparator />
               <Link
                 to={taskRef.href ?? "#"}
                 className="font-mono text-(length:--text-nano) text-muted-foreground hover:text-foreground"
@@ -215,12 +214,6 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
               >
                 {taskRef.identifier}
               </Link>
-            </>
-          )}
-          {item.project && (
-            <>
-              <BreadcrumbSeparator />
-              <ProjectMeta project={item.project} />
             </>
           )}
           {trainable && trained && (
@@ -382,11 +375,17 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
   );
 });
 
-/** "/" between breadcrumb segments in the meta band. */
-function BreadcrumbSeparator() {
+/**
+ * "·" between eyebrow segments.
+ *
+ * The eyebrow is a flat list of two facts (decision kind, task key), not a
+ * hierarchy, so a middle dot reads more honestly than the "/" this started as —
+ * a slash implies containment that the two segments do not have.
+ */
+function EyebrowSeparator() {
   return (
-    <span className="text-(length:--text-nano) text-muted-foreground/60" aria-hidden>
-      /
+    <span className="text-xs text-muted-foreground" aria-hidden>
+      ·
     </span>
   );
 }
@@ -539,20 +538,6 @@ function decisionVerbVariant(verb: AttentionItem["decisionVerbs"][number]): "def
   if (/\b(reject|decline|deny|delete|remove)\b/.test(text)) return "destructive";
   if (/\b(accept|approve|confirm|apply)\b/.test(text)) return "default";
   return "outline";
-}
-
-/** Inline project identity keeps useful context without a competing badge. */
-function ProjectMeta({ project }: { project: NonNullable<AttentionItem["project"]> }) {
-  return (
-    <span
-      className="inline-flex max-w-(--sz-12rem) items-center gap-1 text-(length:--text-nano) text-muted-foreground"
-      title={project.name}
-      data-testid="attention-project-meta"
-    >
-      <ProjectTile color={project.color} icon={project.icon} size="xs" />
-      <span className="truncate">{project.name}</span>
-    </span>
-  );
 }
 
 /** Square screenshot thumbnails at the right of the description (plan §10). */
