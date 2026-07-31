@@ -92,16 +92,23 @@ resolves the sandbox work directory first, then the user home directory. It uses
 home directory for your image or snapshot. Install the `sudo` package in the
 image or snapshot if it is absent.
 
-### 3. Allow an unprivileged user namespace
+### 3. Allow user namespaces
 
-The unprivileged user namespace is a host and kernel setting. On a Debian/Ubuntu
-host, set:
+The `bwrap` wrapper creates a user namespace. The kernel must support user
+namespaces for the wrapper to run. Confirm the kernel allows them:
 
 ```bash
-sysctl kernel.unprivileged_userns_clone=1
+sysctl user.max_user_namespaces
 ```
 
-On other kernels, confirm `user.max_user_namespaces` is greater than zero.
+A value greater than zero means the kernel supports user namespaces. This value
+is the requirement for the wrapper.
+
+The wrapper runs `bwrap` as root with `sudo -n`. Root creates the user namespace
+directly, so the Debian/Ubuntu `kernel.unprivileged_userns_clone` setting does
+not apply here. That setting only limits an unprivileged process. A managed
+sandbox that denies `sysctl kernel.unprivileged_userns_clone=1` still runs the
+wrapper when `user.max_user_namespaces` is greater than zero.
 
 ### 4. Verify the three prerequisites
 
@@ -114,6 +121,11 @@ sudo -n bwrap --unshare-user --uid 0 --gid 0 --ro-bind / / -- true
 A zero exit code means all three prerequisites are met. A non-zero exit code
 means one prerequisite is missing. The wrapper then stays off and runs the plain
 command.
+
+The `--uid 0` and `--gid 0` flags map the check to root inside the test
+namespace. This command is only a capability check. It does not need to match
+the sandbox user id. The live wrapper maps to the real sandbox user id and group
+id.
 
 ## Local development
 
