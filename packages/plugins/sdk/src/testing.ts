@@ -736,6 +736,11 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
 
   const ctx: PluginContext = {
     manifest,
+    runtime: {
+      runProactively<T>(callback: () => T): T {
+        return callback();
+      },
+    },
     config: {
       async get() {
         return { ...currentConfig };
