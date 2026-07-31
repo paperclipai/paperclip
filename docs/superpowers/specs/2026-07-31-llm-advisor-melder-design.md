@@ -176,17 +176,31 @@ Titel und erscheint so in jedem erzeugten Issue. Titel auf
 Ebenso die Kopfzeile in `routine-brief.md` und die Beschreibung im `README.md` des
 Advisor-Repos, die beide „täglich 11:00" nennen.
 
-## Baustein 4 — Modell-Drift des Advisor-Agenten
+## Baustein 4 — `claude-opus-5` fehlt in der Adapter-Modellliste
 
-Der Agent ist auf `claude-opus-5` konfiguriert, lief aber in 6 von 9 Fällen mit
-`claude-sonnet-4-6`. Ursache: `packages/adapters/claude-local/src/index.ts` kennt nur
-Modelle bis Opus 4.7 (Zeile 9 ff.) und fällt auf den Default `claude-sonnet-4-6`
-(Zeile 23) zurück; der Server validiert Modellnamen nicht.
+**Korrigierte Fassung (bei der Umsetzung überprüft).** Der ursprüngliche Verdacht war,
+der Agent liefe wegen dieser Lücke tatsächlich auf einem anderen Modell. Das trägt
+nicht:
 
-**Maßnahme:** `claude-opus-5` in die Modellliste des Adapters aufnehmen. Das ist der
-allgemeine Fix — die Lücke trifft sonst jeden künftig auf Opus 5 konfigurierten Agenten.
-Läufe müssen reproduzierbar sein; dass ausgerechnet der Agent, der Modellzuweisungen
-beurteilt, nicht mit der ihm zugewiesenen läuft, ist zusätzlich ein Glaubwürdigkeitsproblem.
+- `models` in `packages/adapters/claude-local/src/index.ts` wird **nirgends zur
+  Validierung oder als Fallback** benutzt — sie speist nur die Modellauswahl in der UI.
+- `execute.ts:663` reicht ein gesetztes `model` unverändert als `--model` an die CLI
+  durch. `claude-sonnet-4-6` in Zeile 23 ist das `cheap`-Profil, kein Default.
+- Die Telemetrie stützt die Drift-These nicht: Der **frische** Session-Start des
+  Advisors am 31.07. um 11:00 lief mit `claude-opus-5`. Nur Resume-Läufe
+  (`freshSession=false`) zeigen überwiegend `claude-sonnet-4-6` — und auch das nicht
+  durchgängig (14:01 und 14:08 sind Opus 5 trotz Resume).
+
+**Deutung:** `usage_json.model` gibt den Abrechnungsschwerpunkt eines Session-Deltas
+wieder, nicht das Hauptmodell des Laufs. Claude Code nutzt intern Sonnet für
+Nebenaufgaben (Kompaktierung, kleine Tool-Zyklen); bei Resume-Läufen mit wenig
+Hauptarbeit dominiert das die Abrechnung. **`usage_json.model` ist daher kein
+verlässlicher Beleg dafür, mit welchem Modell ein Agent arbeitet.**
+
+**Maßnahme bleibt, mit anderer Begründung:** `claude-opus-5` in die Modellliste
+aufnehmen, damit es in der UI wählbar ist und nicht versehentlich überschrieben wird.
+Das ist eine Vollständigkeitslücke, kein Laufzeitfehler — und deshalb auch kein
+dringender Punkt.
 
 Betrifft das Paperclip-Hauptrepo, nicht das Advisor-Repo.
 
