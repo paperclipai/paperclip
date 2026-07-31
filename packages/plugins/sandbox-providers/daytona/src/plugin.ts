@@ -620,13 +620,20 @@ function shellQuote(value: string): string {
 //   1. `--unshare-user --uid <uid> --gid <gid>` when a uid/gid pair is supplied.
 //   2. `--ro-bind / /` (read-only root — the static system allowance base).
 //   3. `--dev /dev --proc /proc --tmpfs /tmp` (fresh pseudo-filesystems).
-//   4. one `--bind <dir> <dir>` per writable directory, in the caller's order.
+//   4. one `--bind-try <dir> <dir>` per writable directory, in the caller's order.
 //   5. `--ro-bind <stdinPath> <stdinPath>` when a stdin path is supplied.
 //   6. `--new-session`.
 //   7. `-- sh -c '<escaped inner script>'`.
 // `--uid`/`--gid` require `--unshare-user`, so the function emits the three
 // flags only together. `sudo -n bwrap` runs as root; the user namespace
 // re-enters the sandbox as the normal sandbox user.
+//
+// The writable binds use `--bind-try`, not `--bind`. The writable set is an
+// advisory in-memory collection of sandbox paths. The host cannot check whether
+// a sandbox path still exists. A path can be deleted or replaced after the store
+// records it. `--bind` aborts bwrap when the source is absent, so one stale path
+// would fail every later command for the scope. `--bind-try` skips a missing
+// source and runs the command, which keeps the wrapper advisory and best-effort.
 export function buildBwrapCommand(
   innerScript: string,
   writableDirs: string[],
@@ -637,7 +644,7 @@ export function buildBwrapCommand(
     ? ["--unshare-user", "--uid", String(identity.uid), "--gid", String(identity.gid)]
     : [];
   const rootBinds = ["--ro-bind", "/", "/", "--dev", "/dev", "--proc", "/proc", "--tmpfs", "/tmp"];
-  const writableBinds = writableDirs.flatMap((dir) => ["--bind", shellQuote(dir), shellQuote(dir)]);
+  const writableBinds = writableDirs.flatMap((dir) => ["--bind-try", shellQuote(dir), shellQuote(dir)]);
   // Re-bind the stdin file after `--tmpfs /tmp`, so the tmpfs does not hide it.
   const stdinReBind = stdinPath ? ["--ro-bind", shellQuote(stdinPath), shellQuote(stdinPath)] : [];
   const tail = ["--new-session", "--", "sh", "-c", shellQuote(innerScript)];
@@ -1257,6 +1264,11 @@ const sandboxHandleCache = (() => {
 // and a cold store (for example after a worker restart) degrades to the
 // workspace baseline, never to a crash. The store is keyed the same way as
 // `sandboxHandleCache`, by `sandboxHandleCacheKey(scope)`.
+//
+// The store keeps a path after a sync records it, so a path that a later
+// operation deletes or replaces can stay in the set. The wrapper binds each
+// path with `bwrap --bind-try`, which skips a missing source, so a stale path
+// never fails a later command. See `buildBwrapCommand`.
 const sandboxHandleWritableDirs = (() => {
   const dirsByKey = new Map<string, Set<string>>();
 
