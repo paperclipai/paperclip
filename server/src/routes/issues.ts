@@ -12411,6 +12411,13 @@ export function issueRoutes(
       blockedToTodoRecovery: reopened && reopenFromStatus === "blocked" && currentIssue.status === "todo",
     });
 
+    let mentionedIds: string[] = [];
+    try {
+      mentionedIds = await svc.findMentionedAgents(issue.companyId, req.body.body);
+    } catch (err) {
+      logger.warn({ err, issueId: id }, "failed to resolve @-mentions");
+    }
+
     // Merge all wakeups from this comment into one enqueue per agent to avoid duplicate runs.
     void (async () => {
       type WakeupRequest = NonNullable<Parameters<typeof heartbeat.wakeup>[1]>;
@@ -12424,12 +12431,6 @@ export function issueRoutes(
         if (wakeups.has(key)) return;
         wakeups.set(key, { agentId, wakeup });
       };
-      let mentionedIds: string[] = [];
-      try {
-        mentionedIds = await svc.findMentionedAgents(issue.companyId, req.body.body);
-      } catch (err) {
-        logger.warn({ err, issueId: id }, "failed to resolve @-mentions");
-      }
       const addDependencyResolvedWakeup = async (input: {
         agentId: string;
         dependentIssueId: string;
