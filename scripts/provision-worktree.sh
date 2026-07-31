@@ -55,8 +55,17 @@ repair_base_workspace_install() {
   # otherwise skip the dangling symlinks; --frozen-lockfile keeps the repair
   # from mutating the shared base workspace's lockfile.
   local repair_cmd=(pnpm install --prod=false --force --frozen-lockfile --config.confirmModulesPurge=false)
-  if command -v flock >/dev/null 2>&1 && [[ -d "$base_cwd/.git" ]]; then
-    (cd "$base_cwd" && env -u NODE_ENV CI=true flock "$base_cwd/.git/paperclip-provision-repair.lock" "${repair_cmd[@]}") >&2
+  # Resolve the real git dir so locking also covers base workspaces that are
+  # linked worktrees, where "$base_cwd/.git" is a file rather than a directory.
+  local repair_lock_dir=""
+  if command -v git >/dev/null 2>&1; then
+    repair_lock_dir="$(git -C "$base_cwd" rev-parse --absolute-git-dir 2>/dev/null || true)"
+  fi
+  if [[ ! -d "$repair_lock_dir" && -d "$base_cwd/.git" ]]; then
+    repair_lock_dir="$base_cwd/.git"
+  fi
+  if command -v flock >/dev/null 2>&1 && [[ -d "$repair_lock_dir" ]]; then
+    (cd "$base_cwd" && env -u NODE_ENV CI=true flock "$repair_lock_dir/paperclip-provision-repair.lock" "${repair_cmd[@]}") >&2
   else
     (cd "$base_cwd" && env -u NODE_ENV CI=true "${repair_cmd[@]}") >&2
   fi
