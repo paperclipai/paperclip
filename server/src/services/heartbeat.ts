@@ -68,6 +68,7 @@ import {
   workspaceOperations,
 } from "@paperclipai/db";
 import { conflict, HttpError, notFound } from "../errors.js";
+import { getStartupTraceContext } from "../instrumentation.js";
 import { logger } from "../middleware/logger.js";
 import { publishLiveEvent } from "./live-events.js";
 import { normalizeResponsibleUserDenialCode } from "./responsible-user-denial-run-outcomes.js";
@@ -14458,6 +14459,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           onLog,
           onMeta: onAdapterMeta,
           onEvent: onAdapterEvent,
+          // The endpoint-gated OpenTelemetry startup trace context. It is a
+          // no-op unless `OTEL_EXPORTER_OTLP_ENDPOINT` is set and the OTel
+          // packages are installed, so the sandbox-start span path stays inert
+          // by default.
+          startupTraceContext: getStartupTraceContext(),
           onRuntimeProgress: async (progress) => {
             await recordCurrentHeartbeatRunRuntimeProgress(run, progress, issueId);
           },

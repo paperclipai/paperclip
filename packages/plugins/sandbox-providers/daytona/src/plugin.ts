@@ -36,6 +36,7 @@ import type {
   PluginEnvironmentSyncResult,
   PluginEnvironmentValidateConfigParams,
   PluginEnvironmentValidationResult,
+  PluginSyncOperation,
 } from "@paperclipai/plugin-sdk";
 import { performSyncIn, performSyncOut } from "./file-sync.js";
 
@@ -1096,6 +1097,55 @@ const sandboxHandleCache = (() => {
   return { get, seed, clear, reset, markFresh };
 })();
 
+// Advisory writable-set store. It holds, per lease scope, the sandbox
+// directories that a sync operation declared read-write (`access: "rw"`). An
+// optional sandbox feedback wrapper reads this set later to bind those
+// directories read-write, so an agent gets real-time feedback when a write to a
+// non-persistent path fails. The store is advisory and best-effort in-memory
+// state: it adds no security (the ephemeral sandbox stays the only boundary),
+// and a cold store (for example after a worker restart) degrades to the
+// workspace baseline, never to a crash. The store is keyed the same way as
+// `sandboxHandleCache`, by `sandboxHandleCacheKey(scope)`.
+const sandboxHandleWritableDirs = (() => {
+  const dirsByKey = new Map<string, Set<string>>();
+
+  // Record the read-write destination directory of every `access: "rw"`
+  // mapping. Skip read-only mappings (`access` absent or `"ro"`). Read-only is
+  // the safe default for an advisory signal.
+  //
+  // A workspace, git-history, or asset mapping uploads a tar archive, so its
+  // `targetPath` is the staging archive under the runtime root, not the directory
+  // that the post-upload extract command fills. For those mappings the author
+  // sets `writablePath` to the final destination directory, so this records the
+  // real read-write destination, not the staging parent. When `writablePath` is
+  // absent the mapping writes `targetPath` in place, so the parent directory of
+  // `targetPath` is the destination.
+  function recordWritableTargets(scope: SandboxScope, operations: PluginSyncOperation[]): void {
+    const key = sandboxHandleCacheKey(scope);
+    for (const operation of operations) {
+      for (const mapping of operation.files) {
+        if (mapping.access !== "rw") continue;
+        let dirs = dirsByKey.get(key);
+        if (!dirs) {
+          dirs = new Set<string>();
+          dirsByKey.set(key, dirs);
+        }
+        dirs.add(mapping.writablePath ?? path.posix.dirname(mapping.targetPath));
+      }
+    }
+  }
+
+  function get(scope: SandboxScope): ReadonlySet<string> {
+    return dirsByKey.get(sandboxHandleCacheKey(scope)) ?? new Set<string>();
+  }
+
+  function reset(): void {
+    dirsByKey.clear();
+  }
+
+  return { recordWritableTargets, get, reset };
+})();
+
 /**
  * Test seam: clear the process-scoped handle cache between tests so a handle
  * memoized under a reused composite key in one test never leaks into the next.
@@ -1106,6 +1156,29 @@ export function __resetDaytonaSandboxHandleCacheForTest(): void {
   sandboxHandleTeardownGates.reset();
   sandboxHandleActivityGates.reset();
   sandboxHandleLeaseAdmissionStates.reset();
+  sandboxHandleWritableDirs.reset();
+}
+
+/**
+ * Test seam: read the advisory writable directories recorded for a sync scope.
+ * The caller passes the same `onEnvironmentSyncIn` inputs, so this rebuilds the
+ * exact scope key the hook used. Not used in production.
+ */
+export function __getDaytonaWritableDirsForTest(input: {
+  driverKey: string;
+  companyId: string;
+  environmentId: string;
+  lease: { providerLeaseId?: string | null };
+  config: Record<string, unknown>;
+}): string[] {
+  const scope: SandboxScope = {
+    driverKey: input.driverKey,
+    companyId: input.companyId,
+    environmentId: input.environmentId,
+    providerLeaseId: input.lease.providerLeaseId ?? "",
+    config: parseDriverConfig(input.config),
+  };
+  return [...sandboxHandleWritableDirs.get(scope)];
 }
 
 async function getSandbox(scope: SandboxScope, options: SandboxLookupOptions = {}): Promise<Sandbox> {
@@ -1874,6 +1947,9 @@ const plugin = definePlugin({
       providerLeaseId: params.lease.providerLeaseId,
       config,
     };
+    // Collect the advisory read-write destinations for this scope. This records
+    // intent only; it does not change the transfer below.
+    sandboxHandleWritableDirs.recordWritableTargets(scope, params.operations);
     return await withSandboxActivityGate(scope, async () => {
       const sandbox = await getSandbox(scope, { bypassTeardownGate: true });
       await ensureSandboxStarted(sandbox, timeoutSeconds);

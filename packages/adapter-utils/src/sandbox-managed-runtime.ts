@@ -161,6 +161,24 @@ export interface SandboxSyncFileMapping {
   mode?: number;
   exclude?: string[];
   followSymlinks?: boolean;
+  /**
+   * Advisory read-write intent for the sandbox target. `"rw"` marks a target the
+   * agent may change and keep; `"ro"` marks a read-only tree. An absent value
+   * defaults to `"ro"` (read-only is the safe default for an advisory signal).
+   * The field is advisory metadata for an optional sandbox feedback wrapper. It
+   * does not change the transfer and adds no security.
+   */
+  access?: "rw" | "ro";
+  /**
+   * The sandbox directory that becomes read-write when `access` is `"rw"` and a
+   * post-upload command extracts `targetPath` into a different directory. A tar
+   * mapping uploads an archive under the runtime root, so its `targetPath` is the
+   * staging archive, not the directory the extract command fills. This field
+   * names that final destination directory. When absent, the read-write
+   * destination is the parent directory of `targetPath`. Advisory; ignored when
+   * `access` is not `"rw"`.
+   */
+  writablePath?: string;
 }
 
 /**
@@ -816,7 +834,7 @@ export async function prepareSandboxManagedRuntime(input: {
             exclude: [".paperclip-runtime"],
           });
         });
-        workspaceFiles.push({ sourcePath: gitTarPath, targetPath: remoteGitTar, kind: "file" });
+        workspaceFiles.push({ sourcePath: gitTarPath, targetPath: remoteGitTar, kind: "file", access: "rw", writablePath: workspaceRemoteDir });
         workspacePostUploadCommands.push({
           command: buildWorkspaceTarExtractCommand({
             workspaceRemoteDir,
@@ -847,7 +865,7 @@ export async function prepareSandboxManagedRuntime(input: {
         exclude: gitSnapshot ? undefined : workspaceArchiveExclude,
       });
       const remoteWorkspaceTar = path.posix.join(runtimeRootDir, "workspace-upload.tar");
-      workspaceFiles.push({ sourcePath: workspaceTarPath, targetPath: remoteWorkspaceTar, kind: "file" });
+      workspaceFiles.push({ sourcePath: workspaceTarPath, targetPath: remoteWorkspaceTar, kind: "file", access: "rw", writablePath: workspaceRemoteDir });
       workspacePostUploadCommands.push({
         command: buildWorkspaceTarExtractCommand({
           workspaceRemoteDir,
@@ -898,7 +916,7 @@ export async function prepareSandboxManagedRuntime(input: {
         exclude: asset.exclude,
       });
       const files: SandboxSyncFileMapping[] = [
-        { sourcePath: assetTarPath, targetPath: remoteAssetTar, kind: "file" },
+        { sourcePath: assetTarPath, targetPath: remoteAssetTar, kind: "file", access: "rw", writablePath: remoteAssetDir },
       ];
       // Stage provision helper files (e.g. the merge scripts) into the temp dir
       // and map them alongside the asset tar so they ride the same native upload.
@@ -912,10 +930,14 @@ export async function prepareSandboxManagedRuntime(input: {
           : stageFile.contents;
         const stageHostPath = path.join(tempDir, `${asset.key}.stage.${safeName}`);
         await fs.writeFile(stageHostPath, stageBytes);
+        // A stage helper file (for example a merge script) is a read-only input
+        // that the provision command reads; the agent does not change it and does
+        // not keep it. So it is `access: "ro"` and never joins the writable set.
         files.push({
           sourcePath: stageHostPath,
           targetPath: path.posix.join(runtimeRootDir, safeName),
           kind: "file",
+          access: "ro",
         });
       }
       const postUploadCommand = asset.provision?.postUploadCommand?.({
@@ -967,6 +989,7 @@ export async function prepareSandboxManagedRuntime(input: {
             targetPath: remoteProjectDir,
             kind: "directory",
             exclude: additionalSourceExclude,
+            access: "ro",
           }],
           sourceRoots: [localPath],
           targetRoots: [remoteProjectDir],

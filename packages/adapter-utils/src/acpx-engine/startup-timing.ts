@@ -58,23 +58,56 @@ export interface StartupSpan {
 }
 
 /**
+ * An opaque parent-context token. The server builds it from the OTel
+ * `@opentelemetry/api` `context` / `trace` helpers. `adapter-utils` never reads
+ * it; it only forwards it to `startSpan`, so this package stays OTel-free. A
+ * child span opened with this token parents to the span the token carries.
+ */
+export type StartupSpanContext = unknown;
+
+/**
  * A minimal, OTel-free tracer contract. The server injects a real
  * `@opentelemetry/api` tracer, which satisfies this shape structurally. The
  * `startSpan` signature is a subset of the OTel one, so a real tracer is
- * assignable here.
+ * assignable here. The optional third argument is the explicit parent context:
+ * a real OTel `startSpan(name, options, context)` parents the new span to the
+ * span that `context` carries. `adapter-utils` passes it through as an opaque
+ * token, so parenting never depends on ambient async-context propagation.
  */
 export interface StartupTracer {
   startSpan(
     name: string,
     options?: { attributes?: Record<string, string | number | boolean> },
+    context?: StartupSpanContext,
   ): StartupSpan;
 }
 
-const NOOP_SPAN: StartupSpan = {
+/**
+ * The injected tracer plus the one context helper the engine needs to build a
+ * parent-context token from the root span. The server binds these to
+ * `@opentelemetry/api` (`trace.getTracer`, `trace.setSpan` over
+ * `context.active()`). The default is a no-op, so the whole span path stays a
+ * no-op until the server injects a real implementation.
+ */
+export interface StartupTraceContext {
+  readonly tracer: StartupTracer;
+  /**
+   * Return a parent-context token whose active span is `span`. A child span
+   * opened with this token parents to `span`. The token is opaque to
+   * `adapter-utils`.
+   */
+  contextWithSpan(span: StartupSpan): StartupSpanContext;
+}
+
+/** A shared no-op span. It implements the structural span contract and does
+ * nothing, so a caller with no injected tracer changes no behavior. */
+export const NOOP_STARTUP_SPAN: StartupSpan = {
   setAttribute() {},
   setStatus() {},
   end() {},
 };
+
+const NOOP_SPAN = NOOP_STARTUP_SPAN;
 
 /**
  * The default tracer. It opens no real span, so `measureStartupStep` behaves
@@ -82,6 +115,16 @@ const NOOP_SPAN: StartupSpan = {
  */
 const NOOP_TRACER: StartupTracer = {
   startSpan: () => NOOP_SPAN,
+};
+
+/**
+ * The default trace context. Its tracer is a no-op and it produces no parent
+ * token, so the engine emits no spans until the server injects a real
+ * implementation.
+ */
+export const NOOP_STARTUP_TRACE_CONTEXT: StartupTraceContext = {
+  tracer: NOOP_TRACER,
+  contextWithSpan: () => undefined,
 };
 
 /**
@@ -139,6 +182,10 @@ function finiteDelta(
  *   span path changes no runtime behavior until the server injects a real
  *   tracer. The span carries only the closed attribute allowlist (`step`, the
  *   normalized `provider`, and the finite counter deltas).
+ * - `parentContext` — an opaque parent-context token from the root span. When
+ *   set, the step's span parents to that root. `measureStartupStep` forwards it
+ *   to `startSpan` and never inspects it, so parenting stays explicit and does
+ *   not depend on ambient async-context propagation.
  * - `provider` — the raw provider key for the step. `measureStartupStep`
  *   normalizes it through `normalizeProviderFamily` before it sets the
  *   low-cardinality `provider` span attribute. It never sets the raw key.
@@ -149,6 +196,7 @@ export interface StartupStepMeasureOptions {
   providerGetMs?: () => number;
   extra?: () => Record<string, number>;
   tracer?: StartupTracer;
+  parentContext?: StartupSpanContext;
   provider?: string;
 }
 
@@ -205,7 +253,7 @@ export async function measureStartupStep<T>(
   }
   let span: StartupSpan;
   try {
-    span = tracer.startSpan(step, { attributes: startAttributes });
+    span = tracer.startSpan(step, { attributes: startAttributes }, options.parentContext);
   } catch {
     // A throwing tracer must not change startup control flow.
     span = NOOP_SPAN;

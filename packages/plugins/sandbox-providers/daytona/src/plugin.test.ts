@@ -32,6 +32,7 @@ import plugin, {
   setDaytonaTimingClockForTest,
   setDaytonaHandleFreshnessClockForTest,
   __resetDaytonaSandboxHandleCacheForTest,
+  __getDaytonaWritableDirsForTest,
 } from "./plugin.js";
 import manifest from "./manifest.js";
 
@@ -2198,6 +2199,124 @@ describe("daytona native file-sync hooks", () => {
   it("declares both sync hooks so the worker advertises the native transport", () => {
     expect(plugin.definition.onEnvironmentSyncIn).toBeTypeOf("function");
     expect(plugin.definition.onEnvironmentSyncOut).toBeTypeOf("function");
+  });
+
+  it("records the writablePath destination of a staging-tar rw mapping, not the staging parent", async () => {
+    const hostDir = await makeHostDir();
+    const source = path.join(hostDir, "workspace.tar");
+    await fs.writeFile(source, "bytes");
+
+    const sandbox = createMockSandbox();
+    mockGet.mockResolvedValue(sandbox);
+
+    const params = {
+      driverKey: "daytona",
+      companyId: "company-1",
+      environmentId: "env-1",
+      config: { timeoutMs: 300000, reuseLease: false },
+      lease: syncLease(),
+      operations: [
+        {
+          operationId: "sync-op-rw",
+          files: [
+            {
+              // The mapping uploads a staging tar under the runtime root, and a
+              // post-upload command extracts it into the workspace directory. So
+              // `writablePath` names the real read-write destination.
+              sourcePath: source,
+              targetPath: `${REMOTE_DIR}/.paperclip-runtime/workspace-upload.tar`,
+              kind: "file" as const,
+              access: "rw" as const,
+              writablePath: REMOTE_DIR,
+            },
+          ],
+        },
+      ],
+    };
+    await plugin.definition.onEnvironmentSyncIn?.(params);
+
+    // The set holds the extract destination, not the staging archive parent.
+    const recorded = __getDaytonaWritableDirsForTest(params);
+    expect(recorded).toContain(REMOTE_DIR);
+    expect(recorded).not.toContain(`${REMOTE_DIR}/.paperclip-runtime`);
+  });
+
+  it("falls back to the parent directory of an rw mapping with no writablePath", async () => {
+    const hostDir = await makeHostDir();
+    const source = path.join(hostDir, "in-place.txt");
+    await fs.writeFile(source, "bytes");
+
+    const sandbox = createMockSandbox();
+    mockGet.mockResolvedValue(sandbox);
+
+    const params = {
+      driverKey: "daytona",
+      companyId: "company-1",
+      environmentId: "env-1",
+      config: { timeoutMs: 300000, reuseLease: false },
+      lease: syncLease(),
+      operations: [
+        {
+          operationId: "sync-op-rw-inplace",
+          files: [
+            {
+              // No post-upload extract, so the mapping writes `targetPath` in
+              // place and the parent directory is the read-write destination.
+              sourcePath: source,
+              targetPath: `${REMOTE_DIR}/data/in-place.txt`,
+              kind: "file" as const,
+              access: "rw" as const,
+            },
+          ],
+        },
+      ],
+    };
+    await plugin.definition.onEnvironmentSyncIn?.(params);
+
+    expect(__getDaytonaWritableDirsForTest(params)).toContain(`${REMOTE_DIR}/data`);
+  });
+
+  it("skips ro and access-absent sync targets in the advisory writable set", async () => {
+    const hostDir = await makeHostDir();
+    const roSource = path.join(hostDir, "referenced");
+    const defaultSource = path.join(hostDir, "default.tar");
+    await fs.mkdir(roSource, { recursive: true });
+    await fs.writeFile(path.join(roSource, "notes.md"), "reference");
+    await fs.writeFile(defaultSource, "bytes");
+
+    const sandbox = createMockSandbox();
+    mockGet.mockResolvedValue(sandbox);
+
+    const params = {
+      driverKey: "daytona",
+      companyId: "company-1",
+      environmentId: "env-1",
+      config: { timeoutMs: 300000, reuseLease: false },
+      lease: syncLease(),
+      operations: [
+        {
+          operationId: "sync-op-ro",
+          files: [
+            {
+              sourcePath: roSource,
+              targetPath: `${REMOTE_DIR}/.paperclip-runtime/project-proj-first`,
+              kind: "directory" as const,
+              access: "ro" as const,
+            },
+            {
+              // An absent `access` defaults to read-only, so it is not recorded.
+              sourcePath: defaultSource,
+              targetPath: `${REMOTE_DIR}/.paperclip-runtime/default-upload.tar`,
+              kind: "file" as const,
+            },
+          ],
+        },
+      ],
+    };
+    await plugin.definition.onEnvironmentSyncIn?.(params);
+
+    // Neither the ro directory nor the access-absent file directory is recorded.
+    expect(__getDaytonaWritableDirsForTest(params)).toEqual([]);
   });
 
   it("syncIn coalesces file mappings into one uploadFiles batch to reserved temp destinations, then one batched mv, applying secret mode via setFilePermissions before the rename", async () => {

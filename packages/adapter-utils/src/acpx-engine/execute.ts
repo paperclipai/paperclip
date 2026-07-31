@@ -83,7 +83,15 @@ import {
   DEFAULT_ACP_ENGINE_TIMEOUT_SEC,
   DEFAULT_ACP_ENGINE_WARM_HANDLE_IDLE_MS,
 } from "./constants.js";
-import { measureStartupStep, type StartupStepMeasureOptions } from "./startup-timing.js";
+import {
+  measureStartupStep,
+  NOOP_STARTUP_SPAN,
+  NOOP_STARTUP_TRACE_CONTEXT,
+  type StartupSpan,
+  type StartupSpanContext,
+  type StartupStepMeasureOptions,
+  type StartupTraceContext,
+} from "./startup-timing.js";
 import type { CommandManagedRuntimeRunner } from "../command-managed-runtime.js";
 
 const defaultModuleDir = path.dirname(fileURLToPath(import.meta.url));
@@ -1335,6 +1343,10 @@ async function buildRuntime(input: {
   ctx: AdapterExecutionContext;
   engine: AcpxEngineSettings;
   deps: AcpxEngineExecutorOptions;
+  // The injected tracer plus the root-span parent-context token. Merged into
+  // every startup-step option set, so each boundary span parents to the one
+  // root span (`sandbox.startup`) that the executor opens.
+  spanParent: Pick<StartupStepMeasureOptions, "tracer" | "parentContext">;
 }): Promise<AcpxPreparedRuntime> {
   const { runId, agent, config, context, authToken } = input.ctx;
   // Injectable monotonic clock for per-step startup timing. Hoisted above the
@@ -1410,17 +1422,23 @@ async function buildRuntime(input: {
   // and emits the per-step delta. Empty when there is no runner (local runs,
   // the runner-less ACP→CLI fallback, or an SSH runner that does not
   // instrument the seam), so those steps simply omit the fields.
-  const stepMetrics = buildStartupStepMetrics(
-    executionTarget?.kind === "remote" && executionTarget.transport === "sandbox"
-      ? executionTarget.runner
-      : undefined,
-  );
+  // Merge the injected tracer + root parent-context into every step option set,
+  // so each boundary span parents to the root span. With no injected trace
+  // context both fields are no-ops and the span path stays inert.
+  const stepMetrics: StartupStepMeasureOptions = {
+    ...buildStartupStepMetrics(
+      executionTarget?.kind === "remote" && executionTarget.transport === "sandbox"
+        ? executionTarget.runner
+        : undefined,
+    ),
+    ...input.spanParent,
+  };
   // The two bridge-start steps intentionally overlap, so their runner counters
   // would double-count each other if we sampled them here. Keep the shared
   // counter attribution on the sequential startup phases only; the concurrent
-  // bridge steps still emit duration telemetry, just not misleading per-step
-  // round-trip/provider deltas.
-  const concurrentBridgeStepMetrics: StartupStepMeasureOptions = {};
+  // bridge steps still emit duration telemetry (and a span), just not
+  // misleading per-step round-trip/provider deltas.
+  const concurrentBridgeStepMetrics: StartupStepMeasureOptions = { ...input.spanParent };
   const shapedWorkspaceEnv = shapePaperclipWorkspaceEnvForExecution({
     workspaceCwd: effectiveWorkspaceCwd,
     workspaceWorktreePath,
@@ -2787,6 +2805,54 @@ function warmHandleMatches(
   return entry !== undefined && entry.runtime === runtime && entry.handle === handle;
 }
 
+/** The stable name of the one root span for a sandbox bring-up. It is a fixed
+ * low-cardinality constant, never derived from run/user data. */
+const STARTUP_ROOT_SPAN_NAME = "sandbox.startup";
+
+/**
+ * Open the one root span for a sandbox bring-up and return its parent-context
+ * token plus a guarded `end`. The span parents every startup boundary span:
+ * the engine forwards `parentContext` to each `measureStartupStep` call. The
+ * `end` closure runs at most once (bring-up complete OR a bring-up failure) and
+ * swallows every tracer error, so observability never changes startup control
+ * flow. With no injected trace context, the tracer is a no-op and the span is
+ * a no-op.
+ */
+function openStartupRootSpan(tracing: StartupTraceContext): {
+  parentContext: StartupSpanContext;
+  end: (failed: boolean) => void;
+} {
+  let span: StartupSpan;
+  try {
+    span = tracing.tracer.startSpan(STARTUP_ROOT_SPAN_NAME);
+  } catch {
+    span = NOOP_STARTUP_SPAN;
+  }
+  let parentContext: StartupSpanContext;
+  try {
+    parentContext = tracing.contextWithSpan(span);
+  } catch {
+    parentContext = undefined;
+  }
+  let ended = false;
+  return {
+    parentContext,
+    end: (failed: boolean) => {
+      if (ended) return;
+      ended = true;
+      try {
+        // `2` is `SpanStatusCode.ERROR`. `adapter-utils` stays OTel-free, so it
+        // uses the numeric value that a real injected span reads as the error
+        // status.
+        if (failed) span.setStatus({ code: 2 });
+        span.end();
+      } catch {
+        // Observability must not change startup control flow.
+      }
+    },
+  };
+}
+
 export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
   const createRuntime = deps.createRuntime ?? createAcpRuntime;
   const now = deps.now ?? (() => Date.now());
@@ -2817,7 +2883,39 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       now,
       idleMs: warmIdleMs,
     });
-    const prepared = await buildRuntime({ ctx, engine, deps });
+    // The `sandbox.startup` span names a sandbox bring-up. It must not cover a
+    // local or SSH run: those runs have no sandbox, so they stay out of sandbox
+    // telemetry. Open the real root span only when the target is a remote
+    // sandbox; every other target forces the no-op trace context, so the whole
+    // startup span path stays inert regardless of the injected context.
+    const startupExecutionTarget = readAdapterExecutionTarget({
+      executionTarget: ctx.executionTarget,
+      legacyRemoteExecution: ctx.executionTransport?.remoteExecution,
+    });
+    const targetsRemoteSandbox =
+      startupExecutionTarget?.kind === "remote" && startupExecutionTarget.transport === "sandbox";
+    // Open the one root span for this bring-up. It spans `buildRuntime` through
+    // `acp.handshake`, so every startup boundary span parents to it. `spanParent`
+    // carries the injected tracer + the root parent-context token into each
+    // `measureStartupStep` call. With no injected trace context the whole path
+    // is a no-op. `endRootSpan` runs exactly once — at bring-up completion or on
+    // a bring-up failure.
+    const tracing =
+      targetsRemoteSandbox && ctx.startupTraceContext
+        ? ctx.startupTraceContext
+        : NOOP_STARTUP_TRACE_CONTEXT;
+    const rootSpan = openStartupRootSpan(tracing);
+    const spanParent: Pick<StartupStepMeasureOptions, "tracer" | "parentContext"> = {
+      tracer: tracing.tracer,
+      parentContext: rootSpan.parentContext,
+    };
+    let prepared: AcpxPreparedRuntime;
+    try {
+      prepared = await buildRuntime({ ctx, engine, deps, spanParent });
+    } catch (err) {
+      rootSpan.end(true);
+      throw err;
+    }
     // State the effective wall-clock timeout and its source up front so a
     // later timeout is diagnosable from the run log alone. Goes to stderr:
     // the acpx stdout log stream carries JSON acpx.* event payloads and must
@@ -2945,6 +3043,8 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         }
       }
     } catch (err) {
+      // Bring-up failed at the handshake — close the root span with error status.
+      rootSpan.end(true);
       const { classified, message } = await emitAcpxFailure({
         ctx,
         prepared,
@@ -2968,6 +3068,8 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
     }
 
     if (!handle) {
+      // Bring-up produced no session handle — close the root span with error status.
+      rootSpan.end(true);
       await discardStagedRuntime({ handles: stagedRuntimes, prepared });
       await cleanupRemoteBridges(prepared);
       return {
@@ -2982,6 +3084,10 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         summary: "ACPX did not return a runtime session handle.",
       };
     }
+    // Bring-up is complete: the session handle is established. Close the root
+    // span here, so it covers `buildRuntime` through `acp.handshake` and no
+    // further. The agent turn runs after and is out of the startup root's scope.
+    rootSpan.end(false);
     const sessionHandle = handle;
     try {
       await applySessionConfigOptions({

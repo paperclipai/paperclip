@@ -691,6 +691,30 @@ export interface PluginSyncFileMapping {
    * as links; `true` dereferences them to their target bytes. Mirrors tar's `-h`.
    */
   followSymlinks?: boolean;
+  /**
+   * Advisory read-write intent for the sandbox target. `"rw"` means the author
+   * expects the agent to change the bytes at the target and keep the change.
+   * `"ro"` means the target is a read-only tree. An absent value defaults to
+   * `"ro"` (read-only is the safe default for an advisory signal).
+   *
+   * This field is advisory metadata for an optional sandbox feedback wrapper. It
+   * does not change the transfer and adds no security. A provider may read it to
+   * bind the read-write targets read-write under the wrapper, but the ephemeral
+   * sandbox stays the only security boundary.
+   */
+  access?: "rw" | "ro";
+  /**
+   * The sandbox directory that becomes read-write when `access` is `"rw"` and a
+   * post-upload command extracts `targetPath` into a different directory. A
+   * workspace, git-history, or asset mapping uploads a tar archive, so its
+   * `targetPath` is the staging archive under the runtime root, not the directory
+   * that the extract command fills. This field names that final destination
+   * directory, so a consumer records the real read-write destination, not the
+   * staging parent. When absent, the read-write destination is the parent
+   * directory of `targetPath`. This field is advisory and ignored when `access`
+   * is not `"rw"`.
+   */
+  writablePath?: string;
 }
 
 /**
