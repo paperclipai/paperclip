@@ -6,7 +6,7 @@
 import { instrumentationReady, shutdownInstrumentation } from "./instrumentation.js";
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
-import { resolve } from "node:path";
+import { basename, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import { pathToFileURL } from "node:url";
@@ -71,7 +71,11 @@ import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-
 import { maybePersistWorktreeRuntimePorts } from "./worktree-config.js";
 import { initTelemetry, getTelemetryClient } from "./telemetry.js";
 import { conflict } from "./errors.js";
-import { coordinateHeartbeatSchedulerShutdown } from "./shutdown.js";
+import {
+  coordinateEmbeddedPostgresShutdown,
+  coordinateHeartbeatSchedulerShutdown,
+  createShutdownLifecycleContext,
+} from "./shutdown.js";
 import { flushInFlightRunLogMirrors } from "./services/run-log-store.js";
 import type {
   InstanceDatabaseBackupRunResult,
@@ -1299,6 +1303,14 @@ export async function startServer(): Promise<StartedServer> {
         waitForHeartbeatSchedulerIdle,
       });
       const skipHeartbeatDrain = heartbeatShutdown.hotRestart?.skipDrain === true;
+      const shutdownLifecycle = createShutdownLifecycleContext({
+        signal,
+        hotRestart: heartbeatShutdown.hotRestart,
+        launcherIdentity: [basename(process.execPath), process.argv[1] ? basename(process.argv[1]) : null]
+          .filter((part): part is string => Boolean(part))
+          .join(":"),
+      });
+      logger.info({ shutdownLifecycle }, "server shutdown initiated");
       if (skipHeartbeatDrain) {
         logger.info(
           { signal, hotRestart: heartbeatShutdown.hotRestart },
@@ -1340,11 +1352,22 @@ export async function startServer(): Promise<StartedServer> {
       appShutdown?.();
 
       if (embeddedPostgres && embeddedPostgresStartedByThisProcess) {
-        logger.info({ signal }, "Stopping embedded PostgreSQL");
         try {
-          await embeddedPostgres?.stop();
+          const postgresShutdown = await coordinateEmbeddedPostgresShutdown({
+            startedByThisProcess: embeddedPostgresStartedByThisProcess,
+            stop: () => embeddedPostgres!.stop(),
+            lifecycle: shutdownLifecycle,
+          });
+          if (postgresShutdown === "preserved_for_hot_restart") {
+            logger.info(
+              { shutdownLifecycle },
+              "Preserving embedded PostgreSQL for hot-restart adoption",
+            );
+          } else if (postgresShutdown === "stopped") {
+            logger.info({ shutdownLifecycle }, "Stopped embedded PostgreSQL");
+          }
         } catch (err) {
-          logger.error({ err }, "Failed to stop embedded PostgreSQL cleanly");
+          logger.error({ err, shutdownLifecycle }, "Failed to stop embedded PostgreSQL cleanly");
         }
       }
 

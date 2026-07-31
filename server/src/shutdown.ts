@@ -2,11 +2,51 @@ type HotRestartShutdownPreparation = {
   skipDrain: boolean;
 };
 
+export type ShutdownSignal = "SIGINT" | "SIGTERM";
+
+export type ShutdownLifecycleContext = {
+  controlEvent: ShutdownSignal;
+  parentPid: number;
+  launcherIdentity: string;
+  uptimeMs: number;
+  shutdownInitiator: "hot_restart_intent" | "process_signal";
+  preserveEmbeddedPostgres: boolean;
+};
+
+export function createShutdownLifecycleContext(input: {
+  signal: ShutdownSignal;
+  hotRestart: HotRestartShutdownPreparation | null;
+  parentPid?: number;
+  launcherIdentity?: string;
+  uptimeMs?: number;
+}): ShutdownLifecycleContext {
+  const preserveEmbeddedPostgres = input.hotRestart?.skipDrain === true;
+  return {
+    controlEvent: input.signal,
+    parentPid: input.parentPid ?? process.ppid,
+    launcherIdentity: input.launcherIdentity ?? "unknown",
+    uptimeMs: input.uptimeMs ?? Math.round(process.uptime() * 1_000),
+    shutdownInitiator: preserveEmbeddedPostgres ? "hot_restart_intent" : "process_signal",
+    preserveEmbeddedPostgres,
+  };
+}
+
+export async function coordinateEmbeddedPostgresShutdown(input: {
+  startedByThisProcess: boolean;
+  stop: (() => Promise<void>) | null;
+  lifecycle: ShutdownLifecycleContext;
+}): Promise<"not_owned" | "preserved_for_hot_restart" | "stopped"> {
+  if (!input.startedByThisProcess || !input.stop) return "not_owned";
+  if (input.lifecycle.preserveEmbeddedPostgres) return "preserved_for_hot_restart";
+  await input.stop();
+  return "stopped";
+}
+
 export async function coordinateHeartbeatSchedulerShutdown<
   TPreparation extends HotRestartShutdownPreparation,
 >(input: {
-  signal: "SIGINT" | "SIGTERM";
-  prepareHotRestartShutdown: ((signal: "SIGINT" | "SIGTERM") => Promise<TPreparation>) | null;
+  signal: ShutdownSignal;
+  prepareHotRestartShutdown: ((signal: ShutdownSignal) => Promise<TPreparation>) | null;
   waitForHeartbeatSchedulerIdle: () => Promise<void>;
 }): Promise<{
   hotRestart: TPreparation | null;

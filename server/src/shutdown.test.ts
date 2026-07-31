@@ -1,5 +1,76 @@
 import { describe, expect, it, vi } from "vitest";
-import { coordinateHeartbeatSchedulerShutdown } from "./shutdown.js";
+import {
+  coordinateEmbeddedPostgresShutdown,
+  coordinateHeartbeatSchedulerShutdown,
+  createShutdownLifecycleContext,
+} from "./shutdown.js";
+
+describe("coordinateEmbeddedPostgresShutdown", () => {
+  it("preserves the database and active work for a validated hot restart", async () => {
+    const activeWork = { transactionOpen: true, childRunAlive: true };
+    const stop = vi.fn(async () => {
+      activeWork.transactionOpen = false;
+      activeWork.childRunAlive = false;
+    });
+    const lifecycle = createShutdownLifecycleContext({
+      signal: "SIGTERM",
+      hotRestart: { skipDrain: true },
+      parentPid: 4242,
+      launcherIdentity: "node:paperclipai",
+      uptimeMs: 15_000,
+    });
+
+    const result = await coordinateEmbeddedPostgresShutdown({
+      startedByThisProcess: true,
+      stop,
+      lifecycle,
+    });
+
+    expect(result).toBe("preserved_for_hot_restart");
+    expect(stop).not.toHaveBeenCalled();
+    expect(activeWork).toEqual({ transactionOpen: true, childRunAlive: true });
+    expect(lifecycle).toEqual({
+      controlEvent: "SIGTERM",
+      parentPid: 4242,
+      launcherIdentity: "node:paperclipai",
+      uptimeMs: 15_000,
+      shutdownInitiator: "hot_restart_intent",
+      preserveEmbeddedPostgres: true,
+    });
+  });
+
+  it("stops an owned database during a normal graceful shutdown", async () => {
+    const stop = vi.fn(async () => undefined);
+
+    const result = await coordinateEmbeddedPostgresShutdown({
+      startedByThisProcess: true,
+      stop,
+      lifecycle: createShutdownLifecycleContext({
+        signal: "SIGINT",
+        hotRestart: { skipDrain: false },
+      }),
+    });
+
+    expect(result).toBe("stopped");
+    expect(stop).toHaveBeenCalledOnce();
+  });
+
+  it("does not stop a database owned by another server process", async () => {
+    const stop = vi.fn(async () => undefined);
+
+    const result = await coordinateEmbeddedPostgresShutdown({
+      startedByThisProcess: false,
+      stop,
+      lifecycle: createShutdownLifecycleContext({
+        signal: "SIGTERM",
+        hotRestart: null,
+      }),
+    });
+
+    expect(result).toBe("not_owned");
+    expect(stop).not.toHaveBeenCalled();
+  });
+});
 
 describe("coordinateHeartbeatSchedulerShutdown", () => {
   it("captures a hot-restart snapshot without waiting for active scheduler work", async () => {
