@@ -1,0 +1,19 @@
+-- Drop activity_log's foreign key to heartbeat_runs. The column stays, the index
+-- stays, only the constraint goes.
+--
+-- An audit trail must be able to name an entity that has since been cleaned up.
+-- This constraint made that impossible in both directions:
+--
+--  * Writing: agent JWTs pin a run_id claim for their whole 14-day life while
+--    heartbeat runs are ephemeral. Once the run row was gone, every write by that
+--    token failed the constraint. logActivity runs after the business write has
+--    committed, so the caller saw a 500 on work that had actually succeeded — and
+--    callers that retry on 500 then created the issue twice. Six of ten agent
+--    tokens on this instance carried a dead run id and could not write at all.
+--  * Cleaning up: ON DELETE no action means audit rows pin their runs, so run
+--    retention is blocked by the log that merely mentions them.
+--
+-- Keeping the value without the constraint is the point: activity_log.run_id
+-- records which run claimed to act, whether or not that run still exists.
+-- activity_log_run_id_idx (0003) is untouched, so queries by run_id are unaffected.
+ALTER TABLE "activity_log" DROP CONSTRAINT IF EXISTS "activity_log_run_id_heartbeat_runs_id_fk";
