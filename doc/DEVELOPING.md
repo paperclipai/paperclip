@@ -208,6 +208,12 @@ pnpm paperclipai run
 2. `paperclipai doctor` with repair enabled
 3. starts the server when checks pass
 
+When `paperclipai run` starts from a repo checkout and the server import fails with
+`ERR_MODULE_NOT_FOUND` from torn `node_modules`, a broken pnpm store, or stale
+workspace package links, it now attempts a frozen `pnpm install`, reruns the
+workspace-link preflight, verifies `@paperclipai/server` still builds, and then
+retries startup once before surfacing the boot failure.
+
 ## Docker Quickstart (No local Node install)
 
 Build and run Paperclip in Docker:

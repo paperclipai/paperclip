@@ -49,8 +49,11 @@ import { classifyCodexAuthRefreshFailure } from "./parse.js";
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const packageRootDir = path.resolve(moduleDir, "../..");
 const MIN_ACP_NODE_VERSION = "22.13.0";
-const DEFAULT_CODEX_ACP_STREAM_IDLE_TIMEOUT_MS = 20 * 60 * 1000;
-const DEFAULT_CODEX_ACP_STREAM_IDLE_MAX_RETRIES = 1;
+// Recovery and long-running verification paths in Paperclip can exceed short ACP
+// stream gaps; keep the local lane tolerant of longer quiet periods while
+// preserving a bounded retry envelope.
+const DEFAULT_CODEX_ACP_STREAM_IDLE_TIMEOUT_MS = 45 * 60 * 1000;
+const DEFAULT_CODEX_ACP_STREAM_IDLE_MAX_RETRIES = 2;
 
 export type CodexExecutionEngine = "cli" | "acp";
 

@@ -16,6 +16,10 @@ import {
   resolvePaperclipHomeDir,
   resolvePaperclipInstanceId,
 } from "../config/home.js";
+import {
+  classifyStartupRepairableFailure,
+  repairDevWorkspaceDependencyIntegrity,
+} from "./run-startup-repair.js";
 
 interface RunOptions {
   config?: string;
@@ -176,10 +180,7 @@ async function importServerEntry(): Promise<StartedServer> {
   const projectRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
   const devEntry = path.resolve(projectRoot, "server/src/index.ts");
   if (fs.existsSync(devEntry)) {
-    ensureDevWorkspaceBuildDeps(projectRoot);
-    maybeEnableUiDevMiddleware(devEntry);
-    const mod = await import(pathToFileURL(devEntry).href);
-    return await startServerFromModule(mod, devEntry);
+    return await importWorkspaceServerEntry({ devEntry, projectRoot });
   }
 
   // Production mode: import the published @paperclipai/server package
@@ -200,6 +201,35 @@ async function importServerEntry(): Promise<StartedServer> {
       `Paperclip server failed to start.\n` +
         `${formatError(err)}`,
     );
+  }
+}
+
+async function importWorkspaceServerEntry(input: {
+  devEntry: string;
+  projectRoot: string;
+}): Promise<StartedServer> {
+  ensureDevWorkspaceBuildDeps(input.projectRoot);
+  maybeEnableUiDevMiddleware(input.devEntry);
+
+  try {
+    const mod = await import(pathToFileURL(input.devEntry).href);
+    return await startServerFromModule(mod, input.devEntry);
+  } catch (err) {
+    const repairableFailure = classifyStartupRepairableFailure({
+      error: err,
+      projectRoot: input.projectRoot,
+    });
+    if (!repairableFailure) throw err;
+
+    p.log.step(
+      `Detected a repairable Paperclip workspace dependency failure while starting the server. ${repairableFailure.summary}`,
+    );
+    repairDevWorkspaceDependencyIntegrity(input.projectRoot);
+    p.log.success("Dependency repair completed. Retrying Paperclip server startup.");
+
+    ensureDevWorkspaceBuildDeps(input.projectRoot);
+    const mod = await import(`${pathToFileURL(input.devEntry).href}?repair=${Date.now()}`);
+    return await startServerFromModule(mod, input.devEntry);
   }
 }
 
