@@ -1054,6 +1054,39 @@ function applyDocumentFixups(document: any): any {
 
 // ─── Health ──────────────────────────────────────────────────────────────────
 
+// Shared by the healthy and database-unreachable responses: full details
+// (including serverInfo) ride only on board/agent-actor responses.
+const healthServerInfoSchema = z.object({
+  processStartedAt: z.string().datetime(),
+  git: z.union([
+    z.object({
+      available: z.literal(true),
+      fullSha: z.string(),
+      shortSha: z.string(),
+      branchName: z.string().nullable(),
+      subject: z.string(),
+      committedAt: z.string().datetime().nullable(),
+      localChanges: z.union([
+        z.object({
+          available: z.literal(true),
+          hasLocalChanges: z.boolean(),
+          stagedFileCount: z.number().int().nonnegative(),
+          unstagedFileCount: z.number().int().nonnegative(),
+          untrackedFileCount: z.number().int().nonnegative(),
+        }).strict(),
+        z.object({
+          available: z.literal(false),
+          unavailableReason: z.enum(["git_status_unavailable"]),
+        }).strict(),
+      ]),
+    }).strict(),
+    z.object({
+      available: z.literal(false),
+      unavailableReason: z.enum(["git_unavailable", "invalid_git_metadata"]),
+    }).strict(),
+  ]),
+}).strict();
+
 registry.registerPath({
   method: "get",
   path: "/api/health",
@@ -1100,38 +1133,26 @@ registry.registerPath({
         code: z.string(),
         message: z.string(),
       })).optional(),
-      serverInfo: z.object({
-        processStartedAt: z.string().datetime(),
-        git: z.union([
-          z.object({
-            available: z.literal(true),
-            fullSha: z.string(),
-            shortSha: z.string(),
-            branchName: z.string().nullable(),
-            subject: z.string(),
-            committedAt: z.string().datetime().nullable(),
-            localChanges: z.union([
-              z.object({
-                available: z.literal(true),
-                hasLocalChanges: z.boolean(),
-                stagedFileCount: z.number().int().nonnegative(),
-                unstagedFileCount: z.number().int().nonnegative(),
-                untrackedFileCount: z.number().int().nonnegative(),
-              }).strict(),
-              z.object({
-                available: z.literal(false),
-                unavailableReason: z.enum(["git_status_unavailable"]),
-              }).strict(),
-            ]),
-          }).strict(),
-          z.object({
-            available: z.literal(false),
-            unavailableReason: z.enum(["git_unavailable", "invalid_git_metadata"]),
-          }).strict(),
-        ]),
-      }).strict().optional(),
+      serverInfo: healthServerInfoSchema.optional(),
     })),
-    503: { description: "Service unavailable", content: { "application/json": { schema: ErrorSchema } } },
+    // The database-unreachable body still carries version and commit so
+    // deployment tooling can verify the running build during an outage;
+    // serverInfo rides only on full-details (board/agent) responses.
+    503: {
+      description: "Service unavailable",
+      content: {
+        "application/json": {
+          schema: z.object({
+            status: z.literal("unhealthy"),
+            version: z.string(),
+            serverVersion: z.string(),
+            commit: z.string().nullable(),
+            error: z.literal("database_unreachable"),
+            serverInfo: healthServerInfoSchema.optional(),
+          }),
+        },
+      },
+    },
   },
 });
 
