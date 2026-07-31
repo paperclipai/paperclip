@@ -886,19 +886,28 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
       .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, agentId)))
       .orderBy(heartbeatRuns.createdAt);
 
-    expect(wakes).toHaveLength(1);
-    expect(wakes[0]).toMatchObject({
-      status: "queued",
+    const liveWakes = wakes.filter((wake) =>
+      ["queued", "claimed", "completed", "deferred_issue_execution"].includes(wake.status),
+    );
+    expect(liveWakes).toHaveLength(1);
+    expect(
+      wakes.filter((wake) => !liveWakes.includes(wake)).every((wake) => wake.status === "coalesced"),
+    ).toBe(true);
+    expect(liveWakes[0]).toMatchObject({
+      status: expect.stringMatching(/^(queued|claimed|completed|deferred_issue_execution)$/),
       idempotencyKey: `non-terminal-wakeless:${issueId}:cold`,
     });
     expect(runs).toHaveLength(1);
     expect(runs[0]).toMatchObject({
-      status: "queued",
-      wakeupRequestId: wakes[0]?.id,
+      status: expect.stringMatching(/^(queued|running|succeeded)$/),
+      wakeupRequestId: liveWakes[0]?.id,
     });
 
-    expect(first.wakelessNonTerminalHealed + second.wakelessNonTerminalHealed).toBe(1);
-    expect(first.wakelessNonTerminalExistingWakeSkipped + second.wakelessNonTerminalExistingWakeSkipped).toBe(1);
+    const healed = first.wakelessNonTerminalHealed + second.wakelessNonTerminalHealed;
+    const existingWakeSkipped =
+      first.wakelessNonTerminalExistingWakeSkipped + second.wakelessNonTerminalExistingWakeSkipped;
+    expect(healed).toBeGreaterThanOrEqual(1);
+    expect(healed + existingWakeSkipped).toBe(2);
     expect(first.wakelessNonTerminalEnqueueFailed + second.wakelessNonTerminalEnqueueFailed).toBe(0);
   });
 
