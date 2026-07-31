@@ -335,6 +335,7 @@ export const AWAITING_HUMAN_INTERACTION_KINDS = [
   "ask_user_questions",
   "request_confirmation",
   "request_checkbox_confirmation",
+  "request_item_verdicts",
 ] as const;
 export type AwaitingHumanInteractionKind = (typeof AWAITING_HUMAN_INTERACTION_KINDS)[number];
 

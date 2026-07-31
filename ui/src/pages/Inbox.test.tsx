@@ -31,6 +31,7 @@ const apiMocks = vi.hoisted(() => ({
   issuesList: vi.fn(),
   issuesCount: vi.fn(),
   issueLabels: vi.fn(),
+  listAwaitingHumanInteractions: vi.fn(),
   archiveFromInbox: vi.fn(),
   unarchiveFromInbox: vi.fn(),
   agentsList: vi.fn(),
@@ -73,6 +74,7 @@ vi.mock("../api/issues", () => ({
     listCompact: apiMocks.issuesList,
     count: apiMocks.issuesCount,
     listLabels: apiMocks.issueLabels,
+    listAwaitingHumanInteractions: apiMocks.listAwaitingHumanInteractions,
     markRead: vi.fn(),
     markUnread: vi.fn(),
     archiveFromInbox: apiMocks.archiveFromInbox,
@@ -288,6 +290,7 @@ function resetInboxApiMocks() {
   apiMocks.issuesList.mockResolvedValue([]);
   apiMocks.issuesCount.mockResolvedValue({ count: 0 });
   apiMocks.issueLabels.mockResolvedValue([]);
+  apiMocks.listAwaitingHumanInteractions.mockResolvedValue([]);
   apiMocks.archiveFromInbox.mockResolvedValue({ id: "issue-1", archivedAt: new Date() });
   apiMocks.unarchiveFromInbox.mockResolvedValue({ id: "issue-1", archivedAt: new Date() });
   apiMocks.agentsList.mockResolvedValue([]);
@@ -311,6 +314,61 @@ describe("Inbox toolbar", () => {
       clearLocalInboxArchive("company-1", issueId);
     }
     container.remove();
+  });
+
+  it("renders the Waiting on you tab with pending interaction context", async () => {
+    routerMock.location.pathname = "/inbox/waiting";
+    const issue = createIssue({ id: "issue-1", identifier: "PAP-100", title: "Test issue" });
+    apiMocks.issuesList.mockResolvedValue([issue]);
+    apiMocks.listAwaitingHumanInteractions.mockResolvedValue([
+      {
+        interaction: {
+          id: "interaction-1",
+          companyId: "company-1",
+          issueId: "issue-1",
+          kind: "ask_user_questions",
+          status: "pending",
+          continuationPolicy: "continue_on_user_response",
+          title: "Need clarification",
+          summary: "Please answer these questions",
+          createdAt: new Date("2026-06-01T00:00:00Z"),
+          updatedAt: new Date("2026-06-01T00:00:00Z"),
+          payload: {},
+        } as any,
+        issue: {
+          id: "issue-1",
+          identifier: "PAP-100",
+          title: "Test issue",
+          status: "in_review",
+          assigneeAgentId: null,
+          assigneeUserId: null,
+        },
+      },
+    ]);
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 0, gcTime: 0 } },
+    });
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Inbox />
+        </QueryClientProvider>,
+      );
+    });
+    await vi.waitFor(() => {
+      expect(container.textContent).toContain("Questions for you");
+    });
+
+    const text = container.textContent ?? "";
+    expect(text).toContain("Waiting on you");
+    expect(text).toContain("PAP-100");
+    expect(text).toContain("Test issue");
+    expect(text).toContain("Please answer these questions");
+
+    act(() => root.unmount());
   });
 
   it("does not render external-object summaries in inbox rows", async () => {

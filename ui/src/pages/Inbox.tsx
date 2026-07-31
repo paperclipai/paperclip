@@ -236,6 +236,8 @@ function interactionKindLabel(kind: IssueThreadInteraction["kind"]): string {
       return "Questions for you";
     case "request_checkbox_confirmation":
       return "Checkbox confirmation";
+    case "request_item_verdicts":
+      return "Item verdicts requested";
     case "suggest_tasks":
       return "Task suggestions";
     default: {
@@ -1107,7 +1109,6 @@ export function Inbox() {
     // ask appears here instead of only after a reload.
     refetchInterval: 5000,
   });
-  const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns), [liveRuns]);
   const { data: companyMembers } = useQuery({
     queryKey: queryKeys.access.companyUserDirectory(selectedCompanyId!),
     queryFn: () => accessApi.listUserDirectory(selectedCompanyId!),
@@ -3335,7 +3336,7 @@ export function Inbox() {
                       const pathId = issue.identifier ?? issue.id;
                       const detailState = armIssueDetailInboxQuickArchive(withIssueDetailHeaderSeed(issueLinkState, issue as Partial<Issue> as Issue));
                       rememberIssueDetailLocationState(pathId, detailState);
-                      void prefetchIssueDetail(queryClient, pathId, { issue: issue as Partial<Issue> as Issue });
+                      void prefetchIssueDetailForNavigation(queryClient, pathId, { issue: issue as Partial<Issue> as Issue });
                       navigate(createIssueDetailPath(pathId), { state: detailState });
                     }}
                     isNavigating={false}
