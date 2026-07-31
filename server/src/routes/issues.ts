@@ -10855,7 +10855,23 @@ export function issueRoutes(
     assertCompanyAccess(req, companyId);
     const interactionSvc = issueThreadInteractionService(db);
     const items = await interactionSvc.listAwaitingHumanForCompany(companyId);
-    res.json(items);
+    const visibleItems = [];
+    for (const item of items) {
+      const decision = await decideIssueAccess(req, item.issue, "issue:read");
+      if (!decision.allowed) continue;
+      visibleItems.push({
+        interaction: item.interaction,
+        issue: {
+          id: item.issue.id,
+          identifier: item.issue.identifier,
+          title: item.issue.title,
+          status: item.issue.status,
+          assigneeAgentId: item.issue.assigneeAgentId,
+          assigneeUserId: item.issue.assigneeUserId,
+        },
+      });
+    }
+    res.json(visibleItems);
   });
 
   router.post("/issues/:id/interactions", validate(createIssueThreadInteractionSchema), async (req, res) => {

@@ -2011,14 +2011,7 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
       const rows = await db
         .select({
           interaction: issueThreadInteractions,
-          issue: {
-            id: issues.id,
-            identifier: issues.identifier,
-            title: issues.title,
-            status: issues.status,
-            assigneeAgentId: issues.assigneeAgentId,
-            assigneeUserId: issues.assigneeUserId,
-          },
+          issue: issues,
         })
         .from(issueThreadInteractions)
         .innerJoin(issues, eq(issueThreadInteractions.issueId, issues.id))
