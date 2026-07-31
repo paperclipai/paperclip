@@ -1,5 +1,5 @@
 /**
- * PHA-1626 backfill: populate `cost_events.rate_card_cents` and correct
+ * Backfill: populate `cost_events.rate_card_cents` and correct
  * `cost_events.cost_status` for rows written before the rate card existed.
  *
  * Historical rows carry correct token counts but were written with
@@ -23,6 +23,19 @@
  *   tsx src/backfill-cost-event-rate-card.ts --apply    # writes
  *
  * Idempotent: re-running recomputes the same values from the same tokens.
+ *
+ * KNOWN UNDERSTATEMENT on pre-migration rows. Before this change, cache-creation
+ * tokens were summed into `input_tokens` and never stored separately, and the
+ * migration defaults `cache_write_tokens` to 0. Those tokens are therefore
+ * priced here at the ordinary input rate rather than the 1.25x cache-write
+ * premium, so historical `rate_card_cents` is slightly low.
+ *
+ * This is not recoverable: the split was never recorded, and any correction
+ * would be a guessed ratio dressed up as data. A rate card that is slightly low
+ * and honest about it beats one that is invented. Rows written after this change
+ * carry a real `cache_write_tokens` and are priced exactly. The affected span is
+ * bounded and shrinking, and the figure is notional in the first place — it
+ * never reaches `cost_cents`, so nothing downstream of cash is affected.
  */
 import { deriveRateCardCents } from "@paperclipai/shared";
 import postgres from "postgres";
@@ -120,11 +133,24 @@ async function main(): Promise<void> {
       if (!unchanged) updates.push({ id: row.id, resolution });
     }
 
+    const foldedCacheWriteRows = rows.filter(
+      (row) => Number(row.cache_write_tokens) === 0 && Number(row.input_tokens) > 0,
+    ).length;
+
     console.log(`Scanned ${rows.length} cost_events row(s).`);
     for (const [status, tally] of [...byStatus.entries()].sort((a, b) => b[1].rows - a[1].rows)) {
       console.log(`  ${status.padEnd(9)} ${String(tally.rows).padStart(6)} rows  rate card $${(tally.cents / 100).toFixed(2)}`);
     }
     console.log(`${updates.length} row(s) need updating.`);
+    if (foldedCacheWriteRows > 0) {
+      console.log(
+        `Note: ${foldedCacheWriteRows} row(s) have cache_write_tokens=0 with non-zero input_tokens. ` +
+          "Rows written before cache writes were recorded separately fold those tokens into " +
+          "input_tokens, so they are priced at the input rate rather than the 1.25x cache-write " +
+          "premium. Their rate card is therefore a slight underestimate. This is not recoverable " +
+          "from stored data. cost_cents is unaffected.",
+      );
+    }
 
     if (!apply) {
       console.log("Dry run. Re-run with --apply to write.");
