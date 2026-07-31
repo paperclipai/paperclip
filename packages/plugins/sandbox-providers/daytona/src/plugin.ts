@@ -146,6 +146,14 @@ const ARCHIVE_ON_RELEASE_AUTO_DELETE_MINUTES = 60;
 // RPC ceiling; callers always see an actionable error within this window.
 const GIT_NETWORK_TIMEOUT_MS = 120_000;
 
+// Fail-fast cap for the advisory bwrap capability probe. The probe is
+// best-effort, so it must return fallback metadata inside the lease hook. It
+// must never consume the full hook deadline. A stalled probe command would
+// otherwise expire the outer lease RPC before the probe records its unavailable
+// result. This short cap keeps the probe well under the hook deadline, so the
+// probe fails fast, records `bwrapAvailable: false`, and the hook still returns.
+const BWRAP_PROBE_TIMEOUT_MS = 10_000;
+
 // Noninteractive git credential defaults injected into every Daytona one-shot
 // command so that git operations never stall waiting for a terminal prompt.
 // Callers can override any of these via the env parameter.
@@ -291,6 +299,14 @@ function buildSandboxLabels(input: {
 
 function toTimeoutSeconds(timeoutMs: number): number {
   return Math.max(1, Math.ceil(timeoutMs / 1000));
+}
+
+// Bounded timeout for the advisory bwrap capability probe. The probe never uses
+// the full hook deadline. It uses the smaller of the short probe cap and the
+// hook timeout, so a stalled probe command returns fallback metadata inside the
+// hook instead of expiring the outer lease RPC.
+function toBwrapProbeTimeoutSeconds(config: DaytonaDriverConfig): number {
+  return toTimeoutSeconds(Math.min(BWRAP_PROBE_TIMEOUT_MS, config.timeoutMs));
 }
 
 function resolveTimeoutMs(paramsTimeoutMs: number | undefined, config: DaytonaDriverConfig): number {
@@ -1497,7 +1513,7 @@ const plugin = definePlugin({
       try {
         const remoteCwd = await resolveSandboxWorkingDirectory(sandbox);
         const shellCommand = await detectSandboxShellCommand(sandbox, toTimeoutSeconds(config.timeoutMs));
-        const bwrapCapability = await detectBwrapCapability(sandbox, toTimeoutSeconds(config.timeoutMs));
+        const bwrapCapability = await detectBwrapCapability(sandbox, toBwrapProbeTimeoutSeconds(config));
         return {
           ok: true,
           summary: `Connected to Daytona sandbox ${sandbox.name}.`,
@@ -1544,7 +1560,7 @@ const plugin = definePlugin({
     try {
       const remoteCwd = await resolveSandboxWorkingDirectory(sandbox);
       const shellCommand = await detectSandboxShellCommand(sandbox, toTimeoutSeconds(config.timeoutMs));
-      const bwrapCapability = await detectBwrapCapability(sandbox, toTimeoutSeconds(config.timeoutMs));
+      const bwrapCapability = await detectBwrapCapability(sandbox, toBwrapProbeTimeoutSeconds(config));
       const workspaceSentinel = await writeWorkspaceSentinel({
         sandbox,
         remoteCwd,
@@ -1627,7 +1643,7 @@ const plugin = definePlugin({
         return { providerLeaseId: null, metadata: { expired: true, workspaceSentinel } };
       }
       const shellCommand = await detectSandboxShellCommand(sandbox, toTimeoutSeconds(config.timeoutMs));
-      const bwrapCapability = await detectBwrapCapability(sandbox, toTimeoutSeconds(config.timeoutMs));
+      const bwrapCapability = await detectBwrapCapability(sandbox, toBwrapProbeTimeoutSeconds(config));
       sandboxHandleCache.markFresh(scope);
       sandboxHandleLeaseAdmissionStates.open(scope);
       return {

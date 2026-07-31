@@ -3492,6 +3492,25 @@ describe("advisory bwrap capability probe at lease time", () => {
     });
   });
 
+  it("bounds the probe timeout well under the hook deadline so the hook returns fallback metadata", async () => {
+    process.env.DAYTONA_API_KEY = "host-key";
+    const sandbox = createMockSandbox();
+    sandbox.process.executeCommand.mockImplementation(bwrapExecMock({ bwrapExit: 0, uid: "1000", gid: "1000" }));
+    mockCreate.mockResolvedValue(sandbox);
+
+    // The hook deadline is 300 s; the probe must cap far below it.
+    await plugin.definition.onEnvironmentAcquireLease?.(acquireParams);
+
+    const probeCalls = sandbox.process.executeCommand.mock.calls.filter(
+      ([command]: [string]) => command === "id -u" || command === "id -g" || command.startsWith("sudo -n bwrap"),
+    );
+    expect(probeCalls.length).toBeGreaterThan(0);
+    for (const call of probeCalls) {
+      const timeoutArg = call[3] as number;
+      expect(timeoutArg).toBe(10);
+    }
+  });
+
   it("records bwrap unavailable when the capability probe exits non-zero", async () => {
     process.env.DAYTONA_API_KEY = "host-key";
     const sandbox = createMockSandbox();
