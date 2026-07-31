@@ -84,11 +84,13 @@ Use the real sandbox user name and the real `bwrap` path:
 <sandbox-user> ALL=(root) NOPASSWD: /usr/bin/bwrap
 ```
 
-The `<sandbox-user>` is the account that the probe reads with `id -u` and
-`id -g`. The driver resolves the sandbox work directory first, then the user
-home directory. It uses `/home/daytona` only as a fallback default when both
-are empty. Confirm the real home directory for your image or snapshot. Install
-the `sudo` package in the image or snapshot if it is absent.
+The `<sandbox-user>` is the account name that `id -un` returns inside the
+sandbox. Use the account name, not a numeric id, in the sudoers line. The probe
+reads the numeric user id and group id with `id -u` and `id -g`. The driver
+resolves the sandbox work directory first, then the user home directory. It uses
+`/home/daytona` only as a fallback default when both are empty. Confirm the real
+home directory for your image or snapshot. Install the `sudo` package in the
+image or snapshot if it is absent.
 
 ### 3. Allow an unprivileged user namespace
 
