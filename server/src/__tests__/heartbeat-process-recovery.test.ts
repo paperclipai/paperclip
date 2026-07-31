@@ -117,6 +117,7 @@ import { secretService } from "../services/secrets.ts";
 import {
   SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_NOTICE_BODY,
   SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY,
+  SUCCESSFUL_RUN_HANDOFF_SETTLE_WINDOW_MS,
   SUCCESSFUL_RUN_MISSING_STATE_REASON,
 } from "../services/recovery/index.ts";
 import {
@@ -235,6 +236,23 @@ async function waitForHeartbeatIdle(
     }
     await new Promise((resolve) => setTimeout(resolve, 50));
   }
+}
+
+async function reconcileSuccessfulRunHandoffAfterSettle(
+  db: ReturnType<typeof createDb>,
+  heartbeat: ReturnType<typeof heartbeatService>,
+  runId: string,
+) {
+  await waitForValue(async () => {
+    const run = await heartbeat.getRun(runId);
+    return run?.livenessState ? run : null;
+  }, 5_000);
+  const settledAt = new Date(Date.now() - SUCCESSFUL_RUN_HANDOFF_SETTLE_WINDOW_MS - 1_000);
+  await db
+    .update(heartbeatRuns)
+    .set({ finishedAt: settledAt, updatedAt: settledAt })
+    .where(eq(heartbeatRuns.id, runId));
+  return heartbeat.reconcileStrandedAssignedIssues();
 }
 
 async function cancelActiveRunsForCleanup(
@@ -1303,7 +1321,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(wakeup?.status).toBe("claimed");
   });
 
-  it("does not reap a stale zero-pid local run when silence is the only signal", async () => {
+  it("reaps a stale zero-pid local run after the orphan-silence threshold", async () => {
     const now = new Date("2026-03-19T00:00:00.000Z");
     const { runId, wakeupRequestId, issueId } = await seedRunFixture({
       now,
@@ -1316,13 +1334,13 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const result = await heartbeat.reapOrphanedRuns({
       now: new Date("2026-03-19T00:16:00.000Z"),
     });
-    expect(result).toEqual({ reaped: 0, runIds: [] });
+    expect(result).toEqual({ reaped: 1, runIds: [runId] });
 
     const run = await heartbeat.getRun(runId);
     expect(run).toMatchObject({
       id: runId,
-      status: "running",
-      errorCode: null,
+      status: "failed",
+      errorCode: "process_lost",
       processPid: null,
       processGroupId: null,
     });
@@ -1332,18 +1350,18 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .from(agentWakeupRequests)
       .where(eq(agentWakeupRequests.id, wakeupRequestId))
       .then((rows) => rows[0] ?? null);
-    expect(wakeup?.status).toBe("claimed");
+    expect(wakeup?.status).toBe("failed");
 
     const issue = await db
       .select()
       .from(issues)
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0] ?? null);
-    expect(issue?.checkoutRunId).toBe(runId);
-    expect(issue?.executionRunId).toBe(runId);
+    expect(issue?.checkoutRunId).toBeNull();
+    expect(issue?.executionRunId).toBeNull();
   });
 
-  it("does not reap a stale zero-pid local run under the startup-equivalent stale threshold", async () => {
+  it("does not let a shorter startup threshold bypass the orphan-silence threshold", async () => {
     const now = new Date("2026-03-19T00:00:00.000Z");
     const { runId, wakeupRequestId, issueId } = await seedRunFixture({
       now,
@@ -1354,7 +1372,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const heartbeat = heartbeatService(db);
 
     const result = await heartbeat.reapOrphanedRuns({
-      now: new Date("2026-03-19T00:16:00.000Z"),
+      now: new Date("2026-03-19T00:06:00.000Z"),
       staleThresholdMs: 5 * 60 * 1000,
     });
     expect(result).toEqual({ reaped: 0, runIds: [] });
@@ -1937,7 +1955,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       });
       expect(typeof report.newServerVersion).toBe("string");
 
-      const reap = await heartbeat.reapOrphanedRuns();
+      const reap = await heartbeat.reapOrphanedRuns({
+        now: new Date("2026-03-19T00:08:00.000Z"),
+      });
       expect(reap).toEqual({ reaped: 0, runIds: [] });
       const adopted = await db
         .select()
@@ -1992,7 +2012,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         skippedRunIds: [],
       });
 
-      const reap = await heartbeat.reapOrphanedRuns();
+      const reap = await heartbeat.reapOrphanedRuns({
+        now: new Date("2026-03-19T00:08:00.000Z"),
+      });
       expect(reap).toEqual({ reaped: 0, runIds: [] });
       expect(isPidAlive(orphan.descendantPid)).toBe(true);
       const adopted = await db
@@ -3343,6 +3365,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     await heartbeat.resumeQueuedRuns();
     await waitForRunToSettle(heartbeat, runId, 5_000);
+    await reconcileSuccessfulRunHandoffAfterSettle(db, heartbeat, runId);
 
     const handoffWakeups = await waitForValue(async () => {
       const rows = await db
@@ -3502,6 +3525,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     await heartbeat.resumeQueuedRuns();
     await waitForRunToSettle(heartbeat, runId, 5_000);
+    await reconcileSuccessfulRunHandoffAfterSettle(db, heartbeat, runId);
 
     const handoffWakeups = await waitForValue(async () => {
       const rows = await db
@@ -3583,6 +3607,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     await heartbeat.resumeQueuedRuns();
     const settledRun = await waitForRunToSettle(heartbeat, runId, 5_000);
+    await reconcileSuccessfulRunHandoffAfterSettle(db, heartbeat, runId);
 
     const handoffWakeups = await waitForValue(async () => {
       const rows = await db
@@ -3622,7 +3647,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   });
 
   it("redacts secret-bearing successful-run detected progress before handoff disclosure", async () => {
-    const { agentId, runId, issueId } = await seedQueuedIssueRunFixture();
+    const { companyId, agentId, runId, issueId } = await seedQueuedIssueRunFixture();
     const bearerSecret = "live-bearer-token-value";
     const apiKeySecret = "sk-testsuccessfulhandoffsecret";
     const redactedDetectedSummary = redactDetectedSuccessfulRunProgressSummaryForBoard(
@@ -3633,22 +3658,32 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(redactedDetectedSummary).not.toContain(bearerSecret);
     expect(redactedDetectedSummary).not.toContain(apiKeySecret);
 
-    mockAdapterExecute.mockResolvedValueOnce({
-      exitCode: 0,
-      signal: null,
-      timedOut: false,
-      errorMessage: null,
-      summary: "Made progress but left the issue open.",
-      resultJson: {
-        message: `Next action: Authorization: Bearer ${bearerSecret} OPENAI_API_KEY=${apiKeySecret}`,
-      },
-      provider: "test",
-      model: "test-model",
+    mockAdapterExecute.mockImplementationOnce(async (ctx: { runId: string }) => {
+      await db.insert(issueComments).values({
+        companyId,
+        issueId,
+        authorAgentId: agentId,
+        createdByRunId: ctx.runId,
+        body: "Implemented the backend detector, but did not choose a final issue state.",
+      });
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        errorMessage: null,
+        summary: "Implemented the backend detector but left the issue open.",
+        resultJson: {
+          message: `Next action: Authorization: Bearer ${bearerSecret} OPENAI_API_KEY=${apiKeySecret}`,
+        },
+        provider: "test",
+        model: "test-model",
+      };
     });
     const heartbeat = heartbeatService(db);
 
     await heartbeat.resumeQueuedRuns();
     await waitForRunToSettle(heartbeat, runId, 5_000);
+    await reconcileSuccessfulRunHandoffAfterSettle(db, heartbeat, runId);
 
     const handoffWakeups = await waitForValue(async () => {
       const rows = await db
@@ -6466,6 +6501,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const { agentId, issueId, runId } = await seedStrandedIssueFixture({
       status: "in_progress",
       runStatus: "succeeded",
+      retryReason: "issue_continuation_needed",
+      runSource: "issue.continuation_recovery",
       livenessState: "advanced",
     });
     const heartbeat = heartbeatService(db);
@@ -6722,6 +6759,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const { agentId, issueId, runId } = await seedStrandedIssueFixture({
       status: "in_progress",
       runStatus: "succeeded",
+      retryReason: "issue_continuation_needed",
+      runSource: "issue.continuation_recovery",
       livenessState: "advanced",
     });
     const heartbeat = heartbeatService(db);
@@ -6772,6 +6811,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const { agentId, issueId, runId } = await seedStrandedIssueFixture({
       status: "in_progress",
       runStatus: "succeeded",
+      retryReason: "issue_continuation_needed",
+      runSource: "issue.continuation_recovery",
       livenessState: "advanced",
       resultJson: localWaitEvidence,
     });
@@ -6976,6 +7017,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
       status: "in_progress",
       runStatus: "succeeded",
+      retryReason: "issue_continuation_needed",
+      runSource: "issue.continuation_recovery",
       livenessState: "advanced",
     });
     const heartbeat = heartbeatService(db);

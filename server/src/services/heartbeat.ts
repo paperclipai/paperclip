@@ -15829,7 +15829,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             ? WORKSPACE_VALIDATION_RECOVERY_CAUSE
             : configurationIncompleteFailure
               ? CONFIGURATION_INCOMPLETE_RECOVERY_CAUSE
-              : undefined,
+              : run.errorCode === "process_lost"
+                ? "process_lost" as const
+                : undefined,
         };
       }
 
@@ -15942,6 +15944,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               ? CONFIGURATION_INCOMPLETE_RECOVERY_CAUSE
               : promotionResult.recoveryCause === EXECUTION_REVIEW_PARTICIPANT_RECOVERY_CAUSE
                 ? EXECUTION_REVIEW_PARTICIPANT_RECOVERY_CAUSE
+              : promotionResult.recoveryCause === "process_lost"
+                ? "process_lost"
               : undefined,
         recoveryOwnerAgentId: promotionResult.recoveryOwnerAgentId,
       });

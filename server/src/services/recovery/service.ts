@@ -49,8 +49,10 @@ import { getRunLogStore } from "../run-log-store.js";
 import {
   DEFAULT_MAX_SUCCESSFUL_RUN_HANDOFF_ATTEMPTS,
   FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
+  SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY,
   SUCCESSFUL_RUN_HANDOFF_SETTLE_WINDOW_MS,
   SUCCESSFUL_RUN_MISSING_STATE_REASON,
+  buildSuccessfulRunHandoffRequiredNotice,
   buildFinishSuccessfulRunHandoffIdempotencyKey,
   decideSuccessfulRunHandoff,
   findExistingFinishSuccessfulRunHandoffWake,
@@ -152,7 +154,7 @@ type ResolvedDependencyWakeBackstopOptions = {
 
 type LatestIssueRun = Pick<
   typeof heartbeatRuns.$inferSelect,
-  "id" | "agentId" | "status" | "error" | "errorCode" | "contextSnapshot" | "livenessState" | "startedAt" | "updatedAt" | "finishedAt"
+  "id" | "companyId" | "agentId" | "status" | "error" | "errorCode" | "contextSnapshot" | "livenessState" | "startedAt" | "updatedAt" | "finishedAt"
 > & {
   resultJson?: unknown;
 } | null;
@@ -160,6 +162,7 @@ type SuccessfulLatestIssueRun = NonNullable<LatestIssueRun> & { status: "succeed
 
 type StrandedRecoveryCause =
   | "stranded_assigned_issue"
+  | "process_lost"
   | "workspace_validation_failed"
   | "configuration_incomplete"
   | "execution_review_participant_recovery"
@@ -837,6 +840,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return db
       .select({
         id: heartbeatRuns.id,
+        companyId: heartbeatRuns.companyId,
         agentId: heartbeatRuns.agentId,
         status: heartbeatRuns.status,
         error: heartbeatRuns.error,
@@ -868,6 +872,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return db
       .select({
         id: heartbeatRuns.id,
+        companyId: heartbeatRuns.companyId,
         agentId: heartbeatRuns.agentId,
         status: heartbeatRuns.status,
         error: heartbeatRuns.error,
@@ -1177,6 +1182,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return db
       .select({
         id: heartbeatRuns.id,
+        companyId: heartbeatRuns.companyId,
         agentId: heartbeatRuns.agentId,
         status: heartbeatRuns.status,
         error: heartbeatRuns.error,
@@ -1200,6 +1206,33 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
       .limit(1)
       .then((rows) => rows[0] ?? null);
+  }
+
+  async function countAcceptedInteractionReviewParkCancellations(input: {
+    companyId: string;
+    issueId: string;
+    agentId: string;
+    interactionId: string;
+    resolvedAt: Date;
+  }) {
+    return db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, input.companyId),
+          eq(heartbeatRuns.agentId, input.agentId),
+          eq(heartbeatRuns.status, "cancelled"),
+          eq(heartbeatRuns.errorCode, CONTINUATION_WAITING_ON_REVIEW_ERROR_CODE),
+          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${input.issueId}`,
+          sql`${heartbeatRuns.contextSnapshot} ->> 'interactionId' = ${input.interactionId}`,
+          or(
+            gte(heartbeatRuns.createdAt, input.resolvedAt),
+            gte(heartbeatRuns.finishedAt, input.resolvedAt),
+          ),
+        ),
+      )
+      .then((rows) => rows.length);
   }
 
   // GGU-809: visible-progress signal for stranded-recovery escalation guard.
@@ -1328,7 +1361,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     });
     if (decision.kind !== "enqueue") return null;
 
-    return deps.enqueueWakeup(decision.targetAgentId, {
+    const queued = await deps.enqueueWakeup(decision.targetAgentId, {
       source: "automation",
       triggerDetail: "system",
       reason: FINISH_SUCCESSFUL_RUN_HANDOFF_REASON,
@@ -1338,6 +1371,64 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       requestedByActorType: "system",
       requestedByActorId: "recovery",
     });
+    if (!queued) return null;
+
+    const resultJson = parseObject(latestRun.resultJson);
+    const detectedProgressSummary = [resultJson.summary, resultJson.result, resultJson.message]
+      .map((value) => readNonEmptyString(value))
+      .find((value): value is string => Boolean(value)) ??
+      "The run reported progress, but did not choose a next step.";
+    const redactedSummary = redactSensitiveText(
+      redactCurrentUserText(detectedProgressSummary, await getCurrentUserRedactionOptions()),
+    );
+    const existingNotice = await db
+      .select({ id: issueComments.id })
+      .from(issueComments)
+      .where(
+        and(
+          eq(issueComments.companyId, issue.companyId),
+          eq(issueComments.issueId, issue.id),
+          eq(issueComments.body, SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (!existingNotice) {
+      const notice = buildSuccessfulRunHandoffRequiredNotice({
+        issue,
+        run: latestRun,
+        agent,
+        detectedProgressSummary: redactedSummary,
+      });
+      await issuesSvc.addComment(
+        issue.id,
+        notice.body,
+        { runId: latestRun.id },
+        {
+          authorType: "system",
+          presentation: notice.presentation,
+          metadata: notice.metadata,
+        },
+      );
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: "system",
+        actorId: "recovery",
+        agentId: latestRun.agentId,
+        runId: latestRun.id,
+        action: "issue.successful_run_handoff_required",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          label: "Successful run missing issue disposition",
+          sourceRunId: latestRun.id,
+          correctiveRunId: queued.id,
+          handoffReason: SUCCESSFUL_RUN_MISSING_STATE_REASON,
+        },
+      });
+    }
+
+    return queued;
   }
 
   async function enqueueInitialAssignedTodoDispatch(issue: typeof issues.$inferSelect, agentId: string) {
@@ -3240,6 +3331,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           ? "Bind the missing secret(s) named in the run failure to the agent/project/routine env before resuming adapter execution."
         : recoveryCause === "execution_review_participant_recovery"
           ? "Repair the failed review participant path, restore the source issue to in_review with a live reviewer, or record an intentional manual resolution."
+        : recoveryCause === "process_lost"
+          ? "Retry the original assignee from durable progress, or record an intentional manual resolution if the work cannot resume safely."
         : "Restore a live execution path, fix the runtime/adapter failure, or record an intentional manual resolution.",
       wakePolicy: recoveryCause === "workspace_validation_failed" || recoveryCause === "configuration_incomplete"
         ? {
@@ -3736,6 +3829,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       if (
         latestRun?.status === "succeeded" &&
         isProductiveContinuationRun(latestRun) &&
+        !readNonEmptyString(parseObject(latestRun.contextSnapshot).retryReason) &&
         !successfulRunHandoffRecoveryEvidence(latestRun)
       ) {
         if (isSuccessfulRunHandoffInsideSettleWindow(latestRun)) {
@@ -3789,6 +3883,38 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         );
 
         if (!successfulRunSinceResolution) {
+          const reviewParkCancellations = await countAcceptedInteractionReviewParkCancellations({
+            companyId: issue.companyId,
+            issueId: issue.id,
+            agentId,
+            interactionId: acceptedContinuationInteraction.id,
+            resolvedAt: acceptedInteractionResolvedAt,
+          });
+          if (reviewParkCancellations >= CONTINUATION_RECOVERY_TRANSIENT_MAX_ATTEMPTS) {
+            const latestPostResolutionRun = await getLatestIssueRunSince(
+              issue.companyId,
+              issue.id,
+              agentId,
+              acceptedInteractionResolvedAt,
+            );
+            const updated = await escalateStrandedAssignedIssue({
+              issue,
+              previousStatus: "in_review",
+              latestRun: latestPostResolutionRun,
+              comment:
+                `Paperclip retried accepted interaction \`${acceptedContinuationInteraction.id}\` ` +
+                `${reviewParkCancellations} times, but every continuation parked itself back in review. ` +
+                "Moving the issue to `blocked` so the accepted decision cannot loop indefinitely.",
+            });
+            if (updated) {
+              result.escalated += 1;
+              result.issueIds.push(issue.id);
+            } else {
+              result.skipped += 1;
+            }
+            continue;
+          }
+
           if (!agentInvokable) {
             result.skipped += 1;
             continue;
@@ -4005,6 +4131,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             issue,
             previousStatus: "todo",
             latestRun,
+            recoveryCause: latestRun.errorCode === "process_lost" ? "process_lost" : undefined,
             comment:
               "Paperclip automatically retried dispatch for this assigned `todo` issue after a lost wake/run, " +
               `but it still has no live execution path.${failureSummary ?? ""} ` +
@@ -4176,6 +4303,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
               issue,
               previousStatus: "in_progress",
               latestRun,
+              recoveryCause: latestRun.errorCode === "process_lost" ? "process_lost" : undefined,
               comment:
                 "Paperclip automatically retried continuation for this assigned `in_progress` issue after its live " +
                 `execution disappeared, but it still has no live execution path${attemptCopy}.${causeCopy}${failureSummary ?? ""} ` +
