@@ -1406,6 +1406,15 @@ async function buildRuntime(input: {
       contentSignature: await referencedSourceContentSignature(entry.localPath),
     })),
   );
+  // Referenced-project workspace hints exposed to the agent through PAPERCLIP_WORKSPACES_JSON. The
+  // list joins the anchor project's alternative workspaces with the referenced (mentioned) projects.
+  // On the confined sandbox lane the run repoints each referenced hint at its staged directory after
+  // staging below. Empty unless run prep resolved referenced projects or alternative workspaces.
+  const workspaceHints = Array.isArray(context.paperclipWorkspaces)
+    ? context.paperclipWorkspaces.filter(
+        (value): value is Record<string, unknown> => typeof value === "object" && value !== null,
+      )
+    : [];
   const executionTarget = readAdapterExecutionTarget({
     executionTarget: input.ctx.executionTarget,
     legacyRemoteExecution: input.ctx.executionTransport?.remoteExecution,
@@ -1888,6 +1897,27 @@ async function buildRuntime(input: {
     remoteManagedHomeTeardown = staged.value.teardown;
     remoteStagingDispose = staged.value.dispose;
     remoteStagingEnvDelta = staged.value.envDelta;
+    // Publish the referenced-project workspace hints to the in-sandbox agent. The staged-directory
+    // map (`project-<projectId>`) is known only after staging above, so this runs here rather than
+    // with the initial workspace shaping. Each referenced hint repoints at its staged directory; a
+    // referenced hint whose project did not stage loses its cwd, so the agent never receives an
+    // unstaged path. Only the confined sandbox lane stages referenced trees, so only it publishes
+    // the hints; the local and runner-less lanes keep their env untouched. The set `env` write wins
+    // over an inherited value in the merged launch env.
+    const stagedProjectDirs = stagedRuntime?.additionalSourceDirs ?? {};
+    if (Object.keys(stagedProjectDirs).length > 0) {
+      const shapedHints = shapePaperclipWorkspaceEnvForExecution({
+        workspaceCwd: effectiveWorkspaceCwd,
+        workspaceWorktreePath,
+        workspaceHints,
+        executionTargetIsRemote,
+        executionCwd: effectiveExecutionCwd,
+        stagedProjectDirs,
+      }).workspaceHints;
+      if (shapedHints.length > 0) {
+        env.PAPERCLIP_WORKSPACES_JSON = JSON.stringify(shapedHints);
+      }
+    }
   }
   // Both bridge starts run under one try so a failure at EITHER — including the
   // paperclip callback bridge — fires the same abandon-path cleanup. The

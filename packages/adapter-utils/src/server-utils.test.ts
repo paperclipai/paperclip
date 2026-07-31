@@ -2295,6 +2295,53 @@ describe("shapePaperclipWorkspaceEnvForExecution", () => {
     });
   });
 
+  it("repoints a referenced hint to its staged remote directory when the map has an entry", () => {
+    const shaped = shapePaperclipWorkspaceEnvForExecution({
+      workspaceCwd: "/tmp/workspace",
+      workspaceWorktreePath: "/tmp/worktree",
+      workspaceHints: [
+        // The anchor hint keeps its remote-cwd rewrite.
+        { workspaceId: "workspace-1", cwd: "/tmp/workspace" },
+        // A referenced hint with a staged directory repoints at it.
+        { workspaceId: "workspace-2", cwd: "/tmp/referenced/project-a", projectId: "project-a" },
+        // A referenced hint with no staged directory loses its cwd.
+        { workspaceId: "workspace-3", cwd: "/tmp/referenced/project-b", projectId: "project-b" },
+      ],
+      executionTargetIsRemote: true,
+      executionCwd: "/remote/workspace",
+      stagedProjectDirs: { "project-a": "/remote/runtime/project-project-a" },
+    });
+
+    expect(shaped).toEqual({
+      workspaceCwd: "/remote/workspace",
+      workspaceWorktreePath: null,
+      workspaceHints: [
+        { workspaceId: "workspace-1", cwd: "/remote/workspace" },
+        {
+          workspaceId: "workspace-2",
+          cwd: "/remote/runtime/project-project-a",
+          projectId: "project-a",
+        },
+        { workspaceId: "workspace-3", projectId: "project-b" },
+      ],
+    });
+  });
+
+  it("removes cwd from a referenced hint that has no staged directory", () => {
+    const shaped = shapePaperclipWorkspaceEnvForExecution({
+      workspaceCwd: "/tmp/workspace",
+      workspaceHints: [
+        { workspaceId: "workspace-2", cwd: "/tmp/referenced/project-a", projectId: "project-a" },
+      ],
+      executionTargetIsRemote: true,
+      executionCwd: "/remote/workspace",
+      // The map is empty, so the referenced hint has no staged directory.
+      stagedProjectDirs: {},
+    });
+
+    expect(shaped.workspaceHints).toEqual([{ workspaceId: "workspace-2", projectId: "project-a" }]);
+  });
+
   it("leaves local execution workspace paths unchanged", () => {
     const workspaceHints = [{ workspaceId: "workspace-1", cwd: "/tmp/workspace" }];
     const shaped = shapePaperclipWorkspaceEnvForExecution({

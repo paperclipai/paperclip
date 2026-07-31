@@ -2116,6 +2116,80 @@ describe("ACPX engine remote sandbox staging seam (PR 1: workspace + cwd)", () =
     expect(payloadEnv.PAPERCLIP_API_KEY).not.toBe("real-run-jwt");
   });
 
+  it("publishes referenced-project workspace hints repointed at their staged sandbox directories", async () => {
+    const { root, stateDir, localCwd, executionTarget } = await setupRemoteSandbox();
+    // A referenced project with a real host tree, so the sandbox transport stages it and returns a
+    // `project-<projectId>` directory for it.
+    const referencedProjectDir = path.join(root, "referenced-project-a");
+    await fs.mkdir(referencedProjectDir, { recursive: true });
+    await fs.writeFile(path.join(referencedProjectDir, "note.txt"), "referenced", "utf8");
+
+    // Decode the process-session LAUNCH payload — the in-sandbox process env is carried there.
+    let launchPayload: Record<string, unknown> | null = null;
+    (executionTarget as { runner: unknown }).runner = createLocalSandboxRunner((input) => {
+      if (input.env?.PAPERCLIP_SANDBOX_EXEC_CHANNEL === "bridge") {
+        const script = input.args?.[1] ?? "";
+        const match = script.match(/PAPERCLIP_PROCESS_SESSION_COMMAND_B64='([^']+)'/);
+        if (match) {
+          launchPayload = JSON.parse(Buffer.from(match[1]!, "base64").toString("utf8")) as Record<
+            string,
+            unknown
+          >;
+        }
+      }
+    });
+
+    await runExecutor(
+      { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir, cwd: localCwd },
+      {
+        authToken: "real-run-jwt",
+        executionTarget,
+        context: {
+          taskId: "issue-1",
+          wakeReason: "issue_assigned",
+          paperclipWorkspace: {
+            cwd: localCwd,
+            realization: {
+              additional: [
+                {
+                  path: referencedProjectDir,
+                  projectId: "a",
+                  projectWorkspaceId: "ws-a",
+                  repoUrl: "https://example.test/a.git",
+                  repoRef: "main",
+                },
+              ],
+            },
+          },
+          // The plural workspace-hints channel the agent reads. The referenced hint points at the
+          // host path today; on a remote target the run must repoint it at the staged directory.
+          paperclipWorkspaces: [
+            {
+              workspaceId: "ws-a",
+              cwd: referencedProjectDir,
+              repoUrl: "https://example.test/a.git",
+              repoRef: "main",
+              projectId: "a",
+            },
+          ],
+        },
+      },
+    );
+
+    const payloadEnv = ((launchPayload as Record<string, unknown> | null)?.env ?? {}) as Record<
+      string,
+      unknown
+    >;
+    const workspacesJson = payloadEnv.PAPERCLIP_WORKSPACES_JSON;
+    expect(typeof workspacesJson).toBe("string");
+    const hints = JSON.parse(String(workspacesJson)) as Array<Record<string, unknown>>;
+    const referencedHint = hints.find((hint) => hint.projectId === "a");
+    expect(referencedHint).toBeTruthy();
+    // The referenced hint repoints from the host path to its staged in-sandbox directory.
+    expect(String(referencedHint!.cwd)).toContain("project-a");
+    expect(referencedHint!.cwd).not.toBe(referencedProjectDir);
+  });
+
   it("stops the process-session bridge when the paperclip bridge fails under concurrency", async () => {
     const { stateDir, localCwd, executionTarget } = await setupRemoteSandbox();
     // The paperclip bridge fails; the process-session bridge — started CONCURRENTLY
