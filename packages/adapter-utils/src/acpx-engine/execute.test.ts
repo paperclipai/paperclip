@@ -3181,6 +3181,45 @@ describe("ACPX engine sandbox-start spans (opt-in root + child parenting)", () =
     );
     expect(result.exitCode).toBe(0);
   });
+
+  it("opens no span for a local run, even when a trace context is injected", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const localCwd = path.join(root, "worktree");
+    await fs.mkdir(localCwd, { recursive: true });
+    const { traceContext, spans } = createRecordingStartupTrace();
+
+    // A local run has no execution target. The `sandbox.startup` span names a
+    // sandbox bring-up, so a local run must stay out of sandbox telemetry.
+    const { result } = await runExecutor(
+      { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir, cwd: localCwd },
+      { authToken: "real-run-jwt", startupTraceContext: traceContext },
+    );
+    expect(result.exitCode).toBe(0);
+    expect(spans).toHaveLength(0);
+  });
+
+  it("opens no span for an SSH run, even when a trace context is injected", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const localCwd = path.join(root, "worktree");
+    const remoteCwd = path.join(root, "remote-workspace");
+    await fs.mkdir(localCwd, { recursive: true });
+    const { traceContext, spans } = createRecordingStartupTrace();
+
+    // An SSH run is remote but is not a sandbox, so it also stays out of sandbox
+    // telemetry.
+    const { result } = await runExecutor(
+      { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir, cwd: localCwd },
+      {
+        authToken: "real-run-jwt",
+        executionTarget: { kind: "remote", transport: "ssh", remoteCwd },
+        startupTraceContext: traceContext,
+      },
+    );
+    expect(result.exitCode).toBe(0);
+    expect(spans).toHaveLength(0);
+  });
 });
 
 describe("ACPX engine per-step startup timing (run.startup.step events)", () => {

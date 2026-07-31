@@ -2883,13 +2883,27 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       now,
       idleMs: warmIdleMs,
     });
+    // The `sandbox.startup` span names a sandbox bring-up. It must not cover a
+    // local or SSH run: those runs have no sandbox, so they stay out of sandbox
+    // telemetry. Open the real root span only when the target is a remote
+    // sandbox; every other target forces the no-op trace context, so the whole
+    // startup span path stays inert regardless of the injected context.
+    const startupExecutionTarget = readAdapterExecutionTarget({
+      executionTarget: ctx.executionTarget,
+      legacyRemoteExecution: ctx.executionTransport?.remoteExecution,
+    });
+    const targetsRemoteSandbox =
+      startupExecutionTarget?.kind === "remote" && startupExecutionTarget.transport === "sandbox";
     // Open the one root span for this bring-up. It spans `buildRuntime` through
     // `acp.handshake`, so every startup boundary span parents to it. `spanParent`
     // carries the injected tracer + the root parent-context token into each
     // `measureStartupStep` call. With no injected trace context the whole path
     // is a no-op. `endRootSpan` runs exactly once — at bring-up completion or on
     // a bring-up failure.
-    const tracing = ctx.startupTraceContext ?? NOOP_STARTUP_TRACE_CONTEXT;
+    const tracing =
+      targetsRemoteSandbox && ctx.startupTraceContext
+        ? ctx.startupTraceContext
+        : NOOP_STARTUP_TRACE_CONTEXT;
     const rootSpan = openStartupRootSpan(tracing);
     const spanParent: Pick<StartupStepMeasureOptions, "tracer" | "parentContext"> = {
       tracer: tracing.tracer,
