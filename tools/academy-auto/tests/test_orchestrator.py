@@ -50,9 +50,40 @@ def base_deps(**over):
         record_triage_outcome=lambda cfg, key, status: recorded.append((key, status)),
         reset_worktree=lambda cfg, cwd: resets.append(cwd),
         quarantined=lambda cfg: [],
+        awaiting_approval=lambda cfg: False,  # default: nichts wartet auf ✅
     )
     d.update(over)
     return SimpleNamespace(**d)
+
+
+def test_run_is_skipped_while_a_commit_awaits_approval(tmp_path):
+    """prepare_worktree macht `reset --hard main` und wuerde einen noch nicht
+    freigegebenen Commit vernichten — es darf gar nicht erst dazu kommen."""
+    global parked
+    parked = []
+    prepared: list = []
+    cfg = _cfg(tmp_path)
+
+    report = run_once(cfg, "irgendeine Aufgabe", base_deps(
+        awaiting_approval=lambda cfg: True,
+        prepare_worktree=lambda cfg: prepared.append(cfg) or cfg.worktree_path,
+    ))
+
+    assert report.status == "awaiting_approval"
+    assert prepared == []  # Worktree wurde nicht angefasst
+
+
+def test_pending_record_survives_a_skipped_run(tmp_path):
+    """pending.json traegt die run_ts, auf die die Telegram-Buttons zeigen
+    (executor prueft ref_run_ts). Ueberschreiben wuerde die Freigabe
+    unmoeglich machen — der Commit waere weder freigebbar noch gerettet."""
+    global parked
+    parked = []
+    cfg = _cfg(tmp_path)
+
+    run_once(cfg, "irgendeine Aufgabe", base_deps(awaiting_approval=lambda cfg: True))
+
+    assert parked == []
 
 
 def test_run_once_paused_when_flag_present(tmp_path):
@@ -357,6 +388,7 @@ def test_green_change_parks_has_change(tmp_path):
         base = dict(
             prepare_worktree=lambda cfg: "/wt",
             quarantined=lambda cfg: [],
+            awaiting_approval=lambda cfg: False,
             measure_gate=lambda cfg, cwd: _gate(0),
             triage_and_pick=lambda cfg, cwd, red: SimpleNamespace(
                 task_prompt="Tu was", reason="weil", chosen_key="k"),

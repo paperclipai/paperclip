@@ -11,13 +11,20 @@ from .scope import check_scope
 
 @dataclass
 class RunReport:
-    status: str  # "paused" | "committed" | "discarded" | "impl_failed" | "nothing_to_do" | "error"
+    status: str  # "paused" | "awaiting_approval" | "committed" | "discarded" | "impl_failed" | "nothing_to_do" | "error"
 
 
 def run_once(cfg: Config, task_prompt, deps) -> RunReport:
-    """Pause → [Top-Level-Schutz] → Worktree → Baseline → Triage → Impl → Delta → Scope → Cap → Commit+Park."""
+    """Pause → Freigabe-Sperre → [Top-Level-Schutz] → Worktree → Baseline → Triage → Impl → Delta → Scope → Cap → Commit+Park."""
     if cfg.pause_flag.exists():
         return RunReport(status="paused")
+    # Vor allem anderen, insbesondere vor prepare_worktree: dessen
+    # `reset --hard <base_branch>` wuerde einen Commit, der noch auf Walters
+    # Telegram-✅ wartet, unerreichbar machen. Auch NICHT parken — pending.json
+    # traegt die run_ts, auf die die Buttons zeigen (executor prueft
+    # ref_run_ts); ein neuer Datensatz wuerde die Freigabe entwerten.
+    if deps.awaiting_approval(cfg):
+        return RunReport(status="awaiting_approval")
     try:
         return _run_once_inner(cfg, task_prompt, deps)
     except Exception as exc:
@@ -148,6 +155,7 @@ def _build_default_deps(worktree, gate, runner):  # pragma: no cover
         record_triage_outcome=_record_triage_outcome,
         reset_worktree=_reset_worktree,
         quarantined=_quarantined,
+        awaiting_approval=_awaiting_approval,
     )
 
 
@@ -220,6 +228,11 @@ def _record_triage_outcome(cfg, key, status):
 def _quarantined(cfg):
     from .triage.state import load_state, quarantined_keys
     return quarantined_keys(load_state(cfg.triage_state_path))
+
+
+def _awaiting_approval(cfg):  # pragma: no cover - echte git-Abfrage beim Deploy
+    from .approval import has_unapproved_commit
+    return has_unapproved_commit(cfg)
 
 
 def _reset_worktree(cfg, cwd):  # pragma: no cover - echter Git-Reset beim Deploy

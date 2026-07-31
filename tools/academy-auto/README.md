@@ -41,3 +41,31 @@ Schalter (Flag-Dateien, kein Code-Edit nötig):
 Lauf von Hand (statt auf 02:00 zu warten):
 
     zsh ~/.paperclip/scripts/academy-auto/run-nightly.sh
+
+## Freigabe-Sperre (`awaiting_approval`)
+
+Solange auf `agents/academy-auto` ein Commit liegt, der noch nicht per
+Telegram-✅ freigegeben wurde, **setzt der Lauf komplett aus** und meldet
+`awaiting_approval`.
+
+Grund: `prepare_worktree` startet jeden Lauf mit
+`git reset --hard <base_branch>`. Das verschiebt den Branch-Zeiger und macht
+einen nicht freigegebenen Commit unerreichbar (nur noch im Reflog). Der
+normale Takt geht auf — 02:00 Lauf, 08:00 Digest, Entscheidung am selben Tag —,
+aber jede Abweichung (Lauf von Hand, Urlaub, übersehener Digest) hätte die
+Arbeit gekostet.
+
+Erkennung in `approval.py`: Commit über `base_branch` vorhanden **und** noch
+nicht auf `origin` (der Executor pusht bei ✅ vor `gh pr create`, gleiche SHA
+heißt also freigegeben). Jede unklare git-Antwort gilt als „offen" —
+eine ausgelassene Nacht ist sichtbar, ein vernichteter Commit nicht.
+
+Wichtig: Im Sperrfall wird `pending.json` **nicht** überschrieben. Die Datei
+trägt die `run_ts`, auf die die Telegram-Buttons zeigen (`executor` prüft
+`ref_run_ts`); ein neuer Datensatz würde die Freigabe entwerten. Der 08:00-
+Digest wiederholt deshalb denselben Stand mit funktionierenden Buttons, bis
+entschieden ist.
+
+Steckengeblieben? Entweder in Telegram ✅/❌ drücken, oder von Hand auflösen:
+
+    git -C ~/Developer/WHITESTAG.ACADEMY log --oneline main..agents/academy-auto
