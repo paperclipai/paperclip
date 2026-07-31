@@ -85,6 +85,12 @@ describe("GET /health dev-server supervisor access", () => {
           deploymentExposure: "private",
           authReady: true,
           companyDeletionEnabled: true,
+          // Pin server info so the commit field is deterministic (null)
+          // instead of picking up the checkout's real git metadata.
+          serverInfo: {
+            processStartedAt: "2026-03-20T11:00:00.000Z",
+            git: { available: false, unavailableReason: "git_unavailable" },
+          },
         }),
       );
 
@@ -97,6 +103,7 @@ describe("GET /health dev-server supervisor access", () => {
         status: "ok",
         deploymentMode: "authenticated",
         deploymentExposure: "private",
+        commit: null,
         bootstrapStatus: "ready",
         bootstrapInviteActive: false,
         devServer: {
