@@ -44,6 +44,13 @@ jobs:
           echo "version=${version}" >> "$GITHUB_OUTPUT"
           echo "Stamping build version: ${version:-<none>}"
 
+      # ISO week stamp for the Dockerfile's tool layer: the layer caches
+      # across commits and re-pulls the @latest CLI tools when the week rolls
+      # over, instead of on every build.
+      - name: Compute tool cache epoch
+        id: tools-epoch
+        run: echo "epoch=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
+
       - name: Setup pnpm
         uses: pnpm/action-setup@v6
         with:
@@ -149,10 +156,16 @@ jobs:
           build-args: |
             PAPERCLIP_BUILD_VERSION=${{ steps.build-version.outputs.version }}
             PAPERCLIP_BUILD_COMMIT=${{ github.sha }}
+            CLI_TOOLS_CACHE_EPOCH=${{ steps.tools-epoch.outputs.epoch }}
           platforms: linux/amd64,linux/arm64
           push: true
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # Registry-backed BuildKit cache instead of type=gha: the Actions
+          # cache is capped at 10GB per repo, and two multi-arch mode=max jobs
+          # evict each other, so most builds ran effectively cold. The cache
+          # ref lives in ghcr next to the image and is written only by this
+          # workflow (docker.yml runs on master/tag pushes, never on PRs).
+          cache-from: type=registry,ref=ghcr.io/${{ github.repository }}:buildcache
+          cache-to: type=registry,ref=ghcr.io/${{ github.repository }}:buildcache,mode=max
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
 
@@ -187,6 +200,13 @@ jobs:
           version="$(git describe --tags --match 'v*' --long --dirty 2>/dev/null || true)"
           echo "version=${version}" >> "$GITHUB_OUTPUT"
           echo "Stamping build version: ${version:-<none>}"
+
+      # ISO week stamp for the Dockerfile's tool layer: the layer caches
+      # across commits and re-pulls the @latest CLI tools when the week rolls
+      # over, instead of on every build.
+      - name: Compute tool cache epoch
+        id: tools-epoch
+        run: echo "epoch=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
 
       - name: Setup pnpm
         uses: pnpm/action-setup@v6
@@ -297,13 +317,17 @@ jobs:
             CLOUD_BUNDLED_PLUGINS=daytona
             PAPERCLIP_BUILD_VERSION=${{ steps.build-version.outputs.version }}
             PAPERCLIP_BUILD_COMMIT=${{ github.sha }}
+            CLI_TOOLS_CACHE_EPOCH=${{ steps.tools-epoch.outputs.epoch }}
           # amd64 only, unlike the self-hosted image above: the cloud variant
           # is consumed exclusively by managed-deployment hosts, which run
           # amd64. The QEMU-emulated arm64 half dominated this job's wall
           # clock, and dropping it roughly halves time-to-deployable-image.
           platforms: linux/amd64
           push: true
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # Registry-backed BuildKit cache, separate ref from the self-hosted
+          # job so the two parallel builds never clobber each other's cache
+          # manifest (see the rationale on the job above).
+          cache-from: type=registry,ref=ghcr.io/${{ github.repository }}:buildcache-cloud
+          cache-to: type=registry,ref=ghcr.io/${{ github.repository }}:buildcache-cloud,mode=max
           tags: ${{ steps.meta-cloud.outputs.tags }}
           labels: ${{ steps.meta-cloud.outputs.labels }}

@@ -67,9 +67,17 @@ ARG PAPERCLIP_BUILD_VERSION=""
 # falls back to PAPERCLIP_BUILD_COMMIT when git is unavailable, which feeds the
 # /api/health `commit` field that deploy tooling verifies. Empty locally.
 ARG PAPERCLIP_BUILD_COMMIT=""
+# Refreshes the tool layer below when it changes (CI stamps an ISO week, so
+# the @latest CLI tools advance weekly). Without it the cached layer would
+# freeze the tools until an unrelated cache bust.
+ARG CLI_TOOLS_CACHE_EPOCH=""
 WORKDIR /app
-COPY --chown=node:node --from=build /app /app
-RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/codex@latest opencode-ai @google/gemini-cli@latest \
+# Tool and OS layer BEFORE the app copy: it references nothing from /app, and
+# the app copy changes on every commit — ordered the other way around, this
+# (the single most expensive layer: four CLI toolchains + apt, per arch) can
+# never hit the layer cache and rebuilds on every build.
+RUN echo "cli-tools-epoch: ${CLI_TOOLS_CACHE_EPOCH}" \
+  && npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/codex@latest opencode-ai @google/gemini-cli@latest \
   && apt-get update \
   && apt-get install -y --no-install-recommends openssh-client jq \
   && rm -rf /var/lib/apt/lists/* \
@@ -78,6 +86,8 @@ RUN npm install --global --omit=dev @anthropic-ai/claude-code@latest @openai/cod
 
 COPY scripts/docker-entrypoint.sh /usr/local/bin/
 RUN chmod +x /usr/local/bin/docker-entrypoint.sh
+
+COPY --chown=node:node --from=build /app /app
 
 ENV NODE_ENV=production \
   HOME=/paperclip \
