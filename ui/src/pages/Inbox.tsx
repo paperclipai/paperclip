@@ -2445,7 +2445,7 @@ export function Inbox() {
   const visibleSections = [
     showAwaitingHumanSection ? "waiting_on_you" : null,
     showAlertsSection ? "alerts" : null,
-    showWorkItemsSection ? "work_items" : null,
+    tab !== "waiting" && showWorkItemsSection ? "work_items" : null,
   ].filter((key): key is SectionKey => key !== null);
 
   const allLoaded =
