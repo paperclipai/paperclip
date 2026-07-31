@@ -14,6 +14,17 @@ const textDecoder = new TextDecoder();
 // re-encode to their original bytes; fatal surfaces invalid UTF-8.
 const strictTextDecoder = new TextDecoder("utf-8", { fatal: true, ignoreBOM: true });
 
+// Decompression-bomb guards. The compressed upload is already capped upstream
+// (multer/express.raw at PORTABLE_ZIP_UPLOAD_LIMIT_BYTES), but DEFLATE lets a
+// small compressed archive expand to gigabytes. Bound the expansion so a
+// malicious highly-compressible package cannot exhaust server memory: a
+// per-entry ceiling (passed to zlib as maxOutputLength, so it fails before
+// over-allocating) plus an aggregate ceiling across all entries. Both sit far
+// above any real company package (inline JSON was historically capped at 64MB)
+// yet far below what a bomb would need.
+export const MAX_ZIP_ENTRY_DECOMPRESSED_BYTES = 256 * 1024 * 1024;
+export const MAX_ZIP_TOTAL_DECOMPRESSED_BYTES = 512 * 1024 * 1024;
+
 export const binaryContentTypeByExtension: Record<string, string> = {
   ".gif": "image/gif",
   ".jpeg": "image/jpeg",
@@ -42,6 +53,20 @@ function readUint32(source: Uint8Array, offset: number) {
     (source[offset + 2]! << 16) |
     (source[offset + 3]! << 24)
   ) >>> 0;
+}
+
+const EOCD_SIGNATURE = 0x06054b50;
+
+// Locate the end-of-central-directory record by scanning back from the tail.
+// The record is 22 bytes plus an optional trailing comment (max 0xffff), so the
+// signature lives within the last 22 + 0xffff bytes; returns -1 when absent
+// (a truncated or non-zip upload), which the reader treats as fail-closed.
+function findEndOfCentralDirectoryOffset(bytes: Uint8Array): number {
+  const minOffset = Math.max(0, bytes.length - (22 + 0xffff));
+  for (let offset = bytes.length - 22; offset >= minOffset; offset -= 1) {
+    if (readUint32(bytes, offset) === EOCD_SIGNATURE) return offset;
+  }
+  return -1;
 }
 
 function sharedArchiveRoot(paths: string[]) {
@@ -86,25 +111,69 @@ export function bytesToPortableFileEntry(pathValue: string, bytes: Uint8Array): 
   return { encoding: "base64", data: Buffer.from(bytes).toString("base64"), contentType: "application/octet-stream" };
 }
 
-function inflateZipEntry(compressionMethod: number, bytes: Uint8Array) {
-  if (compressionMethod === 0) return bytes;
+// Size caps applied while expanding an archive. Callers use the module defaults;
+// the limits are parameterizable so the guard can be exercised in tests without
+// allocating hundreds of megabytes.
+export interface ReadZipArchiveLimits {
+  maxEntryDecompressedBytes: number;
+  maxTotalDecompressedBytes: number;
+}
+
+const DEFAULT_ZIP_LIMITS: ReadZipArchiveLimits = {
+  maxEntryDecompressedBytes: MAX_ZIP_ENTRY_DECOMPRESSED_BYTES,
+  maxTotalDecompressedBytes: MAX_ZIP_TOTAL_DECOMPRESSED_BYTES,
+};
+
+function inflateZipEntry(compressionMethod: number, bytes: Uint8Array, maxEntryDecompressedBytes: number) {
+  if (compressionMethod === 0) {
+    if (bytes.length > maxEntryDecompressedBytes) {
+      throw new Error(
+        `Unsupported zip archive: a stored entry exceeds the ${maxEntryDecompressedBytes}-byte per-entry limit.`,
+      );
+    }
+    return bytes;
+  }
   if (compressionMethod !== 8) {
     throw new Error("Unsupported zip archive: only STORE and DEFLATE entries are supported.");
   }
-  return new Uint8Array(inflateRawSync(bytes));
+  try {
+    // maxOutputLength makes zlib throw (ERR_BUFFER_TOO_LARGE) before it allocates
+    // past the per-entry ceiling, so a bomb entry never materializes in memory.
+    return new Uint8Array(inflateRawSync(bytes, { maxOutputLength: maxEntryDecompressedBytes }));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException | undefined)?.code === "ERR_BUFFER_TOO_LARGE") {
+      throw new Error(
+        `Unsupported zip archive: a compressed entry expands beyond the ${maxEntryDecompressedBytes}-byte per-entry limit.`,
+      );
+    }
+    throw error;
+  }
 }
 
-export async function readZipArchive(source: ArrayBuffer | Uint8Array): Promise<{
+export async function readZipArchive(
+  source: ArrayBuffer | Uint8Array,
+  limits: ReadZipArchiveLimits = DEFAULT_ZIP_LIMITS,
+): Promise<{
   rootPath: string | null;
   files: Record<string, CompanyPortabilityFileEntry>;
 }> {
+  const { maxEntryDecompressedBytes, maxTotalDecompressedBytes } = limits;
   const bytes = source instanceof Uint8Array ? source : new Uint8Array(source);
   const entries: Array<{ path: string; body: CompanyPortabilityFileEntry }> = [];
   let offset = 0;
+  // Count every local file header (including directory entries) so the tally can
+  // be reconciled against the central directory below; guard total expansion so
+  // a bomb split across many entries is still bounded.
+  let localHeaderCount = 0;
+  let totalDecompressedBytes = 0;
+  let reachedCentralDirectory = false;
 
   while (offset + 4 <= bytes.length) {
     const signature = readUint32(bytes, offset);
-    if (signature === 0x02014b50 || signature === 0x06054b50) break;
+    if (signature === 0x02014b50 || signature === EOCD_SIGNATURE) {
+      reachedCentralDirectory = true;
+      break;
+    }
     if (signature !== 0x04034b50) {
       throw new Error("Invalid zip archive: unsupported local file header.");
     }
@@ -130,11 +199,18 @@ export async function readZipArchive(source: ArrayBuffer | Uint8Array): Promise<
       throw new Error("Invalid zip archive: truncated file contents.");
     }
 
+    localHeaderCount += 1;
     const rawArchivePath = textDecoder.decode(bytes.slice(nameOffset, nameOffset + fileNameLength));
     const archivePath = normalizeArchivePath(rawArchivePath);
     const isDirectoryEntry = /\/$/.test(rawArchivePath.replace(/\\/g, "/"));
     if (archivePath && !isDirectoryEntry) {
-      const entryBytes = inflateZipEntry(compressionMethod, bytes.slice(bodyOffset, bodyEnd));
+      const entryBytes = inflateZipEntry(compressionMethod, bytes.slice(bodyOffset, bodyEnd), maxEntryDecompressedBytes);
+      totalDecompressedBytes += entryBytes.length;
+      if (totalDecompressedBytes > maxTotalDecompressedBytes) {
+        throw new Error(
+          `Unsupported zip archive: decompressed contents exceed the ${maxTotalDecompressedBytes}-byte limit.`,
+        );
+      }
       entries.push({
         path: archivePath,
         body: bytesToPortableFileEntry(archivePath, entryBytes),
@@ -142,6 +218,25 @@ export async function readZipArchive(source: ArrayBuffer | Uint8Array): Promise<
     }
 
     offset = bodyEnd;
+  }
+
+  // A complete archive always ends with a central directory after its local
+  // entries. If the scan ran off the end of the buffer without reaching one, the
+  // upload was truncated at a record boundary — fail closed rather than import a
+  // leading fragment. Then reconcile the entry tally with the central directory's
+  // own count so a truncation *within* the directory is caught too.
+  if (!reachedCentralDirectory) {
+    throw new Error("Invalid zip archive: truncated before the central directory.");
+  }
+  const eocdOffset = findEndOfCentralDirectoryOffset(bytes);
+  if (eocdOffset === -1) {
+    throw new Error("Invalid zip archive: missing end-of-central-directory record.");
+  }
+  const declaredEntryCount = readUint16(bytes, eocdOffset + 10);
+  if (declaredEntryCount !== localHeaderCount) {
+    throw new Error(
+      `Invalid zip archive: central directory declares ${declaredEntryCount} entries but ${localHeaderCount} were read (truncated or corrupt).`,
+    );
   }
 
   const rootPath = sharedArchiveRoot(entries.map((entry) => entry.path));
@@ -152,6 +247,12 @@ export async function readZipArchive(source: ArrayBuffer | Uint8Array): Promise<
         ? entry.path.slice(rootPath.length + 1)
         : entry.path;
     if (!normalizedPath) continue;
+    // Two entries that normalize to the same path (e.g. `a/b` and `a//b`) make
+    // the package ambiguous; reject it rather than silently letting the later
+    // entry's contents win over the earlier one.
+    if (Object.prototype.hasOwnProperty.call(files, normalizedPath)) {
+      throw new Error(`Invalid zip archive: duplicate entry path "${normalizedPath}".`);
+    }
     files[normalizedPath] = entry.body;
   }
 
