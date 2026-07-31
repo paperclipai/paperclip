@@ -67,6 +67,10 @@ function defaultConfig(): PaperclipConfig {
     telemetry: {
       enabled: true,
     },
+    attribution: {
+      commit: true,
+      pr: true,
+    },
     storage: defaultStorageConfig(),
     secrets: defaultSecretsConfig(),
   };

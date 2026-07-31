@@ -614,6 +614,10 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
     telemetry: {
       enabled: true,
     },
+    attribution: {
+      commit: true,
+      pr: true,
+    },
     storage,
     secrets,
   };
