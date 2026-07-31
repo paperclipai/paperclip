@@ -959,9 +959,12 @@ npx paperclipai workspace get <execution-workspace-id>
 npx paperclipai workspace close-readiness <execution-workspace-id>
 npx paperclipai workspace operations <execution-workspace-id>
 npx paperclipai workspace update <execution-workspace-id> --payload-json '{...}'
+npx paperclipai workspace update <execution-workspace-id> --payload-json '{"status":"archived"}'
 npx paperclipai workspace runtime-service <execution-workspace-id> start --payload-json '{...}'
 npx paperclipai workspace runtime-command <execution-workspace-id> run --payload-json '{...}'
 ```
+
+Before archiving an execution workspace, run `workspace close-readiness`. Archive it only when `state` is `ready` or `ready_with_warnings`; a `blocked` state makes the update return `409`. Archiving is the supported manual lifecycle close. It stops runtime services and performs allowed workspace cleanup.
 
 ```sh
 npx paperclipai environment list --company-id <company-id>
