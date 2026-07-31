@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, desc, eq, inArray, like, ne, notInArray, or, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, like, ne, notInArray, notLike, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -4012,6 +4012,111 @@ export function secretService(db: Db) {
           })),
         );
       });
+      return normalizedRefs;
+    },
+
+    /**
+     * Replace the config-derived secret bindings of an instance-scoped target
+     * (an environment). Instance-scoped targets are shared across companies,
+     * so each binding is written under the company that owns the referenced
+     * secret rather than a single caller-supplied company context — a
+     * re-point to a secret owned by another company moves the binding with
+     * it. All non-`env.*` bindings of the target are replaced across every
+     * company (env-var bindings stay company-scoped and are managed by
+     * `syncEnvBindingsForTarget`).
+     *
+     * Every referenced secret is loaded and validated before any row is
+     * written, and the delete + insert run on one executor, so an invalid
+     * ref (deleted or unknown secret) fails the whole call without leaving
+     * the target half-bound.
+     */
+    replaceSecretRefsForInstanceTarget: async (
+      target: { targetType: SecretBindingTargetType; targetId: string },
+      refs: Array<{
+        secretId: string;
+        configPath: string;
+        versionSelector?: SecretVersionSelector;
+        required?: boolean;
+        label?: string | null;
+        projectionClass?: SecretProjectionClass;
+        projectionAllowlistKey?: string | null;
+      }>,
+      options?: { db?: SecretBindingDb },
+    ) => {
+      const normalizedRefs: Array<{
+        companyId: string;
+        secretId: string;
+        configPath: string;
+        versionSelector: SecretVersionSelector;
+        required: boolean;
+        label: string | null;
+        projectionClass: SecretProjectionClass;
+        projectionAllowlistKey: string | null;
+      }> = [];
+      const readDb = options?.db ?? db;
+      for (const ref of refs) {
+        const secret = await getById(ref.secretId, readDb);
+        if (!secret || secret.status === "deleted") {
+          throw unprocessable(
+            `Secret referenced at ${ref.configPath} was not found`,
+            { code: "secret_missing", configPath: ref.configPath },
+          );
+        }
+        assertSecretBindingConfigPath({ targetType: target.targetType, configPath: ref.configPath });
+        const projectionClass = ref.projectionClass ?? "unclassified";
+        const projectionAllowlistKey = ref.projectionAllowlistKey ?? null;
+        assertClass3StaticLeaseAllowed({
+          targetType: target.targetType,
+          configPath: ref.configPath,
+          projectionClass,
+          projectionAllowlistKey,
+        });
+        normalizedRefs.push({
+          companyId: secret.companyId,
+          secretId: ref.secretId,
+          configPath: ref.configPath,
+          versionSelector: ref.versionSelector ?? "latest",
+          required: ref.required ?? true,
+          label: ref.label ?? null,
+          projectionClass,
+          projectionAllowlistKey,
+        });
+      }
+
+      const writeBindings = async (executor: SecretBindingDb) => {
+        await executor
+          .delete(companySecretBindings)
+          .where(
+            and(
+              eq(companySecretBindings.targetType, target.targetType),
+              eq(companySecretBindings.targetId, target.targetId),
+              notLike(companySecretBindings.configPath, "env.%"),
+            ),
+          );
+        if (normalizedRefs.length === 0) return;
+        await executor.insert(companySecretBindings).values(
+          normalizedRefs.map((ref) => ({
+            companyId: ref.companyId,
+            secretId: ref.secretId,
+            targetType: target.targetType,
+            targetId: target.targetId,
+            configPath: ref.configPath,
+            versionSelector: String(ref.versionSelector),
+            required: ref.required,
+            label: ref.label,
+            projectionClass: ref.projectionClass,
+            projectionAllowlistKey: ref.projectionAllowlistKey,
+          })),
+        );
+      };
+
+      if (options?.db) {
+        await writeBindings(options.db);
+      } else {
+        await db.transaction(async (tx) => {
+          await writeBindings(tx);
+        });
+      }
       return normalizedRefs;
     },
 

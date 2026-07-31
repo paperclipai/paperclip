@@ -2,6 +2,7 @@ import type { Server } from "node:http";
 import express from "express";
 import request from "supertest";
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { unprocessable } from "../errors.js";
 import { environmentRoutes } from "../routes/environments.js";
 import { errorHandler } from "../middleware/index.js";
 
@@ -64,6 +65,7 @@ const mockSecretService = vi.hoisted(() => ({
   resolveSecretValueForEphemeralAccess: vi.fn(),
   syncEnvBindingsForTarget: vi.fn(),
   syncSecretRefsForTarget: vi.fn(),
+  replaceSecretRefsForInstanceTarget: vi.fn(),
   remove: vi.fn(),
 }));
 const mockValidatePluginEnvironmentDriverConfig = vi.hoisted(() => vi.fn());
@@ -182,6 +184,14 @@ let currentActor: Record<string, unknown> = {
 const routeOptions: Record<string, unknown> = {};
 const originalSecretsProviderEnv = process.env.PAPERCLIP_SECRETS_PROVIDER;
 
+// The routes open a transaction around environment writes and their binding
+// syncs. Service calls are mocked, so the executor never runs a real query —
+// it only needs to be identity-checkable in assertions.
+const routeDbTx = { __routeDbTx: true };
+const routeDb = {
+  transaction: async <T>(fn: (tx: unknown) => Promise<T>): Promise<T> => fn(routeDbTx),
+};
+
 function createApp(actor: Record<string, unknown>, options: Record<string, unknown> = {}) {
   currentActor = actor;
   for (const key of Object.keys(routeOptions)) {
@@ -196,7 +206,7 @@ function createApp(actor: Record<string, unknown>, options: Record<string, unkno
     (req as any).actor = currentActor;
     next();
   });
-  app.use("/api", environmentRoutes({} as any, routeOptions as any));
+  app.use("/api", environmentRoutes(routeDb as any, routeOptions as any));
   app.use(errorHandler);
   server = app.listen(0);
   return server;
@@ -258,6 +268,7 @@ describe("environment routes", () => {
     mockSecretService.resolveSecretValueForEphemeralAccess.mockReset();
     mockSecretService.syncEnvBindingsForTarget.mockReset();
     mockSecretService.syncSecretRefsForTarget.mockReset();
+    mockSecretService.replaceSecretRefsForInstanceTarget.mockReset();
     mockSecretService.remove.mockReset();
     mockSecretService.create.mockResolvedValue({
       id: "11111111-1111-1111-1111-111111111111",
@@ -270,6 +281,7 @@ describe("environment routes", () => {
     mockSecretService.listBindingCompanyIdsForTarget.mockResolvedValue([]);
     mockSecretService.syncEnvBindingsForTarget.mockResolvedValue([]);
     mockSecretService.syncSecretRefsForTarget.mockResolvedValue([]);
+    mockSecretService.replaceSecretRefsForInstanceTarget.mockResolvedValue([]);
     mockSecretService.remove.mockResolvedValue(null);
     mockSecretService.resolveSecretValueForEphemeralAccess.mockResolvedValue("resolved-provider-key");
     delete process.env.PAPERCLIP_SECRETS_PROVIDER;
@@ -1039,7 +1051,7 @@ describe("environment routes", () => {
       status: "active",
       config: { shell: "zsh" },
       envVars: {},
-    });
+    }, undefined, { db: routeDbTx });
     expect(mockLogActivity).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
@@ -1354,7 +1366,7 @@ describe("environment routes", () => {
         },
       }),
       envVars: {},
-    }));
+    }), undefined, { db: routeDbTx });
     expect(JSON.stringify(mockEnvironmentService.create.mock.calls[0][0])).not.toContain("super-secret-key");
     expect(mockSecretService.create).toHaveBeenCalledWith(
       "company-1",
@@ -1498,7 +1510,7 @@ describe("environment routes", () => {
         reuseLease: true,
       },
       envVars: {},
-    });
+    }, undefined, { db: routeDbTx });
     expect(mockSecretService.create).not.toHaveBeenCalled();
   });
 
@@ -1586,7 +1598,7 @@ describe("environment routes", () => {
         reuseLease: true,
       },
       envVars: {},
-    });
+    }, undefined, { db: routeDbTx });
     expect(JSON.stringify(mockEnvironmentService.create.mock.calls[0][0])).not.toContain("test-provider-key");
     expect(mockSecretService.create).toHaveBeenCalledWith(
       "company-1",
@@ -1667,8 +1679,13 @@ describe("environment routes", () => {
         reuseLease: true,
       },
       envVars: {},
-    });
+    }, undefined, { db: routeDbTx });
     expect(mockSecretService.create).not.toHaveBeenCalled();
+    expect(mockSecretService.replaceSecretRefsForInstanceTarget).toHaveBeenCalledWith(
+      { targetType: "environment", targetId: "env-sandbox-secure-plugin" },
+      [{ secretId, configPath: "apiKey", versionSelector: "latest" }],
+      { db: routeDbTx },
+    );
   });
 
   it("uses the configured provider for schema-driven sandbox secret fields", async () => {
@@ -1795,7 +1812,7 @@ describe("environment routes", () => {
     expect(mockEnvironmentService.create).toHaveBeenCalledWith(expect.objectContaining({
       config: environment.config,
       envVars: {},
-    }));
+    }), undefined, { db: routeDbTx });
   });
 
   it("rejects agent mutations for instance-scoped environments", async () => {
@@ -1996,9 +2013,126 @@ describe("environment routes", () => {
     expect(mockEnvironmentService.update).toHaveBeenCalledWith(environment.id, {
       driver: "local",
       config: {},
-    });
+    }, { db: routeDbTx });
     expect(JSON.stringify(mockEnvironmentService.update.mock.calls[0][1])).not.toContain("super-secret-key");
     expect(JSON.stringify(mockEnvironmentService.update.mock.calls[0][1])).not.toContain("known-host");
+  });
+
+  it("re-points a sandbox secret ref to another company's secret even when existing bindings disagree", async () => {
+    const oldSecretId = "11111111-1111-1111-1111-111111111111";
+    const newSecretId = "22222222-2222-2222-2222-222222222222";
+    const existing = {
+      ...createEnvironment(),
+      id: "env-sandbox",
+      name: "Daytona",
+      driver: "sandbox" as const,
+      config: {
+        provider: "secure-plugin",
+        template: "base",
+        apiKey: oldSecretId,
+        timeoutMs: 450000,
+        reuseLease: true,
+      },
+    };
+    const updated = {
+      ...existing,
+      config: { ...existing.config, apiKey: newSecretId },
+    };
+    mockEnvironmentService.getById.mockResolvedValue(existing);
+    mockEnvironmentService.update.mockResolvedValue(updated);
+    mockValidatePluginSandboxProviderConfig.mockImplementation(async ({ config }: { config: Record<string, unknown> }) => ({
+      normalizedConfig: { ...config },
+      pluginId: "plugin-secure",
+      pluginKey: "acme.secure-sandbox-provider",
+      driver: {
+        driverKey: "secure-plugin",
+        kind: "sandbox_provider",
+        displayName: "Secure Sandbox",
+        configSchema: {
+          type: "object",
+          properties: {
+            template: { type: "string" },
+            apiKey: { type: "string", format: "secret-ref" },
+            timeoutMs: { type: "number" },
+            reuseLease: { type: "boolean" },
+          },
+        },
+      },
+    }));
+    // The environment's only binding still lives in another company. Before
+    // bindings moved with the referenced secret, this state made every save
+    // from the caller's company fail, with no route-level way out.
+    mockSecretService.listBindingCompanyIdsForTarget.mockResolvedValue(["company-old"]);
+    const app = createApp({
+      type: "board",
+      userId: "user-1",
+      source: "local_implicit",
+    }, { pluginWorkerManager: {} });
+
+    const res = await request(app)
+      .patch("/api/environments/env-sandbox?companyId=company-new")
+      .send({
+        config: {
+          apiKey: { type: "secret_ref", secretId: newSecretId, version: "latest" },
+        },
+      });
+
+    expect(res.status).toBe(200);
+    expect(mockEnvironmentService.update).toHaveBeenCalledWith(
+      "env-sandbox",
+      expect.objectContaining({
+        config: expect.objectContaining({ apiKey: newSecretId }),
+      }),
+      { db: routeDbTx },
+    );
+    expect(mockSecretService.replaceSecretRefsForInstanceTarget).toHaveBeenCalledWith(
+      { targetType: "environment", targetId: "env-sandbox" },
+      [{ secretId: newSecretId, configPath: "apiKey", versionSelector: "latest" }],
+      { db: routeDbTx },
+    );
+    // Explicit caller context wins outright; stale bindings are never consulted.
+    expect(mockSecretService.listBindingCompanyIdsForTarget).not.toHaveBeenCalled();
+    expect(mockSecretService.syncSecretRefsForTarget).not.toHaveBeenCalled();
+  });
+
+  it("fails the whole save when a referenced secret cannot be bound", async () => {
+    const existing = {
+      ...createEnvironment(),
+      id: "env-sandbox",
+      name: "Daytona",
+      driver: "sandbox" as const,
+      config: {
+        provider: "secure-plugin",
+        template: "base",
+        apiKey: "11111111-1111-1111-1111-111111111111",
+        timeoutMs: 450000,
+        reuseLease: true,
+      },
+    };
+    mockEnvironmentService.getById.mockResolvedValue(existing);
+    mockEnvironmentService.update.mockResolvedValue({
+      ...existing,
+      config: { ...existing.config, apiKey: "33333333-3333-3333-3333-333333333333" },
+    });
+    mockSecretService.replaceSecretRefsForInstanceTarget.mockRejectedValue(
+      unprocessable("Secret referenced at apiKey was not found", { code: "secret_missing" }),
+    );
+    const app = createApp({
+      type: "board",
+      userId: "user-1",
+      source: "local_implicit",
+    }, { pluginWorkerManager: {} });
+
+    const res = await request(app)
+      .patch("/api/environments/env-sandbox?companyId=company-1")
+      .send({
+        config: {
+          apiKey: { type: "secret_ref", secretId: "33333333-3333-3333-3333-333333333333", version: "latest" },
+        },
+      });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toContain("was not found");
   });
 
   it("requires explicit SSH config when switching from local to SSH", async () => {
