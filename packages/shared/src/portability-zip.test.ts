@@ -214,6 +214,49 @@ describe("readZipArchive", () => {
     await expect(readZipArchive(archive)).rejects.toThrow(/central directory declares 5 entries/i);
   });
 
+  it("rejects a truncated archive re-terminated with a forged EOCD that matches the surviving entries", async () => {
+    // The exact silent-partial-import this reader guards against: an archive is
+    // cut after a complete leading local entry (losing the real central directory
+    // and EOCD), then re-terminated with a hand-forged 22-byte EOCD whose entry
+    // count matches the surviving local entry. An entry-count-only check would
+    // wave it through; validating the central directory it points at must not.
+    const archive = buildZip(
+      [{ path: "COMPANY.md", bytes: new TextEncoder().encode("---\nname: Demo\n---\n") }],
+      "paperclip-demo",
+    );
+    // Keep only the intact local entry (everything before the first central record).
+    const localOnly = archive.slice(0, centralDirectoryOffset(archive));
+
+    const forgedEocd = Buffer.alloc(22);
+    forgedEocd.writeUInt32LE(0x06054b50, 0);
+    forgedEocd.writeUInt16LE(1, 8); // entries on this disk
+    forgedEocd.writeUInt16LE(1, 10); // total entries — matches the one surviving local entry
+    forgedEocd.writeUInt32LE(0, 12); // central directory size (forged)
+    forgedEocd.writeUInt32LE(0, 16); // central directory offset (forged)
+    const forged = new Uint8Array(Buffer.concat([Buffer.from(localOnly), forgedEocd]));
+
+    await expect(readZipArchive(forged)).rejects.toThrow(/central directory location is inconsistent/i);
+  });
+
+  it("rejects a forged EOCD whose central directory offset points at non-directory bytes", async () => {
+    const archive = buildZip(
+      [{ path: "COMPANY.md", bytes: new TextEncoder().encode("---\nname: Demo\n---\n") }],
+      "paperclip-demo",
+    );
+    const firstEntryOnly = archive.slice(0, centralDirectoryOffset(archive));
+    // A forged EOCD whose offset+size abut the record (passing the location
+    // check) but point into the local entry, which carries no directory signature.
+    const forgedEocd = Buffer.alloc(22);
+    forgedEocd.writeUInt32LE(0x06054b50, 0);
+    forgedEocd.writeUInt16LE(1, 8);
+    forgedEocd.writeUInt16LE(1, 10);
+    forgedEocd.writeUInt32LE(46, 12); // size
+    forgedEocd.writeUInt32LE(firstEntryOnly.length - 46, 16); // start = eocdOffset - size
+    const forged = new Uint8Array(Buffer.concat([Buffer.from(firstEntryOnly), forgedEocd]));
+
+    await expect(readZipArchive(forged)).rejects.toThrow(/malformed central directory record/i);
+  });
+
   it("rejects two entries that normalize to the same path instead of silently overwriting", async () => {
     const archive = buildZip(
       [

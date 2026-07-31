@@ -55,6 +55,8 @@ function readUint32(source: Uint8Array, offset: number) {
   ) >>> 0;
 }
 
+const LOCAL_FILE_SIGNATURE = 0x04034b50;
+const CENTRAL_DIRECTORY_SIGNATURE = 0x02014b50;
 const EOCD_SIGNATURE = 0x06054b50;
 
 // Locate the end-of-central-directory record by scanning back from the tail.
@@ -67,6 +69,56 @@ function findEndOfCentralDirectoryOffset(bytes: Uint8Array): number {
     if (readUint32(bytes, offset) === EOCD_SIGNATURE) return offset;
   }
   return -1;
+}
+
+// Fully validate the central directory the EOCD advertises against the local
+// entries actually read from the archive body. Trusting only the EOCD's entry
+// count is not enough: a truncated archive with a forged 22-byte EOCD whose
+// count matches the surviving local entries would otherwise be accepted, and the
+// importer would silently process a partial company package (dropping agents,
+// issues, and so on). This walks the real central directory and requires that:
+//   • it is fully present and sits immediately before the EOCD (no gap, no
+//     pointer past the buffer — a truncated tail fails here);
+//   • every record carries the central-directory signature and its lengths sum
+//     to exactly the declared directory size; and
+//   • every record references a real local file header, and the record count
+//     equals both the EOCD's declared count and the local entries parsed.
+function validateCentralDirectory(bytes: Uint8Array, eocdOffset: number, localHeaderCount: number) {
+  const declaredEntryCount = readUint16(bytes, eocdOffset + 10);
+  const centralDirectorySize = readUint32(bytes, eocdOffset + 12);
+  const centralDirectoryStart = readUint32(bytes, eocdOffset + 16);
+  if (centralDirectoryStart > eocdOffset || centralDirectoryStart + centralDirectorySize !== eocdOffset) {
+    throw new Error(
+      "Invalid zip archive: central directory location is inconsistent (truncated or forged).",
+    );
+  }
+
+  const directoryEnd = centralDirectoryStart + centralDirectorySize;
+  let cursor = centralDirectoryStart;
+  let recordCount = 0;
+  while (cursor < directoryEnd) {
+    if (cursor + 46 > directoryEnd || readUint32(bytes, cursor) !== CENTRAL_DIRECTORY_SIGNATURE) {
+      throw new Error("Invalid zip archive: malformed central directory record.");
+    }
+    const fileNameLength = readUint16(bytes, cursor + 28);
+    const extraFieldLength = readUint16(bytes, cursor + 30);
+    const commentLength = readUint16(bytes, cursor + 32);
+    const localHeaderOffset = readUint32(bytes, cursor + 42);
+    if (localHeaderOffset + 4 > bytes.length || readUint32(bytes, localHeaderOffset) !== LOCAL_FILE_SIGNATURE) {
+      throw new Error("Invalid zip archive: central directory references a missing local entry.");
+    }
+    cursor += 46 + fileNameLength + extraFieldLength + commentLength;
+    recordCount += 1;
+  }
+
+  if (cursor !== directoryEnd) {
+    throw new Error("Invalid zip archive: central directory size does not match its records.");
+  }
+  if (recordCount !== declaredEntryCount || recordCount !== localHeaderCount) {
+    throw new Error(
+      `Invalid zip archive: central directory declares ${declaredEntryCount} entries but ${localHeaderCount} local entries were read (truncated or corrupt).`,
+    );
+  }
 }
 
 function sharedArchiveRoot(paths: string[]) {
@@ -170,11 +222,11 @@ export async function readZipArchive(
 
   while (offset + 4 <= bytes.length) {
     const signature = readUint32(bytes, offset);
-    if (signature === 0x02014b50 || signature === EOCD_SIGNATURE) {
+    if (signature === CENTRAL_DIRECTORY_SIGNATURE || signature === EOCD_SIGNATURE) {
       reachedCentralDirectory = true;
       break;
     }
-    if (signature !== 0x04034b50) {
+    if (signature !== LOCAL_FILE_SIGNATURE) {
       throw new Error("Invalid zip archive: unsupported local file header.");
     }
 
@@ -223,8 +275,9 @@ export async function readZipArchive(
   // A complete archive always ends with a central directory after its local
   // entries. If the scan ran off the end of the buffer without reaching one, the
   // upload was truncated at a record boundary — fail closed rather than import a
-  // leading fragment. Then reconcile the entry tally with the central directory's
-  // own count so a truncation *within* the directory is caught too.
+  // leading fragment. Then fully validate the central directory the EOCD points
+  // at so a truncated tail with a forged EOCD (whose count happens to match the
+  // surviving entries) cannot smuggle in a partial import.
   if (!reachedCentralDirectory) {
     throw new Error("Invalid zip archive: truncated before the central directory.");
   }
@@ -232,12 +285,7 @@ export async function readZipArchive(
   if (eocdOffset === -1) {
     throw new Error("Invalid zip archive: missing end-of-central-directory record.");
   }
-  const declaredEntryCount = readUint16(bytes, eocdOffset + 10);
-  if (declaredEntryCount !== localHeaderCount) {
-    throw new Error(
-      `Invalid zip archive: central directory declares ${declaredEntryCount} entries but ${localHeaderCount} were read (truncated or corrupt).`,
-    );
-  }
+  validateCentralDirectory(bytes, eocdOffset, localHeaderCount);
 
   const rootPath = sharedArchiveRoot(entries.map((entry) => entry.path));
   const files: Record<string, CompanyPortabilityFileEntry> = {};
