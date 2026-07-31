@@ -15397,8 +15397,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           deferredAgent?.companyId === issue.companyId
             ? evaluateAgentInvokability(deferredAgent, companyAgents)
             : evaluateAgentInvokability(null, companyAgents);
+        // General invokability deliberately still accepts `error` (a human may
+        // want to manually retry an errored agent elsewhere), but promoting a
+        // *deferred* wake automatically is exactly the automatic-recovery path
+        // this PR closes for the immediate release check above — gate it the
+        // same way, or an agent that errored while its deferred wake was
+        // queued gets silently re-invoked here instead.
+        const deferredInvokableForRecovery = isAgentInvokableForRecovery(deferredAgent?.status ?? null);
 
-        if (!deferredAgent || deferredAgent.companyId !== issue.companyId || !deferredInvokability.invokable) {
+        if (
+          !deferredAgent ||
+          deferredAgent.companyId !== issue.companyId ||
+          !deferredInvokability.invokable ||
+          !deferredInvokableForRecovery
+        ) {
           await tx
             .update(agentWakeupRequests)
             .set({
