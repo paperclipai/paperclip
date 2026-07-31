@@ -4578,6 +4578,15 @@ registry.registerPath({
 
 registry.registerPath({
   method: "get",
+  path: "/api/environments/{id}/secret-refs",
+  tags: ["environments"],
+  summary: "Describe an environment's config secret refs (name, status, owning company — never values)",
+  request: { params: z.object({ id: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "get",
   path: "/api/environments/{id}/leases",
   tags: ["environments"],
   summary: "List leases for an environment",

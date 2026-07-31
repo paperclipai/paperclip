@@ -4119,6 +4119,9 @@ export function secretService(db: Db) {
         });
       }
       return normalizedRefs;
+    },
+
+    /**
      * Describe secret refs (id + config path) with the referenced secret's
      * name, status, and owning company. Environments are instance-scoped
      * while secrets are company-scoped, so an environment can legitimately
