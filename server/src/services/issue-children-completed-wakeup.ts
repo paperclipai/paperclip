@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agentWakeupRequests } from "@paperclipai/db";
 
@@ -34,7 +34,7 @@ export function buildIssueChildrenCompletedWakeIdempotencyKey(input: {
 }
 
 export async function findExistingIssueChildrenCompletedWake(
-  db: Db,
+  db: Pick<Db, "select">,
   input: { companyId: string; idempotencyKey: string },
 ) {
   return db
@@ -49,4 +49,38 @@ export async function findExistingIssueChildrenCompletedWake(
     )
     .limit(1)
     .then((rows) => rows[0] ?? null);
+}
+
+/**
+ * Makes the children-completed wake idempotency claim atomic: a Postgres advisory
+ * transaction lock (tenant-scoped via companyId in the lock key) serializes concurrent
+ * claims for the exact same idempotency key, so the existence check inside the lock
+ * always observes any equivalent wake a concurrent caller already committed. `onClaimed`
+ * only runs — and is only allowed to actually enqueue the wake — while the lock is held,
+ * closing the check-then-enqueue race that a plain SELECT-then-INSERT leaves open.
+ *
+ * A partial unique index on agent_wakeup_requests (company_id, idempotency_key) scoped to
+ * reason = 'issue_children_completed' backstops this: if the lock is ever bypassed, the
+ * real insert performed inside `onClaimed` hits a DB conflict instead of silently
+ * duplicating the wake.
+ *
+ * If the existence check itself fails (e.g. a database fault), this throws rather than
+ * treating the failure as "no existing wake": callers must fail closed and skip the wake
+ * rather than risk duplicate emission during an outage.
+ */
+export async function claimIssueChildrenCompletedWake<T>(
+  db: Db,
+  input: { companyId: string; idempotencyKey: string },
+  onClaimed: () => Promise<T>,
+): Promise<{ claimed: boolean; result: T | null }> {
+  return db.transaction(async (tx) => {
+    const lockKey = `issue-children-completed-wake:${input.companyId}:${input.idempotencyKey}`;
+    await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`);
+    const existing = await findExistingIssueChildrenCompletedWake(tx, input);
+    if (existing) {
+      return { claimed: false, result: null };
+    }
+    const result = await onClaimed();
+    return { claimed: true, result };
+  });
 }

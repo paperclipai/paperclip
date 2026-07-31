@@ -4,7 +4,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockWakeup = vi.hoisted(() => vi.fn(async () => undefined));
 const mockFindExistingIssueBlockersResolvedWake = vi.hoisted(() => vi.fn(async () => null));
-const mockFindExistingIssueChildrenCompletedWake = vi.hoisted(() => vi.fn(async () => null));
+const mockClaimIssueChildrenCompletedWake = vi.hoisted(() =>
+  vi.fn(async (_db: unknown, _input: unknown, onClaimed: () => Promise<unknown>) => {
+    const result = await onClaimed();
+    return { claimed: true, result };
+  }),
+);
 const mockIssueService = vi.hoisted(() => ({
   getAncestors: vi.fn(),
   getById: vi.fn(),
@@ -107,7 +112,7 @@ vi.mock("../services/issue-children-completed-wakeup.js", async () => {
   );
   return {
     ...actual,
-    findExistingIssueChildrenCompletedWake: mockFindExistingIssueChildrenCompletedWake,
+    claimIssueChildrenCompletedWake: mockClaimIssueChildrenCompletedWake,
   };
 });
 
@@ -154,7 +159,10 @@ describe("issue dependency wakeups in issue routes", () => {
     vi.doUnmock("../middleware/index.js");
     vi.clearAllMocks();
     mockFindExistingIssueBlockersResolvedWake.mockResolvedValue(null);
-    mockFindExistingIssueChildrenCompletedWake.mockResolvedValue(null);
+    mockClaimIssueChildrenCompletedWake.mockImplementation(async (_db, _input, onClaimed) => {
+      const result = await onClaimed();
+      return { claimed: true, result };
+    });
     mockIssueService.getAncestors.mockResolvedValue([]);
     mockIssueService.getComment.mockResolvedValue(null);
     mockIssueService.getCommentCursor.mockResolvedValue({
@@ -453,7 +461,7 @@ describe("issue dependency wakeups in issue routes", () => {
       ],
       childIssueSummaryTruncated: false,
     });
-    mockFindExistingIssueChildrenCompletedWake.mockResolvedValue({ id: "wake-1", status: "queued" });
+    mockClaimIssueChildrenCompletedWake.mockResolvedValue({ claimed: false, result: null });
 
     const res = await request(await createApp()).patch("/api/issues/child-1").send({ status: "done" });
     expect(res.status).toBe(200);
