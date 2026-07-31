@@ -12,6 +12,7 @@ import {
   portCheck,
   secretsCheck,
   storageCheck,
+  runtimeLockCheck,
   type CheckResult,
 } from "../checks/index.js";
 import { loadPaperclipEnvFile } from "../config/env.js";
@@ -115,7 +116,16 @@ export async function doctor(opts: {
     }),
   );
 
-  // 9. Port check
+  // 9. Runtime lock check
+  results.push(
+    await runRepairableCheck({
+      run: () => runtimeLockCheck(),
+      configPath,
+      opts,
+    }),
+  );
+
+  // 10. Port check
   const portResult = await portCheck(config);
   results.push(portResult);
   printResult(portResult);
