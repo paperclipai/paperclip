@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { Router, type Request, type Response } from "express";
+import { Router, type NextFunction, type Request, type Response } from "express";
 import multer from "multer";
 import { z } from "zod";
 import { and, asc, desc, eq, inArray, isNull, notInArray } from "drizzle-orm";
@@ -7072,7 +7072,21 @@ export function issueRoutes(
     res.json({ ok: true });
   });
 
-  router.post("/companies/:companyId/issues", applyCreateIssueStatusDefault, validate(createIssueSchema), async (req, res) => {
+  const rejectGenericIssueProvenance = (req: Request, res: Response, next: NextFunction) => {
+    const body = req.body && typeof req.body === "object" ? req.body as Record<string, unknown> : {};
+    const forbiddenFields = ["originKind", "originId", "originRunId", "originFingerprint"]
+      .filter((field) => Object.prototype.hasOwnProperty.call(body, field));
+    if (forbiddenFields.length > 0) {
+      res.status(422).json({
+        error: "Provider provenance is accepted only by the dedicated issue-import boundary",
+        details: { forbiddenFields },
+      });
+      return;
+    }
+    next();
+  };
+
+  router.post("/companies/:companyId/issues", rejectGenericIssueProvenance, applyCreateIssueStatusDefault, validate(createIssueSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId);
     if (isSkillTestScopedActor(req)) {
