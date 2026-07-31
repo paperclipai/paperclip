@@ -219,6 +219,14 @@ export async function startServer(): Promise<StartedServer> {
     return normalized === "127.0.0.1" || normalized === "localhost" || normalized === "::1";
   }
 
+  function isLocalAuthPublicBaseUrl(rawUrl: string): boolean {
+    try {
+      return isLoopbackHost(new URL(rawUrl).hostname);
+    } catch {
+      return false;
+    }
+  }
+
   function isPostgresConnectionString(connectionString: string): boolean {
     try {
       const parsed = new URL(connectionString);
@@ -530,7 +538,7 @@ export async function startServer(): Promise<StartedServer> {
 
   const requestedListenPort = config.port;
   const listenPort = await detectPort(requestedListenPort);
-  if (config.authBaseUrlMode === "explicit" && config.authPublicBaseUrl) {
+  if (config.authBaseUrlMode === "explicit" && config.authPublicBaseUrl && isLocalAuthPublicBaseUrl(config.authPublicBaseUrl)) {
     config.authPublicBaseUrl = rewriteLocalUrlPort(config.authPublicBaseUrl, listenPort);
   }
   

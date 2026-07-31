@@ -514,6 +514,21 @@ describe("startServer PAPERCLIP_API_URL handling", () => {
     expect(process.env.PAPERCLIP_RUNTIME_API_URL).toBe("http://my-host.ts.net:3110");
   });
 
+  it("keeps reverse-proxy auth public URLs stable when detect-port selects a new port", async () => {
+    loadConfigMock.mockReturnValueOnce(buildTestConfig({
+      port: 3100,
+      authBaseUrlMode: "explicit",
+      authPublicBaseUrl: "http://my-host.ts.net:3100",
+    }));
+    detectPortMock.mockResolvedValueOnce(3110);
+
+    const started = await startServer();
+
+    expect(started.listenPort).toBe(3110);
+    expect(started.apiUrl).toBe("http://my-host.ts.net:3100");
+    expect(process.env.PAPERCLIP_RUNTIME_API_URL).toBe("http://my-host.ts.net:3100");
+  });
+
   it("keeps no-port auth public URLs stable when detect-port selects a new port", async () => {
     loadConfigMock.mockReturnValueOnce(buildTestConfig({
       port: 3100,

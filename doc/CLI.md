@@ -771,6 +771,7 @@ pnpm paperclipai budget incident:resolve <incident-id> --company-id <company-id>
 pnpm paperclipai workspace list --company-id <company-id>
 pnpm paperclipai workspace get <execution-workspace-id>
 pnpm paperclipai workspace close-readiness <execution-workspace-id>
+pnpm paperclipai workspace archive <execution-workspace-id>
 pnpm paperclipai workspace operations <execution-workspace-id>
 pnpm paperclipai workspace update <execution-workspace-id> --payload-json '{...}'
 pnpm paperclipai workspace runtime-service <execution-workspace-id> start --payload-json '{...}'
