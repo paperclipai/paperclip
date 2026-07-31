@@ -48,8 +48,10 @@ import { cn, SIDEBAR_RAIL_HIDDEN_LABEL } from "../lib/utils";
 import { PluginSlotOutlet } from "@/plugins/slots";
 import { PluginLauncherOutlet } from "@/plugins/launchers";
 import { SidebarCompanyMenu } from "./SidebarCompanyMenu";
+import { useTranslation } from "@/i18n";
 
 export function Sidebar() {
+  const { t } = useTranslation();
   const { openNewIssue } = useDialogActions();
   // Every labeled section is collapsible (session-scoped, default open) —
   // one policy across static nav groups and the data-driven sections.
@@ -134,8 +136,8 @@ export function Sidebar() {
               variant="ghost"
               size="icon-sm"
               className="text-muted-foreground shrink-0"
-              aria-label="Open search"
-              title="Open search"
+              aria-label={t("common.openSearch")}
+              title={t("common.openSearch")}
             >
               <NavLink to="/search">
                 <Search className="h-4 w-4" />
@@ -153,8 +155,8 @@ export function Sidebar() {
                   variant="ghost"
                   size="icon-sm"
                   className="text-muted-foreground shrink-0"
-                  aria-label="Keep sidebar expanded"
-                  title="Keep sidebar expanded"
+                  aria-label={t("common.keepSidebarExpanded")}
+                  title={t("common.keepSidebarExpanded")}
                   onClick={() => setCollapsed(false)}
                 >
                   <Pin className="h-4 w-4" />
@@ -165,8 +167,8 @@ export function Sidebar() {
                   size="icon-sm"
                   className="text-muted-foreground shrink-0"
                   aria-expanded={!collapsed}
-                  aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
-                  title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+                  aria-label={collapsed ? t("common.expandSidebar") : t("common.collapseSidebar")}
+                  title={collapsed ? t("common.expandSidebar") : t("common.collapseSidebar")}
                   onClick={() => toggleCollapsed()}
                 >
                   {collapsed ? <PanelLeftOpen className="h-4 w-4" /> : <PanelLeftClose className="h-4 w-4" />}
@@ -185,60 +187,60 @@ export function Sidebar() {
               <button
                 onClick={() => openNewIssue()}
                 data-slot="icon-button"
-                aria-label={rail ? "New Task" : undefined}
+                aria-label={rail ? t("common.newTask") : undefined}
                 className="flex items-center gap-2.5 mx-2 rounded-lg px-2 py-1.5 pointer-coarse:py-1 text-(length:--text-compact) font-medium text-foreground/80 hover:bg-accent/50 hover:text-foreground transition-colors"
               >
                 <SquarePen className="h-4 w-4 shrink-0" />
-                <span className={rail ? SIDEBAR_RAIL_HIDDEN_LABEL : "truncate"}>New Task</span>
+                <span className={rail ? SIDEBAR_RAIL_HIDDEN_LABEL : "truncate"}>{t("common.newTask")}</span>
               </button>
             );
             return rail ? (
               <Tooltip>
                 <TooltipTrigger asChild>{newTaskButton}</TooltipTrigger>
-                <TooltipContent side="right">New Task</TooltipContent>
+                <TooltipContent side="right">{t("common.newTask")}</TooltipContent>
               </Tooltip>
             ) : (
               newTaskButton
             );
           })()}
-          <SidebarNavItem to="/dashboard" label="Dashboard" icon={LayoutDashboard} liveCount={liveRunCount} />
+          <SidebarNavItem to="/dashboard" label={t("sidebar.dashboard")} icon={LayoutDashboard} liveCount={liveRunCount} />
           <SidebarNavItem
             to="/inbox"
-            label="Inbox"
+            label={t("sidebar.inbox")}
             icon={Inbox}
             badge={inboxBadge.inbox}
-            badgeLabel="unread"
+            badgeLabel={t("sidebar.unread")}
             badgeTone={inboxBadge.failedRuns > 0 ? "danger" : "default"}
             alert={inboxBadge.failedRuns > 0}
           />
           {showDecisions ? (
             <SidebarNavItem
               to="/decisions"
-              label="Decisions"
+              label={t("sidebar.decisions")}
               icon={ListChecks}
               badge={attentionCount}
-              badgeLabel="decisions"
+              badgeLabel={t("sidebar.decisionsBadge")}
             />
           ) : null}
           {showStatusCards ? (
-            <SidebarNavItem to="/status" label="Status" icon={LayoutGrid} textBadge="beta" />
+            <SidebarNavItem to="/status" label={t("sidebar.status")} icon={LayoutGrid} textBadge={t("sidebar.beta")} />
           ) : null}
           {conferenceRoomChatEnabled ? (
-            <SidebarNavItem to="/board-chat" label="Conference Room" icon={MessagesSquare} />
+            <SidebarNavItem to="/board-chat" label={t("sidebar.conferenceRoom")} icon={MessagesSquare} />
           ) : null}
         </div>
 
-        <SidebarSection label="Work" collapsible={{ open: workOpen, onOpenChange: setWorkOpen }}>
-          <SidebarNavItem to="/issues" label="Tasks" icon={CircleDot} />
+        <SidebarSection label={t("sidebar.work")} collapsible={{ open: workOpen, onOpenChange: setWorkOpen }}>
+          <SidebarNavItem to="/issues" label={t("sidebar.tasks")} icon={CircleDot} />
           {showCases ? (
-            <SidebarNavItem to="/cases" label="Cases" icon={Layers} textBadge="beta" />
+            <SidebarNavItem to="/cases" label={t("sidebar.cases")} icon={Layers} textBadge={t("sidebar.beta")} />
           ) : null}
-          <SidebarNavItem to="/routines" label="Routines" icon={Repeat} />
+          <SidebarNavItem to="/routines" label={t("sidebar.routines")} icon={Repeat} />
           {showPipelines ? (
-            <SidebarNavItem to="/pipelines" label="Pipelines" icon={GitBranch} />
+            <SidebarNavItem to="/pipelines" label={t("sidebar.pipelines")} icon={GitBranch} />
           ) : null}
           {showGoalsLink ? (
-            <SidebarNavItem to="/goals" label="Goals" icon={Target} />
+            <SidebarNavItem to="/goals" label={t("sidebar.goals")} icon={Target} />
           ) : goalsLinkPending ? (
             <div
               data-testid="sidebar-goals-placeholder"
@@ -246,14 +248,14 @@ export function Sidebar() {
               aria-hidden="true"
             />
           ) : null}
-          <SidebarNavItem to="/artifacts" label="Artifacts" icon={Package} />
-          <SidebarNavItem to="/skills" label="Skills" icon={Boxes} />
+          <SidebarNavItem to="/artifacts" label={t("sidebar.artifacts")} icon={Package} />
+          <SidebarNavItem to="/skills" label={t("sidebar.skills")} icon={Boxes} />
           {showWorkspacesLink ? (
-            <SidebarNavItem to="/workspaces" label="Workspaces" icon={GitBranch} />
+            <SidebarNavItem to="/workspaces" label={t("sidebar.workspaces")} icon={GitBranch} />
           ) : null}
           {streamlined ? (
             <>
-              <SidebarNavItem to="/projects" label="Projects" icon={FolderOpen} />
+              <SidebarNavItem to="/projects" label={t("sidebar.projects")} icon={FolderOpen} />
               <SidebarStarredProjects />
             </>
           ) : null}
@@ -277,13 +279,13 @@ export function Sidebar() {
 
         <SidebarAgents streamlined={streamlined} />
 
-        <SidebarSection label="Company" collapsible={{ open: companyOpen, onOpenChange: setCompanyOpen }}>
-          <SidebarNavItem to="/org" label="Org" icon={Network} />
-          {showApps ? <SidebarNavItem to="/apps" label="Apps" icon={AppWindow} /> : null}
-          <SidebarNavItem to="/timeline" label="Timeline" icon={GanttChartSquare} />
-          <SidebarNavItem to="/costs" label="Costs" icon={DollarSign} />
-          <SidebarNavItem to="/activity" label="Activity" icon={History} />
-          <SidebarNavItem to="/company/settings" label="Settings" icon={Settings} />
+        <SidebarSection label={t("sidebar.company")} collapsible={{ open: companyOpen, onOpenChange: setCompanyOpen }}>
+          <SidebarNavItem to="/org" label={t("sidebar.org")} icon={Network} />
+          {showApps ? <SidebarNavItem to="/apps" label={t("sidebar.apps")} icon={AppWindow} /> : null}
+          <SidebarNavItem to="/timeline" label={t("sidebar.timeline")} icon={GanttChartSquare} />
+          <SidebarNavItem to="/costs" label={t("sidebar.costs")} icon={DollarSign} />
+          <SidebarNavItem to="/activity" label={t("sidebar.activity")} icon={History} />
+          <SidebarNavItem to="/company/settings" label={t("sidebar.settings")} icon={Settings} />
         </SidebarSection>
 
         <PluginSlotOutlet
