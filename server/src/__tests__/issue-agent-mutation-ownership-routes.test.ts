@@ -824,7 +824,6 @@ describe("agent issue mutation checkout ownership", () => {
     mockIssueService.getById
       .mockResolvedValueOnce(blockedIssue)
       .mockResolvedValueOnce(blockedIssue)
-      .mockResolvedValueOnce(blockedIssue)
       .mockResolvedValue(latestIssue);
     mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
       allowed: input.action === "issue:comment" || input.action === "issue:read",
@@ -854,9 +853,12 @@ describe("agent issue mutation checkout ownership", () => {
       expect.any(Function),
     );
     await new Promise((resolve) => setTimeout(resolve, 0));
-    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalledWith(
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
       ownerAgentId,
-      expect.objectContaining({ reason: "issue_commented" }),
+      expect.objectContaining({
+        reason: "issue_commented",
+        currentIssueAssigneeGuard: { issueId },
+      }),
     );
   });
 
@@ -1702,7 +1704,6 @@ describe("agent issue mutation checkout ownership", () => {
     mockIssueService.getById
       .mockResolvedValueOnce(blockedIssue)
       .mockResolvedValueOnce(ownerResult)
-      .mockResolvedValueOnce(ownerResult)
       .mockResolvedValue(latestIssue);
     mockIssueService.update.mockResolvedValue(ownerResult);
     mockAgentService.resolveByReference.mockResolvedValue({
@@ -1733,12 +1734,15 @@ describe("agent issue mutation checkout ownership", () => {
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(res.body).toMatchObject({ status: "todo", assigneeAgentId: latestAssigneeAgentId });
-    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalledWith(
-      latestAssigneeAgentId,
-      expect.objectContaining({ reason: "issue_assigned" }),
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      peerAgentId,
+      expect.objectContaining({
+        reason: "issue_assigned",
+        currentIssueAssigneeGuard: { issueId },
+      }),
     );
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalledWith(
-      peerAgentId,
+      latestAssigneeAgentId,
       expect.objectContaining({ reason: "issue_assigned" }),
     );
   });
