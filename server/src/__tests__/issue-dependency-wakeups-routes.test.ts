@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockWakeup = vi.hoisted(() => vi.fn(async () => undefined));
 const mockFindExistingIssueBlockersResolvedWake = vi.hoisted(() => vi.fn(async () => null));
+const mockFindExistingIssueChildrenCompletedWake = vi.hoisted(() => vi.fn(async () => null));
 const mockIssueService = vi.hoisted(() => ({
   getAncestors: vi.fn(),
   getById: vi.fn(),
@@ -100,6 +101,16 @@ vi.mock("../services/issue-dependency-wakeups.js", async () => {
   };
 });
 
+vi.mock("../services/issue-children-completed-wakeup.js", async () => {
+  const actual = await vi.importActual<typeof import("../services/issue-children-completed-wakeup.js")>(
+    "../services/issue-children-completed-wakeup.js",
+  );
+  return {
+    ...actual,
+    findExistingIssueChildrenCompletedWake: mockFindExistingIssueChildrenCompletedWake,
+  };
+});
+
 async function createApp() {
   const emptyRows: unknown[] = [];
   const whereResult = {
@@ -143,6 +154,7 @@ describe("issue dependency wakeups in issue routes", () => {
     vi.doUnmock("../middleware/index.js");
     vi.clearAllMocks();
     mockFindExistingIssueBlockersResolvedWake.mockResolvedValue(null);
+    mockFindExistingIssueChildrenCompletedWake.mockResolvedValue(null);
     mockIssueService.getAncestors.mockResolvedValue([]);
     mockIssueService.getComment.mockResolvedValue(null);
     mockIssueService.getCommentCursor.mockResolvedValue({
@@ -385,5 +397,70 @@ describe("issue dependency wakeups in issue routes", () => {
         }),
       );
     });
+  });
+
+  it("does not re-wake the parent when a children-completed wake already exists for the same sibling set", async () => {
+    mockIssueService.getById.mockResolvedValue({
+      id: "child-1",
+      companyId: "company-1",
+      identifier: "PAP-101",
+      title: "Reusable watchdog issue",
+      description: null,
+      status: "todo",
+      priority: "medium",
+      parentId: "parent-1",
+      assigneeAgentId: "agent-1",
+      assigneeUserId: null,
+      createdByAgentId: null,
+      createdByUserId: null,
+      executionWorkspaceId: null,
+      labels: [],
+      labelIds: [],
+    });
+    mockIssueService.update.mockResolvedValue({
+      id: "child-1",
+      companyId: "company-1",
+      identifier: "PAP-101",
+      title: "Reusable watchdog issue",
+      description: null,
+      status: "done",
+      priority: "medium",
+      parentId: "parent-1",
+      assigneeAgentId: "agent-1",
+      assigneeUserId: null,
+      createdByAgentId: null,
+      createdByUserId: null,
+      executionWorkspaceId: null,
+      labels: [],
+      labelIds: [],
+    });
+    mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue({
+      id: "parent-1",
+      assigneeAgentId: "agent-9",
+      childIssueIds: ["child-1"],
+      childIssueSummaries: [
+        {
+          id: "child-1",
+          identifier: "PAP-101",
+          title: "Reusable watchdog issue",
+          status: "done",
+          priority: "medium",
+          assigneeAgentId: "agent-1",
+          assigneeUserId: null,
+          updatedAt: new Date("2026-07-31T12:00:00.000Z"),
+          summary: "Nothing new to review.",
+        },
+      ],
+      childIssueSummaryTruncated: false,
+    });
+    mockFindExistingIssueChildrenCompletedWake.mockResolvedValue({ id: "wake-1", status: "queued" });
+
+    const res = await request(await createApp()).patch("/api/issues/child-1").send({ status: "done" });
+    expect(res.status).toBe(200);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(mockWakeup).not.toHaveBeenCalledWith(
+      "agent-9",
+      expect.objectContaining({ reason: "issue_children_completed" }),
+    );
   });
 });

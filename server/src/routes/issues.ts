@@ -154,6 +154,10 @@ import {
   buildIssueBlockersResolvedWakeIdempotencyKey,
   findExistingIssueBlockersResolvedWake,
 } from "../services/issue-dependency-wakeups.js";
+import {
+  buildIssueChildrenCompletedWakeIdempotencyKey,
+  findExistingIssueChildrenCompletedWake,
+} from "../services/issue-children-completed-wakeup.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
 import { executionWorkspaceService as executionWorkspaceServiceDirect } from "../services/execution-workspaces.js";
 import { decisionTrainingService } from "../services/decision-training.js";
@@ -8904,30 +8908,50 @@ export function issueRoutes(
       if (becameTerminal && issue.parentId) {
         const parent = await svc.getWakeableParentAfterChildCompletion(issue.parentId);
         if (parent) {
-          addWakeup(parent.assigneeAgentId, {
-            source: "automation",
-            triggerDetail: "system",
-            reason: "issue_children_completed",
-            payload: {
-              issueId: parent.id,
-              completedChildIssueId: issue.id,
-              childIssueIds: parent.childIssueIds,
-              childIssueSummaries: parent.childIssueSummaries,
-              childIssueSummaryTruncated: parent.childIssueSummaryTruncated,
-            },
-            requestedByActorType: actor.actorType,
-            requestedByActorId: actor.actorId,
-            contextSnapshot: {
-              issueId: parent.id,
-              taskId: parent.id,
-              wakeReason: "issue_children_completed",
-              source: "issue.children_completed",
-              completedChildIssueId: issue.id,
-              childIssueIds: parent.childIssueIds,
-              childIssueSummaries: parent.childIssueSummaries,
-              childIssueSummaryTruncated: parent.childIssueSummaryTruncated,
-            },
+          const childrenCompletedIdempotencyKey = buildIssueChildrenCompletedWakeIdempotencyKey({
+            parentIssueId: parent.id,
+            completedChildIssueId: issue.id,
+            childIssueIds: parent.childIssueIds,
           });
+          let existingChildrenCompletedWake = null;
+          try {
+            existingChildrenCompletedWake = await findExistingIssueChildrenCompletedWake(db, {
+              companyId: issue.companyId,
+              idempotencyKey: childrenCompletedIdempotencyKey,
+            });
+          } catch (err) {
+            logger.warn(
+              { err, issueId: parent.id, idempotencyKey: childrenCompletedIdempotencyKey },
+              "failed to check existing children-completed wake before issue update wake",
+            );
+          }
+          if (!existingChildrenCompletedWake) {
+            addWakeup(parent.assigneeAgentId, {
+              source: "automation",
+              triggerDetail: "system",
+              reason: "issue_children_completed",
+              payload: {
+                issueId: parent.id,
+                completedChildIssueId: issue.id,
+                childIssueIds: parent.childIssueIds,
+                childIssueSummaries: parent.childIssueSummaries,
+                childIssueSummaryTruncated: parent.childIssueSummaryTruncated,
+              },
+              idempotencyKey: childrenCompletedIdempotencyKey,
+              requestedByActorType: actor.actorType,
+              requestedByActorId: actor.actorId,
+              contextSnapshot: {
+                issueId: parent.id,
+                taskId: parent.id,
+                wakeReason: "issue_children_completed",
+                source: "issue.children_completed",
+                completedChildIssueId: issue.id,
+                childIssueIds: parent.childIssueIds,
+                childIssueSummaries: parent.childIssueSummaries,
+                childIssueSummaryTruncated: parent.childIssueSummaryTruncated,
+              },
+            });
+          }
         }
       }
 
@@ -10434,30 +10458,50 @@ export function issueRoutes(
       if (becameTerminal && currentIssue.parentId) {
         const parent = await svc.getWakeableParentAfterChildCompletion(currentIssue.parentId);
         if (parent) {
-          addWakeup(parent.assigneeAgentId, {
-            source: "automation",
-            triggerDetail: "system",
-            reason: "issue_children_completed",
-            payload: {
-              issueId: parent.id,
-              completedChildIssueId: currentIssue.id,
-              childIssueIds: parent.childIssueIds,
-              childIssueSummaries: parent.childIssueSummaries,
-              childIssueSummaryTruncated: parent.childIssueSummaryTruncated,
-            },
-            requestedByActorType: actor.actorType,
-            requestedByActorId: actor.actorId,
-            contextSnapshot: {
-              issueId: parent.id,
-              taskId: parent.id,
-              wakeReason: "issue_children_completed",
-              source: "issue.children_completed",
-              completedChildIssueId: currentIssue.id,
-              childIssueIds: parent.childIssueIds,
-              childIssueSummaries: parent.childIssueSummaries,
-              childIssueSummaryTruncated: parent.childIssueSummaryTruncated,
-            },
+          const childrenCompletedIdempotencyKey = buildIssueChildrenCompletedWakeIdempotencyKey({
+            parentIssueId: parent.id,
+            completedChildIssueId: currentIssue.id,
+            childIssueIds: parent.childIssueIds,
           });
+          let existingChildrenCompletedWake = null;
+          try {
+            existingChildrenCompletedWake = await findExistingIssueChildrenCompletedWake(db, {
+              companyId: currentIssue.companyId,
+              idempotencyKey: childrenCompletedIdempotencyKey,
+            });
+          } catch (err) {
+            logger.warn(
+              { err, issueId: parent.id, idempotencyKey: childrenCompletedIdempotencyKey },
+              "failed to check existing children-completed wake before issue comment wake",
+            );
+          }
+          if (!existingChildrenCompletedWake) {
+            addWakeup(parent.assigneeAgentId, {
+              source: "automation",
+              triggerDetail: "system",
+              reason: "issue_children_completed",
+              payload: {
+                issueId: parent.id,
+                completedChildIssueId: currentIssue.id,
+                childIssueIds: parent.childIssueIds,
+                childIssueSummaries: parent.childIssueSummaries,
+                childIssueSummaryTruncated: parent.childIssueSummaryTruncated,
+              },
+              idempotencyKey: childrenCompletedIdempotencyKey,
+              requestedByActorType: actor.actorType,
+              requestedByActorId: actor.actorId,
+              contextSnapshot: {
+                issueId: parent.id,
+                taskId: parent.id,
+                wakeReason: "issue_children_completed",
+                source: "issue.children_completed",
+                completedChildIssueId: currentIssue.id,
+                childIssueIds: parent.childIssueIds,
+                childIssueSummaries: parent.childIssueSummaries,
+                childIssueSummaryTruncated: parent.childIssueSummaryTruncated,
+              },
+            });
+          }
         }
       }
 
