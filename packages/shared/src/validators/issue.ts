@@ -498,6 +498,10 @@ export type CreateIssue = z.infer<typeof createIssueSchema>;
 export const upsertIssueWatchdogSchema = z.object({
   agentId: z.string().uuid(),
   instructions: multilineTextSchema.optional().nullable(),
+  // "subtask" (default) reviews stopped subtrees through a separate watchdog
+  // issue; "self" wakes the watchdog agent directly on the watched issue
+  // (experimental "watchdog everything"). Omitted on update keeps the current mode.
+  mode: z.enum(["subtask", "self"]).optional(),
 }).strict();
 
 export type UpsertIssueWatchdog = z.infer<typeof upsertIssueWatchdogSchema>;

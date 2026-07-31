@@ -655,6 +655,30 @@ type PaperclipWakeRecovery = {
   routingFallbackReason: string | null;
 };
 
+// Experimental "watchdog everything": assignment-shaped wake for a task with
+// no watchdog yet — the assignee should triage whether the task needs a
+// completion-goal watchdog and, if so, register it on itself in self mode.
+type PaperclipWakeTaskWatchdogEverything = {
+  watchedIssueId: string | null;
+  watchedIssueIdentifier: string | null;
+  selfAgentId: string | null;
+};
+
+// Self-mode watchdog verification wake: the assignee is woken on its own task
+// to verify the recorded completion goal after the subtree stopped.
+type PaperclipWakeTaskWatchdogSelfReview = {
+  watchedIssueId: string | null;
+  watchedIssueIdentifier: string | null;
+  watchedIssueTitle: string | null;
+  stopFingerprint: string | null;
+  goalInstructions: string | null;
+  stoppedLeaves: Array<{
+    identifier: string | null;
+    title: string | null;
+    status: string | null;
+  }>;
+};
+
 type PaperclipWakePayload = {
   reason: string | null;
   recovery: PaperclipWakeRecovery | null;
@@ -670,6 +694,8 @@ type PaperclipWakePayload = {
   planReviewContext: PaperclipWakePlanReviewContext | null;
   livenessContinuation: PaperclipWakeLivenessContinuation | null;
   taskWatchdog: PaperclipWakeTaskWatchdogContext | null;
+  taskWatchdogEverything: PaperclipWakeTaskWatchdogEverything | null;
+  taskWatchdogSelfReview: PaperclipWakeTaskWatchdogSelfReview | null;
   interactionKind: string | null;
   interactionStatus: string | null;
   checkboxSelection: PaperclipWakeCheckboxSelection | null;
@@ -1191,6 +1217,52 @@ function normalizePaperclipWakeTaskWatchdog(value: unknown): PaperclipWakeTaskWa
   };
 }
 
+function normalizePaperclipWakeTaskWatchdogEverything(value: unknown): PaperclipWakeTaskWatchdogEverything | null {
+  const setup = parseObject(value);
+  const watchedIssueId = asString(setup.watchedIssueId, "").trim() || null;
+  const watchedIssueIdentifier = asString(setup.watchedIssueIdentifier, "").trim() || null;
+  const selfAgentId = asString(setup.selfAgentId, "").trim() || null;
+  if (!watchedIssueId && !watchedIssueIdentifier) return null;
+  return { watchedIssueId, watchedIssueIdentifier, selfAgentId };
+}
+
+function normalizePaperclipWakeTaskWatchdogSelfReview(value: unknown): PaperclipWakeTaskWatchdogSelfReview | null {
+  const review = parseObject(value);
+  const watchedIssueId = asString(review.watchedIssueId, "").trim() || null;
+  const watchedIssueIdentifier = asString(review.watchedIssueIdentifier, "").trim() || null;
+  const watchedIssueTitle = asString(review.watchedIssueTitle, "").trim() || null;
+  const stopFingerprint = asString(review.stopFingerprint, "").trim() || null;
+  const goalInstructionsRaw = asString(review.goalInstructions, "").trim();
+  const goalInstructions = goalInstructionsRaw
+    ? goalInstructionsRaw.length > MAX_WATCHDOG_INSTRUCTIONS_CHARS
+      ? goalInstructionsRaw.slice(0, MAX_WATCHDOG_INSTRUCTIONS_CHARS)
+      : goalInstructionsRaw
+    : null;
+  const stoppedLeaves = Array.isArray(review.stoppedLeaves)
+    ? review.stoppedLeaves
+        .slice(0, MAX_WATCHDOG_LEAF_SUMMARIES)
+        .map((entry) => {
+          const leaf = parseObject(entry);
+          const identifier = asString(leaf.identifier, "").trim() ||
+            asString(leaf.issueId, "").trim() || null;
+          const title = asString(leaf.title, "").trim() || null;
+          const status = asString(leaf.status, "").trim() || null;
+          return identifier || title || status ? { identifier, title, status } : null;
+        })
+        .filter((entry): entry is { identifier: string | null; title: string | null; status: string | null } =>
+          Boolean(entry))
+    : [];
+  if (!watchedIssueId && !watchedIssueIdentifier && !stopFingerprint && !goalInstructions) return null;
+  return {
+    watchedIssueId,
+    watchedIssueIdentifier,
+    watchedIssueTitle,
+    stopFingerprint,
+    goalInstructions,
+    stoppedLeaves,
+  };
+}
+
 function normalizePaperclipWakeExecutionStage(value: unknown): PaperclipWakeExecutionStage | null {
   const stage = parseObject(value);
   const wakeRoleRaw = asString(stage.wakeRole, "").trim().toLowerCase();
@@ -1281,6 +1353,8 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
     : [];
   const livenessContinuation = normalizePaperclipWakeLivenessContinuation(payload.livenessContinuation);
   const taskWatchdog = normalizePaperclipWakeTaskWatchdog(payload.taskWatchdog);
+  const taskWatchdogEverything = normalizePaperclipWakeTaskWatchdogEverything(payload.taskWatchdogEverything);
+  const taskWatchdogSelfReview = normalizePaperclipWakeTaskWatchdogSelfReview(payload.taskWatchdogSelfReview);
   const recovery = normalizePaperclipWakeRecovery(payload.recovery);
   const childIssueSummaries = Array.isArray(payload.childIssueSummaries)
     ? payload.childIssueSummaries
@@ -1302,7 +1376,7 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
   const checkboxSelection = normalizePaperclipWakeCheckboxSelection(payload.checkboxSelection);
   const executionWorkspace = normalizePaperclipWakeExecutionWorkspace(payload.executionWorkspace);
   const agentMessage = normalizePaperclipWakeAgentMessage(payload.agentMessage);
-  if (comments.length === 0 && commentIds.length === 0 && annotationDeltas.length === 0 && childIssueSummaries.length === 0 && unresolvedBlockerIssueIds.length === 0 && unresolvedBlockerSummaries.length === 0 && !activeTreeHold && !executionStage && !continuationSummary && !planReviewContext && !livenessContinuation && !taskWatchdog && !checkboxSelection && !executionWorkspace && !agentMessage && !recovery && !normalizePaperclipWakeIssue(payload.issue)) {
+  if (comments.length === 0 && commentIds.length === 0 && annotationDeltas.length === 0 && childIssueSummaries.length === 0 && unresolvedBlockerIssueIds.length === 0 && unresolvedBlockerSummaries.length === 0 && !activeTreeHold && !executionStage && !continuationSummary && !planReviewContext && !livenessContinuation && !taskWatchdog && !taskWatchdogEverything && !taskWatchdogSelfReview && !checkboxSelection && !executionWorkspace && !agentMessage && !recovery && !normalizePaperclipWakeIssue(payload.issue)) {
     return null;
   }
 
@@ -1322,6 +1396,8 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
     annotationDeltas,
     livenessContinuation,
     taskWatchdog,
+    taskWatchdogEverything,
+    taskWatchdogSelfReview,
     interactionKind: asString(payload.interactionKind, "").trim() || null,
     interactionStatus: asString(payload.interactionStatus, "").trim() || null,
     checkboxSelection,
@@ -1840,6 +1916,63 @@ export function renderPaperclipWakePrompt(
         "",
         "No board-supplied watchdog instructions. Apply the mandate above.",
       );
+    }
+    lines.push("");
+  }
+
+  if (normalized.taskWatchdogEverything) {
+    const setup = normalized.taskWatchdogEverything;
+    const issueLabel = setup.watchedIssueId ?? setup.watchedIssueIdentifier ?? "{issueId}";
+    lines.push(
+      "",
+      "## Watchdog Everything (experimental)",
+      "",
+      "Watchdog-everything is enabled and this task has no watchdog yet. Your FIRST step, before doing the work, is to triage whether this task needs a completion-goal watchdog:",
+      "- Simple/trivial tasks (one obvious deliverable you will verify inline during this run) do NOT need one — skip the watchdog and just do the work.",
+      "- For anything more substantial, determine the completion goal first: the concrete, checkable criteria that prove the task is truly done (what to inspect, run, or observe).",
+      `- Register the goal on yourself as a self-mode watchdog: PUT ${"$"}PAPERCLIP_API_URL/api/issues/${issueLabel}/watchdog with JSON body {"agentId": "${setup.selfAgentId ?? "<your agent id>"}", "mode": "self", "instructions": "<the completion goal>"}.`,
+      "- Then do the task normally. After the task's subtree stops (including after you mark it done), you will be woken once on this same task as its watchdog to verify the goal actually passed — no separate watchdog sub-task is created.",
+      "",
+    );
+  }
+
+  if (normalized.taskWatchdogSelfReview) {
+    const review = normalized.taskWatchdogSelfReview;
+    const watchedLabel = review.watchedIssueIdentifier ?? review.watchedIssueId ?? "this task";
+    lines.push(
+      "",
+      "## Task Watchdog Self-Review (verify the completion goal)",
+      "",
+      `You are the self-mode watchdog for ${watchedLabel}${review.watchedIssueTitle ? ` ${review.watchedIssueTitle}` : ""}. Its subtree has no live execution path, so this wake is your verification pass on the task itself — no separate watchdog issue exists.`,
+    );
+    if (review.goalInstructions) {
+      lines.push(
+        "",
+        "Completion goal to verify:",
+        markdownFencedText(review.goalInstructions),
+      );
+    } else {
+      lines.push(
+        "",
+        "No explicit completion goal was recorded; verify the task delivered what its description and thread asked for.",
+      );
+    }
+    lines.push(
+      "",
+      "Verification contract:",
+      "- Verify the goal concretely: inspect the deliverable and run the smallest check that proves it (or disproves it). Do not re-do finished work.",
+      "- Goal passes: post a short verification comment on this task stating what you checked, and keep (or set) the correct final disposition — usually `done`. Then stop; do not start new work.",
+      "- Goal fails or the work stalled without a valid waiting path: resume the work on this task, close the gap, and set a proper final disposition again.",
+      "- The stop is a legitimate waiting state (pending interaction, approval, or review): confirm that briefly in a comment and leave the waiting posture untouched.",
+    );
+    if (review.stopFingerprint) {
+      lines.push(`- Stop fingerprint: ${review.stopFingerprint}`);
+    }
+    if (review.stoppedLeaves.length > 0) {
+      lines.push("", "Stopped leaves:");
+      for (const leaf of review.stoppedLeaves) {
+        lines.push(`- ${leaf.identifier ?? "unknown"}${leaf.title ? ` ${leaf.title}` : ""}${leaf.status ? ` (${leaf.status})` : ""}`);
+      }
     }
     lines.push("");
   }

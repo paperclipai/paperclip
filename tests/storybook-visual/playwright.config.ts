@@ -21,6 +21,10 @@ export default defineConfig({
   fullyParallel: true,
   reporter: [["list"], ["html", { open: "never", outputFolder: "playwright-report" }]],
   expect: {
+    // Full-page captures of the large *-matrix stories can take >5s per
+    // attempt under CI worker contention; give the two-stable-screenshots
+    // loop room to converge instead of timing out mid-capture.
+    timeout: 20_000,
     toHaveScreenshot: {
       animations: "disabled",
       caret: "hide",

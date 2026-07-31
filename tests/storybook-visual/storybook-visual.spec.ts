@@ -42,6 +42,18 @@ const MASKED_SELECTORS: Record<string, string> = {
   // paragraph that carries that highlight.
   "product-documents-annotations--integrated-mobile-bottom-sheet":
     'p:has-text("Use a sidecar anchor made from")',
+  // Same anchor-offset race as the mobile variant above.
+  "product-documents-annotations--integrated-desktop-open":
+    'p:has-text("Use a sidecar anchor made from")',
+  // Gallery app icons load live from the Google favicon service; paint timing
+  // races against the capture, so mask the remote favicon images.
+  "apps-connect-discoverability-pap-11091--gallery-link-affordance":
+    'img[src*="favicons"]',
+  // The rotating-reasoning ticker demo animates by design and its interval
+  // keeps advancing between capture attempts, so the two ticker rows never
+  // settle. Mask just the ticker line containers.
+  "ux-labs-converted-test-pages--issue-chat-review-surface":
+    "#rotating-text .relative.h-5",
 };
 
 async function renderStory(page: Page, storyId: string, theme: (typeof THEMES)[number]) {

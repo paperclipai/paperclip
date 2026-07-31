@@ -14,6 +14,9 @@ export const issueWatchdogs = pgTable(
     watchdogAgentId: uuid("watchdog_agent_id").notNull().references(() => agents.id),
     instructions: text("instructions"),
     status: text("status").notNull().default("active"),
+    // "subtask" reviews stopped subtrees via a separate watchdog issue;
+    // "self" wakes the watchdog agent directly on the watched issue.
+    mode: text("mode").notNull().default("subtask"),
     watchdogIssueId: uuid("watchdog_issue_id").references(() => issues.id, { onDelete: "set null" }),
     lastObservedFingerprint: text("last_observed_fingerprint"),
     lastReviewedFingerprint: text("last_reviewed_fingerprint"),

@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
@@ -9,6 +9,7 @@ import {
   companies,
   createDb,
   documents,
+  heartbeatRunEvents,
   heartbeatRuns,
   issueComments,
   issueDocuments,
@@ -22,6 +23,8 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { issueService } from "../services/issues.ts";
+import { heartbeatService } from "../services/heartbeat.ts";
 import { taskWatchdogService } from "../services/task-watchdogs.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -51,6 +54,7 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     await db.delete(issueDocuments);
     await db.delete(documents);
     await db.delete(issueComments);
+    await db.delete(heartbeatRunEvents);
     await db.delete(heartbeatRuns);
     await db.delete(agentWakeupRequests);
     await db.delete(issueWatchdogs);
@@ -144,23 +148,47 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     });
   }
 
-  async function seedWatchdog(companyId: string, issueId: string, agentId: string) {
+  async function seedWatchdog(
+    companyId: string,
+    issueId: string,
+    agentId: string,
+    overrides: Partial<typeof issueWatchdogs.$inferInsert> = {},
+  ) {
     const [row] = await db.insert(issueWatchdogs).values({
       companyId,
       issueId,
       watchdogAgentId: agentId,
       instructions: "Verify stopped work.",
       status: "active",
+      ...overrides,
     }).returning();
     return row;
   }
 
   function createService() {
     const wakes: Array<{ agentId: string; opts: Record<string, unknown> | undefined }> = [];
+    const wakeIdsByIdempotencyKey = new Map<string, string>();
     const service = taskWatchdogService(db, {
       enqueueWakeup: async (agentId, opts) => {
-        wakes.push({ agentId, opts });
-        return { id: randomUUID() };
+        return db.transaction(async (tx) => {
+          await opts?.beforeIssueLock?.(tx);
+          const idempotencyKey = typeof opts?.idempotencyKey === "string" ? opts.idempotencyKey : null;
+          if (idempotencyKey?.startsWith("task_watchdog_self:")) {
+            const existingId = wakeIdsByIdempotencyKey.get(idempotencyKey);
+            if (existingId) {
+              await opts?.onWakeAccepted?.(tx, {
+                wakeupRequestId: existingId,
+                runId: existingId,
+              });
+              return { id: existingId };
+            }
+          }
+          const id = randomUUID();
+          await opts?.onWakeAccepted?.(tx, { wakeupRequestId: id, runId: id });
+          if (idempotencyKey?.startsWith("task_watchdog_self:")) wakeIdsByIdempotencyKey.set(idempotencyKey, id);
+          wakes.push({ agentId, opts });
+          return { id };
+        });
       },
     });
     return { service, wakes };
@@ -301,6 +329,452 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     expect(comments).toHaveLength(2);
     const [watchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
     expect(watchdog?.triggerCount).toBe(2);
+  });
+
+  it("self mode posts the review on the watched issue and wakes the agent directly on it", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent(companyId);
+    const sourceId = await seedIssue(companyId, {
+      identifier: "WDOG-SELF",
+      status: "done",
+      assigneeAgentId: agentId,
+    });
+    await seedWatchdog(companyId, sourceId, agentId, {
+      mode: "self",
+      instructions: "Verify the report exists and passes lint.",
+    });
+    const { service, wakes } = createService();
+
+    const result = await service.reconcileTaskWatchdogs({ companyId });
+
+    expect(result).toMatchObject({ checked: 1, triggered: 1 });
+    expect(result.watchdogIssueIds).toEqual([sourceId]);
+
+    // No separate watchdog sub-task in self mode.
+    const watchdogIssues = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "task_watchdog")));
+    expect(watchdogIssues).toHaveLength(0);
+
+    expect(wakes).toHaveLength(1);
+    expect(wakes[0]?.agentId).toBe(agentId);
+    expect(wakes[0]?.opts?.reason).toBe("task_watchdog_self_review");
+    expect(wakes[0]?.opts?.idempotencyKey).toMatch(
+      new RegExp(`^task_watchdog_self:[^:]+:${agentId}:task_watchdog_stop:`),
+    );
+    expect(wakes[0]?.opts?.contextSnapshot).toMatchObject({
+      issueId: sourceId,
+      taskId: sourceId,
+      wakeReason: "task_watchdog_self_review",
+      taskWatchdogSelfReview: {
+        watchedIssueId: sourceId,
+        watchedIssueIdentifier: "WDOG-SELF",
+        goalInstructions: "Verify the report exists and passes lint.",
+      },
+    });
+    // Self wakes must not carry the restricted task-watchdog mutation scope key.
+    expect((wakes[0]?.opts?.contextSnapshot as Record<string, unknown>).taskWatchdog).toBeUndefined();
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, sourceId));
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.body).toContain("Self-watchdog review triggered");
+    expect(comments[0]?.body).toContain("Verify the report exists and passes lint.");
+
+    const [watchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
+    expect(watchdog?.lastObservedFingerprint).toMatch(/^task_watchdog_stop:/);
+    expect(watchdog?.lastReviewedFingerprint).toBe(watchdog?.lastObservedFingerprint);
+    expect(watchdog?.watchdogIssueId).toBeNull();
+    expect(watchdog?.triggerCount).toBe(1);
+
+    // The same stopped state is reviewed-at-trigger: no re-wake, no comment churn.
+    const second = await service.reconcileTaskWatchdogs({ companyId });
+    expect(second).toMatchObject({ checked: 1, triggered: 0, alreadyReviewed: 1 });
+    expect(wakes).toHaveLength(1);
+    const commentsAfter = await db.select().from(issueComments).where(eq(issueComments.issueId, sourceId));
+    expect(commentsAfter).toHaveLength(1);
+  });
+
+  it("self mode atomically claims a stopped fingerprint across concurrent reconciliations", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent(companyId);
+    const sourceId = await seedIssue(companyId, {
+      identifier: "WDOG-SELF-RACE",
+      status: "done",
+      assigneeAgentId: agentId,
+    });
+    await seedWatchdog(companyId, sourceId, agentId, {
+      mode: "self",
+      instructions: "Verify the report exists and passes lint.",
+    });
+    const { service, wakes } = createService();
+
+    const results = await Promise.all([
+      service.reconcileTaskWatchdogs({ companyId }),
+      service.reconcileTaskWatchdogs({ companyId }),
+    ]);
+
+    expect(results.reduce((total, result) => total + result.triggered, 0)).toBe(1);
+    expect(results.reduce((total, result) => total + result.alreadyReviewed, 0)).toBe(1);
+    expect(wakes).toHaveLength(1);
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, sourceId));
+    expect(comments).toHaveLength(1);
+    const [watchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
+    expect(watchdog?.triggerCount).toBe(1);
+  });
+
+  it("rolls back the self-review wake when claim bookkeeping fails", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent(companyId);
+    const sourceId = await seedIssue(companyId, {
+      identifier: "WDOG-SELF-ATOMIC-WAKE",
+      status: "done",
+      assigneeAgentId: agentId,
+    });
+    await seedWatchdog(companyId, sourceId, agentId, { mode: "self" });
+    const failingService = taskWatchdogService(db, {
+      enqueueWakeup: async (wakeAgentId, opts) => db.transaction(async (tx) => {
+        await opts?.beforeIssueLock?.(tx);
+        const [wakeupRequest] = await tx
+          .insert(agentWakeupRequests)
+          .values({
+            companyId,
+            agentId: wakeAgentId,
+            source: opts?.source ?? "automation",
+            triggerDetail: opts?.triggerDetail,
+            reason: opts?.reason,
+            payload: opts?.payload,
+            status: "queued",
+            idempotencyKey: opts?.idempotencyKey,
+          })
+          .returning();
+        const [run] = await tx
+          .insert(heartbeatRuns)
+          .values({
+            companyId,
+            agentId: wakeAgentId,
+            invocationSource: opts?.source ?? "automation",
+            triggerDetail: opts?.triggerDetail,
+            status: "queued",
+            wakeupRequestId: wakeupRequest!.id,
+            contextSnapshot: opts?.contextSnapshot,
+          })
+          .returning();
+        await tx
+          .update(agentWakeupRequests)
+          .set({ runId: run!.id })
+          .where(eq(agentWakeupRequests.id, wakeupRequest!.id));
+        await opts?.onWakeAccepted?.(tx, {
+          wakeupRequestId: wakeupRequest!.id,
+          runId: run!.id,
+        });
+        throw new Error("force self-review transaction rollback");
+      }),
+    });
+
+    await expect(failingService.reconcileTaskWatchdogs({ companyId }))
+      .rejects.toThrow("force self-review transaction rollback");
+
+    expect(await db.select().from(agentWakeupRequests)).toHaveLength(0);
+    expect(await db.select().from(heartbeatRuns)).toHaveLength(0);
+    expect(await db.select().from(issueComments).where(eq(issueComments.issueId, sourceId))).toHaveLength(0);
+    const [unclaimed] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
+    expect(unclaimed).toMatchObject({
+      lastReviewedFingerprint: null,
+      triggerCount: 0,
+    });
+
+    const { service, wakes } = createService();
+    const retried = await service.reconcileTaskWatchdogs({ companyId });
+    expect(retried).toMatchObject({ checked: 1, triggered: 1 });
+    expect(wakes).toHaveLength(1);
+  });
+
+  it("retargets a self-mode watchdog to the current assignee before waking", async () => {
+    const companyId = await seedCompany();
+    const formerAssigneeId = await seedAgent(companyId, { name: "Former Assignee" });
+    const currentAssigneeId = await seedAgent(companyId, { name: "Current Assignee" });
+    const sourceId = await seedIssue(companyId, {
+      identifier: "WDOG-SELF-REASSIGNED",
+      status: "done",
+      assigneeAgentId: currentAssigneeId,
+    });
+    await seedWatchdog(companyId, sourceId, formerAssigneeId, { mode: "self" });
+    const { service, wakes } = createService();
+
+    const result = await service.reconcileTaskWatchdogs({ companyId });
+
+    expect(result).toMatchObject({ checked: 1, triggered: 1 });
+    expect(wakes).toHaveLength(1);
+    expect(wakes[0]?.agentId).toBe(currentAssigneeId);
+    const [watchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
+    expect(watchdog?.watchdogAgentId).toBe(currentAssigneeId);
+  });
+
+  it("re-wakes the current assignee when reassignment overlaps self-review dispatch", async () => {
+    const companyId = await seedCompany();
+    const formerAssigneeId = await seedAgent(companyId, { name: "Former Assignee" });
+    const currentAssigneeId = await seedAgent(companyId, { name: "Current Assignee" });
+    const sourceId = await seedIssue(companyId, {
+      identifier: "WDOG-SELF-REASSIGN-RACE",
+      status: "done",
+      assigneeAgentId: formerAssigneeId,
+    });
+    await seedWatchdog(companyId, sourceId, formerAssigneeId, { mode: "self" });
+
+    let signalWakeStarted!: () => void;
+    const wakeStarted = new Promise<void>((resolve) => {
+      signalWakeStarted = resolve;
+    });
+    let releaseWake!: () => void;
+    const wakeCanFinish = new Promise<void>((resolve) => {
+      releaseWake = resolve;
+    });
+    const firstWakes: string[] = [];
+    const firstService = taskWatchdogService(db, {
+      enqueueWakeup: async (agentId, opts) => {
+        return db.transaction(async (tx) => {
+          await opts?.beforeIssueLock?.(tx);
+          firstWakes.push(agentId);
+          const [wakeupRequest] = await tx
+            .insert(agentWakeupRequests)
+            .values({
+              companyId,
+              agentId,
+              source: opts?.source ?? "automation",
+              triggerDetail: opts?.triggerDetail,
+              reason: opts?.reason,
+              payload: opts?.payload,
+              status: "running",
+              claimedAt: new Date(),
+              idempotencyKey: opts?.idempotencyKey,
+            })
+            .returning();
+          const [run] = await tx
+            .insert(heartbeatRuns)
+            .values({
+              companyId,
+              agentId,
+              invocationSource: opts?.source ?? "automation",
+              triggerDetail: opts?.triggerDetail,
+              status: "running",
+              startedAt: new Date(),
+              wakeupRequestId: wakeupRequest!.id,
+              contextSnapshot: opts?.contextSnapshot,
+            })
+            .returning();
+          await tx
+            .update(agentWakeupRequests)
+            .set({ runId: run!.id })
+            .where(eq(agentWakeupRequests.id, wakeupRequest!.id));
+          signalWakeStarted();
+          await wakeCanFinish;
+          await opts?.onWakeAccepted?.(tx, {
+            wakeupRequestId: wakeupRequest!.id,
+            runId: run!.id,
+          });
+          return { id: run!.id };
+        });
+      },
+    });
+
+    const firstReconcile = firstService.reconcileTaskWatchdogs({ companyId });
+    await wakeStarted;
+    const heartbeat = heartbeatService(db);
+    const reassignment = issueService(db, {
+      finalizeCancelledHeartbeatRun: heartbeat.finalizeCancelledRun,
+    }).update(sourceId, { assigneeAgentId: currentAssigneeId });
+    releaseWake();
+    await Promise.all([firstReconcile, reassignment]);
+
+    expect(firstWakes).toEqual([formerAssigneeId]);
+    const [retargeted] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
+    expect(retargeted).toMatchObject({
+      watchdogAgentId: currentAssigneeId,
+      lastReviewedFingerprint: null,
+    });
+    const [cancelledRun] = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, formerAssigneeId));
+    expect(cancelledRun).toMatchObject({
+      status: "cancelled",
+      errorCode: "issue_reassigned",
+    });
+    const [cancelledWake] = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, formerAssigneeId));
+    expect(cancelledWake).toMatchObject({ status: "cancelled" });
+
+    const { service, wakes } = createService();
+    const second = await service.reconcileTaskWatchdogs({ companyId });
+
+    expect(second).toMatchObject({ checked: 1, triggered: 1 });
+    expect(wakes).toHaveLength(1);
+    expect(wakes[0]?.agentId).toBe(currentAssigneeId);
+    expect(wakes[0]?.opts?.idempotencyKey).toContain(currentAssigneeId);
+  });
+
+  it("rolls back self-review cancellation when reassignment fails", async () => {
+    const companyId = await seedCompany();
+    const formerAssigneeId = await seedAgent(companyId, { name: "Rollback Former Assignee" });
+    const currentAssigneeId = await seedAgent(companyId, { name: "Rollback Current Assignee" });
+    const sourceId = await seedIssue(companyId, {
+      identifier: "WDOG-SELF-REASSIGN-ROLLBACK",
+      status: "done",
+      assigneeAgentId: formerAssigneeId,
+    });
+    const watchdog = await seedWatchdog(companyId, sourceId, formerAssigneeId, { mode: "self" });
+    const [wakeupRequest] = await db
+      .insert(agentWakeupRequests)
+      .values({
+        companyId,
+        agentId: formerAssigneeId,
+        source: "automation",
+        triggerDetail: "system",
+        reason: "task_watchdog_self_review",
+        status: "running",
+        claimedAt: new Date(),
+      })
+      .returning();
+    const [run] = await db
+      .insert(heartbeatRuns)
+      .values({
+        companyId,
+        agentId: formerAssigneeId,
+        invocationSource: "automation",
+        triggerDetail: "system",
+        status: "running",
+        startedAt: new Date(),
+        wakeupRequestId: wakeupRequest!.id,
+        contextSnapshot: {
+          issueId: sourceId,
+          taskWatchdogSelfReview: { watchdogId: watchdog!.id },
+        },
+      })
+      .returning();
+    await db
+      .update(agentWakeupRequests)
+      .set({ runId: run!.id })
+      .where(eq(agentWakeupRequests.id, wakeupRequest!.id));
+
+    await db.execute(sql`
+      create or replace function fail_watchdog_reassignment_test()
+      returns trigger as $$
+      begin
+        raise exception 'forced reassignment failure';
+      end;
+      $$ language plpgsql
+    `);
+    await db.execute(sql`
+      create trigger fail_watchdog_reassignment_test_trigger
+      before update on issues
+      for each row execute function fail_watchdog_reassignment_test()
+    `);
+    const finalizedRunIds: string[] = [];
+    try {
+      await expect(issueService(db, {
+        finalizeCancelledHeartbeatRun: async (runId) => {
+          finalizedRunIds.push(runId);
+        },
+      }).update(sourceId, { assigneeAgentId: currentAssigneeId }))
+        .rejects.toThrow("Failed query: update \"issues\"");
+    } finally {
+      await db.execute(sql`drop trigger if exists fail_watchdog_reassignment_test_trigger on issues`);
+      await db.execute(sql`drop function if exists fail_watchdog_reassignment_test()`);
+    }
+
+    const [unchangedIssue] = await db.select().from(issues).where(eq(issues.id, sourceId));
+    const [unchangedRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run!.id));
+    const [unchangedWake] = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, wakeupRequest!.id));
+    expect(unchangedIssue?.assigneeAgentId).toBe(formerAssigneeId);
+    expect(unchangedRun?.status).toBe("running");
+    expect(unchangedWake?.status).toBe("running");
+    expect(finalizedRunIds).toEqual([]);
+    expect(await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, run!.id))).toHaveLength(0);
+  });
+
+  it("retries a self review when the wake was not queued", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent(companyId);
+    const sourceId = await seedIssue(companyId, {
+      identifier: "WDOG-SELF-RETRY",
+      status: "done",
+      assigneeAgentId: agentId,
+    });
+    await seedWatchdog(companyId, sourceId, agentId, { mode: "self" });
+    const suppressedService = taskWatchdogService(db, {
+      enqueueWakeup: async () => null,
+    });
+
+    const suppressed = await suppressedService.reconcileTaskWatchdogs({ companyId });
+
+    expect(suppressed).toMatchObject({ checked: 1, triggered: 0, skipped: 1 });
+    expect(await db.select().from(issueComments).where(eq(issueComments.issueId, sourceId))).toHaveLength(0);
+    const [unreviewed] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
+    expect(unreviewed?.lastReviewedFingerprint).toBeNull();
+    expect(unreviewed?.triggerCount).toBe(0);
+
+    const { service, wakes } = createService();
+    const retried = await service.reconcileTaskWatchdogs({ companyId });
+
+    expect(retried).toMatchObject({ checked: 1, triggered: 1 });
+    expect(wakes).toHaveLength(1);
+    expect(await db.select().from(issueComments).where(eq(issueComments.issueId, sourceId))).toHaveLength(1);
+  });
+
+  it("claims a deferred self-review wake without duplicating it on reconciliation", async () => {
+    const companyId = await seedCompany();
+    const agentId = await seedAgent(companyId);
+    const sourceId = await seedIssue(companyId, {
+      identifier: "WDOG-SELF-DEFERRED",
+      status: "done",
+      assigneeAgentId: agentId,
+    });
+    await seedWatchdog(companyId, sourceId, agentId, { mode: "self" });
+    const service = taskWatchdogService(db, {
+      enqueueWakeup: async (wakeAgentId, opts) => db.transaction(async (tx) => {
+        await opts?.beforeIssueLock?.(tx);
+        const [deferred] = await tx
+          .insert(agentWakeupRequests)
+          .values({
+            companyId,
+            agentId: wakeAgentId,
+            source: opts?.source ?? "automation",
+            triggerDetail: opts?.triggerDetail,
+            reason: opts?.reason,
+            payload: {
+              ...(opts?.payload ?? {}),
+              issueId: sourceId,
+              _paperclipWakeContext: opts?.contextSnapshot,
+            },
+            status: "deferred_issue_execution",
+            idempotencyKey: opts?.idempotencyKey,
+          })
+          .returning();
+        await opts?.onWakeAccepted?.(tx, {
+          wakeupRequestId: deferred!.id,
+          runId: null,
+        });
+        return null;
+      }),
+    });
+
+    const first = await service.reconcileTaskWatchdogs({ companyId });
+    const second = await service.reconcileTaskWatchdogs({ companyId });
+
+    expect(first).toMatchObject({ checked: 1, triggered: 1 });
+    expect(second).toMatchObject({ checked: 1, triggered: 0, live: 1 });
+    expect(await db.select().from(agentWakeupRequests)).toHaveLength(1);
+    expect(await db.select().from(heartbeatRuns)).toHaveLength(0);
+    expect(await db.select().from(issueComments).where(eq(issueComments.issueId, sourceId))).toHaveLength(1);
+    const [watchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
+    expect(watchdog?.lastReviewedFingerprint).not.toBeNull();
+    expect(watchdog?.triggerCount).toBe(1);
   });
 
   it("does not trigger while a non-watchdog descendant has live work", async () => {

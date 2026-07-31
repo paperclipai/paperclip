@@ -104,6 +104,22 @@ export const INSTANCE_FEATURE_CATALOG: Record<InstanceFeatureKey, FeatureCatalog
     cloudDefault: false,
     selfHostedDefault: false,
   },
+  enableSameTaskWatchdogs: {
+    title: "Same-Task Watchdogs",
+    description:
+      "Allow a task's watchdog to run on the task itself: the review posts on the watched task and wakes its assignee directly instead of going through a separate watchdog sub-task. Adds a same-task option to the watchdog editor; nothing is registered automatically.",
+    tier: "managed",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
+  enableWatchdogEverything: {
+    title: "Watchdog Everything",
+    description:
+      "On new task assignments, instruct the assignee to triage whether the task needs a completion goal and, if so, register it as a same-task watchdog on itself; the watchdog then wakes the same agent directly on the task to verify the goal — no separate watchdog sub-task. Implies same-task watchdog capability even when that toggle is off.",
+    tier: "managed",
+    cloudDefault: false,
+    selfHostedDefault: false,
+  },
   enableIssuePlanDecompositions: {
     title: "Task Plan Decomposition Panel",
     description: "Show accepted-plan decomposition history on task detail pages.",

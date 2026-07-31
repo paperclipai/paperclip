@@ -14,6 +14,7 @@ import {
   documentRevisions,
   documents,
   goals,
+  heartbeatRunEvents,
   heartbeatRuns,
   routineRuns,
   executionWorkspaces,
@@ -124,6 +125,10 @@ export const ISSUE_LIST_MAX_LIMIT = 1000;
 export const ISSUE_BLOCKER_DIAGNOSTICS_MAX_BLOCKERS = 100;
 export const ISSUE_WAKE_DIAGNOSTICS_MAX_WAKE_REQUESTS = 50;
 export const ISSUE_WAKE_DIAGNOSTICS_MAX_ACTIVITY_RECORDS = 50;
+
+type IssueServiceOptions = {
+  finalizeCancelledHeartbeatRun?: (runId: string) => Promise<void>;
+};
 export const ISSUE_WAKE_DIAGNOSTICS_LOOKBACK_DAYS = 14;
 export const ISSUE_SUBTREE_DIAGNOSTICS_MAX_DEPTH = 8;
 export const ISSUE_SUBTREE_DIAGNOSTICS_MAX_NODES = 100;
@@ -3807,7 +3812,7 @@ async function countBlockedInboxIssues(dbOrTx: any, companyId: string, filters?:
   }, 0);
 }
 
-export function issueService(db: Db) {
+export function issueService(db: Db, options: IssueServiceOptions = {}) {
   const instanceSettings = instanceSettingsService(db);
   const treeControlSvc = issueTreeControlService(db);
 
@@ -6896,6 +6901,8 @@ export function issueService(db: Db) {
         issueData.assigneeAgentId !== undefined ? issueData.assigneeAgentId : existing.assigneeAgentId;
       const nextAssigneeUserId =
         issueData.assigneeUserId !== undefined ? issueData.assigneeUserId : existing.assigneeUserId;
+      const assigneeWillChange =
+        nextAssigneeAgentId !== existing.assigneeAgentId || nextAssigneeUserId !== existing.assigneeUserId;
 
       if (nextAssigneeAgentId && nextAssigneeUserId) {
         throw unprocessable("Issue can only have one assignee");
@@ -6987,17 +6994,160 @@ export function issueService(db: Db) {
         patch.executionAgentNameKey = null;
         patch.executionLockedAt = null;
       }
-      if (
-        (issueData.assigneeAgentId !== undefined && issueData.assigneeAgentId !== existing.assigneeAgentId) ||
-        (issueData.assigneeUserId !== undefined && issueData.assigneeUserId !== existing.assigneeUserId)
-      ) {
+      if (assigneeWillChange) {
         patch.checkoutRunId = null;
         patch.executionRunId = null;
         patch.executionAgentNameKey = null;
         patch.executionLockedAt = null;
       }
 
+      const cancelledSelfReviewRunIds: string[] = [];
+
       const runUpdate = async (tx: any) => {
+        // Self-watchdog dispatch takes this row lock across wake creation and
+        // the reviewed-fingerprint claim. Taking it before changing the issue
+        // assignee closes the read/dispatch race in both directions.
+        const lockedSelfWatchdog = assigneeWillChange
+          ? await tx
+            .select({ id: issueWatchdogs.id })
+            .from(issueWatchdogs)
+            .where(and(
+              eq(issueWatchdogs.companyId, existing.companyId),
+              eq(issueWatchdogs.issueId, existing.id),
+              eq(issueWatchdogs.status, "active"),
+              eq(issueWatchdogs.mode, "self"),
+            ))
+            .for("update")
+            .then((rows: Array<{ id: string }>) => rows[0] ?? null)
+          : null;
+        const cancelledSelfReviewRuns: Array<{
+          id: string;
+          agentId: string;
+          wakeupRequestId: string | null;
+        }> = [];
+        if (lockedSelfWatchdog) {
+          const cancelledAt = new Date();
+          const cancellationReason = "Cancelled because the self-review issue was reassigned to a different owner";
+          const cancellableRuns = await tx
+            .select({
+              id: heartbeatRuns.id,
+              agentId: heartbeatRuns.agentId,
+              status: heartbeatRuns.status,
+              wakeupRequestId: heartbeatRuns.wakeupRequestId,
+            })
+            .from(heartbeatRuns)
+            .where(and(
+              eq(heartbeatRuns.companyId, existing.companyId),
+              inArray(heartbeatRuns.status, ["queued", "running", "scheduled_retry"]),
+              sql`${heartbeatRuns.contextSnapshot} -> 'taskWatchdogSelfReview' ->> 'watchdogId' = ${lockedSelfWatchdog.id}`,
+            ));
+
+          const hasRunningReview = cancellableRuns.some((run: { status: string }) => run.status === "running");
+          const canFinalizeCancellationAfterCommit = dbOrTx === db && Boolean(options.finalizeCancelledHeartbeatRun);
+          if (hasRunningReview && !canFinalizeCancellationAfterCommit) {
+            throw conflict("Cannot reassign an issue while its self-review run is active", {
+              issueId: existing.id,
+              watchdogId: lockedSelfWatchdog.id,
+              runIds: cancellableRuns
+                .filter((run: { status: string }) => run.status === "running")
+                .map((run: { id: string }) => run.id),
+            });
+          }
+
+          const directlyCancelledRuns = await tx
+            .update(heartbeatRuns)
+            .set({
+              status: "cancelled",
+              finishedAt: cancelledAt,
+              error: cancellationReason,
+              errorCode: "issue_reassigned",
+              updatedAt: cancelledAt,
+            })
+            .where(and(
+              eq(heartbeatRuns.companyId, existing.companyId),
+              inArray(
+                heartbeatRuns.status,
+                canFinalizeCancellationAfterCommit
+                  ? ["queued", "running", "scheduled_retry"]
+                  : ["queued", "scheduled_retry"],
+              ),
+              sql`${heartbeatRuns.contextSnapshot} -> 'taskWatchdogSelfReview' ->> 'watchdogId' = ${lockedSelfWatchdog.id}`,
+            ))
+            .returning({
+              id: heartbeatRuns.id,
+              agentId: heartbeatRuns.agentId,
+              wakeupRequestId: heartbeatRuns.wakeupRequestId,
+            });
+          cancelledSelfReviewRuns.push(...directlyCancelledRuns);
+          cancelledSelfReviewRunIds.push(...directlyCancelledRuns.map((run: { id: string }) => run.id));
+
+          const remainingCancellableRuns = await tx
+            .select({ id: heartbeatRuns.id, status: heartbeatRuns.status })
+            .from(heartbeatRuns)
+            .where(and(
+              eq(heartbeatRuns.companyId, existing.companyId),
+              inArray(heartbeatRuns.status, ["queued", "running", "scheduled_retry"]),
+              sql`${heartbeatRuns.contextSnapshot} -> 'taskWatchdogSelfReview' ->> 'watchdogId' = ${lockedSelfWatchdog.id}`,
+            ));
+          if (remainingCancellableRuns.length > 0) {
+            throw conflict("Cannot reassign an issue while its self-review work is still active", {
+              issueId: existing.id,
+              watchdogId: lockedSelfWatchdog.id,
+              runs: remainingCancellableRuns,
+            });
+          }
+
+          const wakeupRequestIds = cancelledSelfReviewRuns
+            .map((run) => run.wakeupRequestId)
+            .filter((requestId): requestId is string => Boolean(requestId));
+          if (wakeupRequestIds.length > 0) {
+            await tx
+              .update(agentWakeupRequests)
+              .set({
+                status: "cancelled",
+                finishedAt: cancelledAt,
+                error: cancellationReason,
+                updatedAt: cancelledAt,
+              })
+              .where(inArray(agentWakeupRequests.id, wakeupRequestIds));
+          }
+          for (const cancelledRun of cancelledSelfReviewRuns) {
+            const [eventSeq] = await tx
+              .select({ maxSeq: sql<number | null>`max(${heartbeatRunEvents.seq})` })
+              .from(heartbeatRunEvents)
+              .where(eq(heartbeatRunEvents.runId, cancelledRun.id));
+            await tx.insert(heartbeatRunEvents).values({
+              companyId: existing.companyId,
+              runId: cancelledRun.id,
+              agentId: cancelledRun.agentId,
+              seq: Number(eventSeq?.maxSeq ?? 0) + 1,
+              eventType: "lifecycle",
+              stream: "system",
+              level: "warn",
+              message: "self-review run cancelled for issue reassignment",
+              payload: {
+                source: "self_watchdog_reassignment",
+                issueId: existing.id,
+                watchdogId: lockedSelfWatchdog.id,
+                previousAssigneeAgentId: existing.assigneeAgentId,
+                currentAssigneeAgentId: nextAssigneeAgentId,
+              },
+            });
+          }
+          await tx
+            .update(agentWakeupRequests)
+            .set({
+              status: "cancelled",
+              finishedAt: cancelledAt,
+              error: cancellationReason,
+              updatedAt: cancelledAt,
+            })
+            .where(and(
+              eq(agentWakeupRequests.companyId, existing.companyId),
+              eq(agentWakeupRequests.status, "deferred_issue_execution"),
+              sql`${agentWakeupRequests.payload} -> '_paperclipWakeContext' -> 'taskWatchdogSelfReview' ->> 'watchdogId' = ${lockedSelfWatchdog.id}`,
+            ));
+        }
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, existing.companyId);
         const [currentProjectGoalId, nextProjectGoalId] = await Promise.all([
           getProjectDefaultGoalId(tx, existing.companyId, existing.projectId),
@@ -7024,6 +7174,37 @@ export function issueService(db: Db) {
           .returning()
           .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
         if (!updated) return null;
+        if (lockedSelfWatchdog) {
+          for (const cancelledRun of cancelledSelfReviewRuns) {
+            await logActivity(tx as unknown as Db, {
+              companyId: existing.companyId,
+              actorType: actorAgentId ? "agent" : actorUserId ? "user" : "system",
+              actorId: actorAgentId ?? actorUserId ?? "issue_service",
+              agentId: cancelledRun.agentId,
+              runId: null,
+              action: "heartbeat.cancelled",
+              entityType: "heartbeat_run",
+              entityId: cancelledRun.id,
+              issueId: existing.id,
+              details: {
+                source: "self_watchdog_reassignment",
+                issueId: existing.id,
+                watchdogId: lockedSelfWatchdog.id,
+                previousAssigneeAgentId: existing.assigneeAgentId,
+                currentAssigneeAgentId: nextAssigneeAgentId,
+              },
+            });
+          }
+          await tx
+            .update(issueWatchdogs)
+            .set({
+              ...(nextAssigneeAgentId ? { watchdogAgentId: nextAssigneeAgentId } : {}),
+              lastReviewedFingerprint: null,
+              lastReviewedStopSnapshot: null,
+              updatedAt: new Date(),
+            })
+            .where(eq(issueWatchdogs.id, lockedSelfWatchdog.id));
+        }
         if (existing.status !== updated.status) {
           if (updated.status === "done" || updated.status === "cancelled") {
             await finalizeSummarySlotsForTerminalIssue(tx, updated);
@@ -7137,7 +7318,15 @@ export function issueService(db: Db) {
         return enriched;
       };
 
-      return dbOrTx === db ? db.transaction(runUpdate) : runUpdate(dbOrTx);
+      if (dbOrTx !== db) return runUpdate(dbOrTx);
+
+      const updated = await db.transaction(runUpdate);
+      if (updated && options.finalizeCancelledHeartbeatRun) {
+        for (const runId of cancelledSelfReviewRunIds) {
+          await options.finalizeCancelledHeartbeatRun(runId);
+        }
+      }
+      return updated;
     },
 
     clearExecutionWorkspaceEnvironmentSelection: async (companyId: string, environmentId: string) => {

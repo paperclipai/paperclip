@@ -684,6 +684,14 @@ export interface IssueExecutionDecision {
 
 export type IssueWatchdogStatus = "active" | "disabled";
 
+// "subtask": stopped subtrees are reviewed through a separate reusable
+// watchdog issue assigned to the watchdog agent (default, original behavior).
+// "self": the watchdog agent is woken directly on the watched issue itself and
+// reviews/verifies in place — no watchdog sub-task is created (used by the
+// experimental "watchdog everything" flow where agents self-watchdog their
+// own tasks).
+export type IssueWatchdogMode = "subtask" | "self";
+
 export interface IssueWatchdogSummary {
   id: string;
   companyId: string;
@@ -691,6 +699,7 @@ export interface IssueWatchdogSummary {
   watchdogAgentId: string;
   instructions: string | null;
   status: IssueWatchdogStatus;
+  mode?: IssueWatchdogMode;
   watchdogIssueId: string | null;
   lastObservedFingerprint: string | null;
   lastReviewedFingerprint: string | null;

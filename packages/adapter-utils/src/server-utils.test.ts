@@ -742,6 +742,70 @@ describe("renderPaperclipWakePrompt", () => {
     );
   });
 
+  it("renders the watchdog-everything setup directive as a first instruction", () => {
+    const payload = {
+      reason: "issue_assigned",
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-1",
+        title: "Build the exporter",
+        description: "Build it.",
+        descriptionTruncated: false,
+        status: "in_progress",
+      },
+      taskWatchdogEverything: {
+        watchedIssueId: "issue-1",
+        watchedIssueIdentifier: "PAP-1",
+        selfAgentId: "agent-1",
+      },
+      commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+      comments: [],
+      fallbackFetchNeeded: false,
+    };
+
+    const prompt = renderPaperclipWakePrompt(payload);
+    expect(prompt).toContain("## Watchdog Everything (experimental)");
+    expect(prompt).toContain("triage whether this task needs a completion-goal watchdog");
+    expect(prompt).toContain("do NOT need one");
+    expect(prompt).toContain('PUT $PAPERCLIP_API_URL/api/issues/issue-1/watchdog');
+    expect(prompt).toContain('"agentId": "agent-1", "mode": "self"');
+  });
+
+  it("renders the self-review verification contract with the recorded goal", () => {
+    const payload = {
+      reason: "task_watchdog_self_review",
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-1",
+        title: "Build the exporter",
+        description: "Build it.",
+        descriptionTruncated: false,
+        status: "done",
+      },
+      taskWatchdogSelfReview: {
+        watchedIssueId: "issue-1",
+        watchedIssueIdentifier: "PAP-1",
+        watchedIssueTitle: "Build the exporter",
+        stopFingerprint: "task_watchdog_stop:abc123",
+        goalInstructions: "Exporter produces a CSV with 3 rows for the seed data.",
+        stoppedLeaves: [{ identifier: "PAP-1", title: "Build the exporter", status: "done" }],
+      },
+      commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+      comments: [],
+      fallbackFetchNeeded: false,
+    };
+
+    const prompt = renderPaperclipWakePrompt(payload);
+    expect(prompt).toContain("## Task Watchdog Self-Review (verify the completion goal)");
+    expect(prompt).toContain("You are the self-mode watchdog for PAP-1 Build the exporter");
+    expect(prompt).toContain("Exporter produces a CSV with 3 rows for the seed data.");
+    expect(prompt).toContain("Goal passes: post a short verification comment");
+    expect(prompt).toContain("- Stop fingerprint: task_watchdog_stop:abc123");
+    expect(prompt).toContain("- PAP-1 Build the exporter (done)");
+    // Self review must not carry the subtask-mode watchdog mandate.
+    expect(prompt).not.toContain("## Task Watchdog Mandate");
+  });
+
   it("suppresses the issue description when the prompt already carries the task-context markdown", () => {
     const payload = {
       reason: "issue_assigned",

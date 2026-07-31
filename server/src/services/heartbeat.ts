@@ -240,6 +240,7 @@ import {
   type SessionCompactionPolicy,
 } from "@paperclipai/adapter-utils";
 import {
+  isAssignmentShapedPaperclipWakeReason,
   readPaperclipSkillSyncPreference,
   UNMANAGED_BACKGROUND_TASK_LIVENESS_REASON,
   UNMANAGED_BACKGROUND_TASK_STOP_REASON,
@@ -2207,6 +2208,11 @@ interface WakeupOptions {
   requestedByActorType?: "user" | "agent" | "system";
   requestedByActorId?: string | null;
   contextSnapshot?: Record<string, unknown>;
+  beforeIssueLock?: (tx: any) => Promise<void>;
+  onWakeAccepted?: (
+    tx: any,
+    wake: { wakeupRequestId: string; runId: string | null },
+  ) => Promise<void>;
 }
 
 type UsageTotals = {
@@ -5419,6 +5425,8 @@ export async function buildPaperclipWakePayload(input: {
       : [],
     executionStage: Object.keys(executionStage).length > 0 ? executionStage : null,
     taskWatchdog: (input.contextSnapshot.taskWatchdog ?? null) as unknown,
+    taskWatchdogEverything: (input.contextSnapshot.taskWatchdogEverything ?? null) as unknown,
+    taskWatchdogSelfReview: (input.contextSnapshot.taskWatchdogSelfReview ?? null) as unknown,
     skillTest: (input.contextSnapshot.paperclipSkillTest ?? null) as unknown,
     continuationSummary: safeContinuationSummary
       ? {
@@ -12944,6 +12952,29 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     } else {
       delete context.paperclipSkillTest;
     }
+    // Experimental "watchdog everything": on assignment-shaped wakes for an
+    // issue with no active watchdog, the wake payload instructs the assignee
+    // to first triage whether the task needs a completion-goal watchdog and,
+    // if so, register it on itself in self mode before doing the work.
+    delete context.taskWatchdogEverything;
+    if (
+      issueContext &&
+      issueContext.assigneeAgentId === agent.id &&
+      issueContext.originKind !== "task_watchdog" &&
+      issueContext.status !== "done" &&
+      issueContext.status !== "cancelled" &&
+      isAssignmentShapedPaperclipWakeReason(readNonEmptyString(context.wakeReason)) &&
+      (await instanceSettings.getExperimental()).enableWatchdogEverything === true
+    ) {
+      const activeWatchdog = await taskWatchdogs.getActiveForIssue(agent.companyId, issueContext.id);
+      if (!activeWatchdog) {
+        context.taskWatchdogEverything = {
+          watchedIssueId: issueContext.id,
+          watchedIssueIdentifier: issueContext.identifier,
+          selfAgentId: agent.id,
+        };
+      }
+    }
     const paperclipWakePayload = await buildPaperclipWakePayload({
       db,
       companyId: agent.companyId,
@@ -16386,6 +16417,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const agentNameKey = normalizeAgentNameKey(agent.name);
 
       const outcome = await db.transaction(async (tx) => {
+        await opts.beforeIssueLock?.(tx);
         await tx.execute(
           sql`select id from issues where id = ${issueId} and company_id = ${agent.companyId} for update`,
         );
@@ -16871,20 +16903,29 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               .returning()
               .then((rows) => rows[0] ?? availableActiveExecutionRun);
 
-            await tx.insert(agentWakeupRequests).values({
-              companyId: agent.companyId,
-              agentId,
-              source,
-              triggerDetail,
-              reason: "issue_execution_same_name",
-              payload,
-              status: "coalesced",
-              coalescedCount: 1,
-              requestedByActorType: opts.requestedByActorType ?? null,
-              requestedByActorId: opts.requestedByActorId ?? null,
-              idempotencyKey: opts.idempotencyKey ?? null,
+            const coalescedWake = await tx
+              .insert(agentWakeupRequests)
+              .values({
+                companyId: agent.companyId,
+                agentId,
+                source,
+                triggerDetail,
+                reason: "issue_execution_same_name",
+                payload,
+                status: "coalesced",
+                coalescedCount: 1,
+                requestedByActorType: opts.requestedByActorType ?? null,
+                requestedByActorId: opts.requestedByActorId ?? null,
+                idempotencyKey: opts.idempotencyKey ?? null,
+                runId: mergedRun.id,
+                finishedAt: new Date(),
+              })
+              .returning({ id: agentWakeupRequests.id })
+              .then((rows) => rows[0]);
+
+            await opts.onWakeAccepted?.(tx, {
+              wakeupRequestId: coalescedWake.id,
               runId: mergedRun.id,
-              finishedAt: new Date(),
             });
 
             return { kind: "coalesced" as const, run: mergedRun };
@@ -16935,20 +16976,34 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
                 })
                 .where(eq(agentWakeupRequests.id, existingDeferred.id));
 
+              await opts.onWakeAccepted?.(tx, {
+                wakeupRequestId: existingDeferred.id,
+                runId: existingDeferred.runId,
+              });
+
               return { kind: "deferred" as const };
             }
 
-            await tx.insert(agentWakeupRequests).values({
-              companyId: agent.companyId,
-              agentId,
-              source,
-              triggerDetail,
-              reason: "issue_execution_deferred",
-              payload: deferredPayload,
-              status: "deferred_issue_execution",
-              requestedByActorType: opts.requestedByActorType ?? null,
-              requestedByActorId: opts.requestedByActorId ?? null,
-              idempotencyKey: opts.idempotencyKey ?? null,
+            const deferredWake = await tx
+              .insert(agentWakeupRequests)
+              .values({
+                companyId: agent.companyId,
+                agentId,
+                source,
+                triggerDetail,
+                reason: "issue_execution_deferred",
+                payload: deferredPayload,
+                status: "deferred_issue_execution",
+                requestedByActorType: opts.requestedByActorType ?? null,
+                requestedByActorId: opts.requestedByActorId ?? null,
+                idempotencyKey: opts.idempotencyKey ?? null,
+              })
+              .returning({ id: agentWakeupRequests.id })
+              .then((rows) => rows[0]);
+
+            await opts.onWakeAccepted?.(tx, {
+              wakeupRequestId: deferredWake.id,
+              runId: null,
             });
 
             return { kind: "deferred" as const };
@@ -17138,6 +17193,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             updatedAt: new Date(),
           })
           .where(eq(agentWakeupRequests.id, wakeupRequest.id));
+
+        await opts.onWakeAccepted?.(tx, {
+          wakeupRequestId: wakeupRequest.id,
+          runId: newRun.id,
+        });
 
         // executionRunId is NOT stamped here (enqueueWakeup queues the run but
         // doesn't start it). It will be stamped in claimQueuedRun() once the run
@@ -17506,6 +17566,32 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return cancelled;
   }
 
+  async function finalizeCancelledRunInternal(runId: string) {
+    const run = await getRun(runId);
+    if (!run || run.status !== "cancelled") return;
+
+    const running = runningProcesses.get(run.id);
+    try {
+      if (running) {
+        await terminateHeartbeatRunProcess({
+          pid: running.child.pid ?? run.processPid,
+          processGroupId: running.processGroupId ?? run.processGroupId,
+          graceMs: Math.max(1, running.graceSec) * 1000,
+        });
+      } else if (run.processPid || run.processGroupId) {
+        await terminateHeartbeatRunProcess({
+          pid: run.processPid,
+          processGroupId: run.processGroupId,
+        });
+      }
+    } finally {
+      runningProcesses.delete(run.id);
+    }
+
+    await finalizeAgentStatus(run.agentId, "cancelled");
+    await startNextQueuedRunForAgent(run.agentId);
+  }
+
   async function cancelActiveForAgentInternal(agentId: string, reason = "Cancelled due to agent pause", errorCode = "cancelled") {
     const agent = await getAgent(agentId);
     const runs = await db
@@ -17734,6 +17820,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     },
 
     getRun,
+
+    finalizeCancelledRun: finalizeCancelledRunInternal,
 
     decorateActiveRunStatus: decorateHeartbeatRunRuntimeStatus,
     recordRuntimeProgress: recordCurrentHeartbeatRunRuntimeProgress,

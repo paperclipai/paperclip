@@ -47,6 +47,8 @@ export const instanceExperimentalSettingsSchema = z.object({
   enableCases: z.boolean().default(false),
   enableConferenceRoomChat: z.boolean().default(false),
   enableTaskWatchdogs: z.boolean().default(false),
+  enableSameTaskWatchdogs: z.boolean().default(false),
+  enableWatchdogEverything: z.boolean().default(false),
   enableIssuePlanDecompositions: z.boolean().default(false),
   enableExperimentalFileViewer: z.boolean().default(false),
   enableExternalObjects: z.boolean().default(false),

@@ -163,6 +163,11 @@ export function IssueProperties({
     queryFn: () => instanceSettingsApi.getExperimental(),
   });
   const taskWatchdogsEnabled = experimentalSettings?.enableTaskWatchdogs === true;
+  // Watchdog Everything registers same-task watchdogs automatically, so it
+  // implies the same-task capability even when that toggle is off.
+  const sameTaskWatchdogsEnabled =
+    experimentalSettings?.enableSameTaskWatchdogs === true ||
+    experimentalSettings?.enableWatchdogEverything === true;
   const [assigneeOpen, setAssigneeOpen] = useState(false);
   const [assigneeSearch, setAssigneeSearch] = useState("");
   /** When a run is live, a selection is staged here until the operator confirms
@@ -205,6 +210,9 @@ export function IssueProperties({
   const [watchdogOpen, setWatchdogOpen] = useState(false);
   const [watchdogAgentInput, setWatchdogAgentInput] = useState(issue.watchdog?.watchdogAgentId ?? "");
   const [watchdogInstructionsInput, setWatchdogInstructionsInput] = useState(issue.watchdog?.instructions ?? "");
+  const [watchdogModeInput, setWatchdogModeInput] = useState<"subtask" | "self">(
+    issue.watchdog?.mode === "self" ? "self" : "subtask",
+  );
   const normalizedBlockedBySearch = blockedBySearch.trim();
 
   useEffect(() => {
@@ -803,7 +811,8 @@ export function IssueProperties({
     if (watchdogOpen) return;
     setWatchdogAgentInput(issue.watchdog?.watchdogAgentId ?? "");
     setWatchdogInstructionsInput(issue.watchdog?.instructions ?? "");
-  }, [issue.watchdog?.watchdogAgentId, issue.watchdog?.instructions, watchdogOpen]);
+    setWatchdogModeInput(issue.watchdog?.mode === "self" ? "self" : "subtask");
+  }, [issue.watchdog?.watchdogAgentId, issue.watchdog?.instructions, issue.watchdog?.mode, watchdogOpen]);
 
   const watchdogAgentOptions = useMemo<InlineEntityOption[]>(
     () =>
@@ -817,7 +826,7 @@ export function IssueProperties({
     [agents],
   );
   const upsertWatchdog = useMutation({
-    mutationFn: (data: { agentId: string; instructions: string | null }) =>
+    mutationFn: (data: { agentId: string; instructions: string | null; mode: "subtask" | "self" }) =>
       issuesApi.upsertWatchdog(issue.id, data),
     onSuccess: (watchdog) => {
       queryClient.setQueryData<Issue>(queryKeys.issues.detail(issue.id), (current) =>
@@ -842,6 +851,7 @@ export function IssueProperties({
     upsertWatchdog.mutate({
       agentId: watchdogAgentInput,
       instructions: watchdogInstructionsInput.trim() || null,
+      mode: watchdogModeInput,
     });
   };
   const removeWatchdog = () => {
@@ -852,6 +862,7 @@ export function IssueProperties({
     }
     setWatchdogAgentInput("");
     setWatchdogInstructionsInput("");
+    setWatchdogModeInput("subtask");
   };
   const watchdogMutationError =
     upsertWatchdog.error instanceof Error
@@ -869,6 +880,9 @@ export function IssueProperties({
         return agent ? <AgentIcon icon={agent.icon} className="h-3.5 w-3.5 shrink-0 text-muted-foreground" /> : null;
       })()}
       <span className="shrink-0 max-w-40 truncate">{agentName(issue.watchdog.watchdogAgentId)}</span>
+      {issue.watchdog.mode === "self" ? (
+        <span className="shrink-0 text-xs text-muted-foreground">(on this task)</span>
+      ) : null}
       {issue.watchdog.instructions?.trim() ? (
         <span className="min-w-0 flex-1 truncate text-muted-foreground">
           · {issue.watchdog.instructions.trim()}
@@ -881,8 +895,37 @@ export function IssueProperties({
   ) : (
     <span className="text-sm text-muted-foreground">None</span>
   );
+  const watchdogSelfMode = watchdogModeInput === "self";
   const watchdogContent = (
     <div className="space-y-3 p-2">
+      {sameTaskWatchdogsEnabled || watchdogSelfMode ? (
+        <div className="flex items-start justify-between gap-3">
+          <div className="space-y-0.5">
+            <div className="text-xs font-medium text-foreground">Run on this task</div>
+            <div className="text-xs text-muted-foreground">
+              Reviews post on this task and wake the assignee directly — no watchdog sub-task.
+            </div>
+          </div>
+          <ToggleSwitch
+            checked={watchdogSelfMode}
+            onCheckedChange={(checked) => {
+              setWatchdogModeInput(checked ? "self" : "subtask");
+              if (checked) setWatchdogAgentInput(issue.assigneeAgentId ?? "");
+            }}
+            aria-label="Toggle same-task watchdog mode"
+          />
+        </div>
+      ) : null}
+      {watchdogSelfMode ? (
+        <div className="space-y-1.5">
+          <div className="text-xs font-medium text-foreground">Watchdog agent</div>
+          <div className="text-xs text-muted-foreground">
+            {issue.assigneeAgentId
+              ? `Runs as the task assignee: ${agentName(issue.assigneeAgentId)}`
+              : "Assign this task to an agent first — same-task watchdogs run as the assignee."}
+          </div>
+        </div>
+      ) : (
       <div className="space-y-1.5">
         <div className="text-xs font-medium text-foreground">Watchdog agent</div>
         <InlineEntitySelector
@@ -914,6 +957,7 @@ export function IssueProperties({
           }}
         />
       </div>
+      )}
       <div className="space-y-1.5">
         <div className="text-xs font-medium text-foreground">
           Instructions <span className="font-normal text-muted-foreground">(optional)</span>

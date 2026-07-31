@@ -56,14 +56,20 @@ jobs:
 
       - name: Cache Storybook visual baseline archive
         uses: actions/cache@v6
+        if: ${{ github.event.inputs.update_snapshots != 'true' }}
         with:
           path: tests/storybook-visual/.cache
           key: storybook-visual-baseline-${{ runner.os }}-${{ hashFiles('tests/storybook-visual/baseline-manifest.json') }}
 
+      # Snapshot-update (baseline bootstrap/regeneration) runs regenerate every
+      # snapshot from scratch, so they must not require an already-published
+      # baseline — otherwise the very first baseline could never be produced.
       - name: Download Storybook visual baseline
+        if: ${{ github.event.inputs.update_snapshots != 'true' }}
         run: pnpm storybook-visual:baseline download
 
       - name: Verify Storybook visual baseline
+        if: ${{ github.event.inputs.update_snapshots != 'true' }}
         run: pnpm storybook-visual:baseline verify
 
       - name: Build Storybook
