@@ -1627,7 +1627,14 @@ export function executionWorkspaceService(db: Db) {
       }
 
       const inspection = await inspectExecutionWorkspaceBranchForReconcile(existing);
-      if (input.mode === "forward" && inspection.ancestryVerdict !== "ancestor") {
+      // A recorded branch with no resolvable commit has nothing to lose, so adopting
+      // the clean checked-out branch is trivially forward-only.
+      const recordedBranchMissing = inspection.fromSha === null;
+      if (
+        input.mode === "forward" &&
+        inspection.ancestryVerdict !== "ancestor" &&
+        !(recordedBranchMissing && inspection.cleanliness === "clean")
+      ) {
         throw unprocessable(
           "Forward branch reconciliation requires the recorded branch to be an ancestor of the checked-out branch",
           { inspection },
