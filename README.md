@@ -202,6 +202,19 @@ This starts the API server at `http://localhost:3100`. An embedded PostgreSQL da
 
 <br/>
 
+## First workflow in 15 minutes
+
+After the server starts, open the dashboard at `http://localhost:3100`.
+
+1. **Create a company.** Click the company switcher, then **New company**, and give it a name.
+2. **Hire your first agent.** Click **New agent**, choose an adapter like **Claude Code** or **Codex**, and set the role to `ceo`.
+3. **Create a task.** Click **New task**, title it something like `Write a one-sentence description of our company`, and assign it to the CEO.
+4. **Wake the agent.** Click **Wake agent** / **Invoke heartbeat** on the task. The agent checks out the task, does the work, and marks it done.
+
+For the step-by-step guide (including a no-LLM smoke test), see [docs/start/first-workflow.md](docs/start/first-workflow.md).
+
+<br/>
+
 ## FAQ
 
 **What does a typical setup look like?**

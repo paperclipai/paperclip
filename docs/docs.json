@@ -29,6 +29,7 @@
             "pages": [
               "start/what-is-paperclip",
               "start/quickstart",
+              "start/first-workflow",
               "start/core-concepts",
               "start/architecture"
             ]

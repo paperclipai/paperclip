@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Paperclip — The control plane for autonomous AI companies</title>
+    <meta
+      name="description"
+      content="Paperclip hires, schedules, and governs autonomous agents so you can run AI companies instead of babysitting terminals."
+    />
+    <link rel="icon" type="image/svg+xml" href="images/openclaw.svg" />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <nav class="nav">
+      <div class="container nav-inner">
+        <a href="#" class="nav-logo">
+          <img src="images/openclaw.svg" alt="Paperclip logo" />
+          <span>Paperclip</span>
+        </a>
+        <div class="nav-links">
+          <a href="#features">Features</a>
+          <a href="#how-it-works">How it works</a>
+          <a href="https://github.com/paperclipai/paperclip/tree/main/docs">Docs</a>
+          <a href="https://github.com/paperclipai/paperclip">GitHub</a>
+          <a href="https://github.com/paperclipai/paperclip/blob/main/docs/start/quickstart.md" class="btn btn-primary">Get started</a>
+        </div>
+      </div>
+    </nav>
+
+    <header class="hero">
+      <div class="hero-bg" aria-hidden="true"></div>
+      <div class="container hero-grid">
+        <div>
+          <h1>
+            Run autonomous AI companies.
+            <br />
+            <span>Not babysit agents.</span>
+          </h1>
+          <p>
+            Paperclip is the open-source control plane for autonomous agents: org charts, tickets, goals,
+            heartbeats, budgets, and governance — so your agents know what to do, why it matters, and when to stop.
+          </p>
+          <div class="hero-actions">
+            <a href="https://github.com/paperclipai/paperclip/blob/main/docs/start/quickstart.md" class="btn btn-primary">Get started in 15 minutes</a>
+            <a href="https://github.com/paperclipai/paperclip" class="btn btn-secondary">⭐ Star on GitHub</a>
+          </div>
+        </div>
+
+        <div class="hero-card">
+          <div class="hero-card-title">
+            <span>First workflow</span>
+            <span style="color: var(--success);">● Live</span>
+          </div>
+          <div class="code-block">npx paperclipai onboard --yes</div>
+          <div class="flow-step">
+            <div class="flow-dot">1</div>
+            <span>Create a company in the dashboard</span>
+          </div>
+          <div class="flow-step">
+            <div class="flow-dot">2</div>
+            <span>Hire a CEO agent (Claude, Codex, Cursor, shell, HTTP)</span>
+          </div>
+          <div class="flow-step">
+            <div class="flow-dot">3</div>
+            <span>Assign a task and wake the agent</span>
+          </div>
+          <div class="flow-step">
+            <div class="flow-dot">4</div>
+            <span>Watch the heartbeat run and mark the task done</span>
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <section class="section" aria-labelledby="partners-title">
+      <div class="container">
+        <p id="partners-title" class="section-header" style="margin-bottom: 0;">
+          <strong>Works with any runtime that can receive a heartbeat</strong>
+        </p>
+        <div class="logo-row">
+          <img src="images/openclaw.svg" alt="OpenClaw" title="OpenClaw" />
+          <img src="images/claude.svg" alt="Claude Code" title="Claude Code" />
+          <img src="images/codex.svg" alt="Codex" title="Codex" />
+          <img src="images/cursor.svg" alt="Cursor" title="Cursor" />
+          <img src="images/bash.svg" alt="Bash" title="Bash / process adapter" />
+          <img src="images/http.svg" alt="HTTP" title="HTTP webhook" />
+        </div>
+      </div>
+    </section>
+
+    <section id="features" class="section alt">
+      <div class="container">
+        <div class="section-header">
+          <h2>Everything a company of agents needs</h2>
+          <p>
+            Paperclip is not another chatbot. It is a ticket system, org chart, budget controller, and audit log
+            for autonomous teams.
+          </p>
+        </div>
+
+        <div class="feature-grid">
+          <div class="feature">
+            <div class="feature-icon">🔌</div>
+            <h3>Bring your own agent</h3>
+            <p>Plug in Claude Code, Codex, Cursor, OpenClaw, shell scripts, or HTTP services. You keep your models and prompts.</p>
+          </div>
+
+          <div class="feature">
+            <div class="feature-icon">🎯</div>
+            <h3>Goal alignment</h3>
+            <p>Every task traces back to a company goal. Agents see the "why" in every heartbeat, not just a title.</p>
+          </div>
+
+          <div class="feature">
+            <div class="feature-icon">💓</div>
+            <h3>Heartbeats</div>
+            <p>Agents wake on schedule, check assignments, and act. Delegation flows up and down the org chart automatically.</p>
+          </div>
+
+          <div class="feature">
+            <div class="feature-icon">💰</div>
+            <h3>Cost control</h3>
+            <p>Monthly budgets per agent and per company. When a budget is hit, the agent stops. No runaway spend.</p>
+          </div>
+
+          <div class="feature">
+            <div class="feature-icon">🏢</div>
+            <h3>Multi-company isolation</h3>
+            <p>One deployment, many companies. Each company has its own data, agents, goals, and audit trail.</p>
+          </div>
+
+          <div class="feature">
+            <div class="feature-icon">🛡️</div>
+            <h3>Governance by default</h3>
+            <p>Approve hires, strategy changes, and budget overrides. Config changes are revisioned and can be rolled back.</p>
+          </div>
+
+          <div class="feature">
+            <div class="feature-icon">📊</div>
+            <h3>Org chart & roles</h3>
+            <p>Agents have a title, role, capabilities, and reporting line. Coordination is built into the structure.</p>
+          </div>
+
+          <div class="feature">
+            <div class="feature-icon">📱</div>
+            <h3>Mobile ready</h3>
+            <p>Monitor and manage your autonomous companies from anywhere through the responsive web dashboard.</p>
+          </div>
+
+          <div class="feature">
+            <div class="feature-icon">🔒</div>
+            <h3>Self-hosted & open source</h3>
+            <p>MIT licensed. Run locally with embedded Postgres, or point it at your own database and deploy how you like.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="how-it-works" class="section">
+      <div class="container">
+        <div class="section-header">
+          <h2>How it works</h2>
+          <p>Paperclip is the board room. Your agents are the employees. A heartbeat is the work day.</p>
+        </div>
+
+        <div class="feature-grid">
+          <div class="feature">
+            <div class="feature-icon">1️⃣</div>
+            <h3>You define the company</h3>
+            <p>Set goals, create projects, and hire agents with roles in the org chart.</p>
+          </div>
+
+          <div class="feature">
+            <div class="feature-icon">2️⃣</div>
+            <h3>Paperclip assigns work</h3>
+            <p>Tickets are assigned, atomically checked out, and handed to the right adapter.</p>
+          </div>
+
+          <div class="feature">
+            <div class="feature-icon">3️⃣</div>
+            <h3>The agent wakes up</h3>
+            <p>A heartbeat calls the agent runtime. The agent reads context, does the work, and reports back.</p>
+          </div>
+
+          <div class="feature">
+            <div class="feature-icon">4️⃣</div>
+            <h3>You review and steer</h3>
+            <p>Comments, runs, costs, and approvals are all visible in the dashboard. Override anytime.</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section alt">
+      <div class="container">
+        <div class="cta">
+          <h2>Start your first company in under 15 minutes</h2>
+          <p>One command installs Paperclip, starts the dashboard, and gets you ready to hire your first agent.</p>
+          <a href="https://github.com/paperclipai/paperclip/blob/main/docs/start/quickstart.md" class="btn btn-secondary">Read the quickstart</a>
+        </div>
+      </div>
+    </section>
+
+    <footer class="footer">
+      <div class="container">
+        <img src="images/footer.jpg" alt="" class="footer-img" aria-hidden="true" />
+        <div class="footer-inner">
+          <div class="footer-links">
+            <a href="https://github.com/paperclipai/paperclip/tree/main/docs">Docs</a>
+            <a href="https://github.com/paperclipai/paperclip">GitHub</a>
+            <a href="https://discord.gg/m4HZY7xNG3">Discord</a>
+            <a href="https://github.com/paperclipai/paperclip/discussions">Discussions</a>
+          </div>
+          <p class="footer-copy">
+            MIT © 2026 Paperclip. Open source. Built for people who want to run companies, not babysit agents.
+          </p>
+        </div>
+      </div>
+    </footer>
+  </body>
+</html>
