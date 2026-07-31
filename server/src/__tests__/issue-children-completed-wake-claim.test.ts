@@ -130,4 +130,60 @@ describeEmbeddedPostgres("claimIssueChildrenCompletedWake", () => {
     expect(first.claimed).toBe(true);
     expect(second.claimed).toBe(true);
   });
+
+  it("retries a transient claim failure and still claims exactly once", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const idempotencyKey = buildIssueChildrenCompletedWakeIdempotencyKey({
+      parentIssueId: "parent-1",
+      completedChildIssueId: "watchdog-child-1",
+      childIssueIds: ["watchdog-child-1"],
+    });
+
+    let onClaimedCallCount = 0;
+    const onClaimed = async () => {
+      onClaimedCallCount += 1;
+      if (onClaimedCallCount < 2) {
+        throw new Error("simulated transient database fault");
+      }
+      await enqueueChildrenCompletedWakeRow({ companyId, agentId, idempotencyKey });
+      return "enqueued" as const;
+    };
+
+    const outcome = await claimIssueChildrenCompletedWake(db, { companyId, idempotencyKey }, onClaimed);
+
+    expect(outcome.claimed).toBe(true);
+    expect(onClaimedCallCount).toBe(2);
+
+    const persisted = await db
+      .select({ id: agentWakeupRequests.id })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.idempotencyKey, idempotencyKey));
+    expect(persisted).toHaveLength(1);
+  });
+
+  it("throws after exhausting retries so the caller can fail closed", async () => {
+    const { companyId } = await seedCompanyAndAgent();
+    const idempotencyKey = buildIssueChildrenCompletedWakeIdempotencyKey({
+      parentIssueId: "parent-1",
+      completedChildIssueId: "watchdog-child-1",
+      childIssueIds: ["watchdog-child-1"],
+    });
+
+    let onClaimedCallCount = 0;
+    const onClaimed = async () => {
+      onClaimedCallCount += 1;
+      throw new Error("simulated sustained database fault");
+    };
+
+    await expect(
+      claimIssueChildrenCompletedWake(db, { companyId, idempotencyKey }, onClaimed),
+    ).rejects.toThrow("simulated sustained database fault");
+    expect(onClaimedCallCount).toBe(3);
+
+    const persisted = await db
+      .select({ id: agentWakeupRequests.id })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.idempotencyKey, idempotencyKey));
+    expect(persisted).toHaveLength(0);
+  });
 });

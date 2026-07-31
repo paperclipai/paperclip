@@ -51,6 +51,13 @@ export async function findExistingIssueChildrenCompletedWake(
     .then((rows) => rows[0] ?? null);
 }
 
+const CLAIM_MAX_ATTEMPTS = 3;
+const CLAIM_RETRY_DELAY_MS = 25;
+
+function delay(ms: number) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 /**
  * Makes the children-completed wake idempotency claim atomic: a Postgres advisory
  * transaction lock (tenant-scoped via companyId in the lock key) serializes concurrent
@@ -64,23 +71,39 @@ export async function findExistingIssueChildrenCompletedWake(
  * real insert performed inside `onClaimed` hits a DB conflict instead of silently
  * duplicating the wake.
  *
- * If the existence check itself fails (e.g. a database fault), this throws rather than
- * treating the failure as "no existing wake": callers must fail closed and skip the wake
- * rather than risk duplicate emission during an outage.
+ * The transaction is retried up to `CLAIM_MAX_ATTEMPTS` times (small fixed backoff) before
+ * giving up. The caller's terminal child transition is already committed by the time this
+ * runs, so a single transient fault (a dropped connection, a lock-wait timeout) would
+ * otherwise permanently lose the parent's only notification for this transition — retrying
+ * a few times closes most of that gap without reintroducing the duplicate-emission risk,
+ * since every attempt still goes through the same atomic claim. If every attempt fails, this
+ * throws rather than treating the failure as "no existing wake": callers must fail closed and
+ * skip the wake rather than risk duplicate emission during a sustained outage.
  */
 export async function claimIssueChildrenCompletedWake<T>(
   db: Db,
   input: { companyId: string; idempotencyKey: string },
   onClaimed: () => Promise<T>,
 ): Promise<{ claimed: boolean; result: T | null }> {
-  return db.transaction(async (tx) => {
-    const lockKey = `issue-children-completed-wake:${input.companyId}:${input.idempotencyKey}`;
-    await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`);
-    const existing = await findExistingIssueChildrenCompletedWake(tx, input);
-    if (existing) {
-      return { claimed: false, result: null };
+  let lastErr: unknown;
+  for (let attempt = 1; attempt <= CLAIM_MAX_ATTEMPTS; attempt += 1) {
+    try {
+      return await db.transaction(async (tx) => {
+        const lockKey = `issue-children-completed-wake:${input.companyId}:${input.idempotencyKey}`;
+        await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`);
+        const existing = await findExistingIssueChildrenCompletedWake(tx, input);
+        if (existing) {
+          return { claimed: false, result: null };
+        }
+        const result = await onClaimed();
+        return { claimed: true, result };
+      });
+    } catch (err) {
+      lastErr = err;
+      if (attempt < CLAIM_MAX_ATTEMPTS) {
+        await delay(CLAIM_RETRY_DELAY_MS * attempt);
+      }
     }
-    const result = await onClaimed();
-    return { claimed: true, result };
-  });
+  }
+  throw lastErr;
 }
