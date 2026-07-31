@@ -818,6 +818,45 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
     expect(wakeCountAfterExhaustion).toHaveLength(4);
   });
 
+  it("caps wakeless skipped agent-not-invokable retries per idempotency key", async () => {
+    const { companyId, agentId, issueId } = await seedWakelessNonTerminalFixture();
+    const idempotencyKey = `non-terminal-wakeless:${issueId}:cold`;
+    const historicalSkips = Array.from({ length: 4 }, (_, index) => ({
+      companyId,
+      agentId,
+      source: "automation" as const,
+      triggerDetail: "system" as const,
+      reason: "agent.not_invokable",
+      payload: {
+        issueId,
+        backstop: "non_terminal_wakeless",
+        wakelessWakeRearmToken: "cold",
+      },
+      status: "skipped" as const,
+      error: `synthetic not invokable skip ${index + 1}`,
+      requestedAt: new Date(Date.now() - (index + 1) * 60_000),
+      finishedAt: new Date(Date.now() - (index + 1) * 60_000),
+      idempotencyKey,
+    }));
+    await db.insert(agentWakeupRequests).values(historicalSkips);
+
+    const result = await heartbeatService(db).reconcileIssueGraphLiveness();
+
+    expect(result.wakelessNonTerminalHealed).toBe(0);
+    expect(result.wakelessNonTerminalEnqueueFailed).toBe(0);
+    expect(result.wakelessNonTerminalIssueIds).toEqual([]);
+
+    const wakeRows = await db
+      .select({
+        status: agentWakeupRequests.status,
+        reason: agentWakeupRequests.reason,
+      })
+      .from(agentWakeupRequests)
+      .where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.idempotencyKey, idempotencyKey)));
+    expect(wakeRows).toHaveLength(4);
+    expect(wakeRows.every((wake) => wake.status === "skipped" && wake.reason === "agent.not_invokable")).toBe(true);
+  });
+
   it("serializes concurrent wakeless backstop scans to one live wake and one run", async () => {
     const { companyId, agentId, issueId } = await seedWakelessNonTerminalFixture();
     const heartbeat = heartbeatService(db);

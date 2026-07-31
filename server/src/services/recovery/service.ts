@@ -1050,6 +1050,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const rows = await db
       .select({
         status: agentWakeupRequests.status,
+        reason: agentWakeupRequests.reason,
         requestedAt: agentWakeupRequests.requestedAt,
         finishedAt: agentWakeupRequests.finishedAt,
       })
@@ -1066,7 +1067,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     let consecutiveFailures = 0;
     let latestFailureAt: Date | null = null;
     for (const row of rows) {
-      if (row.status !== "failed") break;
+      const countsTowardFailureCap =
+        row.status === "failed" || (row.status === "skipped" && row.reason === "agent.not_invokable");
+      if (!countsTowardFailureCap) break;
       consecutiveFailures += 1;
       if (!latestFailureAt) latestFailureAt = row.finishedAt ?? row.requestedAt ?? null;
     }
