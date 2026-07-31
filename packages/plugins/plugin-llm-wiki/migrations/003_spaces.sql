@@ -140,37 +140,14 @@ ALTER TABLE plugin_llm_wiki_8f50da974f.paperclip_distillation_runs ALTER COLUMN 
 ALTER TABLE plugin_llm_wiki_8f50da974f.paperclip_source_snapshots ALTER COLUMN space_id SET NOT NULL;
 ALTER TABLE plugin_llm_wiki_8f50da974f.paperclip_page_bindings ALTER COLUMN space_id SET NOT NULL;
 
-DO $$
-DECLARE
-  target record;
-  constraint_name text;
-BEGIN
-  FOR target IN
-    SELECT * FROM (VALUES
-      ('wiki_pages', ARRAY['company_id', 'wiki_id', 'path']::text[]),
-      ('paperclip_distillation_cursors', ARRAY['company_id', 'wiki_id', 'source_scope', 'scope_key', 'source_kind']::text[]),
-      ('paperclip_distillation_work_items', ARRAY['company_id', 'wiki_id', 'idempotency_key']::text[]),
-      ('paperclip_page_bindings', ARRAY['company_id', 'wiki_id', 'page_path']::text[])
-    ) AS targets(table_name, column_names)
-  LOOP
-    FOR constraint_name IN
-      SELECT c.conname
-      FROM pg_constraint c
-      JOIN pg_class t ON t.oid = c.conrelid
-      JOIN pg_namespace n ON n.oid = t.relnamespace
-      WHERE n.nspname = 'plugin_llm_wiki_8f50da974f'
-        AND t.relname = target.table_name
-        AND c.contype = 'u'
-        AND (
-          SELECT array_agg(a.attname ORDER BY constraint_columns.ordinality)::text[]
-          FROM unnest(c.conkey) WITH ORDINALITY AS constraint_columns(attnum, ordinality)
-          JOIN pg_attribute a ON a.attrelid = c.conrelid AND a.attnum = constraint_columns.attnum
-        ) = target.column_names
-    LOOP
-      EXECUTE format('ALTER TABLE %I.%I DROP CONSTRAINT %I', 'plugin_llm_wiki_8f50da974f', target.table_name, constraint_name);
-    END LOOP;
-  END LOOP;
-END $$;
+ALTER TABLE plugin_llm_wiki_8f50da974f.wiki_pages
+  DROP CONSTRAINT IF EXISTS wiki_pages_company_id_wiki_id_path_key;
+ALTER TABLE plugin_llm_wiki_8f50da974f.paperclip_distillation_cursors
+  DROP CONSTRAINT IF EXISTS paperclip_distillation_cursor_company_id_wiki_id_source_sco_key;
+ALTER TABLE plugin_llm_wiki_8f50da974f.paperclip_distillation_work_items
+  DROP CONSTRAINT IF EXISTS paperclip_distillation_work_i_company_id_wiki_id_idempotenc_key;
+ALTER TABLE plugin_llm_wiki_8f50da974f.paperclip_page_bindings
+  DROP CONSTRAINT IF EXISTS paperclip_page_bindings_company_id_wiki_id_page_path_key;
 
 ALTER TABLE plugin_llm_wiki_8f50da974f.wiki_pages
   DROP CONSTRAINT IF EXISTS wiki_pages_company_wiki_space_path_key;

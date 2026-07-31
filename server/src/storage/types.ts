@@ -3,13 +3,19 @@ import type { Readable } from "node:stream";
 
 export interface PutObjectInput {
   objectKey: string;
-  body: Buffer;
+  // Readable bodies stream straight to the backend (contentLength must be the
+  // exact byte size); Buffer stays supported for small payloads.
+  body: Buffer | Readable;
   contentType: string;
   contentLength: number;
 }
 
 export interface GetObjectInput {
   objectKey: string;
+  range?: {
+    start: number;
+    end: number;
+  };
 }
 
 export interface GetObjectResult {
@@ -56,7 +62,7 @@ export interface PutFileResult {
 export interface StorageService {
   provider: StorageProviderId;
   putFile(input: PutFileInput): Promise<PutFileResult>;
-  getObject(companyId: string, objectKey: string): Promise<GetObjectResult>;
+  getObject(companyId: string, objectKey: string, options?: Pick<GetObjectInput, "range">): Promise<GetObjectResult>;
   headObject(companyId: string, objectKey: string): Promise<HeadObjectResult>;
   deleteObject(companyId: string, objectKey: string): Promise<void>;
 }

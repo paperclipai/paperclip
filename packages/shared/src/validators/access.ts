@@ -85,6 +85,14 @@ export const resolveCliAuthChallengeSchema = z.object({
 
 export type ResolveCliAuthChallenge = z.infer<typeof resolveCliAuthChallengeSchema>;
 
+export const createBoardApiKeySchema = z.object({
+  name: z.string().trim().min(1).max(120).default("paperclipai cli"),
+  expiresAt: z.coerce.date().optional().nullable(),
+  requestedCompanyId: z.string().uuid().optional().nullable(),
+});
+
+export type CreateBoardApiKey = z.infer<typeof createBoardApiKeySchema>;
+
 export const updateMemberPermissionsSchema = z.object({
   grants: z.array(
     z.object({
@@ -171,8 +179,14 @@ const profileImageSchema = z
 
 export const currentUserProfileSchema = z.object({
   id: z.string().min(1),
-  email: z.string().email().nullable(),
-  name: z.string().min(1).max(120).nullable(),
+  email: z.preprocess(
+    (v) => (typeof v === "string" && v.trim() === "" ? null : v),
+    z.string().email().nullable(),
+  ),
+  name: z.preprocess(
+    (v) => (typeof v === "string" && v.trim() === "" ? null : v),
+    z.string().min(1).max(120).nullable(),
+  ),
   image: profileImageSchema.nullable(),
 });
 

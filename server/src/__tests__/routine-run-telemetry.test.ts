@@ -5,11 +5,14 @@ import {
   agents,
   companies,
   createDb,
+  documentRevisions,
+  documents,
   executionWorkspaces,
   heartbeatRuns,
   issues,
   projectWorkspaces,
   projects,
+  routineDocuments,
   routineRuns,
   routines,
   routineTriggers,
@@ -54,7 +57,10 @@ describeEmbeddedPostgres("routine run telemetry", () => {
     vi.clearAllMocks();
     await db.delete(routineRuns);
     await db.delete(routineTriggers);
+    await db.delete(routineDocuments);
     await db.delete(routines);
+    await db.delete(documents);
+    await db.delete(documentRevisions);
     await db.delete(heartbeatRuns);
     await db.delete(issues);
     await db.delete(executionWorkspaces);
@@ -78,6 +84,7 @@ describeEmbeddedPostgres("routine run telemetry", () => {
       name: "Paperclip",
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
     });
 
     await db.insert(agents).values({

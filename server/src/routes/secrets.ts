@@ -3,21 +3,122 @@ import type { Db } from "@paperclipai/db";
 import {
   createSecretProviderConfigSchema,
   createSecretSchema,
+  createUserSecretDefinitionSchema,
+  createUserSecretValueSchema,
   remoteSecretImportPreviewSchema,
   remoteSecretImportSchema,
   rotateSecretSchema,
+  rotateUserSecretValueSchema,
+  secretProviderConfigDiscoveryPreviewSchema,
   updateSecretProviderConfigSchema,
   updateSecretSchema,
+  updateUserSecretDefinitionSchema,
+  updateUserSecretValueSchema,
 } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
-import { assertBoard, assertCompanyAccess } from "./authz.js";
+import { assertBoard, assertCompanyAccess, getAccessibleResource } from "./authz.js";
 import { logActivity, secretService } from "../services/index.js";
 import { getConfiguredSecretProvider } from "../secrets/configured-provider.js";
+import { forbidden, unauthorized } from "../errors.js";
+
+function assertSecretDefinitionAdmin(req: Parameters<typeof assertBoard>[0], companyId: string) {
+  assertBoard(req);
+  assertCompanyAccess(req, companyId);
+  if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return;
+  const membership = req.actor.memberships?.find((item) => item.companyId === companyId);
+  if (membership?.status === "active" && ["owner", "admin"].includes(String(membership.membershipRole))) {
+    return;
+  }
+  throw forbidden("Company admin access required");
+}
+
+function currentUserId(req: Parameters<typeof assertBoard>[0]) {
+  assertBoard(req);
+  if (req.actor.userId) return req.actor.userId;
+  throw unauthorized("User identity required for user-specific secrets");
+}
+
+function boardActorUser(req: Parameters<typeof assertBoard>[0]) {
+  assertBoard(req);
+  return { userId: req.actor.userId ?? null, agentId: null };
+}
+
+function userSecretDefinitionActivityActor(req: Parameters<typeof assertBoard>[0]) {
+  assertBoard(req);
+  if (req.actor.userId) {
+    return { actorType: "user" as const, actorId: req.actor.userId };
+  }
+  return { actorType: "system" as const, actorId: req.actor.source ?? "board" };
+}
+
+function isCompanyScopedSecret(secret: { scope?: string | null }) {
+  return (secret.scope ?? "company") === "company";
+}
 
 export function secretRoutes(db: Db) {
   const router = Router();
   const svc = secretService(db);
   const defaultProvider = getConfiguredSecretProvider();
+
+  function agentSecretContext(req: Parameters<typeof assertBoard>[0]) {
+    if (req.actor.type !== "agent" || !req.actor.agentId || !req.actor.companyId || !req.actor.runId) {
+      throw forbidden("Run-bound agent authentication required");
+    }
+    return {
+      companyId: req.actor.companyId,
+      agentId: req.actor.agentId,
+      actorSource: req.actor.source === "agent_jwt" ? "agent_jwt" as const : "agent_key" as const,
+      keyId: req.actor.keyId ?? null,
+      keyScope: req.actor.keyScope ?? null,
+      heartbeatRunId: req.actor.runId,
+      responsibleUserId: req.actor.onBehalfOfUserId ?? null,
+    };
+  }
+
+  router.get("/agents/me/secrets", async (req, res) => {
+    const context = agentSecretContext(req);
+    const secrets = await svc.listAgentSecretAccess(context.companyId, context);
+    await logActivity(db, {
+      companyId: context.companyId,
+      actorType: "agent",
+      actorId: context.agentId,
+      action: "secret.access.listed",
+      entityType: "agent",
+      entityId: context.agentId,
+      agentId: context.agentId,
+      runId: context.heartbeatRunId,
+      details: { count: secrets.length },
+    });
+    res.json({
+      secrets: secrets.map(({ secretId: _secretId, bindingId: _bindingId, configPath: _configPath, ...secret }) => secret),
+    });
+  });
+
+  router.post("/agents/me/secrets/:key/value", async (req, res) => {
+    const context = agentSecretContext(req);
+    const available = await svc.listAgentSecretAccess(context.companyId, context);
+    const secret = available.find((entry) => entry.key === req.params.key);
+    const unresolvedSecret = secret ? null : await svc.getByKey(context.companyId, req.params.key);
+    if (!secret && !unresolvedSecret) throw forbidden("Secret access is not granted for this agent");
+    const resolution = await svc.resolveSecretValueForAgentAccess(
+      context.companyId,
+      secret?.secretId ?? unresolvedSecret!.id,
+      secret?.versionSelector ?? "latest",
+      {
+        ...context,
+        configPath: secret?.configPath ?? `access.${req.params.key}`,
+        bindingId: secret?.bindingId ?? null,
+        issueId: null,
+        registerForRedaction: () => undefined,
+      },
+    );
+    res.set("Cache-Control", "no-store");
+    res.json({
+      key: secret?.key ?? unresolvedSecret!.key,
+      value: resolution.value,
+      version: resolution.version,
+    });
+  });
 
   router.get("/companies/:companyId/secret-providers", (req, res) => {
     assertBoard(req);
@@ -40,6 +141,41 @@ export function secretRoutes(db: Db) {
     assertCompanyAccess(req, companyId);
     res.json(await svc.listProviderConfigs(companyId));
   });
+
+  router.post(
+    "/companies/:companyId/secret-provider-configs/discovery/preview",
+    validate(secretProviderConfigDiscoveryPreviewSchema),
+    async (req, res) => {
+      assertBoard(req);
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+
+      const preview = await svc.previewProviderConfigDiscovery(companyId, {
+        provider: req.body.provider,
+        config: req.body.config,
+        query: req.body.query,
+        nextToken: req.body.nextToken,
+        pageSize: req.body.pageSize,
+      });
+
+      await logActivity(db, {
+        companyId,
+        actorType: "user",
+        actorId: req.actor.userId ?? "board",
+        action: "secret_provider_config.discovery_previewed",
+        entityType: "secret_provider_config_discovery",
+        entityId: companyId,
+        details: {
+          provider: preview.provider,
+          candidateCount: preview.candidates.length,
+          sampledSecretCount: preview.sampledSecretCount,
+          warningCount: preview.warnings.length,
+        },
+      });
+
+      res.json(preview);
+    },
+  );
 
   router.post("/companies/:companyId/secret-provider-configs", validate(createSecretProviderConfigSchema), async (req, res) => {
     assertBoard(req);
@@ -78,24 +214,16 @@ export function secretRoutes(db: Db) {
 
   router.get("/secret-provider-configs/:id", async (req, res) => {
     assertBoard(req);
-    const existing = await svc.getProviderConfigById(req.params.id as string);
-    if (!existing) {
-      res.status(404).json({ error: "Provider vault not found" });
-      return;
-    }
-    assertCompanyAccess(req, existing.companyId);
+    const existing = await getAccessibleResource(req, res, svc.getProviderConfigById(req.params.id as string), "Provider vault not found");
+    if (!existing) return;
     res.json(existing);
   });
 
   router.patch("/secret-provider-configs/:id", validate(updateSecretProviderConfigSchema), async (req, res) => {
     assertBoard(req);
     const id = req.params.id as string;
-    const existing = await svc.getProviderConfigById(id);
-    if (!existing) {
-      res.status(404).json({ error: "Provider vault not found" });
-      return;
-    }
-    assertCompanyAccess(req, existing.companyId);
+    const existing = await getAccessibleResource(req, res, svc.getProviderConfigById(id), "Provider vault not found");
+    if (!existing) return;
 
     const updated = await svc.updateProviderConfig(id, {
       displayName: req.body.displayName,
@@ -129,45 +257,37 @@ export function secretRoutes(db: Db) {
   router.delete("/secret-provider-configs/:id", async (req, res) => {
     assertBoard(req);
     const id = req.params.id as string;
-    const existing = await svc.getProviderConfigById(id);
-    if (!existing) {
-      res.status(404).json({ error: "Provider vault not found" });
-      return;
-    }
-    assertCompanyAccess(req, existing.companyId);
+    const existing = await getAccessibleResource(req, res, svc.getProviderConfigById(id), "Provider vault not found");
+    if (!existing) return;
 
-    const disabled = await svc.disableProviderConfig(id);
-    if (!disabled) {
+    const removed = await svc.removeProviderConfig(id);
+    if (!removed) {
       res.status(404).json({ error: "Provider vault not found" });
       return;
     }
 
     await logActivity(db, {
-      companyId: disabled.companyId,
+      companyId: removed.companyId,
       actorType: "user",
       actorId: req.actor.userId ?? "board",
-      action: "secret_provider_config.disabled",
+      action: "secret_provider_config.removed",
       entityType: "secret_provider_config",
-      entityId: disabled.id,
+      entityId: removed.id,
       details: {
-        provider: disabled.provider,
-        displayName: disabled.displayName,
-        status: disabled.status,
+        provider: removed.provider,
+        displayName: removed.displayName,
+        remoteDeleted: false,
       },
     });
 
-    res.json(disabled);
+    res.json(removed);
   });
 
   router.post("/secret-provider-configs/:id/default", async (req, res) => {
     assertBoard(req);
     const id = req.params.id as string;
-    const existing = await svc.getProviderConfigById(id);
-    if (!existing) {
-      res.status(404).json({ error: "Provider vault not found" });
-      return;
-    }
-    assertCompanyAccess(req, existing.companyId);
+    const existing = await getAccessibleResource(req, res, svc.getProviderConfigById(id), "Provider vault not found");
+    if (!existing) return;
 
     const updated = await svc.setDefaultProviderConfig(id);
     if (!updated) {
@@ -195,12 +315,8 @@ export function secretRoutes(db: Db) {
   router.post("/secret-provider-configs/:id/health", async (req, res) => {
     assertBoard(req);
     const id = req.params.id as string;
-    const existing = await svc.getProviderConfigById(id);
-    if (!existing) {
-      res.status(404).json({ error: "Provider vault not found" });
-      return;
-    }
-    assertCompanyAccess(req, existing.companyId);
+    const existing = await getAccessibleResource(req, res, svc.getProviderConfigById(id), "Provider vault not found");
+    if (!existing) return;
 
     const health = await svc.checkProviderConfigHealth(id);
     if (!health) {
@@ -231,6 +347,291 @@ export function secretRoutes(db: Db) {
     assertCompanyAccess(req, companyId);
     const secrets = await svc.list(companyId);
     res.json(secrets);
+  });
+
+  router.get("/companies/:companyId/user-secret-definitions", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertSecretDefinitionAdmin(req, companyId);
+    res.json(await svc.listUserSecretDefinitions(companyId));
+  });
+
+  router.post(
+    "/companies/:companyId/user-secret-definitions",
+    validate(createUserSecretDefinitionSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertSecretDefinitionAdmin(req, companyId);
+
+      const created = await svc.createUserSecretDefinition(
+        companyId,
+        {
+          key: req.body.key,
+          name: req.body.name,
+          description: req.body.description,
+          status: req.body.status,
+          provider: req.body.provider ?? defaultProvider,
+          providerConfigId: req.body.providerConfigId,
+          managedMode: req.body.managedMode,
+          providerMetadata: req.body.providerMetadata,
+          usageGuidance: req.body.usageGuidance,
+        },
+        boardActorUser(req),
+      );
+      const activityActor = userSecretDefinitionActivityActor(req);
+
+      await logActivity(db, {
+        companyId,
+        actorType: activityActor.actorType,
+        actorId: activityActor.actorId,
+        action: "user_secret_definition.created",
+        entityType: "user_secret_definition",
+        entityId: created.id,
+        details: { key: created.key, provider: created.provider },
+      });
+
+      res.status(201).json(created);
+    },
+  );
+
+  router.patch(
+    "/companies/:companyId/user-secret-definitions/:definitionId",
+    validate(updateUserSecretDefinitionSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      const definitionId = req.params.definitionId as string;
+      assertSecretDefinitionAdmin(req, companyId);
+
+      const updated = await svc.updateUserSecretDefinition(
+        companyId,
+        definitionId,
+        {
+          key: req.body.key,
+          name: req.body.name,
+          description: req.body.description,
+          status: req.body.status,
+          providerConfigId: req.body.providerConfigId,
+          providerMetadata: req.body.providerMetadata,
+          usageGuidance: req.body.usageGuidance,
+        },
+        boardActorUser(req),
+      );
+      if (!updated) {
+        res.status(404).json({ error: "User secret definition not found" });
+        return;
+      }
+      const activityActor = userSecretDefinitionActivityActor(req);
+      const activityAction = req.body.status === "deleted"
+        ? "user_secret_definition.deleted"
+        : "user_secret_definition.updated";
+
+      await logActivity(db, {
+        companyId,
+        actorType: activityActor.actorType,
+        actorId: activityActor.actorId,
+        action: activityAction,
+        entityType: "user_secret_definition",
+        entityId: updated.id,
+        details: { key: updated.key, status: updated.status },
+      });
+
+      res.json(updated);
+    },
+  );
+
+  router.delete("/companies/:companyId/user-secret-definitions/:definitionId", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const definitionId = req.params.definitionId as string;
+    assertSecretDefinitionAdmin(req, companyId);
+
+    const removed = await svc.removeUserSecretDefinition(
+      companyId,
+      definitionId,
+      boardActorUser(req),
+    );
+    if (!removed) {
+      res.status(404).json({ error: "User secret definition not found" });
+      return;
+    }
+    const activityActor = userSecretDefinitionActivityActor(req);
+
+    await logActivity(db, {
+      companyId,
+      actorType: activityActor.actorType,
+      actorId: activityActor.actorId,
+      action: "user_secret_definition.deleted",
+      entityType: "user_secret_definition",
+      entityId: removed.id,
+      details: { key: removed.key },
+    });
+
+    res.json({ ok: true });
+  });
+
+  router.get("/companies/:companyId/user-secret-definitions/:definitionId/coverage", async (req, res) => {
+    const companyId = req.params.companyId as string;
+    const definitionId = req.params.definitionId as string;
+    assertSecretDefinitionAdmin(req, companyId);
+    res.json(await svc.getUserSecretDefinitionCoverage(companyId, definitionId));
+  });
+
+  router.get("/companies/:companyId/me/user-secrets", async (req, res) => {
+    assertBoard(req);
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    res.json(await svc.listCurrentUserSecretValues(companyId, currentUserId(req)));
+  });
+
+  router.post(
+    "/companies/:companyId/me/user-secrets",
+    validate(createUserSecretValueSchema),
+    async (req, res) => {
+      assertBoard(req);
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+      const ownerUserId = currentUserId(req);
+      const created = await svc.createCurrentUserSecretValue(
+        companyId,
+        ownerUserId,
+        {
+          definitionKey: req.body.definitionKey,
+          definitionId: req.body.definitionId,
+          value: req.body.value,
+          externalRef: req.body.externalRef,
+          providerVersionRef: req.body.providerVersionRef,
+          providerConfigId: req.body.providerConfigId,
+        },
+        { userId: ownerUserId, agentId: null },
+      );
+
+      await logActivity(db, {
+        companyId,
+        actorType: "user",
+        actorId: ownerUserId,
+        action: "user_secret_value.created",
+        entityType: "secret",
+        entityId: created.id,
+        details: {
+          userSecretDefinitionId: created.userSecretDefinitionId,
+          ownerUserId: created.ownerUserId,
+          provider: created.provider,
+        },
+      });
+
+      res.status(201).json(created);
+    },
+  );
+
+  router.patch(
+    "/companies/:companyId/me/user-secrets/:secretId",
+    validate(updateUserSecretValueSchema),
+    async (req, res) => {
+      assertBoard(req);
+      const companyId = req.params.companyId as string;
+      const secretId = req.params.secretId as string;
+      assertCompanyAccess(req, companyId);
+      const ownerUserId = currentUserId(req);
+      const updated = await svc.updateCurrentUserSecretValue(
+        companyId,
+        ownerUserId,
+        secretId,
+        {
+          status: req.body.status,
+          value: req.body.value,
+          externalRef: req.body.externalRef,
+          providerVersionRef: req.body.providerVersionRef,
+          providerConfigId: req.body.providerConfigId,
+        },
+        { userId: ownerUserId, agentId: null },
+      );
+      if (!updated) {
+        res.status(404).json({ error: "User secret value not found" });
+        return;
+      }
+
+      await logActivity(db, {
+        companyId,
+        actorType: "user",
+        actorId: ownerUserId,
+        action: "user_secret_value.updated",
+        entityType: "secret",
+        entityId: updated.id,
+        details: {
+          userSecretDefinitionId: updated.userSecretDefinitionId,
+          ownerUserId: updated.ownerUserId,
+          status: updated.status,
+        },
+      });
+
+      res.json(updated);
+    },
+  );
+
+  router.post(
+    "/companies/:companyId/me/user-secrets/:secretId/rotate",
+    validate(rotateUserSecretValueSchema),
+    async (req, res) => {
+      assertBoard(req);
+      const companyId = req.params.companyId as string;
+      const secretId = req.params.secretId as string;
+      assertCompanyAccess(req, companyId);
+      const ownerUserId = currentUserId(req);
+      const rotated = await svc.rotateCurrentUserSecretValue(
+        companyId,
+        ownerUserId,
+        secretId,
+        {
+          value: req.body.value,
+          externalRef: req.body.externalRef,
+          providerVersionRef: req.body.providerVersionRef,
+          providerConfigId: req.body.providerConfigId,
+        },
+        { userId: ownerUserId, agentId: null },
+      );
+
+      await logActivity(db, {
+        companyId,
+        actorType: "user",
+        actorId: ownerUserId,
+        action: "user_secret_value.rotated",
+        entityType: "secret",
+        entityId: rotated.id,
+        details: {
+          userSecretDefinitionId: rotated.userSecretDefinitionId,
+          ownerUserId: rotated.ownerUserId,
+          version: rotated.latestVersion,
+        },
+      });
+
+      res.json(rotated);
+    },
+  );
+
+  router.delete("/companies/:companyId/me/user-secrets/:secretId", async (req, res) => {
+    assertBoard(req);
+    const companyId = req.params.companyId as string;
+    const secretId = req.params.secretId as string;
+    assertCompanyAccess(req, companyId);
+    const ownerUserId = currentUserId(req);
+    const removed = await svc.removeCurrentUserSecretValue(companyId, ownerUserId, secretId);
+    if (!removed) {
+      res.status(404).json({ error: "User secret value not found" });
+      return;
+    }
+
+    await logActivity(db, {
+      companyId,
+      actorType: "user",
+      actorId: ownerUserId,
+      action: "user_secret_value.deleted",
+      entityType: "secret",
+      entityId: removed.id,
+      details: {
+        userSecretDefinitionId: removed.userSecretDefinitionId,
+        ownerUserId: removed.ownerUserId,
+      },
+    });
+
+    res.json({ ok: true });
   });
 
   router.post("/companies/:companyId/secrets", validate(createSecretSchema), async (req, res) => {
@@ -342,12 +743,14 @@ export function secretRoutes(db: Db) {
   router.post("/secrets/:id/rotate", validate(rotateSecretSchema), async (req, res) => {
     assertBoard(req);
     const id = req.params.id as string;
-    const existing = await svc.getById(id);
-    if (!existing) {
-      res.status(404).json({ error: "Secret not found" });
-      return;
-    }
-    assertCompanyAccess(req, existing.companyId);
+    const fetched = await svc.getById(id);
+    const existing = await getAccessibleResource(
+      req,
+      res,
+      fetched && isCompanyScopedSecret(fetched) ? fetched : null,
+      "Secret not found",
+    );
+    if (!existing) return;
     if (existing.status === "deleted") {
       res.status(404).json({ error: "Secret not found" });
       return;
@@ -380,12 +783,14 @@ export function secretRoutes(db: Db) {
   router.patch("/secrets/:id", validate(updateSecretSchema), async (req, res) => {
     assertBoard(req);
     const id = req.params.id as string;
-    const existing = await svc.getById(id);
-    if (!existing) {
-      res.status(404).json({ error: "Secret not found" });
-      return;
-    }
-    assertCompanyAccess(req, existing.companyId);
+    const fetched = await svc.getById(id);
+    const existing = await getAccessibleResource(
+      req,
+      res,
+      fetched && isCompanyScopedSecret(fetched) ? fetched : null,
+      "Secret not found",
+    );
+    if (!existing) return;
     if (existing.status === "deleted") {
       res.status(404).json({ error: "Secret not found" });
       return;
@@ -422,12 +827,14 @@ export function secretRoutes(db: Db) {
   router.get("/secrets/:id/usage", async (req, res) => {
     assertBoard(req);
     const id = req.params.id as string;
-    const existing = await svc.getById(id);
-    if (!existing) {
-      res.status(404).json({ error: "Secret not found" });
-      return;
-    }
-    assertCompanyAccess(req, existing.companyId);
+    const fetched = await svc.getById(id);
+    const existing = await getAccessibleResource(
+      req,
+      res,
+      fetched && isCompanyScopedSecret(fetched) ? fetched : null,
+      "Secret not found",
+    );
+    if (!existing) return;
     const bindings = await svc.listBindingReferences(existing.companyId, existing.id);
     res.json({ secretId: existing.id, bindings });
   });
@@ -435,12 +842,14 @@ export function secretRoutes(db: Db) {
   router.get("/secrets/:id/access-events", async (req, res) => {
     assertBoard(req);
     const id = req.params.id as string;
-    const existing = await svc.getById(id);
-    if (!existing) {
-      res.status(404).json({ error: "Secret not found" });
-      return;
-    }
-    assertCompanyAccess(req, existing.companyId);
+    const fetched = await svc.getById(id);
+    const existing = await getAccessibleResource(
+      req,
+      res,
+      fetched && isCompanyScopedSecret(fetched) ? fetched : null,
+      "Secret not found",
+    );
+    if (!existing) return;
     const events = await svc.listAccessEvents(existing.companyId, existing.id);
     res.json(events);
   });
@@ -448,12 +857,14 @@ export function secretRoutes(db: Db) {
   router.delete("/secrets/:id", async (req, res) => {
     assertBoard(req);
     const id = req.params.id as string;
-    const existing = await svc.getById(id);
-    if (!existing) {
-      res.status(404).json({ error: "Secret not found" });
-      return;
-    }
-    assertCompanyAccess(req, existing.companyId);
+    const fetched = await svc.getById(id);
+    const existing = await getAccessibleResource(
+      req,
+      res,
+      fetched && isCompanyScopedSecret(fetched) ? fetched : null,
+      "Secret not found",
+    );
+    if (!existing) return;
 
     const removed = await svc.remove(id);
     if (!removed) {

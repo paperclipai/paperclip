@@ -28,9 +28,13 @@ const mockSecretService = vi.hoisted(() => ({
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn());
+const mockAccessService = vi.hoisted(() => ({
+  decide: vi.fn(),
+}));
 
 function registerModuleMocks() {
   vi.doMock("../services/index.js", () => ({
+    accessService: () => mockAccessService,
     approvalService: () => mockApprovalService,
     heartbeatService: () => mockHeartbeatService,
     issueApprovalService: () => mockIssueApprovalService,
@@ -57,12 +61,32 @@ async function createApp(actorOverrides: Record<string, unknown> = {}) {
     };
     next();
   });
-  app.use("/api", approvalRoutes({} as any));
+  app.use("/api", approvalRoutes(createRouteDb()));
   app.use(errorHandler);
   return app;
 }
 
-async function createAgentApp() {
+function createRouteDb(contextSnapshot: Record<string, unknown> = {}, runId = "run-1", agentId = "agent-1") {
+  const runRows = [{
+    id: runId,
+    companyId: "company-1",
+    agentId,
+    contextSnapshot,
+  }];
+  return {
+    select: vi.fn((selection: Record<string, unknown> = {}) => ({
+      from: vi.fn(() => ({
+        where: vi.fn(() => ({
+          then: async (resolve: (rows: unknown[]) => unknown) => resolve(
+            Object.keys(selection).includes("contextSnapshot") ? runRows : [],
+          ),
+        })),
+      })),
+    })),
+  } as any;
+}
+
+async function createAgentApp(options: { runId?: string; contextSnapshot?: Record<string, unknown> } = {}) {
   const [{ errorHandler }, { approvalRoutes }] = await Promise.all([
     import("../middleware/index.js"),
     import("../routes/approvals.js"),
@@ -74,12 +98,13 @@ async function createAgentApp() {
       type: "agent",
       agentId: "agent-1",
       companyId: "company-1",
+      runId: options.runId ?? "run-1",
       source: "api_key",
       isInstanceAdmin: false,
     };
     next();
   });
-  app.use("/api", approvalRoutes({} as any));
+  app.use("/api", approvalRoutes(createRouteDb(options.contextSnapshot, options.runId ?? "run-1")));
   app.use(errorHandler);
   return app;
 }
@@ -107,6 +132,13 @@ describe("approval routes idempotent retries", () => {
     mockIssueApprovalService.linkManyForApproval.mockReset();
     mockSecretService.normalizeHireApprovalPayloadForPersistence.mockReset();
     mockLogActivity.mockReset();
+    mockAccessService.decide.mockReset();
+    mockAccessService.decide.mockResolvedValue({
+      allowed: true,
+      action: "company_scope:read",
+      reason: "allow_test",
+      explanation: "Allowed by test mock.",
+    });
     mockHeartbeatService.wakeup.mockResolvedValue({ id: "wake-1" });
     mockIssueApprovalService.listIssuesForApproval.mockResolvedValue([{ id: "issue-1" }]);
     mockLogActivity.mockResolvedValue(undefined);
@@ -183,7 +215,8 @@ describe("approval routes idempotent retries", () => {
       .post("/api/approvals/approval-2/approve")
       .send({});
 
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe("Approval not found");
     expect(mockApprovalService.approve).not.toHaveBeenCalled();
   });
 
@@ -200,7 +233,8 @@ describe("approval routes idempotent retries", () => {
       .post("/api/approvals/approval-3/request-revision")
       .send({ decisionNote: "Need changes" });
 
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe("Approval not found");
     expect(mockApprovalService.requestRevision).not.toHaveBeenCalled();
   });
 
@@ -335,5 +369,81 @@ describe("approval routes idempotent retries", () => {
         action: "approval.created",
       }),
     );
+  });
+
+  it("blocks status-only recovery runs from creating approvals", async () => {
+    const res = await request(await createAgentApp({
+      contextSnapshot: {
+        modelProfile: "cheap",
+        recoveryIntent: "status_only",
+        allowDeliverableWork: false,
+        allowDocumentUpdates: false,
+        resumeRequiresNormalModel: true,
+      },
+    }))
+      .post("/api/companies/company-1/approvals")
+      .send({
+        type: "request_board_approval",
+        payload: { title: "Approve hosting spend" },
+      });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toContain("Cheap status-only recovery runs cannot create or modify approvals");
+    expect(mockApprovalService.create).not.toHaveBeenCalled();
+    expect(mockIssueApprovalService.linkManyForApproval).not.toHaveBeenCalled();
+  });
+
+  it("blocks status-only recovery runs from resubmitting approvals", async () => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-7",
+      companyId: "company-1",
+      type: "request_board_approval",
+      status: "revision_requested",
+      payload: {},
+      requestedByAgentId: "agent-1",
+    });
+
+    const res = await request(await createAgentApp({
+      contextSnapshot: {
+        modelProfile: "cheap",
+        recoveryIntent: "status_only",
+        allowDeliverableWork: false,
+        allowDocumentUpdates: false,
+        resumeRequiresNormalModel: true,
+      },
+    }))
+      .post("/api/approvals/approval-7/resubmit")
+      .send({ payload: { title: "Retry" } });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toContain("Cheap status-only recovery runs cannot create or modify approvals");
+    expect(mockApprovalService.resubmit).not.toHaveBeenCalled();
+  });
+
+  it("blocks status-only recovery runs from commenting on approvals", async () => {
+    mockApprovalService.getById.mockResolvedValue({
+      id: "approval-8",
+      companyId: "company-1",
+      type: "request_board_approval",
+      status: "pending",
+      payload: {},
+      requestedByAgentId: "agent-1",
+    });
+
+    const res = await request(await createAgentApp({
+      contextSnapshot: {
+        modelProfile: "cheap",
+        recoveryIntent: "status_only",
+        allowDeliverableWork: false,
+        allowDocumentUpdates: false,
+        resumeRequiresNormalModel: true,
+      },
+    }))
+      .post("/api/approvals/approval-8/comments")
+      .send({ body: "please approve" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toContain("Cheap status-only recovery runs cannot create or modify approvals");
+    expect(mockApprovalService.addComment).not.toHaveBeenCalled();
   });
 });

@@ -17,8 +17,8 @@ export function unauthorized(message = "Unauthorized") {
   return new HttpError(401, message);
 }
 
-export function forbidden(message = "Forbidden") {
-  return new HttpError(403, message);
+export function forbidden(message = "Forbidden", details?: unknown) {
+  return new HttpError(403, message, details);
 }
 
 export function notFound(message = "Not found") {
@@ -31,4 +31,8 @@ export function conflict(message: string, details?: unknown) {
 
 export function unprocessable(message: string, details?: unknown) {
   return new HttpError(422, message, details);
+}
+
+export function tooManyRequests(message = "Too many requests", details?: unknown) {
+  return new HttpError(429, message, details);
 }

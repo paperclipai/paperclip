@@ -1,12 +1,13 @@
 import { Link } from "@/lib/router";
-import type { ExecutionWorkspace, Issue } from "@paperclipai/shared";
+import type { ExecutionWorkspace } from "@paperclipai/shared";
 import { Button } from "@/components/ui/button";
 import { CopyText } from "./CopyText";
 import { IssuesQuicklook } from "./IssuesQuicklook";
-import type { ProjectWorkspaceSummary } from "../lib/project-workspaces-tab";
+import type { ProjectWorkspaceLinkedIssue, ProjectWorkspaceSummary } from "../lib/project-workspaces-tab";
 import { cn, projectWorkspaceUrl } from "../lib/utils";
 import { timeAgo } from "../lib/timeAgo";
 import { Copy, ExternalLink, FolderOpen, GitBranch, Loader2, Play, Square } from "lucide-react";
+import { Badge } from "@/components/ui/badge";
 
 function workspaceKindLabel(kind: ProjectWorkspaceSummary["kind"]) {
   return kind === "execution_workspace" ? "Execution workspace" : "Project workspace";
@@ -45,7 +46,7 @@ export function ProjectWorkspaceSummaryCard({
   onCloseWorkspace,
 }: ProjectWorkspaceSummaryCardProps) {
   const visibleIssues = summary.issues.slice(0, 4);
-  const hiddenIssueCount = Math.max(summary.issues.length - visibleIssues.length, 0);
+  const hiddenIssueCount = Math.max(summary.linkedIssueCount - visibleIssues.length, 0);
   const workspaceHref =
     summary.kind === "project_workspace"
       ? projectWorkspaceUrl({ id: projectRef, urlKey: projectRef }, summary.workspaceId)
@@ -59,16 +60,16 @@ export function ProjectWorkspaceSummaryCard({
         <div className="flex flex-col gap-3 lg:flex-row lg:items-start lg:justify-between">
           <div className="min-w-0 space-y-2">
             <div className="flex flex-wrap items-center gap-2">
-              <span className="inline-flex items-center rounded-full border border-border bg-background px-2.5 py-1 text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
+              <Badge variant="outline" className="border-border bg-background px-2.5 py-1 text-(length:--text-micro) uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
                 {workspaceKindLabel(summary.kind)}
-              </span>
-              <span className="inline-flex items-center rounded-full border border-border/70 bg-background px-2.5 py-1 text-xs text-muted-foreground">
+              </Badge>
+              <Badge variant="outline" className="border-border/70 bg-background px-2.5 py-1 text-muted-foreground">
                 Updated {timeAgo(summary.lastUpdatedAt)}
-              </span>
+              </Badge>
               {summary.serviceCount > 0 ? (
-                <span
+                <Badge variant="outline"
                   className={cn(
-                    "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs",
+                    "gap-1.5 px-2.5 py-1",
                     hasRunningServices
                       ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
                       : "border-border/70 bg-background text-muted-foreground",
@@ -81,12 +82,12 @@ export function ProjectWorkspaceSummaryCard({
                     )}
                   />
                   {summary.runningServiceCount}/{summary.serviceCount} services
-                </span>
+                </Badge>
               ) : null}
               {summary.executionWorkspaceStatus ? (
-                <span className="inline-flex items-center rounded-full border border-border/70 bg-background px-2.5 py-1 text-xs text-muted-foreground">
+                <Badge variant="outline" className="border-border/70 bg-background px-2.5 py-1 text-muted-foreground">
                   {summary.executionWorkspaceStatus.replace(/_/g, " ")}
-                </span>
+                </Badge>
               ) : null}
             </div>
             <Link
@@ -149,7 +150,7 @@ export function ProjectWorkspaceSummaryCard({
               <div className="flex items-start gap-2">
                 <GitBranch className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                 <div className="min-w-0 flex-1">
-                  <div className="text-[11px] uppercase tracking-[0.14em] text-muted-foreground">Branch</div>
+                  <div className="text-(length:--text-micro) uppercase tracking-(--tracking-eyebrow) text-muted-foreground">Branch</div>
                   <div className="flex items-start gap-2">
                     <CopyText
                       text={summary.branchName}
@@ -176,7 +177,7 @@ export function ProjectWorkspaceSummaryCard({
               <div className="flex items-start gap-2">
                 <FolderOpen className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                 <div className="min-w-0 flex-1">
-                  <div className="text-[11px] uppercase tracking-[0.14em] text-muted-foreground">Path</div>
+                  <div className="text-(length:--text-micro) uppercase tracking-(--tracking-eyebrow) text-muted-foreground">Path</div>
                   <div className="flex items-start gap-2">
                     <CopyText
                       text={summary.cwd}
@@ -204,7 +205,7 @@ export function ProjectWorkspaceSummaryCard({
               <div className="flex items-start gap-2">
                 <ExternalLink className="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" />
                 <div className="min-w-0">
-                  <div className="text-[11px] uppercase tracking-[0.14em] text-muted-foreground">Service</div>
+                  <div className="text-(length:--text-micro) uppercase tracking-(--tracking-eyebrow) text-muted-foreground">Service</div>
                   <a
                     href={summary.primaryServiceUrl}
                     target="_blank"
@@ -226,8 +227,8 @@ export function ProjectWorkspaceSummaryCard({
 
         {summary.issues.length > 0 ? (
           <div className="space-y-2">
-            <div className="text-[11px] font-medium uppercase tracking-[0.14em] text-muted-foreground">
-              Linked issues
+            <div className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
+              Linked tasks
             </div>
             <div className="flex flex-wrap gap-2">
               {visibleIssues.map((issue) => (
@@ -249,7 +250,7 @@ export function ProjectWorkspaceSummaryCard({
   );
 }
 
-function IssuePill({ issue }: { issue: Issue }) {
+function IssuePill({ issue }: { issue: ProjectWorkspaceLinkedIssue }) {
   return (
     <IssuesQuicklook issue={issue}>
       <Link

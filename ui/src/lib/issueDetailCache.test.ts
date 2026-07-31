@@ -31,6 +31,7 @@ function createIssue(overrides: Partial<Issue> = {}): Issue {
     priority: "medium",
     assigneeAgentId: null,
     assigneeUserId: null,
+    responsibleUserId: null,
     createdByAgentId: null,
     createdByUserId: null,
     issueNumber: 1,
@@ -93,6 +94,39 @@ describe("issueDetailCache", () => {
     expect(getCachedIssueDetail(queryClient, issue.identifier)).toEqual(issue);
     expect(getCachedIssueDetail(queryClient, issue.id)).toEqual(issue);
     expect(issuesApi.get).not.toHaveBeenCalled();
+  });
+
+  it("does not seed partial issue snapshots during prefetch", async () => {
+    const issue = createIssue();
+    const partialIssue = {
+      id: issue.id,
+      identifier: issue.identifier,
+      title: issue.title,
+      status: issue.status,
+      priority: issue.priority,
+    } as Issue;
+    vi.mocked(issuesApi.get).mockResolvedValue(issue);
+
+    await prefetchIssueDetail(queryClient, issue.identifier!, { issue: partialIssue });
+
+    expect(issuesApi.get).toHaveBeenCalledWith(issue.identifier);
+    expect(getCachedIssueDetail(queryClient, issue.identifier)).toEqual(issue);
+  });
+
+  it("does not write partial issue snapshots into the detail cache", () => {
+    const issue = createIssue();
+    const partialIssue = {
+      id: issue.id,
+      identifier: issue.identifier,
+      title: issue.title,
+      status: issue.status,
+      priority: issue.priority,
+    } as Issue;
+
+    seedIssueDetailCache(queryClient, partialIssue, { issueRef: issue.identifier });
+
+    expect(queryClient.getQueryData(queryKeys.issues.detail(issue.identifier!))).toBeUndefined();
+    expect(getCachedIssueDetail(queryClient, issue.identifier)).toBeUndefined();
   });
 
   it("hydrates both cache aliases from a fetched issue detail response", async () => {

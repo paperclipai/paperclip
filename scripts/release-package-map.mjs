@@ -79,6 +79,45 @@ function loadReleaseManifest() {
   });
 }
 
+// Sections whose @paperclipai workspace deps are rewritten to the calver release
+// version by replaceWorkspaceDeps() and that consumers resolve at install time.
+const RESOLVED_DEP_SECTIONS = ["dependencies", "optionalDependencies", "peerDependencies"];
+
+// A publishFromCi:true package gets republished at the unified calver version every
+// release, and every @paperclipai/* workspace: dep it declares is rewritten to that
+// same calver version. If the target is NOT publishFromCi:true it never gets a calver
+// publish, so the rewritten spec points at a version that will never exist on npm and
+// the package becomes uninstallable. Detect those edges so the release fails fast
+// instead of shipping a broken canary (e.g. server -> skills-catalog from #8327).
+function findUnpublishableWorkspaceEdges(packages) {
+  const publishFromCiByName = new Map(packages.map((pkg) => [pkg.name, pkg.publishFromCi]));
+  const problems = [];
+
+  for (const pkg of packages) {
+    if (!pkg.publishFromCi) continue;
+
+    for (const section of RESOLVED_DEP_SECTIONS) {
+      const deps = pkg.pkg[section];
+      if (!deps) continue;
+
+      for (const [depName, spec] of Object.entries(deps)) {
+        if (!depName.startsWith("@paperclipai/")) continue;
+        if (typeof spec !== "string" || !spec.startsWith("workspace:")) continue;
+        if (publishFromCiByName.get(depName) === true) continue;
+
+        problems.push(
+          `${pkg.name} (${pkg.dir}) is publishFromCi:true but declares a "${section}" workspace dependency on ${depName}, ` +
+            `which is not publishFromCi:true. The release version rewrite would point ${depName} at the calver version, ` +
+            `but that version is never published, so installs of ${pkg.name} would fail to resolve. ` +
+            `Enable publishFromCi for ${depName} (bootstrap its first npm publish if needed) or drop the workspace dependency.`,
+        );
+      }
+    }
+  }
+
+  return problems;
+}
+
 function buildReleasePackagePlan() {
   const discoveredPackages = discoverPublicPackages();
   const manifestEntries = loadReleaseManifest();
@@ -123,6 +162,11 @@ function buildReleasePackagePlan() {
     ...pkg,
     publishFromCi: manifestByDir.get(pkg.dir).publishFromCi,
   }));
+
+  const edgeProblems = findUnpublishableWorkspaceEdges(packages);
+  if (edgeProblems.length > 0) {
+    throw new Error(`release package manifest validation failed:\n- ${edgeProblems.join("\n- ")}`);
+  }
 
   return packages;
 }
@@ -280,6 +324,7 @@ export {
   buildReleasePackagePlan,
   checkConfiguration,
   discoverPublicPackages,
+  findUnpublishableWorkspaceEdges,
   getReleasePackages,
   loadReleaseManifest,
 };

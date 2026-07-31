@@ -34,7 +34,7 @@ Inside this repo, the generated package uses `@paperclipai/plugin-sdk` via `work
 Outside this repo, the scaffold snapshots `@paperclipai/plugin-sdk` from your local Paperclip checkout into a `.paperclip-sdk/` tarball and points the generated package at that local file by default. You can override the SDK source explicitly:
 
 ```bash
-node packages/plugins/create-paperclip-plugin/dist/index.js @acme/my-plugin \
+node packages/plugins/create-paperclip-plugin/dist/bin.js @acme/my-plugin \
   --output /absolute/path/to/plugins \
   --sdk-path /absolute/path/to/paperclip/packages/plugins/sdk
 ```

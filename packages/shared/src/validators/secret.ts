@@ -2,10 +2,15 @@ import { z } from "zod";
 import {
   SECRET_BINDING_TARGET_TYPES,
   SECRET_MANAGED_MODES,
+  SECRET_PROJECTION_CLASSES,
   SECRET_PROVIDER_CONFIG_STATUSES,
   SECRET_PROVIDERS,
   SECRET_STATUSES,
 } from "../constants.js";
+
+const secretKeySchema = z.string().trim().min(1).max(120).regex(/^[a-zA-Z0-9_.-]+$/);
+const secretVersionSelectorSchema = z.union([z.literal("latest"), z.number().int().positive()]);
+const creatableSecretStatusSchema = z.enum(["active", "disabled", "archived"]);
 
 export const envBindingPlainSchema = z.object({
   type: z.literal("plain"),
@@ -15,7 +20,17 @@ export const envBindingPlainSchema = z.object({
 export const envBindingSecretRefSchema = z.object({
   type: z.literal("secret_ref"),
   secretId: z.string().uuid(),
-  version: z.union([z.literal("latest"), z.number().int().positive()]).optional(),
+  version: secretVersionSelectorSchema.optional(),
+  projectionClass: z.enum(SECRET_PROJECTION_CLASSES).optional(),
+  projectionAllowlistKey: z.string().trim().min(1).max(160).optional().nullable(),
+});
+
+export const envBindingUserSecretRefSchema = z.object({
+  type: z.literal("user_secret_ref"),
+  key: secretKeySchema,
+  version: secretVersionSelectorSchema.optional(),
+  required: z.boolean().optional().default(true),
+  allowMissingOverride: z.boolean().optional().default(false),
 });
 
 // Backward-compatible union that accepts legacy inline values.
@@ -23,20 +38,21 @@ export const envBindingSchema = z.union([
   z.string(),
   envBindingPlainSchema,
   envBindingSecretRefSchema,
+  envBindingUserSecretRefSchema,
 ]);
 
-export const envConfigSchema = z.record(envBindingSchema);
+export const envConfigSchema = z.record(z.string(), envBindingSchema);
 
 export const createSecretSchema = z.object({
   name: z.string().min(1),
-  key: z.string().min(1).regex(/^[a-zA-Z0-9_.-]+$/).optional(),
+  key: secretKeySchema.optional(),
   provider: z.enum(SECRET_PROVIDERS).optional(),
   providerConfigId: z.string().uuid().optional().nullable(),
   managedMode: z.enum(SECRET_MANAGED_MODES).optional(),
   value: z.string().min(1).optional().nullable(),
   description: z.string().optional().nullable(),
   externalRef: z.string().optional().nullable(),
-  providerMetadata: z.record(z.unknown()).optional().nullable(),
+  providerMetadata: z.record(z.string(), z.unknown()).optional().nullable(),
   providerVersionRef: z.string().optional().nullable(),
 }).superRefine((value, ctx) => {
   if ((value.managedMode ?? "paperclip_managed") === "external_reference") {
@@ -67,23 +83,46 @@ export const createSecretSchema = z.object({
 
 export type CreateSecret = z.infer<typeof createSecretSchema>;
 
+function requireSecretRotationInput(
+  value: {
+    value?: string | null;
+    externalRef?: string | null;
+    providerVersionRef?: string | null;
+    providerConfigId?: string | null;
+  },
+  ctx: z.RefinementCtx,
+) {
+  if (
+    !value.value?.trim() &&
+    !value.externalRef?.trim() &&
+    value.providerVersionRef == null &&
+    value.providerConfigId == null
+  ) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["value"],
+      message: "Secret rotation requires value, externalRef, providerVersionRef, or providerConfigId",
+    });
+  }
+}
+
 export const rotateSecretSchema = z.object({
   value: z.string().min(1).optional().nullable(),
   externalRef: z.string().optional().nullable(),
   providerVersionRef: z.string().optional().nullable(),
   providerConfigId: z.string().uuid().optional().nullable(),
-});
+}).superRefine(requireSecretRotationInput);
 
 export type RotateSecret = z.infer<typeof rotateSecretSchema>;
 
 export const updateSecretSchema = z.object({
   name: z.string().min(1).optional(),
-  key: z.string().min(1).regex(/^[a-zA-Z0-9_.-]+$/).optional(),
+  key: secretKeySchema.optional(),
   status: z.enum(SECRET_STATUSES).optional(),
   providerConfigId: z.string().uuid().optional().nullable(),
   description: z.string().optional().nullable(),
   externalRef: z.string().optional().nullable(),
-  providerMetadata: z.record(z.unknown()).optional().nullable(),
+  providerMetadata: z.record(z.string(), z.unknown()).optional().nullable(),
 });
 
 export type UpdateSecret = z.infer<typeof updateSecretSchema>;
@@ -96,12 +135,95 @@ export const secretBindingTargetSchema = z.object({
 
 export const createSecretBindingSchema = secretBindingTargetSchema.extend({
   secretId: z.string().uuid(),
-  versionSelector: z.union([z.literal("latest"), z.number().int().positive()]).default("latest"),
+  versionSelector: secretVersionSelectorSchema.default("latest"),
   required: z.boolean().default(true),
   label: z.string().optional().nullable(),
+  projectionClass: z.enum(SECRET_PROJECTION_CLASSES).optional(),
+  projectionAllowlistKey: z.string().trim().min(1).max(160).optional().nullable(),
 });
 
 export type CreateSecretBinding = z.infer<typeof createSecretBindingSchema>;
+
+export const createUserSecretDefinitionSchema = z.object({
+  key: secretKeySchema,
+  name: z.string().trim().min(1).max(160),
+  description: z.string().trim().max(500).optional().nullable(),
+  status: creatableSecretStatusSchema.optional(),
+  provider: z.enum(SECRET_PROVIDERS).optional(),
+  providerConfigId: z.string().uuid().optional().nullable(),
+  managedMode: z.enum(SECRET_MANAGED_MODES).optional(),
+  providerMetadata: z.record(z.string(), z.unknown()).optional().nullable(),
+  usageGuidance: z.string().trim().max(1000).optional().nullable(),
+});
+
+export type CreateUserSecretDefinition = z.infer<typeof createUserSecretDefinitionSchema>;
+
+export const updateUserSecretDefinitionSchema = z.object({
+  name: z.string().trim().min(1).max(160).optional(),
+  description: z.string().trim().max(500).optional().nullable(),
+  status: z.enum(SECRET_STATUSES).optional(),
+  providerConfigId: z.string().uuid().optional().nullable(),
+  providerMetadata: z.record(z.string(), z.unknown()).optional().nullable(),
+  usageGuidance: z.string().trim().max(1000).optional().nullable(),
+});
+
+export type UpdateUserSecretDefinition = z.infer<typeof updateUserSecretDefinitionSchema>;
+
+export const createUserSecretValueSchema = z.object({
+  definitionKey: secretKeySchema.optional(),
+  definitionId: z.string().uuid().optional(),
+  value: z.string().min(1).optional().nullable(),
+  externalRef: z.string().optional().nullable(),
+  providerVersionRef: z.string().optional().nullable(),
+  providerConfigId: z.string().uuid().optional().nullable(),
+}).superRefine((value, ctx) => {
+  if (!value.definitionKey && !value.definitionId) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["definitionId"],
+      message: "User secret value requires definitionId or definitionKey",
+    });
+  }
+  if (!value.value?.trim() && !value.externalRef?.trim()) {
+    ctx.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ["value"],
+      message: "User secret value requires value or externalRef",
+    });
+  }
+});
+
+export type CreateUserSecretValue = z.infer<typeof createUserSecretValueSchema>;
+
+export const updateUserSecretValueSchema = z.object({
+  status: z.enum(SECRET_STATUSES).optional(),
+  value: z.string().min(1).optional().nullable(),
+  externalRef: z.string().min(1).optional().nullable(),
+  providerVersionRef: z.string().min(1).optional().nullable(),
+  providerConfigId: z.string().uuid().optional().nullable(),
+});
+
+export type UpdateUserSecretValue = z.infer<typeof updateUserSecretValueSchema>;
+
+export const rotateUserSecretValueSchema = z.object({
+  value: z.string().min(1).optional().nullable(),
+  externalRef: z.string().min(1).optional().nullable(),
+  providerVersionRef: z.string().min(1).optional().nullable(),
+  providerConfigId: z.string().uuid().optional().nullable(),
+}).superRefine(requireSecretRotationInput);
+
+export type RotateUserSecretValue = z.infer<typeof rotateUserSecretValueSchema>;
+
+export const createUserSecretDeclarationSchema = secretBindingTargetSchema.extend({
+  definitionKey: secretKeySchema,
+  envKey: z.string().trim().min(1),
+  versionSelector: secretVersionSelectorSchema.default("latest"),
+  required: z.boolean().default(true),
+  allowMissingOverride: z.boolean().default(false),
+  label: z.string().optional().nullable(),
+});
+
+export type CreateUserSecretDeclaration = z.infer<typeof createUserSecretDeclarationSchema>;
 
 const safeShortText = z.string().trim().min(1).max(160);
 const optionalSafeShortText = safeShortText.optional().nullable();
@@ -198,7 +320,7 @@ export const createSecretProviderConfigSchema = z.object({
   displayName: z.string().trim().min(1).max(120),
   status: z.enum(SECRET_PROVIDER_CONFIG_STATUSES).optional(),
   isDefault: z.boolean().optional(),
-  config: z.record(z.unknown()).default({}),
+  config: z.record(z.string(), z.unknown()).default({}),
 }).superRefine((value, ctx) => {
   rejectSensitiveProviderConfigKeys(value.config, ctx);
   const parsed = secretProviderConfigPayloadSchema.safeParse({
@@ -236,7 +358,7 @@ export const updateSecretProviderConfigSchema = z.object({
   displayName: z.string().trim().min(1).max(120).optional(),
   status: z.enum(SECRET_PROVIDER_CONFIG_STATUSES).optional(),
   isDefault: z.boolean().optional(),
-  config: z.record(z.unknown()).optional(),
+  config: z.record(z.string(), z.unknown()).optional(),
 }).superRefine((value, ctx) => {
   if (value.config !== undefined) {
     rejectSensitiveProviderConfigKeys(value.config, ctx);
@@ -262,13 +384,37 @@ export const remoteSecretImportPreviewSchema = z.object({
 
 export type RemoteSecretImportPreview = z.infer<typeof remoteSecretImportPreviewSchema>;
 
+export const secretProviderConfigDiscoveryPreviewSchema = z.object({
+  provider: z.enum(SECRET_PROVIDERS),
+  config: z.record(z.unknown()).default({}),
+  query: z.string().trim().max(200).optional().nullable(),
+  nextToken: z.string().trim().min(1).max(4096).optional().nullable(),
+  pageSize: z.number().int().min(1).max(100).optional(),
+}).superRefine((value, ctx) => {
+  rejectSensitiveProviderConfigKeys(value.config, ctx);
+  const parsed = secretProviderConfigPayloadSchema.safeParse({
+    provider: value.provider,
+    config: value.config,
+  });
+  if (!parsed.success) {
+    for (const issue of parsed.error.issues) {
+      ctx.addIssue({
+        ...issue,
+        path: issue.path[0] === "config" ? issue.path : ["config", ...issue.path],
+      });
+    }
+  }
+});
+
+export type SecretProviderConfigDiscoveryPreview = z.infer<typeof secretProviderConfigDiscoveryPreviewSchema>;
+
 export const remoteSecretImportSelectionSchema = z.object({
   externalRef: z.string().trim().min(1).max(2048),
   name: z.string().trim().min(1).max(160).optional().nullable(),
   key: z.string().trim().min(1).max(120).regex(/^[a-zA-Z0-9_.-]+$/).optional().nullable(),
   description: z.string().trim().max(500).optional().nullable(),
   providerVersionRef: z.string().trim().min(1).max(512).optional().nullable(),
-  providerMetadata: z.record(z.unknown()).optional().nullable(),
+  providerMetadata: z.record(z.string(), z.unknown()).optional().nullable(),
 });
 
 export const remoteSecretImportSchema = z.object({

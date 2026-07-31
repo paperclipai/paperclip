@@ -9,11 +9,19 @@ import { collapseDuplicatePendingHumanJoinRequests } from "../lib/join-request-d
 import { assertCompanyAccess } from "./authz.js";
 
 function buildDismissedAtByKey(
-  dismissals: Array<{ itemKey: string; dismissedAt: Date | string }>,
+  dismissals: Array<{ itemKey: string; kind: string; dismissedAt: Date | string; snoozedUntil: Date | string | null }>,
 ): Map<string, number> {
-  return new Map(
-    dismissals.map((dismissal) => [dismissal.itemKey, new Date(dismissal.dismissedAt).getTime()]),
-  );
+  const now = Date.now();
+  const entries: Array<[string, number]> = [];
+  for (const dismissal of dismissals) {
+    if (dismissal.kind === "snooze") {
+      const snoozedUntil = dismissal.snoozedUntil ? new Date(dismissal.snoozedUntil).getTime() : 0;
+      if (Number.isFinite(snoozedUntil) && snoozedUntil > now) entries.push([dismissal.itemKey, Number.MAX_SAFE_INTEGER]);
+      continue;
+    }
+    entries.push([dismissal.itemKey, new Date(dismissal.dismissedAt).getTime()]);
+  }
+  return new Map(entries);
 }
 
 export function sidebarBadgeRoutes(db: Db) {
@@ -59,7 +67,12 @@ export function sidebarBadgeRoutes(db: Db) {
     const dismissedAtByKey =
       req.actor.type === "board" && req.actor.userId
         ? await db
-          .select({ itemKey: inboxDismissals.itemKey, dismissedAt: inboxDismissals.dismissedAt })
+          .select({
+            itemKey: inboxDismissals.itemKey,
+            kind: inboxDismissals.kind,
+            dismissedAt: inboxDismissals.dismissedAt,
+            snoozedUntil: inboxDismissals.snoozedUntil,
+          })
           .from(inboxDismissals)
           .where(and(eq(inboxDismissals.companyId, companyId), eq(inboxDismissals.userId, req.actor.userId)))
           .then(buildDismissedAtByKey)

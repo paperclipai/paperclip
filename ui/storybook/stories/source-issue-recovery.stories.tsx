@@ -129,6 +129,63 @@ function AllStatesPanel() {
           nextAction: "Issue restored to a valid disposition.",
         })}
       />
+      <CardPanel
+        caption="State 6 · Workspace validation (kind: workspace_validation)"
+        action={buildAction({
+          kind: "workspace_validation",
+          cause: "workspace_validation_failed",
+          fingerprint: "fp-workspace",
+          evidence: {
+            latestRunErrorCode: "workspace_validation_failed",
+            sourceRunId: "7accd7a4-c9ca-4db2-9233-3228a037cc09",
+          },
+          nextAction:
+            "Repair the source issue workspace link, project workspace cwd, or git checkout before resuming adapter execution.",
+        })}
+        canFalsePositive
+      />
+      <CardPanel
+        caption="State 7 · Invalid external wait — killed background watcher (kind: stranded_assigned_issue)"
+        action={buildAction({
+          kind: "stranded_assigned_issue",
+          cause: "stranded_assigned_issue",
+          fingerprint: "fp-external-wait",
+          attemptCount: 1,
+          maxAttempts: 1,
+          evidence: {
+            summary: "Unmanaged background task stopped; no durable live path.",
+            latestRunStatus: "failed",
+            latestRunErrorCode: "unmanaged_background_task_stopped",
+            sourceRunId: "7accd7a4-c9ca-4db2-9233-3228a037cc09",
+          },
+          wakePolicy: { type: "wake_owner" },
+          nextAction:
+            "Inspect the external result, then replace the local watcher with a monitor, blocker, or delegated child issue — or record a valid disposition.",
+        })}
+        canFalsePositive
+      />
+      <CardPanel
+        caption="State 8 · Invalid external wait — escalated after the single continuation (kind: stranded_assigned_issue)"
+        action={buildAction({
+          kind: "stranded_assigned_issue",
+          cause: "stranded_assigned_issue",
+          status: "escalated",
+          fingerprint: "fp-external-wait",
+          attemptCount: 1,
+          maxAttempts: 1,
+          wakePolicy: { type: "board_escalation" },
+          evidence: {
+            summary: "Unmanaged background task stopped; no durable live path.",
+            latestRunStatus: "failed",
+            latestRunErrorCode: "unmanaged_background_task_stopped",
+            sourceRunId: "7accd7a4-c9ca-4db2-9233-3228a037cc09",
+          },
+          nextAction:
+            "Name the real external dependency as a blocker, or open an explicit recovery action with a named owner and repair step. Do not re-queue another equivalent continuation.",
+        })}
+        forcedState="escalated"
+        canFalsePositive
+      />
     </div>
   );
 }
@@ -172,6 +229,20 @@ function BlockerNoticePanel() {
             id: "blocker-4",
             identifier: "PAP-9051",
             title: "Bare blocker without recovery state",
+          }),
+          buildBlocker({
+            id: "blocker-5",
+            identifier: "PAP-10409",
+            title: "Phase 6 follow-up failed: git workspace lost",
+            status: "blocked",
+            activeRecoveryAction: buildAction({
+              kind: "workspace_validation",
+              cause: "workspace_validation_failed",
+              fingerprint: "fp-workspace-blocker",
+              evidence: { latestRunErrorCode: "workspace_validation_failed" },
+              nextAction:
+                "Repair the source issue workspace link, project workspace cwd, or git checkout before resuming adapter execution.",
+            }),
           }),
         ]}
       />
@@ -320,6 +391,23 @@ function InboxRowPanel() {
           title: "Recovery escalated for stranded run",
           status: "blocked",
           activeRecoveryAction: buildAction({ status: "escalated" }),
+        }}
+      />
+      <IssueRow
+        issue={{
+          ...baseIssue,
+          id: "issue-recovery-workspace",
+          identifier: "PAP-10409",
+          title: "Phase 6 follow-up failed: git workspace lost",
+          status: "blocked",
+          activeRecoveryAction: buildAction({
+            kind: "workspace_validation",
+            cause: "workspace_validation_failed",
+            fingerprint: "fp-workspace-row",
+            evidence: { latestRunErrorCode: "workspace_validation_failed" },
+            nextAction:
+              "Repair the source issue workspace link, project workspace cwd, or git checkout before resuming adapter execution.",
+          }),
         }}
       />
     </div>

@@ -216,6 +216,81 @@ describe("pi remote execution", () => {
     expect(restoreWorkspaceFromSshExecution).toHaveBeenCalledTimes(1);
   });
 
+  it("ships the managed Pi agent config and repoints PI_CODING_AGENT_DIR when PAPERCLIP_PI_PROVIDERS is set", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-pi-remote-providers-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "workspace");
+    const managedRemoteWorkspace = "/remote/workspace/.paperclip-runtime/runs/run-providers/workspace";
+    await mkdir(workspaceDir, { recursive: true });
+
+    const providers = {
+      tensorix: {
+        baseUrl: "http://gateway.example.svc.cluster.local:8080/anthropic",
+        apiKey: "{env:ANTHROPIC_API_KEY}",
+        api: "anthropic-messages",
+        models: [{ id: "deepseek/deepseek-chat-v3.1", name: "DeepSeek v3.1" }],
+      },
+    };
+
+    await execute({
+      runId: "run-providers",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Pi Builder",
+        adapterType: "pi_local",
+        adapterConfig: {},
+      },
+      runtime: {
+        sessionId: null,
+        sessionParams: null,
+        sessionDisplayId: null,
+        taskKey: null,
+      },
+      config: {
+        command: "pi",
+        model: "tensorix/deepseek/deepseek-chat-v3.1",
+        env: {
+          PAPERCLIP_PI_PROVIDERS: JSON.stringify(providers),
+          ANTHROPIC_API_KEY: "sk-bf-REALVK",
+        },
+      },
+      context: {
+        paperclipWorkspace: {
+          cwd: workspaceDir,
+          source: "project_primary",
+        },
+      },
+      executionTransport: {
+        remoteExecution: {
+          host: "127.0.0.1",
+          port: 2222,
+          username: "fixture",
+          remoteWorkspacePath: "/remote/workspace",
+          remoteCwd: "/remote/workspace",
+          privateKey: "PRIVATE KEY",
+          knownHosts: "[127.0.0.1]:2222 ssh-ed25519 AAAA",
+          strictHostKeyChecking: true,
+        },
+      },
+      onLog: async () => {},
+    });
+
+    expect(syncDirectoryToSsh).toHaveBeenCalledWith(expect.objectContaining({
+      remoteDir: `${managedRemoteWorkspace}/.paperclip-runtime/pi/agentConfig`,
+    }));
+    const call = runChildProcess.mock.calls[0] as unknown as
+      | [string, string, string[], { env: Record<string, string> }]
+      | undefined;
+    expect(call?.[3].env.PI_CODING_AGENT_DIR).toBe(
+      `${managedRemoteWorkspace}/.paperclip-runtime/pi/agentConfig`,
+    );
+    expect(call?.[2]).toContain("--provider");
+    expect(call?.[2]).toContain("tensorix");
+    expect(call?.[2]).toContain("--model");
+    expect(call?.[2]).toContain("deepseek/deepseek-chat-v3.1");
+  });
+
   it("resumes saved Pi sessions for remote SSH execution only when the identity matches", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-pi-remote-resume-"));
     cleanupDirs.push(rootDir);

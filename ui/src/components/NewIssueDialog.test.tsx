@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
-import { act } from "react";
 import type { ComponentProps, ReactNode } from "react";
+import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -11,6 +11,14 @@ const dialogState = vi.hoisted(() => ({
   newIssueOpen: true,
   newIssueDefaults: {} as Record<string, unknown>,
   closeNewIssue: vi.fn(),
+}));
+
+const dialogContentState = vi.hoisted(() => ({
+  onEscapeKeyDown: null as null | ((event: KeyboardEvent) => void),
+  onPointerDownOutside: null as null | ((event: {
+    detail: { originalEvent: { target: EventTarget | null } };
+    preventDefault: () => void;
+  }) => void),
 }));
 
 const companyState = vi.hoisted(() => ({
@@ -45,6 +53,7 @@ const mockIssuesApi = vi.hoisted(() => ({
 
 const mockExecutionWorkspacesApi = vi.hoisted(() => ({
   list: vi.fn(),
+  listSummaries: vi.fn(),
 }));
 
 const mockProjectsApi = vi.hoisted(() => ({
@@ -67,6 +76,7 @@ const mockAssetsApi = vi.hoisted(() => ({
 const mockInstanceSettingsApi = vi.hoisted(() => ({
   getExperimental: vi.fn(),
 }));
+const mockMissingUserSecretsBannerRender = vi.hoisted(() => vi.fn());
 
 vi.mock("../context/DialogContext", () => ({
   useDialog: () => dialogState,
@@ -107,6 +117,20 @@ vi.mock("../api/assets", () => ({
 vi.mock("../api/instanceSettings", () => ({
   instanceSettingsApi: mockInstanceSettingsApi,
 }));
+
+vi.mock("../pages/secrets/MissingUserSecretsBanner", async () => {
+  const React = await import("react");
+  return {
+    MissingUserSecretsBanner: (props: { definitionKeys?: string[] }) => {
+      mockMissingUserSecretsBannerRender(props);
+      return React.createElement(
+        "div",
+        { "data-testid": "missing-user-secrets-banner" },
+        props.definitionKeys?.join(",") ?? "",
+      );
+    },
+  };
+});
 
 vi.mock("../hooks/useProjectOrder", () => ({
   useProjectOrder: ({ projects }: { projects: unknown[] }) => ({
@@ -185,14 +209,18 @@ vi.mock("@/components/ui/dialog", () => ({
   DialogContent: ({
     children,
     showCloseButton: _showCloseButton,
-    onEscapeKeyDown: _onEscapeKeyDown,
-    onPointerDownOutside: _onPointerDownOutside,
+    onEscapeKeyDown,
+    onPointerDownOutside,
     ...props
   }: ComponentProps<"div"> & {
     showCloseButton?: boolean;
-    onEscapeKeyDown?: (event: unknown) => void;
+    onEscapeKeyDown?: (event: KeyboardEvent) => void;
     onPointerDownOutside?: (event: unknown) => void;
-  }) => <div {...props}>{children}</div>,
+  }) => {
+    dialogContentState.onEscapeKeyDown = onEscapeKeyDown ?? null;
+    dialogContentState.onPointerDownOutside = onPointerDownOutside as typeof dialogContentState.onPointerDownOutside;
+    return <div {...props}>{children}</div>;
+  },
 }));
 
 vi.mock("@/components/ui/button", () => ({
@@ -210,11 +238,23 @@ vi.mock("@/components/ui/toggle-switch", () => ({
 vi.mock("@/components/ui/popover", () => ({
   Popover: ({ children }: { children: ReactNode }) => <div>{children}</div>,
   PopoverTrigger: ({ children }: { children: ReactNode }) => <>{children}</>,
-  PopoverContent: ({ children }: { children: ReactNode }) => <div>{children}</div>,
+  PopoverContent: ({ children, disablePortal }: { children: ReactNode; disablePortal?: boolean }) => (
+    <div data-disable-portal={String(Boolean(disablePortal))}>{children}</div>
+  ),
 }));
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 (globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+
+function act(callback: () => void | Promise<void>): void | Promise<void> {
+  let result: unknown;
+  flushSync(() => {
+    result = callback();
+  });
+  return result && typeof (result as Promise<void>).then === "function"
+    ? (result as Promise<void>).then(() => undefined)
+    : undefined;
+}
 
 async function flush() {
   await act(async () => {
@@ -277,19 +317,30 @@ function renderDialog(container: HTMLDivElement) {
 
 describe("NewIssueDialog", () => {
   let container: HTMLDivElement;
+  let originalResizeObserver: typeof ResizeObserver | undefined;
 
   beforeEach(() => {
     vi.useRealTimers();
+    originalResizeObserver = globalThis.ResizeObserver;
+    globalThis.ResizeObserver = class ResizeObserver {
+      observe() {}
+      unobserve() {}
+      disconnect() {}
+    };
     container = document.createElement("div");
     document.body.appendChild(container);
     dialogState.newIssueOpen = true;
     dialogState.newIssueDefaults = {};
     dialogState.closeNewIssue.mockReset();
+    dialogContentState.onEscapeKeyDown = null;
+    dialogContentState.onPointerDownOutside = null;
     toastState.pushToast.mockReset();
     mockIssuesApi.create.mockReset();
     mockIssuesApi.upsertDocument.mockReset();
     mockIssuesApi.uploadAttachment.mockReset();
-    mockExecutionWorkspacesApi.list.mockResolvedValue([]);
+    mockExecutionWorkspacesApi.list.mockReset();
+    mockExecutionWorkspacesApi.listSummaries.mockReset();
+    mockExecutionWorkspacesApi.listSummaries.mockResolvedValue([]);
     mockProjectsApi.list.mockResolvedValue([
       {
         id: "project-1",
@@ -304,6 +355,7 @@ describe("NewIssueDialog", () => {
     mockAuthApi.getSession.mockResolvedValue({ user: { id: "user-1" } });
     mockAssetsApi.uploadImage.mockResolvedValue({ contentPath: "/uploads/asset.png" });
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: false });
+    mockMissingUserSecretsBannerRender.mockReset();
     localStorage.clear();
     mockIssuesApi.create.mockResolvedValue({
       id: "issue-2",
@@ -313,6 +365,7 @@ describe("NewIssueDialog", () => {
   });
 
   afterEach(() => {
+    globalThis.ResizeObserver = originalResizeObserver!;
     document.body.innerHTML = "";
   });
 
@@ -328,11 +381,11 @@ describe("NewIssueDialog", () => {
     const { root } = renderDialog(container);
     await flush();
 
-    expect(container.textContent).toContain("New sub-issue");
-    expect(container.textContent).toContain("Sub-issue of");
+    expect(container.textContent).toContain("New sub-task");
+    expect(container.textContent).toContain("Sub-task of");
     expect(container.textContent).toContain("PAP-1");
     expect(container.textContent).toContain("Parent issue");
-    expect(container.textContent).toContain("Create Sub-Issue");
+    expect(container.textContent).toContain("Create Sub-Task");
 
     act(() => root.unmount());
 
@@ -340,9 +393,9 @@ describe("NewIssueDialog", () => {
     const rerendered = renderDialog(container);
     await flush();
 
-    expect(container.textContent).toContain("New issue");
-    expect(container.textContent).toContain("Create Issue");
-    expect(container.textContent).not.toContain("Sub-issue of");
+    expect(container.textContent).toContain("New task");
+    expect(container.textContent).toContain("Create Task");
+    expect(container.textContent).not.toContain("Sub-task of");
 
     act(() => rerendered.root.unmount());
   });
@@ -361,13 +414,15 @@ describe("NewIssueDialog", () => {
         },
       },
     ]);
-    mockExecutionWorkspacesApi.list.mockResolvedValue([
+    mockExecutionWorkspacesApi.listSummaries.mockResolvedValue([
       {
         id: "workspace-1",
         name: "Parent workspace",
+        mode: "isolated_workspace",
         status: "active",
         branchName: "feature/pap-1",
         cwd: "/tmp/workspace-1",
+        projectWorkspaceId: null,
         lastUsedAt: new Date("2026-04-06T16:00:00.000Z"),
       },
     ]);
@@ -385,8 +440,17 @@ describe("NewIssueDialog", () => {
     const { root } = renderDialog(container);
     await flush();
 
+    await waitForAssertion(() => {
+      expect(mockExecutionWorkspacesApi.listSummaries).toHaveBeenCalledWith("company-1", {
+        projectId: "project-1",
+        projectWorkspaceId: undefined,
+        reuseEligible: true,
+      });
+    });
+    expect(mockExecutionWorkspacesApi.list).not.toHaveBeenCalled();
+
     const submitButton = Array.from(container.querySelectorAll("button"))
-      .find((button) => button.textContent?.includes("Create Sub-Issue"));
+      .find((button) => button.textContent?.includes("Create Sub-Task"));
     expect(submitButton).not.toBeUndefined();
     await waitForAssertion(() => {
       expect(submitButton?.hasAttribute("disabled")).toBe(false);
@@ -412,6 +476,64 @@ describe("NewIssueDialog", () => {
     act(() => root.unmount());
   });
 
+  it("does not show user-secret warnings when the draft will not run an env binding that needs them", async () => {
+    const { root } = renderDialog(container);
+    await flush();
+
+    expect(mockMissingUserSecretsBannerRender).not.toHaveBeenCalled();
+
+    act(() => root.unmount());
+  });
+
+  it("scopes user-secret warnings to selected runnable agent and project env bindings", async () => {
+    dialogState.newIssueDefaults = {
+      title: "Run with scoped secrets",
+      assigneeAgentId: "agent-1",
+      projectId: "project-1",
+    };
+    mockAgentsApi.list.mockResolvedValue([
+      {
+        id: "agent-1",
+        name: "CodexCoder",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {
+          env: {
+            AGENT_TOKEN: { type: "user_secret_ref", key: "agent_token", required: true },
+            OPTIONAL_TOKEN: { type: "user_secret_ref", key: "optional_token", required: false },
+          },
+        },
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+    mockProjectsApi.list.mockResolvedValue([
+      {
+        id: "project-1",
+        name: "Alpha",
+        description: null,
+        archivedAt: null,
+        color: "#445566",
+        env: {
+          PROJECT_TOKEN: { type: "user_secret_ref", key: "project_token", required: true },
+        },
+      },
+    ]);
+
+    const { root } = renderDialog(container);
+    await waitForAssertion(() => {
+      expect(mockMissingUserSecretsBannerRender).toHaveBeenCalledWith(
+        expect.objectContaining({
+          definitionKeys: ["agent_token", "project_token"],
+        }),
+      );
+    });
+
+    expect(container.textContent).toContain("agent_token,project_token");
+
+    act(() => root.unmount());
+  });
+
   it("restores the planning mode from dialog defaults", async () => {
     dialogState.newIssueDefaults = {
       title: "Planned from defaults",
@@ -425,7 +547,7 @@ describe("NewIssueDialog", () => {
     expect(planningButton?.className).toContain("bg-accent");
 
     const submitButton = Array.from(container.querySelectorAll("button"))
-      .find((button) => button.textContent?.includes("Create Issue"));
+      .find((button) => button.textContent?.includes("Create Task"));
     expect(submitButton).not.toBeUndefined();
     await vi.waitFor(() => {
       expect(submitButton?.hasAttribute("disabled")).toBe(false);
@@ -441,6 +563,41 @@ describe("NewIssueDialog", () => {
       expect.objectContaining({
         title: "Planned from defaults",
         workMode: "planning",
+      }),
+    );
+
+    act(() => root.unmount());
+  });
+
+  it("restores ask mode from dialog defaults", async () => {
+    dialogState.newIssueDefaults = {
+      title: "Question from defaults",
+      workMode: "ask",
+    };
+
+    const { root } = renderDialog(container);
+    await flush();
+
+    const askButton = container.querySelector('[data-issue-work-mode="ask"]');
+    expect(askButton?.className).toContain("bg-accent");
+
+    const submitButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Create Task"));
+    expect(submitButton).not.toBeUndefined();
+    await vi.waitFor(() => {
+      expect(submitButton?.hasAttribute("disabled")).toBe(false);
+    });
+
+    await act(async () => {
+      submitButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    expect(mockIssuesApi.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        title: "Question from defaults",
+        workMode: "ask",
       }),
     );
 
@@ -473,7 +630,7 @@ describe("NewIssueDialog", () => {
         },
       },
     ]);
-    mockExecutionWorkspacesApi.list.mockResolvedValue([
+    mockExecutionWorkspacesApi.listSummaries.mockResolvedValue([
       {
         id: "workspace-1",
         name: "PAP-100",
@@ -481,6 +638,7 @@ describe("NewIssueDialog", () => {
         status: "active",
         branchName: "feature/pap-100",
         cwd: "/tmp/workspace-1",
+        projectWorkspaceId: "project-workspace-2",
         lastUsedAt: new Date("2026-04-06T16:00:00.000Z"),
       },
     ]);
@@ -495,14 +653,14 @@ describe("NewIssueDialog", () => {
     const { root } = renderDialog(container);
     await flush();
 
-    expect(container.textContent).toContain("New issue");
-    expect(container.textContent).not.toContain("New sub-issue");
+    expect(container.textContent).toContain("New task");
+    expect(container.textContent).not.toContain("New sub-task");
     await waitForAssertion(() => {
       expect(container.textContent).toContain("Reusing PAP-100");
     });
 
     const submitButton = Array.from(container.querySelectorAll("button"))
-      .find((button) => button.textContent?.includes("Create Issue"));
+      .find((button) => button.textContent?.includes("Create Task"));
     expect(submitButton).not.toBeUndefined();
 
     await act(async () => {
@@ -527,6 +685,57 @@ describe("NewIssueDialog", () => {
     act(() => root.unmount());
   });
 
+  it("keeps the reusable workspace search popover inside the modal", async () => {
+    mockProjectsApi.list.mockResolvedValue([
+      {
+        id: "project-1",
+        name: "Alpha",
+        description: null,
+        archivedAt: null,
+        color: "#445566",
+        workspaces: [
+          {
+            id: "project-workspace-1",
+            name: "Primary",
+            isPrimary: true,
+          },
+        ],
+        executionWorkspacePolicy: {
+          enabled: true,
+          defaultMode: "shared_workspace",
+        },
+      },
+    ]);
+    mockExecutionWorkspacesApi.listSummaries.mockResolvedValue([
+      {
+        id: "workspace-1",
+        name: "PAP-11446-on-mobile-the-agent-chat",
+        mode: "isolated_workspace",
+        status: "active",
+        branchName: "PAP-11446-on-mobile-the-agent-chat",
+        cwd: "/tmp/workspace-1",
+        projectWorkspaceId: "project-workspace-1",
+        lastUsedAt: new Date("2026-04-06T16:00:00.000Z"),
+      },
+    ]);
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: true });
+    dialogState.newIssueDefaults = {
+      title: "Follow-up issue",
+      projectId: "project-1",
+      executionWorkspaceId: "workspace-1",
+    };
+
+    const { root } = renderDialog(container);
+    await flush();
+
+    await waitForAssertion(() => {
+      const workspaceInput = container.querySelector('input[placeholder="Search workspaces..."]');
+      expect(workspaceInput?.closest("[data-disable-portal]")?.getAttribute("data-disable-portal")).toBe("true");
+    });
+
+    act(() => root.unmount());
+  });
+
   it("submits the latest locally typed title and description", async () => {
     let resolveProjects: (projects: Array<{
       id: string;
@@ -542,7 +751,7 @@ describe("NewIssueDialog", () => {
     const { root } = renderDialog(container);
     await flush();
 
-    const titleInput = container.querySelector('textarea[placeholder="Issue title"]') as HTMLTextAreaElement | null;
+    const titleInput = container.querySelector('textarea[placeholder="Task title"]') as HTMLTextAreaElement | null;
     const descriptionInput = container.querySelector('textarea[aria-label="Add description..."]') as HTMLTextAreaElement | null;
     expect(titleInput).not.toBeNull();
     expect(descriptionInput).not.toBeNull();
@@ -565,7 +774,7 @@ describe("NewIssueDialog", () => {
     await flush();
 
     const submitButton = Array.from(container.querySelectorAll("button"))
-      .find((button) => button.textContent?.includes("Create Issue"));
+      .find((button) => button.textContent?.includes("Create Task"));
     expect(submitButton).not.toBeUndefined();
     await vi.waitFor(() => {
       expect(submitButton?.hasAttribute("disabled")).toBe(false);
@@ -588,11 +797,54 @@ describe("NewIssueDialog", () => {
     act(() => root.unmount());
   });
 
+  it("submits Chinese, Japanese, and Hindi issue text without normalization", async () => {
+    const title = "验证中文任务";
+    const description = [
+      "请用中文回复。",
+      "日本語: 次の手順を書いてください。",
+      "हिन्दी: कृपया स्थिति बताएं।",
+    ].join("\n");
+
+    const { root } = renderDialog(container);
+    await flush();
+
+    const titleInput = container.querySelector('textarea[placeholder="Task title"]') as HTMLTextAreaElement | null;
+    const descriptionInput = container.querySelector('textarea[aria-label="Add description..."]') as HTMLTextAreaElement | null;
+    expect(titleInput).not.toBeNull();
+    expect(descriptionInput).not.toBeNull();
+
+    await typeTextareaValue(titleInput!, title);
+    await typeTextareaValue(descriptionInput!, description);
+
+    const submitButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Create Task"));
+    expect(submitButton).not.toBeUndefined();
+    await vi.waitFor(() => {
+      expect(submitButton?.hasAttribute("disabled")).toBe(false);
+    });
+
+    await act(async () => {
+      submitButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    expect(mockIssuesApi.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        title,
+        description,
+        workMode: "standard",
+      }),
+    );
+
+    act(() => root.unmount());
+  });
+
   it("submits planning work mode when planning is selected", async () => {
     const { root } = renderDialog(container);
     await flush();
 
-    const titleInput = container.querySelector('textarea[placeholder="Issue title"]') as HTMLTextAreaElement | null;
+    const titleInput = container.querySelector('textarea[placeholder="Task title"]') as HTMLTextAreaElement | null;
     expect(titleInput).not.toBeNull();
     await typeTextareaValue(titleInput!, "Plan this first");
 
@@ -604,7 +856,7 @@ describe("NewIssueDialog", () => {
     await flush();
 
     const submitButton = Array.from(container.querySelectorAll("button"))
-      .find((button) => button.textContent?.includes("Create Issue"));
+      .find((button) => button.textContent?.includes("Create Task"));
     expect(submitButton).not.toBeUndefined();
     await vi.waitFor(() => {
       expect(submitButton?.hasAttribute("disabled")).toBe(false);
@@ -626,6 +878,154 @@ describe("NewIssueDialog", () => {
     act(() => root.unmount());
   });
 
+  it("submits ask work mode when ask is selected", async () => {
+    const { root } = renderDialog(container);
+    await flush();
+
+    const titleInput = container.querySelector('textarea[placeholder="Task title"]') as HTMLTextAreaElement | null;
+    expect(titleInput).not.toBeNull();
+    await typeTextareaValue(titleInput!, "Answer this first");
+
+    const askButton = container.querySelector('[data-issue-work-mode="ask"]');
+    expect(askButton).not.toBeNull();
+    await act(async () => {
+      askButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    const submitButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Create Task"));
+    expect(submitButton).not.toBeUndefined();
+    await vi.waitFor(() => {
+      expect(submitButton?.hasAttribute("disabled")).toBe(false);
+    });
+
+    await act(async () => {
+      submitButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    expect(mockIssuesApi.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        title: "Answer this first",
+        workMode: "ask",
+      }),
+    );
+
+    act(() => root.unmount());
+  });
+
+  it("cycles work modes with cmd-period", async () => {
+    const { root } = renderDialog(container);
+    await flush();
+
+    const modeChip = () => container.querySelector("[data-issue-work-mode-chip]");
+    expect(modeChip()?.getAttribute("data-issue-work-mode-chip")).toBe("standard");
+
+    await act(async () => {
+      modeChip()?.dispatchEvent(new KeyboardEvent("keydown", {
+        bubbles: true,
+        code: "",
+        key: ".",
+        metaKey: true,
+      }));
+    });
+    expect(modeChip()?.getAttribute("data-issue-work-mode-chip")).toBe("planning");
+
+    await act(async () => {
+      modeChip()?.dispatchEvent(new KeyboardEvent("keydown", {
+        bubbles: true,
+        code: "Period",
+        key: ".",
+        metaKey: true,
+      }));
+    });
+    expect(modeChip()?.getAttribute("data-issue-work-mode-chip")).toBe("ask");
+
+    await act(async () => {
+      modeChip()?.dispatchEvent(new KeyboardEvent("keydown", {
+        bubbles: true,
+        code: "Period",
+        key: ".",
+        metaKey: true,
+      }));
+    });
+    expect(modeChip()?.getAttribute("data-issue-work-mode-chip")).toBe("standard");
+
+    act(() => root.unmount());
+  });
+
+  it("cycles work modes when iOS reports cmd-period as Escape", async () => {
+    const { root } = renderDialog(container);
+    await flush();
+
+    const modeChip = () => container.querySelector("[data-issue-work-mode-chip]");
+    expect(modeChip()?.getAttribute("data-issue-work-mode-chip")).toBe("standard");
+    expect(dialogContentState.onEscapeKeyDown).not.toBeNull();
+
+    const commandPeriodAsEscape = new KeyboardEvent("keydown", {
+      bubbles: true,
+      cancelable: true,
+      key: "Escape",
+      metaKey: true,
+    });
+    await act(async () => {
+      dialogContentState.onEscapeKeyDown?.(commandPeriodAsEscape);
+    });
+
+    expect(commandPeriodAsEscape.defaultPrevented).toBe(true);
+    expect(modeChip()?.getAttribute("data-issue-work-mode-chip")).toBe("planning");
+    expect(dialogState.closeNewIssue).not.toHaveBeenCalled();
+
+    const plainEscape = new KeyboardEvent("keydown", {
+      bubbles: true,
+      cancelable: true,
+      key: "Escape",
+    });
+    await act(async () => {
+      dialogContentState.onEscapeKeyDown?.(plainEscape);
+    });
+
+    expect(plainEscape.defaultPrevented).toBe(false);
+    expect(modeChip()?.getAttribute("data-issue-work-mode-chip")).toBe("planning");
+
+    const controlEscape = new KeyboardEvent("keydown", {
+      bubbles: true,
+      cancelable: true,
+      ctrlKey: true,
+      key: "Escape",
+    });
+    await act(async () => {
+      dialogContentState.onEscapeKeyDown?.(controlEscape);
+    });
+
+    expect(controlEscape.defaultPrevented).toBe(false);
+    expect(modeChip()?.getAttribute("data-issue-work-mode-chip")).toBe("planning");
+
+    act(() => root.unmount());
+  });
+
+  it("cycles work modes with ctrl-period", async () => {
+    const { root } = renderDialog(container);
+    await flush();
+
+    const modeChip = () => container.querySelector("[data-issue-work-mode-chip]");
+    expect(modeChip()?.getAttribute("data-issue-work-mode-chip")).toBe("standard");
+
+    await act(async () => {
+      modeChip()?.dispatchEvent(new KeyboardEvent("keydown", {
+        bubbles: true,
+        code: "Period",
+        key: ".",
+        ctrlKey: true,
+      }));
+    });
+    expect(modeChip()?.getAttribute("data-issue-work-mode-chip")).toBe("planning");
+
+    act(() => root.unmount());
+  });
+
   it("submits the parent assignee when a sub-issue opens with inherited defaults", async () => {
     dialogState.newIssueDefaults = {
       parentId: "issue-1",
@@ -641,7 +1041,7 @@ describe("NewIssueDialog", () => {
     await flush();
 
     const submitButton = Array.from(container.querySelectorAll("button"))
-      .find((button) => button.textContent?.includes("Create Sub-Issue"));
+      .find((button) => button.textContent?.includes("Create Sub-Task"));
     expect(submitButton).not.toBeUndefined();
 
     await act(async () => {
@@ -668,12 +1068,14 @@ describe("NewIssueDialog", () => {
     await flush();
 
     const dialogContent = Array.from(container.querySelectorAll("div")).find((element) =>
-      typeof element.className === "string" && element.className.includes("max-h-[calc(100dvh-2rem)]"),
+      typeof element.className === "string" && element.className.includes("max-h-(--new-issue-dialog-height)"),
     );
-    expect(dialogContent?.className).toContain("h-[calc(100dvh-2rem)]");
+    expect(dialogContent?.className).toContain("h-(--new-issue-dialog-height)");
     expect(dialogContent?.className).toContain("overflow-hidden");
+    expect(dialogContent?.getAttribute("style")).toContain("env(safe-area-inset-top)");
+    expect(dialogContent?.getAttribute("style")).toContain("env(safe-area-inset-bottom)");
 
-    const titleInput = container.querySelector('textarea[placeholder="Issue title"]');
+    const titleInput = container.querySelector('textarea[placeholder="Task title"]');
     const descriptionInput = container.querySelector('textarea[aria-label="Add description..."]');
     const bodyScrollRegion = Array.from(container.querySelectorAll("div")).find((element) =>
       typeof element.className === "string" && element.className.includes("overscroll-contain"),
@@ -682,6 +1084,49 @@ describe("NewIssueDialog", () => {
     expect(bodyScrollRegion?.className).toContain("overflow-y-auto");
     expect(bodyScrollRegion?.contains(titleInput ?? null)).toBe(true);
     expect(bodyScrollRegion?.contains(descriptionInput ?? null)).toBe(true);
+
+    act(() => root.unmount());
+  });
+
+  it("keeps priority under the mobile overflow menu", async () => {
+    const { root } = renderDialog(container);
+    await flush();
+
+    const priorityChip = container.querySelector('[data-testid="new-issue-priority-chip"]');
+    expect(priorityChip?.className).toContain("hidden");
+    expect(priorityChip?.className).toContain("sm:inline-flex");
+
+    const highPriorityOption = container.querySelector('[data-testid="new-issue-more-priority-high"]');
+    expect(highPriorityOption?.textContent).toContain("High");
+
+    await act(async () => {
+      highPriorityOption?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    const selectedHighPriorityOption = container.querySelector('[data-testid="new-issue-more-priority-high"]');
+    expect(selectedHighPriorityOption?.className).toContain("bg-accent");
+
+    act(() => root.unmount());
+  });
+
+  it("allows editor autocomplete portal pointer events inside the modal", async () => {
+    const { root } = renderDialog(container);
+    await flush();
+
+    const menu = document.createElement("div");
+    menu.setAttribute("data-paperclip-floating-ui", "");
+    const option = document.createElement("button");
+    menu.appendChild(option);
+    document.body.appendChild(menu);
+    const preventDefault = vi.fn();
+
+    dialogContentState.onPointerDownOutside?.({
+      detail: { originalEvent: { target: option } },
+      preventDefault,
+    });
+
+    expect(preventDefault).toHaveBeenCalledTimes(1);
 
     act(() => root.unmount());
   });
@@ -700,21 +1145,25 @@ describe("NewIssueDialog", () => {
         },
       },
     ]);
-    mockExecutionWorkspacesApi.list.mockResolvedValue([
+    mockExecutionWorkspacesApi.listSummaries.mockResolvedValue([
       {
         id: "workspace-1",
         name: "Parent workspace",
+        mode: "isolated_workspace",
         status: "active",
         branchName: "feature/pap-1",
         cwd: "/tmp/workspace-1",
+        projectWorkspaceId: null,
         lastUsedAt: new Date("2026-04-06T16:00:00.000Z"),
       },
       {
         id: "workspace-2",
         name: "Other workspace",
+        mode: "isolated_workspace",
         status: "active",
         branchName: "feature/pap-2",
         cwd: "/tmp/workspace-2",
+        projectWorkspaceId: null,
         lastUsedAt: new Date("2026-04-06T16:01:00.000Z"),
       },
     ]);
@@ -734,7 +1183,7 @@ describe("NewIssueDialog", () => {
     await flush();
     await flush();
 
-    expect(container.textContent).not.toContain("will no longer use the parent issue workspace");
+    expect(container.textContent).not.toContain("will no longer use the parent task workspace");
 
     const selects = Array.from(container.querySelectorAll("select"));
     const modeSelect = selects[0] as HTMLSelectElement | undefined;
@@ -746,9 +1195,123 @@ describe("NewIssueDialog", () => {
     });
     await flush();
 
-    expect(container.textContent).toContain("will no longer use the parent issue workspace");
+    expect(container.textContent).toContain("will no longer use the parent task workspace");
     expect(container.textContent).toContain("Parent workspace");
 
     act(() => root.unmount());
+  });
+
+  it("reveals the watchdog editor from the overflow menu", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableIsolatedWorkspaces: false,
+      enableTaskWatchdogs: true,
+    });
+
+    const { root } = renderDialog(container);
+    await flush();
+
+    // The watchdog row is hidden until the menu item is toggled on.
+    expect(container.querySelector('textarea[placeholder^="What should the watchdog"]')).toBeNull();
+
+    const watchdogMenuItem = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.trim() === "Watchdog");
+    expect(watchdogMenuItem).not.toBeUndefined();
+
+    await act(async () => {
+      watchdogMenuItem!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    expect(container.textContent).toContain("Set watchdog");
+    expect(container.querySelector('textarea[placeholder^="What should the watchdog"]')).not.toBeNull();
+
+    act(() => root.unmount());
+  });
+
+  it("submits the configured watchdog from a restored draft", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({
+      enableIsolatedWorkspaces: false,
+      enableTaskWatchdogs: true,
+    });
+    localStorage.setItem(
+      "paperclip:issue-draft",
+      JSON.stringify({
+        title: "Watched task",
+        description: "",
+        status: "todo",
+        priority: "medium",
+        assigneeValue: "",
+        reviewerValue: "",
+        approverValue: "",
+        watchdogAgentId: "agent-9",
+        watchdogInstructions: "Keep it moving",
+        projectId: "",
+        assigneeModelOverride: "",
+        assigneeThinkingEffort: "",
+        assigneeChrome: false,
+        workMode: "standard",
+      }),
+    );
+
+    const { root } = renderDialog(container);
+    await flush();
+
+    expect(container.textContent).toContain("Keep it moving");
+
+    const submitButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Create Task"));
+    expect(submitButton).not.toBeUndefined();
+    await vi.waitFor(() => {
+      expect(submitButton?.hasAttribute("disabled")).toBe(false);
+    });
+
+    await act(async () => {
+      submitButton!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    expect(mockIssuesApi.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        title: "Watched task",
+        watchdog: { agentId: "agent-9", instructions: "Keep it moving" },
+      }),
+    );
+
+    act(() => root.unmount());
+  });
+
+  describe("graduated work-mode labels and status hues", () => {
+    function workModeOption(value: string) {
+      return container.querySelector(`[data-issue-work-mode="${value}"]`);
+    }
+
+    function statusOptionIconClass(label: string, description?: string) {
+      const button = Array.from(container.querySelectorAll("button")).find((candidate) => {
+        const text = candidate.textContent ?? "";
+        return (
+          candidate.querySelector("svg") !== null &&
+          text.includes(label) &&
+          (description === undefined || text.includes(description))
+        );
+      });
+      return button?.querySelector("svg")?.getAttribute("class") ?? "";
+    }
+
+    it("uses agent-mode labels and brand status hues by default", async () => {
+      const { root } = renderDialog(container);
+      await waitForAssertion(() => {
+        expect(workModeOption("standard")?.textContent).toContain("Agent mode");
+      });
+
+      expect(workModeOption("standard")?.textContent).toContain("Agent mode");
+      expect(workModeOption("ask")?.textContent).toContain("Ask mode");
+      expect(workModeOption("planning")?.textContent).toContain("Plan mode");
+
+      expect(statusOptionIconClass("Todo", "Executable - assignee will be woken")).toContain("text-amber-600");
+      expect(statusOptionIconClass("In Progress")).toContain("text-blue-600");
+
+      act(() => root.unmount());
+    });
   });
 });

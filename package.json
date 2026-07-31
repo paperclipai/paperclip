@@ -3,6 +3,7 @@
   "private": true,
   "type": "module",
   "scripts": {
+    "postinstall": "node scripts/link-plugin-dev-sdk.mjs",
     "preflight:workspace-links": "node cli/node_modules/tsx/dist/cli.mjs scripts/ensure-workspace-package-links.ts",
     "dev": "pnpm --filter @paperclipai/server exec tsx ../scripts/dev-runner.ts watch",
     "dev:watch": "pnpm --filter @paperclipai/server exec tsx ../scripts/dev-runner.ts watch",
@@ -14,13 +15,14 @@
     "storybook": "pnpm --filter @paperclipai/ui storybook",
     "build-storybook": "pnpm --filter @paperclipai/ui build-storybook",
     "build": "pnpm run preflight:workspace-links && pnpm -r build",
+    "build:feature-catalog": "node cli/node_modules/tsx/dist/cli.mjs scripts/generate-feature-catalog.ts",
     "typecheck": "pnpm run preflight:workspace-links && pnpm -r typecheck",
-    "typecheck:build-gaps": "pnpm run preflight:workspace-links && node scripts/run-typecheck-build-gaps.mjs",
+    "typecheck:build-gaps": "pnpm run preflight:workspace-links && pnpm --filter @paperclipai/plugin-sdk ensure-build-deps && pnpm --filter @paperclipai/server build && node scripts/run-typecheck-build-gaps.mjs",
     "test": "pnpm run test:run",
     "test:watch": "pnpm run preflight:workspace-links && vitest",
     "test:run": "pnpm run preflight:workspace-links && node scripts/run-vitest-stable.mjs",
-    "test:run:general": "pnpm run preflight:workspace-links && pnpm --filter @paperclipai/plugin-sdk build && node scripts/run-vitest-stable.mjs --mode general",
-    "test:run:serialized": "pnpm run preflight:workspace-links && pnpm --filter @paperclipai/plugin-sdk build && node scripts/run-vitest-stable.mjs --mode serialized",
+    "test:run:general": "pnpm run preflight:workspace-links && pnpm --filter @paperclipai/plugin-sdk ensure-build-deps && node scripts/run-vitest-stable.mjs --mode general",
+    "test:run:serialized": "pnpm run preflight:workspace-links && pnpm --filter @paperclipai/plugin-sdk ensure-build-deps && node scripts/run-vitest-stable.mjs --mode serialized",
     "db:generate": "pnpm --filter @paperclipai/db generate",
     "db:migrate": "pnpm --filter @paperclipai/db migrate",
     "issue-references:backfill": "pnpm run preflight:workspace-links && tsx scripts/backfill-issue-reference-mentions.ts",
@@ -35,27 +37,40 @@
     "release:rollback": "./scripts/rollback-latest.sh",
     "release:bootstrap-package": "node scripts/bootstrap-npm-package.mjs",
     "check:tokens": "node scripts/check-forbidden-tokens.mjs",
+    "check:token-gates": "node scripts/check-token-gates.mjs",
+    "check:no-git-push": "node scripts/check-no-git-push.mjs",
+    "test:check-no-git-push": "node --test scripts/check-no-git-push.test.mjs",
+    "test:hermes-gateway-smoke": "node --test scripts/smoke/hermes-gateway-smoke.test.mjs",
     "docs:dev": "cd docs && npx mintlify dev",
+    "smoke:hermes-gateway-join": "./scripts/smoke/hermes-gateway-join.sh",
+    "smoke:hermes-gateway-e2e": "./scripts/smoke/hermes-gateway-e2e.sh",
     "smoke:openclaw-join": "./scripts/smoke/openclaw-join.sh",
     "smoke:openclaw-docker-ui": "./scripts/smoke/openclaw-docker-ui.sh",
     "smoke:openclaw-sse-standalone": "./scripts/smoke/openclaw-sse-standalone.sh",
+    "smoke:mcp-fixtures": "node scripts/smoke/mcp-fixture-harness.mjs",
+    "smoke:pipelines-tutorial": "./scripts/smoke/pipelines-tutorial-smoke.sh",
     "smoke:terminal-bench-loop-skill": "node scripts/smoke/terminal-bench-loop-skill-smoke.mjs",
-    "test:release-registry": "node --test scripts/verify-release-registry-state.test.mjs scripts/release-package-map.test.mjs scripts/check-release-package-bootstrap.test.mjs",
+    "test:release-registry": "node --test scripts/verify-release-registry-state.test.mjs scripts/release-package-map.test.mjs scripts/check-release-package-bootstrap.test.mjs scripts/check-no-git-push.test.mjs scripts/release-lib.test.mjs scripts/release-registry-versions.test.mjs scripts/link-plugin-dev-sdk.test.js scripts/acpx-patch-packaging.test.mjs",
+    "storybook-visual:baseline": "node scripts/storybook-visual-baseline.mjs",
+    "test:storybook-visual": "node scripts/storybook-visual-baseline.mjs download && node scripts/storybook-visual-baseline.mjs verify && pnpm build-storybook && npx playwright test --config tests/storybook-visual/playwright.config.ts",
+    "test:storybook-visual:update": "node scripts/storybook-visual-baseline.mjs download && pnpm build-storybook && npx playwright test --config tests/storybook-visual/playwright.config.ts --update-snapshots && node scripts/storybook-visual-baseline.mjs pack",
     "test:e2e": "npx playwright test --config tests/e2e/playwright.config.ts",
+    "test:e2e:mcp-user-stories": "node scripts/e2e-mcp-user-stories.mjs",
     "test:e2e:headed": "npx playwright test --config tests/e2e/playwright.config.ts --headed",
     "test:e2e:multiuser-authenticated": "npx playwright test --config tests/e2e/playwright-multiuser-authenticated.config.ts",
     "evals:smoke": "cd evals/promptfoo && npx promptfoo@0.103.3 eval",
     "test:release-smoke": "npx playwright test --config tests/release-smoke/playwright.config.ts",
     "test:release-smoke:headed": "npx playwright test --config tests/release-smoke/playwright.config.ts --headed",
     "metrics:paperclip-commits": "tsx scripts/paperclip-commit-metrics.ts",
-    "perf:issue-chat-long-thread": "node scripts/measure-issue-chat-long-thread.mjs"
+    "perf:issue-chat-long-thread": "node scripts/measure-issue-chat-long-thread.mjs",
+    "connections:ingest-app-definitions": "node scripts/ingest-app-definitions.mjs"
   },
   "devDependencies": {
-    "@playwright/test": "^1.58.2",
+    "@playwright/test": "^1.61.1",
     "cross-env": "^10.1.0",
-    "esbuild": "^0.27.3",
+    "esbuild": "^0.28.1",
     "typescript": "^5.7.3",
-    "vitest": "^3.0.5"
+    "vitest": "^4.1.10"
   },
   "engines": {
     "node": ">=20"
@@ -63,10 +78,23 @@
   "packageManager": "pnpm@9.15.4",
   "pnpm": {
     "patchedDependencies": {
-      "embedded-postgres@18.1.0-beta.16": "patches/embedded-postgres@18.1.0-beta.16.patch"
+      "embedded-postgres@18.1.0-beta.16": "patches/embedded-postgres@18.1.0-beta.16.patch",
+      "acpx@0.12.0": "patches/acpx@0.12.0.patch"
     },
     "overrides": {
-      "rollup": ">=4.59.0"
+      "rollup": ">=4.59.0",
+      "react": "^19.2.7",
+      "react-dom": "^19.2.7",
+      "lexical": "0.46.0",
+      "@lexical/clipboard": "0.46.0",
+      "@lexical/link": "0.46.0",
+      "@lexical/list": "0.46.0",
+      "@lexical/markdown": "0.46.0",
+      "@lexical/plain-text": "0.46.0",
+      "@lexical/react": "0.46.0",
+      "@lexical/rich-text": "0.46.0",
+      "@lexical/selection": "0.46.0",
+      "@lexical/utils": "0.46.0"
     }
   }
 }

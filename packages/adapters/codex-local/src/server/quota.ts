@@ -3,9 +3,14 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import type { ProviderQuotaResult, QuotaWindow } from "@paperclipai/adapter-utils";
+import {
+  classifyCodexAuthRefreshFailure,
+  type CodexAuthRefreshFailureClass,
+} from "./parse.js";
 
 const CODEX_USAGE_SOURCE_RPC = "codex-rpc";
 const CODEX_USAGE_SOURCE_WHAM = "codex-wham";
+const MAX_QUOTA_ERROR_BODY_BYTES = 4_000;
 
 export function codexHomeDir(): string {
   const fromEnv = process.env.CODEX_HOME;
@@ -187,6 +192,16 @@ interface WhamUsageResponse {
   credits?: WhamCredits | null;
 }
 
+class CodexQuotaAuthError extends Error {
+  constructor(
+    message: string,
+    readonly errorFamily: CodexAuthRefreshFailureClass,
+  ) {
+    super(message);
+    this.name = "CodexQuotaAuthError";
+  }
+}
+
 /**
  * Map a window duration in seconds to a human-readable label.
  * Falls back to the provided fallback string when seconds is null/undefined.
@@ -218,6 +233,44 @@ export async function fetchWithTimeout(
   }
 }
 
+async function readResponseTextPrefix(
+  resp: Response,
+  maxBytes = MAX_QUOTA_ERROR_BODY_BYTES,
+): Promise<string> {
+  if (maxBytes <= 0 || !resp.body) return "";
+
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let remainingBytes = maxBytes;
+  let text = "";
+
+  try {
+    while (remainingBytes > 0) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      if (!value || value.byteLength === 0) continue;
+
+      const chunk =
+        value.byteLength > remainingBytes
+          ? value.subarray(0, remainingBytes)
+          : value;
+      text += decoder.decode(chunk, { stream: true });
+      remainingBytes -= chunk.byteLength;
+
+      if (remainingBytes <= 0) {
+        await reader.cancel().catch(() => undefined);
+        break;
+      }
+    }
+    text += decoder.decode();
+    return text;
+  } catch {
+    return "";
+  } finally {
+    reader.releaseLock();
+  }
+}
+
 function normalizeCodexUsedPercent(rawPct: number | null | undefined): number | null {
   if (rawPct == null) return null;
   return Math.min(100, Math.round(rawPct < 1 ? rawPct * 100 : rawPct));
@@ -233,7 +286,15 @@ export async function fetchCodexQuota(
   if (accountId) headers["ChatGPT-Account-Id"] = accountId;
 
   const resp = await fetchWithTimeout("https://chatgpt.com/backend-api/wham/usage", { headers });
-  if (!resp.ok) throw new Error(`chatgpt wham api returned ${resp.status}`);
+  if (!resp.ok) {
+    const message = `chatgpt wham api returned ${resp.status}`;
+    const responseText = await readResponseTextPrefix(resp);
+    const authFailure = classifyCodexAuthRefreshFailure({
+      errorMessage: [message, responseText].filter(Boolean).join("\n"),
+    });
+    if (authFailure) throw new CodexQuotaAuthError(message, authFailure);
+    throw new Error(message);
+  }
   const body = (await resp.json()) as WhamUsageResponse;
   const windows: QuotaWindow[] = [];
 
@@ -530,8 +591,15 @@ function formatProviderError(source: string, error: unknown): string {
   return `${source}: ${message}`;
 }
 
+export function readCodexQuotaErrorFamily(error: unknown): CodexAuthRefreshFailureClass | null {
+  if (error instanceof CodexQuotaAuthError) return error.errorFamily;
+  const message = error instanceof Error ? error.message : String(error);
+  return classifyCodexAuthRefreshFailure({ errorMessage: message });
+}
+
 export async function getQuotaWindows(): Promise<ProviderQuotaResult> {
   const errors: string[] = [];
+  let rpcErrorFamily: CodexAuthRefreshFailureClass | null = null;
 
   try {
     const rpc = await fetchCodexRpcQuota();
@@ -540,6 +608,10 @@ export async function getQuotaWindows(): Promise<ProviderQuotaResult> {
     }
   } catch (error) {
     errors.push(formatProviderError("Codex app-server", error));
+    const errorFamily = readCodexQuotaErrorFamily(error);
+    if (errorFamily) {
+      rpcErrorFamily = errorFamily;
+    }
   }
 
   const auth = await readCodexToken();
@@ -549,15 +621,31 @@ export async function getQuotaWindows(): Promise<ProviderQuotaResult> {
       return { provider: "openai", source: CODEX_USAGE_SOURCE_WHAM, ok: true, windows };
     } catch (error) {
       errors.push(formatProviderError("ChatGPT WHAM usage", error));
+      const errorFamily = readCodexQuotaErrorFamily(error);
+      if (errorFamily) {
+        return {
+          provider: "openai",
+          source: CODEX_USAGE_SOURCE_WHAM,
+          ok: false,
+          errorFamily,
+          error: errors.join("; "),
+          windows: [],
+        };
+      }
     }
   } else {
     errors.push("no local codex auth token");
   }
 
-  return {
+  const result: ProviderQuotaResult = {
     provider: "openai",
     ok: false,
     error: errors.join("; "),
     windows: [],
   };
+  if (rpcErrorFamily) {
+    result.source = CODEX_USAGE_SOURCE_RPC;
+    result.errorFamily = rpcErrorFamily;
+  }
+  return result;
 }

@@ -16,7 +16,7 @@ The host plugin installer runs `npm install` into the managed plugin directory, 
 
 ## Configuration
 
-Configure E2B from `Company Settings -> Environments`, not from the plugin's instance settings page.
+Configure E2B from `Instance Settings -> Environments`, not from the plugin's plugin page.
 
 - Put the E2B API key on the sandbox environment itself.
 - When you save an environment, Paperclip stores pasted API keys as company secrets.

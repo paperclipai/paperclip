@@ -16,6 +16,7 @@ export const companies = pgTable(
     attachmentMaxBytes: integer("attachment_max_bytes")
       .notNull()
       .default(10 * 1024 * 1024),
+    defaultResponsibleUserId: text("default_responsible_user_id"),
     requireBoardApprovalForNewAgents: boolean("require_board_approval_for_new_agents")
       .notNull()
       .default(false),

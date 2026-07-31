@@ -100,7 +100,7 @@ runWorker(plugin, import.meta.url);
 | `onValidateConfig?(config)` | Optional. Return `{ ok, warnings?, errors? }` for settings UI / Test Connection. |
 | `onWebhook?(input)` | Optional. Handle `POST /api/plugins/:pluginId/webhooks/:endpointKey`; required if webhooks declared. |
 
-**Context (`ctx`) in setup:** `config`, `localFolders`, `events`, `jobs`, `launchers`, `http`, `secrets`, `activity`, `state`, `entities`, `projects`, `companies`, `issues`, `agents`, `goals`, `data`, `actions`, `streams`, `tools`, `metrics`, `logger`, `manifest`. Worker-side host APIs are capability-gated; declare capabilities in the manifest.
+**Context (`ctx`) in setup:** `config`, `localFolders`, `events`, `jobs`, `launchers`, `http`, `secrets`, `activity`, `state`, `entities`, `projects`, `companies`, `issues`, `agents`, `goals`, `access`, `authorization`, `data`, `actions`, `streams`, `tools`, `metrics`, `logger`, `manifest`. Worker-side host APIs are capability-gated; declare capabilities in the manifest.
 
 **Agents:** `ctx.agents.invoke(agentId, companyId, opts)` for one-shot invocation. `ctx.agents.sessions` for two-way chat: `create`, `list`, `sendMessage` (with streaming `onEvent` callback), `close`. See the [Plugin Authoring Guide](../../doc/plugins/PLUGIN_AUTHORING_GUIDE.md#agent-sessions-two-way-chat) for details.
 
@@ -134,7 +134,7 @@ Subscribe in `setup` with `ctx.events.on(name, handler)` or `ctx.events.on(name,
 
 **Filter (optional):** Pass a second argument to `on()`: `{ projectId?, companyId?, agentId? }` so the host only delivers matching events.
 
-**Company context:** Events still carry `companyId` for company-scoped data, but plugin installation and activation are instance-wide in the current runtime.
+**Company context:** Events still carry `companyId` for company-scoped data, but plugin installation and activation are instance-wide in the current runtime. Access and authorization host services require an active company-scoped invocation such as an event, API route, tool run, environment call, or UI bridge call; the requested `companyId` must match that active scope.
 
 ## Scheduled (recurring) jobs
 
@@ -238,7 +238,9 @@ Adds a navigation-style entry to the main company sidebar navigation area, rende
 
 #### `routeSidebar`
 
-Replaces the normal company sidebar while the current route is a plugin page route with the same `routePath`. Use this for full-page plugin workspaces that need their own local navigation while keeping the company rail and account footer. Receives `PluginRouteSidebarProps` with `context.companyId` and `context.companyPrefix` set to the active company. Requires the `ui.sidebar.register` capability.
+A contextual sidebar shown while the current route is a plugin page route with the same `routePath`. Use this for full-page plugin workspaces that need their own local navigation. It does **not** replace the app sidebar: the host collapses the main `<Sidebar/>` to its 64px icon rail (still hover/peek-able) and renders your `routeSidebar` in a secondary pane beside it, producing `[ app rail ][ your sidebar ][ content ]`. Receives `PluginRouteSidebarProps` with `context.companyId` and `context.companyPrefix` set to the active company. Requires the `ui.sidebar.register` capability.
+
+Do **not** mount `RequestCollapsedSidebar` (or otherwise try to collapse the app sidebar) from a `routeSidebar` plugin — the host drives the collapse automatically while your route is active and restores the user's preference when they navigate away. The collapse is a hard invariant: a secondary sidebar always forces the app rail collapsed (hiding its expand toggle), overriding any user pin, but it never mutates the user's saved expanded/collapsed preference — that is restored as soon as they leave your route.
 
 #### `sidebarPanel`
 
@@ -321,12 +323,18 @@ Declare in `manifest.capabilities`. Grouped by scope:
 | | `activity.read` |
 | | `costs.read` |
 | | `issues.orchestration.read` |
+| | `access.members.read` |
+| | `access.invites.read` |
+| | `authorization.grants.read` |
+| | `authorization.policies.read` |
+| | `authorization.audit.read` |
 | | `database.namespace.read` |
 | | `issues.create` |
 | | `issues.update` |
 | | `issues.checkout` |
 | | `issues.wakeup` |
 | | `issue.comments.create` |
+| | `issue.comments.create_human_attributed` |
 | | `issue.documents.write` |
 | | `issue.relations.write` |
 | | `activity.log.write` |
@@ -334,6 +342,10 @@ Declare in `manifest.capabilities`. Grouped by scope:
 | | `telemetry.track` |
 | | `database.namespace.migrate` |
 | | `database.namespace.write` |
+| | `external.objects.detect` |
+| | `external.objects.read` |
+| | `external.objects.write` |
+| | `external.objects.refresh` |
 | **Instance** | `instance.settings.register` |
 | | `plugin.state.read` |
 | | `plugin.state.write` |
@@ -348,6 +360,10 @@ Declare in `manifest.capabilities`. Grouped by scope:
 | | `local.folders` |
 | **Agent** | `agent.tools.register` |
 | | `agents.invoke` |
+| | `access.members.write` |
+| | `access.invites.write` |
+| | `authorization.grants.write` |
+| | `authorization.policies.write` |
 | | `agent.sessions.create` |
 | | `agent.sessions.list` |
 | | `agent.sessions.send` |
@@ -360,6 +376,42 @@ Declare in `manifest.capabilities`. Grouped by scope:
 | | `ui.action.register` |
 
 Full list in code: import `PLUGIN_CAPABILITIES` from `@paperclipai/plugin-sdk`.
+
+### External Object Reference Providers
+
+Trusted connector plugins can declare generic external object providers in the
+manifest. The host owns URL scanning, sanitized canonical URLs, core storage,
+normalized status rendering, and issue/comment/document write durability. The
+plugin only identifies provider-owned objects and resolves board-safe status
+metadata.
+
+```ts
+objectReferences: [
+  {
+    providerKey: "mocktracker",
+    displayName: "Mock Tracker",
+    objectTypes: ["ticket"],
+    urlPatterns: ["https://mock.example/tickets/:id"],
+    refreshPolicy: { defaultTtlSeconds: 300, staleAfterSeconds: 1800 },
+  },
+],
+capabilities: ["external.objects.detect", "external.objects.read"],
+```
+
+Implement `onDetectExternalObjects()` to map sanitized URL candidates to
+`providerKey`, `objectType`, provider-stable `externalId`, and optional display
+metadata such as `displayKey`/`iconKey`. Implement `onResolveExternalObject()`
+to return a normalized snapshot with `statusCategory`, `statusTone`,
+`statusLabel`, optional `statusIconKey`, board-safe `data`, and freshness
+metadata. Slow or failing plugins are isolated: Paperclip logs the failure and
+continues saving the source issue, comment, or document.
+
+MVP security posture: provider plugins are trusted installs. Manifest
+capabilities gate host APIs and provider invocation paths, but they are not a
+sandbox boundary for untrusted marketplace code. Plugin UI is same-origin
+JavaScript and must not be mounted inline in markdown; inline external-object
+rendering uses host-owned metadata only. Treat untrusted providers as future work
+that requires worker sandboxing plus isolated plugin UI.
 
 ### Restricted Database Namespace
 
@@ -518,6 +570,26 @@ const summary = await ctx.issues.summaries.getOrchestration({
 });
 ```
 
+By default, `ctx.issues.createComment` attributes the comment to the calling
+plugin's own agent (`authorAgentId`). A plugin that relays a message a human
+actually sent — a chat gateway bridging Slack/Telegram replies back onto an
+issue, for example — can instead attribute the comment to that person by
+passing `actorUserId`:
+
+```ts
+await ctx.issues.createComment(issueId, replyText, companyId, {
+  actorUserId: verifiedSlackUser.paperclipUserId,
+});
+```
+
+This requires the `issue.comments.create_human_attributed` capability in
+addition to `issue.comments.create`. The host independently verifies that
+`actorUserId` is an active human member of the issue's company before
+applying the comment — a plugin cannot forge attribution to an arbitrary or
+inactive user id. When the issue has a non-terminal status and an assigned
+agent, a human-attributed comment also wakes that assignee, the same way a
+board user's comment does in the web app.
+
 Required capabilities:
 
 | API | Capability |
@@ -526,6 +598,8 @@ Required capabilities:
 | `ctx.issues.relations.setBlockedBy` / `addBlockers` / `removeBlockers` | `issue.relations.write` |
 | `ctx.issues.getSubtree` | `issue.subtree.read` |
 | `ctx.issues.assertCheckoutOwner` | `issues.checkout` |
+| `ctx.issues.createComment` | `issue.comments.create` |
+| `ctx.issues.createComment` with `actorUserId` | `issue.comments.create` + `issue.comments.create_human_attributed` |
 | `ctx.issues.requestWakeup` / `requestWakeups` | `issues.wakeup` |
 | `ctx.issues.summaries.getOrchestration` | `issues.orchestration.read` |
 

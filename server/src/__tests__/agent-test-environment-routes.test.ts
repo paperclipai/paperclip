@@ -10,6 +10,7 @@ const mockAgentService = vi.hoisted(() => ({
 
 const mockAccessService = vi.hoisted(() => ({
   canUser: vi.fn(),
+  decide: vi.fn(),
   hasPermission: vi.fn(),
   getMembership: vi.fn(async () => null),
   listPrincipalGrants: vi.fn(async () => []),
@@ -44,6 +45,7 @@ vi.mock("../services/index.js", () => ({
   agentInstructionsService: () => ({}),
   accessService: () => mockAccessService,
   approvalService: () => ({}),
+  builtInAgentService: () => ({ ensureCompanyDefaultAgentGrants: vi.fn() }),
   companySkillService: () => ({
     listRuntimeSkillEntries: vi.fn(async () => []),
     resolveRequestedSkillKeys: vi.fn(async () => []),
@@ -120,6 +122,11 @@ describe("agent test-environment route", () => {
   beforeEach(async () => {
     vi.resetModules();
     vi.clearAllMocks();
+    mockAccessService.decide.mockResolvedValue({
+      allowed: true,
+      reason: "allow_explicit_grant",
+      explanation: "Allowed by test grant",
+    });
     mockEnvironmentService.getById.mockResolvedValue({
       id: "11111111-1111-4111-8111-111111111111",
       companyId: "company-1",
@@ -130,7 +137,15 @@ describe("agent test-environment route", () => {
     mockEnvironmentRuntime.acquireRunLease.mockResolvedValue({
       lease: {
         id: "lease-1",
-        metadata: { remoteCwd: "/home/user/paperclip-workspace" },
+        provider: "daytona",
+        providerLeaseId: "provider-lease-1",
+        metadata: {
+          remoteCwd: "/home/user/paperclip-workspace",
+          sandboxId: "sandbox-1",
+          sandboxName: "paperclip-probe",
+          templateKind: "snapshot",
+          templateRef: "snapshot-1",
+        },
       },
       leaseContext: {
         executionWorkspaceId: null,
@@ -256,6 +271,19 @@ describe("agent test-environment route", () => {
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(testEnvironmentSpy).toHaveBeenCalledTimes(1);
+    // Test leases boot fresh and stay debuggable: never resume a retained
+    // agent lease, archive (not delete) the sandbox on release.
+    expect(mockEnvironmentRuntime.acquireRunLease).toHaveBeenCalledWith(
+      expect.objectContaining({
+        applyCustomImageTemplate: true,
+        environment: expect.objectContaining({
+          config: expect.objectContaining({
+            reuseLease: false,
+            archiveOnRelease: true,
+          }),
+        }),
+      }),
+    );
     expect(testEnvironmentSpy.mock.calls[0]?.[0]).toMatchObject({
       executionTarget: expect.objectContaining({
         kind: "remote",
@@ -264,6 +292,24 @@ describe("agent test-environment route", () => {
       environmentName: "Sandbox QA",
     });
     expect(res.body).toMatchObject({ adapterType: "external_test", status: "pass" });
+    expect(res.body.checks).toEqual([
+      expect.objectContaining({
+        code: "sandbox_test_identity",
+        level: "info",
+        message: 'Sandbox test identity for "Sandbox QA".',
+        detail: expect.stringContaining("paperclipLeaseId=lease-1"),
+      }),
+      expect.objectContaining({
+        code: "external_test_hello_probe_passed",
+        level: "info",
+        message: "OK",
+      }),
+    ]);
+    expect(res.body.checks[0].detail).toContain("providerLeaseId=provider-lease-1");
+    expect(res.body.checks[0].detail).toContain("provider=daytona");
+    expect(res.body.checks[0].detail).toContain("sandboxId=sandbox-1");
+    expect(res.body.checks[0].detail).toContain("sandboxName=paperclip-probe");
+    expect(res.body.checks[0].detail).toContain("snapshotRef=snapshot-1");
     expect(mockReleaseRunLease).toHaveBeenCalledWith({
       environment: expect.objectContaining({ id: "11111111-1111-4111-8111-111111111111" }),
       lease: expect.objectContaining({ id: "lease-1" }),

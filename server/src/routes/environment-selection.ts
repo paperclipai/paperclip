@@ -4,13 +4,12 @@ export async function assertEnvironmentSelectionForCompany(
   environmentsSvc: {
     getById(environmentId: string): Promise<{
       id: string;
-      companyId: string;
       driver: string;
       status?: string | null;
       config: Record<string, unknown> | null;
     } | null>;
   },
-  companyId: string,
+  _companyId: string,
   environmentId: string | null | undefined,
   options?: {
     allowedDrivers?: string[];
@@ -19,7 +18,7 @@ export async function assertEnvironmentSelectionForCompany(
 ) {
   if (environmentId === undefined || environmentId === null) return;
   const environment = await environmentsSvc.getById(environmentId);
-  if (!environment || environment.companyId !== companyId) {
+  if (!environment) {
     throw unprocessable("Environment not found.");
   }
   if (environment.status === "archived") {

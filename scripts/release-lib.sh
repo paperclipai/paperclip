@@ -142,11 +142,23 @@ next_stable_version() {
 const input = process.argv[2];
 const packageNames = process.argv.slice(3);
 const { execSync } = require("node:child_process");
+const { readFileSync } = require("node:fs");
 
 const date = input ? new Date(`${input}T00:00:00Z`) : new Date();
 if (Number.isNaN(date.getTime())) {
   console.error(`invalid date: ${input}`);
   process.exit(1);
+}
+
+// Optional pre-fetched version data (see release-registry-versions.mjs).
+// Avoids one serial `npm view` round-trip per package.
+let versionsCache = null;
+if (process.env.RELEASE_PACKAGE_VERSIONS_FILE) {
+  try {
+    versionsCache = JSON.parse(readFileSync(process.env.RELEASE_PACKAGE_VERSIONS_FILE, "utf8"));
+  } catch {
+    versionsCache = null;
+  }
 }
 
 const stableSlot = `${date.getUTCFullYear()}.${date.getUTCMonth() + 1}${String(date.getUTCDate()).padStart(2, "0")}`;
@@ -156,18 +168,22 @@ let max = -1;
 for (const packageName of packageNames) {
   let versions = [];
 
-  try {
-    const raw = execSync(`npm view ${JSON.stringify(packageName)} versions --json`, {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
+  if (versionsCache && Array.isArray(versionsCache[packageName])) {
+    versions = versionsCache[packageName];
+  } else {
+    try {
+      const raw = execSync(`npm view ${JSON.stringify(packageName)} versions --json`, {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      }).trim();
 
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      versions = Array.isArray(parsed) ? parsed : [parsed];
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        versions = Array.isArray(parsed) ? parsed : [parsed];
+      }
+    } catch {
+      versions = [];
     }
-  } catch {
-    versions = [];
   }
 
   for (const version of versions) {
@@ -189,6 +205,18 @@ next_canary_version() {
 const stable = process.argv[2];
 const packageNames = process.argv.slice(3);
 const { execSync } = require("node:child_process");
+const { readFileSync } = require("node:fs");
+
+// Optional pre-fetched version data (see release-registry-versions.mjs).
+// Avoids one serial `npm view` round-trip per package.
+let versionsCache = null;
+if (process.env.RELEASE_PACKAGE_VERSIONS_FILE) {
+  try {
+    versionsCache = JSON.parse(readFileSync(process.env.RELEASE_PACKAGE_VERSIONS_FILE, "utf8"));
+  } catch {
+    versionsCache = null;
+  }
+}
 
 const pattern = new RegExp(`^${stable.replace(/\./g, '\\.')}-canary\\.(\\d+)$`);
 let max = -1;
@@ -196,20 +224,24 @@ let max = -1;
 for (const packageName of packageNames) {
   let versions = [];
 
-  try {
-    const raw = execSync(`npm view ${JSON.stringify(packageName)} versions --json`, {
-      encoding: "utf8",
-      stdio: ["ignore", "pipe", "ignore"],
-    }).trim();
+  if (versionsCache && Array.isArray(versionsCache[packageName])) {
+    versions = versionsCache[packageName];
+  } else {
+    try {
+      const raw = execSync(`npm view ${JSON.stringify(packageName)} versions --json`, {
+        encoding: "utf8",
+        stdio: ["ignore", "pipe", "ignore"],
+      }).trim();
 
-    if (raw) {
-      const parsed = JSON.parse(raw);
-      versions = Array.isArray(parsed) ? parsed : [parsed];
+      if (raw) {
+        const parsed = JSON.parse(raw);
+        versions = Array.isArray(parsed) ? parsed : [parsed];
+      }
+    } catch {
+      versions = [];
     }
-  } catch {
-    versions = [];
   }
- 
+
   for (const version of versions) {
     const match = version.match(pattern);
     if (!match) continue;
@@ -260,6 +292,96 @@ wait_for_npm_package_version() {
     attempt=$((attempt + 1))
   done
 
+  return 1
+}
+
+is_npm_tlog_duplicate_error() {
+  local output="$1"
+
+  grep -q "TLOG_CREATE_ENTRY_ERROR" <<< "$output" &&
+    grep -q "equivalent entry already exists in the transparency log" <<< "$output"
+}
+
+package_publish_tool() {
+  node -e '
+    const pkg = require(process.cwd() + "/package.json");
+    const bundled = pkg.bundleDependencies ?? pkg.bundledDependencies ?? [];
+    process.stdout.write(bundled.length > 0 ? "npm" : "pnpm");
+  '
+}
+
+BUNDLED_NPM_PACK_VERSION="10.9.7"
+BUNDLED_NPM_PUBLISH_VERSION="11.18.0"
+
+run_bundled_npm_pack() {
+  npx --yes "npm@$BUNDLED_NPM_PACK_VERSION" "$@"
+}
+
+run_bundled_npm_publish() {
+  npx --yes "npm@$BUNDLED_NPM_PUBLISH_VERSION" "$@" --loglevel verbose
+}
+
+run_package_publish() {
+  local publish_tool="$1"
+  local dist_tag="$2"
+  local disable_provenance="${3:-false}"
+
+  if [ "$publish_tool" = "npm" ]; then
+    if [ "$disable_provenance" = "true" ]; then
+      run_bundled_npm_publish publish --tag "$dist_tag" --access public --provenance=false
+    else
+      run_bundled_npm_publish publish --tag "$dist_tag" --access public
+    fi
+    return
+  fi
+
+  if [ "$disable_provenance" = "true" ]; then
+    pnpm publish --no-git-checks --tag "$dist_tag" --access public --provenance=false
+  else
+    pnpm publish --no-git-checks --tag "$dist_tag" --access public
+  fi
+}
+
+publish_package_to_npm() {
+  local dist_tag="$1"
+  local package_name="$2"
+  local package_version="$3"
+  local publish_tool="${4:-pnpm}"
+  local publish_log
+
+  publish_log="$(mktemp "${TMPDIR:-/tmp}/paperclip-npm-publish.XXXXXX")"
+
+  if (set -o pipefail; run_package_publish "$publish_tool" "$dist_tag" false 2>&1 | tee "$publish_log"); then
+    rm -f "$publish_log"
+    return 0
+  fi
+
+  if ! is_npm_tlog_duplicate_error "$(cat "$publish_log")"; then
+    rm -f "$publish_log"
+    return 1
+  fi
+
+  release_warn "npm publish hit a duplicate Sigstore transparency-log entry for ${package_name}@${package_version}."
+
+  if npm_package_version_exists "$package_name" "$package_version"; then
+    release_warn "npm already exposes ${package_name}@${package_version}; continuing to registry verification."
+    rm -f "$publish_log"
+    return 0
+  fi
+
+  if [ "$dist_tag" != "canary" ]; then
+    release_warn "Not retrying ${package_name}@${package_version} without provenance for dist-tag ${dist_tag}."
+    rm -f "$publish_log"
+    return 1
+  fi
+
+  release_warn "Retrying ${package_name}@${package_version} once with npm provenance disabled."
+  if run_package_publish "$publish_tool" "$dist_tag" true; then
+    rm -f "$publish_log"
+    return 0
+  fi
+
+  rm -f "$publish_log"
   return 1
 }
 

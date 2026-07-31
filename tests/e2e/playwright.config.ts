@@ -8,6 +8,17 @@ import { defineConfig } from "@playwright/test";
 const PORT = Number(process.env.PAPERCLIP_E2E_PORT ?? 3199);
 const BASE_URL = `http://127.0.0.1:${PORT}`;
 const PAPERCLIP_HOME = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-e2e-home-"));
+const PAPERCLIP_INSTANCE_ID = "playwright-e2e";
+const PAPERCLIP_CONFIG = path.join(PAPERCLIP_HOME, "instances", PAPERCLIP_INSTANCE_ID, "config.json");
+const PAPERCLIP_AGENT_JWT_SECRET = process.env.PAPERCLIP_AGENT_JWT_SECRET ?? "playwright-e2e-agent-jwt-secret";
+const PAPERCLIP_TOOL_ACTION_SIGNING_SECRET =
+  process.env.PAPERCLIP_TOOL_ACTION_SIGNING_SECRET ?? "playwright-e2e-tool-action-signing-secret";
+const PLAYWRIGHT_CHANNEL = process.env.PAPERCLIP_PLAYWRIGHT_CHANNEL;
+
+process.env.PAPERCLIP_HOME = PAPERCLIP_HOME;
+process.env.PAPERCLIP_CONFIG = PAPERCLIP_CONFIG;
+process.env.PAPERCLIP_AGENT_JWT_SECRET = PAPERCLIP_AGENT_JWT_SECRET;
+process.env.PAPERCLIP_TOOL_ACTION_SIGNING_SECRET = PAPERCLIP_TOOL_ACTION_SIGNING_SECRET;
 
 export default defineConfig({
   testDir: ".",
@@ -17,6 +28,11 @@ export default defineConfig({
   testIgnore: ["multi-user.spec.ts", "multi-user-authenticated.spec.ts"],
   timeout: 60_000,
   retries: 0,
+  // All specs share one throwaway server, and several toggle instance-level
+  // state (the `enableConferenceRoomChat` experimental flag) that changes
+  // which UI variant renders. Run files serially so a flag flip in one spec
+  // can't change the wizard/thread under another spec mid-flight.
+  workers: 1,
   use: {
     baseURL: BASE_URL,
     headless: true,
@@ -26,7 +42,10 @@ export default defineConfig({
   projects: [
     {
       name: "chromium",
-      use: { browserName: "chromium" },
+      use: {
+        browserName: "chromium",
+        ...(PLAYWRIGHT_CHANNEL ? { channel: PLAYWRIGHT_CHANNEL } : {}),
+      },
     },
   ],
   // The webServer directive bootstraps a throwaway instance and then starts it.
@@ -42,9 +61,13 @@ export default defineConfig({
     stderr: "pipe",
     env: {
       ...process.env,
+      NODE_ENV: "test",
       PORT: String(PORT),
       PAPERCLIP_HOME,
-      PAPERCLIP_INSTANCE_ID: "playwright-e2e",
+      PAPERCLIP_INSTANCE_ID,
+      PAPERCLIP_CONFIG,
+      PAPERCLIP_AGENT_JWT_SECRET,
+      PAPERCLIP_TOOL_ACTION_SIGNING_SECRET,
       PAPERCLIP_BIND: "loopback",
       PAPERCLIP_DEPLOYMENT_MODE: "local_trusted",
       PAPERCLIP_DEPLOYMENT_EXPOSURE: "private",

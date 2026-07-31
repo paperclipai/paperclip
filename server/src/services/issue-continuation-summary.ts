@@ -1,7 +1,7 @@
 import { and, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { documents, issueDocuments, issues } from "@paperclipai/db";
-import { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY } from "@paperclipai/shared";
+import { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY, type SourceTrustMetadata } from "@paperclipai/shared";
 import { documentService } from "./documents.js";
 
 export { ISSUE_CONTINUATION_SUMMARY_DOCUMENT_KEY };
@@ -44,6 +44,7 @@ export type IssueContinuationSummaryDocument = {
   body: string;
   latestRevisionId: string | null;
   latestRevisionNumber: number;
+  sourceTrust: SourceTrustMetadata | null;
   updatedAt: Date;
 };
 
@@ -93,7 +94,7 @@ function extractPathCandidates(...texts: Array<string | null | undefined>) {
 
 function inferMode(issue: IssueSummaryInput, run: RunSummaryInput) {
   if (issue.status === "done" || issue.status === "in_review") return "review";
-  if (run.status === "failed" || run.status === "timed_out" || run.status === "cancelled") return "implementation";
+  if (run.status === "failed" || run.status === "timed_out" || run.status === "cancelled" || run.status === "interrupted") return "implementation";
   if (issue.status === "backlog" || issue.status === "todo") return "plan";
   return "implementation";
 }
@@ -218,6 +219,7 @@ export async function getIssueContinuationSummaryDocument(
       body: documents.latestBody,
       latestRevisionId: documents.latestRevisionId,
       latestRevisionNumber: documents.latestRevisionNumber,
+      sourceTrust: documents.sourceTrust,
       updatedAt: documents.updatedAt,
     })
     .from(issueDocuments)
@@ -232,6 +234,7 @@ export async function getIssueContinuationSummaryDocument(
     body: row.body,
     latestRevisionId: row.latestRevisionId,
     latestRevisionNumber: row.latestRevisionNumber,
+    sourceTrust: row.sourceTrust ?? null,
     updatedAt: row.updatedAt,
   };
 }

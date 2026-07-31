@@ -82,6 +82,10 @@ function registerModuleMocks() {
     agentService: () => ({
       getById: vi.fn(async () => null),
     }),
+    companySkillService: () => ({
+      completeTestRunForIssue: vi.fn(async () => null),
+    }),
+    documentAnnotationService: () => ({ remapOpenThreadsForDocument: async () => [] }),
     documentService: () => ({}),
     executionWorkspaceService: () => ({}),
     feedbackService: () => mockFeedbackService,
@@ -105,6 +109,11 @@ function registerModuleMocks() {
       syncComment: async () => undefined,
       syncDocument: async () => undefined,
       syncIssue: async () => undefined,
+    }),
+    issueThreadInteractionService: () => ({
+      listForIssue: vi.fn(async () => []),
+      expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
+      expireStaleRequestConfirmationsForIssueDocument: vi.fn(async () => []),
     }),
     issueService: () => mockIssueService,
     logActivity: mockLogActivity,

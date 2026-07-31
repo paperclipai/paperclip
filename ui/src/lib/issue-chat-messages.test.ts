@@ -3,6 +3,8 @@ import type { Agent } from "@paperclipai/shared";
 import {
   buildAssistantPartsFromTranscript,
   buildIssueChatMessages,
+  isCoTSegmentActive,
+  preserveReadableStreamingRetraction,
   stabilizeThreadMessages,
   type IssueChatComment,
   type IssueChatLinkedRun,
@@ -12,7 +14,7 @@ import type {
   SuggestTasksInteraction,
 } from "./issue-thread-interactions";
 import type { IssueTimelineEvent } from "./issue-timeline-events";
-import type { LiveRunForIssue } from "../api/heartbeats";
+import type { ActiveRunForIssue, LiveRunForIssue } from "../api/heartbeats";
 
 function createAgent(id: string, name: string): Agent {
   return {
@@ -53,6 +55,7 @@ function createComment(overrides: Partial<IssueChatComment> = {}): IssueChatComm
     authorType: authorAgentId ? "agent" : "user",
     presentation: null,
     metadata: null,
+    sourceTrust: null,
     createdAt: new Date("2026-04-06T12:00:00.000Z"),
     updatedAt: new Date("2026-04-06T12:00:00.000Z"),
     ...overrides,
@@ -237,6 +240,24 @@ describe("buildAssistantPartsFromTranscript", () => {
     }]);
   });
 
+  it("marks only the latest chain-of-thought segment active while a run is live", () => {
+    expect(isCoTSegmentActive({
+      isMessageRunning: true,
+      segmentIndex: 0,
+      segmentCount: 2,
+    })).toBe(false);
+    expect(isCoTSegmentActive({
+      isMessageRunning: true,
+      segmentIndex: 1,
+      segmentCount: 2,
+    })).toBe(true);
+    expect(isCoTSegmentActive({
+      isMessageRunning: false,
+      segmentIndex: 1,
+      segmentCount: 2,
+    })).toBe(false);
+  });
+
   it("keeps run errors while suppressing init and system transcript noise", () => {
     const result = buildAssistantPartsFromTranscript([
       {
@@ -324,6 +345,91 @@ describe("buildIssueChatMessages", () => {
     });
   });
 
+  it("flags an operator-interrupted historical run so the timeline can read 'interrupted'", () => {
+    const messages = buildIssueChatMessages({
+      comments: [],
+      timelineEvents: [],
+      linkedRuns: [
+        {
+          runId: "run-int",
+          status: "cancelled",
+          agentId: "agent-1",
+          createdAt: new Date("2026-04-06T12:01:00.000Z"),
+          startedAt: new Date("2026-04-06T12:01:00.000Z"),
+          finishedAt: new Date("2026-04-06T12:02:00.000Z"),
+          resultJson: { operatorInterrupted: true, interruptionSource: "issue_comment_interrupt" },
+        },
+        {
+          runId: "run-plain",
+          status: "cancelled",
+          agentId: "agent-1",
+          createdAt: new Date("2026-04-06T12:03:00.000Z"),
+          startedAt: new Date("2026-04-06T12:03:00.000Z"),
+          finishedAt: new Date("2026-04-06T12:04:00.000Z"),
+          resultJson: null,
+        },
+      ],
+      liveRuns: [],
+    });
+
+    const interrupted = messages.find((message) => message.id === "run-assistant:run-int");
+    const plain = messages.find((message) => message.id === "run-assistant:run-plain");
+    expect(interrupted?.metadata?.custom).toMatchObject({ runOperatorInterrupted: true });
+    expect(plain?.metadata?.custom).toMatchObject({ runOperatorInterrupted: false });
+  });
+
+  it("redacts deleted comment bodies while preserving tombstone metadata", () => {
+    const messages = buildIssueChatMessages({
+      comments: [
+        createComment({
+          body: "Sensitive deleted body",
+          deletedAt: new Date("2026-04-06T12:05:00.000Z"),
+          deletedByType: "user",
+          deletedByUserId: "user-1",
+        }),
+      ],
+      timelineEvents: [],
+      linkedRuns: [],
+      liveRuns: [],
+      currentUserId: "user-1",
+      userLabelMap: new Map([["user-1", "Dotta"]]),
+    });
+
+    expect(messages[0]?.content).toEqual([{ type: "text", text: "" }]);
+    expect(messages[0]?.metadata.custom).toMatchObject({
+      deletedAt: "2026-04-06T12:05:00.000Z",
+      deletedByType: "user",
+      deletedByUserId: "user-1",
+    });
+    expect(JSON.stringify(messages[0])).not.toContain("Sensitive deleted body");
+  });
+
+  it("preserves low-trust source metadata on comment messages", () => {
+    const messages = buildIssueChatMessages({
+      comments: [
+        createComment({
+          authorAgentId: "agent-1",
+          authorUserId: null,
+          sourceTrust: {
+            preset: "low_trust_review",
+            disposition: "quarantined",
+            sourceAgentId: "agent-1",
+          },
+        }),
+      ],
+      timelineEvents: [],
+      linkedRuns: [],
+      liveRuns: [],
+      agentMap: new Map([["agent-1", createAgent("agent-1", "Low Trust Reviewer")]]),
+    });
+
+    expect(messages[0]?.metadata.custom.sourceTrust).toMatchObject({
+      preset: "low_trust_review",
+      disposition: "quarantined",
+      sourceAgentId: "agent-1",
+    });
+  });
+
   it("prefers derived agent attribution when a board-authored comment is proven to come from a run", () => {
     const agentMap = new Map<string, Agent>([["agent-1", createAgent("agent-1", "Claude")]]);
     const messages = buildIssueChatMessages({
@@ -352,6 +458,40 @@ describe("buildIssueChatMessages", () => {
           authorUserId: "user-1",
           runId: "run-1",
           runAgentId: "agent-1",
+        },
+      },
+    });
+  });
+
+  it("does not reattribute a genuine board/user comment that has no derived agent", () => {
+    const agentMap = new Map<string, Agent>([["agent-1", createAgent("agent-1", "Claude")]]);
+    const messages = buildIssueChatMessages({
+      comments: [
+        createComment({
+          authorUserId: "local-board",
+          authorType: "user",
+          // No agent ever resolved for this comment — a real board action.
+          derivedAuthorAgentId: null,
+          derivedCreatedByRunId: null,
+          runId: null,
+          runAgentId: null,
+        }),
+      ],
+      timelineEvents: [],
+      linkedRuns: [],
+      liveRuns: [],
+      agentMap,
+      currentUserId: "user-1",
+      userLabelMap: new Map([["local-board", "Board"]]),
+    });
+
+    expect(messages[0]).toMatchObject({
+      role: "user",
+      metadata: {
+        custom: {
+          authorType: "user",
+          authorAgentId: null,
+          authorUserId: "local-board",
         },
       },
     });
@@ -530,6 +670,52 @@ describe("buildIssueChatMessages", () => {
         custom: {
           kind: "interaction",
           anchorId: "interaction-interaction-2",
+        },
+      },
+    });
+  });
+
+  it("preserves ephemeral active-run status metadata for rendering", () => {
+    const activeRun: ActiveRunForIssue = {
+      id: "run-active-1",
+      status: "running",
+      invocationSource: "manual",
+      triggerDetail: null,
+      startedAt: "2026-04-06T12:03:00.000Z",
+      finishedAt: null,
+      createdAt: "2026-04-06T12:03:00.000Z",
+      agentId: "agent-1",
+      agentName: "CodexCoder",
+      adapterType: "codex_local",
+      currentStatusMessage: "Syncing git worktree to sandbox",
+      currentStatusUpdatedAt: "2026-04-06T12:03:05.000Z",
+      currentToolName: "bash",
+      lastAssistantSnippet: "Checking repository status",
+      lastEventAt: "2026-04-06T12:03:08.000Z",
+    };
+
+    const messages = buildIssueChatMessages({
+      comments: [],
+      timelineEvents: [],
+      linkedRuns: [],
+      liveRuns: [],
+      activeRun,
+      currentUserId: "user-1",
+    });
+
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatchObject({
+      role: "assistant",
+      status: { type: "running" },
+      metadata: {
+        custom: {
+          kind: "live-run",
+          runId: "run-active-1",
+          currentStatusMessage: "Syncing git worktree to sandbox",
+          currentStatusUpdatedAt: "2026-04-06T12:03:05.000Z",
+          currentToolName: "bash",
+          lastAssistantSnippet: "Checking repository status",
+          lastEventAt: "2026-04-06T12:03:08.000Z",
         },
       },
     });
@@ -861,6 +1047,39 @@ describe("buildIssueChatMessages", () => {
     });
   });
 
+  it("labels error-code-only operator interruptions as interrupted by board", () => {
+    const messages = buildIssueChatMessages({
+      comments: [],
+      timelineEvents: [],
+      linkedRuns: [
+        {
+          runId: "run-interrupted",
+          status: "cancelled",
+          agentId: "agent-1",
+          agentName: "CodexCoder",
+          createdAt: new Date("2026-04-06T12:01:00.000Z"),
+          startedAt: new Date("2026-04-06T12:01:00.000Z"),
+          finishedAt: new Date("2026-04-06T12:02:00.000Z"),
+          errorCode: "operator_interrupted",
+          resultJson: null,
+        },
+      ],
+      liveRuns: [],
+      transcriptsByRunId: new Map([
+        ["run-interrupted", [{ kind: "assistant", ts: "2026-04-06T12:01:05.000Z", text: "Working on it." }]],
+      ]),
+      hasOutputForRun: (runId) => runId === "run-interrupted",
+      currentUserId: "user-1",
+    });
+
+    expect(messages).toHaveLength(1);
+    expect(messages[0]?.metadata.custom).toMatchObject({
+      chainOfThoughtLabel: "Interrupted by board after 1 minute",
+      runOperatorInterrupted: true,
+      runStatus: "cancelled",
+    });
+  });
+
   it("can keep succeeded runs without transcript output for embedded run feeds", () => {
     const messages = buildIssueChatMessages({
       comments: [],
@@ -898,6 +1117,108 @@ describe("buildIssueChatMessages", () => {
 });
 
 describe("stabilizeThreadMessages", () => {
+  it("reveals live streamed additions at word boundaries instead of character boundaries", () => {
+    expect(preserveReadableStreamingRetraction(
+      "Writing ",
+      "Writing the pla",
+    )).toBe("Writing the ");
+    expect(preserveReadableStreamingRetraction(
+      "Writing ",
+      "Writing the plan ",
+    )).toBe("Writing the plan ");
+    expect(preserveReadableStreamingRetraction(
+      "Writing ",
+      "Writing the plan.",
+    )).toBe("Writing the plan.");
+    expect(preserveReadableStreamingRetraction(
+      "Writing ",
+      "Writing draft",
+    )).toBe("Writing draft");
+  });
+
+  it("holds sliding-window removals until an older paragraph or group boundary drops", () => {
+    expect(preserveReadableStreamingRetraction(
+      "First sentence. Second sentence is visible",
+      "irst sentence. Second sentence is visible now ",
+    )).toBe("irst sentence. Second sentence is visible now ");
+    expect(preserveReadableStreamingRetraction(
+      "First sentence. Second sentence is visible",
+      "Second sentence is visible now ",
+    )).toBe("Second sentence is visible now ");
+    expect(preserveReadableStreamingRetraction(
+      "Paragraph one.\n\nParagraph two is visible",
+      "Paragraph two is visible now ",
+    )).toBe("Paragraph two is visible now ");
+    expect(preserveReadableStreamingRetraction(
+      "The answer is 42",
+      "42 is the answer",
+    )).toBe("42 is the answer");
+    expect(preserveReadableStreamingRetraction(
+      "The quick brown fox jumps over the lazy dog",
+      "quick brown fox jumps over the lazy dog near the river",
+    )).toBe("quick brown fox jumps over the lazy dog near the river");
+  });
+
+  it("keeps live streamed retractions readable until a whole line disappears", () => {
+    expect(preserveReadableStreamingRetraction(
+      "First line\nSecond line\nThird line is complete",
+      "First line\nSecond line\nThird line",
+    )).toBe("First line\nSecond line\nThird line is complete");
+    expect(preserveReadableStreamingRetraction(
+      "First line\nSecond line\nThird line is complete",
+      "First line\nSecond line",
+    )).toBe("First line\nSecond line");
+
+    const liveRun: LiveRunForIssue = {
+      id: "run-live-retract",
+      status: "running",
+      invocationSource: "manual",
+      triggerDetail: null,
+      startedAt: "2026-04-06T12:04:00.000Z",
+      finishedAt: null,
+      createdAt: "2026-04-06T12:04:00.000Z",
+      agentId: "agent-1",
+      agentName: "CodexCoder",
+      adapterType: "codex_local",
+    };
+    const buildLiveMessages = (text: string) => buildIssueChatMessages({
+      comments: [],
+      timelineEvents: [],
+      linkedRuns: [],
+      liveRuns: [liveRun],
+      transcriptsByRunId: new Map([
+        ["run-live-retract", [{ kind: "assistant", ts: "2026-04-06T12:04:01.000Z", text }]],
+      ]),
+      hasOutputForRun: (runId) => runId === "run-live-retract",
+      currentUserId: "user-1",
+    });
+
+    const fullText = "First line\nSecond line\nThird line is complete";
+    const firstStable = stabilizeThreadMessages(buildLiveMessages(fullText), [], new Map());
+    const partialRetractionStable = stabilizeThreadMessages(
+      buildLiveMessages("First line\nSecond line\nThird line"),
+      firstStable.messages,
+      firstStable.cache,
+    );
+
+    expect(partialRetractionStable.messages).toBe(firstStable.messages);
+    expect(partialRetractionStable.messages[0]?.content[0]).toMatchObject({
+      type: "text",
+      text: fullText,
+    });
+
+    const wholeLineRetractionStable = stabilizeThreadMessages(
+      buildLiveMessages("First line\nSecond line"),
+      partialRetractionStable.messages,
+      partialRetractionStable.cache,
+    );
+
+    expect(wholeLineRetractionStable.messages[0]?.content[0]).toMatchObject({
+      type: "text",
+      text: "First line\nSecond line",
+    });
+  });
+
   it("reuses unchanged message objects across rebuilds", () => {
     const firstPass = buildIssueChatMessages({
       comments: [createComment()],

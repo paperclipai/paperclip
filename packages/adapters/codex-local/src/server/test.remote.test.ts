@@ -13,9 +13,15 @@ const {
   prepareAdapterExecutionTargetRuntime,
   prepareManagedCodexHome,
   restoreWorkspace,
+  capturedHomeAssetFiles,
 } = vi.hoisted(() => {
   const restoreWorkspace = vi.fn(async () => {});
+  // Records the files staged in the uploaded "home" asset at call time, before
+  // the probe's cleanup deletes the temp dir. Lets tests assert the upload is a
+  // minimal credentials-only home and not the full managed CODEX_HOME.
+  const capturedHomeAssetFiles: { value: string[] | null } = { value: null };
   return {
+    capturedHomeAssetFiles,
     ensureAdapterExecutionTargetDirectory: vi.fn(async () => {}),
     ensureAdapterExecutionTargetCommandResolvable: vi.fn(async () => {}),
     maybeRunSandboxInstallCommand: vi.fn(async () => null),
@@ -40,16 +46,29 @@ const {
       }
       return fallbackCwd;
     }),
-    prepareAdapterExecutionTargetRuntime: vi.fn(async () => ({
-      target: null,
-      workspaceRemoteDir: "/remote/workspace/.paperclip-runtime/runs/test/workspace",
-      runtimeRootDir: "/remote/workspace/.paperclip-runtime/runs/test/workspace/.paperclip-runtime/codex",
-      assetDirs: {
-        home: "/remote/workspace/.paperclip-runtime/runs/test/workspace/.paperclip-runtime/codex/home",
-      },
-      restoreWorkspace,
-    })),
-    prepareManagedCodexHome: vi.fn(async () => "/tmp/paperclip-managed-codex-home"),
+    prepareAdapterExecutionTargetRuntime: vi.fn(async (input: { assets?: Array<{ key: string; localDir: string }> }) => {
+      const homeAsset = input?.assets?.find((asset) => asset.key === "home");
+      if (homeAsset) {
+        capturedHomeAssetFiles.value = (await fs.readdir(homeAsset.localDir)).sort();
+      }
+      return {
+        target: null,
+        workspaceRemoteDir: "/remote/workspace/.paperclip-runtime/runs/test/workspace",
+        runtimeRootDir: "/remote/workspace/.paperclip-runtime/runs/test/workspace/.paperclip-runtime/codex",
+        assetDirs: {
+          home: "/remote/workspace/.paperclip-runtime/runs/test/workspace/.paperclip-runtime/codex/home",
+        },
+        restoreWorkspace,
+      };
+    }),
+    prepareManagedCodexHome: vi.fn(async () => {
+      // Return a real managed home seeded with credentials so the probe's
+      // minimal-home copy step (auth.json/config.toml) has something to read.
+      const dir = await fs.mkdtemp(`${os.tmpdir()}/paperclip-managed-codex-home-`);
+      await fs.writeFile(`${dir}/auth.json`, JSON.stringify({ OPENAI_API_KEY: "sk-managed" }));
+      await fs.writeFile(`${dir}/config.toml`, "model = \"gpt-5\"\n");
+      return dir;
+    }),
     restoreWorkspace,
   };
 });
@@ -107,6 +126,7 @@ describe("codex remote environment diagnostics", () => {
       companyId: "company-1",
       adapterType: "codex_local",
       config: {
+        engine: "cli",
         command: "codex",
       },
       executionTarget: remoteTarget,
@@ -122,9 +142,15 @@ describe("codex remote environment diagnostics", () => {
         workspaceLocalDir: string;
         target?: { remoteCwd?: string };
         workspaceRemoteDir?: string;
+        assets?: Array<{ key: string; localDir: string }>;
       },
     ]>;
     const runtimeInput = runtimeCalls[0]?.[0];
+    // The probe must upload only a minimal credentials-only home, never the
+    // full managed CODEX_HOME (which can be hundreds of MB of session history).
+    const homeAsset = runtimeInput?.assets?.find((asset) => asset.key === "home");
+    expect(homeAsset?.localDir).toContain(`${os.tmpdir()}/paperclip-codex-probe-home-`);
+    expect(capturedHomeAssetFiles.value).toEqual(["auth.json", "config.toml"]);
     expect(runtimeInput?.workspaceLocalDir).toContain(`${os.tmpdir()}/paperclip-codex-envtest-`);
     expect(runtimeInput?.workspaceLocalDir).not.toBe("/remote/workspace");
     expect(await fs.stat(runtimeInput!.workspaceLocalDir).catch(() => null)).toBeNull();
@@ -174,6 +200,7 @@ describe("codex remote environment diagnostics", () => {
       companyId: "company-1",
       adapterType: "codex_local",
       config: {
+        engine: "cli",
         command: "codex",
         env: {
           OPENAI_API_KEY: "sk-test",
@@ -190,5 +217,51 @@ describe("codex remote environment diagnostics", () => {
     expect(probeCall?.[4].env.CODEX_HOME).toContain("/remote/workspace/.paperclip-runtime/codex/probe-home-codex-envtest-");
     expect(probeCall?.[4].env.CODEX_HOME?.startsWith("/tmp/")).toBe(false);
     expect(probeCall?.[3]).toContain("--skip-git-repo-check");
+  });
+
+  it("does not override CODEX_HOME when the host has no credentials to seed", async () => {
+    // Custom-image flow: the login lives inside the captured snapshot, and the
+    // host has no Codex auth.json. The probe must not upload an empty home or
+    // set CODEX_HOME, so Codex falls back to the sandbox's baked-in login.
+    prepareManagedCodexHome.mockImplementationOnce(async () => {
+      const dir = await fs.mkdtemp(`${os.tmpdir()}/paperclip-managed-codex-home-noauth-`);
+      // No auth.json — only a config file.
+      await fs.writeFile(`${dir}/config.toml`, "model = \"gpt-5\"\n");
+      return dir;
+    });
+
+    const remoteTarget: AdapterExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "daytona",
+      remoteCwd: "/remote/workspace",
+      runner: {
+        execute: async () => ({
+          exitCode: 0,
+          signal: null,
+          timedOut: false,
+          stdout: "",
+          stderr: "",
+          pid: null,
+          startedAt: new Date().toISOString(),
+        }),
+      },
+    };
+
+    const result = await testEnvironment({
+      companyId: "company-1",
+      adapterType: "codex_local",
+      config: { engine: "cli", command: "codex" },
+      executionTarget: remoteTarget,
+      environmentName: "QA Daytona",
+    });
+
+    expect(result.status).toBe("pass");
+    // No managed-home upload, so the full-runtime staging is skipped entirely.
+    expect(prepareAdapterExecutionTargetRuntime).not.toHaveBeenCalled();
+    const probeCall = runAdapterExecutionTargetProcess.mock.calls[0] as unknown as
+      | [string, AdapterExecutionTarget, string, string[], { cwd: string; env: Record<string, string> }]
+      | undefined;
+    expect(probeCall?.[4].env.CODEX_HOME).toBeUndefined();
   });
 });

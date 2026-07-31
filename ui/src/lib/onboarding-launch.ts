@@ -1,4 +1,4 @@
-import type { Goal } from "@paperclipai/shared";
+import type { Goal, Project } from "@paperclipai/shared";
 
 export const ONBOARDING_PROJECT_NAME = "Onboarding";
 
@@ -30,6 +30,18 @@ export function buildOnboardingProjectPayload(goalId: string | null) {
     status: "in_progress" as const,
     ...(goalId ? { goalIds: [goalId] } : {}),
   };
+}
+
+export function selectReusableOnboardingProject<T extends Pick<Project, "name" | "status">>(
+  projects: T[],
+): T | null {
+  return (
+    projects.find(
+      (project) =>
+        project.status !== "cancelled" &&
+        project.name.trim().toLowerCase() === ONBOARDING_PROJECT_NAME.toLowerCase(),
+    ) ?? null
+  );
 }
 
 export function buildOnboardingIssuePayload(input: {

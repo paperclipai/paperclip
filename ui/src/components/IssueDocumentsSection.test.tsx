@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 
-import { act } from "react";
+import { act as reactAct } from "react";
 import type { ComponentProps } from "react";
+import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { DocumentRevision, Issue, IssueDocument } from "@paperclipai/shared";
@@ -15,6 +16,8 @@ const mockIssuesApi = vi.hoisted(() => ({
   listDocumentRevisions: vi.fn(),
   restoreDocumentRevision: vi.fn(),
   upsertDocument: vi.fn(),
+  lockDocument: vi.fn(),
+  unlockDocument: vi.fn(),
   deleteDocument: vi.fn(),
   getDocument: vi.fn(),
 }));
@@ -22,6 +25,24 @@ const mockIssuesApi = vi.hoisted(() => ({
 const markdownEditorMockState = vi.hoisted(() => ({
   emitMountEmptyChange: false,
 }));
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+(globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+
+async function act<T>(callback: () => T | Promise<T>): Promise<T> {
+  if (typeof reactAct === "function") {
+    return await (reactAct(callback) as T | Promise<T>);
+  }
+
+  let result: T | Promise<T> | undefined;
+  flushSync(() => {
+    result = callback();
+  });
+  const resolved = await result;
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  flushSync(() => {});
+  return resolved as T;
+}
 
 vi.mock("../api/issues", () => ({
   issuesApi: mockIssuesApi,
@@ -41,8 +62,22 @@ vi.mock("@/lib/router", () => ({
 }));
 
 vi.mock("./MarkdownBody", () => ({
-  MarkdownBody: ({ children, className }: { children: string; className?: string }) => (
-    <div className={className}>{children}</div>
+  MarkdownBody: ({
+    children,
+    className,
+    externalReferences,
+  }: {
+    children: string;
+    className?: string;
+    externalReferences?: Record<string, unknown>;
+  }) => (
+    <div
+      className={className}
+      data-testid="markdown-body"
+      data-external-reference-keys={externalReferences ? Object.keys(externalReferences).join(",") : ""}
+    >
+      {children}
+    </div>
   ),
 }));
 
@@ -117,9 +152,6 @@ vi.mock("@/components/ui/dropdown-menu", async () => {
   };
 });
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-(globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
-
 const localStorageEntries = new Map<string, string>();
 
 function ensureLocalStorageMock() {
@@ -178,6 +210,9 @@ function createIssueDocument(overrides: Partial<IssueDocument> = {}): IssueDocum
     createdByUserId: "user-1",
     updatedByAgentId: null,
     updatedByUserId: "user-1",
+    lockedAt: null,
+    lockedByAgentId: null,
+    lockedByUserId: null,
     createdAt: new Date("2026-03-31T12:00:00.000Z"),
     updatedAt: new Date("2026-03-31T12:05:00.000Z"),
     ...overrides,
@@ -219,6 +254,7 @@ function createIssue(): Issue {
     priority: "medium",
     assigneeAgentId: null,
     assigneeUserId: null,
+    responsibleUserId: null,
     createdByAgentId: null,
     createdByUserId: "user-1",
     issueNumber: 807,
@@ -306,6 +342,185 @@ describe("IssueDocumentsSection", () => {
     queryClient.clear();
   });
 
+  it("locks documents from the document header action", async () => {
+    const unlockedDocument = createIssueDocument({
+      body: "Draftable plan body",
+      lockedAt: null,
+    });
+    const lockedDocument = createIssueDocument({
+      body: "Draftable plan body",
+      lockedAt: new Date("2026-03-31T12:06:00.000Z"),
+      lockedByUserId: "user-1",
+      updatedAt: new Date("2026-03-31T12:06:00.000Z"),
+    });
+    const issue = createIssue();
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: {
+          retry: false,
+        },
+        mutations: {
+          retry: false,
+        },
+      },
+    });
+
+    mockIssuesApi.listDocuments
+      .mockResolvedValueOnce([unlockedDocument])
+      .mockResolvedValue([lockedDocument]);
+    mockIssuesApi.lockDocument.mockResolvedValue(lockedDocument);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDocumentsSection issue={issue} canDeleteDocuments={false} canManageDocumentLocks />
+        </QueryClientProvider>,
+      );
+    });
+    await flush();
+    await flush();
+
+    const lockButton = container.querySelector('button[title="Lock document"]');
+    expect(lockButton).toBeTruthy();
+
+    await act(async () => {
+      lockButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    expect(mockIssuesApi.lockDocument).toHaveBeenCalledWith("issue-1", "plan");
+    expect(container.querySelector('button[title="Unlock document"]')).toBeTruthy();
+
+    await act(async () => {
+      root.unmount();
+    });
+    queryClient.clear();
+  });
+
+  it("hides direct edit and delete actions for locked documents", async () => {
+    const issue = createIssue();
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: {
+          retry: false,
+        },
+        mutations: {
+          retry: false,
+        },
+      },
+    });
+
+    mockIssuesApi.listDocuments.mockResolvedValue([
+      createIssueDocument({
+        body: "Locked plan body",
+        lockedAt: new Date("2026-03-31T12:06:00.000Z"),
+        lockedByUserId: "user-1",
+      }),
+    ]);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDocumentsSection issue={issue} canDeleteDocuments canManageDocumentLocks />
+        </QueryClientProvider>,
+      );
+    });
+    await flush();
+    await flush();
+
+    expect(container.textContent).toContain("Locked plan body");
+    expect(container.textContent).not.toContain("Edit document");
+    expect(container.textContent).not.toContain("Delete document");
+    expect(container.querySelector('button[title="Unlock document"]')).toBeTruthy();
+
+    await act(async () => {
+      root.unmount();
+    });
+    queryClient.clear();
+  });
+
+  it("shows revision authors with names and avatars in the revision history menu", async () => {
+    const currentDocument = createIssueDocument({
+      body: "Current plan body",
+      latestRevisionId: "revision-agent",
+      latestRevisionNumber: 4,
+      updatedByAgentId: "agent-1",
+      updatedByUserId: null,
+      updatedAt: new Date("2026-03-31T12:05:00.000Z"),
+    });
+    const issue = createIssue();
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: {
+          retry: false,
+        },
+        mutations: {
+          retry: false,
+        },
+      },
+    });
+
+    mockIssuesApi.listDocuments.mockResolvedValue([currentDocument]);
+    queryClient.setQueryData(
+      queryKeys.issues.documentRevisions(issue.id, "plan"),
+      [
+        createRevision({
+          id: "revision-agent",
+          revisionNumber: 4,
+          body: "Current plan body",
+          createdByAgentId: "agent-1",
+          createdByUserId: null,
+          createdAt: new Date("2026-03-31T12:05:00.000Z"),
+        }),
+        createRevision({
+          id: "revision-user",
+          revisionNumber: 3,
+          body: "Board-written plan body",
+          createdByAgentId: null,
+          createdByUserId: "user-1",
+          createdAt: new Date("2026-03-31T11:00:00.000Z"),
+        }),
+      ],
+    );
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDocumentsSection
+            issue={issue}
+            canDeleteDocuments={false}
+            agentMap={new Map([["agent-1", { id: "agent-1", name: "CodexCoder", icon: "code" }]])}
+            userProfileMap={new Map([["user-1", { label: "Dotta", image: "https://example.test/dotta.png" }]])}
+          />
+        </QueryClientProvider>,
+      );
+    });
+    await flush();
+    await flush();
+
+    const revisionButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("rev 4"));
+    expect(revisionButton).toBeTruthy();
+
+    await act(async () => {
+      revisionButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    expect(document.body.textContent).toContain("CodexCoder");
+    expect(document.body.textContent).toContain("Dotta");
+    expect(document.body.textContent).not.toContain("• agent");
+    expect(document.body.querySelectorAll('[data-slot="avatar"]').length).toBeGreaterThanOrEqual(2);
+
+    await act(async () => {
+      root.unmount();
+    });
+    queryClient.clear();
+  });
+
   it("shows the restored document body immediately after a revision restore", async () => {
     const blankLatestDocument = createIssueDocument({
       body: "",
@@ -374,6 +589,7 @@ describe("IssueDocumentsSection", () => {
     await act(async () => {
       restoreButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
     });
+    await flush();
 
     expect(mockIssuesApi.restoreDocumentRevision).toHaveBeenCalledWith("issue-1", "plan", "revision-3");
     expect(container.textContent).toContain("Restored plan body");
@@ -580,6 +796,61 @@ describe("IssueDocumentsSection", () => {
     queryClient.clear();
   });
 
+  it("forwards externalReferences to the rendered document body so URL decoration applies", async () => {
+    const issue = createIssue();
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false },
+        mutations: { retry: false },
+      },
+    });
+
+    mockIssuesApi.listDocuments.mockResolvedValue([
+      createIssueDocument({
+        body: "Linked work: https://github.com/example/repo/pull/99",
+      }),
+    ]);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDocumentsSection
+            issue={issue}
+            canDeleteDocuments={false}
+            externalReferences={{
+              "https://github.com/example/repo/pull/99": {
+                providerKey: "github",
+                objectType: "pull_request",
+                statusCategory: "open",
+                liveness: "fresh",
+                statusLabel: "Open",
+                displayTitle: "PR #99",
+              },
+            }}
+          />
+        </QueryClientProvider>,
+      );
+    });
+    await flush();
+    await flush();
+
+    const markdownBodies = Array.from(
+      container.querySelectorAll('[data-testid="markdown-body"]'),
+    ) as HTMLElement[];
+    expect(markdownBodies.length).toBeGreaterThan(0);
+    const rendered = markdownBodies.find((element) =>
+      (element.textContent ?? "").includes("Linked work"),
+    );
+    expect(rendered?.getAttribute("data-external-reference-keys"))
+      .toContain("https://github.com/example/repo/pull/99");
+
+    await act(async () => {
+      root.unmount();
+    });
+    queryClient.clear();
+  });
+
   it("wraps the documents header actions so mobile layouts do not overflow", async () => {
     const issue = createIssue();
     const root = createRoot(container);
@@ -620,6 +891,86 @@ describe("IssueDocumentsSection", () => {
     expect(heading).toBeTruthy();
     expect(heading?.parentElement?.className).toContain("flex-wrap");
     expect(heading?.nextElementSibling?.className).toContain("flex-wrap");
+
+    await act(async () => {
+      root.unmount();
+    });
+    queryClient.clear();
+  });
+
+  it("renders and locks documents for a non-issue document subject", async () => {
+    const caseDocument = createIssueDocument({
+      id: "case-document-1",
+      issueId: "case-1",
+      key: "body",
+      title: "Body",
+      body: "Reusable case document body",
+      latestRevisionId: "case-revision-2",
+      latestRevisionNumber: 2,
+      updatedByAgentId: "agent-1",
+      updatedByUserId: null,
+    });
+    const lockedCaseDocument = {
+      ...caseDocument,
+      lockedAt: new Date("2026-03-31T12:06:00.000Z"),
+      lockedByUserId: "user-1",
+      updatedAt: new Date("2026-03-31T12:06:00.000Z"),
+    };
+    const listDocuments = vi.fn()
+      .mockResolvedValueOnce([caseDocument])
+      .mockResolvedValue([lockedCaseDocument]);
+    const setDocumentLock = vi.fn().mockResolvedValue(lockedCaseDocument);
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: {
+        queries: { retry: false },
+        mutations: { retry: false },
+      },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDocumentsSection
+            subject={{
+              id: "case-1",
+              documentsQueryKey: ["cases", "documents", "case-1"],
+              idleDocumentRevisionsQueryKey: ["cases", "revisions", "case-1", "__idle__"],
+              documentRevisionsQueryKey: (key) => ["cases", "revisions", "case-1", key],
+              listDocuments,
+              listDocumentRevisions: vi.fn().mockResolvedValue([]),
+              getDocument: vi.fn().mockResolvedValue(caseDocument),
+              upsertDocument: vi.fn().mockResolvedValue(caseDocument),
+              deleteDocument: vi.fn().mockResolvedValue({ ok: true }),
+              restoreDocumentRevision: vi.fn().mockResolvedValue(caseDocument),
+              setDocumentLock,
+              hideSystemDocuments: false,
+              legacyPlanDocument: null,
+              annotations: null,
+            }}
+            canDeleteDocuments
+            canManageDocumentLocks
+          />
+        </QueryClientProvider>,
+      );
+    });
+    await flush();
+    await flush();
+
+    expect(listDocuments).toHaveBeenCalled();
+    expect(container.textContent).toContain("Reusable case document body");
+    expect(container.textContent).toContain("body");
+
+    const lockButton = container.querySelector('button[title="Lock document"]');
+    expect(lockButton).toBeTruthy();
+
+    await act(async () => {
+      lockButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flush();
+
+    expect(setDocumentLock).toHaveBeenCalledWith("body", true);
+    expect(container.querySelector('button[title="Unlock document"]')).toBeTruthy();
 
     await act(async () => {
       root.unmount();

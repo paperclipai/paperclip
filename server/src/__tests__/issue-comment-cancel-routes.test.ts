@@ -7,6 +7,7 @@ const mockIssueService = vi.hoisted(() => ({
   assertCheckoutOwner: vi.fn(),
   getComment: vi.fn(),
   removeComment: vi.fn(),
+  tombstoneComment: vi.fn(),
 }));
 
 const mockAccessService = vi.hoisted(() => ({
@@ -38,6 +39,45 @@ const mockIssueThreadInteractionService = vi.hoisted(() => ({
   expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
   expireStaleRequestConfirmationsForIssueDocument: vi.fn(async () => []),
 }));
+const mockDocumentAnnotationService = vi.hoisted(() => ({
+  cleanupForIssueCommentDeletion: vi.fn(async () => ({ deletedCommentIds: [], resolvedThreadIds: [] })),
+  remapOpenThreadsForDocument: vi.fn(async () => []),
+}));
+const mockDecisionTrainingService = vi.hoisted(() => ({
+  scrubDeletedComments: vi.fn(async () => ({ updatedCount: 0 })),
+}));
+const mockIssueReferenceService = vi.hoisted(() => ({
+  deleteCommentSource: vi.fn(async () => undefined),
+  deleteDocumentSource: vi.fn(async () => undefined),
+  diffIssueReferenceSummary: vi.fn(() => ({
+    addedReferencedIssues: [],
+    removedReferencedIssues: [],
+    currentReferencedIssues: [],
+  })),
+  emptySummary: vi.fn(() => ({ outbound: [], inbound: [] })),
+  listIssueReferenceSummary: vi.fn(async () => ({ outbound: [], inbound: [] })),
+  syncComment: vi.fn(async () => undefined),
+  syncDocument: vi.fn(async () => undefined),
+  syncIssue: vi.fn(async () => undefined),
+}));
+const mockExternalObjectService = vi.hoisted(() => ({
+  getIssueSummaries: vi.fn(async () => ({ summaries: {} })),
+  getIssueSummary: vi.fn(async () => ({
+    authRequiredCount: 0,
+    byLiveness: {},
+    byStatusCategory: {},
+    highestSeverity: "muted",
+    objects: [],
+    staleCount: 0,
+    total: 0,
+    unreachableCount: 0,
+  })),
+  listForIssue: vi.fn(async () => []),
+  refreshIssueObjects: vi.fn(async () => []),
+  syncCommentSafely: vi.fn(async () => undefined),
+  syncDocumentSafely: vi.fn(async () => undefined),
+  syncIssueSafely: vi.fn(async () => undefined),
+}));
 
 function registerModuleMocks() {
   vi.doMock("@paperclipai/shared/telemetry", () => ({
@@ -57,6 +97,10 @@ function registerModuleMocks() {
     logActivity: mockLogActivity,
   }));
 
+  vi.doMock("../services/decision-training.js", () => ({
+    decisionTrainingService: () => mockDecisionTrainingService,
+  }));
+
   vi.doMock("../services/feedback.js", () => ({
     feedbackService: () => mockFeedbackService,
   }));
@@ -73,12 +117,20 @@ function registerModuleMocks() {
     issueService: () => mockIssueService,
   }));
 
+  vi.doMock("../services/external-objects.js", () => ({
+    externalObjectService: () => mockExternalObjectService,
+  }));
+
   vi.doMock("../services/index.js", () => ({
     companyService: () => ({
       getById: vi.fn(async () => ({ id: "company-1", attachmentMaxBytes: 10 * 1024 * 1024 })),
     }),
     accessService: () => mockAccessService,
     agentService: () => ({ getById: vi.fn(async () => null) }),
+    companySkillService: () => ({
+      completeTestRunForIssue: vi.fn(async () => null),
+    }),
+    documentAnnotationService: () => mockDocumentAnnotationService,
     documentService: () => ({}),
     executionWorkspaceService: () => ({}),
     feedbackService: () => mockFeedbackService,
@@ -90,19 +142,7 @@ function registerModuleMocks() {
       getActiveForIssue: vi.fn(async () => null),
       listActiveForIssues: vi.fn(async () => new Map()),
     }),
-    issueReferenceService: () => ({
-      deleteDocumentSource: async () => undefined,
-      diffIssueReferenceSummary: () => ({
-        addedReferencedIssues: [],
-        removedReferencedIssues: [],
-        currentReferencedIssues: [],
-      }),
-      emptySummary: () => ({ outbound: [], inbound: [] }),
-      listIssueReferenceSummary: async () => ({ outbound: [], inbound: [] }),
-      syncComment: async () => undefined,
-      syncDocument: async () => undefined,
-      syncIssue: async () => undefined,
-    }),
+    issueReferenceService: () => mockIssueReferenceService,
     issueService: () => mockIssueService,
     issueThreadInteractionService: () => mockIssueThreadInteractionService,
     logActivity: mockLogActivity,
@@ -173,6 +213,8 @@ describe.sequential("issue comment cancel routes", () => {
     vi.doUnmock("../telemetry.js");
     vi.doUnmock("../services/access.js");
     vi.doUnmock("../services/activity-log.js");
+    vi.doUnmock("../services/decision-training.js");
+    vi.doUnmock("../services/external-objects.js");
     vi.doUnmock("../services/feedback.js");
     vi.doUnmock("../services/heartbeat.js");
     vi.doUnmock("../services/index.js");
@@ -187,6 +229,19 @@ describe.sequential("issue comment cancel routes", () => {
     mockIssueService.assertCheckoutOwner.mockResolvedValue({ adoptedFromRunId: null });
     mockIssueService.getComment.mockResolvedValue(makeComment());
     mockIssueService.removeComment.mockResolvedValue(makeComment());
+    mockIssueService.tombstoneComment.mockImplementation(async (_commentId, _actor, options) => {
+      const deleted = makeComment({
+        body: "",
+        metadata: null,
+        deletedAt: new Date("2026-04-11T15:05:00.000Z"),
+        deletedByType: "user",
+        deletedByAgentId: null,
+        deletedByUserId: "local-board",
+        deletedByRunId: null,
+      });
+      await options?.afterTombstone?.(deleted, "tx");
+      return deleted;
+    });
     mockAccessService.canUser.mockResolvedValue(false);
     mockAccessService.hasPermission.mockResolvedValue(false);
     mockFeedbackService.listIssueVotesForUser.mockResolvedValue([]);
@@ -213,13 +268,24 @@ describe.sequential("issue comment cancel routes", () => {
     });
     mockInstanceSettingsService.listCompanyIds.mockResolvedValue(["company-1"]);
     mockLogActivity.mockResolvedValue(undefined);
+    mockDocumentAnnotationService.cleanupForIssueCommentDeletion.mockResolvedValue({
+      deletedCommentIds: [],
+      resolvedThreadIds: [],
+    });
+    mockIssueReferenceService.deleteCommentSource.mockResolvedValue(undefined);
+    mockIssueReferenceService.syncComment.mockResolvedValue(undefined);
+    mockExternalObjectService.syncCommentSafely.mockResolvedValue(undefined);
   });
 
   it("cancels a queued comment from its author and restores the deleted body", async () => {
     const res = await request(await installActor(createApp()))
-      .delete("/api/issues/11111111-1111-4111-8111-111111111111/comments/comment-1");
+      .delete("/api/issues/11111111-1111-4111-8111-111111111111/comments/comment-1?mode=cancel");
 
-    expect(res.status).toBe(200);
+    expect(res.status, JSON.stringify({
+      body: res.body,
+      tombstoneCalls: mockIssueService.tombstoneComment.mock.calls,
+      activityCalls: mockLogActivity.mock.calls,
+    })).toBe(200);
     expect(res.body).toMatchObject({
       id: "comment-1",
       body: "Queued follow-up",
@@ -238,6 +304,18 @@ describe.sequential("issue comment cancel routes", () => {
     );
   });
 
+  it("rejects stale queued cancellation after the active run is gone", async () => {
+    mockHeartbeatService.getRun.mockResolvedValue(null);
+
+    const res = await request(await installActor(createApp()))
+      .delete("/api/issues/11111111-1111-4111-8111-111111111111/comments/comment-1?mode=cancel");
+
+    expect(res.status).toBe(409);
+    expect(res.body.error).toBe("Queued comment can no longer be canceled");
+    expect(mockIssueService.removeComment).not.toHaveBeenCalled();
+    expect(mockIssueService.tombstoneComment).not.toHaveBeenCalled();
+  });
+
   it("rejects canceling comments that are no longer queued", async () => {
     mockIssueService.getComment.mockResolvedValue(
       makeComment({
@@ -247,11 +325,12 @@ describe.sequential("issue comment cancel routes", () => {
     );
 
     const res = await request(await installActor(createApp()))
-      .delete("/api/issues/11111111-1111-4111-8111-111111111111/comments/comment-1");
+      .delete("/api/issues/11111111-1111-4111-8111-111111111111/comments/comment-1?mode=cancel");
 
     expect(res.status).toBe(409);
     expect(res.body.error).toBe("Only queued comments can be canceled");
     expect(mockIssueService.removeComment).not.toHaveBeenCalled();
+    expect(mockIssueService.tombstoneComment).not.toHaveBeenCalled();
   });
 
   it("rejects canceling another actor's queued comment", async () => {
@@ -262,10 +341,100 @@ describe.sequential("issue comment cancel routes", () => {
     );
 
     const res = await request(await installActor(createApp()))
-      .delete("/api/issues/11111111-1111-4111-8111-111111111111/comments/comment-1");
+      .delete("/api/issues/11111111-1111-4111-8111-111111111111/comments/comment-1?mode=cancel");
 
     expect(res.status).toBe(403);
     expect(res.body.error).toBe("Only the comment author can cancel queued comments");
     expect(mockIssueService.removeComment).not.toHaveBeenCalled();
+  });
+
+  it("deletes a normal authored comment as a tombstone without returning the original body", async () => {
+    mockIssueService.getComment.mockResolvedValue(
+      makeComment({
+        body: "Sensitive original comment body",
+        metadata: { version: 1, sections: [{ rows: [{ type: "text", text: "Sensitive metadata copy" }] }] },
+        createdAt: new Date("2026-04-11T14:58:00.000Z"),
+        updatedAt: new Date("2026-04-11T14:58:00.000Z"),
+      }),
+    );
+    mockDocumentAnnotationService.cleanupForIssueCommentDeletion.mockResolvedValue({
+      deletedCommentIds: ["annotation-comment-1"],
+      resolvedThreadIds: ["annotation-thread-1"],
+    });
+
+    const res = await request(await installActor(createApp()))
+      .delete("/api/issues/11111111-1111-4111-8111-111111111111/comments/comment-1");
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toMatchObject({
+      id: "comment-1",
+      body: "",
+      metadata: null,
+      deletedByType: "user",
+      deletedByUserId: "local-board",
+    });
+    expect(JSON.stringify(res.body)).not.toContain("Sensitive original comment body");
+    expect(JSON.stringify(res.body)).not.toContain("Sensitive metadata copy");
+    expect(mockIssueService.removeComment).not.toHaveBeenCalled();
+    expect(mockIssueService.tombstoneComment).toHaveBeenCalledWith(
+      "comment-1",
+      {
+        actorType: "user",
+        agentId: null,
+        userId: "local-board",
+        runId: null,
+      },
+      expect.objectContaining({ afterTombstone: expect.any(Function) }),
+    );
+    expect(mockIssueReferenceService.syncComment).toHaveBeenCalledWith("comment-1", "tx");
+    expect(mockExternalObjectService.syncCommentSafely).toHaveBeenCalledWith("comment-1", "tx");
+    expect(mockDocumentAnnotationService.cleanupForIssueCommentDeletion).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      "comment-1",
+      expect.objectContaining({
+        actorType: "user",
+        userId: "local-board",
+      }),
+      "tx",
+    );
+    expect(mockIssueReferenceService.deleteCommentSource).toHaveBeenCalledWith("annotation-comment-1", "tx");
+    expect(mockExternalObjectService.syncCommentSafely).toHaveBeenCalledWith("annotation-comment-1", "tx");
+    expect(mockDecisionTrainingService.scrubDeletedComments).toHaveBeenCalledWith({
+      companyId: "company-1",
+      issueId: "11111111-1111-4111-8111-111111111111",
+      commentIds: ["comment-1", "annotation-comment-1"],
+      deletedAt: new Date("2026-04-11T15:05:00.000Z"),
+    }, "tx");
+    const deletedActivity = mockLogActivity.mock.calls.find((call) => call[1]?.action === "issue.comment_deleted")?.[1];
+    expect(deletedActivity).toEqual(expect.objectContaining({
+      action: "issue.comment_deleted",
+      details: expect.objectContaining({
+        deletedAnnotationCommentIds: ["annotation-comment-1"],
+        resolvedAnnotationThreadIds: ["annotation-thread-1"],
+      }),
+    }));
+    expect(deletedActivity?.details).toEqual(expect.not.objectContaining({
+      bodySnippet: expect.anything(),
+    }));
+    expect(JSON.stringify(deletedActivity?.details ?? {})).not.toContain("Sensitive original comment body");
+    expect(JSON.stringify(deletedActivity?.details ?? {})).not.toContain("Sensitive metadata copy");
+  });
+
+  it("rejects deleting another actor's normal comment", async () => {
+    mockIssueService.getComment.mockResolvedValue(
+      makeComment({
+        authorUserId: "someone-else",
+        createdAt: new Date("2026-04-11T14:58:00.000Z"),
+        updatedAt: new Date("2026-04-11T14:58:00.000Z"),
+      }),
+    );
+
+    const res = await request(await installActor(createApp()))
+      .delete("/api/issues/11111111-1111-4111-8111-111111111111/comments/comment-1");
+
+    expect(res.status).toBe(403);
+    expect(res.body.error).toBe("Only the comment author can delete comments");
+    expect(mockIssueService.removeComment).not.toHaveBeenCalled();
+    expect(mockIssueService.tombstoneComment).not.toHaveBeenCalled();
   });
 });

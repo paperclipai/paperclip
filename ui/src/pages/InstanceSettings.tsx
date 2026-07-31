@@ -33,7 +33,8 @@ export function InstanceSettings() {
 
   useEffect(() => {
     setBreadcrumbs([
-      { label: "Instance Settings" },
+      { label: "Settings", href: "/company/settings" },
+      { label: "Instance settings", href: "/company/settings/instance/general" },
       { label: "Heartbeats" },
     ]);
   }, [setBreadcrumbs]);
@@ -227,7 +228,7 @@ export function InstanceSettings() {
                       >
                         <Badge
                           variant={agent.schedulerActive ? "default" : "outline"}
-                          className="shrink-0 text-[10px] px-1.5 py-0"
+                          className="shrink-0 text-(length:--text-nano) px-1.5 py-0"
                         >
                           {agent.schedulerActive ? "On" : "Off"}
                         </Badge>

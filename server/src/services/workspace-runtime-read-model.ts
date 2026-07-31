@@ -3,6 +3,7 @@ import { workspaceRuntimeServices } from "@paperclipai/db";
 import { and, desc, eq, inArray } from "drizzle-orm";
 
 type WorkspaceRuntimeServiceRow = typeof workspaceRuntimeServices.$inferSelect;
+type RuntimeServiceReadDb = Pick<Db, "select">;
 
 function runtimeServiceIdentityKey(row: WorkspaceRuntimeServiceRow) {
   if (row.reuseKey) return row.reuseKey;
@@ -27,7 +28,7 @@ export function selectCurrentRuntimeServiceRows(rows: WorkspaceRuntimeServiceRow
 }
 
 export async function listCurrentRuntimeServicesForProjectWorkspaces(
-  db: Db,
+  db: RuntimeServiceReadDb,
   companyId: string,
   projectWorkspaceIds: string[],
 ) {
@@ -62,7 +63,7 @@ export async function listCurrentRuntimeServicesForProjectWorkspaces(
 }
 
 export async function listCurrentRuntimeServicesForExecutionWorkspaces(
-  db: Db,
+  db: RuntimeServiceReadDb,
   companyId: string,
   executionWorkspaceIds: string[],
 ) {

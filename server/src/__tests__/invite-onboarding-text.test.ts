@@ -39,7 +39,7 @@ describe("buildInviteOnboardingTextDocument", () => {
       allowedHostnames: [],
     });
 
-    expect(text).toContain("Paperclip OpenClaw Gateway Onboarding");
+    expect(text).toContain("Paperclip Agent Onboarding");
     expect(text).toContain("/api/invites/token-123/accept");
     expect(text).toContain("/api/join-requests/{requestId}/claim-api-key");
     expect(text).toContain("/api/invites/token-123/onboarding.txt");
@@ -48,14 +48,39 @@ describe("buildInviteOnboardingTextDocument", () => {
     expect(text).toContain("http://localhost:3100");
     expect(text).toContain("host.docker.internal");
     expect(text).toContain("paperclipApiUrl");
-    expect(text).toContain("adapterType \"openclaw_gateway\"");
+    expect(text).toContain('"adapterType": "openclaw_gateway"');
     expect(text).toContain("headers.x-openclaw-token");
     expect(text).toContain("Do NOT use /v1/responses or /hooks/*");
+    expect(text).toContain('adapterType: "hermes_gateway"');
+    expect(text).toContain('"adapterType": "hermes_gateway"');
+    expect(text).toContain("API_SERVER_ENABLED=true");
+    expect(text).toContain("API_SERVER_KEY");
+    expect(text).toContain("Set agentDefaultsPayload.apiKey to the exact same value as API_SERVER_KEY");
+    expect(text).toContain("hermes gateway run --replace --accept-hooks");
+    expect(text).toContain("Default Hermes API server port: 8642");
+    expect(text).toContain("agentDefaultsPayload.apiBaseUrl");
+    expect(text).toContain("agentDefaultsPayload.paperclipApiUrl");
+    expect(text).toContain("hermes_local");
+    expect(text).toContain("Hermes-originated Paperclip API usage");
+    expect(text).toContain("http://127.0.0.1:8642");
+    expect(text).toContain("http://127.0.0.1:9119");
+    expect(text).toContain("http://127.0.0.1:9119/chat");
+    expect(text).toContain("map to /api");
+    expect(text).toContain("/chat and the dashboard root are browser UI routes");
+    expect(text).toContain("/api/v1/runs");
+    expect(text).toContain("Do not rotate or invent a Paperclip key manually");
+    expect(text).toContain("http://192.168.1.25:8642");
+    expect(text).toContain("tailnet-name.ts.net:8642");
+    expect(text).toContain("http://host.docker.internal:8642");
+    expect(text).toContain("https://hermes-gateway.example");
     expect(text).toContain("set the first reachable candidate as agentDefaultsPayload.paperclipApiUrl");
-    expect(text).toContain("~/.openclaw/workspace/paperclip-claimed-api-key.json");
     expect(text).toContain("PAPERCLIP_API_KEY");
-    expect(text).toContain("saved token field");
-    expect(text).toContain("Gateway token unexpectedly short");
+    expect(text).toContain("Store the parsed token field from the raw HTTP JSON response");
+    expect(text).toContain("A token value containing literal ... or [redacted]");
+    expect(text).toContain("The response body includes the full token exactly once");
+    expect(text).toContain("Do not persist displayed previews containing literal ... or [redacted]");
+    expect(text).toContain("Use your runtime's normal skill or instruction installation path.");
+    expect(text).toContain("Decide which Paperclip adapter type matches your runtime.");
   });
 
   it("includes loopback diagnostics for authenticated/private onboarding", () => {

@@ -288,8 +288,6 @@ describe("cursor execute", () => {
             {
               name: "paperclip",
               source: paperclipDir,
-              required: true,
-              requiredReason: "Bundled Paperclip skills are always available for local adapters.",
             },
             {
               name: "ascii-heart",

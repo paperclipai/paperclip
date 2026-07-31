@@ -166,7 +166,7 @@ export function decideRunLivenessContinuation(input: {
     instruction:
       nextAction ??
       "The previous run ended without concrete progress. Take the first concrete action now or mark the issue blocked with a specific unblock request.",
-  });
+  }, "normal_model");
 
   return {
     kind: "enqueue",
@@ -184,6 +184,6 @@ export function decideRunLivenessContinuation(input: {
       livenessContinuationState: livenessState,
       livenessContinuationReason: livenessReason,
       livenessContinuationInstruction: payload.instruction,
-    }),
+    }, "normal_model"),
   };
 }

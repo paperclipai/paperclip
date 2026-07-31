@@ -131,19 +131,11 @@ export const InlineEntitySelector = forwardRef<HTMLButtonElement, InlineEntitySe
           align="start"
           side="bottom"
           collisionPadding={16}
-          className="w-[min(20rem,calc(100vw-2rem))] p-1"
+          className="w-(--sz-calc-6) p-1"
           disablePortal={disablePortal}
           onOpenAutoFocus={(event) => {
             event.preventDefault();
-            // On touch devices, don't auto-focus the search input to avoid
-            // opening the virtual keyboard which reshapes the viewport and
-            // pushes the popover off-screen.
-            const isTouch = typeof window.matchMedia === "function"
-              ? window.matchMedia("(pointer: coarse)").matches
-              : false;
-            if (!isTouch) {
-              inputRef.current?.focus();
-            }
+            inputRef.current?.focus();
           }}
           onCloseAutoFocus={(event) => {
             if (!shouldPreventCloseAutoFocusRef.current) return;

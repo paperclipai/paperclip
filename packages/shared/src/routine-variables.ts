@@ -1,6 +1,14 @@
 import type { RoutineVariable } from "./types/routine.js";
 
-const ROUTINE_VARIABLE_MATCHER = /\{\{\s*([A-Za-z][A-Za-z0-9_]*)\s*\}\}/g;
+// Tolerate markdown-escaped underscores (`\_`) inside placeholders. WYSIWYG markdown
+// editors (e.g. MDXEditor) serialize `_` between word chars as `\_` to prevent
+// reparse-as-emphasis, so a user-typed `{{pr_url}}` is stored as `{{pr\_url}}`.
+const ROUTINE_VARIABLE_MATCHER = /\{\{\s*([A-Za-z](?:\\_|[A-Za-z0-9_])*)\s*\}\}/g;
+
+function unescapeRoutineVariableName(raw: string): string {
+  return raw.replace(/\\_/g, "_");
+}
+
 type RoutineTemplateInput = string | null | undefined | Array<string | null | undefined>;
 
 /**
@@ -41,6 +49,37 @@ export function isValidRoutineVariableName(name: string): boolean {
   return /^[A-Za-z][A-Za-z0-9_]*$/.test(name);
 }
 
+export function isRoutineDateVariableName(name: string): boolean {
+  return isValidRoutineVariableName(name) && name.length > "Date".length && name.endsWith("Date");
+}
+
+export function isValidRoutineDateString(value: string): boolean {
+  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!match) return false;
+
+  const year = Number(match[1]);
+  const month = Number(match[2]);
+  const day = Number(match[3]);
+  if (month < 1 || month > 12) return false;
+
+  const leapYear = year % 4 === 0 && (year % 100 !== 0 || year % 400 === 0);
+  const daysInMonth = [
+    31,
+    leapYear ? 29 : 28,
+    31,
+    30,
+    31,
+    30,
+    31,
+    31,
+    30,
+    31,
+    30,
+    31,
+  ][month - 1]!;
+  return day >= 1 && day <= daysInMonth;
+}
+
 function normalizeRoutineTemplateInput(input: RoutineTemplateInput): string[] {
   const templates = Array.isArray(input) ? input : [input];
   return templates.filter((template): template is string => typeof template === "string" && template.length > 0);
@@ -50,7 +89,7 @@ export function extractRoutineVariableNames(template: RoutineTemplateInput): str
   const found = new Set<string>();
   for (const source of normalizeRoutineTemplateInput(template)) {
     for (const match of source.matchAll(ROUTINE_VARIABLE_MATCHER)) {
-      const name = match[1];
+      const name = match[1] ? unescapeRoutineVariableName(match[1]) : "";
       if (name && !found.has(name)) {
         found.add(name);
       }
@@ -63,7 +102,7 @@ function defaultRoutineVariable(name: string): RoutineVariable {
   return {
     name,
     label: null,
-    type: "text",
+    type: isRoutineDateVariableName(name) ? "date" : "text",
     defaultValue: null,
     required: true,
     options: [],
@@ -97,7 +136,8 @@ export function interpolateRoutineTemplate(
   if (template == null) return null;
   if (!values || Object.keys(values).length === 0) return template;
   return template.replace(ROUTINE_VARIABLE_MATCHER, (match, rawName: string) => {
-    if (!(rawName in values)) return match;
-    return stringifyRoutineVariableValue(values[rawName]);
+    const name = unescapeRoutineVariableName(rawName);
+    if (!(name in values)) return match;
+    return stringifyRoutineVariableValue(values[name]);
   });
 }

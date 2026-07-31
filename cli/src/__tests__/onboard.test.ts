@@ -7,6 +7,7 @@ import type { PaperclipConfig } from "../config/schema.js";
 
 const ORIGINAL_ENV = { ...process.env };
 const ORIGINAL_CWD = process.cwd();
+const ORIGINAL_PATH = process.env.PATH;
 
 function createExistingConfigFixture() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-onboard-"));
@@ -86,6 +87,14 @@ describe("onboard", () => {
     delete process.env.PAPERCLIP_AGENT_JWT_SECRET;
     delete process.env.PAPERCLIP_SECRETS_MASTER_KEY;
     delete process.env.PAPERCLIP_SECRETS_MASTER_KEY_FILE;
+    delete process.env.PAPERCLIP_DB_BACKUP_DIR;
+    delete process.env.PAPERCLIP_DB_BACKUP_ENABLED;
+    delete process.env.PAPERCLIP_DB_BACKUP_INTERVAL_MINUTES;
+    delete process.env.PAPERCLIP_DB_BACKUP_RETENTION_DAYS;
+    delete process.env.PAPERCLIP_STORAGE_PROVIDER;
+    delete process.env.PAPERCLIP_STORAGE_LOCAL_DIR;
+    delete process.env.PAPERCLIP_SECRETS_PROVIDER;
+    delete process.env.PAPERCLIP_SECRETS_STRICT_MODE;
     delete process.env.PAPERCLIP_HOME;
     delete process.env.PAPERCLIP_CONFIG;
     delete process.env.PAPERCLIP_INSTANCE_ID;
@@ -171,8 +180,13 @@ describe("onboard", () => {
   it("keeps tailnet quickstart on loopback until tailscale is available", async () => {
     const configPath = createFreshConfigPath();
     delete process.env.PAPERCLIP_TAILNET_BIND_HOST;
+    process.env.PATH = "";
 
-    await onboard({ config: configPath, yes: true, invokedByRun: true, bind: "tailnet" });
+    try {
+      await onboard({ config: configPath, yes: true, invokedByRun: true, bind: "tailnet" });
+    } finally {
+      process.env.PATH = ORIGINAL_PATH;
+    }
 
     const raw = JSON.parse(fs.readFileSync(configPath, "utf8")) as PaperclipConfig;
     expect(raw.server.deploymentMode).toBe("authenticated");

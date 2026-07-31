@@ -143,6 +143,40 @@ The database mode is controlled by `DATABASE_URL`:
 
 Your Drizzle schema (`packages/db/src/schema/`) stays the same regardless of mode.
 
+## Migration authoring checklist
+
+The 0126 issue comment attribution backfill showed the failure mode this checklist is meant to prevent: each batch looked for the next rows with an unindexed predicate, so PostgreSQL repeatedly scanned the same table and the migration became O(n²) as the table grew.
+
+When authoring migrations or one-time backfills:
+
+- Create the supporting index for the batch predicate before the backfill loop runs.
+- Bound batches by an indexed key, such as an id range or keyset pagination cursor. Do not use `OFFSET` pagination or a query shape that re-scans already-visited rows each batch.
+- Avoid unbounded full-table `UPDATE` or `DELETE` statements. Add a selective predicate and process rows in bounded batches when table size can be large.
+- Use `CREATE INDEX CONCURRENTLY` for large existing tables when the migration can run outside a transaction and must avoid long write locks.
+- Split schema changes, index creation, and data backfill into separate phases so each step has clear locking and rollback behavior.
+- Treat the `check:migrations` CI gate as the enforcement backstop for these rules. If it flags a migration, rewrite the migration or add a suppression comment with the indexed predicate, batch bound, and reason the remaining scan is safe.
+
+## Resource membership tables
+
+Paperclip stores current-user sidebar membership state in:
+
+- `project_memberships`
+- `agent_memberships`
+
+These rows are company-scoped and user-scoped. A missing row means the user is joined, so existing users keep seeing projects and agents in the sidebar until they explicitly leave them. Rows only control sidebar visibility; they do not affect project/agent detail access, all-pages, selectors, assignment flows, or existing company permissions.
+
+Both tables use a unique key on `(company_id, user_id, resource_id)` and keep `state` as `joined` or `left`. Join/leave mutations are idempotent board-user `/me` operations and write activity entries when the effective state changes.
+
+## Decision training snapshot retention
+
+`decision_training_examples` stores a point-in-time copy of an issue, its comments, relevant runs, and the selected decision. Each row carries the `scrub_deleted_comments_v1` retention policy marker, and JSONL exports include that marker alongside the snapshot.
+
+- Deleting a captured source comment transactionally replaces that comment in every affected snapshot with a content-free redaction tombstone. The original body, presentation, and metadata are not retained in the training record.
+- Deleting an issue deletes its decision-training examples through the `issue_id` foreign-key cascade.
+- Deleting a training example deletes only that example and does not mutate the source issue.
+
+This policy makes training exports self-describing while keeping the decision record usable after a comment deletion without retaining content the author removed.
+
 ## Plugin database namespaces
 
 The plugin runtime tracks plugin-owned database namespaces and migrations in `plugin_database_namespaces` and `plugin_migrations`. Hosted deployments that separate runtime and migration connections should set `DATABASE_MIGRATION_URL`; plugin namespace migration work uses the migration connection when present.
@@ -163,8 +197,22 @@ up separately when you need full instance disaster recovery.
 
 Paperclip stores secret metadata and versions in:
 
+- `user_secret_definitions`
+- `user_secret_declarations`
 - `company_secrets`
 - `company_secret_versions`
+- `company_secret_bindings`
+- `secret_access_events`
+
+Company secrets use `company_secrets.scope = 'company'` and are bound directly
+through `company_secret_bindings`. User-specific secrets reuse the same provider
+and version storage, but each value is a `company_secrets.scope = 'user'` row
+with `owner_user_id` and `user_secret_definition_id` set. Definitions describe
+the reusable company-level slot, declarations record where `user_secret_ref`
+bindings are required, and the concrete value is selected later for the
+responsible user.
+
+Secret-aware env bindings are supported by agents, projects, and routines. Routine env lives in `routines.env`, is captured in `routine_revisions.snapshot`, and routine dispatches store `routine_runs.routine_revision_id` so runtime secret resolution uses the env snapshot that existed when the run was created. Routine secret refs bind with `target_type = 'routine'`, `target_id = routines.id`, and `config_path` values under `env.*`.
 
 For local/default installs, the active provider is `local_encrypted`:
 
@@ -173,6 +221,10 @@ For local/default installs, the active provider is `local_encrypted`:
 - CLI config location: `~/.paperclip/instances/default/config.json` under `secrets.localEncrypted.keyFilePath`.
 - Backup/restore requires both the database metadata and the local master key file; either artifact alone is insufficient.
 - The server best-effort enforces `0600` key file permissions and provider health reports permission warnings.
+- User-scoped values use the same local encrypted provider path. Database
+  backups preserve definitions, declarations, owner metadata, version metadata,
+  and access events, but restored user-scoped values are decryptable only when
+  the matching local master key is restored with the database.
 
 Optional overrides:
 

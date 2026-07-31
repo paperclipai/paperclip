@@ -76,12 +76,11 @@ describe("run liveness continuations", () => {
       continuationAttempt: 1,
       maxContinuationAttempts: DEFAULT_MAX_LIVENESS_CONTINUATION_ATTEMPTS,
       instruction: "Take the first concrete action now.",
-      modelProfile: "cheap",
     });
+    expect(decision.payload).not.toHaveProperty("modelProfile");
     expect(decision.contextSnapshot).toMatchObject({
       issueId,
       wakeReason: RUN_LIVENESS_CONTINUATION_REASON,
-      modelProfile: "cheap",
       livenessContinuationAttempt: 1,
       livenessContinuationMaxAttempts: DEFAULT_MAX_LIVENESS_CONTINUATION_ATTEMPTS,
       livenessContinuationSourceRunId: runId,
@@ -89,6 +88,7 @@ describe("run liveness continuations", () => {
       livenessContinuationReason: "Planned without acting",
       livenessContinuationInstruction: "Take the first concrete action now.",
     });
+    expect(decision.contextSnapshot).not.toHaveProperty("modelProfile");
   });
 
   it("enqueues the second empty_response continuation", () => {

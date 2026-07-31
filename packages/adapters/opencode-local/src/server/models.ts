@@ -175,6 +175,12 @@ export async function discoverOpenCodeModelsCached(input: {
   return models;
 }
 
+export function isTruthyEnvFlag(value: string | undefined): boolean {
+  if (value === undefined) return false;
+  const v = value.trim().toLowerCase();
+  return v === "true" || v === "1" || v === "yes";
+}
+
 export async function ensureOpenCodeModelConfiguredAndAvailable(input: {
   model?: unknown;
   command?: unknown;
@@ -182,6 +188,16 @@ export async function ensureOpenCodeModelConfiguredAndAvailable(input: {
   env?: unknown;
 }): Promise<AdapterModel[]> {
   const model = requireOpenCodeModelId(input.model);
+
+  // When the caller opts into OPENCODE_ALLOW_ALL_MODELS, OpenCode accepts any
+  // provider/model at run time (e.g. gateway-routed models that never appear in
+  // `opencode models` output). Honour that by skipping the availability probe;
+  // we still enforce the provider/model format above and do not second-guess
+  // the configured model. Prefer the explicit run env, then the process env.
+  const env = normalizeEnv(input.env);
+  if (isTruthyEnvFlag(env.OPENCODE_ALLOW_ALL_MODELS ?? process.env.OPENCODE_ALLOW_ALL_MODELS)) {
+    return [{ id: model, label: model }];
+  }
 
   const models = await discoverOpenCodeModelsCached({
     command: input.command,

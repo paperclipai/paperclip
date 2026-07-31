@@ -112,4 +112,85 @@ describeEmbeddedPostgres("documentService system issue documents", () => {
       body: "# Handoff",
     }));
   });
+
+  it("locks and unlocks issue documents", async () => {
+    const { issueId } = await createIssueWithDocuments();
+
+    const locked = await svc.lockIssueDocument({
+      issueId,
+      key: "plan",
+      lockedByUserId: "board-user",
+    });
+
+    expect(locked.changed).toBe(true);
+    expect(locked.document.lockedAt).toBeInstanceOf(Date);
+    expect(locked.document.lockedByUserId).toBe("board-user");
+
+    await expect(svc.upsertIssueDocument({
+      issueId,
+      key: "plan",
+      title: "Plan",
+      format: "markdown",
+      body: "# Updated plan",
+      baseRevisionId: locked.document.latestRevisionId,
+      createdByUserId: "board-user",
+    })).rejects.toMatchObject({
+      status: 409,
+      message: "Document is locked",
+    });
+
+    const unlocked = await svc.unlockIssueDocument(issueId, "plan");
+    expect(unlocked.changed).toBe(true);
+    expect(unlocked.document.lockedAt).toBeNull();
+
+    const updated = await svc.upsertIssueDocument({
+      issueId,
+      key: "plan",
+      title: "Plan",
+      format: "markdown",
+      body: "# Updated plan",
+      baseRevisionId: unlocked.document.latestRevisionId,
+      createdByUserId: "board-user",
+    });
+
+    expect(updated.created).toBe(false);
+    expect(updated.document.body).toBe("# Updated plan");
+  });
+
+  it("creates a new document instead of updating a locked document when requested", async () => {
+    const { issueId } = await createIssueWithDocuments();
+    const locked = await svc.lockIssueDocument({
+      issueId,
+      key: "plan",
+      lockedByUserId: "board-user",
+    });
+
+    const fallback = await svc.upsertIssueDocument({
+      issueId,
+      key: "plan",
+      title: "Plan",
+      format: "markdown",
+      body: "# Agent replacement plan",
+      baseRevisionId: locked.document.latestRevisionId,
+      lockedDocumentStrategy: "create_new_document",
+    });
+
+    expect(fallback.created).toBe(true);
+    expect(fallback.document.key).toBe("plan-2");
+    expect(fallback.document.body).toBe("# Agent replacement plan");
+    expect("redirectedFromLockedDocument" in fallback ? fallback.redirectedFromLockedDocument : null)
+      .toEqual({ id: locked.document.id, key: "plan" });
+
+    const originalPlan = await svc.getIssueDocumentByKey(issueId, "plan");
+    expect(originalPlan).toEqual(expect.objectContaining({
+      body: "# Plan",
+      lockedAt: expect.any(Date),
+    }));
+
+    const newPlan = await svc.getIssueDocumentByKey(issueId, "plan-2");
+    expect(newPlan).toEqual(expect.objectContaining({
+      body: "# Agent replacement plan",
+      lockedAt: null,
+    }));
+  });
 });

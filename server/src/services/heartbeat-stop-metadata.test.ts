@@ -64,6 +64,18 @@ describe("heartbeat stop metadata", () => {
     ).toBe("cancelled");
   });
 
+  it("records graceful interruption separately from failure", () => {
+    expect(
+      buildHeartbeatRunStopMetadata({
+        adapterType: "codex_local",
+        adapterConfig: {},
+        outcome: "interrupted",
+        errorCode: "server_shutdown_interrupted",
+        errorMessage: "Interrupted by graceful server shutdown",
+      }).stopReason,
+    ).toBe("interrupted");
+  });
+
   it("normalizes max-turn exhaustion stop reasons", () => {
     expect(
       buildHeartbeatRunStopMetadata({

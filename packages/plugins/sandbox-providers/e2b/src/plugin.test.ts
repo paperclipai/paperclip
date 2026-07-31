@@ -364,6 +364,9 @@ describe("E2B sandbox provider plugin", () => {
     expect(fgCall).toBeDefined();
     if (!fgCall) throw new Error("fgCall not found");
     expect(fgCall[0]).toMatch(/\.profile/);
+    // The wrapper sources no `nvm.sh`; the sandbox image supplies node on PATH.
+    expect(fgCall[0]).not.toMatch(/nvm\.sh/);
+    expect(fgCall[0]).not.toMatch(/NVM_DIR/);
     expect(fgCall[0]).toMatch(/exec env FOO='bar' 'printf' 'hello'$/);
     expect(fgCall[1]).toEqual(expect.objectContaining({ cwd: "/workspace", timeoutMs: 1000 }));
     expect(fgCall[1]).not.toHaveProperty("envs");
@@ -377,6 +380,59 @@ describe("E2B sandbox provider plugin", () => {
       stdout: "foreground\n",
       stderr: "",
     });
+  });
+
+  it("refreshes the sandbox lifetime on every execute so long runs don't die mid-command", async () => {
+    const sandbox = createMockSandbox();
+    mockConnect.mockResolvedValue(sandbox);
+
+    await plugin.definition.onEnvironmentExecute?.({
+      driverKey: "e2b",
+      companyId: "company-1",
+      environmentId: "env-1",
+      config: {
+        template: "base",
+        apiKey: "resolved-key",
+        timeoutMs: 1_800_000,
+        reuseLease: false,
+      },
+      lease: { providerLeaseId: "sandbox-123", metadata: {} },
+      command: "printf",
+      args: ["hello"],
+      cwd: "/workspace",
+      env: {},
+      timeoutMs: 1000,
+    });
+
+    expect(sandbox.setTimeout).toHaveBeenCalledWith(1_800_000);
+  });
+
+  it("still runs the command when the setTimeout refresh fails transiently", async () => {
+    const sandbox = createMockSandbox();
+    sandbox.setTimeout.mockRejectedValueOnce(new Error("transient e2b api error"));
+    mockConnect.mockResolvedValue(sandbox);
+
+    const result = await plugin.definition.onEnvironmentExecute?.({
+      driverKey: "e2b",
+      companyId: "company-1",
+      environmentId: "env-1",
+      config: {
+        template: "base",
+        apiKey: "resolved-key",
+        timeoutMs: 1_800_000,
+        reuseLease: false,
+      },
+      lease: { providerLeaseId: "sandbox-123", metadata: {} },
+      command: "printf",
+      args: ["hello"],
+      cwd: "/workspace",
+      env: {},
+      timeoutMs: 1000,
+    });
+
+    expect(sandbox.setTimeout).toHaveBeenCalledWith(1_800_000);
+    expect(sandbox.commands.run).toHaveBeenCalled();
+    expect(result?.exitCode).toBe(0);
   });
 
   it("cleans up staged stdin even when writing it fails", async () => {

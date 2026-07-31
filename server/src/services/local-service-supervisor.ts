@@ -207,6 +207,10 @@ export async function findLocalServiceRegistryRecordByRuntimeServiceId(input: {
     await removeLocalServiceRegistryRecord(record.serviceKey);
     return null;
   }
+  if (!(await doesLocalServiceRecordMatchCwd(candidate))) {
+    await removeLocalServiceRegistryRecord(record.serviceKey);
+    return null;
+  }
 
   return candidate;
 }
@@ -249,12 +253,17 @@ async function isLikelyMatchingCommand(record: LocalServiceRegistryRecord) {
 
 export async function findAdoptableLocalService(input: {
   serviceKey: string;
+  profileKind?: string | null;
+  serviceName?: string | null;
   command?: string | null;
   cwd?: string | null;
   envFingerprint?: string | null;
   port?: number | null;
+  url?: string | null;
 }) {
-  const record = await readLocalServiceRegistryRecord(input.serviceKey);
+  const record =
+    await readLocalServiceRegistryRecord(input.serviceKey)
+    ?? await adoptLocalServiceFromPortOwner(input);
   if (!record) return null;
 
   if (!isPidAlive(record.pid)) {
@@ -265,10 +274,74 @@ export async function findAdoptableLocalService(input: {
     await removeLocalServiceRegistryRecord(input.serviceKey);
     return null;
   }
+  if (!(await doesLocalServiceRecordMatchCwd(record))) {
+    await removeLocalServiceRegistryRecord(input.serviceKey);
+    return null;
+  }
   if (input.command && record.command !== input.command) return null;
   if (input.cwd && path.resolve(record.cwd) !== path.resolve(input.cwd)) return null;
   if (input.envFingerprint && record.envFingerprint !== input.envFingerprint) return null;
   if (input.port !== undefined && input.port !== null && record.port !== input.port) return null;
+  return record;
+}
+
+async function readProcessGroupId(pid: number) {
+  if (process.platform === "win32") return null;
+  try {
+    const { stdout } = await execFileAsync("ps", ["-o", "pgid=", "-p", String(pid)]);
+    const parsed = Number.parseInt(stdout.trim(), 10);
+    return Number.isInteger(parsed) && parsed > 0 ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+async function adoptLocalServiceFromPortOwner(input: {
+  serviceKey: string;
+  profileKind?: string | null;
+  serviceName?: string | null;
+  command?: string | null;
+  cwd?: string | null;
+  envFingerprint?: string | null;
+  port?: number | null;
+  url?: string | null;
+}) {
+  if (!input.port) return null;
+  const ownerPid = await readLocalServicePortOwner(input.port);
+  if (!ownerPid) return null;
+
+  if (input.cwd) {
+    const ownerCwd = await readLocalServiceProcessCwd(ownerPid);
+    if (!ownerCwd || !(await isLocalServiceProcessInWorkspace(ownerCwd, input.cwd))) {
+      return null;
+    }
+  }
+
+  const processGroupId = await readProcessGroupId(ownerPid);
+  const pid = processGroupId && isPidAlive(processGroupId) ? processGroupId : ownerPid;
+  const now = new Date().toISOString();
+  const record: LocalServiceRegistryRecord = {
+    version: 1,
+    serviceKey: input.serviceKey,
+    profileKind: input.profileKind ?? "workspace-runtime",
+    serviceName: input.serviceName ?? "service",
+    command: input.command ?? input.serviceName ?? "service",
+    cwd: input.cwd ?? process.cwd(),
+    envFingerprint: input.envFingerprint ?? "",
+    port: input.port,
+    url: input.url ?? null,
+    pid,
+    processGroupId: processGroupId ?? pid,
+    provider: "local_process",
+    runtimeServiceId: null,
+    reuseKey: input.envFingerprint ?? null,
+    startedAt: now,
+    lastSeenAt: now,
+    metadata: null,
+  };
+
+  if (!(await isLikelyMatchingCommand(record))) return null;
+  await writeLocalServiceRegistryRecord(record);
   return record;
 }
 
@@ -334,7 +407,7 @@ export async function terminateLocalService(
 export async function readLocalServicePortOwner(port: number) {
   if (!Number.isInteger(port) || port <= 0 || process.platform === "win32") return null;
   try {
-    const { stdout } = await execFileAsync("lsof", ["-nPiTCP", `:${port}`, "-sTCP:LISTEN", "-t"]);
+    const { stdout } = await execFileAsync("lsof", ["-nP", `-iTCP:${port}`, "-sTCP:LISTEN", "-t"]);
     const firstPid = stdout
       .split("\n")
       .map((line) => Number.parseInt(line.trim(), 10))
@@ -343,4 +416,39 @@ export async function readLocalServicePortOwner(port: number) {
   } catch {
     return null;
   }
+}
+
+export async function readLocalServiceProcessCwd(pid: number) {
+  if (!Number.isInteger(pid) || pid <= 0 || process.platform !== "linux") return null;
+  try {
+    return await fs.readlink(`/proc/${pid}/cwd`);
+  } catch {
+    return null;
+  }
+}
+
+export async function isLocalServiceProcessInWorkspace(processCwd: string, workspaceCwd: string) {
+  try {
+    const [resolvedProcessCwd, resolvedWorkspaceCwd] = await Promise.all([
+      fs.realpath(processCwd),
+      fs.realpath(workspaceCwd),
+    ]);
+    const relativePath = path.relative(resolvedWorkspaceCwd, resolvedProcessCwd);
+    return relativePath === "" || (!relativePath.startsWith(`..${path.sep}`) && relativePath !== "..");
+  } catch {
+    return false;
+  }
+}
+
+export async function isLocalServiceRegistryCwdCompatible(processCwd: string | null, workspaceCwd: string) {
+  if (!processCwd) return process.platform !== "linux";
+  return isLocalServiceProcessInWorkspace(processCwd, workspaceCwd);
+}
+
+async function doesLocalServiceRecordMatchCwd(record: LocalServiceRegistryRecord) {
+  if (!record.port) return true;
+  const ownerPid = await readLocalServicePortOwner(record.port);
+  if (!ownerPid) return false;
+  const ownerCwd = await readLocalServiceProcessCwd(ownerPid);
+  return isLocalServiceRegistryCwdCompatible(ownerCwd, record.cwd);
 }

@@ -46,8 +46,8 @@ function orderedWindows(windows: QuotaWindow[]): QuotaWindow[] {
 
 function fillClass(usedPercent: number | null): string {
   if (usedPercent == null) return "bg-zinc-700";
-  if (usedPercent >= 90) return "bg-red-400";
-  if (usedPercent >= 70) return "bg-amber-400";
+  if (usedPercent >= 90) return "bg-(--status-task-blocked)";
+  if (usedPercent >= 70) return "bg-(--status-task-todo)";
   return "bg-primary/70";
 }
 
@@ -62,7 +62,7 @@ export function ClaudeSubscriptionPanel({
     <div className="border border-border px-4 py-4">
       <div className="flex items-start justify-between gap-3 border-b border-border pb-3">
         <div className="min-w-0">
-          <div className="text-[11px] font-semibold uppercase tracking-[0.2em] text-muted-foreground">
+          <div className="text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-caps) text-muted-foreground">
             Anthropic subscription
           </div>
           <div className="mt-1 text-sm text-muted-foreground">
@@ -70,7 +70,7 @@ export function ClaudeSubscriptionPanel({
           </div>
         </div>
         {source ? (
-          <span className="shrink-0 border border-border px-2.5 py-1 text-[10px] font-semibold uppercase tracking-[0.16em] text-muted-foreground">
+          <span className="shrink-0 border border-border px-2.5 py-1 text-(length:--text-nano) font-semibold uppercase tracking-(--tracking-eyebrow) text-muted-foreground">
             {quotaSourceDisplayName(source)}
           </span>
         ) : null}
@@ -127,7 +127,7 @@ export function ClaudeSubscriptionPanel({
 
               <div className="mt-3 h-2 overflow-hidden bg-muted">
                 <div
-                  className={cn("h-full transition-[width] duration-200", fillClass(window.usedPercent))}
+                  className={cn("h-full transition-(--tp-width) duration-200", fillClass(window.usedPercent))}
                   style={{ width: `${width}%` }}
                 />
               </div>
