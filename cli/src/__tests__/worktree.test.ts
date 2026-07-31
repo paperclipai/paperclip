@@ -20,6 +20,7 @@ import {
 import {
   copyGitHooksToWorktreeGitDir,
   copySeededSecretsKey,
+  isEmbeddedPostgresUnsafeToOverwrite,
   pauseSeededScheduledRoutines,
   quarantineSeededWorktreeExecutionState,
   readSourceAttachmentBody,
@@ -165,6 +166,32 @@ function buildSourceConfig(): PaperclipConfig {
 }
 
 describe("worktree helpers", () => {
+  it("blocks both running and ambiguous embedded PostgreSQL overwrite targets", () => {
+    const base = {
+      pid: 4242,
+      port: 54330,
+      dataDir: "/tmp/worktree-db",
+      pidFile: "/tmp/worktree-db/postmaster.pid",
+      pidFileDataDir: "/tmp/worktree-db",
+    };
+
+    expect(isEmbeddedPostgresUnsafeToOverwrite({
+      ...base,
+      state: "running",
+      reason: "data_directory_match",
+    })).toBe(true);
+    expect(isEmbeddedPostgresUnsafeToOverwrite({
+      ...base,
+      state: "ambiguous",
+      reason: "identity_unverified",
+    })).toBe(true);
+    expect(isEmbeddedPostgresUnsafeToOverwrite({
+      ...base,
+      state: "stale",
+      reason: "dead_pid",
+    })).toBe(false);
+  });
+
   it("sanitizes instance ids", () => {
     expect(sanitizeWorktreeInstanceId("feature/worktree-support")).toBe("feature-worktree-support");
     expect(sanitizeWorktreeInstanceId("  ")).toBe("worktree");

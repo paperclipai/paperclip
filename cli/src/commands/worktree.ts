@@ -45,8 +45,11 @@ import {
   runDatabaseRestore,
   resetPostgresDatabase,
   createEmbeddedPostgresLogBuffer,
+  formatEmbeddedPostgresLifecycleAmbiguity,
   formatEmbeddedPostgresError,
+  inspectEmbeddedPostgresLifecycle,
   prepareEmbeddedPostgresNativeRuntime,
+  type EmbeddedPostgresLifecycleResult,
 } from "@paperclipai/db";
 import type { Command } from "commander";
 import { ensureAgentJwtSecret, loadPaperclipEnvFile, mergePaperclipEnvEntries, readPaperclipEnvEntries, resolvePaperclipEnvFile } from "../config/env.js";
@@ -476,29 +479,6 @@ export function resolveGitWorktreeAddArgs(input: {
   }
   const commitish = input.startPoint ?? "HEAD";
   return ["worktree", "add", "-b", input.branchName, input.targetPath, commitish];
-}
-
-function readPidFilePort(postmasterPidFile: string): number | null {
-  if (!existsSync(postmasterPidFile)) return null;
-  try {
-    const lines = readFileSync(postmasterPidFile, "utf8").split("\n");
-    const port = Number(lines[3]?.trim());
-    return Number.isInteger(port) && port > 0 ? port : null;
-  } catch {
-    return null;
-  }
-}
-
-function readRunningPostmasterPid(postmasterPidFile: string): number | null {
-  if (!existsSync(postmasterPidFile)) return null;
-  try {
-    const pid = Number(readFileSync(postmasterPidFile, "utf8").split("\n")[0]?.trim());
-    if (!Number.isInteger(pid) || pid <= 0) return null;
-    process.kill(pid, 0);
-    return pid;
-  } catch {
-    return null;
-  }
 }
 
 async function isPortAvailable(port: number): Promise<boolean> {
@@ -1065,10 +1045,16 @@ async function ensureEmbeddedPostgres(dataDir: string, preferredPort: number): P
   await prepareEmbeddedPostgresNativeRuntime();
 
   const postmasterPidFile = path.resolve(dataDir, "postmaster.pid");
-  const runningPid = readRunningPostmasterPid(postmasterPidFile);
-  if (runningPid) {
+  const lifecycle = await inspectEmbeddedPostgresLifecycle({
+    dataDir,
+    configuredPort: preferredPort,
+  });
+  if (lifecycle.state === "ambiguous") {
+    throw new Error(formatEmbeddedPostgresLifecycleAmbiguity(lifecycle));
+  }
+  if (lifecycle.state === "running") {
     return {
-      port: readPidFilePort(postmasterPidFile) ?? preferredPort,
+      port: lifecycle.port,
       startedByThisProcess: false,
       stop: async () => {},
     };
@@ -1097,7 +1083,10 @@ async function ensureEmbeddedPostgres(dataDir: string, preferredPort: number): P
       });
     }
   }
-  if (existsSync(postmasterPidFile)) {
+  if (lifecycle.state === "stale" && existsSync(postmasterPidFile)) {
+    process.emitWarning(
+      `Removing stale embedded PostgreSQL PID file ${postmasterPidFile} (${lifecycle.reason}).`,
+    );
     rmSync(postmasterPidFile, { force: true });
   }
   try {
@@ -2145,11 +2134,22 @@ function renderMergePlan(plan: Awaited<ReturnType<typeof collectMergePlan>>["pla
   return lines.join("\n");
 }
 
-function resolveRunningEmbeddedPostgresPid(config: PaperclipConfig): number | null {
+async function inspectConfiguredEmbeddedPostgres(
+  config: PaperclipConfig,
+): Promise<EmbeddedPostgresLifecycleResult | null> {
   if (config.database.mode !== "embedded-postgres") {
     return null;
   }
-  return readRunningPostmasterPid(path.resolve(config.database.embeddedPostgresDataDir, "postmaster.pid"));
+  return await inspectEmbeddedPostgresLifecycle({
+    dataDir: config.database.embeddedPostgresDataDir,
+    configuredPort: config.database.embeddedPostgresPort,
+  });
+}
+
+export function isEmbeddedPostgresUnsafeToOverwrite(
+  lifecycle: EmbeddedPostgresLifecycleResult | null,
+): boolean {
+  return lifecycle?.state === "running" || lifecycle?.state === "ambiguous";
 }
 
 async function collectMergePlan(input: {
@@ -3124,10 +3124,13 @@ async function runWorktreeReseed(opts: WorktreeReseedOptions): Promise<void> {
     configPath: targetEndpoint.configPath,
     rootPath: targetEndpoint.rootPath,
   });
-  const runningTargetPid = resolveRunningEmbeddedPostgresPid(targetConfig);
-  if (runningTargetPid && !opts.allowLiveTarget) {
+  const targetLifecycle = await inspectConfiguredEmbeddedPostgres(targetConfig);
+  const unsafeTargetLifecycle = isEmbeddedPostgresUnsafeToOverwrite(targetLifecycle)
+    ? targetLifecycle
+    : null;
+  if (unsafeTargetLifecycle && !opts.allowLiveTarget) {
     throw new Error(
-      `Target worktree database appears to be running (pid ${runningTargetPid}). Stop Paperclip in ${targetEndpoint.rootPath} before reseeding, or re-run with --allow-live-target if you want to override this guard.`,
+      `Target worktree database is unsafe to overwrite (state=${unsafeTargetLifecycle.state}, pid=${unsafeTargetLifecycle.pid ?? "unknown"}). Stop Paperclip in ${targetEndpoint.rootPath} and verify the embedded PostgreSQL state before reseeding, or re-run with --allow-live-target if you want to override this guard.`,
     );
   }
 
@@ -3142,8 +3145,10 @@ async function runWorktreeReseed(opts: WorktreeReseedOptions): Promise<void> {
     return;
   }
 
-  if (runningTargetPid && opts.allowLiveTarget) {
-    p.log.warning(`Proceeding even though the target embedded PostgreSQL appears to be running (pid ${runningTargetPid}).`);
+  if (unsafeTargetLifecycle && opts.allowLiveTarget) {
+    p.log.warning(
+      `Proceeding even though the target embedded PostgreSQL is unsafe to overwrite (state=${unsafeTargetLifecycle.state}, pid=${unsafeTargetLifecycle.pid ?? "unknown"}).`,
+    );
   }
 
   const spinner = p.spinner();
@@ -3246,14 +3251,25 @@ export async function worktreeRepairCommand(opts: WorktreeRepairOptions): Promis
     homeDir: resolveWorktreeHome(opts.home),
     instanceId: repairInstanceId,
   });
-  const runningTargetPid = readRunningPostmasterPid(path.resolve(repairPaths.embeddedPostgresDataDir, "postmaster.pid"));
-  if (runningTargetPid && !opts.allowLiveTarget) {
+  const targetLifecycle = await inspectEmbeddedPostgresLifecycle({
+    dataDir: repairPaths.embeddedPostgresDataDir,
+    configuredPort:
+      targetConfig?.database.mode === "embedded-postgres"
+        ? targetConfig.database.embeddedPostgresPort
+        : 54329,
+  });
+  const unsafeTargetLifecycle = isEmbeddedPostgresUnsafeToOverwrite(targetLifecycle)
+    ? targetLifecycle
+    : null;
+  if (unsafeTargetLifecycle && !opts.allowLiveTarget) {
     throw new Error(
-      `Target worktree database appears to be running (pid ${runningTargetPid}). Stop Paperclip in ${target.rootPath} before repairing, or re-run with --allow-live-target if you want to override this guard.`,
+      `Target worktree database is unsafe to overwrite (state=${unsafeTargetLifecycle.state}, pid=${unsafeTargetLifecycle.pid ?? "unknown"}). Stop Paperclip in ${target.rootPath} and verify the embedded PostgreSQL state before repairing, or re-run with --allow-live-target if you want to override this guard.`,
     );
   }
-  if (runningTargetPid && opts.allowLiveTarget) {
-    p.log.warning(`Proceeding even though the target embedded PostgreSQL appears to be running (pid ${runningTargetPid}).`);
+  if (unsafeTargetLifecycle && opts.allowLiveTarget) {
+    p.log.warning(
+      `Proceeding even though the target embedded PostgreSQL is unsafe to overwrite (state=${unsafeTargetLifecycle.state}, pid=${unsafeTargetLifecycle.pid ?? "unknown"}).`,
+    );
   }
 
   const originalCwd = process.cwd();
