@@ -966,7 +966,13 @@ async function cleanupStaleAgentWrappers(input: { wrappersRootDir: string; curre
       const wrapperPath = path.join(input.wrappersRootDir, name);
       const stats = await fs.stat(wrapperPath).catch(() => null);
       if (!stats || now - stats.mtimeMs < WRAPPER_CLEANUP_RETENTION_MS) return;
-      await fs.rm(wrapperPath, { force: true, recursive: true });
+      if (stats.isDirectory()) {
+        await fs.rm(wrapperPath, { recursive: true, force: true });
+        return;
+      }
+      const isManagedWrapperFile = name.endsWith(".sh") || name.endsWith(".env");
+      if (!isManagedWrapperFile) return;
+      await fs.rm(wrapperPath, { force: true });
     }),
   );
 }
