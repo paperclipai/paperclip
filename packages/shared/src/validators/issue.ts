@@ -1219,6 +1219,11 @@ export const cancelIssueThreadInteractionSchema = z.object({
 });
 export type CancelIssueThreadInteraction = z.infer<typeof cancelIssueThreadInteractionSchema>;
 
+export const withdrawIssueThreadInteractionSchema = z.object({
+  reason: z.string().trim().max(4000).optional(),
+});
+export type WithdrawIssueThreadInteraction = z.infer<typeof withdrawIssueThreadInteractionSchema>;
+
 export const respondIssueThreadInteractionSchema = z.object({
   answers: z.array(askUserQuestionsAnswerSchema).max(20),
   summaryMarkdown: multilineTextSchema.pipe(z.string().max(20000)).nullable().optional(),
