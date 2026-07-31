@@ -1,8 +1,21 @@
 import { describe, expect, it } from "vitest";
 import { t } from ".";
 import en from "./locales/en.json";
-import { localeMessages } from "./locales";
 import { validateLocaleMessages } from "./locale-validation";
+
+// The runtime now loads non-default locales lazily, so `locales.ts`
+// no longer eagerly exposes every locale's messages. Glob them here so this
+// test keeps validating all locale files.
+const localeModules = import.meta.glob("./locales/*.json", {
+  eager: true,
+  import: "default",
+}) as Record<string, unknown>;
+const localeMessages = Object.fromEntries(
+  Object.entries(localeModules).map(([path, messages]) => {
+    const locale = path.match(/\/([A-Za-z0-9_-]+)\.json$/)?.[1] ?? path;
+    return [locale, messages];
+  }),
+);
 
 describe("locale validation", () => {
   it("resolves English messages with key and default fallbacks", () => {
