@@ -1,3 +1,5 @@
+import type { EmbeddedPostgresHandoffClaim } from "./services/hot-restart.js";
+
 type HotRestartShutdownPreparation = {
   skipDrain: boolean;
 };
@@ -34,7 +36,8 @@ export function createShutdownLifecycleContext(input: {
 export function adoptEmbeddedPostgres(input: {
   adopt: () => void;
   stop: () => Promise<void>;
-}): () => Promise<void> {
+}, claim: EmbeddedPostgresHandoffClaim | null): (() => Promise<void>) | null {
+  if (!claim) return null;
   input.adopt();
   return () => input.stop();
 }

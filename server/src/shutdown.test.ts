@@ -1,6 +1,14 @@
 import { spawnSync } from "node:child_process";
+import fs from "node:fs/promises";
+import os from "node:os";
 import { resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
+import {
+  claimEmbeddedPostgresHandoff,
+  readEmbeddedPostgresProcessIdentity,
+  writeEmbeddedPostgresHandoff,
+  type EmbeddedPostgresProcessIdentity,
+} from "./services/hot-restart.js";
 import {
   adoptEmbeddedPostgres,
   coordinateEmbeddedPostgresShutdown,
@@ -9,6 +17,36 @@ import {
 } from "./shutdown.js";
 
 describe("coordinateEmbeddedPostgresShutdown", () => {
+  const hotRestartRequestedAt = "2026-07-31T15:00:00.000Z";
+  const shutdownSnapshotCapturedAt = "2026-07-31T15:00:04.000Z";
+  const predecessorServerPid = 4242;
+
+  async function withHandoffHome(
+    run: (homeDir: string, postgres: EmbeddedPostgresProcessIdentity) => Promise<void>,
+  ) {
+    const homeDir = await fs.mkdtemp(resolve(os.tmpdir(), "paperclip-postgres-handoff-"));
+    const postgres: EmbeddedPostgresProcessIdentity = {
+      pid: 54321,
+      startedAtEpochSeconds: 1_754_000_000,
+      dataDir: resolve(homeDir, "postgres"),
+      port: 5432,
+    };
+    try {
+      await writeEmbeddedPostgresHandoff({
+        hotRestartRequestedAt,
+        shutdownSnapshotCapturedAt,
+        predecessorServerPid,
+        predecessorServerStartedAtEpochMs: 1_753_999_900_000,
+        postgres,
+        now: new Date("2026-07-31T15:00:05.000Z"),
+        homeDir,
+      });
+      await run(homeDir, postgres);
+    } finally {
+      await fs.rm(homeDir, { recursive: true, force: true });
+    }
+  }
+
   it("prevents the dependency signal hook from stopping an application-owned database", () => {
     const child = spawnSync(
       process.execPath,
@@ -99,6 +137,106 @@ describe("coordinateEmbeddedPostgresShutdown", () => {
     expect(stop).not.toHaveBeenCalled();
   });
 
+  it("does not let an unrelated concurrent server acquire database stop authority", async () => {
+    await withHandoffHome(async (homeDir, postgres) => {
+      const replacement = {
+        adopt: vi.fn(),
+        stop: vi.fn(async () => undefined),
+      };
+      const claim = await claimEmbeddedPostgresHandoff({
+        expectedHotRestartRequestedAt: hotRestartRequestedAt,
+        expectedShutdownSnapshotCapturedAt: shutdownSnapshotCapturedAt,
+        expectedPredecessorServerPid: predecessorServerPid,
+        expectedPostgres: postgres,
+        replacementServerPid: 4343,
+        isProcessAlive: () => true,
+        now: new Date("2026-07-31T15:00:06.000Z"),
+        homeDir,
+      });
+
+      const stopAdoptedDatabase = adoptEmbeddedPostgres(replacement, claim);
+      const result = await coordinateEmbeddedPostgresShutdown({
+        ownedByThisProcess: stopAdoptedDatabase !== null,
+        stop: stopAdoptedDatabase,
+        lifecycle: createShutdownLifecycleContext({
+          signal: "SIGTERM",
+          hotRestart: null,
+        }),
+      });
+
+      expect(claim).toBeNull();
+      expect(replacement.adopt).not.toHaveBeenCalled();
+      expect(replacement.stop).not.toHaveBeenCalled();
+      expect(result).toBe("not_owned");
+    });
+  });
+
+  it("reads the PostgreSQL PID, start time, canonical data directory, and port as one identity", async () => {
+    const homeDir = await fs.mkdtemp(resolve(os.tmpdir(), "paperclip-postgres-identity-"));
+    const dataDir = resolve(homeDir, "postgres");
+    try {
+      await fs.mkdir(dataDir);
+      await fs.writeFile(
+        resolve(dataDir, "postmaster.pid"),
+        ["54321", dataDir, "1754000000", "5432", "", "127.0.0.1", "", "ready", ""].join("\n"),
+        "utf8",
+      );
+
+      await expect(readEmbeddedPostgresProcessIdentity(dataDir)).resolves.toEqual({
+        pid: 54321,
+        startedAtEpochSeconds: 1_754_000_000,
+        dataDir: await fs.realpath(dataDir),
+        port: 5432,
+      });
+    } finally {
+      await fs.rm(homeDir, { recursive: true, force: true });
+    }
+  });
+
+  it("binds a one-time claim to the intended PostgreSQL process identity", async () => {
+    await withHandoffHome(async (homeDir, postgres) => {
+      const mismatchedClaim = await claimEmbeddedPostgresHandoff({
+        expectedHotRestartRequestedAt: hotRestartRequestedAt,
+        expectedShutdownSnapshotCapturedAt: shutdownSnapshotCapturedAt,
+        expectedPredecessorServerPid: predecessorServerPid,
+        expectedPostgres: { ...postgres, startedAtEpochSeconds: postgres.startedAtEpochSeconds + 1 },
+        replacementServerPid: 4343,
+        isProcessAlive: () => false,
+        now: new Date("2026-07-31T15:00:06.000Z"),
+        homeDir,
+      });
+      expect(mismatchedClaim).toBeNull();
+
+      const claim = await claimEmbeddedPostgresHandoff({
+        expectedHotRestartRequestedAt: hotRestartRequestedAt,
+        expectedShutdownSnapshotCapturedAt: shutdownSnapshotCapturedAt,
+        expectedPredecessorServerPid: predecessorServerPid,
+        expectedPostgres: postgres,
+        replacementServerPid: 4343,
+        isProcessAlive: () => false,
+        now: new Date("2026-07-31T15:00:06.000Z"),
+        homeDir,
+      });
+      const replay = await claimEmbeddedPostgresHandoff({
+        expectedHotRestartRequestedAt: hotRestartRequestedAt,
+        expectedShutdownSnapshotCapturedAt: shutdownSnapshotCapturedAt,
+        expectedPredecessorServerPid: predecessorServerPid,
+        expectedPostgres: postgres,
+        replacementServerPid: 4444,
+        isProcessAlive: () => false,
+        now: new Date("2026-07-31T15:00:07.000Z"),
+        homeDir,
+      });
+
+      expect(claim).toMatchObject({
+        predecessorServerPid,
+        replacementServerPid: 4343,
+        postgres,
+      });
+      expect(replay).toBeNull();
+    });
+  });
+
   it("transfers ownership so a replacement can stop the preserved database", async () => {
     const originalStop = vi.fn(async () => undefined);
     const replacement = {
@@ -115,7 +253,23 @@ describe("coordinateEmbeddedPostgresShutdown", () => {
       }),
     });
 
-    const stopAdoptedDatabase = adoptEmbeddedPostgres(replacement);
+    const stopAdoptedDatabase = adoptEmbeddedPostgres(replacement, {
+      version: 1,
+      transferToken: "test-transfer",
+      createdAt: "2026-07-31T15:00:05.000Z",
+      expiresAt: "2026-07-31T15:10:05.000Z",
+      hotRestartRequestedAt,
+      shutdownSnapshotCapturedAt,
+      predecessorServerPid,
+      predecessorServerStartedAtEpochMs: 1_753_999_900_000,
+      postgres: {
+        pid: 54321,
+        startedAtEpochSeconds: 1_754_000_000,
+        dataDir: "/paperclip/postgres",
+        port: 5432,
+      },
+      replacementServerPid: 4343,
+    });
     const result = await coordinateEmbeddedPostgresShutdown({
       ownedByThisProcess: true,
       stop: stopAdoptedDatabase,

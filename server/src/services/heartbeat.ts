@@ -9585,7 +9585,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       previousServerVersion: intent.previousServerVersion ?? serverVersion,
     };
 
-    await writeHotRestartShutdownSnapshot({
+    const preparedIntent = await writeHotRestartShutdownSnapshot({
       intent: intentWithVersion,
       signal,
       activeRuns: snapshotRuns,
@@ -9617,6 +9617,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       mode: "hot_restart" as const,
       skipDrain: true as const,
       activeRunIds: snapshotRuns.map((run) => run.runId),
+      previousServerPid: intent.previousServerPid,
+      requestedAt: intent.requestedAt,
+      shutdownSnapshotCapturedAt: preparedIntent.shutdownSnapshot!.capturedAt,
     };
   }
 
