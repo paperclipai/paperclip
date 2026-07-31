@@ -5,5 +5,40 @@
       "description": "Beginnen Sie, indem Sie ein Unternehmen erstellen.",
       "newCompany": "Neues Unternehmen"
     }
+  },
+  "sidebar": {
+    "openSearch": "Suche öffnen",
+    "keepExpanded": "Seitenleiste ausgeklappt lassen",
+    "expand": "Seitenleiste ausklappen",
+    "collapse": "Seitenleiste einklappen",
+    "newTask": "Neue Aufgabe",
+    "sections": {
+      "work": "Arbeit",
+      "company": "Unternehmen"
+    },
+    "nav": {
+      "dashboard": "Dashboard",
+      "inbox": "Eingang",
+      "unreadBadge": "ungelesen",
+      "decisions": "Entscheidungen",
+      "decisionsBadge": "Entscheidungen",
+      "conferenceRoom": "Konferenzraum",
+      "tasks": "Aufgaben",
+      "cases": "Fälle",
+      "betaBadge": "Beta",
+      "routines": "Routinen",
+      "pipelines": "Pipelines",
+      "goals": "Ziele",
+      "artifacts": "Artefakte",
+      "skills": "Skills",
+      "workspaces": "Arbeitsbereiche",
+      "projects": "Projekte",
+      "org": "Organisation",
+      "apps": "Apps",
+      "timeline": "Zeitachse",
+      "costs": "Kosten",
+      "activity": "Aktivität",
+      "settings": "Einstellungen"
+    }
   }
 }
