@@ -389,19 +389,31 @@ describeEmbeddedPostgres("routine routes end-to-end", () => {
     });
 
     expect(runRes.status).toBe(202);
-    expect(runRes.body.triggerPayload).toEqual({
-      variables: {
-        repo: "paperclip",
-        priority: "high",
-      },
+    // Built-in `date`/`timestamp` are materialized for every run alongside the
+    // supplied variables, so assert them by shape and the supplied ones exactly.
+    expect(runRes.body.triggerPayload.variables).toMatchObject({
+      repo: "paperclip",
+      priority: "high",
     });
+    expect(Object.keys(runRes.body.triggerPayload.variables).sort()).toEqual([
+      "date",
+      "priority",
+      "repo",
+      "timestamp",
+    ]);
+    expect(runRes.body.triggerPayload.variables.date).toMatch(/^\d{4}-\d{2}-\d{2}$/);
+    expect(runRes.body.triggerPayload.variables.timestamp).toContain("UTC");
+    expect(Object.keys(runRes.body.triggerPayload)).toEqual(["variables"]);
 
     const [issue] = await db
       .select({ description: issues.description })
       .from(issues)
       .where(eq(issues.id, runRes.body.linkedIssueId));
 
-    expect(issue?.description).toBe("Review paperclip for high bugs");
+    // The interpolated template stays first; the materialized run context is
+    // appended after it.
+    expect(issue?.description?.startsWith("Review paperclip for high bugs")).toBe(true);
+    expect(issue?.description).toContain("## Routine run context");
   });
 
   it("defaults activity gates and rejects invalid activity gate values", async () => {

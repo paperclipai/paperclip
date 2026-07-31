@@ -55,6 +55,7 @@ import { z } from "zod";
 import { conflict, notFound, unprocessable } from "../errors.js";
 import { getTelemetryClient } from "../telemetry.js";
 import { issueService, runWorkspaceIsFinalized } from "./issues.js";
+import { parseIssueExecutionState } from "./issue-execution-policy.js";
 
 type InteractionActor = {
   agentId?: string | null;
@@ -98,6 +99,7 @@ type IssueResolutionContext = {
   status: string;
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
+  executionState: unknown;
 };
 
 const REQUEST_CONFIRMATION_INTERACTION_KINDS = [
@@ -1103,6 +1105,10 @@ export function issueThreadInteractionService(db: Db) {
         throw conflict("Interaction has already been resolved");
       }
 
+      // Serialize concurrent confirmation resolutions on the same issue so a
+      // governed execution-stage transition is decided exactly once: the loser
+      // re-reads the committed state below and is rejected instead of writing a
+      // duplicate approval decision for the same stage.
       const issueContext = await tx
         .select({
           id: issues.id,
@@ -1110,13 +1116,25 @@ export function issueThreadInteractionService(db: Db) {
           status: issues.status,
           assigneeAgentId: issues.assigneeAgentId,
           assigneeUserId: issues.assigneeUserId,
+          executionState: issues.executionState,
         })
         .from(issues)
         .where(eq(issues.id, args.issue.id))
+        .for("update")
         .then((rows: IssueResolutionContext[]) => rows[0] ?? null);
 
       if (!issueContext || issueContext.companyId !== args.issue.companyId) {
         throw notFound("Issue not found");
+      }
+
+      if (args.governedAcceptance) {
+        const persistedState = parseIssueExecutionState(issueContext.executionState);
+        if (
+          persistedState?.status !== "pending" ||
+          persistedState.currentStageId !== args.governedAcceptance.decision.stageId
+        ) {
+          throw conflict("Issue execution stage has already been decided");
+        }
       }
 
       let continuationIssue: IssueWakeTarget | null = null;

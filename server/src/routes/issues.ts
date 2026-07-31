@@ -9409,6 +9409,13 @@ export function issueRoutes(
       const interactionId = req.params.interactionId as string;
       const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
       if (!issue) return;
+      // Task-watchdog scope must be rejected before any interaction lookup so an
+      // out-of-subtree run cannot use 404-vs-403 as an existence oracle.
+      if (
+        req.actor.type === "agent" &&
+        req.actor.runId &&
+        !(await assertTaskWatchdogIssueMutationAllowed(req, res, issue, { allowWatchdogIssue: false }))
+      ) return;
       const actor = getActorInfo(req);
       const interactionService = issueThreadInteractionService(db);
       const pendingInteraction = await interactionService.getForIssue(issue, interactionId);

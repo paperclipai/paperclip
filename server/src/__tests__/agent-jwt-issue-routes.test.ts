@@ -219,4 +219,146 @@ describeEmbeddedPostgres("system-attributed agent JWT issue authorization", () =
       .send({});
     expect(denied.status).toBe(403);
   });
+
+  it("persists a single approval decision when distinct confirmations are accepted concurrently", async () => {
+    const companyId = randomUUID();
+    const coachId = randomUUID();
+    const approverId = randomUUID();
+    const firstSourceRunId = randomUUID();
+    const secondSourceRunId = randomUUID();
+    const approverRunId = randomUUID();
+    const issueId = randomUUID();
+    const firstInteractionId = randomUUID();
+    const secondInteractionId = randomUUID();
+    const approvalStageId = randomUUID();
+
+    await db.insert(companies).values({ id: companyId, name: "Race Company", issuePrefix: "RACE" });
+    await db.insert(agents).values([
+      {
+        id: coachId,
+        companyId,
+        name: "Reflection Coach",
+        role: "general",
+        status: "paused",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+        metadata: { paperclipBuiltInAgent: { key: "reflection-coach", featureKeys: [] } },
+      },
+      {
+        id: approverId,
+        companyId,
+        name: "CTO",
+        role: "cto",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+        metadata: { paperclipBuiltInAgent: { key: "agent-cto", featureKeys: [] } },
+      },
+    ]);
+    await db.insert(heartbeatRuns).values([
+      { id: firstSourceRunId, companyId, agentId: coachId, status: "succeeded", responsibleUserId: null },
+      { id: secondSourceRunId, companyId, agentId: coachId, status: "succeeded", responsibleUserId: null },
+      { id: approverRunId, companyId, agentId: approverId, status: "running", responsibleUserId: null },
+    ]);
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      identifier: "RACE-1",
+      issueNumber: 1,
+      title: "Apply Reflection Coach proposal",
+      status: "in_review",
+      priority: "high",
+      assigneeAgentId: approverId,
+      createdByAgentId: coachId,
+      executionPolicy: {
+        mode: "auto",
+        commentRequired: true,
+        stages: [
+          { id: approvalStageId, type: "approval", approvalsNeeded: 1, participants: [{ type: "agent", agentId: approverId }] },
+        ],
+      },
+      executionState: {
+        status: "pending",
+        currentStageId: approvalStageId,
+        currentStageIndex: 0,
+        currentStageType: "approval",
+        currentParticipant: { type: "agent", agentId: approverId },
+        returnAssignee: { type: "agent", agentId: coachId },
+        reviewRequest: null,
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+        monitor: null,
+      },
+    });
+    await db.insert(issueThreadInteractions).values([
+      {
+        id: firstInteractionId,
+        companyId,
+        issueId,
+        kind: "request_confirmation",
+        status: "pending",
+        continuationPolicy: "wake_assignee_on_accept",
+        sourceRunId: firstSourceRunId,
+        createdByAgentId: coachId,
+        payload: {
+          version: 1,
+          prompt: "Apply proposal one?",
+          detailsMarkdown: "```diff\n+one\n```",
+          target: { type: "custom", key: `agent:${coachId}:instructions`, revisionId: "proposal-v1" },
+        },
+      },
+      {
+        id: secondInteractionId,
+        companyId,
+        issueId,
+        kind: "request_confirmation",
+        status: "pending",
+        continuationPolicy: "wake_assignee_on_accept",
+        sourceRunId: secondSourceRunId,
+        createdByAgentId: coachId,
+        payload: {
+          version: 1,
+          prompt: "Apply proposal two?",
+          detailsMarkdown: "```diff\n+two\n```",
+          target: { type: "custom", key: `agent:${coachId}:instructions`, revisionId: "proposal-v2" },
+        },
+      },
+    ]);
+
+    const token = createLocalAgentJwt(approverId, companyId, "codex_local", approverRunId, null);
+    const auth = { Authorization: `Bearer ${token}`, "X-Paperclip-Run-Id": approverRunId };
+    const [first, second] = await Promise.all([
+      request(app()).post(`/api/issues/${issueId}/interactions/${firstInteractionId}/accept`).set(auth).send({}),
+      request(app()).post(`/api/issues/${issueId}/interactions/${secondInteractionId}/accept`).set(auth).send({}),
+    ]);
+
+    const statuses = [first!.status, second!.status].sort();
+    expect(statuses, JSON.stringify([first!.body, second!.body])).toEqual([200, 409]);
+
+    const decisions = await db
+      .select()
+      .from(issueExecutionDecisions)
+      .where(eq(issueExecutionDecisions.issueId, issueId));
+    expect(decisions).toHaveLength(1);
+    expect(decisions[0]).toMatchObject({ stageId: approvalStageId, stageType: "approval", outcome: "approved" });
+
+    const [storedIssue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(storedIssue?.executionState).toMatchObject({
+      status: "completed",
+      lastDecisionId: decisions[0]!.id,
+      lastDecisionOutcome: "approved",
+    });
+
+    const stillPending = await db
+      .select({ id: issueThreadInteractions.id, status: issueThreadInteractions.status })
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.issueId, issueId));
+    expect(stillPending.filter((row) => row.status === "accepted")).toHaveLength(1);
+    expect(stillPending.filter((row) => row.status === "pending")).toHaveLength(1);
+  });
 });
