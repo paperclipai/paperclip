@@ -352,7 +352,7 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       responsibleUserId: "responsible-user",
       assigneeAgentId: agentId,
       executionRunId: runId,
-      executionAgentNameKey: "recovery-owner",
+      executionAgentNameKey: "recovery owner",
       executionLockedAt: new Date(),
       issueNumber: 1,
       identifier: `${issuePrefix}-1`,
