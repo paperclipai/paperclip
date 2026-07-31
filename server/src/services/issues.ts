@@ -132,6 +132,7 @@ import {
 } from "./activity-log.js";
 import { buildIssueChanges } from "./issue-change-receipt.js";
 import { issueThreadInteractionAttentionAgentAllowed } from "./issue-thread-interaction-resolution.js";
+import { authorizationService, type AuthorizationAction, type AuthorizationActor } from "./authorization.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
@@ -5426,6 +5427,106 @@ export function issueService(db: Db) {
     return { comment, parent };
   }
 
+  async function runBlockedUnblockOwnerTransaction<T>(
+    input: {
+      issueId: string;
+      expectedUpdatedAt: Date | string;
+      actor: AuthorizationActor;
+      action: Extract<AuthorizationAction, "issue:comment" | "issue:mutate">;
+    },
+    operation: (tx: any) => Promise<T>,
+  ): Promise<T> {
+    const actorAgentId = input.actor.type === "agent" ? input.actor.agentId?.trim() : null;
+    if (!actorAgentId) throw conflict("Unblock owner authorization became stale");
+
+    return db.transaction(async (tx) => {
+      const lockedIssue = await tx
+        .select()
+        .from(issues)
+        .where(eq(issues.id, input.issueId))
+        .for("update")
+        .then((rows) => rows[0] ?? null);
+      const expectedUpdatedAt = new Date(input.expectedUpdatedAt).getTime();
+      if (
+        !isStrictBlockedUnblockOwner(lockedIssue, actorAgentId) ||
+        !Number.isFinite(expectedUpdatedAt) ||
+        lockedIssue!.updatedAt.getTime() !== expectedUpdatedAt
+      ) {
+        throw conflict("Unblock owner authorization became stale");
+      }
+
+      const lockedOwner = await tx
+        .select({
+          id: agents.id,
+          companyId: agents.companyId,
+          status: agents.status,
+        })
+        .from(agents)
+        .where(eq(agents.id, actorAgentId))
+        .for("update")
+        .then((rows) => rows[0] ?? null);
+      if (
+        !lockedOwner ||
+        lockedOwner.companyId !== lockedIssue!.companyId ||
+        lockedOwner.status === "pending_approval" ||
+        lockedOwner.status === "terminated"
+      ) {
+        throw conflict("Unblock owner authorization became stale");
+      }
+
+      const responsibleUserId = input.actor.onBehalfOfUserId?.trim();
+      if (responsibleUserId) {
+        await tx
+          .select({ id: authUsers.id })
+          .from(authUsers)
+          .where(eq(authUsers.id, responsibleUserId))
+          .for("update");
+        await tx
+          .select({ companyId: companyMemberships.companyId })
+          .from(companyMemberships)
+          .where(and(
+            eq(companyMemberships.companyId, lockedIssue!.companyId),
+            eq(companyMemberships.principalType, "user"),
+            eq(companyMemberships.principalId, responsibleUserId),
+          ))
+          .for("update");
+      }
+
+      const actor = { ...input.actor, onBehalfOfMemberships: undefined } as AuthorizationActor & {
+        __responsibleUserSnapshotMemo?: unknown;
+      };
+      delete actor.__responsibleUserSnapshotMemo;
+      const decision = await authorizationService(tx as unknown as Db).decide({
+        actor,
+        action: input.action,
+        resource: {
+          type: "issue",
+          companyId: lockedIssue!.companyId,
+          issueId: lockedIssue!.id,
+          projectId: lockedIssue!.projectId,
+          parentIssueId: lockedIssue!.parentId,
+          assigneeAgentId: lockedIssue!.assigneeAgentId,
+          assigneeUserId: lockedIssue!.assigneeUserId,
+          status: lockedIssue!.status,
+        },
+        scope: {
+          issueId: lockedIssue!.id,
+          projectId: lockedIssue!.projectId,
+          parentIssueId: lockedIssue!.parentId,
+          assigneeAgentId: lockedIssue!.assigneeAgentId,
+          assigneeUserId: lockedIssue!.assigneeUserId,
+          allowIssueUnblockOwner: true,
+          requireFreshResponsibleUser: true,
+        },
+      });
+      if (!decision.allowed || decision.reason !== "allow_issue_unblock_owner") {
+        throw conflict("Unblock owner authorization became stale");
+      }
+
+      return operation(tx);
+    });
+  }
+
   async function archiveInbox(
     companyId: string,
     issueId: string,
@@ -5468,6 +5569,7 @@ export function issueService(db: Db) {
   return {
     clearExecutionRunIfTerminal,
     clearCheckoutRunIfTerminal,
+    runBlockedUnblockOwnerTransaction,
     addStopRelayCommentIfNeeded,
 
     list: async (companyId: string, filters?: IssueFilters) => {
@@ -7558,7 +7660,6 @@ export function issueService(db: Db) {
       },
       dbOrTx: any = db,
       postCommitActivityPublications?: ActivityPublication[],
-      options?: { expectedBlockedUnblockOwnerAgentId?: string },
     ) => {
       const ownedActivityPublications: ActivityPublication[] = [];
       const activityPublications = postCommitActivityPublications ?? ownedActivityPublications;
@@ -7737,10 +7838,6 @@ export function issueService(db: Db) {
             ? getIssueRelationSummaryMap(existing.companyId, [id], tx)
             : Promise.resolve(new Map<string, IssueRelationSummaryMap>()),
         ]);
-        const expectedOwnerAgentId = options?.expectedBlockedUnblockOwnerAgentId;
-        if (expectedOwnerAgentId) {
-          if (!isStrictBlockedUnblockOwner(receiptExisting, expectedOwnerAgentId)) return null;
-        }
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, existing.companyId);
         const [currentProjectGoalId, nextProjectGoalId] = await Promise.all([
           getProjectDefaultGoalId(tx, existing.companyId, existing.projectId),
@@ -8726,36 +8823,19 @@ export function issueService(db: Db) {
         authorizationReason?: string | null;
         sourceTrust?: typeof issueComments.$inferInsert.sourceTrust;
         createdAt?: Date | string | null;
-        expectedBlockedUnblockOwnerAgentId?: string;
       },
       dbOrTx: any = db,
     ) => {
       const runAddComment = async (executor: any) => {
-        const expectedOwnerAgentId = options?.expectedBlockedUnblockOwnerAgentId;
-        const issue = expectedOwnerAgentId
-          ? await executor
-              .select({
-                companyId: issues.companyId,
-                status: issues.status,
-                unblockDescriptor: issues.unblockDescriptor,
-              })
-              .from(issues)
-              .where(eq(issues.id, issueId))
-              .for("update")
-              .then((rows: Array<{ companyId: string; status: string; unblockDescriptor: unknown }>) => rows[0] ?? null)
-          : await executor
-              .select({
-                companyId: issues.companyId,
-                status: issues.status,
-                unblockDescriptor: issues.unblockDescriptor,
-              })
-              .from(issues)
-              .where(eq(issues.id, issueId))
-              .then((rows: Array<{ companyId: string; status: string; unblockDescriptor: unknown }>) => rows[0] ?? null);
-
-        if (expectedOwnerAgentId && !isStrictBlockedUnblockOwner(issue, expectedOwnerAgentId)) {
-          throw conflict("Unblock owner authorization became stale");
-        }
+        const issue = await executor
+          .select({
+            companyId: issues.companyId,
+            status: issues.status,
+            unblockDescriptor: issues.unblockDescriptor,
+          })
+          .from(issues)
+          .where(eq(issues.id, issueId))
+          .then((rows: Array<{ companyId: string; status: string; unblockDescriptor: unknown }>) => rows[0] ?? null);
         if (!issue) throw notFound("Issue not found");
 
         const currentUserRedactionOptions = {
@@ -8849,9 +8929,7 @@ export function issueService(db: Db) {
         return redactIssueComment(comment, currentUserRedactionOptions.enabled);
       };
 
-      return options?.expectedBlockedUnblockOwnerAgentId && dbOrTx === db
-        ? db.transaction(runAddComment)
-        : runAddComment(dbOrTx);
+      return runAddComment(dbOrTx);
     },
 
     createAttachment: async (input: {

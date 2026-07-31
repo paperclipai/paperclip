@@ -1,5 +1,5 @@
 import { randomUUID } from "node:crypto";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { and, eq } from "drizzle-orm";
 import {
@@ -1690,7 +1690,7 @@ describeEmbeddedPostgres("authorization service", () => {
     })).resolves.toMatchObject({ allowed: false });
   });
 
-  it("atomically rejects stale unblock-owner issue writes and comments", async () => {
+  it("authorizes unblock-owner writes from one locked, fresh transaction snapshot", async () => {
     const company = await createCompany(db, "UnblockOwnerWriteRace");
     const assignee = await createAgent(db, company.id);
     const owner = await createAgent(db, company.id);
@@ -1704,7 +1704,23 @@ describeEmbeddedPostgres("authorization service", () => {
       },
     });
     const svc = issueService(db);
-    const writeOptions = { expectedBlockedUnblockOwnerAgentId: owner.id };
+    const actor = {
+      type: "agent",
+      agentId: owner.id,
+      companyId: company.id,
+      source: "agent_key",
+    } as const;
+
+    const runOwnerTransaction = <T>(
+      expectedUpdatedAt: Date,
+      action: "issue:comment" | "issue:mutate",
+      callback: (tx: ReturnType<typeof createDb>) => Promise<T>,
+    ) => svc.runBlockedUnblockOwnerTransaction({
+      issueId: issue.id,
+      expectedUpdatedAt,
+      actor,
+      action,
+    }, callback);
 
     await db.update(issues).set({
       unblockDescriptor: {
@@ -1713,62 +1729,149 @@ describeEmbeddedPostgres("authorization service", () => {
       },
     }).where(eq(issues.id, issue.id));
 
-    await expect(svc.update(issue.id, { status: "todo" }, db, writeOptions)).resolves.toBeNull();
-    await expect(svc.addComment(
+    await expect(runOwnerTransaction(issue.updatedAt, "issue:comment", async (tx) => svc.addComment(
       issue.id,
       "Stale owner comment",
       { agentId: owner.id },
-      writeOptions,
-    )).rejects.toMatchObject({ status: 409 });
+      undefined,
+      tx,
+    ))).rejects.toMatchObject({ status: 409 });
     await expect(db.select().from(issueComments).where(eq(issueComments.issueId, issue.id)))
       .resolves.toHaveLength(0);
 
-    await db.update(issues).set({
+    const [restored] = await db.update(issues).set({
       unblockDescriptor: {
         owner: { agentId: owner.id },
-        action: "Malformed owner action",
-        extra: true,
-      } as never,
-    }).where(eq(issues.id, issue.id));
-    await expect(svc.update(issue.id, { status: "todo" }, db, writeOptions)).resolves.toBeNull();
-    await expect(svc.addComment(
-      issue.id,
-      "Comment after descriptor became malformed",
-      { agentId: owner.id },
-      writeOptions,
-    )).rejects.toMatchObject({ status: 409 });
-    await expect(db.select().from(issueComments).where(eq(issueComments.issueId, issue.id)))
-      .resolves.toHaveLength(0);
-
-    await db.update(issues).set({
-      status: "todo",
-      unblockDescriptor: {
-        owner: { agentId: owner.id },
-        action: "Owner action after status change",
+        action: "Current owner action",
       },
-    }).where(eq(issues.id, issue.id));
-    await expect(svc.addComment(
-      issue.id,
-      "Comment after issue left blocked",
-      { agentId: owner.id },
-      writeOptions,
-    )).rejects.toMatchObject({ status: 409 });
+      updatedAt: new Date(issue.updatedAt.getTime() + 1_000),
+    }).where(eq(issues.id, issue.id)).returning();
 
     await db.update(issues).set({
+      title: "A stronger concurrent edit",
+      updatedAt: new Date(restored.updatedAt.getTime() + 1_000),
+    }).where(eq(issues.id, issue.id));
+    await expect(runOwnerTransaction(restored.updatedAt, "issue:mutate", async (tx) => svc.update(
+      issue.id,
+      { status: "todo" },
+      tx,
+    ))).rejects.toMatchObject({ status: 409 });
+
+    const currentIssue = await svc.getById(issue.id);
+    expect(currentIssue).not.toBeNull();
+    const result = await runOwnerTransaction(currentIssue!.updatedAt, "issue:mutate", async (tx) => {
+      const updated = await svc.update(issue.id, { status: "todo", assigneeAgentId: owner.id }, tx);
+      const comment = await svc.addComment(
+        issue.id,
+        "Current owner comment",
+        { agentId: owner.id },
+        undefined,
+        tx,
+      );
+      return { updated, comment };
+    });
+    expect(result.updated).toMatchObject({ status: "todo", assigneeAgentId: owner.id });
+    expect(result.comment).toMatchObject({ body: "Current owner comment" });
+
+    const [blockedAgain] = await db.update(issues).set({
       status: "blocked",
       unblockDescriptor: {
         owner: { agentId: owner.id },
         action: "Current owner action",
       },
-    }).where(eq(issues.id, issue.id));
-    await expect(svc.addComment(
+      updatedAt: new Date(result.updated!.updatedAt.getTime() + 1_000),
+    }).where(eq(issues.id, issue.id)).returning();
+    await db.update(agents).set({ status: "terminated" }).where(eq(agents.id, owner.id));
+    await expect(runOwnerTransaction(blockedAgain.updatedAt, "issue:comment", async (tx) => svc.addComment(
       issue.id,
-      "Current owner comment",
+      "Terminated owner comment",
       { agentId: owner.id },
-      writeOptions,
-    )).resolves.toMatchObject({ body: "Current owner comment" });
-    await expect(svc.update(issue.id, { status: "todo" }, db, writeOptions))
-      .resolves.toMatchObject({ status: "todo" });
+      undefined,
+      tx,
+    ))).rejects.toMatchObject({ status: 409 });
+
+    const bridgeOwner = await createAgent(db, company.id);
+    const bridgeIssue = await createIssue(db, company.id, {
+      status: "blocked",
+      assigneeAgentId: assignee.id,
+      unblockDescriptor: {
+        owner: { agentId: bridgeOwner.id },
+        action: "Bridge owner action",
+      },
+    });
+    let bridgeCallbackRan = false;
+    await expect(svc.runBlockedUnblockOwnerTransaction({
+      issueId: bridgeIssue.id,
+      expectedUpdatedAt: bridgeIssue.updatedAt,
+      actor: {
+        type: "agent",
+        agentId: bridgeOwner.id,
+        companyId: company.id,
+        source: "agent_key",
+        keyId: randomUUID(),
+        keyScope: {
+          kind: "task_bridge",
+          parentIssueId: issue.id,
+          allowedAssigneeAgentIds: [bridgeOwner.id],
+        },
+      },
+      action: "issue:comment",
+    }, async () => {
+      bridgeCallbackRan = true;
+    })).rejects.toMatchObject({ status: 409 });
+    expect(bridgeCallbackRan).toBe(false);
+
+    const delegatedOwner = await createAgent(db, company.id);
+    const delegatedIssue = await createIssue(db, company.id, {
+      status: "blocked",
+      assigneeAgentId: assignee.id,
+      unblockDescriptor: {
+        owner: { agentId: delegatedOwner.id },
+        action: "Delegated owner action",
+      },
+    });
+    const responsibleUserId = await createUser(db);
+    await db.insert(companyMemberships).values({
+      companyId: company.id,
+      principalType: "user",
+      principalId: responsibleUserId,
+      status: "active",
+      membershipRole: "operator",
+    });
+    const delegatedActor = {
+      type: "agent" as const,
+      agentId: delegatedOwner.id,
+      companyId: company.id,
+      onBehalfOfUserId: responsibleUserId,
+      source: "agent_jwt" as const,
+    };
+    await expect(authorizationService(db).decide({
+      actor: delegatedActor,
+      action: "issue:comment",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        issueId: delegatedIssue.id,
+        assigneeAgentId: assignee.id,
+        status: "blocked",
+      },
+      scope: { allowIssueUnblockOwner: true },
+    })).resolves.toMatchObject({ allowed: true });
+    await db.update(companyMemberships).set({ status: "inactive" }).where(and(
+      eq(companyMemberships.companyId, company.id),
+      eq(companyMemberships.principalType, "user"),
+      eq(companyMemberships.principalId, responsibleUserId),
+    ));
+    let delegatedCallbackRan = false;
+    await expect(svc.runBlockedUnblockOwnerTransaction({
+      issueId: delegatedIssue.id,
+      expectedUpdatedAt: delegatedIssue.updatedAt,
+      actor: delegatedActor,
+      action: "issue:comment",
+    }, async () => {
+      delegatedCallbackRan = true;
+    })).rejects.toMatchObject({ status: 409 });
+    expect(delegatedCallbackRan).toBe(false);
   });
 
   it("allows mentioned agents to read and comment on assigned issues without granting issue mutation", async () => {

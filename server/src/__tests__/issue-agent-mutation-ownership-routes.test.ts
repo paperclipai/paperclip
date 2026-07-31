@@ -31,6 +31,7 @@ const mockIssueService = vi.hoisted(() => ({
   listWakeableBlockedDependents: vi.fn(),
   remove: vi.fn(),
   removeAttachment: vi.fn(),
+  runBlockedUnblockOwnerTransaction: vi.fn(),
   update: vi.fn(),
   findMentionedAgents: vi.fn(),
 }));
@@ -524,6 +525,10 @@ describe("agent issue mutation checkout ownership", () => {
     mockIssueThreadInteractionService.listForIssue.mockResolvedValue([]);
     mockIssueService.remove.mockReset();
     mockIssueService.removeAttachment.mockReset();
+    mockIssueService.runBlockedUnblockOwnerTransaction.mockReset();
+    mockIssueService.runBlockedUnblockOwnerTransaction.mockImplementation(
+      async (_input: unknown, callback: (tx: Record<string, never>) => Promise<unknown>) => callback({}),
+    );
     mockIssueService.update.mockReset();
     mockIssueService.findMentionedAgents.mockReset();
     mockLogActivity.mockClear();
@@ -851,7 +856,16 @@ describe("agent issue mutation checkout ownership", () => {
       issueId,
       "The unblock action is complete.",
       expect.any(Object),
-      expect.objectContaining({ expectedBlockedUnblockOwnerAgentId: peerAgentId }),
+      expect.any(Object),
+      expect.any(Object),
+    );
+    expect(mockIssueService.runBlockedUnblockOwnerTransaction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        issueId,
+        action: "issue:comment",
+        actor: expect.objectContaining({ type: "agent", agentId: peerAgentId }),
+      }),
+      expect.any(Function),
     );
   });
 
@@ -1654,14 +1668,23 @@ describe("agent issue mutation checkout ownership", () => {
     const blockedIssue = makeIssue({
       status: "blocked",
       assigneeAgentId: ownerAgentId,
+      updatedAt: new Date("2026-07-31T08:00:00.000Z"),
       unblockDescriptor: {
         owner: { agentId: peerAgentId },
         action: "Choose the remediation path",
       },
     });
-    mockIssueService.getById.mockResolvedValue(blockedIssue);
-    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+    const updatedIssue = {
       ...blockedIssue,
+      status: "todo",
+      assigneeAgentId: peerAgentId,
+      updatedAt: new Date(blockedIssue.updatedAt.getTime() + 1_000),
+    };
+    mockIssueService.getById
+      .mockResolvedValueOnce(blockedIssue)
+      .mockResolvedValueOnce(updatedIssue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...updatedIssue,
       ...patch,
     }));
     mockAgentService.resolveByReference.mockResolvedValue({
@@ -1702,7 +1725,6 @@ describe("agent issue mutation checkout ownership", () => {
       issueId,
       expect.objectContaining({ status: "todo", assigneeAgentId: peerAgentId }),
       expect.any(Object),
-      { expectedBlockedUnblockOwnerAgentId: peerAgentId },
     );
     expect(mockIssueService.addComment).toHaveBeenCalledTimes(1);
     expect(mockIssueService.addComment).toHaveBeenCalledWith(
@@ -1720,6 +1742,125 @@ describe("agent issue mutation checkout ownership", () => {
       action: "tasks:assign",
       resource: expect.objectContaining({ assigneeAgentId: peerAgentId }),
     }));
+    expect(mockIssueService.runBlockedUnblockOwnerTransaction).toHaveBeenCalledWith(
+      expect.objectContaining({
+        issueId,
+        expectedUpdatedAt: blockedIssue.updatedAt,
+        action: "issue:mutate",
+        actor: expect.objectContaining({ type: "agent", agentId: peerAgentId }),
+      }),
+      expect.any(Function),
+    );
+    expect(res.body).toMatchObject({ status: "todo", assigneeAgentId: peerAgentId });
+  });
+
+  it("uses the latest committed issue for unblock-owner responses and wake dispatch", async () => {
+    const latestAssigneeAgentId = "88888888-8888-4888-8888-888888888888";
+    const blockedIssue = makeIssue({
+      status: "blocked",
+      assigneeAgentId: ownerAgentId,
+      updatedAt: new Date("2026-07-31T08:10:00.000Z"),
+      unblockDescriptor: {
+        owner: { agentId: peerAgentId },
+        action: "Choose the remediation path",
+      },
+    });
+    const ownerResult = {
+      ...blockedIssue,
+      status: "todo",
+      assigneeAgentId: peerAgentId,
+      updatedAt: new Date("2026-07-31T08:10:01.000Z"),
+    };
+    const latestIssue = {
+      ...ownerResult,
+      assigneeAgentId: latestAssigneeAgentId,
+      updatedAt: new Date("2026-07-31T08:10:02.000Z"),
+    };
+    mockIssueService.getById
+      .mockResolvedValueOnce(blockedIssue)
+      .mockResolvedValue(latestIssue);
+    mockIssueService.update.mockResolvedValue(ownerResult);
+    mockAgentService.resolveByReference.mockResolvedValue({
+      ambiguous: false,
+      agent: makeAgent(peerAgentId),
+    });
+    mockAccessService.decide.mockImplementation(async (input: {
+      action: string;
+      scope?: Record<string, unknown>;
+    }) => {
+      const unblockOwnerMutation =
+        input.action === "issue:mutate" && input.scope?.allowIssueUnblockOwner === true;
+      return {
+        allowed: unblockOwnerMutation || input.action === "tasks:assign" || input.action === "issue:read",
+        action: input.action,
+        reason: unblockOwnerMutation
+          ? "allow_issue_unblock_owner"
+          : input.action === "issue:read"
+            ? "allow_company_agent"
+            : "allow_explicit_grant",
+        explanation: "Allowed by the test fixture.",
+      };
+    });
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ comment: "Remediation is complete", resume: true, assigneeAgentId: peerAgentId });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(res.body).toMatchObject({ status: "todo", assigneeAgentId: latestAssigneeAgentId });
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      latestAssigneeAgentId,
+      expect.objectContaining({
+        reason: "issue_assigned",
+        payload: expect.objectContaining({ issueId }),
+      }),
+    );
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalledWith(
+      peerAgentId,
+      expect.objectContaining({ reason: "issue_assigned" }),
+    );
+  });
+
+  it("rejects an unblock owner attempting to resume the issue to another agent", async () => {
+    const blockedIssue = makeIssue({
+      status: "blocked",
+      assigneeAgentId: ownerAgentId,
+      unblockDescriptor: {
+        owner: { agentId: peerAgentId },
+        action: "Choose the remediation path",
+      },
+    });
+    mockIssueService.getById.mockResolvedValue(blockedIssue);
+    mockAgentService.resolveByReference.mockResolvedValue({
+      ambiguous: false,
+      agent: makeAgent(ownerAgentId),
+    });
+    mockAccessService.decide.mockImplementation(async (input: {
+      action: string;
+      scope?: Record<string, unknown>;
+    }) => {
+      const unblockOwnerMutation =
+        input.action === "issue:mutate" && input.scope?.allowIssueUnblockOwner === true;
+      return {
+        allowed: unblockOwnerMutation || input.action === "tasks:assign" || input.action === "issue:read",
+        action: input.action,
+        reason: unblockOwnerMutation
+          ? "allow_issue_unblock_owner"
+          : input.action === "issue:read"
+            ? "allow_company_agent"
+            : "allow_explicit_grant",
+        explanation: "Allowed by the test fixture.",
+      };
+    });
+
+    const res = await request(await createApp(peerActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ comment: "Remediation is complete", resume: true, assigneeAgentId: ownerAgentId });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(403);
+    expect(res.body.error).toBe("Unblock owners may only claim resumed work for themselves");
+    expect(mockIssueService.runBlockedUnblockOwnerTransaction).not.toHaveBeenCalled();
+    expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
   it("returns conflict when unblock-owner authority changes before the issue write", async () => {
@@ -1763,7 +1904,10 @@ describe("agent issue mutation checkout ownership", () => {
       issueId,
       expect.objectContaining({ status: "todo" }),
       expect.any(Object),
-      { expectedBlockedUnblockOwnerAgentId: peerAgentId },
+    );
+    expect(mockIssueService.runBlockedUnblockOwnerTransaction).toHaveBeenCalledWith(
+      expect.objectContaining({ issueId, action: "issue:mutate" }),
+      expect.any(Function),
     );
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
   });

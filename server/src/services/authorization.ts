@@ -607,7 +607,11 @@ export function authorizationService(db: Db) {
     actor: AuthorizationActor;
     companyId: string;
     userId: string;
+    fresh?: boolean;
   }): Promise<ResponsibleUserSnapshot> {
+    if (input.fresh) {
+      return loadResponsibleUserSnapshot(input.companyId, input.userId);
+    }
     const actorWithMemo = input.actor as ResponsibleUserActorWithMemo;
     const key = `${input.companyId}:${input.userId}`;
     actorWithMemo.__responsibleUserSnapshotMemo ??= new Map();
@@ -2188,6 +2192,7 @@ export function authorizationService(db: Db) {
       (input.action === "issue:mutate" && scopeBoolean(input.scope, "allowIssueUnblockOwner"));
     if (
       trustResolution.kind === "standard" &&
+      isSimpleAssignableAgentStatus(actorAgent.status) &&
       issueUnblockOwnerAction &&
       input.resource.type === "issue" &&
       input.resource.issueId
@@ -2313,6 +2318,7 @@ export function authorizationService(db: Db) {
       actor: input.actor,
       companyId,
       userId: responsibleUserId,
+      fresh: scopeBoolean(input.scope, "requireFreshResponsibleUser"),
     });
     const denyCode: AuthorizationDecision["code"] =
       snapshot.userExists && snapshot.activeMembership

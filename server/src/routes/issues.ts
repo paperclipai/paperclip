@@ -3979,6 +3979,7 @@ export function issueRoutes(
 
   function isDefaultOpenIssueWriteDecision(decision: true | Awaited<ReturnType<typeof decideIssueAccess>>) {
     return decision !== true && decision.reason === "allow_visible_issue_write";
+  }
 
   function isIssueUnblockOwnerDecision(decision: Awaited<ReturnType<typeof decideIssueAccess>>) {
     return decision.reason === "allow_issue_unblock_owner";
@@ -4095,6 +4096,14 @@ export function issueRoutes(
       return denyIssueWrite(req, res, issue, issueWriteDenialCodeForDecision(boundaryDecision));
     }
     if (options.allowIssueUnblockOwner && isIssueUnblockOwnerDecision(boundaryDecision)) {
+      if (
+        "assigneeAgentId" in req.body &&
+        req.body.assigneeAgentId !== undefined &&
+        req.body.assigneeAgentId !== actorAgentId
+      ) {
+        res.status(403).json({ error: "Unblock owners may only claim resumed work for themselves" });
+        return false;
+      }
       if (!isScopedIssueUnblockOwnerPatch(req.body)) {
         res.status(403).json({
           error: "Unblock owners may only comment and resume blocked issues",
@@ -9084,17 +9093,10 @@ export function issueRoutes(
     const issueMutationAuthorizationReason = req.actor.type === "agent"
       ? issueWriteAuthorizationReason(req, await decideIssueAccess(req, existing, "issue:mutate", { allowIssueUnblockOwner: true }))
       : issueWriteAuthorizationReason(req, true);
-    const ownerWritePrecondition = isIssueUnblockOwner && req.actor.type === "agent" && req.actor.agentId
-      ? { expectedBlockedUnblockOwnerAgentId: req.actor.agentId }
-      : undefined;
     const persistIssueUpdate = (
       data: Parameters<typeof svc.update>[1],
       tx?: Parameters<typeof svc.update>[2],
-    ) => ownerWritePrecondition
-      ? svc.update(id, data, tx, undefined, ownerWritePrecondition)
-      : tx
-        ? svc.update(id, data, tx)
-        : svc.update(id, data);
+    ) => tx ? svc.update(id, data, tx) : svc.update(id, data);
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, existing, req.body))) return;
 
     const actor = getActorInfo(req);
@@ -9634,7 +9636,7 @@ export function issueRoutes(
     }
     let issue: Awaited<ReturnType<typeof svc.update>>;
     let atomicOwnerComment: Awaited<ReturnType<typeof svc.addComment>> | null = null;
-    const ownerCommentSourceTrust = ownerWritePrecondition && commentBody
+    const ownerCommentSourceTrust = isIssueUnblockOwner && commentBody
       ? await sourceTrustForActorWrite(existing, actor)
       : null;
     // Clear the reopen-pending flag if this update leaves the issue terminal, so
@@ -9656,8 +9658,13 @@ export function issueRoutes(
       || persistReviewActivityTransactionally
       || reviewPolicySensitiveMutationRequested;
     try {
-      if (ownerWritePrecondition) {
-        issue = await db.transaction(async (tx) => {
+      if (isIssueUnblockOwner) {
+        issue = await svc.runBlockedUnblockOwnerTransaction({
+          issueId: id,
+          expectedUpdatedAt: existing.updatedAt,
+          actor: req.actor,
+          action: "issue:mutate",
+        }, async (tx) => {
           const updated = await persistIssueUpdate({
             ...updateFields,
             actorAgentId: actor.agentId ?? null,
@@ -9753,7 +9760,7 @@ export function issueRoutes(
       throw err;
     }
     if (!issue) {
-      if (ownerWritePrecondition) {
+      if (isIssueUnblockOwner) {
         res.status(409).json({ error: "Unblock owner authorization became stale" });
         return;
       }
@@ -9761,6 +9768,15 @@ export function issueRoutes(
       return;
     }
     for (const publication of postCommitActivityPublications) publishActivity(publication);
+
+    if (isIssueUnblockOwner) {
+      const latestIssue = await svc.getById(id);
+      if (!latestIssue) {
+        res.status(409).json({ error: "Issue changed after unblock-owner recovery" });
+        return;
+      }
+      issue = { ...issue, ...latestIssue };
+    }
 
     if (enteringBlocked) {
       const blockedIssue = issue;
@@ -11889,13 +11905,12 @@ export function issueRoutes(
     const commentAccessDecision = await assertAgentIssueCommentAllowed(req, res, issue);
     if (!commentAccessDecision) return;
     const commentAuthorizationReason = issueWriteAuthorizationReason(req, commentAccessDecision);
-    const commentOwnerWritePrecondition =
+    const isIssueUnblockOwnerComment = Boolean(
       commentAccessDecision !== true &&
       isIssueUnblockOwnerDecision(commentAccessDecision) &&
       req.actor.type === "agent" &&
-      req.actor.agentId
-        ? req.actor.agentId
-        : undefined;
+      req.actor.agentId,
+    );
     if (!assertStructuredCommentFieldsAllowed(req, res, {
       presentation: req.body.presentation,
       metadata: req.body.metadata,
@@ -11908,7 +11923,7 @@ export function issueRoutes(
     const reopenRequested = req.body.reopen === true;
     const resumeRequested = req.body.resume === true;
     const interruptRequested = req.body.interrupt === true;
-    if (commentOwnerWritePrecondition && (reopenRequested || resumeRequested || interruptRequested)) {
+    if (isIssueUnblockOwnerComment && (reopenRequested || resumeRequested || interruptRequested)) {
       res.status(403).json({ error: "Unblock owners must use the guarded issue PATCH to resume work" });
       return;
     }
@@ -12250,19 +12265,35 @@ export function issueRoutes(
         requestedByActorId: actor.actorId,
       });
     } else {
-      comment = await svc.addComment(id, req.body.body, {
-        agentId: actor.agentId ?? undefined,
-        userId: actor.actorType === "user" ? actor.actorId : undefined,
-        runId: actor.runId,
-        onBehalfOfUserId: authenticatedActorResponsibleUserId(req),
-      }, {
+      const commentOptions = {
         authorType: req.body.authorType ?? (actor.actorType === "agent" ? "agent" : "user"),
         presentation: commentPresentation,
         metadata: req.body.metadata ?? null,
         authorizationReason: commentAuthorizationReason,
         sourceTrust: await sourceTrustForActorWrite(currentIssue, actor),
-        expectedBlockedUnblockOwnerAgentId: commentOwnerWritePrecondition,
-      });
+      };
+      const commentActor = {
+        agentId: actor.agentId ?? undefined,
+        userId: actor.actorType === "user" ? actor.actorId : undefined,
+        runId: actor.runId,
+        onBehalfOfUserId: authenticatedActorResponsibleUserId(req),
+      };
+      const addComment = (tx?: Parameters<typeof svc.addComment>[4]) => tx
+        ? svc.addComment(id, req.body.body, commentActor, commentOptions, tx)
+        : svc.addComment(id, req.body.body, commentActor, commentOptions);
+      comment = isIssueUnblockOwnerComment
+        ? await svc.runBlockedUnblockOwnerTransaction({
+            issueId: id,
+            expectedUpdatedAt: issue.updatedAt,
+            actor: req.actor,
+            action: "issue:comment",
+          }, addComment)
+        : await addComment();
+      if (isIssueUnblockOwnerComment) {
+        const latestIssue = await svc.getById(id);
+        if (!latestIssue) throw conflict("Issue changed after unblock-owner comment");
+        currentIssue = latestIssue;
+      }
     }
 
     await issueReferencesSvc.syncComment(comment.id);
