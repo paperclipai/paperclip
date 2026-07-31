@@ -5481,6 +5481,24 @@ export function issueService(db: Db) {
         throw conflict("Unblock owner authorization became stale");
       }
 
+      // Scoped assignment grants can depend on the company hierarchy, so lock
+      // the full hierarchy before evaluating grant scope in this transaction.
+      await tx
+        .select({ id: agents.id })
+        .from(agents)
+        .where(eq(agents.companyId, lockedIssue!.companyId))
+        .for("update");
+
+      await tx
+        .select({ companyId: companyMemberships.companyId })
+        .from(companyMemberships)
+        .where(and(
+          eq(companyMemberships.companyId, lockedIssue!.companyId),
+          eq(companyMemberships.principalType, "agent"),
+          eq(companyMemberships.principalId, actorAgentId),
+        ))
+        .for("update");
+
       if (lockedIssue!.projectId) {
         await tx
           .select({ id: projects.id })
@@ -5488,6 +5506,16 @@ export function issueService(db: Db) {
           .where(and(
             eq(projects.id, lockedIssue!.projectId),
             eq(projects.companyId, lockedIssue!.companyId),
+          ))
+          .for("update");
+      }
+      if (lockedIssue!.parentId && lockedIssue!.parentId !== lockedIssue!.id) {
+        await tx
+          .select({ id: issues.id })
+          .from(issues)
+          .where(and(
+            eq(issues.id, lockedIssue!.parentId),
+            eq(issues.companyId, lockedIssue!.companyId),
           ))
           .for("update");
       }
