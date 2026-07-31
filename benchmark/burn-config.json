@@ -1,0 +1,524 @@
+{
+  "_comment": "Paperclip benchmark #15 \u2014 active model evaluator. Per-role suites -> multi-model runner -> deterministic+LLM-judge scorer -> quality-per-token -> per-role model recommendation that drives data-driven tiering (#9). Models are invoked via their CLIs in a neutralized temp CWD (no project CLAUDE.md/AGENTS.md/rules) so we measure the base model, not the local agent's tools/skills (that is #16's job).",
+  "models": [
+    {
+      "id": "claude-opus",
+      "adapter": "claude",
+      "model_arg": "opus",
+      "label": "Claude Opus",
+      "lane": "claude"
+    },
+    {
+      "id": "claude-sonnet-5",
+      "adapter": "claude",
+      "model_arg": "claude-sonnet-5",
+      "label": "Claude Sonnet 5",
+      "lane": "claude"
+    },
+    {
+      "id": "codex-gpt-5.4",
+      "adapter": "codex",
+      "model_arg": "gpt-5.4",
+      "label": "Codex GPT-5.4",
+      "lane": "codex"
+    },
+    {
+      "id": "gemini-pro",
+      "adapter": "antigravity",
+      "model_arg": "gemini-3.1-pro-low",
+      "label": "Gemini 3.1 Pro (Low)",
+      "lane": "antigravity",
+      "note": "TSBC-1439 repointed the active gemini-pro row from broken gemini-3.1-pro-high to gemini-3.1-pro-low; historical gemini-pro ledger rows before 2026-07-28 are served-model-unverified."
+    },
+    {
+      "id": "grok-4.3",
+      "adapter": "hermes",
+      "model_arg": "grok-4.3",
+      "label": "Grok 4.3",
+      "lane": "hermes"
+    },
+    {
+      "id": "grok-4.20",
+      "adapter": "hermes",
+      "model_arg": "grok-4.20-0309-reasoning",
+      "label": "Grok 4.20 (reasoning)",
+      "lane": "hermes"
+    },
+    {
+      "id": "gemini-flash",
+      "adapter": "antigravity",
+      "model_arg": "gemini-3.5-flash-medium",
+      "label": "Gemini 3.5 Flash (Med)",
+      "lane": "antigravity"
+    },
+    {
+      "id": "gemini-flash-low",
+      "adapter": "antigravity",
+      "model_arg": "gemini-3.5-flash-low",
+      "label": "Gemini 3.5 Flash (Low)",
+      "lane": "antigravity"
+    },
+    {
+      "id": "gpt-5.4-mini",
+      "adapter": "codex",
+      "model_arg": "gpt-5.4-mini",
+      "label": "GPT-5.4 Mini",
+      "lane": "codex"
+    },
+    {
+      "id": "claude-haiku",
+      "adapter": "claude",
+      "model_arg": "haiku",
+      "label": "Claude Haiku",
+      "lane": "claude"
+    },
+    {
+      "id": "agy-claude-opus-4.6",
+      "adapter": "antigravity",
+      "model_arg": "claude-opus-4-6-thinking",
+      "label": "agy Claude Opus 4.6",
+      "lane": "antigravity"
+    },
+    {
+      "id": "agy-claude-sonnet-4.6",
+      "adapter": "antigravity",
+      "model_arg": "claude-sonnet-4-6",
+      "label": "agy Claude Sonnet 4.6",
+      "lane": "antigravity"
+    },
+    {
+      "id": "agy-gpt-oss-120b",
+      "adapter": "antigravity",
+      "model_arg": "gpt-oss-120b-medium",
+      "label": "agy GPT-OSS 120B",
+      "lane": "antigravity"
+    },
+    {
+      "id": "gpt-5.3-codex-spark",
+      "adapter": "codex",
+      "model_arg": "gpt-5.3-codex-spark",
+      "label": "GPT-5.3 Codex Spark",
+      "lane": "codex",
+      "_comment": "Weekly Spark quota (~27M tok/wk), metered SEPARATELY from the general Codex bucket -- verified 2026-07-31 03:5x: the general codex account was quota-dead until Aug 5 while this model answered in 247 tokens. Unused Spark quota is wasted at the weekly reset, hence the burn."
+    }
+  ],
+  "_models_catalog_comment": "Validated within-family variants (confirmed callable via their CLI 2026-06-14 unless noted below). `bench.py all` runs the active `models` roster above; as of 2026-07-11 that includes the new codex mini tier (`gpt-5.4-mini`) and the Claude cheap-lane probe (`claude-sonnet-5`). Opt in per run for catalog-only variants such as `claude-haiku`, `gemini-flash`, or the direct-Grok `grok-4.5` flagship. GPT-5.6 family availability was re-confirmed on 2026-07-11 from the EU via Codex OAuth after upgrading codex-cli to 0.144.1. `grok-4.5` was re-confirmed callable on the direct EU `grok.com` lane on 2026-07-17 (`grok --prompt-file ... -m grok-4.5`), but the CLI still exposes no usage block so benchmark token accounting remains estimated on that lane. gpt-5.3-codex-spark IS a valid model (same as Paperclip's spark lane, invoked --model gpt-5.3-codex-spark with reasoning_effort=high) but is DAILY RATE-LIMITED \u2014 sweeps including it fail with a usage-limit error while exhausted (resets ~mid-afternoon). Genuinely NOT supported on this ChatGPT account (400 invalid_request, never works): plain gpt-5.3, gpt-5.3-codex, gpt-5-codex.",
+  "models_catalog": [
+    {
+      "id": "claude-sonnet",
+      "adapter": "claude",
+      "model_arg": "sonnet",
+      "label": "Claude Sonnet 4.6",
+      "lane": "claude"
+    },
+    {
+      "id": "claude-sonnet-5",
+      "adapter": "claude",
+      "model_arg": "claude-sonnet-5",
+      "label": "Claude Sonnet 5",
+      "lane": "claude"
+    },
+    {
+      "id": "claude-fable-5",
+      "adapter": "claude",
+      "model_arg": "claude-fable-5",
+      "label": "Claude Fable 5",
+      "lane": "claude"
+    },
+    {
+      "id": "claude-haiku",
+      "adapter": "claude",
+      "model_arg": "haiku",
+      "label": "Claude Haiku 4.5",
+      "lane": "claude"
+    },
+    {
+      "id": "claude-opus-4.7",
+      "adapter": "claude",
+      "model_arg": "claude-opus-4-7",
+      "label": "Claude Opus 4.7",
+      "lane": "claude"
+    },
+    {
+      "id": "claude-opus-4-8",
+      "adapter": "claude",
+      "model_arg": "claude-opus-4-8",
+      "label": "Claude Opus 4.8",
+      "lane": "claude"
+    },
+    {
+      "id": "claude-haiku-4-5",
+      "adapter": "claude",
+      "model_arg": "claude-haiku-4-5",
+      "label": "Claude Haiku 4.5",
+      "lane": "claude"
+    },
+    {
+      "id": "gpt-5.5",
+      "adapter": "codex",
+      "model_arg": "gpt-5.5",
+      "label": "Codex GPT-5.5",
+      "lane": "codex"
+    },
+    {
+      "id": "gpt-5.6-sol",
+      "adapter": "codex",
+      "model_arg": "gpt-5.6-sol",
+      "label": "Codex GPT-5.6 Sol",
+      "lane": "codex",
+      "note": "Flagship/premium GPT-5.6 lane; serving-confirmed on Codex OAuth from the EU on 2026-07-11"
+    },
+    {
+      "id": "gpt-5.6-terra",
+      "adapter": "codex",
+      "model_arg": "gpt-5.6-terra",
+      "label": "Codex GPT-5.6 Terra",
+      "lane": "codex",
+      "note": "Default/everyday GPT-5.6 lane; serving-confirmed on Codex OAuth from the EU on 2026-07-11"
+    },
+    {
+      "id": "gpt-5.6-luna",
+      "adapter": "codex",
+      "model_arg": "gpt-5.6-luna",
+      "label": "Codex GPT-5.6 Luna",
+      "lane": "codex",
+      "note": "Cheap/high-volume GPT-5.6 lane; serving-confirmed on Codex OAuth from the EU on 2026-07-11"
+    },
+    {
+      "id": "gpt-5.4-mini",
+      "adapter": "codex",
+      "model_arg": "gpt-5.4-mini",
+      "label": "Codex GPT-5.4 mini",
+      "lane": "codex"
+    },
+    {
+      "id": "gpt-5.3-codex-spark",
+      "adapter": "codex",
+      "model_arg": "gpt-5.3-codex-spark",
+      "reasoning_effort": "high",
+      "label": "Codex GPT-5.3 Spark",
+      "lane": "codex",
+      "note": "Paperclip's cheap codex lane; daily rate-limited"
+    },
+    {
+      "id": "grok-3-mini",
+      "adapter": "hermes",
+      "model_arg": "grok-3-mini",
+      "label": "Grok 3 mini",
+      "lane": "hermes"
+    },
+    {
+      "id": "grok-4.5",
+      "adapter": "grok",
+      "model_arg": "grok-4.5",
+      "label": "Grok 4.5",
+      "lane": "grok",
+      "note": "Direct `grok.com` EU lane confirmed callable on 2026-07-17; token usage is estimated because the CLI stream does not emit usage blocks"
+    },
+    {
+      "id": "gemini-pro-low",
+      "adapter": "antigravity",
+      "model_arg": "gemini-3.1-pro-low",
+      "label": "Gemini 3.1 Pro (Low)",
+      "lane": "antigravity"
+    },
+    {
+      "id": "gemini-3.5-flash",
+      "adapter": "antigravity",
+      "model_arg": "gemini-3.5-flash",
+      "label": "Gemini 3.5 Flash",
+      "lane": "antigravity",
+      "note": "Stable Gemini Flash ID probe-verified on the EU agy lane 2026-07-13"
+    },
+    {
+      "id": "gemini-3.1-flash-lite",
+      "adapter": "antigravity",
+      "model_arg": "gemini-3.1-flash-lite",
+      "label": "Gemini 3.1 Flash Lite",
+      "lane": "antigravity",
+      "note": "Stable Flash Lite ID probe-verified on the EU agy lane 2026-07-13"
+    },
+    {
+      "id": "gemini-flash",
+      "adapter": "antigravity",
+      "model_arg": "gemini-3.5-flash-medium",
+      "label": "Gemini 3.5 Flash (Medium)",
+      "lane": "antigravity"
+    },
+    {
+      "id": "gemini-flash-low",
+      "adapter": "antigravity",
+      "model_arg": "gemini-3.5-flash-low",
+      "label": "Gemini 3.5 Flash (Low)",
+      "lane": "antigravity"
+    },
+    {
+      "id": "gemini-flash-high",
+      "adapter": "antigravity",
+      "model_arg": "gemini-3.5-flash-high",
+      "label": "Gemini 3.5 Flash (High)",
+      "lane": "antigravity"
+    },
+    {
+      "id": "gpt-oss-120b",
+      "adapter": "antigravity",
+      "model_arg": "gpt-oss-120b-medium",
+      "label": "GPT-OSS 120B (Medium)",
+      "lane": "antigravity"
+    }
+  ],
+  "model_denylist": [
+    {
+      "id": "agy-gemini-3.1-pro-high-20260728",
+      "models": [
+        "gemini-3.1-pro-high"
+      ],
+      "source": "TSBC-1439",
+      "reason": "Permanent bench guard after the July 28, 2026 AGY model-truth probe: gemini-3.1-pro-high self-reported Gemini 3.6 Flash both as a combined slug and as --model gemini-3.1-pro --effort high. The bare gemini-3.1-pro id fails loudly without effort, and gemini-3.1-pro-low self-reports correctly. Re-probe after AGY version bumps before removing."
+    },
+    {
+      "id": "xai-fast-alias-retirement-20260515",
+      "models": [
+        "grok-4-fast",
+        "grok-4-fast-reasoning",
+        "grok-4-fast-non-reasoning",
+        "grok-4-1-fast",
+        "grok-4-1-fast-reasoning",
+        "grok-4-1-fast-non-reasoning",
+        "grok-4.1-fast",
+        "grok-4.1-fast-reasoning",
+        "grok-4.1-fast-non-reasoning",
+        "grok-4-0709",
+        "grok-code-fast-1"
+      ],
+      "prefixes": [
+        "grok-4-fast-",
+        "grok-4-1-fast-",
+        "grok-4.1-fast-"
+      ],
+      "source": "TSBC-1571; docs.x.ai May-15 retirement; Hermes xai-oauth catalog excludes these aliases",
+      "reason": "Permanent bench guard: xAI retired these aliases on 2026-05-15. Fast Grok 4/4.1 rows aggregate as served grok-4.3; grok-code-fast-1 migrates to grok-build-0.1. Do not add these retired aliases to future matrices or live lane configs."
+    }
+  ],
+  "judge": {
+    "id": "grok-4.20",
+    "adapter": "hermes",
+    "model_arg": "grok-4.20-0309-reasoning",
+    "_comment": "BURN-CONFIG JUDGE, set 2026-07-31. claude-opus (the config.json default) was unreachable -- Claude OAuth refresh failing -- and codex was quota-dead until Aug 5. gemini-pro was rejected: config.json's own note records the 07-26 move OFF gemini after a burn drained the weekly Gemini quota to 18%, and it contends with live production Gemini lanes. grok-4.20 reasoning is live (positive-controlled 2026-07-31) and is itself a deliberate burn target on the 07-31 Grok burn day, so judging here burns two quotas at once. CAVEAT: judge changes break score comparability with claude-judged historical rows -- do NOT compare these runs against the claude-judge ledger."
+  },
+  "roles": [
+    "engineer",
+    "designer",
+    "content",
+    "intake",
+    "ops",
+    "ceo",
+    "cto",
+    "researcher",
+    "seo",
+    "cmo",
+    "ledger",
+    "recruiter",
+    "auditor",
+    "quant",
+    "onboarding",
+    "cv-review",
+    "video-hook",
+    "social-post",
+    "book-chapter",
+    "reasoning",
+    "summarize-extract"
+  ],
+  "agentic_roles": [
+    "paperclip"
+  ],
+  "paperclip": {
+    "_comment": "Agentic 'Paperclip function' lane (paperclip_lane.py). OPT-IN: never part of a default `all` sweep - run with `--roles paperclip --models grok-4.3,grok-4.20,grok-4.5`. Requires PAPERCLIP_API_URL + PAPERCLIP_API_KEY (board token) in env. Maps each benchmark model id -> a DEDICATED bench AGENT that runs that model; the lane creates a fixture issue assigned to that agent, triggers a fresh-session run, and scores whether it reaches a VALID disposition. SAFE-BY-DEFAULT: `agents` is empty so a stray run is a no-op (the lane skips models with no configured agent). DO NOT point this at live fleet agents - that commandeers real lanes. Provision dedicated throwaway bench Hermes agents (one per current grok model) in a sandbox/bench company, then fill `agents` + `benchCompanyId`. Candidate models to bench: grok-4.3 (reasoning, the working baseline), grok-4.20, grok-4.5. Former fast-alias TSC agents are intentionally omitted after the 2026-05-15 xAI retirement; do not model new dedicated bench agents after those retired configs.",
+    "benchCompanyId": "e212ce50-b524-408c-b3d4-0c6108d8c2e2",
+    "benchProjectId": "f71e8665-3f38-4920-b777-348ec85b9071",
+    "maxWorkers": 1,
+    "cellTimeoutSec": 900,
+    "_runtime_comment": "maxWorkers=1 (SERIAL) is REQUIRED: parallel rapid-fire invokes fight the platform's GLOBAL heartbeat machinery (heartbeat.wakeup() coalesces/dedups concurrent wakeups -> 'skipped'; run-recovery reapers cancel queued runs), which company isolation can't avoid. Single-model/serial runs were clean (grok-4.3=0.94); every parallel 4-model sweep collapsed to skipped/cancelled. cellTimeoutSec=900 (raised from 600) because the grok-4.20 REASONING model legitimately runs 313-444s/cell; the lane retries transient timeouts + waits for agent-idle around each invoke. NOTE 2026-06-18: paperclip_lane SOCKET_TIMEOUT_SEC raised 45->120 \u2014 the old 45s socket timeout made a slow grok-4.20 run get abandoned mid-poll, leaving a lease-holding zombie that cascaded Errno 60 ('Operation timed out') into every following cell from ~stage 6 on. Runs in the dedicated isolated company (see _isolation_comment) so nothing acts on fixtures mid-run. ~70-90 min for the 4-model grok sweep, serial.",
+    "agents": {
+      "grok-4.3": "7fffa42f-467a-4f76-b802-4dc8bd552bd9",
+      "grok-4.20": "fc866269-900a-42b4-84e7-df4159f98f54",
+      "claude-opus": "c7024122-7589-444a-a58f-597515d5a211",
+      "codex-gpt-5.4": "5bcc7a94-6715-43eb-ad53-da7bd300ef79",
+      "gemini-pro": "4b103786-19d0-4ce9-bf27-8b5fae22c959",
+      "gpt-5.5": "045f72f8-08ce-4f29-8f28-8d4ea4864e48",
+      "gpt-5.6-sol": "9cde1342-a63e-48e5-ae32-769778cd5408",
+      "gpt-5.6-terra": "9dc76a01-420e-440f-a76e-2c0d097acf7d",
+      "gpt-5.6-luna": "aaecdcd0-dc5b-41d1-a6fd-0ff7a56776a0",
+      "claude-sonnet-5": "53a4e9d3-81b1-4d86-8f87-e19447412f0e"
+    },
+    "_isolation_comment": "Bench runs in a DEDICATED ISOLATED company (Agentic Bench, e212ce50) with NO CEO/routines/active agents, so nothing in the company acts on bench fixtures mid-run (TSMC's GLaD0S + cleanup machinery was the interference that quiet-TSMC couldn't stop). reportsTo for the 4 agents = paused Bench-Manager b610338d."
+  },
+  "scoring": {
+    "deterministic_weight": 0.5,
+    "judge_weight": 0.5,
+    "_comment": "Per-task blend. If a task has only deterministic checks (e.g. intake ground-truth), quality = deterministic. If only judge criteria, quality = judge. If both, quality = normalized weighted blend of the two."
+  },
+  "recommendation": {
+    "objective": "peak_quality_cost_aware",
+    "quality_floor": 0.6,
+    "min_success_rate_for_quality": 0.8,
+    "min_reps_for_decision": 3,
+    "value_metric": "output",
+    "quality_epsilon": 0.02,
+    "cost_ratio_trigger": 1.5,
+    "_comment": "objective=peak_quality_cost_aware (davin's policy 2026-06-14): TIER FOR PEAK QUALITY, but don't pay multiples for marginal gains. Rule per role: start from the highest-quality model; among models within quality_epsilon (0.02) of it, prefer the lowest mean output tokens only when materially cheaper. min_success_rate_for_quality suppresses published quality/q-per-token when too few tasks succeeded; min_reps_for_decision caps under-repeated cells at candidate."
+  },
+  "incumbent_baselines": {
+    "cv-review": {
+      "required": true,
+      "model": "gemini-flash",
+      "adapter_type": "antigravity_local",
+      "served_model": "Gemini 3.5 Flash (Medium)",
+      "agents": [
+        "ApplicationWriter-Gemini",
+        "RecruitmentManager-Gemini"
+      ],
+      "source": "TSBC-1391",
+      "_comment": "Any CV-review evaluation that proposes replacing or supplementing the deployed TSR lane must include the deployed agent+adapter+served-model baseline in the same run. A plain model-name row is not enough."
+    }
+  },
+  "run": {
+    "timeout_sec": 300,
+    "max_workers": 4,
+    "reps": 3,
+    "neutralize_env": true,
+    "_comment": "Each model call runs in a fresh empty temp CWD with config/rules-ignore flags where the CLI supports them. reps is repetitions per role/task/model cell; decision-grade rows require recommendation.min_reps_for_decision or higher. max_workers parallelizes cells; keep modest because the Mac is shared with the live fleet + image-gen."
+  },
+  "adapters": {
+    "claude": {
+      "extra_args": [
+        "--allowedTools",
+        "",
+        "--strict-mcp-config"
+      ]
+    },
+    "codex": {
+      "extra_args": [
+        "--sandbox",
+        "read-only",
+        "--skip-git-repo-check",
+        "--ignore-user-config",
+        "--ignore-rules"
+      ]
+    },
+    "gemini": {
+      "extra_args": [
+        "--approval-mode",
+        "plan"
+      ]
+    },
+    "hermes": {
+      "extra_args": [
+        "--ignore-user-config",
+        "--ignore-rules"
+      ]
+    },
+    "grok": {
+      "extra_args": [
+        "--always-approve",
+        "--permission-mode",
+        "dontAsk",
+        "--disable-web-search",
+        "--no-subagents",
+        "--tools",
+        ""
+      ]
+    },
+    "antigravity": {
+      "extra_args": []
+    }
+  },
+  "_pricing_comment": "NOTIONAL API list prices in USD per MILLION tokens, {in, out}, for the optional $ cost basis in costreport.py (#19). LEFT NULL ON PURPOSE \u2014 fill with REAL rates you can verify (operator-supplied; not fabricated). Caveat: lanes are subscription/OAuth-billed so marginal $ is ~0 today; these model the cost IF scaled via API. Output-token efficiency (q/1k-out) is the live signal and needs no prices.",
+  "pricing": {
+    "claude-opus": {
+      "in": null,
+      "out": null
+    },
+    "codex-gpt-5.4": {
+      "in": null,
+      "out": null
+    },
+    "gemini-pro": {
+      "in": null,
+      "out": null
+    },
+    "grok-4.3": {
+      "in": null,
+      "out": null
+    },
+    "grok-4.20": {
+      "in": null,
+      "out": null
+    },
+    "claude-sonnet": {
+      "in": null,
+      "out": null
+    },
+    "claude-haiku": {
+      "in": null,
+      "out": null
+    },
+    "claude-opus-4.7": {
+      "in": null,
+      "out": null
+    },
+    "gpt-5.5": {
+      "in": null,
+      "out": null
+    },
+    "gpt-5.6-sol": {
+      "in": null,
+      "out": null
+    },
+    "gpt-5.6-terra": {
+      "in": null,
+      "out": null
+    },
+    "gpt-5.6-luna": {
+      "in": null,
+      "out": null
+    },
+    "gpt-5.4-mini": {
+      "in": null,
+      "out": null
+    },
+    "gpt-5.3-codex-spark": {
+      "in": null,
+      "out": null
+    },
+    "grok-3-mini": {
+      "in": null,
+      "out": null
+    },
+    "grok-4.5": {
+      "in": null,
+      "out": null
+    },
+    "gemini-pro-low": {
+      "in": null,
+      "out": null
+    },
+    "gemini-flash": {
+      "in": null,
+      "out": null
+    },
+    "gemini-flash-low": {
+      "in": null,
+      "out": null
+    },
+    "gemini-flash-high": {
+      "in": null,
+      "out": null
+    },
+    "gpt-oss-120b": {
+      "in": null,
+      "out": null
+    }
+  },
+  "_burn_comment": "Spark burn config. Rebuilt 2026-07-31 after the original was lost with session 6879b920's scratchpad (see spark-burn.sh header). Lives in the repo on purpose -- the previous copy died in an ephemeral workspace and took the whole burn with it."
+}
