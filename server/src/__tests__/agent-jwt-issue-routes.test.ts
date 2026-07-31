@@ -20,6 +20,7 @@ import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { actorMiddleware } from "../middleware/auth.js";
 import { errorHandler } from "../middleware/error-handler.js";
 import { issueRoutes } from "../routes/issues.js";
+import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -360,5 +361,171 @@ describeEmbeddedPostgres("system-attributed agent JWT issue authorization", () =
       .where(eq(issueThreadInteractions.issueId, issueId));
     expect(stillPending.filter((row) => row.status === "accepted")).toHaveLength(1);
     expect(stillPending.filter((row) => row.status === "pending")).toHaveLength(1);
+  });
+
+  it("rejects an acceptance derived from a policy whose stage participants changed", async () => {
+    const companyId = randomUUID();
+    const coachId = randomUUID();
+    const approverId = randomUUID();
+    const replacementApproverId = randomUUID();
+    const sourceRunId = randomUUID();
+    const approverRunId = randomUUID();
+    const issueId = randomUUID();
+    const interactionId = randomUUID();
+    const approvalStageId = randomUUID();
+
+    await db.insert(companies).values({ id: companyId, name: "Stale Company", issuePrefix: "STALE" });
+    await db.insert(agents).values([
+      {
+        id: coachId,
+        companyId,
+        name: "Reflection Coach",
+        role: "general",
+        status: "paused",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+        metadata: { paperclipBuiltInAgent: { key: "reflection-coach", featureKeys: [] } },
+      },
+      {
+        id: approverId,
+        companyId,
+        name: "CTO",
+        role: "cto",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+        metadata: { paperclipBuiltInAgent: { key: "agent-cto", featureKeys: [] } },
+      },
+      {
+        id: replacementApproverId,
+        companyId,
+        name: "Replacement Approver",
+        role: "cto",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+    await db.insert(heartbeatRuns).values([
+      { id: sourceRunId, companyId, agentId: coachId, status: "succeeded", responsibleUserId: null },
+      { id: approverRunId, companyId, agentId: approverId, status: "running", responsibleUserId: null },
+    ]);
+    const originalPolicy = {
+      mode: "auto" as const,
+      commentRequired: true,
+      stages: [
+        { id: approvalStageId, type: "approval" as const, approvalsNeeded: 1, participants: [{ type: "agent" as const, agentId: approverId }] },
+      ],
+    };
+    const executionState = {
+      status: "pending" as const,
+      currentStageId: approvalStageId,
+      currentStageIndex: 0,
+      currentStageType: "approval" as const,
+      currentParticipant: { type: "agent" as const, agentId: approverId },
+      returnAssignee: { type: "agent" as const, agentId: coachId },
+      reviewRequest: null,
+      completedStageIds: [],
+      lastDecisionId: null,
+      lastDecisionOutcome: null,
+      monitor: null,
+    };
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      identifier: "STALE-1",
+      issueNumber: 1,
+      title: "Apply Reflection Coach proposal",
+      status: "in_review",
+      priority: "high",
+      assigneeAgentId: approverId,
+      createdByAgentId: coachId,
+      executionPolicy: originalPolicy,
+      executionState,
+    });
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId,
+      companyId,
+      issueId,
+      kind: "request_confirmation",
+      status: "pending",
+      continuationPolicy: "wake_assignee_on_accept",
+      sourceRunId,
+      createdByAgentId: coachId,
+      payload: {
+        version: 1,
+        prompt: "Apply proposal?",
+        detailsMarkdown: "```diff\n+one\n```",
+        target: { type: "custom", key: `agent:${coachId}:instructions`, revisionId: "proposal-v1" },
+      },
+    });
+
+    await db
+      .update(issues)
+      .set({
+        executionPolicy: {
+          ...originalPolicy,
+          stages: [
+            {
+              id: approvalStageId,
+              type: "approval",
+              approvalsNeeded: 1,
+              participants: [{ type: "agent", agentId: replacementApproverId }],
+            },
+          ],
+        },
+      })
+      .where(eq(issues.id, issueId));
+
+    await expect(issueThreadInteractionService(db).acceptInteraction(
+      { id: issueId, companyId, projectId: null, goalId: null },
+      interactionId,
+      {},
+      { agentId: approverId, userId: null },
+      {
+        governedAcceptance: {
+          policySnapshot: originalPolicy,
+          executionState: {
+            ...executionState,
+            status: "completed",
+            currentStageId: null,
+            currentStageIndex: null,
+            currentStageType: null,
+            currentParticipant: null,
+            completedStageIds: [approvalStageId],
+            lastDecisionId: randomUUID(),
+            lastDecisionOutcome: "approved",
+          },
+          decision: {
+            id: randomUUID(),
+            stageId: approvalStageId,
+            stageType: "approval",
+            outcome: "approved",
+            body: `Accepted governed request_confirmation ${interactionId}`,
+            createdByRunId: approverRunId,
+          },
+        },
+      },
+    )).rejects.toMatchObject({
+      status: 409,
+      message: "Issue execution policy changed while the decision was being applied",
+    });
+
+    const decisions = await db
+      .select()
+      .from(issueExecutionDecisions)
+      .where(eq(issueExecutionDecisions.issueId, issueId));
+    expect(decisions).toHaveLength(0);
+    const [storedInteraction] = await db
+      .select({ status: issueThreadInteractions.status })
+      .from(issueThreadInteractions)
+      .where(eq(issueThreadInteractions.id, interactionId));
+    expect(storedInteraction?.status).toBe("pending");
   });
 });

@@ -3807,6 +3807,7 @@ export function issueRoutes(
     return {
       governedAcceptance: {
         executionState: { ...completedState, lastDecisionId: decisionId },
+        policySnapshot: issue.executionPolicy ?? null,
         decision: {
           id: decisionId,
           stageId: transition.decision.stageId,

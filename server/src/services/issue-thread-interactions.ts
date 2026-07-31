@@ -80,6 +80,12 @@ type ResolvedInteractionResult = {
 
 type GovernedConfirmationAcceptance = {
   executionState: Record<string, unknown>;
+  /**
+   * Normalized policy the transition was derived from. Revalidated under the
+   * issue row lock so a concurrently edited stage participant set cannot be
+   * approved from a superseded policy.
+   */
+  policySnapshot: unknown;
   decision: {
     id: string;
     stageId: string;
@@ -100,6 +106,7 @@ type IssueResolutionContext = {
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
   executionState: unknown;
+  executionPolicy: unknown;
 };
 
 const REQUEST_CONFIRMATION_INTERACTION_KINDS = [
@@ -1117,6 +1124,7 @@ export function issueThreadInteractionService(db: Db) {
           assigneeAgentId: issues.assigneeAgentId,
           assigneeUserId: issues.assigneeUserId,
           executionState: issues.executionState,
+          executionPolicy: issues.executionPolicy,
         })
         .from(issues)
         .where(eq(issues.id, args.issue.id))
@@ -1134,6 +1142,12 @@ export function issueThreadInteractionService(db: Db) {
           persistedState.currentStageId !== args.governedAcceptance.decision.stageId
         ) {
           throw conflict("Issue execution stage has already been decided");
+        }
+        // Stage id alone is not enough: a concurrent policy edit can keep the
+        // pending stage id while changing its participants, which would let a
+        // removed approver commit a decision derived from the superseded policy.
+        if (!isDeepStrictEqual(issueContext.executionPolicy ?? null, args.governedAcceptance.policySnapshot)) {
+          throw conflict("Issue execution policy changed while the decision was being applied");
         }
       }
 
