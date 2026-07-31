@@ -7,14 +7,48 @@ const ANTHROPIC_MODELS_TIMEOUT_MS = 5000;
 const ANTHROPIC_MODELS_CACHE_TTL_MS = 60_000;
 const ANTHROPIC_API_VERSION = "2023-06-01";
 
-/** AWS Bedrock model IDs — region-qualified identifiers required by the Bedrock API. */
-const BEDROCK_MODELS: AdapterModel[] = [
-  { id: "us.anthropic.claude-opus-4-8-v1", label: "Bedrock Opus 4.8" },
-  { id: "us.anthropic.claude-fable-5-v1", label: "Bedrock Fable 5" },
-  { id: "us.anthropic.claude-opus-4-6-v1", label: "Bedrock Opus 4.6" },
-  { id: "us.anthropic.claude-sonnet-4-5-20250929-v2:0", label: "Bedrock Sonnet 4.5" },
-  { id: "us.anthropic.claude-haiku-4-5-20251001-v1:0", label: "Bedrock Haiku 4.5" },
-];
+/**
+ * AWS Bedrock model IDs — region-qualified identifiers required by the Bedrock API.
+ *
+ * Inference-profile IDs are prefixed by region family, and the families are not a simple
+ * prefix swap: version suffixes diverge (Sonnet 4.5 is `-v2:0` under `us`, `-v1:0` under `eu`),
+ * so each family is listed explicitly rather than derived.
+ *
+ * Only families with verified profile IDs are listed. Unrecognised regions fall back to `us`,
+ * which preserves the previous behaviour.
+ */
+type BedrockRegionFamily = "us" | "eu";
+
+const BEDROCK_MODELS_BY_FAMILY: Record<BedrockRegionFamily, AdapterModel[]> = {
+  us: [
+    { id: "us.anthropic.claude-opus-4-8-v1", label: "Bedrock Opus 4.8" },
+    { id: "us.anthropic.claude-fable-5-v1", label: "Bedrock Fable 5" },
+    { id: "us.anthropic.claude-opus-4-6-v1", label: "Bedrock Opus 4.6" },
+    { id: "us.anthropic.claude-sonnet-4-5-20250929-v2:0", label: "Bedrock Sonnet 4.5" },
+    { id: "us.anthropic.claude-haiku-4-5-20251001-v1:0", label: "Bedrock Haiku 4.5" },
+  ],
+  // Verified ACTIVE via `aws bedrock list-inference-profiles --region eu-west-1` (2026-07-31).
+  eu: [
+    { id: "eu.anthropic.claude-opus-5", label: "Bedrock Opus 5" },
+    { id: "eu.anthropic.claude-sonnet-5", label: "Bedrock Sonnet 5" },
+    { id: "eu.anthropic.claude-opus-4-8", label: "Bedrock Opus 4.8" },
+    { id: "eu.anthropic.claude-opus-4-7", label: "Bedrock Opus 4.7" },
+    { id: "eu.anthropic.claude-sonnet-4-6", label: "Bedrock Sonnet 4.6" },
+    { id: "eu.anthropic.claude-sonnet-4-5-20250929-v1:0", label: "Bedrock Sonnet 4.5" },
+    { id: "eu.anthropic.claude-haiku-4-5-20251001-v1:0", label: "Bedrock Haiku 4.5" },
+  ],
+};
+
+function resolveBedrockRegionFamily(): BedrockRegionFamily {
+  const region = (process.env.AWS_REGION?.trim() || process.env.AWS_DEFAULT_REGION?.trim() || "")
+    .toLowerCase();
+  if (region.startsWith("eu-")) return "eu";
+  return "us";
+}
+
+function bedrockModelsForRegion(): AdapterModel[] {
+  return BEDROCK_MODELS_BY_FAMILY[resolveBedrockRegionFamily()];
+}
 
 let cached: { keyFingerprint: string; baseUrl: string; expiresAt: number; models: AdapterModel[] } | null = null;
 
@@ -102,7 +136,7 @@ async function fetchAnthropicModels(apiKey: string, baseUrl: string): Promise<Ad
 }
 
 async function loadClaudeModels(options?: { forceRefresh?: boolean }): Promise<AdapterModel[]> {
-  if (isBedrockEnv()) return dedupeModels(BEDROCK_MODELS);
+  if (isBedrockEnv()) return dedupeModels(bedrockModelsForRegion());
 
   const fallback = dedupeModels(DIRECT_MODELS);
   const apiKey = resolveAnthropicApiKey();
