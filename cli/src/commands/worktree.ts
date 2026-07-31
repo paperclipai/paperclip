@@ -141,6 +141,7 @@ type WorktreeRepairOptions = {
   fromInstance?: string;
   seedMode?: string;
   preserveLiveWork?: boolean;
+  seed?: boolean;
   noSeed?: boolean;
   allowLiveTarget?: boolean;
 };
@@ -3185,6 +3186,7 @@ export async function worktreeRepairCommand(opts: WorktreeRepairOptions): Promis
   p.intro(pc.bgCyan(pc.black(" paperclipai worktree repair ")));
 
   const seedMode = opts.seedMode ?? "minimal";
+  const skipSeed = opts.seed === false || opts.noSeed === true;
   if (!isWorktreeSeedMode(seedMode)) {
     throw new Error(`Unsupported seed mode "${seedMode}". Expected one of: minimal, full.`);
   }
@@ -3214,7 +3216,7 @@ export async function worktreeRepairCommand(opts: WorktreeRepairOptions): Promis
     nonEmpty(targetEnvEntries.PAPERCLIP_HOME) && nonEmpty(targetEnvEntries.PAPERCLIP_INSTANCE_ID),
   );
 
-  if (targetConfig && targetHasWorktreeEnv && opts.noSeed) {
+  if (targetConfig && targetHasWorktreeEnv && skipSeed) {
     p.log.message(pc.dim(`Target ${target.label} already has worktree-local config/env. Skipping reseed because --no-seed was passed.`));
     p.outro(pc.green(`Worktree metadata already looks healthy for ${target.label}.`));
     return;
@@ -3256,7 +3258,7 @@ export async function worktreeRepairCommand(opts: WorktreeRepairOptions): Promis
       fromConfig: source.configPath,
       fromDataDir: opts.fromDataDir,
       fromInstance: opts.fromInstance,
-      seed: opts.noSeed ? false : true,
+      seed: !skipSeed,
       seedMode,
       preserveLiveWork: opts.preserveLiveWork,
       force: true,
@@ -3354,7 +3356,7 @@ export function registerWorktreeCommands(program: Command): void {
     .option("--from-instance <id>", "Source instance id when deriving the source config (default: default)")
     .option("--seed-mode <mode>", "Seed profile: minimal or full (default: minimal)", "minimal")
     .option("--preserve-live-work", "Do not quarantine copied agent timers or assigned open issues in the seeded worktree", false)
-    .option("--no-seed", "Repair metadata only and skip reseeding when bootstrapping a missing worktree config", false)
+    .option("--no-seed", "Repair metadata only and skip reseeding when bootstrapping a missing worktree config")
     .option("--allow-live-target", "Override the guard that requires the target worktree DB to be stopped first", false)
     .action(worktreeRepairCommand);
 

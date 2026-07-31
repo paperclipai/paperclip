@@ -156,6 +156,14 @@ describe("onboard", () => {
     expect(fs.existsSync(path.join(instanceRoot, "secrets", "master.key"))).toBe(true);
   });
 
+  it("supports non-interactive config-only onboarding for isolated restore targets", async () => {
+    const configPath = createFreshConfigPath();
+
+    await onboard({ config: configPath, yes: true, start: false });
+
+    expect(fs.existsSync(configPath)).toBe(true);
+  });
+
   it("supports authenticated/private quickstart bind presets", async () => {
     const configPath = createFreshConfigPath();
     process.env.PAPERCLIP_TAILNET_BIND_HOST = "100.64.0.8";

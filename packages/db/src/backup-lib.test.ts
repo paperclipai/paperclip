@@ -4,7 +4,12 @@ import path from "node:path";
 import { gunzipSync } from "node:zlib";
 import { afterEach, describe, expect, it } from "vitest";
 import postgres from "postgres";
-import { createBufferedTextFileWriter, runDatabaseBackup, runDatabaseRestore } from "./backup-lib.js";
+import {
+  createBufferedTextFileWriter,
+  runDatabaseBackup,
+  runDatabaseRestore,
+  runDatabaseTableCounts,
+} from "./backup-lib.js";
 import { ensurePostgresDatabase } from "./client.js";
 import {
   getEmbeddedPostgresTestSupport,
@@ -455,6 +460,15 @@ describeEmbeddedPostgres("runDatabaseBackup", () => {
           FROM public.restore_stream_test
         `);
         expect(rows).toEqual([{ payload: "hello" }]);
+
+        const counts = await runDatabaseTableCounts({
+          connectionString: restoreConnectionString,
+        });
+        expect(counts.tables).toContainEqual({
+          schema: "public",
+          table: "restore_stream_test",
+          rowCount: 1,
+        });
       } finally {
         await restoreSql.end();
       }

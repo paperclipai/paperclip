@@ -10,6 +10,15 @@ the live embedded-PostgreSQL data directory. It includes `config.json`,
 existing MemPalace trees. Each successful archive has a non-sensitive component
 inventory and a SHA-256 sidecar manifest.
 
+## QA restore path
+
+Use the candidate release's supported `paperclipai db:restore` command against a
+new home on `/mnt/paperclipdata`; never target the live instance home. The
+complete command sequence, hash guard, table-name/count comparison, and health
+check are documented under **Supported isolated restore** in
+`doc/DEVELOPING.md`. Operators do not invoke `psql`, `pg_restore`, `createdb`, or
+any other raw PostgreSQL command.
+
 ## Promotion gate
 
 Do not install a candidate until the canonical QA child has independently tested

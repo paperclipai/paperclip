@@ -49,6 +49,7 @@ type SetupMode = "quickstart" | "advanced";
 type OnboardOptions = {
   config?: string;
   run?: boolean;
+  start?: boolean;
   yes?: boolean;
   invokedByRun?: boolean;
   bind?: BindMode;
@@ -400,7 +401,7 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
       "Next commands",
     );
 
-    let shouldRunNow = opts.run === true || opts.yes === true;
+    let shouldRunNow = opts.start !== false && (opts.run === true || opts.yes === true);
     if (!shouldRunNow && !opts.invokedByRun && process.stdin.isTTY && process.stdout.isTTY) {
       const answer = await p.confirm({
         message: "Start Paperclip now?",
@@ -660,7 +661,7 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
     await bootstrapCeoInvite({ config: configPath });
   }
 
-  let shouldRunNow = opts.run === true || opts.yes === true;
+  let shouldRunNow = opts.start !== false && (opts.run === true || opts.yes === true);
   if (!shouldRunNow && !opts.invokedByRun && process.stdin.isTTY && process.stdout.isTTY) {
     const answer = await p.confirm({
       message: "Start Paperclip now?",

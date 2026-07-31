@@ -20,11 +20,14 @@ export {
 export {
   runDatabaseBackup,
   runDatabaseRestore,
+  runDatabaseTableCounts,
   formatDatabaseBackupResult,
   type BackupRetentionPolicy,
   type RunDatabaseBackupOptions,
   type RunDatabaseBackupResult,
   type RunDatabaseRestoreOptions,
+  type DatabaseTableCount,
+  type RunDatabaseTableCountsResult,
 } from "./backup-lib.js";
 export {
   createEmbeddedPostgresLogBuffer,

@@ -42,6 +42,16 @@ export type RunDatabaseRestoreOptions = {
   connectTimeoutSeconds?: number;
 };
 
+export type DatabaseTableCount = {
+  schema: string;
+  table: string;
+  rowCount: number;
+};
+
+export type RunDatabaseTableCountsResult = {
+  tables: DatabaseTableCount[];
+};
+
 type SequenceDefinition = {
   sequence_schema: string;
   sequence_name: string;
@@ -1013,6 +1023,38 @@ export async function runDatabaseRestore(opts: RunDatabaseRestoreOptions): Promi
     throw new Error(
       `Failed to restore ${basename(opts.backupFile)}: ${sanitizeRestoreErrorMessage(error)}${statementPreview ? ` [statement: ${statementPreview.slice(0, 120)}]` : ""}`,
     );
+  } finally {
+    await sql.end();
+  }
+}
+
+export async function runDatabaseTableCounts(opts: {
+  connectionString: string;
+  connectTimeoutSeconds?: number;
+}): Promise<RunDatabaseTableCountsResult> {
+  const connectTimeout = Math.max(1, Math.trunc(opts.connectTimeoutSeconds ?? 5));
+  const sql = postgres(opts.connectionString, { max: 1, connect_timeout: connectTimeout });
+  try {
+    const tables = await sql<TableDefinition[]>`
+      SELECT table_schema AS schema_name, table_name AS tablename
+      FROM information_schema.tables
+      WHERE table_type = 'BASE TABLE'
+        AND ${sql.unsafe(nonSystemSchemaPredicate("table_schema"))}
+      ORDER BY table_schema, table_name
+    `;
+    const counts: DatabaseTableCount[] = [];
+    for (const table of tables) {
+      const qualifiedTable = quoteQualifiedName(table.schema_name, table.tablename);
+      const rows = await sql.unsafe<{ row_count: number }[]>(
+        `SELECT count(*)::int AS row_count FROM ${qualifiedTable}`,
+      );
+      counts.push({
+        schema: table.schema_name,
+        table: table.tablename,
+        rowCount: rows[0]?.row_count ?? 0,
+      });
+    }
+    return { tables: counts };
   } finally {
     await sql.end();
   }

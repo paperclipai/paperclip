@@ -8,6 +8,7 @@ import { heartbeatRun } from "./commands/heartbeat-run.js";
 import { runCommand } from "./commands/run.js";
 import { bootstrapCeoInvite } from "./commands/auth-bootstrap-ceo.js";
 import { dbBackupCommand } from "./commands/db-backup.js";
+import { dbRestoreCommand, dbTableCountsCommand } from "./commands/db-restore.js";
 import { registerEnvLabCommands } from "./commands/env-lab.js";
 import { registerContextCommands } from "./commands/client/context.js";
 import { registerCompanyCommands } from "./commands/client/company.js";
@@ -72,6 +73,7 @@ program
   .option("--bind <mode>", "Quickstart reachability preset (loopback, lan, tailnet)")
   .option("-y, --yes", "Accept quickstart defaults (trusted local loopback unless --bind is set) and start immediately", false)
   .option("--run", "Start Paperclip immediately after saving config", false)
+  .option("--no-start", "Save configuration without starting Paperclip (including with --yes)")
   .action(onboard);
 
 program
@@ -112,6 +114,32 @@ program
   .option("--json", "Print backup metadata as JSON")
   .action(async (opts) => {
     await dbBackupCommand(opts);
+  });
+
+program
+  .command("db:restore")
+  .description("Restore a logical database backup into an explicit isolated target")
+  .requiredOption("--backup-file <path>", "Logical .sql or .sql.gz backup to restore")
+  .option("-c, --config <path>", "Explicit isolated target config file")
+  .option("-d, --data-dir <path>", DATA_DIR_OPTION_HELP)
+  .option("-i, --instance <id>", "Target instance id when used with --data-dir", "default")
+  .option("--expected-sha256 <sha256>", "Require this backup SHA-256 before opening the target")
+  .option("--allow-external-target", "Acknowledge that external PostgreSQL isolation cannot be verified", false)
+  .option("-y, --yes", "Confirm replacement of database objects in the explicit target", false)
+  .option("--json", "Print restore metadata as JSON")
+  .action(async (opts) => {
+    await dbRestoreCommand(opts);
+  });
+
+program
+  .command("db:table-counts")
+  .description("Print non-system table names and row counts without row contents")
+  .option("-c, --config <path>", "Path to config file")
+  .option("-d, --data-dir <path>", DATA_DIR_OPTION_HELP)
+  .option("-i, --instance <id>", "Local instance id", "default")
+  .option("--json", "Print stable JSON output")
+  .action(async (opts) => {
+    await dbTableCountsCommand(opts);
   });
 
 program

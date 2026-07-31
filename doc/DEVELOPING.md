@@ -609,6 +609,68 @@ pnpm paperclipai db:backup
 pnpm db:backup
 ```
 
+### Supported isolated restore
+
+`db:restore` is destructive inside its target database, so it never accepts the
+implicit default instance. Create a separate Paperclip home, stop that target if
+it is running, and name the target explicitly. The CLI verifies the backup hash
+before it opens the target, starts and stops an embedded target database for the
+restore, and refuses a running embedded target.
+
+```sh
+RESTORE_HOME=/mnt/paperclipdata/paperclip-restore-qa
+RESTORE_INSTANCE=recovery-check
+RESTORE_PORT=32189
+BACKUP_FILE=/var/backups/paperclip-mempalace/paperclip-host-YYYYMMDDTHHMMSSZ.sql.gz
+BACKUP_SHA256=<64-hex-sha256>
+
+PORT="$RESTORE_PORT" PAPERCLIP_INSTANCE_ID="$RESTORE_INSTANCE" \
+  pnpm paperclipai onboard --data-dir "$RESTORE_HOME" --yes --no-start
+
+pnpm paperclipai db:restore \
+  --data-dir "$RESTORE_HOME" \
+  --instance "$RESTORE_INSTANCE" \
+  --backup-file "$BACKUP_FILE" \
+  --expected-sha256 "$BACKUP_SHA256" \
+  --yes \
+  --json
+```
+
+External PostgreSQL targets require `--allow-external-target` because Paperclip
+cannot prove that an external database is isolated or that every writer is
+stopped. This override is not needed for the embedded isolated-target procedure
+above.
+
+Compare table names and row counts without printing row contents. Output is
+sorted by schema and table, so an exact `cmp` proves parity:
+
+```sh
+corepack pnpm --silent paperclipai db:table-counts \
+  --config /path/to/source/config.json > /mnt/paperclipdata/source-table-counts.txt
+
+corepack pnpm --silent paperclipai db:table-counts \
+  --data-dir "$RESTORE_HOME" \
+  --instance "$RESTORE_INSTANCE" > /mnt/paperclipdata/restored-table-counts.txt
+
+cmp /mnt/paperclipdata/source-table-counts.txt \
+  /mnt/paperclipdata/restored-table-counts.txt
+```
+
+Start the isolated instance and use its configured port for the health check:
+
+```sh
+PAPERCLIP_INSTANCE_ID="$RESTORE_INSTANCE" \
+  pnpm paperclipai run --data-dir "$RESTORE_HOME"
+
+curl -fsS "http://127.0.0.1:$(jq -r '.server.port' \
+  "$RESTORE_HOME/instances/$RESTORE_INSTANCE/config.json")/api/health"
+```
+
+The restore only replaces database objects. Preserve and restore the separate
+`config.json`, `data/storage`, and `secrets/master.key` components from the host
+archive when performing a full disaster recovery. Never point the isolated
+config at the production database or storage paths.
+
 Environment overrides:
 
 - `PAPERCLIP_DB_BACKUP_ENABLED=true|false`
