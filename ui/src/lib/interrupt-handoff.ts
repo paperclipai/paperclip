@@ -1,12 +1,13 @@
-import { parseAgentMentionHref } from "@paperclipai/shared";
+import { extractBareAgentMentionIds, parseAgentMentionHref } from "@paperclipai/shared";
 
 /**
  * Shared logic for the "interrupt handoff" UX clarity surfaces (PAP-10669).
  *
  * The single rule every surface enforces: an *agent* appearance — agent chip,
  * "handed to <agent>" copy, a queued wake — is reserved for either (a) a durable
- * `assigneeAgentId` mutation, or (b) a structured agent mention (`agent://<id>`).
- * Plain text such as `QA` or `please get QA on this` never implies an agent wake.
+ * `assigneeAgentId` mutation, (b) a structured agent mention (`agent://<id>`),
+ * or (c) an unambiguous visible `@agent-handle`. Plain text such as `QA` or
+ * `please get QA on this` never implies an agent wake.
  *
  * Backend interrupt semantics (see server/src/routes/issues.ts
  * `operatorInterruptCancelOptions`): an operator-triggered interrupt cancels the
@@ -87,8 +88,11 @@ export function resolveRunStatusPresentation(
 
 const MARKDOWN_LINK_RE = /\[[^\]]*\]\(([^)]*)\)/g;
 
-/** Ordered list of agent ids referenced via structured `agent://` mentions. */
-export function extractAgentMentionIds(body: string): string[] {
+/** Ordered agent ids from structured links and safe bare handles. */
+export function extractAgentMentionIds(
+  body: string,
+  mentions: readonly HandoffAgentMention[] = [],
+): string[] {
   const ids: string[] = [];
   if (!body) return ids;
   for (const match of body.matchAll(MARKDOWN_LINK_RE)) {
@@ -98,11 +102,21 @@ export function extractAgentMentionIds(body: string): string[] {
       ids.push(parsed.agentId);
     }
   }
+  const bareIds = extractBareAgentMentionIds(
+    body,
+    mentions.map((mention) => ({ id: mention.agentId, name: mention.name })),
+  );
+  for (const agentId of bareIds) {
+    if (!ids.includes(agentId)) ids.push(agentId);
+  }
   return ids;
 }
 
-export function bodyHasAgentMention(body: string): boolean {
-  return extractAgentMentionIds(body).length > 0;
+export function bodyHasAgentMention(
+  body: string,
+  mentions: readonly HandoffAgentMention[] = [],
+): boolean {
+  return extractAgentMentionIds(body, mentions).length > 0;
 }
 
 /** Strip every markdown link so chip labels/hrefs are not mistaken for plain text. */
@@ -178,6 +192,8 @@ export interface ComposerHandoffPreview {
   suffix?: string;
   /** Entity to render as a mini chip, if any. */
   chip?: { kind: "agent" | "user"; id: string };
+  /** All entities affected when one submit action notifies multiple agents. */
+  chips?: Array<{ kind: "agent" | "user"; id: string }>;
 }
 
 function parseReassignValue(value: string): { kind: "agent" | "user" | "none"; id: string | null } {
@@ -204,6 +220,8 @@ export interface ComposerHandoffPreviewInput {
   bodyHasAgentMention: boolean;
   /** First agent id structurally mentioned in the body, if any. */
   mentionedAgentId?: string | null;
+  /** All agent ids the server will notify for structured or bare mentions. */
+  mentionedAgentIds?: readonly string[];
   /** A plain-text agent-name candidate detected in the body, if any. */
   plainNameCandidate?: PlainAgentNameCandidate | null;
 }
@@ -217,25 +235,44 @@ export function computeComposerHandoffPreview(
   input: ComposerHandoffPreviewInput,
 ): ComposerHandoffPreview {
   const hasReassignment = input.reassignTarget !== input.currentAssigneeValue;
+  const mentionedAgentIds = input.bodyHasAgentMention
+    ? [...new Set(input.mentionedAgentIds ?? (input.mentionedAgentId ? [input.mentionedAgentId] : []))]
+    : [];
+  const mentionedAgentChips = mentionedAgentIds.map((id) => ({ kind: "agent" as const, id }));
 
   if (hasReassignment) {
     const target = parseReassignValue(input.reassignTarget);
     if (target.kind === "agent" && target.id) {
+      const chips = [
+        { kind: "agent" as const, id: target.id },
+        ...mentionedAgentChips.filter((chip) => chip.id !== target.id),
+      ];
       return input.hasActiveRun
         ? {
             kind: "interrupt_handoff_agent",
             tone: "neutral",
-            text: "Interrupt current run, hand off to",
+            text: chips.length > 1 ? "Interrupt current run, hand off and notify" : "Interrupt current run, hand off to",
             chip: { kind: "agent", id: target.id },
+            ...(chips.length > 1 ? { chips } : {}),
           }
         : {
             kind: "wake_agent",
             tone: "neutral",
-            text: "Wake",
+            text: chips.length > 1 ? "Wake and notify" : "Wake",
             chip: { kind: "agent", id: target.id },
+            ...(chips.length > 1 ? { chips } : {}),
           };
     }
     if (target.kind === "user" && target.id) {
+      if (mentionedAgentChips.length > 0) {
+        return {
+          kind: "user_handoff",
+          tone: "neutral",
+          text: "Hand off and notify",
+          chip: { kind: "user", id: target.id },
+          chips: [{ kind: "user", id: target.id }, ...mentionedAgentChips],
+        };
+      }
       return {
         kind: "user_handoff",
         tone: "neutral",
@@ -245,6 +282,14 @@ export function computeComposerHandoffPreview(
       };
     }
     // Cleared / no target chosen for the mutation.
+    if (mentionedAgentChips.length > 0) {
+      return {
+        kind: "clear_assignee",
+        tone: "neutral",
+        text: "Clear responsible and notify",
+        chips: mentionedAgentChips,
+      };
+    }
     return {
       kind: "clear_assignee",
       tone: "neutral",
@@ -257,8 +302,9 @@ export function computeComposerHandoffPreview(
       kind: "notify_agent",
       tone: "neutral",
       text: "Notify",
-      chip: input.mentionedAgentId ? { kind: "agent", id: input.mentionedAgentId } : undefined,
-      suffix: input.mentionedAgentId ? undefined : "the mentioned agent",
+      chip: mentionedAgentIds[0] ? { kind: "agent", id: mentionedAgentIds[0] } : undefined,
+      chips: mentionedAgentChips,
+      suffix: mentionedAgentIds.length > 0 ? undefined : "the mentioned agent",
     };
   }
 
