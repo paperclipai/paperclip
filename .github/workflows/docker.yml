@@ -297,7 +297,11 @@ jobs:
             CLOUD_BUNDLED_PLUGINS=daytona
             PAPERCLIP_BUILD_VERSION=${{ steps.build-version.outputs.version }}
             PAPERCLIP_BUILD_COMMIT=${{ github.sha }}
-          platforms: linux/amd64,linux/arm64
+          # amd64 only, unlike the self-hosted image above: the cloud variant
+          # is consumed exclusively by managed-deployment hosts, which run
+          # amd64. The QEMU-emulated arm64 half dominated this job's wall
+          # clock, and dropping it roughly halves time-to-deployable-image.
+          platforms: linux/amd64
           push: true
           cache-from: type=gha
           cache-to: type=gha,mode=max
