@@ -1216,7 +1216,7 @@ function createSandboxEnvironmentDriver(
             lease: input.lease,
             provider: providerKey,
           });
-          return await pluginWorkerManager.call(pluginId, "environmentRealizeWorkspace", {
+          const pluginResult = await pluginWorkerManager.call(pluginId, "environmentRealizeWorkspace", {
             driverKey: providerKey,
             companyId: input.lease.companyId,
             environmentId: input.environment.id,
@@ -1229,6 +1229,35 @@ function createSandboxEnvironmentDriver(
             },
             workspace: input.workspace,
           }, resolvePluginSandboxRpcTimeoutMs(stripSandboxProviderEnvelope(config as SandboxEnvironmentConfig)));
+          // A plugin realize handler returns only its realized cwd and provider metadata; it does
+          // not build the full workspace-realization record. Build that record on the server from
+          // the run request, so the referenced (mentioned) project sources reach the adapter through
+          // `realization.additional`. The adapter reads that field to stage each referenced tree into
+          // the sandbox; without it the sandbox agent never receives the mentioned projects. Merge
+          // the plugin cwd and metadata into the record, so the provider `remoteCwd` still drives the
+          // remote path.
+          const pluginRealizedCwd =
+            typeof pluginResult.cwd === "string" && pluginResult.cwd.trim().length > 0
+              ? pluginResult.cwd.trim()
+              : null;
+          const record = buildWorkspaceRealizationRecordFromDriverInput({
+            environment: input.environment,
+            lease: input.lease,
+            workspace: input.workspace,
+            cwd:
+              pluginRealizedCwd ??
+              (typeof input.lease.metadata?.remoteCwd === "string" && input.lease.metadata.remoteCwd.trim().length > 0
+                ? input.lease.metadata.remoteCwd.trim()
+                : input.workspace.remotePath ?? input.workspace.localPath ?? null),
+            providerMetadata: pluginResult.metadata ?? null,
+          });
+          return {
+            cwd: pluginRealizedCwd ?? record.remote.path ?? record.local.path,
+            metadata: {
+              ...(pluginResult.metadata ?? {}),
+              workspaceRealization: record,
+            },
+          };
         }
       }
 
