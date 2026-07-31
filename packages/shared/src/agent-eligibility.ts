@@ -243,3 +243,59 @@ export function isAgentInvokable(input: {
 }): boolean {
   return getAgentWorkEligibility(input).invokable;
 }
+
+/** Minimal reporting-chain shape needed to evaluate the org subtree. */
+export interface AgentSubtreeNode {
+  id: string;
+  reportsTo: string | null;
+}
+
+/** Maximum reporting-chain depth walked before bailing out (defends against cycles). */
+export const AGENT_SUBTREE_MAX_DEPTH = 50;
+
+/**
+ * Returns true when `targetAgentId` is `rootAgentId` itself, or reports
+ * (transitively) up to `rootAgentId`.
+ *
+ * This is the single authoritative predicate for the hierarchical issue
+ * write-authorization boundary: an actor may mutate an issue iff it is the
+ * assignee (self) or a manager of the assignee (the assignee is inside the
+ * actor's subtree). Both the write-auth path (`authorization.decide`,
+ * `issue:mutate`) and the execution-binding path (heartbeat run claim) MUST use
+ * this same predicate so the two can never diverge — the divergence between a
+ * bare `assigneeAgentId === run.agentId` bind check and this hierarchical
+ * write boundary is the root cause of the execution-binding deadlock in
+ * QUA-5362 / QUA-5364.
+ */
+export function agentIsInSubtree(
+  agentsById: ReadonlyMap<string, AgentSubtreeNode>,
+  rootAgentId: string,
+  targetAgentId: string,
+): boolean {
+  if (rootAgentId === targetAgentId) return true;
+
+  let cursor: string | null = targetAgentId;
+  for (let depth = 0; cursor && depth < AGENT_SUBTREE_MAX_DEPTH; depth += 1) {
+    const current = agentsById.get(cursor);
+    if (!current) return false;
+    if (current.reportsTo === rootAgentId) return true;
+    cursor = current.reportsTo;
+  }
+  return false;
+}
+
+/**
+ * Returns true when `actorAgentId` is inside the issue's write-authorization
+ * boundary for the given `assigneeAgentId`: the actor is the assignee itself,
+ * or a manager of the assignee. An issue with no agent assignee has an open
+ * boundary (mirrors `authorization.decide`'s `allow_company_agent` fallback for
+ * an unassigned issue).
+ */
+export function agentIsWithinIssueWriteBoundary(
+  agentsById: ReadonlyMap<string, AgentSubtreeNode>,
+  actorAgentId: string,
+  assigneeAgentId: string | null,
+): boolean {
+  if (!assigneeAgentId) return true;
+  return agentIsInSubtree(agentsById, actorAgentId, assigneeAgentId);
+}
