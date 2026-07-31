@@ -327,12 +327,14 @@ describeEmbeddedPostgres("workflowHandoffBridgeService", () => {
   });
 
   it("polls threaded bridges from the workflow root and resolves replies after the question marker", async () => {
-    const { runId, bridgeId } = await insertWaitingWorkflowBridge(db, {
+    const { runId, bridgeId, handoffId } = await insertWaitingWorkflowBridge(db, {
       runStatus: "awaiting_human",
       runError: null,
       externalThreadId: "thread-root-1",
       externalMessageId: "question-reply-1",
     });
+    const attachmentUrl = "https://cdn.example.test/hero.png";
+    const enrichedReply = `Use this as the hero image.\n\n## Attachments from ClickUp\n1. hero.png: ${attachmentUrl}`;
     mocks.detectClickUpAwaitingHumanBridgeEventsAfterMessage.mockResolvedValueOnce({
       status: "sent",
       detail: "replies-detected",
@@ -341,8 +343,15 @@ describeEmbeddedPostgres("workflowHandoffBridgeService", () => {
         externalEventId: "human-reply-1",
         externalThreadId: "thread-root-1",
         externalMessageId: "question-reply-1",
-        body: "Sydney",
-        metadata: { clickupReplyId: "human-reply-1" },
+        body: enrichedReply,
+        metadata: {
+          clickupReplyId: "human-reply-1",
+          clickupAttachments: [{
+            url: attachmentUrl,
+            label: "hero.png",
+            mimeType: "image/png",
+          }],
+        },
       }],
     });
 
@@ -366,6 +375,8 @@ describeEmbeddedPostgres("workflowHandoffBridgeService", () => {
     expect(bridge?.closeOutcome).toBe("responded");
     const [run] = await db.select().from(workflowRuns).where(eq(workflowRuns.id, runId));
     expect(run?.status).toBe("running");
+    const [handoff] = await db.select().from(workflowHandoffs).where(eq(workflowHandoffs.id, handoffId));
+    expect(handoff?.responseMarkdown).toBe(enrichedReply);
   });
 
   it("records missing threaded question markers as poll failures", async () => {

@@ -68,7 +68,14 @@ export interface ClickUpChatMessageReply {
   reactionsUrl: string | null;
   content: string | null;
   dateMs: number | null;
+  attachments?: ClickUpReplyAttachment[];
 }
+
+export type ClickUpReplyAttachment = {
+  url: string;
+  label: string;
+  mimeType: string | null;
+};
 
 type ClickUpTransportMessageResult = AwaitingHumanNotificationResult & {
   messageLink: string | null;
@@ -466,6 +473,9 @@ type ClickUpReplyMessageResponse = {
   date?: number | string | null;
   date_assigned?: number | string | null;
   links: ClickUpReplyMessageLinksResponse;
+  attachments?: unknown;
+  attachment?: unknown;
+  files?: unknown;
 };
 
 type ClickUpGetChatMessageRepliesResponse = {
@@ -510,14 +520,65 @@ function compareClickUpRepliesChronologically(
   return 0;
 }
 
+function extractClickUpReplyAttachments(row: ClickUpReplyMessageResponse) {
+  const attachments: ClickUpReplyAttachment[] = [];
+  const seenUrls = new Set<string>();
+
+  for (const field of [row.attachments, row.attachment, row.files]) {
+    const values = Array.isArray(field) ? field : [field];
+    for (const value of values) {
+      if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+      const record = value as Record<string, unknown>;
+      const url = readString(record.url)
+        ?? readString(record.download_url)
+        ?? readString(record.downloadUrl);
+      if (!url || seenUrls.has(url)) continue;
+      seenUrls.add(url);
+      attachments.push({
+        url,
+        label: readString(record.title)
+          ?? readString(record.name)
+          ?? readString(record.filename)
+          ?? readString(record.file_name)
+          ?? url,
+        mimeType: readString(record.mime_type)
+          ?? readString(record.mimeType)
+          ?? readString(record.content_type)
+          ?? readString(record.contentType),
+      });
+    }
+  }
+
+  return attachments;
+}
+
+function formatClickUpReplyBodyWithAttachments(
+  replyBody: string | null,
+  attachments: ClickUpReplyAttachment[] | undefined,
+) {
+  const body = replyBody?.trim() ?? "";
+  const files = attachments ?? [];
+  if (files.length === 0) return body || null;
+
+  const attachmentLines = files.map((attachment, index) =>
+    `${index + 1}. ${attachment.label}: ${attachment.url}`,
+  );
+  const attachmentSection = ["## Attachments from ClickUp", ...attachmentLines].join("\n");
+  return body ? `${body}\n\n${attachmentSection}` : attachmentSection;
+}
+
 function extractReplyRowsFromRows(rows: ClickUpReplyMessageResponse[]): ClickUpChatMessageReply[] {
-  return [...rows].sort(compareClickUpRepliesChronologically).map((row) => ({
-    id: row.id,
-    parentMessageId: row.parent_message,
-    reactionsUrl: row.links.reactions,
-    content: row.content,
-    dateMs: readClickUpReplyDate(row),
-  }));
+  return [...rows].sort(compareClickUpRepliesChronologically).map((row) => {
+    const attachments = extractClickUpReplyAttachments(row);
+    return {
+      id: row.id,
+      parentMessageId: row.parent_message,
+      reactionsUrl: row.links.reactions,
+      content: row.content,
+      dateMs: readClickUpReplyDate(row),
+      ...(attachments.length > 0 ? { attachments } : {}),
+    };
+  });
 }
 
 function extractReplyRows(payload: ClickUpGetChatMessageRepliesResponse): ClickUpChatMessageReply[] {
@@ -1365,7 +1426,7 @@ export async function detectClickUpAwaitingHumanBridgeEvents(
   const events: AwaitingHumanBridgePollEvent[] = [];
   for (const reply of repliesResult.replies) {
     const replyId = readString(reply.id);
-    const replyBody = readString(reply.content);
+    const replyBody = formatClickUpReplyBodyWithAttachments(readString(reply.content), reply.attachments);
     if (!replyId) {
       logger.warn(
         { messageId, reply },
@@ -1381,6 +1442,7 @@ export async function detectClickUpAwaitingHumanBridgeEvents(
       body: replyBody,
       metadata: {
         clickupReplyId: replyId,
+        ...(reply.attachments?.length ? { clickupAttachments: reply.attachments } : {}),
       },
     });
   }
@@ -1436,7 +1498,7 @@ export async function detectClickUpAwaitingHumanBridgeEventsAfterMessage(
     }
     if (!markerFound) continue;
 
-    const replyBody = readString(reply.content);
+    const replyBody = formatClickUpReplyBodyWithAttachments(readString(reply.content), reply.attachments);
     if (!replyBody) continue;
     events.push({
       kind: "reply",
@@ -1448,6 +1510,7 @@ export async function detectClickUpAwaitingHumanBridgeEventsAfterMessage(
         clickupReplyId: replyId,
         clickupThreadId: threadId,
         clickupQuestionMessageId: markerId,
+        ...(reply.attachments?.length ? { clickupAttachments: reply.attachments } : {}),
       },
     });
   }

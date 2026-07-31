@@ -359,6 +359,87 @@ describe("getClickUpChatMessageReplies", () => {
     ]);
   });
 
+  it("extracts generic attachments from attachment-like reply fields", async () => {
+    process.env.CLICKUP_PERSONAL_TOKEN = "token-123";
+    process.env.CLICKUP_WORKSPACE_ID = "workspace-1";
+
+    const briefUrl = "https://t90161423646.p.clickup-attachments.com/t90161423646/brief.pdf?view=open";
+    globalThis.fetch = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        data: [
+          {
+            id: "reply-row-1",
+            parent_message: "message-42",
+            content: "Use the attached brief.",
+            attachments: [
+              {
+                id: "attachment-1",
+                title: "brief.pdf",
+                mime_type: "application/pdf",
+                url: briefUrl,
+              },
+            ],
+            links: {
+              reactions: "https://api.clickup.com/api/v3/workspaces/workspace-1/chat/messages/reply-row-1/reactions",
+            },
+          },
+        ],
+      }),
+    }) as typeof fetch;
+
+    const result = await getClickUpChatMessageReplies("message-42");
+
+    expect(result.status).toBe("sent");
+    expect(result.replies[0]?.attachments).toEqual([
+      {
+        url: briefUrl,
+        label: "brief.pdf",
+        mimeType: "application/pdf",
+      },
+    ]);
+  });
+
+  it("deduplicates attachment URLs and leaves pasted links as reply text", async () => {
+    process.env.CLICKUP_PERSONAL_TOKEN = "token-123";
+    process.env.CLICKUP_WORKSPACE_ID = "workspace-1";
+
+    const attachmentUrl = "https://cdn.example.test/hero.jpg";
+    globalThis.fetch = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        data: [
+          {
+            id: "reply-row-1",
+            parent_message: "message-42",
+            content: `${attachmentUrl} https://example.test/brief`,
+            attachments: [
+              { title: "Hero", url: attachmentUrl },
+              { title: "Hero duplicate", url: attachmentUrl },
+            ],
+            links: {
+              reactions: "https://api.clickup.com/api/v3/workspaces/workspace-1/chat/messages/reply-row-1/reactions",
+            },
+          },
+        ],
+      }),
+    }) as typeof fetch;
+
+    const result = await getClickUpChatMessageReplies("message-42");
+
+    expect(result.status).toBe("sent");
+    expect(result.replies[0]?.content).toBe(`${attachmentUrl} https://example.test/brief`);
+    expect(result.replies[0]?.attachments).toEqual([
+      {
+        url: attachmentUrl,
+        label: "Hero",
+        mimeType: null,
+      },
+    ]);
+  });
+
   it("paginates replies and orders them chronologically across all pages", async () => {
     process.env.CLICKUP_PERSONAL_TOKEN = "token-123";
     process.env.CLICKUP_WORKSPACE_ID = "workspace-1";
@@ -1234,6 +1315,54 @@ describe("detectClickUpAwaitingHumanBridgeEvents", () => {
       }],
     });
   });
+
+  it("returns attachment-only replies with an attached files markdown section", async () => {
+    process.env.CLICKUP_PERSONAL_TOKEN = "token-123";
+    process.env.CLICKUP_WORKSPACE_ID = "workspace-1";
+
+    const attachmentUrl = "https://t90161423646.p.clickup-attachments.com/t90161423646/hero.jpeg?view=open";
+    globalThis.fetch = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        data: [{
+          id: "reply-1",
+          parent_message: "message-42",
+          content: "",
+          attachments: [{
+            title: "Hero reference",
+            mime_type: "image/jpeg",
+            url: attachmentUrl,
+          }],
+          links: {
+            reactions: "https://api.clickup.com/api/v3/workspaces/workspace-1/chat/messages/reply-1/reactions",
+            tagged_users: "https://api.clickup.com/api/v3/workspaces/workspace-1/chat/messages/reply-1/tagged_users",
+          },
+        }],
+      }),
+    }) as typeof fetch;
+
+    const result = await detectClickUpAwaitingHumanBridgeEvents("message-42");
+
+    expect(result).toEqual({
+      status: "sent",
+      detail: "replies-detected",
+      events: [{
+        kind: "reply",
+        externalEventId: "reply-1",
+        externalMessageId: "message-42",
+        body: `## Attachments from ClickUp\n1. Hero reference: ${attachmentUrl}`,
+        metadata: {
+          clickupReplyId: "reply-1",
+          clickupAttachments: [{
+            url: attachmentUrl,
+            label: "Hero reference",
+            mimeType: "image/jpeg",
+          }],
+        },
+      }],
+    });
+  });
 });
 
 describe("detectClickUpAwaitingHumanBridgeEventsAfterMessage", () => {
@@ -1289,6 +1418,63 @@ describe("detectClickUpAwaitingHumanBridgeEventsAfterMessage", () => {
           clickupReplyId: "human-reply-2",
           clickupThreadId: "thread-root-1",
           clickupQuestionMessageId: "question-reply-2",
+        },
+      }],
+    });
+  });
+
+  it("appends attachments to replies after the current bot question marker", async () => {
+    process.env.CLICKUP_PERSONAL_TOKEN = "token-123";
+    process.env.CLICKUP_WORKSPACE_ID = "workspace-1";
+
+    const attachmentUrl = "https://cdn.example.test/product.png";
+    globalThis.fetch = vi.fn().mockResolvedValueOnce({
+      ok: true,
+      status: 200,
+      json: async () => ({
+        data: [
+          {
+            id: "question-reply-2",
+            parent_message: "thread-root-1",
+            content: "Which asset?",
+            date: 2000,
+            links: { reactions: "https://example.test/reactions/question" },
+          },
+          {
+            id: "human-reply-2",
+            parent_message: "thread-root-1",
+            content: "Use this as the big image.",
+            attachments: [{ title: "product.png", mime_type: "image/png", url: attachmentUrl }],
+            date: 3000,
+            links: { reactions: "https://example.test/reactions/answer" },
+          },
+        ],
+      }),
+    }) as typeof fetch;
+
+    const result = await detectClickUpAwaitingHumanBridgeEventsAfterMessage(
+      "thread-root-1",
+      "question-reply-2",
+    );
+
+    expect(result).toEqual({
+      status: "sent",
+      detail: "replies-detected",
+      events: [{
+        kind: "reply",
+        externalEventId: "human-reply-2",
+        externalThreadId: "thread-root-1",
+        externalMessageId: "question-reply-2",
+        body: `Use this as the big image.\n\n## Attachments from ClickUp\n1. product.png: ${attachmentUrl}`,
+        metadata: {
+          clickupReplyId: "human-reply-2",
+          clickupThreadId: "thread-root-1",
+          clickupQuestionMessageId: "question-reply-2",
+          clickupAttachments: [{
+            url: attachmentUrl,
+            label: "product.png",
+            mimeType: "image/png",
+          }],
         },
       }],
     });
