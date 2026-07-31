@@ -1101,7 +1101,11 @@ export function Inbox() {
   });
   usePublishSharedQueryData(sharedLiveRuns, liveRuns, liveRunsUpdatedAt);
 
-  const { data: awaitingHumanInteractionsData = [] } = useQuery({
+  const {
+    data: awaitingHumanInteractionsData = [],
+    isLoading: isAwaitingHumanLoading,
+    isError: isAwaitingHumanError,
+  } = useQuery({
     queryKey: queryKeys.issues.awaitingHumanInteractions(selectedCompanyId!),
     queryFn: () => issuesApi.listAwaitingHumanInteractions(selectedCompanyId!),
     enabled: !!selectedCompanyId,
@@ -2455,7 +2459,8 @@ export function Inbox() {
     !isIssuesLoading &&
     !isMineIssuesLoading &&
     !isTouchedIssuesLoading &&
-    !isRunsLoading;
+    !isRunsLoading &&
+    (tab !== "waiting" || !isAwaitingHumanLoading);
 
   const showSeparatorBefore = (key: SectionKey) => visibleSections.indexOf(key) > 0;
   const markAllReadIssues = (tab === "mine" ? visibleMineIssues : unreadTouchedIssues)
@@ -2821,11 +2826,18 @@ export function Inbox() {
         />
       ) : null}
 
-      {tab !== "blocked" && tab !== "waiting" && !allLoaded && visibleSections.length === 0 && (
+      {tab !== "blocked" && !allLoaded && visibleSections.length === 0 && (
         <PageSkeleton variant="inbox" />
       )}
 
-      {tab !== "blocked" && allLoaded && visibleSections.length === 0 && (
+      {tab === "waiting" && isAwaitingHumanError && visibleSections.length === 0 && (
+        <EmptyState
+          icon={AlertTriangle}
+          message="Couldn't load requests waiting on you."
+        />
+      )}
+
+      {tab !== "blocked" && allLoaded && (tab !== "waiting" || !isAwaitingHumanError) && visibleSections.length === 0 && (
         <EmptyState
           icon={searchQuery.trim() ? Search : InboxIcon}
           message={

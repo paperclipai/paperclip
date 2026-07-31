@@ -371,6 +371,29 @@ describe("Inbox toolbar", () => {
     act(() => root.unmount());
   });
 
+  it("does not report inbox zero when waiting interactions fail to load", async () => {
+    routerMock.location.pathname = "/inbox/waiting";
+    apiMocks.listAwaitingHumanInteractions.mockRejectedValue(new Error("network unavailable"));
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 0, gcTime: 0 } },
+    });
+    const root = createRoot(container);
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <Inbox />
+        </QueryClientProvider>,
+      );
+    });
+    await vi.waitFor(() => {
+      expect(container.textContent).toContain("Couldn't load requests waiting on you.");
+    });
+    expect(container.textContent).not.toContain("Nothing is waiting on you right now.");
+
+    act(() => root.unmount());
+  });
+
   it("does not render external-object summaries in inbox rows", async () => {
     routerMock.location.pathname = "/inbox/mine";
     const issue = createIssue({ title: "Inbox row without external object column" });
