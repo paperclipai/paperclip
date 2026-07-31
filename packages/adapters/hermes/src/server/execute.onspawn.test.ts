@@ -69,6 +69,7 @@ function makeCtx(overrides: Record<string, unknown> = {}) {
         issueId: "issue-1",
         wakeReason: "manual",
         paperclipWake: null,
+        ...((overrides.context as Record<string, unknown> | undefined) ?? {}),
       },
       onLog: vi.fn(async () => undefined),
       onMeta: vi.fn(async () => undefined),
@@ -104,18 +105,55 @@ describe("hermes-local adapter onSpawn forwarding", () => {
     expect(opts.onSpawn).toBe(onSpawn);
   });
 
-  it("launches Hermes from the runtime-provided execution workspace cwd", async () => {
-    const executionWorkspaceCwd = "/workspace/WPR2-pr-1542";
-    const { ctx } = makeCtx({ cwd: executionWorkspaceCwd, worktreeMode: true });
+  it("uses the realized Paperclip worktree CWD for -w launches", async () => {
+    const worktreeCwd = process.cwd();
+    const { ctx } = makeCtx({
+      worktreeMode: true,
+      context: { paperclipWorkspace: { cwd: worktreeCwd } },
+    });
 
     await execute(ctx as any);
 
-    const mocked = vi.mocked(serverUtils.runChildProcess);
-    const lastCall = mocked.mock.calls[mocked.mock.calls.length - 1];
-    const args = lastCall[2] as string[];
-    const opts = lastCall[3] as Record<string, unknown>;
-    expect(args).toContain("-w");
-    expect(opts.cwd).toBe(executionWorkspaceCwd);
+    const call = vi.mocked(serverUtils.runChildProcess).mock.calls.at(-1)!;
+    expect(call[2]).toContain("-w");
+    expect((call[3] as Record<string, unknown>).cwd).toBe(worktreeCwd);
+  });
+
+  it("preserves a valid explicit CWD override for a worktree launch", async () => {
+    const explicitCwd = process.cwd();
+    const { ctx } = makeCtx({
+      worktreeMode: true,
+      cwd: explicitCwd,
+      context: { paperclipWorkspace: { cwd: "/tmp" } },
+    });
+
+    await execute(ctx as any);
+
+    const call = vi.mocked(serverUtils.runChildProcess).mock.calls.at(-1)!;
+    expect((call[3] as Record<string, unknown>).cwd).toBe(explicitCwd);
+  });
+
+  it("preserves ordinary non-worktree CWD behavior", async () => {
+    const { ctx } = makeCtx({ cwd: "/tmp" });
+
+    await execute(ctx as any);
+
+    const call = vi.mocked(serverUtils.runChildProcess).mock.calls.at(-1)!;
+    expect(call[2]).not.toContain("-w");
+    expect((call[3] as Record<string, unknown>).cwd).toBe("/tmp");
+  });
+
+  it("rejects a worktree launch when no valid Git workspace CWD exists", async () => {
+    const { ctx } = makeCtx({
+      worktreeMode: true,
+      context: { paperclipWorkspace: { cwd: "/tmp" } },
+    });
+
+    const result = await execute(ctx as any);
+
+    expect(result.exitCode).toBe(1);
+    expect(result.errorMessage).toContain("not a Git worktree");
+    expect(serverUtils.runChildProcess).not.toHaveBeenCalled();
   });
 
   it("runChildProcess opts type includes onSpawn", () => {
