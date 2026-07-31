@@ -435,7 +435,7 @@ describe.sequential("agent permission routes", () => {
     expect(res.body.runtimeConfig).toEqual({});
   }, 20_000);
 
-  it("keeps board agent detail unredacted for low-trust agents", async () => {
+  it("never returns adapter or runtime config from board agent detail", async () => {
     mockAgentService.getById.mockResolvedValue({
       ...baseAgent,
       permissions: {
@@ -464,16 +464,53 @@ describe.sequential("agent permission routes", () => {
     const res = await requestApp(app, (baseUrl) => request(baseUrl).get(`/api/agents/${agentId}`));
 
     expect(res.status).toBe(200);
-    expect(res.body.adapterConfig).toMatchObject({
-      command: "pnpm agent:run",
-      env: { PAPERCLIP_API_KEY: "secret-test-key" },
-    });
-    expect(res.body.runtimeConfig).toMatchObject({
-      modelProfiles: {
-        default: { enabled: true, adapterConfig: { model: "openai/gpt-5.4-mini" } },
+    expect(res.body.adapterConfig).toEqual({});
+    expect(res.body.runtimeConfig).toEqual({});
+    expect(JSON.stringify(res.body)).not.toContain("secret-test-key");
+    expect(res.body.permissions).toMatchObject({ trustPreset: LOW_TRUST_REVIEW_PRESET });
+  }, 20_000);
+
+  it("returns only binding metadata from the authorized configuration endpoint", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      ...baseAgent,
+      adapterConfig: {
+        command: "pnpm agent:run",
+        env: {
+          CUSTOM_NAME: { type: "plain", value: "credential-with-an-innocent-key" },
+          SECRET_NAME: {
+            type: "secret_ref",
+            secretId: "33333333-3333-4333-8333-333333333333",
+            version: "latest",
+          },
+        },
       },
     });
-    expect(res.body.permissions).toMatchObject({ trustPreset: LOW_TRUST_REVIEW_PRESET });
+
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl).get(`/api/agents/${agentId}/configuration`),
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.body.adapterConfig).toMatchObject({
+      command: "pnpm agent:run",
+      env: {
+        CUSTOM_NAME: { type: "plain" },
+        SECRET_NAME: {
+          type: "secret_ref",
+          secretId: "33333333-3333-4333-8333-333333333333",
+          version: "latest",
+        },
+      },
+    });
+    expect(JSON.stringify(res.body)).not.toContain("credential-with-an-innocent-key");
   }, 20_000);
 
   it("redacts company agent list for authenticated company members without agent admin permission", async () => {
@@ -502,6 +539,51 @@ describe.sequential("agent permission routes", () => {
         runtimeConfig: {},
       }),
     ]);
+  });
+
+  it("preserves only the built-in marker in authorized company agent lists", async () => {
+    mockAgentService.list.mockResolvedValue([
+      {
+        ...baseAgent,
+        adapterConfig: {
+          env: {
+            GITHUBAUTH: {
+              type: "plain",
+              value: "fixture-github-auth",
+            },
+          },
+        },
+        metadata: {
+          paperclipBuiltInAgent: {
+            key: "briefs",
+            featureKeys: ["briefs"],
+          },
+          privateNote: "fixture-private-metadata",
+        },
+      },
+    ]);
+
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) =>
+      request(baseUrl).get(`/api/companies/${companyId}/agents`),
+    );
+
+    expect(res.status).toBe(200);
+    expect(res.body[0].metadata).toEqual({
+      paperclipBuiltInAgent: {
+        key: "briefs",
+        featureKeys: ["briefs"],
+      },
+    });
+    expect(JSON.stringify(res.body)).not.toContain("fixture-github-auth");
+    expect(JSON.stringify(res.body)).not.toContain("fixture-private-metadata");
   });
 
   it("blocks agent updates for authenticated company members without agent admin permission", async () => {

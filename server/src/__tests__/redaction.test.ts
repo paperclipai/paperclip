@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { REDACTED_EVENT_VALUE, redactEventPayload, redactSensitiveText, sanitizeRecord } from "../redaction.js";
+import {
+  REDACTED_EVENT_VALUE,
+  redactConfigMetadata,
+  redactEventPayload,
+  redactSensitiveText,
+  sanitizeRecord,
+} from "../redaction.js";
 
 describe("redaction", () => {
   it("redacts sensitive keys and nested secret values", () => {
@@ -61,6 +67,52 @@ describe("redaction", () => {
     expect(redactEventPayload({ password: "hunter2", safe: "value" })).toEqual({
       password: REDACTED_EVENT_VALUE,
       safe: "value",
+    });
+  });
+
+  it("returns configuration metadata without scalar environment values", () => {
+    expect(redactConfigMetadata({
+      command: "pnpm agent:run",
+      env: {
+        CUSTOM_NAME: { type: "plain", value: "credential-with-an-innocent-key" },
+        LEGACY_NAME: "legacy-credential",
+        SECRET_NAME: {
+          type: "secret_ref",
+          secretId: "11111111-1111-1111-1111-111111111111",
+          version: "latest",
+        },
+        USER_NAME: {
+          type: "user_secret_ref",
+          key: "provider_key",
+          version: 2,
+        },
+      },
+      nested: {
+        env: {
+          ANOTHER_NAME: { type: "plain", value: "nested-credential" },
+        },
+      },
+    })).toEqual({
+      command: "pnpm agent:run",
+      env: {
+        CUSTOM_NAME: { type: "plain" },
+        LEGACY_NAME: { type: "plain" },
+        SECRET_NAME: {
+          type: "secret_ref",
+          secretId: "11111111-1111-1111-1111-111111111111",
+          version: "latest",
+        },
+        USER_NAME: {
+          type: "user_secret_ref",
+          key: "provider_key",
+          version: 2,
+        },
+      },
+      nested: {
+        env: {
+          ANOTHER_NAME: { type: "plain" },
+        },
+      },
     });
   });
 

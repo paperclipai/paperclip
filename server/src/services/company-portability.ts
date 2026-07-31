@@ -97,6 +97,7 @@ import {
 } from "./catalog-provenance.js";
 import { readBuiltInAgentMarker } from "./built-in-agent-metadata.js";
 import { normalizePortablePath } from "./portable-path.js";
+import { isSensitiveEnvKey } from "./sensitive-env.js";
 import type {
   ImportIssueRow,
   ImportIssueCommentRow,
@@ -497,35 +498,6 @@ function buildSkillExportDirMap(skills: CompanySkill[], companyIssuePrefix: stri
   }
 
   return keyToDir;
-}
-
-function isSensitiveEnvKey(key: string) {
-  const normalized = key.trim().toLowerCase();
-  return (
-    normalized === "token" ||
-    normalized.endsWith("_token") ||
-    normalized.endsWith("-token") ||
-    normalized.includes("apikey") ||
-    normalized.includes("api_key") ||
-    normalized.includes("api-key") ||
-    normalized.includes("access_token") ||
-    normalized.includes("access-token") ||
-    normalized.includes("auth") ||
-    normalized.includes("auth_token") ||
-    normalized.includes("auth-token") ||
-    normalized.includes("authorization") ||
-    normalized.includes("bearer") ||
-    normalized.includes("secret") ||
-    normalized.includes("passwd") ||
-    normalized.includes("password") ||
-    normalized.includes("credential") ||
-    normalized.includes("jwt") ||
-    normalized.includes("privatekey") ||
-    normalized.includes("private_key") ||
-    normalized.includes("private-key") ||
-    normalized.includes("cookie") ||
-    normalized.includes("connectionstring")
-  );
 }
 
 function normalizePortableProjectEnv(value: unknown): AgentEnvConfig | null {

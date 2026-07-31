@@ -2929,17 +2929,21 @@ describe("company portability", () => {
         adapterConfig: {
           promptTemplate: "You are ClaudeCoder.",
           env: {
+            AUTHORITY_URL: {
+              type: "plain",
+              value: "https://identity.example.test",
+            },
             APIKEY: {
               type: "plain",
-              value: "sk-plain-api",
+              value: "fixture-api-key",
             },
             GITHUBAUTH: {
               type: "plain",
-              value: "gh-auth-token",
+              value: "fixture-github-auth",
             },
             PRIVATEKEY: {
               type: "plain",
-              value: "private-key-value",
+              value: "fixture-private-key",
             },
           },
         },
@@ -2963,10 +2967,24 @@ describe("company portability", () => {
     expect(extension).toContain("APIKEY:");
     expect(extension).toContain("GITHUBAUTH:");
     expect(extension).toContain("PRIVATEKEY:");
-    expect(extension).not.toContain("sk-plain-api");
-    expect(extension).not.toContain("gh-auth-token");
-    expect(extension).not.toContain("private-key-value");
+    expect(extension).not.toContain("fixture-api-key");
+    expect(extension).not.toContain("fixture-github-auth");
+    expect(extension).not.toContain("fixture-private-key");
     expect(extension).toContain('kind: "secret"');
+    expect(exported.manifest.envInputs).toContainEqual(
+      expect.objectContaining({
+        key: "GITHUBAUTH",
+        kind: "secret",
+        defaultValue: "",
+      }),
+    );
+    expect(exported.manifest.envInputs).toContainEqual(
+      expect.objectContaining({
+        key: "AUTHORITY_URL",
+        kind: "plain",
+        defaultValue: "https://identity.example.test",
+      }),
+    );
   });
 
   it("imports packaged skills and restores desired skill refs on agents", async () => {

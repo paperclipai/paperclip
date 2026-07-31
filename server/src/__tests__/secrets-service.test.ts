@@ -148,6 +148,36 @@ describeEmbeddedPostgres("secretService", () => {
     ).rejects.toThrow(/same company/i);
   });
 
+  it("enforces strict mode for token, PAT, database URL, and scoped credential keys", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+
+    for (const key of [
+      "READINESS_READ_TOKEN",
+      "SYNTHETIC_CREDENTIAL_DELTA",
+      "QA_DATABASE_URL",
+      "SYNTHETIC_CREDENTIAL_ALPHA",
+    ]) {
+      await expect(
+        svc.normalizeEnvBindingsForPersistence(
+          companyId,
+          { [key]: "synthetic-value" },
+          { strictMode: true },
+        ),
+      ).rejects.toThrow(`Strict secret mode requires secret references for sensitive key: ${key}`);
+    }
+
+    await expect(
+      svc.normalizeEnvBindingsForPersistence(
+        companyId,
+        { PATH: "/usr/local/bin" },
+        { strictMode: true },
+      ),
+    ).resolves.toEqual({
+      PATH: { type: "plain", value: "/usr/local/bin" },
+    });
+  });
+
   it("prevents duplicate bindings for a target config path", async () => {
     const companyId = await seedCompany();
     const svc = secretService(db);

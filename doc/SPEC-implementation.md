@@ -360,7 +360,9 @@ Invariants:
 
 Operational policy:
 
-- Config read APIs redact sensitive plain values.
+- Agent identity and detail APIs never return adapter or runtime configuration.
+- Authorized configuration reads expose environment binding metadata only; scalar environment values are write-only.
+- Strict secret mode rejects sensitive plain bindings, including token, PAT, database URL, and scoped credential keys.
 - Activity and approval payloads must not persist raw sensitive values.
 - Config revisions may include redacted placeholders; such revisions are non-restorable for redacted fields.
 

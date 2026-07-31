@@ -75,6 +75,48 @@ function isPlainBinding(value: unknown): value is { type: "plain"; value: unknow
   return value.type === "plain" && "value" in value;
 }
 
+function redactEnvBindingMetadata(value: unknown): Record<string, unknown> {
+  if (isSecretRefBinding(value)) {
+    return {
+      type: "secret_ref",
+      secretId: value.secretId,
+      ...(value.version !== undefined ? { version: value.version } : {}),
+    };
+  }
+  if (isUserSecretRefBinding(value)) {
+    return {
+      type: "user_secret_ref",
+      key: value.key,
+      ...(value.version !== undefined ? { version: value.version } : {}),
+    };
+  }
+  if (isPlainBinding(value) || typeof value === "string") {
+    return { type: "plain" };
+  }
+  return { type: "unknown" };
+}
+
+function redactConfigValue(value: unknown): unknown {
+  if (value === null || value === undefined) return value;
+  if (Array.isArray(value)) return value.map(redactConfigValue);
+  if (!isPlainObject(value)) return value;
+
+  const redacted: Record<string, unknown> = {};
+  for (const [key, entry] of Object.entries(value)) {
+    if (key === "env" && isPlainObject(entry)) {
+      redacted[key] = Object.fromEntries(
+        Object.entries(entry).map(([envKey, binding]) => [
+          envKey,
+          redactEnvBindingMetadata(binding),
+        ]),
+      );
+      continue;
+    }
+    redacted[key] = redactConfigValue(entry);
+  }
+  return sanitizeRecord(redacted);
+}
+
 function sanitizeCommandArgs(args: unknown[]): unknown[] {
   let redactNext = false;
   return args.map((arg) => {
@@ -131,6 +173,14 @@ export function redactEventPayload(payload: Record<string, unknown> | null): Rec
   if (!payload) return null;
   if (!isPlainObject(payload)) return payload;
   return sanitizeRecord(payload);
+}
+
+export function redactConfigMetadata(
+  config: Record<string, unknown> | null,
+): Record<string, unknown> | null {
+  if (!config) return null;
+  if (!isPlainObject(config)) return config;
+  return redactConfigValue(config) as Record<string, unknown>;
 }
 
 export function redactSensitiveText(input: string): string {

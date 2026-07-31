@@ -81,7 +81,7 @@ import {
   refreshAdapterModels,
   requireServerAdapter,
 } from "../adapters/index.js";
-import { redactEventPayload } from "../redaction.js";
+import { redactConfigMetadata, redactEventPayload } from "../redaction.js";
 import { redactCurrentUserValue } from "../log-redaction.js";
 import { renderOrgChartSvg, renderOrgChartPng, type OrgNode, type OrgChartStyle, ORG_CHART_STYLES } from "./org-chart-svg.js";
 import {
@@ -105,6 +105,10 @@ import { recoveryService } from "../services/recovery/service.js";
 import { resolveCoreTrustPreset } from "../services/trust-preset-resolver.js";
 import { readObject } from "../lib/objects.js";
 import { listInvalidOrgChainDescendantIds } from "../services/agent-invokability.js";
+import {
+  BUILT_IN_AGENT_METADATA_KEY,
+  readBuiltInAgentMarker,
+} from "../services/built-in-agent-metadata.js";
 import { logger } from "../middleware/logger.js";
 import {
   AGENT_PROFILE_CHANGE_CONSENT_FIELDS,
@@ -656,7 +660,6 @@ export function agentRoutes(
 
   async function buildAgentDetail(
     agent: NonNullable<Awaited<ReturnType<typeof svc.getById>>>,
-    options?: { restricted?: boolean },
   ) {
     const [chainOfCommand, accessState] = await Promise.all([
       svc.getChainOfCommand(agent.id),
@@ -664,7 +667,7 @@ export function agentRoutes(
     ]);
 
     return {
-      ...(options?.restricted ? redactForRestrictedAgentView(agent) : agent),
+      ...redactForRestrictedAgentView(agent),
       chainOfCommand,
       access: accessState,
     };
@@ -1674,11 +1677,13 @@ export function agentRoutes(
       ...agent,
       adapterConfig: {},
       runtimeConfig: {},
+      metadata: null,
     };
   }
 
   function redactAgentConfiguration(agent: Awaited<ReturnType<typeof svc.getById>>) {
     if (!agent) return null;
+    const builtInAgentMarker = readBuiltInAgentMarker(agent.metadata);
     return {
       id: agent.id,
       companyId: agent.companyId,
@@ -1688,9 +1693,12 @@ export function agentRoutes(
       status: agent.status,
       reportsTo: agent.reportsTo,
       adapterType: agent.adapterType,
-      adapterConfig: redactEventPayload(agent.adapterConfig),
-      runtimeConfig: redactEventPayload(agent.runtimeConfig),
+      adapterConfig: redactConfigMetadata(agent.adapterConfig),
+      runtimeConfig: redactConfigMetadata(agent.runtimeConfig),
       permissions: agent.permissions,
+      metadata: builtInAgentMarker
+        ? { [BUILT_IN_AGENT_METADATA_KEY]: builtInAgentMarker }
+        : null,
       updatedAt: agent.updatedAt,
     };
   }
@@ -1700,12 +1708,12 @@ export function agentRoutes(
     const record = snapshot as Record<string, unknown>;
     return {
       ...record,
-      adapterConfig: redactEventPayload(
+      adapterConfig: redactConfigMetadata(
         typeof record.adapterConfig === "object" && record.adapterConfig !== null
           ? (record.adapterConfig as Record<string, unknown>)
           : {},
       ),
-      runtimeConfig: redactEventPayload(
+      runtimeConfig: redactConfigMetadata(
         typeof record.runtimeConfig === "object" && record.runtimeConfig !== null
           ? (record.runtimeConfig as Record<string, unknown>)
           : {},
@@ -2028,7 +2036,7 @@ export function agentRoutes(
     const result = await filterAgentsForActor(req, await svc.list(companyId));
     const canReadConfigs = await actorCanReadConfigurationsForCompany(req, companyId);
     if (canReadConfigs) {
-      res.json(result);
+      res.json(result.map((agent) => redactAgentConfiguration(agent)));
       return;
     }
     res.json(result.map((agent) => redactForRestrictedAgentView(agent)));
@@ -2253,13 +2261,6 @@ export function agentRoutes(
         res.json(buildLowTrustSelfView(agent));
         return;
       }
-    }
-    const canReadSensitiveDetail = isSelf
-      ? true
-      : await actorCanReadConfigurationsForCompany(req, agent.companyId);
-    if (!canReadSensitiveDetail) {
-      res.json(await buildAgentDetail(agent, { restricted: true }));
-      return;
     }
     res.json(await buildAgentDetail(agent));
   });
@@ -3131,7 +3132,7 @@ export function agentRoutes(
       details: summarizeAgentUpdateDetails(patchData),
     });
 
-    res.json(agent);
+    res.json(redactForRestrictedAgentView(agent));
   });
 
   router.post("/agents/:id/pause", async (req, res) => {
@@ -3157,7 +3158,7 @@ export function agentRoutes(
       entityId: agent.id,
     });
 
-    res.json(agent);
+    res.json(redactForRestrictedAgentView(agent));
   });
 
   router.post("/agents/:id/resume", async (req, res) => {
@@ -3188,7 +3189,7 @@ export function agentRoutes(
       entityId: agent.id,
     });
 
-    res.json(agent);
+    res.json(redactForRestrictedAgentView(agent));
   });
 
   router.post("/agents/:id/clear-error", async (req, res) => {
@@ -3220,7 +3221,7 @@ export function agentRoutes(
       entityId: agent.id,
     });
 
-    res.json(agent);
+    res.json(redactForRestrictedAgentView(agent));
   });
 
   router.post("/agents/:id/approve", async (req, res) => {
@@ -3274,7 +3275,7 @@ export function agentRoutes(
       details: { source: "agent_detail", approvalId: openApproval?.id ?? null },
     });
 
-    res.json(agent);
+    res.json(redactForRestrictedAgentView(agent));
   });
 
   router.post("/agents/:id/terminate", async (req, res) => {
@@ -3344,7 +3345,7 @@ export function agentRoutes(
       },
     });
 
-    res.json(agent);
+    res.json(redactForRestrictedAgentView(agent));
   });
 
   router.delete("/agents/:id", async (req, res) => {

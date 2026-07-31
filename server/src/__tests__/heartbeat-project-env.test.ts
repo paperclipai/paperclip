@@ -401,6 +401,51 @@ describe("resolveExecutionRunAdapterConfig", () => {
     });
   });
 
+  it("allows non-credential auth mode selectors for low-trust runs", async () => {
+    const resolveAdapterConfigForRuntime = vi.fn().mockResolvedValue({
+      config: {
+        env: {
+          AUTH_MODE: "device",
+          GITHUB_AUTH_MODE: "app",
+        },
+      },
+      secretKeys: new Set<string>(),
+      manifest: [],
+    });
+
+    const result = await resolveExecutionRunAdapterConfig({
+      companyId: "company-1",
+      agentId: "agent-1",
+      issueId: "issue-1",
+      executionRunConfig: {
+        env: {
+          AUTH_MODE: "device",
+          GITHUB_AUTH_MODE: "app",
+        },
+      },
+      projectEnv: null,
+      trustPreset: {
+        kind: "low_trust_review",
+        preset: LOW_TRUST_REVIEW_PRESET,
+        boundary: {
+          mode: LOW_TRUST_REVIEW_PRESET,
+          companyId: "company-1",
+          issueIds: ["issue-1"],
+        },
+        sourcePresets: {},
+      },
+      secretsSvc: {
+        resolveAdapterConfigForRuntime,
+        resolveEnvBindings: vi.fn(),
+      } as any,
+    });
+
+    expect(result.resolvedConfig.env).toEqual({
+      AUTH_MODE: "device",
+      GITHUB_AUTH_MODE: "app",
+    });
+  });
+
   it("fails push-capability preflight when no GitHub write credential is bound at agent or project scope", async () => {
     await expect(resolveExecutionRunAdapterConfig({
       companyId: "company-1",

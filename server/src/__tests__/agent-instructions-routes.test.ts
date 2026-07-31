@@ -555,15 +555,19 @@ describe("agent instructions bundle routes", () => {
         adapterConfig: {
           command: "codex --profile engineer",
         },
-      }));
+    }));
 
     expect(res.status, JSON.stringify(res.body)).toBe(200);
-    expect(res.body.adapterConfig).toMatchObject({
-      command: "codex --profile engineer",
-    });
-    expect(res.body.adapterConfig.instructionsBundleMode).toBeUndefined();
-    expect(res.body.adapterConfig.instructionsRootPath).toBeUndefined();
-    expect(res.body.adapterConfig.instructionsEntryFile).toBeUndefined();
-    expect(res.body.adapterConfig.instructionsFilePath).toBeUndefined();
+    expect(res.body.adapterConfig).toEqual({});
+    expect(res.body.runtimeConfig).toEqual({});
+    expect(mockAgentService.update).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      expect.objectContaining({
+        adapterConfig: expect.objectContaining({
+          command: "codex --profile engineer",
+        }),
+      }),
+      expect.any(Object),
+    );
   });
 });
