@@ -65,17 +65,30 @@ repair_base_workspace_install() {
     repair_lock_dir="$base_cwd/.git"
   fi
   if command -v flock >/dev/null 2>&1 && [[ -d "$repair_lock_dir" ]]; then
-    (cd "$base_cwd" && env -u NODE_ENV CI=true flock "$repair_lock_dir/paperclip-provision-repair.lock" "${repair_cmd[@]}") >&2
+    # The post-repair verification must run under the same lock: a concurrent
+    # provision's forced install could be mid-relink during an unlocked check
+    # and fail a repair that actually succeeded. Holding the lock also means a
+    # process that queued behind a peer's repair can skip its own reinstall.
+    (
+      cd "$base_cwd" || exit 1
+      exec 9>"$repair_lock_dir/paperclip-provision-repair.lock"
+      flock 9
+      if base_cli_healthy; then
+        echo "Base workspace CLI became healthy while waiting for the repair lock; skipping reinstall." >&2
+        exit 0
+      fi
+      env -u NODE_ENV CI=true "${repair_cmd[@]}" >&2 || exit 1
+      base_cli_healthy
+    )
   else
-    (cd "$base_cwd" && env -u NODE_ENV CI=true "${repair_cmd[@]}") >&2
+    (cd "$base_cwd" && env -u NODE_ENV CI=true "${repair_cmd[@]}" >&2 && base_cli_healthy)
   fi
 }
 
 ensure_base_cli_healthy() {
   base_cli_files_present || return 1
   base_cli_healthy && return 0
-  repair_base_workspace_install || true
-  base_cli_healthy
+  repair_base_workspace_install
 }
 
 run_isolated_worktree_init() {
