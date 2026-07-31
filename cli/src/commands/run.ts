@@ -7,6 +7,10 @@ import pc from "picocolors";
 import { bootstrapCeoInvite } from "./auth-bootstrap-ceo.js";
 import { onboard } from "./onboard.js";
 import { doctor } from "./doctor.js";
+import {
+  applyMigrationEnvUpdates,
+  resolveMigrationEnvUpdates,
+} from "./run-migration-env.js";
 import { loadPaperclipEnvFile } from "../config/env.js";
 import { configExists, resolveConfigPath } from "../config/store.js";
 import type { PaperclipConfig } from "../config/schema.js";
@@ -23,6 +27,7 @@ interface RunOptions {
   repair?: boolean;
   yes?: boolean;
   bind?: "loopback" | "lan" | "tailnet";
+  autoMigrate?: boolean;
 }
 
 interface StartedServer {
@@ -79,6 +84,11 @@ export async function runCommand(opts: RunOptions): Promise<void> {
     p.log.error(`No config found at ${configPath}.`);
     process.exit(1);
   }
+
+  applyMigrationEnvUpdates(
+    process.env,
+    resolveMigrationEnvUpdates(process.env, { autoMigrate: opts.autoMigrate ?? true }),
+  );
 
   p.log.step("Starting Paperclip server...");
   const startedServer = await importServerEntry();
