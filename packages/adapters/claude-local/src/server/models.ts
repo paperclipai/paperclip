@@ -12,12 +12,17 @@ const ANTHROPIC_API_VERSION = "2023-06-01";
  *
  * Inference-profile IDs are prefixed by region family, and the families are not a simple
  * prefix swap: version suffixes diverge (Sonnet 4.5 is `-v2:0` under `us`, `-v1:0` under `eu`),
- * so each family is listed explicitly rather than derived.
+ * and a family does not always carry the same models (`jp` has no Opus 5 profile). Each family
+ * is therefore listed explicitly rather than derived.
  *
- * Only families with verified profile IDs are listed. Unrecognised regions fall back to `us`,
- * which preserves the previous behaviour.
+ * A family's profiles are only offered in the regions that publish them: `us.` profiles do not
+ * exist outside `us-*`, so they cannot serve as a general fallback. `global.` profiles are
+ * published in every region checked, so unrecognised regions fall back to `global` instead.
+ *
+ * Every ID below was verified ACTIVE on 2026-07-31 with
+ * `aws bedrock list-inference-profiles --region <region>`.
  */
-type BedrockRegionFamily = "us" | "eu";
+type BedrockRegionFamily = "us" | "eu" | "au" | "jp" | "global";
 
 const BEDROCK_MODELS_BY_FAMILY: Record<BedrockRegionFamily, AdapterModel[]> = {
   us: [
@@ -27,7 +32,7 @@ const BEDROCK_MODELS_BY_FAMILY: Record<BedrockRegionFamily, AdapterModel[]> = {
     { id: "us.anthropic.claude-sonnet-4-5-20250929-v2:0", label: "Bedrock Sonnet 4.5" },
     { id: "us.anthropic.claude-haiku-4-5-20251001-v1:0", label: "Bedrock Haiku 4.5" },
   ],
-  // Verified ACTIVE via `aws bedrock list-inference-profiles --region eu-west-1` (2026-07-31).
+  // eu-west-1.
   eu: [
     { id: "eu.anthropic.claude-opus-5", label: "Bedrock Opus 5" },
     { id: "eu.anthropic.claude-sonnet-5", label: "Bedrock Sonnet 5" },
@@ -37,13 +42,59 @@ const BEDROCK_MODELS_BY_FAMILY: Record<BedrockRegionFamily, AdapterModel[]> = {
     { id: "eu.anthropic.claude-sonnet-4-5-20250929-v1:0", label: "Bedrock Sonnet 4.5" },
     { id: "eu.anthropic.claude-haiku-4-5-20251001-v1:0", label: "Bedrock Haiku 4.5" },
   ],
+  // ap-southeast-2. The `apac.` family only carries Claude 3.x-era profiles, so Australian
+  // regions use `au.` for anything current.
+  au: [
+    { id: "au.anthropic.claude-opus-5", label: "Bedrock Opus 5" },
+    { id: "au.anthropic.claude-sonnet-5", label: "Bedrock Sonnet 5" },
+    { id: "au.anthropic.claude-opus-4-8", label: "Bedrock Opus 4.8" },
+    { id: "au.anthropic.claude-opus-4-7", label: "Bedrock Opus 4.7" },
+    { id: "au.anthropic.claude-sonnet-4-6", label: "Bedrock Sonnet 4.6" },
+    { id: "au.anthropic.claude-sonnet-4-5-20250929-v1:0", label: "Bedrock Sonnet 4.5" },
+    { id: "au.anthropic.claude-haiku-4-5-20251001-v1:0", label: "Bedrock Haiku 4.5" },
+  ],
+  // ap-northeast-1. This family publishes no Opus 5 or Sonnet 5 profile.
+  jp: [
+    { id: "jp.anthropic.claude-opus-4-8", label: "Bedrock Opus 4.8" },
+    { id: "jp.anthropic.claude-opus-4-7", label: "Bedrock Opus 4.7" },
+    { id: "jp.anthropic.claude-sonnet-4-6", label: "Bedrock Sonnet 4.6" },
+    { id: "jp.anthropic.claude-sonnet-4-5-20250929-v1:0", label: "Bedrock Sonnet 4.5" },
+    { id: "jp.anthropic.claude-haiku-4-5-20251001-v1:0", label: "Bedrock Haiku 4.5" },
+  ],
+  // Verified in us-east-1, eu-west-1, ap-southeast-1, ap-southeast-2 and ap-northeast-1.
+  // These profiles can route a request to any region, so they are a fallback rather than a
+  // default: a region with its own family keeps that family, which respects data residency.
+  global: [
+    { id: "global.anthropic.claude-opus-5", label: "Bedrock Opus 5 (global)" },
+    { id: "global.anthropic.claude-sonnet-5", label: "Bedrock Sonnet 5 (global)" },
+    { id: "global.anthropic.claude-fable-5", label: "Bedrock Fable 5 (global)" },
+    { id: "global.anthropic.claude-opus-4-8", label: "Bedrock Opus 4.8 (global)" },
+    { id: "global.anthropic.claude-opus-4-7", label: "Bedrock Opus 4.7 (global)" },
+    { id: "global.anthropic.claude-sonnet-4-6", label: "Bedrock Sonnet 4.6 (global)" },
+    { id: "global.anthropic.claude-sonnet-4-5-20250929-v1:0", label: "Bedrock Sonnet 4.5 (global)" },
+    { id: "global.anthropic.claude-haiku-4-5-20251001-v1:0", label: "Bedrock Haiku 4.5 (global)" },
+  ],
+};
+
+/**
+ * Regions whose residency-specific family is not implied by the region prefix. Only regions with
+ * verified profile IDs are listed; any other `ap-*` region falls back to `global`.
+ */
+const BEDROCK_REGION_FAMILY_BY_REGION: Record<string, BedrockRegionFamily> = {
+  "ap-southeast-2": "au",
+  "ap-northeast-1": "jp",
 };
 
 function resolveBedrockRegionFamily(): BedrockRegionFamily {
   const region = (process.env.AWS_REGION?.trim() || process.env.AWS_DEFAULT_REGION?.trim() || "")
     .toLowerCase();
+  // No configured region: keep the previous default rather than guess.
+  if (!region) return "us";
+  const mapped = BEDROCK_REGION_FAMILY_BY_REGION[region];
+  if (mapped) return mapped;
+  if (region.startsWith("us-")) return "us";
   if (region.startsWith("eu-")) return "eu";
-  return "us";
+  return "global";
 }
 
 function bedrockModelsForRegion(): AdapterModel[] {

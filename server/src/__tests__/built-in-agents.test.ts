@@ -485,6 +485,25 @@ describeEmbeddedPostgres("built-in agents", () => {
     });
   });
 
+  it("stores the resolved Bedrock profile on a board-approval pending row", async () => {
+    process.env.CLAUDE_CODE_USE_BEDROCK = "1";
+    process.env.AWS_REGION = "eu-west-1";
+    const companyId = await seedCompany({ requireApproval: true });
+
+    // A pending row must carry the profile that will run once the board approves the hire.
+    // Storing the unresolved "claude-haiku-4-5" alias would leave the approved agent without a
+    // usable model, and the failure would only appear at run time.
+    const result = await builtInAgentService(db).provision(companyId, "summarizer");
+
+    expect(result.state.status).toBe("pending_approval");
+    const rows = await db.select().from(agents).where(eq(agents.companyId, companyId));
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.status).toBe("pending_approval");
+    expect(rows[0]?.adapterConfig).toMatchObject({
+      model: "eu.anthropic.claude-haiku-4-5-20251001-v1:0",
+    });
+  });
+
   it("recovers an orphaned marked row instead of creating a duplicate", async () => {
     const companyId = await seedCompany();
     const orphanId = randomUUID();
