@@ -16829,22 +16829,27 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               `- Reason: ${WORKSPACE_WORKTREE_REQUIRES_PROJECT_MESSAGE}`,
               `- Next action: ${WORKSPACE_WORKTREE_REQUIRES_PROJECT_REMEDIATION}`,
             ].join("\n");
-            await tx
-              .update(issues)
-              .set(versionedIssuePatch({
-                status: "blocked",
-                checkoutRunId: null,
-                executionRunId: null,
-                executionAgentNameKey: null,
-                executionLockedAt: null
-              }, now))
-              .where(eq(issues.id, issue.id));
-            await tx.insert(issueComments).values({
-              companyId: issue.companyId,
+            await runIssueMutation(tx, {
               issueId: issue.id,
-              body: blockedComment,
-              createdAt: now,
-              updatedAt: now,
+              now,
+              mutate: async (mtx) => {
+                await mtx.insert(issueComments).values({
+                  companyId: issue.companyId,
+                  issueId: issue.id,
+                  body: blockedComment,
+                  createdAt: now,
+                });
+                return {
+                  issuePatch: {
+                    status: "blocked",
+                    checkoutRunId: null,
+                    executionRunId: null,
+                    executionAgentNameKey: null,
+                    executionLockedAt: null,
+                  },
+                  result: null,
+                };
+              },
             });
             await tx.insert(agentWakeupRequests).values({
               companyId: agent.companyId,

@@ -5175,42 +5175,38 @@ export function issueService(db: Db) {
   }
 
   async function updateWithInlineComment(
-    issueId: string,
-    issueData: IssueUpdateMutationData,
-    commentData: {
-      body: string;
-      actor: { agentId?: string; userId?: string; runId?: string | null };
-      options?: AddIssueCommentOptions;
-      afterUpdate?: (
-        tx: DbTransaction,
-        issue: typeof issues.$inferSelect,
-        comment: IssueComment,
-      ) => Promise<void>;
-      beforeCommit?: (
-        tx: DbTransaction,
-        issue: typeof issues.$inferSelect,
-        comment: IssueComment,
-      ) => Promise<void>;
-    },
-    dbOrTx: DbOrTx = db,
-  ) {
-    const execute = async (tx: DbTransaction) => {
-      const updated = await issueService(tx as unknown as Db).update(issueId, issueData, tx);
-      if (!updated) return null;
-      const comment = await insertIssueComment(
-        tx,
-        updated,
-        commentData.body,
-        commentData.actor,
-        commentData.options,
+      issueId: string,
+      issueData: IssueUpdateMutationData,
+      commentData: {
+        body: string;
+        actor: { agentId?: string; userId?: string; runId?: string | null };
+        options?: AddIssueCommentOptions;
+        afterUpdate?: (
+          tx: DbTransaction,
+          issue: typeof issues.$inferSelect,
+          comment: IssueComment,
+        ) => Promise<void>;
+        beforeCommit?: (
+          tx: DbTransaction,
+          issue: typeof issues.$inferSelect,
+          comment: IssueComment,
+        ) => Promise<void>;
+      },
+      dbOrTx: DbOrTx = db,
+    ) {
+      // Keep the comment insert inside the same runIssueMutation as the issue
+      // patch so static CAS authority can certify the write.
+      const updated = await issueService(dbOrTx as unknown as Db).update(
+        issueId,
+        issueData,
+        dbOrTx,
+        commentData,
       );
-      await commentData.afterUpdate?.(tx, updated, comment);
-      await commentData.beforeCommit?.(tx, updated, comment);
+      if (!updated) return null;
+      const comment = (updated as { inlineComment?: IssueComment }).inlineComment;
+      if (!comment) return null;
       return { issue: updated, comment };
-    };
-    if ("rollback" in dbOrTx) return await execute(dbOrTx);
-    return await dbOrTx.transaction(execute);
-  }
+    }
 
   class IssueCommentMutationMissingError extends Error {}
 
@@ -7300,10 +7296,10 @@ export function issueService(db: Db) {
           };
         });
         await insertRowsInChunks(tx, issueComments, commentRows);
-        // Mirror addComment's recency bump, once per affected issue.
+                // Mirror addComment's recency bump, once per affected issue, through CAS.
         const issueIds = [...new Set(rows.map((row) => row.issueId))];
         if (issueIds.length > 0) {
-          await tx.update(issues).set({ updatedAt: new Date() }).where(inArray(issues.id, issueIds));
+                  await bumpIssueVersions(tx, issueIds, new Date());
         }
       });
     },
@@ -7348,20 +7344,35 @@ export function issueService(db: Db) {
       id: string,
       data: IssueUpdateMutationData,
       dbOrTx: any = db,
-    ) => {
-      const {
-        labelIds: nextLabelIds,
-        blockedByIssueIds,
-        actorAgentId,
-        actorUserId,
-        expectedVersion,
-        ...issueData
-      } = data;
+          inlineComment?: {
+            body: string;
+            actor: { agentId?: string; userId?: string; runId?: string | null };
+            options?: AddIssueCommentOptions;
+            afterUpdate?: (
+              tx: DbTransaction,
+              issue: typeof issues.$inferSelect,
+              comment: IssueComment,
+            ) => Promise<void>;
+            beforeCommit?: (
+              tx: DbTransaction,
+              issue: typeof issues.$inferSelect,
+              comment: IssueComment,
+            ) => Promise<void>;
+          },
+        ) => {
+          const {
+            labelIds: nextLabelIds,
+            blockedByIssueIds,
+            actorAgentId,
+            actorUserId,
+            expectedVersion,
+            ...issueData
+          } = data;
 
-      const mutation = await runIssueMutation(dbOrTx, {
-        issueId: id,
-        expectedVersion,
-        mutate: async (tx, existing) => {
+          const mutation = await runIssueMutation(dbOrTx, {
+            issueId: id,
+            expectedVersion,
+            mutate: async (tx, existing) => {
           const isolatedWorkspacesEnabled = (
             await instanceSettingsService(tx as unknown as Db).getExperimental()
           ).enableIsolatedWorkspaces;
@@ -7662,61 +7673,119 @@ export function issueService(db: Db) {
           const nextBlockedByIssueIds = blockedByIssueIds === undefined
             ? undefined
             : [...new Set(blockedByIssueIds)].sort();
-          // Labels on the post-write issue are attached after runIssueMutation returns.
-          // Store preimages for receipt assembly in result.
-          return {
-            issuePatch: patch,
-            result: {
-              receiptExisting,
-              previousLabelIds: nextLabelIds !== undefined
-                ? (previousLabelsByIssueId.get(id) ?? []).map((label) => label.id)
-                : undefined,
-              previousBlockedByIssueIds: nextBlockedByIssueIds !== undefined
-                ? (previousRelationSummaries.get(id)?.blockedBy ?? []).map((relation) => relation.id)
-                : undefined,
-              nextBlockedByIssueIds,
-            },
-          };
-        },
-      });
-      if (!mutation) return null;
-      const [enriched] = await withIssueLabels(dbOrTx, [mutation.issue]);
-      const receiptMeta = mutation.result as {
-        receiptExisting: typeof issues.$inferSelect;
-        previousLabelIds?: string[];
-        previousBlockedByIssueIds?: string[];
-        nextBlockedByIssueIds?: string[];
-      } | null;
-      const changes = buildIssueChanges(
-        (receiptMeta?.receiptExisting ?? mutation.issue) as unknown as Record<string, unknown>,
-        mutation.issue as unknown as Record<string, unknown>,
-        {
-          ...(receiptMeta?.previousLabelIds !== undefined
-            ? {
-                labelIds: {
-                  from: receiptMeta.previousLabelIds,
-                  to: enriched.labelIds,
-                },
-              }
-            : {}),
-          ...(receiptMeta?.nextBlockedByIssueIds !== undefined
-            ? {
-                blockedByIssueIds: {
-                  from: receiptMeta.previousBlockedByIssueIds ?? [],
-                  to: receiptMeta.nextBlockedByIssueIds,
-                },
-              }
-            : {}),
-        },
-      );
-      return {
-        ...enriched,
-        ...(receiptMeta?.nextBlockedByIssueIds !== undefined
-          ? { blockedByIssueIds: receiptMeta.nextBlockedByIssueIds }
-          : {}),
-        changes,
-      };
-    },
+                    let inlineCommentResult: IssueComment | null = null;
+                    if (inlineComment) {
+                      // Inline the insert here (do not call insertIssueComment) so the
+                      // static CAS analyzer can certify this write as lexically inside
+                      // runIssueMutation rather than through a second helper edge.
+                      const provisionalIssue = {
+                        ...existing,
+                        ...patch,
+                      } as typeof issues.$inferSelect;
+                      const { censorUsernameInLogs } = await instanceSettingsService(
+                        tx as unknown as Db,
+                      ).getGeneral();
+                      const redactedBody = redactCurrentUserText(inlineComment.body, {
+                        enabled: censorUsernameInLogs,
+                      });
+                      const authorType = issueCommentAuthorTypeSchema.parse(
+                        inlineComment.options?.authorType ??
+                          (inlineComment.actor.agentId
+                            ? "agent"
+                            : inlineComment.actor.userId
+                              ? "user"
+                              : "system"),
+                      );
+                      assertIssueCommentAuthorTypeAllowed(inlineComment.actor, authorType);
+                      const presentation = issueCommentPresentationSchema.nullable().parse(
+                        inlineComment.options?.presentation ?? null,
+                      );
+                      const metadata = issueCommentMetadataSchema.nullable().parse(
+                        inlineComment.options?.metadata ?? null,
+                      );
+                      const createdAt = inlineComment.options?.createdAt
+                        ? new Date(inlineComment.options.createdAt)
+                        : undefined;
+                      const [comment] = await tx
+                        .insert(issueComments)
+                        .values({
+                          companyId: provisionalIssue.companyId,
+                          issueId: provisionalIssue.id,
+                          authorAgentId: inlineComment.actor.agentId ?? null,
+                          authorUserId: inlineComment.actor.userId ?? null,
+                          authorType,
+                          createdByRunId: inlineComment.actor.runId ?? null,
+                          body: redactedBody,
+                          presentation,
+                          metadata,
+                          sourceTrust: inlineComment.options?.sourceTrust ?? null,
+                          ...(createdAt && !Number.isNaN(createdAt.getTime())
+                            ? { createdAt, updatedAt: createdAt }
+                            : {}),
+                        })
+                        .returning();
+                      inlineCommentResult = redactIssueComment(comment, censorUsernameInLogs);
+                      await inlineComment.afterUpdate?.(tx, provisionalIssue, inlineCommentResult);
+                      await inlineComment.beforeCommit?.(tx, provisionalIssue, inlineCommentResult);
+                    }
+                    // Labels on the post-write issue are attached after runIssueMutation returns.
+                    // Store preimages for receipt assembly in result.
+                    return {
+                      issuePatch: patch,
+                      result: {
+                        receiptExisting,
+                        previousLabelIds: nextLabelIds !== undefined
+                          ? (previousLabelsByIssueId.get(id) ?? []).map((label) => label.id)
+                          : undefined,
+                        previousBlockedByIssueIds: nextBlockedByIssueIds !== undefined
+                          ? (previousRelationSummaries.get(id)?.blockedBy ?? []).map((relation) => relation.id)
+                          : undefined,
+                        nextBlockedByIssueIds,
+                        inlineComment: inlineCommentResult,
+                      },
+                    };
+                  },
+                });
+                if (!mutation) return null;
+                const [enriched] = await withIssueLabels(dbOrTx, [mutation.issue]);
+                const receiptMeta = mutation.result as {
+                  receiptExisting: typeof issues.$inferSelect;
+                  previousLabelIds?: string[];
+                  previousBlockedByIssueIds?: string[];
+                  nextBlockedByIssueIds?: string[];
+                  inlineComment?: IssueComment | null;
+                } | null;
+                const changes = buildIssueChanges(
+                  (receiptMeta?.receiptExisting ?? mutation.issue) as unknown as Record<string, unknown>,
+                  mutation.issue as unknown as Record<string, unknown>,
+                  {
+                    ...(receiptMeta?.previousLabelIds !== undefined
+                      ? {
+                          labelIds: {
+                            from: receiptMeta.previousLabelIds,
+                            to: enriched.labelIds,
+                          },
+                        }
+                      : {}),
+                    ...(receiptMeta?.nextBlockedByIssueIds !== undefined
+                      ? {
+                          blockedByIssueIds: {
+                            from: receiptMeta.previousBlockedByIssueIds ?? [],
+                            to: receiptMeta.nextBlockedByIssueIds,
+                          },
+                        }
+                      : {}),
+                  },
+                );
+                return {
+                  ...enriched,
+                  ...(receiptMeta?.nextBlockedByIssueIds !== undefined
+                    ? { blockedByIssueIds: receiptMeta.nextBlockedByIssueIds }
+                    : {}),
+                  changes,
+                  ...(receiptMeta?.inlineComment ? { inlineComment: receiptMeta.inlineComment } : {}),
+                };
+              },
 
     clearExecutionWorkspaceEnvironmentSelection: async (companyId: string, environmentId: string) => {
       const rows = await db

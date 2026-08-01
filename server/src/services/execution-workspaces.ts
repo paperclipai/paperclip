@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { versionedIssuePatch } from "./issue-versioning.js";
+import { runIssueMutation, versionedIssuePatch } from "./issue-versioning.js";
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
 import path from "node:path";
@@ -1919,7 +1919,7 @@ export function executionWorkspaceService(db: Db) {
 
         let restoredSourceIssue: ExecutionWorkspaceBranchReconcileResult["restoredSourceIssue"] = null;
         let sourceIssueStatusChanged = false;
-        let sourceIssueVersionAdvanced = false;
+        let reconcileAuditCommentId: string | null = null;
         if (input.mode === "quarantine_restore") {
           const [sourceBefore] = await tx
             .select({
@@ -1956,60 +1956,89 @@ export function executionWorkspaceService(db: Db) {
             },
             commentBody: null,
           });
-          const { issueService } = await import("./issues.js");
-          const updatedIssue = await issueService(db).update(
-            lockedWorkspace.sourceIssueId,
-            {
-              ...(requestedStatus ? { status: requestedStatus } : {}),
-              ...transition.patch,
-              actorAgentId: input.actor.agentId ?? null,
-              actorUserId: input.actor.actorType === "user" ? input.actor.actorId : null,
-            },
-            tx,
-          );
-          if (!updatedIssue) throw notFound("Source issue not found");
-          sourceIssueVersionAdvanced = true;
-          restoredSourceIssue = {
-            id: updatedIssue.id,
-            companyId: updatedIssue.companyId,
-            status: updatedIssue.status,
-            assigneeAgentId: updatedIssue.assigneeAgentId,
-          };
-          sourceIssueStatusChanged = sourceBefore.status !== updatedIssue.status;
-        }
-
-        const [auditComment] = await tx
-          .insert(issueComments)
-          .values({
-            companyId: lockedWorkspace.companyId,
+          const mutation = await runIssueMutation(tx, {
             issueId: lockedWorkspace.sourceIssueId,
-            authorAgentId: input.actor.actorType === "agent" ? input.actor.agentId : null,
-            authorUserId: input.actor.actorType === "user" ? input.actor.actorId : null,
-            authorType: input.actor.actorType,
-            createdByRunId: input.actor.runId,
-            body: formatBranchReconcileAuditComment({
-              mode: input.mode,
-              reason,
-              workspaceId: existing.id,
-              inspection,
-              recoveryActionId: recoveryAction?.id ?? null,
-              rescueRef,
-            }),
-          })
-          .returning({ id: issueComments.id });
-
-        if (!sourceIssueVersionAdvanced) {
-          await tx
-            .update(issues)
-            .set(versionedIssuePatch({}, now))
-            .where(eq(issues.id, lockedWorkspace.sourceIssueId));
+            now,
+            mutate: async (mtx, current) => {
+              const [auditComment] = await mtx
+                .insert(issueComments)
+                .values({
+                  companyId: lockedWorkspace.companyId,
+                  issueId: lockedWorkspace.sourceIssueId,
+                  authorAgentId: input.actor.actorType === "agent" ? input.actor.agentId : null,
+                  authorUserId: input.actor.actorType === "user" ? input.actor.actorId : null,
+                  authorType: input.actor.actorType,
+                  createdByRunId: input.actor.runId,
+                  body: formatBranchReconcileAuditComment({
+                    mode: input.mode,
+                    reason,
+                    workspaceId: existing.id,
+                    inspection,
+                    recoveryActionId: recoveryAction?.id ?? null,
+                    rescueRef,
+                  }),
+                })
+                .returning({ id: issueComments.id });
+              return {
+                issuePatch: {
+                  ...(requestedStatus ? { status: requestedStatus } : {}),
+                  ...transition.patch,
+                },
+                result: {
+                  auditCommentId: auditComment?.id ?? null,
+                  previousStatus: current.status,
+                },
+              };
+            },
+          });
+          if (!mutation) throw notFound("Source issue not found");
+          restoredSourceIssue = {
+            id: mutation.issue.id,
+            companyId: mutation.issue.companyId,
+            status: mutation.issue.status,
+            assigneeAgentId: mutation.issue.assigneeAgentId,
+          };
+          sourceIssueStatusChanged = mutation.result.previousStatus !== mutation.issue.status;
+          reconcileAuditCommentId = mutation.result.auditCommentId;
+        } else {
+          const mutation = await runIssueMutation(tx, {
+            issueId: lockedWorkspace.sourceIssueId,
+            now,
+            mutate: async (mtx) => {
+              const [auditComment] = await mtx
+                .insert(issueComments)
+                .values({
+                  companyId: lockedWorkspace.companyId,
+                  issueId: lockedWorkspace.sourceIssueId,
+                  authorAgentId: input.actor.actorType === "agent" ? input.actor.agentId : null,
+                  authorUserId: input.actor.actorType === "user" ? input.actor.actorId : null,
+                  authorType: input.actor.actorType,
+                  createdByRunId: input.actor.runId,
+                  body: formatBranchReconcileAuditComment({
+                    mode: input.mode,
+                    reason,
+                    workspaceId: existing.id,
+                    inspection,
+                    recoveryActionId: recoveryAction?.id ?? null,
+                    rescueRef,
+                  }),
+                })
+                .returning({ id: issueComments.id });
+              return {
+                issuePatch: {},
+                result: { auditCommentId: auditComment?.id ?? null },
+              };
+            },
+          });
+          if (!mutation) throw notFound("Source issue not found");
+          reconcileAuditCommentId = mutation.result.auditCommentId;
         }
 
         return {
           workspace: toExecutionWorkspace(updatedRow, lockedRuntimeServices),
           inspection,
           recoveryAction,
-          auditCommentId: auditComment?.id ?? null,
+          auditCommentId: reconcileAuditCommentId,
           rescueRef,
           restoredSourceIssue,
           sourceIssueStatusChanged,

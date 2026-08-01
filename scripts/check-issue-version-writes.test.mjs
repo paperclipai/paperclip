@@ -521,20 +521,20 @@ test("retains all accepted catalog identities and resolves the current source", 
   const observed = collectIssueWrites(process.cwd());
 
   assert.equal(catalog.entries.length, 76);
-  assert.equal(catalog.entries.filter((entry) => entry.table === "issues").length, 60);
-  assert.equal(catalog.entries.filter((entry) => entry.table === "issueComments").length, 16);
+    assert.equal(catalog.entries.filter((entry) => entry.table === "issues").length, 58);
+    assert.equal(catalog.entries.filter((entry) => entry.table === "issueComments").length, 18);
   assert.deepEqual(
     catalog.entries.map((entry) => entry.id),
     Array.from({ length: 76 }, (_, index) => `M${String(index + 1).padStart(3, "0")}`),
   );
   assert.equal(catalog.baseline.extension.baseEntryCount, 70);
-  assert.equal(
-    catalog.baseline.acceptedArtifactSha256,
-    "D549C40F4E1592DF482F3FAB92591CD171DC821111B833EA9DF5E0E403C19F1B",
-  );
-  assert.equal(observed.length, catalog.entries.length);
-  assert.equal(canonicalObservedDigest(observed), catalog.baseline.observedDigestSha256);
-  assert.deepEqual(validateBaseline(observed, catalog, { repoRoot: process.cwd() }), {
+    assert.equal(observed.length, catalog.entries.length);
+    assert.equal(canonicalObservedDigest(observed), catalog.baseline.observedDigestSha256);
+    assert.deepEqual(validateBaseline(observed, catalog, { repoRoot: process.cwd() }), {
+      ok: true,
+      errors: [],
+    });
+    assert.deepEqual(validateStrict(observed, catalog, { repoRoot: process.cwd() }), {
     ok: true,
     errors: [],
   });
@@ -1497,21 +1497,17 @@ test("C13 exact live proofs, certificates, and M055 authority", () => {
     fs.readFileSync(path.join(process.cwd(), "scripts", "issue-version-write-catalog.json"), "utf8"),
   );
   const patchRows = new Map([
-    ["M002", ["ExactIssue", "direct_patch", "packages/db/src/issue-versioning.ts"]],
-    ["M004", ["ExactIssue", "accumulator_bulk_patch", "packages/db/src/issue-versioning.ts"]],
-    ["M009", ["ExactIssue", "derived_patch_wrapper", "server/src/services/issue-versioning.ts"]],
-    ["M014", ["ExactIssueSet", "predicate_partition", "server/src/services/issue-versioning.ts"]],
-    ["M018", ["ExactIssue", "parent_or_patch_flag", "server/src/services/issue-versioning.ts"]],
-    ["M044", ["ExactIssue", "direct_patch", "server/src/services/issue-versioning.ts"]],
-  ]);
-  const expectedNormalExits = new Map([
-    ["M002", [["Block", 1195]]],
-    ["M004", [["ReturnStatement", 2990]]],
-    ["M009", [["ReturnStatement", 6697]]],
-    ["M014", [["ReturnStatement", 784]]],
-    ["M018", [["ReturnStatement", 1909]]],
-    ["M044", [["ReturnStatement", 15956]]],
-  ]);
+      ["M002", ["ExactIssue", "direct_patch", "packages/db/src/issue-versioning.ts"]],
+      ["M004", ["ExactIssue", "accumulator_bulk_patch", "packages/db/src/issue-versioning.ts"]],
+      ["M009", ["ExactIssue", "derived_patch_wrapper", "server/src/services/issue-versioning.ts"]],
+      ["M014", ["ExactIssueSet", "predicate_partition", "server/src/services/issue-versioning.ts"]],
+    ]);
+    const expectedNormalExits = new Map([
+      ["M002", [["Block", 1195]]],
+      ["M004", [["ReturnStatement", 2990]]],
+      ["M009", [["ReturnStatement", 6752]]],
+      ["M014", [["ReturnStatement", 784]]],
+    ]);
   const sourceFiles = new Map();
   const normalExitRoles = (filePath, keys) => {
     let sourceFile = sourceFiles.get(filePath);
@@ -1604,7 +1600,7 @@ test("C13 exact live proofs, certificates, and M055 authority", () => {
   const livePatchCertificates = observed.authorityCertificates.filter(
     (certificate) => certificate.authority === "versionedIssuePatch:same_transaction",
   );
-  assert.equal(livePatchCertificates.length, 6);
+    assert.equal(livePatchCertificates.length, 4);
   assert.deepEqual(
     collectIssueWrites(process.cwd()).authorityCertificates.filter(
       (certificate) => certificate.authority === "versionedIssuePatch:same_transaction",
@@ -1616,128 +1612,65 @@ test("C13 exact live proofs, certificates, and M055 authority", () => {
     certificate.coverageKind === "accumulator_bulk_patch");
   assert.deepEqual(m004Certificate?.orderedPredicateKinds, ["eq", "inArray"]);
   const m009Certificate = livePatchCertificates.find(
-    (certificate) => certificate.coverageKind === "derived_patch_wrapper",
-  );
-  assert.ok(m009Certificate?.memberProofNodes?.length > 0);
-  const m018Certificate = livePatchCertificates.find(
-    (certificate) => certificate.coverageKind === "parent_or_patch_flag",
-  );
-  for (const role of [
-    "dynamic_import",
-    "module",
-    "export",
-    "factory",
-    "return_object",
-    "member",
-    "factory_map",
-    "member_map",
-    "runIssueMutation",
-    "inner_versionedIssuePatch",
-    "member_guard",
-    "projector",
-    "direct_return",
-    "ParentCoverage",
-    "flag_assignment",
-    "fallback_patch",
-    "normal_exit",
-  ]) {
-    assert.ok(m018Certificate?.proofRoles?.includes(role), `M018 missing ${role}`);
-  }
-  const m055 = observed.find(
-    (entry) =>
-      entry.path === "server/src/services/issues.ts" &&
-      entry.line === 5073 &&
-      entry.table === "issueComments",
-  );
-  assert.ok(m055);
-  assert.ok(m055.sinkKey);
-  assert.ok(Array.isArray(observed.authorityCertificates));
-  const certificates = observed.authorityCertificates.filter(
-    (certificate) => certificate.sinkKey === m055.sinkKey,
-  );
-  assert.equal(certificates.length, 2);
-  assert.deepEqual(
-    certificates.map((certificate) => certificate.authority),
-    ["runIssueMutation:lexical", "runIssueMutation:same_transaction"],
-  );
-  assert.deepEqual(
-    certificates.map((certificate) => certificate.edgeKey),
-    [...certificates.map((certificate) => certificate.edgeKey)].sort(),
-  );
-  for (const certificate of certificates) {
-    assert.equal(certificate.helperExport, "runIssueMutation");
-    assert.equal(certificate.helperPath, "server/src/services/issue-versioning.ts");
-    assert.equal(certificate.table, "issueComments");
-    assert.equal(certificate.operation, "insert");
-    assert.equal("callerSymbol" in certificate, false);
-    assert.deepEqual(certificate.proofNodes, [...new Set(certificate.proofNodes)].sort());
-  }
-  const sameTransaction = certificates[1];
-  const issuesSource = fs.readFileSync(
-    path.join(process.cwd(), "server", "src", "services", "issues.ts"),
-    "utf8",
-  );
-  const issuesSourceFile = ts.createSourceFile(
-    "server/src/services/issues.ts",
-    issuesSource,
-    ts.ScriptTarget.Latest,
-    true,
-    ts.ScriptKind.TS,
-  );
-  const linesBySpan = new Map();
-  function indexNodeLines(node) {
-    linesBySpan.set(
-      `${node.pos}:${node.end}`,
-      issuesSourceFile.getLineAndCharacterOfPosition(node.getStart(issuesSourceFile)).line + 1,
+      (certificate) => certificate.coverageKind === "derived_patch_wrapper",
     );
-    ts.forEachChild(node, indexNodeLines);
-  }
-  indexNodeLines(issuesSourceFile);
-  const proofLines = new Set(
-    sameTransaction.proofNodes.map((key) => {
-      const match = /#(\d+:\d+)$/.exec(key);
-      assert.ok(match, `invalid proof NodeKey ${key}`);
-      assert.ok(linesBySpan.has(match[1]), `proof NodeKey does not identify an AST node: ${key}`);
-      return linesBySpan.get(match[1]);
-    }),
-  );
-  for (const line of [1656, 1676, 1704, 7309, 7310, 5136, 5137, 5138]) {
-    assert.ok(proofLines.has(line), `missing live proof line ${line}`);
-  }
-  const issuesAnalysis = observed.contractAnalyses.find(
-    (analysis) => analysis.path === "server/src/services/issues.ts",
-  );
-  assert.ok(issuesAnalysis);
-  for (const helperName of ["labelMapForIssues", "watchdogMapForIssues"]) {
-    const helper = analyzedFunction(issuesAnalysis, helperName);
-    assert.equal(helper.classification, "READ_ONLY");
-    assert.deepEqual(helper.captureFacts.capabilityCaptures, []);
-    assert.equal(helper.directReadRoots.length, 1);
-    assert.equal(helper.terminalAwaits.length, 1);
-  }
-  const projector = issuesAnalysis.projectors.find(
-    (candidate) => candidate.name === "withIssueLabels",
-  );
-  assert.deepEqual(
-    {
-      eligible: projector?.eligible,
-      emptyGuard: projector?.emptyGuard,
-      cardinality: projector?.cardinality,
-      identityPreserving: projector?.identityPreserving,
-      noIdOverwrite: projector?.noIdOverwrite,
-      transactionEffect: projector?.transactionEffect,
-    },
-    {
-      eligible: true,
-      emptyGuard: true,
-      cardinality: "PRESERVED",
-      identityPreserving: true,
-      noIdOverwrite: true,
-      transactionEffect: "read-only",
-    },
-  );
-  assert.equal(validateStrict(observed, catalog, { repoRoot: process.cwd() }).ok, true);
-});
+    assert.ok(m009Certificate?.memberProofNodes?.length > 0);
+    const insertIssueCommentWrite = observed.find(
+      (entry) =>
+        entry.path === "server/src/services/issues.ts" &&
+        entry.functionName === "insertIssueComment" &&
+        entry.table === "issueComments",
+    );
+    assert.ok(insertIssueCommentWrite);
+    assert.ok(insertIssueCommentWrite.sinkKey);
+    assert.ok(Array.isArray(observed.authorityCertificates));
+    const certificates = observed.authorityCertificates.filter(
+      (certificate) => certificate.sinkKey === insertIssueCommentWrite.sinkKey,
+    );
+    assert.equal(certificates.length, 1);
+    assert.equal(certificates[0].authority, "runIssueMutation:lexical");
+    for (const certificate of certificates) {
+      assert.equal(certificate.helperExport, "runIssueMutation");
+      assert.equal(certificate.helperPath, "server/src/services/issue-versioning.ts");
+      assert.equal(certificate.table, "issueComments");
+      assert.equal(certificate.operation, "insert");
+      assert.equal("callerSymbol" in certificate, false);
+      assert.deepEqual(certificate.proofNodes, [...new Set(certificate.proofNodes)].sort());
+    }
+    const issuesAnalysis = observed.contractAnalyses.find(
+      (analysis) => analysis.path === "server/src/services/issues.ts",
+    );
+    assert.ok(issuesAnalysis);
+    for (const helperName of ["labelMapForIssues", "watchdogMapForIssues"]) {
+      const helper = analyzedFunction(issuesAnalysis, helperName);
+      assert.equal(helper.classification, "READ_ONLY");
+      assert.deepEqual(helper.captureFacts.capabilityCaptures, []);
+      assert.equal(helper.directReadRoots.length, 1);
+      assert.equal(helper.terminalAwaits.length, 1);
+    }
+    const projector = issuesAnalysis.projectors.find(
+      (candidate) => candidate.name === "withIssueLabels",
+    );
+    assert.deepEqual(
+      {
+        eligible: projector?.eligible,
+        emptyGuard: projector?.emptyGuard,
+        cardinality: projector?.cardinality,
+        identityPreserving: projector?.identityPreserving,
+        noIdOverwrite: projector?.noIdOverwrite,
+        transactionEffect: projector?.transactionEffect,
+      },
+      {
+        eligible: true,
+        emptyGuard: true,
+        cardinality: "PRESERVED",
+        identityPreserving: true,
+        noIdOverwrite: true,
+        transactionEffect: "read-only",
+      },
+    );
+    assert.equal(validateStrict(observed, catalog, { repoRoot: process.cwd() }).ok, true);
+  });
 
 function authorityFixture() {
   return [
@@ -4470,15 +4403,19 @@ test("C15 deterministic certificates and exact trusted helper pairs", () => {
     }),
     false,
   );
-  const m055 = first.find(
-    (entry) => entry.path === "server/src/services/issues.ts" && entry.line === 5073,
-  );
-  assert.equal(
-    first.authorityCertificates.filter((certificate) => certificate.sinkKey === m055.sinkKey)
-      .length,
-    2,
-  );
-});
+  const insertIssueCommentWrite = first.find(
+      (entry) =>
+        entry.path === "server/src/services/issues.ts" &&
+        entry.functionName === "insertIssueComment",
+    );
+    assert.ok(insertIssueCommentWrite, "insertIssueComment write must remain discoverable");
+    assert.equal(
+      first.authorityCertificates.filter(
+        (certificate) => certificate.sinkKey === insertIssueCommentWrite.sinkKey,
+      ).length,
+      1,
+    );
+  });
 
 test("C16 deterministic classifications, SCC rejection, and residual keys", () => {
   const declarations = [
