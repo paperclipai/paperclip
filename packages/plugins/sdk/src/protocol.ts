@@ -49,6 +49,11 @@ import type {
   ExternalObjectMentionSourceKind,
   EnvSecretRefBinding,
 } from "@paperclipai/shared";
+
+export {
+  validatePluginDatabaseTransactionSql,
+  type PluginDatabaseTransactionSqlTarget,
+} from "./database-transaction-policy.js";
 export type { PluginLauncherRenderContextSnapshot } from "@paperclipai/shared";
 
 import type {

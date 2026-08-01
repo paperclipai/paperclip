@@ -455,6 +455,8 @@ applies every step on one database transaction, and rolls everything back on a
 SQL error or exact `expectRowCount` mismatch. A mismatch surfaces with
 `PLUGIN_RPC_ERROR_CODES.CONDITION_FAILED`. The API intentionally accepts data
 rather than a callback, so no live transaction crosses the JSON-RPC boundary.
+The SDK test harness applies the same transaction SQL policy before it calls a
+configured database driver, so test statements should use `ctx.db.namespace`.
 Each step is a single-table mutation; express a multi-table transition as
 multiple ordered steps. Targets must be plugin-owned base tables, and steps
 reject `RETURNING`, secondary-table reads, comments, and functions outside a

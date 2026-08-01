@@ -80,6 +80,7 @@ import {
   PLUGIN_DATABASE_TRANSACTION_LIMITS,
   PLUGIN_RPC_ERROR_CODES,
 } from "./protocol.js";
+import { validatePluginDatabaseTransactionSql } from "./database-transaction-policy.js";
 
 export interface TestHarnessOptions {
   /** Plugin manifest used to seed capability checks and metadata. */
@@ -505,6 +506,9 @@ function isInCompany<T extends { companyId: string | null | undefined }>(
 export function createTestHarness(options: TestHarnessOptions): TestHarness {
   const manifest = options.manifest;
   const capabilitySet = new Set(options.capabilities ?? manifest.capabilities);
+  const databaseNamespace = manifest.database
+    ? `test_${manifest.id.replace(/[^a-z0-9_]+/g, "_")}`
+    : "";
   let currentConfig = { ...(options.config ?? {}) };
 
   const logs: TestHarnessLogEntry[] = [];
@@ -918,7 +922,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       },
     },
     db: {
-      namespace: manifest.database ? `test_${manifest.id.replace(/[^a-z0-9_]+/g, "_")}` : "",
+      namespace: databaseNamespace,
       async query(sql, params) {
         requireCapability(manifest, capabilitySet, "database.namespace.read");
         dbQueries.push({ sql, params });
@@ -946,6 +950,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
             if (typeof step.sql !== "string" || step.sql.trim().length === 0) {
               throw new Error("ctx.db.executeTransaction step SQL must be a non-empty string");
             }
+            validatePluginDatabaseTransactionSql(step.sql, databaseNamespace);
             if (step.params !== undefined && !Array.isArray(step.params)) {
               throw new Error("ctx.db.executeTransaction step params must be an array");
             }

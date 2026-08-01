@@ -292,6 +292,23 @@ describe("plugin database SQL validation", () => {
     }, "plugin_test")).not.toThrow();
   });
 
+  it("binds transaction placeholders only in executable SQL contexts", () => {
+    expect(() => preparePluginDatabaseTransaction({
+      steps: [{
+        sql: "INSERT INTO plugin_test.rows (id, value) VALUES ($1, '$2')",
+        params: ["row-a"],
+      }],
+    }, "plugin_test")).not.toThrow();
+    expect(() => preparePluginDatabaseTransaction({
+      steps: [{
+        sql: `UPDATE plugin_test.rows AS "row$2"
+              SET value = $1
+              WHERE "row$2".id = 'literal$3'`,
+        params: ["value"],
+      }],
+    }, "plugin_test")).not.toThrow();
+  });
+
   it("targets anonymous DO blocks without rejecting do-prefixed aliases", () => {
     expect(() =>
       validatePluginRuntimeQuery(

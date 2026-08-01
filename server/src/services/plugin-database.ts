@@ -7,6 +7,7 @@ import type { Db } from "@paperclipai/db";
 import {
   PLUGIN_DATABASE_TRANSACTION_LIMITS,
   PLUGIN_RPC_ERROR_CODES,
+  validatePluginDatabaseTransactionSql,
   type PluginDatabaseTransactionInput,
   type PluginDatabaseTransactionResult,
 } from "@paperclipai/plugin-sdk/protocol";
@@ -297,69 +298,6 @@ function extractRuntimeTableRefs(statement: string): RuntimeTableRef[] {
   return refs;
 }
 
-const SAFE_TRANSACTION_SQL_FUNCTIONS = new Set([
-  "abs",
-  "array_append",
-  "array_cat",
-  "array_prepend",
-  "btrim",
-  "ceil",
-  "ceiling",
-  "char_length",
-  "coalesce",
-  "concat",
-  "concat_ws",
-  "date_trunc",
-  "decode",
-  "encode",
-  "floor",
-  "gen_random_uuid",
-  "greatest",
-  "json_build_array",
-  "json_build_object",
-  "json_strip_nulls",
-  "jsonb_build_array",
-  "jsonb_build_object",
-  "jsonb_insert",
-  "jsonb_set",
-  "jsonb_strip_nulls",
-  "least",
-  "length",
-  "lower",
-  "ltrim",
-  "md5",
-  "mod",
-  "now",
-  "nullif",
-  "octet_length",
-  "power",
-  "replace",
-  "round",
-  "rtrim",
-  "sign",
-  "sqrt",
-  "statement_timestamp",
-  "substring",
-  "to_json",
-  "to_jsonb",
-  "transaction_timestamp",
-  "trim",
-  "trunc",
-  "upper",
-]);
-
-const TRANSACTION_SQL_PAREN_KEYWORDS = new Set([
-  "all",
-  "any",
-  "cast",
-  "conflict",
-  "extract",
-  "in",
-  "position",
-  "row",
-  "values",
-]);
-
 function assertAllowedPublicRead(
   ref: SqlRef,
   allowedCoreReadTables: ReadonlySet<string>,
@@ -531,81 +469,90 @@ export function validatePluginRuntimeExecute(query: string, namespace: string): 
   }
 }
 
-/**
- * Atomic batches intentionally use a narrower, single-table mutation grammar
- * than legacy `ctx.db.execute`. This makes namespace validation fail closed:
- * values and predicates may be expressive, but one step cannot introduce a
- * secondary table through SELECT, FROM, JOIN, USING, or TABLE syntax.
- */
-function validatePluginRuntimeTransactionExecute(
-  query: string,
-  namespace: string,
-): RuntimeTableRef {
-  validatePluginRuntimeExecute(query, namespace);
-  const structuralStatement = maskRuntimeSqlForStructure(splitSqlStatements(query)[0]!);
-  const refs = extractRuntimeTableRefs(structuralStatement);
-  const normalized = structuralStatement.replace(/\s+/g, " ").trim().toLowerCase();
-  if (
-    refs.length !== 1
-    || /\b(select|join|using|table|tablesample|returning|operator)\b/.test(normalized)
-  ) {
-    throw new Error(
-      "ctx.db.executeTransaction steps must be single-table namespace mutations",
-    );
-  }
-
-  const identifier = `\"(?:[^\"]|\"\")+\"|[A-Za-z_][A-Za-z0-9_]*`;
-  const insertTargetPattern = new RegExp(
-    `^\\s*insert\\s+into\\s+(?:only\\s+)?(?:${identifier})`
-    + `\\s*\\.\\s*(?:${identifier})`
-    + `(?:\\s+(?:as\\s+)?(?:${identifier}))?\\s*(\\()`,
-    "i",
-  );
-  const insertTarget = structuralStatement.match(insertTargetPattern);
-  const insertColumnListOffset = insertTarget?.index === undefined
-    ? -1
-    : insertTarget.index + insertTarget[0].lastIndexOf("(");
-  const functionPattern = new RegExp(
-    `(?:(?:(${identifier}))\\s*\\.\\s*)?(${identifier})\\s*(\\()`,
-    "gi",
-  );
-  for (const match of structuralStatement.matchAll(functionPattern)) {
-    const openParenOffset = match.index + match[0].lastIndexOf("(");
-    if (openParenOffset === insertColumnListOffset) continue;
-    const schema = match[1] ? unquoteRuntimeIdentifier(match[1]).toLowerCase() : null;
-    const functionName = unquoteRuntimeIdentifier(match[2]!).toLowerCase();
-    if (TRANSACTION_SQL_PAREN_KEYWORDS.has(functionName)) continue;
-    if (schema !== null && schema !== "pg_catalog") {
-      throw new Error(
-        `ctx.db.executeTransaction function schema "${schema}" is not allowed`,
-      );
-    }
-    if (!SAFE_TRANSACTION_SQL_FUNCTIONS.has(functionName)) {
-      throw new Error(
-        `ctx.db.executeTransaction function "${functionName}" is not allowed`,
-      );
-    }
-  }
-  return refs[0]!;
-}
-
 function bindSql(statement: string, params: readonly unknown[] = []): SQL {
   // Safe only after callers run the plugin SQL validators above.
   if (params.length === 0) return sql.raw(statement);
   const chunks: SQL[] = [];
   let cursor = 0;
-  const placeholderPattern = /\$(\d+)/g;
   const seen = new Set<number>();
 
-  for (const match of statement.matchAll(placeholderPattern)) {
-    const index = Number(match[1]);
-    if (!Number.isInteger(index) || index < 1 || index > params.length) {
-      throw new Error(`SQL placeholder $${match[1]} has no matching parameter`);
+  let quote: "'" | "\"" | null = null;
+  let dollarQuote = "";
+  let lineComment = false;
+  let blockCommentDepth = 0;
+  for (let offset = 0; offset < statement.length; offset += 1) {
+    const char = statement[offset]!;
+    const next = statement[offset + 1];
+
+    if (lineComment) {
+      if (char === "\n") lineComment = false;
+      continue;
     }
-    chunks.push(sql.raw(statement.slice(cursor, match.index)));
-    chunks.push(sql`${params[index - 1]}`);
-    seen.add(index);
-    cursor = match.index! + match[0].length;
+    if (blockCommentDepth > 0) {
+      if (char === "/" && next === "*") {
+        blockCommentDepth += 1;
+        offset += 1;
+      } else if (char === "*" && next === "/") {
+        blockCommentDepth -= 1;
+        offset += 1;
+      }
+      continue;
+    }
+    if (dollarQuote) {
+      if (statement.startsWith(dollarQuote, offset)) {
+        offset += dollarQuote.length - 1;
+        dollarQuote = "";
+      }
+      continue;
+    }
+    if (quote) {
+      if (char === quote) {
+        if (next === quote) {
+          offset += 1;
+        } else {
+          quote = null;
+        }
+      }
+      continue;
+    }
+    if (char === "-" && next === "-") {
+      lineComment = true;
+      offset += 1;
+      continue;
+    }
+    if (char === "/" && next === "*") {
+      blockCommentDepth = 1;
+      offset += 1;
+      continue;
+    }
+    if (char === "'" || char === "\"") {
+      quote = char;
+      continue;
+    }
+    if (char !== "$") continue;
+
+    const dollarQuoteMatch = statement.slice(offset).match(/^\$(?:[A-Za-z_][A-Za-z0-9_]*)?\$/);
+    if (dollarQuoteMatch) {
+      dollarQuote = dollarQuoteMatch[0];
+      offset += dollarQuote.length - 1;
+      continue;
+    }
+
+    const placeholderMatch = statement.slice(offset).match(/^\$(\d+)/);
+    if (!placeholderMatch) continue;
+    const parameterIndex = Number(placeholderMatch[1]);
+    if (
+      !Number.isInteger(parameterIndex)
+      || parameterIndex < 1
+      || parameterIndex > params.length
+    ) {
+      throw new Error(`SQL placeholder $${placeholderMatch[1]} has no matching parameter`);
+    }
+    chunks.push(sql.raw(statement.slice(cursor, offset)));
+    chunks.push(sql`${params[parameterIndex - 1]}`);
+    seen.add(parameterIndex);
+    cursor = offset + placeholderMatch[0].length;
+    offset = cursor - 1;
   }
   chunks.push(sql.raw(statement.slice(cursor)));
   if (seen.size !== params.length) {
@@ -691,7 +638,7 @@ export function preparePluginDatabaseTransaction(
   }
 
   return input.steps.map((step) => {
-    const target = validatePluginRuntimeTransactionExecute(step.sql, namespace);
+    const target = validatePluginDatabaseTransactionSql(step.sql, namespace);
     return {
       statement: bindSql(step.sql, step.params),
       targetTable: target.table,

@@ -32,10 +32,11 @@ describe("plugin SDK database test harness", () => {
       manifest: manifest(["database.namespace.write"]),
       database: { transaction },
     });
+    const namespace = harness.ctx.db.namespace;
     const input = {
       steps: [
-        { sql: "INSERT INTO plugin_test.rows (id) VALUES ($1)", params: ["one"], expectRowCount: 1 },
-        { sql: "DELETE FROM plugin_test.locks WHERE id = $1", params: ["one"], expectRowCount: 1 },
+        { sql: `INSERT INTO ${namespace}.rows (id) VALUES ($1)`, params: ["one"], expectRowCount: 1 },
+        { sql: `DELETE FROM ${namespace}.locks WHERE id = $1`, params: ["one"], expectRowCount: 1 },
       ],
     };
 
@@ -70,16 +71,17 @@ describe("plugin SDK database test harness", () => {
         },
       },
     });
+    const namespace = harness.ctx.db.namespace;
 
     await expect(harness.ctx.db.executeTransaction({
       steps: [
         {
-          sql: "INSERT INTO plugin_test.rows (id) VALUES ($1)",
+          sql: `INSERT INTO ${namespace}.rows (id) VALUES ($1)`,
           params: ["tentative"],
           expectRowCount: 1,
         },
         {
-          sql: "UPDATE plugin_test.rows SET claimed = true WHERE id = $1",
+          sql: `UPDATE ${namespace}.rows SET claimed = true WHERE id = $1`,
           params: ["missing"],
           expectRowCount: 1,
         },
@@ -92,10 +94,11 @@ describe("plugin SDK database test harness", () => {
     const harness = createTestHarness({
       manifest: manifest(["database.namespace.write"]),
     });
+    const namespace = harness.ctx.db.namespace;
 
     await expect(harness.ctx.db.executeTransaction({
       steps: [{
-        sql: "UPDATE plugin_test.rows SET claimed = true WHERE id = $1",
+        sql: `UPDATE ${namespace}.rows SET claimed = true WHERE id = $1`,
         params: ["missing"],
         expectRowCount: 1,
       }],
@@ -107,10 +110,40 @@ describe("plugin SDK database test harness", () => {
 
   it("requires database.namespace.write for atomic batches", async () => {
     const harness = createTestHarness({ manifest: manifest([]) });
+    const namespace = harness.ctx.db.namespace;
 
     await expect(harness.ctx.db.executeTransaction({
-      steps: [{ sql: "DELETE FROM plugin_test.rows", expectRowCount: 0 }],
+      steps: [{ sql: `DELETE FROM ${namespace}.rows`, expectRowCount: 0 }],
     })).rejects.toThrow(/database\.namespace\.write/);
+    expect(harness.dbTransactions).toEqual([]);
+  });
+
+  it("enforces the production transaction SQL policy before invoking the driver", async () => {
+    const execute = vi.fn(async () => ({ rowCount: 1 }));
+    const transaction = vi.fn(async function transactionImpl<T>(
+      run: (driver: TestHarnessDatabaseTransactionDriver) => Promise<T>,
+    ): Promise<T> {
+      return run({ execute });
+    });
+    const harness = createTestHarness({
+      manifest: manifest(["database.namespace.write"]),
+      database: { transaction },
+    });
+    const namespace = harness.ctx.db.namespace;
+    const invalidStatements = [
+      "UPDATE public.issues SET title = $1",
+      `UPDATE ${namespace}.rows SET value = source.value FROM ${namespace}.source`,
+      `INSERT INTO ${namespace}.rows (id) VALUES ($1) RETURNING id`,
+      `UPDATE ${namespace}.rows SET value = pg_notify('channel', 'payload')`,
+    ];
+
+    for (const sql of invalidStatements) {
+      await expect(harness.ctx.db.executeTransaction({
+        steps: [{ sql, params: ["value"] }],
+      })).rejects.toThrow();
+    }
+    expect(transaction).not.toHaveBeenCalled();
+    expect(execute).not.toHaveBeenCalled();
     expect(harness.dbTransactions).toEqual([]);
   });
 });
