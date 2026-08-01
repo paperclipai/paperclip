@@ -1922,6 +1922,65 @@ describe.sequential("issue comment reopen routes", () => {
     );
   });
 
+  it("returns the committed mutation once when interrupt cancellation fails", async () => {
+    let persistedIssue = {
+      ...makeIssue("todo"),
+      executionRunId: "run-1",
+    };
+    mockIssueService.getById.mockImplementation(async () => persistedIssue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => {
+      persistedIssue = {
+        ...persistedIssue,
+        ...patch,
+        version: persistedIssue.version + 1,
+      };
+      return persistedIssue;
+    });
+    mockHeartbeatService.getRun.mockResolvedValue({
+      id: "run-1",
+      companyId: "company-1",
+      agentId: "22222222-2222-4222-8222-222222222222",
+      status: "running",
+    });
+    mockHeartbeatService.cancelRun.mockRejectedValue(new Error("adapter process did not exit"));
+
+    const res = await request(await installActor(createApp()))
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({
+        comment: "hello",
+        interrupt: true,
+        assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      version: 2,
+      comment: { id: "comment-1", body: "hello" },
+      interrupt: {
+        outcome: "cancel_failed",
+        runId: "run-1",
+        mutationCommitted: true,
+        commentId: "comment-1",
+      },
+    });
+    expect(mockIssueService.updateWithInlineComment).toHaveBeenCalledTimes(1);
+    expect(mockIssueService.update).toHaveBeenCalledTimes(1);
+    expect(mockIssueService.addComment).toHaveBeenCalledTimes(1);
+    expect(mockHeartbeatService.cancelRun).toHaveBeenCalledTimes(1);
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "heartbeat.cancel_failed",
+        entityId: "run-1",
+        details: expect.objectContaining({
+          source: "issue_comment_interrupt",
+          issueMutationCommitted: true,
+          commentId: "comment-1",
+        }),
+      }),
+    );
+  });
+
   it("cancels an active run when an issue is marked cancelled", async () => {
     const issue = {
       ...makeIssue("in_progress"),

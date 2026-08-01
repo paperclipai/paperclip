@@ -33,6 +33,12 @@ export type IssueUpdateResponse = Issue & {
   comment?: IssueComment | null;
   changes: IssueChanges;
   blockedByIssueIds?: string[];
+  interrupt?: {
+    outcome: "cancelled" | "cancel_failed" | "no_active_run";
+    runId: string | null;
+    mutationCommitted: true;
+    commentId: string | null;
+  };
 };
 
 export type ResolveRecoveryActionResponse = {

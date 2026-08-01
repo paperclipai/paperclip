@@ -7957,6 +7957,10 @@ export function issueRoutes(
     }
     let interruptedRunId: string | null = null;
     let runToInterrupt: Awaited<ReturnType<typeof resolveActiveIssueRun>> = null;
+    let interruptDisposition: {
+      outcome: "cancelled" | "cancel_failed" | "no_active_run";
+      runId: string | null;
+    } | null = null;
     const closedExecutionWorkspace = await getClosedIssueExecutionWorkspace(existing);
     const isAgentWorkUpdate =
       req.actor.type === "agent" && (Object.keys(updateFields).length > 0 || reviewRequest !== undefined);
@@ -7977,6 +7981,9 @@ export function issueRoutes(
       }
 
       runToInterrupt = await resolveActiveIssueRun(existing);
+      if (!runToInterrupt) {
+        interruptDisposition = { outcome: "no_active_run", runId: null };
+      }
     }
 
     const runToCancelForCancelledStatus = shouldCancelActiveRunForCancelledStatus
@@ -8381,31 +8388,69 @@ export function issueRoutes(
     }
 
     if (runToInterrupt) {
-      const cancelled = await heartbeat.cancelRun(
-        runToInterrupt.id,
-        "Interrupted by board comment",
-        operatorInterruptCancelOptions({ issueId: existing.id, actor }),
-      );
-      if (cancelled) {
-        interruptedRunId = cancelled.id;
+      try {
+        const cancelled = await heartbeat.cancelRun(
+          runToInterrupt.id,
+          "Interrupted by board comment",
+          operatorInterruptCancelOptions({ issueId: existing.id, actor }),
+        );
+        interruptDisposition = {
+          outcome: "cancelled",
+          runId: cancelled?.id ?? runToInterrupt.id,
+        };
+        if (cancelled) {
+          interruptedRunId = cancelled.id;
+          await logActivity(db, {
+            companyId: cancelled.companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            agentApiKeyId: actor.agentApiKeyId,
+            action: "heartbeat.cancelled",
+            entityType: "heartbeat_run",
+            entityId: cancelled.id,
+            issueId: existing.id,
+            details: {
+              agentId: cancelled.agentId,
+              source: "issue_comment_interrupt",
+              issueId: existing.id,
+              cancellationKind: "operator_interrupted",
+              operatorInterrupted: true,
+            },
+          });
+        }
+      } catch (err) {
+        interruptDisposition = {
+          outcome: "cancel_failed",
+          runId: runToInterrupt.id,
+        };
+        logger.warn(
+          { err, issueId: existing.id, runId: runToInterrupt.id },
+          "failed to interrupt run after issue comment mutation committed",
+        );
         await logActivity(db, {
-          companyId: cancelled.companyId,
+          companyId: existing.companyId,
           actorType: actor.actorType,
           actorId: actor.actorId,
           agentId: actor.agentId,
           runId: actor.runId,
           agentApiKeyId: actor.agentApiKeyId,
-          action: "heartbeat.cancelled",
+          action: "heartbeat.cancel_failed",
           entityType: "heartbeat_run",
-          entityId: cancelled.id,
+          entityId: runToInterrupt.id,
           issueId: existing.id,
           details: {
-            agentId: cancelled.agentId,
             source: "issue_comment_interrupt",
             issueId: existing.id,
-            cancellationKind: "operator_interrupted",
-            operatorInterrupted: true,
+            issueMutationCommitted: true,
+            commentId: committedComment?.id ?? null,
           },
+        }).catch((activityErr) => {
+          logger.warn(
+            { err: activityErr, issueId: existing.id, runId: runToInterrupt.id },
+            "failed to record issue comment interrupt failure",
+          );
         });
       }
     }
@@ -9267,6 +9312,13 @@ export function issueRoutes(
       latestIssue && latestIssue.version > issue.version ? latestIssue.version : issue.version,
     );
     const changes = issueResponse.changes ?? {};
+    const interrupt = interruptDisposition
+      ? {
+          ...interruptDisposition,
+          mutationCommitted: true as const,
+          commentId: comment?.id ?? null,
+        }
+      : undefined;
     if (prefersMinimalIssueUpdateResponse(req)) {
       res.setHeader("Preference-Applied", "return=minimal");
       res.json({
@@ -9275,10 +9327,11 @@ export function issueRoutes(
         updatedAt: issueResponse.updatedAt,
         changes,
         comment,
+        ...(interrupt ? { interrupt } : {}),
       });
       return;
     }
-    res.json({ ...issueResponse, changes, comment });
+    res.json({ ...issueResponse, changes, comment, ...(interrupt ? { interrupt } : {}) });
   });
 
   router.delete("/issues/:id", async (req, res) => {
