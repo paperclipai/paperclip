@@ -5,6 +5,7 @@ import { normalizeIssueExecutionPolicy } from "../services/issue-execution-polic
 
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
+  findOpenAncestorCreatedByAgent: vi.fn(async () => null),
   assertCheckoutOwner: vi.fn(),
   update: vi.fn(),
   createChild: vi.fn(),
