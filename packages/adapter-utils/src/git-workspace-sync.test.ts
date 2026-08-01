@@ -11,6 +11,7 @@ import {
   createRemoteGitExportRef,
   deleteLocalGitRef,
   fetchGitBundleIntoLocalRef,
+  isMissingGitPrerequisiteError,
   readGitWorkspaceSnapshot,
   runLocalGit,
   withShallowGitWorkspaceClone,
@@ -177,6 +178,83 @@ describe("git workspace sync", () => {
       expect(importedHead).toBe(sandboxHead);
       // The host received the local-only commit and its parent (the merge-base).
       expect(await git(host, ["cat-file", "-e", `${sandboxHead}^{commit}`])).toBe("");
+    } finally {
+      await deleteLocalGitRef({ localDir: host, ref: importedRef });
+    }
+  });
+
+  it("re-exports a full bundle that imports when the host holds neither baseSha nor the merge-base", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-git-ancestor-"));
+    cleanupDirs.push(rootDir);
+    // Host was reset to a strict ancestor of the eventual merge-base: it holds
+    // only the very first commit, not baseSha and not the fork point.
+    const host = await createRepo(rootDir);
+    const ancestor = await git(host, ["rev-parse", "HEAD"]);
+
+    const sandbox = path.join(rootDir, "sandbox");
+    await git(rootDir, ["clone", host, sandbox]);
+    await git(sandbox, ["config", "user.name", "Paperclip Remote"]);
+    await git(sandbox, ["config", "user.email", "remote@paperclip.dev"]);
+    // Advance the merge-base past the host, then baseSha past that, then a
+    // divergent local commit — so merge-base(baseSha, HEAD) is itself a commit
+    // the host does not hold.
+    await writeFile(path.join(sandbox, "fork.txt"), "fork\n", "utf8");
+    await git(sandbox, ["add", "-A"]);
+    await git(sandbox, ["commit", "-m", "fork point"]);
+    const forkPoint = await git(sandbox, ["rev-parse", "HEAD"]);
+    await writeFile(path.join(sandbox, "advance.txt"), "advance\n", "utf8");
+    await git(sandbox, ["add", "-A"]);
+    await git(sandbox, ["commit", "-m", "advance"]);
+    const baseSha = await git(sandbox, ["rev-parse", "HEAD"]);
+    await git(sandbox, ["reset", "--hard", forkPoint]);
+    await writeFile(path.join(sandbox, "local.txt"), "local\n", "utf8");
+    await git(sandbox, ["add", "-A"]);
+    await git(sandbox, ["commit", "-m", "local-only"]);
+    const sandboxHead = await git(sandbox, ["rev-parse", "HEAD"]);
+
+    // Host holds only the initial commit; it lacks both baseSha and the fork point.
+    expect(await git(host, ["rev-parse", "HEAD"])).toBe(ancestor);
+    await expect(git(host, ["cat-file", "-e", `${forkPoint}^{commit}`])).rejects.toThrow();
+
+    const exportRef = createRemoteGitExportRef("test");
+    const importedRef = createImportedGitRef("test");
+
+    // The delta bundle (relative to the merge-base = fork point) names a
+    // prerequisite the host lacks, so its import fails and is detected.
+    const deltaBundle = path.join(rootDir, "delta.bundle");
+    await execFile("sh", ["-c", buildRemoteGitDeltaBundleScript({
+      remoteDir: sandbox,
+      baseSha,
+      exportRef,
+      bundlePath: deltaBundle,
+    })]);
+    let deltaError: unknown;
+    try {
+      await fetchGitBundleIntoLocalRef({ localDir: host, bundlePath: deltaBundle, exportRef, importedRef, baseSha });
+    } catch (error) {
+      deltaError = error;
+    }
+    expect(deltaError).toBeDefined();
+    expect(isMissingGitPrerequisiteError(deltaError)).toBe(true);
+
+    // The forced full bundle is self-contained and imports into the same host.
+    const fullBundle = path.join(rootDir, "full.bundle");
+    try {
+      await execFile("sh", ["-c", buildRemoteGitDeltaBundleScript({
+        remoteDir: sandbox,
+        baseSha,
+        exportRef,
+        bundlePath: fullBundle,
+        forceFullBundle: true,
+      })]);
+      const importedHead = await fetchGitBundleIntoLocalRef({
+        localDir: host,
+        bundlePath: fullBundle,
+        exportRef,
+        importedRef,
+        baseSha,
+      });
+      expect(importedHead).toBe(sandboxHead);
     } finally {
       await deleteLocalGitRef({ localDir: host, ref: importedRef });
     }

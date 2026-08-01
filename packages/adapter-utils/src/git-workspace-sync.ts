@@ -197,6 +197,24 @@ export async function fetchGitBundleIntoLocalRef(input: {
   return importedHead.stdout.trim();
 }
 
+/** Substrings git emits when a bundle names a prerequisite the importer lacks. */
+const GIT_MISSING_PREREQUISITE_MARKERS = [
+  "did not send all necessary objects",
+  "lacks these prerequisite commits",
+  "revision walk setup failed",
+];
+
+/**
+ * True when a bundle import failed because the host repository does not hold a
+ * commit the (delta) bundle assumes as a prerequisite. Such a failure is
+ * recoverable by re-exporting a full, self-contained bundle from the still-live
+ * sandbox rather than discarding the run.
+ */
+export function isMissingGitPrerequisiteError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return GIT_MISSING_PREREQUISITE_MARKERS.some((marker) => message.includes(marker));
+}
+
 export function buildRemoteGitDeltaBundleScript(input: {
   remoteDir: string;
   baseSha: string;
@@ -205,6 +223,12 @@ export function buildRemoteGitDeltaBundleScript(input: {
   statusPath?: string;
   catBundle?: boolean;
   cleanupBundle?: boolean;
+  /**
+   * Skip the delta boundary entirely and always emit a full, self-contained
+   * bundle (no prerequisites). Used as the recovery path when a delta import
+   * failed because the host lacked the bundle's prerequisite.
+   */
+  forceFullBundle?: boolean;
 }): string {
   const remoteDir = shellQuote(input.remoteDir);
   const bundlePath = shellQuote(input.bundlePath);
@@ -235,13 +259,19 @@ export function buildRemoteGitDeltaBundleScript(input: {
     // Bundle relative to the merge-base of baseSha and HEAD instead: that
     // merge-base is an ancestor of baseSha, so any host that holds baseSha (or
     // an ancestor of it) can satisfy the prerequisite, while the bundle stays a
-    // delta. When baseSha is absent from the sandbox — or no merge-base exists —
-    // fall back to a full, self-contained bundle with no prerequisites.
-    `if git -C ${remoteDir} cat-file -e ${baseSha}^{commit} 2>/dev/null; then`,
-    `  bundle_base=$(git -C ${remoteDir} merge-base ${baseSha} HEAD 2>/dev/null || true)`,
-    "else",
-    `  bundle_base=""`,
-    "fi",
+    // delta. When baseSha is absent from the sandbox — or no merge-base exists,
+    // or the caller forces it after a delta import failed on a missing
+    // prerequisite — fall back to a full, self-contained bundle with no
+    // prerequisites.
+    ...(input.forceFullBundle
+      ? [`bundle_base=""`]
+      : [
+        `if git -C ${remoteDir} cat-file -e ${baseSha}^{commit} 2>/dev/null; then`,
+        `  bundle_base=$(git -C ${remoteDir} merge-base ${baseSha} HEAD 2>/dev/null || true)`,
+        "else",
+        `  bundle_base=""`,
+        "fi",
+      ]),
     `if [ -n "$bundle_base" ]; then`,
     `  commit_count=$(git -C ${remoteDir} rev-list --count HEAD --not "$bundle_base")`,
     "else",
