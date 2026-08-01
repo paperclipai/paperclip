@@ -8,6 +8,7 @@ import {
   pipelines,
   pipelineStages,
   routines,
+  statusCards,
   type Db,
 } from "@paperclipai/db";
 import {
@@ -15,7 +16,9 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { agentService } from "../services/agents.js";
+import { withBuiltInAgentMarker } from "../services/built-in-agent-metadata.js";
 import { routineService } from "../services/routines.js";
+import { statusCardService } from "../services/status-cards.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -68,6 +71,10 @@ describeEmbeddedPostgres("reserved-agent policy transaction serialization", () =
       adapterConfig: {},
       runtimeConfig: {},
       permissions: {},
+      metadata: withBuiltInAgentMarker(null, {
+        key: "summarizer",
+        featureKeys: ["summarizer"],
+      }),
     });
     return { companyId, agentId, allowedUserId };
   }
@@ -96,6 +103,15 @@ describeEmbeddedPostgres("reserved-agent policy transaction serialization", () =
       status: "active" as const,
       concurrencyPolicy: "coalesce_if_active" as const,
       catchUpPolicy: "skip_missed" as const,
+    };
+  }
+
+  function implicitStatusCardInput(prompt: string) {
+    return {
+      interestPrompt: prompt,
+      titlePinned: false,
+      agentId: null,
+      refreshPolicy: { mode: "manual" as const },
     };
   }
 
@@ -182,6 +198,118 @@ describeEmbeddedPostgres("reserved-agent policy transaction serialization", () =
       details: { code: "reserved_agent_automatic_configuration" },
     });
     await expect(db.select().from(routines)).resolves.toHaveLength(0);
+  });
+
+  it("makes an implicit status-card writer wait for in-flight Summarizer policy activation", async () => {
+    const { companyId, agentId, allowedUserId } = await seed();
+    const policyWritten = deferred();
+    const releasePolicyCommit = deferred();
+
+    const policyTransaction = db.transaction(async (tx) => {
+      const updated = await agentService(tx as unknown as Db).updatePermissions(
+        agentId,
+        reservedPermissions(allowedUserId),
+      );
+      policyWritten.resolve();
+      await releasePolicyCommit.promise;
+      return updated;
+    });
+
+    await policyWritten.promise;
+    try {
+      await expect(withShortLockTimeout((txDb) => statusCardService(txDb).create(
+        companyId,
+        implicitStatusCardInput("Policy wins over implicit card"),
+        { userId: allowedUserId, agentId: null },
+      ))).rejects.toMatchObject({ cause: { code: "55P03" } });
+    } finally {
+      releasePolicyCommit.resolve();
+    }
+    await expect(policyTransaction).resolves.toMatchObject({ id: agentId });
+
+    await expect(statusCardService(db).create(
+      companyId,
+      implicitStatusCardInput("Rejected after policy commit"),
+      { userId: allowedUserId, agentId: null },
+    )).rejects.toMatchObject({
+      status: 422,
+      details: { code: "reserved_agent_automatic_configuration" },
+    });
+    await expect(db.select().from(statusCards)).resolves.toHaveLength(0);
+  });
+
+  it("makes Summarizer policy activation wait for an in-flight implicit status-card writer", async () => {
+    const { companyId, agentId, allowedUserId } = await seed();
+    const cardWritten = deferred();
+    const releaseCardCommit = deferred();
+
+    const cardTransaction = db.transaction(async (tx) => {
+      const created = await statusCardService(tx as unknown as Db).create(
+        companyId,
+        implicitStatusCardInput("Implicit card wins"),
+        { userId: allowedUserId, agentId: null },
+      );
+      cardWritten.resolve();
+      await releaseCardCommit.promise;
+      return created;
+    });
+
+    await cardWritten.promise;
+    try {
+      await expect(withShortLockTimeout((txDb) => agentService(txDb).updatePermissions(
+        agentId,
+        reservedPermissions(allowedUserId),
+      ))).rejects.toMatchObject({ cause: { code: "55P03" } });
+    } finally {
+      releaseCardCommit.resolve();
+    }
+    await expect(cardTransaction).resolves.toMatchObject({ agentId: null });
+
+    await expect(agentService(db).updatePermissions(
+      agentId,
+      reservedPermissions(allowedUserId),
+    )).rejects.toMatchObject({
+      status: 422,
+      details: {
+        code: "reserved_agent_automatic_configuration",
+        references: [{ kind: "status_card" }],
+      },
+    });
+  });
+
+  it("rejects an explicit override to implicit Summarizer transition when Summarizer is reserved", async () => {
+    const { companyId, agentId, allowedUserId } = await seed();
+    const [override] = await db.insert(agents).values({
+      companyId,
+      name: "Explicit card writer",
+      role: "general",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    }).returning();
+    await agentService(db).updatePermissions(agentId, reservedPermissions(allowedUserId));
+    const service = statusCardService(db);
+    const card = await service.create(
+      companyId,
+      {
+        ...implicitStatusCardInput("Explicit override"),
+        agentId: override!.id,
+      },
+      { userId: allowedUserId, agentId: null },
+    );
+
+    await expect(service.update(
+      card,
+      { agentId: null },
+      { userId: allowedUserId, agentId: null },
+    )).rejects.toMatchObject({
+      status: 422,
+      details: { code: "reserved_agent_automatic_configuration" },
+    });
+    await expect(db.select().from(statusCards).where(eq(statusCards.id, card.id)))
+      .resolves.toMatchObject([{ agentId: override!.id }]);
   });
 
   it("guards generic permission updates with the same automatic-reference invariant", async () => {

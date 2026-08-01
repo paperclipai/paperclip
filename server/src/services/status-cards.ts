@@ -160,6 +160,37 @@ export function statusCardService(
   const issuesSvc = deps.issuesSvc ?? issueService(db);
   const searchSvc = companySearchService(db);
 
+  async function resolveAutomaticAgentId(
+    dbClient: Db,
+    companyId: string,
+    explicitAgentId: string | null,
+  ) {
+    if (explicitAgentId) return explicitAgentId;
+    return dbClient
+      .select({ id: agents.id })
+      .from(agents)
+      .where(and(
+        eq(agents.companyId, companyId),
+        ne(agents.status, "terminated"),
+        sql`${agents.metadata}->'paperclipBuiltInAgent'->>'key' = ${SUMMARIZER_BUILT_IN_KEY}`,
+      ))
+      .limit(1)
+      .then((rows) => rows[0]?.id ?? null);
+  }
+
+  async function lockAutomaticAgents(
+    dbClient: Db,
+    companyId: string,
+    agentIds: Array<string | null>,
+  ) {
+    const lockedAgents = new Map<string, AssignmentPolicyAgentRow>();
+    for (const agentId of [...new Set(agentIds.filter((id): id is string => Boolean(id)))].sort()) {
+      const lockedAgent = await lockAgentAssignmentPolicyRow(dbClient, companyId, agentId);
+      if (lockedAgent) lockedAgents.set(agentId, lockedAgent);
+    }
+    return lockedAgents;
+  }
+
   async function readWatchedIssueCount(card: StatusCardRow) {
     if (card.queries.length === 0 && (card.mentionedIssueIds?.length ?? 0) === 0) return 0;
     try {
@@ -229,17 +260,23 @@ export function statusCardService(
     };
     return db.transaction(async (tx) => {
       const txDb = tx as unknown as Db;
-      const lockedAgents = new Map<string, AssignmentPolicyAgentRow>();
-      const agentIds = [...new Set([actor.agentId, input.agentId].filter((id): id is string => Boolean(id)))].sort();
-      for (const agentId of agentIds) {
-        const lockedAgent = await lockAgentAssignmentPolicyRow(txDb, companyId, agentId);
-        if (lockedAgent) lockedAgents.set(agentId, lockedAgent);
-      }
+      const automaticAgentId = await resolveAutomaticAgentId(
+        txDb,
+        companyId,
+        input.agentId ?? null,
+      );
+      const lockedAgents = await lockAutomaticAgents(
+        txDb,
+        companyId,
+        [actor.agentId, automaticAgentId],
+      );
 
-      if (input.agentId) {
-        const summarizer = lockedAgents.get(input.agentId) ?? null;
+      if (automaticAgentId) {
+        const summarizer = lockedAgents.get(automaticAgentId) ?? null;
         if (!summarizer) throw unprocessable("Summarizer agent must belong to this company");
         assertLockedAgentEligibleForAutomaticAssignment(summarizer, "status_card");
+      } else if (input.agentId) {
+        throw unprocessable("Summarizer agent must belong to this company");
       }
 
       if (actor.agentId) {
@@ -271,15 +308,32 @@ export function statusCardService(
         .then((rows) => rows[0] ?? null);
       if (!locked) throw notFound("Status card not found");
 
-      const checkedAgentId = input.agentId || (input.archived === false ? locked.agentId : null);
-      if (checkedAgentId) {
-        const summarizer = await lockAgentAssignmentPolicyRow(
-          txDb,
-          locked.companyId,
-          checkedAgentId,
-        );
+      const currentAutomaticAgentId = await resolveAutomaticAgentId(
+        txDb,
+        locked.companyId,
+        locked.agentId,
+      );
+      const nextExplicitAgentId = input.agentId !== undefined
+        ? input.agentId
+        : locked.agentId;
+      const nextAutomaticAgentId = await resolveAutomaticAgentId(
+        txDb,
+        locked.companyId,
+        nextExplicitAgentId,
+      );
+      const lockedAgents = await lockAutomaticAgents(
+        txDb,
+        locked.companyId,
+        [currentAutomaticAgentId, nextAutomaticAgentId],
+      );
+      const mustValidateNextOwner =
+        input.agentId !== undefined || input.archived === false;
+      if (mustValidateNextOwner && nextAutomaticAgentId) {
+        const summarizer = lockedAgents.get(nextAutomaticAgentId) ?? null;
         if (!summarizer) throw unprocessable("Summarizer agent must belong to this company");
         assertLockedAgentEligibleForAutomaticAssignment(summarizer, "status_card");
+      } else if (input.agentId && !nextAutomaticAgentId) {
+        throw unprocessable("Summarizer agent must belong to this company");
       }
 
       const now = new Date();

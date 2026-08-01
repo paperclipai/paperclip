@@ -567,6 +567,7 @@ export function agentService(db: Db) {
         await assertBoardUiCreateOnlyActivationHasNoAutomaticReferences(txDb, {
           companyId: locked.companyId,
           agentId: locked.id,
+          agentMetadata: locked.metadata,
           nextPermissions: normalizedPatch.permissions,
         });
       }
@@ -843,6 +844,7 @@ export function agentService(db: Db) {
         await assertBoardUiCreateOnlyActivationHasNoAutomaticReferences(txDb, {
           companyId: existing.companyId,
           agentId: existing.id,
+          agentMetadata: existing.metadata,
           nextPermissions: patch.permissions ?? existing.permissions,
         });
         const updated = await tx
@@ -895,6 +897,7 @@ export function agentService(db: Db) {
         await assertBoardUiCreateOnlyActivationHasNoAutomaticReferences(txDb, {
           companyId: existing.companyId,
           agentId: existing.id,
+          agentMetadata: existing.metadata,
           nextPermissions,
         });
 

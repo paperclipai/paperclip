@@ -1,4 +1,4 @@
-import { and, eq, isNull, sql } from "drizzle-orm";
+import { and, eq, isNull, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -9,6 +9,7 @@ import {
   statusCards,
 } from "@paperclipai/db";
 import { unprocessable } from "../errors.js";
+import { readBuiltInAgentMarker } from "./built-in-agent-metadata.js";
 
 export const BOARD_UI_CREATE_ONLY_ASSIGNMENT_MODE = "board_ui_create_only" as const;
 export const RESERVED_AGENT_BOARD_UI_ONLY_CODE = "reserved_agent_board_ui_only" as const;
@@ -134,10 +135,13 @@ export async function assertBoardUiCreateOnlyActivationHasNoAutomaticReferences(
   input: {
     companyId: string;
     agentId: string;
+    agentMetadata: unknown;
     nextPermissions: unknown;
   },
 ) {
   if (!readAgentBoardUiCreateOnlyAssignmentPolicy({ permissions: input.nextPermissions })) return;
+  const isBuiltInSummarizer =
+    readBuiltInAgentMarker(input.agentMetadata)?.key === "summarizer";
   const [routine, pipelineRoutine, watchdog, statusCard] = await Promise.all([
     db
       .select({ id: routines.id })
@@ -181,7 +185,9 @@ export async function assertBoardUiCreateOnlyActivationHasNoAutomaticReferences(
       .from(statusCards)
       .where(and(
         eq(statusCards.companyId, input.companyId),
-        eq(statusCards.agentId, input.agentId),
+        isBuiltInSummarizer
+          ? or(eq(statusCards.agentId, input.agentId), isNull(statusCards.agentId))
+          : eq(statusCards.agentId, input.agentId),
         isNull(statusCards.archivedAt),
       ))
       .limit(1)
