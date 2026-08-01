@@ -103,6 +103,7 @@ import {
   INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
   INTERACTION_CONTINUATION_INFRA_WAKE_REASON,
   heartbeatService,
+  mergeCoalescedContextSnapshot,
   redactDetectedSuccessfulRunProgressSummaryForBoard,
   redactSuccessfulRunHandoffEvidence,
 } from "../services/heartbeat.ts";
@@ -7579,5 +7580,252 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
     expect(runs).toHaveLength(1);
+  });
+
+  it.each(["blocked", "backlog"] as const)(
+    "recovers a dropped resolved-interaction continuation on a %s issue",
+    async (status) => {
+      const companyId = randomUUID();
+      const agentId = randomUUID();
+      const issueId = randomUUID();
+      const interactionId = randomUUID();
+      const resolvedAt = new Date(Date.now() - 60_000);
+
+      await db.insert(companies).values({ id: companyId, name: `Dropped ${status} interaction co` });
+      await db.insert(agents).values({
+        id: agentId,
+        companyId,
+        name: `Dropped${status}InteractionAgent`,
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: { cwd: "/workspace" },
+        budgetMonthlyCents: 0,
+        spentMonthlyCents: 0,
+      });
+      await db.insert(issues).values({
+        id: issueId,
+        companyId,
+        issueNumber: status === "blocked" ? 2_000_301 : 2_000_302,
+        identifier: status === "blocked" ? "TEST-2000301" : "TEST-2000302",
+        title: `Resolved interaction wake was dropped while ${status}`,
+        status,
+        priority: "medium",
+        assigneeAgentId: agentId,
+        creatorAgentId: agentId,
+      });
+      await db.insert(issueThreadInteractions).values({
+        id: interactionId,
+        companyId,
+        issueId,
+        kind: "ask_user_questions",
+        status: "answered",
+        continuationPolicy: "wake_assignee",
+        createdByAgentId: agentId,
+        resolvedByUserId: "local-board",
+        resolvedAt,
+        updatedAt: resolvedAt,
+        payload: {
+          version: 1,
+          questions: [{
+            id: "scope",
+            prompt: "Which scope?",
+            selectionMode: "single",
+            options: [{ id: "phase-1", label: "Phase 1" }],
+          }],
+        },
+        result: {
+          version: 1,
+          answers: [{ questionId: "scope", optionIds: ["phase-1"] }],
+        },
+      });
+
+      const result = await heartbeatService(db).reconcileStrandedAssignedIssues();
+      expect(result.continuationRequeued).toBe(1);
+      expect(result.issueIds).toContain(issueId);
+    },
+  );
+
+  it("recognizes a consumed interaction from its immutable wake request after mutable run context clears", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const interactionId = randomUUID();
+    const runId = randomUUID();
+    const wakeupRequestId = randomUUID();
+    const resolvedAt = new Date(Date.now() - 2 * 60_000);
+    const completedAt = new Date(Date.now() - 60_000);
+    const deliveredContext = {
+      issueId,
+      taskId: issueId,
+      mutation: "interaction",
+      interactionId,
+      interactionKind: "request_confirmation",
+      interactionStatus: "accepted",
+      wakeReason: "issue_commented",
+    };
+    const persistedAfterOrdinaryWake = mergeCoalescedContextSnapshot(deliveredContext, {
+      issueId,
+      taskId: issueId,
+      wakeReason: "timer",
+    });
+    expect(persistedAfterOrdinaryWake).not.toHaveProperty("interactionId");
+
+    await db.insert(companies).values({ id: companyId, name: "Consumed interaction context co" });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "ConsumedInteractionAgent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: { cwd: "/workspace" },
+      budgetMonthlyCents: 0,
+      spentMonthlyCents: 0,
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      issueNumber: 2_000_303,
+      identifier: "TEST-2000303",
+      title: "Consumed interaction context was later cleared",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      creatorAgentId: agentId,
+    });
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId,
+      companyId,
+      issueId,
+      kind: "request_confirmation",
+      status: "accepted",
+      continuationPolicy: "wake_assignee",
+      createdByAgentId: agentId,
+      resolvedByUserId: "local-board",
+      resolvedAt,
+      updatedAt: resolvedAt,
+      payload: { version: 1, prompt: "Continue?" },
+      result: { version: 1, outcome: "accepted" },
+    });
+    await db.insert(agentWakeupRequests).values({
+      id: wakeupRequestId,
+      companyId,
+      agentId,
+      source: "issue.interaction_resolved",
+      triggerDetail: "system",
+      reason: "issue_commented",
+      payload: deliveredContext,
+      status: "claimed",
+      runId,
+      claimedAt: resolvedAt,
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      invocationSource: "automation",
+      triggerDetail: "system",
+      status: "succeeded",
+      wakeupRequestId,
+      createdAt: resolvedAt,
+      startedAt: resolvedAt,
+      finishedAt: completedAt,
+      updatedAt: completedAt,
+      contextSnapshot: persistedAfterOrdinaryWake,
+    });
+
+    const result = await heartbeatService(db).reconcileStrandedAssignedIssues();
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.issueIds).not.toContain(issueId);
+  });
+
+  it("delivers a later executed tool-action result after an earlier accepted-state continuation succeeded", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const interactionId = randomUUID();
+    const acceptedAt = new Date(Date.now() - 3 * 60_000);
+    const earlierRunAt = new Date(Date.now() - 2 * 60_000);
+    const executedAt = new Date(Date.now() - 60_000);
+
+    await db.insert(companies).values({ id: companyId, name: "Evolving tool-action result co" });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "EvolvingToolActionAgent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: { cwd: "/workspace" },
+      budgetMonthlyCents: 0,
+      spentMonthlyCents: 0,
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      issueNumber: 2_000_304,
+      identifier: "TEST-2000304",
+      title: "Executed tool result arrived after accepted-state continuation",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      creatorAgentId: agentId,
+    });
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId,
+      companyId,
+      issueId,
+      kind: "request_confirmation",
+      status: "accepted",
+      continuationPolicy: "wake_assignee",
+      createdByAgentId: agentId,
+      resolvedByUserId: "local-board",
+      resolvedAt: acceptedAt,
+      updatedAt: executedAt,
+      payload: {
+        version: 1,
+        prompt: "Run the approved action?",
+        toolAction: { toolName: "deploy", actionRequestId: randomUUID() },
+      },
+      result: {
+        version: 1,
+        outcome: "accepted",
+        toolAction: {
+          version: 1,
+          status: "executed",
+          resultSummary: "Deployment completed",
+          updatedAt: executedAt.toISOString(),
+        },
+      },
+    });
+    await db.insert(heartbeatRuns).values({
+      companyId,
+      agentId,
+      invocationSource: "automation",
+      triggerDetail: "system",
+      status: "succeeded",
+      createdAt: earlierRunAt,
+      startedAt: earlierRunAt,
+      finishedAt: earlierRunAt,
+      updatedAt: earlierRunAt,
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        mutation: "interaction",
+        interactionId,
+        interactionKind: "request_confirmation",
+        interactionStatus: "accepted",
+        toolAction: {
+          toolName: "deploy",
+          decision: "accepted",
+          executionStatus: "approved",
+        },
+      },
+    });
+
+    const result = await heartbeatService(db).reconcileStrandedAssignedIssues();
+    expect(result.continuationRequeued).toBe(1);
+    expect(result.issueIds).toContain(issueId);
   });
 });

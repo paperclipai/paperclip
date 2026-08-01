@@ -1086,34 +1086,61 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     agentId: string,
     since: Date,
     interactionId?: string | null,
-    resolvedItemIds: string[] = [],
+    progress: {
+      resolvedItemIds?: string[];
+      toolActionExecutionStatus?: string | null;
+    } = {},
   ) {
+    const resolvedItemIds = progress.resolvedItemIds ?? [];
+    const toolActionExecutionStatus = progress.toolActionExecutionStatus ?? null;
     const rows = await db
-      .select({ id: heartbeatRuns.id, contextSnapshot: heartbeatRuns.contextSnapshot })
+      .select({
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+        wakePayload: agentWakeupRequests.payload,
+      })
       .from(heartbeatRuns)
+      .leftJoin(agentWakeupRequests, eq(agentWakeupRequests.runId, heartbeatRuns.id))
       .where(
         and(
           eq(heartbeatRuns.companyId, companyId),
           eq(heartbeatRuns.agentId, agentId),
           eq(heartbeatRuns.status, "succeeded"),
-          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+          or(
+            sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+            sql`${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}`,
+          ),
           interactionId
-            ? sql`${heartbeatRuns.contextSnapshot} ->> 'interactionId' = ${interactionId}`
+            ? or(
+              sql`${heartbeatRuns.contextSnapshot} ->> 'interactionId' = ${interactionId}`,
+              sql`${agentWakeupRequests.payload} ->> 'interactionId' = ${interactionId}`,
+            )
             : sql`true`,
           or(gte(heartbeatRuns.createdAt, since), gte(heartbeatRuns.finishedAt, since)),
         ),
       )
-      .limit(resolvedItemIds.length > 0 ? 50 : 1);
-    if (resolvedItemIds.length === 0) return Boolean(rows[0]);
+      .limit(resolvedItemIds.length > 0 || toolActionExecutionStatus ? 50 : 1);
+    if (resolvedItemIds.length === 0 && !toolActionExecutionStatus) return Boolean(rows[0]);
     const requiredItemIds = new Set(resolvedItemIds);
     return rows.some((row) => {
-      const context = row.contextSnapshot && typeof row.contextSnapshot === "object" && !Array.isArray(row.contextSnapshot)
-        ? row.contextSnapshot as Record<string, unknown>
-        : {};
-      const coveredItemIds = Array.isArray(context.newlyResolvedItemIds)
-        ? new Set(context.newlyResolvedItemIds.filter((value): value is string => typeof value === "string" && value.length > 0))
-        : new Set<string>();
-      return [...requiredItemIds].every((id) => coveredItemIds.has(id));
+      const contexts = [parseObject(row.contextSnapshot), parseObject(row.wakePayload)];
+      if (requiredItemIds.size > 0) {
+        const coveredItemIds = new Set(
+          contexts.flatMap((context) => (
+            Array.isArray(context.newlyResolvedItemIds)
+              ? context.newlyResolvedItemIds.filter(
+                (value): value is string => typeof value === "string" && value.length > 0,
+              )
+              : []
+          )),
+        );
+        if (![...requiredItemIds].every((id) => coveredItemIds.has(id))) return false;
+      }
+      if (toolActionExecutionStatus) {
+        return contexts.some((context) => (
+          readNonEmptyString(parseObject(context.toolAction).executionStatus) === toolActionExecutionStatus
+        ));
+      }
+      return true;
     });
   }
 
@@ -3710,7 +3737,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .where(
         and(
           isNull(issues.assigneeUserId),
-          inArray(issues.status, ["todo", "in_progress", "in_review"]),
+          inArray(issues.status, ["backlog", "todo", "in_progress", "in_review", "blocked"]),
           or(
             sql`${issues.assigneeAgentId} is not null`,
             eq(issues.status, "in_review"),
@@ -3783,13 +3810,15 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           const resolvedItemIds = interaction.kind === "request_item_verdicts"
             ? readLatestResolvedItemVerdictIds(interaction.result)
             : [];
+          const toolActionExecutionStatus =
+            readToolActionContinuationContext(interaction)?.executionStatus ?? null;
           const successful = await hasSuccessfulIssueRunSince(
             issue.companyId,
             issue.id,
             agentId,
             progressAt,
             interaction.id,
-            resolvedItemIds,
+            { resolvedItemIds, toolActionExecutionStatus },
           );
           if (successful) {
             successfulRunSinceResolution = true;
@@ -4003,6 +4032,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           }
           continue;
         }
+      }
+
+      if (issue.status === "backlog" || issue.status === "blocked") {
+        result.skipped += 1;
+        continue;
       }
 
       if (issue.status === "in_review") {
