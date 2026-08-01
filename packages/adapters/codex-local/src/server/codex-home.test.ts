@@ -13,6 +13,10 @@ import {
   reconcileManagedCodexHome,
   seedManagedCodexHome,
   stageCodexHomeForSync,
+  trustManagedCodexWorkspace,
+  updateManagedTrustedProjectsBlock,
+  validateCodexConfigToml,
+  writeValidatedCodexConfigTomlFile,
   writeManagedCodexMcpConfig,
 } from "./codex-home.js";
 
@@ -217,6 +221,153 @@ describe("codex managed home", () => {
 
       expect((await fs.lstat(target)).isDirectory()).toBe(true);
       expect(await fs.readFile(path.join(target, "sentinel"), "utf8")).toBe("keep-me");
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("dedupes legacy unmanaged trusted-project entries before rewriting the managed block", async () => {
+    const trustedWorkspace = path.resolve("/srv/paperclip/instances/default/companies/company-1/workspaces/repo");
+    const configToml = [
+      'model = "codex-mini-latest"',
+      "",
+      `[projects."${trustedWorkspace}"]`,
+      'trust_level = "trusted"',
+      "",
+      "# BEGIN PAPERCLIP MANAGED TRUSTED PROJECTS",
+      `[projects."${trustedWorkspace}"]`,
+      'trust_level = "trusted"',
+      "# END PAPERCLIP MANAGED TRUSTED PROJECTS",
+      "",
+    ].join("\n");
+
+    const updated = updateManagedTrustedProjectsBlock(configToml, [trustedWorkspace]);
+
+    expect(updated.skippedProjectCwds).toEqual([trustedWorkspace]);
+    expect(updated.configToml.match(/\[projects\."/g)?.length).toBe(1);
+    expect(updated.configToml).not.toContain(
+      `# BEGIN PAPERCLIP MANAGED TRUSTED PROJECTS\n[projects."${trustedWorkspace}"]`,
+    );
+    expect(() => validateCodexConfigToml(updated.configToml)).not.toThrow();
+  });
+
+  it("rejects config.toml files that still declare a trusted project twice", () => {
+    const trustedWorkspace = path.resolve("/srv/paperclip/instances/default/companies/company-1/workspaces/repo");
+    const invalidConfigToml = [
+      `[projects."${trustedWorkspace}"]`,
+      'trust_level = "trusted"',
+      "",
+      `[projects."${trustedWorkspace}"]`,
+      'trust_level = "trusted"',
+      "",
+    ].join("\n");
+
+    expect(() => validateCodexConfigToml(invalidConfigToml)).toThrow(
+      /duplicate trusted-project table/,
+    );
+  });
+
+  it("rejects malformed TOML even when there are no duplicate trusted-project tables", () => {
+    const invalidConfigToml = [
+      'model = "codex-mini-latest"',
+      "",
+      "[projects",
+      'trust_level = "trusted"',
+      "",
+    ].join("\n");
+
+    expect(() => validateCodexConfigToml(invalidConfigToml)).toThrow(/TOML parse failed/);
+  });
+
+  it("writes validated config.toml changes atomically and preserves the previous file on parse failure", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-trusted-project-atomic-write-"));
+    try {
+      const configTomlPath = path.join(root, "config.toml");
+      const originalConfigToml = 'model = "codex-mini-latest"\n';
+      await fs.writeFile(configTomlPath, originalConfigToml, "utf8");
+
+      await expect(
+        writeValidatedCodexConfigTomlFile(
+          configTomlPath,
+          [
+            'model = "codex-mini-latest"',
+            "",
+            "[projects",
+            'trust_level = "trusted"',
+            "",
+          ].join("\n"),
+        ),
+      ).rejects.toThrow(/TOML parse failed/);
+
+      expect(await fs.readFile(configTomlPath, "utf8")).toBe(originalConfigToml);
+      const leftovers = (await fs.readdir(root)).filter((name) => name.startsWith("config.toml.paperclip-write-"));
+      expect(leftovers).toEqual([]);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("logs and removes a duplicate managed trusted-project block when the legacy entry already exists", async () => {
+    const root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-trusted-project-dedupe-"));
+    try {
+      const paperclipHome = path.join(root, "paperclip-home");
+      const managedCodexHome = path.join(
+        paperclipHome,
+        "instances",
+        "default",
+        "companies",
+        "company-1",
+        "codex-home",
+      );
+      const trustedWorkspace = path.join(
+        paperclipHome,
+        "instances",
+        "default",
+        "companies",
+        "company-1",
+        "workspaces",
+        "repo",
+      );
+      const configTomlPath = path.join(managedCodexHome, "config.toml");
+      const logs: string[] = [];
+
+      await fs.mkdir(path.dirname(configTomlPath), { recursive: true });
+      await fs.mkdir(trustedWorkspace, { recursive: true });
+      await fs.writeFile(
+        configTomlPath,
+        [
+          'model = "codex-mini-latest"',
+          "",
+          `[projects."${trustedWorkspace}"]`,
+          'trust_level = "trusted"',
+          "",
+          "# BEGIN PAPERCLIP MANAGED TRUSTED PROJECTS",
+          `[projects."${trustedWorkspace}"]`,
+          'trust_level = "trusted"',
+          "# END PAPERCLIP MANAGED TRUSTED PROJECTS",
+          "",
+        ].join("\n"),
+        "utf8",
+      );
+
+      const changed = await trustManagedCodexWorkspace({
+        env: {
+          PAPERCLIP_HOME: paperclipHome,
+          PAPERCLIP_INSTANCE_ID: "default",
+        },
+        companyId: "company-1",
+        codexHome: managedCodexHome,
+        cwd: trustedWorkspace,
+        onLog: async (_stream, chunk) => {
+          logs.push(chunk);
+        },
+      });
+
+      expect(changed).toBe(true);
+      const updatedConfigToml = await fs.readFile(configTomlPath, "utf8");
+      expect(updatedConfigToml.match(/\[projects\."/g)?.length).toBe(1);
+      expect(logs.join("")).toContain("Skipped re-declaring legacy trusted Codex project entry");
+      expect(() => validateCodexConfigToml(updatedConfigToml)).not.toThrow();
     } finally {
       await fs.rm(root, { recursive: true, force: true });
     }
@@ -820,6 +971,7 @@ describe("stageCodexHomeForSync", () => {
     await fs.mkdir(home, { recursive: true });
     // auth.json is a symlink into the shared source (single-use rotating tokens).
     await fs.symlink(authSource, path.join(home, "auth.json"));
+    await fs.writeFile(path.join(home, "AGENTS.md"), "# agent guidance\n", "utf8");
     await fs.writeFile(path.join(home, "config.toml"), "model_provider = \"paperclip\"\n", "utf8");
     await fs.writeFile(path.join(home, "config.json"), "{}\n", "utf8");
     await fs.writeFile(path.join(home, "instructions.md"), "hi\n", "utf8");

@@ -3,12 +3,15 @@ import os from "node:os";
 import path from "node:path";
 import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
 import { resolvePaperclipInstanceRootForAdapter } from "@paperclipai/adapter-utils/server-utils";
+import { parse as parseToml } from "smol-toml";
 
 const TRUTHY_ENV_RE = /^(1|true|yes|on)$/i;
 const COPIED_SHARED_FILES = ["AGENTS.md", "config.json", "config.toml", "instructions.md"] as const;
 const SYMLINKED_SHARED_FILES = ["auth.json"] as const;
 const MANAGED_MCP_BLOCK_START = "# BEGIN PAPERCLIP MANAGED MCP";
 const MANAGED_MCP_BLOCK_END = "# END PAPERCLIP MANAGED MCP";
+const TRUSTED_PROJECT_BLOCK_HEADER = "# BEGIN PAPERCLIP MANAGED TRUSTED PROJECTS";
+const TRUSTED_PROJECT_BLOCK_FOOTER = "# END PAPERCLIP MANAGED TRUSTED PROJECTS";
 
 /**
  * The allowlist of managed `CODEX_HOME` entries that the codex-local adapter
@@ -48,6 +51,25 @@ export function mergeManagedCodexMcpGateways(
 
 function nonEmpty(value: string | undefined): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+function escapeTomlBasicString(value: string): string {
+  return value.replace(/[\\"\u0000-\u001f\u007f]/g, (char) => {
+    switch (char) {
+      case "\\":
+        return "\\\\";
+      case '"':
+        return '\\"';
+      case "\n":
+        return "\\n";
+      case "\r":
+        return "\\r";
+      case "\t":
+        return "\\t";
+      default:
+        return `\\u${char.charCodeAt(0).toString(16).padStart(4, "0")}`;
+    }
+  });
 }
 
 export async function pathExists(candidate: string): Promise<boolean> {
@@ -114,6 +136,151 @@ export function resolveManagedCodexHomeDir(
   return companyId
     ? path.resolve(instanceRoot, "companies", companyId, "codex-home")
     : path.resolve(instanceRoot, "codex-home");
+}
+
+export function resolveManagedTrustedProjectCwd(
+  env: NodeJS.ProcessEnv,
+  companyId: string | undefined,
+  cwd: string,
+): string | null {
+  const resolvedCwd = path.resolve(cwd);
+  const instanceRoot = resolvePaperclipInstanceRootForAdapter({
+    homeDir: nonEmpty(env.PAPERCLIP_HOME) ?? undefined,
+    instanceId: nonEmpty(env.PAPERCLIP_INSTANCE_ID) ?? undefined,
+    env,
+  });
+  const managedRoots = [
+    path.resolve(instanceRoot, "workspaces"),
+    path.resolve(instanceRoot, "projects"),
+    ...(companyId ? [path.resolve(instanceRoot, "companies", companyId)] : []),
+  ];
+
+  for (const root of managedRoots) {
+    if (resolvedCwd === root || resolvedCwd.startsWith(`${root}${path.sep}`)) {
+      return resolvedCwd;
+    }
+  }
+  return null;
+}
+
+function decodeTomlBasicString(value: string): string | null {
+  try {
+    return JSON.parse(`"${value}"`) as string;
+  } catch {
+    return null;
+  }
+}
+
+function readDeclaredTrustedProjectPaths(configToml: string): Set<string> {
+  const declared = new Set<string>();
+  for (const match of configToml.matchAll(/^\s*\[projects\."((?:[^"\\]|\\.)*)"\]\s*(?:#.*)?$/gm)) {
+    const decoded = decodeTomlBasicString(match[1] ?? "");
+    if (!decoded) continue;
+    declared.add(path.resolve(decoded));
+  }
+  return declared;
+}
+
+function listDuplicateTrustedProjectTables(configToml: string): string[] {
+  const duplicates = new Set<string>();
+  const seen = new Set<string>();
+  for (const match of configToml.matchAll(/^\s*\[projects\."((?:[^"\\]|\\.)*)"\]\s*(?:#.*)?$/gm)) {
+    const decoded = decodeTomlBasicString(match[1] ?? "");
+    if (!decoded) continue;
+    const declared = path.resolve(decoded);
+    if (seen.has(declared)) duplicates.add(declared);
+    seen.add(declared);
+  }
+  return Array.from(duplicates).sort();
+}
+
+export function validateCodexConfigToml(configToml: string): void {
+  const duplicates = listDuplicateTrustedProjectTables(configToml);
+  if (duplicates.length > 0) {
+    const rendered = duplicates.map((cwd) => `[projects."${escapeTomlBasicString(cwd)}"]`).join(", ");
+    throw new Error(`invalid Codex config.toml: duplicate trusted-project table(s): ${rendered}`);
+  }
+  try {
+    parseToml(configToml);
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`invalid Codex config.toml: TOML parse failed: ${detail}`);
+  }
+}
+
+export async function validateCodexConfigTomlFile(configPath: string): Promise<void> {
+  const configToml = await fs.readFile(configPath, "utf8");
+  validateCodexConfigToml(configToml);
+}
+
+export async function writeValidatedCodexConfigTomlFile(
+  configPath: string,
+  configToml: string,
+): Promise<void> {
+  validateCodexConfigToml(configToml);
+  const tempPath = `${configPath}.paperclip-write-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  try {
+    await fs.writeFile(tempPath, configToml, { mode: 0o600 });
+    await fs.chmod(tempPath, 0o600);
+    await validateCodexConfigTomlFile(tempPath);
+    await fs.rename(tempPath, configPath);
+  } finally {
+    await fs.rm(tempPath, { force: true }).catch(() => {});
+  }
+}
+
+export function updateManagedTrustedProjectsBlock(
+  configToml: string,
+  trustedProjectCwds: string[],
+): { configToml: string; skippedProjectCwds: string[] } {
+  const normalized = Array.from(new Set(trustedProjectCwds.map((cwd) => path.resolve(cwd)))).sort();
+  const block = [
+    TRUSTED_PROJECT_BLOCK_HEADER,
+    TRUSTED_PROJECT_BLOCK_FOOTER,
+  ];
+
+  const lines = configToml.length > 0 ? configToml.split("\n") : [];
+  const out: string[] = [];
+  let inManagedBlock = false;
+  let hadManagedBlock = false;
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!inManagedBlock && trimmed === TRUSTED_PROJECT_BLOCK_HEADER) {
+      inManagedBlock = true;
+      hadManagedBlock = true;
+      continue;
+    }
+    if (inManagedBlock) {
+      if (trimmed === TRUSTED_PROJECT_BLOCK_FOOTER) inManagedBlock = false;
+      continue;
+    }
+    out.push(line);
+  }
+
+  const unmanagedConfigToml = out.join("\n");
+  const unmanagedDeclaredProjects = readDeclaredTrustedProjectPaths(unmanagedConfigToml);
+  const skippedProjectCwds = normalized.filter((cwd) => unmanagedDeclaredProjects.has(cwd));
+  const managedProjectCwds = normalized.filter((cwd) => !unmanagedDeclaredProjects.has(cwd));
+
+  while (out.length > 0 && out[out.length - 1] === "") out.pop();
+  if (managedProjectCwds.length > 0) {
+    const managedEntries = managedProjectCwds.flatMap((cwd) => [
+      `[projects."${escapeTomlBasicString(cwd)}"]`,
+      'trust_level = "trusted"',
+      "",
+    ]);
+    block.splice(1, 0, ...managedEntries);
+    while (block[block.length - 1] === "") block.pop();
+    if (out.length > 0) out.push("");
+    out.push(...block);
+  } else if (hadManagedBlock === false) {
+    const unchangedConfigToml = configToml.endsWith("\n") ? configToml : `${configToml}\n`;
+    validateCodexConfigToml(unchangedConfigToml);
+    return { configToml: unchangedConfigToml, skippedProjectCwds };
+  }
+  const updatedConfigToml = `${out.join("\n")}\n`;
+  validateCodexConfigToml(updatedConfigToml);
+  return { configToml: updatedConfigToml, skippedProjectCwds };
 }
 
 /**
@@ -319,8 +486,7 @@ export async function writeManagedCodexMcpConfig(input: {
   const next = input.gateways.length > 0
     ? `${unmanagedConfig}${unmanagedConfig ? "\n\n" : ""}${block}\n`
     : `${unmanagedConfig}${unmanagedConfig ? "\n" : ""}`;
-  await fs.writeFile(configPath, next, { mode: 0o600 });
-  await fs.chmod(configPath, 0o600);
+  await writeValidatedCodexConfigTomlFile(configPath, next);
   return { configPath, warnings };
 }
 
@@ -626,6 +792,42 @@ export async function seedManagedCodexHome(
       `[paperclip] Wrote API-key auth.json into Codex home "${targetHome}" from configured OPENAI_API_KEY.\n`,
     );
   }
+
+  const configTomlPath = path.join(targetHome, "config.toml");
+  if (await pathExists(configTomlPath)) {
+    await validateCodexConfigTomlFile(configTomlPath);
+  }
+}
+
+export async function trustManagedCodexWorkspace(input: {
+  env: NodeJS.ProcessEnv;
+  companyId?: string;
+  codexHome: string;
+  cwd: string;
+  onLog: AdapterExecutionContext["onLog"];
+}): Promise<boolean> {
+  const trustedProjectCwd = resolveManagedTrustedProjectCwd(input.env, input.companyId, input.cwd);
+  if (!trustedProjectCwd) return false;
+  if (!isManagedCodexHomePath(input.env, input.companyId, input.codexHome)) return false;
+
+  const configTomlPath = path.join(input.codexHome, "config.toml");
+  const existing = await fs.readFile(configTomlPath, "utf8").catch(() => "");
+  const updated = updateManagedTrustedProjectsBlock(existing, [trustedProjectCwd]);
+  if (updated.skippedProjectCwds.length > 0) {
+    await input.onLog(
+      "stdout",
+      `[paperclip] Skipped re-declaring legacy trusted Codex project entr${updated.skippedProjectCwds.length === 1 ? "y" : "ies"} in "${configTomlPath}": ${updated.skippedProjectCwds.map((cwd) => `"${cwd}"`).join(", ")}.\n`,
+    );
+  }
+  if (updated.configToml === existing) return false;
+
+  await fs.mkdir(input.codexHome, { recursive: true });
+  await writeValidatedCodexConfigTomlFile(configTomlPath, updated.configToml);
+  await input.onLog(
+    "stdout",
+    `[paperclip] Trusted managed Codex workspace "${trustedProjectCwd}" in "${configTomlPath}".\n`,
+  );
+  return true;
 }
 
 export async function prepareManagedCodexHome(
