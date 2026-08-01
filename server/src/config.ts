@@ -89,6 +89,17 @@ export interface Config {
   telemetryEnabled: boolean;
 }
 
+export function resolveDeploymentMode(input: {
+  envValue?: string;
+  fileValue?: DeploymentMode;
+}): DeploymentMode {
+  const envValue = input.envValue;
+  if (envValue && DEPLOYMENT_MODES.includes(envValue as DeploymentMode)) {
+    return envValue as DeploymentMode;
+  }
+  return input.fileValue ?? "authenticated";
+}
+
 function detectTailnetBindHost(): string | undefined {
   const explicit = process.env.PAPERCLIP_TAILNET_BIND_HOST?.trim();
   if (explicit) return explicit;
@@ -158,11 +169,10 @@ export function loadConfig(): Config {
     undefined;
 
   const deploymentModeFromEnvRaw = process.env.PAPERCLIP_DEPLOYMENT_MODE;
-  const deploymentModeFromEnv =
-    deploymentModeFromEnvRaw && DEPLOYMENT_MODES.includes(deploymentModeFromEnvRaw as DeploymentMode)
-      ? (deploymentModeFromEnvRaw as DeploymentMode)
-      : null;
-  const deploymentMode: DeploymentMode = deploymentModeFromEnv ?? fileConfig?.server.deploymentMode ?? "local_trusted";
+  const deploymentMode = resolveDeploymentMode({
+    envValue: deploymentModeFromEnvRaw,
+    fileValue: fileConfig?.server.deploymentMode,
+  });
   const strictModeFromEnv = process.env.PAPERCLIP_SECRETS_STRICT_MODE;
   const secretsStrictMode =
     strictModeFromEnv !== undefined

@@ -90,6 +90,7 @@ import { createCachedViteHtmlRenderer } from "./vite-html-renderer.js";
 import { DEFAULT_JSON_BODY_LIMIT, PORTABLE_JSON_BODY_LIMIT } from "./http/body-limits.js";
 import { COMPANY_IMPORT_API_PATH } from "./routes/company-import-paths.js";
 import { apiCompression } from "./middleware/api-compression.js";
+import { unauthorized } from "./errors.js";
 
 type UiMode = "none" | "static" | "vite-dev";
 const FEEDBACK_EXPORT_FLUSH_INTERVAL_MS = 5_000;
@@ -226,6 +227,32 @@ export function createManagedBundledPluginWorkerRecovery(input: {
         inFlightStarts.delete(plugin.id);
       }
     }
+  };
+}
+
+export function authenticatedApiGuard(opts: { deploymentMode: DeploymentMode }): express.RequestHandler {
+  return (req, _res, next) => {
+    // These routes establish authentication with a one-time capability instead
+    // of an existing actor. They still validate that capability in accessRoutes.
+    const isCapabilityBootstrapPath =
+      req.path.startsWith("/invites/") ||
+      req.path.startsWith("/board-claim/") ||
+      req.path === "/cli-auth/challenges" ||
+      req.path.startsWith("/cli-auth/challenges/") ||
+      (/^\/join-requests\/[^/]+\/claim-api-key$/.test(req.path));
+    // healthRoutes is mounted at /api/health below; keep its liveness response
+    // public while all other /api routes require an authenticated actor.
+    const isPublicHealthCheck = req.path === "/health" || req.path.startsWith("/health/");
+    if (
+      opts.deploymentMode === "authenticated" &&
+      !isPublicHealthCheck &&
+      !isCapabilityBootstrapPath &&
+      (!req.actor || req.actor.type === "none")
+    ) {
+      next(unauthorized());
+      return;
+    }
+    next();
   };
 }
 
@@ -521,6 +548,7 @@ export async function createApp(
       allowedHostnames: opts.allowedHostnames,
     }),
   );
+  app.use("/api", authenticatedApiGuard({ deploymentMode: opts.deploymentMode }));
   app.use("/api", api);
   app.use("/api", (_req, res) => {
     res.status(404).json({ error: "API route not found" });

@@ -40,7 +40,13 @@ This does:
 
 ## Bind Presets In Dev
 
-Default `pnpm dev` stays in `local_trusted` with loopback-only binding.
+Default `pnpm dev` uses authenticated/private mode for agent-hosting safety.
+
+For an isolated single-user development box that does not run agent sandboxes, opt into trusted loopback mode:
+
+```sh
+pnpm dev --bind loopback
+```
 
 To open Paperclip to a private network with login enabled:
 
