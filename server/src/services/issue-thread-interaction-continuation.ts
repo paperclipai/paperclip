@@ -202,6 +202,21 @@ export function readLatestResolvedItemVerdictIds(result: unknown) {
   return [...new Set(timestamped.filter((row) => row.time === latestTime).map((row) => row.id))];
 }
 
+export function readResolvedItemVerdictProgress(result: unknown) {
+  const rows = readItemVerdictRows(result);
+  const resolvedItemIds = [...new Set(rows.map((row) => row.id))];
+  const resolvedTimes = rows.flatMap((row) => {
+    const time = row.resolvedAt ? Date.parse(row.resolvedAt) : Number.NaN;
+    return Number.isFinite(time) ? [time] : [];
+  });
+  return {
+    resolvedItemIds,
+    firstResolvedAt: resolvedTimes.length > 0
+      ? new Date(Math.min(...resolvedTimes))
+      : null,
+  };
+}
+
 export function readItemVerdictContinuationContext(input: {
   result: unknown;
   newlyResolvedItemIds: string[];

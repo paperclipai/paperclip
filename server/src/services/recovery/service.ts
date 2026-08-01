@@ -54,8 +54,8 @@ import {
 import {
   readCheckboxSelectionForWake,
   readItemVerdictContinuationContext,
-  readLatestResolvedItemVerdictIds,
   readPlanReviewInteractionForWake,
+  readResolvedItemVerdictProgress,
   readToolActionContinuationContext,
 } from "../issue-thread-interaction-continuation.js";
 import { evaluateAgentInvokabilityFromDb } from "../agent-invokability.js";
@@ -1080,7 +1080,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .orderBy(asc(sql`coalesce(${issueThreadInteractions.resolvedAt}, ${issueThreadInteractions.updatedAt})`), asc(issueThreadInteractions.id));
   }
 
-  async function hasSuccessfulIssueRunSince(
+  async function readSuccessfulInteractionDeliverySince(
     companyId: string,
     issueId: string,
     agentId: string,
@@ -1117,10 +1117,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             : sql`true`,
           or(gte(heartbeatRuns.createdAt, since), gte(heartbeatRuns.finishedAt, since)),
         ),
-      )
-      .limit(50);
+      );
 
-    const contextsByRow = rows.map((row) => {
+    const contexts = rows.flatMap((row) => {
       const wakeupPayload = parseObject(row.wakeupPayload);
       return (
         (row.wakeupStatus === "claimed" || row.wakeupStatus === "completed")
@@ -1129,30 +1128,24 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         ? [wakeupPayload]
         : [];
     });
-    if (resolvedItemIds.length === 0 && !toolActionExecutionStatus) {
-      return contextsByRow.some((contexts) => contexts.length > 0);
-    }
-
-    return contextsByRow.some((contexts) => {
-      if (resolvedItemIds.length > 0) {
-        const coveredItemIds = new Set(
-          contexts.flatMap((context) => (
-            Array.isArray(context.newlyResolvedItemIds)
-              ? context.newlyResolvedItemIds.filter(
-                (value): value is string => typeof value === "string" && value.length > 0,
-              )
-              : []
-          )),
-        );
-        if (!resolvedItemIds.every((id) => coveredItemIds.has(id))) return false;
-      }
-      if (toolActionExecutionStatus) {
-        return contexts.some((context) => (
-          readNonEmptyString(parseObject(context.toolAction).executionStatus) === toolActionExecutionStatus
-        ));
-      }
-      return true;
-    });
+    const coveredItemIds = new Set(
+      contexts.flatMap((context) => (
+        Array.isArray(context.newlyResolvedItemIds)
+          ? context.newlyResolvedItemIds.filter(
+            (value): value is string => typeof value === "string" && value.length > 0,
+          )
+          : []
+      )),
+    );
+    const hasRequiredToolActionStatus = !toolActionExecutionStatus || contexts.some((context) => (
+      readNonEmptyString(parseObject(context.toolAction).executionStatus) === toolActionExecutionStatus
+    ));
+    return {
+      successful: contexts.length > 0
+        && resolvedItemIds.every((id) => coveredItemIds.has(id))
+        && hasRequiredToolActionStatus,
+      coveredItemIds,
+    };
   }
 
   async function getLatestIssueRunSince(companyId: string, issueId: string, agentId: string, since: Date): Promise<LatestIssueRun> {
@@ -3817,13 +3810,16 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       let successfulRunSinceResolution = false;
       if (!pendingExecutionState) {
         for (const interaction of continuationInteractions) {
-          const progressAt = interaction.resolvedAt ?? interaction.updatedAt;
-          const resolvedItemIds = interaction.kind === "request_item_verdicts"
-            ? readLatestResolvedItemVerdictIds(interaction.result)
-            : [];
+          const itemVerdictProgress = interaction.kind === "request_item_verdicts"
+            ? readResolvedItemVerdictProgress(interaction.result)
+            : null;
+          const progressAt = itemVerdictProgress?.firstResolvedAt
+            ?? interaction.resolvedAt
+            ?? interaction.updatedAt;
+          const resolvedItemIds = itemVerdictProgress?.resolvedItemIds ?? [];
           const toolActionExecutionStatus =
             readToolActionContinuationContext(interaction)?.executionStatus ?? null;
-          const successful = await hasSuccessfulIssueRunSince(
+          const delivery = await readSuccessfulInteractionDeliverySince(
             issue.companyId,
             issue.id,
             agentId,
@@ -3831,12 +3827,12 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             interaction.id,
             { resolvedItemIds, toolActionExecutionStatus },
           );
-          if (successful) {
+          if (delivery.successful) {
             successfulRunSinceResolution = true;
             continue;
           }
           resolvedContinuationInteraction = interaction;
-          resolvedContinuationItemIds = resolvedItemIds;
+          resolvedContinuationItemIds = resolvedItemIds.filter((id) => !delivery.coveredItemIds.has(id));
           interactionResolvedAt = progressAt;
           successfulRunSinceResolution = false;
           break;

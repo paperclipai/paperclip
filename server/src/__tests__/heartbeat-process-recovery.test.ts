@@ -5979,7 +5979,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     },
   );
 
-  it("recovers only the newest partial item verdicts when an older continuation finishes late", async () => {
+  it("recovers every partial item verdict without an immutable delivery receipt", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
     const issueId = randomUUID();
@@ -6085,14 +6085,161 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       interactionId,
       interactionKind: "request_item_verdicts",
       interactionStatus: "pending",
-      newlyResolvedItemIds: ["item-b"],
+      newlyResolvedItemIds: ["item-a", "item-b"],
       itemVerdicts: {
+        newlyResolvedItemIds: ["item-a", "item-b"],
+        items: [
+          {
+            id: "item-a",
+            verdict: "approve",
+          },
+          {
+            id: "item-b",
+            verdict: "reject",
+            reason: "Needs a safer migration",
+          },
+        ],
+      },
+    });
+  });
+
+  it("recovers an older dropped item verdict after a newer verdict was immutably delivered", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const interactionId = randomUUID();
+    const runId = randomUUID();
+    const wakeupRequestId = randomUUID();
+    const firstResolvedAt = new Date(Date.now() - 3 * 60_000);
+    const latestResolvedAt = new Date(Date.now() - 2 * 60_000);
+    const completedAt = new Date(Date.now() - 60_000);
+
+    await db.insert(companies).values({ id: companyId, name: "Dropped older verdict recovery co" });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "DroppedOlderVerdictAgent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: { cwd: "/workspace" },
+      budgetMonthlyCents: 0,
+      spentMonthlyCents: 0,
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      issueNumber: 2_000_399,
+      identifier: "TEST-2000399",
+      title: "Older item verdict wake was dropped",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      creatorAgentId: agentId,
+    });
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId,
+      companyId,
+      issueId,
+      kind: "request_item_verdicts",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      createdByAgentId: agentId,
+      updatedAt: latestResolvedAt,
+      payload: {
+        version: 1,
+        prompt: "Review both items",
+        items: [
+          { id: "item-a", label: "Change A" },
+          { id: "item-b", label: "Change B" },
+        ],
+      },
+      result: {
+        version: 1,
+        items: [
+          {
+            id: "item-a",
+            verdict: "approve",
+            resolvedByUserId: "local-board",
+            resolvedAt: firstResolvedAt,
+          },
+          {
+            id: "item-b",
+            verdict: "reject",
+            reason: "Needs a safer migration",
+            resolvedByUserId: "local-board",
+            resolvedAt: latestResolvedAt,
+          },
+        ],
+        complete: false,
+      },
+    });
+    await db.insert(agentWakeupRequests).values({
+      id: wakeupRequestId,
+      companyId,
+      agentId,
+      source: "issue.interaction_resolved",
+      triggerDetail: "system",
+      reason: "issue_commented",
+      payload: {
+        issueId,
+        taskId: issueId,
+        mutation: "interaction",
+        interactionId,
+        interactionKind: "request_item_verdicts",
+        interactionStatus: "pending",
         newlyResolvedItemIds: ["item-b"],
-        items: [{
-          id: "item-b",
-          verdict: "reject",
-          reason: "Needs a safer migration",
-        }],
+        itemVerdicts: {
+          newlyResolvedItemIds: ["item-b"],
+          items: [{ id: "item-b", verdict: "reject", resolvedAt: latestResolvedAt.toISOString() }],
+        },
+      },
+      status: "completed",
+      runId,
+      requestedAt: latestResolvedAt,
+      claimedAt: latestResolvedAt,
+      completedAt,
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      wakeupRequestId,
+      invocationSource: "automation",
+      triggerDetail: "system",
+      status: "succeeded",
+      createdAt: latestResolvedAt,
+      startedAt: latestResolvedAt,
+      finishedAt: completedAt,
+      updatedAt: completedAt,
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        mutation: "interaction",
+        interactionId,
+        interactionKind: "request_item_verdicts",
+        interactionStatus: "pending",
+        newlyResolvedItemIds: ["item-b"],
+      },
+    });
+
+    const result = await heartbeatService(db).reconcileStrandedAssignedIssues();
+    expect(result.continuationRequeued).toBe(1);
+    expect(result.issueIds).toContain(issueId);
+
+    const recoveryRun = await db
+      .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId))
+      .then((rows) => rows.find((row) => (
+        row.contextSnapshot as Record<string, unknown> | null
+      )?.source === "issue.interaction_continuation_recovery") ?? null);
+    expect(recoveryRun?.contextSnapshot).toMatchObject({
+      interactionId,
+      newlyResolvedItemIds: ["item-a"],
+      itemVerdicts: {
+        newlyResolvedItemIds: ["item-a"],
+        items: [{ id: "item-a", verdict: "approve" }],
       },
     });
   });
