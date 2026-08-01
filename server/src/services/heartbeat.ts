@@ -2281,6 +2281,28 @@ export interface ModelProfileApplication {
   adapterConfig: Record<string, unknown> | null;
 }
 
+export function assertRequestedModelProfileApplied(
+  modelProfile: ModelProfileApplication,
+): void {
+  if (!modelProfile.requested || modelProfile.applied) return;
+
+  const fallbackReason = modelProfile.fallbackReason ?? "requested_model_profile_unavailable";
+  const metadata = modelProfileRunMetadata(modelProfile);
+  throw new ConfigurationIncompleteFailure(
+    `configuration incomplete: requested model profile "${modelProfile.requested}" could not be applied ` +
+      `(${fallbackReason}); refusing to fall back to the primary adapter configuration`,
+    {
+      configurationIncomplete: {
+        reason: "requested_model_profile_unavailable",
+        requestedModelProfile: modelProfile.requested,
+        requestedBy: modelProfile.requestedBy,
+        fallbackReason,
+      },
+      ...(metadata ? { modelProfile: metadata } : {}),
+    },
+  );
+}
+
 /**
  * A single read-only referenced (mentioned) project workspace resolved for a run.
  * The run materializes one entry per authorized additional project, each in its own
@@ -6046,6 +6068,36 @@ export function normalizeSessionParams(params: Record<string, unknown> | null | 
 }
 
 type RunSessionOutcome = "succeeded" | "interrupted" | "failed" | "cancelled" | "timed_out";
+
+const ADAPTER_SEMANTIC_FAILURE_STATUSES = new Set(["error", "failed", "failure", "errored"]);
+
+function readAdapterSemanticFailure(
+  resultJson: Record<string, unknown> | null | undefined,
+): { status: string; message: string | null } | null {
+  const result = parseObject(resultJson);
+  const status = readNonEmptyString(result.status)?.trim().toLowerCase() ?? null;
+  if (!status || !ADAPTER_SEMANTIC_FAILURE_STATUSES.has(status)) return null;
+
+  return {
+    status,
+    message:
+      readNonEmptyString(result.errorMessage) ??
+      readNonEmptyString(result.error) ??
+      readNonEmptyString(result.message) ??
+      null,
+  };
+}
+
+export function resolveAdapterRunOutcome(input: {
+  currentTerminalStatus?: RunSessionOutcome | null;
+  adapterResult: Pick<AdapterExecutionResult, "timedOut" | "exitCode" | "errorMessage" | "resultJson">;
+}): RunSessionOutcome {
+  if (input.currentTerminalStatus) return input.currentTerminalStatus;
+  if (input.adapterResult.timedOut) return "timed_out";
+  if (readAdapterSemanticFailure(input.adapterResult.resultJson)) return "failed";
+  if ((input.adapterResult.exitCode ?? 0) === 0 && !input.adapterResult.errorMessage) return "succeeded";
+  return "failed";
+}
 
 type SkillTestHeartbeatCompletion = {
   outcome: "failed" | "cancelled";
@@ -13323,6 +13375,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     } else {
       delete context.paperclipModelProfile;
     }
+    assertRequestedModelProfileApplied(modelProfileApplication);
     const mergedConfig = mergeModelProfileAdapterConfig({
       baseConfig: workspaceManagedConfig,
       modelProfile: modelProfileApplication,
@@ -14845,17 +14898,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           }
         }
       }
-      let outcome: RunSessionOutcome;
       const latestRun = await getRun(run.id);
-      if (isHeartbeatRunTerminalStatus(latestRun?.status)) {
-        outcome = latestRun.status;
-      } else if (adapterResult.timedOut) {
-        outcome = "timed_out";
-      } else if ((adapterResult.exitCode ?? 0) === 0 && !adapterResult.errorMessage) {
-        outcome = "succeeded";
-      } else {
-        outcome = "failed";
-      }
+      const adapterSemanticFailure = readAdapterSemanticFailure(adapterResult.resultJson);
+      const outcome = resolveAdapterRunOutcome({
+        currentTerminalStatus: isHeartbeatRunTerminalStatus(latestRun?.status)
+          ? latestRun.status
+          : null,
+        adapterResult,
+      });
 
       const nextSessionState = resolveNextSessionState({
         adapterType: agent.adapterType,
@@ -14881,7 +14931,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           : outcome === "succeeded"
             ? null
             : redactCurrentUserText(
-                adapterResult.errorMessage ?? (outcome === "timed_out" ? "Timed out" : "Adapter failed"),
+                adapterResult.errorMessage ??
+                  (outcome === "timed_out"
+                    ? "Timed out"
+                    : adapterSemanticFailure?.message ??
+                      (adapterSemanticFailure
+                        ? `Adapter reported ${adapterSemanticFailure.status} status`
+                        : "Adapter failed")),
                 currentUserRedactionOptions,
               );
       const recordedResponsibleUserDenialCode =
@@ -14892,7 +14948,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           : outcome === "cancelled"
             ? (latestRun?.errorCode ?? "cancelled")
             : outcome === "failed"
-              ? (adapterResult.errorCode ?? recordedResponsibleUserDenialCode ?? "adapter_failed")
+              ? (
+                  adapterResult.errorCode ??
+                  recordedResponsibleUserDenialCode ??
+                  (adapterSemanticFailure ? "adapter_result_error" : "adapter_failed")
+                )
               : null;
 
       let logSummary: { bytes: number; sha256?: string; compressed: boolean } | null = null;
