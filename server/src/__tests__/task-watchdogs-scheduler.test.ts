@@ -215,6 +215,7 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
       originId: sourceId,
       assigneeAgentId: agentId,
       status: "todo",
+      version: 2,
     });
 
     const [watchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
@@ -259,6 +260,34 @@ describeEmbeddedPostgres("task watchdog scheduler", () => {
     const [watchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
     expect(watchdog?.lastObservedFingerprint).toBe(firstWatchdog?.lastObservedFingerprint);
     expect(watchdog?.triggerCount).toBe(1);
+  });
+
+  it("increments once for a changed watchdog fingerprint and once for its review comment", async () => {
+    const companyId = await seedCompany();
+    const sourceId = await seedIssue(companyId, { identifier: "WDOG-VERSION", status: "done" });
+    const childId = await seedIssue(companyId, { parentId: sourceId, status: "done" });
+    const agentId = await seedAgent(companyId);
+    await seedWatchdog(companyId, sourceId, agentId);
+    const { service } = createService();
+
+    await service.reconcileTaskWatchdogs({ companyId });
+    const [firstWatchdog] = await db.select().from(issueWatchdogs).where(eq(issueWatchdogs.issueId, sourceId));
+    const watchdogIssueId = firstWatchdog!.watchdogIssueId!;
+    const [initialWatchdogIssue] = await db.select().from(issues).where(eq(issues.id, watchdogIssueId));
+    expect(initialWatchdogIssue?.version).toBe(2);
+
+    await db
+      .update(issues)
+      .set({ status: "blocked", updatedAt: new Date(Date.now() + 60_000) })
+      .where(eq(issues.id, childId));
+    const retriggered = await service.reconcileTaskWatchdogs({ companyId });
+
+    expect(retriggered).toMatchObject({ checked: 1, triggered: 1 });
+    const [updatedWatchdogIssue] = await db.select().from(issues).where(eq(issues.id, watchdogIssueId));
+    expect(updatedWatchdogIssue?.originFingerprint).not.toBe(initialWatchdogIssue?.originFingerprint);
+    expect(updatedWatchdogIssue?.version).toBe(4);
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, watchdogIssueId));
+    expect(comments).toHaveLength(2);
   });
 
   it("re-wakes a same-fingerprint watchdog review stuck in stale in_review", async () => {

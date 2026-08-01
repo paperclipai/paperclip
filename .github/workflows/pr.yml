@@ -46,6 +46,21 @@ jobs:
         with:
           node-version: 24
 
+      - name: Validate dependency resolution when manifests change
+        id: regen_lockfile
+        run: |
+          changed="$(git diff --name-only "${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}")"
+          manifest_pattern='(^|/)package\.json$|^pnpm-workspace\.yaml$|^\.npmrc$|^pnpmfile\.(cjs|js|mjs)$|^patches/'
+          if printf '%s\n' "$changed" | grep -Eq "$manifest_pattern"; then
+            pnpm install --lockfile-only --ignore-scripts --no-frozen-lockfile
+            echo "regenerated=1" >> "$GITHUB_OUTPUT"
+          else
+            echo "regenerated=0" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Install policy scanner dependencies
+        run: pnpm install --filter paperclip --frozen-lockfile --ignore-scripts
+
       - name: Validate Dockerfile deps stage
         run: node ./scripts/check-docker-deps-stage.mjs
 
@@ -54,6 +69,12 @@ jobs:
 
       - name: Test no-git-push check
         run: node --test ./scripts/check-no-git-push.test.mjs
+
+      - name: Verify issue version write catalog
+        run: node ./scripts/check-issue-version-writes.mjs --verify-baseline
+
+      - name: Test issue version write catalog scanner
+        run: node --test ./scripts/check-issue-version-writes.test.mjs
 
       - name: Test general-server shard partition
         run: node --test ./scripts/__tests__/run-vitest-stable-shard.test.mjs
@@ -75,18 +96,6 @@ jobs:
           mapfile -t changed_paths < <(git diff --name-only "${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}")
           PAPERCLIP_RELEASE_BOOTSTRAP_BASE_SHA="${{ github.event.pull_request.base.sha }}" \
             node ./scripts/check-release-package-bootstrap.mjs "${changed_paths[@]}"
-
-      - name: Validate dependency resolution when manifests change
-        id: regen_lockfile
-        run: |
-          changed="$(git diff --name-only "${{ github.event.pull_request.base.sha }}...${{ github.event.pull_request.head.sha }}")"
-          manifest_pattern='(^|/)package\.json$|^pnpm-workspace\.yaml$|^\.npmrc$|^pnpmfile\.(cjs|js|mjs)$|^patches/'
-          if printf '%s\n' "$changed" | grep -Eq "$manifest_pattern"; then
-            pnpm install --lockfile-only --ignore-scripts --no-frozen-lockfile
-            echo "regenerated=1" >> "$GITHUB_OUTPUT"
-          else
-            echo "regenerated=0" >> "$GITHUB_OUTPUT"
-          fi
 
       # Manifest-only PRs (where pnpm-lock.yaml stays at base because the policy
       # job above blocks committing it) need the regenerated lockfile for the

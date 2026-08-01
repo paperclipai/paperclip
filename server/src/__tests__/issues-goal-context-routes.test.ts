@@ -158,6 +158,7 @@ function createApp() {
 
 const legacyProjectLinkedIssue = {
   id: "11111111-1111-4111-8111-111111111111",
+  version: 1,
   companyId: "company-1",
   identifier: "PAP-581",
   title: "Legacy onboarding task",

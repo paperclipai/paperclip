@@ -44,6 +44,8 @@ import type {
   PrincipalPermissionGrant,
   PermissionKey,
   PrincipalType,
+  PluginNamespaceFenceScalar,
+  PluginVersionedIssue,
 } from "./types.js";
 import type {
   PluginEnvironmentValidateConfigParams,
@@ -108,7 +110,7 @@ export interface TestHarness {
   seed(input: {
     companies?: Company[];
     projects?: Project[];
-    issues?: Issue[];
+    issues?: Array<Issue & { version?: number }>;
     issueComments?: IssueComment[];
     issueInteractions?: IssueThreadInteraction[];
     issueAttachments?: Array<IssueAttachment & { contentBase64?: string }>;
@@ -119,6 +121,11 @@ export interface TestHarness {
     executionWorkspaces?: PluginExecutionWorkspaceMetadata[];
     accessMembers?: PluginAccessMember[];
     principalGrants?: PrincipalPermissionGrant[];
+    namespaceFences?: Array<{
+      table: string;
+      lane: Record<string, PluginNamespaceFenceScalar>;
+      values: Record<string, PluginNamespaceFenceScalar>;
+    }>;
   }): void;
   setConfig(config: Record<string, unknown>): void;
   /** Dispatch a host or plugin event to registered handlers. */
@@ -493,7 +500,8 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
   const projects = new Map<string, Project>();
   const routines = new Map<string, Routine>();
   const routineRuns = new Map<string, RoutineRun>();
-  const issues = new Map<string, Issue>();
+  const issues = new Map<string, PluginVersionedIssue>();
+  const namespaceFences = new Map<string, Record<string, PluginNamespaceFenceScalar>>();
   const blockedByIssueIds = new Map<string, string[]>();
   const issueComments = new Map<string, IssueComment[]>();
   const issueInteractions = new Map<string, IssueThreadInteraction[]>();
@@ -505,6 +513,13 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
   const goals = new Map<string, Goal>();
   const accessMembers = new Map<string, PluginAccessMember>();
   const principalGrants = new Map<string, PrincipalPermissionGrant[]>();
+
+  function namespaceFenceKey(
+    table: string,
+    lane: Record<string, PluginNamespaceFenceScalar>,
+  ) {
+    return `${table}:${JSON.stringify(Object.entries(lane).sort(([a], [b]) => a.localeCompare(b)))}`;
+  }
 
   function principalGrantsKey(companyId: string, principalType: PrincipalType, principalId: string) {
     return `${companyId}:${principalType}:${principalId}`;
@@ -1590,7 +1605,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
             ? pluginOperationIssueOriginKind(manifest.id)
             : input.originKind,
         );
-        const record: Issue = {
+        const record: PluginVersionedIssue = {
           id: randomUUID(),
           companyId: input.companyId,
           projectId: input.projectId ?? null,
@@ -1626,6 +1641,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
           completedAt: null,
           cancelledAt: null,
           hiddenAt: null,
+          version: 1,
           createdAt: now,
           updatedAt: now,
         };
@@ -1641,9 +1657,10 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         if (issuePatch.originKind !== undefined) {
           issuePatch.originKind = normalizePluginOriginKind(issuePatch.originKind);
         }
-        const updated: Issue = {
+        const updated: PluginVersionedIssue = {
           ...record,
           ...issuePatch,
+          version: record.version + 1,
           updatedAt: new Date(),
         };
         issues.set(issueId, updated);
@@ -1651,6 +1668,40 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
           blockedByIssueIds.set(issueId, [...new Set(nextBlockedByIssueIds)]);
         }
         return updated;
+      },
+      async updateConditional(input) {
+        requireCapability(manifest, capabilitySet, "issues.update");
+        const record = issues.get(input.issueId);
+        if (!isInCompany(record, input.companyId)) {
+          return { applied: false, reason: "not_found" };
+        }
+        const fence = namespaceFences.get(
+          namespaceFenceKey(input.namespaceFence.table, input.namespaceFence.lane),
+        );
+        if (!fence) return { applied: false, reason: "not_found" };
+        const fenceMatches = Object.entries(input.namespaceFence.expected).every(
+          ([key, value]) => Object.is(fence[key], value),
+        );
+        if (!fenceMatches) return { applied: false, reason: "fence_mismatch" };
+        const currentVersion = record.version;
+        if (currentVersion !== input.expectedVersion) {
+          return { applied: false, reason: "issue_version_mismatch" };
+        }
+        const { blockedByIssueIds: nextBlockedByIssueIds, ...issuePatch } = input.patch;
+        if (issuePatch.originKind !== undefined) {
+          issuePatch.originKind = normalizePluginOriginKind(issuePatch.originKind);
+        }
+        const updated: PluginVersionedIssue = {
+          ...record,
+          ...issuePatch,
+          version: currentVersion + 1,
+          updatedAt: new Date(),
+        };
+        issues.set(input.issueId, updated);
+        if (nextBlockedByIssueIds !== undefined) {
+          blockedByIssueIds.set(input.issueId, [...new Set(nextBlockedByIssueIds)]);
+        }
+        return { applied: true, issue: updated };
       },
       async assertCheckoutOwner(input) {
         requireCapability(manifest, capabilitySet, "issues.checkout");
@@ -1944,7 +1995,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
           frontier = children;
         }
         const issueIds = includeRoot ? allIds : allIds.filter((id) => id !== root.id);
-        const subtreeIssues = issueIds.map((id) => issues.get(id)).filter((candidate): candidate is Issue => Boolean(candidate));
+        const subtreeIssues = issueIds.map((id) => issues.get(id)).filter((candidate): candidate is PluginVersionedIssue => Boolean(candidate));
         return {
           rootIssueId: root.id,
           companyId,
@@ -2510,7 +2561,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       for (const row of input.companies ?? []) companies.set(row.id, row);
       for (const row of input.projects ?? []) projects.set(row.id, row);
       for (const row of input.issues ?? []) {
-        issues.set(row.id, row);
+        issues.set(row.id, { ...row, version: row.version ?? 1 });
         if (row.blockedBy) {
           blockedByIssueIds.set(row.id, row.blockedBy.map((blocker) => blocker.id));
         }
@@ -2546,6 +2597,12 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         const list = principalGrants.get(principalGrantsKey(row.companyId, row.principalType, row.principalId)) ?? [];
         list.push(row);
         principalGrants.set(principalGrantsKey(row.companyId, row.principalType, row.principalId), list);
+      }
+      for (const row of input.namespaceFences ?? []) {
+        namespaceFences.set(
+          namespaceFenceKey(row.table, row.lane),
+          { ...row.values },
+        );
       }
     },
     setConfig(config) {

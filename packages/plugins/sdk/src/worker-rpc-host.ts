@@ -848,6 +848,10 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
           });
         },
 
+        async updateConditional(input) {
+          return callHost("issues.updateConditional", input);
+        },
+
         async assertCheckoutOwner(input) {
           return callHost("issues.assertCheckoutOwner", input);
         },

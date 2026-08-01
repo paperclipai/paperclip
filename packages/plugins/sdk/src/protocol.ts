@@ -74,6 +74,10 @@ import type {
   PluginAuthorizationDecisionResult,
   PluginAuthorizationPolicyRecord,
   PluginAuthorizationPolicySummary,
+  PluginConditionalIssueUpdateResult,
+  PluginIssueUpdatePatch,
+  PluginNamespaceFence,
+  PluginVersionedIssue,
 } from "./types.js";
 import type {
   PluginHealthDiagnostics,
@@ -282,6 +286,10 @@ export type PluginRpcErrorCode =
  */
 export interface PluginInvocationScope {
   companyId: string;
+  actorType?: "user" | "agent" | "system";
+  actorUserId?: string | null;
+  actorAgentId?: string | null;
+  actorRunId?: string | null;
 }
 
 /**
@@ -1390,11 +1398,11 @@ export interface WorkerToHostMethods {
       limit?: number;
       offset?: number;
     },
-    result: Issue[],
+    result: PluginVersionedIssue[],
   ];
   "issues.get": [
     params: { issueId: string; companyId: string },
-    result: Issue | null,
+    result: PluginVersionedIssue | null,
   ];
   "issues.create": [
     params: {
@@ -1425,7 +1433,7 @@ export interface WorkerToHostMethods {
       actorUserId?: string | null;
       actorRunId?: string | null;
     },
-    result: Issue,
+    result: PluginVersionedIssue,
   ];
   "issues.update": [
     params: {
@@ -1433,7 +1441,17 @@ export interface WorkerToHostMethods {
       patch: Record<string, unknown>;
       companyId: string;
     },
-    result: Issue,
+    result: PluginVersionedIssue,
+  ];
+  "issues.updateConditional": [
+    params: {
+      issueId: string;
+      companyId: string;
+      patch: PluginIssueUpdatePatch;
+      expectedVersion: number;
+      namespaceFence: PluginNamespaceFence;
+    },
+    result: PluginConditionalIssueUpdateResult,
   ];
   "issues.relations.get": [
     params: { issueId: string; companyId: string },

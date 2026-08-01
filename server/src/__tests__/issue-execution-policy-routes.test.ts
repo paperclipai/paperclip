@@ -236,6 +236,7 @@ describe("issue execution policy routes", () => {
       title: "Missing review path",
       executionPolicy: null,
       executionState: null,
+      version: 1,
     };
     mockIssueService.getById.mockResolvedValue(issue);
 
@@ -270,6 +271,7 @@ describe("issue execution policy routes", () => {
       title: "Pending confirmation",
       executionPolicy: null,
       executionState: null,
+      version: 1,
     };
     mockIssueService.getById.mockResolvedValue(issue);
     mockIssueThreadInteractionService.listForIssue.mockResolvedValue([
@@ -309,6 +311,7 @@ describe("issue execution policy routes", () => {
       title: "Execution participant",
       executionPolicy: null,
       executionState: null,
+      version: 1,
     };
     const policy = normalizeIssueExecutionPolicy({
       stages: [
@@ -368,6 +371,7 @@ describe("issue execution policy routes", () => {
       monitorLastTriggeredAt: null,
       monitorNotes: null,
       monitorScheduledBy: null,
+      version: 1,
     };
     mockIssueService.getById.mockResolvedValue(issue);
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
@@ -416,6 +420,7 @@ describe("issue execution policy routes", () => {
       title: "Board repair",
       executionPolicy: null,
       executionState: null,
+      version: 1,
     };
     mockIssueService.getById.mockResolvedValue(issue);
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
@@ -454,6 +459,7 @@ describe("issue execution policy routes", () => {
       title: "Execution policy edit",
       executionPolicy: null,
       executionState: null,
+      version: 1,
     };
     mockIssueService.getById.mockResolvedValue(issue);
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
@@ -501,6 +507,7 @@ describe("issue execution policy routes", () => {
         },
       }),
       executionState: null,
+      version: 1,
     };
     mockIssueService.getById.mockResolvedValue(issue);
 

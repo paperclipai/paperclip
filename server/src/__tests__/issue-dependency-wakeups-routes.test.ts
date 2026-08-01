@@ -184,6 +184,7 @@ describe("issue dependency wakeups in issue routes", () => {
     });
     mockIssueService.update.mockResolvedValue({
       id: "issue-1",
+      version: 1,
       companyId: "company-1",
       identifier: "PAP-100",
       title: "Finish blocker",
@@ -245,6 +246,7 @@ describe("issue dependency wakeups in issue routes", () => {
     });
     mockIssueService.update.mockResolvedValue({
       id: parentIssueId,
+      version: 1,
       companyId: "company-1",
       identifier: "PAP-200",
       title: "Blocked after completion",
@@ -317,6 +319,7 @@ describe("issue dependency wakeups in issue routes", () => {
     });
     mockIssueService.update.mockResolvedValue({
       id: "child-1",
+      version: 1,
       companyId: "company-1",
       identifier: "PAP-101",
       title: "Last child",

@@ -12,7 +12,7 @@ const manifest = {
   author: "Paperclip",
   categories: ["automation"],
   capabilities: [],
-  entrypoints: {},
+  entrypoints: { worker: "worker.js" },
 } satisfies PaperclipPluginManifestV1;
 
 describe("createTestHarness action context", () => {
@@ -112,6 +112,7 @@ describe("createTestHarness issue interactions", () => {
       issue.id,
       {
         idempotencyKey: "checkbox:files",
+        continuationPolicy: "wake_assignee",
         title: "Choose files",
         payload: {
           version: 1,
@@ -120,6 +121,7 @@ describe("createTestHarness issue interactions", () => {
             { id: "file-a", label: "File A" },
             { id: "file-b", label: "File B", description: "Secondary draft" },
           ],
+          allowDeclineReason: false,
           defaultSelectedOptionIds: ["file-a"],
           minSelected: 1,
           maxSelected: 2,

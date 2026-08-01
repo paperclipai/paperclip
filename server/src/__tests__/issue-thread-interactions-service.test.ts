@@ -243,6 +243,8 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
 
     const childrenAfterDuplicateAccept = await issuesSvc.list(companyId, { parentId: issueId });
     expect(childrenAfterDuplicateAccept).toHaveLength(1);
+    const [parentIssue] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(parentIssue?.version).toBe(3);
   });
 
   it("accepts a selected subset of suggested tasks and records the skipped drafts", async () => {

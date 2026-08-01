@@ -1,4 +1,5 @@
 import type { Db } from "@paperclipai/db";
+import { requireVersionedIssue, versionedIssuePatch } from "./issue-versioning.js";
 import {
   activityLog,
   agentTaskSessions as agentTaskSessionsTable,
@@ -34,6 +35,7 @@ import { agentService } from "./agents.js";
 import { projectService } from "./projects.js";
 import { executionWorkspaceService } from "./execution-workspaces.js";
 import { issueService } from "./issues.js";
+import { pluginConditionalIssueUpdateService } from "./plugin-conditional-issue-update.js";
 import { issueThreadInteractionService } from "./issue-thread-interactions.js";
 import { goalService } from "./goals.js";
 import { documentService } from "./documents.js";
@@ -540,6 +542,7 @@ export function buildHostServices(
   const projects = projectService(db);
   const executionWorkspaces = executionWorkspaceService(db);
   const issues = issueService(db);
+  const conditionalIssueUpdates = pluginConditionalIssueUpdateService(db, pluginId, pluginKey);
   const documents = documentService(db);
   const goals = goalService(db);
   const access = accessService(db);
@@ -1685,13 +1688,16 @@ export function buildHostServices(
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
         assertReadableOriginFilter(params.originKind);
-        return applyWindow((await issues.list(companyId, params as any)) as Issue[], params);
+        return applyWindow(
+          ((await issues.list(companyId, params as any)) as unknown[]).map(requireVersionedIssue),
+          params,
+        );
       },
       async get(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
         const issue = await issues.getById(params.issueId);
-        return (inCompany(issue, companyId) ? issue : null) as Issue | null;
+        return inCompany(issue, companyId) ? requireVersionedIssue(issue) : null;
       },
       async create(params) {
         const companyId = ensureCompanyId(params.companyId);
@@ -1702,7 +1708,7 @@ export function buildHostServices(
             ? pluginOperationIssueOriginKind(pluginKey)
             : originKind,
         );
-        const issue = (await issues.create(companyId, {
+        const createdIssue = (await issues.create(companyId, {
           ...(issueInput as any),
           originKind: normalizedOriginKind,
           originId: params.originId ?? null,
@@ -1711,7 +1717,8 @@ export function buildHostServices(
           createdByUserId: actorUserId ?? null,
           actorResponsibleUserId: actorUserId ?? null,
           trustExplicitResponsibleUserId: true,
-        })) as Issue;
+        }));
+        const issue = requireVersionedIssue(createdIssue);
         await logPluginActivity({
           companyId,
           action: "issue.created",
@@ -1743,11 +1750,12 @@ export function buildHostServices(
         if (patch.originKind !== undefined) {
           patch.originKind = normalizePluginOriginKind(patch.originKind);
         }
-        const updated = (await issues.update(params.issueId, {
+        const updatedIssue = (await issues.update(params.issueId, {
           ...(patch as any),
           actorAgentId,
           actorUserId,
-        })) as Issue;
+        }));
+        const updated = requireVersionedIssue(updatedIssue);
         await logPluginActivity({
           companyId,
           action: "issue.updated",
@@ -1765,6 +1773,21 @@ export function buildHostServices(
           },
         });
         return updated;
+      },
+      async updateConditional(params, context) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const patch = { ...(params.patch as Record<string, unknown>) };
+        if (patch.originKind !== undefined) {
+          patch.originKind = normalizePluginOriginKind(patch.originKind);
+        }
+        return conditionalIssueUpdates.update({
+          issueId: params.issueId,
+          companyId,
+          expectedVersion: params.expectedVersion,
+          namespaceFence: params.namespaceFence,
+          patch,
+        }, context);
       },
       async getRelations(params) {
         const companyId = ensureCompanyId(params.companyId);
@@ -2890,7 +2913,7 @@ export function buildHostServices(
           else delete executionPolicy.authorizationPolicy;
           await db
             .update(issuesTable)
-            .set({ executionPolicy, updatedAt: new Date() })
+            .set(versionedIssuePatch({ executionPolicy }, new Date()))
             .where(eq(issuesTable.id, issue.id));
         } else {
           const company = await companies.getById(params.resourceId);

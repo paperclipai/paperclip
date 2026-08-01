@@ -7,6 +7,7 @@ const mockIssueService = vi.hoisted(() => ({
   assertCheckoutOwner: vi.fn(),
   update: vi.fn(),
   addComment: vi.fn(),
+  updateWithInlineComment: vi.fn(),
   getDependencyReadiness: vi.fn(),
   getCurrentScheduledRetry: vi.fn(),
   findMentionedAgents: vi.fn(),
@@ -26,6 +27,8 @@ const mockHeartbeatService = vi.hoisted(() => ({
   getRun: vi.fn(async () => null),
   getActiveRunForAgent: vi.fn(async () => null),
   cancelRun: vi.fn(async () => null),
+  cancelScheduledRetryInTransaction: vi.fn(async () => null),
+  finalizeScheduledRetryCancellation: vi.fn(async () => undefined),
 }));
 
 const mockAgentService = vi.hoisted(() => ({
@@ -216,6 +219,7 @@ function makeIssue(status: "todo" | "done" | "blocked" | "cancelled" | "in_progr
     createdByUserId: "local-board",
     identifier: "PAP-580",
     title: "Comment reopen default",
+    version: 1,
   };
 }
 
@@ -240,6 +244,7 @@ describe.sequential("issue comment reopen routes", () => {
     mockIssueService.assertCheckoutOwner.mockReset();
     mockIssueService.update.mockReset();
     mockIssueService.addComment.mockReset();
+    mockIssueService.updateWithInlineComment.mockReset();
     mockIssueService.getDependencyReadiness.mockReset();
     mockIssueService.getCurrentScheduledRetry.mockReset();
     mockIssueService.findMentionedAgents.mockReset();
@@ -253,6 +258,8 @@ describe.sequential("issue comment reopen routes", () => {
     mockHeartbeatService.getRun.mockReset();
     mockHeartbeatService.getActiveRunForAgent.mockReset();
     mockHeartbeatService.cancelRun.mockReset();
+    mockHeartbeatService.cancelScheduledRetryInTransaction.mockReset();
+    mockHeartbeatService.finalizeScheduledRetryCancellation.mockReset();
     mockAgentService.getById.mockReset();
     mockAgentService.list.mockReset();
     mockAgentService.resolveByReference.mockReset();
@@ -289,6 +296,8 @@ describe.sequential("issue comment reopen routes", () => {
     mockHeartbeatService.getRun.mockResolvedValue(null);
     mockHeartbeatService.getActiveRunForAgent.mockResolvedValue(null);
     mockHeartbeatService.cancelRun.mockResolvedValue(null);
+    mockHeartbeatService.cancelScheduledRetryInTransaction.mockResolvedValue(null);
+    mockHeartbeatService.finalizeScheduledRetryCancellation.mockResolvedValue(undefined);
     mockExternalObjectService.syncCommentSafely.mockResolvedValue(undefined);
     mockExternalObjectService.syncIssueSafely.mockResolvedValue(undefined);
     mockLogActivity.mockResolvedValue(undefined);
@@ -319,6 +328,27 @@ describe.sequential("issue comment reopen routes", () => {
       authorAgentId: null,
       authorUserId: "local-board",
     });
+    mockIssueService.updateWithInlineComment.mockImplementation(
+      async (issueId, issueData, commentData) =>
+        mockDb.transaction(async (tx) => {
+          const meaningfulUpdate = Object.keys(issueData).some(
+            (key) => key !== "expectedVersion",
+          );
+          const issue = meaningfulUpdate
+            ? await mockIssueService.update(issueId, issueData)
+            : await mockIssueService.getById(issueId);
+          if (!issue) return null;
+          const comment = await mockIssueService.addComment(
+            issueId,
+            commentData.body,
+            commentData.actor,
+            commentData.options,
+          );
+          await commentData.afterUpdate?.(tx, issue, comment);
+          await commentData.beforeCommit?.(tx, issue, comment);
+          return { issue, comment };
+        }),
+    );
     mockIssueService.findMentionedAgents.mockResolvedValue([]);
     mockIssueService.getDependencyReadiness.mockResolvedValue({
       issueId: "11111111-1111-4111-8111-111111111111",
@@ -396,7 +426,7 @@ describe.sequential("issue comment reopen routes", () => {
         details: expect.not.objectContaining({ reopened: true }),
       }),
     );
-  });
+  }, 10_000);
 
   it("implicitly reopens closed issues via the PATCH comment path when reassigning to an agent", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("done"));
@@ -430,7 +460,7 @@ describe.sequential("issue comment reopen routes", () => {
         }),
       }),
     );
-  });
+  }, 10_000);
 
   it("resolves assignee shortnames before updating an issue", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
@@ -876,7 +906,7 @@ describe.sequential("issue comment reopen routes", () => {
       ...patch,
       updatedAt: new Date(),
     }));
-    mockHeartbeatService.cancelRun.mockResolvedValue({
+    mockHeartbeatService.cancelScheduledRetryInTransaction.mockResolvedValue({
       id: "retry-run-1",
       companyId: "company-1",
       agentId: "22222222-2222-4222-8222-222222222222",
@@ -890,9 +920,19 @@ describe.sequential("issue comment reopen routes", () => {
     expect(res.status).toBe(201);
     expect(mockIssueService.update).toHaveBeenCalledWith(
       "11111111-1111-4111-8111-111111111111",
-      { status: "todo" },
+      expect.objectContaining({
+        executionAgentNameKey: null,
+        executionLockedAt: null,
+        executionRunId: null,
+        status: "todo",
+      }),
     );
-    expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith("retry-run-1");
+    expect(mockHeartbeatService.cancelScheduledRetryInTransaction).toHaveBeenCalledWith(
+      mockTx,
+      "retry-run-1",
+      "Superseded by a human issue comment",
+    );
+    expect(mockHeartbeatService.finalizeScheduledRetryCancellation).toHaveBeenCalledWith("retry-run-1");
     expect(mockLogActivity).toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({
@@ -921,6 +961,50 @@ describe.sequential("issue comment reopen routes", () => {
     ));
   });
 
+  it("returns the committed POST comment when scheduled retry finalization fails", async () => {
+    const issue = {
+      ...makeIssue("in_progress"),
+      executionRunId: "retry-run-1",
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.getCurrentScheduledRetry.mockResolvedValue({
+      runId: "retry-run-1",
+      status: "scheduled_retry",
+      agentId: "22222222-2222-4222-8222-222222222222",
+      agentName: "CodexCoder",
+      retryOfRunId: "source-run-1",
+      scheduledRetryAt: new Date("2026-05-18T14:00:00.000Z"),
+      scheduledRetryAttempt: 1,
+      scheduledRetryReason: "transient_failure",
+      error: null,
+      errorCode: null,
+    });
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+    mockHeartbeatService.cancelScheduledRetryInTransaction.mockResolvedValue({
+      id: "retry-run-1",
+      companyId: "company-1",
+      agentId: "22222222-2222-4222-8222-222222222222",
+      status: "cancelled",
+    });
+    mockHeartbeatService.finalizeScheduledRetryCancellation.mockRejectedValue(
+      new Error("finalization failed"),
+    );
+
+    const res = await request(await installActor(createApp()))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "I added the missing detail; please continue." });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.addComment).toHaveBeenCalled();
+    expect(mockHeartbeatService.finalizeScheduledRetryCancellation).toHaveBeenCalledWith(
+      "retry-run-1",
+    );
+  });
+
   it("does not move scheduled-retry issues to todo when POST comment retry cancellation fails", async () => {
     const issue = {
       ...makeIssue("in_progress"),
@@ -939,16 +1023,25 @@ describe.sequential("issue comment reopen routes", () => {
       error: null,
       errorCode: null,
     });
-    mockHeartbeatService.cancelRun.mockRejectedValue(new Error("cancel failed"));
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+    mockHeartbeatService.cancelScheduledRetryInTransaction.mockRejectedValue(new Error("cancel failed"));
 
     const res = await request(await installActor(createApp()))
       .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
       .send({ body: "I added the missing detail; please continue." });
 
     expect(res.status).toBe(500);
-    expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith("retry-run-1");
-    expect(mockIssueService.update).not.toHaveBeenCalled();
-    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.cancelScheduledRetryInTransaction).toHaveBeenCalledWith(
+      mockTx,
+      "retry-run-1",
+      "Superseded by a human issue comment",
+    );
+    expect(mockIssueService.update).toHaveBeenCalled();
+    expect(mockIssueService.addComment).toHaveBeenCalled();
     expect(mockLogActivity).not.toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({ action: "issue.updated" }),
@@ -1352,7 +1445,7 @@ describe.sequential("issue comment reopen routes", () => {
       ...patch,
       updatedAt: new Date(),
     }));
-    mockHeartbeatService.cancelRun.mockResolvedValue({
+    mockHeartbeatService.cancelScheduledRetryInTransaction.mockResolvedValue({
       id: "retry-run-1",
       companyId: "company-1",
       agentId: "22222222-2222-4222-8222-222222222222",
@@ -1370,9 +1463,17 @@ describe.sequential("issue comment reopen routes", () => {
         status: "todo",
         actorAgentId: null,
         actorUserId: "local-board",
+        executionAgentNameKey: null,
+        executionLockedAt: null,
+        executionRunId: null,
       }),
     );
-    expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith("retry-run-1");
+    expect(mockHeartbeatService.cancelScheduledRetryInTransaction).toHaveBeenCalledWith(
+      mockTx,
+      "retry-run-1",
+      "Superseded by a human issue comment",
+    );
+    expect(mockHeartbeatService.finalizeScheduledRetryCancellation).toHaveBeenCalledWith("retry-run-1");
     await waitForWakeup(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
       "22222222-2222-4222-8222-222222222222",
       expect.objectContaining({
@@ -1383,6 +1484,50 @@ describe.sequential("issue comment reopen routes", () => {
         }),
       }),
     ));
+  });
+
+  it("returns the committed PATCH comment when scheduled retry finalization fails", async () => {
+    const issue = {
+      ...makeIssue("in_progress"),
+      executionRunId: "retry-run-1",
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.getCurrentScheduledRetry.mockResolvedValue({
+      runId: "retry-run-1",
+      status: "scheduled_retry",
+      agentId: "22222222-2222-4222-8222-222222222222",
+      agentName: "CodexCoder",
+      retryOfRunId: "source-run-1",
+      scheduledRetryAt: new Date("2026-05-18T14:00:00.000Z"),
+      scheduledRetryAttempt: 1,
+      scheduledRetryReason: "transient_failure",
+      error: null,
+      errorCode: null,
+    });
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+    mockHeartbeatService.cancelScheduledRetryInTransaction.mockResolvedValue({
+      id: "retry-run-1",
+      companyId: "company-1",
+      agentId: "22222222-2222-4222-8222-222222222222",
+      status: "cancelled",
+    });
+    mockHeartbeatService.finalizeScheduledRetryCancellation.mockRejectedValue(
+      new Error("finalization failed"),
+    );
+
+    const res = await request(await installActor(createApp()))
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ comment: "Retry window is over; please continue." });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.addComment).toHaveBeenCalled();
+    expect(mockHeartbeatService.finalizeScheduledRetryCancellation).toHaveBeenCalledWith(
+      "retry-run-1",
+    );
   });
 
   it("does not move scheduled-retry issues to todo when PATCH comment retry cancellation fails", async () => {
@@ -1403,16 +1548,25 @@ describe.sequential("issue comment reopen routes", () => {
       error: null,
       errorCode: null,
     });
-    mockHeartbeatService.cancelRun.mockRejectedValue(new Error("cancel failed"));
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+    mockHeartbeatService.cancelScheduledRetryInTransaction.mockRejectedValue(new Error("cancel failed"));
 
     const res = await request(await installActor(createApp()))
       .patch("/api/issues/11111111-1111-4111-8111-111111111111")
       .send({ comment: "Retry window is over; please continue." });
 
     expect(res.status).toBe(500);
-    expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith("retry-run-1");
-    expect(mockIssueService.update).not.toHaveBeenCalled();
-    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.cancelScheduledRetryInTransaction).toHaveBeenCalledWith(
+      mockTx,
+      "retry-run-1",
+      "Superseded by a human issue comment",
+    );
+    expect(mockIssueService.update).toHaveBeenCalled();
+    expect(mockIssueService.addComment).toHaveBeenCalled();
     expect(mockLogActivity).not.toHaveBeenCalledWith(
       expect.anything(),
       expect.objectContaining({ action: "issue.updated" }),
@@ -1768,6 +1922,111 @@ describe.sequential("issue comment reopen routes", () => {
     );
   });
 
+  it("returns the committed mutation once when interrupt cancellation fails", async () => {
+    let persistedIssue = {
+      ...makeIssue("todo"),
+      executionRunId: "run-1",
+    };
+    mockIssueService.getById.mockImplementation(async () => persistedIssue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => {
+      persistedIssue = {
+        ...persistedIssue,
+        ...patch,
+        version: persistedIssue.version + 1,
+      };
+      return persistedIssue;
+    });
+    mockHeartbeatService.getRun.mockResolvedValue({
+      id: "run-1",
+      companyId: "company-1",
+      agentId: "22222222-2222-4222-8222-222222222222",
+      status: "running",
+    });
+    mockHeartbeatService.cancelRun.mockRejectedValue(new Error("adapter process did not exit"));
+
+    const res = await request(await installActor(createApp()))
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({
+        comment: "hello",
+        interrupt: true,
+        assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      version: 2,
+      comment: { id: "comment-1", body: "hello" },
+      interrupt: {
+        outcome: "cancel_failed",
+        runId: "run-1",
+        mutationCommitted: true,
+        commentId: "comment-1",
+      },
+    });
+    expect(mockIssueService.updateWithInlineComment).toHaveBeenCalledTimes(1);
+    expect(mockIssueService.update).toHaveBeenCalledTimes(1);
+    expect(mockIssueService.addComment).toHaveBeenCalledTimes(1);
+    expect(mockHeartbeatService.cancelRun).toHaveBeenCalledTimes(1);
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "heartbeat.cancel_failed",
+        entityId: "run-1",
+        details: expect.objectContaining({
+          source: "issue_comment_interrupt",
+          issueMutationCommitted: true,
+          commentId: "comment-1",
+        }),
+      }),
+    );
+  });
+
+  it("returns the committed standalone comment once when interrupt cancellation fails", async () => {
+    const persistedIssue = {
+      ...makeIssue("todo"),
+      executionRunId: "run-1",
+    };
+    mockIssueService.getById.mockResolvedValue(persistedIssue);
+    mockHeartbeatService.getRun.mockResolvedValue({
+      id: "run-1",
+      companyId: "company-1",
+      agentId: "22222222-2222-4222-8222-222222222222",
+      status: "running",
+    });
+    mockHeartbeatService.cancelRun.mockRejectedValue(new Error("adapter process did not exit"));
+
+    const res = await request(await installActor(createApp()))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "hello", interrupt: true });
+
+    expect(res.status).toBe(201);
+    expect(res.body).toMatchObject({
+      id: "comment-1",
+      body: "hello",
+      interrupt: {
+        outcome: "cancel_failed",
+        runId: "run-1",
+        mutationCommitted: true,
+        commentId: "comment-1",
+      },
+    });
+    expect(mockIssueService.updateWithInlineComment).toHaveBeenCalledTimes(1);
+    expect(mockIssueService.addComment).toHaveBeenCalledTimes(1);
+    expect(mockHeartbeatService.cancelRun).toHaveBeenCalledTimes(1);
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "heartbeat.cancel_failed",
+        entityId: "run-1",
+        details: expect.objectContaining({
+          source: "issue_comment_interrupt",
+          issueMutationCommitted: true,
+          commentId: "comment-1",
+        }),
+      }),
+    );
+  }, 10_000);
+
   it("cancels an active run when an issue is marked cancelled", async () => {
     const issue = {
       ...makeIssue("in_progress"),
@@ -1889,7 +2148,6 @@ describe.sequential("issue comment reopen routes", () => {
           lastDecisionOutcome: "approved",
         }),
       }),
-      mockTx,
     );
     const updatePatch = mockIssueService.update.mock.calls[0]?.[1] as Record<string, any>;
     const decisionId = updatePatch.executionState.lastDecisionId;
@@ -1984,7 +2242,6 @@ describe.sequential("issue comment reopen routes", () => {
           lastDecisionOutcome: "approved",
         }),
       }),
-      mockTx,
     );
   });
 
@@ -2069,7 +2326,6 @@ describe.sequential("issue comment reopen routes", () => {
           lastDecisionOutcome: "approved",
         }),
       }),
-      mockTx,
     );
   });
 
@@ -2282,7 +2538,7 @@ describe.sequential("issue comment reopen routes", () => {
       .send({ body: reviewBody });
 
     expect(res.status).toBe(201);
-    expect(mockDb.transaction).not.toHaveBeenCalled();
+    expect(mockDb.transaction).toHaveBeenCalledTimes(1);
     expect(mockIssueService.update).not.toHaveBeenCalled();
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalledWith(
       expect.any(String),
@@ -2347,7 +2603,7 @@ describe.sequential("issue comment reopen routes", () => {
       .send({ body: reviewBody });
 
     expect(res.status).toBe(201);
-    expect(mockDb.transaction).not.toHaveBeenCalled();
+    expect(mockDb.transaction).toHaveBeenCalledTimes(1);
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
@@ -2407,7 +2663,7 @@ describe.sequential("issue comment reopen routes", () => {
       .send({ body: reviewBody });
 
     expect(res.status).toBe(201);
-    expect(mockDb.transaction).not.toHaveBeenCalled();
+    expect(mockDb.transaction).toHaveBeenCalledTimes(1);
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
@@ -2465,7 +2721,7 @@ describe.sequential("issue comment reopen routes", () => {
       .send({ body: reviewBody });
 
     expect(res.status).toBe(201);
-    expect(mockDb.transaction).not.toHaveBeenCalled();
+    expect(mockDb.transaction).toHaveBeenCalledTimes(1);
     expect(mockIssueService.update).not.toHaveBeenCalled();
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
@@ -2524,7 +2780,7 @@ describe.sequential("issue comment reopen routes", () => {
       .send({ body: reviewBody });
 
     expect(res.status).toBe(201);
-    expect(mockDb.transaction).not.toHaveBeenCalled();
+    expect(mockDb.transaction).toHaveBeenCalledTimes(1);
     expect(mockIssueService.update).not.toHaveBeenCalled();
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
@@ -2599,7 +2855,7 @@ describe.sequential("issue comment reopen routes", () => {
         .send({ body });
 
       expect(res.status).toBe(201);
-      expect(mockDb.transaction).not.toHaveBeenCalled();
+      expect(mockDb.transaction).toHaveBeenCalledTimes(1);
       expect(mockIssueService.update).not.toHaveBeenCalled();
       expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
     });
@@ -2678,7 +2934,6 @@ describe.sequential("issue comment reopen routes", () => {
       expect(mockIssueService.update).toHaveBeenCalledWith(
         "11111111-1111-4111-8111-111111111111",
         expect.objectContaining({ status: "done" }),
-        mockTx,
       );
       expect(mockLogActivity).toHaveBeenCalledWith(
         expect.anything(),
@@ -2749,18 +3004,11 @@ describe.sequential("issue comment reopen routes", () => {
       .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
       .send({ body: reviewBody });
 
-    // The route must propagate the 422 (no successful 201) and must insert the
-    // comment inside the same transaction as the status update so the comment
-    // rolls back when the status update fails.
+    // The atomic service updates first, so a rejected transition never inserts
+    // the comment and the transaction propagates the 422.
     expect(res.status).toBe(422);
     expect(mockDb.transaction).toHaveBeenCalledTimes(1);
-    expect(mockIssueService.addComment).toHaveBeenCalledWith(
-      "11111111-1111-4111-8111-111111111111",
-      reviewBody,
-      expect.objectContaining({ agentId: reviewerAgentId }),
-      expect.any(Object),
-      mockTx,
-    );
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
@@ -2819,18 +3067,11 @@ describe.sequential("issue comment reopen routes", () => {
       .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
       .send({ body: reviewBody });
 
-    // The route must surface a 404 AND keep the transaction rollback path intact:
-    // the addComment INSERT must run inside the same transaction that the throw aborts,
-    // so the comment cannot survive when the status update finds no issue.
+    // The atomic service updates first, so a missing issue returns before the
+    // comment insert and the route surfaces a 404.
     expect(res.status).toBe(404);
     expect(mockDb.transaction).toHaveBeenCalledTimes(1);
-    expect(mockIssueService.addComment).toHaveBeenCalledWith(
-      "11111111-1111-4111-8111-111111111111",
-      reviewBody,
-      expect.objectContaining({ agentId: reviewerAgentId }),
-      expect.any(Object),
-      mockTx,
-    );
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 

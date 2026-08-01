@@ -160,6 +160,7 @@ function makeIssue() {
     priority: "medium",
     executionPolicy: null,
     executionState: null,
+    version: 1,
     updatedAt: new Date("2026-07-30T12:00:00.000Z"),
   };
 }
@@ -378,6 +379,7 @@ describe("issue activity event routes", () => {
         "status": "todo",
         "title": "Activity event issue",
         "updatedAt": "2026-07-30T12:01:00.000Z",
+        "version": 1,
       }
     `);
   });
