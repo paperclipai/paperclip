@@ -291,13 +291,21 @@ function managedMcpGatewaysFromContext(context: Record<string, unknown>): Manage
 type ResolvedExecutionTarget = ReturnType<typeof readAdapterExecutionTarget>;
 type MaybeResolvedExecutionTarget = ResolvedExecutionTarget | undefined;
 
-async function sandboxCodexAuthJsonExists(input: {
+type SandboxCodexAuthProbeResult = "present" | "absent" | "unknown";
+
+/**
+ * Probe the sandbox for its own `~/.codex/auth.json`. "unknown" means the
+ * probe itself failed (timeout, transport error, or a shell failure other
+ * than `test`'s clean false) — callers that gate on the result must not
+ * report that as a missing credential.
+ */
+async function probeSandboxCodexAuthJson(input: {
   runId: string;
   target: MaybeResolvedExecutionTarget;
   cwd: string;
-}): Promise<boolean> {
+}): Promise<SandboxCodexAuthProbeResult> {
   if (!input.target || input.target.kind !== "remote" || input.target.transport !== "sandbox") {
-    return false;
+    return "absent";
   }
 
   try {
@@ -311,10 +319,20 @@ async function sandboxCodexAuthJsonExists(input: {
         timeoutSec: 5,
       },
     );
-    return !result.timedOut && result.exitCode === 0;
+    if (result.timedOut) return "unknown";
+    if (result.exitCode === 0) return "present";
+    return result.exitCode === 1 ? "absent" : "unknown";
   } catch {
-    return false;
+    return "unknown";
   }
+}
+
+async function sandboxCodexAuthJsonExists(input: {
+  runId: string;
+  target: MaybeResolvedExecutionTarget;
+  cwd: string;
+}): Promise<boolean> {
+  return (await probeSandboxCodexAuthJson(input)) === "present";
 }
 
 /**
@@ -349,15 +367,27 @@ export async function assertCodexCredentialsLaunchable(input: {
   const targetIsSandbox =
     input.target?.kind === "remote" && input.target.transport === "sandbox";
   if (targetIsSandbox) {
-    const sandboxAuthJson = await sandboxCodexAuthJsonExists({
+    const sandboxAuthJson = await probeSandboxCodexAuthJson({
       runId: input.runId,
       target: input.target,
       cwd: input.cwd,
     });
-    if (sandboxAuthJson) {
+    if (sandboxAuthJson === "present") {
       await input.onLog(
         "stdout",
         `Using the sandbox's own Codex login; managed home "${input.effectiveCodexHome}" has no host credentials.\n`,
+      );
+      return;
+    }
+    if (sandboxAuthJson === "unknown") {
+      // The probe failing is an operational problem, not evidence that the
+      // sandbox lacks a login — proceeding lets a genuinely credentialed
+      // sandbox run, and a credential-less one still fails at Codex's first
+      // request with the provider's own error.
+      await input.onLog(
+        "stderr",
+        `Could not verify the sandbox's Codex login (probe failed); proceeding. ` +
+          `If the sandbox has no credentials, Codex will fail at its first request.\n`,
       );
       return;
     }

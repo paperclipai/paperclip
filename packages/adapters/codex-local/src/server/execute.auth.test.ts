@@ -175,6 +175,48 @@ describe("codex sandbox-target credential gate", () => {
     ).rejects.toThrow(/the sandbox has no Codex login/);
   });
 
+  it("proceeds with a warning when the sandbox login probe fails operationally", async () => {
+    const { env, managedAgentHome } = await makeCredentiallessManagedHome();
+    mockRunTargetShellCommand.mockRejectedValue(new Error("transport lost"));
+    const stderrLines: string[] = [];
+
+    await expect(
+      assertCodexCredentialsLaunchable({
+        runId: "run-probe-error",
+        companyId: "company-1",
+        configuredCodexHome: managedAgentHome,
+        configuredApiKey: null,
+        effectiveCodexHome: managedAgentHome,
+        target: sandboxTarget,
+        cwd: "/workspace",
+        env,
+        onLog: async (stream, line) => {
+          if (stream === "stderr") stderrLines.push(line);
+        },
+      }),
+    ).resolves.toBeUndefined();
+    expect(stderrLines.join("")).toContain("Could not verify the sandbox's Codex login");
+  });
+
+  it("treats a probe timeout as unverifiable, not as a missing credential", async () => {
+    const { env, managedAgentHome } = await makeCredentiallessManagedHome();
+    mockRunTargetShellCommand.mockResolvedValue({ exitCode: 0, timedOut: true, stdout: "", stderr: "" });
+
+    await expect(
+      assertCodexCredentialsLaunchable({
+        runId: "run-probe-timeout",
+        companyId: "company-1",
+        configuredCodexHome: managedAgentHome,
+        configuredApiKey: null,
+        effectiveCodexHome: managedAgentHome,
+        target: sandboxTarget,
+        cwd: "/workspace",
+        env,
+        onLog: async () => {},
+      }),
+    ).resolves.toBeUndefined();
+  });
+
   it("keeps the strict host requirement for non-sandbox targets", async () => {
     const { env, managedAgentHome } = await makeCredentiallessManagedHome();
 
