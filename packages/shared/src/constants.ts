@@ -235,6 +235,9 @@ export type IssueCommentPresentationKind = (typeof ISSUE_COMMENT_PRESENTATION_KI
 export const ISSUE_COMMENT_PRESENTATION_TONES = ["neutral", "info", "success", "warning", "danger"] as const;
 export type IssueCommentPresentationTone = (typeof ISSUE_COMMENT_PRESENTATION_TONES)[number];
 
+export const ISSUE_COMMENT_PRESENTATION_DENSITIES = ["compact"] as const;
+export type IssueCommentPresentationDensity = (typeof ISSUE_COMMENT_PRESENTATION_DENSITIES)[number];
+
 export const ISSUE_COMMENT_METADATA_ROW_TYPES = [
   "text",
   "code",
@@ -931,6 +934,7 @@ export const PERMISSION_KEYS = [
   "tools:manage_connections",
   "tools:manage_profiles",
   "tools:view_audit",
+  "audit:view_agent_actions",
   "tools:use",
   "tools:manage_runtime",
   "inbox:manage",

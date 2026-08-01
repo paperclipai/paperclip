@@ -420,4 +420,180 @@ describe("resolveEnvironmentExecutionTarget", () => {
     expect(runner!.providerExecMs()).toBe(0);
     expect(runner!.providerGetMs()).toBe(0);
   });
+
+  // A recording tracer that captures each provider-exec span's name, attribute
+  // map, and end. It satisfies the structural tracer the seam calls.
+  function createRecordingExecTracer() {
+    const spans: Array<{ name: string; attributes: Record<string, unknown>; ended: boolean }> = [];
+    const tracer = {
+      startSpan(name: string) {
+        const span = {
+          name,
+          attributes: {} as Record<string, unknown>,
+          ended: false,
+          setAttribute(key: string, value: unknown) {
+            span.attributes[key] = value;
+          },
+          end() {
+            span.ended = true;
+          },
+        };
+        spans.push(span);
+        return span;
+      },
+    };
+    return { tracer, spans };
+  }
+
+  // The closed span-attribute allowlist for a provider-exec span (Phase 4).
+  const ALLOWED_EXEC_SPAN_ATTRIBUTE_KEYS = new Set([
+    "provider",
+    "exit",
+    "provider.exec.duration_ms",
+    "provider.get.duration_ms",
+  ]);
+
+  async function runnerFor(input: {
+    provider: string;
+    execResult: Record<string, unknown>;
+    tracer: unknown;
+  }) {
+    mockResolveEnvironmentDriverConfigForRuntime.mockResolvedValue({
+      driver: "sandbox",
+      config: { provider: input.provider, reuseLease: false, timeoutMs: 30_000 },
+    });
+    const environmentRuntime = {
+      execute: vi.fn().mockResolvedValue(input.execResult),
+      supportsSync: vi.fn().mockReturnValue(false),
+    };
+    const target = await resolveEnvironmentExecutionTarget({
+      db: {} as never,
+      companyId: "company-1",
+      adapterType: "codex_local",
+      environment: { id: "env-1", driver: "sandbox", config: { provider: input.provider } },
+      leaseId: "lease-1",
+      leaseMetadata: { remoteCwd: "/workspace" },
+      lease: { id: "lease-1" } as never,
+      environmentRuntime: environmentRuntime as never,
+      tracer: input.tracer as never,
+    });
+    return (target as { runner?: {
+      execute(input: { command: string; args?: string[] }): Promise<unknown>;
+    } }).runner!;
+  }
+
+  it("sets the provider duration attributes from finite Daytona-shaped metadata", async () => {
+    const { tracer, spans } = createRecordingExecTracer();
+    const runner = await runnerFor({
+      provider: "daytona",
+      execResult: {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: "ok",
+        stderr: "",
+        metadata: { durationMs: 600, getDurationMs: 15 },
+      },
+      tracer,
+    });
+
+    await runner.execute({ command: "echo", args: ["a"] });
+
+    expect(spans).toHaveLength(1);
+    const span = spans[0]!;
+    expect(span.name).toBe("provider.execute");
+    expect(span.ended).toBe(true);
+    expect(span.attributes["provider.exec.duration_ms"]).toBe(600);
+    expect(span.attributes["provider.get.duration_ms"]).toBe(15);
+    expect(span.attributes.provider).toBe("daytona");
+    expect(span.attributes.exit).toBe("ok");
+  });
+
+  it("omits each duration attribute when a provider returns no timing (does not throw, keeps provider)", async () => {
+    const { tracer, spans } = createRecordingExecTracer();
+    const runner = await runnerFor({
+      provider: "kubernetes",
+      execResult: { exitCode: 0, signal: null, timedOut: false, stdout: "", stderr: "" },
+      tracer,
+    });
+
+    await expect(runner.execute({ command: "echo" })).resolves.toBeTruthy();
+
+    expect(spans).toHaveLength(1);
+    const span = spans[0]!;
+    expect("provider.exec.duration_ms" in span.attributes).toBe(false);
+    expect("provider.get.duration_ms" in span.attributes).toBe(false);
+    // The provider attribute is always present so a trace shows which provider ran.
+    expect(span.attributes.provider).toBe("kubernetes");
+  });
+
+  it("never emits a `0` duration attribute for a Daytona timeout that omits durationMs", async () => {
+    const { tracer, spans } = createRecordingExecTracer();
+    const runner = await runnerFor({
+      provider: "daytona",
+      execResult: {
+        exitCode: 124,
+        signal: null,
+        timedOut: true,
+        stdout: "",
+        stderr: "",
+        // The Daytona timeout branch may leave durationMs undefined.
+        metadata: { getDurationMs: 20 },
+      },
+      tracer,
+    });
+
+    await runner.execute({ command: "sleep", args: ["999"] });
+
+    const span = spans[0]!;
+    expect("provider.exec.duration_ms" in span.attributes).toBe(false);
+    expect(span.attributes["provider.get.duration_ms"]).toBe(20);
+    expect(span.attributes.exit).toBe("error");
+  });
+
+  it("never sets a command, arg, or non-allowlisted key as an indexed span attribute", async () => {
+    const { tracer, spans } = createRecordingExecTracer();
+    const runner = await runnerFor({
+      provider: "daytona",
+      execResult: {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: "",
+        stderr: "",
+        metadata: { durationMs: 5, getDurationMs: 1 },
+      },
+      tracer,
+    });
+
+    await runner.execute({ command: "bash -lc 'rm -rf /secret/path'", args: ["--token", "s3cr3t"] });
+
+    const span = spans[0]!;
+    for (const key of Object.keys(span.attributes)) {
+      expect(ALLOWED_EXEC_SPAN_ATTRIBUTE_KEYS.has(key), `non-allowlisted key "${key}"`).toBe(true);
+    }
+    const values = Object.values(span.attributes).map(String);
+    expect(values.some((value) => value.includes("rm -rf"))).toBe(false);
+    expect(values.some((value) => value.includes("s3cr3t"))).toBe(false);
+  });
+
+  it("normalizes a plugin-backed provider key to `plugin` and keeps a built-in family as-is", async () => {
+    const plugin = createRecordingExecTracer();
+    const pluginRunner = await runnerFor({
+      provider: "acme-custom-sandbox",
+      execResult: { exitCode: 0, signal: null, timedOut: false, stdout: "", stderr: "" },
+      tracer: plugin.tracer,
+    });
+    await pluginRunner.execute({ command: "echo" });
+    expect(plugin.spans[0]!.attributes.provider).toBe("plugin");
+
+    const builtIn = createRecordingExecTracer();
+    const builtInRunner = await runnerFor({
+      provider: "e2b",
+      execResult: { exitCode: 0, signal: null, timedOut: false, stdout: "", stderr: "" },
+      tracer: builtIn.tracer,
+    });
+    await builtInRunner.execute({ command: "echo" });
+    expect(builtIn.spans[0]!.attributes.provider).toBe("e2b");
+  });
 });

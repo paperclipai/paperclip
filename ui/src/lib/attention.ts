@@ -1,16 +1,3 @@
-import {
-  AlertTriangle,
-  Ban,
-  DollarSign,
-  Eye,
-  LifeBuoy,
-  MessageSquareQuote,
-  RefreshCw,
-  ShieldCheck,
-  UserPlus,
-  Zap,
-  type LucideIcon,
-} from "lucide-react";
 import type {
   AttentionDetailImage,
   AttentionFeed,
@@ -30,6 +17,7 @@ import type {
  */
 export const INLINE_RESOLVABLE_SOURCE_KINDS: ReadonlySet<AttentionSourceKind> = new Set<AttentionSourceKind>([
   "approval",
+  "decision",
   "issue_thread_interaction",
   "join_request",
 ]);
@@ -38,26 +26,32 @@ export function isInlineResolvable(item: AttentionItem): boolean {
   return item.inlineResolvable && INLINE_RESOLVABLE_SOURCE_KINDS.has(item.sourceKind);
 }
 
+/**
+ * Per-source wording only. The icon used to live here too — one glyph per
+ * source kind — but rows now borrow the task-status glyph for their kind (see
+ * `attentionStatus` below), so a source contributes its *name* and nothing
+ * visual.
+ */
 interface SourceMeta {
   label: string;
-  icon: LucideIcon;
 }
 
 const SOURCE_META: Record<AttentionSourceKind, SourceMeta> = {
-  approval: { label: "Approval", icon: ShieldCheck },
-  issue_thread_interaction: { label: "Decision requested", icon: MessageSquareQuote },
-  join_request: { label: "Join request", icon: UserPlus },
-  recovery_action: { label: "Recovery", icon: LifeBuoy },
-  productivity_review: { label: "Productivity review", icon: Zap },
-  blocker_attention: { label: "Blocked dependency", icon: Ban },
-  review: { label: "Review", icon: Eye },
-  failed_run: { label: "Failed run", icon: RefreshCw },
-  budget_alert: { label: "Budget", icon: DollarSign },
-  agent_error_alert: { label: "Agent error", icon: AlertTriangle },
+  approval: { label: "Approval" },
+  decision: { label: "Decision" },
+  issue_thread_interaction: { label: "Decision requested" },
+  join_request: { label: "Join request" },
+  recovery_action: { label: "Recovery" },
+  productivity_review: { label: "Productivity review" },
+  blocker_attention: { label: "Blocked dependency" },
+  review: { label: "Review" },
+  failed_run: { label: "Failed run" },
+  budget_alert: { label: "Budget" },
+  agent_error_alert: { label: "Agent error" },
 };
 
 export function sourceMeta(kind: AttentionSourceKind): SourceMeta {
-  return SOURCE_META[kind] ?? { label: kind.replaceAll("_", " "), icon: AlertTriangle };
+  return SOURCE_META[kind] ?? { label: kind.replaceAll("_", " ") };
 }
 
 interface SeverityStyle {
@@ -79,99 +73,93 @@ export function severityStyle(severity: AttentionSeverity): SeverityStyle {
 }
 
 // ---------------------------------------------------------------------------
-// Canonical type → color map (PAP-13409 §4)
+// Decision kind → borrowed task status (supersedes the PAP-13409 §4 tone map)
 //
-// The row color is driven by the *kind of decision*, never by severity — one
-// map, sourced from `IssueThreadInteractionCard`'s palette so a plan approval or
-// confirmation reads identically in the queue and on the issue thread:
-//   • confirmations / questions / suggested-tasks / verdicts / reviews → sky
-//   • plan approvals                                                   → violet
-//   • failures (failed run, agent error)                              → rose
-//   • blocked / recovery / budget                                     → amber
-//   • join request                                                    → neutral
-// Severity only ever surfaces as a small Critical/High badge (never the accent).
+// The queue used to run five parallel colour/icon vocabularies (sky / violet /
+// rose / amber / neutral), one glyph per source kind, plus an orange-or-red
+// severity badge — so two rows demanding the same response from an operator
+// could look completely unrelated. The system is flattened to TWO kinds, and
+// each one *borrows the task status it corresponds to* instead of declaring a
+// palette of its own:
+//
+//   • blocking — failed run, agent error, blocked dependency, recovery, budget
+//       → task status `blocked`    (red, CircleMinus)
+//   • review   — approval, confirmation, review, join request, everything else
+//       → task status `in_review`  (violet, CircleDot)
+//
+// Colour and glyph therefore resolve through <StatusGlyph> and the
+// `--status-task-icon-*` tokens, so the decision queue and the task list stay
+// in lockstep by construction — an operator learns the vocabulary once
+// (DESIGN.md principle 5). Source kinds keep their own *wording* ("Approval",
+// "Agent error", …); only colour and icon merge.
+//
+// Severity is no longer chrome. It survives as a filter/group dimension in the
+// toolbar, which is where an operator goes when they want to rank by urgency.
 // ---------------------------------------------------------------------------
 
-export type AttentionTone = "sky" | "violet" | "rose" | "amber" | "neutral";
+export type AttentionKind = "blocking" | "review";
 
-export interface AttentionToneStyle {
-  /** Left accent bar background. */
-  accent: string;
-  /** Source-icon tint. */
-  icon: string;
-  /** Chip / badge border+bg+text (matches the interaction card badge palette). */
-  chip: string;
-}
-
-const TONE_STYLE: Record<AttentionTone, AttentionToneStyle> = {
-  sky: {
-    accent: "bg-sky-500",
-    icon: "text-sky-600 dark:text-sky-400",
-    chip: "border-sky-500/60 bg-sky-500/10 text-sky-900 dark:bg-sky-500/15 dark:text-sky-100",
-  },
-  violet: {
-    accent: "bg-violet-500",
-    icon: "text-violet-600 dark:text-violet-400",
-    chip: "border-violet-500/60 bg-violet-500/10 text-violet-900 dark:bg-violet-500/15 dark:text-violet-100",
-  },
-  rose: {
-    accent: "bg-rose-500",
-    icon: "text-rose-600 dark:text-rose-400",
-    chip: "border-rose-500/60 bg-rose-500/10 text-rose-900 dark:bg-rose-500/15 dark:text-rose-100",
-  },
-  amber: {
-    accent: "bg-amber-500",
-    icon: "text-amber-600 dark:text-amber-400",
-    chip: "border-amber-500/60 bg-amber-500/10 text-amber-900 dark:bg-amber-500/15 dark:text-amber-100",
-  },
-  neutral: {
-    accent: "bg-muted-foreground/40",
-    icon: "text-muted-foreground",
-    chip: "border-border/70 bg-muted/50 text-muted-foreground",
-  },
+/** The task status each decision kind renders as. */
+export const ATTENTION_KIND_STATUS: Record<AttentionKind, "blocked" | "in_review"> = {
+  blocking: "blocked",
+  review: "in_review",
 };
 
-/**
- * Resolve the canonical tone for a row. A plan approval is violet regardless of
- * which surface tagged it (approval flow *or* issue-thread confirmation), so we
- * check the T1 detail discriminant first, then fall back to the source kind.
- */
-export function attentionTone(item: AttentionItem): AttentionTone {
-  if (item.detail?.kind === "plan_approval") return "violet";
+/** Does this row report something stuck, or something waiting on a verdict? */
+export function attentionKind(item: AttentionItem): AttentionKind {
   switch (item.sourceKind) {
+    case "decision":
+      return "review";
     case "failed_run":
     case "agent_error_alert":
-      return "rose";
     case "blocker_attention":
     case "recovery_action":
     case "budget_alert":
-      return "amber";
-    case "join_request":
-      return "neutral";
+      return "blocking";
     case "approval":
     case "issue_thread_interaction":
+    case "join_request":
     case "review":
     case "productivity_review":
     default:
-      return "sky";
+      return "review";
   }
 }
 
-export function attentionToneStyle(item: AttentionItem): AttentionToneStyle {
-  return TONE_STYLE[attentionTone(item)];
+/** Task status a row borrows its glyph and colour from — feeds <StatusGlyph>. */
+export function attentionStatus(item: AttentionItem): "blocked" | "in_review" {
+  return ATTENTION_KIND_STATUS[attentionKind(item)];
 }
 
 /**
- * Severity is demoted to a small badge — and only when it is genuinely
- * escalated (Critical/High). Medium/Low return `null` so most rows carry no
- * severity chrome at all.
+ * The task a row belongs to, wherever the feed happens to put it.
+ *
+ * The feed uses two shapes, and a row that reads only one of them silently
+ * drops the task key on the other:
+ *   • the subject IS the task (review, blocked dependency) → `subject`
+ *     carries the identifier and `relatedIssue` is null;
+ *   • the subject hangs off a task (a thread interaction, an issue-scoped
+ *     approval) → the task arrives separately as `relatedIssue`.
+ *
+ * `relatedIssue` wins when both are present: it is the *other* record, so it
+ * is the one the subject alone can't tell you about.
+ *
+ * Returns null for rows genuinely not attached to a task — a hire approval, an
+ * agent error — which should show no key rather than a borrowed one.
+ *
+ * Known gap (server-side, not resolvable here): an approval can carry
+ * `subject.metadata.issueId` while `relatedIssue` is null. That is a bare UUID
+ * with no key or href, so there is nothing to render; the feed builder has to
+ * populate `relatedIssue` for those.
  */
-export function severityBadge(severity: AttentionSeverity): { label: string; className: string } | null {
-  if (severity === "critical") {
-    return { label: "Critical", className: "border-red-500/60 bg-red-500/10 text-red-700 dark:text-red-300" };
+export function attentionTaskRef(item: AttentionItem): { identifier: string; href: string | null } | null {
+  const related = item.relatedIssue;
+  if (related?.identifier) {
+    return { identifier: related.identifier, href: related.href };
   }
-  if (severity === "high") {
-    return { label: "High", className: "border-orange-500/60 bg-orange-500/10 text-orange-700 dark:text-orange-300" };
+  const subject = item.subject;
+  if (subject.kind === "issue" && subject.identifier) {
+    return { identifier: subject.identifier, href: subject.href };
   }
   return null;
 }

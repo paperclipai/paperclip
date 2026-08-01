@@ -1,5 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { fileURLToPath } from 'node:url';
 import { checkLinkedIssue, hasInlineIssueDescription } from '../check-pr-linked-issue.mjs';
 
 // Existing tests with title parameter added (defaults to no prefix, so still required)
@@ -220,4 +222,185 @@ Build it.
 None.
 `;
   assert.equal(hasInlineIssueDescription(body), true);
+});
+
+// Prose-only description (no template labels) must fail. A good paragraph of
+// prose matches zero labels, so the gate rejects it.
+test('fails with a prose-only description that has no template labels', () => {
+  const body = `
+This pull request rewrites the retry loop so the worker gives up after five
+attempts instead of looping forever. The previous loop could hang a job when
+the upstream service was down. I also added a log line for each retry so an
+operator can see the backoff in the run output.
+`;
+  const result = checkLinkedIssue(body, 'feat: bounded retry');
+  assert.equal(result.passed, false);
+  assert.ok(result.failures.length > 0);
+});
+
+// An author who copies the feature template labels into the PR body must pass.
+// The labels use the bold-label-on-its-own-line form the gate accepts.
+const FEATURE_BOLD_LABEL_BODY = `
+**Problem or motivation:**
+- The gate rejects a good prose description.
+
+**Proposed solution:**
+- Copy the feature template labels into the PR body.
+
+**Alternatives considered:**
+- Lower the field threshold — rejected, it weakens the gate.
+`;
+
+test('passes with the feature template labels (bold labels)', () => {
+  assert.equal(checkLinkedIssue(FEATURE_BOLD_LABEL_BODY, 'feat: inline feature description').passed, true);
+});
+
+// Enhancement template set (matches .github/ISSUE_TEMPLATE/enhancement.yml).
+const ENHANCEMENT_INLINE_BODY = `
+## What existing behavior does this improve?
+
+The board task list sort order.
+
+## Current behavior
+
+The list sorts by creation time only.
+
+## Proposed behavior
+
+The list sorts by priority, then creation time.
+
+## Reason and benefit
+
+Users miss high-priority tasks that were created early.
+`;
+
+test('passes with inline enhancement description (4 template fields)', () => {
+  assert.equal(checkLinkedIssue(ENHANCEMENT_INLINE_BODY, 'feat: sort by priority').passed, true);
+});
+
+test('hasInlineIssueDescription returns true for ≥3 enhancement fields', () => {
+  assert.equal(hasInlineIssueDescription(ENHANCEMENT_INLINE_BODY), true);
+});
+
+// Empty default skeleton must fail. A label with only the bare "-" placeholder
+// under it is not filled, so it must not count toward the field minimum.
+const EMPTY_SKELETON_BODY = `
+**What happened?**
+-
+
+**Expected behavior:**
+-
+
+**Steps to reproduce:**
+-
+`;
+
+test('fails with an empty template skeleton (labels but no content)', () => {
+  const result = checkLinkedIssue(EMPTY_SKELETON_BODY, 'feat: something');
+  assert.equal(result.passed, false);
+  assert.ok(result.failures.length > 0);
+});
+
+test('hasInlineIssueDescription returns false for an empty skeleton', () => {
+  assert.equal(hasInlineIssueDescription(EMPTY_SKELETON_BODY), false);
+});
+
+// A filled bug skeleton in the bold-label form must pass, even with list-marker
+// content. This proves the fix does not reject real author content.
+const FILLED_BUG_SKELETON_BODY = `
+**What happened?**
+- The login button does nothing.
+
+**Expected behavior:**
+- The login button authenticates the user.
+
+**Steps to reproduce:**
+- Open the app, then click login.
+`;
+
+test('passes with a filled bug skeleton (three filled fields)', () => {
+  assert.equal(checkLinkedIssue(FILLED_BUG_SKELETON_BODY, 'feat: fix login').passed, true);
+});
+
+// Stacked plain labels with no content must fail. Each label sits on its own
+// line with the next label directly under it. The scan must treat the next
+// label as a field boundary, not as content, so every field stays empty.
+const STACKED_FEATURE_LABELS = `
+Problem or motivation:
+Proposed solution:
+Alternatives considered:
+Roadmap alignment:
+`;
+
+const STACKED_BUG_LABELS = `
+What happened?:
+Expected behavior:
+Steps to reproduce:
+Paperclip version:
+`;
+
+const STACKED_ENHANCEMENT_LABELS = `
+What existing behavior does this improve?
+Subsystem affected
+Current behavior
+Proposed behavior
+Reason and benefit
+`;
+
+const STACKED_DOCS_LABELS = `
+Issue type
+Where is the issue?
+What's wrong?
+Suggested fix
+`;
+
+test('fails with stacked plain feature labels and no content', () => {
+  assert.equal(checkLinkedIssue(STACKED_FEATURE_LABELS, 'feat: x').passed, false);
+});
+
+test('fails with stacked plain bug labels and no content', () => {
+  assert.equal(checkLinkedIssue(STACKED_BUG_LABELS, 'feat: x').passed, false);
+});
+
+test('fails with stacked plain enhancement labels and no content', () => {
+  assert.equal(checkLinkedIssue(STACKED_ENHANCEMENT_LABELS, 'feat: x').passed, false);
+});
+
+test('fails with stacked plain docs labels and no content', () => {
+  assert.equal(checkLinkedIssue(STACKED_DOCS_LABELS, 'feat: x').passed, false);
+});
+
+// A plain-label skeleton with real content under each label must still pass.
+// The boundary fix must not reject a field that has genuine content.
+const FILLED_PLAIN_FEATURE_LABELS = `
+Problem or motivation:
+- The gate rejects a good prose description.
+Proposed solution:
+- Copy the feature template labels into the PR body.
+Alternatives considered:
+- Lower the field threshold — rejected, it weakens the gate.
+`;
+
+test('passes with plain feature labels and real content under each', () => {
+  assert.equal(checkLinkedIssue(FILLED_PLAIN_FEATURE_LABELS, 'feat: inline feature').passed, true);
+});
+
+// The real .github/PULL_REQUEST_TEMPLATE.md, submitted unchanged, must fail the
+// gate. Its skeleton labels have no content and its example issue links live in
+// HTML comments, so neither the inline path nor the linked path may pass it.
+const PR_TEMPLATE_PATH = fileURLToPath(
+  new URL('../../PULL_REQUEST_TEMPLATE.md', import.meta.url)
+);
+
+test('fails with the unfilled default PR template body', () => {
+  const body = readFileSync(PR_TEMPLATE_PATH, 'utf8');
+  const result = checkLinkedIssue(body, 'feat: unfilled template');
+  assert.equal(result.passed, false);
+});
+
+// An issue link that appears only inside an HTML comment must not satisfy the
+// linked-issue check. The template ships such an example ("Fixes: #123").
+test('fails when the only issue link is inside an HTML comment', () => {
+  const body = '<!-- Example: Fixes: #123 -->\n\nSome prose with no real link.';
+  assert.equal(checkLinkedIssue(body, 'feat: commented link').passed, false);
 });

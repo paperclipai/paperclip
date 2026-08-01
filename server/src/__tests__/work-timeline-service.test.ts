@@ -260,6 +260,62 @@ describeEmbeddedPostgres("work timeline aggregation", () => {
     ]));
   });
 
+  it("preserves delegation edges when parent and child cross a page boundary", async () => {
+    const { companyId, userId, agentAId, agentBId } = await seedBase();
+    const parentIssueId = randomUUID();
+    const childIssueId = randomUUID();
+
+    await db.insert(issues).values([
+      {
+        id: parentIssueId,
+        companyId,
+        title: "Parent",
+        status: "in_progress",
+        priority: "medium",
+        createdByUserId: userId,
+        assigneeAgentId: agentAId,
+        createdAt: new Date("2026-03-01T10:00:00Z"),
+        updatedAt: new Date("2026-03-01T10:00:00Z"),
+      },
+      {
+        id: childIssueId,
+        companyId,
+        title: "Child",
+        status: "in_progress",
+        priority: "medium",
+        parentId: parentIssueId,
+        createdByAgentId: agentAId,
+        assigneeAgentId: agentBId,
+        createdAt: new Date("2026-03-01T11:00:00Z"),
+        updatedAt: new Date("2026-03-01T11:00:00Z"),
+      },
+    ]);
+
+    const result = await workTimelineService(db).getTimeline({
+      companyId,
+      from: new Date("2026-03-01T00:00:00Z"),
+      to: new Date("2026-03-02T00:00:00Z"),
+      limit: 1,
+    });
+
+    expect(result.pagination).toEqual({
+      limit: 1,
+      offset: 0,
+      totalIssues: 2,
+      hasMore: true,
+    });
+    expect(result.events).toContainEqual(expect.objectContaining({
+      kind: "delegated",
+      issueId: childIssueId,
+    }));
+    expect(result.edges).toContainEqual(expect.objectContaining({
+      kind: "delegation",
+      issueId: childIssueId,
+      fromActorId: `agent:${agentAId}`,
+      toActorId: `agent:${agentBId}`,
+    }));
+  });
+
   it("does not join activity rows to runs from another company", async () => {
     const { companyId, agentAId } = await seedBase();
     const otherCompanyId = randomUUID();

@@ -2,7 +2,6 @@ export { companies } from "./companies.js";
 export { companyLogos } from "./company_logos.js";
 export { authUsers, authSessions, authAccounts, authVerifications } from "./auth.js";
 export { instanceSettings } from "./instance_settings.js";
-export { cloudUpstreamConnections, cloudUpstreamRuns } from "./cloud_upstreams.js";
 export { instanceUserRoles } from "./instance_user_roles.js";
 export { userSidebarPreferences } from "./user_sidebar_preferences.js";
 export { agents } from "./agents.js";
@@ -71,6 +70,12 @@ export { issueApprovals } from "./issue_approvals.js";
 export { issueComments } from "./issue_comments.js";
 export { issueCreateIdempotencyKeys } from "./issue_create_idempotency_keys.js";
 export { issueThreadInteractions } from "./issue_thread_interactions.js";
+export {
+  decisions,
+  decisionBundles,
+  decisionTargetIssues,
+  decisionEffectExecutions,
+} from "./decisions.js";
 export { issueTreeHolds } from "./issue_tree_holds.js";
 export { issueTreeHoldMembers } from "./issue_tree_hold_members.js";
 export { issueExecutionDecisions } from "./issue_execution_decisions.js";

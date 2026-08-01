@@ -2,8 +2,8 @@ import { useQuery } from "@tanstack/react-query";
 import {
   ChevronLeft,
   Clock3,
-  CloudUpload,
   Cpu,
+  Download,
   FlaskConical,
   KeyRound,
   MailPlus,
@@ -12,12 +12,12 @@ import {
   Settings,
   Shield,
   SlidersHorizontal,
+  Upload,
   UserRoundPen,
   Users,
 } from "lucide-react";
 import type { PluginRecord } from "@paperclipai/shared";
 import { sidebarBadgesApi } from "@/api/sidebarBadges";
-import { instanceSettingsApi } from "@/api/instanceSettings";
 import { pluginsApi } from "@/api/plugins";
 import { ApiError } from "@/api/client";
 import { Link, NavLink } from "@/lib/router";
@@ -67,15 +67,10 @@ export function CompanySettingsSidebar() {
     retry: false,
     refetchInterval: 15_000,
   });
-  const { data: experimentalSettings } = useQuery({
-    queryKey: queryKeys.instance.experimentalSettings,
-    queryFn: () => instanceSettingsApi.getExperimental(),
-  });
   const { data: plugins } = useQuery({
     queryKey: queryKeys.plugins.all,
     queryFn: () => pluginsApi.list(),
   });
-  const showCloudUpstream = experimentalSettings?.enableCloudSync === true;
   const sidebarPlugins = (plugins ?? []).filter((plugin) => !isSandboxProviderOnly(plugin));
 
   return (
@@ -105,14 +100,8 @@ export function CompanySettingsSidebar() {
         </div>
         <div className="flex flex-col gap-0.5">
           <SidebarNavItem to="/company/settings" label="General" icon={SlidersHorizontal} end />
-          {showCloudUpstream ? (
-            <SidebarNavItem
-              to="/company/settings/cloud-upstream"
-              label="Cloud upstream"
-              icon={CloudUpload}
-              end
-            />
-          ) : null}
+          <SidebarNavItem to="/company/export" label="Export" icon={Download} />
+          <SidebarNavItem to="/company/import" label="Import" icon={Upload} end />
           <SidebarNavItem
             to="/company/settings/members"
             label="Members"

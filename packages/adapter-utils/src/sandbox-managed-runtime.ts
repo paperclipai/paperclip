@@ -6,6 +6,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import {
   buildRemoteGitDeltaBundleScript,
+  isMissingGitPrerequisiteError,
   createImportedGitRef,
   createRemoteGitExportRef,
   deleteLocalGitRef,
@@ -161,6 +162,24 @@ export interface SandboxSyncFileMapping {
   mode?: number;
   exclude?: string[];
   followSymlinks?: boolean;
+  /**
+   * Advisory read-write intent for the sandbox target. `"rw"` marks a target the
+   * agent may change and keep; `"ro"` marks a read-only tree. An absent value
+   * defaults to `"ro"` (read-only is the safe default for an advisory signal).
+   * The field is advisory metadata for an optional sandbox feedback wrapper. It
+   * does not change the transfer and adds no security.
+   */
+  access?: "rw" | "ro";
+  /**
+   * The sandbox directory that becomes read-write when `access` is `"rw"` and a
+   * post-upload command extracts `targetPath` into a different directory. A tar
+   * mapping uploads an archive under the runtime root, so its `targetPath` is the
+   * staging archive, not the directory the extract command fills. This field
+   * names that final destination directory. When absent, the read-write
+   * destination is the parent directory of `targetPath`. Advisory; ignored when
+   * `access` is not `"rw"`.
+   */
+  writablePath?: string;
 }
 
 /**
@@ -282,7 +301,21 @@ export interface PreparedSandboxManagedRuntime {
    * were requested.
    */
   additionalSourceDirs: Record<string, string>;
+  /**
+   * Each additional (referenced) project whose staging failed, paired with the
+   * failure message. Per-project failure isolation keeps one project's failure
+   * from aborting the run, so a failed project is absent from
+   * `additionalSourceDirs` and present here. Empty when every requested project
+   * staged, or when no additional sources were requested.
+   */
+  additionalSourceFailures: AdditionalSourceStagingFailure[];
   restoreWorkspace(onProgress?: RuntimeProgressSink): Promise<void>;
+}
+
+/** One additional (referenced) project that failed to stage into the sandbox. */
+export interface AdditionalSourceStagingFailure {
+  projectId: string;
+  error: string;
 }
 
 function asObject(value: unknown): Record<string, unknown> {
@@ -718,6 +751,10 @@ export async function prepareSandboxManagedRuntime(input: {
   // Remote directory of each additional (referenced) project that stages
   // successfully, keyed by projectId. A project that fails to stage is absent.
   const additionalSourceDirs: Record<string, string> = {};
+  // Each additional (referenced) project whose staging failed, paired with the
+  // failure message. Per-project failure isolation keeps the run and the other
+  // projects going; this list makes each failure a first-class, reported outcome.
+  const additionalSourceFailures: AdditionalSourceStagingFailure[] = [];
   // Additional projects stage as plain trees. Drop the heavy build/cache dirs a
   // reference tree does not need, and `.git` — additional sources never carry
   // git-history semantics (anchor-only).
@@ -816,7 +853,7 @@ export async function prepareSandboxManagedRuntime(input: {
             exclude: [".paperclip-runtime"],
           });
         });
-        workspaceFiles.push({ sourcePath: gitTarPath, targetPath: remoteGitTar, kind: "file" });
+        workspaceFiles.push({ sourcePath: gitTarPath, targetPath: remoteGitTar, kind: "file", access: "rw", writablePath: workspaceRemoteDir });
         workspacePostUploadCommands.push({
           command: buildWorkspaceTarExtractCommand({
             workspaceRemoteDir,
@@ -847,7 +884,7 @@ export async function prepareSandboxManagedRuntime(input: {
         exclude: gitSnapshot ? undefined : workspaceArchiveExclude,
       });
       const remoteWorkspaceTar = path.posix.join(runtimeRootDir, "workspace-upload.tar");
-      workspaceFiles.push({ sourcePath: workspaceTarPath, targetPath: remoteWorkspaceTar, kind: "file" });
+      workspaceFiles.push({ sourcePath: workspaceTarPath, targetPath: remoteWorkspaceTar, kind: "file", access: "rw", writablePath: workspaceRemoteDir });
       workspacePostUploadCommands.push({
         command: buildWorkspaceTarExtractCommand({
           workspaceRemoteDir,
@@ -898,7 +935,7 @@ export async function prepareSandboxManagedRuntime(input: {
         exclude: asset.exclude,
       });
       const files: SandboxSyncFileMapping[] = [
-        { sourcePath: assetTarPath, targetPath: remoteAssetTar, kind: "file" },
+        { sourcePath: assetTarPath, targetPath: remoteAssetTar, kind: "file", access: "rw", writablePath: remoteAssetDir },
       ];
       // Stage provision helper files (e.g. the merge scripts) into the temp dir
       // and map them alongside the asset tar so they ride the same native upload.
@@ -912,10 +949,14 @@ export async function prepareSandboxManagedRuntime(input: {
           : stageFile.contents;
         const stageHostPath = path.join(tempDir, `${asset.key}.stage.${safeName}`);
         await fs.writeFile(stageHostPath, stageBytes);
+        // A stage helper file (for example a merge script) is a read-only input
+        // that the provision command reads; the agent does not change it and does
+        // not keep it. So it is `access: "ro"` and never joins the writable set.
         files.push({
           sourcePath: stageHostPath,
           targetPath: path.posix.join(runtimeRootDir, safeName),
           kind: "file",
+          access: "ro",
         });
       }
       const postUploadCommand = asset.provision?.postUploadCommand?.({
@@ -967,6 +1008,7 @@ export async function prepareSandboxManagedRuntime(input: {
             targetPath: remoteProjectDir,
             kind: "directory",
             exclude: additionalSourceExclude,
+            access: "ro",
           }],
           sourceRoots: [localPath],
           targetRoots: [remoteProjectDir],
@@ -976,9 +1018,13 @@ export async function prepareSandboxManagedRuntime(input: {
         });
         additionalSourceDirs[projectId] = remoteProjectDir;
       } catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
         console.warn(
-          `[paperclip] Failed to stage referenced project ${projectId}; skipping it. ${String(error)}`,
+          `[paperclip] Failed to stage referenced project ${projectId}; skipping it. ${message}`,
         );
+        // Record the failure as a first-class per-project outcome so the run can count it in the
+        // requested-vs-synced accounting instead of losing it to a warning line.
+        additionalSourceFailures.push({ projectId, error: message });
       }
     }
   });
@@ -994,6 +1040,7 @@ export async function prepareSandboxManagedRuntime(input: {
     runtimeRootDir,
     assetDirs,
     additionalSourceDirs,
+    additionalSourceFailures,
     restoreWorkspace: async (onProgress?: RuntimeProgressSink) => {
       const restoreSink = onProgress ?? input.onProgress;
       if (!syncWorkspace) {
@@ -1017,41 +1064,60 @@ export async function prepareSandboxManagedRuntime(input: {
             const remoteGitBundle = path.posix.join(runtimeRootDir, "git-delta.bundle");
             const remoteWorkspaceStatusPath = path.posix.join(runtimeRootDir, "workspace-status.txt");
             const exportRef = createRemoteGitExportRef("sandbox");
-            await input.client.run(
-              `sh -c ${shellQuote(buildRemoteGitDeltaBundleScript({
-                remoteDir: workspaceRemoteDir,
-                baseSha: gitSnapshot.headCommit,
+            const localBundlePath = path.join(tempDir, "git-delta.bundle");
+
+            // Export the sandbox history and import it into the host workspace.
+            // The delta bundle assumes the host holds the bundle's boundary
+            // commit; when the host has been reset far enough that it does not,
+            // the import fails on a missing prerequisite. In that case re-export
+            // a full, self-contained bundle from the still-live sandbox rather
+            // than discard the completed run.
+            const exportAndImport = async (forceFullBundle: boolean): Promise<string> => {
+              await input.client.run(
+                `sh -c ${shellQuote(buildRemoteGitDeltaBundleScript({
+                  remoteDir: workspaceRemoteDir,
+                  baseSha: gitSnapshot.headCommit,
+                  exportRef,
+                  bundlePath: remoteGitBundle,
+                  statusPath: forceFullBundle ? undefined : remoteWorkspaceStatusPath,
+                  forceFullBundle,
+                }))}`,
+                { timeoutMs: input.spec.timeoutMs },
+              );
+              const gitExport = makeTransferProgress(
+                restoreSink,
+                "Exporting git history",
+                "from",
+                undefined,
+                { sink: input.onRuntimeProgress, phase: "export" },
+              );
+              const bundleBytes = await input.client.readFile(remoteGitBundle, gitExport.options);
+              const bundleBuffer = toBuffer(bundleBytes);
+              await gitExport.finish(bundleBuffer.byteLength, bundleBuffer.byteLength);
+              await input.client.remove(remoteGitBundle).catch(() => undefined);
+              if (!forceFullBundle) {
+                remoteWorkspaceStatus = await input.client.readFile(remoteWorkspaceStatusPath)
+                  .then((bytes) => toBuffer(bytes).toString("utf8").trim())
+                  .catch(() => "dirty");
+                remoteWorkspaceStatus = remoteWorkspaceStatus === "clean" ? "clean" : "dirty";
+                await input.client.remove(remoteWorkspaceStatusPath).catch(() => undefined);
+              }
+              await fs.writeFile(localBundlePath, bundleBuffer);
+              return fetchGitBundleIntoLocalRef({
+                localDir: input.workspaceLocalDir,
+                bundlePath: localBundlePath,
                 exportRef,
-                bundlePath: remoteGitBundle,
-                statusPath: remoteWorkspaceStatusPath,
-              }))}`,
-              { timeoutMs: input.spec.timeoutMs },
-            );
-            const gitExport = makeTransferProgress(
-              restoreSink,
-              "Exporting git history",
-              "from",
-              undefined,
-              { sink: input.onRuntimeProgress, phase: "export" },
-            );
-            const bundleBytes = await input.client.readFile(remoteGitBundle, gitExport.options);
-            const bundleBuffer = toBuffer(bundleBytes);
-            await gitExport.finish(bundleBuffer.byteLength, bundleBuffer.byteLength);
-            await input.client.remove(remoteGitBundle).catch(() => undefined);
-            remoteWorkspaceStatus = await input.client.readFile(remoteWorkspaceStatusPath)
-              .then((bytes) => toBuffer(bytes).toString("utf8").trim())
-              .catch(() => "dirty");
-            remoteWorkspaceStatus = remoteWorkspaceStatus === "clean" ? "clean" : "dirty";
-            await input.client.remove(remoteWorkspaceStatusPath).catch(() => undefined);
-            const bundlePath = path.join(tempDir, "git-delta.bundle");
-            await fs.writeFile(bundlePath, bundleBuffer);
-            importedHead = await fetchGitBundleIntoLocalRef({
-              localDir: input.workspaceLocalDir,
-              bundlePath,
-              exportRef,
-              importedRef,
-              baseSha: gitSnapshot.headCommit,
-            });
+                importedRef: importedRef!,
+                baseSha: gitSnapshot.headCommit,
+              });
+            };
+
+            try {
+              importedHead = await exportAndImport(false);
+            } catch (error) {
+              if (!isMissingGitPrerequisiteError(error)) throw error;
+              importedHead = await exportAndImport(true);
+            }
           }
 
           await emitRuntimeStatus(input.onRuntimeProgress, "restore", "Restoring workspace from sandbox");

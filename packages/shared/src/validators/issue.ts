@@ -12,6 +12,7 @@ import {
   ISSUE_COMMENT_METADATA_ROW_TYPES,
   ISSUE_COMMENT_PRESENTATION_KINDS,
   ISSUE_COMMENT_PRESENTATION_TONES,
+  ISSUE_COMMENT_PRESENTATION_DENSITIES,
   ISSUE_HARNESS_KINDS,
   ISSUE_MONITOR_SCHEDULED_BY,
   ISSUE_PRIORITIES,
@@ -563,6 +564,7 @@ export const issueCommentPresentationSchema = z.object({
   tone: z.enum(ISSUE_COMMENT_PRESENTATION_TONES).default("neutral"),
   title: z.string().trim().min(1).max(160).nullable().optional(),
   detailsDefaultOpen: z.boolean().optional().default(false),
+  density: z.enum(ISSUE_COMMENT_PRESENTATION_DENSITIES).optional(),
 }).strict();
 
 export type IssueCommentPresentation = z.infer<typeof issueCommentPresentationSchema>;

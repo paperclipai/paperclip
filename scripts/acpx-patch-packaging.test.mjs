@@ -16,14 +16,21 @@ import test from "node:test";
 
 import cliEsbuildConfig from "../cli/esbuild.config.mjs";
 import { bundledCliNpmDependencies } from "./cli-bundled-npm-dependencies.mjs";
-import { materializePublishManifest } from "./prepare-bundled-package.mjs";
+import {
+  createBundledInstallManifest,
+  materializePublishManifest,
+} from "./prepare-bundled-package.mjs";
 
 const rootPackage = JSON.parse(await readFile(new URL("../package.json", import.meta.url), "utf8"));
 const adapterUtilsPackage = JSON.parse(
   await readFile(new URL("../packages/adapter-utils/package.json", import.meta.url), "utf8"),
 );
+const dbPackage = JSON.parse(
+  await readFile(new URL("../packages/db/package.json", import.meta.url), "utf8"),
+);
 const releaseScript = await readFile(new URL("./release.sh", import.meta.url), "utf8");
 const releaseLib = await readFile(new URL("./release-lib.sh", import.meta.url), "utf8");
+const buildNpmScript = await readFile(new URL("./build-npm.sh", import.meta.url), "utf8");
 
 test("published packages preserve the patched ACPX runtime", () => {
   assert.equal(
@@ -36,6 +43,16 @@ test("published packages preserve the patched ACPX runtime", () => {
   assert.equal(cliEsbuildConfig.external.includes("acpx"), false);
 });
 
+test("published packages preserve the patched embedded-postgres runtime", () => {
+  assert.equal(
+    rootPackage.pnpm.patchedDependencies["embedded-postgres@18.1.0-beta.16"],
+    "patches/embedded-postgres@18.1.0-beta.16.patch",
+  );
+  assert.deepEqual(dbPackage.bundleDependencies, ["embedded-postgres"]);
+  assert.equal(bundledCliNpmDependencies.has("embedded-postgres"), true);
+  assert.equal(cliEsbuildConfig.external.includes("embedded-postgres"), false);
+});
+
 test("bundled package staging materializes publishConfig entrypoints", () => {
   const staged = materializePublishManifest(adapterUtilsPackage);
 
@@ -45,6 +62,41 @@ test("bundled package staging materializes publishConfig entrypoints", () => {
   assert.deepEqual(staged.exports, adapterUtilsPackage.publishConfig.exports);
 });
 
+test("bundled package staging materializes workspace dependency versions", () => {
+  const staged = materializePublishManifest({
+    name: "@paperclipai/example",
+    version: "2026.723.0",
+    dependencies: { exact: "workspace:*", caret: "workspace:^", tilde: "workspace:~" },
+  });
+
+  assert.deepEqual(staged.dependencies, {
+    exact: "2026.723.0",
+    caret: "^2026.723.0",
+    tilde: "~2026.723.0",
+  });
+});
+
+test("bundled package staging installs only dependencies included in the tarball", () => {
+  const installManifest = createBundledInstallManifest(
+    {
+      name: "@paperclipai/db",
+      version: "2026.723.0-canary.8",
+      dependencies: {
+        "@paperclipai/shared": "2026.723.0-canary.8",
+        "drizzle-orm": "^0.45.2",
+        "embedded-postgres": "^18.1.0-beta.16",
+      },
+      bundleDependencies: ["embedded-postgres"],
+    },
+    ["embedded-postgres"],
+  );
+
+  assert.deepEqual(installManifest.dependencies, {
+    "embedded-postgres": "^18.1.0-beta.16",
+  });
+  assert.deepEqual(installManifest.bundleDependencies, ["embedded-postgres"]);
+});
+
 test("bundled package staging rebuilds npm dependencies and applies the acpx patch", (t) => {
   const fixtureDir = mkdtempSync(join(tmpdir(), "paperclip-bundled-stage-"));
   const sourceDir = join(fixtureDir, "source");
@@ -52,6 +104,8 @@ test("bundled package staging rebuilds npm dependencies and applies the acpx pat
   const binDir = join(fixtureDir, "bin");
   const callLog = join(fixtureDir, "calls.log");
   mkdirSync(sourceDir);
+  mkdirSync(join(sourceDir, "dist"));
+  writeFileSync(join(sourceDir, "dist", "index.js"), "export {};\n");
   mkdirSync(destinationDir);
   mkdirSync(binDir);
   writeFileSync(join(sourceDir, "package.json"), JSON.stringify(adapterUtilsPackage));
@@ -135,4 +189,9 @@ test("bundled package dry runs preview without querying published versions", () 
   assert.match(releaseLib, /"\$@" --loglevel verbose/);
   assert.match(releaseLib, /run_bundled_npm_publish publish --tag "\$dist_tag"/);
   assert.doesNotMatch(releaseLib, /run_bundled_npm_publish publish "\.\/\$tarball"/);
+});
+
+test("npm builds use corepack instead of requiring a global pnpm", () => {
+  assert.match(buildNpmScript, /corepack pnpm -r typecheck/);
+  assert.doesNotMatch(buildNpmScript, /^\s*pnpm -r typecheck/m);
 });
