@@ -120,6 +120,10 @@ export const STRANDED_IN_PROGRESS_TRANSITION_GRACE_MS = Math.max(
   60_000,
   Number(process.env.STRANDED_IN_PROGRESS_TRANSITION_GRACE_MS) || 15 * 60 * 1000,
 );
+export const REVIEW_PARTICIPANT_PENDING_SUPPRESSION_MAX_AGE_MS = Math.max(
+  60_000,
+  Number(process.env.REVIEW_PARTICIPANT_PENDING_SUPPRESSION_MAX_AGE_MS) || 30 * 60 * 1000,
+);
 
 type RecoveryWakeupOptions = {
   source?: "timer" | "assignment" | "on_demand" | "automation";
@@ -151,6 +155,7 @@ type ResolvedDependencyWakeBackstopOptions = {
 type LatestIssueRun = Pick<
   typeof heartbeatRuns.$inferSelect,
   | "id"
+  | "companyId"
   | "agentId"
   | "status"
   | "error"
@@ -158,6 +163,9 @@ type LatestIssueRun = Pick<
   | "contextSnapshot"
   | "livenessState"
   | "createdAt"
+  | "startedAt"
+  | "updatedAt"
+  | "finishedAt"
 > & {
   resultJson?: unknown;
   startedAt?: Date | null;
@@ -371,6 +379,29 @@ function buildExecutionReviewParticipantUnavailableComment(latestRun: LatestIssu
     "Moving it to `blocked` with a source-scoped recovery action so the recovery owner can repair the reviewer runtime, " +
     "restore the review stage, or record an intentional manual resolution."
   );
+}
+
+function buildExecutionReviewParticipantSuppressionExpiredComment(
+  latestRun: LatestIssueRun,
+  pendingAgeMs: number,
+) {
+  const failureSummary = summarizeRunFailureForIssueComment(latestRun);
+  const boundedMinutes = Math.round(REVIEW_PARTICIPANT_PENDING_SUPPRESSION_MAX_AGE_MS / 60_000);
+  const ageMinutes = Math.max(1, Math.round(pendingAgeMs / 60_000));
+  return (
+    "Paperclip suppressed automatic recovery while the review stage still named a typed pending participant, " +
+    `but that suppression is capped at ${boundedMinutes} minute${boundedMinutes === 1 ? "" : "s"}. ` +
+    `The stage has remained pending for about ${ageMinutes} minute${ageMinutes === 1 ? "" : "s"} ` +
+    `with no completed decision, live reviewer run, or queued reviewer wake.${failureSummary ?? ""} ` +
+    "Moving it to `blocked` with a source-scoped recovery action so the recovery owner can restore the review stage " +
+    "or record an intentional manual resolution."
+  );
+}
+
+function getReviewParticipantPendingSuppressionAgeMs(issue: typeof issues.$inferSelect) {
+  const pendingSince = issue.executionLockedAt ?? issue.updatedAt ?? issue.createdAt ?? null;
+  if (!(pendingSince instanceof Date)) return null;
+  return Math.max(0, Date.now() - pendingSince.getTime());
 }
 
 function didAutomaticRecoveryFail(
@@ -893,6 +924,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return db
       .select({
         id: heartbeatRuns.id,
+        companyId: heartbeatRuns.companyId,
         agentId: heartbeatRuns.agentId,
         status: heartbeatRuns.status,
         error: heartbeatRuns.error,
@@ -925,6 +957,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return db
       .select({
         id: heartbeatRuns.id,
+        companyId: heartbeatRuns.companyId,
         agentId: heartbeatRuns.agentId,
         status: heartbeatRuns.status,
         error: heartbeatRuns.error,
@@ -1254,6 +1287,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return db
       .select({
         id: heartbeatRuns.id,
+        companyId: heartbeatRuns.companyId,
         agentId: heartbeatRuns.agentId,
         status: heartbeatRuns.status,
         error: heartbeatRuns.error,
@@ -1278,6 +1312,33 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
       .limit(1)
       .then((rows) => rows[0] ?? null);
+  }
+
+  async function countAcceptedInteractionReviewParkCancellations(input: {
+    companyId: string;
+    issueId: string;
+    agentId: string;
+    interactionId: string;
+    resolvedAt: Date;
+  }) {
+    return db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, input.companyId),
+          eq(heartbeatRuns.agentId, input.agentId),
+          eq(heartbeatRuns.status, "cancelled"),
+          eq(heartbeatRuns.errorCode, CONTINUATION_WAITING_ON_REVIEW_ERROR_CODE),
+          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${input.issueId}`,
+          sql`${heartbeatRuns.contextSnapshot} ->> 'interactionId' = ${input.interactionId}`,
+          or(
+            gte(heartbeatRuns.createdAt, input.resolvedAt),
+            gte(heartbeatRuns.finishedAt, input.resolvedAt),
+          ),
+        ),
+      )
+      .then((rows) => rows.length);
   }
 
   // GGU-809: visible-progress signal for stranded-recovery escalation guard.
@@ -4068,6 +4129,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       orphanBlockersAssigned: 0,
       successfulRunHandoffEscalated: 0,
       reviewParticipantRequeued: 0,
+      reviewParticipantTypedPendingSkipped: 0,
       escalated: 0,
       waitingOnReviewResolved: 0,
       providerQuotaMonitored: 0,
@@ -4225,6 +4287,38 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         );
 
         if (!successfulRunSinceResolution) {
+          const reviewParkCancellations = await countAcceptedInteractionReviewParkCancellations({
+            companyId: issue.companyId,
+            issueId: issue.id,
+            agentId,
+            interactionId: acceptedContinuationInteraction.id,
+            resolvedAt: acceptedInteractionResolvedAt,
+          });
+          if (reviewParkCancellations >= CONTINUATION_RECOVERY_TRANSIENT_MAX_ATTEMPTS) {
+            const latestPostResolutionRun = await getLatestIssueRunSince(
+              issue.companyId,
+              issue.id,
+              agentId,
+              acceptedInteractionResolvedAt,
+            );
+            const updated = await escalateStrandedAssignedIssue({
+              issue,
+              previousStatus: "in_review",
+              latestRun: latestPostResolutionRun,
+              comment:
+                `Paperclip retried accepted interaction \`${acceptedContinuationInteraction.id}\` ` +
+                `${reviewParkCancellations} times, but every continuation parked itself back in review. ` +
+                "Moving the issue to `blocked` so the accepted decision cannot loop indefinitely.",
+            });
+            if (updated) {
+              result.escalated += 1;
+              result.issueIds.push(issue.id);
+            } else {
+              result.skipped += 1;
+            }
+            continue;
+          }
+
           if (!agentInvokable) {
             result.skipped += 1;
             continue;
@@ -4389,7 +4483,33 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           hasTypedPendingReviewParticipant(pendingExecutionState) &&
           !isExecutionReviewParticipantRecoveryEligibleRun(participantLatestRun)
         ) {
-          result.skipped += 1;
+          const suppressionAgeMs = getReviewParticipantPendingSuppressionAgeMs(issue);
+          if (
+            suppressionAgeMs !== null &&
+            suppressionAgeMs <= REVIEW_PARTICIPANT_PENDING_SUPPRESSION_MAX_AGE_MS
+          ) {
+            result.reviewParticipantTypedPendingSkipped += 1;
+            result.skipped += 1;
+            continue;
+          }
+
+          const updated = await escalateStrandedAssignedIssue({
+            issue,
+            previousStatus: "in_review",
+            latestRun: participantLatestRun,
+            comment: buildExecutionReviewParticipantSuppressionExpiredComment(
+              participantLatestRun,
+              suppressionAgeMs ?? REVIEW_PARTICIPANT_PENDING_SUPPRESSION_MAX_AGE_MS,
+            ),
+            recoveryCause: EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON,
+            recoveryOwnerAgentId: participantAgentId,
+          });
+          if (updated) {
+            result.escalated += 1;
+            result.issueIds.push(issue.id);
+          } else {
+            result.skipped += 1;
+          }
           continue;
         }
 
@@ -4498,6 +4618,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             issue,
             previousStatus: "todo",
             latestRun,
+            recoveryCause: latestRun.errorCode === "process_lost" ? "process_lost" : undefined,
             comment:
               "Paperclip automatically retried dispatch for this assigned `todo` issue after a lost wake/run, " +
               `but it still has no live execution path.${failureSummary ?? ""} ` +
@@ -4670,6 +4791,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
               issue,
               previousStatus: "in_progress",
               latestRun,
+              recoveryCause: latestRun?.errorCode === "process_lost" ? "process_lost" : undefined,
               comment:
                 "Paperclip automatically retried continuation for this assigned `in_progress` issue after its live " +
                 `execution disappeared, but it still has no live execution path${attemptCopy}.${causeCopy}${failureSummary ?? ""} ` +
