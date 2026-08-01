@@ -5164,6 +5164,7 @@ export async function buildPaperclipWakePayload(input: {
   const commentIds = extractWakeCommentIds(input.contextSnapshot);
   const annotationCommentId = readNonEmptyString(input.contextSnapshot.annotationCommentId);
   const issueId = readNonEmptyString(input.contextSnapshot.issueId);
+  const interactionId = readNonEmptyString(input.contextSnapshot.interactionId);
   const continuationSummary = input.continuationSummary ?? null;
   const agentMessage = parseObject(input.contextSnapshot[PAPERCLIP_AGENT_MESSAGE_KEY]);
   const agentMessageText = sanitizeAgentSessionMessageText(agentMessage.text);
@@ -5189,6 +5190,7 @@ export async function buildPaperclipWakePayload(input: {
     && Object.keys(executionStage).length === 0
     && !issueSummary
     && !agentMessageText
+    && !interactionId
   ) return null;
 
   const commentRows =
@@ -5338,7 +5340,6 @@ export async function buildPaperclipWakePayload(input: {
             : { type: row.authorType, id: null },
       })))
     : [];
-  const interactionId = readNonEmptyString(input.contextSnapshot.interactionId);
   const interactionKind = readNonEmptyString(input.contextSnapshot.interactionKind);
   const interactionStatus = readNonEmptyString(input.contextSnapshot.interactionStatus);
   const checkboxSelection = parseObject(input.contextSnapshot.checkboxSelection);
@@ -5432,6 +5433,7 @@ export async function buildPaperclipWakePayload(input: {
           instruction: readNonEmptyString(input.contextSnapshot.livenessContinuationInstruction),
         }
       : null,
+    interactionId,
     interactionKind,
     interactionStatus,
     checkboxSelection: Object.keys(checkboxSelection).length > 0 ? checkboxSelection : null,
@@ -5474,7 +5476,7 @@ export async function buildPaperclipWakePayload(input: {
       missingCount: missingCommentCount,
     },
     truncated: payloadTruncated,
-    fallbackFetchNeeded: payloadTruncated || missingCommentCount > 0,
+    fallbackFetchNeeded: payloadTruncated || missingCommentCount > 0 || Boolean(interactionId),
   };
 }
 
