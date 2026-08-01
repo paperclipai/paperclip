@@ -166,3 +166,54 @@ export function readCheckboxSelectionForWake(input: {
     selectedOptions: selectedOptionIds.map((id) => optionById.get(id) ?? { id, label: id, description: null }),
   };
 }
+
+export const ITEM_VERDICTS_WAKE_COALESCE_WINDOW_MS = 2_000;
+
+function readItemVerdictRows(result: unknown) {
+  const items = readObject(result).items;
+  if (!Array.isArray(items)) return [];
+  return items.flatMap((value) => {
+    const item = readObject(value);
+    const id = readNonEmptyString(item.id);
+    const verdict = readNonEmptyString(item.verdict);
+    if (!id || !verdict) return [];
+    const resolvedAtValue = item.resolvedAt;
+    const resolvedAt = resolvedAtValue instanceof Date
+      ? resolvedAtValue.toISOString()
+      : readNonEmptyString(resolvedAtValue);
+    return [{
+      id,
+      verdict,
+      reason: readNonEmptyString(item.reason),
+      resolvedByUserId: readNonEmptyString(item.resolvedByUserId),
+      resolvedAt,
+    }];
+  });
+}
+
+export function readLatestResolvedItemVerdictIds(result: unknown) {
+  const rows = readItemVerdictRows(result);
+  const timestamped = rows.flatMap((row) => {
+    const time = row.resolvedAt ? Date.parse(row.resolvedAt) : Number.NaN;
+    return Number.isFinite(time) ? [{ id: row.id, time }] : [];
+  });
+  if (timestamped.length === 0) return [...new Set(rows.map((row) => row.id))];
+  const latestTime = Math.max(...timestamped.map((row) => row.time));
+  return [...new Set(timestamped.filter((row) => row.time === latestTime).map((row) => row.id))];
+}
+
+export function readItemVerdictContinuationContext(input: {
+  result: unknown;
+  newlyResolvedItemIds: string[];
+}) {
+  const newlyResolvedItemIds = [...new Set(input.newlyResolvedItemIds.filter((id) => id.length > 0))];
+  if (newlyResolvedItemIds.length === 0) return null;
+  const selectedIds = new Set(newlyResolvedItemIds);
+  const items = readItemVerdictRows(input.result)
+    .filter((item) => selectedIds.has(item.id));
+  return {
+    newlyResolvedItemIds,
+    items,
+    coalesceWindowMs: ITEM_VERDICTS_WAKE_COALESCE_WINDOW_MS,
+  };
+}

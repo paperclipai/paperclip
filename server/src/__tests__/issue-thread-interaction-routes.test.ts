@@ -595,6 +595,13 @@ describe.sequential("issue thread interaction routes", () => {
           itemVerdicts: {
             newlyResolvedItemIds: ["docs"],
             coalesceWindowMs: 2000,
+            items: [{
+              id: "docs",
+              verdict: "reject",
+              reason: "Missing examples",
+              resolvedByUserId: "local-board",
+              resolvedAt: "2026-04-20T12:06:00.000Z",
+            }],
           },
         }),
         contextSnapshot: expect.objectContaining({
@@ -605,6 +612,13 @@ describe.sequential("issue thread interaction routes", () => {
           itemVerdicts: {
             newlyResolvedItemIds: ["docs"],
             coalesceWindowMs: 2000,
+            items: [{
+              id: "docs",
+              verdict: "reject",
+              reason: "Missing examples",
+              resolvedByUserId: "local-board",
+              resolvedAt: "2026-04-20T12:06:00.000Z",
+            }],
           },
         }),
       }),

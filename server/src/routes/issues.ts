@@ -157,7 +157,9 @@ import {
   findExistingIssueBlockersResolvedWake,
 } from "../services/issue-dependency-wakeups.js";
 import {
+  ITEM_VERDICTS_WAKE_COALESCE_WINDOW_MS as REQUEST_ITEM_VERDICTS_WAKE_COALESCE_WINDOW_MS,
   readCheckboxSelectionForWake,
+  readItemVerdictContinuationContext,
   readPlanReviewInteractionForWake,
   readToolActionContinuationContext,
   readToolActionExecutionStatus,
@@ -1784,8 +1786,6 @@ function isAssigneeSelfCommentOnTerminalIssue(input: {
   return input.actorId === input.assigneeAgentId;
 }
 
-const REQUEST_ITEM_VERDICTS_WAKE_COALESCE_WINDOW_MS = 2_000;
-
 function buildRequestItemVerdictsWakeIdempotencyKey(args: {
   issueId: string;
   interactionId: string;
@@ -1862,12 +1862,10 @@ async function queueResolvedInteractionContinuationWakeup(input: {
   const checkboxSelection = readCheckboxSelectionForWake(input.interaction);
   const toolAction = readToolActionContinuationContext(input.interaction);
   const newlyResolvedItemIds = input.newlyResolvedItemIds?.filter((value) => value.length > 0) ?? [];
-  const itemVerdicts = newlyResolvedItemIds.length > 0
-    ? {
-        newlyResolvedItemIds,
-        coalesceWindowMs: REQUEST_ITEM_VERDICTS_WAKE_COALESCE_WINDOW_MS,
-      }
-    : null;
+  const itemVerdicts = readItemVerdictContinuationContext({
+    result: input.interaction.result,
+    newlyResolvedItemIds,
+  });
   try {
     const run = await input.heartbeat.wakeup(input.issue.assigneeAgentId, {
       source: "automation",

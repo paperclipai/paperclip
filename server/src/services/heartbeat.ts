@@ -5343,6 +5343,7 @@ export async function buildPaperclipWakePayload(input: {
   const interactionStatus = readNonEmptyString(input.contextSnapshot.interactionStatus);
   const checkboxSelection = parseObject(input.contextSnapshot.checkboxSelection);
   const toolAction = parseObject(input.contextSnapshot.toolAction);
+  const itemVerdicts = parseObject(input.contextSnapshot.itemVerdicts);
   const planReviewContext = issueId
     ? await buildPlanReviewContext({
       db: input.db,
@@ -5435,6 +5436,7 @@ export async function buildPaperclipWakePayload(input: {
     interactionStatus,
     checkboxSelection: Object.keys(checkboxSelection).length > 0 ? checkboxSelection : null,
     toolAction: Object.keys(toolAction).length > 0 ? toolAction : null,
+    itemVerdicts: Object.keys(itemVerdicts).length > 0 ? itemVerdicts : null,
     checkedOutByHarness: input.contextSnapshot[PAPERCLIP_HARNESS_CHECKOUT_KEY] === true,
     dependencyBlockedInteraction: input.contextSnapshot.dependencyBlockedInteraction === true,
     treeHoldInteraction: input.contextSnapshot.treeHoldInteraction === true,
