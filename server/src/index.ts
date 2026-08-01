@@ -568,7 +568,42 @@ export async function startServer(): Promise<StartedServer> {
   }
 
   const requestedListenPort = config.port;
-  const listenPort = await detectPort(requestedListenPort);
+  // WAIT for the canonical port before accepting a different one.
+  //
+  // 2026-08-01 (TSMC-18806): the board silently relocated to :3101 three times in twelve hours.
+  // Every occurrence was the same benign race — the server restarts, the OUTGOING process still
+  // holds :3100 for a few seconds, `detectPort` helpfully returns the next free port, and the
+  // new server comes up healthy somewhere nobody is looking. Agents are unaffected (they use the
+  // runtime URL), so the server logs 200s and nothing reports a problem. But roughly ten
+  // operator-side tools are pinned to :3100, so the entire operator control and detection
+  // surface goes dark at once with only connection-refused to explain it. And it never migrates
+  // back: the drift is permanent until someone restarts it again.
+  //
+  // A control plane whose address moves is the defect. Teaching ten tools to hunt for it would
+  // be ten chances to drift and would normalise the problem, so fix it here: poll briefly for
+  // the requested port to be released. A handover takes seconds; this covers it comfortably.
+  //
+  // If the port is STILL busy after the wait, something else genuinely owns it — then fall back
+  // as before (a board on the wrong port beats no board at all) but say so at error level, not
+  // the warn that has been scrolling past unread.
+  const portWaitMs = Number(process.env.PAPERCLIP_PORT_WAIT_MS ?? 30000);
+  const portPollMs = 500;
+  let listenPort = await detectPort(requestedListenPort);
+  if (listenPort !== requestedListenPort && portWaitMs > 0) {
+    const deadline = Date.now() + portWaitMs;
+    logger.warn(
+      `Requested port ${requestedListenPort} is busy; waiting up to ${portWaitMs}ms for it to free `
+      + "(usually the outgoing process during a restart).",
+    );
+    while (Date.now() < deadline) {
+      await new Promise((r) => setTimeout(r, portPollMs));
+      listenPort = await detectPort(requestedListenPort);
+      if (listenPort === requestedListenPort) {
+        logger.info(`Requested port ${requestedListenPort} became available; binding it.`);
+        break;
+      }
+    }
+  }
   if (config.authBaseUrlMode === "explicit" && config.authPublicBaseUrl) {
     config.authPublicBaseUrl = rewriteLocalUrlPort(config.authPublicBaseUrl, listenPort);
   }
@@ -786,7 +821,14 @@ export async function startServer(): Promise<StartedServer> {
   server.headersTimeout = 186000;
   
   if (listenPort !== requestedListenPort) {
-    logger.warn(`Requested port is busy; using next free port (requestedPort=${requestedListenPort}, selectedPort=${listenPort})`);
+    // Escalated from warn to error 2026-08-01: this line existed throughout three silent
+    // relocations and nobody saw it. If we get here the wait above already expired, so the port
+    // is genuinely owned by something else — that is an operator-visible condition, not a note.
+    logger.error(
+      `BOARD IS NOT ON ITS CANONICAL PORT. Requested ${requestedListenPort}, bound ${listenPort} `
+      + `after waiting. Operator tooling pinned to ${requestedListenPort} is now blind — see the `
+      + "board-reachable guard. Find and stop whatever holds the port, then restart.",
+    );
   }
   
   const runtimeListenHost = config.host;
