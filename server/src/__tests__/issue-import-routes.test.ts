@@ -242,6 +242,127 @@ describePg("provider-aware staged issue imports", () => {
       .rejects.toThrow();
   });
 
+  it("adopts a declared parent when first linking an origin with no current parent", async () => {
+    const { companyId, projectId } = await seed();
+    const parentSourceId = randomUUID();
+    const target = item({
+      sourceIdentifier: "EXT-918",
+      parentSourceId,
+    });
+    const [parentIssue, targetIssue] = await db.insert(issues).values([
+      {
+        companyId,
+        title: "Pre-existing Linear parent",
+        originKind: "linear_issue",
+        originId: parentSourceId,
+        originFingerprint: computeLinearIssueFingerprint(parentSourceId),
+      },
+      {
+        companyId,
+        title: "Pre-existing Linear target",
+        originKind: "linear_issue",
+        originId: target.sourceId,
+        originFingerprint: computeLinearIssueFingerprint(target.sourceId),
+      },
+    ]).returning();
+
+    const preview = await request(app()).post(`/api/companies/${companyId}/issue-imports/preview`)
+      .send(manifest(projectId, [target]))
+      .expect(201);
+    const targetPreview = preview.body.items.find((entry: { sourceId: string }) => entry.sourceId === target.sourceId);
+    expect(targetPreview).toMatchObject({
+      action: "link",
+      proposed: { parentSourceId },
+      current: { parentId: null },
+    });
+    expect(targetPreview.conflicts).not.toContain("parent_relation_drift");
+
+    const applied = await request(app()).post(`/api/companies/${companyId}/issue-imports/apply`).send({
+      previewRunId: preview.body.previewRunId,
+      previewDigest: preview.body.previewDigest,
+      activate: false,
+    }).expect(200);
+    expect(applied.body.items.find((entry: { sourceId: string }) => entry.sourceId === target.sourceId))
+      .toMatchObject({
+        relationResults: {
+          parentApplied: true,
+          parentReconciliation: {
+            authority: "source_first_link",
+            proposedSourceId: parentSourceId,
+            proposedIssueId: parentIssue.id,
+            currentIssueId: null,
+            conflict: false,
+            applied: true,
+          },
+        },
+      });
+    expect(await db.select().from(issues).where(eq(issues.id, targetIssue.id)).then((rows) => rows[0]?.parentId))
+      .toBe(parentIssue.id);
+  });
+
+  it("preserves and reports an established parent when first-link source parent differs", async () => {
+    const { companyId, projectId } = await seed();
+    const proposedParentSourceId = randomUUID();
+    const target = item({
+      sourceIdentifier: "EXT-919",
+      parentSourceId: proposedParentSourceId,
+    });
+    const [proposedParent, currentParent, targetIssue] = await db.insert(issues).values([
+      {
+        companyId,
+        title: "Proposed Linear parent",
+        originKind: "linear_issue",
+        originId: proposedParentSourceId,
+        originFingerprint: computeLinearIssueFingerprint(proposedParentSourceId),
+      },
+      {
+        companyId,
+        title: "Paperclip-native current parent",
+      },
+      {
+        companyId,
+        title: "Pre-existing Linear target",
+        originKind: "linear_issue",
+        originId: target.sourceId,
+        originFingerprint: computeLinearIssueFingerprint(target.sourceId),
+      },
+    ]).returning();
+    await db.update(issues).set({ parentId: currentParent.id }).where(eq(issues.id, targetIssue.id));
+
+    const preview = await request(app()).post(`/api/companies/${companyId}/issue-imports/preview`)
+      .send(manifest(projectId, [target]))
+      .expect(201);
+    const targetPreview = preview.body.items.find((entry: { sourceId: string }) => entry.sourceId === target.sourceId);
+    expect(targetPreview).toMatchObject({
+      action: "link",
+      proposed: { parentSourceId: proposedParentSourceId },
+      current: { parentId: currentParent.id },
+    });
+    expect(targetPreview.conflicts).toContain("parent_relation_drift");
+
+    const applied = await request(app()).post(`/api/companies/${companyId}/issue-imports/apply`).send({
+      previewRunId: preview.body.previewRunId,
+      previewDigest: preview.body.previewDigest,
+      activate: false,
+    }).expect(200);
+    expect(applied.body.items.find((entry: { sourceId: string }) => entry.sourceId === target.sourceId))
+      .toMatchObject({
+        relationResults: {
+          parentApplied: false,
+          parentReconciliation: {
+            authority: "paperclip",
+            proposedSourceId: proposedParentSourceId,
+            proposedIssueId: proposedParent.id,
+            currentIssueId: currentParent.id,
+            conflict: true,
+            applied: false,
+          },
+        },
+      });
+    expect(await db.select().from(issues).where(eq(issues.id, targetIssue.id)).then((rows) => rows[0]?.parentId))
+      .toBe(currentParent.id);
+  });
+
   it("preserves a Paperclip-side blocker deletion on same-version replay", async () => {
     const { companyId, projectId } = await seed();
     const parent = item({ sourceIdentifier: "EXT-911", title: "Parent" });
@@ -397,7 +518,7 @@ describePg("provider-aware staged issue imports", () => {
     ))).toHaveLength(1);
   });
 
-  it("reports blocker drift when linking an origin without import state", async () => {
+  it("adopts blockers when first linking an origin with no current blockers", async () => {
     const { companyId, projectId } = await seed();
     const blockerSourceId = randomUUID();
     const target = item({
@@ -430,6 +551,73 @@ describePg("provider-aware staged issue imports", () => {
       proposed: { blockedBySourceIds: [blockerSourceId] },
       current: { blockedByIssueIds: [], blockedBySourceIds: [] },
     });
+    expect(targetPreview.conflicts).not.toContain("blocker_relations_drift");
+
+    const applied = await request(app()).post(`/api/companies/${companyId}/issue-imports/apply`).send({
+      previewRunId: preview.body.previewRunId,
+      previewDigest: preview.body.previewDigest,
+      activate: false,
+    }).expect(200);
+    expect(applied.body.items.find((entry: { sourceId: string }) => entry.sourceId === target.sourceId))
+      .toMatchObject({
+        relationResults: {
+          blockersApplied: 1,
+          blockerReconciliation: {
+            authority: "source_first_link",
+            proposedSourceIds: [blockerSourceId],
+            currentIssueIds: [],
+            currentSourceIds: [],
+            conflict: false,
+            applied: 1,
+          },
+        },
+      });
+    expect(await tableCount(issueRelations)).toBe(1);
+  });
+
+  it("preserves established blockers when first-link source blockers differ", async () => {
+    const { companyId, projectId } = await seed();
+    const proposedBlockerSourceId = randomUUID();
+    const target = item({
+      sourceIdentifier: "EXT-920",
+      blockedBySourceIds: [proposedBlockerSourceId],
+    });
+    const [proposedBlocker, currentBlocker, targetIssue] = await db.insert(issues).values([
+      {
+        companyId,
+        title: "Proposed Linear blocker",
+        originKind: "linear_issue",
+        originId: proposedBlockerSourceId,
+        originFingerprint: computeLinearIssueFingerprint(proposedBlockerSourceId),
+      },
+      {
+        companyId,
+        title: "Paperclip-native current blocker",
+      },
+      {
+        companyId,
+        title: "Pre-existing Linear target",
+        originKind: "linear_issue",
+        originId: target.sourceId,
+        originFingerprint: computeLinearIssueFingerprint(target.sourceId),
+      },
+    ]).returning();
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: currentBlocker.id,
+      relatedIssueId: targetIssue.id,
+      type: "blocks",
+    });
+
+    const preview = await request(app()).post(`/api/companies/${companyId}/issue-imports/preview`)
+      .send(manifest(projectId, [target]))
+      .expect(201);
+    const targetPreview = preview.body.items.find((entry: { sourceId: string }) => entry.sourceId === target.sourceId);
+    expect(targetPreview).toMatchObject({
+      action: "link",
+      proposed: { blockedBySourceIds: [proposedBlockerSourceId] },
+      current: { blockedByIssueIds: [currentBlocker.id], blockedBySourceIds: [] },
+    });
     expect(targetPreview.conflicts).toContain("blocker_relations_drift");
 
     const applied = await request(app()).post(`/api/companies/${companyId}/issue-imports/apply`).send({
@@ -443,14 +631,20 @@ describePg("provider-aware staged issue imports", () => {
           blockersApplied: 0,
           blockerReconciliation: {
             authority: "paperclip",
-            proposedSourceIds: [blockerSourceId],
-            currentIssueIds: [],
+            proposedSourceIds: [proposedBlockerSourceId],
+            currentIssueIds: [currentBlocker.id],
             currentSourceIds: [],
             conflict: true,
+            applied: 0,
           },
         },
       });
-    expect(await tableCount(issueRelations)).toBe(0);
+    expect(await db.select().from(issueRelations).where(eq(issueRelations.relatedIssueId, targetIssue.id)))
+      .toMatchObject([{ issueId: currentBlocker.id }]);
+    expect(await db.select().from(issueRelations).where(and(
+      eq(issueRelations.issueId, proposedBlocker.id),
+      eq(issueRelations.relatedIssueId, targetIssue.id),
+    ))).toHaveLength(0);
   });
 
   it("does not attribute an unrelated concurrent company wake to the import", async () => {

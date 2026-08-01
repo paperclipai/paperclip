@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { and, asc, eq, inArray, max, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, max, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
@@ -272,19 +272,29 @@ export function issueImportService(db: Db) {
       const fingerprint = computeLinearIssueFingerprint(source.sourceId);
       if (existing && existing.originFingerprint !== fingerprint) failures.push("origin_fingerprint_mismatch");
       if (existing && state && state.sourceVersion !== source.sourceVersion) conflicts.push("source_version_drift");
+      const action = !existing ? "create" : !state ? "link" : state.sourceVersion === source.sourceVersion ? "unchanged" : "update";
       const currentBlockers = existing ? currentBlockersByIssue.get(existing.id) ?? [] : [];
       if (existing) {
+        const proposedParentIssueId = source.parentSourceId
+          ? existingBySource.get(source.parentSourceId)?.id ?? null
+          : null;
+        const parentMatches = source.parentSourceId === null
+          ? existing.parentId === null
+          : proposedParentIssueId !== null && existing.parentId === proposedParentIssueId;
+        const firstLinkCanAdoptParent = action === "link"
+          && source.parentSourceId !== null
+          && existing.parentId === null;
+        if (!parentMatches && !firstLinkCanAdoptParent) conflicts.push("parent_relation_drift");
+
         const proposedBlockerSourceIds = [...new Set(source.blockedBySourceIds)].sort();
         const currentBlockerSourceIds = currentBlockers
           .flatMap((blocker) => blocker.sourceId ? [blocker.sourceId] : [])
           .sort();
         const hasPaperclipNativeBlocker = currentBlockers.some((blocker) => blocker.sourceId === null);
-        if (
-          hasPaperclipNativeBlocker
-          || JSON.stringify(proposedBlockerSourceIds) !== JSON.stringify(currentBlockerSourceIds)
-        ) {
-          conflicts.push("blocker_relations_drift");
-        }
+        const blockerSetsMatch = !hasPaperclipNativeBlocker
+          && JSON.stringify(proposedBlockerSourceIds) === JSON.stringify(currentBlockerSourceIds);
+        const firstLinkCanAdoptBlockers = action === "link" && currentBlockers.length === 0;
+        if (!blockerSetsMatch && !firstLinkCanAdoptBlockers) conflicts.push("blocker_relations_drift");
       }
       const proposed = {
         title: source.title,
@@ -301,7 +311,6 @@ export function issueImportService(db: Db) {
         assigneeAgentId: null,
         assigneeUserId: null,
       };
-      const action = !existing ? "create" : !state ? "link" : state.sourceVersion === source.sourceVersion ? "unchanged" : "update";
       return {
         source,
         action,
@@ -440,8 +449,18 @@ export function issueImportService(db: Db) {
           eq(issues.companyId, companyId),
           eq(issues.originKind, LINEAR_ISSUE_ORIGIN_KIND),
           inArray(issues.originId, sourceIds),
-        ));
+        )).for("update");
         const issueBySource = new Map(existingIssues.map((issue) => [issue.originId!, issue]));
+        const existingOriginStates = await tx.select({ sourceId: issueOriginStates.sourceId })
+          .from(issueOriginStates).where(and(
+            eq(issueOriginStates.companyId, companyId),
+            eq(issueOriginStates.provider, "linear"),
+            inArray(issueOriginStates.sourceId, sourceIds),
+          ));
+        const reconciledSourceIds = new Set(existingOriginStates.map((state) => state.sourceId));
+        const firstLinkSourceIds = new Set(existingIssues
+          .filter((issue) => !reconciledSourceIds.has(issue.originId!))
+          .map((issue) => issue.originId!));
         const [company] = await tx.select().from(companies).where(eq(companies.id, companyId)).for("update");
         if (!company) throw notFound("Company not found");
         const currentMax = await tx.select({ value: max(issues.issueNumber) }).from(issues)
@@ -518,42 +537,105 @@ export function issueImportService(db: Db) {
           await tx.update(companies).set({ issueCounter: nextNumber, updatedAt: new Date() }).where(eq(companies.id, companyId));
         }
 
+        const importedIssueIds = [...issueBySource.values()].map((issue) => issue.id);
+        const applyBlockerRows = importedIssueIds.length === 0 ? [] : await tx.select({
+          blockedIssueId: issueRelations.relatedIssueId,
+          blockerIssueId: issueRelations.issueId,
+          blockerOriginKind: issues.originKind,
+          blockerOriginId: issues.originId,
+        }).from(issueRelations).innerJoin(issues, and(
+          eq(issues.companyId, companyId),
+          eq(issues.id, issueRelations.issueId),
+        )).where(and(
+          eq(issueRelations.companyId, companyId),
+          eq(issueRelations.type, "blocks"),
+          inArray(issueRelations.relatedIssueId, importedIssueIds),
+        ));
+        const applyBlockersByIssue = new Map<string, CurrentBlocker[]>();
+        for (const row of applyBlockerRows) {
+          const blockers = applyBlockersByIssue.get(row.blockedIssueId) ?? [];
+          blockers.push({
+            issueId: row.blockerIssueId,
+            sourceId: row.blockerOriginKind === LINEAR_ISSUE_ORIGIN_KIND ? row.blockerOriginId : null,
+          });
+          applyBlockersByIssue.set(row.blockedIssueId, blockers);
+        }
+
         let relationCount = 0;
         let commentCreatedCount = 0;
         let commentDeduplicatedCount = 0;
         for (const item of itemRows) {
           const source = item.sourceData as unknown as LinearIssueImportItem;
           const issue = issueBySource.get(item.sourceId)!;
-          const previewCurrent = item.current as {
-            blockedByIssueIds?: string[];
-            blockedBySourceIds?: string[];
-          } | null;
           const isInitialImport = createdSourceIds.has(item.sourceId);
+          const isFirstLink = firstLinkSourceIds.has(item.sourceId);
+          const currentBlockers = applyBlockersByIssue.get(issue.id) ?? [];
+          const proposedBlockerSourceIds = [...new Set(source.blockedBySourceIds)].sort();
+          const currentBlockerIssueIds = currentBlockers.map((blocker) => blocker.issueId).sort();
+          const currentBlockerSourceIds = currentBlockers
+            .flatMap((blocker) => blocker.sourceId ? [blocker.sourceId] : [])
+            .sort();
+          const blockerSetsMatch = currentBlockers.every((blocker) => blocker.sourceId !== null)
+            && JSON.stringify(proposedBlockerSourceIds) === JSON.stringify(currentBlockerSourceIds);
+          const canAdoptBlockers = isInitialImport || (isFirstLink && currentBlockers.length === 0);
+          const blockerAuthority = isInitialImport
+            ? "source_initial"
+            : isFirstLink && currentBlockers.length === 0 && proposedBlockerSourceIds.length > 0
+              ? "source_first_link"
+              : "paperclip";
+
+          const parent = source.parentSourceId
+            ? issueBySource.get(source.parentSourceId) ?? await tx.select().from(issues).where(and(
+                eq(issues.companyId, companyId),
+                eq(issues.originKind, LINEAR_ISSUE_ORIGIN_KIND),
+                eq(issues.originId, source.parentSourceId),
+              )).then((rows) => rows[0] ?? null)
+            : null;
+          if (source.parentSourceId && !parent) throw unprocessable("Parent source disappeared after preview");
+          const currentParentId = issue.parentId;
+          const parentMatches = source.parentSourceId === null
+            ? currentParentId === null
+            : currentParentId === parent!.id;
+          const canAdoptParent = source.parentSourceId !== null
+            && (isInitialImport || (isFirstLink && currentParentId === null));
+          const parentAuthority = isInitialImport
+            ? "source_initial"
+            : isFirstLink && currentParentId === null && source.parentSourceId !== null
+              ? "source_first_link"
+              : "paperclip";
           const relationResults: Record<string, unknown> = {
             parentApplied: false,
             blockersApplied: 0,
+            parentReconciliation: {
+              authority: parentAuthority,
+              proposedSourceId: source.parentSourceId ?? null,
+              proposedIssueId: parent?.id ?? null,
+              currentIssueId: currentParentId,
+              conflict: !parentMatches && !canAdoptParent,
+              applied: false,
+            },
             blockerReconciliation: {
-              authority: isInitialImport ? "source_initial" : "paperclip",
-              proposedSourceIds: source.blockedBySourceIds,
-              currentIssueIds: previewCurrent?.blockedByIssueIds ?? [],
-              currentSourceIds: previewCurrent?.blockedBySourceIds ?? [],
-              conflict: item.conflicts.includes("blocker_relations_drift"),
+              authority: blockerAuthority,
+              proposedSourceIds: proposedBlockerSourceIds,
+              currentIssueIds: currentBlockerIssueIds,
+              currentSourceIds: currentBlockerSourceIds,
+              conflict: !blockerSetsMatch && !canAdoptBlockers,
+              applied: 0,
             },
           };
-          if (source.parentSourceId) {
-            const parent = issueBySource.get(source.parentSourceId) ?? await tx.select().from(issues).where(and(
-              eq(issues.companyId, companyId),
-              eq(issues.originKind, LINEAR_ISSUE_ORIGIN_KIND),
-              eq(issues.originId, source.parentSourceId),
-            )).then((rows) => rows[0] ?? null);
-            if (!parent) throw unprocessable("Parent source disappeared after preview");
-            if (createdSourceIds.has(item.sourceId)) {
-              await tx.update(issues).set({ parentId: parent.id, updatedAt: new Date() }).where(eq(issues.id, issue.id));
+          if (canAdoptParent) {
+            const appliedParent = isInitialImport
+              ? await tx.update(issues).set({ parentId: parent!.id, updatedAt: new Date() })
+                  .where(eq(issues.id, issue.id)).returning({ id: issues.id })
+              : await tx.update(issues).set({ parentId: parent!.id, updatedAt: new Date() })
+                  .where(and(eq(issues.id, issue.id), isNull(issues.parentId))).returning({ id: issues.id });
+            if (appliedParent.length > 0) {
               relationCount += 1;
               relationResults.parentApplied = true;
+              (relationResults.parentReconciliation as Record<string, unknown>).applied = true;
             }
           }
-          if (isInitialImport) {
+          if (canAdoptBlockers) {
             for (const blockerSourceId of source.blockedBySourceIds) {
               const blocker = issueBySource.get(blockerSourceId) ?? await tx.select().from(issues).where(and(
                 eq(issues.companyId, companyId),
@@ -572,6 +654,8 @@ export function issueImportService(db: Db) {
               if (inserted.length > 0) {
                 relationCount += 1;
                 relationResults.blockersApplied = Number(relationResults.blockersApplied) + 1;
+                const blockerReconciliation = relationResults.blockerReconciliation as Record<string, unknown>;
+                blockerReconciliation.applied = Number(blockerReconciliation.applied) + 1;
               }
             }
           }
