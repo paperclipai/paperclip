@@ -17,6 +17,12 @@ const mockDocumentService = vi.hoisted(() => ({
   unlockIssueDocument: vi.fn(),
 }));
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
+const mockAccessDecision = vi.hoisted(() => vi.fn(async (input: { action?: string }) => ({
+  allowed: true,
+  action: input.action,
+  reason: "allow_test",
+  explanation: "Allowed by test mock.",
+})));
 const mockDb = vi.hoisted(() => ({
   select: vi.fn(() => ({
     from: vi.fn(() => ({
@@ -27,12 +33,7 @@ const mockDb = vi.hoisted(() => ({
 
 function registerMocks() {
   vi.doMock("../services/index.js", () => ({
-    accessService: () => ({ decide: vi.fn(async (input: { action?: string }) => ({
-      allowed: true,
-      action: input.action,
-      reason: "allow_test",
-      explanation: "Allowed by test mock.",
-    })) }),
+    accessService: () => ({ decide: mockAccessDecision }),
     agentService: () => ({ getById: vi.fn(), list: vi.fn(async () => []) }),
     companySkillService: () => ({ completeTestRunForIssue: vi.fn(async () => null) }),
     companyService: () => ({ getById: vi.fn(async () => ({ id: companyId, attachmentMaxBytes: 10_000_000 })) }),
@@ -59,7 +60,7 @@ function registerMocks() {
     routineService: () => ({ syncRunStatusForIssue: vi.fn(async () => undefined) }),
     workProductService: () => ({}),
   }));
-  vi.doMock("../services/access.js", () => ({ accessService: () => ({ decide: vi.fn(async () => ({ allowed: true, reason: "allow_test", explanation: "Allowed by test mock." })) }) }));
+  vi.doMock("../services/access.js", () => ({ accessService: () => ({ decide: mockAccessDecision }) }));
   vi.doMock("../services/activity-log.js", () => ({ logActivity: mockLogActivity }));
   vi.doMock("@paperclipai/shared/telemetry", () => ({ trackAgentTaskCompleted: vi.fn(), trackErrorHandlerCrash: vi.fn() }));
   vi.doMock("../telemetry.js", () => ({ getTelemetryClient: vi.fn(() => ({ track: vi.fn() })) }));
@@ -109,6 +110,7 @@ describe("agent-finalizable issue document routes", () => {
     vi.doUnmock("../telemetry.js");
     registerMocks();
     vi.clearAllMocks();
+    mockAccessDecision.mockResolvedValue({ allowed: true, reason: "allow_test", explanation: "Allowed by test mock." });
     mockIssueService.getById.mockResolvedValue(issue());
     mockDocumentService.getIssueDocumentByKey.mockResolvedValue(revisionedDocument);
     mockDocumentService.lockIssueDocument.mockResolvedValue({ changed: true, document: { ...revisionedDocument, lockedAt: new Date(), lockedByAgentId: ownerAgentId } });
@@ -124,6 +126,21 @@ describe("agent-finalizable issue document routes", () => {
   it("rejects a non-assignee agent", async () => {
     const res = await request(await appFor(agent(otherAgentId))).post(`/api/issues/${issueId}/documents/plan-eng-review/lock`);
     expect(res.status).toBe(403);
+  });
+
+  it("enforces the centralized mutation boundary before agent finalization", async () => {
+    mockAccessDecision.mockImplementation(async (input: { action?: string }) => ({
+      allowed: input.action !== "issue:mutate",
+      action: input.action,
+      reason: "deny_low_trust_boundary",
+      explanation: "Issue is outside this actor's authorization boundary.",
+    }));
+
+    const res = await request(await appFor(agent(ownerAgentId))).post(`/api/issues/${issueId}/documents/plan-eng-review/lock`);
+
+    expect(res.status).toBe(403);
+    expect(mockDocumentService.lockIssueDocument).not.toHaveBeenCalled();
+    expect(mockAccessDecision).toHaveBeenCalledWith(expect.objectContaining({ action: "issue:mutate" }));
   });
 
   it("rejects an assignee locking a non-allowlisted key", async () => {
