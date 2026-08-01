@@ -224,3 +224,16 @@ PR #2218 (`feat/external-adapter-phase1`) adds external adapter support. See roo
 ## Design system
 
 `DESIGN.md` at the repo root is the source of truth for UI design decisions. The token-only rule applies to all `ui/` changes: every color, spacing, radius, type, shadow, and motion value in `ui/src/components/**` and `ui/src/pages/**` comes from the token layer in `ui/src/index.css` — no hex, raw px, arbitrary Tailwind bracket values, or raw `font-size`/`fontSize` declarations in components, outside the documented allowlist in `ui/src/index.css`. Run `pnpm check:token-gates` (`scripts/check-token-gates.mjs`) before committing UI changes — it fails on any violation not covered by that allowlist.
+
+## Cross-project design tool: Impeccable
+
+`impeccable/` is available at `~/Downloads/Projects/impeccable`. It provides 23
+design commands and 59 deterministic anti-pattern detector rules for frontend
+design quality. Use it when working on Paperclip's board UI (`ui/`):
+
+- `/impeccable critique` — UX design review for the board interface
+- `/impeccable audit` — accessibility, performance, and responsive checks
+- `/impeccable polish` — final quality pass before shipping
+
+Run `npx impeccable install` from the project root to set up. See
+`impeccable/README.md` for details.
