@@ -3448,6 +3448,49 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
     expect(issue.responsibleUserId).toBe(actorResponsibleUserId);
   });
 
+  it("defaults closeContract for generation and measurement card templates", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    const cases = [
+      {
+        title: "Asset generation card",
+        cardTemplate: "asset-generation" as const,
+        artifactKind: "generated_media",
+      },
+      {
+        title: "Benchmark cell card",
+        cardTemplate: "benchmark-cell" as const,
+        artifactKind: "benchmark_result",
+      },
+      {
+        title: "Matrix cell card",
+        cardTemplate: "matrix-cell" as const,
+        artifactKind: "matrix_cell_ledger",
+      },
+    ];
+
+    for (const testCase of cases) {
+      const issue = await svc.create(companyId, {
+        title: testCase.title,
+        cardTemplate: testCase.cardTemplate,
+      });
+
+      expect(issue.closeContract).toMatchObject({
+        mode: "evidence",
+        evidenceTarget: 1,
+        evidencePath: issue.identifier,
+        artifactKind: testCase.artifactKind,
+        cardTemplate: testCase.cardTemplate,
+      });
+    }
+  });
+
   it("does not stamp the assignee default environment onto new issues", async () => {
     const companyId = randomUUID();
     const projectId = randomUUID();
@@ -7195,6 +7238,62 @@ describeEmbeddedPostgres("board action requirements", () => {
     );
   });
 
+  it("treats request_item_verdicts as board action while pending and clears it once resolved", async () => {
+    const { companyId, issueId } = await seedBoardActionIssue();
+    const interactionId = randomUUID();
+
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId,
+      companyId,
+      issueId,
+      kind: "request_item_verdicts",
+      status: "pending",
+      continuationPolicy: "wake_assignee",
+      title: "Review generated artifacts",
+      summary: "Need verdicts on API, docs, and tests.",
+      payload: {
+        version: 1,
+        prompt: "Review generated artifacts.",
+        items: [
+          { id: "api", label: "API route" },
+          { id: "docs", label: "Docs" },
+          { id: "tests", label: "Tests" },
+        ],
+      },
+      createdByUserId: "local-board",
+    });
+
+    const pending = await svc.getBoardActionRequirements(companyId, [{ id: issueId }]);
+    expect(pending.get(issueId)).toEqual(expect.objectContaining({
+      source: "interaction",
+      sourceKind: "request_item_verdicts",
+      state: "pending_board_decision",
+    }));
+    expect(pending.get(issueId)?.decisionText).toContain("Approve, reject, or defer items");
+
+    await db
+      .update(issueThreadInteractions)
+      .set({
+        status: "answered",
+        result: {
+          version: 1,
+          outcome: "resolved",
+          complete: true,
+          items: [
+            { id: "api", verdict: "approve" },
+            { id: "docs", verdict: "approve" },
+            { id: "tests", verdict: "reject", reason: "Coverage missing" },
+          ],
+        },
+        resolvedAt: new Date("2026-07-31T15:00:00.000Z"),
+        resolvedByUserId: "local-board",
+      })
+      .where(eq(issueThreadInteractions.id, interactionId));
+
+    const resolved = await svc.getBoardActionRequirements(companyId, [{ id: issueId }]);
+    expect(resolved.has(issueId)).toBe(false);
+  });
+
   it("ignores stale self-created request_confirmation interactions when deriving board action", async () => {
     const { companyId, issueId, assigneeAgentId } = await seedBoardActionIssue();
     const documentId = randomUUID();
@@ -7422,6 +7521,45 @@ describeEmbeddedPostgres("board action requirements", () => {
     expect(requirement?.decisionText).toContain("auto-cancelled");
     expect(requirement?.decisionText).toContain("Approve artifact set");
     expect(requirement?.resumeText).toContain("Issue closed as done.");
+  });
+
+  it("keeps reassignment-cancelled board actions explicitly unresolved", async () => {
+    const { companyId, issueId, assigneeAgentId } = await seedBoardActionIssue();
+
+    await db.insert(issueThreadInteractions).values({
+      id: randomUUID(),
+      companyId,
+      issueId,
+      kind: "request_confirmation",
+      status: "cancelled",
+      continuationPolicy: "wake_assignee_on_accept",
+      title: "Approve reassignment-sensitive action",
+      summary: "AA review was cancelled by reassignment.",
+      payload: {
+        version: 1,
+        prompt: "Approve the action?",
+      },
+      result: {
+        version: 1,
+        outcome: "stale_issue_state",
+        reason: "Issue reassigned to a different owner.",
+      },
+      createdByAgentId: assigneeAgentId,
+      createdAt: new Date("2026-07-31T09:00:00.000Z"),
+      resolvedAt: new Date("2026-07-31T09:01:00.000Z"),
+    });
+
+    const result = await svc.getBoardActionRequirements(companyId, [{ id: issueId }]);
+    const requirement = result.get(issueId);
+
+    expect(requirement).toEqual(expect.objectContaining({
+      source: "interaction",
+      sourceKind: "request_confirmation",
+      state: "pending_board_decision",
+    }));
+    expect(requirement?.decisionText).toContain("reassigned before any decision was made");
+    expect(requirement?.resumeText).toContain("No decision was made before reassignment");
+    expect(requirement?.resumeText).toContain("Issue reassigned to a different owner.");
   });
 });
 

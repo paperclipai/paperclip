@@ -34,15 +34,28 @@ const mockAccessService = vi.hoisted(() => ({
   decide: vi.fn(),
   hasPermission: vi.fn(async () => false),
 }));
-const mockDbSelectWhere = vi.hoisted(() => vi.fn(() => ({
-  then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
-    Promise.resolve([{
-      companyId: "company-1",
-      agentId: "33333333-3333-4333-8333-333333333333",
-      contextSnapshot: null,
-      permissions: null,
-    }]).then(onFulfilled, onRejected),
-})));
+function makeDbSelectChain(rows: unknown[]) {
+  const promise = Promise.resolve(rows);
+  const limitResult = {
+    then: promise.then.bind(promise),
+  };
+  const orderByResult = {
+    limit: vi.fn(() => limitResult),
+    then: promise.then.bind(promise),
+  };
+  return {
+    orderBy: vi.fn(() => orderByResult),
+    limit: vi.fn(() => limitResult),
+    then: promise.then.bind(promise),
+  };
+}
+
+const mockDbSelectWhere = vi.hoisted(() => vi.fn(() => makeDbSelectChain([{
+  companyId: "company-1",
+  agentId: "33333333-3333-4333-8333-333333333333",
+  contextSnapshot: null,
+  permissions: null,
+}])));
 const mockDbSelectFrom = vi.hoisted(() => vi.fn(() => ({ where: mockDbSelectWhere })));
 const mockDbSelect = vi.hoisted(() => vi.fn(() => ({ from: mockDbSelectFrom })));
 const mockDbInsertValues = vi.hoisted(() => vi.fn(async () => undefined));
@@ -208,15 +221,12 @@ describe("issue execution policy routes", () => {
     mockWorkProductService.listForIssue.mockResolvedValue([]);
     mockDbSelect.mockImplementation(() => ({ from: mockDbSelectFrom }));
     mockDbSelectFrom.mockImplementation(() => ({ where: mockDbSelectWhere }));
-    mockDbSelectWhere.mockImplementation(() => ({
-      then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
-        Promise.resolve([{
-          companyId: "company-1",
-          agentId: "33333333-3333-4333-8333-333333333333",
-          contextSnapshot: null,
-          permissions: null,
-        }]).then(onFulfilled, onRejected),
-    }));
+    mockDbSelectWhere.mockImplementation(() => makeDbSelectChain([{
+      companyId: "company-1",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      contextSnapshot: null,
+      permissions: null,
+    }]));
     mockIssueService.createChild.mockResolvedValue({
       issue: {
         id: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
@@ -302,6 +312,7 @@ describe("issue execution policy routes", () => {
       closeContract: {
         evidenceTarget: 4,
         evidencePath: "TSMC-18567",
+        artifactKind: "generated_media",
       },
       executionPolicy: null,
       executionState: null,
@@ -337,6 +348,51 @@ describe("issue execution policy routes", () => {
 
     delete process.env.PAPERCLIP_WORK_PRODUCTS_DIR;
     await rm(tempRoot, { recursive: true, force: true });
+  });
+
+  it("rejects done when another live execution run still targets the issue", async () => {
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_progress",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "TSMC-18905",
+      title: "Live run close block",
+      executionRunId: "run-active-2",
+      executionPolicy: null,
+      executionState: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockDbSelectWhere
+      .mockImplementationOnce(() => makeDbSelectChain([]))
+      .mockImplementationOnce(() => makeDbSelectChain([]));
+    mockHeartbeatService.getRun.mockResolvedValue({
+      id: "run-active-2",
+      status: "running",
+      startedAt: new Date("2026-08-01T09:00:00.000Z"),
+      createdAt: new Date("2026-08-01T09:00:00.000Z"),
+    });
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: "33333333-3333-4333-8333-333333333333",
+      companyId: "company-1",
+      runId: "run-1",
+    }))
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ status: "done" });
+
+    expect(res.status).toBe(422);
+    expect(res.body.error).toContain("still running");
+    expect(res.body.details).toMatchObject({
+      code: "invalid_issue_disposition",
+      reason: "active_run_in_progress",
+      runId: "run-active-2",
+      runStatus: "running",
+    });
+    expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
   it("accepts a gate-keeper assignee as a typed in_review path and still rejects non-gate-keepers", async () => {

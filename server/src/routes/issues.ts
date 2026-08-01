@@ -4,7 +4,7 @@ import { promisify } from "node:util";
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
 import { z } from "zod";
-import { and, asc, desc, eq, inArray, isNull, notInArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
@@ -142,7 +142,7 @@ import {
 import type { TaskWatchdogServiceDeps, taskWatchdogService } from "../services/task-watchdogs.js";
 import { logger } from "../middleware/logger.js";
 import { conflict, forbidden, HttpError, notFound, unauthorized, unprocessable } from "../errors.js";
-import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
+import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo, hasCompanyAccess } from "./authz.js";
 import {
   assertNoAgentHostWorkspaceCommandMutation,
   collectIssueWorkspaceCommandPaths,
@@ -190,7 +190,7 @@ import {
   redactIssueMonitorExternalRef,
   setIssueExecutionPolicyMonitorScheduledBy,
 } from "../services/issue-execution-policy.js";
-import { measureCloseEvidence } from "../services/issue-close-evidence.js";
+import { evaluateCloseContractForDone, isActiveHeartbeatRunStatusBlockingDone, acceptanceCriteriaChangedAfterRunStart } from "../services/issue-close-evidence.js";
 import { parseIssueExecutionWorkspaceSettings } from "../services/execution-workspace-policy.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import {
@@ -676,38 +676,190 @@ async function assertIssueDoneVerificationSatisfied(input: {
 }
 
 async function assertIssueCloseEvidenceSatisfied(input: {
-  issue: { id: string; companyId: string; closeContract?: unknown };
+  issue: {
+    id: string;
+    companyId: string;
+    title?: string | null;
+    labels?: Array<{ name?: string | null }> | null;
+    closeContract?: unknown;
+    executionRunId?: string | null;
+  };
   nextStatus: string;
-  svc: ReturnType<typeof issueService>;
-  workProductsSvc: ReturnType<typeof workProductService>;
+  svc: {
+    listAttachments: (issueId: string) => Promise<unknown[]>;
+    listComments?: (
+      issueId: string,
+      opts?: { order?: "asc" | "desc"; limit?: number | null },
+    ) => Promise<Array<{ createdAt?: Date | string | null; authorType?: string | null; body?: string | null }>>;
+  };
+  workProductsSvc: { listForIssue: (issueId: string) => Promise<unknown[]> };
+  documentsSvc: {
+    listIssueDocuments: (
+      issueId: string,
+      options?: { includeSystem?: boolean },
+    ) => Promise<Array<{ key: string; updatedAt?: Date | string | null }>>;
+  };
+  /**
+   * Latest/active execution run context for this issue.
+   * Prefer an active OTHER run when present; otherwise the most recent run for AC freshness.
+   * The caller's own live run is excluded from the active-run block (see resolveIssueRunForCloseGate).
+   */
+  issueRun?: {
+    id: string;
+    status: string;
+    startedAt?: Date | string | null;
+    createdAt?: Date | string | null;
+  } | null;
+  /** When set, an active run with this id is treated as the caller's own and does not block done. */
+  actorRunId?: string | null;
 }) {
   if (input.nextStatus !== "done") return;
+
+  const issueRun = input.issueRun ?? null;
+  const actorRunId = input.actorRunId?.trim() || null;
+
+  // TSMC-18738 §2 — reject done while another execution run on this issue is still active.
+  // Do not self-block the agent run that is performing the close.
+  if (
+    issueRun
+    && isActiveHeartbeatRunStatusBlockingDone(issueRun.status)
+    && (!actorRunId || issueRun.id !== actorRunId)
+  ) {
+    throw unprocessable(
+      `Issue cannot enter done while execution run ${issueRun.id} is still ${issueRun.status}.`,
+      {
+        code: "invalid_issue_disposition",
+        reason: "active_run_in_progress",
+        runId: issueRun.id,
+        runStatus: issueRun.status,
+      },
+    );
+  }
+
+  // TSMC-18738 §3 — reject done when acceptance criteria changed after the last run started.
+  const runStartedAt = issueRun?.startedAt ?? issueRun?.createdAt ?? null;
+  if (issueRun && runStartedAt) {
+    const documents = await input.documentsSvc.listIssueDocuments(input.issue.id, { includeSystem: true });
+    const acceptanceDoc = documents.find((doc) => doc.key === "acceptance-criteria") ?? null;
+    const comments = typeof input.svc.listComments === "function"
+      ? await input.svc.listComments(input.issue.id, { order: "desc", limit: 40 })
+      : [];
+    const acChange = acceptanceCriteriaChangedAfterRunStart({
+      runStartedAt,
+      acceptanceCriteriaDocumentUpdatedAt: acceptanceDoc?.updatedAt ?? null,
+      comments: comments.map((comment) => ({
+        createdAt: comment.createdAt,
+        authorType: comment.authorType,
+        body: comment.body,
+      })),
+    });
+    if (acChange.changed) {
+      throw unprocessable(
+        "Issue cannot enter done because acceptance criteria changed after the last execution run started; re-run before closing.",
+        {
+          code: "invalid_issue_disposition",
+          reason: "acceptance_criteria_stale_vs_run",
+          runId: issueRun.id,
+          runStartedAt: new Date(runStartedAt).toISOString(),
+          changedSource: acChange.source,
+          changedAt: acChange.changedAt,
+        },
+      );
+    }
+  }
 
   const [attachments, workProducts] = await Promise.all([
     input.svc.listAttachments(input.issue.id),
     input.workProductsSvc.listForIssue(input.issue.id),
   ]);
-  const measurement = await measureCloseEvidence({
+  const evaluation = await evaluateCloseContractForDone({
     companyId: input.issue.companyId,
+    issue: input.issue,
     attachmentsCount: attachments.length,
     workProductsCount: workProducts.length,
-    closeContract: input.issue.closeContract ?? null,
   });
-  if (!measurement || measurement.measuredCount >= measurement.targetCount) return;
 
-  throw unprocessable(
-    `Issue cannot close until close evidence reaches ${measurement.targetCount}; measured ${measurement.measuredCount}.`,
-    {
-      code: "invalid_issue_disposition",
-      reason: "close_evidence_unmet",
-      measuredCount: measurement.measuredCount,
-      targetCount: measurement.targetCount,
-      evidencePath: measurement.closeContract.evidencePath,
-      localPath: measurement.localPath,
-      breakdown: measurement.breakdown,
-    },
-  );
+  if (evaluation.outcome === "unmet") {
+    throw unprocessable(evaluation.message, evaluation.details);
+  }
 }
+
+async function resolveIssueRunForCloseGate(
+  db: Db,
+  issue: { id: string; companyId: string; executionRunId?: string | null },
+  heartbeat: ReturnType<typeof heartbeatService>,
+  opts: { excludeRunId?: string | null } = {},
+): Promise<{ id: string; status: string; startedAt: Date | null; createdAt: Date | null } | null> {
+  const excludeRunId = opts.excludeRunId?.trim() || null;
+
+  // Prefer any OTHER active run scoped to this issue (TSBC-1585 class).
+  // The caller's own live run must not self-block a terminal done transition —
+  // agents routinely PATCH done as the last action before the adapter exits.
+  const activeRows = await db
+    .select({
+      id: heartbeatRuns.id,
+      status: heartbeatRuns.status,
+      startedAt: heartbeatRuns.startedAt,
+      createdAt: heartbeatRuns.createdAt,
+    })
+    .from(heartbeatRuns)
+    .where(and(
+      eq(heartbeatRuns.companyId, issue.companyId),
+      inArray(heartbeatRuns.status, [...ACTIVE_HEARTBEAT_RUN_STATUSES_BLOCKING_DONE_LIST]),
+      sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
+      excludeRunId ? sql`${heartbeatRuns.id} <> ${excludeRunId}` : undefined,
+    ))
+    .orderBy(desc(heartbeatRuns.createdAt))
+    .limit(1);
+  if (activeRows[0]) return activeRows[0];
+
+  if (issue.executionRunId && issue.executionRunId !== excludeRunId) {
+    const run = await heartbeat.getRun(issue.executionRunId);
+    if (run) {
+      return {
+        id: run.id,
+        status: run.status,
+        startedAt: run.startedAt ?? null,
+        createdAt: run.createdAt ?? null,
+      };
+    }
+  }
+
+  // Latest non-self run for acceptance-criteria freshness (not for active-run block).
+  const latestRows = await db
+    .select({
+      id: heartbeatRuns.id,
+      status: heartbeatRuns.status,
+      startedAt: heartbeatRuns.startedAt,
+      createdAt: heartbeatRuns.createdAt,
+    })
+    .from(heartbeatRuns)
+    .where(and(
+      eq(heartbeatRuns.companyId, issue.companyId),
+      sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
+      excludeRunId ? sql`${heartbeatRuns.id} <> ${excludeRunId}` : undefined,
+    ))
+    .orderBy(desc(heartbeatRuns.createdAt))
+    .limit(1);
+  if (latestRows[0]) return latestRows[0];
+
+  // Fall back to the caller's own finished/active run only for AC freshness when it is
+  // the sole run on the issue (active self-run still must not trip the active-run block).
+  if (excludeRunId) {
+    const selfRun = await heartbeat.getRun(excludeRunId);
+    if (selfRun) {
+      return {
+        id: selfRun.id,
+        status: selfRun.status,
+        startedAt: selfRun.startedAt ?? null,
+        createdAt: selfRun.createdAt ?? null,
+      };
+    }
+  }
+  return null;
+}
+
+const ACTIVE_HEARTBEAT_RUN_STATUSES_BLOCKING_DONE_LIST = ["queued", "running", "scheduled_retry"] as const;
 
 async function hasTypedGateKeeperReviewPath(input: {
   access: {
@@ -3193,6 +3345,15 @@ export function issueRoutes(
     return resolveActorSourceTrustForIssue({ db, issue, actor });
   }
 
+  async function sourceTrustForIssueCommentWrite(
+    issue: { id: string; companyId: string; projectId?: string | null; executionPolicy?: unknown },
+    actor: ReturnType<typeof getActorInfo>,
+    decision: true | Awaited<ReturnType<typeof decideIssueAccess>>,
+  ) {
+    if (isDirectParentReportDecision(decision)) return null;
+    return sourceTrustForActorWrite(issue, actor);
+  }
+
   function hasExplicitIssueWorkspaceCreateSelection(input: Record<string, unknown>) {
     return input.parentId !== undefined ||
       input.inheritExecutionWorkspaceFromIssueId !== undefined ||
@@ -3980,6 +4141,20 @@ export function issueRoutes(
     const label = interaction.title && interaction.title.trim().length > 0
       ? ` "${interaction.title.trim()}"`
       : "";
+    const cancelledByReassignment = Boolean(
+      interaction.reason
+      && interaction.status === "cancelled"
+      && /\breassigned\b/i.test(interaction.reason),
+    );
+    if (cancelledByReassignment) {
+      return [
+        "Board action cancelled by reassignment — the decision remains open.",
+        "",
+        `- ${interaction.kind} interaction${label}: cancelled before any decision was made.`,
+        `- Reason: ${interaction.reason!.trim()}`,
+        "- If this decision is still needed, create a fresh interaction for the new owner.",
+      ].join("\n");
+    }
     const lines = [
       "Board action resolved — no board decision is pending.",
       "",
@@ -4300,6 +4475,22 @@ export function issueRoutes(
     return boundaryDecision;
   }
 
+  async function getCommentAccessibleIssue(req: Request, res: Response, issueId: string) {
+    const issue = await svc.getById(issueId);
+    if (!issue) {
+      res.status(404).json({ error: "Issue not found" });
+      return null;
+    }
+    if (hasCompanyAccess(req, issue.companyId)) {
+      assertCompanyAccess(req, issue.companyId);
+      return issue;
+    }
+    const decision = await decideIssueAccess(req, issue, "issue:comment");
+    if (isDirectParentReportDecision(decision)) return issue;
+    res.status(404).json({ error: "Issue not found" });
+    return null;
+  }
+
   function isIssueMentionGrantDecision(decision: true | Awaited<ReturnType<typeof decideIssueAccess>>) {
     return decision !== true && decision.reason === "allow_issue_mention_grant";
   }
@@ -4467,8 +4658,14 @@ export function issueRoutes(
       }
       return assertFreshTaskWatchdogSourceMutation(res, watchdogScope, issue);
     }
+    const activeCheckoutManagementOverride = issue.assigneeAgentId && issue.assigneeAgentId !== actorAgentId
+      ? await hasActiveCheckoutManagementOverride(actorAgentId, issue.companyId, issue.assigneeAgentId)
+      : false;
     const boundaryDecision = await decideIssueAccess(req, issue, "issue:mutate");
     if (!boundaryDecision.allowed) {
+      if (activeCheckoutManagementOverride) {
+        return true;
+      }
       const agentMutationOverride = await decideAgentIssueMutationOverride(
         issue,
         actorAgentId,
@@ -4484,7 +4681,7 @@ export function issueRoutes(
       return true;
     }
     if (issue.assigneeAgentId !== actorAgentId) {
-      if (await hasActiveCheckoutManagementOverride(actorAgentId, issue.companyId, issue.assigneeAgentId)) {
+      if (activeCheckoutManagementOverride) {
         return true;
       }
       const agentMutationOverride = await decideAgentIssueMutationOverride(
@@ -5341,24 +5538,6 @@ export function issueRoutes(
     const assignee = await agentsSvc.getById(normalizedAssigneeAgentId);
     if (!assignee || assignee.companyId !== companyId) {
       return normalizedAssigneeAgentId;
-    }
-
-    if (options.preserveFallbackSisterAssignee !== true) {
-      const primaryRelationship = await agentsSvc.getFallbackPrimaryRelationshipForSister(
-        companyId,
-        assignee.id,
-      );
-      if (primaryRelationship) {
-        const primary = await agentsSvc.getById(primaryRelationship.primaryAgentId);
-        if (
-          primary
-          && primary.companyId === companyId
-          && isAgentStatusInvokable(primary.status)
-          && primary.orgChainHealth?.status !== "invalid_org_chain"
-        ) {
-          return primary.id;
-        }
-      }
     }
 
     if (assignee.status !== "paused") {
@@ -9443,6 +9622,15 @@ export function issueRoutes(
       nextStatus,
       svc,
       workProductsSvc,
+      documentsSvc,
+      // Exclude the caller's own live run from the active-run block and pass actorRunId so
+      // self-close during an in-flight heartbeat is allowed (agents PATCH done before exit).
+      issueRun: nextStatus === "done"
+        ? await resolveIssueRunForCloseGate(db, existing, heartbeat, {
+            excludeRunId: actor.runId ?? null,
+          })
+        : null,
+      actorRunId: actor.runId ?? null,
     });
     if (enteringBlocked) {
       const nextBlockedByIssueIds = Array.isArray(req.body.blockedByIssueIds)
@@ -11616,7 +11804,7 @@ export function issueRoutes(
 
   router.post("/issues/:id/comments", validate(addIssueCommentSchema), async (req, res) => {
     const id = req.params.id as string;
-    const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+    const issue = await getCommentAccessibleIssue(req, res, id);
     if (!issue) return;
     const commentAccessDecision = await assertAgentIssueCommentAllowed(req, res, issue, {
       gateKeeperOverride: { kind: "comment" },
@@ -11844,7 +12032,7 @@ export function issueRoutes(
         actorUserId: actor.actorType === "user" ? actor.actorId : null,
       };
 
-      const sourceTrust = await sourceTrustForActorWrite(currentIssue, actor);
+      const sourceTrust = await sourceTrustForIssueCommentWrite(currentIssue, actor, commentAccessDecision);
       const commentOptions = {
         authorType: req.body.authorType ?? (actor.actorType === "agent" ? "agent" : "user"),
         presentation: req.body.presentation ?? null,
@@ -11934,7 +12122,7 @@ export function issueRoutes(
         authorType: req.body.authorType ?? (actor.actorType === "agent" ? "agent" : "user"),
         presentation: req.body.presentation ?? null,
         metadata: req.body.metadata ?? null,
-        sourceTrust: await sourceTrustForActorWrite(currentIssue, actor),
+        sourceTrust: await sourceTrustForIssueCommentWrite(currentIssue, actor, commentAccessDecision),
       });
     }
 
