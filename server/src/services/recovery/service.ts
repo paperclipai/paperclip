@@ -1148,7 +1148,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
               : []
           )),
         );
-        if (![...requiredItemIds].every((id) => coveredItemIds.has(id))) return false;
+        if (!resolvedItemIds.every((id) => coveredItemIds.has(id))) return false;
       }
       if (toolActionExecutionStatus) {
         return contexts.some((context) => (
