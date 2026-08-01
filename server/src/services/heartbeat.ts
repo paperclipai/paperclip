@@ -16837,6 +16837,51 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           return true;
         };
 
+        const cancelStaleReassignedQueuedHolder = async (
+          queuedRun: typeof heartbeatRuns.$inferSelect,
+        ) => {
+          if (
+            queuedRun.status === "running" ||
+            !issue.assigneeAgentId ||
+            queuedRun.agentId === issue.assigneeAgentId
+          ) {
+            return false;
+          }
+
+          const now = new Date();
+          const reason = "Execution lock released after issue reassigned to a different agent";
+          const cancelled = await tx
+            .update(heartbeatRuns)
+            .set({
+              status: "cancelled",
+              finishedAt: now,
+              error: reason,
+              errorCode: "lock_released_on_reassignment",
+              updatedAt: now,
+            })
+            .where(
+              and(
+                eq(heartbeatRuns.id, queuedRun.id),
+                eq(heartbeatRuns.status, queuedRun.status),
+              ),
+            )
+            .returning({ id: heartbeatRuns.id });
+          if (cancelled.length === 0) return false;
+
+          if (queuedRun.wakeupRequestId) {
+            await tx
+              .update(agentWakeupRequests)
+              .set({
+                status: "cancelled",
+                finishedAt: now,
+                error: reason,
+                updatedAt: now,
+              })
+              .where(eq(agentWakeupRequests.id, queuedRun.wakeupRequestId));
+          }
+          return true;
+        };
+
         let activeExecutionRun = issue.executionRunId
           ? await tx
             .select()
@@ -16873,42 +16918,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         // claimed running run. If zero rows matched, leave
         // `activeExecutionRun` populated so the defer path runs
         // normally against the now-running holder.
-        if (
-          activeExecutionRun &&
-          activeExecutionRun.status !== "running" &&
-          issue.assigneeAgentId &&
-          activeExecutionRun.agentId !== issue.assigneeAgentId
-        ) {
-          const cancelled = await tx
-            .update(heartbeatRuns)
-            .set({
-              status: "cancelled",
-              finishedAt: new Date(),
-              error: "Execution lock released after issue reassigned to a different agent",
-              errorCode: "lock_released_on_reassignment",
-              updatedAt: new Date(),
-            })
-            .where(
-              and(
-                eq(heartbeatRuns.id, activeExecutionRun.id),
-                eq(heartbeatRuns.status, activeExecutionRun.status),
-              ),
-            )
-            .returning({ id: heartbeatRuns.id });
-          if (cancelled.length > 0) {
-            if (activeExecutionRun.wakeupRequestId) {
-              await tx
-                .update(agentWakeupRequests)
-                .set({
-                  status: "cancelled",
-                  finishedAt: new Date(),
-                  error: "Execution lock released after issue reassigned to a different agent",
-                  updatedAt: new Date(),
-                })
-                .where(eq(agentWakeupRequests.id, activeExecutionRun.wakeupRequestId));
-            }
-            activeExecutionRun = null;
-          }
+        if (activeExecutionRun && await cancelStaleReassignedQueuedHolder(activeExecutionRun)) {
+          activeExecutionRun = null;
         }
 
         if (!activeExecutionRun && issue.executionRunId) {
@@ -16943,6 +16954,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
           if (legacyRun) {
             if (await cancelStaleScheduledRetry(legacyRun)) {
+              activeExecutionRun = null;
+            } else if (await cancelStaleReassignedQueuedHolder(legacyRun)) {
               activeExecutionRun = null;
             } else {
               activeExecutionRun = legacyRun;

@@ -83,6 +83,14 @@ async function waitForCondition(fn: () => Promise<boolean>, timeoutMs = 3_000) {
   return fn();
 }
 
+function deferred() {
+  let resolve!: () => void;
+  const promise = new Promise<void>((next) => {
+    resolve = next;
+  });
+  return { promise, resolve };
+}
+
 async function cleanupHeartbeatInvalidationFixture(db: ReturnType<typeof createDb>) {
   for (let attempt = 0; attempt < 10; attempt += 1) {
     try {
@@ -1118,6 +1126,115 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
     expect(wakeup?.status).toBe("skipped");
     expect(wakeup?.error).toContain("assignee changed");
     expect(countExecuteCallsForRun(runId)).toBe(0);
+  });
+
+  it("cancels a pre-claim run after reassignment before locking and gives the new assignee one scoped run", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent({ agentName: "OriginalCoder" });
+    const replacementAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: replacementAgentId,
+      companyId,
+      name: "ReplacementScout",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {
+        heartbeat: {
+          wakeOnDemand: true,
+          maxConcurrentRuns: 1,
+        },
+      },
+      permissions: {},
+    });
+
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Reassigned before queued claim",
+      status: "in_progress",
+      priority: "high",
+      assigneeAgentId: agentId,
+    });
+    const { runId: staleRunId, wakeupRequestId: staleWakeupRequestId } = await seedQueuedRun({
+      companyId,
+      agentId,
+      issueId,
+      wakeReason: "issue_assigned",
+    });
+
+    await db
+      .update(issues)
+      .set({ assigneeAgentId: replacementAgentId, updatedAt: new Date() })
+      .where(eq(issues.id, issueId));
+
+    const replacementExecuteStarted = deferred();
+    const releaseReplacementExecute = deferred();
+    mockAdapterExecute.mockImplementation(async () => {
+      replacementExecuteStarted.resolve();
+      await releaseReplacementExecute.promise;
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        errorMessage: null,
+        summary: "Replacement completed the scoped assignment.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+
+    const replacementRun = await heartbeat.wakeup(replacementAgentId, {
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId },
+      contextSnapshot: { issueId, wakeReason: "issue_assigned" },
+    });
+
+    expect(replacementRun).not.toBeNull();
+    expect(replacementRun?.agentId).toBe(replacementAgentId);
+    expect(replacementRun?.id).not.toBe(staleRunId);
+    await replacementExecuteStarted.promise;
+
+    try {
+      const [staleRun, staleWakeup, issueBeforeDrain, replacementRunsBeforeDrain] = await Promise.all([
+        db
+          .select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, staleRunId))
+          .then((rows) => rows[0] ?? null),
+        db
+          .select({ status: agentWakeupRequests.status })
+          .from(agentWakeupRequests)
+          .where(eq(agentWakeupRequests.id, staleWakeupRequestId))
+          .then((rows) => rows[0] ?? null),
+        db
+          .select({ executionRunId: issues.executionRunId })
+          .from(issues)
+          .where(eq(issues.id, issueId))
+          .then((rows) => rows[0] ?? null),
+        db
+          .select({ id: heartbeatRuns.id })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.agentId, replacementAgentId)),
+      ]);
+
+      expect(staleRun).toMatchObject({
+        status: "cancelled",
+        errorCode: "lock_released_on_reassignment",
+      });
+      expect(staleWakeup?.status).toBe("cancelled");
+      expect(issueBeforeDrain?.executionRunId).not.toBe(staleRunId);
+      expect(countExecuteCallsForRun(staleRunId)).toBe(0);
+      expect(replacementRunsBeforeDrain).toEqual([{ id: replacementRun!.id }]);
+    } finally {
+      releaseReplacementExecute.resolve();
+    }
+
+    await heartbeat.drainActiveRunExecutions();
+    expect(countExecuteCallsForRun(replacementRun!.id)).toBe(1);
   });
 
   it("cancels queued runs when the issue reaches a terminal status before the run starts", async () => {
