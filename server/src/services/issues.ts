@@ -19,6 +19,7 @@ import {
   executionWorkspaces,
   issueApprovals,
   issueAttachments,
+  issueCreateIdempotencyKeys,
   issueInboxArchives,
   issueLabels,
   issueWatchdogs,
@@ -137,6 +138,9 @@ const ISSUE_COMMENT_RUN_LOG_DERIVATION_MAX_LOG_BYTES = 2_000_000;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_CHUNK_BYTES = 256_000;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_END_SLACK_MS = 60_000;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_MAX_PARALLEL_READS = 8;
+export const ISSUE_CREATE_IDEMPOTENCY_KEY_RETENTION_DAYS = 7;
+const ISSUE_CREATE_IDEMPOTENCY_KEY_RETENTION_MS = ISSUE_CREATE_IDEMPOTENCY_KEY_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+const ISSUE_CREATE_IDEMPOTENCY_KEY_CLEANUP_BATCH_SIZE = 500;
 const DELETED_ISSUE_COMMENT_BODY = "";
 const ISSUE_WAKE_DIAGNOSTICS_ACTIVITY_ACTIONS = ["issue.tree_hold_wakeup_deferred"] as const;
 
@@ -3793,6 +3797,10 @@ export function issueService(db: Db) {
   const instanceSettings = instanceSettingsService(db);
   const treeControlSvc = issueTreeControlService(db);
 
+  function normalizeCreateIssueTitle(title: string) {
+    return title.trim().replace(/\s+/g, " ").toLowerCase();
+  }
+
   async function getIssueByUuid(id: string) {
     const row = await db
       .select()
@@ -6404,6 +6412,9 @@ export function issueService(db: Db) {
         actorRunId,
         actorResponsibleUserId,
         trustExplicitResponsibleUserId,
+        idempotencyKey: rawIdempotencyKey,
+        allowDuplicate,
+        onDeduplicated,
         ...issueData
       } = data;
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
@@ -6425,6 +6436,75 @@ export function issueService(db: Db) {
         throw unprocessable("in_progress issues require an assignee");
       }
       return db.transaction(async (tx) => {
+        const idempotencyKey = rawIdempotencyKey?.trim() || null;
+        const normalizedTitle = normalizeCreateIssueTitle(issueData.title);
+        if (allowDuplicate === false) {
+          const titleGuardKey =
+            `issue-create:title:${companyId}:${issueData.parentId ?? "root"}:${normalizedTitle}`;
+          await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${titleGuardKey}, 0))`);
+        }
+        if (idempotencyKey) {
+          const idempotencyGuardKey = `issue-create:idempotency:${companyId}:${idempotencyKey}`;
+          await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${idempotencyGuardKey}, 0))`);
+        }
+
+        let existingIssue: typeof issues.$inferSelect | undefined;
+        let deduplicationReason: "idempotency_key" | "recent_open_title" | null = null;
+        if (idempotencyKey) {
+          const idempotencyKeyRetentionCutoff = new Date(Date.now() - ISSUE_CREATE_IDEMPOTENCY_KEY_RETENTION_MS);
+          await tx.execute(sql`
+            delete from ${issueCreateIdempotencyKeys}
+            where ${issueCreateIdempotencyKeys.id} in (
+              select ${issueCreateIdempotencyKeys.id}
+              from ${issueCreateIdempotencyKeys}
+              where ${issueCreateIdempotencyKeys.companyId} = ${companyId}
+                and ${issueCreateIdempotencyKeys.createdAt} < ${idempotencyKeyRetentionCutoff.toISOString()}::timestamptz
+              order by ${issueCreateIdempotencyKeys.createdAt} asc, ${issueCreateIdempotencyKeys.id} asc
+              limit ${ISSUE_CREATE_IDEMPOTENCY_KEY_CLEANUP_BATCH_SIZE}
+            )
+          `);
+
+          [existingIssue] = await tx
+            .select()
+            .from(issueCreateIdempotencyKeys)
+            .innerJoin(issues, eq(issueCreateIdempotencyKeys.issueId, issues.id))
+            .where(and(
+              eq(issueCreateIdempotencyKeys.companyId, companyId),
+              eq(issueCreateIdempotencyKeys.idempotencyKey, idempotencyKey),
+            ))
+            .limit(1)
+            .then((rows) => rows.map((row) => row.issues));
+          if (existingIssue) deduplicationReason = "idempotency_key";
+        }
+        if (!existingIssue && allowDuplicate === false) {
+          [existingIssue] = await tx
+            .select()
+            .from(issues)
+            .where(and(
+              eq(issues.companyId, companyId),
+              issueData.parentId ? eq(issues.parentId, issueData.parentId) : isNull(issues.parentId),
+              isNull(issues.hiddenAt),
+              notInArray(issues.status, ["done", "cancelled"]),
+              gte(issues.createdAt, new Date(Date.now() - 48 * 60 * 60 * 1000)),
+              sql`lower(regexp_replace(btrim(${issues.title}), '\\s+', ' ', 'g')) = ${normalizedTitle}`,
+            ))
+            .orderBy(asc(issues.createdAt), asc(issues.id))
+            .limit(1);
+          if (existingIssue) deduplicationReason = "recent_open_title";
+        }
+        if (existingIssue) {
+          if (idempotencyKey) {
+            await tx
+              .insert(issueCreateIdempotencyKeys)
+              .values({ companyId, idempotencyKey, issueId: existingIssue.id })
+              .onConflictDoNothing();
+          }
+          if (deduplicationReason) onDeduplicated?.(deduplicationReason);
+          const [enriched] = await withIssueLabels(tx, [existingIssue]);
+          const [withRelations] = await withIssueRelationSummaries(companyId, [enriched], tx);
+          return withRelations;
+        }
+
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, companyId);
         let projectWorkspaceId = issueData.projectWorkspaceId ?? null;
         let executionWorkspaceId = issueData.executionWorkspaceId ?? null;
@@ -6610,6 +6690,13 @@ export function issueService(db: Db) {
         );
 
         const [issue] = await tx.insert(issues).values(values).returning();
+        if (idempotencyKey) {
+          await tx.insert(issueCreateIdempotencyKeys).values({
+            companyId,
+            idempotencyKey,
+            issueId: issue.id,
+          });
+        }
         if (watchdog) {
           await upsertIssueWatchdogForIssue(tx, companyId, issue.id, {
             agentId: watchdog.agentId,

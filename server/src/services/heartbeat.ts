@@ -12506,23 +12506,39 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
       return issue.assigneeAgentId ?? null;
     };
-    const enqueueCurrentIssueWake = async (targetAgentId: string | null) => {
+    const enqueueCurrentIssueWake = async (targetAgentId: string | null, deferred = false) => {
       if (!targetAgentId) return;
-      await enqueueWakeup(targetAgentId, {
+      const wakeContext = {
+        issueId,
+        wakeReason: "issue_assigned",
+        staleQueuedRunId: run.id,
+        staleQueuedRunErrorCode: staleness.errorCode,
+      };
+      if (!deferred) {
+        await enqueueWakeup(targetAgentId, {
+          source: "automation",
+          triggerDetail: "system",
+          reason: "issue_assigned",
+          payload: wakeContext,
+          contextSnapshot: wakeContext,
+        });
+        return;
+      }
+      // The stale run was cancelled because this issue is not executable yet.
+      // Preserve a durable successor wake, but defer it until the issue becomes
+      // runnable instead of immediately creating another run and recursing.
+      await db.insert(agentWakeupRequests).values({
+        companyId: run.companyId,
+        agentId: targetAgentId,
         source: "automation",
         triggerDetail: "system",
         reason: "issue_assigned",
         payload: {
-          issueId,
-          staleQueuedRunId: run.id,
-          staleQueuedRunErrorCode: staleness.errorCode,
+          ...wakeContext,
+          [DEFERRED_WAKE_CONTEXT_KEY]: wakeContext,
         },
-        contextSnapshot: {
-          issueId,
-          wakeReason: "issue_assigned",
-          staleQueuedRunId: run.id,
-          staleQueuedRunErrorCode: staleness.errorCode,
-        },
+        status: "deferred_issue_execution",
+        requestedByActorType: "system",
       });
     };
     const now = new Date();
@@ -12580,7 +12596,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       case "issue_not_in_progress":
       case "issue_review_participant_changed":
       case "issue_continuation_waiting_on_review":
-        await enqueueCurrentIssueWake(await readCurrentStaleWakeTargetAgentId());
+        await enqueueCurrentIssueWake(await readCurrentStaleWakeTargetAgentId(), true);
         break;
       case "issue_execution_lock_changed": {
         const agent = await getAgent(run.agentId);

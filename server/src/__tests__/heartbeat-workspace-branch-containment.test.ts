@@ -1,6 +1,6 @@
 import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -737,11 +737,12 @@ async function expectForwardBranchReconciled(input: {
     .from(executionWorkspaces)
     .where(eq(executionWorkspaces.id, activeWorkspaceId));
   const expectedDurableBranch = input.expectsExistingRecordUpdate ? input.actualBranch : input.expectedBranch;
+  const expectedProviderRef = await realpath(input.worktreePath);
   expect(activeWorkspace).toMatchObject({
     name: expectedDurableBranch,
     branchName: expectedDurableBranch,
-    providerRef: input.worktreePath,
   });
+  expect(await realpath(activeWorkspace!.providerRef!)).toBe(expectedProviderRef);
 
   const recoveryRows = await input.db
     .select()

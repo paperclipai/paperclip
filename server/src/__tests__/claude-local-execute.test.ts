@@ -868,9 +868,9 @@ describe("claude execute", () => {
       res.end("<html>login</html>");
     });
     const reachableServer = createServer((req, res) => {
-      if (req.url === "/api/agents/me") {
+      if (req.url === "/api/health") {
         res.writeHead(200, { "content-type": "application/json" });
-        res.end(JSON.stringify({ id: "agent-1" }));
+        res.end(JSON.stringify({ status: "ok" }));
         return;
       }
       res.writeHead(404, { "content-type": "application/json" });
