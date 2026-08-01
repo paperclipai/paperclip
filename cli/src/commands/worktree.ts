@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import {
   chmodSync,
   copyFileSync,
@@ -64,6 +65,7 @@ import {
   isWorktreeSeedMode,
   resolveSuggestedWorktreeName,
   resolveWorktreeSeedPlan,
+  resolveWorktreeSeedMarkerPaths,
   resolveWorktreeLocalPaths,
   sanitizeWorktreeInstanceId,
   type WorktreeSeedPlan,
@@ -147,6 +149,14 @@ type WorktreeRepairOptions = {
   allowLiveTarget?: boolean;
 };
 
+type WorktreeEnsureSeededOptions = {
+  config?: string;
+  fromConfig?: string;
+  fromDataDir?: string;
+  fromInstance?: string;
+  preserveLiveWork?: boolean;
+};
+
 type EmbeddedPostgresInstance = {
   initialise(): Promise<void>;
   start(): Promise<void>;
@@ -192,6 +202,29 @@ type SeedWorktreeDatabaseResult = {
     fromCwd: string;
     toCwd: string;
   }>;
+};
+
+type WorktreeSeedPendingMarker = {
+  version: 1;
+  state: "pending";
+  sourceConfigPath: string;
+  seedMode: "minimal";
+  createdAt: string;
+};
+
+type WorktreeSeedCompleteMarker = {
+  version: 1;
+  state: "complete";
+  seedMode: WorktreeSeedMode;
+  completedAt: string;
+};
+
+type SeedWorktreeDatabase = typeof seedWorktreeDatabase;
+
+export type EnsureWorktreeSeededResult = {
+  seeded: boolean;
+  reason: "seeded" | "complete_marker" | "legacy_unmarked";
+  details?: SeedWorktreeDatabaseResult;
 };
 
 export type SeededWorktreeExecutionQuarantineSummary = {
@@ -1359,13 +1392,324 @@ async function seedWorktreeDatabase(input: {
   }
 }
 
+function writeWorktreeSeedMarker(
+  filePath: string,
+  marker: WorktreeSeedPendingMarker | WorktreeSeedCompleteMarker,
+): void {
+  mkdirSync(path.dirname(filePath), { recursive: true });
+  writeFileSync(filePath, `${JSON.stringify(marker, null, 2)}\n`, { mode: 0o600 });
+}
+
+export function markWorktreeSeedPending(input: {
+  configPath: string;
+  sourceConfigPath: string;
+  now?: Date;
+}): void {
+  const markers = resolveWorktreeSeedMarkerPaths(input.configPath);
+  rmSync(markers.complete, { force: true });
+  writeWorktreeSeedMarker(markers.pending, {
+    version: 1,
+    state: "pending",
+    sourceConfigPath: path.resolve(input.sourceConfigPath),
+    seedMode: "minimal",
+    createdAt: (input.now ?? new Date()).toISOString(),
+  });
+}
+
+export function markWorktreeSeedComplete(input: {
+  configPath: string;
+  seedMode?: WorktreeSeedMode;
+  now?: Date;
+}): void {
+  const markers = resolveWorktreeSeedMarkerPaths(input.configPath);
+  writeWorktreeSeedMarker(markers.complete, {
+    version: 1,
+    state: "complete",
+    seedMode: input.seedMode ?? "minimal",
+    completedAt: (input.now ?? new Date()).toISOString(),
+  });
+  rmSync(markers.pending, { force: true });
+}
+
+function readWorktreeSeedPendingMarker(filePath: string): WorktreeSeedPendingMarker {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(readFileSync(filePath, "utf8"));
+  } catch (error) {
+    throw new Error(
+      `Invalid worktree seed-pending marker at ${filePath}: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+
+  if (
+    !parsed
+    || typeof parsed !== "object"
+    || (parsed as { version?: unknown }).version !== 1
+    || (parsed as { state?: unknown }).state !== "pending"
+    || typeof (parsed as { sourceConfigPath?: unknown }).sourceConfigPath !== "string"
+    || !(parsed as { sourceConfigPath: string }).sourceConfigPath.trim()
+  ) {
+    throw new Error(`Invalid worktree seed-pending marker at ${filePath}.`);
+  }
+
+  return parsed as WorktreeSeedPendingMarker;
+}
+
+const WORKTREE_SEED_LOCK_PREFIX = "seed.lock.";
+const WORKTREE_SEED_LOCK_SUFFIX = ".json";
+const WORKTREE_SEED_LOCK_TIMEOUT_MS = 30 * 60 * 1_000;
+
+type WorktreeSeedLockEntry = {
+  version: 1;
+  state: "choosing" | "ready";
+  pid: number;
+  processIdentity: string;
+  token: string;
+  ticket?: number;
+};
+
+function parseWorktreeSeedLockEntry(value: string): WorktreeSeedLockEntry | null {
+  try {
+    const parsed = JSON.parse(value) as Partial<WorktreeSeedLockEntry>;
+    if (
+      parsed.version !== 1
+      || (parsed.state !== "choosing" && parsed.state !== "ready")
+      || !Number.isInteger(parsed.pid)
+      || (parsed.pid ?? 0) <= 0
+      || typeof parsed.processIdentity !== "string"
+      || !parsed.processIdentity
+      || typeof parsed.token !== "string"
+      || !parsed.token
+      || (parsed.state === "ready" && (!Number.isSafeInteger(parsed.ticket) || (parsed.ticket ?? 0) <= 0))
+    ) {
+      return null;
+    }
+    return parsed as WorktreeSeedLockEntry;
+  } catch {
+    return null;
+  }
+}
+
+function readWorktreeSeedProcessIdentity(pid: number): string | null {
+  try {
+    if (process.platform === "linux") {
+      const stat = readFileSync(`/proc/${pid}/stat`, "utf8");
+      const fieldsAfterCommand = stat.slice(stat.lastIndexOf(")") + 2).trim().split(/\s+/);
+      const startTicks = fieldsAfterCommand[19];
+      if (!startTicks) return null;
+      const bootId = readFileSync("/proc/sys/kernel/random/boot_id", "utf8").trim();
+      return `linux:${bootId}:${startTicks}`;
+    }
+    if (process.platform === "win32") {
+      const startedAt = execFileSync(
+        "powershell.exe",
+        [
+          "-NoLogo",
+          "-NoProfile",
+          "-NonInteractive",
+          "-Command",
+          `(Get-Process -Id ${pid} -ErrorAction Stop).StartTime.ToUniversalTime().Ticks`,
+        ],
+        { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] },
+      ).trim();
+      return startedAt ? `win32:${startedAt}` : null;
+    }
+    const startedAt = execFileSync("ps", ["-o", "lstart=", "-p", String(pid)], {
+      encoding: "utf8",
+      stdio: ["ignore", "pipe", "ignore"],
+    }).trim();
+    return startedAt ? `${process.platform}:${startedAt}` : null;
+  } catch {
+    return null;
+  }
+}
+
+function worktreeSeedProcessExists(pid: number): boolean {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code !== "ESRCH";
+  }
+}
+
+async function writeWorktreeSeedLockEntry(
+  entryPath: string,
+  entry: WorktreeSeedLockEntry,
+): Promise<void> {
+  const tempPath = `${entryPath}.tmp-${randomUUID()}`;
+  try {
+    await fsPromises.writeFile(tempPath, `${JSON.stringify(entry)}\n`, {
+      encoding: "utf8",
+      mode: 0o600,
+      flag: "wx",
+    });
+    await fsPromises.rename(tempPath, entryPath);
+  } finally {
+    await fsPromises.rm(tempPath, { force: true });
+  }
+}
+
+async function listLiveWorktreeSeedLocks(lockDir: string): Promise<WorktreeSeedLockEntry[]> {
+  const entries: WorktreeSeedLockEntry[] = [];
+  for (const name of await fsPromises.readdir(lockDir)) {
+    if (!name.startsWith(WORKTREE_SEED_LOCK_PREFIX) || !name.endsWith(WORKTREE_SEED_LOCK_SUFFIX)) {
+      continue;
+    }
+    const entryPath = path.join(lockDir, name);
+    let entry: WorktreeSeedLockEntry | null;
+    try {
+      entry = parseWorktreeSeedLockEntry(await fsPromises.readFile(entryPath, "utf8"));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
+      throw error;
+    }
+    if (!entry || !worktreeSeedProcessExists(entry.pid)) {
+      await fsPromises.rm(entryPath, { force: true });
+      continue;
+    }
+    const processIdentity = readWorktreeSeedProcessIdentity(entry.pid);
+    if (processIdentity !== null && processIdentity !== entry.processIdentity) {
+      await fsPromises.rm(entryPath, { force: true });
+      continue;
+    }
+    entries.push(entry);
+  }
+  return entries;
+}
+
+async function withWorktreeSeedLock<T>(configPath: string, callback: () => Promise<T>): Promise<T> {
+  const lockDir = path.resolve(path.dirname(configPath));
+  const token = `${process.pid}-${Date.now()}-${randomUUID()}`;
+  const processIdentity = readWorktreeSeedProcessIdentity(process.pid);
+  if (!processIdentity) {
+    throw new Error(`Unable to determine process identity before locking worktree seed state at ${lockDir}.`);
+  }
+  const entryPath = path.join(lockDir, `${WORKTREE_SEED_LOCK_PREFIX}${token}${WORKTREE_SEED_LOCK_SUFFIX}`);
+  const deadline = Date.now() + WORKTREE_SEED_LOCK_TIMEOUT_MS;
+  await fsPromises.mkdir(lockDir, { recursive: true });
+  await writeWorktreeSeedLockEntry(entryPath, {
+    version: 1,
+    state: "choosing",
+    pid: process.pid,
+    processIdentity,
+    token,
+  });
+
+  try {
+    const ticket = Math.max(
+      0,
+      ...(await listLiveWorktreeSeedLocks(lockDir))
+        .filter((entry) => entry.state === "ready")
+        .map((entry) => entry.ticket ?? 0),
+    ) + 1;
+    await writeWorktreeSeedLockEntry(entryPath, {
+      version: 1,
+      state: "ready",
+      pid: process.pid,
+      processIdentity,
+      token,
+      ticket,
+    });
+
+    while (true) {
+      const entries = await listLiveWorktreeSeedLocks(lockDir);
+      const anotherEntryIsChoosing = entries.some((entry) => entry.token !== token && entry.state === "choosing");
+      const firstReadyEntry = entries
+        .filter((entry): entry is WorktreeSeedLockEntry & { ticket: number } => (
+          entry.state === "ready" && entry.ticket !== undefined
+        ))
+        .sort((left, right) => left.ticket - right.ticket || left.token.localeCompare(right.token))[0];
+      if (!anotherEntryIsChoosing && firstReadyEntry?.token === token) break;
+      if (Date.now() >= deadline) {
+        throw new Error(
+          `Another worktree database seed is still running. ` +
+          `If no seed process is active, remove stale seed lock entries from ${lockDir} and retry.`,
+        );
+      }
+      await new Promise<void>((resolve) => setTimeout(resolve, 100));
+    }
+
+    return await callback();
+  } finally {
+    await fsPromises.rm(entryPath, { force: true });
+  }
+}
+
+async function ensureWorktreeSeededUnlocked(
+  configPath: string,
+  opts: WorktreeEnsureSeededOptions = {},
+  dependencies: { seedDatabase?: SeedWorktreeDatabase } = {},
+): Promise<EnsureWorktreeSeededResult> {
+  const markers = resolveWorktreeSeedMarkerPaths(configPath);
+
+  if (existsSync(markers.complete)) {
+    return { seeded: false, reason: "complete_marker" };
+  }
+  if (!existsSync(markers.pending)) {
+    // Worktrees created before lazy seeding shipped were seeded eagerly and
+    // have neither marker. Preserve that compatibility without re-cloning.
+    return { seeded: false, reason: "legacy_unmarked" };
+  }
+
+  const pending = readWorktreeSeedPendingMarker(markers.pending);
+  const sourceConfigPath = opts.fromConfig || opts.fromDataDir || opts.fromInstance
+    ? resolveSourceConfigPath({
+        fromConfig: opts.fromConfig,
+        fromDataDir: opts.fromDataDir,
+        fromInstance: opts.fromInstance,
+      })
+    : path.resolve(pending.sourceConfigPath);
+
+  if (path.resolve(sourceConfigPath) === path.resolve(configPath)) {
+    throw new Error(
+      "Source and target Paperclip configs are the same. Pass --from-config for the source instance.",
+    );
+  }
+
+  const sourceConfig = readConfig(sourceConfigPath);
+  if (!sourceConfig) {
+    throw new Error(`Source config not found at ${sourceConfigPath}.`);
+  }
+  const targetConfig = readConfig(configPath);
+  if (!targetConfig) {
+    throw new Error(`Target config not found at ${configPath}.`);
+  }
+
+  const targetRoot = path.dirname(path.dirname(configPath));
+  const targetPaths = resolveWorktreeReseedTargetPaths({ configPath, rootPath: targetRoot });
+  const seedDatabase = dependencies.seedDatabase ?? seedWorktreeDatabase;
+  const details = await seedDatabase({
+    sourceConfigPath,
+    sourceConfig,
+    targetConfig,
+    targetPaths,
+    instanceId: targetPaths.instanceId,
+    seedMode: "minimal",
+    preserveLiveWork: opts.preserveLiveWork,
+  });
+  markWorktreeSeedComplete({ configPath });
+  return { seeded: true, reason: "seeded", details };
+}
+
+export async function ensureWorktreeSeeded(
+  opts: WorktreeEnsureSeededOptions = {},
+  dependencies: { seedDatabase?: SeedWorktreeDatabase } = {},
+): Promise<EnsureWorktreeSeededResult> {
+  const configPath = resolveConfigPath(opts.config);
+  return withWorktreeSeedLock(
+    configPath,
+    () => ensureWorktreeSeededUnlocked(configPath, opts, dependencies),
+  );
+}
+
 export function resolveWorktreeSeedBackupEngine(seedPlan: WorktreeSeedPlan): "auto" | "javascript" {
   return seedPlan.excludedTables.length === 0 && Object.keys(seedPlan.nullifyColumns).length === 0
     ? "auto"
     : "javascript";
 }
 
-async function runWorktreeInit(opts: WorktreeInitOptions): Promise<void> {
+async function runWorktreeInitUnlocked(opts: WorktreeInitOptions): Promise<void> {
   const cwd = process.cwd();
   const worktreeName = resolveSuggestedWorktreeName(
     cwd,
@@ -1401,6 +1745,9 @@ async function runWorktreeInit(opts: WorktreeInitOptions): Promise<void> {
     // checkout, and a recursive rmSync here would nuke them all.
     rmSync(paths.configPath, { force: true });
     rmSync(paths.envPath, { force: true });
+    const seedMarkers = resolveWorktreeSeedMarkerPaths(paths.configPath);
+    rmSync(seedMarkers.pending, { force: true });
+    rmSync(seedMarkers.complete, { force: true });
     rmSync(paths.instanceRoot, { recursive: true, force: true });
   }
 
@@ -1420,6 +1767,10 @@ async function runWorktreeInit(opts: WorktreeInitOptions): Promise<void> {
   });
 
   writeConfig(targetConfig, paths.configPath);
+  markWorktreeSeedPending({
+    configPath: paths.configPath,
+    sourceConfigPath,
+  });
   const sourceEnvEntries = readPaperclipEnvEntries(resolvePaperclipEnvFile(sourceConfigPath));
   const existingAgentJwtSecret =
     nonEmpty(sourceEnvEntries.PAPERCLIP_AGENT_JWT_SECRET) ??
@@ -1461,6 +1812,7 @@ async function runWorktreeInit(opts: WorktreeInitOptions): Promise<void> {
       seedExecutionQuarantineSummary = seeded.executionQuarantine;
       pausedScheduledRoutineCount = seeded.pausedScheduledRoutines;
       reboundWorkspaceSummary = seeded.reboundWorkspaces;
+      markWorktreeSeedComplete({ configPath: paths.configPath, seedMode });
       spinner.stop(`Seeded isolated worktree database (${seedMode}).`);
     } catch (error) {
       spinner.stop(pc.red("Failed to seed worktree database."));
@@ -1505,10 +1857,65 @@ async function runWorktreeInit(opts: WorktreeInitOptions): Promise<void> {
   );
 }
 
+async function runWorktreeInit(opts: WorktreeInitOptions): Promise<void> {
+  const cwd = process.cwd();
+  const worktreeName = resolveSuggestedWorktreeName(
+    cwd,
+    opts.name ?? detectGitBranchName(cwd) ?? undefined,
+  );
+  const instanceId = sanitizeWorktreeInstanceId(opts.instance ?? worktreeName);
+  const configPath = resolveWorktreeLocalPaths({
+    cwd,
+    homeDir: resolveWorktreeHome(opts.home),
+    instanceId,
+  }).configPath;
+  await withWorktreeSeedLock(configPath, () => runWorktreeInitUnlocked(opts));
+}
+
 export async function worktreeInitCommand(opts: WorktreeInitOptions): Promise<void> {
   printPaperclipCliBanner();
   p.intro(pc.bgCyan(pc.black(" paperclipai worktree init ")));
   await runWorktreeInit(opts);
+}
+
+export async function worktreeEnsureSeededCommand(opts: WorktreeEnsureSeededOptions): Promise<void> {
+  printPaperclipCliBanner();
+  p.intro(pc.bgCyan(pc.black(" paperclipai worktree ensure-seeded ")));
+
+  const markers = resolveWorktreeSeedMarkerPaths(resolveConfigPath(opts.config));
+  if (existsSync(markers.complete) || !existsSync(markers.pending)) {
+    const result = await ensureWorktreeSeeded(opts);
+    const reason = result.reason === "complete_marker"
+      ? "Seed-complete marker already present."
+      : "No seed-pending marker found; treating this legacy worktree as already seeded.";
+    p.outro(pc.green(reason));
+    return;
+  }
+
+  const spinner = p.spinner();
+  spinner.start("Seeding isolated worktree database from source instance (minimal)...");
+  try {
+    const result = await ensureWorktreeSeeded(opts);
+    spinner.stop("Seeded isolated worktree database (minimal).");
+    if (result.details) {
+      p.log.message(pc.dim(`Seed snapshot: ${result.details.backupSummary}`));
+      p.log.message(
+        pc.dim(
+          `Seed execution quarantine: ${formatSeededWorktreeExecutionQuarantineSummary(result.details.executionQuarantine)}`,
+        ),
+      );
+      p.log.message(pc.dim(`Paused scheduled routines: ${result.details.pausedScheduledRoutines}`));
+      for (const rebound of result.details.reboundWorkspaces) {
+        p.log.message(
+          pc.dim(`Rebound workspace ${rebound.name}: ${rebound.fromCwd} -> ${rebound.toCwd}`),
+        );
+      }
+    }
+    p.outro(pc.green("Worktree database seed complete."));
+  } catch (error) {
+    spinner.stop(pc.red("Failed to seed worktree database."));
+    throw error;
+  }
 }
 
 export async function worktreeMakeCommand(nameArg: string, opts: WorktreeMakeOptions): Promise<void> {
@@ -3093,15 +3500,15 @@ export async function worktreeMergeHistoryCommand(sourceArg: string | undefined,
   }
 }
 
-async function runWorktreeReseed(opts: WorktreeReseedOptions): Promise<void> {
+async function runWorktreeReseedUnlocked(
+  opts: WorktreeReseedOptions,
+  targetEndpoint: ResolvedWorktreeEndpoint,
+): Promise<void> {
   const seedMode = opts.seedMode ?? "full";
   if (!isWorktreeSeedMode(seedMode)) {
     throw new Error(`Unsupported seed mode "${seedMode}". Expected one of: minimal, full.`);
   }
 
-  const targetEndpoint = opts.to
-    ? resolveWorktreeEndpointFromSelector(opts.to, { allowCurrent: true })
-    : resolveCurrentEndpoint();
   const source = resolveWorktreeReseedSource(opts);
 
   if (path.resolve(source.configPath) === path.resolve(targetEndpoint.configPath)) {
@@ -3158,6 +3565,7 @@ async function runWorktreeReseed(opts: WorktreeReseedOptions): Promise<void> {
       seedMode,
       preserveLiveWork: opts.preserveLiveWork,
     });
+    markWorktreeSeedComplete({ configPath: targetEndpoint.configPath, seedMode });
     spinner.stop(`Reseeded ${targetEndpoint.label} (${seedMode}).`);
     p.log.message(pc.dim(`Source: ${source.configPath}`));
     p.log.message(pc.dim(`Target: ${targetEndpoint.configPath}`));
@@ -3180,6 +3588,16 @@ async function runWorktreeReseed(opts: WorktreeReseedOptions): Promise<void> {
     spinner.stop(pc.red("Failed to reseed worktree database."));
     throw error;
   }
+}
+
+async function runWorktreeReseed(opts: WorktreeReseedOptions): Promise<void> {
+  const targetEndpoint = opts.to
+    ? resolveWorktreeEndpointFromSelector(opts.to, { allowCurrent: true })
+    : resolveCurrentEndpoint();
+  await withWorktreeSeedLock(
+    targetEndpoint.configPath,
+    () => runWorktreeReseedUnlocked(opts, targetEndpoint),
+  );
 }
 
 export async function worktreeReseedCommand(opts: WorktreeReseedOptions): Promise<void> {
@@ -3318,6 +3736,16 @@ export function registerWorktreeCommands(program: Command): void {
     .option("-c, --config <path>", "Path to config file")
     .option("--json", "Print JSON instead of shell exports")
     .action(worktreeEnvCommand);
+
+  worktree
+    .command("ensure-seeded")
+    .description("Seed a seed-pending worktree database exactly once from its source instance")
+    .option("-c, --config <path>", "Path to the target worktree config file")
+    .option("--from-config <path>", "Source config.json to seed from (defaults to the seed-pending marker)")
+    .option("--from-data-dir <path>", "Source PAPERCLIP_HOME used when deriving the source config")
+    .option("--from-instance <id>", "Source instance id when deriving the source config")
+    .option("--preserve-live-work", "Do not quarantine copied agent timers or assigned open issues", false)
+    .action(worktreeEnsureSeededCommand);
 
   program
     .command("worktree:list")
