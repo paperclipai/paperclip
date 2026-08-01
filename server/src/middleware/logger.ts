@@ -1,5 +1,6 @@
 import path from "node:path";
 import fs from "node:fs";
+import { fileURLToPath } from "node:url";
 import pino from "pino";
 import { pinoHttp } from "pino-http";
 import { readConfigFile } from "../config-file.js";
@@ -7,6 +8,10 @@ import { resolveDefaultLogsDir, resolveHomeAwarePath } from "../home-paths.js";
 import { HTTP_LOG_REDACT_PATHS } from "./http-log-redaction.js";
 import { shouldSilenceHttpSuccessLog } from "./http-log-policy.js";
 import { redactSensitive } from "./redact-sensitive.js";
+import {
+  DEFAULT_SERVER_LOG_MAX_ARCHIVES,
+  DEFAULT_SERVER_LOG_MAX_BYTES,
+} from "./rotating-file-stream.js";
 
 function resolveServerLogDir(): string {
   const envOverride = process.env.PAPERCLIP_LOG_DIR?.trim();
@@ -22,6 +27,7 @@ const logDir = resolveServerLogDir();
 fs.mkdirSync(logDir, { recursive: true });
 
 const logFile = path.join(logDir, "server.log");
+const rotatingFileTransport = fileURLToPath(new URL("./rotating-file-transport.js", import.meta.url));
 
 const sharedOpts = {
   translateTime: "SYS:HH:MM:ss",
@@ -40,8 +46,14 @@ export const logger = pino({
       level: "info",
     },
     {
-      target: "pino-pretty",
-      options: { ...sharedOpts, colorize: false, destination: logFile, mkdir: true },
+      target: rotatingFileTransport,
+      options: {
+        ...sharedOpts,
+        colorize: false,
+        logFile,
+        maxBytes: DEFAULT_SERVER_LOG_MAX_BYTES,
+        maxArchives: DEFAULT_SERVER_LOG_MAX_ARCHIVES,
+      },
       level: "debug",
     },
   ],
