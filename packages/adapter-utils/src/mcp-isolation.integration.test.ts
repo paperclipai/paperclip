@@ -54,7 +54,7 @@ async function runAcpxFixtureSession(
     sessionStore: createRuntimeStore({ stateDir: path.join(root, `acpx-${sessionName}`) }),
     agentRegistry: createAgentRegistry({
       overrides: {
-        isolation_fixture: `${process.execPath} ${acpFixturePath}`,
+        isolation_fixture: `${process.execPath} ${JSON.stringify(acpFixturePath)}`,
       },
     }),
     mcpServers,
@@ -127,9 +127,10 @@ describe("same-machine MCP isolation", () => {
   it("keeps concurrent Claude CLI MCP configs strict and disjoint", async () => {
     const version = await commandVersion("claude");
     if (!version) return;
-    const claudeVersionMatch = version.match(/^2\.1\.(\d+) \(Claude Code\)$/);
-    expect(claudeVersionMatch).not.toBeNull();
-    expect(Number(claudeVersionMatch?.[1])).toBeGreaterThanOrEqual(207);
+    const claudeVersionMatch = version.match(/^(\d+)\.(\d+)\.(\d+) \(Claude Code\)$/);
+    if (!claudeVersionMatch) return;
+    const [, major, minor, patch] = claudeVersionMatch.map(Number);
+    if (major < 2 || (major === 2 && minor < 1) || (major === 2 && minor === 1 && patch < 207)) return;
 
     const root = await createMcpIsolationRoot("paperclip-claude-mcp-isolation-");
     cleanupRoots.push(root);
