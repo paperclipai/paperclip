@@ -398,3 +398,61 @@ describe("paperclip MCP tools", () => {
     expect(response.content[0]?.text).toContain("must not contain '..'");
   });
 });
+
+describe("per-call runId", () => {
+  beforeEach(() => {
+    vi.restoreAllMocks();
+  });
+
+  function headersOf(fetchMock: ReturnType<typeof vi.fn>): Record<string, string> {
+    return (fetchMock.mock.calls[0]?.[1] as { headers: Record<string, string> }).headers;
+  }
+
+  it("sends the call's runId as X-Paperclip-Run-Id instead of the configured one", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(mockJsonResponse({ ok: true }));
+    vi.stubGlobal("fetch", fetchMock);
+    const tool = getTool("paperclipCreateIssue");
+
+    await tool.execute({
+      companyId: "11111111-1111-1111-1111-111111111111",
+      title: "t",
+      runId: "44444444-4444-4444-4444-444444444444",
+    });
+
+    expect(headersOf(fetchMock)["X-Paperclip-Run-Id"]).toBe("44444444-4444-4444-4444-444444444444");
+  });
+
+  it("falls back to PAPERCLIP_RUN_ID when the call does not carry one", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(mockJsonResponse({ ok: true }));
+    vi.stubGlobal("fetch", fetchMock);
+    const tool = getTool("paperclipCreateIssue");
+
+    await tool.execute({ companyId: "11111111-1111-1111-1111-111111111111", title: "t" });
+
+    expect(headersOf(fetchMock)["X-Paperclip-Run-Id"]).toBe("33333333-3333-3333-3333-333333333333");
+  });
+
+  it("does not leak one call's runId into a concurrent call", async () => {
+    // The reason this is scoped rather than stored on the client: tool calls
+    // interleave, and a shared field would attribute one run's write to another.
+    const seen: Array<string | undefined> = [];
+    const fetchMock = vi.fn().mockImplementation(async (_url, init) => {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      seen.push((init as { headers: Record<string, string> }).headers["X-Paperclip-Run-Id"]);
+      return mockJsonResponse({ ok: true });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    const tool = getTool("paperclipCreateIssue");
+    const company = "11111111-1111-1111-1111-111111111111";
+
+    await Promise.all([
+      tool.execute({ companyId: company, title: "a", runId: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa" }),
+      tool.execute({ companyId: company, title: "b", runId: "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb" }),
+    ]);
+
+    expect(seen.sort()).toEqual([
+      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb",
+    ]);
+  });
+});

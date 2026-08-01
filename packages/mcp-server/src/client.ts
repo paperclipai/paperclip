@@ -1,3 +1,4 @@
+import { AsyncLocalStorage } from "node:async_hooks";
 import type { PaperclipMcpConfig } from "./config.js";
 
 export class PaperclipApiError extends Error {
@@ -25,6 +26,18 @@ export class PaperclipApiError extends Error {
 export interface JsonRequestOptions {
   body?: unknown;
   includeRunId?: boolean;
+  /**
+   * Run id for this call, overriding PAPERCLIP_RUN_ID.
+   *
+   * The env var is read once at startup, which is enough for a server spawned per
+   * run but not for a long-lived or shared one — there the current run is simply
+   * not knowable when the process starts. Without a run id the server omits
+   * X-Paperclip-Run-Id, comments land with created_by_run_id NULL, and the guards
+   * that recognise an agent's own comment (shouldImplicitlyMoveCommentedIssueToTodo,
+   * deferredCommentWakeIsSelfAuthored) cannot fire — so a run that closes its issue
+   * and comments reopens it and wakes itself.
+   */
+  runId?: string | null;
 }
 
 function isWriteMethod(method: string): boolean {
@@ -46,6 +59,20 @@ async function parseResponseBody(response: Response): Promise<unknown> {
   } catch {
     return text;
   }
+}
+
+/**
+ * Run id for the tool call currently executing.
+ *
+ * A shared client cannot hold this on the instance: tool calls interleave, and a
+ * field would leak one call's run id into another. AsyncLocalStorage scopes it to
+ * the call that set it.
+ */
+const runIdScope = new AsyncLocalStorage<string | undefined>();
+
+/** Run `fn` with `runId` applied to every request it makes. */
+export function withRunId<T>(runId: string | undefined, fn: () => T): T {
+  return runIdScope.run(runId, fn);
 }
 
 export class PaperclipApiClient {
@@ -88,8 +115,9 @@ export class PaperclipApiClient {
     if (options.body !== undefined) {
       headers["Content-Type"] = "application/json";
     }
-    if ((options.includeRunId ?? isWriteMethod(method)) && this.config.runId) {
-      headers["X-Paperclip-Run-Id"] = this.config.runId;
+    const runId = options.runId?.trim() || runIdScope.getStore()?.trim() || this.config.runId;
+    if ((options.includeRunId ?? isWriteMethod(method)) && runId) {
+      headers["X-Paperclip-Run-Id"] = runId;
     }
 
     const response = await fetch(url, {
