@@ -134,6 +134,8 @@ export interface PluginToolDispatcher {
    * @param namespacedName - Fully qualified tool name
    * @param parameters - Input parameters matching the tool's schema
    * @param runContext - Agent run context
+   * @param agentRunScope - Host-authenticated provenance binding. Callers must
+   *   never derive this value from plugin- or board-supplied runContext.
    * @returns The execution result with routing metadata
    * @throws {Error} if the tool is not found, the worker is not running,
    *   or the tool execution fails
@@ -142,6 +144,7 @@ export interface PluginToolDispatcher {
     namespacedName: string,
     parameters: unknown,
     runContext: ToolRunContext,
+    agentRunScope?: { agentId: string; runId: string; companyId: string },
   ): Promise<ToolExecutionResult>;
 
   /**
@@ -403,6 +406,7 @@ export function createPluginToolDispatcher(
       namespacedName: string,
       parameters: unknown,
       runContext: ToolRunContext,
+      agentRunScope?: { agentId: string; runId: string; companyId: string },
     ): Promise<ToolExecutionResult> {
       log.debug(
         {
@@ -417,6 +421,7 @@ export function createPluginToolDispatcher(
         namespacedName,
         parameters,
         runContext,
+        agentRunScope,
       );
 
       log.debug(

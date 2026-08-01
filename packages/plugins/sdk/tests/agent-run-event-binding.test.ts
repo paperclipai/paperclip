@@ -412,4 +412,36 @@ describe("test harness emitFromAgentRun", () => {
     expect(jobError).toBeInstanceOf(Error);
     expect(String(jobError)).toMatch(/executeTool invocation bound to an active agent run/);
   });
+
+  it("rejects a timer callback after the test-harness tool handler returns", async () => {
+    const harness = createTestHarness({ manifest: WORKER_MANIFEST });
+    const received: PluginEvent[] = [];
+    let timerError: unknown = null;
+    harness.ctx.events.on("plugin.*", async (event) => {
+      received.push(event);
+    });
+    harness.ctx.tools.register(
+      "probe",
+      { displayName: "Probe", description: "probe", parametersSchema: { type: "object" } },
+      async () => {
+        setTimeout(() => {
+          harness.ctx.events.emitFromAgentRun("from-timer", {}).catch((err) => {
+            timerError = err;
+          });
+        }, 0);
+        return { content: "ok" };
+      },
+    );
+
+    await harness.executeTool("probe", {}, {
+      agentId: "agent-1",
+      runId: "run-1",
+      companyId: "company-1",
+    });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+
+    expect(timerError).toBeInstanceOf(Error);
+    expect(String(timerError)).toMatch(/executeTool invocation bound to an active agent run/);
+    expect(received).toHaveLength(0);
+  });
 });

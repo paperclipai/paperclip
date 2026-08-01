@@ -5801,6 +5801,11 @@ export function createToolGatewayService(
                     companyId: session.companyId,
                     projectId: session.projectId ?? "",
                   },
+                  {
+                    agentId: session.agentId!,
+                    runId: session.runId!,
+                    companyId: session.companyId,
+                  },
                 ),
                 executionTimeoutMs,
               )

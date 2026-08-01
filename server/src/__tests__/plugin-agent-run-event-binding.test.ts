@@ -205,6 +205,45 @@ describe("plugin events bound to active agent runs (worker manager + factory)", 
     }
   });
 
+  it("keeps the host-only agent-run scope out of worker-visible executeTool params", async () => {
+    const { handle } = createEmitHandle();
+
+    try {
+      await handle.start();
+
+      await expect(handle.call("executeTool", {
+        toolName: "probe",
+        parameters: { mode: "inspect-host-fields" },
+        runContext: RUN_CONTEXT,
+        _agentRunScope: { agentId: "agent-1", runId: "run-1", companyId: "company-1" },
+      })).resolves.toEqual({ data: { hasAgentRunScope: false } });
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("rejects a host scope whose company differs from the dispatched run context", async () => {
+    const { handle, emitFromAgentRun } = createEmitHandle();
+
+    try {
+      await handle.start();
+
+      await expect(handle.call("executeTool", {
+        toolName: "probe",
+        parameters: { mode: "echo", payload: {} },
+        runContext: RUN_CONTEXT,
+        _agentRunScope: { agentId: "agent-1", runId: "run-1", companyId: "company-2" },
+      })).rejects.toMatchObject({
+        code: PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED,
+        message: expect.stringContaining("agent run"),
+      });
+
+      expect(emitFromAgentRun).not.toHaveBeenCalled();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
   it("rejects expired invocation ids after the executeTool call settles", async () => {
     const { handle, emitFromAgentRun } = createEmitHandle();
 

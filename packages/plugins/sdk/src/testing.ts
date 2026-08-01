@@ -581,7 +581,10 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
   const toolHandlers = new Map<string, (params: unknown, runCtx: ToolRunContext) => Promise<ToolResult>>();
   // Active executeTool run context, visible to ctx.events.emitFromAgentRun the
   // same way the real worker sees its host-issued invocation.
-  const toolRunStorage = new AsyncLocalStorage<ToolRunContext>();
+  const toolRunStorage = new AsyncLocalStorage<{
+    run: ToolRunContext;
+    completed: boolean;
+  }>();
 
   function localFolderKey(companyId: string, folderKey: string): string {
     return `${companyId}:${folderKey}`;
@@ -882,12 +885,13 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       },
       async emitFromAgentRun(name, payload) {
         requireCapability(manifest, capabilitySet, "events.emit");
-        const run = toolRunStorage.getStore();
-        if (!run) {
+        const execution = toolRunStorage.getStore();
+        if (!execution || execution.completed) {
           throw new Error(
             "emitFromAgentRun is only available inside an executeTool invocation bound to an active agent run",
           );
         }
+        const run = execution.run;
         // Envelope identities are harness-owned (mirroring the host): they come
         // from the executeTool run context, never from the payload.
         await harness.emit(`plugin.${manifest.id}.${name}`, payload, {
@@ -2628,7 +2632,12 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         companyId: runCtx.companyId ?? "company-test",
         projectId: runCtx.projectId ?? "project-test",
       };
-      return await toolRunStorage.run(ctxToPass, () => handler(params, ctxToPass)) as T;
+      const execution = { run: ctxToPass, completed: false };
+      try {
+        return await toolRunStorage.run(execution, () => handler(params, ctxToPass)) as T;
+      } finally {
+        execution.completed = true;
+      }
     },
     getState(input) {
       return state.get(stateMapKey(input));

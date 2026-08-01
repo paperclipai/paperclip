@@ -620,8 +620,12 @@ export function createPluginWorkerHandle(
         const src = params._agentRunScope;
         const agentId = readNonEmptyString(src.agentId);
         const runId = readNonEmptyString(src.runId);
-        if (agentId && runId) {
-          return { companyId, agentRun: { agentId, runId, companyId } };
+        const scopeCompanyId = readNonEmptyString(src.companyId);
+        if (agentId && runId && scopeCompanyId === companyId) {
+          return {
+            companyId: scopeCompanyId,
+            agentRun: { agentId, runId, companyId: scopeCompanyId },
+          };
         }
       }
       return { companyId };
@@ -633,6 +637,17 @@ export function createPluginWorkerHandle(
     }
 
     return null;
+  }
+
+  function stripHostOnlyInvocationFields<M extends HostToWorkerMethodName>(
+    method: M,
+    params: HostToWorkerMethods[M][0],
+  ): HostToWorkerMethods[M][0] {
+    if (method !== "executeTool" || !isRecord(params) || !("_agentRunScope" in params)) {
+      return params;
+    }
+    const { _agentRunScope: _hostOnlyScope, ...workerParams } = params;
+    return workerParams as HostToWorkerMethods[M][0];
   }
 
   function registerInvocation(scope: PluginInvocationScope, ttlMs?: number): PluginInvocationContext {
@@ -1334,8 +1349,9 @@ export function createPluginWorkerHandle(
       pendingRequests.set(id, pending);
 
       try {
+        const workerParams = stripHostOnlyInvocationFields(method, params);
         const request = {
-          ...createRequest(method, params, id),
+          ...createRequest(method, workerParams, id),
           ...(invocation ? { paperclipInvocation: invocation } : {}),
         };
         sendMessage(request);
@@ -1415,10 +1431,14 @@ export function createPluginWorkerHandle(
       // cleared on settlement, so they survive arbitrarily long call timeouts.
       const invocation = invocationScope ? registerInvocation(invocationScope, MAX_RPC_TIMEOUT_MS) : null;
       try {
+        const workerParams = stripHostOnlyInvocationFields(
+          method as HostToWorkerMethodName,
+          params as HostToWorkerMethods[HostToWorkerMethodName][0],
+        );
         sendMessage({
           jsonrpc: JSONRPC_VERSION,
           method,
-          params,
+          params: workerParams,
           ...(invocation ? { paperclipInvocation: invocation } : {}),
         });
       } catch {

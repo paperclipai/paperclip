@@ -132,12 +132,28 @@ describe("dispatcher.registerPluginTools — activation path", () => {
           companyId: "company-1",
           projectId: "project-1",
         },
+        {
+          agentId: "agent-1",
+          runId: "run-1",
+          companyId: "company-1",
+        },
       ),
     ).resolves.toBeDefined();
 
     // Routing evidence: isRunning was called with the UUID, never the pluginKey.
     expect(workerManager.isRunning).toHaveBeenCalledWith(PLUGIN_DB_ID);
     expect(workerManager.isRunning).not.toHaveBeenCalledWith(PLUGIN_KEY);
+    expect(workerManager.call).toHaveBeenCalledWith(
+      PLUGIN_DB_ID,
+      "executeTool",
+      expect.objectContaining({
+        _agentRunScope: {
+          agentId: "agent-1",
+          runId: "run-1",
+          companyId: "company-1",
+        },
+      }),
+    );
   });
 
   // ---------------------------------------------------------------------------

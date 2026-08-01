@@ -67,6 +67,21 @@ rl.on("line", (line) => {
     const mode = parameters.mode || "echo";
     const currentInvocationId = message.paperclipInvocation?.id ?? null;
     lastExecuteToolInvocationId = currentInvocationId;
+    if (mode === "inspect-host-fields") {
+      send({
+        jsonrpc: "2.0",
+        id: message.id,
+        result: {
+          data: {
+            hasAgentRunScope: Object.prototype.hasOwnProperty.call(
+              message.params ?? {},
+              "_agentRunScope",
+            ),
+          },
+        },
+      });
+      return;
+    }
     const echoInvocationId = mode === "unknown"
       ? "unknown-invocation"
       : mode === "omit"
