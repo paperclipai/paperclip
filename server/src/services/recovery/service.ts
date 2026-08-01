@@ -53,6 +53,8 @@ import {
 } from "../issue-dependency-wakeups.js";
 import {
   readCheckboxSelectionForWake,
+  readItemVerdictContinuationContext,
+  readLatestResolvedItemVerdictIds,
   readPlanReviewInteractionForWake,
   readToolActionContinuationContext,
 } from "../issue-thread-interaction-continuation.js";
@@ -1007,18 +1009,6 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .then((rows) => Boolean(rows[0]));
   }
 
-  function readResolvedItemVerdictIds(result: unknown) {
-    if (!result || typeof result !== "object" || Array.isArray(result)) return [];
-    const items = (result as Record<string, unknown>).items;
-    if (!Array.isArray(items)) return [];
-    return [...new Set(items.flatMap((item) => {
-      if (!item || typeof item !== "object" || Array.isArray(item)) return [];
-      const row = item as Record<string, unknown>;
-      return typeof row.id === "string" && row.id.trim() && typeof row.verdict === "string"
-        ? [row.id.trim()]
-        : [];
-    }))];
-  }
 
   function readLatestResolvedItemVerdictUserId(result: unknown) {
     if (!result || typeof result !== "object" || Array.isArray(result)) return null;
@@ -1096,9 +1086,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     agentId: string,
     since: Date,
     interactionId?: string | null,
+    resolvedItemIds: string[] = [],
   ) {
-    return db
-      .select({ id: heartbeatRuns.id })
+    const rows = await db
+      .select({ id: heartbeatRuns.id, contextSnapshot: heartbeatRuns.contextSnapshot })
       .from(heartbeatRuns)
       .where(
         and(
@@ -1112,8 +1103,18 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           or(gte(heartbeatRuns.createdAt, since), gte(heartbeatRuns.finishedAt, since)),
         ),
       )
-      .limit(1)
-      .then((rows) => Boolean(rows[0]));
+      .limit(resolvedItemIds.length > 0 ? 50 : 1);
+    if (resolvedItemIds.length === 0) return Boolean(rows[0]);
+    const requiredItemIds = new Set(resolvedItemIds);
+    return rows.some((row) => {
+      const context = row.contextSnapshot && typeof row.contextSnapshot === "object" && !Array.isArray(row.contextSnapshot)
+        ? row.contextSnapshot as Record<string, unknown>
+        : {};
+      const coveredItemIds = Array.isArray(context.newlyResolvedItemIds)
+        ? new Set(context.newlyResolvedItemIds.filter((value): value is string => typeof value === "string" && value.length > 0))
+        : new Set<string>();
+      return [...requiredItemIds].every((id) => coveredItemIds.has(id));
+    });
   }
 
   async function getLatestIssueRunSince(companyId: string, issueId: string, agentId: string, since: Date): Promise<LatestIssueRun> {
@@ -3773,23 +3774,29 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
 
       const continuationInteractions = await listContinuationProgressInteractions(issue.companyId, issue.id);
       let resolvedContinuationInteraction: (typeof continuationInteractions)[number] | null = null;
+      let resolvedContinuationItemIds: string[] = [];
       let interactionResolvedAt: Date | null = null;
       let successfulRunSinceResolution = false;
       if (!pendingExecutionState) {
         for (const interaction of continuationInteractions) {
           const progressAt = interaction.resolvedAt ?? interaction.updatedAt;
+          const resolvedItemIds = interaction.kind === "request_item_verdicts"
+            ? readLatestResolvedItemVerdictIds(interaction.result)
+            : [];
           const successful = await hasSuccessfulIssueRunSince(
             issue.companyId,
             issue.id,
             agentId,
             progressAt,
             interaction.id,
+            resolvedItemIds,
           );
           if (successful) {
             successfulRunSinceResolution = true;
             continue;
           }
           resolvedContinuationInteraction = interaction;
+          resolvedContinuationItemIds = resolvedItemIds;
           interactionResolvedAt = progressAt;
           successfulRunSinceResolution = false;
           break;
@@ -3957,6 +3964,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           });
           const checkboxSelection = readCheckboxSelectionForWake(resolvedContinuationInteraction);
           const toolAction = readToolActionContinuationContext(resolvedContinuationInteraction);
+          const itemVerdicts = readItemVerdictContinuationContext({
+            result: resolvedContinuationInteraction.result,
+            newlyResolvedItemIds: resolvedContinuationItemIds,
+          });
           const queued = await enqueueStrandedIssueRecovery({
             issueId: issue.id,
             agentId,
@@ -3974,12 +3985,14 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
               ...(planReviewInteraction ? { planReviewInteraction } : {}),
               ...(checkboxSelection ? { checkboxSelection } : {}),
               ...(toolAction ? { toolAction } : {}),
+              ...(itemVerdicts ? {
+                itemVerdicts,
+                newlyResolvedItemIds: itemVerdicts.newlyResolvedItemIds,
+              } : {}),
               ...(interactionResponsibleUserId
                 ? { responsibleUserId: interactionResponsibleUserId }
                 : {}),
-              ...(resolvedContinuationInteraction.kind === "request_item_verdicts"
-                ? { newlyResolvedItemIds: readResolvedItemVerdictIds(resolvedContinuationInteraction.result) }
-                : {}),
+
             },
           });
           if (queued) {

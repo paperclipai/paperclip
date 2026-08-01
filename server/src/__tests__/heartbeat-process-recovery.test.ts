@@ -5943,12 +5943,13 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     },
   );
 
-  it("recovers a partial item-verdict interaction whose continuation wake enqueue was dropped", async () => {
+  it("recovers only the newest partial item verdicts when an older continuation finishes late", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
     const issueId = randomUUID();
     const interactionId = randomUUID();
-    const resolvedAt = new Date(Date.now() - 5 * 60_000);
+    const firstResolvedAt = new Date(Date.now() - 10 * 60_000);
+    const latestResolvedAt = new Date(Date.now() - 5 * 60_000);
 
     await db.insert(companies).values({ id: companyId, name: "Partial verdict recovery co" });
     await db.insert(agents).values({
@@ -5972,8 +5973,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       priority: "medium",
       assigneeAgentId: agentId,
       creatorAgentId: agentId,
-      createdAt: new Date(Date.now() - 10 * 60_000),
-      updatedAt: resolvedAt,
+      createdAt: new Date(Date.now() - 15 * 60_000),
+      updatedAt: latestResolvedAt,
     });
     await db.insert(issueThreadInteractions).values({
       id: interactionId,
@@ -5983,7 +5984,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       status: "pending",
       continuationPolicy: "wake_assignee",
       createdByAgentId: agentId,
-      updatedAt: resolvedAt,
+      updatedAt: latestResolvedAt,
       payload: {
         version: 1,
         prompt: "Review the proposed changes",
@@ -5994,13 +5995,38 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       },
       result: {
         version: 1,
-        items: [{
-          id: "item-a",
-          verdict: "approve",
-          resolvedByUserId: "local-board",
-          resolvedAt,
-        }],
+        items: [
+          {
+            id: "item-a",
+            verdict: "approve",
+            resolvedByUserId: "local-board",
+            resolvedAt: firstResolvedAt,
+          },
+          {
+            id: "item-b",
+            verdict: "reject",
+            reason: "Needs a safer migration",
+            resolvedByUserId: "local-board",
+            resolvedAt: latestResolvedAt,
+          },
+        ],
         complete: false,
+      },
+    });
+    await db.insert(heartbeatRuns).values({
+      companyId,
+      agentId,
+      invocationSource: "on_demand",
+      triggerDetail: "system",
+      status: "succeeded",
+      createdAt: new Date(latestResolvedAt.getTime() - 60_000),
+      startedAt: new Date(latestResolvedAt.getTime() - 30_000),
+      finishedAt: new Date(latestResolvedAt.getTime() + 60_000),
+      contextSnapshot: {
+        issueId,
+        interactionId,
+        mutation: "interaction",
+        newlyResolvedItemIds: ["item-a"],
       },
     });
 
@@ -6014,14 +6040,24 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .select({ contextSnapshot: heartbeatRuns.contextSnapshot })
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.agentId, agentId))
-      .then((rows) => rows[0] ?? null);
+      .then((rows) => rows.find((row) => (
+        row.contextSnapshot as Record<string, unknown> | null
+      )?.source === "issue.interaction_continuation_recovery") ?? null);
     expect(run).not.toBeNull();
     expect(run?.contextSnapshot).toMatchObject({
       mutation: "interaction",
       interactionId,
       interactionKind: "request_item_verdicts",
       interactionStatus: "pending",
-      newlyResolvedItemIds: ["item-a"],
+      newlyResolvedItemIds: ["item-b"],
+      itemVerdicts: {
+        newlyResolvedItemIds: ["item-b"],
+        items: [{
+          id: "item-b",
+          verdict: "reject",
+          reason: "Needs a safer migration",
+        }],
+      },
     });
   });
 

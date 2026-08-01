@@ -184,6 +184,7 @@ import {
 } from "../services/issue-dependency-wakeups.js";
 import {
   readCheckboxSelectionForWake,
+  readItemVerdictContinuationContext,
   readPlanReviewInteractionForWake,
   readToolActionContinuationContext,
   readToolActionExecutionStatus,
@@ -2054,12 +2055,10 @@ async function queueResolvedInteractionContinuationWakeup(input: {
   const toolAction = readToolActionContinuationContext(input.interaction);
   const secretProposal = readSecretProposalContinuationContext(input.interaction);
   const newlyResolvedItemIds = input.newlyResolvedItemIds?.filter((value) => value.length > 0) ?? [];
-  const itemVerdicts = newlyResolvedItemIds.length > 0
-    ? {
-        newlyResolvedItemIds,
-        coalesceWindowMs: REQUEST_ITEM_VERDICTS_WAKE_COALESCE_WINDOW_MS,
-      }
-    : null;
+  const itemVerdicts = readItemVerdictContinuationContext({
+    result: input.interaction.result,
+    newlyResolvedItemIds,
+  });
   try {
     const run = await input.heartbeat.wakeup(input.issue.assigneeAgentId, {
       source: "automation",
