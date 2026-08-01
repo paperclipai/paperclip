@@ -118,6 +118,7 @@ import { finalizeSummarySlotsForTerminalIssue } from "./summary-slot-finalizatio
 import { logActivity } from "./activity-log.js";
 import { buildIssueChanges } from "./issue-change-receipt.js";
 import {
+  bumpIssueVersions,
   type DbOrTx,
   IssueVersionConflictError,
   runIssueMutation,
@@ -7228,10 +7229,12 @@ export function issueService(db: Db) {
           };
         });
         await insertRowsInChunks(tx, issueComments, commentRows);
-        // Mirror addComment's recency bump, once per affected issue.
+        // Mirror addComment's recency bump, once per affected issue. Comments
+        // are part of the issue's versioned surface, so the bump must go
+        // through the CAS helper instead of a raw updatedAt write.
         const issueIds = [...new Set(rows.map((row) => row.issueId))];
         if (issueIds.length > 0) {
-          await tx.update(issues).set({ updatedAt: new Date() }).where(inArray(issues.id, issueIds));
+          await bumpIssueVersions(tx, issueIds);
         }
       });
     },
