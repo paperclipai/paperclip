@@ -9,6 +9,7 @@ import {
   type IssueCommentPresentation,
   type IssueGraphLivenessAutoRecoveryPreview,
   type IssueGraphLivenessAutoRecoveryPreviewItem,
+  type IssueUnblockDescriptor,
 } from "@paperclipai/shared";
 import {
   agents,
@@ -3124,7 +3125,19 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     previousStatus: StrandedPreviousStatus;
     latestRun: LatestIssueRun;
   }) {
-    const updated = await issuesSvc.update(input.issue.id, { status: "blocked" });
+    const blockerIds = await existingUnresolvedBlockerIssueIds(input.issue.companyId, input.issue.id);
+    const updated = await applyRecoveryBlockedUpdate({
+      issue: input.issue,
+      patch: { status: "blocked" },
+      blockerIssueIds: blockerIds,
+      // Board-owned on purpose: this path exists because Paperclip has *stopped*
+      // automatic stranded-work recovery for the issue, so the intervention surface has
+      // to be a human one rather than another agent wake.
+      ownerAgentId: null,
+      action:
+        "Inspect the failed run evidence, restore a live execution path or record the manual resolution, " +
+        "then move this recovery issue out of `blocked`.",
+    });
     if (!updated) return null;
 
     const prefix = await getCompanyIssuePrefix(input.issue.companyId);
@@ -3224,6 +3237,138 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
 
   async function existingUnresolvedBlockerIssueIds(companyId: string, issueId: string) {
     return existingUnresolvedBlockerIssues(companyId, issueId).then((rows) => rows.map((row) => row.id));
+  }
+
+  async function hasPendingBlockedJustification(companyId: string, issueId: string) {
+    const [pendingInteraction, pendingApproval] = await Promise.all([
+      db
+        .select({ id: issueThreadInteractions.id })
+        .from(issueThreadInteractions)
+        .where(and(
+          eq(issueThreadInteractions.companyId, companyId),
+          eq(issueThreadInteractions.issueId, issueId),
+          eq(issueThreadInteractions.status, "pending"),
+        ))
+        .limit(1)
+        .then((rows) => rows.length > 0),
+      db
+        .select({ id: approvals.id })
+        .from(issueApprovals)
+        .innerJoin(approvals, eq(issueApprovals.approvalId, approvals.id))
+        .where(and(
+          eq(issueApprovals.companyId, companyId),
+          eq(issueApprovals.issueId, issueId),
+          eq(approvals.status, "pending"),
+        ))
+        .limit(1)
+        .then((rows) => rows.length > 0),
+    ]);
+    return pendingInteraction || pendingApproval;
+  }
+
+  /**
+   * Recovery demotions write `blocked` straight through `issuesSvc.update`, which skips
+   * the invariant the PATCH route enforces for every other actor: "Entering blocked
+   * requires unresolved blockers, a pending interaction/approval, or unblockDescriptor".
+   *
+   * A `blocked` row with none of those is unreachable by every wake path:
+   * `classifyIssueGraphLiveness` only emits findings for the blocked-by-unassigned,
+   * assigned-backlog, uninvokable-assignee, cancelled-blocker and review shapes, and with
+   * no blocker edge the row can never receive `issue_blockers_resolved` either. So once
+   * the single recovery wake has been consumed, nothing can ever wake it again — and the
+   * sweep will not revisit it, because a `blocked` issue is no longer a stranded-issue
+   * candidate. The escalation comment's promise, "moving it to `blocked` so it is visible
+   * for intervention", held for the human attention feed but not for any automated path.
+   * That asymmetry is why a 25-minute dependency outage cost 35 stranded issues rather
+   * than 25 minutes.
+   *
+   * Returns the `unblockDescriptor` a recovery demotion must attach so the resulting
+   * `blocked` row names who can clear it: the recovery owner agent when there is one,
+   * otherwise `board` so it lands in the human attention queue. Returns null only when
+   * the row already carries its own justification (a live blocker edge, or a pending
+   * interaction/approval), because then `blocked` is already legal and reachable.
+   *
+   * Deliberately does NOT enqueue a wake. The `stranded_assigned_issue` path already
+   * wakes the recovery owner via `enqueueSourceScopedStrandedRecoveryWake`, and the
+   * paths that skip that wake (`configuration_incomplete`, provider-quota waits, and
+   * `escalateStrandedRecoveryIssueInPlace`) skip it on purpose — re-dispatching them
+   * only reproduces the same opaque setup failure. For those, the descriptor is the
+   * intervention surface, not a retry trigger.
+   */
+  async function resolveRecoveryUnblockDescriptor(input: {
+    issue: Pick<typeof issues.$inferSelect, "id" | "companyId">;
+    blockerIssueIds: string[];
+    ownerAgentId?: string | null;
+    action: string;
+  }): Promise<IssueUnblockDescriptor | null> {
+    if (input.blockerIssueIds.length > 0) return null;
+    if (await hasPendingBlockedJustification(input.issue.companyId, input.issue.id)) return null;
+    const action = input.action.trim() ||
+      "Restore a live execution path for this issue or record its manual resolution.";
+    return {
+      owner: input.ownerAgentId ? { agentId: input.ownerAgentId } : "board",
+      action,
+    };
+  }
+
+  /**
+   * Picks the first candidate that can actually act on the descriptor.
+   *
+   * Naming an agent who is paused, archived, budget-blocked or otherwise uninvokable
+   * reproduces the defect this guard exists to close: the row looks routed but no wake
+   * can land on it. Falling through to `board` is the honest answer — it puts the issue
+   * in the human attention queue instead of a dead mailbox.
+   */
+  async function resolveInvokableDescriptorOwnerAgentId(
+    companyId: string,
+    candidates: Array<string | null | undefined>,
+  ): Promise<string | null> {
+    const seen = new Set<string>();
+    for (const candidateId of candidates) {
+      if (!candidateId || seen.has(candidateId)) continue;
+      seen.add(candidateId);
+      const candidate = await getAgent(candidateId);
+      if (!candidate || candidate.companyId !== companyId) continue;
+      if (await isAgentInvokable(candidate)) return candidate.id;
+    }
+    return null;
+  }
+
+  /**
+   * Writes a recovery demotion to `blocked` with the descriptor guard applied, then
+   * re-checks the justification it relied on.
+   *
+   * The blocker/interaction/approval read and the status write are separate statements,
+   * so a blocker that completes — or an interaction that is answered — in between would
+   * otherwise leave `blocked` standing on a justification that no longer exists. That is
+   * the same stranded shape, reached through a narrower window. The re-read costs one
+   * query and only runs on the path that skipped the descriptor.
+   */
+  async function applyRecoveryBlockedUpdate(input: {
+    issue: Pick<typeof issues.$inferSelect, "id" | "companyId">;
+    patch: Record<string, unknown>;
+    blockerIssueIds: string[];
+    ownerAgentId?: string | null;
+    action: string;
+  }) {
+    const descriptorInput = {
+      issue: input.issue,
+      blockerIssueIds: input.blockerIssueIds,
+      ownerAgentId: input.ownerAgentId,
+      action: input.action,
+    };
+    const unblockDescriptor = await resolveRecoveryUnblockDescriptor(descriptorInput);
+    const updated = await issuesSvc.update(input.issue.id, {
+      ...input.patch,
+      ...(unblockDescriptor ? { unblockDescriptor } : {}),
+    } as Parameters<typeof issuesSvc.update>[1]);
+    if (!updated || unblockDescriptor) return updated;
+    const repaired = await resolveRecoveryUnblockDescriptor({
+      ...descriptorInput,
+      blockerIssueIds: await existingUnresolvedBlockerIssueIds(input.issue.companyId, input.issue.id),
+    });
+    if (!repaired) return updated;
+    return (await issuesSvc.update(input.issue.id, { unblockDescriptor: repaired })) ?? updated;
   }
 
   async function resolveContinuationWaitingOnReview(issue: typeof issues.$inferSelect) {
@@ -3331,10 +3476,27 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       });
     }
     const blockerIds = await existingUnresolvedBlockerIssueIds(input.issue.companyId, input.issue.id);
-    const updated = await issuesSvc.update(input.issue.id, {
-      status: "blocked",
-      blockedByIssueIds: blockerIds,
-      assigneeAgentId: recoveryAction.ownerAgentId ?? input.issue.assigneeAgentId,
+    const nextAssigneeAgentId = recoveryAction.ownerAgentId ?? input.issue.assigneeAgentId;
+    // Only an invokable candidate may be named; otherwise the descriptor falls through to
+    // `board`. `returnOwnerAgentId` is the pre-recovery assignee, which is exactly the
+    // agent that can be uninvokable, so it is a candidate rather than a guaranteed owner.
+    const descriptorOwnerAgentId = await resolveInvokableDescriptorOwnerAgentId(input.issue.companyId, [
+      recoveryAction.ownerAgentId,
+      recoveryAction.returnOwnerAgentId,
+      nextAssigneeAgentId,
+    ]);
+    const descriptorAction = recoveryAction.nextAction ??
+      "Restore a live execution path for this issue or record its manual resolution.";
+    const updated = await applyRecoveryBlockedUpdate({
+      issue: input.issue,
+      patch: {
+        status: "blocked",
+        blockedByIssueIds: blockerIds,
+        assigneeAgentId: nextAssigneeAgentId,
+      },
+      blockerIssueIds: blockerIds,
+      ownerAgentId: descriptorOwnerAgentId,
+      action: descriptorAction,
     });
     if (!updated) return null;
     if (isProviderQuotaWait) return updated;
@@ -3479,10 +3641,16 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         (currentIssue.status !== "blocked" ||
           currentIssue.assigneeAgentId !== recoveryAction.ownerAgentId)
       ) {
-        const reblocked = await issuesSvc.update(input.issue.id, {
-          status: "blocked",
-          blockedByIssueIds: blockerIds,
-          assigneeAgentId: recoveryAction.ownerAgentId,
+        const reblocked = await applyRecoveryBlockedUpdate({
+          issue: input.issue,
+          patch: {
+            status: "blocked",
+            blockedByIssueIds: blockerIds,
+            assigneeAgentId: recoveryAction.ownerAgentId,
+          },
+          blockerIssueIds: blockerIds,
+          ownerAgentId: descriptorOwnerAgentId,
+          action: descriptorAction,
         });
         if (reblocked) return reblocked;
       }
@@ -3624,7 +3792,91 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       readNonEmptyString(monitor.externalRef) === latestRun.id;
   }
 
+  /**
+   * The invariant "entering blocked requires unresolved blockers, a pending
+   * interaction/approval, or unblockDescriptor" is enforced only on the *transition*
+   * into `blocked`. Two entry points therefore still produce unreachable rows even once
+   * every recovery demotion attaches a descriptor:
+   *
+   *  - creation — an issue can be created directly in `blocked`, which is not a
+   *    transition, so the check never runs;
+   *  - decay — a row that entered `blocked` legally loses its justification later, when
+   *    its last blocker reaches done/cancelled. `issue_blockers_resolved` is a one-shot
+   *    wake whose idempotency key stays claimed at status `completed`, so if that single
+   *    wake is consumed without the assignee moving the issue off `blocked`, no second
+   *    wake is ever enqueued for the same (dependent, blocker) pair.
+   *
+   * `reconcileStrandedAssignedIssues` cannot see either shape — it selects only
+   * todo/in_progress/in_review — so the invariant has to be re-applied continuously
+   * rather than only at write time. `todo` is the honest repair: nothing is actually
+   * gating the issue any more, and `todo` is a status the wake path can reach.
+   */
+  async function reconcileUnreachableBlockedIssues(opts?: { issueCreatedAtGte?: Date | null }) {
+    const candidates = await db
+      .select()
+      .from(issues)
+      .where(
+        and(
+          eq(issues.status, "blocked"),
+          isNull(issues.hiddenAt),
+          isNull(issues.assigneeUserId),
+          sql`${issues.assigneeAgentId} is not null`,
+          opts?.issueCreatedAtGte ? gte(issues.createdAt, opts.issueCreatedAtGte) : undefined,
+        ),
+      );
+
+    const now = new Date();
+    const repairedIssueIds: string[] = [];
+
+    for (const issue of candidates) {
+      // Any one of these is a legal justification for staying `blocked`.
+      if (issue.unblockDescriptor) continue;
+      if (issue.monitorNextCheckAt && issue.monitorNextCheckAt.getTime() > now.getTime()) continue;
+      if ((await existingUnresolvedBlockerIssueIds(issue.companyId, issue.id)).length > 0) continue;
+      if (await hasPendingBlockedJustification(issue.companyId, issue.id)) continue;
+      // A run already in flight will write its own disposition; don't race it.
+      if (await hasActiveExecutionPath(issue.companyId, issue.id)) continue;
+      if (await isAutomaticRecoverySuppressedByPauseHold(db, issue.companyId, issue.id, treeControlSvc)) continue;
+
+      const updated = await issuesSvc.update(issue.id, { status: "todo" });
+      if (!updated) continue;
+      repairedIssueIds.push(issue.id);
+
+      await issuesSvc.addComment(
+        issue.id,
+        "Paperclip moved this issue from `blocked` to `todo`. It was `blocked` with no unresolved " +
+          "blocker, no pending interaction or approval, no unblock descriptor and no scheduled " +
+          "monitor — a shape no wake path can reach, so it would never have been picked up again. " +
+          "If something really is gating this work, re-block it with a first-class blocker or an " +
+          "unblock descriptor naming who can clear it.",
+        {},
+      );
+
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: "system",
+        actorId: "system",
+        agentId: null,
+        runId: null,
+        action: "issue.updated",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          identifier: issue.identifier,
+          status: "todo",
+          previousStatus: "blocked",
+          source: "recovery.reconcile_unreachable_blocked",
+          blockedTransitionAt: issue.blockedTransitionAt?.toISOString() ?? null,
+        },
+      });
+    }
+
+    return { repaired: repairedIssueIds.length, issueIds: repairedIssueIds };
+  }
+
   async function reconcileStrandedAssignedIssues(opts?: { issueCreatedAtGte?: Date | null }) {
+    const unreachableBlocked = await reconcileUnreachableBlockedIssues(opts);
+
     const candidates = await db
       .select()
       .from(issues)
@@ -3653,8 +3905,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       waitingOnReviewResolved: 0,
       providerQuotaMonitored: 0,
       recentProgressExempted: 0,
+      unreachableBlockedRepaired: unreachableBlocked.repaired,
       skipped: 0,
-      issueIds: [] as string[],
+      issueIds: [...unreachableBlocked.issueIds] as string[],
     };
 
     for (const issue of candidates) {
