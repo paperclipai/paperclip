@@ -6,6 +6,7 @@ const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
   assertCheckoutOwner: vi.fn(),
   update: vi.fn(),
+  submitExecutionChangesRequested: vi.fn(),
   addComment: vi.fn(),
   getDependencyReadiness: vi.fn(),
   getCurrentScheduledRetry: vi.fn(),
@@ -239,6 +240,7 @@ describe.sequential("issue comment reopen routes", () => {
     mockIssueService.getById.mockReset();
     mockIssueService.assertCheckoutOwner.mockReset();
     mockIssueService.update.mockReset();
+    mockIssueService.submitExecutionChangesRequested.mockReset();
     mockIssueService.addComment.mockReset();
     mockIssueService.getDependencyReadiness.mockReset();
     mockIssueService.getCurrentScheduledRetry.mockReset();
@@ -2941,11 +2943,21 @@ describe.sequential("issue comment reopen routes", () => {
       },
     };
     mockIssueService.getById.mockResolvedValue(issue);
-    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
-      ...issue,
-      ...patch,
-      updatedAt: new Date(),
-    }));
+    mockIssueService.submitExecutionChangesRequested.mockResolvedValue({
+      decisionId: "44444444-4444-4444-8444-444444444444",
+      issue: {
+        ...issue,
+        status: "in_progress",
+        assigneeAgentId: "22222222-2222-4222-8222-222222222222",
+        executionState: {
+          ...issue.executionState,
+          status: "changes_requested",
+          lastDecisionId: "44444444-4444-4444-8444-444444444444",
+          lastDecisionOutcome: "changes_requested",
+        },
+        updatedAt: new Date(),
+      },
+    });
 
     const res = await request(
       await installActor(createApp(), {
@@ -2962,6 +2974,8 @@ describe.sequential("issue comment reopen routes", () => {
       });
 
     expect(res.status).toBe(200);
+    expect(mockIssueService.submitExecutionChangesRequested).toHaveBeenCalledOnce();
+    expect(mockIssueService.update).not.toHaveBeenCalled();
     await waitForWakeup(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
       "22222222-2222-4222-8222-222222222222",
       expect.objectContaining({
