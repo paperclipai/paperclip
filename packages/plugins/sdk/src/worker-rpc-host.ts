@@ -538,6 +538,19 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
         async emit(name: string, companyId: string, payload: unknown): Promise<void> {
           await callHost("events.emit", { name, companyId, payload });
         },
+
+        async emitFromAgentRun(name: string, payload: unknown): Promise<void> {
+          // Fast local fail: only a host-issued executeTool invocation carries
+          // an agent-run binding. The host revalidates against its own
+          // invocation registry regardless of this check.
+          const activeInvocation = invocationContextStorage.getStore();
+          if (!activeInvocation?.scope?.agentRun) {
+            throw new Error(
+              "emitFromAgentRun is only available inside an executeTool invocation bound to an active agent run",
+            );
+          }
+          await callHost("events.emitFromAgentRun", { name, payload });
+        },
       },
 
       jobs: {

@@ -963,6 +963,18 @@ Rules:
 - Plugin events follow the same at-least-once delivery semantics as core events.
 - The host must not allow plugins to emit events in the core namespace (events without the `plugin.` prefix).
 
+### 16.3 Agent-Run-Bound Events
+
+`ctx.events.emitFromAgentRun(name, payload)` emits a plugin-namespaced event bound to the agent run that is currently invoking one of the plugin's tools.
+
+The plugin supplies **no identity**: the host derives `companyId`, `agentId` and `runId` from its own `executeTool` invocation bookkeeping and attaches `producer: { kind: "agent_run", agentId, runId }` to the delivered envelope. The `eventId` is freshly minted per emit and is never derived from the run. Payload contents cannot influence any envelope field.
+
+Rules:
+
+- Requires the `events.emit` capability — this is a strictly more restricted operation than `emit()`, so no separate capability exists.
+- Available **only** while handling an `executeTool` call dispatched by the host with a valid run context. Calls from `onEvent` handlers, `performAction`, scheduled job runs, timers, or any proactive context are rejected: those invocation kinds never carry an agent-run binding, so provenance cannot be laundered through them.
+- The host rejects the call when the echoed invocation is missing, expired, or forged, and when the bound run is terminal, belongs to a different company or agent, or is not an agent run (a plugin job run is not an agent run).
+
 ## 17. Scheduled Jobs
 
 Plugins may declare scheduled jobs in their manifest.

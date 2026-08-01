@@ -609,7 +609,17 @@ export function createPluginWorkerHandle(
 
     if (method === "executeTool" && isRecord(params.runContext)) {
       const companyId = readNonEmptyString(params.runContext.companyId);
-      return companyId ? { companyId } : null;
+      if (!companyId) return null;
+      // Bind the invocation to the agent run the host itself dispatched.
+      // executeTool is the ONLY invocation kind that carries this binding —
+      // onEvent/performAction/runJob scopes stay company-only so provenance
+      // cannot be laundered through them.
+      const agentId = readNonEmptyString(params.runContext.agentId);
+      const runId = readNonEmptyString(params.runContext.runId);
+      if (agentId && runId) {
+        return { companyId, agentRun: { agentId, runId, companyId } };
+      }
+      return { companyId };
     }
 
     if (method === "onEvent" && isRecord(params.event)) {

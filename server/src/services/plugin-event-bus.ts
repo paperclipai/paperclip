@@ -21,7 +21,7 @@
  */
 
 import type { PluginEventType } from "@paperclipai/shared";
-import type { PluginEvent, EventFilter } from "@paperclipai/plugin-sdk";
+import type { PluginEvent, PluginEventAgentRunProducer, EventFilter } from "@paperclipai/plugin-sdk";
 
 // ---------------------------------------------------------------------------
 // Internal types
@@ -248,7 +248,12 @@ export function createPluginEventBus(): PluginEventBus {
        * @throws {Error} if `name` already contains the `plugin.` prefix
        *   (prevents cross-namespace spoofing).
        */
-      async emit(name: string, companyId: string, payload: unknown): Promise<PluginEventBusEmitResult> {
+      async emit(
+        name: string,
+        companyId: string,
+        payload: unknown,
+        options?: ScopedPluginEventBusEmitOptions,
+      ): Promise<PluginEventBusEmitResult> {
         if (!name || name.trim() === "") {
           throw new Error(`Plugin "${pluginId}" must provide a non-empty event name.`);
         }
@@ -272,6 +277,10 @@ export function createPluginEventBus(): PluginEventBus {
           occurredAt: new Date().toISOString(),
           actorType: "plugin",
           actorId: pluginId,
+          // Producer provenance is host-derived (options come from the host
+          // service layer, never from worker params). The payload stays an
+          // opaque blob below and cannot influence any envelope field.
+          ...(options?.producer ? { producer: options.producer } : {}),
           payload,
         };
 
@@ -403,10 +412,24 @@ export interface ScopedPluginEventBus {
    * @throws {Error} if `name` is empty or whitespace-only.
    * @throws {Error} if `name` starts with `"plugin."` (namespace spoofing guard).
    */
-  emit(name: string, companyId: string, payload: unknown): Promise<PluginEventBusEmitResult>;
+  emit(
+    name: string,
+    companyId: string,
+    payload: unknown,
+    options?: ScopedPluginEventBusEmitOptions,
+  ): Promise<PluginEventBusEmitResult>;
 
   /**
    * Remove all subscriptions registered by this plugin.
    */
   clear(): void;
+}
+
+/**
+ * Host-only options for a scoped emit. Never populated from worker-supplied
+ * params — the host service layer sets these after validating provenance.
+ */
+export interface ScopedPluginEventBusEmitOptions {
+  /** Host-derived producer provenance to attach to the envelope. */
+  producer?: PluginEventAgentRunProducer;
 }

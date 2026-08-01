@@ -195,6 +195,21 @@ export interface EventFilter {
 }
 
 /**
+ * Host-attached producer provenance for a plugin event emitted from inside an
+ * active agent run via `ctx.events.emitFromAgentRun()`.
+ *
+ * The host derives every field from its own invocation bookkeeping — plugins
+ * never supply these values, and payload contents cannot influence them.
+ */
+export interface PluginEventAgentRunProducer {
+  kind: "agent_run";
+  /** UUID of the agent whose run produced the event. */
+  agentId: string;
+  /** UUID of the agent run that produced the event. */
+  runId: string;
+}
+
+/**
  * Envelope wrapping every domain event delivered to a plugin worker.
  *
  * @see PLUGIN_SPEC.md §16 — Event System
@@ -216,6 +231,12 @@ export interface PluginEvent<TPayload = unknown> {
   entityType?: string;
   /** UUID of the company this event belongs to. */
   companyId: string;
+  /**
+   * Host-owned producer provenance. Present only when the event was emitted
+   * through `ctx.events.emitFromAgentRun()` inside a live `executeTool`
+   * invocation.
+   */
+  producer?: PluginEventAgentRunProducer;
   /** Typed event payload. */
   payload: TPayload;
 }
@@ -567,6 +588,31 @@ export interface PluginEventsClient {
    * @param payload - JSON-serializable event payload
    */
   emit(name: string, companyId: string, payload: unknown): Promise<void>;
+
+  /**
+   * Emit a plugin-namespaced event bound to the agent run currently invoking
+   * this plugin's tool.
+   *
+   * Available **only** while handling an `executeTool` call dispatched by the
+   * host with a valid run context. The plugin supplies no identity: the host
+   * derives `companyId`, `agentId` and `runId` from its own invocation
+   * bookkeeping and attaches `producer: { kind: "agent_run", agentId, runId }`
+   * to the delivered envelope. Payload contents cannot influence the envelope.
+   *
+   * Rejected deterministically when:
+   * - called outside a host-issued `executeTool` invocation (including from
+   *   `onEvent` handlers, scheduled job runs, timers, and `performAction`);
+   * - the echoed invocation is expired, unknown, or forged;
+   * - the bound run is terminal, belongs to another company or another agent,
+   *   or is not an agent run.
+   *
+   * Requires the `events.emit` capability (this is a strictly more restricted
+   * operation than `emit()`; no separate capability exists).
+   *
+   * @param name - Bare event name (e.g. `"sync-done"`)
+   * @param payload - JSON-serializable event payload
+   */
+  emitFromAgentRun(name: string, payload: unknown): Promise<void>;
 }
 
 /**

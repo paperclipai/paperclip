@@ -490,6 +490,56 @@ if (_logFlushInterval.unref) _logFlushInterval.unref();
 /** Maximum time (ms) to keep a session event subscription alive before forcing cleanup. */
 const SESSION_EVENT_SUBSCRIPTION_TIMEOUT_MS = 30 * 60 * 1_000; // 30 minutes
 
+/**
+ * Terminal heartbeat-run statuses. Mirrors `HEARTBEAT_RUN_TERMINAL_STATUSES`
+ * in `heartbeat.ts` (kept private there); a run in any of these states may no
+ * longer produce events.
+ */
+export const AGENT_RUN_EVENT_TERMINAL_STATUSES = [
+  "succeeded",
+  "interrupted",
+  "failed",
+  "cancelled",
+  "timed_out",
+] as const;
+
+/**
+ * Assert that the agent run bound to an `executeTool` invocation is still a
+ * live agent run for the same tenant and agent. `run` is the persisted
+ * `heartbeat_runs` row (or null when no such run exists — which is also the
+ * case for plugin job runs and forged run ids, since those never live in
+ * `heartbeat_runs`).
+ *
+ * Exported for unit tests.
+ */
+export function assertLiveAgentRunBinding(
+  run: { id: string; companyId: string; agentId: string; status: string } | null,
+  expected: { agentId: string; runId: string; companyId: string },
+): void {
+  if (!run) {
+    throw new Error(
+      `events.emitFromAgentRun rejected: run "${expected.runId}" is not an agent run`,
+    );
+  }
+  if (run.companyId !== expected.companyId) {
+    throw new Error(
+      `events.emitFromAgentRun rejected: run "${expected.runId}" belongs to a different company`,
+    );
+  }
+  if (run.agentId !== expected.agentId) {
+    throw new Error(
+      `events.emitFromAgentRun rejected: run "${expected.runId}" belongs to a different agent`,
+    );
+  }
+  if (
+    (AGENT_RUN_EVENT_TERMINAL_STATUSES as readonly string[]).includes(run.status)
+  ) {
+    throw new Error(
+      `events.emitFromAgentRun rejected: run "${expected.runId}" is terminal (${run.status})`,
+    );
+  }
+}
+
 export function buildHostServices(
   db: Db,
   pluginId: string,
@@ -1354,6 +1404,35 @@ export function buildHostServices(
           await ensurePluginAvailableForCompany(params.companyId);
         }
         await scopedBus.emit(params.name, params.companyId, params.payload);
+      },
+      async emitFromAgentRun(params, context) {
+        // Defense in depth: the SDK factory already refuses calls without an
+        // agent-run-bound invocation, but this service must never trust that
+        // routing alone. Every identity below comes from the host-owned
+        // invocation scope — params carry only { name, payload }.
+        const agentRun = context?.invocationScope?.agentRun;
+        if (!agentRun?.agentId || !agentRun.runId || !agentRun.companyId) {
+          throw new Error(
+            "events.emitFromAgentRun requires an active executeTool invocation bound to an agent run",
+          );
+        }
+        await ensurePluginAvailableForCompany(agentRun.companyId);
+
+        const [run] = await db
+          .select({
+            id: heartbeatRuns.id,
+            companyId: heartbeatRuns.companyId,
+            agentId: heartbeatRuns.agentId,
+            status: heartbeatRuns.status,
+          })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, agentRun.runId))
+          .limit(1);
+        assertLiveAgentRunBinding(run ?? null, agentRun);
+
+        await scopedBus.emit(params.name, agentRun.companyId, params.payload, {
+          producer: { kind: "agent_run", agentId: agentRun.agentId, runId: agentRun.runId },
+        });
       },
       async subscribe(params: { eventPattern: string; filter?: Record<string, unknown> | null }) {
         const handler = async (event: import("@paperclipai/plugin-sdk").PluginEvent) => {
