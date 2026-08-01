@@ -273,12 +273,16 @@ export function issueImportService(db: Db) {
       if (existing && existing.originFingerprint !== fingerprint) failures.push("origin_fingerprint_mismatch");
       if (existing && state && state.sourceVersion !== source.sourceVersion) conflicts.push("source_version_drift");
       const currentBlockers = existing ? currentBlockersByIssue.get(existing.id) ?? [] : [];
-      if (existing && state) {
+      if (existing) {
         const proposedBlockerSourceIds = [...new Set(source.blockedBySourceIds)].sort();
         const currentBlockerSourceIds = currentBlockers
           .flatMap((blocker) => blocker.sourceId ? [blocker.sourceId] : [])
           .sort();
-        if (JSON.stringify(proposedBlockerSourceIds) !== JSON.stringify(currentBlockerSourceIds)) {
+        const hasPaperclipNativeBlocker = currentBlockers.some((blocker) => blocker.sourceId === null);
+        if (
+          hasPaperclipNativeBlocker
+          || JSON.stringify(proposedBlockerSourceIds) !== JSON.stringify(currentBlockerSourceIds)
+        ) {
           conflicts.push("blocker_relations_drift");
         }
       }
