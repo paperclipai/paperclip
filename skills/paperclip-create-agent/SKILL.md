@@ -22,38 +22,31 @@ If you do not have this permission, escalate to your CEO or board.
 ## Workflow
 
 ### 1. Confirm identity and company context
-
 ```sh
-# Auth via mode-600 config file keeps the token out of curl argv (/proc/*/cmdline is world-readable).
-_AUTH=$(mktemp); chmod 600 "$_AUTH"
-printf 'header = "Authorization: Bearer %s"\n' "$PAPERCLIP_API_KEY" > "$_AUTH"
-curl -sS --config "$_AUTH" "$PAPERCLIP_API_URL/api/agents/me"
-rm -f "$_AUTH"
+# Auth via a piped curl config: the token stays out of curl argv
+# (/proc/*/cmdline is world-readable) and is never written to disk.
+_auth() { printf 'header = "Authorization: Bearer %s"\n' "$PAPERCLIP_API_KEY"; }
+_auth | curl -sS --config - "$PAPERCLIP_API_URL/api/agents/me"
 ```
 
 ### 2. Discover adapter configuration for this Paperclip instance
-
 ```sh
-# Auth via mode-600 config file keeps the token out of curl argv (/proc/*/cmdline is world-readable).
-_AUTH=$(mktemp); chmod 600 "$_AUTH"
-printf 'header = "Authorization: Bearer %s"\n' "$PAPERCLIP_API_KEY" > "$_AUTH"
+# Auth via a piped curl config: the token stays out of curl argv
+# (/proc/*/cmdline is world-readable) and is never written to disk.
+_auth() { printf 'header = "Authorization: Bearer %s"\n' "$PAPERCLIP_API_KEY"; }
 
-curl -sS --config "$_AUTH" "$PAPERCLIP_API_URL/llms/agent-configuration.txt"
+_auth | curl -sS --config - "$PAPERCLIP_API_URL/llms/agent-configuration.txt"
 
 # Then the specific adapter you plan to use, e.g. claude_local:
-curl -sS --config "$_AUTH" "$PAPERCLIP_API_URL/llms/agent-configuration/claude_local.txt"
-
-rm -f "$_AUTH"
+_auth | curl -sS --config - "$PAPERCLIP_API_URL/llms/agent-configuration/claude_local.txt"
 ```
 
 ### 3. Compare existing agent configurations
-
 ```sh
-# Auth via mode-600 config file keeps the token out of curl argv (/proc/*/cmdline is world-readable).
-_AUTH=$(mktemp); chmod 600 "$_AUTH"
-printf 'header = "Authorization: Bearer %s"\n' "$PAPERCLIP_API_KEY" > "$_AUTH"
-curl -sS --config "$_AUTH" "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/agent-configurations"
-rm -f "$_AUTH"
+# Auth via a piped curl config: the token stays out of curl argv
+# (/proc/*/cmdline is world-readable) and is never written to disk.
+_auth() { printf 'header = "Authorization: Bearer %s"\n' "$PAPERCLIP_API_KEY"; }
+_auth | curl -sS --config - "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/agent-configurations"
 ```
 
 Note naming, icon, reporting-line, and adapter conventions the company already follows.
@@ -75,13 +68,11 @@ Generic fallback for no-template hires:
 State which path you took in your hire-request comment so the board can see the reasoning.
 
 ### 5. Discover allowed agent icons
-
 ```sh
-# Auth via mode-600 config file keeps the token out of curl argv (/proc/*/cmdline is world-readable).
-_AUTH=$(mktemp); chmod 600 "$_AUTH"
-printf 'header = "Authorization: Bearer %s"\n' "$PAPERCLIP_API_KEY" > "$_AUTH"
-curl -sS --config "$_AUTH" "$PAPERCLIP_API_URL/llms/agent-icons.txt"
-rm -f "$_AUTH"
+# Auth via a piped curl config: the token stays out of curl argv
+# (/proc/*/cmdline is world-readable) and is never written to disk.
+_auth() { printf 'header = "Authorization: Bearer %s"\n' "$PAPERCLIP_API_KEY"; }
+_auth | curl -sS --config - "$PAPERCLIP_API_URL/llms/agent-icons.txt"
 ```
 
 ### 6. Draft the new hire config
@@ -107,12 +98,11 @@ Before submitting, walk the draft-review checklist end-to-end and fix any item t
 `skills/paperclip-create-agent/references/draft-review-checklist.md`
 
 ### 8. Submit hire request
-
 ```sh
-# Auth via mode-600 config file keeps the token out of curl argv (/proc/*/cmdline is world-readable).
-_AUTH=$(mktemp); chmod 600 "$_AUTH"
-printf 'header = "Authorization: Bearer %s"\n' "$PAPERCLIP_API_KEY" > "$_AUTH"
-curl -sS -X POST --config "$_AUTH" "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/agent-hires" \
+# Auth via a piped curl config: the token stays out of curl argv
+# (/proc/*/cmdline is world-readable) and is never written to disk.
+_auth() { printf 'header = "Authorization: Bearer %s"\n' "$PAPERCLIP_API_KEY"; }
+_auth | curl -sS -X POST --config - "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/agent-hires" \
   -H "Content-Type: application/json" \
   -d '{
     "name": "CTO",
@@ -128,7 +118,6 @@ curl -sS -X POST --config "$_AUTH" "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_
     "runtimeConfig": {"heartbeat": {"enabled": false, "wakeOnDemand": true}},
     "sourceIssueId": "<issue-id>"
   }'
-rm -f "$_AUTH"
 ```
 
 ### 9. Handle governance state
@@ -136,45 +125,37 @@ rm -f "$_AUTH"
 - if the response has `approval`, the hire is `pending_approval`
 - monitor and discuss on the approval thread
 - when the board approves, you will be woken with `PAPERCLIP_APPROVAL_ID`; read linked issues and close/comment follow-up
-
 ```sh
-# Auth via mode-600 config file keeps the token out of curl argv (/proc/*/cmdline is world-readable).
-_AUTH=$(mktemp); chmod 600 "$_AUTH"
-printf 'header = "Authorization: Bearer %s"\n' "$PAPERCLIP_API_KEY" > "$_AUTH"
+# Auth via a piped curl config: the token stays out of curl argv
+# (/proc/*/cmdline is world-readable) and is never written to disk.
+_auth() { printf 'header = "Authorization: Bearer %s"\n' "$PAPERCLIP_API_KEY"; }
 
-curl -sS --config "$_AUTH" "$PAPERCLIP_API_URL/api/approvals/<approval-id>"
+_auth | curl -sS --config - "$PAPERCLIP_API_URL/api/approvals/<approval-id>"
 
-curl -sS -X POST --config "$_AUTH" "$PAPERCLIP_API_URL/api/approvals/<approval-id>/comments" \
+_auth | curl -sS -X POST --config - "$PAPERCLIP_API_URL/api/approvals/<approval-id>/comments" \
   -H "Content-Type: application/json" \
   -d '{"body":"## CTO hire request submitted\n\n- Approval: [<approval-id>](/approvals/<approval-id>)\n- Pending agent: [<agent-ref>](/agents/<agent-url-key-or-id>)\n- Source issue: [<issue-ref>](/issues/<issue-identifier-or-id>)\n\nUpdated prompt and adapter config per board feedback."}'
-
-rm -f "$_AUTH"
 ```
 
 If the approval already exists and needs manual linking to the issue:
-
 ```sh
-# Auth via mode-600 config file keeps the token out of curl argv (/proc/*/cmdline is world-readable).
-_AUTH=$(mktemp); chmod 600 "$_AUTH"
-printf 'header = "Authorization: Bearer %s"\n' "$PAPERCLIP_API_KEY" > "$_AUTH"
-curl -sS -X POST --config "$_AUTH" "$PAPERCLIP_API_URL/api/issues/<issue-id>/approvals" \
+# Auth via a piped curl config: the token stays out of curl argv
+# (/proc/*/cmdline is world-readable) and is never written to disk.
+_auth() { printf 'header = "Authorization: Bearer %s"\n' "$PAPERCLIP_API_KEY"; }
+_auth | curl -sS -X POST --config - "$PAPERCLIP_API_URL/api/issues/<issue-id>/approvals" \
   -H "Content-Type: application/json" \
   -d '{"approvalId":"<approval-id>"}'
-rm -f "$_AUTH"
 ```
 
 After approval is granted, run this follow-up loop:
-
 ```sh
-# Auth via mode-600 config file keeps the token out of curl argv (/proc/*/cmdline is world-readable).
-_AUTH=$(mktemp); chmod 600 "$_AUTH"
-printf 'header = "Authorization: Bearer %s"\n' "$PAPERCLIP_API_KEY" > "$_AUTH"
+# Auth via a piped curl config: the token stays out of curl argv
+# (/proc/*/cmdline is world-readable) and is never written to disk.
+_auth() { printf 'header = "Authorization: Bearer %s"\n' "$PAPERCLIP_API_KEY"; }
 
-curl -sS --config "$_AUTH" "$PAPERCLIP_API_URL/api/approvals/$PAPERCLIP_APPROVAL_ID"
+_auth | curl -sS --config - "$PAPERCLIP_API_URL/api/approvals/$PAPERCLIP_APPROVAL_ID"
 
-curl -sS --config "$_AUTH" "$PAPERCLIP_API_URL/api/approvals/$PAPERCLIP_APPROVAL_ID/issues"
-
-rm -f "$_AUTH"
+_auth | curl -sS --config - "$PAPERCLIP_API_URL/api/approvals/$PAPERCLIP_APPROVAL_ID/issues"
 ```
 
 For each linked issue, either:

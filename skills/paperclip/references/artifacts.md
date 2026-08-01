@@ -3,7 +3,6 @@
 When work produces a user-inspectable file, upload true deliverables to the current issue before final disposition. Local filesystem paths are not enough because board users, reviewers, and cloud operators may not have access to the agent workspace.
 
 Use the helper bundled with this skill. From an installed `paperclip` skill directory, the helper lives at `scripts/paperclip-upload-artifact.sh`:
-
 ```bash
 scripts/paperclip-upload-artifact.sh path/to/output.webm \
   --title "Walkthrough render" \
@@ -21,7 +20,6 @@ uploading a deliverable file that a board user should be able to inspect outside
 the workspace.
 
 Annotate the work product with `metadata.resourceRef`:
-
 ```json
 {
   "type": "document",
@@ -50,38 +48,41 @@ optional positive integers. `relativePath` must be relative to the selected
 workspace root; do not use host-local absolute paths in `resourceRef`.
 
 Create the work product with:
-
 ```bash
-# Safe: write auth to config file so token stays out of curl argv (/proc/*/cmdline is world-readable)
-_AUTH=$(mktemp); chmod 600 "$_AUTH"
-printf 'header = "Authorization: Bearer %s"\n' "$PAPERCLIP_API_KEY" > "$_AUTH"
-printf 'header = "X-Paperclip-Run-Id: %s"\n' "$PAPERCLIP_RUN_ID" >> "$_AUTH"
-curl -sS -X POST --config "$_AUTH" \
+# Auth via a piped curl config: the token stays out of curl argv
+# (/proc/*/cmdline is world-readable) and is never written to disk.
+_auth() {
+  printf 'header = "Authorization: Bearer %s"\n' "$PAPERCLIP_API_KEY"
+  printf 'header = "X-Paperclip-Run-Id: %s"\n' "$PAPERCLIP_RUN_ID"
+}
+_auth | curl -sS -X POST --config - \
   "$PAPERCLIP_API_URL/api/issues/$PAPERCLIP_TASK_ID/work-products" \
   -H "Content-Type: application/json" \
   --data-binary @workspace-file-work-product.json
-rm -f "$_AUTH"
 ```
 
 If the helper is unavailable, use the Paperclip API directly:
-
 ```bash
-_AUTH=$(mktemp); chmod 600 "$_AUTH"
-printf 'header = "Authorization: Bearer %s"\n' "$PAPERCLIP_API_KEY" > "$_AUTH"
-printf 'header = "X-Paperclip-Run-Id: %s"\n' "$PAPERCLIP_RUN_ID" >> "$_AUTH"
-curl -sS -X POST --config "$_AUTH" \
+# Auth via a piped curl config: the token stays out of curl argv
+# (/proc/*/cmdline is world-readable) and is never written to disk.
+_auth() {
+  printf 'header = "Authorization: Bearer %s"\n' "$PAPERCLIP_API_KEY"
+  printf 'header = "X-Paperclip-Run-Id: %s"\n' "$PAPERCLIP_RUN_ID"
+}
+_auth | curl -sS -X POST --config - \
   "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/issues/$PAPERCLIP_TASK_ID/attachments" \
   -F 'file=@"path/to/output.webm";type=video/webm'
-rm -f "$_AUTH"
 ```
 
 Then create a work product when the file is the deliverable. The server canonicalizes attachment-backed artifact metadata from the `attachmentId`:
-
 ```bash
-_AUTH=$(mktemp); chmod 600 "$_AUTH"
-printf 'header = "Authorization: Bearer %s"\n' "$PAPERCLIP_API_KEY" > "$_AUTH"
-printf 'header = "X-Paperclip-Run-Id: %s"\n' "$PAPERCLIP_RUN_ID" >> "$_AUTH"
-curl -sS -X POST --config "$_AUTH" \
+# Auth via a piped curl config: the token stays out of curl argv
+# (/proc/*/cmdline is world-readable) and is never written to disk.
+_auth() {
+  printf 'header = "Authorization: Bearer %s"\n' "$PAPERCLIP_API_KEY"
+  printf 'header = "X-Paperclip-Run-Id: %s"\n' "$PAPERCLIP_RUN_ID"
+}
+_auth | curl -sS -X POST --config - \
   "$PAPERCLIP_API_URL/api/issues/$PAPERCLIP_TASK_ID/work-products" \
   -H "Content-Type: application/json" \
   --data-binary '{
@@ -93,7 +94,6 @@ curl -sS -X POST --config "$_AUTH" \
     "isPrimary": true,
     "metadata": { "attachmentId": "<uploaded-attachment-id>" }
   }'
-rm -f "$_AUTH"
 ```
 
 In your final issue comment, link the uploaded attachment or work product and

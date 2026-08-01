@@ -77,24 +77,22 @@ Two paths cover the common cases:
 Browse, inspect, and install catalog skills before reaching for an external
 source. Bundled skills are the curated defaults for any company; optional
 skills are role- or domain-specific.
-
 ```sh
 # Write auth to a mode-600 config file so the token never appears in curl argv
 # (/proc/*/cmdline is world-readable on Linux). Reused across the calls below.
-_AUTH=$(mktemp); chmod 600 "$_AUTH"
-printf 'header = "Authorization: Bearer %s"\n' "$PAPERCLIP_API_KEY" > "$_AUTH"
+# Auth via a piped curl config: the token stays out of curl argv
+# (/proc/*/cmdline is world-readable) and is never written to disk.
+_auth() { printf 'header = "Authorization: Bearer %s"\n' "$PAPERCLIP_API_KEY"; }
 
-curl -sS --config "$_AUTH" "$PAPERCLIP_API_URL/api/skills/catalog?kind=bundled"
+_auth | curl -sS --config - "$PAPERCLIP_API_URL/api/skills/catalog?kind=bundled"
 
-curl -sS --config "$_AUTH" "$PAPERCLIP_API_URL/api/skills/catalog/ref?ref=github-pr-workflow"
+_auth | curl -sS --config - "$PAPERCLIP_API_URL/api/skills/catalog/ref?ref=github-pr-workflow"
 
-curl -sS -X POST --config "$_AUTH" "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/skills/install-catalog" \
+_auth | curl -sS -X POST --config - "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/skills/install-catalog" \
   -H "Content-Type: application/json" \
   -d '{
     "catalogSkillId": "paperclipai:bundled:software-development:github-pr-workflow"
   }'
-
-rm -f "$_AUTH"
 ```
 
 The install response records provenance (`catalogId`, `catalogKey`,
@@ -118,45 +116,39 @@ Import using a **skills.sh URL**, a key-style source string, a GitHub URL, or a 
 **Critical:** If a user gives you a `https://skills.sh/...` URL, use that URL or its key-style equivalent (`org/repo/skill-name`) as the `source`. Do **not** convert it to a GitHub URL — skills.sh is the managed registry and the source of truth for versioning, discovery, and updates.
 
 ### Example: skills.sh import (preferred)
-
 ```sh
-# Auth via mode-600 config file keeps the token out of curl argv (/proc/*/cmdline is world-readable).
-_AUTH=$(mktemp); chmod 600 "$_AUTH"
-printf 'header = "Authorization: Bearer %s"\n' "$PAPERCLIP_API_KEY" > "$_AUTH"
-curl -sS -X POST --config "$_AUTH" "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/skills/import" \
+# Auth via a piped curl config: the token stays out of curl argv
+# (/proc/*/cmdline is world-readable) and is never written to disk.
+_auth() { printf 'header = "Authorization: Bearer %s"\n' "$PAPERCLIP_API_KEY"; }
+_auth | curl -sS -X POST --config - "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/skills/import" \
   -H "Content-Type: application/json" \
   -d '{
     "source": "https://skills.sh/google-labs-code/stitch-skills/design-md"
   }'
-rm -f "$_AUTH"
 ```
 
 Or equivalently using the key-style string:
-
 ```sh
-# Auth via mode-600 config file keeps the token out of curl argv (/proc/*/cmdline is world-readable).
-_AUTH=$(mktemp); chmod 600 "$_AUTH"
-printf 'header = "Authorization: Bearer %s"\n' "$PAPERCLIP_API_KEY" > "$_AUTH"
-curl -sS -X POST --config "$_AUTH" "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/skills/import" \
+# Auth via a piped curl config: the token stays out of curl argv
+# (/proc/*/cmdline is world-readable) and is never written to disk.
+_auth() { printf 'header = "Authorization: Bearer %s"\n' "$PAPERCLIP_API_KEY"; }
+_auth | curl -sS -X POST --config - "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/skills/import" \
   -H "Content-Type: application/json" \
   -d '{
     "source": "google-labs-code/stitch-skills/design-md"
   }'
-rm -f "$_AUTH"
 ```
 
 ### Example: GitHub import
-
 ```sh
-# Auth via mode-600 config file keeps the token out of curl argv (/proc/*/cmdline is world-readable).
-_AUTH=$(mktemp); chmod 600 "$_AUTH"
-printf 'header = "Authorization: Bearer %s"\n' "$PAPERCLIP_API_KEY" > "$_AUTH"
-curl -sS -X POST --config "$_AUTH" "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/skills/import" \
+# Auth via a piped curl config: the token stays out of curl argv
+# (/proc/*/cmdline is world-readable) and is never written to disk.
+_auth() { printf 'header = "Authorization: Bearer %s"\n' "$PAPERCLIP_API_KEY"; }
+_auth | curl -sS -X POST --config - "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/skills/import" \
   -H "Content-Type: application/json" \
   -d '{
     "source": "https://github.com/vercel-labs/agent-browser"
   }'
-rm -f "$_AUTH"
 ```
 
 You can also use source strings such as:
@@ -166,39 +158,32 @@ You can also use source strings such as:
 - `npx skills add https://github.com/vercel-labs/agent-browser --skill agent-browser`
 
 If the task is to discover skills from the company project workspaces first:
-
 ```sh
-# Auth via mode-600 config file keeps the token out of curl argv (/proc/*/cmdline is world-readable).
-_AUTH=$(mktemp); chmod 600 "$_AUTH"
-printf 'header = "Authorization: Bearer %s"\n' "$PAPERCLIP_API_KEY" > "$_AUTH"
-curl -sS -X POST --config "$_AUTH" "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/skills/scan-projects" \
+# Auth via a piped curl config: the token stays out of curl argv
+# (/proc/*/cmdline is world-readable) and is never written to disk.
+_auth() { printf 'header = "Authorization: Bearer %s"\n' "$PAPERCLIP_API_KEY"; }
+_auth | curl -sS -X POST --config - "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/skills/scan-projects" \
   -H "Content-Type: application/json" \
   -d '{}'
-rm -f "$_AUTH"
 ```
 
 ## Inspect What Was Installed
-
 ```sh
-# Auth via mode-600 config file keeps the token out of curl argv (/proc/*/cmdline is world-readable).
-_AUTH=$(mktemp); chmod 600 "$_AUTH"
-printf 'header = "Authorization: Bearer %s"\n' "$PAPERCLIP_API_KEY" > "$_AUTH"
-curl -sS --config "$_AUTH" "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/skills"
-rm -f "$_AUTH"
+# Auth via a piped curl config: the token stays out of curl argv
+# (/proc/*/cmdline is world-readable) and is never written to disk.
+_auth() { printf 'header = "Authorization: Bearer %s"\n' "$PAPERCLIP_API_KEY"; }
+_auth | curl -sS --config - "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/skills"
 ```
 
 Read the skill entry and its `SKILL.md`:
-
 ```sh
-# Auth via mode-600 config file keeps the token out of curl argv (/proc/*/cmdline is world-readable).
-_AUTH=$(mktemp); chmod 600 "$_AUTH"
-printf 'header = "Authorization: Bearer %s"\n' "$PAPERCLIP_API_KEY" > "$_AUTH"
+# Auth via a piped curl config: the token stays out of curl argv
+# (/proc/*/cmdline is world-readable) and is never written to disk.
+_auth() { printf 'header = "Authorization: Bearer %s"\n' "$PAPERCLIP_API_KEY"; }
 
-curl -sS --config "$_AUTH" "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/skills/<skill-id>"
+_auth | curl -sS --config - "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/skills/<skill-id>"
 
-curl -sS --config "$_AUTH" "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/skills/<skill-id>/files?path=SKILL.md"
-
-rm -f "$_AUTH"
+_auth | curl -sS --config - "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/skills/<skill-id>/files?path=SKILL.md"
 ```
 
 ## Assign Skills To An Existing Agent
@@ -210,40 +195,35 @@ rm -f "$_AUTH"
 - exact slug when it is unique in the company
 
 The server persists canonical company skill keys.
-
 ```sh
-# Auth via mode-600 config file keeps the token out of curl argv (/proc/*/cmdline is world-readable).
-_AUTH=$(mktemp); chmod 600 "$_AUTH"
-printf 'header = "Authorization: Bearer %s"\n' "$PAPERCLIP_API_KEY" > "$_AUTH"
-curl -sS -X POST --config "$_AUTH" "$PAPERCLIP_API_URL/api/agents/<agent-id>/skills/sync" \
+# Auth via a piped curl config: the token stays out of curl argv
+# (/proc/*/cmdline is world-readable) and is never written to disk.
+_auth() { printf 'header = "Authorization: Bearer %s"\n' "$PAPERCLIP_API_KEY"; }
+_auth | curl -sS -X POST --config - "$PAPERCLIP_API_URL/api/agents/<agent-id>/skills/sync" \
   -H "Content-Type: application/json" \
   -d '{
     "desiredSkills": [
       "vercel-labs/agent-browser/agent-browser"
     ]
   }'
-rm -f "$_AUTH"
 ```
 
 If you need the current state first:
-
 ```sh
-# Auth via mode-600 config file keeps the token out of curl argv (/proc/*/cmdline is world-readable).
-_AUTH=$(mktemp); chmod 600 "$_AUTH"
-printf 'header = "Authorization: Bearer %s"\n' "$PAPERCLIP_API_KEY" > "$_AUTH"
-curl -sS --config "$_AUTH" "$PAPERCLIP_API_URL/api/agents/<agent-id>/skills"
-rm -f "$_AUTH"
+# Auth via a piped curl config: the token stays out of curl argv
+# (/proc/*/cmdline is world-readable) and is never written to disk.
+_auth() { printf 'header = "Authorization: Bearer %s"\n' "$PAPERCLIP_API_KEY"; }
+_auth | curl -sS --config - "$PAPERCLIP_API_URL/api/agents/<agent-id>/skills"
 ```
 
 ## Include Skills During Hire Or Create
 
 Use the same company skill keys or references in `desiredSkills` when hiring or creating an agent:
-
 ```sh
-# Auth via mode-600 config file keeps the token out of curl argv (/proc/*/cmdline is world-readable).
-_AUTH=$(mktemp); chmod 600 "$_AUTH"
-printf 'header = "Authorization: Bearer %s"\n' "$PAPERCLIP_API_KEY" > "$_AUTH"
-curl -sS -X POST --config "$_AUTH" "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/agent-hires" \
+# Auth via a piped curl config: the token stays out of curl argv
+# (/proc/*/cmdline is world-readable) and is never written to disk.
+_auth() { printf 'header = "Authorization: Bearer %s"\n' "$PAPERCLIP_API_KEY"; }
+_auth | curl -sS -X POST --config - "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/agent-hires" \
   -H "Content-Type: application/json" \
   -d '{
     "name": "QA Browser Agent",
@@ -256,16 +236,14 @@ curl -sS -X POST --config "$_AUTH" "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_
       "agent-browser"
     ]
   }'
-rm -f "$_AUTH"
 ```
 
 For direct create without approval:
-
 ```sh
-# Auth via mode-600 config file keeps the token out of curl argv (/proc/*/cmdline is world-readable).
-_AUTH=$(mktemp); chmod 600 "$_AUTH"
-printf 'header = "Authorization: Bearer %s"\n' "$PAPERCLIP_API_KEY" > "$_AUTH"
-curl -sS -X POST --config "$_AUTH" "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/agents" \
+# Auth via a piped curl config: the token stays out of curl argv
+# (/proc/*/cmdline is world-readable) and is never written to disk.
+_auth() { printf 'header = "Authorization: Bearer %s"\n' "$PAPERCLIP_API_KEY"; }
+_auth | curl -sS -X POST --config - "$PAPERCLIP_API_URL/api/companies/$PAPERCLIP_COMPANY_ID/agents" \
   -H "Content-Type: application/json" \
   -d '{
     "name": "QA Browser Agent",
