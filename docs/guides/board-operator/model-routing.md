@@ -12,10 +12,13 @@ carries no `adapterType`, so it cannot change the assigned agent's adapter. For
 a family-bound adapter (`claude_local` → Claude, `codex_local` → GPT) the pin
 therefore stays within that adapter's single family and cannot reach the other,
 so it is not a substitute for a different-family agent. A multi-provider adapter
-is the exception: `hermes_local` resolves the provider from the pinned model, so
-a pin there can move between the families it serves (e.g. Qwen and Gemma)
-without changing `adapterType` — if you ever route a cross-family check that
-way, verify the resulting model family on the run ledger. For the Claude/GPT
+is a partial exception: `hermes_local` can infer the provider from the pinned
+model, but only as a fallback — an explicit `provider` in its config, or a
+configured Hermes provider whose model matches the pin, takes precedence and
+keeps that provider. So a pin there can move between the families it serves
+(e.g. Qwen and Gemma) without changing `adapterType` only when provider
+resolution falls through to the model name — if you route a cross-family check
+that way, always verify the resulting model family on the run ledger. For the Claude/GPT
 cloud lanes, always assign a different-family agent. The Cloud Reviewer default
 is the company-level fallback for cloud work.
 

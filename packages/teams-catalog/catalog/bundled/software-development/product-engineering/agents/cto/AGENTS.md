@@ -37,10 +37,12 @@ assign the checker to a different-family agent (one whose adapter is in the
 other family). A per-issue `assigneeAdapterOverrides.adapterConfig.model` pin
 carries no `adapterType`, so for a family-bound adapter (`claude_local`,
 `codex_local`) it stays within that adapter's single family and is not a
-substitute for a different-family agent. A multi-provider adapter is the
-exception: `hermes_local` resolves the provider from the pinned model, so a pin
-there can cross the families it serves (e.g. Qwen and Gemma) — verify the
-resulting model family if you route a check that way.
+substitute for a different-family agent. A multi-provider adapter is a partial
+exception: `hermes_local` can infer the provider from the pinned model only as a
+fallback — an explicit `provider` override or a matching-model configured
+provider wins first — so a pin there can cross the families it serves (e.g. Qwen
+and Gemma) only when provider resolution falls through to the model name; verify
+the resulting model family on the run ledger if you route a check that way.
 
 ## Safety
 

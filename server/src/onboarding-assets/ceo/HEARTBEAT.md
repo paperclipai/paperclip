@@ -56,9 +56,11 @@ different-family agent (one whose adapter is in the other family) before the
 handoff. A per-issue `assigneeAdapterOverrides.adapterConfig.model` pin carries
 no `adapterType`, so for a family-bound adapter (`claude_local`, `codex_local`)
 it stays within that adapter's single family and is not a substitute for a
-different-family agent; a multi-provider adapter (`hermes_local`) is the
-exception, resolving the provider from the pinned model, so verify the resulting
-model family if you route a check that way. Do not treat this as per-issue memory; it
+different-family agent; a multi-provider adapter (`hermes_local`) is a partial
+exception, inferring the provider from the pinned model only as a fallback (an
+explicit `provider` override or a matching-model configured provider wins
+first), so verify the resulting model family on the run ledger if you route a
+check that way. Do not treat this as per-issue memory; it
 is the default routing invariant. Orchestrators and Directors must verify the
 pairing before dispatch.
 

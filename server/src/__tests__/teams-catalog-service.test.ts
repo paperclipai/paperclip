@@ -39,7 +39,7 @@ const {
 } = await import("../services/teams-catalog.js");
 
 const CORE_EXEC_TEAM_ID = "paperclipai:bundled:company-defaults:core-exec-team";
-const CORE_EXEC_TEAM_HASH = "sha256:0b1ea540bf852911e8410799d2d09fdabf125b6b43dc736990719b3d19a14b70";
+const CORE_EXEC_TEAM_HASH = "sha256:c85048d4e87111f7a734b88c418b96f9a0ccc54ff782911d7bd45ada7727e67d";
 
 function agentWithCatalogTeam(originHash: string | null, extra: Record<string, unknown> = {}) {
   return {
