@@ -73,6 +73,8 @@ import {
 } from "./issue-graph-liveness.js";
 import {
   recoveryAssigneeAdapterOverrides,
+  RECOVERY_MODEL_PROFILE_KEY,
+  recoveryModelProfileWorkClass,
   withRecoveryModelProfileHint,
 } from "./model-profile-hint.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js";
@@ -2161,6 +2163,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       now: input.now,
     });
     const level = (evidence.silenceAgeMs ?? 0) >= ACTIVE_RUN_OUTPUT_CRITICAL_THRESHOLD_MS ? "critical" : "suspicious";
+    const recoveryWorkClass = recoveryModelProfileWorkClass({ critical: level === "critical" });
     if (existing) {
       if (level === "critical" && existing.priority !== "high") {
         await issuesSvc.update(existing.id, {
@@ -2212,7 +2215,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         goalId: sourceIssue?.goalId ?? null,
         billingCode: sourceIssue?.billingCode ?? null,
         assigneeAgentId: ownerAgentId,
-        assigneeAdapterOverrides: recoveryAssigneeAdapterOverrides("status_only"),
+        assigneeAdapterOverrides: recoveryAssigneeAdapterOverrides(recoveryWorkClass),
         originKind: STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND,
         originId: input.run.id,
         originRunId: input.run.id,
@@ -2258,7 +2261,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           issueId: evaluation.id,
           staleRunId: input.run.id,
           sourceIssueId: sourceIssue?.id ?? null,
-        }, "status_only"),
+        }, recoveryWorkClass),
         requestedByActorType: "system",
         requestedByActorId: null,
         contextSnapshot: withRecoveryModelProfileHint({
@@ -2268,7 +2271,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           source: STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND,
           staleRunId: input.run.id,
           sourceIssueId: sourceIssue?.id ?? null,
-        }, "status_only"),
+        }, recoveryWorkClass),
       });
     }
     return { kind: "created" as const, evaluationIssueId: evaluation.id };
@@ -2727,6 +2730,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const prefix = await getCompanyIssuePrefix(input.issue.companyId);
     const sourceAssignee = input.issue.assigneeAgentId ? await getAgent(input.issue.assigneeAgentId) : null;
     const recoveryCause = input.recoveryCause ?? "stranded_assigned_issue";
+    const recoveryWorkClass = recoveryModelProfileWorkClass({ critical: input.issue.priority === "critical" });
     let recovery: Awaited<ReturnType<typeof issuesSvc.create>>;
     try {
       recovery = await issuesSvc.create(input.issue.companyId, {
@@ -2748,7 +2752,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         projectId: input.issue.projectId,
         goalId: input.issue.goalId,
         assigneeAgentId: ownerAgentId,
-        assigneeAdapterOverrides: recoveryAssigneeAdapterOverrides("status_only"),
+        assigneeAdapterOverrides: recoveryAssigneeAdapterOverrides(recoveryWorkClass),
         originKind: STRANDED_ISSUE_RECOVERY_ORIGIN_KIND,
         originId: input.issue.id,
         originRunId: input.latestRun?.id ?? null,
@@ -2778,7 +2782,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         sourceIssueId: input.issue.id,
         strandedRunId: input.latestRun?.id ?? null,
         recoveryCause,
-      }, "status_only"),
+      }, recoveryWorkClass),
       requestedByActorType: "system",
       requestedByActorId: null,
       contextSnapshot: withRecoveryModelProfileHint({
@@ -2789,7 +2793,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         sourceIssueId: input.issue.id,
         strandedRunId: input.latestRun?.id ?? null,
         recoveryCause,
-      }, "status_only"),
+      }, recoveryWorkClass),
     });
 
     return recovery;
@@ -4966,6 +4970,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       recoveryIssue,
       ownerAgentId: ownerSelection.agentId,
     });
+    const recoveryWorkClass = recoveryModelProfileWorkClass({ critical: input.finding.severity === "critical" });
 
     let escalation: Awaited<ReturnType<typeof issuesSvc.create>>;
     try {
@@ -4978,7 +4983,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         projectId: recoveryIssue.projectId,
         goalId: recoveryIssue.goalId,
         assigneeAgentId: ownerSelection.agentId,
-        assigneeAdapterOverrides: recoveryAssigneeAdapterOverrides("status_only"),
+        assigneeAdapterOverrides: recoveryAssigneeAdapterOverrides(recoveryWorkClass),
         originKind: RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation,
         originId: input.finding.incidentKey,
         originFingerprint: livenessRecoveryLeafFingerprint(input.finding),
@@ -5059,12 +5064,13 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       source: "assignment",
       triggerDetail: "system",
       reason: "issue_assigned",
+      idempotencyKey: `critical-recovery-primary-model:${escalation.id}`,
       payload: withRecoveryModelProfileHint({
         issueId: escalation.id,
         sourceIssueId: issue.id,
         recoveryIssueId: recoveryIssue.id,
         incidentKey: input.finding.incidentKey,
-      }, "status_only"),
+      }, recoveryWorkClass),
       requestedByActorType: "system",
       requestedByActorId: null,
       contextSnapshot: withRecoveryModelProfileHint({
@@ -5075,7 +5081,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         sourceIssueId: issue.id,
         recoveryIssueId: recoveryIssue.id,
         incidentKey: input.finding.incidentKey,
-      }, "status_only"),
+      }, recoveryWorkClass),
     });
 
     logger.warn({
@@ -5327,6 +5333,84 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return result;
   }
 
+  async function ensureCriticalLivenessRecoveryModelLane() {
+    const recoveries = await db
+      .select()
+      .from(issues)
+      .where(and(
+        eq(issues.originKind, RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation),
+        visibleIssueCondition(),
+        notInArray(issues.status, ["done", "cancelled"]),
+        sql`${issues.assigneeAgentId} is not null`,
+      ));
+    const result = { checked: recoveries.length, overridesCleared: 0, wakesEnsured: 0 };
+
+    for (const recovery of recoveries) {
+      const adapterOverrides = recovery.assigneeAdapterOverrides as { modelProfile?: unknown } | null;
+      const hadCheapOverride = adapterOverrides?.modelProfile === RECOVERY_MODEL_PROFILE_KEY;
+      if (hadCheapOverride) {
+        await issuesSvc.update(recovery.id, { assigneeAdapterOverrides: null });
+        result.overridesCleared += 1;
+      }
+
+      const idempotencyKey = `critical-recovery-primary-model:${recovery.id}`;
+      const existingWake = await db
+        .select({ id: agentWakeupRequests.id })
+        .from(agentWakeupRequests)
+        .where(and(
+          eq(agentWakeupRequests.companyId, recovery.companyId),
+          eq(agentWakeupRequests.agentId, recovery.assigneeAgentId!),
+          eq(agentWakeupRequests.idempotencyKey, idempotencyKey),
+        ))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      const parsed = parseIssueGraphLivenessIncidentKey(recovery.originId);
+      const wake = existingWake ?? await deps.enqueueWakeup(recovery.assigneeAgentId!, {
+        source: "assignment",
+        triggerDetail: "system",
+        reason: "issue_assigned",
+        idempotencyKey,
+        payload: withRecoveryModelProfileHint({
+          issueId: recovery.id,
+          sourceIssueId: parsed?.issueId ?? null,
+          recoveryIssueId: parsed?.leafIssueId ?? null,
+          incidentKey: recovery.originId,
+        }, "normal_model"),
+        requestedByActorType: "system",
+        requestedByActorId: null,
+        contextSnapshot: withRecoveryModelProfileHint({
+          issueId: recovery.id,
+          taskId: recovery.id,
+          wakeReason: "issue_assigned",
+          source: RECOVERY_ORIGIN_KINDS.issueGraphLivenessEscalation,
+          sourceIssueId: parsed?.issueId ?? null,
+          recoveryIssueId: parsed?.leafIssueId ?? null,
+          incidentKey: recovery.originId,
+        }, "normal_model"),
+      });
+      if (wake) result.wakesEnsured += 1;
+
+      if (hadCheapOverride) {
+        await logActivity(db, {
+          companyId: recovery.companyId,
+          actorType: "system",
+          actorId: "issue_graph_liveness_reconciliation",
+          agentId: recovery.assigneeAgentId,
+          action: "issue.recovery_model_profile_failover",
+          entityType: "issue",
+          entityId: recovery.id,
+          details: {
+            previousModelProfile: RECOVERY_MODEL_PROFILE_KEY,
+            nextModelProfile: "default",
+            wakeupRunId: wake?.id ?? null,
+          },
+        });
+      }
+    }
+
+    return result;
+  }
+
   async function reconcileIssueGraphLiveness(opts?: {
     runId?: string | null;
     force?: boolean;
@@ -5395,6 +5479,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       dependencyWakeDeferredOrFailed: 0,
       dependencyWakeEnqueueFailed: 0,
       dependencyWakeIssueIds: [] as string[],
+      criticalRecoveryModelProfilesChecked: 0,
+      criticalRecoveryModelOverridesCleared: 0,
+      criticalRecoveryModelWakesEnsured: 0,
       issueIds: [] as string[],
       escalationIssueIds: [] as string[],
       retiredRecoveryIssueIds: obsoleteRecoveryCleanup.retiredIssueIds,
@@ -5419,6 +5506,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       result.skippedAutoRecoveryDisabled = findings.length;
       return result;
     }
+
+    const criticalRecoveryModelLane = await ensureCriticalLivenessRecoveryModelLane();
+    result.criticalRecoveryModelProfilesChecked = criticalRecoveryModelLane.checked;
+    result.criticalRecoveryModelOverridesCleared = criticalRecoveryModelLane.overridesCleared;
+    result.criticalRecoveryModelWakesEnsured = criticalRecoveryModelLane.wakesEnsured;
 
     for (const finding of findings) {
       if (!isLivenessFindingInsideAutoRecoveryLookback(finding, cutoff, updatedAtByIssueKey)) {

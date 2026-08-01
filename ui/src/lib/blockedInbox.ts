@@ -24,6 +24,7 @@ const VARIANT_BY_REASON: Record<IssueBlockedInboxReason, BlockedReasonVariant> =
   in_review_without_action_path: "needs_attention",
   invalid_review_participant: "needs_attention",
   open_recovery_issue: "recovery_required",
+  recovery_stalled: "needs_attention",
   external_owner_action: "external_wait",
   blocked_by_uninvokable_assignee: "owner_paused",
 };
@@ -57,6 +58,7 @@ const REASON_LABELS: Record<IssueBlockedInboxReason, string> = {
   in_review_without_action_path: "Review without action path",
   invalid_review_participant: "Invalid review participant",
   open_recovery_issue: "Recovery in progress",
+  recovery_stalled: "Recovery stalled",
   external_owner_action: "External owner action",
   blocked_by_uninvokable_assignee: "Owner paused",
 };

@@ -773,6 +773,7 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
       priority: "high",
       parentId: blockerIssueId,
       assigneeAgentId: managerId,
+      assigneeAdapterOverrides: { modelProfile: "cheap" },
       issueNumber: 5,
       identifier: `${`P${companyId.replace(/-/g, "").slice(0, 4)}`}-5`,
       originKind: "harness_liveness_escalation",
@@ -784,18 +785,40 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
         blockerIssueId,
       ].join(":"),
     });
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: existingEscalationId,
+      relatedIssueId: blockedIssueId,
+      type: "blocks",
+    });
 
-    const result = await heartbeatService(db).reconcileIssueGraphLiveness();
 
-    expect(result.findings).toBe(0);
-    expect(result.escalationsCreated).toBe(0);
-    expect(result.existingEscalations).toBe(0);
+    const heartbeat = heartbeatService(db);
+    const first = await heartbeat.reconcileIssueGraphLiveness();
+    const second = await heartbeat.reconcileIssueGraphLiveness();
+
+    expect(first.findings).toBe(0);
+    expect(first.escalationsCreated).toBe(0);
+    expect(first.existingEscalations).toBe(0);
+    expect(first.criticalRecoveryModelOverridesCleared).toBe(1);
+    expect(second.criticalRecoveryModelOverridesCleared).toBe(0);
 
     const escalations = await db
       .select()
       .from(issues)
       .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "harness_liveness_escalation")));
     expect(escalations).toHaveLength(1);
+    expect(escalations[0]).toMatchObject({
+      assigneeAgentId: managerId,
+      assigneeAdapterOverrides: null,
+    });
+    const recoveryWakes = (await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.agentId, managerId)))
+      .filter((wake) => (wake.payload as { issueId?: string } | null)?.issueId === existingEscalationId);
+    expect(recoveryWakes).toHaveLength(1);
+    expect(recoveryWakes[0]?.payload).not.toHaveProperty("modelProfile");
   });
 
   it("keeps active invalid_review_participant recoveries from being retired", async () => {
@@ -873,7 +896,7 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
     expect(escalations[0]).toMatchObject({
       parentId: blockerIssueId,
       assigneeAgentId: managerId,
-      assigneeAdapterOverrides: { modelProfile: "cheap" },
+      assigneeAdapterOverrides: null,
       status: expect.stringMatching(/^(todo|in_progress|done)$/),
       originFingerprint: [
         "harness_liveness_leaf",
@@ -1122,7 +1145,7 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
       executionWorkspaceId: null,
       executionWorkspacePreference: null,
       assigneeAgentId: managerId,
-      assigneeAdapterOverrides: { modelProfile: "cheap" },
+      assigneeAdapterOverrides: null,
     });
   });
 

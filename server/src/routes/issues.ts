@@ -3023,6 +3023,41 @@ export function issueRoutes(
     return null;
   }
 
+  async function resolveSuccessfulRunHandoffDisposition(input: {
+    issue: Pick<IssueRouteSnapshot, "id" | "companyId" | "identifier" | "status">;
+    actor?: ReturnType<typeof getActorInfo> | null;
+    details?: Record<string, unknown>;
+  }) {
+    const handoff = await listSuccessfulRunHandoffStates(
+      db,
+      input.issue.companyId,
+      [input.issue.id],
+      { hydrateLiveness: false },
+    ).then((handoffStates) => handoffStates.get(input.issue.id));
+    if (handoff?.state !== "required" && handoff?.state !== "escalated") return false;
+
+    const actor = input.actor;
+    await logActivity(db, {
+      companyId: input.issue.companyId,
+      actorType: actor?.actorType ?? "system",
+      actorId: actor?.actorId ?? "system",
+      agentId: actor?.agentId ?? null,
+      runId: actor?.runId ?? null,
+      agentApiKeyId: actor?.agentApiKeyId ?? null,
+      action: "issue.successful_run_handoff_resolved",
+      entityType: "issue",
+      entityId: input.issue.id,
+      details: {
+        identifier: input.issue.identifier,
+        sourceRunId: handoff.sourceRunId,
+        correctiveRunId: handoff.correctiveRunId,
+        resolvedFromState: handoff.state,
+        ...input.details,
+      },
+    });
+    return true;
+  }
+
   async function revalidateActiveSourceRecovery(input: {
     issue: IssueRouteSnapshot;
     trigger: RecoveryRevalidationTrigger;
@@ -3077,6 +3112,15 @@ export function issueRoutes(
         resolutionNote: resolved.resolutionNote,
         source: "source_revalidation",
         trigger: input.trigger,
+      },
+    });
+    await resolveSuccessfulRunHandoffDisposition({
+      issue: input.issue,
+      actor,
+      details: {
+        resolvedByRecoveryActionId: resolved.id,
+        resolvedByRecoveryActionOutcome: resolved.outcome,
+        resolvedByRecoveryRevalidationTrigger: input.trigger,
       },
     });
 
@@ -8419,28 +8463,11 @@ export function issueRoutes(
     });
 
     if (existing.status === "in_progress" && issue.status !== existing.status && issue.status !== "in_progress") {
-      await listSuccessfulRunHandoffStates(db, issue.companyId, [issue.id], { hydrateLiveness: false })
-        .then(async (handoffStates) => {
-          const handoff = handoffStates.get(issue.id);
-          if (handoff?.state !== "required") return;
-          await logActivity(db, {
-            companyId: issue.companyId,
-            actorType: actor.actorType,
-            actorId: actor.actorId,
-            agentId: actor.agentId,
-            runId: actor.runId,
-            agentApiKeyId: actor.agentApiKeyId,
-            action: "issue.successful_run_handoff_resolved",
-            entityType: "issue",
-            entityId: issue.id,
-            details: {
-              identifier: issue.identifier,
-              sourceRunId: handoff.sourceRunId,
-              correctiveRunId: handoff.correctiveRunId,
-              resolvedByStatus: issue.status,
-            },
-          });
-        })
+      await resolveSuccessfulRunHandoffDisposition({
+        issue,
+        actor,
+        details: { resolvedByStatus: issue.status },
+      })
         .catch((err) => {
           logger.warn({ err, issueId: issue.id }, "failed to log successful run handoff resolution");
         });

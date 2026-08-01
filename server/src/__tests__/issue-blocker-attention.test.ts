@@ -904,6 +904,46 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     });
   });
 
+  it("propagates a live descendant through terminal topology connectors", async () => {
+    const { companyId, agentId } = await createCompany("BITC");
+    const rootId = await insertIssue({
+      companyId,
+      identifier: "BITC-1",
+      title: "Blocked source",
+      status: "blocked",
+      assigneeAgentId: agentId,
+    });
+    const firstDoneConnectorId = await insertIssue({
+      companyId,
+      identifier: "BITC-2",
+      title: "Completed connector one",
+      status: "done",
+      parentId: rootId,
+      assigneeAgentId: agentId,
+    });
+    const secondDoneConnectorId = await insertIssue({
+      companyId,
+      identifier: "BITC-3",
+      title: "Completed connector two",
+      status: "done",
+      parentId: firstDoneConnectorId,
+      assigneeAgentId: agentId,
+    });
+    const activeGrandchildId = await insertIssue({
+      companyId,
+      identifier: "BITC-4",
+      title: "Live descendant",
+      status: "in_progress",
+      parentId: secondDoneConnectorId,
+      assigneeAgentId: agentId,
+    });
+    await activeRun({ companyId, agentId, issueId: activeGrandchildId });
+
+    const rows = await svc.list(companyId, { attention: "blocked" });
+
+    expect(rows.some((issue) => issue.id === rootId)).toBe(false);
+  });
+
   it("does not propagate descendant continuation coverage across company boundaries", async () => {
     const primary = await createCompany("BITA");
     const other = await createCompany("BITB");
@@ -1063,7 +1103,7 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     });
   });
 
-  it("classifies recovery issues and missing successful-run dispositions", async () => {
+  it("classifies live recovery issues and missing successful-run dispositions", async () => {
     const { companyId, agentId } = await createCompany("BID");
     const sourceId = await insertIssue({ companyId, identifier: "BID-1", title: "Stopped source", status: "blocked" });
     const leafId = await insertIssue({ companyId, identifier: "BID-2", title: "Stopped leaf", status: "todo" });
@@ -1098,6 +1138,7 @@ describeEmbeddedPostgres("issue blocker attention", () => {
       agentId,
       details: { sourceRunId: randomUUID(), detectedProgressSummary: "Progress was made" },
     });
+    await activeRun({ companyId, agentId, issueId: recoveryId, current: false });
 
     const rows = await svc.list(companyId, { attention: "blocked" });
     const byId = new Map(rows.map((row) => [row.id, row]));
@@ -1145,6 +1186,45 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     expect(exhaustedRows.find((row) => row.id === handoffId)?.blockedInboxAttention).toMatchObject({
       state: "missing_disposition",
       reason: "missing_successful_run_disposition",
+    });
+  });
+
+  it("classifies a recovery with only terminal failures as stalled", async () => {
+    const { companyId, agentId } = await createCompany("BIRS");
+    const sourceId = await insertIssue({
+      companyId,
+      identifier: "BIRS-1",
+      title: "Stopped source",
+      status: "blocked",
+    });
+    const recoveryId = await insertIssue({
+      companyId,
+      identifier: "BIRS-2",
+      title: "Recovery without executable path",
+      status: "todo",
+      assigneeAgentId: agentId,
+      originKind: "stranded_issue_recovery",
+      originId: sourceId,
+    });
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      await activeRun({
+        companyId,
+        agentId,
+        issueId: recoveryId,
+        status: "failed",
+        current: false,
+      });
+    }
+
+    const recovery = (await svc.list(companyId, { attention: "blocked" }))
+      .find((issue) => issue.id === recoveryId);
+
+    expect(recovery?.blockedInboxAttention).toMatchObject({
+      state: "needs_attention",
+      reason: "recovery_stalled",
+      owner: { type: "agent", agentId },
+      recoveryIssue: { id: recoveryId },
+      action: { label: "Restart recovery" },
     });
   });
 

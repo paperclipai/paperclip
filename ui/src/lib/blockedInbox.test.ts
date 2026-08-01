@@ -103,6 +103,7 @@ describe("blockedInbox", () => {
       "blocked_by_uninvokable_assignee",
       "in_review_without_action_path",
       "invalid_review_participant",
+      "recovery_stalled",
       "open_recovery_issue",
       "external_owner_action",
     ];

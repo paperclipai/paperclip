@@ -57,6 +57,7 @@ export const issueBlockedInboxReasonSchema = z.enum([
   "pending_user_decision",
   "external_owner_action",
   "open_recovery_issue",
+  "recovery_stalled",
 ]);
 
 export const issueBlockedInboxIssueRefSchema = z.object({

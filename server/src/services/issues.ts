@@ -3338,7 +3338,6 @@ async function listIssueBlockedInboxAttentionMap(
       .where(and(
         eq(issues.companyId, companyId),
         visibleIssueCondition(),
-        ne(issues.status, "done"),
       )),
     dbOrTx
       .select({
@@ -3655,6 +3654,8 @@ async function listIssueBlockedInboxAttentionMap(
       continue;
     }
 
+    const approval = approvalByIssueId.get(row.id);
+
     if (BLOCKED_INBOX_RECOVERY_ORIGIN_KINDS.includes(row.originKind as typeof BLOCKED_INBOX_RECOVERY_ORIGIN_KINDS[number])) {
       let sourceIssue: IssueBlockedInboxIssueRef | null = null;
       let leafIssue: IssueBlockedInboxIssueRef | null = null;
@@ -3667,9 +3668,14 @@ async function listIssueBlockedInboxAttentionMap(
       } else if (row.originKind === "stranded_issue_recovery" && row.originId) {
         sourceIssue = issueRef(issuesById.get(row.originId));
       }
+      const hasRecoveryOwner = Boolean(row.assigneeAgentId || row.assigneeUserId);
+      const hasExecutableRecoveryPath = Boolean(
+        liveContinuationIssueIds.has(row.id) || interactionCoverage || approval,
+      );
+      const recoveryIsLive = hasRecoveryOwner && hasExecutableRecoveryPath;
       result.set(row.id, attentionBase({
-        state: "recovery_open",
-        reason: "open_recovery_issue",
+        state: recoveryIsLive ? "recovery_open" : "needs_attention",
+        reason: recoveryIsLive ? "open_recovery_issue" : "recovery_stalled",
         severity: "high",
         stoppedSinceAt: row.createdAt,
         owner: {
@@ -3679,8 +3685,10 @@ async function listIssueBlockedInboxAttentionMap(
           label: null,
         },
         action: {
-          label: "Resolve recovery",
-          detail: "Restore a live path for the source work or record why this recovery issue is a false positive.",
+          label: recoveryIsLive ? "Resolve recovery" : "Restart recovery",
+          detail: recoveryIsLive
+            ? "Restore a live path for the source work or record why this recovery issue is a false positive."
+            : "Assign an owner and queue a run, wake, retry, or bounded monitor for this stalled recovery.",
         },
         sourceIssue: sourceIssue ?? source,
         leafIssue,
@@ -3694,7 +3702,6 @@ async function listIssueBlockedInboxAttentionMap(
       continue;
     }
 
-    const approval = approvalByIssueId.get(row.id);
     if (approval) {
       result.set(row.id, attentionBase({
         state: "awaiting_decision",

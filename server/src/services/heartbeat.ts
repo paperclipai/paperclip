@@ -209,6 +209,7 @@ import {
 import { isAutomaticRecoverySuppressedByPauseHold } from "./recovery/pause-hold-guard.js";
 import {
   recoveryAssigneeAdapterOverrides,
+  recoveryModelProfileWorkClass,
   withRecoveryModelProfileHint,
 } from "./recovery/model-profile-hint.js";
 import { recoveryService } from "./recovery/service.js";
@@ -7223,6 +7224,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       monitor: input.monitor,
       source: input.activitySource,
     });
+    const recoveryWorkClass = recoveryModelProfileWorkClass({ critical: input.claimed.priority === "critical" });
 
     if (input.recoveryPolicy === "create_recovery_issue") {
       let recoveryIssue = await findOpenIssueMonitorRecoveryIssue(input.claimed);
@@ -7241,7 +7243,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           projectId: input.claimed.projectId,
           goalId: input.claimed.goalId,
           assigneeAgentId: input.claimed.assigneeAgentId,
-          assigneeAdapterOverrides: recoveryAssigneeAdapterOverrides("status_only"),
+          assigneeAdapterOverrides: recoveryAssigneeAdapterOverrides(recoveryWorkClass),
           originKind: RECOVERY_ORIGIN_KINDS.strandedIssueRecovery,
           originId: input.claimed.id,
           originFingerprint: `issue_monitor:${input.clearReason}`,
@@ -7255,7 +7257,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           triggerDetail: "system",
           reason: "issue_monitor_recovery_issue",
           idempotencyKey: `issue-monitor-recovery-issue:${input.claimed.id}:${input.clearReason}:${input.scheduledAtIso}`,
-          payload: withRecoveryModelProfileHint({ issueId: recoveryIssue.id, sourceIssueId: input.claimed.id }, "status_only"),
+          payload: withRecoveryModelProfileHint({ issueId: recoveryIssue.id, sourceIssueId: input.claimed.id }, recoveryWorkClass),
           requestedByActorType: input.actorType,
           requestedByActorId: input.actorId,
           contextSnapshot: withRecoveryModelProfileHint({
@@ -7263,7 +7265,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             sourceIssueId: input.claimed.id,
             source: "issue.monitor.recovery_issue",
             wakeReason: "issue_monitor_recovery_issue",
-          }, "status_only"),
+          }, recoveryWorkClass),
         });
       }
 
@@ -7324,7 +7326,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         serviceName: input.monitor?.serviceName ?? null,
         timeoutAt: input.monitor?.timeoutAt ?? null,
         maxAttempts: input.monitor?.maxAttempts ?? null,
-      }, "status_only"),
+      }, recoveryWorkClass),
       requestedByActorType: input.actorType,
       requestedByActorId: input.actorId,
       contextSnapshot: withRecoveryModelProfileHint({
@@ -7337,7 +7339,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         serviceName: input.monitor?.serviceName ?? null,
         timeoutAt: input.monitor?.timeoutAt ?? null,
         maxAttempts: input.monitor?.maxAttempts ?? null,
-      }, "status_only"),
+      }, recoveryWorkClass),
     });
 
     await logActivity(db, {
