@@ -1,7 +1,6 @@
 import { pgTable, uuid, text, timestamp, jsonb, index } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { agents } from "./agents.js";
-import { heartbeatRuns } from "./heartbeat_runs.js";
 
 export const activityLog = pgTable(
   "activity_log",
@@ -14,7 +13,10 @@ export const activityLog = pgTable(
     entityType: text("entity_type").notNull(),
     entityId: text("entity_id").notNull(),
     agentId: uuid("agent_id").references(() => agents.id),
-    runId: uuid("run_id").references(() => heartbeatRuns.id),
+    // Deliberately NOT a foreign key (see migration 0198). An audit row must be able
+    // to name a run that has since been cleaned up; constraining it broke writes from
+    // agent tokens whose pinned run had expired, and blocked run retention besides.
+    runId: uuid("run_id"),
     responsibleUserId: text("responsible_user_id"),
     details: jsonb("details").$type<Record<string, unknown>>(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

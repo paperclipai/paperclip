@@ -231,4 +231,105 @@ describeEmbeddedPostgres("logActivity responsible-user stamping", () => {
 
     expect(row?.responsibleUserId).toBe("key-user");
   });
+
+  it("logs the activity when the claimed run no longer exists", async () => {
+    // The regression: an agent JWT pins a run_id for 14 days, heartbeat runs are
+    // ephemeral, and once the row is gone activity_log's FK to heartbeat_runs
+    // rejected the insert. logActivity threw, the route returned 500 — on a write
+    // that had already committed. Six of ten agent tokens on the live instance
+    // carried a dead run id and could not create an issue at all.
+    // Migration 0198 drops that FK: an audit row must be able to name a run that
+    // has since been cleaned up, so the id is kept as a plain value.
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const deadRunId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      defaultResponsibleUserId: "default-user",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Ripley",
+      role: "ceo",
+      status: "running",
+      adapterType: "openclaw_gateway",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    // The assertion that matters is that this does not throw: with the FK in place
+    // the insert raised and the route turned a committed write into a 500.
+    await expect(logActivity(db, activityInput({
+      companyId,
+      actorId: agentId,
+      agentId,
+      entityType: "agent",
+      entityId: agentId,
+      runId: deadRunId,
+    }))).resolves.toBeDefined();
+
+    const row = await db
+      .select({ runId: activityLog.runId })
+      .from(activityLog)
+      .where(eq(activityLog.companyId, companyId))
+      .then((rows) => rows[0]);
+
+    expect(row).toBeDefined();
+    expect(row?.runId).toBe(deadRunId);   // provenance kept, constraint gone
+  });
+
+  it("still records a run id that does exist", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const liveRunId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      defaultResponsibleUserId: "default-user",
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Bishop",
+      role: "cto",
+      status: "running",
+      adapterType: "openclaw_gateway",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(heartbeatRuns).values({
+      id: liveRunId,
+      companyId,
+      agentId,
+      responsibleUserId: "run-user",
+    });
+
+    await logActivity(db, activityInput({
+      companyId,
+      actorId: agentId,
+      agentId,
+      entityType: "agent",
+      entityId: agentId,
+      runId: liveRunId,
+    }));
+
+    const row = await db
+      .select({ runId: activityLog.runId, responsibleUserId: activityLog.responsibleUserId })
+      .from(activityLog)
+      .where(eq(activityLog.companyId, companyId))
+      .then((rows) => rows[0]);
+
+    expect(row?.runId).toBe(liveRunId);
+    expect(row?.responsibleUserId).toBe("run-user");
+  });
 });
