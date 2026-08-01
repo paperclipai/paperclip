@@ -238,7 +238,7 @@ describeEmbeddedPostgres("logActivity responsible-user stamping", () => {
     // rejected the insert. logActivity threw, the route returned 500 — on a write
     // that had already committed. Six of ten agent tokens on the live instance
     // carried a dead run id and could not create an issue at all.
-    // Migration 0197 drops that FK: an audit row must be able to name a run that
+    // Migration 0198 drops that FK: an audit row must be able to name a run that
     // has since been cleaned up, so the id is kept as a plain value.
     const companyId = randomUUID();
     const agentId = randomUUID();

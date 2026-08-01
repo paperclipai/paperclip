@@ -13,7 +13,7 @@ export const activityLog = pgTable(
     entityType: text("entity_type").notNull(),
     entityId: text("entity_id").notNull(),
     agentId: uuid("agent_id").references(() => agents.id),
-    // Deliberately NOT a foreign key (see migration 0197). An audit row must be able
+    // Deliberately NOT a foreign key (see migration 0198). An audit row must be able
     // to name a run that has since been cleaned up; constraining it broke writes from
     // agent tokens whose pinned run had expired, and blocked run retention besides.
     runId: uuid("run_id"),
