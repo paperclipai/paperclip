@@ -5651,6 +5651,138 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     }
   });
 
+  // PLA-3727 gate 2, second half: attaching a descriptor at demotion time only covers rows
+  // that entered `blocked` *through* a recovery demotion. The invariant is enforced on the
+  // PATCH transition only, so two other entry points still produce unreachable rows — an
+  // issue created directly in `blocked`, and an issue whose last blocker later resolves.
+  // `issue_blockers_resolved` is a one-shot, idempotency-deduped wake, so once that single
+  // wake is consumed without the assignee moving the issue off `blocked`, nothing fires
+  // again. Observed dwell on live data before this pass existed: 12 days.
+  it("repairs a blocked issue whose last blocker already resolved", async () => {
+    const { companyId, agentId, runId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      runErrorCode: "budget_blocked",
+      runError: "Budget exceeded; refusing to dispatch.",
+    });
+
+    const decayedIssueId = randomUUID();
+    const resolvedBlockerId = randomUUID();
+    await db.insert(issues).values([
+      {
+        id: resolvedBlockerId,
+        companyId,
+        title: "Blocker that already finished",
+        description: "",
+        status: "done",
+        priority: "medium",
+        assigneeAgentId: agentId,
+      },
+      {
+        id: decayedIssueId,
+        companyId,
+        title: "Dependent left behind when its blocker completed",
+        description: "",
+        status: "blocked",
+        priority: "medium",
+        assigneeAgentId: agentId,
+      },
+    ]);
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: resolvedBlockerId,
+      relatedIssueId: decayedIssueId,
+      type: "blocks",
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    expect(result.unreachableBlockedRepaired).toBe(1);
+    expect(result.issueIds).toContain(decayedIssueId);
+
+    const repaired = await db.select().from(issues).where(eq(issues.id, decayedIssueId))
+      .then((rows) => rows[0] ?? null);
+    // `todo` is the honest state: nothing is gating the work any more, and unlike
+    // `blocked` it is a status the wake path can reach.
+    expect(repaired?.status).toBe("todo");
+
+    const followupRuns = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    for (const row of followupRuns) {
+      if (row.id !== runId) {
+        await waitForRunToSettle(heartbeat, row.id);
+      }
+    }
+  });
+
+  it("leaves a blocked issue alone when it still carries a legal justification", async () => {
+    const { companyId, agentId, runId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      runErrorCode: "budget_blocked",
+      runError: "Budget exceeded; refusing to dispatch.",
+    });
+
+    // Justified by a live blocker edge.
+    const liveBlockerId = randomUUID();
+    const blockedByLiveEdgeId = randomUUID();
+    // Justified by an unblock descriptor naming who can clear it.
+    const descriptorBlockedId = randomUUID();
+    await db.insert(issues).values([
+      {
+        id: liveBlockerId,
+        companyId,
+        title: "Still open blocker",
+        description: "",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: agentId,
+      },
+      {
+        id: blockedByLiveEdgeId,
+        companyId,
+        title: "Legitimately blocked on open work",
+        description: "",
+        status: "blocked",
+        priority: "medium",
+        assigneeAgentId: agentId,
+      },
+      {
+        id: descriptorBlockedId,
+        companyId,
+        title: "Legitimately blocked on a named human step",
+        description: "",
+        status: "blocked",
+        priority: "medium",
+        assigneeAgentId: agentId,
+        unblockDescriptor: { owner: "board", action: "Provision the missing credential." },
+      },
+    ]);
+    await db.insert(issueRelations).values({
+      companyId,
+      issueId: liveBlockerId,
+      relatedIssueId: blockedByLiveEdgeId,
+      type: "blocks",
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    expect(result.unreachableBlockedRepaired).toBe(0);
+    const rows = await db.select().from(issues)
+      .where(inArray(issues.id, [blockedByLiveEdgeId, descriptorBlockedId]));
+    for (const row of rows) {
+      expect(row.status).toBe("blocked");
+    }
+
+    const followupRuns = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    for (const row of followupRuns) {
+      if (row.id !== runId) {
+        await waitForRunToSettle(heartbeat, row.id);
+      }
+    }
+  });
+
   it("leaves the productive-but-stranded continuation path unchanged under the new classifier", async () => {
     const { agentId, issueId, runId } = await seedStrandedIssueFixture({
       status: "in_progress",

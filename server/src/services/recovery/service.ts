@@ -3631,7 +3631,91 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       readNonEmptyString(monitor.externalRef) === latestRun.id;
   }
 
+  /**
+   * The invariant "entering blocked requires unresolved blockers, a pending
+   * interaction/approval, or unblockDescriptor" is enforced only on the *transition*
+   * into `blocked`. Two entry points therefore still produce unreachable rows even once
+   * every recovery demotion attaches a descriptor:
+   *
+   *  - creation — an issue can be created directly in `blocked`, which is not a
+   *    transition, so the check never runs;
+   *  - decay — a row that entered `blocked` legally loses its justification later, when
+   *    its last blocker reaches done/cancelled. `issue_blockers_resolved` is a one-shot
+   *    wake whose idempotency key stays claimed at status `completed`, so if that single
+   *    wake is consumed without the assignee moving the issue off `blocked`, no second
+   *    wake is ever enqueued for the same (dependent, blocker) pair.
+   *
+   * `reconcileStrandedAssignedIssues` cannot see either shape — it selects only
+   * todo/in_progress/in_review — so the invariant has to be re-applied continuously
+   * rather than only at write time. `todo` is the honest repair: nothing is actually
+   * gating the issue any more, and `todo` is a status the wake path can reach.
+   */
+  async function reconcileUnreachableBlockedIssues(opts?: { issueCreatedAtGte?: Date | null }) {
+    const candidates = await db
+      .select()
+      .from(issues)
+      .where(
+        and(
+          eq(issues.status, "blocked"),
+          isNull(issues.hiddenAt),
+          isNull(issues.assigneeUserId),
+          sql`${issues.assigneeAgentId} is not null`,
+          opts?.issueCreatedAtGte ? gte(issues.createdAt, opts.issueCreatedAtGte) : undefined,
+        ),
+      );
+
+    const now = new Date();
+    const repairedIssueIds: string[] = [];
+
+    for (const issue of candidates) {
+      // Any one of these is a legal justification for staying `blocked`.
+      if (issue.unblockDescriptor) continue;
+      if (issue.monitorNextCheckAt && issue.monitorNextCheckAt.getTime() > now.getTime()) continue;
+      if ((await existingUnresolvedBlockerIssueIds(issue.companyId, issue.id)).length > 0) continue;
+      if (await hasPendingBlockedJustification(issue.companyId, issue.id)) continue;
+      // A run already in flight will write its own disposition; don't race it.
+      if (await hasActiveExecutionPath(issue.companyId, issue.id)) continue;
+      if (await isAutomaticRecoverySuppressedByPauseHold(db, issue.companyId, issue.id, treeControlSvc)) continue;
+
+      const updated = await issuesSvc.update(issue.id, { status: "todo" });
+      if (!updated) continue;
+      repairedIssueIds.push(issue.id);
+
+      await issuesSvc.addComment(
+        issue.id,
+        "Paperclip moved this issue from `blocked` to `todo`. It was `blocked` with no unresolved " +
+          "blocker, no pending interaction or approval, no unblock descriptor and no scheduled " +
+          "monitor — a shape no wake path can reach, so it would never have been picked up again. " +
+          "If something really is gating this work, re-block it with a first-class blocker or an " +
+          "unblock descriptor naming who can clear it.",
+        {},
+      );
+
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: "system",
+        actorId: "system",
+        agentId: null,
+        runId: null,
+        action: "issue.updated",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          identifier: issue.identifier,
+          status: "todo",
+          previousStatus: "blocked",
+          source: "recovery.reconcile_unreachable_blocked",
+          blockedTransitionAt: issue.blockedTransitionAt?.toISOString() ?? null,
+        },
+      });
+    }
+
+    return { repaired: repairedIssueIds.length, issueIds: repairedIssueIds };
+  }
+
   async function reconcileStrandedAssignedIssues(opts?: { issueCreatedAtGte?: Date | null }) {
+    const unreachableBlocked = await reconcileUnreachableBlockedIssues(opts);
+
     const candidates = await db
       .select()
       .from(issues)
@@ -3660,8 +3744,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       waitingOnReviewResolved: 0,
       providerQuotaMonitored: 0,
       recentProgressExempted: 0,
+      unreachableBlockedRepaired: unreachableBlocked.repaired,
       skipped: 0,
-      issueIds: [] as string[],
+      issueIds: [...unreachableBlocked.issueIds] as string[],
     };
 
     for (const issue of candidates) {
