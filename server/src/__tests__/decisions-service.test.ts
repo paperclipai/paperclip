@@ -1,4 +1,7 @@
 import { randomUUID } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import {
@@ -185,8 +188,9 @@ describePg("decisionService", () => {
   });
 
   it("expires a decision atomically instead of executing after its deadline", async () => {
-    const created = await createCommentDecision("lenient", { expiresAt: new Date(Date.now() + 5) });
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    const created = await createCommentDecision("lenient");
+    await db.update(decisions).set({ expiresAt: new Date(Date.now() - 1) })
+      .where(eq(decisions.id, created.id));
     await expect(service().decide({ id: created.id, optionId: "yes", decidedByUserId, userActor: boardActor() }))
       .rejects.toThrow("decision_expired");
     expect((await service().get(created.id))?.status).toBe("expired");
@@ -278,13 +282,38 @@ describePg("decisionService", () => {
     expect(result.executions[0]?.result).toMatchObject({ originReason: "deny_missing_membership" });
   });
 
-  it("refuses execution when the decision signing secret is unavailable", async () => {
+  it("fails closed when the configured signing secret is removed after proposal", async () => {
     const created = await createCommentDecision();
+    const originalHome = process.env.PAPERCLIP_HOME;
+    const tempHome = mkdtempSync(path.join(tmpdir(), "paperclip-decision-rotate-"));
+    process.env.PAPERCLIP_HOME = tempHome;
     delete process.env.PAPERCLIP_DECISION_SIGNING_SECRET;
     process.env.PAPERCLIP_AGENT_JWT_SECRET = "agent-jwt-secret-must-not-sign-decisions";
-    await expect(service().decide({ id: created.id, optionId: "yes", decidedByUserId, userActor: boardActor() }))
-      .rejects.toThrow("PAPERCLIP_DECISION_SIGNING_SECRET is required");
-    expect(await db.select().from(issueComments).where(eq(issueComments.issueId, targetIssueId))).toHaveLength(0);
+    try {
+      await expect(service().decide({ id: created.id, optionId: "yes", decidedByUserId, userActor: boardActor() }))
+        .rejects.toThrow("Decision signature verification failed");
+      expect(await db.select().from(issueComments).where(eq(issueComments.issueId, targetIssueId))).toHaveLength(0);
+    } finally {
+      if (originalHome === undefined) delete process.env.PAPERCLIP_HOME;
+      else process.env.PAPERCLIP_HOME = originalHome;
+      rmSync(tempHome, { recursive: true, force: true });
+    }
+  });
+
+  it("signs and verifies with an auto-generated key when no secret is configured", async () => {
+    const originalHome = process.env.PAPERCLIP_HOME;
+    const tempHome = mkdtempSync(path.join(tmpdir(), "paperclip-decision-generated-"));
+    process.env.PAPERCLIP_HOME = tempHome;
+    delete process.env.PAPERCLIP_DECISION_SIGNING_SECRET;
+    try {
+      const created = await createCommentDecision();
+      const result = await service().decide({ id: created.id, optionId: "yes", decidedByUserId, userActor: boardActor() });
+      expect(result.executionStatus).toBe("succeeded");
+    } finally {
+      if (originalHome === undefined) delete process.env.PAPERCLIP_HOME;
+      else process.env.PAPERCLIP_HOME = originalHome;
+      rmSync(tempHome, { recursive: true, force: true });
+    }
   });
 
   it("records a failed effect and continues independent later effects", async () => {

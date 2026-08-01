@@ -72,7 +72,7 @@ import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-
 import { maybePersistWorktreeRuntimePorts } from "./worktree-config.js";
 import { initTelemetry, getTelemetryClient } from "./telemetry.js";
 import { conflict } from "./errors.js";
-import { validateDecisionSigningSecret } from "./services/decision-signing.js";
+import { ensureDecisionSigningSecret } from "./services/decision-signing.js";
 import { createDecisionWakeOriginAgent } from "./services/decision-wakeup.js";
 import { coordinateHeartbeatSchedulerShutdown } from "./shutdown.js";
 import { systemdNotify } from "./services/systemd-notify.js";
@@ -123,7 +123,7 @@ export async function startServer(): Promise<StartedServer> {
   // Tracing must be active (or have failed and logged) before the first DB
   // connection or the HTTP server exists — see instrumentation.ts.
   await instrumentationReady;
-  validateDecisionSigningSecret();
+  ensureDecisionSigningSecret();
   let config = loadConfig();
   initTelemetry({ enabled: config.telemetryEnabled });
   if (process.env.PAPERCLIP_SECRETS_PROVIDER === undefined) {

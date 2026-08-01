@@ -106,6 +106,7 @@ import {
 } from "../services/heartbeat.ts";
 import {
   readHotRestartIntent,
+  resolveLegacyHotRestartIntentPath,
   resolveHotRestartReportPath,
   writeHotRestartIntent,
 } from "../services/hot-restart.ts";
@@ -1486,6 +1487,153 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
           },
         ],
       });
+    });
+  });
+
+  it("adopts an old-server legacy snapshot written for a new instance-scoped marker", async () => {
+    const child = spawnAliveProcess();
+    childProcesses.add(child);
+    expect(child.pid).toBeGreaterThan(0);
+    const { companyId, agentId, issueId, runId } = await seedRunFixture({
+      agentStatus: "running",
+      processPid: child.pid ?? null,
+      processGroupId: null,
+    });
+
+    await withTempPaperclipHome(async (home) => {
+      await writeHotRestartIntent({
+        previousServerPid: process.pid,
+        previousServerVersion: "old-home-root-version",
+        requestedAt: new Date("2026-08-01T00:05:00.000Z"),
+        requestedByRunId: "deploy-run",
+        preflightActiveRunIds: [runId],
+      });
+
+      // Simulate the previous binary: it reads and rewrites only the legacy
+      // home-root marker, and its parser drops fields introduced by the new binary.
+      const legacyPath = resolveLegacyHotRestartIntentPath(home);
+      const legacyIntent = JSON.parse(await fs.readFile(legacyPath, "utf8")) as Record<string, unknown>;
+      delete legacyIntent.preflightActiveRunIds;
+      legacyIntent.shutdownSnapshot = {
+        capturedAt: "2026-08-01T00:06:00.000Z",
+        signal: "SIGTERM",
+        activeRuns: [{
+          runId,
+          companyId,
+          agentId,
+          adapterType: "codex_local",
+          status: "running",
+          processPid: child.pid,
+          processGroupId: null,
+          issueId,
+        }],
+      };
+      await fs.writeFile(legacyPath, `${JSON.stringify(legacyIntent, null, 2)}\n`, "utf8");
+
+      const mergedIntent = await readHotRestartIntent();
+      expect(mergedIntent).toMatchObject({
+        preflightActiveRunIds: [runId],
+        shutdownSnapshot: {
+          activeRuns: [expect.objectContaining({ runId, processPid: child.pid })],
+        },
+      });
+
+      const heartbeat = heartbeatService(db);
+      const adoption = await heartbeat.reconcileHotRestartAdoption(
+        new Date("2026-08-01T00:07:00.000Z"),
+      );
+      expect(adoption).toMatchObject({
+        mode: "reported",
+        adoptedRunIds: [runId],
+        finalizedWhileDownRunIds: [],
+        lostRunIds: [],
+      });
+    });
+  });
+
+  it("reports preflight live runs as lost when the shutdown snapshot is missing", async () => {
+    const { runId } = await seedRunFixture({
+      agentStatus: "running",
+      processPid: process.pid,
+      processGroupId: null,
+    });
+
+    await withTempPaperclipHome(async (home) => {
+      await writeHotRestartIntent({
+        previousServerPid: process.pid,
+        previousServerVersion: "missing-snapshot-version",
+        requestedAt: new Date("2026-08-01T01:05:00.000Z"),
+        preflightActiveRunIds: [runId],
+      });
+
+      const heartbeat = heartbeatService(db);
+      const adoption = await heartbeat.reconcileHotRestartAdoption(
+        new Date("2026-08-01T01:07:00.000Z"),
+      );
+      expect(adoption).toMatchObject({
+        mode: "reported",
+        adoptedRunIds: [],
+        finalizedWhileDownRunIds: [],
+        lostRunIds: [runId],
+      });
+
+      const report = JSON.parse(
+        await fs.readFile(resolveHotRestartReportPath(home), "utf8"),
+      ) as Record<string, unknown>;
+      expect(report).toMatchObject({
+        adoptedRunIds: [],
+        finalizedWhileDownRunIds: [],
+        lostRunIds: [runId],
+      });
+    });
+  });
+
+  it("reports a preflight run that finished before snapshot capture as finalized", async () => {
+    const { runId } = await seedRunFixture({
+      agentStatus: "running",
+      processPid: process.pid,
+      processGroupId: null,
+    });
+
+    await withTempPaperclipHome(async (home) => {
+      await writeHotRestartIntent({
+        previousServerPid: process.pid,
+        previousServerVersion: "preflight-race-version",
+        requestedAt: new Date("2026-08-01T01:08:00.000Z"),
+        preflightActiveRunIds: [runId],
+      });
+      await db
+        .update(heartbeatRuns)
+        .set({
+          status: "succeeded",
+          finishedAt: new Date("2026-08-01T01:08:01.000Z"),
+          updatedAt: new Date("2026-08-01T01:08:01.000Z"),
+        })
+        .where(eq(heartbeatRuns.id, runId));
+
+      const heartbeat = heartbeatService(db);
+      const adoption = await heartbeat.reconcileHotRestartAdoption(
+        new Date("2026-08-01T01:09:00.000Z"),
+      );
+      expect(adoption).toMatchObject({
+        mode: "reported",
+        adoptedRunIds: [],
+        finalizedWhileDownRunIds: [runId],
+        lostRunIds: [],
+      });
+
+      const report = JSON.parse(
+        await fs.readFile(resolveHotRestartReportPath(home), "utf8"),
+      ) as { runs?: Array<Record<string, unknown>> };
+      expect(report.runs).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            runId,
+            classification: "finalized_while_down",
+            reason: "run_status_succeeded",
+          }),
+        ]),
+      );
     });
   });
 

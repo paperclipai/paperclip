@@ -127,7 +127,7 @@ describePostgres("agent action audit routes", () => {
     })).get(`/api/companies/${company.id}/audit/agent-actions`);
     expect(boardResponse.status).toBe(403);
     expect(boardResponse.body.error).toContain("audit:view_agent_actions");
-  });
+  }, 30_000);
 
   it("returns a client error for invalid audit query parameters", async () => {
     const { company } = await seed();

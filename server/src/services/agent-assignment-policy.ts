@@ -1,6 +1,13 @@
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, isNull, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { agents, issueWatchdogs, routines, statusCards } from "@paperclipai/db";
+import {
+  agents,
+  issueWatchdogs,
+  pipelines,
+  pipelineStages,
+  routines,
+  statusCards,
+} from "@paperclipai/db";
 import { unprocessable } from "../errors.js";
 
 export const BOARD_UI_CREATE_ONLY_ASSIGNMENT_MODE = "board_ui_create_only" as const;
@@ -74,6 +81,39 @@ export function isAgentEligibleForAutomaticAssignment(
   return readAgentBoardUiCreateOnlyAssignmentPolicy(agent) === null;
 }
 
+export type AssignmentPolicyAgentRow = typeof agents.$inferSelect;
+
+/**
+ * Every transaction that can either enable the reserved-agent policy or add
+ * an automatic reference must take this row lock before it validates and
+ * writes. The shared agent row is the serialization point for both sides of
+ * that invariant.
+ */
+export async function lockAgentAssignmentPolicyRow(
+  db: Db,
+  companyId: string,
+  agentId: string,
+): Promise<AssignmentPolicyAgentRow | null> {
+  return db
+    .select()
+    .from(agents)
+    .where(and(eq(agents.id, agentId), eq(agents.companyId, companyId)))
+    .for("update")
+    .then((rows) => rows[0] ?? null);
+}
+
+export function assertLockedAgentEligibleForAutomaticAssignment(
+  agent: { id: string; permissions?: unknown } | null | undefined,
+  automationKind: "routine" | "task_watchdog" | "status_card",
+) {
+  if (!agent || !readAgentBoardUiCreateOnlyAssignmentPolicy(agent)) return;
+  throw unprocessable("This reserved agent cannot be configured as an automatic work owner.", {
+    code: RESERVED_AGENT_AUTOMATIC_CONFIGURATION_CODE,
+    agentId: agent.id,
+    automationKind,
+  });
+}
+
 export async function assertAgentEligibleForAutomaticAssignment(
   db: Db,
   companyId: string,
@@ -81,17 +121,12 @@ export async function assertAgentEligibleForAutomaticAssignment(
   automationKind: "routine" | "task_watchdog" | "status_card",
 ) {
   const agent = await db
-    .select({ companyId: agents.companyId, permissions: agents.permissions })
+    .select({ id: agents.id, companyId: agents.companyId, permissions: agents.permissions })
     .from(agents)
     .where(eq(agents.id, agentId))
     .then((rows) => rows[0] ?? null);
   if (!agent || agent.companyId !== companyId) return;
-  if (!readAgentBoardUiCreateOnlyAssignmentPolicy(agent)) return;
-  throw unprocessable("This reserved agent cannot be configured as an automatic work owner.", {
-    code: RESERVED_AGENT_AUTOMATIC_CONFIGURATION_CODE,
-    agentId,
-    automationKind,
-  });
+  assertLockedAgentEligibleForAutomaticAssignment(agent, automationKind);
 }
 
 export async function assertBoardUiCreateOnlyActivationHasNoAutomaticReferences(
@@ -103,7 +138,7 @@ export async function assertBoardUiCreateOnlyActivationHasNoAutomaticReferences(
   },
 ) {
   if (!readAgentBoardUiCreateOnlyAssignmentPolicy({ permissions: input.nextPermissions })) return;
-  const [routine, watchdog, statusCard] = await Promise.all([
+  const [routine, pipelineRoutine, watchdog, statusCard] = await Promise.all([
     db
       .select({ id: routines.id })
       .from(routines)
@@ -111,6 +146,23 @@ export async function assertBoardUiCreateOnlyActivationHasNoAutomaticReferences(
         eq(routines.companyId, input.companyId),
         eq(routines.assigneeAgentId, input.agentId),
         eq(routines.status, "active"),
+      ))
+      .limit(1)
+      .then((rows) => rows[0] ?? null),
+    db
+      .select({ id: routines.id })
+      .from(routines)
+      .innerJoin(
+        pipelineStages,
+        sql`${pipelineStages.config}->'onEnter'->>'routineId' = ${routines.id}::text`,
+      )
+      .innerJoin(pipelines, eq(pipelines.id, pipelineStages.pipelineId))
+      .where(and(
+        eq(routines.companyId, input.companyId),
+        eq(pipelines.companyId, input.companyId),
+        eq(routines.assigneeAgentId, input.agentId),
+        eq(routines.status, "paused"),
+        sql`${pipelineStages.config}->'onEnter'->>'type' = 'run_routine'`,
       ))
       .limit(1)
       .then((rows) => rows[0] ?? null),
@@ -137,6 +189,7 @@ export async function assertBoardUiCreateOnlyActivationHasNoAutomaticReferences(
   ]);
   const references = [
     ...(routine ? [{ kind: "routine", id: routine.id }] : []),
+    ...(pipelineRoutine ? [{ kind: "routine", id: pipelineRoutine.id }] : []),
     ...(watchdog ? [{ kind: "task_watchdog", id: watchdog.id }] : []),
     ...(statusCard ? [{ kind: "status_card", id: statusCard.id }] : []),
   ];

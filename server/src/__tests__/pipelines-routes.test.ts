@@ -130,6 +130,17 @@ describeEmbeddedPostgres("pipeline routes", () => {
     return agent!;
   }
 
+  function reservedPermissions() {
+    return {
+      authorizationPolicy: {
+        assignmentPolicy: {
+          mode: "board_ui_create_only",
+          allowedUserIds: [boardActor.userId],
+        },
+      },
+    };
+  }
+
   async function seedProjectWorkspaceFixture(companyId: string, name = "Automation") {
     const projectId = randomUUID();
     const projectWorkspaceId = randomUUID();
@@ -596,6 +607,71 @@ describeEmbeddedPostgres("pipeline routes", () => {
       executionWorkspacePreference: "reuse_existing",
       executionWorkspaceSettings: { mode: "isolated_workspace" },
     });
+  });
+
+  it("rejects generated pipeline automation assigned to a reserved board-only agent", async () => {
+    const company = await seedCompany();
+    const http = request(app(boardActor));
+    const agent = await seedAutomationAgent(company.id);
+    await db.update(agents).set({ permissions: reservedPermissions() }).where(eq(agents.id, agent.id));
+
+    const pipeline = await http
+      .post(`/api/companies/${company.id}/pipelines`)
+      .send({ key: "reserved-generated", name: "Reserved generated automation" })
+      .expect(201);
+    const stageId = pipeline.body.stages.find((stage: { key: string }) => stage.key === "in_progress").id as string;
+
+    const denied = await http
+      .patch(`/api/pipelines/${pipeline.body.id}/stages/${stageId}`)
+      .send({
+        config: {
+          automation: {
+            assigneeAgentId: agent.id,
+            instructionsBody: "This must stay manual-only.",
+          },
+        },
+      })
+      .expect(422);
+
+    expect(denied.body.details).toMatchObject({
+      code: "reserved_agent_automatic_configuration",
+      agentId: agent.id,
+      automationKind: "routine",
+    });
+    await expect(db.select().from(routines).where(eq(routines.assigneeAgentId, agent.id)))
+      .resolves.toHaveLength(0);
+  });
+
+  it("rejects attaching a reserved agent's paused routine to pipeline automation", async () => {
+    const company = await seedCompany();
+    const http = request(app(boardActor));
+    const agent = await seedAutomationAgent(company.id);
+    const [routine] = await db.insert(routines).values({
+      companyId: company.id,
+      title: "Paused manual routine",
+      status: "paused",
+      assigneeAgentId: agent.id,
+    }).returning();
+    await db.update(agents).set({ permissions: reservedPermissions() }).where(eq(agents.id, agent.id));
+
+    const pipeline = await http
+      .post(`/api/companies/${company.id}/pipelines`)
+      .send({ key: "reserved-existing", name: "Reserved existing automation" })
+      .expect(201);
+    const stageId = pipeline.body.stages.find((stage: { key: string }) => stage.key === "in_progress").id as string;
+
+    const denied = await http
+      .patch(`/api/pipelines/${pipeline.body.id}/stages/${stageId}`)
+      .send({ config: { onEnter: { type: "run_routine", routineId: routine!.id } } })
+      .expect(422);
+
+    expect(denied.body.details).toMatchObject({
+      code: "reserved_agent_automatic_configuration",
+      agentId: agent.id,
+      automationKind: "routine",
+    });
+    await expect(db.select().from(routines).where(eq(routines.id, routine!.id)))
+      .resolves.toMatchObject([{ status: "paused", originKind: "manual", originId: null }]);
   });
 
   it("fails automation execution when the selected project workspace belongs to a different project", async () => {

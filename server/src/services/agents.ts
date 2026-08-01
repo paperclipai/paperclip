@@ -34,7 +34,10 @@ import {
   builtInAgentMarkersEqual,
   readBuiltInAgentMarker,
 } from "./built-in-agent-metadata.js";
-import { assertBoardUiCreateOnlyActivationHasNoAutomaticReferences } from "./agent-assignment-policy.js";
+import {
+  assertBoardUiCreateOnlyActivationHasNoAutomaticReferences,
+  lockAgentAssignmentPolicyRow,
+} from "./agent-assignment-policy.js";
 
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
@@ -528,10 +531,47 @@ export function agentService(db: Db) {
     }
 
     const shouldRecordRevision = Boolean(options?.recordRevision) && hasConfigPatchFields(normalizedPatch);
-    const beforeConfig = shouldRecordRevision ? buildConfigSnapshot(existing) : null;
 
     return db.transaction(async (tx) => {
       const txDb = tx as unknown as Db;
+      const locked = await lockAgentAssignmentPolicyRow(txDb, existing.companyId, id);
+      if (!locked) return null;
+
+      if (locked.status === "terminated" && data.status && data.status !== "terminated") {
+        throw conflict("Terminated agents cannot be resumed");
+      }
+      if (
+        locked.status === "pending_approval" &&
+        data.status &&
+        data.status !== "pending_approval" &&
+        data.status !== "terminated"
+      ) {
+        throw conflict("Pending approval agents cannot be activated directly");
+      }
+      if (locked.status === "pending_approval" && !options?.allowPendingApprovalConfigUpdate) {
+        const changedFields = changedPendingApprovalConfigFields(locked, data);
+        if (changedFields.length > 0) {
+          throw conflict("Pending approval agent configuration cannot be changed before board approval", {
+            code: "pending_approval_agent_config_frozen",
+            agentId: id,
+            fields: changedFields,
+          });
+        }
+      }
+
+      if (data.permissions !== undefined) {
+        normalizedPatch.permissions = normalizeAgentPermissions(
+          data.permissions,
+          (data.role ?? locked.role) as string,
+        );
+        await assertBoardUiCreateOnlyActivationHasNoAutomaticReferences(txDb, {
+          companyId: locked.companyId,
+          agentId: locked.id,
+          nextPermissions: normalizedPatch.permissions,
+        });
+      }
+
+      const beforeConfig = shouldRecordRevision ? buildConfigSnapshot(locked) : null;
       const updated = await tx
         .update(agents)
         .set({ ...normalizedPatch, updatedAt: new Date() })
@@ -771,9 +811,16 @@ export function agentService(db: Db) {
     },
 
     activatePendingApproval: async (id: string, approvedPayload?: Record<string, unknown> | null) => {
+      const existingCompany = await db
+        .select({ companyId: agents.companyId })
+        .from(agents)
+        .where(eq(agents.id, id))
+        .then((rows) => rows[0] ?? null);
+      if (!existingCompany) return null;
+
       const activatedAgent = await db.transaction(async (tx) => {
         const txDb = tx as unknown as Db;
-        const existing = await agentService(txDb).getById(id);
+        const existing = await lockAgentAssignmentPolicyRow(txDb, existingCompany.companyId, id);
         if (!existing || existing.status !== "pending_approval") return null;
         const approvedPatch = approvedPayload ? configPatchFromApprovalPayload(approvedPayload) : {};
         let patch = { ...approvedPatch } as Partial<typeof agents.$inferInsert>;
@@ -793,6 +840,11 @@ export function agentService(db: Db) {
             (patch.role ?? existing.role) as string,
           );
         }
+        await assertBoardUiCreateOnlyActivationHasNoAutomaticReferences(txDb, {
+          companyId: existing.companyId,
+          agentId: existing.id,
+          nextPermissions: patch.permissions ?? existing.permissions,
+        });
         const updated = await tx
           .update(agents)
           .set({ ...patch, status: "idle", updatedAt: new Date() })
@@ -816,38 +868,48 @@ export function agentService(db: Db) {
       return existing ? { agent: existing, activated: false } : null;
     },
 
-    updatePermissions: async (id: string, permissions: Record<string, unknown> & { canCreateAgents: boolean }) => {
-      const existing = await getById(id);
-      if (!existing) return null;
-      if (existing.status === "pending_approval") {
-        throw conflict("Pending approval agent permissions cannot be changed before board approval", {
-          code: "pending_approval_agent_config_frozen",
-          agentId: id,
-          fields: ["permissions"],
-        });
-      }
-
-      const nextPermissions = normalizeAgentPermissions(
-        { ...existing.permissions, ...permissions },
-        existing.role,
-      );
-      await assertBoardUiCreateOnlyActivationHasNoAutomaticReferences(db, {
-        companyId: existing.companyId,
-        agentId: existing.id,
-        nextPermissions,
-      });
-
-      const updated = await db
-        .update(agents)
-        .set({
-          permissions: nextPermissions,
-          updatedAt: new Date(),
-        })
+    updatePermissions: async (id: string, permissions: Record<string, unknown>) => {
+      const existingCompany = await db
+        .select({ companyId: agents.companyId })
+        .from(agents)
         .where(eq(agents.id, id))
-        .returning()
         .then((rows) => rows[0] ?? null);
+      if (!existingCompany) return null;
 
-      return updated ? getById(updated.id) : null;
+      return db.transaction(async (tx) => {
+        const txDb = tx as unknown as Db;
+        const existing = await lockAgentAssignmentPolicyRow(txDb, existingCompany.companyId, id);
+        if (!existing) return null;
+        if (existing.status === "pending_approval") {
+          throw conflict("Pending approval agent permissions cannot be changed before board approval", {
+            code: "pending_approval_agent_config_frozen",
+            agentId: id,
+            fields: ["permissions"],
+          });
+        }
+
+        const nextPermissions = normalizeAgentPermissions(
+          { ...(existing.permissions ?? {}), ...permissions },
+          existing.role,
+        );
+        await assertBoardUiCreateOnlyActivationHasNoAutomaticReferences(txDb, {
+          companyId: existing.companyId,
+          agentId: existing.id,
+          nextPermissions,
+        });
+
+        const updated = await tx
+          .update(agents)
+          .set({
+            permissions: nextPermissions,
+            updatedAt: new Date(),
+          })
+          .where(eq(agents.id, id))
+          .returning()
+          .then((rows) => rows[0] ?? null);
+
+        return updated ? agentService(txDb).getById(updated.id) : null;
+      });
     },
 
     listConfigRevisions: async (id: string) =>

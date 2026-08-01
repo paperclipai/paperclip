@@ -268,6 +268,7 @@ import {
   touchHeartbeatRunRuntimeStatus,
 } from "./heartbeat-run-runtime-status.js";
 import {
+  findMissingHotRestartSnapshotRunIds,
   readHotRestartIntent,
   removeHotRestartIntent,
   shouldHonorHotRestartIntentForProcess,
@@ -3415,6 +3416,21 @@ export function resolveLedgerCostStatus(input: {
 }): CostStatus {
   const hasTokenUsage = input.inputTokens > 0 || input.cachedInputTokens > 0 || input.outputTokens > 0;
   return input.costUsd == null && hasTokenUsage ? "unpriced" : "reported";
+}
+
+export function resolveCacheAdjustedCostUsd(input: {
+  costUsd?: number | null;
+  cacheAdjustedCostUsd?: number | null;
+}) {
+  const explicit = input.cacheAdjustedCostUsd;
+  if (typeof explicit === "number" && Number.isFinite(explicit) && explicit >= 0) {
+    return explicit;
+  }
+  const reported = input.costUsd;
+  if (typeof reported === "number" && Number.isFinite(reported) && reported >= 0) {
+    return reported;
+  }
+  return null;
 }
 
 export async function resolveLedgerScopeForRun(
@@ -9767,12 +9783,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     if (!intent.shutdownSnapshot) {
       logger.warn(
-        { previousServerPid: intent.previousServerPid },
+        {
+          previousServerPid: intent.previousServerPid,
+          preflightActiveRunIds: intent.preflightActiveRunIds,
+        },
         "hot-restart intent present but shutdown snapshot is missing; no runs can be adopted",
       );
     }
     const candidates = intent.shutdownSnapshot?.activeRuns ?? [];
-    const currentRows = candidates.length > 0
+    const missingSnapshotRunIds = findMissingHotRestartSnapshotRunIds(intent);
+    const reconciliationRunIds = [
+      ...new Set([...candidates.map((run) => run.runId), ...missingSnapshotRunIds]),
+    ];
+    const currentRows = reconciliationRunIds.length > 0
       ? await db
         .select({
           run: heartbeatRuns,
@@ -9780,7 +9803,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         })
         .from(heartbeatRuns)
         .innerJoin(agents, eq(heartbeatRuns.agentId, agents.id))
-        .where(inArray(heartbeatRuns.id, candidates.map((run) => run.runId)))
+        .where(inArray(heartbeatRuns.id, reconciliationRunIds))
       : [];
     const currentByRunId = new Map(currentRows.map((row) => [row.run.id, row]));
 
@@ -9803,6 +9826,28 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       else if (classification === "lost") lostRunIds.push(candidate.runId);
       else skippedRunIds.push(candidate.runId);
     };
+
+    for (const runId of missingSnapshotRunIds) {
+      const current = currentByRunId.get(runId);
+      if (!current) {
+        finalizedWhileDownRunIds.push(runId);
+        continue;
+      }
+
+      const candidate = toHotRestartIntentRun(current);
+      if (current.run.status !== "running") {
+        classify(candidate, "finalized_while_down", `run_status_${current.run.status}`);
+      } else {
+        classify(candidate, "lost", "missing_shutdown_snapshot");
+      }
+    }
+
+    if (lostRunIds.length > 0) {
+      logger.error(
+        { previousServerPid: intent.previousServerPid, lostRunIds },
+        "hot-restart shutdown snapshot omitted live preflight runs; reporting them as lost",
+      );
+    }
 
     for (const candidate of candidates) {
       const current = currentByRunId.get(candidate.runId);
@@ -9914,7 +9959,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       skippedRunIds,
       runs: reportRuns,
     });
-    await removeHotRestartIntent();
+    await removeHotRestartIntent(undefined, intent);
 
     logger.info(
       {
@@ -9923,6 +9968,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         adoptedRunIds,
         finalizedWhileDownRunIds,
         lostRunIds,
+        missingSnapshotRunIds,
         skippedRunIds,
       },
       "hot-restart adoption report written",
@@ -12637,10 +12683,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const outputTokens = usage?.outputTokens ?? 0;
     const cachedInputTokens = usage?.cachedInputTokens ?? 0;
     const billingType = normalizeLedgerBillingType(result.billingType);
-    const additionalCostCents = normalizeBilledCostCents(result.costUsd, billingType);
+    const billedCostUsd = resolveCacheAdjustedCostUsd(result);
+    const additionalCostCents = normalizeBilledCostCents(billedCostUsd, billingType);
     const hasTokenUsage = inputTokens > 0 || outputTokens > 0 || cachedInputTokens > 0;
     const costStatus = resolveLedgerCostStatus({
-      costUsd: result.costUsd,
+      costUsd: billedCostUsd,
       inputTokens,
       cachedInputTokens,
       outputTokens,
@@ -14938,8 +14985,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               ? "timed_out"
               : "failed";
 
+      const cacheAdjustedCostUsd = resolveCacheAdjustedCostUsd(adapterResult);
       const usageJson =
-        normalizedUsage || adapterResult.costUsd != null
+        normalizedUsage || adapterResult.costUsd != null || cacheAdjustedCostUsd != null
           ? ({
               ...(normalizedUsage ?? {}),
               ...(rawUsage ? {
@@ -14965,8 +15013,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               biller: resolveLedgerBiller(adapterResult),
               model: readNonEmptyString(adapterResult.model) ?? "unknown",
               ...(adapterResult.costUsd != null ? { costUsd: adapterResult.costUsd } : {}),
+              ...(cacheAdjustedCostUsd != null ? { cacheAdjustedCostUsd } : {}),
               costStatus: resolveLedgerCostStatus({
-                costUsd: adapterResult.costUsd,
+                costUsd: cacheAdjustedCostUsd,
                 inputTokens: normalizedUsage?.inputTokens ?? 0,
                 cachedInputTokens: normalizedUsage?.cachedInputTokens ?? 0,
                 outputTokens: normalizedUsage?.outputTokens ?? 0,

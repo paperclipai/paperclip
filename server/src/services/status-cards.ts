@@ -40,7 +40,12 @@ import {
   type StatusCardDeltaChange,
   type StatusCardFingerprint,
 } from "./status-card-update-engine.js";
-import { assertAgentEligibleForAutomaticAssignment } from "./agent-assignment-policy.js";
+import {
+  assertAgentEligibleForAutomaticAssignment,
+  assertLockedAgentEligibleForAutomaticAssignment,
+  lockAgentAssignmentPolicyRow,
+  type AssignmentPolicyAgentRow,
+} from "./agent-assignment-policy.js";
 
 type StatusCardActor = { agentId: string | null; userId: string | null };
 type StatusCardWriter = { agentId: string | null; runId: string | null };
@@ -211,20 +216,6 @@ export function statusCardService(
   }
 
   async function create(companyId: string, input: CreateStatusCard, actor: StatusCardActor) {
-    if (input.agentId) {
-      const summarizer = await db
-        .select({ id: agents.id })
-        .from(agents)
-        .where(and(eq(agents.id, input.agentId), eq(agents.companyId, companyId)))
-        .then((rows) => rows[0] ?? null);
-      if (!summarizer) throw unprocessable("Summarizer agent must belong to this company");
-      await assertAgentEligibleForAutomaticAssignment(
-        db,
-        companyId,
-        input.agentId,
-        "status_card",
-      );
-    }
     const values = {
       companyId,
       createdByAgentId: actor.agentId,
@@ -236,27 +227,33 @@ export function statusCardService(
       refreshPolicy: input.refreshPolicy,
       state: "compiling" as const,
     };
-    const agentId = actor.agentId;
-    if (!agentId) {
-      return db.insert(statusCards).values(values).returning().then((rows) => rows[0]!);
-    }
-
     return db.transaction(async (tx) => {
-      const author = await tx
-        .select({ id: agents.id })
-        .from(agents)
-        .where(and(eq(agents.id, agentId), eq(agents.companyId, companyId)))
-        .for("update")
-        .then((rows) => rows[0] ?? null);
-      if (!author) throw forbidden("Agent cannot author status cards for this company");
+      const txDb = tx as unknown as Db;
+      const lockedAgents = new Map<string, AssignmentPolicyAgentRow>();
+      const agentIds = [...new Set([actor.agentId, input.agentId].filter((id): id is string => Boolean(id)))].sort();
+      for (const agentId of agentIds) {
+        const lockedAgent = await lockAgentAssignmentPolicyRow(txDb, companyId, agentId);
+        if (lockedAgent) lockedAgents.set(agentId, lockedAgent);
+      }
 
-      const authoredCount = await tx
-        .select({ count: sql<number>`count(*)::int` })
-        .from(statusCards)
-        .where(and(eq(statusCards.companyId, companyId), eq(statusCards.createdByAgentId, agentId)))
-        .then((rows) => rows[0]?.count ?? 0);
-      if (authoredCount >= STATUS_CARD_AGENT_MAX_CARDS) {
-        throw unprocessable(`Agents can author at most ${STATUS_CARD_AGENT_MAX_CARDS} status cards`);
+      if (input.agentId) {
+        const summarizer = lockedAgents.get(input.agentId) ?? null;
+        if (!summarizer) throw unprocessable("Summarizer agent must belong to this company");
+        assertLockedAgentEligibleForAutomaticAssignment(summarizer, "status_card");
+      }
+
+      if (actor.agentId) {
+        const author = lockedAgents.get(actor.agentId) ?? null;
+        if (!author) throw forbidden("Agent cannot author status cards for this company");
+
+        const authoredCount = await tx
+          .select({ count: sql<number>`count(*)::int` })
+          .from(statusCards)
+          .where(and(eq(statusCards.companyId, companyId), eq(statusCards.createdByAgentId, actor.agentId)))
+          .then((rows) => rows[0]?.count ?? 0);
+        if (authoredCount >= STATUS_CARD_AGENT_MAX_CARDS) {
+          throw unprocessable(`Agents can author at most ${STATUS_CARD_AGENT_MAX_CARDS} status cards`);
+        }
       }
 
       return tx.insert(statusCards).values(values).returning().then((rows) => rows[0]!);
@@ -264,73 +261,80 @@ export function statusCardService(
   }
 
   async function update(card: StatusCardRow, input: PatchStatusCard, actor: StatusCardActor) {
-    const now = new Date();
-    if (input.agentId) {
-      const summarizer = await db
-        .select({ id: agents.id })
-        .from(agents)
-        .where(and(eq(agents.id, input.agentId), eq(agents.companyId, card.companyId)))
+    const result = await db.transaction(async (tx) => {
+      const txDb = tx as unknown as Db;
+      const locked = await tx
+        .select()
+        .from(statusCards)
+        .where(eq(statusCards.id, card.id))
+        .for("update")
         .then((rows) => rows[0] ?? null);
-      if (!summarizer) throw unprocessable("Summarizer agent must belong to this company");
-      await assertAgentEligibleForAutomaticAssignment(
-        db,
-        card.companyId,
-        input.agentId,
-        "status_card",
-      );
-    } else if (input.archived === false && card.agentId) {
-      await assertAgentEligibleForAutomaticAssignment(
-        db,
-        card.companyId,
-        card.agentId,
-        "status_card",
-      );
-    }
-    const agentChanged = input.agentId !== undefined && input.agentId !== card.agentId;
-    const archiveChanged = input.archived !== undefined && input.archived !== Boolean(card.archivedAt);
-    const values: Partial<typeof statusCards.$inferInsert> = {
-      updatedAt: now,
-      ...(input.title !== undefined ? { title: input.title } : {}),
-      ...(input.titlePinned !== undefined ? { titlePinned: input.titlePinned } : {}),
-      ...(input.interestPrompt !== undefined
-        ? { interestPrompt: input.interestPrompt, state: "compiling", failureReason: null }
-        : {}),
-      ...(input.agentId !== undefined ? { agentId: input.agentId } : {}),
-      // A new summarizer or a new card prompt (which doubles as the summary
-      // instructions) invalidates the incremental chain, so the next update
-      // rebuilds from scratch.
-      ...(input.interestPrompt !== undefined || agentChanged ? { lastUpdateRunKind: null } : {}),
-      ...(input.refreshPolicy !== undefined
-        ? {
-            refreshPolicy: input.refreshPolicy,
-            nextEvalAt: card.archivedAt ? null : nextStatusCardEvaluationAt(input.refreshPolicy, now),
-          }
-        : {}),
-      ...(archiveChanged && input.archived
-        ? { archivedAt: now, archivedByAgentId: actor.agentId, archivedByUserId: actor.userId, nextEvalAt: null }
-        : {}),
-      ...(archiveChanged && !input.archived
-        ? {
-            archivedAt: null,
-            archivedByAgentId: null,
-            archivedByUserId: null,
-            lastChangeAt: now,
-            lastUpdateRunKind: null,
-            nextEvalAt: card.queries.length > 0 ? now : null,
-          }
-        : {}),
-    };
-    const next = await db.update(statusCards).set({
-      ...values,
-      ...(archiveChanged && input.archived ? { generatingIssueId: null, pendingChangeHash: null } : {}),
-    }).where(eq(statusCards.id, card.id)).returning().then((rows) => rows[0]!);
-    if (archiveChanged && input.archived && card.generatingIssueId) {
-      const generationIssue = await db.select().from(issues).where(eq(issues.id, card.generatingIssueId)).then((rows) => rows[0] ?? null);
+      if (!locked) throw notFound("Status card not found");
+
+      const checkedAgentId = input.agentId || (input.archived === false ? locked.agentId : null);
+      if (checkedAgentId) {
+        const summarizer = await lockAgentAssignmentPolicyRow(
+          txDb,
+          locked.companyId,
+          checkedAgentId,
+        );
+        if (!summarizer) throw unprocessable("Summarizer agent must belong to this company");
+        assertLockedAgentEligibleForAutomaticAssignment(summarizer, "status_card");
+      }
+
+      const now = new Date();
+      const agentChanged = input.agentId !== undefined && input.agentId !== locked.agentId;
+      const archiveChanged = input.archived !== undefined && input.archived !== Boolean(locked.archivedAt);
+      const values: Partial<typeof statusCards.$inferInsert> = {
+        updatedAt: now,
+        ...(input.title !== undefined ? { title: input.title } : {}),
+        ...(input.titlePinned !== undefined ? { titlePinned: input.titlePinned } : {}),
+        ...(input.interestPrompt !== undefined
+          ? { interestPrompt: input.interestPrompt, state: "compiling", failureReason: null }
+          : {}),
+        ...(input.agentId !== undefined ? { agentId: input.agentId } : {}),
+        // A new summarizer or a new card prompt (which doubles as the summary
+        // instructions) invalidates the incremental chain, so the next update
+        // rebuilds from scratch.
+        ...(input.interestPrompt !== undefined || agentChanged ? { lastUpdateRunKind: null } : {}),
+        ...(input.refreshPolicy !== undefined
+          ? {
+              refreshPolicy: input.refreshPolicy,
+              nextEvalAt: locked.archivedAt ? null : nextStatusCardEvaluationAt(input.refreshPolicy, now),
+            }
+          : {}),
+        ...(archiveChanged && input.archived
+          ? { archivedAt: now, archivedByAgentId: actor.agentId, archivedByUserId: actor.userId, nextEvalAt: null }
+          : {}),
+        ...(archiveChanged && !input.archived
+          ? {
+              archivedAt: null,
+              archivedByAgentId: null,
+              archivedByUserId: null,
+              lastChangeAt: now,
+              lastUpdateRunKind: null,
+              nextEvalAt: locked.queries.length > 0 ? now : null,
+            }
+          : {}),
+      };
+      const next = await tx.update(statusCards).set({
+        ...values,
+        ...(archiveChanged && input.archived ? { generatingIssueId: null, pendingChangeHash: null } : {}),
+      }).where(eq(statusCards.id, locked.id)).returning().then((rows) => rows[0]!);
+      return {
+        next,
+        generationIssueIdToCancel:
+          archiveChanged && input.archived ? locked.generatingIssueId : null,
+      };
+    });
+
+    if (result.generationIssueIdToCancel) {
+      const generationIssue = await db.select().from(issues).where(eq(issues.id, result.generationIssueIdToCancel)).then((rows) => rows[0] ?? null);
       if (generationIssue && !TERMINAL_ISSUE_STATUSES.has(generationIssue.status)) {
         await issuesSvc.update(generationIssue.id, { status: "cancelled" });
       }
     }
-    return next;
+    return result.next;
   }
 
   async function remove(id: string) {

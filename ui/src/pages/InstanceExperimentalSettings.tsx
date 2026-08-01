@@ -363,6 +363,7 @@ export function InstanceExperimentalSettings() {
   // Streamlined left navigation is now the standard sidebar (PAP-12472); the
   // experimental opt-out was retired, so it no longer surfaces a toggle here.
   const enableConferenceRoomChat = experimentalQuery.data?.enableConferenceRoomChat === true;
+  const enableTaskChatRedesign = experimentalQuery.data?.enableTaskChatRedesign === true;
   const enableIssuePlanDecompositions =
     experimentalQuery.data?.enableIssuePlanDecompositions === true;
   const enableExperimentalFileViewer =
@@ -673,6 +674,18 @@ export function InstanceExperimentalSettings() {
         disabled={toggleMutation.isPending}
         managed={managedKeys.enableIssuePlanDecompositions}
         ariaLabel="Toggle task plan decomposition panel experimental setting"
+      />
+
+      <ExperimentalToggleCard
+        title="Chat-Style Tasks"
+        experimental
+        description="Reimagines the task detail page as a live conversation with your agents: chat bubbles for people and agents, streaming activity — thinking, tool calls, diffs — that folds into a one-line summary when a turn finishes, inline plan/question/permission cards, a three-mode composer (Agent · Plan · Ask), and a resizable Properties · Plan · Artifacts pane."
+        footnote="Turning this off instantly restores the classic task page. No task data is affected."
+        checked={enableTaskChatRedesign}
+        onCheckedChange={(checked) => toggleMutation.mutate({ enableTaskChatRedesign: checked })}
+        disabled={toggleMutation.isPending}
+        managed={managedKeys.enableTaskChatRedesign}
+        ariaLabel="Toggle chat-style tasks experimental setting"
       />
 
       <ExperimentalToggleCard

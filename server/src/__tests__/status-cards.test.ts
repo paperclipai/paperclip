@@ -169,6 +169,47 @@ describeEmbeddedPostgres("status card routes", () => {
     expect(await db.select().from(issues)).toHaveLength(0);
   });
 
+  it("rejects restoring an archived card after its summarizer becomes board-ui-only", async () => {
+    const company = await seedCompany();
+    await enableStatusCards();
+    const summarizer = await seedSummarizer(company.id);
+    const app = createApp(db, localBoardActor());
+    const created = await request(app)
+      .post(`/api/companies/${company.id}/status-cards`)
+      .send({
+        interestPrompt: "Archived launch health",
+        agentId: summarizer.id,
+      });
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+
+    const archived = await request(app)
+      .patch(`/api/status-cards/${created.body.id}`)
+      .send({ archived: true });
+    expect(archived.status, JSON.stringify(archived.body)).toBe(200);
+    expect(archived.body.archivedAt).toEqual(expect.any(String));
+
+    await db.update(agents).set({
+      permissions: {
+        authorizationPolicy: {
+          assignmentPolicy: {
+            mode: "board_ui_create_only",
+            allowedUserIds: ["board-user"],
+          },
+        },
+      },
+    }).where(eq(agents.id, summarizer.id));
+
+    const restored = await request(app)
+      .patch(`/api/status-cards/${created.body.id}`)
+      .send({ archived: false });
+    expect(restored.status, JSON.stringify(restored.body)).toBe(422);
+    expect(restored.body).toMatchObject({
+      details: { code: "reserved_agent_automatic_configuration" },
+    });
+    await expect(db.select().from(statusCards).where(eq(statusCards.id, created.body.id)))
+      .resolves.toMatchObject([{ archivedAt: expect.any(Date) }]);
+  });
+
   it("rolls back a new card when compile wakeup fails", async () => {
     const company = await seedCompany();
     await enableStatusCards();

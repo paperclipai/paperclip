@@ -258,7 +258,7 @@ function sortByCreated<T extends { createdAt: Date | string; id: string }>(items
   });
 }
 
-function latestSameRunHandoffTimestamp(args: {
+export function latestSameRunHandoffTimestamp(args: {
   interactionCreatedAtMs: number;
   sourceRunId: string;
   comments: readonly IssueChatComment[];

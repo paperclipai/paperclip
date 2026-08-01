@@ -3,6 +3,8 @@ import { Button } from "@/components/ui/button";
 import { useTranslation } from "@/i18n";
 import { Layout } from "./components/Layout";
 import { ConferenceRoomChatGate } from "./components/ConferenceRoomChatGate";
+import { TaskChatRedesignGate } from "./components/TaskChatRedesignGate";
+import { TaskChatLab } from "./pages/TaskChatLab";
 import { PipelinesExperimentalGate } from "./components/PipelinesExperimentalGate";
 import { CasesExperimentalGate } from "./components/CasesExperimentalGate";
 import { StatusCardsExperimentalGate } from "./components/StatusCardsExperimentalGate";
@@ -269,6 +271,14 @@ function boardRoutes() {
         <Route path="board-chat" element={<BoardChat />} />
         <Route path="artifacts" element={<Artifacts />} />
       </Route>
+      {/* Task Chat Redesign dev harness — dev builds only, and additionally
+          gated by enableTaskChatRedesign (redirects to /dashboard when the
+          flag is off). */}
+      {import.meta.env.DEV ? (
+        <Route element={<TaskChatRedesignGate />}>
+          <Route path="dev/task-chat-lab" element={<TaskChatLab />} />
+        </Route>
+      ) : null}
       <Route path="decisions" element={<WhatNeedsMe />} />
       <Route path="decisions/training" element={<TrainingLibrary />} />
       <Route path="decisions/training/:id" element={<TrainingInspector />} />

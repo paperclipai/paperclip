@@ -1,4 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import path from "node:path";
 
 const ORIGINAL_PAPERCLIP_API_URL = process.env.PAPERCLIP_API_URL;
 const ORIGINAL_PAPERCLIP_RUNTIME_API_URL = process.env.PAPERCLIP_RUNTIME_API_URL;
@@ -298,9 +301,92 @@ describe("startServer feedback export wiring", () => {
     process.env.BETTER_AUTH_SECRET = "test-secret";
   });
 
-  it("refuses startup when the decision signing secret is unavailable", async () => {
+  it("starts without PAPERCLIP_DECISION_SIGNING_SECRET by generating a persisted key", async () => {
+    const originalHome = process.env.PAPERCLIP_HOME;
+    const originalInstanceId = process.env.PAPERCLIP_INSTANCE_ID;
+    const tempHome = mkdtempSync(path.join(tmpdir(), "paperclip-decision-key-"));
+    process.env.PAPERCLIP_HOME = tempHome;
+    process.env.PAPERCLIP_INSTANCE_ID = "default";
     delete process.env.PAPERCLIP_DECISION_SIGNING_SECRET;
-    await expect(startServer()).rejects.toThrow("PAPERCLIP_DECISION_SIGNING_SECRET is required");
+    try {
+      const started = await startServer();
+      expect(started.server).toBe(fakeServer);
+      const keyPath = path.join(tempHome, "instances", "default", "secrets", "decision-signing.key");
+      expect(readFileSync(keyPath, "utf8").trim().length).toBeGreaterThanOrEqual(32);
+      if (process.platform !== "win32") {
+        expect(statSync(path.dirname(keyPath)).mode & 0o777).toBe(0o700);
+        expect(statSync(keyPath).mode & 0o777).toBe(0o600);
+      }
+    } finally {
+      if (originalHome === undefined) delete process.env.PAPERCLIP_HOME;
+      else process.env.PAPERCLIP_HOME = originalHome;
+      if (originalInstanceId === undefined) delete process.env.PAPERCLIP_INSTANCE_ID;
+      else process.env.PAPERCLIP_INSTANCE_ID = originalInstanceId;
+      rmSync(tempHome, { recursive: true, force: true });
+    }
+  });
+
+  it("repairs permissive permissions on an existing generated decision signing key", async () => {
+    const originalHome = process.env.PAPERCLIP_HOME;
+    const originalInstanceId = process.env.PAPERCLIP_INSTANCE_ID;
+    const tempHome = mkdtempSync(path.join(tmpdir(), "paperclip-decision-key-mode-"));
+    const keyPath = path.join(tempHome, "instances", "default", "secrets", "decision-signing.key");
+    const existingKey = Buffer.alloc(32, 7).toString("base64");
+    mkdirSync(path.dirname(keyPath), { recursive: true, mode: 0o777 });
+    chmodSync(path.dirname(keyPath), 0o777);
+    writeFileSync(keyPath, existingKey, { encoding: "utf8", mode: 0o644 });
+    chmodSync(keyPath, 0o644);
+    process.env.PAPERCLIP_HOME = tempHome;
+    process.env.PAPERCLIP_INSTANCE_ID = "default";
+    delete process.env.PAPERCLIP_DECISION_SIGNING_SECRET;
+    try {
+      const started = await startServer();
+      expect(started.server).toBe(fakeServer);
+      expect(readFileSync(keyPath, "utf8")).toBe(existingKey);
+      if (process.platform !== "win32") {
+        expect(statSync(path.dirname(keyPath)).mode & 0o777).toBe(0o700);
+        expect(statSync(keyPath).mode & 0o777).toBe(0o600);
+      }
+    } finally {
+      if (originalHome === undefined) delete process.env.PAPERCLIP_HOME;
+      else process.env.PAPERCLIP_HOME = originalHome;
+      if (originalInstanceId === undefined) delete process.env.PAPERCLIP_INSTANCE_ID;
+      else process.env.PAPERCLIP_INSTANCE_ID = originalInstanceId;
+      rmSync(tempHome, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses a symlink planted as the generated decision signing key", async () => {
+    if (process.platform === "win32") return;
+
+    const originalHome = process.env.PAPERCLIP_HOME;
+    const originalInstanceId = process.env.PAPERCLIP_INSTANCE_ID;
+    const tempHome = mkdtempSync(path.join(tmpdir(), "paperclip-decision-key-symlink-"));
+    const keyPath = path.join(tempHome, "instances", "default", "secrets", "decision-signing.key");
+    const plantedTarget = path.join(tempHome, "planted.key");
+    const plantedKey = Buffer.alloc(32, 9).toString("base64");
+    mkdirSync(path.dirname(keyPath), { recursive: true, mode: 0o777 });
+    chmodSync(path.dirname(keyPath), 0o777);
+    writeFileSync(plantedTarget, plantedKey, { encoding: "utf8", mode: 0o600 });
+    symlinkSync(plantedTarget, keyPath);
+    process.env.PAPERCLIP_HOME = tempHome;
+    process.env.PAPERCLIP_INSTANCE_ID = "default";
+    delete process.env.PAPERCLIP_DECISION_SIGNING_SECRET;
+    try {
+      await expect(startServer()).rejects.toThrow("must be a regular file");
+      expect(readFileSync(plantedTarget, "utf8")).toBe(plantedKey);
+    } finally {
+      if (originalHome === undefined) delete process.env.PAPERCLIP_HOME;
+      else process.env.PAPERCLIP_HOME = originalHome;
+      if (originalInstanceId === undefined) delete process.env.PAPERCLIP_INSTANCE_ID;
+      else process.env.PAPERCLIP_INSTANCE_ID = originalInstanceId;
+      rmSync(tempHome, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses startup when an explicit decision signing secret is too short", async () => {
+    process.env.PAPERCLIP_DECISION_SIGNING_SECRET = "too-short";
+    await expect(startServer()).rejects.toThrow("PAPERCLIP_DECISION_SIGNING_SECRET must be at least 32 characters");
     expect(loadConfigMock).not.toHaveBeenCalled();
   });
 

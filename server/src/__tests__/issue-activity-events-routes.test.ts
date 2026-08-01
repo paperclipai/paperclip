@@ -168,6 +168,7 @@ function issueUpdateWithReceipt(issue: ReturnType<typeof makeIssue>, patch: Reco
   const {
     actorAgentId: _actorAgentId,
     actorUserId: _actorUserId,
+    assignmentAdmission: _assignmentAdmission,
     blockedByIssueIds: _blockedByIssueIds,
     ...issuePatch
   } = patch;
