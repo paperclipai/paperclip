@@ -214,7 +214,10 @@ import {
   recoveryAssigneeAdapterOverrides,
   withRecoveryModelProfileHint,
 } from "./recovery/model-profile-hint.js";
-import { recoveryService } from "./recovery/service.js";
+import {
+  PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS,
+  recoveryService,
+} from "./recovery/service.js";
 import { productivityReviewService } from "./productivity-review.js";
 import { resolveRequiredSuccessfulRunHandoffOnValidPath } from "./successful-run-handoff-state.js";
 import { taskWatchdogService } from "./task-watchdogs.js";
@@ -10489,7 +10492,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       agent.adapterType === "codex_local" && transientRecovery?.errorFamily === "transient_upstream"
         ? resolveCodexTransientFallbackMode(nextAttempt)
         : null;
-    const transientRetryNotBefore = transientRecovery?.retryNotBefore ?? null;
+    const transientRetryNotBefore = transientRecovery?.retryNotBefore ??
+      (transientRecovery?.errorFamily === "provider_quota"
+        ? new Date(now.getTime() + PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS)
+        : null);
     const contextSnapshot = parseObject(run.contextSnapshot);
     const issueId = readNonEmptyString(contextSnapshot.issueId);
 
@@ -11607,18 +11613,33 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return Number(count ?? 0);
   }
 
-  async function claimQueuedRun(run: typeof heartbeatRuns.$inferSelect, companyAgents?: AgentOrgRow[]) {
+  async function claimQueuedRun(
+    run: typeof heartbeatRuns.$inferSelect,
+    companyAgents?: AgentOrgRow[],
+    options: { agentStartLockHeld?: boolean } = {},
+  ) {
     if (run.status !== "queued") return run;
+
+    // startNextQueuedRunForAgent() calls this while holding the per-agent start
+    // lock. Defer queue continuation so cancelRunInternal() cannot reacquire
+    // that same lock and stall for its 30-second stale timeout.
+    const cancelBeforeClaim = (reason: string) =>
+      cancelRunInternal(run.id, reason, {
+        deferQueueDispatch: options.agentStartLockHeld === true,
+      });
+
     const agent = await getAgent(run.agentId);
     if (!agent) {
-      await cancelRunInternal(run.id, "Cancelled because the agent no longer exists");
+      await cancelBeforeClaim("Cancelled because the agent no longer exists");
       return null;
     }
     const invokability = companyAgents
       ? evaluateAgentInvokability(toAgentOrgRow(agent), companyAgents)
       : await getAgentInvokability(agent);
     if (!invokability.invokable) {
-      await cancelRunInternal(run.id, `Cancelled because the agent is not invokable: ${invokability.reason}`);
+      await cancelBeforeClaim(
+        `Cancelled because the agent is not invokable: ${invokability.reason}`,
+      );
       return null;
     }
 
@@ -11628,7 +11649,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       projectId: readNonEmptyString(context.projectId),
     });
     if (budgetBlock) {
-      await cancelRunInternal(run.id, budgetBlock.reason);
+      await cancelBeforeClaim(budgetBlock.reason);
       return null;
     }
 
@@ -11654,7 +11675,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         contextSnapshot: context,
       });
       if (activePauseHold && !treeHoldInteractionWake) {
-        await cancelRunInternal(run.id, "Cancelled because issue is held by an active subtree pause hold");
+        await cancelBeforeClaim(
+          "Cancelled because issue is held by an active subtree pause hold",
+        );
         await logActivity(db, {
           companyId: run.companyId,
           actorType: "system",
@@ -12726,7 +12749,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const claimedRuns: Array<typeof heartbeatRuns.$inferSelect> = [];
       for (const queuedRun of prioritizedRuns) {
         if (claimedRuns.length >= availableSlots) break;
-        const claimed = await claimQueuedRun(queuedRun, companyAgents);
+        const claimed = await claimQueuedRun(queuedRun, companyAgents, { agentStartLockHeld: true });
         if (claimed) claimedRuns.push(claimed);
       }
       if (claimedRuns.length === 0) return [];
@@ -14958,6 +14981,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         error: runErrorMessage,
       });
 
+      let automaticRetryScheduled = false;
       const finalizedRun = persistedRun ?? (await getRun(run.id));
       if (finalizedRun) {
         await appendRunEvent(finalizedRun, seq++, {
@@ -15010,12 +15034,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         if (outcome === "failed" && isMaxTurnExhaustionRun(livenessRun)) {
           const policy = parseMaxTurnContinuationPolicy(agent);
           if (policy.enabled && policy.maxAttempts > 0) {
-            await scheduleBoundedRetryForRun(livenessRun, agent, {
+            const retry = await scheduleBoundedRetryForRun(livenessRun, agent, {
               retryReason: MAX_TURN_CONTINUATION_RETRY_REASON,
               wakeReason: MAX_TURN_CONTINUATION_WAKE_REASON,
               maxAttempts: policy.maxAttempts,
               delayMs: policy.delayMs,
             });
+            automaticRetryScheduled = retry.outcome === "scheduled";
           } else {
             await appendRunEvent(livenessRun, await nextRunEventSeq(livenessRun.id), {
               eventType: "lifecycle",
@@ -15029,7 +15054,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             });
           }
         } else if (outcome === "failed" && readTransientRecoveryContractFromRun(livenessRun)) {
-          await scheduleBoundedRetryForRun(livenessRun, agent);
+          const retry = await scheduleBoundedRetryForRun(livenessRun, agent);
+          automaticRetryScheduled = retry.outcome === "scheduled";
         }
         const issueCommentPolicyResult = await finalizeIssueCommentPolicy(livenessRun, agent);
         await releaseIssueExecutionAndPromote(livenessRun);
@@ -15108,7 +15134,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         {
           keepIdleOnFailure:
             outcome === "failed" &&
-            (finalizedRun ? readHeartbeatRunErrorFamily(finalizedRun) === "provider_quota" : runErrorCode === "provider_quota"),
+            automaticRetryScheduled,
           wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
         },
       );
@@ -15462,7 +15488,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
   async function releaseIssueExecutionAndPromote(
     run: typeof heartbeatRuns.$inferSelect,
-    options: { suppressImmediateRecovery?: boolean } = {},
+    options: {
+      suppressImmediateRecovery?: boolean;
+      suppressQueueDispatch?: boolean;
+    } = {},
   ) {
     const runContext = parseObject(run.contextSnapshot);
     const contextIssueId = readNonEmptyString(runContext.issueId);
@@ -16224,7 +16253,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       },
     });
 
-    await startNextQueuedRunForAgent(promotedRun.agentId);
+    if (!options.suppressQueueDispatch) {
+      await startNextQueuedRunForAgent(promotedRun.agentId);
+    }
   }
 
   async function enqueueWakeup(agentId: string, opts: WakeupOptions = {}) {
@@ -17578,6 +17609,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     resultJson?: Record<string, unknown>;
     eventMessage?: string;
     eventPayload?: Record<string, unknown>;
+    deferQueueDispatch?: boolean;
   };
 
   async function cancelRunInternal(runId: string, reason = "Cancelled by control plane", options: CancelRunOptions = {}) {
@@ -17636,13 +17668,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         message: options.eventMessage ?? "run cancelled",
         ...(options.eventPayload ? { payload: options.eventPayload } : {}),
       });
-      await releaseIssueExecutionAndPromote(cancelled);
+      await releaseIssueExecutionAndPromote(cancelled, {
+        suppressImmediateRecovery: options.deferQueueDispatch,
+        suppressQueueDispatch: options.deferQueueDispatch,
+      });
     }
 
-    await finalizeAgentStatus(run.agentId, "cancelled", undefined, {
-      wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
-    });
-    await startNextQueuedRunForAgent(run.agentId);
+    if (!options.deferQueueDispatch) {
+      await finalizeAgentStatus(run.agentId, "cancelled", undefined, {
+        wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
+      });
+      await startNextQueuedRunForAgent(run.agentId);
+    }
     return cancelled;
   }
 

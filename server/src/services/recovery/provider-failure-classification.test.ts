@@ -35,6 +35,21 @@ describe("classifyAdapterFailureForRecovery", () => {
     });
   });
 
+  it("recovers historical ACPX weekly-limit failures that lost their adapter family", () => {
+    const now = new Date("2026-08-01T12:00:00.000Z");
+    const classification = classifyAdapterFailureForRecovery({
+      errorCode: "acpx_turn_failed",
+      error: "Claude usage limit reached — weekly limit reached.",
+      resultJson: { stopReason: "weekly limit reached" },
+    }, now);
+
+    expect(classification).toEqual({
+      kind: "provider_quota",
+      retryAt: new Date(now.getTime() + PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS),
+      parsedResetTime: false,
+    });
+  });
+
   it("treats timezone-less provider reset clocks as UTC", () => {
     const now = new Date("2026-07-15T20:00:00.000Z");
     const classification = classifyAdapterFailureForRecovery({
@@ -73,6 +88,14 @@ describe("classifyAdapterFailureForRecovery", () => {
     expect(classifyAdapterFailureForRecovery({
       errorCode: "adapter_failed",
       error,
+      resultJson: null,
+    })).toEqual({ kind: "configuration_incomplete" });
+  });
+
+  it("treats ACPX login failures as configuration-incomplete circuit breakers", () => {
+    expect(classifyAdapterFailureForRecovery({
+      errorCode: "acpx_auth_required",
+      error: "Please log in. Run `claude login` first.",
       resultJson: null,
     })).toEqual({ kind: "configuration_incomplete" });
   });

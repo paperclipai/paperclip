@@ -32,6 +32,7 @@ import {
   MAX_TURN_CONTINUATION_WAKE_REASON,
   heartbeatService,
 } from "../services/heartbeat.ts";
+import { PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS } from "../services/recovery/service.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -293,6 +294,80 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
         { timeout: 5_000, interval: 50 },
       )
       .toEqual({ status: "idle", errorReason: null });
+  });
+
+  it("opens the error circuit when provider quota retry attempts are exhausted", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Exhausted Quota Test",
+      role: "engineer",
+      status: "idle",
+      adapterType: PROVIDER_QUOTA_TEST_ADAPTER,
+      adapterConfig: {},
+      runtimeConfig: {
+        heartbeat: {
+          wakeOnDemand: true,
+          maxConcurrentRuns: 1,
+        },
+      },
+      permissions: {},
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      invocationSource: "automation",
+      triggerDetail: "system",
+      status: "queued",
+      scheduledRetryAttempt: BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS.length,
+      scheduledRetryReason: "transient_failure",
+      contextSnapshot: {
+        wakeReason: "transient_failure_retry",
+      },
+    });
+
+    await heartbeat.resumeQueuedRuns();
+    const failedRun = await waitForRunToFinish(heartbeat, runId);
+
+    expect(failedRun).toMatchObject({
+      status: "failed",
+      errorCode: "provider_quota",
+      scheduledRetryAttempt: BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS.length,
+    });
+    const retryCount = await db
+      .select({ count: sql<number>`count(*)::int` })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.retryOfRunId, runId))
+      .then((rows) => rows[0]?.count ?? 0);
+    expect(retryCount).toBe(0);
+    await expect
+      .poll(
+        () =>
+          db
+            .select({ status: agents.status, errorReason: agents.errorReason })
+            .from(agents)
+            .where(eq(agents.id, agentId))
+            .then((rows) => rows[0] ?? null),
+        { timeout: 5_000, interval: 50 },
+      )
+      .toEqual({
+        status: "error",
+        errorReason: "You've hit your session limit - resets at 4pm (America/Chicago).",
+      });
   });
 
   async function seedMaxTurnFixture(input?: {
@@ -2085,6 +2160,32 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       retryReason: "transient_failure",
       scheduledRetryAttempt: BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS.length,
       maxAttempts: BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS.length,
+    });
+  });
+
+  it("uses a conservative quota cooldown when the provider omits reset metadata", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const now = new Date("2026-08-01T12:00:00.000Z");
+
+    await seedRetryFixture({
+      runId,
+      companyId,
+      agentId,
+      now,
+      errorCode: "provider_quota",
+      errorFamily: "provider_quota",
+    });
+
+    const scheduled = await heartbeat.scheduleBoundedRetry(runId, {
+      now,
+      random: () => 0.5,
+    });
+
+    expect(scheduled).toMatchObject({
+      outcome: "scheduled",
+      dueAt: new Date(now.getTime() + PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS),
     });
   });
 

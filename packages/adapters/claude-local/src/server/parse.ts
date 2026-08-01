@@ -17,6 +17,8 @@ const CLAUDE_MODEL_NOT_FOUND_RE =
   /(?:\b404\b[\s\S]{0,120})?(?:model[\s_-]*(?:not[\s_-]*found|does not exist|unknown|invalid)|unknown[\s_-]*model)/i;
 const CLAUDE_EXTRA_USAGE_RESET_RE =
   /(?:you(?:'|’)ve\s+hit\s+your\s+session\s+limit|session\s+limit\s+(?:reached|exceeded)|out\s+of\s+extra\s+usage|extra\s+usage|usage\s+limit\s+reached|usage\s+cap\s+reached|5[-\s]?hour\s+limit\s+reached|weekly\s+limit\s+reached|claude\s+usage\s+limit\s+reached)[\s\S]{0,120}?\bresets?\s+(?:at\s+)?([^\n()]+?)(?:\s*\(([^)]+)\))?(?:[.!]|\n|$)/i;
+const CLAUDE_EXTRA_USAGE_RELATIVE_RE =
+  /(?:try\s+again|resets?)\s+in\s+(\d+(?:\.\d+)?)\s*(minutes?|hours?|days?|weeks?)/i;
 
 /**
  * Sum the per-model usage ledger from a Claude CLI result event. The result
@@ -456,8 +458,24 @@ export function extractClaudeRetryNotBefore(
 ): Date | null {
   const haystack = buildClaudeTransientHaystack(input);
   const match = haystack.match(CLAUDE_EXTRA_USAGE_RESET_RE);
-  if (!match) return null;
-  return parseClaudeResetClockTime(match[1] ?? "", now, match[2]);
+  if (match) {
+    const clockReset = parseClaudeResetClockTime(match[1] ?? "", now, match[2]);
+    if (clockReset) return clockReset;
+  }
+
+  const relativeMatch = haystack.match(CLAUDE_EXTRA_USAGE_RELATIVE_RE);
+  if (!relativeMatch) return null;
+  const amount = Number.parseFloat(relativeMatch[1] ?? "");
+  if (!Number.isFinite(amount) || amount <= 0) return null;
+  const unit = (relativeMatch[2] ?? "").toLowerCase();
+  const unitMs = unit.startsWith("week")
+    ? 7 * 24 * 60 * 60 * 1000
+    : unit.startsWith("day")
+      ? 24 * 60 * 60 * 1000
+      : unit.startsWith("hour")
+        ? 60 * 60 * 1000
+        : 60 * 1000;
+  return new Date(now.getTime() + amount * unitMs);
 }
 
 export function isClaudeTransientUpstreamError(input: {

@@ -13,6 +13,7 @@ export type AgentOrgRow = Pick<
 export type AgentInvokabilityBlockReason =
   | "missing"
   | "paused"
+  | "error"
   | "terminated"
   | "pending_approval"
   | "unknown_status"
@@ -34,6 +35,7 @@ export type AgentInvokability =
 
 export const DIRECT_NON_INVOKABLE_STATUSES = new Set<AgentStatus>([
   "paused",
+  "error",
   "terminated",
   "pending_approval",
 ]);
@@ -49,6 +51,7 @@ function blocked(
 
 function statusBlockReason(status: AgentStatus): AgentInvokabilityBlockReason | null {
   if (status === "paused") return "paused";
+  if (status === "error") return "error";
   if (status === "terminated") return "terminated";
   if (status === "pending_approval") return "pending_approval";
   return null;
