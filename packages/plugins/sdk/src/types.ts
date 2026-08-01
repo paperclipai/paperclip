@@ -1356,6 +1356,14 @@ export type PluginIssueUpdatePatch = Partial<Pick<
   executionWorkspaceSettings?: Record<string, unknown> | null;
 };
 
+/**
+ * An issue as returned to plugins: the shared `Issue` shape plus the
+ * monotonically increasing `version` used by `updateConditional` CAS calls.
+ * All `ctx.issues` reads and writes return this shape so a plugin can thread
+ * `version` into `expectedVersion` without casts.
+ */
+export type PluginVersionedIssue = Issue & { version: number };
+
 export type PluginNamespaceFenceScalar = string | number | boolean | null;
 
 /** A host-qualified row fence inside the calling plugin's own database namespace. */
@@ -1369,7 +1377,7 @@ export interface PluginNamespaceFence {
 }
 
 export type PluginConditionalIssueUpdateResult =
-  | { applied: true; issue: Issue & { version: number } }
+  | { applied: true; issue: PluginVersionedIssue }
   | {
       applied: false;
       reason: "fence_mismatch" | "issue_version_mismatch" | "not_found";
@@ -1407,8 +1415,8 @@ export interface PluginIssuesClient {
     includePluginOperations?: boolean;
     limit?: number;
     offset?: number;
-  }): Promise<Issue[]>;
-  get(issueId: string, companyId: string): Promise<Issue | null>;
+  }): Promise<PluginVersionedIssue[]>;
+  get(issueId: string, companyId: string): Promise<PluginVersionedIssue | null>;
   create(input: {
     companyId: string;
     projectId?: string;
@@ -1434,13 +1442,13 @@ export interface PluginIssuesClient {
     executionWorkspacePreference?: string | null;
     executionWorkspaceSettings?: Record<string, unknown> | null;
     actor?: PluginIssueMutationActor;
-  }): Promise<Issue>;
+  }): Promise<PluginVersionedIssue>;
   update(
     issueId: string,
     patch: PluginIssueUpdatePatch,
     companyId: string,
     actor?: PluginIssueMutationActor,
-  ): Promise<Issue>;
+  ): Promise<PluginVersionedIssue>;
   updateConditional(input: {
     issueId: string;
     companyId: string;

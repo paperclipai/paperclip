@@ -8,12 +8,14 @@ import { fileURLToPath, pathToFileURL } from "node:url";
 const require = createRequire(import.meta.url);
 const ts = require("typescript");
 
-const SCAN_ROOTS = ["server/src/routes", "server/src/services"];
-const EXCLUDED_DIRECTORIES = new Set(["__tests__", "coverage", "dist", "node_modules"]);
+const SCAN_ROOTS = ["server/src", "cli/src", "packages/db/src"];
+const EXCLUDED_DIRECTORIES = new Set(["__tests__", "coverage", "dist", "migrations", "node_modules"]);
 const WRITE_OPERATIONS = new Set(["delete", "insert", "update"]);
 const TABLE_EXPORTS = new Set(["issues", "issueComments"]);
-const HELPER_PATH = "server/src/services/issue-versioning.ts";
-const HELPER_EXPORTS = new Set(["runIssueMutation", "versionedIssuePatch"]);
+const DB_MODULE_SPECIFIER = "@paperclipai/db";
+const DB_PACKAGE_ROOT = "packages/db/src";
+const HELPER_PATH = "packages/db/src/issue-versioning.ts";
+const HELPER_EXPORTS = new Set(["bumpIssueVersions", "runIssueMutation", "versionedIssuePatch"]);
 const IDENTITY_FIELDS = [
   "path",
   "line",
@@ -105,7 +107,22 @@ function collectAssignments(sourceFile) {
   return assigned;
 }
 
-function collectTableAliases(sourceFile) {
+function isDbModuleSpecifier(specifier, filePath) {
+  if (specifier === DB_MODULE_SPECIFIER) return true;
+  if (!specifier.startsWith(".")) return false;
+  const resolved = path.posix.normalize(
+    path.posix.join(path.posix.dirname(normalizePath(filePath)), specifier),
+  );
+  const withoutExtension = resolved.replace(/\.(?:js|ts)$/, "");
+  return (
+    withoutExtension === DB_PACKAGE_ROOT ||
+    withoutExtension === `${DB_PACKAGE_ROOT}/index` ||
+    withoutExtension === `${DB_PACKAGE_ROOT}/schema` ||
+    withoutExtension.startsWith(`${DB_PACKAGE_ROOT}/schema/`)
+  );
+}
+
+function collectTableAliases(sourceFile, filePath) {
   const aliases = new Map();
   const declarations = [];
 
@@ -113,7 +130,7 @@ function collectTableAliases(sourceFile) {
     if (
       ts.isImportDeclaration(node) &&
       ts.isStringLiteral(node.moduleSpecifier) &&
-      node.moduleSpecifier.text === "@paperclipai/db"
+      isDbModuleSpecifier(node.moduleSpecifier.text, filePath)
     ) {
       const bindings = node.importClause?.namedBindings;
       if (bindings && ts.isNamedImports(bindings)) {
@@ -311,10 +328,18 @@ export function collectIssueWritesFromSource(filePath, source) {
     true,
     ts.ScriptKind.TS,
   );
-  const aliases = collectTableAliases(sourceFile);
+  const aliases = collectTableAliases(sourceFile, filePath);
   const writes = [];
+  const bumpTransactionCallbacks = new Set();
 
   function visit(node) {
+    if (ts.isCallExpression(node)) {
+      const bumpCallee = unwrap(node.expression);
+      if (ts.isIdentifier(bumpCallee) && bumpCallee.text === "bumpIssueVersions") {
+        const transactionCallback = nearestTransactionCallback(node);
+        if (transactionCallback) bumpTransactionCallbacks.add(transactionCallback);
+      }
+    }
     if (ts.isCallExpression(node) && node.arguments.length > 0) {
       const operation = staticOperation(node.expression);
       const argument = unwrap(node.arguments[0]);
@@ -366,6 +391,14 @@ export function collectIssueWritesFromSource(filePath, source) {
     ts.forEachChild(node, visit);
   }
   visit(sourceFile);
+  for (const entry of writes) {
+    Object.defineProperty(entry, "hasBumpInSameTransaction", {
+      value:
+        entry.transactionCallback !== null &&
+        bumpTransactionCallbacks.has(entry.transactionCallback),
+      enumerable: false,
+    });
+  }
   return writes.sort(sortWrites);
 }
 
@@ -383,7 +416,8 @@ function listTypeScriptFiles(repoRoot) {
         } else if (
           entry.isFile() &&
           entry.name.endsWith(".ts") &&
-          !entry.name.endsWith(".d.ts")
+          !entry.name.endsWith(".d.ts") &&
+          !entry.name.endsWith(".test.ts")
         ) {
           files.push(absolute);
         }
@@ -425,7 +459,7 @@ function validateCatalog(catalog) {
     return errors;
   }
   const entries = Array.isArray(catalog.entries) ? catalog.entries : [];
-  if (entries.length !== 78) errors.push(`catalog entry count is ${entries.length}, expected 78`);
+  if (entries.length !== 83) errors.push(`catalog entry count is ${entries.length}, expected 83`);
   if (new Set(entries.map((entry) => entry.id)).size !== entries.length) {
     errors.push("catalog entry IDs are not unique");
   }
@@ -443,21 +477,24 @@ function exactCatalogEntry(entry, catalog) {
 }
 
 function stableCatalogEntry(entry, catalog) {
-  const preferredCommentExport =
-    entry.table === "issueComments" &&
-    (entry.insideRunIssueMutation || entry.functionName === "insertIssueComment")
-      ? "runIssueMutation"
-      : entry.table === "issueComments" && entry.transactionCallback
-        ? "versionedIssuePatch"
-        : null;
-  let matches = preferredCommentExport
+  const acceptableCommentExports =
+    entry.table === "issueComments"
+      ? [
+          ...(entry.insideRunIssueMutation || entry.functionName === "insertIssueComment"
+            ? ["runIssueMutation"]
+            : []),
+          ...(entry.hasBumpInSameTransaction ? ["bumpIssueVersions"] : []),
+          ...(entry.transactionCallback ? ["versionedIssuePatch"] : []),
+        ]
+      : [];
+  let matches = acceptableCommentExports.length > 0
     ? catalog.entries.filter(
         (candidate) =>
           validResolution(candidate) &&
           candidate.path === entry.path &&
           candidate.table === entry.table &&
           candidate.operation === entry.operation &&
-          candidate.resolution?.export === preferredCommentExport,
+          acceptableCommentExports.includes(candidate.resolution?.export),
       )
     : catalog.entries.filter(
         (candidate) =>
@@ -617,6 +654,10 @@ export function validateStrict(observed, catalog, { table = null, repoRoot = nul
           );
           if (!hasPairedParentUpdate) {
             errors.push(`comment write lacks same-transaction parent version: ${catalogEntry.id}`);
+          }
+        } else if (resolutionExport === "bumpIssueVersions") {
+          if (!entry.hasBumpInSameTransaction) {
+            errors.push(`comment write lacks same-transaction bumpIssueVersions: ${catalogEntry.id}`);
           }
         } else {
           errors.push(`unsupported comment write resolution: ${catalogEntry.id}`);

@@ -1,5 +1,5 @@
 import type { Db } from "@paperclipai/db";
-import { versionedIssuePatch } from "./issue-versioning.js";
+import { requireVersionedIssue, versionedIssuePatch } from "./issue-versioning.js";
 import {
   activityLog,
   agentTaskSessions as agentTaskSessionsTable,
@@ -1688,13 +1688,16 @@ export function buildHostServices(
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
         assertReadableOriginFilter(params.originKind);
-        return applyWindow((await issues.list(companyId, params as any)) as Issue[], params);
+        return applyWindow(
+          ((await issues.list(companyId, params as any)) as unknown[]).map(requireVersionedIssue),
+          params,
+        );
       },
       async get(params) {
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
         const issue = await issues.getById(params.issueId);
-        return (inCompany(issue, companyId) ? issue : null) as Issue | null;
+        return inCompany(issue, companyId) ? requireVersionedIssue(issue) : null;
       },
       async create(params) {
         const companyId = ensureCompanyId(params.companyId);
@@ -1705,7 +1708,7 @@ export function buildHostServices(
             ? pluginOperationIssueOriginKind(pluginKey)
             : originKind,
         );
-        const issue = (await issues.create(companyId, {
+        const createdIssue = (await issues.create(companyId, {
           ...(issueInput as any),
           originKind: normalizedOriginKind,
           originId: params.originId ?? null,
@@ -1714,7 +1717,8 @@ export function buildHostServices(
           createdByUserId: actorUserId ?? null,
           actorResponsibleUserId: actorUserId ?? null,
           trustExplicitResponsibleUserId: true,
-        })) as Issue;
+        }));
+        const issue = requireVersionedIssue(createdIssue);
         await logPluginActivity({
           companyId,
           action: "issue.created",
@@ -1746,11 +1750,12 @@ export function buildHostServices(
         if (patch.originKind !== undefined) {
           patch.originKind = normalizePluginOriginKind(patch.originKind);
         }
-        const updated = (await issues.update(params.issueId, {
+        const updatedIssue = (await issues.update(params.issueId, {
           ...(patch as any),
           actorAgentId,
           actorUserId,
-        })) as Issue;
+        }));
+        const updated = requireVersionedIssue(updatedIssue);
         await logPluginActivity({
           companyId,
           action: "issue.updated",

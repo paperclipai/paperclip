@@ -6,16 +6,16 @@
     "acceptedArtifactPath": "files/paperclip-g2-mutation-catalog-v1.json",
     "acceptedArtifactSha256": "D549C40F4E1592DF482F3FAB92591CD171DC821111B833EA9DF5E0E403C19F1B",
     "acceptedCatalogDigestSha256": "ECC3BD4D55D92AE56783D5E0B3651B57F4FA40BBFA5E18820493FA4637E726BB",
-    "acceptedEntryDigestSha256": "1CA2E841CF982F76387A5249014E52AA44F70924423F2AA78FFC6A9FD9CCA89C",
-    "observedDigestSha256": "2E09161DA9414B4D954D08B30312A6DA9809D235FD9B321D06EFB1C5292A4B28",
+    "acceptedEntryDigestSha256": "7547C6FA000D9D45334517934DC85F7E79C7C36691B2E85ADDD44F515CD725FA",
+    "observedDigestSha256": "9CB07109481E9CCD0C39F09B484BDF9F9687600F42CB897ADE53727254CE990E",
     "counts": {
-      "total": 78,
-      "issues": 64,
-      "issueComments": 14,
-      "insert": 10,
-      "update": 62,
+      "total": 83,
+      "issues": 67,
+      "issueComments": 16,
+      "insert": 14,
+      "update": 63,
       "delete": 6,
-      "files": 19,
+      "files": 21,
       "unresolvedContainingFunctions": 0
     }
   },
@@ -35,7 +35,7 @@
       "state": "versioned",
       "resolution": {
         "kind": "versioned_helper",
-        "path": "server/src/services/issue-versioning.ts",
+        "path": "packages/db/src/issue-versioning.ts",
         "export": "versionedIssuePatch"
       }
     },
@@ -54,7 +54,7 @@
       "state": "versioned",
       "resolution": {
         "kind": "versioned_helper",
-        "path": "server/src/services/issue-versioning.ts",
+        "path": "packages/db/src/issue-versioning.ts",
         "export": "versionedIssuePatch"
       }
     },
@@ -73,7 +73,7 @@
       "state": "versioned",
       "resolution": {
         "kind": "versioned_helper",
-        "path": "server/src/services/issue-versioning.ts",
+        "path": "packages/db/src/issue-versioning.ts",
         "export": "versionedIssuePatch"
       }
     },
@@ -111,7 +111,7 @@
       "state": "versioned",
       "resolution": {
         "kind": "versioned_helper",
-        "path": "server/src/services/issue-versioning.ts",
+        "path": "packages/db/src/issue-versioning.ts",
         "export": "versionedIssuePatch"
       }
     },
@@ -130,7 +130,7 @@
       "state": "versioned",
       "resolution": {
         "kind": "versioned_helper",
-        "path": "server/src/services/issue-versioning.ts",
+        "path": "packages/db/src/issue-versioning.ts",
         "export": "versionedIssuePatch"
       }
     },
@@ -149,7 +149,7 @@
       "state": "versioned",
       "resolution": {
         "kind": "versioned_helper",
-        "path": "server/src/services/issue-versioning.ts",
+        "path": "packages/db/src/issue-versioning.ts",
         "export": "versionedIssuePatch"
       }
     },
@@ -168,7 +168,7 @@
       "state": "versioned",
       "resolution": {
         "kind": "versioned_helper",
-        "path": "server/src/services/issue-versioning.ts",
+        "path": "packages/db/src/issue-versioning.ts",
         "export": "versionedIssuePatch"
       }
     },
@@ -225,7 +225,7 @@
       "state": "versioned",
       "resolution": {
         "kind": "versioned_helper",
-        "path": "server/src/services/issue-versioning.ts",
+        "path": "packages/db/src/issue-versioning.ts",
         "export": "versionedIssuePatch"
       }
     },
@@ -244,7 +244,7 @@
       "state": "versioned",
       "resolution": {
         "kind": "versioned_helper",
-        "path": "server/src/services/issue-versioning.ts",
+        "path": "packages/db/src/issue-versioning.ts",
         "export": "versionedIssuePatch"
       }
     },
@@ -263,7 +263,7 @@
       "state": "versioned",
       "resolution": {
         "kind": "versioned_helper",
-        "path": "server/src/services/issue-versioning.ts",
+        "path": "packages/db/src/issue-versioning.ts",
         "export": "versionedIssuePatch"
       }
     },
@@ -282,7 +282,7 @@
       "state": "versioned",
       "resolution": {
         "kind": "versioned_helper",
-        "path": "server/src/services/issue-versioning.ts",
+        "path": "packages/db/src/issue-versioning.ts",
         "export": "runIssueMutation"
       }
     },
@@ -301,7 +301,7 @@
       "state": "versioned",
       "resolution": {
         "kind": "versioned_helper",
-        "path": "server/src/services/issue-versioning.ts",
+        "path": "packages/db/src/issue-versioning.ts",
         "export": "versionedIssuePatch"
       }
     },
@@ -320,7 +320,7 @@
       "state": "versioned",
       "resolution": {
         "kind": "versioned_helper",
-        "path": "server/src/services/issue-versioning.ts",
+        "path": "packages/db/src/issue-versioning.ts",
         "export": "versionedIssuePatch"
       }
     },
@@ -339,7 +339,7 @@
       "state": "versioned",
       "resolution": {
         "kind": "versioned_helper",
-        "path": "server/src/services/issue-versioning.ts",
+        "path": "packages/db/src/issue-versioning.ts",
         "export": "versionedIssuePatch"
       }
     },
@@ -358,7 +358,7 @@
       "state": "versioned",
       "resolution": {
         "kind": "versioned_helper",
-        "path": "server/src/services/issue-versioning.ts",
+        "path": "packages/db/src/issue-versioning.ts",
         "export": "versionedIssuePatch"
       }
     },
@@ -377,7 +377,7 @@
       "state": "versioned",
       "resolution": {
         "kind": "versioned_helper",
-        "path": "server/src/services/issue-versioning.ts",
+        "path": "packages/db/src/issue-versioning.ts",
         "export": "versionedIssuePatch"
       }
     },
@@ -396,7 +396,7 @@
       "state": "versioned",
       "resolution": {
         "kind": "versioned_helper",
-        "path": "server/src/services/issue-versioning.ts",
+        "path": "packages/db/src/issue-versioning.ts",
         "export": "versionedIssuePatch"
       }
     },
@@ -415,7 +415,7 @@
       "state": "versioned",
       "resolution": {
         "kind": "versioned_helper",
-        "path": "server/src/services/issue-versioning.ts",
+        "path": "packages/db/src/issue-versioning.ts",
         "export": "versionedIssuePatch"
       }
     },
@@ -434,7 +434,7 @@
       "state": "versioned",
       "resolution": {
         "kind": "versioned_helper",
-        "path": "server/src/services/issue-versioning.ts",
+        "path": "packages/db/src/issue-versioning.ts",
         "export": "versionedIssuePatch"
       }
     },
@@ -453,7 +453,7 @@
       "state": "versioned",
       "resolution": {
         "kind": "versioned_helper",
-        "path": "server/src/services/issue-versioning.ts",
+        "path": "packages/db/src/issue-versioning.ts",
         "export": "versionedIssuePatch"
       }
     },
@@ -472,7 +472,7 @@
       "state": "versioned",
       "resolution": {
         "kind": "versioned_helper",
-        "path": "server/src/services/issue-versioning.ts",
+        "path": "packages/db/src/issue-versioning.ts",
         "export": "versionedIssuePatch"
       }
     },
@@ -491,7 +491,7 @@
       "state": "versioned",
       "resolution": {
         "kind": "versioned_helper",
-        "path": "server/src/services/issue-versioning.ts",
+        "path": "packages/db/src/issue-versioning.ts",
         "export": "versionedIssuePatch"
       }
     },
@@ -510,7 +510,7 @@
       "state": "versioned",
       "resolution": {
         "kind": "versioned_helper",
-        "path": "server/src/services/issue-versioning.ts",
+        "path": "packages/db/src/issue-versioning.ts",
         "export": "versionedIssuePatch"
       }
     },
@@ -529,7 +529,7 @@
       "state": "versioned",
       "resolution": {
         "kind": "versioned_helper",
-        "path": "server/src/services/issue-versioning.ts",
+        "path": "packages/db/src/issue-versioning.ts",
         "export": "versionedIssuePatch"
       }
     },
@@ -548,7 +548,7 @@
       "state": "versioned",
       "resolution": {
         "kind": "versioned_helper",
-        "path": "server/src/services/issue-versioning.ts",
+        "path": "packages/db/src/issue-versioning.ts",
         "export": "versionedIssuePatch"
       }
     },
@@ -567,7 +567,7 @@
       "state": "versioned",
       "resolution": {
         "kind": "versioned_helper",
-        "path": "server/src/services/issue-versioning.ts",
+        "path": "packages/db/src/issue-versioning.ts",
         "export": "versionedIssuePatch"
       }
     },
@@ -586,7 +586,7 @@
       "state": "versioned",
       "resolution": {
         "kind": "versioned_helper",
-        "path": "server/src/services/issue-versioning.ts",
+        "path": "packages/db/src/issue-versioning.ts",
         "export": "versionedIssuePatch"
       }
     },
@@ -605,7 +605,7 @@
       "state": "versioned",
       "resolution": {
         "kind": "versioned_helper",
-        "path": "server/src/services/issue-versioning.ts",
+        "path": "packages/db/src/issue-versioning.ts",
         "export": "versionedIssuePatch"
       }
     },
@@ -624,7 +624,7 @@
       "state": "versioned",
       "resolution": {
         "kind": "versioned_helper",
-        "path": "server/src/services/issue-versioning.ts",
+        "path": "packages/db/src/issue-versioning.ts",
         "export": "versionedIssuePatch"
       }
     },
@@ -643,7 +643,7 @@
       "state": "versioned",
       "resolution": {
         "kind": "versioned_helper",
-        "path": "server/src/services/issue-versioning.ts",
+        "path": "packages/db/src/issue-versioning.ts",
         "export": "versionedIssuePatch"
       }
     },
@@ -662,7 +662,7 @@
       "state": "versioned",
       "resolution": {
         "kind": "versioned_helper",
-        "path": "server/src/services/issue-versioning.ts",
+        "path": "packages/db/src/issue-versioning.ts",
         "export": "versionedIssuePatch"
       }
     },
@@ -681,7 +681,7 @@
       "state": "versioned",
       "resolution": {
         "kind": "versioned_helper",
-        "path": "server/src/services/issue-versioning.ts",
+        "path": "packages/db/src/issue-versioning.ts",
         "export": "versionedIssuePatch"
       }
     },
@@ -700,7 +700,7 @@
       "state": "versioned",
       "resolution": {
         "kind": "versioned_helper",
-        "path": "server/src/services/issue-versioning.ts",
+        "path": "packages/db/src/issue-versioning.ts",
         "export": "versionedIssuePatch"
       }
     },
@@ -719,7 +719,7 @@
       "state": "versioned",
       "resolution": {
         "kind": "versioned_helper",
-        "path": "server/src/services/issue-versioning.ts",
+        "path": "packages/db/src/issue-versioning.ts",
         "export": "versionedIssuePatch"
       }
     },
@@ -738,7 +738,7 @@
       "state": "versioned",
       "resolution": {
         "kind": "versioned_helper",
-        "path": "server/src/services/issue-versioning.ts",
+        "path": "packages/db/src/issue-versioning.ts",
         "export": "versionedIssuePatch"
       }
     },
@@ -757,7 +757,7 @@
       "state": "versioned",
       "resolution": {
         "kind": "versioned_helper",
-        "path": "server/src/services/issue-versioning.ts",
+        "path": "packages/db/src/issue-versioning.ts",
         "export": "versionedIssuePatch"
       }
     },
@@ -776,7 +776,7 @@
       "state": "versioned",
       "resolution": {
         "kind": "versioned_helper",
-        "path": "server/src/services/issue-versioning.ts",
+        "path": "packages/db/src/issue-versioning.ts",
         "export": "versionedIssuePatch"
       }
     },
@@ -795,7 +795,7 @@
       "state": "versioned",
       "resolution": {
         "kind": "versioned_helper",
-        "path": "server/src/services/issue-versioning.ts",
+        "path": "packages/db/src/issue-versioning.ts",
         "export": "versionedIssuePatch"
       }
     },
@@ -814,7 +814,7 @@
       "state": "versioned",
       "resolution": {
         "kind": "versioned_helper",
-        "path": "server/src/services/issue-versioning.ts",
+        "path": "packages/db/src/issue-versioning.ts",
         "export": "versionedIssuePatch"
       }
     },
@@ -833,7 +833,7 @@
       "state": "versioned",
       "resolution": {
         "kind": "versioned_helper",
-        "path": "server/src/services/issue-versioning.ts",
+        "path": "packages/db/src/issue-versioning.ts",
         "export": "versionedIssuePatch"
       }
     },
@@ -852,7 +852,7 @@
       "state": "versioned",
       "resolution": {
         "kind": "versioned_helper",
-        "path": "server/src/services/issue-versioning.ts",
+        "path": "packages/db/src/issue-versioning.ts",
         "export": "versionedIssuePatch"
       }
     },
@@ -871,7 +871,7 @@
       "state": "versioned",
       "resolution": {
         "kind": "versioned_helper",
-        "path": "server/src/services/issue-versioning.ts",
+        "path": "packages/db/src/issue-versioning.ts",
         "export": "versionedIssuePatch"
       }
     },
@@ -890,7 +890,7 @@
       "state": "versioned",
       "resolution": {
         "kind": "versioned_helper",
-        "path": "server/src/services/issue-versioning.ts",
+        "path": "packages/db/src/issue-versioning.ts",
         "export": "versionedIssuePatch"
       }
     },
@@ -928,7 +928,7 @@
       "state": "versioned",
       "resolution": {
         "kind": "versioned_helper",
-        "path": "server/src/services/issue-versioning.ts",
+        "path": "packages/db/src/issue-versioning.ts",
         "export": "runIssueMutation"
       }
     },
@@ -947,7 +947,7 @@
       "state": "versioned",
       "resolution": {
         "kind": "versioned_helper",
-        "path": "server/src/services/issue-versioning.ts",
+        "path": "packages/db/src/issue-versioning.ts",
         "export": "versionedIssuePatch"
       }
     },
@@ -985,7 +985,7 @@
       "state": "versioned",
       "resolution": {
         "kind": "versioned_helper",
-        "path": "server/src/services/issue-versioning.ts",
+        "path": "packages/db/src/issue-versioning.ts",
         "export": "versionedIssuePatch"
       }
     },
@@ -1004,7 +1004,7 @@
       "state": "versioned",
       "resolution": {
         "kind": "versioned_helper",
-        "path": "server/src/services/issue-versioning.ts",
+        "path": "packages/db/src/issue-versioning.ts",
         "export": "versionedIssuePatch"
       }
     },
@@ -1023,7 +1023,7 @@
       "state": "versioned",
       "resolution": {
         "kind": "versioned_helper",
-        "path": "server/src/services/issue-versioning.ts",
+        "path": "packages/db/src/issue-versioning.ts",
         "export": "versionedIssuePatch"
       }
     },
@@ -1042,7 +1042,7 @@
       "state": "versioned",
       "resolution": {
         "kind": "versioned_helper",
-        "path": "server/src/services/issue-versioning.ts",
+        "path": "packages/db/src/issue-versioning.ts",
         "export": "versionedIssuePatch"
       }
     },
@@ -1061,7 +1061,7 @@
       "state": "versioned",
       "resolution": {
         "kind": "versioned_helper",
-        "path": "server/src/services/issue-versioning.ts",
+        "path": "packages/db/src/issue-versioning.ts",
         "export": "versionedIssuePatch"
       }
     },
@@ -1080,7 +1080,7 @@
       "state": "versioned",
       "resolution": {
         "kind": "versioned_helper",
-        "path": "server/src/services/issue-versioning.ts",
+        "path": "packages/db/src/issue-versioning.ts",
         "export": "runIssueMutation"
       }
     },
@@ -1099,7 +1099,7 @@
       "state": "versioned",
       "resolution": {
         "kind": "versioned_helper",
-        "path": "server/src/services/issue-versioning.ts",
+        "path": "packages/db/src/issue-versioning.ts",
         "export": "versionedIssuePatch"
       }
     },
@@ -1118,7 +1118,7 @@
       "state": "versioned",
       "resolution": {
         "kind": "versioned_helper",
-        "path": "server/src/services/issue-versioning.ts",
+        "path": "packages/db/src/issue-versioning.ts",
         "export": "runIssueMutation"
       }
     },
@@ -1137,7 +1137,7 @@
       "state": "versioned",
       "resolution": {
         "kind": "versioned_helper",
-        "path": "server/src/services/issue-versioning.ts",
+        "path": "packages/db/src/issue-versioning.ts",
         "export": "versionedIssuePatch"
       }
     },
@@ -1156,7 +1156,7 @@
       "state": "versioned",
       "resolution": {
         "kind": "versioned_helper",
-        "path": "server/src/services/issue-versioning.ts",
+        "path": "packages/db/src/issue-versioning.ts",
         "export": "runIssueMutation"
       }
     },
@@ -1175,7 +1175,7 @@
       "state": "versioned",
       "resolution": {
         "kind": "versioned_helper",
-        "path": "server/src/services/issue-versioning.ts",
+        "path": "packages/db/src/issue-versioning.ts",
         "export": "versionedIssuePatch"
       }
     },
@@ -1194,7 +1194,7 @@
       "state": "versioned",
       "resolution": {
         "kind": "versioned_helper",
-        "path": "server/src/services/issue-versioning.ts",
+        "path": "packages/db/src/issue-versioning.ts",
         "export": "runIssueMutation"
       }
     },
@@ -1213,7 +1213,7 @@
       "state": "versioned",
       "resolution": {
         "kind": "versioned_helper",
-        "path": "server/src/services/issue-versioning.ts",
+        "path": "packages/db/src/issue-versioning.ts",
         "export": "versionedIssuePatch"
       }
     },
@@ -1232,7 +1232,7 @@
       "state": "versioned",
       "resolution": {
         "kind": "versioned_helper",
-        "path": "server/src/services/issue-versioning.ts",
+        "path": "packages/db/src/issue-versioning.ts",
         "export": "runIssueMutation"
       }
     },
@@ -1251,7 +1251,7 @@
       "state": "versioned",
       "resolution": {
         "kind": "versioned_helper",
-        "path": "server/src/services/issue-versioning.ts",
+        "path": "packages/db/src/issue-versioning.ts",
         "export": "versionedIssuePatch"
       }
     },
@@ -1270,7 +1270,7 @@
       "state": "versioned",
       "resolution": {
         "kind": "versioned_helper",
-        "path": "server/src/services/issue-versioning.ts",
+        "path": "packages/db/src/issue-versioning.ts",
         "export": "versionedIssuePatch"
       }
     },
@@ -1289,7 +1289,7 @@
       "state": "versioned",
       "resolution": {
         "kind": "versioned_helper",
-        "path": "server/src/services/issue-versioning.ts",
+        "path": "packages/db/src/issue-versioning.ts",
         "export": "versionedIssuePatch"
       }
     },
@@ -1308,7 +1308,7 @@
       "state": "versioned",
       "resolution": {
         "kind": "versioned_helper",
-        "path": "server/src/services/issue-versioning.ts",
+        "path": "packages/db/src/issue-versioning.ts",
         "export": "runIssueMutation"
       }
     },
@@ -1327,7 +1327,7 @@
       "state": "versioned",
       "resolution": {
         "kind": "versioned_helper",
-        "path": "server/src/services/issue-versioning.ts",
+        "path": "packages/db/src/issue-versioning.ts",
         "export": "versionedIssuePatch"
       }
     },
@@ -1346,7 +1346,7 @@
       "state": "versioned",
       "resolution": {
         "kind": "versioned_helper",
-        "path": "server/src/services/issue-versioning.ts",
+        "path": "packages/db/src/issue-versioning.ts",
         "export": "versionedIssuePatch"
       }
     },
@@ -1365,7 +1365,7 @@
       "state": "versioned",
       "resolution": {
         "kind": "versioned_helper",
-        "path": "server/src/services/issue-versioning.ts",
+        "path": "packages/db/src/issue-versioning.ts",
         "export": "versionedIssuePatch"
       }
     },
@@ -1384,7 +1384,7 @@
       "state": "versioned",
       "resolution": {
         "kind": "versioned_helper",
-        "path": "server/src/services/issue-versioning.ts",
+        "path": "packages/db/src/issue-versioning.ts",
         "export": "versionedIssuePatch"
       }
     },
@@ -1422,7 +1422,7 @@
       "state": "versioned",
       "resolution": {
         "kind": "versioned_helper",
-        "path": "server/src/services/issue-versioning.ts",
+        "path": "packages/db/src/issue-versioning.ts",
         "export": "versionedIssuePatch"
       }
     },
@@ -1441,7 +1441,7 @@
       "state": "versioned",
       "resolution": {
         "kind": "versioned_helper",
-        "path": "server/src/services/issue-versioning.ts",
+        "path": "packages/db/src/issue-versioning.ts",
         "export": "runIssueMutation"
       }
     },
@@ -1460,7 +1460,7 @@
       "state": "versioned",
       "resolution": {
         "kind": "versioned_helper",
-        "path": "server/src/services/issue-versioning.ts",
+        "path": "packages/db/src/issue-versioning.ts",
         "export": "versionedIssuePatch"
       }
     },
@@ -1479,7 +1479,7 @@
       "state": "versioned",
       "resolution": {
         "kind": "versioned_helper",
-        "path": "server/src/services/issue-versioning.ts",
+        "path": "packages/db/src/issue-versioning.ts",
         "export": "runIssueMutation"
       }
     },
@@ -1498,8 +1498,103 @@
       "state": "versioned",
       "resolution": {
         "kind": "versioned_helper",
-        "path": "server/src/services/issue-versioning.ts",
+        "path": "packages/db/src/issue-versioning.ts",
         "export": "versionedIssuePatch"
+      }
+    },
+    {
+      "id": "M079",
+      "path": "cli/src/commands/worktree.ts",
+      "line": 1243,
+      "receiver": "tx",
+      "operation": "update",
+      "table": "issues",
+      "tableToken": "issues",
+      "containingFunction": "quarantineSeededWorktreeExecutionState",
+      "containingFunctionLine": 1190,
+      "sourceFileSha256": "C2125FE0CC8C3E979E4E26733AEC2EBF1CE51FA014E6E83B15F756E8C3C0C57E",
+      "classification": "versioned",
+      "state": "versioned",
+      "resolution": {
+        "kind": "versioned_helper",
+        "path": "packages/db/src/issue-versioning.ts",
+        "export": "versionedIssuePatch"
+      }
+    },
+    {
+      "id": "M080",
+      "path": "cli/src/commands/worktree.ts",
+      "line": 1258,
+      "receiver": "tx",
+      "operation": "insert",
+      "table": "issueComments",
+      "tableToken": "issueComments",
+      "containingFunction": "quarantineSeededWorktreeExecutionState",
+      "containingFunctionLine": 1190,
+      "sourceFileSha256": "C2125FE0CC8C3E979E4E26733AEC2EBF1CE51FA014E6E83B15F756E8C3C0C57E",
+      "classification": "versioned",
+      "state": "versioned",
+      "resolution": {
+        "kind": "versioned_helper",
+        "path": "packages/db/src/issue-versioning.ts",
+        "export": "versionedIssuePatch"
+      }
+    },
+    {
+      "id": "M081",
+      "path": "cli/src/commands/worktree.ts",
+      "line": 2709,
+      "receiver": "tx",
+      "operation": "insert",
+      "table": "issues",
+      "tableToken": "issues",
+      "containingFunction": "applyMergePlan",
+      "containingFunctionLine": 2596,
+      "sourceFileSha256": "C2125FE0CC8C3E979E4E26733AEC2EBF1CE51FA014E6E83B15F756E8C3C0C57E",
+      "classification": "issue_created_at_version_1",
+      "state": "verified_create",
+      "resolution": {
+        "kind": "schema_default",
+        "column": "issues.version",
+        "value": 1
+      }
+    },
+    {
+      "id": "M082",
+      "path": "cli/src/commands/worktree.ts",
+      "line": 2770,
+      "receiver": "tx",
+      "operation": "insert",
+      "table": "issueComments",
+      "tableToken": "issueComments",
+      "containingFunction": "applyMergePlan",
+      "containingFunctionLine": 2596,
+      "sourceFileSha256": "C2125FE0CC8C3E979E4E26733AEC2EBF1CE51FA014E6E83B15F756E8C3C0C57E",
+      "classification": "versioned",
+      "state": "versioned",
+      "resolution": {
+        "kind": "versioned_helper",
+        "path": "packages/db/src/issue-versioning.ts",
+        "export": "bumpIssueVersions"
+      }
+    },
+    {
+      "id": "M083",
+      "path": "packages/db/src/seed.ts",
+      "line": 74,
+      "receiver": "db",
+      "operation": "insert",
+      "table": "issues",
+      "tableToken": "issues",
+      "containingFunction": "<module>",
+      "containingFunctionLine": null,
+      "sourceFileSha256": "808D480B39952C788AECCFF7552621824C428E3BD22406744F8C63193572474B",
+      "classification": "issue_created_at_version_1",
+      "state": "verified_create",
+      "resolution": {
+        "kind": "schema_default",
+        "column": "issues.version",
+        "value": 1
       }
     }
   ]

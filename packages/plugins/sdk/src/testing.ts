@@ -45,6 +45,7 @@ import type {
   PermissionKey,
   PrincipalType,
   PluginNamespaceFenceScalar,
+  PluginVersionedIssue,
 } from "./types.js";
 import type {
   PluginEnvironmentValidateConfigParams,
@@ -109,7 +110,7 @@ export interface TestHarness {
   seed(input: {
     companies?: Company[];
     projects?: Project[];
-    issues?: Issue[];
+    issues?: Array<Issue & { version?: number }>;
     issueComments?: IssueComment[];
     issueInteractions?: IssueThreadInteraction[];
     issueAttachments?: Array<IssueAttachment & { contentBase64?: string }>;
@@ -499,8 +500,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
   const projects = new Map<string, Project>();
   const routines = new Map<string, Routine>();
   const routineRuns = new Map<string, RoutineRun>();
-  const issues = new Map<string, Issue>();
-  const issueVersions = new Map<string, number>();
+  const issues = new Map<string, PluginVersionedIssue>();
   const namespaceFences = new Map<string, Record<string, PluginNamespaceFenceScalar>>();
   const blockedByIssueIds = new Map<string, string[]>();
   const issueComments = new Map<string, IssueComment[]>();
@@ -1605,7 +1605,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
             ? pluginOperationIssueOriginKind(manifest.id)
             : input.originKind,
         );
-        const record: Issue = {
+        const record: PluginVersionedIssue = {
           id: randomUUID(),
           companyId: input.companyId,
           projectId: input.projectId ?? null,
@@ -1641,11 +1641,11 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
           completedAt: null,
           cancelledAt: null,
           hiddenAt: null,
+          version: 1,
           createdAt: now,
           updatedAt: now,
         };
         issues.set(record.id, record);
-        issueVersions.set(record.id, 1);
         if (input.blockedByIssueIds) blockedByIssueIds.set(record.id, [...new Set(input.blockedByIssueIds)]);
         return record;
       },
@@ -1657,13 +1657,13 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         if (issuePatch.originKind !== undefined) {
           issuePatch.originKind = normalizePluginOriginKind(issuePatch.originKind);
         }
-        const updated: Issue = {
+        const updated: PluginVersionedIssue = {
           ...record,
           ...issuePatch,
+          version: record.version + 1,
           updatedAt: new Date(),
         };
         issues.set(issueId, updated);
-        issueVersions.set(issueId, (issueVersions.get(issueId) ?? 1) + 1);
         if (nextBlockedByIssueIds !== undefined) {
           blockedByIssueIds.set(issueId, [...new Set(nextBlockedByIssueIds)]);
         }
@@ -1683,7 +1683,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
           ([key, value]) => Object.is(fence[key], value),
         );
         if (!fenceMatches) return { applied: false, reason: "fence_mismatch" };
-        const currentVersion = issueVersions.get(input.issueId) ?? 1;
+        const currentVersion = record.version;
         if (currentVersion !== input.expectedVersion) {
           return { applied: false, reason: "issue_version_mismatch" };
         }
@@ -1691,15 +1691,13 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         if (issuePatch.originKind !== undefined) {
           issuePatch.originKind = normalizePluginOriginKind(issuePatch.originKind);
         }
-        const version = currentVersion + 1;
-        const updated = {
+        const updated: PluginVersionedIssue = {
           ...record,
           ...issuePatch,
-          version,
+          version: currentVersion + 1,
           updatedAt: new Date(),
         };
         issues.set(input.issueId, updated);
-        issueVersions.set(input.issueId, version);
         if (nextBlockedByIssueIds !== undefined) {
           blockedByIssueIds.set(input.issueId, [...new Set(nextBlockedByIssueIds)]);
         }
@@ -1997,7 +1995,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
           frontier = children;
         }
         const issueIds = includeRoot ? allIds : allIds.filter((id) => id !== root.id);
-        const subtreeIssues = issueIds.map((id) => issues.get(id)).filter((candidate): candidate is Issue => Boolean(candidate));
+        const subtreeIssues = issueIds.map((id) => issues.get(id)).filter((candidate): candidate is PluginVersionedIssue => Boolean(candidate));
         return {
           rootIssueId: root.id,
           companyId,
@@ -2563,8 +2561,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       for (const row of input.companies ?? []) companies.set(row.id, row);
       for (const row of input.projects ?? []) projects.set(row.id, row);
       for (const row of input.issues ?? []) {
-        issues.set(row.id, row);
-        issueVersions.set(row.id, (row as Issue & { version?: number }).version ?? 1);
+        issues.set(row.id, { ...row, version: row.version ?? 1 });
         if (row.blockedBy) {
           blockedByIssueIds.set(row.id, row.blockedBy.map((blocker) => blocker.id));
         }

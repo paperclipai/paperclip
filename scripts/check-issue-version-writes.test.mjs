@@ -70,12 +70,12 @@ test("retains all accepted catalog identities and resolves the current source", 
   );
   const observed = collectIssueWrites(process.cwd());
 
-  assert.equal(catalog.entries.length, 78);
-  assert.equal(catalog.entries.filter((entry) => entry.table === "issues").length, 64);
-  assert.equal(catalog.entries.filter((entry) => entry.table === "issueComments").length, 14);
+  assert.equal(catalog.entries.length, 83);
+  assert.equal(catalog.entries.filter((entry) => entry.table === "issues").length, 67);
+  assert.equal(catalog.entries.filter((entry) => entry.table === "issueComments").length, 16);
   assert.deepEqual(
     catalog.entries.map((entry) => entry.id),
-    Array.from({ length: 78 }, (_, index) => `M${String(index + 1).padStart(3, "0")}`),
+    Array.from({ length: 83 }, (_, index) => `M${String(index + 1).padStart(3, "0")}`),
   );
   assert.equal(
     catalog.baseline.acceptedArtifactSha256,
@@ -85,6 +85,84 @@ test("retains all accepted catalog identities and resolves the current source", 
     ok: true,
     errors: [],
   });
+});
+
+test("collects aliases from relative schema imports inside packages/db", () => {
+  const source = [
+    'import { issues, issueComments } from "./schema/index.js";',
+    "await db.update(issues).set({ title: 'x' });",
+    "await db.insert(issueComments).values({ issueId: 'i' });",
+  ].join("\n");
+
+  assert.deepEqual(
+    collectIssueWritesFromSource("packages/db/src/example.ts", source).map((entry) => entry.table),
+    ["issues", "issueComments"],
+  );
+  assert.deepEqual(
+    collectIssueWritesFromSource("server/src/services/example.ts", source),
+    [],
+  );
+});
+
+test("covers cli and packages/db production writes in the repository scan", () => {
+  const observed = collectIssueWrites(process.cwd());
+  const paths = new Set(observed.map((entry) => entry.path));
+  assert.ok(paths.has("cli/src/commands/worktree.ts"));
+  assert.ok(paths.has("packages/db/src/seed.ts"));
+  assert.ok(paths.has("packages/db/src/issue-versioning.ts"));
+});
+
+test("comment writes accept and require same-transaction bumpIssueVersions", () => {
+  const helperPath = "packages/db/src/issue-versioning.ts";
+  const catalogFor = (line) => ({
+    schemaVersion: "paperclip_issue_version_write_catalog_v2",
+    baseline: {},
+    entries: [
+      {
+        id: "M001",
+        path: "cli/src/commands/example.ts",
+        line,
+        receiver: "tx",
+        operation: "insert",
+        table: "issueComments",
+        tableToken: "issueComments",
+        containingFunction: "<module>",
+        sourceFileSha256: "0".repeat(64),
+        classification: "versioned",
+        state: "versioned",
+        resolution: { kind: "versioned_helper", path: helperPath, export: "bumpIssueVersions" },
+      },
+    ],
+  });
+
+  const pairedSource = [
+    'import { bumpIssueVersions, issueComments } from "@paperclipai/db";',
+    "await db.transaction(async (tx) => {",
+    "  await tx.insert(issueComments).values({ issueId: 'i' });",
+    "  await bumpIssueVersions(tx, ['i']);",
+    "});",
+  ].join("\n");
+  const paired = collectIssueWritesFromSource("cli/src/commands/example.ts", pairedSource);
+  const pairedResult = validateStrict(paired, catalogFor(3));
+  assert.equal(
+    pairedResult.errors.some((error) => error.includes("bumpIssueVersions")),
+    false,
+  );
+
+  const unpairedSource = [
+    'import { issueComments } from "@paperclipai/db";',
+    "await db.transaction(async (tx) => {",
+    "  await tx.insert(issueComments).values({ issueId: 'i' });",
+    "});",
+  ].join("\n");
+  const unpaired = collectIssueWritesFromSource("cli/src/commands/example.ts", unpairedSource);
+  const unpairedResult = validateStrict(unpaired, catalogFor(3));
+  assert.equal(
+    unpairedResult.errors.some((error) =>
+      error.includes("comment write lacks same-transaction bumpIssueVersions"),
+    ),
+    true,
+  );
 });
 
 test("strict mode rejects injected raw issue and comment writes", () => {

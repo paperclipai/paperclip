@@ -244,6 +244,7 @@ export type {
   PluginIssuesClient,
   PluginIssueMutationActor,
   PluginIssueUpdatePatch,
+  PluginVersionedIssue,
   PluginNamespaceFenceScalar,
   PluginNamespaceFence,
   PluginConditionalIssueUpdateResult,

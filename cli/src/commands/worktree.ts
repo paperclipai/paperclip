@@ -24,6 +24,7 @@ import {
   applyPendingMigrations,
   agents,
   assets,
+  bumpIssueVersions,
   companies,
   createDb,
   documentRevisions,
@@ -47,6 +48,7 @@ import {
   createEmbeddedPostgresLogBuffer,
   formatEmbeddedPostgresError,
   prepareEmbeddedPostgresNativeRuntime,
+  versionedIssuePatch,
 } from "@paperclipai/db";
 import type { Command } from "commander";
 import { ensureAgentJwtSecret, loadPaperclipEnvFile, mergePaperclipEnvEntries, readPaperclipEnvEntries, resolvePaperclipEnvFile } from "../config/env.js";
@@ -1240,7 +1242,7 @@ export async function quarantineSeededWorktreeExecutionState(
         const nextStatus = issue.status === "in_progress" ? "blocked" : issue.status;
         await tx
           .update(issues)
-          .set({
+          .set(versionedIssuePatch({
             status: nextStatus,
             assigneeAgentId: null,
             checkoutRunId: null,
@@ -1248,8 +1250,7 @@ export async function quarantineSeededWorktreeExecutionState(
             executionAgentNameKey: null,
             executionLockedAt: null,
             executionWorkspaceId: null,
-            updatedAt: new Date(),
-          })
+          }))
           .where(eq(issues.id, issue.id));
 
         if (issue.status === "in_progress") {
@@ -2757,6 +2758,7 @@ async function applyMergePlan(input: {
       : new Set<string>();
 
     let insertedComments = 0;
+    const preexistingCommentParentIds = new Set<string>();
     for (const comment of commentCandidates) {
       if (existingCommentIds.has(comment.source.id)) continue;
       const parentExists = await tx
@@ -2776,7 +2778,11 @@ async function applyMergePlan(input: {
         updatedAt: comment.source.updatedAt,
       });
       insertedComments += 1;
+      if (!insertedIssueIdentifiers.has(comment.source.issueId)) {
+        preexistingCommentParentIds.add(comment.source.issueId);
+      }
     }
+    await bumpIssueVersions(tx, [...preexistingCommentParentIds]);
 
     const documentCandidates = input.plan.documentPlans.filter(
       (plan): plan is PlannedIssueDocumentInsert | PlannedIssueDocumentMerge =>

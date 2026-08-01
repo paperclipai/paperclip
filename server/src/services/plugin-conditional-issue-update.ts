@@ -14,6 +14,7 @@ import type {
   WorkerToHostMethods,
 } from "@paperclipai/plugin-sdk";
 import { logActivity } from "./activity-log.js";
+import { requireVersionedIssue } from "./issue-versioning.js";
 import { issueService } from "./issues.js";
 
 const IDENTIFIER_RE = /^[A-Za-z_][A-Za-z0-9_]*$/;
@@ -247,8 +248,8 @@ export function pluginConditionalIssueUpdateService(
         });
         return {
           applied: true,
-          issue: updated,
-        } as unknown as PluginConditionalIssueUpdateResult;
+          issue: requireVersionedIssue(updated),
+        };
       });
     },
   };
