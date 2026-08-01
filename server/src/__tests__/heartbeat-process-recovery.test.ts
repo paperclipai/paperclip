@@ -7657,6 +7657,95 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     },
   );
 
+  it("does not count a pre-upgrade coalesced interaction request as delivered", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const interactionId = randomUUID();
+    const runId = randomUUID();
+    const resolvedAt = new Date(Date.now() - 2 * 60_000);
+    const completedAt = new Date(Date.now() - 60_000);
+
+    await db.insert(companies).values({ id: companyId, name: "Pre-upgrade coalesced interaction co" });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "PreUpgradeCoalescedInteractionAgent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: { cwd: "/workspace" },
+      budgetMonthlyCents: 0,
+      spentMonthlyCents: 0,
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      issueNumber: 2_000_305,
+      identifier: "TEST-2000305",
+      title: "Pre-upgrade coalesced interaction was never delivered",
+      status: "in_progress",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      creatorAgentId: agentId,
+    });
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId,
+      companyId,
+      issueId,
+      kind: "request_confirmation",
+      status: "accepted",
+      continuationPolicy: "wake_assignee",
+      createdByAgentId: agentId,
+      resolvedByUserId: "local-board",
+      resolvedAt,
+      updatedAt: resolvedAt,
+      payload: { version: 1, prompt: "Continue?" },
+      result: { version: 1, outcome: "accepted" },
+    });
+    await db.insert(agentWakeupRequests).values({
+      companyId,
+      agentId,
+      source: "issue.interaction_resolved",
+      triggerDetail: "system",
+      reason: "issue_execution_same_name",
+      payload: {
+        issueId,
+        taskId: issueId,
+        mutation: "interaction",
+        interactionId,
+        interactionKind: "request_confirmation",
+        interactionStatus: "accepted",
+        wakeReason: "issue_commented",
+      },
+      status: "coalesced",
+      runId,
+      requestedAt: resolvedAt,
+      finishedAt: resolvedAt,
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      invocationSource: "automation",
+      triggerDetail: "system",
+      status: "succeeded",
+      createdAt: new Date(resolvedAt.getTime() - 60_000),
+      startedAt: new Date(resolvedAt.getTime() - 60_000),
+      finishedAt: completedAt,
+      updatedAt: completedAt,
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        wakeReason: "timer",
+      },
+    });
+
+    const result = await heartbeatService(db).reconcileStrandedAssignedIssues();
+    expect(result.continuationRequeued).toBe(1);
+    expect(result.issueIds).toContain(issueId);
+  });
+
   it("recognizes a consumed interaction from its immutable wake request after mutable run context clears", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -7727,7 +7816,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       triggerDetail: "system",
       reason: "issue_commented",
       payload: deliveredContext,
-      status: "claimed",
+      status: "completed",
       runId,
       claimedAt: resolvedAt,
     });

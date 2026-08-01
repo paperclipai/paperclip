@@ -1096,7 +1096,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const rows = await db
       .select({
         contextSnapshot: heartbeatRuns.contextSnapshot,
-        wakePayload: agentWakeupRequests.payload,
+        wakeupPayload: agentWakeupRequests.payload,
+        wakeupStatus: agentWakeupRequests.status,
       })
       .from(heartbeatRuns)
       .leftJoin(agentWakeupRequests, eq(agentWakeupRequests.runId, heartbeatRuns.id))
@@ -1119,11 +1120,25 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         ),
       )
       .limit(resolvedItemIds.length > 0 || toolActionExecutionStatus ? 50 : 1);
-    if (resolvedItemIds.length === 0 && !toolActionExecutionStatus) return Boolean(rows[0]);
-    const requiredItemIds = new Set(resolvedItemIds);
-    return rows.some((row) => {
-      const contexts = [parseObject(row.contextSnapshot), parseObject(row.wakePayload)];
-      if (requiredItemIds.size > 0) {
+    const contextsByRow = rows.map((row) => {
+      const runContext = parseObject(row.contextSnapshot);
+      const wakeupPayload = parseObject(row.wakeupPayload);
+      return [
+        ...(readNonEmptyString(runContext.interactionId) === interactionId ? [runContext] : []),
+        ...(
+          (row.wakeupStatus === "claimed" || row.wakeupStatus === "completed")
+          && readNonEmptyString(wakeupPayload.interactionId) === interactionId
+            ? [wakeupPayload]
+            : []
+        ),
+      ];
+    });
+    if (resolvedItemIds.length === 0 && !toolActionExecutionStatus) {
+      return contextsByRow.some((contexts) => contexts.length > 0);
+    }
+
+    return contextsByRow.some((contexts) => {
+      if (resolvedItemIds.length > 0) {
         const coveredItemIds = new Set(
           contexts.flatMap((context) => (
             Array.isArray(context.newlyResolvedItemIds)
