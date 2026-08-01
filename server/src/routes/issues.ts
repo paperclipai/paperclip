@@ -7992,7 +7992,11 @@ export function issueRoutes(
       reviewRequest: reviewRequest === undefined ? undefined : reviewRequest,
       monitorExplicitlyUpdated: req.body.executionPolicy !== undefined && monitorChanged,
     });
-    const decisionId = transition.decision ? randomUUID() : null;
+    const serviceOwnedChangesRequestedDecision =
+      transition.decision?.outcome === "changes_requested";
+    let decisionId = transition.decision && !serviceOwnedChangesRequestedDecision
+      ? randomUUID()
+      : null;
     if (decisionId) {
       const nextExecutionState = transition.patch.executionState;
       if (!nextExecutionState || typeof nextExecutionState !== "object") {
@@ -8145,7 +8149,26 @@ export function issueRoutes(
     } = { value: null };
     let issue: Awaited<ReturnType<typeof svc.update>>;
     try {
-      if (transition.decision && decisionId) {
+      if (serviceOwnedChangesRequestedDecision) {
+        const result = await svc.submitExecutionChangesRequested(id, {
+          expectedUpdatedAt: existing.updatedAt,
+          updateFields,
+          requestedStatus: typeof updateFields.status === "string" ? updateFields.status : undefined,
+          requestedAssigneePatch: {
+            assigneeAgentId: normalizedAssigneeAgentId,
+            assigneeUserId:
+              req.body.assigneeUserId === undefined ? undefined : (req.body.assigneeUserId as string | null),
+          },
+          actor: {
+            agentId: actor.agentId ?? null,
+            userId: actor.actorType === "user" ? actor.actorId : null,
+            runId: actor.runId ?? null,
+          },
+          commentBody: commentBody ?? "",
+        });
+        issue = result?.issue ?? null;
+        decisionId = result?.decisionId ?? null;
+      } else if (transition.decision && decisionId) {
         const decision = transition.decision;
         issue = await db.transaction(async (tx) => {
           const updated = await svc.update(
@@ -8160,7 +8183,7 @@ export function issueRoutes(
           if (!updated) return null;
 
           await tx.insert(issueExecutionDecisions).values({
-            id: decisionId,
+            id: decisionId!,
             companyId: updated.companyId,
             issueId: updated.id,
             stageId: decision.stageId,

@@ -28,6 +28,7 @@ import {
   issueRelations,
   issueComments,
   issueDocuments,
+  issueExecutionDecisions,
   issueReadStates,
   issueThreadInteractions,
   issues,
@@ -85,6 +86,7 @@ import {
 } from "./execution-workspace-policy.js";
 import { mergeExecutionWorkspaceConfig } from "./execution-workspaces.js";
 import {
+  applyIssueExecutionPolicyTransition,
   buildInitialIssueMonitorFields,
   normalizeIssueExecutionPolicy,
   parseIssueExecutionState,
@@ -122,6 +124,7 @@ import { finalizeSummarySlotsForTerminalIssue } from "./summary-slot-finalizatio
 import { logActivity } from "./activity-log.js";
 import { buildIssueChanges } from "./issue-change-receipt.js";
 
+const EXECUTION_DECISION_UPDATE = Symbol("execution-decision-update");
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
 export const ISSUE_LIST_DEFAULT_LIMIT = 500;
@@ -6910,6 +6913,7 @@ export function issueService(db: Db) {
         actorUserId?: string | null;
       },
       dbOrTx: any = db,
+      internalOperation?: typeof EXECUTION_DECISION_UPDATE,
     ) => {
       const existing = await dbOrTx
         .select()
@@ -6963,7 +6967,45 @@ export function issueService(db: Db) {
       if (patch.status === "in_progress" && !nextAssigneeAgentId && !nextAssigneeUserId) {
         throw unprocessable("in_progress issues require an assignee");
       }
-      if (patch.status === "in_progress") {
+      const previousExecutionState = parseIssueExecutionState(existing.executionState);
+      const nextExecutionState = parseIssueExecutionState(issueData.executionState);
+      const currentParticipant = previousExecutionState?.currentParticipant ?? null;
+      const nextParticipant = nextExecutionState?.currentParticipant ?? null;
+      const returnAssignee = previousExecutionState?.returnAssignee ?? null;
+      const nextReturnAssignee = nextExecutionState?.returnAssignee ?? null;
+      const actorIsCurrentParticipant = currentParticipant?.type === "agent"
+        ? actorAgentId === currentParticipant.agentId
+        : currentParticipant?.type === "user" && actorUserId === currentParticipant.userId;
+      const participantIsPreserved = currentParticipant?.type === "agent"
+        ? nextParticipant?.type === "agent" && nextParticipant.agentId === currentParticipant.agentId
+        : currentParticipant?.type === "user"
+          && nextParticipant?.type === "user"
+          && nextParticipant.userId === currentParticipant.userId;
+      const returnAssigneeIsPreserved = returnAssignee?.type === "agent"
+        ? nextReturnAssignee?.type === "agent" && nextReturnAssignee.agentId === returnAssignee.agentId
+        : returnAssignee?.type === "user"
+          && nextReturnAssignee?.type === "user"
+          && nextReturnAssignee.userId === returnAssignee.userId;
+      const returnsToExecutionAssignee = returnAssignee?.type === "agent"
+        ? nextAssigneeAgentId === returnAssignee.agentId && !nextAssigneeUserId
+        : returnAssignee?.type === "user"
+          && nextAssigneeUserId === returnAssignee.userId
+          && !nextAssigneeAgentId;
+      const isAtomicBlockedStageReturn =
+        internalOperation === EXECUTION_DECISION_UPDATE
+        && blockedByIssueIds === undefined
+        && existing.status === "in_review"
+        && previousExecutionState?.status === "pending"
+        && nextExecutionState?.status === "changes_requested"
+        && nextExecutionState.currentStageId === previousExecutionState.currentStageId
+        && nextExecutionState.currentStageType === previousExecutionState.currentStageType
+        && nextExecutionState.lastDecisionOutcome === "changes_requested"
+        && Boolean(nextExecutionState.lastDecisionId)
+        && actorIsCurrentParticipant
+        && participantIsPreserved
+        && returnAssigneeIsPreserved
+        && returnsToExecutionAssignee;
+      if (patch.status === "in_progress" && !isAtomicBlockedStageReturn) {
         const dependencyReadiness = blockedByIssueIds === undefined
           ? (await listIssueDependencyReadinessMap(dbOrTx, existing.companyId, [id])).get(id)
           : null;
@@ -7256,6 +7298,109 @@ export function issueService(db: Db) {
 
       return dbOrTx === db ? db.transaction(runUpdate) : runUpdate(dbOrTx);
     },
+
+    submitExecutionChangesRequested: async (
+      id: string,
+      input: {
+        expectedUpdatedAt: Date | string;
+        updateFields: Partial<typeof issues.$inferInsert> & {
+          labelIds?: string[];
+          blockedByIssueIds?: string[];
+        };
+        requestedStatus?: string;
+        requestedAssigneePatch: {
+          assigneeAgentId?: string | null;
+          assigneeUserId?: string | null;
+        };
+        actor: {
+          agentId?: string | null;
+          userId?: string | null;
+          runId?: string | null;
+        };
+        commentBody: string;
+      },
+    ) => db.transaction(async (tx) => {
+      if (input.updateFields.blockedByIssueIds !== undefined) {
+        throw unprocessable("Execution decisions cannot mutate blocker relations");
+      }
+      if (input.updateFields.executionPolicy !== undefined) {
+        throw unprocessable("Execution decisions cannot replace the execution policy");
+      }
+
+      await tx.execute(
+        sql`select ${issues.id} from ${issues} where ${issues.id} = ${id} for update`,
+      );
+      const current = await tx
+        .select()
+        .from(issues)
+        .where(eq(issues.id, id))
+        .then((rows) => rows[0] ?? null);
+      if (!current) return null;
+
+      const expectedUpdatedAt = new Date(input.expectedUpdatedAt).getTime();
+      if (!Number.isFinite(expectedUpdatedAt) || current.updatedAt.getTime() !== expectedUpdatedAt) {
+        throw conflict("Issue changed before the execution decision could be applied", {
+          issueId: id,
+          expectedUpdatedAt: Number.isFinite(expectedUpdatedAt)
+            ? new Date(expectedUpdatedAt).toISOString()
+            : null,
+          actualUpdatedAt: current.updatedAt.toISOString(),
+        });
+      }
+
+      const transition = applyIssueExecutionPolicyTransition({
+        issue: current,
+        policy: normalizeIssueExecutionPolicy(current.executionPolicy ?? null),
+        requestedStatus: input.requestedStatus,
+        requestedAssigneePatch: input.requestedAssigneePatch,
+        actor: {
+          agentId: input.actor.agentId ?? null,
+          userId: input.actor.userId ?? null,
+        },
+        commentBody: input.commentBody,
+      });
+      if (!transition.decision || transition.decision.outcome !== "changes_requested") {
+        throw unprocessable("The current actor and execution stage do not permit requesting changes");
+      }
+
+      const nextExecutionState = parseIssueExecutionState(transition.patch.executionState);
+      if (!nextExecutionState || nextExecutionState.status !== "changes_requested") {
+        throw unprocessable("Changes-requested execution state is invalid");
+      }
+
+      const decisionId = randomUUID();
+      const updated = await issueService(db).update(
+        id,
+        {
+          ...input.updateFields,
+          ...transition.patch,
+          executionState: {
+            ...nextExecutionState,
+            lastDecisionId: decisionId,
+          },
+          actorAgentId: input.actor.agentId ?? null,
+          actorUserId: input.actor.userId ?? null,
+        },
+        tx,
+        EXECUTION_DECISION_UPDATE,
+      );
+      if (!updated) return null;
+
+      await tx.insert(issueExecutionDecisions).values({
+        id: decisionId,
+        companyId: updated.companyId,
+        issueId: updated.id,
+        stageId: transition.decision.stageId,
+        stageType: transition.decision.stageType,
+        actorAgentId: input.actor.agentId ?? null,
+        actorUserId: input.actor.userId ?? null,
+        outcome: transition.decision.outcome,
+        body: transition.decision.body,
+        createdByRunId: input.actor.runId ?? null,
+      });
+
+      return { issue: updated, decisionId };
+    }),
 
     clearExecutionWorkspaceEnvironmentSelection: async (companyId: string, environmentId: string) => {
       const rows = await db
