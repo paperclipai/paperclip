@@ -3,6 +3,7 @@ import type { Db } from "@paperclipai/db";
 import { documentRevisions, documents, issueDocuments, issues } from "@paperclipai/db";
 import { isSystemIssueDocumentKey, issueDocumentKeySchema } from "@paperclipai/shared";
 import { conflict, notFound, unprocessable } from "../errors.js";
+import { bumpIssueVersions, type DbTransaction } from "./issue-versioning.js";
 
 function normalizeDocumentKey(key: string) {
   const normalized = key.trim().toLowerCase();
@@ -29,6 +30,15 @@ function nextAvailableDocumentKey(sourceKey: string, existingKeys: string[]) {
     }
   }
   throw conflict("Unable to choose a new document key for locked document", { key: sourceKey });
+}
+
+async function lockIssueForDocumentMutation(tx: DbTransaction, issueId: string) {
+  return await tx
+    .select({ id: issues.id })
+    .from(issues)
+    .where(eq(issues.id, issueId))
+    .for("update")
+    .then((rows) => rows[0] ?? null);
 }
 
 export function extractLegacyPlanBody(description: string | null | undefined) {
@@ -221,32 +231,42 @@ export function documentService(db: Db) {
         try {
           return await db.transaction(async (tx) => {
           const now = new Date();
-          const existing = await tx
-            .select({
-              id: documents.id,
-              companyId: documents.companyId,
-              issueId: issueDocuments.issueId,
-              key: issueDocuments.key,
-              title: documents.title,
-              format: documents.format,
-              latestBody: documents.latestBody,
-              latestRevisionId: documents.latestRevisionId,
-              latestRevisionNumber: documents.latestRevisionNumber,
-              createdByAgentId: documents.createdByAgentId,
-              createdByUserId: documents.createdByUserId,
-              updatedByAgentId: documents.updatedByAgentId,
-              updatedByUserId: documents.updatedByUserId,
-              lockedAt: documents.lockedAt,
-              lockedByAgentId: documents.lockedByAgentId,
-              lockedByUserId: documents.lockedByUserId,
-              sourceTrust: documents.sourceTrust,
-              createdAt: documents.createdAt,
-              updatedAt: documents.updatedAt,
-            })
+          const lockedIssue = await lockIssueForDocumentMutation(tx, issue.id);
+          if (!lockedIssue) throw notFound("Issue not found");
+          const lockedLink = await tx
+            .select({ documentId: issueDocuments.documentId })
             .from(issueDocuments)
-            .innerJoin(documents, eq(issueDocuments.documentId, documents.id))
             .where(and(eq(issueDocuments.issueId, issue.id), eq(issueDocuments.key, key)))
+            .for("update")
             .then((rows) => rows[0] ?? null);
+          const existing = lockedLink
+            ? await tx
+                .select({
+                  id: documents.id,
+                  companyId: documents.companyId,
+                  issueId: issueDocuments.issueId,
+                  key: issueDocuments.key,
+                  title: documents.title,
+                  format: documents.format,
+                  latestBody: documents.latestBody,
+                  latestRevisionId: documents.latestRevisionId,
+                  latestRevisionNumber: documents.latestRevisionNumber,
+                  createdByAgentId: documents.createdByAgentId,
+                  createdByUserId: documents.createdByUserId,
+                  updatedByAgentId: documents.updatedByAgentId,
+                  updatedByUserId: documents.updatedByUserId,
+                  lockedAt: documents.lockedAt,
+                  lockedByAgentId: documents.lockedByAgentId,
+                  lockedByUserId: documents.lockedByUserId,
+                  sourceTrust: documents.sourceTrust,
+                  createdAt: documents.createdAt,
+                  updatedAt: documents.updatedAt,
+                })
+                .from(issueDocuments)
+                .innerJoin(documents, eq(issueDocuments.documentId, documents.id))
+                .where(and(eq(issueDocuments.issueId, issue.id), eq(issueDocuments.key, key)))
+                .then((rows) => rows[0] ?? null)
+            : null;
 
           if (existing) {
             if (existing.lockedAt) {
@@ -309,6 +329,7 @@ export function documentService(db: Db) {
                   createdAt: now,
                   updatedAt: now,
                 });
+                await bumpIssueVersions(tx, [issue.id], now);
 
                 return {
                   created: true as const,
@@ -395,6 +416,7 @@ export function documentService(db: Db) {
               .update(issueDocuments)
               .set({ updatedAt: now })
               .where(eq(issueDocuments.documentId, existing.id));
+            await bumpIssueVersions(tx, [issue.id], now);
 
             return {
               created: false as const,
@@ -472,6 +494,7 @@ export function documentService(db: Db) {
             createdAt: now,
             updatedAt: now,
           });
+          await bumpIssueVersions(tx, [issue.id], now);
 
           return {
             created: true as const,
@@ -521,6 +544,16 @@ export function documentService(db: Db) {
     }) => {
       const key = normalizeDocumentKey(input.key);
       return db.transaction(async (tx) => {
+        const lockedIssue = await lockIssueForDocumentMutation(tx, input.issueId);
+        if (!lockedIssue) throw notFound("Document not found");
+        const lockedLink = await tx
+          .select({ documentId: issueDocuments.documentId })
+          .from(issueDocuments)
+          .where(and(eq(issueDocuments.issueId, input.issueId), eq(issueDocuments.key, key)))
+          .for("update")
+          .then((rows) => rows[0] ?? null);
+        if (!lockedLink) throw notFound("Document not found");
+
         const existing = await tx
           .select(issueDocumentSelect)
           .from(issueDocuments)
@@ -594,6 +627,7 @@ export function documentService(db: Db) {
           .update(issueDocuments)
           .set({ updatedAt: now })
           .where(eq(issueDocuments.documentId, existing.id));
+        await bumpIssueVersions(tx, [input.issueId], now);
 
         return {
           restoredFromRevisionId: revision.id,
@@ -621,6 +655,16 @@ export function documentService(db: Db) {
     }) => {
       const key = normalizeDocumentKey(input.key);
       return db.transaction(async (tx) => {
+        const lockedIssue = await lockIssueForDocumentMutation(tx, input.issueId);
+        if (!lockedIssue) throw notFound("Document not found");
+        const lockedLink = await tx
+          .select({ documentId: issueDocuments.documentId })
+          .from(issueDocuments)
+          .where(and(eq(issueDocuments.issueId, input.issueId), eq(issueDocuments.key, key)))
+          .for("update")
+          .then((rows) => rows[0] ?? null);
+        if (!lockedLink) throw notFound("Document not found");
+
         const existing = await tx
           .select(issueDocumentSelect)
           .from(issueDocuments)
@@ -651,6 +695,7 @@ export function documentService(db: Db) {
           .update(issueDocuments)
           .set({ updatedAt: now })
           .where(eq(issueDocuments.documentId, existing.id));
+        await bumpIssueVersions(tx, [input.issueId], now);
 
         return {
           changed: true as const,
@@ -668,6 +713,16 @@ export function documentService(db: Db) {
     unlockIssueDocument: async (issueId: string, rawKey: string) => {
       const key = normalizeDocumentKey(rawKey);
       return db.transaction(async (tx) => {
+        const lockedIssue = await lockIssueForDocumentMutation(tx, issueId);
+        if (!lockedIssue) throw notFound("Document not found");
+        const lockedLink = await tx
+          .select({ documentId: issueDocuments.documentId })
+          .from(issueDocuments)
+          .where(and(eq(issueDocuments.issueId, issueId), eq(issueDocuments.key, key)))
+          .for("update")
+          .then((rows) => rows[0] ?? null);
+        if (!lockedLink) throw notFound("Document not found");
+
         const existing = await tx
           .select(issueDocumentSelect)
           .from(issueDocuments)
@@ -698,6 +753,7 @@ export function documentService(db: Db) {
           .update(issueDocuments)
           .set({ updatedAt: now })
           .where(eq(issueDocuments.documentId, existing.id));
+        await bumpIssueVersions(tx, [issueId], now);
 
         return {
           changed: true as const,
@@ -715,6 +771,16 @@ export function documentService(db: Db) {
     deleteIssueDocument: async (issueId: string, rawKey: string) => {
       const key = normalizeDocumentKey(rawKey);
       return db.transaction(async (tx) => {
+        const lockedIssue = await lockIssueForDocumentMutation(tx, issueId);
+        if (!lockedIssue) return null;
+        const lockedLink = await tx
+          .select({ documentId: issueDocuments.documentId })
+          .from(issueDocuments)
+          .where(and(eq(issueDocuments.issueId, issueId), eq(issueDocuments.key, key)))
+          .for("update")
+          .then((rows) => rows[0] ?? null);
+        if (!lockedLink) return null;
+
         const existing = await tx
           .select(issueDocumentSelect)
           .from(issueDocuments)
@@ -733,6 +799,7 @@ export function documentService(db: Db) {
 
         await tx.delete(issueDocuments).where(eq(issueDocuments.documentId, existing.id));
         await tx.delete(documents).where(eq(documents.id, existing.id));
+        await bumpIssueVersions(tx, [issueId]);
 
         return {
           ...existing,

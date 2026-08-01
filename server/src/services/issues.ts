@@ -111,6 +111,7 @@ import { finalizeStatusCardsForStalledGeneration } from "./status-card-finalizat
 import { finalizeSummarySlotsForTerminalIssue } from "./summary-slot-finalization.js";
 import { logActivity } from "./activity-log.js";
 import {
+  bumpIssueVersions,
   type DbOrTx,
   IssueVersionConflictError,
   runIssueMutation,
@@ -121,6 +122,8 @@ import {
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
+const LABEL_DELETE_LOCK_MAX_ATTEMPTS = 20;
+const LABEL_DELETE_LOCK_RETRY_DELAY_MS = 25;
 export const ISSUE_LIST_DEFAULT_LIMIT = 500;
 export const ISSUE_LIST_MAX_LIMIT = 1000;
 export const ISSUE_BLOCKER_DIAGNOSTICS_MAX_BLOCKERS = 100;
@@ -3810,6 +3813,76 @@ async function countBlockedInboxIssues(dbOrTx: any, companyId: string, filters?:
   }, 0);
 }
 
+function isLockNotAvailableError(error: unknown): boolean {
+  let current = error;
+  for (let depth = 0; depth < 5; depth += 1) {
+    if (!current || typeof current !== "object") return false;
+    if ("code" in current && current.code === "55P03") return true;
+    current = "cause" in current ? current.cause : null;
+  }
+  return false;
+}
+
+async function deleteLabelWithIssueLocks(
+  db: Db,
+  id: string,
+): Promise<typeof labels.$inferSelect | null> {
+  for (let attempt = 0; attempt < LABEL_DELETE_LOCK_MAX_ATTEMPTS; attempt += 1) {
+    try {
+      return await db.transaction(async (tx) => {
+        const existing = await tx
+          .select({ id: labels.id })
+          .from(labels)
+          .where(eq(labels.id, id))
+          .for("update")
+          .then((rows) => rows[0] ?? null);
+        if (!existing) return null;
+
+        const affectedIssueIds = await tx
+          .select({ issueId: issueLabels.issueId })
+          .from(issueLabels)
+          .where(eq(issueLabels.labelId, id))
+          .orderBy(asc(issueLabels.issueId))
+          .for("update", { noWait: true })
+          .then((rows) => [...new Set(rows.map((row) => row.issueId))].sort());
+        if (affectedIssueIds.length > 0) {
+          await tx
+            .select({ id: issues.id })
+            .from(issues)
+            .where(inArray(issues.id, affectedIssueIds))
+            .orderBy(asc(issues.id))
+            .for("update", { noWait: true });
+        }
+
+        const removed = await tx
+          .delete(labels)
+          .where(eq(labels.id, id))
+          .returning()
+          .then((rows) => rows[0] ?? null);
+        if (removed) {
+          await bumpIssueVersions(tx, affectedIssueIds);
+        }
+        return removed;
+      });
+    } catch (error) {
+      if (!isLockNotAvailableError(error) || attempt === LABEL_DELETE_LOCK_MAX_ATTEMPTS - 1) {
+        throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, LABEL_DELETE_LOCK_RETRY_DELAY_MS));
+    }
+  }
+  throw new Error("Label deletion retry loop exhausted");
+}
+
+async function lockIssueForRelatedMutation(tx: DbTransaction, issueId: string) {
+  return await tx
+    .select({ id: issues.id, companyId: issues.companyId })
+    .from(issues)
+    .where(eq(issues.id, issueId))
+    .for("update")
+    .then((rows) => rows[0] ?? null);
+}
+
 export function issueService(db: Db) {
   const instanceSettings = instanceSettingsService(db);
   const treeControlSvc = issueTreeControlService(db);
@@ -7272,6 +7345,9 @@ export function issueService(db: Db) {
 
     remove: (id: string) =>
       db.transaction(async (tx) => {
+        const existingIssue = await lockIssueForRelatedMutation(tx, id);
+        if (!existingIssue) return null;
+
         const attachmentAssetIds = await tx
           .select({ assetId: issueAttachments.assetId })
           .from(issueAttachments)
@@ -7763,12 +7839,7 @@ export function issueService(db: Db) {
       return created;
     },
 
-    deleteLabel: async (id: string) =>
-      db
-        .delete(labels)
-        .where(eq(labels.id, id))
-        .returning()
-        .then((rows) => rows[0] ?? null),
+    deleteLabel: async (id: string) => deleteLabelWithIssueLocks(db, id),
 
     listComments: async (
       issueId: string,
@@ -7934,6 +8005,9 @@ export function issueService(db: Db) {
       }
 
       return db.transaction(async (tx) => {
+        const lockedIssue = await lockIssueForRelatedMutation(tx, issue.id);
+        if (!lockedIssue) throw notFound("Issue not found");
+
         const [asset] = await tx
           .insert(assets)
           .values({
@@ -7958,6 +8032,7 @@ export function issueService(db: Db) {
             issueCommentId: input.issueCommentId ?? null,
           })
           .returning();
+        await bumpIssueVersions(tx, [issue.id]);
 
         return {
           id: attachment.id,
@@ -8029,6 +8104,16 @@ export function issueService(db: Db) {
 
     removeAttachment: async (id: string) =>
       db.transaction(async (tx) => {
+        const attachmentIssue = await tx
+          .select({ issueId: issueAttachments.issueId })
+          .from(issueAttachments)
+          .where(eq(issueAttachments.id, id))
+          .then((rows) => rows[0] ?? null);
+        if (!attachmentIssue) return null;
+
+        const lockedIssue = await lockIssueForRelatedMutation(tx, attachmentIssue.issueId);
+        if (!lockedIssue) return null;
+
         const existing = await tx
           .select({
             id: issueAttachments.id,
@@ -8050,11 +8135,13 @@ export function issueService(db: Db) {
           .from(issueAttachments)
           .innerJoin(assets, eq(issueAttachments.assetId, assets.id))
           .where(eq(issueAttachments.id, id))
+          .for("update")
           .then((rows) => rows[0] ?? null);
         if (!existing) return null;
 
         await tx.delete(issueAttachments).where(eq(issueAttachments.id, id));
         await tx.delete(assets).where(eq(assets.id, existing.assetId));
+        await bumpIssueVersions(tx, [existing.issueId]);
         return existing;
       }),
 

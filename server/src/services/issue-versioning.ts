@@ -1,22 +1,20 @@
-import { and, eq, inArray, sql, type SQL } from "drizzle-orm";
-import { issues, type Db } from "@paperclipai/db";
+import { and, eq, inArray } from "drizzle-orm";
+import {
+  issues,
+  versionedIssuePatch,
+  type Db,
+  type IssueMutationPatch,
+} from "@paperclipai/db";
 
 export type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 export type DbOrTx = Db | DbTransaction;
+export { versionedIssuePatch, type IssueMutationPatch } from "@paperclipai/db";
 
 export class IssueVersionConflictError extends Error {
   constructor(readonly currentVersion: number) {
     super("Issue version conflict");
   }
 }
-
-export type IssueMutationPatch = Omit<
-  Partial<typeof issues.$inferInsert>,
-  "id" | "version" | "updatedAt"
->;
-type VersionedIssuePatchInput = {
-  [Key in keyof IssueMutationPatch]: IssueMutationPatch[Key] | SQL;
-};
 
 export type IssueMutationPlan<T> = {
   issuePatch?: IssueMutationPatch;
@@ -40,17 +38,6 @@ export type RunIssueMutationInput<T> = {
 
 function isDbTransaction(dbOrTx: DbOrTx): dbOrTx is DbTransaction {
   return "rollback" in dbOrTx;
-}
-
-export function versionedIssuePatch(
-  patch: VersionedIssuePatchInput,
-  now = new Date(),
-) {
-  return {
-    ...patch,
-    updatedAt: now,
-    version: sql`${issues.version} + 1`,
-  };
 }
 
 export async function bumpIssueVersions(

@@ -19,7 +19,7 @@ import { createServer } from "node:net";
 import { Readable } from "node:stream";
 import * as p from "@clack/prompts";
 import pc from "picocolors";
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, sql } from "drizzle-orm";
 import {
   applyPendingMigrations,
   agents,
@@ -44,6 +44,7 @@ import {
   runDatabaseBackup,
   runDatabaseRestore,
   resetPostgresDatabase,
+  versionedIssuePatch,
   createEmbeddedPostgresLogBuffer,
   formatEmbeddedPostgresError,
   prepareEmbeddedPostgresNativeRuntime,
@@ -1240,7 +1241,7 @@ export async function quarantineSeededWorktreeExecutionState(
         const nextStatus = issue.status === "in_progress" ? "blocked" : issue.status;
         await tx
           .update(issues)
-          .set({
+          .set(versionedIssuePatch({
             status: nextStatus,
             assigneeAgentId: null,
             checkoutRunId: null,
@@ -1248,8 +1249,7 @@ export async function quarantineSeededWorktreeExecutionState(
             executionAgentNameKey: null,
             executionLockedAt: null,
             executionWorkspaceId: null,
-            updatedAt: new Date(),
-          })
+          }))
           .where(eq(issues.id, issue.id));
 
         if (issue.status === "in_progress") {
@@ -2592,7 +2592,7 @@ async function promptForSourceEndpoint(excludeWorktreePath?: string): Promise<Re
   return resolveWorktreeEndpointFromSelector(selection, { allowCurrent: true });
 }
 
-async function applyMergePlan(input: {
+export async function applyMergePlan(input: {
   sourceStorages: ConfiguredStorage[];
   targetStorage: ConfiguredStorage;
   targetDb: ClosableDb;
@@ -2600,8 +2600,9 @@ async function applyMergePlan(input: {
   plan: Awaited<ReturnType<typeof collectMergePlan>>["plan"];
 }) {
   const companyId = input.company.id;
-
   return await input.targetDb.transaction(async (tx) => {
+    const affectedIssueIds = new Set<string>();
+    const mergeLocks = await lockMergePlanParents(tx, companyId, input.plan);
     const importedProjectIds = input.plan.projectImports.map((project) => project.source.id);
     const existingImportedProjectIds = importedProjectIds.length > 0
       ? new Set(
@@ -2742,9 +2743,9 @@ async function applyMergePlan(input: {
       insertedIssues += 1;
     }
 
-    const commentCandidates = input.plan.commentPlans.filter(
-      (plan): plan is PlannedCommentInsert => plan.action === "insert",
-    );
+    const {
+      commentCandidates,
+    } = mergeLocks;
     const commentCandidateIds = commentCandidates.map((comment) => comment.source.id);
     const existingCommentIds = commentCandidateIds.length > 0
       ? new Set(
@@ -2776,12 +2777,13 @@ async function applyMergePlan(input: {
         updatedAt: comment.source.updatedAt,
       });
       insertedComments += 1;
+      affectedIssueIds.add(comment.source.issueId);
     }
 
-    const documentCandidates = input.plan.documentPlans.filter(
-      (plan): plan is PlannedIssueDocumentInsert | PlannedIssueDocumentMerge =>
-        plan.action === "insert" || plan.action === "merge_existing",
-    );
+    const {
+      documentCandidates,
+      lockedDocumentLinksById,
+    } = mergeLocks;
     let insertedDocuments = 0;
     let mergedDocuments = 0;
     let insertedDocumentRevisions = 0;
@@ -2838,11 +2840,11 @@ async function applyMergePlan(input: {
         });
         insertedDocuments += 1;
       } else {
-        const existingLink = await tx
-          .select({ id: issueDocuments.id })
-          .from(issueDocuments)
-          .where(eq(issueDocuments.documentId, documentPlan.source.documentId))
-          .then((rows) => rows[0] ?? null);
+        const existingLink =
+          lockedDocumentLinksById
+            .get(
+              documentPlan.source.documentId,
+            ) ?? null;
         if (!existingLink) {
           await tx.insert(issueDocuments).values({
             id: documentPlan.source.id,
@@ -2854,6 +2856,7 @@ async function applyMergePlan(input: {
             updatedAt: documentPlan.source.linkUpdatedAt,
           });
         } else {
+          affectedIssueIds.add(existingLink.issueId);
           await tx
             .update(issueDocuments)
             .set({
@@ -2903,11 +2906,12 @@ async function applyMergePlan(input: {
         });
         insertedDocumentRevisions += 1;
       }
+      affectedIssueIds.add(documentPlan.source.issueId);
     }
 
-    const attachmentCandidates = input.plan.attachmentPlans.filter(
-      (plan): plan is PlannedAttachmentInsert => plan.action === "insert",
-    );
+    const {
+      attachmentCandidates,
+    } = mergeLocks;
     const existingAttachmentIds = new Set(
       (
         await tx
@@ -2918,6 +2922,8 @@ async function applyMergePlan(input: {
     );
     let insertedAttachments = 0;
     let skippedMissingAttachmentObjects = 0;
+    const pendingAttachmentWrites: Array<{
+      objectKey: string; body: Buffer; contentType: string }> = [];
     for (const attachment of attachmentCandidates) {
       if (existingAttachmentIds.has(attachment.source.id)) continue;
       const parentExists = await tx
@@ -2936,13 +2942,6 @@ async function applyMergePlan(input: {
         skippedMissingAttachmentObjects += 1;
         continue;
       }
-      await input.targetStorage.putObject(
-        companyId,
-        attachment.source.objectKey,
-        body,
-        attachment.source.contentType,
-      );
-
       await tx.insert(assets).values({
         id: attachment.source.assetId,
         companyId,
@@ -2968,8 +2967,26 @@ async function applyMergePlan(input: {
         updatedAt: attachment.source.attachmentUpdatedAt,
       });
       insertedAttachments += 1;
+      affectedIssueIds.add(attachment.source.issueId);
+      pendingAttachmentWrites.push({
+        objectKey: attachment.source.objectKey,
+        body,
+        contentType: attachment.source.contentType,
+      });
     }
 
+    if (affectedIssueIds.size > 0) {
+      await tx
+        .update(issues)
+        .set(versionedIssuePatch({}))
+        .where(
+          and(
+            eq(issues.companyId, companyId),
+            inArray(issues.id, [...affectedIssueIds]),
+          ),
+        );
+    }
+    await writePendingAttachmentObjects(input.targetStorage, companyId, pendingAttachmentWrites);
     return {
       insertedProjects,
       insertedProjectWorkspaces,
@@ -2983,6 +3000,137 @@ async function applyMergePlan(input: {
       insertedIssueIdentifiers,
     };
   });
+}
+
+type MergeTransaction = Parameters<
+  Parameters<ClosableDb["transaction"]>[0]
+>[0];
+
+async function writePendingAttachmentObjects(
+  storage: ConfiguredStorage,
+  companyId: string,
+  attachments: Array<{
+    objectKey: string;
+    body: Buffer;
+    contentType: string;
+  }>,
+) {
+  for (const attachment of attachments) {
+    await storage.putObject(
+      companyId,
+      attachment.objectKey,
+      attachment.body,
+      attachment.contentType,
+    );
+  }
+}
+
+async function lockMergePlanParents(
+  tx: MergeTransaction,
+  companyId: string,
+  plan: Awaited<ReturnType<typeof collectMergePlan>>["plan"],
+) {
+  const commentCandidates = plan.commentPlans.filter(
+    (candidate): candidate is PlannedCommentInsert =>
+      candidate.action === "insert",
+  );
+  const documentCandidates = plan.documentPlans.filter(
+    (
+      candidate,
+    ): candidate is PlannedIssueDocumentInsert | PlannedIssueDocumentMerge =>
+      candidate.action === "insert" || candidate.action === "merge_existing",
+  );
+  const attachmentCandidates = plan.attachmentPlans.filter(
+    (candidate): candidate is PlannedAttachmentInsert =>
+      candidate.action === "insert",
+  );
+  const plannedIssueInsertIds = new Set(
+    plan.issuePlans
+      .filter((candidate): candidate is PlannedIssueInsert =>
+        candidate.action === "insert")
+      .map((candidate) => candidate.source.id),
+  );
+  const plannedParentIssueIds = new Set([
+    ...commentCandidates.map((candidate) => candidate.source.issueId),
+    ...documentCandidates.map((candidate) => candidate.source.issueId),
+    ...attachmentCandidates.map((candidate) => candidate.source.issueId),
+  ]);
+  const candidateDocumentIds = [
+    ...new Set(
+      documentCandidates.map((candidate) => candidate.source.documentId),
+    ),
+  ].sort();
+  const prefetchedDocumentLinks = candidateDocumentIds.length > 0
+    ? await tx
+        .select({
+          documentId: issueDocuments.documentId,
+          issueId: issueDocuments.issueId,
+        })
+        .from(issueDocuments)
+        .where(
+          and(
+            eq(issueDocuments.companyId, companyId),
+            inArray(issueDocuments.documentId, candidateDocumentIds),
+          ),
+        )
+    : [];
+  for (const link of prefetchedDocumentLinks) {
+    plannedParentIssueIds.add(link.issueId);
+  }
+
+  const parentIdsToLock = [...plannedParentIssueIds].sort();
+  const lockedParentIds = parentIdsToLock.length > 0
+    ? new Set(
+        (
+          await tx
+            .select({ id: issues.id })
+            .from(issues)
+            .where(
+              and(
+                eq(issues.companyId, companyId),
+                inArray(issues.id, parentIdsToLock),
+              ),
+            )
+            .orderBy(asc(issues.id))
+            .for("update")
+        ).map((row) => row.id),
+      )
+    : new Set<string>();
+  const lockedDocumentLinks = candidateDocumentIds.length > 0
+    ? await tx
+        .select({
+          documentId: issueDocuments.documentId,
+          issueId: issueDocuments.issueId,
+        })
+        .from(issueDocuments)
+        .where(
+          and(
+            eq(issueDocuments.companyId, companyId),
+            inArray(issueDocuments.documentId, candidateDocumentIds),
+          ),
+        )
+        .orderBy(asc(issueDocuments.documentId))
+        .for("update")
+    : [];
+  for (const link of lockedDocumentLinks) {
+    if (
+      !lockedParentIds.has(link.issueId) &&
+      !plannedIssueInsertIds.has(link.issueId)
+    ) {
+      throw new Error(
+        `Document ${link.documentId} moved to an unlocked issue during merge planning.`,
+      );
+    }
+  }
+
+  return {
+    commentCandidates,
+    documentCandidates,
+    attachmentCandidates,
+    lockedDocumentLinksById: new Map(
+      lockedDocumentLinks.map((link) => [link.documentId, link]),
+    ),
+  };
 }
 
 export async function worktreeMergeHistoryCommand(sourceArg: string | undefined, opts: WorktreeMergeHistoryOptions): Promise<void> {

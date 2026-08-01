@@ -1,5 +1,31 @@
-import { describe, expect, it } from "vitest";
-import { buildWorktreeMergePlan, parseWorktreeMergeScopes } from "../commands/worktree-merge-history-lib.js";
+import { randomUUID } from "node:crypto";
+import { eq } from "drizzle-orm";
+import { describe, expect, it, vi } from "vitest";
+import {
+  assets,
+  companies,
+  createDb,
+  documentRevisions,
+  documents,
+  issueAttachments,
+  issueComments,
+  issueDocuments,
+  issues,
+  projectWorkspaces,
+  projects,
+} from "@paperclipai/db";
+import {
+  buildWorktreeMergePlan,
+  parseWorktreeMergeScopes,
+} from "../commands/worktree-merge-history-lib.js";
+import { applyMergePlan } from "../commands/worktree.js";
+import {
+  getEmbeddedPostgresTestSupport,
+  startEmbeddedPostgresTestDatabase,
+} from "./helpers/embedded-postgres.js";
+
+const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+const itEmbeddedPostgres = embeddedPostgresSupport.supported ? it : it.skip;
 
 function makeIssue(overrides: Record<string, unknown> = {}) {
   return {
@@ -161,11 +187,636 @@ function makeProjectWorkspace(overrides: Record<string, unknown> = {}) {
   } as any;
 }
 
+function queryParameterValues(value: unknown, seen = new Set<unknown>()): string[] {
+  if (!value || typeof value !== "object" || seen.has(value)) return [];
+  seen.add(value);
+  if (
+    value.constructor?.name === "Param" &&
+    "value" in value &&
+    typeof value.value === "string"
+  ) {
+    return [value.value];
+  }
+  return Object.values(value).flatMap((nested) =>
+    queryParameterValues(nested, seen));
+}
+
+function instrumentedMergeHarness({
+  companyId,
+  expectedParentIds,
+  previousLinkParentId,
+  failStorage = false,
+}: {
+  companyId: string;
+  expectedParentIds: string[];
+  previousLinkParentId: string;
+  failStorage?: boolean;
+}) {
+  const events: string[] = [];
+  let lockedIds: string[] = [];
+  let committed = false;
+  let rolledBack = false;
+
+  class Query {
+    table: unknown;
+    selection: Record<string, unknown> | undefined;
+    kind: "select" | "insert" | "update";
+    whereValues: string[] = [];
+    ordered = false;
+    lock: string | null = null;
+    executed = false;
+
+    constructor(
+      kind: "select" | "insert" | "update",
+      table?: unknown,
+      selection?: Record<string, unknown>,
+    ) {
+      this.kind = kind;
+      this.table = table;
+      this.selection = selection;
+    }
+
+    from(table: unknown) {
+      this.table = table;
+      return this;
+    }
+
+    where(condition: unknown) {
+      this.whereValues = queryParameterValues(condition);
+      return this;
+    }
+
+    orderBy(..._values: unknown[]) {
+      this.ordered = true;
+      return this;
+    }
+
+    for(lock: string) {
+      this.lock = lock;
+      return this;
+    }
+
+    values(_values: unknown) {
+      return this;
+    }
+
+    set(_values: unknown) {
+      return this;
+    }
+
+    returning(_selection?: unknown) {
+      return this;
+    }
+
+    async execute() {
+      if (this.executed) return [];
+      this.executed = true;
+      const fields = Object.keys(this.selection ?? {}).sort().join(",");
+
+      if (this.kind === "select") {
+        if (this.table === projects || this.table === projectWorkspaces) return [];
+        if (this.table === issueComments || this.table === issueAttachments) return [];
+        if (this.table === issues && this.lock === "update") {
+          events.push("parent-lock");
+          lockedIds = this.whereValues.filter((value) => value !== companyId);
+          expect(this.ordered).toBe(true);
+          return expectedParentIds.map((id) => ({ id }));
+        }
+        if (this.table === issues) return [{ id: expectedParentIds[0] }];
+        if (this.table === issueDocuments && fields === "documentId,issueId") {
+          events.push(this.lock === "update" ? "link-revalidate" : "link-prefetch");
+          return [{ documentId: "document-1", issueId: previousLinkParentId }];
+        }
+        if (this.table === issueDocuments && fields === "documentId") {
+          return [{ documentId: "document-1" }];
+        }
+        if (this.table === issueDocuments && fields === "id,issueId") {
+          return [{ id: "link-1", issueId: previousLinkParentId }];
+        }
+        if (this.table === documents) return [{ id: "document-1" }];
+        if (this.table === documentRevisions) return [];
+        return [];
+      }
+
+      const tableName =
+        this.table === issueComments ? "comments"
+          : this.table === issueDocuments ? "links"
+            : this.table === documents ? "documents"
+              : this.table === documentRevisions ? "revisions"
+                : this.table === assets ? "assets"
+                  : this.table === issueAttachments ? "attachments"
+                    : this.table === issues ? "issues"
+                      : "other";
+      if (this.table === issues && this.kind === "update") {
+        events.push("parent-version-update");
+      } else {
+        events.push(`child-${this.kind}:${tableName}`);
+      }
+      return [];
+    }
+
+    then<TResult1 = unknown, TResult2 = never>(
+      onfulfilled?: ((value: unknown) => TResult1 | PromiseLike<TResult1>) | null,
+      onrejected?: ((reason: unknown) => TResult2 | PromiseLike<TResult2>) | null,
+    ) {
+      return this.execute().then(onfulfilled, onrejected);
+    }
+  }
+
+  const tx = {
+    select: (selection?: Record<string, unknown>) =>
+      new Query("select", undefined, selection),
+    insert: (table: unknown) => new Query("insert", table),
+    update: (table: unknown) => new Query("update", table),
+  };
+  const targetDb = {
+    transaction: async (callback: (transaction: typeof tx) => Promise<unknown>) => {
+      try {
+        const result = await callback(tx);
+        committed = true;
+        return result;
+      } catch (error) {
+        rolledBack = true;
+        throw error;
+      }
+    },
+  };
+  const sourceStorage = {
+    getObject: vi.fn(async () => Buffer.from("image")),
+    putObject: vi.fn(async () => undefined),
+  };
+  const targetStorage = {
+    getObject: vi.fn(async () => Buffer.alloc(0)),
+    putObject: vi.fn(async () => {
+      events.push("storage-put");
+      if (failStorage) throw new Error("storage unavailable");
+    }),
+  };
+  return {
+    events,
+    get lockedIds() {
+      return lockedIds;
+    },
+    get committed() {
+      return committed;
+    },
+    get rolledBack() {
+      return rolledBack;
+    },
+    sourceStorage,
+    targetDb: targetDb as any,
+    targetStorage,
+  };
+}
+
+function orderingMergePlan(parentIds: {
+  comment: string;
+  document: string;
+  attachment: string;
+}) {
+  return {
+    projectImports: [],
+    issuePlans: [],
+    commentPlans: [
+      {
+        action: "insert",
+        source: makeComment({
+          id: "comment-ordering",
+          issueId: parentIds.comment,
+        }),
+        targetAuthorAgentId: null,
+      },
+    ],
+    documentPlans: [
+      {
+        action: "merge_existing",
+        source: makeIssueDocument({
+          id: "link-1",
+          issueId: parentIds.document,
+          documentId: "document-1",
+          latestRevisionId: "revision-2",
+          latestRevisionNumber: 2,
+        }),
+        targetCreatedByAgentId: null,
+        targetUpdatedByAgentId: null,
+        latestRevisionId: "revision-2",
+        latestRevisionNumber: 2,
+        revisionsToInsert: [
+          {
+            source: makeDocumentRevision({
+              id: "revision-2",
+              documentId: "document-1",
+              revisionNumber: 2,
+            }),
+            targetRevisionNumber: 2,
+            targetCreatedByAgentId: null,
+          },
+        ],
+      },
+    ],
+    attachmentPlans: [
+      {
+        action: "insert",
+        source: makeAttachment({
+          id: "attachment-ordering",
+          issueId: parentIds.attachment,
+        }),
+        targetIssueCommentId: null,
+        targetCreatedByAgentId: null,
+      },
+    ],
+  } as any;
+}
+
 describe("worktree merge history planner", () => {
   it("parses default scopes", () => {
     expect(parseWorktreeMergeScopes(undefined)).toEqual(["issues", "comments"]);
     expect(parseWorktreeMergeScopes("issues")).toEqual(["issues"]);
   });
+
+  itEmbeddedPostgres("increments an imported issue projection once per merge transaction", async () => {
+    const tempDb = await startEmbeddedPostgresTestDatabase("paperclip-worktree-merge-version-");
+    const db = createDb(tempDb.connectionString);
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    const firstCommentId = randomUUID();
+    const secondCommentId = randomUUID();
+    const documentId = randomUUID();
+    const revisionId = randomUUID();
+    const attachmentId = randomUUID();
+    const assetId = randomUUID();
+
+    try {
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix: "MRG",
+        requireBoardApprovalForNewAgents: false,
+      });
+      await db.insert(issues).values({
+        id: issueId,
+        companyId,
+        title: "Existing target issue",
+        status: "todo",
+        priority: "medium",
+        issueNumber: 1,
+        identifier: "MRG-1",
+      });
+      const [targetIssue] = await db.select().from(issues).where(eq(issues.id, issueId));
+
+      const plan = buildWorktreeMergePlan({
+        companyId,
+        companyName: "Paperclip",
+        issuePrefix: "MRG",
+        previewIssueCounterStart: 1,
+        scopes: ["issues", "comments"],
+        sourceIssues: [targetIssue],
+        targetIssues: [targetIssue],
+        sourceComments: [
+          makeComment({ id: firstCommentId, companyId, issueId, body: "First imported comment" }),
+          makeComment({ id: secondCommentId, companyId, issueId, body: "Second imported comment" }),
+        ],
+        targetComments: [],
+        sourceDocuments: [
+          makeIssueDocument({
+            id: randomUUID(),
+            companyId,
+            issueId,
+            documentId,
+            latestRevisionId: revisionId,
+          }),
+        ],
+        targetDocuments: [],
+        sourceDocumentRevisions: [
+          makeDocumentRevision({ id: revisionId, companyId, documentId }),
+        ],
+        targetDocumentRevisions: [],
+        sourceAttachments: [
+          makeAttachment({
+            id: attachmentId,
+            companyId,
+            issueId,
+            issueCommentId: firstCommentId,
+            assetId,
+            objectKey: `${companyId}/issues/${issueId}/asset.png`,
+          }),
+        ],
+        targetAttachments: [],
+        sourceProjects: [],
+        sourceProjectWorkspaces: [],
+        targetAgents: [],
+        targetProjects: [],
+        targetProjectWorkspaces: [],
+        targetGoals: [],
+      });
+      const sourceStorage = {
+        getObject: vi.fn(async () => Buffer.from("image")),
+        putObject: vi.fn(async () => undefined),
+      };
+      const targetStorage = {
+        getObject: vi.fn(async () => Buffer.alloc(0)),
+        putObject: vi.fn(async () => undefined),
+      };
+
+      await applyMergePlan({
+        sourceStorages: [sourceStorage],
+        targetStorage,
+        targetDb: db,
+        company: { id: companyId, name: "Paperclip", issuePrefix: "MRG" },
+        plan,
+      });
+
+      const [updatedIssue] = await db.select().from(issues).where(eq(issues.id, issueId));
+      expect(updatedIssue.version).toBe(2);
+      expect(targetStorage.putObject).toHaveBeenCalledOnce();
+    } finally {
+      await db.$client?.end?.({ timeout: 5 }).catch(() => undefined);
+      await tempDb.cleanup();
+    }
+  }, 120_000);
+
+  it("locks every planned and previous-link parent before child mutations", async () => {
+    const companyId = "company-1";
+    const parentIds = {
+      comment: "issue-comment",
+      document: "issue-document-new",
+      attachment: "issue-attachment",
+    };
+    const previousLinkParentId = "issue-document-old";
+    const expectedParentIds = [
+      parentIds.attachment,
+      parentIds.comment,
+      parentIds.document,
+      previousLinkParentId,
+    ].sort();
+    const harness = instrumentedMergeHarness({
+      companyId,
+      expectedParentIds,
+      previousLinkParentId,
+    });
+
+    const result = await applyMergePlan({
+      sourceStorages: [harness.sourceStorage],
+      targetStorage: harness.targetStorage,
+      targetDb: harness.targetDb,
+      company: { id: companyId, name: "Paperclip", issuePrefix: "MRG" },
+      plan: orderingMergePlan(parentIds),
+    });
+
+    expect(harness.lockedIds).toEqual(expectedParentIds);
+    expect(harness.events.indexOf("parent-lock")).toBeGreaterThanOrEqual(0);
+    expect(harness.events.indexOf("link-revalidate")).toBeGreaterThan(
+      harness.events.indexOf("parent-lock"),
+    );
+    const firstChild = harness.events.findIndex((event) => event.startsWith("child-"));
+    expect(firstChild).toBeGreaterThan(harness.events.indexOf("link-revalidate"));
+    expect(result).toMatchObject({
+      insertedComments: 1,
+      mergedDocuments: 1,
+      insertedDocumentRevisions: 1,
+      insertedAttachments: 1,
+    });
+    expect(harness.committed).toBe(true);
+  });
+
+  it("defers object storage writes until after the parent version update", async () => {
+    const companyId = "company-1";
+    const parentIds = {
+      comment: "issue-comment",
+      document: "issue-document-new",
+      attachment: "issue-attachment",
+    };
+    const harness = instrumentedMergeHarness({
+      companyId,
+      expectedParentIds: [
+        parentIds.attachment,
+        parentIds.comment,
+        parentIds.document,
+        "issue-document-old",
+      ].sort(),
+      previousLinkParentId: "issue-document-old",
+    });
+
+    await applyMergePlan({
+      sourceStorages: [harness.sourceStorage],
+      targetStorage: harness.targetStorage,
+      targetDb: harness.targetDb,
+      company: { id: companyId, name: "Paperclip", issuePrefix: "MRG" },
+      plan: orderingMergePlan(parentIds),
+    });
+
+    expect(harness.events.indexOf("storage-put")).toBeGreaterThan(
+      harness.events.indexOf("parent-version-update"),
+    );
+  });
+
+  itEmbeddedPostgres("rolls back attachment metadata and version when storage fails", async () => {
+    const tempDb = await startEmbeddedPostgresTestDatabase("paperclip-worktree-storage-rollback-");
+    const db = createDb(tempDb.connectionString);
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    const attachmentId = randomUUID();
+    const assetId = randomUUID();
+    try {
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix: "MRG",
+        requireBoardApprovalForNewAgents: false,
+      });
+      await db.insert(issues).values({
+        id: issueId,
+        companyId,
+        title: "Existing target issue",
+        status: "todo",
+        priority: "medium",
+        issueNumber: 1,
+        identifier: "MRG-1",
+      });
+      const plan = {
+        projectImports: [],
+        issuePlans: [],
+        commentPlans: [],
+        documentPlans: [],
+        attachmentPlans: [
+          {
+            action: "insert",
+            source: makeAttachment({
+              id: attachmentId,
+              companyId,
+              issueId,
+              assetId,
+              objectKey: `${companyId}/issues/${issueId}/asset.png`,
+            }),
+            targetIssueCommentId: null,
+            targetCreatedByAgentId: null,
+          },
+        ],
+      } as any;
+
+      await expect(
+        applyMergePlan({
+          sourceStorages: [{
+            getObject: vi.fn(async () => Buffer.from("image")),
+            putObject: vi.fn(async () => undefined),
+          }],
+          targetStorage: {
+            getObject: vi.fn(async () => Buffer.alloc(0)),
+            putObject: vi.fn(async () => {
+              throw new Error("storage unavailable");
+            }),
+          },
+          targetDb: db,
+          company: { id: companyId, name: "Paperclip", issuePrefix: "MRG" },
+          plan,
+        }),
+      ).rejects.toThrow("storage unavailable");
+
+      const [issue] = await db.select().from(issues).where(eq(issues.id, issueId));
+      const storedAssets = await db.select().from(assets).where(eq(assets.id, assetId));
+      const storedAttachments = await db
+        .select()
+        .from(issueAttachments)
+        .where(eq(issueAttachments.id, attachmentId));
+      expect(issue.version).toBe(1);
+      expect(storedAssets).toEqual([]);
+      expect(storedAttachments).toEqual([]);
+    } finally {
+      await db.$client?.end?.({ timeout: 5 }).catch(() => undefined);
+      await tempDb.cleanup();
+    }
+  }, 120_000);
+
+  itEmbeddedPostgres("avoids the issue-to-document-link lock inversion", async () => {
+    const tempDb = await startEmbeddedPostgresTestDatabase("paperclip-worktree-lock-order-");
+    const db = createDb(tempDb.connectionString);
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    const documentId = randomUUID();
+    const linkId = randomUUID();
+    const revisionId = randomUUID();
+    let releaseDocumentMutation!: () => void;
+    const mayLockLink = new Promise<void>((resolve) => {
+      releaseDocumentMutation = resolve;
+    });
+    let reportParentLocked!: () => void;
+    const parentLocked = new Promise<void>((resolve) => {
+      reportParentLocked = resolve;
+    });
+
+    try {
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix: "MRG",
+        requireBoardApprovalForNewAgents: false,
+      });
+      await db.insert(issues).values({
+        id: issueId,
+        companyId,
+        title: "Existing target issue",
+        status: "todo",
+        priority: "medium",
+        issueNumber: 1,
+        identifier: "MRG-1",
+      });
+      await db.insert(documents).values({
+        id: documentId,
+        companyId,
+        title: "Plan",
+        format: "markdown",
+        latestBody: "# Old",
+        latestRevisionId: null,
+        latestRevisionNumber: 1,
+      });
+      await db.insert(issueDocuments).values({
+        id: linkId,
+        companyId,
+        issueId,
+        documentId,
+        key: "plan",
+      });
+
+      const documentMutation = db.transaction(async (tx) => {
+        await tx
+          .select({ id: issues.id })
+          .from(issues)
+          .where(eq(issues.id, issueId))
+          .for("update");
+        reportParentLocked();
+        await mayLockLink;
+        await tx
+          .update(issueDocuments)
+          .set({ updatedAt: new Date("2026-03-21T00:00:00.000Z") })
+          .where(eq(issueDocuments.documentId, documentId));
+      });
+      await parentLocked;
+
+      const plan = {
+        projectImports: [],
+        issuePlans: [],
+        commentPlans: [],
+        attachmentPlans: [],
+        documentPlans: [
+          {
+            action: "merge_existing",
+            source: makeIssueDocument({
+              id: linkId,
+              companyId,
+              issueId,
+              documentId,
+              latestBody: "# New",
+              latestRevisionId: revisionId,
+              latestRevisionNumber: 2,
+            }),
+            targetCreatedByAgentId: null,
+            targetUpdatedByAgentId: null,
+            latestRevisionId: revisionId,
+            latestRevisionNumber: 2,
+            revisionsToInsert: [
+              {
+                source: makeDocumentRevision({
+                  id: revisionId,
+                  companyId,
+                  documentId,
+                  revisionNumber: 2,
+                  body: "# New",
+                }),
+                targetRevisionNumber: 2,
+                targetCreatedByAgentId: null,
+              },
+            ],
+          },
+        ],
+      } as any;
+      const merge = applyMergePlan({
+        sourceStorages: [],
+        targetStorage: {
+          getObject: vi.fn(async () => Buffer.alloc(0)),
+          putObject: vi.fn(async () => undefined),
+        },
+        targetDb: db,
+        company: { id: companyId, name: "Paperclip", issuePrefix: "MRG" },
+        plan,
+      });
+
+      await new Promise((resolve) => setTimeout(resolve, 400));
+      releaseDocumentMutation();
+      let timeout: ReturnType<typeof setTimeout> | undefined;
+      await Promise.race([
+        Promise.all([documentMutation, merge]),
+        new Promise((_, reject) => {
+          timeout = setTimeout(() => reject(new Error("lock-order regression timed out")), 10_000);
+        }),
+      ]).finally(() => {
+        if (timeout) clearTimeout(timeout);
+      });
+    } finally {
+      releaseDocumentMutation();
+      await db.$client?.end?.({ timeout: 5 }).catch(() => undefined);
+      await tempDb.cleanup();
+    }
+  }, 120_000);
 
   it("dedupes nested worktree issues by preserved source uuid", () => {
     const sharedIssue = makeIssue({ id: "issue-a", identifier: "PAP-10", title: "Shared" });
