@@ -156,6 +156,12 @@ import {
   buildIssueBlockersResolvedWakeIdempotencyKey,
   findExistingIssueBlockersResolvedWake,
 } from "../services/issue-dependency-wakeups.js";
+import {
+  readCheckboxSelectionForWake,
+  readPlanReviewInteractionForWake,
+  readToolActionContinuationContext,
+  readToolActionExecutionStatus,
+} from "../services/issue-thread-interaction-continuation.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
 import { executionWorkspaceService as executionWorkspaceServiceDirect } from "../services/execution-workspaces.js";
 import { decisionTrainingService } from "../services/decision-training.js";
@@ -534,29 +540,6 @@ async function sanitizeIssueCreateAttribution<T extends object>(
 
 function authenticatedActorResponsibleUserId(req: Request) {
   return req.actor.type === "agent" ? req.actor.onBehalfOfUserId ?? null : null;
-}
-
-function readPlanConfirmationTargetForIssue(payload: unknown, issueId: string) {
-  const target = readObject(readObject(payload).target);
-  if (target.type !== "issue_document" || target.key !== "plan") return null;
-  if (readNonEmptyString(target.issueId) !== issueId) return null;
-  return {
-    issueId,
-    documentId: readNonEmptyString(target.documentId),
-    key: "plan",
-    revisionId: readNonEmptyString(target.revisionId),
-    revisionNumber: typeof target.revisionNumber === "number" ? target.revisionNumber : null,
-  };
-}
-
-function readConfirmationResultForWake(result: unknown) {
-  const parsed = readObject(result);
-  if (Object.keys(parsed).length === 0) return null;
-  return {
-    outcome: readNonEmptyString(parsed.outcome),
-    reason: readNonEmptyString(parsed.reason) ?? readNonEmptyString(parsed.rejectionReason),
-    commentId: readNonEmptyString(parsed.commentId),
-  };
 }
 
 function hasIssueWorkspaceAuditChange(previous: Record<string, unknown>) {
@@ -1801,82 +1784,6 @@ function isAssigneeSelfCommentOnTerminalIssue(input: {
   return input.actorId === input.assigneeAgentId;
 }
 
-function readToolActionExecutionStatus(value: unknown) {
-  return value === "approved"
-    || value === "executing"
-    || value === "executed"
-    || value === "failed"
-    || value === "expired"
-    ? value
-    : null;
-}
-
-function readToolActionContinuationContext(interaction: {
-  status: string;
-  payload?: unknown;
-  result?: unknown;
-}) {
-  const payload = readObject(interaction.payload);
-  const toolActionPayload = readObject(payload.toolAction);
-  const toolName = readNonEmptyString(toolActionPayload.toolName);
-  const actionRequestId = readNonEmptyString(toolActionPayload.actionRequestId);
-  if (!toolName || !actionRequestId) return null;
-
-  const result = readObject(interaction.result);
-  const toolActionResult = readObject(result.toolAction);
-  const declineReason = interaction.status === "rejected"
-    ? readNonEmptyString(result.reason)
-    : null;
-  const error = readNonEmptyString(toolActionResult.errorMessage);
-  const resultSummary = readNonEmptyString(toolActionResult.resultSummary);
-
-  if (interaction.status === "rejected") {
-    return {
-      toolName,
-      actionRequestId,
-      decision: "rejected",
-      executionStatus: "rejected",
-      ...(declineReason ? { declineReason } : {}),
-      instructions: `the action was declined${declineReason ? `: ${declineReason}` : ""}; do not retry the same call — adjust your approach or mark the task blocked/in_review with the decline reason.`,
-    };
-  }
-
-  if (interaction.status !== "accepted") return null;
-  const executionStatus = readToolActionExecutionStatus(toolActionResult.status);
-  if (!executionStatus) return null;
-
-  if (executionStatus === "executed") {
-    return {
-      toolName,
-      actionRequestId,
-      decision: "accepted",
-      executionStatus,
-      ...(resultSummary ? { resultSummary } : {}),
-      instructions: `the approved ${toolName} action already ran — do not call the tool again; continue with this result.`,
-    };
-  }
-
-  if (executionStatus === "failed") {
-    const failureMessage = error ?? "an unknown error";
-    return {
-      toolName,
-      actionRequestId,
-      decision: "accepted",
-      executionStatus,
-      ...(error ? { error } : {}),
-      instructions: `the approved action ran and failed with ${failureMessage}; adjust your approach — a fresh call will open a new approval.`,
-    };
-  }
-
-  return {
-    toolName,
-    actionRequestId,
-    decision: "accepted",
-    executionStatus,
-    instructions: `the approved ${toolName} action is ${executionStatus}; do not call the tool again while this approval is being processed.`,
-  };
-}
-
 const REQUEST_ITEM_VERDICTS_WAKE_COALESCE_WINDOW_MS = 2_000;
 
 function buildRequestItemVerdictsWakeIdempotencyKey(args: {
@@ -1948,8 +1855,10 @@ async function queueResolvedInteractionContinuationWakeup(input: {
 
   const forceFreshSession = input.forceFreshSession === true;
   const workspaceRefreshReason = readNonEmptyString(input.workspaceRefreshReason);
-  const planTarget = readPlanConfirmationTargetForIssue(input.interaction.payload, input.issue.id);
-  const interactionResult = readConfirmationResultForWake(input.interaction.result);
+  const planReviewInteraction = readPlanReviewInteractionForWake({
+    issueId: input.issue.id,
+    interaction: input.interaction,
+  });
   const checkboxSelection = readCheckboxSelectionForWake(input.interaction);
   const toolAction = readToolActionContinuationContext(input.interaction);
   const newlyResolvedItemIds = input.newlyResolvedItemIds?.filter((value) => value.length > 0) ?? [];
@@ -1959,17 +1868,6 @@ async function queueResolvedInteractionContinuationWakeup(input: {
         coalesceWindowMs: REQUEST_ITEM_VERDICTS_WAKE_COALESCE_WINDOW_MS,
       }
     : null;
-  const planReviewInteraction =
-    planTarget && input.interaction.kind === "request_confirmation"
-      ? {
-          id: input.interaction.id,
-          kind: input.interaction.kind,
-          status: input.interaction.status,
-          target: planTarget,
-          acceptedTargetRevision: input.interaction.status === "accepted" ? planTarget : null,
-          result: interactionResult,
-        }
-      : null;
   try {
     const run = await input.heartbeat.wakeup(input.issue.assigneeAgentId, {
       source: "automation",
@@ -2023,41 +1921,6 @@ async function queueResolvedInteractionContinuationWakeup(input: {
       agentId: input.issue.assigneeAgentId,
     }, "failed to wake assignee on issue interaction resolution");
   }
-}
-
-function readCheckboxSelectionForWake(input: {
-  kind: string;
-  payload?: unknown;
-  result?: unknown;
-}) {
-  if (input.kind !== "request_checkbox_confirmation") return null;
-  const result = readObject(input.result);
-  if (result.outcome !== "accepted") return null;
-  const selectedOptionIds = Array.isArray(result.selectedOptionIds)
-    ? result.selectedOptionIds.filter((value): value is string => typeof value === "string" && value.length > 0)
-    : [];
-  const payload = readObject(input.payload);
-  const options = Array.isArray(payload.options)
-    ? payload.options
-        .map((value) => {
-          const option = readObject(value);
-          const id = readNonEmptyString(option.id);
-          if (!id) return null;
-          return {
-            id,
-            label: readNonEmptyString(option.label) ?? id,
-            description: readNonEmptyString(option.description),
-          };
-        })
-        .filter((value): value is { id: string; label: string; description: string | null } => Boolean(value))
-    : [];
-  const optionById = new Map(options.map((option) => [option.id, option]));
-
-  return {
-    prompt: readNonEmptyString(payload.prompt),
-    selectedOptionIds,
-    selectedOptions: selectedOptionIds.map((id) => optionById.get(id) ?? { id, label: id, description: null }),
-  };
 }
 
 function diffExecutionParticipants(
