@@ -31,6 +31,7 @@ import { isTrainable } from "../lib/decisionTraining";
 import { cn, relativeTime } from "../lib/utils";
 import { StatusGlyph } from "./StatusGlyph";
 import { Button } from "./ui/button";
+import { Collapsible, CollapsibleContent } from "./ui/collapsible";
 import { Textarea } from "./ui/textarea";
 import {
   DropdownMenu,
@@ -316,18 +317,30 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
           expanded. Both sit in the row's own column now — the expanded state no
           longer opens a separately tinted and bordered drawer. */}
       {hasImages && !expanded && <ThumbnailStack images={images} />}
-      {expanded && hasImages && <ExpandedImages images={images} issueHref={issueHref} />}
 
-      {expanded && inline && (
-        <InlineResolver
-          item={item}
-          companyId={companyId}
-          agentMap={agentMap}
-          currentUserId={currentUserId}
-          userLabelMap={userLabelMap}
-          toggle={toggle}
-        />
-      )}
+      {/* The disclosure panel. Collapsible measures the panel and publishes its
+          height, so the card grows and shrinks to a real number rather than
+          snapping open. `contents` keeps the Root out of the layout, so a
+          collapsed row does not pay a flex gap for an empty wrapper — and once
+          the exit finishes Radix unmounts the panel, so a collapsed row is not
+          left with a live resolver behind it. */}
+      <Collapsible open={expanded} onOpenChange={() => onToggleExpand(item)} className="contents">
+        <CollapsibleContent data-decision-disclosure>
+          <div className="flex flex-col gap-4">
+            {hasImages && <ExpandedImages images={images} issueHref={issueHref} />}
+            {inline && (
+              <InlineResolver
+                item={item}
+                companyId={companyId}
+                agentMap={agentMap}
+                currentUserId={currentUserId}
+                userLabelMap={userLabelMap}
+                toggle={toggle}
+              />
+            )}
+          </div>
+        </CollapsibleContent>
+      </Collapsible>
 
       {/* Footer: disclosure on the left, decision verbs on the right. Sibling of
           the headline so taps never toggle expand. */}

@@ -182,3 +182,31 @@ Radix aligns box to box, so `align="start"` put the preview's *left edge* on the
 The offset follows the align prop (`start` negative, `end` the mirror, `center` zero) rather than being hardcoded to one direction, and both surfaces that render the standard card — `IssueLinkQuicklook` and `IssuesQuicklook` — now share `QUICKLOOK_CONTENT_CLASS` and this helper, so the preview is positioned identically wherever it opens.
 
 The 13px is a derived constant with the border and padding written out as `12 + 1`, and a test asserts the shell still carries `p-3`, so the two cannot drift apart silently.
+
+## First motion tokens, and the inert animate-in finding (design session, Jul 29 2026)
+
+**Motion tokens minted.** Durations and easings were previously written inline at each call site in `index.css`. Four named values now exist, and both new animations consume them:
+
+- `--motion-duration-enter: 160ms` / `--motion-duration-exit: 110ms` — exit is deliberately shorter: a thing appearing wants to be followed, a thing leaving just needs to get out of the way.
+- `--motion-ease-out: cubic-bezier(0.16, 1, 0.3, 1)` — the curve the dialog max-width transition already used, promoted to the system. It decelerates hard at the end, which is what reads as "snappy" rather than "slow start".
+- `--motion-ease-in: cubic-bezier(0.4, 0, 1, 1)` for exits.
+
+**Decision-card disclosure.** See more / See less now animates height through Radix `Collapsible`, which measures the panel and publishes `--radix-collapsible-content-height`, so the card grows and shrinks to a real number instead of snapping. Measured on the live card: 0 → 65 → 98 → 114 → 121 → 125 → 128px over ~136ms. The Root carries `contents` so a collapsed row pays no flex gap for an empty wrapper, and Radix keeps the panel an empty `hidden` shell when closed — verified all 17 closed panels hold zero children, so no row runs a resolver behind a collapsed card.
+
+**`animate-in` is dead CSS in this repo.** Chasing the quicklook's scale turned up that the shadcn `PopoverContent` class string (`animate-in`, `zoom-in-95`, `fade-in-0`, `slide-in-from-*`) resolves to nothing: those utilities ship with the `tailwindcss-animate` plugin, which is not a dependency and is not imported in `index.css`. A stylesheet scan found no `enter`/`exit` keyframes in the build. **This affects every shadcn surface in the app** — dialogs, dropdowns, tooltips, sheets all carry the same inert classes and have never animated.
+
+Rather than add the plugin for one surface — which would newly animate every one of those surfaces at once, an app-wide visual change nobody has reviewed — the quicklook defines its own `quicklook-open` / `quicklook-close` keyframes. Adopting the plugin properly is worth its own run.
+
+**Quicklook motion.** A shallow scale (0.96 → 1) plus opacity, anchored to `--radix-popover-content-transform-origin` so the card grows out of the task key that opened it rather than swelling in place. Verified live: `quicklook-open`, running, 160ms, ease-out, origin `0px 0px`.
+
+Both animations are disabled under `prefers-reduced-motion: reduce`.
+
+## Task eyebrow project reads as tile + name (design session, Jul 29 2026)
+
+The task detail eyebrow showed a bare `Hexagon` outline glyph next to the project name — a shape used nowhere else for projects. It now renders `ProjectTile` at `xs`, matching the sidebar and Projects list.
+
+Measured against the mock, every value matches and all of it resolves through tokens: 16×16 tile, 4.8px radius, `bg-muted` (`oklch(0.269 0 0)`, the mock's `#313131`), 10px folder icon, 4px gap, 2px/4px padding, 4px link radius, 12px `text-muted-foreground` (the mock's `#a1a1a1`).
+
+**The tile stays neutral rather than taking the project colour**, which `ProjectTile` would do if passed one. The eyebrow already carries the status glyph's colour, and a second tinted swatch beside it competes with the one mark that means something. Project colour still identifies the project on project-native surfaces. This matches the direction #9574 took for the Decisions feed.
+
+The seeded header (rendered from `headerSeed` while the issue loads) was updated in lockstep, so the eyebrow does not change shape when the real issue arrives.

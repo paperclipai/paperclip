@@ -22,6 +22,7 @@ export function IssuesQuicklook({ issue, children }: IssuesQuicklookProps) {
         {children}
       </PopoverTrigger>
       <PopoverContent
+        data-quicklook
         className={QUICKLOOK_CONTENT_CLASS}
         side="top"
         align="start"

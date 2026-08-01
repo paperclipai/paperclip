@@ -417,6 +417,8 @@ export const IssueLinkQuicklook = React.forwardRef<
       </PopoverTrigger>
       <PopoverContent
         ref={contentRef}
+        // Opts into the scale-from-trigger motion defined in index.css.
+        data-quicklook
         className={QUICKLOOK_CONTENT_CLASS}
         side={issueQuicklookSide}
         align={issueQuicklookAlign}
