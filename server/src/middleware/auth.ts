@@ -48,6 +48,26 @@ async function resolveLegacyRunResponsibleUserId(
   return normalizeOptionalString(run?.responsibleUserId);
 }
 
+/** Whether `runId` names a run of this agent in this company. */
+async function runBelongsToAgent(
+  db: Db,
+  input: { runId: string; companyId: string; agentId: string },
+) {
+  if (!isUuidLike(input.runId)) return false;
+  const run = await db
+    .select({ id: heartbeatRuns.id })
+    .from(heartbeatRuns)
+    .where(
+      and(
+        eq(heartbeatRuns.id, input.runId),
+        eq(heartbeatRuns.companyId, input.companyId),
+        eq(heartbeatRuns.agentId, input.agentId),
+      ),
+    )
+    .then((rows) => rows[0] ?? null);
+  return run !== null;
+}
+
 async function loadResponsibleUserMemberships(
   db: Db,
   input: { companyId: string; userId: string | null },
@@ -250,7 +270,11 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
           memberships: access.memberships,
           isInstanceAdmin: access.isInstanceAdmin,
           keyId: boardKey.id,
-          runId: runIdHeader || undefined,
+          // A board key acts for a user and owns no heartbeat run, so there is
+          // nothing to bind a run id to. Dropped rather than rejected, so an
+          // existing caller that sends the header keeps working — it simply stops
+          // being treated as if a run had acted.
+          runId: undefined,
           source: "board_key",
         };
         next();
@@ -362,6 +386,23 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
       });
       next(forbidden("Responsible user is unavailable for this agent key", {
         code: "RESPONSIBLE_USER_UNAVAILABLE",
+      }));
+      return;
+    }
+
+    // A run id on the wire is caller-controlled, so it must be proved before it is
+    // trusted for attribution. Without this, one agent can send another agent's run
+    // id and have its writes recorded against that run — which makes the self-wake
+    // guards (shouldImplicitlyMoveCommentedIssueToTodo, deferredCommentWakeIsSelfAuthored)
+    // treat the comment as self-authored and drop a wake that was owed. The agent JWT
+    // path already proves the claim; this gives the agent-key path the same footing.
+    if (runIdHeader && !(await runBelongsToAgent(db, {
+      runId: runIdHeader,
+      companyId: key.companyId,
+      agentId: key.agentId,
+    }))) {
+      next(unprocessable("X-Paperclip-Run-Id does not belong to this agent key", {
+        code: "AGENT_KEY_RUN_ID_MISMATCH",
       }));
       return;
     }

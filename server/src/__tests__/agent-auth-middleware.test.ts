@@ -345,6 +345,60 @@ describe("agent auth middleware", () => {
     });
   });
 
+  it("accepts an agent-key run id that belongs to the key's own agent", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const token = "pcp_test_agent_key_run_ok";
+    const { db } = createDbState({
+      agent: { id: agentId, companyId },
+      agentKey: {
+        id: randomUUID(),
+        agentId,
+        companyId,
+        keyHash: hashToken(token),
+        responsibleUserId: "user-key",
+      },
+      run: { id: runId, companyId, agentId },
+    });
+
+    const res = await request(createApp(db))
+      .get("/actor")
+      .set("Authorization", `Bearer ${token}`)
+      .set("x-paperclip-run-id", runId);
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({ type: "agent", agentId, runId, source: "agent_key" });
+  });
+
+  it("rejects an agent-key run id that names no run of this agent", async () => {
+    // A run id on the wire is caller-controlled. Trusted without proof, one agent
+    // could write against another agent's run, and the self-wake guards would read
+    // the comment as self-authored and drop a wake that was owed.
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const token = "pcp_test_agent_key_run_bad";
+    const { db } = createDbState({
+      agent: { id: agentId, companyId },
+      agentKey: {
+        id: randomUUID(),
+        agentId,
+        companyId,
+        keyHash: hashToken(token),
+        responsibleUserId: "user-key",
+      },
+      // no run row: the lookup finds nothing for this agent
+    });
+
+    const res = await request(createApp(db))
+      .get("/actor")
+      .set("Authorization", `Bearer ${token}`)
+      .set("x-paperclip-run-id", randomUUID());
+
+    expect(res.status).toBe(422);
+    expect(res.body?.code ?? res.body?.error?.code).toBe("AGENT_KEY_RUN_ID_MISMATCH");
+  });
+
   it("rejects agent keys that lack a responsible user binding and audits the denial", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
