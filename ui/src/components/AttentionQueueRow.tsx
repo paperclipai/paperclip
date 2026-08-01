@@ -358,8 +358,8 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
           same tokens as that grows and fades in, instead of popping. */}
       {hasCollapsedOnlyContent && (
         <Collapsible open={!expanded} className="contents">
-          <CollapsibleContent data-decision-disclosure>
-            <div className="flex flex-col gap-4">
+          <CollapsibleContent data-decision-disclosure className="-mt-4">
+            <div className="flex flex-col gap-4 pt-4">
               {hasImages && <ThumbnailStack images={images} />}
               {inline && renderFooter({ compact: true })}
             </div>
@@ -374,8 +374,8 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
           the exit finishes Radix unmounts the panel, so a collapsed row is not
           left with a live resolver behind it. */}
       <Collapsible open={expanded} onOpenChange={() => onToggleExpand(item)} className="contents">
-        <CollapsibleContent data-decision-disclosure>
-          <div className="flex flex-col gap-4">
+        <CollapsibleContent data-decision-disclosure className="-mt-4">
+          <div className="flex flex-col gap-4 pt-4">
             {hasImages && <ExpandedImages images={images} issueHref={issueHref} />}
             {inline && (
               <InlineResolver
