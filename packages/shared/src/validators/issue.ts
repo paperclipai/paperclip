@@ -530,6 +530,11 @@ export const createIssueLabelSchema = z.object({
 
 export type CreateIssueLabel = z.infer<typeof createIssueLabelSchema>;
 
+const unsupportedTopLevelIssueMonitorFieldSchema = z.custom<never>(
+  () => false,
+  "Top-level issue monitor fields are not supported; use executionPolicy.monitor",
+);
+
 export const updateIssueSchema = createIssueBaseSchema.omit({
   createdByUserId: true,
   responsibleUserId: true,
@@ -543,6 +548,9 @@ export const updateIssueSchema = createIssueBaseSchema.omit({
   resume: z.boolean().optional(),
   interrupt: z.boolean().optional(),
   hiddenAt: z.string().datetime().nullable().optional(),
+  monitorNextCheckAt: unsupportedTopLevelIssueMonitorFieldSchema.optional(),
+  monitorAttemptCount: unsupportedTopLevelIssueMonitorFieldSchema.optional(),
+  monitorLastTriggeredAt: unsupportedTopLevelIssueMonitorFieldSchema.optional(),
 });
 
 export type UpdateIssue = z.infer<typeof updateIssueSchema>;

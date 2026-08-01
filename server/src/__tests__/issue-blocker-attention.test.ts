@@ -244,6 +244,36 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     expect((await svc.list(companyId, { attention: "blocked" })).some((issue) => issue.id === parentId)).toBe(false);
   });
 
+  it("does not treat a routine parent link as monitor coverage", async () => {
+    const { companyId, agentId } = await createCompany("PBRM");
+    const routineParentId = await insertIssue({
+      companyId,
+      identifier: "PBRM-1",
+      title: "Routine parent",
+      status: "in_progress",
+      assigneeAgentId: agentId,
+    });
+    await activeRun({ companyId, agentId, issueId: routineParentId });
+    const routineExecutionId = await insertIssue({
+      companyId,
+      identifier: "PBRM-2",
+      title: "Routine execution without monitor",
+      status: "in_review",
+      parentId: routineParentId,
+      assigneeAgentId: agentId,
+      originKind: "routine_execution",
+    });
+
+    const routineExecution = (await svc.list(companyId, { attention: "blocked" }))
+      .find((issue) => issue.id === routineExecutionId);
+
+    expect(routineExecution?.blockedInboxAttention).toMatchObject({
+      state: "needs_attention",
+      reason: "in_review_without_action_path",
+      leafIssue: { id: routineExecutionId },
+    });
+  });
+
   it("does not let overdue or uninvokable-owner monitors hide real review stalls", async () => {
     const { companyId, agentId, pausedAgentId } = await createCompany("PBMX");
     const now = Date.now();

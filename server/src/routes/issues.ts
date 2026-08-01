@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
-import { Router, type Request, type Response } from "express";
+import { Router, type NextFunction, type Request, type Response } from "express";
 import multer from "multer";
 import { z } from "zod";
 import { and, asc, desc, eq, inArray, isNull, notInArray } from "drizzle-orm";
@@ -201,9 +201,40 @@ import { externalObjectService } from "../services/external-objects.js";
 import { deliverAgentUnblockNotification } from "../services/routable-blocked.js";
 
 const MAX_ISSUE_COMMENT_LIMIT = 500;
+const TOP_LEVEL_ISSUE_MONITOR_PATCH_FIELDS = [
+  "monitorNextCheckAt",
+  "monitorAttemptCount",
+  "monitorLastTriggeredAt",
+] as const;
 const updateIssueRouteSchema = updateIssueSchema.extend({
   interrupt: z.boolean().optional(),
 });
+
+function rejectTopLevelIssueMonitorPatch(
+  req: Request,
+  res: Response,
+  next: NextFunction,
+) {
+  const body = req.body;
+  const field =
+    body && typeof body === "object" && !Array.isArray(body)
+      ? TOP_LEVEL_ISSUE_MONITOR_PATCH_FIELDS.find((candidate) =>
+          Object.prototype.hasOwnProperty.call(body, candidate),
+        )
+      : undefined;
+  if (!field) {
+    next();
+    return;
+  }
+  res.status(422).json({
+    error: `${field} is not writable at the issue top level; use executionPolicy.monitor`,
+    details: {
+      code: "invalid_issue_monitor_payload",
+      field,
+      path: ["executionPolicy", "monitor"],
+    },
+  });
+}
 
 function prefersMinimalIssueUpdateResponse(req: Request) {
   return (req.get("Prefer") ?? "")
@@ -7798,7 +7829,7 @@ export function issueRoutes(
     res.json(result);
   });
 
-  router.patch("/issues/:id", validate(updateIssueRouteSchema), async (req, res) => {
+  router.patch("/issues/:id", rejectTopLevelIssueMonitorPatch, validate(updateIssueRouteSchema), async (req, res) => {
     const id = req.params.id as string;
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
     if (!existing) return;
