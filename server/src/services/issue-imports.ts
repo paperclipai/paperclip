@@ -3,7 +3,6 @@ import { and, asc, eq, inArray, max, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
-  agentWakeupRequests,
   companies,
   issueComments,
   issueImportItems,
@@ -432,8 +431,6 @@ export function issueImportService(db: Db) {
           await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`issue-import:linear:${companyId}:${item.sourceId}`}, 0))`);
         }
 
-        const wakeCountBefore = await tx.select({ count: sql<number>`count(*)::int` }).from(agentWakeupRequests)
-          .where(eq(agentWakeupRequests.companyId, companyId)).then((rows) => rows[0]?.count ?? 0);
         const sourceIds = itemRows.map((item) => item.sourceId);
         const existingIssues = await tx.select().from(issues).where(and(
           eq(issues.companyId, companyId),
@@ -616,10 +613,6 @@ export function issueImportService(db: Db) {
           }).where(eq(issueImportItems.id, item.id));
         }
 
-        const wakeCountAfter = await tx.select({ count: sql<number>`count(*)::int` }).from(agentWakeupRequests)
-          .where(eq(agentWakeupRequests.companyId, companyId)).then((rows) => rows[0]?.count ?? 0);
-        const wakeCount = wakeCountAfter - wakeCountBefore;
-        if (wakeCount !== 0) throw new Error("Issue import unexpectedly emitted agent wakes");
         const conflictCount = itemRows.reduce((sum, item) => sum + item.conflicts.length, 0);
         const [appliedRun] = await tx.update(issueImportRuns).set({
           status: "applied",

@@ -5,6 +5,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
+  agents,
   agentWakeupRequests,
   companies,
   createDb,
@@ -46,6 +47,7 @@ describePg("provider-aware staged issue imports", () => {
     await db.delete(issueImportRuns);
     await db.delete(agentWakeupRequests);
     await db.delete(issues);
+    await db.delete(agents);
     await db.delete(projects);
     await db.delete(companies);
   });
@@ -334,6 +336,64 @@ describePg("provider-aware staged issue imports", () => {
       activate: false,
     }).expect(200);
     expect(await tableCount(issueRelations)).toBe(0);
+  });
+
+  it("does not attribute an unrelated concurrent company wake to the import", async () => {
+    const { companyId, projectId } = await seed();
+    const [agent] = await db.insert(agents).values({ companyId, name: "Unrelated agent" }).returning();
+    const [unrelatedWake] = await db.insert(agentWakeupRequests).values({
+      companyId,
+      agentId: agent.id,
+      source: "manual",
+      reason: "Unrelated concurrent wake",
+    }).returning();
+    const payload = manifest(projectId, [item({ sourceIdentifier: "EXT-915" })]);
+    const preview = await request(app()).post(`/api/companies/${companyId}/issue-imports/preview`).send(payload).expect(201);
+
+    await db.execute(sql.raw(`
+      create function issue_import_test_delay() returns trigger as $$
+      begin
+        perform pg_advisory_xact_lock(580058);
+        perform pg_sleep(0.5);
+        return new;
+      end;
+      $$ language plpgsql;
+      create trigger issue_import_test_delay_trigger
+      after insert on issues
+      for each row when (new.origin_kind = 'linear_issue')
+      execute function issue_import_test_delay();
+    `));
+
+    let applied: request.Response | null = null;
+    try {
+      const concurrentDb = createDb(tempDb!.connectionString);
+      const applyPromise = request(app()).post(`/api/companies/${companyId}/issue-imports/apply`).send({
+        previewRunId: preview.body.previewRunId,
+        previewDigest: preview.body.previewDigest,
+        activate: false,
+      }).then((response) => response);
+      let triggerActive = false;
+      for (let attempt = 0; attempt < 100; attempt += 1) {
+        const [probe] = await concurrentDb.select({
+          acquired: sql<boolean>`pg_try_advisory_xact_lock(580058)`,
+        }).from(companies).limit(1);
+        if (!probe.acquired) {
+          triggerActive = true;
+          break;
+        }
+        await new Promise((resolve) => setTimeout(resolve, 10));
+      }
+      expect(triggerActive).toBe(true);
+      await concurrentDb.delete(agentWakeupRequests).where(eq(agentWakeupRequests.id, unrelatedWake.id));
+      applied = await applyPromise;
+    } finally {
+      await db.execute(sql.raw("drop trigger if exists issue_import_test_delay_trigger on issues"));
+      await db.execute(sql.raw("drop function if exists issue_import_test_delay()"));
+    }
+
+    expect(applied?.status).toBe(200);
+    expect(applied?.body.counts).toMatchObject({ assignments: 0, wakes: 0 });
+    expect(await tableCount(agentWakeupRequests)).toBe(0);
   });
 
   it("rejects digest drift without consuming the valid preview", async () => {

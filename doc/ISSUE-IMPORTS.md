@@ -80,6 +80,7 @@ Preview computes the manifest digest and each origin fingerprint server-side. It
 - Paperclip fields and relations are authoritative after linkage. A later source version is recorded as drift and updates origin state/audit data without silently overwriting Paperclip issue fields or restoring Paperclip-side relation edits.
 - Preview reports proposed blocker source IDs alongside current blocker issue/source IDs. A mismatch on an already reconciled issue records `blocker_relations_drift`; apply preserves the current Paperclip blocker set and records the reconciliation result.
 - Initial parent and blocker edges for issues created by the import are applied only after every source resolves to one issue, in the same transaction.
+- Apply writes every imported issue unassigned and never invokes the wake path. Its `wakes=0` report describes import-owned behavior rather than a racy company-wide wake-count delta, so unrelated concurrent wake processing cannot invalidate an import.
 - Imported comments use unique provider event receipts and `suppressOutboundMirror=true` metadata. Replay creates one comment and the receipt is the connector-facing loop guard.
 - Run and item records retain source version/timestamp, proposed/current/applied values, conflicts, failures, relations, comments, assignment count, and wake count. Request schemas do not accept provider credentials, and persisted failures use a bounded generic message.
 
