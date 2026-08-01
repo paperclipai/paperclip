@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { PROVIDER_QUOTA_MONITOR_SERVICE_NAME } from "@paperclipai/shared";
 import {
   activityLog,
   agentRuntimeState,
@@ -268,6 +269,73 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
       .where(eq(activityLog.entityId, issueId))
       .then((rows) => rows.map((row) => row.action));
     expect(activity).toContain("issue.monitor_triggered");
+  });
+
+  it("wakes a cross-agent review participant for provider quota monitors", async () => {
+    const { companyId, issueId, agentId: assigneeAgentId } = await seedFixture({
+      issueStatus: "in_review",
+      monitor: { serviceName: PROVIDER_QUOTA_MONITOR_SERVICE_NAME },
+    });
+    const participantAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: participantAgentId,
+      companyId,
+      name: "Quota-limited reviewer",
+      role: "engineer",
+      status: "active",
+      adapterType: "process",
+      adapterConfig: {
+        command: process.execPath,
+        args: ["-e", ""],
+        cwd: process.cwd(),
+      },
+      runtimeConfig: {
+        heartbeat: {
+          enabled: false,
+          wakeOnDemand: true,
+        },
+      },
+      permissions: {},
+    });
+    seededAgentIds.add(participantAgentId);
+    const monitorState = await db
+      .select({ executionState: issues.executionState })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => parseIssueExecutionState(rows[0]?.executionState ?? null)?.monitor ?? null);
+    await db.update(issues).set({
+      executionState: {
+        status: "pending",
+        currentStageId: randomUUID(),
+        currentStageIndex: 0,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: participantAgentId, userId: null },
+        returnAssignee: { type: "agent", agentId: assigneeAgentId, userId: null },
+        reviewRequest: null,
+        completedStageIds: [],
+        lastDecisionId: null,
+        lastDecisionOutcome: null,
+        monitor: monitorState,
+      },
+    }).where(eq(issues.id, issueId));
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.tickTimers(new Date("2026-04-11T12:31:00.000Z"));
+
+    expect(result.enqueued).toBe(1);
+    const wakeups = await db.select().from(agentWakeupRequests);
+    expect(wakeups).toHaveLength(1);
+    expect(wakeups[0]).toMatchObject({
+      agentId: participantAgentId,
+      reason: "execution_review_participant_recovery",
+    });
+    await waitForHeartbeatIdle();
+    const participantRuns = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, participantAgentId));
+    expect(participantRuns).toHaveLength(1);
+    expect(participantRuns[0]?.errorCode).not.toBe("issue_assignee_changed");
   });
 
   it("lets the board trigger a scheduled issue monitor immediately", async () => {

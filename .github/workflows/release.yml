@@ -54,7 +54,7 @@ jobs:
           version: 9.15.4
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: pnpm
@@ -77,6 +77,16 @@ jobs:
         env:
           GITHUB_ACTIONS: "true"
         run: ./scripts/release.sh canary --skip-verify
+
+      - name: Dump npm debug logs
+        if: failure()
+        run: |
+          shopt -s nullglob
+          for f in "$HOME"/.npm/_logs/*.log; do
+            echo "===== $f ====="
+            tail -n 300 "$f" | sed -E \
+              -e 's#((authorization|_authToken|_auth|node_auth_token|npm_token)"?[[:space:]]*[:=][[:space:]]*"?)(Bearer[[:space:]]+)?[^",[:space:]]+#\1***REDACTED***#Ig'
+          done
 
       - name: Push canary tag
         run: |
@@ -114,7 +124,7 @@ jobs:
           version: 9.15.4
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: pnpm
@@ -158,7 +168,7 @@ jobs:
           version: 9.15.4
 
       - name: Setup Node.js
-        uses: actions/setup-node@v6
+        uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: pnpm
@@ -183,6 +193,16 @@ jobs:
             args+=(--date "${{ inputs.stable_date }}")
           fi
           ./scripts/release.sh "${args[@]}"
+
+      - name: Dump npm debug logs
+        if: failure()
+        run: |
+          shopt -s nullglob
+          for f in "$HOME"/.npm/_logs/*.log; do
+            echo "===== $f ====="
+            tail -n 300 "$f" | sed -E \
+              -e 's#((authorization|_authToken|_auth|node_auth_token|npm_token)"?[[:space:]]*[:=][[:space:]]*"?)(Bearer[[:space:]]+)?[^",[:space:]]+#\1***REDACTED***#Ig'
+          done
 
       - name: Push stable tag
         run: |

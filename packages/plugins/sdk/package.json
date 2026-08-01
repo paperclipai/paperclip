@@ -112,7 +112,7 @@
     "zod": "^3.24.2"
   },
   "devDependencies": {
-    "@types/node": "^22.19.21",
+    "@types/node": "^22.20.1",
     "@types/react": "^19.2.17",
     "typescript": "^5.7.3"
   },

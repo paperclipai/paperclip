@@ -10,6 +10,7 @@ import { queryKeys } from "../../lib/queryKeys";
 import { cn } from "../../lib/utils";
 import { useToastActions } from "../../context/ToastContext";
 import { SetMyUserSecretDialog } from "./SetMyUserSecretDialog";
+import { SecretPathName } from "./SecretPathName";
 import {
   myValueLabel,
   myValueState,
@@ -136,7 +137,7 @@ function MyUserSecretRow({
     >
       <div className="min-w-0 flex-1">
         <div className="flex min-w-0 flex-wrap items-center gap-2">
-          <span className="font-medium text-foreground">{definition.name}</span>
+          <SecretPathName name={definition.name} />
           <code className="rounded bg-muted px-1.5 py-0.5 text-(length:--text-micro) text-muted-foreground">
             {definition.key}
           </code>

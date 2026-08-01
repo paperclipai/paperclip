@@ -3,6 +3,7 @@ import type {
   IssueCommentMetadataRowType,
   IssueCommentPresentationKind,
   IssueCommentPresentationTone,
+  IssueCommentPresentationDensity,
   IssueExecutionMonitorClearReason,
   IssueExecutionMonitorKind,
   IssueExecutionMonitorRecoveryPolicy,
@@ -399,6 +400,7 @@ export interface IssueBlockerAttention {
   coveredBlockerCount: number;
   stalledBlockerCount: number;
   attentionBlockerCount: number;
+  pendingFinalizeBlockerIssueIds?: string[];
   sampleBlockerIdentifier: string | null;
   sampleStalledBlockerIdentifier: string | null;
 }
@@ -472,6 +474,13 @@ export interface IssueBlockedInboxAttention {
   };
 }
 
+export type IssueUnblockOwner = { agentId: string } | { userId: string } | "board";
+
+export interface IssueUnblockDescriptor {
+  owner: IssueUnblockOwner;
+  action: string;
+}
+
 export type IssueProductivityReviewTrigger =
   | "no_comment_streak"
   | "long_active_duration"
@@ -522,6 +531,8 @@ export type SuccessfulRunHandoffStateKind = "required" | "resolved" | "escalated
 export interface SuccessfulRunHandoffState {
   state: SuccessfulRunHandoffStateKind;
   required: boolean;
+  hasLiveContinuation: boolean;
+  liveRunId?: string | null;
   sourceRunId: string | null;
   correctiveRunId: string | null;
   assigneeAgentId: string | null;
@@ -700,6 +711,14 @@ export interface IssueWatchdog extends IssueWatchdogSummary {
   updatedByRunId: string | null;
 }
 
+export interface IssueChangeReceiptEntry {
+  from: unknown;
+  to: unknown;
+  updated?: true;
+}
+
+export type IssueChanges = Record<string, IssueChangeReceiptEntry>;
+
 export interface Issue {
   id: string;
   companyId: string;
@@ -752,6 +771,9 @@ export interface Issue {
   blocks?: IssueRelationIssueSummary[];
   blockerAttention?: IssueBlockerAttention;
   blockedInboxAttention?: IssueBlockedInboxAttention | null;
+  unblockDescriptor?: IssueUnblockDescriptor | null;
+  blockedTransitionAt?: Date | null;
+  blockedOwnerNotifiedAt?: Date | null;
   productivityReview?: IssueProductivityReview | null;
   activeRecoveryAction?: IssueRecoveryAction | null;
   successfulRunHandoff?: SuccessfulRunHandoffState | null;
@@ -772,6 +794,10 @@ export interface Issue {
   lastExternalCommentAt?: Date | null;
   lastActivityAt?: Date | null;
   isUnreadForMe?: boolean;
+  archivedAt?: Date | null;
+  archivedByActorType?: "user" | "agent" | null;
+  archivedByAgentId?: string | null;
+  archivedByRunId?: string | null;
   createdAt: Date;
   updatedAt: Date;
 }
@@ -823,6 +849,10 @@ export type CompactIssue = Pick<
   lastExternalCommentAt?: Date | null;
   lastActivityAt?: Date | null;
   isUnreadForMe?: boolean;
+  archivedAt?: Date | null;
+  archivedByActorType?: "user" | "agent" | null;
+  archivedByAgentId?: string | null;
+  archivedByRunId?: string | null;
   activeRecoveryAction: IssueRecoveryAction | null;
   successfulRunHandoff: SuccessfulRunHandoffState | null;
 };
@@ -933,6 +963,7 @@ export interface IssueCommentPresentation {
   tone: IssueCommentPresentationTone;
   title?: string | null;
   detailsDefaultOpen: boolean;
+  density?: IssueCommentPresentationDensity;
 }
 
 export interface IssueThreadInteractionActorFields {
@@ -976,6 +1007,8 @@ export interface SuggestTasksResultCreatedTask {
 
 export interface SuggestTasksResult {
   version: 1;
+  outcome?: "withdrawn" | "issue_closed";
+  reason?: string | null;
   createdTasks?: SuggestTasksResultCreatedTask[];
   skippedClientKeys?: string[];
   rejectionReason?: string | null;
@@ -1012,6 +1045,8 @@ export interface AskUserQuestionsAnswer {
 
 export interface AskUserQuestionsResult {
   version: 1;
+  outcome?: "withdrawn" | "issue_closed";
+  reason?: string | null;
   answers: AskUserQuestionsAnswer[];
   cancelled?: true;
   cancellationReason?: string | null;
@@ -1044,6 +1079,43 @@ export type RequestConfirmationTarget =
   | RequestConfirmationIssueDocumentTarget
   | RequestConfirmationCustomTarget;
 
+/**
+ * Enrichment block carried on a `request_confirmation` interaction when it gates
+ * a write/destructive MCP tool call (PAP-13726 §D1). Its presence flips the feed
+ * card into the dedicated tool-approval rendering (PAP-13745). Arguments are
+ * redacted server-side before this reaches the client.
+ */
+export interface RequestConfirmationToolActionPayload {
+  version: 1;
+  actionRequestId: string;
+  invocationId: string;
+  toolName: string;
+  toolDisplayName: string;
+  connectionId: string | null;
+  applicationId: string | null;
+  appDisplayName: string | null;
+  risk: "write" | "destructive";
+  previewMarkdown: string;
+  argumentsSummaryJson: string;
+  argumentsHash: string;
+  expiresAt: string;
+}
+
+/**
+ * Lifecycle status written back onto the resolved interaction once the operator
+ * approves. `approve = run`, so the terminal states are executed/failed/expired —
+ * never a bare "accepted".
+ */
+export interface RequestConfirmationToolActionResult {
+  version: 1;
+  status: "approved" | "executing" | "executed" | "failed" | "expired";
+  errorCode?: string | null;
+  errorMessage?: string | null;
+  resultSummary?: string | null;
+  resultHref?: string | null;
+  updatedAt: string;
+}
+
 export interface RequestConfirmationPayload {
   version: 1;
   prompt: string;
@@ -1056,6 +1128,7 @@ export interface RequestConfirmationPayload {
   detailsMarkdown?: string | null;
   supersedeOnUserComment?: boolean;
   target?: RequestConfirmationTarget | null;
+  toolAction?: RequestConfirmationToolActionPayload;
 }
 
 export interface RequestCheckboxConfirmationOption {
@@ -1108,7 +1181,7 @@ export interface RequestItemVerdictsPayload {
 
 export interface RequestConfirmationResult {
   version: 1;
-  outcome: "accepted" | "rejected" | "superseded_by_comment" | "stale_target";
+  outcome: "accepted" | "rejected" | "superseded_by_comment" | "stale_target" | "withdrawn" | "issue_closed";
   reason?: string | null;
   commentId?: string | null;
   staleTarget?: RequestConfirmationTarget | null;
@@ -1122,6 +1195,7 @@ export interface RequestConfirmationResult {
     recoveryActionId?: string | null;
     updatedAt?: string | null;
   } | null;
+  toolAction?: RequestConfirmationToolActionResult;
 }
 
 export interface RequestCheckboxConfirmationResult extends RequestConfirmationResult {
@@ -1139,7 +1213,8 @@ export interface RequestItemVerdictsResultItem {
 
 export interface RequestItemVerdictsResult {
   version: 1;
-  outcome: "resolved" | "superseded_by_comment" | "stale_target" | "cancelled";
+  outcome: "resolved" | "superseded_by_comment" | "stale_target" | "cancelled" | "withdrawn" | "issue_closed";
+  reason?: string | null;
   complete: boolean;
   items: RequestItemVerdictsResultItem[];
   commentId?: string | null;

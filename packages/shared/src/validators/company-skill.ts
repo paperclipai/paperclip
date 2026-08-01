@@ -20,6 +20,8 @@ export const companySkillVersionFileInventoryEntrySchema = companySkillFileInven
 export const companySkillSchema = z.object({
   id: z.string().uuid(),
   companyId: z.string().uuid(),
+  folderId: z.string().uuid().nullable().optional(),
+  folderPath: z.string().nullable().optional(),
   key: z.string().min(1),
   slug: z.string().min(1),
   name: z.string().min(1),
@@ -106,6 +108,8 @@ export const companySkillListQuerySchema = z.object({
   categories: z.array(z.string().min(1)).optional(),
   scope: companySkillSharingScopeSchema.optional(),
   include: z.array(companySkillListIncludeSchema).optional(),
+  folderId: z.string().uuid().optional(),
+  includeSubtree: z.boolean().optional(),
 });
 
 export const companySkillCategoryCountSchema = z.object({
@@ -196,6 +200,19 @@ export const companySkillForkPrecheckResultSchema = z.object({
   existingForks: z.array(companySkillForkSummarySchema),
 });
 
+export const companySkillRenameSchema = z.object({
+  name: z.string().min(1).regex(/^[^\r\n]+$/, "Name must be a single line"),
+  slug: z.string().min(1).nullable().optional(),
+});
+
+export const companySkillRenameResultSchema = z.object({
+  skill: companySkillSchema,
+  previousName: z.string(),
+  previousSlug: z.string(),
+  previousKey: z.string(),
+  reassignments: z.array(companySkillForkReassignmentSchema),
+});
+
 export const companySkillUpdateSchema = z.object({
   description: z.string().nullable().optional(),
   iconUrl: z.string().nullable().optional(),
@@ -261,11 +278,32 @@ export const companySkillImportSchema = z.object({
 export const companySkillProjectScanRequestSchema = z.object({
   projectIds: z.array(z.string().uuid()).optional(),
   workspaceIds: z.array(z.string().uuid()).optional(),
+  mode: z.enum(["import", "preview"]).optional(),
+  selection: z.array(z.object({
+    workspaceId: z.string().uuid(),
+    path: z.string().min(1),
+    slug: z.string().min(1).optional(),
+  })).optional(),
+});
+
+export const companySkillProjectScanCandidateSchema = z.object({
+  slug: z.string().min(1),
+  name: z.string().min(1),
+  description: z.string().nullable(),
+  workspaceId: z.string().uuid(),
+  workspaceName: z.string().min(1),
+  projectId: z.string().uuid(),
+  projectName: z.string().min(1),
+  directoryRoot: z.string().min(1),
+  relativePath: z.string().min(1),
+  status: z.enum(["new", "already_imported", "conflict", "skipped"]),
+  existingSkillId: z.string().uuid().optional(),
+  reason: z.string().min(1).optional(),
 });
 
 export const companySkillProjectScanSkippedSchema = z.object({
-  projectId: z.string().uuid(),
-  projectName: z.string().min(1),
+  projectId: z.string().uuid().nullable(),
+  projectName: z.string().min(1).nullable(),
   workspaceId: z.string().uuid().nullable(),
   workspaceName: z.string().nullable(),
   path: z.string().nullable(),
@@ -294,10 +332,12 @@ export const companySkillProjectScanResultSchema = z.object({
   updated: z.array(companySkillSchema),
   skipped: z.array(companySkillProjectScanSkippedSchema),
   conflicts: z.array(companySkillProjectScanConflictSchema),
+  candidates: z.array(companySkillProjectScanCandidateSchema),
   warnings: z.array(z.string()),
 });
 
 export const companySkillCreateSchema = z.object({
+  folderId: z.string().uuid().nullable().optional(),
   name: z.string().min(1),
   slug: z.string().min(1).nullable().optional(),
   description: z.string().nullable().optional(),
@@ -542,6 +582,7 @@ export type CompanySkillVersionCreate = z.infer<typeof companySkillVersionCreate
 export type CompanySkillCommentCreate = z.infer<typeof companySkillCommentCreateSchema>;
 export type CompanySkillCommentUpdate = z.infer<typeof companySkillCommentUpdateSchema>;
 export type CompanySkillFork = z.infer<typeof companySkillForkSchema>;
+export type CompanySkillRename = z.infer<typeof companySkillRenameSchema>;
 export type CompanySkillUpdate = z.infer<typeof companySkillUpdateSchema>;
 export type CatalogSkillListQuery = z.infer<typeof catalogSkillListQuerySchema>;
 export type CompanySkillInstallCatalog = z.infer<typeof companySkillInstallCatalogSchema>;

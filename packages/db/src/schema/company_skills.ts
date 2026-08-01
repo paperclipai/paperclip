@@ -9,16 +9,19 @@ import {
   integer,
   uniqueIndex,
 } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import type { CompanySkillFileInventoryEntry, CompanySkillSharingScope } from "@paperclipai/shared";
 import { agents } from "./agents.js";
 import { companies } from "./companies.js";
 import { issues } from "./issues.js";
+import { folders } from "./folders.js";
 
 export const companySkills = pgTable(
   "company_skills",
   {
     id: uuid("id").primaryKey().defaultRandom(),
     companyId: uuid("company_id").notNull().references(() => companies.id),
+    folderId: uuid("folder_id").references(() => folders.id, { onDelete: "set null" }),
     key: text("key").notNull(),
     slug: text("slug").notNull(),
     name: text("name").notNull(),
@@ -51,6 +54,7 @@ export const companySkills = pgTable(
   (table) => ({
     companyKeyUniqueIdx: uniqueIndex("company_skills_company_key_idx").on(table.companyId, table.key),
     companyNameIdx: index("company_skills_company_name_idx").on(table.companyId, table.name),
+    companyFolderIdx: index("company_skills_company_folder_idx").on(table.companyId, table.folderId),
     companyCategoriesIdx: index("company_skills_company_categories_idx").using("gin", table.categories),
     companySharingScopeIdx: index("company_skills_company_sharing_scope_idx").on(table.companyId, table.sharingScope),
     companyCurrentVersionIdx: index("company_skills_company_current_version_idx").on(table.companyId, table.currentVersionId),
@@ -70,6 +74,9 @@ export const companySkillVersions = pgTable(
     companySkillId: uuid("company_skill_id").notNull().references(() => companySkills.id, { onDelete: "cascade" }),
     revisionNumber: integer("revision_number").notNull(),
     label: text("label"),
+    releaseId: text("release_id"),
+    releaseName: text("release_name"),
+    releasedAt: timestamp("released_at", { withTimezone: true }),
     fileInventory: jsonb("file_inventory").$type<CompanySkillVersionFileInventoryEntry[]>().notNull().default([]),
     authorAgentId: uuid("author_agent_id").references(() => agents.id, { onDelete: "set null" }),
     authorUserId: text("author_user_id"),
@@ -80,6 +87,9 @@ export const companySkillVersions = pgTable(
       table.companySkillId,
       table.revisionNumber,
     ),
+    companySkillReleaseUniqueIdx: uniqueIndex("company_skill_versions_skill_release_idx")
+      .on(table.companySkillId, table.releaseId)
+      .where(sql`${table.releaseId} is not null`),
     companySkillCreatedIdx: index("company_skill_versions_company_skill_created_idx").on(
       table.companyId,
       table.companySkillId,

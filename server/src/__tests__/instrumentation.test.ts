@@ -87,6 +87,44 @@ describe("instrumentationReady", () => {
   });
 });
 
+describe("getStartupTracer", () => {
+  it("returns a usable tracer-shaped object when OTEL_EXPORTER_OTLP_ENDPOINT is unset", async () => {
+    const { getStartupTracer } = await importFreshInstrumentation();
+
+    const tracer = getStartupTracer();
+
+    // The accessor never returns null. The result exposes the span surface the
+    // startup seam calls, so the caller needs no null check.
+    expect(tracer).not.toBeNull();
+    expect(typeof tracer.startSpan).toBe("function");
+    // A no-op tracer must open and end a span without throwing.
+    expect(() => tracer.startSpan("workspace.resolve").end()).not.toThrow();
+  });
+
+  it("loads no OTel SDK package when the endpoint is unset", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+
+    const { getStartupTracer, instrumentationReady } = await importFreshInstrumentation();
+
+    // The endpoint is unset, so the bootstrap never runs and no SDK package
+    // import is attempted; readiness resolves at once.
+    await expect(instrumentationReady).resolves.toBeUndefined();
+
+    // The accessor still returns a usable tracer even though no @opentelemetry
+    // SDK package is installed. That proves it never imported the SDK: a hard
+    // dependency on the SDK would throw here instead.
+    const tracer = getStartupTracer();
+    expect(typeof tracer.startSpan).toBe("function");
+    expect(() => tracer.startSpan("stage.sync").end()).not.toThrow();
+
+    // The bootstrap "packages are not installed" diagnostic must not fire on
+    // this path. That message comes only from the endpoint-set bootstrap.
+    for (const call of warn.mock.calls) {
+      expect(String(call[0])).not.toContain("@opentelemetry/* packages are not installed");
+    }
+  });
+});
+
 describe("shutdownInstrumentation", () => {
   it("is a no-op when tracing is off and idempotent across calls", async () => {
     const { shutdownInstrumentation } = await importFreshInstrumentation();

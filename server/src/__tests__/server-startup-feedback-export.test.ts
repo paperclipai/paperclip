@@ -35,6 +35,7 @@ const {
   }));
   const heartbeatServiceMock = {
     resolveSchedulingSuppression: resolveHeartbeatSchedulingSuppressionMock,
+    reconcileHotRestartAdoption: vi.fn(async () => ({ mode: "none" })),
     reapOrphanedRuns: vi.fn(async () => ({ reaped: 0, runIds: [] })),
     promoteDueScheduledRetries: vi.fn(async () => ({ promoted: 0, runIds: [] })),
     resumeQueuedRuns: vi.fn(async () => undefined),
@@ -190,14 +191,28 @@ vi.mock("../realtime/live-events-ws.js", () => ({
 }));
 
 vi.mock("../services/index.js", () => ({
+  backfillLegacyToolOAuthTokens: vi.fn(async () => ({
+    scannedConnections: 0,
+    migratedConnections: 0,
+    sanitizedConnections: 0,
+    createdSecrets: 0,
+    rotatedSecrets: 0,
+    accessTokensBackfilled: 0,
+    refreshTokensBackfilled: 0,
+  })),
   backfillPrincipalAccessCompatibility: vi.fn(async () => ({
     agentMembershipsInserted: 0,
     humanGrantsInserted: 0,
   })),
+  decisionService: vi.fn(() => ({
+    sweepExpired: vi.fn(async () => ({ expired: 0 })),
+  })),
   feedbackService: feedbackServiceFactoryMock,
   bootstrapExecutionPolicyFromEnv: vi.fn(async () => null),
+  applyManagedEnvironments: vi.fn(async () => null),
   environmentCustomImageService: environmentCustomImagesServiceFactoryMock,
   heartbeatService: heartbeatServiceFactoryMock,
+  issueService: vi.fn(() => ({ update: vi.fn(async () => null) })),
   instanceSettingsService: vi.fn(() => ({
     getGeneral: vi.fn(async () => ({
       backupRetention: {
@@ -207,7 +222,6 @@ vi.mock("../services/index.js", () => ({
       },
     })),
   })),
-  reconcileCloudUpstreamRunsOnStartup: vi.fn(async () => ({ reconciled: 0 })),
   reconcileCodexLocalManagedHomesOnStartup: vi.fn(async () => ({
     scanned: 0,
     seeded: 0,
@@ -227,6 +241,15 @@ vi.mock("../services/index.js", () => ({
   reconcilePersistedRuntimeServicesOnStartup: vi.fn(async () => ({ reconciled: 0 })),
   resolveHeartbeatSchedulingSuppression: resolveHeartbeatSchedulingSuppressionMock,
   routineService: routineServiceFactoryMock,
+  statusCardService: vi.fn(() => ({})),
+  toolAccessService: vi.fn(() => ({
+    sweepConnectionHealth: vi.fn(async () => ({
+      checked: 0,
+      healthy: 0,
+      needsAttention: 0,
+      failed: 0,
+    })),
+  })),
 }));
 
 vi.mock("../storage/index.js", () => ({
@@ -263,6 +286,8 @@ import { startServer } from "../index.ts";
 describe("startServer feedback export wiring", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    process.env.PAPERCLIP_DECISION_SIGNING_SECRET = "fedcba9876543210fedcba9876543210";
+    process.env.PAPERCLIP_AGENT_JWT_SECRET = "0123456789abcdef0123456789abcdef";
     loadConfigMock.mockReturnValue(buildTestConfig());
     resolveHeartbeatSchedulingSuppressionMock.mockReturnValue({
       suppressed: false,
@@ -271,6 +296,12 @@ describe("startServer feedback export wiring", () => {
     createBetterAuthInstanceMock.mockReturnValue({});
     deriveAuthTrustedOriginsMock.mockReturnValue([]);
     process.env.BETTER_AUTH_SECRET = "test-secret";
+  });
+
+  it("refuses startup when the decision signing secret is unavailable", async () => {
+    delete process.env.PAPERCLIP_DECISION_SIGNING_SECRET;
+    await expect(startServer()).rejects.toThrow("PAPERCLIP_DECISION_SIGNING_SECRET is required");
+    expect(loadConfigMock).not.toHaveBeenCalled();
   });
 
   it("passes the feedback export service into createApp so pending traces flush in runtime", async () => {
@@ -323,6 +354,22 @@ describe("startServer feedback export wiring", () => {
     }
   });
 
+  it("does not replay hot-restart adoption when the orphan reaper retries", async () => {
+    loadConfigMock.mockReturnValue(buildTestConfig({
+      heartbeatSchedulerEnabled: true,
+      heartbeatSchedulerIntervalMs: 30000,
+    }));
+    heartbeatServiceMock.reconcileHotRestartAdoption.mockRejectedValueOnce(new Error("partial adoption"));
+    heartbeatServiceMock.reapOrphanedRuns
+      .mockRejectedValueOnce(new Error("transient reap failure"))
+      .mockResolvedValueOnce({ reaped: 0, runIds: [] });
+
+    await startServer();
+
+    expect(heartbeatServiceMock.reconcileHotRestartAdoption).toHaveBeenCalledTimes(1);
+    expect(heartbeatServiceMock.reapOrphanedRuns).toHaveBeenCalledTimes(2);
+  });
+
   it("refuses authenticated public startup without an external database URL", async () => {
     loadConfigMock.mockReturnValue(buildTestConfig({
       deploymentExposure: "public",
@@ -356,6 +403,7 @@ describe("startServer feedback export wiring", () => {
 describe("startServer authenticated auth origin setup", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    process.env.PAPERCLIP_DECISION_SIGNING_SECRET = "fedcba9876543210fedcba9876543210";
     loadConfigMock.mockReturnValue(buildTestConfig());
     createBetterAuthInstanceMock.mockReturnValue({});
     deriveAuthTrustedOriginsMock.mockReturnValue([]);
@@ -402,6 +450,7 @@ describe("startServer authenticated auth origin setup", () => {
 describe("startServer PAPERCLIP_API_URL handling", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    process.env.PAPERCLIP_DECISION_SIGNING_SECRET = "fedcba9876543210fedcba9876543210";
     loadConfigMock.mockReturnValue(buildTestConfig());
     process.env.BETTER_AUTH_SECRET = "test-secret";
     delete process.env.PAPERCLIP_API_URL;

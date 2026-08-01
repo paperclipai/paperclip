@@ -541,7 +541,7 @@ describe("Modal sandbox provider plugin", () => {
     });
   });
 
-  it("executes commands with a login-shell wrapper that injects env after profile sourcing", async () => {
+  it("executes commands with a non-login-shell wrapper that injects env after profile sourcing", async () => {
     const sandbox = createFakeSandbox({
       execImpl: async (argv: string[]) =>
         makeFakeProcess({
@@ -568,9 +568,12 @@ describe("Modal sandbox provider plugin", () => {
     expect(sandbox.execCalls).toHaveLength(1);
     const call = sandbox.execCalls[0]!;
     expect(call.argv[0]).toBe("sh");
-    expect(call.argv[1]).toBe("-lc");
+    expect(call.argv[1]).toBe("-c");
     const script = call.argv[2]!;
     expect(script).toMatch(/\/etc\/profile/);
+    // The wrapper sources no `nvm.sh`; the sandbox image supplies node on PATH.
+    expect(script).not.toMatch(/nvm\.sh/);
+    expect(script).not.toMatch(/NVM_DIR/);
     expect(script).toMatch(/cd '\/srv\/work'/);
     expect(script).toMatch(/&& exec env FOO='bar' 'printf' 'hello'$/);
     expect(call.params).toMatchObject({

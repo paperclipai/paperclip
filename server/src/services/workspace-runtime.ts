@@ -17,7 +17,7 @@ import {
   type WorkspaceRuntimeDesiredState,
   type WorkspaceRuntimeServiceStateMap,
 } from "@paperclipai/shared";
-import { and, desc, eq, inArray, ne } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, ne } from "drizzle-orm";
 import { asNumber, asString, parseObject, renderTemplate } from "../adapters/utils.js";
 import { resolveHomeAwarePath } from "../home-paths.js";
 import {
@@ -45,6 +45,19 @@ export function resolveShell(): string {
   return shell;
 }
 
+/**
+ * A read-only referenced (mentioned) project workspace carried alongside the anchor. Additive and
+ * backward-compatible: it defaults to an empty array. Additional workspaces never get git-worktree
+ * realization; the anchor keeps the single scalar realization path.
+ */
+export interface ExecutionWorkspaceAdditionalInput {
+  cwd: string;
+  projectId: string;
+  workspaceId: string | null;
+  repoUrl: string | null;
+  repoRef: string | null;
+}
+
 export interface ExecutionWorkspaceInput {
   baseCwd: string;
   source: "project_primary" | "task_session" | "agent_home";
@@ -52,6 +65,7 @@ export interface ExecutionWorkspaceInput {
   workspaceId: string | null;
   repoUrl: string | null;
   repoRef: string | null;
+  additionalWorkspaces?: ExecutionWorkspaceAdditionalInput[];
 }
 
 export interface ExecutionWorkspaceIssueRef {
@@ -1744,14 +1758,24 @@ export async function ensureGitWorktreeBranchCoherent(input: {
     };
   }
 
+  // A recorded branch that no longer exists anywhere has no commits to lose, so
+  // adopting the clean checked-out branch is trivially forward-only. This is the
+  // steady state left behind when an agent renames its task branch (e.g. to a
+  // feat/* PR branch) and the recorded branch was never created or was deleted.
+  const recordedBranchMissingButAdoptable =
+    !evidence.provenance.expectedBranchExists &&
+    evidence.provenance.actualBranchExists === true &&
+    evidence.provenance.registeredBranchMatchesHead;
   if (
     input.enableWorkspaceBranchReconcileForward === true &&
-    evidence.provenance.ancestryVerdict === "ancestor" &&
-    !evidence.provenance.sameHead &&
     evidence.cleanliness === "clean" &&
-    currentBranch
+    currentBranch &&
+    ((evidence.provenance.ancestryVerdict === "ancestor" && !evidence.provenance.sameHead) ||
+      recordedBranchMissingButAdoptable)
   ) {
-    const reason = "Automatic forward reconciliation: recorded branch is an ancestor of the checked-out branch.";
+    const reason = evidence.provenance.expectedBranchExists
+      ? "Automatic forward reconciliation: recorded branch is an ancestor of the checked-out branch."
+      : "Automatic forward reconciliation: the recorded branch no longer exists, so Paperclip adopted the clean checked-out branch.";
     if (input.executionWorkspaceId && input.persistForwardReconcile !== false) {
       if (!input.db) {
         evidence.safeRepair.reason = "forward reconciliation requires database access to update the execution workspace record";
@@ -2932,6 +2956,7 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
     workspaceId: input.workspace.projectWorkspaceId ?? input.base.workspaceId,
     repoUrl: input.workspace.repoUrl ?? input.base.repoUrl,
     repoRef: input.workspace.baseRef ?? input.base.repoRef,
+    additionalWorkspaces: input.base.additionalWorkspaces ?? [],
     strategy,
     cwd,
     branchName: input.workspace.branchName ?? null,
@@ -3550,11 +3575,13 @@ async function waitForReadiness(input: {
   serviceName?: string | null;
   command?: string | null;
   url: string | null;
+  readinessUrl: string | null;
 }) {
   const readiness = parseObject(input.service.readiness);
   const readinessType = asString(readiness.type, "");
-  if (readinessType !== "http" || !input.url) return;
-  const readinessUrl = resolveRuntimeServiceHealthUrl(input.url, {
+  const readinessTargetUrl = input.readinessUrl ?? input.url;
+  if (readinessType !== "http" || !readinessTargetUrl) return;
+  const readinessUrl = resolveRuntimeServiceHealthUrl(readinessTargetUrl, {
     serviceName: input.serviceName,
     command: input.command,
   });
@@ -3694,8 +3721,37 @@ async function findStoppedRuntimeServiceReuseCandidate(input: {
   db?: Db;
   companyId: string;
   reuseKey: string | null;
+  serviceName: string;
+  command: string;
+  cwd: string;
+  scopeType: RuntimeServiceRef["scopeType"];
+  scopeId: string | null;
 }): Promise<StoppedRuntimeServiceReuseCandidate | null> {
-  if (!input.db || !input.reuseKey) return null;
+  if (!input.db) return null;
+  if (input.reuseKey) {
+    const row = await input.db
+      .select({
+        id: workspaceRuntimeServices.id,
+        port: workspaceRuntimeServices.port,
+      })
+      .from(workspaceRuntimeServices)
+      .where(
+        and(
+          eq(workspaceRuntimeServices.companyId, input.companyId),
+          eq(workspaceRuntimeServices.reuseKey, input.reuseKey),
+          eq(workspaceRuntimeServices.provider, "local_process"),
+          eq(workspaceRuntimeServices.status, "stopped"),
+        ),
+      )
+      .orderBy(desc(workspaceRuntimeServices.updatedAt))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (row) return row;
+  }
+
+  const scopeIdCondition = input.scopeId === null
+    ? isNull(workspaceRuntimeServices.scopeId)
+    : eq(workspaceRuntimeServices.scopeId, input.scopeId);
   const row = await input.db
     .select({
       id: workspaceRuntimeServices.id,
@@ -3705,9 +3761,13 @@ async function findStoppedRuntimeServiceReuseCandidate(input: {
     .where(
       and(
         eq(workspaceRuntimeServices.companyId, input.companyId),
-        eq(workspaceRuntimeServices.reuseKey, input.reuseKey),
         eq(workspaceRuntimeServices.provider, "local_process"),
         eq(workspaceRuntimeServices.status, "stopped"),
+        eq(workspaceRuntimeServices.scopeType, input.scopeType),
+        scopeIdCondition,
+        eq(workspaceRuntimeServices.serviceName, input.serviceName),
+        eq(workspaceRuntimeServices.command, input.command),
+        eq(workspaceRuntimeServices.cwd, input.cwd),
       ),
     )
     .orderBy(desc(workspaceRuntimeServices.updatedAt))
@@ -3835,6 +3895,11 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
     db: input.db,
     companyId: input.agent.companyId,
     reuseKey: input.reuseKey,
+    serviceName,
+    command,
+    cwd: identity.serviceCwd,
+    scopeType: input.scopeType,
+    scopeId: input.scopeId,
   });
   let reusableStoppedPort: number | null = null;
   if (asString(portConfig.type, "") === "auto" && stoppedReuseCandidate?.port) {
@@ -3876,6 +3941,8 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
     asString(expose.urlTemplate, "") ||
     asString(readiness.urlTemplate, "");
   const url = urlTemplate ? renderTemplate(urlTemplate, templateData) : null;
+  const readinessUrlTemplate = asString(readiness.urlTemplate, "");
+  const readinessUrl = readinessUrlTemplate ? renderTemplate(readinessUrlTemplate, templateData) : null;
   const stopPolicy = parseObject(input.service.stopPolicy);
   const serviceKey = createLocalServiceKey({
     profileKind: "workspace-runtime",
@@ -4064,7 +4131,7 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
   }
 
   const readinessPromise = Promise.race([
-    waitForReadiness({ service: input.service, serviceName, command, url }),
+    waitForReadiness({ service: input.service, serviceName, command, url, readinessUrl }),
     spawnErrorPromise,
   ]).then(async () => {
     record.status = "running";
@@ -4697,12 +4764,13 @@ export async function reconcilePersistedRuntimeServicesOnStartup(db: Db) {
     .where(
       and(
         eq(workspaceRuntimeServices.provider, "local_process"),
-        inArray(workspaceRuntimeServices.status, ["starting", "running"]),
+        inArray(workspaceRuntimeServices.status, ["starting", "running", "stopped"]),
       ),
     );
 
   if (rows.length === 0) return { reconciled: 0, adopted: 0, stopped: 0 };
 
+  let reconciled = 0;
   let adopted = 0;
   let stopped = 0;
   for (const row of rows) {
@@ -4710,6 +4778,19 @@ export async function reconcilePersistedRuntimeServicesOnStartup(db: Db) {
       runtimeServiceId: row.id,
       profileKind: "workspace-runtime",
     });
+    if (
+      adoptedRecord
+      && (
+        adoptedRecord.command !== row.command
+        || adoptedRecord.serviceName !== row.serviceName
+        || adoptedRecord.envFingerprint !== (row.reuseKey ?? "")
+        || adoptedRecord.port !== (row.port ?? null)
+        || (row.cwd !== null && path.resolve(adoptedRecord.cwd) !== path.resolve(row.cwd))
+      )
+    ) {
+      await removeLocalServiceRegistryRecord(adoptedRecord.serviceKey);
+      adoptedRecord = null;
+    }
     if (!adoptedRecord && row.command && row.cwd) {
       adoptedRecord = await findAdoptableLocalService({
         serviceKey: createLocalServiceKey({
@@ -4782,9 +4863,14 @@ export async function reconcilePersistedRuntimeServicesOnStartup(db: Db) {
           lastSeenAt: record.lastUsedAt,
         });
         await persistRuntimeServiceRecord(db, record);
+        reconciled += 1;
         adopted += 1;
         continue;
       }
+    }
+
+    if (row.status === "stopped") {
+      continue;
     }
 
     const now = new Date();
@@ -4805,10 +4891,11 @@ export async function reconcilePersistedRuntimeServicesOnStartup(db: Db) {
     if (registryRecord) {
       await removeLocalServiceRegistryRecord(registryRecord.serviceKey);
     }
+    reconciled += 1;
     stopped += 1;
   }
 
-  return { reconciled: rows.length, adopted, stopped };
+  return { reconciled, adopted, stopped };
 }
 
 export async function restartDesiredRuntimeServicesOnStartup(db: Db) {

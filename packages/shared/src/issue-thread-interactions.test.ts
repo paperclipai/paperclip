@@ -3,6 +3,8 @@ import {
   acceptIssueThreadInteractionSchema,
   askUserQuestionsResultSchema,
   createIssueThreadInteractionSchema,
+  requestConfirmationPayloadSchema,
+  requestConfirmationResultSchema,
   submitIssueThreadInteractionVerdictsSchema,
 } from "./validators/issue.js";
 
@@ -37,6 +39,49 @@ describe("issue thread interaction schemas", () => {
         supersedeOnUserComment: true,
       },
     });
+  });
+
+  it("round-trips versioned tool action payload and lifecycle metadata", () => {
+    const payload = requestConfirmationPayloadSchema.parse({
+      version: 1,
+      prompt: "Approve send_email?",
+      toolAction: {
+        version: 1,
+        actionRequestId: "11111111-1111-4111-8111-111111111111",
+        invocationId: "22222222-2222-4222-8222-222222222222",
+        toolName: "send_email",
+        toolDisplayName: "Send email",
+        connectionId: "33333333-3333-4333-8333-333333333333",
+        applicationId: "44444444-4444-4444-8444-444444444444",
+        appDisplayName: "Gmail",
+        risk: "write",
+        previewMarkdown: "Send an email to the reviewed recipient.",
+        argumentsSummaryJson: '{"to":"recipient@example.com"}',
+        argumentsHash: "reviewed-arguments-hash",
+        expiresAt: "2026-07-12T16:00:00.000Z",
+      },
+    });
+    const result = requestConfirmationResultSchema.parse({
+      version: 1,
+      outcome: "accepted",
+      toolAction: {
+        version: 1,
+        status: "executed",
+        errorCode: null,
+        errorMessage: null,
+        updatedAt: "2026-07-12T15:05:00.000Z",
+      },
+    });
+
+    expect(payload.toolAction).toMatchObject({
+      version: 1,
+      toolDisplayName: "Send email",
+      risk: "write",
+      argumentsHash: "reviewed-arguments-hash",
+    });
+    expect(result.toolAction).toMatchObject({ version: 1, status: "executed" });
+    expect(requestConfirmationPayloadSchema.parse({ version: 1, prompt: "Legacy confirmation?" }).toolAction)
+      .toBeUndefined();
   });
 
   it("accepts issue document targets for request_confirmation interactions", () => {

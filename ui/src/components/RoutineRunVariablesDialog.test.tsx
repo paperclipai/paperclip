@@ -393,7 +393,15 @@ describe("RoutineRunVariablesDialog", () => {
       );
     });
 
-    for (let i = 0; i < 10 && !document.querySelector('[data-testid="workspace-card"]'); i += 1) {
+    // The workspace card mounts once experimental settings resolve, then reports its
+    // branch name through an effect callback. That callback triggers a follow-up render,
+    // so wait for the branch value itself to land — not merely for the card to appear —
+    // otherwise we assert against the intermediate render before the branch propagates.
+    const hasBranchInput = () =>
+      Array.from(document.querySelectorAll("input")).some(
+        (input) => input.value === "pap-1634-routine-branch",
+      );
+    for (let i = 0; i < 20 && !hasBranchInput(); i += 1) {
       await settleEffects();
     }
 

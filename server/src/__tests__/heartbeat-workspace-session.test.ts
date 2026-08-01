@@ -1855,6 +1855,21 @@ describe("effective run session config freshness", () => {
     expect(decision.reasons).toEqual(["effective run configuration fingerprint metadata is missing"]);
   });
 
+  it("uses persisted fingerprint metadata even when an adapter codec omits it from resume params", async () => {
+    const metadata = await buildSessionConfigMetadata();
+    const persistedParams = sessionParamsWithConfigMetadata(metadata);
+
+    const decision = resolveTaskSessionConfigFreshness({
+      hasTaskSession: true,
+      configuredModel: "gpt-5.4-mini",
+      taskSessionParams: persistedParams,
+      configMetadata: metadata,
+    });
+
+    expect(decision.reset).toBe(false);
+    expect(decision.reasons).toEqual([]);
+  });
+
   it("preserves legacy metadata gaps only for active accepted-plan continuation sessions", async () => {
     const metadata = await buildSessionConfigMetadata();
 

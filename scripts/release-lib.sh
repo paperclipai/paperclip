@@ -302,15 +302,56 @@ is_npm_tlog_duplicate_error() {
     grep -q "equivalent entry already exists in the transparency log" <<< "$output"
 }
 
+package_publish_tool() {
+  node -e '
+    const pkg = require(process.cwd() + "/package.json");
+    const bundled = pkg.bundleDependencies ?? pkg.bundledDependencies ?? [];
+    process.stdout.write(bundled.length > 0 ? "npm" : "pnpm");
+  '
+}
+
+BUNDLED_NPM_PACK_VERSION="10.9.7"
+BUNDLED_NPM_PUBLISH_VERSION="11.18.0"
+
+run_bundled_npm_pack() {
+  npx --yes "npm@$BUNDLED_NPM_PACK_VERSION" "$@"
+}
+
+run_bundled_npm_publish() {
+  npx --yes "npm@$BUNDLED_NPM_PUBLISH_VERSION" "$@" --loglevel verbose
+}
+
+run_package_publish() {
+  local publish_tool="$1"
+  local dist_tag="$2"
+  local disable_provenance="${3:-false}"
+
+  if [ "$publish_tool" = "npm" ]; then
+    if [ "$disable_provenance" = "true" ]; then
+      run_bundled_npm_publish publish --tag "$dist_tag" --access public --provenance=false
+    else
+      run_bundled_npm_publish publish --tag "$dist_tag" --access public
+    fi
+    return
+  fi
+
+  if [ "$disable_provenance" = "true" ]; then
+    pnpm publish --no-git-checks --tag "$dist_tag" --access public --provenance=false
+  else
+    pnpm publish --no-git-checks --tag "$dist_tag" --access public
+  fi
+}
+
 publish_package_to_npm() {
   local dist_tag="$1"
   local package_name="$2"
   local package_version="$3"
+  local publish_tool="${4:-pnpm}"
   local publish_log
 
   publish_log="$(mktemp "${TMPDIR:-/tmp}/paperclip-npm-publish.XXXXXX")"
 
-  if (set -o pipefail; pnpm publish --no-git-checks --tag "$dist_tag" --access public 2>&1 | tee "$publish_log"); then
+  if (set -o pipefail; run_package_publish "$publish_tool" "$dist_tag" false 2>&1 | tee "$publish_log"); then
     rm -f "$publish_log"
     return 0
   fi
@@ -335,13 +376,50 @@ publish_package_to_npm() {
   fi
 
   release_warn "Retrying ${package_name}@${package_version} once with npm provenance disabled."
-  if pnpm publish --no-git-checks --tag "$dist_tag" --access public --provenance=false; then
+  if run_package_publish "$publish_tool" "$dist_tag" true; then
     rm -f "$publish_log"
     return 0
   fi
 
   rm -f "$publish_log"
   return 1
+}
+
+publish_package_to_npm_and_wait() {
+  local dist_tag="$1"
+  local package_name="$2"
+  local package_version="$3"
+  local publish_tool="${4:-pnpm}"
+  local attempts="${5:-12}"
+  local delay_seconds="${6:-5}"
+
+  publish_package_to_npm "$dist_tag" "$package_name" "$package_version" "$publish_tool" || return 1
+
+  if wait_for_npm_package_version "$package_name" "$package_version" "$attempts" "$delay_seconds"; then
+    return 0
+  fi
+
+  release_warn "npm accepted ${package_name}@${package_version}, but the version did not become registry-visible."
+  return 1
+}
+
+verify_npm_installable() {
+  local package_spec="$1"
+  local expected_version="$2"
+  local install_dir
+  local installed_version
+
+  install_dir="$(mktemp -d "${TMPDIR:-/tmp}/paperclip-release-install.XXXXXX")"
+
+  if ! npm install --prefix "$install_dir" "$package_spec" --no-audit --no-fund; then
+    rm -rf "$install_dir"
+    return 1
+  fi
+
+  installed_version="$(node -e "console.log(require(process.argv[1]).version)" "$install_dir/node_modules/paperclipai/package.json")"
+  rm -rf "$install_dir"
+
+  [ "$installed_version" = "$expected_version" ]
 }
 
 wait_for_release_registry_state() {

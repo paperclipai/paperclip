@@ -1,11 +1,12 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { ArrowUpDown, Check, CheckCircle2, Inbox, Layers, ListFilter } from "lucide-react";
-import type { Agent, AttentionItem } from "@paperclipai/shared";
+import { ArrowUpDown, Check, CheckCircle2, GraduationCap, Inbox, Layers, ListFilter } from "lucide-react";
+import type { Agent, AttentionItem, AttentionSubject } from "@paperclipai/shared";
 import { useNavigate } from "@/lib/router";
 import { attentionApi } from "../api/attention";
 import { agentsApi } from "../api/agents";
 import { authApi } from "../api/auth";
+import { decisionsApi } from "../api/decisions";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
 import { useToastActions } from "../context/ToastContext";
@@ -25,6 +26,7 @@ import {
   loadAttentionSortOrder,
   loadCollapsedAttentionGroupKeys,
   NO_GROUP_SENTINEL,
+  planAttentionRenderRows,
   saveAttentionFilters,
   saveAttentionGroupBy,
   saveAttentionSortOrder,
@@ -35,10 +37,13 @@ import {
   type AttentionGroupBy,
   type AttentionSortOrder,
 } from "../lib/attention";
+import { decisionTrainingHref } from "../lib/decisionTraining";
 import { cn } from "../lib/utils";
 import { hasBlockingShortcutDialog, resolveAttentionQueueKeyAction } from "../lib/keyboardShortcuts";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { AttentionQueueRow } from "../components/AttentionQueueRow";
+import { DecisionResolver } from "../components/DecisionResolver";
+import { DecisionTrainingDrawer } from "../components/DecisionTrainingDrawer";
 import { IssueGroupHeader } from "../components/IssueGroupHeader";
 import { Button } from "../components/ui/button";
 import { Checkbox } from "../components/ui/checkbox";
@@ -51,12 +56,58 @@ const SEVERITY_LABELS: Record<string, string> = {
   low: "Low",
 };
 
+/** Curtain rows never expand; module-level so memoized rows see one identity. */
+const noopToggleExpand = () => {};
+
+// Incremental rendering (PAP-13784, same pattern as IssuesList): the feed is
+// uncapped, so mounting every row up front makes the page slow to paint and
+// scroll. Render a bounded window and grow it as the scroll position nears the
+// bottom. One budget spans the active groups and the open curtains in document
+// order, so everything below the fold stays unmounted until needed.
+const INITIAL_ATTENTION_ROW_RENDER_LIMIT = 50;
+const ATTENTION_ROW_RENDER_BATCH_SIZE = 100;
+const ATTENTION_SCROLL_LOAD_THRESHOLD_PX = 480;
+const DECISION_HISTORY_VISIBLE_LIMIT = 50;
+const DECISION_HISTORY_QUERY_LIMIT = DECISION_HISTORY_VISIBLE_LIMIT + 1;
+
+export function decisionHistoryQueryEnabled(companyId: string | null | undefined, open: boolean) {
+  return Boolean(companyId && open);
+}
+
+export function decisionHistoryCount(count: number | undefined) {
+  if (count == null) return undefined;
+  return count > DECISION_HISTORY_VISIBLE_LIMIT ? `${DECISION_HISTORY_VISIBLE_LIMIT}+` : count;
+}
+
+function findScrollContainer(element: HTMLElement | null): HTMLElement | null {
+  if (!element || typeof window === "undefined") return null;
+  let current = element.parentElement;
+  while (current && current !== document.body && current !== document.documentElement) {
+    const overflowY = window.getComputedStyle(current).overflowY;
+    if (overflowY === "auto" || overflowY === "scroll" || overflowY === "overlay") {
+      return current;
+    }
+    current = current.parentElement;
+  }
+  return null;
+}
+
 export function WhatNeedsMe() {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [selectedAttentionId, setSelectedAttentionId] = useState<string | null>(null);
+  // How the current selection was made. The selection ring is the keyboard
+  // cursor — it marks the row that j/k, e, x and s will act on — so it is drawn
+  // only for a keyboard-driven selection. Clicking used to set it too, which
+  // put a ring around the card for no reason the operator could act on, and
+  // only ever on rows with a See more/less toggle to click (the toggle is what
+  // set it), so the queue looked arbitrarily inconsistent. The selection itself
+  // still follows a click, so keyboard actions target the row you just used.
+  const [selectionFromKeyboard, setSelectionFromKeyboard] = useState(false);
   const [autoExpandDone, setAutoExpandDone] = useState(false);
+  // Decision-training drawer target. `null` when closed.
+  const [trainingItem, setTrainingItem] = useState<AttentionItem | null>(null);
 
   // Toolbar preferences (persisted to localStorage, Inbox pattern).
   const [groupBy, setGroupBy] = useState<AttentionGroupBy>(() => loadAttentionGroupBy());
@@ -65,6 +116,8 @@ export function WhatNeedsMe() {
   const [collapsedGroupKeys, setCollapsedGroupKeys] = useState<Set<string>>(() => new Set());
   const [snoozedOpen, setSnoozedOpen] = useState(false);
   const [dismissedOpen, setDismissedOpen] = useState(false);
+  const [decidedOpen, setDecidedOpen] = useState(false);
+  const [expiredOpen, setExpiredOpen] = useState(false);
 
   // Optimistic hide/restore. Reset whenever a fresh feed lands (server truth).
   const [pendingHide, setPendingHide] = useState<Set<string>>(() => new Set());
@@ -102,6 +155,19 @@ export function WhatNeedsMe() {
     queryKey: queryKeys.agents.list(selectedCompanyId!),
     queryFn: () => agentsApi.list(selectedCompanyId!),
     enabled: !!selectedCompanyId,
+  });
+
+  // Decision history — decided / expired decisions leave the open attention
+  // feed (entryRule = open only), so we fetch them directly for the curtains.
+  const { data: decidedDecisions, isLoading: decidedDecisionsLoading } = useQuery({
+    queryKey: queryKeys.decisions.list(selectedCompanyId!, "decided"),
+    queryFn: () => decisionsApi.list(selectedCompanyId!, { status: "decided", limit: DECISION_HISTORY_QUERY_LIMIT }),
+    enabled: decisionHistoryQueryEnabled(selectedCompanyId, decidedOpen),
+  });
+  const { data: expiredDecisions, isLoading: expiredDecisionsLoading } = useQuery({
+    queryKey: queryKeys.decisions.list(selectedCompanyId!, "expired"),
+    queryFn: () => decisionsApi.list(selectedCompanyId!, { status: "expired", limit: DECISION_HISTORY_QUERY_LIMIT }),
+    enabled: decisionHistoryQueryEnabled(selectedCompanyId, expiredOpen),
   });
 
   const { data: session } = useQuery({
@@ -165,9 +231,84 @@ export function WhatNeedsMe() {
     [collapsedGroupKeys, groups],
   );
 
+  // Rendered-row budget: only ratchets up (a hard reset mid-scroll would yank
+  // the DOM out from under the user), and resets when the company changes.
+  const [renderedRowLimit, setRenderedRowLimit] = useState(INITIAL_ATTENTION_ROW_RENDER_LIMIT);
+  const rootRef = useRef<HTMLDivElement | null>(null);
+  useEffect(() => {
+    setRenderedRowLimit(INITIAL_ATTENTION_ROW_RENDER_LIMIT);
+  }, [selectedCompanyId]);
+
+  // Keyboard selection may point past the budget (e.g. wrapping to the last
+  // row), so the effective limit is derived to always cover it — the selected
+  // row is then guaranteed to be in the DOM in the same commit that selects it.
+  const renderPlan = useMemo(() => {
+    const selectedIndex = selectedAttentionId
+      ? keyboardItems.findIndex((item) => item.id === selectedAttentionId)
+      : -1;
+    return planAttentionRenderRows({
+      groups,
+      collapsedGroupKeys,
+      snoozedItems,
+      snoozedOpen,
+      dismissedItems,
+      dismissedOpen,
+      limit: Math.max(renderedRowLimit, selectedIndex + 1),
+    });
+  }, [
+    collapsedGroupKeys,
+    dismissedItems,
+    dismissedOpen,
+    groups,
+    keyboardItems,
+    renderedRowLimit,
+    selectedAttentionId,
+    snoozedItems,
+    snoozedOpen,
+  ]);
+
+  const loadMoreRows = useCallback(() => {
+    setRenderedRowLimit((current) => current + ATTENTION_ROW_RENDER_BATCH_SIZE);
+  }, []);
+
+  useEffect(() => {
+    if (!renderPlan.hasMoreRows) return;
+    let animationFrameId: number | null = null;
+    const scrollContainer = findScrollContainer(rootRef.current);
+    const scrollTarget: Window | HTMLElement = scrollContainer ?? window;
+
+    const checkScrollPosition = () => {
+      if (animationFrameId !== null) return;
+      animationFrameId = window.requestAnimationFrame(() => {
+        animationFrameId = null;
+        const scrollHeight = scrollContainer?.scrollHeight ?? document.documentElement.scrollHeight;
+        if (scrollHeight === 0) return;
+        const scrollBottom = scrollContainer
+          ? scrollContainer.scrollTop + scrollContainer.clientHeight
+          : window.scrollY + window.innerHeight;
+        if (scrollBottom >= scrollHeight - ATTENTION_SCROLL_LOAD_THRESHOLD_PX) {
+          loadMoreRows();
+        }
+      });
+    };
+
+    scrollTarget.addEventListener("scroll", checkScrollPosition, { passive: true });
+    window.addEventListener("resize", checkScrollPosition);
+    // Initial check: a tall viewport (or an opened curtain) may need more rows
+    // than the current budget before any scrolling happens.
+    checkScrollPosition();
+
+    return () => {
+      scrollTarget.removeEventListener("scroll", checkScrollPosition);
+      window.removeEventListener("resize", checkScrollPosition);
+      if (animationFrameId !== null) window.cancelAnimationFrame(animationFrameId);
+    };
+  }, [loadMoreRows, renderPlan.hasMoreRows, renderedRowLimit]);
+
   useEffect(() => {
     if (selectedAttentionId && !keyboardItems.some((item) => item.id === selectedAttentionId)) {
       setSelectedAttentionId(null);
+      setSelectionFromKeyboard(false);
     }
   }, [keyboardItems, selectedAttentionId]);
 
@@ -207,38 +348,61 @@ export function WhatNeedsMe() {
     });
   };
 
-  const handleUndoDismiss = (item: AttentionItem) => {
-    setPendingHide((prev) => {
-      const next = new Set(prev);
-      next.delete(item.id);
-      return next;
-    });
-    restore(item.dismissalKey);
-  };
-  const handleDismiss = (item: AttentionItem) => {
-    setPendingHide((prev) => new Set(prev).add(item.id));
-    dismiss(item.dismissalKey);
-    setExpandedId((previous) => (previous === item.id ? null : previous));
-    // ~8s undo window; restores the row in place via T1's DELETE endpoint.
-    pushToast({
-      id: `attention-dismiss-${item.id}`,
-      dedupeKey: `attention-dismiss-${item.dismissalKey}`,
-      title: "Dismissed",
-      body: item.subject.title ?? undefined,
-      tone: "info",
-      ttlMs: 8000,
-      action: { label: "Undo", onClick: () => handleUndoDismiss(item) },
-    });
-  };
-  const handleSnooze = (item: AttentionItem, snoozedUntil: string) => {
-    setPendingHide((prev) => new Set(prev).add(item.id));
-    snooze(item.dismissalKey, snoozedUntil);
-    if (expandedId === item.id) setExpandedId(null);
-  };
-  const handleRestore = (item: AttentionItem) => {
-    setPendingRestore((prev) => new Set(prev).add(item.id));
-    restore(item.dismissalKey);
-  };
+  // All row callbacks are stable (deps are setState functions, stable hook
+  // callbacks, and the stable `pushToast`) so the memoized rows only re-render
+  // when their own item/expanded/selected props change (PAP-13784).
+  const handleUndoDismiss = useCallback(
+    (item: AttentionItem) => {
+      setPendingHide((prev) => {
+        const next = new Set(prev);
+        next.delete(item.id);
+        return next;
+      });
+      restore(item.dismissalKey);
+    },
+    [restore],
+  );
+  const handleDismiss = useCallback(
+    (item: AttentionItem) => {
+      setPendingHide((prev) => new Set(prev).add(item.id));
+      dismiss(item.dismissalKey);
+      setExpandedId((previous) => (previous === item.id ? null : previous));
+      // ~8s undo window; restores the row in place via T1's DELETE endpoint.
+      pushToast({
+        id: `attention-dismiss-${item.id}`,
+        dedupeKey: `attention-dismiss-${item.dismissalKey}`,
+        title: "Dismissed",
+        body: item.subject.title ?? undefined,
+        tone: "info",
+        ttlMs: 8000,
+        action: { label: "Undo", onClick: () => handleUndoDismiss(item) },
+      });
+    },
+    [dismiss, handleUndoDismiss, pushToast],
+  );
+  const handleSnooze = useCallback(
+    (item: AttentionItem, snoozedUntil: string) => {
+      setPendingHide((prev) => new Set(prev).add(item.id));
+      snooze(item.dismissalKey, snoozedUntil);
+      setExpandedId((previous) => (previous === item.id ? null : previous));
+    },
+    [snooze],
+  );
+  const handleRestore = useCallback(
+    (item: AttentionItem) => {
+      setPendingRestore((prev) => new Set(prev).add(item.id));
+      restore(item.dismissalKey);
+    },
+    [restore],
+  );
+  const handleToggleExpand = useCallback((item: AttentionItem) => {
+    setSelectedAttentionId(item.id);
+    setSelectionFromKeyboard(false);
+    setExpandedId((prev) => (prev === item.id ? null : item.id));
+  }, []);
+  const handleTrain = useCallback((item: AttentionItem) => {
+    setTrainingItem(item);
+  }, []);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -264,6 +428,7 @@ export function WhatNeedsMe() {
             : keyboardItems.length - 1
           : (currentIndex + offset + keyboardItems.length) % keyboardItems.length;
         setSelectedAttentionId(keyboardItems[nextIndex]?.id ?? null);
+        setSelectionFromKeyboard(true);
         return;
       }
 
@@ -282,7 +447,7 @@ export function WhatNeedsMe() {
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [keyboardItems, navigate, selectedAttentionId]);
+  }, [handleDismiss, keyboardItems, navigate, selectedAttentionId]);
   const activeFilterCount = countActiveAttentionFilters(filters);
 
   if (!selectedCompanyId) {
@@ -296,7 +461,7 @@ export function WhatNeedsMe() {
   const hasAnything = activeItems.length > 0 || snoozedItems.length > 0 || dismissedItems.length > 0;
 
   return (
-    <div className="max-w-3xl space-y-4">
+    <div ref={rootRef} className="max-w-3xl space-y-4">
       <div className="flex items-center justify-between gap-2">
         <h1 className="text-xl font-bold">Decisions</h1>
         <div className="flex items-center gap-2">
@@ -360,6 +525,17 @@ export function WhatNeedsMe() {
               </div>
             </PopoverContent>
           </Popover>
+          <Button
+            type="button"
+            variant="outline"
+            size="icon"
+            className="h-8 w-8 shrink-0"
+            title="Training"
+            aria-label="Training"
+            onClick={() => navigate(decisionTrainingHref())}
+          >
+            <GraduationCap className="h-3.5 w-3.5" />
+          </Button>
           {/* Sort */}
           <Popover>
             <PopoverTrigger asChild>
@@ -422,24 +598,54 @@ export function WhatNeedsMe() {
                     />
                   )}
                   {!collapsed && (
-                    <div className="space-y-2">
-                      {group.items.map((item) => (
-                        <AttentionQueueRow
-                          key={item.id}
-                          item={item}
-                          companyId={selectedCompanyId}
-                          expanded={expandedId === item.id}
-                          onToggleExpand={() => {
-                            setSelectedAttentionId(item.id);
-                            setExpandedId((prev) => (prev === item.id ? null : item.id));
-                          }}
-                          onDismiss={handleDismiss}
-                          onSnooze={handleSnooze}
-                          agentMap={agentMap}
-                          currentUserId={currentUserId}
-                          selected={selectedAttentionId === item.id}
-                        />
-                      ))}
+                    <div className="space-y-4">
+                      {(() => {
+                        const rows = renderPlan.groupRows.get(group.key) ?? [];
+                        const seenBundles = new Set<string>();
+                        return rows.map((item) => {
+                          const bundleId =
+                            item.sourceKind === "decision"
+                              ? ((item.subject.metadata?.bundleId as string | null | undefined) ?? null)
+                              : null;
+                          let header: ReactNode = null;
+                          if (bundleId && !seenBundles.has(bundleId)) {
+                            seenBundles.add(bundleId);
+                            const bundleRows = rows.filter(
+                              (row) =>
+                                row.sourceKind === "decision" &&
+                                ((row.subject.metadata?.bundleId as string | null | undefined) ?? null) === bundleId,
+                            );
+                            const first = bundleRows[0];
+                            header = (
+                              <DecisionBundleHeader
+                                agentName={agentMap.get(first?.subject.metadata?.originAgentId as string)?.name ?? null}
+                                title={(first?.subject.metadata?.bundleTitle as string | null | undefined) ?? null}
+                                originIssue={first?.relatedIssue ?? null}
+                                count={bundleRows.length}
+                              />
+                            );
+                          }
+                          return (
+                            <Fragment key={item.id}>
+                              {header}
+                              <div className={bundleId ? "border-l-2 border-violet-500/40 pl-3" : undefined}>
+                                <AttentionQueueRow
+                                  item={item}
+                                  companyId={selectedCompanyId}
+                                  expanded={expandedId === item.id}
+                                  onToggleExpand={handleToggleExpand}
+                                  onDismiss={handleDismiss}
+                                  onSnooze={handleSnooze}
+                                  onTrain={handleTrain}
+                                  agentMap={agentMap}
+                                  currentUserId={currentUserId}
+                                  selected={selectionFromKeyboard && selectedAttentionId === item.id}
+                                />
+                              </div>
+                            </Fragment>
+                          );
+                        });
+                      })()}
                     </div>
                   )}
                 </section>
@@ -454,14 +660,14 @@ export function WhatNeedsMe() {
               open={snoozedOpen}
               onToggle={() => setSnoozedOpen((prev) => !prev)}
             >
-              {snoozedItems.map((item) => (
+              {renderPlan.snoozedRows.map((item) => (
                 <AttentionQueueRow
                   key={item.id}
                   item={item}
                   companyId={selectedCompanyId}
                   variant="hidden"
                   expanded={false}
-                  onToggleExpand={() => {}}
+                  onToggleExpand={noopToggleExpand}
                   onDismiss={handleDismiss}
                   onRestore={handleRestore}
                   agentMap={agentMap}
@@ -478,14 +684,14 @@ export function WhatNeedsMe() {
               open={dismissedOpen}
               onToggle={() => setDismissedOpen((prev) => !prev)}
             >
-              {dismissedItems.map((item) => (
+              {renderPlan.dismissedRows.map((item) => (
                 <AttentionQueueRow
                   key={item.id}
                   item={item}
                   companyId={selectedCompanyId}
                   variant="hidden"
                   expanded={false}
-                  onToggleExpand={() => {}}
+                  onToggleExpand={noopToggleExpand}
                   onDismiss={handleDismiss}
                   onRestore={handleRestore}
                   agentMap={agentMap}
@@ -494,8 +700,107 @@ export function WhatNeedsMe() {
               ))}
             </Curtain>
           )}
+
         </div>
       )}
+
+      <div className="space-y-4">
+        <Curtain
+          label="Decided"
+          count={decisionHistoryCount(decidedDecisions?.length)}
+          open={decidedOpen}
+          onToggle={() => setDecidedOpen((prev) => !prev)}
+        >
+          {decidedDecisionsLoading ? (
+            <p className="text-xs text-muted-foreground">Loading decided decisions…</p>
+          ) : (decidedDecisions?.length ?? 0) > 0 ? (
+            decidedDecisions!.slice(0, DECISION_HISTORY_VISIBLE_LIMIT).map((decision) => (
+              <DecisionResolver
+                key={decision.id}
+                companyId={selectedCompanyId}
+                decisionId={decision.id}
+                agentMap={agentMap}
+                initialDecision={{ ...decision, executions: decision.executions ?? [] }}
+              />
+            ))
+          ) : (
+            <p className="text-xs text-muted-foreground">No decided decisions.</p>
+          )}
+        </Curtain>
+
+        <Curtain
+          label="Expired"
+          count={decisionHistoryCount(expiredDecisions?.length)}
+          open={expiredOpen}
+          onToggle={() => setExpiredOpen((prev) => !prev)}
+        >
+          {expiredDecisionsLoading ? (
+            <p className="text-xs text-muted-foreground">Loading expired decisions…</p>
+          ) : (expiredDecisions?.length ?? 0) > 0 ? (
+            expiredDecisions!.slice(0, DECISION_HISTORY_VISIBLE_LIMIT).map((decision) => (
+              <DecisionResolver
+                key={decision.id}
+                companyId={selectedCompanyId}
+                decisionId={decision.id}
+                agentMap={agentMap}
+                initialDecision={{ ...decision, executions: decision.executions ?? [] }}
+              />
+            ))
+          ) : (
+            <p className="text-xs text-muted-foreground">No expired decisions.</p>
+          )}
+        </Curtain>
+      </div>
+
+      <DecisionTrainingDrawer
+        open={trainingItem !== null}
+        onOpenChange={(next) => {
+          if (!next) setTrainingItem(null);
+        }}
+        companyId={selectedCompanyId}
+        item={trainingItem}
+        currentUserId={currentUserId}
+      />
+    </div>
+  );
+}
+
+/**
+ * Violet left-rule strip over a run of decisions that share a bundle, e.g.
+ * "Planner proposed 6 decisions · from PAP-123 · routing review · 6 pending".
+ * Grouping is a surface only — each decision is still decided independently.
+ */
+export function DecisionBundleHeader({
+  agentName,
+  title,
+  originIssue,
+  count,
+}: {
+  agentName: string | null;
+  title: string | null;
+  originIssue: AttentionSubject | null;
+  count: number;
+}) {
+  const noun = count === 1 ? "decision" : "decisions";
+  return (
+    <div className="flex flex-wrap items-center gap-x-1.5 gap-y-0.5 rounded-sm border-l-2 border-violet-500/60 bg-violet-500/5 px-3 py-1.5 text-xs">
+      <span className="font-semibold text-violet-800 dark:text-violet-200">
+        {agentName ?? "An agent"} proposed {count} {noun}
+      </span>
+      {originIssue && (originIssue.identifier || originIssue.title) && (
+        <span className="text-muted-foreground">
+          {"· from "}
+          {originIssue.href ? (
+            <a href={originIssue.href} className="hover:underline">
+              {originIssue.identifier ?? originIssue.title}
+            </a>
+          ) : (
+            originIssue.identifier ?? originIssue.title
+          )}
+        </span>
+      )}
+      {title && <span className="text-muted-foreground">· {title}</span>}
+      <span className="text-muted-foreground">· {count} pending</span>
     </div>
   );
 }
@@ -640,7 +945,7 @@ function Curtain({
   children,
 }: {
   label: string;
-  count: number;
+  count?: number | string;
   open: boolean;
   onToggle: () => void;
   children: ReactNode;
@@ -648,13 +953,13 @@ function Curtain({
   return (
     <section className="space-y-2">
       <IssueGroupHeader
-        label={`${label} (${count})`}
+        label={count == null ? label : `${label} (${count})`}
         collapsible
         collapsed={!open}
         onToggle={onToggle}
         className="text-muted-foreground"
       />
-      {open && <div className="space-y-2">{children}</div>}
+      {open && <div className="space-y-4">{children}</div>}
     </section>
   );
 }

@@ -325,7 +325,7 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
       queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(project.urlKey) });
     }
     if (selectedCompanyId) {
-      queryClient.invalidateQueries({ queryKey: queryKeys.projects.list(selectedCompanyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.projects.all(selectedCompanyId) });
     }
   };
 

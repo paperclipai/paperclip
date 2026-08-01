@@ -28,6 +28,7 @@ import { PageSkeleton } from "../components/PageSkeleton";
 import { Card } from "@/components/ui/card";
 import type { Agent, Issue } from "@paperclipai/shared";
 import { PluginSlotOutlet } from "@/plugins/slots";
+import { SmokeLabDashboardCard } from "../components/SmokeLabDashboardCard";
 
 const DASHBOARD_ACTIVITY_LIMIT = 10;
 
@@ -90,8 +91,8 @@ export function Dashboard() {
   });
 
   const { data: projects } = useQuery({
-    queryKey: queryKeys.projects.list(selectedCompanyId!),
-    queryFn: () => projectsApi.list(selectedCompanyId!),
+    queryKey: queryKeys.projects.list(selectedCompanyId!, { includeArchived: true }),
+    queryFn: () => projectsApi.list(selectedCompanyId!, { includeArchived: true }),
     enabled: !!selectedCompanyId,
   });
 
@@ -308,6 +309,8 @@ export function Dashboard() {
               }
             />
           </div>
+
+          <SmokeLabDashboardCard companyId={selectedCompanyId!} />
 
           <div className="grid grid-cols-2 lg:grid-cols-4 gap-4">
             <ChartCard title="Run Activity" subtitle="Last 14 days">

@@ -10,6 +10,7 @@ import {
   resolveExecutionWorkspaceEnvironmentId,
   resolvePinnedIssueWorkspaceStrategyType,
   resolveExecutionWorkspaceMode,
+  selectEnvironmentExecutionWorkspaceSettings,
 } from "../services/execution-workspace-policy.ts";
 
 describe("execution workspace policy helpers", () => {
@@ -291,6 +292,38 @@ describe("execution workspace policy helpers", () => {
       mode: "shared_workspace",
       environmentId: "11111111-1111-4111-8111-111111111111",
     });
+    expect(
+      parseIssueExecutionWorkspaceSettings({
+        mode: "isolated_workspace",
+        networkEgress: {
+          allowFqdns: ["github.com", "pypi.org"],
+          allowCidrs: ["203.0.113.0/24"],
+        },
+      }),
+    ).toEqual({
+      mode: "isolated_workspace",
+      networkEgress: {
+        allowFqdns: ["github.com", "pypi.org"],
+        allowCidrs: ["203.0.113.0/24"],
+      },
+    });
+  });
+
+  it("keeps egress grants independent from isolated workspace mode", () => {
+    const parsedSettings = {
+      mode: "isolated_workspace" as const,
+      workspaceRuntime: { image: "example/image" },
+      networkEgress: {
+        allowFqdns: ["github.com"],
+        allowCidrs: ["203.0.113.0/24"],
+      },
+    };
+
+    expect(selectEnvironmentExecutionWorkspaceSettings(parsedSettings, false)).toEqual({
+      networkEgress: parsedSettings.networkEgress,
+    });
+    expect(selectEnvironmentExecutionWorkspaceSettings(parsedSettings, true)).toEqual(parsedSettings);
+    expect(selectEnvironmentExecutionWorkspaceSettings({ mode: "isolated_workspace" }, false)).toBeNull();
   });
 
   it("prefers the agent default environment", () => {

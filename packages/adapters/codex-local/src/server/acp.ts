@@ -2,12 +2,18 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type {
+  AdapterBillingType,
   AdapterEnvironmentCheck,
   AdapterEnvironmentTestContext,
   AdapterEnvironmentTestResult,
   AdapterExecutionContext,
   AdapterExecutionResult,
 } from "@paperclipai/adapter-utils";
+import {
+  parseLocalProcessFilesystemScope,
+  parseLocalProcessNetworkScope,
+} from "@paperclipai/adapter-utils/local-process-sandbox";
+import { inferOpenAiCompatibleBiller } from "@paperclipai/adapter-utils";
 import {
   ensureAdapterExecutionTargetCommandResolvable,
   readAdapterExecutionTarget,
@@ -19,12 +25,24 @@ import {
   DEFAULT_ACP_ENGINE_PERMISSION_MODE,
   DEFAULT_ACP_ENGINE_WARM_HANDLE_IDLE_MS,
 } from "@paperclipai/adapter-utils/acpx-engine/constants";
-import type { AcpxEngineExecutorOptions } from "@paperclipai/adapter-utils/acpx-engine/execute";
+import type {
+  AcpxEngineExecutorOptions,
+  AcpxRemoteManagedHomeContext,
+  AcpxRemoteManagedHomeResult,
+} from "@paperclipai/adapter-utils/acpx-engine/execute";
 import {
   asNumber,
   asString,
   parseObject,
 } from "@paperclipai/adapter-utils/server-utils";
+import { normalizeCodexModel } from "../index.js";
+import { classifyCodexAuthRefreshFailure } from "./parse.js";
+import { copyBackCodexAuth } from "./codex-auth-copyback.js";
+import { buildCodexAuthInboundProvision } from "./codex-auth-merge-scripts.js";
+import {
+  resolveSharedCodexHomeDir,
+  stageCodexHomeForSync,
+} from "./codex-home.js";
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const packageRootDir = path.resolve(moduleDir, "../..");
@@ -64,6 +82,36 @@ export async function resolveCodexExecutionEngineForRun(
   input: CodexEngineResolutionInput,
 ): Promise<CodexEngineSelection> {
   const selection = normalizeEngine(input.config.engine);
+  const target = readAdapterExecutionTarget({
+    executionTarget: input.executionTarget,
+    legacyRemoteExecution: input.executionTransport?.remoteExecution,
+  });
+  if (target?.workspaceRealization?.mode === "in_place") {
+    if (selection.explicit && selection.engine === "acp") {
+      throw new Error("In-place workspace realization requires the Codex CLI engine; ACP archive staging is not supported.");
+    }
+    return {
+      engine: "cli",
+      explicit: selection.explicit,
+      ...(!selection.explicit
+        ? { fallbackReason: "In-place workspace realization must run without ACP archive staging." }
+        : {}),
+    };
+  }
+  const filesystemScope = parseLocalProcessFilesystemScope(input.config.filesystemScope);
+  const networkScope = parseLocalProcessNetworkScope(input.config.networkScope);
+  if (filesystemScope || networkScope) {
+    if (selection.explicit && selection.engine === "acp") {
+      throw new Error("Local filesystem/network confinement requires the Codex CLI engine; ACP confinement is not supported.");
+    }
+    return {
+      engine: "cli",
+      explicit: selection.explicit,
+      ...(!selection.explicit
+        ? { fallbackReason: "Local filesystem/network scope requires spawn-level confinement in the CLI lane." }
+        : {}),
+    };
+  }
   if (selection.explicit || selection.engine !== "acp") return selection;
 
   const fallbackReason = await defaultCodexAcpFallbackReason(input);
@@ -98,6 +146,11 @@ export function buildCodexAcpConfig(config: Record<string, unknown>): Record<str
     config.warmHandleIdleMs ??
     config.acpWarmHandleIdleMs ??
     DEFAULT_ACP_ENGINE_WARM_HANDLE_IDLE_MS;
+  // Rewrite legacy model aliases (e.g. bare gpt-5.6) to the concrete slug Codex has metadata for,
+  // so the ACP session config matches the CLI lane and avoids the fallback-metadata warning.
+  const normalizedModel = normalizeCodexModel(
+    typeof config.model === "string" ? config.model : "",
+  );
 
   return {
     ...config,
@@ -106,18 +159,185 @@ export function buildCodexAcpConfig(config: Record<string, unknown>): Record<str
     permissionMode,
     nonInteractivePermissions,
     warmHandleIdleMs,
+    ...(normalizedModel ? { model: normalizedModel } : {}),
     ...(agentCommand ? { agentCommand } : {}),
     ...(stateDir ? { stateDir } : {}),
   };
 }
 
+/**
+ * Codex remote managed-home seed + auth copy-back for the runner-backed remote
+ * sandbox ACP lane. Mirrors the codex CLI lane (`codex-local/execute.ts`): stage
+ * the managed `CODEX_HOME` (auth.json + config.toml + skills) into the sandbox
+ * as the `home` asset — carrying the inbound auth-merge `provision` and the
+ * outbound `restore` copy-back seams — then repoint `CODEX_HOME` onto the
+ * in-sandbox `assetDirs.home` path. The copy-back rides the asset `restore`,
+ * which fires inside `restoreWorkspace()` at teardown.
+ *
+ * The engine already resolved+seeded the host managed Codex home and set
+ * `env.CODEX_HOME` to it (a HOST path) before this seam runs, so `env.CODEX_HOME`
+ * is exactly the home to stage. Seed inbound and copy-back outbound land together
+ * (never seed-without-copy-back): Codex refresh tokens are single-use, so a
+ * refreshed sandbox token that is never copied back would spend the host's token
+ * and corrupt the host credential.
+ */
+async function prepareCodexRemoteManagedHome(
+  input: AcpxRemoteManagedHomeContext,
+): Promise<AcpxRemoteManagedHomeResult> {
+  const { env, runId, onLog } = input;
+  // The host managed Codex home the engine seeded and set on env.CODEX_HOME.
+  const effectiveCodexHome = env.CODEX_HOME;
+  if (!effectiveCodexHome) {
+    // No managed home resolved (e.g. custom CODEX_HOME cleared) — stage the
+    // workspace with no home asset, identical to the no-seam fallback.
+    return { stagedRuntime: await input.stage([]) };
+  }
+  // Curated allowlist temp dir (auth/config/skills only); caller owns cleanup.
+  const stagedCodexHomeDir = await stageCodexHomeForSync(effectiveCodexHome, { runId });
+  let stagedRuntime;
+  try {
+    stagedRuntime = await input.stage([
+      {
+        key: "home",
+        localDir: stagedCodexHomeDir,
+        followSymlinks: true,
+        // Inbound (host→sandbox) auth-merge: keeps whichever credential is newer
+        // when the sandbox image already carries a Codex auth.json.
+        provision: buildCodexAuthInboundProvision(),
+        // Outbound (sandbox→host) copy-back at teardown, under the same
+        // direction-agnostic decision predicate + directory merge-lock +
+        // atomic-rename + 0600 guard. Target is the SHARED host auth.json
+        // (the symlink source managed homes point at), never an in-sandbox copy.
+        restore: async ({ assetDir, readFile }) =>
+          void (await copyBackCodexAuth({
+            readSandboxAuth: () => readFile(path.posix.join(assetDir, "auth.json")),
+            hostAuthPath: path.join(resolveSharedCodexHomeDir(process.env), "auth.json"),
+            log: (line) => onLog("stdout", `${line}\n`),
+          })),
+      },
+    ]);
+  } catch (err) {
+    await fs.rm(stagedCodexHomeDir, { recursive: true, force: true }).catch(() => {});
+    throw err;
+  }
+  // Repoint CODEX_HOME from the HOST path onto the seeded in-sandbox home.
+  env.CODEX_HOME =
+    stagedRuntime.assetDirs.home ??
+    path.posix.join(stagedRuntime.runtimeRootDir ?? "", "home");
+
+  return {
+    stagedRuntime,
+    // Per-run copy-back: fires on EVERY run's teardown (including a compatible
+    // resume that reuses this staged runtime). It reads the sandbox auth.json /
+    // workspace live and copies back to the host; it does NOT remove the staged
+    // in-sandbox home, so re-running it across resumes can't leave a later run
+    // without its staged home. Host staged-temp removal is deliberately NOT here
+    // — see `disposeStaged` — so caching this runtime for reuse never destroys
+    // resources the next resume needs.
+    teardown: async () => {
+      try {
+        await onLog(
+          "stdout",
+          "[paperclip] Restoring workspace changes and Codex auth from the sandbox.\n",
+        );
+        await stagedRuntime.restoreWorkspace((line) => onLog("stdout", line));
+      } catch (err) {
+        // Fail-soft: a teardown copy-back miss loses this rotation and surfaces
+        // loudly as refresh_token_reused on the next host Codex use (re-auth
+        // recovers) — never silent host-credential corruption, so it must not
+        // mask the run result.
+        await onLog(
+          "stderr",
+          `[paperclip] Codex ACP teardown restore/copy-back failed: ${
+            err instanceof Error ? err.message : String(err)
+          }\n`,
+        );
+      }
+    },
+    // One-time cleanup of the HOST staged home temp dir. Fired ONLY when the
+    // staged runtime is dropped (failed/cancelled/timed-out turn, incompatible
+    // re-stage, idle eviction) — never on a clean turn that keeps the runtime
+    // warm — so it can't remove the staged home while a reuse still depends on
+    // it. Idempotent: `force: true` no-ops if it was already removed.
+    disposeStaged: async () => {
+      await fs.rm(stagedCodexHomeDir, { recursive: true, force: true }).catch(async (error) => {
+        await onLog(
+          "stderr",
+          `[paperclip] Failed to remove staged Codex home "${stagedCodexHomeDir}": ${
+            error instanceof Error ? error.message : String(error)
+          }\n`,
+        );
+      });
+    },
+  };
+}
+
 function withCodexAcpDefaults(options: CodexAcpExecutorOptions): AcpxEngineExecutorOptions {
   return {
+    resolveBillingIdentity: resolveCodexAcpBillingIdentity,
+    prepareRemoteManagedHome: prepareCodexRemoteManagedHome,
     ...options,
     adapterType: "codex_local",
     moduleDir,
     packageRootDir,
   };
+}
+
+function withCodexAuthRefreshFailureClassification(result: AdapterExecutionResult): AdapterExecutionResult {
+  if ((result.exitCode ?? 0) === 0) return result;
+  const resultJson = parseObject(result.resultJson);
+  const stopReason = asString(resultJson.stopReason, "");
+  const authFailure = classifyCodexAuthRefreshFailure({
+    errorMessage: [result.errorMessage ?? "", result.summary ?? "", stopReason]
+      .map((line) => line.trim())
+      .filter(Boolean)
+      .join("\n"),
+  });
+  if (!authFailure) return result;
+
+  return {
+    ...result,
+    errorCode: authFailure,
+    errorFamily: authFailure,
+    resultJson: {
+      ...(result.resultJson ?? {}),
+      errorFamily: authFailure,
+    },
+  };
+}
+
+/**
+ * Classify billing the same way the Codex CLI lane does so ACP runs land in
+ * the cost ledger with a real provider/billingType instead of acpx/unknown.
+ * Host env only counts for local execution targets; remote targets see just
+ * the adapter-config env.
+ */
+export function resolveCodexAcpBillingIdentity(
+  ctx: Pick<AdapterExecutionContext, "config"> &
+    Partial<Pick<AdapterExecutionContext, "executionTarget" | "executionTransport">>,
+): { provider: string; biller: string; billingType: AdapterBillingType } {
+  const envConfig = parseObject(parseObject(ctx.config).env);
+  const target = readAdapterExecutionTarget({
+    executionTarget: ctx.executionTarget,
+    legacyRemoteExecution: ctx.executionTransport?.remoteExecution,
+  });
+  const considerHostEnv = target?.kind !== "remote";
+  const mergedEnv: NodeJS.ProcessEnv = {
+    ...(considerHostEnv ? process.env : {}),
+    ...Object.fromEntries(
+      Object.entries(envConfig).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
+    ),
+  };
+  const apiKey = typeof mergedEnv.OPENAI_API_KEY === "string" && mergedEnv.OPENAI_API_KEY.trim().length > 0;
+  const billingType: AdapterBillingType = apiKey ? "api" : "subscription";
+  const openAiCompatibleBiller = inferOpenAiCompatibleBiller(mergedEnv, "openai");
+  const biller =
+    openAiCompatibleBiller === "openrouter"
+      ? "openrouter"
+      : billingType === "subscription"
+      ? "chatgpt"
+      : openAiCompatibleBiller ?? "openai";
+  return { provider: "openai", biller, billingType };
 }
 
 export function createCodexAcpExecutor(options: CodexAcpExecutorOptions = {}): CodexAcpExecutor {
@@ -129,10 +349,11 @@ export function createCodexAcpExecutor(options: CodexAcpExecutorOptions = {}): C
       currentExecutor = createAcpxEngineExecutor(withCodexAcpDefaults(options));
       executor = currentExecutor;
     }
-    return currentExecutor({
+    const result = await currentExecutor({
       ...ctx,
       config: buildCodexAcpConfig(ctx.config),
     });
+    return withCodexAuthRefreshFailureClassification(result);
   };
 }
 

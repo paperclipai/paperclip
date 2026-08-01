@@ -5,6 +5,7 @@ import type {
   AdapterEnvironmentTestResult,
   CompanySecret,
   EnvBinding,
+  EnvSecretRefBinding,
   Environment,
 } from "@paperclipai/shared";
 import { AGENT_DEFAULT_MAX_CONCURRENT_RUNS, supportedEnvironmentDriversForAdapter } from "@paperclipai/shared";
@@ -51,6 +52,8 @@ import {
   EnvironmentVariablesEditor,
   type EnvironmentVariablesEditorHandle,
 } from "./environment-variables-editor";
+import { AgentSecretAccessEditor } from "./AgentSecretAccessEditor";
+import { AGENT_ACCESS_CONFIG_PATH_PREFIX } from "../lib/secret-delivery";
 import { shouldShowLegacyWorkingDirectoryField } from "../lib/legacy-agent-config";
 import { listAdapterOptions, listVisibleAdapterTypes } from "../adapters/metadata";
 import { getAdapterDisplay, getAdapterLabel } from "../adapters/adapter-display-registry";
@@ -323,6 +326,29 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
   function flushEnvironmentDraft() {
     return environmentVariablesEditorRef.current?.flushPendingDraft() ?? null;
   }
+
+  /**
+   * Replace the agent's API-access grants (top-level `access.<ALIAS>` keys) with
+   * the complete set emitted by the Secret access editor. Added/changed aliases
+   * are marked into the overlay; aliases dropped from the set are marked
+   * `undefined` so `buildAgentUpdatePatch` strips them.
+   */
+  const applyAccessGrants = useCallback((next: Record<string, EnvSecretRefBinding>) => {
+    if (isCreate) return;
+    setOverlay((prev) => {
+      const effective = { ...(props.agent.adapterConfig ?? {}), ...prev.adapterConfig } as Record<string, unknown>;
+      const nextAdapterConfig: Record<string, unknown> = { ...prev.adapterConfig };
+      for (const [alias, binding] of Object.entries(next)) {
+        nextAdapterConfig[`${AGENT_ACCESS_CONFIG_PATH_PREFIX}${alias}`] = binding;
+      }
+      for (const key of Object.keys(effective)) {
+        if (!key.startsWith(AGENT_ACCESS_CONFIG_PATH_PREFIX)) continue;
+        const alias = key.slice(AGENT_ACCESS_CONFIG_PATH_PREFIX.length);
+        if (!(alias in next)) nextAdapterConfig[key] = undefined;
+      }
+      return { ...prev, adapterConfig: nextAdapterConfig };
+    });
+  }, [isCreate, !isCreate ? props.agent : undefined]); // eslint-disable-line react-hooks/exhaustive-deps
 
   /** Build accumulated patch and send to parent */
   const handleCancel = useCallback(() => {
@@ -1380,6 +1406,16 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                   }
                 />
               </Field>
+
+              {!isCreate && (
+                <Field label="Secret access" hint={help.secretAccess}>
+                  <AgentSecretAccessEditor
+                    config={{ ...config, ...overlay.adapterConfig }}
+                    secrets={availableSecrets}
+                    onChange={applyAccessGrants}
+                  />
+                </Field>
+              )}
 
               {/* Edit-only: timeout + grace period */}
               {!isCreate && (

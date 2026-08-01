@@ -45,6 +45,7 @@ import type {
 } from "@paperclipai/shared";
 import type { ActiveRunForIssue, LiveRunForIssue } from "../api/heartbeats";
 import { useLiveRunTranscripts } from "./transcript/useLiveRunTranscripts";
+import { useSecondTick } from "../hooks/useSecondTick";
 import { usePaperclipIssueRuntime, type PaperclipIssueRuntimeReassignment } from "../hooks/usePaperclipIssueRuntime";
 import { useOptionalToastActions } from "../context/ToastContext";
 import { copyTextToClipboard } from "../lib/clipboard";
@@ -144,10 +145,13 @@ import {
   SystemNotice,
   type SystemNoticeMetadataRow,
   type SystemNoticeMetadataSection,
+  type SystemNoticeProps,
+  type SystemNoticeTone,
 } from "./SystemNotice";
 import {
   buildSystemNoticeProps,
   mapCommentMetadataToSystemNoticeSections,
+  systemNoticeLabelForTone,
 } from "../lib/system-notice-comment";
 import type {
   IssueCommentMetadata,
@@ -165,7 +169,7 @@ import {
 } from "../lib/transcriptPresentation";
 import { buildAgentMentionHref } from "@paperclipai/shared";
 import { cn, formatDateTime, formatShortDate } from "../lib/utils";
-import { brandChipBadge } from "../lib/status-colors";
+import { liveBlueBadge } from "../lib/status-colors";
 import { nextWorkMode, titleForPendingWorkMode, workModeMetaFor, workModeMetaList } from "../lib/work-mode-meta";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -305,12 +309,10 @@ function findCoTSegmentIndex(
 }
 
 function useLiveElapsed(startMs: number | null | undefined, active: boolean): string | null {
-  const [, rerender] = useState(0);
-  useEffect(() => {
-    if (!active || !startMs) return;
-    const interval = setInterval(() => rerender((n) => n + 1), 1000);
-    return () => clearInterval(interval);
-  }, [active, startMs]);
+  // Drive the 1s refresh from the shared page-wide ticker instead of a
+  // per-instance setInterval, so a thread with many live elements uses one
+  // timer rather than one per element.
+  useSecondTick(Boolean(active && startMs));
   if (!active || !startMs) return null;
   return formatDurationWords(Date.now() - startMs);
 }
@@ -528,6 +530,8 @@ interface IssueChatThreadProps {
     verdicts: { id: string; verdict: RequestItemVerdictValue; reason?: string }[],
   ) => Promise<void> | void;
   composerRef?: Ref<IssueChatComposerHandle>;
+  /** Optional node rendered inline directly above the sticky composer dock (e.g. the monitor strip). */
+  composerAccessory?: ReactNode;
   issueWorkMode?: IssueWorkMode;
   /**
    * Hook for the parent to refetch comments when the user explicitly asks
@@ -1928,12 +1932,12 @@ function IssueChatAssistantMessage({
                 </Badge>
               ) : null}
               {isRunning ? (
-                // Gallery feedback r1: running chip uses the canonical brand blue
-                // (brandChipBadge.blue), not cyan; layout/size classes unchanged.
+                // Running chip shares the liveness-blue badge recipe with the
+                // issue header's "Live" badge (one live/running blue).
                 <Badge variant="outline"
                   className={cn(
                     "text-(length:--text-nano) uppercase tracking-(--tracking-eyebrow)",
-                    brandChipBadge.blue,
+                    liveBlueBadge,
                   )}
                 >
                   <Loader2 className="h-3 w-3 animate-spin" />
@@ -2557,6 +2561,82 @@ function StaleDispositionWarningRow({
   );
 }
 
+// Tone-colored dot for the fully-collapsed compact notice row. Tone is never
+// conveyed by color alone — the adjacent title text names the notice.
+const COMPACT_TONE_DOT: Record<SystemNoticeTone, string> = {
+  neutral: "bg-muted-foreground/40",
+  info: "bg-sky-500 dark:bg-sky-400",
+  success: "bg-emerald-500 dark:bg-emerald-400",
+  warning: "bg-amber-500 dark:bg-amber-400",
+  danger: "bg-red-500 dark:bg-red-400",
+};
+
+// A system notice whose presentation opts into `density: "compact"` collapses to
+// a single quiet row — tone dot + title (+ author) + timestamp + chevron.
+// Expanding reveals the full SystemNotice card (body + details), so no
+// information is lost. Generalized from the StaleDispositionWarningRow precedent.
+function CompactSystemNoticeRow({
+  anchorId,
+  message,
+  tone,
+  title,
+  source,
+  noticeProps,
+  defaultOpen = false,
+}: {
+  anchorId?: string;
+  message: ThreadMessage;
+  tone: SystemNoticeTone;
+  title: string;
+  source?: SystemNoticeProps["source"];
+  noticeProps: SystemNoticeProps;
+  defaultOpen?: boolean;
+}) {
+  const [open, setOpen] = useState(defaultOpen);
+  const detailsId = useId();
+
+  return (
+    <div id={anchorId} data-testid="compact-system-notice" className="group">
+      <div className="flex items-start gap-2.5 py-1.5">
+        <span className="size-6 shrink-0" aria-hidden />
+        <div className="min-w-0 flex-1">
+          <button
+            type="button"
+            aria-expanded={open}
+            aria-controls={detailsId}
+            className="-mx-1 flex w-full items-center gap-2 rounded-md px-1 py-0.5 text-left transition-colors hover:bg-accent/5"
+            onClick={() => setOpen((value) => !value)}
+          >
+            <span
+              className={cn("size-1.5 shrink-0 rounded-full", COMPACT_TONE_DOT[tone])}
+              aria-hidden
+            />
+            <span className="truncate text-sm font-medium text-foreground/80">{title}</span>
+            {source ? (
+              <span className="truncate text-(length:--text-micro) text-muted-foreground">
+                · {source.label}
+              </span>
+            ) : null}
+            {/* Trailing meta never shrinks — keeps the timestamp on one line so the
+                collapsed row stays a single quiet line on narrow / mobile widths. */}
+            <span className="ml-auto flex shrink-0 items-center gap-1.5">
+              {message.createdAt ? (
+                <span data-testid="compact-system-notice-time" className="whitespace-nowrap text-(length:--text-micro) text-muted-foreground/50">
+                  {commentDateLabel(message.createdAt)}
+                </span>
+              ) : null}
+              <ChevronDown className={cn("h-3.5 w-3.5 shrink-0 text-muted-foreground/40 transition-transform group-hover:text-muted-foreground/70", open && "rotate-180")} />
+            </span>
+          </button>
+          <div id={detailsId} hidden={!open} className="py-1">
+            <SystemNotice {...noticeProps} />
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 function SystemNoticeCommentRow({
   message,
   anchorId,
@@ -2649,6 +2729,24 @@ function SystemNoticeCommentRow({
         message={message}
         metadata={commentMetadata}
         runAgentId={runAgentId}
+      />
+    );
+  }
+
+  // Compact presentation collapses the notice to a single quiet row. Notices
+  // without `density` (old comments / old data) keep today's full card.
+  if (presentation?.density === "compact") {
+    const tone = presentation.tone ?? "neutral";
+    const title = systemNoticeLabelForTone(tone, presentation.title);
+    return (
+      <CompactSystemNoticeRow
+        anchorId={anchorId}
+        message={message}
+        tone={tone}
+        title={title}
+        source={source}
+        noticeProps={props}
+        defaultOpen={Boolean(presentation.detailsDefaultOpen)}
       />
     );
   }
@@ -4250,6 +4348,7 @@ export function IssueChatThread({
   onCancelInteraction,
   onSubmitInteractionVerdicts,
   composerRef,
+  composerAccessory,
   issueWorkMode,
   onWorkModeChange,
   onRefreshLatestComments,
@@ -5003,6 +5102,12 @@ export function IssueChatThread({
             </div>
           </div>
         </IssueChatErrorBoundary>
+
+        {showComposer && composerAccessory ? (
+          <div data-testid="issue-chat-composer-accessory" className="mb-2">
+            {composerAccessory}
+          </div>
+        ) : null}
 
         {showComposer ? (
           <div

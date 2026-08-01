@@ -230,6 +230,8 @@ describe("SidebarAgents", () => {
     memberships = {
       projectMemberships: {},
       agentMemberships: {},
+      starredDocumentIds: [],
+      documentStarredAt: {},
       updatedAt: null,
     };
     mockResourceMembershipsApi.listMine.mockImplementation(() => Promise.resolve(memberships));
@@ -368,8 +370,10 @@ describe("SidebarAgents", () => {
       agentMemberships: {},
       starredProjectIds: [],
       starredAgentIds: ["agent-b"],
+      starredDocumentIds: [],
       projectStarredAt: {},
       agentStarredAt: {},
+      documentStarredAt: {},
       updatedAt: new Date(),
     };
 
@@ -417,8 +421,10 @@ describe("SidebarAgents", () => {
       agentMemberships: { "agent-b": "joined" },
       starredProjectIds: [],
       starredAgentIds: ["agent-b"],
+      starredDocumentIds: [],
       projectStarredAt: {},
       agentStarredAt: {},
+      documentStarredAt: {},
       updatedAt: new Date(),
     };
     mockResourceMembershipsApi.updateAgent.mockRejectedValue(new Error("nope"));
@@ -544,6 +550,8 @@ describe("SidebarAgents", () => {
       resolveMemberships({
         projectMemberships: {},
         agentMemberships: { "agent-1": "left" },
+        starredDocumentIds: [],
+        documentStarredAt: {},
         updatedAt: null,
       });
     });
@@ -702,7 +710,8 @@ describe("SidebarAgents", () => {
     expect(agentLinkLabels(container)).toEqual(["Alpha"]);
 
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(1);
+      await vi.advanceTimersByTimeAsync(5);
+      await vi.advanceTimersByTimeAsync(0);
     });
     expect(agentLinkLabels(container)).toEqual(["Alpha", "Bravo", "Charlie"]);
   });
@@ -758,12 +767,14 @@ describe("SidebarAgents", () => {
     expect(agentLinkLabels(container)).toEqual(["Alpha", "Bravo"]);
 
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(60_001);
+      await vi.advanceTimersByTimeAsync(60_005);
+      await vi.advanceTimersByTimeAsync(0);
     });
     expect(agentLinkLabels(container)).toEqual(["Bravo"]);
 
     await act(async () => {
-      await vi.advanceTimersByTimeAsync(60_000);
+      await vi.advanceTimersByTimeAsync(60_005);
+      await vi.advanceTimersByTimeAsync(0);
     });
     expect(agentLinkLabels(container)).toEqual(["Alpha", "Bravo", "Charlie"]);
   });

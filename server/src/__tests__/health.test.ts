@@ -16,6 +16,7 @@ const testServerInfo = {
     available: true,
     fullSha: "0123456789abcdef0123456789abcdef01234567",
     shortSha: "0123456",
+    branchName: "master",
     subject: "Add server info debug view",
     committedAt: "2026-06-25T23:00:00.000Z",
     localChanges: {
@@ -67,12 +68,13 @@ describe("GET /health", () => {
 
   afterEach(() => {
     vi.restoreAllMocks();
+    vi.unstubAllEnvs();
   });
   it("returns 200 with status ok", async () => {
     const app = createApp();
     const res = await request(app).get("/health");
     expect(res.status).toBe(200);
-    expect(res.body).toEqual({ status: "ok", version: serverVersion, serverInfo: testServerInfo });
+    expect(res.body).toEqual({ status: "ok", version: serverVersion, serverVersion: serverVersion, commit: testServerInfo.git.fullSha, serverInfo: testServerInfo });
   }, 15_000);
 
   it("returns 200 when the database probe succeeds", async () => {
@@ -104,6 +106,8 @@ describe("GET /health", () => {
     expect(res.body).toEqual({
       status: "unhealthy",
       version: serverVersion,
+      serverVersion,
+      commit: testServerInfo.git.fullSha,
       error: "database_unreachable",
       serverInfo: testServerInfo,
     });
@@ -128,6 +132,8 @@ describe("GET /health", () => {
         unavailableReason: "git_unavailable",
       },
     });
+    // With no git metadata baked in, the exposed commit is null (not omitted).
+    expect(res.body.commit).toBeNull();
   });
 
   it("surfaces a stale database backup warning in full health details", async () => {
@@ -278,6 +284,7 @@ describe("GET /health", () => {
       status: "ok",
       deploymentMode: "authenticated",
       deploymentExposure: "public",
+      commit: testServerInfo.git.fullSha,
       bootstrapStatus: "ready",
       bootstrapInviteActive: false,
       databaseBackup: {
@@ -334,6 +341,7 @@ describe("GET /health", () => {
       status: "ok",
       deploymentMode: "authenticated",
       deploymentExposure: "public",
+      commit: testServerInfo.git.fullSha,
       bootstrapStatus: "ready",
       bootstrapInviteActive: false,
     });
@@ -371,6 +379,7 @@ describe("GET /health", () => {
       status: "ok",
       deploymentMode: "authenticated",
       deploymentExposure: "public",
+      commit: testServerInfo.git.fullSha,
       bootstrapStatus: "ready",
       bootstrapInviteActive: false,
     });
@@ -411,6 +420,7 @@ describe("GET /health", () => {
     expect(res.body).toMatchObject({
       status: "ok",
       version: serverVersion,
+      serverVersion,
       deploymentMode: "authenticated",
       deploymentExposure: "public",
       authReady: true,
@@ -420,6 +430,79 @@ describe("GET /health", () => {
         companyDeletionEnabled: false,
       },
       serverInfo: testServerInfo,
+    });
+  });
+
+  it("reports bootstrap_pending in authenticated mode when no instance admin exists", async () => {
+    const { healthRoutes } = await import("../routes/health.js");
+    const db = {
+      execute: vi.fn().mockResolvedValue([{ "?column?": 1 }]),
+      select: vi.fn(() => ({
+        from: vi.fn(() => ({
+          where: vi.fn().mockResolvedValue([{ count: 0 }]),
+        })),
+      })),
+    } as unknown as Db;
+    const app = express();
+    app.use((req, _res, next) => {
+      (req as any).actor = { type: "none", source: "none" };
+      next();
+    });
+    app.use(
+      "/health",
+      healthRoutes(db, {
+        deploymentMode: "authenticated",
+        deploymentExposure: "public",
+        authReady: true,
+        companyDeletionEnabled: false,
+        serverInfo: testServerInfo,
+      }),
+    );
+
+    const res = await request(app).get("/health");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      status: "ok",
+      bootstrapStatus: "bootstrap_pending",
+      bootstrapInviteActive: false,
+    });
+  });
+
+  it("reports bootstrapStatus ready for cloud-managed instances regardless of instance admin count", async () => {
+    vi.stubEnv("PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN", "test-tenant-server-token");
+    const { healthRoutes } = await import("../routes/health.js");
+    const db = {
+      execute: vi.fn().mockResolvedValue([{ "?column?": 1 }]),
+      select: vi.fn(() => ({
+        from: vi.fn(() => ({
+          where: vi.fn().mockResolvedValue([{ count: 0 }]),
+        })),
+      })),
+    } as unknown as Db;
+    const app = express();
+    app.use((req, _res, next) => {
+      (req as any).actor = { type: "none", source: "none" };
+      next();
+    });
+    app.use(
+      "/health",
+      healthRoutes(db, {
+        deploymentMode: "authenticated",
+        deploymentExposure: "public",
+        authReady: true,
+        companyDeletionEnabled: false,
+        serverInfo: testServerInfo,
+      }),
+    );
+
+    const res = await request(app).get("/health");
+
+    expect(res.status).toBe(200);
+    expect(res.body).toMatchObject({
+      status: "ok",
+      bootstrapStatus: "ready",
+      bootstrapInviteActive: false,
     });
   });
 });

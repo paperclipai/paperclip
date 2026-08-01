@@ -32,7 +32,7 @@ function externalObjectRowDisplayKey(group: IssueExternalObjectGroup): string {
   const displayKey = pill.displayKey?.trim();
   if (displayKey) return displayKey;
   if (pill.providerKey === "github") {
-    if (pill.objectType === "pull_request") return "Github Pull Request";
+    if (pill.objectType === "pull_request") return "Github PR";
     if (pill.objectType === "issue") return "Github Issue";
   }
   return externalObjectDisplayLabel(pill.providerKey, pill.objectType);
@@ -101,7 +101,7 @@ function externalObjectPropertyTitle(group: IssueExternalObjectGroup): string {
 }
 
 function ExternalObjectPropertyValue({ group }: { group: IssueExternalObjectGroup }) {
-  const { pill, mentionCount } = group;
+  const { pill } = group;
   const statusLabel = externalObjectPropertyStatusLabel(group);
   const providerLabel = externalObjectProviderLabel(pill.providerKey);
   const typeLabel = externalObjectTypeLabel(pill.objectType);
@@ -116,9 +116,6 @@ function ExternalObjectPropertyValue({ group }: { group: IssueExternalObjectGrou
         label={`${providerLabel}: ${statusLabel}`}
       />
       <span className="min-w-0 truncate">{value}</span>
-      {mentionCount > 1 ? (
-        <span className="tabular-nums text-xs text-muted-foreground">×{mentionCount}</span>
-      ) : null}
     </>
   );
   const className = cn(

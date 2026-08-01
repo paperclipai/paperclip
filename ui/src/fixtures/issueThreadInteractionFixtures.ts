@@ -8,6 +8,7 @@ import type {
   AskUserQuestionsInteraction,
   RequestCheckboxConfirmationInteraction,
   RequestConfirmationInteraction,
+  RequestConfirmationToolActionPayload,
   RequestItemVerdictsInteraction,
   SuggestTasksInteraction,
 } from "../lib/issue-thread-interactions";
@@ -504,6 +505,181 @@ export const rejectedNoReasonRequestConfirmationInteraction = createRequestConfi
     version: 1,
     outcome: "rejected",
     reason: null,
+  },
+});
+
+// ---------------------------------------------------------------------------
+// MCP tool-approval fixtures (PAP-13745). A `request_confirmation` carrying a
+// `payload.toolAction` block renders as the dedicated tool-approval card. The
+// pending fixtures use a live `expiresAt` so the countdown renders meaningfully
+// in Storybook; the destructive one sits inside the ~5-min urgent window.
+// ---------------------------------------------------------------------------
+
+function expiresInMinutes(minutes: number): string {
+  return new Date(Date.now() + minutes * 60000).toISOString();
+}
+
+const sheetsToolActionBase: RequestConfirmationToolActionPayload = {
+  version: 1,
+  actionRequestId: "aaaaaaa1-1111-4111-8111-1111111111a1",
+  invocationId: "bbbbbbb2-2222-4222-8222-2222222222b2",
+  toolName: "google_sheets.append_row",
+  toolDisplayName: "Append row to spreadsheet",
+  connectionId: "ccccccc3-3333-4333-8333-3333333333c3",
+  applicationId: "ddddddd4-4444-4444-8444-4444444444d4",
+  appDisplayName: "Google Sheets",
+  risk: "write" as const,
+  previewMarkdown:
+    "Add **1 row** to the **Q3 Growth Leads** sheet:\n\n"
+    + "| Column | Value |\n| --- | --- |\n| Name | Priya Anand |\n| Company | Northwind |\n| Stage | Qualified |\n| Owner | growth-bot |",
+  argumentsSummaryJson: JSON.stringify(
+    {
+      spreadsheetId: "1AbC…xyz",
+      range: "Leads!A2:D2",
+      values: [["Priya Anand", "Northwind", "Qualified", "growth-bot"]],
+      apiKey: "[redacted]",
+    },
+    null,
+    2,
+  ),
+  argumentsHash: "sha256:9f2c1a7be4d0c8a3",
+  expiresAt: expiresInMinutes(42),
+};
+
+function createToolActionConfirmationInteraction(
+  overrides: Partial<RequestConfirmationInteraction> & {
+    toolAction?: Partial<RequestConfirmationToolActionPayload>;
+  },
+): RequestConfirmationInteraction {
+  const { toolAction: toolActionOverrides, payload, ...rest } = overrides;
+  return createRequestConfirmationInteraction({
+    id: "interaction-tool-action-default",
+    title: undefined,
+    summary: undefined,
+    createdByAgentId: "agent-codex",
+    payload: {
+      version: 1,
+      prompt: "Approve running this tool call?",
+      acceptLabel: "Approve & run",
+      rejectLabel: "Decline",
+      ...payload,
+      toolAction: { ...sheetsToolActionBase, ...toolActionOverrides },
+    },
+    ...rest,
+  });
+}
+
+export const pendingToolActionWriteInteraction = createToolActionConfirmationInteraction({
+  id: "interaction-tool-action-pending-write",
+});
+
+export const pendingToolActionDestructiveInteraction = createToolActionConfirmationInteraction({
+  id: "interaction-tool-action-pending-destructive",
+  toolAction: {
+    actionRequestId: "aaaaaaa5-5555-4555-8555-5555555555a5",
+    invocationId: "bbbbbbb6-6666-4666-8666-6666666666b6",
+    toolName: "google_sheets.delete_rows",
+    toolDisplayName: "Delete rows from spreadsheet",
+    risk: "destructive",
+    previewMarkdown:
+      "**Permanently delete 12 rows** (rows 30–41) from the **Q3 Growth Leads** sheet. "
+      + "This cannot be undone.",
+    argumentsSummaryJson: JSON.stringify(
+      { spreadsheetId: "1AbC…xyz", range: "Leads!A30:D41", rowCount: 12 },
+      null,
+      2,
+    ),
+    argumentsHash: "sha256:1c4e77aa90b3f2d1",
+    expiresAt: expiresInMinutes(4),
+  },
+});
+
+export const runningToolActionInteraction = createToolActionConfirmationInteraction({
+  id: "interaction-tool-action-running",
+  status: "accepted",
+  resolvedByUserId: issueThreadInteractionFixtureMeta.currentUserId,
+  resolvedAt: new Date("2026-04-20T15:02:00.000Z"),
+  updatedAt: new Date("2026-04-20T15:02:00.000Z"),
+  result: {
+    version: 1,
+    outcome: "accepted",
+    toolAction: {
+      version: 1,
+      status: "approved",
+      updatedAt: "2026-04-20T15:02:00.000Z",
+    },
+  },
+});
+
+export const executedToolActionInteraction = createToolActionConfirmationInteraction({
+  id: "interaction-tool-action-executed",
+  status: "accepted",
+  resolvedByUserId: issueThreadInteractionFixtureMeta.currentUserId,
+  resolvedAt: new Date("2026-04-20T15:02:00.000Z"),
+  updatedAt: new Date("2026-04-20T15:02:12.000Z"),
+  result: {
+    version: 1,
+    outcome: "accepted",
+    toolAction: {
+      version: 1,
+      status: "executed",
+      resultSummary: "Row 42 added to “Q3 Growth Leads”.",
+      resultHref: "https://docs.google.com/spreadsheets/d/1AbCxyz/edit#gid=0&range=A42",
+      updatedAt: "2026-04-20T15:02:12.000Z",
+    },
+  },
+});
+
+export const failedToolActionInteraction = createToolActionConfirmationInteraction({
+  id: "interaction-tool-action-failed",
+  status: "accepted",
+  resolvedByUserId: issueThreadInteractionFixtureMeta.currentUserId,
+  resolvedAt: new Date("2026-04-20T15:02:00.000Z"),
+  updatedAt: new Date("2026-04-20T15:02:09.000Z"),
+  result: {
+    version: 1,
+    outcome: "accepted",
+    toolAction: {
+      version: 1,
+      status: "failed",
+      errorCode: "insufficient_permission",
+      errorMessage:
+        "The caller does not have permission to edit this spreadsheet (Google API 403). "
+        + "Ask the sheet owner to grant edit access to the connected account.",
+      updatedAt: "2026-04-20T15:02:09.000Z",
+    },
+  },
+});
+
+export const declinedToolActionInteraction = createToolActionConfirmationInteraction({
+  id: "interaction-tool-action-declined",
+  status: "rejected",
+  resolvedByUserId: issueThreadInteractionFixtureMeta.currentUserId,
+  resolvedAt: new Date("2026-04-20T15:01:00.000Z"),
+  updatedAt: new Date("2026-04-20T15:01:00.000Z"),
+  result: {
+    version: 1,
+    outcome: "rejected",
+    reason: "We don't add leads to this sheet manually — use the CRM sync instead.",
+  },
+});
+
+export const expiredToolActionInteraction = createToolActionConfirmationInteraction({
+  id: "interaction-tool-action-expired",
+  status: "expired",
+  updatedAt: new Date("2026-04-20T16:00:00.000Z"),
+  resolvedAt: new Date("2026-04-20T16:00:00.000Z"),
+  toolAction: {
+    expiresAt: "2026-04-20T16:00:00.000Z",
+  },
+  result: {
+    version: 1,
+    outcome: "superseded_by_comment",
+    toolAction: {
+      version: 1,
+      status: "expired",
+      updatedAt: "2026-04-20T16:00:00.000Z",
+    },
   },
 });
 
