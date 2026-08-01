@@ -382,9 +382,17 @@ const CONTINUATION_RECOVERY_TRANSIENT_BASE_BACKOFF_MS = 60_000;
 export const PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS = 60 * 60 * 1000;
 
 const PROVIDER_QUOTA_ERROR_RE =
-  /(?:you(?:'|’)ve hit your usage limit|usage limit(?: reached| exceeded)?|provider quota|quota (?:limit )?exceeded|model (?:is )?at capacity)/i;
+  /(?:you(?:'|’)ve hit your (?:usage|session) limit|(?:usage|session|weekly|5[-\s]?hour) limit(?: reached| exceeded)?|out of extra usage|provider quota|quota (?:limit )?exceeded|model (?:is )?at capacity)/i;
 const CONFIGURATION_INCOMPLETE_ERROR_RE =
-  /(?:model_not_found|model [^\n]{0,120} not found|missing (?:api )?(?:key|credentials?)|credentials? (?:are |is )?missing|no (?:api )?(?:key|credentials?) (?:was |were )?(?:found|configured|provided)|api key (?:is )?(?:not set|unavailable))/i;
+  /(?:model_not_found|model [^\n]{0,120} not found|missing (?:api )?(?:key|credentials?)|credentials? (?:are |is )?missing|no (?:api )?(?:key|credentials?) (?:was |were )?(?:found|configured|provided)|api key (?:is )?(?:not set|unavailable)|auth(?:entication)? required|not logged in|please (?:log in|run `?claude login`?))/i;
+const ADAPTER_FAILURE_RECOVERY_ERROR_CODES = new Set([
+  "adapter_failed",
+  "provider_quota",
+  "configuration_incomplete",
+  "acpx_turn_failed",
+  "acpx_auth_required",
+  "claude_auth_required",
+]);
 
 export type AdapterFailureRecoveryClassification =
   | { kind: "provider_quota"; retryAt: Date; parsedResetTime: boolean }
@@ -463,11 +471,7 @@ export function classifyAdapterFailureForRecovery(
   latestRun: Pick<NonNullable<LatestIssueRun>, "error" | "errorCode" | "resultJson">,
   now = new Date(),
 ): AdapterFailureRecoveryClassification {
-  if (
-    latestRun.errorCode !== "adapter_failed" &&
-    latestRun.errorCode !== "provider_quota" &&
-    latestRun.errorCode !== "configuration_incomplete"
-  ) {
+  if (!latestRun.errorCode || !ADAPTER_FAILURE_RECOVERY_ERROR_CODES.has(latestRun.errorCode)) {
     return null;
   }
   const resultJson = parseObject(latestRun.resultJson);
@@ -3678,10 +3682,6 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       const agentInvokable = agent && agent.companyId === issue.companyId
         ? await isAgentInvokable(agent)
         : false;
-      if (issue.status !== "in_review" && !agentInvokable) {
-        result.skipped += 1;
-        continue;
-      }
 
       if (await hasActiveExecutionPath(
         issue.companyId,
@@ -3776,6 +3776,15 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           }
           continue;
         }
+      }
+
+      // A failed agent is intentionally non-invokable until clear-error. Still
+      // classify its terminal adapter failure first so quota waits become
+      // durable monitors and credential failures become explicit blockers,
+      // rather than leaving the issue to be reconsidered every recovery sweep.
+      if (issue.status !== "in_review" && !agentInvokable) {
+        result.skipped += 1;
+        continue;
       }
 
       const acceptedContinuationInteraction = await getLatestAcceptedContinuationInteraction(issue.companyId, issue.id);

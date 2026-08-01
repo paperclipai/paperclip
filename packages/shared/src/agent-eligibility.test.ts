@@ -64,6 +64,18 @@ describe("agent work eligibility", () => {
     });
   });
 
+  it("keeps failed agents assigned but opens the invocation circuit until their error is cleared", () => {
+    const target = agent({ status: "error" });
+    const manager = agent({ id: "manager-1", name: "CTO", status: "active", reportsTo: null });
+
+    expect(getAgentWorkEligibility({ agent: target, agents: [target, manager] })).toMatchObject({
+      assignable: true,
+      invokable: false,
+      assignabilityReason: "eligible",
+      invokabilityReason: "error",
+    });
+  });
+
   it("reports unknown lifecycle statuses explicitly", () => {
     const target = agent({ status: "sabbatical" });
     const manager = agent({ id: "manager-1", name: "CTO", status: "active", reportsTo: null });

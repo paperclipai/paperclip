@@ -16,6 +16,20 @@ function agent(partial: Partial<AgentOrgRow> & Pick<AgentOrgRow, "id">): AgentOr
 }
 
 describe("agent invokability", () => {
+  it("blocks agents in error until the explicit clear-error transition", () => {
+    const rows = [agent({ id: "coder", status: "error" })];
+
+    expect(evaluateAgentInvokability(rows[0], rows)).toMatchObject({
+      invokable: false,
+      reason: "error",
+      invalidOrgChain: false,
+      details: {
+        agentId: "coder",
+        agentStatus: "error",
+      },
+    });
+  });
+
   it("blocks active descendants under a terminated manager as invalid-org-chain", () => {
     const rows = [
       agent({ id: "ceo", status: "terminated" }),

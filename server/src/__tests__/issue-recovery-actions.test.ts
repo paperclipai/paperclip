@@ -428,6 +428,41 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(await db.select().from(issueRecoveryActions)).toHaveLength(0);
   });
 
+  it("classifies an errored ACPX agent before the invocation circuit suppresses recovery wakes", async () => {
+    const { companyId, coderId, sourceIssueId } = await seedCompany();
+    await db.update(agents).set({ status: "error" }).where(eq(agents.id, coderId));
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId: coderId,
+      invocationSource: "manual",
+      status: "failed",
+      error: "Claude usage limit reached — weekly limit reached.",
+      errorCode: "acpx_turn_failed",
+      startedAt: new Date("2026-08-01T12:00:00.000Z"),
+      finishedAt: new Date("2026-08-01T12:01:00.000Z"),
+      contextSnapshot: { issueId: sourceIssueId },
+      resultJson: { stopReason: "weekly limit reached" },
+    });
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+
+    const result = await recovery.reconcileStrandedAssignedIssues();
+
+    expect(result).toMatchObject({ providerQuotaMonitored: 1, dispatchRequeued: 0 });
+    const [updatedIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(updatedIssue).toMatchObject({
+      status: "in_progress",
+      assigneeAgentId: coderId,
+      monitorNextCheckAt: expect.any(Date),
+      monitorNotes: "Provider usage quota reached; retry the original assignee after the default recovery backoff.",
+    });
+    const [updatedRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(updatedRun).toMatchObject({ errorCode: "provider_quota" });
+    expect(enqueueWakeup).not.toHaveBeenCalled();
+  });
+
   it("schedules another provider-quota monitor after a prior quota monitor fired", async () => {
     const { companyId, coderId, sourceIssueId } = await seedCompany();
     await db.update(issues).set({ monitorAttemptCount: 1 }).where(eq(issues.id, sourceIssueId));

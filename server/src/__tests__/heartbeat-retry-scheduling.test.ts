@@ -32,6 +32,7 @@ import {
   MAX_TURN_CONTINUATION_WAKE_REASON,
   heartbeatService,
 } from "../services/heartbeat.ts";
+import { PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS } from "../services/recovery/service.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -2085,6 +2086,32 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       retryReason: "transient_failure",
       scheduledRetryAttempt: BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS.length,
       maxAttempts: BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS.length,
+    });
+  });
+
+  it("uses a conservative quota cooldown when the provider omits reset metadata", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const now = new Date("2026-08-01T12:00:00.000Z");
+
+    await seedRetryFixture({
+      runId,
+      companyId,
+      agentId,
+      now,
+      errorCode: "provider_quota",
+      errorFamily: "provider_quota",
+    });
+
+    const scheduled = await heartbeat.scheduleBoundedRetry(runId, {
+      now,
+      random: () => 0.5,
+    });
+
+    expect(scheduled).toMatchObject({
+      outcome: "scheduled",
+      dueAt: new Date(now.getTime() + PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS),
     });
   });
 

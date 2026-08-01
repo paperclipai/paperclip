@@ -38,6 +38,11 @@ import {
   materializeRemoteClaudeConfig,
   prepareClaudeConfigSeed,
 } from "./claude-config.js";
+import {
+  detectClaudeLoginRequired,
+  extractClaudeRetryNotBefore,
+  isClaudeProviderQuotaError,
+} from "./parse.js";
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const packageRootDir = path.resolve(moduleDir, "../..");
@@ -280,6 +285,56 @@ function withClaudeAcpDefaults(options: ClaudeAcpExecutorOptions): AcpxEngineExe
   };
 }
 
+export function withClaudeAcpProviderFailureClassification(
+  result: AdapterExecutionResult,
+  now = new Date(),
+): AdapterExecutionResult {
+  if ((result.exitCode ?? 0) === 0) return result;
+  const resultJson = parseObject(result.resultJson);
+  const stopReason = asString(resultJson.stopReason, "");
+  const failureText = [result.errorMessage ?? "", result.summary ?? "", stopReason]
+    .map((line) => line.trim())
+    .filter(Boolean)
+    .join("\n");
+  const classifierInput = {
+    parsed: resultJson,
+    stdout: result.summary ?? "",
+    stderr: failureText,
+    errorMessage: result.errorMessage ?? "",
+  };
+
+  if (detectClaudeLoginRequired(classifierInput).requiresLogin) {
+    return {
+      ...result,
+      errorCode: "configuration_incomplete",
+      resultJson: {
+        ...resultJson,
+        recoveryClassification: "configuration_incomplete",
+      },
+    };
+  }
+  if (!isClaudeProviderQuotaError(classifierInput)) return result;
+
+  const retryNotBefore = extractClaudeRetryNotBefore(classifierInput, now)?.toISOString() ?? null;
+  return {
+    ...result,
+    errorCode: "provider_quota",
+    errorFamily: "provider_quota",
+    retryNotBefore,
+    resultJson: {
+      ...resultJson,
+      errorFamily: "provider_quota",
+      ...(retryNotBefore
+        ? {
+            retryNotBefore,
+            transientRetryNotBefore: retryNotBefore,
+            providerQuotaRetryNotBefore: retryNotBefore,
+          }
+        : {}),
+    },
+  };
+}
+
 export function createClaudeAcpExecutor(options: ClaudeAcpExecutorOptions = {}): ClaudeAcpExecutor {
   let executor: ClaudeAcpExecutor | null = null;
   return async (ctx) => {
@@ -289,10 +344,11 @@ export function createClaudeAcpExecutor(options: ClaudeAcpExecutorOptions = {}):
       currentExecutor = createAcpxEngineExecutor(withClaudeAcpDefaults(options));
       executor = currentExecutor;
     }
-    return currentExecutor({
+    const result = await currentExecutor({
       ...ctx,
       config: buildClaudeAcpConfig(ctx.config),
     });
+    return withClaudeAcpProviderFailureClassification(result);
   };
 }
 

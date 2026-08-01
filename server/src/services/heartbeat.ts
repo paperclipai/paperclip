@@ -211,7 +211,10 @@ import {
   recoveryAssigneeAdapterOverrides,
   withRecoveryModelProfileHint,
 } from "./recovery/model-profile-hint.js";
-import { recoveryService } from "./recovery/service.js";
+import {
+  PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS,
+  recoveryService,
+} from "./recovery/service.js";
 import { productivityReviewService } from "./productivity-review.js";
 import { resolveRequiredSuccessfulRunHandoffOnValidPath } from "./successful-run-handoff-state.js";
 import { taskWatchdogService } from "./task-watchdogs.js";
@@ -10436,7 +10439,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       agent.adapterType === "codex_local" && transientRecovery?.errorFamily === "transient_upstream"
         ? resolveCodexTransientFallbackMode(nextAttempt)
         : null;
-    const transientRetryNotBefore = transientRecovery?.retryNotBefore ?? null;
+    const transientRetryNotBefore = transientRecovery?.retryNotBefore ??
+      (transientRecovery?.errorFamily === "provider_quota"
+        ? new Date(now.getTime() + PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS)
+        : null);
     const contextSnapshot = parseObject(run.contextSnapshot);
     const issueId = readNonEmptyString(contextSnapshot.issueId);
 
@@ -14902,6 +14908,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         error: runErrorMessage,
       });
 
+      let automaticRetryScheduled = false;
       const finalizedRun = persistedRun ?? (await getRun(run.id));
       if (finalizedRun) {
         await appendRunEvent(finalizedRun, seq++, {
@@ -14954,12 +14961,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         if (outcome === "failed" && isMaxTurnExhaustionRun(livenessRun)) {
           const policy = parseMaxTurnContinuationPolicy(agent);
           if (policy.enabled && policy.maxAttempts > 0) {
-            await scheduleBoundedRetryForRun(livenessRun, agent, {
+            const retry = await scheduleBoundedRetryForRun(livenessRun, agent, {
               retryReason: MAX_TURN_CONTINUATION_RETRY_REASON,
               wakeReason: MAX_TURN_CONTINUATION_WAKE_REASON,
               maxAttempts: policy.maxAttempts,
               delayMs: policy.delayMs,
             });
+            automaticRetryScheduled = retry.outcome === "scheduled";
           } else {
             await appendRunEvent(livenessRun, await nextRunEventSeq(livenessRun.id), {
               eventType: "lifecycle",
@@ -14973,7 +14981,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             });
           }
         } else if (outcome === "failed" && readTransientRecoveryContractFromRun(livenessRun)) {
-          await scheduleBoundedRetryForRun(livenessRun, agent);
+          const retry = await scheduleBoundedRetryForRun(livenessRun, agent);
+          automaticRetryScheduled = retry.outcome === "scheduled";
         }
         const issueCommentPolicyResult = await finalizeIssueCommentPolicy(livenessRun, agent);
         await releaseIssueExecutionAndPromote(livenessRun);
@@ -15052,7 +15061,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         {
           keepIdleOnFailure:
             outcome === "failed" &&
-            (finalizedRun ? readHeartbeatRunErrorFamily(finalizedRun) === "provider_quota" : runErrorCode === "provider_quota"),
+            (automaticRetryScheduled ||
+              (finalizedRun
+                ? readHeartbeatRunErrorFamily(finalizedRun) === "provider_quota"
+                : runErrorCode === "provider_quota")),
           wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
         },
       );

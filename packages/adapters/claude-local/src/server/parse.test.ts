@@ -117,11 +117,16 @@ describe("isClaudeTransientUpstreamError", () => {
   });
 
   it("classifies the subscription 5-hour / weekly limit wording as provider quota", () => {
+    const now = new Date("2026-08-01T12:00:00.000Z");
+    const weeklyLimit = "Claude usage limit reached — weekly limit reached. Try again in 2 days.";
     expect(
       isClaudeProviderQuotaError({
-        errorMessage: "Claude usage limit reached — weekly limit reached. Try again in 2 days.",
+        errorMessage: weeklyLimit,
       }),
     ).toBe(true);
+    expect(extractClaudeRetryNotBefore({ errorMessage: weeklyLimit }, now)?.toISOString()).toBe(
+      "2026-08-03T12:00:00.000Z",
+    );
     expect(
       isClaudeProviderQuotaError({
         errorMessage: "5-hour limit reached.",
