@@ -545,6 +545,18 @@ function mergeAdapterRecoveryMetadata(input: {
       : {}),
   };
 }
+
+function stripAdapterRecoveryMetadata(
+  resultJson: Record<string, unknown> | null | undefined,
+) {
+  if (!resultJson) return resultJson ?? null;
+  const sanitized = { ...resultJson };
+  delete sanitized.errorFamily;
+  delete sanitized.retryNotBefore;
+  delete sanitized.transientRetryNotBefore;
+  delete sanitized.providerQuotaRetryNotBefore;
+  return sanitized;
+}
 const RUNNING_ISSUE_WAKE_REASONS_REQUIRING_FOLLOWUP = new Set([
   "approval_approved",
   ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
@@ -9538,6 +9550,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     run: typeof heartbeatRuns.$inferSelect,
     agent: typeof agents.$inferSelect,
   ) {
+    if (run.errorCode === "adapter_result_error") {
+      if (run.issueCommentStatus !== "not_applicable") {
+        await patchRunIssueCommentStatus(run.id, {
+          issueCommentStatus: "not_applicable",
+          issueCommentSatisfiedByCommentId: null,
+          issueCommentRetryQueuedAt: null,
+        });
+      }
+      return { outcome: "not_applicable" as const, queuedRun: null };
+    }
+
     const contextSnapshot = parseObject(run.contextSnapshot);
     const issueId = readNonEmptyString(contextSnapshot.issueId);
     if (!issueId) {
@@ -14906,6 +14929,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           : null,
         adapterResult,
       });
+      const semanticFailureOutcome = outcome === "failed" && adapterSemanticFailure !== null;
 
       const nextSessionState = resolveNextSessionState({
         adapterType: agent.adapterType,
@@ -14949,9 +14973,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             ? (latestRun?.errorCode ?? "cancelled")
             : outcome === "failed"
               ? (
+                  (semanticFailureOutcome ? "adapter_result_error" : null) ??
                   adapterResult.errorCode ??
                   recordedResponsibleUserDenialCode ??
-                  (adapterSemanticFailure ? "adapter_result_error" : "adapter_failed")
+                  "adapter_failed"
                 )
               : null;
 
@@ -15018,11 +15043,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           resultJson: mergeModelProfileRunMetadata(
             mergeAdapterRecoveryMetadata({
               resultJson: {
-                ...parseObject(adapterResult.resultJson),
+                ...(semanticFailureOutcome
+                  ? stripAdapterRecoveryMetadata(parseObject(adapterResult.resultJson))
+                  : parseObject(adapterResult.resultJson)),
                 configFreshness: configFreshnessResultMetadata,
               },
-              errorFamily: adapterResult.errorFamily ?? null,
-              retryNotBefore: adapterResult.retryNotBefore ?? null,
+              errorFamily: semanticFailureOutcome ? null : (adapterResult.errorFamily ?? null),
+              retryNotBefore: semanticFailureOutcome ? null : (adapterResult.retryNotBefore ?? null),
             }),
             modelProfileApplication,
           ),
@@ -15143,7 +15170,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           await scheduleBoundedRetryForRun(livenessRun, agent);
         }
         const issueCommentPolicyResult = await finalizeIssueCommentPolicy(livenessRun, agent);
-        await releaseIssueExecutionAndPromote(livenessRun);
+        await releaseIssueExecutionAndPromote(livenessRun, {
+          suppressImmediateRecovery: semanticFailureOutcome,
+        });
         await handleRunLivenessContinuation(livenessRun);
         await handleSuccessfulRunHandoff(
           issueCommentPolicyResult.outcome === "retry_queued" || issueCommentPolicyResult.outcome === "retry_exhausted"
