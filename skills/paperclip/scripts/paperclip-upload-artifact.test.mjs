@@ -2,16 +2,18 @@
 /**
  * Tests for paperclip-upload-artifact.sh authentication handling.
  *
- * Two properties are covered:
+ * The bearer token must never be readable by anything but curl itself, which
+ * means two things:
  *
- *  1. The bearer token never reaches curl's argv. Process arguments are
- *     world-readable through /proc/<pid>/cmdline on Linux, so a token passed
- *     as `-H "Authorization: Bearer $PAPERCLIP_API_KEY"` leaks to every
- *     process on the host. Auth must travel through a mode-600 curl config.
+ *  1. It never reaches curl's argv. Process arguments are world-readable
+ *     through /proc/<pid>/cmdline on Linux, so `-H "Authorization: Bearer
+ *     $PAPERCLIP_API_KEY"` hands the credential to every process on the host.
  *
- *  2. The token-bearing config file does not survive an interrupted run. The
- *     script pools its temp files under one workspace dir and removes it from
- *     a main-shell trap on EXIT/INT/TERM.
+ *  2. It never reaches disk. Writing it to a mode-600 temp file satisfies (1)
+ *     but leaves a credential that has to be deleted, and a deletion can
+ *     always be skipped: bash defers a trap while curl holds the foreground,
+ *     and SIGKILL skips it outright. The script pipes the config into
+ *     `curl --config -` instead, so there is nothing to clean up.
  *
  * Run: node --test skills/paperclip/scripts/paperclip-upload-artifact.test.mjs
  */
@@ -28,6 +30,12 @@ import { fileURLToPath } from 'node:url';
 
 const SCRIPT = fileURLToPath(new URL('./paperclip-upload-artifact.sh', import.meta.url));
 const SOURCE = fs.readFileSync(SCRIPT, 'utf8');
+
+// Executable lines only. Comments legitimately quote the unsafe pattern to say
+// what not to do, and that prose must not trip the checks below.
+const CODE = SOURCE.split('\n')
+  .filter(line => !/^\s*#/.test(line))
+  .join('\n');
 
 // A value distinctive enough that finding it on disk is unambiguous.
 const SENTINEL_TOKEN = 'sentinel-token-4f8a2c91-do-not-use';
@@ -64,6 +72,27 @@ async function filesContainingToken(dir) {
 
 const sleep = ms => new Promise(resolve => setTimeout(resolve, ms));
 
+/**
+ * Every running process whose arguments contain the token, as `pid: cmdline`.
+ * Linux only — this is the exposure the fix exists to prevent, so it is worth
+ * asserting against the real kernel view rather than only against the source.
+ */
+async function argvExposingToken() {
+  const hits = [];
+  for (const pid of await fsp.readdir('/proc')) {
+    if (!/^\d+$/.test(pid)) continue;
+    try {
+      const cmdline = await fsp.readFile(`/proc/${pid}/cmdline`, 'utf8');
+      if (cmdline.includes(SENTINEL_TOKEN)) {
+        hits.push(`${pid}: ${cmdline.replace(/\0/g, ' ').trim()}`);
+      }
+    } catch {
+      // Process exited mid-scan, or not ours to read.
+    }
+  }
+  return hits;
+}
+
 /** Poll `predicate` until truthy or `timeoutMs` elapses. */
 async function waitFor(predicate, timeoutMs = 10_000, stepMs = 50) {
   const deadline = Date.now() + timeoutMs;
@@ -78,10 +107,8 @@ async function waitFor(predicate, timeoutMs = 10_000, stepMs = 50) {
 describe('paperclip-upload-artifact.sh auth handling', () => {
   describe('token never reaches curl argv', () => {
     it('passes no Authorization header as a curl argument', () => {
-      // The one permitted mention is the SKILL.md-style warning; the script
-      // itself must not build an -H Authorization argument at all.
       const argvHeader = /-H\s+(["'])Authorization:\s*Bearer[^\n]*\1/g;
-      const matches = SOURCE.match(argvHeader) ?? [];
+      const matches = CODE.match(argvHeader) ?? [];
       assert.deepEqual(
         matches,
         [],
@@ -89,37 +116,46 @@ describe('paperclip-upload-artifact.sh auth handling', () => {
       );
     });
 
-    it('sends auth through a mode-600 curl config file', () => {
-      assert.match(SOURCE, /write_auth_config\(\)/, 'expected a write_auth_config helper');
-      assert.match(SOURCE, /chmod 600/, 'auth config must be created mode 600');
-      assert.match(SOURCE, /--config\s+"\$auth_cfg"/, 'curl must read auth from --config');
+    it('sends auth through a curl config piped on stdin', () => {
+      assert.match(CODE, /write_auth_config\(\)/, 'expected a write_auth_config helper');
+      assert.match(
+        CODE,
+        /write_auth_config \| curl[\s\S]{0,200}?--config -/,
+        'curl must read auth from --config - (stdin)'
+      );
     });
 
-    it('cleans up token files from a main-shell trap', () => {
-      // request_json/upload_file run inside command substitutions, so a signal
-      // sent to the script never reaches them. The trap has to be in the main
-      // shell, over a workspace dir that owns every temp file.
-      assert.match(SOURCE, /trap\s+\w+\s+EXIT\s+INT\s+TERM/, 'expected an EXIT/INT/TERM trap');
-      assert.match(SOURCE, /mktemp -d/, 'expected a single mktemp -d workspace');
+    it('never writes the token to a file', () => {
+      // A temp file keeps the token out of argv but still has to be deleted,
+      // and a deletion can always be skipped — a deferred trap while curl
+      // hangs, or SIGKILL. Piping the config leaves nothing to clean up.
       assert.doesNotMatch(
-        SOURCE,
-        /^\s*(cfg|response_file)="\$\(mktemp\)"/m,
-        'temp files must be created inside the trapped workspace (mktemp -p "$_WORKDIR")'
+        CODE,
+        /PAPERCLIP_API_KEY"?\s*>>?\s*"?\$/,
+        'the token must never be redirected into a file'
+      );
+      assert.doesNotMatch(
+        CODE,
+        /--config\s+"\$\w+"/,
+        'auth must not be read from a temp file on disk'
       );
     });
   });
 
-  describe('interrupted run leaves no token on disk', () => {
+  describe('credential never reaches disk or argv', () => {
     let server;
     let baseUrl;
     let tmpRoot;
     let payload;
+    let requestsSeen = 0;
     const sockets = new Set();
 
     before(async () => {
-      // A server that accepts the request and never answers, so the script is
-      // parked inside curl with its auth config already written to disk.
-      server = createServer(() => {});
+      // A server that accepts the request and never answers, so the script sits
+      // parked inside curl with the credential in play.
+      server = createServer(() => {
+        requestsSeen += 1;
+      });
       server.on('connection', socket => {
         sockets.add(socket);
         socket.on('close', () => sockets.delete(socket));
@@ -145,12 +181,10 @@ describe('paperclip-upload-artifact.sh auth handling', () => {
      * Spawn the script with TMPDIR isolated so we can audit everything it
      * writes, and `detached` so it leads its own process group.
      *
-     * The process group matters. Signalling only the top-level bash does not
-     * interrupt the run: bash is blocked waiting on curl inside a command
-     * substitution, and it defers a trap until that foreground child returns.
-     * With curl parked on a request that never answers, the trap would never
-     * run. A real interruption — a terminal Ctrl-C, or a supervisor tearing a
-     * run down — signals the whole group, which is what this models.
+     * The group matters for teardown. The script is parked on a request that
+     * never answers, and signalling only the top-level bash would not stop it:
+     * bash blocks on curl inside a command substitution and defers signals
+     * until that foreground child returns. Killing the group takes curl too.
      */
     function spawnScript(tmpdir) {
       return spawn('bash', [SCRIPT, payload, '--no-work-product'], {
@@ -177,22 +211,27 @@ describe('paperclip-upload-artifact.sh auth handling', () => {
       }
     }
 
-    it('removes the auth config when the run is terminated mid-request', async () => {
+    it('keeps the token off disk while a request is in flight', async () => {
       const tmpdir = await fsp.mkdtemp(path.join(tmpRoot, 'run-'));
       const child = spawnScript(tmpdir);
 
       try {
-        // Wait until the token is actually on disk. Without this the assertion
-        // could pass simply because the script had not got that far yet.
-        const written = await waitFor(async () => (await filesContainingToken(tmpdir)).length > 0);
-        assert.ok(written, 'auth config holding the token was never written — test cannot conclude');
+        // Park until the request has actually reached the server, so the script
+        // is provably mid-request rather than not yet started.
+        const reached = await waitFor(() => requestsSeen > 0);
+        assert.ok(reached, 'script never issued a request — test cannot conclude');
 
-        signalGroup(child, 'SIGTERM');
-        const exited = await Promise.race([once(child, 'exit'), sleep(10_000).then(() => null)]);
-        assert.ok(exited, 'script did not exit within 10s of SIGTERM to its process group');
+        // The credential must not exist anywhere on disk at this moment. This
+        // is the property a temp file cannot give: with a file, cleanup depends
+        // on a deletion that an interrupted run may never perform.
+        const onDisk = await filesContainingToken(tmpdir);
+        assert.deepEqual(onDisk, [], `token written to disk mid-request: ${onDisk.join(', ')}`);
 
-        const leaked = await filesContainingToken(tmpdir);
-        assert.deepEqual(leaked, [], `token survived SIGTERM in: ${leaked.join(', ')}`);
+        // And it must not be visible in any process's arguments.
+        if (process.platform === 'linux') {
+          const exposed = await argvExposingToken();
+          assert.deepEqual(exposed, [], `token visible in process argv: ${exposed.join(', ')}`);
+        }
       } finally {
         // Never let a stray group keep the test runner alive.
         signalGroup(child, 'SIGKILL');
