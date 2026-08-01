@@ -227,6 +227,83 @@ describe("issue dependency wakeups in issue routes", () => {
     });
   });
 
+  it("redrives the persisted unblock owner when the final prerequisite becomes ready", async () => {
+    const transitionAt = new Date("2026-08-01T17:33:05.000Z");
+    mockIssueService.getById.mockResolvedValue({
+      id: "issue-1",
+      companyId: "company-1",
+      identifier: "PAP-110",
+      title: "Finish prerequisite",
+      description: null,
+      status: "in_progress",
+      priority: "medium",
+      parentId: null,
+      assigneeAgentId: "agent-1",
+      assigneeUserId: null,
+      createdByAgentId: null,
+      createdByUserId: null,
+      executionWorkspaceId: null,
+      labels: [],
+      labelIds: [],
+    });
+    mockIssueService.update.mockResolvedValue({
+      id: "issue-1",
+      companyId: "company-1",
+      identifier: "PAP-110",
+      title: "Finish prerequisite",
+      description: null,
+      status: "done",
+      priority: "medium",
+      parentId: null,
+      assigneeAgentId: "agent-1",
+      assigneeUserId: null,
+      createdByAgentId: null,
+      createdByUserId: null,
+      executionWorkspaceId: null,
+      labels: [],
+      labelIds: [],
+    });
+    mockIssueService.listWakeableBlockedDependents.mockResolvedValue([
+      {
+        id: "issue-2",
+        status: "blocked",
+        assigneeAgentId: "agent-2",
+        blockerIssueIds: ["issue-1"],
+        unblockDescriptor: {
+          owner: { agentId: "owner-agent" },
+          action: "Review the completed prerequisite and release the dependent",
+        },
+        blockedTransitionAt: transitionAt,
+        blockedOwnerNotifiedAt: null,
+      },
+    ]);
+
+    const res = await request(await createApp()).patch("/api/issues/issue-1").send({ status: "done" });
+    expect(res.status).toBe(200);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(mockWakeup.mock.calls).toContainEqual([
+      "owner-agent",
+      expect.objectContaining({
+        reason: "issue_unblock_requested",
+        idempotencyKey: expect.stringMatching(/:dependency:issue-1$/),
+        payload: expect.objectContaining({
+          issueId: "issue-2",
+          action: "Review the completed prerequisite and release the dependent",
+          intentFingerprint: expect.any(String),
+        }),
+        contextSnapshot: expect.objectContaining({
+          issueId: "issue-2",
+          wakeReason: "issue_unblock_requested",
+          resolvedBlockerIssueId: "issue-1",
+        }),
+      }),
+    ]);
+    expect(mockWakeup).not.toHaveBeenCalledWith(
+      "agent-2",
+      expect.objectContaining({ reason: "issue_blockers_resolved" }),
+    );
+  });
+
   it("wakes an assigned blocked issue when blockers are applied after the blocker is already done", async () => {
     const parentIssueId = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
     const childIssueId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
