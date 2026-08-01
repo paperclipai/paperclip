@@ -1,7 +1,19 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { classifyAcpxError } from "./execute.js";
 
 describe("classifyAcpxError", () => {
+  // The provider states the reset without a year, so it is resolved against the
+  // clock. Pin the clock, otherwise the expected instant below drifts with the
+  // calendar rather than with the behaviour under test.
+  beforeEach(() => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-08-01T05:00:00.000Z"));
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
   // The engine names failures after the protocol phase that noticed them. Quota
   // exhaustion is about why the provider refused, so it has to be recognised
   // before the phase dispatch — otherwise every exhausted plan is filed as a
