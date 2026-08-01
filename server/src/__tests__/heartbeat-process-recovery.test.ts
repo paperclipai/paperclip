@@ -5686,7 +5686,16 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       resolvedByUserId: "responsible-user",
       resolvedAt,
       updatedAt: resolvedAt,
-      payload: { version: 1, prompt: "Approve the plan?" },
+      payload: {
+        version: 1,
+        prompt: "Approve the plan?",
+        target: {
+          type: "issue_document",
+          issueId,
+          key: "plan",
+          revisionId: "revision-1",
+        },
+      },
       result: { outcome: "accepted" },
     });
 
@@ -5719,6 +5728,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       interactionId,
       interactionStatus: "accepted",
       source: "issue.interaction_continuation_recovery",
+      forceFreshSession: true,
+      workspaceRefreshReason: "accepted_plan_confirmation",
     });
 
     const wakeup = await db
