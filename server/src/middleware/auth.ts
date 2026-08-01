@@ -204,7 +204,8 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         if (cloudTenantActor) {
           req.actor = {
             ...cloudTenantActor,
-            runId: runIdHeader ?? undefined,
+            // User actors own no heartbeat run — see NO_RUN_FOR_USER_ACTORS below.
+            runId: undefined,
           };
           next();
           return;
@@ -238,14 +239,20 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
             companyIds: memberships.map((row) => row.companyId),
             memberships,
             isInstanceAdmin: Boolean(roleRow),
-            runId: runIdHeader ?? undefined,
+            // User actors own no heartbeat run — see NO_RUN_FOR_USER_ACTORS below.
+            runId: undefined,
             source: "session",
           };
           next();
           return;
         }
       }
-      if (runIdHeader) req.actor.runId = runIdHeader;
+      // NO_RUN_FOR_USER_ACTORS: a user actor — session, cloud tenant, board key or
+      // the local implicit fallback — acts for a person and owns no heartbeat run,
+      // so there is nothing to bind a run id to and no way to prove one. The header
+      // is dropped rather than rejected, so an existing caller that sends it keeps
+      // working; it simply stops being attributed to a run. Only agent actors carry
+      // a run, and they must prove it (see runBelongsToAgent).
       next();
       return;
     }
@@ -270,10 +277,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
           memberships: access.memberships,
           isInstanceAdmin: access.isInstanceAdmin,
           keyId: boardKey.id,
-          // A board key acts for a user and owns no heartbeat run, so there is
-          // nothing to bind a run id to. Dropped rather than rejected, so an
-          // existing caller that sends the header keeps working — it simply stops
-          // being treated as if a run had acted.
+          // User actors own no heartbeat run — see NO_RUN_FOR_USER_ACTORS below.
           runId: undefined,
           source: "board_key",
         };
