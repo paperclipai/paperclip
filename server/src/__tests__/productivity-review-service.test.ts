@@ -55,6 +55,7 @@ describeEmbeddedPostgres("productivity review service", () => {
     startedAt?: Date;
     parentId?: string | null;
     originKind?: string;
+    managerPermissions?: Record<string, unknown>;
   }) {
     const companyId = randomUUID();
     const managerId = randomUUID();
@@ -79,7 +80,7 @@ describeEmbeddedPostgres("productivity review service", () => {
         adapterType: "codex_local",
         adapterConfig: {},
         runtimeConfig: {},
-        permissions: {},
+        permissions: opts?.managerPermissions ?? {},
       },
       {
         id: coderId,
@@ -208,6 +209,50 @@ describeEmbeddedPostgres("productivity review service", () => {
     expect(reviews[0]?.description).toContain("No-comment completed-run streak: 10");
 
     expect(await listRefreshComments(reviews[0]!.id)).toHaveLength(0);
+  });
+
+  it("skips board-ui-only agents when resolving an automatic productivity-review owner", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const ownerUserId = `owner-${randomUUID()}`;
+    const seeded = await seedAssignedIssue({
+      managerPermissions: {
+        authorizationPolicy: {
+          assignmentPolicy: {
+            mode: "board_ui_create_only",
+            allowedUserIds: [ownerUserId],
+          },
+        },
+      },
+    });
+    const fallbackOwnerId = randomUUID();
+    await db.insert(agents).values({
+      id: fallbackOwnerId,
+      companyId: seeded.companyId,
+      name: "Fallback CEO",
+      role: "ceo",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await insertRuns({
+      companyId: seeded.companyId,
+      agentId: seeded.coderId,
+      issueId: seeded.issueId,
+      count: DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
+      now,
+    });
+
+    const result = await productivityReviewService(db).reconcileProductivityReviews({
+      now,
+      companyId: seeded.companyId,
+    });
+
+    expect(result.created).toBe(1);
+    const [review] = await listProductivityReviews(seeded.companyId);
+    expect(review?.assigneeAgentId).toBe(fallbackOwnerId);
+    expect(review?.assigneeAgentId).not.toBe(seeded.managerId);
   });
 
   it("refreshes open productivity reviews only once per interval and caps refresh comments", async () => {

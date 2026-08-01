@@ -274,6 +274,115 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(allRoutines.map((entry) => entry.id)).toEqual(expect.arrayContaining([routine.id, otherRoutine.id]));
   });
 
+  it("rejects configuring a board-ui-only agent as a routine assignee", async () => {
+    const { companyId, agentId, projectId, svc } = await seedFixture();
+    await db.update(agents).set({
+      permissions: {
+        authorizationPolicy: {
+          assignmentPolicy: {
+            mode: "board_ui_create_only",
+            allowedUserIds: ["owner-user"],
+          },
+        },
+      },
+    }).where(eq(agents.id, agentId));
+
+    await expect(svc.create(companyId, {
+      projectId,
+      goalId: null,
+      parentIssueId: null,
+      title: "reserved agent routine",
+      description: null,
+      assigneeAgentId: agentId,
+      priority: "medium",
+      status: "active",
+      concurrencyPolicy: "coalesce_if_active",
+      catchUpPolicy: "skip_missed",
+    }, {})).rejects.toMatchObject({
+      status: 422,
+      details: { code: "reserved_agent_automatic_configuration" },
+    });
+  });
+
+  it("rejects updating a routine to use a board-ui-only assignee", async () => {
+    const { companyId, routine, svc } = await seedFixture();
+    const reservedAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: reservedAgentId,
+      companyId,
+      name: "Reserved Update Agent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {
+        authorizationPolicy: {
+          assignmentPolicy: {
+            mode: "board_ui_create_only",
+            allowedUserIds: ["owner-user"],
+          },
+        },
+      },
+    });
+
+    await expect(svc.update(routine.id, { assigneeAgentId: reservedAgentId }, {}))
+      .rejects.toMatchObject({
+        status: 422,
+        details: { code: "reserved_agent_automatic_configuration" },
+      });
+    await expect(svc.get(routine.id)).resolves.toMatchObject({ assigneeAgentId: routine.assigneeAgentId });
+  });
+
+  it("rejects reactivating a paused routine after its assignee becomes board-ui-only", async () => {
+    const { agentId, routine, svc } = await seedFixture();
+    await svc.update(routine.id, { status: "paused" }, {});
+    await db.update(agents).set({
+      permissions: {
+        authorizationPolicy: {
+          assignmentPolicy: {
+            mode: "board_ui_create_only",
+            allowedUserIds: ["owner-user"],
+          },
+        },
+      },
+    }).where(eq(agents.id, agentId));
+
+    await expect(svc.update(routine.id, { status: "active" }, {}))
+      .rejects.toMatchObject({
+        status: 422,
+        details: { code: "reserved_agent_automatic_configuration" },
+      });
+    await expect(svc.get(routine.id)).resolves.toMatchObject({ status: "paused" });
+  });
+
+  it("rejects restoring a routine revision that would reattach a board-ui-only assignee", async () => {
+    const { agentId, routine, svc } = await seedFixture();
+    const assignedRevisionId = routine.latestRevisionId!;
+    const detached = await svc.update(routine.id, { assigneeAgentId: null, status: "paused" }, {});
+    await db.update(agents).set({
+      permissions: {
+        authorizationPolicy: {
+          assignmentPolicy: {
+            mode: "board_ui_create_only",
+            allowedUserIds: ["owner-user"],
+          },
+        },
+      },
+    }).where(eq(agents.id, agentId));
+
+    await expect(svc.restoreRevision(routine.id, assignedRevisionId, {}))
+      .rejects.toMatchObject({
+        status: 422,
+        details: { code: "reserved_agent_automatic_configuration" },
+      });
+    await expect(svc.get(routine.id)).resolves.toMatchObject({
+      assigneeAgentId: null,
+      status: "paused",
+      latestRevisionId: detached?.latestRevisionId,
+    });
+  });
+
   it("does not reveal folders owned by another company", async () => {
     const { companyId, agentId, projectId, svc } = await seedFixture();
     const otherCompanyId = randomUUID();

@@ -138,6 +138,21 @@ function readRunIssueId(context: Record<string, unknown> | null) {
   return typeof nestedIssueId === "string" && isUuidLike(nestedIssueId) ? nestedIssueId : null;
 }
 
+function assignmentPolicyAuditSummary(permissions: unknown) {
+  const authorizationPolicy = readObject(readObject(permissions)?.authorizationPolicy);
+  const assignmentPolicy = readObject(authorizationPolicy?.assignmentPolicy);
+  const mode = typeof assignmentPolicy?.mode === "string" ? assignmentPolicy.mode : null;
+  const allowedUserIds = Array.isArray(assignmentPolicy?.allowedUserIds)
+    ? assignmentPolicy.allowedUserIds.filter(
+        (value): value is string => typeof value === "string" && value.trim().length > 0,
+      )
+    : [];
+  return {
+    mode,
+    allowedUserCount: new Set(allowedUserIds).size,
+  };
+}
+
 export function agentRoutes(
   db: Db,
   options: { pluginWorkerManager?: PluginWorkerManager } = {},
@@ -2712,6 +2727,7 @@ export function agentRoutes(
       await assertBoardCanManageAgentsForCompany(req, existing.companyId);
     }
 
+    const previousAssignmentPolicy = assignmentPolicyAuditSummary(existing.permissions);
     const agent = await svc.updatePermissions(id, req.body);
     if (!agent) {
       res.status(404).json({ error: "Agent not found" });
@@ -2746,6 +2762,10 @@ export function agentRoutes(
         canCreateSkills: agent.permissions?.canCreateSkills ?? true,
         canAssignTasks: effectiveCanAssignTasks,
         trustPreset: agent.permissions?.trustPreset ?? "standard",
+        assignmentPolicy: {
+          previous: previousAssignmentPolicy,
+          current: assignmentPolicyAuditSummary(agent.permissions),
+        },
       },
     });
 

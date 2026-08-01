@@ -76,6 +76,7 @@ import {
   withRecoveryModelProfileHint,
 } from "./model-profile-hint.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js";
+import { isAgentEligibleForAutomaticAssignment } from "../agent-assignment-policy.js";
 
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["interrupted", "failed", "cancelled", "timed_out"] as const;
@@ -1828,7 +1829,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       if (seen.has(agentId)) continue;
       seen.add(agentId);
       const candidate = await getAgent(agentId);
-      if (!candidate || candidate.companyId !== input.run.companyId) continue;
+      if (
+        !candidate ||
+        candidate.companyId !== input.run.companyId ||
+        !isAgentEligibleForAutomaticAssignment(candidate)
+      ) continue;
       const budgetBlock = await budgets.getInvocationBlock(input.run.companyId, candidate.id, {
         issueId: input.sourceIssue?.id ?? null,
         projectId: input.sourceIssue?.projectId ?? null,
@@ -2550,7 +2555,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       if (seen.has(agentId)) continue;
       seen.add(agentId);
       const candidate = await getAgent(agentId);
-      if (!candidate || candidate.companyId !== issue.companyId) continue;
+      if (
+        !candidate ||
+        candidate.companyId !== issue.companyId ||
+        !isAgentEligibleForAutomaticAssignment(candidate)
+      ) continue;
       const budgetBlock = await budgets.getInvocationBlock(issue.companyId, candidate.id, {
         issueId: issue.id,
         projectId: issue.projectId,
@@ -4836,6 +4845,12 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const budgetBlockedCandidateAgentIds: string[] = [];
 
     for (const candidate of candidates) {
+      const candidateAgent = await getAgent(candidate.agentId);
+      if (
+        !candidateAgent ||
+        candidateAgent.companyId !== issue.companyId ||
+        !isAgentEligibleForAutomaticAssignment(candidateAgent)
+      ) continue;
       const budgetBlock = await budgets.getInvocationBlock(issue.companyId, candidate.agentId, {
         issueId: issue.id,
         projectId: issue.projectId,

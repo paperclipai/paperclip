@@ -143,12 +143,15 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
     outsideLookback?: boolean;
     blockerStatus?: string;
     blockerAssigneeAgentId?: "coder" | "manager" | null;
+    managerPermissions?: Record<string, unknown>;
+    includeFallbackCeo?: boolean;
   } = {}) {
     const companyId = randomUUID();
     const managerId = randomUUID();
     const coderId = randomUUID();
     const blockedIssueId = randomUUID();
     const blockerIssueId = randomUUID();
+    const fallbackOwnerId = opts.includeFallbackCeo ? randomUUID() : null;
     const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
 
     await db.insert(companies).values({
@@ -158,7 +161,7 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
       requireBoardApprovalForNewAgents: false,
     });
 
-    await db.insert(agents).values([
+    const agentRows: Array<typeof agents.$inferInsert> = [
       {
         id: managerId,
         companyId,
@@ -168,7 +171,7 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
         adapterType: "codex_local",
         adapterConfig: {},
         runtimeConfig: { heartbeat: { wakeOnDemand: false } },
-        permissions: {},
+        permissions: opts.managerPermissions ?? {},
       },
       {
         id: coderId,
@@ -182,7 +185,21 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
         runtimeConfig: { heartbeat: { wakeOnDemand: false } },
         permissions: {},
       },
-    ]);
+    ];
+    if (fallbackOwnerId) {
+      agentRows.push({
+        id: fallbackOwnerId,
+        companyId,
+        name: "CEO",
+        role: "ceo",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: { heartbeat: { wakeOnDemand: false } },
+        permissions: {},
+      });
+    }
+    await db.insert(agents).values(agentRows);
 
     const issueTimestamp = opts.outsideLookback === true
       ? new Date(Date.now() - 25 * 60 * 60 * 1000)
@@ -225,7 +242,7 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
       type: "blocks",
     });
 
-    return { companyId, managerId, coderId, blockedIssueId, blockerIssueId };
+    return { companyId, managerId, coderId, fallbackOwnerId, blockedIssueId, blockerIssueId };
   }
 
   async function seedResolvedDependencyBackstopFixture(opts: {
@@ -913,6 +930,35 @@ describeEmbeddedPostgres("heartbeat issue graph liveness escalation", () => {
       },
     });
     expect(events.filter((event) => event.action === "issue.blockers.updated")).toHaveLength(1);
+  });
+
+  it("skips board-ui-only agents when selecting an automatic liveness escalation owner", async () => {
+    await enableAutoRecovery();
+    const ownerUserId = `owner-${randomUUID()}`;
+    const { companyId, managerId, fallbackOwnerId } = await seedBlockedChain({
+      includeFallbackCeo: true,
+      managerPermissions: {
+        authorizationPolicy: {
+          assignmentPolicy: {
+            mode: "board_ui_create_only",
+            allowedUserIds: [ownerUserId],
+          },
+        },
+      },
+    });
+
+    const result = await heartbeatService(db).reconcileIssueGraphLiveness();
+
+    expect(result.escalationsCreated).toBe(1);
+    const [escalation] = await db
+      .select()
+      .from(issues)
+      .where(and(
+        eq(issues.companyId, companyId),
+        eq(issues.originKind, "harness_liveness_escalation"),
+      ));
+    expect(escalation?.assigneeAgentId).toBe(fallbackOwnerId);
+    expect(escalation?.assigneeAgentId).not.toBe(managerId);
   });
 
   it("skips budget-blocked direct owners and assigns recovery to the manager fallback", async () => {

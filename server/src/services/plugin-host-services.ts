@@ -2861,15 +2861,8 @@ export function buildHostServices(
         const policy = params.policy ? sanitizeRecord(params.policy) : null;
         if (params.resourceType === "agent") {
           const agent = requireInCompany("Agent", await agents.getById(params.resourceId), companyId);
-          const permissions = agent.permissions && typeof agent.permissions === "object"
-            ? { ...(agent.permissions as Record<string, unknown>) }
-            : {};
-          if (policy) permissions.authorizationPolicy = policy;
-          else delete permissions.authorizationPolicy;
-          await db
-            .update(agentsTable)
-            .set({ permissions, updatedAt: new Date() })
-            .where(eq(agentsTable.id, agent.id));
+          const updated = await agents.updatePermissions(agent.id, { authorizationPolicy: policy });
+          if (!updated) throw new Error("Agent not found");
         } else if (params.resourceType === "project") {
           const project = requireInCompany("Project", await projects.getById(params.resourceId), companyId);
           const executionWorkspacePolicy = project.executionWorkspacePolicy && typeof project.executionWorkspacePolicy === "object"

@@ -77,6 +77,10 @@ import {
 import { queueIssueAssignmentWakeup, type IssueAssignmentWakeupDeps } from "./issue-assignment-wakeup.js";
 import { logActivity } from "./activity-log.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
+import {
+  assertLockedAgentEligibleForAutomaticAssignment,
+  lockAgentAssignmentPolicyRow,
+} from "./agent-assignment-policy.js";
 
 const OPEN_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"];
 const LIVE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"];
@@ -2082,7 +2086,6 @@ export function routineService(
     create: async (companyId: string, input: CreateRoutine, actor: Actor): Promise<Routine> => {
       await assertProject(companyId, input.projectId ?? null);
       await assertRoutineFolder(companyId, input.folderId ?? null);
-      await assertAssignableAgent(db, companyId, input.assigneeAgentId ?? null, { kind: "routine" });
       if (input.goalId) await assertGoal(companyId, input.goalId);
       if (input.parentIssueId) await assertParentIssue(companyId, input.parentIssueId);
       const env = input.env === undefined || input.env === null
@@ -2103,6 +2106,15 @@ export function routineService(
       }
       const createdRoutine = await db.transaction(async (tx) => {
         const txDb = tx as unknown as Db;
+        if (input.assigneeAgentId) {
+          const lockedAgent = await lockAgentAssignmentPolicyRow(
+            txDb,
+            companyId,
+            input.assigneeAgentId,
+          );
+          await assertAssignableAgent(txDb, companyId, input.assigneeAgentId, { kind: "routine" });
+          assertLockedAgentEligibleForAutomaticAssignment(lockedAgent, "routine");
+        }
         const [created] = await txDb
           .insert(routines)
           .values({
@@ -2174,9 +2186,6 @@ export function routineService(
       );
       if (patch.projectId !== undefined) await assertProject(existing.companyId, nextProjectId);
       if (patch.folderId !== undefined) await assertRoutineFolder(existing.companyId, nextFolderId);
-      if (patch.assigneeAgentId !== undefined || patch.status === "active") {
-        await assertAssignableAgent(db, existing.companyId, nextAssigneeAgentId, { kind: "routine" });
-      }
       if (patch.goalId) await assertGoal(existing.companyId, patch.goalId);
       if (patch.parentIssueId) await assertParentIssue(existing.companyId, patch.parentIssueId);
       assertRoutineVariableDefinitions(nextVariables);
@@ -2214,6 +2223,30 @@ export function routineService(
           .then((rows) => rows[0] ?? null);
         if (!locked) return null;
 
+        const lockedNextAssigneeAgentId = patch.assigneeAgentId === undefined
+          ? locked.assigneeAgentId
+          : patch.assigneeAgentId;
+        const lockedRequestedStatus = patch.status ?? locked.status;
+        if (patch.status === "active") {
+          assertRoutineCanEnable(patch.status, lockedNextAssigneeAgentId);
+        }
+        const lockedNextStatus = patch.assigneeAgentId === undefined
+          ? lockedRequestedStatus
+          : normalizeDraftRoutineStatus(lockedRequestedStatus, lockedNextAssigneeAgentId);
+        if (patch.assigneeAgentId !== undefined || patch.status === "active") {
+          if (lockedNextAssigneeAgentId) {
+            const lockedAgent = await lockAgentAssignmentPolicyRow(
+              txDb,
+              locked.companyId,
+              lockedNextAssigneeAgentId,
+            );
+            await assertAssignableAgent(txDb, locked.companyId, lockedNextAssigneeAgentId, { kind: "routine" });
+            assertLockedAgentEligibleForAutomaticAssignment(lockedAgent, "routine");
+          } else {
+            await assertAssignableAgent(txDb, locked.companyId, null, { kind: "routine" });
+          }
+        }
+
         if (patch.baseRevisionId && patch.baseRevisionId !== locked.latestRevisionId) {
           throw conflict("Routine was updated by someone else", {
             currentRevisionId: locked.latestRevisionId,
@@ -2228,9 +2261,9 @@ export function routineService(
           parentIssueId: patch.parentIssueId === undefined ? locked.parentIssueId : patch.parentIssueId,
           title: nextTitle,
           description: nextDescription,
-          assigneeAgentId: nextAssigneeAgentId,
+          assigneeAgentId: lockedNextAssigneeAgentId,
           priority: patch.priority ?? locked.priority,
-          status: nextStatus,
+          status: lockedNextStatus,
           concurrencyPolicy: patch.concurrencyPolicy ?? locked.concurrencyPolicy,
           catchUpPolicy: patch.catchUpPolicy ?? locked.catchUpPolicy,
           activityGatePolicy: patch.activityGatePolicy ?? locked.activityGatePolicy,
@@ -2594,6 +2627,20 @@ export function routineService(
           .where(eq(routines.id, existingRoutine.id))
           .then((rows) => rows[0] ?? null);
         if (!locked) throw notFound("Routine not found");
+        if (routineSnapshot.assigneeAgentId) {
+          const lockedAgent = await lockAgentAssignmentPolicyRow(
+            txDb,
+            locked.companyId,
+            routineSnapshot.assigneeAgentId,
+          );
+          await assertAssignableAgent(
+            txDb,
+            locked.companyId,
+            routineSnapshot.assigneeAgentId,
+            { kind: "routine" },
+          );
+          assertLockedAgentEligibleForAutomaticAssignment(lockedAgent, "routine");
+        }
         if (locked.latestRevisionId === targetRevision.id) {
           throw conflict("Selected revision is already the latest revision", {
             currentRevisionId: locked.latestRevisionId,

@@ -48,6 +48,10 @@ import { secretService } from "./secrets.js";
 import type { IssueAssignmentWakeupDeps } from "./issue-assignment-wakeup.js";
 import { logActivity } from "./activity-log.js";
 import { assertAssignableAgent } from "./agent-assignability.js";
+import {
+  assertLockedAgentEligibleForAutomaticAssignment,
+  lockAgentAssignmentPolicyRow,
+} from "./agent-assignment-policy.js";
 import { authorizationService } from "./authorization.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
 import { finalizeSummarySlotsForTerminalIssue } from "./summary-slot-finalization.js";
@@ -2735,18 +2739,25 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
       return rest as PipelineStageConfig;
     }
 
-    await assertAssignableAgent(dbOrTx as Db, input.companyId, input.assigneeAgentId, { kind: "routine" });
     const actorPatch = routineActorPatch(input.actor);
     const previousRoutine = input.previousRoutineId
       ? await dbOrTx
           .select()
           .from(routines)
           .where(and(eq(routines.id, input.previousRoutineId), eq(routines.companyId, input.companyId)))
+          .for("update")
           .then((rows) => rows[0] ?? null)
       : null;
     const canReusePrevious =
       previousRoutine &&
       (previousRoutine.originKind === "pipeline_automation" || previousRoutine.originKind === "manual");
+    const lockedAgent = await lockAgentAssignmentPolicyRow(
+      dbOrTx as Db,
+      input.companyId,
+      input.assigneeAgentId,
+    );
+    await assertAssignableAgent(dbOrTx as Db, input.companyId, input.assigneeAgentId, { kind: "routine" });
+    assertLockedAgentEligibleForAutomaticAssignment(lockedAgent, "routine");
     const title = resolvePipelineAutomationTitleTemplate({
       requestedTitleTemplate: input.titleTemplate,
       previousRoutine: canReusePrevious ? previousRoutine : null,
@@ -2834,6 +2845,27 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
     dbOrTx: PipelineDb,
     input: { companyId: string; pipelineId: string; routineId: string; actor: PipelineActor },
   ) {
+    const routine = await dbOrTx
+      .select()
+      .from(routines)
+      .where(and(eq(routines.id, input.routineId), eq(routines.companyId, input.companyId)))
+      .for("update")
+      .then((rows) => rows[0] ?? null);
+    if (!routine) throw notFound("Routine not found");
+    if (routine.assigneeAgentId) {
+      const lockedAgent = await lockAgentAssignmentPolicyRow(
+        dbOrTx as Db,
+        input.companyId,
+        routine.assigneeAgentId,
+      );
+      await assertAssignableAgent(
+        dbOrTx as Db,
+        input.companyId,
+        routine.assigneeAgentId,
+        { kind: "routine" },
+      );
+      assertLockedAgentEligibleForAutomaticAssignment(lockedAgent, "routine");
+    }
     const updated = await dbOrTx
       .update(routines)
       .set({ originKind: "pipeline_automation", originId: input.pipelineId, updatedAt: nowDate() })

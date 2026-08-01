@@ -8,6 +8,7 @@ import {
   createDb,
   invites,
   principalPermissionGrants,
+  routines,
 } from "@paperclipai/db";
 import { buildHostServices } from "../services/plugin-host-services.js";
 import {
@@ -55,6 +56,7 @@ describeEmbeddedPostgres("plugin access and authorization host services", () => 
     await db.delete(activityLog);
     await db.delete(principalPermissionGrants);
     await db.delete(invites);
+    await db.delete(routines);
     await db.delete(agents);
     await db.delete(companyMemberships);
     await db.delete(companies);
@@ -317,6 +319,51 @@ describeEmbeddedPostgres("plugin access and authorization host services", () => 
     });
     expect(JSON.stringify(rows[0]!.details)).not.toContain("sk-test-secret");
     expect(JSON.stringify(rows[0]!.details)).not.toContain("should-not-persist");
+    services.dispose();
+  });
+
+  it("cannot use plugin policy updates to reserve an active routine assignee", async () => {
+    const company = await createCompany(db, "PAR");
+    const targetAgent = await db
+      .insert(agents)
+      .values({
+        companyId: company.id,
+        name: "Routine policy target",
+        role: "engineer",
+        adapterType: "process",
+        adapterConfig: {},
+        permissions: {},
+      })
+      .returning()
+      .then((rows) => rows[0]!);
+    await db.insert(routines).values({
+      companyId: company.id,
+      title: "Existing plugin-visible routine",
+      status: "active",
+      assigneeAgentId: targetAgent.id,
+    });
+    const services = buildHostServices(db, pluginId, "permissions-extension", createEventBusStub());
+
+    await expect(services.authorization.updatePolicy({
+      companyId: company.id,
+      resourceType: "agent",
+      resourceId: targetAgent.id,
+      policy: {
+        assignmentPolicy: {
+          mode: "board_ui_create_only",
+          allowedUserIds: ["board-user"],
+        },
+      },
+    })).rejects.toMatchObject({
+      status: 422,
+      details: { code: "reserved_agent_automatic_configuration" },
+    });
+
+    await expect(services.authorization.getPolicy({
+      companyId: company.id,
+      resourceType: "agent",
+      resourceId: targetAgent.id,
+    })).resolves.toMatchObject({ policy: null });
     services.dispose();
   });
 });

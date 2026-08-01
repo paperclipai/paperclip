@@ -23,6 +23,10 @@ import { evaluateAgentInvokabilityFromDb } from "./agent-invokability.js";
 import { issueService } from "./issues.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
 import { TASK_WATCHDOG_ORIGIN_KIND } from "./task-watchdog-scope.js";
+import {
+  assertLockedAgentEligibleForAutomaticAssignment,
+  lockAgentAssignmentPolicyRow,
+} from "./agent-assignment-policy.js";
 
 const TASK_WATCHDOG_STOP_FINGERPRINT_PREFIX = "task_watchdog_stop:";
 const TASK_WATCHDOG_SUBTREE_MAX_DEPTH = 100;
@@ -810,7 +814,13 @@ export async function upsertIssueWatchdogForIssue(
   input: IssueWatchdogUpsertInput,
 ): Promise<{ watchdog: IssueWatchdog; created: boolean }> {
   await assertWatchedIssue(dbOrTx, companyId, issueId);
+  const lockedAgent = await lockAgentAssignmentPolicyRow(
+    dbOrTx as Db,
+    companyId,
+    input.agentId,
+  );
   await assertWatchdogAgentInvokable(dbOrTx, companyId, input.agentId);
+  assertLockedAgentEligibleForAutomaticAssignment(lockedAgent, "task_watchdog");
 
   const now = new Date();
   const existing = await dbOrTx
@@ -1693,7 +1703,8 @@ export function taskWatchdogService(db: Db, deps: TaskWatchdogServiceDeps = {}) 
       issueId: string,
       input: IssueWatchdogUpsertInput,
     ): Promise<{ watchdog: IssueWatchdog; created: boolean }> => {
-      return upsertIssueWatchdogForIssue(db, companyId, issueId, input);
+      return db.transaction(async (tx) =>
+        upsertIssueWatchdogForIssue(tx, companyId, issueId, input));
     },
 
     disableForIssue: async (
