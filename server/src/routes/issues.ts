@@ -4399,6 +4399,7 @@ export function issueRoutes(
   async function normalizeIssueAssigneeAgentReference(
     companyId: string,
     rawAssigneeAgentId: string | null | undefined,
+    options: { actorType?: string } = {},
   ) {
     if (rawAssigneeAgentId === undefined || rawAssigneeAgentId === null) {
       return rawAssigneeAgentId;
@@ -4421,6 +4422,18 @@ export function issueRoutes(
     }
     if (resolved.agent.status === "terminated") {
       throw conflict("Cannot assign work to terminated agents");
+    }
+    // Agents must not route work to a paused peer/manager: the assignment is
+    // accepted silently, nothing will ever run it, and the issue becomes an
+    // invisible dead letter (e.g. escalation issues assigned to a paused
+    // manager via the org chart). Humans may still assign to paused agents
+    // deliberately — the pause state is visible in the UI and staging work
+    // for a later unpause is a legitimate workflow.
+    if (options.actorType === "agent" && resolved.agent.status === "paused") {
+      throw conflict(
+        "Cannot assign work to a paused agent. Assign an invokable agent, leave the issue unassigned, or escalate to a board operator instead.",
+        { assigneeAgentId: resolved.agent.id, assigneeStatus: "paused" },
+      );
     }
     if (resolved.agent.orgChainHealth?.status === "invalid_org_chain") {
       throw conflict(
@@ -7128,6 +7141,7 @@ export function issueRoutes(
     const normalizedAssigneeAgentId = await normalizeIssueAssigneeAgentReference(
       companyId,
       rawCreateBody.assigneeAgentId as string | null | undefined,
+      { actorType: req.actor.type },
     );
     const actor = getActorInfo(req);
     const runWorkspaceInheritanceSourceIssueId = hasExplicitIssueWorkspaceCreateSelection(rawCreateBody)
@@ -7343,6 +7357,7 @@ export function issueRoutes(
     const normalizedAssigneeAgentId = await normalizeIssueAssigneeAgentReference(
       parent.companyId,
       sanitizedBody.assigneeAgentId as string | null | undefined,
+      { actorType: req.actor.type },
     );
     const createBody = {
       ...sanitizedBody,
@@ -7519,6 +7534,7 @@ export function issueRoutes(
       const normalizedAssigneeAgentId = await normalizeIssueAssigneeAgentReference(
         sourceIssue.companyId,
         sanitizedChild.assigneeAgentId as string | null | undefined,
+        { actorType: req.actor.type },
       );
       const childBody = {
         ...sanitizedChild,
@@ -7768,6 +7784,7 @@ export function issueRoutes(
     const normalizedAssigneeAgentId = await normalizeIssueAssigneeAgentReference(
       existing.companyId,
       req.body.assigneeAgentId as string | null | undefined,
+      { actorType: req.actor.type },
     );
     const titleOrDescriptionChanged = req.body.title !== undefined || req.body.description !== undefined;
     const existingRelations =
