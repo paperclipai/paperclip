@@ -12,7 +12,7 @@ import {
 import { createPluginWorkerHandle } from "../services/plugin-worker-manager.js";
 import { createPluginEventBus } from "../services/plugin-event-bus.js";
 import {
-  AGENT_RUN_EVENT_TERMINAL_STATUSES,
+  AGENT_RUN_LIVE_STATUSES,
   assertLiveAgentRunBinding,
 } from "../services/plugin-host-services.js";
 
@@ -90,6 +90,7 @@ describe("plugin events bound to active agent runs (worker manager + factory)", 
         toolName: "probe",
         parameters: { mode: "echo", payload: spoofPayload },
         runContext: RUN_CONTEXT,
+        _agentRunScope: { agentId: "agent-1", runId: "run-1", companyId: "company-1" },
       })).resolves.toEqual({ data: "emitted" });
 
       expect(emitFromAgentRun).toHaveBeenCalledTimes(1);
@@ -180,6 +181,30 @@ describe("plugin events bound to active agent runs (worker manager + factory)", 
     }
   });
 
+  it("runContext agentId/runId without _agentRunScope confers no agent-run provenance (board path)", async () => {
+    const { handle, emitFromAgentRun } = createEmitHandle();
+
+    try {
+      await handle.start();
+
+      // Board callers supply runContext but no _agentRunScope; the host must not
+      // derive an agent-run binding from the plugin-visible runContext fields.
+      await expect(handle.call("executeTool", {
+        toolName: "probe",
+        parameters: { mode: "echo", payload: {} },
+        runContext: RUN_CONTEXT,
+        // No _agentRunScope — simulates a board caller supplying arbitrary ids
+      })).rejects.toMatchObject({
+        code: PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED,
+        message: expect.stringContaining("agent run"),
+      });
+
+      expect(emitFromAgentRun).not.toHaveBeenCalled();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
   it("rejects expired invocation ids after the executeTool call settles", async () => {
     const { handle, emitFromAgentRun } = createEmitHandle();
 
@@ -191,6 +216,7 @@ describe("plugin events bound to active agent runs (worker manager + factory)", 
         toolName: "probe",
         parameters: { mode: "echo" },
         runContext: RUN_CONTEXT,
+        _agentRunScope: { agentId: "agent-1", runId: "run-1", companyId: "company-1" },
       })).resolves.toEqual({ data: "emitted" });
       expect(emitFromAgentRun).toHaveBeenCalledTimes(1);
 
@@ -218,6 +244,7 @@ describe("plugin events bound to active agent runs (worker manager + factory)", 
         toolName: "probe",
         parameters: { mode: "echo" },
         runContext: RUN_CONTEXT,
+        _agentRunScope: { agentId: "agent-1", runId: "run-1", companyId: "company-1" },
       })).rejects.toMatchObject({
         code: PLUGIN_RPC_ERROR_CODES.CAPABILITY_DENIED,
       });
@@ -303,9 +330,18 @@ describe("assertLiveAgentRunBinding", () => {
 
   it("accepts a live run owned by the same company and agent", () => {
     expect(() => assertLiveAgentRunBinding(liveRun, expected)).not.toThrow();
+  });
+
+  it("rejects a non-running status — allowlist fails closed on unknown future statuses", () => {
+    // "queued" is not in the allowlist and must be rejected, even though it is
+    // not a terminal status. This ensures future statuses (e.g. "draining")
+    // also fail closed without requiring changes to this check.
     expect(() =>
       assertLiveAgentRunBinding({ ...liveRun, status: "queued" }, expected),
-    ).not.toThrow();
+    ).toThrow(/not live/);
+    expect(() =>
+      assertLiveAgentRunBinding({ ...liveRun, status: "draining" }, expected),
+    ).toThrow(/not live/);
   });
 
   it("rejects a missing run — job runs and forged ids never exist in heartbeat_runs", () => {
@@ -324,11 +360,17 @@ describe("assertLiveAgentRunBinding", () => {
     ).toThrow(/different agent/);
   });
 
-  it("rejects every terminal status", () => {
-    for (const status of AGENT_RUN_EVENT_TERMINAL_STATUSES) {
+  it("rejects every non-live status, including all known terminal statuses", () => {
+    const nonLiveStatuses = [
+      "succeeded", "interrupted", "failed", "cancelled", "timed_out",
+      "queued", "draining",
+    ];
+    for (const status of nonLiveStatuses) {
       expect(() =>
         assertLiveAgentRunBinding({ ...liveRun, status }, expected),
-      ).toThrow(/terminal/);
+      ).toThrow(/not live/);
     }
+    // Confirm only "running" is accepted.
+    expect(AGENT_RUN_LIVE_STATUSES).toEqual(new Set(["running"]));
   });
 });

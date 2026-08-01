@@ -491,17 +491,11 @@ if (_logFlushInterval.unref) _logFlushInterval.unref();
 const SESSION_EVENT_SUBSCRIPTION_TIMEOUT_MS = 30 * 60 * 1_000; // 30 minutes
 
 /**
- * Terminal heartbeat-run statuses. Mirrors `HEARTBEAT_RUN_TERMINAL_STATUSES`
- * in `heartbeat.ts` (kept private there); a run in any of these states may no
- * longer produce events.
+ * Allowlist of heartbeat-run statuses that permit event emission.
+ * Any status not in this set is treated as non-live and will be rejected.
+ * Using an allowlist ensures that unknown future statuses fail closed.
  */
-export const AGENT_RUN_EVENT_TERMINAL_STATUSES = [
-  "succeeded",
-  "interrupted",
-  "failed",
-  "cancelled",
-  "timed_out",
-] as const;
+export const AGENT_RUN_LIVE_STATUSES = new Set(["running"]);
 
 /**
  * Assert that the agent run bound to an `executeTool` invocation is still a
@@ -531,11 +525,9 @@ export function assertLiveAgentRunBinding(
       `events.emitFromAgentRun rejected: run "${expected.runId}" belongs to a different agent`,
     );
   }
-  if (
-    (AGENT_RUN_EVENT_TERMINAL_STATUSES as readonly string[]).includes(run.status)
-  ) {
+  if (!AGENT_RUN_LIVE_STATUSES.has(run.status)) {
     throw new Error(
-      `events.emitFromAgentRun rejected: run "${expected.runId}" is terminal (${run.status})`,
+      `events.emitFromAgentRun rejected: run "${expected.runId}" is not live (${run.status})`,
     );
   }
 }
@@ -1426,7 +1418,12 @@ export function buildHostServices(
             status: heartbeatRuns.status,
           })
           .from(heartbeatRuns)
-          .where(eq(heartbeatRuns.id, agentRun.runId))
+          .where(
+            and(
+              eq(heartbeatRuns.id, agentRun.runId),
+              eq(heartbeatRuns.status, "running"),
+            ),
+          )
           .limit(1);
         assertLiveAgentRunBinding(run ?? null, agentRun);
 

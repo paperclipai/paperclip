@@ -159,6 +159,60 @@ describe("worker ctx.events.emitFromAgentRun", () => {
     }
   });
 
+  it("rejects a timer callback that fires after the executeTool handler has resolved", async () => {
+    let timerError: unknown = null;
+    const fixture = startWorkerFixture(async (ctx) => {
+      ctx.tools.register(
+        "probe",
+        { displayName: "Probe", description: "probe", parametersSchema: { type: "object" } },
+        async () => {
+          // Schedule a deferred call — the timer inherits the ALS context of
+          // this invocation scope, so `invocationContextStorage` would still
+          // report an active agentRun binding when the timer fires. The
+          // `executeToolExecutionStorage` completed flag must block it.
+          setTimeout(() => {
+            ctx.events.emitFromAgentRun("from-timer", {}).catch((err) => {
+              timerError = err;
+            });
+          }, 0);
+          // Return before the timer fires.
+          return { content: "ok" };
+        },
+      );
+    });
+
+    try {
+      await initializeWorker(fixture.callWorker);
+
+      // The executeTool call resolves successfully.
+      await expect(fixture.callWorker("executeTool", {
+        toolName: "probe",
+        parameters: {},
+        runContext: {
+          agentId: "agent-1",
+          runId: "run-1",
+          companyId: "company-1",
+          projectId: "project-1",
+        },
+      }, AGENT_RUN_INVOCATION)).resolves.toEqual({ content: "ok" });
+
+      // Give the timer a moment to fire.
+      await new Promise((resolve) => setTimeout(resolve, 20));
+
+      // The timer must have been rejected by the completed-flag guard.
+      expect(timerError).toBeInstanceOf(Error);
+      expect(String(timerError)).toMatch(/executeTool invocation bound to an active agent run/);
+
+      // The host must not have received any emitFromAgentRun request.
+      const emitRequests = fixture.hostRequests.filter(
+        (request) => request.method === "events.emitFromAgentRun",
+      );
+      expect(emitRequests).toHaveLength(0);
+    } finally {
+      fixture.stop();
+    }
+  });
+
   it("fails locally inside an invocation that is not bound to an agent run", async () => {
     const fixture = startWorkerFixture(async (ctx) => {
       ctx.events.on("plugin.*", async () => {

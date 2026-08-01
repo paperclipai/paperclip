@@ -610,14 +610,19 @@ export function createPluginWorkerHandle(
     if (method === "executeTool" && isRecord(params.runContext)) {
       const companyId = readNonEmptyString(params.runContext.companyId);
       if (!companyId) return null;
-      // Bind the invocation to the agent run the host itself dispatched.
-      // executeTool is the ONLY invocation kind that carries this binding —
-      // onEvent/performAction/runJob scopes stay company-only so provenance
-      // cannot be laundered through them.
-      const agentId = readNonEmptyString(params.runContext.agentId);
-      const runId = readNonEmptyString(params.runContext.runId);
-      if (agentId && runId) {
-        return { companyId, agentRun: { agentId, runId, companyId } };
+      // Agent-run binding comes exclusively from `_agentRunScope`, which the
+      // host sets only when the caller is authenticated as the named agent run.
+      // Reading from `runContext.agentId/runId` here would allow board callers
+      // to forge agent-run provenance by supplying arbitrary ids in the request
+      // body. `_agentRunScope` is a host-internal field never derived from the
+      // plugin-visible `runContext`.
+      if (isRecord(params._agentRunScope)) {
+        const src = params._agentRunScope;
+        const agentId = readNonEmptyString(src.agentId);
+        const runId = readNonEmptyString(src.runId);
+        if (agentId && runId) {
+          return { companyId, agentRun: { agentId, runId, companyId } };
+        }
       }
       return { companyId };
     }

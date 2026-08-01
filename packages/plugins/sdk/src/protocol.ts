@@ -470,6 +470,15 @@ export interface ExecuteToolParams {
   parameters: unknown;
   /** Agent run context. */
   runContext: ToolRunContext;
+  /**
+   * Host-internal: authenticated agent-run binding set by the host only when
+   * the caller has been verified as the named agent run. Never derived from
+   * the plugin-visible `runContext` — prevents board callers from forging
+   * agent-run provenance by supplying agentId/runId in the request body.
+   *
+   * Not forwarded to the plugin worker process.
+   */
+  _agentRunScope?: { agentId: string; runId: string; companyId: string };
 }
 
 export interface PluginExternalObjectUrlCandidate {

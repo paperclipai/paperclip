@@ -326,6 +326,10 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
   let configCompanyId: string | null = null;
   let databaseNamespace: string | null = null;
   const invocationContextStorage = new AsyncLocalStorage<PluginInvocationContext>();
+  // Tracks whether the executeTool handler is still executing. Timers created
+  // inside the handler inherit this ALS context; checking `completed` here
+  // prevents post-resolve timer callbacks from calling emitFromAgentRun.
+  const executeToolExecutionStorage = new AsyncLocalStorage<{ completed: boolean }>();
 
   // Plugin handler registrations (populated during setup())
   const eventHandlers: EventRegistration[] = [];
@@ -545,6 +549,18 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
           // invocation registry regardless of this check.
           const activeInvocation = invocationContextStorage.getStore();
           if (!activeInvocation?.scope?.agentRun) {
+            throw new Error(
+              "emitFromAgentRun is only available inside an executeTool invocation bound to an active agent run",
+            );
+          }
+          // Reject deferred calls from timers that inherited the ALS context
+          // after the executeTool handler has already resolved. Timers in Node.js
+          // inherit the AsyncLocalStorage context of their creation scope, so
+          // `invocationContextStorage` stays populated even after the handler
+          // returns — `executeToolExecutionStorage` provides the additional
+          // completed flag that gates this post-resolve window.
+          const executionCtx = executeToolExecutionStorage.getStore();
+          if (!executionCtx || executionCtx.completed) {
             throw new Error(
               "emitFromAgentRun is only available inside an executeTool invocation bound to an active agent run",
             );
@@ -1795,7 +1811,14 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
     if (!entry) {
       throw new Error(`No tool handler registered for "${params.toolName}"`);
     }
-    return entry.fn(params.parameters, params.runContext);
+    const executionCtx = { completed: false };
+    try {
+      return await executeToolExecutionStorage.run(executionCtx, () =>
+        entry.fn(params.parameters, params.runContext),
+      );
+    } finally {
+      executionCtx.completed = true;
+    }
   }
 
   async function handleDetectExternalObjects(params: DetectExternalObjectsParams) {
