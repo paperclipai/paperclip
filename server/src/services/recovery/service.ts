@@ -69,6 +69,9 @@ import {
 } from "./origins.js";
 import {
   classifyIssueGraphLiveness,
+  hasExplicitExternalServiceWakeExemption,
+  hasScheduledMonitor,
+  type IssueLivenessIssueInput,
   type IssueLivenessFinding,
 } from "./issue-graph-liveness.js";
 import {
@@ -154,12 +157,12 @@ type LatestIssueRun = Pick<
   | "errorCode"
   | "contextSnapshot"
   | "livenessState"
-  | "startedAt"
   | "createdAt"
-  | "updatedAt"
-  | "finishedAt"
 > & {
   resultJson?: unknown;
+  startedAt?: Date | null;
+  updatedAt?: Date;
+  finishedAt?: Date | null;
 } | null;
 type SuccessfulLatestIssueRun = NonNullable<LatestIssueRun> & { status: "succeeded" };
 
@@ -436,6 +439,8 @@ export const PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS = 60 * 60 * 1000;
 
 const PROVIDER_QUOTA_ERROR_RE =
   /(?:you(?:'|’)ve hit your usage limit|usage limit(?: reached| exceeded)?|provider quota|quota (?:limit )?exceeded|model (?:is )?at capacity)/i;
+const PROVIDER_QUOTA_RESET_DATE_RE =
+  /\bresets?\s+(?:at\s+)?(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\.?\s+(\d{1,2})(?:,\s*(\d{4}))?\s+at\s+(\d{1,2})(?::(\d{2}))?\s*([ap])\.?\s*m\.?(?:\s*\(([^)]+)\))?/i;
 const CONFIGURATION_INCOMPLETE_ERROR_RE =
   /(?:model_not_found|model [^\n]{0,120} not found|missing (?:api )?(?:key|credentials?)|credentials? (?:are |is )?missing|no (?:api )?(?:key|credentials?) (?:was |were )?(?:found|configured|provided)|api key (?:is )?(?:not set|unavailable))/i;
 
@@ -1051,6 +1056,20 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           inArray(issueThreadInteractions.continuationPolicy, ["wake_assignee", "wake_assignee_on_accept"]),
         ),
       )
+      .limit(1)
+      .then((rows) => Boolean(rows[0]));
+  }
+
+  async function hasPendingApproval(companyId: string, issueId: string) {
+    return db
+      .select({ id: issueApprovals.approvalId })
+      .from(issueApprovals)
+      .innerJoin(approvals, eq(issueApprovals.approvalId, approvals.id))
+      .where(and(
+        eq(issueApprovals.companyId, companyId),
+        eq(issueApprovals.issueId, issueId),
+        inArray(approvals.status, ["pending", "revision_requested"]),
+      ))
       .limit(1)
       .then((rows) => Boolean(rows[0]));
   }

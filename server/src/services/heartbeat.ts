@@ -143,6 +143,7 @@ import { visibleIssueCondition } from "./issue-visibility.js";
 import { ISSUE_BLOCKERS_RESOLVED_WAKE_REASON } from "./issue-dependency-wakeups.js";
 import {
   buildIssueMonitorClearedPatch,
+  buildIssueMonitorRearmedPatch,
   buildIssueMonitorTriggeredPatch,
   normalizeIssueExecutionPolicy,
   parseIssueExecutionState,
@@ -212,7 +213,7 @@ import {
   recoveryAssigneeAdapterOverrides,
   withRecoveryModelProfileHint,
 } from "./recovery/model-profile-hint.js";
-import { recoveryService } from "./recovery/service.js";
+import { classifyAdapterFailureForRecovery, recoveryService } from "./recovery/service.js";
 import { productivityReviewService } from "./productivity-review.js";
 import { resolveRequiredSuccessfulRunHandoffOnValidPath } from "./successful-run-handoff-state.js";
 import { taskWatchdogService } from "./task-watchdogs.js";
@@ -6041,6 +6042,26 @@ export function resolveSkillTestRunCompletionForHeartbeatOutcome(
 
 const HERMES_ADAPTER_TYPE = "hermes_local";
 const HERMES_SESSION_ID_REGEX = /^(?:\d{8}_\d{6}_[A-Za-z0-9_-]{4,}|[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12})$/;
+const UNDELIVERED_ISSUE_MONITOR_REARM_DELAY_MS = 150_000;
+const ISSUE_MONITOR_FAILED_DISPATCH_REARM_MAX_DELAY_MS = 60 * 60 * 1000;
+const ISSUE_MONITOR_FAILED_DISPATCH_STREAK_LOOKBACK_LIMIT = 32;
+
+function buildUndeliveredIssueMonitorRearmAt(now: Date, nextCheckAt: string | null | undefined) {
+  const minimumFuture = new Date(now.getTime() + UNDELIVERED_ISSUE_MONITOR_REARM_DELAY_MS);
+  const scheduled = readNonEmptyString(nextCheckAt);
+  if (!scheduled) return minimumFuture;
+  const parsed = new Date(scheduled);
+  if (Number.isNaN(parsed.getTime())) return minimumFuture;
+  return parsed.getTime() > minimumFuture.getTime() ? parsed : minimumFuture;
+}
+
+export function computeIssueMonitorFailedDispatchBackoffDelayMs(consecutiveFailures: number) {
+  const normalizedFailures = Math.max(1, Math.floor(consecutiveFailures));
+  return Math.min(
+    UNDELIVERED_ISSUE_MONITOR_REARM_DELAY_MS * 2 ** Math.max(0, normalizedFailures - 1),
+    ISSUE_MONITOR_FAILED_DISPATCH_REARM_MAX_DELAY_MS,
+  );
+}
 
 function requiresCanonicalSessionIds(adapterType: string | null | undefined) {
   return adapterType === HERMES_ADAPTER_TYPE;
@@ -7888,32 +7909,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         action: "issue.monitor_triggered",
         entityType: "issue",
         entityId: claimed.id,
-        details: consumedByTargetIssue
-          ? {
-              identifier: claimed.identifier,
-              nextCheckAt: scheduledAtIso,
-              lastTriggeredAt: input.now.toISOString(),
-              attemptCount: nextAttemptCount,
-              notes: claimed.monitorNotes ?? null,
-              ...monitorMetadata,
-              source: input.activitySource,
-            }
-          : {
-              identifier: claimed.identifier,
-            previousNextCheckAt: scheduledAtIso,
-            rearmedNextCheckAt:
-                "monitorNextCheckAt" in issueMonitorPatch && issueMonitorPatch.monitorNextCheckAt instanceof Date
-                  ? issueMonitorPatch.monitorNextCheckAt.toISOString()
-                  : null,
-              attemptedAttemptCount: nextAttemptCount,
-              restoredAttemptCount: claimed.monitorAttemptCount ?? 0,
-              notes: claimed.monitorNotes ?? null,
-              ...monitorMetadata,
-              source: input.activitySource,
-              reason: deliveredRun && !deliveredRunActive
-                ? "claim_failed_backoff"
-                : "undelivered_foreign_issue_carrier",
-            },
+        details: {
+          identifier: claimed.identifier,
+          nextCheckAt: scheduledAtIso,
+          lastTriggeredAt: input.now.toISOString(),
+          attemptCount: nextAttemptCount,
+          notes: claimed.monitorNotes ?? null,
+          ...monitorMetadata,
+          source: input.activitySource,
+        },
       });
 
       return { outcome: "triggered" as const };

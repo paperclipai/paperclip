@@ -33,6 +33,10 @@ import detectPort from "detect-port";
 import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
 import { logger } from "./middleware/logger.js";
+import {
+  getManagedInstanceConfig,
+  type ManagedInstanceConfig,
+} from "./services/managed-config.js";
 import { setupEnvironmentCustomImageTerminalWebSocketServer } from "./realtime/environment-custom-image-terminal-ws.js";
 import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
 import {
@@ -618,6 +622,7 @@ export async function startServer(): Promise<StartedServer> {
 
   const requestedListenPort = config.port;
   const listenPort = await detectPort(requestedListenPort);
+  const isPrimaryRuntimeInstance = listenPort === requestedListenPort;
   if (config.authBaseUrlMode === "explicit" && config.authPublicBaseUrl) {
     config.authPublicBaseUrl = rewriteLocalUrlPort(config.authPublicBaseUrl, listenPort);
   }
@@ -682,6 +687,14 @@ export async function startServer(): Promise<StartedServer> {
     serverPort: listenPort,
     databasePort: resolvedEmbeddedPostgresPort,
   });
+  let managedConfig: ManagedInstanceConfig | null;
+  try {
+    managedConfig = getManagedInstanceConfig();
+  } catch (err) {
+    logger.error({ err }, "invalid PAPERCLIP_MANAGED_CONFIG; refusing to start (fail closed)");
+    throw err;
+  }
+
   const uiMode = config.uiDevMiddleware ? "vite-dev" : config.serveUi ? "static" : "none";
   const storageService = createStorageServiceFromConfig(config);
   const feedback = feedbackService(db as any, {
@@ -930,6 +943,7 @@ export async function startServer(): Promise<StartedServer> {
   }
 
   let drainHeartbeatRunsForShutdown: ((signal: "SIGINT" | "SIGTERM") => Promise<unknown>) | null = null;
+  let prepareHotRestartShutdown: ((signal: "SIGINT" | "SIGTERM") => Promise<{ skipDrain: boolean }>) | null = null;
   let heartbeatSchedulerStopped = false;
   let heartbeatSchedulerInterval: ReturnType<typeof setInterval> | null = null;
   const heartbeatSchedulerInFlight = new Set<Promise<void>>();
@@ -951,6 +965,7 @@ export async function startServer(): Promise<StartedServer> {
   if (heartbeat) {
     const decisionExecutor = decisionService(db as any, decisionServiceOptions);
     drainHeartbeatRunsForShutdown = heartbeat.drainRunningRunsForShutdown;
+    prepareHotRestartShutdown = heartbeat.prepareHotRestartShutdown;
     const environmentCustomImages = environmentCustomImageService(db as any, { pluginWorkerManager });
     const routines = routineService(db as any, { pluginWorkerManager });
     const tools = toolAccessService(db as any, {
@@ -1342,29 +1357,27 @@ export async function startServer(): Promise<StartedServer> {
 
       const heartbeatShutdown = await coordinateHeartbeatSchedulerShutdown({
         signal,
-        stopHeartbeatScheduler: () => {
-          heartbeatSchedulerStopped = true;
-          if (heartbeatSchedulerInterval) {
-            clearInterval(heartbeatSchedulerInterval);
-            heartbeatSchedulerInterval = null;
-          }
-        },
+        prepareHotRestartShutdown,
         waitForHeartbeatSchedulerIdle,
-        drainHeartbeatRunsForShutdown,
-        stopTelemetry: async () => {
-          const telemetryClient = getTelemetryClient();
-          if (!telemetryClient) return;
-          telemetryClient.stop();
-          await telemetryClient.flush();
-        },
-        appShutdown: (app as { locals?: { paperclipShutdown?: () => void } }).locals?.paperclipShutdown,
-        stopEmbeddedPostgres:
-          embeddedPostgres && embeddedPostgresStartedByThisProcess
-            ? async () => embeddedPostgres.stop()
-            : null,
-        shutdownInstrumentation,
-        exitProcess: (code) => process.exit(code),
       });
+      const skipHeartbeatDrain = heartbeatShutdown.hotRestart?.skipDrain === true;
+      const telemetryClient = getTelemetryClient();
+      if (telemetryClient) {
+        telemetryClient.stop();
+        await telemetryClient.flush();
+      }
+      if (!skipHeartbeatDrain && drainHeartbeatRunsForShutdown) {
+        await drainHeartbeatRunsForShutdown(signal).catch((err) => {
+          logger.error({ err, signal }, "graceful heartbeat run drain failed");
+        });
+      }
+      await flushInFlightRunLogMirrors().catch((err) => {
+        logger.error({ err, signal }, "run-log in-flight mirror flush failed");
+      });
+      (app as { locals?: { paperclipShutdown?: () => void } }).locals?.paperclipShutdown?.();
+      if (embeddedPostgres && embeddedPostgresStartedByThisProcess) await embeddedPostgres.stop();
+      await shutdownInstrumentation();
+      process.exit(0);
     };
 
     process.once("SIGINT", () => {

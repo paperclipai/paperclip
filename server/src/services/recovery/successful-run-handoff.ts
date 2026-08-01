@@ -7,6 +7,10 @@ import { withRecoveryModelProfileHint } from "./model-profile-hint.js";
 export const FINISH_SUCCESSFUL_RUN_HANDOFF_REASON = "finish_successful_run_handoff";
 export const SUCCESSFUL_RUN_MISSING_STATE_REASON = "successful_run_missing_state";
 export const DEFAULT_MAX_SUCCESSFUL_RUN_HANDOFF_ATTEMPTS = 1;
+export const SUCCESSFUL_RUN_HANDOFF_SETTLE_WINDOW_MS = Math.max(
+  0,
+  Number(process.env.SUCCESSFUL_RUN_HANDOFF_SETTLE_WINDOW_MS) || 20 * 60 * 1000,
+);
 export const SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY =
   "Paperclip needs a disposition before this issue can continue.";
 export const SUCCESSFUL_RUN_HANDOFF_EXHAUSTED_NOTICE_BODY =
@@ -370,6 +374,23 @@ function isProductiveSuccessfulRun(input: {
 }) {
   if (input.livenessState && PRODUCTIVE_SUCCESS_LIVENESS_STATES.has(input.livenessState)) return true;
   return Boolean(input.detectedProgressSummary);
+}
+
+function successfulRunHandoffSettleAnchor(
+  run: Pick<HeartbeatRunRow, "finishedAt" | "updatedAt" | "startedAt">,
+) {
+  return run.finishedAt ?? run.updatedAt ?? run.startedAt ?? null;
+}
+
+export function isSuccessfulRunHandoffInsideSettleWindow(
+  run: Pick<HeartbeatRunRow, "status" | "contextSnapshot" | "finishedAt" | "updatedAt" | "startedAt">,
+  nowMs = Date.now(),
+) {
+  if (run.status !== "succeeded") return false;
+  if (isCorrectiveHandoffRun(run as HeartbeatRunRow)) return false;
+  const anchor = successfulRunHandoffSettleAnchor(run);
+  if (!(anchor instanceof Date)) return false;
+  return nowMs - anchor.getTime() < SUCCESSFUL_RUN_HANDOFF_SETTLE_WINDOW_MS;
 }
 
 export function buildSuccessfulRunHandoffInstruction(input: {
