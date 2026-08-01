@@ -981,7 +981,8 @@ export const requestConfirmationToolActionResultSchema = z.object({
 
 export const requestConfirmationResultSchema = z.object({
   version: z.literal(1),
-  outcome: z.enum(["accepted", "rejected", "superseded_by_comment", "stale_target", "withdrawn", "issue_closed"]),
+  outcome: z.enum(["accepted", "rejected", "superseded_by_comment", "superseded_by_interaction", "stale_target", "withdrawn", "issue_closed"]),
+  targetMutationApplied: z.literal(false).optional(),
   reason: z.string().trim().max(4000).nullable().optional(),
   commentId: z.string().uuid().nullable().optional(),
   staleTarget: requestConfirmationTargetSchema.nullable().optional(),
@@ -1103,7 +1104,7 @@ export const requestItemVerdictsResultItemSchema = z.object({
 
 export const requestItemVerdictsResultSchema = z.object({
   version: z.literal(1),
-  outcome: z.enum(["resolved", "superseded_by_comment", "stale_target", "cancelled", "withdrawn", "issue_closed"]),
+  outcome: z.enum(["resolved", "superseded_by_comment", "superseded_by_interaction", "stale_target", "cancelled", "withdrawn", "issue_closed"]),
   reason: z.string().trim().max(4000).nullable().optional(),
   complete: z.boolean(),
   items: z.array(requestItemVerdictsResultItemSchema)

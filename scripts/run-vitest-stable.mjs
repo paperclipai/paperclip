@@ -263,6 +263,34 @@ function runVitest(args, label) {
     PAPERCLIP_INSTANCE_ID: `vt-${process.pid}-${invocationIndex}`,
     TMPDIR: path.join(testRoot, "t"),
   };
+  // Heartbeat-launched verification inherits live control-plane and workspace
+  // coordinates. They are production inputs, not test fixtures, and can make
+  // suites target the live runtime or shared worktree roots. Keep only the
+  // per-invocation PAPERCLIP_HOME/INSTANCE_ID defined above.
+  for (const key of Object.keys(env)) {
+    if (
+      key.startsWith("PAPERCLIP_WORKSPACE_") ||
+      key.startsWith("PAPERCLIP_WAKE_") ||
+      [
+        "PAPERCLIP_AGENT_ID",
+        "PAPERCLIP_API_KEY",
+        "PAPERCLIP_API_URL",
+        "PAPERCLIP_COMPANY_ID",
+        "PAPERCLIP_ISSUE_WORK_MODE",
+        "PAPERCLIP_LISTEN_HOST",
+        "PAPERCLIP_LISTEN_PORT",
+        "PAPERCLIP_RUNTIME_API_URL",
+        "PAPERCLIP_RUN_ID",
+        "PAPERCLIP_RUN_SCRATCH_DIR",
+        "PAPERCLIP_SCRATCH_DIR",
+        "PAPERCLIP_TASK_ID",
+        "PAPERCLIP_TASK_SCRATCH_DIR",
+        "PAPERCLIP_TMPDIR",
+      ].includes(key)
+    ) {
+      delete env[key];
+    }
+  }
   mkdirSync(env.PAPERCLIP_HOME, { recursive: true });
   mkdirSync(env.TMPDIR, { recursive: true });
   const result = spawnSync("pnpm", ["exec", "vitest", "run", ...args], {
