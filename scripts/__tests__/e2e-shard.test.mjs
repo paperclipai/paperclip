@@ -14,7 +14,7 @@ const durationsManifest = path.join(repoRoot, "scripts", "e2e-shard-durations.js
 const playwrightConfig = path.join(repoRoot, "tests", "e2e", "playwright.config.ts");
 const prWorkflow = path.join(repoRoot, ".github", "workflows", "pr.yml");
 
-const SHARD_COUNT = 2;
+const SHARD_COUNT = 3;
 
 function runShard(args) {
   const result = spawnSync(process.execPath, [script, ...args], { cwd: repoRoot, encoding: "utf8" });
@@ -65,11 +65,16 @@ test("the weighted partition keeps the shards close to balanced", () => {
   const heaviest = Math.max(...weights);
   const total = weights.reduce((sum, weight) => sum + weight, 0);
   // Round-robin/count-based sharding would strand the ~168s smoke-lab spec on
-  // one runner. Assert the weighted split stays within 15% of an even cut so a
-  // future spec-time regression surfaces here instead of on the PR critical path.
+  // one runner alongside other specs. Assert the weighted split stays within
+  // 15% of an even cut so a future spec-time regression surfaces here instead
+  // of on the PR critical path. A single indivisible spec (smoke-lab) can
+  // legitimately exceed the even cut on its own, so the bound is floored at
+  // the largest per-spec weight — the best any file-level partition can do.
+  const largestSpec = Math.max(...specs.map((file) => durations[file] ?? 0));
+  const bound = Math.max((total / SHARD_COUNT) * 1.15, largestSpec);
   assert.ok(
-    heaviest <= (total / SHARD_COUNT) * 1.15,
-    `heaviest shard ${heaviest}ms exceeds 115% of the even cut (${total / SHARD_COUNT}ms)`,
+    heaviest <= bound,
+    `heaviest shard ${heaviest}ms exceeds the balance bound (${bound}ms)`,
   );
 });
 
@@ -86,7 +91,7 @@ test("shard arguments are validated", () => {
 
 test("pr.yml keeps a stable aggregate check named e2e over the shard matrix", () => {
   // Branch protection requires a check literally named `e2e`. The shards run
-  // as `e2e shard (n/2)`, so the aggregate job below is what keeps the
+  // as `e2e shard (n/3)`, so the aggregate job below is what keeps the
   // required-check contract intact — same pattern as the `verify` aggregate.
   const workflow = readFileSync(prWorkflow, "utf8");
   const jobs = new Map();
@@ -116,5 +121,13 @@ test("pr.yml keeps a stable aggregate check named e2e over the shard matrix", ()
 
   const shards = jobs.get("e2e_shards");
   assert.ok(shards, "pr.yml must define the `e2e_shards` matrix job");
-  assert.match(shards, /shard_count: 2/, "the shard matrix must match SHARD_COUNT");
+  assert.match(
+    shards,
+    new RegExp(`shard_count: ${SHARD_COUNT}`),
+    "the shard matrix must match SHARD_COUNT",
+  );
+  assert.ok(
+    !new RegExp(`shard_index: ${SHARD_COUNT}\\b`).test(shards),
+    "the shard matrix must not define more shards than SHARD_COUNT",
+  );
 });
