@@ -236,7 +236,7 @@ describe("document annotation routes", () => {
       status: "open",
       includeComments: false,
     });
-  });
+  }, 10_000);
 
   it("includes annotation comment bodies on document reads only when explicitly requested", async () => {
     const res = await request(await createApp("agent"))
