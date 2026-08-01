@@ -7342,7 +7342,11 @@ export function issueRoutes(
     if (!issue) return;
     const target = await resolveInboxArchiveTarget(req, issue);
     const actor = getActorInfo(req);
-    const archiveState = await svc.archiveInbox(issue.companyId, issue.id, target.userId);
+    const archiveState = await svc.archiveInbox(issue.companyId, issue.id, target.userId, new Date(), {
+      archivedByActorType: req.actor.type === "agent" ? "agent" : "user",
+      archivedByAgentId: actor.agentId,
+      archivedByRunId: actor.runId,
+    });
     await logActivity(db, {
       companyId: issue.companyId,
       actorType: actor.actorType,

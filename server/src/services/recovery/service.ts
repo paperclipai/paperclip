@@ -92,6 +92,9 @@ const STALE_ACTIVE_RUN_EVALUATION_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.staleActiv
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON = "execution_review_participant_recovery";
 const RESOLVED_DEPENDENCY_WAKE_BACKSTOP_CANDIDATE_LIMIT = 500;
+const NON_TERMINAL_WAKELESS_WAKE_MAX_ATTEMPTS = 4;
+const NON_TERMINAL_WAKELESS_WAKE_BACKOFF_BASE_MS = 2 * 60_000;
+const NON_TERMINAL_WAKELESS_WAKE_BACKOFF_MAX_MS = 30 * 60_000;
 const SESSIONED_LOCAL_ADAPTERS = new Set([
   "claude_local",
   "codex_local",
@@ -308,6 +311,22 @@ export type RunOutputSilenceSummary = {
 
 function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
+}
+
+function buildNonTerminalWakelessWakeRearmToken(latestSuccessfulRunId?: string | null) {
+  return latestSuccessfulRunId?.trim() || "cold";
+}
+
+function buildNonTerminalWakelessWakeIdempotencyKey(input: {
+  issueId: string;
+  rearmToken?: string | null;
+}) {
+  return `non-terminal-wakeless:${input.issueId}:${buildNonTerminalWakelessWakeRearmToken(input.rearmToken)}`;
+}
+
+function computeNonTerminalWakelessWakeBackoffMs(consecutiveFailures: number) {
+  const factor = 2 ** Math.min(Math.max(0, consecutiveFailures - 1), 16);
+  return Math.min(NON_TERMINAL_WAKELESS_WAKE_BACKOFF_BASE_MS * factor, NON_TERMINAL_WAKELESS_WAKE_BACKOFF_MAX_MS);
 }
 
 function hasTypedPendingReviewParticipant(
@@ -1152,6 +1171,66 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       )
       .limit(1)
       .then((rows) => Boolean(rows[0]));
+  }
+
+  async function loadLatestSuccessfulRunIdByIssue(companyId: string, issueIds: string[]) {
+    const ids = [...new Set(issueIds.filter(Boolean))];
+    if (ids.length === 0) return new Map<string, string>();
+
+    const issueIdFromRun = sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`;
+    const rows = await db
+      .select({ issueId: issueIdFromRun, runId: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(and(
+        eq(heartbeatRuns.companyId, companyId),
+        eq(heartbeatRuns.status, "succeeded"),
+        inArray(issueIdFromRun, ids),
+      ))
+      .orderBy(asc(issueIdFromRun), desc(heartbeatRuns.finishedAt), desc(heartbeatRuns.id));
+
+    const latestByIssueId = new Map<string, string>();
+    for (const row of rows) {
+      if (!row.issueId || latestByIssueId.has(row.issueId)) continue;
+      latestByIssueId.set(row.issueId, row.runId);
+    }
+    return latestByIssueId;
+  }
+
+  async function readNonTerminalWakelessWakeFailureState(input: {
+    companyId: string;
+    agentId: string;
+    idempotencyKey: string;
+  }) {
+    const rows = await db
+      .select({
+        status: agentWakeupRequests.status,
+        reason: agentWakeupRequests.reason,
+        requestedAt: agentWakeupRequests.requestedAt,
+        finishedAt: agentWakeupRequests.finishedAt,
+      })
+      .from(agentWakeupRequests)
+      .where(and(
+        eq(agentWakeupRequests.companyId, input.companyId),
+        eq(agentWakeupRequests.agentId, input.agentId),
+        eq(agentWakeupRequests.idempotencyKey, input.idempotencyKey),
+      ))
+      .orderBy(desc(agentWakeupRequests.requestedAt), desc(agentWakeupRequests.id));
+
+    let consecutiveFailures = 0;
+    let latestFailureAt: Date | null = null;
+    for (const row of rows) {
+      const countsTowardFailureCap =
+        row.status === "failed" || (row.status === "skipped" && row.reason === "agent.not_invokable");
+      if (!countsTowardFailureCap) break;
+      consecutiveFailures += 1;
+      if (!latestFailureAt) latestFailureAt = row.finishedAt ?? row.requestedAt ?? null;
+    }
+    return {
+      consecutiveFailures,
+      latestFailureAt,
+      backoffMs: consecutiveFailures > 0 ? computeNonTerminalWakelessWakeBackoffMs(consecutiveFailures) : 0,
+      exhausted: consecutiveFailures >= NON_TERMINAL_WAKELESS_WAKE_MAX_ATTEMPTS,
+    };
   }
 
   async function getLatestAcceptedContinuationInteraction(companyId: string, issueId: string) {
@@ -2509,6 +2588,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       monitorSkipped: 0,
       explicitExemptionSkipped: 0,
       existingWakeSkipped: 0,
+      backoffSkipped: 0,
+      exhaustedSkipped: 0,
       enqueueFailed: 0,
       issueIds: [] as string[],
     };
@@ -2546,6 +2627,17 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       );
 
     result.checked = candidateRows.length;
+    const latestSuccessfulRunIdByIssue = new Map<string, string>();
+    const candidateIssueIdsByCompany = new Map<string, string[]>();
+    for (const candidate of candidateRows) {
+      const issueIds = candidateIssueIdsByCompany.get(candidate.companyId) ?? [];
+      issueIds.push(candidate.id);
+      candidateIssueIdsByCompany.set(candidate.companyId, issueIds);
+    }
+    for (const [companyId, issueIds] of candidateIssueIdsByCompany.entries()) {
+      const latestForCompany = await loadLatestSuccessfulRunIdByIssue(companyId, issueIds);
+      for (const [issueId, runId] of latestForCompany.entries()) latestSuccessfulRunIdByIssue.set(issueId, runId);
+    }
 
     for (const candidate of candidateRows) {
       const agentId = candidate.assigneeAgentId;
@@ -2609,7 +2701,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         continue;
       }
 
-      const idempotencyKey = `non-terminal-wakeless:${candidate.id}`;
+      const rearmToken = latestSuccessfulRunIdByIssue.get(candidate.id);
+      const idempotencyKey = buildNonTerminalWakelessWakeIdempotencyKey({
+        issueId: candidate.id,
+        rearmToken,
+      });
       const existingWake = await db
         .select({ id: agentWakeupRequests.id })
         .from(agentWakeupRequests)
@@ -2628,6 +2724,24 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         continue;
       }
 
+      const failureState = await readNonTerminalWakelessWakeFailureState({
+        companyId: candidate.companyId,
+        agentId,
+        idempotencyKey,
+      });
+      if (failureState.exhausted) {
+        result.exhaustedSkipped += 1;
+        continue;
+      }
+      if (
+        failureState.consecutiveFailures > 0 &&
+        failureState.latestFailureAt &&
+        Date.now() < failureState.latestFailureAt.getTime() + failureState.backoffMs
+      ) {
+        result.backoffSkipped += 1;
+        continue;
+      }
+
       try {
         const wake = await deps.enqueueWakeup(agentId, {
           source: "automation",
@@ -2637,6 +2751,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             issueId: candidate.id,
             backstop: "non_terminal_wakeless",
             status: candidate.status,
+            wakelessWakeRearmToken: buildNonTerminalWakelessWakeRearmToken(rearmToken),
           },
           idempotencyKey,
           requestedByActorType: "system",
@@ -2646,6 +2761,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             source: "issue_graph_liveness.non_terminal_wakeless",
             wakeReason: "non_terminal_wakeless_backstop",
             status: candidate.status,
+            wakelessWakeRearmToken: buildNonTerminalWakelessWakeRearmToken(rearmToken),
           },
         });
         if (!wake) {

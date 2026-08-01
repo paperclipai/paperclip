@@ -2211,12 +2211,12 @@ describe("agent issue mutation checkout ownership", () => {
       const app = await createApp(peerActor(), createSupervisoryDb());
       const res = await request(app)
         .patch(`/api/issues/${childIssueId}`)
-        .send({ status: "blocked", blockedByIssueIds: [] });
+        .send({ status: "in_progress", blockedByIssueIds: [] });
 
       expect(res.status, JSON.stringify(res.body)).toBe(200);
       expect(mockIssueService.update).toHaveBeenCalledWith(
         childIssueId,
-        expect.objectContaining({ status: "blocked", blockedByIssueIds: [], actorAgentId: peerAgentId }),
+        expect.objectContaining({ status: "in_progress", blockedByIssueIds: [], actorAgentId: peerAgentId }),
       );
     });
 
