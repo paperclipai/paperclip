@@ -1215,18 +1215,25 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     return { companyId, agentId, runId, wakeupRequestId, issueId };
   }
 
-  it("keeps a local run active when the recorded pid is still alive", async () => {
+  it("does not force-stop an alive pid run after the orphan-silence threshold", async () => {
     const child = spawnAliveProcess();
     childProcesses.add(child);
     expect(child.pid).toBeTypeOf("number");
 
+    const staleAt = new Date("2026-03-19T00:00:00.000Z");
     const { runId, wakeupRequestId } = await seedRunFixture({
       processPid: child.pid ?? null,
       includeIssue: false,
+      now: staleAt,
+      updatedAt: staleAt,
+      createdAt: staleAt,
     });
     const heartbeat = heartbeatService(db);
 
-    const result = await heartbeat.reapOrphanedRuns();
+    const result = await heartbeat.reapOrphanedRuns({
+      staleThresholdMs: 1,
+      now: new Date("2026-03-19T00:20:00.000Z"),
+    });
     expect(result.reaped).toBe(0);
 
     const run = await heartbeat.getRun(runId);
@@ -2130,7 +2137,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(lease?.releasedAt).toBeTruthy();
   });
 
-  it("reaps lease-less local runs with no process metadata after the orphan-silence threshold", async () => {
+  it("does not reap lease-less local runs with no process metadata after the orphan-silence threshold", async () => {
     const now = new Date("2026-03-19T00:20:00.000Z");
     const staleAt = new Date("2026-03-19T00:00:00.000Z");
     const { agentId, runId, issueId, wakeupRequestId } = await seedRunFixture({
@@ -2145,15 +2152,14 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const heartbeat = heartbeatService(db);
 
     const result = await heartbeat.reapOrphanedRuns({ staleThresholdMs: 1, now });
-    expect(result).toEqual({ reaped: 1, runIds: [runId] });
+    expect(result).toEqual({ reaped: 0, runIds: [] });
 
-    const failedRun = await heartbeat.getRun(runId);
-    expect(failedRun).toMatchObject({
-      status: "failed",
-      errorCode: "process_lost",
+    const activeRun = await heartbeat.getRun(runId);
+    expect(activeRun).toMatchObject({
+      status: "running",
+      errorCode: null,
       processPid: null,
       processGroupId: null,
-      error: "Process lost -- run never acquired an environment lease before exceeding the orphan-silence threshold",
     });
 
     const retryRuns = await db
@@ -2167,17 +2173,17 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .from(agentWakeupRequests)
       .where(eq(agentWakeupRequests.id, wakeupRequestId))
       .then((rows) => rows[0] ?? null);
-    expect(wakeup?.status).toBe("failed");
+    expect(wakeup?.status).toBe("claimed");
 
     const issue = await db
       .select()
       .from(issues)
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0] ?? null);
-    expect(issue?.executionRunId).toBeNull();
+    expect(issue?.executionRunId).toBe(runId);
   });
 
-  it("reaps stale active-lease local runs with no process metadata after the orphan-silence threshold", async () => {
+  it("does not reap stale active-lease local runs with no process metadata after the orphan-silence threshold", async () => {
     const now = new Date("2026-03-19T00:20:00.000Z");
     const staleAt = new Date("2026-03-19T00:00:00.000Z");
     const { runId, issueId, companyId } = await seedRunFixture({
@@ -2197,19 +2203,19 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const heartbeat = heartbeatService(db);
 
     const result = await heartbeat.reapOrphanedRuns({ staleThresholdMs: 1, now });
-    expect(result).toEqual({ reaped: 1, runIds: [runId] });
+    expect(result).toEqual({ reaped: 0, runIds: [] });
 
-    const failedRun = await heartbeat.getRun(runId);
-    expect(failedRun?.status).toBe("failed");
-    expect(failedRun?.errorCode).toBe("process_lost");
+    const activeRun = await heartbeat.getRun(runId);
+    expect(activeRun?.status).toBe("running");
+    expect(activeRun?.errorCode).toBeNull();
 
     const lease = await db
       .select()
       .from(environmentLeases)
       .where(eq(environmentLeases.id, leaseId))
       .then((rows) => rows[0] ?? null);
-    expect(lease?.status).toBe("failed");
-    expect(lease?.releasedAt).toBeTruthy();
+    expect(lease?.status).toBe("active");
+    expect(lease?.releasedAt).toBeNull();
   });
 
   it("keeps recent active-lease local runs with no process metadata protected until the orphan-silence threshold", async () => {

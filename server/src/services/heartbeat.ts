@@ -326,8 +326,6 @@ const PAPERCLIP_WAKE_PAYLOAD_KEY = "paperclipWake";
 const PAPERCLIP_AGENT_MESSAGE_KEY = "paperclipAgentMessage";
 const PAPERCLIP_HARNESS_CHECKOUT_KEY = "paperclipHarnessCheckedOut";
 const DETACHED_PROCESS_ERROR_CODE = "process_detached";
-const ORPHANED_RUN_DURABLE_ACTIVITY_GRACE_MS = 5 * 60 * 1000;
-const ORPHANED_RUN_SILENCE_SWEEP_THRESHOLD_MS = 15 * 60 * 1000;
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_INLINE_WAKE_COMMENTS = 8;
@@ -5896,16 +5894,7 @@ async function terminateHeartbeatRunProcess(input: {
 function buildProcessLossMessage(run: {
   processPid: number | null;
   processGroupId: number | null;
-}, options?: { descendantOnly?: boolean; forcedStop?: boolean; leaseLessBeforeStart?: boolean }) {
-  if (options?.leaseLessBeforeStart) {
-    return "Process lost -- run never acquired an environment lease before exceeding the orphan-silence threshold";
-  }
-  if (options?.forcedStop && run.processPid) {
-    return `Process lost -- stale silent child pid ${run.processPid} exceeded the orphan-silence threshold and was terminated`;
-  }
-  if (options?.forcedStop && run.processGroupId) {
-    return `Process lost -- stale silent process group ${run.processGroupId} exceeded the orphan-silence threshold and was terminated`;
-  }
+}, options?: { descendantOnly?: boolean }) {
   if (options?.descendantOnly && run.processGroupId) {
     return `Process lost -- parent pid ${run.processPid ?? "unknown"} exited, but descendant process group ${run.processGroupId} was still alive and was terminated`;
   }
@@ -12737,14 +12726,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   async function reapOrphanedRuns(opts?: { staleThresholdMs?: number; now?: Date }) {
     const staleThresholdMs = opts?.staleThresholdMs ?? 0;
     const now = opts?.now ?? new Date();
-    const durableActivityGraceMs = staleThresholdMs > 0
-      ? staleThresholdMs
-      : ORPHANED_RUN_DURABLE_ACTIVITY_GRACE_MS;
-    const orphanSilenceSweepThresholdMs = Math.max(
-      ORPHANED_RUN_SILENCE_SWEEP_THRESHOLD_MS,
-      staleThresholdMs,
-    );
-
     // Find all runs stuck in "running" state (queued runs are legitimately waiting; resumeQueuedRuns handles them)
     const activeRuns = await db
       .select({
@@ -12808,31 +12789,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const zeroProcessMetadata = tracksLocalChild && !run.processPid && !run.processGroupId;
       const hasActiveEnvironmentLease = activeLeaseRunIds.has(run.id);
       const silenceAgeMs = orphanedRunSilenceAgeMs(run, now);
-      const hasRecentDurableActivity = silenceAgeMs < durableActivityGraceMs;
-      const exceededOrphanSilenceSweepThreshold = silenceAgeMs >= orphanSilenceSweepThresholdMs;
       if (zeroProcessMetadata) {
-        if (agentStatus === "paused") {
-          logger.warn(
-            { runId: run.id, adapterType, silenceAgeMs, hasActiveEnvironmentLease },
-            "skipping orphan reap because the owning agent is paused and process loss is not independently proven",
-          );
-          continue;
-        }
-        if (!exceededOrphanSilenceSweepThreshold) {
-          logger.warn(
-            hasRecentDurableActivity
-              ? { runId: run.id, adapterType, silenceAgeMs, durableActivityGraceMs, hasActiveEnvironmentLease }
-              : { runId: run.id, adapterType, silenceAgeMs, orphanSilenceSweepThresholdMs, hasActiveEnvironmentLease },
-            "skipping orphan reap because local run has no process metadata and silence has not crossed the orphan threshold",
-          );
-          continue;
-        }
-        if (hasActiveEnvironmentLease) {
-          logger.warn(
-            { runId: run.id, adapterType, silenceAgeMs, orphanSilenceSweepThresholdMs, hasActiveEnvironmentLease },
-            "force-releasing active environment lease for stale local run with no process metadata before orphan reap",
-          );
-        }
+        logger.warn(
+          { runId: run.id, adapterType, agentStatus, silenceAgeMs, hasActiveEnvironmentLease },
+          "skipping orphan reap because local run has no process metadata and cannot be classified from silence alone",
+        );
+        continue;
       }
       const processPidAlive = Boolean(
         tracksLocalChild && run.processPid && isProcessAlive(run.processPid),
@@ -12869,7 +12831,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
 
       let descendantOnlyCleanup = false;
-      let forcedStopForSilence = false;
       if (processPidAlive || processGroupAlive) {
         descendantOnlyCleanup = !processPidAlive && processGroupAlive;
         await terminateHeartbeatRunProcess({
@@ -12893,13 +12854,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       );
       const baseMessage = buildProcessLossMessage(
         run,
-        zeroProcessMetadata
-          ? { leaseLessBeforeStart: true }
-          : forcedStopForSilence
-          ? { forcedStop: true }
-          : descendantOnlyCleanup
-            ? { descendantOnly: true }
-            : undefined,
+        descendantOnlyCleanup ? { descendantOnly: true } : undefined,
       );
       const unmanagedBackgroundTaskEvidence = descendantOnlyCleanup
         ? {
