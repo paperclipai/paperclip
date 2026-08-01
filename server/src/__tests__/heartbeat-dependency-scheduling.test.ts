@@ -19,6 +19,7 @@ import {
   issueComments,
   issueDocuments,
   issueRelations,
+  issueThreadInteractions,
   issueTreeHolds,
   issues,
   workspaceOperations,
@@ -138,6 +139,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     await db.delete(documentRevisions);
     await db.delete(documents);
     await db.delete(issueRelations);
+    await db.delete(issueThreadInteractions);
     await db.delete(issueTreeHolds);
     await db.delete(issues);
     await db.delete(heartbeatRunEvents);
@@ -308,6 +310,91 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       dependencyBlockedInteraction: true,
       unresolvedBlockerIssueIds: [blockerId],
     });
+
+    const recoveredInteractionId = randomUUID();
+    const recoveredAt = new Date();
+    await db.insert(issueThreadInteractions).values({
+      id: recoveredInteractionId,
+      companyId,
+      issueId: blockedIssueId,
+      kind: "ask_user_questions",
+      status: "answered",
+      continuationPolicy: "wake_assignee",
+      createdByAgentId: agentId,
+      resolvedByUserId: "responsible-user",
+      resolvedAt: recoveredAt,
+      updatedAt: recoveredAt,
+      payload: {
+        version: 1,
+        questions: [{
+          id: "scope",
+          prompt: "Which scope?",
+          selectionMode: "single",
+          options: [{ id: "phase-1", label: "Phase 1" }],
+        }],
+      },
+      result: {
+        version: 1,
+        answers: [{ questionId: "scope", optionIds: ["phase-1"] }],
+      },
+    });
+
+    const recoveredInteractionWake = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_continuation_needed",
+      payload: {
+        issueId: blockedIssueId,
+        mutation: "interaction",
+        interactionId: recoveredInteractionId,
+        interactionKind: "ask_user_questions",
+        interactionStatus: "answered",
+        interactionContinuationPolicy: "wake_assignee",
+        interactionResolvedAt: recoveredAt.toISOString(),
+      },
+      requestedByActorType: "system",
+      requestedByActorId: null,
+      contextSnapshot: {
+        issueId: blockedIssueId,
+        taskId: blockedIssueId,
+        wakeReason: "issue_continuation_needed",
+        retryReason: "issue_continuation_needed",
+        source: "issue.interaction_continuation_recovery",
+        mutation: "interaction",
+        interactionId: recoveredInteractionId,
+        interactionKind: "ask_user_questions",
+        interactionStatus: "answered",
+        interactionContinuationPolicy: "wake_assignee",
+        interactionResolvedAt: recoveredAt.toISOString(),
+      },
+    });
+    expect(recoveredInteractionWake).not.toBeNull();
+
+    const recoveredInteractionCompleted = await waitForCondition(async () => {
+      const run = await db
+        .select({ status: heartbeatRuns.status })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, recoveredInteractionWake!.id))
+        .then((rows) => rows[0] ?? null);
+      return run?.status === "succeeded";
+    });
+    expect(recoveredInteractionCompleted).toBe(true);
+
+    const recoveredInteractionRun = await db
+      .select({
+        status: heartbeatRuns.status,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+      })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, recoveredInteractionWake!.id))
+      .then((rows) => rows[0] ?? null);
+    expect(recoveredInteractionRun?.status).toBe("succeeded");
+    expect(recoveredInteractionRun?.contextSnapshot).toMatchObject({
+      dependencyBlockedInteraction: true,
+      interactionId: recoveredInteractionId,
+      unresolvedBlockerIssueIds: [blockerId],
+    });
+    expect(mockAdapterExecute).toHaveBeenCalledTimes(2);
 
     let finishReadyRun!: () => void;
     const readyRunCanFinish = new Promise<void>((resolve) => {

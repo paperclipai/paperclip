@@ -532,7 +532,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     });
   });
 
-  it("schedules accepted interaction continuation infra retries while the issue is in_review", async () => {
+  it("schedules partial item-verdict continuation infra retries while the issue is in_review", async () => {
     const { issueId, runId, now } = await seedMaxTurnFixture({ issueStatus: "in_review" });
     const interactionId = randomUUID();
 
@@ -548,8 +548,9 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
           wakeReason: "issue_commented",
           mutation: "interaction",
           interactionId,
-          interactionKind: "request_confirmation",
-          interactionStatus: "accepted",
+          interactionKind: "request_item_verdicts",
+          interactionStatus: "pending",
+          newlyResolvedItemIds: ["item-a"],
         },
       })
       .where(eq(heartbeatRuns.id, runId));
@@ -589,7 +590,8 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     expect(retryRun?.contextSnapshot).toMatchObject({
       issueId,
       interactionId,
-      interactionStatus: "accepted",
+      interactionStatus: "pending",
+      newlyResolvedItemIds: ["item-a"],
       retryReason: INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
       wakeReason: INTERACTION_CONTINUATION_INFRA_WAKE_REASON,
       scheduledRetryAttempt: 1,
