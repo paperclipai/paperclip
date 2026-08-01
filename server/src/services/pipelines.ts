@@ -51,6 +51,7 @@ import { assertAssignableAgent } from "./agent-assignability.js";
 import { authorizationService } from "./authorization.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
 import { finalizeSummarySlotsForTerminalIssue } from "./summary-slot-finalization.js";
+import { cleanupTerminalIssueWorkspacesForIssue } from "./terminal-issue-workspace-cleanup.js";
 import {
   formatPipelineCaseOutputContextMarkdown,
   pipelineCaseOutputsService,
@@ -4612,8 +4613,15 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
         const issueIdsToCancel = input.cleanup.cancelLinkedAutomationIssues
           ? effects.linkedAutomationIssueIds
           : [];
+        let cancelledIssues: Array<{
+          id: string;
+          companyId: string;
+          identifier: string | null;
+          title: string;
+          status: string;
+        }> = [];
         if (issueIdsToCancel.length > 0) {
-          const cancelledIssues = await tx
+          cancelledIssues = await tx
             .update(issues)
             .set({ status: "cancelled", updatedAt: now })
             .where(and(
@@ -4715,8 +4723,22 @@ export function pipelineService(db: Db, deps: { heartbeat?: IssueAssignmentWakeu
             caseIds: uniqueRetireCaseIds,
             issueIds: issueIdsToCancel,
           },
+          cancelledIssues,
         };
       });
+      for (const issue of result.cancelledIssues) {
+        await cleanupTerminalIssueWorkspacesForIssue(db, issue, {
+          actorType: input.actor.type,
+          actorId:
+            input.actor.type === "agent"
+              ? input.actor.agentId
+              : input.actor.type === "user"
+                ? input.actor.userId
+                : "pipeline_automation_retry",
+          agentId: input.actor.type === "agent" ? input.actor.agentId : null,
+          runId: input.actor.type === "agent" ? input.actor.runId : null,
+        });
+      }
       const automationExecution = await executeAutomationLedger(result.ledger.id, input.actor);
       const { targetStageRow: _targetStageRow, automationRoutineId: _automationRoutineId, ...plan } = result.plan;
       return {

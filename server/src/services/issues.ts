@@ -116,6 +116,7 @@ import { visibleIssueCondition } from "./issue-visibility.js";
 import { finalizeStatusCardsForStalledGeneration } from "./status-card-finalization.js";
 import { finalizeSummarySlotsForTerminalIssue } from "./summary-slot-finalization.js";
 import { logActivity } from "./activity-log.js";
+import { cleanupTerminalIssueWorkspacesForIssue } from "./terminal-issue-workspace-cleanup.js";
 import { buildIssueChanges } from "./issue-change-receipt.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
@@ -7250,7 +7251,22 @@ export function issueService(db: Db) {
         };
       };
 
-      return dbOrTx === db ? db.transaction(runUpdate) : runUpdate(dbOrTx);
+      const updated = await (dbOrTx === db ? db.transaction(runUpdate) : runUpdate(dbOrTx));
+      const becameTerminal =
+        updated &&
+        existing.status !== updated.status &&
+        (updated.status === "done" || updated.status === "cancelled");
+      if (becameTerminal && dbOrTx === db) {
+        // Keep filesystem cleanup outside the issue transaction when this
+        // service owns it. The cleanup service contains per-candidate failure
+        // isolation, so a stale workspace cannot roll back the issue status.
+        await cleanupTerminalIssueWorkspacesForIssue(db, updated, {
+          actorType: actorAgentId ? "agent" : actorUserId ? "user" : "system",
+          actorId: actorAgentId ?? actorUserId ?? "issue_service",
+          agentId: actorAgentId ?? null,
+        });
+      }
+      return updated;
     },
 
     clearExecutionWorkspaceEnvironmentSelection: async (companyId: string, environmentId: string) => {
