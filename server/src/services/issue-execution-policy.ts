@@ -810,9 +810,12 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
       }
       // Assignee-only override: the issue stays in_review, so clearing the
       // execution state would strand it with no participant or return
-      // assignment. Re-pend the stage with the board's chosen participant, or
-      // dissolve the review when the board unassigns.
-      if (explicitAssignee) {
+      // assignment. Re-pend the stage when the board's chosen assignee is an
+      // eligible stage participant; otherwise (unassign or a non-participant)
+      // dissolve the review — storing an ineligible participant would be
+      // silently replaced by the stage-membership repair on the next
+      // transition.
+      if (explicitAssignee && stageHasParticipant(activeStage, explicitAssignee)) {
         buildPendingStagePatch({
           patch,
           previous: existingState,

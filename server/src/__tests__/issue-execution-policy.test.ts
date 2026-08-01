@@ -633,7 +633,56 @@ describe("issue execution policy transitions", () => {
       expect(result.workflowControlledAssignment).toBeUndefined();
     });
 
-    it("board override reassignment re-pends the stage with the new participant", () => {
+    it("board override reassignment to an eligible participant re-pends the stage", () => {
+      const multiReviewerPolicy = makePolicy([
+        {
+          type: "review",
+          participants: [
+            { type: "agent", agentId: qaAgentId },
+            { type: "agent", agentId: ctoAgentId },
+          ],
+        },
+      ]);
+      const multiReviewerStageId = multiReviewerPolicy.stages[0].id;
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_review",
+          assigneeAgentId: qaAgentId,
+          assigneeUserId: null,
+          executionPolicy: multiReviewerPolicy,
+          executionState: {
+            status: "pending",
+            currentStageId: multiReviewerStageId,
+            currentStageIndex: 0,
+            currentStageType: "review",
+            currentParticipant: { type: "agent", agentId: qaAgentId },
+            returnAssignee: { type: "agent", agentId: coderAgentId },
+            completedStageIds: [],
+            lastDecisionId: null,
+            lastDecisionOutcome: null,
+          },
+        },
+        policy: multiReviewerPolicy,
+        requestedAssigneePatch: { assigneeAgentId: ctoAgentId },
+        actor: { userId: boardUserId },
+        allowBoardOverride: true,
+        commentBody: "Swapping the reviewer",
+      });
+
+      expect(result.patch.status).toBe("in_review");
+      expect(result.patch.assigneeAgentId).toBe(ctoAgentId);
+      expect(result.patch.assigneeUserId).toBeNull();
+      expect(result.patch.executionState).toMatchObject({
+        status: "pending",
+        currentStageId: multiReviewerStageId,
+        currentStageType: "review",
+        currentParticipant: { type: "agent", agentId: ctoAgentId },
+        returnAssignee: { type: "agent", agentId: coderAgentId },
+      });
+      expect(result.decision).toBeUndefined();
+    });
+
+    it("board override reassignment to a non-participant dissolves the review", () => {
       const result = applyIssueExecutionPolicyTransition({
         issue: {
           status: "in_review",
@@ -653,23 +702,15 @@ describe("issue execution policy transitions", () => {
           },
         },
         policy,
-        requestedAssigneePatch: { assigneeAgentId: ctoAgentId },
+        requestedAssigneePatch: { assigneeAgentId: coderAgentId },
         actor: { userId: boardUserId },
         allowBoardOverride: true,
-        commentBody: "Swapping the reviewer",
+        commentBody: "Handing the task back",
       });
 
-      expect(result.patch.status).toBe("in_review");
-      expect(result.patch.assigneeAgentId).toBe(ctoAgentId);
-      expect(result.patch.assigneeUserId).toBeNull();
-      expect(result.patch.executionState).toMatchObject({
-        status: "pending",
-        currentStageId: reviewStageId,
-        currentStageType: "review",
-        currentParticipant: { type: "agent", agentId: ctoAgentId },
-        returnAssignee: { type: "agent", agentId: coderAgentId },
-      });
+      expect(result.patch).toEqual({ executionState: null, status: "in_progress" });
       expect(result.decision).toBeUndefined();
+      expect(result.workflowControlledAssignment).toBeUndefined();
     });
 
     it("board override unassignment dissolves the review instead of stranding in_review", () => {
