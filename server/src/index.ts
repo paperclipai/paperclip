@@ -65,7 +65,10 @@ import { createPluginWorkerManager } from "./services/plugin-worker-manager.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
 import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
-import { maybePersistWorktreeRuntimePorts } from "./worktree-config.js";
+import {
+  isIsolatedWorktreeRuntimeConfigured,
+  maybePersistWorktreeRuntimePorts,
+} from "./worktree-config.js";
 import { initTelemetry, getTelemetryClient } from "./telemetry.js";
 import { conflict } from "./errors.js";
 import { ensureDecisionSigningSecret } from "./services/decision-signing.js";
@@ -77,6 +80,12 @@ import {
   clearRuntimeStartupState,
   writeRuntimeStartupState,
 } from "./runtime-startup-state.js";
+import {
+  claimRuntimePrimaryLease,
+  currentRuntimePrimaryLeaseMatches,
+  readRuntimePrimaryLease,
+  releaseRuntimePrimaryLeaseForPid,
+} from "./runtime-primary-instance.js";
 import type {
   InstanceDatabaseBackupRunResult,
   InstanceDatabaseBackupTrigger,
@@ -622,10 +631,104 @@ export async function startServer(): Promise<StartedServer> {
 
   const requestedListenPort = config.port;
   const listenPort = await detectPort(requestedListenPort);
-  const isPrimaryRuntimeInstance = listenPort === requestedListenPort;
-  if (config.authBaseUrlMode === "explicit" && config.authPublicBaseUrl) {
-    config.authPublicBaseUrl = rewriteLocalUrlPort(config.authPublicBaseUrl, listenPort);
-  }
+  const isIsolatedWorktreeRuntime = isIsolatedWorktreeRuntimeConfigured();
+  const isPrimaryRuntimePort = listenPort === requestedListenPort || isIsolatedWorktreeRuntime;
+  const primaryRuntimeLeasePort = isIsolatedWorktreeRuntime ? listenPort : requestedListenPort;
+  let isPrimaryRuntimeInstance = false;
+  let primaryRuntimeLeaseReleased = false;
+  let primaryHeartbeatStartupRecoveryPending = true;
+  const releasePrimaryRuntimeLease = () => {
+    if (!isPrimaryRuntimeInstance || primaryRuntimeLeaseReleased) return;
+    primaryRuntimeLeaseReleased = true;
+    releaseRuntimePrimaryLeaseForPid(process.pid);
+  };
+  let primaryRuntimeExitHookRegistered = false;
+  const setPrimaryRuntimeInstance = (next: boolean) => {
+    isPrimaryRuntimeInstance = next;
+    process.env.PAPERCLIP_PRIMARY_RUNTIME_INSTANCE = next ? "true" : "false";
+    if (next && !primaryRuntimeExitHookRegistered) {
+      primaryRuntimeExitHookRegistered = true;
+      process.once("exit", releasePrimaryRuntimeLease);
+    }
+  };
+  const ensurePrimaryRuntimeOwnership = (reason: "startup" | "periodic") => {
+    if (!isPrimaryRuntimePort) {
+      setPrimaryRuntimeInstance(false);
+      return { primary: false, newlyAcquired: false };
+    }
+    const lease = readRuntimePrimaryLease();
+    const ownsLease = currentRuntimePrimaryLeaseMatches(lease);
+    if (ownsLease) {
+      setPrimaryRuntimeInstance(true);
+      return { primary: true, newlyAcquired: false };
+    }
+    const claimedLease = claimRuntimePrimaryLease({
+      pid: process.pid,
+      requestedPort: primaryRuntimeLeasePort,
+      startedAt: startupStateStartedAt,
+    });
+    if (claimedLease.acquired) {
+      logger.info(
+        {
+          reason,
+          leasePath: claimedLease.leasePath,
+          currentPid: process.pid,
+          previousPid: claimedLease.existing?.pid ?? null,
+          previousStartedAt: claimedLease.existing?.startedAt ?? null,
+        },
+        "runtime acquired primary lease ownership after prior owner exited",
+      );
+      setPrimaryRuntimeInstance(true);
+      return { primary: true, newlyAcquired: true };
+    }
+    if (isPrimaryRuntimeInstance) {
+      logger.warn(
+        {
+          reason,
+          requestedPort: requestedListenPort,
+          selectedPort: listenPort,
+          currentPid: process.pid,
+          leaseOwnerPid: lease?.pid ?? null,
+          leaseOwnerStartedAt: lease?.startedAt ?? null,
+        },
+        "runtime lost primary lease ownership; suppressing primary-only work",
+      );
+    } else if (claimedLease.existing?.pid) {
+      logger.info(
+        {
+          reason,
+          requestedPort: requestedListenPort,
+          selectedPort: listenPort,
+          currentPid: process.pid,
+          leaseOwnerPid: claimedLease.existing.pid,
+          leaseOwnerStartedAt: claimedLease.existing.startedAt,
+        },
+        "runtime deferring primary-only work until the previous lease owner exits",
+      );
+    }
+    setPrimaryRuntimeInstance(false);
+    return { primary: false, newlyAcquired: false };
+  };
+  setPrimaryRuntimeInstance(false);
+  try {
+    if (
+      config.deploymentMode === "authenticated"
+      && config.deploymentExposure === "public"
+      && listenPort !== requestedListenPort
+    ) {
+      throw new Error(
+        `authenticated public deployments require requested listen port ${requestedListenPort} to be available; refusing fallback to ${listenPort}`,
+      );
+    }
+    if (listenPort !== requestedListenPort && !isIsolatedWorktreeRuntime) {
+      throw new Error(
+        `requested listen port ${requestedListenPort} is already in use; refusing fallback to ${listenPort} ` +
+          "because this runtime is not configured as an isolated worktree instance",
+      );
+    }
+    if (config.authBaseUrlMode === "explicit" && config.authPublicBaseUrl) {
+      config.authPublicBaseUrl = rewriteLocalUrlPort(config.authPublicBaseUrl, listenPort);
+    }
   
   let authReady = config.deploymentMode === "local_trusted";
   let betterAuthHandler: RequestHandler | undefined;
@@ -853,7 +956,7 @@ export async function startServer(): Promise<StartedServer> {
   });
   process.env.PAPERCLIP_LISTEN_HOST = runtimeListenHost;
   process.env.PAPERCLIP_LISTEN_PORT = String(listenPort);
-  process.env.PAPERCLIP_PRIMARY_RUNTIME_INSTANCE = isPrimaryRuntimeInstance ? "true" : "false";
+  ensurePrimaryRuntimeOwnership("startup");
   process.env.PAPERCLIP_RUNTIME_API_URL = runtimeApiUrl;
   process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = JSON.stringify(runtimeApiCandidates);
   process.env.PAPERCLIP_API_URL = configuredApiUrl;
@@ -946,6 +1049,8 @@ export async function startServer(): Promise<StartedServer> {
   let prepareHotRestartShutdown: ((signal: "SIGINT" | "SIGTERM") => Promise<{ skipDrain: boolean }>) | null = null;
   let heartbeatSchedulerStopped = false;
   let heartbeatSchedulerInterval: ReturnType<typeof setInterval> | null = null;
+  let shouldRunPrimaryHeartbeatStartupRecovery = false;
+  let runPrimaryHeartbeatStartupRecovery: (() => Promise<boolean>) | null = null;
   const heartbeatSchedulerInFlight = new Set<Promise<void>>();
   const trackHeartbeatSchedulerWork = (work: Promise<unknown>) => {
     let tracked: Promise<void>;
@@ -989,17 +1094,9 @@ export async function startServer(): Promise<StartedServer> {
 
     // Reap orphaned runs before timer ticks start so wakeups cannot coalesce
     // into a dead "running" row during startup recovery.
-    if (!isPrimaryRuntimeInstance) {
-      logger.warn(
-        { requestedPort: requestedListenPort, selectedPort: listenPort },
-        "skipping startup background reconciliation because this runtime instance is not primary",
-      );
-    } else if (heartbeatSchedulingSuppression.suppressed) {
-      logger.warn(
-        { reason: heartbeatSchedulingSuppression.reason },
-        "heartbeat scheduling suppressed for this runtime instance",
-      );
-    } else {
+    runPrimaryHeartbeatStartupRecovery = async () => {
+      if (!ensurePrimaryRuntimeOwnership("startup").primary) return false;
+      primaryHeartbeatStartupRecoveryPending = false;
       const startupHeartbeatRecovery = (async () => {
         try {
           const hotRestartAdoption = await heartbeat.reconcileHotRestartAdoption();
@@ -1091,6 +1188,21 @@ export async function startServer(): Promise<StartedServer> {
       });
       trackHeartbeatSchedulerWork(startupHeartbeatRecovery);
       await startupHeartbeatRecovery;
+      return true;
+    };
+
+    shouldRunPrimaryHeartbeatStartupRecovery =
+      ensurePrimaryRuntimeOwnership("startup").primary && !heartbeatSchedulingSuppression.suppressed;
+    if (!isPrimaryRuntimeInstance) {
+      logger.warn(
+        { requestedPort: requestedListenPort, selectedPort: listenPort },
+        "skipping startup background reconciliation because this runtime instance is not primary",
+      );
+    } else if (heartbeatSchedulingSuppression.suppressed) {
+      logger.warn(
+        { reason: heartbeatSchedulingSuppression.reason },
+        "heartbeat scheduling suppressed for this runtime instance",
+      );
     }
 
     if (isPrimaryRuntimeInstance) {
@@ -1123,7 +1235,16 @@ export async function startServer(): Promise<StartedServer> {
           );
         }
 
-        if (!isPrimaryRuntimeInstance) return;
+        const primaryOwnership = ensurePrimaryRuntimeOwnership("periodic");
+        if (!primaryOwnership.primary) return;
+        if (
+          primaryOwnership.newlyAcquired
+          && primaryHeartbeatStartupRecoveryPending
+          && runPrimaryHeartbeatStartupRecovery
+        ) {
+          await runPrimaryHeartbeatStartupRecovery();
+          return;
+        }
 
         if (!(await heartbeat.resolveSchedulingSuppression()).suppressed) {
           trackHeartbeatSchedulerWork(heartbeat
@@ -1281,20 +1402,21 @@ export async function startServer(): Promise<StartedServer> {
       startupDbInfo.mode === "embedded-postgres" ? "Embedded PostgreSQL" : "PostgreSQL",
   });
 
-  await new Promise<void>((resolveListen, rejectListen) => {
-    const onError = (err: Error) => {
-      server.off("error", onError);
-      rejectListen(err);
+    await new Promise<void>((resolveListen, rejectListen) => {
+      const onError = (err: Error) => {
+        server.off("error", onError);
+        releasePrimaryRuntimeLease();
+        rejectListen(err);
     };
 
-    server.once("error", onError);
-    server.listen(listenPort, config.host, () => {
-      server.off("error", onError);
-      clearRuntimeStartupState();
-      logger.info(`Server listening on ${config.host}:${listenPort}`);
-      void systemdNotify(["--ready", `--status=Listening on ${config.host}:${listenPort}`]).then((notified) => {
-        if (notified) logger.info("Notified systemd that Paperclip is ready");
-      });
+      server.once("error", onError);
+      server.listen(listenPort, config.host, () => {
+        server.off("error", onError);
+        clearRuntimeStartupState();
+        logger.info(`Server listening on ${config.host}:${listenPort}`);
+        void systemdNotify(["--ready", `--status=Listening on ${config.host}:${listenPort}`]).then((notified) => {
+          if (notified) logger.info("Notified systemd that Paperclip is ready");
+        });
       if (process.env.PAPERCLIP_OPEN_ON_LISTEN === "true") {
         const openHost = config.host === "0.0.0.0" || config.host === "::" ? "127.0.0.1" : config.host;
         const url = `http://${openHost}:${listenPort}`;
@@ -1345,6 +1467,10 @@ export async function startServer(): Promise<StartedServer> {
       resolveListen();
     });
   });
+
+  if (shouldRunPrimaryHeartbeatStartupRecovery && runPrimaryHeartbeatStartupRecovery) {
+    await runPrimaryHeartbeatStartupRecovery();
+  }
   
   {
     const shutdown = async (signal: "SIGINT" | "SIGTERM") => {
@@ -1395,6 +1521,10 @@ export async function startServer(): Promise<StartedServer> {
     apiUrl: configuredApiUrl,
     databaseUrl: activeDatabaseConnectionString,
   };
+  } catch (err) {
+    releasePrimaryRuntimeLease();
+    throw err;
+  }
 }
 
 function isMainModule(metaUrl: string): boolean {
