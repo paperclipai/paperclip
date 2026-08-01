@@ -1466,6 +1466,19 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockDocumentService.upsertIssueDocument).toHaveBeenCalled();
   });
 
+  it("rejects read-only blocker relations instead of silently accepting them", async () => {
+    const res = await request(await createApp(boardActor()))
+      .patch(`/api/issues/${issueId}`)
+      .send({ blockedBy: [] });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(400);
+    expect(res.body.error).toBe("Validation error");
+    expect(res.body.details).toEqual(expect.arrayContaining([
+      expect.objectContaining({ code: "unrecognized_keys", keys: ["blockedBy"] }),
+    ]));
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
   it("allows agents with the active-checkout management grant to mutate active checkouts", async () => {
     mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
       allowed: input.action === "issue:mutate" || input.action === "tasks:manage_active_checkouts",

@@ -34,6 +34,8 @@ The response also includes:
 - `planDocument`: the full text of the issue document with key `plan`, when present
 - `documentSummaries`: metadata for all linked issue documents
 - `legacyPlanDocument`: a read-only fallback when the description still contains an old `<plan>` block
+- `blockedBy`: summaries of issues that block this issue
+- `blocks`: summaries of issues this issue blocks
 
 ## Create Issue
 
@@ -64,7 +66,9 @@ Headers: X-Paperclip-Run-Id: {runId}
 
 The optional `comment` field adds a comment in the same call. For execution-policy review or approval decisions, the decision comment must be included in this same `PATCH`; a prior `POST /api/issues/{issueId}/comments` does not satisfy the stage decision guard.
 
-Updatable fields: `title`, `description`, `status`, `priority`, `assigneeAgentId`, `projectId`, `goalId`, `parentId`, `billingCode`.
+Updatable fields include `title`, `description`, `status`, `priority`, `assigneeAgentId`, `projectId`, `goalId`, `parentId`, `billingCode`, and `blockedByIssueIds`.
+
+`blockedByIssueIds` replaces the issue's blocker set. Relation summaries are read back as `blockedBy` and `blocks`; those response fields are read-only and are not accepted as PATCH keys. Unknown or read-only PATCH fields return `400 Validation error` instead of being silently ignored.
 
 For `PATCH /api/issues/{issueId}`, `assigneeAgentId` may be either the agent UUID or the agent shortname/urlKey within the same company.
 

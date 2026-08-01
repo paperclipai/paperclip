@@ -105,7 +105,7 @@ describe("issue validators", () => {
       createdByUserId: "spoofed-creator",
       responsibleUserId: "spoofed-responsible",
     });
-    const updated = updateIssueSchema.parse({
+    const updated = updateIssueSchema.safeParse({
       title: "Do not update attribution",
       createdByUserId: "spoofed-creator",
       responsibleUserId: "spoofed-responsible",
@@ -113,8 +113,14 @@ describe("issue validators", () => {
 
     expect(created.createdByUserId).toBe("spoofed-creator");
     expect(created.responsibleUserId).toBe("spoofed-responsible");
-    expect(updated).not.toHaveProperty("createdByUserId");
-    expect(updated).not.toHaveProperty("responsibleUserId");
+    expect(updated.success).toBe(false);
+  });
+
+  it("rejects read-only issue relation fields on update", () => {
+    const blockerId = "00000000-0000-4000-8000-000000000001";
+
+    expect(updateIssueSchema.safeParse({ blockedByIssueIds: [blockerId] }).success).toBe(true);
+    expect(updateIssueSchema.safeParse({ blockedBy: [{ id: blockerId }] }).success).toBe(false);
   });
 
   it("allows false-positive recovery resolutions to atomically restore the source issue status", () => {
