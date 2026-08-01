@@ -51,6 +51,11 @@ import {
   buildIssueBlockersResolvedWakeIdempotencyKey,
   findExistingIssueBlockersResolvedWakeForAnyKey,
 } from "../issue-dependency-wakeups.js";
+import {
+  readCheckboxSelectionForWake,
+  readPlanReviewInteractionForWake,
+  readToolActionContinuationContext,
+} from "../issue-thread-interaction-continuation.js";
 import { evaluateAgentInvokabilityFromDb } from "../agent-invokability.js";
 import { getRunLogStore } from "../run-log-store.js";
 import {
@@ -1046,6 +1051,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         kind: issueThreadInteractions.kind,
         status: issueThreadInteractions.status,
         continuationPolicy: issueThreadInteractions.continuationPolicy,
+        payload: issueThreadInteractions.payload,
         result: issueThreadInteractions.result,
         resolvedByUserId: issueThreadInteractions.resolvedByUserId,
         sourceRunId: issueThreadInteractions.sourceRunId,
@@ -3945,6 +3951,12 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           const interactionResponsibleUserId =
             resolvedContinuationInteraction.resolvedByUserId
             ?? readLatestResolvedItemVerdictUserId(resolvedContinuationInteraction.result);
+          const planReviewInteraction = readPlanReviewInteractionForWake({
+            issueId: issue.id,
+            interaction: resolvedContinuationInteraction,
+          });
+          const checkboxSelection = readCheckboxSelectionForWake(resolvedContinuationInteraction);
+          const toolAction = readToolActionContinuationContext(resolvedContinuationInteraction);
           const queued = await enqueueStrandedIssueRecovery({
             issueId: issue.id,
             agentId,
@@ -3959,6 +3971,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
               interactionStatus: resolvedContinuationInteraction.status,
               interactionContinuationPolicy: resolvedContinuationInteraction.continuationPolicy,
               interactionResolvedAt: interactionResolvedAt.toISOString(),
+              ...(planReviewInteraction ? { planReviewInteraction } : {}),
+              ...(checkboxSelection ? { checkboxSelection } : {}),
+              ...(toolAction ? { toolAction } : {}),
               ...(interactionResponsibleUserId
                 ? { responsibleUserId: interactionResponsibleUserId }
                 : {}),

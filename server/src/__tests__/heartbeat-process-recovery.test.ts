@@ -5729,7 +5729,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect((wakeup?.payload as Record<string, unknown> | null)?.issueId).toBe(issueId);
   });
 
-  it.each(["answered", "rejected", "cancelled", "failed"] as const)(
+  it.each(["accepted", "answered", "rejected", "cancelled", "failed"] as const)(
     "recovers a resolved interaction whose continuation wake enqueue was dropped (%s)",
     async (interactionStatus) => {
     const companyId = randomUUID();
@@ -5772,15 +5772,42 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       id: interactionId,
       companyId,
       issueId,
-      kind: interactionStatus === "answered" ? "request_user_input" : "request_confirmation",
+      kind: interactionStatus === "accepted"
+        ? "request_checkbox_confirmation"
+        : interactionStatus === "answered"
+          ? "request_user_input"
+          : interactionStatus === "rejected"
+            ? "request_tool_action"
+            : "request_confirmation",
       status: interactionStatus,
       continuationPolicy: "wake_assignee",
       createdByAgentId: agentId,
       resolvedByUserId: "responsible-user",
       resolvedAt,
       updatedAt: resolvedAt,
-      payload: { version: 1, prompt: "Which database?" },
-      result: interactionStatus === "answered" ? { version: 1, value: "Postgres" } : null,
+      payload: interactionStatus === "accepted"
+        ? {
+            version: 1,
+            prompt: "Which safeguards should be enabled?",
+            options: [
+              { id: "backup", label: "Create backup", description: "Preserve the current state" },
+              { id: "dry-run", label: "Dry run" },
+            ],
+          }
+        : interactionStatus === "rejected"
+          ? {
+              version: 1,
+              prompt: "Allow the destructive action?",
+              toolAction: { toolName: "delete_file", actionRequestId: "action-1" },
+            }
+          : { version: 1, prompt: "Which database?" },
+      result: interactionStatus === "accepted"
+        ? { version: 1, outcome: "accepted", selectedOptionIds: ["backup"] }
+        : interactionStatus === "answered"
+          ? { version: 1, value: "Postgres" }
+          : interactionStatus === "rejected"
+            ? { version: 1, outcome: "rejected", reason: "Use the archive endpoint instead" }
+            : null,
     });
     await db.insert(issueThreadInteractions).values({
       id: randomUUID(),
@@ -5852,6 +5879,33 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       interactionStatus,
       source: "issue.interaction_continuation_recovery",
     });
+    if (interactionStatus === "accepted") {
+      expect(run?.contextSnapshot).toMatchObject({
+        checkboxSelection: {
+          prompt: "Which safeguards should be enabled?",
+          selectedOptionIds: ["backup"],
+          selectedOptions: [{
+            id: "backup",
+            label: "Create backup",
+            description: "Preserve the current state",
+          }],
+        },
+      });
+    }
+    if (interactionStatus === "rejected") {
+      expect(run?.contextSnapshot).toMatchObject({
+        toolAction: {
+          toolName: "delete_file",
+          actionRequestId: "action-1",
+          decision: "rejected",
+          executionStatus: "rejected",
+          declineReason: "Use the archive endpoint instead",
+        },
+      });
+      expect(
+        ((run?.contextSnapshot as Record<string, unknown> | null)?.toolAction as Record<string, unknown> | null)?.instructions,
+      ).toContain("do not retry the same call");
+    }
     },
   );
 
