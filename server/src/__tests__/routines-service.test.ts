@@ -274,6 +274,36 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(allRoutines.map((entry) => entry.id)).toEqual(expect.arrayContaining([routine.id, otherRoutine.id]));
   });
 
+  it("rejects configuring a board-ui-only agent as a routine assignee", async () => {
+    const { companyId, agentId, projectId, svc } = await seedFixture();
+    await db.update(agents).set({
+      permissions: {
+        authorizationPolicy: {
+          assignmentPolicy: {
+            mode: "board_ui_create_only",
+            allowedUserIds: ["owner-user"],
+          },
+        },
+      },
+    }).where(eq(agents.id, agentId));
+
+    await expect(svc.create(companyId, {
+      projectId,
+      goalId: null,
+      parentIssueId: null,
+      title: "reserved agent routine",
+      description: null,
+      assigneeAgentId: agentId,
+      priority: "medium",
+      status: "active",
+      concurrencyPolicy: "coalesce_if_active",
+      catchUpPolicy: "skip_missed",
+    }, {})).rejects.toMatchObject({
+      status: 422,
+      details: { code: "reserved_agent_automatic_configuration" },
+    });
+  });
+
   it("does not reveal folders owned by another company", async () => {
     const { companyId, agentId, projectId, svc } = await seedFixture();
     const otherCompanyId = randomUUID();

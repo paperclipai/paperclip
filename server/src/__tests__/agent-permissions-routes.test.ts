@@ -1673,6 +1673,54 @@ describe.sequential("agent permission routes", () => {
     expect(res.body.access.taskAssignSource).toBe("agent_creator");
   });
 
+  it("records a safe assignment-policy summary when permissions change", async () => {
+    mockAgentService.updatePermissions.mockResolvedValue({
+      ...baseAgent,
+      permissions: {
+        canCreateAgents: false,
+        authorizationPolicy: {
+          assignmentPolicy: {
+            mode: "board_ui_create_only",
+            allowedUserIds: ["owner-user", "backup-owner"],
+          },
+        },
+      },
+    });
+
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+    const res = await requestApp(app, (baseUrl) => request(baseUrl)
+      .patch(`/api/agents/${agentId}/permissions`)
+      .send({
+        canCreateAgents: false,
+        canAssignTasks: false,
+        authorizationPolicy: {
+          assignmentPolicy: {
+            mode: "board_ui_create_only",
+            allowedUserIds: ["owner-user", "backup-owner"],
+          },
+        },
+      }));
+
+    expect(res.status).toBe(200);
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: "agent.permissions_updated",
+      details: expect.objectContaining({
+        assignmentPolicy: {
+          previous: { mode: null, allowedUserCount: 0 },
+          current: { mode: "board_ui_create_only", allowedUserCount: 2 },
+        },
+      }),
+    }));
+    expect(JSON.stringify(mockLogActivity.mock.calls)).not.toContain("owner-user");
+    expect(JSON.stringify(mockLogActivity.mock.calls)).not.toContain("backup-owner");
+  });
+
   it("preserves disabled skill creation when unrelated permission updates omit that field", async () => {
     mockAgentService.updatePermissions.mockResolvedValue({
       ...baseAgent,

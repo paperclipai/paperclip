@@ -138,6 +138,8 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
 
   async function seedFixture(input?: {
     agentStatus?: "active" | "paused";
+    agentPermissions?: Record<string, unknown>;
+    createdByUserId?: string | null;
     issueStatus?: "in_progress" | "in_review";
     monitorAttemptCount?: number;
     monitor?: Record<string, unknown>;
@@ -182,7 +184,7 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
           wakeOnDemand: true,
         },
       },
-      permissions: {},
+      permissions: input?.agentPermissions ?? {},
     });
     seededAgentIds.add(agentId);
 
@@ -193,6 +195,7 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
       status: input?.issueStatus ?? "in_progress",
       priority: "medium",
       assigneeAgentId: agentId,
+      createdByUserId: input?.createdByUserId ?? null,
       issueNumber: 1,
       identifier: `${issuePrefix}-1`,
       executionPolicy: {
@@ -487,6 +490,59 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
       assigneeAdapterOverrides: { modelProfile: "cheap" },
     });
     expect(["todo", "in_progress"]).toContain(recoveryIssue?.status);
+  });
+
+  it("escalates exhausted recovery to the board when the assignee is board-ui-only", async () => {
+    const ownerUserId = `owner-${randomUUID()}`;
+    const { issueId, companyId } = await seedFixture({
+      createdByUserId: ownerUserId,
+      agentPermissions: {
+        authorizationPolicy: {
+          assignmentPolicy: {
+            mode: "board_ui_create_only",
+            allowedUserIds: [ownerUserId],
+          },
+        },
+      },
+      monitor: {
+        timeoutAt: "2026-04-11T12:00:00.000Z",
+        recoveryPolicy: "create_recovery_issue",
+      },
+    });
+
+    const result = await heartbeatService(db).tickTimers(new Date("2026-04-11T12:31:00.000Z"));
+
+    expect(result).toMatchObject({ enqueued: 0, skipped: 1 });
+    const sourceIssue = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0]!);
+    expect(sourceIssue.monitorNextCheckAt).toBeNull();
+    expect(parseIssueExecutionState(sourceIssue.executionState)?.monitor).toMatchObject({
+      status: "cleared",
+      clearReason: "timeout_exceeded",
+    });
+    const recoveryIssues = await db
+      .select()
+      .from(issues)
+      .where(eq(issues.originId, issueId));
+    expect(recoveryIssues.filter((row) => row.companyId === companyId)).toHaveLength(0);
+    const comments = await db
+      .select({ body: issueComments.body })
+      .from(issueComments)
+      .where(eq(issueComments.issueId, issueId));
+    expect(comments.map((row) => row.body).join("\n")).toContain(
+      "reserved for eligible board-created manual issues",
+    );
+    const actions = await db
+      .select({ action: activityLog.action })
+      .from(activityLog)
+      .where(eq(activityLog.entityId, issueId))
+      .then((rows) => rows.map((row) => row.action));
+    expect(actions).toContain("issue.monitor_exhausted");
+    expect(actions).toContain("issue.monitor_escalated_to_board");
+    expect(actions).not.toContain("issue.monitor_recovery_issue_created");
   });
 
   it("omits external monitor refs from wake payloads and activity details", async () => {

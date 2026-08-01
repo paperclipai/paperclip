@@ -7203,6 +7203,12 @@ export function issueRoutes(
       ...(sourceTrust ? { sourceTrust } : {}),
       createdByAgentId: actor.agentId,
       createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+      assignmentAdmission: {
+        surface: "board_ui_issue_create",
+        actorType: actor.actorType,
+        actorSource: actor.actorSource,
+        actorUserId: actor.actorType === "user" ? actor.actorId : null,
+      },
       actorRunId: actor.runId,
       actorResponsibleUserId: authenticatedActorResponsibleUserId(req),
       trustExplicitResponsibleUserId: actor.actorType === "user",
@@ -7392,6 +7398,12 @@ export function issueRoutes(
       ...(sourceTrust ? { sourceTrust } : {}),
       createdByAgentId: actor.agentId,
       createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+      assignmentAdmission: {
+        surface: "board_ui_issue_create",
+        actorType: actor.actorType,
+        actorSource: actor.actorSource,
+        actorUserId: actor.actorType === "user" ? actor.actorId : null,
+      },
       actorRunId: actor.runId,
       actorResponsibleUserId: authenticatedActorResponsibleUserId(req),
       trustExplicitResponsibleUserId: actor.actorType === "user",
@@ -7763,6 +7775,12 @@ export function issueRoutes(
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, existing, req.body))) return;
 
     const actor = getActorInfo(req);
+    const assignmentAdmission = {
+      surface: "board_ui_issue_update" as const,
+      actorType: actor.actorType,
+      actorSource: actor.actorSource,
+      actorUserId: actor.actorType === "user" ? actor.actorId : null,
+    };
     const isClosed = isClosedIssueStatus(existing.status);
     const isBlocked = existing.status === "blocked";
     const normalizedAssigneeAgentId = await normalizeIssueAssigneeAgentReference(
@@ -8154,6 +8172,7 @@ export function issueRoutes(
               ...updateFields,
               actorAgentId: actor.agentId ?? null,
               actorUserId: actor.actorType === "user" ? actor.actorId : null,
+              assignmentAdmission,
             },
             tx,
           );
@@ -8184,6 +8203,7 @@ export function issueRoutes(
             ...updateFields,
             actorAgentId: actor.agentId ?? null,
             actorUserId: actor.actorType === "user" ? actor.actorId : null,
+            assignmentAdmission,
           }, tx);
           if (!updated) return null;
           stopRelayResult.value = await svc.addStopRelayCommentIfNeeded(updated, tx);
@@ -8194,6 +8214,7 @@ export function issueRoutes(
           ...updateFields,
           actorAgentId: actor.agentId ?? null,
           actorUserId: actor.actorType === "user" ? actor.actorId : null,
+          assignmentAdmission,
         });
       }
     } catch (err) {
@@ -9158,8 +9179,19 @@ export function issueRoutes(
 
     const checkoutRunId = requireAgentRunId(req, res);
     if (req.actor.type === "agent" && !checkoutRunId) return;
-    const updated = await svc.checkout(id, req.body.agentId, req.body.expectedStatuses, checkoutRunId);
     const actor = getActorInfo(req);
+    const updated = await svc.checkout(
+      id,
+      req.body.agentId,
+      req.body.expectedStatuses,
+      checkoutRunId,
+      {
+        surface: "board_ui_issue_update",
+        actorType: actor.actorType,
+        actorSource: actor.actorSource,
+        actorUserId: actor.actorType === "user" ? actor.actorId : null,
+      },
+    );
     if (updated?.harnessKind === "skill_test") {
       await companySkillsSvc.markTestRunRunning(updated.companyId, updated.id);
     }

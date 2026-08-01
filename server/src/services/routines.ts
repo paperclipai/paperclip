@@ -77,6 +77,7 @@ import {
 import { queueIssueAssignmentWakeup, type IssueAssignmentWakeupDeps } from "./issue-assignment-wakeup.js";
 import { logActivity } from "./activity-log.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
+import { assertAgentEligibleForAutomaticAssignment } from "./agent-assignment-policy.js";
 
 const OPEN_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"];
 const LIVE_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"];
@@ -2083,6 +2084,14 @@ export function routineService(
       await assertProject(companyId, input.projectId ?? null);
       await assertRoutineFolder(companyId, input.folderId ?? null);
       await assertAssignableAgent(db, companyId, input.assigneeAgentId ?? null, { kind: "routine" });
+      if (input.assigneeAgentId) {
+        await assertAgentEligibleForAutomaticAssignment(
+          db,
+          companyId,
+          input.assigneeAgentId,
+          "routine",
+        );
+      }
       if (input.goalId) await assertGoal(companyId, input.goalId);
       if (input.parentIssueId) await assertParentIssue(companyId, input.parentIssueId);
       const env = input.env === undefined || input.env === null
@@ -2176,6 +2185,14 @@ export function routineService(
       if (patch.folderId !== undefined) await assertRoutineFolder(existing.companyId, nextFolderId);
       if (patch.assigneeAgentId !== undefined || patch.status === "active") {
         await assertAssignableAgent(db, existing.companyId, nextAssigneeAgentId, { kind: "routine" });
+        if (nextAssigneeAgentId) {
+          await assertAgentEligibleForAutomaticAssignment(
+            db,
+            existing.companyId,
+            nextAssigneeAgentId,
+            "routine",
+          );
+        }
       }
       if (patch.goalId) await assertGoal(existing.companyId, patch.goalId);
       if (patch.parentIssueId) await assertParentIssue(existing.companyId, patch.parentIssueId);

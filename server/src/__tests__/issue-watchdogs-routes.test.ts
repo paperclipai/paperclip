@@ -285,6 +285,36 @@ describeEmbeddedPostgres("issue watchdog routes", () => {
     expect(actionNames).toContain("issue.task_watchdog_triggered");
   });
 
+  it("rejects configuring a board-ui-only agent as a task watchdog", async () => {
+    const companyId = await seedCompany();
+    const issueId = await seedIssue(companyId, { identifier: "WDOG-RESERVED", issueNumber: 2 });
+    const agentId = await seedAgent(companyId, {
+      name: "Reserved Watchdog",
+      permissions: {
+        authorizationPolicy: {
+          assignmentPolicy: {
+            mode: "board_ui_create_only",
+            allowedUserIds: ["cloud-user-1"],
+          },
+        },
+      },
+    });
+
+    const response = await request(createApp(companyId))
+      .put(`/api/issues/${issueId}/watchdog`)
+      .send({ agentId, instructions: "This automatic configuration must be rejected." });
+
+    expect(response.status, JSON.stringify(response.body)).toBe(422);
+    expect(response.body).toMatchObject({
+      details: { code: "reserved_agent_automatic_configuration" },
+    });
+    const stored = await db
+      .select()
+      .from(issueWatchdogs)
+      .where(and(eq(issueWatchdogs.companyId, companyId), eq(issueWatchdogs.issueId, issueId)));
+    expect(stored).toHaveLength(0);
+  });
+
   it("handles concurrent first-time watchdog upserts without duplicate-key failures", async () => {
     const companyId = await seedCompany();
     const issueId = await seedIssue(companyId, { identifier: "WDOG-RACE", issueNumber: 99 });

@@ -40,6 +40,7 @@ import {
   type StatusCardDeltaChange,
   type StatusCardFingerprint,
 } from "./status-card-update-engine.js";
+import { assertAgentEligibleForAutomaticAssignment } from "./agent-assignment-policy.js";
 
 type StatusCardActor = { agentId: string | null; userId: string | null };
 type StatusCardWriter = { agentId: string | null; runId: string | null };
@@ -217,6 +218,12 @@ export function statusCardService(
         .where(and(eq(agents.id, input.agentId), eq(agents.companyId, companyId)))
         .then((rows) => rows[0] ?? null);
       if (!summarizer) throw unprocessable("Summarizer agent must belong to this company");
+      await assertAgentEligibleForAutomaticAssignment(
+        db,
+        companyId,
+        input.agentId,
+        "status_card",
+      );
     }
     const values = {
       companyId,
@@ -265,6 +272,19 @@ export function statusCardService(
         .where(and(eq(agents.id, input.agentId), eq(agents.companyId, card.companyId)))
         .then((rows) => rows[0] ?? null);
       if (!summarizer) throw unprocessable("Summarizer agent must belong to this company");
+      await assertAgentEligibleForAutomaticAssignment(
+        db,
+        card.companyId,
+        input.agentId,
+        "status_card",
+      );
+    } else if (input.archived === false && card.agentId) {
+      await assertAgentEligibleForAutomaticAssignment(
+        db,
+        card.companyId,
+        card.agentId,
+        "status_card",
+      );
     }
     const agentChanged = input.agentId !== undefined && input.agentId !== card.agentId;
     const archiveChanged = input.archived !== undefined && input.archived !== Boolean(card.archivedAt);
@@ -349,7 +369,15 @@ export function statusCardService(
         .from(agents)
         .where(and(eq(agents.id, card.agentId), eq(agents.companyId, card.companyId)))
         .then((rows) => rows[0] ?? null);
-      if (override) return override.id;
+      if (override) {
+        await assertAgentEligibleForAutomaticAssignment(
+          db,
+          card.companyId,
+          override.id,
+          "status_card",
+        );
+        return override.id;
+      }
     }
     const builtIn = await builtIns.get(card.companyId, SUMMARIZER_BUILT_IN_KEY);
     if (builtIn.status !== "ready" || !builtIn.agentId) {
@@ -358,6 +386,12 @@ export function statusCardService(
         status: builtIn.status,
       });
     }
+    await assertAgentEligibleForAutomaticAssignment(
+      db,
+      card.companyId,
+      builtIn.agentId,
+      "status_card",
+    );
     return builtIn.agentId;
   }
 

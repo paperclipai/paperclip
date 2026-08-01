@@ -21,6 +21,7 @@ import {
   withRecoveryModelProfileHint,
 } from "./recovery/model-profile-hint.js";
 import { RECOVERY_ORIGIN_KINDS } from "./recovery/origins.js";
+import { isAgentEligibleForAutomaticAssignment } from "./agent-assignment-policy.js";
 
 export const PRODUCTIVITY_REVIEW_ORIGIN_KIND = RECOVERY_ORIGIN_KINDS.issueProductivityReview;
 export const DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS = 10;
@@ -603,7 +604,12 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       if (seen.has(agentId)) continue;
       seen.add(agentId);
       const candidate = await getAgent(agentId);
-      if (!candidate || candidate.companyId !== sourceIssue.companyId || !isAgentInvokable(candidate)) continue;
+      if (
+        !candidate ||
+        candidate.companyId !== sourceIssue.companyId ||
+        !isAgentInvokable(candidate) ||
+        !isAgentEligibleForAutomaticAssignment(candidate)
+      ) continue;
       const budgetBlock = await budgets.getInvocationBlock(sourceIssue.companyId, candidate.id, {
         issueId: sourceIssue.id,
         projectId: sourceIssue.projectId ?? null,

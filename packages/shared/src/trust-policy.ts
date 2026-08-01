@@ -38,10 +38,25 @@ export interface LowTrustReviewPresetPolicy {
   rawOutputDisposition: typeof LOW_TRUST_REVIEW_RAW_OUTPUT_DISPOSITION;
 }
 
+export const AGENT_ASSIGNMENT_POLICY_MODES = [
+  "company_default",
+  "protected",
+  "board_ui_create_only",
+] as const;
+
+export type AgentAssignmentPolicyMode = (typeof AGENT_ASSIGNMENT_POLICY_MODES)[number];
+
+export interface AgentAssignmentPolicy extends Record<string, unknown> {
+  mode: AgentAssignmentPolicyMode;
+  protectedAgentRequiresApproval?: boolean;
+  allowedUserIds?: string[];
+}
+
 export interface TrustAuthorizationPolicy extends Record<string, unknown> {
   trustPreset?: TrustPreset;
   reviewPreset?: LowTrustReviewPresetPolicy;
   trustBoundary?: LowTrustBoundary;
+  assignmentPolicy?: AgentAssignmentPolicy;
 }
 
 export type SourceTrustArtifactKind = "issue" | "comment" | "document" | "work_product";

@@ -34,6 +34,7 @@ import {
   builtInAgentMarkersEqual,
   readBuiltInAgentMarker,
 } from "./built-in-agent-metadata.js";
+import { assertBoardUiCreateOnlyActivationHasNoAutomaticReferences } from "./agent-assignment-policy.js";
 
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
@@ -826,10 +827,20 @@ export function agentService(db: Db) {
         });
       }
 
+      const nextPermissions = normalizeAgentPermissions(
+        { ...existing.permissions, ...permissions },
+        existing.role,
+      );
+      await assertBoardUiCreateOnlyActivationHasNoAutomaticReferences(db, {
+        companyId: existing.companyId,
+        agentId: existing.id,
+        nextPermissions,
+      });
+
       const updated = await db
         .update(agents)
         .set({
-          permissions: normalizeAgentPermissions({ ...existing.permissions, ...permissions }, existing.role),
+          permissions: nextPermissions,
           updatedAt: new Date(),
         })
         .where(eq(agents.id, id))

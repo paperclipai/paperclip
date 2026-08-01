@@ -105,11 +105,14 @@ export {
   LOW_TRUST_REVIEW_PRESET_VERSION,
   LOW_TRUST_REVIEW_RAW_OUTPUT_DISPOSITION,
   LOW_TRUST_TOOL_CLASSES,
+  AGENT_ASSIGNMENT_POLICY_MODES,
   type TrustPreset,
   type LowTrustToolClass,
   type LowTrustOutputPromotionTarget,
   type LowTrustBoundary,
   type LowTrustReviewPresetPolicy,
+  type AgentAssignmentPolicyMode,
+  type AgentAssignmentPolicy,
   type TrustAuthorizationPolicy,
 } from "../trust-policy.js";
 export type {

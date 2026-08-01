@@ -136,6 +136,11 @@ import {
 import { issueService } from "./issues.js";
 import { projectService } from "./projects.js";
 import { authorizationService, type AuthorizationActor } from "./authorization.js";
+import {
+  boardUiCreateOnlyIssueExecutionAllowed,
+  readAgentBoardUiCreateOnlyAssignmentPolicy,
+  RESERVED_AGENT_BOARD_UI_ONLY_CODE,
+} from "./agent-assignment-policy.js";
 import { createToolGatewayService } from "./tool-gateway.js";
 import { toolAccessService } from "./tool-access.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
@@ -7191,6 +7196,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     nextAttemptCount: number;
     clearReason: IssueExecutionMonitorClearReason;
     recoveryPolicy: IssueExecutionMonitorRecoveryPolicy;
+    configuredRecoveryPolicy?: IssueExecutionMonitorRecoveryPolicy;
     monitor: IssueExecutionMonitorPolicy | null;
     actorType: "user" | "agent" | "system";
     actorId: string;
@@ -7198,15 +7204,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     runId: string | null;
     activitySource: "manual" | "scheduled";
   }) {
-    const details = monitorRecoveryDetails({
-      claimed: input.claimed,
-      scheduledAtIso: input.scheduledAtIso,
-      nextAttemptCount: input.nextAttemptCount,
-      clearReason: input.clearReason,
-      recoveryPolicy: input.recoveryPolicy,
-      monitor: input.monitor,
-      source: input.activitySource,
-    });
+    const details = {
+      ...monitorRecoveryDetails({
+        claimed: input.claimed,
+        scheduledAtIso: input.scheduledAtIso,
+        nextAttemptCount: input.nextAttemptCount,
+        clearReason: input.clearReason,
+        recoveryPolicy: input.recoveryPolicy,
+        monitor: input.monitor,
+        source: input.activitySource,
+      }),
+      ...(input.configuredRecoveryPolicy
+        ? {
+            configuredRecoveryPolicy: input.configuredRecoveryPolicy,
+            recoveryPolicyFallbackReason: RESERVED_AGENT_BOARD_UI_ONLY_CODE,
+          }
+        : {}),
+    };
 
     if (input.recoveryPolicy === "create_recovery_issue") {
       let recoveryIssue = await findOpenIssueMonitorRecoveryIssue(input.claimed);
@@ -7270,15 +7284,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     if (input.recoveryPolicy === "escalate_to_board") {
+      const fallbackNote = input.configuredRecoveryPolicy
+        ? [
+            "",
+            "Paperclip escalated this recovery to the board because the configured assignee is reserved for eligible board-created manual issues.",
+          ]
+        : [];
       await db.insert(issueComments).values({
         companyId: input.claimed.companyId,
         issueId: input.claimed.id,
-        body: monitorRecoveryComment({
-          issue: input.claimed,
-          clearReason: input.clearReason,
-          recoveryPolicy: input.recoveryPolicy,
-          nextAttemptCount: input.nextAttemptCount,
-        }),
+        body: [
+          monitorRecoveryComment({
+            issue: input.claimed,
+            clearReason: input.clearReason,
+            recoveryPolicy: input.recoveryPolicy,
+            nextAttemptCount: input.nextAttemptCount,
+          }),
+          ...fallbackNote,
+        ].join("\n"),
       });
 
       await logActivity(db, {
@@ -7352,6 +7375,20 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     runId: string | null;
     activitySource: "manual" | "scheduled";
   }) {
+    let effectiveRecoveryPolicy = input.recoveryPolicy;
+    if (
+      input.recoveryPolicy === "create_recovery_issue" &&
+      input.claimed.assigneeAgentId
+    ) {
+      const recoveryAssignee = await getAgent(input.claimed.assigneeAgentId);
+      if (readAgentBoardUiCreateOnlyAssignmentPolicy(recoveryAssignee)) {
+        effectiveRecoveryPolicy = "escalate_to_board";
+      }
+    }
+    const configuredRecoveryPolicy = effectiveRecoveryPolicy !== input.recoveryPolicy
+      ? input.recoveryPolicy
+      : undefined;
+
     await db
       .update(issues)
       .set({
@@ -7374,15 +7411,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       action: "issue.monitor_exhausted",
       entityType: "issue",
       entityId: input.claimed.id,
-      details: monitorRecoveryDetails({
-        claimed: input.claimed,
-        scheduledAtIso: input.scheduledAtIso,
-        nextAttemptCount: input.nextAttemptCount,
-        clearReason: input.clearReason,
-        recoveryPolicy: input.recoveryPolicy,
-        monitor: input.monitor,
-        source: input.activitySource,
-      }),
+      details: {
+        ...monitorRecoveryDetails({
+          claimed: input.claimed,
+          scheduledAtIso: input.scheduledAtIso,
+          nextAttemptCount: input.nextAttemptCount,
+          clearReason: input.clearReason,
+          recoveryPolicy: effectiveRecoveryPolicy,
+          monitor: input.monitor,
+          source: input.activitySource,
+        }),
+        ...(configuredRecoveryPolicy
+          ? {
+              configuredRecoveryPolicy,
+              recoveryPolicyFallbackReason: RESERVED_AGENT_BOARD_UI_ONLY_CODE,
+            }
+          : {}),
+      },
     });
 
     await performIssueMonitorRecovery({
@@ -7390,7 +7435,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       scheduledAtIso: input.scheduledAtIso,
       nextAttemptCount: input.nextAttemptCount,
       clearReason: input.clearReason,
-      recoveryPolicy: input.recoveryPolicy,
+      recoveryPolicy: effectiveRecoveryPolicy,
+      configuredRecoveryPolicy,
       monitor: input.monitor,
       actorType: input.actorType,
       actorId: input.actorId,
@@ -11539,6 +11585,35 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     const context = parseObject(run.contextSnapshot);
+    const boardUiCreateOnlyPolicy = readAgentBoardUiCreateOnlyAssignmentPolicy(agent);
+    if (boardUiCreateOnlyPolicy) {
+      const reservedIssueId = readNonEmptyString(context.issueId);
+      const idMatch = reservedIssueId
+        ? isUuidLike(reservedIssueId)
+          ? or(eq(issues.id, reservedIssueId), eq(issues.identifier, reservedIssueId.toUpperCase()))
+          : eq(issues.identifier, reservedIssueId.toUpperCase())
+        : null;
+      const reservedIssue = idMatch
+        ? await db
+          .select({
+            assigneeAgentId: issues.assigneeAgentId,
+            originKind: issues.originKind,
+            createdByAgentId: issues.createdByAgentId,
+            createdByUserId: issues.createdByUserId,
+          })
+          .from(issues)
+          .where(and(eq(issues.companyId, run.companyId), idMatch))
+          .then((rows) => rows[0] ?? null)
+        : null;
+      if (!boardUiCreateOnlyIssueExecutionAllowed({
+        policy: boardUiCreateOnlyPolicy,
+        agentId: run.agentId,
+        issue: reservedIssue,
+      })) {
+        await cancelQueuedRunForBoardUiOnlyPolicy(run, reservedIssueId);
+        return null;
+      }
+    }
     const budgetBlock = await budgets.getInvocationBlock(run.companyId, run.agentId, {
       issueId: readNonEmptyString(context.issueId),
       projectId: readNonEmptyString(context.projectId),
@@ -11946,6 +12021,48 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       level: "warn",
       message: staleness.reason,
       payload: staleness.details,
+    });
+
+    return cancelled;
+  }
+
+  async function cancelQueuedRunForBoardUiOnlyPolicy(
+    run: typeof heartbeatRuns.$inferSelect,
+    issueId: string | null,
+  ) {
+    const now = new Date();
+    const reason = "Cancelled because this board-ui-only agent is not linked to an eligible manual issue";
+    const cancelled = await setRunStatus(run.id, "cancelled", {
+      finishedAt: now,
+      error: reason,
+      errorCode: RESERVED_AGENT_BOARD_UI_ONLY_CODE,
+      resultJson: {
+        ...parseObject(run.resultJson),
+        stopReason: RESERVED_AGENT_BOARD_UI_ONLY_CODE,
+        effectiveTimeoutSec: 0,
+        timeoutConfigured: false,
+        timeoutSource: "board_ui_create_only_claim_gate",
+        timeoutFired: false,
+      },
+    });
+    if (!cancelled) return null;
+
+    await setWakeupStatus(run.wakeupRequestId, "cancelled", {
+      finishedAt: now,
+      error: reason,
+    });
+
+    await clearRunIssueExecutionReferences(run);
+
+    await appendRunEvent(cancelled, await nextRunEventSeq(cancelled.id), {
+      eventType: "lifecycle",
+      stream: "system",
+      level: "warn",
+      message: "run cancelled by board-ui-only assignment policy",
+      payload: {
+        code: RESERVED_AGENT_BOARD_UI_ONLY_CODE,
+        issueId,
+      },
     });
 
     return cancelled;
@@ -12600,9 +12717,52 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         .orderBy(asc(heartbeatRuns.createdAt));
       if (queuedRuns.length === 0) return [];
 
-      const dependencyReadiness = await listQueuedRunDependencyReadiness(agent.companyId, queuedRuns);
+      const boardUiCreateOnlyPolicy = readAgentBoardUiCreateOnlyAssignmentPolicy(agent);
+      const policyEligibleQueuedRuns: Array<typeof heartbeatRuns.$inferSelect> = [];
+      for (const queuedRun of queuedRuns) {
+        if (!boardUiCreateOnlyPolicy) {
+          policyEligibleQueuedRuns.push(queuedRun);
+          continue;
+        }
+        const queuedIssueRef = readNonEmptyString(parseObject(queuedRun.contextSnapshot).issueId);
+        const queuedIssueMatch = queuedIssueRef
+          ? isUuidLike(queuedIssueRef)
+            ? or(
+                eq(issues.id, queuedIssueRef),
+                eq(issues.identifier, queuedIssueRef.toUpperCase()),
+              )
+            : eq(issues.identifier, queuedIssueRef.toUpperCase())
+          : null;
+        const queuedIssue = queuedIssueMatch
+          ? await db
+            .select({
+              assigneeAgentId: issues.assigneeAgentId,
+              originKind: issues.originKind,
+              createdByAgentId: issues.createdByAgentId,
+              createdByUserId: issues.createdByUserId,
+            })
+            .from(issues)
+            .where(and(eq(issues.companyId, queuedRun.companyId), queuedIssueMatch))
+            .then((rows) => rows[0] ?? null)
+          : null;
+        if (boardUiCreateOnlyIssueExecutionAllowed({
+          policy: boardUiCreateOnlyPolicy,
+          agentId,
+          issue: queuedIssue,
+        })) {
+          policyEligibleQueuedRuns.push(queuedRun);
+          continue;
+        }
+        await cancelQueuedRunForBoardUiOnlyPolicy(queuedRun, queuedIssueRef);
+      }
+      if (policyEligibleQueuedRuns.length === 0) return [];
+
+      const dependencyReadiness = await listQueuedRunDependencyReadiness(
+        agent.companyId,
+        policyEligibleQueuedRuns,
+      );
       const queuedIssueIds = [...new Set(
-        queuedRuns
+        policyEligibleQueuedRuns
           .map((run) => readNonEmptyString(parseObject(run.contextSnapshot).issueId))
           .filter((issueId): issueId is string => Boolean(issueId)),
       )];
@@ -12620,7 +12780,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         );
       const issueById = new Map(issueRows.map((row) => [row.id, row]));
       const companyAgents = await listCompanyAgentOrgRows(agent.companyId);
-      const prioritizedRuns = [...queuedRuns].sort((left, right) => {
+      const prioritizedRuns = [...policyEligibleQueuedRuns].sort((left, right) => {
         const leftIssueId = readNonEmptyString(parseObject(left.contextSnapshot).issueId);
         const rightIssueId = readNonEmptyString(parseObject(right.contextSnapshot).issueId);
         const leftReadiness = leftIssueId ? dependencyReadiness.get(leftIssueId) : null;
@@ -15373,12 +15533,99 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     );
   }
 
+  async function lockAndClearRunIssueExecutionReferences(
+    tx: any,
+    run: typeof heartbeatRuns.$inferSelect,
+  ) {
+    const rawContextIssueId = readNonEmptyString(parseObject(run.contextSnapshot).issueId);
+    const contextIssueId = rawContextIssueId
+      ? await tx
+        .select({ id: issues.id })
+        .from(issues)
+        .where(and(
+          eq(issues.companyId, run.companyId),
+          isUuidLike(rawContextIssueId)
+            ? or(
+                eq(issues.id, rawContextIssueId),
+                eq(issues.identifier, rawContextIssueId.toUpperCase()),
+              )
+            : eq(issues.identifier, rawContextIssueId.toUpperCase()),
+        ))
+        .then((rows: Array<{ id: string }>) => rows[0]?.id ?? null)
+      : null;
+
+    // A run may be referenced by multiple issues. Lock every reference in a
+    // deterministic order before clearing either lock column so cancellation
+    // cannot leave siblings stranded or race another finalizer.
+    await tx.execute(
+      contextIssueId
+        ? sql`
+            select id from issues
+            where company_id = ${run.companyId}
+              and (
+                id = ${contextIssueId}
+                or execution_run_id = ${run.id}
+                or checkout_run_id = ${run.id}
+              )
+            order by id
+            for update
+          `
+        : sql`
+            select id from issues
+            where company_id = ${run.companyId}
+              and (execution_run_id = ${run.id} or checkout_run_id = ${run.id})
+            order by id
+            for update
+          `,
+    );
+
+    const candidateIssues: Array<typeof issues.$inferSelect> = await tx
+      .select()
+      .from(issues)
+      .where(
+        and(
+          eq(issues.companyId, run.companyId),
+          contextIssueId
+            ? or(
+                eq(issues.id, contextIssueId),
+                eq(issues.executionRunId, run.id),
+                eq(issues.checkoutRunId, run.id),
+              )
+            : or(eq(issues.executionRunId, run.id), eq(issues.checkoutRunId, run.id)),
+        ),
+      )
+      .orderBy(asc(issues.id));
+
+    const clearedAt = new Date();
+    await tx
+      .update(issues)
+      .set({
+        executionRunId: null,
+        executionAgentNameKey: null,
+        executionLockedAt: null,
+        updatedAt: clearedAt,
+      })
+      .where(and(eq(issues.companyId, run.companyId), eq(issues.executionRunId, run.id)));
+    await tx
+      .update(issues)
+      .set({
+        checkoutRunId: null,
+        updatedAt: clearedAt,
+      })
+      .where(and(eq(issues.companyId, run.companyId), eq(issues.checkoutRunId, run.id)));
+
+    return { candidateIssues, contextIssueId };
+  }
+
+  async function clearRunIssueExecutionReferences(run: typeof heartbeatRuns.$inferSelect) {
+    return db.transaction((tx) => lockAndClearRunIssueExecutionReferences(tx, run));
+  }
+
   async function releaseIssueExecutionAndPromote(
     run: typeof heartbeatRuns.$inferSelect,
     options: { suppressImmediateRecovery?: boolean } = {},
   ) {
     const runContext = parseObject(run.contextSnapshot);
-    const contextIssueId = readNonEmptyString(runContext.issueId);
     const taskKey = deriveTaskKeyWithHeartbeatFallback(runContext, null);
     const recoveryAgent = await getAgent(run.agentId);
     const recoveryAgentInvokable =
@@ -15392,93 +15639,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const recoveryAgentNameKey = normalizeAgentNameKey(recoveryAgent?.name);
 
     const promotionResult = await db.transaction(async (tx) => {
-      // Lock the context issue (if any) AND every issue that still references this run.
-      //
-      // A single run can hold execution locks on multiple issues: the caller's context
-      // issue (set via svc.checkout) plus any additional issues stamped by
-      // enqueueWakeup's "legacy run" fallback when the run was the only queued/running
-      // run matching their contextSnapshot.issueId. Historically this function only
-      // resolved and cleared the lock on *one* issue (rows[0]), leaving the others
-      // with an executionRunId pointing at a finalized run. Subsequent checkouts from
-      // the assigned agent then failed with 409 and the issue stayed blocked forever.
-      // `order by id` makes row-lock acquisition deterministic across concurrent
-      // finalizations, which keeps deadlock risk independent of PostgreSQL's plan
-      // choice when multiple issues match.
-      await tx.execute(
-        contextIssueId
-          ? sql`
-              select id from issues
-              where company_id = ${run.companyId}
-                and (
-                  id = ${contextIssueId}
-                  or execution_run_id = ${run.id}
-                  or checkout_run_id = ${run.id}
-                )
-              order by id
-              for update
-            `
-          : sql`
-              select id from issues
-              where company_id = ${run.companyId}
-                and (execution_run_id = ${run.id} or checkout_run_id = ${run.id})
-              order by id
-              for update
-            `,
-      );
-
-      const candidateIssues = await tx
-        .select()
-        .from(issues)
-        .where(
-          and(
-            eq(issues.companyId, run.companyId),
-            contextIssueId
-              ? or(
-                  eq(issues.id, contextIssueId),
-                  eq(issues.executionRunId, run.id),
-                  eq(issues.checkoutRunId, run.id),
-                )
-              : or(eq(issues.executionRunId, run.id), eq(issues.checkoutRunId, run.id)),
-          ),
-        )
-        .orderBy(asc(issues.id));
-
-      // Clear orphaned execution-lock columns that still point at this finalizing
-      // run, across every sibling issue in one statement so it scales with N
-      // orphans without N round-trips. Rows are already held under FOR UPDATE from
-      // the lock query above.
-      //
-      // The two columns are cleared in separate UPDATEs so we never clobber a
-      // retry's executionRunId pointer: when a process-loss or codex-transient
-      // retry is scheduled mid-finalization, it moves `executionRunId` from this
-      // run to the retry run while leaving `checkoutRunId` pinned at this run.
-      // Only the checkout column should be released in that case; the execution
-      // column now belongs to the retry.
-      const promotionUpdateTimestamp = new Date();
-      await tx
-        .update(issues)
-        .set({
-          executionRunId: null,
-          executionAgentNameKey: null,
-          executionLockedAt: null,
-          updatedAt: promotionUpdateTimestamp,
-        })
-        .where(
-          and(eq(issues.companyId, run.companyId), eq(issues.executionRunId, run.id)),
-        );
-      // `checkoutRunId` clear is symmetric to #6008's per-issue self-heal,
-      // extended to all siblings: covers paths where the issue's assignee or
-      // status changed between checkout and termination, which
-      // adoptStaleCheckoutRun's narrow WHERE clause cannot reach.
-      await tx
-        .update(issues)
-        .set({
-          checkoutRunId: null,
-          updatedAt: promotionUpdateTimestamp,
-        })
-        .where(
-          and(eq(issues.companyId, run.companyId), eq(issues.checkoutRunId, run.id)),
-        );
+      const { candidateIssues, contextIssueId } =
+        await lockAndClearRunIssueExecutionReferences(tx, run);
 
       // Deferred-wake promotion is bound to a single primary issue: the run's context
       // issue when present, otherwise the first candidate we found (preserves the
@@ -16162,6 +16324,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     const agent = await getAgent(agentId);
     if (!agent) throw notFound("Agent not found");
+    const boardUiCreateOnlyPolicy = readAgentBoardUiCreateOnlyAssignmentPolicy(agent);
 
     const writeSkippedRequest = async (
       skipReason: string,
@@ -16296,6 +16459,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     // project workspace even when context.projectId wasn't set by the caller.
     if (projectId && !readNonEmptyString(enrichedContextSnapshot.projectId)) {
       enrichedContextSnapshot.projectId = projectId;
+    }
+    if (boardUiCreateOnlyPolicy && !issueId) {
+      await writeSkippedHeartbeatRequest(RESERVED_AGENT_BOARD_UI_ONLY_CODE, {
+        code: RESERVED_AGENT_BOARD_UI_ONLY_CODE,
+        reason: "Board-ui-only agents require an eligible issue-scoped wake.",
+      });
+      return null;
     }
     const isolatedWorkspacesEnabled = issueId
       ? (await instanceSettings.getExperimental()).enableIsolatedWorkspaces
@@ -16453,6 +16623,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             executionWorkspacePreference: issues.executionWorkspacePreference,
             executionWorkspaceSettings: issues.executionWorkspaceSettings,
             assigneeAgentId: issues.assigneeAgentId,
+            originKind: issues.originKind,
+            createdByAgentId: issues.createdByAgentId,
+            createdByUserId: issues.createdByUserId,
             executionRunId: issues.executionRunId,
             executionAgentNameKey: issues.executionAgentNameKey,
             createdAt: issues.createdAt,
@@ -16469,6 +16642,37 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             triggerDetail,
             reason: "issue_execution_issue_not_found",
             payload,
+            status: "skipped",
+            requestedByActorType: opts.requestedByActorType ?? null,
+            requestedByActorId: opts.requestedByActorId ?? null,
+            idempotencyKey: opts.idempotencyKey ?? null,
+            finishedAt: new Date(),
+          });
+          return { kind: "skipped" as const };
+        }
+
+        if (
+          boardUiCreateOnlyPolicy &&
+          !boardUiCreateOnlyIssueExecutionAllowed({
+            policy: boardUiCreateOnlyPolicy,
+            agentId,
+            issue,
+          })
+        ) {
+          await tx.insert(agentWakeupRequests).values({
+            companyId: agent.companyId,
+            agentId,
+            source,
+            triggerDetail,
+            reason: RESERVED_AGENT_BOARD_UI_ONLY_CODE,
+            payload: {
+              ...(payload ?? {}),
+              heartbeatSkip: {
+                code: RESERVED_AGENT_BOARD_UI_ONLY_CODE,
+                reason: "Issue provenance is not eligible for this board-ui-only agent.",
+                issueId: issue.id,
+              },
+            },
             status: "skipped",
             requestedByActorType: opts.requestedByActorType ?? null,
             requestedByActorId: opts.requestedByActorId ?? null,

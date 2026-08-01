@@ -28,6 +28,7 @@ import {
   type TrustPresetResolution,
 } from "./trust-preset-resolver.js";
 import { logger } from "../middleware/logger.js";
+import { readBoardUiCreateOnlyAssignmentPolicy } from "./agent-assignment-policy.js";
 
 export type AuthorizationActor =
   {
@@ -107,6 +108,7 @@ export type AuthorizationDecision = {
     | "allow_company_agent"
     | "allow_company_member"
     | "allow_simple_company_member"
+    | "allow_board_ui_create_only"
     | "allow_manager_chain"
     | "inbox_target_user_unresolved"
     | "inbox_management_disabled"
@@ -214,6 +216,7 @@ function readBoolean(value: unknown): boolean | null {
 type AssignmentPolicyEffect =
   | { kind: "none" }
   | { kind: "restricted"; explanation: string }
+  | { kind: "board_ui_create_only"; explanation: string; allowedUserIds: string[] }
   | { kind: "requires_approval"; explanation: string }
   | { kind: "unknown"; explanation: string };
 
@@ -249,6 +252,7 @@ type IssueAuthorizationRow = {
 function evaluateAuthorizationPolicyForAssignment(
   policy: Record<string, unknown> | null | undefined,
   label: string,
+  options: { allowBoardUiCreateOnly?: boolean } = {},
 ): AssignmentPolicyEffect {
   if (!policy || objectIsEmpty(policy)) return { kind: "none" };
 
@@ -279,7 +283,12 @@ function evaluateAuthorizationPolicyForAssignment(
   }
 
   const assignmentMode = readString(assignmentPolicy?.mode);
-  if (assignmentMode && assignmentMode !== "company_default" && assignmentMode !== "protected") {
+  if (
+    assignmentMode &&
+    assignmentMode !== "company_default" &&
+    assignmentMode !== "protected" &&
+    assignmentMode !== "board_ui_create_only"
+  ) {
     return {
       kind: "unknown",
       explanation: `${label} has an unsupported assignment policy mode.`,
@@ -303,6 +312,27 @@ function evaluateAuthorizationPolicyForAssignment(
     return {
       kind: "restricted",
       explanation: `${label} is private and cannot use simple company-wide task assignment.`,
+    };
+  }
+
+  if (assignmentMode === "board_ui_create_only") {
+    if (!options.allowBoardUiCreateOnly) {
+      return {
+        kind: "unknown",
+        explanation: `${label} cannot use the agent-only board-ui assignment policy mode.`,
+      };
+    }
+    const boardUiPolicy = readBoardUiCreateOnlyAssignmentPolicy(policy);
+    if (!boardUiPolicy?.valid) {
+      return {
+        kind: "unknown",
+        explanation: `${label} has an invalid board-ui-only assignment policy.`,
+      };
+    }
+    return {
+      kind: "board_ui_create_only",
+      allowedUserIds: boardUiPolicy.allowedUserIds,
+      explanation: `${label} only accepts board UI assignment by an allowed user.`,
     };
   }
 
@@ -1254,6 +1284,7 @@ export function authorizationService(db: Db) {
           evaluateAuthorizationPolicyForAssignment(
             readPolicyObject(agent?.permissions, "authorizationPolicy"),
             "Target agent",
+            { allowBoardUiCreateOnly: true },
           ),
         ),
       );
@@ -1286,6 +1317,7 @@ export function authorizationService(db: Db) {
       effects.find((effect) => effect.kind === "unknown") ??
       effects.find((effect) => effect.kind === "requires_approval") ??
       effects.find((effect) => effect.kind === "restricted") ??
+      effects.find((effect) => effect.kind === "board_ui_create_only") ??
       { kind: "none" }
     );
   }
@@ -1535,6 +1567,38 @@ export function authorizationService(db: Db) {
 
     if (input.actor.type === "board") {
       let taskAssignmentPolicyEffect: AssignmentPolicyEffect | null = null;
+      if (input.action === "tasks:assign") {
+        taskAssignmentPolicyEffect = await assignmentPolicyEffect(input.resource);
+        if (taskAssignmentPolicyEffect.kind === "board_ui_create_only") {
+          if (!(await assignmentTargetIsInCompany(input.resource))) {
+            return deny({
+              action: input.action,
+              reason: "deny_company_boundary",
+              explanation: "Task assignment target agent is not active in the target company.",
+            });
+          }
+          if (
+            input.actor.source === "session" &&
+            input.actor.userId &&
+            taskAssignmentPolicyEffect.allowedUserIds.includes(input.actor.userId)
+          ) {
+            const membership = await getActiveMembership(companyId, "user", input.actor.userId);
+            if (membership && membership.membershipRole !== "viewer") {
+              return allow({
+                action: input.action,
+                reason: "allow_board_ui_create_only",
+                explanation:
+                  "Allowed for the configured active company member through an authenticated board session.",
+              });
+            }
+          }
+          return deny({
+            action: input.action,
+            reason: "deny_policy_restricted",
+            explanation: taskAssignmentPolicyEffect.explanation,
+          });
+        }
+      }
       if (input.actor.source === "local_implicit") {
         return allow({
           action: input.action,
@@ -1606,7 +1670,7 @@ export function authorizationService(db: Db) {
             explanation: "Task assignment target agent is not active in the target company.",
           });
         }
-        const policyEffect = await assignmentPolicyEffect(input.resource);
+        const policyEffect = taskAssignmentPolicyEffect ?? await assignmentPolicyEffect(input.resource);
         taskAssignmentPolicyEffect = policyEffect;
         const policyDeny = await denyForAssignmentPolicyIfNeeded(policyEffect);
         if (policyDeny) return policyDeny;

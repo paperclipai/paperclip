@@ -55,12 +55,18 @@ async function createAgent(
     .then((rows) => rows[0]!);
 }
 
-async function createProject(db: ReturnType<typeof createDb>, companyId: string, label: string) {
+async function createProject(
+  db: ReturnType<typeof createDb>,
+  companyId: string,
+  label: string,
+  input: { executionWorkspacePolicy?: Record<string, unknown> } = {},
+) {
   return db
     .insert(projects)
     .values({
       companyId,
       name: `Project ${label} ${randomUUID()}`,
+      executionWorkspacePolicy: input.executionWorkspacePolicy,
     })
     .returning()
     .then((rows) => rows[0]!);
@@ -525,6 +531,134 @@ describeEmbeddedPostgres("authorization service", () => {
       reason: "allow_simple_company_member",
     });
     expect(decision.explanation).toContain("simple mode");
+  });
+
+  it("admits board-ui-only assignment only for an allowlisted authenticated session", async () => {
+    const company = await createCompany(db, "BoardUiOnlyAssignment");
+    const ownerUserId = await createUser(db);
+    const noMembershipUserId = await createUser(db);
+    const unallowlistedUserId = await createUser(db);
+    const viewerUserId = await createUser(db);
+    const inactiveUserId = await createUser(db);
+    const actorAgent = await createAgent(db, company.id);
+    const targetAgent = await createAgent(db, company.id, {
+      permissions: {
+        authorizationPolicy: {
+          assignmentPolicy: {
+            mode: "board_ui_create_only",
+            allowedUserIds: [ownerUserId, noMembershipUserId, viewerUserId, inactiveUserId],
+          },
+        },
+      },
+    });
+    await db.insert(companyMemberships).values([
+      {
+        companyId: company.id,
+        principalType: "user",
+        principalId: ownerUserId,
+        status: "active",
+        membershipRole: "operator",
+      },
+      {
+        companyId: company.id,
+        principalType: "user",
+        principalId: viewerUserId,
+        status: "active",
+        membershipRole: "viewer",
+      },
+      {
+        companyId: company.id,
+        principalType: "user",
+        principalId: inactiveUserId,
+        status: "inactive",
+        membershipRole: "operator",
+      },
+    ]);
+    const authorization = authorizationService(db);
+    const resource = {
+      type: "issue" as const,
+      companyId: company.id,
+      assigneeAgentId: targetAgent.id,
+    };
+
+    await expect(authorization.decide({
+      actor: { type: "board", userId: ownerUserId, source: "session" },
+      action: "tasks:assign",
+      resource,
+    })).resolves.toMatchObject({
+      allowed: true,
+      reason: "allow_board_ui_create_only",
+    });
+
+    const deniedActors = [
+      { type: "board" as const, userId: ownerUserId, source: "local_implicit" as const },
+      { type: "board" as const, userId: ownerUserId, source: "board_key" as const },
+      { type: "board" as const, userId: noMembershipUserId, source: "session" as const },
+      { type: "board" as const, userId: unallowlistedUserId, source: "session" as const },
+      { type: "board" as const, userId: viewerUserId, source: "session" as const },
+      { type: "board" as const, userId: inactiveUserId, source: "session" as const },
+      {
+        type: "board" as const,
+        userId: unallowlistedUserId,
+        source: "session" as const,
+        isInstanceAdmin: true,
+      },
+      {
+        type: "agent" as const,
+        agentId: actorAgent.id,
+        companyId: company.id,
+        source: "agent_key" as const,
+      },
+    ];
+    for (const actor of deniedActors) {
+      await expect(authorization.decide({
+        actor,
+        action: "tasks:assign",
+        resource,
+      })).resolves.toMatchObject({
+        allowed: false,
+        reason: "deny_policy_restricted",
+      });
+    }
+  });
+
+  it("rejects board-ui-only assignment policy outside the target-agent scope", async () => {
+    const company = await createCompany(db, "BoardUiOnlyScope");
+    const ownerUserId = await createUser(db);
+    await db.insert(companyMemberships).values({
+      companyId: company.id,
+      principalType: "user",
+      principalId: ownerUserId,
+      status: "active",
+      membershipRole: "operator",
+    });
+    const targetAgent = await createAgent(db, company.id);
+    const targetProject = await createProject(db, company.id, "BoardUiOnlyScope", {
+      executionWorkspacePolicy: {
+        authorizationPolicy: {
+          assignmentPolicy: {
+            mode: "board_ui_create_only",
+            allowedUserIds: [ownerUserId],
+          },
+        },
+      },
+    });
+    const authorization = authorizationService(db);
+    const resource = {
+      type: "issue" as const,
+      companyId: company.id,
+      projectId: targetProject.id,
+      assigneeAgentId: targetAgent.id,
+    };
+
+    await expect(authorization.decide({
+      actor: { type: "board", userId: ownerUserId, source: "session" },
+      action: "tasks:assign",
+      resource,
+    })).resolves.toMatchObject({
+      allowed: false,
+      reason: "deny_policy_restricted",
+    });
   });
 
   it("denies delegated protected assignment when the responsible user lacks matching authority", async () => {

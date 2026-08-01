@@ -117,6 +117,10 @@ import { finalizeStatusCardsForStalledGeneration } from "./status-card-finalizat
 import { finalizeSummarySlotsForTerminalIssue } from "./summary-slot-finalization.js";
 import { logActivity } from "./activity-log.js";
 import { buildIssueChanges } from "./issue-change-receipt.js";
+import {
+  assertAgentAssignmentAllowedForIssueMutation,
+  type IssueAssignmentAdmission,
+} from "./agent-assignment-policy.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
@@ -615,6 +619,7 @@ type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId"> & {
   idempotencyKey?: string | null;
   allowDuplicate?: boolean;
   onDeduplicated?: (reason: "idempotency_key" | "recent_open_title") => void;
+  assignmentAdmission?: IssueAssignmentAdmission | null;
 };
 type IssueChildCreateInput = IssueCreateInput & {
   acceptanceCriteria?: string[];
@@ -6344,6 +6349,7 @@ export function issueService(db: Db) {
         idempotencyKey: rawIdempotencyKey,
         allowDuplicate,
         onDeduplicated,
+        assignmentAdmission,
         ...issueData
       } = data;
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
@@ -6356,6 +6362,17 @@ export function issueService(db: Db) {
         throw unprocessable("Issue can only have one assignee");
       }
       if (data.assigneeAgentId) {
+        await assertAgentAssignmentAllowedForIssueMutation(db, {
+          companyId,
+          assigneeAgentId: data.assigneeAgentId,
+          mutation: "create",
+          admission: assignmentAdmission,
+          issue: {
+            originKind: issueData.originKind,
+            createdByAgentId: issueData.createdByAgentId,
+            createdByUserId: issueData.createdByUserId,
+          },
+        });
         await assertAssignableAgent(db, companyId, data.assigneeAgentId, { kind: "work" });
       }
       if (data.assigneeUserId) {
@@ -6754,6 +6771,17 @@ export function issueService(db: Db) {
 
           if (row.assigneeAgentId) {
             if (!validatedAgentIds.has(row.assigneeAgentId)) {
+              await assertAgentAssignmentAllowedForIssueMutation(tx as unknown as Db, {
+                companyId,
+                assigneeAgentId: row.assigneeAgentId,
+                mutation: "create",
+                admission: null,
+                issue: {
+                  originKind: "manual",
+                  createdByAgentId: null,
+                  createdByUserId: null,
+                },
+              });
               await assertAssignableAgent(tx as unknown as Db, companyId, row.assigneeAgentId, { kind: "work" });
               validatedAgentIds.add(row.assigneeAgentId);
             }
@@ -6904,6 +6932,7 @@ export function issueService(db: Db) {
         blockedByIssueIds?: string[];
         actorAgentId?: string | null;
         actorUserId?: string | null;
+        assignmentAdmission?: IssueAssignmentAdmission | null;
       },
       dbOrTx: any = db,
     ) => {
@@ -6919,6 +6948,7 @@ export function issueService(db: Db) {
         blockedByIssueIds,
         actorAgentId,
         actorUserId,
+        assignmentAdmission,
         ...issueData
       } = data;
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
@@ -6983,6 +7013,19 @@ export function issueService(db: Db) {
         Boolean(nextAssigneeAgentId) &&
         (issueData.assigneeAgentId !== undefined || patch.status === "in_progress");
       if (shouldValidateNextAssignee) {
+        if (issueData.assigneeAgentId !== undefined && nextAssigneeAgentId !== existing.assigneeAgentId) {
+          await assertAgentAssignmentAllowedForIssueMutation(dbOrTx as Db, {
+            companyId: existing.companyId,
+            assigneeAgentId: nextAssigneeAgentId,
+            mutation: "update",
+            admission: assignmentAdmission,
+            issue: {
+              originKind: existing.originKind,
+              createdByAgentId: existing.createdByAgentId,
+              createdByUserId: existing.createdByUserId,
+            },
+          });
+        }
         await assertAssignableAgent(dbOrTx as Db, existing.companyId, nextAssigneeAgentId, { kind: "work" });
       }
       if (issueData.assigneeUserId) {
@@ -7320,13 +7363,38 @@ export function issueService(db: Db) {
         return enriched;
       }),
 
-    checkout: async (id: string, agentId: string, expectedStatuses: string[], checkoutRunId: string | null) => {
+    checkout: async (
+      id: string,
+      agentId: string,
+      expectedStatuses: string[],
+      checkoutRunId: string | null,
+      assignmentAdmission?: IssueAssignmentAdmission | null,
+    ) => {
       const issueCompany = await db
-        .select({ companyId: issues.companyId })
+        .select({
+          companyId: issues.companyId,
+          assigneeAgentId: issues.assigneeAgentId,
+          originKind: issues.originKind,
+          createdByAgentId: issues.createdByAgentId,
+          createdByUserId: issues.createdByUserId,
+        })
         .from(issues)
         .where(eq(issues.id, id))
         .then((rows) => rows[0] ?? null);
       if (!issueCompany) throw notFound("Issue not found");
+      if (issueCompany.assigneeAgentId !== agentId) {
+        await assertAgentAssignmentAllowedForIssueMutation(db, {
+          companyId: issueCompany.companyId,
+          assigneeAgentId: agentId,
+          mutation: "update",
+          admission: assignmentAdmission,
+          issue: {
+            originKind: issueCompany.originKind,
+            createdByAgentId: issueCompany.createdByAgentId,
+            createdByUserId: issueCompany.createdByUserId,
+          },
+        });
+      }
       await assertAssignableAgent(db, issueCompany.companyId, agentId, { kind: "work" });
 
       const now = new Date();
