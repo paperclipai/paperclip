@@ -1,7 +1,7 @@
 import { createServer } from "node:http";
 import net from "node:net";
 import { execFile, spawn } from "node:child_process";
-import { mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
@@ -103,6 +103,30 @@ describe("sandbox adapter execution targets", () => {
       await new Promise((resolve) => setTimeout(resolve, 5));
     }
     throw new Error(message);
+  }
+
+  function isProcessAlive(pid: number | null | undefined) {
+    if (!pid || !Number.isInteger(pid) || pid <= 0) return false;
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code === "EPERM";
+    }
+  }
+
+  async function readProcessSessionState(runtimeRootDir: string) {
+    const sessionsRoot = path.join(runtimeRootDir, "process-sessions");
+    const sessionNames = (await readdir(sessionsRoot, { withFileTypes: true }))
+      .filter((entry) => entry.isDirectory() && !entry.name.startsWith("."))
+      .map((entry) => entry.name);
+    expect(sessionNames).toHaveLength(1);
+    const sessionDir = path.join(sessionsRoot, sessionNames[0]!);
+    const state = JSON.parse(await readFile(path.join(sessionDir, "process-state.json"), "utf8")) as {
+      bridgePid: number;
+      childPid: number | null;
+    };
+    return { sessionDir, state };
   }
 
   async function runProxyWithInput(command: string, input: string): Promise<{ stdout: string; stderr: string; code: number | null }> {
@@ -386,6 +410,274 @@ describe("sandbox adapter execution targets", () => {
       await bridge?.stop();
     }
   });
+
+  it.skipIf(process.platform === "win32")(
+    "lets the remote bridge exit after its child closes without a stdin marker",
+    async () => {
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-process-session-child-close-"));
+      cleanupDirs.push(rootDir);
+      const runtimeRootDir = path.posix.join(rootDir, ".paperclip-runtime", "acpx");
+      const childPath = path.join(rootDir, "short-lived-acp-child.mjs");
+      await writeFile(childPath, "setTimeout(() => process.exit(0), 25);\n", "utf8");
+      const target: AdapterSandboxExecutionTarget = {
+        kind: "remote",
+        transport: "sandbox",
+        providerKey: "local-test",
+        remoteCwd: rootDir,
+        timeoutMs: 30_000,
+        runner: createLocalSandboxRunner(),
+      };
+
+      const bridge = await startAdapterExecutionTargetProcessSessionBridge({
+        runId: "run-process-session-child-close",
+        target,
+        runtimeRootDir,
+        adapterKey: "acpx",
+        command: process.execPath,
+        args: [childPath],
+        cwd: rootDir,
+        env: {},
+        timeoutSec: 5,
+        onLog: async () => {},
+      });
+      expect(bridge).not.toBeNull();
+
+      try {
+        const { state } = await readProcessSessionState(runtimeRootDir);
+        await waitForCondition(
+          () => !isProcessAlive(state.bridgePid),
+          `Remote process-session bridge ${state.bridgePid} survived its child close.`,
+          3_000,
+        );
+        expect(isProcessAlive(state.childPid)).toBe(false);
+      } finally {
+        await bridge?.stop();
+      }
+    },
+    10_000,
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "rolls back the remote process tree when launch state cannot be acquired",
+    async () => {
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-process-session-launch-rollback-"));
+      cleanupDirs.push(rootDir);
+      const runtimeRootDir = path.posix.join(rootDir, ".paperclip-runtime", "acpx");
+      const childPath = path.join(rootDir, "launch-rollback-acp-child.mjs");
+      await writeFile(childPath, "process.stdin.resume(); setInterval(() => {}, 1000);\n", "utf8");
+      const baseRunner = createLocalSandboxRunner();
+      let launchedState: { bridgePid: number; childPid: number | null } | null = null;
+      const runner = {
+        execute: async (input: Parameters<typeof baseRunner.execute>[0]) => {
+          const result = await baseRunner.execute(input);
+          const script = input.args?.join("\n") ?? "";
+          if (script.includes("nohup node") && (result.exitCode ?? 1) === 0) {
+            launchedState = JSON.parse(result.stdout) as { bridgePid: number; childPid: number | null };
+            return { ...result, stdout: "{}\n" };
+          }
+          return result;
+        },
+      };
+      const target: AdapterSandboxExecutionTarget = {
+        kind: "remote",
+        transport: "sandbox",
+        providerKey: "local-test",
+        remoteCwd: rootDir,
+        timeoutMs: 30_000,
+        runner,
+      };
+
+      await expect(startAdapterExecutionTargetProcessSessionBridge({
+        runId: "run-process-session-launch-rollback",
+        target,
+        runtimeRootDir,
+        adapterKey: "acpx",
+        command: process.execPath,
+        args: [childPath],
+        cwd: rootDir,
+        env: {},
+        timeoutSec: 5,
+        onLog: async () => {},
+      })).rejects.toThrow("state did not match");
+
+      expect(launchedState).not.toBeNull();
+      expect(isProcessAlive(launchedState!.bridgePid)).toBe(false);
+      expect(isProcessAlive(launchedState!.childPid)).toBe(false);
+      const sessionDirs = (await readdir(path.join(runtimeRootDir, "process-sessions"), { withFileTypes: true }))
+        .filter((entry) => entry.isDirectory() && !entry.name.startsWith("."));
+      expect(sessionDirs).toHaveLength(0);
+    },
+    10_000,
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "keeps the stdin control directory until a stubborn remote child is terminated",
+    async () => {
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-process-session-stop-"));
+      cleanupDirs.push(rootDir);
+      const runtimeRootDir = path.posix.join(rootDir, ".paperclip-runtime", "acpx");
+      const childPath = path.join(rootDir, "stubborn-acp-child.mjs");
+      await writeFile(
+        childPath,
+        [
+          "process.on('SIGTERM', () => {});",
+          "process.stdin.resume();",
+          "setInterval(() => {}, 1000);",
+        ].join("\n"),
+        "utf8",
+      );
+      const target: AdapterSandboxExecutionTarget = {
+        kind: "remote",
+        transport: "sandbox",
+        providerKey: "local-test",
+        remoteCwd: rootDir,
+        timeoutMs: 30_000,
+        runner: createLocalSandboxRunner(),
+      };
+
+      const bridge = await startAdapterExecutionTargetProcessSessionBridge({
+        runId: "run-process-session-stop",
+        target,
+        runtimeRootDir,
+        adapterKey: "acpx",
+        command: process.execPath,
+        args: [childPath],
+        cwd: rootDir,
+        env: {},
+        timeoutSec: 5,
+        onLog: async () => {},
+      });
+      expect(bridge).not.toBeNull();
+
+      const { sessionDir, state } = await readProcessSessionState(runtimeRootDir);
+      expect(isProcessAlive(state.bridgePid)).toBe(true);
+      expect(isProcessAlive(state.childPid)).toBe(true);
+
+      await bridge?.stop();
+
+      expect(isProcessAlive(state.bridgePid)).toBe(false);
+      expect(isProcessAlive(state.childPid)).toBe(false);
+      await expect(access(sessionDir)).rejects.toThrow();
+    },
+    10_000,
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "terminates persisted session identities when the remote control directory is already missing",
+    async () => {
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-process-session-missing-state-"));
+      cleanupDirs.push(rootDir);
+      const runtimeRootDir = path.posix.join(rootDir, ".paperclip-runtime", "acpx");
+      const childPath = path.join(rootDir, "missing-state-acp-child.mjs");
+      await writeFile(
+        childPath,
+        [
+          "process.on('SIGTERM', () => {});",
+          "process.stdin.resume();",
+          "setInterval(() => {}, 1000);",
+        ].join("\n"),
+        "utf8",
+      );
+      const target: AdapterSandboxExecutionTarget = {
+        kind: "remote",
+        transport: "sandbox",
+        providerKey: "local-test",
+        remoteCwd: rootDir,
+        timeoutMs: 30_000,
+        runner: createLocalSandboxRunner(),
+      };
+
+      const bridge = await startAdapterExecutionTargetProcessSessionBridge({
+        runId: "run-process-session-missing-state",
+        target,
+        runtimeRootDir,
+        adapterKey: "acpx",
+        command: process.execPath,
+        args: [childPath],
+        cwd: rootDir,
+        env: {},
+        timeoutSec: 5,
+        onLog: async () => {},
+      });
+      expect(bridge).not.toBeNull();
+
+      const { sessionDir, state } = await readProcessSessionState(runtimeRootDir);
+      expect(isProcessAlive(state.bridgePid)).toBe(true);
+      expect(isProcessAlive(state.childPid)).toBe(true);
+      await rm(sessionDir, { recursive: true, force: true });
+
+      await bridge?.stop();
+
+      expect(isProcessAlive(state.bridgePid)).toBe(false);
+      expect(isProcessAlive(state.childPid)).toBe(false);
+    },
+    10_000,
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "allows a later remote teardown retry after bounded runner failures",
+    async () => {
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-process-session-stop-retry-"));
+      cleanupDirs.push(rootDir);
+      const runtimeRootDir = path.posix.join(rootDir, ".paperclip-runtime", "acpx");
+      const childPath = path.join(rootDir, "stop-retry-acp-child.mjs");
+      await writeFile(
+        childPath,
+        [
+          "process.on('SIGTERM', () => {});",
+          "process.stdin.resume();",
+          "setInterval(() => {}, 1000);",
+        ].join("\n"),
+        "utf8",
+      );
+      const baseRunner = createLocalSandboxRunner();
+      let stopAttempts = 0;
+      const runner = {
+        execute: async (input: Parameters<typeof baseRunner.execute>[0]) => {
+          const script = input.args?.join("\n") ?? "";
+          if (script.includes("bridge_pid=") && script.includes("session_identity_conflict")) {
+            stopAttempts += 1;
+            if (stopAttempts <= 2) throw new Error("transient stop runner failure");
+          }
+          return await baseRunner.execute(input);
+        },
+      };
+      const target: AdapterSandboxExecutionTarget = {
+        kind: "remote",
+        transport: "sandbox",
+        providerKey: "local-test",
+        remoteCwd: rootDir,
+        timeoutMs: 30_000,
+        runner,
+      };
+
+      const bridge = await startAdapterExecutionTargetProcessSessionBridge({
+        runId: "run-process-session-stop-retry",
+        target,
+        runtimeRootDir,
+        adapterKey: "acpx",
+        command: process.execPath,
+        args: [childPath],
+        cwd: rootDir,
+        env: {},
+        timeoutSec: 5,
+        onLog: async () => {},
+      });
+      expect(bridge).not.toBeNull();
+      const { state } = await readProcessSessionState(runtimeRootDir);
+
+      await expect(bridge?.stop()).rejects.toThrow("transient stop runner failure");
+      expect(isProcessAlive(state.bridgePid)).toBe(true);
+      expect(isProcessAlive(state.childPid)).toBe(true);
+
+      await bridge?.stop();
+
+      expect(stopAttempts).toBe(3);
+      expect(isProcessAlive(state.bridgePid)).toBe(false);
+      expect(isProcessAlive(state.childPid)).toBe(false);
+    },
+    10_000,
+  );
 
   it("ignores unauthenticated connections to the process session bridge", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-process-session-auth-"));

@@ -366,8 +366,31 @@ export async function terminateLocalService(
   record: Pick<LocalServiceRegistryRecord, "pid" | "processGroupId">,
   opts?: { signal?: NodeJS.Signals; forceAfterMs?: number },
 ) {
+  if (process.platform === "win32") {
+    try {
+      // Runtime services are launched through a shell wrapper. taskkill /T is
+      // required so the actual server descendant cannot outlive that wrapper.
+      await execFileAsync(
+        "taskkill",
+        ["/PID", String(record.pid), "/T", "/F"],
+        { windowsHide: true },
+      );
+    } catch (error) {
+      if (isPidAlive(record.pid)) throw error;
+      return;
+    }
+    const deadline = Date.now() + (opts?.forceAfterMs ?? 2_000);
+    while (isPidAlive(record.pid) && Date.now() < deadline) {
+      await delay(50);
+    }
+    if (isPidAlive(record.pid)) {
+      throw new Error(`Local service process tree ${record.pid} remained alive after taskkill.`);
+    }
+    return;
+  }
+
   const signal = opts?.signal ?? "SIGTERM";
-  const targetProcessGroup = process.platform !== "win32" && record.processGroupId && record.processGroupId > 0;
+  const targetProcessGroup = record.processGroupId && record.processGroupId > 0;
   try {
     if (targetProcessGroup) {
       process.kill(-record.processGroupId!, signal);

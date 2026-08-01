@@ -44,6 +44,7 @@ import {
 } from "../services/workspace-runtime.ts";
 import {
   findAdoptableLocalService,
+  isPidAlive,
   isLocalServiceRegistryCwdCompatible,
   isLocalServiceProcessInWorkspace,
   readLocalServicePortOwner,
@@ -64,6 +65,7 @@ import {
 } from "./helpers/embedded-postgres.js";
 
 const execFileAsync = promisify(execFile);
+const originalShellEnv = process.env.SHELL;
 
 function stableStringifyForTest(value: unknown): string {
   if (Array.isArray(value)) {
@@ -353,6 +355,8 @@ afterEach(async () => {
   delete process.env.PAPERCLIP_INSTANCE_ID;
   delete process.env.PAPERCLIP_WORKTREES_DIR;
   delete process.env.DATABASE_URL;
+  if (originalShellEnv === undefined) delete process.env.SHELL;
+  else process.env.SHELL = originalShellEnv;
   await resetRuntimeServicesForTests();
 });
 
@@ -3384,6 +3388,64 @@ describe("ensureRuntimeServicesForRun", () => {
     expect(services).toEqual([]);
   });
 
+  it(
+    "terminates registered runtime services before resetting test state",
+    async () => {
+      if (process.platform === "win32") {
+        const programFiles = process.env.ProgramFiles ?? "C:\\Program Files";
+        const gitShell = path.join(programFiles, "Git", "bin", "sh.exe");
+        expect(existsSync(gitShell)).toBe(true);
+        process.env.SHELL = gitShell;
+      }
+      const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-reset-"));
+      const workspace = buildWorkspace(workspaceRoot);
+      const services = await startRuntimeServicesForWorkspaceControl({
+        actor: {
+          id: "agent-reset",
+          name: "Codex Coder",
+          companyId: "company-reset",
+        },
+        issue: null,
+        workspace,
+        executionWorkspaceId: "execution-workspace-reset",
+        config: {
+          workspaceRuntime: {
+            services: [
+              {
+                name: "web",
+                command:
+                  "node -e \"require('node:http').createServer((req,res)=>res.end('ok')).listen(Number(process.env.PORT), '127.0.0.1')\"",
+                port: { type: "auto" },
+                readiness: {
+                  type: "http",
+                  urlTemplate: "http://127.0.0.1:{{port}}",
+                  timeoutSec: 10,
+                  intervalMs: 100,
+                },
+                lifecycle: "shared",
+                reuseScope: "execution_workspace",
+                stopPolicy: { type: "manual" },
+              },
+            ],
+          },
+        },
+        adapterEnv: {},
+      });
+
+      expect(services).toHaveLength(1);
+      const service = services[0]!;
+      const pid = Number.parseInt(service.providerRef ?? "", 10);
+      expect(isPidAlive(pid)).toBe(true);
+      await expect(fetch(service.url!)).resolves.toMatchObject({ ok: true });
+
+      await resetRuntimeServicesForTests();
+
+      expect(isPidAlive(pid)).toBe(false);
+      await expect(fetch(service.url!)).rejects.toThrow();
+    },
+    15_000,
+  );
+
   it("requires Paperclip dev runtime services to pass /api/health readiness", async () => {
     const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-health-"));
     const workspace = buildWorkspace(workspaceRoot);
@@ -5264,6 +5326,9 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
   });
 
   afterEach(async () => {
+    // Runtime records still reference these rows while teardown persists the
+    // final stopped state, so process cleanup must precede fixture deletion.
+    await resetRuntimeServicesForTests();
     await db.delete(workspaceRuntimeServices);
     await db.delete(executionWorkspaces);
     await db.delete(projectWorkspaces);
@@ -5273,7 +5338,7 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
     await db.delete(companies);
   });
 
-  it("adopts a live auto-port shared service after runtime state is reset", async () => {
+  it("adopts a live auto-port shared service during startup reconciliation", async () => {
     const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-reconcile-"));
     const paperclipHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-home-"));
     process.env.PAPERCLIP_HOME = paperclipHome;
@@ -5360,8 +5425,6 @@ describeEmbeddedPostgres("workspace runtime startup reconciliation", () => {
     await expect(fetch(service!.url!)).resolves.toMatchObject({ ok: true });
 
     await fs.rm(paperclipHome, { recursive: true, force: true });
-    await resetRuntimeServicesForTests();
-
     const result = await reconcilePersistedRuntimeServicesOnStartup(db);
     expect(result).toMatchObject({ reconciled: 1, adopted: 1, stopped: 0 });
 

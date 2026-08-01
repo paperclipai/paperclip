@@ -24,6 +24,8 @@ import {
   createLocalServiceKey,
   findLocalServiceRegistryRecordByRuntimeServiceId,
   findAdoptableLocalService,
+  isPidAlive,
+  isProcessGroupAlive,
   isLocalServiceProcessInWorkspace,
   readLocalServiceProcessCwd,
   readLocalServicePortOwner,
@@ -135,6 +137,7 @@ export interface RuntimeServiceRef {
 interface RuntimeServiceRecord extends RuntimeServiceRef {
   db?: Db;
   child: ChildProcess | null;
+  exitListener?: (code: number | null, signal: NodeJS.Signals | null) => void;
   leaseRunIds: Set<string>;
   idleTimer: ReturnType<typeof globalThis.setTimeout> | null;
   envFingerprint: string;
@@ -170,12 +173,74 @@ type ProcessOutputAccumulator = {
 };
 
 export async function resetRuntimeServicesForTests() {
-  for (const record of runtimeServicesById.values()) {
+  const records = Array.from(runtimeServicesById.values());
+  for (const record of records) {
     clearIdleTimer(record);
+    // The registered exit listener normally removes the record immediately.
+    // During a test reset, keep the registry stable until every process has
+    // completed its bounded termination attempt.
+    detachRuntimeServiceExitListener(record);
   }
-  runtimeServicesById.clear();
-  runtimeServicesByReuseKey.clear();
-  runtimeServiceLeasesByRun.clear();
+
+  const stopResults = await Promise.all(
+    records.map(async (record) => {
+      try {
+        await terminateRuntimeServiceProcess(record);
+      } catch (error) {
+        return { record, terminationError: error, cleanupErrors: [] as unknown[] };
+      }
+
+      record.status = "stopped";
+      record.healthStatus = "unknown";
+      record.lastUsedAt = new Date().toISOString();
+      record.stoppedAt = record.lastUsedAt;
+      const cleanupResults = await Promise.allSettled([
+        removeLocalServiceRegistryRecord(record.serviceKey),
+        persistRuntimeServiceRecord(record.db, record),
+      ]);
+      return {
+        record,
+        terminationError: null,
+        cleanupErrors: cleanupResults
+          .filter((result): result is PromiseRejectedResult => result.status === "rejected")
+          .map((result) => result.reason),
+      };
+    }),
+  );
+  const stopFailures: unknown[] = [];
+  for (const result of stopResults) {
+    if (result.terminationError) {
+      // Keep the live record, reuse index, leases, and exit listener so a
+      // later teardown can retry. Losing these references would create the
+      // exact orphan that this reset is meant to prevent.
+      attachRuntimeServiceExitListener(result.record.db, result.record);
+      stopFailures.push(result.terminationError);
+      continue;
+    }
+    runtimeServicesById.delete(result.record.id);
+    if (
+      result.record.reuseKey
+      && runtimeServicesByReuseKey.get(result.record.reuseKey) === result.record.id
+    ) {
+      runtimeServicesByReuseKey.delete(result.record.reuseKey);
+    }
+    stopFailures.push(...result.cleanupErrors);
+  }
+  for (const [reuseKey, serviceId] of runtimeServicesByReuseKey) {
+    if (!runtimeServicesById.has(serviceId)) runtimeServicesByReuseKey.delete(reuseKey);
+  }
+  for (const [runId, serviceIds] of runtimeServiceLeasesByRun) {
+    const retainedServiceIds = serviceIds.filter((serviceId) => runtimeServicesById.has(serviceId));
+    if (retainedServiceIds.length > 0) runtimeServiceLeasesByRun.set(runId, retainedServiceIds);
+    else runtimeServiceLeasesByRun.delete(runId);
+  }
+
+  if (stopFailures.length > 0) {
+    throw new AggregateError(
+      stopFailures,
+      `Failed to fully reset ${stopFailures.length} runtime service cleanup operation(s).`,
+    );
+  }
 }
 
 function stableStringify(value: unknown): string {
@@ -4173,6 +4238,43 @@ function scheduleIdleStop(record: RuntimeServiceRecord) {
   }, idleSeconds * 1000);
 }
 
+async function terminateRuntimeServiceProcess(record: RuntimeServiceRecord) {
+  let pid: number | null = null;
+  let processGroupId: number | null = null;
+  if (record.child?.pid) {
+    pid = record.child.pid;
+    processGroupId = record.processGroupId ?? record.child.pid;
+  } else if (record.providerRef) {
+    const providerPid = Number.parseInt(record.providerRef, 10);
+    if (Number.isInteger(providerPid) && providerPid > 0) {
+      pid = providerPid;
+      processGroupId = record.processGroupId;
+    }
+  }
+  if (!pid) return;
+  // A stale or synthetic registry entry must never make test cleanup signal
+  // the Vitest/Paperclip host process itself. There is no child service to
+  // reap in this case, so clearing the in-memory record is the safe outcome.
+  if (pid === process.pid) return;
+
+  await terminateLocalService({
+    pid,
+    processGroupId,
+  });
+
+  const processAlive = () =>
+    process.platform !== "win32" && processGroupId
+      ? isProcessGroupAlive(processGroupId)
+      : isPidAlive(pid!);
+  const deadline = Date.now() + 1_000;
+  while (processAlive() && Date.now() < deadline) {
+    await delay(50);
+  }
+  if (processAlive()) {
+    throw new Error(`Runtime service process ${pid} remained alive after bounded TERM/KILL cleanup.`);
+  }
+}
+
 async function stopRuntimeService(serviceId: string) {
   const record = runtimeServicesById.get(serviceId);
   if (!record) return;
@@ -4185,20 +4287,7 @@ async function stopRuntimeService(serviceId: string) {
   if (record.reuseKey && runtimeServicesByReuseKey.get(record.reuseKey) === record.id) {
     runtimeServicesByReuseKey.delete(record.reuseKey);
   }
-  if (record.child && record.child.pid) {
-    await terminateLocalService({
-      pid: record.child.pid,
-      processGroupId: record.processGroupId ?? record.child.pid,
-    });
-  } else if (record.providerRef) {
-    const pid = Number.parseInt(record.providerRef, 10);
-    if (Number.isInteger(pid) && pid > 0) {
-      await terminateLocalService({
-        pid,
-        processGroupId: record.processGroupId,
-      });
-    }
-  }
+  await terminateRuntimeServiceProcess(record);
   await removeLocalServiceRegistryRecord(record.serviceKey);
   await persistRuntimeServiceRecord(record.db, record);
 }
@@ -4225,14 +4314,18 @@ async function markPersistedRuntimeServicesStoppedForExecutionWorkspace(input: {
     );
 }
 
-function registerRuntimeService(db: Db | undefined, record: RuntimeServiceRecord) {
-  record.db = db;
-  runtimeServicesById.set(record.id, record);
-  if (record.reuseKey) {
-    runtimeServicesByReuseKey.set(record.reuseKey, record.id);
+function detachRuntimeServiceExitListener(record: RuntimeServiceRecord) {
+  if (record.child && record.exitListener) {
+    record.child.off("exit", record.exitListener);
   }
+  record.exitListener = undefined;
+}
 
-  record.child?.on("exit", (code, signal) => {
+function attachRuntimeServiceExitListener(db: Db | undefined, record: RuntimeServiceRecord) {
+  if (!record.child) return;
+  detachRuntimeServiceExitListener(record);
+  const exitListener = (code: number | null, signal: NodeJS.Signals | null) => {
+    record.exitListener = undefined;
     const current = runtimeServicesById.get(record.id);
     if (!current) return;
     clearIdleTimer(current);
@@ -4246,7 +4339,18 @@ function registerRuntimeService(db: Db | undefined, record: RuntimeServiceRecord
     }
     void removeLocalServiceRegistryRecord(current.serviceKey);
     void persistRuntimeServiceRecord(db, current);
-  });
+  };
+  record.exitListener = exitListener;
+  record.child.on("exit", exitListener);
+}
+
+function registerRuntimeService(db: Db | undefined, record: RuntimeServiceRecord) {
+  record.db = db;
+  runtimeServicesById.set(record.id, record);
+  if (record.reuseKey) {
+    runtimeServicesByReuseKey.set(record.reuseKey, record.id);
+  }
+  attachRuntimeServiceExitListener(db, record);
 }
 
 function readRuntimeServiceEntries(config: Record<string, unknown>) {
