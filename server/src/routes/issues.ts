@@ -3296,7 +3296,9 @@ export function issueRoutes(
         assigneeUserId: issue.assigneeUserId,
         status: issue.status,
         returnAssigneeAgentId: (() => {
-          const returnAssignee = parseIssueExecutionState(issue.executionState ?? null)?.returnAssignee;
+          const executionState = parseIssueExecutionState(issue.executionState ?? null);
+          if (issue.status !== "in_progress" || executionState?.status !== "changes_requested") return null;
+          const returnAssignee = executionState.returnAssignee;
           return returnAssignee?.type === "agent" ? returnAssignee.agentId ?? null : null;
         })(),
       },

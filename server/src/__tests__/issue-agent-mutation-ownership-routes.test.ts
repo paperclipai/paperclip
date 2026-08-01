@@ -796,7 +796,7 @@ describe("agent issue mutation checkout ownership", () => {
     mockIssueService.getById.mockResolvedValue(makeIssue({
       assigneeAgentId: peerAgentId,
       executionState: {
-        status: "pending",
+        status: "changes_requested",
         currentStageId: "99999999-9999-4999-8999-999999999999",
         currentStageIndex: 0,
         currentStageType: "review",
@@ -830,6 +830,26 @@ describe("agent issue mutation checkout ownership", () => {
       .post(`/api/issues/${issueId}/comments`)
       .send({ body: "I should still be denied." });
     expect(outsider.status).toBe(403);
+
+    mockIssueService.getById.mockResolvedValue(makeIssue({
+      assigneeAgentId: peerAgentId,
+      status: "done",
+      executionState: {
+        status: "completed",
+        currentStageId: null,
+        currentStageIndex: null,
+        currentStageType: null,
+        currentParticipant: null,
+        returnAssignee: { type: "agent", agentId: ownerAgentId },
+        completedStageIds: ["99999999-9999-4999-8999-999999999999"],
+        lastDecisionId: null,
+        lastDecisionOutcome: "approved",
+      },
+    }));
+    const afterCompletion = await request(await createApp(ownerActor()))
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "I should no longer have return-assignee access." });
+    expect(afterCompletion.status).toBe(403);
   });
 
   it("rejects non-mentioned peer agents from posting comments", async () => {
