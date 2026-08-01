@@ -78,7 +78,9 @@ export function linkSdkInto(packageDir) {
   try {
     const stat = lstatSync(linkTarget);
     if (stat.isSymbolicLink()) {
-      if (readlinkSync(linkTarget) === relativeSdkDir) {
+      // Windows junctions report an absolute target, POSIX symlinks the relative one.
+      const currentTarget = readlinkSync(linkTarget);
+      if (currentTarget === relativeSdkDir || resolve(scopeDir, currentTarget) === sdkDir) {
         // Already linked to the in-repo SDK; nothing to do.
         return false;
       }
@@ -93,6 +95,13 @@ export function linkSdkInto(packageDir) {
     if (error?.code !== "ENOENT") throw error;
   }
 
-  symlinkSync(relativeSdkDir, linkTarget, "dir");
+  // On Windows a real directory symlink requires SeCreateSymbolicLinkPrivilege
+  // (elevation or Developer Mode); a junction does not and behaves the same for
+  // module resolution. Junction targets must be absolute.
+  if (process.platform === "win32") {
+    symlinkSync(sdkDir, linkTarget, "junction");
+  } else {
+    symlinkSync(relativeSdkDir, linkTarget, "dir");
+  }
   return true;
 }
