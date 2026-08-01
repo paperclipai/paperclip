@@ -899,6 +899,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         errorCode: heartbeatRuns.errorCode,
         contextSnapshot: heartbeatRuns.contextSnapshot,
         livenessState: heartbeatRuns.livenessState,
+        startedAt: heartbeatRuns.startedAt,
+        updatedAt: heartbeatRuns.updatedAt,
+        finishedAt: heartbeatRuns.finishedAt,
         resultJson: heartbeatRuns.resultJson,
         createdAt: heartbeatRuns.createdAt,
       })
@@ -928,6 +931,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         errorCode: heartbeatRuns.errorCode,
         contextSnapshot: heartbeatRuns.contextSnapshot,
         livenessState: heartbeatRuns.livenessState,
+        startedAt: heartbeatRuns.startedAt,
+        updatedAt: heartbeatRuns.updatedAt,
+        finishedAt: heartbeatRuns.finishedAt,
         resultJson: heartbeatRuns.resultJson,
         createdAt: heartbeatRuns.createdAt,
       })
@@ -1254,6 +1260,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         errorCode: heartbeatRuns.errorCode,
         contextSnapshot: heartbeatRuns.contextSnapshot,
         livenessState: heartbeatRuns.livenessState,
+        startedAt: heartbeatRuns.startedAt,
+        updatedAt: heartbeatRuns.updatedAt,
+        finishedAt: heartbeatRuns.finishedAt,
         resultJson: heartbeatRuns.resultJson,
         createdAt: heartbeatRuns.createdAt,
       })
