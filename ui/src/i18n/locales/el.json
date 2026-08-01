@@ -5,5 +5,50 @@
       "description": "Ξεκινήστε δημιουργώντας μια εταιρεία.",
       "newCompany": "Νέα εταιρεία"
     }
+  },
+  "common": {
+    "skipToMainContent": "Skip to Main Content",
+    "openSearch": "Open search",
+    "keepSidebarExpanded": "Keep sidebar expanded",
+    "expandSidebar": "Expand sidebar",
+    "collapseSidebar": "Collapse sidebar",
+    "newTask": "New Task"
+  },
+  "sidebar": {
+    "dashboard": "Dashboard",
+    "inbox": "Inbox",
+    "decisions": "Decisions",
+    "status": "Status",
+    "conferenceRoom": "Conference Room",
+    "work": "Work",
+    "tasks": "Tasks",
+    "cases": "Cases",
+    "routines": "Routines",
+    "pipelines": "Pipelines",
+    "goals": "Goals",
+    "artifacts": "Artifacts",
+    "skills": "Skills",
+    "workspaces": "Workspaces",
+    "projects": "Projects",
+    "org": "Org",
+    "apps": "Apps",
+    "timeline": "Timeline",
+    "costs": "Costs",
+    "activity": "Activity",
+    "settings": "Settings",
+    "unread": "unread",
+    "decisionsBadge": "decisions",
+    "beta": "beta",
+    "company": "Company"
+  },
+  "onboarding": {
+    "createFirstCompanyTitle": "Create your first company",
+    "createAnotherCompanyTitle": "Create another company",
+    "addAgentToCompanyTitle": "Add another agent to {{name}}",
+    "createFirstCompanyDesc": "Get started by creating a company and your first agent.",
+    "createAnotherCompanyDesc": "Run onboarding again to create another company and seed its first agent.",
+    "addAgentToCompanyDesc": "Run onboarding again to add an agent and a starter task for this company.",
+    "addAgentButton": "Add Agent",
+    "startOnboardingButton": "Start Onboarding"
   }
 }
