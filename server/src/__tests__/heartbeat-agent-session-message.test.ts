@@ -157,6 +157,52 @@ describe("agent session wake messages", () => {
     expect(prompt).toContain("````text");
   });
 
+  it("projects generic resolved interactions into a fetchable wake directive", async () => {
+    const db = {
+      select: () => ({
+        from: () => ({
+          where: () => ({
+            limit: async () => [],
+            then: (resolve: (rows: unknown[]) => unknown) => Promise.resolve([]).then(resolve),
+          }),
+        }),
+      }),
+    } as never;
+    const wakePayload = await buildPaperclipWakePayload({
+      db,
+      companyId: "company-1",
+      contextSnapshot: {
+        wakeReason: "issue_commented",
+        issueId: "issue-1",
+        mutation: "interaction",
+        interactionId: "interaction-answered-1",
+        interactionKind: "ask_user_questions",
+        interactionStatus: "answered",
+        issueSummary: {
+          id: "issue-1",
+          identifier: "PAP-11",
+          title: "Continue from the board answer",
+          status: "in_progress",
+          priority: "high",
+          workMode: "standard",
+        },
+      },
+    });
+
+    expect(wakePayload).toMatchObject({
+      interactionId: "interaction-answered-1",
+      interactionKind: "ask_user_questions",
+      interactionStatus: "answered",
+      fallbackFetchNeeded: true,
+    });
+    const prompt = renderPaperclipWakePrompt(wakePayload);
+    expect(prompt).toContain("resolved interaction id: `interaction-answered-1`");
+    expect(prompt).toContain("interaction kind: `ask_user_questions`");
+    expect(prompt).toContain("interaction status: `answered`");
+    expect(prompt).toContain("fetch the resolved interaction by id before continuing");
+    expect(prompt).toContain("fallback fetch needed: yes");
+  });
+
   it("leaves a normal context-only wake without a renderable payload", async () => {
     await expect(
       buildPaperclipWakePayload({

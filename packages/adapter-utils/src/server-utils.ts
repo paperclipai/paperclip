@@ -710,6 +710,7 @@ type PaperclipWakePayload = {
   documentReviewContext: PaperclipWakeDocumentReviewContext | null;
   livenessContinuation: PaperclipWakeLivenessContinuation | null;
   taskWatchdog: PaperclipWakeTaskWatchdogContext | null;
+  interactionId: string | null;
   interactionKind: string | null;
   interactionStatus: string | null;
   checkboxSelection: PaperclipWakeCheckboxSelection | null;
@@ -1439,7 +1440,8 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
   const itemVerdicts = normalizePaperclipWakeItemVerdicts(payload.itemVerdicts);
   const executionWorkspace = normalizePaperclipWakeExecutionWorkspace(payload.executionWorkspace);
   const agentMessage = normalizePaperclipWakeAgentMessage(payload.agentMessage);
-  if (comments.length === 0 && commentIds.length === 0 && annotationDeltas.length === 0 && childIssueSummaries.length === 0 && unresolvedBlockerIssueIds.length === 0 && unresolvedBlockerSummaries.length === 0 && !activeTreeHold && !executionStage && !continuationSummary && !planReviewContext && !documentReviewContext && !livenessContinuation && !taskWatchdog && !checkboxSelection && !toolAction && !itemVerdicts && !executionWorkspace && !agentMessage && !recovery && !normalizePaperclipWakeIssue(payload.issue)) {
+  const interactionId = asString(payload.interactionId, "").trim() || null;
+  if (comments.length === 0 && commentIds.length === 0 && annotationDeltas.length === 0 && childIssueSummaries.length === 0 && unresolvedBlockerIssueIds.length === 0 && unresolvedBlockerSummaries.length === 0 && !activeTreeHold && !executionStage && !continuationSummary && !planReviewContext && !documentReviewContext && !livenessContinuation && !taskWatchdog && !interactionId && !checkboxSelection && !toolAction && !itemVerdicts && !executionWorkspace && !agentMessage && !recovery && !normalizePaperclipWakeIssue(payload.issue)) {
     return null;
   }
 
@@ -1461,6 +1463,7 @@ export function normalizePaperclipWakePayload(value: unknown): PaperclipWakePayl
     annotationDeltas,
     livenessContinuation,
     taskWatchdog,
+    interactionId,
     interactionKind: asString(payload.interactionKind, "").trim() || null,
     interactionStatus: asString(payload.interactionStatus, "").trim() || null,
     checkboxSelection,
@@ -1716,6 +1719,16 @@ export function renderPaperclipWakePrompt(
     }
   } else if (issueDescription !== null && resumeOmitsIssueDescription) {
     lines.push("- issue description: omitted from this resume delta; fetch the issue if you need the latest brief");
+  }
+  if (normalized.interactionId) {
+    lines.push(`- resolved interaction id: ${markdownInlineCode(normalized.interactionId)}`);
+    if (normalized.interactionKind) {
+      lines.push(`- interaction kind: ${markdownInlineCode(normalized.interactionKind)}`);
+    }
+    if (normalized.interactionStatus) {
+      lines.push(`- interaction status: ${markdownInlineCode(normalized.interactionStatus)}`);
+    }
+    lines.push("- interaction directive: fetch the resolved interaction by id before continuing so you use the board's exact response");
   }
   if (normalized.checkboxSelection) {
     if (normalized.checkboxSelection.prompt) {
