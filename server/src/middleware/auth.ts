@@ -1,6 +1,6 @@
 import { createHash, timingSafeEqual } from "node:crypto";
 import type { Request, RequestHandler } from "express";
-import { and, eq, isNull } from "drizzle-orm";
+import { and, eq, inArray, isNull } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
