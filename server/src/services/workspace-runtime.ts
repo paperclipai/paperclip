@@ -161,6 +161,16 @@ const runtimeServicesByReuseKey = new Map<string, string>();
 const runtimeServiceLeasesByRun = new Map<string, string[]>();
 const DEFAULT_EXECUTE_PROCESS_OUTPUT_BYTES = 256 * 1024;
 
+export function inspectRuntimeServicesForTests() {
+  return {
+    serviceIds: Array.from(runtimeServicesById.keys()).sort(),
+    reuseServiceIds: Array.from(runtimeServicesByReuseKey.values()).sort(),
+    leasesByRun: Array.from(runtimeServiceLeasesByRun.entries())
+      .map(([runId, serviceIds]) => [runId, [...serviceIds].sort()] as const)
+      .sort(([leftRunId], [rightRunId]) => leftRunId.localeCompare(rightRunId)),
+  };
+}
+
 type ProcessOutputCapture = {
   text: string;
   truncated: boolean;
@@ -187,23 +197,20 @@ export async function resetRuntimeServicesForTests() {
       try {
         await terminateRuntimeServiceProcess(record);
       } catch (error) {
-        return { record, terminationError: error, cleanupErrors: [] as unknown[] };
+        return { record, terminationError: error };
       }
 
       record.status = "stopped";
       record.healthStatus = "unknown";
       record.lastUsedAt = new Date().toISOString();
       record.stoppedAt = record.lastUsedAt;
-      const cleanupResults = await Promise.allSettled([
+      await Promise.allSettled([
         removeLocalServiceRegistryRecord(record.serviceKey),
         persistRuntimeServiceRecord(record.db, record),
       ]);
       return {
         record,
         terminationError: null,
-        cleanupErrors: cleanupResults
-          .filter((result): result is PromiseRejectedResult => result.status === "rejected")
-          .map((result) => result.reason),
       };
     }),
   );
@@ -224,7 +231,6 @@ export async function resetRuntimeServicesForTests() {
     ) {
       runtimeServicesByReuseKey.delete(result.record.reuseKey);
     }
-    stopFailures.push(...result.cleanupErrors);
   }
   for (const [reuseKey, serviceId] of runtimeServicesByReuseKey) {
     if (!runtimeServicesById.has(serviceId)) runtimeServicesByReuseKey.delete(reuseKey);

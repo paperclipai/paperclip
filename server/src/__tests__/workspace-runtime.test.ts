@@ -8,7 +8,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { parse as parseEnvContents } from "dotenv";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
   agents,
@@ -29,6 +29,7 @@ import {
   ensurePersistedExecutionWorkspaceAvailable,
   ensureServerWorkspaceLinksCurrent,
   ensureRuntimeServicesForRun,
+  inspectRuntimeServicesForTests,
   listConfiguredRuntimeServiceEntries,
   normalizeAdapterManagedRuntimeServices,
   reconcilePersistedRuntimeServicesOnStartup,
@@ -42,6 +43,7 @@ import {
   stopRuntimeServicesForExecutionWorkspace,
   type RealizedExecutionWorkspace,
 } from "../services/workspace-runtime.ts";
+import * as localServiceSupervisor from "../services/local-service-supervisor.ts";
 import {
   findAdoptableLocalService,
   isPidAlive,
@@ -3446,6 +3448,85 @@ describe("ensureRuntimeServicesForRun", () => {
     15_000,
   );
 
+  it(
+    "retains runtime state when process termination fails so reset can retry",
+    async () => {
+      const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-reset-retry-"));
+      const workspace = buildWorkspace(workspaceRoot);
+      const runId = randomUUID();
+      const services = await ensureRuntimeServicesForRun({
+        runId,
+        agent: {
+          id: "agent-reset-retry",
+          name: "Codex Coder",
+          companyId: "company-reset-retry",
+        },
+        issue: null,
+        workspace,
+        config: {
+          workspaceRuntime: {
+            services: [
+              {
+                name: "web",
+                command:
+                  "node -e \"require('node:http').createServer((req,res)=>res.end('ok')).listen(Number(process.env.PORT), '127.0.0.1')\"",
+                port: { type: "auto" },
+                readiness: {
+                  type: "http",
+                  urlTemplate: "http://127.0.0.1:{{port}}",
+                  timeoutSec: 10,
+                  intervalMs: 100,
+                },
+                lifecycle: "shared",
+                reuseScope: "execution_workspace",
+                stopPolicy: { type: "manual" },
+              },
+            ],
+          },
+        },
+        adapterEnv: {},
+      });
+
+      expect(services).toHaveLength(1);
+      const service = services[0]!;
+      const pid = Number.parseInt(service.providerRef ?? "", 10);
+      expect(isPidAlive(pid)).toBe(true);
+      expect(inspectRuntimeServicesForTests()).toEqual({
+        serviceIds: [service.id],
+        reuseServiceIds: [service.id],
+        leasesByRun: [[runId, [service.id]]],
+      });
+
+      const terminationError = new Error("synthetic termination failure");
+      const terminateSpy = vi
+        .spyOn(localServiceSupervisor, "terminateLocalService")
+        .mockRejectedValueOnce(terminationError);
+      try {
+        await expect(resetRuntimeServicesForTests()).rejects.toMatchObject({
+          errors: [terminationError],
+        });
+      } finally {
+        terminateSpy.mockRestore();
+      }
+
+      expect(isPidAlive(pid)).toBe(true);
+      expect(inspectRuntimeServicesForTests()).toEqual({
+        serviceIds: [service.id],
+        reuseServiceIds: [service.id],
+        leasesByRun: [[runId, [service.id]]],
+      });
+
+      await expect(resetRuntimeServicesForTests()).resolves.toBeUndefined();
+      expect(isPidAlive(pid)).toBe(false);
+      expect(inspectRuntimeServicesForTests()).toEqual({
+        serviceIds: [],
+        reuseServiceIds: [],
+        leasesByRun: [],
+      });
+    },
+    15_000,
+  );
+
   it("requires Paperclip dev runtime services to pass /api/health readiness", async () => {
     const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-health-"));
     const workspace = buildWorkspace(workspaceRoot);
@@ -5127,6 +5208,101 @@ describeEmbeddedPostgres("workspace runtime service control persistence", () => 
     await db.delete(agents);
     await db.delete(companies);
   });
+
+  it(
+    "treats persistence and registry cleanup as best-effort after terminating the process tree",
+    async () => {
+      const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-reset-tree-"));
+      const paperclipHome = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-reset-home-"));
+      const instanceId = `runtime-reset-${randomUUID()}`;
+      process.env.PAPERCLIP_HOME = paperclipHome;
+      process.env.PAPERCLIP_INSTANCE_ID = instanceId;
+
+      const companyId = randomUUID();
+      const childPidPath = path.join(workspaceRoot, "child.pid");
+      const childScript =
+        "require('node:http').createServer((_req,res)=>res.end('ok')).listen(Number(process.env.PORT), '127.0.0.1'); setInterval(() => {}, 1000);";
+      const parentScript = [
+        "const { spawn } = require('node:child_process');",
+        "const { writeFileSync } = require('node:fs');",
+        `const child = spawn(process.execPath, [\"-e\", ${JSON.stringify(childScript)}], { stdio: \"ignore\" });`,
+        `writeFileSync(${JSON.stringify(childPidPath)}, String(child.pid));`,
+        "setInterval(() => {}, 1000);",
+      ].join(" ");
+      const command = `${JSON.stringify(process.execPath)} -e ${JSON.stringify(parentScript)}`;
+
+      await db.insert(companies).values({
+        id: companyId,
+        name: "Paperclip reset",
+        issuePrefix: `R${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      });
+
+      const services = await startRuntimeServicesForWorkspaceControl({
+        db,
+        invocationId: randomUUID(),
+        actor: {
+          id: null,
+          name: "Board",
+          companyId,
+        },
+        issue: null,
+        workspace: {
+          ...buildWorkspace(workspaceRoot),
+          projectId: null,
+          workspaceId: null,
+        },
+        config: {
+          workspaceRuntime: {
+            services: [
+              {
+                name: "tree",
+                command,
+                lifecycle: "shared",
+                reuseScope: "agent",
+                port: { type: "auto", envKey: "PORT" },
+                expose: { urlTemplate: "http://127.0.0.1:{{port}}" },
+                readiness: { type: "http", intervalMs: 50, timeoutSec: 10 },
+                stopPolicy: { type: "manual" },
+              },
+            ],
+          },
+        },
+        adapterEnv: {},
+      });
+
+      expect(services).toHaveLength(1);
+      const service = services[0]!;
+      const parentPid = Number.parseInt(service.providerRef ?? "", 10);
+      const childPid = Number.parseInt(await fs.readFile(childPidPath, "utf8"), 10);
+      expect(isPidAlive(parentPid)).toBe(true);
+      expect(isPidAlive(childPid)).toBe(true);
+      expect(inspectRuntimeServicesForTests()).toMatchObject({
+        serviceIds: [service.id],
+        reuseServiceIds: [service.id],
+        leasesByRun: [],
+      });
+
+      await db.delete(workspaceRuntimeServices);
+      await db.delete(companies);
+      const registryDir = path.join(paperclipHome, "instances", instanceId, "runtime-services");
+      await fs.rm(registryDir, { recursive: true, force: true });
+      await fs.writeFile(registryDir, "registry fixture already removed", "utf8");
+
+      await expect(resetRuntimeServicesForTests()).resolves.toBeUndefined();
+
+      expect(isPidAlive(parentPid)).toBe(false);
+      expect(isPidAlive(childPid)).toBe(false);
+      expect(inspectRuntimeServicesForTests()).toEqual({
+        serviceIds: [],
+        reuseServiceIds: [],
+        leasesByRun: [],
+      });
+      await expect(fetch(service.url!)).rejects.toThrow();
+      await fs.rm(paperclipHome, { recursive: true, force: true });
+    },
+    15_000,
+  );
 
   it("commits a starting service row before waiting for slow readiness", async () => {
     const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-runtime-slow-control-"));
