@@ -182,13 +182,11 @@ export function issueRecoveryActionService(db: Db) {
     const now = new Date();
     const ownerType = input.ownerType ?? (input.ownerAgentId ? "agent" : "board");
     if (existing) {
-      // Stable source-scoped incidents should coalesce rather than look like a
-      // fresh recovery attempt on every recovery scan. Keeping the attempt count
-      // and idempotency material stable prevents retry storms while the adapter
-      // or runtime remains unhealthy with the same deterministic fingerprint.
-      if (existing.fingerprint === input.fingerprint) {
-        return existing;
-      }
+      // Stable active incidents keep their attempt identity while still
+      // refreshing volatile routing and evidence. A row that changed state
+      // between the read and update must fail the guarded update and retry.
+      const unchangedActiveFingerprint =
+        existing.status === "active" && existing.fingerprint === input.fingerprint;
 
       const [updated] = await db
         .update(issueRecoveryActions)
@@ -207,7 +205,9 @@ export function issueRecoveryActionService(db: Db) {
           nextAction: input.nextAction,
           wakePolicy: input.wakePolicy ?? null,
           monitorPolicy: input.monitorPolicy ?? null,
-          attemptCount: existing.attemptCount + 1,
+          attemptCount: unchangedActiveFingerprint
+            ? existing.attemptCount
+            : existing.attemptCount + 1,
           maxAttempts: input.maxAttempts ?? null,
           timeoutAt: input.timeoutAt ?? null,
           lastAttemptAt: input.lastAttemptAt ?? now,

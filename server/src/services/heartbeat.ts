@@ -2215,6 +2215,7 @@ interface WakeupOptions {
   requestedByActorType?: "user" | "agent" | "system";
   requestedByActorId?: string | null;
   contextSnapshot?: Record<string, unknown>;
+  sourceScopedIdempotencyOutcome?: { accepted?: boolean };
 }
 
 type UsageTotals = {
@@ -16566,7 +16567,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             .limit(1)
             .then((rows) => rows[0] ?? null);
           if (existingRecoveryWake) {
+            if (opts.sourceScopedIdempotencyOutcome) {
+              opts.sourceScopedIdempotencyOutcome.accepted = false;
+            }
             return { kind: "skipped" as const };
+          }
+          if (opts.sourceScopedIdempotencyOutcome) {
+            opts.sourceScopedIdempotencyOutcome.accepted = true;
           }
         }
 

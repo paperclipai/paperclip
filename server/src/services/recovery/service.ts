@@ -120,6 +120,7 @@ type RecoveryWakeupOptions = {
   requestedByActorType?: "user" | "agent" | "system";
   requestedByActorId?: string | null;
   contextSnapshot?: Record<string, unknown>;
+  sourceScopedIdempotencyOutcome?: { accepted?: boolean };
 };
 
 type RecoveryWakeup = (
@@ -2956,9 +2957,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     latestRun: LatestIssueRun;
     recoveryCause: StrandedRecoveryCause;
   }) {
-    if (input.recoveryCause === "provider_quota" && !input.action.ownerAgentId) return;
-    if (input.recoveryCause === "configuration_incomplete") return;
-    if (!input.action.ownerAgentId) return;
+    if (input.recoveryCause === "provider_quota" && !input.action.ownerAgentId) return true;
+    if (input.recoveryCause === "configuration_incomplete") return true;
+    if (!input.action.ownerAgentId) return true;
+    const sourceScopedIdempotencyOutcome: { accepted?: boolean } = {};
     await deps.enqueueWakeup(input.action.ownerAgentId, {
       source: "assignment",
       triggerDetail: "system",
@@ -2984,7 +2986,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         strandedRunId: input.latestRun?.id ?? null,
         recoveryCause: input.recoveryCause,
       }, "status_only"),
+      sourceScopedIdempotencyOutcome,
     });
+    return sourceScopedIdempotencyOutcome.accepted !== false;
   }
 
   function readProviderQuotaRetryAt(latestRun: LatestIssueRun, now: Date) {
@@ -3339,6 +3343,16 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     if (!updated) return null;
     if (isProviderQuotaWait) return updated;
 
+    // enqueueWakeup serializes this decision under the source issue row lock.
+    // For an unchanged action, only the caller that creates the stable wake may
+    // post the matching source comment.
+    const shouldPostWakeBackedComment = await enqueueSourceScopedStrandedRecoveryWake({
+      action: recoveryAction,
+      issue: input.issue,
+      latestRun: input.latestRun,
+      recoveryCause,
+    });
+
     const prefix = await getCompanyIssuePrefix(input.issue.companyId);
     const recoveryOwner = recoveryAction.ownerAgentId ? await getAgent(recoveryAction.ownerAgentId) : null;
     const sourceAssignee = input.issue.assigneeAgentId ? await getAgent(input.issue.assigneeAgentId) : null;
@@ -3377,7 +3391,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       recoveryAction.attemptCount === 1 ||
       input.recoveryCause === "workspace_validation_failed" ||
       input.recoveryCause === "configuration_incomplete";
-    if (shouldPostEscalationComment) {
+    if (shouldPostEscalationComment && shouldPostWakeBackedComment) {
       const escalationCommentMarker = `Recovery action: \`${recoveryAction.id}\``;
 
       const hasEscalationComment = await db
@@ -3456,13 +3470,6 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         returnOwnerAgentId: recoveryAction.returnOwnerAgentId,
         blockerIssueIds: blockerIds,
       },
-    });
-
-    await enqueueSourceScopedStrandedRecoveryWake({
-      action: recoveryAction,
-      issue: input.issue,
-      latestRun: input.latestRun,
-      recoveryCause,
     });
 
     if (recoveryAction.ownerAgentId && recoveryAction.ownerAgentId === input.issue.assigneeAgentId) {
