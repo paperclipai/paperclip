@@ -3409,6 +3409,33 @@ export function issueRoutes(
     return req.actor.type === "agent" && req.actor.keyScope?.kind === "skill_test";
   }
 
+  /**
+   * ALAA-2113 (regression of ALAA-766): an agent-authored create that omits both
+   * assignee fields yields an issue nobody is ever woken for, so the work is
+   * silently invisible until a drift scan finds it.
+   *
+   * Deliberately a default rather than a 422: human/UI creates legitimately leave
+   * an issue unassigned for triage, and every observed drift instance was
+   * agent-authored.
+   *
+   * Self-assignment intentionally does NOT go through assertCanAssignTasks. An
+   * agent taking its own work needs no tasks:assign grant -- the same carve-out
+   * the checkout and return-to-creator paths already make -- and requiring one
+   * would fail creates that succeed today.
+   */
+  function agentCreatorAutoAssigneeAgentId(
+    req: Request,
+    body: { assigneeAgentId?: unknown; assigneeUserId?: unknown },
+  ): string | null {
+    if (req.actor.type !== "agent" || !req.actor.agentId) return null;
+    if (body.assigneeAgentId || body.assigneeUserId) return null;
+    return req.actor.agentId;
+  }
+
+  function markIssueAutoAssignedToCreator(res: Response) {
+    res.setHeader("X-Paperclip-Issue-Autoassigned", "creator");
+  }
+
   function taskBridgeOriginForActor(req: Request) {
     return isTaskBridgeKeyActor(req) && req.actor.keyId
       ? { originKind: "task_bridge", originId: req.actor.keyId }
@@ -7129,6 +7156,11 @@ export function issueRoutes(
       companyId,
       rawCreateBody.assigneeAgentId as string | null | undefined,
     );
+    const autoAssigneeAgentId = agentCreatorAutoAssigneeAgentId(req, {
+      assigneeAgentId: normalizedAssigneeAgentId ?? rawCreateBody.assigneeAgentId,
+      assigneeUserId: rawCreateBody.assigneeUserId,
+    });
+    if (autoAssigneeAgentId) markIssueAutoAssignedToCreator(res);
     const actor = getActorInfo(req);
     const runWorkspaceInheritanceSourceIssueId = hasExplicitIssueWorkspaceCreateSelection(rawCreateBody)
       ? null
@@ -7137,6 +7169,7 @@ export function issueRoutes(
       ...rawCreateBody,
       parentId: effectiveParentId,
       ...(normalizedAssigneeAgentId !== undefined ? { assigneeAgentId: normalizedAssigneeAgentId } : {}),
+      ...(autoAssigneeAgentId ? { assigneeAgentId: autoAssigneeAgentId } : {}),
       ...(runWorkspaceInheritanceSourceIssueId
         ? { inheritExecutionWorkspaceFromIssueId: runWorkspaceInheritanceSourceIssueId }
         : {}),
@@ -7344,9 +7377,15 @@ export function issueRoutes(
       parent.companyId,
       sanitizedBody.assigneeAgentId as string | null | undefined,
     );
+    const childAutoAssigneeAgentId = agentCreatorAutoAssigneeAgentId(req, {
+      assigneeAgentId: normalizedAssigneeAgentId ?? sanitizedBody.assigneeAgentId,
+      assigneeUserId: sanitizedBody.assigneeUserId,
+    });
+    if (childAutoAssigneeAgentId) markIssueAutoAssignedToCreator(res);
     const createBody = {
       ...sanitizedBody,
       ...(normalizedAssigneeAgentId !== undefined ? { assigneeAgentId: normalizedAssigneeAgentId } : {}),
+      ...(childAutoAssigneeAgentId ? { assigneeAgentId: childAutoAssigneeAgentId } : {}),
     };
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, parent, createBody))) return;
     const childAssignmentScope = {
@@ -7520,9 +7559,15 @@ export function issueRoutes(
         sourceIssue.companyId,
         sanitizedChild.assigneeAgentId as string | null | undefined,
       );
+      const decompositionAutoAssigneeAgentId = agentCreatorAutoAssigneeAgentId(req, {
+        assigneeAgentId: normalizedAssigneeAgentId ?? sanitizedChild.assigneeAgentId,
+        assigneeUserId: sanitizedChild.assigneeUserId,
+      });
+      if (decompositionAutoAssigneeAgentId) markIssueAutoAssignedToCreator(res);
       const childBody = {
         ...sanitizedChild,
         ...(normalizedAssigneeAgentId !== undefined ? { assigneeAgentId: normalizedAssigneeAgentId } : {}),
+        ...(decompositionAutoAssigneeAgentId ? { assigneeAgentId: decompositionAutoAssigneeAgentId } : {}),
       };
       requestedChildren.push(childBody);
       assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(childBody));
