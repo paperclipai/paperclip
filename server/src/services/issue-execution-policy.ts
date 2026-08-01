@@ -724,6 +724,32 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
       !stageHasParticipant(activeStage, currentParticipant) &&
       (existingState?.changesRequestedCount ?? 0) >= resolveMaxReviewRounds(input.policy);
     if (escalatedHold && !principalsEqual(currentParticipant, actor)) {
+      // An empty patch would not override the caller's own requested fields,
+      // so a status or assignee change from a non-escalated actor must be
+      // rejected outright — mirroring the "only the active participant can
+      // advance" rule below — and a drifted assignee must be re-asserted
+      // rather than left pointing away from the escalated human.
+      const attemptedAdvanceDuringHold =
+        (requestedStatus !== undefined && requestedStatus !== "in_review") ||
+        (requestedAssigneePatchProvided && !principalsEqual(explicitAssignee, currentParticipant));
+      if (attemptedAdvanceDuringHold) {
+        throw unprocessable("Only the escalated reviewer can advance the current execution stage");
+      }
+      const holdDrifted =
+        input.issue.status !== "in_review" ||
+        !principalsEqual(currentAssignee, currentParticipant);
+      if (holdDrifted) {
+        patch.status = "in_review";
+        Object.assign(patch, patchForPrincipal(currentParticipant));
+        patch.executionState = buildPendingState({
+          previous: existingState,
+          stage: activeStage,
+          stageIndex: input.policy.stages.findIndex((candidate) => candidate.id === activeStage.id),
+          participant: currentParticipant,
+          returnAssignee: existingState?.returnAssignee ?? null,
+          reviewRequest: effectiveReviewRequest,
+        });
+      }
       return { patch };
     }
     if (!escalatedHold && !stageHasParticipant(activeStage, currentParticipant)) {

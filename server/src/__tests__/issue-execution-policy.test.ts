@@ -1742,6 +1742,68 @@ describe("review round circuit breaker", () => {
     expect(result.patch.assigneeAgentId).toBeUndefined();
   });
 
+  it("rejects a non-escalated actor advancing the stage during the hold", () => {
+    expect(() =>
+      applyIssueExecutionPolicyTransition({
+        issue: reviewPendingIssue(
+          { assigneeAgentId: null, assigneeUserId: boardUserId },
+          {
+            currentParticipant: { type: "user", userId: boardUserId },
+            changesRequestedCount: 3,
+          },
+        ),
+        policy,
+        requestedStatus: "done",
+        requestedAssigneePatch: {},
+        actor: { agentId: qaAgentId },
+        commentBody: "Agent trying to close it anyway",
+      }),
+    ).toThrow("Only the escalated reviewer can advance the current execution stage");
+  });
+
+  it("rejects a non-escalated actor reassigning the issue during the hold", () => {
+    expect(() =>
+      applyIssueExecutionPolicyTransition({
+        issue: reviewPendingIssue(
+          { assigneeAgentId: null, assigneeUserId: boardUserId },
+          {
+            currentParticipant: { type: "user", userId: boardUserId },
+            changesRequestedCount: 3,
+          },
+        ),
+        policy,
+        requestedAssigneePatch: { assigneeAgentId: coderAgentId },
+        actor: { agentId: coderAgentId },
+      }),
+    ).toThrow("Only the escalated reviewer can advance the current execution stage");
+  });
+
+  it("re-asserts the hold when the assignee has drifted away from the escalated human", () => {
+    const result = applyIssueExecutionPolicyTransition({
+      issue: reviewPendingIssue(
+        // Assignee drifted back to the agent reviewer while the state still
+        // records the escalated human as participant.
+        { assigneeAgentId: qaAgentId, assigneeUserId: null },
+        {
+          currentParticipant: { type: "user", userId: boardUserId },
+          changesRequestedCount: 3,
+        },
+      ),
+      policy,
+      requestedAssigneePatch: {},
+      actor: { agentId: coderAgentId },
+    });
+
+    expect(result.patch.status).toBe("in_review");
+    expect(result.patch.assigneeAgentId).toBeNull();
+    expect(result.patch.assigneeUserId).toBe(boardUserId);
+    expect(result.patch.executionState).toMatchObject({
+      status: "pending",
+      currentParticipant: { type: "user", userId: boardUserId },
+      changesRequestedCount: 3,
+    });
+  });
+
   it("resets the counter when the escalated human requests changes", () => {
     const result = applyIssueExecutionPolicyTransition({
       issue: reviewPendingIssue(
