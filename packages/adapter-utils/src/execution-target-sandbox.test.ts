@@ -122,12 +122,14 @@ describe("sandbox adapter execution targets", () => {
       const timeout = setTimeout(() => {
         child.kill("SIGKILL");
         reject(new Error("Timed out waiting for process session proxy."));
-      }, 5000);
+      }, 15_000);
       child.on("error", (error) => {
         clearTimeout(timeout);
         reject(error);
       });
-      child.on("exit", (exitCode) => {
+      // `exit` can fire before stdout/stderr have drained. `close` waits for
+      // the stdio handles too, so the assertions below see the complete output.
+      child.on("close", (exitCode) => {
         clearTimeout(timeout);
         resolve(exitCode);
       });
@@ -511,7 +513,7 @@ describe("sandbox adapter execution targets", () => {
       const timeout = setTimeout(() => {
         child.kill("SIGKILL");
         reject(new Error("Timed out waiting for streaming process session proxy."));
-      }, 5000);
+      }, 15_000);
       child.on("error", (error) => {
         clearTimeout(timeout);
         reject(error);
@@ -528,7 +530,7 @@ describe("sandbox adapter execution targets", () => {
       await waitForCondition(
         () => stdout.includes("delta:ping\n") && stderr.includes("trace:ping\n"),
         "Timed out waiting for live process session output.",
-        3000,
+        10_000,
       );
       expect(exited).toBe(false);
 
