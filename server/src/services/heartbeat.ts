@@ -18352,9 +18352,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             wakeCommentId,
             forceFreshSession: enrichedContextSnapshot.forceFreshSession === true,
           });
-          const shouldQueueFollowupForRunningWake =
+          const shouldQueueFollowupForActiveWake =
             shouldQueueFollowupForRunningIssueWake({ contextSnapshot: enrichedContextSnapshot, wakeCommentId }) &&
-            activeExecutionRun.status === "running" &&
             isSameExecutionAgent;
           const availableActiveExecutionRun = isSameExecutionAgent
             ? filterZombieCoalesceTarget(activeExecutionRun, liveRunExecutions)
@@ -18363,7 +18362,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           if (
             isSameExecutionAgent
             && !shouldDeferFollowupWake
-            && !shouldQueueFollowupForRunningWake
+            && !shouldQueueFollowupForActiveWake
             && availableActiveExecutionRun
           ) {
             const mergedContextSnapshot = mergeCoalescedContextSnapshot(

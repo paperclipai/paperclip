@@ -521,6 +521,135 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
     expect(runs[0]?.id).toBe(runId);
   });
 
+  it("does not overwrite a queued interaction continuation with a later interaction", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const runId = randomUUID();
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+    const heartbeat = heartbeatService(db);
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CEO",
+      role: "ceo",
+      status: "idle",
+      adapterType: "process",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    const firstWake = await db
+      .insert(agentWakeupRequests)
+      .values({
+        companyId,
+        agentId,
+        source: "automation",
+        triggerDetail: "system",
+        reason: "issue_commented",
+        payload: {
+          issueId,
+          interactionId: "interaction-a",
+          interactionStatus: "answered",
+          mutation: "interaction",
+        },
+        status: "queued",
+        requestedByActorType: "user",
+        requestedByActorId: "local-board",
+      })
+      .returning()
+      .then((rows) => rows[0]);
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      invocationSource: "automation",
+      triggerDetail: "system",
+      status: "queued",
+      wakeupRequestId: firstWake.id,
+      responsibleUserId: "responsible-user",
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        interactionId: "interaction-a",
+        interactionStatus: "answered",
+        mutation: "interaction",
+        wakeReason: "issue_commented",
+      },
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Preserve queued interaction context",
+      status: "in_progress",
+      priority: "medium",
+      responsibleUserId: "responsible-user",
+      assigneeAgentId: agentId,
+      executionRunId: runId,
+      executionAgentNameKey: "ceo",
+      executionLockedAt: new Date(),
+      issueNumber: 2,
+      identifier: `${issuePrefix}-2`,
+    });
+
+    const followupRun = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "issue_commented",
+      payload: {
+        issueId,
+        interactionId: "interaction-b",
+        interactionStatus: "accepted",
+        mutation: "interaction",
+      },
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        interactionId: "interaction-b",
+        interactionStatus: "accepted",
+        mutation: "interaction",
+        wakeReason: "issue_commented",
+      },
+      requestedByActorType: "user",
+      requestedByActorId: "local-board",
+    });
+
+    expect(followupRun).toBeNull();
+    const persistedRun = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0]);
+    expect(persistedRun.contextSnapshot).toMatchObject({ interactionId: "interaction-a" });
+
+    const deferred = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(and(
+        eq(agentWakeupRequests.companyId, companyId),
+        eq(agentWakeupRequests.agentId, agentId),
+        eq(agentWakeupRequests.status, "deferred_issue_execution"),
+      ))
+      .then((rows) => rows[0] ?? null);
+    expect(deferred?.payload).toMatchObject({
+      issueId,
+      interactionId: "interaction-b",
+      interactionStatus: "accepted",
+    });
+    expect((deferred?.payload as Record<string, unknown>)._paperclipWakeContext).toMatchObject({
+      interactionId: "interaction-b",
+      interactionStatus: "accepted",
+    });
+  });
+
   it("batches deferred comment wakes and forwards the ordered batch to the next run", async () => {
     const gateway = await createControlledGatewayServer();
     const companyId = randomUUID();
