@@ -5220,13 +5220,14 @@ describeEmbeddedPostgres("workspace runtime service control persistence", () => 
 
       const companyId = randomUUID();
       const childPidPath = path.join(workspaceRoot, "child.pid");
+      const childPidPathForShell = childPidPath.replaceAll("\\", "/");
       const childScript =
         "require('node:http').createServer((_req,res)=>res.end('ok')).listen(Number(process.env.PORT), '127.0.0.1'); setInterval(() => {}, 1000);";
       const parentScript = [
         "const { spawn } = require('node:child_process');",
         "const { writeFileSync } = require('node:fs');",
         `const child = spawn(process.execPath, [\"-e\", ${JSON.stringify(childScript)}], { stdio: \"ignore\" });`,
-        `writeFileSync(${JSON.stringify(childPidPath)}, String(child.pid));`,
+        `writeFileSync(${JSON.stringify(childPidPathForShell)}, String(child.pid));`,
         "setInterval(() => {}, 1000);",
       ].join(" ");
       const command = `${JSON.stringify(process.execPath)} -e ${JSON.stringify(parentScript)}`;
