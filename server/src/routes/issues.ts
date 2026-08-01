@@ -10930,17 +10930,23 @@ export function issueRoutes(
         const executionStatus = readToolActionExecutionStatus(approval.status);
         if (executionStatus) {
           const currentResult = readObject(interaction.result);
+          const persistedToolActionResult = {
+            version: 1 as const,
+            status: executionStatus,
+            errorMessage: readNonEmptyString(approval.error),
+            resultSummary: readNonEmptyString(approval.resultSummary),
+            updatedAt: new Date().toISOString(),
+          };
+          await issueThreadInteractionsSvc.recordAcceptedToolActionResult(
+            issue,
+            interaction.id,
+            persistedToolActionResult,
+          );
           continuationInteraction = {
             ...interaction,
             result: {
               ...currentResult,
-              toolAction: {
-                version: 1,
-                status: executionStatus,
-                errorMessage: readNonEmptyString(approval.error),
-                resultSummary: readNonEmptyString(approval.resultSummary),
-                updatedAt: new Date().toISOString(),
-              },
+              toolAction: persistedToolActionResult,
             } as typeof interaction.result,
           };
         }

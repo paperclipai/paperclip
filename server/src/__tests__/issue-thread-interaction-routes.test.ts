@@ -32,6 +32,7 @@ const mockInteractionService = vi.hoisted(() => ({
   getForIssue: vi.fn(),
   create: vi.fn(),
   acceptInteraction: vi.fn(),
+  recordAcceptedToolActionResult: vi.fn(),
   acceptSuggestedTasks: vi.fn(),
   rejectInteraction: vi.fn(),
   rejectSuggestedTasks: vi.fn(),
@@ -1088,6 +1089,18 @@ describe.sequential("issue thread interaction routes", () => {
       actionRequestId: "action-request-1",
       actor: { agentId: null, userId: "local-board" },
     });
+    expect(mockInteractionService.recordAcceptedToolActionResult).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        companyId: "company-1",
+      }),
+      "interaction-tool-action",
+      expect.objectContaining({
+        version: 1,
+        status: "executed",
+        resultSummary: "Added row 42",
+      }),
+    );
     const expectedToolAction = {
       toolName: "google_sheets_add_row",
       actionRequestId: "action-request-1",
@@ -1138,6 +1151,18 @@ describe.sequential("issue thread interaction routes", () => {
       .send({});
 
     expect(res.status).toBe(200);
+    expect(mockInteractionService.recordAcceptedToolActionResult).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+        companyId: "company-1",
+      }),
+      "interaction-tool-action-failed",
+      expect.objectContaining({
+        version: 1,
+        status: "failed",
+        errorMessage: "Connector timed out",
+      }),
+    );
     expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
       ASSIGNEE_AGENT_ID,
       expect.objectContaining({

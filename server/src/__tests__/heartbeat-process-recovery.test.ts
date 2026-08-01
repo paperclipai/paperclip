@@ -5729,7 +5729,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect((wakeup?.payload as Record<string, unknown> | null)?.issueId).toBe(issueId);
   });
 
-  it.each(["accepted", "answered", "rejected", "cancelled", "failed"] as const)(
+  it.each(["accepted", "accepted_tool_action", "answered", "rejected", "cancelled", "failed"] as const)(
     "recovers a resolved interaction whose continuation wake enqueue was dropped (%s)",
     async (interactionStatus) => {
     const companyId = randomUUID();
@@ -5737,6 +5737,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const issueId = randomUUID();
     const interactionId = randomUUID();
     const resolvedAt = new Date("2026-03-19T00:05:00.000Z");
+    const storedInteractionStatus = interactionStatus === "accepted_tool_action" ? "accepted" : interactionStatus;
     const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
 
     await db.insert(companies).values({
@@ -5774,12 +5775,14 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       issueId,
       kind: interactionStatus === "accepted"
         ? "request_checkbox_confirmation"
-        : interactionStatus === "answered"
-          ? "request_user_input"
-          : interactionStatus === "rejected"
-            ? "request_tool_action"
-            : "request_confirmation",
-      status: interactionStatus,
+        : interactionStatus === "accepted_tool_action"
+          ? "request_confirmation"
+          : interactionStatus === "answered"
+            ? "request_user_input"
+            : interactionStatus === "rejected"
+              ? "request_tool_action"
+              : "request_confirmation",
+      status: storedInteractionStatus,
       continuationPolicy: "wake_assignee",
       createdByAgentId: agentId,
       resolvedByUserId: "responsible-user",
@@ -5794,6 +5797,12 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
               { id: "dry-run", label: "Dry run" },
             ],
           }
+        : interactionStatus === "accepted_tool_action"
+          ? {
+              version: 1,
+              prompt: "Run the approved action?",
+              toolAction: { toolName: "google_sheets_add_row", actionRequestId: "action-2" },
+            }
         : interactionStatus === "rejected"
           ? {
               version: 1,
@@ -5803,6 +5812,17 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
           : { version: 1, prompt: "Which database?" },
       result: interactionStatus === "accepted"
         ? { version: 1, outcome: "accepted", selectedOptionIds: ["backup"] }
+        : interactionStatus === "accepted_tool_action"
+          ? {
+              version: 1,
+              outcome: "accepted",
+              toolAction: {
+                version: 1,
+                status: "executed",
+                resultSummary: "Added row 42",
+                updatedAt: resolvedAt.toISOString(),
+              },
+            }
         : interactionStatus === "answered"
           ? { version: 1, value: "Postgres" }
           : interactionStatus === "rejected"
@@ -5876,7 +5896,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(run?.contextSnapshot).toMatchObject({
       issueId,
       interactionId,
-      interactionStatus,
+      interactionStatus: storedInteractionStatus,
       source: "issue.interaction_continuation_recovery",
     });
     if (interactionStatus === "accepted") {
@@ -5905,6 +5925,20 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       expect(
         ((run?.contextSnapshot as Record<string, unknown> | null)?.toolAction as Record<string, unknown> | null)?.instructions,
       ).toContain("do not retry the same call");
+    }
+    if (interactionStatus === "accepted_tool_action") {
+      expect(run?.contextSnapshot).toMatchObject({
+        toolAction: {
+          toolName: "google_sheets_add_row",
+          actionRequestId: "action-2",
+          decision: "accepted",
+          executionStatus: "executed",
+          resultSummary: "Added row 42",
+        },
+      });
+      expect(
+        ((run?.contextSnapshot as Record<string, unknown> | null)?.toolAction as Record<string, unknown> | null)?.instructions,
+      ).toContain("do not call the tool again");
     }
     },
   );

@@ -31,6 +31,7 @@ import type {
   RequestCheckboxConfirmationInteraction,
   RequestConfirmationInteraction,
   RequestConfirmationTarget,
+  RequestConfirmationToolActionResult,
   RequestItemVerdictsInteraction,
   RequestItemVerdictsResult,
   RequestItemVerdictsResultItem,
@@ -2538,6 +2539,47 @@ export function issueThreadInteractionService(db: Db, opts: IssueThreadInteracti
         default:
           throw unprocessable(`Interactions of kind ${current.kind} cannot be accepted`);
       }
+    },
+
+    recordAcceptedToolActionResult: async (
+      issue: { id: string; companyId: string },
+      interactionId: string,
+      toolAction: RequestConfirmationToolActionResult,
+    ) => {
+      const current = await db
+        .select()
+        .from(issueThreadInteractions)
+        .where(and(
+          eq(issueThreadInteractions.id, interactionId),
+          eq(issueThreadInteractions.companyId, issue.companyId),
+          eq(issueThreadInteractions.issueId, issue.id),
+        ))
+        .then((rows) => rows[0] ?? null);
+
+      if (!current) throw notFound("Interaction not found");
+      if (current.kind !== "request_confirmation" || current.status !== "accepted") {
+        throw conflict("Tool-action result can only be recorded on an accepted request confirmation");
+      }
+
+      const currentResult = current.result && typeof current.result === "object" && !Array.isArray(current.result)
+        ? current.result as unknown as Record<string, unknown>
+        : {};
+      const result = requestConfirmationResultSchema.parse({
+        ...currentResult,
+        toolAction,
+      });
+      const [updated] = await db
+        .update(issueThreadInteractions)
+        .set({ result, updatedAt: new Date() })
+        .where(and(
+          eq(issueThreadInteractions.id, interactionId),
+          eq(issueThreadInteractions.companyId, issue.companyId),
+          eq(issueThreadInteractions.issueId, issue.id),
+          eq(issueThreadInteractions.status, "accepted"),
+        ))
+        .returning();
+      if (!updated) throw conflict("Interaction changed before the tool-action result was recorded");
+      return hydrateInteraction(updated);
     },
 
     acceptSuggestedTasks: async (

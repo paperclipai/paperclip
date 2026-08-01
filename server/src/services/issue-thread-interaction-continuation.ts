@@ -1,3 +1,5 @@
+import type { RequestConfirmationToolActionResult } from "@paperclipai/shared";
+
 function readObject(value: unknown): Record<string, unknown> {
   return value && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
@@ -53,7 +55,9 @@ export function readPlanReviewInteractionForWake(input: {
   };
 }
 
-export function readToolActionExecutionStatus(value: unknown) {
+export function readToolActionExecutionStatus(
+  value: unknown,
+): RequestConfirmationToolActionResult["status"] | null {
   return value === "approved"
     || value === "executing"
     || value === "executed"
