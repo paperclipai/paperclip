@@ -56,3 +56,29 @@ No visual redesign, no new colors or typefaces, no layout restructuring, no new 
 See `doc/design/PRIOR-ART.md` — a previous audit pass (PAP-280/283/284, on the `PAP-282-playground` branch, NOT on master) found that of ~220 hardcoded drift sites, only 6 were exact-value-mappable to existing tokens; expect the verbatim extraction to mint many new tokens that the human scale-collapse step later merges. It also drafted usage rules (radius tiers, CTA tiers, named type styles) that are good candidates for the post-audit scale decision.
 
 How-to guide for day-to-day UI changes: see `doc/design/CHANGING-THE-UI.md`.
+
+## Motion tokens (Task Chat Redesign)
+
+The redesigned task thread (flag `enableTaskChatRedesign`) is the first surface to
+tokenize motion. Principles — reasoning only; values live in `ui/src/index.css`:
+
+- **One home, and it is `:root`, not `@theme inline`.** `@theme inline` bakes literals
+  at build time, so a value placed there cannot be moved at runtime. The dev tweak panel
+  tunes motion by writing CSS custom properties live, so every motion token must resolve
+  at runtime — hence `:root`.
+- **Two tiers.** Primitives (`--motion-duration-*`, `--motion-ease-*`) express the app's
+  baseline motion feel; state/component-scoped tokens (`--motion-<state>-*`) reference the
+  primitives so the whole thread retunes from a few knobs. Scoped tokens exist so the
+  tweak panel can group controls by the state they affect.
+- **Reuse the house curves.** New easing defaults point at the two curves already used
+  across the app rather than inventing a third feel.
+- **No hardcoded timing in components.** Durations, easings, delays, and staggers used by
+  the redesigned thread must reference these tokens; a check script rejects raw `ms` /
+  `cubic-bezier` values outside `ui/src/index.css`. This discipline is what makes the
+  tweak panel structurally possible.
+- **Values are placeholders.** The committed numbers are sensible starting points, tuned
+  live by a human and pasted back from the tweak panel's export — never treated as final
+  during the baseline build.
+- **Reduced motion is honored at the token layer.** A `prefers-reduced-motion: reduce`
+  block collapses the duration/stagger tokens to zero, cascading to every scoped token,
+  in addition to each animation's own component-level guard.

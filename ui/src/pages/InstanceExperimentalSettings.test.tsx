@@ -49,6 +49,8 @@ const STREAMLINED_TOGGLE_SELECTOR =
   'button[aria-label="Toggle streamlined left navigation experimental setting"]';
 const TASK_WATCHDOGS_TOGGLE_SELECTOR =
   'button[aria-label="Toggle task watchdogs experimental setting"]';
+const TASK_CHAT_REDESIGN_TOGGLE_SELECTOR =
+  'button[aria-label="Toggle chat-style tasks experimental setting"]';
 const GOALS_SIDEBAR_LINK_TOGGLE_SELECTOR =
   'button[aria-label="Toggle goals sidebar link experimental setting"]';
 const DECISIONS_TOGGLE_SELECTOR =
@@ -76,6 +78,7 @@ function defaultExperimentalSettings(): InstanceExperimentalSettingsPayload {
     enablePipelines: false,
     enableCases: false,
     enableConferenceRoomChat: false,
+    enableTaskChatRedesign: false,
     enableIssuePlanDecompositions: false,
     enableExperimentalFileViewer: false,
     enableExternalObjects: false,
@@ -287,6 +290,52 @@ describe("InstanceExperimentalSettings — Conference Room Chat card (PAP-11233)
 
     expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenLastCalledWith({
       enableTaskWatchdogs: false,
+    });
+  });
+
+  it("renders and patches the Chat-Style Tasks experimental toggle on and off", async () => {
+    await renderPage();
+
+    expect(container.textContent).toContain("Chat-Style Tasks");
+    expect(container.textContent).toContain(
+      "Reimagines the task detail page as a live conversation with your agents",
+    );
+    expect(container.textContent).toContain(
+      "Turning this off instantly restores the classic task page. No task data is affected.",
+    );
+
+    const toggle = container.querySelector<HTMLButtonElement>(TASK_CHAT_REDESIGN_TOGGLE_SELECTOR);
+    expect(toggle?.getAttribute("aria-checked")).toBe("false");
+
+    await act(async () => {
+      toggle?.click();
+    });
+    await flushReact();
+
+    expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenCalledWith({
+      enableTaskChatRedesign: true,
+    });
+    expect(toggle?.getAttribute("aria-checked")).toBe("true");
+
+    flushSync(() => {
+      root?.unmount();
+    });
+    root = null;
+    container.textContent = "";
+    await renderPage();
+
+    const enabledToggle = container.querySelector<HTMLButtonElement>(
+      TASK_CHAT_REDESIGN_TOGGLE_SELECTOR,
+    );
+    expect(enabledToggle?.getAttribute("aria-checked")).toBe("true");
+
+    await act(async () => {
+      enabledToggle?.click();
+    });
+    await flushReact();
+
+    expect(mockInstanceSettingsApi.updateExperimental).toHaveBeenLastCalledWith({
+      enableTaskChatRedesign: false,
     });
   });
 
