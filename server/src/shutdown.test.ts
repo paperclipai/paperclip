@@ -195,6 +195,61 @@ describe("coordinateEmbeddedPostgresShutdown", () => {
     expect(onHotRestartHandoffFailure).toHaveBeenCalledWith(writeError);
   });
 
+  it("keeps the predecessor operational when handoff persistence and database stop both fail", () => {
+    const shutdownModuleUrl = new URL("./shutdown.ts", import.meta.url).href;
+    const child = spawnSync(
+      process.execPath,
+      [
+        resolve(process.cwd(), "server/node_modules/tsx/dist/cli.mjs"),
+        "--eval",
+        [
+          "void (async () => {",
+          `const { createShutdownLifecycleContext, prepareEmbeddedPostgresForHotRestart } = await import(${JSON.stringify(shutdownModuleUrl)});`,
+          "let schedulerStopped = true;",
+          "let schedulerTicks = 0;",
+          "let telemetryRunning = true;",
+          "let mirrorsRunning = true;",
+          "let appRunning = true;",
+          "let handoffAttempts = 0;",
+          "let stopAttempts = 0;",
+          "const scheduler = setInterval(() => { if (!schedulerStopped) schedulerTicks += 1; }, 5);",
+          "process.once('SIGTERM', async () => {",
+          "  const result = await prepareEmbeddedPostgresForHotRestart({",
+          "    ownedByThisProcess: true,",
+          "    stop: async () => { stopAttempts += 1; throw new Error('forced stop failure'); },",
+          "    lifecycle: createShutdownLifecycleContext({ signal: 'SIGTERM', hotRestart: { skipDrain: true } }),",
+          "    persistHotRestartHandoff: async () => { handoffAttempts += 1; throw new Error('forced handoff failure'); },",
+          "    restorePredecessor: () => { schedulerStopped = false; },",
+          "  });",
+          "  if (result !== 'aborted') { telemetryRunning = false; mirrorsRunning = false; appRunning = false; }",
+          "  setTimeout(() => {",
+          "    const state = { result, schedulerTicks, telemetryRunning, mirrorsRunning, appRunning, handoffAttempts, stopAttempts };",
+          "    console.log(JSON.stringify(state));",
+          "    clearInterval(scheduler);",
+          "    process.exit(result === 'aborted' && schedulerTicks > 0 && telemetryRunning && mirrorsRunning && appRunning && handoffAttempts === 1 && stopAttempts === 1 ? 0 : 1);",
+          "  }, 50);",
+          "});",
+          "process.emit('SIGTERM');",
+          "})();",
+        ].join("\n"),
+      ],
+      {
+        cwd: process.cwd(),
+        encoding: "utf8",
+        timeout: 5_000,
+      },
+    );
+
+    expect(child.error).toBeUndefined();
+    expect(child.status, child.stderr || child.stdout).toBe(0);
+    expect(child.stdout).toContain('"result":"aborted"');
+    expect(child.stdout).toContain('"telemetryRunning":true');
+    expect(child.stdout).toContain('"mirrorsRunning":true');
+    expect(child.stdout).toContain('"appRunning":true');
+    expect(child.stdout).toContain('"handoffAttempts":1');
+    expect(child.stdout).toContain('"stopAttempts":1');
+  });
+
   it("reads the PostgreSQL PID, start time, canonical data directory, and port as one identity", async () => {
     const homeDir = await fs.mkdtemp(resolve(os.tmpdir(), "paperclip-postgres-identity-"));
     const dataDir = resolve(homeDir, "postgres");

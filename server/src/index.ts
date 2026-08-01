@@ -76,6 +76,7 @@ import {
   coordinateEmbeddedPostgresShutdown,
   coordinateHeartbeatSchedulerShutdown,
   createShutdownLifecycleContext,
+  prepareEmbeddedPostgresForHotRestart,
 } from "./shutdown.js";
 import { flushInFlightRunLogMirrors } from "./services/run-log-store.js";
 import {
@@ -1353,10 +1354,6 @@ export async function startServer(): Promise<StartedServer> {
   {
     const shutdown = async (signal: "SIGINT" | "SIGTERM") => {
       heartbeatSchedulerStopped = true;
-      if (heartbeatSchedulerInterval) {
-        clearInterval(heartbeatSchedulerInterval);
-        heartbeatSchedulerInterval = null;
-      }
 
       const heartbeatShutdown = await coordinateHeartbeatSchedulerShutdown({
         signal,
@@ -1382,6 +1379,102 @@ export async function startServer(): Promise<StartedServer> {
           { err: heartbeatShutdown.preparationError, signal },
           "hot-restart shutdown preparation failed; falling back to graceful heartbeat run drain",
         );
+      }
+
+      const hotRestart = heartbeatShutdown.hotRestart;
+      const hotRestartHandoffContext = (
+        shutdownLifecycle.preserveEmbeddedPostgres
+        && hotRestart?.previousServerPid === process.pid
+        && hotRestart.requestedAt
+        && hotRestart.shutdownSnapshotCapturedAt
+      )
+        ? {
+            requestedAt: hotRestart.requestedAt,
+            shutdownSnapshotCapturedAt: hotRestart.shutdownSnapshotCapturedAt,
+          }
+        : null;
+      const persistedHandoff: {
+        value: Awaited<ReturnType<typeof writeEmbeddedPostgresHandoff>> | null;
+      } = { value: null };
+      const persistHotRestartHandoff = hotRestartHandoffContext
+        ? async () => {
+            const currentIdentity = await readEmbeddedPostgresProcessIdentity(
+              ownedEmbeddedPostgresIdentity?.dataDir ?? config.embeddedPostgresDataDir,
+            );
+            if (
+              !currentIdentity
+              || !ownedEmbeddedPostgresIdentity
+              || currentIdentity.pid !== ownedEmbeddedPostgresIdentity.pid
+              || currentIdentity.startedAtEpochSeconds !== ownedEmbeddedPostgresIdentity.startedAtEpochSeconds
+              || currentIdentity.port !== ownedEmbeddedPostgresIdentity.port
+              || resolve(currentIdentity.dataDir) !== resolve(ownedEmbeddedPostgresIdentity.dataDir)
+            ) {
+              throw new Error("Embedded PostgreSQL identity changed before hot-restart handoff persistence");
+            }
+            persistedHandoff.value = await writeEmbeddedPostgresHandoff({
+              hotRestartRequestedAt: hotRestartHandoffContext.requestedAt,
+              shutdownSnapshotCapturedAt: hotRestartHandoffContext.shutdownSnapshotCapturedAt,
+              predecessorServerPid: process.pid,
+              predecessorServerStartedAtEpochMs: serverStartedAtEpochMs,
+              postgres: currentIdentity,
+            });
+          }
+        : undefined;
+      const onHotRestartHandoffFailure = (err: unknown) => {
+        logger.error(
+          { err, expectedPostgresPid: ownedEmbeddedPostgresIdentity?.pid ?? null },
+          "Embedded PostgreSQL hot-restart handoff failed; stopping owned database",
+        );
+      };
+      const logPostgresShutdown = (
+        postgresShutdown: "not_owned" | "preserved_for_hot_restart" | "stopped",
+      ) => {
+        if (postgresShutdown === "preserved_for_hot_restart") {
+          logger.info({
+            postgresPid: persistedHandoff.value?.postgres.pid,
+            port: persistedHandoff.value?.postgres.port,
+            transferToken: persistedHandoff.value?.transferToken,
+            expiresAt: persistedHandoff.value?.expiresAt,
+          }, "Embedded PostgreSQL hot-restart ownership handoff issued");
+          logger.info(
+            { shutdownLifecycle },
+            "Preserving embedded PostgreSQL for hot-restart adoption",
+          );
+        } else if (postgresShutdown === "stopped") {
+          logger.info({ shutdownLifecycle }, "Stopped embedded PostgreSQL");
+        }
+      };
+
+      if (shutdownLifecycle.preserveEmbeddedPostgres) {
+        const postgresShutdown = await prepareEmbeddedPostgresForHotRestart({
+          ownedByThisProcess: stopOwnedEmbeddedPostgres !== null,
+          stop: stopOwnedEmbeddedPostgres,
+          lifecycle: shutdownLifecycle,
+          persistHotRestartHandoff,
+          onHotRestartHandoffFailure,
+          restorePredecessor: () => {
+            heartbeatSchedulerStopped = false;
+          },
+          onPreTeardownFailure: (err) => {
+            logger.error(
+              { err, shutdownLifecycle },
+              "Embedded PostgreSQL handoff and stop both failed before teardown",
+            );
+          },
+        });
+        if (postgresShutdown === "aborted") {
+          logger.error(
+            { shutdownLifecycle },
+            "Aborting hot-restart teardown; predecessor remains operational for recovery",
+          );
+          return;
+        }
+        logPostgresShutdown(postgresShutdown);
+      }
+
+      if (heartbeatSchedulerInterval) {
+        clearInterval(heartbeatSchedulerInterval);
+        heartbeatSchedulerInterval = null;
       }
 
       const telemetryClient = getTelemetryClient();
@@ -1412,81 +1505,16 @@ export async function startServer(): Promise<StartedServer> {
       const appShutdown = (app as { locals?: { paperclipShutdown?: () => void } }).locals?.paperclipShutdown;
       appShutdown?.();
 
-      if (stopOwnedEmbeddedPostgres) {
+      if (stopOwnedEmbeddedPostgres && !shutdownLifecycle.preserveEmbeddedPostgres) {
         try {
-          const hotRestart = heartbeatShutdown.hotRestart;
-          const hotRestartHandoffContext = (
-            shutdownLifecycle.preserveEmbeddedPostgres
-            && hotRestart?.previousServerPid === process.pid
-            && hotRestart.requestedAt
-            && hotRestart.shutdownSnapshotCapturedAt
-          )
-            ? {
-                requestedAt: hotRestart.requestedAt,
-                shutdownSnapshotCapturedAt: hotRestart.shutdownSnapshotCapturedAt,
-              }
-            : null;
-          const persistedHandoff: {
-            value: Awaited<ReturnType<typeof writeEmbeddedPostgresHandoff>> | null;
-          } = { value: null };
           const postgresShutdown = await coordinateEmbeddedPostgresShutdown({
             ownedByThisProcess: true,
             stop: stopOwnedEmbeddedPostgres,
             lifecycle: shutdownLifecycle,
-            persistHotRestartHandoff: hotRestartHandoffContext
-              ? async () => {
-                  const currentIdentity = await readEmbeddedPostgresProcessIdentity(
-                    ownedEmbeddedPostgresIdentity?.dataDir ?? config.embeddedPostgresDataDir,
-                  );
-                  if (
-                    !currentIdentity
-                    || !ownedEmbeddedPostgresIdentity
-                    || currentIdentity.pid !== ownedEmbeddedPostgresIdentity.pid
-                    || currentIdentity.startedAtEpochSeconds !== ownedEmbeddedPostgresIdentity.startedAtEpochSeconds
-                    || currentIdentity.port !== ownedEmbeddedPostgresIdentity.port
-                    || resolve(currentIdentity.dataDir) !== resolve(ownedEmbeddedPostgresIdentity.dataDir)
-                  ) {
-                    throw new Error("Embedded PostgreSQL identity changed before hot-restart handoff persistence");
-                  }
-                  persistedHandoff.value = await writeEmbeddedPostgresHandoff({
-                    hotRestartRequestedAt: hotRestartHandoffContext.requestedAt,
-                    shutdownSnapshotCapturedAt: hotRestartHandoffContext.shutdownSnapshotCapturedAt,
-                    predecessorServerPid: process.pid,
-                    predecessorServerStartedAtEpochMs: serverStartedAtEpochMs,
-                    postgres: currentIdentity,
-                  });
-                }
-              : undefined,
-            onHotRestartHandoffFailure: (err) => {
-              logger.error(
-                { err, expectedPostgresPid: ownedEmbeddedPostgresIdentity?.pid ?? null },
-                "Embedded PostgreSQL hot-restart handoff failed; stopping owned database",
-              );
-            },
           });
-          if (postgresShutdown === "preserved_for_hot_restart") {
-            logger.info({
-              postgresPid: persistedHandoff.value?.postgres.pid,
-              port: persistedHandoff.value?.postgres.port,
-              transferToken: persistedHandoff.value?.transferToken,
-              expiresAt: persistedHandoff.value?.expiresAt,
-            }, "Embedded PostgreSQL hot-restart ownership handoff issued");
-            logger.info(
-              { shutdownLifecycle },
-              "Preserving embedded PostgreSQL for hot-restart adoption",
-            );
-          } else if (postgresShutdown === "stopped") {
-            logger.info({ shutdownLifecycle }, "Stopped embedded PostgreSQL");
-          }
+          logPostgresShutdown(postgresShutdown);
         } catch (err) {
           logger.error({ err, shutdownLifecycle }, "Failed to stop embedded PostgreSQL cleanly");
-          if (shutdownLifecycle.preserveEmbeddedPostgres) {
-            logger.error(
-              { shutdownLifecycle },
-              "Aborting hot-restart process exit to retain embedded PostgreSQL ownership",
-            );
-            return;
-          }
         }
       }
 
@@ -1497,12 +1525,16 @@ export async function startServer(): Promise<StartedServer> {
       process.exit(0);
     };
 
-    process.once("SIGINT", () => {
-      void shutdown("SIGINT");
-    });
-    process.once("SIGTERM", () => {
-      void shutdown("SIGTERM");
-    });
+    let shutdownInProgress = false;
+    const handleShutdownSignal = (signal: "SIGINT" | "SIGTERM") => {
+      if (shutdownInProgress) return;
+      shutdownInProgress = true;
+      void shutdown(signal).finally(() => {
+        shutdownInProgress = false;
+      });
+    };
+    process.on("SIGINT", handleShutdownSignal);
+    process.on("SIGTERM", handleShutdownSignal);
   }
 
   return {

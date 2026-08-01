@@ -66,6 +66,34 @@ export async function coordinateEmbeddedPostgresShutdown(input: {
   return "stopped";
 }
 
+export async function prepareEmbeddedPostgresForHotRestart(input: {
+  ownedByThisProcess: boolean;
+  stop: (() => Promise<void>) | null;
+  lifecycle: ShutdownLifecycleContext;
+  persistHotRestartHandoff?: () => Promise<void>;
+  onHotRestartHandoffFailure?: (error: unknown) => void;
+  restorePredecessor: () => void;
+  onPreTeardownFailure?: (error: unknown) => void;
+}): Promise<"not_owned" | "preserved_for_hot_restart" | "stopped" | "aborted"> {
+  try {
+    return await coordinateEmbeddedPostgresShutdown({
+      ownedByThisProcess: input.ownedByThisProcess,
+      stop: input.stop,
+      lifecycle: input.lifecycle,
+      persistHotRestartHandoff: input.persistHotRestartHandoff,
+      onHotRestartHandoffFailure: input.onHotRestartHandoffFailure,
+    });
+  } catch (error) {
+    try {
+      input.onPreTeardownFailure?.(error);
+    } catch {
+      // Diagnostic callbacks must not prevent predecessor recovery.
+    }
+    input.restorePredecessor();
+    return "aborted";
+  }
+}
+
 export async function coordinateHeartbeatSchedulerShutdown<
   TPreparation extends HotRestartShutdownPreparation,
 >(input: {
