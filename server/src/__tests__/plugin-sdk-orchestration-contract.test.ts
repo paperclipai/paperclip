@@ -150,6 +150,55 @@ describe("plugin SDK orchestration contract", () => {
     ).rejects.toThrow("Plugin may only use originKind values under plugin:paperclip.test-orchestration");
   });
 
+  it("models fenced conditional issue updates and safe retries", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    const harness = createTestHarness({
+      manifest: manifest(["issues.update"]),
+    });
+    harness.seed({
+      issues: [
+        {
+          ...issue({ id: issueId, companyId, title: "Original" }),
+          version: 4,
+        } as Issue,
+      ],
+      namespaceFences: [{
+        table: "mutation_lanes",
+        lane: { lane_key: "phase-a2" },
+        values: { fence_token: "fence-1", generation: 7 },
+      }],
+    });
+    const input = {
+      issueId,
+      companyId,
+      patch: { title: "Applied once" },
+      expectedVersion: 4,
+      namespaceFence: {
+        table: "mutation_lanes",
+        lane: { lane_key: "phase-a2" },
+        expected: { fence_token: "fence-1", generation: 7 },
+      },
+    };
+
+    await expect(harness.ctx.issues.updateConditional(input)).resolves.toMatchObject({
+      applied: true,
+      issue: { title: "Applied once", version: 5 },
+    });
+    await expect(harness.ctx.issues.updateConditional(input)).resolves.toEqual({
+      applied: false,
+      reason: "issue_version_mismatch",
+    });
+    await expect(harness.ctx.issues.updateConditional({
+      ...input,
+      expectedVersion: 5,
+      namespaceFence: {
+        ...input.namespaceFence,
+        expected: { fence_token: "stale", generation: 7 },
+      },
+    })).resolves.toEqual({ applied: false, reason: "fence_mismatch" });
+  });
+
   it("supports generic plugin operation issue visibility in the test harness", async () => {
     const companyId = randomUUID();
     const harness = createTestHarness({

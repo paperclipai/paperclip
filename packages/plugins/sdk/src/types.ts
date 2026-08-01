@@ -1335,6 +1335,46 @@ export interface PluginIssueAttachmentContent {
   contentBase64: string;
 }
 
+export type PluginIssueUpdatePatch = Partial<Pick<
+  Issue,
+  | "title"
+  | "description"
+  | "status"
+  | "priority"
+  | "assigneeAgentId"
+  | "assigneeUserId"
+  | "billingCode"
+  | "originKind"
+  | "originId"
+  | "originRunId"
+  | "requestDepth"
+  | "executionWorkspaceId"
+  | "executionWorkspacePreference"
+>> & {
+  blockedByIssueIds?: string[];
+  labelIds?: string[];
+  executionWorkspaceSettings?: Record<string, unknown> | null;
+};
+
+export type PluginNamespaceFenceScalar = string | number | boolean | null;
+
+/** A host-qualified row fence inside the calling plugin's own database namespace. */
+export interface PluginNamespaceFence {
+  /** Unqualified table name. The host supplies and verifies the plugin schema. */
+  table: string;
+  /** Columns that uniquely identify the serialized lane row. */
+  lane: Record<string, PluginNamespaceFenceScalar>;
+  /** Complete fence values that must match while the lane row is locked. */
+  expected: Record<string, PluginNamespaceFenceScalar>;
+}
+
+export type PluginConditionalIssueUpdateResult =
+  | { applied: true; issue: Issue & { version: number } }
+  | {
+      applied: false;
+      reason: "fence_mismatch" | "issue_version_mismatch" | "not_found";
+    };
+
 /**
  * `ctx.issues` — read and mutate issues plus comments.
  *
@@ -1397,29 +1437,17 @@ export interface PluginIssuesClient {
   }): Promise<Issue>;
   update(
     issueId: string,
-    patch: Partial<Pick<
-      Issue,
-      | "title"
-      | "description"
-      | "status"
-      | "priority"
-      | "assigneeAgentId"
-      | "assigneeUserId"
-      | "billingCode"
-      | "originKind"
-      | "originId"
-      | "originRunId"
-      | "requestDepth"
-      | "executionWorkspaceId"
-      | "executionWorkspacePreference"
-    >> & {
-      blockedByIssueIds?: string[];
-      labelIds?: string[];
-      executionWorkspaceSettings?: Record<string, unknown> | null;
-    },
+    patch: PluginIssueUpdatePatch,
     companyId: string,
     actor?: PluginIssueMutationActor,
   ): Promise<Issue>;
+  updateConditional(input: {
+    issueId: string;
+    companyId: string;
+    patch: PluginIssueUpdatePatch;
+    expectedVersion: number;
+    namespaceFence: PluginNamespaceFence;
+  }): Promise<PluginConditionalIssueUpdateResult>;
   assertCheckoutOwner(input: {
     issueId: string;
     companyId: string;

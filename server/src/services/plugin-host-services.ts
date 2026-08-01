@@ -35,6 +35,7 @@ import { agentService } from "./agents.js";
 import { projectService } from "./projects.js";
 import { executionWorkspaceService } from "./execution-workspaces.js";
 import { issueService } from "./issues.js";
+import { pluginConditionalIssueUpdateService } from "./plugin-conditional-issue-update.js";
 import { issueThreadInteractionService } from "./issue-thread-interactions.js";
 import { goalService } from "./goals.js";
 import { documentService } from "./documents.js";
@@ -541,6 +542,7 @@ export function buildHostServices(
   const projects = projectService(db);
   const executionWorkspaces = executionWorkspaceService(db);
   const issues = issueService(db);
+  const conditionalIssueUpdates = pluginConditionalIssueUpdateService(db, pluginId, pluginKey);
   const documents = documentService(db);
   const goals = goalService(db);
   const access = accessService(db);
@@ -1766,6 +1768,21 @@ export function buildHostServices(
           },
         });
         return updated;
+      },
+      async updateConditional(params, context) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        const patch = { ...(params.patch as Record<string, unknown>) };
+        if (patch.originKind !== undefined) {
+          patch.originKind = normalizePluginOriginKind(patch.originKind);
+        }
+        return conditionalIssueUpdates.update({
+          issueId: params.issueId,
+          companyId,
+          expectedVersion: params.expectedVersion,
+          namespaceFence: params.namespaceFence,
+          patch,
+        }, context);
       },
       async getRelations(params) {
         const companyId = ensureCompanyId(params.companyId);

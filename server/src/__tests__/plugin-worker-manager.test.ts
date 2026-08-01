@@ -282,7 +282,15 @@ describe("plugin-worker-manager stderr failure context", () => {
       });
       expect(companiesGet).toHaveBeenCalledWith(
         { companyId: "company-a" },
-        { invocationScope: { companyId: "company-a" } },
+        {
+          invocationScope: {
+            companyId: "company-a",
+            actorType: "agent",
+            actorAgentId: "agent-1",
+            actorUserId: null,
+            actorRunId: "run-1",
+          },
+        },
       );
     } finally {
       await handle.stop().catch(() => undefined);

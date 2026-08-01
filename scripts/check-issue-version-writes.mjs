@@ -538,6 +538,14 @@ function helperExports(repoRoot) {
   );
   const names = new Set();
   for (const statement of sourceFile.statements) {
+    if (
+      ts.isExportDeclaration(statement)
+      && statement.exportClause
+      && ts.isNamedExports(statement.exportClause)
+    ) {
+      for (const specifier of statement.exportClause.elements) names.add(specifier.name.text);
+      continue;
+    }
     const modifiers = ts.canHaveModifiers(statement) ? ts.getModifiers(statement) ?? [] : [];
     if (!modifiers.some((modifier) => modifier.kind === ts.SyntaxKind.ExportKeyword)) continue;
     if (ts.isFunctionDeclaration(statement) && statement.name && statement.body) {

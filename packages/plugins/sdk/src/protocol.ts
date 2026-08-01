@@ -74,6 +74,9 @@ import type {
   PluginAuthorizationDecisionResult,
   PluginAuthorizationPolicyRecord,
   PluginAuthorizationPolicySummary,
+  PluginConditionalIssueUpdateResult,
+  PluginIssueUpdatePatch,
+  PluginNamespaceFence,
 } from "./types.js";
 import type {
   PluginHealthDiagnostics,
@@ -282,6 +285,10 @@ export type PluginRpcErrorCode =
  */
 export interface PluginInvocationScope {
   companyId: string;
+  actorType?: "user" | "agent" | "system";
+  actorUserId?: string | null;
+  actorAgentId?: string | null;
+  actorRunId?: string | null;
 }
 
 /**
@@ -1434,6 +1441,16 @@ export interface WorkerToHostMethods {
       companyId: string;
     },
     result: Issue,
+  ];
+  "issues.updateConditional": [
+    params: {
+      issueId: string;
+      companyId: string;
+      patch: PluginIssueUpdatePatch;
+      expectedVersion: number;
+      namespaceFence: PluginNamespaceFence;
+    },
+    result: PluginConditionalIssueUpdateResult,
   ];
   "issues.relations.get": [
     params: { issueId: string; companyId: string },

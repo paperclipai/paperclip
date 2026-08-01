@@ -32,6 +32,18 @@ export {
   formatEmbeddedPostgresError,
 } from "./embedded-postgres-error.js";
 export {
+  IssueVersionConflictError,
+  bumpIssueVersions,
+  runIssueMutation,
+  versionedIssuePatch,
+  type DbOrTx,
+  type DbTransaction,
+  type IssueMutationPatch,
+  type IssueMutationPlan,
+  type IssueMutationResult,
+  type RunIssueMutationInput,
+} from "./issue-versioning.js";
+export {
   ensureLinuxSharedLibraryAliases,
   prepareEmbeddedPostgresNativeRuntime,
 } from "./embedded-postgres-native.js";

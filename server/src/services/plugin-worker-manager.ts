@@ -599,18 +599,34 @@ export function createPluginWorkerHandle(
   ): PluginInvocationScope | null {
     if (!isRecord(params)) return null;
 
-    const directCompanyId = readNonEmptyString(params.companyId);
-    if (directCompanyId) return { companyId: directCompanyId };
-
     if (method === "performAction" && isRecord(params.actorContext)) {
       const companyId = readNonEmptyString(params.actorContext.companyId);
-      return companyId ? { companyId } : null;
+      if (!companyId) return null;
+      const actorType = params.actorContext.type;
+      return {
+        companyId,
+        ...(actorType === "user" || actorType === "agent" || actorType === "system"
+          ? { actorType }
+          : {}),
+        actorUserId: readNonEmptyString(params.actorContext.userId),
+        actorAgentId: readNonEmptyString(params.actorContext.agentId),
+        actorRunId: readNonEmptyString(params.actorContext.runId),
+      };
     }
 
     if (method === "executeTool" && isRecord(params.runContext)) {
       const companyId = readNonEmptyString(params.runContext.companyId);
-      return companyId ? { companyId } : null;
+      if (!companyId) return null;
+      return {
+        companyId,
+        actorType: "agent",
+        actorAgentId: readNonEmptyString(params.runContext.agentId),
+        actorRunId: readNonEmptyString(params.runContext.runId),
+      };
     }
+
+    const directCompanyId = readNonEmptyString(params.companyId);
+    if (directCompanyId) return { companyId: directCompanyId };
 
     if (method === "onEvent" && isRecord(params.event)) {
       const companyId = readNonEmptyString(params.event.companyId);

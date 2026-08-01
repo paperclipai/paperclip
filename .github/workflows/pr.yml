@@ -55,6 +55,12 @@ jobs:
       - name: Test no-git-push check
         run: node --test ./scripts/check-no-git-push.test.mjs
 
+      - name: Verify issue version write catalog
+        run: node ./scripts/check-issue-version-writes.mjs --verify-baseline
+
+      - name: Test issue version write catalog scanner
+        run: node --test ./scripts/check-issue-version-writes.test.mjs
+
       - name: Test general-server shard partition
         run: node --test ./scripts/__tests__/run-vitest-stable-shard.test.mjs
 

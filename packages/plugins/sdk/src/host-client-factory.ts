@@ -227,6 +227,10 @@ export interface HostServices {
     get(params: WorkerToHostMethods["issues.get"][0]): Promise<WorkerToHostMethods["issues.get"][1]>;
     create(params: WorkerToHostMethods["issues.create"][0]): Promise<WorkerToHostMethods["issues.create"][1]>;
     update(params: WorkerToHostMethods["issues.update"][0]): Promise<WorkerToHostMethods["issues.update"][1]>;
+    updateConditional(
+      params: WorkerToHostMethods["issues.updateConditional"][0],
+      context?: WorkerHostCallContext,
+    ): Promise<WorkerToHostMethods["issues.updateConditional"][1]>;
     getRelations(params: WorkerToHostMethods["issues.relations.get"][0]): Promise<WorkerToHostMethods["issues.relations.get"][1]>;
     setBlockedBy(params: WorkerToHostMethods["issues.relations.setBlockedBy"][0]): Promise<WorkerToHostMethods["issues.relations.setBlockedBy"][1]>;
     addBlockers(params: WorkerToHostMethods["issues.relations.addBlockers"][0]): Promise<WorkerToHostMethods["issues.relations.addBlockers"][1]>;
@@ -444,6 +448,7 @@ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | n
   "issues.get": "issues.read",
   "issues.create": "issues.create",
   "issues.update": "issues.update",
+  "issues.updateConditional": "issues.update",
   "issues.relations.get": "issue.relations.read",
   "issues.relations.setBlockedBy": "issue.relations.write",
   "issues.relations.addBlockers": "issue.relations.write",
@@ -870,6 +875,9 @@ export function createHostClientHandlers(
     }),
     "issues.update": gated("issues.update", async (params) => {
       return services.issues.update(params);
+    }),
+    "issues.updateConditional": gated("issues.updateConditional", async (params, context) => {
+      return services.issues.updateConditional(params, context);
     }),
     "issues.relations.get": gated("issues.relations.get", async (params) => {
       return services.issues.getRelations(params);

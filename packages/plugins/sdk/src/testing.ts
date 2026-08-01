@@ -44,6 +44,7 @@ import type {
   PrincipalPermissionGrant,
   PermissionKey,
   PrincipalType,
+  PluginNamespaceFenceScalar,
 } from "./types.js";
 import type {
   PluginEnvironmentValidateConfigParams,
@@ -119,6 +120,11 @@ export interface TestHarness {
     executionWorkspaces?: PluginExecutionWorkspaceMetadata[];
     accessMembers?: PluginAccessMember[];
     principalGrants?: PrincipalPermissionGrant[];
+    namespaceFences?: Array<{
+      table: string;
+      lane: Record<string, PluginNamespaceFenceScalar>;
+      values: Record<string, PluginNamespaceFenceScalar>;
+    }>;
   }): void;
   setConfig(config: Record<string, unknown>): void;
   /** Dispatch a host or plugin event to registered handlers. */
@@ -494,6 +500,8 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
   const routines = new Map<string, Routine>();
   const routineRuns = new Map<string, RoutineRun>();
   const issues = new Map<string, Issue>();
+  const issueVersions = new Map<string, number>();
+  const namespaceFences = new Map<string, Record<string, PluginNamespaceFenceScalar>>();
   const blockedByIssueIds = new Map<string, string[]>();
   const issueComments = new Map<string, IssueComment[]>();
   const issueInteractions = new Map<string, IssueThreadInteraction[]>();
@@ -505,6 +513,13 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
   const goals = new Map<string, Goal>();
   const accessMembers = new Map<string, PluginAccessMember>();
   const principalGrants = new Map<string, PrincipalPermissionGrant[]>();
+
+  function namespaceFenceKey(
+    table: string,
+    lane: Record<string, PluginNamespaceFenceScalar>,
+  ) {
+    return `${table}:${JSON.stringify(Object.entries(lane).sort(([a], [b]) => a.localeCompare(b)))}`;
+  }
 
   function principalGrantsKey(companyId: string, principalType: PrincipalType, principalId: string) {
     return `${companyId}:${principalType}:${principalId}`;
@@ -1630,6 +1645,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
           updatedAt: now,
         };
         issues.set(record.id, record);
+        issueVersions.set(record.id, 1);
         if (input.blockedByIssueIds) blockedByIssueIds.set(record.id, [...new Set(input.blockedByIssueIds)]);
         return record;
       },
@@ -1647,10 +1663,47 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
           updatedAt: new Date(),
         };
         issues.set(issueId, updated);
+        issueVersions.set(issueId, (issueVersions.get(issueId) ?? 1) + 1);
         if (nextBlockedByIssueIds !== undefined) {
           blockedByIssueIds.set(issueId, [...new Set(nextBlockedByIssueIds)]);
         }
         return updated;
+      },
+      async updateConditional(input) {
+        requireCapability(manifest, capabilitySet, "issues.update");
+        const record = issues.get(input.issueId);
+        if (!isInCompany(record, input.companyId)) {
+          return { applied: false, reason: "not_found" };
+        }
+        const fence = namespaceFences.get(
+          namespaceFenceKey(input.namespaceFence.table, input.namespaceFence.lane),
+        );
+        if (!fence) return { applied: false, reason: "not_found" };
+        const fenceMatches = Object.entries(input.namespaceFence.expected).every(
+          ([key, value]) => Object.is(fence[key], value),
+        );
+        if (!fenceMatches) return { applied: false, reason: "fence_mismatch" };
+        const currentVersion = issueVersions.get(input.issueId) ?? 1;
+        if (currentVersion !== input.expectedVersion) {
+          return { applied: false, reason: "issue_version_mismatch" };
+        }
+        const { blockedByIssueIds: nextBlockedByIssueIds, ...issuePatch } = input.patch;
+        if (issuePatch.originKind !== undefined) {
+          issuePatch.originKind = normalizePluginOriginKind(issuePatch.originKind);
+        }
+        const version = currentVersion + 1;
+        const updated = {
+          ...record,
+          ...issuePatch,
+          version,
+          updatedAt: new Date(),
+        };
+        issues.set(input.issueId, updated);
+        issueVersions.set(input.issueId, version);
+        if (nextBlockedByIssueIds !== undefined) {
+          blockedByIssueIds.set(input.issueId, [...new Set(nextBlockedByIssueIds)]);
+        }
+        return { applied: true, issue: updated };
       },
       async assertCheckoutOwner(input) {
         requireCapability(manifest, capabilitySet, "issues.checkout");
@@ -2511,6 +2564,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       for (const row of input.projects ?? []) projects.set(row.id, row);
       for (const row of input.issues ?? []) {
         issues.set(row.id, row);
+        issueVersions.set(row.id, (row as Issue & { version?: number }).version ?? 1);
         if (row.blockedBy) {
           blockedByIssueIds.set(row.id, row.blockedBy.map((blocker) => blocker.id));
         }
@@ -2546,6 +2600,12 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         const list = principalGrants.get(principalGrantsKey(row.companyId, row.principalType, row.principalId)) ?? [];
         list.push(row);
         principalGrants.set(principalGrantsKey(row.companyId, row.principalType, row.principalId), list);
+      }
+      for (const row of input.namespaceFences ?? []) {
+        namespaceFences.set(
+          namespaceFenceKey(row.table, row.lane),
+          { ...row.values },
+        );
       }
     },
     setConfig(config) {

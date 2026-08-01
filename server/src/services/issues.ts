@@ -5016,6 +5016,7 @@ export function issueService(db: Db) {
     actorAgentId?: string | null;
     actorUserId?: string | null;
     expectedVersion?: number;
+    expectedCompanyId?: string;
   };
 
   type AddIssueCommentOptions = {
@@ -7281,6 +7282,7 @@ export function issueService(db: Db) {
         actorAgentId,
         actorUserId,
         expectedVersion,
+        expectedCompanyId,
         ...issueData
       } = data;
 
@@ -7289,6 +7291,7 @@ export function issueService(db: Db) {
       let previousRelationSummaries = new Map<string, IssueRelationSummaryMap>();
       const mutation = await runIssueMutation(dbOrTx, {
         issueId: id,
+        companyId: expectedCompanyId,
         expectedVersion,
         mutate: async (tx, existing) => {
           const isolatedWorkspacesEnabled = (
