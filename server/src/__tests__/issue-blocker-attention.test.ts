@@ -99,7 +99,10 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     originKind?: string | null;
     originId?: string | null;
     originFingerprint?: string | null;
+    executionPolicy?: Record<string, unknown> | null;
     executionState?: Record<string, unknown> | null;
+    monitorNextCheckAt?: Date | null;
+    monitorAttemptCount?: number | null;
     description?: string | null;
   }) {
     const id = input.id ?? randomUUID();
@@ -116,7 +119,10 @@ describeEmbeddedPostgres("issue blocker attention", () => {
       originKind: input.originKind ?? "manual",
       originId: input.originId ?? null,
       originFingerprint: input.originFingerprint ?? "default",
+      executionPolicy: input.executionPolicy ?? null,
       executionState: input.executionState ?? null,
+      monitorNextCheckAt: input.monitorNextCheckAt ?? null,
+      monitorAttemptCount: input.monitorAttemptCount ?? 0,
       description: input.description ?? null,
     });
     return id;
@@ -170,6 +176,177 @@ describeEmbeddedPostgres("issue blocker attention", () => {
       attentionBlockerCount: 0,
       sampleBlockerIdentifier: "PBC-2",
     });
+  });
+
+  it("classifies a future bounded monitor on an active blocker as a covered waiting path", async () => {
+    const { companyId, agentId } = await createCompany("PBMF");
+    const now = Date.now();
+    const nextCheckAt = new Date(now + 60 * 60 * 1000);
+    const parentId = await insertIssue({ companyId, identifier: "PBMF-1", title: "Parent", status: "blocked" });
+    const blockerId = await insertIssue({
+      companyId,
+      identifier: "PBMF-2",
+      title: "Monitored dependency",
+      status: "in_progress",
+      assigneeAgentId: agentId,
+      executionPolicy: {
+        monitor: {
+          nextCheckAt: nextCheckAt.toISOString(),
+          timeoutAt: new Date(now + 2 * 60 * 60 * 1000).toISOString(),
+          maxAttempts: 2,
+        },
+      },
+      monitorNextCheckAt: nextCheckAt,
+      monitorAttemptCount: 0,
+    });
+    await block({ companyId, blockerIssueId: blockerId, blockedIssueId: parentId });
+
+    const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+
+    expect(parent?.blockerAttention).toMatchObject({
+      state: "covered",
+      reason: "active_dependency",
+      unresolvedBlockerCount: 1,
+      coveredBlockerCount: 1,
+      stalledBlockerCount: 0,
+      attentionBlockerCount: 0,
+      sampleBlockerIdentifier: "PBMF-2",
+    });
+  });
+
+  it("lets a valid future monitor cover an in-review blocker without classifying it as stalled", async () => {
+    const { companyId, agentId } = await createCompany("PBMR");
+    const nextCheckAt = new Date(Date.now() + 60 * 60 * 1000);
+    const parentId = await insertIssue({ companyId, identifier: "PBMR-1", title: "Parent", status: "blocked" });
+    const blockerId = await insertIssue({
+      companyId,
+      identifier: "PBMR-2",
+      title: "Review awaiting monitored check",
+      status: "in_review",
+      assigneeAgentId: agentId,
+      executionPolicy: { monitor: { nextCheckAt: nextCheckAt.toISOString(), maxAttempts: 2 } },
+      monitorNextCheckAt: nextCheckAt,
+      monitorAttemptCount: 1,
+    });
+    await block({ companyId, blockerIssueId: blockerId, blockedIssueId: parentId });
+
+    const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+
+    expect(parent?.blockerAttention).toMatchObject({
+      state: "covered",
+      coveredBlockerCount: 1,
+      stalledBlockerCount: 0,
+      attentionBlockerCount: 0,
+      sampleBlockerIdentifier: "PBMR-2",
+    });
+  });
+
+  it("keeps absent, overdue, timed-out, exhausted, malformed, and invalid monitors attention-required", async () => {
+    const { companyId, agentId, pausedAgentId } = await createCompany("PBMX");
+    const now = Date.now();
+    const future = new Date(now + 60 * 60 * 1000);
+    const past = new Date(now - 60 * 60 * 1000);
+    const cases = [
+      {
+        suffix: "missing",
+        issue: { status: "in_progress", assigneeAgentId: agentId },
+      },
+      {
+        suffix: "overdue",
+        issue: { status: "in_progress", assigneeAgentId: agentId, monitorNextCheckAt: past },
+      },
+      {
+        suffix: "timed-out",
+        issue: {
+          status: "in_progress",
+          assigneeAgentId: agentId,
+          executionPolicy: {
+            monitor: {
+              nextCheckAt: future.toISOString(),
+              timeoutAt: past.toISOString(),
+              maxAttempts: 2,
+            },
+          },
+          monitorNextCheckAt: future,
+          monitorAttemptCount: 0,
+        },
+      },
+      {
+        suffix: "exhausted",
+        issue: {
+          status: "in_progress",
+          assigneeAgentId: agentId,
+          executionPolicy: { monitor: { nextCheckAt: future.toISOString(), maxAttempts: 1 } },
+          monitorNextCheckAt: future,
+          monitorAttemptCount: 1,
+        },
+      },
+      {
+        suffix: "malformed-timeout",
+        issue: {
+          status: "in_progress",
+          assigneeAgentId: agentId,
+          executionPolicy: {
+            monitor: {
+              nextCheckAt: future.toISOString(),
+              timeoutAt: "not-a-date",
+              maxAttempts: 2,
+            },
+          },
+          monitorNextCheckAt: future,
+          monitorAttemptCount: 0,
+        },
+      },
+      {
+        suffix: "paused-assignee",
+        issue: {
+          status: "in_progress",
+          assigneeAgentId: pausedAgentId,
+          executionPolicy: { monitor: { nextCheckAt: future.toISOString(), maxAttempts: 2 } },
+          monitorNextCheckAt: future,
+          monitorAttemptCount: 0,
+        },
+      },
+      {
+        suffix: "invalid-assignee",
+        issue: {
+          status: "in_progress",
+          assigneeAgentId: null,
+          executionPolicy: { monitor: { nextCheckAt: future.toISOString(), maxAttempts: 2 } },
+          monitorNextCheckAt: future,
+          monitorAttemptCount: 0,
+        },
+      },
+    ] as const;
+
+    for (const [index, testCase] of cases.entries()) {
+      const parentIdentifier = `PBMX-${index * 2 + 1}`;
+      const blockerIdentifier = `PBMX-${index * 2 + 2}`;
+      const parentId = await insertIssue({
+        companyId,
+        identifier: parentIdentifier,
+        title: `Parent ${testCase.suffix}`,
+        status: "blocked",
+      });
+      const blockerId = await insertIssue({
+        companyId,
+        identifier: blockerIdentifier,
+        title: `Blocker ${testCase.suffix}`,
+        ...testCase.issue,
+      });
+      await block({ companyId, blockerIssueId: blockerId, blockedIssueId: parentId });
+
+      const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+      expect(parent?.blockerAttention, testCase.suffix).toMatchObject({
+        state: "needs_attention",
+        reason: "attention_required",
+        unresolvedBlockerCount: 1,
+        coveredBlockerCount: 0,
+        stalledBlockerCount: 0,
+        attentionBlockerCount: 1,
+        sampleBlockerIdentifier: blockerIdentifier,
+      });
+    }
   });
 
   it("classifies an assigned backlog blocker leaf without a waiting path as attention-needed", async () => {

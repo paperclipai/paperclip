@@ -111,7 +111,11 @@ import {
   parseIssueGraphLivenessIncidentKey,
   RECOVERY_ORIGIN_KINDS,
 } from "./recovery/origins.js";
-import { classifyIssueGraphLiveness, type IssueLivenessFinding } from "./recovery/issue-graph-liveness.js";
+import {
+  classifyIssueGraphLiveness,
+  hasScheduledIssueMonitor,
+  type IssueLivenessFinding,
+} from "./recovery/issue-graph-liveness.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
 import { finalizeStatusCardsForStalledGeneration } from "./status-card-finalization.js";
 import { finalizeSummarySlotsForTerminalIssue } from "./summary-slot-finalization.js";
@@ -1815,6 +1819,10 @@ type IssueBlockerAttentionNode = {
   executionRunId?: string | null;
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
+  executionPolicy?: Record<string, unknown> | null;
+  executionState?: Record<string, unknown> | null;
+  monitorNextCheckAt?: Date | string | null;
+  monitorAttemptCount?: number | null;
 };
 type IssueBlockerAttentionInputNode =
   Pick<
@@ -2248,6 +2256,10 @@ async function listIssueBlockerAttentionMap(
           executionRunId: issues.executionRunId,
           assigneeAgentId: issues.assigneeAgentId,
           assigneeUserId: issues.assigneeUserId,
+          executionPolicy: issues.executionPolicy,
+          executionState: issues.executionState,
+          monitorNextCheckAt: issues.monitorNextCheckAt,
+          monitorAttemptCount: issues.monitorAttemptCount,
         })
         .from(issueRelations)
         .innerJoin(issues, eq(issueRelations.issueId, issues.id))
@@ -2272,6 +2284,10 @@ async function listIssueBlockerAttentionMap(
           executionRunId: issues.executionRunId,
           assigneeAgentId: issues.assigneeAgentId,
           assigneeUserId: issues.assigneeUserId,
+          executionPolicy: issues.executionPolicy,
+          executionState: issues.executionState,
+          monitorNextCheckAt: issues.monitorNextCheckAt,
+          monitorAttemptCount: issues.monitorAttemptCount,
         })
         .from(issues)
         .where(
@@ -2310,6 +2326,10 @@ async function listIssueBlockerAttentionMap(
           executionRunId: row.executionRunId,
           assigneeAgentId: row.assigneeAgentId,
           assigneeUserId: row.assigneeUserId,
+          executionPolicy: row.executionPolicy,
+          executionState: row.executionState,
+          monitorNextCheckAt: row.monitorNextCheckAt,
+          monitorAttemptCount: row.monitorAttemptCount,
         });
         nextFrontier.add(row.blockerIssueId);
       }
@@ -2450,6 +2470,7 @@ async function listIssueBlockerAttentionMap(
         .where(and(eq(agents.companyId, companyId), inArray(agents.id, [...agentIds])))
     : [];
   const agentsById = new Map(agentRows.map((agent) => [agent.id, agent]));
+  const blockerAttentionNowMs = Date.now();
 
   type PathClassification = {
     covered: boolean;
@@ -2477,6 +2498,17 @@ async function listIssueBlockerAttentionMap(
       return { covered: true, stalled: false, sampleBlockerIdentifier: nodeSample, sampleStalledBlockerIdentifier: null };
     }
     if (node.assigneeUserId && node.status !== "cancelled") {
+      return { covered: true, stalled: false, sampleBlockerIdentifier: nodeSample, sampleStalledBlockerIdentifier: null };
+    }
+    const monitorAssignee = node.assigneeAgentId ? agentsById.get(node.assigneeAgentId) : null;
+    const hasValidScheduledMonitor =
+      Boolean(node.assigneeAgentId) &&
+      !node.assigneeUserId &&
+      (node.status === "in_progress" || node.status === "in_review") &&
+      monitorAssignee?.companyId === companyId &&
+      BLOCKER_ATTENTION_INVOKABLE_AGENT_STATUSES.has(monitorAssignee.status) &&
+      hasScheduledIssueMonitor(node, blockerAttentionNowMs);
+    if (hasValidScheduledMonitor) {
       return { covered: true, stalled: false, sampleBlockerIdentifier: nodeSample, sampleStalledBlockerIdentifier: null };
     }
     if (node.status === "in_review") {
