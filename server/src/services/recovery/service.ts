@@ -1095,7 +1095,6 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const toolActionExecutionStatus = progress.toolActionExecutionStatus ?? null;
     const rows = await db
       .select({
-        contextSnapshot: heartbeatRuns.contextSnapshot,
         wakeupPayload: agentWakeupRequests.payload,
         wakeupStatus: agentWakeupRequests.status,
       })
@@ -1119,19 +1118,16 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           or(gte(heartbeatRuns.createdAt, since), gte(heartbeatRuns.finishedAt, since)),
         ),
       )
-      .limit(resolvedItemIds.length > 0 || toolActionExecutionStatus ? 50 : 1);
+      .limit(50);
+
     const contextsByRow = rows.map((row) => {
-      const runContext = parseObject(row.contextSnapshot);
       const wakeupPayload = parseObject(row.wakeupPayload);
-      return [
-        ...(readNonEmptyString(runContext.interactionId) === interactionId ? [runContext] : []),
-        ...(
-          (row.wakeupStatus === "claimed" || row.wakeupStatus === "completed")
-          && readNonEmptyString(wakeupPayload.interactionId) === interactionId
-            ? [wakeupPayload]
-            : []
-        ),
-      ];
+      return (
+        (row.wakeupStatus === "claimed" || row.wakeupStatus === "completed")
+        && readNonEmptyString(wakeupPayload.interactionId) === interactionId
+      )
+        ? [wakeupPayload]
+        : [];
     });
     if (resolvedItemIds.length === 0 && !toolActionExecutionStatus) {
       return contextsByRow.some((contexts) => contexts.length > 0);

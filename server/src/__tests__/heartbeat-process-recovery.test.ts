@@ -5459,6 +5459,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const agentId = randomUUID();
     const issueId = randomUUID();
     const interactionId = randomUUID();
+    const runId = randomUUID();
+    const wakeupRequestId = randomUUID();
     const resolvedAt = new Date("2026-03-19T00:05:00.000Z");
     const succeededAt = new Date("2026-03-19T00:06:00.000Z");
     const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
@@ -5506,10 +5508,32 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       payload: { version: 1, prompt: "Approve the plan?" },
       result: { outcome: "accepted" },
     });
-    await db.insert(heartbeatRuns).values({
-      id: randomUUID(),
+    await db.insert(agentWakeupRequests).values({
+      id: wakeupRequestId,
       companyId,
       agentId,
+      source: "issue.assignment",
+      triggerDetail: "system",
+      reason: "issue_continuation_needed",
+      payload: {
+        issueId,
+        taskId: issueId,
+        mutation: "interaction",
+        interactionId,
+        interactionKind: "request_confirmation",
+        interactionStatus: "accepted",
+      },
+      status: "completed",
+      runId,
+      requestedAt: succeededAt,
+      claimedAt: succeededAt,
+      completedAt: succeededAt,
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      wakeupRequestId,
       invocationSource: "automation",
       triggerDetail: "system",
       status: "succeeded",
@@ -7737,7 +7761,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       contextSnapshot: {
         issueId,
         taskId: issueId,
-        wakeReason: "timer",
+        mutation: "interaction",
+        interactionId,
+        interactionKind: "request_confirmation",
+        interactionStatus: "accepted",
+        wakeReason: "issue_commented",
       },
     });
 
