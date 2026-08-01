@@ -5450,7 +5450,10 @@ function clearInteractionContinuationWakeContext(contextSnapshot: Record<string,
 }
 
 function hasInteractionContinuationWakeContext(contextSnapshot: Record<string, unknown>) {
-  return INTERACTION_CONTINUATION_CONTEXT_KEYS.some((key) => readNonEmptyString(contextSnapshot[key]));
+  return (
+    isInteractionResolutionWakePayload(contextSnapshot)
+    || Boolean(readNonEmptyString(contextSnapshot.interactionId))
+  );
 }
 
 function normalizeInteractionContinuationWakeContext(
@@ -5576,6 +5579,121 @@ export function mergeCoalescedContextSnapshot(
     clearInteractionContinuationWakeContext(merged);
   }
   return merged;
+}
+
+function hasExecutionStageWakeContext(contextSnapshot: Record<string, unknown>) {
+  const wakeReason = readNonEmptyString(contextSnapshot.wakeReason);
+  return (
+    Object.keys(parseObject(contextSnapshot.executionStage)).length > 0
+    || Boolean(wakeReason?.startsWith("execution_"))
+  );
+}
+
+function canMergeDeferredWakeContexts(
+  existing: Record<string, unknown>,
+  incoming: Record<string, unknown>,
+) {
+  const existingInteractionId = readNonEmptyString(existing.interactionId);
+  const incomingInteractionId = readNonEmptyString(incoming.interactionId);
+  if (existingInteractionId && incomingInteractionId) {
+    return existingInteractionId === incomingInteractionId;
+  }
+  if (existingInteractionId || incomingInteractionId) {
+    const nonInteractionContext = existingInteractionId ? incoming : existing;
+    return (
+      Boolean(deriveCommentId(nonInteractionContext, null))
+      && !hasExecutionStageWakeContext(nonInteractionContext)
+    );
+  }
+  return true;
+}
+
+export function mergeDeferredWakeContextSnapshot(
+  existingRaw: unknown,
+  incoming: Record<string, unknown>,
+) {
+  const existing = parseObject(existingRaw);
+  const existingInteractionId = readNonEmptyString(existing.interactionId);
+  const incomingInteractionId = readNonEmptyString(incoming.interactionId);
+  const preservedInteractionContext = (
+    existingInteractionId
+    && !incomingInteractionId
+    && Boolean(deriveCommentId(incoming, null))
+    && !hasExecutionStageWakeContext(incoming)
+  )
+    ? Object.fromEntries(
+        INTERACTION_CONTINUATION_CONTEXT_KEYS
+          .filter((key) => Object.prototype.hasOwnProperty.call(existing, key))
+          .map((key) => [key, existing[key]]),
+      )
+    : null;
+  const merged = mergeCoalescedContextSnapshot(existing, incoming);
+  if (preservedInteractionContext) {
+    Object.assign(merged, preservedInteractionContext);
+    delete merged[PAPERCLIP_WAKE_PAYLOAD_KEY];
+  }
+
+  const stageAuthority = hasExecutionStageWakeContext(incoming)
+    ? incoming
+    : hasExecutionStageWakeContext(existing)
+      ? existing
+      : null;
+  if (stageAuthority) {
+    for (const key of [
+      "wakeReason",
+      "source",
+      "wakeSource",
+      "wakeTriggerDetail",
+      "executionStage",
+      "skipIssueComment",
+    ]) {
+      if (Object.prototype.hasOwnProperty.call(stageAuthority, key)) {
+        merged[key] = stageAuthority[key];
+      }
+    }
+  }
+  return merged;
+}
+
+export function mergeDeferredWakePayload(input: {
+  existingPayload: unknown;
+  incomingPayload: Record<string, unknown> | null | undefined;
+  issueId: string;
+  mergedContext: Record<string, unknown>;
+}) {
+  const mergedPayload: Record<string, unknown> = {
+    ...parseObject(input.existingPayload),
+    ...(input.incomingPayload ?? {}),
+    ...input.mergedContext,
+    issueId: input.issueId,
+    [DEFERRED_WAKE_CONTEXT_KEY]: input.mergedContext,
+  };
+  for (const key of INTERACTION_CONTINUATION_CONTEXT_KEYS) {
+    if (Object.prototype.hasOwnProperty.call(input.mergedContext, key)) continue;
+    if (key === "mutation") {
+      const incomingMutation = readNonEmptyString(input.incomingPayload?.mutation);
+      if (incomingMutation && incomingMutation !== "interaction") {
+        mergedPayload.mutation = incomingMutation;
+        continue;
+      }
+    }
+    delete mergedPayload[key];
+  }
+  if (!Object.prototype.hasOwnProperty.call(input.mergedContext, PAPERCLIP_WAKE_PAYLOAD_KEY)) {
+    delete mergedPayload[PAPERCLIP_WAKE_PAYLOAD_KEY];
+  }
+  return mergedPayload;
+}
+
+function requiresIsolatedFollowupWakeContext(contextSnapshot: Record<string, unknown>) {
+  return (
+    hasInteractionContinuationWakeContext(contextSnapshot)
+    || hasExecutionStageWakeContext(contextSnapshot)
+    || shouldQueueFollowupForRunningIssueWake({
+      contextSnapshot,
+      wakeCommentId: deriveCommentId(contextSnapshot, null),
+    })
+  );
 }
 
 export async function buildPaperclipWakePayload(input: {
@@ -18353,8 +18471,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             forceFreshSession: enrichedContextSnapshot.forceFreshSession === true,
           });
           const shouldQueueFollowupForActiveWake =
-            shouldQueueFollowupForRunningIssueWake({ contextSnapshot: enrichedContextSnapshot, wakeCommentId }) &&
-            isSameExecutionAgent;
+            isSameExecutionAgent && (
+              requiresIsolatedFollowupWakeContext(enrichedContextSnapshot)
+              || requiresIsolatedFollowupWakeContext(parseObject(activeExecutionRun.contextSnapshot))
+            );
           const availableActiveExecutionRun = isSameExecutionAgent
             ? filterZombieCoalesceTarget(activeExecutionRun, liveRunExecutions)
             : activeExecutionRun;
@@ -18399,11 +18519,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           }
 
           if (availableActiveExecutionRun) {
-            const deferredPayload = {
-              ...(payload ?? {}),
+            const deferredPayload = mergeDeferredWakePayload({
+              existingPayload: {},
+              incomingPayload: payload,
               issueId,
-              [DEFERRED_WAKE_CONTEXT_KEY]: enrichedContextSnapshot,
-            };
+              mergedContext: enrichedContextSnapshot,
+            });
 
             const existingDeferred = await tx
               .select()
@@ -18423,27 +18544,40 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             if (existingDeferred) {
               const existingDeferredPayload = parseObject(existingDeferred.payload);
               const existingDeferredContext = parseObject(existingDeferredPayload[DEFERRED_WAKE_CONTEXT_KEY]);
-              const mergedDeferredContext = mergeCoalescedContextSnapshot(
-                existingDeferredContext,
-                enrichedContextSnapshot,
-              );
-              const mergedDeferredPayload = {
-                ...existingDeferredPayload,
-                ...(payload ?? {}),
-                issueId,
-                [DEFERRED_WAKE_CONTEXT_KEY]: mergedDeferredContext,
-              };
+              if (canMergeDeferredWakeContexts(existingDeferredContext, enrichedContextSnapshot)) {
+                const incomingStageTakesAuthority =
+                  hasExecutionStageWakeContext(enrichedContextSnapshot)
+                  && !hasExecutionStageWakeContext(existingDeferredContext);
+                const mergedDeferredContext = mergeDeferredWakeContextSnapshot(
+                  existingDeferredContext,
+                  enrichedContextSnapshot,
+                );
+                const mergedDeferredPayload = mergeDeferredWakePayload({
+                  existingPayload: existingDeferredPayload,
+                  incomingPayload: payload,
+                  issueId,
+                  mergedContext: mergedDeferredContext,
+                });
 
-              await tx
-                .update(agentWakeupRequests)
-                .set({
-                  payload: mergedDeferredPayload,
-                  coalescedCount: (existingDeferred.coalescedCount ?? 0) + 1,
-                  updatedAt: new Date(),
-                })
-                .where(eq(agentWakeupRequests.id, existingDeferred.id));
+                await tx
+                  .update(agentWakeupRequests)
+                  .set({
+                    payload: mergedDeferredPayload,
+                    ...(incomingStageTakesAuthority
+                      ? {
+                          source,
+                          triggerDetail,
+                          requestedByActorType: opts.requestedByActorType ?? null,
+                          requestedByActorId: opts.requestedByActorId ?? null,
+                        }
+                      : {}),
+                    coalescedCount: (existingDeferred.coalescedCount ?? 0) + 1,
+                    updatedAt: new Date(),
+                  })
+                  .where(eq(agentWakeupRequests.id, existingDeferred.id));
 
-              return { kind: "deferred" as const };
+                return { kind: "deferred" as const };
+              }
             }
 
             await tx.insert(agentWakeupRequests).values({

@@ -521,7 +521,9 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
     expect(runs[0]?.id).toBe(runId);
   });
 
-  it("does not overwrite a queued interaction continuation with a later interaction", async () => {
+  it.each(["interaction", "ordinary assignment"] as const)(
+    "does not overwrite a queued interaction continuation with a later %s wake",
+    async (followupKind) => {
     const companyId = randomUUID();
     const agentId = randomUUID();
     const issueId = randomUUID();
@@ -600,23 +602,32 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
       identifier: `${issuePrefix}-2`,
     });
 
+    const isInteractionFollowup = followupKind === "interaction";
     const followupRun = await heartbeat.wakeup(agentId, {
       source: "automation",
       triggerDetail: "system",
-      reason: "issue_commented",
+      reason: isInteractionFollowup ? "issue_commented" : "issue_assigned",
       payload: {
         issueId,
-        interactionId: "interaction-b",
-        interactionStatus: "accepted",
-        mutation: "interaction",
+        ...(isInteractionFollowup
+          ? {
+              interactionId: "interaction-b",
+              interactionStatus: "accepted",
+              mutation: "interaction",
+            }
+          : {}),
       },
       contextSnapshot: {
         issueId,
         taskId: issueId,
-        interactionId: "interaction-b",
-        interactionStatus: "accepted",
-        mutation: "interaction",
-        wakeReason: "issue_commented",
+        ...(isInteractionFollowup
+          ? {
+              interactionId: "interaction-b",
+              interactionStatus: "accepted",
+              mutation: "interaction",
+            }
+          : {}),
+        wakeReason: isInteractionFollowup ? "issue_commented" : "issue_assigned",
       },
       requestedByActorType: "user",
       requestedByActorId: "local-board",
@@ -639,16 +650,15 @@ describeEmbeddedPostgres("heartbeat comment wake batching", () => {
         eq(agentWakeupRequests.status, "deferred_issue_execution"),
       ))
       .then((rows) => rows[0] ?? null);
-    expect(deferred?.payload).toMatchObject({
-      issueId,
-      interactionId: "interaction-b",
-      interactionStatus: "accepted",
-    });
-    expect((deferred?.payload as Record<string, unknown>)._paperclipWakeContext).toMatchObject({
-      interactionId: "interaction-b",
-      interactionStatus: "accepted",
-    });
-  });
+    const expectedDeferredContext = isInteractionFollowup
+      ? { interactionId: "interaction-b", interactionStatus: "accepted" }
+      : { wakeReason: "issue_assigned" };
+    expect(deferred?.payload).toMatchObject({ issueId, ...expectedDeferredContext });
+    expect((deferred?.payload as Record<string, unknown>)._paperclipWakeContext).toMatchObject(
+      expectedDeferredContext,
+    );
+    },
+  );
 
   it("batches deferred comment wakes and forwards the ordered batch to the next run", async () => {
     const gateway = await createControlledGatewayServer();

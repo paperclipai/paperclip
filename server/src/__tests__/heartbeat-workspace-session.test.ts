@@ -21,6 +21,8 @@ import {
   formatRuntimeWorkspaceWarningLog,
   mergeExecutionWorkspaceMetadataForPersistence,
   mergeCoalescedContextSnapshot,
+  mergeDeferredWakeContextSnapshot,
+  mergeDeferredWakePayload,
   preflightLowTrustWorkspaceIsolation,
   prioritizeProjectWorkspaceCandidatesForRun,
   parseSessionCompactionPolicy,
@@ -2569,6 +2571,101 @@ describe("comment wake batching", () => {
           { id: "item-b", verdict: "reject", reason: "revise" },
         ],
       },
+    });
+  });
+
+  it("keeps a deferred interaction aligned with its immutable receipt when a comment is batched", () => {
+    const existingContext = {
+      issueId: "issue-1",
+      mutation: "interaction",
+      interactionId: "interaction-1",
+      interactionKind: "request_confirmation",
+      interactionStatus: "accepted",
+      toolAction: {
+        actionRequestId: "action-1",
+        decision: "accepted",
+        executionStatus: "executed",
+      },
+    };
+    const mergedContext = mergeDeferredWakeContextSnapshot(existingContext, {
+      issueId: "issue-1",
+      mutation: "comment",
+      wakeReason: "issue_commented",
+      source: "issue.comment",
+      wakeCommentId: "comment-2",
+    });
+    const mergedPayload = mergeDeferredWakePayload({
+      existingPayload: {
+        ...existingContext,
+        _paperclipWakeContext: existingContext,
+      },
+      incomingPayload: {
+        issueId: "issue-1",
+        mutation: "comment",
+        commentId: "comment-2",
+      },
+      issueId: "issue-1",
+      mergedContext,
+    });
+
+    expect(mergedContext).toMatchObject({
+      mutation: "interaction",
+      interactionId: "interaction-1",
+      wakeCommentId: "comment-2",
+      toolAction: { actionRequestId: "action-1", executionStatus: "executed" },
+    });
+    expect(mergedPayload).toMatchObject({
+      mutation: "interaction",
+      interactionId: "interaction-1",
+      _paperclipWakeContext: {
+        mutation: "interaction",
+        interactionId: "interaction-1",
+      },
+    });
+  });
+
+  it.each([
+    {
+      existing: {
+        issueId: "issue-1",
+        wakeReason: "execution_review_requested",
+        source: "issue.execution_stage",
+        wakeSource: "issue.execution_stage",
+        executionStage: { id: "stage-1", status: "review_pending" },
+      },
+      incoming: {
+        issueId: "issue-1",
+        wakeReason: "issue_commented",
+        source: "issue.comment",
+        wakeSource: "issue.comment",
+        wakeCommentId: "comment-1",
+      },
+    },
+    {
+      existing: {
+        issueId: "issue-1",
+        wakeReason: "issue_commented",
+        source: "issue.comment",
+        wakeSource: "issue.comment",
+        wakeCommentId: "comment-1",
+      },
+      incoming: {
+        issueId: "issue-1",
+        wakeReason: "execution_review_requested",
+        source: "issue.execution_stage",
+        wakeSource: "issue.execution_stage",
+        executionStage: { id: "stage-1", status: "review_pending" },
+      },
+    },
+  ])("preserves execution-stage authority regardless of deferred merge order", ({ existing, incoming }) => {
+    const merged = mergeDeferredWakeContextSnapshot(existing, incoming);
+
+    expect(merged).toMatchObject({
+      wakeReason: "execution_review_requested",
+      source: "issue.execution_stage",
+      wakeSource: "issue.execution_stage",
+      executionStage: { id: "stage-1", status: "review_pending" },
+      wakeCommentId: "comment-1",
     });
   });
 });
