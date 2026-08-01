@@ -83,6 +83,16 @@ import {
   DEFAULT_ACP_ENGINE_TIMEOUT_SEC,
   DEFAULT_ACP_ENGINE_WARM_HANDLE_IDLE_MS,
 } from "./constants.js";
+import {
+  measureStartupStep,
+  NOOP_STARTUP_SPAN,
+  NOOP_STARTUP_TRACE_CONTEXT,
+  type StartupSpan,
+  type StartupSpanContext,
+  type StartupStepMeasureOptions,
+  type StartupTraceContext,
+} from "./startup-timing.js";
+import type { CommandManagedRuntimeRunner } from "../command-managed-runtime.js";
 
 const defaultModuleDir = path.dirname(fileURLToPath(import.meta.url));
 const PAPERCLIP_MANAGED_CODEX_SKILLS_MANIFEST = ".paperclip-managed-skills.json";
@@ -1427,6 +1437,17 @@ async function buildRuntime(input: {
       ? remoteExecutionIdentity.remoteCwd
       : cwd;
   const executionTargetIsRemote = remoteExecutionIdentity !== null;
+  const stepMetrics: StartupStepMeasureOptions = {
+    ...buildStartupStepMetrics(
+      executionTarget?.kind === "remote" && executionTarget.transport === "sandbox"
+        ? executionTarget.runner
+        : undefined,
+    ),
+    ...input.spanParent,
+  };
+  // Concurrent bridge starts share runner counters, so only duration/span
+  // telemetry is attributed to each bridge independently.
+  const concurrentBridgeStepMetrics: StartupStepMeasureOptions = { ...input.spanParent };
   const shapedWorkspaceEnv = shapePaperclipWorkspaceEnvForExecution({
     workspaceCwd: effectiveWorkspaceCwd,
     workspaceWorktreePath,
@@ -2814,6 +2835,40 @@ function warmHandleMatches(
   return entry !== undefined && entry.runtime === runtime && entry.handle === handle;
 }
 
+const STARTUP_ROOT_SPAN_NAME = "sandbox.startup";
+
+function openStartupRootSpan(tracing: StartupTraceContext): {
+  parentContext: StartupSpanContext;
+  end: (failed: boolean) => void;
+} {
+  let span: StartupSpan;
+  try {
+    span = tracing.tracer.startSpan(STARTUP_ROOT_SPAN_NAME);
+  } catch {
+    span = NOOP_STARTUP_SPAN;
+  }
+  let parentContext: StartupSpanContext;
+  try {
+    parentContext = tracing.contextWithSpan(span);
+  } catch {
+    parentContext = undefined;
+  }
+  let ended = false;
+  return {
+    parentContext,
+    end: (failed: boolean) => {
+      if (ended) return;
+      ended = true;
+      try {
+        if (failed) span.setStatus({ code: 2 });
+        span.end();
+      } catch {
+        // Startup telemetry must never change runtime control flow.
+      }
+    },
+  };
+}
+
 export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
   const createRuntime = deps.createRuntime ?? createAcpRuntime;
   const now = deps.now ?? (() => Date.now());
@@ -3042,6 +3097,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         });
       }
     } catch (err) {
+      rootSpan.end(true);
       const { classified, message } = await emitAcpxFailure({
         ctx,
         prepared,
@@ -3066,6 +3122,8 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
     }
 
     if (!handle) {
+      rootSpan.end(true);
+      await discardStagedRuntime({ handles: stagedRuntimes, prepared });
       await cleanupRemoteBridges(prepared);
       return {
         exitCode: 1,
@@ -3080,6 +3138,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         summary: "ACPX did not return a runtime session handle.",
       };
     }
+    rootSpan.end(false);
     const sessionHandle = handle;
     try {
       await applySessionConfigOptions({
