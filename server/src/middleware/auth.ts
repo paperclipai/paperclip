@@ -48,6 +48,31 @@ async function resolveLegacyRunResponsibleUserId(
   return normalizeOptionalString(run?.responsibleUserId);
 }
 
+/**
+ * The run id to record for a user actor, or undefined when it names no run.
+ *
+ * A user actor — session, cloud tenant, board key, or the local implicit fallback —
+ * owns no heartbeat run, so there is nothing to bind the header to the way an agent
+ * key binds to its own agent. But dropping it outright would remove real provenance:
+ * a manual create records `originRunId` so the run that prompted it stays visible.
+ *
+ * So the header is checked for existence instead of ownership. That stops an invented
+ * id from being written as attribution, and leaves the remaining reach — naming
+ * another run inside a company the user can already write to — no greater than what
+ * that user can do directly. An unknown id is dropped rather than rejected, so an
+ * existing caller keeps working and simply stops being attributed to a run.
+ */
+async function verifiedRunIdForUserActor(db: Db, runId: string | undefined) {
+  const candidate = normalizeOptionalString(runId);
+  if (!candidate || !isUuidLike(candidate)) return undefined;
+  const run = await db
+    .select({ id: heartbeatRuns.id })
+    .from(heartbeatRuns)
+    .where(eq(heartbeatRuns.id, candidate))
+    .then((rows) => rows[0] ?? null);
+  return run ? candidate : undefined;
+}
+
 /** Whether `runId` names a run of this agent in this company. */
 async function runBelongsToAgent(
   db: Db,
@@ -204,8 +229,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         if (cloudTenantActor) {
           req.actor = {
             ...cloudTenantActor,
-            // User actors own no heartbeat run — see NO_RUN_FOR_USER_ACTORS below.
-            runId: undefined,
+            runId: await verifiedRunIdForUserActor(db, runIdHeader),
           };
           next();
           return;
@@ -239,20 +263,14 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
             companyIds: memberships.map((row) => row.companyId),
             memberships,
             isInstanceAdmin: Boolean(roleRow),
-            // User actors own no heartbeat run — see NO_RUN_FOR_USER_ACTORS below.
-            runId: undefined,
+            runId: await verifiedRunIdForUserActor(db, runIdHeader),
             source: "session",
           };
           next();
           return;
         }
       }
-      // NO_RUN_FOR_USER_ACTORS: a user actor — session, cloud tenant, board key or
-      // the local implicit fallback — acts for a person and owns no heartbeat run,
-      // so there is nothing to bind a run id to and no way to prove one. The header
-      // is dropped rather than rejected, so an existing caller that sends it keeps
-      // working; it simply stops being attributed to a run. Only agent actors carry
-      // a run, and they must prove it (see runBelongsToAgent).
+      req.actor.runId = await verifiedRunIdForUserActor(db, runIdHeader);
       next();
       return;
     }
@@ -277,8 +295,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
           memberships: access.memberships,
           isInstanceAdmin: access.isInstanceAdmin,
           keyId: boardKey.id,
-          // User actors own no heartbeat run — see NO_RUN_FOR_USER_ACTORS below.
-          runId: undefined,
+          runId: await verifiedRunIdForUserActor(db, runIdHeader),
           source: "board_key",
         };
         next();
