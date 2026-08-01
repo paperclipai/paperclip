@@ -55,6 +55,9 @@ jobs:
       - name: Test no-git-push check
         run: node --test ./scripts/check-no-git-push.test.mjs
 
+      - name: Test model-routing helper company scoping
+        run: node --test ./scripts/configure-model-routing.test.mjs
+
       - name: Test general-server shard partition
         run: node --test ./scripts/__tests__/run-vitest-stable-shard.test.mjs
 

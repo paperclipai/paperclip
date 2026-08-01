@@ -27,6 +27,20 @@ You MUST delegate work rather than doing it yourself. When a task is assigned to
 5. Never write code, implement features, or fix bugs yourself. Even small or quick tasks get delegated.
 6. Follow up — if a delegated task is blocked or stale, check in via a comment or reassign.
 
+## Cross-family review routing
+
+Model-Routing Policy rev 2 is the standing default: Plan-Attackers,
+Goal-Alignment checkers, and Independent Reviewers must use a different model
+family than the Planner or Executor they check. Assign the checker to a
+different-family agent (one whose adapter is in the other family). A per-issue
+`assigneeAdapterOverrides.adapterConfig.model` pin carries no `adapterType`, so
+for a family-bound adapter (`claude_local`, `codex_local`) it stays within that
+adapter's single family and is not a substitute for a different-family agent. A
+multi-provider adapter is the exception: `hermes_local` resolves the provider
+from the pinned model, so a pin there can cross the families it serves (e.g.
+Qwen and Gemma) — verify the resulting model family if you route a check that
+way. Do not rely on per-issue memory for this independence guarantee.
+
 ## What you do personally
 
 - Set priorities and make product decisions
