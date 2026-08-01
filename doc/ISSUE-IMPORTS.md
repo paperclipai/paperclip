@@ -77,8 +77,9 @@ Preview computes the manifest digest and each origin fingerprint server-side. It
 - A partial unique database index and per-source transaction lock prevent duplicate origins under replay or concurrency.
 - Backlog maps to `backlog`; Todo maps to unassigned `todo`. In Progress and In Review stage as `backlog` with `source_status_requires_accountable_execution_path` rather than fabricating execution.
 - Missing project mappings are conflicts and apply with no guessed project. Invalid mapped Paperclip projects and unresolved required parent/blocker sources are failures.
-- Paperclip fields are authoritative after linkage. A later source version is recorded as drift and updates origin state/audit data without silently overwriting Paperclip issue fields.
-- Parent and blocker edges are applied only after every source resolves to one issue, in the same transaction.
+- Paperclip fields and relations are authoritative after linkage. A later source version is recorded as drift and updates origin state/audit data without silently overwriting Paperclip issue fields or restoring Paperclip-side relation edits.
+- Preview reports proposed blocker source IDs alongside current blocker issue/source IDs. A mismatch on an already reconciled issue records `blocker_relations_drift`; apply preserves the current Paperclip blocker set and records the reconciliation result.
+- Initial parent and blocker edges for issues created by the import are applied only after every source resolves to one issue, in the same transaction.
 - Imported comments use unique provider event receipts and `suppressOutboundMirror=true` metadata. Replay creates one comment and the receipt is the connector-facing loop guard.
 - Run and item records retain source version/timestamp, proposed/current/applied values, conflicts, failures, relations, comments, assignment count, and wake count. Request schemas do not accept provider credentials, and persisted failures use a bounded generic message.
 

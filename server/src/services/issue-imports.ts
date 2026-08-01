@@ -102,7 +102,12 @@ function findCyclicSources(edges: Map<string, string[]>): Set<string> {
   return cyclic;
 }
 
-function issueCurrentSnapshot(issue: typeof issues.$inferSelect) {
+type CurrentBlocker = {
+  issueId: string;
+  sourceId: string | null;
+};
+
+function issueCurrentSnapshot(issue: typeof issues.$inferSelect, blockers: CurrentBlocker[]) {
   return {
     title: issue.title,
     description: issue.description,
@@ -110,6 +115,10 @@ function issueCurrentSnapshot(issue: typeof issues.$inferSelect) {
     priority: issue.priority,
     projectId: issue.projectId,
     parentId: issue.parentId,
+    blockedByIssueIds: blockers.map((blocker) => blocker.issueId).sort(),
+    blockedBySourceIds: blockers
+      .flatMap((blocker) => blocker.sourceId ? [blocker.sourceId] : [])
+      .sort(),
   };
 }
 
@@ -192,6 +201,29 @@ export function issueImportService(db: Db) {
       inArray(issues.originId, lookupSourceIds),
     ));
     const existingBySource = new Map(existingIssues.map((issue) => [issue.originId!, issue]));
+    const existingIssueIds = existingIssues.map((issue) => issue.id);
+    const currentBlockerRows = existingIssueIds.length === 0 ? [] : await db.select({
+      blockedIssueId: issueRelations.relatedIssueId,
+      blockerIssueId: issueRelations.issueId,
+      blockerOriginKind: issues.originKind,
+      blockerOriginId: issues.originId,
+    }).from(issueRelations).innerJoin(issues, and(
+      eq(issues.companyId, companyId),
+      eq(issues.id, issueRelations.issueId),
+    )).where(and(
+      eq(issueRelations.companyId, companyId),
+      eq(issueRelations.type, "blocks"),
+      inArray(issueRelations.relatedIssueId, existingIssueIds),
+    ));
+    const currentBlockersByIssue = new Map<string, CurrentBlocker[]>();
+    for (const row of currentBlockerRows) {
+      const blockers = currentBlockersByIssue.get(row.blockedIssueId) ?? [];
+      blockers.push({
+        issueId: row.blockerIssueId,
+        sourceId: row.blockerOriginKind === LINEAR_ISSUE_ORIGIN_KIND ? row.blockerOriginId : null,
+      });
+      currentBlockersByIssue.set(row.blockedIssueId, blockers);
+    }
     const originStates = sourceIds.length === 0 ? [] : await db.select().from(issueOriginStates).where(and(
       eq(issueOriginStates.companyId, companyId),
       eq(issueOriginStates.provider, "linear"),
@@ -241,6 +273,16 @@ export function issueImportService(db: Db) {
       const fingerprint = computeLinearIssueFingerprint(source.sourceId);
       if (existing && existing.originFingerprint !== fingerprint) failures.push("origin_fingerprint_mismatch");
       if (existing && state && state.sourceVersion !== source.sourceVersion) conflicts.push("source_version_drift");
+      const currentBlockers = existing ? currentBlockersByIssue.get(existing.id) ?? [] : [];
+      if (existing && state) {
+        const proposedBlockerSourceIds = [...new Set(source.blockedBySourceIds)].sort();
+        const currentBlockerSourceIds = currentBlockers
+          .flatMap((blocker) => blocker.sourceId ? [blocker.sourceId] : [])
+          .sort();
+        if (JSON.stringify(proposedBlockerSourceIds) !== JSON.stringify(currentBlockerSourceIds)) {
+          conflicts.push("blocker_relations_drift");
+        }
+      }
       const proposed = {
         title: source.title,
         description: source.description ?? null,
@@ -262,7 +304,7 @@ export function issueImportService(db: Db) {
         action,
         issueId: existing?.id ?? null,
         proposed,
-        current: existing ? issueCurrentSnapshot(existing) : null,
+        current: existing ? issueCurrentSnapshot(existing, currentBlockers) : null,
         conflicts: [...new Set(conflicts)],
         failures: [...new Set(failures)],
       };
@@ -481,7 +523,22 @@ export function issueImportService(db: Db) {
         for (const item of itemRows) {
           const source = item.sourceData as unknown as LinearIssueImportItem;
           const issue = issueBySource.get(item.sourceId)!;
-          const relationResults: Record<string, unknown> = { parentApplied: false, blockersApplied: 0 };
+          const previewCurrent = item.current as {
+            blockedByIssueIds?: string[];
+            blockedBySourceIds?: string[];
+          } | null;
+          const isInitialImport = createdSourceIds.has(item.sourceId);
+          const relationResults: Record<string, unknown> = {
+            parentApplied: false,
+            blockersApplied: 0,
+            blockerReconciliation: {
+              authority: isInitialImport ? "source_initial" : "paperclip",
+              proposedSourceIds: source.blockedBySourceIds,
+              currentIssueIds: previewCurrent?.blockedByIssueIds ?? [],
+              currentSourceIds: previewCurrent?.blockedBySourceIds ?? [],
+              conflict: item.conflicts.includes("blocker_relations_drift"),
+            },
+          };
           if (source.parentSourceId) {
             const parent = issueBySource.get(source.parentSourceId) ?? await tx.select().from(issues).where(and(
               eq(issues.companyId, companyId),
@@ -495,24 +552,26 @@ export function issueImportService(db: Db) {
               relationResults.parentApplied = true;
             }
           }
-          for (const blockerSourceId of source.blockedBySourceIds) {
-            const blocker = issueBySource.get(blockerSourceId) ?? await tx.select().from(issues).where(and(
-              eq(issues.companyId, companyId),
-              eq(issues.originKind, LINEAR_ISSUE_ORIGIN_KIND),
-              eq(issues.originId, blockerSourceId),
-            )).then((rows) => rows[0] ?? null);
-            if (!blocker) throw unprocessable("Blocker source disappeared after preview");
-            const inserted = await tx.insert(issueRelations).values({
-              companyId,
-              issueId: blocker.id,
-              relatedIssueId: issue.id,
-              type: "blocks",
-              createdByAgentId: actor.agentId,
-              createdByUserId: actor.actorType === "user" ? actor.actorId : null,
-            }).onConflictDoNothing().returning({ id: issueRelations.id });
-            if (inserted.length > 0) {
-              relationCount += 1;
-              relationResults.blockersApplied = Number(relationResults.blockersApplied) + 1;
+          if (isInitialImport) {
+            for (const blockerSourceId of source.blockedBySourceIds) {
+              const blocker = issueBySource.get(blockerSourceId) ?? await tx.select().from(issues).where(and(
+                eq(issues.companyId, companyId),
+                eq(issues.originKind, LINEAR_ISSUE_ORIGIN_KIND),
+                eq(issues.originId, blockerSourceId),
+              )).then((rows) => rows[0] ?? null);
+              if (!blocker) throw unprocessable("Blocker source disappeared after preview");
+              const inserted = await tx.insert(issueRelations).values({
+                companyId,
+                issueId: blocker.id,
+                relatedIssueId: issue.id,
+                type: "blocks",
+                createdByAgentId: actor.agentId,
+                createdByUserId: actor.actorType === "user" ? actor.actorId : null,
+              }).onConflictDoNothing().returning({ id: issueRelations.id });
+              if (inserted.length > 0) {
+                relationCount += 1;
+                relationResults.blockersApplied = Number(relationResults.blockersApplied) + 1;
+              }
             }
           }
           for (const comment of source.comments) {

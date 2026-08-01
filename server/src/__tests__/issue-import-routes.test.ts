@@ -222,6 +222,12 @@ describePg("provider-aware staged issue imports", () => {
 
     const replayPreview = await request(app()).post(`/api/companies/${companyId}/issue-imports/preview`).send(payload).expect(201);
     expect(replayPreview.body.counts).toMatchObject({ wouldCreate: 0, unchanged: 2 });
+    const replayChild = replayPreview.body.items.find((entry: { sourceId: string }) => entry.sourceId === child.sourceId);
+    expect(replayChild.current).toMatchObject({
+      blockedByIssueIds: [parentRow.id],
+      blockedBySourceIds: [parent.sourceId],
+    });
+    expect(replayChild.conflicts).not.toContain("blocker_relations_drift");
     await request(app()).post(`/api/companies/${companyId}/issue-imports/apply`).send({
       previewRunId: replayPreview.body.previewRunId,
       previewDigest: replayPreview.body.previewDigest,
@@ -232,6 +238,102 @@ describePg("provider-aware staged issue imports", () => {
     expect(await tableCount(providerEventReceipts)).toBe(1);
     await expect(db.update(issues).set({ originId: randomUUID() }).where(eq(issues.id, parentRow.id)))
       .rejects.toThrow();
+  });
+
+  it("preserves a Paperclip-side blocker deletion on same-version replay", async () => {
+    const { companyId, projectId } = await seed();
+    const parent = item({ sourceIdentifier: "EXT-911", title: "Parent" });
+    const child = item({
+      sourceIdentifier: "EXT-912",
+      title: "Child",
+      blockedBySourceIds: [parent.sourceId],
+    });
+    const payload = manifest(projectId, [parent, child]);
+    const preview = await request(app()).post(`/api/companies/${companyId}/issue-imports/preview`).send(payload).expect(201);
+    await request(app()).post(`/api/companies/${companyId}/issue-imports/apply`).send({
+      previewRunId: preview.body.previewRunId,
+      previewDigest: preview.body.previewDigest,
+      activate: false,
+    }).expect(200);
+
+    const rows = await db.select().from(issues).where(eq(issues.companyId, companyId));
+    const parentRow = rows.find((row) => row.originId === parent.sourceId)!;
+    const childRow = rows.find((row) => row.originId === child.sourceId)!;
+    await db.delete(issueRelations).where(and(
+      eq(issueRelations.issueId, parentRow.id),
+      eq(issueRelations.relatedIssueId, childRow.id),
+    ));
+
+    const replayPreview = await request(app()).post(`/api/companies/${companyId}/issue-imports/preview`).send(payload).expect(201);
+    const childPreview = replayPreview.body.items.find((entry: { sourceId: string }) => entry.sourceId === child.sourceId);
+    expect(childPreview).toMatchObject({
+      action: "unchanged",
+      current: { blockedByIssueIds: [], blockedBySourceIds: [] },
+    });
+    expect(childPreview.conflicts).toContain("blocker_relations_drift");
+
+    const replayApplied = await request(app()).post(`/api/companies/${companyId}/issue-imports/apply`).send({
+      previewRunId: replayPreview.body.previewRunId,
+      previewDigest: replayPreview.body.previewDigest,
+      activate: false,
+    }).expect(200);
+    expect(replayApplied.body.items.find((entry: { sourceId: string }) => entry.sourceId === child.sourceId))
+      .toMatchObject({
+        relationResults: {
+          blockersApplied: 0,
+          blockerReconciliation: {
+            authority: "paperclip",
+            proposedSourceIds: [parent.sourceId],
+            currentIssueIds: [],
+            currentSourceIds: [],
+            conflict: true,
+          },
+        },
+      });
+    expect(await db.select().from(issueRelations).where(and(
+      eq(issueRelations.issueId, parentRow.id),
+      eq(issueRelations.relatedIssueId, childRow.id),
+    ))).toHaveLength(0);
+  });
+
+  it("reports newer-source blocker drift without overwriting Paperclip relations", async () => {
+    const { companyId, projectId } = await seed();
+    const parent = item({ sourceIdentifier: "EXT-913", title: "Parent" });
+    const child = item({ sourceIdentifier: "EXT-914", title: "Child" });
+    const initialPayload = manifest(projectId, [parent, child]);
+    const initialPreview = await request(app()).post(`/api/companies/${companyId}/issue-imports/preview`).send(initialPayload).expect(201);
+    await request(app()).post(`/api/companies/${companyId}/issue-imports/apply`).send({
+      previewRunId: initialPreview.body.previewRunId,
+      previewDigest: initialPreview.body.previewDigest,
+      activate: false,
+    }).expect(200);
+
+    const updatedChild = {
+      ...child,
+      sourceVersion: "v2",
+      sourceUpdatedAt: "2026-07-31T20:00:00.000Z",
+      blockedBySourceIds: [parent.sourceId],
+    };
+    const driftPreview = await request(app()).post(`/api/companies/${companyId}/issue-imports/preview`)
+      .send(manifest(projectId, [parent, updatedChild]))
+      .expect(201);
+    const childPreview = driftPreview.body.items.find((entry: { sourceId: string }) => entry.sourceId === child.sourceId);
+    expect(childPreview).toMatchObject({
+      action: "update",
+      proposed: { blockedBySourceIds: [parent.sourceId] },
+      current: { blockedByIssueIds: [], blockedBySourceIds: [] },
+    });
+    expect(childPreview.conflicts).toEqual(expect.arrayContaining([
+      "source_version_drift",
+      "blocker_relations_drift",
+    ]));
+
+    await request(app()).post(`/api/companies/${companyId}/issue-imports/apply`).send({
+      previewRunId: driftPreview.body.previewRunId,
+      previewDigest: driftPreview.body.previewDigest,
+      activate: false,
+    }).expect(200);
+    expect(await tableCount(issueRelations)).toBe(0);
   });
 
   it("rejects digest drift without consuming the valid preview", async () => {
