@@ -3409,14 +3409,18 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     await db.delete(issueRelations);
     await db.delete(issueInboxArchives);
     await db.delete(activityLog);
+    await db.delete(issueExecutionDecisions);
     await db.delete(issues);
     await db.delete(workspaceOperations);
     await db.delete(executionWorkspaces);
     await db.delete(projectWorkspaces);
     await db.delete(projects);
+    await db.delete(heartbeatRuns);
+    await db.delete(companyMemberships);
     await db.delete(agents);
     await db.delete(instanceSettings);
     await db.delete(companies);
+    await db.delete(authUsers);
   });
 
   afterAll(async () => {
@@ -4213,6 +4217,7 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     const qaAgentId = randomUUID();
     const returnAgentId = randomUUID();
     const stageId = randomUUID();
+    const runId = randomUUID();
     await db.insert(companies).values({
       id: companyId,
       name: "Paperclip",
@@ -4278,6 +4283,14 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
         executionState: pendingExecutionState,
       },
     ]);
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId: qaAgentId,
+      invocationSource: "assignment",
+      status: "running",
+      contextSnapshot: { issueId },
+    });
     await svc.update(issueId, { blockedByIssueIds: [blockerId] });
 
     const changesRequestedUpdate = {
@@ -4330,7 +4343,7 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
       },
       requestedStatus: "in_progress",
       requestedAssigneePatch: { assigneeAgentId: returnAgentId },
-      actor: { agentId: qaAgentId, runId: randomUUID() },
+      actor: { agentId: qaAgentId, runId },
       commentBody: "Please fix the transactional race.",
     });
 
@@ -4355,6 +4368,7 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
       actorUserId: null,
       outcome: "changes_requested",
       body: "Please fix the transactional race.",
+      createdByRunId: runId,
     });
     await expect(svc.submitExecutionChangesRequested(issueId, {
       expectedUpdatedAt: beforeDecision!.updatedAt,
