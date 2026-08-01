@@ -1097,6 +1097,60 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
       expect(row?.status).toBe("pending");
     },
   );
+  it("respondInteraction waits for the continuation wake and preserves comment context", async () => {
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const humanUserId = randomUUID();
+    await db.insert(companyMemberships).values({
+      companyId, principalType: "user", principalId: humanUserId, status: "active", membershipRole: "owner",
+    });
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId, companyId, title: "Decision", status: "in_review", priority: "medium", assigneeAgentId: agentId,
+    });
+    const [sourceComment] = await db.insert(issueComments).values({
+      companyId,
+      issueId,
+      body: "Please confirm",
+      authorType: "user",
+      authorUserId: humanUserId,
+    }).returning();
+    const interactionId = await seedInteraction(companyId, issueId, {
+      sourceCommentId: sourceComment!.id,
+    });
+
+    await db.update(agents).set({ runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } } }).where(eq(agents.id, agentId));
+    await db.insert(heartbeatRuns).values({
+      companyId,
+      agentId,
+      status: "running",
+      invocationSource: "assignment",
+      contextSnapshot: { issueId },
+    });
+
+    const services = buildHostServices(db, "plugin-record-id", "paperclip.gateway", createEventBusStub());
+    const result = await services.issues.respondInteraction({
+      issueId, interactionId, companyId, action: "accept", actorUserId: humanUserId,
+    });
+
+    expect(result.applied).toBe(true);
+    const [wakeupRequest] = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.agentId, agentId)));
+    expect(wakeupRequest).toMatchObject({
+      reason: "issue_commented",
+      status: "queued",
+      requestedByActorType: "user",
+      requestedByActorId: humanUserId,
+      payload: expect.objectContaining({
+        issueId,
+        interactionId,
+        mutation: "interaction",
+        commentId: sourceComment!.id,
+        wakeCommentId: sourceComment!.id,
+      }),
+    });
+  });
 
   it("respondInteraction converges (applied:false) when the interaction is already resolved", async () => {
     const { companyId, agentId } = await seedCompanyAndAgent();

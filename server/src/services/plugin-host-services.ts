@@ -35,6 +35,7 @@ import { projectService } from "./projects.js";
 import { executionWorkspaceService } from "./execution-workspaces.js";
 import { issueService } from "./issues.js";
 import { issueThreadInteractionService } from "./issue-thread-interactions.js";
+import { readPlanReviewInteractionForWake } from "./issue-thread-interaction-continuation.js";
 import { goalService } from "./goals.js";
 import { documentService } from "./documents.js";
 import { heartbeatService } from "./heartbeat.js";
@@ -909,10 +910,10 @@ export function buildHostServices(
    * carries the core interaction context plus the plan-review continuation
    * payload (the confirmation kind the gateway resolves), and skips the
    * checkbox/tool-action/item-verdict extras that the gateway's yes/no decision
-   * cards never produce. Failure-tolerant: a wake failure is logged, never
-   * thrown back to the plugin (the decision itself already applied).
+   * cards never produce. Wake scheduling is awaited so a failed enqueue is not
+   * reported as successful to the plugin bridge.
    */
-  const queuePluginInteractionContinuationWakeup = (args: {
+  const queuePluginInteractionContinuationWakeup = async (args: {
     issue: { id: string; assigneeAgentId: string | null; status: string };
     interaction: {
       id: string;
@@ -922,10 +923,11 @@ export function buildHostServices(
       sourceCommentId?: string | null;
       sourceRunId?: string | null;
       payload?: unknown;
+      result?: unknown;
     };
     actorUserId: string;
     source: string;
-  }): void => {
+  }): Promise<void> => {
     const { interaction, issue } = args;
     if (
       interaction.continuationPolicy !== "wake_assignee"
@@ -936,29 +938,15 @@ export function buildHostServices(
       && interaction.status !== "accepted"
     ) return;
     if (interaction.status === "expired") return;
-    if (!issue.assigneeAgentId || issue.status === "done" || issue.status === "cancelled") return;
+    if (!issue.assigneeAgentId) return;
 
-    let planReviewInteraction: Record<string, unknown> | null = null;
-    if (interaction.kind === "request_confirmation" && isRecord(interaction.payload)) {
-      const target = isRecord(interaction.payload.target) ? interaction.payload.target : null;
-      if (
-        target
-        && target.type === "issue_document"
-        && target.key === "plan"
-        && typeof target.issueId === "string"
-        && target.issueId === issue.id
-      ) {
-        planReviewInteraction = {
-          id: interaction.id,
-          kind: interaction.kind,
-          status: interaction.status,
-          target,
-          acceptedTargetRevision: interaction.status === "accepted" ? target : null,
-        };
-      }
-    }
+    const sourceCommentId = interaction.sourceCommentId ?? null;
+    const planReviewInteraction = readPlanReviewInteractionForWake({
+      issueId: issue.id,
+      interaction,
+    });
 
-    void heartbeat.wakeup(issue.assigneeAgentId, {
+    await heartbeat.wakeup(issue.assigneeAgentId, {
       source: "automation",
       triggerDetail: "system",
       reason: "issue_commented",
@@ -969,6 +957,7 @@ export function buildHostServices(
         interactionStatus: interaction.status,
         sourceCommentId: interaction.sourceCommentId ?? null,
         sourceRunId: interaction.sourceRunId ?? null,
+        ...(sourceCommentId ? { commentId: sourceCommentId, wakeCommentId: sourceCommentId } : {}),
         ...(planReviewInteraction ? { planReviewInteraction } : {}),
         mutation: "interaction",
       },
@@ -980,17 +969,13 @@ export function buildHostServices(
         interactionId: interaction.id,
         interactionKind: interaction.kind,
         interactionStatus: interaction.status,
+        mutation: "interaction",
+        ...(sourceCommentId ? { commentId: sourceCommentId, wakeCommentId: sourceCommentId } : {}),
         ...(planReviewInteraction ? { planReviewInteraction } : {}),
         wakeReason: "issue_commented",
         source: `plugin:${pluginKey}`,
       },
-    }).catch((err) => logger.warn({
-      err,
-      issueId: issue.id,
-      interactionId: interaction.id,
-      agentId: issue.assigneeAgentId,
-      source: args.source,
-    }, "failed to wake assignee on plugin-relayed interaction resolution"));
+    });
   };
 
   /**
@@ -2560,7 +2545,7 @@ export function buildHostServices(
           },
         });
 
-        queuePluginInteractionContinuationWakeup({
+        await queuePluginInteractionContinuationWakeup({
           issue: continuationTarget,
           interaction: resolved,
           actorUserId: params.actorUserId,
