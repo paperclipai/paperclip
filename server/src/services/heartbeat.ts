@@ -648,7 +648,11 @@ function hasGithubPrWorkflowSkill(desiredSkills: string[]) {
 const PR_DELIVERABLE_TEXT_PATTERNS = [
   /\bopen(?:s|ed|ing)?\s+(?:a\s+|the\s+|an?\s+draft\s+)?(?:pull\s+request|pr)\b/i,
   /\b(?:create|creates|created|creating|raise|raises|raised|raising|submit|submits|submitted|submitting)\s+(?:a\s+|the\s+|an?\s+draft\s+)?(?:pull\s+request|pr)\b/i,
-  /\bpush(?:es|ed|ing)?\b[^.\n]{0,60}\b(?:branch|remote|origin|upstream)\b/i,
+  // "push back" (an objection or a date) is never a git push, and bare
+  // proximity to words like "upstream" over-matches ("push back on the
+  // upstream dependency change"); require the git object shape instead.
+  /\bpush(?:es|ed|ing)?\b(?!\s+back\b)[^.\n]{0,40}\bbranch(?:es)?\b/i,
+  /\bpush(?:es|ed|ing)?\s+(?:[^.\n]{0,30}\s)?to\s+(?:origin|remote|upstream|github)\b/i,
 ];
 
 export function issueTextImpliesPrDeliverable(text: string | null | undefined): boolean {

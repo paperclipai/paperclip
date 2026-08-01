@@ -719,6 +719,15 @@ describe("issueTextImpliesPrDeliverable", () => {
     expect(issueTextImpliesPrDeliverable(null)).toBe(false);
     expect(issueTextImpliesPrDeliverable("")).toBe(false);
   });
+
+  it("ignores non-git uses of push", () => {
+    expect(issueTextImpliesPrDeliverable("push back on the upstream dependency change")).toBe(false);
+    expect(issueTextImpliesPrDeliverable("push back the branch cut date")).toBe(false);
+    expect(issueTextImpliesPrDeliverable("push notifications for mobile")).toBe(false);
+    // Git shapes still match.
+    expect(issueTextImpliesPrDeliverable("pushing the release branch")).toBe(true);
+    expect(issueTextImpliesPrDeliverable("push feature work to origin when done")).toBe(true);
+  });
 });
 
 describe("requiresPushCapabilityPreflight", () => {
