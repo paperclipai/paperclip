@@ -15,11 +15,24 @@ parsing from JCode's NDJSON stream.
   with `jcode login --provider <name>` or provider API keys in the adapter env
 - A working directory the Paperclip server can access
 
-For sandbox targets, Paperclip advertises this install command:
+For sandbox targets, Paperclip advertises a verified install path:
 
 ```sh
-curl -fsSL https://jcode.sh/install | bash
+set -euo pipefail
+if command -v brew >/dev/null 2>&1; then
+  brew tap 1jehuang/jcode
+  brew install jcode
+else
+  tmpdir="$(mktemp -d)"
+  git clone --depth 1 https://github.com/1jehuang/jcode.git "$tmpdir/jcode"
+  cd "$tmpdir/jcode"
+  cargo build --release
+  scripts/install_release.sh
+fi
 ```
+
+This avoids executing an unverified remote shell script and falls back to
+building from the official source tree when Homebrew is unavailable.
 
 ## Configuration Fields
 

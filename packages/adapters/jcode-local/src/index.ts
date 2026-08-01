@@ -3,7 +3,17 @@ import type { AdapterModelProfileDefinition } from "@paperclipai/adapter-utils";
 export const type = "jcode_local";
 export const label = "JCode";
 
-export const SANDBOX_INSTALL_COMMAND = "curl -fsSL https://jcode.sh/install | bash";
+export const SANDBOX_INSTALL_COMMAND = `set -euo pipefail
+if command -v brew >/dev/null 2>&1; then
+  brew tap 1jehuang/jcode
+  brew install jcode
+else
+  tmpdir="$(mktemp -d)"
+  git clone --depth 1 https://github.com/1jehuang/jcode.git "$tmpdir/jcode"
+  cd "$tmpdir/jcode"
+  cargo build --release
+  scripts/install_release.sh
+fi`;
 
 export const models: Array<{ id: string; label: string }> = [];
 
