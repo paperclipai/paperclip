@@ -76,8 +76,10 @@ import {
   adoptEmbeddedPostgres,
   coordinateEmbeddedPostgresShutdown,
   coordinateHeartbeatSchedulerShutdown,
+  createEmbeddedPostgresHandoffLogContext,
   createShutdownLifecycleContext,
   prepareEmbeddedPostgresForHotRestart,
+  restoreAbortedHotRestartPredecessor,
 } from "./shutdown.js";
 import { ensureDecisionSigningSecret } from "./services/decision-signing.js";
 import { createDecisionWakeOriginAgent } from "./services/decision-wakeup.js";
@@ -472,13 +474,10 @@ export async function startServer(): Promise<StartedServer> {
           embeddedPostgres = createEmbeddedPostgres(port);
           stopOwnedEmbeddedPostgres = adoptEmbeddedPostgres(embeddedPostgres, handoffClaim);
           ownedEmbeddedPostgresIdentity = runningIdentity;
-          logger.warn({
-            postgresPid: runningIdentity.pid,
-            port,
-            predecessorServerPid: handoffClaim.predecessorServerPid,
-            replacementServerPid: handoffClaim.replacementServerPid,
-            transferToken: handoffClaim.transferToken,
-          }, "Embedded PostgreSQL hot-restart ownership handoff claimed");
+          logger.warn(
+            createEmbeddedPostgresHandoffLogContext(handoffClaim),
+            "Embedded PostgreSQL hot-restart ownership handoff claimed",
+          );
         } else {
           logger.warn(
             { postgresPid: runningIdentity.pid, port },
@@ -1450,12 +1449,12 @@ export async function startServer(): Promise<StartedServer> {
         postgresShutdown: "not_owned" | "preserved_for_hot_restart" | "stopped",
       ) => {
         if (postgresShutdown === "preserved_for_hot_restart") {
-          logger.info({
-            postgresPid: persistedHandoff.value?.postgres.pid,
-            port: persistedHandoff.value?.postgres.port,
-            transferToken: persistedHandoff.value?.transferToken,
-            expiresAt: persistedHandoff.value?.expiresAt,
-          }, "Embedded PostgreSQL hot-restart ownership handoff issued");
+          if (persistedHandoff.value) {
+            logger.info(
+              createEmbeddedPostgresHandoffLogContext(persistedHandoff.value),
+              "Embedded PostgreSQL hot-restart ownership handoff issued",
+            );
+          }
           logger.info(
             { shutdownLifecycle },
             "Preserving embedded PostgreSQL for hot-restart adoption",
@@ -1472,8 +1471,17 @@ export async function startServer(): Promise<StartedServer> {
           lifecycle: shutdownLifecycle,
           persistHotRestartHandoff,
           onHotRestartHandoffFailure,
-          restorePredecessor: () => {
-            heartbeatSchedulerStopped = false;
+          restorePredecessor: async () => {
+            const notified = await restoreAbortedHotRestartPredecessor({
+              signal,
+              restartHeartbeatScheduler: () => {
+                heartbeatSchedulerStopped = false;
+              },
+              notifyServiceManager: systemdNotify,
+            });
+            if (notified) {
+              logger.info("Notified systemd that aborted hot restart left Paperclip ready");
+            }
           },
           onPreTeardownFailure: (err) => {
             logger.error(

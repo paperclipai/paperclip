@@ -13,6 +13,7 @@ import {
   adoptEmbeddedPostgres,
   coordinateEmbeddedPostgresShutdown,
   coordinateHeartbeatSchedulerShutdown,
+  createEmbeddedPostgresHandoffLogContext,
   createShutdownLifecycleContext,
 } from "./shutdown.js";
 
@@ -204,12 +205,13 @@ describe("coordinateEmbeddedPostgresShutdown", () => {
         "--eval",
         [
           "void (async () => {",
-          `const { createShutdownLifecycleContext, prepareEmbeddedPostgresForHotRestart } = await import(${JSON.stringify(shutdownModuleUrl)});`,
+          `const { createShutdownLifecycleContext, prepareEmbeddedPostgresForHotRestart, restoreAbortedHotRestartPredecessor } = await import(${JSON.stringify(shutdownModuleUrl)});`,
           "let schedulerStopped = true;",
           "let schedulerTicks = 0;",
           "let telemetryRunning = true;",
           "let mirrorsRunning = true;",
           "let appRunning = true;",
+          "const serviceManagerNotifications = [];",
           "let handoffAttempts = 0;",
           "let stopAttempts = 0;",
           "const scheduler = setInterval(() => { if (!schedulerStopped) schedulerTicks += 1; }, 5);",
@@ -219,14 +221,18 @@ describe("coordinateEmbeddedPostgresShutdown", () => {
           "    stop: async () => { stopAttempts += 1; throw new Error('forced stop failure'); },",
           "    lifecycle: createShutdownLifecycleContext({ signal: 'SIGTERM', hotRestart: { skipDrain: true } }),",
           "    persistHotRestartHandoff: async () => { handoffAttempts += 1; throw new Error('forced handoff failure'); },",
-          "    restorePredecessor: () => { schedulerStopped = false; },",
+          "    restorePredecessor: () => restoreAbortedHotRestartPredecessor({",
+          "      signal: 'SIGTERM',",
+          "      restartHeartbeatScheduler: () => { schedulerStopped = false; },",
+          "      notifyServiceManager: async (args) => { serviceManagerNotifications.push(args); return true; },",
+          "    }),",
           "  });",
           "  if (result !== 'aborted') { telemetryRunning = false; mirrorsRunning = false; appRunning = false; }",
           "  setTimeout(() => {",
-          "    const state = { result, schedulerTicks, telemetryRunning, mirrorsRunning, appRunning, handoffAttempts, stopAttempts };",
+          "    const state = { result, schedulerTicks, telemetryRunning, mirrorsRunning, appRunning, serviceManagerNotifications, handoffAttempts, stopAttempts };",
           "    console.log(JSON.stringify(state));",
           "    clearInterval(scheduler);",
-          "    process.exit(result === 'aborted' && schedulerTicks > 0 && telemetryRunning && mirrorsRunning && appRunning && handoffAttempts === 1 && stopAttempts === 1 ? 0 : 1);",
+          "    process.exit(result === 'aborted' && schedulerTicks > 0 && telemetryRunning && mirrorsRunning && appRunning && serviceManagerNotifications.length === 1 && serviceManagerNotifications[0][0] === '--ready' && serviceManagerNotifications[0][1] === '--status=Hot restart aborted after SIGTERM; predecessor remains operational' && handoffAttempts === 1 && stopAttempts === 1 ? 0 : 1);",
           "  }, 50);",
           "});",
           "process.emit('SIGTERM');",
@@ -246,8 +252,49 @@ describe("coordinateEmbeddedPostgresShutdown", () => {
     expect(child.stdout).toContain('"telemetryRunning":true');
     expect(child.stdout).toContain('"mirrorsRunning":true');
     expect(child.stdout).toContain('"appRunning":true');
+    expect(child.stdout).toContain('"serviceManagerNotifications":[["--ready","--status=Hot restart aborted after SIGTERM; predecessor remains operational"]]');
     expect(child.stdout).toContain('"handoffAttempts":1');
     expect(child.stdout).toContain('"stopAttempts":1');
+  });
+
+  it("omits the handoff transfer token from issued and claimed log context", () => {
+    const handoff = {
+      version: 1 as const,
+      transferToken: "do-not-log-this-token",
+      createdAt: "2026-07-31T15:00:05.000Z",
+      expiresAt: "2026-07-31T15:10:05.000Z",
+      hotRestartRequestedAt,
+      shutdownSnapshotCapturedAt,
+      predecessorServerPid,
+      predecessorServerStartedAtEpochMs: 1_753_999_900_000,
+      postgres: {
+        pid: 54321,
+        startedAtEpochSeconds: 1_754_000_000,
+        dataDir: "/paperclip/postgres",
+        port: 5432,
+      },
+    };
+
+    const issuedContext = createEmbeddedPostgresHandoffLogContext(handoff);
+    const claimedContext = createEmbeddedPostgresHandoffLogContext({
+      ...handoff,
+      replacementServerPid: 4343,
+    });
+
+    expect(issuedContext).toEqual({
+      postgresPid: 54321,
+      port: 5432,
+      predecessorServerPid,
+      expiresAt: "2026-07-31T15:10:05.000Z",
+    });
+    expect(claimedContext).toEqual({
+      postgresPid: 54321,
+      port: 5432,
+      predecessorServerPid,
+      replacementServerPid: 4343,
+      expiresAt: "2026-07-31T15:10:05.000Z",
+    });
+    expect(JSON.stringify({ issuedContext, claimedContext })).not.toContain(handoff.transferToken);
   });
 
   it("reads the PostgreSQL PID, start time, canonical data directory, and port as one identity", async () => {

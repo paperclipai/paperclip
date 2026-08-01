@@ -1,4 +1,7 @@
-import type { EmbeddedPostgresHandoffClaim } from "./services/hot-restart.js";
+import type {
+  EmbeddedPostgresHandoff,
+  EmbeddedPostgresHandoffClaim,
+} from "./services/hot-restart.js";
 
 type HotRestartShutdownPreparation = {
   skipDrain: boolean;
@@ -14,6 +17,32 @@ export type ShutdownLifecycleContext = {
   shutdownInitiator: "hot_restart_intent" | "process_signal";
   preserveEmbeddedPostgres: boolean;
 };
+
+export function createEmbeddedPostgresHandoffLogContext(
+  handoff: EmbeddedPostgresHandoff | EmbeddedPostgresHandoffClaim,
+) {
+  return {
+    postgresPid: handoff.postgres.pid,
+    port: handoff.postgres.port,
+    predecessorServerPid: handoff.predecessorServerPid,
+    ...("replacementServerPid" in handoff
+      ? { replacementServerPid: handoff.replacementServerPid }
+      : {}),
+    expiresAt: handoff.expiresAt,
+  };
+}
+
+export async function restoreAbortedHotRestartPredecessor(input: {
+  signal: ShutdownSignal;
+  restartHeartbeatScheduler: () => void;
+  notifyServiceManager: (args: string[]) => Promise<boolean>;
+}): Promise<boolean> {
+  input.restartHeartbeatScheduler();
+  return await input.notifyServiceManager([
+    "--ready",
+    `--status=Hot restart aborted after ${input.signal}; predecessor remains operational`,
+  ]);
+}
 
 export function createShutdownLifecycleContext(input: {
   signal: ShutdownSignal;
@@ -72,7 +101,7 @@ export async function prepareEmbeddedPostgresForHotRestart(input: {
   lifecycle: ShutdownLifecycleContext;
   persistHotRestartHandoff?: () => Promise<void>;
   onHotRestartHandoffFailure?: (error: unknown) => void;
-  restorePredecessor: () => void;
+  restorePredecessor: () => void | Promise<void>;
   onPreTeardownFailure?: (error: unknown) => void;
 }): Promise<"not_owned" | "preserved_for_hot_restart" | "stopped" | "aborted"> {
   try {
@@ -89,7 +118,7 @@ export async function prepareEmbeddedPostgresForHotRestart(input: {
     } catch {
       // Diagnostic callbacks must not prevent predecessor recovery.
     }
-    input.restorePredecessor();
+    await input.restorePredecessor();
     return "aborted";
   }
 }

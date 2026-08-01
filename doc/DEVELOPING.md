@@ -140,6 +140,7 @@ look like a zero-loss restart.
 When the server owns embedded PostgreSQL, a validated hot restart leaves that database process running and opts out of the dependency's package-global signal hook. The predecessor issues a short-lived, one-time handoff bound to the validated restart intent and the PostgreSQL PID, start time, canonical data directory, and port. Exactly one replacement process can claim that handoff after the predecessor exits; an unrelated or mismatched server may reuse the live database but does not acquire authority to stop it. Normal shutdowns stop either the originally started or validly adopted embedded database.
 
 Handoff persistence fails closed. The predecessor resolves PostgreSQL ownership before stopping telemetry, schedulers, run-log mirrors, or app services. If the handoff cannot be written or the PostgreSQL identity changes before it is written, the predecessor stops its owned database instead of exiting and leaving it ownerless. If that stop also fails, the predecessor aborts teardown, restores scheduler activity, and remains operational so an operator can correct the failure and retry the signal.
+When managed by systemd, that aborted path also reports the server ready again with an explicit recovery status so the service-manager lifecycle matches the restored runtime state.
 
 A healthy guarded deploy must compare the report against `/api/health` (`version` or `serverVersion`) and treat any `lostRunIds` entry as a continuity failure that needs recovery before marking deployment complete.
 
