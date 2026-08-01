@@ -152,13 +152,13 @@ function isValidShellEnvKey(value: string) {
   return /^[A-Za-z_][A-Za-z0-9_]*$/.test(value);
 }
 
-// Mirror SSH's buildSshSpawnTarget: source the user's login profiles (and nvm)
-// before exec so commands run with the same PATH the user sees in an
-// interactive shell. e2b's `sandbox.commands.run` otherwise spawns a
-// non-login, non-interactive shell whose PATH does not include npm-globals,
-// nvm shims, or anything else the template installs via .profile/.bashrc —
-// which makes the hello probe fail with `exec: <cli>: not found` even when
-// the binary is on disk.
+// Source the user's login profiles before exec so commands run with the same
+// PATH the user sees in an interactive shell. e2b's `sandbox.commands.run`
+// otherwise spawns a non-login, non-interactive shell whose PATH does not
+// include npm-globals or anything else the template installs via
+// .profile/.bashrc — which makes the hello probe fail with
+// `exec: <cli>: not found` even when the binary is on disk. The wrapper no
+// longer sources `nvm.sh`; the sandbox image supplies `node` on the PATH.
 function buildLoginShellScript(input: {
   command: string;
   args: string[];
@@ -186,8 +186,6 @@ function buildLoginShellScript(input: {
     // .bash_profile -> .bashrc.
     'if [ -f "$HOME/.bash_profile" ]; then . "$HOME/.bash_profile" >/dev/null 2>&1 || true; elif [ -f "$HOME/.bashrc" ]; then . "$HOME/.bashrc" >/dev/null 2>&1 || true; fi',
     'if [ -f "$HOME/.zprofile" ]; then . "$HOME/.zprofile" >/dev/null 2>&1 || true; fi',
-    'export NVM_DIR="${NVM_DIR:-$HOME/.nvm}"',
-    '[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh" >/dev/null 2>&1 || true',
     execLine,
   ].join(" && ");
 }

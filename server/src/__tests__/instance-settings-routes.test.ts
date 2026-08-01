@@ -1,6 +1,6 @@
 import express from "express";
 import request from "supertest";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockInstanceSettingsService = vi.hoisted(() => ({
   get: vi.fn(),
@@ -80,9 +80,9 @@ describe("instance settings routes", () => {
         enableIsolatedWorkspaces: false,
         enableIssuePlanDecompositions: false,
         enableExperimentalFileViewer: false,
-        enableCloudSync: false,
         enableExternalObjects: false,
         enableBuiltInAgents: false,
+        enableBetaSkills: false,
         enableGoalsSidebarLink: false,
         enableServerInfoDebugView: false,
         autoRestartDevServerWhenIdle: false,
@@ -108,9 +108,9 @@ describe("instance settings routes", () => {
       enableIssuePlanDecompositions: false,
       enableExperimentalFileViewer: false,
       enableTaskWatchdogs: false,
-      enableCloudSync: false,
       enableExternalObjects: false,
       enableBuiltInAgents: false,
+      enableBetaSkills: false,
       enableGoalsSidebarLink: false,
       enableServerInfoDebugView: false,
       autoRestartDevServerWhenIdle: false,
@@ -135,9 +135,9 @@ describe("instance settings routes", () => {
         enableIsolatedWorkspaces: true,
         enableIssuePlanDecompositions: true,
         enableExperimentalFileViewer: true,
-        enableCloudSync: true,
         enableExternalObjects: false,
         enableBuiltInAgents: false,
+        enableBetaSkills: false,
         enableGoalsSidebarLink: false,
         enableServerInfoDebugView: false,
         autoRestartDevServerWhenIdle: false,
@@ -168,7 +168,6 @@ describe("instance settings routes", () => {
         enableIssuePlanDecompositions: true,
         enableExperimentalFileViewer: true,
         enableTaskWatchdogs: true,
-        enableCloudSync: true,
         enableExternalObjects: false,
         enableBuiltInAgents: true,
         enableGoalsSidebarLink: false,
@@ -229,9 +228,9 @@ describe("instance settings routes", () => {
       enableIssuePlanDecompositions: false,
       enableExperimentalFileViewer: false,
       enableTaskWatchdogs: false,
-      enableCloudSync: false,
       enableExternalObjects: false,
       enableBuiltInAgents: false,
+      enableBetaSkills: false,
       enableGoalsSidebarLink: false,
       enableServerInfoDebugView: false,
       autoRestartDevServerWhenIdle: false,
@@ -626,5 +625,100 @@ describe("instance settings routes", () => {
 
     expect(res.status).toBe(403);
     expect(mockInstanceSettingsService.updateGeneral).not.toHaveBeenCalled();
+  });
+
+  describe("executionMode floor on cloud-managed instances", () => {
+    const adminActor = {
+      type: "board",
+      userId: "owner-1",
+      source: "cloud_tenant",
+      isInstanceAdmin: true,
+      companyIds: ["company-1"],
+    };
+
+    beforeEach(() => {
+      process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN = "test-server-token";
+    });
+    afterEach(() => {
+      delete process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN;
+    });
+
+    it("rejects a write that changes executionMode", async () => {
+      mockInstanceSettingsService.getGeneral.mockResolvedValue({
+        censorUsernameInLogs: false,
+        keyboardShortcuts: false,
+        feedbackDataSharingPreference: "prompt",
+        executionMode: "kubernetes",
+      });
+      const app = await createApp(adminActor);
+
+      const res = await request(app)
+        .patch("/api/instance/settings/general")
+        .send({ executionMode: "any" });
+
+      expect(res.status).toBe(403);
+      expect(res.body.details).toMatchObject({ code: "execution_mode_platform_managed" });
+      expect(mockInstanceSettingsService.updateGeneral).not.toHaveBeenCalled();
+    });
+
+    it("rejects pinning executionMode when the platform left it unrestricted", async () => {
+      const app = await createApp(adminActor);
+
+      const res = await request(app)
+        .patch("/api/instance/settings/general")
+        .send({ executionMode: "kubernetes" });
+
+      expect(res.status).toBe(403);
+      expect(mockInstanceSettingsService.updateGeneral).not.toHaveBeenCalled();
+    });
+
+    it("allows a same-value executionMode echo so full-object settings forms keep working", async () => {
+      mockInstanceSettingsService.getGeneral.mockResolvedValue({
+        censorUsernameInLogs: false,
+        keyboardShortcuts: false,
+        feedbackDataSharingPreference: "prompt",
+        executionMode: "kubernetes",
+      });
+      const app = await createApp(adminActor);
+
+      const res = await request(app)
+        .patch("/api/instance/settings/general")
+        .send({ executionMode: "kubernetes", keyboardShortcuts: true });
+
+      expect(res.status).toBe(200);
+      expect(mockInstanceSettingsService.updateGeneral).toHaveBeenCalledWith({
+        executionMode: "kubernetes",
+        keyboardShortcuts: true,
+      });
+    });
+
+    it("allows general-settings writes that do not touch executionMode", async () => {
+      const app = await createApp(adminActor);
+
+      const res = await request(app)
+        .patch("/api/instance/settings/general")
+        .send({ keyboardShortcuts: true });
+
+      expect(res.status).toBe(200);
+      expect(mockInstanceSettingsService.getGeneral).not.toHaveBeenCalled();
+      expect(mockInstanceSettingsService.updateGeneral).toHaveBeenCalledWith({ keyboardShortcuts: true });
+    });
+
+    it("keeps executionMode writable on self-hosted instances", async () => {
+      delete process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN;
+      const app = await createApp({
+        type: "board",
+        userId: "admin-1",
+        source: "session",
+        isInstanceAdmin: true,
+      });
+
+      const res = await request(app)
+        .patch("/api/instance/settings/general")
+        .send({ executionMode: "kubernetes" });
+
+      expect(res.status).toBe(200);
+      expect(mockInstanceSettingsService.updateGeneral).toHaveBeenCalledWith({ executionMode: "kubernetes" });
+    });
   });
 });

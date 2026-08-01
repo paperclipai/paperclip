@@ -20,6 +20,7 @@ import { projectsApi } from "../api/projects";
 import { routinesApi } from "../api/routines";
 import { IssuesList } from "../components/IssuesList";
 import { PageTabBar } from "../components/PageTabBar";
+import { SummarySlotCard } from "../components/SummarySlotCard";
 import { usePublishSharedQueryData, useSharedPollingQuery } from "../hooks/useSharedPolling";
 import { PluginSlotMount, PluginSlotOutlet, usePluginSlots } from "@/plugins/slots";
 import {
@@ -447,7 +448,7 @@ function ExecutionWorkspaceIssuesList({
     resourceKey: "live-runs",
     queryKey: liveRunsQueryKey,
     enabled: !!companyId,
-    // Event-sourced via LiveUpdatesProvider (#9627); no interval poll needed.
+    // Event-sourced via LiveUpdatesProvider (issue 9627); no interval poll needed.
     refetchInterval: false,
     leaderOnly: true,
   });
@@ -1409,14 +1410,25 @@ export function ExecutionWorkspaceDetail() {
             </CardContent>
           </Card>
         ) : activeTab === "issues" ? (
-          <ExecutionWorkspaceIssuesList
-            companyId={workspace.companyId}
-            workspace={workspace}
-            issues={linkedIssues}
-            isLoading={linkedIssuesQuery.isLoading}
-            error={linkedIssuesQuery.error as Error | null}
-            project={project}
-          />
+          <div className="space-y-6">
+            {workspace.projectWorkspaceId ? (
+              <SummarySlotCard
+                companyId={workspace.companyId}
+                scopeKind="project_workspace"
+                scopeId={workspace.projectWorkspaceId}
+                title="Workspace summary"
+                description="Summarizer keeps the latest workspace status, next step, and operator-needed items here."
+              />
+            ) : null}
+            <ExecutionWorkspaceIssuesList
+              companyId={workspace.companyId}
+              workspace={workspace}
+              issues={linkedIssues}
+              isLoading={linkedIssuesQuery.isLoading}
+              error={linkedIssuesQuery.error as Error | null}
+              project={project}
+            />
+          </div>
         ) : activePluginTab ? (
           <PluginSlotMount
             slot={activePluginTab.slot}

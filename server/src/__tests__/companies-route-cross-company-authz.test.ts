@@ -254,6 +254,10 @@ describe.sequential("company route cross-company authorization", () => {
       request: (app: express.Express) => request(app).post(`/api/companies/${companyBId}/exports/preview`).send(exportRequest),
     },
     {
+      label: "GET /api/companies/:companyId/export/fidelity",
+      request: (app: express.Express) => request(app).get(`/api/companies/${companyBId}/export/fidelity`),
+    },
+    {
       label: "POST /api/companies/:companyId/imports/preview",
       request: (app: express.Express) => request(app).post(`/api/companies/${companyBId}/imports/preview`).send(importRequest()),
     },

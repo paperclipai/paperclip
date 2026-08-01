@@ -22,6 +22,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { heartbeatService } from "../services/heartbeat.ts";
+import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.js";
 import { runningProcesses } from "../adapters/index.ts";
 
 const mockAdapterExecute = vi.hoisted(() =>
@@ -69,11 +70,15 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
 
   afterEach(async () => {
     runningProcesses.clear();
-    for (let attempt = 0; attempt < 100; attempt += 1) {
-      const runs = await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns);
-      if (!runs.some((run) => run.status === "queued" || run.status === "running")) break;
-      await new Promise((resolve) => setTimeout(resolve, 50));
-    }
+    // Await every in-flight background heartbeat run to quiescence before the
+    // deletes below. A wakeup claims a run and dispatches its execution
+    // fire-and-forget, and that run can dispatch a follow-up wakeup, so a run or
+    // wakeup can still write heartbeat_runs and issues rows when teardown starts
+    // and would race the deletes (a heartbeat_runs delete deadlocks on the ON
+    // DELETE SET NULL cascade to issues). The shared drain also awaits an
+    // in-flight wakeup that is still before run registration, which a plain run
+    // table status poll cannot see.
+    await drainHeartbeatRunsToQuiescence(db, heartbeat);
     // Post-run bookkeeping (run-event records, follow-up wake scheduling) can
     // still write for a moment after a run reaches a terminal status, so a
     // single delete sweep can hit a foreign-key violation when a late insert

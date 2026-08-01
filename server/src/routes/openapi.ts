@@ -12,6 +12,13 @@ import {
   createAgentKeySchema,
   builtInAgentEmptyMutationSchema,
   builtInAgentProvisionSchema,
+  generateSummarySlotSchema,
+  writeSummarySlotSchema,
+  createStatusCardSchema,
+  patchStatusCardSchema,
+  refreshStatusCardSchema,
+  writeStatusCardQuerySchema,
+  writeStatusCardSummarySchema,
   wakeAgentSchema,
   resetAgentSessionSchema,
   agentSkillSyncSchema,
@@ -103,6 +110,8 @@ import {
   companySkillImportSchema,
   companySkillProjectScanRequestSchema,
   companySkillProjectScanResultSchema,
+  companySkillRenameResultSchema,
+  companySkillRenameSchema,
   companySkillTestInputCreateSchema,
   companySkillTestInputUpdateSchema,
   companySkillTestRunCreateSchema,
@@ -148,6 +157,7 @@ import {
   patchInstanceSettingsSchema,
   issueGraphLivenessAutoRecoveryRequestSchema,
   // Resource memberships
+  updateDocumentResourceMembershipSchema,
   updateResourceMembershipSchema,
   // Document annotations
   createDocumentAnnotationCommentSchema,
@@ -157,6 +167,7 @@ import {
   createAcceptedPlanDecompositionSchema,
   resolveIssueRecoveryActionSchema,
   cancelIssueThreadInteractionSchema,
+  withdrawIssueThreadInteractionSchema,
   // Secret provider configs and remote import
   createSecretProviderConfigSchema,
   updateSecretProviderConfigSchema,
@@ -171,6 +182,7 @@ import {
   updateToolApplicationSchema,
   createToolConnectionSchema,
   connectionTokenRequestSchema,
+  startConnectionAuthorizationSchema,
   createToolStdioCommandTemplateSchema,
   disableToolStdioCommandTemplateSchema,
   finishToolAppSchema,
@@ -511,6 +523,40 @@ const jsonBody = (schema: z.ZodTypeAny) => ({
   required: true as const,
 });
 
+// The company import + preview routes accept the inline JSON body or the raw
+// company package as a compressed zip upload. Document both content types: the
+// JSON variant keeps its zod schema; the multipart variant carries the zip in a
+// `package` file field plus the other import fields as a JSON `meta` field.
+const importRequestBody = (schema: z.ZodTypeAny) => ({
+  content: {
+    "application/json": { schema },
+    "multipart/form-data": {
+      schema: {
+        type: "object",
+        properties: {
+          package: {
+            type: "string",
+            format: "binary",
+            description: "The company package as a compressed .zip.",
+          },
+          meta: {
+            type: "string",
+            description:
+              "JSON-encoded import fields (include, target, collisionStrategy, and, for " +
+              "the apply route, nameOverrides / selectedFiles / adapterOverrides / " +
+              "pauseAutomations). A `source` here is ignored — the source is the zip.",
+          },
+        },
+        required: ["package"],
+      },
+    },
+    "application/zip": {
+      schema: { type: "string", format: "binary" },
+    },
+  },
+  required: true as const,
+});
+
 const r = responses;
 
 const externalObjectSummariesBodySchema = z.object({
@@ -694,7 +740,6 @@ const PUBLIC_OPERATIONS = new Set([
 const BOARD_ONLY_PREFIXES = [
   "/api/auth/",
   "/api/admin/",
-  "/api/cloud-upstreams",
   "/api/plugins",
   "/api/instance/",
 ];
@@ -704,6 +749,7 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "POST /api/companies",
   "GET /api/companies/stats",
   "GET /api/companies/issues",
+  "GET /api/companies/import/jobs/{jobId}",
   "POST /api/board-claim/{token}/claim",
   "GET /api/cli-auth/me",
   "POST /api/companies/{companyId}/invites",
@@ -725,6 +771,7 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "POST /api/bootstrap/claim",
   "GET /api/companies/{companyId}/resource-memberships/me",
   "PUT /api/companies/{companyId}/resource-memberships/me/agents/{agentId}",
+  "PUT /api/companies/{companyId}/resource-memberships/me/documents/{documentId}",
   "PUT /api/companies/{companyId}/resource-memberships/me/projects/{projectId}",
   "GET /api/companies/{companyId}/secret-provider-configs",
   "POST /api/companies/{companyId}/secret-provider-configs",
@@ -770,7 +817,12 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "DELETE /api/tool-applications/{applicationId}",
   "GET /api/companies/{companyId}/tools/connections",
   "POST /api/companies/{companyId}/tools/connections",
+  "POST /api/companies/{companyId}/tools/connections/{connectionId}/start-authorization",
   "GET /api/tool-connections/{connectionId}",
+  "GET /api/tool-connections/{connectionId}/grants",
+  "POST /api/tool-connections/{connectionId}/grants/installations",
+  "DELETE /api/tool-connections/{connectionId}/grants/{grantId}",
+  "GET /api/tool-connections/{connectionId}/usage",
   "PATCH /api/tool-connections/{connectionId}",
   "DELETE /api/tool-connections/{connectionId}",
   "POST /api/tool-connections/{connectionId}/health-check",
@@ -781,6 +833,7 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "GET /api/tool-connections/{connectionId}/test-agents",
   "POST /api/tool-connections/{connectionId}/test-calls",
   "GET /api/tool-connections/{connectionId}/test-calls/{actionRequestId}",
+  "POST /api/agents/me/connections/{connectionId}/start-authorization",
   "POST /api/agents/me/connections/{connectionId}/token",
   "POST /api/tools/oauth/{connectionId}/start",
   "GET /api/tools/oauth/callback",
@@ -1001,6 +1054,39 @@ function applyDocumentFixups(document: any): any {
 
 // ─── Health ──────────────────────────────────────────────────────────────────
 
+// Shared by the healthy and database-unreachable responses: full details
+// (including serverInfo) ride only on board/agent-actor responses.
+const healthServerInfoSchema = z.object({
+  processStartedAt: z.string().datetime(),
+  git: z.union([
+    z.object({
+      available: z.literal(true),
+      fullSha: z.string(),
+      shortSha: z.string(),
+      branchName: z.string().nullable(),
+      subject: z.string(),
+      committedAt: z.string().datetime().nullable(),
+      localChanges: z.union([
+        z.object({
+          available: z.literal(true),
+          hasLocalChanges: z.boolean(),
+          stagedFileCount: z.number().int().nonnegative(),
+          unstagedFileCount: z.number().int().nonnegative(),
+          untrackedFileCount: z.number().int().nonnegative(),
+        }).strict(),
+        z.object({
+          available: z.literal(false),
+          unavailableReason: z.enum(["git_status_unavailable"]),
+        }).strict(),
+      ]),
+    }).strict(),
+    z.object({
+      available: z.literal(false),
+      unavailableReason: z.enum(["git_unavailable", "invalid_git_metadata"]),
+    }).strict(),
+  ]),
+}).strict();
+
 registry.registerPath({
   method: "get",
   path: "/api/health",
@@ -1010,6 +1096,9 @@ registry.registerPath({
     200: r.ok(z.object({
       status: z.enum(["ok", "unhealthy"]),
       version: z.string().optional(),
+      // Running build commit (full git SHA), or null when git metadata is
+      // unavailable. Present on every response shape, including redacted ones.
+      commit: z.string().nullable(),
       deploymentMode: z.string().optional(),
       bootstrapStatus: z.enum(["ready", "bootstrap_pending"]).optional(),
       bootstrapInviteActive: z.boolean().optional(),
@@ -1044,38 +1133,26 @@ registry.registerPath({
         code: z.string(),
         message: z.string(),
       })).optional(),
-      serverInfo: z.object({
-        processStartedAt: z.string().datetime(),
-        git: z.union([
-          z.object({
-            available: z.literal(true),
-            fullSha: z.string(),
-            shortSha: z.string(),
-            branchName: z.string().nullable(),
-            subject: z.string(),
-            committedAt: z.string().datetime().nullable(),
-            localChanges: z.union([
-              z.object({
-                available: z.literal(true),
-                hasLocalChanges: z.boolean(),
-                stagedFileCount: z.number().int().nonnegative(),
-                unstagedFileCount: z.number().int().nonnegative(),
-                untrackedFileCount: z.number().int().nonnegative(),
-              }).strict(),
-              z.object({
-                available: z.literal(false),
-                unavailableReason: z.enum(["git_status_unavailable"]),
-              }).strict(),
-            ]),
-          }).strict(),
-          z.object({
-            available: z.literal(false),
-            unavailableReason: z.enum(["git_unavailable", "invalid_git_metadata"]),
-          }).strict(),
-        ]),
-      }).strict().optional(),
+      serverInfo: healthServerInfoSchema.optional(),
     })),
-    503: { description: "Service unavailable", content: { "application/json": { schema: ErrorSchema } } },
+    // The database-unreachable body still carries version and commit so
+    // deployment tooling can verify the running build during an outage;
+    // serverInfo rides only on full-details (board/agent) responses.
+    503: {
+      description: "Service unavailable",
+      content: {
+        "application/json": {
+          schema: z.object({
+            status: z.literal("unhealthy"),
+            version: z.string(),
+            serverVersion: z.string(),
+            commit: z.string().nullable(),
+            error: z.literal("database_unreachable"),
+            serverInfo: healthServerInfoSchema.optional(),
+          }),
+        },
+      },
+    },
   },
 });
 
@@ -1368,6 +1445,126 @@ for (const route of [
   });
 }
 
+const summarySlotParams = z.object({
+  companyId: z.string(),
+  scopeKind: z.string(),
+  slotKey: z.string(),
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/summary-slots/{scopeKind}/{slotKey}",
+  tags: ["summaries"],
+  summary: "Get a summary slot with its latest document and generation state",
+  request: { params: summarySlotParams },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 422: r.unprocessable },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/summary-slots/{scopeKind}/{slotKey}/revisions",
+  tags: ["summaries"],
+  summary: "List dated revisions for a summary slot",
+  request: { params: summarySlotParams },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 422: r.unprocessable },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/summary-slots/{scopeKind}/{slotKey}/generate",
+  tags: ["summaries"],
+  summary: "Manually generate (or refresh) a summary slot",
+  request: { params: summarySlotParams, body: jsonBody(generateSummarySlotSchema) },
+  responses: {
+    200: r.ok(),
+    202: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+    422: r.unprocessable,
+  },
+});
+
+registry.registerPath({
+  method: "put",
+  path: "/api/companies/{companyId}/summary-slots/{scopeKind}/{slotKey}",
+  tags: ["summaries"],
+  summary: "Write a summary revision (Summarizer built-in agent only)",
+  request: { params: summarySlotParams, body: jsonBody(writeSummarySlotSchema) },
+  responses: {
+    200: r.ok(),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+    422: r.unprocessable,
+  },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/status-cards",
+  tags: ["status-cards"],
+  summary: "List status cards",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/status-cards",
+  tags: ["status-cards"],
+  summary: "Create a status card",
+  request: { params: z.object({ companyId: z.string() }), body: jsonBody(createStatusCardSchema) },
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+for (const route of [
+  ["get", "/api/status-cards/{id}", "Get a status card"],
+  ["delete", "/api/status-cards/{id}", "Delete a status card"],
+  ["post", "/api/status-cards/{id}/recompile", "Recompile a status card query"],
+  ["get", "/api/status-cards/{id}/dry-run", "Execute stored status card queries without an LLM"],
+  ["get", "/api/status-cards/{id}/updates", "List status card updates"],
+  ["get", "/api/status-cards/{id}/summary-revisions", "List status card summary revisions"],
+] as const) {
+  registerCurrentRoute({ method: route[0], path: route[1], tags: ["status-cards"], summary: route[2] });
+}
+
+registerCurrentRoute({
+  method: "patch",
+  path: "/api/status-cards/{id}",
+  tags: ["status-cards"],
+  summary: "Update, archive, or restore a status card",
+  body: patchStatusCardSchema,
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/status-cards/{id}/refresh",
+  tags: ["status-cards"],
+  summary: "Refresh a status card",
+  body: refreshStatusCardSchema,
+});
+
+registerCurrentRoute({
+  method: "put",
+  path: "/api/status-cards/{id}/query",
+  tags: ["status-cards"],
+  summary: "Write a compiled status card query",
+  body: writeStatusCardQuerySchema,
+});
+
+registerCurrentRoute({
+  method: "put",
+  path: "/api/status-cards/{id}/summary",
+  tags: ["status-cards"],
+  summary: "Write a generated status card summary",
+  body: writeStatusCardSummarySchema,
+});
+
 registry.registerPath({
   method: "get",
   path: "/api/companies/{companyId}/agents",
@@ -1433,6 +1630,47 @@ registry.registerPath({
   tags: ["agents"],
   summary: "Get current agent inbox (lite)",
   responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+const AgentSecretListResponseSchema = z.object({
+  secrets: z.array(z.object({
+    key: z.string(),
+    name: z.string(),
+    description: z.string().nullable(),
+    delivery: z.enum(["env", "api", "both"]),
+    projectionClass: z.string(),
+    latestVersion: z.number().int().nonnegative(),
+    versionSelector: z.union([z.literal("latest"), z.number().int().positive()]),
+    resolvedVersion: z.number().int().positive(),
+  })),
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/agents/me/secrets",
+  tags: ["secrets"],
+  summary: "List secrets accessible to the current agent run",
+  responses: {
+    200: { description: "Accessible secret metadata", content: { "application/json": { schema: AgentSecretListResponseSchema } } },
+    401: r.unauthorized,
+    403: r.forbidden,
+  },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/agents/me/secrets/{key}/value",
+  tags: ["secrets"],
+  summary: "Fetch one secret value for the current agent run",
+  request: { params: z.object({ key: z.string() }) },
+  responses: {
+    200: {
+      description: "Decrypted secret value",
+      content: { "application/json": { schema: z.object({ key: z.string(), value: z.string(), version: z.number().int().positive() }) } },
+    },
+    401: r.unauthorized,
+    403: r.forbidden,
+  },
 });
 
 registry.registerPath({
@@ -3002,6 +3240,81 @@ registry.registerPath({
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
 });
 
+// ─── Decision training ──────────────────────────────────────────────────────
+
+const decisionTrainingSourceKindSchema = z.enum(["interaction", "approval", "execution_decision"]);
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/decision-training",
+  tags: ["decision-training"],
+  summary: "Capture a decision training example",
+  body: z.object({
+    sourceKind: decisionTrainingSourceKindSchema,
+    sourceId: z.string().uuid(),
+    issueId: z.string().uuid(),
+    notes: z.string().max(100_000).default(""),
+  }).strict(),
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/decision-training/preview",
+  tags: ["decision-training"],
+  summary: "Preview a decision training snapshot",
+  body: z.object({
+    sourceKind: decisionTrainingSourceKindSchema,
+    sourceId: z.string().uuid(),
+    issueId: z.string().uuid(),
+  }).strict(),
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/companies/{companyId}/decision-training",
+  tags: ["decision-training"],
+  summary: "List decision training examples",
+  query: z.object({
+    project: z.string().uuid().optional(),
+    kind: decisionTrainingSourceKindSchema.optional(),
+    author: z.string().optional(),
+    q: z.string().max(500).optional(),
+  }),
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/companies/{companyId}/decision-training/export.jsonl",
+  tags: ["decision-training"],
+  summary: "Export decision training examples as JSONL",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/decision-training/{id}",
+  tags: ["decision-training"],
+  summary: "Get a decision training example",
+});
+
+registerCurrentRoute({
+  method: "patch",
+  path: "/api/decision-training/{id}",
+  tags: ["decision-training"],
+  summary: "Update decision training notes",
+  body: z.object({ notes: z.string().max(100_000) }).strict(),
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registerCurrentRoute({
+  method: "delete",
+  path: "/api/decision-training/{id}",
+  tags: ["decision-training"],
+  summary: "Delete a decision training example",
+  responses: { 204: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
 registry.registerPath({
   method: "get",
   path: "/api/sidebar-preferences/me",
@@ -3824,6 +4137,26 @@ registry.registerPath({
 
 registry.registerPath({
   method: "post",
+  path: "/api/companies/{companyId}/skills/{skillId}/rename",
+  tags: ["skills"],
+  summary: "Rename a managed company skill",
+  request: {
+    params: z.object({ companyId: z.string(), skillId: z.string() }),
+    body: jsonBody(companySkillRenameSchema),
+  },
+  responses: {
+    200: r.ok(companySkillRenameResultSchema),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    409: r.conflict,
+    422: r.unprocessable,
+  },
+});
+
+registry.registerPath({
+  method: "post",
   path: "/api/companies/{companyId}/skills",
   tags: ["skills"],
   summary: "Create a company skill",
@@ -4263,6 +4596,15 @@ registry.registerPath({
   path: "/api/environments/{id}/delete-blast-radius",
   tags: ["environments"],
   summary: "Get environment delete blast radius",
+  request: { params: z.object({ id: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/environments/{id}/secret-refs",
+  tags: ["environments"],
+  summary: "Describe an environment's config secret refs (name, status, owning company — never values)",
   request: { params: z.object({ id: z.string() }) },
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });
@@ -4975,12 +5317,28 @@ registry.registerPath({
 });
 
 registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/export/fidelity",
+  tags: ["companies"],
+  summary: "Report company data that an export bundle does not include",
+  request: { params: z.object({ companyId: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
   method: "post",
   path: "/api/companies/import/preview",
   tags: ["companies"],
   summary: "Preview a company import (legacy route)",
-  request: { body: jsonBody(companyPortabilityPreviewSchema) },
-  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+  description:
+    "Accepts either the inline JSON body (`application/json`) or the raw company " +
+    "package uploaded as a compressed zip (`multipart/form-data` with a `package` " +
+    "file field plus a JSON `meta` field carrying the other import fields, or a bare " +
+    "`application/zip` body with the `meta` JSON in the `meta` query parameter). The " +
+    "zip is unzipped server-side into the same `{ source: { type: \"inline\", ... } }` " +
+    "bundle the JSON body carries.",
+  request: { body: importRequestBody(companyPortabilityPreviewSchema) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 422: r.unprocessable },
 });
 
 registry.registerPath({
@@ -4988,8 +5346,30 @@ registry.registerPath({
   path: "/api/companies/import",
   tags: ["companies"],
   summary: "Apply a company import (legacy route)",
-  request: { body: jsonBody(companyPortabilityImportSchema) },
-  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+  description:
+    "Accepts either the inline JSON body (`application/json`) or the raw company package " +
+    "uploaded as a compressed zip (`multipart/form-data` with a `package` file field plus a " +
+    "JSON `meta` field, or a bare `application/zip` body with the `meta` JSON in the `meta` " +
+    "query parameter); the zip is unzipped server-side into the same import bundle. " +
+    "Callers can opt into asynchronous processing: trusted Cloud tenants set the " +
+    "`x-paperclip-cloud-async-import: 1` header (browsers cannot — the Cloud harness proxy " +
+    "strips inbound `x-paperclip-cloud-*` headers), while board sessions use the proxy-safe " +
+    "`?async=1` query parameter. Either way the server responds 202 with a job id and status " +
+    "URL instead of holding the connection open for the whole import. While a board actor " +
+    "already has an async job running, a resubmit returns 409 carrying the running job's id " +
+    "and status URL. Jobs are held in memory and are lost on restart.",
+  request: {
+    query: z.object({ async: z.enum(["1"]).optional() }),
+    body: importRequestBody(companyPortabilityImportSchema),
+  },
+  responses: {
+    200: r.ok(),
+    202: { description: "Async import job accepted" },
+    400: r.badRequest,
+    401: r.unauthorized,
+    409: { description: "An async import job is already running for this actor" },
+    422: r.unprocessable,
+  },
 });
 
 // ─── Board claim & CLI auth ───────────────────────────────────────────────────
@@ -5236,8 +5616,21 @@ registerCurrentRoute({
   summary: "Revoke a board API key",
 });
 
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/import/jobs/{jobId}",
+  tags: ["companies"],
+  summary: "Get company import job status",
+  description:
+    "A job is readable only by the actor that created it — the board user or the trusted Cloud " +
+    "tenant identity from the async import submission. Any other caller gets the same 404 as an " +
+    "unknown id. Jobs are held in memory: they are dropped a few minutes after finishing and do " +
+    "not survive a server restart.",
+  request: { params: z.object({ jobId: z.string() }) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 404: r.notFound },
+});
+
 for (const route of [
-  ["get", "/api/companies/import/jobs/{jobId}", "Get company import job status"],
   ["get", "/api/companies/{companyId}/search", "Search company data"],
   ["get", "/api/companies/{companyId}/search/extract", "Extract company search matches"],
   ["get", "/api/companies/{companyId}/issues/count", "Count issues in a company"],
@@ -5312,6 +5705,14 @@ registerCurrentRoute({
   summary: "Get issue cost summary",
 });
 
+registerCurrentRoute({
+  method: "put",
+  path: "/api/companies/{companyId}/resource-memberships/me/documents/{documentId}",
+  tags: ["resource-memberships"],
+  summary: "Star or unstar a document resource",
+  body: updateDocumentResourceMembershipSchema,
+});
+
 for (const route of [
   ["get", "/api/companies/{companyId}/resource-memberships/me", "List current user's resource memberships"],
   ["put", "/api/companies/{companyId}/resource-memberships/me/agents/{agentId}", "Join or leave an agent resource"],
@@ -5325,93 +5726,6 @@ for (const route of [
     ...(route[0] === "put" ? { body: updateResourceMembershipSchema } : {}),
   });
 }
-
-const cloudCompanyQuerySchema = z.object({
-  companyId: z.string().min(1),
-});
-const cloudCompanyBodySchema = z.object({
-  companyId: z.string().min(1),
-});
-const cloudConnectStartSchema = z.object({
-  companyId: z.string().min(1),
-  remoteUrl: z.string().min(1),
-  redirectUri: z.string().min(1),
-});
-const cloudConnectFinishSchema = z.object({
-  pendingConnectionId: z.string().min(1),
-  code: z.string().min(1),
-  state: z.string().min(1),
-});
-const cloudPushRunSchema = cloudCompanyBodySchema.extend({
-  retryOfRunId: z.string().optional(),
-});
-const cloudPushRunActivationSchema = cloudCompanyBodySchema.extend({
-  entityType: z.enum(["agents", "routines", "monitors"]),
-});
-
-registerCurrentRoute({
-  method: "get",
-  path: "/api/cloud-upstreams",
-  tags: ["cloud-upstreams"],
-  summary: "List cloud upstream connections",
-  query: cloudCompanyQuerySchema,
-});
-
-registerCurrentRoute({
-  method: "post",
-  path: "/api/cloud-upstreams/connect/start",
-  tags: ["cloud-upstreams"],
-  summary: "Start a cloud upstream connection",
-  body: cloudConnectStartSchema,
-});
-
-registerCurrentRoute({
-  method: "post",
-  path: "/api/cloud-upstreams/connect/finish",
-  tags: ["cloud-upstreams"],
-  summary: "Finish a cloud upstream connection",
-  body: cloudConnectFinishSchema,
-});
-
-registerCurrentRoute({
-  method: "post",
-  path: "/api/cloud-upstreams/{connectionId}/push-runs/preview",
-  tags: ["cloud-upstreams"],
-  summary: "Preview a cloud upstream push run",
-  body: cloudCompanyBodySchema,
-});
-
-registerCurrentRoute({
-  method: "post",
-  path: "/api/cloud-upstreams/{connectionId}/push-runs",
-  tags: ["cloud-upstreams"],
-  summary: "Create a cloud upstream push run",
-  body: cloudPushRunSchema,
-});
-
-registerCurrentRoute({
-  method: "get",
-  path: "/api/cloud-upstreams/{connectionId}/push-runs/{runId}",
-  tags: ["cloud-upstreams"],
-  summary: "Get a cloud upstream push run",
-  query: cloudCompanyQuerySchema,
-});
-
-registerCurrentRoute({
-  method: "post",
-  path: "/api/cloud-upstreams/{connectionId}/push-runs/{runId}/cancel",
-  tags: ["cloud-upstreams"],
-  summary: "Cancel a cloud upstream push run",
-  body: cloudCompanyBodySchema,
-});
-
-registerCurrentRoute({
-  method: "post",
-  path: "/api/cloud-upstreams/{connectionId}/push-runs/{runId}/activation",
-  tags: ["cloud-upstreams"],
-  summary: "Activate cloud upstream push run entities",
-  body: cloudPushRunActivationSchema,
-});
 
 for (const route of [
   ["get", "/api/companies/{companyId}/secret-providers/health", "Check configured secret providers"],
@@ -5683,6 +5997,14 @@ registerCurrentRoute({
   body: cancelIssueThreadInteractionSchema,
 });
 
+registerCurrentRoute({
+  method: "post",
+  path: "/api/issues/{id}/interactions/{interactionId}/withdraw",
+  tags: ["issues"],
+  summary: "Withdraw a pending issue thread interaction",
+  body: withdrawIssueThreadInteractionSchema,
+});
+
 for (const route of [
   ["get", "/api/routines/{id}/revisions", "List routine revisions"],
   ["post", "/api/routines/{id}/revisions/{revisionId}/restore", "Restore a routine revision"],
@@ -5861,6 +6183,51 @@ registerCurrentRoute({
   path: "/api/tool-connections/{connectionId}",
   tags: ["tool-access"],
   summary: "Get a tool connection",
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/tools/connections/{connectionId}/start-authorization",
+  tags: ["tool-access"],
+  summary: "Start user authorization for a tool connection",
+  body: startConnectionAuthorizationSchema,
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/agents/me/connections/{connectionId}/start-authorization",
+  tags: ["tool-access"],
+  summary: "Start user authorization for an agent tool connection",
+  body: startConnectionAuthorizationSchema,
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/tool-connections/{connectionId}/grants",
+  tags: ["tool-access"],
+  summary: "List tool connection grants",
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/tool-connections/{connectionId}/grants/installations",
+  tags: ["tool-access"],
+  summary: "Add an installation grant to a tool connection",
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+registerCurrentRoute({
+  method: "delete",
+  path: "/api/tool-connections/{connectionId}/grants/{grantId}",
+  tags: ["tool-access"],
+  summary: "Revoke a tool connection grant",
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/tool-connections/{connectionId}/usage",
+  tags: ["tool-access"],
+  summary: "Get tool connection usage",
 });
 
 registerCurrentRoute({

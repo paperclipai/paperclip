@@ -166,6 +166,7 @@ export interface AttentionItem {
   project: AttentionProjectRef | null;
   workspace: AttentionWorkspaceRef | null;
   detail: AttentionItemDetail | null;
+  trainingExampleId: string | null;
 }
 
 export interface AttentionFeed {

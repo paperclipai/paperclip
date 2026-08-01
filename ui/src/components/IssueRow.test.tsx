@@ -6,6 +6,7 @@ import { createRoot } from "react-dom/client";
 import type { Issue } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IssueRow } from "./IssueRow";
+import { StatusIcon } from "./StatusIcon";
 
 vi.mock("@/lib/router", () => ({
   Link: ({
@@ -114,6 +115,33 @@ describe("IssueRow", () => {
     });
   });
 
+  it("keeps editable row controls keyboard-accessible and outside the navigation link", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <IssueRow
+          issue={createIssue()}
+          desktopMetaLeading={<StatusIcon status="todo" onChange={() => undefined} />}
+        />,
+      );
+    });
+
+    const link = container.querySelector<HTMLAnchorElement>("[data-inbox-issue-link]");
+    const statusButton = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Change status (current: Todo)"]',
+    );
+
+    expect(link).not.toBeNull();
+    expect(statusButton).not.toBeNull();
+    expect(statusButton?.tabIndex).toBe(0);
+    expect(link?.contains(statusButton)).toBe(false);
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
   it("suppresses accent hover styling when the row is selected", () => {
     const root = createRoot(container);
     const issue = createIssue();
@@ -155,6 +183,53 @@ describe("IssueRow", () => {
     expect(statusGlyph).not.toBeNull();
     expect(statusGlyph?.getAttribute("class")).toContain("!text-muted-foreground");
     expect(statusGlyph?.getAttribute("class")).toContain("!border-muted-foreground");
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("reserves the leading dot slot on read rows so unread rows never indent past them", () => {
+    const root = createRoot(container);
+    act(() => {
+      // A read inbox row still supplies `unreadState` (as "hidden").
+      root.render(<IssueRow issue={createIssue()} unreadState="hidden" />);
+    });
+
+    // The desktop dot slot is reserved even when read (empty), so unread rows
+    // add no column and line up with read rows.
+    const slot = container.querySelector('[data-testid="issue-row-unread-slot"]');
+    expect(slot).not.toBeNull();
+    expect(slot?.className).toContain("w-4");
+    expect(slot?.className).toContain("sm:inline-flex");
+    // In flow, not an absolute overlay.
+    expect(slot?.className).not.toContain("absolute");
+    // Read rows carry no dot button in the slot.
+    expect(slot?.querySelector('button[aria-label="Mark as read"]')).toBeNull();
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("puts the unread dot in the reserved far-left slot on desktop and in flow on mobile", () => {
+    const root = createRoot(container);
+    act(() => {
+      root.render(<IssueRow issue={createIssue()} unreadState="visible" />);
+    });
+
+    // Desktop: the dot lives in the reserved leading slot (far left, ahead of
+    // any leading control such as a parent's collapse caret).
+    const slot = container.querySelector('[data-testid="issue-row-unread-slot"]');
+    expect(slot).not.toBeNull();
+    expect(slot?.querySelector('button[aria-label="Mark as read"]')).not.toBeNull();
+
+    // Mobile: a separate in-flow, order-first dot (mobile has no reserved slot).
+    const mobileDot = container
+      .querySelector('button[aria-label="Mark as read"].sm\\:hidden, span.sm\\:hidden button[aria-label="Mark as read"]')
+      ?.closest("span.sm\\:hidden");
+    expect(mobileDot).not.toBeNull();
+    expect(mobileDot?.className).toContain("order-first");
 
     act(() => {
       root.unmount();
@@ -249,8 +324,7 @@ describe("IssueRow", () => {
       );
     });
 
-    const link = container.querySelector("[data-inbox-issue-link]") as HTMLAnchorElement | null;
-    const metaRow = Array.from(link?.querySelectorAll("span.flex.items-center.gap-2") ?? [])
+    const metaRow = Array.from(container.querySelectorAll("span.flex.items-center.gap-2"))
       .find((element) => element.textContent?.includes("PAP-42"));
 
     expect(metaRow).not.toBeUndefined();

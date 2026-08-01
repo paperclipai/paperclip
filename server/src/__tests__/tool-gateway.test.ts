@@ -204,7 +204,8 @@ async function createRemoteMcpTool(
     companyId,
     applicationId: application.id,
     name: input.connectionName ?? `Remote connection ${randomUUID()}`,
-    transport: "remote_http",
+    uid: `test/${randomUUID()}`,
+    transport: "mcp_remote",
     status: input.connectionStatus ?? "active",
     enabled: input.connectionEnabled ?? true,
     healthStatus: input.healthStatus ?? "ok",
@@ -327,6 +328,7 @@ rl.on("line", (line) => {
     companyId,
     applicationId: application!.id,
     name: input.connectionName ?? `Local stdio connection ${randomUUID()}`,
+    uid: `test/${randomUUID()}`,
     transport: "local_stdio",
     status: input.connectionStatus ?? "active",
     enabled: input.connectionEnabled ?? true,
@@ -1162,7 +1164,7 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
         applicationKey: "kv-demo",
         connectionId: remoteTool.connection.id,
         catalogEntryId: remoteTool.catalogEntry.id,
-        transport: "remote_http",
+        transport: "mcp_remote",
         upstreamToolName: "kv_set",
         annotations: { readOnlyHint: false },
         risk: expect.objectContaining({ level: "write", isWrite: true }),
@@ -1985,7 +1987,7 @@ rl.on("line", (line) => {
       const access = toolAccessService(db);
       const connection = await access.createConnection(company.id, {
         name: "KV demo SDK fixture",
-        transport: "remote_http",
+        transport: "mcp_remote",
         config: { url: `http://127.0.0.1:${port}/mcp` },
         enabled: true,
         status: "active",
@@ -2241,7 +2243,7 @@ rl.on("line", (line) => {
           summary: expect.stringContaining('"value":"original"'),
         },
         execution: {
-          transport: "remote_http",
+          transport: "mcp_remote",
           request: {
             protocol: "MCP JSON-RPC 2.0",
             httpMethod: "POST",
@@ -2616,13 +2618,13 @@ rl.on("line", (line) => {
   const remoteFailureCases = [
     {
       name: "HTTP status",
-      reasonCode: "remote_http_status",
+      reasonCode: "mcp_remote_status",
       status: 502,
       response: () => ({ status: 503, body: { error: "unavailable" } }),
     },
     {
       name: "invalid JSON",
-      reasonCode: "remote_http_invalid_json",
+      reasonCode: "mcp_remote_invalid_json",
       status: 502,
       response: () => ({ rawBody: "not json" }),
     },
@@ -2634,7 +2636,7 @@ rl.on("line", (line) => {
     },
     {
       name: "response size",
-      reasonCode: "remote_http_response_too_large",
+      reasonCode: "mcp_remote_response_too_large",
       status: 502,
       response: () => {
         const rawBody = "x".repeat(1_000_001);
@@ -2695,7 +2697,7 @@ rl.on("line", (line) => {
             summary: expect.stringContaining('"key":"alpha"'),
           },
           execution: {
-            transport: "remote_http",
+            transport: "mcp_remote",
             request: {
               endpoint: fake.url,
               mcpMethod: "tools/call",
@@ -2703,7 +2705,7 @@ rl.on("line", (line) => {
             },
           },
         });
-        if (scenario.reasonCode === "remote_http_status") {
+        if (scenario.reasonCode === "mcp_remote_status") {
           expect(failureAudit.details).toMatchObject({
             execution: { response: { httpStatus: 503 } },
           });
@@ -3114,6 +3116,7 @@ rl.on("line", (line) => {
       companyId: company.id,
       applicationId: application!.id,
       name: "Plugin: acme.plugin-mail",
+      uid: `test/${randomUUID()}`,
       transport: "local_stdio",
       status: "active",
       enabled: true,
@@ -3514,7 +3517,15 @@ rl.on("line", (line) => {
       "mcp-stdio-fixture:increment_counter",
       "mcp-stdio-fixture:runtime_status",
     ]);
-    const gateway = createTestToolGatewayService(db, { runtimeSupervisor: { idleTtlMs: 25 } });
+    // Drive idle-down off an injected clock so the assertions below do not
+    // depend on real wall-clock elapsing under 25ms (the source of the flake).
+    // The supervisor computes idleDeadlineAt = now() + idleTtlMs and reaps lazily
+    // on every listRuntimeSlots call, so a fixed clock keeps the slot alive until
+    // we deliberately advance past the TTL.
+    let clockMs = Date.now();
+    const gateway = createTestToolGatewayService(db, {
+      runtimeSupervisor: { idleTtlMs: 25, now: () => new Date(clockMs) },
+    });
     const session = await gateway.createSession({
       companyId: company.id,
       agentId: agent.id,
@@ -3537,6 +3548,7 @@ rl.on("line", (line) => {
     expect(firstData).toMatchObject({ lazyStarted: true, reusedRuntimeSlot: false, counter: 1 });
     expect(secondData).toMatchObject({ lazyStarted: false, reusedRuntimeSlot: true, counter: 1 });
     expect(secondData.slotId).toBe(firstData.slotId);
+    // Clock has not advanced past the deadline, so the slot is deterministically present.
     await expect(gateway.listRuntimeSlots(company.id)).resolves.toHaveLength(1);
     const [idleSlot] = await db.select().from(toolRuntimeSlots).where(eq(toolRuntimeSlots.companyId, company.id));
     expect(idleSlot).toMatchObject({
@@ -3551,7 +3563,8 @@ rl.on("line", (line) => {
       resourceLimits: expect.objectContaining({ memoryCeilingSupported: expect.any(Boolean) }),
     });
 
-    await new Promise((resolve) => setTimeout(resolve, 35));
+    // Advance the injected clock past the idle TTL to deterministically reap the slot.
+    clockMs += 35;
     await expect(gateway.listRuntimeSlots(company.id)).resolves.toEqual([]);
     const [stoppedSlot] = await db.select().from(toolRuntimeSlots).where(eq(toolRuntimeSlots.id, idleSlot.id));
     expect(stoppedSlot).toMatchObject({

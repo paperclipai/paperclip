@@ -45,6 +45,19 @@ export function resolveShell(): string {
   return shell;
 }
 
+/**
+ * A read-only referenced (mentioned) project workspace carried alongside the anchor. Additive and
+ * backward-compatible: it defaults to an empty array. Additional workspaces never get git-worktree
+ * realization; the anchor keeps the single scalar realization path.
+ */
+export interface ExecutionWorkspaceAdditionalInput {
+  cwd: string;
+  projectId: string;
+  workspaceId: string | null;
+  repoUrl: string | null;
+  repoRef: string | null;
+}
+
 export interface ExecutionWorkspaceInput {
   baseCwd: string;
   source: "project_primary" | "task_session" | "agent_home";
@@ -52,6 +65,7 @@ export interface ExecutionWorkspaceInput {
   workspaceId: string | null;
   repoUrl: string | null;
   repoRef: string | null;
+  additionalWorkspaces?: ExecutionWorkspaceAdditionalInput[];
 }
 
 export interface ExecutionWorkspaceIssueRef {
@@ -1744,14 +1758,24 @@ export async function ensureGitWorktreeBranchCoherent(input: {
     };
   }
 
+  // A recorded branch that no longer exists anywhere has no commits to lose, so
+  // adopting the clean checked-out branch is trivially forward-only. This is the
+  // steady state left behind when an agent renames its task branch (e.g. to a
+  // feat/* PR branch) and the recorded branch was never created or was deleted.
+  const recordedBranchMissingButAdoptable =
+    !evidence.provenance.expectedBranchExists &&
+    evidence.provenance.actualBranchExists === true &&
+    evidence.provenance.registeredBranchMatchesHead;
   if (
     input.enableWorkspaceBranchReconcileForward === true &&
-    evidence.provenance.ancestryVerdict === "ancestor" &&
-    !evidence.provenance.sameHead &&
     evidence.cleanliness === "clean" &&
-    currentBranch
+    currentBranch &&
+    ((evidence.provenance.ancestryVerdict === "ancestor" && !evidence.provenance.sameHead) ||
+      recordedBranchMissingButAdoptable)
   ) {
-    const reason = "Automatic forward reconciliation: recorded branch is an ancestor of the checked-out branch.";
+    const reason = evidence.provenance.expectedBranchExists
+      ? "Automatic forward reconciliation: recorded branch is an ancestor of the checked-out branch."
+      : "Automatic forward reconciliation: the recorded branch no longer exists, so Paperclip adopted the clean checked-out branch.";
     if (input.executionWorkspaceId && input.persistForwardReconcile !== false) {
       if (!input.db) {
         evidence.safeRepair.reason = "forward reconciliation requires database access to update the execution workspace record";
@@ -2932,6 +2956,7 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
     workspaceId: input.workspace.projectWorkspaceId ?? input.base.workspaceId,
     repoUrl: input.workspace.repoUrl ?? input.base.repoUrl,
     repoRef: input.workspace.baseRef ?? input.base.repoRef,
+    additionalWorkspaces: input.base.additionalWorkspaces ?? [],
     strategy,
     cwd,
     branchName: input.workspace.branchName ?? null,

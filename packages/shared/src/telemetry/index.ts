@@ -1,5 +1,6 @@
 export { TelemetryClient } from "./client.js";
-export { resolveTelemetryConfig } from "./config.js";
+export { resolveTelemetryConfig, resolveCaps, TELEMETRY_DEFAULTS } from "./config.js";
+export type { TelemetryConfigOverrides } from "./config.js";
 export { loadOrCreateState } from "./state.js";
 export {
   trackInstallStarted,
@@ -18,6 +19,7 @@ export {
 } from "./events.js";
 export type {
   TelemetryConfig,
+  TelemetryBackoffConfig,
   TelemetryState,
   TelemetryEvent,
   TelemetryEventEnvelope,

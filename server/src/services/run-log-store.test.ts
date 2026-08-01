@@ -166,3 +166,173 @@ describe("createDurableRunLogStore", () => {
     await expect(store.read(handle)).rejects.toThrow(/not found/i);
   });
 });
+
+describe("in-flight mirror", () => {
+  it("is OFF by default: appends never upload before finalize", async () => {
+    const { provider, calls } = createMemoryProvider();
+    const store = createDurableRunLogStore({ basePath: baseDir, s3: { provider } });
+    const handle = await store.begin(begin);
+    await store.append(handle, { stream: "stdout", chunk: "tail-1", ts: "t1" });
+    await store.append(handle, { stream: "stdout", chunk: "tail-2", ts: "t2" });
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(calls.put).toBe(0);
+    // flush is a no-op with the mirror off
+    await store.flushInflightMirrors?.();
+    expect(calls.put).toBe(0);
+  });
+
+  it("mirrors the running log after the interval so a wipe without finalize preserves the tail", async () => {
+    const { provider, objects } = createMemoryProvider();
+    const store = createDurableRunLogStore({
+      basePath: baseDir,
+      s3: { provider, keyPrefix: "run-logs", inflightMirrorMs: 10 },
+    });
+    const handle = await store.begin(begin);
+    await store.append(handle, { stream: "stdout", chunk: "crash-tail", ts: "t1" });
+    const key = `run-logs/${handle.logRef}`;
+    await vi.waitFor(() => expect(objects.has(key)).toBe(true), { timeout: 2000 });
+    // Simulate a crash mid-run: local dir wiped, run never finalized.
+    await fs.rm(baseDir, { recursive: true, force: true });
+    const res = await store.read(handle);
+    expect(res.content).toContain("crash-tail");
+  });
+
+  it("throttles: rapid appends coalesce into one upload, delivered by flush", async () => {
+    const { provider, objects, calls } = createMemoryProvider();
+    // Interval far beyond the test's lifetime: nothing may upload until the
+    // flush, and the flush must carry every appended line in ONE put.
+    const store = createDurableRunLogStore({
+      basePath: baseDir,
+      s3: { provider, keyPrefix: "run-logs", inflightMirrorMs: 60_000 },
+    });
+    const handle = await store.begin(begin);
+    for (let i = 0; i < 5; i++) {
+      await store.append(handle, { stream: "stdout", chunk: `line-${i}`, ts: `t${i}` });
+    }
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(calls.put).toBe(0); // throttled: no per-append PUT
+    await store.flushInflightMirrors?.();
+    expect(calls.put).toBe(1);
+    const body = objects.get(`run-logs/${handle.logRef}`)!.toString("utf8");
+    for (let i = 0; i < 5; i++) expect(body).toContain(`line-${i}`);
+    // Nothing dirty afterwards: flushing again uploads nothing.
+    await store.flushInflightMirrors?.();
+    expect(calls.put).toBe(1);
+  });
+
+  it("finalize supersedes the in-flight mirror and retires its timer", async () => {
+    const { provider, objects, calls } = createMemoryProvider();
+    const store = createDurableRunLogStore({
+      basePath: baseDir,
+      s3: { provider, keyPrefix: "run-logs", inflightMirrorMs: 10 },
+    });
+    const handle = await store.begin(begin);
+    await store.append(handle, { stream: "stdout", chunk: "early-tail", ts: "t1" });
+    const key = `run-logs/${handle.logRef}`;
+    await vi.waitFor(() => expect(objects.has(key)).toBe(true), { timeout: 2000 });
+    await store.append(handle, { stream: "stdout", chunk: "final-line", ts: "t2" });
+    await store.finalize(handle);
+    const body = objects.get(key)!.toString("utf8");
+    expect(body).toContain("early-tail");
+    expect(body).toContain("final-line");
+    // No retired timer fires a stale partial upload over the finalized log.
+    const putsAfterFinalize = calls.put;
+    await new Promise((resolve) => setTimeout(resolve, 60));
+    expect(calls.put).toBe(putsAfterFinalize);
+    expect(objects.get(key)!.toString("utf8")).toContain("final-line");
+  });
+
+  it("shutdown flush re-checks dirtiness after an upload already on the wire completes", async () => {
+    const { provider, objects, calls } = createMemoryProvider();
+    let releaseFirstPut: (() => void) | null = null;
+    const firstPutGate = new Promise<void>((resolve) => {
+      releaseFirstPut = resolve;
+    });
+    let putStarts = 0;
+    const realPut = provider.putObject.bind(provider);
+    provider.putObject = async (input) => {
+      putStarts++;
+      if (putStarts === 1) await firstPutGate; // hold the first upload on the wire
+      return realPut(input);
+    };
+    const store = createDurableRunLogStore({
+      basePath: baseDir,
+      s3: { provider, keyPrefix: "run-logs", inflightMirrorMs: 10 },
+    });
+    const handle = await store.begin(begin);
+    await store.append(handle, { stream: "stdout", chunk: "mirrored-line", ts: "t1" });
+    await vi.waitFor(() => expect(putStarts).toBe(1), { timeout: 2000 });
+    // Re-dirty the entry while the first upload is still in flight.
+    await store.append(handle, { stream: "stdout", chunk: "tail-during-upload", ts: "t2" });
+    const flush = store.flushInflightMirrors!();
+    releaseFirstPut!();
+    await flush;
+    // A single-pass flush would exit after the first upload and leave the
+    // tail on an unref'ed timer that never fires once the process exits.
+    const body = objects.get(`run-logs/${handle.logRef}`)!.toString("utf8");
+    expect(body).toContain("tail-during-upload");
+    expect(calls.put).toBeGreaterThanOrEqual(2);
+  });
+
+  it("bounds the in-flight upload to the stat'ed size when appends race the stream", async () => {
+    const { provider, objects } = createMemoryProvider();
+    const store = createDurableRunLogStore({
+      basePath: baseDir,
+      s3: { provider, keyPrefix: "run-logs", inflightMirrorMs: 60_000 },
+    });
+    const handle = await store.begin(begin);
+    await store.append(handle, { stream: "stdout", chunk: "counted-line", ts: "t1" });
+    const absPath = path.join(baseDir, handle.logRef);
+    const sizeAtStat = (await fs.stat(absPath)).size;
+    // Grow the file between the mirror's stat() and its stream reaching EOF:
+    // the upload must carry exactly the stat'ed bytes, not the racing tail
+    // (an unbounded stream would violate the declared contentLength).
+    const realStat = fs.stat.bind(fs);
+    const statSpy = vi.spyOn(fs, "stat").mockImplementation(async (target, ...rest) => {
+      const result = await realStat(target as Parameters<typeof realStat>[0], ...(rest as []));
+      if (String(target).endsWith(".ndjson")) {
+        await fs.appendFile(absPath, `${JSON.stringify({ ts: "t2", stream: "stdout", chunk: "raced-append" })}\n`);
+      }
+      return result;
+    });
+    try {
+      await store.flushInflightMirrors!();
+    } finally {
+      statSpy.mockRestore();
+    }
+    const body = objects.get(`run-logs/${handle.logRef}`)!;
+    expect(body.length).toBe(sizeAtStat);
+    expect(body.toString("utf8")).toContain("counted-line");
+    expect(body.toString("utf8")).not.toContain("raced-append");
+  });
+
+  it("in-flight upload failures never break appends and recover on the next flush", async () => {
+    const { provider, objects, calls } = createMemoryProvider();
+    let failPuts = true;
+    const realPut = provider.putObject.bind(provider);
+    provider.putObject = async (input) => {
+      if (failPuts) throw new Error("endpoint down");
+      return realPut(input);
+    };
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    try {
+      const store = createDurableRunLogStore({
+        basePath: baseDir,
+        s3: { provider, keyPrefix: "run-logs", inflightMirrorMs: 60_000 },
+      });
+      const handle = await store.begin(begin);
+      await store.append(handle, { stream: "stdout", chunk: "survives-outage", ts: "t1" });
+      await store.flushInflightMirrors?.(); // upload fails, append flow unaffected
+      expect(warn).toHaveBeenCalled();
+      await store.append(handle, { stream: "stdout", chunk: "post-outage", ts: "t2" });
+      failPuts = false;
+      await store.flushInflightMirrors?.();
+      const body = objects.get(`run-logs/${handle.logRef}`)!.toString("utf8");
+      expect(body).toContain("survives-outage");
+      expect(body).toContain("post-outage");
+      expect(calls.put).toBe(1); // only the successful upload reached storage
+    } finally {
+      warn.mockRestore();
+    }
+  });
+});

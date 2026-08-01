@@ -3,8 +3,9 @@ import { mkdirSync, rmSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import {
+  activityLog,
   agents,
   companies,
   companyMemberships,
@@ -13,10 +14,12 @@ import {
   companySecretVersions,
   companySecrets,
   createDb,
+  heartbeatRuns,
   secretAccessEvents,
   userSecretDeclarations,
   userSecretDefinitions,
 } from "@paperclipai/db";
+import { LOW_TRUST_REVIEW_PRESET } from "@paperclipai/shared";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { awsSecretsManagerProvider } from "../secrets/aws-secrets-manager-provider.js";
 import { localEncryptedProvider } from "../secrets/local-encrypted-provider.js";
@@ -48,6 +51,7 @@ describeEmbeddedPostgres("secretService", () => {
 
   afterEach(async () => {
     vi.restoreAllMocks();
+    await db.delete(activityLog);
     await db.delete(secretAccessEvents);
     await db.delete(userSecretDeclarations);
     await db.delete(companySecretBindings);
@@ -56,6 +60,7 @@ describeEmbeddedPostgres("secretService", () => {
     await db.delete(userSecretDefinitions);
     await db.delete(companySecretProviderConfigs);
     await db.delete(companyMemberships);
+    await db.delete(heartbeatRuns);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -99,6 +104,33 @@ describeEmbeddedPostgres("secretService", () => {
     });
   }
 
+  async function seedAgentRun(companyId: string, permissions: Record<string, unknown> = {}) {
+    const agentId = randomUUID();
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Secret reader",
+      role: "engineer",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      permissions,
+      status: "idle",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    const heartbeatRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: heartbeatRunId,
+      companyId,
+      agentId,
+      status: "running",
+      startedAt: new Date(),
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    return { agentId, heartbeatRunId };
+  }
+
   it("rejects cross-company secret references during env normalization", async () => {
     const companyA = await seedCompany("A");
     const companyB = await seedCompany("B");
@@ -114,6 +146,185 @@ describeEmbeddedPostgres("secretService", () => {
         API_KEY: { type: "secret_ref", secretId: foreignSecret.id, version: "latest" },
       }),
     ).rejects.toThrow(/same company/i);
+  });
+
+  it("replaceSecretRefsForInstanceTarget moves the binding to the referenced secret's company", async () => {
+    const companyA = await seedCompany("A");
+    const companyB = await seedCompany("B");
+    const svc = secretService(db);
+    const secretA = await svc.create(companyA, {
+      name: `provider-key-a-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "a",
+    });
+    const secretB = await svc.create(companyB, {
+      name: `provider-key-b-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "b",
+    });
+    const envSecretA = await svc.create(companyA, {
+      name: `env-var-a-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "env",
+    });
+    const environmentId = randomUUID();
+    await svc.createBinding({
+      companyId: companyA,
+      secretId: secretA.id,
+      targetType: "environment",
+      targetId: environmentId,
+      configPath: "apiKey",
+    });
+    // A company-scoped env-var binding on the same environment target must
+    // survive config-ref replacement untouched.
+    await db.insert(companySecretBindings).values({
+      companyId: companyA,
+      secretId: envSecretA.id,
+      targetType: "environment",
+      targetId: environmentId,
+      configPath: "env.EXTRA",
+      versionSelector: "latest",
+      required: true,
+      projectionClass: "unclassified",
+    });
+
+    await svc.replaceSecretRefsForInstanceTarget(
+      { targetType: "environment", targetId: environmentId },
+      [{ secretId: secretB.id, configPath: "apiKey" }],
+    );
+
+    const rows = await db
+      .select()
+      .from(companySecretBindings)
+      .where(
+        and(
+          eq(companySecretBindings.targetType, "environment"),
+          eq(companySecretBindings.targetId, environmentId),
+        ),
+      );
+    const configRows = rows.filter((row) => row.configPath === "apiKey");
+    expect(configRows).toHaveLength(1);
+    expect(configRows[0]?.companyId).toBe(companyB);
+    expect(configRows[0]?.secretId).toBe(secretB.id);
+    expect(rows.filter((row) => row.configPath === "env.EXTRA")).toHaveLength(1);
+  });
+
+  it("replaceSecretRefsForInstanceTarget writes each binding under its own secret's company", async () => {
+    const companyA = await seedCompany("A");
+    const companyB = await seedCompany("B");
+    const svc = secretService(db);
+    const secretA = await svc.create(companyA, {
+      name: `api-key-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "a",
+    });
+    const secretB = await svc.create(companyB, {
+      name: `ssh-key-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "b",
+    });
+    const environmentId = randomUUID();
+
+    const refs = await svc.replaceSecretRefsForInstanceTarget(
+      { targetType: "environment", targetId: environmentId },
+      [
+        { secretId: secretA.id, configPath: "apiKey" },
+        { secretId: secretB.id, configPath: "privateKeySecretRef" },
+      ],
+    );
+
+    expect(refs.map((ref) => ref.companyId).sort()).toEqual([companyA, companyB].sort());
+    const rows = await db
+      .select()
+      .from(companySecretBindings)
+      .where(
+        and(
+          eq(companySecretBindings.targetType, "environment"),
+          eq(companySecretBindings.targetId, environmentId),
+        ),
+      );
+    expect(rows).toHaveLength(2);
+    expect(rows.find((row) => row.configPath === "apiKey")?.companyId).toBe(companyA);
+    expect(rows.find((row) => row.configPath === "privateKeySecretRef")?.companyId).toBe(companyB);
+  });
+
+  it("replaceSecretRefsForInstanceTarget rejects unknown secrets without touching existing bindings", async () => {
+    const companyA = await seedCompany("A");
+    const svc = secretService(db);
+    const secretA = await svc.create(companyA, {
+      name: `provider-key-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "a",
+    });
+    const environmentId = randomUUID();
+    await svc.createBinding({
+      companyId: companyA,
+      secretId: secretA.id,
+      targetType: "environment",
+      targetId: environmentId,
+      configPath: "apiKey",
+    });
+
+    await expect(
+      svc.replaceSecretRefsForInstanceTarget(
+        { targetType: "environment", targetId: environmentId },
+        [{ secretId: randomUUID(), configPath: "apiKey" }],
+      ),
+    ).rejects.toThrow(/was not found/i);
+
+    const rows = await db
+      .select()
+      .from(companySecretBindings)
+      .where(
+        and(
+          eq(companySecretBindings.targetType, "environment"),
+          eq(companySecretBindings.targetId, environmentId),
+        ),
+      );
+    expect(rows).toHaveLength(1);
+    expect(rows[0]?.secretId).toBe(secretA.id);
+    expect(rows[0]?.companyId).toBe(companyA);
+  });
+
+  it("describeSecretRefs names secrets across companies and omits unknown ids", async () => {
+    const companyA = await seedCompany("Alpha");
+    const companyB = await seedCompany("Beta");
+    const svc = secretService(db);
+    const secretA = await svc.create(companyA, {
+      name: "PROVIDER_KEY_A",
+      provider: "local_encrypted",
+      value: "a",
+    });
+    const secretB = await svc.create(companyB, {
+      name: "PROVIDER_KEY_B",
+      provider: "local_encrypted",
+      value: "b",
+    });
+
+    const described = await svc.describeSecretRefs([
+      { secretId: secretA.id, configPath: "apiKey" },
+      { secretId: secretB.id, configPath: "privateKeySecretRef" },
+      { secretId: randomUUID(), configPath: "token" },
+    ]);
+
+    expect(described).toEqual([
+      {
+        configPath: "apiKey",
+        secretId: secretA.id,
+        name: "PROVIDER_KEY_A",
+        status: "active",
+        companyId: companyA,
+        companyName: "Alpha",
+      },
+      {
+        configPath: "privateKeySecretRef",
+        secretId: secretB.id,
+        name: "PROVIDER_KEY_B",
+        status: "active",
+        companyId: companyB,
+        companyName: "Beta",
+      },
+    ]);
   });
 
   it("prevents duplicate bindings for a target config path", async () => {
@@ -147,6 +358,211 @@ describeEmbeddedPostgres("secretService", () => {
         configPath: "env.API_KEY",
       }),
     ).rejects.toThrow(/already exists/i);
+  });
+
+  it("validates the access namespace as agent-only with env-style aliases", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const secret = await svc.create(companyId, {
+      name: `access-validation-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "runtime-secret",
+    });
+
+    await expect(svc.createBinding({
+      companyId,
+      secretId: secret.id,
+      targetType: "project",
+      targetId: randomUUID(),
+      configPath: "access.API_KEY",
+    })).rejects.toThrow(/must target an agent/i);
+
+    await expect(svc.createBinding({
+      companyId,
+      secretId: secret.id,
+      targetType: "agent",
+      targetId: randomUUID(),
+      configPath: "access.invalid-alias",
+    })).rejects.toThrow(/invalid agent secret access alias/i);
+  });
+
+  it("resolves env and access bindings through the run-bound agent resolver with dual audit", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const { agentId, heartbeatRunId } = await seedAgentRun(companyId);
+    const secret = await svc.create(companyId, {
+      name: `agent-read-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "runtime-secret",
+    });
+    await svc.createBinding({
+      companyId,
+      secretId: secret.id,
+      targetType: "agent",
+      targetId: agentId,
+      configPath: "access.API_KEY",
+    });
+    await svc.createBinding({
+      companyId,
+      secretId: secret.id,
+      targetType: "agent",
+      targetId: agentId,
+      configPath: "env.API_KEY",
+    });
+    const redactedValues: string[] = [];
+
+    for (const configPath of ["access.API_KEY", "env.API_KEY"]) {
+      await expect(svc.resolveSecretValueForAgentAccess(companyId, secret.id, "latest", {
+        agentId,
+        configPath,
+        actorSource: "agent_jwt",
+        heartbeatRunId,
+        registerForRedaction: (value) => redactedValues.push(value),
+      })).resolves.toEqual({ value: "runtime-secret", version: 1 });
+    }
+
+    expect(redactedValues).toEqual(["runtime-secret", "runtime-secret"]);
+    const events = await svc.listAccessEvents(companyId, secret.id);
+    expect(events).toHaveLength(2);
+    expect(events).toEqual(expect.arrayContaining([
+      expect.objectContaining({
+        consumerType: "agent_api",
+        consumerId: agentId,
+        configPath: "access.API_KEY",
+        actorType: "agent",
+        actorId: agentId,
+        heartbeatRunId,
+        outcome: "success",
+      }),
+      expect.objectContaining({
+        consumerType: "agent_api",
+        consumerId: agentId,
+        configPath: "env.API_KEY",
+        outcome: "success",
+      }),
+    ]));
+    const activities = await db
+      .select()
+      .from(activityLog)
+      .where(eq(activityLog.entityId, secret.id));
+    expect(activities).toHaveLength(2);
+    expect(activities.every((entry) => entry.action === "secret.value.read")).toBe(true);
+    expect(activities.every((entry) => entry.runId === heartbeatRunId)).toBe(true);
+    expect(JSON.stringify([...events, ...activities])).not.toContain("runtime-secret");
+  });
+
+  it("rejects long-lived, mismatched-run, and unbound agent secret reads", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const { agentId, heartbeatRunId } = await seedAgentRun(companyId);
+    const secret = await svc.create(companyId, {
+      name: `agent-read-denied-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "runtime-secret",
+    });
+    await svc.createBinding({
+      companyId,
+      secretId: secret.id,
+      targetType: "agent",
+      targetId: agentId,
+      configPath: "access.GRANTED",
+    });
+    const registerForRedaction = vi.fn();
+
+    await expect(svc.resolveSecretValueForAgentAccess(companyId, secret.id, "latest", {
+      agentId,
+      configPath: "access.API_KEY",
+      actorSource: "agent_key",
+      heartbeatRunId,
+      registerForRedaction,
+    })).rejects.toThrow(/run-bound agent token/i);
+
+    await expect(svc.resolveSecretValueForAgentAccess(companyId, secret.id, "latest", {
+      agentId,
+      configPath: "access.GRANTED",
+      actorSource: "agent_jwt",
+      keyScope: { kind: "skill_test", issueId: randomUUID() },
+      heartbeatRunId,
+      registerForRedaction,
+    })).rejects.toThrow(/skill-test.*secret/i);
+
+    await expect(svc.resolveSecretValueForAgentAccess(companyId, secret.id, "latest", {
+      agentId,
+      configPath: "access.API_KEY",
+      actorSource: "agent_jwt",
+      heartbeatRunId: randomUUID(),
+      registerForRedaction,
+    })).rejects.toThrow(/verified heartbeat run/i);
+
+    await expect(svc.resolveSecretValueForAgentAccess(companyId, secret.id, "latest", {
+      agentId,
+      configPath: "access.API_KEY",
+      actorSource: "agent_jwt",
+      heartbeatRunId,
+      registerForRedaction,
+    })).rejects.toThrow(/not granted/i);
+
+    await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, heartbeatRunId));
+    await expect(svc.listAgentSecretAccess(companyId, {
+      agentId,
+      actorSource: "agent_jwt",
+      heartbeatRunId,
+    })).rejects.toThrow(/verified heartbeat run/i);
+    await expect(svc.resolveSecretValueForAgentAccess(companyId, secret.id, "latest", {
+      agentId,
+      configPath: "access.GRANTED",
+      actorSource: "agent_jwt",
+      heartbeatRunId,
+      registerForRedaction,
+    })).rejects.toThrow(/verified heartbeat run/i);
+
+    expect(registerForRedaction).not.toHaveBeenCalled();
+    const events = await svc.listAccessEvents(companyId, secret.id);
+    expect(events).toEqual([
+      expect.objectContaining({
+        consumerType: "agent_api",
+        consumerId: agentId,
+        configPath: "access.API_KEY",
+        outcome: "failure",
+        errorCode: "binding_missing",
+      }),
+    ]);
+  });
+
+  it("preserves low-trust authorization denial for agent secret reads", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const { agentId, heartbeatRunId } = await seedAgentRun(companyId, {
+      trustPreset: LOW_TRUST_REVIEW_PRESET,
+      authorizationPolicy: {
+        trustBoundary: {
+          mode: LOW_TRUST_REVIEW_PRESET,
+          projectIds: [randomUUID()],
+        },
+      },
+    });
+    const secret = await svc.create(companyId, {
+      name: `low-trust-agent-read-${randomUUID()}`,
+      provider: "local_encrypted",
+      value: "runtime-secret",
+    });
+    await svc.createBinding({
+      companyId,
+      secretId: secret.id,
+      targetType: "agent",
+      targetId: agentId,
+      configPath: "access.API_KEY",
+    });
+
+    await expect(svc.resolveSecretValueForAgentAccess(companyId, secret.id, "latest", {
+      agentId,
+      configPath: "access.API_KEY",
+      actorSource: "agent_jwt",
+      heartbeatRunId,
+      registerForRedaction: vi.fn(),
+    })).rejects.toThrow(/low[_-]trust.*secrets:read/i);
+
+    expect(await svc.listAccessEvents(companyId, secret.id)).toEqual([]);
   });
 
   it("syncs top-level secret refs idempotently", async () => {
@@ -2528,6 +2944,156 @@ describeEmbeddedPostgres("secretService", () => {
     expect(JSON.stringify(thrown)).not.toContain("arn:aws");
     expect(JSON.stringify(thrown)).not.toContain("123456789012");
     expect(thrown instanceof Error ? thrown.message : String(thrown)).not.toContain("arn:aws");
+  });
+
+  it("writes external reference rotations through the provider when a value is given", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const awsVault = await svc.createProviderConfig(companyId, {
+      provider: "aws_secrets_manager",
+      displayName: "AWS production",
+      config: { region: "us-east-1", namespace: "prod-use1" },
+    });
+    const externalRef = "arn:aws:secretsmanager:us-east-1:123456789012:secret:shared/neon-admin";
+    const secret = await svc.create(companyId, {
+      name: `external-${randomUUID()}`,
+      provider: "aws_secrets_manager",
+      providerConfigId: awsVault.id,
+      managedMode: "external_reference",
+      externalRef,
+    });
+
+    const writeSpy = vi
+      .spyOn(awsSecretsManagerProvider, "updateExternalSecretValue")
+      .mockResolvedValueOnce({
+        material: {
+          scheme: "aws_secrets_manager_v1",
+          secretId: externalRef,
+          versionId: null,
+          source: "external_reference",
+          lastWrittenVersionId: "aws-version-2",
+        },
+        valueSha256: "a".repeat(64),
+        fingerprintSha256: "a".repeat(64),
+        externalRef,
+        providerVersionRef: null,
+      });
+    const linkSpy = vi.spyOn(awsSecretsManagerProvider, "linkExternalSecret");
+
+    const rotated = await svc.rotate(secret.id, { value: "new-admin-key" }, { userId: "user-1" });
+
+    expect(writeSpy).toHaveBeenCalledTimes(1);
+    expect(writeSpy.mock.calls[0]?.[0]).toMatchObject({
+      externalRef,
+      value: "new-admin-key",
+    });
+    expect(linkSpy).not.toHaveBeenCalled();
+    expect(rotated.latestVersion).toBe(2);
+    expect(rotated.externalRef).toBe(externalRef);
+
+    const versions = await db
+      .select()
+      .from(companySecretVersions)
+      .where(eq(companySecretVersions.secretId, secret.id));
+    const current = versions.find((row) => row.status === "current");
+    expect(current?.version).toBe(2);
+    expect(current?.providerVersionRef).toBeNull();
+    expect(JSON.stringify(current)).not.toContain("new-admin-key");
+  });
+
+  it("restores the provider current version when external value rotation persistence fails", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const awsVault = await svc.createProviderConfig(companyId, {
+      provider: "aws_secrets_manager",
+      displayName: "AWS production",
+      config: { region: "us-east-1", namespace: "prod-use1" },
+    });
+    const externalRef = "arn:aws:secretsmanager:us-east-1:123456789012:secret:shared/rollback";
+    const secret = await svc.create(companyId, {
+      name: "External rollback",
+      key: "external-rollback",
+      provider: "aws_secrets_manager",
+      providerConfigId: awsVault.id,
+      managedMode: "external_reference",
+      externalRef,
+    });
+    const prepared = {
+      material: {
+        scheme: "aws_secrets_manager_v1",
+        secretId: externalRef,
+        versionId: null,
+        source: "external_reference",
+        lastWrittenVersionId: "aws-version-2",
+        previousCurrentVersionId: "aws-version-1",
+      },
+      valueSha256: "a".repeat(64),
+      fingerprintSha256: "a".repeat(64),
+      externalRef,
+      providerVersionRef: null,
+    };
+    vi.spyOn(awsSecretsManagerProvider, "updateExternalSecretValue").mockResolvedValueOnce(prepared);
+    const rollbackSpy = vi.spyOn(awsSecretsManagerProvider, "deleteOrArchive").mockResolvedValue();
+    vi.spyOn(db, "transaction").mockRejectedValueOnce(new Error("db rotate failed"));
+
+    await expect(svc.rotate(secret.id, { value: "new-value" })).rejects.toThrow(
+      "db rotate failed",
+    );
+
+    expect(rollbackSpy).toHaveBeenCalledWith(expect.objectContaining({
+      material: prepared.material,
+      externalRef,
+      mode: "archive",
+      providerConfig: expect.objectContaining({ id: awsVault.id }),
+      context: {
+        companyId,
+        secretKey: "external-rollback",
+        secretName: "External rollback",
+        version: 2,
+      },
+    }));
+  });
+
+  it("rejects external value rotations that also retarget or pin versions", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const awsVault = await svc.createProviderConfig(companyId, {
+      provider: "aws_secrets_manager",
+      displayName: "AWS production",
+      config: { region: "us-east-1", namespace: "prod-use1" },
+    });
+    const secret = await svc.create(companyId, {
+      name: `external-${randomUUID()}`,
+      provider: "aws_secrets_manager",
+      providerConfigId: awsVault.id,
+      managedMode: "external_reference",
+      externalRef: "arn:aws:secretsmanager:us-east-1:123456789012:secret:shared/neon-admin",
+    });
+
+    await expect(
+      svc.rotate(secret.id, {
+        value: "new-admin-key",
+        externalRef: "arn:aws:secretsmanager:us-east-1:123456789012:secret:shared/other",
+      }),
+    ).rejects.toThrow(/not both/);
+    await expect(
+      svc.rotate(secret.id, { value: "new-admin-key", providerVersionRef: "pinned-1" }),
+    ).rejects.toThrow(/cannot pin/i);
+  });
+
+  it("rejects external value rotations when the provider cannot write values", async () => {
+    const companyId = await seedCompany();
+    const svc = secretService(db);
+    const secret = await svc.create(companyId, {
+      name: `external-${randomUUID()}`,
+      provider: "vault",
+      managedMode: "external_reference",
+      externalRef: "kv/data/shared/neon-admin",
+    });
+
+    await expect(svc.rotate(secret.id, { value: "new-admin-key" })).rejects.toThrow(
+      /does not support writing values/,
+    );
   });
 
   it("imports AWS remote references row-by-row without fetching plaintext", async () => {

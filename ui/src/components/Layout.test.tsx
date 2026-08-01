@@ -460,7 +460,8 @@ describe("Layout", () => {
     expect(selector?.value).toBe("secrets");
     const selectorText = selector?.textContent?.toLowerCase() ?? "";
     expect(selectorText).toContain("general");
-    expect(selectorText).toContain("cloud upstream");
+    expect(selectorText).toContain("export");
+    expect(selectorText).toContain("import");
     expect(selectorText).toContain("members");
     expect(selectorText).toContain("invites");
     expect(selectorText).toContain("secrets");

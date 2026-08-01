@@ -15,7 +15,7 @@ import type {
 import { getTelemetryClient, trackCompanyImported } from "../../telemetry.js";
 import { ApiRequestError } from "../../client/http.js";
 import { openUrl } from "../../client/board-auth.js";
-import { binaryContentTypeByExtension, readZipArchive } from "./zip.js";
+import { binaryContentTypeByExtension, bytesToPortableFileEntry, isBlobStorePath, readZipArchive } from "./zip.js";
 import {
   addCommonClientOptions,
   apiPath,
@@ -58,6 +58,7 @@ interface CompanyExportOptions extends BaseClientOptions {
   issues?: string;
   projectIssues?: string;
   expandReferencedSkills?: boolean;
+  force?: boolean;
 }
 
 interface CompanyFeedbackOptions extends BaseClientOptions {
@@ -139,16 +140,6 @@ type ImportSelectionState = {
   skills: Set<string>;
 };
 
-function readPortableFileEntry(filePath: string, contents: Buffer): CompanyPortabilityFileEntry {
-  const contentType = binaryContentTypeByExtension[path.extname(filePath).toLowerCase()];
-  if (!contentType) return contents.toString("utf8");
-  return {
-    encoding: "base64",
-    data: contents.toString("base64"),
-    contentType,
-  };
-}
-
 function portableFileEntryToWriteValue(entry: CompanyPortabilityFileEntry): string | Uint8Array {
   if (typeof entry === "string") return entry;
   return Buffer.from(entry.data, "base64");
@@ -212,7 +203,7 @@ function shouldIncludePortableFile(filePath: string): boolean {
   const isMarkdown = baseName.endsWith(".md");
   const isPaperclipYaml = baseName === ".paperclip.yaml" || baseName === ".paperclip.yml";
   const contentType = binaryContentTypeByExtension[path.extname(baseName).toLowerCase()];
-  return isMarkdown || isPaperclipYaml || Boolean(contentType);
+  return isMarkdown || isPaperclipYaml || Boolean(contentType) || isBlobStorePath(filePath);
 }
 
 function findPortableExtensionPath(files: Record<string, CompanyPortabilityFileEntry>): string | null {
@@ -371,7 +362,7 @@ export function buildSelectedFilesFromImportSelection(
     }
   }
 
-  if (selected.size > 0 && catalog.extensionPath) {
+  if (catalog.extensionPath) {
     selected.add(normalizePortablePath(catalog.extensionPath));
   }
 
@@ -931,7 +922,7 @@ async function collectPackageFiles(
     if (!entry.isFile()) continue;
     const relativePath = path.relative(root, absolutePath).replace(/\\/g, "/");
     if (!shouldIncludePortableFile(relativePath)) continue;
-    files[relativePath] = readPortableFileEntry(relativePath, await readFile(absolutePath));
+    files[relativePath] = bytesToPortableFileEntry(relativePath, await readFile(absolutePath));
   }
 }
 
@@ -987,7 +978,10 @@ export function resolveExportOutputPath(root: string, relativePath: string): str
   return filePath;
 }
 
-async function confirmOverwriteExportDirectory(outDir: string): Promise<void> {
+export async function confirmOverwriteExportDirectory(
+  outDir: string,
+  opts: { force?: boolean } = {},
+): Promise<void> {
   const root = path.resolve(outDir);
   const stats = await stat(root).catch(() => null);
   if (!stats) return;
@@ -998,8 +992,13 @@ async function confirmOverwriteExportDirectory(outDir: string): Promise<void> {
   const entries = await readdir(root);
   if (entries.length === 0) return;
 
+  // --force skips the guard for non-interactive/automated callers (e.g. the
+  // nightly backup routine, which exports into a git clone that legitimately
+  // still holds .git and BACKUP-README.md after cleaning tracked content).
+  if (opts.force) return;
+
   if (!process.stdin.isTTY || !process.stdout.isTTY) {
-    throw new Error(`Export output directory ${root} already contains files. Re-run interactively or choose an empty directory.`);
+    throw new Error(`Export output directory ${root} already contains files. Re-run interactively, pass --force, or choose an empty directory.`);
   }
 
   const confirmed = await p.confirm({
@@ -1338,6 +1337,11 @@ export function registerCompanyCommands(program: Command): void {
       .option("--issues <values>", "Comma-separated issue identifiers/ids to export")
       .option("--project-issues <values>", "Comma-separated project shortnames/ids whose issues should be exported")
       .option("--expand-referenced-skills", "Vendor skill contents instead of exporting upstream references", false)
+      .option(
+        "--force",
+        "Overwrite a non-empty output directory without the interactive confirmation (required for non-interactive/automated runs such as the nightly backup routine)",
+        false,
+      )
       .action(async (companyId: string, opts: CompanyExportOptions) => {
         try {
           const ctx = resolveCommandContext(opts);
@@ -1356,7 +1360,7 @@ export function registerCompanyCommands(program: Command): void {
           if (!exported) {
             throw new Error("Export request returned no data");
           }
-          await confirmOverwriteExportDirectory(opts.out!);
+          await confirmOverwriteExportDirectory(opts.out!, { force: Boolean(opts.force) });
           await writeExportToFolder(opts.out!, exported);
           printOutput(
             {

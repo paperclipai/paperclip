@@ -5,6 +5,7 @@ import {
   type SharedMessage,
   type SharedPollingSnapshot,
 } from "../lib/cross-tab-poll";
+import { filterLocalInboxArchivedQueryData } from "../lib/inboxArchiveCache";
 
 type RefetchInterval = number | false;
 
@@ -72,7 +73,8 @@ export function applySharedPollingResult<TData>(
   if (incomingUpdatedAt <= 0) return false;
   const localUpdatedAt = queryClient.getQueryState(queryKey)?.dataUpdatedAt ?? 0;
   if (localUpdatedAt >= incomingUpdatedAt) return false;
-  queryClient.setQueryData(queryKey, message.data as TData, { updatedAt: incomingUpdatedAt });
+  const data = filterLocalInboxArchivedQueryData(queryKey, message.data as TData);
+  queryClient.setQueryData(queryKey, data, { updatedAt: incomingUpdatedAt });
   return true;
 }
 

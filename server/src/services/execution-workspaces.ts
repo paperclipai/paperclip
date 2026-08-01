@@ -56,6 +56,8 @@ export type ExecutionWorkspaceBranchReconcileActor = {
   runId: string | null;
 };
 
+export type ExecutionWorkspaceBranchRefResolution = "resolved" | "missing" | "error";
+
 export type ExecutionWorkspaceBranchReconcileInspection = {
   fingerprint: string;
   worktreePath: string;
@@ -64,6 +66,8 @@ export type ExecutionWorkspaceBranchReconcileInspection = {
   toBranch: string;
   fromSha: string | null;
   toSha: string | null;
+  fromBranchRefStatus: ExecutionWorkspaceBranchRefResolution;
+  toBranchRefStatus: ExecutionWorkspaceBranchRefResolution;
   ancestryVerdict: GitWorktreeBranchAncestryVerdict;
   cleanliness: "clean" | "dirty" | "unknown";
   statusEntryCount: number | null;
@@ -224,6 +228,24 @@ function fingerprintWorkspaceBranchIncoherence(input: {
   return `workspace_incoherence:v1:sha256:${digest}`;
 }
 
+async function resolveLocalBranchCommit(
+  repoRoot: string,
+  branch: string,
+): Promise<{ status: ExecutionWorkspaceBranchRefResolution; sha: string | null }> {
+  try {
+    // --quiet makes an absent ref exit 1 with empty output instead of exiting
+    // 128 with a fatal message, so a missing branch stays distinguishable from
+    // git failing to inspect the repository at all.
+    const sha = await readGitStdout(["rev-parse", "--verify", "--quiet", `refs/heads/${branch}^{commit}`], repoRoot);
+    return sha ? { status: "resolved", sha } : { status: "missing", sha: null };
+  } catch (error) {
+    const code = typeof error === "object" && error && "code" in error
+      ? (error as { code?: unknown }).code
+      : null;
+    return { status: code === 1 ? "missing" : "error", sha: null };
+  }
+}
+
 async function getGitWorktreeBranchAncestryVerdict(input: {
   repoRoot: string;
   expectedHeadSha: string | null;
@@ -296,8 +318,9 @@ async function inspectExecutionWorkspaceBranchForReconcile(
   const cleanliness: ExecutionWorkspaceBranchReconcileInspection["cleanliness"] =
     status === null ? "unknown" : status.trim().length > 0 ? "dirty" : "clean";
 
-  const fromSha = await readGitStdout(["rev-parse", "--verify", `refs/heads/${fromBranch}^{commit}`], repoRoot)
-    .catch(() => null);
+  const fromRef = await resolveLocalBranchCommit(repoRoot, fromBranch);
+  const toRef = await resolveLocalBranchCommit(repoRoot, toBranch);
+  const fromSha = fromRef.sha;
   const toSha = await readGitStdout(["rev-parse", "HEAD"], worktreePath).catch(() => null);
   const ancestryVerdict = await getGitWorktreeBranchAncestryVerdict({
     repoRoot,
@@ -322,6 +345,8 @@ async function inspectExecutionWorkspaceBranchForReconcile(
     toBranch,
     fromSha,
     toSha,
+    fromBranchRefStatus: fromRef.status,
+    toBranchRefStatus: toRef.status,
     ancestryVerdict,
     cleanliness,
     statusEntryCount: statusLines?.length ?? null,
@@ -1627,7 +1652,18 @@ export function executionWorkspaceService(db: Db) {
       }
 
       const inspection = await inspectExecutionWorkspaceBranchForReconcile(existing);
-      if (input.mode === "forward" && inspection.ancestryVerdict !== "ancestor") {
+      // A recorded branch whose ref is confirmed absent (not merely unreadable)
+      // has nothing to lose, so adopting the clean checked-out branch is
+      // trivially forward-only — provided the adopted branch's own local ref
+      // resolves, so a nonexistent branch name is never persisted.
+      const recordedBranchAdoptable =
+        inspection.fromBranchRefStatus === "missing" &&
+        inspection.toBranchRefStatus === "resolved";
+      if (
+        input.mode === "forward" &&
+        inspection.ancestryVerdict !== "ancestor" &&
+        !(recordedBranchAdoptable && inspection.cleanliness === "clean")
+      ) {
         throw unprocessable(
           "Forward branch reconciliation requires the recorded branch to be an ancestor of the checked-out branch",
           { inspection },

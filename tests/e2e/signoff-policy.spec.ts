@@ -96,18 +96,53 @@ async function retryAgentPatchWithCurrentLockOnConflict(
   return retryRes.ok() ? retryRes : failedRes;
 }
 
-/** PATCH an issue as an agent with a fresh heartbeat run ID. */
+/**
+ * PATCH an issue as an agent, using a freshly invoked heartbeat run.
+ *
+ * Invoking a heartbeat starts a background run that races this PATCH for the
+ * issue's run-lock: the background run may check the issue out (flipping it to
+ * `in_progress` under its own run id) a moment before — or after — this PATCH
+ * lands, and the server answers the loser with a 409 ("Issue is checked out by
+ * another agent"). With `retries: 0` / `workers: 1` a single transient 409
+ * fails the whole shard, so we retry a run-lock 409 under the issue's *current*
+ * lock, bounded by escalating backoff to cover the race window.
+ *
+ * The retry is intentionally narrow so the suite's negative paths keep failing
+ * for the right reason:
+ *   - It only re-PATCHes while the issue is still assigned to the acting agent,
+ *     so a non-participant's genuine 409/403 rejection is returned untouched.
+ *   - It re-PATCHes under the winning run id (or the invoked run id once the
+ *     background run has released its lock), so a real validation error such as
+ *     the missing-comment 400 surfaces instead of a masking transient 409.
+ */
 async function agentPatch(
   board: APIRequestContext,
   agent: AgentAuth,
   issueId: string,
   data: Record<string, unknown>,
+  {
+    maxAttempts = 8,
+    backoffMs = 50,
+    maxBackoffMs = 500,
+  }: { maxAttempts?: number; backoffMs?: number; maxBackoffMs?: number } = {},
 ) {
   const runId = await invokeHeartbeat(board, agent.agentId);
-  const res = await agent.request.patch(`${BASE_URL}/api/issues/${issueId}`, {
-    headers: { "X-Paperclip-Run-Id": runId },
-    data,
-  });
+  const patchWith = (patchRunId: string) =>
+    agent.request.patch(`${BASE_URL}/api/issues/${issueId}`, {
+      headers: { "X-Paperclip-Run-Id": patchRunId },
+      data,
+    });
+
+  let res = await patchWith(runId);
+  for (let attempt = 1; attempt < maxAttempts && res.status() === 409; attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, Math.min(maxBackoffMs, backoffMs * 2 ** (attempt - 1))));
+    const issueRunLock = await getIssueRunLockState(board, issueId);
+    // A 409 on an issue no longer assigned to us is a genuine rejection, not a
+    // run-lock race — leave it for the caller to assert on.
+    if (issueRunLock.assigneeAgentId !== agent.agentId) break;
+    const retryRunId = issueRunLock.checkoutRunId ?? issueRunLock.executionRunId ?? runId;
+    res = await patchWith(retryRunId);
+  }
   return res;
 }
 

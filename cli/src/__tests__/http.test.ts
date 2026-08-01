@@ -3,6 +3,7 @@ import { ApiConnectionError, ApiRequestError, PaperclipApiClient } from "../clie
 
 describe("PaperclipApiClient", () => {
   afterEach(() => {
+    vi.unstubAllGlobals();
     vi.restoreAllMocks();
   });
 

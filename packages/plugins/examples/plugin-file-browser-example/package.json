@@ -20,15 +20,15 @@
   },
   "dependencies": {
     "@codemirror/lang-javascript": "^6.2.5",
-    "@codemirror/language": "^6.12.3",
-    "@codemirror/state": "^6.7.0",
+    "@codemirror/language": "^6.12.4",
+    "@codemirror/state": "^6.7.1",
     "@codemirror/view": "^6.43.1",
     "@lezer/highlight": "^1.2.1",
     "@paperclipai/plugin-sdk": "workspace:*",
     "codemirror": "^6.0.1"
   },
   "devDependencies": {
-    "@types/node": "^22.19.21",
+    "@types/node": "^22.20.1",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
     "esbuild": "^0.28.1",

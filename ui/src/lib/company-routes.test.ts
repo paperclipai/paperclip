@@ -39,9 +39,6 @@ describe("company routes", () => {
   it("rewrites company package paths with the active prefix", () => {
     expect(applyCompanyPrefix("/company/export", "NEU")).toBe("/NEU/company/export");
     expect(applyCompanyPrefix("/company/import", "NEU")).toBe("/NEU/company/import");
-    expect(applyCompanyPrefix("/company/settings/cloud-upstream", "NEU")).toBe(
-      "/NEU/company/settings/cloud-upstream",
-    );
     expect(applyCompanyPrefix("/org", "NEU")).toBe("/NEU/org");
   });
 

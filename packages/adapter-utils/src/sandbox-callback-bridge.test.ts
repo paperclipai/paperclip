@@ -13,6 +13,7 @@ import {
   createSandboxCallbackBridgeAsset,
   createSandboxCallbackBridgeToken,
   sandboxCallbackBridgeDirectories,
+  syncRemoteTextFileWithHashSkip,
   syncSandboxCallbackBridgeEntrypoint,
   startSandboxCallbackBridgeServer,
   startSandboxCallbackBridgeWorker,
@@ -437,6 +438,7 @@ describe("sandbox callback bridge", () => {
       const worker = await startSandboxCallbackBridgeWorker({
         client: {
           makeDir: async () => {},
+          makeDirs: async () => {},
           listJsonFiles: async () => {
             throw new Error(
               "list /remote/.paperclip-runtime/gemini/paperclip-bridge/queue/requests failed with exit code 255: kex_exchange_identification: read: Connection reset by peer",
@@ -862,6 +864,135 @@ describe("sandbox callback bridge", () => {
     ).resolves.toEqual([]);
   });
 
+  // The process-session remote script is a static, Paperclip-authored `.mjs`
+  // written into the sandbox on every bridge start. `syncRemoteTextFileWithHashSkip`
+  // (which now backs that write, mirroring the bridge-entrypoint sha256 gate)
+  // content-hash-skips it so a warm start where the remote script already matches
+  // costs ZERO write execs instead of the prior ~3 (prepare/append/finalize base64
+  // upload).
+  it("test_process_session_script_skipped_when_remote_hash_matches: warm start with a matching remote hash writes 0 execs", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-hashskip-warm-"));
+    cleanupDirs.push(rootDir);
+    const remoteDir = path.join(rootDir, "runtime", "codex", "process-sessions");
+    const remotePath = path.posix.join(remoteDir, "paperclip-process-session-remote.mjs");
+    const lockDir = path.posix.join(remoteDir, ".paperclip-process-session-script.lock");
+    const body = "console.log('process session remote script v1');\n";
+
+    let execCount = 0;
+    const inner = createExecRunner();
+    const runner = {
+      execute: async (input: Parameters<typeof inner.execute>[0]) => {
+        execCount += 1;
+        return inner.execute(input);
+      },
+    };
+    const args = {
+      runner,
+      remoteCwd: rootDir,
+      remoteDir,
+      remotePath,
+      body,
+      label: "Process session remote script",
+      action: "sync process session remote script",
+      lockDir,
+      timeoutMs: 30_000,
+    } as const;
+
+    // Cold start: the script is uploaded (single sha-gate exec that writes).
+    const first = await syncRemoteTextFileWithHashSkip(args);
+    expect(first.uploaded).toBe(true);
+    await expect(readFile(remotePath, "utf8")).resolves.toBe(body);
+
+    // Warm start: the remote hash matches, so the write is skipped entirely.
+    execCount = 0;
+    const second = await syncRemoteTextFileWithHashSkip(args);
+    expect(second.uploaded).toBe(false);
+    // A single hash-gate round-trip that performed 0 writes (down from ~3 execs).
+    expect(execCount).toBe(1);
+    // sha is still returned on the skip path so callers get a well-formed result.
+    expect(second.sha256).toBe(first.sha256);
+    // The remote file is unchanged and no upload/partial/lock leftovers remain.
+    await expect(readFile(remotePath, "utf8")).resolves.toBe(body);
+    await expect(
+      readdir(remoteDir).then((entries) =>
+        entries.filter(
+          (entry) =>
+            entry.endsWith(".paperclip-upload.b64") ||
+            entry.endsWith(".partial") ||
+            entry === ".paperclip-process-session-script.lock",
+        ),
+      ),
+    ).resolves.toEqual([]);
+  });
+
+  it("test_process_session_script_rewritten_on_hash_mismatch: a mismatched remote hash still rewrites the script", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-hashskip-cold-"));
+    cleanupDirs.push(rootDir);
+    const remoteDir = path.join(rootDir, "runtime", "codex", "process-sessions");
+    const remotePath = path.posix.join(remoteDir, "paperclip-process-session-remote.mjs");
+    const lockDir = path.posix.join(remoteDir, ".paperclip-process-session-script.lock");
+    const body = "console.log('process session remote script v2');\n";
+
+    // Pre-seed the remote with a DIFFERENT script (a prior/stale build).
+    await mkdir(remoteDir, { recursive: true });
+    await writeFile(remotePath, "console.log('stale remote script');\n", "utf8");
+
+    const result = await syncRemoteTextFileWithHashSkip({
+      runner: createExecRunner(),
+      remoteCwd: rootDir,
+      remoteDir,
+      remotePath,
+      body,
+      label: "Process session remote script",
+      action: "sync process session remote script",
+      lockDir,
+      timeoutMs: 30_000,
+    });
+
+    expect(result.uploaded).toBe(true);
+    await expect(readFile(remotePath, "utf8")).resolves.toBe(body);
+  });
+
+  it("fails loud when the hash-skip sync exec errors instead of silently re-uploading", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-hashskip-fail-"));
+    cleanupDirs.push(rootDir);
+    const remoteDir = path.join(rootDir, "runtime", "codex", "process-sessions");
+    const remotePath = path.posix.join(remoteDir, "paperclip-process-session-remote.mjs");
+    const lockDir = path.posix.join(remoteDir, ".paperclip-process-session-script.lock");
+
+    // A runner whose exec fails: the hash-gate cannot be evaluated. The write
+    // must surface the failure, never swallow it and re-upload behind a green
+    // return value.
+    const runner = {
+      execute: async () => ({
+        exitCode: 1,
+        signal: null,
+        timedOut: false,
+        stdout: "",
+        stderr: "hash gate boom",
+        pid: null,
+        startedAt: new Date().toISOString(),
+      }),
+    };
+
+    await expect(
+      syncRemoteTextFileWithHashSkip({
+        runner,
+        remoteCwd: rootDir,
+        remoteDir,
+        remotePath,
+        body: "console.log('never written');\n",
+        label: "Process session remote script",
+        action: "sync process session remote script",
+        lockDir,
+        timeoutMs: 30_000,
+      }),
+    ).rejects.toThrow(/sync process session remote script/i);
+
+    // Nothing was written to the remote path on the failure path.
+    await expect(readFile(remotePath, "utf8")).rejects.toThrow();
+  });
+
   it("permits the documented heartbeat surface and denies unrelated routes", () => {
     const allowed: Array<{ method: string; path: string }> = [
       { method: "GET", path: "/api/agents/me" },
@@ -983,5 +1114,111 @@ describe("sandbox callback bridge", () => {
         PAPERCLIP_SANDBOX_EXEC_CHANNEL: "bridge",
       },
     }));
+  });
+
+  it("creates the bridge queue directories in one directory-creation exec", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-makedirs-"));
+    cleanupDirs.push(rootDir);
+
+    const queueDir = path.posix.join(rootDir, "queue");
+    const directories = sandboxCallbackBridgeDirectories(queueDir);
+    const makeDir = vi.fn(async () => {});
+    const makeDirs = vi.fn(async () => {});
+
+    const worker = await startSandboxCallbackBridgeWorker({
+      client: {
+        makeDir,
+        makeDirs,
+        listJsonFiles: async () => [],
+        readTextFile: async () => {
+          throw new Error("unexpected readTextFile");
+        },
+        writeTextFile: async () => {},
+        rename: async () => {},
+        remove: async () => {},
+      },
+      queueDir,
+      authorizeRequest: async () => null,
+      handleRequest: async () => ({ status: 200, body: "ok" }),
+    });
+
+    await worker.stop();
+
+    expect(makeDir).not.toHaveBeenCalled();
+    expect(makeDirs).toHaveBeenCalledTimes(1);
+    expect(makeDirs).toHaveBeenCalledWith([
+      directories.rootDir,
+      directories.requestsDir,
+      directories.responsesDir,
+      directories.logsDir,
+    ]);
+  });
+
+  it("falls back to sequential makeDir when the queue client omits makeDirs", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-makedir-fallback-"));
+    cleanupDirs.push(rootDir);
+
+    const queueDir = path.posix.join(rootDir, "queue");
+    const directories = sandboxCallbackBridgeDirectories(queueDir);
+    const makeDir = vi.fn(async (_remotePath: string) => {});
+
+    // A queue client that predates the batched makeDirs method. The worker
+    // must still create every queue directory through sequential makeDir.
+    const worker = await startSandboxCallbackBridgeWorker({
+      client: {
+        makeDir,
+        listJsonFiles: async () => [],
+        readTextFile: async () => {
+          throw new Error("unexpected readTextFile");
+        },
+        writeTextFile: async () => {},
+        rename: async () => {},
+        remove: async () => {},
+      },
+      queueDir,
+      authorizeRequest: async () => null,
+      handleRequest: async () => ({ status: 200, body: "ok" }),
+    });
+
+    await worker.stop();
+
+    expect(makeDir.mock.calls.map((call) => call[0])).toEqual([
+      directories.rootDir,
+      directories.requestsDir,
+      directories.responsesDir,
+      directories.logsDir,
+    ]);
+  });
+
+  it("runs one mkdir -p exec for makeDirs on the command-managed queue client", async () => {
+    const runner = {
+      execute: vi.fn(async (_input: { args?: string[] }) => ({
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: "",
+        stderr: "",
+        pid: null,
+        startedAt: new Date().toISOString(),
+      })),
+    };
+
+    const client = createCommandManagedSandboxCallbackBridgeQueueClient({
+      runner,
+      remoteCwd: "/workspace",
+      timeoutMs: 30_000,
+    });
+
+    // The command-managed client always provides the batched makeDirs method.
+    expect(client.makeDirs).toBeDefined();
+    await client.makeDirs?.(["/workspace/a", "/workspace/b", "/workspace/c"]);
+
+    expect(runner.execute).toHaveBeenCalledTimes(1);
+    const call = runner.execute.mock.calls[0][0];
+    const script = call.args?.[call.args.length - 1] ?? "";
+    expect(script).toContain("mkdir -p");
+    expect(script).toContain("/workspace/a");
+    expect(script).toContain("/workspace/b");
+    expect(script).toContain("/workspace/c");
   });
 });

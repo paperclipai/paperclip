@@ -85,6 +85,64 @@ function formatEnvEntries(entries: Record<string, string>): string {
   ].join("\n");
 }
 
+function trailingEnvComment(rawValue: string): string {
+  let quote: "\"" | "'" | null = null;
+  let escaped = false;
+
+  for (let index = 0; index < rawValue.length; index += 1) {
+    const character = rawValue[index];
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (quote === "\"" && character === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (quote !== null) {
+      if (character === quote) quote = null;
+      continue;
+    }
+    if (character === "\"" || character === "'") {
+      quote = character;
+      continue;
+    }
+    if (character !== "#" || index === 0 || !/\s/.test(rawValue[index - 1] ?? "")) continue;
+
+    let commentStart = index;
+    while (commentStart > 0 && /\s/.test(rawValue[commentStart - 1] ?? "")) {
+      commentStart -= 1;
+    }
+    return rawValue.slice(commentStart);
+  }
+
+  return "";
+}
+
+function updateEnvFileContents(contents: string, entries: Record<string, string>): string {
+  const newline = contents.includes("\r\n") ? "\r\n" : "\n";
+  const missingEntries = new Map(Object.entries(entries));
+  const lines = contents.split(/\r?\n/).map((rawLine) => {
+    const match = rawLine.match(/^(\s*(?:export\s+)?)([A-Za-z_][A-Za-z0-9_]*)(\s*=\s*)(.*)$/);
+    if (!match) return rawLine;
+
+    const [, prefix, key, separator, rawValue] = match;
+    const value = entries[key];
+    if (value === undefined) return rawLine;
+
+    missingEntries.delete(key);
+    return `${prefix}${key}${separator}${JSON.stringify(value)}${trailingEnvComment(rawValue)}`;
+  });
+
+  const insertionIndex = lines.at(-1) === "" ? lines.length - 1 : lines.length;
+  lines.splice(
+    insertionIndex,
+    0,
+    ...Array.from(missingEntries, ([key, value]) => `${key}=${JSON.stringify(value)}`),
+  );
+  return lines.join(newline);
+}
+
 function isPathInside(candidatePath: string, rootPath: string): boolean {
   const candidate = path.resolve(candidatePath);
   const root = path.resolve(rootPath);
@@ -355,6 +413,7 @@ function buildIsolatedWorktreeConfig(
             embeddedPostgresPort: databasePort ?? config.database.embeddedPostgresPort,
             backup: {
               ...config.database.backup,
+              enabled: false,
               dir: context.backupDir,
             },
           }
@@ -399,6 +458,9 @@ function needsWorktreeConfigRepair(
   context: WorktreeRuntimeContext,
 ): boolean {
   if (config.database.mode === "embedded-postgres") {
+    if (config.database.backup.enabled) {
+      return true;
+    }
     if (!isPathInside(config.database.embeddedPostgresDataDir, context.instanceRoot)) {
       return true;
     }
@@ -562,23 +624,32 @@ export function maybeRepairLegacyWorktreeConfigAndEnvFiles(): {
   }
 
   const existingEnvEntries = readEnvEntries(context.envPath);
-  const desiredEnvEntries: Record<string, string> = {
-    ...existingEnvEntries,
+  const managedEnvEntries: Record<string, string> = {
     PAPERCLIP_HOME: context.homeDir,
     PAPERCLIP_INSTANCE_ID: context.instanceId,
     PAPERCLIP_CONFIG: context.configPath,
     PAPERCLIP_CONTEXT: context.contextPath,
     PAPERCLIP_IN_WORKTREE: "true",
+    PAPERCLIP_DB_BACKUP_ENABLED: "false",
     PAPERCLIP_WORKTREE_NAME: context.worktreeName,
   };
 
-  const repairedEnv = Object.entries(desiredEnvEntries).some(
+  process.env.PAPERCLIP_DB_BACKUP_ENABLED = "false";
+
+  const repairedEnv = Object.entries(managedEnvEntries).some(
     ([key, value]) => existingEnvEntries[key] !== value,
   );
 
   if (repairedEnv) {
     fs.mkdirSync(path.dirname(context.envPath), { recursive: true });
-    fs.writeFileSync(context.envPath, formatEnvEntries(desiredEnvEntries), { mode: 0o600 });
+    const existingContents = fs.existsSync(context.envPath)
+      ? fs.readFileSync(context.envPath, "utf8")
+      : null;
+    const repairedContents =
+      existingContents === null
+        ? formatEnvEntries(managedEnvEntries)
+        : updateEnvFileContents(existingContents, managedEnvEntries);
+    fs.writeFileSync(context.envPath, repairedContents, { mode: 0o600 });
   }
 
   return { repairedConfig, repairedEnv };

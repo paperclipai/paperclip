@@ -95,7 +95,7 @@ export function Projects() {
   const membershipsQuery = useResourceMemberships(selectedCompanyId);
   const membershipMutation = useResourceMembershipMutation(selectedCompanyId);
   const projects = useMemo(
-    () => (allProjects ?? []).filter((p) => !p.archivedAt),
+    () => allProjects ?? [],
     [allProjects],
   );
   const sortedProjects = useMemo(

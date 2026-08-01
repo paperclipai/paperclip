@@ -236,6 +236,76 @@ describe("IssueThreadInteractionCard", () => {
     expect(host.textContent).not.toContain("Questions expired by comment");
   });
 
+  it("renders withdrawn confirmations with the withdraw reason", () => {
+    const host = renderCard({
+      interaction: {
+        ...pendingRequestConfirmationInteraction,
+        status: "cancelled",
+        result: { version: 1, outcome: "withdrawn", reason: "Superseded by the hotfix plan." },
+      },
+      onAcceptInteraction: vi.fn(),
+      onRejectInteraction: vi.fn(),
+    });
+
+    expect(host.textContent).toContain("Withdrawn");
+    expect(host.textContent).toContain("Superseded by the hotfix plan.");
+    expect(host.textContent).not.toContain("Decline");
+  });
+
+  it("renders confirmations expired by issue closure with dedicated copy", () => {
+    const host = renderCard({
+      interaction: {
+        ...pendingRequestConfirmationInteraction,
+        status: "expired",
+        result: { version: 1, outcome: "issue_closed", reason: null },
+      },
+    });
+
+    expect(host.textContent).toContain("Expired when issue closed");
+    expect(host.textContent).toContain("The issue was closed before this confirmation was resolved.");
+    expect(host.textContent).not.toContain("Expired by target change");
+  });
+
+  it("renders withdrawn question interactions with the withdraw reason", () => {
+    const host = renderCard({
+      interaction: {
+        ...pendingAskUserQuestionsInteraction,
+        status: "cancelled",
+        result: {
+          version: 1,
+          outcome: "withdrawn",
+          reason: "Scope was decided on the parent issue.",
+          answers: [],
+          summaryMarkdown: null,
+        },
+      },
+    });
+
+    expect(host.textContent).toContain("Questions withdrawn");
+    expect(host.textContent).toContain("Scope was decided on the parent issue.");
+    expect(host.textContent).not.toContain("Question cancelled");
+  });
+
+  it("renders question interactions expired by issue closure with dedicated copy", () => {
+    const host = renderCard({
+      interaction: {
+        ...pendingAskUserQuestionsInteraction,
+        status: "expired",
+        result: {
+          version: 1,
+          outcome: "issue_closed",
+          reason: null,
+          answers: [],
+          summaryMarkdown: null,
+        },
+      },
+    });
+
+    expect(host.textContent).toContain("Questions expired when issue closed");
+    expect(host.textContent).toContain("The issue was closed before these questions were answered.");
+    expect(host.textContent).not.toContain("expired by comment");
+  });
+
   it("makes child tasks explicit in suggested task trees", () => {
     const host = renderCard({
       interaction: pendingSuggestedTasksInteraction,

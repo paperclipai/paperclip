@@ -186,6 +186,10 @@ function makeMockRuntime(overrides: Partial<EnvironmentRuntimeService> = {}): En
       metadata: {
         workspaceRealization: {
           version: 1,
+          mode: "copy",
+          authoritativeRoot: "/workspace/project",
+          pathAliases: [],
+          outboundRestorePaths: [],
           driver: "local",
           cwd: "/workspace/project",
         },
@@ -254,7 +258,15 @@ describe("environmentRunOrchestrator — realizeForRun", () => {
     const result = await orchestrator.realizeForRun(makeRealizeInput());
 
     expect(result.lease).toBeDefined();
-    expect(result.executionTarget).toEqual(executionTarget);
+    expect(result.executionTarget).toEqual({
+      ...executionTarget,
+      workspaceRealization: {
+        mode: "copy",
+        authoritativeRoot: "/workspace/project",
+        pathAliases: [],
+        outboundRestorePaths: [],
+      },
+    });
     expect(result.remoteExecution).toEqual(remoteExecution);
     expect(result.workspaceRealization).toEqual(
       expect.objectContaining({ version: 1, driver: "local" }),
@@ -262,6 +274,45 @@ describe("environmentRunOrchestrator — realizeForRun", () => {
 
     expect(runtime.realizeWorkspace).toHaveBeenCalledOnce();
     expect(mockResolveEnvironmentExecutionTarget).toHaveBeenCalledOnce();
+  });
+
+  it("uses an in-place authoritative root on the adapter execution target", async () => {
+    mockResolveEnvironmentExecutionTarget.mockResolvedValue({
+      kind: "remote",
+      transport: "sandbox",
+      remoteCwd: "/copied/workspace",
+    });
+    const runtime = makeMockRuntime({
+      realizeWorkspace: vi.fn().mockResolvedValue({
+        cwd: "/app",
+        metadata: {
+          workspaceRealization: {
+            version: 1,
+            mode: "in_place",
+            authoritativeRoot: "/app",
+            pathAliases: [],
+            outboundRestorePaths: [],
+          },
+        },
+      }),
+    });
+    const orchestrator = environmentRunOrchestrator(mockDb, { environmentRuntime: runtime });
+
+    const result = await orchestrator.realizeForRun(
+      makeRealizeInput({ environment: makeEnvironment("sandbox") }),
+    );
+
+    expect(result.executionTarget).toEqual(expect.objectContaining({
+      kind: "remote",
+      transport: "sandbox",
+      remoteCwd: "/app",
+      workspaceRealization: {
+        mode: "in_place",
+        authoritativeRoot: "/app",
+        pathAliases: [],
+        outboundRestorePaths: [],
+      },
+    }));
   });
 
   it("realization failure: runtime.realizeWorkspace throws → EnvironmentRunError with code workspace_realization_failed", async () => {

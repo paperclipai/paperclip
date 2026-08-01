@@ -243,7 +243,6 @@ function makeInstanceSettings({
       enableTaskWatchdogs: true,
       enableIssuePlanDecompositions: true,
       enableExperimentalFileViewer: false,
-      enableCloudSync: false,
       enableExternalObjects: false,
       enableBuiltInAgents,
       autoRestartDevServerWhenIdle: false,
@@ -885,6 +884,7 @@ describe("Agents", () => {
     expect(container.textContent).toContain("Built-in");
     expect(container.textContent).toContain("Briefs Agent");
     expect(container.textContent).not.toContain("Regular Agent");
+    expect(container.querySelector('[title="Ships with Paperclip"]')).toBeNull();
     expect(mockRouterState.navigate).not.toHaveBeenCalledWith("/agents/all", { replace: true });
   });
 

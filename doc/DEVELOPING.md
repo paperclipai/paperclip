@@ -119,6 +119,45 @@ Use `--drain-required` only when the deploy intentionally requires the old termi
 
 A healthy guarded deploy must compare the report against `/api/health` (`version` or `serverVersion`) and treat any `lostRunIds` entry as a continuity failure that needs recovery before marking deployment complete.
 
+### Recovering a deploy blocked by missing process metadata
+
+If the currently installed version already has a running local-agent heartbeat
+whose `processPid` and `processGroupId` are both null, that pre-fix run cannot be
+made adoptable retroactively. Cross that version boundary once with the normal
+drain-and-retry path:
+
+```sh
+old_main_pid="$(systemctl show paperclip.service -p MainPID --value)"
+pnpm --filter @paperclipai/server exec tsx ../scripts/request-hot-restart.ts \
+  --server-pid "$old_main_pid" --drain-required
+systemctl restart paperclip.service
+```
+
+After the fixed server starts, wait for the replacement `codex_local` heartbeat
+to spawn, then confirm its run record has an identity (use an authenticated API
+request in authenticated mode):
+
+```sh
+PAPERCLIP_API_BASE="${PAPERCLIP_API_URL:-http://127.0.0.1:3100}"
+PAPERCLIP_API_BASE="${PAPERCLIP_API_BASE%/api}"
+curl -fsS "$PAPERCLIP_API_BASE/api/heartbeat-runs/$RUN_ID" \
+  | jq -e '.status == "running" and (.processPid != null or .processGroupId != null)'
+```
+
+The next continuity check should use the ordinary marker without
+`--drain-required`. After restart, require both an empty loss list and an
+explicit outcome for the run that was live before restart:
+
+```sh
+jq -e --arg run "$RUN_ID" \
+  '(.lostRunIds | length) == 0 and ((.adoptedRunIds + .finalizedWhileDownRunIds) | index($run) != null)' \
+  "$PAPERCLIP_HOME/hot-restart-report.json"
+```
+
+An alive child appears in `adoptedRunIds`; a child that completed during the
+restart window appears in `finalizedWhileDownRunIds`. Either is continuous. A
+`lostRunIds` entry remains a failed deploy and must not be waived.
+
 Tailscale/private-auth dev mode:
 
 ```sh
@@ -355,6 +394,7 @@ This command:
 - creates an isolated instance under `~/.paperclip-worktrees/instances/<worktree-id>/`
 - when run inside a linked git worktree, mirrors the effective git hooks into that worktree's private git dir
 - picks a free app port and embedded PostgreSQL port
+- disables automatic database backups for the isolated instance
 - by default seeds the isolated DB in `minimal` mode from the current effective Paperclip instance/config (repo-local worktree config when present, otherwise the default instance) via a logical SQL snapshot
 
 Seed modes:
@@ -374,6 +414,7 @@ Provisioned git worktrees also pause seeded routines that still have enabled sch
 That repo-local env also sets:
 
 - `PAPERCLIP_IN_WORKTREE=true`
+- `PAPERCLIP_DB_BACKUP_ENABLED=false`
 - `PAPERCLIP_WORKTREE_NAME=<worktree-name>`
 - `PAPERCLIP_WORKTREE_COLOR=<hex-color>`
 
@@ -654,6 +695,11 @@ schemas. Defaults:
 - every 60 minutes
 - retain 30 days
 - backup dir: `~/.paperclip/instances/default/data/backups`
+
+Automatic backups are disabled for isolated worktree instances created with
+`paperclipai worktree init` or `paperclipai worktree:make`. Existing worktree
+configs are migrated to the disabled setting when their server next starts. The
+main/default instance keeps the normal enabled-by-default behavior.
 
 Configure these in:
 

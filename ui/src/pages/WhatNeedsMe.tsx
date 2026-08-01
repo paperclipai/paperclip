@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { ArrowUpDown, Check, CheckCircle2, Inbox, Layers, ListFilter } from "lucide-react";
+import { ArrowUpDown, Check, CheckCircle2, GraduationCap, Inbox, Layers, ListFilter } from "lucide-react";
 import type { Agent, AttentionItem } from "@paperclipai/shared";
 import { useNavigate } from "@/lib/router";
 import { attentionApi } from "../api/attention";
@@ -36,10 +36,12 @@ import {
   type AttentionGroupBy,
   type AttentionSortOrder,
 } from "../lib/attention";
+import { decisionTrainingHref } from "../lib/decisionTraining";
 import { cn } from "../lib/utils";
 import { hasBlockingShortcutDialog, resolveAttentionQueueKeyAction } from "../lib/keyboardShortcuts";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { AttentionQueueRow } from "../components/AttentionQueueRow";
+import { DecisionTrainingDrawer } from "../components/DecisionTrainingDrawer";
 import { IssueGroupHeader } from "../components/IssueGroupHeader";
 import { Button } from "../components/ui/button";
 import { Checkbox } from "../components/ui/checkbox";
@@ -82,7 +84,17 @@ export function WhatNeedsMe() {
   const { setBreadcrumbs } = useBreadcrumbs();
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [selectedAttentionId, setSelectedAttentionId] = useState<string | null>(null);
+  // How the current selection was made. The selection ring is the keyboard
+  // cursor — it marks the row that j/k, e, x and s will act on — so it is drawn
+  // only for a keyboard-driven selection. Clicking used to set it too, which
+  // put a ring around the card for no reason the operator could act on, and
+  // only ever on rows with a See more/less toggle to click (the toggle is what
+  // set it), so the queue looked arbitrarily inconsistent. The selection itself
+  // still follows a click, so keyboard actions target the row you just used.
+  const [selectionFromKeyboard, setSelectionFromKeyboard] = useState(false);
   const [autoExpandDone, setAutoExpandDone] = useState(false);
+  // Decision-training drawer target. `null` when closed.
+  const [trainingItem, setTrainingItem] = useState<AttentionItem | null>(null);
 
   // Toolbar preferences (persisted to localStorage, Inbox pattern).
   const [groupBy, setGroupBy] = useState<AttentionGroupBy>(() => loadAttentionGroupBy());
@@ -268,6 +280,7 @@ export function WhatNeedsMe() {
   useEffect(() => {
     if (selectedAttentionId && !keyboardItems.some((item) => item.id === selectedAttentionId)) {
       setSelectedAttentionId(null);
+      setSelectionFromKeyboard(false);
     }
   }, [keyboardItems, selectedAttentionId]);
 
@@ -356,7 +369,11 @@ export function WhatNeedsMe() {
   );
   const handleToggleExpand = useCallback((item: AttentionItem) => {
     setSelectedAttentionId(item.id);
+    setSelectionFromKeyboard(false);
     setExpandedId((prev) => (prev === item.id ? null : item.id));
+  }, []);
+  const handleTrain = useCallback((item: AttentionItem) => {
+    setTrainingItem(item);
   }, []);
 
   useEffect(() => {
@@ -383,6 +400,7 @@ export function WhatNeedsMe() {
             : keyboardItems.length - 1
           : (currentIndex + offset + keyboardItems.length) % keyboardItems.length;
         setSelectedAttentionId(keyboardItems[nextIndex]?.id ?? null);
+        setSelectionFromKeyboard(true);
         return;
       }
 
@@ -479,6 +497,17 @@ export function WhatNeedsMe() {
               </div>
             </PopoverContent>
           </Popover>
+          <Button
+            type="button"
+            variant="outline"
+            size="icon"
+            className="h-8 w-8 shrink-0"
+            title="Training"
+            aria-label="Training"
+            onClick={() => navigate(decisionTrainingHref())}
+          >
+            <GraduationCap className="h-3.5 w-3.5" />
+          </Button>
           {/* Sort */}
           <Popover>
             <PopoverTrigger asChild>
@@ -541,7 +570,7 @@ export function WhatNeedsMe() {
                     />
                   )}
                   {!collapsed && (
-                    <div className="space-y-2">
+                    <div className="space-y-4">
                       {(renderPlan.groupRows.get(group.key) ?? []).map((item) => (
                         <AttentionQueueRow
                           key={item.id}
@@ -551,9 +580,10 @@ export function WhatNeedsMe() {
                           onToggleExpand={handleToggleExpand}
                           onDismiss={handleDismiss}
                           onSnooze={handleSnooze}
+                          onTrain={handleTrain}
                           agentMap={agentMap}
                           currentUserId={currentUserId}
-                          selected={selectedAttentionId === item.id}
+                          selected={selectionFromKeyboard && selectedAttentionId === item.id}
                         />
                       ))}
                     </div>
@@ -612,6 +642,16 @@ export function WhatNeedsMe() {
           )}
         </div>
       )}
+
+      <DecisionTrainingDrawer
+        open={trainingItem !== null}
+        onOpenChange={(next) => {
+          if (!next) setTrainingItem(null);
+        }}
+        companyId={selectedCompanyId}
+        item={trainingItem}
+        currentUserId={currentUserId}
+      />
     </div>
   );
 }
@@ -770,7 +810,7 @@ function Curtain({
         onToggle={onToggle}
         className="text-muted-foreground"
       />
-      {open && <div className="space-y-2">{children}</div>}
+      {open && <div className="space-y-4">{children}</div>}
     </section>
   );
 }
