@@ -100,6 +100,10 @@ test("unselected candidates start unchecked and are labelled as previously decli
     confirmationBody(scan, candidates, 0, 1).idempotencyKey,
     "garden-inbox:scan-1:1:1",
   );
+  assert.equal(
+    confirmationBody(scan, [candidates[1]], 1, 2, new Set(["issue-1"])).idempotencyKey,
+    "garden-inbox:scan-1:2:2",
+  );
 });
 
 test("preserves an overridden scan user for archive and undo requests", () => {

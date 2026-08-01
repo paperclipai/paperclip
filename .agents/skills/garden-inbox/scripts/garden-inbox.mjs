@@ -494,10 +494,14 @@ function chunk(values, size) {
   return chunks;
 }
 
-function unselectedKeySuffix(unselectedIds) {
-  if (unselectedIds.size === 0) return "";
+function unselectedKeySuffix(candidates, unselectedIds) {
+  const idsInCard = candidates
+    .map((candidate) => candidate.issueId)
+    .filter((issueId) => unselectedIds.has(issueId))
+    .sort();
+  if (idsInCard.length === 0) return "";
   const fingerprint = createHash("sha256")
-    .update([...unselectedIds].sort().join("\n"))
+    .update(idsInCard.join("\n"))
     .digest("hex")
     .slice(0, 16);
   return `:${fingerprint}`;
@@ -514,7 +518,7 @@ function confirmationBody(scanData, candidates, index, count, unselectedIds = ne
   const part = count > 1 ? ` (${index + 1}/${count})` : "";
   return {
     kind: "request_checkbox_confirmation",
-    idempotencyKey: `garden-inbox:${scanData.scanId}:${index + 1}:${count}${unselectedKeySuffix(unselectedIds)}`,
+    idempotencyKey: `garden-inbox:${scanData.scanId}:${index + 1}:${count}${unselectedKeySuffix(candidates, unselectedIds)}`,
     title: `Confirm inbox archive candidates${part}`,
     summary: `Choose which reversible inbox entries to archive${part}.`,
     continuationPolicy: "wake_assignee",
