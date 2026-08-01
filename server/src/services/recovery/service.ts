@@ -3840,7 +3840,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       }
 
       let latestRun = await getLatestIssueRun(issue.companyId, issue.id);
-      if (latestRun?.status === "succeeded" && await hasPersistedDurableWaitPath(issue)) {
+      if (
+        !hasMissingResolvedContinuation
+        && latestRun?.status === "succeeded"
+        && await hasPersistedDurableWaitPath(issue)
+      ) {
         result.skipped += 1;
         continue;
       }
