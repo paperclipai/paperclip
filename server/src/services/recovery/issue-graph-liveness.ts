@@ -27,6 +27,7 @@ export interface IssueLivenessIssueInput {
   executionPolicy?: Record<string, unknown> | null;
   executionState?: Record<string, unknown> | null;
   monitorNextCheckAt?: Date | string | null;
+  monitorLastTriggeredAt?: Date | string | null;
   monitorAttemptCount?: number | null;
 }
 
@@ -163,26 +164,70 @@ function readDateMs(value: unknown): number | null {
   return Number.isNaN(time) ? null : time;
 }
 
+// A monitor wake is persisted before the scheduled monitor is consumed, but
+// read-model queries can still observe the consumed monitor while its queued
+// continuation is moving through capacity admission. Keep that transition
+// covered for one stale-claim window; the queued wake/run remains the durable
+// path after the grace expires.
+export const ISSUE_MONITOR_CONTINUATION_GRACE_MS = 5 * 60 * 1000;
+const ISSUE_MONITOR_OWNER_STATUSES = new Set(["active", "idle", "running", "error"]);
+
 function monitorFromIssue(issue: IssueLivenessIssueInput) {
-  const policyMonitor = readRecord(readRecord(issue.executionPolicy)?.monitor);
-  const stateMonitor = readRecord(readRecord(issue.executionState)?.monitor);
-  return { policyMonitor, stateMonitor };
+  const policy = readRecord(issue.executionPolicy);
+  const state = readRecord(issue.executionState);
+  const rawPolicyMonitor = policy?.monitor;
+  const rawStateMonitor = state?.monitor;
+  const policyMonitor = readRecord(rawPolicyMonitor);
+  const stateMonitor = readRecord(rawStateMonitor);
+  const invalidMetadata =
+    (issue.executionPolicy != null && !policy) ||
+    (issue.executionState != null && !state) ||
+    (rawPolicyMonitor != null && !policyMonitor) ||
+    (rawStateMonitor != null && !stateMonitor);
+  return { policyMonitor, stateMonitor, invalidMetadata };
 }
 
-function hasScheduledMonitor(issue: IssueLivenessIssueInput, nowMs: number) {
+export function hasScheduledIssueMonitor(issue: IssueLivenessIssueInput, nowMs: number) {
   const nextCheckAtMs = readDateMs(issue.monitorNextCheckAt);
   if (nextCheckAtMs === null || nextCheckAtMs <= nowMs) return false;
 
-  const { policyMonitor, stateMonitor } = monitorFromIssue(issue);
-  const timeoutAtMs = readDateMs(policyMonitor?.timeoutAt ?? stateMonitor?.timeoutAt);
+  const { policyMonitor, stateMonitor, invalidMetadata } = monitorFromIssue(issue);
+  if (invalidMetadata) return false;
+
+  const timeoutAt = policyMonitor?.timeoutAt ?? stateMonitor?.timeoutAt;
+  const timeoutAtMs = readDateMs(timeoutAt);
+  if (timeoutAt != null && timeoutAtMs === null) return false;
   if (timeoutAtMs !== null && timeoutAtMs <= nowMs) return false;
 
-  const maxAttempts = readPositiveInteger(policyMonitor?.maxAttempts ?? stateMonitor?.maxAttempts);
-  const stateAttemptCount = readPositiveInteger(stateMonitor?.attemptCount) ?? 0;
+  const rawMaxAttempts = policyMonitor?.maxAttempts ?? stateMonitor?.maxAttempts;
+  const maxAttempts = readPositiveInteger(rawMaxAttempts);
+  if (rawMaxAttempts != null && maxAttempts === null) return false;
+
+  const rawStateAttemptCount = stateMonitor?.attemptCount;
+  if (
+    rawStateAttemptCount != null &&
+    (typeof rawStateAttemptCount !== "number" || !Number.isInteger(rawStateAttemptCount) || rawStateAttemptCount < 0)
+  ) {
+    return false;
+  }
+  const stateAttemptCount = typeof rawStateAttemptCount === "number" ? rawStateAttemptCount : 0;
   const attemptCount = issue.monitorAttemptCount ?? stateAttemptCount;
+  if (typeof attemptCount !== "number" || !Number.isInteger(attemptCount) || attemptCount < 0) return false;
   if (maxAttempts !== null && attemptCount >= maxAttempts) return false;
 
   return true;
+}
+
+export function hasRecentlyTriggeredIssueMonitor(
+  issue: IssueLivenessIssueInput,
+  nowMs: number,
+  graceMs = ISSUE_MONITOR_CONTINUATION_GRACE_MS,
+) {
+  if (!Number.isFinite(graceMs) || graceMs < 0) return false;
+  const lastTriggeredAtMs = readDateMs(issue.monitorLastTriggeredAt);
+  if (lastTriggeredAtMs === null) return false;
+  const ageMs = nowMs - lastTriggeredAtMs;
+  return ageMs >= 0 && ageMs <= graceMs;
 }
 
 function readPrincipalAgentId(principal: unknown): string | null {
@@ -399,9 +444,28 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
     });
   }
 
+  function hasOwnedMonitorPath(issue: IssueLivenessIssueInput) {
+    if (
+      !issue.assigneeAgentId ||
+      issue.assigneeUserId ||
+      (issue.status !== "in_progress" && issue.status !== "in_review")
+    ) {
+      return false;
+    }
+    const assignee = agentsById.get(issue.assigneeAgentId);
+    if (
+      !assignee ||
+      assignee.companyId !== issue.companyId ||
+      !ISSUE_MONITOR_OWNER_STATUSES.has(assignee.status)
+    ) {
+      return false;
+    }
+    return hasScheduledIssueMonitor(issue, nowMs) || hasRecentlyTriggeredIssueMonitor(issue, nowMs);
+  }
+
   function hasExplicitWaitingPath(issue: IssueLivenessIssueInput) {
     return Boolean(issue.assigneeUserId) ||
-      hasScheduledMonitor(issue, nowMs) ||
+      hasOwnedMonitorPath(issue) ||
       hasActiveExecutionPath(issue.companyId, issue.id, activeRuns, queuedWakeRequests) ||
       hasWaitingPath(issue.companyId, issue.id, pendingInteractions) ||
       hasWaitingPath(issue.companyId, issue.id, pendingApprovals) ||

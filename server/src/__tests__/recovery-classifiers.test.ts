@@ -168,6 +168,84 @@ describe("recovery classifier boundary", () => {
     expect(exhausted[0]?.state).toBe("in_review_without_action_path");
   });
 
+  it("uses a bounded post-trigger grace while a monitor continuation enters the queue", () => {
+    const baseInput = {
+      issues: [
+        {
+          id: issueId,
+          companyId,
+          identifier: "PAP-2946",
+          title: "Monitor wake entering capacity queue",
+          status: "in_review",
+          assigneeAgentId: agentId,
+          assigneeUserId: null,
+          createdByAgentId: null,
+          createdByUserId: null,
+          executionState: null,
+          monitorNextCheckAt: null,
+          monitorLastTriggeredAt: "2026-04-30T18:00:00.000Z",
+          monitorAttemptCount: 1,
+        },
+      ],
+      relations: [],
+      agents: [
+        {
+          id: agentId,
+          companyId,
+          name: "Coder",
+          role: "engineer",
+          status: "idle",
+          reportsTo: managerId,
+        },
+      ],
+    };
+
+    expect(classifyIssueGraphLiveness({
+      ...baseInput,
+      now: "2026-04-30T18:04:59.999Z",
+    })).toEqual([]);
+
+    expect(classifyIssueGraphLiveness({
+      ...baseInput,
+      now: "2026-04-30T18:05:00.001Z",
+    })[0]?.state).toBe("in_review_without_action_path");
+  });
+
+  it("does not let a future or recently triggered monitor cover an uninvokable owner", () => {
+    const findings = classifyIssueGraphLiveness({
+      now: "2026-04-30T18:00:00.000Z",
+      issues: [
+        {
+          id: issueId,
+          companyId,
+          identifier: "PAP-2947",
+          title: "Paused monitor owner",
+          status: "in_review",
+          assigneeAgentId: agentId,
+          assigneeUserId: null,
+          createdByAgentId: null,
+          createdByUserId: null,
+          executionState: null,
+          monitorNextCheckAt: "2026-04-30T19:00:00.000Z",
+          monitorLastTriggeredAt: "2026-04-30T17:59:00.000Z",
+        },
+      ],
+      relations: [],
+      agents: [
+        {
+          id: agentId,
+          companyId,
+          name: "Paused coder",
+          role: "engineer",
+          status: "paused",
+          reportsTo: managerId,
+        },
+      ],
+    });
+
+    expect(findings[0]?.state).toBe("in_review_without_action_path");
+  });
+
   it("keeps run liveness continuation decision parity with the compatibility export", () => {
     const input = {
       run: {

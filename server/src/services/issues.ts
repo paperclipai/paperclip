@@ -111,7 +111,12 @@ import {
   parseIssueGraphLivenessIncidentKey,
   RECOVERY_ORIGIN_KINDS,
 } from "./recovery/origins.js";
-import { classifyIssueGraphLiveness, type IssueLivenessFinding } from "./recovery/issue-graph-liveness.js";
+import {
+  classifyIssueGraphLiveness,
+  hasRecentlyTriggeredIssueMonitor,
+  hasScheduledIssueMonitor,
+  type IssueLivenessFinding,
+} from "./recovery/issue-graph-liveness.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
 import { finalizeStatusCardsForStalledGeneration } from "./status-card-finalization.js";
 import { finalizeSummarySlotsForTerminalIssue } from "./summary-slot-finalization.js";
@@ -1815,13 +1820,30 @@ type IssueBlockerAttentionNode = {
   executionRunId?: string | null;
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
+  executionPolicy?: Record<string, unknown> | null;
+  executionState?: Record<string, unknown> | null;
+  monitorNextCheckAt?: Date | string | null;
+  monitorLastTriggeredAt?: Date | string | null;
+  monitorAttemptCount?: number | null;
 };
 type IssueBlockerAttentionInputNode =
   Pick<
     IssueBlockerAttentionNode,
-    "id" | "companyId" | "parentId" | "identifier" | "title" | "status" | "assigneeAgentId" | "assigneeUserId"
-  >
-  & { executionRunId?: string | null };
+    | "id"
+    | "companyId"
+    | "parentId"
+    | "identifier"
+    | "title"
+    | "status"
+    | "executionRunId"
+    | "assigneeAgentId"
+    | "assigneeUserId"
+    | "executionPolicy"
+    | "executionState"
+    | "monitorNextCheckAt"
+    | "monitorLastTriggeredAt"
+    | "monitorAttemptCount"
+  >;
 
 type IssueBlockerAttentionEdge = {
   issueId: string;
@@ -2208,6 +2230,7 @@ async function listIssueBlockerAttentionMap(
   dbOrTx: any,
   companyId: string,
   issueRows: IssueBlockerAttentionInputNode[],
+  nowMs = Date.now(),
 ): Promise<Map<string, IssueBlockerAttention>> {
   const roots = issueRows.filter((row) => row.companyId === companyId && row.status === "blocked");
   const attentionMap = new Map<string, IssueBlockerAttention>();
@@ -2248,6 +2271,11 @@ async function listIssueBlockerAttentionMap(
           executionRunId: issues.executionRunId,
           assigneeAgentId: issues.assigneeAgentId,
           assigneeUserId: issues.assigneeUserId,
+          executionPolicy: issues.executionPolicy,
+          executionState: issues.executionState,
+          monitorNextCheckAt: issues.monitorNextCheckAt,
+          monitorLastTriggeredAt: issues.monitorLastTriggeredAt,
+          monitorAttemptCount: issues.monitorAttemptCount,
         })
         .from(issueRelations)
         .innerJoin(issues, eq(issueRelations.issueId, issues.id))
@@ -2272,6 +2300,11 @@ async function listIssueBlockerAttentionMap(
           executionRunId: issues.executionRunId,
           assigneeAgentId: issues.assigneeAgentId,
           assigneeUserId: issues.assigneeUserId,
+          executionPolicy: issues.executionPolicy,
+          executionState: issues.executionState,
+          monitorNextCheckAt: issues.monitorNextCheckAt,
+          monitorLastTriggeredAt: issues.monitorLastTriggeredAt,
+          monitorAttemptCount: issues.monitorAttemptCount,
         })
         .from(issues)
         .where(
@@ -2310,6 +2343,11 @@ async function listIssueBlockerAttentionMap(
           executionRunId: row.executionRunId,
           assigneeAgentId: row.assigneeAgentId,
           assigneeUserId: row.assigneeUserId,
+          executionPolicy: row.executionPolicy,
+          executionState: row.executionState,
+          monitorNextCheckAt: row.monitorNextCheckAt,
+          monitorLastTriggeredAt: row.monitorLastTriggeredAt,
+          monitorAttemptCount: row.monitorAttemptCount,
         });
         nextFrontier.add(row.blockerIssueId);
       }
@@ -2477,6 +2515,20 @@ async function listIssueBlockerAttentionMap(
       return { covered: true, stalled: false, sampleBlockerIdentifier: nodeSample, sampleStalledBlockerIdentifier: null };
     }
     if (node.assigneeUserId && node.status !== "cancelled") {
+      return { covered: true, stalled: false, sampleBlockerIdentifier: nodeSample, sampleStalledBlockerIdentifier: null };
+    }
+    const monitorAssignee = node.assigneeAgentId ? agentsById.get(node.assigneeAgentId) : null;
+    const hasValidMonitorPath =
+      Boolean(node.assigneeAgentId) &&
+      !node.assigneeUserId &&
+      (node.status === "in_progress" || node.status === "in_review") &&
+      monitorAssignee?.companyId === companyId &&
+      BLOCKER_ATTENTION_INVOKABLE_AGENT_STATUSES.has(monitorAssignee.status) &&
+      (
+        hasScheduledIssueMonitor(node, nowMs) ||
+        hasRecentlyTriggeredIssueMonitor(node, nowMs)
+      );
+    if (hasValidMonitorPath) {
       return { covered: true, stalled: false, sampleBlockerIdentifier: nodeSample, sampleStalledBlockerIdentifier: null };
     }
     if (node.status === "in_review") {
@@ -2886,6 +2938,106 @@ type BlockedInboxApprovalRow = {
   createdAt: Date;
 };
 
+type BlockedInboxInteractionCoverage = {
+  interaction: BlockedInboxInteractionRow;
+  interactionIssueId: string;
+  distance: number;
+};
+
+function buildBlockedInboxUpstreamGraph(
+  companyId: string,
+  issueRows: IssueRow[],
+  relationRows: Array<{ companyId: string; blockerIssueId: string; blockedIssueId: string }>,
+) {
+  const issuesById = new Map(issueRows.map((issue) => [issue.id, issue]));
+  const upstreamByIssueId = new Map<string, Set<string>>();
+  const append = (issueId: string, upstreamIssueId: string) => {
+    if (issueId === upstreamIssueId) return;
+    const existing = upstreamByIssueId.get(issueId) ?? new Set<string>();
+    existing.add(upstreamIssueId);
+    upstreamByIssueId.set(issueId, existing);
+  };
+
+  for (const issue of issueRows) {
+    if (issue.companyId !== companyId || !issue.parentId) continue;
+    const parent = issuesById.get(issue.parentId);
+    if (parent?.companyId === companyId) append(issue.id, parent.id);
+  }
+  for (const relation of relationRows) {
+    if (relation.companyId !== companyId) continue;
+    const blocker = issuesById.get(relation.blockerIssueId);
+    const blocked = issuesById.get(relation.blockedIssueId);
+    if (blocker?.companyId !== companyId || blocked?.companyId !== companyId) continue;
+    append(blocker.id, blocked.id);
+  }
+
+  return new Map(
+    [...upstreamByIssueId.entries()].map(([issueId, upstreamIds]) => [
+      issueId,
+      [...upstreamIds].sort(),
+    ]),
+  );
+}
+
+function propagateBlockedInboxIssueIds(
+  upstreamByIssueId: Map<string, string[]>,
+  seedIssueIds: Iterable<string>,
+) {
+  const coveredIssueIds = new Set<string>();
+  const queue = [...new Set(seedIssueIds)].sort();
+  for (let index = 0; index < queue.length; index += 1) {
+    const issueId = queue[index]!;
+    if (coveredIssueIds.has(issueId)) continue;
+    coveredIssueIds.add(issueId);
+    for (const upstreamIssueId of upstreamByIssueId.get(issueId) ?? []) {
+      if (!coveredIssueIds.has(upstreamIssueId)) queue.push(upstreamIssueId);
+    }
+  }
+  return coveredIssueIds;
+}
+
+function propagateBlockedInboxInteractions(
+  upstreamByIssueId: Map<string, string[]>,
+  interactionRows: BlockedInboxInteractionRow[],
+) {
+  const coverageByIssueId = new Map<string, BlockedInboxInteractionCoverage>();
+  const sortedInteractions = [...interactionRows].sort((left, right) => {
+    const createdAt = left.createdAt.getTime() - right.createdAt.getTime();
+    return createdAt !== 0 ? createdAt : left.id.localeCompare(right.id);
+  });
+
+  // A multi-source breadth-first walk keeps this O(V + E). The sorted seeds
+  // also make equal-distance decisions deterministic: the oldest interaction,
+  // then the lowest interaction id, wins.
+  const queue = sortedInteractions.map((interaction) => ({
+    issueId: interaction.issueId,
+    interaction,
+    interactionIssueId: interaction.issueId,
+    distance: 0,
+  }));
+  for (let index = 0; index < queue.length; index += 1) {
+    const current = queue[index]!;
+    const existing = coverageByIssueId.get(current.issueId);
+    if (existing && existing.distance <= current.distance) continue;
+
+    coverageByIssueId.set(current.issueId, {
+      interaction: current.interaction,
+      interactionIssueId: current.interactionIssueId,
+      distance: current.distance,
+    });
+    for (const upstreamIssueId of upstreamByIssueId.get(current.issueId) ?? []) {
+      queue.push({
+        issueId: upstreamIssueId,
+        interaction: current.interaction,
+        interactionIssueId: current.interactionIssueId,
+        distance: current.distance + 1,
+      });
+    }
+  }
+
+  return coverageByIssueId;
+}
+
 function issueRef(row: Pick<IssueRow, "id" | "identifier" | "title" | "status" | "priority" | "assigneeAgentId" | "assigneeUserId"> | null | undefined): IssueBlockedInboxIssueRef | null {
   if (!row) return null;
   return {
@@ -3176,6 +3328,8 @@ async function listIssueBlockedInboxAttentionMap(
   const rowIssueIds = [...new Set(issueRows.map((row) => row.id))];
   const result = new Map<string, IssueBlockedInboxAttention>();
   if (rowIssueIds.length === 0) return result;
+  const blockedInboxNow = new Date();
+  const blockedInboxNowMs = blockedInboxNow.getTime();
 
   const [graphIssueRows, graphRelationRows, companyAgentRows] = await Promise.all([
     dbOrTx
@@ -3369,6 +3523,7 @@ async function listIssueBlockedInboxAttentionMap(
       executionPolicy: issue.executionPolicy,
       executionState: issue.executionState,
       monitorNextCheckAt: issue.monitorNextCheckAt,
+      monitorLastTriggeredAt: issue.monitorLastTriggeredAt,
       monitorAttemptCount: issue.monitorAttemptCount,
     })),
     relations: graphRelations,
@@ -3387,17 +3542,13 @@ async function listIssueBlockedInboxAttentionMap(
     pendingInteractions,
     pendingApprovals,
     openRecoveryIssues,
-    now: new Date(),
+    now: blockedInboxNow,
   });
   const findingByIssueId = new Map<string, IssueLivenessFinding>();
   for (const finding of findings) {
     if (!findingByIssueId.has(finding.issueId)) findingByIssueId.set(finding.issueId, finding);
   }
 
-  const interactionByIssueId = new Map<string, BlockedInboxInteractionRow>();
-  for (const row of interactionRows as BlockedInboxInteractionRow[]) {
-    if (!interactionByIssueId.has(row.issueId)) interactionByIssueId.set(row.issueId, row);
-  }
   const approvalByIssueId = new Map<string, BlockedInboxApprovalRow>();
   for (const row of approvalRows as BlockedInboxApprovalRow[]) {
     if (!approvalByIssueId.has(row.issueId)) approvalByIssueId.set(row.issueId, row);
@@ -3409,6 +3560,68 @@ async function listIssueBlockedInboxAttentionMap(
   const liveHandoffWakeIssueIds = new Set(
     (wakeRows as Array<{ issueId: string | null }>).flatMap((row) => row.issueId ? [row.issueId] : []),
   );
+  const upstreamByIssueId = buildBlockedInboxUpstreamGraph(companyId, graphIssues, graphRelations);
+  const companyAgentsById = new Map(companyAgents.map((agent) => [agent.id, agent]));
+  const liveContinuationSeedIssueIds = new Set([
+    ...liveHandoffRunIssueIds,
+    ...liveHandoffWakeIssueIds,
+  ]);
+  for (const issue of graphIssues) {
+    if (
+      !issue.assigneeAgentId ||
+      issue.assigneeUserId ||
+      (issue.status !== "in_progress" && issue.status !== "in_review")
+    ) {
+      continue;
+    }
+    const assignee = companyAgentsById.get(issue.assigneeAgentId);
+    if (
+      assignee?.companyId !== companyId ||
+      !BLOCKER_ATTENTION_INVOKABLE_AGENT_STATUSES.has(assignee.status)
+    ) {
+      continue;
+    }
+    if (
+      hasScheduledIssueMonitor(issue, blockedInboxNowMs) ||
+      hasRecentlyTriggeredIssueMonitor(issue, blockedInboxNowMs)
+    ) {
+      liveContinuationSeedIssueIds.add(issue.id);
+    }
+  }
+  const liveContinuationIssueIds = propagateBlockedInboxIssueIds(
+    upstreamByIssueId,
+    liveContinuationSeedIssueIds,
+  );
+  const interactionCoverageByIssueId = propagateBlockedInboxInteractions(
+    upstreamByIssueId,
+    interactionRows as BlockedInboxInteractionRow[],
+  );
+
+  const awaitingDecisionAttention = (
+    row: BlockedInboxIssueRow,
+    coverage: BlockedInboxInteractionCoverage,
+  ) => {
+    const interactionIssue = issuesById.get(coverage.interactionIssueId) ?? row;
+    const isUserQuestion =
+      coverage.interaction.kind === "ask_user_questions" &&
+      Boolean(interactionIssue.assigneeUserId);
+    return attentionBase({
+      state: "awaiting_decision",
+      reason: isUserQuestion ? "pending_user_decision" : "pending_board_decision",
+      severity: "medium",
+      stoppedSinceAt: coverage.interaction.createdAt,
+      owner: isUserQuestion
+        ? { type: "user", agentId: null, userId: interactionIssue.assigneeUserId, label: null }
+        : { type: "board", agentId: null, userId: null, label: "Board" },
+      action: {
+        label: isUserQuestion ? "Answer question" : "Answer confirmation",
+        detail: "Respond to the pending issue-thread interaction so the assignee has a live next action.",
+      },
+      sourceIssue: issueRef(row),
+      leafIssue: coverage.distance > 0 ? issueRef(interactionIssue) : null,
+      interactionId: coverage.interaction.id,
+    });
+  };
 
   for (const row of issueRows) {
     if (row.companyId !== companyId || BLOCKED_INBOX_TERMINAL_STATUSES.includes(row.status as typeof BLOCKED_INBOX_TERMINAL_STATUSES[number]) || row.hiddenAt) {
@@ -3416,9 +3629,10 @@ async function listIssueBlockedInboxAttentionMap(
     }
     const source = issueRef(row);
     const handoff = handoffMap.get(row.id);
+    const interactionCoverage = interactionCoverageByIssueId.get(row.id);
     const hasLiveHandoffContinuation = Boolean(
-      handoff?.state === "required"
-      && (liveHandoffRunIssueIds.has(row.id) || liveHandoffWakeIssueIds.has(row.id))
+      handoff &&
+      (liveContinuationIssueIds.has(row.id) || interactionCoverage)
     );
     if (handoff && !hasLiveHandoffContinuation && (handoff.required || handoff.state === "escalated")) {
       result.set(row.id, attentionBase({
@@ -3475,24 +3689,8 @@ async function listIssueBlockedInboxAttentionMap(
       continue;
     }
 
-    const interaction = interactionByIssueId.get(row.id);
-    if (interaction) {
-      const isUserQuestion = interaction.kind === "ask_user_questions" && Boolean(row.assigneeUserId);
-      result.set(row.id, attentionBase({
-        state: "awaiting_decision",
-        reason: isUserQuestion ? "pending_user_decision" : "pending_board_decision",
-        severity: "medium",
-        stoppedSinceAt: interaction.createdAt,
-        owner: isUserQuestion
-          ? { type: "user", agentId: null, userId: row.assigneeUserId, label: null }
-          : { type: "board", agentId: null, userId: null, label: "Board" },
-        action: {
-          label: isUserQuestion ? "Answer question" : "Answer confirmation",
-          detail: "Respond to the pending issue-thread interaction so the assignee has a live next action.",
-        },
-        sourceIssue: source,
-        interactionId: interaction.id,
-      }));
+    if (interactionCoverage?.distance === 0) {
+      result.set(row.id, awaitingDecisionAttention(row, interactionCoverage));
       continue;
     }
 
@@ -3563,7 +3761,14 @@ async function listIssueBlockedInboxAttentionMap(
       continue;
     }
 
-    const hasMonitor = Boolean(row.monitorNextCheckAt && row.monitorNextCheckAt.getTime() > Date.now());
+    if (interactionCoverage) {
+      result.set(row.id, awaitingDecisionAttention(row, interactionCoverage));
+      continue;
+    }
+
+    const hasMonitor = Boolean(
+      row.monitorNextCheckAt && row.monitorNextCheckAt.getTime() > blockedInboxNowMs,
+    );
     const external = row.status === "blocked" && !hasMonitor ? externalWaitFromDescription(row.description) : null;
     if (external) {
       result.set(row.id, attentionBase({
@@ -3582,7 +3787,9 @@ async function listIssueBlockedInboxAttentionMap(
       continue;
     }
 
-    const blockerAttention = await listIssueBlockerAttentionMap(dbOrTx, companyId, [row]);
+    if (liveContinuationIssueIds.has(row.id)) continue;
+
+    const blockerAttention = await listIssueBlockerAttentionMap(dbOrTx, companyId, [row], blockedInboxNowMs);
     const blockerState = blockerAttention.get(row.id);
     if (row.status === "blocked" && (blockerState?.state === "needs_attention" || blockerState?.state === "stalled")) {
       result.set(row.id, attentionBase({
