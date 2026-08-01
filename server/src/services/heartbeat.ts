@@ -4252,6 +4252,85 @@ async function allowsRecoveredInteractionContinuationWake(
   return newlyResolvedItemIds.every((id) => persistedResolvedIds.has(id));
 }
 
+async function allowsClaimedRecoveredInteractionContinuationWake(
+  dbOrTx: Pick<Db, "select">,
+  input: {
+    runId: string;
+    wakeupRequestId: string | null;
+    contextSnapshot: Record<string, unknown>;
+    companyId: string;
+    issueId: string;
+    assigneeAgentId: string | null;
+    agentId: string;
+  },
+) {
+  if (!input.wakeupRequestId) return false;
+  const request = await dbOrTx
+    .select({
+      source: agentWakeupRequests.source,
+      triggerDetail: agentWakeupRequests.triggerDetail,
+      reason: agentWakeupRequests.reason,
+      payload: agentWakeupRequests.payload,
+      status: agentWakeupRequests.status,
+      runId: agentWakeupRequests.runId,
+      requestedByActorType: agentWakeupRequests.requestedByActorType,
+    })
+    .from(agentWakeupRequests)
+    .where(and(
+      eq(agentWakeupRequests.id, input.wakeupRequestId),
+      eq(agentWakeupRequests.companyId, input.companyId),
+      eq(agentWakeupRequests.agentId, input.agentId),
+    ))
+    .then((rows) => rows[0] ?? null);
+  if (
+    !request
+    || request.runId !== input.runId
+    || request.status !== "queued"
+    || request.source !== "automation"
+    || request.triggerDetail !== "system"
+    || request.reason !== "issue_continuation_needed"
+    || request.requestedByActorType !== "system"
+  ) {
+    return false;
+  }
+
+  const payload = parseObject(request.payload);
+  const immutableStringFields = [
+    "interactionId",
+    "interactionKind",
+    "interactionStatus",
+    "interactionContinuationPolicy",
+    "interactionResolvedAt",
+  ] as const;
+  if (
+    readNonEmptyString(payload.issueId) !== input.issueId
+    || readNonEmptyString(payload.mutation) !== "interaction"
+    || immutableStringFields.some(
+      (key) => readNonEmptyString(payload[key]) !== readNonEmptyString(input.contextSnapshot[key]),
+    )
+  ) {
+    return false;
+  }
+  const normalizeIds = (value: unknown) => Array.isArray(value)
+    ? [...new Set(value.filter((entry): entry is string => typeof entry === "string" && entry.length > 0))].sort()
+    : [];
+  if (
+    JSON.stringify(normalizeIds(payload.newlyResolvedItemIds))
+    !== JSON.stringify(normalizeIds(input.contextSnapshot.newlyResolvedItemIds))
+  ) {
+    return false;
+  }
+
+  return allowsRecoveredInteractionContinuationWake(dbOrTx, {
+    contextSnapshot: input.contextSnapshot,
+    companyId: input.companyId,
+    issueId: input.issueId,
+    assigneeAgentId: input.assigneeAgentId,
+    agentId: input.agentId,
+    requestedByActorType: request.requestedByActorType,
+  });
+}
+
 async function listUnresolvedBlockerSummaries(
   dbOrTx: Pick<Db, "select">,
   companyId: string,
@@ -12800,10 +12879,32 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         return null;
       }
 
+      const recoveredInteractionIssue = readNonEmptyString(context.wakeReason) === "issue_continuation_needed"
+        ? await db
+            .select({ id: issues.id, assigneeAgentId: issues.assigneeAgentId })
+            .from(issues)
+            .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
+            .then((rows) => rows[0] ?? null)
+        : null;
+      const exactRecoveredInteractionWake = recoveredInteractionIssue
+        ? await allowsClaimedRecoveredInteractionContinuationWake(db, {
+            runId: run.id,
+            wakeupRequestId: run.wakeupRequestId,
+            contextSnapshot: context,
+            companyId: run.companyId,
+            issueId,
+            assigneeAgentId: recoveredInteractionIssue.assigneeAgentId,
+            agentId: run.agentId,
+          })
+        : false;
       const dependencyReadiness = await issuesSvc.listDependencyReadiness(run.companyId, [issueId]);
       const readiness = dependencyReadiness.get(issueId);
       const unresolvedBlockerCount = readiness?.unresolvedBlockerCount ?? 0;
-      if (unresolvedBlockerCount > 0 && !allowsIssueInteractionWake(context)) {
+      if (
+        unresolvedBlockerCount > 0
+        && !allowsIssueInteractionWake(context)
+        && !exactRecoveredInteractionWake
+      ) {
         await cancelQueuedRunForBlockedDependencies(run, issueId, readiness?.unresolvedBlockerIssueIds ?? []);
         logger.info({ runId: run.id, issueId, unresolvedBlockerCount }, "claimQueuedRun: cancelled blocked queued run");
         return null;
