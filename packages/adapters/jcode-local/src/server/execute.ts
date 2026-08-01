@@ -1,5 +1,4 @@
 import fs from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import type { AdapterExecutionContext, AdapterExecutionResult } from "@paperclipai/adapter-utils";
@@ -49,14 +48,13 @@ import {
   readPaperclipIssueWorkModeFromContext,
   removeMaintainerOnlySkillSymlinks,
   resolvePaperclipDesiredSkillNames,
+  resolveJcodeSkillsHome,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
 } from "@paperclipai/adapter-utils/server-utils";
 import { isJcodeUnknownSessionError, parseJcodeNdjson } from "./parse.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
-
-const JCODE_SKILLS_DIR = path.join(os.homedir(), ".jcode", "skills");
 
 function resolveJcodeBillingType(env: Record<string, string>): "api" | "subscription" | "metered_api" {
   if (hasNonEmptyEnvValue(env, "ANTHROPIC_API_KEY")) return "api";
@@ -356,27 +354,28 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const jcodeSkillEntries = await readPaperclipRuntimeSkillEntries(config, __moduleDir);
   const desiredSkillNames = resolvePaperclipDesiredSkillNames(config, jcodeSkillEntries);
   if (desiredSkillNames.length > 0 && !executionTargetIsRemote) {
+    const jcodeSkillsDir = resolveJcodeSkillsHome(config);
     const desiredSet = new Set(desiredSkillNames);
     const selectedEntries = jcodeSkillEntries.filter((entry) => desiredSet.has(entry.key));
     if (selectedEntries.length > 0) {
-      await fs.mkdir(JCODE_SKILLS_DIR, { recursive: true });
+      await fs.mkdir(jcodeSkillsDir, { recursive: true });
       await removeMaintainerOnlySkillSymlinks(
-        JCODE_SKILLS_DIR,
+        jcodeSkillsDir,
         selectedEntries.map((entry) => entry.runtimeName),
       );
       for (const entry of selectedEntries) {
-        const target = path.join(JCODE_SKILLS_DIR, entry.runtimeName);
+        const target = path.join(jcodeSkillsDir, entry.runtimeName);
         try {
           const result = await ensurePaperclipSkillSymlink(entry.source, target);
           if (result === "skipped") continue;
           await onLog(
             "stderr",
-            `[paperclip] ${result === "repaired" ? "Repaired" : "Injected"} JCode skill "${entry.runtimeName}" into ${JCODE_SKILLS_DIR}\n`,
+            `[paperclip] ${result === "repaired" ? "Repaired" : "Injected"} JCode skill "${entry.runtimeName}" into ${jcodeSkillsDir}\n`,
           );
         } catch (err) {
           await onLog(
             "stderr",
-            `[paperclip] Failed to inject JCode skill "${entry.runtimeName}" into ${JCODE_SKILLS_DIR}: ${err instanceof Error ? err.message : String(err)}\n`,
+            `[paperclip] Failed to inject JCode skill "${entry.runtimeName}" into ${jcodeSkillsDir}: ${err instanceof Error ? err.message : String(err)}\n`,
           );
         }
       }

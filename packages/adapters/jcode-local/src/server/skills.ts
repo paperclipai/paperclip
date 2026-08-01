@@ -20,7 +20,7 @@ function asString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
 }
 
-function resolveJcodeSkillsHome(config: Record<string, unknown>) {
+export function resolveJcodeSkillsHome(config: Record<string, unknown>) {
   const env =
     typeof config.env === "object" && config.env !== null && !Array.isArray(config.env)
       ? (config.env as Record<string, unknown>)

@@ -6,15 +6,27 @@ describe("jcode sessionCodec", () => {
     const parsed = sessionCodec.deserialize({
       session_id: "jcode-session-1",
       folder: "/tmp/jcode",
+      remoteExecution: {
+        transport: "sandbox",
+        remoteCwd: "/remote/jcode",
+      },
     });
 
     expect(parsed).toEqual({
       sessionId: "jcode-session-1",
       cwd: "/tmp/jcode",
+      remoteExecution: {
+        transport: "sandbox",
+        remoteCwd: "/remote/jcode",
+      },
     });
     expect(sessionCodec.serialize(parsed)).toEqual({
       sessionId: "jcode-session-1",
       cwd: "/tmp/jcode",
+      remoteExecution: {
+        transport: "sandbox",
+        remoteCwd: "/remote/jcode",
+      },
     });
     expect(sessionCodec.getDisplayId?.(parsed)).toBe("jcode-session-1");
   });
