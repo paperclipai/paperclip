@@ -20,6 +20,8 @@ type AssigneeLike = {
 
 type IssueLike = AssigneeLike & {
   status: string;
+  responsibleUserId?: string | null;
+  createdByUserId?: string | null;
   executionPolicy?: IssueExecutionPolicy | Record<string, unknown> | null;
   executionState?: IssueExecutionState | Record<string, unknown> | null;
   monitorNextCheckAt?: Date | null;
@@ -57,6 +59,13 @@ type TransitionResult = {
   decision?: Pick<IssueExecutionDecision, "stageId" | "stageType" | "outcome" | "body">;
   workflowControlledAssignment?: boolean;
 };
+
+/**
+ * Consecutive agent-initiated changes-requested rounds tolerated on one stage
+ * before the pending review escalates to the responsible human. Policies can
+ * override via `maxReviewRounds`; human decisions always reset the counter.
+ */
+export const DEFAULT_MAX_REVIEW_ROUNDS = 3;
 
 const COMPLETED_STATUS: IssueExecutionState["status"] = "completed";
 const PENDING_STATUS: IssueExecutionState["status"] = "pending";
@@ -400,6 +409,7 @@ export function normalizeIssueExecutionPolicy(input: unknown): IssueExecutionPol
     ...(monitor ? { monitor } : {}),
     ...(reviewPreset ? { reviewPreset } : {}),
     ...(authorizationPolicy ? { authorizationPolicy } : {}),
+    ...(parsed.data.maxReviewRounds != null ? { maxReviewRounds: parsed.data.maxReviewRounds } : {}),
   };
 }
 
@@ -430,6 +440,24 @@ function principalsEqual(a: IssueExecutionStagePrincipal | null, b: IssueExecuti
   if (!a || !b) return false;
   if (a.type !== b.type) return false;
   return a.type === "agent" ? a.agentId === b.agentId : a.userId === b.userId;
+}
+
+function resolveMaxReviewRounds(policy: IssueExecutionPolicy | null): number {
+  const configured = policy?.maxReviewRounds;
+  return typeof configured === "number" && configured > 0 ? configured : DEFAULT_MAX_REVIEW_ROUNDS;
+}
+
+/**
+ * The human a review stage escalates to when agents exhaust their
+ * changes-requested rounds. Without one the loop keeps handing back to the
+ * return assignee (pre-existing behavior) rather than stalling the stage.
+ */
+function reviewEscalationUserId(issue: IssueLike): string | null {
+  const responsible = issue.responsibleUserId?.trim();
+  if (responsible) return responsible;
+  const creator = issue.createdByUserId?.trim();
+  if (creator) return creator;
+  return null;
 }
 
 function findStageById(policy: IssueExecutionPolicy, stageId: string | null | undefined) {
@@ -497,6 +525,7 @@ function buildCompletedState(previous: IssueExecutionState | null, currentStage:
     lastDecisionId: previous?.lastDecisionId ?? null,
     lastDecisionOutcome: "approved",
     monitor: previous?.monitor ?? null,
+    changesRequestedCount: 0,
   };
 }
 
@@ -547,6 +576,7 @@ function buildPendingState(input: {
   participant: IssueExecutionStagePrincipal;
   returnAssignee: IssueExecutionStagePrincipal | null;
   reviewRequest?: IssueExecutionState["reviewRequest"] | null;
+  changesRequestedCount?: number;
 }): IssueExecutionState {
   return {
     status: PENDING_STATUS,
@@ -560,10 +590,15 @@ function buildPendingState(input: {
     lastDecisionId: input.previous?.lastDecisionId ?? null,
     lastDecisionOutcome: input.previous?.lastDecisionOutcome ?? null,
     monitor: input.previous?.monitor ?? null,
+    changesRequestedCount: input.changesRequestedCount ?? input.previous?.changesRequestedCount ?? 0,
   };
 }
 
-function buildChangesRequestedState(previous: IssueExecutionState, currentStage: IssueExecutionStage): IssueExecutionState {
+function buildChangesRequestedState(
+  previous: IssueExecutionState,
+  currentStage: IssueExecutionStage,
+  changesRequestedCount: number,
+): IssueExecutionState {
   return {
     ...previous,
     status: CHANGES_REQUESTED_STATUS,
@@ -571,6 +606,7 @@ function buildChangesRequestedState(previous: IssueExecutionState, currentStage:
     currentStageType: currentStage.type,
     reviewRequest: null,
     lastDecisionOutcome: "changes_requested",
+    changesRequestedCount,
   };
 }
 
@@ -582,6 +618,7 @@ function buildPendingStagePatch(input: {
   participant: IssueExecutionStagePrincipal;
   returnAssignee: IssueExecutionStagePrincipal | null;
   reviewRequest?: IssueExecutionState["reviewRequest"] | null;
+  changesRequestedCount?: number;
 }) {
   input.patch.status = "in_review";
   Object.assign(input.patch, patchForPrincipal(input.participant));
@@ -592,6 +629,7 @@ function buildPendingStagePatch(input: {
     participant: input.participant,
     returnAssignee: input.returnAssignee,
     reviewRequest: input.reviewRequest,
+    changesRequestedCount: input.changesRequestedCount,
   });
 }
 
@@ -676,7 +714,19 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
       throw unprocessable(`No eligible ${activeStage.type} participant is configured for this issue`);
     }
 
-    if (!stageHasParticipant(activeStage, currentParticipant)) {
+    // An escalated review is deliberately held by a human who is not in the
+    // stage's configured participants. Re-selecting a configured (agent)
+    // participant would silently undo the escalation on the next unrelated
+    // PATCH, so the hold is sticky until the escalated human decides — their
+    // own decisions fall through to the participant decision branch below.
+    const escalatedHold =
+      currentParticipant.type === "user" &&
+      !stageHasParticipant(activeStage, currentParticipant) &&
+      (existingState?.changesRequestedCount ?? 0) >= resolveMaxReviewRounds(input.policy);
+    if (escalatedHold && !principalsEqual(currentParticipant, actor)) {
+      return { patch };
+    }
+    if (!escalatedHold && !stageHasParticipant(activeStage, currentParticipant)) {
       const participant = selectStageParticipant(activeStage, {
         preferred: explicitAssignee ?? existingState?.currentParticipant ?? null,
         exclude: existingState?.returnAssignee ?? null,
@@ -768,17 +818,47 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
         if (!existingState?.returnAssignee) {
           throw unprocessable("This execution stage has no return assignee");
         }
+        const decision = {
+          stageId: activeStage.id,
+          stageType: activeStage.type,
+          outcome: "changes_requested" as const,
+          body: input.commentBody.trim(),
+        };
+        // Human decisions reset the round counter: the cap exists to stop
+        // unattended agent↔agent ping-pong, not to limit human review.
+        const actorIsHuman = actor?.type === "user";
+        const nextRounds = actorIsHuman ? 0 : (existingState.changesRequestedCount ?? 0) + 1;
+        if (!actorIsHuman && nextRounds >= resolveMaxReviewRounds(input.policy)) {
+          const escalationUserId = reviewEscalationUserId(input.issue);
+          if (escalationUserId) {
+            // Rounds exhausted: keep the stage pending but hand it to the
+            // responsible human instead of bouncing back to the implementer.
+            // The recorded changes-requested decision carries the reviewer's
+            // reasoning; the human approves, requests changes (resetting the
+            // counter), or re-scopes.
+            buildPendingStagePatch({
+              patch,
+              previous: existingState,
+              policy: input.policy,
+              stage: activeStage,
+              participant: { type: "user", agentId: null, userId: escalationUserId },
+              returnAssignee: existingState.returnAssignee,
+              reviewRequest: effectiveReviewRequest,
+              changesRequestedCount: nextRounds,
+            });
+            return {
+              patch,
+              decision,
+              workflowControlledAssignment: true,
+            };
+          }
+        }
         patch.status = "in_progress";
         Object.assign(patch, patchForPrincipal(existingState.returnAssignee));
-        patch.executionState = buildChangesRequestedState(existingState, activeStage);
+        patch.executionState = buildChangesRequestedState(existingState, activeStage, nextRounds);
         return {
           patch,
-          decision: {
-            stageId: activeStage.id,
-            stageType: activeStage.type,
-            outcome: "changes_requested",
-            body: input.commentBody.trim(),
-          },
+          decision,
           workflowControlledAssignment: true,
         };
       }
