@@ -6438,6 +6438,9 @@ export function issueService(db: Db) {
           id: issues.id,
           assigneeAgentId: issues.assigneeAgentId,
           status: issues.status,
+          unblockDescriptor: issues.unblockDescriptor,
+          blockedTransitionAt: issues.blockedTransitionAt,
+          blockedOwnerNotifiedAt: issues.blockedOwnerNotifiedAt,
         })
         .from(issueRelations)
         .innerJoin(issues, eq(issueRelations.relatedIssueId, issues.id))
@@ -6475,8 +6478,12 @@ export function issueService(db: Db) {
         .filter(({ readiness }) => readiness.isDependencyReady && readiness.blockerIssueIds.length > 0)
         .map(({ candidate, readiness }) => ({
           id: candidate.id,
+          status: candidate.status,
           assigneeAgentId: candidate.assigneeAgentId!,
           blockerIssueIds: readiness.blockerIssueIds,
+          unblockDescriptor: candidate.unblockDescriptor,
+          blockedTransitionAt: candidate.blockedTransitionAt,
+          blockedOwnerNotifiedAt: candidate.blockedOwnerNotifiedAt,
         }));
     },
 

@@ -1806,6 +1806,42 @@ function isClosedIssueStatus(status: string | null | undefined): status is "done
   return status === "done" || status === "cancelled";
 }
 
+function buildDependencyReadyUnblockOwnerWake(input: {
+  dependent: {
+    id: string;
+    status: string;
+    unblockDescriptor: IssueUnblockDescriptor | null;
+    blockedTransitionAt: Date | null;
+    blockedOwnerNotifiedAt: Date | null;
+  };
+  resolvedBlockerIssueId: string;
+  requestedByActorType: "agent" | "user";
+  requestedByActorId: string;
+}) {
+  const intent = buildAgentUnblockWakeIntent(input.dependent);
+  if (!intent) return null;
+  return {
+    agentId: intent.ownerAgentId,
+    wakeup: {
+      source: "automation" as const,
+      triggerDetail: "system" as const,
+      reason: "issue_unblock_requested",
+      idempotencyKey: `${intent.idempotencyKey}:dependency:${input.resolvedBlockerIssueId}`,
+      payload: intent.payload,
+      requestedByActorType: input.requestedByActorType,
+      requestedByActorId: input.requestedByActorId,
+      contextSnapshot: {
+        issueId: input.dependent.id,
+        taskId: input.dependent.id,
+        wakeReason: "issue_unblock_requested",
+        source: "issue.unblock_prerequisite_resolved",
+        resolvedBlockerIssueId: input.resolvedBlockerIssueId,
+        intentFingerprint: intent.intentFingerprint,
+      },
+    },
+  };
+}
+
 function shouldImplicitlyMoveCommentedIssueToTodo(input: {
   issueStatus: string | null | undefined;
   assigneeAgentId: string | null | undefined;
@@ -9958,6 +9994,16 @@ export function issueRoutes(
       if (becameDone) {
         const dependents = await svc.listWakeableBlockedDependents(issue.id);
         for (const dependent of dependents) {
+          const ownerWake = buildDependencyReadyUnblockOwnerWake({
+            dependent,
+            resolvedBlockerIssueId: issue.id,
+            requestedByActorType: actor.actorType,
+            requestedByActorId: actor.actorId,
+          });
+          if (ownerWake) {
+            addWakeup(ownerWake.agentId, ownerWake.wakeup);
+            continue;
+          }
           await addDependencyResolvedWakeup({
             agentId: dependent.assigneeAgentId,
             dependentIssueId: dependent.id,
@@ -11796,6 +11842,16 @@ export function issueRoutes(
       if (becameDone) {
         const dependents = await svc.listWakeableBlockedDependents(currentIssue.id);
         for (const dependent of dependents) {
+          const ownerWake = buildDependencyReadyUnblockOwnerWake({
+            dependent,
+            resolvedBlockerIssueId: currentIssue.id,
+            requestedByActorType: actor.actorType,
+            requestedByActorId: actor.actorId,
+          });
+          if (ownerWake) {
+            addWakeup(ownerWake.agentId, ownerWake.wakeup);
+            continue;
+          }
           await addDependencyResolvedWakeup({
             agentId: dependent.assigneeAgentId,
             dependentIssueId: dependent.id,
