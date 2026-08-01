@@ -4,6 +4,34 @@
 // instrumentationReady before opening DB connections or constructing the
 // HTTP server, so trace coverage does not depend on incidental timing.
 import { instrumentationReady, shutdownInstrumentation } from "./instrumentation.js";
+
+// A broken stdio pipe must never take down the control plane.
+//
+// 2026-08-01 (TSMC-18806): the server entered a crash-restart loop — 12 unexpected exits in
+// 20 minutes, board API unreachable in repeated windows — dying every time on:
+//
+//   node:events:502  throw er; // Unhandled 'error' event
+//   Error: write EPIPE   at WriteWrap.onWriteComplete
+//   Emitted 'error' event on Socket instance at: ...
+//
+// When stdout/stderr are PIPES rather than files — which they are here; the process runs under
+// pnpm -> cross-env -> tsx -> node with dev-watch supervising that chain — Node models them as
+// net.Socket. If any process holding the read end goes away, the next write raises EPIPE as an
+// 'error' event. Nothing was listening for it, so Node's default handling of an unhandled
+// 'error' event took the whole server down. Boot is when it bites: `resumeQueuedRuns` logs a
+// line per queued run immediately after listen, so a stale reader gets discovered under maximum
+// write pressure — which is why every restart died within seconds of coming up.
+//
+// Losing a log line is a nuisance. Losing the control plane stops the entire fleet, because the
+// board is the only channel agents respond to. Swallow EPIPE / ERR_STREAM_DESTROYED here and let
+// every other stream error surface exactly as before.
+for (const stream of [process.stdout, process.stderr]) {
+  stream.on("error", (err: NodeJS.ErrnoException) => {
+    if (err?.code === "EPIPE" || err?.code === "ERR_STREAM_DESTROYED") return;
+    throw err;
+  });
+}
+
 import { existsSync, readFileSync, rmSync } from "node:fs";
 import { createServer } from "node:http";
 import { resolve } from "node:path";
@@ -67,10 +95,12 @@ import { createFeedbackTraceShareClientFromConfig } from "./services/feedback-sh
 import { buildRuntimeApiCandidateUrls, choosePrimaryRuntimeApiUrl } from "./runtime-api.js";
 import { createPluginWorkerManager } from "./services/plugin-worker-manager.js";
 import { startHeartbeatHistoryRetention } from "./services/heartbeat-retention.js";
+import { startRunLogRetention } from "./services/run-log-retention.js";
 import { createStorageServiceFromConfig } from "./storage/index.js";
 import { printStartupBanner } from "./startup-banner.js";
 import { getBoardClaimWarningUrl, initializeBoardClaimChallenge } from "./board-claim.js";
 import { maybePersistWorktreeRuntimePorts } from "./worktree-config.js";
+import { resolvePaperclipInstanceRoot } from "./home-paths.js";
 import { initTelemetry, getTelemetryClient } from "./telemetry.js";
 import { conflict } from "./errors.js";
 import { coordinateHeartbeatSchedulerShutdown } from "./shutdown.js";
@@ -1389,6 +1419,15 @@ export async function startServer(): Promise<StartedServer> {
   const heartbeatRetentionDays = Number(process.env.PAPERCLIP_HEARTBEAT_RETENTION_DAYS);
   if (Number.isFinite(heartbeatRetentionDays) && heartbeatRetentionDays > 0) {
     startHeartbeatHistoryRetention(db, { retentionDays: heartbeatRetentionDays });
+  }
+
+  const runLogRetentionDays = Number(process.env.PAPERCLIP_RUN_LOG_RETENTION_DAYS);
+  if (Number.isFinite(runLogRetentionDays) && runLogRetentionDays > 0) {
+    startRunLogRetention({
+      basePath: process.env.RUN_LOG_BASE_PATH ?? resolve(resolvePaperclipInstanceRoot(), "data", "run-logs"),
+      archivePath: process.env.PAPERCLIP_RUN_LOG_ARCHIVE_PATH?.trim() || undefined,
+      retentionDays: runLogRetentionDays,
+    });
   }
 
   // Wait for external adapters to finish loading before accepting requests.
