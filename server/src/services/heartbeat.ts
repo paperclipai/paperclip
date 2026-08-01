@@ -11560,18 +11560,33 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return Number(count ?? 0);
   }
 
-  async function claimQueuedRun(run: typeof heartbeatRuns.$inferSelect, companyAgents?: AgentOrgRow[]) {
+  async function claimQueuedRun(
+    run: typeof heartbeatRuns.$inferSelect,
+    companyAgents?: AgentOrgRow[],
+    options: { agentStartLockHeld?: boolean } = {},
+  ) {
     if (run.status !== "queued") return run;
+
+    // startNextQueuedRunForAgent() calls this while holding the per-agent start
+    // lock. Defer queue continuation so cancelRunInternal() cannot reacquire
+    // that same lock and stall for its 30-second stale timeout.
+    const cancelBeforeClaim = (reason: string) =>
+      cancelRunInternal(run.id, reason, {
+        deferQueueDispatch: options.agentStartLockHeld === true,
+      });
+
     const agent = await getAgent(run.agentId);
     if (!agent) {
-      await cancelRunInternal(run.id, "Cancelled because the agent no longer exists");
+      await cancelBeforeClaim("Cancelled because the agent no longer exists");
       return null;
     }
     const invokability = companyAgents
       ? evaluateAgentInvokability(toAgentOrgRow(agent), companyAgents)
       : await getAgentInvokability(agent);
     if (!invokability.invokable) {
-      await cancelRunInternal(run.id, `Cancelled because the agent is not invokable: ${invokability.reason}`);
+      await cancelBeforeClaim(
+        `Cancelled because the agent is not invokable: ${invokability.reason}`,
+      );
       return null;
     }
 
@@ -11581,7 +11596,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       projectId: readNonEmptyString(context.projectId),
     });
     if (budgetBlock) {
-      await cancelRunInternal(run.id, budgetBlock.reason);
+      await cancelBeforeClaim(budgetBlock.reason);
       return null;
     }
 
@@ -11607,7 +11622,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         contextSnapshot: context,
       });
       if (activePauseHold && !treeHoldInteractionWake) {
-        await cancelRunInternal(run.id, "Cancelled because issue is held by an active subtree pause hold");
+        await cancelBeforeClaim(
+          "Cancelled because issue is held by an active subtree pause hold",
+        );
         await logActivity(db, {
           companyId: run.companyId,
           actorType: "system",
@@ -12678,7 +12695,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       const claimedRuns: Array<typeof heartbeatRuns.$inferSelect> = [];
       for (const queuedRun of prioritizedRuns) {
         if (claimedRuns.length >= availableSlots) break;
-        const claimed = await claimQueuedRun(queuedRun, companyAgents);
+        const claimed = await claimQueuedRun(queuedRun, companyAgents, { agentStartLockHeld: true });
         if (claimed) claimedRuns.push(claimed);
       }
       if (claimedRuns.length === 0) return [];
@@ -15415,7 +15432,10 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
   async function releaseIssueExecutionAndPromote(
     run: typeof heartbeatRuns.$inferSelect,
-    options: { suppressImmediateRecovery?: boolean } = {},
+    options: {
+      suppressImmediateRecovery?: boolean;
+      suppressQueueDispatch?: boolean;
+    } = {},
   ) {
     const runContext = parseObject(run.contextSnapshot);
     const contextIssueId = readNonEmptyString(runContext.issueId);
@@ -16177,7 +16197,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       },
     });
 
-    await startNextQueuedRunForAgent(promotedRun.agentId);
+    if (!options.suppressQueueDispatch) {
+      await startNextQueuedRunForAgent(promotedRun.agentId);
+    }
   }
 
   async function enqueueWakeup(agentId: string, opts: WakeupOptions = {}) {
@@ -17531,6 +17553,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     resultJson?: Record<string, unknown>;
     eventMessage?: string;
     eventPayload?: Record<string, unknown>;
+    deferQueueDispatch?: boolean;
   };
 
   async function cancelRunInternal(runId: string, reason = "Cancelled by control plane", options: CancelRunOptions = {}) {
@@ -17589,13 +17612,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         message: options.eventMessage ?? "run cancelled",
         ...(options.eventPayload ? { payload: options.eventPayload } : {}),
       });
-      await releaseIssueExecutionAndPromote(cancelled);
+      await releaseIssueExecutionAndPromote(cancelled, {
+        suppressImmediateRecovery: options.deferQueueDispatch,
+        suppressQueueDispatch: options.deferQueueDispatch,
+      });
     }
 
-    await finalizeAgentStatus(run.agentId, "cancelled", undefined, {
-      wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
-    });
-    await startNextQueuedRunForAgent(run.agentId);
+    if (!options.deferQueueDispatch) {
+      await finalizeAgentStatus(run.agentId, "cancelled", undefined, {
+        wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
+      });
+      await startNextQueuedRunForAgent(run.agentId);
+    }
     return cancelled;
   }
 

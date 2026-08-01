@@ -41,6 +41,9 @@ const mockAdapterExecute = vi.hoisted(() =>
     model: "test-model",
   })),
 );
+const invokabilityMockState = vi.hoisted(() => ({
+  rejectDirectEvaluation: false,
+}));
 
 vi.mock("../adapters/index.ts", async () => {
   const actual = await vi.importActual<typeof import("../adapters/index.ts")>("../adapters/index.ts");
@@ -50,6 +53,29 @@ vi.mock("../adapters/index.ts", async () => {
       supportsLocalAgentJwt: false,
       execute: mockAdapterExecute,
     })),
+  };
+});
+
+vi.mock("../services/agent-invokability.ts", async () => {
+  const actual = await vi.importActual<typeof import("../services/agent-invokability.ts")>(
+    "../services/agent-invokability.ts",
+  );
+  return {
+    ...actual,
+    evaluateAgentInvokability: (
+      ...args: Parameters<typeof actual.evaluateAgentInvokability>
+    ): ReturnType<typeof actual.evaluateAgentInvokability> => {
+      if (invokabilityMockState.rejectDirectEvaluation) {
+        return {
+          invokable: false,
+          reason: "error",
+          message: "Agent became non-invokable before claim",
+          details: {},
+          invalidOrgChain: false,
+        };
+      }
+      return actual.evaluateAgentInvokability(...args);
+    },
   };
 });
 
@@ -100,6 +126,7 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
   }, 20_000);
 
   afterEach(async () => {
+    invokabilityMockState.rejectDirectEvaluation = false;
     let idlePolls = 0;
     for (let attempt = 0; attempt < 100; attempt += 1) {
       const runs = await db
@@ -683,6 +710,94 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
       finishFirstRun();
     }
   }, 40_000);
+
+  it("cancels a run that becomes non-invokable during claim without reacquiring the agent start lock", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const wakeupRequestId = randomUUID();
+    const runId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `L${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "LockRaceAgent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {
+        heartbeat: {
+          wakeOnDemand: true,
+          maxConcurrentRuns: 1,
+        },
+      },
+      permissions: {},
+    });
+    await db.insert(agentWakeupRequests).values({
+      id: wakeupRequestId,
+      companyId,
+      agentId,
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      status: "queued",
+    });
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "queued",
+      wakeupRequestId,
+      contextSnapshot: { wakeReason: "issue_assigned" },
+      responsibleUserId: "responsible-user",
+    });
+    await db
+      .update(agentWakeupRequests)
+      .set({ runId })
+      .where(eq(agentWakeupRequests.id, wakeupRequestId));
+
+    // The scheduler's initial database-backed eligibility check still passes.
+    // The direct evaluation inside claimQueuedRun then models the real race in
+    // which another run moves the agent to error before this queued row claims.
+    invokabilityMockState.rejectDirectEvaluation = true;
+    await heartbeat.resumeQueuedRuns();
+    invokabilityMockState.rejectDirectEvaluation = false;
+
+    const [run, wakeup, agent] = await Promise.all([
+      db
+        .select({ status: heartbeatRuns.status, error: heartbeatRuns.error })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({ status: agentWakeupRequests.status })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, wakeupRequestId))
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({ status: agents.status })
+        .from(agents)
+        .where(eq(agents.id, agentId))
+        .then((rows) => rows[0] ?? null),
+    ]);
+
+    expect(run).toMatchObject({
+      status: "cancelled",
+      error: "Cancelled because the agent is not invokable: error",
+    });
+    expect(wakeup?.status).toBe("cancelled");
+    expect(agent?.status).toBe("active");
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+  });
 
   it("cancels stale queued runs when issue blockers are still unresolved", async () => {
     const companyId = randomUUID();
