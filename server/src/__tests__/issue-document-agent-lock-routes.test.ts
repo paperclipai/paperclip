@@ -7,13 +7,23 @@ const companyId = "22222222-2222-4222-8222-222222222222";
 const ownerAgentId = "33333333-3333-4333-8333-333333333333";
 const otherAgentId = "44444444-4444-4444-8444-444444444444";
 
-const mockIssueService = vi.hoisted(() => ({ getById: vi.fn() }));
+const mockIssueService = vi.hoisted(() => ({
+  getById: vi.fn(),
+  assertCheckoutOwner: vi.fn(async () => ({ adoptedFromRunId: null })),
+}));
 const mockDocumentService = vi.hoisted(() => ({
   getIssueDocumentByKey: vi.fn(),
   lockIssueDocument: vi.fn(),
   unlockIssueDocument: vi.fn(),
 }));
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
+const mockDb = vi.hoisted(() => ({
+  select: vi.fn(() => ({
+    from: vi.fn(() => ({
+      where: vi.fn(async () => []),
+    })),
+  })),
+}));
 
 function registerMocks() {
   vi.doMock("../services/index.js", () => ({
@@ -79,7 +89,7 @@ async function appFor(actor: Record<string, unknown>) {
   const app = express();
   app.use(express.json());
   app.use((req, _res, next) => { (req as any).actor = actor; next(); });
-  app.use("/api", issueRoutes({} as any, {} as any));
+  app.use("/api", issueRoutes(mockDb as any, {} as any));
   app.use(errorHandler);
   return app;
 }
