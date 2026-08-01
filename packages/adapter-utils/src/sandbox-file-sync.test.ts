@@ -21,8 +21,10 @@ interface RecordingClient {
 }
 
 // A filesystem-backed client that additionally exposes native syncIn/syncOut,
-// mirroring a provider that opted into the sync verbs. The native transfer is a
-// faithful destroy-then-replace directory copy honoring followSymlinks.
+// mirroring a provider that opted into the sync verbs and HONORS an operation's
+// ordered `postUploadCommands` after its files land (PR-2 contract: execute or
+// fail-closed, never silently ignore). The native transfer is a faithful copy
+// honoring followSymlinks; single-file mappings stream verbatim.
 function makeNativeClient(): RecordingClient {
   const syncInOps: SandboxSyncOperation[][] = [];
   const syncOutOps: SandboxSyncOperation[][] = [];
@@ -52,6 +54,10 @@ function makeNativeClient(): RecordingClient {
           await writeFile(mapping.targetPath, await readFile(mapping.sourcePath));
           filesTransferred += 1;
         }
+      }
+      // Honor the operation's ordered post-upload commands (PR-2), fail-fast.
+      for (const command of operation.postUploadCommands ?? []) {
+        await execFile("sh", ["-c", command.command], { maxBuffer: 32 * 1024 * 1024 });
       }
       return { operationId: operation.operationId, filesTransferred, bytesTransferred: 0 };
     })),
@@ -106,16 +112,25 @@ describe("sandbox native file sync", () => {
       assets: [{ key: "skills", localDir: localAssetsDir }],
     });
 
-    // The default-provision asset was transferred through syncIn as a single
-    // directory mapping with an opaque operationId; the file landed in place.
+    // Both the workspace and the default-provision asset stage through syncIn:
+    // each uploads a single tar as a `file` mapping with an opaque operationId,
+    // and the extract runs as the operation's ordered post-upload command.
     const inboundOps = syncInOps.flat();
-    expect(inboundOps.length).toBe(1);
-    const assetOp = inboundOps[0];
-    expect(assetOp.operationId).toMatch(/^sync-op-\d+$/);
-    expect(assetOp.operationId).not.toContain("skills");
-    expect(assetOp.files).toEqual([
-      { sourcePath: localAssetsDir, targetPath: prepared.assetDirs.skills, kind: "directory", exclude: undefined, followSymlinks: undefined },
-    ]);
+    expect(inboundOps.length).toBe(2);
+    const assetOp = inboundOps.find((op) =>
+      op.files.some((mapping) => mapping.targetPath.endsWith("skills-upload.tar")),
+    );
+    expect(assetOp).toBeDefined();
+    expect(assetOp!.operationId).toMatch(/^sync-op-\d+$/);
+    expect(assetOp!.operationId).not.toContain("skills");
+    expect(assetOp!.files).toHaveLength(1);
+    expect(assetOp!.files[0]).toMatchObject({
+      targetPath: path.posix.join(prepared.runtimeRootDir, "skills-upload.tar"),
+      kind: "file",
+    });
+    // Default provision → a plain destroy-then-replace tar extract post-command.
+    expect(assetOp!.postUploadCommands).toHaveLength(1);
+    expect(assetOp!.postUploadCommands![0].command).toContain("tar -xf");
     expect(await readFile(path.join(prepared.assetDirs.skills, "skill.md"), "utf8")).toBe("skill body\n");
 
     // Mutate the sandbox workspace, then restore through the native outbound path.
@@ -130,7 +145,54 @@ describe("sandbox native file sync", () => {
     expect(await readFile(path.join(localWorkspaceDir, "new.txt"), "utf8")).toBe("added\n");
   });
 
-  it("keeps a custom-provision asset on the tar fallback even when native sync is available", async () => {
+  it("stamps the run-specific timeout onto every delegated post-upload command", async () => {
+    // The extract/wipe/merge commands are delegated to the provider through
+    // `syncIn` as `postUploadCommands`. They MUST carry the run-specific timeout
+    // (`spec.timeoutMs`) — the same limit the pre-syncIn code passed to
+    // `client.run` — not the provider sync client's own default. When the two
+    // differ, a command left without a `timeoutMs` outlives (or is killed under)
+    // the wrong limit; here a distinctive `spec.timeoutMs` proves propagation.
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-native-timeout-"));
+    cleanupDirs.push(rootDir);
+    const localWorkspaceDir = path.join(rootDir, "local-workspace");
+    const remoteWorkspaceDir = path.join(rootDir, "remote-workspace");
+    const defaultAssetDir = path.join(rootDir, "default-asset");
+    const customAssetDir = path.join(rootDir, "custom-asset");
+    await mkdir(localWorkspaceDir, { recursive: true });
+    await mkdir(defaultAssetDir, { recursive: true });
+    await mkdir(customAssetDir, { recursive: true });
+    await writeFile(path.join(localWorkspaceDir, "README.md"), "ws\n", "utf8");
+    await writeFile(path.join(defaultAssetDir, "skill.md"), "skill\n", "utf8");
+    await writeFile(path.join(customAssetDir, "cred.txt"), "secret\n", "utf8");
+
+    const runTimeoutMs = 7_000;
+    const { client, syncInOps } = makeNativeClient();
+    await prepareSandboxManagedRuntime({
+      spec: { transport: "sandbox", provider: "test", sandboxId: "s1", remoteCwd: remoteWorkspaceDir, timeoutMs: runTimeoutMs, apiKey: null },
+      adapterKey: "test-adapter",
+      client,
+      workspaceLocalDir: localWorkspaceDir,
+      assets: [
+        { key: "skills", localDir: defaultAssetDir },
+        {
+          key: "creds",
+          localDir: customAssetDir,
+          provision: { postUploadCommand: ({ assetTarPath, assetDir }) =>
+            `rm -rf ${assetDir} && mkdir -p ${assetDir} && tar -xf ${assetTarPath} -C ${assetDir} && rm -f ${assetTarPath}` },
+        },
+      ],
+    });
+
+    // Workspace extract + default-asset extract + custom-provision merge — every
+    // delegated command across every operation carries the run timeout.
+    const commands = syncInOps.flat().flatMap((op) => op.postUploadCommands ?? []);
+    expect(commands.length).toBeGreaterThanOrEqual(3);
+    for (const command of commands) {
+      expect(command.timeoutMs).toBe(runTimeoutMs);
+    }
+  });
+
+  it("routes a custom-provision asset through syncIn with its bespoke post-upload command (native)", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-native-custom-"));
     cleanupDirs.push(rootDir);
     const localWorkspaceDir = path.join(rootDir, "local-workspace");
@@ -150,16 +212,125 @@ describe("sandbox native file sync", () => {
       assets: [{
         key: "creds",
         localDir: localAssetsDir,
-        // A bespoke extract command (e.g. a credential merge) cannot be a generic
-        // file mapping, so the orchestrator keeps it on the tar path.
-        provision: { extractCommand: ({ assetTarPath, assetDir }) =>
+        // A bespoke post-upload command (e.g. a credential merge) rides syncIn as
+        // the operation's ordered post-upload command — no native-diversion gate.
+        provision: { postUploadCommand: ({ assetTarPath, assetDir }) =>
           `rm -rf ${assetDir} && mkdir -p ${assetDir} && tar -xf ${assetTarPath} -C ${assetDir} && rm -f ${assetTarPath}` },
       }],
     });
 
-    // No syncIn operation for the custom asset; it still materializes via tar.
-    expect(syncInOps.flat().length).toBe(0);
+    // The custom asset now rides syncIn (native uploadFiles), carrying its
+    // bespoke command as the operation's ordered post-upload command.
+    const credsOp = syncInOps.flat().find((op) =>
+      op.files.some((mapping) => mapping.targetPath.endsWith("creds-upload.tar")),
+    );
+    expect(credsOp).toBeDefined();
+    expect(credsOp!.files.every((mapping) => mapping.kind === "file")).toBe(true);
+    expect(credsOp!.postUploadCommands).toHaveLength(1);
+    expect(credsOp!.postUploadCommands![0].command).toContain("tar -xf");
     expect(await readFile(path.join(prepared.assetDirs.creds, "cred.txt"), "utf8")).toBe("secret\n");
+  });
+
+  it("stages each additional project into its own isolated dir via a native directory syncIn", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-native-additional-"));
+    cleanupDirs.push(rootDir);
+    const localWorkspaceDir = path.join(rootDir, "local-workspace");
+    const remoteWorkspaceDir = path.join(rootDir, "remote-workspace");
+    await mkdir(localWorkspaceDir, { recursive: true });
+    await writeFile(path.join(localWorkspaceDir, "README.md"), "anchor\n", "utf8");
+
+    // Three referenced projects, each with a distinctive file, staged as plain
+    // read-only trees.
+    const projects = [
+      { projectId: "alpha", localDir: path.join(rootDir, "src-alpha"), file: "alpha.txt", body: "alpha body\n" },
+      { projectId: "bravo", localDir: path.join(rootDir, "src-bravo"), file: "bravo.txt", body: "bravo body\n" },
+      { projectId: "charlie", localDir: path.join(rootDir, "src-charlie"), file: "charlie.txt", body: "charlie body\n" },
+    ];
+    for (const project of projects) {
+      await mkdir(project.localDir, { recursive: true });
+      await writeFile(path.join(project.localDir, project.file), project.body, "utf8");
+    }
+
+    const { client, syncInOps } = makeNativeClient();
+    const prepared = await prepareSandboxManagedRuntime({
+      spec: { transport: "sandbox", provider: "test", sandboxId: "s1", remoteCwd: remoteWorkspaceDir, timeoutMs: 30_000, apiKey: null },
+      adapterKey: "test-adapter",
+      client,
+      workspaceLocalDir: localWorkspaceDir,
+      additionalSources: projects.map((project) => ({ localPath: project.localDir, projectId: project.projectId })),
+    });
+
+    // Each project lands in its OWN `project-<projectId>` directory under the
+    // runtime root, and its file materializes there.
+    const projectDirs = projects.map((project) => {
+      const dir = prepared.additionalSourceDirs[project.projectId];
+      expect(dir).toBe(path.posix.join(prepared.runtimeRootDir, `project-${project.projectId}`));
+      return dir;
+    });
+    for (const [index, project] of projects.entries()) {
+      expect(await readFile(path.join(projectDirs[index], project.file), "utf8")).toBe(project.body);
+    }
+
+    // The target dirs are pairwise distinct and never nested inside one another.
+    for (const outer of projectDirs) {
+      for (const inner of projectDirs) {
+        if (outer === inner) continue;
+        expect(inner.startsWith(`${outer}/`)).toBe(false);
+      }
+    }
+
+    // Each project rides its own `syncIn` operation as a single `directory`
+    // mapping, source = the host checkout dir, target = the isolated project dir.
+    const inboundOps = syncInOps.flat();
+    for (const [index, project] of projects.entries()) {
+      const op = inboundOps.find((candidate) =>
+        candidate.files.some((mapping) => mapping.targetPath === projectDirs[index]),
+      );
+      expect(op).toBeDefined();
+      expect(op!.operationId).toMatch(/^sync-op-\d+$/);
+      expect(op!.operationId).not.toContain(project.projectId);
+      expect(op!.files).toHaveLength(1);
+      expect(op!.files[0]).toMatchObject({
+        sourcePath: project.localDir,
+        targetPath: projectDirs[index],
+        kind: "directory",
+      });
+      // Plain read-only tree — no post-upload extract/wipe/merge command.
+      expect(op!.postUploadCommands ?? []).toHaveLength(0);
+    }
+  });
+
+  it("isolates one additional project's sync failure and stages the rest", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-native-additional-fail-"));
+    cleanupDirs.push(rootDir);
+    const localWorkspaceDir = path.join(rootDir, "local-workspace");
+    const remoteWorkspaceDir = path.join(rootDir, "remote-workspace");
+    const goodDir = path.join(rootDir, "src-good");
+    await mkdir(localWorkspaceDir, { recursive: true });
+    await mkdir(goodDir, { recursive: true });
+    await writeFile(path.join(localWorkspaceDir, "README.md"), "anchor\n", "utf8");
+    await writeFile(path.join(goodDir, "good.txt"), "good body\n", "utf8");
+
+    // The middle source points at a directory that does not exist, so its native
+    // transfer fails. Failure isolation must skip only it and stage the rest.
+    const { client } = makeNativeClient();
+    const prepared = await prepareSandboxManagedRuntime({
+      spec: { transport: "sandbox", provider: "test", sandboxId: "s1", remoteCwd: remoteWorkspaceDir, timeoutMs: 30_000, apiKey: null },
+      adapterKey: "test-adapter",
+      client,
+      workspaceLocalDir: localWorkspaceDir,
+      additionalSources: [
+        { localPath: goodDir, projectId: "good-a" },
+        { localPath: path.join(rootDir, "does-not-exist"), projectId: "broken" },
+        { localPath: goodDir, projectId: "good-b" },
+      ],
+    });
+
+    // Both healthy projects staged; the broken one is absent, not fatal.
+    expect(Object.keys(prepared.additionalSourceDirs).sort()).toEqual(["good-a", "good-b"]);
+    expect(prepared.additionalSourceDirs.broken).toBeUndefined();
+    expect(await readFile(path.join(prepared.additionalSourceDirs["good-a"], "good.txt"), "utf8")).toBe("good body\n");
+    expect(await readFile(path.join(prepared.additionalSourceDirs["good-b"], "good.txt"), "utf8")).toBe("good body\n");
   });
 
   it("dereferences symlinks only when followSymlinks is true (native honors the flag)", async () => {

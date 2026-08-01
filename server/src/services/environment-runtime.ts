@@ -1202,7 +1202,14 @@ function createSandboxEnvironmentDriver(
     },
 
     async realizeWorkspace(input) {
-      // Plugin-backed sandbox providers: delegate workspace realization.
+      // Resolve the realized cwd and any provider metadata first, then build ONE
+      // workspace-realization record and wrap it the SAME way for every driver. A
+      // plugin-backed sandbox provider realizes the workspace remotely and returns its
+      // own cwd and metadata. A built-in driver has no plugin call; it uses the lease
+      // `remoteCwd`. Both paths must produce the record through the single build below,
+      // so the record can never drift between two exits.
+      let pluginRealizedCwd: string | null = null;
+      let providerMetadata: Record<string, unknown> | null = null;
       if (input.lease.metadata?.sandboxProviderPlugin && pluginWorkerManager) {
         const pluginId = readString(input.lease.metadata?.pluginId);
         const providerKey =
@@ -1216,7 +1223,7 @@ function createSandboxEnvironmentDriver(
             lease: input.lease,
             provider: providerKey,
           });
-          return await pluginWorkerManager.call(pluginId, "environmentRealizeWorkspace", {
+          const pluginResult = await pluginWorkerManager.call(pluginId, "environmentRealizeWorkspace", {
             driverKey: providerKey,
             companyId: input.lease.companyId,
             environmentId: input.environment.id,
@@ -1229,21 +1236,36 @@ function createSandboxEnvironmentDriver(
             },
             workspace: input.workspace,
           }, resolvePluginSandboxRpcTimeoutMs(stripSandboxProviderEnvelope(config as SandboxEnvironmentConfig)));
+          pluginRealizedCwd =
+            typeof pluginResult.cwd === "string" && pluginResult.cwd.trim().length > 0
+              ? pluginResult.cwd.trim()
+              : null;
+          providerMetadata = pluginResult.metadata ?? null;
         }
       }
 
+      // A plugin realize handler returns only its realized cwd and provider metadata; it
+      // does not build the full workspace-realization record. The server builds that record
+      // from the run request, so the referenced (mentioned) project sources reach the adapter
+      // through `realization.additional`. The adapter reads that field to stage each referenced
+      // tree into the sandbox; without the record the sandbox agent never receives the mentioned
+      // projects. The provider cwd and metadata still drive the remote path when a plugin realizes
+      // the workspace.
       const record = buildWorkspaceRealizationRecordFromDriverInput({
         environment: input.environment,
         lease: input.lease,
         workspace: input.workspace,
         cwd:
-          typeof input.lease.metadata?.remoteCwd === "string" && input.lease.metadata.remoteCwd.trim().length > 0
+          pluginRealizedCwd ??
+          (typeof input.lease.metadata?.remoteCwd === "string" && input.lease.metadata.remoteCwd.trim().length > 0
             ? input.lease.metadata.remoteCwd.trim()
-            : input.workspace.remotePath ?? input.workspace.localPath ?? null,
+            : input.workspace.remotePath ?? input.workspace.localPath ?? null),
+        providerMetadata,
       });
       return {
-        cwd: record.remote.path ?? record.local.path,
+        cwd: pluginRealizedCwd ?? record.remote.path ?? record.local.path,
         metadata: {
+          ...(providerMetadata ?? {}),
           workspaceRealization: record,
         },
       };

@@ -509,6 +509,9 @@ describe("renderCompanyImportResult", () => {
           { slug: "ops", id: "project-2", action: "updated", name: "Operations", reason: "replace strategy" },
           { slug: "archive", id: null, action: "skipped", name: "Archive", reason: "skip strategy" },
         ],
+        routines: [
+          { slug: "weekly-report", id: "routine-1", action: "created", title: "Weekly report", status: "paused" },
+        ],
         envInputs: [],
         warnings: ["Review API keys"],
       },

@@ -1019,6 +1019,12 @@ describeEmbeddedPostgres("issue recovery actions", () => {
       comment: "Workspace failed validation.",
       recoveryCause: "workspace_validation_failed",
     });
+    // Prove dedupe uses the structured recovery-action reference rather than
+    // depending only on the legacy body marker.
+    await db
+      .update(issueComments)
+      .set({ body: "Workspace recovery was already escalated." })
+      .where(eq(issueComments.issueId, sourceIssue.id));
     await recovery.escalateStrandedAssignedIssue({
       issue: sourceIssue,
       previousStatus: "in_progress",
@@ -1061,7 +1067,22 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     });
 
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, sourceIssue.id));
-    expect(comments.filter((comment) => comment.body.includes(`Recovery action: \`${actionRows[0]?.id}\``))).toHaveLength(1);
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.presentation).toMatchObject({
+      kind: "system_notice",
+      tone: "warning",
+      title: "Recovery: workspace validation failed — moved to blocked (owner: CTO)",
+      density: "compact",
+    });
+    expect(comments[0]?.metadata).toMatchObject({
+      version: 1,
+      sections: [expect.objectContaining({
+        rows: expect.arrayContaining([
+          expect.objectContaining({ type: "key_value", label: "Recovery action", value: actionRows[0]?.id }),
+          expect.objectContaining({ type: "key_value", label: "Cause", value: "workspace_validation_failed" }),
+        ]),
+      })],
+    });
     expect(enqueueWakeup).toHaveBeenCalledTimes(2);
     expect(enqueueWakeup).toHaveBeenCalledWith(
       expect.any(String),

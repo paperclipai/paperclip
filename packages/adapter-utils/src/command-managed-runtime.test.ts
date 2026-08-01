@@ -32,7 +32,12 @@ function makeSpawnRunner(options: {
     supportsSingleStreamStdinProgress: options.supportsSingleStreamStdinProgress,
     execute: async (input) =>
       await new Promise<RunProcessResult>((resolve) => {
-        calls.push({ command: input.command, args: input.args, cwd: input.cwd, stdin: input.stdin });
+        calls.push({
+          command: input.command,
+          args: input.args,
+          cwd: input.cwd,
+          stdin: input.stdin,
+        });
         const startedAt = new Date().toISOString();
         const command =
           input.command === "sh" ? "/bin/sh" : input.command === "bash" ? "/bin/bash" : input.command;
@@ -298,6 +303,89 @@ describe("command managed runtime", () => {
     );
   });
 
+  it("stages each additional project into an isolated dir on the base64/tar transport, one failure skipped", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-command-runtime-additional-"));
+    cleanupDirs.push(rootDir);
+
+    const localWorkspaceDir = path.join(rootDir, "local-workspace");
+    const remoteWorkspaceDir = path.join(rootDir, "remote-workspace");
+    await mkdir(localWorkspaceDir, { recursive: true });
+    await mkdir(remoteWorkspaceDir, { recursive: true });
+    await writeFile(path.join(localWorkspaceDir, "README.md"), "anchor\n", "utf8");
+
+    const goodOne = path.join(rootDir, "src-one");
+    const goodTwo = path.join(rootDir, "src-two");
+    await mkdir(goodOne, { recursive: true });
+    await mkdir(path.join(goodTwo, "nested"), { recursive: true });
+    await writeFile(path.join(goodOne, "one.txt"), "one body\n", "utf8");
+    await writeFile(path.join(goodTwo, "nested", "two.txt"), "two body\n", "utf8");
+
+    // The `makeSpawnRunner` runner exposes no native syncIn, so staging rides the
+    // base64/tar fallback. The middle source points at a missing directory, so
+    // its tar build fails; failure isolation skips only it.
+    const { runner } = makeSpawnRunner();
+    const prepared = await prepareCommandManagedRuntime({
+      runner,
+      spec: {
+        remoteCwd: remoteWorkspaceDir,
+        timeoutMs: 30_000,
+      },
+      adapterKey: "claude",
+      workspaceLocalDir: localWorkspaceDir,
+      additionalSources: [
+        { localPath: goodOne, projectId: "one" },
+        { localPath: path.join(rootDir, "missing"), projectId: "broken" },
+        { localPath: goodTwo, projectId: "two" },
+      ],
+    });
+
+    const runtimeRootDir = path.posix.join(remoteWorkspaceDir, ".paperclip-runtime", "claude");
+    expect(Object.keys(prepared.additionalSourceDirs).sort()).toEqual(["one", "two"]);
+    expect(prepared.additionalSourceDirs.one).toBe(path.posix.join(runtimeRootDir, "project-one"));
+    expect(prepared.additionalSourceDirs.two).toBe(path.posix.join(runtimeRootDir, "project-two"));
+    expect(prepared.additionalSourceDirs.broken).toBeUndefined();
+
+    // Each healthy project's tree materialized in its OWN dir (nested files kept).
+    await expect(readFile(path.join(prepared.additionalSourceDirs.one, "one.txt"), "utf8")).resolves.toBe("one body\n");
+    await expect(readFile(path.join(prepared.additionalSourceDirs.two, "nested", "two.txt"), "utf8")).resolves.toBe(
+      "two body\n",
+    );
+    // The broken project's dir was never created.
+    await expect(readFile(path.join(runtimeRootDir, "project-broken"), "utf8")).rejects.toMatchObject({
+      code: "ENOENT",
+    });
+  });
+
+  it("keeps adapter detection on the profile-backed shell path", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-command-runtime-detect-"));
+    cleanupDirs.push(rootDir);
+
+    const localWorkspaceDir = path.join(rootDir, "local-workspace");
+    const remoteWorkspaceDir = path.join(rootDir, "remote-workspace");
+    await mkdir(localWorkspaceDir, { recursive: true });
+    await mkdir(remoteWorkspaceDir, { recursive: true });
+
+    const { runner, calls } = makeSpawnRunner();
+    await prepareCommandManagedRuntime({
+      runner,
+      spec: {
+        remoteCwd: remoteWorkspaceDir,
+        timeoutMs: 30_000,
+      },
+      adapterKey: "claude",
+      workspaceLocalDir: localWorkspaceDir,
+      installCommand: "echo install",
+      detectCommand: "sh",
+    });
+
+    // The detection probe must be the first shell invocation, so a CLI on the
+    // sandbox default PATH is discoverable before we decide whether to install.
+    expect(calls[0]?.args?.join(" ")).toContain("command -v 'sh'");
+    // Detection succeeds here, so the install command must be skipped entirely;
+    // the remaining calls are workspace staging, never the install command.
+    expect(calls.some((call) => call.args?.join(" ").includes("echo install"))).toBe(false);
+  });
+
   it("runs setup commands from a stable root cwd when staging into a nested remote workspace dir", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-command-runtime-nested-"));
     cleanupDirs.push(rootDir);
@@ -546,6 +634,39 @@ describe("command managed runtime", () => {
     expect(untarIdx).toBeGreaterThan(uploadIdx);
     expect(cmd1Idx).toBeGreaterThan(untarIdx);
     expect(cmd2Idx).toBeGreaterThan(cmd1Idx);
+  });
+
+  it("fallback syncIn runs a post-upload command under its own timeout, not the sync-client default", async () => {
+    // The run-specific timeout (`spec.timeoutMs`, stamped onto each delegated
+    // post-upload command) can differ from the sync client's own default. The
+    // fallback must honor the per-command `timeoutMs` so the delegated
+    // extract/cleanup/merge runs under the run limit — not the sync default.
+    const syncClientTimeoutMs = 30_000;
+    const runTimeoutMs = 7_000;
+    const execTimeouts: Array<number | undefined> = [];
+    const runner: CommandManagedRuntimeRunner = {
+      execute: async (input) => {
+        execTimeouts.push(input.timeoutMs);
+        return { exitCode: 0, signal: null, timedOut: false, stdout: "", stderr: "", pid: null, startedAt: "" };
+      },
+    };
+    const client = createCommandManagedRuntimeClient({ runner, commandCwd: "/", timeoutMs: syncClientTimeoutMs });
+
+    await client.syncIn!([
+      {
+        operationId: "op-timeout",
+        files: [],
+        postUploadCommands: [
+          { command: "echo carries-run-timeout", timeoutMs: runTimeoutMs },
+          { command: "echo defaults-to-sync-timeout" },
+        ],
+      },
+    ]);
+
+    // First command carries the run timeout; a command with no explicit timeout
+    // still falls back to the sync-client default (matched by the stamping in
+    // prepareSandboxManagedRuntime, which never leaves a delegated command bare).
+    expect(execTimeouts).toEqual([runTimeoutMs, syncClientTimeoutMs]);
   });
 
   it("fallback syncIn stages mode-constrained files before chmod and rename", async () => {

@@ -88,6 +88,7 @@ import {
   type IssueWakeDiagnosticWakeRequest,
   type IssueWakeDiagnosticsResponse,
   type IssueRelationIssueSummary,
+  type IssueCommentPresentation,
   type IssueWatchdogDiscoveryKind,
   type ProjectWorkspace,
   type SourceTrustMetadata,
@@ -227,6 +228,13 @@ const MAX_ISSUE_COMMENT_LIMIT = 500;
 const updateIssueRouteSchema = updateIssueSchema.extend({
   interrupt: z.boolean().optional(),
 });
+
+function prefersMinimalIssueUpdateResponse(req: Request) {
+  return (req.get("Prefer") ?? "")
+    .split(",")
+    .some((preference) => preference.trim().toLowerCase() === "return=minimal");
+}
+
 const refreshExternalObjectsSchema = z.object({
   objectIds: z.array(z.string().uuid()).max(50).optional(),
 }).strict();
@@ -4090,6 +4098,53 @@ export function issueRoutes(
       .then((rows) => rows[0] ?? null);
     if (!run || run.companyId !== companyId || run.agentId !== req.actor.agentId) return null;
     return run;
+  }
+
+  function readObject(value: unknown): Record<string, unknown> {
+    return value && typeof value === "object" && !Array.isArray(value)
+      ? value as Record<string, unknown>
+      : {};
+  }
+
+  async function deriveRecoveryCommentPresentation(
+    req: Request,
+    companyId: string,
+    body: string,
+  ): Promise<IssueCommentPresentation | null> {
+    const run = await loadActorRunContext(req, companyId);
+    if (!run) return null;
+
+    const context = readObject(run.contextSnapshot);
+    const paperclipWake = readObject(context.paperclipWake);
+    const recovery = readObject(paperclipWake.recovery);
+    const wakeReason = typeof context.wakeReason === "string"
+      ? context.wakeReason
+      : typeof paperclipWake.reason === "string"
+        ? paperclipWake.reason
+        : null;
+    if (wakeReason !== "source_scoped_recovery_action") return null;
+
+    const recoveryCause = typeof context.recoveryCause === "string"
+      ? context.recoveryCause
+      : typeof recovery.cause === "string"
+        ? recovery.cause
+        : null;
+    if (
+      recoveryCause === "successful_run_missing_state" ||
+      recoveryCause === "successful_run_missing_issue_disposition"
+    ) {
+      return null;
+    }
+
+    const firstLine = body.split(/\r?\n/, 1)[0]?.trim() || "Recovery update";
+    const title = firstLine.length > 160 ? `${firstLine.slice(0, 159)}…` : firstLine;
+    return {
+      kind: "system_notice",
+      tone: "info",
+      title,
+      detailsDefaultOpen: false,
+      density: "compact",
+    };
   }
 
   async function assertCheapRecoveryIssueAssigneeProfileAllowed(
@@ -8439,6 +8494,8 @@ export function issueRoutes(
       updatedRelations = await svc.getRelationSummaries(issue.id);
       issueResponse = {
         ...issue,
+        blockedByIssueIds:
+          issue.blockedByIssueIds ?? [...new Set(req.body.blockedByIssueIds as string[])].sort(),
         blockedBy: updatedRelations.blockedBy,
         blocks: updatedRelations.blocks,
       };
@@ -9209,7 +9266,19 @@ export function issueRoutes(
       res,
       latestIssue && latestIssue.version > issue.version ? latestIssue.version : issue.version,
     );
-    res.json({ ...issueResponse, comment });
+    const changes = issueResponse.changes ?? {};
+    if (prefersMinimalIssueUpdateResponse(req)) {
+      res.setHeader("Preference-Applied", "return=minimal");
+      res.json({
+        id: issueResponse.id,
+        identifier: issueResponse.identifier,
+        updatedAt: issueResponse.updatedAt,
+        changes,
+        comment,
+      });
+      return;
+    }
+    res.json({ ...issueResponse, changes, comment });
   });
 
   router.delete("/issues/:id", async (req, res) => {
@@ -10273,6 +10342,8 @@ export function issueRoutes(
     }
 
     const actor = getActorInfo(req);
+    const commentPresentation = req.body.presentation ??
+      await deriveRecoveryCommentPresentation(req, issue.companyId, req.body.body);
     const reopenRequested = req.body.reopen === true;
     const resumeRequested = req.body.resume === true;
     const interruptRequested = req.body.interrupt === true;
@@ -10587,6 +10658,89 @@ export function issueRoutes(
     }
 
     if (shouldAutoApproveReviewComment) {
+      const transition = applyIssueExecutionPolicyTransition({
+        issue: currentIssue,
+        policy: currentExecutionPolicy,
+        requestedStatus: "done",
+        requestedAssigneePatch: {},
+        actor: {
+          agentId: actor.agentId ?? null,
+          userId: actor.actorType === "user" ? actor.actorId : null,
+        },
+        commentBody: req.body.body,
+      });
+      const decisionId = transition.decision ? randomUUID() : null;
+      if (decisionId) {
+        const nextExecutionState = transition.patch.executionState;
+        if (!nextExecutionState || typeof nextExecutionState !== "object") {
+          throw new Error("Execution policy decision patch is missing executionState");
+        }
+        transition.patch.executionState = {
+          ...nextExecutionState,
+          lastDecisionId: decisionId,
+        };
+      }
+
+      issueBeforeCommentDecision = currentIssue;
+      const updatePatch = {
+        ...transition.patch,
+        status: typeof transition.patch.status === "string" ? transition.patch.status : "done",
+        actorAgentId: actor.agentId ?? null,
+        actorUserId: actor.actorType === "user" ? actor.actorId : null,
+      };
+
+      const sourceTrust = await sourceTrustForActorWrite(currentIssue, actor);
+      const commentOptions = {
+        authorType: req.body.authorType ?? (actor.actorType === "agent" ? "agent" : "user"),
+        presentation: commentPresentation,
+        metadata: req.body.metadata ?? null,
+        sourceTrust,
+      };
+      let txResult: { comment: Awaited<ReturnType<typeof svc.addComment>>; issue: NonNullable<Awaited<ReturnType<typeof svc.update>>> };
+      try {
+        txResult = await db.transaction(async (tx) => {
+          const insertedComment = await svc.addComment(
+            id,
+            req.body.body,
+            {
+              agentId: actor.agentId ?? undefined,
+              userId: actor.actorType === "user" ? actor.actorId : undefined,
+              runId: actor.runId,
+            },
+            commentOptions,
+            tx,
+          );
+          const updated = await svc.update(id, updatePatch, tx);
+          // Throw (not return null) so drizzle rolls back the inserted comment when the issue
+          // has been concurrently deleted between the initial fetch and the in-transaction update.
+          if (!updated) throw new AutoApprovalIssueMissingError();
+
+          if (transition.decision && decisionId) {
+            await tx.insert(issueExecutionDecisions).values({
+              id: decisionId,
+              companyId: updated.companyId,
+              issueId: updated.id,
+              stageId: transition.decision.stageId,
+              stageType: transition.decision.stageType,
+              actorAgentId: actor.agentId ?? null,
+              actorUserId: actor.actorType === "user" ? actor.actorId : null,
+              outcome: transition.decision.outcome,
+              body: transition.decision.body,
+              createdByRunId: actor.runId ?? null,
+            });
+          }
+
+          return { comment: insertedComment, issue: updated };
+        });
+      } catch (err) {
+        if (err instanceof AutoApprovalIssueMissingError) {
+          res.status(404).json({ error: "Issue not found" });
+          return;
+        }
+        throw err;
+      }
+      comment = txResult.comment;
+      currentIssue = txResult.issue;
       // Mirror the normal status-change audit trail: every other in_review -> done path
       // emits an `issue.updated` activity, so emit one here too for the auto-approval path.
       if (issueBeforeCommentDecision.status !== currentIssue.status) {
@@ -10615,6 +10769,17 @@ export function issueRoutes(
         interruptedRunId,
         requestedByActorType: actor.actorType,
         requestedByActorId: actor.actorId,
+      });
+    } else {
+      comment = await svc.addComment(id, req.body.body, {
+        agentId: actor.agentId ?? undefined,
+        userId: actor.actorType === "user" ? actor.actorId : undefined,
+        runId: actor.runId,
+      }, {
+        authorType: req.body.authorType ?? (actor.actorType === "agent" ? "agent" : "user"),
+        presentation: commentPresentation,
+        metadata: req.body.metadata ?? null,
+        sourceTrust: await sourceTrustForActorWrite(currentIssue, actor),
       });
     }
 

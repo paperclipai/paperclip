@@ -162,27 +162,36 @@ export function IssueRow({
   ) : null;
 
   return (
-    <Link
-      to={createIssueDetailPath(issuePathId)}
-      state={detailState}
-      disableIssueQuicklook
-      issuePrefetch={issue}
-      data-inbox-issue-link
-      id={checklistRowId}
-      aria-current={checklistCurrentStep ? "step" : undefined}
-      onClickCapture={() => rememberIssueDetailLocationState(issuePathId, detailState)}
+    <div
       onMouseEnter={onMouseEnter}
       className={cn(
         // No color transition on the row band: hover/selection must snap
         // instantly. A fade (transition-colors) leaves a trail of fading bands
         // when scrubbing the mouse fast across the list.
         "group relative flex items-start gap-2 rounded-lg py-2.5 pl-2 pr-3 text-sm no-underline text-inherit sm:items-center sm:py-2 sm:pl-1",
-        !hideDivider && "border-b border-border last:border-b-0",
-        selected ? "hover:bg-transparent" : "hover:bg-accent/50",
-        checklistCurrentStep ? "bg-primary/5" : null,
+        "[&_button]:relative [&_button]:z-10",
         className,
       )}
     >
+      <Link
+        to={createIssueDetailPath(issuePathId)}
+        state={detailState}
+        disableIssueQuicklook
+        issuePrefetch={issue}
+        data-inbox-issue-link
+        id={checklistRowId}
+        aria-current={checklistCurrentStep ? "step" : undefined}
+        onClickCapture={() => rememberIssueDetailLocationState(issuePathId, detailState)}
+        className={cn(
+          "absolute inset-0 rounded-lg no-underline text-inherit focus-visible:z-10 focus-visible:outline-none focus-visible:ring-(length:--rad-3) focus-visible:ring-ring",
+          !hideDivider && "border-b border-border last:border-b-0",
+          selected ? "hover:bg-transparent" : "hover:bg-accent/50",
+          checklistCurrentStep ? "bg-primary/5" : null,
+          className,
+        )}
+      >
+        <span className="sr-only">Open {identifier}: {issue.title}</span>
+      </Link>
       <span className="flex shrink-0 items-center gap-1 pt-px sm:hidden">
         {mobileLeading ?? <StatusIcon status={issue.status} blockerAttention={issue.blockerAttention} size="md" className={selectedStatusClass} />}
         {productivityReviewIndicator}
@@ -316,7 +325,7 @@ export function IssueRow({
           {unreadDotButton}
         </span>
       ) : null}
-    </Link>
+    </div>
   );
 }
 

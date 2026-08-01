@@ -183,6 +183,7 @@ export type {
   PluginEnvironmentExecuteParams,
   PluginEnvironmentExecuteResult,
   PluginSyncFileMapping,
+  PluginPostUploadCommand,
   PluginSyncOperation,
   PluginEnvironmentSyncInParams,
   PluginEnvironmentSyncOutParams,

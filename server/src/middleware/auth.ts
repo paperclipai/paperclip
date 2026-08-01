@@ -78,6 +78,28 @@ async function loadResponsibleUserMemberships(
   return user ? memberships : [];
 }
 
+/**
+ * The user's own active company memberships — the exact company scope a
+ * locally authenticated session actor carries. Shared by the session path
+ * and the Cloud trusted-header path so both resolve the same access set.
+ */
+async function loadActiveUserCompanyMemberships(db: Db, userId: string) {
+  return db
+    .select({
+      companyId: companyMemberships.companyId,
+      membershipRole: companyMemberships.membershipRole,
+      status: companyMemberships.status,
+    })
+    .from(companyMemberships)
+    .where(
+      and(
+        eq(companyMemberships.principalType, "user"),
+        eq(companyMemberships.principalId, userId),
+        eq(companyMemberships.status, "active"),
+      ),
+    );
+}
+
 async function auditAgentJwtRunHeaderMismatch(
   db: Db,
   input: { companyId: string; agentId: string; claimRunId: string; headerRunId: string; method: string; url: string },
@@ -185,20 +207,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
               .from(instanceUserRoles)
               .where(and(eq(instanceUserRoles.userId, userId), eq(instanceUserRoles.role, "instance_admin")))
               .then((rows) => rows[0] ?? null),
-            db
-              .select({
-                companyId: companyMemberships.companyId,
-                membershipRole: companyMemberships.membershipRole,
-                status: companyMemberships.status,
-              })
-              .from(companyMemberships)
-              .where(
-                and(
-                  eq(companyMemberships.principalType, "user"),
-                  eq(companyMemberships.principalId, userId),
-                  eq(companyMemberships.status, "active"),
-                ),
-              ),
+            loadActiveUserCompanyMemberships(db, userId),
           ]);
           req.actor = {
             type: "board",
@@ -518,17 +527,42 @@ export async function resolveCloudTenantActor(db: Db, req: Request): Promise<Exp
     grantedByUserId: null,
   });
 
+  // The stack's seeded company is only where Cloud provisioned this user.
+  // Companies created afterwards on the instance (imports, in-app company
+  // creation) attach real membership rows for the user, so union those with
+  // the pinned primary — the same active-membership scope a locally
+  // authenticated session actor carries. Strictly this user's own rows; the
+  // membership-creating flows seed their own permission grants, so nothing
+  // needs seeding per request here. A read failure degrades to the pinned
+  // primary instead of blocking authentication, mirroring the fail-closed
+  // owner-elevation resolution below.
+  let additionalMemberships: { companyId: string; membershipRole: string | null; status: string }[] =
+    [];
+  try {
+    additionalMemberships = (await loadActiveUserCompanyMemberships(db, userId)).filter(
+      (row) => row.companyId !== companyId,
+    );
+  } catch (err) {
+    logger.warn(
+      { err, userId, stackId },
+      "Failed to load cloud tenant user's company memberships; scoping actor to the stack's primary company",
+    );
+  }
+
   return {
     type: "board",
     userId,
     userName,
     userEmail,
-    companyIds: [companyId],
-    memberships: [{
-      companyId,
-      membershipRole: membership.membershipRole,
-      status: membership.status,
-    }],
+    companyIds: [companyId, ...additionalMemberships.map((row) => row.companyId)],
+    memberships: [
+      {
+        companyId,
+        membershipRole: membership.membershipRole,
+        status: membership.status,
+      },
+      ...additionalMemberships,
+    ],
     // Computed per request, never persisted: the stack owner is elevated to
     // instance admin of their own dedicated instance only while the
     // `enableOwnerInstanceAdmin` flag is on. Non-owner stack roles stay

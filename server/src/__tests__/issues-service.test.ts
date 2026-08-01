@@ -3476,6 +3476,7 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
         id: blockerId,
         companyId,
         projectId,
+        identifier: "PAP-15043",
         title: "Predecessor",
         status: "done",
         priority: "medium",
@@ -3485,6 +3486,7 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
         id: dependentId,
         companyId,
         projectId,
+        identifier: "PAP-15046",
         title: "Dependent",
         status: "blocked",
         priority: "medium",
@@ -3494,6 +3496,7 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
         id: foreignIssueId,
         companyId,
         projectId,
+        identifier: "PAP-15125",
         title: "Foreign in-flight issue",
         status: "in_progress",
         priority: "medium",
@@ -3513,6 +3516,68 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
       foreignIssueId,
     };
   }
+
+  it("returns authoritative update receipts for row fields and blocker relations", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    const blockerId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(issues).values([
+      {
+        id: issueId,
+        companyId,
+        title: "Receipt issue",
+        description: "old description",
+        status: "todo",
+        priority: "medium",
+      },
+      {
+        id: blockerId,
+        companyId,
+        title: "Blocker",
+        status: "todo",
+        priority: "high",
+      },
+    ]);
+
+    const fieldUpdate = await svc.update(issueId, {
+      title: "Receipt issue",
+      priority: "high",
+      description: "new description",
+    });
+    expect(fieldUpdate?.changes).toEqual({
+      priority: { from: "medium", to: "high" },
+      description: { from: "old description", to: "new description", updated: true },
+    });
+
+    const blockersSet = await svc.update(issueId, { blockedByIssueIds: [blockerId, blockerId] });
+    expect(blockersSet?.blockedByIssueIds).toEqual([blockerId]);
+    expect(blockersSet?.changes.blockedByIssueIds).toEqual({ from: [], to: [blockerId] });
+
+    const blockersCleared = await svc.update(issueId, { blockedByIssueIds: [] });
+    expect(blockersCleared?.blockedByIssueIds).toEqual([]);
+    expect(blockersCleared?.changes.blockedByIssueIds).toEqual({ from: [blockerId], to: [] });
+
+    await db.update(issues).set({
+      title: "Concurrent receipt issue",
+      priority: "medium",
+    }).where(eq(issues.id, issueId));
+    const [titleUpdate, priorityUpdate] = await Promise.all([
+      svc.update(issueId, { title: "Concurrent title" }),
+      svc.update(issueId, { priority: "high" }),
+    ]);
+    expect(titleUpdate?.changes).toEqual({
+      title: { from: "Concurrent receipt issue", to: "Concurrent title" },
+    });
+    expect(priorityUpdate?.changes).toEqual({
+      priority: { from: "medium", to: "high" },
+    });
+  });
 
   it("persists blocked-by relations and exposes both blockedBy and blocks summaries", async () => {
     const companyId = randomUUID();
@@ -3862,6 +3927,7 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
       executionWorkspaceId,
       blockerId,
       dependentId,
+      foreignIssueId,
       assigneeAgentId,
     } = await seedSharedWorkspaceDependency();
 
@@ -3893,13 +3959,36 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
       startedAt: new Date("2026-05-23T22:05:00.000Z"),
     });
     expect(await svc.listWakeableBlockedDependents(blockerId)).toEqual([]);
+    const pendingDependent = (await svc.list(companyId, { status: "blocked" }))
+      .find((issue) => issue.id === dependentId);
+    expect(pendingDependent?.blockerAttention).toMatchObject({
+      state: "needs_attention",
+      unresolvedBlockerCount: 1,
+      attentionBlockerCount: 1,
+      pendingFinalizeBlockerIssueIds: [blockerId],
+      sampleBlockerIdentifier: "PAP-15043",
+    });
+    await expect(
+      svc.checkout(dependentId, assigneeAgentId, ["blocked"], null),
+    ).rejects.toMatchObject({
+      status: 422,
+      details: {
+        unresolvedBlockerIssueIds: [blockerId],
+        unresolvedBlockers: [{
+          issueId: blockerId,
+          identifier: "PAP-15043",
+          title: "Predecessor",
+          reason: "pending_finalize",
+        }],
+      },
+    });
 
-    // Once a workspace_finalize succeeded row lands AFTER the failed one,
-    // the gate opens and the dependent is wakeable.
+    // A later successful finalize on the same workspace, even when attributed
+    // to another issue, proves the shared branch is coherent past the failure.
     await db.insert(workspaceOperations).values({
       companyId,
       executionWorkspaceId,
-      issueId: blockerId,
+      issueId: foreignIssueId,
       phase: "workspace_finalize",
       status: "succeeded",
       startedAt: new Date("2026-05-23T22:10:00.000Z"),
@@ -4082,7 +4171,7 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     const blockerId = randomUUID();
     const blockedId = randomUUID();
     await db.insert(issues).values([
-      { id: blockerId, companyId, title: "Blocker", status: "todo", priority: "medium" },
+      { id: blockerId, companyId, identifier: "PAP-1", title: "Blocker", status: "todo", priority: "medium" },
       {
         id: blockedId,
         companyId,
@@ -4100,7 +4189,18 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
 
     await expect(
       svc.checkout(blockedId, assigneeAgentId, ["todo", "blocked"], null),
-    ).rejects.toMatchObject({ status: 422 });
+    ).rejects.toMatchObject({
+      status: 422,
+      details: {
+        unresolvedBlockerIssueIds: [blockerId],
+        unresolvedBlockers: [{
+          issueId: blockerId,
+          identifier: "PAP-1",
+          title: "Blocker",
+          reason: "not_done",
+        }],
+      },
+    });
   });
 
   it("wakes parents only when all direct children are terminal", async () => {
@@ -4843,6 +4943,94 @@ describeEmbeddedPostgres("issueService.findMentionedProjectIds", () => {
       titleProjectId,
       commentProjectId,
     ]);
+  });
+
+  it("returns multiple same-company mentions in order, deduped", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    const firstProjectId = randomUUID();
+    const secondProjectId = randomUUID();
+    const thirdProjectId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(projects).values([
+      { id: firstProjectId, companyId, name: "First project", status: "in_progress" },
+      { id: secondProjectId, companyId, name: "Second project", status: "in_progress" },
+      { id: thirdProjectId, companyId, name: "Third project", status: "in_progress" },
+    ]);
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title:
+        `See [First](${buildProjectMentionHref(firstProjectId)}) and ` +
+        `[Second](${buildProjectMentionHref(secondProjectId)})`,
+      description: null,
+      status: "todo",
+      priority: "medium",
+    });
+
+    await db.insert(issueComments).values({
+      companyId,
+      issueId,
+      // Repeats the first mention (deduped) and introduces a third.
+      body:
+        `Also [First again](${buildProjectMentionHref(firstProjectId)}) and ` +
+        `[Third](${buildProjectMentionHref(thirdProjectId)})`,
+    });
+
+    expect(await svc.findMentionedProjectIds(issueId)).toEqual([
+      firstProjectId,
+      secondProjectId,
+      thirdProjectId,
+    ]);
+  });
+
+  it("filters out a mention from another company", async () => {
+    const companyId = randomUUID();
+    const foreignCompanyId = randomUUID();
+    const issueId = randomUUID();
+    const sameCompanyProjectId = randomUUID();
+    const foreignProjectId = randomUUID();
+
+    await db.insert(companies).values([
+      {
+        id: companyId,
+        name: "Paperclip",
+        issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      },
+      {
+        id: foreignCompanyId,
+        name: "Other company",
+        issuePrefix: `F${foreignCompanyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      },
+    ]);
+
+    await db.insert(projects).values([
+      { id: sameCompanyProjectId, companyId, name: "Same-company project", status: "in_progress" },
+      { id: foreignProjectId, companyId: foreignCompanyId, name: "Foreign project", status: "in_progress" },
+    ]);
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title:
+        `Ours [Same](${buildProjectMentionHref(sameCompanyProjectId)}) and ` +
+        `theirs [Foreign](${buildProjectMentionHref(foreignProjectId)})`,
+      description: null,
+      status: "todo",
+      priority: "medium",
+    });
+
+    expect(await svc.findMentionedProjectIds(issueId)).toEqual([sameCompanyProjectId]);
   });
 });
 
