@@ -3429,6 +3429,7 @@ export function issueRoutes(
       status: string;
     },
     action: "issue:comment" | "issue:read" | "issue:mutate",
+    additionalScope: Record<string, unknown> = {},
   ) {
     return access.decide({
       actor: req.actor,
@@ -3449,6 +3450,7 @@ export function issueRoutes(
         parentIssueId: issue.parentId,
         assigneeAgentId: issue.assigneeAgentId,
         assigneeUserId: issue.assigneeUserId,
+        ...additionalScope,
       },
     });
   }
@@ -3510,6 +3512,30 @@ export function issueRoutes(
     return decision !== true && decision.reason === "allow_direct_parent_report";
   }
 
+  function isIssueUnblockOwnerDecision(decision: Awaited<ReturnType<typeof decideIssueAccess>>) {
+    return decision.reason === "allow_issue_unblock_owner";
+  }
+
+  function isScopedIssueUnblockOwnerPatch(value: unknown) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+    const patch = value as Record<string, unknown>;
+    const allowedKeys = new Set(["comment", "resume", "assigneeAgentId"]);
+    if (Object.keys(patch).some((key) => !allowedKeys.has(key))) return false;
+
+    const comment = typeof patch.comment === "string" ? patch.comment.trim() : "";
+    if (!comment) return false;
+    if ("resume" in patch && patch.resume !== true) return false;
+
+    const requestsRedispatch = patch.resume === true;
+    if (
+      "assigneeAgentId" in patch &&
+      (typeof patch.assigneeAgentId !== "string" || !patch.assigneeAgentId || !requestsRedispatch)
+    ) {
+      return false;
+    }
+    return true;
+  }
+
   async function filterIssuesForActor<T extends Parameters<typeof decideIssueAccess>[1]>(req: Request, rows: T[]) {
     const decisions = await Promise.all(rows.map((issue) => decideIssueAccess(req, issue, "issue:read")));
     return rows.filter((_, index) => decisions[index]?.allowed);
@@ -3557,6 +3583,7 @@ export function issueRoutes(
       assigneeAgentId: string | null;
       assigneeUserId: string | null;
     },
+    options: { allowIssueUnblockOwner?: boolean } = {},
   ) {
     if (req.actor.type !== "agent") return true;
     const actorAgentId = req.actor.agentId;
@@ -3587,10 +3614,36 @@ export function issueRoutes(
       }
       return assertFreshTaskWatchdogSourceMutation(res, watchdogScope, issue);
     }
-    const boundaryDecision = await decideIssueAccess(req, issue, "issue:mutate");
+    const boundaryDecision = await decideIssueAccess(
+      req,
+      issue,
+      "issue:mutate",
+      options.allowIssueUnblockOwner ? { allowIssueUnblockOwner: true } : {},
+    );
     if (!boundaryDecision.allowed) {
       res.status(403).json({ error: "Issue is outside this actor's authorization boundary" });
       return false;
+    }
+    if (options.allowIssueUnblockOwner && isIssueUnblockOwnerDecision(boundaryDecision)) {
+      if (
+        "assigneeAgentId" in req.body &&
+        req.body.assigneeAgentId !== undefined &&
+        req.body.assigneeAgentId !== actorAgentId
+      ) {
+        res.status(403).json({ error: "Unblock owners may only claim resumed work for themselves" });
+        return false;
+      }
+      if (!isScopedIssueUnblockOwnerPatch(req.body)) {
+        res.status(403).json({
+          error: "Unblock owners may only comment and resume blocked issues",
+          details: {
+            issueId: issue.id,
+            securityPrinciples: ["Least Privilege", "Complete Mediation", "Fail Securely"],
+          },
+        });
+        return false;
+      }
+      return "issue_unblock_owner" as const;
     }
     if (issue.assigneeAgentId === null) {
       return true;
@@ -4220,6 +4273,7 @@ export function issueRoutes(
     req: Request,
     res: Response,
     issue: { id: string; companyId: string; status: string; assigneeAgentId: string | null },
+    options: { allowIssueUnblockOwner?: boolean } = {},
   ) {
     if (await assertLowTrustControlPlaneDenied(req, res, issue.companyId, issue)) return false;
 
@@ -4277,6 +4331,7 @@ export function issueRoutes(
       res.status(403).json({ error: "Agent authentication required" });
       return false;
     }
+    if (options.allowIssueUnblockOwner) return true;
     if (!issue.assigneeAgentId) {
       res.status(409).json({
         error: "Issue follow-up requires an assigned agent",
@@ -7752,7 +7807,18 @@ export function issueRoutes(
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
     if (!existing) return;
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
-    if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
+    const mutationAccess = await assertAgentIssueMutationAllowed(
+      req,
+      res,
+      existing,
+      { allowIssueUnblockOwner: true },
+    );
+    if (!mutationAccess) return;
+    const isIssueUnblockOwner = mutationAccess === "issue_unblock_owner";
+    const persistIssueUpdate = (
+      data: Parameters<typeof svc.update>[1],
+      tx?: Parameters<typeof svc.update>[2],
+    ) => tx ? svc.update(id, data, tx) : svc.update(id, data);
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, existing, req.body))) return;
 
     const actor = getActorInfo(req);
@@ -7790,7 +7856,10 @@ export function issueRoutes(
     ) {
       return;
     }
-    if (resumeRequested === true && !(await assertExplicitResumeIntentAllowed(req, res, existing))) return;
+    if (
+      resumeRequested === true &&
+      !(await assertExplicitResumeIntentAllowed(req, res, existing, { allowIssueUnblockOwner: isIssueUnblockOwner }))
+    ) return;
     if (resumeRequested !== true && reopenRequested === true && req.actor.type === "agent") {
       if (!(await assertExplicitResumeIntentAllowed(req, res, existing))) return;
     }
@@ -8092,9 +8161,10 @@ export function issueRoutes(
       !!existing.createdByUserId &&
       nextAssigneeUserId === existing.createdByUserId;
 
+    let assignmentScope: TaskAssignmentAuthorizationScope | null = null;
     if (assigneeWillChange && !transition.workflowControlledAssignment) {
       if (!isAgentReturningIssueToCreator) {
-        await assertCanAssignTasks(req, existing.companyId, {
+        assignmentScope = {
           issueId: existing.id,
           projectId: await resolveAssignmentProjectId({
             companyId: existing.companyId,
@@ -8110,7 +8180,8 @@ export function issueRoutes(
             : updateFields.parentId) as string | null | undefined,
           assigneeAgentId: nextAssigneeAgentId,
           assigneeUserId: nextAssigneeUserId,
-        });
+        };
+        await assertCanAssignTasks(req, existing.companyId, assignmentScope);
       }
     }
 
@@ -8137,19 +8208,68 @@ export function issueRoutes(
       value: Awaited<ReturnType<typeof svc.addStopRelayCommentIfNeeded>>;
     } = { value: null };
     let issue: Awaited<ReturnType<typeof svc.update>>;
+    let atomicOwnerComment: Awaited<ReturnType<typeof svc.addComment>> | null = null;
+    const ownerCommentSourceTrust = isIssueUnblockOwner && commentBody
+      ? await sourceTrustForActorWrite(existing, actor)
+      : null;
     try {
-      if (transition.decision && decisionId) {
-        const decision = transition.decision;
-        issue = await db.transaction(async (tx) => {
-          const updated = await svc.update(
-            id,
-            {
-              ...updateFields,
+      if (isIssueUnblockOwner) {
+        issue = await svc.runBlockedUnblockOwnerTransaction({
+          issueId: id,
+          expectedUpdatedAt: existing.updatedAt,
+          actor: req.actor,
+          action: "issue:mutate",
+          ...(assignmentScope ? {
+            assignment: {
+              projectId: assignmentScope.projectId ?? null,
+              parentIssueId: assignmentScope.parentIssueId ?? null,
+              assigneeAgentId: assignmentScope.assigneeAgentId ?? null,
+              assigneeUserId: assignmentScope.assigneeUserId ?? null,
+            },
+          } : {}),
+        }, async (tx) => {
+          const updated = await persistIssueUpdate({
+            ...updateFields,
+            actorAgentId: actor.agentId ?? null,
+            actorUserId: actor.actorType === "user" ? actor.actorId : null,
+          }, tx);
+          if (!updated) return null;
+
+          if (transition.decision && decisionId) {
+            await tx.insert(issueExecutionDecisions).values({
+              id: decisionId,
+              companyId: updated.companyId,
+              issueId: updated.id,
+              stageId: transition.decision.stageId,
+              stageType: transition.decision.stageType,
               actorAgentId: actor.agentId ?? null,
               actorUserId: actor.actorType === "user" ? actor.actorId : null,
-            },
-            tx,
-          );
+              outcome: transition.decision.outcome,
+              body: transition.decision.body,
+              createdByRunId: actor.runId ?? null,
+            });
+          }
+          if (shouldRelayStop) {
+            stopRelayResult.value = await svc.addStopRelayCommentIfNeeded(updated, tx);
+          }
+          if (!commentBody) throw new Error("Unblock-owner PATCH is missing its required result comment");
+          atomicOwnerComment = await svc.addComment(id, commentBody, {
+            agentId: actor.agentId ?? undefined,
+            userId: actor.actorType === "user" ? actor.actorId : undefined,
+            runId: actor.runId,
+          }, {
+            sourceTrust: ownerCommentSourceTrust,
+          }, tx);
+          return updated;
+        });
+      } else if (transition.decision && decisionId) {
+        const decision = transition.decision;
+        issue = await db.transaction(async (tx) => {
+          const updated = await persistIssueUpdate({
+            ...updateFields,
+            actorAgentId: actor.agentId ?? null,
+            actorUserId: actor.actorType === "user" ? actor.actorId : null,
+          }, tx);
           if (!updated) return null;
 
           await tx.insert(issueExecutionDecisions).values({
@@ -8173,7 +8293,7 @@ export function issueRoutes(
         });
       } else if (shouldRelayStop) {
         issue = await db.transaction(async (tx) => {
-          const updated = await svc.update(id, {
+          const updated = await persistIssueUpdate({
             ...updateFields,
             actorAgentId: actor.agentId ?? null,
             actorUserId: actor.actorType === "user" ? actor.actorId : null,
@@ -8183,7 +8303,7 @@ export function issueRoutes(
           return updated;
         });
       } else {
-        issue = await svc.update(id, {
+        issue = await persistIssueUpdate({
           ...updateFields,
           actorAgentId: actor.agentId ?? null,
           actorUserId: actor.actorType === "user" ? actor.actorId : null,
@@ -8213,8 +8333,21 @@ export function issueRoutes(
       throw err;
     }
     if (!issue) {
+      if (isIssueUnblockOwner) {
+        res.status(409).json({ error: "Unblock owner authorization became stale" });
+        return;
+      }
       res.status(404).json({ error: "Issue not found" });
       return;
+    }
+
+    if (isIssueUnblockOwner) {
+      const latestIssue = await svc.getById(id);
+      if (!latestIssue) {
+        res.status(409).json({ error: "Issue changed after unblock-owner recovery" });
+        return;
+      }
+      issue = latestIssue;
     }
 
     if (enteringBlocked) {
@@ -8410,12 +8543,13 @@ export function issueRoutes(
     });
 
     if (existing.status === "in_progress" && issue.status !== existing.status && issue.status !== "in_progress") {
-      await listSuccessfulRunHandoffStates(db, issue.companyId, [issue.id], { hydrateLiveness: false })
+      const resolvedIssue = issue;
+      await listSuccessfulRunHandoffStates(db, resolvedIssue.companyId, [resolvedIssue.id], { hydrateLiveness: false })
         .then(async (handoffStates) => {
-          const handoff = handoffStates.get(issue.id);
+          const handoff = handoffStates.get(resolvedIssue.id);
           if (handoff?.state !== "required") return;
           await logActivity(db, {
-            companyId: issue.companyId,
+            companyId: resolvedIssue.companyId,
             actorType: actor.actorType,
             actorId: actor.actorId,
             agentId: actor.agentId,
@@ -8423,17 +8557,17 @@ export function issueRoutes(
             agentApiKeyId: actor.agentApiKeyId,
             action: "issue.successful_run_handoff_resolved",
             entityType: "issue",
-            entityId: issue.id,
+            entityId: resolvedIssue.id,
             details: {
-              identifier: issue.identifier,
+              identifier: resolvedIssue.identifier,
               sourceRunId: handoff.sourceRunId,
               correctiveRunId: handoff.correctiveRunId,
-              resolvedByStatus: issue.status,
+              resolvedByStatus: resolvedIssue.status,
             },
           });
         })
         .catch((err) => {
-          logger.warn({ err, issueId: issue.id }, "failed to log successful run handoff resolution");
+          logger.warn({ err, issueId: resolvedIssue.id }, "failed to log successful run handoff resolution");
         });
     }
 
@@ -8609,17 +8743,19 @@ export function issueRoutes(
       }
     }
 
-    let comment = null;
+    let comment = atomicOwnerComment;
     if (commentBody) {
       const commentReferenceSummaryBefore = updateReferenceSummaryAfter
         ?? await issueReferencesSvc.listIssueReferenceSummary(issue.id);
-      comment = await svc.addComment(id, commentBody, {
-        agentId: actor.agentId ?? undefined,
-        userId: actor.actorType === "user" ? actor.actorId : undefined,
-        runId: actor.runId,
-      }, {
-        sourceTrust: await sourceTrustForActorWrite(issue, actor),
-      });
+      if (!comment) {
+        comment = await svc.addComment(id, commentBody, {
+          agentId: actor.agentId ?? undefined,
+          userId: actor.actorType === "user" ? actor.actorId : undefined,
+          runId: actor.runId,
+        }, {
+          sourceTrust: await sourceTrustForActorWrite(issue, actor),
+        });
+      }
       await issueReferencesSvc.syncComment(comment.id);
       await externalObjectsSvc.syncCommentSafely(comment.id);
       const commentReferenceSummaryAfter = await issueReferencesSvc.listIssueReferenceSummary(issue.id);
@@ -8785,6 +8921,7 @@ export function issueRoutes(
           source: "assignment",
           triggerDetail: "system",
           reason: "issue_assigned",
+          ...(isIssueUnblockOwner ? { currentIssueAssigneeGuard: { issueId: issue.id } } : {}),
           payload: {
             issueId: issue.id,
             ...(comment ? { commentId: comment.id } : {}),
@@ -8819,6 +8956,7 @@ export function issueRoutes(
           source: "automation",
           triggerDetail: "system",
           reason: "issue_status_changed",
+          ...(isIssueUnblockOwner ? { currentIssueAssigneeGuard: { issueId: issue.id } } : {}),
           payload: {
             issueId: issue.id,
             mutation: "update",
@@ -8847,6 +8985,7 @@ export function issueRoutes(
             source: "automation",
             triggerDetail: "system",
             reason: reopened ? "issue_reopened_via_comment" : "issue_commented",
+            ...(isIssueUnblockOwner ? { currentIssueAssigneeGuard: { issueId: issue.id } } : {}),
             payload: {
               issueId: id,
               commentId: comment.id,
@@ -9055,6 +9194,19 @@ export function issueRoutes(
     })();
 
     await queueTaskWatchdogEvaluation(issue, actor.runId);
+    if (isIssueUnblockOwner) {
+      const responseIssue = await svc.getById(issue.id);
+      if (!responseIssue) {
+        res.status(409).json({ error: "Issue changed after unblock-owner update; reload and retry" });
+        return;
+      }
+      const responseAccess = await decideIssueAccess(req, responseIssue, "issue:read");
+      if (!responseAccess.allowed) {
+        res.status(409).json({ error: "Issue access changed after unblock-owner update; reload" });
+        return;
+      }
+      issueResponse = { ...issueResponse, ...responseIssue };
+    }
     res.json({ ...issueResponse, comment });
   });
 
@@ -10019,6 +10171,12 @@ export function issueRoutes(
     if (!issue) return;
     const commentAccessDecision = await assertAgentIssueCommentAllowed(req, res, issue);
     if (!commentAccessDecision) return;
+    const isIssueUnblockOwnerComment = Boolean(
+      commentAccessDecision !== true &&
+      isIssueUnblockOwnerDecision(commentAccessDecision) &&
+      req.actor.type === "agent" &&
+      req.actor.agentId,
+    );
     if (!assertStructuredCommentFieldsAllowed(req, res, {
       presentation: req.body.presentation,
       metadata: req.body.metadata,
@@ -10035,6 +10193,10 @@ export function issueRoutes(
     const reopenRequested = req.body.reopen === true;
     const resumeRequested = req.body.resume === true;
     const interruptRequested = req.body.interrupt === true;
+    if (isIssueUnblockOwnerComment && (reopenRequested || resumeRequested || interruptRequested)) {
+      res.status(403).json({ error: "Unblock owners must use the guarded issue PATCH to resume work" });
+      return;
+    }
     const isClosed = isClosedIssueStatus(issue.status);
     const isBlocked = issue.status === "blocked";
     const crossIssueCommentOnlyGrant =
@@ -10325,16 +10487,33 @@ export function issueRoutes(
         requestedByActorId: actor.actorId,
       });
     } else {
-      comment = await svc.addComment(id, req.body.body, {
-        agentId: actor.agentId ?? undefined,
-        userId: actor.actorType === "user" ? actor.actorId : undefined,
-        runId: actor.runId,
-      }, {
+      const commentOptions = {
         authorType: req.body.authorType ?? (actor.actorType === "agent" ? "agent" : "user"),
         presentation: commentPresentation,
         metadata: req.body.metadata ?? null,
         sourceTrust: await sourceTrustForActorWrite(currentIssue, actor),
-      });
+      };
+      const commentActor = {
+        agentId: actor.agentId ?? undefined,
+        userId: actor.actorType === "user" ? actor.actorId : undefined,
+        runId: actor.runId,
+      };
+      const addComment = (tx?: Parameters<typeof svc.addComment>[4]) => tx
+        ? svc.addComment(id, req.body.body, commentActor, commentOptions, tx)
+        : svc.addComment(id, req.body.body, commentActor, commentOptions);
+      comment = isIssueUnblockOwnerComment
+        ? await svc.runBlockedUnblockOwnerTransaction({
+            issueId: id,
+            expectedUpdatedAt: issue.updatedAt,
+            actor: req.actor,
+            action: "issue:comment",
+          }, addComment)
+        : await addComment();
+      if (isIssueUnblockOwnerComment) {
+        const latestIssue = await svc.getById(id);
+        if (!latestIssue) throw conflict("Issue changed after unblock-owner comment");
+        currentIssue = latestIssue;
+      }
     }
 
     await issueReferencesSvc.syncComment(comment.id);
@@ -10410,6 +10589,13 @@ export function issueRoutes(
       reopened,
       blockedToTodoRecovery: reopened && reopenFromStatus === "blocked" && currentIssue.status === "todo",
     });
+
+    let mentionedIds: string[] = [];
+    try {
+      mentionedIds = await svc.findMentionedAgents(issue.companyId, req.body.body);
+    } catch (err) {
+      logger.warn({ err, issueId: id }, "failed to resolve @-mentions");
+    }
 
     // Merge all wakeups from this comment into one enqueue per agent to avoid duplicate runs.
     void (async () => {
@@ -10487,6 +10673,9 @@ export function issueRoutes(
             source: "automation",
             triggerDetail: "system",
             reason: "issue_reopened_via_comment",
+            ...(isIssueUnblockOwnerComment
+              ? { currentIssueAssigneeGuard: { issueId: currentIssue.id } }
+              : {}),
             payload: {
               issueId: currentIssue.id,
               commentId: comment.id,
@@ -10514,6 +10703,9 @@ export function issueRoutes(
             source: "automation",
             triggerDetail: "system",
             reason: "issue_commented",
+            ...(isIssueUnblockOwnerComment && !mentionedIds.includes(assigneeId)
+              ? { currentIssueAssigneeGuard: { issueId: currentIssue.id } }
+              : {}),
             payload: {
               issueId: currentIssue.id,
               commentId: comment.id,
@@ -10535,13 +10727,6 @@ export function issueRoutes(
             },
           });
         }
-      }
-
-      let mentionedIds: string[] = [];
-      try {
-        mentionedIds = await svc.findMentionedAgents(issue.companyId, req.body.body);
-      } catch (err) {
-        logger.warn({ err, issueId: id }, "failed to resolve @-mentions");
       }
 
       for (const mentionedId of mentionedIds) {
@@ -10646,6 +10831,13 @@ export function issueRoutes(
     })();
 
     await queueTaskWatchdogEvaluation(currentIssue, actor.runId);
+    if (isIssueUnblockOwnerComment) {
+      const responseIssue = await svc.getById(currentIssue.id);
+      if (!responseIssue) {
+        res.status(409).json({ error: "Issue changed after unblock-owner comment; reload" });
+        return;
+      }
+    }
     res.status(201).json(comment);
   });
 

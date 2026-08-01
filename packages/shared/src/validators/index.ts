@@ -371,6 +371,7 @@ export {
 export {
   createIssueSchema,
   createIssueInputSchema,
+  issueUnblockDescriptorSchema,
   createChildIssueSchema,
   createAcceptedPlanDecompositionSchema,
   resolveCreateIssueStatusDefault,

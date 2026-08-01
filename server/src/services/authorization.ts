@@ -20,7 +20,12 @@ import type {
   SkillTestAgentKeyScope,
   TaskBridgeAgentKeyScope,
 } from "@paperclipai/shared";
-import { LOW_TRUST_REVIEW_PRESET, extractAgentMentionIds, type LowTrustBoundary } from "@paperclipai/shared";
+import {
+  LOW_TRUST_REVIEW_PRESET,
+  extractAgentMentionIds,
+  issueUnblockDescriptorSchema,
+  type LowTrustBoundary,
+} from "@paperclipai/shared";
 import {
   LOW_TRUST_ISSUE_ANCESTRY_MAX_DEPTH,
   isIssueWithinLowTrustBoundary,
@@ -102,6 +107,7 @@ export type AuthorizationDecision = {
     | "allow_consented_change"
     | "allow_legacy_agent_creator"
     | "allow_issue_mention_grant"
+    | "allow_issue_unblock_owner"
     | "allow_direct_parent_report"
     | "allow_self"
     | "allow_company_agent"
@@ -211,6 +217,12 @@ function readBoolean(value: unknown): boolean | null {
   return typeof value === "boolean" ? value : null;
 }
 
+function issueUnblockOwnerAgentId(value: unknown) {
+  const parsed = issueUnblockDescriptorSchema.safeParse(value);
+  if (!parsed.success || typeof parsed.data.owner !== "object" || !("agentId" in parsed.data.owner)) return null;
+  return parsed.data.owner.agentId;
+}
+
 type AssignmentPolicyEffect =
   | { kind: "none" }
   | { kind: "restricted"; explanation: string }
@@ -244,6 +256,7 @@ type IssueAuthorizationRow = {
   executionPolicy: unknown;
   originKind: string | null;
   originId: string | null;
+  unblockDescriptor: unknown;
 };
 
 function evaluateAuthorizationPolicyForAssignment(
@@ -590,7 +603,11 @@ export function authorizationService(db: Db) {
     actor: AuthorizationActor;
     companyId: string;
     userId: string;
+    fresh?: boolean;
   }): Promise<ResponsibleUserSnapshot> {
+    if (input.fresh) {
+      return loadResponsibleUserSnapshot(input.companyId, input.userId);
+    }
     const actorWithMemo = input.actor as ResponsibleUserActorWithMemo;
     const key = `${input.companyId}:${input.userId}`;
     actorWithMemo.__responsibleUserSnapshotMemo ??= new Map();
@@ -750,6 +767,7 @@ export function authorizationService(db: Db) {
         executionPolicy: issues.executionPolicy,
         originKind: issues.originKind,
         originId: issues.originId,
+        unblockDescriptor: issues.unblockDescriptor,
       })
       .from(issues)
       .where(eq(issues.id, issueId))
@@ -1793,7 +1811,6 @@ export function authorizationService(db: Db) {
       });
     }
 
-
     if (input.action === "inbox:manage") {
       if (!isSimpleAssignableAgentStatus(actorAgent.status)) {
         return deny({
@@ -1987,6 +2004,29 @@ export function authorizationService(db: Db) {
         return allowIssueMentionGrant(input.action);
       }
     }
+    const issueUnblockOwnerAction =
+      input.action === "issue:comment" ||
+      (input.action === "issue:mutate" && scopeBoolean(input.scope, "allowIssueUnblockOwner"));
+    if (
+      trustResolution.kind === "standard" &&
+      isSimpleAssignableAgentStatus(actorAgent.status) &&
+      issueUnblockOwnerAction &&
+      input.resource.type === "issue" &&
+      input.resource.issueId
+    ) {
+      const issue = await loadIssue(input.resource.issueId);
+      if (
+        issue?.companyId === companyId &&
+        issue.status === "blocked" &&
+        issueUnblockOwnerAgentId(issue.unblockDescriptor) === actorAgentId
+      ) {
+        return allow({
+          action: input.action,
+          reason: "allow_issue_unblock_owner",
+          explanation: "Allowed because the actor is the current persisted unblock owner.",
+        });
+      }
+    }
     if (
       input.action === "agent_config:update" &&
       input.resource.type === "agent" &&
@@ -2095,6 +2135,7 @@ export function authorizationService(db: Db) {
       actor: input.actor,
       companyId,
       userId: responsibleUserId,
+      fresh: scopeBoolean(input.scope, "requireFreshResponsibleUser"),
     });
     const denyCode: AuthorizationDecision["code"] =
       snapshot.userExists && snapshot.activeMembership
@@ -2156,8 +2197,11 @@ export function authorizationService(db: Db) {
       grant: userDecision.grant,
     });
 
+    const shadowMode =
+      responsibleUserAuthzShadowMode() &&
+      !scopeBoolean(input.scope, "forceResponsibleUserEnforcement");
     logger.warn({
-      authzMode: responsibleUserAuthzShadowMode() ? "shadow" : "enforce",
+      authzMode: shadowMode ? "shadow" : "enforce",
       code: denied.code,
       reason: userDecision.reason,
       action: input.action,
@@ -2167,7 +2211,7 @@ export function authorizationService(db: Db) {
       responsibleUserId,
     }, "responsible-user authorization intersection denied");
 
-    return responsibleUserAuthzShadowMode() ? agentDecision : denied;
+    return shadowMode ? agentDecision : denied;
   }
 
   async function decide(input: {
