@@ -2061,6 +2061,17 @@ registry.registerPath({
 });
 
 registry.registerPath({
+  method: "post",
+  path: "/api/issues/{id}/manager-handoff",
+  tags: ["issues"],
+  summary: "Request a scoped manager assignment handoff",
+  description:
+    "Allows a run-bound manager agent to activate or wake one existing backlog/todo issue assigned to a healthy direct report without widening generic issue mutation or checkout authority.",
+  request: { params: z.object({ id: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound, 409: r.conflict },
+});
+
+registry.registerPath({
   method: "get",
   path: "/api/issues/{id}/heartbeat-context",
   tags: ["issues"],
