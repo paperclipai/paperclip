@@ -3860,7 +3860,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         result.operatorCancelExempted += 1;
         continue;
       }
-      if (latestRun?.status === "succeeded" && await hasPersistedDurableWaitPath(issue)) {
+      if (
+        !hasMissingResolvedContinuation
+        && latestRun?.status === "succeeded"
+        && await hasPersistedDurableWaitPath(issue)
+      ) {
         result.skipped += 1;
         continue;
       }

@@ -7771,6 +7771,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       const agentId = randomUUID();
       const issueId = randomUUID();
       const interactionId = randomUUID();
+      const runId = randomUUID();
       const resolvedAt = new Date(Date.now() - 60_000);
 
       await db.insert(companies).values({ id: companyId, name: `Dropped ${status} interaction co` });
@@ -7795,6 +7796,24 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         priority: "medium",
         assigneeAgentId: agentId,
         creatorAgentId: agentId,
+        monitorNextCheckAt: new Date(Date.now() + 60 * 60_000),
+      });
+      await db.insert(heartbeatRuns).values({
+        id: runId,
+        companyId,
+        agentId,
+        invocationSource: "automation",
+        triggerDetail: "system",
+        status: "succeeded",
+        createdAt: new Date(resolvedAt.getTime() - 120_000),
+        startedAt: new Date(resolvedAt.getTime() - 120_000),
+        finishedAt: new Date(resolvedAt.getTime() - 60_000),
+        updatedAt: new Date(resolvedAt.getTime() - 60_000),
+        contextSnapshot: {
+          issueId,
+          taskId: issueId,
+          wakeReason: "previous_work_completed",
+        },
       });
       await db.insert(issueThreadInteractions).values({
         id: interactionId,
