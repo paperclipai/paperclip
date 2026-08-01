@@ -6,15 +6,18 @@ import {
   agents,
   companies,
   companySkills,
+  costEvents,
   createDb,
   documents,
   documentRevisions,
+  financeEvents,
   heartbeatRunEvents,
   heartbeatRuns,
   issueComments,
   issueDocuments,
   issueExecutionDecisions,
   issueReadStates,
+  issueThreadInteractions,
   issues,
   routines,
 } from "@paperclipai/db";
@@ -46,6 +49,9 @@ describeEmbeddedPostgres("cleanup removal services", () => {
   afterEach(async () => {
     await db.delete(heartbeatRunEvents);
     await db.delete(activityLog);
+    await db.delete(financeEvents);
+    await db.delete(costEvents);
+    await db.delete(issueThreadInteractions);
     await db.delete(issueReadStates);
     await db.delete(issueComments);
     await db.delete(issueExecutionDecisions);
@@ -188,6 +194,53 @@ describeEmbeddedPostgres("cleanup removal services", () => {
       details: {},
     });
 
+    const [companyAgent] = await db
+      .select({ id: agents.id })
+      .from(agents)
+      .where(eq(agents.companyId, companyId));
+    const costEventId = randomUUID();
+    await db.insert(costEvents).values({
+      id: costEventId,
+      companyId,
+      agentId: companyAgent!.id,
+      issueId,
+      heartbeatRunId: runId,
+      provider: "test",
+      model: "test-model",
+      costCents: 1,
+      occurredAt: new Date(),
+    });
+    await db.insert(financeEvents).values({
+      id: randomUUID(),
+      companyId,
+      issueId,
+      heartbeatRunId: runId,
+      costEventId,
+      eventKind: "model_usage",
+      biller: "test",
+      amountCents: 1,
+      occurredAt: new Date(),
+    });
+
+    const interactionId = randomUUID();
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId,
+      companyId,
+      issueId,
+      kind: "request_confirmation",
+      status: "pending",
+      continuationPolicy: "wake_assignee_on_accept",
+      title: "Approve deletion regression fixture",
+      createdByUserId: "user-1",
+      payload: {
+        version: 1,
+        prompt: "Continue?",
+        acceptLabel: "Continue",
+        rejectLabel: "Stop",
+        target: { type: "custom", key: "cleanup-regression" },
+      },
+    });
+
     await db.insert(documents).values({
       id: documentId,
       companyId,
@@ -231,6 +284,11 @@ describeEmbeddedPostgres("cleanup removal services", () => {
     await expect(db.select().from(documentRevisions).where(eq(documentRevisions.id, revisionId))).resolves.toHaveLength(0);
     await expect(db.select().from(issueReadStates).where(eq(issueReadStates.companyId, companyId))).resolves.toHaveLength(0);
     await expect(db.select().from(activityLog).where(eq(activityLog.companyId, companyId))).resolves.toHaveLength(0);
+    await expect(db.select().from(costEvents).where(eq(costEvents.companyId, companyId))).resolves.toHaveLength(0);
+    await expect(db.select().from(financeEvents).where(eq(financeEvents.companyId, companyId))).resolves.toHaveLength(0);
+    await expect(
+      db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, interactionId)),
+    ).resolves.toHaveLength(0);
   });
 
   it("removes heartbeat events by run id before deleting company-owned runs", async () => {

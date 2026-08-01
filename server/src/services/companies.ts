@@ -53,6 +53,76 @@ const SYSTEM_COMPANY_ACTOR: CompanyActivityActor = {
   runId: null,
 };
 
+export type RestrictiveForeignKeyEdge = {
+  childSchema: string;
+  childTable: string;
+  parentSchema: string;
+  parentTable: string;
+  constraintName: string;
+  deleteAction: "a" | "r";
+};
+
+const SAFE_SQL_IDENTIFIER = /^[a-z_][a-z0-9_]*$/;
+
+export function buildCompanyScopedDeleteOrder(
+  tableNames: string[],
+  restrictiveEdges: RestrictiveForeignKeyEdge[],
+) {
+  const scopedTables = new Set(tableNames);
+  if (scopedTables.size === 0) {
+    throw new Error("Company deletion refused: no public company-scoped tables were discovered");
+  }
+
+  for (const tableName of scopedTables) {
+    if (!SAFE_SQL_IDENTIFIER.test(tableName)) {
+      throw new Error(`Company deletion refused: unsafe table identifier ${JSON.stringify(tableName)}`);
+    }
+  }
+
+  const outgoing = new Map<string, Set<string>>();
+  const indegree = new Map<string, number>();
+  for (const tableName of scopedTables) {
+    outgoing.set(tableName, new Set());
+    indegree.set(tableName, 0);
+  }
+
+  for (const edge of restrictiveEdges) {
+    if (edge.parentSchema !== "public" || !scopedTables.has(edge.parentTable)) continue;
+    if (edge.childSchema !== "public" || !scopedTables.has(edge.childTable)) {
+      throw new Error(
+        `Company deletion refused: restrictive external FK ${edge.constraintName} ` +
+        `(${edge.childSchema}.${edge.childTable} -> ${edge.parentSchema}.${edge.parentTable})`,
+      );
+    }
+    if (edge.childTable === edge.parentTable) continue;
+    const parents = outgoing.get(edge.childTable)!;
+    if (parents.has(edge.parentTable)) continue;
+    parents.add(edge.parentTable);
+    indegree.set(edge.parentTable, indegree.get(edge.parentTable)! + 1);
+  }
+
+  const ready = [...scopedTables].filter((tableName) => indegree.get(tableName) === 0).sort();
+  const ordered: string[] = [];
+  while (ready.length > 0) {
+    const tableName = ready.shift()!;
+    ordered.push(tableName);
+    for (const parentTable of [...outgoing.get(tableName)!].sort()) {
+      const nextIndegree = indegree.get(parentTable)! - 1;
+      indegree.set(parentTable, nextIndegree);
+      if (nextIndegree === 0) {
+        ready.push(parentTable);
+        ready.sort();
+      }
+    }
+  }
+
+  if (ordered.length !== scopedTables.size) {
+    const blocked = [...scopedTables].filter((tableName) => !ordered.includes(tableName)).sort();
+    throw new Error(`Company deletion refused: restrictive FK cycle among ${blocked.join(", ")}`);
+  }
+  return ordered;
+}
+
 export function companyService(db: Db) {
   const ISSUE_PREFIX_FALLBACK = "CMP";
   const environmentsSvc = environmentService(db);
@@ -431,47 +501,57 @@ export function companyService(db: Db) {
 
     remove: (id: string) =>
       db.transaction(async (tx) => {
-        // Delete from child tables in dependency order
+        // Lock the parent first so concurrent workers cannot add new rows after
+        // their company-scoped table has already been cleared.
+        await tx.execute(sql`SELECT id FROM ${companies} WHERE ${companies.id} = ${id} FOR UPDATE`);
+
+        // Preserve the historical cross-scope safeguard: old/corrupt event rows
+        // may point at a company run while carrying a different company_id.
         const companyRunIds = await tx
           .select({ id: heartbeatRuns.id })
           .from(heartbeatRuns)
           .where(eq(heartbeatRuns.companyId, id));
-
-        await tx.delete(heartbeatRunEvents).where(eq(heartbeatRunEvents.companyId, id));
         if (companyRunIds.length > 0) {
           await tx
             .delete(heartbeatRunEvents)
             .where(inArray(heartbeatRunEvents.runId, companyRunIds.map((run) => run.id)));
         }
-        await tx.delete(agentTaskSessions).where(eq(agentTaskSessions.companyId, id));
-        await tx.delete(activityLog).where(eq(activityLog.companyId, id));
-        await tx.delete(heartbeatRuns).where(eq(heartbeatRuns.companyId, id));
-        await tx.delete(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, id));
-        await tx.delete(agentApiKeys).where(eq(agentApiKeys.companyId, id));
-        await tx.delete(agentRuntimeState).where(eq(agentRuntimeState.companyId, id));
-        await tx.delete(issueComments).where(eq(issueComments.companyId, id));
-        await tx.delete(costEvents).where(eq(costEvents.companyId, id));
-        await tx.delete(financeEvents).where(eq(financeEvents.companyId, id));
-        await tx.delete(approvalComments).where(eq(approvalComments.companyId, id));
-        await tx.delete(approvals).where(eq(approvals.companyId, id));
-        await tx.delete(companySecrets).where(eq(companySecrets.companyId, id));
-        await tx.delete(joinRequests).where(eq(joinRequests.companyId, id));
-        await tx.delete(invites).where(eq(invites.companyId, id));
-        await tx.delete(principalPermissionGrants).where(eq(principalPermissionGrants.companyId, id));
-        await tx.delete(companyMemberships).where(eq(companyMemberships.companyId, id));
-        await tx.delete(companySkills).where(eq(companySkills.companyId, id));
-        await tx.delete(routineRuns).where(eq(routineRuns.companyId, id));
-        await tx.delete(routineTriggers).where(eq(routineTriggers.companyId, id));
-        await tx.delete(routineRevisions).where(eq(routineRevisions.companyId, id));
-        await tx.delete(routines).where(eq(routines.companyId, id));
-        await tx.delete(issueReadStates).where(eq(issueReadStates.companyId, id));
-        await tx.delete(documents).where(eq(documents.companyId, id));
-        await tx.delete(issues).where(eq(issues.companyId, id));
-        await tx.delete(companyLogos).where(eq(companyLogos.companyId, id));
-        await tx.delete(assets).where(eq(assets.companyId, id));
-        await tx.delete(goals).where(eq(goals.companyId, id));
-        await tx.delete(projects).where(eq(projects.companyId, id));
-        await tx.delete(agents).where(eq(agents.companyId, id));
+
+        const companyScopedRows = Array.from(await tx.execute(sql<{ tableName: string }>`
+          SELECT table_name AS "tableName"
+          FROM information_schema.columns
+          WHERE table_schema = 'public' AND column_name = 'company_id'
+          ORDER BY table_name
+        `)) as unknown as Array<{ tableName: string }>;
+        const restrictiveEdges = Array.from(await tx.execute(sql<RestrictiveForeignKeyEdge>`
+          SELECT
+            child_ns.nspname AS "childSchema",
+            child.relname AS "childTable",
+            parent_ns.nspname AS "parentSchema",
+            parent.relname AS "parentTable",
+            constraint_row.conname AS "constraintName",
+            constraint_row.confdeltype AS "deleteAction"
+          FROM pg_constraint constraint_row
+          JOIN pg_class child ON child.oid = constraint_row.conrelid
+          JOIN pg_namespace child_ns ON child_ns.oid = child.relnamespace
+          JOIN pg_class parent ON parent.oid = constraint_row.confrelid
+          JOIN pg_namespace parent_ns ON parent_ns.oid = parent.relnamespace
+          WHERE constraint_row.contype = 'f'
+            AND constraint_row.confdeltype IN ('a', 'r')
+            AND parent_ns.nspname = 'public'
+          ORDER BY child_ns.nspname, child.relname, parent.relname, constraint_row.conname
+        `)) as unknown as RestrictiveForeignKeyEdge[];
+
+        const deleteOrder = buildCompanyScopedDeleteOrder(
+          companyScopedRows.map((row) => row.tableName),
+          restrictiveEdges,
+        );
+        for (const tableName of deleteOrder) {
+          await tx.execute(
+            sql`DELETE FROM ${sql.identifier(tableName)} WHERE ${sql.identifier("company_id")} = ${id}`,
+          );
+        }
+
         const rows = await tx
           .delete(companies)
           .where(eq(companies.id, id))
