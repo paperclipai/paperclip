@@ -35,29 +35,33 @@ const sharedOpts = {
   singleLine: true,
 };
 
-export const logger = pino({
-  level: "debug",
+const loggerOptions = {
+  level: process.env.NODE_ENV === "test" ? "silent" : "debug",
   redact: [...HTTP_LOG_REDACT_PATHS],
-}, pino.transport({
-  targets: [
-    {
-      target: "pino-pretty",
-      options: { ...sharedOpts, ignore: "pid,hostname,req,res,responseTime", colorize: true, destination: 1 },
-      level: "info",
-    },
-    {
-      target: rotatingFileTransport,
-      options: {
-        ...sharedOpts,
-        colorize: false,
-        logFile,
-        maxBytes: DEFAULT_SERVER_LOG_MAX_BYTES,
-        maxArchives: DEFAULT_SERVER_LOG_MAX_ARCHIVES,
+};
+
+export const logger = process.env.NODE_ENV === "test"
+  ? pino(loggerOptions)
+  : pino(loggerOptions, pino.transport({
+    targets: [
+      {
+        target: "pino-pretty",
+        options: { ...sharedOpts, ignore: "pid,hostname,req,res,responseTime", colorize: true, destination: 1 },
+        level: "info",
       },
-      level: "debug",
-    },
-  ],
-}));
+      {
+        target: rotatingFileTransport,
+        options: {
+          ...sharedOpts,
+          colorize: false,
+          logFile,
+          maxBytes: DEFAULT_SERVER_LOG_MAX_BYTES,
+          maxArchives: DEFAULT_SERVER_LOG_MAX_ARCHIVES,
+        },
+        level: "debug",
+      },
+    ],
+  }));
 
 export const httpLogger = pinoHttp({
   logger,
