@@ -121,13 +121,24 @@ test("pr.yml keeps a stable aggregate check named e2e over the shard matrix", ()
 
   const shards = jobs.get("e2e_shards");
   assert.ok(shards, "pr.yml must define the `e2e_shards` matrix job");
-  assert.match(
-    shards,
-    new RegExp(`shard_count: ${SHARD_COUNT}`),
-    "the shard matrix must match SHARD_COUNT",
+  const matrixEntries = [
+    ...shards.matchAll(
+      /^ {10}- shard_index: (?<shardIndex>\d+)\n {12}shard_count: (?<shardCount>\d+)\n {12}shard_label: (?<shardLabel>\d+\/\d+)$/gm,
+    ),
+  ].map((match) => ({
+    shardIndex: Number(match.groups.shardIndex),
+    shardCount: Number(match.groups.shardCount),
+    shardLabel: match.groups.shardLabel,
+  }));
+
+  assert.equal(matrixEntries.length, SHARD_COUNT, "the shard matrix must define exactly SHARD_COUNT entries");
+  assert.deepEqual(
+    matrixEntries.map((entry) => entry.shardIndex).sort((a, b) => a - b),
+    Array.from({ length: SHARD_COUNT }, (_, index) => index),
+    "the shard matrix must define each shard index exactly once",
   );
-  assert.ok(
-    !new RegExp(`shard_index: ${SHARD_COUNT}\\b`).test(shards),
-    "the shard matrix must not define more shards than SHARD_COUNT",
-  );
+  for (const entry of matrixEntries) {
+    assert.equal(entry.shardCount, SHARD_COUNT, "each shard matrix entry must use the same SHARD_COUNT");
+    assert.equal(entry.shardLabel, `${entry.shardIndex + 1}/${SHARD_COUNT}`, "each shard label must match its index");
+  }
 });
