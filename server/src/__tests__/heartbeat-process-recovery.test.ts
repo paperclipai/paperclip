@@ -2914,12 +2914,10 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     });
   });
 
-  // Scenario 4: `process_lost` before the agent started is retried like
-  // other infrastructure failures. Distinct from the pid-based process-loss retry
-  // ("queues exactly one retry when the recorded local pid is dead"): here no pid was ever
-  // recorded (the process died before producing output), so the reaper falls through to the
-  // accepted-interaction infra-retry path. Pre-P1 `process_lost` was not retry-eligible there.
-  it("retries a plan-approval continuation lost as process_lost before agent start as an infrastructure failure", async () => {
+  // A claimed continuation with no pid/process-group evidence cannot be distinguished from a
+  // slow adapter launch after a server restart. The orphan reaper must fail closed instead of
+  // manufacturing a process_lost failure and a duplicate approval continuation.
+  it("does not infer process_lost for a plan-approval continuation with no process identity", async () => {
     const { companyId, agentId, runId, wakeupRequestId, issueId } = await seedQueuedIssueRunFixture();
     const interactionId = randomUUID();
 
@@ -2982,46 +2980,30 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     const heartbeat = heartbeatService(db);
     const result = await heartbeat.reapOrphanedRuns();
-    expect(result.reaped).toBe(1);
-    expect(result.runIds).toEqual([runId]);
+    expect(result).toEqual({ reaped: 0, runIds: [] });
 
     const runs = await db
       .select()
       .from(heartbeatRuns)
       .where(eq(heartbeatRuns.agentId, agentId));
-    expect(runs).toHaveLength(2);
-
-    const failedRun = runs.find((row) => row.id === runId);
-    const retryRun = runs.find((row) => row.id !== runId);
-    expect(failedRun).toMatchObject({ status: "failed", errorCode: "process_lost" });
-    expect(retryRun).toMatchObject({
-      status: "scheduled_retry",
-      retryOfRunId: runId,
-      scheduledRetryAttempt: 1,
-      scheduledRetryReason: INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
-    });
-    expect(retryRun?.contextSnapshot).toMatchObject({
-      issueId,
-      interactionId,
-      interactionStatus: "accepted",
-      retryReason: INTERACTION_CONTINUATION_INFRA_RETRY_REASON,
-      wakeReason: INTERACTION_CONTINUATION_INFRA_WAKE_REASON,
-      scheduledRetryAttempt: 1,
+    expect(runs).toHaveLength(1);
+    expect(runs[0]).toMatchObject({
+      id: runId,
+      status: "running",
+      errorCode: null,
+      processPid: null,
+      processGroupId: null,
     });
 
     const retryWakeup = await db
       .select({ reason: agentWakeupRequests.reason, status: agentWakeupRequests.status })
       .from(agentWakeupRequests)
-      .where(eq(agentWakeupRequests.runId, retryRun?.id ?? ""))
+      .where(eq(agentWakeupRequests.id, wakeupRequestId))
       .then((rows) => rows[0] ?? null);
-    expect(retryWakeup?.reason).toBe(INTERACTION_CONTINUATION_INFRA_WAKE_REASON);
+    expect(retryWakeup).toMatchObject({ reason: "issue_commented", status: "claimed" });
 
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
-    expect(comments).toHaveLength(1);
-    expect(comments[0]).toMatchObject({
-      authorType: "system",
-      body: "Agent failed to resume after approval: `process_lost` — retrying (attempt 1/3)",
-    });
+    expect(comments).toHaveLength(0);
 
     const interaction = await db
       .select({ result: issueThreadInteractions.result })
@@ -3031,15 +3013,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(interaction?.result).toMatchObject({
       version: 1,
       outcome: "accepted",
-      resumeFailure: {
-        status: "retrying",
-        errorCode: "process_lost",
-        attempt: 1,
-        maxAttempts: 3,
-        runId,
-        retryRunId: retryRun?.id ?? null,
-      },
     });
+    expect(interaction?.result).not.toHaveProperty("resumeFailure");
     mockAdapterExecute.mockClear();
   });
 
