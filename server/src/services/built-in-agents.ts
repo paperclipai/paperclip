@@ -19,6 +19,7 @@ import {
   withBuiltInAgentMarker,
 } from "./built-in-agent-metadata.js";
 import { companySkillService } from "./company-skills.js";
+import { instanceSettingsService } from "./instance-settings.js";
 import { routineService } from "./routines.js";
 import { accessService } from "./access.js";
 import { listAdapterModels } from "../adapters/registry.js";
@@ -825,6 +826,7 @@ export function builtInAgentService(db: Db) {
   const accessSvc = accessService(db);
   const approvalSvc = approvalService(db);
   const instructionsSvc = agentInstructionsService();
+  const instanceSettingsSvc = instanceSettingsService(db);
   const skillSvc = companySkillService(db);
   const routineSvc = routineService(db);
 
@@ -1593,6 +1595,14 @@ export function builtInAgentService(db: Db) {
     return agent as Agent | null;
   }
 
+  async function hasTerminatedAgent(companyId: string, definition: BuiltInAgentDefinition) {
+    const rows = await db
+      .select({ metadata: agents.metadata })
+      .from(agents)
+      .where(and(eq(agents.companyId, companyId), eq(agents.status, "terminated")));
+    return rows.some((row) => readBuiltInAgentMarker(row.metadata)?.key === definition.key);
+  }
+
   async function state(
     definition: BuiltInAgentDefinition,
     agent: Agent | null,
@@ -1943,19 +1953,54 @@ export function builtInAgentService(db: Db) {
 
   async function autoProvisionBundledAgents(companyId: string) {
     const company = await ensureCompany(companyId);
+    const definitions = DEFINITIONS.filter((entry) => entry.bundle);
+    const experimental = await instanceSettingsSvc.getExperimental();
+    if (experimental.enableBuiltInAgents !== true) {
+      return {
+        autoEnsured: 0,
+        pendingApprovals: 0,
+        defaultGrantsEnsured: 0,
+        outcomes: {
+          skipped_by_flag: definitions.length,
+          skipped_by_tombstone: 0,
+          provisioned: 0,
+          already_present: 0,
+        },
+      };
+    }
     let autoEnsured = 0;
     let pendingApprovals = 0;
-    for (const definition of DEFINITIONS.filter((entry) => entry.bundle)) {
+    let skippedByTombstone = 0;
+    let provisioned = 0;
+    let alreadyPresent = 0;
+    for (const definition of definitions) {
+      const existing = await findSingleAgent(companyId, definition);
+      if (!existing && await hasTerminatedAgent(companyId, definition)) {
+        skippedByTombstone += 1;
+        continue;
+      }
       if (company.requireBoardApprovalForNewAgents) {
         const result = await provision(companyId, definition.key);
         if (result.approval) pendingApprovals += 1;
       } else {
         await ensure(companyId, definition.key);
       }
+      if (existing) alreadyPresent += 1;
+      else provisioned += 1;
       autoEnsured += 1;
     }
     const defaultGrantsEnsured = await ensureCompanyDefaultAgentGrants(companyId);
-    return { autoEnsured, pendingApprovals, defaultGrantsEnsured };
+    return {
+      autoEnsured,
+      pendingApprovals,
+      defaultGrantsEnsured,
+      outcomes: {
+        skipped_by_flag: 0,
+        skipped_by_tombstone: skippedByTombstone,
+        provisioned,
+        already_present: alreadyPresent,
+      },
+    };
   }
 
   return {
@@ -1993,6 +2038,12 @@ export async function reconcileBuiltInAgentsOnStartup(db: Db) {
   let autoEnsured = 0;
   let pendingApprovals = 0;
   let defaultGrantsEnsured = 0;
+  const outcomes = {
+    skipped_by_flag: 0,
+    skipped_by_tombstone: 0,
+    provisioned: 0,
+    already_present: 0,
+  };
   // Isolate per-company failures so one bad company (e.g. an unresolvable data
   // problem) can no longer abort reconciliation for every company after it.
   let companyFailures = 0;
@@ -2002,6 +2053,10 @@ export async function reconcileBuiltInAgentsOnStartup(db: Db) {
       autoEnsured += result.autoEnsured;
       pendingApprovals += result.pendingApprovals;
       defaultGrantsEnsured += result.defaultGrantsEnsured;
+      outcomes.skipped_by_flag += result.outcomes.skipped_by_flag;
+      outcomes.skipped_by_tombstone += result.outcomes.skipped_by_tombstone;
+      outcomes.provisioned += result.outcomes.provisioned;
+      outcomes.already_present += result.outcomes.already_present;
     } catch (err) {
       companyFailures += 1;
       console.error(
@@ -2050,5 +2105,15 @@ export async function reconcileBuiltInAgentsOnStartup(db: Db) {
     }
   }
 
-  return { scanned, reconciled, unknown, duplicates, autoEnsured, pendingApprovals, defaultGrantsEnsured, companyFailures };
+  return {
+    scanned,
+    reconciled,
+    unknown,
+    duplicates,
+    autoEnsured,
+    pendingApprovals,
+    defaultGrantsEnsured,
+    companyFailures,
+    outcomes,
+  };
 }
