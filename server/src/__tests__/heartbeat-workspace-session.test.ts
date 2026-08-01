@@ -2531,6 +2531,46 @@ describe("comment wake batching", () => {
     expect(merged).not.toHaveProperty("planReviewInteraction");
     expect(merged).not.toHaveProperty("toolAction");
   });
+
+  it("preserves every coalesced partial item verdict for the same interaction", () => {
+    const merged = mergeCoalescedContextSnapshot(
+      {
+        issueId: "issue-1",
+        mutation: "interaction",
+        interactionId: "interaction-1",
+        interactionKind: "request_item_verdicts",
+        interactionStatus: "pending",
+        newlyResolvedItemIds: ["item-a"],
+        itemVerdicts: {
+          newlyResolvedItemIds: ["item-a"],
+          items: [{ id: "item-a", verdict: "accept", reason: "ready" }],
+        },
+      },
+      {
+        issueId: "issue-1",
+        mutation: "interaction",
+        interactionId: "interaction-1",
+        interactionKind: "request_item_verdicts",
+        interactionStatus: "pending",
+        newlyResolvedItemIds: ["item-b"],
+        itemVerdicts: {
+          newlyResolvedItemIds: ["item-b"],
+          items: [{ id: "item-b", verdict: "reject", reason: "revise" }],
+        },
+      },
+    );
+
+    expect(merged).toMatchObject({
+      newlyResolvedItemIds: ["item-a", "item-b"],
+      itemVerdicts: {
+        newlyResolvedItemIds: ["item-a", "item-b"],
+        items: [
+          { id: "item-a", verdict: "accept", reason: "ready" },
+          { id: "item-b", verdict: "reject", reason: "revise" },
+        ],
+      },
+    });
+  });
 });
 
 describe("buildExplicitResumeSessionOverride", () => {

@@ -5529,6 +5529,39 @@ export function mergeCoalescedContextSnapshot(
   if (existing.forceFreshSession === true || incoming.forceFreshSession === true) {
     merged.forceFreshSession = true;
   }
+  const existingInteractionId = readNonEmptyString(existing.interactionId);
+  const incomingInteractionId = readNonEmptyString(incoming.interactionId);
+  if (
+    existingInteractionId
+    && existingInteractionId === incomingInteractionId
+    && readNonEmptyString(incoming.interactionKind) === "request_item_verdicts"
+  ) {
+    const existingVerdicts = parseObject(existing.itemVerdicts);
+    const incomingVerdicts = parseObject(incoming.itemVerdicts);
+    const mergedItemIds = Array.from(new Set([
+      ...(Array.isArray(existing.newlyResolvedItemIds) ? existing.newlyResolvedItemIds : []),
+      ...(Array.isArray(existingVerdicts.newlyResolvedItemIds) ? existingVerdicts.newlyResolvedItemIds : []),
+      ...(Array.isArray(incoming.newlyResolvedItemIds) ? incoming.newlyResolvedItemIds : []),
+      ...(Array.isArray(incomingVerdicts.newlyResolvedItemIds) ? incomingVerdicts.newlyResolvedItemIds : []),
+    ].filter((value): value is string => typeof value === "string" && value.length > 0)));
+    const itemsById = new Map<string, Record<string, unknown>>();
+    for (const item of [
+      ...(Array.isArray(existingVerdicts.items) ? existingVerdicts.items : []),
+      ...(Array.isArray(incomingVerdicts.items) ? incomingVerdicts.items : []),
+    ]) {
+      const normalized = parseObject(item);
+      const itemId = readNonEmptyString(normalized.id);
+      if (itemId) itemsById.set(itemId, normalized);
+    }
+    merged.newlyResolvedItemIds = mergedItemIds;
+    merged.itemVerdicts = {
+      ...existingVerdicts,
+      ...incomingVerdicts,
+      newlyResolvedItemIds: mergedItemIds,
+      items: Array.from(itemsById.values()),
+    };
+    delete merged[PAPERCLIP_WAKE_PAYLOAD_KEY];
+  }
   const mergedCommentIds = mergeWakeCommentIds(existing, incoming);
   if (mergedCommentIds.length > 0) {
     const latestCommentId = mergedCommentIds[mergedCommentIds.length - 1];
