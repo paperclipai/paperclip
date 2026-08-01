@@ -526,11 +526,11 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(enqueueWakeup).not.toHaveBeenCalled();
   });
 
-  it("DON-207: skips stranded escalation when a cancelled zombie still advances last_output_at", async () => {
-    // Specimen shape from DON-172: latest run is a short-lived agent_paused
-    // continuation retry, while an older cancelled run keeps updating
-    // last_output_at (process-tree orphan / DON-127). Status-only active-path
-    // checks would escalate; recent output evidence must suppress that.
+  it("skips stranded escalation when a cancelled zombie still advances last_output_at", async () => {
+    // Specimen: latest run is a short-lived agent_paused continuation retry,
+    // while an older cancelled run keeps updating last_output_at (process-tree
+    // orphan). Status-only active-path checks would escalate; recent output
+    // evidence must suppress only that exhausted-continuation escalate.
     const { companyId, coderId, sourceIssueId } = await seedCompany();
     const zombieRunId = randomUUID();
     const pausedRetryRunId = randomUUID();
@@ -590,10 +590,10 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(enqueueWakeup).not.toHaveBeenCalled();
   });
 
-  it("DON-207: skips stranded re-escalation within cooldown after a cleared recovery", async () => {
-    // Specimen shape from DON-172 second firing: Louis cleared the stranded
-    // recovery, then the same agent_paused continuation shape re-fired within
-    // minutes. Cleared source-scoped stranded recovery must suppress re-fire
+  it("skips stranded re-escalation within cooldown after a cleared recovery", async () => {
+    // Specimen: a cleared stranded recovery is followed by the same
+    // agent_paused continuation shape within minutes. Cleared source-scoped
+    // stranded recovery must suppress only exhausted-continuation re-escalate
     // for DEFAULT_LIVENESS_REESCALATION_COOLDOWN_MS.
     const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
     const pausedRetryRunId = randomUUID();

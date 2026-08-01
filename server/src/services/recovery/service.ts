@@ -1119,10 +1119,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return Boolean(comment || attachment);
   }
 
-  // DON-207: zombie/cancelled runs can keep updating last_output_at after the
-  // control plane marks them terminal (see DON-127). Status-only active-path
-  // checks then false-positive "no live execution path" and escalate over a
-  // process that is still producing output.
+  // Cancelled zombie runs can keep updating last_output_at after the control
+  // plane marks them terminal. Status-only active-path checks then
+  // false-positive "no live execution path" and escalate over a process that
+  // is still producing output.
   async function hasRecentRunOutputEvidence(
     companyId: string,
     issueId: string,
@@ -1146,9 +1146,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .then((rows) => Boolean(rows[0]));
   }
 
-  // DON-207: stranded recovery lacks the issue-graph liveness re-escalation
-  // cooldown. After a source-scoped action is cleared, the same fingerprint
-  // can re-fire within minutes on a stale agent_paused retry.
+  // Stranded recovery lacked the issue-graph liveness re-escalation cooldown.
+  // After a source-scoped action is cleared, the same fingerprint can re-fire
+  // within minutes on a stale agent_paused retry.
   async function hasRecentlyClearedStrandedRecovery(
     companyId: string,
     issueId: string,
@@ -1169,6 +1169,34 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       )
       .limit(1)
       .then((rows) => Boolean(rows[0]));
+  }
+
+  // Suppress only exhausted-continuation stranded escalation. Do not early-exit
+  // the reconciler — quota monitors, configuration escalation, and review
+  // participant recovery must still classify when a distinct failure is present.
+  async function shouldSuppressExhaustedContinuationEscalation(
+    companyId: string,
+    issueId: string,
+    agentId: string,
+  ) {
+    return (
+      await hasRecentRunOutputEvidence(
+        companyId,
+        issueId,
+        STRANDED_RECENT_PROGRESS_EXEMPTION_MS,
+      ) ||
+      await hasRecentlyClearedStrandedRecovery(
+        companyId,
+        issueId,
+        DEFAULT_LIVENESS_REESCALATION_COOLDOWN_MS,
+      ) ||
+      await hasRecentVisibleProgress(
+        companyId,
+        issueId,
+        agentId,
+        STRANDED_RECENT_PROGRESS_EXEMPTION_MS,
+      )
+    );
   }
 
   async function enqueueStrandedIssueRecovery(input: {
@@ -3744,28 +3772,6 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         continue;
       }
 
-      // DON-207: treat recent last_output_at / last_useful_action_at as a
-      // live path even when the run row is already cancelled/failed.
-      if (await hasRecentRunOutputEvidence(
-        issue.companyId,
-        issue.id,
-        STRANDED_RECENT_PROGRESS_EXEMPTION_MS,
-      )) {
-        result.skipped += 1;
-        continue;
-      }
-
-      // DON-207: suppress stranded re-escalation shortly after a cleared
-      // source-scoped recovery (mirrors issue-graph liveness cooldown).
-      if (await hasRecentlyClearedStrandedRecovery(
-        issue.companyId,
-        issue.id,
-        DEFAULT_LIVENESS_REESCALATION_COOLDOWN_MS,
-      )) {
-        result.skipped += 1;
-        continue;
-      }
-
       if (await hasPendingWakeInteraction(issue.companyId, issue.id)) {
         result.skipped += 1;
         continue;
@@ -4289,27 +4295,14 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             classification.errorCode,
           );
           if (consecutive >= classification.maxAttempts) {
-            // DON-207 defense-in-depth: never escalate over recent output
-            // or a just-cleared stranded recovery, even if earlier skips
-            // were bypassed by a race with getLatestIssueRun.
-            if (
-              await hasRecentRunOutputEvidence(
-                issue.companyId,
-                issue.id,
-                STRANDED_RECENT_PROGRESS_EXEMPTION_MS,
-              ) ||
-              await hasRecentlyClearedStrandedRecovery(
-                issue.companyId,
-                issue.id,
-                DEFAULT_LIVENESS_REESCALATION_COOLDOWN_MS,
-              ) ||
-              await hasRecentVisibleProgress(
-                issue.companyId,
-                issue.id,
-                agentId,
-                STRANDED_RECENT_PROGRESS_EXEMPTION_MS,
-              )
-            ) {
+            // Suppress only this stranded escalate. Other recovery branches
+            // (quota monitor, configuration, review participants) already ran
+            // above and must not be masked by zombie output or cooldown.
+            if (await shouldSuppressExhaustedContinuationEscalation(
+              issue.companyId,
+              issue.id,
+              agentId,
+            )) {
               result.skipped += 1;
               continue;
             }
