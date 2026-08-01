@@ -62,13 +62,28 @@ async function resolveLegacyRunResponsibleUserId(
  * that user can do directly. An unknown id is dropped rather than rejected, so an
  * existing caller keeps working and simply stops being attributed to a run.
  */
-async function verifiedRunIdForUserActor(db: Db, runId: string | undefined) {
+async function verifiedRunIdForUserActor(
+  db: Db,
+  runId: string | undefined,
+  scope: { companyIds?: string[]; isInstanceAdmin?: boolean },
+) {
   const candidate = normalizeOptionalString(runId);
   if (!candidate || !isUuidLike(candidate)) return undefined;
+  // Scope to the companies this actor reaches. A global lookup would let a user in
+  // one company name a run from another and have it written as originRunId on an
+  // issue in their own — cross-tenant provenance, and an oracle for whether a given
+  // run id exists elsewhere. An instance admin reaches every company, so there is
+  // nothing to narrow.
+  const companyIds = scope.isInstanceAdmin ? undefined : scope.companyIds;
+  if (companyIds && companyIds.length === 0) return undefined;
   const run = await db
     .select({ id: heartbeatRuns.id })
     .from(heartbeatRuns)
-    .where(eq(heartbeatRuns.id, candidate))
+    .where(
+      companyIds
+        ? and(eq(heartbeatRuns.id, candidate), inArray(heartbeatRuns.companyId, companyIds))
+        : eq(heartbeatRuns.id, candidate),
+    )
     .then((rows) => rows[0] ?? null);
   return run ? candidate : undefined;
 }
@@ -229,7 +244,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
         if (cloudTenantActor) {
           req.actor = {
             ...cloudTenantActor,
-            runId: await verifiedRunIdForUserActor(db, runIdHeader),
+            runId: await verifiedRunIdForUserActor(db, runIdHeader, cloudTenantActor),
           };
           next();
           return;
@@ -263,14 +278,17 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
             companyIds: memberships.map((row) => row.companyId),
             memberships,
             isInstanceAdmin: Boolean(roleRow),
-            runId: await verifiedRunIdForUserActor(db, runIdHeader),
+            runId: await verifiedRunIdForUserActor(db, runIdHeader, {
+              companyIds: memberships.map((row) => row.companyId),
+              isInstanceAdmin: Boolean(roleRow),
+            }),
             source: "session",
           };
           next();
           return;
         }
       }
-      req.actor.runId = await verifiedRunIdForUserActor(db, runIdHeader);
+      req.actor.runId = await verifiedRunIdForUserActor(db, runIdHeader, req.actor);
       next();
       return;
     }
@@ -295,7 +313,7 @@ export function actorMiddleware(db: Db, opts: ActorMiddlewareOptions): RequestHa
           memberships: access.memberships,
           isInstanceAdmin: access.isInstanceAdmin,
           keyId: boardKey.id,
-          runId: await verifiedRunIdForUserActor(db, runIdHeader),
+          runId: await verifiedRunIdForUserActor(db, runIdHeader, access),
           source: "board_key",
         };
         next();
