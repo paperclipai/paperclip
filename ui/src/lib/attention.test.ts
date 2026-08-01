@@ -260,13 +260,14 @@ describe("sortAttentionItems", () => {
 });
 
 describe("attentionDateBucket", () => {
-  const now = new Date("2026-07-10T12:00:00Z").getTime();
+  const localTimestamp = (day: number, hour: number) => new Date(2026, 6, day, hour).toISOString();
+  const now = new Date(2026, 6, 10, 12).getTime();
 
   it("buckets by rolling calendar-day windows relative to now", () => {
-    expect(attentionDateBucket("2026-07-10T09:00:00Z", now)).toBe("today");
-    expect(attentionDateBucket("2026-07-09T23:00:00Z", now)).toBe("yesterday");
-    expect(attentionDateBucket("2026-07-06T09:00:00Z", now)).toBe("this_week");
-    expect(attentionDateBucket("2026-06-01T09:00:00Z", now)).toBe("earlier");
+    expect(attentionDateBucket(localTimestamp(10, 9), now)).toBe("today");
+    expect(attentionDateBucket(localTimestamp(9, 23), now)).toBe("yesterday");
+    expect(attentionDateBucket(localTimestamp(6, 9), now)).toBe("this_week");
+    expect(attentionDateBucket(new Date(2026, 5, 1, 9).toISOString(), now)).toBe("earlier");
   });
 
   it("treats invalid timestamps as earlier", () => {

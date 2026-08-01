@@ -240,6 +240,7 @@ describe("LiveUpdatesProvider issue invalidation", () => {
       currentToolName: "bash",
       lastAssistantSnippet: "Checking workspace",
       lastEventAt: "2026-04-06T12:00:09.000Z",
+      lastStreamEventAt: "2026-04-06T12:00:09.000Z",
     });
   });
 
@@ -264,6 +265,7 @@ describe("LiveUpdatesProvider issue invalidation", () => {
       issueId: "issue-1",
       updatedAt: "2026-04-06T12:00:09.000Z",
       lastEventAt: "2026-04-06T12:00:10.000Z",
+      lastStreamEventAt: "2026-04-06T12:00:10.000Z",
     });
     expect(patch).not.toHaveProperty("message");
     expect(patch).not.toHaveProperty("currentToolName");
