@@ -2505,6 +2505,32 @@ describe("comment wake batching", () => {
 
     expect(merged.forceFreshSession).toBe(true);
   });
+
+  it("clears stale plan and tool-action decisions when an unrelated wake is coalesced", () => {
+    const merged = mergeCoalescedContextSnapshot(
+      {
+        issueId: "issue-1",
+        mutation: "interaction",
+        interactionId: "interaction-1",
+        interactionKind: "request_confirmation",
+        interactionStatus: "accepted",
+        planReviewInteraction: { id: "interaction-1", status: "accepted" },
+        toolAction: {
+          actionRequestId: "action-1",
+          decision: "accepted",
+          executionStatus: "executed",
+        },
+      },
+      {
+        issueId: "issue-1",
+        wakeReason: "timer",
+      },
+    );
+
+    expect(merged).not.toHaveProperty("mutation");
+    expect(merged).not.toHaveProperty("planReviewInteraction");
+    expect(merged).not.toHaveProperty("toolAction");
+  });
 });
 
 describe("buildExplicitResumeSessionOverride", () => {

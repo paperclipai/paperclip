@@ -5433,6 +5433,8 @@ const INTERACTION_CONTINUATION_CONTEXT_KEYS = [
   "interactionStatus",
   "continuationPolicy",
   "checkboxSelection",
+  "planReviewInteraction",
+  "toolAction",
   "itemVerdicts",
   "newlyResolvedItemIds",
 ] as const;
@@ -5756,6 +5758,7 @@ export async function buildPaperclipWakePayload(input: {
   const interactionKind = readNonEmptyString(input.contextSnapshot.interactionKind);
   const interactionStatus = readNonEmptyString(input.contextSnapshot.interactionStatus);
   const checkboxSelection = parseObject(input.contextSnapshot.checkboxSelection);
+  const toolAction = parseObject(input.contextSnapshot.toolAction);
   const planReviewContext = issueId
     ? await buildPlanReviewContext({
       db: input.db,
@@ -5856,6 +5859,7 @@ export async function buildPaperclipWakePayload(input: {
     interactionKind,
     interactionStatus,
     checkboxSelection: Object.keys(checkboxSelection).length > 0 ? checkboxSelection : null,
+    toolAction: Object.keys(toolAction).length > 0 ? toolAction : null,
     checkedOutByHarness: input.contextSnapshot[PAPERCLIP_HARNESS_CHECKOUT_KEY] === true,
     simplifiedEnglishInteractions: input.simplifiedEnglishInteractions === true,
     dependencyBlockedInteraction: input.contextSnapshot.dependencyBlockedInteraction === true,
