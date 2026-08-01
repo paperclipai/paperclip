@@ -3345,6 +3345,31 @@ export async function runChildProcess(
 
         const stdin = child.stdin;
         if (opts.stdin != null && stdin) {
+          // A child that exits before we finish writing its prompt must not kill the server.
+          //
+          // 2026-08-01 (TSMC-18806): this was the control plane's crash-restart loop — 217
+          // unexpected exits, board API repeatedly unreachable, every death identical:
+          //   Error: write EPIPE  at WriteWrap.onWriteComplete
+          //   Emitted 'error' event on Socket instance
+          //
+          // `child.stdin` is a Socket. The `child.killed || stdin.destroyed` guard below is a
+          // CHECK-THEN-ACT race: the write is deferred to spawnPersistPromise.finally(), and the
+          // child can exit in the window between that check and the write landing. The write
+          // then raises EPIPE as an 'error' event on the stdin stream, which nothing listened
+          // for, so Node's default for an unhandled 'error' took the whole process down.
+          //
+          // The `child.on("error", ...)` handler a few lines below does NOT cover this — that is
+          // the ChildProcess emitter, a different object from the stdin stream. That mismatch is
+          // why the path looked guarded for months while being fatal.
+          //
+          // Load-sensitive by nature: more concurrent children means more chances to lose the
+          // race. Raising per-adapter caps 2-6 -> 4 on 2026-08-01 multiplied the crash rate 4.5x
+          // (0.16/min -> 0.72/min) without being the cause — the loop predated the change by
+          // seven minutes. That is the signature of exactly this race.
+          stdin.on("error", (err: NodeJS.ErrnoException) => {
+            if (err?.code === "EPIPE" || err?.code === "ERR_STREAM_DESTROYED") return;
+            throw err;
+          });
           void spawnPersistPromise.finally(() => {
             if (child.killed || stdin.destroyed) return;
             stdin.write(opts.stdin as string);

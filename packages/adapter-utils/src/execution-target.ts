@@ -1627,6 +1627,19 @@ child.on("error", (error) => void writeEvent({ type: "error", message: error.mes
 // "close" (not "exit") so stdout/stderr fully drain before the exit event;
 // the write chain then guarantees the exit file lands after every data file.
 child.on("close", (code, signal) => void writeEvent({ type: "exit", code, signal }));
+// Same class as the TSMC-18806 crash loop in server-utils.ts: child.stdin is a Socket, and
+// pollStdin() below writes to it from a polling loop with no knowledge of whether the child is
+// still alive. Note that the child.on("error") handler on the line above is the ChildProcess
+// emitter, NOT this stream -- it does not cover a write to a closed stdin. Without this listener
+// an EPIPE here is an unhandled 'error' event and takes the process down.
+// (No backticks in this comment on purpose: it lives inside a template literal.)
+child.stdin.on("error", (error) => {
+  if (error && (error.code === "EPIPE" || error.code === "ERR_STREAM_DESTROYED")) {
+    stdinClosed = true;   // the child is gone; stop the poll loop rather than spinning on a dead pipe
+    return;
+  }
+  void writeEvent({ type: "error", message: error.message });
+});
 
 async function pollStdin() {
   while (!stdinClosed) {
