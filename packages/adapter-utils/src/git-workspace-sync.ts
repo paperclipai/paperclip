@@ -197,6 +197,24 @@ export async function fetchGitBundleIntoLocalRef(input: {
   return importedHead.stdout.trim();
 }
 
+/** Substrings git emits when a bundle names a prerequisite the importer lacks. */
+const GIT_MISSING_PREREQUISITE_MARKERS = [
+  "did not send all necessary objects",
+  "lacks these prerequisite commits",
+  "revision walk setup failed",
+];
+
+/**
+ * True when a bundle import failed because the host repository does not hold a
+ * commit the (delta) bundle assumes as a prerequisite. Such a failure is
+ * recoverable by re-exporting a full, self-contained bundle from the still-live
+ * sandbox rather than discarding the run.
+ */
+export function isMissingGitPrerequisiteError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return GIT_MISSING_PREREQUISITE_MARKERS.some((marker) => message.includes(marker));
+}
+
 export function buildRemoteGitDeltaBundleScript(input: {
   remoteDir: string;
   baseSha: string;
@@ -205,6 +223,12 @@ export function buildRemoteGitDeltaBundleScript(input: {
   statusPath?: string;
   catBundle?: boolean;
   cleanupBundle?: boolean;
+  /**
+   * Skip the delta boundary entirely and always emit a full, self-contained
+   * bundle (no prerequisites). Used as the recovery path when a delta import
+   * failed because the host lacked the bundle's prerequisite.
+   */
+  forceFullBundle?: boolean;
 }): string {
   const remoteDir = shellQuote(input.remoteDir);
   const bundlePath = shellQuote(input.bundlePath);
@@ -222,11 +246,44 @@ export function buildRemoteGitDeltaBundleScript(input: {
     input.cleanupBundle ? "trap cleanup EXIT" : "",
     `mkdir -p ${shellQuote(path.posix.dirname(input.bundlePath))}`,
     `rm -f ${bundlePath}`,
-    `git -C ${remoteDir} cat-file -e ${baseSha}^{commit}`,
-    `commit_count=$(git -C ${remoteDir} rev-list --count HEAD --not ${baseSha})`,
+    // Choose the bundle boundary. A thin bundle `HEAD --not <baseSha>` records
+    // baseSha as a prerequisite the importer (host) must already hold. That
+    // assumption breaks in two real cases, and then `git fetch` on the host
+    // hard-fails with "did not send all necessary objects" and the run's work
+    // is lost:
+    //   1. The sandbox HEAD has diverged from baseSha (e.g. a local-only branch
+    //      that forked from an older commit) — the host may still hold baseSha,
+    //      but a repo whose history is inconsistent cannot satisfy the walk.
+    //   2. The host workspace no longer holds baseSha at import time (a shared
+    //      workspace that was reset/re-realized between export and import).
+    // Bundle relative to the merge-base of baseSha and HEAD instead: that
+    // merge-base is an ancestor of baseSha, so any host that holds baseSha (or
+    // an ancestor of it) can satisfy the prerequisite, while the bundle stays a
+    // delta. When baseSha is absent from the sandbox — or no merge-base exists,
+    // or the caller forces it after a delta import failed on a missing
+    // prerequisite — fall back to a full, self-contained bundle with no
+    // prerequisites.
+    ...(input.forceFullBundle
+      ? [`bundle_base=""`]
+      : [
+        `if git -C ${remoteDir} cat-file -e ${baseSha}^{commit} 2>/dev/null; then`,
+        `  bundle_base=$(git -C ${remoteDir} merge-base ${baseSha} HEAD 2>/dev/null || true)`,
+        "else",
+        `  bundle_base=""`,
+        "fi",
+      ]),
+    `if [ -n "$bundle_base" ]; then`,
+    `  commit_count=$(git -C ${remoteDir} rev-list --count HEAD --not "$bundle_base")`,
+    "else",
+    `  commit_count=$(git -C ${remoteDir} rev-list --count HEAD)`,
+    "fi",
     'if [ "$commit_count" -gt 0 ]; then',
     `  git -C ${remoteDir} update-ref ${exportRef} HEAD`,
-    `  git -C ${remoteDir} bundle create ${bundlePath} ${exportRef} --not ${baseSha} >/dev/null`,
+    `  if [ -n "$bundle_base" ]; then`,
+    `    git -C ${remoteDir} bundle create ${bundlePath} ${exportRef} --not "$bundle_base" >/dev/null`,
+    "  else",
+    `    git -C ${remoteDir} bundle create ${bundlePath} ${exportRef} >/dev/null`,
+    "  fi",
     "else",
     `  : > ${bundlePath}`,
     "fi",

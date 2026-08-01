@@ -455,6 +455,129 @@
   transition: max-width 200ms cubic-bezier(0.16, 1, 0.3, 1);
 }
 
+/* ---------------------------------------------------------------------------
+   Motion tokens
+   ---------------------------------------------------------------------------
+   The first named motion values in the system. Durations and easings were
+   previously written inline at each call site; these give the "snappy, eases
+   in and out" behaviour one definition so surfaces stay in step.
+
+   Exit is deliberately shorter than enter: a thing appearing wants to be
+   followed, a thing leaving just needs to get out of the way.
+
+   The enter curve is the same cubic-bezier the dialog max-width transition
+   already used — decelerating hard at the end, which is what reads as "snappy"
+   rather than "slow start". Consumers: the decision-card disclosure and the
+   task quicklook, both below.
+--------------------------------------------------------------------------- */
+:root {
+  --motion-duration-enter: 160ms;
+  --motion-duration-exit: 110ms;
+  --motion-ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --motion-ease-in: cubic-bezier(0.4, 0, 1, 1);
+
+  /* A crossfading pair must share one duration and one curve. Two elements
+     swapping places both change height, and the container shows the SUM. Give
+     them different timing — the outgoing on a 110ms ease-in against the
+     incoming on a 160ms ease-out — and that sum stops being monotonic: the
+     container bulges or dips mid-swap, which reads as a lurch even though each
+     half is individually smooth. Run both off the same clock and the same
+     curve and the sum collapses to a clean interpolation between the two
+     states, because at every moment progress is identical on both sides. */
+  --motion-duration-swap: 150ms;
+}
+
+/* ---------------------------------------------------------------------------
+   Decision-card disclosure (See more / See less)
+   ---------------------------------------------------------------------------
+   Radix Collapsible measures the panel and publishes its height, so the card
+   can grow and shrink to a real number instead of snapping. The content
+   unmounts once the exit finishes, so an expanded row's resolver is not left
+   running behind a collapsed card.
+--------------------------------------------------------------------------- */
+@keyframes decision-disclosure-open {
+  from {
+    height: 0;
+    opacity: 0;
+  }
+  to {
+    height: var(--radix-collapsible-content-height);
+    opacity: 1;
+  }
+}
+@keyframes decision-disclosure-close {
+  from {
+    height: var(--radix-collapsible-content-height);
+    opacity: 1;
+  }
+  to {
+    height: 0;
+    opacity: 0;
+  }
+}
+[data-slot="collapsible-content"][data-decision-disclosure] {
+  overflow: hidden;
+}
+[data-slot="collapsible-content"][data-decision-disclosure][data-state="open"] {
+  animation: decision-disclosure-open var(--motion-duration-swap) var(--motion-ease-out);
+}
+[data-slot="collapsible-content"][data-decision-disclosure][data-state="closed"] {
+  /* Same duration and same curve as the open side — see --motion-duration-swap.
+     The two run against each other, so matched timing is what keeps the card's
+     height a straight interpolation instead of a bulge. */
+  animation: decision-disclosure-close var(--motion-duration-swap) var(--motion-ease-out);
+}
+
+/* ---------------------------------------------------------------------------
+   Task quicklook: a small scale-up out of the trigger, not a fade in place.
+   ---------------------------------------------------------------------------
+   The shadcn PopoverContent class string carries `animate-in`, `zoom-in-95`
+   and friends, but those utilities come from the tailwindcss-animate plugin,
+   which this project does not install — there is no `enter`/`exit` keyframe in
+   the build, so they are inert. Rather than take on that dependency for one
+   surface (it would newly animate every dialog, dropdown and tooltip in the
+   app), the quicklook defines its own motion here.
+
+   The scale is deliberately shallow. `--radix-popover-content-transform-origin`
+   pins the origin to the corner nearest the trigger, so the card reads as
+   growing out of the task key that opened it rather than swelling in place.
+--------------------------------------------------------------------------- */
+@keyframes quicklook-open {
+  from {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+@keyframes quicklook-close {
+  from {
+    opacity: 1;
+    transform: scale(1);
+  }
+  to {
+    opacity: 0;
+    transform: scale(0.96);
+  }
+}
+[data-slot="popover-content"][data-quicklook][data-state="open"] {
+  animation: quicklook-open var(--motion-duration-enter) var(--motion-ease-out);
+}
+[data-slot="popover-content"][data-quicklook][data-state="closed"] {
+  animation: quicklook-close var(--motion-duration-exit) var(--motion-ease-in);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  [data-slot="collapsible-content"][data-decision-disclosure][data-state="open"],
+  [data-slot="collapsible-content"][data-decision-disclosure][data-state="closed"],
+  [data-slot="popover-content"][data-quicklook][data-state="open"],
+  [data-slot="popover-content"][data-quicklook][data-state="closed"] {
+    animation: none;
+  }
+}
+
 /* Dashboard activity row entry motion */
 @keyframes dashboard-activity-enter {
   0% {

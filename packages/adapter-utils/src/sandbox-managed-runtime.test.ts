@@ -1904,6 +1904,14 @@ describe("sandbox managed runtime", () => {
       expect(prepared.additionalSourceDirs["proj-second"]).toBe(path.posix.join(runtimeRootDir, "project-proj-second"));
       expect(prepared.additionalSourceDirs["proj-missing"]).toBeUndefined();
 
+      // The skipped project is a first-class per-project failure outcome, not only a warning, so the
+      // run can count it in the requested-vs-synced accounting. The two healthy projects do not
+      // appear as failures.
+      expect(prepared.additionalSourceFailures.map((failure) => failure.projectId)).toEqual([
+        "proj-missing",
+      ]);
+      expect(prepared.additionalSourceFailures[0]!.error.length).toBeGreaterThan(0);
+
       await expect(readFile(path.join(prepared.additionalSourceDirs["proj-first"], "docs", "guide.md"), "utf8"))
         .resolves.toBe("first guide\n");
       await expect(readFile(path.join(prepared.additionalSourceDirs["proj-second"], "notes.md"), "utf8"))

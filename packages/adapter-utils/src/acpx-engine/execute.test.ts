@@ -290,6 +290,94 @@ const ALLOWED_STARTUP_SPAN_ATTRIBUTE_KEYS = new Set([
 ]);
 
 describe("shared ACPX engine runtime behavior", () => {
+  it("persists ACP agent process identity before prompting and reuses it for the next warm heartbeat", async () => {
+    const root = await makeTempRoot();
+    const startedAt = "2026-07-30T07:00:00.000Z";
+    const processPid = 43_210;
+    let runtimeCreateCount = 0;
+    let processIdentityPersisted = false;
+    let turnStartedBeforeProcessIdentity = false;
+    const warmHandles = new Map();
+    const execute = createAcpxEngineExecutor({
+      warmHandles,
+      createRuntime: (options) => {
+        runtimeCreateCount += 1;
+        const patchedOptions = options as AcpRuntimeOptions & {
+          onAgentSpawn?: (meta: { pid: number; startedAt: string }) => Promise<void>;
+        };
+        return {
+          ensureSession: async () => {
+            await patchedOptions.onAgentSpawn?.({ pid: processPid, startedAt });
+            return {
+              backendSessionId: "backend-session",
+              agentSessionId: "agent-session",
+              runtimeSessionName: "runtime-session",
+            };
+          },
+          startTurn: () => {
+            turnStartedBeforeProcessIdentity = !processIdentityPersisted;
+            return {
+              events: (async function* () {})(),
+              result: Promise.resolve({ status: "completed" as const, stopReason: "end_turn" }),
+              cancel: async () => {},
+            };
+          },
+          close: async () => {},
+        } as never;
+      },
+    });
+    const config = {
+      agent: "codex",
+      cwd: root,
+      stateDir: path.join(root, "state"),
+      warmHandleIdleMs: 60_000,
+    };
+    const context = {
+      taskId: "issue-1",
+      paperclipWorkspace: { cwd: root },
+    };
+    const firstOnSpawn = vi.fn(async (meta: unknown) => {
+      expect(meta).toEqual({ pid: processPid, processGroupId: null, startedAt });
+      processIdentityPersisted = true;
+    });
+    const first = await execute({
+      runId: "run-process-identity-1",
+      agent: { id: "agent-1", companyId: "company-1" },
+      runtime: {},
+      config,
+      context,
+      onLog: async () => {},
+      onMeta: async () => {},
+      onSpawn: firstOnSpawn,
+    } as never);
+
+    expect(first.exitCode).toBe(0);
+    expect(firstOnSpawn).toHaveBeenCalledOnce();
+    expect(turnStartedBeforeProcessIdentity).toBe(false);
+
+    processIdentityPersisted = false;
+    turnStartedBeforeProcessIdentity = false;
+    const secondOnSpawn = vi.fn(async (meta: unknown) => {
+      expect(meta).toEqual({ pid: processPid, processGroupId: null, startedAt });
+      processIdentityPersisted = true;
+    });
+    const second = await execute({
+      runId: "run-process-identity-2",
+      agent: { id: "agent-1", companyId: "company-1" },
+      runtime: { sessionParams: first.sessionParams },
+      config,
+      context,
+      onLog: async () => {},
+      onMeta: async () => {},
+      onSpawn: secondOnSpawn,
+    } as never);
+
+    expect(second.exitCode).toBe(0);
+    expect(runtimeCreateCount).toBe(1);
+    expect(secondOnSpawn).toHaveBeenCalledOnce();
+    expect(turnStartedBeforeProcessIdentity).toBe(false);
+  });
+
   it("sets Codex model, effort, and fast mode through CODEX_CONFIG without session config calls", async () => {
     const { configOptions, meta } = await runExecutor({
       agent: "codex",
@@ -2114,6 +2202,80 @@ describe("ACPX engine remote sandbox staging seam (PR 1: workspace + cwd)", () =
     expect(String(payloadEnv.PAPERCLIP_API_URL ?? "")).toMatch(/^http:\/\/127\.0\.0\.1:\d+$/);
     expect(payloadEnv.PAPERCLIP_API_KEY).toBeTruthy();
     expect(payloadEnv.PAPERCLIP_API_KEY).not.toBe("real-run-jwt");
+  });
+
+  it("publishes referenced-project workspace hints repointed at their staged sandbox directories", async () => {
+    const { root, stateDir, localCwd, executionTarget } = await setupRemoteSandbox();
+    // A referenced project with a real host tree, so the sandbox transport stages it and returns a
+    // `project-<projectId>` directory for it.
+    const referencedProjectDir = path.join(root, "referenced-project-a");
+    await fs.mkdir(referencedProjectDir, { recursive: true });
+    await fs.writeFile(path.join(referencedProjectDir, "note.txt"), "referenced", "utf8");
+
+    // Decode the process-session LAUNCH payload — the in-sandbox process env is carried there.
+    let launchPayload: Record<string, unknown> | null = null;
+    (executionTarget as { runner: unknown }).runner = createLocalSandboxRunner((input) => {
+      if (input.env?.PAPERCLIP_SANDBOX_EXEC_CHANNEL === "bridge") {
+        const script = input.args?.[1] ?? "";
+        const match = script.match(/PAPERCLIP_PROCESS_SESSION_COMMAND_B64='([^']+)'/);
+        if (match) {
+          launchPayload = JSON.parse(Buffer.from(match[1]!, "base64").toString("utf8")) as Record<
+            string,
+            unknown
+          >;
+        }
+      }
+    });
+
+    await runExecutor(
+      { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir, cwd: localCwd },
+      {
+        authToken: "real-run-jwt",
+        executionTarget,
+        context: {
+          taskId: "issue-1",
+          wakeReason: "issue_assigned",
+          paperclipWorkspace: {
+            cwd: localCwd,
+            realization: {
+              additional: [
+                {
+                  path: referencedProjectDir,
+                  projectId: "a",
+                  projectWorkspaceId: "ws-a",
+                  repoUrl: "https://example.test/a.git",
+                  repoRef: "main",
+                },
+              ],
+            },
+          },
+          // The plural workspace-hints channel the agent reads. The referenced hint points at the
+          // host path today; on a remote target the run must repoint it at the staged directory.
+          paperclipWorkspaces: [
+            {
+              workspaceId: "ws-a",
+              cwd: referencedProjectDir,
+              repoUrl: "https://example.test/a.git",
+              repoRef: "main",
+              projectId: "a",
+            },
+          ],
+        },
+      },
+    );
+
+    const payloadEnv = ((launchPayload as Record<string, unknown> | null)?.env ?? {}) as Record<
+      string,
+      unknown
+    >;
+    const workspacesJson = payloadEnv.PAPERCLIP_WORKSPACES_JSON;
+    expect(typeof workspacesJson).toBe("string");
+    const hints = JSON.parse(String(workspacesJson)) as Array<Record<string, unknown>>;
+    const referencedHint = hints.find((hint) => hint.projectId === "a");
+    expect(referencedHint).toBeTruthy();
+    // The referenced hint repoints from the host path to its staged in-sandbox directory.
+    expect(String(referencedHint!.cwd)).toContain("project-a");
+    expect(referencedHint!.cwd).not.toBe(referencedProjectDir);
   });
 
   it("stops the process-session bridge when the paperclip bridge fails under concurrency", async () => {

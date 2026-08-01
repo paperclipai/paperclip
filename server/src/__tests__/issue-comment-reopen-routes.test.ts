@@ -1042,6 +1042,87 @@ describe.sequential("issue comment reopen routes", () => {
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
   });
 
+  it("derives compact presentation for comments from source-scoped recovery runs", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("in_progress"));
+    mockDbSelectWhere.mockImplementation(() => ({
+      then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
+        Promise.resolve([{
+          id: "run-1",
+          companyId: "company-1",
+          agentId: "22222222-2222-4222-8222-222222222222",
+          contextSnapshot: {
+            wakeReason: "source_scoped_recovery_action",
+            recoveryCause: "process_lost",
+          },
+        }]).then(onFulfilled, onRejected),
+    }));
+
+    const res = await request(await installActor(createApp(), agentActor()))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "Recovered the execution path.\nHanded back to the original owner." });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      "Recovered the execution path.\nHanded back to the original owner.",
+      { agentId: "22222222-2222-4222-8222-222222222222", userId: undefined, runId: "run-1" },
+      expect.objectContaining({
+        authorType: "agent",
+        presentation: {
+          kind: "system_notice",
+          tone: "info",
+          title: "Recovered the execution path.",
+          detailsDefaultOpen: false,
+          density: "compact",
+        },
+      }),
+    );
+  });
+
+  it("leaves normal agent comments without derived presentation", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("in_progress"));
+
+    const res = await request(await installActor(createApp(), agentActor()))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "Normal work update." });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      "Normal work update.",
+      { agentId: "22222222-2222-4222-8222-222222222222", userId: undefined, runId: "run-1" },
+      expect.objectContaining({ presentation: null }),
+    );
+  });
+
+  it("keeps successful-run missing-state recovery comments fully visible", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("in_progress"));
+    mockDbSelectWhere.mockImplementation(() => ({
+      then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
+        Promise.resolve([{
+          id: "run-1",
+          companyId: "company-1",
+          agentId: "22222222-2222-4222-8222-222222222222",
+          contextSnapshot: {
+            wakeReason: "source_scoped_recovery_action",
+            recoveryCause: "successful_run_missing_state",
+          },
+        }]).then(onFulfilled, onRejected),
+    }));
+
+    const res = await request(await installActor(createApp(), agentActor()))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "The run completed; here is the required summary." });
+
+    expect(res.status).toBe(201);
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      "11111111-1111-4111-8111-111111111111",
+      "The run completed; here is the required summary.",
+      { agentId: "22222222-2222-4222-8222-222222222222", userId: undefined, runId: "run-1" },
+      expect.objectContaining({ presentation: null }),
+    );
+  });
+
   it("rejects invalid comment metadata before writing a comment", async () => {
     const app = await installActor(createApp());
     mockIssueService.getById.mockResolvedValue(makeIssue("todo"));

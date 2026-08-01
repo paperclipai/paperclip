@@ -25,7 +25,7 @@ class ApiError extends Error {
 function usage() {
   return `Usage:
   garden-inbox.mjs [scan] [--user-id UUID] [--stale-days 60] [--output-dir DIR]
-  garden-inbox.mjs confirm [--issue-id ID] [--candidates FILE] [--dry-run]
+  garden-inbox.mjs confirm [--issue-id ID] [--candidates FILE] [--unselect ISSUE_ID]... [--dry-run]
   garden-inbox.mjs apply [--issue-id ID] (--interaction-id ID | --interaction-file FILE) [--candidates FILE] [--dry-run]
 
 Common environment:
@@ -494,16 +494,31 @@ function chunk(values, size) {
   return chunks;
 }
 
-function confirmationBody(scanData, candidates, index, count) {
+function unselectedKeySuffix(candidates, unselectedIds) {
+  const idsInCard = candidates
+    .map((candidate) => candidate.issueId)
+    .filter((issueId) => unselectedIds.has(issueId))
+    .sort();
+  if (idsInCard.length === 0) return "";
+  const fingerprint = createHash("sha256")
+    .update(idsInCard.join("\n"))
+    .digest("hex")
+    .slice(0, 16);
+  return `:${fingerprint}`;
+}
+
+function confirmationBody(scanData, candidates, index, count, unselectedIds = new Set()) {
   const options = candidates.map((candidate) => ({
     id: candidate.issueId,
     label: truncate(`${candidate.identifier ?? candidate.issueId} — ${candidate.title}`, 120),
-    description: truncate(`${candidate.reason.message} Last activity: ${candidate.lastActivityAt}.`, 500),
+    description: truncate(`${candidate.reason.message} Last activity: ${candidate.lastActivityAt}.${
+      unselectedIds.has(candidate.issueId) ? " Declined in a previous pass; starts unchecked." : ""
+    }`, 500),
   }));
   const part = count > 1 ? ` (${index + 1}/${count})` : "";
   return {
     kind: "request_checkbox_confirmation",
-    idempotencyKey: `garden-inbox:${scanData.scanId}:${index + 1}:${count}`,
+    idempotencyKey: `garden-inbox:${scanData.scanId}:${index + 1}:${count}${unselectedKeySuffix(candidates, unselectedIds)}`,
     title: `Confirm inbox archive candidates${part}`,
     summary: `Choose which reversible inbox entries to archive${part}.`,
     continuationPolicy: "wake_assignee",
@@ -512,7 +527,8 @@ function confirmationBody(scanData, candidates, index, count) {
       prompt: `Select the inbox entries to archive${part}. Unchecked entries will remain visible.`,
       options,
       defaultSelectedOptionIds: candidates
-        .filter((candidate) => candidate.bucket === "A" || candidate.bucket === "B")
+        .filter((candidate) => (candidate.bucket === "A" || candidate.bucket === "B")
+          && !unselectedIds.has(candidate.issueId))
         .map((candidate) => candidate.issueId),
       minSelected: 0,
       acceptLabel: "Archive selected",
@@ -526,12 +542,17 @@ async function confirm(options) {
   const data = candidateFile(options);
   const drivingIssueId = options.issue_id ?? process.env.PAPERCLIP_TASK_ID;
   if (!options.dry_run) required(drivingIssueId, "--issue-id or PAPERCLIP_TASK_ID");
+  const candidateIds = new Set(data.candidates.map((candidate) => candidate.issueId));
+  const unselectedIds = new Set(optionValues(options.unselect).map((id) => required(id, "--unselect")));
+  for (const id of unselectedIds) {
+    if (!candidateIds.has(id)) throw new Error(`--unselect ${id} is not an offered candidate in this scan`);
+  }
   const groups = chunk(data.candidates, INTERACTION_LIMIT);
   if (groups.length === 0) {
     process.stdout.write("No archive candidates; no confirmation interaction created.\n");
     return [];
   }
-  const bodies = groups.map((candidates, index) => confirmationBody(data, candidates, index, groups.length));
+  const bodies = groups.map((candidates, index) => confirmationBody(data, candidates, index, groups.length, unselectedIds));
   if (options.dry_run) {
     process.stdout.write(`${JSON.stringify({ dryRun: true, issueId: drivingIssueId ?? null, interactions: bodies }, null, 2)}\n`);
     return bodies;
@@ -674,6 +695,7 @@ export {
   archiveTargetBody,
   classify,
   confirm,
+  confirmationBody,
   decodeJwtPayload,
   fetchMineInboxRows,
   normalizeApiBase,

@@ -163,7 +163,7 @@ export const DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE = [
   "- If woken by a human comment on a dependency-blocked issue, respond or triage the comment without treating the blocked deliverable work as unblocked.",
   "- Create child issues directly when you know what needs to be done; use issue-thread interactions when the board/user must choose suggested tasks, answer structured questions, or confirm a proposal.",
   "- Use `PAPERCLIP_SCRATCH_DIR` / `PAPERCLIP_RUN_SCRATCH_DIR` for temporary scratch files instead of ad hoc `/tmp` paths; Paperclip removes that run-owned directory after the run ends.",
-  "- To ask for that input, create an interaction on the current issue with POST /api/issues/{issueId}/interactions using kind suggest_tasks, ask_user_questions, or request_confirmation. Use continuationPolicy wake_assignee when you need to resume after a response; for request_confirmation this resumes only after acceptance.",
+  "- To ask for that input, create an interaction on the current issue with POST /api/issues/{issueId}/interactions using kind suggest_tasks, ask_user_questions, or request_confirmation. Use continuationPolicy wake_assignee when you need to resume after a response (it wakes on acceptance and rejection alike; only expiry does not wake); use wake_assignee_on_accept when you want to resume only after acceptance.",
   "- When you intentionally restart follow-up work on a completed assigned issue, include structured `resume: true` with the POST /api/issues/{issueId}/comments or PATCH /api/issues/{issueId} comment payload. Generic agent comments on closed issues are inert by default.",
   "- For plan approval, update the plan document first, then create request_confirmation targeting the latest plan revision with idempotencyKey confirmation:{issueId}:plan:{revisionId}. Wait for acceptance before creating implementation subtasks, and create a fresh confirmation after superseding board/user comments if approval is still needed.",
   "- If blocked, mark the issue blocked and name the unblock owner and action.",
@@ -1437,7 +1437,7 @@ export function renderPaperclipWakePrompt(
   const recoveryInstruction = (() => {
     switch (recovery?.cause) {
       case "process_lost":
-        return `Your previous run on this issue was lost (${recovery.failureSummary ?? "no failure summary available"}). Try again — resume from durable progress; don't redo completed steps.`;
+        return `Your previous run on this issue was lost (${recovery.failureSummary ?? "no failure summary available"}). Try again — resume from durable progress; don't redo completed steps. Do not narrate the recovery in your next comment — at most one short sentence; lead with the work.`;
       case "successful_run_missing_state":
       case "successful_run_missing_issue_disposition":
         return "Your run completed but left no final disposition. Post a comment summarizing the state and set the correct disposition (`done` / `in_review` / `blocked` / `in_progress` with a live path). Do not start new work.";
@@ -1480,6 +1480,10 @@ export function renderPaperclipWakePrompt(
     ? [
         "Recovery contract: your job is to RECOVER this task, not to do the work. Do not produce the deliverable yourself.",
         `Cause-specific instruction: ${recoveryInstruction}`,
+        ...(recovery?.cause === "successful_run_missing_state" ||
+            recovery?.cause === "successful_run_missing_issue_disposition"
+          ? []
+          : ["Record the outcome in the resolve call's `resolutionNote`. Any comment you post on the source issue must be ≤3 lines (cause → what you did → hand-back). No headings, no run-by-run narrative."]),
         `Fallback preference order: (1) send back to ${originalAssigneeLabel} with a retry instruction; (2) fix the runtime/adapter/workspace problem, then send it back; (3) reassign to another agent with the right specialty; (4) convert to an explicit manual-review state for the board.`,
         "",
       ]
@@ -1510,6 +1514,9 @@ export function renderPaperclipWakePrompt(
             ? [`- routing fallback: ${recovery.routingFallbackReason}`]
             : []),
         ]
+      : []),
+    ...(normalized.reason === "issue_recovery_action_restored"
+      ? ["- instruction: Do not narrate the recovery in your next comment — at most one short sentence; lead with the work."]
       : []),
   ];
   const lines = resumedSession
@@ -2019,6 +2026,15 @@ export function shapePaperclipWorkspaceEnvForExecution(input: {
   workspaceHints?: Array<Record<string, unknown>>;
   executionTargetIsRemote?: boolean;
   executionCwd?: string | null;
+  /**
+   * On a remote target, the map of referenced (mentioned) project id to the staged in-sandbox
+   * directory that received that project's tree (`project-<projectId>`). A non-anchor hint whose
+   * `projectId` has an entry repoints its `cwd` to the staged directory. A non-anchor hint with no
+   * entry loses its `cwd`, so the agent never receives a path the transport did not stage. The map
+   * is empty on a local target and defaults to empty, so a caller that passes nothing keeps the
+   * previous behavior (every non-anchor hint loses its `cwd` on a remote target).
+   */
+  stagedProjectDirs?: Record<string, string>;
 }): {
   workspaceCwd: string | null;
   workspaceWorktreePath: string | null;
@@ -2061,6 +2077,7 @@ export function shapePaperclipWorkspaceEnvForExecution(input: {
   }
   const realizedWorkspaceCwd = executionCwd;
   const localWorkspaceCwd = workspaceCwd ? path.resolve(workspaceCwd) : null;
+  const stagedProjectDirs = input.stagedProjectDirs ?? {};
   const shapedWorkspaceHints = workspaceHints.map((hint) => {
     const nextHint = { ...hint };
     const hintCwd = typeof nextHint.cwd === "string" ? nextHint.cwd.trim() : "";
@@ -2075,7 +2092,19 @@ export function shapePaperclipWorkspaceEnvForExecution(input: {
       return nextHint;
     }
 
-    delete nextHint.cwd;
+    // A referenced (mentioned) project hint carries its `projectId`. When the transport staged that
+    // project into the sandbox, repoint the hint at its staged `project-<projectId>` directory so
+    // the agent reads it there. Without a staged directory the hint would point at a local path that
+    // the remote target cannot reach, so remove the `cwd` (fail loud — never expose an unstaged
+    // path). This also removes the `cwd` of a non-anchor hint that carries no `projectId`, such as an
+    // alternative anchor-project workspace, which keeps the previous behavior for those hints.
+    const hintProjectId = typeof nextHint.projectId === "string" ? nextHint.projectId : "";
+    const stagedProjectDir = hintProjectId ? stagedProjectDirs[hintProjectId] : undefined;
+    if (stagedProjectDir && stagedProjectDir.trim().length > 0) {
+      nextHint.cwd = stagedProjectDir.trim();
+    } else {
+      delete nextHint.cwd;
+    }
     return nextHint;
   });
 
@@ -2138,6 +2167,8 @@ export function refreshPaperclipWorkspaceEnvForExecution(input: {
   agentHome?: string | null;
   executionTargetIsRemote?: boolean;
   executionCwd?: string | null;
+  /** Referenced-project id to staged in-sandbox directory map; see {@link shapePaperclipWorkspaceEnvForExecution}. */
+  stagedProjectDirs?: Record<string, string>;
 }): {
   workspaceCwd: string | null;
   workspaceWorktreePath: string | null;
@@ -2149,6 +2180,7 @@ export function refreshPaperclipWorkspaceEnvForExecution(input: {
     workspaceHints: input.workspaceHints,
     executionTargetIsRemote: input.executionTargetIsRemote,
     executionCwd: input.executionCwd,
+    stagedProjectDirs: input.stagedProjectDirs,
   });
 
   delete input.env.PAPERCLIP_WORKSPACE_CWD;

@@ -850,6 +850,12 @@ describe("renderPaperclipWakePrompt", () => {
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("Create child issues directly when you know what needs to be done");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("POST /api/issues/{issueId}/interactions");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("kind suggest_tasks, ask_user_questions, or request_confirmation");
+    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain(
+      "Use continuationPolicy wake_assignee when you need to resume after a response (it wakes on acceptance and rejection alike; only expiry does not wake); use wake_assignee_on_accept when you want to resume only after acceptance",
+    );
+    expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).not.toContain(
+      "for request_confirmation this resumes only after acceptance",
+    );
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("confirmation:{issueId}:plan:{revisionId}");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain("Wait for acceptance before creating implementation subtasks");
     expect(DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE).toContain(
@@ -973,6 +979,48 @@ describe("renderPaperclipWakePrompt", () => {
     expect(prompt).toContain("- recovery attempt: 2/3");
     expect(prompt).toContain("- next action: Restore the execution path.");
     expect(prompt).not.toContain("Execution contract: take concrete action");
+    if (cause === "successful_run_missing_state") {
+      expect(prompt).not.toContain("Any comment you post on the source issue must be ≤3 lines");
+    } else {
+      expect(prompt).toContain("Record the outcome in the resolve call's `resolutionNote`");
+      expect(prompt).toContain("Any comment you post on the source issue must be ≤3 lines");
+      expect(prompt).toContain("No headings, no run-by-run narrative.");
+    }
+  });
+
+  it("asks process-loss retries to lead with the work instead of narrating recovery", () => {
+    const prompt = renderPaperclipWakePrompt({
+      reason: "source_scoped_recovery_action",
+      issue: { id: "issue-1", identifier: "PAP-14092", title: "Recover work", status: "blocked" },
+      recovery: {
+        cause: "process_lost",
+        failureSummary: "adapter stopped",
+        originalAssignee: { id: "agent-1", name: "Coder" },
+        attemptCount: 1,
+        nextAction: "Restore the execution path.",
+      },
+      commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+      comments: [],
+      fallbackFetchNeeded: false,
+    });
+
+    expect(prompt).toContain(
+      "Do not narrate the recovery in your next comment — at most one short sentence; lead with the work.",
+    );
+  });
+
+  it("asks restored source owners to lead with work instead of narrating recovery", () => {
+    const prompt = renderPaperclipWakePrompt({
+      reason: "issue_recovery_action_restored",
+      issue: { id: "issue-1", identifier: "PAP-14092", title: "Continue work", status: "todo" },
+      commentWindow: { requestedCount: 0, includedCount: 0, missingCount: 0 },
+      comments: [],
+      fallbackFetchNeeded: false,
+    });
+
+    expect(prompt).toContain(
+      "Do not narrate the recovery in your next comment — at most one short sentence; lead with the work.",
+    );
   });
 
   it("keeps exactly one execution contract in a composed fresh heartbeat prompt", () => {
@@ -2251,6 +2299,53 @@ describe("shapePaperclipWorkspaceEnvForExecution", () => {
         },
       ],
     });
+  });
+
+  it("repoints a referenced hint to its staged remote directory when the map has an entry", () => {
+    const shaped = shapePaperclipWorkspaceEnvForExecution({
+      workspaceCwd: "/tmp/workspace",
+      workspaceWorktreePath: "/tmp/worktree",
+      workspaceHints: [
+        // The anchor hint keeps its remote-cwd rewrite.
+        { workspaceId: "workspace-1", cwd: "/tmp/workspace" },
+        // A referenced hint with a staged directory repoints at it.
+        { workspaceId: "workspace-2", cwd: "/tmp/referenced/project-a", projectId: "project-a" },
+        // A referenced hint with no staged directory loses its cwd.
+        { workspaceId: "workspace-3", cwd: "/tmp/referenced/project-b", projectId: "project-b" },
+      ],
+      executionTargetIsRemote: true,
+      executionCwd: "/remote/workspace",
+      stagedProjectDirs: { "project-a": "/remote/runtime/project-project-a" },
+    });
+
+    expect(shaped).toEqual({
+      workspaceCwd: "/remote/workspace",
+      workspaceWorktreePath: null,
+      workspaceHints: [
+        { workspaceId: "workspace-1", cwd: "/remote/workspace" },
+        {
+          workspaceId: "workspace-2",
+          cwd: "/remote/runtime/project-project-a",
+          projectId: "project-a",
+        },
+        { workspaceId: "workspace-3", projectId: "project-b" },
+      ],
+    });
+  });
+
+  it("removes cwd from a referenced hint that has no staged directory", () => {
+    const shaped = shapePaperclipWorkspaceEnvForExecution({
+      workspaceCwd: "/tmp/workspace",
+      workspaceHints: [
+        { workspaceId: "workspace-2", cwd: "/tmp/referenced/project-a", projectId: "project-a" },
+      ],
+      executionTargetIsRemote: true,
+      executionCwd: "/remote/workspace",
+      // The map is empty, so the referenced hint has no staged directory.
+      stagedProjectDirs: {},
+    });
+
+    expect(shaped.workspaceHints).toEqual([{ workspaceId: "workspace-2", projectId: "project-a" }]);
   });
 
   it("leaves local execution workspace paths unchanged", () => {

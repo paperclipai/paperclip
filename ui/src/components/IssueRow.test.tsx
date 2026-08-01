@@ -6,6 +6,7 @@ import { createRoot } from "react-dom/client";
 import type { Issue } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { IssueRow } from "./IssueRow";
+import { StatusIcon } from "./StatusIcon";
 
 vi.mock("@/lib/router", () => ({
   Link: ({
@@ -108,6 +109,33 @@ describe("IssueRow", () => {
       expect(glyph.getAttribute("width")).toBe("16");
       expect(glyph.getAttribute("height")).toBe("16");
     });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("keeps editable row controls keyboard-accessible and outside the navigation link", () => {
+    const root = createRoot(container);
+
+    act(() => {
+      root.render(
+        <IssueRow
+          issue={createIssue()}
+          desktopMetaLeading={<StatusIcon status="todo" onChange={() => undefined} />}
+        />,
+      );
+    });
+
+    const link = container.querySelector<HTMLAnchorElement>("[data-inbox-issue-link]");
+    const statusButton = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Change status (current: Todo)"]',
+    );
+
+    expect(link).not.toBeNull();
+    expect(statusButton).not.toBeNull();
+    expect(statusButton?.tabIndex).toBe(0);
+    expect(link?.contains(statusButton)).toBe(false);
 
     act(() => {
       root.unmount();
@@ -296,8 +324,7 @@ describe("IssueRow", () => {
       );
     });
 
-    const link = container.querySelector("[data-inbox-issue-link]") as HTMLAnchorElement | null;
-    const metaRow = Array.from(link?.querySelectorAll("span.flex.items-center.gap-2") ?? [])
+    const metaRow = Array.from(container.querySelectorAll("span.flex.items-center.gap-2"))
       .find((element) => element.textContent?.includes("PAP-42"));
 
     expect(metaRow).not.toBeUndefined();

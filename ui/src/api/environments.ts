@@ -58,11 +58,22 @@ function customImageCompanyQuery(companyId: string): string {
   return `companyId=${encodeURIComponent(companyId)}`;
 }
 
+export interface EnvironmentSecretRefDescriptor {
+  configPath: string;
+  secretId: string;
+  name: string;
+  status: string;
+  companyId: string;
+  companyName: string | null;
+}
+
 export const environmentsApi = {
   list: (companyId: string) => api.get<Environment[]>(`/companies/${companyId}/environments`),
   capabilities: (companyId: string) =>
     api.get<EnvironmentCapabilities>(`/companies/${companyId}/environments/capabilities`),
   lease: (leaseId: string) => api.get<EnvironmentLease>(`/environment-leases/${leaseId}`),
+  secretRefs: (environmentId: string) =>
+    api.get<{ refs: EnvironmentSecretRefDescriptor[] }>(`/environments/${environmentId}/secret-refs`),
   create: (companyId: string, body: {
     name: string;
     description?: string | null;

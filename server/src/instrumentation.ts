@@ -283,9 +283,15 @@ async function bootstrapOtel(endpoint: string): Promise<void> {
       // and the exporter appends /v1/traces only when it reads the env var
       // itself — an explicit `url` is used verbatim and would silently POST
       // to the wrong path. Pass `url` only for gRPC, which has no path.
-      traceExporter: protocol === "grpc"
+      // `importExporter` types `OTLPTraceExporter` as `=> unknown` so the
+      // module graph stays free of the optional OTLP/SDK packages. Without
+      // that type, `traceExporter` needs `SpanExporter`, and an import of
+      // `SpanExporter` breaks the compile when the optional packages are
+      // absent. Cast to `never` instead: `never` is assignable to
+      // `SpanExporter` and needs no import.
+      traceExporter: (protocol === "grpc"
         ? new OTLPTraceExporter({ url: endpoint })
-        : new OTLPTraceExporter(),
+        : new OTLPTraceExporter()) as never,
       instrumentations: [
         getNodeAutoInstrumentations({
           // Too chatty for this workload.

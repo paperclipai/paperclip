@@ -115,13 +115,72 @@ pnpm --filter @paperclipai/server exec tsx ../scripts/request-hot-restart.ts --s
 systemctl restart paperclip.service
 ```
 
-Use `--drain-required` only when the deploy intentionally requires the old terminate-and-retry behavior. Without that flag, the old server verifies that the marker targets its own PID, snapshots currently running heartbeat run IDs and child PIDs, and skips the shutdown drain so eligible detached local-agent processes can keep running. On startup the new server writes `$PAPERCLIP_HOME/hot-restart-report.json` with `previousServerPid`, `newServerPid`, `previousServerVersion`, `newServerVersion`, `adoptedRunIds`, `finalizedWhileDownRunIds`, `lostRunIds`, and per-run classifications before the normal orphan reaper runs.
+The staged command records the target server's boot identity and operating
+system process start time with the PID. It reads process metadata through
+`/proc` on Linux, `ps` on macOS and BSD, and PowerShell on Windows. These
+identities let a later request reclaim an abandoned marker after the operating
+system recycles the numeric PID. Older markers stay compatible and use process
+start metadata when available. When OS metadata is unavailable, the current
+server's health-reported boot time can still prove that a legacy marker predates
+the process now using its PID. Paperclip refuses to create a new request without
+at least one identity source. Supported-platform process probes fail explicitly
+instead of silently treating a live PID as either the original owner or a
+recycled process when identity cannot be established.
+
+Use `--drain-required` only when the deploy intentionally requires the old terminate-and-retry behavior. Without that flag, the old server verifies that the marker targets its own PID, snapshots currently running heartbeat run IDs and child PIDs, and skips the shutdown drain so eligible detached local-agent processes can keep running. On startup the new server writes `$PAPERCLIP_HOME/instances/${PAPERCLIP_INSTANCE_ID:-default}/hot-restart-report.json` with `previousServerPid`, `newServerPid`, `previousServerVersion`, `newServerVersion`, `adoptedRunIds`, `finalizedWhileDownRunIds`, `lostRunIds`, and per-run classifications before the normal orphan reaper runs.
+
+The request command records the preflight set of running heartbeat IDs and writes
+an instance-scoped marker plus a PID-targeted legacy home-root handoff marker.
+This lets a previous server version capture its snapshot at the old path while
+the new server correlates that snapshot back to the authoritative instance
+request. If any preflight run ID is absent from the shutdown snapshot, the
+startup report includes it in `lostRunIds`; a missing snapshot therefore cannot
+look like a zero-loss restart.
 
 When the server owns embedded PostgreSQL, a validated hot restart leaves that database process running and opts out of the dependency's package-global signal hook. The predecessor issues a short-lived, one-time handoff bound to the validated restart intent and the PostgreSQL PID, start time, canonical data directory, and port. Exactly one replacement process can claim that handoff after the predecessor exits; an unrelated or mismatched server may reuse the live database but does not acquire authority to stop it. Normal shutdowns stop either the originally started or validly adopted embedded database.
 
 Handoff persistence fails closed. The predecessor resolves PostgreSQL ownership before stopping telemetry, schedulers, run-log mirrors, or app services. If the handoff cannot be written or the PostgreSQL identity changes before it is written, the predecessor stops its owned database instead of exiting and leaving it ownerless. If that stop also fails, the predecessor aborts teardown, restores scheduler activity, and remains operational so an operator can correct the failure and retry the signal.
 
 A healthy guarded deploy must compare the report against `/api/health` (`version` or `serverVersion`) and treat any `lostRunIds` entry as a continuity failure that needs recovery before marking deployment complete.
+
+### Recovering a deploy blocked by missing process metadata
+
+If the currently installed version already has a running local-agent heartbeat
+whose `processPid` and `processGroupId` are both null, that pre-fix run cannot be
+made adoptable retroactively. Cross that version boundary once with the normal
+drain-and-retry path:
+
+```sh
+old_main_pid="$(systemctl show paperclip.service -p MainPID --value)"
+pnpm --filter @paperclipai/server exec tsx ../scripts/request-hot-restart.ts \
+  --server-pid "$old_main_pid" --drain-required
+systemctl restart paperclip.service
+```
+
+After the fixed server starts, wait for the replacement `codex_local` heartbeat
+to spawn, then confirm its run record has an identity (use an authenticated API
+request in authenticated mode):
+
+```sh
+PAPERCLIP_API_BASE="${PAPERCLIP_API_URL:-http://127.0.0.1:3100}"
+PAPERCLIP_API_BASE="${PAPERCLIP_API_BASE%/api}"
+curl -fsS "$PAPERCLIP_API_BASE/api/heartbeat-runs/$RUN_ID" \
+  | jq -e '.status == "running" and (.processPid != null or .processGroupId != null)'
+```
+
+The next continuity check should use the ordinary marker without
+`--drain-required`. After restart, require both an empty loss list and an
+explicit outcome for the run that was live before restart:
+
+```sh
+jq -e --arg run "$RUN_ID" \
+  '(.lostRunIds | length) == 0 and ((.adoptedRunIds + .finalizedWhileDownRunIds) | index($run) != null)' \
+  "$PAPERCLIP_HOME/hot-restart-report.json"
+```
+
+An alive child appears in `adoptedRunIds`; a child that completed during the
+restart window appears in `finalizedWhileDownRunIds`. Either is continuous. A
+`lostRunIds` entry remains a failed deploy and must not be waived.
 
 Tailscale/private-auth dev mode:
 

@@ -1,6 +1,7 @@
 import {
   useCallback,
   useEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
@@ -31,6 +32,11 @@ import {
   type EnvironmentVariablesEditorHandle,
 } from "@/components/environment-variables-editor";
 import { JsonSchemaForm, getDefaultValues, validateJsonSchemaForm } from "@/components/JsonSchemaForm";
+import {
+  SecretRefHintsContext,
+  type SecretRefHint,
+  type SecretRefHintsContextValue,
+} from "@/components/SecretBindingPicker";
 import { useBreadcrumbs } from "@/context/BreadcrumbContext";
 import { useCompany } from "@/context/CompanyContext";
 import { useToast } from "@/context/ToastContext";
@@ -1190,6 +1196,37 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
     enabled: Boolean(selectedCompanyId) && environmentsEnabled,
   });
   const savedEnvironments = environments ?? [];
+  // Descriptors for the edited environment's secret refs. Environments are
+  // instance-scoped while secrets are company-scoped, so a ref may point at
+  // a secret this company's picker cannot list; these hints let the picker
+  // name it instead of calling it missing.
+  const environmentSecretRefsQuery = useQuery({
+    queryKey: editingEnvironmentId
+      ? ["environment-secret-refs", editingEnvironmentId]
+      : ["environment-secret-refs", "none"],
+    queryFn: () => environmentsApi.secretRefs(editingEnvironmentId!),
+    enabled: Boolean(editingEnvironmentId) && environmentsEnabled,
+    retry: false,
+  });
+  const environmentSecretRefHints = useMemo<SecretRefHintsContextValue>(() => {
+    // A new environment has no persisted refs, so the empty map is
+    // authoritative. For an existing environment the map is only "ready"
+    // once the descriptor request resolved — the picker must not call a
+    // reference missing off a pending or failed lookup.
+    if (!editingEnvironmentId) return { status: "ready", hints: {} };
+    if (environmentSecretRefsQuery.isError) return { status: "error", hints: {} };
+    if (!environmentSecretRefsQuery.data) return { status: "loading", hints: {} };
+    const hints: Record<string, SecretRefHint> = {};
+    for (const ref of environmentSecretRefsQuery.data.refs) {
+      hints[ref.secretId] = {
+        name: ref.name,
+        status: ref.status,
+        companyId: ref.companyId,
+        companyName: ref.companyName,
+      };
+    }
+    return { status: "ready", hints };
+  }, [editingEnvironmentId, environmentSecretRefsQuery.data, environmentSecretRefsQuery.isError]);
   const { data: environmentCapabilities } = useQuery({
     queryKey: selectedCompanyId ? ["environment-capabilities", selectedCompanyId] : ["environment-capabilities", "none"],
     queryFn: () => environmentsApi.capabilities(selectedCompanyId!),
@@ -1699,6 +1736,7 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
       ) : null}
 
       {isEnvironmentFormPage && (mode === "create" || editingEnvironment) ? (
+        <SecretRefHintsContext.Provider value={environmentSecretRefHints}>
         <div className="rounded-md border border-border bg-background" data-testid="environment-form-page">
           <div className="border-b border-border/60 px-6 pb-4 pt-6">
             <div className="mb-4">
@@ -1988,6 +2026,7 @@ export function CompanyEnvironments({ mode = "list" }: CompanyEnvironmentsProps)
             </Button>
           </div>
         </div>
+        </SecretRefHintsContext.Provider>
       ) : null}
     </div>
   );

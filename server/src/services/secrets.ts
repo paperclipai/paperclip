@@ -1,8 +1,9 @@
 import { randomUUID } from "node:crypto";
-import { and, desc, eq, inArray, like, ne, notInArray, or, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, like, ne, notInArray, notLike, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
+  companies,
   companySecretBindings,
   companySecretProviderConfigs,
   companySecrets,
@@ -4013,6 +4014,156 @@ export function secretService(db: Db) {
         );
       });
       return normalizedRefs;
+    },
+
+    /**
+     * Replace the config-derived secret bindings of an instance-scoped target
+     * (an environment). Instance-scoped targets are shared across companies,
+     * so each binding is written under the company that owns the referenced
+     * secret rather than a single caller-supplied company context — a
+     * re-point to a secret owned by another company moves the binding with
+     * it. All non-`env.*` bindings of the target are replaced across every
+     * company (env-var bindings stay company-scoped and are managed by
+     * `syncEnvBindingsForTarget`).
+     *
+     * Every referenced secret is loaded and validated before any row is
+     * written, and the delete + insert run on one executor, so an invalid
+     * ref (deleted or unknown secret) fails the whole call without leaving
+     * the target half-bound.
+     */
+    replaceSecretRefsForInstanceTarget: async (
+      target: { targetType: SecretBindingTargetType; targetId: string },
+      refs: Array<{
+        secretId: string;
+        configPath: string;
+        versionSelector?: SecretVersionSelector;
+        required?: boolean;
+        label?: string | null;
+        projectionClass?: SecretProjectionClass;
+        projectionAllowlistKey?: string | null;
+      }>,
+      options?: { db?: SecretBindingDb },
+    ) => {
+      const normalizedRefs: Array<{
+        companyId: string;
+        secretId: string;
+        configPath: string;
+        versionSelector: SecretVersionSelector;
+        required: boolean;
+        label: string | null;
+        projectionClass: SecretProjectionClass;
+        projectionAllowlistKey: string | null;
+      }> = [];
+      const readDb = options?.db ?? db;
+      for (const ref of refs) {
+        const secret = await getById(ref.secretId, readDb);
+        if (!secret || secret.status === "deleted") {
+          throw unprocessable(
+            `Secret referenced at ${ref.configPath} was not found`,
+            { code: "secret_missing", configPath: ref.configPath },
+          );
+        }
+        assertSecretBindingConfigPath({ targetType: target.targetType, configPath: ref.configPath });
+        const projectionClass = ref.projectionClass ?? "unclassified";
+        const projectionAllowlistKey = ref.projectionAllowlistKey ?? null;
+        assertClass3StaticLeaseAllowed({
+          targetType: target.targetType,
+          configPath: ref.configPath,
+          projectionClass,
+          projectionAllowlistKey,
+        });
+        normalizedRefs.push({
+          companyId: secret.companyId,
+          secretId: ref.secretId,
+          configPath: ref.configPath,
+          versionSelector: ref.versionSelector ?? "latest",
+          required: ref.required ?? true,
+          label: ref.label ?? null,
+          projectionClass,
+          projectionAllowlistKey,
+        });
+      }
+
+      const writeBindings = async (executor: SecretBindingDb) => {
+        await executor
+          .delete(companySecretBindings)
+          .where(
+            and(
+              eq(companySecretBindings.targetType, target.targetType),
+              eq(companySecretBindings.targetId, target.targetId),
+              notLike(companySecretBindings.configPath, "env.%"),
+            ),
+          );
+        if (normalizedRefs.length === 0) return;
+        await executor.insert(companySecretBindings).values(
+          normalizedRefs.map((ref) => ({
+            companyId: ref.companyId,
+            secretId: ref.secretId,
+            targetType: target.targetType,
+            targetId: target.targetId,
+            configPath: ref.configPath,
+            versionSelector: String(ref.versionSelector),
+            required: ref.required,
+            label: ref.label,
+            projectionClass: ref.projectionClass,
+            projectionAllowlistKey: ref.projectionAllowlistKey,
+          })),
+        );
+      };
+
+      if (options?.db) {
+        await writeBindings(options.db);
+      } else {
+        await db.transaction(async (tx) => {
+          await writeBindings(tx);
+        });
+      }
+      return normalizedRefs;
+    },
+
+    /**
+     * Describe secret refs (id + config path) with the referenced secret's
+     * name, status, and owning company. Environments are instance-scoped
+     * while secrets are company-scoped, so an environment can legitimately
+     * reference a secret a given company's picker cannot list; this gives
+     * instance-level readers enough metadata to present such refs honestly.
+     * Returns names across companies — callers must sit behind an
+     * instance-level authorization gate. Never returns secret values.
+     */
+    describeSecretRefs: async (
+      refs: Array<{ secretId: string; configPath: string }>,
+    ): Promise<Array<{
+      configPath: string;
+      secretId: string;
+      name: string;
+      status: string;
+      companyId: string;
+      companyName: string | null;
+    }>> => {
+      if (refs.length === 0) return [];
+      const secretIds = [...new Set(refs.map((ref) => ref.secretId))];
+      const secretRows = await db
+        .select()
+        .from(companySecrets)
+        .where(inArray(companySecrets.id, secretIds));
+      const secretsById = new Map(secretRows.map((row) => [row.id, row]));
+      const companyIds = [...new Set(secretRows.map((row) => row.companyId))];
+      const companyRows = companyIds.length > 0
+        ? await db.select().from(companies).where(inArray(companies.id, companyIds))
+        : [];
+      const companyNamesById = new Map(companyRows.map((row) => [row.id, row.name]));
+      return refs.flatMap((ref) => {
+        const secret = secretsById.get(ref.secretId);
+        if (!secret) return [];
+        return [{
+          configPath: ref.configPath,
+          secretId: secret.id,
+          name: secret.name,
+          status: secret.status,
+          companyId: secret.companyId,
+          companyName: companyNamesById.get(secret.companyId) ?? null,
+        }];
+      });
     },
 
     listBindingCompanyIdsForTarget: async (
