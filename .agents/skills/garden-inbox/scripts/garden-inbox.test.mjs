@@ -87,6 +87,19 @@ test("unselected candidates start unchecked and are labelled as previously decli
   assert.deepEqual(body.payload.defaultSelectedOptionIds, ["issue-2"]);
   assert.match(body.payload.options[0].description, /Declined in a previous pass; starts unchecked\./);
   assert.doesNotMatch(body.payload.options[1].description, /Declined in a previous pass/);
+  assert.notEqual(body.idempotencyKey, "garden-inbox:scan-1:1:1");
+  assert.equal(
+    body.idempotencyKey,
+    confirmationBody(scan, candidates, 0, 1, new Set(["issue-1"])).idempotencyKey,
+  );
+  assert.notEqual(
+    body.idempotencyKey,
+    confirmationBody(scan, candidates, 0, 1, new Set(["issue-2"])).idempotencyKey,
+  );
+  assert.equal(
+    confirmationBody(scan, candidates, 0, 1).idempotencyKey,
+    "garden-inbox:scan-1:1:1",
+  );
 });
 
 test("preserves an overridden scan user for archive and undo requests", () => {
