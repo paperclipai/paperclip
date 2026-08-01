@@ -251,7 +251,7 @@ function buildClearedMonitorState(input: {
   };
 }
 
-function issueAllowsMonitor(status: string, assigneeAgentId: string | null, assigneeUserId: string | null) {
+export function issueAllowsMonitor(status: string, assigneeAgentId: string | null, assigneeUserId: string | null) {
   return Boolean(assigneeAgentId) && !assigneeUserId && (status === "in_progress" || status === "in_review");
 }
 

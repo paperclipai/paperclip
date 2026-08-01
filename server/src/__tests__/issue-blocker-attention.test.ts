@@ -501,6 +501,33 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     });
   });
 
+  it("does not treat a future monitor on a blocked issue as covered", async () => {
+    const { companyId, agentId } = await createCompany("PBYM");
+    const parentId = await insertIssue({ companyId, identifier: "PBYM-1", title: "Parent", status: "blocked" });
+    const blockerId = await insertIssue({
+      companyId,
+      identifier: "PBYM-2",
+      title: "Blocked lane with dormant monitor metadata",
+      status: "blocked",
+      assigneeAgentId: agentId,
+      monitorNextCheckAt: new Date("2099-02-01T15:00:00.000Z"),
+      monitorAttemptCount: 0,
+    });
+    await block({ companyId, blockerIssueId: blockerId, blockedIssueId: parentId });
+
+    const parent = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === parentId);
+
+    expect(parent?.blockerAttention).toMatchObject({
+      state: "needs_attention",
+      reason: "attention_required",
+      unresolvedBlockerCount: 1,
+      coveredBlockerCount: 0,
+      stalledBlockerCount: 0,
+      attentionBlockerCount: 1,
+      sampleBlockerIdentifier: "PBYM-2",
+    });
+  });
+
   it("flags a deep chain whose leaf is stalled in_review through multiple layers", async () => {
     const { companyId, agentId } = await createCompany("PBZ");
     const rootId = await insertIssue({ companyId, identifier: "PBZ-1", title: "Root", status: "blocked" });

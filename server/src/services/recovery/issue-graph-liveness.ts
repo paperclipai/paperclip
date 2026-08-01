@@ -1,5 +1,6 @@
 import { getAgentWorkEligibility, isAgentInvokable } from "@paperclipai/shared";
 import { buildIssueGraphLivenessIncidentKey } from "./origins.js";
+import { issueAllowsMonitor } from "../issue-execution-policy.js";
 
 export type IssueLivenessSeverity = "warning" | "critical";
 
@@ -170,6 +171,10 @@ function monitorFromIssue(issue: IssueLivenessIssueInput) {
 }
 
 export function hasScheduledMonitorWaitingPath(issue: IssueLivenessIssueInput, nowMs: number) {
+  if (!issueAllowsMonitor(issue.status, issue.assigneeAgentId ?? null, issue.assigneeUserId ?? null)) {
+    return false;
+  }
+
   const nextCheckAtMs = readDateMs(issue.monitorNextCheckAt);
   if (nextCheckAtMs === null || nextCheckAtMs <= nowMs) return false;
 
