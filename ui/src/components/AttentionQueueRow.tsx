@@ -1,9 +1,9 @@
-import { memo, useState, type KeyboardEvent } from "react";
+import { memo, useState, type KeyboardEvent, type ReactNode } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   AlarmClock,
   ChevronDown,
-  ChevronRight,
+  ChevronUp,
   ExternalLink,
   GraduationCap,
   Loader2,
@@ -22,14 +22,16 @@ import {
   attentionDetailImages,
   attentionDetailLine,
   attentionImageUrl,
-  attentionToneStyle,
+  attentionStatus,
+  attentionTaskRef,
   isInlineResolvable,
-  severityBadge,
   sourceMeta,
 } from "../lib/attention";
 import { isTrainable } from "../lib/decisionTraining";
 import { cn, relativeTime } from "../lib/utils";
+import { StatusGlyph } from "./StatusGlyph";
 import { Button } from "./ui/button";
+import { Collapsible, CollapsibleContent } from "./ui/collapsible";
 import { Textarea } from "./ui/textarea";
 import {
   DropdownMenu,
@@ -42,7 +44,6 @@ import {
   DropdownMenuTrigger,
 } from "./ui/dropdown-menu";
 import { AttentionInteractionResolver } from "./AttentionInteractionResolver";
-import { ProjectTile } from "./ProjectTile";
 
 const HOUR_MS = 60 * 60 * 1000;
 const DAY_MS = 24 * HOUR_MS;
@@ -112,9 +113,11 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
   selected = false,
 }: AttentionQueueRowProps) {
   const meta = sourceMeta(item.sourceKind);
-  const tone = attentionToneStyle(item);
-  const sevBadge = severityBadge(item.severity);
-  const Icon = meta.icon;
+  // Colour + glyph are borrowed wholesale from the task status system, so a
+  // blocking decision reads exactly like a blocked task (DESIGN.md principle 5).
+  const status = attentionStatus(item);
+  // The task this row belongs to, whichever field the feed put it in.
+  const taskRef = attentionTaskRef(item);
   const isHidden = variant === "hidden";
   const inline = !isHidden && isInlineResolvable(item);
   const href = item.subject.href;
@@ -150,18 +153,73 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
   // Which rows contribute an action bar. Inline rows carry compact decision
   // verbs; deep-link rows carry an Open button; curtain rows carry Restore.
   const compactActions = !isHidden ? collectCompactActions(item) : [];
-  const showCompact = !expanded && compactActions.length > 0;
   const showOpen = !inline && !!href;
   const showRestore = isHidden && !!onRestore;
-  const showActionBar = showCompact || showOpen || showRestore;
-  // Left gutter width (chevron + gap) so the stacked content aligns under the
-  // headline in the wide layout; when narrow, everything runs full-bleed.
-  const gutterIndent = "@xl:pl-6";
+  // An expanded inline row hands its footer to the resolver, which owns the
+  // decision verbs — so the toggle rides alongside them on one row rather than
+  // stranding a lone "See less" under the buttons. That makes the collapsed
+  // footer a swap rather than a survivor, so it crossfades with the panel.
+  const hasCollapsedOnlyContent = hasImages || inline;
+
+  // Disclosure control. Now the row's only expand affordance: it names what it
+  // does instead of leaving a bare chevron to be decoded, and it sits at the
+  // bottom-left where the eye lands after reading the row.
+  const toggle = expandable ? (
+    <button
+      type="button"
+      className="inline-flex shrink-0 items-center gap-1 rounded-md text-xs font-medium text-muted-foreground hover:text-foreground focus-visible:ring-ring focus-visible:ring-(length:--rad-3) focus-visible:outline-none"
+      aria-label={expanded ? "Collapse decision" : "Expand decision"}
+      aria-expanded={expanded}
+      onClick={activate}
+    >
+      {expanded ? <ChevronUp className="h-4 w-4" /> : <ChevronDown className="h-4 w-4" />}
+      {expanded ? "See less" : "See more"}
+    </button>
+  ) : null;
+
+  /**
+   * The row's action bar: disclosure on the left, decision verbs on the right.
+   * Rendered either inside the collapsed-only cluster (inline rows, where the
+   * resolver takes it over once expanded) or as a standing sibling (everything
+   * else). `compact` is false for the standing copy so an expanded row does not
+   * show collapsed verbs beside the panel's own.
+   */
+  const renderFooter = ({ compact }: { compact: boolean }) => {
+    const showCompact = compactActions.length > 0 && (compact || !expanded);
+    if (!toggle && !showCompact && !showOpen && !showRestore) return null;
+    return (
+      <div className="flex flex-wrap items-center justify-between gap-2" data-attention-actions="true">
+        {toggle ?? <span />}
+
+        <div className="flex flex-wrap items-center gap-2 @xl:justify-end">
+          {showCompact && (
+            <CompactDecisionActions item={item} companyId={companyId} onOpen={() => onToggleExpand(item)} />
+          )}
+
+          {showOpen && (
+            <Button asChild variant="default" size="xs" className={ACTION_BTN}>
+              <Link to={href!}>
+                Open
+                <ExternalLink className="h-3 w-3" />
+              </Link>
+            </Button>
+          )}
+
+          {showRestore && (
+            <Button type="button" variant="outline" size="xs" className={ACTION_BTN} onClick={() => onRestore(item)}>
+              <RotateCcw className="h-3 w-3" />
+              Restore
+            </Button>
+          )}
+        </div>
+      </div>
+    );
+  };
 
   return (
     <div
       className={cn(
-        "@container relative flex flex-col overflow-hidden border border-border bg-card",
+        "@container relative flex flex-col gap-4 overflow-hidden rounded-xl border border-border bg-card px-4 pt-3 pb-4",
         // The feed is uncapped, so off-screen rows must not cost layout/paint
         // while scrolling. The intrinsic-size estimate only matters before a
         // row's first paint; `auto` keeps the real measured height afterwards.
@@ -176,225 +234,185 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
       data-attention-source={item.sourceKind}
       data-attention-severity={item.severity}
     >
-      {/* Type accent bar (canonical color map — never severity). */}
-      <span className={cn("absolute inset-y-0 left-0 w-1", tone.accent)} aria-hidden />
+      {/* Meta band: one breadcrumb of identity on the left (kind → task →
+          project), recency + overflow on the right. Not part of the clickable
+          headline, so the menu never toggles it. */}
+      <div className="flex items-start justify-between gap-2">
+        <div className="flex min-w-0 flex-wrap items-center gap-1">
+          <span className="inline-flex items-center gap-1 text-xs font-medium text-muted-foreground">
+            <StatusGlyph status={status} size="md" />
+            {meta.label}
+          </span>
+          {taskRef && (
+            <>
+              <EyebrowSeparator />
+              <Link
+                to={taskRef.href ?? "#"}
+                className="font-mono text-(length:--text-nano) text-muted-foreground hover:text-foreground"
+                onClick={(e) => e.stopPropagation()}
+              >
+                {taskRef.identifier}
+              </Link>
+            </>
+          )}
+          {trainable && trained && (
+            <button
+              type="button"
+              className="inline-flex items-center gap-1 rounded-sm border border-primary/30 bg-primary/10 px-1.5 py-px text-(length:--text-nano) font-medium text-primary hover:bg-primary/15"
+              onClick={(event) => {
+                event.stopPropagation();
+                onTrain?.(item);
+              }}
+              data-testid="attention-trained-badge"
+            >
+              <GraduationCap className="h-3 w-3 fill-primary/25" />
+              Trained ✓
+            </button>
+          )}
+        </div>
 
-      <div className="flex items-start gap-2 py-3 pl-4 pr-3">
-        {/* Expand affordance / spacer gutter — keeps headlines aligned across the list. */}
-        {expandable ? (
-          <button
-            type="button"
-            className="mt-0.5 shrink-0 rounded-sm p-0.5 text-muted-foreground hover:text-foreground focus-visible:ring-ring focus-visible:ring-(length:--rad-3) focus-visible:outline-none"
-            aria-label={expanded ? "Collapse decision" : "Expand decision"}
-            aria-expanded={expanded}
-            onClick={activate}
-          >
-            {expanded ? <ChevronDown className="h-4 w-4" /> : <ChevronRight className="h-4 w-4" />}
-          </button>
-        ) : (
-          <span className="mt-0.5 hidden h-4 w-4 shrink-0 @xl:block" aria-hidden />
-        )}
-
-        {/* Content column: a single vertical stack that fills the full width on
-            mobile (no competing right-hand controls) and reads top-to-bottom. */}
-        <div className="flex min-w-0 flex-1 flex-col gap-2">
-          {/* Meta band: identity on the left, recency + overflow on the right.
-              Not part of the clickable headline, so the menu never toggles it. */}
-          <div className="flex items-start justify-between gap-2">
-            <div className="flex min-w-0 flex-wrap items-center gap-x-2 gap-y-1">
-              <span className="inline-flex items-center gap-1 text-xs font-medium text-muted-foreground">
-                <Icon className={cn("h-3.5 w-3.5", tone.icon)} />
-                {meta.label}
-              </span>
-              {sevBadge && (
-                <span
-                  className={cn(
-                    "inline-flex items-center rounded-sm border px-1.5 py-px text-(length:--text-nano) font-semibold uppercase tracking-(--tracking-eyebrow)",
-                    sevBadge.className,
-                  )}
-                >
-                  {sevBadge.label}
-                </span>
-              )}
-              {item.relatedIssue?.identifier && (
-                <Link
-                  to={item.relatedIssue.href ?? "#"}
-                  className="font-mono text-(length:--text-nano) text-muted-foreground hover:text-foreground"
-                  onClick={(e) => e.stopPropagation()}
-                >
-                  {item.relatedIssue.identifier}
-                </Link>
-              )}
-            </div>
-
-            <div className="flex shrink-0 items-center gap-1" data-attention-menu="true">
-              {trainable && (
+        <div className="flex shrink-0 items-center gap-1" data-attention-menu="true">
+          {isHidden && snoozedUntil ? (
+            <span
+              className="text-(length:--text-nano) text-muted-foreground"
+              title={`Reappears ${new Date(snoozedUntil).toLocaleString()}`}
+            >
+              Reappears {reappearLabel(snoozedUntil)}
+            </span>
+          ) : (
+            <span className="text-(length:--text-nano) text-muted-foreground">{relativeTime(item.activityAt)}</span>
+          )}
+          {!isHidden && (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
                 <Button
-                  type="button"
                   variant="ghost"
                   size="icon-xs"
-                  className={cn(trained ? "text-primary" : "text-muted-foreground")}
-                  aria-label={trained ? "View training example" : "Train this decision"}
-                  aria-pressed={trained}
-                  title={trained ? "Trained — view example" : "Train this decision"}
-                  data-training-state={trained ? "trained" : "untrained"}
-                  data-testid="attention-train-button"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    onTrain?.(item);
-                  }}
+                  className="text-muted-foreground"
+                  aria-label="Row actions"
                 >
-                  <GraduationCap className={cn("h-4 w-4", trained && "fill-primary/25")} />
+                  <MoreHorizontal className="h-4 w-4" />
                 </Button>
-              )}
-              {isHidden && snoozedUntil ? (
-                <span
-                  className="text-(length:--text-nano) text-muted-foreground"
-                  title={`Reappears ${new Date(snoozedUntil).toLocaleString()}`}
-                >
-                  Reappears {reappearLabel(snoozedUntil)}
-                </span>
-              ) : (
-                <span className="text-(length:--text-nano) text-muted-foreground">{relativeTime(item.activityAt)}</span>
-              )}
-              {!isHidden && (
-                <DropdownMenu>
-                  <DropdownMenuTrigger asChild>
-                    <Button
-                      variant="ghost"
-                      size="icon-xs"
-                      className="text-muted-foreground"
-                      aria-label="Row actions"
-                    >
-                      <MoreHorizontal className="h-4 w-4" />
-                    </Button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end">
-                    {onSnooze && <SnoozeSubmenu onSnooze={(iso) => onSnooze(item, iso)} />}
-                    <DropdownMenuItem onClick={() => onDismiss(item)}>
-                      <X className="h-4 w-4" />
-                      Dismiss
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                {/* Training moved off the header strip (which now carries only
+                    recency + overflow) but keeps its testids so the affordance
+                    is still addressable. */}
+                {trainable && (
+                  <DropdownMenuItem
+                    data-training-state={trained ? "trained" : "untrained"}
+                    data-testid="attention-train-button"
+                    onClick={() => onTrain?.(item)}
+                  >
+                    <GraduationCap className={cn("h-4 w-4", trained && "fill-primary/25")} />
+                    {trained ? "View training example" : "Train this decision"}
+                  </DropdownMenuItem>
+                )}
+                {onSnooze && <SnoozeSubmenu onSnooze={(iso) => onSnooze(item, iso)} />}
+                <DropdownMenuItem onClick={() => onDismiss(item)}>
+                  <X className="h-4 w-4" />
+                  Dismiss
+                </DropdownMenuItem>
+                {href && (
+                  <>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem asChild>
+                      <Link to={href}>Open source</Link>
                     </DropdownMenuItem>
-                    {href && (
-                      <>
-                        <DropdownMenuSeparator />
-                        <DropdownMenuItem asChild>
-                          <Link to={href}>Open source</Link>
-                        </DropdownMenuItem>
-                      </>
-                    )}
-                  </DropdownMenuContent>
-                </DropdownMenu>
-              )}
-            </div>
-          </div>
-
-          {/* Headline — the primary expand target for inline rows. Title now wraps
-              to two lines instead of truncating to a sliver on narrow screens. */}
-          <div
-            className={cn(
-              "min-w-0 rounded-md",
-              expandable && "cursor-pointer focus-visible:ring-ring focus-visible:ring-(length:--rad-3) focus-visible:outline-none",
-            )}
-            {...(expandable
-              ? {
-                  role: "button",
-                  tabIndex: 0,
-                  "aria-expanded": expanded,
-                  "aria-label": expanded ? "Collapse decision" : "Expand decision",
-                  onClick: activate,
-                  onKeyDown: onHeaderKeyDown,
-                }
-              : {})}
-          >
-            <span className="line-clamp-2 text-sm font-medium text-foreground" title={item.subject.title ?? undefined}>
-              {item.subject.title ?? meta.label}
-            </span>
-            <p className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">{detailLine}</p>
-          </div>
-
-          {/* Context row: project identity and evidence thumbnails move below the
-              text so they never squeeze the headline on mobile. */}
-          {(item.project || (hasImages && !expanded) || (trainable && trained)) && (
-            <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
-              {item.project && <ProjectMeta project={item.project} />}
-              {trainable && trained && (
-                <button
-                  type="button"
-                  className="inline-flex items-center gap-1 rounded-sm border border-primary/30 bg-primary/10 px-1.5 py-px text-(length:--text-nano) font-medium text-primary hover:bg-primary/15"
-                  onClick={(event) => {
-                    event.stopPropagation();
-                    onTrain?.(item);
-                  }}
-                  data-testid="attention-trained-badge"
-                >
-                  <GraduationCap className="h-3 w-3 fill-primary/25" />
-                  Trained ✓
-                </button>
-              )}
-              {hasImages && !expanded && <ThumbnailStack images={images} />}
-            </div>
-          )}
-
-          {/* Action bar: full-width, thumb-reachable buttons on mobile;
-              right-aligned dense pills on desktop. Sibling of the headline so
-              taps never toggle expand. */}
-          {showActionBar && (
-            <div
-              className={cn("flex flex-wrap items-center gap-2 @xl:justify-end", gutterIndent)}
-              data-attention-actions="true"
-            >
-              {showCompact && (
-                <CompactDecisionActions
-                  item={item}
-                  companyId={companyId}
-                  onOpen={() => onToggleExpand(item)}
-                />
-              )}
-
-              {showOpen && (
-                <Button asChild variant="outline" size="xs" className={cn(ACTION_BTN, "w-full @xl:w-auto")}>
-                  <Link to={href!}>
-                    Open
-                    <ExternalLink className="h-3 w-3" />
-                  </Link>
-                </Button>
-              )}
-
-              {showRestore && (
-                <Button
-                  type="button"
-                  variant="outline"
-                  size="xs"
-                  className={cn(ACTION_BTN, "w-full @xl:w-auto")}
-                  onClick={() => onRestore(item)}
-                >
-                  <RotateCcw className="h-3 w-3" />
-                  Restore
-                </Button>
-              )}
-            </div>
+                  </>
+                )}
+              </DropdownMenuContent>
+            </DropdownMenu>
           )}
         </div>
       </div>
 
-      {expanded && (hasImages || inline) && (
-        <div className="space-y-3 border-t border-border/60 bg-muted/20 px-4 py-3 motion-safe:animate-in motion-safe:fade-in-0 motion-safe:slide-in-from-top-1 motion-safe:duration-200">
-          {hasImages && <ExpandedImages images={images} issueHref={issueHref} />}
-          {inline && (
-            <InlineResolver
-              item={item}
-              companyId={companyId}
-              agentMap={agentMap}
-              currentUserId={currentUserId}
-              userLabelMap={userLabelMap}
-            />
-          )}
-        </div>
+      {/* Headline — the primary expand target for inline rows. Title wraps to
+          two lines instead of truncating to a sliver on narrow screens. */}
+      <div
+        className={cn(
+          "min-w-0 rounded-md",
+          expandable && "cursor-pointer focus-visible:ring-ring focus-visible:ring-(length:--rad-3) focus-visible:outline-none",
+        )}
+        {...(expandable
+          ? {
+              role: "button",
+              tabIndex: 0,
+              "aria-expanded": expanded,
+              "aria-label": expanded ? "Collapse decision" : "Expand decision",
+              onClick: activate,
+              onKeyDown: onHeaderKeyDown,
+            }
+          : {})}
+      >
+        <span className="line-clamp-2 text-sm font-medium text-foreground" title={item.subject.title ?? undefined}>
+          {item.subject.title ?? meta.label}
+        </span>
+        <p className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">{detailLine}</p>
+      </div>
+
+      {/* Collapsed-only content. It has no counterpart to morph into — the
+          thumbnail strip becomes a full gallery, and an inline row's footer is
+          replaced by the resolver's own — so it rides an inverse disclosure and
+          crossfades against the panel below: this shrinks and fades out on the
+          same tokens as that grows and fades in, instead of popping. */}
+      {hasCollapsedOnlyContent && (
+        <Collapsible open={!expanded} className="contents">
+          <CollapsibleContent data-decision-disclosure className="-mt-4">
+            <div className="flex flex-col gap-4 pt-4">
+              {hasImages && <ThumbnailStack images={images} />}
+              {inline && renderFooter({ compact: true })}
+            </div>
+          </CollapsibleContent>
+        </Collapsible>
       )}
+
+      {/* The disclosure panel. Collapsible measures the panel and publishes its
+          height, so the card grows and shrinks to a real number rather than
+          snapping open. `contents` keeps the Root out of the layout, so a
+          collapsed row does not pay a flex gap for an empty wrapper — and once
+          the exit finishes Radix unmounts the panel, so a collapsed row is not
+          left with a live resolver behind it. */}
+      <Collapsible open={expanded} onOpenChange={() => onToggleExpand(item)} className="contents">
+        <CollapsibleContent data-decision-disclosure className="-mt-4">
+          <div className="flex flex-col gap-4 pt-4">
+            {hasImages && <ExpandedImages images={images} issueHref={issueHref} />}
+            {inline && (
+              <InlineResolver
+                item={item}
+                companyId={companyId}
+                agentMap={agentMap}
+                currentUserId={currentUserId}
+                userLabelMap={userLabelMap}
+                toggle={toggle}
+              />
+            )}
+          </div>
+        </CollapsibleContent>
+      </Collapsible>
+
+      {/* A non-inline row keeps one footer across both states — its Open or
+          Restore button and its toggle are the same control either way, so it
+          stays put rather than crossfading with itself. */}
+      {!inline && renderFooter({ compact: false })}
     </div>
   );
 });
+
+/**
+ * "·" between eyebrow segments.
+ *
+ * The eyebrow is a flat list of two facts (decision kind, task key), not a
+ * hierarchy, so a middle dot reads more honestly than the "/" this started as —
+ * a slash implies containment that the two segments do not have.
+ */
+function EyebrowSeparator() {
+  return (
+    <span className="text-xs text-muted-foreground" aria-hidden>
+      ·
+    </span>
+  );
+}
 
 type CompactDecisionAction = "accept" | "approve" | "reject" | "request_revision";
 
@@ -415,12 +433,33 @@ function compactDecisionAction(item: AttentionItem, verbId: string): CompactDeci
   return null;
 }
 
+/**
+ * Weight used to order a decision's verbs. The affirmative verb always lands
+ * rightmost — the same place in every row, collapsed or expanded — so the
+ * operator's aim never has to move with the verb list.
+ */
+const VERB_ORDER: Record<"outline" | "destructive" | "default", number> = {
+  outline: 0,
+  destructive: 1,
+  default: 2,
+};
+
+interface CompactAction {
+  action: CompactDecisionAction;
+  label: string;
+  id: string;
+  description: string;
+}
+
 /** The compact accept/reject verbs a collapsed row can resolve in place. */
-function collectCompactActions(item: AttentionItem): Array<{ action: CompactDecisionAction; label: string; id: string }> {
-  return item.decisionVerbs.slice(0, 3).flatMap((verb) => {
-    const action = compactDecisionAction(item, verb.id);
-    return action ? [{ action, label: verb.label, id: verb.id }] : [];
-  });
+function collectCompactActions(item: AttentionItem): CompactAction[] {
+  return item.decisionVerbs
+    .slice(0, 3)
+    .flatMap((verb) => {
+      const action = compactDecisionAction(item, verb.id);
+      return action ? [{ action, label: verb.label, id: verb.id, description: verb.description ?? "" }] : [];
+    })
+    .sort((a, b) => VERB_ORDER[decisionVerbVariant(a)] - VERB_ORDER[decisionVerbVariant(b)]);
 }
 
 function CompactDecisionActions({
@@ -481,11 +520,11 @@ function CompactDecisionActions({
 
   return (
     <div className="flex w-full flex-wrap items-center gap-2 @xl:w-auto @xl:justify-end @xl:gap-1" aria-label="Decision actions">
-      {actions.map(({ action, id, label }) => (
+      {actions.map(({ action, id, label, description }) => (
         <Button
           key={id}
           type="button"
-          variant={decisionVerbVariant({ id, label, description: "" })}
+          variant={decisionVerbVariant({ id, label, description })}
           size="xs"
           className={cn(ACTION_BTN, "min-w-0 flex-1 @xl:flex-none")}
           disabled={decision.isPending}
@@ -523,20 +562,6 @@ function decisionVerbVariant(verb: AttentionItem["decisionVerbs"][number]): "def
   if (/\b(reject|decline|deny|delete|remove)\b/.test(text)) return "destructive";
   if (/\b(accept|approve|confirm|apply)\b/.test(text)) return "default";
   return "outline";
-}
-
-/** Inline project identity keeps useful context without a competing badge. */
-function ProjectMeta({ project }: { project: NonNullable<AttentionItem["project"]> }) {
-  return (
-    <span
-      className="inline-flex max-w-(--sz-12rem) items-center gap-1.5 text-(length:--text-nano) text-muted-foreground"
-      title={project.name}
-      data-testid="attention-project-meta"
-    >
-      <ProjectTile color={project.color} icon={project.icon} size="xs" />
-      <span className="truncate">{project.name}</span>
-    </span>
-  );
 }
 
 /** Square screenshot thumbnails at the right of the description (plan §10). */
@@ -591,6 +616,12 @@ function ExpandedImages({ images, issueHref }: { images: AttentionDetailImage[];
           <Link
             key={key}
             to={issueHref}
+            // No task quicklook on evidence. `Link` upgrades any /issues/ href
+            // into a hover preview, which here pops a text card over the very
+            // screenshot being examined — and because expanding a row mounts
+            // this gallery directly under a stationary pointer, the preview
+            // opens unbidden and can outlive the pointer that never entered it.
+            disableIssueQuicklook
             className="block rounded-md focus-visible:ring-ring focus-visible:ring-(length:--rad-3) focus-visible:outline-none"
             onClick={(e) => e.stopPropagation()}
           >
@@ -605,6 +636,8 @@ function ExpandedImages({ images, issueHref }: { images: AttentionDetailImage[];
       {extra > 0 && (issueHref ? (
         <Link
           to={issueHref}
+          // Same gallery, same pointer trap — see the thumbnail note above.
+          disableIssueQuicklook
           onClick={(e) => e.stopPropagation()}
           className="flex h-32 w-24 flex-col items-center justify-center rounded-md border border-dashed border-border bg-muted/40 text-sm font-medium text-muted-foreground transition-colors hover:bg-muted hover:text-foreground focus-visible:ring-ring focus-visible:ring-(length:--rad-3) focus-visible:outline-none"
         >
@@ -682,18 +715,26 @@ function reappearLabel(snoozedUntil: string): string {
   return `in ${diffDay}d`;
 }
 
+/**
+ * Expanded-row content. Resolvers that own their decision verbs also render the
+ * row's footer, so the disclosure toggle (`toggle`) sits on the same line as the
+ * buttons. The issue-thread interaction card keeps its verbs internally — it is
+ * shared with the issue thread surface — so there the toggle gets its own row.
+ */
 function InlineResolver({
   item,
   companyId,
   agentMap,
   currentUserId,
   userLabelMap,
+  toggle,
 }: {
   item: AttentionItem;
   companyId: string;
   agentMap?: Map<string, Agent>;
   currentUserId?: string | null;
   userLabelMap?: ReadonlyMap<string, string> | null;
+  toggle: ReactNode;
 }) {
   if (item.sourceKind === "issue_thread_interaction") {
     const issueId = (item.subject.metadata?.issueId as string | undefined) ?? item.relatedIssue?.id;
@@ -701,29 +742,42 @@ function InlineResolver({
       return <p className="text-xs text-muted-foreground">Missing issue reference for this decision.</p>;
     }
     return (
-      <AttentionInteractionResolver
-        companyId={companyId}
-        issueId={issueId}
-        interactionId={item.subject.id}
-        agentMap={agentMap}
-        currentUserId={currentUserId}
-        userLabelMap={userLabelMap}
-      />
+      <>
+        <AttentionInteractionResolver
+          companyId={companyId}
+          issueId={issueId}
+          interactionId={item.subject.id}
+          agentMap={agentMap}
+          currentUserId={currentUserId}
+          userLabelMap={userLabelMap}
+        />
+        {toggle && <div className="flex items-center">{toggle}</div>}
+      </>
     );
   }
 
   if (item.sourceKind === "approval") {
-    return <ApprovalResolver item={item} companyId={companyId} />;
+    return <ApprovalResolver item={item} companyId={companyId} toggle={toggle} />;
   }
 
   if (item.sourceKind === "join_request") {
-    return <JoinRequestResolver item={item} companyId={companyId} />;
+    return <JoinRequestResolver item={item} companyId={companyId} toggle={toggle} />;
   }
 
   return null;
 }
 
-function ApprovalResolver({ item, companyId }: { item: AttentionItem; companyId: string }) {
+/** Footer shared by the resolvers that own their verbs: toggle left, verbs right. */
+function ResolverFooter({ toggle, children }: { toggle: ReactNode; children: ReactNode }) {
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-2" data-attention-actions="true">
+      {toggle ?? <span />}
+      <div className="flex flex-wrap items-center gap-2">{children}</div>
+    </div>
+  );
+}
+
+function ApprovalResolver({ item, companyId, toggle }: { item: AttentionItem; companyId: string; toggle: ReactNode }) {
   const queryClient = useQueryClient();
   const [note, setNote] = useState("");
   const invalidate = () => {
@@ -744,19 +798,17 @@ function ApprovalResolver({ item, companyId }: { item: AttentionItem; companyId:
   });
   const pending = approve.isPending || reject.isPending || revise.isPending;
 
+  // Verb order matches the collapsed row exactly (revise → reject → approve),
+  // so expanding never moves the button the operator was already aiming at.
   return (
-    <div className="space-y-3">
+    <>
       <Textarea
         value={note}
         onChange={(e) => setNote(e.target.value)}
         placeholder="Optional decision note…"
         className="min-h-16 text-sm"
       />
-      <div className="flex flex-wrap gap-2">
-        <Button size="sm" onClick={() => approve.mutate()} disabled={pending}>
-          {approve.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-          Approve
-        </Button>
+      <ResolverFooter toggle={toggle}>
         <Button size="sm" variant="outline" onClick={() => revise.mutate()} disabled={pending}>
           {revise.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
           Request revision
@@ -765,12 +817,16 @@ function ApprovalResolver({ item, companyId }: { item: AttentionItem; companyId:
           {reject.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
           Reject
         </Button>
-      </div>
-    </div>
+        <Button size="sm" onClick={() => approve.mutate()} disabled={pending}>
+          {approve.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+          Approve
+        </Button>
+      </ResolverFooter>
+    </>
   );
 }
 
-function JoinRequestResolver({ item, companyId }: { item: AttentionItem; companyId: string }) {
+function JoinRequestResolver({ item, companyId, toggle }: { item: AttentionItem; companyId: string; toggle: ReactNode }) {
   const queryClient = useQueryClient();
   const invalidate = () => {
     queryClient.invalidateQueries({ queryKey: queryKeys.attention(companyId) });
@@ -787,15 +843,15 @@ function JoinRequestResolver({ item, companyId }: { item: AttentionItem; company
   const pending = approve.isPending || reject.isPending;
 
   return (
-    <div className="flex flex-wrap gap-2">
-      <Button size="sm" onClick={() => approve.mutate()} disabled={pending}>
-        {approve.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
-        Approve
-      </Button>
+    <ResolverFooter toggle={toggle}>
       <Button size="sm" variant="destructive" onClick={() => reject.mutate()} disabled={pending}>
         {reject.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
         Reject
       </Button>
-    </div>
+      <Button size="sm" onClick={() => approve.mutate()} disabled={pending}>
+        {approve.isPending && <Loader2 className="h-3.5 w-3.5 animate-spin" />}
+        Approve
+      </Button>
+    </ResolverFooter>
   );
 }

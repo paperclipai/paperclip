@@ -64,6 +64,16 @@ describe("paperclip skill utils", () => {
     await expect(fs.access(path.resolve("scripts/paperclip-upload-artifact.sh"))).rejects.toThrow();
   });
 
+  it("uses the authoritative PATCH response to confirm monitor scheduling", async () => {
+    const skillBody = await fs.readFile(path.resolve("skills/paperclip/SKILL.md"), "utf8");
+
+    expect(skillBody).toContain("Use that request's default full response");
+    expect(skillBody).toContain("do not issue a confirming GET");
+    expect(skillBody).toContain("`monitorNextCheckAt` is non-null");
+    expect(skillBody).toContain("`assigneeAgentId` is set");
+    expect(skillBody).toContain("`assigneeUserId` is null");
+  });
+
   it("keeps the create-issue-interaction-ui guide as a maintainer-only skill", async () => {
     const skillPath = path.resolve(".agents/skills/create-issue-interaction-ui/SKILL.md");
     const skillBody = await fs.readFile(skillPath, "utf8");

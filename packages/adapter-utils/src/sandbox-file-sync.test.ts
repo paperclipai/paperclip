@@ -231,6 +231,108 @@ describe("sandbox native file sync", () => {
     expect(await readFile(path.join(prepared.assetDirs.creds, "cred.txt"), "utf8")).toBe("secret\n");
   });
 
+  it("stages each additional project into its own isolated dir via a native directory syncIn", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-native-additional-"));
+    cleanupDirs.push(rootDir);
+    const localWorkspaceDir = path.join(rootDir, "local-workspace");
+    const remoteWorkspaceDir = path.join(rootDir, "remote-workspace");
+    await mkdir(localWorkspaceDir, { recursive: true });
+    await writeFile(path.join(localWorkspaceDir, "README.md"), "anchor\n", "utf8");
+
+    // Three referenced projects, each with a distinctive file, staged as plain
+    // read-only trees.
+    const projects = [
+      { projectId: "alpha", localDir: path.join(rootDir, "src-alpha"), file: "alpha.txt", body: "alpha body\n" },
+      { projectId: "bravo", localDir: path.join(rootDir, "src-bravo"), file: "bravo.txt", body: "bravo body\n" },
+      { projectId: "charlie", localDir: path.join(rootDir, "src-charlie"), file: "charlie.txt", body: "charlie body\n" },
+    ];
+    for (const project of projects) {
+      await mkdir(project.localDir, { recursive: true });
+      await writeFile(path.join(project.localDir, project.file), project.body, "utf8");
+    }
+
+    const { client, syncInOps } = makeNativeClient();
+    const prepared = await prepareSandboxManagedRuntime({
+      spec: { transport: "sandbox", provider: "test", sandboxId: "s1", remoteCwd: remoteWorkspaceDir, timeoutMs: 30_000, apiKey: null },
+      adapterKey: "test-adapter",
+      client,
+      workspaceLocalDir: localWorkspaceDir,
+      additionalSources: projects.map((project) => ({ localPath: project.localDir, projectId: project.projectId })),
+    });
+
+    // Each project lands in its OWN `project-<projectId>` directory under the
+    // runtime root, and its file materializes there.
+    const projectDirs = projects.map((project) => {
+      const dir = prepared.additionalSourceDirs[project.projectId];
+      expect(dir).toBe(path.posix.join(prepared.runtimeRootDir, `project-${project.projectId}`));
+      return dir;
+    });
+    for (const [index, project] of projects.entries()) {
+      expect(await readFile(path.join(projectDirs[index], project.file), "utf8")).toBe(project.body);
+    }
+
+    // The target dirs are pairwise distinct and never nested inside one another.
+    for (const outer of projectDirs) {
+      for (const inner of projectDirs) {
+        if (outer === inner) continue;
+        expect(inner.startsWith(`${outer}/`)).toBe(false);
+      }
+    }
+
+    // Each project rides its own `syncIn` operation as a single `directory`
+    // mapping, source = the host checkout dir, target = the isolated project dir.
+    const inboundOps = syncInOps.flat();
+    for (const [index, project] of projects.entries()) {
+      const op = inboundOps.find((candidate) =>
+        candidate.files.some((mapping) => mapping.targetPath === projectDirs[index]),
+      );
+      expect(op).toBeDefined();
+      expect(op!.operationId).toMatch(/^sync-op-\d+$/);
+      expect(op!.operationId).not.toContain(project.projectId);
+      expect(op!.files).toHaveLength(1);
+      expect(op!.files[0]).toMatchObject({
+        sourcePath: project.localDir,
+        targetPath: projectDirs[index],
+        kind: "directory",
+      });
+      // Plain read-only tree — no post-upload extract/wipe/merge command.
+      expect(op!.postUploadCommands ?? []).toHaveLength(0);
+    }
+  });
+
+  it("isolates one additional project's sync failure and stages the rest", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-native-additional-fail-"));
+    cleanupDirs.push(rootDir);
+    const localWorkspaceDir = path.join(rootDir, "local-workspace");
+    const remoteWorkspaceDir = path.join(rootDir, "remote-workspace");
+    const goodDir = path.join(rootDir, "src-good");
+    await mkdir(localWorkspaceDir, { recursive: true });
+    await mkdir(goodDir, { recursive: true });
+    await writeFile(path.join(localWorkspaceDir, "README.md"), "anchor\n", "utf8");
+    await writeFile(path.join(goodDir, "good.txt"), "good body\n", "utf8");
+
+    // The middle source points at a directory that does not exist, so its native
+    // transfer fails. Failure isolation must skip only it and stage the rest.
+    const { client } = makeNativeClient();
+    const prepared = await prepareSandboxManagedRuntime({
+      spec: { transport: "sandbox", provider: "test", sandboxId: "s1", remoteCwd: remoteWorkspaceDir, timeoutMs: 30_000, apiKey: null },
+      adapterKey: "test-adapter",
+      client,
+      workspaceLocalDir: localWorkspaceDir,
+      additionalSources: [
+        { localPath: goodDir, projectId: "good-a" },
+        { localPath: path.join(rootDir, "does-not-exist"), projectId: "broken" },
+        { localPath: goodDir, projectId: "good-b" },
+      ],
+    });
+
+    // Both healthy projects staged; the broken one is absent, not fatal.
+    expect(Object.keys(prepared.additionalSourceDirs).sort()).toEqual(["good-a", "good-b"]);
+    expect(prepared.additionalSourceDirs.broken).toBeUndefined();
+    expect(await readFile(path.join(prepared.additionalSourceDirs["good-a"], "good.txt"), "utf8")).toBe("good body\n");
+    expect(await readFile(path.join(prepared.additionalSourceDirs["good-b"], "good.txt"), "utf8")).toBe("good body\n");
+  });
+
   it("dereferences symlinks only when followSymlinks is true (native honors the flag)", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-native-symlink-"));
     cleanupDirs.push(rootDir);

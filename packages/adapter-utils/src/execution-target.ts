@@ -14,6 +14,14 @@ import {
   prepareRemoteManagedRuntime,
   remoteExecutionSessionMatches,
 } from "./remote-managed-runtime.js";
+import type {
+  AdditionalSourceStagingFailure,
+  SandboxAdditionalSource,
+} from "./sandbox-managed-runtime.js";
+export type {
+  AdditionalSourceStagingFailure,
+  SandboxAdditionalSource,
+} from "./sandbox-managed-runtime.js";
 import {
   createCommandManagedSandboxCallbackBridgeQueueClient,
   createSandboxCallbackBridgeAsset,
@@ -114,6 +122,18 @@ export interface PreparedAdapterExecutionTargetRuntime {
   workspaceRemoteDir: string | null;
   runtimeRootDir: string | null;
   assetDirs: Record<string, string>;
+  /**
+   * Remote directory of each additional (referenced) project that staged
+   * successfully, keyed by `projectId`. Empty for a local target or when no
+   * additional sources were requested.
+   */
+  additionalSourceDirs: Record<string, string>;
+  /**
+   * Each additional (referenced) project whose staging failed, paired with the
+   * failure message. Empty for a local target, for a transport that does not
+   * stage referenced projects, or when every requested project staged.
+   */
+  additionalSourceFailures: AdditionalSourceStagingFailure[];
   restoreWorkspace(onProgress?: RuntimeProgressSink): Promise<void>;
 }
 
@@ -1107,6 +1127,8 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
   workspaceExclude?: string[];
   preserveAbsentOnRestore?: string[];
   assets?: AdapterManagedRuntimeAsset[];
+  /** Referenced (additional) projects to stage into the sandbox as plain, read-only trees. */
+  additionalSources?: SandboxAdditionalSource[];
   installCommand?: string | null;
   /** When provided alongside `installCommand`, skip the install if the binary is already on PATH. */
   detectCommand?: string | null;
@@ -1124,6 +1146,8 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
       workspaceRemoteDir: null,
       runtimeRootDir: null,
       assetDirs: {},
+      additionalSourceDirs: {},
+      additionalSourceFailures: [],
       restoreWorkspace: async () => {},
     };
   }
@@ -1137,6 +1161,7 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
       workspaceRemoteDir: input.workspaceRemoteDir,
       syncWorkspace: input.syncWorkspace,
       assets: input.assets,
+      additionalSources: input.additionalSources,
       onProgress: input.onProgress,
     });
     return {
@@ -1144,6 +1169,10 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
       workspaceRemoteDir: prepared.workspaceRemoteDir,
       runtimeRootDir: prepared.runtimeRootDir,
       assetDirs: prepared.assetDirs,
+      additionalSourceDirs: prepared.additionalSourceDirs,
+      // The SSH transport does not stage referenced projects (it is out of scope), so it never
+      // reports a per-project staging failure.
+      additionalSourceFailures: [],
       restoreWorkspace: prepared.restoreWorkspace,
     };
   }
@@ -1167,6 +1196,7 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
     workspaceExclude: input.workspaceExclude,
     preserveAbsentOnRestore: input.preserveAbsentOnRestore,
     assets: input.assets,
+    additionalSources: input.additionalSources,
     installCommand: input.installCommand,
     detectCommand: input.detectCommand,
     onProgress: input.onProgress,
@@ -1177,6 +1207,8 @@ export async function prepareAdapterExecutionTargetRuntime(input: {
     workspaceRemoteDir: prepared.workspaceRemoteDir,
     runtimeRootDir: prepared.runtimeRootDir,
     assetDirs: prepared.assetDirs,
+    additionalSourceDirs: prepared.additionalSourceDirs,
+    additionalSourceFailures: prepared.additionalSourceFailures,
     restoreWorkspace: prepared.restoreWorkspace,
   };
 }
@@ -1363,8 +1395,9 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
     shellCommand,
   });
 
-  await client.makeDir(stdinDir);
-  await client.makeDir(eventsDir);
+  // The launch exec below re-creates stdinDir and eventsDir with one `mkdir -p`,
+  // and the remote script also creates them on start. No reader touches the two
+  // directories before the launch exec runs, so upfront makeDir execs are redundant.
   await syncProcessSessionRemoteScript({
     runner,
     remoteCwd: target.remoteCwd,

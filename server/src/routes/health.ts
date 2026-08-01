@@ -121,14 +121,19 @@ export function healthRoutes(
     // enableServerInfoDebugView experimental flag gates the UI surface, not this
     // already access-controlled field.
     const serverInfo = opts.serverInfo ?? getServerInfoSnapshot();
+    // The build commit is a plain git SHA of a public repository — not a
+    // secret — so it is surfaced on every response, including the redacted
+    // one, unlike the fuller `serverInfo` block. Deploy tooling (and anyone)
+    // can read which commit this server is running without authenticating.
+    const commit = serverInfo.git.available ? serverInfo.git.fullSha : null;
     const exposeDevServerDetails =
       exposeFullDetails || hasDevServerStatusToken(req.get("x-paperclip-dev-server-status-token"));
 
     if (!db) {
       res.json(
         exposeFullDetails
-          ? { status: "ok", version: serverVersion, serverVersion: serverVersion, serverInfo }
-          : { status: "ok", deploymentMode: opts.deploymentMode },
+          ? { status: "ok", version: serverVersion, serverVersion: serverVersion, commit, serverInfo }
+          : { status: "ok", deploymentMode: opts.deploymentMode, commit },
       );
       return;
     }
@@ -141,6 +146,7 @@ export function healthRoutes(
         status: "unhealthy",
         version: serverVersion,
         serverVersion,
+        commit,
         error: "database_unreachable",
         ...(exposeFullDetails ? { serverInfo } : {}),
       });
@@ -210,6 +216,7 @@ export function healthRoutes(
         status: "ok",
         deploymentMode: opts.deploymentMode,
         deploymentExposure: opts.deploymentExposure,
+        commit,
         bootstrapStatus,
         bootstrapInviteActive,
         ...(redactedDatabaseBackup ? { databaseBackup: redactedDatabaseBackup } : {}),
@@ -223,6 +230,7 @@ export function healthRoutes(
       status: "ok",
       version: serverVersion,
       serverVersion,
+      commit,
       deploymentMode: opts.deploymentMode,
       deploymentExposure: opts.deploymentExposure,
       authReady: opts.authReady,

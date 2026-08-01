@@ -9,6 +9,7 @@ import type {
   FeedbackTrace,
   FeedbackVote,
   Issue,
+  IssueChanges,
   IssueAttachment,
   IssueCostSummary,
   IssueComment,
@@ -30,6 +31,8 @@ import { api, type RequestOptions } from "./client";
 
 export type IssueUpdateResponse = Issue & {
   comment?: IssueComment | null;
+  changes: IssueChanges;
+  blockedByIssueIds?: string[];
 };
 
 export type ResolveRecoveryActionResponse = {

@@ -438,6 +438,7 @@ describe("sandbox callback bridge", () => {
       const worker = await startSandboxCallbackBridgeWorker({
         client: {
           makeDir: async () => {},
+          makeDirs: async () => {},
           listJsonFiles: async () => {
             throw new Error(
               "list /remote/.paperclip-runtime/gemini/paperclip-bridge/queue/requests failed with exit code 255: kex_exchange_identification: read: Connection reset by peer",
@@ -1113,5 +1114,111 @@ describe("sandbox callback bridge", () => {
         PAPERCLIP_SANDBOX_EXEC_CHANNEL: "bridge",
       },
     }));
+  });
+
+  it("creates the bridge queue directories in one directory-creation exec", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-makedirs-"));
+    cleanupDirs.push(rootDir);
+
+    const queueDir = path.posix.join(rootDir, "queue");
+    const directories = sandboxCallbackBridgeDirectories(queueDir);
+    const makeDir = vi.fn(async () => {});
+    const makeDirs = vi.fn(async () => {});
+
+    const worker = await startSandboxCallbackBridgeWorker({
+      client: {
+        makeDir,
+        makeDirs,
+        listJsonFiles: async () => [],
+        readTextFile: async () => {
+          throw new Error("unexpected readTextFile");
+        },
+        writeTextFile: async () => {},
+        rename: async () => {},
+        remove: async () => {},
+      },
+      queueDir,
+      authorizeRequest: async () => null,
+      handleRequest: async () => ({ status: 200, body: "ok" }),
+    });
+
+    await worker.stop();
+
+    expect(makeDir).not.toHaveBeenCalled();
+    expect(makeDirs).toHaveBeenCalledTimes(1);
+    expect(makeDirs).toHaveBeenCalledWith([
+      directories.rootDir,
+      directories.requestsDir,
+      directories.responsesDir,
+      directories.logsDir,
+    ]);
+  });
+
+  it("falls back to sequential makeDir when the queue client omits makeDirs", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-makedir-fallback-"));
+    cleanupDirs.push(rootDir);
+
+    const queueDir = path.posix.join(rootDir, "queue");
+    const directories = sandboxCallbackBridgeDirectories(queueDir);
+    const makeDir = vi.fn(async (_remotePath: string) => {});
+
+    // A queue client that predates the batched makeDirs method. The worker
+    // must still create every queue directory through sequential makeDir.
+    const worker = await startSandboxCallbackBridgeWorker({
+      client: {
+        makeDir,
+        listJsonFiles: async () => [],
+        readTextFile: async () => {
+          throw new Error("unexpected readTextFile");
+        },
+        writeTextFile: async () => {},
+        rename: async () => {},
+        remove: async () => {},
+      },
+      queueDir,
+      authorizeRequest: async () => null,
+      handleRequest: async () => ({ status: 200, body: "ok" }),
+    });
+
+    await worker.stop();
+
+    expect(makeDir.mock.calls.map((call) => call[0])).toEqual([
+      directories.rootDir,
+      directories.requestsDir,
+      directories.responsesDir,
+      directories.logsDir,
+    ]);
+  });
+
+  it("runs one mkdir -p exec for makeDirs on the command-managed queue client", async () => {
+    const runner = {
+      execute: vi.fn(async (_input: { args?: string[] }) => ({
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        stdout: "",
+        stderr: "",
+        pid: null,
+        startedAt: new Date().toISOString(),
+      })),
+    };
+
+    const client = createCommandManagedSandboxCallbackBridgeQueueClient({
+      runner,
+      remoteCwd: "/workspace",
+      timeoutMs: 30_000,
+    });
+
+    // The command-managed client always provides the batched makeDirs method.
+    expect(client.makeDirs).toBeDefined();
+    await client.makeDirs?.(["/workspace/a", "/workspace/b", "/workspace/c"]);
+
+    expect(runner.execute).toHaveBeenCalledTimes(1);
+    const call = runner.execute.mock.calls[0][0];
+    const script = call.args?.[call.args.length - 1] ?? "";
+    expect(script).toContain("mkdir -p");
+    expect(script).toContain("/workspace/a");
+    expect(script).toContain("/workspace/b");
+    expect(script).toContain("/workspace/c");
   });
 });

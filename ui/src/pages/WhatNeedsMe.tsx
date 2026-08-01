@@ -84,6 +84,14 @@ export function WhatNeedsMe() {
   const { setBreadcrumbs } = useBreadcrumbs();
   const [expandedId, setExpandedId] = useState<string | null>(null);
   const [selectedAttentionId, setSelectedAttentionId] = useState<string | null>(null);
+  // How the current selection was made. The selection ring is the keyboard
+  // cursor — it marks the row that j/k, e, x and s will act on — so it is drawn
+  // only for a keyboard-driven selection. Clicking used to set it too, which
+  // put a ring around the card for no reason the operator could act on, and
+  // only ever on rows with a See more/less toggle to click (the toggle is what
+  // set it), so the queue looked arbitrarily inconsistent. The selection itself
+  // still follows a click, so keyboard actions target the row you just used.
+  const [selectionFromKeyboard, setSelectionFromKeyboard] = useState(false);
   const [autoExpandDone, setAutoExpandDone] = useState(false);
   // Decision-training drawer target. `null` when closed.
   const [trainingItem, setTrainingItem] = useState<AttentionItem | null>(null);
@@ -272,6 +280,7 @@ export function WhatNeedsMe() {
   useEffect(() => {
     if (selectedAttentionId && !keyboardItems.some((item) => item.id === selectedAttentionId)) {
       setSelectedAttentionId(null);
+      setSelectionFromKeyboard(false);
     }
   }, [keyboardItems, selectedAttentionId]);
 
@@ -360,6 +369,7 @@ export function WhatNeedsMe() {
   );
   const handleToggleExpand = useCallback((item: AttentionItem) => {
     setSelectedAttentionId(item.id);
+    setSelectionFromKeyboard(false);
     setExpandedId((prev) => (prev === item.id ? null : item.id));
   }, []);
   const handleTrain = useCallback((item: AttentionItem) => {
@@ -390,6 +400,7 @@ export function WhatNeedsMe() {
             : keyboardItems.length - 1
           : (currentIndex + offset + keyboardItems.length) % keyboardItems.length;
         setSelectedAttentionId(keyboardItems[nextIndex]?.id ?? null);
+        setSelectionFromKeyboard(true);
         return;
       }
 
@@ -559,7 +570,7 @@ export function WhatNeedsMe() {
                     />
                   )}
                   {!collapsed && (
-                    <div className="space-y-2">
+                    <div className="space-y-4">
                       {(renderPlan.groupRows.get(group.key) ?? []).map((item) => (
                         <AttentionQueueRow
                           key={item.id}
@@ -572,7 +583,7 @@ export function WhatNeedsMe() {
                           onTrain={handleTrain}
                           agentMap={agentMap}
                           currentUserId={currentUserId}
-                          selected={selectedAttentionId === item.id}
+                          selected={selectionFromKeyboard && selectedAttentionId === item.id}
                         />
                       ))}
                     </div>
@@ -799,7 +810,7 @@ function Curtain({
         onToggle={onToggle}
         className="text-muted-foreground"
       />
-      {open && <div className="space-y-2">{children}</div>}
+      {open && <div className="space-y-4">{children}</div>}
     </section>
   );
 }

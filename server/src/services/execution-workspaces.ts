@@ -37,6 +37,7 @@ import { readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-c
 import {
   listCurrentRuntimeServicesForExecutionWorkspaces,
   listCurrentRuntimeServicesForProjectWorkspaces,
+  selectConfiguredRuntimeServiceRows,
 } from "./workspace-runtime-read-model.js";
 
 type ExecutionWorkspaceRow = typeof executionWorkspaces.$inferSelect;
@@ -56,6 +57,8 @@ export type ExecutionWorkspaceBranchReconcileActor = {
   runId: string | null;
 };
 
+export type ExecutionWorkspaceBranchRefResolution = "resolved" | "missing" | "error";
+
 export type ExecutionWorkspaceBranchReconcileInspection = {
   fingerprint: string;
   worktreePath: string;
@@ -64,6 +67,8 @@ export type ExecutionWorkspaceBranchReconcileInspection = {
   toBranch: string;
   fromSha: string | null;
   toSha: string | null;
+  fromBranchRefStatus: ExecutionWorkspaceBranchRefResolution;
+  toBranchRefStatus: ExecutionWorkspaceBranchRefResolution;
   ancestryVerdict: GitWorktreeBranchAncestryVerdict;
   cleanliness: "clean" | "dirty" | "unknown";
   statusEntryCount: number | null;
@@ -224,6 +229,24 @@ function fingerprintWorkspaceBranchIncoherence(input: {
   return `workspace_incoherence:v1:sha256:${digest}`;
 }
 
+async function resolveLocalBranchCommit(
+  repoRoot: string,
+  branch: string,
+): Promise<{ status: ExecutionWorkspaceBranchRefResolution; sha: string | null }> {
+  try {
+    // --quiet makes an absent ref exit 1 with empty output instead of exiting
+    // 128 with a fatal message, so a missing branch stays distinguishable from
+    // git failing to inspect the repository at all.
+    const sha = await readGitStdout(["rev-parse", "--verify", "--quiet", `refs/heads/${branch}^{commit}`], repoRoot);
+    return sha ? { status: "resolved", sha } : { status: "missing", sha: null };
+  } catch (error) {
+    const code = typeof error === "object" && error && "code" in error
+      ? (error as { code?: unknown }).code
+      : null;
+    return { status: code === 1 ? "missing" : "error", sha: null };
+  }
+}
+
 async function getGitWorktreeBranchAncestryVerdict(input: {
   repoRoot: string;
   expectedHeadSha: string | null;
@@ -296,8 +319,9 @@ async function inspectExecutionWorkspaceBranchForReconcile(
   const cleanliness: ExecutionWorkspaceBranchReconcileInspection["cleanliness"] =
     status === null ? "unknown" : status.trim().length > 0 ? "dirty" : "clean";
 
-  const fromSha = await readGitStdout(["rev-parse", "--verify", `refs/heads/${fromBranch}^{commit}`], repoRoot)
-    .catch(() => null);
+  const fromRef = await resolveLocalBranchCommit(repoRoot, fromBranch);
+  const toRef = await resolveLocalBranchCommit(repoRoot, toBranch);
+  const fromSha = fromRef.sha;
   const toSha = await readGitStdout(["rev-parse", "HEAD"], worktreePath).catch(() => null);
   const ancestryVerdict = await getGitWorktreeBranchAncestryVerdict({
     repoRoot,
@@ -322,6 +346,8 @@ async function inspectExecutionWorkspaceBranchForReconcile(
     toBranch,
     fromSha,
     toSha,
+    fromBranchRefStatus: fromRef.status,
+    toBranchRefStatus: toRef.status,
     ancestryVerdict,
     cleanliness,
     statusEntryCount: statusLines?.length ?? null,
@@ -727,7 +753,9 @@ export function mergeExecutionWorkspaceConfig(
   return Object.keys(nextMetadata).length > 0 ? nextMetadata : null;
 }
 
-function toRuntimeService(row: WorkspaceRuntimeServiceRow): WorkspaceRuntimeService {
+function toRuntimeService(
+  row: WorkspaceRuntimeServiceRow & { configIndex?: number | null },
+): WorkspaceRuntimeService {
   return {
     id: row.id,
     companyId: row.companyId,
@@ -754,6 +782,7 @@ function toRuntimeService(row: WorkspaceRuntimeServiceRow): WorkspaceRuntimeServ
     stoppedAt: row.stoppedAt ?? null,
     stopPolicy: (row.stopPolicy as Record<string, unknown> | null) ?? null,
     healthStatus: row.healthStatus as WorkspaceRuntimeService["healthStatus"],
+    configIndex: row.configIndex ?? null,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
   };
@@ -851,8 +880,13 @@ function noActiveRuntimeServicesForWorkspaceCondition(row: ExecutionWorkspaceRow
   const activeServiceConditions = inheritedProjectWorkspaceId
     ? and(
         eq(workspaceRuntimeServices.companyId, row.companyId),
-        eq(workspaceRuntimeServices.projectWorkspaceId, inheritedProjectWorkspaceId),
-        eq(workspaceRuntimeServices.scopeType, "project_workspace"),
+        or(
+          and(
+            eq(workspaceRuntimeServices.projectWorkspaceId, inheritedProjectWorkspaceId),
+            eq(workspaceRuntimeServices.scopeType, "project_workspace"),
+          ),
+          eq(workspaceRuntimeServices.executionWorkspaceId, row.id),
+        ),
         ne(workspaceRuntimeServices.status, "stopped"),
       )
     : and(
@@ -868,28 +902,77 @@ async function loadEffectiveRuntimeServicesByExecutionWorkspace(
   companyId: string,
   rows: ExecutionWorkspaceRow[],
 ) {
-  const executionRuntimeServices = await listCurrentRuntimeServicesForExecutionWorkspaces(
-    db,
-    companyId,
-    rows.map((row) => row.id),
-  );
-  const projectWorkspaceIds = rows
-    .filter((row) => usesInheritedProjectRuntimeServices(row))
+  const inheritedRows = rows.filter((row) => usesInheritedProjectRuntimeServices(row));
+  const projectWorkspaceIds = inheritedRows
     .map((row) => row.projectWorkspaceId)
     .filter((value): value is string => Boolean(value));
-  const projectRuntimeServices = await listCurrentRuntimeServicesForProjectWorkspaces(
-    db,
-    companyId,
-    [...new Set(projectWorkspaceIds)],
+  const uniqueProjectWorkspaceIds = [...new Set(projectWorkspaceIds)];
+  const [executionRuntimeServices, projectRuntimeServices, projectWorkspaceRows] = await Promise.all([
+    listCurrentRuntimeServicesForExecutionWorkspaces(
+      db,
+      companyId,
+      rows.map((row) => row.id),
+    ),
+    listCurrentRuntimeServicesForProjectWorkspaces(
+      db,
+      companyId,
+      uniqueProjectWorkspaceIds,
+    ),
+    uniqueProjectWorkspaceIds.length > 0
+      ? db
+          .select({
+            id: projectWorkspaces.id,
+            metadata: projectWorkspaces.metadata,
+          })
+          .from(projectWorkspaces)
+          .where(
+            and(
+              eq(projectWorkspaces.companyId, companyId),
+              inArray(projectWorkspaces.id, uniqueProjectWorkspaceIds),
+            ),
+          )
+      : Promise.resolve([]),
+  ]);
+  const projectRuntimeConfigByWorkspaceId = new Map(
+    projectWorkspaceRows.map((row) => [
+      row.id,
+      readProjectWorkspaceRuntimeConfig((row.metadata as Record<string, unknown> | null) ?? null)?.workspaceRuntime
+        ?? null,
+    ]),
+  );
+  const effectiveProjectRuntimeServices = new Map(
+    uniqueProjectWorkspaceIds.map((projectWorkspaceId) => [
+      projectWorkspaceId,
+      selectConfiguredRuntimeServiceRows(
+        projectRuntimeServices.get(projectWorkspaceId) ?? [],
+        projectRuntimeConfigByWorkspaceId.get(projectWorkspaceId) ?? null,
+      ),
+    ]),
   );
 
   return new Map(
-    rows.map((row) => [
-      row.id,
-      usesInheritedProjectRuntimeServices(row)
-        ? (projectRuntimeServices.get(row.projectWorkspaceId!) ?? [])
-        : (executionRuntimeServices.get(row.id) ?? []),
-    ]),
+    rows.map((row) => {
+      if (!usesInheritedProjectRuntimeServices(row)) {
+        return [row.id, executionRuntimeServices.get(row.id) ?? []] as const;
+      }
+
+      const workspaceRuntime = projectRuntimeConfigByWorkspaceId.get(row.projectWorkspaceId!) ?? null;
+      const executionScopedRows = selectConfiguredRuntimeServiceRows(
+        (executionRuntimeServices.get(row.id) ?? []).filter(
+          (runtimeService) => runtimeService.scopeType !== "project_workspace",
+        ),
+        workspaceRuntime,
+      );
+      const effectiveRows = [
+        ...(effectiveProjectRuntimeServices.get(row.projectWorkspaceId!) ?? []),
+        ...executionScopedRows,
+      ].sort(
+        (left, right) =>
+          (left.configIndex ?? Number.MAX_SAFE_INTEGER) -
+          (right.configIndex ?? Number.MAX_SAFE_INTEGER),
+      );
+      return [row.id, effectiveRows] as const;
+    }),
   );
 }
 
@@ -1627,7 +1710,18 @@ export function executionWorkspaceService(db: Db) {
       }
 
       const inspection = await inspectExecutionWorkspaceBranchForReconcile(existing);
-      if (input.mode === "forward" && inspection.ancestryVerdict !== "ancestor") {
+      // A recorded branch whose ref is confirmed absent (not merely unreadable)
+      // has nothing to lose, so adopting the clean checked-out branch is
+      // trivially forward-only — provided the adopted branch's own local ref
+      // resolves, so a nonexistent branch name is never persisted.
+      const recordedBranchAdoptable =
+        inspection.fromBranchRefStatus === "missing" &&
+        inspection.toBranchRefStatus === "resolved";
+      if (
+        input.mode === "forward" &&
+        inspection.ancestryVerdict !== "ancestor" &&
+        !(recordedBranchAdoptable && inspection.cleanliness === "clean")
+      ) {
         throw unprocessable(
           "Forward branch reconciliation requires the recorded branch to be an ancestor of the checked-out branch",
           { inspection },
@@ -1702,8 +1796,13 @@ export function executionWorkspaceService(db: Db) {
             usesInheritedProjectRuntimeServices(lockedRow)
               ? and(
                   eq(workspaceRuntimeServices.companyId, lockedRow.companyId),
-                  eq(workspaceRuntimeServices.projectWorkspaceId, lockedRow.projectWorkspaceId!),
-                  eq(workspaceRuntimeServices.scopeType, "project_workspace"),
+                  or(
+                    and(
+                      eq(workspaceRuntimeServices.projectWorkspaceId, lockedRow.projectWorkspaceId!),
+                      eq(workspaceRuntimeServices.scopeType, "project_workspace"),
+                    ),
+                    eq(workspaceRuntimeServices.executionWorkspaceId, lockedRow.id),
+                  ),
                 )
               : and(
                   eq(workspaceRuntimeServices.companyId, lockedRow.companyId),

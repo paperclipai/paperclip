@@ -1359,6 +1359,13 @@
       "when": 1785170000001,
       "tag": "0195_built_in_agent_unique_marker",
       "breakpoints": true
+    },
+    {
+      "idx": 196,
+      "version": "7",
+      "when": 1785170001001,
+      "tag": "0196_drop_cloud_upstream_tables",
+      "breakpoints": true
     }
   ]
 }

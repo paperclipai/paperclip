@@ -11,16 +11,16 @@
 import type { ReactNode } from "react";
 import { flushSync } from "react-dom";
 import { createRoot } from "react-dom/client";
-import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
-import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { App } from "./App";
 
 // jsdom's CSS parser rejects the custom-property marker rule stitches inserts
 // (`--sxs{--sxs:N}`), pulled into <App>'s eager import graph transitively via
 // @codesandbox/sandpack-react. Substitute a benign, valid rule on parse failure
 // so stitches' index bookkeeping stays intact and the module graph evaluates.
 // (sandpack itself is never exercised by the routing under test.)
-beforeAll(() => {
+vi.hoisted(() => {
   const sheetProto = window.CSSStyleSheet.prototype as unknown as {
     insertRule: (rule: string, index?: number) => number;
     __pap13002Patched?: boolean;
@@ -64,16 +64,12 @@ vi.mock("./components/OnboardingWizardVariant", () => ({
 vi.mock("./pages/Cases", () => ({ Cases: () => <div>CASES_LIST_PAGE</div> }));
 vi.mock("./pages/CaseDetail", () => ({ CaseDetail: () => <div>CASE_DETAIL_PAGE</div> }));
 
-// CloudAccessGate must fall through to <Outlet/> (authorized w/ company access).
-const mockHealthApi = vi.hoisted(() => ({ get: vi.fn() }));
-const mockAuthApi = vi.hoisted(() => ({ getSession: vi.fn() }));
-const mockAccessApi = vi.hoisted(() => ({
-  getCurrentBoardAccess: vi.fn(),
-  claimBootstrapAdmin: vi.fn(),
-}));
-vi.mock("./api/health", () => ({ healthApi: mockHealthApi }));
-vi.mock("./api/auth", () => ({ authApi: mockAuthApi }));
-vi.mock("./api/access", () => ({ accessApi: mockAccessApi }));
+// Cloud access is unrelated to the route-table regression. Let it fall through
+// synchronously so this test does not poll its three query transitions.
+vi.mock("./components/CloudAccessGate", async () => {
+  const { Outlet } = await import("react-router-dom");
+  return { CloudAccessGate: () => <Outlet /> };
+});
 
 // The prefix resolver + redirect logic both read the active company.
 const PAP_COMPANY = {
@@ -92,36 +88,24 @@ vi.mock("./context/CompanyContext", () => ({
   CompanyProvider: ({ children }: { children: ReactNode }) => <>{children}</>,
 }));
 
-async function flushReact() {
-  for (let i = 0; i < 20; i += 1) {
-    await Promise.resolve();
-    await new Promise((resolve) => window.setTimeout(resolve, 0));
-  }
-  flushSync(() => {});
-}
-
-async function waitForText(container: HTMLElement, text: string) {
-  for (let attempt = 0; attempt < 25; attempt += 1) {
-    if (container.textContent?.includes(text)) return;
-    await flushReact();
-  }
-  expect(container.textContent).toContain(text);
-}
-
 async function renderAppAt(container: HTMLElement, path: string) {
-  const { App } = await import("./App");
   const root = createRoot(container);
-  const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
   flushSync(() => {
     root.render(
-      <QueryClientProvider client={queryClient}>
-        <MemoryRouter initialEntries={[path]}>
-          <App />
-        </MemoryRouter>
-      </QueryClientProvider>,
+      <MemoryRouter initialEntries={[path]}>
+        <App />
+      </MemoryRouter>,
     );
   });
   return root;
+}
+
+async function waitForRoute(container: HTMLElement, text: string) {
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    if (container.textContent?.includes(text)) return;
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+  }
+  expect(container.textContent).toContain(text);
 }
 
 describe("App Cases routing (PAP-13002)", () => {
@@ -130,24 +114,6 @@ describe("App Cases routing (PAP-13002)", () => {
   beforeEach(() => {
     container = document.createElement("div");
     document.body.appendChild(container);
-    mockHealthApi.get.mockResolvedValue({
-      status: "ok",
-      deploymentMode: "authenticated",
-      deploymentExposure: "private",
-      bootstrapStatus: "ready",
-    });
-    mockAuthApi.getSession.mockResolvedValue({
-      session: { id: "session-1", userId: "user-1" },
-      user: { id: "user-1", email: "user@example.com", name: "User", image: null },
-    });
-    mockAccessApi.getCurrentBoardAccess.mockResolvedValue({
-      user: { id: "user-1", email: "user@example.com", name: "User", image: null },
-      userId: "user-1",
-      isInstanceAdmin: false,
-      companyIds: [PAP_COMPANY.id],
-      source: "session",
-      keyId: null,
-    });
   });
 
   afterEach(() => {
@@ -158,15 +124,15 @@ describe("App Cases routing (PAP-13002)", () => {
 
   it("redirects unprefixed /cases to the company-prefixed list page", async () => {
     const root = await renderAppAt(container, "/cases");
-    await waitForText(container, "CASES_LIST_PAGE");
+    await waitForRoute(container, "CASES_LIST_PAGE");
     expect(container.textContent).not.toContain("No company matches prefix");
     flushSync(() => root.unmount());
-  }, 20000);
+  });
 
   it("redirects unprefixed /cases/:id to the company-prefixed detail page", async () => {
     const root = await renderAppAt(container, "/cases/PAP-C5");
-    await waitForText(container, "CASE_DETAIL_PAGE");
+    await waitForRoute(container, "CASE_DETAIL_PAGE");
     expect(container.textContent).not.toContain("No company matches prefix");
     flushSync(() => root.unmount());
-  }, 20000);
+  });
 });

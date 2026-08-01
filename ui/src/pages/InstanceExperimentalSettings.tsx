@@ -368,7 +368,6 @@ export function InstanceExperimentalSettings() {
   const enableExperimentalFileViewer =
     experimentalQuery.data?.enableExperimentalFileViewer === true;
   const enableTaskWatchdogs = experimentalQuery.data?.enableTaskWatchdogs === true;
-  const enableCloudSync = experimentalQuery.data?.enableCloudSync === true;
   const enableExternalObjects = experimentalQuery.data?.enableExternalObjects === true;
   const enableBuiltInAgents = experimentalQuery.data?.enableBuiltInAgents === true;
   const enableBetaSkills = experimentalQuery.data?.enableBetaSkills === true;
@@ -684,16 +683,6 @@ export function InstanceExperimentalSettings() {
         disabled={toggleMutation.isPending}
         managed={managedKeys.enableTaskWatchdogs}
         ariaLabel="Toggle task watchdogs experimental setting"
-      />
-
-      <ExperimentalToggleCard
-        title="Cloud Sync"
-        description="Show local Paperclip Cloud upstream connection, preview, push, retry, and activation review surfaces. Saved connections and run history are preserved when this is disabled."
-        checked={enableCloudSync}
-        onCheckedChange={(checked) => toggleMutation.mutate({ enableCloudSync: checked })}
-        disabled={toggleMutation.isPending}
-        managed={managedKeys.enableCloudSync}
-        ariaLabel="Toggle cloud sync experimental setting"
       />
 
       <ExperimentalToggleCard

@@ -576,6 +576,31 @@ async function blockingIssueMap(db: Db, companyId: string, blockedIssueIds: Arra
   return map;
 }
 
+/**
+ * The task that blocks `issue` — never `issue` itself.
+ *
+ * Both blocker_attention call sites used to fall back to the blocked task's own
+ * identity when no `blocks` relation was loaded, so every such row reported
+ * "PAP-23 — Blocked by PAP-23". The UI renders that as a real dependency, which
+ * tells an operator nothing and reads as a bug.
+ *
+ * Order: the loaded `blocks` relation, then an identifier sampled by
+ * blockerAttention, and otherwise nothing — a null lets the row fall back to
+ * its `whyNow` line, which is honest about not knowing the blocker.
+ */
+function resolveBlockingIssue(
+  issue: { id: string; identifier: string | null },
+  fromRelation: BlockingIssueSummary | undefined,
+  sampledIdentifier?: string | null,
+): BlockingIssueSummary | null {
+  // A self-referential relation row would be corrupt data; treat it as unknown.
+  if (fromRelation && fromRelation.id !== issue.id) return fromRelation;
+  if (sampledIdentifier && sampledIdentifier !== issue.identifier && sampledIdentifier !== issue.id) {
+    return { id: null, identifier: sampledIdentifier, title: null };
+  }
+  return null;
+}
+
 function readRunIssueId(contextSnapshot: Record<string, unknown> | null) {
   const issueId = contextSnapshot?.issueId ?? contextSnapshot?.taskId;
   return typeof issueId === "string" && issueId.length > 0 ? issueId : null;
@@ -948,15 +973,23 @@ export function attentionService(db: Db) {
             updatedAt: toIso(issue.updatedAt),
             relatedIssue: null,
             ...issueContext(issueSummary),
-            detail: { kind: "blocker", blockingIssue: { id: issue.id, identifier: issue.identifier, title: issue.title }, images: issueImages(blockedImageMap, issue.id) },
+            detail: {
+              kind: "blocker",
+              blockingIssue: resolveBlockingIssue(issue, blockingIssues.get(issue.id)),
+              images: issueImages(blockedImageMap, issue.id),
+            },
           }));
         }
         const blockerAttention = issue.blockerAttention;
         if (blockerAttention?.state !== "stalled" && blockerAttention?.state !== "needs_attention") continue;
         const issueSummary = blockedIssueSummaries.get(issue.id) ?? null;
         const summarizedIssue = issueSummary ?? issue;
-        const sample = blockerAttention.sampleStalledBlockerIdentifier ?? blockerAttention.sampleBlockerIdentifier ?? issue.identifier ?? issue.id;
-        const blockingIssue = blockingIssues.get(issue.id) ?? { id: null, identifier: sample, title: null };
+        const sampledBlocker = blockerAttention.sampleStalledBlockerIdentifier ?? blockerAttention.sampleBlockerIdentifier;
+        const blockingIssue = resolveBlockingIssue(issue, blockingIssues.get(issue.id), sampledBlocker);
+        // The dedup key keeps its original fallback chain (including the issue's
+        // own identifier) on purpose: it is the stable identity a dismissal is
+        // recorded against, so narrowing it would resurrect dismissed rows.
+        const sample = sampledBlocker ?? issue.identifier ?? issue.id;
         const dedupKey = `blocker:${issue.id}:${sample}`;
         add(createItem({
           companyId,

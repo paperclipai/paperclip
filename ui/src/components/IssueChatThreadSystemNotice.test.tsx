@@ -391,7 +391,9 @@ describe("IssueChatThread system notice routing", () => {
     expect(sourceLink?.textContent).toBe("Paperclip");
   });
 
-  it("keeps agent-authored comments as assistant bubbles even when presentation requests system_notice", () => {
+  it("routes agent-authored comments to the notice renderer when presentation requests system_notice", () => {
+    const owner = { id: "agent-1", name: "ClaudeCoder" } as unknown as Agent;
+    const agentMap = new Map<string, Agent>([[owner.id, owner]]);
     const comment: IssueChatComment = {
       id: "comment-agent-system",
       companyId: "company-1",
@@ -399,11 +401,166 @@ describe("IssueChatThread system notice routing", () => {
       authorType: "agent",
       authorAgentId: "agent-1",
       authorUserId: null,
+      runId: "run-owner",
+      runAgentId: "agent-1",
       body: "Reassigned to ClaudeFixer.",
       presentation: {
         kind: "system_notice",
         tone: "neutral",
-        title: null,
+        title: "Recovery reassignment",
+        detailsDefaultOpen: false,
+      },
+      metadata: null,
+      ...baseTimestamps,
+    };
+
+    renderThread([comment], { agentMap });
+
+    // No longer an assistant bubble — it collapses like a system notice.
+    expect(container.querySelector('[data-message-role="assistant"]')).toBeNull();
+    const row = container.querySelector('[data-message-role="system"]');
+    expect(row).not.toBeNull();
+    const status = row?.querySelector('[role="status"]');
+    expect(status?.getAttribute("aria-label")).toBe("Recovery reassignment");
+    // The real author's name + run link stay visible on the notice.
+    const sourceLink = status?.querySelector('a[href^="/agents/"]') as HTMLAnchorElement | null;
+    expect(sourceLink?.getAttribute("href")).toBe("/agents/agent-1/runs/run-owner");
+    expect(sourceLink?.textContent).toBe("ClaudeCoder");
+  });
+
+  it("collapses compact system notices to a single quiet row and expands to the full card", () => {
+    const comment: IssueChatComment = {
+      id: "comment-compact",
+      companyId: "company-1",
+      issueId: "issue-1",
+      authorType: "system",
+      authorAgentId: null,
+      authorUserId: null,
+      runId: "run-recovery",
+      runAgentId: "agent-codex",
+      body: "Recovery escalated to the CTO after repeated stalls.",
+      presentation: {
+        kind: "system_notice",
+        tone: "warning",
+        title: "Recovery escalated",
+        detailsDefaultOpen: false,
+        density: "compact",
+      },
+      metadata: {
+        version: 1,
+        sections: [
+          {
+            title: "Escalation",
+            rows: [{ type: "agent_link", label: "Owner", agentId: "agent-cto", name: "CTO" }],
+          },
+        ],
+      },
+      ...baseTimestamps,
+    };
+
+    renderThread([comment]);
+
+    const row = container.querySelector('[data-testid="compact-system-notice"]');
+    expect(row).not.toBeNull();
+    // Collapsed: title + timestamp + chevron visible, but body/card hidden.
+    expect(row?.textContent).toContain("Recovery escalated");
+    expect(row?.querySelector('[data-testid="compact-system-notice-time"]')).not.toBeNull();
+    expect(row?.querySelector(".lucide-chevron-down")).not.toBeNull();
+    const toggle = row?.querySelector("button[aria-expanded]") as HTMLButtonElement;
+    expect(toggle.getAttribute("aria-expanded")).toBe("false");
+    const detailsId = toggle.getAttribute("aria-controls");
+    const details = detailsId ? container.ownerDocument.getElementById(detailsId) : null;
+    expect(details).not.toBeNull();
+    expect(details).toHaveProperty("hidden", true);
+    // The full SystemNotice card lives inside the collapsed region.
+    expect(details?.querySelector('[role="status"]')).not.toBeNull();
+
+    act(() => {
+      toggle.click();
+    });
+
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    expect(details).toHaveProperty("hidden", false);
+    expect(details?.textContent).toContain("Recovery escalated to the CTO");
+  });
+
+  it("renders a compact notice already expanded when detailsDefaultOpen is true", () => {
+    const comment: IssueChatComment = {
+      id: "comment-compact-open",
+      companyId: "company-1",
+      issueId: "issue-1",
+      authorType: "system",
+      authorAgentId: null,
+      authorUserId: null,
+      body: "Recovery escalated to the CTO.",
+      presentation: {
+        kind: "system_notice",
+        tone: "danger",
+        title: "Recovery escalated",
+        detailsDefaultOpen: true,
+        density: "compact",
+      },
+      metadata: null,
+      ...baseTimestamps,
+    };
+
+    renderThread([comment]);
+
+    const row = container.querySelector('[data-testid="compact-system-notice"]');
+    expect(row).not.toBeNull();
+    const toggle = row?.querySelector("button[aria-expanded]") as HTMLButtonElement;
+    expect(toggle.getAttribute("aria-expanded")).toBe("true");
+    const detailsId = toggle.getAttribute("aria-controls");
+    const details = detailsId ? container.ownerDocument.getElementById(detailsId) : null;
+    expect(details).toHaveProperty("hidden", false);
+    expect(details?.querySelector('[role="status"]')).not.toBeNull();
+    expect(details?.textContent).toContain("Recovery escalated to the CTO.");
+  });
+
+  it("keeps the author visible on a compact agent-authored notice row", () => {
+    const owner = { id: "agent-1", name: "ClaudeCoder" } as unknown as Agent;
+    const agentMap = new Map<string, Agent>([[owner.id, owner]]);
+    const comment: IssueChatComment = {
+      id: "comment-compact-agent",
+      companyId: "company-1",
+      issueId: "issue-1",
+      authorType: "agent",
+      authorAgentId: "agent-1",
+      authorUserId: null,
+      body: "Picked this back up after the wake.",
+      presentation: {
+        kind: "system_notice",
+        tone: "neutral",
+        title: "Recovery owner update",
+        detailsDefaultOpen: false,
+        density: "compact",
+      },
+      metadata: null,
+      ...baseTimestamps,
+    };
+
+    renderThread([comment], { agentMap });
+
+    const row = container.querySelector('[data-testid="compact-system-notice"]');
+    expect(row).not.toBeNull();
+    expect(row?.textContent).toContain("Recovery owner update");
+    // Author name shows on the collapsed row itself.
+    expect(row?.querySelector("button[aria-expanded]")?.textContent).toContain("ClaudeCoder");
+  });
+
+  it("keeps notices without density rendering as the full card (graceful fallback)", () => {
+    const comment: IssueChatComment = {
+      id: "comment-no-density",
+      companyId: "company-1",
+      issueId: "issue-1",
+      authorType: "system",
+      authorAgentId: null,
+      authorUserId: null,
+      body: "Recovery completed.",
+      presentation: {
+        kind: "system_notice",
+        tone: "success",
+        title: "Recovery completed",
         detailsDefaultOpen: false,
       },
       metadata: null,
@@ -412,8 +569,11 @@ describe("IssueChatThread system notice routing", () => {
 
     renderThread([comment]);
 
-    expect(container.querySelector('[role="status"]')).toBeNull();
-    expect(container.querySelector('[data-message-role="assistant"]')).not.toBeNull();
+    expect(container.querySelector('[data-testid="compact-system-notice"]')).toBeNull();
+    const status = container.querySelector('[role="status"]');
+    expect(status?.getAttribute("aria-label")).toBe("Recovery completed");
+    // Body is visible immediately on the full card.
+    expect(status?.textContent).toContain("Recovery completed.");
   });
 
   it("folds stale successful-run disposition warnings into the activity log disclosure style", () => {

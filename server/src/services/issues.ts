@@ -1,5 +1,5 @@
 import { Buffer } from "node:buffer";
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { and, asc, desc, eq, gt, gte, inArray, isNull, like, lt, ne, notInArray, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -92,6 +92,12 @@ import { resolveIssueGoalId, resolveNextIssueGoalId } from "./issue-goal-fallbac
 import { getRunLogStore } from "./run-log-store.js";
 import { getDefaultCompanyGoal } from "./goals.js";
 import { assertAssignableAgent } from "./agent-assignability.js";
+import { insertRowsInChunks } from "./batch-insert.js";
+import type {
+  ImportIssueRow,
+  ImportIssueCommentRow,
+  ImportIssueAttachmentRow,
+} from "./import-write-types.js";
 import {
   summarizeIssueWatchdog,
   upsertIssueWatchdogForIssue,
@@ -110,6 +116,7 @@ import { visibleIssueCondition } from "./issue-visibility.js";
 import { finalizeStatusCardsForStalledGeneration } from "./status-card-finalization.js";
 import { finalizeSummarySlotsForTerminalIssue } from "./summary-slot-finalization.js";
 import { logActivity } from "./activity-log.js";
+import { buildIssueChanges } from "./issue-change-receipt.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
@@ -1017,14 +1024,20 @@ async function listPendingFinalizeBlockerIssueIds(
       and(
         eq(workspaceOperations.companyId, companyId),
         inArray(workspaceOperations.executionWorkspaceId, executionWorkspaceIds),
-        or(inArray(workspaceOperations.issueId, blockerIssueIds), isNull(workspaceOperations.issueId)),
       ),
     );
 
   const latestAttributedByBlockerWorkspace = new Map<string, { phase: string; status: string; startedAt: Date }>();
   const latestUnattributedByWorkspace = new Map<string, { phase: string; status: string; startedAt: Date }>();
+  const latestSuccessfulFinalizeByWorkspace = new Map<string, Date>();
   for (const row of rows) {
     if (!row.executionWorkspaceId) continue;
+    if (row.phase === "workspace_finalize" && row.status === "succeeded") {
+      const current = latestSuccessfulFinalizeByWorkspace.get(row.executionWorkspaceId);
+      if (!current || row.startedAt > current) {
+        latestSuccessfulFinalizeByWorkspace.set(row.executionWorkspaceId, row.startedAt);
+      }
+    }
     if (row.issueId) {
       const key = `${row.issueId}:${row.executionWorkspaceId}`;
       if (!blockerWorkspaceKeys.has(key)) continue;
@@ -1054,6 +1067,8 @@ async function listPendingFinalizeBlockerIssueIds(
       ?? latestUnattributedByWorkspace.get(pair.executionWorkspaceId);
     if (!latest) continue; // no ops recorded -> nothing to finalize for this blocker
     if (latest.phase === "workspace_finalize" && latest.status === "succeeded") continue;
+    const laterSuccessfulFinalize = latestSuccessfulFinalizeByWorkspace.get(pair.executionWorkspaceId);
+    if (laterSuccessfulFinalize && laterSuccessfulFinalize > latest.startedAt) continue;
     pending.add(pair.blockerIssueId);
   }
 
@@ -1216,6 +1231,34 @@ async function listIssueDependencyReadinessMap(
   }
 
   return readinessMap;
+}
+
+async function listUnresolvedBlockerDetails(
+  dbOrTx: Pick<Db, "select">,
+  companyId: string,
+  unresolvedBlockerIssueIds: string[],
+  pendingFinalizeBlockerIssueIds: string[] = [],
+) {
+  if (unresolvedBlockerIssueIds.length === 0) return [];
+  const pendingFinalizeIds = new Set(pendingFinalizeBlockerIssueIds);
+  const rows = await dbOrTx
+    .select({
+      issueId: issues.id,
+      identifier: issues.identifier,
+      title: issues.title,
+    })
+    .from(issues)
+    .where(and(eq(issues.companyId, companyId), inArray(issues.id, unresolvedBlockerIssueIds)));
+  const rowsById = new Map(rows.map((row) => [row.issueId, row]));
+  return unresolvedBlockerIssueIds.map((issueId) => {
+    const row = rowsById.get(issueId);
+    return {
+      issueId,
+      identifier: row?.identifier ?? null,
+      title: row?.title ?? null,
+      reason: pendingFinalizeIds.has(issueId) ? "pending_finalize" as const : "not_done" as const,
+    };
+  });
 }
 
 async function listUnresolvedBlockerIssueIds(
@@ -1925,6 +1968,7 @@ function createIssueBlockerAttention(input: Partial<IssueBlockerAttention> = {})
     coveredBlockerCount: input.coveredBlockerCount ?? 0,
     stalledBlockerCount: input.stalledBlockerCount ?? 0,
     attentionBlockerCount: input.attentionBlockerCount ?? 0,
+    pendingFinalizeBlockerIssueIds: input.pendingFinalizeBlockerIssueIds ?? [],
     sampleBlockerIdentifier: input.sampleBlockerIdentifier ?? null,
     sampleStalledBlockerIdentifier: input.sampleStalledBlockerIdentifier ?? null,
   };
@@ -2180,10 +2224,17 @@ async function listIssueBlockerAttentionMap(
 
   let frontier = roots.map((root) => root.id);
   let truncated = false;
+  const pendingFinalizeBlockerIssueIds = new Set<string>();
   for (let depth = 0; frontier.length > 0 && depth < BLOCKER_ATTENTION_MAX_DEPTH; depth += 1) {
     const nextFrontier = new Set<string>();
 
     for (const chunk of chunkList([...new Set(frontier)], ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE)) {
+      const readinessByIssueId = await listIssueDependencyReadinessMap(dbOrTx, companyId, chunk);
+      for (const readiness of readinessByIssueId.values()) {
+        for (const blockerIssueId of readiness.pendingFinalizeBlockerIssueIds) {
+          pendingFinalizeBlockerIssueIds.add(blockerIssueId);
+        }
+      }
       const explicitBlockerRowsPromise: Promise<IssueBlockerAttentionQueryRow[]> = dbOrTx
         .select({
           issueId: issueRelations.relatedIssueId,
@@ -2206,7 +2257,6 @@ async function listIssueBlockerAttentionMap(
             eq(issueRelations.type, "blocks"),
             inArray(issueRelations.relatedIssueId, chunk),
             eq(issues.companyId, companyId),
-            ne(issues.status, "done"),
           ),
         );
       const childRowsPromise: Promise<IssueBlockerAttentionQueryRow[]> = dbOrTx
@@ -2236,8 +2286,11 @@ async function listIssueBlockerAttentionMap(
         childRowsPromise,
       ]);
 
+      const unresolvedExplicitBlockerRows = explicitBlockerRows.filter(
+        (row) => row.status !== "done" || pendingFinalizeBlockerIssueIds.has(row.blockerIssueId),
+      );
       appendBlockerAttentionEdges(edgesByIssueId, [
-        ...explicitBlockerRows
+        ...unresolvedExplicitBlockerRows
           .filter((row): row is IssueBlockerAttentionQueryRow & { issueId: string } => row.issueId !== null)
           .map((row) => ({ issueId: row.issueId, blockerIssueId: row.blockerIssueId })),
         ...childRows
@@ -2245,7 +2298,7 @@ async function listIssueBlockerAttentionMap(
           .map((row) => ({ issueId: row.issueId, blockerIssueId: row.blockerIssueId })),
       ]);
 
-      for (const row of [...explicitBlockerRows, ...childRows]) {
+      for (const row of [...unresolvedExplicitBlockerRows, ...childRows]) {
         if (!row.issueId || nodesById.has(row.blockerIssueId)) continue;
         nodesById.set(row.blockerIssueId, {
           id: row.blockerIssueId,
@@ -2417,7 +2470,7 @@ async function listIssueBlockerAttentionMap(
       return { covered: false, stalled: false, sampleBlockerIdentifier: nodeId, sampleStalledBlockerIdentifier: null };
     }
     const nodeSample = blockerSampleIdentifier(node);
-    if (node.status === "done") {
+    if (node.status === "done" && !pendingFinalizeBlockerIssueIds.has(node.id)) {
       return { covered: true, stalled: false, sampleBlockerIdentifier: nodeSample, sampleStalledBlockerIdentifier: null };
     }
     if (explicitWaitingIssueIds.has(node.id)) {
@@ -2443,7 +2496,10 @@ async function listIssueBlockerAttentionMap(
       return { covered: false, stalled: false, sampleBlockerIdentifier: nodeSample, sampleStalledBlockerIdentifier: null };
     }
 
-    const downstream = (edgesByIssueId.get(node.id) ?? []).filter((edge) => nodesById.get(edge.blockerIssueId)?.status !== "done");
+    const downstream = (edgesByIssueId.get(node.id) ?? []).filter((edge) => {
+      const blocker = nodesById.get(edge.blockerIssueId);
+      return blocker?.status !== "done" || pendingFinalizeBlockerIssueIds.has(edge.blockerIssueId);
+    });
     if (downstream.length > 0) {
       const nextSeen = new Set(seen);
       nextSeen.add(nodeId);
@@ -2487,7 +2543,10 @@ async function listIssueBlockerAttentionMap(
   };
 
   for (const root of roots) {
-    const topLevelEdges = (edgesByIssueId.get(root.id) ?? []).filter((edge) => nodesById.get(edge.blockerIssueId)?.status !== "done");
+    const topLevelEdges = (edgesByIssueId.get(root.id) ?? []).filter((edge) => {
+      const blocker = nodesById.get(edge.blockerIssueId);
+      return blocker?.status !== "done" || pendingFinalizeBlockerIssueIds.has(edge.blockerIssueId);
+    });
     if (topLevelEdges.length === 0) {
       attentionMap.set(root.id, createIssueBlockerAttention({
         state: "needs_attention",
@@ -2533,6 +2592,9 @@ async function listIssueBlockerAttentionMap(
       coveredBlockerCount,
       stalledBlockerCount,
       attentionBlockerCount,
+      pendingFinalizeBlockerIssueIds: topLevelEdges
+        .map((edge) => edge.blockerIssueId)
+        .filter((blockerIssueId) => pendingFinalizeBlockerIssueIds.has(blockerIssueId)),
       sampleBlockerIdentifier: sampleEntry?.result.sampleBlockerIdentifier ?? blockerSampleIdentifier(sampleNode),
       sampleStalledBlockerIdentifier:
         stalledEntry?.result.sampleStalledBlockerIdentifier ?? sampleStalledFromChain ?? null,
@@ -5214,6 +5276,40 @@ export function issueService(db: Db) {
       return row;
     },
 
+    /**
+     * Seed inbox archives for a batch of freshly imported issues so a company
+     * import does not flood the importing user's inbox. Imported issues are
+     * historical work, not new inbox items, but the inbox "mine" query surfaces
+     * every touched-and-not-archived issue; a 1000-task import would otherwise
+     * bury the inbox. Seeding a per-user inbox archive keeps them hidden via
+     * `inboxVisibleForUserCondition`, while genuine new activity on an imported
+     * issue still resurfaces it. This runs only on import (mirroring how
+     * `pauseAutomations` threads an import-only suppression) and never touches
+     * normal issue creation. Rows carry the same "user"-attributed shape a
+     * manual inbox archive writes, batched to stay under Postgres bind limits.
+     */
+    archiveImportedInbox: async (
+      companyId: string,
+      issueIds: string[],
+      userId: string,
+      archivedAt: Date = new Date(),
+    ): Promise<void> => {
+      if (issueIds.length === 0) return;
+      const now = new Date();
+      const rows = issueIds.map((issueId) => ({
+        companyId,
+        issueId,
+        userId,
+        archivedByActorType: "user" as const,
+        archivedByAgentId: null,
+        archivedByRunId: null,
+        archivedAt,
+        createdAt: now,
+        updatedAt: now,
+      }));
+      await insertRowsInChunks(db, issueInboxArchives, rows);
+    },
+
     unarchiveInbox: async (companyId: string, issueId: string, userId: string) => {
       const [row] = await db
         .delete(issueInboxArchives)
@@ -6562,6 +6658,245 @@ export function issueService(db: Db) {
       });
     },
 
+    /**
+     * Batched issue insert for company import.
+     *
+     * Company import used to call {@link create} once per issue — each call a
+     * separate network round-trip that inserted the issue, then serialized the
+     * issue's comments/documents behind the returned id. This inserts a whole
+     * bundle of pre-resolved issues (ids already generated by the caller) in
+     * chunked multi-row statements, so a thousand-issue import issues a handful
+     * of statements instead of thousands.
+     *
+     * The per-issue derivations {@link create} performs are reproduced for the
+     * import subset: a single contiguous identifier range is allocated from the
+     * company counter, per-project goal/workspace/policy defaults are computed
+     * once and cached, assignable-agent and workspace validation run per
+     * distinct id, and monitor notes land un-armed on the row. Dedup,
+     * idempotency, watchdogs, workspace inheritance and blocked-by wiring — none
+     * of which import uses — are intentionally omitted.
+     */
+    importIssues: async (companyId: string, rows: ImportIssueRow[]): Promise<void> => {
+      if (rows.length === 0) return;
+      const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
+      await db.transaction(async (tx) => {
+        // Self-correcting counter: seed from max(issue_number) so a drifted
+        // company counter cannot mint colliding identifiers, then reserve the
+        // whole range in one bump instead of one-per-issue.
+        const [maxRow] = await tx
+          .select({ maxNum: sql<number>`coalesce(max(${issues.issueNumber}), 0)` })
+          .from(issues)
+          .where(eq(issues.companyId, companyId));
+        const currentMax = maxRow?.maxNum ?? 0;
+        const [company] = await tx
+          .select({ issueCounter: companies.issueCounter, issuePrefix: companies.issuePrefix })
+          .from(companies)
+          .where(eq(companies.id, companyId));
+        if (!company) throw notFound("Target company not found");
+        const base = Math.max(company.issueCounter ?? 0, currentMax);
+        await tx
+          .update(companies)
+          .set({ issueCounter: base + rows.length })
+          .where(eq(companies.id, companyId));
+
+        const defaultCompanyGoal = await getDefaultCompanyGoal(tx, companyId);
+        const defaultGoalId = defaultCompanyGoal?.id ?? null;
+
+        // Project-scoped derivations depend only on the project, so resolve each
+        // distinct project once and reuse it across that project's issues.
+        const projectDerivedCache = new Map<
+          string,
+          {
+            goalId: string | null;
+            defaultProjectWorkspaceId: string | null;
+            defaultExecutionWorkspaceSettings: Record<string, unknown> | null;
+          }
+        >();
+        const loadProjectDerived = async (projectId: string) => {
+          const cached = projectDerivedCache.get(projectId);
+          if (cached) return cached;
+          const projectRow = await tx
+            .select({
+              goalId: projects.goalId,
+              executionWorkspacePolicy: projects.executionWorkspacePolicy,
+            })
+            .from(projects)
+            .where(and(eq(projects.id, projectId), eq(projects.companyId, companyId)))
+            .then((r) => r[0] ?? null);
+          const policy = parseProjectExecutionWorkspacePolicy(projectRow?.executionWorkspacePolicy);
+          let defaultProjectWorkspaceId = policy?.defaultProjectWorkspaceId ?? null;
+          if (!defaultProjectWorkspaceId) {
+            defaultProjectWorkspaceId = await tx
+              .select({ id: projectWorkspaces.id })
+              .from(projectWorkspaces)
+              .where(and(eq(projectWorkspaces.projectId, projectId), eq(projectWorkspaces.companyId, companyId)))
+              .orderBy(desc(projectWorkspaces.isPrimary), asc(projectWorkspaces.createdAt), asc(projectWorkspaces.id))
+              .then((r) => r[0]?.id ?? null);
+          }
+          const defaultExecutionWorkspaceSettings = defaultIssueExecutionWorkspaceSettingsForProject(
+            gateProjectExecutionWorkspacePolicy(policy, isolatedWorkspacesEnabled),
+          ) as Record<string, unknown> | null;
+          const derived = { goalId: projectRow?.goalId ?? null, defaultProjectWorkspaceId, defaultExecutionWorkspaceSettings };
+          projectDerivedCache.set(projectId, derived);
+          return derived;
+        };
+
+        const validatedAgentIds = new Set<string>();
+        const validatedWorkspaceKeys = new Set<string>();
+        const issueRows: Array<Record<string, unknown>> = [];
+        const labelRows: Array<{ issueId: string; labelId: string; companyId: string }> = [];
+
+        let counter = base;
+        for (const row of rows) {
+          counter += 1;
+          const issueNumber = counter;
+          const identifier = `${company.issuePrefix}-${issueNumber}`;
+
+          if (row.assigneeAgentId) {
+            if (!validatedAgentIds.has(row.assigneeAgentId)) {
+              await assertAssignableAgent(tx as unknown as Db, companyId, row.assigneeAgentId, { kind: "work" });
+              validatedAgentIds.add(row.assigneeAgentId);
+            }
+          }
+          if (row.status === "in_progress" && !row.assigneeAgentId) {
+            throw unprocessable("in_progress issues require an assignee");
+          }
+
+          const projectId = row.projectId ?? null;
+          let projectWorkspaceId = row.projectWorkspaceId ?? null;
+          // Isolated-workspace fields are gated the same way create() gates them:
+          // when the experiment is off the imported settings are dropped.
+          let executionWorkspaceSettings = isolatedWorkspacesEnabled
+            ? (row.executionWorkspaceSettings ?? null)
+            : null;
+          let projectGoalId: string | null = null;
+          if (projectId) {
+            const derived = await loadProjectDerived(projectId);
+            projectGoalId = derived.goalId;
+            if (!projectWorkspaceId) projectWorkspaceId = derived.defaultProjectWorkspaceId;
+            if (executionWorkspaceSettings == null) {
+              executionWorkspaceSettings = derived.defaultExecutionWorkspaceSettings;
+            }
+          }
+          if (projectWorkspaceId) {
+            const workspaceKey = `${projectId ?? ""}:${projectWorkspaceId}`;
+            if (!validatedWorkspaceKeys.has(workspaceKey)) {
+              await assertValidProjectWorkspace(companyId, projectId, projectWorkspaceId, tx);
+              validatedWorkspaceKeys.add(workspaceKey);
+            }
+          }
+
+          const goalId = resolveIssueGoalId({
+            projectId,
+            goalId: null,
+            projectGoalId,
+            defaultGoalId,
+          });
+
+          issueRows.push({
+            id: row.id,
+            companyId,
+            issueNumber,
+            identifier,
+            title: row.title,
+            description: row.description ?? null,
+            assigneeAgentId: row.assigneeAgentId ?? null,
+            status: row.status,
+            priority: row.priority,
+            billingCode: row.billingCode ?? null,
+            assigneeAdapterOverrides: row.assigneeAdapterOverrides ?? null,
+            projectId,
+            projectWorkspaceId,
+            executionWorkspaceSettings,
+            goalId,
+            responsibleUserId: null,
+            requestDepth: clampIssueRequestDepth(undefined),
+            originKind: "manual",
+            startedAt: row.status === "in_progress" ? new Date() : null,
+            completedAt: row.status === "done" ? new Date() : null,
+            cancelledAt: row.status === "cancelled" ? new Date() : null,
+            monitorNotes: row.monitorNotes ?? null,
+            monitorScheduledBy: row.monitorScheduledBy ?? null,
+          });
+          for (const labelId of new Set(row.labelIds ?? [])) {
+            labelRows.push({ issueId: row.id, labelId, companyId });
+          }
+        }
+
+        await insertRowsInChunks(tx, issues, issueRows);
+        await insertRowsInChunks(tx, issueLabels, labelRows);
+      });
+    },
+
+    /**
+     * Batched comment insert for company import. Comment ids are pre-generated
+     * by the caller so attachments can reference them without a round-trip.
+     */
+    addImportedComments: async (rows: ImportIssueCommentRow[]): Promise<void> => {
+      if (rows.length === 0) return;
+      const censorUsernameInLogs = (await instanceSettings.getGeneral()).censorUsernameInLogs;
+      await db.transaction(async (tx) => {
+        const commentRows = rows.map((row) => {
+          const createdAt = row.createdAt ? new Date(row.createdAt) : null;
+          return {
+            id: row.id,
+            companyId: row.companyId,
+            issueId: row.issueId,
+            authorAgentId: row.authorAgentId ?? null,
+            authorUserId: row.authorUserId ?? null,
+            authorType: row.authorType,
+            createdByRunId: null,
+            body: redactCurrentUserText(row.body, { enabled: censorUsernameInLogs }),
+            presentation: row.presentation ?? null,
+            metadata: row.metadata ?? null,
+            sourceTrust: null,
+            createdAt: createdAt && !Number.isNaN(createdAt.getTime()) ? createdAt : new Date(),
+          };
+        });
+        await insertRowsInChunks(tx, issueComments, commentRows);
+        // Mirror addComment's recency bump, once per affected issue.
+        const issueIds = [...new Set(rows.map((row) => row.issueId))];
+        if (issueIds.length > 0) {
+          await tx.update(issues).set({ updatedAt: new Date() }).where(inArray(issues.id, issueIds));
+        }
+      });
+    },
+
+    /**
+     * Batched attachment insert for company import: each row mints an asset and
+     * links it to its issue (and optionally comment) in two chunked statements.
+     */
+    addImportedAttachments: async (rows: ImportIssueAttachmentRow[]): Promise<void> => {
+      if (rows.length === 0) return;
+      await db.transaction(async (tx) => {
+        const assetRows: Array<Record<string, unknown>> = [];
+        const attachmentRows: Array<Record<string, unknown>> = [];
+        for (const row of rows) {
+          const assetId = randomUUID();
+          assetRows.push({
+            id: assetId,
+            companyId: row.companyId,
+            provider: row.provider,
+            objectKey: row.objectKey,
+            contentType: row.contentType,
+            byteSize: row.byteSize,
+            sha256: row.sha256,
+            originalFilename: row.originalFilename ?? null,
+            createdByAgentId: row.createdByAgentId ?? null,
+            createdByUserId: row.createdByUserId ?? null,
+          });
+          attachmentRows.push({
+            companyId: row.companyId,
+            issueId: row.issueId,
+            assetId,
+            issueCommentId: row.issueCommentId ?? null,
+          });
+        }
+        await insertRowsInChunks(tx, assets, assetRows);
+        await insertRowsInChunks(tx, issueAttachments, attachmentRows);
+      });
+    },
+
     update: async (
       id: string,
       data: Partial<typeof issues.$inferInsert> & {
@@ -6625,13 +6960,23 @@ export function issueService(db: Db) {
         throw unprocessable("in_progress issues require an assignee");
       }
       if (patch.status === "in_progress") {
+        const dependencyReadiness = blockedByIssueIds === undefined
+          ? (await listIssueDependencyReadinessMap(dbOrTx, existing.companyId, [id])).get(id)
+          : null;
         const unresolvedBlockerIssueIds = blockedByIssueIds !== undefined
           ? await listUnresolvedBlockerIssueIds(dbOrTx, existing.companyId, blockedByIssueIds)
-          : (
-              await listIssueDependencyReadinessMap(dbOrTx, existing.companyId, [id])
-            ).get(id)?.unresolvedBlockerIssueIds ?? [];
+          : dependencyReadiness?.unresolvedBlockerIssueIds ?? [];
         if (unresolvedBlockerIssueIds.length > 0) {
-          throw unprocessable("Issue is blocked by unresolved blockers", { unresolvedBlockerIssueIds });
+          const unresolvedBlockers = await listUnresolvedBlockerDetails(
+            dbOrTx,
+            existing.companyId,
+            unresolvedBlockerIssueIds,
+            dependencyReadiness?.pendingFinalizeBlockerIssueIds,
+          );
+          throw unprocessable("Issue is blocked by unresolved blockers", {
+            unresolvedBlockerIssueIds,
+            unresolvedBlockers,
+          });
         }
       }
       const shouldValidateNextAssignee =
@@ -6719,6 +7064,24 @@ export function issueService(db: Db) {
       }
 
       const runUpdate = async (tx: any) => {
+        // The receipt baseline must be read under the same row lock as the
+        // write. Otherwise a concurrent update can be mistaken for a change
+        // made by this request.
+        const receiptExisting = await tx
+          .select()
+          .from(issues)
+          .where(eq(issues.id, id))
+          .for("update")
+          .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
+        if (!receiptExisting) return null;
+        const [previousLabelsByIssueId, previousRelationSummaries] = await Promise.all([
+          nextLabelIds !== undefined
+            ? labelMapForIssues(tx, [id])
+            : Promise.resolve(new Map<string, IssueLabelRow[]>()),
+          blockedByIssueIds !== undefined
+            ? getIssueRelationSummaryMap(existing.companyId, [id], tx)
+            : Promise.resolve(new Map<string, IssueRelationSummaryMap>()),
+        ]);
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, existing.companyId);
         const [currentProjectGoalId, nextProjectGoalId] = await Promise.all([
           getProjectDefaultGoalId(tx, existing.companyId, existing.projectId),
@@ -6836,6 +7199,31 @@ export function issueService(db: Db) {
           }
         }
         const [enriched] = await withIssueLabels(tx, [updated]);
+        const nextBlockedByIssueIds = blockedByIssueIds === undefined
+          ? undefined
+          : [...new Set(blockedByIssueIds)].sort();
+        const changes = buildIssueChanges(
+          receiptExisting as unknown as Record<string, unknown>,
+          updated as unknown as Record<string, unknown>,
+          {
+            ...(nextLabelIds !== undefined
+              ? {
+                  labelIds: {
+                    from: (previousLabelsByIssueId.get(id) ?? []).map((label) => label.id),
+                    to: enriched.labelIds,
+                  },
+                }
+              : {}),
+            ...(nextBlockedByIssueIds !== undefined
+              ? {
+                  blockedByIssueIds: {
+                    from: (previousRelationSummaries.get(id)?.blockedBy ?? []).map((relation) => relation.id),
+                    to: nextBlockedByIssueIds,
+                  },
+                }
+              : {}),
+          },
+        );
         if (
           (issueData.status === "done" || issueData.status === "cancelled") &&
           existing.status !== issueData.status &&
@@ -6855,7 +7243,11 @@ export function issueService(db: Db) {
               );
           }
         }
-        return enriched;
+        return {
+          ...enriched,
+          ...(nextBlockedByIssueIds !== undefined ? { blockedByIssueIds: nextBlockedByIssueIds } : {}),
+          changes,
+        };
       };
 
       return dbOrTx === db ? db.transaction(runUpdate) : runUpdate(dbOrTx);
@@ -6956,9 +7348,19 @@ export function issueService(db: Db) {
       await clearCheckoutRunIfTerminal(id);
 
       const dependencyReadiness = await listIssueDependencyReadinessMap(db, issueCompany.companyId, [id]);
-      const unresolvedBlockerIssueIds = dependencyReadiness.get(id)?.unresolvedBlockerIssueIds ?? [];
+      const readiness = dependencyReadiness.get(id);
+      const unresolvedBlockerIssueIds = readiness?.unresolvedBlockerIssueIds ?? [];
       if (unresolvedBlockerIssueIds.length > 0) {
-        throw unprocessable("Issue is blocked by unresolved blockers", { unresolvedBlockerIssueIds });
+        const unresolvedBlockers = await listUnresolvedBlockerDetails(
+          db,
+          issueCompany.companyId,
+          unresolvedBlockerIssueIds,
+          readiness?.pendingFinalizeBlockerIssueIds,
+        );
+        throw unprocessable("Issue is blocked by unresolved blockers", {
+          unresolvedBlockerIssueIds,
+          unresolvedBlockers,
+        });
       }
 
       const sameRunAssigneeCondition = checkoutRunId

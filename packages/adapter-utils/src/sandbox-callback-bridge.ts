@@ -149,6 +149,11 @@ export interface SandboxCallbackBridgeDirectories {
 
 export interface SandboxCallbackBridgeQueueClient {
   makeDir(remotePath: string): Promise<void>;
+  // Optional batched directory create. The built-in clients create every
+  // queue directory in one remote exec. A client that predates this method
+  // omits it; the worker falls back to sequential `makeDir` calls, so an
+  // external implementation stays compatible without a change.
+  makeDirs?(remotePaths: string[]): Promise<void>;
   listJsonFiles(remotePath: string): Promise<string[]>;
   readTextFile(remotePath: string): Promise<string>;
   writeTextFile(remotePath: string, body: string): Promise<void>;
@@ -359,6 +364,11 @@ export function createFileSystemSandboxCallbackBridgeQueueClient(): SandboxCallb
     makeDir: async (remotePath) => {
       await fs.mkdir(remotePath, { recursive: true });
     },
+    makeDirs: async (remotePaths) => {
+      for (const remotePath of remotePaths) {
+        await fs.mkdir(remotePath, { recursive: true });
+      }
+    },
     listJsonFiles: async (remotePath) => {
       const entries = await fs.readdir(remotePath, { withFileTypes: true }).catch(() => []);
       return entries
@@ -469,6 +479,13 @@ export function createCommandManagedSandboxCallbackBridgeQueueClient(input: {
   return {
     makeDir: async (remotePath) => {
       await runChecked(`mkdir ${remotePath}`, `mkdir -p ${shellQuote(remotePath)}`);
+    },
+    makeDirs: async (remotePaths) => {
+      if (remotePaths.length === 0) {
+        return;
+      }
+      const quoted = remotePaths.map((remotePath) => shellQuote(remotePath));
+      await runChecked(`mkdir ${remotePaths.join(" ")}`, `mkdir -p ${quoted.join(" ")}`);
     },
     listJsonFiles: async (remotePath) => {
       const result = await runShell(
@@ -606,10 +623,21 @@ export async function startSandboxCallbackBridgeWorker(input: {
   const pollIntervalMs = normalizeTimeoutMs(input.pollIntervalMs, DEFAULT_BRIDGE_POLL_INTERVAL_MS);
   const maxBodyBytes = normalizeTimeoutMs(input.maxBodyBytes, DEFAULT_BRIDGE_MAX_BODY_BYTES);
   const directories = sandboxCallbackBridgeDirectories(input.queueDir);
-  await input.client.makeDir(directories.rootDir);
-  await input.client.makeDir(directories.requestsDir);
-  await input.client.makeDir(directories.responsesDir);
-  await input.client.makeDir(directories.logsDir);
+  const queueDirectories = [
+    directories.rootDir,
+    directories.requestsDir,
+    directories.responsesDir,
+    directories.logsDir,
+  ];
+  if (input.client.makeDirs) {
+    await input.client.makeDirs(queueDirectories);
+  } else {
+    // Backward-compatible fallback for a queue client that omits the batched
+    // makeDirs method. Create each queue directory with a single makeDir.
+    for (const directory of queueDirectories) {
+      await input.client.makeDir(directory);
+    }
+  }
 
   let stopping = false;
   let inFlight = 0;

@@ -30,8 +30,47 @@ import {
 import { pluginRegistryService } from "./plugin-registry.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 
+export interface ReadyPluginWorkerRecovery {
+  pluginKeys: readonly string[];
+  startWorker(plugin: { id: string; pluginKey: string }): Promise<boolean>;
+  timeoutMs?: number;
+}
+
+export interface ReadyPluginEnvironmentDriver {
+  pluginId: string;
+  pluginKey: string;
+  driverKey: string;
+  displayName: string;
+  description?: string;
+  configSchema: PluginEnvironmentDriverDeclaration["configSchema"];
+  supportsReusableLeases?: PluginEnvironmentDriverDeclaration["supportsReusableLeases"];
+  supportsInteractiveSetup?: PluginEnvironmentDriverDeclaration["supportsInteractiveSetup"];
+  interactiveSetupConnectionTypes?: PluginEnvironmentDriverDeclaration["interactiveSetupConnectionTypes"];
+  supportsTemplateCapture?: PluginEnvironmentDriverDeclaration["supportsTemplateCapture"];
+  templateRefKind?: PluginEnvironmentDriverDeclaration["templateRefKind"];
+  templateConfigBinding?: PluginEnvironmentDriverDeclaration["templateConfigBinding"];
+  supportsTemplateDelete?: PluginEnvironmentDriverDeclaration["supportsTemplateDelete"];
+}
+
 export function pluginDriverProviderKey(config: Pick<PluginEnvironmentConfig, "pluginKey" | "driverKey">): string {
   return `${config.pluginKey}:${config.driverKey}`;
+}
+
+const DEFAULT_READY_PLUGIN_WORKER_RECOVERY_TIMEOUT_MS = 2_000;
+
+async function resolveWithTimeout<T>(promise: Promise<T>, timeoutMs: number, timeoutValue: T): Promise<T> {
+  if (!Number.isFinite(timeoutMs) || timeoutMs <= 0) return await promise;
+  let timeout: ReturnType<typeof setTimeout> | null = null;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise<T>((resolve) => {
+        timeout = setTimeout(() => resolve(timeoutValue), timeoutMs);
+      }),
+    ]);
+  } finally {
+    if (timeout) clearTimeout(timeout);
+  }
 }
 
 export async function resolvePluginEnvironmentDriver(input: {
@@ -94,30 +133,67 @@ export async function resolvePluginSandboxProviderDriverByKey(input: {
 export async function listReadyPluginEnvironmentDrivers(input: {
   db: Db;
   workerManager?: PluginWorkerManager;
+  recoverMissingWorker?: ReadyPluginWorkerRecovery;
 }) {
   if (!input.workerManager) return [];
   const pluginRegistry = pluginRegistryService(input.db);
   const plugins = await pluginRegistry.list();
-  return plugins.flatMap((plugin) => {
-    if (plugin.status !== "ready" || !input.workerManager?.isRunning(plugin.id)) return [];
-    return (plugin.manifestJson.environmentDrivers ?? [])
-      .filter((driver) => driver.kind === "sandbox_provider")
-      .map((driver) => ({
-        pluginId: plugin.id,
+  const recoverablePluginKeys = new Set(input.recoverMissingWorker?.pluginKeys ?? []);
+  const readyPlugins = plugins.filter((plugin) => plugin.status === "ready");
+  const recoveryAttempts: Promise<boolean>[] = [];
+
+  for (const plugin of readyPlugins) {
+    const hasSandboxProviderDriver = plugin.manifestJson.environmentDrivers?.some(
+      (driver) => driver.kind === "sandbox_provider",
+    ) ?? false;
+    const canRecover =
+      hasSandboxProviderDriver
+      && !input.workerManager.isRunning(plugin.id)
+      && recoverablePluginKeys.has(plugin.pluginKey)
+      && !input.workerManager.getWorker(plugin.id);
+    if (!canRecover || !input.recoverMissingWorker) continue;
+    const timeoutMs =
+      input.recoverMissingWorker.timeoutMs ?? DEFAULT_READY_PLUGIN_WORKER_RECOVERY_TIMEOUT_MS;
+    recoveryAttempts.push(resolveWithTimeout(
+      input.recoverMissingWorker.startWorker({
+        id: plugin.id,
         pluginKey: plugin.pluginKey,
-        driverKey: driver.driverKey,
-        displayName: driver.displayName,
-        description: driver.description,
-        configSchema: driver.configSchema,
-        supportsReusableLeases: driver.supportsReusableLeases,
-        supportsInteractiveSetup: driver.supportsInteractiveSetup,
-        interactiveSetupConnectionTypes: driver.interactiveSetupConnectionTypes,
-        supportsTemplateCapture: driver.supportsTemplateCapture,
-        templateRefKind: driver.templateRefKind,
-        templateConfigBinding: driver.templateConfigBinding,
-        supportsTemplateDelete: driver.supportsTemplateDelete,
-      }));
-  });
+      }).catch(() => false),
+      timeoutMs,
+      false,
+    ));
+  }
+
+  if (recoveryAttempts.length > 0) {
+    await Promise.all(recoveryAttempts);
+  }
+
+  const rows: ReadyPluginEnvironmentDriver[] = [];
+  for (const plugin of readyPlugins) {
+    if (!input.workerManager.isRunning(plugin.id)) {
+      continue;
+    }
+    rows.push(
+      ...(plugin.manifestJson.environmentDrivers ?? [])
+        .filter((driver) => driver.kind === "sandbox_provider")
+        .map((driver) => ({
+          pluginId: plugin.id,
+          pluginKey: plugin.pluginKey,
+          driverKey: driver.driverKey,
+          displayName: driver.displayName,
+          description: driver.description,
+          configSchema: driver.configSchema,
+          supportsReusableLeases: driver.supportsReusableLeases,
+          supportsInteractiveSetup: driver.supportsInteractiveSetup,
+          interactiveSetupConnectionTypes: driver.interactiveSetupConnectionTypes,
+          supportsTemplateCapture: driver.supportsTemplateCapture,
+          templateRefKind: driver.templateRefKind,
+          templateConfigBinding: driver.templateConfigBinding,
+          supportsTemplateDelete: driver.supportsTemplateDelete,
+        })),
+    );
+  }
+  return rows;
 }
 
 export async function validatePluginSandboxProviderConfig(input: {
