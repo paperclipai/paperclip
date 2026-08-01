@@ -33,6 +33,15 @@ mkdir -p "$paperclip_dir"
 
 base_cli_runner_path="$base_cwd/cli/node_modules/tsx/dist/cli.mjs"
 base_cli_entry_path="$base_cwd/cli/src/index.ts"
+init_args=(worktree init --force --name "$worktree_name")
+if [[ -f "$source_config_path" ]]; then
+  init_args+=(--seed-mode minimal --from-config "$source_config_path")
+else
+  # A fresh/test repository may not have a source instance yet. Initializing
+  # without a database seed is safe; pointing at the operator's default live
+  # config is not.
+  init_args+=(--no-seed)
+fi
 
 base_cli_files_present() {
   [[ -f "$base_cli_runner_path" && -f "$base_cli_entry_path" ]]
@@ -95,23 +104,23 @@ run_isolated_worktree_init() {
   if ensure_base_cli_healthy; then
     (
       cd "$worktree_cwd" &&
-        node "$base_cli_runner_path" "$base_cli_entry_path" worktree init --force --seed-mode minimal --name "$worktree_name" --from-config "$source_config_path"
+        node "$base_cli_runner_path" "$base_cli_entry_path" "${init_args[@]}"
     )
     return
   fi
 
   if command -v pnpm >/dev/null 2>&1 && pnpm paperclipai --help >/dev/null 2>&1; then
     (
-      cd "$worktree_cwd" &&
-        pnpm paperclipai worktree init --force --seed-mode minimal --name "$worktree_name" --from-config "$source_config_path"
+      cd "$worktree_cwd"
+      pnpm paperclipai "${init_args[@]}"
     )
     return
   fi
 
   if command -v paperclipai >/dev/null 2>&1; then
     (
-      cd "$worktree_cwd" &&
-        paperclipai worktree init --force --seed-mode minimal --name "$worktree_name" --from-config "$source_config_path"
+      cd "$worktree_cwd"
+      paperclipai "${init_args[@]}"
     )
     return
   fi
