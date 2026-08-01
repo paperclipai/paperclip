@@ -3977,6 +3977,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             result: resolvedContinuationInteraction.result,
             newlyResolvedItemIds: resolvedContinuationItemIds,
           });
+          const acceptedPlanConfirmation = Boolean(
+            planReviewInteraction?.status === "accepted"
+            && planReviewInteraction.acceptedTargetRevision,
+          );
           const queued = await enqueueStrandedIssueRecovery({
             issueId: issue.id,
             agentId,
@@ -3998,6 +4002,12 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
                 itemVerdicts,
                 newlyResolvedItemIds: itemVerdicts.newlyResolvedItemIds,
               } : {}),
+              ...(acceptedPlanConfirmation
+                ? {
+                    forceFreshSession: true,
+                    workspaceRefreshReason: "accepted_plan_confirmation",
+                  }
+                : {}),
               ...(interactionResponsibleUserId
                 ? { responsibleUserId: interactionResponsibleUserId }
                 : {}),
