@@ -1,13 +1,30 @@
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { onboard } from "../commands/onboard.js";
 import type { PaperclipConfig } from "../config/schema.js";
+
+const { confirmMock } = vi.hoisted(() => ({ confirmMock: vi.fn() }));
+
+vi.mock("@clack/prompts", async (importOriginal) => ({
+  ...(await importOriginal<typeof import("@clack/prompts")>()),
+  confirm: confirmMock,
+}));
 
 const ORIGINAL_ENV = { ...process.env };
 const ORIGINAL_CWD = process.cwd();
 const ORIGINAL_PATH = process.env.PATH;
+const ORIGINAL_STDIN_ISTTY = Object.getOwnPropertyDescriptor(process.stdin, "isTTY");
+const ORIGINAL_STDOUT_ISTTY = Object.getOwnPropertyDescriptor(process.stdout, "isTTY");
+
+function restoreIsTTY(target: NodeJS.ReadStream | NodeJS.WriteStream, descriptor: PropertyDescriptor | undefined) {
+  if (descriptor) {
+    Object.defineProperty(target, "isTTY", descriptor);
+  } else {
+    delete (target as { isTTY?: boolean }).isTTY;
+  }
+}
 
 function createExistingConfigFixture() {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-onboard-"));
@@ -83,6 +100,7 @@ function createFreshConfigPath() {
 
 describe("onboard", () => {
   beforeEach(() => {
+    confirmMock.mockReset();
     process.env = { ...ORIGINAL_ENV };
     delete process.env.PAPERCLIP_AGENT_JWT_SECRET;
     delete process.env.PAPERCLIP_SECRETS_MASTER_KEY;
@@ -97,6 +115,9 @@ describe("onboard", () => {
   });
 
   afterEach(() => {
+    vi.restoreAllMocks();
+    restoreIsTTY(process.stdin, ORIGINAL_STDIN_ISTTY);
+    restoreIsTTY(process.stdout, ORIGINAL_STDOUT_ISTTY);
     process.env = { ...ORIGINAL_ENV };
     process.chdir(ORIGINAL_CWD);
   });
@@ -156,12 +177,26 @@ describe("onboard", () => {
     expect(fs.existsSync(path.join(instanceRoot, "secrets", "master.key"))).toBe(true);
   });
 
-  it("supports non-interactive config-only onboarding for isolated restore targets", async () => {
+  it("keeps --yes --no-start non-interactive in a TTY for isolated restore targets", async () => {
     const configPath = createFreshConfigPath();
+    Object.defineProperty(process.stdin, "isTTY", { configurable: true, value: true });
+    Object.defineProperty(process.stdout, "isTTY", { configurable: true, value: true });
 
     await onboard({ config: configPath, yes: true, start: false });
 
     expect(fs.existsSync(configPath)).toBe(true);
+    expect(confirmMock).not.toHaveBeenCalled();
+  });
+
+  it("keeps --yes --no-start non-interactive in a TTY with an existing config", async () => {
+    const fixture = createExistingConfigFixture();
+    Object.defineProperty(process.stdin, "isTTY", { configurable: true, value: true });
+    Object.defineProperty(process.stdout, "isTTY", { configurable: true, value: true });
+
+    await onboard({ config: fixture.configPath, yes: true, start: false });
+
+    expect(fs.readFileSync(fixture.configPath, "utf8")).toBe(fixture.configText);
+    expect(confirmMock).not.toHaveBeenCalled();
   });
 
   it("supports authenticated/private quickstart bind presets", async () => {

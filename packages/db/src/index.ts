@@ -34,7 +34,7 @@ export {
   formatEmbeddedPostgresError,
 } from "./embedded-postgres-error.js";
 export {
-  ensureLinuxSharedLibraryAliases,
+  createLinuxSharedLibraryAliasDirectory,
   prepareEmbeddedPostgresNativeRuntime,
 } from "./embedded-postgres-native.js";
 export { issueRelations } from "./schema/issue_relations.js";

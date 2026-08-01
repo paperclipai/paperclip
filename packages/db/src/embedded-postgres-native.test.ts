@@ -2,7 +2,7 @@ import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { ensureLinuxSharedLibraryAliases } from "./embedded-postgres-native.js";
+import { createLinuxSharedLibraryAliasDirectory } from "./embedded-postgres-native.js";
 
 describe("embedded Postgres native runtime", () => {
   const tempDirs: string[] = [];
@@ -13,31 +13,37 @@ describe("embedded Postgres native runtime", () => {
     }
   });
 
-  it.runIf(process.platform !== "win32")("creates soname aliases for bundled patch-level shared libraries", async () => {
+  it.runIf(process.platform !== "win32")("creates soname aliases outside the immutable bundled library directory", async () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-embedded-pg-libs-"));
     tempDirs.push(tempDir);
     fs.writeFileSync(path.join(tempDir, "libicuuc.so.60.2"), "");
     fs.writeFileSync(path.join(tempDir, "libicui18n.so.60.2"), "");
+    fs.writeFileSync(path.join(tempDir, "libcrypto.so.1.1"), "");
     fs.writeFileSync(path.join(tempDir, "README.md"), "");
+    const before = fs.readdirSync(tempDir).sort();
 
-    const created = await ensureLinuxSharedLibraryAliases(tempDir);
+    const result = await createLinuxSharedLibraryAliasDirectory(tempDir);
+    expect(result.aliasDir).not.toBeNull();
+    tempDirs.push(result.aliasDir!);
 
-    expect(created.map((file) => path.basename(file)).sort()).toEqual([
+    expect(result.aliases.map((file) => path.basename(file)).sort()).toEqual([
+      "libcrypto.so.1",
       "libicui18n.so.60",
       "libicuuc.so.60",
     ]);
-    expect(fs.readlinkSync(path.join(tempDir, "libicuuc.so.60"))).toBe("libicuuc.so.60.2");
+    expect(fs.readdirSync(tempDir).sort()).toEqual(before);
+    expect(fs.readlinkSync(path.join(result.aliasDir!, "libcrypto.so.1"))).toBe(
+      path.join(tempDir, "libcrypto.so.1.1"),
+    );
   });
 
-  it.runIf(process.platform !== "win32")("is idempotent when aliases already exist", async () => {
+  it.runIf(process.platform !== "win32")("does not create a runtime directory when no aliases are needed", async () => {
     const tempDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-embedded-pg-libs-"));
     tempDirs.push(tempDir);
-    fs.writeFileSync(path.join(tempDir, "libicuuc.so.60.2"), "");
+    fs.writeFileSync(path.join(tempDir, "README.md"), "");
 
-    await ensureLinuxSharedLibraryAliases(tempDir);
-    const second = await ensureLinuxSharedLibraryAliases(tempDir);
+    const result = await createLinuxSharedLibraryAliasDirectory(tempDir);
 
-    expect(second).toEqual([]);
-    expect(fs.readlinkSync(path.join(tempDir, "libicuuc.so.60"))).toBe("libicuuc.so.60.2");
+    expect(result).toEqual({ aliasDir: null, aliases: [] });
   });
 });

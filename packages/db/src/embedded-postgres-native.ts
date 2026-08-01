@@ -1,8 +1,10 @@
-import { promises as fs } from "node:fs";
+import { promises as fs, rmSync } from "node:fs";
 import { createRequire } from "node:module";
+import os from "node:os";
 import path from "node:path";
 
 const require = createRequire(import.meta.url);
+const runtimeAliasDirectories = new Map<string, Promise<string | null>>();
 
 function resolveNativePackageName(): string | null {
   if (process.platform !== "linux") return null;
@@ -48,27 +50,54 @@ function prependPathEnv(name: string, value: string): void {
   process.env[name] = [value, ...parts].join(path.delimiter);
 }
 
-export async function ensureLinuxSharedLibraryAliases(libDir: string): Promise<string[]> {
+export async function createLinuxSharedLibraryAliasDirectory(libDir: string): Promise<{
+  aliasDir: string | null;
+  aliases: string[];
+}> {
   const entries = await fs.readdir(libDir, { withFileTypes: true });
+  const aliases = entries.flatMap((entry) => {
+    if (!entry.isFile()) return [];
+    const match = entry.name.match(/^(lib.+\.so\.\d+)\.\d+(?:\.\d+)?$/);
+    if (!match) return [];
+    return [{ sourceName: entry.name, aliasName: match[1] }];
+  });
+
+  if (aliases.length === 0) return { aliasDir: null, aliases: [] };
+
+  const aliasDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-embedded-pg-libs-"));
   const created: string[] = [];
 
-  for (const entry of entries) {
-    if (!entry.isFile()) continue;
-    const match = entry.name.match(/^(lib.+\.so\.\d+)\.\d+(?:\.\d+)?$/);
-    if (!match) continue;
-
-    const aliasName = match[1];
-    const aliasPath = path.join(libDir, aliasName);
-    try {
-      await fs.symlink(entry.name, aliasPath);
+  try {
+    for (const alias of aliases) {
+      const aliasPath = path.join(aliasDir, alias.aliasName);
+      await fs.symlink(path.join(libDir, alias.sourceName), aliasPath);
       created.push(aliasPath);
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === "EEXIST") continue;
-      throw error;
     }
+  } catch (error) {
+    await fs.rm(aliasDir, { recursive: true, force: true });
+    throw error;
   }
 
-  return created;
+  return { aliasDir, aliases: created };
+}
+
+async function resolveRuntimeAliasDirectory(libDir: string): Promise<string | null> {
+  const existing = runtimeAliasDirectories.get(libDir);
+  if (existing) return existing;
+
+  const pending = createLinuxSharedLibraryAliasDirectory(libDir)
+    .then(({ aliasDir }) => {
+      if (aliasDir) {
+        process.once("exit", () => rmSync(aliasDir, { recursive: true, force: true }));
+      }
+      return aliasDir;
+    })
+    .catch((error) => {
+      runtimeAliasDirectories.delete(libDir);
+      throw error;
+    });
+  runtimeAliasDirectories.set(libDir, pending);
+  return pending;
 }
 
 export async function prepareEmbeddedPostgresNativeRuntime(): Promise<void> {
@@ -80,6 +109,9 @@ export async function prepareEmbeddedPostgresNativeRuntime(): Promise<void> {
   const libDir = path.join(nativeRoot, "native", "lib");
   if (!(await pathExists(libDir))) return;
 
+  const aliasDir = await resolveRuntimeAliasDirectory(libDir);
   prependPathEnv("LD_LIBRARY_PATH", libDir);
-  await ensureLinuxSharedLibraryAliases(libDir);
+  if (aliasDir) {
+    prependPathEnv("LD_LIBRARY_PATH", aliasDir);
+  }
 }

@@ -402,7 +402,7 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
     );
 
     let shouldRunNow = opts.start !== false && (opts.run === true || opts.yes === true);
-    if (!shouldRunNow && !opts.invokedByRun && process.stdin.isTTY && process.stdout.isTTY) {
+    if (opts.start !== false && !shouldRunNow && !opts.invokedByRun && process.stdin.isTTY && process.stdout.isTTY) {
       const answer = await p.confirm({
         message: "Start Paperclip now?",
         initialValue: true,
@@ -662,7 +662,7 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
   }
 
   let shouldRunNow = opts.start !== false && (opts.run === true || opts.yes === true);
-  if (!shouldRunNow && !opts.invokedByRun && process.stdin.isTTY && process.stdout.isTTY) {
+  if (opts.start !== false && !shouldRunNow && !opts.invokedByRun && process.stdin.isTTY && process.stdout.isTTY) {
     const answer = await p.confirm({
       message: "Start Paperclip now?",
       initialValue: true,
