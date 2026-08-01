@@ -519,6 +519,16 @@ describe("issue execution policy routes", () => {
         },
       },
     });
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-1",
+      issueId: issue.id,
+      companyId: issue.companyId,
+      body: "Please address the race.",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      authorAgentId: qaAgentId,
+      authorUserId: null,
+    });
 
     const res = await request(await createApp({
       type: "agent",
