@@ -692,6 +692,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     runError?: string | null;
     resultJson?: Record<string, unknown> | null;
     monitorNextCheckAt?: Date | null;
+    workMode?: "standard" | "standing";
   }) {
     const companyId = randomUUID();
     const agentId = randomUUID();
@@ -788,6 +789,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         parentId: input.activePauseHold ? rootIssueId : null,
         title: "Recover stranded assigned work",
         status: input.status,
+        workMode: input.workMode ?? "standard",
         priority: "medium",
         assigneeAgentId: input.assignToUser ? null : agentId,
         assigneeUserId: input.assignToUser ? "user-1" : null,
@@ -7484,6 +7486,129 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .from(issues)
       .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stranded_issue_recovery")));
     expect(recoveryIssues).toHaveLength(0);
+  });
+
+  it("skips an agent-assigned standing issue before stranded recovery can create a child or blocked hold", async () => {
+    const { companyId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      workMode: "standing",
+    });
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    expect(result.escalated).toBe(0);
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.skipped).toBe(1);
+    expect(result.issueIds).toEqual([]);
+
+    const sourceIssue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(sourceIssue).toMatchObject({
+      status: "in_progress",
+      workMode: "standing",
+    });
+
+    const blockingRelations = await db
+      .select()
+      .from(issueRelations)
+      .where(and(
+        eq(issueRelations.companyId, companyId),
+        eq(issueRelations.relatedIssueId, issueId),
+        eq(issueRelations.type, "blocks"),
+      ));
+    expect(blockingRelations).toHaveLength(0);
+
+    const recoveryActionRows = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, issueId));
+    expect(recoveryActionRows).toHaveLength(0);
+
+    const recoveryIssues = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stranded_issue_recovery"), eq(issues.originId, issueId)));
+    expect(recoveryIssues).toHaveLength(0);
+  });
+
+  it("sweeps board-owned standing anchors out of stranded recovery and folds active recovery state", async () => {
+    const { companyId, agentId, issueId } = await seedStrandedIssueFixture({
+      status: "in_progress",
+      runStatus: "failed",
+      workMode: "standing",
+    });
+    const recoveryIssueId = randomUUID();
+    await db.insert(issues).values({
+      id: recoveryIssueId,
+      companyId,
+      parentId: issueId,
+      title: "Recover stalled issue standing anchor",
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      responsibleUserId: "responsible-user",
+      issueNumber: 2,
+      identifier: "PAP-2",
+      originKind: "stranded_issue_recovery",
+      originId: issueId,
+    });
+    await db.insert(issueRecoveryActions).values({
+      companyId,
+      sourceIssueId: issueId,
+      recoveryIssueId,
+      kind: "stranded_assigned_issue",
+      status: "active",
+      ownerType: "agent",
+      ownerAgentId: agentId,
+      cause: "stranded_assigned_issue",
+      fingerprint: `standing:${companyId}:${issueId}`,
+      evidence: {},
+      nextAction: "Recover the issue.",
+      attemptCount: 1,
+    });
+    await db
+      .update(issues)
+      .set({ status: "blocked", assigneeAgentId: null, assigneeUserId: "board-user" })
+      .where(eq(issues.id, issueId));
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    expect(result.escalated).toBe(0);
+    expect(result.continuationRequeued).toBe(0);
+    // The now-cancelled recovery child was part of the original candidate
+    // snapshot and is harmlessly skipped during the same reconciliation pass.
+    expect(result.skipped).toBe(1);
+    expect(result.issueIds).toEqual([issueId]);
+
+    const sourceIssue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(sourceIssue?.status).toBe("blocked");
+    expect(sourceIssue?.assigneeAgentId).toBeNull();
+    expect(sourceIssue?.assigneeUserId).toBe("board-user");
+    expect(sourceIssue?.workMode).toBe("standing");
+
+    const [action] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.sourceIssueId, issueId));
+    expect(action).toMatchObject({
+      status: "resolved",
+      outcome: "false_positive",
+    });
+    expect(action?.resolutionNote).toContain("standing-exempt");
+    expect(action?.resolutionNote).toContain("workMode: \"standing\"");
+
+    const recoveryIssue = await db.select().from(issues).where(eq(issues.id, recoveryIssueId)).then((rows) => rows[0] ?? null);
+    expect(recoveryIssue?.status).toBe("cancelled");
+
+    const recoveryIssues = await db
+      .select()
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.originKind, "stranded_issue_recovery"), eq(issues.originId, issueId)));
+    expect(recoveryIssues).toHaveLength(1);
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, recoveryIssueId));
+    expect(comments).toHaveLength(1);
+    expect(comments[0]?.body).toContain("Standing-anchor recovery fold.");
+    expect(comments[0]?.body).toContain("false positive");
   });
 
   it("preserves a delegated blocker edge as the durable external-wait path", async () => {

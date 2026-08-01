@@ -335,10 +335,11 @@ describe("issue validators", () => {
     }).preserveFallbackSisterAssignee).toBe(true);
   });
 
-  it("defaults issue work mode to standard and accepts ask, planning, and skill_test", () => {
+  it("defaults issue work mode to standard and accepts ask, planning, standing, and skill_test", () => {
     expect(createIssueSchema.parse({ title: "Plan first" }).workMode).toBe("standard");
     expect(createIssueSchema.parse({ title: "Ask first", workMode: "ask" }).workMode).toBe("ask");
     expect(createIssueSchema.parse({ title: "Plan first", workMode: "planning" }).workMode).toBe("planning");
+    expect(createIssueSchema.parse({ title: "Standing anchor", workMode: "standing" }).workMode).toBe("standing");
     expect(createIssueSchema.parse({
       title: "Harness test",
       workMode: "skill_test",
@@ -346,6 +347,7 @@ describe("issue validators", () => {
     })).toMatchObject({ workMode: "skill_test", harnessKind: "skill_test" });
     expect(updateIssueSchema.parse({ workMode: "ask" }).workMode).toBe("ask");
     expect(updateIssueSchema.parse({ workMode: "planning" }).workMode).toBe("planning");
+    expect(updateIssueSchema.parse({ workMode: "standing" }).workMode).toBe("standing");
     expect(updateIssueSchema.parse({ workMode: "skill_test" }).workMode).toBe("skill_test");
     expect(suggestedTaskDraftSchema.parse({
       clientKey: "ask-child",
@@ -357,6 +359,11 @@ describe("issue validators", () => {
       title: "Plan child",
       workMode: "planning",
     }).workMode).toBe("planning");
+    expect(suggestedTaskDraftSchema.parse({
+      clientKey: "standing-child",
+      title: "Standing child",
+      workMode: "standing",
+    }).workMode).toBe("standing");
     expect(suggestedTaskDraftSchema.parse({
       clientKey: "skill-test-child",
       title: "Test child",

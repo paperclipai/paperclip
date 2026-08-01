@@ -44,6 +44,7 @@ import { issueRecoveryActionService } from "../issue-recovery-actions.js";
 import { issueTreeControlService } from "../issue-tree-control.js";
 import { TERMINAL_HEARTBEAT_RUN_STATUSES, issueService } from "../issues.js";
 import { hasExplicitExternalOwnerAction } from "../issue-blocked-gate.js";
+import { measureCloseEvidence, type CloseEvidenceMeasurement } from "../issue-close-evidence.js";
 import {
   applyIssueMonitorPolicyTransition,
   normalizeIssueExecutionPolicy,
@@ -68,10 +69,10 @@ import {
   SUCCESSFUL_RUN_MISSING_STATE_REASON,
   buildSuccessfulRunHandoffExhaustedNotice,
   hasEventDrivenHubIdlePath,
+  isStandingExemptIssue,
   noticeMetadataReferencesRecoveryAction,
   type SuccessfulRunHandoffNotice,
 } from "./successful-run-handoff.js";
-import { measureCloseEvidence, type CloseEvidenceMeasurement } from "../issue-close-evidence.js";
 import {
   RECOVERY_ORIGIN_KINDS,
   buildIssueGraphLivenessLeafKey,
@@ -345,8 +346,11 @@ const NON_RETRYABLE_CONTINUATION_ERROR_CODES = new Set<string>([
 // issue has a real waiting target we convert it into a normal dependency wait rather
 // than escalating it as stranded.
 const CONTINUATION_WAITING_ON_REVIEW_ERROR_CODE = "issue_continuation_waiting_on_review";
+const CODEX_UNTRUSTED_DIRECTORY_ERROR_RE =
+  /^Not inside a trusted directory and --skip-git-repo-check was not specified\.?$/i;
 const INTERACTION_CONTINUATION_REQUEUE_MAX_ATTEMPTS = 3;
 const CONTINUATION_NO_PROGRESS_MAX_ATTEMPTS = 3;
+const STANDING_EXEMPT_RECOVERY_ACTION_KINDS = new Set(["missing_disposition", "stranded_assigned_issue"] as const);
 
 const CONTINUATION_RECOVERY_TRANSIENT_MAX_ATTEMPTS = 3;
 const CONTINUATION_RECOVERY_DEFAULT_MAX_ATTEMPTS = 1;
@@ -3469,12 +3473,95 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     });
   }
 
+  async function foldStandingExemptRecoveryAction(input: {
+    issue: typeof issues.$inferSelect;
+    action: Awaited<ReturnType<typeof recoveryActionsSvc.getActiveForIssue>> | null;
+  }) {
+    const action = input.action;
+    if (!action || !STANDING_EXEMPT_RECOVERY_ACTION_KINDS.has(action.kind)) return false;
+
+    const resolutionNote = input.issue.workMode === "standing"
+      ? "Recovery action folded because the source issue is standing-exempt (`workMode: \"standing\"`)."
+      : "Recovery action folded because the source issue is standing-exempt (non-actionable standing anchor).";
+
+    await foldActiveRecoveryAction({
+      companyId: input.issue.companyId,
+      sourceIssueId: input.issue.id,
+      actionId: action.id,
+      outcome: "false_positive",
+      resolutionNote,
+    });
+
+    if (action.recoveryIssueId) {
+      const recoveryIssue = await db
+        .select({
+          id: issues.id,
+          status: issues.status,
+        })
+        .from(issues)
+        .where(and(eq(issues.companyId, input.issue.companyId), eq(issues.id, action.recoveryIssueId)))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (recoveryIssue && !isTerminalIssueStatus(recoveryIssue.status)) {
+        await issuesSvc.update(recoveryIssue.id, { status: "cancelled" });
+        await issuesSvc.addComment(
+          recoveryIssue.id,
+          [
+            "Standing-anchor recovery fold.",
+            "",
+            `- Source issue: ${input.issue.identifier ?? input.issue.id}`,
+            `- Recovery action: \`${action.id}\``,
+            `- Outcome: false positive; standing-exempt issues do not participate in stranded-work recovery.`,
+          ].join("\n"),
+          {},
+          { authorType: "system" },
+        );
+      }
+    }
+
+    return true;
+  }
+
+  async function sweepStandingExemptRecoveryActions() {
+    // Standing anchors can be board-owned or already parked in `blocked`, so
+    // they are intentionally absent from the normal assigned-work candidate
+    // query below. Sweep their active recovery actions independently: merely
+    // changing the marker must also retire recovery state created before the
+    // exemption was applied.
+    const candidates = await db
+      .select({ issue: issues })
+      .from(issueRecoveryActions)
+      .innerJoin(
+        issues,
+        and(
+          eq(issues.id, issueRecoveryActions.sourceIssueId),
+          eq(issues.companyId, issueRecoveryActions.companyId),
+        ),
+      )
+      .where(
+        and(
+          inArray(issueRecoveryActions.status, ["active", "escalated"]),
+          inArray(issueRecoveryActions.kind, [...STANDING_EXEMPT_RECOVERY_ACTION_KINDS]),
+        ),
+      );
+
+    const result = { folded: 0, issueIds: [] as string[] };
+    for (const { issue } of candidates) {
+      if (!isStandingExemptIssue(issue)) continue;
+      const action = await recoveryActionsSvc.getActiveForIssue(issue.companyId, issue.id);
+      if (!await foldStandingExemptRecoveryAction({ issue, action })) continue;
+      result.folded += 1;
+      result.issueIds.push(issue.id);
+    }
+    return result;
+  }
+
   async function shouldFoldOrDelayMissingDispositionRecovery(input: {
     issue: typeof issues.$inferSelect;
     action: Awaited<ReturnType<typeof recoveryActionsSvc.getActiveForIssue>> | null;
   }) {
     const action = input.action;
-    if (!action || (action.kind !== "missing_disposition" && action.kind !== "close_evidence_unmet")) return false;
+    if (!action || action.kind !== "missing_disposition") return false;
 
     if (input.issue.status !== "in_progress") {
       if (input.issue.status === "blocked") {
@@ -4546,8 +4633,12 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       issueIds: [] as string[],
     };
 
+    const standingExemptRecoveryActions = await sweepStandingExemptRecoveryActions();
+    result.staleRecoveryActionsFolded = standingExemptRecoveryActions.folded;
+    result.issueIds.push(...standingExemptRecoveryActions.issueIds);
+
     const staleRecoveryActions = await sweepStaleRecoveryActions();
-    result.staleRecoveryActionsFolded = staleRecoveryActions.folded;
+    result.staleRecoveryActionsFolded += staleRecoveryActions.folded;
     result.issueIds.push(...staleRecoveryActions.issueIds);
 
     for (const issue of candidates) {
@@ -4564,59 +4655,86 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           result.skipped += 1;
           continue;
         }
-        const executionState = issue.status === "in_review"
-          ? parseIssueExecutionState(issue.executionState)
+        if (isStandingExemptIssue(freshIssue)) {
+          const action = await recoveryActionsSvc.getActiveForIssue(freshIssue.companyId, freshIssue.id);
+          const folded = await foldStandingExemptRecoveryAction({ issue: freshIssue, action });
+          if (folded) result.issueIds.push(freshIssue.id);
+          result.skipped += 1;
+          continue;
+        }
+        const executionState = freshIssue.status === "in_review"
+          ? parseIssueExecutionState(freshIssue.executionState)
           : null;
         const pendingExecutionState = executionState?.status === "pending" ? executionState : null;
         const currentParticipant = pendingExecutionState
           ? pendingExecutionState.currentParticipant
           : null;
         const participantAgentId = currentParticipant?.type === "agent" ? currentParticipant.agentId : null;
-        const agentId = issue.status === "in_review" && participantAgentId
+        const agentId = freshIssue.status === "in_review" && participantAgentId
           ? participantAgentId
-          : issue.assigneeAgentId;
+          : freshIssue.assigneeAgentId;
         if (!agentId) {
           result.skipped += 1;
           continue;
         }
 
         const agent = await getAgent(agentId);
-        const agentInvokable = agent && agent.companyId === issue.companyId
+        const agentInvokable = agent && agent.companyId === freshIssue.companyId
           ? await isAgentInvokable(agent)
           : false;
-        if (issue.status !== "in_review" && !agentInvokable) {
-          result.skipped += 1;
-          continue;
-        }
 
         if (await hasActiveExecutionPath(
-          issue.companyId,
-          issue.id,
-          issue.status === "in_review" ? agentId : null,
+          freshIssue.companyId,
+          freshIssue.id,
+          freshIssue.status === "in_review" ? agentId : null,
         )) {
           result.skipped += 1;
           continue;
         }
 
-        if (await hasPendingWakeInteraction(issue.companyId, issue.id)) {
+        if (await hasPendingWakeInteraction(freshIssue.companyId, freshIssue.id)) {
           result.skipped += 1;
           continue;
         }
 
-        if (await isAutomaticRecoverySuppressedByPauseHold(db, issue.companyId, issue.id, treeControlSvc)) {
+        if (await isAutomaticRecoverySuppressedByPauseHold(db, freshIssue.companyId, freshIssue.id, treeControlSvc)) {
           result.skipped += 1;
           continue;
         }
 
+        const activeRecoveryAction = await recoveryActionsSvc.getActiveForIssue(freshIssue.companyId, freshIssue.id);
         // Local: fold/delay repeat missing-disposition recovery churn instead of
         // opening a new recovery issue every sweep.
-        const activeRecoveryAction = await recoveryActionsSvc.getActiveForIssue(issue.companyId, issue.id);
-        if (await shouldFoldOrDelayMissingDispositionRecovery({ issue, action: activeRecoveryAction })) {
+        if (await shouldFoldOrDelayMissingDispositionRecovery({ issue: freshIssue, action: activeRecoveryAction })) {
           result.skipped += 1;
           continue;
         }
 
-        let latestRun = await getLatestIssueRun(issue.companyId, issue.id);
+        let latestRun = await getLatestIssueRun(freshIssue.companyId, freshIssue.id);
+        if (freshIssue.status !== "in_review" && !agentInvokable) {
+          if (shouldDelayNoInvokableRecoveryOwnerEscalation(activeRecoveryAction)) {
+            result.skipped += 1;
+            continue;
+          }
+          const failureSummary = summarizeRunFailureForIssueComment(latestRun);
+          const updated = await escalateStrandedAssignedIssue({
+            issue: freshIssue,
+            previousStatus: freshIssue.status as StrandedPreviousStatus,
+            latestRun,
+            comment:
+              "Paperclip cannot continue this assigned issue because the assignee is not invokable " +
+              "and the issue has no live execution path. Moving it to `blocked` with a finite recovery action " +
+              "instead of retrying the dead assignee lane indefinitely." +
+              `${failureSummary ?? ""}`,
+          });
+          if (updated) {
+            result.escalated += 1;
+            result.issueIds.push(freshIssue.id);
+          } else {
+            result.skipped += 1;
+          }
+          continue;
+        }
         // Local: a queued/claimed/deferred wake or a future monitor wake is a live
         // continuation path — don't treat the issue as stranded. Exception: assigned
         // `todo` work whose latest run already failed still gets its one

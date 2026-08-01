@@ -54,6 +54,7 @@ type IssueRow = Pick<
   | "title"
   | "description"
   | "status"
+  | "workMode"
   | "assigneeAgentId"
   | "assigneeUserId"
   | "executionState"
@@ -141,6 +142,20 @@ function hasEventDrivenParkMarker(value: unknown): boolean {
 export function hasEventDrivenHubIdlePath(issue: IssueRow | null | undefined) {
   if (!issue || issue.status !== "in_progress") return false;
   return hasEventDrivenParkMarker(issue.executionState) || hasEventDrivenParkMarker(issue.executionPolicy);
+}
+
+function hasStandingExemptMarker(value: unknown): boolean {
+  if (!isRecord(value)) return false;
+  if (value.standingAnchor === true || value.nonActionable === true) return true;
+  return hasStandingExemptMarker(value.idlePath) || hasStandingExemptMarker(value.waitingPath);
+}
+
+export function isStandingExemptIssue(issue: IssueRow | null | undefined) {
+  if (!issue) return false;
+  if (issue.workMode === "standing") return true;
+  return hasEventDrivenHubIdlePath(issue) ||
+    hasStandingExemptMarker(issue.executionState) ||
+    hasStandingExemptMarker(issue.executionPolicy);
 }
 
 function keyValueRow(label: string, value: unknown): IssueCommentMetadata["sections"][number]["rows"][number] {
