@@ -70,6 +70,7 @@ wait_active() {
 cleanup() {
   shim service stop >/dev/null 2>&1 || true
   shim service uninstall >/dev/null 2>&1 || true
+  shim uninstall >/dev/null 2>&1 || true
 }
 trap cleanup EXIT
 
