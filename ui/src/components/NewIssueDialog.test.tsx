@@ -230,8 +230,12 @@ vi.mock("@/components/ui/button", () => ({
 }));
 
 vi.mock("@/components/ui/toggle-switch", () => ({
-  ToggleSwitch: ({ checked, onCheckedChange }: { checked: boolean; onCheckedChange: () => void }) => (
-    <button type="button" aria-pressed={checked} onClick={onCheckedChange}>toggle</button>
+  ToggleSwitch: ({ checked, onCheckedChange, ...props }: {
+    checked: boolean;
+    onCheckedChange: (checked: boolean) => void;
+    "aria-label"?: string;
+  }) => (
+    <button type="button" aria-pressed={checked} onClick={() => onCheckedChange(!checked)} {...props}>toggle</button>
   ),
 }));
 
@@ -473,6 +477,44 @@ describe("NewIssueDialog", () => {
       }),
     );
 
+    act(() => root.unmount());
+  });
+
+  it("defaults a private task to the current user's personal private project", async () => {
+    mockProjectsApi.list.mockResolvedValue([
+      {
+        id: "personal-project",
+        companyId: "company-1",
+        name: "My private tasks",
+        visibility: "private",
+        personalOwnerUserId: "user-1",
+        archivedAt: null,
+      },
+    ]);
+    dialogState.newIssueDefaults = { title: "Private scratch task" };
+
+    const { root } = renderDialog(container);
+    await flush();
+    await flush();
+    const privateToggle = container.querySelector<HTMLButtonElement>('button[aria-label="Private task"]');
+    expect(privateToggle).not.toBeNull();
+    await act(async () => privateToggle!.click());
+    await flush();
+
+    const submitButton = Array.from(container.querySelectorAll("button"))
+      .find((button) => button.textContent?.includes("Create Task"));
+    await waitForAssertion(() => expect(submitButton?.hasAttribute("disabled")).toBe(false));
+    await act(async () => submitButton!.click());
+    await flush();
+
+    expect(mockIssuesApi.create).toHaveBeenCalledWith(
+      "company-1",
+      expect.objectContaining({
+        title: "Private scratch task",
+        visibility: "private",
+        projectId: "personal-project",
+      }),
+    );
     act(() => root.unmount());
   });
 

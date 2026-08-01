@@ -1107,37 +1107,45 @@ describeEmbeddedPostgres("low-trust red-team HTTP route regression suite", () =>
     const attempts = [
       {
         id: "LT-02",
+        status: 404,
         req: () => request(app).get(`/api/issues/${fixture.issues.siblingOutOfScope.id}`),
       },
       {
         id: "LT-08",
+        status: 404,
         req: () => request(app).get(`/api/issues/${fixture.issues.siblingOutOfScope.id}/documents/canary`),
       },
       {
         id: "LT-08 revisions",
+        status: 404,
         req: () => request(app).get(`/api/issues/${fixture.issues.siblingOutOfScope.id}/documents/canary/revisions`),
       },
       {
         id: "LT-08 annotations",
+        status: 404,
         req: () => request(app)
           .get(`/api/issues/${fixture.issues.siblingOutOfScope.id}/documents/canary/annotations`)
           .query({ includeComments: "true" }),
       },
       {
         id: "LT-08 annotation thread",
+        status: 404,
         req: () => request(app)
           .get(`/api/issues/${fixture.issues.siblingOutOfScope.id}/documents/canary/annotations/${fixture.sensitiveRows.siblingAnnotationThreadId}`),
       },
       {
         id: "LT recovery actions",
+        status: 404,
         req: () => request(app).get(`/api/issues/${fixture.issues.siblingOutOfScope.id}/recovery-actions`),
       },
       {
         id: "LT external objects",
+        status: 404,
         req: () => request(app).get(`/api/issues/${fixture.issues.siblingOutOfScope.id}/external-objects`),
       },
       {
         id: "LT external object summary",
+        status: 404,
         req: () => request(app).get(`/api/issues/${fixture.issues.siblingOutOfScope.id}/external-object-summary`),
       },
       {
@@ -1146,10 +1154,12 @@ describeEmbeddedPostgres("low-trust red-team HTTP route regression suite", () =>
       },
       {
         id: "LT attachments",
+        status: 404,
         req: () => request(app).get(`/api/issues/${fixture.issues.siblingOutOfScope.id}/attachments`),
       },
       {
         id: "LT attachment content",
+        status: 404,
         req: () => request(app).get(`/api/attachments/${fixture.sensitiveRows.siblingAttachmentId}/content`),
       },
       {
@@ -1210,7 +1220,7 @@ describeEmbeddedPostgres("low-trust red-team HTTP route regression suite", () =>
     for (const attempt of attempts) {
       const before = await snapshot(db);
       const res = await attempt.req();
-      expect(res.status, `${attempt.id}: ${JSON.stringify(res.body)}`).toBe(403);
+      expect(res.status, `${attempt.id}: ${JSON.stringify(res.body)}`).toBe(attempt.status ?? 403);
       expectNoCanary(res.body, ...forbiddenMarkers);
       const after = await snapshot(db);
       expect(after.issues.length, attempt.id).toBe(before.issues.length);
@@ -1295,7 +1305,7 @@ describeEmbeddedPostgres("low-trust red-team HTTP route regression suite", () =>
 
     for (const attempt of attempts) {
       const res = await attempt.req();
-      expect(res.status, `${attempt.id}: ${JSON.stringify(res.body)}`).toBe(403);
+      expect(res.status, `${attempt.id}: ${JSON.stringify(res.body)}`).toBe(404);
       expectNoCanary(res.body, ...forbiddenMarkers);
     }
 

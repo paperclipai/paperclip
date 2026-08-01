@@ -134,6 +134,7 @@ import { InlineEditor } from "@/components/InlineEditor";
 import { PageSkeleton } from "@/components/PageSkeleton";
 import { Identity } from "@/components/Identity";
 import { IssueReferencePill } from "@/components/IssueReferencePill";
+import { LockedIssueChip } from "@/components/LockedIssueChip";
 import { MembershipAction } from "@/components/MembershipAction";
 import { IssueOutputSection } from "@/components/issue-output/IssueOutputSection";
 import { EnvironmentVariablesEditor } from "@/components/environment-variables-editor";
@@ -692,6 +693,19 @@ export function DesignGuide() {
             <IssueReferencePill issue={{ id: "demo-3", identifier: "PAP-789", title: "Done status", status: "done" }} />
             <IssueReferencePill issue={{ id: "demo-4", identifier: "PAP-101", title: "Blocked status", status: "blocked" }} />
             <IssueReferencePill strikethrough issue={{ id: "demo-5", identifier: "PAP-202", title: "Removed (strikethrough)", status: "todo" }} />
+          </div>
+        </SubSection>
+
+        <SubSection title="LockedIssueChip">
+          <p className="text-xs text-muted-foreground">
+            Existence-only reference to a private task shown from a surface the viewer can see
+            (a blocker edge, a mention). Mono id + lock, dashed muted border,{" "}
+            <strong>no title, never a link</strong>. Falls back to &quot;Private&quot; when even the
+            identifier is withheld.
+          </p>
+          <div className="flex items-center gap-2 flex-wrap">
+            <LockedIssueChip identifier="PAP-1234" />
+            <LockedIssueChip identifier={null} />
           </div>
         </SubSection>
       </Section>

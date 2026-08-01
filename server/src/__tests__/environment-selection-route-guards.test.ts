@@ -62,6 +62,12 @@ vi.mock("../services/index.js", () => ({
   workspaceOperationService: () => ({}),
   accessService: () => ({
     canUser: vi.fn(),
+    decide: vi.fn(async (input: { action: string }) => ({
+      allowed: input.action === "project:read",
+      action: input.action,
+      reason: input.action === "project:read" ? "allow_explicit_grant" : "deny_missing_grant",
+      explanation: input.action === "project:read" ? "Allowed by test default." : "Missing permission.",
+    })),
     hasPermission: vi.fn(),
   }),
   agentService: () => ({

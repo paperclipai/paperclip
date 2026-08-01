@@ -330,6 +330,36 @@ PAPERCLIP_HOME=/custom/path PAPERCLIP_INSTANCE_ID=dev pnpm paperclipai run
 
 No Docker or external database is required for this mode.
 
+## Issue Privacy Rollout
+
+`PAPERCLIP_ISSUE_PRIVACY_MODE` controls the canonical opt-in issue/project privacy predicate:
+
+- `enforce` (default): return private issues only to implicit principals, issue grantees, or private-project access members; hide private projects from non-members
+- `shadow`: log structured would-deny decisions but preserve existing reads; use only for rollout diagnosis
+- `off`: skip the predicate and shadow logging
+
+Grant lookups use a five-second cache by default; override it with `PAPERCLIP_ISSUE_PRIVACY_CACHE_TTL_MS` when testing revocation timing.
+
+The default changed from `shadow` to `enforce` after the P5 shadow-log review. The
+review ran the privacy authorization and route fixtures in shadow mode, classified
+every structured `issue privacy would deny read` / `project privacy would deny read`
+record against the expected non-member probes, and found zero unexpected denials.
+Keep `shadow` as a temporary diagnostic override; it is not a safe production
+privacy setting. See [ISSUE-PRIVACY.md](./ISSUE-PRIVACY.md) for the user-facing
+model, break-glass behavior, and residual risks.
+
+Issue-bound heartbeat runs inherit the same read predicate through the stored
+`heartbeat_runs.scope_kind = 'issue'` and `issue_id` binding. Issue deletion
+nulls the foreign key but preserves the explicit issue scope as a fail-closed
+tombstone. Workspace-operation history is either deleted with its direct issue
+or run binding, or remains bound to that fail-closed run tombstone, so it cannot
+become company-level maintenance data through foreign-key nulling. In enforce mode, direct run detail, transcript,
+event, log, and workspace-operation reads return `404` to non-members. Company
+run-history and live-run lists retain a metadata-only row with timing, status,
+token usage, and cost for budget oversight; issue identifiers, summaries, and
+run content are omitted. Runs without an issue binding keep company-level
+maintenance-run visibility.
+
 ## Storage in Dev (Auto-Handled)
 
 For local development, the default storage provider is `local_disk`, which persists uploaded images/attachments at:

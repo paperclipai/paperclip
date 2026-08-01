@@ -124,7 +124,17 @@ function registerModuleMocks() {
   }));
 }
 
-async function createApp(db: unknown = {}) {
+function createEmptyRelationReadDb() {
+  const query = {
+    from: vi.fn().mockReturnThis(),
+    where: vi.fn(async () => []),
+  };
+  return {
+    select: vi.fn().mockReturnValue(query),
+  };
+}
+
+async function createApp(db: unknown = createEmptyRelationReadDb()) {
   const [{ issueRoutes }, { errorHandler }] = await Promise.all([
     vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),

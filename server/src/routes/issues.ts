@@ -2,17 +2,19 @@ import { createHash, randomUUID } from "node:crypto";
 import { Router, type Request, type Response } from "express";
 import multer from "multer";
 import { z } from "zod";
-import { and, asc, desc, eq, inArray, isNull, notInArray } from "drizzle-orm";
+import { and, asc, desc, eq, inArray, isNull, notInArray, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
   agents,
   approvals,
+  authUsers,
   companyMemberships,
   documents,
   executionWorkspaces,
   heartbeatRuns,
   issueApprovals,
+  issueAccessGrants,
   issueComments,
   issueDocuments,
   issueExecutionDecisions,
@@ -20,6 +22,7 @@ import {
   issueThreadInteractions,
   issues as issueRows,
   issueWorkProducts,
+  instanceUserRoles,
   pipelineCaseIssueLinks,
   pipelineCases,
   pipelineStages,
@@ -88,6 +91,7 @@ import {
   type IssueWakeDiagnosticWakeRequest,
   type IssueWakeDiagnosticsResponse,
   type IssueRelationIssueSummary,
+  type IssueLockedStub,
   type IssueCommentPresentation,
   type IssueWatchdogDiscoveryKind,
   type ProjectWorkspace,
@@ -168,9 +172,15 @@ import {
   ISSUE_WAKE_DIAGNOSTICS_MAX_WAKE_REQUESTS,
   readAcceptedPlanConfirmationTarget,
 } from "../services/issues.js";
-import { authorizationDeniedDetails } from "../services/authorization.js";
+import {
+  authorizationDeniedDetails,
+  invalidateIssuePrivacyGrantCache,
+  issueReadSqlCondition,
+  projectReadSqlCondition,
+} from "../services/authorization.js";
 import { environmentService } from "../services/environments.js";
 import { environmentRuntimeService } from "../services/environment-runtime.js";
+import { ensurePersonalPrivateProject } from "../services/projects.js";
 import { redactSensitiveText } from "../redaction.js";
 import {
   createCompanySearchRateLimiter,
@@ -219,6 +229,11 @@ const inboxArchiveBodySchema = z.object({
 }).strict().default({});
 const externalObjectSummariesSchema = z.object({
   issueIds: z.array(z.string().uuid()).max(1000),
+}).strict();
+const revokeIssueAccessGrantSchema = z.object({}).strict().default({});
+const createIssueAccessGrantSchema = z.object({
+  subjectType: z.enum(["user", "agent"]),
+  subjectId: z.string().trim().min(1),
 }).strict();
 
 const promoteLowTrustOutputSchema = z.object({
@@ -276,8 +291,16 @@ type RecoveryRevalidationTrigger =
   | "work_product"
   | "read_projection";
 type CompanySearchService = {
-  extract(companyId: string, query: CompanySearchExtractQuery): Promise<CompanySearchExtractResponse>;
-  search(companyId: string, query: CompanySearchQuery): Promise<CompanySearchResponse>;
+  extract(
+    companyId: string,
+    query: CompanySearchExtractQuery,
+    options?: { issueReadCondition?: SQL<boolean> },
+  ): Promise<CompanySearchExtractResponse>;
+  search(
+    companyId: string,
+    query: CompanySearchQuery,
+    options?: { issueReadCondition?: SQL<boolean>; projectReadCondition?: SQL<boolean> },
+  ): Promise<CompanySearchResponse>;
 };
 type ActivityIssueRelationSummary = {
   id: string;
@@ -2159,6 +2182,8 @@ function toCompactIssue(issue: any): CompactIssue {
     projectWorkspaceId: issue.projectWorkspaceId,
     goalId: issue.goalId,
     parentId: issue.parentId,
+    visibility: issue.visibility,
+    privacyRootIssueId: issue.privacyRootIssueId,
     title: issue.title,
     description: issue.description,
     status: issue.status,
@@ -3460,11 +3485,398 @@ export function issueRoutes(
     });
   }
 
-  async function assertIssueReadAllowed(req: Request, res: Response, issue: Parameters<typeof decideIssueAccess>[1]) {
+  async function canUseIssueBreakGlass(req: Request, issue: { companyId: string }) {
+    if (req.actor.type !== "board" || !req.actor.userId) return false;
+    return db
+      .select({ role: companyMemberships.membershipRole })
+      .from(companyMemberships)
+      .where(and(
+        eq(companyMemberships.companyId, issue.companyId),
+        eq(companyMemberships.principalType, "user"),
+        eq(companyMemberships.principalId, req.actor.userId),
+        eq(companyMemberships.status, "active"),
+        inArray(companyMemberships.membershipRole, ["owner", "admin"]),
+      ))
+      .limit(1)
+      .then((rows) => rows.length > 0);
+  }
+
+  async function recordIssueBreakGlassRead(
+    req: Request,
+    issue: Parameters<typeof decideIssueAccess>[1] & { identifier?: string | null },
+  ) {
+    const actor = getActorInfo(req);
+    const occurredAt = new Date().toISOString();
+    await db.transaction(async (tx) => {
+      const txDb = tx as unknown as Db;
+      await issueService(txDb).addComment(
+        issue.id,
+        `A company administrator used audited break-glass access to read this private task at ${occurredAt}.`,
+        {},
+        {
+          authorType: "system",
+          presentation: {
+            kind: "system_notice",
+            tone: "warning",
+            title: "Break-glass access used",
+            detailsDefaultOpen: false,
+            density: "compact",
+          },
+        },
+      );
+      await logActivity(txDb, {
+        companyId: issue.companyId,
+        actorType: "user",
+        actorId: actor.actorId,
+        agentId: null,
+        runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
+        action: "issue.break_glass_read",
+        entityType: "issue",
+        entityId: issue.id,
+        issueId: issue.id,
+        details: {
+          issueId: issue.id,
+          occurredAt,
+          acknowledgement: "breakGlass=true",
+        },
+      });
+    });
+  }
+
+  async function assertIssueReadAllowed(
+    req: Request,
+    res: Response,
+    issue: Parameters<typeof decideIssueAccess>[1] & { identifier?: string | null },
+    options: { allowBreakGlass?: boolean } = {},
+  ) {
     const decision = await decideIssueAccess(req, issue, "issue:read");
     if (decision.allowed) return true;
-    res.status(403).json({ error: "Issue is outside this actor's authorization boundary" });
+    if (
+      options.allowBreakGlass === true
+      && req.query.breakGlass === "true"
+      && decision.reason === "deny_issue_private"
+      && await canUseIssueBreakGlass(req, issue)
+    ) {
+      await recordIssueBreakGlassRead(req, issue);
+      return true;
+    }
+    res.status(404).json({ error: "Issue not found" });
     return false;
+  }
+
+  async function canActorReadProject(req: Request, project: { id: string; companyId: string }) {
+    return access.decide({
+      actor: req.actor,
+      action: "project:read",
+      resource: { type: "project", companyId: project.companyId, projectId: project.id },
+    }).then((decision) => decision.allowed);
+  }
+
+  async function visibleIssueProject<T extends { id: string; companyId: string }>(
+    req: Request,
+    project: T | null,
+  ): Promise<T | null> {
+    if (!project) return null;
+    return (await canActorReadProject(req, project)) ? project : null;
+  }
+
+  async function assertCanManageIssuePrivacy(
+    req: Request,
+    res: Response,
+    issue: { companyId: string; responsibleUserId: string | null; createdByUserId: string | null; assigneeUserId: string | null },
+  ) {
+    if (req.actor.type !== "board" || !req.actor.userId) {
+      res.status(403).json({ error: "Only a responsible user, issue owner, or administrator can manage issue privacy" });
+      return false;
+    }
+    if (req.actor.source === "local_implicit" || req.actor.isInstanceAdmin) return true;
+    const instanceAdmin = req.actor.source !== "cloud_tenant"
+      ? await db
+          .select({ id: instanceUserRoles.id })
+          .from(instanceUserRoles)
+          .where(and(
+            eq(instanceUserRoles.userId, req.actor.userId),
+            eq(instanceUserRoles.role, "instance_admin"),
+          ))
+          .limit(1)
+          .then((rows) => rows[0] ?? null)
+      : null;
+    if (instanceAdmin) return true;
+    if (
+      issue.responsibleUserId === req.actor.userId
+      || issue.createdByUserId === req.actor.userId
+      || issue.assigneeUserId === req.actor.userId
+    ) return true;
+    const membership = await db
+      .select({ role: companyMemberships.membershipRole })
+      .from(companyMemberships)
+      .where(and(
+        eq(companyMemberships.companyId, issue.companyId),
+        eq(companyMemberships.principalType, "user"),
+        eq(companyMemberships.principalId, req.actor.userId),
+        eq(companyMemberships.status, "active"),
+      ))
+      .then((rows) => rows[0] ?? null);
+    if (membership && (membership.role === "owner" || membership.role === "admin")) return true;
+    res.status(403).json({ error: "Only a responsible user, issue owner, or administrator can manage issue privacy" });
+    return false;
+  }
+
+  async function resolveIssuePrivacyManagementRoot(
+    req: Request,
+    res: Response,
+    issue: Parameters<typeof decideIssueAccess>[1] & {
+      privacyRootIssueId: string | null;
+      responsibleUserId: string | null;
+      createdByUserId: string | null;
+    },
+  ) {
+    const privacyRootId = issue.privacyRootIssueId ?? issue.id;
+    const privacyRoot = privacyRootId === issue.id
+      ? issue
+      : await getAccessibleResource(req, res, svc.getById(privacyRootId), "Issue not found");
+    if (!privacyRoot) return null;
+    if (privacyRoot.id !== issue.id && !(await assertIssueReadAllowed(req, res, privacyRoot))) return null;
+    if (!(await assertCanManageIssuePrivacy(req, res, privacyRoot))) return null;
+    return privacyRoot;
+  }
+
+  function subjectInitials(displayName: string | null) {
+    if (!displayName) return null;
+    const parts = displayName.trim().split(/\s+/).filter(Boolean);
+    if (parts.length === 0) return null;
+    return parts.slice(0, 2).map((part) => part[0]!.toUpperCase()).join("");
+  }
+
+  function issueGrantAgentVisibility(permissions: unknown): "discoverable" | "private" | null {
+    if (!permissions || typeof permissions !== "object" || Array.isArray(permissions)) return null;
+    const authorizationPolicy = (permissions as Record<string, unknown>).authorizationPolicy;
+    if (!authorizationPolicy || typeof authorizationPolicy !== "object" || Array.isArray(authorizationPolicy)) return null;
+    const agentVisibility = (authorizationPolicy as Record<string, unknown>).agentVisibility;
+    if (!agentVisibility || typeof agentVisibility !== "object" || Array.isArray(agentVisibility)) return null;
+    const mode = (agentVisibility as Record<string, unknown>).mode;
+    return mode === "private" || mode === "discoverable" ? mode : null;
+  }
+
+  async function ensureActiveIssueAccessGrant(
+    dbOrTx: any,
+    input: {
+      issueId: string;
+      subjectType: "user" | "agent";
+      subjectId: string;
+      source: "explicit" | "assignment";
+      grantedByUserId: string | null;
+      grantedByAgentId: string | null;
+    },
+  ) {
+    // No partial unique constraint is required for rollout compatibility. The
+    // transaction-scoped lock serializes the active-row check for this tuple,
+    // including the first insert where SELECT FOR UPDATE cannot lock a row.
+    const lockKey = `issue-access-grant:${input.issueId}:${input.subjectType}:${input.subjectId}`;
+    await dbOrTx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`);
+    const active = await dbOrTx
+      .select()
+      .from(issueAccessGrants)
+      .where(and(
+        eq(issueAccessGrants.issueId, input.issueId),
+        eq(issueAccessGrants.subjectType, input.subjectType),
+        eq(issueAccessGrants.subjectId, input.subjectId),
+        isNull(issueAccessGrants.revokedAt),
+      ))
+      .orderBy(desc(issueAccessGrants.createdAt), desc(issueAccessGrants.id))
+      .limit(1)
+      .then((rows: Array<typeof issueAccessGrants.$inferSelect>) => rows[0] ?? null);
+    if (active) return { grant: active, created: false as const };
+
+    const grant = await dbOrTx
+      .insert(issueAccessGrants)
+      .values(input)
+      .returning()
+      .then((rows: Array<typeof issueAccessGrants.$inferSelect>) => rows[0]!);
+    invalidateIssuePrivacyGrantCache({
+      subjectType: input.subjectType,
+      subjectId: input.subjectId,
+      issueId: input.issueId,
+    });
+    return { grant, created: true as const };
+  }
+
+  async function enrichIssueAccessGrants(
+    companyId: string,
+    grants: Array<typeof issueAccessGrants.$inferSelect>,
+  ) {
+    const agentIds = [...new Set(grants.filter((grant) => grant.subjectType === "agent").map((grant) => grant.subjectId))];
+    const userIds = [...new Set(grants.filter((grant) => grant.subjectType === "user").map((grant) => grant.subjectId))];
+    const [agentRows, userRows] = await Promise.all([
+      agentIds.length === 0
+        ? Promise.resolve([])
+        : db.select({
+            id: agents.id,
+            name: agents.name,
+            permissions: agents.permissions,
+          }).from(agents).where(and(eq(agents.companyId, companyId), inArray(agents.id, agentIds))),
+      userIds.length === 0
+        ? Promise.resolve([])
+        : db.select({ id: authUsers.id, name: authUsers.name, image: authUsers.image })
+            .from(authUsers)
+            .where(inArray(authUsers.id, userIds)),
+    ]);
+    const agentsById = new Map(agentRows.map((agent) => [agent.id, agent]));
+    const usersById = new Map(userRows.map((user) => [user.id, user]));
+
+    return grants.map((grant) => {
+      const agent = grant.subjectType === "agent" ? agentsById.get(grant.subjectId) : null;
+      const user = grant.subjectType === "user" ? usersById.get(grant.subjectId) : null;
+      const subjectDisplayName = agent?.name ?? user?.name ?? null;
+      return {
+        ...grant,
+        subjectDisplayName,
+        subjectAvatarUrl: user?.image ?? null,
+        subjectInitials: subjectInitials(subjectDisplayName),
+        agentVisibility: agent ? issueGrantAgentVisibility(agent.permissions) : null,
+      };
+    });
+  }
+
+  async function assertIssueGrantSubjectExists(
+    companyId: string,
+    subjectType: "user" | "agent",
+    subjectId: string,
+  ) {
+    if (subjectType === "agent") {
+      const agent = await db
+        .select({ id: agents.id })
+        .from(agents)
+        .where(and(eq(agents.companyId, companyId), eq(agents.id, subjectId)))
+        .limit(1)
+        .then((rows) => rows[0] ?? null);
+      if (!agent) throw unprocessable("Grant subject must be an agent in the issue company");
+      return;
+    }
+    const member = await db
+      .select({ id: companyMemberships.id })
+      .from(companyMemberships)
+      .where(and(
+        eq(companyMemberships.companyId, companyId),
+        eq(companyMemberships.principalType, "user"),
+        eq(companyMemberships.principalId, subjectId),
+        eq(companyMemberships.status, "active"),
+      ))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (!member) throw unprocessable("Grant subject must be an active user in the issue company");
+  }
+
+  type IssueEdgeReference = IssueRelationIssueSummary | IssueLockedStub;
+
+  async function readableIssueEdgeIds(req: Request, companyId: string, ids: string[]) {
+    const uniqueIds = [...new Set(ids)];
+    if (uniqueIds.length === 0) return new Set<string>();
+    const rows = await db
+      .select({
+        id: issueRows.id,
+        companyId: issueRows.companyId,
+        projectId: issueRows.projectId,
+        parentId: issueRows.parentId,
+        assigneeAgentId: issueRows.assigneeAgentId,
+        assigneeUserId: issueRows.assigneeUserId,
+        status: issueRows.status,
+      })
+      .from(issueRows)
+      .where(and(eq(issueRows.companyId, companyId), inArray(issueRows.id, uniqueIds)));
+    const decisions = await Promise.all(rows.map(async (row) => ({
+      id: row.id,
+      allowed: (await decideIssueAccess(req, row, "issue:read")).allowed,
+    })));
+    return new Set(decisions.filter((decision) => decision.allowed).map((decision) => decision.id));
+  }
+
+  function lockedIssueStub(issue: Pick<IssueRelationIssueSummary, "id" | "identifier">): IssueLockedStub {
+    return { id: issue.id, identifier: issue.identifier, locked: true };
+  }
+
+  async function redactIssueRelationEdges(
+    req: Request,
+    companyId: string,
+    relations: { blockedBy: IssueRelationIssueSummary[]; blocks: IssueRelationIssueSummary[] },
+  ): Promise<{ blockedBy: IssueEdgeReference[]; blocks: IssueEdgeReference[] }> {
+    const all = [...relations.blockedBy, ...relations.blocks];
+    const edgeIds = new Set<string>();
+    const pending = [...all];
+    while (pending.length > 0) {
+      const issue = pending.pop()!;
+      if (edgeIds.has(issue.id)) continue;
+      edgeIds.add(issue.id);
+      pending.push(...(issue.terminalBlockers ?? []));
+    }
+    const readableIds = await readableIssueEdgeIds(req, companyId, [...edgeIds]);
+    const redact = (issue: IssueRelationIssueSummary, ancestors = new Set<string>()): IssueEdgeReference => {
+      if (!readableIds.has(issue.id)) return lockedIssueStub(issue);
+      const { terminalBlockers, ...visibleFields } = issue;
+      if (ancestors.has(issue.id)) return visibleFields as IssueRelationIssueSummary;
+      const nextAncestors = new Set(ancestors).add(issue.id);
+      return {
+        ...visibleFields,
+        ...(terminalBlockers
+          ? { terminalBlockers: terminalBlockers.map((child) => redact(child, nextAncestors)) as IssueRelationIssueSummary[] }
+          : {}),
+      };
+    };
+    return {
+      blockedBy: relations.blockedBy.map((issue) => redact(issue)),
+      blocks: relations.blocks.map((issue) => redact(issue)),
+    };
+  }
+
+  async function redactIssueReferenceEdges<T extends {
+    outbound: Array<{ issue: IssueRelationIssueSummary }>;
+    inbound: Array<{ issue: IssueRelationIssueSummary }>;
+  }>(req: Request, companyId: string, summary: T) {
+    const items = [...summary.outbound, ...summary.inbound];
+    const readableIds = await readableIssueEdgeIds(req, companyId, items.map((item) => item.issue.id));
+    const redactItems = <I extends { issue: IssueRelationIssueSummary }>(rows: I[]) => rows.map((item) => ({
+      ...item,
+      issue: readableIds.has(item.issue.id) ? item.issue : lockedIssueStub(item.issue),
+    }));
+    return {
+      outbound: redactItems(summary.outbound),
+      inbound: redactItems(summary.inbound),
+    };
+  }
+
+  async function redactIssueRelationEdgesOnRows<T extends {
+    id: string;
+    blockedBy?: IssueRelationIssueSummary[];
+    blocks?: IssueRelationIssueSummary[];
+  }>(req: Request, companyId: string, rows: T[]): Promise<T[]> {
+    const related = rows.flatMap((row) => [...(row.blockedBy ?? []), ...(row.blocks ?? [])]);
+    const edgeIds = new Set<string>();
+    const pending = [...related];
+    while (pending.length > 0) {
+      const issue = pending.pop()!;
+      if (edgeIds.has(issue.id)) continue;
+      edgeIds.add(issue.id);
+      pending.push(...(issue.terminalBlockers ?? []));
+    }
+    const readableIds = await readableIssueEdgeIds(req, companyId, [...edgeIds]);
+    const redact = (issue: IssueRelationIssueSummary, ancestors = new Set<string>()): IssueEdgeReference => {
+      if (!readableIds.has(issue.id)) return lockedIssueStub(issue);
+      const { terminalBlockers, ...visibleFields } = issue;
+      if (ancestors.has(issue.id)) return visibleFields as IssueRelationIssueSummary;
+      const nextAncestors = new Set(ancestors).add(issue.id);
+      return {
+        ...visibleFields,
+        ...(terminalBlockers
+          ? { terminalBlockers: terminalBlockers.map((child) => redact(child, nextAncestors)) as IssueRelationIssueSummary[] }
+          : {}),
+      };
+    };
+    return rows.map((row) => ({
+      ...row,
+      ...(row.blockedBy ? { blockedBy: row.blockedBy.map((issue) => redact(issue)) } : {}),
+      ...(row.blocks ? { blocks: row.blocks.map((issue) => redact(issue)) } : {}),
+    })) as T[];
   }
 
   async function assertAgentIssueCommentAllowed(
@@ -4580,6 +4992,8 @@ export function issueRoutes(
       goals: project.goals,
       name: project.name,
       description: project.description,
+      visibility: project.visibility,
+      personalOwnerUserId: project.personalOwnerUserId,
       status: project.status,
       leadAgentId: project.leadAgentId,
       targetDate: project.targetDate,
@@ -4732,7 +5146,9 @@ export function issueRoutes(
       });
       return;
     }
-    const result = await getSearchService().extract(companyId, parsedQuery.data);
+    const result = await getSearchService().extract(companyId, parsedQuery.data, {
+      issueReadCondition: await issueReadSqlCondition(db, req.actor),
+    });
     res.json(result);
   });
 
@@ -4774,7 +5190,10 @@ export function issueRoutes(
       });
       return;
     }
-    const result = await getSearchService().search(companyId, query);
+    const result = await getSearchService().search(companyId, query, {
+      issueReadCondition: await issueReadSqlCondition(db, req.actor),
+      projectReadCondition: await projectReadSqlCondition(db, req.actor),
+    });
     res.json(result);
   });
 
@@ -4893,6 +5312,7 @@ export function issueRoutes(
     const offset = parsedOffset ?? 0;
 
     const listFilters: IssueFilters = {
+      readCondition: await issueReadSqlCondition(db, req.actor),
       attention: attention === "blocked" ? "blocked" : undefined,
       status: req.query.status as string | string[] | undefined,
       assigneeAgentId,
@@ -4927,11 +5347,15 @@ export function issueRoutes(
       sortField: sortField === "updated" ? "updated" : undefined,
       sortDir: sortDir === "asc" || sortDir === "desc" ? sortDir : undefined,
     };
+    // readCondition is a Drizzle SQL object with cyclic internal references;
+    // actor identity already scopes the coordinator key, so only serializable
+    // request filters belong in its normalized query.
+    const { readCondition: _readCondition, ...requestKeyFilters } = listFilters;
     const requestKey = issueListRequestKey({
       req,
       companyId,
       normalizedQuery: {
-        ...listFilters,
+        ...requestKeyFilters,
         view: compactView ? "compact" : undefined,
       },
     });
@@ -4943,9 +5367,10 @@ export function issueRoutes(
       diagnostics: opts.issueListDiagnostics,
       compute: async () => {
         const rawResult = await svc.list(companyId, listFilters);
-        const result = await actorCanReadCompanyScope(req, companyId)
+        const visibleRows = await actorCanReadCompanyScope(req, companyId)
           ? rawResult
           : await filterIssuesForActor(req, rawResult);
+        const result = await redactIssueRelationEdgesOnRows(req, companyId, visibleRows);
         const issueIds = result.map((issue) => issue.id);
         if (compactView) {
           const [handoffStates, recoveryActionByIssue] = await Promise.all([
@@ -5088,6 +5513,7 @@ export function issueRoutes(
     }
 
     const blockedCountFilters = {
+      readCondition: await issueReadSqlCondition(db, req.actor),
       attention: "blocked",
       status: req.query.status as string | string[] | undefined,
       assigneeAgentId: req.query.assigneeAgentId as string | undefined,
@@ -5247,6 +5673,7 @@ export function issueRoutes(
         currentExecutionWorkspacePromise,
         recoveryActionsSvc.getActiveForIssue(issue.companyId, issue.id),
       ]);
+    const visibleProject = await visibleIssueProject(req, project);
     const recoveryActionsByRelationIssue = await relationRecoveryActionMap(
       recoveryActionsSvc,
       issue.companyId,
@@ -5256,6 +5683,7 @@ export function issueRoutes(
       relations,
       recoveryActionsByRelationIssue,
     );
+    const visibleRelations = await redactIssueRelationEdges(req, issue.companyId, relationsWithRecoveryActions);
     const revalidatedActiveRecoveryAction = await revalidateActiveSourceRecoveryForRead({
       issue,
       trigger: "read_projection",
@@ -5297,8 +5725,8 @@ export function issueRoutes(
         projectId: issue.projectId,
         goalId: goal?.id ?? issue.goalId,
         parentId: issue.parentId,
-        blockedBy: relationsWithRecoveryActions.blockedBy,
-        blocks: relationsWithRecoveryActions.blocks,
+        blockedBy: visibleRelations.blockedBy,
+        blocks: visibleRelations.blocks,
         assigneeAgentId: issue.assigneeAgentId,
         assigneeUserId: issue.assigneeUserId,
         originKind: issue.originKind,
@@ -5312,12 +5740,12 @@ export function issueRoutes(
         status: ancestor.status,
         priority: ancestor.priority,
       })),
-      project: project
+      project: visibleProject
         ? {
-            id: project.id,
-            name: project.name,
-            status: project.status,
-            targetDate: project.targetDate,
+            id: visibleProject.id,
+            name: visibleProject.name,
+            status: visibleProject.status,
+            targetDate: visibleProject.targetDate,
           }
         : null,
       goal: goal
@@ -5485,7 +5913,7 @@ export function issueRoutes(
     const id = req.params.id as string;
     const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
     if (!issue) return;
-    if (!(await assertIssueReadAllowed(req, res, issue))) return;
+    if (!(await assertIssueReadAllowed(req, res, issue, { allowBreakGlass: true }))) return;
     const inboxArchiveFieldsPromise = req.actor.type === "board" && req.actor.userId
       ? svc.getActiveInboxArchiveFields(issue, req.actor.userId)
       : Promise.resolve({});
@@ -5527,6 +5955,10 @@ export function issueRoutes(
       relations,
       recoveryActionsByRelationIssue,
     );
+    const [visibleRelations, visibleReferenceSummary] = await Promise.all([
+      redactIssueRelationEdges(req, issue.companyId, relationsWithRecoveryActions),
+      redactIssueReferenceEdges(req, issue.companyId, referenceSummary),
+    ]);
     const revalidatedActiveRecoveryAction = await revalidateActiveSourceRecoveryForRead({
       issue,
       trigger: "read_projection",
@@ -5536,6 +5968,11 @@ export function issueRoutes(
     const mentionedProjects = mentionedProjectIds.length > 0
       ? await projectsSvc.listByIds(issue.companyId, mentionedProjectIds)
       : [];
+    const [visibleProject, mentionedProjectVisibility] = await Promise.all([
+      visibleIssueProject(req, project),
+      Promise.all(mentionedProjects.map((mentionedProject) => canActorReadProject(req, mentionedProject))),
+    ]);
+    const visibleMentionedProjects = mentionedProjects.filter((_, index) => mentionedProjectVisibility[index]);
     const currentExecutionWorkspace = issue.executionWorkspaceId
       ? await executionWorkspacesSvc.getById(issue.executionWorkspaceId)
       : null;
@@ -5550,14 +5987,14 @@ export function issueRoutes(
       successfulRunHandoff: successfulRunHandoffStates.get(issue.id) ?? null,
       scheduledRetry,
       activeRecoveryAction: revalidatedActiveRecoveryAction,
-      blockedBy: relationsWithRecoveryActions.blockedBy,
-      blocks: relationsWithRecoveryActions.blocks,
-      relatedWork: referenceSummary,
-      referencedIssueIdentifiers: referenceSummary.outbound.map((item) => item.issue.identifier ?? item.issue.id),
+      blockedBy: visibleRelations.blockedBy,
+      blocks: visibleRelations.blocks,
+      relatedWork: visibleReferenceSummary,
+      referencedIssueIdentifiers: visibleReferenceSummary.outbound.map((item) => item.issue.identifier ?? item.issue.id),
       ...documentPayload,
-      project: compactIssueProject(project),
+      project: compactIssueProject(visibleProject),
       goal: goal ?? null,
-      mentionedProjects,
+      mentionedProjects: visibleMentionedProjects,
       currentExecutionWorkspace: compactIssueExecutionWorkspace(currentExecutionWorkspace),
       workProducts,
       linkedCases,
@@ -7178,6 +7615,22 @@ export function issueRoutes(
         }
         : {}),
     };
+    if (createBody.projectId) {
+      const selectedProject = await projectsSvc.getById(createBody.projectId);
+      if (!selectedProject || selectedProject.companyId !== companyId) {
+        res.status(404).json({ error: "Project not found" });
+        return;
+      }
+      const projectDecision = await access.decide({
+        actor: req.actor,
+        action: "project:read",
+        resource: { type: "project", companyId, projectId: selectedProject.id },
+      });
+      if (!projectDecision.allowed) {
+        res.status(404).json({ error: "Project not found" });
+        return;
+      }
+    }
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, { companyId }, createBody))) return;
     const createAssignmentScope = {
       projectId: await resolveAssignmentProjectId({
@@ -7227,12 +7680,13 @@ export function issueRoutes(
     });
     if (deduplicationReason) {
       const referenceSummary = await issueReferencesSvc.listIssueReferenceSummary(issue.id);
+      const visibleReferenceSummary = await redactIssueReferenceEdges(req, companyId, referenceSummary);
       res.status(200).json({
         ...issue,
         deduplicated: true,
         deduplicationReason,
-        relatedWork: referenceSummary,
-        referencedIssueIdentifiers: referenceSummary.outbound.map((item) => item.issue.identifier ?? item.issue.id),
+        relatedWork: visibleReferenceSummary,
+        referencedIssueIdentifiers: visibleReferenceSummary.outbound.map((item) => item.issue.identifier ?? item.issue.id),
       });
       return;
     }
@@ -7334,10 +7788,11 @@ export function issueRoutes(
     });
     await queueTaskWatchdogEvaluation(issue, actor.runId);
 
+    const visibleReferenceSummary = await redactIssueReferenceEdges(req, companyId, referenceSummary);
     res.status(201).json({
       ...issue,
-      relatedWork: referenceSummary,
-      referencedIssueIdentifiers: referenceSummary.outbound.map((item) => item.issue.identifier ?? item.issue.id),
+      relatedWork: visibleReferenceSummary,
+      referencedIssueIdentifiers: visibleReferenceSummary.outbound.map((item) => item.issue.identifier ?? item.issue.id),
     });
   });
 
@@ -7770,10 +8225,120 @@ export function issueRoutes(
     res.json(result);
   });
 
+  router.get("/issues/:id/access-grants", async (req, res) => {
+    const issue = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
+    if (!issue || !(await assertIssueReadAllowed(req, res, issue))) return;
+    const privacyRoot = await resolveIssuePrivacyManagementRoot(req, res, issue);
+    if (!privacyRoot) return;
+    const grantIssueIds = [...new Set([issue.id, privacyRoot.id])];
+    const grants = await db
+      .select()
+      .from(issueAccessGrants)
+      .where(inArray(issueAccessGrants.issueId, grantIssueIds))
+      .orderBy(desc(issueAccessGrants.createdAt), desc(issueAccessGrants.id));
+    res.json(await enrichIssueAccessGrants(issue.companyId, grants));
+  });
+
+  router.post(
+    "/issues/:id/access-grants",
+    validate(createIssueAccessGrantSchema),
+    async (req, res) => {
+      const issue = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
+      if (!issue || !(await assertIssueReadAllowed(req, res, issue))) return;
+      const privacyRoot = await resolveIssuePrivacyManagementRoot(req, res, issue);
+      if (!privacyRoot) return;
+      if (privacyRoot.privacyRootIssueId === null) {
+        res.status(409).json({ error: "Open issues do not require access grants" });
+        return;
+      }
+      const subjectType = req.body.subjectType as "user" | "agent";
+      const subjectId = req.body.subjectId as string;
+      await assertIssueGrantSubjectExists(issue.companyId, subjectType, subjectId);
+      const actor = getActorInfo(req);
+      const result = await db.transaction((tx) => ensureActiveIssueAccessGrant(tx, {
+        issueId: privacyRoot.id,
+        subjectType,
+        subjectId,
+        source: "explicit",
+        grantedByUserId: actor.actorType === "user" ? actor.actorId : null,
+        grantedByAgentId: actor.agentId,
+      }));
+      if (result.created) {
+        await logActivity(db, {
+          companyId: issue.companyId,
+          actorType: actor.actorType,
+          actorId: actor.actorId,
+          agentId: actor.agentId,
+          runId: actor.runId,
+          agentApiKeyId: actor.agentApiKeyId,
+          action: "issue_access_grant.created",
+          entityType: "issue_access_grant",
+          entityId: result.grant.id,
+          details: {
+            issueId: result.grant.issueId,
+            subjectType: result.grant.subjectType,
+            subjectId: result.grant.subjectId,
+            source: result.grant.source,
+          },
+        });
+      }
+      const [enriched] = await enrichIssueAccessGrants(issue.companyId, [result.grant]);
+      res.status(result.created ? 201 : 200).json(enriched);
+    },
+  );
+
+  router.post(
+    "/issues/:id/access-grants/:grantId/revoke",
+    validate(revokeIssueAccessGrantSchema),
+    async (req, res) => {
+      const issue = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
+      if (!issue || !(await assertIssueReadAllowed(req, res, issue))) return;
+      const privacyRoot = await resolveIssuePrivacyManagementRoot(req, res, issue);
+      if (!privacyRoot) return;
+      const grantIssueIds = [...new Set([issue.id, privacyRoot.id])];
+      const [grant] = await db
+        .update(issueAccessGrants)
+        .set({ revokedAt: new Date() })
+        .where(and(
+          eq(issueAccessGrants.id, req.params.grantId as string),
+          inArray(issueAccessGrants.issueId, grantIssueIds),
+          isNull(issueAccessGrants.revokedAt),
+        ))
+        .returning();
+      if (!grant) {
+        res.status(404).json({ error: "Issue access grant not found" });
+        return;
+      }
+      invalidateIssuePrivacyGrantCache({
+        subjectType: grant.subjectType as "user" | "agent",
+        subjectId: grant.subjectId,
+        issueId: grant.issueId,
+      });
+      const actor = getActorInfo(req);
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
+        action: "issue_access_grant.revoked",
+        entityType: "issue_access_grant",
+        entityId: grant.id,
+        details: { issueId: grant.issueId, subjectType: grant.subjectType, subjectId: grant.subjectId },
+      });
+      res.json(grant);
+    },
+  );
+
   router.patch("/issues/:id", validate(updateIssueRouteSchema), async (req, res) => {
     const id = req.params.id as string;
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
     if (!existing) return;
+    const assigneeMutationRequested =
+      req.body.assigneeAgentId !== undefined || req.body.assigneeUserId !== undefined;
+    if (assigneeMutationRequested && !(await assertIssueReadAllowed(req, res, existing))) return;
+    if (req.body.visibility !== undefined && !(await resolveIssuePrivacyManagementRoot(req, res, existing))) return;
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
     if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, existing, req.body))) return;
@@ -7800,6 +8365,34 @@ export function issueRoutes(
       hiddenAt: hiddenAtRaw,
       ...updateFields
     } = req.body;
+    if (req.body.visibility === "private" && !existing.projectId && updateFields.projectId === undefined) {
+      const responsibleUserId = existing.responsibleUserId ?? (req.actor.type === "board"
+        ? req.actor.userId ?? null
+        : req.actor.onBehalfOfUserId ?? null);
+      if (!responsibleUserId) {
+        res.status(422).json({ error: "Private tasks require a responsible user" });
+        return;
+      }
+      const personalProject = await db.transaction((tx) =>
+        ensurePersonalPrivateProject(tx, existing.companyId, responsibleUserId));
+      updateFields.projectId = personalProject.id;
+    }
+    if (updateFields.projectId) {
+      const selectedProject = await projectsSvc.getById(updateFields.projectId as string);
+      if (!selectedProject || selectedProject.companyId !== existing.companyId) {
+        res.status(404).json({ error: "Project not found" });
+        return;
+      }
+      const projectDecision = await access.decide({
+        actor: req.actor,
+        action: "project:read",
+        resource: { type: "project", companyId: existing.companyId, projectId: selectedProject.id },
+      });
+      if (!projectDecision.allowed) {
+        res.status(404).json({ error: "Project not found" });
+        return;
+      }
+    }
     const shouldCancelActiveRunForCancelledStatus =
       existing.status !== "cancelled" && updateFields.status === "cancelled";
     if (resumeRequested === true && !commentBody) {
@@ -8313,18 +8906,19 @@ export function issueRoutes(
       blockedBy?: unknown;
       blocks?: unknown;
       activeRecoveryAction?: unknown;
-      relatedWork?: Awaited<ReturnType<typeof issueReferencesSvc.listIssueReferenceSummary>>;
+      relatedWork?: unknown;
       referencedIssueIdentifiers?: string[];
     } = issue;
     let updatedRelations: Awaited<ReturnType<typeof svc.getRelationSummaries>> | null = null;
     if (issue && Array.isArray(req.body.blockedByIssueIds)) {
       updatedRelations = await svc.getRelationSummaries(issue.id);
+      const visibleUpdatedRelations = await redactIssueRelationEdges(req, issue.companyId, updatedRelations);
       issueResponse = {
         ...issue,
         blockedByIssueIds:
           issue.blockedByIssueIds ?? [...new Set(req.body.blockedByIssueIds as string[])].sort(),
-        blockedBy: updatedRelations.blockedBy,
-        blocks: updatedRelations.blocks,
+        blockedBy: visibleUpdatedRelations.blockedBy,
+        blocks: visibleUpdatedRelations.blocks,
       };
     }
     await routinesSvc.syncRunStatusForIssue(issue.id);
@@ -8654,10 +9248,15 @@ export function issueRoutes(
         commentReferenceSummaryBefore,
         commentReferenceSummaryAfter,
       );
+      const visibleCommentReferenceSummary = await redactIssueReferenceEdges(
+        req,
+        issue.companyId,
+        commentReferenceSummaryAfter,
+      );
       issueResponse = {
         ...issueResponse,
-        relatedWork: commentReferenceSummaryAfter,
-        referencedIssueIdentifiers: commentReferenceSummaryAfter.outbound.map(
+        relatedWork: visibleCommentReferenceSummary,
+        referencedIssueIdentifiers: visibleCommentReferenceSummary.outbound.map(
           (item) => item.issue.identifier ?? item.issue.id,
         ),
       };
@@ -8712,10 +9311,11 @@ export function issueRoutes(
       });
 
     } else if (updateReferenceSummaryAfter) {
+      const visibleUpdateReferenceSummary = await redactIssueReferenceEdges(req, issue.companyId, updateReferenceSummaryAfter);
       issueResponse = {
         ...issueResponse,
-        relatedWork: updateReferenceSummaryAfter,
-        referencedIssueIdentifiers: updateReferenceSummaryAfter.outbound.map(
+        relatedWork: visibleUpdateReferenceSummary,
+        referencedIssueIdentifiers: visibleUpdateReferenceSummary.outbound.map(
           (item) => item.issue.identifier ?? item.issue.id,
         ),
       };

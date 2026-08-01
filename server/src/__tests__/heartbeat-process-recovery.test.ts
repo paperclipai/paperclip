@@ -1183,6 +1183,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       startedAt: now,
     });
 
+    // Complete the circular issue/run fixture after both FK targets exist.
+    await db.update(heartbeatRuns)
+      .set({ scopeKind: "issue", issueId })
+      .where(eq(heartbeatRuns.id, runId));
+
     return { companyId, agentId, runId, wakeupRequestId, issueId };
   }
 

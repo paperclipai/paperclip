@@ -13,6 +13,13 @@ import {
 import { createAgentSchema } from "./agent.js";
 
 describe("issue validators", () => {
+  it("accepts open/private visibility on create and update", () => {
+    expect(createIssueSchema.parse({ title: "Private", visibility: "private" }).visibility).toBe("private");
+    expect(createIssueSchema.parse({ title: "Open" }).visibility).toBe("open");
+    expect(updateIssueSchema.parse({}).visibility).toBeUndefined();
+    expect(updateIssueSchema.parse({ visibility: "private" }).visibility).toBe("private");
+    expect(updateIssueSchema.safeParse({ visibility: "secret" }).success).toBe(false);
+  });
   it("passes real line breaks through unchanged", () => {
     const parsed = createIssueSchema.parse({
       title: "Follow up PR",

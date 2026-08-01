@@ -1,4 +1,4 @@
-import { and, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -7,8 +7,10 @@ import {
   heartbeatRuns,
   instanceUserRoles,
   issueComments,
+  issueAccessGrants,
   issues,
   principalPermissionGrants,
+  projectAccessMembers,
   projects,
   userInboxAgentPolicies,
 } from "@paperclipai/db";
@@ -119,6 +121,8 @@ export type AuthorizationDecision = {
     | "deny_no_grant"
     | "deny_policy_restricted"
     | "deny_low_trust_boundary"
+    | "deny_issue_private"
+    | "deny_project_private"
     | "deny_scope"
     | "deny_unsupported_action";
   grant?: {
@@ -235,7 +239,7 @@ type ProjectAuthorizationRow = {
 type IssueAuthorizationRow = {
   id: string;
   companyId: string;
-  projectId: string | null;
+  projectId?: string | null;
   parentId: string | null;
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
@@ -456,6 +460,268 @@ const responsibleUserSnapshotCache = new Map<
   string,
   { expiresAt: number; promise: Promise<ResponsibleUserSnapshot> }
 >();
+
+export type IssuePrivacyRow = {
+  id: string;
+  companyId: string;
+  visibility: string;
+  privacyRootIssueId: string | null;
+  responsibleUserId: string | null;
+  createdByUserId: string | null;
+  assigneeUserId: string | null;
+  assigneeAgentId: string | null;
+  projectId?: string | null;
+};
+
+export type ProjectPrivacyRow = {
+  id: string;
+  companyId: string;
+  visibility: string;
+};
+
+export const ISSUE_PRIVACY_GRANT_CACHE_MAX_ENTRIES = 256;
+const issuePrivacyGrantCache = new Map<string, { expiresAt: number; promise: Promise<boolean> }>();
+
+export function __getIssuePrivacyGrantCacheSizeForTests() {
+  return issuePrivacyGrantCache.size;
+}
+
+export function __clearIssuePrivacyGrantCacheForTests() {
+  issuePrivacyGrantCache.clear();
+}
+
+function pruneExpiredIssuePrivacyGrantCache(now: number) {
+  for (const [key, entry] of issuePrivacyGrantCache) {
+    if (entry.expiresAt <= now) issuePrivacyGrantCache.delete(key);
+  }
+}
+
+function setIssuePrivacyGrantCacheEntry(
+  key: string,
+  entry: { expiresAt: number; promise: Promise<boolean> },
+) {
+  if (issuePrivacyGrantCache.size >= ISSUE_PRIVACY_GRANT_CACHE_MAX_ENTRIES) {
+    pruneExpiredIssuePrivacyGrantCache(Date.now());
+  }
+  issuePrivacyGrantCache.delete(key);
+  issuePrivacyGrantCache.set(key, entry);
+  while (issuePrivacyGrantCache.size > ISSUE_PRIVACY_GRANT_CACHE_MAX_ENTRIES) {
+    const oldestKey = issuePrivacyGrantCache.keys().next().value as string | undefined;
+    if (oldestKey === undefined) return;
+    issuePrivacyGrantCache.delete(oldestKey);
+  }
+}
+
+export function invalidateIssuePrivacyGrantCache(input: {
+  subjectType: "user" | "agent";
+  subjectId: string;
+  issueId: string;
+}) {
+  const prefix = `${input.subjectType}:${input.subjectId}:`;
+  for (const key of issuePrivacyGrantCache.keys()) {
+    if (key.startsWith(prefix) && key.split(":").includes(input.issueId)) {
+      issuePrivacyGrantCache.delete(key);
+    }
+  }
+}
+
+export function issuePrivacyMode(): "off" | "shadow" | "enforce" {
+  const mode = process.env.PAPERCLIP_ISSUE_PRIVACY_MODE?.trim().toLowerCase();
+  if (mode === "off" || mode === "shadow") return mode;
+  return "enforce";
+}
+
+function issuePrivacyCacheTtlMs() {
+  const raw = process.env.PAPERCLIP_ISSUE_PRIVACY_CACHE_TTL_MS?.trim();
+  if (!raw) return 5_000;
+  const parsed = Number(raw);
+  return Number.isFinite(parsed) && parsed >= 0 ? parsed : 5_000;
+}
+
+function issuePrivacyPrincipal(actor: AuthorizationActor) {
+  if (actor.type === "board" && actor.userId) return { type: "user" as const, id: actor.userId };
+  if (actor.type === "agent" && actor.agentId) return { type: "agent" as const, id: actor.agentId };
+  return null;
+}
+
+async function actorHasProjectAccess(
+  db: Db,
+  actor: AuthorizationActor,
+  companyId: string,
+  projectId: string,
+) {
+  const principal = issuePrivacyPrincipal(actor);
+  if (!principal) return false;
+  return db
+    .select({ id: projectAccessMembers.id })
+    .from(projectAccessMembers)
+    .where(and(
+      eq(projectAccessMembers.companyId, companyId),
+      eq(projectAccessMembers.projectId, projectId),
+      eq(projectAccessMembers.subjectType, principal.type),
+      eq(projectAccessMembers.subjectId, principal.id),
+    ))
+    .limit(1)
+    .then((rows) => rows.length > 0);
+}
+
+export async function canActorReadProjectPrivacy(
+  db: Db,
+  actor: AuthorizationActor,
+  project: ProjectPrivacyRow,
+) {
+  if (project.visibility !== "private") return true;
+  return actorHasProjectAccess(db, actor, project.companyId, project.id);
+}
+
+function actorIsImplicitIssuePrincipal(actor: AuthorizationActor, issue: IssuePrivacyRow) {
+  const principal = issuePrivacyPrincipal(actor);
+  if (!principal) return false;
+  if (principal.type === "agent") return issue.assigneeAgentId === principal.id;
+  return issue.responsibleUserId === principal.id
+    || issue.createdByUserId === principal.id
+    || issue.assigneeUserId === principal.id;
+}
+
+async function actorHasIssuePrivacyGrant(db: Db, actor: AuthorizationActor, issue: IssuePrivacyRow) {
+  const principal = issuePrivacyPrincipal(actor);
+  if (!principal) return false;
+  const rootId = issue.privacyRootIssueId ?? issue.id;
+  const cacheKey = `${principal.type}:${principal.id}:${issue.id}:${rootId}`;
+  const now = Date.now();
+  const cached = issuePrivacyGrantCache.get(cacheKey);
+  if (cached && cached.expiresAt > now) {
+    setIssuePrivacyGrantCacheEntry(cacheKey, cached);
+    return cached.promise;
+  }
+  if (cached) issuePrivacyGrantCache.delete(cacheKey);
+  const promise = db
+    .select({ id: issueAccessGrants.id })
+    .from(issueAccessGrants)
+    .where(and(
+      eq(issueAccessGrants.subjectType, principal.type),
+      eq(issueAccessGrants.subjectId, principal.id),
+      isNull(issueAccessGrants.revokedAt),
+      inArray(issueAccessGrants.issueId, [...new Set([issue.id, rootId])]),
+    ))
+    .limit(1)
+    .then((rows) => rows.length > 0);
+  setIssuePrivacyGrantCacheEntry(cacheKey, { expiresAt: now + issuePrivacyCacheTtlMs(), promise });
+  const granted = await promise;
+  // Positive authorization decisions must observe revocation on the next read.
+  // Keep only negative decisions cached; grant creation paths already tolerate
+  // their short TTL, while revocation must fail closed immediately.
+  if (granted) issuePrivacyGrantCache.delete(cacheKey);
+  return granted;
+}
+
+/** Canonical row-level issue privacy predicate, also consumed by run-derived checks. */
+export async function canActorReadIssuePrivacy(db: Db, actor: AuthorizationActor, issue: IssuePrivacyRow) {
+  if (actorIsImplicitIssuePrincipal(actor, issue)) return true;
+  if (await actorHasIssuePrivacyGrant(db, actor, issue)) return true;
+  if (issue.projectId) {
+    const project = await db
+      .select({ id: projects.id, companyId: projects.companyId, visibility: projects.visibility })
+      .from(projects)
+      .where(and(eq(projects.id, issue.projectId), eq(projects.companyId, issue.companyId)))
+      .then((rows) => rows[0] ?? null);
+    if (project?.visibility === "private") return actorHasProjectAccess(db, actor, project.companyId, project.id);
+  }
+  return issue.visibility !== "private";
+}
+
+/** SQL equivalent of canActorReadIssuePrivacy for list/count/search query pushdown. */
+export async function issueReadSqlCondition(db: Db, actor: AuthorizationActor): Promise<SQL<boolean>> {
+  if (issuePrivacyMode() !== "enforce") return sql<boolean>`true`;
+  if (actor.source === "local_implicit" || actor.isInstanceAdmin) return sql<boolean>`true`;
+  if (
+    actor.type === "board"
+    && !actor.ignoreInstanceAdmin
+    && actor.source !== "cloud_tenant"
+    && Boolean(await db
+      .select({ id: instanceUserRoles.id })
+      .from(instanceUserRoles)
+      .where(and(
+        eq(instanceUserRoles.userId, actor.userId ?? ""),
+        eq(instanceUserRoles.role, "instance_admin"),
+      ))
+      .limit(1)
+      .then((rows) => rows[0] ?? null))
+  ) return sql<boolean>`true`;
+
+  const principal = issuePrivacyPrincipal(actor);
+  const implicit = principal?.type === "agent"
+    ? eq(issues.assigneeAgentId, principal.id)
+    : principal?.type === "user"
+      ? or(
+          eq(issues.responsibleUserId, principal.id),
+          eq(issues.createdByUserId, principal.id),
+          eq(issues.assigneeUserId, principal.id),
+        )!
+      : sql<boolean>`false`;
+  const grant = principal
+    ? sql<boolean>`exists (
+        select 1 from ${issueAccessGrants}
+        where ${issueAccessGrants.subjectType} = ${principal.type}
+          and ${issueAccessGrants.subjectId} = ${principal.id}
+          and ${issueAccessGrants.revokedAt} is null
+          and ${issueAccessGrants.issueId} in (${issues.id}, coalesce(${issues.privacyRootIssueId}, ${issues.id}))
+      )`
+    : sql<boolean>`false`;
+  const projectMember = principal
+    ? sql<boolean>`exists (
+        select 1 from ${projectAccessMembers}
+        where ${projectAccessMembers.companyId} = ${issues.companyId}
+          and ${projectAccessMembers.projectId} = ${issues.projectId}
+          and ${projectAccessMembers.subjectType} = ${principal.type}
+          and ${projectAccessMembers.subjectId} = ${principal.id}
+      )`
+    : sql<boolean>`false`;
+  const projectIsPrivate = sql<boolean>`exists (
+    select 1 from ${projects}
+    where ${projects.id} = ${issues.projectId}
+      and ${projects.companyId} = ${issues.companyId}
+      and ${projects.visibility} = 'private'
+  )`;
+  return sql<boolean>`(
+    ${implicit}
+    or ${grant}
+    or ${projectMember}
+    or (${issues.visibility} = 'open' and not ${projectIsPrivate})
+  )`;
+}
+
+/** SQL equivalent used for project list/search pushdown. */
+export async function projectReadSqlCondition(db: Db, actor: AuthorizationActor): Promise<SQL<boolean>> {
+  if (issuePrivacyMode() !== "enforce") return sql<boolean>`true`;
+  if (actor.source === "local_implicit" || actor.isInstanceAdmin) return sql<boolean>`true`;
+  if (
+    actor.type === "board"
+    && !actor.ignoreInstanceAdmin
+    && actor.source !== "cloud_tenant"
+    && Boolean(await db
+      .select({ id: instanceUserRoles.id })
+      .from(instanceUserRoles)
+      .where(and(
+        eq(instanceUserRoles.userId, actor.userId ?? ""),
+        eq(instanceUserRoles.role, "instance_admin"),
+      ))
+      .limit(1)
+      .then((rows) => rows[0] ?? null))
+  ) return sql<boolean>`true`;
+  const principal = issuePrivacyPrincipal(actor);
+  if (!principal) return sql<boolean>`${projects.visibility} = 'open'`;
+  return sql<boolean>`(
+    ${projects.visibility} = 'open'
+    or exists (
+      select 1 from ${projectAccessMembers}
+      where ${projectAccessMembers.companyId} = ${projects.companyId}
+        and ${projectAccessMembers.projectId} = ${projects.id}
+        and ${projectAccessMembers.subjectType} = ${principal.type}
+        and ${projectAccessMembers.subjectId} = ${principal.id}
+    )
+  )`;
+}
 
 function responsibleUserSnapshotTtlMs() {
   const raw = process.env.PAPERCLIP_RESPONSIBLE_USER_AUTHZ_CACHE_TTL_MS?.trim();
@@ -2177,7 +2443,84 @@ export function authorizationService(db: Db) {
     scope?: Record<string, unknown> | null;
   }): Promise<AuthorizationDecision> {
     const agentDecision = await decideBase(input);
-    return applyResponsibleUserIntersection(input, agentDecision);
+    const intersectedDecision = await applyResponsibleUserIntersection(input, agentDecision);
+    if (
+      input.action === "project:read"
+      && input.resource.type === "project"
+      && input.resource.projectId
+      && intersectedDecision.allowed
+      && intersectedDecision.reason !== "allow_instance_admin"
+      && intersectedDecision.reason !== "allow_local_board"
+      && issuePrivacyMode() !== "off"
+    ) {
+      const project = await db
+        .select({ id: projects.id, companyId: projects.companyId, visibility: projects.visibility })
+        .from(projects)
+        .where(and(eq(projects.id, input.resource.projectId), eq(projects.companyId, input.resource.companyId)))
+        .then((rows) => rows[0] ?? null);
+      if (project && !(await canActorReadProjectPrivacy(db, input.actor, project))) {
+        const denied = deny({
+          action: input.action,
+          reason: "deny_project_private",
+          explanation: "Project is private and the actor is not an access member.",
+        });
+        logger.warn({
+          authzMode: issuePrivacyMode(),
+          action: input.action,
+          companyId: project.companyId,
+          projectId: project.id,
+          actorType: input.actor.type,
+          actorUserId: input.actor.type === "board" ? input.actor.userId ?? null : null,
+          actorAgentId: input.actor.type === "agent" ? input.actor.agentId ?? null : null,
+          reason: denied.reason,
+        }, "project privacy would deny read");
+        return issuePrivacyMode() === "shadow" ? intersectedDecision : denied;
+      }
+    }
+    if (
+      input.action !== "issue:read"
+      || input.resource.type !== "issue"
+      || !input.resource.issueId
+      || !intersectedDecision.allowed
+      || intersectedDecision.reason === "allow_instance_admin"
+      || intersectedDecision.reason === "allow_local_board"
+      || issuePrivacyMode() === "off"
+    ) return intersectedDecision;
+
+    const issue = await db
+      .select({
+        id: issues.id,
+        companyId: issues.companyId,
+        visibility: issues.visibility,
+        privacyRootIssueId: issues.privacyRootIssueId,
+        responsibleUserId: issues.responsibleUserId,
+        createdByUserId: issues.createdByUserId,
+        assigneeUserId: issues.assigneeUserId,
+        assigneeAgentId: issues.assigneeAgentId,
+        projectId: issues.projectId,
+      })
+      .from(issues)
+      .where(and(eq(issues.id, input.resource.issueId), eq(issues.companyId, input.resource.companyId)))
+      .then((rows) => rows[0] ?? null);
+    if (!issue || await canActorReadIssuePrivacy(db, input.actor, issue)) return intersectedDecision;
+
+    const denied = deny({
+      action: input.action,
+      reason: "deny_issue_private",
+      explanation: "Issue is private and the actor is not an implicit principal or active grantee.",
+    });
+    logger.warn({
+      authzMode: issuePrivacyMode(),
+      action: input.action,
+      companyId: issue.companyId,
+      issueId: issue.id,
+      privacyRootIssueId: issue.privacyRootIssueId,
+      actorType: input.actor.type,
+      actorUserId: input.actor.type === "board" ? input.actor.userId ?? null : null,
+      actorAgentId: input.actor.type === "agent" ? input.actor.agentId ?? null : null,
+      reason: denied.reason,
+    }, "issue privacy would deny read");
+    return issuePrivacyMode() === "shadow" ? intersectedDecision : denied;
   }
 
   return {

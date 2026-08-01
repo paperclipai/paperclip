@@ -23,10 +23,10 @@ export const workspaceOperations = pgTable(
       onDelete: "set null",
     }),
     heartbeatRunId: uuid("heartbeat_run_id").references(() => heartbeatRuns.id, {
-      onDelete: "set null",
+      onDelete: "cascade",
     }),
     issueId: uuid("issue_id").references(() => issues.id, {
-      onDelete: "set null",
+      onDelete: "cascade",
     }),
     phase: text("phase").notNull(),
     command: text("command"),

@@ -192,6 +192,8 @@ import {
   XCircle,
 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
+import { IssuePrivacyActions } from "@/components/IssuePrivacyActions";
+import type { ShareSheetImplicitPrincipal } from "@/components/IssueShareSheet";
 import {
   deriveOriginatingActor,
   getClosedIsolatedExecutionWorkspaceMessage,
@@ -1926,6 +1928,44 @@ export function IssueDetail() {
     () => buildCompanyUserLabelMap(companyMembers?.users),
     [companyMembers?.users],
   );
+  // Privacy setter gate (UI mirror of the server's
+  // `resolveIssuePrivacyManagementRoot`): responsible user + board managers /
+  // admins. The server is authoritative; this only decides what to enable.
+  const canManagePrivacy = Boolean(
+    issue &&
+      (canManageBoardRuntime || (currentUserId && issue.responsibleUserId === currentUserId)),
+  );
+  // Role-based principals for the share sheet's implicit rows (no revoke).
+  const privacyImplicitPrincipals = useMemo<ShareSheetImplicitPrincipal[]>(() => {
+    if (!issue) return [];
+    const list: ShareSheetImplicitPrincipal[] = [];
+    const seen = new Set<string>();
+    const pushUser = (userId: string | null, roleLabel: string) => {
+      if (!userId || seen.has(`user:${userId}`)) return;
+      seen.add(`user:${userId}`);
+      const profile = userProfileMap.get(userId);
+      list.push({
+        id: `user:${userId}`,
+        displayName: profile?.label ?? userId.slice(0, 5),
+        roleLabel,
+        avatarUrl: profile?.image ?? null,
+      });
+    };
+    const pushAgent = (agentId: string | null, roleLabel: string) => {
+      if (!agentId || seen.has(`agent:${agentId}`)) return;
+      seen.add(`agent:${agentId}`);
+      const agent = agentMap.get(agentId);
+      list.push({
+        id: `agent:${agentId}`,
+        displayName: agent?.name ?? agentId.slice(0, 8),
+        roleLabel,
+      });
+    };
+    pushUser(issue.responsibleUserId, "Owner");
+    pushAgent(issue.assigneeAgentId, "Assignee");
+    pushUser(issue.assigneeUserId, "Assignee");
+    return list;
+  }, [issue, userProfileMap, agentMap]);
   const mentionOptions = useMemo<MentionOption[]>(() => {
     return buildMarkdownMentionOptions({
       agents,
@@ -4462,6 +4502,13 @@ export function IssueDetail() {
                   ) : null}
                 </>
               ) : null}
+              <IssuePrivacyActions
+                issue={issue}
+                companyId={issue.companyId}
+                canManage={canManagePrivacy}
+                closeMenu={() => setMoreOpen(false)}
+                implicitPrincipals={privacyImplicitPrincipals}
+              />
               <button
                 className="flex items-center gap-2 w-full px-2 py-1.5 text-xs rounded hover:bg-accent/50 text-destructive"
                 onClick={() => {

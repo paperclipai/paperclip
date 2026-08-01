@@ -241,6 +241,32 @@ describe("MarkdownBody", () => {
     expect(html).not.toContain("paperclip-mention-chip--issue");
   });
 
+  it("holds the quicklook preview until an issue mention is confirmed readable (PAP-16070)", () => {
+    // While the fetch is in flight we don't know if the viewer can read the
+    // issue. The mention stays a clickable link, but the IssueLinkQuicklook
+    // hover preview (a Radix Popover portal) must NOT mount yet: a private
+    // mention 404s straight to the locked chip, and mounting then tearing down
+    // that portal to swap in the chip is the element churn that crashed the
+    // chat transcript renderer.
+    const html = renderMarkdown("Depends on PAP-1271 for the hover state.");
+
+    expect(html).toContain('data-mention-pending="true"');
+    expect(html).toContain('data-mention-kind="issue"');
+    expect(html).toContain("paperclip-markdown-issue-ref");
+    // Clickability is preserved through the loading state.
+    expect(html).toContain('href="/issues/PAP-1271"');
+    expect(html).toContain(">PAP-1271<");
+  });
+
+  it("drops the pending marker once a seeded (readable) issue mention resolves", () => {
+    const html = renderMarkdown("Depends on PAP-1271 for the hover state.", [
+      { identifier: "PAP-1271", status: "done" },
+    ]);
+
+    expect(html).toContain('href="/issues/PAP-1271"');
+    expect(html).not.toContain('data-mention-pending="true"');
+  });
+
   it("uses concise issue aria labels until a distinct title is available", () => {
     const html = renderMarkdown("Depends on PAP-1271 and PAP-1272.", [
       { identifier: "PAP-1271", status: "done" },

@@ -40,6 +40,39 @@ import type {
 
 export type { IssueWorkMode };
 
+export type IssueVisibility = "open" | "private";
+export type IssueAccessGrantSubjectType = "user" | "agent";
+export type IssueAccessGrantSource = "explicit" | "assignment" | "project";
+export type IssueAccessGrantAgentVisibility = "discoverable" | "private";
+
+export interface IssueAccessGrant {
+  id: string;
+  issueId: string;
+  subjectType: IssueAccessGrantSubjectType;
+  subjectId: string;
+  source: IssueAccessGrantSource;
+  grantedByUserId: string | null;
+  grantedByAgentId: string | null;
+  createdAt: Date;
+  revokedAt: Date | null;
+  subjectDisplayName: string | null;
+  subjectAvatarUrl: string | null;
+  subjectInitials: string | null;
+  agentVisibility: IssueAccessGrantAgentVisibility | null;
+}
+
+/**
+ * Existence-only projection used when a readable issue references an issue the
+ * current principal cannot read. Edge projections may return this exact shape
+ * in place of an IssueRelationIssueSummary; direct reads and list/search rows
+ * never return locked stubs.
+ */
+export interface IssueLockedStub {
+  id: string;
+  identifier: string | null;
+  locked: true;
+}
+
 export interface IssueAncestorProject {
   id: string;
   name: string;
@@ -734,6 +767,9 @@ export interface Issue {
   projectWorkspaceId: string | null;
   goalId: string | null;
   parentId: string | null;
+  /** Present on current API responses; optional for compatibility with older plugin payloads. */
+  visibility?: IssueVisibility;
+  privacyRootIssueId?: string | null;
   ancestors?: IssueAncestor[];
   title: string;
   description: string | null;
@@ -818,6 +854,8 @@ export type CompactIssue = Pick<
   | "projectWorkspaceId"
   | "goalId"
   | "parentId"
+  | "visibility"
+  | "privacyRootIssueId"
   | "title"
   | "description"
   | "status"

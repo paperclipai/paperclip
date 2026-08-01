@@ -18,6 +18,7 @@ import {
   routineRuns,
   executionWorkspaces,
   issueApprovals,
+  issueAccessGrants,
   issueAttachments,
   issueCreateIdempotencyKeys,
   issueInboxArchives,
@@ -116,7 +117,9 @@ import { visibleIssueCondition } from "./issue-visibility.js";
 import { finalizeStatusCardsForStalledGeneration } from "./status-card-finalization.js";
 import { finalizeSummarySlotsForTerminalIssue } from "./summary-slot-finalization.js";
 import { logActivity } from "./activity-log.js";
+import { invalidateIssuePrivacyGrantCache } from "./authorization.js";
 import { buildIssueChanges } from "./issue-change-receipt.js";
+import { ensurePersonalPrivateProject } from "./projects.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
@@ -517,6 +520,7 @@ export interface IssueFilters {
   includeLiveDescendantSummary?: boolean;
   hasPlanDocument?: boolean;
   lowTrustBoundary?: LowTrustBoundary & { companyId: string };
+  readCondition?: SQL<boolean>;
   q?: string;
   limit?: number;
   offset?: number;
@@ -2013,6 +2017,75 @@ function summarizeIssueRelationRow(row: IssueRelationSummaryRow): IssueRelationI
   };
 }
 
+async function ensureAssignmentIssueAccessGrant(
+  dbOrTx: any,
+  issue: typeof issues.$inferSelect,
+  previous: Pick<typeof issues.$inferSelect, "assigneeAgentId" | "assigneeUserId"> | null,
+  actor: { agentId?: string | null; userId?: string | null },
+) {
+  if (issue.visibility !== "private") return null;
+  const subject = issue.assigneeAgentId
+    ? { subjectType: "agent" as const, subjectId: issue.assigneeAgentId }
+    : issue.assigneeUserId
+      ? { subjectType: "user" as const, subjectId: issue.assigneeUserId }
+      : null;
+  if (!subject) return null;
+  if (
+    previous
+    && previous.assigneeAgentId === issue.assigneeAgentId
+    && previous.assigneeUserId === issue.assigneeUserId
+  ) return null;
+
+  const grantIssueId = issue.privacyRootIssueId ?? issue.id;
+  const lockKey = `issue-access-grant:${grantIssueId}:${subject.subjectType}:${subject.subjectId}`;
+  await dbOrTx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`);
+  const active = await dbOrTx
+    .select({ id: issueAccessGrants.id })
+    .from(issueAccessGrants)
+    .where(and(
+      eq(issueAccessGrants.issueId, grantIssueId),
+      eq(issueAccessGrants.subjectType, subject.subjectType),
+      eq(issueAccessGrants.subjectId, subject.subjectId),
+      isNull(issueAccessGrants.revokedAt),
+    ))
+    .limit(1)
+    .then((rows: Array<{ id: string }>) => rows[0] ?? null);
+  if (active) return null;
+
+  const grant = await dbOrTx
+    .insert(issueAccessGrants)
+    .values({
+      issueId: grantIssueId,
+      ...subject,
+      source: "assignment",
+      grantedByUserId: actor.userId ?? null,
+      grantedByAgentId: actor.agentId ?? null,
+    })
+    .returning()
+    .then((rows: Array<typeof issueAccessGrants.$inferSelect>) => rows[0]!);
+  invalidateIssuePrivacyGrantCache({
+    subjectType: subject.subjectType,
+    subjectId: subject.subjectId,
+    issueId: grantIssueId,
+  });
+  await logActivity(dbOrTx as Db, {
+    companyId: issue.companyId,
+    actorType: actor.agentId ? "agent" : actor.userId ? "user" : "system",
+    actorId: actor.agentId ?? actor.userId ?? "issue_service",
+    agentId: actor.agentId ?? null,
+    action: "issue_access_grant.created",
+    entityType: "issue_access_grant",
+    entityId: grant.id,
+    details: {
+      issueId: grant.issueId,
+      subjectType: grant.subjectType,
+      subjectId: grant.subjectId,
+      source: grant.source,
+    },
+  });
+  return grant;
+}
+
 async function terminalExplicitBlockersByRoot(
   companyId: string,
   roots: IssueRelationIssueSummary[],
@@ -2611,6 +2684,8 @@ const issueListSelect = {
   projectWorkspaceId: issues.projectWorkspaceId,
   goalId: issues.goalId,
   parentId: issues.parentId,
+  visibility: issues.visibility,
+  privacyRootIssueId: issues.privacyRootIssueId,
   title: issues.title,
   description: sql<string | null>`
     CASE
@@ -3629,6 +3704,7 @@ async function blockedInboxIssueConditions(
     visibleIssueCondition(),
     notInArray(issues.status, [...BLOCKED_INBOX_TERMINAL_STATUSES]),
   ];
+  if (filters?.readCondition) conditions.push(filters.readCondition);
   const touchedByUserId = filters?.touchedByUserId?.trim() || undefined;
   const inboxArchivedByUserId = filters?.inboxArchivedByUserId?.trim() || undefined;
   const unreadForUserId = filters?.unreadForUserId?.trim() || undefined;
@@ -4894,6 +4970,7 @@ export function issueService(db: Db) {
       }
 
       const conditions = [eq(issues.companyId, companyId), visibleIssueCondition()];
+      if (filters?.readCondition) conditions.push(filters.readCondition);
       const assigneeAgentFilter = parseIssueAssigneeAgentFilter(filters?.assigneeAgentId);
       assertValidAssigneeAgentFilter(assigneeAgentFilter);
       const limit = typeof filters?.limit === "number" && Number.isFinite(filters.limit)
@@ -5144,6 +5221,7 @@ export function issueService(db: Db) {
       }
 
       const conditions = [eq(issues.companyId, companyId), visibleIssueCondition()];
+      if (filters?.readCondition) conditions.push(filters.readCondition);
       const statuses = parseStatusFilter(filters?.status);
       if (statuses.length === 1) conditions.push(eq(issues.status, statuses[0]!));
       else if (statuses.length > 1) conditions.push(inArray(issues.status, statuses));
@@ -6580,8 +6658,57 @@ export function issueService(db: Db) {
           trustExplicitResponsibleUserId: trustExplicitResponsibleUserId === true,
         });
 
+        let visibility = issueData.visibility ?? "open";
+        let privacyRootIssueId: string | null = null;
+        let inheritedPrivateSubtree = false;
+        if (issueData.parentId) {
+          const parentPrivacy = await tx
+            .select({
+              visibility: issues.visibility,
+              privacyRootIssueId: issues.privacyRootIssueId,
+            })
+            .from(issues)
+            .where(and(eq(issues.id, issueData.parentId), eq(issues.companyId, companyId)))
+            .then((rows) => rows[0] ?? null);
+          if (parentPrivacy?.visibility === "private") {
+            visibility = "private";
+            privacyRootIssueId = parentPrivacy.privacyRootIssueId ?? issueData.parentId;
+            inheritedPrivateSubtree = true;
+          }
+        }
+        if (visibility === "private" && !privacyRootIssueId) {
+          issueData.id ??= randomUUID();
+          privacyRootIssueId = issueData.id;
+        }
+
+        if (issueData.projectId) {
+          const selectedProject = await tx
+            .select({ visibility: projects.visibility })
+            .from(projects)
+            .where(and(eq(projects.id, issueData.projectId), eq(projects.companyId, companyId)))
+            .then((rows) => rows[0] ?? null);
+          if (!selectedProject) throw notFound("Project not found");
+          if (selectedProject.visibility === "private") {
+            visibility = "private";
+            if (!privacyRootIssueId) {
+              issueData.id ??= randomUUID();
+              privacyRootIssueId = issueData.id;
+            }
+          }
+        }
+
+        if (visibility === "private" && !issueData.projectId && !inheritedPrivateSubtree) {
+          if (!responsibleUserId) {
+            throw unprocessable("Private tasks require a responsible user");
+          }
+          const personalProject = await ensurePersonalPrivateProject(tx, companyId, responsibleUserId);
+          issueData.projectId = personalProject.id;
+        }
+
         const values = {
           ...issueData,
+          visibility,
+          privacyRootIssueId,
           responsibleUserId,
           requestDepth: clampIssueRequestDepth(issueData.requestDepth),
           originKind: issueData.originKind ?? "manual",
@@ -6619,6 +6746,19 @@ export function issueService(db: Db) {
         );
 
         const [issue] = await tx.insert(issues).values(values).returning();
+        if (issue.visibility === "private" && !inheritedPrivateSubtree && issueData.createdByAgentId) {
+          await tx.insert(issueAccessGrants).values({
+            issueId: issue.privacyRootIssueId ?? issue.id,
+            subjectType: "agent",
+            subjectId: issueData.createdByAgentId,
+            source: "explicit",
+            grantedByAgentId: issueData.createdByAgentId,
+          }).onConflictDoNothing();
+        }
+        await ensureAssignmentIssueAccessGrant(tx, issue, null, {
+          agentId: issueData.createdByAgentId ?? null,
+          userId: issueData.createdByUserId ?? null,
+        });
         if (idempotencyKey) {
           await tx.insert(issueCreateIdempotencyKeys).values({
             companyId,
@@ -6936,6 +7076,23 @@ export function issueService(db: Db) {
         ...issueData,
         updatedAt: new Date(),
       };
+      if (issueData.visibility === "private") {
+        patch.privacyRootIssueId = existing.privacyRootIssueId ?? existing.id;
+      } else if (issueData.visibility === "open") {
+        patch.privacyRootIssueId = null;
+      }
+      if (issueData.projectId) {
+        const selectedProject = await dbOrTx
+          .select({ visibility: projects.visibility })
+          .from(projects)
+          .where(and(eq(projects.id, issueData.projectId), eq(projects.companyId, existing.companyId)))
+          .then((rows: Array<{ visibility: string }>) => rows[0] ?? null);
+        if (!selectedProject) throw notFound("Project not found");
+        if (selectedProject.visibility === "private") {
+          patch.visibility = "private";
+          patch.privacyRootIssueId = existing.privacyRootIssueId ?? existing.id;
+        }
+      }
       if (existing.status !== "blocked" && issueData.status === "blocked") {
         patch.blockedTransitionAt = patch.updatedAt;
         patch.blockedOwnerNotifiedAt = null;
@@ -7108,6 +7265,10 @@ export function issueService(db: Db) {
           .returning()
           .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
         if (!updated) return null;
+        await ensureAssignmentIssueAccessGrant(tx, updated, receiptExisting, {
+          agentId: actorAgentId ?? null,
+          userId: actorUserId ?? null,
+        });
         if (existing.status !== updated.status) {
           if (updated.status === "done" || updated.status === "cancelled") {
             await finalizeSummarySlotsForTerminalIssue(tx, updated);

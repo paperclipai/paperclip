@@ -10,6 +10,8 @@ import { sanitizeRecord } from "../redaction.js";
 import { badRequest, forbidden } from "../errors.js";
 import { agentActionAuditService } from "../services/agent-action-audit.js";
 import { logActivity } from "../services/activity-log.js";
+import { canActorReadHeartbeatRun } from "../services/heartbeat-run-privacy.js";
+import { issueReadSqlCondition } from "../services/authorization.js";
 
 /** Max rows a single CSV export will stream (guards against runaway exports). */
 const AUDIT_CSV_EXPORT_MAX_ROWS = 10_000;
@@ -187,6 +189,7 @@ export function activityRoutes(db: Db) {
       entityType: req.query.entityType as string | undefined,
       entityId: req.query.entityId as string | undefined,
       limit: normalizeActivityLimit(Number(req.query.limit)),
+      readCondition: await issueReadSqlCondition(db, req.actor),
     };
     const result = await svc.list(filters);
     res.json(result);
@@ -299,6 +302,10 @@ export function activityRoutes(db: Db) {
     }
     assertCompanyAccess(req, run.companyId);
     if (!(await assertCompanyScopeReadAllowed(req, res, run.companyId))) return;
+    if (!(await canActorReadHeartbeatRun(db, access, req.actor, run))) {
+      res.json([]);
+      return;
+    }
     const result = await svc.issuesForRun(runId);
     res.json(result);
   });

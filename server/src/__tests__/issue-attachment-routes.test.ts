@@ -624,7 +624,8 @@ describe("issue attachment routes", () => {
     const app = await createApp(storage);
     const res = await request(app).get("/api/attachments/attachment-1/content");
 
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
+    expect(res.body.error).toBe("Issue not found");
     expect(storage.getObject).not.toHaveBeenCalled();
   });
 

@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   companies,
+  companyMemberships,
   createDb,
   documents,
   issueComments,
@@ -18,6 +19,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 import { companySearchExtractService } from "../services/company-search-extract.js";
+import { issueReadSqlCondition, type AuthorizationActor } from "../services/authorization.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -73,6 +75,7 @@ describeEmbeddedPostgres("companySearchExtractService", () => {
     await db.delete(documents);
     await db.delete(issueComments);
     await db.delete(issues);
+    await db.delete(companyMemberships);
     await db.delete(companies);
   });
 
@@ -265,5 +268,45 @@ describeEmbeddedPostgres("companySearchExtractService", () => {
     const result = await svc.extract(companyId, companySearchExtractQuerySchema.parse({ contains: "needle" }));
 
     expect(result.results).toEqual([]);
+  });
+
+  it("does not extract content from a private issue for a non-member", async () => {
+    const companyId = await createCompany();
+    const viewerId = randomUUID();
+    await db.insert(companyMemberships).values({
+      companyId,
+      principalType: "user",
+      principalId: viewerId,
+      membershipRole: "operator",
+      status: "active",
+    });
+    const visibleIssueId = await createIssue(companyId, {
+      identifier: "EXT-PUBLIC",
+      description: "privacy-leak-needle",
+    });
+    const privateIssueId = randomUUID();
+    await createIssue(companyId, {
+      id: privateIssueId,
+      identifier: "EXT-PRIVATE",
+      description: "privacy-leak-needle private payload",
+      visibility: "private",
+      privacyRootIssueId: privateIssueId,
+      responsibleUserId: randomUUID(),
+    });
+    const actor: AuthorizationActor = {
+      type: "board",
+      userId: viewerId,
+      source: "session",
+    };
+
+    const result = await svc.extract(
+      companyId,
+      companySearchExtractQuerySchema.parse({ contains: "privacy-leak-needle" }),
+      { issueReadCondition: await issueReadSqlCondition(db, actor) },
+    );
+
+    expect(result.results.map((row) => row.issueId)).toEqual([visibleIssueId]);
+    expect(JSON.stringify(result)).not.toContain(privateIssueId);
+    expect(JSON.stringify(result)).not.toContain("private payload");
   });
 });

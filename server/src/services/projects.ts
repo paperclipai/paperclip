@@ -2,6 +2,7 @@ import { and, asc, desc, eq, inArray, isNull, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   projects,
+  projectAccessMembers,
   projectGoals,
   goals,
   issues,
@@ -55,6 +56,68 @@ type CreateWorkspaceInput = {
   isPrimary?: boolean;
 };
 type UpdateWorkspaceInput = Partial<CreateWorkspaceInput>;
+
+export async function ensureProjectAccessMember(
+  dbOrTx: any,
+  input: {
+    companyId: string;
+    projectId: string;
+    subjectType: "user" | "agent";
+    subjectId: string;
+  },
+) {
+  return dbOrTx
+    .insert(projectAccessMembers)
+    .values(input)
+    .onConflictDoNothing()
+    .returning()
+    .then((rows: Array<typeof projectAccessMembers.$inferSelect>) => rows[0] ?? null);
+}
+
+/**
+ * Concurrency-safe lazy creation for the per-user private parking project.
+ * The partial unique index is the final arbiter; the advisory lock avoids
+ * wasting project ids and keeps the membership insert in the same transaction.
+ */
+export async function ensurePersonalPrivateProject(dbOrTx: any, companyId: string, userId: string) {
+  const lockKey = `personal-private-project:${companyId}:${userId}`;
+  await dbOrTx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`);
+  let project = await dbOrTx
+    .select()
+    .from(projects)
+    .where(and(eq(projects.companyId, companyId), eq(projects.personalOwnerUserId, userId)))
+    .limit(1)
+    .then((rows: ProjectRow[]) => rows[0] ?? null);
+  if (!project) {
+    project = await dbOrTx
+      .insert(projects)
+      .values({
+        companyId,
+        name: "My private tasks",
+        description: "Private tasks visible only to people and agents explicitly granted access.",
+        status: "in_progress",
+        visibility: "private",
+        personalOwnerUserId: userId,
+      })
+      .onConflictDoNothing()
+      .returning()
+      .then((rows: ProjectRow[]) => rows[0] ?? null);
+    project ??= await dbOrTx
+      .select()
+      .from(projects)
+      .where(and(eq(projects.companyId, companyId), eq(projects.personalOwnerUserId, userId)))
+      .limit(1)
+      .then((rows: ProjectRow[]) => rows[0] ?? null);
+  }
+  if (!project) throw new Error("Failed to create personal private project");
+  await ensureProjectAccessMember(dbOrTx, {
+    companyId,
+    projectId: project.id,
+    subjectType: "user",
+    subjectId: userId,
+  });
+  return project;
+}
 
 interface ProjectWithGoals extends Omit<ProjectRow, "executionWorkspacePolicy"> {
   urlKey: string;

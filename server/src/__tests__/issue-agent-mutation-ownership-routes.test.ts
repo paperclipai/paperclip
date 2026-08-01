@@ -222,7 +222,9 @@ function registerRouteMocks() {
     issueThreadInteractionService: () => mockIssueThreadInteractionService,
     taskWatchdogService: () => mockTaskWatchdogService,
     logActivity: mockLogActivity,
-    projectService: () => ({}),
+    projectService: () => ({
+      getById: vi.fn(async (id: string) => ({ id, companyId })),
+    }),
     routineService: () => ({
       syncRunStatusForIssue: vi.fn(async () => undefined),
     }),
@@ -387,14 +389,16 @@ describe("agent issue mutation checkout ownership", () => {
         input.action === "issue:comment" ||
         input.action === "issue:read" ||
         input.action === "issue:mutate" ||
-        input.action === "company_scope:read",
+        input.action === "company_scope:read" ||
+        input.action === "project:read",
       action: input.action,
       reason:
         input.action === "tasks:assign" ||
           input.action === "issue:comment" ||
           input.action === "issue:read" ||
           input.action === "issue:mutate" ||
-          input.action === "company_scope:read"
+          input.action === "company_scope:read" ||
+          input.action === "project:read"
           ? "allow_explicit_grant"
           : "deny_missing_grant",
       explanation:
@@ -402,7 +406,8 @@ describe("agent issue mutation checkout ownership", () => {
           input.action === "issue:comment" ||
           input.action === "issue:read" ||
           input.action === "issue:mutate" ||
-          input.action === "company_scope:read"
+          input.action === "company_scope:read" ||
+          input.action === "project:read"
           ? "Allowed by test default."
           : "Missing permission.",
     }));
@@ -831,8 +836,8 @@ describe("agent issue mutation checkout ownership", () => {
     const res = await request(await createApp(peerActor()))
       .get(`/api/issues/${issueId}/comments`);
 
-    expect(res.status, JSON.stringify(res.body)).toBe(403);
-    expect(res.body.error).toBe("Issue is outside this actor's authorization boundary");
+    expect(res.status, JSON.stringify(res.body)).toBe(404);
+    expect(res.body.error).toBe("Issue not found");
     expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({ action: "issue:read" }));
   });
 
@@ -847,8 +852,8 @@ describe("agent issue mutation checkout ownership", () => {
     const res = await request(await createApp(peerActor()))
       .get(`/api/issues/${issueId}/interactions`);
 
-    expect(res.status, JSON.stringify(res.body)).toBe(403);
-    expect(res.body.error).toBe("Issue is outside this actor's authorization boundary");
+    expect(res.status, JSON.stringify(res.body)).toBe(404);
+    expect(res.body.error).toBe("Issue not found");
     expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({ action: "issue:read" }));
     expect(mockIssueThreadInteractionService.listForIssue).not.toHaveBeenCalled();
   });
@@ -893,8 +898,8 @@ describe("agent issue mutation checkout ownership", () => {
     const res = await request(await createApp(peerActor()))
       .get(`/api/issues/${issueId}/comments/comment-1`);
 
-    expect(res.status, JSON.stringify(res.body)).toBe(403);
-    expect(res.body.error).toBe("Issue is outside this actor's authorization boundary");
+    expect(res.status, JSON.stringify(res.body)).toBe(404);
+    expect(res.body.error).toBe("Issue not found");
     expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({ action: "issue:read" }));
     expect(mockIssueService.getComment).not.toHaveBeenCalled();
   });
@@ -1682,11 +1687,14 @@ describe("agent issue mutation checkout ownership", () => {
       explanation: "Target agent requires approval before task assignment.",
     }));
     decide.mockImplementation(async (input: { action: string }) => ({
-      allowed: input.action === "issue:mutate",
+      allowed: input.action === "issue:read" || input.action === "issue:mutate",
       action: input.action,
-      reason: input.action === "issue:mutate" ? "allow_self" : "deny_policy_restricted",
+      reason:
+        input.action === "issue:read" || input.action === "issue:mutate"
+          ? "allow_self"
+          : "deny_policy_restricted",
       explanation:
-        input.action === "issue:mutate"
+        input.action === "issue:read" || input.action === "issue:mutate"
           ? "Allowed because the actor owns the assigned issue."
           : "Target agent requires approval before task assignment.",
     }));
@@ -2044,9 +2052,12 @@ describe("agent issue mutation checkout ownership", () => {
       // Base boundary denied AND tasks:assign denied: the watchdog grant lets the
       // mutation past the ownership boundary, but the assignment guard must still bite.
       mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
-        allowed: input.action === "company_scope:read",
+        allowed: input.action === "company_scope:read" || input.action === "issue:read",
         action: input.action,
-        reason: input.action === "company_scope:read" ? "allow_explicit_grant" : "deny_policy_restricted",
+        reason:
+          input.action === "company_scope:read" || input.action === "issue:read"
+            ? "allow_explicit_grant"
+            : "deny_policy_restricted",
         explanation:
           input.action === "tasks:assign"
             ? "Target agent requires approval before task assignment."

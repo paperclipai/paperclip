@@ -566,6 +566,8 @@ function paperclipIssue(overrides: Partial<Issue> = {}): Issue {
     projectWorkspaceId: null,
     goalId: null,
     parentId: null,
+    visibility: "open",
+    privacyRootIssueId: null,
     title: "Design event ingestion controls",
     description: "Decide which Paperclip issues, comments, and documents can be ingested into the wiki.",
     status: "todo",

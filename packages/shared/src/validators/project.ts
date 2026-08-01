@@ -103,6 +103,7 @@ const projectFields = {
   goalIds: z.array(z.string().uuid()).optional(),
   name: z.string().min(1),
   description: z.string().optional().nullable(),
+  visibility: z.enum(["open", "private"]).optional().default("open"),
   status: z.enum(PROJECT_STATUSES).optional().default("backlog"),
   leadAgentId: z.string().uuid().optional().nullable(),
   targetDate: z.string().optional().nullable(),
@@ -123,5 +124,12 @@ export type CreateProject = z.infer<typeof createProjectSchema>;
 export const updateProjectSchema = z.object(projectFields).partial();
 
 export type UpdateProject = z.infer<typeof updateProjectSchema>;
+
+export const addProjectAccessMemberSchema = z.object({
+  subjectType: z.enum(["user", "agent"]),
+  subjectId: z.string().min(1),
+});
+
+export type AddProjectAccessMember = z.infer<typeof addProjectAccessMemberSchema>;
 
 export type ProjectExecutionWorkspacePolicy = z.infer<typeof projectExecutionWorkspacePolicySchema>;

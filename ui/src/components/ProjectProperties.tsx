@@ -23,6 +23,7 @@ import { DraftInput } from "./agent-config-primitives";
 import { InlineEditor } from "./InlineEditor";
 import { EnvironmentVariablesEditor } from "./environment-variables-editor";
 import { Badge } from "@/components/ui/badge";
+import { ProjectAccessMembers } from "./ProjectAccessMembers";
 
 const PROJECT_STATUSES = [
   { value: "backlog", label: "Backlog" },
@@ -46,6 +47,7 @@ export type ProjectConfigFieldKey =
   | "name"
   | "description"
   | "status"
+  | "visibility"
   | "goals"
   | "env"
   | "execution_workspace_enabled"
@@ -558,6 +560,25 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
           ) : (
             <StatusBadge status={project.status} />
           )}
+        </PropertyRow>
+        <PropertyRow label={<FieldLabel label="Visibility" state={fieldState("visibility")} />} alignStart>
+          <div className="space-y-2">
+            <label className="flex items-center gap-2 text-sm">
+              <ToggleSwitch
+                checked={project.visibility === "private"}
+                onCheckedChange={(checked) => {
+                  if (!checked && !window.confirm("Make this project open to everyone in the company?")) return;
+                  commitField("visibility", { visibility: checked ? "private" : "open" });
+                }}
+                disabled={!onUpdate && !onFieldUpdate}
+              />
+              <span>{project.visibility === "private" ? "Private" : "Open to company"}</span>
+            </label>
+            <p className="text-(length:--text-micro) text-muted-foreground">
+              Only access members can discover this project. Tasks shared directly remain readable on their own.
+            </p>
+            {project.visibility === "private" ? <ProjectAccessMembers project={project} /> : null}
+          </div>
         </PropertyRow>
         {project.leadAgentId && (
           <PropertyRow label="Lead">

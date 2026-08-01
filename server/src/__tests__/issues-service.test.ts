@@ -17,11 +17,13 @@ import {
   issueComments,
   issueInboxArchives,
   issueDocuments,
+  issueAccessGrants,
   issuePlanDecompositions,
   issueRelations,
   issueThreadInteractions,
   issues,
   projectWorkspaces,
+  projectAccessMembers,
   projects,
   workspaceOperations,
 } from "@paperclipai/db";
@@ -2609,6 +2611,121 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
 
     expect(parent.responsibleUserId).toBe(responsibleUserId);
     expect(child.responsibleUserId).toBe(responsibleUserId);
+  });
+
+  it("creates children under a private issue in the same private subtree", async () => {
+    const companyId = randomUUID();
+    const parentIssueId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Private subtree company",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+    });
+    await db.insert(issues).values({
+      id: parentIssueId,
+      companyId,
+      title: "Private root",
+      visibility: "private",
+      privacyRootIssueId: parentIssueId,
+    });
+
+    const child = await svc.create(companyId, {
+      parentId: parentIssueId,
+      title: "Inherited private child",
+      visibility: "open",
+    });
+
+    expect(child.visibility).toBe("private");
+    expect(child.privacyRootIssueId).toBe(parentIssueId);
+  });
+
+  it("creates one personal private project and parks private tasks there", async () => {
+    const companyId = randomUUID();
+    const responsibleUserId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Personal private tasks company",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+    });
+
+    const [first, second] = await Promise.all([
+      svc.create(companyId, {
+        title: "First personal private task",
+        visibility: "private",
+        createdByUserId: responsibleUserId,
+      }),
+      svc.create(companyId, {
+        title: "Second personal private task",
+        visibility: "private",
+        createdByUserId: responsibleUserId,
+      }),
+    ]);
+
+    const personalProjects = await db.select().from(projects)
+      .where(eq(projects.personalOwnerUserId, responsibleUserId));
+    expect(personalProjects).toHaveLength(1);
+    expect(personalProjects[0]).toMatchObject({
+      companyId,
+      name: "My private tasks",
+      visibility: "private",
+    });
+    expect(first.projectId).toBe(personalProjects[0]!.id);
+    expect(second.projectId).toBe(personalProjects[0]!.id);
+    expect(first.privacyRootIssueId).toBe(first.id);
+    expect(second.privacyRootIssueId).toBe(second.id);
+    await expect(db.select().from(projectAccessMembers)
+      .where(eq(projectAccessMembers.projectId, personalProjects[0]!.id)))
+      .resolves.toEqual([
+        expect.objectContaining({ subjectType: "user", subjectId: responsibleUserId }),
+      ]);
+  });
+
+  it("keeps a responsible human and grants an agent access to its explicitly private task", async () => {
+    const companyId = randomUUID();
+    const responsibleUserId = randomUUID();
+    const creatorAgentId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Agent private task company",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+    });
+    await db.insert(agents).values({
+      id: creatorAgentId,
+      companyId,
+      name: "Private task creator",
+      role: "engineer",
+      adapterType: "process",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+
+    const issue = await svc.create(companyId, {
+      title: "Agent email scratch task",
+      visibility: "private",
+      createdByAgentId: creatorAgentId,
+      actorResponsibleUserId: responsibleUserId,
+    });
+
+    expect(issue.responsibleUserId).toBe(responsibleUserId);
+    const personalProject = await db.select().from(projects)
+      .where(eq(projects.id, issue.projectId!))
+      .then((rows) => rows[0]!);
+    expect(personalProject.personalOwnerUserId).toBe(responsibleUserId);
+    await expect(db.select().from(projectAccessMembers)
+      .where(eq(projectAccessMembers.projectId, personalProject.id)))
+      .resolves.toEqual([
+        expect.objectContaining({ subjectType: "user", subjectId: responsibleUserId }),
+      ]);
+    await expect(db.select().from(issueAccessGrants)
+      .where(eq(issueAccessGrants.issueId, issue.id)))
+      .resolves.toEqual([
+        expect.objectContaining({
+          subjectType: "agent",
+          subjectId: creatorAgentId,
+          source: "explicit",
+        }),
+      ]);
   });
 
   it("only honors explicit responsibleUserId for trusted issue create callers", async () => {

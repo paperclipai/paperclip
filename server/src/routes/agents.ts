@@ -113,9 +113,19 @@ import {
   changeConsentGateService,
   touchesAgentProfileChangeConsentFields,
 } from "../services/change-consent-gate.js";
+import {
+  canActorReadHeartbeatRun,
+  redactHeartbeatRunListRow,
+} from "../services/heartbeat-run-privacy.js";
 
 const RUN_LOG_DEFAULT_LIMIT_BYTES = 256_000;
 const RUN_LOG_MAX_LIMIT_BYTES = 1024 * 1024;
+
+type RunReadBinding = {
+  companyId: string;
+  scopeKind?: "company" | "issue" | null;
+  issueId?: string | null;
+};
 
 function readRunLogLimitBytes(value: unknown) {
   const parsed = Number(value ?? RUN_LOG_DEFAULT_LIMIT_BYTES);
@@ -200,6 +210,27 @@ export function agentRoutes(
   const workspaceOperations = workspaceOperationService(db);
   const instanceSettings = instanceSettingsService(db);
   const strictSecretsMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true";
+
+  async function actorCanReadRun(req: Request, run: RunReadBinding) {
+    return canActorReadHeartbeatRun(db, access, req.actor, run);
+  }
+
+  async function assertRunReadAllowed(
+    req: Request,
+    res: Response,
+    run: RunReadBinding,
+    notFoundMessage = "Heartbeat run not found",
+  ) {
+    if (await actorCanReadRun(req, run)) return true;
+    res.status(404).json({ error: notFoundMessage });
+    return false;
+  }
+
+  async function serializeRunListRow<
+    T extends Record<string, unknown> & RunReadBinding,
+  >(req: Request, run: T) {
+    return await actorCanReadRun(req, run) ? run : redactHeartbeatRunListRow(run);
+  }
 
   async function assertAgentEnvironmentSelection(
     companyId: string,
@@ -3649,7 +3680,7 @@ export function agentRoutes(
     const limit = limitParam ? Math.max(1, Math.min(1000, parseInt(limitParam, 10) || 200)) : undefined;
     const summary = req.query.summary === "true" || req.query.summary === "1";
     const runs = await heartbeat.list(companyId, agentId, limit, { summary });
-    res.json(runs);
+    res.json(await Promise.all(runs.map((run) => serializeRunListRow(req, run))));
   });
 
   router.get("/companies/:companyId/live-runs", async (req, res) => {
@@ -3689,7 +3720,17 @@ export function agentRoutes(
       lastOutputStream: heartbeatRuns.lastOutputStream,
       lastOutputBytes: heartbeatRuns.lastOutputBytes,
       processStartedAt: heartbeatRuns.processStartedAt,
-      issueId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`.as("issueId"),
+      scopeKind: heartbeatRuns.scopeKind,
+      issueId: heartbeatRuns.issueId,
+      inputTokens: sql<number | null>`(${heartbeatRuns.usageJson} ->> 'inputTokens')::numeric`.as("inputTokens"),
+      cachedInputTokens: sql<number | null>`(${heartbeatRuns.usageJson} ->> 'cachedInputTokens')::numeric`.as("cachedInputTokens"),
+      outputTokens: sql<number | null>`(${heartbeatRuns.usageJson} ->> 'outputTokens')::numeric`.as("outputTokens"),
+      totalTokens: sql<number | null>`(${heartbeatRuns.usageJson} ->> 'totalTokens')::numeric`.as("totalTokens"),
+      costUsd: sql<number | null>`coalesce(
+        (${heartbeatRuns.resultJson} ->> 'costUsd')::numeric,
+        (${heartbeatRuns.resultJson} ->> 'cost_usd')::numeric,
+        (${heartbeatRuns.resultJson} ->> 'total_cost_usd')::numeric
+      )`.as("costUsd"),
     };
 
     const liveRunsQuery = db
@@ -3724,23 +3765,30 @@ export function agentRoutes(
         .limit(targetRunCount - liveRuns.length);
 
       const rows = [...liveRuns, ...recentRuns];
-      res.json(await Promise.all(rows.map(async (run) => ({
-        ...heartbeat.decorateActiveRunStatus(run),
-        outputSilence: await heartbeat.buildRunOutputSilence(run),
-      }))));
+      res.json(await Promise.all(rows.map(async (run) => {
+        if (!(await actorCanReadRun(req, run))) return redactHeartbeatRunListRow(run);
+        return {
+          ...heartbeat.decorateActiveRunStatus(run),
+          outputSilence: await heartbeat.buildRunOutputSilence(run),
+        };
+      })));
       return;
     }
 
-    res.json(await Promise.all(liveRuns.map(async (run) => ({
-      ...heartbeat.decorateActiveRunStatus(run),
-      outputSilence: await heartbeat.buildRunOutputSilence(run),
-    }))));
+    res.json(await Promise.all(liveRuns.map(async (run) => {
+      if (!(await actorCanReadRun(req, run))) return redactHeartbeatRunListRow(run);
+      return {
+        ...heartbeat.decorateActiveRunStatus(run),
+        outputSilence: await heartbeat.buildRunOutputSilence(run),
+      };
+    })));
   });
 
   router.get("/heartbeat-runs/:runId", async (req, res) => {
     const runId = req.params.runId as string;
     const run = await getAccessibleResource(req, res, heartbeat.getRun(runId), "Heartbeat run not found");
     if (!run) return;
+    if (!(await assertRunReadAllowed(req, res, run))) return;
     const retryExhaustedReason = await heartbeat.getRetryExhaustedReason(runId);
     const decoratedRun = heartbeat.decorateActiveRunStatus(run);
     res.json(
@@ -3756,6 +3804,7 @@ export function agentRoutes(
     const runId = req.params.runId as string;
     const existing = await getAccessibleResource(req, res, heartbeat.getRun(runId), "Heartbeat run not found");
     if (!existing) return;
+    if (!(await assertRunReadAllowed(req, res, existing))) return;
     const run = await heartbeat.cancelRun(runId);
 
     if (run) {
@@ -3777,6 +3826,7 @@ export function agentRoutes(
     const runId = req.params.runId as string;
     const existing = await getAccessibleResource(req, res, heartbeat.getRun(runId), "Heartbeat run not found");
     if (!existing) return;
+    if (!(await assertRunReadAllowed(req, res, existing))) return;
     const decision = typeof req.body?.decision === "string" ? req.body.decision : "";
     if (!["snooze", "continue", "dismissed_false_positive"].includes(decision)) {
       res.status(400).json({ error: "Unsupported watchdog decision" });
@@ -3809,6 +3859,7 @@ export function agentRoutes(
     const runId = req.params.runId as string;
     const run = await getAccessibleResource(req, res, heartbeat.getRun(runId), "Heartbeat run not found");
     if (!run) return;
+    if (!(await assertRunReadAllowed(req, res, run))) return;
 
     const afterSeq = Number(req.query.afterSeq ?? 0);
     const limit = Number(req.query.limit ?? 200);
@@ -3827,6 +3878,7 @@ export function agentRoutes(
     const runId = req.params.runId as string;
     const run = await getAccessibleResource(req, res, heartbeat.getRunLogAccess(runId), "Heartbeat run not found");
     if (!run) return;
+    if (!(await assertRunReadAllowed(req, res, run))) return;
 
     const offset = Number(req.query.offset ?? 0);
     const limitBytes = readRunLogLimitBytes(req.query.limitBytes);
@@ -3843,6 +3895,7 @@ export function agentRoutes(
     const runId = req.params.runId as string;
     const run = await getAccessibleResource(req, res, heartbeat.getRun(runId), "Heartbeat run not found");
     if (!run) return;
+    if (!(await assertRunReadAllowed(req, res, run))) return;
 
     const context = asRecord(run.contextSnapshot);
     const executionWorkspaceId = asNonEmptyString(context?.executionWorkspaceId);
@@ -3854,6 +3907,14 @@ export function agentRoutes(
     const operationId = req.params.operationId as string;
     const operation = await getAccessibleResource(req, res, workspaceOperations.getById(operationId), "Workspace operation not found");
     if (!operation) return;
+    const operationRun = operation.heartbeatRunId
+      ? await heartbeat.getRunLogAccess(operation.heartbeatRunId)
+      : null;
+    if (!(await assertRunReadAllowed(req, res, {
+      companyId: operation.companyId,
+      scopeKind: operationRun?.scopeKind ?? (operation.issueId ? "issue" : null),
+      issueId: operationRun?.issueId ?? operation.issueId ?? null,
+    }, "Workspace operation not found"))) return;
 
     const offset = Number(req.query.offset ?? 0);
     const limitBytes = readRunLogLimitBytes(req.query.limitBytes);
@@ -3910,7 +3971,7 @@ export function agentRoutes(
         and(
           eq(heartbeatRuns.companyId, issue.companyId),
           inArray(heartbeatRuns.status, ["queued", "running"]),
-          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issue.id}`,
+          eq(heartbeatRuns.issueId, issue.id),
         ),
       )
       .orderBy(desc(heartbeatRuns.createdAt));

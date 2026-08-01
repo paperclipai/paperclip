@@ -20,6 +20,7 @@ export function attentionRoutes(db: Db) {
     const feed = await svc.list(companyId, {
       userId: req.actor.userId,
       includeDismissed,
+      actor: req.actor,
     });
     res.json(feed);
   });
