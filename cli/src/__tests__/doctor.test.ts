@@ -88,6 +88,9 @@ describe("doctor", () => {
 
   it("re-runs repairable checks so repaired failures do not remain blocking", async () => {
     const configPath = createTempConfig();
+    const testHome = path.dirname(path.dirname(configPath));
+    process.env.HOME = testHome;
+    process.env.PAPERCLIP_HOME = path.join(testHome, "paperclip-home");
 
     const summary = await doctor({
       config: configPath,
