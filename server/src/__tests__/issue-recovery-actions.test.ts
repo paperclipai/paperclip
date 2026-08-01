@@ -526,6 +526,144 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(enqueueWakeup).not.toHaveBeenCalled();
   });
 
+  it("DON-207: skips stranded escalation when a cancelled zombie still advances last_output_at", async () => {
+    // Specimen shape from DON-172: latest run is a short-lived agent_paused
+    // continuation retry, while an older cancelled run keeps updating
+    // last_output_at (process-tree orphan / DON-127). Status-only active-path
+    // checks would escalate; recent output evidence must suppress that.
+    const { companyId, coderId, sourceIssueId } = await seedCompany();
+    const zombieRunId = randomUUID();
+    const pausedRetryRunId = randomUUID();
+    const zombieFinishedAt = new Date(Date.now() - 20 * 60 * 1000);
+    const recentOutputAt = new Date(Date.now() - 2 * 60 * 1000);
+    const retryFinishedAt = new Date(Date.now() - 60 * 1000);
+
+    await db.insert(heartbeatRuns).values([
+      {
+        id: zombieRunId,
+        companyId,
+        agentId: coderId,
+        invocationSource: "assignment",
+        status: "cancelled",
+        errorCode: "cancelled",
+        error: "cancelled",
+        startedAt: new Date(zombieFinishedAt.getTime() - 5 * 60 * 1000),
+        finishedAt: zombieFinishedAt,
+        createdAt: new Date(zombieFinishedAt.getTime() - 6 * 60 * 1000),
+        lastOutputAt: recentOutputAt,
+        contextSnapshot: { issueId: sourceIssueId, wakeReason: "issue_assigned" },
+      },
+      {
+        id: pausedRetryRunId,
+        companyId,
+        agentId: coderId,
+        invocationSource: "automation",
+        status: "cancelled",
+        errorCode: "agent_paused",
+        error: "agent paused",
+        startedAt: new Date(retryFinishedAt.getTime() - 500),
+        finishedAt: retryFinishedAt,
+        createdAt: new Date(retryFinishedAt.getTime() - 1000),
+        lastOutputAt: null,
+        contextSnapshot: {
+          issueId: sourceIssueId,
+          wakeReason: "issue_continuation_needed",
+          retryReason: "issue_continuation_needed",
+          source: "issue.continuation_recovery",
+        },
+      },
+    ]);
+
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+    const result = await recovery.reconcileStrandedAssignedIssues();
+
+    expect(result.escalated).toBe(0);
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.skipped).toBeGreaterThanOrEqual(1);
+    const [updatedIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(updatedIssue).toMatchObject({
+      status: "in_progress",
+      assigneeAgentId: coderId,
+    });
+    expect(await db.select().from(issueRecoveryActions)).toHaveLength(0);
+    expect(enqueueWakeup).not.toHaveBeenCalled();
+  });
+
+  it("DON-207: skips stranded re-escalation within cooldown after a cleared recovery", async () => {
+    // Specimen shape from DON-172 second firing: Louis cleared the stranded
+    // recovery, then the same agent_paused continuation shape re-fired within
+    // minutes. Cleared source-scoped stranded recovery must suppress re-fire
+    // for DEFAULT_LIVENESS_REESCALATION_COOLDOWN_MS.
+    const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
+    const pausedRetryRunId = randomUUID();
+    const retryFinishedAt = new Date(Date.now() - 60 * 1000);
+    const clearedAt = new Date(Date.now() - 10 * 60 * 1000);
+
+    await db.insert(heartbeatRuns).values({
+      id: pausedRetryRunId,
+      companyId,
+      agentId: coderId,
+      invocationSource: "automation",
+      status: "cancelled",
+      errorCode: "agent_paused",
+      error: "agent paused",
+      startedAt: new Date(retryFinishedAt.getTime() - 500),
+      finishedAt: retryFinishedAt,
+      createdAt: new Date(retryFinishedAt.getTime() - 1000),
+      lastOutputAt: null,
+      contextSnapshot: {
+        issueId: sourceIssueId,
+        wakeReason: "issue_continuation_needed",
+        retryReason: "issue_continuation_needed",
+        source: "issue.continuation_recovery",
+      },
+    });
+
+    const recoveryActionSvc = issueRecoveryActionService(db);
+    const action = await recoveryActionSvc.upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "stranded_assigned_issue",
+      ownerType: "agent",
+      ownerAgentId: managerId,
+      cause: "agent_paused",
+      fingerprint: `source_scoped_recovery:${companyId}:${sourceIssueId}:stranded_assigned_issue`,
+      evidence: { latestRunId: pausedRetryRunId },
+      nextAction: "Restore a live execution path.",
+      wakePolicy: { type: "wake_owner" },
+    });
+    await db
+      .update(issueRecoveryActions)
+      .set({
+        status: "resolved",
+        outcome: "restored",
+        resolutionNote: "Stale agent_paused false positive; restored assignee.",
+        resolvedAt: clearedAt,
+        updatedAt: clearedAt,
+      })
+      .where(eq(issueRecoveryActions.id, action.id));
+
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+    const result = await recovery.reconcileStrandedAssignedIssues();
+
+    expect(result.escalated).toBe(0);
+    expect(result.continuationRequeued).toBe(0);
+    expect(result.skipped).toBeGreaterThanOrEqual(1);
+    const [updatedIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(updatedIssue).toMatchObject({
+      status: "in_progress",
+      assigneeAgentId: coderId,
+    });
+    const activeActions = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(and(eq(issueRecoveryActions.sourceIssueId, sourceIssueId), eq(issueRecoveryActions.status, "active")));
+    expect(activeActions).toHaveLength(0);
+    expect(enqueueWakeup).not.toHaveBeenCalled();
+  });
+
   it("schedules a quota monitor for a cross-agent active review participant", async () => {
     const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
     const stageId = randomUUID();

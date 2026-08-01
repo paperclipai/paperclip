@@ -1119,6 +1119,58 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     return Boolean(comment || attachment);
   }
 
+  // DON-207: zombie/cancelled runs can keep updating last_output_at after the
+  // control plane marks them terminal (see DON-127). Status-only active-path
+  // checks then false-positive "no live execution path" and escalate over a
+  // process that is still producing output.
+  async function hasRecentRunOutputEvidence(
+    companyId: string,
+    issueId: string,
+    windowMs: number,
+  ) {
+    const since = new Date(Date.now() - windowMs);
+    return db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, companyId),
+          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${issueId}`,
+          or(
+            gt(heartbeatRuns.lastOutputAt, since),
+            gt(heartbeatRuns.lastUsefulActionAt, since),
+          ),
+        ),
+      )
+      .limit(1)
+      .then((rows) => Boolean(rows[0]));
+  }
+
+  // DON-207: stranded recovery lacks the issue-graph liveness re-escalation
+  // cooldown. After a source-scoped action is cleared, the same fingerprint
+  // can re-fire within minutes on a stale agent_paused retry.
+  async function hasRecentlyClearedStrandedRecovery(
+    companyId: string,
+    issueId: string,
+    windowMs: number,
+  ) {
+    const since = new Date(Date.now() - windowMs);
+    return db
+      .select({ id: issueRecoveryActions.id })
+      .from(issueRecoveryActions)
+      .where(
+        and(
+          eq(issueRecoveryActions.companyId, companyId),
+          eq(issueRecoveryActions.sourceIssueId, issueId),
+          eq(issueRecoveryActions.kind, "stranded_assigned_issue"),
+          inArray(issueRecoveryActions.status, ["resolved", "cancelled"]),
+          gt(issueRecoveryActions.resolvedAt, since),
+        ),
+      )
+      .limit(1)
+      .then((rows) => Boolean(rows[0]));
+  }
+
   async function enqueueStrandedIssueRecovery(input: {
     issueId: string;
     agentId: string;
@@ -3692,6 +3744,28 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         continue;
       }
 
+      // DON-207: treat recent last_output_at / last_useful_action_at as a
+      // live path even when the run row is already cancelled/failed.
+      if (await hasRecentRunOutputEvidence(
+        issue.companyId,
+        issue.id,
+        STRANDED_RECENT_PROGRESS_EXEMPTION_MS,
+      )) {
+        result.skipped += 1;
+        continue;
+      }
+
+      // DON-207: suppress stranded re-escalation shortly after a cleared
+      // source-scoped recovery (mirrors issue-graph liveness cooldown).
+      if (await hasRecentlyClearedStrandedRecovery(
+        issue.companyId,
+        issue.id,
+        DEFAULT_LIVENESS_REESCALATION_COOLDOWN_MS,
+      )) {
+        result.skipped += 1;
+        continue;
+      }
+
       if (await hasPendingWakeInteraction(issue.companyId, issue.id)) {
         result.skipped += 1;
         continue;
@@ -4215,6 +4289,30 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             classification.errorCode,
           );
           if (consecutive >= classification.maxAttempts) {
+            // DON-207 defense-in-depth: never escalate over recent output
+            // or a just-cleared stranded recovery, even if earlier skips
+            // were bypassed by a race with getLatestIssueRun.
+            if (
+              await hasRecentRunOutputEvidence(
+                issue.companyId,
+                issue.id,
+                STRANDED_RECENT_PROGRESS_EXEMPTION_MS,
+              ) ||
+              await hasRecentlyClearedStrandedRecovery(
+                issue.companyId,
+                issue.id,
+                DEFAULT_LIVENESS_REESCALATION_COOLDOWN_MS,
+              ) ||
+              await hasRecentVisibleProgress(
+                issue.companyId,
+                issue.id,
+                agentId,
+                STRANDED_RECENT_PROGRESS_EXEMPTION_MS,
+              )
+            ) {
+              result.skipped += 1;
+              continue;
+            }
             const failureSummary = summarizeRunFailureForIssueComment(latestRun);
             const attemptCopy = consecutive <= 1 ? "" : ` (${consecutive}× attempts)`;
             const causeCopy = classification.errorCode
