@@ -442,7 +442,7 @@ jobs:
           specs="$(node ./scripts/e2e-shard.mjs \
             --shard-index ${{ matrix.shard_index }} --shard-count ${{ matrix.shard_count }})"
           echo "shard ${{ matrix.shard_label }} specs: $specs"
-          pnpm run test:e2e -- $specs
+          pnpm run test:e2e $specs
 
       - name: Upload Playwright report
         uses: actions/upload-artifact@v7
