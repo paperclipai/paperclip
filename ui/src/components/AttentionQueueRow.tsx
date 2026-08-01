@@ -153,14 +153,13 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
   // Which rows contribute an action bar. Inline rows carry compact decision
   // verbs; deep-link rows carry an Open button; curtain rows carry Restore.
   const compactActions = !isHidden ? collectCompactActions(item) : [];
-  const showCompact = !expanded && compactActions.length > 0;
   const showOpen = !inline && !!href;
   const showRestore = isHidden && !!onRestore;
-  const showActionBar = showCompact || showOpen || showRestore;
   // An expanded inline row hands its footer to the resolver, which owns the
   // decision verbs — so the toggle rides alongside them on one row rather than
-  // stranding a lone "See less" under the buttons.
-  const resolverOwnsFooter = expanded && inline;
+  // stranding a lone "See less" under the buttons. That makes the collapsed
+  // footer a swap rather than a survivor, so it crossfades with the panel.
+  const hasCollapsedOnlyContent = hasImages || inline;
 
   // Disclosure control. Now the row's only expand affordance: it names what it
   // does instead of leaving a bare chevron to be decoded, and it sits at the
@@ -177,6 +176,45 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
       {expanded ? "See less" : "See more"}
     </button>
   ) : null;
+
+  /**
+   * The row's action bar: disclosure on the left, decision verbs on the right.
+   * Rendered either inside the collapsed-only cluster (inline rows, where the
+   * resolver takes it over once expanded) or as a standing sibling (everything
+   * else). `compact` is false for the standing copy so an expanded row does not
+   * show collapsed verbs beside the panel's own.
+   */
+  const renderFooter = ({ compact }: { compact: boolean }) => {
+    const showCompact = compactActions.length > 0 && (compact || !expanded);
+    if (!toggle && !showCompact && !showOpen && !showRestore) return null;
+    return (
+      <div className="flex flex-wrap items-center justify-between gap-2" data-attention-actions="true">
+        {toggle ?? <span />}
+
+        <div className="flex flex-wrap items-center gap-2 @xl:justify-end">
+          {showCompact && (
+            <CompactDecisionActions item={item} companyId={companyId} onOpen={() => onToggleExpand(item)} />
+          )}
+
+          {showOpen && (
+            <Button asChild variant="default" size="xs" className={ACTION_BTN}>
+              <Link to={href!}>
+                Open
+                <ExternalLink className="h-3 w-3" />
+              </Link>
+            </Button>
+          )}
+
+          {showRestore && (
+            <Button type="button" variant="outline" size="xs" className={ACTION_BTN} onClick={() => onRestore(item)}>
+              <RotateCcw className="h-3 w-3" />
+              Restore
+            </Button>
+          )}
+        </div>
+      </div>
+    );
+  };
 
   return (
     <div
@@ -313,10 +351,21 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
         <p className="mt-0.5 line-clamp-2 text-xs text-muted-foreground">{detailLine}</p>
       </div>
 
-      {/* Evidence: a thumbnail strip while collapsed, the full gallery once
-          expanded. Both sit in the row's own column now — the expanded state no
-          longer opens a separately tinted and bordered drawer. */}
-      {hasImages && !expanded && <ThumbnailStack images={images} />}
+      {/* Collapsed-only content. It has no counterpart to morph into — the
+          thumbnail strip becomes a full gallery, and an inline row's footer is
+          replaced by the resolver's own — so it rides an inverse disclosure and
+          crossfades against the panel below: this shrinks and fades out on the
+          same tokens as that grows and fades in, instead of popping. */}
+      {hasCollapsedOnlyContent && (
+        <Collapsible open={!expanded} className="contents">
+          <CollapsibleContent data-decision-disclosure>
+            <div className="flex flex-col gap-4">
+              {hasImages && <ThumbnailStack images={images} />}
+              {inline && renderFooter({ compact: true })}
+            </div>
+          </CollapsibleContent>
+        </Collapsible>
+      )}
 
       {/* The disclosure panel. Collapsible measures the panel and publishes its
           height, so the card grows and shrinks to a real number rather than
@@ -342,48 +391,10 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
         </CollapsibleContent>
       </Collapsible>
 
-      {/* Footer: disclosure on the left, decision verbs on the right. Sibling of
-          the headline so taps never toggle expand. */}
-      {!resolverOwnsFooter && (toggle || showActionBar) && (
-        <div
-          className="flex flex-wrap items-center justify-between gap-2"
-          data-attention-actions="true"
-        >
-          {toggle ?? <span />}
-
-          <div className="flex flex-wrap items-center gap-2 @xl:justify-end">
-            {showCompact && (
-              <CompactDecisionActions
-                item={item}
-                companyId={companyId}
-                onOpen={() => onToggleExpand(item)}
-              />
-            )}
-
-            {showOpen && (
-              <Button asChild variant="default" size="xs" className={ACTION_BTN}>
-                <Link to={href!}>
-                  Open
-                  <ExternalLink className="h-3 w-3" />
-                </Link>
-              </Button>
-            )}
-
-            {showRestore && (
-              <Button
-                type="button"
-                variant="outline"
-                size="xs"
-                className={ACTION_BTN}
-                onClick={() => onRestore(item)}
-              >
-                <RotateCcw className="h-3 w-3" />
-                Restore
-              </Button>
-            )}
-          </div>
-        </div>
-      )}
+      {/* A non-inline row keeps one footer across both states — its Open or
+          Restore button and its toggle are the same control either way, so it
+          stays put rather than crossfading with itself. */}
+      {!inline && renderFooter({ compact: false })}
     </div>
   );
 });

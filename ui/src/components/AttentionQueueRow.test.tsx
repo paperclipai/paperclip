@@ -542,7 +542,12 @@ describe("AttentionQueueRow", () => {
 
     const thumbnailStack = image?.parentElement?.parentElement;
     expect(thumbnailStack?.getAttribute("class")).toContain("items-center");
-    expect(thumbnailStack?.parentElement?.hasAttribute("data-attention-row")).toBe(true);
+    // The strip is collapsed-only content: it rides the inverse disclosure so
+    // it can fade out as the expanded gallery fades in, rather than popping.
+    const cluster = thumbnailStack?.closest("[data-decision-disclosure]");
+    expect(cluster).toBeTruthy();
+    expect(cluster?.getAttribute("data-state")).toBe("open");
+    expect(cluster?.closest("[data-attention-row]")).toBeTruthy();
   });
 
   it("is memoized — a parent re-render with identical props does not re-render the row", async () => {

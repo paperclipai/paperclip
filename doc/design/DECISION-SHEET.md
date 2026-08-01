@@ -210,3 +210,15 @@ Measured against the mock, every value matches and all of it resolves through to
 **The tile stays neutral rather than taking the project colour**, which `ProjectTile` would do if passed one. The eyebrow already carries the status glyph's colour, and a second tinted swatch beside it competes with the one mark that means something. Project colour still identifies the project on project-native surfaces. This matches the direction #9574 took for the Decisions feed.
 
 The seeded header (rendered from `headerSeed` while the issue loads) was updated in lockstep, so the eyebrow does not change shape when the real issue arrives.
+
+## Collapsed-only content crossfades against the panel (design session, Jul 29 2026)
+
+Adding the disclosure animation left a seam: the panel grew smoothly, but the content it *replaces* still popped out of existence in one frame. Two things never carry across the two states — the thumbnail strip, whose counterpart is the full gallery; and an inline row's footer, which the resolver takes over once expanded.
+
+Both now ride an **inverse disclosure** (`open={!expanded}`) using the same keyframes and tokens as the panel, so the collapsed cluster shrinks and fades out while the panel grows and fades in. Verified live during a toggle: `decision-disclosure-close` running at 110ms on the cluster and `decision-disclosure-open` running at 160ms on the panel, in the same frame.
+
+Exit being shorter than enter is what makes it read as a handoff rather than a blend — the outgoing content clears slightly ahead of the incoming.
+
+**Only genuine swaps crossfade.** A non-inline row keeps one standing footer: its Open or Restore button and its toggle are the same control in both states, so it stays put rather than crossfading with itself. The inverse cluster is skipped entirely when a row has neither images nor an inline resolver (`hasCollapsedOnlyContent`), because an always-open empty wrapper would otherwise charge the card a 16px flex gap for nothing — the closed panel avoids this for free, since Radix marks it `hidden` and it drops out of flex layout.
+
+`renderFooter({ compact })` renders the bar in either position. `compact` is false for the standing copy, so an expanded non-inline row does not show collapsed verbs beside the panel's own.
