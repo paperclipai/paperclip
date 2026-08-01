@@ -41,6 +41,15 @@ export type IssueUpdateResponse = Issue & {
   };
 };
 
+export type IssueCommentResponse = IssueComment & {
+  interrupt?: {
+    outcome: "cancelled" | "cancel_failed" | "no_active_run";
+    runId: string | null;
+    mutationCommitted: true;
+    commentId: string | null;
+  };
+};
+
 export type ResolveRecoveryActionResponse = {
   issue: Issue;
   recoveryAction: IssueRecoveryAction;
@@ -294,7 +303,7 @@ export const issuesApi = {
     },
   ) => api.post<FeedbackVote>(`/issues/${id}/feedback-votes`, data),
   addComment: (id: string, body: string, reopen?: boolean, interrupt?: boolean) =>
-    api.post<IssueComment>(
+    api.post<IssueCommentResponse>(
       `/issues/${id}/comments`,
       {
         body,

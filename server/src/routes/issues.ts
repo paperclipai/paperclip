@@ -10471,6 +10471,10 @@ export function issueRoutes(
     let reopened = false;
     let reopenFromStatus: string | null = null;
     let interruptedRunId: string | null = null;
+    let interruptDisposition: {
+      outcome: "cancelled" | "cancel_failed" | "no_active_run";
+      runId: string | null;
+    } | null = null;
     let currentIssue = issue;
     let issueBeforeCommentDecision = issue;
     let commentDecisionStageWakeup: ReturnType<typeof buildExecutionStageWakeup> | null = null;
@@ -10516,6 +10520,9 @@ export function issueRoutes(
       }
 
       runToInterrupt = await resolveActiveIssueRun(currentIssue);
+      if (!runToInterrupt) {
+        interruptDisposition = { outcome: "no_active_run", runId: null };
+      }
     }
 
     const currentExecutionState = parseIssueExecutionState(currentIssue.executionState);
@@ -10650,31 +10657,69 @@ export function issueRoutes(
     }
 
     if (runToInterrupt) {
-      const cancelled = await heartbeat.cancelRun(
-        runToInterrupt.id,
-        "Interrupted by board comment",
-        operatorInterruptCancelOptions({ issueId: currentIssue.id, actor }),
-      );
-      if (cancelled) {
-        interruptedRunId = cancelled.id;
+      try {
+        const cancelled = await heartbeat.cancelRun(
+          runToInterrupt.id,
+          "Interrupted by board comment",
+          operatorInterruptCancelOptions({ issueId: currentIssue.id, actor }),
+        );
+        interruptDisposition = {
+          outcome: "cancelled",
+          runId: cancelled?.id ?? runToInterrupt.id,
+        };
+        if (cancelled) {
+          interruptedRunId = cancelled.id;
+          await logActivity(db, {
+            companyId: cancelled.companyId,
+            actorType: actor.actorType,
+            actorId: actor.actorId,
+            agentId: actor.agentId,
+            runId: actor.runId,
+            agentApiKeyId: actor.agentApiKeyId,
+            action: "heartbeat.cancelled",
+            entityType: "heartbeat_run",
+            entityId: cancelled.id,
+            issueId: currentIssue.id,
+            details: {
+              agentId: cancelled.agentId,
+              source: "issue_comment_interrupt",
+              issueId: currentIssue.id,
+              cancellationKind: "operator_interrupted",
+              operatorInterrupted: true,
+            },
+          });
+        }
+      } catch (err) {
+        interruptDisposition = {
+          outcome: "cancel_failed",
+          runId: runToInterrupt.id,
+        };
+        logger.warn(
+          { err, issueId: currentIssue.id, runId: runToInterrupt.id },
+          "failed to interrupt run after issue comment committed",
+        );
         await logActivity(db, {
-          companyId: cancelled.companyId,
+          companyId: currentIssue.companyId,
           actorType: actor.actorType,
           actorId: actor.actorId,
           agentId: actor.agentId,
           runId: actor.runId,
           agentApiKeyId: actor.agentApiKeyId,
-          action: "heartbeat.cancelled",
+          action: "heartbeat.cancel_failed",
           entityType: "heartbeat_run",
-          entityId: cancelled.id,
+          entityId: runToInterrupt.id,
           issueId: currentIssue.id,
           details: {
-            agentId: cancelled.agentId,
             source: "issue_comment_interrupt",
             issueId: currentIssue.id,
-            cancellationKind: "operator_interrupted",
-            operatorInterrupted: true,
+            issueMutationCommitted: true,
+            commentId: comment.id,
           },
+        }).catch((activityErr) => {
+          logger.warn(
+            { err: activityErr, issueId: currentIssue.id, runId: runToInterrupt.id },
+            "failed to record issue comment interrupt failure",
+          );
         });
       }
     }
@@ -11057,7 +11102,14 @@ export function issueRoutes(
       currentIssue = latestIssue;
     }
     setIssueVersionHeaders(res, currentIssue.version);
-    res.status(201).json(comment);
+    const interrupt = interruptDisposition
+      ? {
+          ...interruptDisposition,
+          mutationCommitted: true as const,
+          commentId: comment.id,
+        }
+      : undefined;
+    res.status(201).json({ ...comment, ...(interrupt ? { interrupt } : {}) });
   });
 
   router.post("/issues/:id/feedback-votes", validate(upsertIssueFeedbackVoteSchema), async (req, res) => {

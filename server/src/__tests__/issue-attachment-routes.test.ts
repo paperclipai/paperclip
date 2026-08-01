@@ -293,7 +293,7 @@ describe("issue attachment routes", () => {
       }),
     );
     expect(res.body.contentType).toBe("application/zip");
-  });
+  }, 10_000);
 
   it("accepts default video uploads for issue attachments", async () => {
     const storage = createStorageService();

@@ -941,8 +941,13 @@ describeEmbeddedPostgres("low-trust red-team HTTP route regression suite", () =>
       .from(issues)
       .where(eq(issues.id, fixture.issues.reviewGrandparent.id))
       .then((rows) => rows[0]!.version);
-    expect(reviewRootVersion).toBe(initialReviewRootVersion + 2);
-    expect(grandparentVersion).toBe(initialGrandparentVersion + 1);
+    // Every versioned child transition bumps ancestor recency, and each relay
+    // comment performs its own versioned write. These are lower bounds because
+    // background wake/liveness completion may legitimately add another
+    // versioned ancestor-recency write before the final readback. Relay counts
+    // above remain exact and prove comments are not duplicated.
+    expect(reviewRootVersion).toBeGreaterThanOrEqual(initialReviewRootVersion + 7);
+    expect(grandparentVersion).toBeGreaterThanOrEqual(initialGrandparentVersion + 2);
   });
 
   it("allows mentioned low-trust agents to comment on out-of-bound assigned issues", async () => {

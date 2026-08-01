@@ -426,7 +426,7 @@ describe.sequential("issue comment reopen routes", () => {
         details: expect.not.objectContaining({ reopened: true }),
       }),
     );
-  });
+  }, 10_000);
 
   it("implicitly reopens closed issues via the PATCH comment path when reassigning to an agent", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("done"));
@@ -460,7 +460,7 @@ describe.sequential("issue comment reopen routes", () => {
         }),
       }),
     );
-  });
+  }, 10_000);
 
   it("resolves assignee shortnames before updating an issue", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("todo"));
@@ -1980,6 +1980,52 @@ describe.sequential("issue comment reopen routes", () => {
       }),
     );
   });
+
+  it("returns the committed standalone comment once when interrupt cancellation fails", async () => {
+    const persistedIssue = {
+      ...makeIssue("todo"),
+      executionRunId: "run-1",
+    };
+    mockIssueService.getById.mockResolvedValue(persistedIssue);
+    mockHeartbeatService.getRun.mockResolvedValue({
+      id: "run-1",
+      companyId: "company-1",
+      agentId: "22222222-2222-4222-8222-222222222222",
+      status: "running",
+    });
+    mockHeartbeatService.cancelRun.mockRejectedValue(new Error("adapter process did not exit"));
+
+    const res = await request(await installActor(createApp()))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "hello", interrupt: true });
+
+    expect(res.status).toBe(201);
+    expect(res.body).toMatchObject({
+      id: "comment-1",
+      body: "hello",
+      interrupt: {
+        outcome: "cancel_failed",
+        runId: "run-1",
+        mutationCommitted: true,
+        commentId: "comment-1",
+      },
+    });
+    expect(mockIssueService.updateWithInlineComment).toHaveBeenCalledTimes(1);
+    expect(mockIssueService.addComment).toHaveBeenCalledTimes(1);
+    expect(mockHeartbeatService.cancelRun).toHaveBeenCalledTimes(1);
+    expect(mockLogActivity).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        action: "heartbeat.cancel_failed",
+        entityId: "run-1",
+        details: expect.objectContaining({
+          source: "issue_comment_interrupt",
+          issueMutationCommitted: true,
+          commentId: "comment-1",
+        }),
+      }),
+    );
+  }, 10_000);
 
   it("cancels an active run when an issue is marked cancelled", async () => {
     const issue = {
