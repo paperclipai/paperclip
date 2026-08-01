@@ -76,6 +76,7 @@ import {
   withRecoveryModelProfileHint,
 } from "./model-profile-hint.js";
 import { isAutomaticRecoverySuppressedByPauseHold } from "./pause-hold-guard.js";
+import { buildProviderQuotaRetryIdempotencyKey } from "../provider-quota-retry.js";
 
 const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES = ["interrupted", "failed", "cancelled", "timed_out"] as const;
@@ -2586,21 +2587,6 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const routeToOriginal = input.recoveryCause === "process_lost" ||
       input.recoveryCause === SUCCESSFUL_RUN_MISSING_STATE_REASON ||
       input.recoveryCause === "codex_output_inactivity_monitor";
-    if (input.recoveryCause === "provider_quota") {
-      const retryAgentId = await resolveInvokableRecoveryAgentId(input.issue, originalAgentId);
-      if (!retryAgentId) {
-        return {
-          ownerAgentId: await resolveStrandedIssueRecoveryOwnerAgentId(input.issue),
-          returnOwnerAgentId: originalAgentId,
-          routingFallbackReason: "The original assignee is not invokable; quota recovery fell through to the manager ladder.",
-        };
-      }
-      return {
-        ownerAgentId: null,
-        returnOwnerAgentId: retryAgentId,
-        routingFallbackReason: null,
-      };
-    }
     if (routeToOriginal) {
       const ownerAgentId = await resolveInvokableRecoveryAgentId(input.issue, originalAgentId);
       if (ownerAgentId) {
@@ -2869,12 +2855,21 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     successfulRunHandoffEvidence?: SuccessfulRunHandoffRecoveryEvidence | null;
   }) {
     const recoveryCause = resolveStrandedRecoveryCause(input.latestRun, input.recoveryCause);
-    const routing = await resolveStrandedRecoveryRouting({
-      issue: input.issue,
-      latestRun: input.latestRun,
-      recoveryCause,
-      preferredOwnerAgentId: input.recoveryOwnerAgentId,
-    });
+    // Quota routing is reconciled from the locked live issue row below. A caller
+    // snapshot may name a former, now non-invokable assignee and must not select
+    // a takeover owner before the canonical retry has a chance to coalesce.
+    const routing = recoveryCause === "provider_quota"
+      ? {
+        ownerAgentId: null,
+        returnOwnerAgentId: input.issue.assigneeAgentId ?? input.latestRun?.agentId ?? null,
+        routingFallbackReason: null,
+      }
+      : await resolveStrandedRecoveryRouting({
+        issue: input.issue,
+        latestRun: input.latestRun,
+        recoveryCause,
+        preferredOwnerAgentId: input.recoveryOwnerAgentId,
+      });
     const ownerAgentId = routing.ownerAgentId;
     const now = new Date();
     const action = await recoveryActionsSvc.upsertSourceScoped({
@@ -2987,9 +2982,15 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     });
   }
 
-  function readProviderQuotaRetryAt(latestRun: LatestIssueRun, now: Date) {
-    const result = parseObject(latestRun?.resultJson);
-    const context = parseObject(latestRun?.contextSnapshot);
+  function readProviderQuotaRetryBoundary(input: {
+    latestRun: LatestIssueRun;
+    now: Date;
+    actionId: string;
+    companyId: string;
+    issueId: string;
+  }) {
+    const result = parseObject(input.latestRun?.resultJson);
+    const context = parseObject(input.latestRun?.contextSnapshot);
     const raw = result.providerQuotaRetryNotBefore ??
       result.retryNotBefore ??
       result.transientRetryNotBefore ??
@@ -2997,39 +2998,186 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       context.transientRetryNotBefore;
     if (typeof raw === "string" || typeof raw === "number" || raw instanceof Date) {
       const parsed = new Date(raw);
-      if (!Number.isNaN(parsed.getTime()) && parsed.getTime() > now.getTime()) return parsed;
+      if (!Number.isNaN(parsed.getTime()) && parsed.getTime() > input.now.getTime()) {
+        return {
+          retryAt: parsed,
+          resetBoundary: parsed,
+          idempotencyKey: buildProviderQuotaRetryIdempotencyKey({
+            companyId: input.companyId,
+            issueId: input.issueId,
+            retryNotBefore: parsed,
+          }),
+        };
+      }
     }
-    return new Date(now.getTime() + PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS);
+    return {
+      retryAt: new Date(input.now.getTime() + PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS),
+      resetBoundary: null,
+      idempotencyKey: buildProviderQuotaRetryIdempotencyKey({
+        companyId: input.companyId,
+        issueId: input.issueId,
+        fallbackBoundary: `recovery-action:${input.actionId}`,
+      }),
+    };
   }
 
   async function ensureProviderQuotaWaitRecoveryMonitor(input: {
     issue: typeof issues.$inferSelect;
     latestRun: LatestIssueRun;
     actionId: string;
-    agentId: string;
   }) {
-    const existing = await db
-      .select()
-      .from(heartbeatRuns)
-      .where(and(
-        eq(heartbeatRuns.companyId, input.issue.companyId),
-        eq(heartbeatRuns.agentId, input.agentId),
-        eq(heartbeatRuns.status, "scheduled_retry"),
-        sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${input.issue.id}`,
-      ))
-      .orderBy(desc(heartbeatRuns.scheduledRetryAt))
-      .limit(1)
-      .then((rows) => rows[0] ?? null);
-    if (existing) return existing;
-
     const now = new Date();
-    const retryAt = readProviderQuotaRetryAt(input.latestRun, now);
+    const retryBoundary = readProviderQuotaRetryBoundary({
+      latestRun: input.latestRun,
+      now,
+      actionId: input.actionId,
+      companyId: input.issue.companyId,
+      issueId: input.issue.id,
+    });
+    const { retryAt, idempotencyKey } = retryBoundary;
     return db.transaction(async (tx) => {
+      await tx.execute(sql`select pg_advisory_xact_lock(hashtext(${idempotencyKey}))`);
+      const lockedIssue = await tx
+        .select({ assigneeAgentId: issues.assigneeAgentId })
+        .from(issues)
+        .where(and(
+          eq(issues.id, input.issue.id),
+          eq(issues.companyId, input.issue.companyId),
+        ))
+        .for("update")
+        .then((rows) => rows[0] ?? null);
+      const retryAgentId = lockedIssue?.assigneeAgentId ?? null;
+      if (!retryAgentId) return null;
+      const retryAgent = await tx
+        .select({ name: agents.name })
+        .from(agents)
+        .where(and(
+          eq(agents.id, retryAgentId),
+          eq(agents.companyId, input.issue.companyId),
+        ))
+        .then((rows) => rows[0] ?? null);
+      const retryAgentNameKey = retryAgent?.name.trim().toLowerCase() || null;
+      const keyedWakeups = await tx
+        .select()
+        .from(agentWakeupRequests)
+        .where(and(
+          eq(agentWakeupRequests.companyId, input.issue.companyId),
+          eq(agentWakeupRequests.idempotencyKey, idempotencyKey),
+        ))
+        .orderBy(asc(agentWakeupRequests.createdAt), asc(agentWakeupRequests.id));
+      const keyedRunIds = keyedWakeups.flatMap((wakeup) => wakeup.runId ? [wakeup.runId] : []);
+      const boundaryCondition = retryBoundary.resetBoundary
+        ? keyedRunIds.length > 0
+          ? or(
+              inArray(heartbeatRuns.id, keyedRunIds),
+              eq(heartbeatRuns.scheduledRetryAt, retryBoundary.resetBoundary),
+            )
+          : eq(heartbeatRuns.scheduledRetryAt, retryBoundary.resetBoundary)
+        : keyedRunIds.length > 0
+          ? inArray(heartbeatRuns.id, keyedRunIds)
+          : sql`false`;
+      const matchingRetries = await tx
+        .select()
+        .from(heartbeatRuns)
+        .where(and(
+          eq(heartbeatRuns.companyId, input.issue.companyId),
+          eq(heartbeatRuns.status, "scheduled_retry"),
+          sql`${heartbeatRuns.contextSnapshot} ->> 'issueId' = ${input.issue.id}`,
+          boundaryCondition,
+        ))
+        .orderBy(asc(heartbeatRuns.createdAt), asc(heartbeatRuns.id))
+        .then((rows) => rows);
+      const existing = matchingRetries.find((retry) => retry.agentId === retryAgentId) ?? null;
+      const staleRetries = matchingRetries.filter((retry) => retry.agentId !== retryAgentId);
+      if (staleRetries.length > 0) {
+        const staleRunIds = staleRetries.map((retry) => retry.id);
+        const staleWakeupIds = staleRetries.flatMap((retry) => retry.wakeupRequestId ? [retry.wakeupRequestId] : []);
+        const supersededReason = "Scheduled provider-quota retry superseded because issue ownership changed";
+        await tx
+          .update(heartbeatRuns)
+          .set({
+            status: "cancelled",
+            finishedAt: now,
+            error: supersededReason,
+            errorCode: "issue_reassigned",
+            updatedAt: now,
+          })
+          .where(inArray(heartbeatRuns.id, staleRunIds));
+        if (staleWakeupIds.length > 0) {
+          await tx
+            .update(agentWakeupRequests)
+            .set({
+              status: "cancelled",
+              finishedAt: now,
+              error: supersededReason,
+              updatedAt: now,
+            })
+            .where(inArray(agentWakeupRequests.id, staleWakeupIds));
+        }
+      }
+      if (existing) {
+        const wakeupRequestId = existing.wakeupRequestId ??
+          keyedWakeups.find((wakeup) => wakeup.agentId === retryAgentId && wakeup.runId === existing.id)?.id ??
+          null;
+        if (wakeupRequestId) {
+          await tx
+            .update(agentWakeupRequests)
+            .set({
+              coalescedCount: sql`${agentWakeupRequests.coalescedCount} + 1`,
+              updatedAt: now,
+            })
+            .where(eq(agentWakeupRequests.id, wakeupRequestId));
+        }
+        const existingRetryAt = existing.scheduledRetryAt
+          ? new Date(existing.scheduledRetryAt)
+          : retryAt;
+        await tx
+          .update(issueRecoveryActions)
+          .set({
+            ownerType: "system",
+            ownerAgentId: null,
+            ownerUserId: null,
+            returnOwnerAgentId: retryAgentId,
+            wakePolicy: {
+              type: "monitor_only",
+              reason: "provider_quota",
+            },
+            monitorPolicy: {
+              type: "wait_recovery",
+              retryAgentId,
+              scheduledRunId: existing.id,
+              retryAt: existingRetryAt.toISOString(),
+            },
+            timeoutAt: existingRetryAt,
+            updatedAt: now,
+          })
+          .where(eq(issueRecoveryActions.id, input.actionId));
+        if (input.latestRun) {
+          await tx
+            .update(issues)
+            .set({
+              executionRunId: existing.id,
+              executionAgentNameKey: retryAgentNameKey,
+              executionLockedAt: now,
+              updatedAt: now,
+            })
+            .where(and(
+              eq(issues.id, input.issue.id),
+              eq(issues.companyId, input.issue.companyId),
+              or(
+                isNull(issues.executionRunId),
+                eq(issues.executionRunId, input.latestRun.id),
+              ),
+            ));
+        }
+        return existing;
+      }
+
       const wakeup = await tx
         .insert(agentWakeupRequests)
         .values({
           companyId: input.issue.companyId,
-          agentId: input.agentId,
+          agentId: retryAgentId,
           source: "automation",
           triggerDetail: "system",
           reason: "provider_quota_recovery",
@@ -3042,7 +3190,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           status: "queued",
           requestedByActorType: "system",
           requestedByActorId: null,
-          idempotencyKey: `provider_quota_recovery:${input.issue.id}:${retryAt.toISOString()}`,
+          idempotencyKey,
           updatedAt: now,
         })
         .returning()
@@ -3051,7 +3199,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         .insert(heartbeatRuns)
         .values({
           companyId: input.issue.companyId,
-          agentId: input.agentId,
+          agentId: retryAgentId,
           invocationSource: "automation",
           triggerDetail: "system",
           status: "scheduled_retry",
@@ -3078,9 +3226,17 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       await tx
         .update(issueRecoveryActions)
         .set({
+          ownerType: "system",
+          ownerAgentId: null,
+          ownerUserId: null,
+          returnOwnerAgentId: retryAgentId,
+          wakePolicy: {
+            type: "monitor_only",
+            reason: "provider_quota",
+          },
           monitorPolicy: {
             type: "wait_recovery",
-            retryAgentId: input.agentId,
+            retryAgentId,
             scheduledRunId: scheduledRun.id,
             retryAt: retryAt.toISOString(),
           },
@@ -3088,6 +3244,24 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           updatedAt: now,
         })
         .where(eq(issueRecoveryActions.id, input.actionId));
+      if (input.latestRun) {
+        await tx
+          .update(issues)
+          .set({
+            executionRunId: scheduledRun.id,
+            executionAgentNameKey: retryAgentNameKey,
+            executionLockedAt: now,
+            updatedAt: now,
+          })
+          .where(and(
+            eq(issues.id, input.issue.id),
+            eq(issues.companyId, input.issue.companyId),
+            or(
+              isNull(issues.executionRunId),
+              eq(issues.executionRunId, input.latestRun.id),
+            ),
+          ));
+      }
       return scheduledRun;
     });
   }
@@ -3319,16 +3493,23 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       recoveryOwnerAgentId: input.recoveryOwnerAgentId,
       successfulRunHandoffEvidence: input.successfulRunHandoffEvidence,
     });
-    const isProviderQuotaWait = recoveryCause === "provider_quota" &&
-      !recoveryAction.ownerAgentId &&
-      Boolean(recoveryAction.returnOwnerAgentId);
-    if (isProviderQuotaWait && recoveryAction.returnOwnerAgentId) {
-      await ensureProviderQuotaWaitRecoveryMonitor({
+    const providerQuotaRetry = recoveryCause === "provider_quota"
+      ? await ensureProviderQuotaWaitRecoveryMonitor({
         issue: input.issue,
         latestRun: input.latestRun,
         actionId: recoveryAction.id,
-        agentId: recoveryAction.returnOwnerAgentId,
-      });
+      })
+      : null;
+    const isProviderQuotaWait = providerQuotaRetry !== null;
+    if (isProviderQuotaWait) {
+      return db
+        .select()
+        .from(issues)
+        .where(and(
+          eq(issues.id, input.issue.id),
+          eq(issues.companyId, input.issue.companyId),
+        ))
+        .then((rows) => rows[0] ?? null);
     }
     const blockerIds = await existingUnresolvedBlockerIssueIds(input.issue.companyId, input.issue.id);
     const updated = await issuesSvc.update(input.issue.id, {
@@ -3337,7 +3518,6 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       assigneeAgentId: recoveryAction.ownerAgentId ?? input.issue.assigneeAgentId,
     });
     if (!updated) return null;
-    if (isProviderQuotaWait) return updated;
 
     const prefix = await getCompanyIssuePrefix(input.issue.companyId);
     const recoveryOwner = recoveryAction.ownerAgentId ? await getAgent(recoveryAction.ownerAgentId) : null;
@@ -3738,12 +3918,35 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         : null;
       if (latestRun && adapterFailureClassification) {
         const targetAgentId = getAdapterFailureRecoveryTargetAgentId(issue);
-        if (!targetAgentId || latestRun.agentId !== targetAgentId) {
+        if (!targetAgentId) {
           result.skipped += 1;
           continue;
         }
 
         if (adapterFailureClassification.kind === "provider_quota") {
+          if (latestRun.agentId !== targetAgentId) {
+            const classifiedRun = withAdapterFailureRecoveryClassification(
+              latestRun,
+              adapterFailureClassification,
+            );
+            const recovered = await escalateStrandedAssignedIssue({
+              issue,
+              previousStatus: issue.status as StrandedPreviousStatus,
+              latestRun: classifiedRun,
+              recoveryCause: "provider_quota",
+            });
+            if (recovered) {
+              latestRun = await persistAdapterFailureRecoveryClassification(
+                latestRun,
+                adapterFailureClassification,
+              );
+              result.providerQuotaMonitored += 1;
+              result.issueIds.push(issue.id);
+            } else {
+              result.skipped += 1;
+            }
+            continue;
+          }
           const monitored = await scheduleProviderQuotaRecoveryMonitor({
             issue,
             latestRun,
@@ -3758,6 +3961,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           result.skipped += 1;
           continue;
         } else {
+          if (latestRun.agentId !== targetAgentId) {
+            result.skipped += 1;
+            continue;
+          }
           const updated = await escalateStrandedAssignedIssue({
             issue,
             previousStatus: issue.status as StrandedPreviousStatus,

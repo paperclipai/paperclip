@@ -38,6 +38,10 @@ import {
   materializeRemoteClaudeConfig,
   prepareClaudeConfigSeed,
 } from "./claude-config.js";
+import {
+  extractClaudeRetryNotBefore,
+  isClaudeProviderQuotaError,
+} from "./parse.js";
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const packageRootDir = path.resolve(moduleDir, "../..");
@@ -61,6 +65,41 @@ type ClaudeAcpExecutorOptions = Omit<
 >;
 
 type ClaudeAcpExecutor = (ctx: AdapterExecutionContext) => Promise<AdapterExecutionResult>;
+
+export function enrichClaudeAcpFailure(
+  result: AdapterExecutionResult,
+  now = new Date(),
+): AdapterExecutionResult {
+  if (result.exitCode === 0) return result;
+
+  const parsed = parseObject(result.resultJson);
+  const failureInput = {
+    parsed,
+    stdout: result.summary ?? "",
+    stderr: "",
+    errorMessage: result.errorMessage ?? "",
+  };
+  if (!isClaudeProviderQuotaError(failureInput)) return result;
+
+  const retryNotBefore = extractClaudeRetryNotBefore(failureInput, now)?.toISOString() ?? null;
+  return {
+    ...result,
+    errorCode: "provider_quota",
+    errorFamily: "provider_quota",
+    retryNotBefore,
+    resultJson: {
+      ...parsed,
+      errorFamily: "provider_quota",
+      ...(retryNotBefore
+        ? {
+            retryNotBefore,
+            transientRetryNotBefore: retryNotBefore,
+            providerQuotaRetryNotBefore: retryNotBefore,
+          }
+        : {}),
+    },
+  };
+}
 
 function normalizeEngine(value: unknown): ClaudeEngineSelection {
   const raw = typeof value === "string" ? value.trim().toLowerCase() : "";
@@ -289,10 +328,11 @@ export function createClaudeAcpExecutor(options: ClaudeAcpExecutorOptions = {}):
       currentExecutor = createAcpxEngineExecutor(withClaudeAcpDefaults(options));
       executor = currentExecutor;
     }
-    return currentExecutor({
+    const result = await currentExecutor({
       ...ctx,
       config: buildClaudeAcpConfig(ctx.config),
     });
+    return enrichClaudeAcpFailure(result, new Date(options.now?.() ?? Date.now()));
   };
 }
 
