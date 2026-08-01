@@ -2537,11 +2537,38 @@ describeEmbeddedPostgres("issueService.findOpenAncestorCreatedByAgent", () => {
     expect(await svc.findOpenAncestorCreatedByAgent(midId, delegatorId)).toBeNull();
   });
 
-  it("stops at the depth bound", async () => {
-    const { delegatorId, midId } = await seedChain();
+  it("finds the ancestor through an arbitrarily deep chain", async () => {
+    const { companyId, delegatorId, midId } = await seedChain();
+    // Extend the chain 60 levels below the delegator-created ancestor so the
+    // match sits far above the new child's parent.
+    let parentId = midId;
+    for (let index = 0; index < 60; index += 1) {
+      const childId = randomUUID();
+      await db.insert(issues).values({
+        id: childId,
+        companyId,
+        title: `Deep child ${index}`,
+        status: "in_progress",
+        priority: "medium",
+        parentId,
+        issueNumber: index + 10,
+        identifier: `CHAIN-${index + 10}`,
+      });
+      parentId = childId;
+    }
 
-    // With maxDepth 0 nothing is inspected.
-    expect(await svc.findOpenAncestorCreatedByAgent(midId, delegatorId, { maxDepth: 0 })).toBeNull();
+    const found = await svc.findOpenAncestorCreatedByAgent(parentId, delegatorId);
+    expect(found?.id).toBe(midId);
+  });
+
+  it("terminates on a corrupted parent-graph cycle", async () => {
+    const { delegatorId, rootId, midId } = await seedChain();
+    // Corrupt the graph: root's parent points back at mid.
+    await db.update(issues).set({ parentId: midId }).where(eq(issues.id, rootId));
+
+    const found = await svc.findOpenAncestorCreatedByAgent(midId, delegatorId);
+    expect(found?.id).toBe(midId);
+    expect(await svc.findOpenAncestorCreatedByAgent(midId, randomUUID())).toBeNull();
   });
 });
 
