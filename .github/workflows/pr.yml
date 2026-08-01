@@ -55,9 +55,6 @@ jobs:
       - name: Test no-git-push check
         run: node --test ./scripts/check-no-git-push.test.mjs
 
-      - name: Enforce issue-version writer catalog
-        run: node ./scripts/check-issue-version-writes.mjs --strict
-
       - name: Test general-server shard partition
         run: node --test ./scripts/__tests__/run-vitest-stable-shard.test.mjs
 
@@ -134,6 +131,9 @@ jobs:
 
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
+
+      - name: Enforce issue-version writer catalog
+        run: pnpm run check:issue-version-writes
 
       - name: Typecheck workspaces whose build scripts skip TypeScript
         run: pnpm run typecheck:build-gaps
