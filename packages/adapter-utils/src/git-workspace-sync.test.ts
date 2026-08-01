@@ -125,4 +125,100 @@ describe("git workspace sync", () => {
       }
     });
   });
+
+  it("imports a diverged sandbox HEAD even when the host no longer holds baseSha", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-git-diverge-"));
+    cleanupDirs.push(rootDir);
+    // Host holds only the shared ancestor B (the eventual merge-base), not the
+    // recorded base H — the state a shared workspace lands in when it is reset
+    // between export and import.
+    const host = await createRepo(rootDir);
+    const mergeBase = await git(host, ["rev-parse", "HEAD"]);
+
+    // Sandbox holds B, an advanced commit H (the recorded baseSha), and a
+    // local-only commit S that forked from B and diverges from H.
+    const sandbox = path.join(rootDir, "sandbox");
+    await git(rootDir, ["clone", host, sandbox]);
+    await git(sandbox, ["config", "user.name", "Paperclip Remote"]);
+    await git(sandbox, ["config", "user.email", "remote@paperclip.dev"]);
+    await writeFile(path.join(sandbox, "advance.txt"), "advance\n", "utf8");
+    await git(sandbox, ["add", "-A"]);
+    await git(sandbox, ["commit", "-m", "advance"]);
+    const baseSha = await git(sandbox, ["rev-parse", "HEAD"]);
+    await git(sandbox, ["reset", "--hard", mergeBase]);
+    await writeFile(path.join(sandbox, "local.txt"), "local\n", "utf8");
+    await git(sandbox, ["add", "-A"]);
+    await git(sandbox, ["commit", "-m", "local-only"]);
+    const sandboxHead = await git(sandbox, ["rev-parse", "HEAD"]);
+
+    // The host genuinely lacks baseSha; the old thin bundle would name it as an
+    // unsatisfiable prerequisite.
+    await expect(git(host, ["cat-file", "-e", `${baseSha}^{commit}`])).rejects.toThrow();
+
+    const bundle = path.join(rootDir, "diverge.bundle");
+    const exportRef = createRemoteGitExportRef("test");
+    const importedRef = createImportedGitRef("test");
+    try {
+      await execFile("sh", ["-c", buildRemoteGitDeltaBundleScript({
+        remoteDir: sandbox,
+        baseSha,
+        exportRef,
+        bundlePath: bundle,
+      })]);
+      expect((await stat(bundle)).size).toBeGreaterThan(0);
+
+      const importedHead = await fetchGitBundleIntoLocalRef({
+        localDir: host,
+        bundlePath: bundle,
+        exportRef,
+        importedRef,
+        baseSha,
+      });
+      expect(importedHead).toBe(sandboxHead);
+      // The host received the local-only commit and its parent (the merge-base).
+      expect(await git(host, ["cat-file", "-e", `${sandboxHead}^{commit}`])).toBe("");
+    } finally {
+      await deleteLocalGitRef({ localDir: host, ref: importedRef });
+    }
+  });
+
+  it("falls back to a full self-contained bundle when the sandbox lacks baseSha", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-git-full-"));
+    cleanupDirs.push(rootDir);
+    const sandbox = await createRepo(rootDir);
+    await writeFile(path.join(sandbox, "more.txt"), "more\n", "utf8");
+    await git(sandbox, ["add", "-A"]);
+    await git(sandbox, ["commit", "-m", "more"]);
+    const sandboxHead = await git(sandbox, ["rev-parse", "HEAD"]);
+
+    // A fresh, unrelated host that shares no history with the sandbox.
+    const host = path.join(rootDir, "fresh-host");
+    await mkdir(host, { recursive: true });
+    await git(host, ["init"]);
+
+    const bundle = path.join(rootDir, "full.bundle");
+    const exportRef = createRemoteGitExportRef("test");
+    const importedRef = createImportedGitRef("test");
+    try {
+      await execFile("sh", ["-c", buildRemoteGitDeltaBundleScript({
+        remoteDir: sandbox,
+        // A base the sandbox does not have forces the full-bundle fallback.
+        baseSha: "0000000000000000000000000000000000000000",
+        exportRef,
+        bundlePath: bundle,
+      })]);
+      expect((await stat(bundle)).size).toBeGreaterThan(0);
+
+      const importedHead = await fetchGitBundleIntoLocalRef({
+        localDir: host,
+        bundlePath: bundle,
+        exportRef,
+        importedRef,
+        baseSha: "0000000000000000000000000000000000000000",
+      });
+      expect(importedHead).toBe(sandboxHead);
+    } finally {
+      await deleteLocalGitRef({ localDir: host, ref: importedRef });
+    }
+  });
 });
