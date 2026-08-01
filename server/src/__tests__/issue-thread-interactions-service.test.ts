@@ -2372,16 +2372,16 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     expect(accepted.continuationIssue).toEqual({
       id: issueId,
       assigneeAgentId: agentId,
-      assigneeUserId: null,
-      status: "todo",
+      assigneeUserId: "local-board",
+      status: "in_review",
     });
 
     const updatedIssue = (await db.select().from(issues)).find((issue) => issue.id === issueId);
     expect(updatedIssue).toMatchObject({
       id: issueId,
-      status: "todo",
-      assigneeAgentId: agentId,
-      assigneeUserId: null,
+      status: "in_review",
+      assigneeAgentId: null,
+      assigneeUserId: "local-board",
     });
 
     await db

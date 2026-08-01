@@ -1011,6 +1011,17 @@ export const requestConfirmationSecretProposalPayloadSchema = z.object({
   expiresAt: z.string().datetime({ offset: true }),
 });
 
+export const requestConfirmationAuthorizationScopeSchema = z.union([
+  z.string().trim().min(1).max(160),
+  z.array(z.string().trim().min(1).max(160)).min(1).max(40),
+]);
+
+export const requestConfirmationAuthorizationWarningSchema = z.object({
+  severity: z.enum(["routine", "serious"]).optional().default("serious"),
+  title: z.string().trim().min(1).max(160).nullable().optional(),
+  body: z.string().trim().min(1).max(1000).nullable().optional(),
+}).strict();
+
 export const requestConfirmationPayloadSchema = z.object({
   version: z.literal(1),
   prompt: z.string().trim().min(1).max(1000),
@@ -1025,7 +1036,9 @@ export const requestConfirmationPayloadSchema = z.object({
   target: requestConfirmationTargetSchema.nullable().optional(),
   toolAction: requestConfirmationToolActionPayloadSchema.optional(),
   secretProposal: requestConfirmationSecretProposalPayloadSchema.optional(),
-});
+  authorizationScope: requestConfirmationAuthorizationScopeSchema.nullable().optional(),
+  authorizationWarning: requestConfirmationAuthorizationWarningSchema.nullable().optional(),
+}).strict();
 
 export const requestCheckboxConfirmationOptionSchema = z.object({
   id: z.string().trim().min(1).max(120),
@@ -1054,7 +1067,9 @@ export const requestCheckboxConfirmationPayloadSchema = z.object({
   declineReasonPlaceholder: z.string().trim().min(1).max(240).nullable().optional(),
   supersedeOnUserComment: z.boolean().optional(),
   target: requestConfirmationTargetSchema.nullable().optional(),
-}).superRefine((value, ctx) => {
+  authorizationScope: requestConfirmationAuthorizationScopeSchema.nullable().optional(),
+  authorizationWarning: requestConfirmationAuthorizationWarningSchema.nullable().optional(),
+}).strict().superRefine((value, ctx) => {
   const optionIds = new Set<string>();
   for (const [index, option] of value.options.entries()) {
     if (optionIds.has(option.id)) {
