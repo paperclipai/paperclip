@@ -168,6 +168,7 @@ import {
   isVerifiedIssueTreeControlInteractionWake,
   issueTreeControlService,
 } from "./issue-tree-control.js";
+import { readResolvedItemVerdictProgress } from "./issue-thread-interaction-continuation.js";
 import {
   continuationSummaryParksExecutor,
   getIssueContinuationSummaryDocument,
@@ -4166,6 +4167,89 @@ function allowsIssueInteractionWake(
   const wakeReason = readNonEmptyString(contextSnapshot?.wakeReason);
   if (!wakeReason || !ISSUE_TREE_CONTROL_INTERACTION_WAKE_REASONS.has(wakeReason)) return false;
   return Boolean(deriveCommentId(contextSnapshot, null));
+}
+
+async function allowsRecoveredInteractionContinuationWake(
+  dbOrTx: Pick<Db, "select">,
+  input: {
+    contextSnapshot: Record<string, unknown>;
+    companyId: string;
+    issueId: string;
+    assigneeAgentId: string | null;
+    agentId: string;
+    requestedByActorType: string | null | undefined;
+  },
+) {
+  const { contextSnapshot } = input;
+  const interactionId = readNonEmptyString(contextSnapshot.interactionId);
+  if (
+    input.requestedByActorType !== "system"
+    || input.assigneeAgentId !== input.agentId
+    || readNonEmptyString(contextSnapshot.wakeReason) !== "issue_continuation_needed"
+    || readNonEmptyString(contextSnapshot.source) !== "issue.interaction_continuation_recovery"
+    || readNonEmptyString(contextSnapshot.wakeSource) !== "automation"
+    || readNonEmptyString(contextSnapshot.wakeTriggerDetail) !== "system"
+    || readNonEmptyString(contextSnapshot.mutation) !== "interaction"
+    || readNonEmptyString(contextSnapshot.issueId) !== input.issueId
+    || !interactionId
+  ) {
+    return false;
+  }
+
+  const interaction = await dbOrTx
+    .select({
+      kind: issueThreadInteractions.kind,
+      status: issueThreadInteractions.status,
+      continuationPolicy: issueThreadInteractions.continuationPolicy,
+      result: issueThreadInteractions.result,
+      resolvedAt: issueThreadInteractions.resolvedAt,
+    })
+    .from(issueThreadInteractions)
+    .where(and(
+      eq(issueThreadInteractions.id, interactionId),
+      eq(issueThreadInteractions.companyId, input.companyId),
+      eq(issueThreadInteractions.issueId, input.issueId),
+    ))
+    .then((rows) => rows[0] ?? null);
+  if (!interaction) return false;
+  if (
+    readNonEmptyString(contextSnapshot.interactionKind) !== interaction.kind
+    || readNonEmptyString(contextSnapshot.interactionStatus) !== interaction.status
+    || readNonEmptyString(contextSnapshot.interactionContinuationPolicy) !== interaction.continuationPolicy
+  ) {
+    return false;
+  }
+
+  const isResolvedContinuation =
+    interaction.resolvedAt instanceof Date
+    && readNonEmptyString(contextSnapshot.interactionResolvedAt) === interaction.resolvedAt.toISOString()
+    && (
+      (
+        interaction.continuationPolicy === "wake_assignee"
+        && ["accepted", "answered", "rejected", "cancelled", "failed"].includes(interaction.status)
+      )
+      || (
+        interaction.continuationPolicy === "wake_assignee_on_accept"
+        && interaction.status === "accepted"
+      )
+    );
+  if (isResolvedContinuation) return true;
+
+  if (
+    interaction.kind !== "request_item_verdicts"
+    || interaction.status !== "pending"
+    || interaction.continuationPolicy !== "wake_assignee"
+  ) {
+    return false;
+  }
+  const newlyResolvedItemIds = Array.isArray(contextSnapshot.newlyResolvedItemIds)
+    ? [...new Set(contextSnapshot.newlyResolvedItemIds.filter(
+      (value): value is string => typeof value === "string" && value.length > 0,
+    ))]
+    : [];
+  if (newlyResolvedItemIds.length === 0) return false;
+  const persistedResolvedIds = new Set(readResolvedItemVerdictProgress(interaction.result).resolvedItemIds);
+  return newlyResolvedItemIds.every((id) => persistedResolvedIds.has(id));
 }
 
 async function listUnresolvedBlockerSummaries(
@@ -18295,11 +18379,27 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
         // Blocked descendants should stay idle until the final blocker resolves.
         // Human comment/mention wakes are the exception: they may run in a
-        // bounded interaction mode so the assignee can answer or triage.
+        // bounded interaction mode so the assignee can answer or triage. A
+        // system recovery of a persisted resolved interaction has the same
+        // bounded exception after its provenance is verified against the DB.
+        const recoveredInteractionContinuationWake =
+          dependencyReadiness &&
+          !dependencyReadiness.isDependencyReady &&
+          await allowsRecoveredInteractionContinuationWake(tx, {
+            contextSnapshot: enrichedContextSnapshot,
+            companyId: issue.companyId,
+            issueId: issue.id,
+            assigneeAgentId: issue.assigneeAgentId,
+            agentId,
+            requestedByActorType: opts.requestedByActorType,
+          });
         const blockedInteractionWake =
           dependencyReadiness &&
           !dependencyReadiness.isDependencyReady &&
-          allowsIssueInteractionWake(enrichedContextSnapshot);
+          (
+            allowsIssueInteractionWake(enrichedContextSnapshot)
+            || recoveredInteractionContinuationWake
+          );
 
         if (blockedInteractionWake) {
           enrichedContextSnapshot.dependencyBlockedInteraction = true;
