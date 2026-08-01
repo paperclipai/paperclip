@@ -21,6 +21,12 @@ class PendingRecord:
     # Default, damit `PendingRecord(**data)` auch aeltere pending.json-Dateien
     # ohne dieses Feld noch liest.
     landed: list[str] = field(default_factory=list)
+    # Gefallene Telegram-Entscheidung ("approved"/"rejected"); leer = offen.
+    # Ohne diese Markierung schickt `deliver` am naechsten Morgen dieselben
+    # Knoepfe erneut, sobald der Nachtlauf die Datei nicht ueberschreibt (der
+    # Sperrfall) -- und ein zweiter Druck auf ✅ oeffnet einen zweiten PR.
+    # Default, damit `PendingRecord(**data)` aeltere Dateien weiter liest.
+    decided: str = ""
 
 
 def write_pending(path: Path, rec: PendingRecord) -> None:

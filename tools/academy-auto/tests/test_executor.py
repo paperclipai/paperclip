@@ -18,6 +18,7 @@ def _deps(intent, pending, notes, calls):
         reset_branch=lambda cfg: calls.append("reset"),
         create_issue=lambda cfg, text: (calls.append(f"issue:{text}"), 42)[1],
         notify=lambda text: notes.append(text),
+        write_pending=lambda path, rec: calls.append(f"decided:{rec.decided}"),
     )
 
 
@@ -128,3 +129,43 @@ def test_free_text_direction_goes_to_the_default_run():
     a, w = Config.for_target("academy"), Config.for_target("web")
     chosen = config_for_intent(Intent("t", "direction", "mach mal X", ""), [a, w], lambda p: None)
     assert chosen is a
+
+
+# --- Doppelentscheidung (01.08.2026) ------------------------------------------
+# Die pending.json blieb nach einer Entscheidung unveraendert liegen. Wird sie
+# vom naechsten Nachtlauf nicht ueberschrieben -- genau der Fall, wenn die
+# Freigabe-Sperre greift --, schickt `deliver` am naechsten Morgen dieselben
+# Knoepfe erneut. `process_intent` prueft nur den run_ts, und der passt ja noch:
+# ein zweiter Druck auf ✅ oeffnet einen ZWEITEN PR.
+
+def test_approve_marks_the_pending_record_as_decided():
+    calls, notes = [], []
+    process_intent(_cfg(), _deps(Intent(ts="t", kind="approve", text="", ref_run_ts="R"), _rec(), notes, calls))
+    assert "decided:approved" in calls
+
+
+def test_reject_marks_the_pending_record_as_decided():
+    calls, notes = [], []
+    process_intent(_cfg(), _deps(Intent(ts="t", kind="reject", text="", ref_run_ts="R"), _rec(), notes, calls))
+    assert "decided:rejected" in calls
+
+
+def test_a_second_decision_on_the_same_run_opens_no_second_pr():
+    calls, notes = [], []
+    entschieden = PendingRecord("R", "committed", "T", "", "", "s", True, 5, [],
+                                decided="approved")
+    ergebnis = process_intent(_cfg(), _deps(Intent(ts="t", kind="approve", text="", ref_run_ts="R"), entschieden,
+                                            notes, calls))
+    assert "pr" not in calls
+    assert ergebnis == "stale"
+    assert "clear" in calls          # Intent trotzdem aufraeumen, sonst Endlos-Retry
+
+
+def test_a_failed_action_does_not_mark_the_record_as_decided():
+    """Sonst waere die Entscheidung verbraucht, ohne dass etwas passiert ist."""
+    calls, notes = [], []
+    deps = _deps(Intent(ts="t", kind="approve", text="", ref_run_ts="R"), _rec(), notes, calls)
+    def _boom(cfg): raise RuntimeError("gh kaputt")
+    deps.open_pr = _boom
+    process_intent(_cfg(), deps)
+    assert not [c for c in calls if c.startswith("decided:")]

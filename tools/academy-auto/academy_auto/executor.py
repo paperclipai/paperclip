@@ -27,11 +27,19 @@ def process_intent(cfg, deps) -> str:
     if intent is None:
         return "none"
 
-    # Freigabe/Verwerfen nur auf den passenden Nachtstand (ref_run_ts).
+    # Freigabe/Verwerfen nur auf den passenden Nachtstand (ref_run_ts) und nur
+    # EINMAL. Der run_ts allein reicht nicht: nach einer Entscheidung bleibt er
+    # gleich, und wenn der naechste Lauf die pending.json nicht ueberschreibt
+    # (Sperrfall), schickt `deliver` dieselben Knoepfe erneut.
+    rec = None
     if intent.kind in ("approve", "reject"):
         rec = deps.read_pending(cfg.pending_path)
         if rec is None or rec.run_ts != intent.ref_run_ts:
             deps.notify("Dieser Vorschlag ist überholt — keine Aktion.")
+            deps.clear_intent(cfg.intent_path)
+            return "stale"
+        if rec.decided:
+            deps.notify(f"Bereits entschieden ({rec.decided}) — keine Aktion.")
             deps.clear_intent(cfg.intent_path)
             return "stale"
 
@@ -52,6 +60,12 @@ def process_intent(cfg, deps) -> str:
     except Exception as exc:  # fail-soft: Fehler melden, Intent bleibt NICHT stehen
         detail = (getattr(exc, "stderr", "") or "").strip()
         deps.notify(f"⚠️ Konnte Aktion nicht ausführen: {exc}" + (f"\n{detail}" if detail else ""))
+    else:
+        # Nur nach erfolgreicher Aktion markieren. Sonst waere die Entscheidung
+        # verbraucht, ohne dass ein PR offen oder der Branch zurueckgesetzt ist.
+        if rec is not None and result in ("approved", "rejected"):
+            from dataclasses import replace
+            deps.write_pending(cfg.pending_path, replace(rec, decided=result))
     deps.clear_intent(cfg.intent_path)
     return result
 
@@ -112,6 +126,7 @@ def main() -> None:  # pragma: no cover - vom Bot per Subprozess angestoßen
     deps = SimpleNamespace(
         read_intent=intent_mod.read_intent,
         read_pending=pending.read_pending,
+        write_pending=pending.write_pending,
         clear_intent=intent_mod.clear_intent,
         open_pr=_open_pr_default,
         reset_branch=_reset_branch_default,

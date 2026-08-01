@@ -16,6 +16,11 @@ def deliver(cfg, deps) -> str:
     rec = deps.read_pending(cfg.pending_path)
     if rec is None:
         return "no_pending"
+    # Bereits per Telegram entschieden: nicht erneut anbieten. Ohne diese
+    # Bremse kommen dieselben Knoepfe am naechsten Morgen wieder, sobald der
+    # Nachtlauf die Datei nicht ueberschreibt (Freigabe-Sperrfall).
+    if rec.decided:
+        return "decided"
     if cfg.notify_mode == "milestone" and not is_milestone(rec, cfg.milestone_delta_threshold):
         return "skipped"
     text = build_digest_from_pending(rec, label=cfg.github_repo)

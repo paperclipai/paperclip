@@ -48,3 +48,25 @@ def test_build_reply_markup_shape():
     m = build_reply_markup("R")
     labels = [b["text"] for row in m["inline_keyboard"] for b in row]
     assert "✅ PR öffnen" in labels and "❌ Verwerfen" in labels
+
+
+def test_a_decided_record_is_not_sent_again():
+    """Kern des Fehlers vom 01.08.2026: bleibt die pending.json nach einer
+    Entscheidung liegen (Sperrfall = der Nachtlauf ueberschreibt sie nicht),
+    schickte `deliver` am naechsten Morgen dieselben Knoepfe erneut."""
+    gesendet = []
+    rec = PendingRecord("R", "committed", "T", "", "", "s", True, 5, [],
+                        decided="approved")
+    deps = SimpleNamespace(read_pending=lambda p: rec,
+                           send=lambda t, m: gesendet.append(t) or True)
+    assert deliver(_cfg(), deps) == "decided"
+    assert gesendet == []
+
+
+def test_an_open_record_is_still_sent():
+    gesendet = []
+    rec = PendingRecord("R", "committed", "T", "", "", "s", True, 5, [])
+    deps = SimpleNamespace(read_pending=lambda p: rec,
+                           send=lambda t, m: gesendet.append(t) or True)
+    assert deliver(_cfg(), deps) == "sent"
+    assert len(gesendet) == 1
