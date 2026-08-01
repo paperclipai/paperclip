@@ -31,6 +31,7 @@ import {
   resolveNextSessionState,
   resolveTaskSessionConfigFreshness,
   issueTextImpliesPrDeliverable,
+  isWorkspaceSyncConflictFailure,
   requiresPushCapabilityPreflight,
   resolveWorkspaceAfterLowTrustPreflight,
   resolveRuntimeSessionParamsForWorkspace,
@@ -2640,5 +2641,29 @@ describe("parseSessionCompactionPolicy", () => {
       maxRawInputTokens: 500_000,
       maxSessionAgeHours: 0,
     });
+  });
+});
+
+describe("isWorkspaceSyncConflictFailure", () => {
+  it("matches the git workspace reconciliation failure signatures", () => {
+    expect(isWorkspaceSyncConflictFailure(
+      "Failed to merge concurrent remote git histories for a5d46a8005b3 and c1042c11774a: Command failed: git merge-tree --write-tree",
+    )).toBe(true);
+    expect(isWorkspaceSyncConflictFailure(
+      "Failed to integrate concurrent remote git history for a5d46a8005b3 after multiple retries.",
+    )).toBe(true);
+    expect(isWorkspaceSyncConflictFailure(
+      "error: /tmp/restore/git-delta.bundle did not send all necessary objects",
+    )).toBe(true);
+    expect(isWorkspaceSyncConflictFailure(
+      "error: Repository lacks these prerequisite commits: 4c631700",
+    )).toBe(true);
+  });
+
+  it("ignores unrelated adapter failures", () => {
+    expect(isWorkspaceSyncConflictFailure("Codex exited with code 2")).toBe(false);
+    expect(isWorkspaceSyncConflictFailure("no Codex credentials provisioned for managed home")).toBe(false);
+    expect(isWorkspaceSyncConflictFailure(null)).toBe(false);
+    expect(isWorkspaceSyncConflictFailure("")).toBe(false);
   });
 });

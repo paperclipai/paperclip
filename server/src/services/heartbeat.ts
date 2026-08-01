@@ -3907,6 +3907,26 @@ export function describeSessionResetReason(
   return null;
 }
 
+/**
+ * Failure signatures from sandbox→host git workspace reconciliation. These
+ * describe the state of the SHARED workspace (divergent histories written by
+ * different runs), not a defect in the agent that happened to run last —
+ * putting the agent into a sticky `error` state over them removes a healthy
+ * agent from rotation while leaving the actual problem (the workspace)
+ * untouched. The run still fails and carries the full message.
+ */
+const WORKSPACE_SYNC_CONFLICT_SIGNATURES = [
+  "Failed to merge concurrent remote git histories",
+  "Failed to integrate concurrent remote git history",
+  "did not send all necessary objects",
+  "lacks these prerequisite commits",
+];
+
+export function isWorkspaceSyncConflictFailure(message: string | null | undefined): boolean {
+  if (!message) return false;
+  return WORKSPACE_SYNC_CONFLICT_SIGNATURES.some((signature) => message.includes(signature));
+}
+
 export function shouldDeferFollowupWakeForSameIssue(input: {
   activeRunStatus: string | null | undefined;
   isSameExecutionAgent: boolean;
@@ -15139,7 +15159,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         {
           keepIdleOnFailure:
             outcome === "failed" &&
-            (finalizedRun ? readHeartbeatRunErrorFamily(finalizedRun) === "provider_quota" : runErrorCode === "provider_quota"),
+            ((finalizedRun ? readHeartbeatRunErrorFamily(finalizedRun) === "provider_quota" : runErrorCode === "provider_quota") ||
+              isWorkspaceSyncConflictFailure(adapterResult.errorMessage)),
           wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
         },
       );
@@ -15266,6 +15287,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
       await finalizeAgentStatus(agent.id, "failed", message, {
         wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
+        keepIdleOnFailure: isWorkspaceSyncConflictFailure(message),
       });
     }
     } catch (outerErr) {
