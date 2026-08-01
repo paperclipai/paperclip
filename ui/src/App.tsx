@@ -271,11 +271,14 @@ function boardRoutes() {
         <Route path="board-chat" element={<BoardChat />} />
         <Route path="artifacts" element={<Artifacts />} />
       </Route>
-      {/* Task Chat Redesign dev harness — gated by enableTaskChatRedesign;
-          redirects to /dashboard when the flag is off. */}
-      <Route element={<TaskChatRedesignGate />}>
-        <Route path="dev/task-chat-lab" element={<TaskChatLab />} />
-      </Route>
+      {/* Task Chat Redesign dev harness — dev builds only, and additionally
+          gated by enableTaskChatRedesign (redirects to /dashboard when the
+          flag is off). */}
+      {import.meta.env.DEV ? (
+        <Route element={<TaskChatRedesignGate />}>
+          <Route path="dev/task-chat-lab" element={<TaskChatLab />} />
+        </Route>
+      ) : null}
       <Route path="decisions" element={<WhatNeedsMe />} />
       <Route path="decisions/training" element={<TrainingLibrary />} />
       <Route path="decisions/training/:id" element={<TrainingInspector />} />
