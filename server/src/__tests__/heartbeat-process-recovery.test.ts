@@ -1456,6 +1456,9 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         mode: "hot_restart",
         skipDrain: true,
         activeRunIds: [runId],
+        previousServerPid: process.pid,
+        requestedAt: "2026-03-19T00:05:00.000Z",
+        shutdownSnapshotCapturedAt: "2026-03-19T00:06:00.000Z",
       });
       expect(isPidAlive(child.pid)).toBe(true);
       const run = await db

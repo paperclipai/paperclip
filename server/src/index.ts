@@ -1414,49 +1414,63 @@ export async function startServer(): Promise<StartedServer> {
 
       if (stopOwnedEmbeddedPostgres) {
         try {
-          if (
+          const hotRestart = heartbeatShutdown.hotRestart;
+          const hotRestartHandoffContext = (
             shutdownLifecycle.preserveEmbeddedPostgres
-            && heartbeatShutdown.hotRestart?.previousServerPid === process.pid
-            && heartbeatShutdown.hotRestart.requestedAt
-            && heartbeatShutdown.hotRestart.shutdownSnapshotCapturedAt
-          ) {
-            const currentIdentity = await readEmbeddedPostgresProcessIdentity(
-              ownedEmbeddedPostgresIdentity?.dataDir ?? config.embeddedPostgresDataDir,
-            );
-            if (
-              currentIdentity
-              && ownedEmbeddedPostgresIdentity
-              && currentIdentity.pid === ownedEmbeddedPostgresIdentity.pid
-              && currentIdentity.startedAtEpochSeconds === ownedEmbeddedPostgresIdentity.startedAtEpochSeconds
-              && currentIdentity.port === ownedEmbeddedPostgresIdentity.port
-              && resolve(currentIdentity.dataDir) === resolve(ownedEmbeddedPostgresIdentity.dataDir)
-            ) {
-              const handoff = await writeEmbeddedPostgresHandoff({
-                hotRestartRequestedAt: heartbeatShutdown.hotRestart.requestedAt,
-                shutdownSnapshotCapturedAt: heartbeatShutdown.hotRestart.shutdownSnapshotCapturedAt,
-                predecessorServerPid: process.pid,
-                predecessorServerStartedAtEpochMs: serverStartedAtEpochMs,
-                postgres: currentIdentity,
-              });
-              logger.info({
-                postgresPid: currentIdentity.pid,
-                port: currentIdentity.port,
-                transferToken: handoff.transferToken,
-                expiresAt: handoff.expiresAt,
-              }, "Embedded PostgreSQL hot-restart ownership handoff issued");
-            } else {
-              logger.warn(
-                { expectedPostgresPid: ownedEmbeddedPostgresIdentity?.pid ?? null },
-                "Embedded PostgreSQL identity changed; preserving without issuing stop authority",
-              );
-            }
-          }
+            && hotRestart?.previousServerPid === process.pid
+            && hotRestart.requestedAt
+            && hotRestart.shutdownSnapshotCapturedAt
+          )
+            ? {
+                requestedAt: hotRestart.requestedAt,
+                shutdownSnapshotCapturedAt: hotRestart.shutdownSnapshotCapturedAt,
+              }
+            : null;
+          const persistedHandoff: {
+            value: Awaited<ReturnType<typeof writeEmbeddedPostgresHandoff>> | null;
+          } = { value: null };
           const postgresShutdown = await coordinateEmbeddedPostgresShutdown({
             ownedByThisProcess: true,
             stop: stopOwnedEmbeddedPostgres,
             lifecycle: shutdownLifecycle,
+            persistHotRestartHandoff: hotRestartHandoffContext
+              ? async () => {
+                  const currentIdentity = await readEmbeddedPostgresProcessIdentity(
+                    ownedEmbeddedPostgresIdentity?.dataDir ?? config.embeddedPostgresDataDir,
+                  );
+                  if (
+                    !currentIdentity
+                    || !ownedEmbeddedPostgresIdentity
+                    || currentIdentity.pid !== ownedEmbeddedPostgresIdentity.pid
+                    || currentIdentity.startedAtEpochSeconds !== ownedEmbeddedPostgresIdentity.startedAtEpochSeconds
+                    || currentIdentity.port !== ownedEmbeddedPostgresIdentity.port
+                    || resolve(currentIdentity.dataDir) !== resolve(ownedEmbeddedPostgresIdentity.dataDir)
+                  ) {
+                    throw new Error("Embedded PostgreSQL identity changed before hot-restart handoff persistence");
+                  }
+                  persistedHandoff.value = await writeEmbeddedPostgresHandoff({
+                    hotRestartRequestedAt: hotRestartHandoffContext.requestedAt,
+                    shutdownSnapshotCapturedAt: hotRestartHandoffContext.shutdownSnapshotCapturedAt,
+                    predecessorServerPid: process.pid,
+                    predecessorServerStartedAtEpochMs: serverStartedAtEpochMs,
+                    postgres: currentIdentity,
+                  });
+                }
+              : undefined,
+            onHotRestartHandoffFailure: (err) => {
+              logger.error(
+                { err, expectedPostgresPid: ownedEmbeddedPostgresIdentity?.pid ?? null },
+                "Embedded PostgreSQL hot-restart handoff failed; stopping owned database",
+              );
+            },
           });
           if (postgresShutdown === "preserved_for_hot_restart") {
+            logger.info({
+              postgresPid: persistedHandoff.value?.postgres.pid,
+              port: persistedHandoff.value?.postgres.port,
+              transferToken: persistedHandoff.value?.transferToken,
+              expiresAt: persistedHandoff.value?.expiresAt,
+            }, "Embedded PostgreSQL hot-restart ownership handoff issued");
             logger.info(
               { shutdownLifecycle },
               "Preserving embedded PostgreSQL for hot-restart adoption",
@@ -1466,6 +1480,13 @@ export async function startServer(): Promise<StartedServer> {
           }
         } catch (err) {
           logger.error({ err, shutdownLifecycle }, "Failed to stop embedded PostgreSQL cleanly");
+          if (shutdownLifecycle.preserveEmbeddedPostgres) {
+            logger.error(
+              { shutdownLifecycle },
+              "Aborting hot-restart process exit to retain embedded PostgreSQL ownership",
+            );
+            return;
+          }
         }
       }
 

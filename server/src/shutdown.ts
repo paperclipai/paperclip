@@ -46,9 +46,22 @@ export async function coordinateEmbeddedPostgresShutdown(input: {
   ownedByThisProcess: boolean;
   stop: (() => Promise<void>) | null;
   lifecycle: ShutdownLifecycleContext;
+  persistHotRestartHandoff?: () => Promise<void>;
+  onHotRestartHandoffFailure?: (error: unknown) => void;
 }): Promise<"not_owned" | "preserved_for_hot_restart" | "stopped"> {
   if (!input.ownedByThisProcess || !input.stop) return "not_owned";
-  if (input.lifecycle.preserveEmbeddedPostgres) return "preserved_for_hot_restart";
+  if (input.lifecycle.preserveEmbeddedPostgres && input.persistHotRestartHandoff) {
+    try {
+      await input.persistHotRestartHandoff();
+      return "preserved_for_hot_restart";
+    } catch (error) {
+      try {
+        input.onHotRestartHandoffFailure?.(error);
+      } catch {
+        // Diagnostic callbacks must never bypass the failure-closed stop below.
+      }
+    }
+  }
   await input.stop();
   return "stopped";
 }

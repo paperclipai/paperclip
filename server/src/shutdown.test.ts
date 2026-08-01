@@ -90,6 +90,7 @@ describe("coordinateEmbeddedPostgresShutdown", () => {
       ownedByThisProcess: true,
       stop,
       lifecycle,
+      persistHotRestartHandoff: vi.fn(async () => undefined),
     });
 
     expect(result).toBe("preserved_for_hot_restart");
@@ -169,6 +170,29 @@ describe("coordinateEmbeddedPostgresShutdown", () => {
       expect(replacement.stop).not.toHaveBeenCalled();
       expect(result).toBe("not_owned");
     });
+  });
+
+  it("stops the owned database when hot-restart handoff persistence fails", async () => {
+    const writeError = new Error("forced handoff write failure");
+    const stop = vi.fn(async () => undefined);
+    const onHotRestartHandoffFailure = vi.fn();
+
+    const result = await coordinateEmbeddedPostgresShutdown({
+      ownedByThisProcess: true,
+      stop,
+      lifecycle: createShutdownLifecycleContext({
+        signal: "SIGTERM",
+        hotRestart: { skipDrain: true },
+      }),
+      persistHotRestartHandoff: vi.fn(async () => {
+        throw writeError;
+      }),
+      onHotRestartHandoffFailure,
+    });
+
+    expect(result).toBe("stopped");
+    expect(stop).toHaveBeenCalledOnce();
+    expect(onHotRestartHandoffFailure).toHaveBeenCalledWith(writeError);
   });
 
   it("reads the PostgreSQL PID, start time, canonical data directory, and port as one identity", async () => {
@@ -251,6 +275,7 @@ describe("coordinateEmbeddedPostgresShutdown", () => {
         signal: "SIGTERM",
         hotRestart: { skipDrain: true },
       }),
+      persistHotRestartHandoff: vi.fn(async () => undefined),
     });
 
     const stopAdoptedDatabase = adoptEmbeddedPostgres(replacement, {
