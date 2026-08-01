@@ -214,3 +214,16 @@ PR #2218 (`feat/external-adapter-phase1`) adds external adapter support. See roo
 - `createServerAdapter()` must include ALL optional fields (especially `detectModel`)
 - Built-in UI adapters can shadow external plugin parsers — remove built-in when fully externalizing
 - Reference external adapters: Hermes (`@henkey/hermes-paperclip-adapter` or `file:`) and Droid (npm)
+
+## Cross-project design tool: Impeccable
+
+`impeccable/` is available at `~/Downloads/Projects/impeccable`. It provides 23
+design commands and 59 deterministic anti-pattern detector rules for frontend
+design quality. Use it when working on Paperclip's board UI (`ui/`):
+
+- `/impeccable critique` — UX design review for the board interface
+- `/impeccable audit` — accessibility, performance, and responsive checks
+- `/impeccable polish` — final quality pass before shipping
+
+Run `npx impeccable install` from the project root to set up. See
+`impeccable/README.md` for details.
