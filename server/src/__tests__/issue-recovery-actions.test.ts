@@ -463,6 +463,40 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect(enqueueWakeup).not.toHaveBeenCalled();
   });
 
+  it("does not turn a temporary agent pause into a permanent issue blocker", async () => {
+    const { companyId, coderId, sourceIssueId } = await seedCompany();
+    await db.update(agents).set({ status: "paused", pauseReason: "manual" }).where(eq(agents.id, coderId));
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId: coderId,
+      invocationSource: "manual",
+      status: "failed",
+      error: "model_not_found: requested model does not exist",
+      errorCode: "adapter_failed",
+      startedAt: new Date("2026-08-01T12:00:00.000Z"),
+      finishedAt: new Date("2026-08-01T12:01:00.000Z"),
+      contextSnapshot: { issueId: sourceIssueId },
+    });
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+
+    const result = await recovery.reconcileStrandedAssignedIssues();
+
+    expect(result).toMatchObject({ escalated: 0, providerQuotaMonitored: 0, skipped: 1 });
+    const [updatedIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(updatedIssue).toMatchObject({
+      status: "in_progress",
+      assigneeAgentId: coderId,
+      monitorNextCheckAt: null,
+    });
+    const [updatedRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
+    expect(updatedRun?.errorCode).toBe("adapter_failed");
+    expect(await db.select().from(issueRecoveryActions)).toHaveLength(0);
+    expect(enqueueWakeup).not.toHaveBeenCalled();
+  });
+
   it("schedules another provider-quota monitor after a prior quota monitor fired", async () => {
     const { companyId, coderId, sourceIssueId } = await seedCompany();
     await db.update(issues).set({ monitorAttemptCount: 1 }).where(eq(issues.id, sourceIssueId));

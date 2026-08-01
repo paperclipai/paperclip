@@ -15061,10 +15061,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         {
           keepIdleOnFailure:
             outcome === "failed" &&
-            (automaticRetryScheduled ||
-              (finalizedRun
-                ? readHeartbeatRunErrorFamily(finalizedRun) === "provider_quota"
-                : runErrorCode === "provider_quota")),
+            automaticRetryScheduled,
           wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
         },
       );

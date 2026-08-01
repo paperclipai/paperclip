@@ -3733,6 +3733,15 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         continue;
       }
 
+      // Only errored agents may cross this gate so we can classify the failure
+      // that opened their invocation circuit. A paused agent is a temporary
+      // operator hold: mutating its issue to blocked here would outlive the
+      // pause and leave the work stranded after the agent is resumed.
+      if (issue.status !== "in_review" && !agentInvokable && agent?.status !== "error") {
+        result.skipped += 1;
+        continue;
+      }
+
       const adapterFailureClassification = issue.status !== "in_review" && latestRun && isUnsuccessfulTerminalIssueRun(latestRun)
         ? classifyAdapterFailureForRecovery(latestRun, recoveryNow)
         : null;
