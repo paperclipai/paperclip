@@ -1,4 +1,4 @@
-CREATE TABLE "decision_queue_items" (
+CREATE TABLE IF NOT EXISTS "decision_queue_items" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"company_id" uuid NOT NULL,
 	"queue_id" uuid NOT NULL,
@@ -18,7 +18,7 @@ CREATE TABLE "decision_queue_items" (
       ))
 );
 --> statement-breakpoint
-CREATE TABLE "decision_queues" (
+CREATE TABLE IF NOT EXISTS "decision_queues" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"company_id" uuid NOT NULL,
 	"key" text NOT NULL,
@@ -42,7 +42,7 @@ CREATE TABLE "decision_queues" (
 	CONSTRAINT "decision_queues_retention_days_check" CHECK ("decision_queues"."retention_days" IS NULL OR ("decision_queues"."retention_days" >= 1 AND "decision_queues"."retention_days" <= 3650))
 );
 --> statement-breakpoint
-CREATE TABLE "decision_triage" (
+CREATE TABLE IF NOT EXISTS "decision_triage" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"company_id" uuid NOT NULL,
 	"source_kind" text NOT NULL,
@@ -70,7 +70,7 @@ CREATE TABLE "decision_triage" (
       ))
 );
 --> statement-breakpoint
-CREATE TABLE "decision_triage_events" (
+CREATE TABLE IF NOT EXISTS "decision_triage_events" (
 	"id" uuid PRIMARY KEY DEFAULT gen_random_uuid() NOT NULL,
 	"company_id" uuid NOT NULL,
 	"queue_id" uuid,
@@ -92,30 +92,70 @@ CREATE TABLE "decision_triage_events" (
       ))
 );
 --> statement-breakpoint
-ALTER TABLE "decision_queue_items" ADD CONSTRAINT "decision_queue_items_company_id_companies_id_fk" FOREIGN KEY ("company_id") REFERENCES "public"."companies"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "decision_queue_items" ADD CONSTRAINT "decision_queue_items_added_by_agent_id_agents_id_fk" FOREIGN KEY ("added_by_agent_id") REFERENCES "public"."agents"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "decision_queue_items" ADD CONSTRAINT "decision_queue_items_added_by_run_id_heartbeat_runs_id_fk" FOREIGN KEY ("added_by_run_id") REFERENCES "public"."heartbeat_runs"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "decision_queue_items" ADD CONSTRAINT "decision_queue_items_added_by_agent_api_key_id_agent_api_keys_id_fk" FOREIGN KEY ("added_by_agent_api_key_id") REFERENCES "public"."agent_api_keys"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-CREATE UNIQUE INDEX "decision_queues_id_company_uq" ON "decision_queues" USING btree ("id","company_id");--> statement-breakpoint
-ALTER TABLE "decision_queue_items" ADD CONSTRAINT "decision_queue_items_queue_company_fk" FOREIGN KEY ("queue_id","company_id") REFERENCES "public"."decision_queues"("id","company_id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "decision_queues" ADD CONSTRAINT "decision_queues_company_id_companies_id_fk" FOREIGN KEY ("company_id") REFERENCES "public"."companies"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "decision_queues" ADD CONSTRAINT "decision_queues_created_by_agent_id_agents_id_fk" FOREIGN KEY ("created_by_agent_id") REFERENCES "public"."agents"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "decision_queues" ADD CONSTRAINT "decision_queues_created_by_run_id_heartbeat_runs_id_fk" FOREIGN KEY ("created_by_run_id") REFERENCES "public"."heartbeat_runs"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "decision_queues" ADD CONSTRAINT "decision_queues_created_by_agent_api_key_id_agent_api_keys_id_fk" FOREIGN KEY ("created_by_agent_api_key_id") REFERENCES "public"."agent_api_keys"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "decision_triage" ADD CONSTRAINT "decision_triage_company_id_companies_id_fk" FOREIGN KEY ("company_id") REFERENCES "public"."companies"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "decision_triage" ADD CONSTRAINT "decision_triage_set_by_agent_id_agents_id_fk" FOREIGN KEY ("set_by_agent_id") REFERENCES "public"."agents"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "decision_triage" ADD CONSTRAINT "decision_triage_set_by_run_id_heartbeat_runs_id_fk" FOREIGN KEY ("set_by_run_id") REFERENCES "public"."heartbeat_runs"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "decision_triage" ADD CONSTRAINT "decision_triage_set_by_agent_api_key_id_agent_api_keys_id_fk" FOREIGN KEY ("set_by_agent_api_key_id") REFERENCES "public"."agent_api_keys"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "decision_triage_events" ADD CONSTRAINT "decision_triage_events_company_id_companies_id_fk" FOREIGN KEY ("company_id") REFERENCES "public"."companies"("id") ON DELETE cascade ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "decision_triage_events" ADD CONSTRAINT "decision_triage_events_queue_id_decision_queues_id_fk" FOREIGN KEY ("queue_id") REFERENCES "public"."decision_queues"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "decision_triage_events" ADD CONSTRAINT "decision_triage_events_actor_agent_id_agents_id_fk" FOREIGN KEY ("actor_agent_id") REFERENCES "public"."agents"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "decision_triage_events" ADD CONSTRAINT "decision_triage_events_actor_run_id_heartbeat_runs_id_fk" FOREIGN KEY ("actor_run_id") REFERENCES "public"."heartbeat_runs"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-ALTER TABLE "decision_triage_events" ADD CONSTRAINT "decision_triage_events_agent_api_key_id_agent_api_keys_id_fk" FOREIGN KEY ("agent_api_key_id") REFERENCES "public"."agent_api_keys"("id") ON DELETE no action ON UPDATE no action;--> statement-breakpoint
-CREATE UNIQUE INDEX "decision_queue_items_queue_source_uq" ON "decision_queue_items" USING btree ("queue_id","source_kind","source_id");--> statement-breakpoint
-CREATE INDEX "decision_queue_items_company_source_idx" ON "decision_queue_items" USING btree ("company_id","source_kind","source_id");--> statement-breakpoint
-CREATE UNIQUE INDEX "decision_queues_company_key_uq" ON "decision_queues" USING btree ("company_id","key");--> statement-breakpoint
-CREATE INDEX "decision_queues_company_updated_idx" ON "decision_queues" USING btree ("company_id","updated_at");--> statement-breakpoint
-CREATE UNIQUE INDEX "decision_triage_company_source_uq" ON "decision_triage" USING btree ("company_id","source_kind","source_id");--> statement-breakpoint
-CREATE INDEX "decision_triage_company_decide_by_idx" ON "decision_triage" USING btree ("company_id","decide_by");--> statement-breakpoint
-CREATE INDEX "decision_triage_events_company_source_created_idx" ON "decision_triage_events" USING btree ("company_id","source_kind","source_id","created_at");--> statement-breakpoint
-CREATE INDEX "decision_triage_events_queue_created_idx" ON "decision_triage_events" USING btree ("queue_id","created_at");
+CREATE UNIQUE INDEX IF NOT EXISTS "decision_queues_id_company_uq" ON "decision_queues" USING btree ("id","company_id");
+--> statement-breakpoint
+DO $$ BEGIN
+	IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'decision_queue_items_company_id_companies_id_fk' AND conrelid = 'public.decision_queue_items'::regclass) THEN
+		ALTER TABLE "decision_queue_items" ADD CONSTRAINT "decision_queue_items_company_id_companies_id_fk" FOREIGN KEY ("company_id") REFERENCES "public"."companies"("id") ON DELETE cascade ON UPDATE no action;
+	END IF;
+	IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'decision_queue_items_added_by_agent_id_agents_id_fk' AND conrelid = 'public.decision_queue_items'::regclass) THEN
+		ALTER TABLE "decision_queue_items" ADD CONSTRAINT "decision_queue_items_added_by_agent_id_agents_id_fk" FOREIGN KEY ("added_by_agent_id") REFERENCES "public"."agents"("id") ON DELETE no action ON UPDATE no action;
+	END IF;
+	IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'decision_queue_items_added_by_run_id_heartbeat_runs_id_fk' AND conrelid = 'public.decision_queue_items'::regclass) THEN
+		ALTER TABLE "decision_queue_items" ADD CONSTRAINT "decision_queue_items_added_by_run_id_heartbeat_runs_id_fk" FOREIGN KEY ("added_by_run_id") REFERENCES "public"."heartbeat_runs"("id") ON DELETE no action ON UPDATE no action;
+	END IF;
+	IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'decision_queue_items_added_by_agent_api_key_id_agent_api_keys_id_fk' AND conrelid = 'public.decision_queue_items'::regclass) THEN
+		ALTER TABLE "decision_queue_items" ADD CONSTRAINT "decision_queue_items_added_by_agent_api_key_id_agent_api_keys_id_fk" FOREIGN KEY ("added_by_agent_api_key_id") REFERENCES "public"."agent_api_keys"("id") ON DELETE no action ON UPDATE no action;
+	END IF;
+	IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'decision_queue_items_queue_company_fk' AND conrelid = 'public.decision_queue_items'::regclass) THEN
+		ALTER TABLE "decision_queue_items" ADD CONSTRAINT "decision_queue_items_queue_company_fk" FOREIGN KEY ("queue_id","company_id") REFERENCES "public"."decision_queues"("id","company_id") ON DELETE cascade ON UPDATE no action;
+	END IF;
+	IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'decision_queues_company_id_companies_id_fk' AND conrelid = 'public.decision_queues'::regclass) THEN
+		ALTER TABLE "decision_queues" ADD CONSTRAINT "decision_queues_company_id_companies_id_fk" FOREIGN KEY ("company_id") REFERENCES "public"."companies"("id") ON DELETE cascade ON UPDATE no action;
+	END IF;
+	IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'decision_queues_created_by_agent_id_agents_id_fk' AND conrelid = 'public.decision_queues'::regclass) THEN
+		ALTER TABLE "decision_queues" ADD CONSTRAINT "decision_queues_created_by_agent_id_agents_id_fk" FOREIGN KEY ("created_by_agent_id") REFERENCES "public"."agents"("id") ON DELETE no action ON UPDATE no action;
+	END IF;
+	IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'decision_queues_created_by_run_id_heartbeat_runs_id_fk' AND conrelid = 'public.decision_queues'::regclass) THEN
+		ALTER TABLE "decision_queues" ADD CONSTRAINT "decision_queues_created_by_run_id_heartbeat_runs_id_fk" FOREIGN KEY ("created_by_run_id") REFERENCES "public"."heartbeat_runs"("id") ON DELETE no action ON UPDATE no action;
+	END IF;
+	IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'decision_queues_created_by_agent_api_key_id_agent_api_keys_id_fk' AND conrelid = 'public.decision_queues'::regclass) THEN
+		ALTER TABLE "decision_queues" ADD CONSTRAINT "decision_queues_created_by_agent_api_key_id_agent_api_keys_id_fk" FOREIGN KEY ("created_by_agent_api_key_id") REFERENCES "public"."agent_api_keys"("id") ON DELETE no action ON UPDATE no action;
+	END IF;
+	IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'decision_triage_company_id_companies_id_fk' AND conrelid = 'public.decision_triage'::regclass) THEN
+		ALTER TABLE "decision_triage" ADD CONSTRAINT "decision_triage_company_id_companies_id_fk" FOREIGN KEY ("company_id") REFERENCES "public"."companies"("id") ON DELETE cascade ON UPDATE no action;
+	END IF;
+	IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'decision_triage_set_by_agent_id_agents_id_fk' AND conrelid = 'public.decision_triage'::regclass) THEN
+		ALTER TABLE "decision_triage" ADD CONSTRAINT "decision_triage_set_by_agent_id_agents_id_fk" FOREIGN KEY ("set_by_agent_id") REFERENCES "public"."agents"("id") ON DELETE no action ON UPDATE no action;
+	END IF;
+	IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'decision_triage_set_by_run_id_heartbeat_runs_id_fk' AND conrelid = 'public.decision_triage'::regclass) THEN
+		ALTER TABLE "decision_triage" ADD CONSTRAINT "decision_triage_set_by_run_id_heartbeat_runs_id_fk" FOREIGN KEY ("set_by_run_id") REFERENCES "public"."heartbeat_runs"("id") ON DELETE no action ON UPDATE no action;
+	END IF;
+	IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'decision_triage_set_by_agent_api_key_id_agent_api_keys_id_fk' AND conrelid = 'public.decision_triage'::regclass) THEN
+		ALTER TABLE "decision_triage" ADD CONSTRAINT "decision_triage_set_by_agent_api_key_id_agent_api_keys_id_fk" FOREIGN KEY ("set_by_agent_api_key_id") REFERENCES "public"."agent_api_keys"("id") ON DELETE no action ON UPDATE no action;
+	END IF;
+	IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'decision_triage_events_company_id_companies_id_fk' AND conrelid = 'public.decision_triage_events'::regclass) THEN
+		ALTER TABLE "decision_triage_events" ADD CONSTRAINT "decision_triage_events_company_id_companies_id_fk" FOREIGN KEY ("company_id") REFERENCES "public"."companies"("id") ON DELETE cascade ON UPDATE no action;
+	END IF;
+	IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'decision_triage_events_queue_id_decision_queues_id_fk' AND conrelid = 'public.decision_triage_events'::regclass) THEN
+		ALTER TABLE "decision_triage_events" ADD CONSTRAINT "decision_triage_events_queue_id_decision_queues_id_fk" FOREIGN KEY ("queue_id") REFERENCES "public"."decision_queues"("id") ON DELETE no action ON UPDATE no action;
+	END IF;
+	IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'decision_triage_events_actor_agent_id_agents_id_fk' AND conrelid = 'public.decision_triage_events'::regclass) THEN
+		ALTER TABLE "decision_triage_events" ADD CONSTRAINT "decision_triage_events_actor_agent_id_agents_id_fk" FOREIGN KEY ("actor_agent_id") REFERENCES "public"."agents"("id") ON DELETE no action ON UPDATE no action;
+	END IF;
+	IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'decision_triage_events_actor_run_id_heartbeat_runs_id_fk' AND conrelid = 'public.decision_triage_events'::regclass) THEN
+		ALTER TABLE "decision_triage_events" ADD CONSTRAINT "decision_triage_events_actor_run_id_heartbeat_runs_id_fk" FOREIGN KEY ("actor_run_id") REFERENCES "public"."heartbeat_runs"("id") ON DELETE no action ON UPDATE no action;
+	END IF;
+	IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'decision_triage_events_agent_api_key_id_agent_api_keys_id_fk' AND conrelid = 'public.decision_triage_events'::regclass) THEN
+		ALTER TABLE "decision_triage_events" ADD CONSTRAINT "decision_triage_events_agent_api_key_id_agent_api_keys_id_fk" FOREIGN KEY ("agent_api_key_id") REFERENCES "public"."agent_api_keys"("id") ON DELETE no action ON UPDATE no action;
+	END IF;
+END $$;
+--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "decision_queue_items_queue_source_uq" ON "decision_queue_items" USING btree ("queue_id","source_kind","source_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "decision_queue_items_company_source_idx" ON "decision_queue_items" USING btree ("company_id","source_kind","source_id");--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "decision_queues_company_key_uq" ON "decision_queues" USING btree ("company_id","key");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "decision_queues_company_updated_idx" ON "decision_queues" USING btree ("company_id","updated_at");--> statement-breakpoint
+CREATE UNIQUE INDEX IF NOT EXISTS "decision_triage_company_source_uq" ON "decision_triage" USING btree ("company_id","source_kind","source_id");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "decision_triage_company_decide_by_idx" ON "decision_triage" USING btree ("company_id","decide_by");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "decision_triage_events_company_source_created_idx" ON "decision_triage_events" USING btree ("company_id","source_kind","source_id","created_at");--> statement-breakpoint
+CREATE INDEX IF NOT EXISTS "decision_triage_events_queue_created_idx" ON "decision_triage_events" USING btree ("queue_id","created_at");
