@@ -53,6 +53,20 @@ def test_bump_attempt_increments_and_replaces_prompt_id():
     assert job["submitted_at"] == 2000.0
 
 
+def test_bump_attempt_updates_seed_when_given():
+    setup_tmp()
+    job_state.add("issue-1", "prompt-1", "company-a", now=1000.0, seed=111)
+    job_state.bump_attempt("issue-1", "prompt-2", now=2000.0, seed=222)
+    assert job_state.get("issue-1")["seed"] == 222
+
+
+def test_bump_attempt_keeps_seed_when_not_given():
+    setup_tmp()
+    job_state.add("issue-1", "prompt-1", "company-a", now=1000.0, seed=111)
+    job_state.bump_attempt("issue-1", "prompt-2", now=2000.0)
+    assert job_state.get("issue-1")["seed"] == 111
+
+
 def test_age_seconds():
     setup_tmp()
     job_state.add("issue-1", "prompt-1", "company-a", now=1000.0)

@@ -35,7 +35,7 @@ def add(issue_id, prompt_id, company_id, now, seed=None):
     _save(st)
 
 
-def bump_attempt(issue_id, prompt_id, now):
+def bump_attempt(issue_id, prompt_id, now, seed=None):
     st = _load()
     jobs = st.setdefault(JOBS_KEY, {})
     job = jobs.get(issue_id)
@@ -44,6 +44,8 @@ def bump_attempt(issue_id, prompt_id, now):
     job["attempts"] = int(job.get("attempts", 1)) + 1
     job["prompt_id"] = prompt_id
     job["submitted_at"] = now
+    if seed is not None:
+        job["seed"] = seed
     _save(st)
     return job["attempts"]
 

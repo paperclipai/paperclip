@@ -40,6 +40,8 @@ def reset_unreachable_counter():
 
 def render_local(company, issue, brief, now):
     iid = issue["id"]
+    if len(job_state.all()) >= config.MAX_INFLIGHT_JOBS:
+        return          # Knoten voll: Auftrag bleibt liegen, naechster Zyklus versucht erneut
     if cost_state.remaining_local_today(_today()) <= 0:
         api.add_comment(iid, "⚠️ Tageslimit (%d lokale Bilder) erreicht. "
                              "Morgen erneut versuchen." % config.DAILY_LOCAL_LIMIT)
@@ -147,7 +149,7 @@ def collect_one(issue_id, job, now):
                 new_id = comfy_client.submit(workflow)
             except comfy_client.ComfyError:
                 return "running"
-            job_state.bump_attempt(issue_id, new_id, now)
+            job_state.bump_attempt(issue_id, new_id, now, seed=seed)
             return "timeout"
         api.add_comment(issue_id,
                         "⚠️ Render nach zwei Versuchen ohne Ergebnis "
@@ -177,17 +179,22 @@ def note_unreachable():
     _unreachable_cycles += 1
     if _unreachable_cycles < config.UNREACHABLE_ALERT_CYCLES or _unreachable_alerted:
         return
+    try:
+        waiting = _waiting_issues()
+        for _company_id, issue_id in waiting:
+            api.add_comment(issue_id,
+                            "⚠️ Renderknoten seit über %d Minuten nicht erreichbar. "
+                            "Der Auftrag bleibt in der Warteschlange."
+                            % config.UNREACHABLE_ALERT_CYCLES)
+        api.mail_alarm("[Bilddienst] Renderknoten nicht erreichbar",
+                       "ComfyUI auf %s antwortet seit %d Zyklen nicht. "
+                       "Wartende Aufträge: %d"
+                       % (config.COMFY_BASE, _unreachable_cycles, len(waiting)))
+    except api.AuthError:
+        raise            # Token-Ablauf gehoert nach oben, nicht verschluckt
+    except Exception:
+        return           # Sperre bleibt offen -> naechster Zyklus versucht es erneut
     _unreachable_alerted = True
-    waiting = _waiting_issues()
-    for _company_id, issue_id in waiting:
-        api.add_comment(issue_id,
-                        "⚠️ Renderknoten seit über %d Minuten nicht erreichbar. "
-                        "Der Auftrag bleibt in der Warteschlange."
-                        % config.UNREACHABLE_ALERT_CYCLES)
-    api.mail_alarm("[Bilddienst] Renderknoten nicht erreichbar",
-                   "ComfyUI auf %s antwortet seit %d Zyklen nicht. "
-                   "Wartende Aufträge: %d"
-                   % (config.COMFY_BASE, _unreachable_cycles, len(waiting)))
 
 
 # --- Zyklus --------------------------------------------------------------
@@ -203,19 +210,13 @@ def collect_phase(now):
 
 
 def submit_phase(now):
-    free = config.MAX_INFLIGHT_JOBS - len(job_state.all())
-    if free <= 0:
-        return
     for company in config.COMPANIES:
         for status in config.POLL_STATUSES:
             for issue in api.list_issues(company["id"], status, company["label"]):
                 if job_state.get(issue["id"]):
                     continue
-                if free <= 0:
-                    return
                 try:
                     process_new_issue(company, issue, now)
-                    free = config.MAX_INFLIGHT_JOBS - len(job_state.all())
                 except api.AuthError:
                     raise
                 except Exception:
@@ -233,6 +234,8 @@ def run_once(now):
     except api.AuthError as e:
         api.mail_alarm("[Bilddienst] Paperclip-Token abgelaufen", str(e))
         sys.exit(1)
+    except Exception:
+        api.mail_alarm("[Bilddienst] Zyklus abgebrochen", traceback.format_exc())
 
 
 def main():
