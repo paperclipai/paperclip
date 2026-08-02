@@ -79,8 +79,8 @@ function sortSources(a: IssueReferenceSource, b: IssueReferenceSource) {
 
 function sortRelatedWork(a: IssueRelatedWorkItem, b: IssueRelatedWorkItem) {
   if (b.mentionCount !== a.mentionCount) return b.mentionCount - a.mentionCount;
-  const leftLabel = a.issue.identifier ?? a.issue.title;
-  const rightLabel = b.issue.identifier ?? b.issue.title;
+  const leftLabel = a.issue.identifier ?? a.issue.title ?? "";
+  const rightLabel = b.issue.identifier ?? b.issue.title ?? "";
   return leftLabel.localeCompare(rightLabel);
 }
 

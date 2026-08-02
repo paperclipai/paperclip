@@ -308,6 +308,7 @@ type SkillSourceMeta = {
   skillKey?: string;
   sourceKind?: string;
   missingSource?: SkillMissingSourceMarker;
+  bundledRetirement?: SkillBundledRetirementMarker;
   hostname?: string;
   owner?: string;
   repo?: string;
@@ -343,6 +344,12 @@ type SkillMissingSourceMarker = {
   sourceLocator: string | null;
   sourcePath: string | null;
   detectedAt: string;
+};
+
+type SkillBundledRetirementMarker = {
+  retiredAt: string;
+  skillKey: string;
+  sourceKind: "paperclip_bundled";
 };
 
 export type LocalSkillInventoryMode = "full" | "project_root";
@@ -2015,6 +2022,19 @@ function getMissingSourceMarker(metadata: Record<string, unknown> | null): Recor
   return isPlainRecord(metadata.missingSource) ? metadata.missingSource : null;
 }
 
+function getBundledRetirementMarker(metadata: Record<string, unknown> | null): SkillBundledRetirementMarker | null {
+  if (!isPlainRecord(metadata) || !isPlainRecord(metadata.bundledRetirement)) return null;
+  const retiredAt = asString(metadata.bundledRetirement.retiredAt);
+  const skillKey = asString(metadata.bundledRetirement.skillKey);
+  const sourceKind = asString(metadata.bundledRetirement.sourceKind);
+  if (!retiredAt || !skillKey || sourceKind !== "paperclip_bundled") return null;
+  return { retiredAt, skillKey, sourceKind };
+}
+
+function isRetiredBundledSkill(skill: Pick<CompanySkill, "metadata">) {
+  return Boolean(getBundledRetirementMarker(isPlainRecord(skill.metadata) ? skill.metadata : null));
+}
+
 function buildMissingLocalSourceMarker(
   skill: Pick<CompanySkill, "sourceLocator" | "metadata">,
 ): SkillMissingSourceMarker {
@@ -2043,6 +2063,17 @@ function withoutMissingSourceMarker(metadata: Record<string, unknown> | null) {
   const next = { ...metadata };
   delete next.missingSource;
   return next;
+}
+
+function withBundledRetirementMarker(skill: Pick<CompanySkill, "key" | "metadata">) {
+  return {
+    ...(isPlainRecord(skill.metadata) ? skill.metadata : {}),
+    bundledRetirement: {
+      retiredAt: new Date().toISOString(),
+      skillKey: skill.key,
+      sourceKind: "paperclip_bundled" as const,
+    },
+  };
 }
 
 function resolveSkillReference(

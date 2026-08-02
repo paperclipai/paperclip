@@ -4,6 +4,8 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
+  listAttachments: vi.fn(async () => []),
+  listComments: vi.fn(async () => []),
   getWakeableParentAfterChildCompletion: vi.fn(),
   listWakeableBlockedDependents: vi.fn(),
   update: vi.fn(),
@@ -16,6 +18,11 @@ const mockAgentService = vi.hoisted(() => ({
 const mockTrackAgentTaskCompleted = vi.hoisted(() => vi.fn());
 const mockGetTelemetryClient = vi.hoisted(() => vi.fn());
 const mockDbSelectWhere = vi.hoisted(() => vi.fn(() => ({
+  orderBy: () => ({
+    limit: async () => [],
+    then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
+      Promise.resolve([]).then(onFulfilled, onRejected),
+  }),
   then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
     Promise.resolve([{ companyId: "company-1", permissions: null }]).then(onFulfilled, onRejected),
 })));
@@ -54,13 +61,14 @@ function registerModuleMocks() {
       completeTestRunForIssue: vi.fn(async () => null),
     }),
     documentAnnotationService: () => ({ remapOpenThreadsForDocument: async () => [] }),
-    documentService: () => ({}),
+    documentService: () => ({ listIssueDocuments: vi.fn(async () => []) }),
     executionWorkspaceService: () => ({}),
     feedbackService: () => ({}),
     goalService: () => ({}),
     heartbeatService: () => ({
       wakeup: vi.fn(async () => undefined),
       reportRunActivity: vi.fn(async () => undefined),
+      getRun: vi.fn(async () => null),
     }),
     instanceSettingsService: () => ({}),
     issueApprovalService: () => ({}),
@@ -95,7 +103,7 @@ function registerModuleMocks() {
     routineService: () => ({
       syncRunStatusForIssue: vi.fn(async () => undefined),
     }),
-    workProductService: () => ({}),
+    workProductService: () => ({ listForIssue: vi.fn(async () => []) }),
   }));
 }
 
@@ -150,6 +158,11 @@ describe("issue telemetry routes", () => {
     mockDbSelect.mockImplementation(() => ({ from: mockDbSelectFrom }));
     mockDbSelectFrom.mockImplementation(() => ({ where: mockDbSelectWhere }));
     mockDbSelectWhere.mockImplementation(() => ({
+      orderBy: () => ({
+        limit: async () => [],
+        then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
+          Promise.resolve([]).then(onFulfilled, onRejected),
+      }),
       then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
         Promise.resolve([{ companyId: "company-1", permissions: null }]).then(onFulfilled, onRejected),
     }));

@@ -142,6 +142,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     agentId: string;
     now: Date;
     errorCode: string;
+    error?: string;
     errorFamily?: "transient_upstream" | "provider_quota" | null;
     retryNotBefore?: string | null;
     scheduledRetryAttempt?: number;
@@ -182,7 +183,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       agentId: input.agentId,
       invocationSource: "assignment",
       status: "failed",
-      error: "upstream overload",
+      error: input.error ?? "upstream overload",
       errorCode: input.errorCode,
       finishedAt: input.now,
       scheduledRetryAttempt: input.scheduledRetryAttempt ?? 0,
@@ -204,6 +205,31 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
       createdAt: input.now,
     });
   }
+
+  it("defers a new Codex run for five minutes after the untrusted-directory adapter failure", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const failedRunId = randomUUID();
+    const now = new Date();
+    await seedRetryFixture({
+      runId: failedRunId,
+      companyId,
+      agentId,
+      now,
+      errorCode: "adapter_failed",
+      error: "Not inside a trusted directory and --skip-git-repo-check was not specified.",
+    });
+
+    const queued = await heartbeat.invoke(agentId, "on_demand", {}, "manual");
+    expect(queued).not.toBeNull();
+    await new Promise((resolve) => setTimeout(resolve, 100));
+
+    const deferred = await heartbeat.getRun(queued!.id);
+    expect(deferred?.status).toBe("queued");
+    const throttle = (deferred?.resultJson as Record<string, unknown>)?.runGateThrottle as Record<string, unknown>;
+    expect(throttle).toMatchObject({ kind: "structural_adapter_failure" });
+    expect(new Date(String(throttle.retryNotBefore)).getTime()).toBeGreaterThan(Date.now());
+  });
 
   it("records provider quota failures, schedules the reset-time retry, and leaves the agent idle", async () => {
     const companyId = randomUUID();

@@ -2201,12 +2201,12 @@ function buildExecutionStageWakeContext(input: {
 function summarizeIssueRelationForActivity(relation: {
   id: string;
   identifier: string | null;
-  title: string;
+  title: string | null;
 }): ActivityIssueRelationSummary {
   return {
     id: relation.id,
     identifier: relation.identifier,
-    title: relation.title,
+    title: relation.title ?? "",
   };
 }
 

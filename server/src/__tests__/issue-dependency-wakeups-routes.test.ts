@@ -7,6 +7,8 @@ const mockFindExistingIssueBlockersResolvedWake = vi.hoisted(() => vi.fn(async (
 const mockIssueService = vi.hoisted(() => ({
   getAncestors: vi.fn(),
   getById: vi.fn(),
+  listAttachments: vi.fn(async () => []),
+  listComments: vi.fn(async () => []),
   getByIdentifier: vi.fn(async () => null),
   getComment: vi.fn(),
   getCommentCursor: vi.fn(),
@@ -38,6 +40,7 @@ vi.mock("../services/index.js", () => ({
   documentAnnotationService: () => ({ remapOpenThreadsForDocument: async () => [] }),
   documentService: () => ({
     getIssueDocumentPayload: vi.fn(async () => ({})),
+    listIssueDocuments: vi.fn(async () => []),
   }),
   executionWorkspaceService: () => ({
     getById: vi.fn(),
@@ -108,10 +111,10 @@ vi.mock("../services/issue-dependency-wakeups.js", async () => {
 
 async function createApp() {
   const emptyRows: unknown[] = [];
-  const whereResult = {
-    limit: vi.fn(async () => emptyRows),
-    then: async (resolve: (rows: unknown[]) => unknown) => resolve(emptyRows),
-  };
+  const whereResult: Record<string, unknown> = {};
+  whereResult.limit = vi.fn(async () => emptyRows);
+  whereResult.orderBy = vi.fn(() => whereResult);
+  whereResult.then = async (resolve: (rows: unknown[]) => unknown) => resolve(emptyRows);
   const query: Record<string, unknown> = {};
   query.innerJoin = vi.fn(() => query);
   query.where = vi.fn(() => whereResult);

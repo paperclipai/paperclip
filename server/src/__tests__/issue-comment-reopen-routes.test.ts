@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
+  listAttachments: vi.fn(async () => []),
   assertCheckoutOwner: vi.fn(),
   update: vi.fn(),
   addComment: vi.fn(),
@@ -41,7 +42,7 @@ const mockTxInsert = vi.hoisted(() => vi.fn(() => ({ values: mockTxInsertValues 
 const mockTx = vi.hoisted(() => ({
   insert: mockTxInsert,
 }));
-const mockDbSelectOrderBy = vi.hoisted(() => vi.fn(async () => []));
+const mockDbSelectOrderBy = vi.hoisted(() => vi.fn());
 const mockDbSelectWhere = vi.hoisted(() => vi.fn(() => ({
   orderBy: mockDbSelectOrderBy,
   then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
@@ -139,7 +140,7 @@ vi.mock("../services/index.js", () => ({
     completeTestRunForIssue: vi.fn(async () => null),
   }),
   documentAnnotationService: () => ({ remapOpenThreadsForDocument: async () => [] }),
-  documentService: () => ({}),
+  documentService: () => ({ listIssueDocuments: vi.fn(async () => []) }),
   executionWorkspaceService: () => ({}),
   feedbackService: () => mockFeedbackService,
   goalService: () => ({}),
@@ -166,7 +167,7 @@ vi.mock("../services/index.js", () => ({
   logActivity: mockLogActivity,
   projectService: () => ({}),
   routineService: () => mockRoutineService,
-  workProductService: () => ({}),
+  workProductService: () => ({ listForIssue: vi.fn(async () => []) }),
 }));
 
 vi.mock("../services/external-objects.js", () => ({
@@ -280,7 +281,11 @@ describe.sequential("issue comment reopen routes", () => {
     mockDb.transaction.mockReset();
     mockTxInsertValues.mockResolvedValue(undefined);
     mockTxInsert.mockImplementation(() => ({ values: mockTxInsertValues }));
-    mockDbSelectOrderBy.mockResolvedValue([]);
+    mockDbSelectOrderBy.mockImplementation(() => ({
+      limit: async () => [],
+      then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
+        Promise.resolve([]).then(onFulfilled, onRejected),
+    }));
     mockDbSelectWhere.mockImplementation(() => ({
       orderBy: mockDbSelectOrderBy,
       then: (onFulfilled: (rows: unknown[]) => unknown, onRejected?: (reason: unknown) => unknown) =>
@@ -1788,7 +1793,7 @@ describe.sequential("issue comment reopen routes", () => {
     );
   });
 
-  it("does not cancel active runs when an issue is marked done", async () => {
+  it("blocks done while an active execution run exists without cancelling it", async () => {
     const issue = {
       ...makeIssue("in_progress"),
       executionRunId: "run-1",
@@ -1809,7 +1814,11 @@ describe.sequential("issue comment reopen routes", () => {
       .patch("/api/issues/11111111-1111-4111-8111-111111111111")
       .send({ status: "done" });
 
-    expect(res.status).toBe(200);
+    expect(res.status).toBe(422);
+    expect(res.body.details).toEqual(expect.objectContaining({
+      reason: "active_run_in_progress",
+      runId: "run-1",
+    }));
     expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
   });
 

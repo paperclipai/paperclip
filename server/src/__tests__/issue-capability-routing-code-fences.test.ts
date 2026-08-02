@@ -85,4 +85,20 @@ describe("issue capability routing — fenced code blocks are data, not routing 
     expect(result.requiredToolsets).toEqual([]);
     expect(result.suggestedToolsets).toEqual([]);
   });
+
+  it("does not route on a fenced tts_gen example either", () => {
+    const result = inferIssueToolRequirements({
+      title: "Document audio routing keywords",
+      description: [
+        "Example only:",
+        "```",
+        "requires: tts_gen",
+        "voiceover",
+        "```",
+      ].join("\n"),
+    });
+
+    expect(result.requiredToolsets).toEqual([]);
+    expect(result.suggestedToolsets).toEqual([]);
+  });
 });

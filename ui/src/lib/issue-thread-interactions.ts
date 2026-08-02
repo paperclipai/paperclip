@@ -135,7 +135,11 @@ export function buildItemVerdictsSummary(
   }
   if (interaction.status === "cancelled") {
     const outcome = interaction.result?.outcome;
-    if (outcome === "stale_issue_state") return "Verdicts cancelled after issue state changed";
+    if (outcome === "stale_issue_state") {
+      return interaction.result?.reason?.includes("reassigned")
+        ? "Verdicts cancelled after reassignment"
+        : "Verdicts cancelled after issue state changed";
+    }
     // The document-revision sweep also cancels rather than expires, so keep the
     // target-specific wording instead of falling through to the generic label.
     if (outcome === "stale_target") return "Verdicts cancelled after target changed";
@@ -222,7 +226,11 @@ export function buildIssueThreadInteractionSummary(
     if (interaction.status === "cancelled") {
       const outcome = interaction.result?.outcome;
       if (outcome === "superseded_by_comment") return "Confirmation cancelled after comment";
-      if (outcome === "stale_issue_state") return "Confirmation cancelled after issue state changed";
+      if (outcome === "stale_issue_state") {
+        return interaction.result?.reason?.includes("reassigned")
+          ? "Confirmation cancelled after reassignment"
+          : "Confirmation cancelled after issue state changed";
+      }
       if (outcome === "stale_target") return "Confirmation cancelled after target changed";
       return "Confirmation cancelled";
     }
@@ -248,7 +256,11 @@ export function buildIssueThreadInteractionSummary(
     if (interaction.status === "cancelled") {
       const outcome = interaction.result?.outcome;
       if (outcome === "superseded_by_comment") return "Selection cancelled after comment";
-      if (outcome === "stale_issue_state") return "Selection cancelled after issue state changed";
+      if (outcome === "stale_issue_state") {
+        return interaction.result?.reason?.includes("reassigned")
+          ? "Selection cancelled after reassignment"
+          : "Selection cancelled after issue state changed";
+      }
       if (outcome === "stale_target") return "Selection cancelled after target changed";
       return "Selection cancelled";
     }

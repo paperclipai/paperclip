@@ -6,6 +6,8 @@ import { normalizeIssueExecutionPolicy } from "../services/issue-execution-polic
 
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
+  listAttachments: vi.fn(async () => []),
+  listComments: vi.fn(async () => []),
   assertCheckoutOwner: vi.fn(),
   update: vi.fn(),
   addComment: vi.fn(),
@@ -88,7 +90,7 @@ function registerModuleMocks() {
       completeTestRunForIssue: vi.fn(async () => null),
     }),
     documentAnnotationService: () => ({ remapOpenThreadsForDocument: async () => [] }),
-    documentService: () => ({}),
+    documentService: () => ({ listIssueDocuments: vi.fn(async () => []) }),
     executionWorkspaceService: () => ({}),
     feedbackService: () => mockFeedbackService,
     goalService: () => ({}),
@@ -124,7 +126,7 @@ function registerModuleMocks() {
     logActivity: mockLogActivity,
     projectService: () => ({}),
     routineService: () => mockRoutineService,
-    workProductService: () => ({}),
+    workProductService: () => ({ listForIssue: vi.fn(async () => []) }),
   }));
 }
 
@@ -399,14 +401,25 @@ describe("issue activity event routes", () => {
       },
       createdAt: new Date("2026-05-01T00:00:00.000Z"),
     };
+    let selectCallCount = 0;
     const dbMock = {
-      select: () => ({
-        from: () => ({
-          where: () => ({
-            orderBy: async () => [handoffActivityRow],
+      select: () => {
+        selectCallCount += 1;
+        return {
+          from: () => ({
+            where: () => ({
+              orderBy: () => {
+                const rows = selectCallCount >= 3 ? [handoffActivityRow] : [];
+                return {
+                  limit: async () => [],
+                  then: (resolve: (value: unknown[]) => unknown, reject: (reason: unknown) => unknown) =>
+                    Promise.resolve(rows).then(resolve, reject),
+                };
+              },
+            }),
           }),
-        }),
-      }),
+        };
+      },
     };
 
     const res = await request(await createApp(dbMock))

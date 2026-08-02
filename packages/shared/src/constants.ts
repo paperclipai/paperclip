@@ -220,6 +220,30 @@ export const ISSUE_HARNESS_KINDS = ["skill_test"] as const;
 export type IssueHarnessKind = (typeof ISSUE_HARNESS_KINDS)[number];
 export const MAX_ISSUE_REQUEST_DEPTH = 1024;
 
+/** Card templates that require a machine closeContract by default (TSKB0055 K18/K19 / TSMC-18738). */
+export const GENERATION_MEASUREMENT_CARD_TEMPLATES = [
+  "asset-generation",
+  "benchmark-cell",
+  "matrix-cell",
+] as const;
+export type GenerationMeasurementCardTemplate = (typeof GENERATION_MEASUREMENT_CARD_TEMPLATES)[number];
+
+/** Legitimate no-artifact close shapes — explicit escape hatch so the gate is not walked around. */
+export const ISSUE_CLOSE_CONTRACT_EXEMPT_REASONS = [
+  "decision",
+  "disposition",
+  "rejection",
+  "duplicate_retirement",
+] as const;
+export type IssueCloseContractExemptReason = (typeof ISSUE_CLOSE_CONTRACT_EXEMPT_REASONS)[number];
+
+/** Active heartbeat-run statuses that block entering done (premature-close class). */
+export const ACTIVE_HEARTBEAT_RUN_STATUSES_BLOCKING_DONE = [
+  "queued",
+  "running",
+  "scheduled_retry",
+] as const;
+
 export const SUMMARY_SLOT_SCOPE_KINDS = ["project", "workspaces_overview", "project_workspace"] as const;
 export type SummarySlotScopeKind = (typeof SUMMARY_SLOT_SCOPE_KINDS)[number];
 export const SUMMARY_SLOT_KEYS = ["header"] as const;
@@ -304,6 +328,7 @@ export type IssueSurfaceVisibility = (typeof ISSUE_SURFACE_VISIBILITIES)[number]
 
 export const ISSUE_RECOVERY_ACTION_KINDS = [
   "missing_disposition",
+  "close_evidence_unmet",
   "stranded_assigned_issue",
   "workspace_validation",
   "configuration_validation",

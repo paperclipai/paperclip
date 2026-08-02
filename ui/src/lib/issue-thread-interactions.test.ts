@@ -241,6 +241,12 @@ describe("issue thread interaction helpers", () => {
     expect(buildIssueThreadInteractionSummary({
       ...base,
       status: "cancelled",
+      result: { version: 1, outcome: "stale_issue_state", reason: "Issue reassigned to a different owner." },
+    })).toBe("Confirmation cancelled after reassignment");
+
+    expect(buildIssueThreadInteractionSummary({
+      ...base,
+      status: "cancelled",
       result: { version: 1, outcome: "stale_target" },
     })).toBe("Confirmation cancelled after target changed");
 
@@ -426,5 +432,16 @@ describe("per-item verdict helpers", () => {
         reason: "Issue closed as done.",
       },
     }))).toBe("Verdicts cancelled after issue state changed");
+
+    expect(buildIssueThreadInteractionSummary(verdictInteraction({
+      status: "cancelled",
+      result: {
+        version: 1,
+        outcome: "stale_issue_state",
+        complete: false,
+        items: [],
+        reason: "Issue reassigned to a different owner.",
+      },
+    }))).toBe("Verdicts cancelled after reassignment");
   });
 });

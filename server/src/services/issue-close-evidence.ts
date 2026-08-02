@@ -1,11 +1,33 @@
 import { promises as fs } from "node:fs";
 import path from "node:path";
-import { issueCloseContractSchema, type IssueCloseContract } from "@paperclipai/shared";
+import {
+  ACTIVE_HEARTBEAT_RUN_STATUSES_BLOCKING_DONE,
+  GENERATION_MEASUREMENT_CARD_TEMPLATES,
+  issueCloseContractSchema,
+  type GenerationMeasurementCardTemplate,
+  type IssueCloseContract,
+} from "@paperclipai/shared";
+import { resolvePaperclipCompanyWorkProductsDir } from "@paperclipai/shared/home-paths";
+
+type IssueCloseEvidenceContract = Extract<IssueCloseContract, { evidenceTarget: number }>;
+type IssueCloseExemptContract = Extract<IssueCloseContract, { mode: "exempt" }>;
 
 const EXCLUDED_LOCAL_PATH_SEGMENTS = ["quarantine", "scratch", "cache"];
 
+const GENERATION_MEASUREMENT_LABEL_HINTS = [
+  "asset-generation",
+  "benchmark-cell",
+  "matrix-cell",
+  "generation",
+  "measurement",
+] as const;
+
+/** Title signals from K18/K19 failure cards and the three named templates. */
+const GENERATION_MEASUREMENT_TITLE_RE =
+  /(\[burn\]|\bburn[- ]tail\b|\basset[- ]generation\b|\bbenchmark[- ]cell\b|\bmatrix[- ]cells?\b|\bvision[- ]judge\b|\bgenerated media\b|\burl[- ]pool\b|\bmatrix incomplete\b)/i;
+
 export type CloseEvidenceMeasurement = {
-  closeContract: IssueCloseContract;
+  closeContract: IssueCloseEvidenceContract;
   measuredCount: number;
   targetCount: number;
   breakdown: {
@@ -15,6 +37,20 @@ export type CloseEvidenceMeasurement = {
   };
   localPath: string | null;
 };
+
+export type CloseContractEvaluation =
+  | { outcome: "not_applicable" }
+  | { outcome: "exempt"; contract: IssueCloseExemptContract }
+  | { outcome: "satisfied"; measurement: CloseEvidenceMeasurement }
+  | {
+      outcome: "unmet";
+      reason:
+        | "close_contract_required"
+        | "close_contract_invalid"
+        | "close_evidence_unmet";
+      message: string;
+      details: Record<string, unknown>;
+    };
 
 function normalizeRelativeEvidencePath(evidencePath: string) {
   return evidencePath
@@ -26,13 +62,14 @@ function normalizeRelativeEvidencePath(evidencePath: string) {
 function resolveWorkProductsRoot(companyId: string) {
   const explicitRoot = process.env.PAPERCLIP_WORK_PRODUCTS_DIR?.trim();
   if (explicitRoot) return path.resolve(explicitRoot);
-
-  const companyRoot = process.env.PAPERCLIP_COMPANY_ROOT?.trim();
-  if (companyRoot) return path.resolve(companyRoot, "work-products");
-
-  const homeDir = process.env.HOME?.trim();
-  if (!homeDir) return null;
-  return path.resolve(homeDir, ".paperclip/instances/default/companies", companyId, "work-products");
+  try {
+    return resolvePaperclipCompanyWorkProductsDir(companyId, {
+      homeDir: process.env.PAPERCLIP_HOME?.trim(),
+      instanceId: process.env.PAPERCLIP_INSTANCE_ID?.trim(),
+    });
+  } catch {
+    return null;
+  }
 }
 
 function isExcludedLocalSegment(segment: string) {
@@ -63,7 +100,7 @@ async function countGovernedFiles(filePath: string): Promise<number> {
   return count;
 }
 
-export async function countCloseEvidenceLocalFiles(companyId: string, closeContract: IssueCloseContract) {
+export async function countCloseEvidenceLocalFiles(companyId: string, closeContract: IssueCloseEvidenceContract) {
   const root = resolveWorkProductsRoot(companyId);
   if (!root) {
     return { count: 0, localPath: null };
@@ -82,22 +119,185 @@ export async function countCloseEvidenceLocalFiles(companyId: string, closeContr
   };
 }
 
+function issueLabelNames(issue: { labels?: Array<{ name?: string | null }> | null }) {
+  return (issue.labels ?? [])
+    .map((label) => (typeof label?.name === "string" ? label.name.trim().toLowerCase() : ""))
+    .filter((label): label is string => label.length > 0);
+}
+
+export function isGenerationMeasurementCardTemplate(
+  value: unknown,
+): value is GenerationMeasurementCardTemplate {
+  return (
+    typeof value === "string" &&
+    (GENERATION_MEASUREMENT_CARD_TEMPLATES as readonly string[]).includes(value)
+  );
+}
+
+/**
+ * Generation/measurement path (TSMC-18738 §5 reachability).
+ * A guard that only fires when closeContract is opt-in is unreachable for this class.
+ */
+export function isGenerationMeasurementPath(issue: {
+  title?: string | null;
+  description?: string | null;
+  labels?: Array<{ name?: string | null }> | null;
+  closeContract?: unknown;
+  cardTemplate?: string | null;
+}): boolean {
+  if (isGenerationMeasurementCardTemplate(issue.cardTemplate)) return true;
+
+  const labels = issueLabelNames(issue);
+  if (
+    labels.some((name) =>
+      GENERATION_MEASUREMENT_LABEL_HINTS.some((hint) => name === hint || name.includes(hint)),
+    )
+  ) {
+    return true;
+  }
+
+  const rawContract = issue.closeContract;
+  if (rawContract && typeof rawContract === "object" && !Array.isArray(rawContract)) {
+    const template = (rawContract as { cardTemplate?: unknown }).cardTemplate;
+    if (isGenerationMeasurementCardTemplate(template)) return true;
+  }
+
+  const title = issue.title ?? "";
+  if (GENERATION_MEASUREMENT_TITLE_RE.test(title)) return true;
+
+  return false;
+}
+
+export function defaultCloseContractForCardTemplate(
+  template: GenerationMeasurementCardTemplate,
+  evidencePath: string,
+): IssueCloseEvidenceContract {
+  const pathValue = evidencePath.trim() || template;
+  switch (template) {
+    case "asset-generation":
+      return {
+        mode: "evidence",
+        evidenceTarget: 1,
+        evidencePath: pathValue,
+        artifactKind: "generated_media",
+        cardTemplate: template,
+      };
+    case "benchmark-cell":
+      return {
+        mode: "evidence",
+        evidenceTarget: 1,
+        evidencePath: pathValue,
+        artifactKind: "benchmark_result",
+        cardTemplate: template,
+      };
+    case "matrix-cell":
+      return {
+        mode: "evidence",
+        evidenceTarget: 1,
+        evidencePath: pathValue,
+        artifactKind: "matrix_cell_ledger",
+        cardTemplate: template,
+      };
+  }
+}
+
+export function inferDefaultCloseContractForIssueCreate(input: {
+  title?: string | null;
+  cardTemplate?: string | null;
+  closeContract?: unknown;
+  identifier: string;
+}): IssueCloseContract | null {
+  if (input.closeContract != null) return null;
+  if (isGenerationMeasurementCardTemplate(input.cardTemplate)) {
+    return defaultCloseContractForCardTemplate(input.cardTemplate, input.identifier);
+  }
+  if (
+    isGenerationMeasurementPath({
+      title: input.title,
+      cardTemplate: input.cardTemplate,
+      closeContract: null,
+    })
+  ) {
+    return {
+      mode: "evidence",
+      evidenceTarget: 1,
+      evidencePath: input.identifier,
+      artifactKind: "generated_media",
+    };
+  }
+  return null;
+}
+
+export function isActiveHeartbeatRunStatusBlockingDone(status: string | null | undefined): boolean {
+  if (!status) return false;
+  return (ACTIVE_HEARTBEAT_RUN_STATUSES_BLOCKING_DONE as readonly string[]).includes(status);
+}
+
+export function acceptanceCriteriaChangedAfterRunStart(input: {
+  runStartedAt: Date | string | null | undefined;
+  acceptanceCriteriaDocumentUpdatedAt?: Date | string | null;
+  comments?: Array<{
+    createdAt?: Date | string | null;
+    authorType?: string | null;
+    body?: string | null;
+  }>;
+}): { changed: boolean; source: "document" | "comment" | null; changedAt: string | null } {
+  if (!input.runStartedAt) {
+    return { changed: false, source: null, changedAt: null };
+  }
+  const runStartedMs = new Date(input.runStartedAt).getTime();
+  if (!Number.isFinite(runStartedMs)) {
+    return { changed: false, source: null, changedAt: null };
+  }
+
+  if (input.acceptanceCriteriaDocumentUpdatedAt) {
+    const docMs = new Date(input.acceptanceCriteriaDocumentUpdatedAt).getTime();
+    if (Number.isFinite(docMs) && docMs > runStartedMs) {
+      return {
+        changed: true,
+        source: "document",
+        changedAt: new Date(docMs).toISOString(),
+      };
+    }
+  }
+
+  for (const comment of input.comments ?? []) {
+    const authorType = (comment.authorType ?? "").toLowerCase();
+    if (authorType !== "user" && authorType !== "board") continue;
+    const body = (comment.body ?? "").toLowerCase();
+    if (!body.includes("acceptance")) continue;
+    if (!comment.createdAt) continue;
+    const commentMs = new Date(comment.createdAt).getTime();
+    if (Number.isFinite(commentMs) && commentMs > runStartedMs) {
+      return {
+        changed: true,
+        source: "comment",
+        changedAt: new Date(commentMs).toISOString(),
+      };
+    }
+  }
+
+  return { changed: false, source: null, changedAt: null };
+}
+
 export async function measureCloseEvidence(input: {
   companyId: string;
   attachmentsCount: number;
   workProductsCount: number;
   closeContract: unknown;
-}) {
+}): Promise<CloseEvidenceMeasurement | null> {
   const parsed = issueCloseContractSchema.safeParse(input.closeContract);
   if (!parsed.success) return null;
+  if (parsed.data.mode === "exempt") return null;
 
-  const { count: localFiles, localPath } = await countCloseEvidenceLocalFiles(input.companyId, parsed.data);
+  const evidenceContract = parsed.data;
+  const { count: localFiles, localPath } = await countCloseEvidenceLocalFiles(input.companyId, evidenceContract);
   const measuredCount = input.attachmentsCount + input.workProductsCount + localFiles;
 
   return {
-    closeContract: parsed.data,
+    closeContract: evidenceContract,
     measuredCount,
-    targetCount: parsed.data.evidenceTarget,
+    targetCount: evidenceContract.evidenceTarget,
     breakdown: {
       attachments: input.attachmentsCount,
       workProducts: input.workProductsCount,
@@ -105,4 +305,98 @@ export async function measureCloseEvidence(input: {
     },
     localPath,
   } satisfies CloseEvidenceMeasurement;
+}
+
+/**
+ * Full close-contract evaluation for a done transition (TSMC-18738).
+ * Generation/measurement path with null contract cannot reach done (reachability).
+ */
+export async function evaluateCloseContractForDone(input: {
+  companyId: string;
+  issue: {
+    title?: string | null;
+    labels?: Array<{ name?: string | null }> | null;
+    closeContract?: unknown;
+    cardTemplate?: string | null;
+  };
+  attachmentsCount: number;
+  workProductsCount: number;
+}): Promise<CloseContractEvaluation> {
+  const onGenerationPath = isGenerationMeasurementPath(input.issue);
+  const raw = input.issue.closeContract ?? null;
+
+  if (raw == null) {
+    if (!onGenerationPath) return { outcome: "not_applicable" };
+    return {
+      outcome: "unmet",
+      reason: "close_contract_required",
+      message:
+        "Generation/measurement cards cannot enter done without a closeContract (opt-in guard is unreachable — TSMC-18738 §5).",
+      details: {
+        code: "invalid_issue_disposition",
+        reason: "close_contract_required",
+        generationMeasurementPath: true,
+      },
+    };
+  }
+
+  const parsed = issueCloseContractSchema.safeParse(raw);
+  if (!parsed.success) {
+    return {
+      outcome: "unmet",
+      reason: "close_contract_invalid",
+      message:
+        "closeContract is present but invalid — evidence contracts require evidenceTarget, evidencePath, and a concrete artifactKind quality floor.",
+      details: {
+        code: "invalid_issue_disposition",
+        reason: "close_contract_invalid",
+        issues: parsed.error.issues.map((issue) => ({
+          path: issue.path.join("."),
+          message: issue.message,
+        })),
+      },
+    };
+  }
+
+  if (parsed.data.mode === "exempt") {
+    return { outcome: "exempt", contract: parsed.data };
+  }
+
+  const measurement = await measureCloseEvidence({
+    companyId: input.companyId,
+    attachmentsCount: input.attachmentsCount,
+    workProductsCount: input.workProductsCount,
+    closeContract: parsed.data,
+  });
+  if (!measurement) {
+    return {
+      outcome: "unmet",
+      reason: "close_contract_invalid",
+      message: "closeContract could not be measured.",
+      details: {
+        code: "invalid_issue_disposition",
+        reason: "close_contract_invalid",
+      },
+    };
+  }
+
+  if (measurement.measuredCount >= measurement.targetCount) {
+    return { outcome: "satisfied", measurement };
+  }
+
+  return {
+    outcome: "unmet",
+    reason: "close_evidence_unmet",
+    message: `Issue cannot close until close evidence reaches ${measurement.targetCount}; measured ${measurement.measuredCount}.`,
+    details: {
+      code: "invalid_issue_disposition",
+      reason: "close_evidence_unmet",
+      measuredCount: measurement.measuredCount,
+      targetCount: measurement.targetCount,
+      evidencePath: measurement.closeContract.evidencePath,
+      artifactKind: measurement.closeContract.artifactKind,
+      localPath: measurement.localPath,
+      breakdown: measurement.breakdown,
+    },
+  };
 }

@@ -410,6 +410,8 @@ export {
   resolveCreateIssueStatusDefault,
   createIssueLabelSchema,
   issueCloseContractSchema,
+  issueCloseEvidenceContractSchema,
+  issueCloseExemptContractSchema,
   issueBlockedInboxAttentionSchema,
   issueBlockedInboxIssueRefSchema,
   issueBlockedInboxReasonSchema,

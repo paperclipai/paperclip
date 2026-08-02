@@ -879,9 +879,24 @@ describeEmbeddedPostgres("low-trust red-team HTTP route regression suite", () =>
       .patch(`/api/issues/${fixture.issues.standardChild.id}`)
       .send({ status: "blocked", unblockDescriptor })
       .expect(200);
-    await request(app).patch(`/api/issues/${fixture.issues.standardChild.id}`).send({ status: "todo" }).expect(200);
-    await request(app).patch(`/api/issues/${fixture.issues.standardChild.id}`).send({ status: "in_review" }).expect(200);
-    await request(app).patch(`/api/issues/${fixture.issues.standardChild.id}`).send({ status: "done" }).expect(200);
+    // Prepare the unrelated standard child for the done-path assertion without
+    // dispatching an assignment wake; this test is about low-trust relay scope,
+    // not heartbeat scheduling.
+    await db
+      .update(issues)
+      .set({ status: "in_review" })
+      .where(eq(issues.id, fixture.issues.standardChild.id));
+    await db
+      .update(heartbeatRuns)
+      .set({ status: "succeeded", finishedAt: new Date() })
+      .where(and(
+        eq(heartbeatRuns.companyId, fixture.company.id),
+        eq(heartbeatRuns.agentId, fixture.agents.standard.id),
+      ));
+    const done = await request(app)
+      .patch(`/api/issues/${fixture.issues.standardChild.id}`)
+      .send({ status: "done" });
+    expect(done.status, JSON.stringify(done.body)).toBe(200);
 
     const relayComments = await db
       .select({ body: issueComments.body, authorType: issueComments.authorType })

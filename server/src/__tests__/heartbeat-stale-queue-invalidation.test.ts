@@ -127,6 +127,7 @@ type SeedOptions = {
   agentRole?: string;
   maxConcurrentRuns?: number;
   heartbeatConfig?: Record<string, unknown>;
+  activityWindow?: Record<string, unknown> | null;
 };
 
 type SeedResult = {
@@ -192,6 +193,7 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
       issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
       defaultResponsibleUserId: "responsible-user",
       requireBoardApprovalForNewAgents: false,
+      activityWindow: opts.activityWindow ?? null,
     });
     await db.insert(agents).values({
       id: agentId,
@@ -1092,6 +1094,169 @@ describeEmbeddedPostgres("heartbeat stale queued-run invalidation", () => {
 
     expect(deferred?.status).not.toBe("deferred_issue_execution");
     expect(promotedRun?.agentId).toBe(peerAgentId);
+  });
+
+  it("does not reap stale queued runs that are deferred by a closed activity window", async () => {
+    const now = new Date("2026-06-11T09:30:00.000Z");
+    const { companyId, agentId } = await seedCompanyAndAgent({
+      activityWindow: { timezone: "Europe/Dublin", startHour: 0, endHour: 4 },
+    });
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Closed-window queued issue",
+      status: "todo",
+      priority: "high",
+      assigneeAgentId: agentId,
+    });
+
+    const { runId, wakeupRequestId } = await seedQueuedRun({
+      companyId,
+      agentId,
+      issueId,
+      wakeReason: "issue_assigned",
+    });
+    await db
+      .update(heartbeatRuns)
+      .set({ createdAt: new Date(now.getTime() - 20 * 60_000) })
+      .where(eq(heartbeatRuns.id, runId));
+
+    const result = await heartbeat.reapStaleQueuedRuns({
+      staleMs: 15 * 60_000,
+      now,
+    });
+
+    expect(result).toMatchObject({ reaped: 0, runIds: [] });
+
+    const [run, wakeup, issue] = await Promise.all([
+      db
+        .select({
+          status: heartbeatRuns.status,
+          errorCode: heartbeatRuns.errorCode,
+          resultJson: heartbeatRuns.resultJson,
+        })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({ status: agentWakeupRequests.status, payload: agentWakeupRequests.payload })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, wakeupRequestId))
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({ status: issues.status })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null),
+    ]);
+
+    expect(run?.status).toBe("queued");
+    expect(run?.errorCode).toBeNull();
+    expect(run?.resultJson).toMatchObject({
+      retryNotBefore: "2026-06-11T23:00:00.000Z",
+      runGateThrottle: {
+        kind: "outside_activity_window",
+        retryNotBefore: "2026-06-11T23:00:00.000Z",
+        nextChangeAt: "2026-06-11T23:00:00.000Z",
+      },
+    });
+    expect(wakeup).toMatchObject({
+      status: "queued",
+      payload: { issueId },
+    });
+    expect(issue?.status).toBe("todo");
+  });
+
+  it("does not reap stale queued runs while the agent is in an active provider quota cooldown", async () => {
+    const now = new Date("2026-06-11T09:30:00.000Z");
+    const { companyId, agentId } = await seedCompanyAndAgent();
+    const issueId = randomUUID();
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Quota-deferred queued issue",
+      status: "todo",
+      priority: "high",
+      assigneeAgentId: agentId,
+    });
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(),
+      companyId,
+      agentId,
+      invocationSource: "automation",
+      triggerDetail: "system",
+      status: "failed",
+      errorCode: "adapter_failed",
+      createdAt: new Date(now.getTime() - 5 * 60_000),
+      startedAt: new Date(now.getTime() - 5 * 60_000),
+      finishedAt: new Date(now.getTime() - 4 * 60_000),
+      resultJson: {
+        errorFamily: "provider_quota",
+        retryNotBefore: "2026-06-11T12:00:00.000Z",
+        transientRetryNotBefore: "2026-06-11T12:00:00.000Z",
+        providerQuotaRetryNotBefore: "2026-06-11T12:00:00.000Z",
+      },
+      contextSnapshot: {},
+    });
+
+    const { runId, wakeupRequestId } = await seedQueuedRun({
+      companyId,
+      agentId,
+      issueId,
+      wakeReason: "issue_assigned",
+    });
+    await db
+      .update(heartbeatRuns)
+      .set({ createdAt: new Date(now.getTime() - 20 * 60_000) })
+      .where(eq(heartbeatRuns.id, runId));
+
+    const result = await heartbeat.reapStaleQueuedRuns({
+      staleMs: 15 * 60_000,
+      now,
+    });
+
+    expect(result).toMatchObject({ reaped: 0, runIds: [] });
+
+    const [run, wakeup, issue] = await Promise.all([
+      db
+        .select({
+          status: heartbeatRuns.status,
+          errorCode: heartbeatRuns.errorCode,
+          resultJson: heartbeatRuns.resultJson,
+        })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({ status: agentWakeupRequests.status, payload: agentWakeupRequests.payload })
+        .from(agentWakeupRequests)
+        .where(eq(agentWakeupRequests.id, wakeupRequestId))
+        .then((rows) => rows[0] ?? null),
+      db
+        .select({ status: issues.status })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null),
+    ]);
+
+    expect(run?.status).toBe("queued");
+    expect(run?.errorCode).toBeNull();
+    expect(run?.resultJson).toMatchObject({
+      errorFamily: "provider_quota",
+      retryNotBefore: "2026-06-11T12:00:00.000Z",
+      transientRetryNotBefore: "2026-06-11T12:00:00.000Z",
+      providerQuotaRetryNotBefore: "2026-06-11T12:00:00.000Z",
+      queuedPolicyDeferral: {
+        kind: "provider_quota",
+        retryNotBefore: "2026-06-11T12:00:00.000Z",
+      },
+    });
+    expect(wakeup).toMatchObject({
+      status: "queued",
+      payload: { issueId },
+    });
+    expect(issue?.status).toBe("todo");
   });
 
   it("cancels queued runs when the issue assignee changes before the run starts", async () => {

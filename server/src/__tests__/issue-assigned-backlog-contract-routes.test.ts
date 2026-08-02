@@ -34,6 +34,7 @@ const mockIssueService = vi.hoisted(() => ({
   listWakeableBlockedDependents: vi.fn(),
   getWakeableParentAfterChildCompletion: vi.fn(),
   findMentionedAgents: vi.fn(async () => []),
+  update: vi.fn(),
 }));
 
 vi.mock("../services/index.js", () => ({
@@ -203,6 +204,15 @@ describe("assigned backlog creation contract", () => {
       }),
       parentBlockerAdded: Boolean(data.blockParentUntilDone),
     }));
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...makeIssue({
+        id: _id,
+        title: "Updated issue",
+        status: "todo",
+        assigneeAgentId: patch.assigneeAgentId as string | null | undefined,
+      }),
+      ...patch,
+    }));
     mockIssueService.getRelationSummaries.mockResolvedValue({ blockedBy: [], blocks: [] });
     mockIssueService.listWakeableBlockedDependents.mockResolvedValue([]);
     mockIssueService.getWakeableParentAfterChildCompletion.mockResolvedValue(null);
@@ -257,7 +267,7 @@ describe("assigned backlog creation contract", () => {
     );
   });
 
-  it("normalizes direct assignment from a fallback sister back to its invokable primary", async () => {
+  it("preserves direct assignment to a fallback sister", async () => {
     mockAgentService.getById.mockImplementation(async (id: string) => {
       if (id === sisterAgentId) {
         return {
@@ -291,7 +301,7 @@ describe("assigned backlog creation contract", () => {
     const res = await request(await createApp())
       .post("/api/companies/company-1/issues")
       .send({
-        title: "Fallback sister should normalize",
+        title: "Fallback sister should persist",
         assigneeAgentId: sisterAgentId,
       });
 
@@ -299,17 +309,17 @@ describe("assigned backlog creation contract", () => {
     expect(mockIssueService.create).toHaveBeenCalledWith(
       "company-1",
       expect.objectContaining({
-        title: "Fallback sister should normalize",
-        assigneeAgentId: primaryAgentId,
+        title: "Fallback sister should persist",
+        assigneeAgentId: sisterAgentId,
         status: "todo",
       }),
     );
     expect(res.body).toEqual(expect.objectContaining({
-      assigneeAgentId: primaryAgentId,
+      assigneeAgentId: sisterAgentId,
       status: "todo",
     }));
     expect(mockWakeup).toHaveBeenCalledWith(
-      primaryAgentId,
+      sisterAgentId,
       expect.objectContaining({
         source: "assignment",
         reason: "issue_assigned",

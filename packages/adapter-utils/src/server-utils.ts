@@ -1,6 +1,6 @@
 import { spawn, type ChildProcess } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
-import { constants as fsConstants, promises as fs, type Dirent } from "node:fs";
+import { constants as fsConstants, existsSync, promises as fs, readFileSync, type Dirent } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { sanitizeRemoteExecutionEnv } from "./remote-execution-env.js";
@@ -129,6 +129,7 @@ const PAPERCLIP_SKILL_ROOT_RELATIVE_CANDIDATES = [
 const MATERIALIZED_SKILL_SENTINEL = ".paperclip-materialized-skill.json";
 const MATERIALIZED_SKILL_LOCK_OWNER = "owner.json";
 const MATERIALIZED_SKILL_LOCK_STALE_MS = 30_000;
+const PAPERCLIP_X10_SENTINEL_BASENAME = ".thinkstack-x10-sentinel";
 
 function expandHomePrefix(value: string): string {
   if (value === "~") return os.homedir();
@@ -166,6 +167,34 @@ function resolvePaperclipCompanyWorkProductsDirForAdapter(input: {
   instanceId?: string;
   env?: NodeJS.ProcessEnv;
 }): string {
+  const configPath = path.resolve(resolvePaperclipCompanyRootForAdapter(input), "config.json");
+  let configuredRoot = "";
+  try {
+    const parsed = JSON.parse(readFileSync(configPath, "utf8")) as {
+      workProductsRoot?: unknown;
+    };
+    if (typeof parsed.workProductsRoot === "string" && parsed.workProductsRoot.trim()) {
+      configuredRoot = path.resolve(expandHomePrefix(parsed.workProductsRoot.trim()));
+    }
+  } catch {
+    configuredRoot = "";
+  }
+  if (configuredRoot) {
+    const x10VolumeRoot = path.resolve(
+      input.env?.PAPERCLIP_X10_VOLUME_ROOT?.trim() || process.env.PAPERCLIP_X10_VOLUME_ROOT?.trim() || "/Volumes/X10 Pro",
+    );
+    const relativeToX10 = path.relative(x10VolumeRoot, configuredRoot);
+    if (relativeToX10 !== ".." && !relativeToX10.startsWith(`..${path.sep}`)) {
+      const sentinelPath = path.join(x10VolumeRoot, PAPERCLIP_X10_SENTINEL_BASENAME);
+      if (!existsSync(sentinelPath)) {
+        throw new Error(
+          `Configured work-products root '${configuredRoot}' requires the real X10 volume, ` +
+          `but sentinel '${sentinelPath}' is missing.`,
+        );
+      }
+    }
+  }
+  if (configuredRoot) return configuredRoot;
   return path.resolve(resolvePaperclipCompanyRootForAdapter(input), "work-products");
 }
 

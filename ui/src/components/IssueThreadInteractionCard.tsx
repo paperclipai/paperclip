@@ -1397,13 +1397,14 @@ function RequestConfirmationResolution({
     const expiredByIssueState = outcome === "stale_issue_state";
     const expiredByTargetChange = outcome === "stale_target";
     const staleReason = expiredByIssueState ? interaction.result?.reason?.trim() : null;
+    const cancelledByReassignment = expiredByIssueState && staleReason?.includes("reassigned");
     return (
       <div className="space-y-3 rounded-sm border border-amber-500/60 bg-amber-500/10 px-4 py-3 text-sm text-amber-900 dark:text-amber-100">
         <div className="text-(length:--text-micro) font-semibold uppercase tracking-(--tracking-eyebrow) text-amber-700">
           {expiredByComment
             ? cancelled ? "Cancelled by comment" : "Expired by comment"
             : expiredByIssueState
-              ? "Cancelled by issue change"
+              ? cancelledByReassignment ? "Cancelled by reassignment" : "Cancelled by issue change"
               : expiredWithIssue
                 ? "Expired when issue closed"
                 : cancelled ? "Cancelled by target change" : "Expired by target change"}
@@ -1412,11 +1413,18 @@ function RequestConfirmationResolution({
           {expiredByComment
             ? "A board comment superseded this confirmation before it was resolved."
             : expiredByIssueState
-              ? "The issue changed before this confirmation was resolved."
+              ? cancelledByReassignment
+                ? "This confirmation was cancelled when the issue was reassigned. No decision was made."
+                : "The issue changed before this confirmation was resolved."
               : expiredWithIssue
                 ? "The issue was closed before this confirmation was resolved."
                 : "The requested target changed before this confirmation was resolved."}
         </p>
+        {cancelledByReassignment ? (
+          <p className="leading-6">
+            If approval is still needed, create a fresh confirmation for the new owner.
+          </p>
+        ) : null}
         {staleReason ? <p className="leading-6">{staleReason}</p> : null}
         {expiredByComment && interaction.result?.commentId ? (
           <Button asChild size="sm" variant="ghost" className="h-7 px-2 text-amber-950 hover:bg-amber-500/15 dark:text-amber-50">
@@ -1671,6 +1679,7 @@ function ToolActionResolution({
     const outcome = interaction.result?.outcome;
     const bySupersedingComment = outcome === "superseded_by_comment";
     const reason = outcome === "stale_issue_state" ? interaction.result?.reason?.trim() : null;
+    const byReassignment = outcome === "stale_issue_state" && reason?.includes("reassigned");
     return (
       <div className="space-y-1 rounded-sm border border-border bg-muted/50 px-4 py-3 text-sm text-muted-foreground">
         <div className="flex items-start gap-2 leading-6">
@@ -1678,7 +1687,11 @@ function ToolActionResolution({
           <div>
             <div className="font-medium text-foreground">
               Cancelled{when ? ` at ${when}` : ""} —{" "}
-              {bySupersedingComment ? "superseded by a later comment" : "the issue changed"}
+              {bySupersedingComment
+                ? "superseded by a later comment"
+                : byReassignment
+                  ? "the issue was reassigned"
+                  : "the issue changed"}
             </div>
             <p>
               The action did <strong>not</strong> run. If it's still needed, the agent can

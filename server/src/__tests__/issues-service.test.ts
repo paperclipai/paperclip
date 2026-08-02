@@ -4422,6 +4422,115 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     expect(created.blocks).toEqual([]);
   });
 
+  it("redacts foreign blocker edges while resolving a local dependent after the foreign blocker is done", async () => {
+    const localCompanyId = randomUUID();
+    const foreignCompanyId = randomUUID();
+    const assigneeAgentId = randomUUID();
+    const foreignAssigneeAgentId = randomUUID();
+    const foreignBlockerId = randomUUID();
+    const localDependentId = randomUUID();
+    const hiddenAt = new Date("2026-08-01T16:00:00.000Z");
+
+    await db.insert(companies).values([
+      {
+        id: localCompanyId,
+        name: "Local company",
+        issuePrefix: `L${localCompanyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      },
+      {
+        id: foreignCompanyId,
+        name: "Foreign company",
+        issuePrefix: `F${foreignCompanyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+        requireBoardApprovalForNewAgents: false,
+      },
+    ]);
+    await db.insert(agents).values({
+      id: assigneeAgentId,
+      companyId: localCompanyId,
+      name: "Local assignee",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(agents).values({
+      id: foreignAssigneeAgentId,
+      companyId: foreignCompanyId,
+      name: "Foreign assignee",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values([
+      {
+        id: foreignBlockerId,
+        companyId: foreignCompanyId,
+        identifier: "FOREIGN-42",
+        title: "Foreign title must remain private",
+        status: "in_progress",
+        priority: "high",
+        assigneeAgentId: foreignAssigneeAgentId,
+      },
+      {
+        id: localDependentId,
+        companyId: localCompanyId,
+        identifier: "LOCAL-17",
+        title: "Local dependent",
+        status: "blocked",
+        priority: "medium",
+        assigneeAgentId,
+      },
+    ]);
+
+    await svc.update(localDependentId, { blockedByIssueIds: [foreignBlockerId] });
+
+    await expect(svc.getRelationSummaries(localDependentId)).resolves.toEqual({
+      blockedBy: [{
+        id: foreignBlockerId,
+        identifier: "FOREIGN-42",
+        title: null,
+        status: "in_progress",
+        hiddenAt: null,
+        priority: null,
+        assigneeAgentId: null,
+        assigneeUserId: null,
+      }],
+      blocks: [],
+    });
+    await expect(svc.getDependencyReadiness(localDependentId)).resolves.toMatchObject({
+      isDependencyReady: false,
+      unresolvedBlockerIssueIds: [foreignBlockerId],
+    });
+
+    await db.update(issues).set({ status: "done", hiddenAt }).where(eq(issues.id, foreignBlockerId));
+
+    await expect(svc.getRelationSummaries(localDependentId)).resolves.toMatchObject({
+      blockedBy: [expect.objectContaining({
+        id: foreignBlockerId,
+        identifier: "FOREIGN-42",
+        status: "done",
+        hiddenAt,
+        title: null,
+        priority: null,
+        assigneeAgentId: null,
+        assigneeUserId: null,
+      })],
+    });
+    await expect(svc.listWakeableBlockedDependents(foreignBlockerId)).resolves.toEqual([
+      expect.objectContaining({
+        id: localDependentId,
+        assigneeAgentId,
+        blockerIssueIds: [foreignBlockerId],
+      }),
+    ]);
+  });
+
   it("returns blocked-by summaries on newly created child issues", async () => {
     const companyId = randomUUID();
     await db.insert(companies).values({

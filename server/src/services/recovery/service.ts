@@ -24,8 +24,8 @@ import {
   issueRecoveryActions,
   issueRelations,
   issueThreadInteractions,
-  issueWorkProducts,
   issueLabels,
+  issueWorkProducts,
   issues,
   labels,
 } from "@paperclipai/db";
@@ -115,6 +115,8 @@ const ISSUE_GRAPH_LIVENESS_BLOCKED_STALE_HOURS = 48;
 const ISSUE_GRAPH_LIVENESS_MAX_ESCALATIONS_PER_RUN = 10;
 const ISSUE_GRAPH_LIVENESS_BASE_BACKOFF_MS = 15 * 60 * 1000;
 const ISSUE_GRAPH_LIVENESS_MAX_ATTEMPTS = 3;
+const STRANDED_NO_INVOKABLE_RECOVERY_OWNER_BASE_BACKOFF_MS = 15 * 60 * 1000;
+const STRANDED_NO_INVOKABLE_RECOVERY_OWNER_MAX_ATTEMPTS = 3;
 const DEFERRED_WAKE_CONTEXT_KEY = "_paperclipWakeContext";
 const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_REASON = "execution_review_participant_recovery";
 const RESOLVED_DEPENDENCY_WAKE_BACKSTOP_CANDIDATE_LIMIT = 500;
@@ -268,6 +270,11 @@ function readNonEmptyString(value: unknown): string | null {
   return typeof value === "string" && value.trim().length > 0 ? value : null;
 }
 
+function isCodexUntrustedDirectoryFailure(latestRun: LatestIssueRun): boolean {
+  return latestRun?.errorCode === "adapter_failed" &&
+    CODEX_UNTRUSTED_DIRECTORY_ERROR_RE.test(latestRun.error ?? "");
+}
+
 function readConfigurationIncompleteRemediation(run: LatestIssueRun) {
   const configurationIncomplete = parseObject(parseObject(run?.resultJson).configurationIncomplete);
   return readNonEmptyString(configurationIncomplete.remediation);
@@ -350,7 +357,7 @@ const CODEX_UNTRUSTED_DIRECTORY_ERROR_RE =
   /^Not inside a trusted directory and --skip-git-repo-check was not specified\.?$/i;
 const INTERACTION_CONTINUATION_REQUEUE_MAX_ATTEMPTS = 3;
 const CONTINUATION_NO_PROGRESS_MAX_ATTEMPTS = 3;
-const STANDING_EXEMPT_RECOVERY_ACTION_KINDS = new Set(["missing_disposition", "stranded_assigned_issue"] as const);
+const STANDING_EXEMPT_RECOVERY_ACTION_KINDS = new Set<string>(["missing_disposition", "stranded_assigned_issue"]);
 
 const CONTINUATION_RECOVERY_TRANSIENT_MAX_ATTEMPTS = 3;
 const CONTINUATION_RECOVERY_DEFAULT_MAX_ATTEMPTS = 1;
@@ -483,6 +490,9 @@ type ContinuationRetryClassification = {
 
 export function classifyContinuationFailure(latestRun: LatestIssueRun): ContinuationRetryClassification {
   const errorCode = readNonEmptyString(latestRun?.errorCode);
+  if (isCodexUntrustedDirectoryFailure(latestRun)) {
+    return { kind: "non_retryable", maxAttempts: 0, baseBackoffMs: 0, errorCode };
+  }
   if (errorCode && NON_RETRYABLE_CONTINUATION_ERROR_CODES.has(errorCode)) {
     return { kind: "non_retryable", maxAttempts: 0, baseBackoffMs: 0, errorCode };
   }
@@ -3284,9 +3294,9 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         ? "close_evidence_unmet" as const
       : cause === "workspace_validation_failed"
         ? "workspace_validation" as const
-      : cause === "configuration_incomplete"
-        ? "configuration_validation" as const
-      : "stranded_assigned_issue" as const;
+        : cause === "configuration_incomplete"
+          ? "configuration_validation" as const
+        : "stranded_assigned_issue" as const;
   }
 
   function strandedRecoveryActionFingerprint(input: {
@@ -3449,6 +3459,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         : null,
       maxAttempts: recoveryCause === SUCCESSFUL_RUN_MISSING_STATE_REASON
         ? MISSING_DISPOSITION_RECOVERY_MAX_ATTEMPTS
+        : !ownerAgentId && recoveryCause !== "provider_quota"
+          ? STRANDED_NO_INVOKABLE_RECOVERY_OWNER_MAX_ATTEMPTS
         : null,
       lastAttemptAt: now,
     });
@@ -3480,9 +3492,11 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     const action = input.action;
     if (!action || !STANDING_EXEMPT_RECOVERY_ACTION_KINDS.has(action.kind)) return false;
 
-    const resolutionNote = input.issue.workMode === "standing"
-      ? "Recovery action folded because the source issue is standing-exempt (`workMode: \"standing\"`)."
-      : "Recovery action folded because the source issue is standing-exempt (non-actionable standing anchor).";
+    const resolutionNote = hasEventDrivenHubIdlePath(input.issue)
+      ? "Missing-disposition recovery folded because the source issue exposes an event-driven hub idle path."
+      : input.issue.workMode === "standing"
+        ? "Recovery action folded because the source issue is standing-exempt (`workMode: \"standing\"`)."
+        : "Recovery action folded because the source issue is standing-exempt (non-actionable standing anchor).";
 
     await foldActiveRecoveryAction({
       companyId: input.issue.companyId,
@@ -3612,6 +3626,31 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     }
 
     return false;
+  }
+
+  function isNoInvokableRecoveryOwnerAction(
+    action: Awaited<ReturnType<typeof recoveryActionsSvc.getActiveForIssue>> | null,
+  ) {
+    if (!action || action.ownerAgentId || action.ownerType !== "board") return false;
+    const wakePolicy = parseObject(action.wakePolicy);
+    return readNonEmptyString(wakePolicy.type) === "board_escalation" &&
+      readNonEmptyString(wakePolicy.reason) === "no_invokable_recovery_owner";
+  }
+
+  function strandedNoInvokableRecoveryOwnerBackoffMs(attemptCount: number) {
+    return STRANDED_NO_INVOKABLE_RECOVERY_OWNER_BASE_BACKOFF_MS * Math.pow(2, Math.max(0, attemptCount - 1));
+  }
+
+  function shouldDelayNoInvokableRecoveryOwnerEscalation(
+    action: Awaited<ReturnType<typeof recoveryActionsSvc.getActiveForIssue>> | null,
+    now = Date.now(),
+  ) {
+    if (!action || !isNoInvokableRecoveryOwnerAction(action)) return false;
+    const maxAttempts = action.maxAttempts ?? STRANDED_NO_INVOKABLE_RECOVERY_OWNER_MAX_ATTEMPTS;
+    if (action.attemptCount >= maxAttempts) return true;
+    const lastAttemptAtMs = action.lastAttemptAt ? new Date(action.lastAttemptAt).getTime() : Number.NaN;
+    if (!Number.isFinite(lastAttemptAtMs)) return false;
+    return now - lastAttemptAtMs < strandedNoInvokableRecoveryOwnerBackoffMs(action.attemptCount);
   }
 
   type RecentNoProgressContinuationSummary = {
@@ -4232,11 +4271,14 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       strandedGateDescription !== undefined ? { description: strandedGateDescription } : {};
     const queuedAssigneeIds: string[] = [];
     const attemptedAssigneeIds = new Set<string>();
+    const boardEscalationWithoutRecoveryOwner = !recoveryAction.ownerAgentId;
     const enqueueAssigneeId = (agentId: string | null | undefined) => {
       if (!agentId || queuedAssigneeIds.includes(agentId) || attemptedAssigneeIds.has(agentId)) return;
       queuedAssigneeIds.push(agentId);
     };
-    enqueueAssigneeId(recoveryAction.ownerAgentId ?? input.issue.assigneeAgentId);
+    if (!boardEscalationWithoutRecoveryOwner) {
+      enqueueAssigneeId(recoveryAction.ownerAgentId ?? input.issue.assigneeAgentId);
+    }
 
     let updated: Awaited<ReturnType<typeof issuesSvc.update>> | null = null;
     let selectedAssigneeAgentId: string | null = null;
@@ -4305,6 +4347,14 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           "stranded issue recovery kept the current assignee after tool capability routing failed",
         );
       }
+    }
+    if (!updated && boardEscalationWithoutRecoveryOwner) {
+      updated = await issuesSvc.update(input.issue.id, {
+        status: "blocked",
+        blockedByIssueIds: blockerIds,
+        assigneeAgentId: null,
+        ...strandedBlockedDescriptionPatch,
+      });
     }
     if (!updated) {
       if (lastCapabilityError) throw lastCapabilityError;
@@ -4712,6 +4762,15 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
 
         let latestRun = await getLatestIssueRun(freshIssue.companyId, freshIssue.id);
         if (freshIssue.status !== "in_review" && !agentInvokable) {
+          // A paused first-run assignee is an intentional containment state, not
+          // evidence that the issue itself has failed. Leave untouched `todo`
+          // work parked until the lane is resumed; only escalate non-invokable
+          // work after execution has actually started or another state requires
+          // an explicit recovery disposition.
+          if (freshIssue.status === "todo" && !latestRun) {
+            result.skipped += 1;
+            continue;
+          }
           if (shouldDelayNoInvokableRecoveryOwnerEscalation(activeRecoveryAction)) {
             result.skipped += 1;
             continue;
@@ -4742,50 +4801,50 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         // in_review issues are excluded: the execution-review participant branch
         // below performs its own agent-scoped wake dedup (a wake queued for a
         // DIFFERENT agent must not starve the pending reviewer).
-        const hasQueuedWake = issue.status !== "in_review"
-          ? await hasQueuedIssueWake(issue.companyId, issue.id)
+        const hasQueuedWake = freshIssue.status !== "in_review"
+          ? await hasQueuedIssueWake(freshIssue.companyId, freshIssue.id)
           : false;
         const treatQueuedWakeAsLivePath =
-          issue.status !== "todo" || !latestRun || latestRun.status === "succeeded";
+          freshIssue.status !== "todo" || !latestRun || latestRun.status === "succeeded";
         if (
-          issue.status !== "in_review" &&
+          freshIssue.status !== "in_review" &&
           ((treatQueuedWakeAsLivePath && hasQueuedWake) ||
-            (issue.monitorNextCheckAt && issue.monitorNextCheckAt > new Date()))
+            (freshIssue.monitorNextCheckAt && freshIssue.monitorNextCheckAt > new Date()))
         ) {
           result.skipped += 1;
           continue;
         }
-        if (latestRun?.status === "succeeded" && await hasPersistedDurableWaitPath(issue)) {
+        if (latestRun?.status === "succeeded" && await hasPersistedDurableWaitPath(freshIssue)) {
           result.skipped += 1;
           continue;
         }
         const recoveryNow = new Date();
-        const participantLatestRunForRecovery = issue.status === "in_review" && participantAgentId
-          ? await getLatestIssueRunForAgent(issue.companyId, issue.id, participantAgentId)
+        const participantLatestRunForRecovery = freshIssue.status === "in_review" && participantAgentId
+          ? await getLatestIssueRunForAgent(freshIssue.companyId, freshIssue.id, participantAgentId)
           : null;
-        const providerQuotaMonitorRun = issue.status === "in_review"
+        const providerQuotaMonitorRun = freshIssue.status === "in_review"
           ? participantLatestRunForRecovery
           : latestRun;
-        if (hasPendingProviderQuotaRecoveryMonitor(issue, providerQuotaMonitorRun, recoveryNow)) {
+        if (hasPendingProviderQuotaRecoveryMonitor(freshIssue, providerQuotaMonitorRun, recoveryNow)) {
           result.skipped += 1;
           continue;
         }
-        if (isStrandedIssueRecoveryIssue(issue) && isUnsuccessfulTerminalIssueRun(latestRun)) {
+        if (isStrandedIssueRecoveryIssue(freshIssue) && isUnsuccessfulTerminalIssueRun(latestRun)) {
           const updated = await escalateStrandedRecoveryIssueInPlace({
-            issue,
-            previousStatus: issue.status as StrandedPreviousStatus,
+            issue: freshIssue,
+            previousStatus: freshIssue.status as StrandedPreviousStatus,
             latestRun,
           });
           if (updated) {
             result.escalated += 1;
-            result.issueIds.push(issue.id);
+            result.issueIds.push(freshIssue.id);
           } else {
             result.skipped += 1;
           }
           continue;
         }
 
-        const adapterFailureClassification = issue.status !== "in_review" && latestRun && isUnsuccessfulTerminalIssueRun(latestRun)
+        const adapterFailureClassification = freshIssue.status !== "in_review" && latestRun && isUnsuccessfulTerminalIssueRun(latestRun)
           ? classifyAdapterFailureForRecovery(latestRun, recoveryNow)
           : null;
         if (latestRun && adapterFailureClassification) {
@@ -5172,40 +5231,6 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             continue;
           }
 
-          const closeEvidenceMeasurement = await measureCloseEvidence({
-            companyId: issue.companyId,
-            attachmentsCount: await db
-              .select({ count: sql<number>`count(*)::int` })
-              .from(issueAttachments)
-              .where(eq(issueAttachments.issueId, issue.id))
-              .then((rows) => rows[0]?.count ?? 0),
-            workProductsCount: await db
-              .select({ count: sql<number>`count(*)::int` })
-              .from(issueWorkProducts)
-              .where(eq(issueWorkProducts.issueId, issue.id))
-              .then((rows) => rows[0]?.count ?? 0),
-            closeContract: issue.closeContract ?? null,
-          });
-          if (closeEvidenceMeasurement && closeEvidenceMeasurement.measuredCount < closeEvidenceMeasurement.targetCount) {
-            const updated = await escalateStrandedAssignedIssue({
-              issue,
-              previousStatus: "in_progress",
-              latestRun: successfulRun,
-              recoveryCause: "close_evidence_unmet",
-              closeEvidenceMeasurement,
-              comment:
-                "Paperclip detected a stranded close-evidence quota issue: the latest continuation succeeded but the issue still measures " +
-                `${closeEvidenceMeasurement.measuredCount}/${closeEvidenceMeasurement.targetCount} governed artifacts.`,
-            });
-            if (updated) {
-              result.escalated += 1;
-              result.issueIds.push(issue.id);
-            } else {
-              result.skipped += 1;
-            }
-            continue;
-          }
-
           if (isRepeatedProductiveContinuationRecovery(successfulRun)) {
             // GGU-809: skip escalation if the assignee has shown visible progress
             // (comment or attachment) within the exemption window. Falling
@@ -5239,6 +5264,40 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
 
           if (await isInvocationBudgetBlocked(issue, agentId)) {
             result.skipped += 1;
+            continue;
+          }
+
+          const closeEvidenceMeasurement = await measureCloseEvidence({
+            companyId: issue.companyId,
+            attachmentsCount: await db
+              .select({ count: sql<number>`count(*)::int` })
+              .from(issueAttachments)
+              .where(eq(issueAttachments.issueId, issue.id))
+              .then((rows) => rows[0]?.count ?? 0),
+            workProductsCount: await db
+              .select({ count: sql<number>`count(*)::int` })
+              .from(issueWorkProducts)
+              .where(eq(issueWorkProducts.issueId, issue.id))
+              .then((rows) => rows[0]?.count ?? 0),
+            closeContract: issue.closeContract ?? null,
+          });
+          if (closeEvidenceMeasurement && closeEvidenceMeasurement.measuredCount < closeEvidenceMeasurement.targetCount) {
+            const updated = await escalateStrandedAssignedIssue({
+              issue,
+              previousStatus: "in_progress",
+              latestRun: successfulRun,
+              recoveryCause: "close_evidence_unmet",
+              closeEvidenceMeasurement,
+              comment:
+                "Paperclip detected a stranded close-evidence quota issue: the latest continuation succeeded but the issue still measures " +
+                `${closeEvidenceMeasurement.measuredCount}/${closeEvidenceMeasurement.targetCount} governed artifacts.`,
+            });
+            if (updated) {
+              result.escalated += 1;
+              result.issueIds.push(issue.id);
+            } else {
+              result.skipped += 1;
+            }
             continue;
           }
 

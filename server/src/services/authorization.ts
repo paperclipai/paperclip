@@ -819,20 +819,93 @@ export function authorizationService(db: Db) {
   async function isDirectParentReportTarget(input: {
     actor: AuthorizationActor;
     actorAgentId: string;
-    companyId: string;
     resource: AuthorizationResource;
   }) {
     if (input.resource.type !== "issue" || !input.resource.issueId) return false;
-    const runIssueId = await loadRunIssueId(input.actor.runId, input.companyId, input.actorAgentId);
+    const actorCompanyId = input.actor.companyId?.trim();
+    if (!actorCompanyId) return false;
+    const runIssueId = await loadRunIssueId(input.actor.runId, actorCompanyId, input.actorAgentId);
     if (!runIssueId || runIssueId === input.resource.issueId) return false;
     const runIssue = await loadIssue(runIssueId);
     return Boolean(
       runIssue &&
-      runIssue.companyId === input.companyId &&
+      runIssue.companyId === actorCompanyId &&
       runIssue.assigneeAgentId === input.actorAgentId &&
       runIssue.checkoutRunId === input.actor.runId &&
       runIssue.parentId === input.resource.issueId,
     );
+  }
+
+  async function decideCrossCompanyDirectParentReportAccess(input: {
+    actor: AuthorizationActor;
+    actorAgentId: string;
+    action: AuthorizationAction;
+    resource: AuthorizationResource;
+  }): Promise<AuthorizationDecision | null> {
+    if (input.action !== "issue:comment" || input.resource.type !== "issue") return null;
+    const actorCompanyId = input.actor.companyId?.trim();
+    if (!actorCompanyId) return null;
+    const directParentReportTarget = await isDirectParentReportTarget({
+      actor: input.actor,
+      actorAgentId: input.actorAgentId,
+      resource: input.resource,
+    });
+    if (!directParentReportTarget) return null;
+
+    const actorAgent = await loadAgent(input.actorAgentId);
+    if (!actorAgent || actorAgent.companyId !== actorCompanyId) {
+      return deny({
+        action: input.action,
+        reason: "deny_company_boundary",
+        explanation: "Actor agent was not found in the current run company.",
+      });
+    }
+
+    const runIssueId = await loadRunIssueId(input.actor.runId, actorCompanyId, input.actorAgentId);
+    if (!runIssueId) {
+      return deny({
+        action: input.action,
+        reason: "deny_company_boundary",
+        explanation: "Direct-parent report requires a checked-out source issue in the current run.",
+      });
+    }
+    const runIssue = await loadIssue(runIssueId);
+    if (!runIssue || runIssue.companyId !== actorCompanyId) {
+      return deny({
+        action: input.action,
+        reason: "deny_company_boundary",
+        explanation: "Direct-parent report source issue is unavailable in the current run company.",
+      });
+    }
+    const project = runIssue.projectId ? await loadProject(runIssue.projectId) : null;
+    const run = await loadRunPolicy(input.actor.runId, actorCompanyId, input.actorAgentId);
+    const trustResolution = await resolveCoreTrustPreset({
+      companyId: actorCompanyId,
+      agent: actorAgent,
+      project,
+      issue: runIssue,
+      run,
+    });
+
+    if (trustResolution.kind === "denied") {
+      return deny({
+        action: input.action,
+        reason: "deny_policy_restricted",
+        explanation: trustResolution.detail,
+      });
+    }
+    if (trustResolution.kind !== "standard") {
+      return deny({
+        action: input.action,
+        reason: "deny_low_trust_boundary",
+        explanation: "Direct-parent report comments are disabled for low-trust review runs.",
+      });
+    }
+    return allow({
+      action: input.action,
+      reason: "allow_direct_parent_report",
+      explanation: "Allowed because the target is the current run issue's direct parent, including across company boundaries.",
+    });
   }
 
   async function loadProjectAuthorizationPolicy(companyId: string, projectId: string) {
@@ -1734,6 +1807,13 @@ export function authorizationService(db: Db) {
       });
     }
     if (input.actor.companyId !== companyId) {
+      const crossCompanyDecision = await decideCrossCompanyDirectParentReportAccess({
+        actor: input.actor,
+        actorAgentId,
+        action: input.action,
+        resource: input.resource,
+      });
+      if (crossCompanyDecision) return crossCompanyDecision;
       return deny({
         action: input.action,
         reason: "deny_company_boundary",
@@ -1789,7 +1869,6 @@ export function authorizationService(db: Db) {
       await isDirectParentReportTarget({
         actor: input.actor,
         actorAgentId,
-        companyId,
         resource: input.resource,
       });
     const lowTrustDecision = await decideLowTrustAccess({

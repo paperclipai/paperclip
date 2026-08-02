@@ -274,3 +274,13 @@ This section is local to the ThinkStack served tree (not upstream).
 - Reuse an Approved release before generating a replacement. Record the exact release entry, integrity count, permanent consumer path and drift result; a chat attachment or temporary render is not adoption evidence.
 - The legacy `brandsuite forge` path is compatibility-only and must not create new canonical assets.
 <!-- END THINKSTACK OPS RULE: forge-studio-v1-block -->
+
+<!-- BEGIN THINKSTACK OPS RULE: verify-by-artifact-block -->
+## Gate VA1 — closure is a measurement, not a claim (standing rule)
+
+- An issue with a numeric quota/target closes ONLY when the artifact count at the governed path (`work-products/<ISSUE-ID>/` or the path named on the card) meets it. State the path and the count in the closing comment. Files in run scratch, git worktrees, or shared model caches (`~/.hermes/cache/…`) count as ZERO — those locations are purged or cross-contaminated.
+- Bank every generated asset into the governed path IMMEDIATELY at creation. Never batch-copy later from a shared cache: concurrent lanes write to the same cache and timestamp-matching delivers other lanes' files (proven 2026-07-30).
+- Renders of canon characters or locked brand marks MUST pass the locked reference images as image refs. Text-only prompts of canon subjects are a defect (Fluffy-as-cat class). No readable fake product content (fake planner pages, invented data) in listing or product imagery.
+- A close that cites a run, model, or benchmark result must quote the artifact — run id, file path, or ledger row. A prose description of work is not evidence. Model labels name the REQUEST; served-model truth requires the retirement/alias map (grok-4-fast→grok-4.3 class).
+- An incident or defect close must name its recurrence mechanism AND the layer it is encoded in, preferring the highest that fits: platform guard > pipeline script/driver > standing rule (this registry) > skill > KB note. A lesson that exists only as prose in a comment is NOT closed.
+<!-- END THINKSTACK OPS RULE: verify-by-artifact-block -->

@@ -8,6 +8,7 @@ const logoAssetIdSchema = z.string().uuid().nullable().optional();
 const brandColorSchema = z.string().regex(/^#[0-9a-fA-F]{6}$/).nullable().optional();
 const feedbackDataSharingTermsVersionSchema = z.string().min(1).nullable().optional();
 const strandedRecoveryOwnerAgentIdSchema = z.string().uuid().nullable().optional();
+const workProductsRootSchema = z.string().min(1).nullable().optional();
 const attachmentMaxBytesSchema = z
   .number()
   .int()
@@ -35,6 +36,7 @@ export const updateCompanySchema = createCompanySchema
     feedbackDataSharingConsentByUserId: z.string().min(1).nullable().optional(),
     feedbackDataSharingTermsVersion: feedbackDataSharingTermsVersionSchema,
     strandedRecoveryOwnerAgentId: strandedRecoveryOwnerAgentIdSchema,
+    workProductsRoot: workProductsRootSchema,
     brandColor: brandColorSchema,
     logoAssetId: logoAssetIdSchema,
     attachmentMaxBytes: attachmentMaxBytesSchema.optional(),

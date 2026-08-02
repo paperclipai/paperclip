@@ -77,6 +77,21 @@ describe("issue capability routing — prose mentions are suggestions, not hard 
     expect(result.suggestedSignals.video_gen).toContain("mention:video_gen");
   });
 
+  it("FP fixture: voiceover discussion is a soft suggestion only", () => {
+    const result = inferIssueToolRequirements({
+      title: "Audio lane postmortem",
+      description: [
+        "The card needed a voiceover but had no explicit tts_gen declaration.",
+        "This note audits the matcher only; it is not an execution request.",
+      ].join("\n"),
+    });
+
+    expect(result.requiresMediaTools).toBe(false);
+    expect(result.requiredToolsets).toEqual([]);
+    expect(result.suggestedToolsets).toContain("tts_gen");
+    expect(result.suggestedSignals.tts_gen).toContain("mention:tts_gen");
+  });
+
   it("FP fixture: status rollup with 'generate an image' phrasing does NOT hard-require", () => {
     const result = inferIssueToolRequirements({
       title: "Weekly creative ops rollup",
@@ -121,6 +136,17 @@ describe("issue capability routing — prose mentions are suggestions, not hard 
     expect(result.requiresMediaTools).toBe(true);
     expect(result.requiredToolsets).toEqual(["video_gen"]);
     expect(result.matchedSignals.video_gen).toContain("keyword:video_gen");
+  });
+
+  it("POSITIVE: explicit requires: tts_gen still hard-requires voiceover toolset", () => {
+    const result = inferIssueToolRequirements({
+      title: "Voiceover pass",
+      description: "requires: tts_gen for the approved script-to-audio render.",
+    });
+
+    expect(result.requiresMediaTools).toBe(true);
+    expect(result.requiredToolsets).toEqual(["tts_gen"]);
+    expect(result.matchedSignals.tts_gen).toContain("keyword:tts_gen");
   });
 
   it("POSITIVE: toolset: image_gen still hard-requires", () => {

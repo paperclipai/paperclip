@@ -3,6 +3,7 @@ import path from "node:path";
 import { createHash } from "node:crypto";
 import { notFound } from "../errors.js";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
+import { resolveRunLogArchivePath } from "./run-log-retention.js";
 import { createS3StorageProvider } from "../storage/s3-provider.js";
 import type { StorageProvider } from "../storage/types.js";
 
@@ -59,6 +60,7 @@ function normalizeKeyPrefix(prefix: string | undefined): string {
 
 export interface DurableRunLogStoreOptions {
   basePath: string;
+  archivePath?: string;
   // When provided, completed logs are mirrored to object storage on finalize and
   // served from there on read whenever the local file is missing (e.g. the pod
   // rolled and wiped the emptyDir). When omitted, the store is local-only (the
@@ -77,6 +79,7 @@ export interface DurableRunLogStoreOptions {
 // operator's privileged selinux-relabel init container in our hardened ns).
 export function createDurableRunLogStore(options: DurableRunLogStoreOptions): RunLogStore {
   const { basePath } = options;
+  const archivePath = options.archivePath ? path.resolve(options.archivePath) : null;
   const s3 = options.s3;
   const s3Prefix = normalizeKeyPrefix(s3?.keyPrefix);
 
@@ -118,6 +121,16 @@ export function createDurableRunLogStore(options: DurableRunLogStoreOptions): Ru
     const content = Buffer.concat(chunks).toString("utf8");
     const nextOffset = end + 1 < stat.size ? end + 1 : undefined;
     return { content, nextOffset };
+  }
+
+  async function readArchiveRange(
+    logRef: string,
+    offset: number,
+    limitBytes: number,
+  ): Promise<RunLogReadResult | null> {
+    if (!archivePath) return null;
+    const archiveFilePath = resolveWithin(archivePath, logRef);
+    return readLocalRange(archiveFilePath, offset, limitBytes);
   }
 
   async function readS3Range(
@@ -228,6 +241,8 @@ export function createDurableRunLogStore(options: DurableRunLogStoreOptions): Ru
       const limitBytes = opts?.limitBytes ?? 256_000;
       const local = await readLocalRange(absPath, offset, limitBytes);
       if (local) return local;
+      const archived = await readArchiveRange(handle.logRef, offset, limitBytes);
+      if (archived) return archived;
       // Local file gone (pod rolled) -> serve from the S3 mirror if configured.
       return readS3Range(handle.logRef, offset, limitBytes);
     },
@@ -259,6 +274,10 @@ let cachedStore: RunLogStore | null = null;
 export function getRunLogStore() {
   if (cachedStore) return cachedStore;
   const basePath = process.env.RUN_LOG_BASE_PATH ?? path.resolve(resolvePaperclipInstanceRoot(), "data", "run-logs");
-  cachedStore = createDurableRunLogStore({ basePath, s3: resolveRunLogS3() });
+  const archivePath = resolveRunLogArchivePath({
+    basePath,
+    archivePath: process.env.PAPERCLIP_RUN_LOG_ARCHIVE_PATH,
+  });
+  cachedStore = createDurableRunLogStore({ basePath, archivePath, s3: resolveRunLogS3() });
   return cachedStore;
 }

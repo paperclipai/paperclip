@@ -11,6 +11,8 @@ const MENTIONED_AGENT_ID = "33333333-3333-4333-8333-333333333333";
 
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
+  listAttachments: vi.fn(async () => []),
+  listComments: vi.fn(async () => []),
   update: vi.fn(),
   addComment: vi.fn(),
   findMentionedAgents: vi.fn(),
@@ -60,7 +62,7 @@ vi.mock("../services/index.js", () => ({
     completeTestRunForIssue: vi.fn(async () => null),
   }),
   documentAnnotationService: () => ({ remapOpenThreadsForDocument: async () => [] }),
-  documentService: () => ({}),
+  documentService: () => ({ listIssueDocuments: vi.fn(async () => []) }),
   executionWorkspaceService: () => ({}),
   feedbackService: () => ({
     listIssueVotesForUser: vi.fn(async () => []),
@@ -103,7 +105,7 @@ vi.mock("../services/index.js", () => ({
   routineService: () => ({
     syncRunStatusForIssue: vi.fn(async () => undefined),
   }),
-  workProductService: () => ({}),
+  workProductService: () => ({ listForIssue: vi.fn(async () => []) }),
 }));
 
 function registerModuleMocks() {
@@ -132,7 +134,7 @@ function registerModuleMocks() {
       completeTestRunForIssue: vi.fn(async () => null),
     }),
     documentAnnotationService: () => ({ remapOpenThreadsForDocument: async () => [] }),
-    documentService: () => ({}),
+    documentService: () => ({ listIssueDocuments: vi.fn(async () => []) }),
     executionWorkspaceService: () => ({}),
     feedbackService: () => ({
       listIssueVotesForUser: vi.fn(async () => []),
@@ -175,11 +177,28 @@ function registerModuleMocks() {
     routineService: () => ({
       syncRunStatusForIssue: vi.fn(async () => undefined),
     }),
-    workProductService: () => ({}),
+    workProductService: () => ({ listForIssue: vi.fn(async () => []) }),
   }));
 }
 
 async function createApp() {
+  const emptyRows: unknown[] = [];
+  const orderedQuery = {
+    limit: async () => emptyRows,
+    then: (resolve: (rows: unknown[]) => unknown, reject?: (reason: unknown) => unknown) =>
+      Promise.resolve(emptyRows).then(resolve, reject),
+  };
+  const routeDb = {
+    select: () => ({
+      from: () => ({
+        where: () => ({
+          orderBy: () => orderedQuery,
+          limit: async () => emptyRows,
+          then: orderedQuery.then,
+        }),
+      }),
+    }),
+  };
   const [{ errorHandler }, { issueRoutes }] = await Promise.all([
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
     vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
@@ -196,7 +215,7 @@ async function createApp() {
     };
     next();
   });
-  app.use("/api", issueRoutes({} as any, {} as any));
+  app.use("/api", issueRoutes(routeDb as any, {} as any));
   app.use(errorHandler);
   return app;
 }

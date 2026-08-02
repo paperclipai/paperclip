@@ -74,7 +74,7 @@ describeEmbeddedPostgres("issue capability-aware routing", () => {
         role: "engineer",
         status: "active",
         adapterType: "hermes_local",
-        adapterConfig: { toolsets: "image_gen,video_gen" },
+        adapterConfig: { toolsets: "image_gen,video_gen", routingToolsets: "tts_gen" },
         runtimeConfig: {},
         permissions: {},
       },
@@ -160,5 +160,24 @@ describeEmbeddedPostgres("issue capability-aware routing", () => {
     expect(storedIssue.assigneeAgentId).toBe(designerId);
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, created.id));
     expect(comments).toHaveLength(0);
+  });
+
+  it("routes explicit tts_gen work to the lane that advertises routing-only toolsets", async () => {
+    const { companyId, coderId, designerId } = await seedCapabilityCompany();
+
+    await expect(svc.create(companyId, {
+      title: "Narrate launch script",
+      description: "requires: tts_gen voiceover for the approved script.",
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: coderId,
+    })).rejects.toMatchObject({
+      status: 422,
+      details: expect.objectContaining({
+        assigneeAgentId: coderId,
+        requiredToolsets: ["tts_gen"],
+        suggestedAgentIds: [designerId],
+      }),
+    });
   });
 });

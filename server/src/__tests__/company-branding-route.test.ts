@@ -66,6 +66,7 @@ function createCompany() {
     budgetMonthlyCents: 0,
     spentMonthlyCents: 0,
     requireBoardApprovalForNewAgents: false,
+    workProductsRoot: null,
     brandColor: "#123456",
     logoAssetId: "11111111-1111-4111-8111-111111111111",
     logoUrl: "/api/assets/11111111-1111-4111-8111-111111111111/content",
@@ -353,5 +354,33 @@ describe("PATCH /api/companies/:companyId", () => {
       actorType: "user",
       actorId: "user-1",
     }));
+  });
+
+  it("allows board callers to set a per-company work-products root", async () => {
+    const company = createCompany();
+    mockCompanyService.getById.mockResolvedValue(company);
+    mockCompanyService.update.mockResolvedValue({
+      ...company,
+      workProductsRoot: "/Volumes/X10 Pro/Paperclip-Work-Products/company-1",
+    });
+    const app = await createApp({
+      type: "board",
+      userId: "user-1",
+      source: "local_implicit",
+    });
+
+    const res = await request(app)
+      .patch("/api/companies/company-1")
+      .send({ workProductsRoot: "/Volumes/X10 Pro/Paperclip-Work-Products/company-1" });
+
+    expect(res.status).toBe(200);
+    expect(mockCompanyService.update).toHaveBeenCalledWith(
+      "company-1",
+      { workProductsRoot: "/Volumes/X10 Pro/Paperclip-Work-Products/company-1" },
+      expect.objectContaining({
+        actorType: "user",
+        actorId: "user-1",
+      }),
+    );
   });
 });

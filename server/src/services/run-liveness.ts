@@ -1,4 +1,5 @@
 import type { HeartbeatRunStatus, IssueStatus, RunLivenessState } from "@paperclipai/shared";
+import { hasBlockedDedupNoOpSignal } from "./blocked-dedup-noop.js";
 
 export type RunLivenessActionability =
   | "runnable"
@@ -158,6 +159,10 @@ function actionabilityText(input: RunLivenessClassificationInput) {
   const highSignal = highSignalSources(input).join("\n").trim();
   if (highSignal) return highSignal;
   return rawSources(input).join("\n").trim();
+}
+
+function isBlockedDedupNoOp(input: RunLivenessClassificationInput) {
+  return hasBlockedDedupNoOpSignal(highSignalSources(input));
 }
 
 export function hasUsefulOutput(input: RunLivenessClassificationInput) {
@@ -335,6 +340,10 @@ export function classifyRunLiveness(input: RunLivenessClassificationInput): RunL
 
   if (issueStatus === "done" || issueStatus === "cancelled") {
     return output("completed", `Issue is ${issueStatus}`);
+  }
+
+  if (isBlockedDedupNoOp(input)) {
+    return output("blocked", "Run intentionally preserved an already-blocked issue without churn");
   }
 
   if (declaredBlocker(input)) {

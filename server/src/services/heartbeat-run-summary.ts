@@ -1,3 +1,5 @@
+import { isBlockedDedupNoOpResult } from "./blocked-dedup-noop.js";
+
 export const HEARTBEAT_RUN_RESULT_SUMMARY_MAX_CHARS = 500;
 export const HEARTBEAT_RUN_RESULT_OUTPUT_MAX_CHARS = 4_096;
 export const HEARTBEAT_RUN_SAFE_RESULT_JSON_MAX_BYTES = 64 * 1024;
@@ -96,6 +98,9 @@ export function buildHeartbeatRunIssueComment(
   resultJson: Record<string, unknown> | null | undefined,
 ): string | null {
   if (!resultJson || typeof resultJson !== "object" || Array.isArray(resultJson)) {
+    return null;
+  }
+  if (isBlockedDedupNoOpResult(resultJson)) {
     return null;
   }
 

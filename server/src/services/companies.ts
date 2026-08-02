@@ -43,6 +43,7 @@ import { environmentService } from "./environments.js";
 import { heartbeatService } from "./heartbeat.js";
 import { logActivity } from "./activity-log.js";
 import { builtInAgentService } from "./built-in-agents.js";
+import { readCompanyLocalConfig, writeCompanyLocalConfig } from "./company-local-config.js";
 
 export interface CompanyActivityActor {
   actorType: "user" | "agent" | "system" | "plugin";
@@ -176,6 +177,16 @@ export function companyService(db: Db) {
     };
   }
 
+  async function attachCompanyLocalConfig<T extends { id: string }>(
+    company: T,
+  ): Promise<T & { workProductsRoot: string | null }> {
+    const localConfig = await readCompanyLocalConfig(company.id);
+    return {
+      ...company,
+      workProductsRoot: localConfig.workProductsRoot,
+    };
+  }
+
   function currentUtcMonthWindow(now = new Date()) {
     const year = now.getUTCFullYear();
     const month = now.getUTCMonth();
@@ -274,7 +285,7 @@ export function companyService(db: Db) {
     list: async () => {
       const rows = await getCompanyQuery(db);
       const hydrated = await hydrateCompanySpend(rows);
-      return hydrated.map((row) => enrichCompany(row));
+      return Promise.all(hydrated.map((row) => attachCompanyLocalConfig(enrichCompany(row))));
     },
 
     getById: async (id: string) => {
@@ -283,7 +294,7 @@ export function companyService(db: Db) {
         .then((rows) => rows[0] ?? null);
       if (!row) return null;
       const [hydrated] = await hydrateCompanySpend([row], db);
-      return enrichCompany(hydrated);
+      return attachCompanyLocalConfig(enrichCompany(hydrated));
     },
 
     create: async (data: typeof companies.$inferInsert) => {
@@ -295,21 +306,25 @@ export function companyService(db: Db) {
         .then((rows) => rows[0] ?? null);
       if (!row) throw notFound("Company not found after creation");
       const [hydrated] = await hydrateCompanySpend([row], db);
-      return enrichCompany(hydrated);
+      return attachCompanyLocalConfig(enrichCompany(hydrated));
     },
 
     update: async (
       id: string,
-      data: Partial<typeof companies.$inferInsert> & { logoAssetId?: string | null },
+      data: Partial<typeof companies.$inferInsert> & {
+        logoAssetId?: string | null;
+        workProductsRoot?: string | null;
+      },
       actor: CompanyActivityActor = SYSTEM_COMPANY_ACTOR,
     ) => {
+      const { workProductsRoot, ...dbData } = data;
       const result = await db.transaction(async (tx) => {
         const existing = await getCompanyQuery(tx)
           .where(eq(companies.id, id))
           .then((rows) => rows[0] ?? null);
         if (!existing) return null;
 
-        const { logoAssetId, ...companyPatch } = data;
+        const { logoAssetId, ...companyPatch } = dbData;
         const willReactivate = existing.status !== "active" && companyPatch.status === "active";
         const willArchive = existing.status !== "archived" && companyPatch.status === "archived";
 
@@ -391,6 +406,9 @@ export function companyService(db: Db) {
         };
       });
       if (!result) return null;
+      if (workProductsRoot !== undefined) {
+        await writeCompanyLocalConfig({ companyId: id, workProductsRoot });
+      }
       if (result.reactivated) {
         await logActivity(db, {
           companyId: id,
@@ -407,7 +425,7 @@ export function companyService(db: Db) {
       if (result.archiveCascade) {
         await finalizeArchive(id, actor, result.archiveCascade);
       }
-      return result.company;
+      return attachCompanyLocalConfig(result.company);
     },
 
     archive: async (id: string, actor: CompanyActivityActor = SYSTEM_COMPANY_ACTOR) => {

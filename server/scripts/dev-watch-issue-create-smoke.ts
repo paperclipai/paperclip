@@ -51,6 +51,7 @@ async function main(): Promise<void> {
         closeContract: {
           evidenceTarget: 1,
           evidencePath: "TSMC-18567",
+          artifactKind: "generated_media",
         },
       });
 
@@ -58,7 +59,11 @@ async function main(): Promise<void> {
       throw new Error(`Issue create smoke failed with ${response.status}: ${JSON.stringify(response.body)}`);
     }
 
-    if (response.body?.closeContract?.evidenceTarget !== 1 || response.body?.closeContract?.evidencePath !== "TSMC-18567") {
+    if (
+      response.body?.closeContract?.evidenceTarget !== 1 ||
+      response.body?.closeContract?.evidencePath !== "TSMC-18567" ||
+      response.body?.closeContract?.artifactKind !== "generated_media"
+    ) {
       throw new Error(`Issue create smoke returned unexpected closeContract: ${JSON.stringify(response.body?.closeContract)}`);
     }
 

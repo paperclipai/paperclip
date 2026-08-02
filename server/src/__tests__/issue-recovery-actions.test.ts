@@ -360,6 +360,106 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     });
   });
 
+  it("backs off dead-family stranded recovery and clears the dead assignee on board escalation", async () => {
+    const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
+    await db
+      .update(agents)
+      .set({ status: "error" })
+      .where(and(eq(agents.companyId, companyId), eq(agents.id, managerId)));
+    await db
+      .update(agents)
+      .set({ status: "error" })
+      .where(and(eq(agents.companyId, companyId), eq(agents.id, coderId)));
+
+    const enqueueWakeup = vi.fn(async () => null);
+    const recovery = recoveryService(db, { enqueueWakeup });
+
+    const firstResult = await recovery.reconcileStrandedAssignedIssues();
+    expect(firstResult).toMatchObject({ escalated: 1 });
+
+    const [firstIssue] = await db.select().from(issues).where(eq(issues.id, sourceIssueId));
+    expect(firstIssue).toMatchObject({
+      status: "blocked",
+      assigneeAgentId: null,
+    });
+
+    const [firstAction] = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, sourceIssueId));
+    expect(firstAction).toMatchObject({
+      ownerType: "board",
+      ownerAgentId: null,
+      cause: "stranded_assigned_issue",
+      attemptCount: 1,
+      maxAttempts: 3,
+      wakePolicy: { type: "board_escalation", reason: "no_invokable_recovery_owner" },
+    });
+    expect(actionWakeCalls(enqueueWakeup)).toHaveLength(0);
+
+    await db
+      .update(issues)
+      .set({ status: "in_progress", assigneeAgentId: coderId })
+      .where(eq(issues.id, sourceIssueId));
+
+    const secondResult = await recovery.reconcileStrandedAssignedIssues();
+    expect(secondResult).toMatchObject({ escalated: 0, skipped: 1 });
+
+    const [secondAction] = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, sourceIssueId));
+    expect(secondAction?.attemptCount).toBe(1);
+
+    await db
+      .update(issueRecoveryActions)
+      .set({ lastAttemptAt: new Date(Date.now() - 16 * 60 * 1000) })
+      .where(eq(issueRecoveryActions.id, firstAction.id));
+    await db
+      .update(issues)
+      .set({ status: "in_progress", assigneeAgentId: coderId })
+      .where(eq(issues.id, sourceIssueId));
+
+    const thirdResult = await recovery.reconcileStrandedAssignedIssues();
+    expect(thirdResult).toMatchObject({ escalated: 1 });
+
+    await db
+      .update(issueRecoveryActions)
+      .set({ lastAttemptAt: new Date(Date.now() - 31 * 60 * 1000) })
+      .where(eq(issueRecoveryActions.id, firstAction.id));
+    await db
+      .update(issues)
+      .set({ status: "in_progress", assigneeAgentId: coderId })
+      .where(eq(issues.id, sourceIssueId));
+
+    const fourthResult = await recovery.reconcileStrandedAssignedIssues();
+    expect(fourthResult).toMatchObject({ escalated: 1 });
+
+    const [maxedAction] = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, sourceIssueId));
+    expect(maxedAction?.attemptCount).toBe(3);
+
+    await db
+      .update(issueRecoveryActions)
+      .set({ lastAttemptAt: new Date(Date.now() - 61 * 60 * 1000) })
+      .where(eq(issueRecoveryActions.id, firstAction.id));
+    await db
+      .update(issues)
+      .set({ status: "in_progress", assigneeAgentId: coderId })
+      .where(eq(issues.id, sourceIssueId));
+
+    const fifthResult = await recovery.reconcileStrandedAssignedIssues();
+    expect(fifthResult).toMatchObject({ escalated: 0, skipped: 1 });
+
+    const [finalAction] = await db
+      .select()
+      .from(issueRecoveryActions)
+      .where(eq(issueRecoveryActions.sourceIssueId, sourceIssueId));
+    expect(finalAction?.attemptCount).toBe(3);
+  });
+
   it.each([
     ["process_lost", undefined, "coder"],
     ["adapter_failed", "successful_run_missing_state", "coder"],
@@ -1187,13 +1287,13 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     await db
       .update(issues)
       .set({
-        title: "Render image thumbnails for launch",
+        title: "Requires: image_gen — render image thumbnails for launch",
       })
       .where(eq(issues.id, sourceIssue.id));
     const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
 
     await recovery.escalateStrandedAssignedIssue({
-      issue: { ...sourceIssue, title: "Render image thumbnails for launch" },
+      issue: { ...sourceIssue, title: "Requires: image_gen — render image thumbnails for launch" },
       previousStatus: "in_progress",
       latestRun: {
         id: randomUUID(),
@@ -1230,13 +1330,13 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     await db
       .update(issues)
       .set({
-        title: "Render image thumbnails for launch",
+        title: "Requires: image_gen — render image thumbnails for launch",
       })
       .where(eq(issues.id, sourceIssue.id));
     const recovery = recoveryService(db, { enqueueWakeup: vi.fn(async () => null) });
 
     await recovery.escalateStrandedAssignedIssue({
-      issue: { ...sourceIssue, title: "Render image thumbnails for launch" },
+      issue: { ...sourceIssue, title: "Requires: image_gen — render image thumbnails for launch" },
       previousStatus: "in_progress",
       latestRun: {
         id: randomUUID(),

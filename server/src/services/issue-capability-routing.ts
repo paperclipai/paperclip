@@ -36,6 +36,18 @@ function normalizeToolsetToken(token: string) {
     return "video_gen" as const;
   }
   if (
+    normalized === "tts_gen"
+    || normalized === "tts-gen"
+    || normalized === "ttsgen"
+    || normalized === "voiceover"
+    || normalized === "voice_over"
+    || normalized === "text_to_speech"
+    || normalized === "speech_synthesis"
+    || normalized === "script_to_audio"
+  ) {
+    return "tts_gen" as const;
+  }
+  if (
     normalized === "media" ||
     normalized === "creative" ||
     normalized === "grok-imagine" ||
@@ -60,11 +72,12 @@ function addSignal(
 function signalsRecord(map: Map<RequiredIssueToolset, Set<string>>): Record<RequiredIssueToolset, string[]> {
   return {
     image_gen: [...(map.get("image_gen") ?? [])].sort(),
+    tts_gen: [...(map.get("tts_gen") ?? [])].sort(),
     video_gen: [...(map.get("video_gen") ?? [])].sort(),
   };
 }
 
-export type RequiredIssueToolset = "image_gen" | "video_gen";
+export type RequiredIssueToolset = "image_gen" | "tts_gen" | "video_gen";
 
 export interface IssueCapabilityRoutingInput {
   title?: string | null;
@@ -106,12 +119,12 @@ export interface NormalizedAgentToolCapabilities {
  * Infer hard tool requirements vs soft suggestions from issue text.
  *
  * Hard (422 on deliberate non-capable assignee):
- *   - explicit intent prefixes: requires:/needs:/toolset:/required-skill: + image_gen|video_gen
+ *   - explicit intent prefixes: requires:/needs:/toolset:/required-skill: + image_gen|video_gen|tts_gen
  *   - labels that name a media toolset/specialist (deliberate tags)
  *
  * Soft (suggestion only — does NOT 422):
- *   - bare prose mentions of image_gen / video_gen / Designer-Media / grok-imagine
- *   - bare "generate/create/render/edit an image|video" phrasing
+ *   - bare prose mentions of image_gen / video_gen / tts_gen / Designer-Media / grok-imagine
+ *   - bare "generate/create/render/edit an image|video|voiceover" phrasing
  *
  * Fenced code blocks are stripped first (quoted data is not intent). Routine executions
  * only honour explicit-intent body signals (labels still apply).
@@ -143,6 +156,11 @@ export function inferIssueToolRequirements(input: IssueCapabilityRoutingInput): 
   if (/\b(?:requires|needs|toolset|required[-_\s]?skill)[:\s_-]+image[_ -]?gen\b/.test(body)) {
     addSignal(hardSignals, "image_gen", "keyword:image_gen");
   }
+  if (
+    /\b(?:requires|needs|toolset|required[-_\s]?skill)[:\s_-]+(?:tts[_ -]?gen|voiceover|text[-_\s]?to[-_\s]?speech|speech[-_\s]?synthesis|script[-_\s]?to[-_\s]?audio)\b/.test(body)
+  ) {
+    addSignal(hardSignals, "tts_gen", "keyword:tts_gen");
+  }
   if (/\b(?:requires|needs|toolset|required[-_\s]?skill)[:\s_-]+video[_ -]?gen\b/.test(body)) {
     addSignal(hardSignals, "video_gen", "keyword:video_gen");
   }
@@ -154,6 +172,11 @@ export function inferIssueToolRequirements(input: IssueCapabilityRoutingInput): 
       // Only soft when the same token was not already claimed as hard via explicit prefix.
       if (!(hardSignals.get("image_gen")?.has("keyword:image_gen"))) {
         addSignal(softSignals, "image_gen", "mention:image_gen");
+      }
+    }
+    if (/\b(?:tts[_ -]?gen|voiceover|text[-_\s]?to[-_\s]?speech|speech[-_\s]?synthesis|script[-_\s]?to[-_\s]?audio)\b/.test(body)) {
+      if (!(hardSignals.get("tts_gen")?.has("keyword:tts_gen"))) {
+        addSignal(softSignals, "tts_gen", "mention:tts_gen");
       }
     }
     if (/\bvideo[_ -]?gen\b/.test(body)) {
@@ -171,6 +194,12 @@ export function inferIssueToolRequirements(input: IssueCapabilityRoutingInput): 
     if (/\b(?:generate|create|render|edit)\s+(?:an?\s+)?video\b/.test(body)) {
       addSignal(softSignals, "video_gen", "mention:generate_video");
     }
+    if (
+      /\b(?:generate|create|render|edit|turn)\s+(?:this\s+script\s+into\s+an?\s+)?(?:voiceover|audio)\b/.test(body)
+      || /\b(?:generate|create|render|edit)\s+(?:an?\s+)?voiceover\b/.test(body)
+    ) {
+      addSignal(softSignals, "tts_gen", "mention:generate_voiceover");
+    }
   }
 
   // --- HARD: labels are deliberate tags ------------------------------------
@@ -180,6 +209,11 @@ export function inferIssueToolRequirements(input: IssueCapabilityRoutingInput): 
       /\b(?:image[_ -]?gen|needs[:/_-]?image[_ -]?gen|requires[:/_-]?image[_ -]?gen|required[-_\s]?skill[:/_-]?image[_ -]?gen)\b/.test(normalized)
     ) {
       addSignal(hardSignals, "image_gen", `label:${labelName}`);
+    }
+    if (
+      /\b(?:tts[_ -]?gen|voiceover|text[-_\s]?to[-_\s]?speech|speech[-_\s]?synthesis|script[-_\s]?to[-_\s]?audio|needs[:/_-]?tts[_ -]?gen|requires[:/_-]?tts[_ -]?gen|required[-_\s]?skill[:/_-]?tts[_ -]?gen)\b/.test(normalized)
+    ) {
+      addSignal(hardSignals, "tts_gen", `label:${labelName}`);
     }
     if (
       /\b(?:video[_ -]?gen|needs[:/_-]?video[_ -]?gen|requires[:/_-]?video[_ -]?gen|required[-_\s]?skill[:/_-]?video[_ -]?gen)\b/.test(normalized)
@@ -212,6 +246,7 @@ export function normalizeAgentToolCapabilities(
   const adapterConfig = isPlainRecord(agent.adapterConfig) ? agent.adapterConfig : {};
   const rawTokens = [
     ...readStringArray(agent.capabilities),
+    ...readStringArray(adapterConfig.routingToolsets),
     ...readStringArray(adapterConfig.toolsets),
     ...readStringArray(adapterConfig.enabledToolsets),
   ];
@@ -220,6 +255,9 @@ export function normalizeAgentToolCapabilities(
     const normalized = normalizeToolsetToken(token);
     if (normalized === "image_gen") {
       toolsets.add("image_gen");
+      matchedSignals.add(`toolset:${token}`);
+    } else if (normalized === "tts_gen") {
+      toolsets.add("tts_gen");
       matchedSignals.add(`toolset:${token}`);
     } else if (normalized === "video_gen") {
       toolsets.add("video_gen");

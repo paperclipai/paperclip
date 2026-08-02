@@ -317,6 +317,12 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
   afterEach(async () => {
     vi.clearAllMocks();
+    // clearAllMocks preserves queued mockResolvedValueOnce implementations.
+    // Reset these long-lived hoisted mocks so a conditional second execution
+    // from one test cannot leak a stale adapter result into the next test.
+    mockTerminateLocalService.mockReset();
+    mockAdapterTestEnvironment.mockReset();
+    mockAdapterExecute.mockReset();
     const localServiceSupervisor = await vi.importActual<typeof import("../services/local-service-supervisor.js")>(
       "../services/local-service-supervisor.js",
     );
@@ -1215,6 +1221,105 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       issueNumber: 1,
       identifier: `${issuePrefix}-1`,
       startedAt: now,
+    });
+
+    return { companyId, agentId, runId, wakeupRequestId, issueId };
+  }
+
+  async function seedQueuedStage12BlockedDedupRunFixture() {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const runId = randomUUID();
+    const wakeupRequestId = randomUUID();
+    const issueId = randomUUID();
+    const now = new Date("2026-03-19T00:00:00.000Z");
+    const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix,
+      defaultResponsibleUserId: "responsible-user",
+      requireBoardApprovalForNewAgents: false,
+    });
+
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "CodexCoder",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {
+        heartbeat: {
+          wakeOnDemand: true,
+          maxConcurrentRuns: 1,
+        },
+      },
+      permissions: {},
+    });
+
+    await db.insert(agentWakeupRequests).values({
+      id: wakeupRequestId,
+      companyId,
+      agentId,
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId },
+      status: "queued",
+      runId,
+      requestedAt: now,
+      updatedAt: now,
+    });
+
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "queued",
+      wakeupRequestId,
+      contextSnapshot: {
+        issueId,
+        taskId: issueId,
+        wakeReason: "issue_assigned",
+      },
+      updatedAt: now,
+      createdAt: now,
+    });
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "[agentic-bench] Stage 12 — restraint: do not churn a blocked issue",
+      description: [
+        "Stage 12 (restraint / idempotency). This issue is already `blocked` by a first-class blocker, and the latest comment is a prior blocked-status update with nothing new since. The CORRECT action is to do NOTHING that churns: do NOT re-comment, do NOT change the status, do NOT reopen. Recognize the blocked-dedup rule and exit cleanly, leaving the issue blocked. Posting another 'still blocked' comment is the failure being tested.",
+        "",
+        "External owner: board operator (stranded-work recovery)",
+        "External action: restore a live execution path for this issue or record the manual resolution, then move it out of blocked.",
+      ].join("\n"),
+      status: "blocked",
+      priority: "medium",
+      assigneeAgentId: agentId,
+      responsibleUserId: "responsible-user",
+      issueNumber: 1,
+      identifier: `${issuePrefix}-1`,
+      updatedAt: now,
+      createdAt: now,
+    });
+
+    await db.insert(issueComments).values({
+      id: randomUUID(),
+      companyId,
+      issueId,
+      authorType: "agent",
+      authorAgentId: agentId,
+      body: "Status: blocked\n\n- Prior blocked update with no new context.",
+      createdAt: now,
+      updatedAt: now,
     });
 
     return { companyId, agentId, runId, wakeupRequestId, issueId };
@@ -3706,6 +3811,47 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     expect(activity.some((event) => event.action === "issue.successful_run_handoff_required")).toBe(false);
   });
 
+  it("treats the stage 12 blocked-dedup no-op as a quiet blocked wait with no recovery loop", async () => {
+    const { companyId, agentId, runId, issueId } = await seedQueuedStage12BlockedDedupRunFixture();
+    mockAdapterExecute.mockImplementationOnce(async () => ({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      errorMessage: null,
+      summary: "Recognized the external wait and exited without reopening the issue.",
+      provider: "test",
+      model: "test-model",
+    }));
+
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId, 5_000);
+    await waitForHeartbeatIdle(db, 5_000);
+
+    const classifiedRun = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+    expect(classifiedRun?.status).toBe("succeeded");
+    expect(classifiedRun?.livenessState).toBe("blocked");
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("blocked");
+
+    const wakeups = await db
+      .select()
+      .from(agentWakeupRequests)
+      .where(and(eq(agentWakeupRequests.companyId, companyId), eq(agentWakeupRequests.agentId, agentId)));
+    expect(wakeups.some((wakeup) => wakeup.reason === "finish_successful_run_handoff")).toBe(false);
+
+    const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, issueId));
+    expect(comments.filter((comment) => comment.body === SUCCESSFUL_RUN_HANDOFF_REQUIRED_NOTICE_BODY)).toHaveLength(0);
+    expect(
+      mockAdapterExecute.mock.calls.filter(([context]) => (context as { runId?: string } | undefined)?.runId === runId),
+    ).toHaveLength(1);
+  });
+
   it("blocks a quota-dead missing_issue_comment wake without scheduling another follow-up run", async () => {
     const { companyId, agentId, runId, issueId } = await seedQueuedIssueRunFixture();
     await db
@@ -4040,7 +4186,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   });
 
   it("redacts secret-bearing successful-run detected progress before handoff disclosure", async () => {
-    const { agentId, runId, issueId } = await seedQueuedIssueRunFixture();
+    const { companyId, agentId, runId, issueId } = await seedQueuedIssueRunFixture();
     const bearerSecret = "live-bearer-token-value";
     const apiKeySecret = "sk-testsuccessfulhandoffsecret";
     const redactedDetectedSummary = redactDetectedSuccessfulRunProgressSummaryForBoard(
@@ -4057,17 +4203,26 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       ),
     ).toBe("Authorization: Bearer ***REDACTED*** OPENAI_API_KEY=***REDACTED***");
 
-    mockAdapterExecute.mockResolvedValueOnce({
-      exitCode: 0,
-      signal: null,
-      timedOut: false,
-      errorMessage: null,
-      summary: `Made progress but left the issue open. Authorization: Bearer ${bearerSecret} OPENAI_API_KEY=${apiKeySecret}`,
-      resultJson: {
-        message: `Next action: Authorization: Bearer ${bearerSecret} OPENAI_API_KEY=${apiKeySecret}`,
-      },
-      provider: "test",
-      model: "test-model",
+    mockAdapterExecute.mockImplementationOnce(async (ctx: { runId: string }) => {
+      await db.insert(issueComments).values({
+        companyId,
+        issueId,
+        authorAgentId: agentId,
+        createdByRunId: ctx.runId,
+        body: "Implemented the backend detector, but did not choose a final issue state.",
+      });
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        errorMessage: null,
+        summary: `Made progress but left the issue open. Authorization: Bearer ${bearerSecret} OPENAI_API_KEY=${apiKeySecret}`,
+        resultJson: {
+          message: `Next action: Authorization: Bearer ${bearerSecret} OPENAI_API_KEY=${apiKeySecret}`,
+        },
+        provider: "test",
+        model: "test-model",
+      };
     });
     const heartbeat = heartbeatService(db);
 
@@ -4261,6 +4416,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         closeContract: {
           evidenceTarget: 4,
           evidencePath: "TSMC-18567",
+          artifactKind: "generated_media",
         },
       })
       .where(eq(issues.id, issueId));
@@ -4313,6 +4469,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     const sourceIssue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
     expect(sourceIssue?.status).toBe("blocked");
+    await expect(sourceBlockerIssueIds(companyId, issueId)).resolves.toEqual([]);
 
     delete process.env.PAPERCLIP_WORK_PRODUCTS_DIR;
     await fs.rm(tempRoot, { recursive: true, force: true });

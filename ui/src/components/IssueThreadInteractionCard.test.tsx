@@ -699,6 +699,27 @@ describe("IssueThreadInteractionCard stale cancellations", () => {
     expect(host.textContent).not.toContain("Approve plan");
   });
 
+  it("renders reassignment-specific copy for cancelled confirmations", () => {
+    const host = renderCard({
+      interaction: {
+        ...staleIssueStateRequestConfirmationInteraction,
+        result: {
+          version: 1,
+          outcome: "stale_issue_state",
+          reason: "Issue reassigned to a different owner.",
+        },
+      },
+    });
+
+    expect(host.textContent).toContain("Cancelled by reassignment");
+    expect(host.textContent).toContain(
+      "This confirmation was cancelled when the issue was reassigned. No decision was made.",
+    );
+    expect(host.textContent).toContain(
+      "If approval is still needed, create a fresh confirmation for the new owner.",
+    );
+  });
+
   it("keeps the target-specific wording when a confirmation is cancelled by the document sweep", () => {
     const host = renderCard({ interaction: staleTargetCancelledRequestConfirmationInteraction });
 
@@ -719,7 +740,7 @@ describe("IssueThreadInteractionCard stale cancellations", () => {
   it("renders a cancelled checkbox confirmation as terminal with its reason", () => {
     const host = renderCard({ interaction: staleIssueStateRequestCheckboxConfirmationInteraction });
 
-    expect(host.textContent).toContain("Cancelled by issue change");
+    expect(host.textContent).toContain("Cancelled by reassignment");
     expect(host.textContent).toContain(
       "Issue was reassigned before the selection was confirmed.",
     );

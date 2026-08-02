@@ -1,10 +1,19 @@
-import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const ORIGINAL_PAPERCLIP_API_URL = process.env.PAPERCLIP_API_URL;
 const ORIGINAL_PAPERCLIP_RUNTIME_API_URL = process.env.PAPERCLIP_RUNTIME_API_URL;
 const ORIGINAL_PAPERCLIP_RUNTIME_API_CANDIDATES_JSON = process.env.PAPERCLIP_RUNTIME_API_CANDIDATES_JSON;
 const ORIGINAL_PAPERCLIP_LISTEN_HOST = process.env.PAPERCLIP_LISTEN_HOST;
 const ORIGINAL_PAPERCLIP_LISTEN_PORT = process.env.PAPERCLIP_LISTEN_PORT;
+const ORIGINAL_PAPERCLIP_PORT_WAIT_MS = process.env.PAPERCLIP_PORT_WAIT_MS;
+
+// Port-fallback assertions exercise the immediate selection branch; the
+// production default deliberately waits for a hot-restart handover first.
+process.env.PAPERCLIP_PORT_WAIT_MS = "0";
+afterAll(() => {
+  if (ORIGINAL_PAPERCLIP_PORT_WAIT_MS === undefined) delete process.env.PAPERCLIP_PORT_WAIT_MS;
+  else process.env.PAPERCLIP_PORT_WAIT_MS = ORIGINAL_PAPERCLIP_PORT_WAIT_MS;
+});
 
 const {
   createAppMock,

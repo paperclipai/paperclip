@@ -8,19 +8,23 @@
 // listening on :3100 — taking the whole fleet down until the file is valid
 // again. This happened twice over the weekend.
 //
-// This gate is the pre-reload safety net the supervisor runs BEFORE it swaps
-// the running server:
-// 1. Bundle the entry's source graph with esbuild. This is cheap and
-//    side-effect-free: no code execution, no port binding, no DB.
-// 2. Typecheck the shared/db workspace packages whose schema/contracts can
-//    invalidate the live server even when the server bundle still parses.
-// 3. Boot a temp migrated embedded-Postgres DB and perform a real issue-create
-//    smoke through the app, proving the create path still works before reload.
+// This gate is the cheap, side-effect-free check the supervisor runs BEFORE it
+// swaps the running server: bundle the entry's source graph with esbuild. It
+// then run a focused issue-create route smoke. The compile step does not
+// execute app code (no port binding, no DB, no embedded Postgres), so it is
+// safe to run against the live instance. It follows relative imports AND
+// `@paperclipai/*` workspace packages (the source tsx will actually load),
+// while treating real `node_modules` dependencies as external so the check
+// stays fast (~0.2s) and only fails on OUR broken source. The route smoke is a
+// targeted Vitest file that proves `POST /api/companies/:companyId/issues`
+// still works before the watcher reports healthy.
 //
-// Exit 0  -> the candidate compiles; the supervisor may reload.
-// Exit !0 -> syntax error / unresolved import; errors printed to stderr and the
-//            supervisor KEEPS the currently-running server. Fail safe: a bad
-//            edit can never take the server down, only delay the next reload.
+// Exit 0  -> the candidate compiles and the issue-create route smoke passes;
+//            the supervisor may reload.
+// Exit !0 -> syntax error / unresolved import / route smoke failure; errors
+//            printed to stderr and the supervisor KEEPS the currently-running
+//            server. Fail safe: a bad edit can never take the server down, only
+//            delay the next reload.
 //
 // Usage: node dev-watch-gate.mjs [entry] [--cwd <dir>]
 //   entry defaults to "src/index.ts"; cwd defaults to the server package root.
@@ -54,6 +58,7 @@ try {
   // esbuild lives in the repo root node_modules, not the server package's.
   esbuild = require(path.resolve(serverRoot, "..", "node_modules", "esbuild"));
 }
+
 try {
   tsxLoaderPath = require.resolve("tsx");
 } catch {

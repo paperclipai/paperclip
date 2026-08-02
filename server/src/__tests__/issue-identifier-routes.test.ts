@@ -3,7 +3,7 @@ import express from "express";
 import request from "supertest";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
-import { companies, companyMemberships, createDb, issues } from "@paperclipai/db";
+import { agentFallbackSisters, agents, companies, companyMemberships, createDb, issues } from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -122,5 +122,139 @@ describeEmbeddedPostgres("issue identifier routes", () => {
       .where(eq(issues.id, issueId))
       .then((rows) => rows[0] ?? null);
     expect(stored?.priority).toBe("high");
+  });
+
+  it("keeps ordinary foreign issue detail reads denied", async () => {
+    const localCompanyId = randomUUID();
+    const foreignCompanyId = randomUUID();
+    const foreignIssueId = randomUUID();
+
+    await db.insert(companies).values([
+      {
+        id: localCompanyId,
+        name: "Local tenant",
+        issuePrefix: "LOCAL",
+        requireBoardApprovalForNewAgents: false,
+      },
+      {
+        id: foreignCompanyId,
+        name: "Foreign tenant",
+        issuePrefix: "FOREIGN",
+        requireBoardApprovalForNewAgents: false,
+      },
+    ]);
+    await seedCloudTenantMember(localCompanyId);
+    await db.insert(issues).values({
+      id: foreignIssueId,
+      companyId: foreignCompanyId,
+      identifier: "FOREIGN-42",
+      title: "Foreign title must remain private",
+      status: "done",
+      priority: "high",
+    });
+
+    const byId = await request(createApp(localCompanyId)).get(`/api/issues/${foreignIssueId}`);
+    const byIdentifier = await request(createApp(localCompanyId)).get("/api/issues/FOREIGN-42");
+
+    // Foreign detail lookups stay tenant-dark, even when their id or identifier is known.
+    expect(byId.status).toBe(404);
+    expect(byId.body.error).toBe("Issue not found");
+    expect(byIdentifier.status).toBe(404);
+    expect(byIdentifier.body.error).toBe("Issue not found");
+  });
+
+  it("stores the exact requested fallback sister on create and patch", async () => {
+    const companyId = randomUUID();
+    const issueId = randomUUID();
+    const primaryAgentId = randomUUID();
+    const sisterAgentId = randomUUID();
+    const issuePrefix = `PC${companyId.replace(/-/g, "").slice(0, 4).toUpperCase()}`;
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Cloud tenant",
+      issuePrefix,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await seedCloudTenantMember(companyId);
+    await db.insert(agents).values([
+      {
+        id: primaryAgentId,
+        companyId,
+        name: "Auditor",
+        role: "engineer",
+        status: "active",
+        adapterType: "claude_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: sisterAgentId,
+        companyId,
+        name: "Auditor-Codex",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+    await db.insert(agentFallbackSisters).values({
+      companyId,
+      primaryAgentId,
+      sisterAgentId,
+      priority: 0,
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      issueNumber: 7,
+      identifier: `${issuePrefix}-7`,
+      title: "Tenant identifier route",
+      status: "todo",
+      priority: "medium",
+      assigneeAgentId: primaryAgentId,
+      createdByUserId: "cloud-user-1",
+    });
+
+    const app = createApp(companyId);
+
+    const created = await request(app)
+      .post(`/api/companies/${companyId}/issues`)
+      .send({
+        title: "Create should keep the requested sister",
+        status: "todo",
+        assigneeAgentId: sisterAgentId,
+      });
+
+    expect(created.status, JSON.stringify(created.body)).toBe(201);
+    expect(created.body).toMatchObject({
+      assigneeAgentId: sisterAgentId,
+    });
+    const createdStored = await db
+      .select({ assigneeAgentId: issues.assigneeAgentId })
+      .from(issues)
+      .where(eq(issues.id, created.body.id))
+      .then((rows) => rows[0] ?? null);
+    expect(createdStored?.assigneeAgentId).toBe(sisterAgentId);
+
+    const updated = await request(app)
+      .patch(`/api/issues/${issuePrefix}-7`)
+      .send({ assigneeAgentId: sisterAgentId });
+
+    expect(updated.status, JSON.stringify(updated.body)).toBe(200);
+    expect(updated.body).toMatchObject({
+      id: issueId,
+      assigneeAgentId: sisterAgentId,
+    });
+
+    const stored = await db
+      .select({ assigneeAgentId: issues.assigneeAgentId })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(stored?.assigneeAgentId).toBe(sisterAgentId);
   });
 });

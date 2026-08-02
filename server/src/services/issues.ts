@@ -91,6 +91,7 @@ import {
 } from "./execution-workspace-policy.js";
 import { mergeExecutionWorkspaceConfig } from "./execution-workspaces.js";
 import { buildInitialIssueMonitorFields, normalizeIssueExecutionPolicy } from "./issue-execution-policy.js";
+import { inferDefaultCloseContractForIssueCreate } from "./issue-close-evidence.js";
 import { instanceSettingsService, isTruthyRuntimeEnvValue } from "./instance-settings.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { redactSensitiveText } from "../redaction.js";
@@ -120,7 +121,11 @@ import {
 } from "./recovery/origins.js";
 import { classifyIssueGraphLiveness, type IssueLivenessFinding } from "./recovery/issue-graph-liveness.js";
 import { logActivity } from "./activity-log.js";
-import { hasExplicitExternalOwnerAction } from "./issue-blocked-gate.js";
+import {
+  DATE_GATED_BLOCKER_REQUIRES_ASSIGNEE_MESSAGE,
+  dateGatedBlockerMissingExecutor,
+  hasExplicitExternalOwnerAction,
+} from "./issue-blocked-gate.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
 import { finalizeStatusCardsForStalledGeneration } from "./status-card-finalization.js";
 import { finalizeSummarySlotsForTerminalIssue } from "./summary-slot-finalization.js";
@@ -155,75 +160,7 @@ export const ISSUE_CREATE_IDEMPOTENCY_KEY_RETENTION_DAYS = 7;
 const ISSUE_CREATE_IDEMPOTENCY_KEY_RETENTION_MS = ISSUE_CREATE_IDEMPOTENCY_KEY_RETENTION_DAYS * 24 * 60 * 60 * 1000;
 const ISSUE_CREATE_IDEMPOTENCY_KEY_CLEANUP_BATCH_SIZE = 500;
 const DELETED_ISSUE_COMMENT_BODY = "";
-const EXTERNAL_BLOCKER_MIRROR_ORIGIN_KIND = "external_blocker_mirror";
-const EXTERNAL_BLOCKER_MIRROR_SYNC_METADATA = Symbol("external_blocker_mirror_sync");
 const ROUTINE_PARENT_LIFECYCLE_BINDING_ENV_KEY = "PAPERCLIP_ROUTINE_PARENT_LIFECYCLE_BINDING";
-
-type ExternalBlockerMirrorRemoteIssue = {
-  id: string;
-  companyId: string;
-  identifier: string | null;
-  title: string;
-  status: string;
-  priority: string;
-  hiddenAt: Date | null;
-};
-
-type ExternalBlockerMirrorSyncResult = {
-  mirrorIssueId: string;
-  previousStatus: string;
-  status: string;
-};
-
-function buildExternalBlockerMirrorTitle(remoteIssue: ExternalBlockerMirrorRemoteIssue) {
-  return `External blocker mirror: ${remoteIssue.identifier ?? remoteIssue.title}`;
-}
-
-function buildExternalBlockerMirrorDescription(remoteIssue: ExternalBlockerMirrorRemoteIssue) {
-  const remoteReference = remoteIssue.identifier ?? remoteIssue.id;
-  const remoteStateLabel =
-    remoteIssue.hiddenAt
-      ? "hidden"
-      : remoteIssue.status === "cancelled"
-        ? "cancelled"
-        : remoteIssue.status;
-  const externalAction =
-    remoteIssue.hiddenAt || remoteIssue.status === "cancelled"
-      ? `Replace or manually clear remote blocker ${remoteReference}`
-      : `Wait for remote blocker ${remoteReference} to complete`;
-  return [
-    "Paperclip-managed mirror for a cross-company blocker.",
-    "",
-    `Remote issue: ${remoteReference}`,
-    `Remote issue id: ${remoteIssue.id}`,
-    `Remote company id: ${remoteIssue.companyId}`,
-    `Remote status: ${remoteStateLabel}`,
-    "External owner: Remote company assignee",
-    `External action: ${externalAction}`,
-  ].join("\n");
-}
-
-function mapExternalBlockerMirrorStatus(remoteIssue: ExternalBlockerMirrorRemoteIssue) {
-  return remoteIssue.status === "done" ? "done" : "blocked";
-}
-
-function attachExternalBlockerMirrorSyncMetadata<T extends Record<string, unknown>>(
-  issue: T,
-  results: ExternalBlockerMirrorSyncResult[],
-) {
-  Object.defineProperty(issue, EXTERNAL_BLOCKER_MIRROR_SYNC_METADATA, {
-    value: results,
-    enumerable: false,
-    configurable: true,
-  });
-  return issue;
-}
-
-export function readExternalBlockerMirrorSyncMetadata(issue: unknown): ExternalBlockerMirrorSyncResult[] {
-  if (!issue || typeof issue !== "object") return [];
-  const value = (issue as Record<PropertyKey, unknown>)[EXTERNAL_BLOCKER_MIRROR_SYNC_METADATA];
-  return Array.isArray(value) ? value as ExternalBlockerMirrorSyncResult[] : [];
-}
 
 const ISSUE_WAKE_DIAGNOSTICS_ACTIVITY_ACTIONS = ["issue.tree_hold_wakeup_deferred"] as const;
 
@@ -851,7 +788,6 @@ type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId"> & {
   labelIds?: string[];
   blockedByIssueIds?: string[];
-  externalBlockedByIssueIds?: string[];
   inheritExecutionWorkspaceFromIssueId?: string | null;
   skipExecutionWorkspaceInheritance?: boolean;
   watchdog?: { agentId: string; instructions?: string | null } | null;
@@ -1409,6 +1345,7 @@ async function listIssueDependencyReadinessMap(
     .select({
       issueId: issueRelations.relatedIssueId,
       blockerIssueId: issueRelations.issueId,
+      blockerCompanyId: issues.companyId,
       blockerStatus: issues.status,
       blockerExecutionWorkspaceId: issues.executionWorkspaceId,
     })
@@ -1427,7 +1364,7 @@ async function listIssueDependencyReadinessMap(
   // mark the dependent as not-ready and don't need a finalize check.
   const doneBlockerWorkspacePairs: Array<{ blockerIssueId: string; executionWorkspaceId: string }> = [];
   for (const row of blockerRows) {
-    if (row.blockerStatus === "done" && row.blockerExecutionWorkspaceId) {
+    if (row.blockerStatus === "done" && row.blockerCompanyId === companyId && row.blockerExecutionWorkspaceId) {
       doneBlockerWorkspacePairs.push({
         blockerIssueId: row.blockerIssueId,
         executionWorkspaceId: row.blockerExecutionWorkspaceId,
@@ -1474,7 +1411,7 @@ async function listIssueDependencyReadinessMap(
 
 async function listUnresolvedBlockerIssueIds(
   dbOrTx: Pick<Db, "select">,
-  companyId: string,
+  _companyId: string,
   blockerIssueIds: string[],
 ) {
   const uniqueBlockerIssueIds = [...new Set(blockerIssueIds.filter(Boolean))];
@@ -1484,7 +1421,6 @@ async function listUnresolvedBlockerIssueIds(
     .from(issues)
     .where(
       and(
-        eq(issues.companyId, companyId),
         inArray(issues.id, uniqueBlockerIssueIds),
         // Cancelled blockers intentionally remain unresolved until the relation changes.
         ne(issues.status, "done"),
@@ -2249,20 +2185,43 @@ function appendBlockerAttentionEdges(
 
 type IssueRelationSummaryRow = {
   relatedId: string;
+  relatedCompanyId: string;
   identifier: string | null;
   title: string;
   status: string;
   priority: string;
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
+  hiddenAt: Date | null;
 };
 
-function summarizeIssueRelationRow(row: IssueRelationSummaryRow): IssueRelationIssueSummary {
+function relationSummarySortKey(summary: Pick<IssueRelationIssueSummary, "title" | "identifier" | "id">) {
+  return summary.title ?? summary.identifier ?? summary.id;
+}
+
+function isRedactedForeignRelationSummary(summary: IssueRelationIssueSummary) {
+  return summary.title === null && summary.priority === null;
+}
+
+function summarizeIssueRelationRow(companyId: string, row: IssueRelationSummaryRow): IssueRelationIssueSummary {
+  if (row.relatedCompanyId !== companyId) {
+    return {
+      id: row.relatedId,
+      identifier: row.identifier,
+      title: null,
+      status: row.status as IssueRelationIssueSummary["status"],
+      hiddenAt: row.hiddenAt,
+      priority: null,
+      assigneeAgentId: null,
+      assigneeUserId: null,
+    };
+  }
   return {
     id: row.relatedId,
     identifier: row.identifier,
     title: row.title,
     status: row.status as IssueRelationIssueSummary["status"],
+    hiddenAt: row.hiddenAt,
     priority: row.priority as IssueRelationIssueSummary["priority"],
     assigneeAgentId: row.assigneeAgentId,
     assigneeUserId: row.assigneeUserId,
@@ -2290,12 +2249,14 @@ async function terminalExplicitBlockersByRoot(
         .select({
           currentIssueId: issueRelations.relatedIssueId,
           relatedId: issues.id,
+          relatedCompanyId: issues.companyId,
           identifier: issues.identifier,
           title: issues.title,
           status: issues.status,
           priority: issues.priority,
           assigneeAgentId: issues.assigneeAgentId,
           assigneeUserId: issues.assigneeUserId,
+          hiddenAt: issues.hiddenAt,
         })
         .from(issueRelations)
         .innerJoin(issues, eq(issueRelations.issueId, issues.id))
@@ -2316,7 +2277,7 @@ async function terminalExplicitBlockersByRoot(
           edgesByIssueId.set(row.currentIssueId, existingEdges);
         }
         if (!nodesById.has(row.relatedId)) {
-          nodesById.set(row.relatedId, summarizeIssueRelationRow(row));
+          nodesById.set(row.relatedId, summarizeIssueRelationRow(companyId, row));
           nextFrontier.add(row.relatedId);
         }
       }
@@ -2343,7 +2304,9 @@ async function terminalExplicitBlockersByRoot(
       if (blocker.id !== rootId) deduped.set(blocker.id, blocker);
     }
     if (deduped.size > 0) {
-      terminalByRoot.set(rootId, [...deduped.values()].sort((a, b) => a.title.localeCompare(b.title)));
+      terminalByRoot.set(rootId, [...deduped.values()].sort(
+        (a, b) => relationSummarySortKey(a).localeCompare(relationSummarySortKey(b)),
+      ));
     }
   }
 
@@ -3061,12 +3024,14 @@ async function blockedByMapForIssues(
       .select({
         currentIssueId: issueRelations.relatedIssueId,
         relatedId: issues.id,
+        relatedCompanyId: issues.companyId,
         identifier: issues.identifier,
         title: issues.title,
         status: issues.status,
         priority: issues.priority,
         assigneeAgentId: issues.assigneeAgentId,
         assigneeUserId: issues.assigneeUserId,
+        hiddenAt: issues.hiddenAt,
       })
       .from(issueRelations)
       .innerJoin(issues, eq(issueRelations.issueId, issues.id))
@@ -3081,20 +3046,12 @@ async function blockedByMapForIssues(
     for (const row of rows) {
       const blockedBy = map.get(row.currentIssueId);
       if (!blockedBy) continue;
-      blockedBy.push({
-        id: row.relatedId,
-        identifier: row.identifier,
-        title: row.title,
-        status: row.status as IssueRelationIssueSummary["status"],
-        priority: row.priority as IssueRelationIssueSummary["priority"],
-        assigneeAgentId: row.assigneeAgentId,
-        assigneeUserId: row.assigneeUserId,
-      });
+      blockedBy.push(summarizeIssueRelationRow(companyId, row));
     }
   }
 
   for (const blockedBy of map.values()) {
-    blockedBy.sort((a, b) => a.title.localeCompare(b.title));
+    blockedBy.sort((a, b) => relationSummarySortKey(a).localeCompare(relationSummarySortKey(b)));
   }
 
   return map;
@@ -3405,6 +3362,9 @@ function boardActionDecisionTextFromInteraction(input: {
   if (input.kind === "request_confirmation" || input.kind === "request_checkbox_confirmation") {
     return `Approve, reject, or request revision${interactionName}.`;
   }
+  if (input.kind === "request_item_verdicts") {
+    return `Approve, reject, or defer items in the open verdict request${interactionName}.`;
+  }
   return `Respond to the open question${interactionName}.`;
 }
 
@@ -3416,13 +3376,20 @@ function boardActionDecisionTextFromStaleInteraction(input: {
   kind: string;
   title: string | null;
   summary: string | null;
+  reason?: string | null;
 }) {
   const interactionLabel = [input.title, input.summary].find((value) => value && value.trim().length > 0)?.trim();
   const interactionName = interactionLabel ? ` interaction "${interactionLabel}"` : " interaction";
+  if (input.reason?.includes("reassigned")) {
+    return `Review the auto-cancelled${interactionName}: the issue was reassigned before any decision was made, so recreate a fresh ask if the decision is still needed.`;
+  }
   return `Review the auto-cancelled${interactionName} and decide whether it still needs to be recreated on a live issue.`;
 }
 
 function boardActionResumeTextFromStaleInteraction(reason: string | null) {
+  if (reason?.includes("reassigned")) {
+    return `No decision was made before reassignment. Recreate the interaction for the new owner if the decision is still needed (auto-cancel reason: ${reason}).`;
+  }
   if (reason) {
     return `Reopen the issue or recreate the interaction on a live issue if the decision is still needed (auto-cancel reason: ${reason}).`;
   }
@@ -3433,10 +3400,19 @@ function isBoardActionInteraction(
   interaction: { kind: string },
   issueRow: { assigneeUserId?: string | null },
 ) {
+  // OPERATOR RULING 2026-07-31: request_item_verdicts is operator triage and
+  // MUST derive board action. It is the per-item approve/reject/defer shape,
+  // so excluding it recreates the hidden-operator-decision trap.
+  //
+  // Deliberate non-inclusion: suggest_tasks stays out of the derived
+  // boardActionRequired issue flag. It already lands in operator attention, but
+  // it proposes follow-up task creation rather than blocking the source issue on
+  // a board verdict in the same way as confirmation / questions / item verdicts.
   if (
     interaction.kind !== "request_confirmation"
     && interaction.kind !== "request_checkbox_confirmation"
     && interaction.kind !== "ask_user_questions"
+    && interaction.kind !== "request_item_verdicts"
   ) {
     return false;
   }
@@ -3722,7 +3698,7 @@ async function listIssueBoardActionRequirementMap(
       title: interaction.title,
       summary: interaction.summary,
       createdAt: interaction.resolvedAt ?? interaction.createdAt,
-      decisionText: boardActionDecisionTextFromStaleInteraction(interaction),
+      decisionText: boardActionDecisionTextFromStaleInteraction({ ...interaction, reason }),
       resumeText: boardActionResumeTextFromStaleInteraction(reason),
     });
   }
@@ -5169,12 +5145,14 @@ export function issueService(db: Db) {
         .select({
           currentIssueId: issueRelations.relatedIssueId,
           relatedId: issues.id,
+          relatedCompanyId: issues.companyId,
           identifier: issues.identifier,
           title: issues.title,
           status: issues.status,
           priority: issues.priority,
           assigneeAgentId: issues.assigneeAgentId,
           assigneeUserId: issues.assigneeUserId,
+          hiddenAt: issues.hiddenAt,
         })
         .from(issueRelations)
         .innerJoin(issues, eq(issueRelations.issueId, issues.id))
@@ -5189,12 +5167,14 @@ export function issueService(db: Db) {
         .select({
           currentIssueId: issueRelations.issueId,
           relatedId: issues.id,
+          relatedCompanyId: issues.companyId,
           identifier: issues.identifier,
           title: issues.title,
           status: issues.status,
           priority: issues.priority,
           assigneeAgentId: issues.assigneeAgentId,
           assigneeUserId: issues.assigneeUserId,
+          hiddenAt: issues.hiddenAt,
         })
         .from(issueRelations)
         .innerJoin(issues, eq(issueRelations.relatedIssueId, issues.id))
@@ -5208,10 +5188,10 @@ export function issueService(db: Db) {
     ]);
 
     for (const row of blockedByRows) {
-      empty.get(row.currentIssueId)?.blockedBy.push(summarizeIssueRelationRow(row));
+      empty.get(row.currentIssueId)?.blockedBy.push(summarizeIssueRelationRow(companyId, row));
     }
     for (const row of blockingRows) {
-      empty.get(row.currentIssueId)?.blocks.push(summarizeIssueRelationRow(row));
+      empty.get(row.currentIssueId)?.blocks.push(summarizeIssueRelationRow(companyId, row));
     }
 
     const terminalByRoot = await terminalExplicitBlockersByRoot(
@@ -5221,14 +5201,14 @@ export function issueService(db: Db) {
     );
 
     for (const relations of empty.values()) {
-      relations.blockedBy.sort((a, b) => a.title.localeCompare(b.title));
+      relations.blockedBy.sort((a, b) => relationSummarySortKey(a).localeCompare(relationSummarySortKey(b)));
       for (const blocker of relations.blockedBy) {
         const terminalBlockers = terminalByRoot.get(blocker.id);
         if (terminalBlockers && terminalBlockers.length > 0) {
           blocker.terminalBlockers = terminalBlockers;
         }
       }
-      relations.blocks.sort((a, b) => a.title.localeCompare(b.title));
+      relations.blocks.sort((a, b) => relationSummarySortKey(a).localeCompare(relationSummarySortKey(b)));
     }
 
     return empty;
@@ -5305,16 +5285,16 @@ export function issueService(db: Db) {
       const lockedIssueIds = [issueId, ...deduped].sort();
       await dbOrTx.execute(
         sql`SELECT ${issues.id} FROM ${issues}
-            WHERE ${and(eq(issues.companyId, companyId), inArray(issues.id, lockedIssueIds))}
+            WHERE ${inArray(issues.id, lockedIssueIds)}
             ORDER BY ${issues.id}
             FOR UPDATE`,
       );
       const relatedIssues = await dbOrTx
         .select({ id: issues.id })
         .from(issues)
-        .where(and(eq(issues.companyId, companyId), inArray(issues.id, deduped)));
+        .where(inArray(issues.id, deduped));
       if (relatedIssues.length !== deduped.length) {
-        throw unprocessable("Blocked-by issues must belong to the same company");
+        throw unprocessable("Blocked-by issues must exist");
       }
       await assertNoBlockingCycles(companyId, issueId, deduped, dbOrTx);
     }
@@ -5341,174 +5321,6 @@ export function issueService(db: Db) {
         createdByUserId: actor.userId ?? null,
       })),
     );
-  }
-
-  async function listExternalBlockerMirrorIssues(
-    companyId: string,
-    dbOrTx: any = db,
-  ) {
-    return dbOrTx
-      .select({
-        id: issues.id,
-        originId: issues.originId,
-      })
-      .from(issues)
-      .where(
-        and(
-          eq(issues.companyId, companyId),
-          eq(issues.originKind, EXTERNAL_BLOCKER_MIRROR_ORIGIN_KIND),
-        ),
-      );
-  }
-
-  async function resolveExternalBlockerMirrorIssueIds(input: {
-    companyId: string;
-    externalBlockedByIssueIds: string[];
-    actor?: { agentId?: string | null; userId?: string | null };
-    dbOrTx?: any;
-  }) {
-    const dbOrTx = input.dbOrTx ?? db;
-    const dedupedRemoteIssueIds = [...new Set(input.externalBlockedByIssueIds.filter(Boolean))];
-    if (dedupedRemoteIssueIds.length === 0) return [];
-
-    const remoteIssues: ExternalBlockerMirrorRemoteIssue[] = await dbOrTx
-      .select({
-        id: issues.id,
-        companyId: issues.companyId,
-        identifier: issues.identifier,
-        title: issues.title,
-        status: issues.status,
-        priority: issues.priority,
-        hiddenAt: issues.hiddenAt,
-      })
-      .from(issues)
-      .where(inArray(issues.id, dedupedRemoteIssueIds));
-    if (remoteIssues.length !== dedupedRemoteIssueIds.length) {
-      throw unprocessable("External blocked-by issues must exist");
-    }
-    if (remoteIssues.some((row) => row.companyId === input.companyId)) {
-      throw unprocessable("External blocked-by issues must belong to a different company");
-    }
-
-    const existingMirrors: Array<{ id: string; originId: string | null }> = await dbOrTx
-      .select({
-        id: issues.id,
-        originId: issues.originId,
-      })
-      .from(issues)
-      .where(
-        and(
-          eq(issues.companyId, input.companyId),
-          eq(issues.originKind, EXTERNAL_BLOCKER_MIRROR_ORIGIN_KIND),
-          inArray(issues.originId, dedupedRemoteIssueIds),
-        ),
-      );
-    const mirrorIdByRemoteIssueId = new Map(existingMirrors.map((row) => [row.originId ?? "", row.id]));
-    const mirrorIssueIds: string[] = [];
-
-    for (const remoteIssueId of dedupedRemoteIssueIds) {
-      const remoteIssue = remoteIssues.find((row) => row.id === remoteIssueId);
-      if (!remoteIssue) continue;
-
-      const existingMirrorIssueId = mirrorIdByRemoteIssueId.get(remoteIssue.id);
-      const desiredStatus = mapExternalBlockerMirrorStatus(remoteIssue);
-      const desiredDescription = buildExternalBlockerMirrorDescription(remoteIssue);
-      const desiredTitle = buildExternalBlockerMirrorTitle(remoteIssue);
-
-      if (existingMirrorIssueId) {
-        await dbOrTx
-          .update(issues)
-          .set({
-            title: desiredTitle,
-            description: desiredDescription,
-            priority: remoteIssue.priority as typeof issues.$inferInsert.priority,
-            status: desiredStatus,
-            completedAt: desiredStatus === "done" ? new Date() : null,
-            cancelledAt: null,
-            updatedAt: new Date(),
-          })
-          .where(eq(issues.id, existingMirrorIssueId));
-        mirrorIssueIds.push(existingMirrorIssueId);
-        continue;
-      }
-
-      const [mirrorIssue] = await dbOrTx.insert(issues).values({
-        companyId: input.companyId,
-        title: desiredTitle,
-        description: desiredDescription,
-        status: desiredStatus,
-        priority: remoteIssue.priority as typeof issues.$inferInsert.priority,
-        originKind: EXTERNAL_BLOCKER_MIRROR_ORIGIN_KIND,
-        originId: remoteIssue.id,
-        createdByAgentId: input.actor?.agentId ?? null,
-        createdByUserId: input.actor?.userId ?? null,
-        completedAt: desiredStatus === "done" ? new Date() : null,
-      }).returning({ id: issues.id });
-      mirrorIssueIds.push(mirrorIssue.id);
-    }
-
-    return mirrorIssueIds;
-  }
-
-  async function syncExternalBlockerMirrorStatusesForRemoteIssue(
-    remoteIssueId: string,
-    dbOrTx: any = db,
-  ): Promise<ExternalBlockerMirrorSyncResult[]> {
-    const remoteIssue: ExternalBlockerMirrorRemoteIssue | null = await dbOrTx
-      .select({
-        id: issues.id,
-        companyId: issues.companyId,
-        identifier: issues.identifier,
-        title: issues.title,
-        status: issues.status,
-        priority: issues.priority,
-        hiddenAt: issues.hiddenAt,
-      })
-      .from(issues)
-      .where(eq(issues.id, remoteIssueId))
-      .then((rows: ExternalBlockerMirrorRemoteIssue[]) => rows[0] ?? null);
-    if (!remoteIssue) return [];
-
-    const mirrors = await dbOrTx
-      .select({
-        id: issues.id,
-        status: issues.status,
-      })
-      .from(issues)
-      .where(
-        and(
-          eq(issues.originKind, EXTERNAL_BLOCKER_MIRROR_ORIGIN_KIND),
-          eq(issues.originId, remoteIssue.id),
-        ),
-      );
-    if (mirrors.length === 0) return [];
-
-    const nextStatus = mapExternalBlockerMirrorStatus(remoteIssue);
-    const nextDescription = buildExternalBlockerMirrorDescription(remoteIssue);
-    const nextTitle = buildExternalBlockerMirrorTitle(remoteIssue);
-    const now = new Date();
-
-    const results: ExternalBlockerMirrorSyncResult[] = [];
-    for (const mirror of mirrors) {
-      await dbOrTx
-        .update(issues)
-        .set({
-          title: nextTitle,
-          description: nextDescription,
-          priority: remoteIssue.priority as typeof issues.$inferInsert.priority,
-          status: nextStatus,
-          completedAt: nextStatus === "done" ? now : null,
-          cancelledAt: null,
-          updatedAt: now,
-        })
-        .where(eq(issues.id, mirror.id));
-      results.push({
-        mirrorIssueId: mirror.id,
-        previousStatus: mirror.status,
-        status: nextStatus,
-      });
-    }
-    return results;
   }
 
   async function isTerminalOrMissingHeartbeatRun(runId: string, dbOrTx: DbReader = db) {
@@ -6830,6 +6642,7 @@ export function issueService(db: Db) {
       const candidates = await db
         .select({
           id: issues.id,
+          companyId: issues.companyId,
           assigneeAgentId: issues.assigneeAgentId,
           status: issues.status,
         })
@@ -6837,7 +6650,6 @@ export function issueService(db: Db) {
         .innerJoin(issues, eq(issueRelations.relatedIssueId, issues.id))
         .where(
           and(
-            eq(issueRelations.companyId, blockerIssue.companyId),
             eq(issueRelations.type, "blocks"),
             eq(issueRelations.issueId, blockerIssueId),
           ),
@@ -6855,23 +6667,31 @@ export function issueService(db: Db) {
       // recorded a successful workspace_finalize. The finalize hook also calls
       // this function on completion, so a wake initially gated by an in-flight
       // sync-back will re-fire once the restore lands locally.
-      const readinessMap = await listIssueDependencyReadinessMap(
-        db,
-        blockerIssue.companyId,
-        wakeableCandidates.map((candidate) => candidate.id),
-      );
+      const candidatesByCompany = new Map<string, typeof wakeableCandidates>();
+      for (const candidate of wakeableCandidates) {
+        const companyCandidates = candidatesByCompany.get(candidate.companyId) ?? [];
+        companyCandidates.push(candidate);
+        candidatesByCompany.set(candidate.companyId, companyCandidates);
+      }
 
-      return wakeableCandidates
-        .map((candidate) => {
+      const resolved: Array<{ id: string; assigneeAgentId: string; blockerIssueIds: string[] }> = [];
+      for (const [companyId, companyCandidates] of candidatesByCompany) {
+        const readinessMap = await listIssueDependencyReadinessMap(
+          db,
+          companyId,
+          companyCandidates.map((candidate) => candidate.id),
+        );
+        for (const candidate of companyCandidates) {
           const readiness = readinessMap.get(candidate.id) ?? createIssueDependencyReadiness(candidate.id);
-          return { candidate, readiness };
-        })
-        .filter(({ readiness }) => readiness.isDependencyReady && readiness.blockerIssueIds.length > 0)
-        .map(({ candidate, readiness }) => ({
-          id: candidate.id,
-          assigneeAgentId: candidate.assigneeAgentId!,
-          blockerIssueIds: readiness.blockerIssueIds,
-        }));
+          if (!readiness.isDependencyReady || readiness.blockerIssueIds.length === 0) continue;
+          resolved.push({
+            id: candidate.id,
+            assigneeAgentId: candidate.assigneeAgentId!,
+            blockerIssueIds: readiness.blockerIssueIds,
+          });
+        }
+      }
+      return resolved;
     },
 
     getWakeableParentAfterChildCompletion: async (parentIssueId: string) => {
@@ -7349,6 +7169,11 @@ export function issueService(db: Db) {
             "Issue cannot be created blocked without unresolved blockedByIssueIds or external owner/action",
           );
         }
+        // Layer 2 (TSMC-18729): a date-gated blocker must name a permissioned executor at write
+        // time, or its gate opens onto nobody. A dateless external wait is unaffected.
+        if (dateGatedBlockerMissingExecutor({ description: data.description, assigneeAgentId: data.assigneeAgentId })) {
+          throw unprocessable(DATE_GATED_BLOCKER_REQUIRES_ASSIGNEE_MESSAGE);
+        }
       }
       return db.transaction(async (tx) => {
         const idempotencyKey = rawIdempotencyKey?.trim() || null;
@@ -7624,8 +7449,21 @@ export function issueService(db: Db) {
           defaultGoalId: defaultCompanyGoal?.id ?? null,
         });
 
+        // TSMC-18738: default a quality-floored closeContract on generation/measurement templates.
+        const cardTemplateRaw = (issueData as { cardTemplate?: string | null }).cardTemplate ?? null;
+        const { cardTemplate: _omitCardTemplate, ...issueDataWithoutCardTemplate } = issueData as typeof issueData & {
+          cardTemplate?: string | null;
+        };
+        const defaultedCloseContract = inferDefaultCloseContractForIssueCreate({
+          title: issueData.title,
+          cardTemplate: cardTemplateRaw,
+          closeContract: issueData.closeContract ?? null,
+          identifier,
+        });
+
         const values = {
-          ...issueData,
+          ...issueDataWithoutCardTemplate,
+          ...(defaultedCloseContract ? { closeContract: defaultedCloseContract } : {}),
           responsibleUserId,
           requestDepth: clampIssueRequestDepth(issueData.requestDepth),
           originKind: issueData.originKind ?? "manual",
@@ -7795,6 +7633,18 @@ export function issueService(db: Db) {
               "Issue cannot enter blocked without unresolved blockedByIssueIds or external owner/action",
             );
           }
+        }
+        // Layer 2 (TSMC-18729): reject entering/re-validating blocked when the gate lines carry a
+        // date but no agent is named to open the gate. Runs regardless of blocker count — a date
+        // gate opens onto a deadline whether or not a relation also blocks it. Recovery writers
+        // stamp dateless gate lines and preserve an agent assignee, so this stays inert for them.
+        const nextBlockedDescription =
+          issueData.description !== undefined ? issueData.description : existing.description;
+        if (dateGatedBlockerMissingExecutor({
+          description: nextBlockedDescription,
+          assigneeAgentId: nextAssigneeAgentId,
+        })) {
+          throw unprocessable(DATE_GATED_BLOCKER_REQUIRES_ASSIGNEE_MESSAGE);
         }
       }
       const shouldValidateNextAssignee =

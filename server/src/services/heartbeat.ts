@@ -122,6 +122,12 @@ import {
   classifyRunLiveness,
   type RunLivenessClassificationInput,
 } from "./run-liveness.js";
+import { isBlockedDedupNoOpResult } from "./blocked-dedup-noop.js";
+import {
+  ADAPTER_POLICY_ECHO_ERROR_CODE,
+  ADAPTER_POLICY_ECHO_ERROR_MESSAGE,
+  assessAdapterPolicyEchoResult,
+} from "./adapter-policy-echo.js";
 import {
   ISSUE_NEW_INPUT_ACTIVITY_ACTIONS,
   ISSUE_PROGRESS_ACTIVITY_ACTIONS,
@@ -613,6 +619,18 @@ function readTransientRecoveryContractFromRun(
     : null;
 }
 
+function readActiveStructuralAdapterFailureRetryNotBefore(
+  run: Pick<typeof heartbeatRuns.$inferSelect, "errorCode" | "error" | "finishedAt" | "updatedAt">,
+  now: Date = new Date(),
+) {
+  if (run.errorCode !== "adapter_failed") return null;
+  if (!CODEX_UNTRUSTED_DIRECTORY_ERROR_RE.test(readNonEmptyString(run.error) ?? "")) return null;
+  const baseTime = run.finishedAt ?? run.updatedAt;
+  if (!baseTime) return null;
+  const retryNotBefore = new Date(baseTime.getTime() + STRUCTURAL_ADAPTER_FAILURE_BACKOFF_MS);
+  return retryNotBefore.getTime() > now.getTime() ? retryNotBefore : null;
+}
+
 function isResolvedInteractionContinuationWakeContext(contextSnapshot: unknown) {
   const context = parseObject(contextSnapshot);
   const interactionId = readNonEmptyString(context.interactionId);
@@ -677,6 +695,9 @@ const RUNNING_ISSUE_WAKE_REASONS_REQUIRING_FOLLOWUP = new Set([
   "approval_approved",
   ISSUE_BLOCKERS_RESOLVED_WAKE_REASON,
 ]);
+const CODEX_UNTRUSTED_DIRECTORY_ERROR_RE =
+  /^Not inside a trusted directory and --skip-git-repo-check was not specified\.?$/i;
+const STRUCTURAL_ADAPTER_FAILURE_BACKOFF_MS = 5 * 60 * 1000;
 const ISSUE_RESPONSIBLE_USER_WAKE_REASONS = new Set([
   "issue_assigned",
   "issue_checked_out",
@@ -8489,6 +8510,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         executionState: issues.executionState,
         monitorNextCheckAt: issues.monitorNextCheckAt,
         projectId: issues.projectId,
+        workMode: issues.workMode,
       })
       .from(issues)
       .where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId)))
@@ -8672,6 +8694,38 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     ]);
 
     if (!issue) return;
+
+    if (
+      issue.status === "in_progress" &&
+      issue.assigneeAgentId === run.agentId &&
+      !issue.assigneeUserId &&
+      isBlockedDedupNoOpResult(resultJson) &&
+      (Boolean(explicitBlocker) || hasExplicitBlockedExternalWait(issue.description))
+    ) {
+      const restored = await issuesSvc.update(issue.id, {
+        status: "blocked",
+        actorAgentId: run.agentId,
+        actorUserId: null,
+      });
+      if (restored) {
+        await logActivity(db, {
+          companyId: issue.companyId,
+          actorType: "system",
+          actorId: "heartbeat",
+          agentId: run.agentId,
+          runId: run.id,
+          action: "issue.disposition_applied",
+          entityType: "issue",
+          entityId: issue.id,
+          details: {
+            label: "Blocked disposition preserved from no-op blocked-dedup summary",
+            appliedStatus: "blocked",
+            sourceRunId: run.id,
+          },
+        });
+        return;
+      }
+    }
 
     // --- Disposition enforcement ---
     // Structured dispositions are self-contained next-action choices that can close
@@ -11533,28 +11587,148 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     };
   }
 
+  function readActiveProviderQuotaRetryNotBefore(
+    run: Pick<typeof heartbeatRuns.$inferSelect, "errorCode" | "resultJson"> | null | undefined,
+    now: Date = new Date(),
+  ): Date | null {
+    const transientRecovery = run ? readTransientRecoveryContractFromRun(run) : null;
+    if (
+      transientRecovery?.errorFamily === "provider_quota" &&
+      transientRecovery.retryNotBefore &&
+      transientRecovery.retryNotBefore.getTime() > now.getTime()
+    ) {
+      return transientRecovery.retryNotBefore;
+    }
+    return readActiveQuotaCooldown(run, now);
+  }
+
+  async function findAgentActiveProviderQuotaCooldown(
+    agentId: string,
+    opts: { excludeRunId?: string | null; now?: Date } = {},
+  ) {
+    const now = opts.now ?? new Date();
+    const rows = await db
+      .select({
+        id: heartbeatRuns.id,
+        status: heartbeatRuns.status,
+        errorCode: heartbeatRuns.errorCode,
+        resultJson: heartbeatRuns.resultJson,
+      })
+      .from(heartbeatRuns)
+      .where(and(
+        eq(heartbeatRuns.agentId, agentId),
+        opts.excludeRunId ? sql`${heartbeatRuns.id} <> ${opts.excludeRunId}` : undefined,
+        sql`${heartbeatRuns.status} <> 'queued'`,
+      ))
+      .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
+      .limit(12);
+
+    for (const row of rows) {
+      if (row.status === "succeeded") return null;
+      const retryNotBefore = readActiveProviderQuotaRetryNotBefore(row, now);
+      if (retryNotBefore) {
+        return {
+          retryNotBefore,
+          sourceRunId: row.id,
+          errorCode: readNonEmptyString(row.errorCode),
+        };
+      }
+    }
+    return null;
+  }
+
+  async function findAgentActiveStructuralAdapterFailureCooldown(
+    agentId: string,
+    opts: { excludeRunId?: string | null; now?: Date } = {},
+  ) {
+    const now = opts.now ?? new Date();
+    const rows = await db
+      .select({
+        id: heartbeatRuns.id,
+        status: heartbeatRuns.status,
+        errorCode: heartbeatRuns.errorCode,
+        error: heartbeatRuns.error,
+        finishedAt: heartbeatRuns.finishedAt,
+        updatedAt: heartbeatRuns.updatedAt,
+      })
+      .from(heartbeatRuns)
+      .where(and(
+        eq(heartbeatRuns.agentId, agentId),
+        opts.excludeRunId ? sql`${heartbeatRuns.id} <> ${opts.excludeRunId}` : undefined,
+        sql`${heartbeatRuns.status} <> 'queued'`,
+      ))
+      .orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id))
+      .limit(12);
+
+    for (const row of rows) {
+      if (row.status === "succeeded") return null;
+      const retryNotBefore = readActiveStructuralAdapterFailureRetryNotBefore(row, now);
+      if (retryNotBefore) return { retryNotBefore, sourceRunId: row.id };
+    }
+    return null;
+  }
+
   async function markQueuedRunDeferredByGate(
     run: typeof heartbeatRuns.$inferSelect,
-    block: { kind: string; reason: string },
+    block: { kind: string; reason: string; nextChangeAt?: Date | null },
     now: Date,
   ) {
-    if (!isConcurrencyRunGateBlockKind(block.kind)) return;
     const throttle = getRunGateThrottleState(run.resultJson);
-    const nextAttempt = Math.min(throttle.attempt + 1, RUN_GATE_CONCURRENCY_BACKOFF_MS.length);
-    const delayMs = RUN_GATE_CONCURRENCY_BACKOFF_MS[nextAttempt - 1] ?? RUN_GATE_CONCURRENCY_BACKOFF_MS.at(-1)!;
-    const retryNotBefore = new Date(now.getTime() + delayMs);
+    const nextAttempt = isConcurrencyRunGateBlockKind(block.kind)
+      ? Math.min(throttle.attempt + 1, RUN_GATE_CONCURRENCY_BACKOFF_MS.length)
+      : null;
+    const retryNotBefore =
+      nextAttempt == null
+        ? (block.nextChangeAt ?? null)
+        : new Date(
+          now.getTime()
+          + (RUN_GATE_CONCURRENCY_BACKOFF_MS[nextAttempt - 1] ?? RUN_GATE_CONCURRENCY_BACKOFF_MS.at(-1)!),
+        );
+    const nextRunGateThrottle = {
+      kind: block.kind,
+      reason: block.reason,
+      ...(nextAttempt == null ? {} : { attempt: nextAttempt }),
+      deferredAt: now.toISOString(),
+      ...(retryNotBefore ? { retryNotBefore: retryNotBefore.toISOString() } : {}),
+      ...(block.nextChangeAt ? { nextChangeAt: block.nextChangeAt.toISOString() } : {}),
+    };
     await db
       .update(heartbeatRuns)
       .set({
         resultJson: {
           ...throttle.resultJson,
-          retryNotBefore: retryNotBefore.toISOString(),
-          runGateThrottle: {
-            kind: block.kind,
-            reason: block.reason,
-            attempt: nextAttempt,
+          ...(retryNotBefore ? { retryNotBefore: retryNotBefore.toISOString() } : {}),
+          runGateThrottle: nextRunGateThrottle,
+        },
+        updatedAt: now,
+      })
+      .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "queued")));
+  }
+
+  async function markQueuedRunDeferredByProviderQuota(
+    run: typeof heartbeatRuns.$inferSelect,
+    block: { retryNotBefore: Date; sourceRunId: string; errorCode: string | null },
+    now: Date,
+  ) {
+    const retryNotBefore = block.retryNotBefore.toISOString();
+    const resultJson =
+      mergeAdapterRecoveryMetadata({
+        resultJson: parseObject(run.resultJson),
+        errorFamily: "provider_quota",
+        retryNotBefore,
+      }) ?? {};
+    await db
+      .update(heartbeatRuns)
+      .set({
+        resultJson: {
+          ...resultJson,
+          queuedPolicyDeferral: {
+            kind: "provider_quota",
+            reason: `Agent is quota-limited until ${retryNotBefore}.`,
             deferredAt: now.toISOString(),
-            retryNotBefore: retryNotBefore.toISOString(),
+            retryNotBefore,
+            sourceRunId: block.sourceRunId,
+            errorCode: block.errorCode,
           },
         },
         updatedAt: now,
@@ -11605,6 +11779,46 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       logger.debug(
         { runId: run.id, agentId: run.agentId, kind: runGateBlock.kind, reason: runGateBlock.reason },
         "claimQueuedRun: run deferred by run gate",
+      );
+      return null;
+    }
+
+    const activeProviderQuotaCooldown = await findAgentActiveProviderQuotaCooldown(run.agentId, {
+      excludeRunId: run.id,
+      now,
+    });
+    if (activeProviderQuotaCooldown) {
+      await markQueuedRunDeferredByProviderQuota(run, activeProviderQuotaCooldown, now);
+      logger.debug(
+        {
+          runId: run.id,
+          agentId: run.agentId,
+          sourceRunId: activeProviderQuotaCooldown.sourceRunId,
+          retryNotBefore: activeProviderQuotaCooldown.retryNotBefore.toISOString(),
+        },
+        "claimQueuedRun: run deferred by provider quota cooldown",
+      );
+      return null;
+    }
+
+    const activeStructuralAdapterFailure = await findAgentActiveStructuralAdapterFailureCooldown(run.agentId, {
+      excludeRunId: run.id,
+      now,
+    });
+    if (activeStructuralAdapterFailure) {
+      await markQueuedRunDeferredByGate(run, {
+        kind: "structural_adapter_failure",
+        reason: "Codex rejected the previous launch because its managed workspace was not a git repository.",
+        nextChangeAt: activeStructuralAdapterFailure.retryNotBefore,
+      }, now);
+      logger.debug(
+        {
+          runId: run.id,
+          agentId: run.agentId,
+          sourceRunId: activeStructuralAdapterFailure.sourceRunId,
+          retryNotBefore: activeStructuralAdapterFailure.retryNotBefore.toISOString(),
+        },
+        "claimQueuedRun: run deferred by structural adapter failure cooldown",
       );
       return null;
     }
@@ -12854,16 +13068,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
     const reaped: string[] = [];
     for (const { run, adapterType, runtimeConfig, activityWindow, issueId, retryNotBefore } of candidates) {
-      // Closed-window queues are correctly deferred and must not be reaped.
-      // A company with no activity window is always active, so its queued rows
-      // are eligible for stale reaping even for non-exempt adapters.
       const parsedRuntimeConfig = parseObject(runtimeConfig);
-      if (getActivityWindowScheduleSkip({
-        activityWindow,
+      const runGateBlock = await runGate.getRunGateBlock({
+        companyId: run.companyId,
+        agentId: run.agentId,
         adapterType,
-        runtimeConfig: parsedRuntimeConfig,
+        agentRuntimeConfig: parsedRuntimeConfig,
+        isManualOverride: run.triggerDetail === "manual",
         now,
-      })) {
+      });
+      if (runGateBlock) {
+        await markQueuedRunDeferredByGate(run, runGateBlock, now);
         continue;
       }
       // If the agent has a RUNNING run, its queue is draining normally behind it.
@@ -12873,21 +13088,25 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         .where(and(eq(heartbeatRuns.agentId, run.agentId), eq(heartbeatRuns.status, "running")))
         .limit(1);
       if (running.length > 0) continue;
-      const throttleState = getRunGateThrottleState(run.resultJson);
-      const throttleKind = readNonEmptyString(parseObject(throttleState.resultJson.runGateThrottle).kind);
-      if (throttleKind && isConcurrencyRunGateBlockKind(throttleKind)) {
-        const runGateBlock = await runGate.getRunGateBlock({
-          companyId: run.companyId,
-          agentId: run.agentId,
-          adapterType,
-          agentRuntimeConfig: parsedRuntimeConfig,
-          isManualOverride: run.triggerDetail === "manual",
-          now,
-        });
-        if (runGateBlock && isConcurrencyRunGateBlockKind(runGateBlock.kind)) {
-          await markQueuedRunDeferredByGate(run, runGateBlock, now);
-          continue;
-        }
+      const activeProviderQuotaCooldown = await findAgentActiveProviderQuotaCooldown(run.agentId, {
+        excludeRunId: run.id,
+        now,
+      });
+      if (activeProviderQuotaCooldown) {
+        await markQueuedRunDeferredByProviderQuota(run, activeProviderQuotaCooldown, now);
+        continue;
+      }
+      const activeStructuralAdapterFailure = await findAgentActiveStructuralAdapterFailureCooldown(run.agentId, {
+        excludeRunId: run.id,
+        now,
+      });
+      if (activeStructuralAdapterFailure) {
+        await markQueuedRunDeferredByGate(run, {
+          kind: "structural_adapter_failure",
+          reason: "Codex rejected the previous launch because its managed workspace was not a git repository.",
+          nextChangeAt: activeStructuralAdapterFailure.retryNotBefore,
+        }, now);
+        continue;
       }
       // A run waiting on a future retry time is correctly deferred, not stuck.
       if (retryNotBefore && new Date(retryNotBefore).getTime() > now.getTime()) continue;
@@ -15449,12 +15668,65 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
       let outcome: RunSessionOutcome;
       const latestRun = await getRun(run.id);
+      // TSMC-18738 / K19: collect issue comments authored during this run for echo detection.
+      // Used only when a clean exit would otherwise settle as succeeded.
+      let policyEchoCommentBodies: string[] | null = null;
       if (isHeartbeatRunTerminalStatus(latestRun?.status)) {
         outcome = latestRun.status;
       } else if (adapterResult.timedOut) {
         outcome = "timed_out";
       } else if ((adapterResult.exitCode ?? 0) === 0 && !adapterResult.errorMessage) {
-        outcome = "succeeded";
+        // TSMC-18738 §K19 (TSBC-1590 class): do not settle as succeeded when the only
+        // durable output is adapter wake-handling/policy instruction text echoed back.
+        try {
+          if (issueId) {
+            const runComments = await issuesSvc.listComments(issueId, { order: "desc", limit: 20 });
+            policyEchoCommentBodies = runComments
+              .filter((comment) => comment.createdByRunId === run.id || comment.authorAgentId === agent.id)
+              .map((comment) => comment.body)
+              .filter((body): body is string => typeof body === "string" && body.trim().length > 0);
+          }
+        } catch {
+          policyEchoCommentBodies = null;
+        }
+        const echoAssessment = assessAdapterPolicyEchoResult({
+          resultJson: parseObject(adapterResult.resultJson),
+          summary: adapterResult.summary ?? null,
+          stdout: typeof stdoutExcerpt === "string" ? stdoutExcerpt : null,
+          stderr: typeof stderrExcerpt === "string" ? stderrExcerpt : null,
+          commentBodies: policyEchoCommentBodies,
+        });
+        if (echoAssessment.isEcho) {
+          outcome = "failed";
+          adapterResult = {
+            ...adapterResult,
+            exitCode: adapterResult.exitCode == null || adapterResult.exitCode === 0 ? 1 : adapterResult.exitCode,
+            errorMessage: ADAPTER_POLICY_ECHO_ERROR_MESSAGE,
+            errorCode: ADAPTER_POLICY_ECHO_ERROR_CODE,
+            errorMeta: {
+              ...(adapterResult.errorMeta ?? {}),
+              adapterPolicyEcho: {
+                reason: echoAssessment.reason,
+                markerHits: echoAssessment.markerHits,
+                strongHits: echoAssessment.strongHits,
+                residualChars: echoAssessment.residualChars,
+                sourceChars: echoAssessment.sourceChars,
+                matchedMarkers: echoAssessment.matchedMarkers.slice(0, 12),
+              },
+            },
+            resultJson: {
+              ...parseObject(adapterResult.resultJson),
+              adapterPolicyEcho: true,
+              adapterPolicyEchoReason: echoAssessment.reason,
+            },
+          };
+          await onLog(
+            "stderr",
+            `[paperclip] ${ADAPTER_POLICY_ECHO_ERROR_MESSAGE} reason=${echoAssessment.reason ?? "unknown"}\n`,
+          );
+        } else {
+          outcome = "succeeded";
+        }
       } else {
         outcome = "failed";
       }

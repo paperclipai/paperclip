@@ -12,6 +12,8 @@ import {
   ISSUE_COMMENT_METADATA_ROW_TYPES,
   ISSUE_COMMENT_PRESENTATION_KINDS,
   ISSUE_COMMENT_PRESENTATION_TONES,
+  GENERATION_MEASUREMENT_CARD_TEMPLATES,
+  ISSUE_CLOSE_CONTRACT_EXEMPT_REASONS,
   ISSUE_HARNESS_KINDS,
   ISSUE_MONITOR_SCHEDULED_BY,
   ISSUE_PRIORITIES,
@@ -188,12 +190,58 @@ const governedWorkProductsPathSchema = z
     "Evidence path must stay within work-products",
   );
 
-export const issueCloseContractSchema = z
+/** Generic count units that do not satisfy the artifact-kind quality floor (TSMC-18738 §1). */
+const GENERIC_CLOSE_ARTIFACT_KIND_DENYLIST = new Set([
+  "file",
+  "files",
+  "any",
+  "artifact",
+  "artifacts",
+  "output",
+  "outputs",
+  "item",
+  "items",
+  "thing",
+  "things",
+  "doc",
+  "docs",
+  "data",
+  "result",
+  "results",
+]);
+
+const closeContractArtifactKindSchema = z
+  .string()
+  .trim()
+  .min(3)
+  .max(120)
+  .refine(
+    (value) => !GENERIC_CLOSE_ARTIFACT_KIND_DENYLIST.has(value.toLowerCase()),
+    "artifactKind must name a concrete artifact class (e.g. rendered_pdf, generated_image), not a generic count unit",
+  );
+
+export const issueCloseEvidenceContractSchema = z
   .object({
+    mode: z.literal("evidence").optional().default("evidence"),
     evidenceTarget: z.number().int().positive().max(100000),
     evidencePath: governedWorkProductsPathSchema,
+    artifactKind: closeContractArtifactKindSchema,
+    cardTemplate: z.enum(GENERATION_MEASUREMENT_CARD_TEMPLATES).optional(),
   })
   .strict();
+
+export const issueCloseExemptContractSchema = z
+  .object({
+    mode: z.literal("exempt"),
+    exemptReason: z.enum(ISSUE_CLOSE_CONTRACT_EXEMPT_REASONS),
+    note: z.string().trim().min(1).max(500).optional(),
+  })
+  .strict();
+
+export const issueCloseContractSchema = z.union([
+  issueCloseEvidenceContractSchema,
+  issueCloseExemptContractSchema,
+]);
 
 const issueExecutionStagePrincipalBaseSchema = z.object({
   type: z.enum(["agent", "user"]),
@@ -476,7 +524,6 @@ const createIssueBaseSchema = z.object({
     ]),
     action: multilineTextSchema.pipe(z.string().trim().min(1).max(2_000)),
   }).strict().optional().nullable(),
-  externalBlockedByIssueIds: z.array(z.string().uuid()).optional(),
   inheritExecutionWorkspaceFromIssueId: z.string().uuid().optional().nullable(),
   title: z.string().min(1),
   description: multilineTextSchema.optional().nullable(),
@@ -493,6 +540,8 @@ const createIssueBaseSchema = z.object({
   billingCode: z.string().optional().nullable(),
   assigneeAdapterOverrides: issueAssigneeAdapterOverridesSchema.optional().nullable(),
   closeContract: issueCloseContractSchema.optional().nullable(),
+  /** Generation/measurement template — defaults a quality-floored closeContract when omitted (TSMC-18738). */
+  cardTemplate: z.enum(GENERATION_MEASUREMENT_CARD_TEMPLATES).optional().nullable(),
   executionPolicy: issueExecutionPolicySchema.optional().nullable(),
   executionWorkspaceId: z.string().uuid().optional().nullable(),
   executionWorkspacePreference: z.enum(ISSUE_EXECUTION_WORKSPACE_PREFERENCES).optional().nullable(),

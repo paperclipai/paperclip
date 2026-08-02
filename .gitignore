@@ -82,6 +82,10 @@ __pycache__/
 
 # transient benchmark run logs
 benchmark/*.log
+# one-off benchmark ledger backups are rollback material, not source
+benchmark/ledger/*.bak-*
+# Live pool-guard telemetry is rewritten by the served process.
+docs/pool-starvation-guard-report.json
 # transient operator resume/preserve state
 scripts/.claude-preserve/
 
@@ -100,9 +104,40 @@ benchmark/.claude-bench-halt
 # Text deliverables (md/txt/json) under work-products remain tracked.
 # (Media committed before 2026-07-20 stays tracked; this governs new renders.)
 work-products/**/*.mp4
+work-products/**/*.webm
+work-products/**/*.mov
+work-products/**/*.wav
+work-products/**/*.mp3
+work-products/**/*.bin
 work-products/**/*.png
 work-products/**/*.jpg
 work-products/**/*.jpeg
+# Captured Hermes homes may be retained locally as benchmark provenance, but
+# they contain credentials, mutable state databases, caches and bundled tools.
+# Commit their redacted manifests/reports, never the runtime home itself.
+work-products/**/.hermes/
+benchmark/work-products/**/.hermes/
+# Legacy captures that placed a Hermes home at the work-product root.
+work-products/**/hermes-*-home/
+work-products/**/auth
+work-products/**/auth.json
+work-products/**/auth.lock
+work-products/**/state.db
+work-products/**/state.db-shm
+work-products/**/state.db-wal
+work-products/**/cache/
+work-products/**/logs/
+# Process-control crumbs are useful while a local driver is live but are not
+# portable evidence and become stale immediately after the run exits.
+work-products/**/*.pid
+work-products/**/nohup.out
+benchmark/work-products/**/*.ptr
+# Raw HTTP response headers may carry transient session or edge cookies.
+work-products/**/*headers.txt
+benchmark/work-products/**/*headers.txt
+# Non-portable operator shortcuts into the live instance work-product store.
+work-products/TSBC-1248/hermes-r1-1266-current-clean
+work-products/TSM-6048/stacklab-v5-contract-source-pack-r4-real-motion-forced-1437
 server/work-products/**/*.mp4
 server/work-products/**/*.png
 server/work-products/**/*.jpg

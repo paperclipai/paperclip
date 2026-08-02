@@ -972,8 +972,37 @@ describe("agent issue mutation checkout ownership", () => {
     // indistinguishable from a nonexistent issue — no existence oracle.
     expect(res.status, JSON.stringify(res.body)).toBe(404);
     expect(res.body.error).toBe("Issue not found");
-    expect(mockAccessService.decide).not.toHaveBeenCalledWith(expect.objectContaining({ action: "issue:comment" }));
+    expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({ action: "issue:comment" }));
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  });
+
+  it("allows cross-company direct-parent report comments when authz grants that exact path", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({
+      companyId: "99999999-9999-4999-8999-999999999999",
+      status: "done",
+    }));
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: input.action === "issue:comment",
+      action: input.action,
+      reason: input.action === "issue:comment" ? "allow_direct_parent_report" : "deny_missing_grant",
+      explanation:
+        input.action === "issue:comment"
+          ? "Allowed because the target is the current run issue's direct parent."
+          : "Missing permission.",
+    }));
+
+    const res = await request(await createApp(peerActor({ companyId: "99999999-9999-4999-8999-999999999999" })))
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "Weekly mirror", resume: true });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({ action: "issue:comment" }));
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      issueId,
+      "Weekly mirror",
+      expect.any(Object),
+      expect.any(Object),
+    );
   });
 
   it("rejects the checked-out owner without a run id on attachment upload (401)", async () => {
@@ -1578,6 +1607,30 @@ describe("agent issue mutation checkout ownership", () => {
     expect(res.status).toBe(200);
     expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
     expect(mockIssueService.update).toHaveBeenCalled();
+  });
+
+  it("allows manager-chain mutation when only checkout-management authority is granted", async () => {
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: input.action === "tasks:manage_active_checkouts",
+      action: input.action,
+      reason: input.action === "tasks:manage_active_checkouts" ? "allow_manager_chain" : "deny_missing_grant",
+      explanation:
+        input.action === "tasks:manage_active_checkouts"
+          ? "Allowed because the actor manages the issue assignee in the reporting chain."
+          : "Missing permission.",
+    }));
+
+    const res = await request(await createApp(peerActor())).patch(`/api/issues/${issueId}`).send({ status: "cancelled" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      issueId,
+      expect.objectContaining({
+        status: "cancelled",
+        actorAgentId: peerAgentId,
+        actorUserId: null,
+      }),
+    );
   });
 
   it("allows gate-keeper comments and allowlisted documents on labeled issues and logs override use", async () => {
@@ -2358,6 +2411,18 @@ describe("agent issue mutation checkout ownership", () => {
       mockIssueService.getById.mockResolvedValue(makeIssue({ assigneeAgentId: ownerAgentId }));
       mockIssueService.update.mockResolvedValue(makeIssue({ assigneeAgentId: peerAgentId }));
       mockAgentService.resolveByReference.mockResolvedValue({ ambiguous: false, agent: makeAgent(peerAgentId) });
+      mockIssueThreadInteractionService.expirePendingInteractionsForStaleIssueState.mockResolvedValue([
+        {
+          id: "interaction-reassigned",
+          kind: "request_confirmation",
+          status: "cancelled",
+          result: {
+            version: 1,
+            outcome: "stale_issue_state",
+            reason: "Issue reassigned to a different owner.",
+          },
+        },
+      ]);
 
       const app = await createApp(ownerActor());
       const res = await request(app)
@@ -2383,6 +2448,72 @@ describe("agent issue mutation checkout ownership", () => {
           userId: null,
         },
       });
+      expect(mockIssueService.addComment).toHaveBeenCalledWith(
+        issueId,
+        expect.stringContaining("Board action cancelled by reassignment"),
+        expect.objectContaining({
+          agentId: ownerAgentId,
+          runId: ownerRunId,
+        }),
+        expect.objectContaining({ authorType: "agent" }),
+      );
+      const reassignmentNotice = mockIssueService.addComment.mock.calls.find(
+        (call: unknown[]) =>
+          typeof call[1] === "string"
+          && (call[1] as string).includes("Board action cancelled by reassignment"),
+      );
+      expect(reassignmentNotice?.[1]).toContain("the decision remains open");
+      expect(reassignmentNotice?.[1]).toContain("create a fresh interaction for the new owner");
+    });
+
+    it("keeps reassignment-to-local-board cancellations explicitly unresolved in the thread", async () => {
+      mockIssueService.getById.mockResolvedValue(makeIssue({ assigneeAgentId: ownerAgentId }));
+      mockIssueService.update.mockResolvedValue(makeIssue({ assigneeAgentId: null, assigneeUserId: "local-board" }));
+      mockIssueThreadInteractionService.expirePendingInteractionsForStaleIssueState.mockResolvedValue([
+        {
+          id: "interaction-local-board",
+          kind: "request_confirmation",
+          status: "cancelled",
+          result: {
+            version: 1,
+            outcome: "stale_issue_state",
+            reason: "Issue reassigned to a different owner.",
+          },
+        },
+      ]);
+
+      const app = await createApp(ownerActor());
+      const res = await request(app)
+        .patch(`/api/issues/${issueId}`)
+        .send({ assigneeUserId: "local-board" });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(mockIssueThreadInteractionService.expirePendingInteractionsForStaleIssueState).toHaveBeenCalledWith({
+        previousIssue: expect.objectContaining({
+          id: issueId,
+          status: "in_progress",
+          assigneeAgentId: ownerAgentId,
+          assigneeUserId: null,
+        }),
+        issue: expect.objectContaining({
+          id: issueId,
+          status: "in_progress",
+          assigneeAgentId: null,
+          assigneeUserId: "local-board",
+        }),
+        actor: {
+          agentId: ownerAgentId,
+          userId: null,
+        },
+      });
+      const reassignmentNotice = mockIssueService.addComment.mock.calls.find(
+        (call: unknown[]) =>
+          typeof call[1] === "string"
+          && (call[1] as string).includes("Board action cancelled by reassignment"),
+      );
+      expect(reassignmentNotice).toBeTruthy();
+      expect(reassignmentNotice?.[1]).not.toContain("Board action resolved");
+      expect(reassignmentNotice?.[1]).toContain("create a fresh interaction for the new owner");
     });
 
     it("still denies a watchdog run mutating an issue outside the watched subtree", async () => {

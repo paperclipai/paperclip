@@ -1,0 +1,19 @@
+Parent: [TSMC-18536](/TSMC/issues/TSMC-18536).
+
+Purpose: convert the date-gated restore wait on `TSMC-18536` into a first-class Paperclip blocker so the parent no longer sits `blocked` on prose alone.
+
+External owner: local-board
+External action: on or after Friday, July 31, 2026 at 14:30 Europe/Dublin, wake a permissioned lane to PATCH the three `/companies/:id/activity-window` records via board scope, verify each with GET read-back, then close this blocker so `TSMC-18536` auto-resumes.
+
+Acceptance criteria:
+1. Re-check the three target activity-window records on or after Friday, July 31, 2026 at 14:30 Europe/Dublin.
+2. Apply the restore only after that gate opens, exactly as specified on `TSMC-18536`.
+3. Record verification evidence for each company read-back before closing this blocker.
+4. Close this blocker only when the restore is complete so `TSMC-18536` wakes on a truthful dependency edge.
+
+Process checked before create:
+- `docs/TSKB/README.txt`
+- `/Users/glad0s/TSKB/KB/TSKB0309 [TSMC] - Date-Gated Review Waits Need First-Class Blockers - v1.0 - 07-30.md`
+- `/Users/glad0s/TSKB/KB/TSKB0030 [ALL] - Paperclip Backlog Index (living) - v1.0 - 06-29/README.md`
+
+Dedup search checked: active TSMC issue searches for `Restore permanent sprint windows after Grok-burn day` and `activity-window grok-burn July 31 2026` showed the parent `TSMC-18536`, this reconcile child `TSMC-18561`, and no existing first-class blocker for the dated restore gate.

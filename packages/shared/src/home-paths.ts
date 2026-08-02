@@ -1,11 +1,17 @@
+import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
 export const DEFAULT_PAPERCLIP_INSTANCE_ID = "default";
 export const PAPERCLIP_CONFIG_BASENAME = "config.json";
 export const PAPERCLIP_ENV_FILENAME = ".env";
+export const PAPERCLIP_X10_SENTINEL_BASENAME = ".thinkstack-x10-sentinel";
 
 const PATH_SEGMENT_RE = /^[a-zA-Z0-9_-]+$/;
+
+export interface PaperclipCompanyConfig {
+  workProductsRoot: string | null;
+}
 
 export function expandHomePrefix(value: string): string {
   if (value === "~") return os.homedir();
@@ -48,6 +54,63 @@ export function resolvePaperclipCompanyRoot(
   return path.resolve(resolvePaperclipInstanceRoot(input), "companies", trimmed);
 }
 
+export function resolvePaperclipCompanyConfigPath(
+  companyId: string,
+  input: {
+    homeDir?: string;
+    instanceId?: string;
+  } = {},
+): string {
+  return path.resolve(resolvePaperclipCompanyRoot(companyId, input), PAPERCLIP_CONFIG_BASENAME);
+}
+
+function resolvePaperclipX10VolumeRoot(): string {
+  const raw = process.env.PAPERCLIP_X10_VOLUME_ROOT?.trim();
+  return path.resolve(raw ? expandHomePrefix(raw) : "/Volumes/X10 Pro");
+}
+
+function assertConfiguredWorkProductsRootIsAvailable(configuredRoot: string) {
+  const x10VolumeRoot = resolvePaperclipX10VolumeRoot();
+  const relativeToX10 = path.relative(x10VolumeRoot, configuredRoot);
+  if (relativeToX10 === ".." || relativeToX10.startsWith(`..${path.sep}`)) return;
+
+  const sentinelPath = path.join(x10VolumeRoot, PAPERCLIP_X10_SENTINEL_BASENAME);
+  if (fs.existsSync(sentinelPath)) return;
+  throw new Error(
+    `Configured work-products root '${configuredRoot}' requires the real X10 volume, ` +
+    `but sentinel '${sentinelPath}' is missing.`,
+  );
+}
+
+export function readPaperclipCompanyConfig(
+  companyId: string,
+  input: {
+    homeDir?: string;
+    instanceId?: string;
+  } = {},
+): PaperclipCompanyConfig {
+  const configPath = resolvePaperclipCompanyConfigPath(companyId, input);
+  let parsed: unknown = null;
+  try {
+    parsed = JSON.parse(fs.readFileSync(configPath, "utf8"));
+  } catch {
+    return { workProductsRoot: null };
+  }
+
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    return { workProductsRoot: null };
+  }
+
+  const workProductsRootRaw =
+    typeof (parsed as { workProductsRoot?: unknown }).workProductsRoot === "string"
+      ? (parsed as { workProductsRoot: string }).workProductsRoot.trim()
+      : "";
+
+  return {
+    workProductsRoot: workProductsRootRaw ? path.resolve(expandHomePrefix(workProductsRootRaw)) : null,
+  };
+}
+
 export function resolvePaperclipCompanyWorkProductsDir(
   companyId: string,
   input: {
@@ -55,6 +118,11 @@ export function resolvePaperclipCompanyWorkProductsDir(
     instanceId?: string;
   } = {},
 ): string {
+  const configuredRoot = readPaperclipCompanyConfig(companyId, input).workProductsRoot;
+  if (configuredRoot) {
+    assertConfiguredWorkProductsRootIsAvailable(configuredRoot);
+    return configuredRoot;
+  }
   return path.resolve(resolvePaperclipCompanyRoot(companyId, input), "work-products");
 }
 

@@ -8,6 +8,7 @@ import {
   companies,
   companyMemberships,
   createDb,
+  heartbeatRuns,
   instanceUserRoles,
   issueComments,
   issues,
@@ -79,6 +80,8 @@ async function createIssue(
     assigneeAgentId?: string | null;
     originKind?: string | null;
     originId?: string | null;
+    status?: (typeof issues.$inferInsert)["status"];
+    checkoutRunId?: string | null;
   } = {},
 ) {
   return db
@@ -87,13 +90,14 @@ async function createIssue(
       id: input.id ?? randomUUID(),
       companyId,
       title: input.title ?? `Issue ${randomUUID()}`,
-      status: "todo",
+      status: input.status ?? "todo",
       priority: "medium",
       projectId: input.projectId ?? null,
       parentId: input.parentId ?? null,
       assigneeAgentId: input.assigneeAgentId ?? null,
       originKind: input.originKind ?? "manual",
       originId: input.originId ?? null,
+      checkoutRunId: input.checkoutRunId ?? null,
     })
     .returning()
     .then((rows) => rows[0]!);
@@ -181,6 +185,7 @@ describeEmbeddedPostgres("authorization service", () => {
     await db.delete(agentFallbackSisters);
     await db.delete(instanceUserRoles);
     await db.delete(issues);
+    await db.delete(heartbeatRuns);
     await db.delete(agents);
     await db.delete(projects);
     await db.delete(companies);
@@ -2003,6 +2008,84 @@ describeEmbeddedPostgres("authorization service", () => {
     })).resolves.toMatchObject({
       allowed: false,
       reason: "deny_scope",
+    });
+  });
+
+  it("allows a standard checked-out run to comment on its direct parent across company boundaries", async () => {
+    const runId = randomUUID();
+    const sourceCompany = await createCompany(db, "DirectParentSource");
+    const targetCompany = await createCompany(db, "DirectParentTarget");
+    const agent = await createAgent(db, sourceCompany.id, { role: "engineer" });
+    const parentIssue = await createIssue(db, targetCompany.id, { assigneeAgentId: null });
+    const childIssueId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId: sourceCompany.id,
+      agentId: agent.id,
+      status: "running",
+      contextSnapshot: {
+        issueId: childIssueId,
+      },
+    });
+    const childIssue = await createIssue(db, sourceCompany.id, {
+      id: childIssueId,
+      parentId: parentIssue.id,
+      assigneeAgentId: agent.id,
+      status: "in_progress",
+      checkoutRunId: runId,
+    });
+
+    const authz = authorizationService(db);
+    const actor = {
+      type: "agent" as const,
+      agentId: agent.id,
+      companyId: sourceCompany.id,
+      source: "agent_jwt" as const,
+      runId,
+    };
+
+    await expect(authz.decide({
+      actor,
+      action: "issue:comment",
+      resource: {
+        type: "issue",
+        companyId: targetCompany.id,
+        issueId: parentIssue.id,
+        parentIssueId: null,
+        projectId: null,
+        assigneeAgentId: parentIssue.assigneeAgentId,
+        assigneeUserId: parentIssue.assigneeUserId,
+        status: parentIssue.status,
+      },
+    })).resolves.toMatchObject({
+      allowed: true,
+      reason: "allow_direct_parent_report",
+    });
+
+    await expect(authz.decide({
+      actor,
+      action: "issue:read",
+      resource: {
+        type: "issue",
+        companyId: targetCompany.id,
+        issueId: parentIssue.id,
+      },
+    })).resolves.toMatchObject({
+      allowed: false,
+      reason: "deny_company_boundary",
+    });
+
+    await expect(authz.decide({
+      actor,
+      action: "issue:mutate",
+      resource: {
+        type: "issue",
+        companyId: targetCompany.id,
+        issueId: parentIssue.id,
+      },
+    })).resolves.toMatchObject({
+      allowed: false,
+      reason: "deny_company_boundary",
     });
   });
 

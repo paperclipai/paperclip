@@ -1,4 +1,6 @@
 import type {
+  GenerationMeasurementCardTemplate,
+  IssueCloseContractExemptReason,
   IssueCommentAuthorType,
   IssueCommentMetadataRowType,
   IssueCommentPresentationKind,
@@ -87,10 +89,24 @@ export interface IssueAssigneeAdapterOverrides {
   useProjectWorkspace?: boolean;
 }
 
-export interface IssueCloseContract {
+/** Evidence close contract — count + path + named artifact kind (quality floor). */
+export interface IssueCloseEvidenceContract {
+  mode?: "evidence";
   evidenceTarget: number;
   evidencePath: string;
+  /** Concrete artifact class required at authoring time (not a generic "file"). */
+  artifactKind: string;
+  cardTemplate?: GenerationMeasurementCardTemplate;
 }
+
+/** Explicit no-artifact exemption (decisions, dispositions, rejections, duplicate retirements). */
+export interface IssueCloseExemptContract {
+  mode: "exempt";
+  exemptReason: IssueCloseContractExemptReason;
+  note?: string;
+}
+
+export type IssueCloseContract = IssueCloseEvidenceContract | IssueCloseExemptContract;
 
 export type DocumentFormat = "markdown";
 
@@ -148,7 +164,6 @@ export interface AcceptedPlanDecompositionChild {
   projectWorkspaceId?: string | null;
   goalId?: string | null;
   blockedByIssueIds?: string[];
-  externalBlockedByIssueIds?: string[];
   title: string;
   description?: string | null;
   status: IssueStatus;
@@ -211,9 +226,10 @@ export interface AcceptedPlanDecompositionSummary extends AcceptedPlanDecomposit
 export interface IssueRelationIssueSummary {
   id: string;
   identifier: string | null;
-  title: string;
+  title: string | null;
   status: IssueStatus;
-  priority: IssuePriority;
+  hiddenAt?: Date | null;
+  priority: IssuePriority | null;
   assigneeAgentId: string | null;
   assigneeUserId: string | null;
   terminalBlockers?: IssueRelationIssueSummary[];

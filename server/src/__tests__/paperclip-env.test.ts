@@ -1,3 +1,6 @@
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { buildPaperclipEnv } from "../adapters/utils.js";
 
@@ -26,6 +29,10 @@ afterEach(() => {
 
   if (ORIGINAL_PORT === undefined) delete process.env.PORT;
   else process.env.PORT = ORIGINAL_PORT;
+
+  delete process.env.PAPERCLIP_HOME;
+  delete process.env.PAPERCLIP_INSTANCE_ID;
+  delete process.env.PAPERCLIP_X10_VOLUME_ROOT;
 });
 
 describe("buildPaperclipEnv", () => {
@@ -72,5 +79,25 @@ describe("buildPaperclipEnv", () => {
     const env = buildPaperclipEnv({ id: "agent-1", companyId: "company-1" });
 
     expect(env.PAPERCLIP_API_URL).toBe("http://[::1]:3101");
+  });
+
+  it("uses the configured per-company work-products root in adapter env", () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-env-company-root-"));
+    const relocatedRoot = path.join(home, "x10", "company-1");
+    process.env.PAPERCLIP_HOME = home;
+    process.env.PAPERCLIP_INSTANCE_ID = "instance-a";
+
+    const companyConfigDir = path.join(home, "instances", "instance-a", "companies", "company-1");
+    fs.mkdirSync(companyConfigDir, { recursive: true });
+    fs.writeFileSync(
+      path.join(companyConfigDir, "config.json"),
+      `${JSON.stringify({ workProductsRoot: relocatedRoot }, null, 2)}\n`,
+      "utf8",
+    );
+
+    const env = buildPaperclipEnv({ id: "agent-1", companyId: "company-1" });
+
+    expect(env.PAPERCLIP_COMPANY_ROOT).toBe(companyConfigDir);
+    expect(env.PAPERCLIP_WORK_PRODUCTS_DIR).toBe(relocatedRoot);
   });
 });

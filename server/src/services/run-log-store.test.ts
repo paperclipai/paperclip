@@ -49,11 +49,14 @@ function createMemoryProvider() {
 }
 
 let baseDir: string;
+let archiveDir: string;
 beforeEach(async () => {
   baseDir = await fs.mkdtemp(path.join(os.tmpdir(), "run-log-store-test-"));
+  archiveDir = await fs.mkdtemp(path.join(os.tmpdir(), "run-log-store-archive-test-"));
 });
 afterEach(async () => {
   await fs.rm(baseDir, { recursive: true, force: true });
+  await fs.rm(archiveDir, { recursive: true, force: true });
 });
 
 const begin = { companyId: "co1", agentId: "ag1", runId: "run1" };
@@ -164,5 +167,19 @@ describe("createDurableRunLogStore", () => {
     // and a roll loses it (documented limitation; this is the pre-fix behaviour)
     await fs.rm(baseDir, { recursive: true, force: true });
     await expect(store.read(handle)).rejects.toThrow(/not found/i);
+  });
+
+  it("reads from the archive path after local pruning removes the live file", async () => {
+    const store = createDurableRunLogStore({ basePath: baseDir, archivePath: archiveDir });
+    const handle = await store.begin(begin);
+    await store.append(handle, { stream: "stdout", chunk: "archived-local-copy", ts: "t1" });
+    await store.finalize(handle);
+    const archivedPath = path.join(archiveDir, handle.logRef);
+    await fs.mkdir(path.dirname(archivedPath), { recursive: true });
+    await fs.copyFile(path.join(baseDir, handle.logRef), archivedPath);
+    await fs.rm(baseDir, { recursive: true, force: true });
+
+    const res = await store.read(handle);
+    expect(res.content).toContain("archived-local-copy");
   });
 });
