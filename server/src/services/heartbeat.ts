@@ -12851,22 +12851,53 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       issueContext: issueId ? await getIssueExecutionContext(run.companyId, issueId) : null,
       routineEnvContext: { routineId: null, env: null, responsibleUserId: null },
     });
-    const claimed = await db
-      .update(heartbeatRuns)
-      .set({
-        status: "running",
-        responsibleUserId,
-        startedAt: run.startedAt ?? claimedAt,
-        resultJson: {
-          ...throttleState.resultJson,
-          retryNotBefore: null,
-          runGateThrottle: null,
-        },
-        updatedAt: claimedAt,
-      })
-      .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "queued")))
-      .returning()
-      .then((rows) => rows[0] ?? null);
+
+    // A read-only gate check immediately followed by a status update allows two
+    // company schedulers to see the same free slot. Serialize the final gate
+    // check and queued -> running transition with one instance-wide transaction
+    // lock. The recheck intentionally includes both adapter and global limits so
+    // retry/recovery dispatches use the same admission path as normal schedulers.
+    const admission = await db.transaction(async (tx) => {
+      await tx.execute(
+        sql`select pg_advisory_xact_lock(hashtextextended(${"paperclip:heartbeat-run-concurrency-admission"}, 0))`,
+      );
+      const atomicGateBlock = await runGateService(tx as unknown as Db).getRunGateBlock({
+        companyId: run.companyId,
+        agentId: run.agentId,
+        adapterType: agent.adapterType,
+        agentRuntimeConfig: parseObject(agent.runtimeConfig),
+        isManualOverride,
+        now: claimedAt,
+      });
+      if (atomicGateBlock) return { claimed: null, block: atomicGateBlock };
+
+      const claimed = await tx
+        .update(heartbeatRuns)
+        .set({
+          status: "running",
+          responsibleUserId,
+          startedAt: run.startedAt ?? claimedAt,
+          resultJson: {
+            ...throttleState.resultJson,
+            retryNotBefore: null,
+            runGateThrottle: null,
+          },
+          updatedAt: claimedAt,
+        })
+        .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "queued")))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+      return { claimed, block: null };
+    });
+    if (admission.block) {
+      await markQueuedRunDeferredByGate(run, admission.block, claimedAt);
+      logger.debug(
+        { runId: run.id, agentId: run.agentId, kind: admission.block.kind, reason: admission.block.reason },
+        "claimQueuedRun: run deferred by atomic run gate",
+      );
+      return null;
+    }
+    const claimed = admission.claimed;
     if (!claimed) return null;
 
     publishLiveEvent({
