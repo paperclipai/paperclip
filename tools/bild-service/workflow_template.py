@@ -22,9 +22,13 @@ def fill(raw, prompt, seed, width, height):
     # Anfuehrungszeichen; die schneiden wir ab, weil der Platzhalter in der
     # Vorlage bereits in Anfuehrungszeichen steht.
     prompt_escaped = json.dumps(prompt, ensure_ascii=False)[1:-1]
+    # Numerische Platzhalter ZUERST ersetzen, dann __PROMPT__ ZULETZT.
+    # Wenn __PROMPT__ zuerst kommt, wird der Prompt-Text anschliessend
+    # von den anderen Replacements gescannt, und Literal-Text wie "__SEED__"
+    # im Prompt wird versehentlich durch die echten Werte ersetzt.
     filled = (raw
-              .replace("__PROMPT__", prompt_escaped)
               .replace("__SEED__", str(int(seed)))
               .replace("__WIDTH__", str(int(width)))
-              .replace("__HEIGHT__", str(int(height))))
+              .replace("__HEIGHT__", str(int(height)))
+              .replace("__PROMPT__", prompt_escaped))
     return json.loads(filled)
