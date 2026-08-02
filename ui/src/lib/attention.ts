@@ -337,9 +337,9 @@ export function attentionIdleMs(item: AttentionItem, now: number): number {
   return Number.isFinite(ts) ? Math.max(0, now - ts) : 0;
 }
 
-/** True once the item has been idle longer than `agingDays` — belongs on the shelf. */
-export function attentionIsAging(item: AttentionItem, now: number, agingDays = ATTENTION_AGING_DAYS): boolean {
-  return attentionIdleMs(item, now) > agingDays * MS_PER_DAY_DECIDE;
+/** Server-computed shelf membership, including per-queue retention overrides. */
+export function attentionIsAging(item: AttentionItem): boolean {
+  return item.shelf;
 }
 
 /** Idle duration in whole days, for the shelf's "idle N days" label. */

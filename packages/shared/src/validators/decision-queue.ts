@@ -43,7 +43,31 @@ export const updateDecisionTriageSchema = z.object({
   snoozedUntil: z.string().datetime({ offset: true }).nullable().optional(),
 }).strict().refine((value) => Object.keys(value).length > 0, "At least one triage field is required");
 
+export const updateDecisionRetentionSchema = z.object({
+  keep: z.boolean(),
+}).strict();
+
+export const createDecisionArchiveProposalSchema = z.object({
+  items: z.array(z.object({
+    sourceKind: decisionAttentionSourceKindSchema,
+    sourceId: z.string().trim().min(1).max(500),
+    reason: z.string().trim().min(1).max(2_000),
+  }).strict()).min(1).max(50),
+  idempotencyKey: z.string().trim().min(1).max(500).optional(),
+}).strict().superRefine((value, ctx) => {
+  const seen = new Set<string>();
+  value.items.forEach((item, index) => {
+    const key = `${item.sourceKind}:${item.sourceId}`;
+    if (seen.has(key)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Archive proposal items must be unique", path: ["items", index] });
+    }
+    seen.add(key);
+  });
+});
+
 export type CreateDecisionQueueInput = z.infer<typeof createDecisionQueueSchema>;
 export type UpdateDecisionQueueInput = z.infer<typeof updateDecisionQueueSchema>;
 export type AddDecisionQueueItemInput = z.infer<typeof addDecisionQueueItemSchema>;
 export type UpdateDecisionTriageInput = z.infer<typeof updateDecisionTriageSchema>;
+export type UpdateDecisionRetentionInput = z.infer<typeof updateDecisionRetentionSchema>;
+export type CreateDecisionArchiveProposalInput = z.infer<typeof createDecisionArchiveProposalSchema>;

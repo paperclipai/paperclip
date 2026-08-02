@@ -36,6 +36,8 @@ export type {
   DecisionChosenOptionCount,
   DecisionRuleKeyStats,
   DecisionStatsResponse,
+  AttentionArchiveManifestEntry,
+  AttentionArchiveTargetSnapshot,
 } from "./types/decision.js";
 
 export {
@@ -123,10 +125,14 @@ export {
   addDecisionQueueItemSchema,
   decisionTriageDecideBySchema,
   updateDecisionTriageSchema,
+  updateDecisionRetentionSchema,
+  createDecisionArchiveProposalSchema,
   type CreateDecisionQueueInput,
   type UpdateDecisionQueueInput,
   type AddDecisionQueueItemInput,
   type UpdateDecisionTriageInput,
+  type UpdateDecisionRetentionInput,
+  type CreateDecisionArchiveProposalInput,
 } from "./validators/decision-queue.js";
 export type {
   DecisionTrainingExample,

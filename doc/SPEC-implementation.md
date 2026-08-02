@@ -461,6 +461,8 @@ Decision-desk triage uses company-scoped sidecars rather than adding queue field
 - `decision_queue_items` keys membership by `(queue_id, source_kind, source_id)` and repeats `company_id` for company-consistent joins.
 - `decision_triage` keys current decide-by/snooze state by `(company_id, source_kind, source_id)` and preserves the latest setter attribution.
 - `decision_triage_events` is the immutable mutation history for queue membership and triage overrides, including actor, run, API-key, and responsible-user provenance.
+- `decision_retention` stores the attention source's last observed activity timestamp, monotonic version, Keep flag, and reversible archive provenance. Queue `retention_days` overrides use the shortest assigned queue threshold; otherwise the shelf threshold is 30 days.
+- `decision_archive_notification_outbox` records one retry-safe origin-agent notification per source/archive version. The 90-day internal sweeper archives only unkept rows and coalesces delivery per origin agent.
 - Queue membership never grants source visibility. Item writes re-authorize the referenced source, and queue reads re-authorize every member before returning rows or counts.
 
 ## 8. State Machines
@@ -990,8 +992,13 @@ The current app also exposes V1-supporting surfaces for:
   - `DELETE /companies/:companyId/decision-queues/:key/items/:sourceKind/:sourceId`
   - `GET /companies/:companyId/decision-queue-seed-rules`
   - `GET|PUT /companies/:companyId/decision-triage/:sourceKind/:sourceId`
+  - `PATCH /companies/:companyId/decision-retention/:sourceKind/:sourceId` (Keep)
+  - `POST /companies/:companyId/decision-retention/:sourceKind/:sourceId/archive|revive`
+  - `POST /companies/:companyId/decision-archive-proposals`
 
 Queue and triage mutations accept board non-viewers and active standard-scope agents, apply responsible-user intersection for run JWTs, and reject low-trust, `task_bridge`, and `skill_test` contexts. Missing, cross-company, and unauthorized attention sources share the same not-found response.
+
+The attention feed returns server-computed `shelf`, `retentionDays`, `keep`, `archivedAt`, and `retentionVersion` fields. Archived rows are excluded by default and selected with `archived=true`. Bulk archive proposals bind the exact source identities, per-item reasons, activity timestamps, and expected retention versions into the signed decisions-v1 target snapshots; acceptance re-authorizes both proposer and decider and commits all rows or none.
 
 ## 11. Heartbeat and Adapter Contract
 

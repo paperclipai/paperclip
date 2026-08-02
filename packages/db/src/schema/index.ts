@@ -89,6 +89,8 @@ export {
   decisionQueueItems,
   decisionTriage,
   decisionTriageEvents,
+  decisionRetention,
+  decisionArchiveNotificationOutbox,
 } from "./decision_queues.js";
 export { feedbackExports } from "./feedback_exports.js";
 export { issueReadStates } from "./issue_read_states.js";

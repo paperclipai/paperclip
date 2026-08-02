@@ -12,6 +12,7 @@ import {
   companyMemberships,
   createDb,
   decisionEffectExecutions,
+  decisionRetention,
   decisions,
   decisionTargetIssues,
   heartbeatRuns,
@@ -22,6 +23,8 @@ import {
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { attentionService } from "../services/attention.js";
 import { decisionService } from "../services/decisions.js";
+import { hashAttentionArchiveManifest } from "../services/decision-retention.js";
+import type { AttentionArchiveManifestEntry, AttentionArchiveTargetSnapshot } from "@paperclipai/shared";
 
 const support = await getEmbeddedPostgresTestSupport();
 const describePg = support.supported ? describe : describe.skip;
@@ -69,7 +72,7 @@ describePg("decisionService", () => {
     delete process.env.PAPERCLIP_DECISIONS_SWEEP_BATCH_SIZE;
     delete process.env.PAPERCLIP_DECISIONS_RECOVERY_GRACE_MS;
     delete process.env.PAPERCLIP_AGENT_JWT_SECRET;
-    await db.delete(decisionEffectExecutions); await db.delete(decisionTargetIssues); await db.delete(decisions); await db.delete(activityLog);
+    await db.delete(decisionEffectExecutions); await db.delete(decisionTargetIssues); await db.delete(decisions); await db.delete(decisionRetention); await db.delete(activityLog);
     await db.delete(issueComments); await db.delete(issueRelations); await db.delete(heartbeatRuns); await db.delete(issues); await db.delete(agents); await db.delete(companyMemberships); await db.delete(authUsers); await db.delete(companies);
   });
   afterAll(async () => tempDb?.cleanup());
@@ -117,6 +120,64 @@ describePg("decisionService", () => {
     expect(outcomes.filter((item) => item.status === "fulfilled")).toHaveLength(1);
     expect(outcomes.filter((item) => item.status === "rejected")).toHaveLength(1);
     expect(await db.select().from(issueComments).where(eq(issueComments.issueId, targetIssueId))).toHaveLength(1);
+  });
+
+  it("binds bulk archive acceptance to the exact signed, versioned manifest", async () => {
+    const extraIssueId = randomUUID();
+    const unreviewedIssueId = randomUUID();
+    await db.insert(issues).values([
+      { id: extraIssueId, companyId, title: "Second aging item", status: "in_review", priority: "medium", createdByAgentId: agentId, assigneeUserId: decidedByUserId },
+      { id: unreviewedIssueId, companyId, title: "Not reviewed", status: "in_review", priority: "medium", createdByAgentId: agentId, assigneeUserId: decidedByUserId },
+    ]);
+    const activityAt = new Date("2026-04-01T00:00:00.000Z");
+    await db.insert(decisionRetention).values([targetIssueId, extraIssueId, unreviewedIssueId].map((sourceId) => ({
+      companyId,
+      sourceKind: "review",
+      sourceId,
+      sourceActivityAt: activityAt,
+    })));
+    const manifest: AttentionArchiveManifestEntry[] = [targetIssueId, extraIssueId].map((sourceId) => ({
+      companyId,
+      sourceKind: "review",
+      sourceId,
+      expectedVersion: 1,
+      activityAt: activityAt.toISOString(),
+      reason: `Archive ${sourceId}`,
+    }));
+    const snapshots = Object.fromEntries(manifest.map((entry) => [
+      `attention:${entry.sourceKind}:${entry.sourceId}`,
+      {
+        status: "attention",
+        assigneeAgentId: null,
+        assigneeUserId: null,
+        updatedAt: entry.activityAt,
+        attentionArchive: entry,
+      } satisfies AttentionArchiveTargetSnapshot,
+    ]));
+    const created = await service().create({
+      companyId,
+      actor: agentActor(),
+      agentId,
+      runId,
+      title: "Archive two?",
+      body: "Reviewed exact set",
+      options: [
+        { id: "archive", label: "Archive", style: "destructive", effects: [] },
+        { id: "keep", label: "Keep", effects: [] },
+      ],
+      metadata: { kind: "attention_archive_proposal", manifestHash: hashAttentionArchiveManifest(manifest) },
+      additionalTargetSnapshots: snapshots,
+    });
+    const result = await service().decide({
+      id: created.id,
+      optionId: "archive",
+      decidedByUserId,
+      userActor: boardActor(),
+    });
+    expect(result.executionStatus).toBe("succeeded");
+    const states = await db.select().from(decisionRetention);
+    expect(states.filter((row) => row.archivedAt).map((row) => row.sourceId).sort()).toEqual([extraIssueId, targetIssueId].sort());
+    expect(states.find((row) => row.sourceId === unreviewedIssueId)?.archivedAt).toBeNull();
   });
 
   it("skips strict stale targets and fails closed on intersection denial", async () => {

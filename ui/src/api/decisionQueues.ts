@@ -50,6 +50,25 @@ export interface UpdateDecisionTriageBody {
   snoozedUntil?: string | null;
 }
 
+export interface DecisionRetentionDto {
+  id: string;
+  companyId: string;
+  sourceKind: AttentionSourceKind;
+  sourceId: string;
+  sourceActivityAt: string;
+  keep: boolean;
+  archivedAt: string | null;
+  archivedReason: string | null;
+  version: number;
+  archiveVersion: number;
+  updatedAt: string;
+}
+
+export interface CreateDecisionArchiveProposalBody {
+  items: Array<{ sourceKind: AttentionSourceKind; sourceId: string; reason: string }>;
+  idempotencyKey?: string;
+}
+
 /**
  * Decision queues + triage (PAP-16039 P1). Queues are named, company-scoped,
  * durable lists any agent or the board can feed; triage stores the per-source
@@ -98,4 +117,25 @@ export const decisionQueuesApi = {
       `/companies/${companyId}/decision-triage/${encodeURIComponent(sourceKind)}/${encodeURIComponent(sourceId)}`,
       body,
     ),
+
+  setKeep: (companyId: string, sourceKind: AttentionSourceKind, sourceId: string, keep: boolean) =>
+    api.patch<DecisionRetentionDto>(
+      `/companies/${companyId}/decision-retention/${encodeURIComponent(sourceKind)}/${encodeURIComponent(sourceId)}`,
+      { keep },
+    ),
+
+  archive: (companyId: string, sourceKind: AttentionSourceKind, sourceId: string) =>
+    api.post<DecisionRetentionDto>(
+      `/companies/${companyId}/decision-retention/${encodeURIComponent(sourceKind)}/${encodeURIComponent(sourceId)}/archive`,
+      {},
+    ),
+
+  revive: (companyId: string, sourceKind: AttentionSourceKind, sourceId: string) =>
+    api.post<DecisionRetentionDto>(
+      `/companies/${companyId}/decision-retention/${encodeURIComponent(sourceKind)}/${encodeURIComponent(sourceId)}/revive`,
+      {},
+    ),
+
+  proposeArchive: (companyId: string, body: CreateDecisionArchiveProposalBody) =>
+    api.post(`/companies/${companyId}/decision-archive-proposals`, body),
 };

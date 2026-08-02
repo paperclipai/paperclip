@@ -78,6 +78,7 @@ export type AttentionSortMode = "activity" | "decide";
 
 export interface AttentionFeedQuery {
   includeDismissed?: boolean;
+  archived?: boolean;
   activitySince?: string;
   activityUntil?: string;
   queue?: string;
@@ -201,6 +202,11 @@ export interface AttentionItem {
   ruleKey: string | null;
   originAgentName: string | null;
   queues: AttentionQueueRef[];
+  shelf: boolean;
+  retentionDays: number;
+  keep: boolean;
+  archivedAt: string | null;
+  retentionVersion: number;
   decideBy: string | null;
   decideByAttribution: AttentionTriageAttribution | null;
   snoozedUntil: string | null;

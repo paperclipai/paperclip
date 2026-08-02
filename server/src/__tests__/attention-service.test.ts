@@ -14,6 +14,8 @@ import {
   createDb,
   decisionQueueItems,
   decisionQueues,
+  decisionArchiveNotificationOutbox,
+  decisionRetention,
   decisions,
   decisionTriage,
   decisionTriageEvents,
@@ -62,6 +64,8 @@ describeEmbeddedPostgres("attention service", () => {
 
   afterEach(async () => {
     await db.delete(inboxDismissals);
+    await db.delete(decisionArchiveNotificationOutbox);
+    await db.delete(decisionRetention);
     await db.delete(decisionTriageEvents);
     await db.delete(decisionTriage);
     await db.delete(decisionQueueItems);
@@ -1369,5 +1373,94 @@ describeEmbeddedPostgres("attention service", () => {
       .get(`/api/companies/${companyId}/attention?sort=oldest`)
       .expect(400, { error: "sort must be 'activity' or 'decide'" });
     await request(app(agent)).get(`/api/companies/${companyId}/attention`).expect(403);
+  });
+
+  it("computes the aging shelf uniformly across approval, interaction, and review sources", async () => {
+    const { companyId, workerId } = await seedCompany("AGE");
+    const now = Date.parse("2026-08-02T12:00:00.000Z");
+    const idleAt = new Date("2026-06-30T12:00:00.000Z");
+    const interactionIssueId = await insertIssue({
+      companyId,
+      identifier: "AGE-1",
+      title: "Old questions",
+      status: "in_progress",
+      assigneeAgentId: workerId,
+      createdAt: idleAt,
+      updatedAt: idleAt,
+    });
+    const reviewIssueId = await insertIssue({
+      companyId,
+      identifier: "AGE-2",
+      title: "Old review",
+      status: "in_review",
+      assigneeUserId: "board-user",
+      createdAt: idleAt,
+      updatedAt: idleAt,
+    });
+    const approvalId = randomUUID();
+    const queueApprovalId = randomUUID();
+    const interactionId = randomUUID();
+    const queueIdleAt = new Date("2026-07-18T12:00:00.000Z");
+    await db.insert(approvals).values([
+      {
+        id: approvalId,
+        companyId,
+        type: "request_board_approval",
+        requestedByAgentId: workerId,
+        status: "pending",
+        payload: { title: "Old approval" },
+        createdAt: idleAt,
+        updatedAt: idleAt,
+      },
+      {
+        id: queueApprovalId,
+        companyId,
+        type: "request_board_approval",
+        requestedByAgentId: workerId,
+        status: "pending",
+        payload: { title: "Queue-retained approval" },
+        createdAt: queueIdleAt,
+        updatedAt: queueIdleAt,
+      },
+    ]);
+    await db.insert(issueThreadInteractions).values({
+      id: interactionId,
+      companyId,
+      issueId: interactionIssueId,
+      kind: "ask_user_questions",
+      status: "pending",
+      createdByAgentId: workerId,
+      payload: { version: 1, questions: [] },
+      createdAt: idleAt,
+      updatedAt: idleAt,
+    });
+    const [queue] = await db.insert(decisionQueues).values({
+      companyId,
+      key: "fast-aging",
+      title: "Fast aging",
+      retentionDays: 10,
+      createdByType: "system",
+    }).returning();
+    await db.insert(decisionQueueItems).values({
+      companyId,
+      queueId: queue!.id,
+      sourceKind: "approval",
+      sourceId: queueApprovalId,
+      addedByType: "system",
+    });
+
+    const feed = await attentionService(db, { now: () => now }).list(companyId, {
+      userId: "board-user",
+      limit: 100,
+    });
+    const byKey = new Map(feed.items.map((item) => [`${item.sourceKind}:${item.subject.id}`, item]));
+    for (const key of [
+      `approval:${approvalId}`,
+      `issue_thread_interaction:${interactionId}`,
+      `review:${reviewIssueId}`,
+    ]) {
+      expect(byKey.get(key)).toMatchObject({ shelf: true, retentionDays: 30, archivedAt: null });
+    }
+    expect(byKey.get(`approval:${queueApprovalId}`)).toMatchObject({ shelf: true, retentionDays: 10 });
   });
 });

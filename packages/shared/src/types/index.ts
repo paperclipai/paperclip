@@ -822,6 +822,8 @@ export type {
   DecisionChosenOptionCount,
   DecisionRuleKeyStats,
   DecisionStatsResponse,
+  AttentionArchiveManifestEntry,
+  AttentionArchiveTargetSnapshot,
 } from "./decision.js";
 export type {
   AccessUserProfile,

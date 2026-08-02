@@ -1,16 +1,18 @@
 import { randomUUID } from "node:crypto";
 import { and, asc, count, desc, eq, gt, gte, inArray, lte, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { companyMemberships, decisionBundles, decisionEffectExecutions, decisions, decisionTargetIssues, heartbeatRuns, issueRelations, issues } from "@paperclipai/db";
-import type { DecisionEffect, DecisionInput, DecisionOption, DecisionStatsCounts, DecisionStatsResponse } from "@paperclipai/shared";
+import { companyMemberships, decisionBundles, decisionEffectExecutions, decisionRetention, decisions, decisionTargetIssues, heartbeatRuns, issueRelations, issues } from "@paperclipai/db";
+import { ATTENTION_SOURCE_KINDS } from "@paperclipai/shared";
+import type { AttentionArchiveManifestEntry, DecisionEffect, DecisionInput, DecisionOption, DecisionStatsCounts, DecisionStatsResponse } from "@paperclipai/shared";
 import { conflict, forbidden, notFound, tooManyRequests, unprocessable } from "../errors.js";
 import { authorizationService, type AuthorizationActor } from "./authorization.js";
 import { logActivity } from "./activity-log.js";
 import { signDecisionSpec, verifyDecisionSpec } from "./decision-signing.js";
 import { issueService } from "./issues.js";
+import { decisionRetentionService, hashAttentionArchiveManifest } from "./decision-retention.js";
 
 type Snapshot = { status: string; assigneeAgentId: string | null; assigneeUserId: string | null; updatedAt: string;
-  descendantCount?: number; descendantIds?: string[]; childCount?: number };
+  descendantCount?: number; descendantIds?: string[]; childCount?: number; attentionArchive?: unknown };
 type Wake = (input: { companyId: string; agentId: string; issueId: string; decisionId: string; outcome: "decided" | "expired" | "cancelled" }) => Promise<unknown>;
 export type DecisionServiceOptions = { wakeOriginAgent: Wake };
 const DAY = 86_400_000;
@@ -78,6 +80,43 @@ function canonicalJson(value: unknown): string {
   return JSON.stringify(value);
 }
 
+function parseAttentionArchiveManifest(
+  companyId: string,
+  targetSnapshots: Record<string, Snapshot>,
+): AttentionArchiveManifestEntry[] | null {
+  const entries: AttentionArchiveManifestEntry[] = [];
+  const seen = new Set<string>();
+  for (const [key, snapshot] of Object.entries(targetSnapshots)) {
+    if (!key.startsWith("attention:")) return null;
+    const entry = snapshot.attentionArchive;
+    if (!entry || typeof entry !== "object" || Array.isArray(entry)) return null;
+    const candidate = entry as Record<string, unknown>;
+    if (candidate.companyId !== companyId
+      || typeof candidate.sourceKind !== "string"
+      || !ATTENTION_SOURCE_KINDS.includes(candidate.sourceKind as (typeof ATTENTION_SOURCE_KINDS)[number])
+      || typeof candidate.sourceId !== "string"
+      || !candidate.sourceId
+      || !Number.isInteger(candidate.expectedVersion)
+      || Number(candidate.expectedVersion) < 1
+      || typeof candidate.activityAt !== "string"
+      || !Number.isFinite(Date.parse(candidate.activityAt))
+      || typeof candidate.reason !== "string"
+      || !candidate.reason.trim()) return null;
+    const expectedKey = `attention:${candidate.sourceKind}:${candidate.sourceId}`;
+    if (key !== expectedKey || seen.has(expectedKey)) return null;
+    seen.add(expectedKey);
+    entries.push({
+      companyId,
+      sourceKind: candidate.sourceKind,
+      sourceId: candidate.sourceId,
+      expectedVersion: Number(candidate.expectedVersion),
+      activityAt: candidate.activityAt,
+      reason: candidate.reason,
+    });
+  }
+  return entries.length > 0 ? entries : null;
+}
+
 function boardCanActDirectly(actor: AuthorizationActor, companyId: string) {
   if (actor.type !== "board") return false;
   if (actor.source === "local_implicit" || actor.isInstanceAdmin) return true;
@@ -91,6 +130,7 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
   type CreateInput = { companyId: string; actor: AuthorizationActor; agentId: string; runId: string; bundleId?: string | null;
     ruleKey?: string | null; title: string; body: string; options: DecisionOption[]; inputs?: DecisionInput[] | null; expiresAt?: Date | null;
     idempotencyKey?: string | null; continuationPolicy?: "none" | "wake_origin_agent"; metadata?: Record<string, unknown> };
+  type CreateInputWithSnapshots = CreateInput & { additionalTargetSnapshots?: Record<string, Snapshot> };
 
   async function origin(companyId: string, agentId: string, runId: string) {
     const run = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.agentId, agentId)))
@@ -155,7 +195,7 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
     return result;
   }
 
-  async function createInStore(input: CreateInput, dbOrTx: Db) {
+  async function createInStore(input: CreateInputWithSnapshots, dbOrTx: Db) {
     if (input.idempotencyKey) {
       const lockKey = `decision-create:${input.companyId}:${input.idempotencyKey}`;
       await dbOrTx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${lockKey}, 0))`);
@@ -165,8 +205,14 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
       const existing = await dbOrTx.select().from(decisions).where(and(eq(decisions.companyId, input.companyId), eq(decisions.idempotencyKey, input.idempotencyKey)))
         .then((rows) => rows[0] ?? null);
       if (existing) {
+        const archiveEquivalent = input.additionalTargetSnapshots === undefined || (
+          canonicalJson(existing.metadata ?? {}) === canonicalJson(input.metadata ?? {}) &&
+          canonicalJson(Object.fromEntries(Object.entries(existing.targetSnapshots as Record<string, Snapshot>)
+            .filter(([key]) => key.startsWith("attention:")))) === canonicalJson(input.additionalTargetSnapshots)
+        );
         const equivalent = existing.title === input.title && existing.body === input.body &&
-          canonicalJson(existing.options) === canonicalJson(input.options) && canonicalJson(existing.inputs ?? null) === canonicalJson(input.inputs ?? null);
+          canonicalJson(existing.options) === canonicalJson(input.options) && canonicalJson(existing.inputs ?? null) === canonicalJson(input.inputs ?? null) &&
+          archiveEquivalent;
         if (!equivalent) throw conflict("Decision idempotency key already used with a different payload");
         return existing;
       }
@@ -179,7 +225,10 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
     const ids = targetIds(input.options);
     const cancellationTargetIds = new Set(input.options.flatMap((option) => option.effects
       .filter((effect) => effect.type === "cancel_issue_tree").map((effect) => effect.targetIssueId)));
-    const targetSnapshots = await snapshots(input.companyId, ids, input.actor, targetActions(input.options), cancellationTargetIds, dbOrTx);
+    const targetSnapshots = {
+      ...await snapshots(input.companyId, ids, input.actor, targetActions(input.options), cancellationTargetIds, dbOrTx),
+      ...(input.additionalTargetSnapshots ?? {}),
+    };
     const id = randomUUID();
     const [created] = await dbOrTx.insert(decisions).values({ id, companyId: input.companyId, bundleId: input.bundleId ?? null,
       originAgentId: input.agentId, originIssueId: provenance.issueId, originRunId: input.runId, ruleKey: input.ruleKey ?? null,
@@ -190,8 +239,14 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
       const existing = input.idempotencyKey
         ? await dbOrTx.select().from(decisions).where(and(eq(decisions.companyId, input.companyId), eq(decisions.idempotencyKey, input.idempotencyKey))).then((rows) => rows[0] ?? null)
         : null;
+      const archiveEquivalent = !existing || input.additionalTargetSnapshots === undefined || (
+        canonicalJson(existing.metadata ?? {}) === canonicalJson(input.metadata ?? {}) &&
+        canonicalJson(Object.fromEntries(Object.entries(existing.targetSnapshots as Record<string, Snapshot>)
+          .filter(([key]) => key.startsWith("attention:")))) === canonicalJson(input.additionalTargetSnapshots)
+      );
       const equivalent = existing && existing.title === input.title && existing.body === input.body &&
-        canonicalJson(existing.options) === canonicalJson(input.options) && canonicalJson(existing.inputs ?? null) === canonicalJson(input.inputs ?? null);
+        canonicalJson(existing.options) === canonicalJson(input.options) && canonicalJson(existing.inputs ?? null) === canonicalJson(input.inputs ?? null) &&
+        archiveEquivalent;
       if (equivalent) return existing;
       throw conflict("Decision idempotency key already used with a different payload");
     }
@@ -202,7 +257,7 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
     return created;
   }
 
-  async function create(input: CreateInput, dbOrTx?: Db) {
+  async function create(input: CreateInputWithSnapshots, dbOrTx?: Db) {
     if (dbOrTx) return createInStore(input, dbOrTx);
     return db.transaction((tx) => createInStore(input, tx as unknown as Db));
   }
@@ -226,13 +281,29 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
     }
     const rows = await db.select().from(decisions).where(and(...conditions)).orderBy(desc(decisions.createdAt)).limit(Math.min(filter.limit ?? 50, 100));
     const openDecisionIds = rows.filter((decision) => decision.status === "open").map((decision) => decision.id);
-    const currentTargets = openDecisionIds.length
+    const currentIssueTargetIds = rows.flatMap((decision) => Object.keys(decision.targetSnapshots as Record<string, Snapshot>))
+      .filter((id) => /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(id));
+    const currentTargets = openDecisionIds.length && currentIssueTargetIds.length
       ? await db.select({ id: issues.id, updatedAt: issues.updatedAt })
         .from(decisionTargetIssues)
         .innerJoin(issues, and(eq(issues.companyId, companyId), eq(issues.id, decisionTargetIssues.issueId)))
-        .where(and(eq(decisionTargetIssues.companyId, companyId), inArray(decisionTargetIssues.decisionId, openDecisionIds)))
+        .where(and(eq(decisionTargetIssues.companyId, companyId), inArray(decisionTargetIssues.decisionId, openDecisionIds), inArray(issues.id, currentIssueTargetIds)))
       : [];
     const currentTargetsById = new Map(currentTargets.map((target) => [target.id, target.updatedAt]));
+    const attentionSnapshotIds = rows.flatMap((decision) => Object.values(decision.targetSnapshots as Record<string, Snapshot>))
+      .map((snapshot) => snapshot.attentionArchive as AttentionArchiveManifestEntry | undefined)
+      .filter((entry): entry is AttentionArchiveManifestEntry => Boolean(entry))
+      .map((entry) => entry.sourceId);
+    const currentAttentionStates = attentionSnapshotIds.length
+      ? await db.select().from(decisionRetention).where(and(
+        eq(decisionRetention.companyId, companyId),
+        inArray(decisionRetention.sourceId, attentionSnapshotIds),
+      ))
+      : [];
+    const currentAttentionByKey = new Map(currentAttentionStates.map((state) => [
+      `attention:${state.sourceKind}:${state.sourceId}`,
+      state,
+    ]));
     const terminalDecisionIds = rows.filter((decision) => decision.status !== "open").map((decision) => decision.id);
     const terminalExecutions = terminalDecisionIds.length
       ? await db.select().from(decisionEffectExecutions)
@@ -248,6 +319,13 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
     return rows.map((decision) => {
       const changed: Record<string, boolean> = {};
       if (decision.status === "open") for (const [id, snapshot] of Object.entries(decision.targetSnapshots as Record<string, Snapshot>)) {
+        if (id.startsWith("attention:")) {
+          const entry = snapshot.attentionArchive as AttentionArchiveManifestEntry | undefined;
+          const current = currentAttentionByKey.get(id);
+          changed[id] = !entry || !current || current.version !== entry.expectedVersion
+            || current.sourceActivityAt.toISOString() !== entry.activityAt || Boolean(current.archivedAt);
+          continue;
+        }
         const currentUpdatedAt = currentTargetsById.get(id);
         changed[id] = !currentUpdatedAt || currentUpdatedAt.toISOString() !== snapshot.updatedAt;
       }
@@ -436,6 +514,58 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
     const option = decision.options.find((item) => item.id === decision.chosenOptionId);
     if (!option || !decision.decidedByUserId) throw unprocessable("Stored decision outcome is invalid");
     const run = await db.select({ responsibleUserId: heartbeatRuns.responsibleUserId }).from(heartbeatRuns).where(eq(heartbeatRuns.id, decision.originRunId)).then((rows) => rows[0] ?? null);
+    const metadata = decision.metadata as Record<string, unknown>;
+    if (metadata.kind === "attention_archive_proposal") {
+      if (!verifyDecisionSpec(spec({
+        id: decision.id,
+        options: decision.options,
+        targetSnapshots: decision.targetSnapshots as Record<string, Snapshot>,
+      }), decision.signedSpec)) {
+        await db.update(decisions).set({ executionStatus: "failed", updatedAt: new Date(), metadata: { ...metadata, archiveProposalError: "invalid_signature" } })
+          .where(eq(decisions.id, decision.id));
+        return outcome(decision.id);
+      }
+      if (option.id === "archive") {
+        const manifest = parseAttentionArchiveManifest(
+          decision.companyId,
+          decision.targetSnapshots as Record<string, Snapshot>,
+        );
+        const manifestHash = manifest ? hashAttentionArchiveManifest(manifest) : null;
+        if (!manifest || manifestHash !== metadata.manifestHash) {
+          await db.update(decisions).set({ executionStatus: "failed", updatedAt: new Date(), metadata: { ...metadata, archiveProposalError: "manifest_mismatch" } })
+            .where(eq(decisions.id, decision.id));
+          return outcome(decision.id);
+        }
+        const originActor: AuthorizationActor = {
+          type: "agent",
+          agentId: decision.originAgentId,
+          companyId: decision.companyId,
+          runId: decision.originRunId,
+          onBehalfOfUserId: run?.responsibleUserId ?? null,
+          source: "agent_jwt",
+        };
+        try {
+          await decisionRetentionService(db).archiveReviewedManifest({
+            companyId: decision.companyId,
+            manifest,
+            originActor,
+            decidingActor: userActor,
+            decidedByUserId: decision.decidedByUserId,
+          });
+        } catch (error) {
+          const message = error instanceof Error ? error.message : "archive_proposal_failed";
+          await db.update(decisions).set({ executionStatus: "failed", updatedAt: new Date(), metadata: { ...metadata, archiveProposalError: message } })
+            .where(eq(decisions.id, decision.id));
+          return outcome(decision.id);
+        }
+      }
+      await db.update(decisions).set({
+        executionStatus: "succeeded",
+        updatedAt: new Date(),
+        metadata: { ...metadata, ...(decision.continuationPolicy === "wake_origin_agent" ? { continuationPending: true } : {}) },
+      }).where(eq(decisions.id, decision.id));
+      return outcome(decision.id);
+    }
     for (let index = 0; index < option.effects.length; index += 1) await executeEffect(decision, option.effects[index]!, index, userActor, decision.decidedByUserId, run?.responsibleUserId ?? null);
     const rows = await db.select().from(decisionEffectExecutions).where(eq(decisionEffectExecutions.decisionId, decision.id));
     const successful = rows.filter((row) => row.status === "executed").length;

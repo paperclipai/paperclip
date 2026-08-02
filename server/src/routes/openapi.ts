@@ -50,11 +50,13 @@ import {
   // Decisions
   addDecisionQueueItemSchema,
   createDecisionQueueSchema,
+  createDecisionArchiveProposalSchema,
   decisionAttentionSourceKindSchema,
   decisionInputsSchema,
   decisionOptionsSchema,
   updateDecisionQueueSchema,
   updateDecisionTriageSchema,
+  updateDecisionRetentionSchema,
   // Routine
   createRoutineSchema,
   updateRoutineSchema,
@@ -3343,6 +3345,25 @@ const decisionTriageSchema = z.object({
   updatedAt: z.string().datetime(),
 }).strict();
 
+const decisionRetentionSchema = z.object({
+  id: z.string(),
+  companyId: z.string(),
+  sourceKind: decisionAttentionSourceKindSchema,
+  sourceId: z.string(),
+  sourceActivityAt: z.string().datetime(),
+  keep: z.boolean(),
+  archivedAt: z.string().datetime().nullable(),
+  archivedReason: z.string().nullable(),
+  archivedByType: z.enum(["agent", "user", "system"]).nullable(),
+  archivedByAgentId: z.string().nullable(),
+  archivedByUserId: z.string().nullable(),
+  archivedByRunId: z.string().nullable(),
+  version: z.number().int().positive(),
+  archiveVersion: z.number().int().nonnegative(),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+}).strict();
+
 registerCurrentRoute({
   method: "get",
   path: "/api/companies/{companyId}/decision-queue-seed-rules",
@@ -3460,6 +3481,34 @@ registerCurrentRoute({
     404: r.notFound,
     422: r.unprocessable,
   },
+});
+
+registerCurrentRoute({
+  method: "patch",
+  path: "/api/companies/{companyId}/decision-retention/{sourceKind}/{sourceId}",
+  tags: ["decision-queues"],
+  summary: "Set Keep for an attention source",
+  body: updateDecisionRetentionSchema,
+  responses: { 200: r.ok(decisionRetentionSchema), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+for (const action of ["archive", "revive"] as const) {
+  registerCurrentRoute({
+    method: "post",
+    path: `/api/companies/{companyId}/decision-retention/{sourceKind}/{sourceId}/${action}`,
+    tags: ["decision-queues"],
+    summary: action === "archive" ? "Archive an attention source" : "Revive an archived attention source",
+    responses: { 200: r.ok(decisionRetentionSchema), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+  });
+}
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/decision-archive-proposals",
+  tags: ["decisions"],
+  summary: "Propose one signed bulk archive decision",
+  body: createDecisionArchiveProposalSchema,
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 409: r.conflict, 422: r.unprocessable },
 });
 
 // Decisions
