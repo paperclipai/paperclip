@@ -6,7 +6,7 @@ Completed: 2026-08-02 (Europe/Dublin)
 
 The supervised Paperclip reinstall is complete. The served API is healthy on Node 22, the dependency layout is internally consistent, rollback artifacts verify, and the reopened Codex cohort completed cleanly with no process loss. A deterministic shell recovery handler produced one policy-gate failure after reopening, so all nine shell fallback handlers were re-paused under existing platform issue TSMC-18853.
 
-Hermes itself is updated and its gateway is healthy, but one bounded xAI canary produced no model output for 180 seconds. It was cancelled without retry. The 38 Hermes lanes that were enabled before maintenance remain paused under follow-up TSMC-19096.
+Hermes itself is updated and its gateway/provider are healthy. A direct `grok-4.5` / `xai-oauth` query returned READY in 6.52 seconds, while Paperclip employee profiles spent more than 180 seconds following their large embedded work instructions instead of terminalizing the bounded smoke; quiet mode made the largest profile appear completely silent. Both canaries were cancelled once without retry. The 38 Hermes lanes that were enabled before maintenance remain paused under follow-up TSMC-19096 pending bounded smoke-specific profiles.
 
 ## Root-cause assessment
 
@@ -56,13 +56,13 @@ The broader dirty-tree recovery bundle was not committed: its focused suite pass
 - Initial host-upgrade canary `e593be76-87a7-4808-be0f-1559b28c5f54` was rejected as a false positive after transcript inspection found an embedded 400 from bundled Codex 0.142.5 despite terminal status `succeeded`.
 - Decisive fixed-bridge `gpt-5.6-terra` canary `7261a6bc-facb-4b80-ba29-92d91ca7d8fd`: 371 streamed model deltas, 29 tool-call events, normal token accounting, zero metadata warnings, zero embedded provider errors, one terminal result, and clean process exit.
 - Post-resume observation: 59 succeeded, 1 deterministic shell-handler `adapter_failed`, 2 queued shell runs cancelled by containment, and 0 `process_lost`. The shell failure is recorded on TSMC-18853.
-- Hermes: v0.19.1 (2026.7.30), upstream `0a62610f`, local `70b4f067` with seven carried commits; update check says Up to date; launchd gateway running.
+- Hermes: v0.19.1 (2026.7.30), upstream `0a62610f`, local `70b4f067` with seven carried commits; update check says Up to date; launchd gateway running. Direct provider/OAuth smoke returned READY in 6.52s. Paperclip minimal-profile canary streamed reasoning after 7s with no auth/session/provider error but exceeded the 180s terminal bound, confirming per-agent prompt/quiet-output overhead.
 
 ## Resume and containment state
 
 - Resumed: 70 Codex agents after the Codex 0.146.0 canary passed.
 - Still paused: the original 93 paused agents, 38 Hermes agents pending TSMC-19096, all 9 deterministic shell handlers pending TSMC-18853, and one agent whose adapter changed from Codex to Claude after the pre-window snapshot. The changed Claude lane was not silently reopened without quota/auth validation.
-- Do not auto-retry quota, auth, session-init, or provider-timeout failures. Resume Hermes only in small cohorts after TSMC-19096 records a successful bounded canary with real output and clean finalization.
+- Do not auto-retry quota, auth, session-init, or provider-timeout failures. Resume Hermes only after a dedicated smoke profile uses a small smoke-only instruction bundle, `maxTurnsPerRun` 1-3, an explicit 120-180s timeout, and quiet output disabled; then require a real terminal result before small-cohort resume.
 
 ## Rollback
 
