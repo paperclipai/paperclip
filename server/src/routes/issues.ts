@@ -3521,6 +3521,10 @@ export function issueRoutes(
     return decision !== true && decision.reason === "allow_issue_mention_grant";
   }
 
+  function isReturnAssigneeCommentDecision(decision: true | Awaited<ReturnType<typeof decideIssueAccess>>) {
+    return decision !== true && decision.reason === "allow_return_assignee_comment";
+  }
+
   function isDirectParentReportDecision(decision: true | Awaited<ReturnType<typeof decideIssueAccess>>) {
     return decision !== true && decision.reason === "allow_direct_parent_report";
   }
@@ -10107,6 +10111,7 @@ export function issueRoutes(
           !reopenRequested &&
           !resumeRequested &&
           isIssueMentionGrantDecision(commentAccessDecision)));
+    const returnAssigneeCommentOnlyGrant = isReturnAssigneeCommentDecision(commentAccessDecision);
     const effectiveReopenRequested = crossIssueCommentOnlyGrant ? false : reopenRequested;
     const effectiveResumeRequested = crossIssueCommentOnlyGrant ? false : resumeRequested;
     if (
@@ -10114,7 +10119,8 @@ export function issueRoutes(
       req.actor.type === "agent" &&
       issue.assigneeAgentId !== null &&
       issue.assigneeAgentId !== req.actor.agentId &&
-      !crossIssueCommentOnlyGrant
+      !crossIssueCommentOnlyGrant &&
+      !returnAssigneeCommentOnlyGrant
     ) {
       if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
     }
