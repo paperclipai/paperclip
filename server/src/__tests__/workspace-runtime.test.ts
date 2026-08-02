@@ -58,6 +58,7 @@ import type { Environment, EnvironmentLease } from "@paperclipai/shared";
 import { resolvePaperclipConfigPath } from "../paths.ts";
 import type { WorkspaceOperation } from "@paperclipai/shared";
 import type { WorkspaceOperationRecorder } from "../services/workspace-operations.ts";
+import { deriveWorktreeInstanceId } from "../services/workspace-instance-cleanup.ts";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -1377,7 +1378,7 @@ describe("realizeExecutionWorkspace", () => {
       const envContents = await fs.readFile(envPath, "utf8");
       const configContents = JSON.parse(await fs.readFile(configPath, "utf8"));
       const configStats = await fs.lstat(configPath);
-      const expectedInstanceId = "pap-885-show-worktree-banner";
+      const expectedInstanceId = deriveWorktreeInstanceId(workspace.cwd);
       const expectedInstanceRoot = path.join(
         isolatedWorktreeHome,
         "instances",
@@ -3314,6 +3315,18 @@ describe("realizeExecutionWorkspace", () => {
       },
     });
 
+    const worktreesDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-cleanup-instances-"));
+    const instanceId = deriveWorktreeInstanceId(workspace.cwd);
+    const instanceRoot = path.join(worktreesDir, "instances", instanceId);
+    await fs.mkdir(path.join(instanceRoot, "db"), { recursive: true });
+    await fs.mkdir(path.join(workspace.cwd, ".paperclip"), { recursive: true });
+    await fs.writeFile(
+      path.join(workspace.cwd, ".paperclip", ".env"),
+      `PAPERCLIP_HOME=${JSON.stringify(worktreesDir)}\nPAPERCLIP_INSTANCE_ID=${JSON.stringify(instanceId)}\n`,
+      "utf8",
+    );
+    process.env.PAPERCLIP_WORKTREES_DIR = worktreesDir;
+
     await cleanupExecutionWorkspaceArtifacts({
       workspace: {
         id: "execution-workspace-1",
@@ -3339,16 +3352,23 @@ describe("realizeExecutionWorkspace", () => {
 
     expect(operations.map((operation) => operation.phase)).toEqual([
       "workspace_teardown",
+      "workspace_teardown",
       "worktree_cleanup",
       "worktree_cleanup",
     ]);
     expect(operations[0]?.command).toBe("printf 'cleanup ok\\n'");
     expect(operations[1]?.metadata).toMatchObject({
-      cleanupAction: "worktree_remove",
+      cleanupAction: "remove_worktree_instance",
+      instanceRoot,
     });
     expect(operations[2]?.metadata).toMatchObject({
+      cleanupAction: "worktree_remove",
+    });
+    expect(operations[3]?.metadata).toMatchObject({
       cleanupAction: "branch_delete",
     });
+    await expect(fs.stat(instanceRoot)).rejects.toMatchObject({ code: "ENOENT" });
+    await fs.rm(worktreesDir, { recursive: true, force: true });
   });
 });
 

@@ -249,6 +249,7 @@ export const issueExecutionPolicySchema = z.object({
   monitor: issueExecutionMonitorPolicySchema.optional().nullable(),
   reviewPreset: lowTrustReviewPresetPolicySchema.optional(),
   authorizationPolicy: trustAuthorizationPolicySchema.optional(),
+  maxReviewRounds: z.number().int().positive().max(50).optional().nullable().default(null),
 });
 
 export const issueExecutionMonitorStateSchema = z.object({
@@ -284,6 +285,7 @@ export const issueExecutionStateSchema = z.object({
   lastDecisionId: z.string().uuid().nullable(),
   lastDecisionOutcome: z.enum(ISSUE_EXECUTION_DECISION_OUTCOMES).nullable(),
   monitor: issueExecutionMonitorStateSchema.optional().nullable(),
+  changesRequestedCount: z.number().int().nonnegative().optional().default(0),
 });
 
 export const issueRecoveryActionReadModelSchema = z.object({

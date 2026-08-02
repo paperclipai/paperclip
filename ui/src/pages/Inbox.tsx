@@ -173,6 +173,12 @@ import {
   type InboxWorkItemGroupBy,
 } from "../lib/inbox";
 import { useDismissedInboxAlerts, useInboxDismissals, useReadInboxItems } from "../hooks/useInboxBadge";
+import { useInboxSortAttention } from "../hooks/useInboxSortAttention";
+import {
+  captureInboxOrderPin,
+  reconcileInboxOrderPin,
+  type InboxOrderPin,
+} from "../lib/inboxOrderPin";
 
 const INBOX_HEARTBEAT_RUN_LIMIT = 200;
 const INBOX_ISSUE_LIST_LIMIT = 500;
@@ -1379,7 +1385,7 @@ export function Inbox() {
       return next;
     });
   }, [selectedCompanyId]);
-  const groupedSections = useMemo<InboxGroupedSection[]>(() => [
+  const freshGroupedSections = useMemo<InboxGroupedSection[]>(() => [
     ...buildGroupedInboxSections(filteredWorkItems, groupBy, inboxWorkspaceGrouping, { nestingEnabled }),
     ...buildGroupedInboxSections(
       getInboxWorkItems({ issues: archivedSearchIssues, approvals: [] }),
@@ -1401,6 +1407,79 @@ export function Inbox() {
     issueSearchSupplementResults,
     nestingEnabled,
   ]);
+
+  // --- Order pinning (PAP-16015) ---
+  // The freshly computed sort is only *displayed* at attention boundaries. Between
+  // them we reconcile the fresh sections against the last committed order so that
+  // archiving mid-engagement (which drops rows from the caches, and can lower a
+  // parent's subtree-max sort ts) can no longer reshuffle the list under the
+  // cursor. New items still land at their algorithmic position; archived rows hold
+  // their slot for the 5s undo grace before collapsing. See `inboxOrderPin.ts`.
+  const orderPinRef = useRef<InboxOrderPin>({ sections: [] });
+  // Bumped by an attention commit to force `groupedSections` to adopt the fresh order.
+  const [orderCommitToken, setOrderCommitToken] = useState(0);
+  const orderCommitRequestedRef = useRef(false);
+  const commitInboxOrder = useCallback(() => {
+    orderCommitRequestedRef.current = true;
+    setOrderCommitToken((token) => token + 1);
+  }, []);
+
+  // Distinct view = distinct pin. Switching tab/filter/search/grouping resets the
+  // held order so we never carry one view's layout into another.
+  const inboxSortViewIdentity = useMemo(
+    () =>
+      JSON.stringify([
+        selectedCompanyId,
+        tab,
+        groupBy,
+        nestingEnabled,
+        normalizedSearchQuery,
+        allCategoryFilter,
+        allApprovalFilter,
+        issueFilters,
+      ]),
+    [
+      allApprovalFilter,
+      allCategoryFilter,
+      groupBy,
+      issueFilters,
+      nestingEnabled,
+      normalizedSearchQuery,
+      selectedCompanyId,
+      tab,
+    ],
+  );
+  // Adopt the fresh order in the SAME render the view identity changes, so a
+  // section key shared between the two views never briefly shows the previous
+  // view's order before the hook's passive commit effect runs.
+  const previousInboxSortViewIdentityRef = useRef(inboxSortViewIdentity);
+  if (previousInboxSortViewIdentityRef.current !== inboxSortViewIdentity) {
+    previousInboxSortViewIdentityRef.current = inboxSortViewIdentity;
+    orderCommitRequestedRef.current = true;
+  }
+
+  const groupedSections = useMemo<InboxGroupedSection[]>(() => {
+    const nowMs = Date.now();
+    // An attention boundary (or a view change) fired: adopt the fresh order
+    // wholesale and re-pin it.
+    if (orderCommitRequestedRef.current) {
+      orderCommitRequestedRef.current = false;
+      orderPinRef.current = captureInboxOrderPin(freshGroupedSections);
+      return freshGroupedSections;
+    }
+    const { sections, pin } = reconcileInboxOrderPin(orderPinRef.current, freshGroupedSections, nowMs);
+    orderPinRef.current = pin;
+    return sections;
+    // orderCommitToken forces re-adoption at a commit boundary; inboxSortViewIdentity
+    // forces it on a view change even when the fresh sections keep their identity.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [freshGroupedSections, inboxSortViewIdentity, orderCommitToken]);
+
+  const inboxSortAttention = useInboxSortAttention({
+    viewIdentity: inboxSortViewIdentity,
+    onCommit: commitInboxOrder,
+  });
+  const noteInboxSortInteraction = inboxSortAttention.noteInteraction;
 
   const openCreateIssueForGroup = useCallback((group: InboxGroupedSection) => {
     const defaults = buildInboxIssueGroupCreateDefaults(
@@ -1654,13 +1733,14 @@ export function Inbox() {
   const hoveredNavKeyRef = useRef<string | null>(null);
   const setSelectedIndexFromPointer = useCallback((idx: number) => {
     if (!pointerMovedSinceKeyNavRef.current) return;
+    noteInboxSortInteraction();
     hoveredIndexRef.current = idx;
     hoveredNavKeyRef.current = navEntryKey(flatNavItemsRef.current[idx]);
     // Drop any keyboard selection band the moment the mouse takes over, so we
     // never show two identical highlights at once. React bails out when the
     // value is already -1, so continuous hovering triggers no re-render.
     setSelectedIndex((prev) => (prev < 0 ? prev : -1));
-  }, []);
+  }, [noteInboxSortInteraction]);
 
   const invalidateInboxIssueQueryCaches = () => {
     if (!selectedCompanyId) return;
@@ -1670,6 +1750,8 @@ export function Inbox() {
   const archiveIssueMutation = useMutation({
     mutationFn: (id: string) => issuesApi.archiveFromInbox(id),
     onMutate: async (id) => {
+      // Keep the sort pinned: archiving is engagement, so defer any idle re-sort.
+      noteInboxSortInteraction();
       setActionError(null);
       setArchivingIssueIds((prev) => new Set(prev).add(id));
 
@@ -1810,6 +1892,7 @@ export function Inbox() {
   }, [markItemRead]);
 
   const handleArchiveNonIssue = useCallback((key: string) => {
+    noteInboxSortInteraction();
     setArchivingNonIssueIds((prev) => new Set(prev).add(key));
     setTimeout(() => {
       if (key.startsWith("alert:")) {
@@ -1823,7 +1906,7 @@ export function Inbox() {
         return next;
       });
     }, 200);
-  }, [dismissAlert, dismissInboxItem]);
+  }, [dismissAlert, dismissInboxItem, noteInboxSortInteraction]);
 
   const nonIssueUnreadState = (key: string): NonIssueUnreadState => {
     if (!canArchiveFromTab) return null;
@@ -1973,6 +2056,9 @@ export function Inbox() {
       const navCount = navItems.length;
       if (navCount === 0) return;
 
+      // Any inbox keystroke (nav, archive, undo) is engagement: hold the sort.
+      noteInboxSortInteraction();
+
       /** Resolve the nav entry at an index to an issue (for child entries) or work item. */
       const resolveNavEntry = (idx: number): { issue?: Issue; item?: InboxWorkItem } => {
         const entry = navItems[idx];
@@ -2115,7 +2201,7 @@ export function Inbox() {
     };
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [issueLinkState, keyboardShortcutsEnabled]);
+  }, [issueLinkState, keyboardShortcutsEnabled, noteInboxSortInteraction]);
 
   // Scroll selected item into view
   useEffect(() => {
@@ -2544,7 +2630,12 @@ export function Inbox() {
         <>
           {showSeparatorBefore("work_items") && <Separator />}
           <div>
-            <div ref={listRef} className="overflow-hidden">
+            <div
+              ref={listRef}
+              className="overflow-hidden"
+              onPointerDownCapture={noteInboxSortInteraction}
+              onWheelCapture={noteInboxSortInteraction}
+            >
               {(() => {
                 const renderInboxIssue = ({
                   issue,

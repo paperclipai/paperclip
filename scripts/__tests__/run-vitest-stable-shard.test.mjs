@@ -28,7 +28,7 @@ function dryRunJson(args) {
   return JSON.parse(result.stdout);
 }
 
-const SHARD_COUNT = 3;
+const SHARD_COUNT = 4;
 
 test("the general-server shards form a complete, non-overlapping partition", () => {
   const shards = Array.from({ length: SHARD_COUNT }, (_, index) =>

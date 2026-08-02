@@ -12,6 +12,11 @@ import {
   budgetPolicies,
   companies,
   createDb,
+  decisionQueueItems,
+  decisionQueues,
+  decisions,
+  decisionTriage,
+  decisionTriageEvents,
   documents,
   heartbeatRunEvents,
   heartbeatRuns,
@@ -57,6 +62,11 @@ describeEmbeddedPostgres("attention service", () => {
 
   afterEach(async () => {
     await db.delete(inboxDismissals);
+    await db.delete(decisionTriageEvents);
+    await db.delete(decisionTriage);
+    await db.delete(decisionQueueItems);
+    await db.delete(decisionQueues);
+    await db.delete(decisions);
     await db.delete(issueThreadInteractions);
     await db.delete(issueApprovals);
     await db.delete(issueAttachments);
@@ -1081,6 +1091,246 @@ describeEmbeddedPostgres("attention service", () => {
     expect(visibleApproval).toBeTruthy();
   });
 
+  it("enriches, filters, paginates, snoozes, and ranks the decide-now feed", async () => {
+    const { companyId, workerId, errorAgentId } = await seedCompany("ATP");
+    const now = Date.now();
+    const originIssueId = await insertIssue({
+      companyId,
+      identifier: "ATP-1",
+      title: "Decision origin",
+      status: "in_progress",
+      assigneeAgentId: workerId,
+      updatedAt: new Date(now - 10 * 60_000),
+    });
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId: workerId,
+      status: "succeeded",
+      contextSnapshot: { issueId: originIssueId },
+    });
+
+    const expiringSoonId = randomUUID();
+    const expiringLaterId = randomUUID();
+    const wheneverId = randomUUID();
+    const snoozedId = randomUUID();
+    const decisionValues = [
+      { id: expiringSoonId, ruleKey: "release.soon", title: "Expires sooner", updatedAt: new Date(now - 60_000), expiresAt: new Date(now + 60 * 60_000) },
+      { id: expiringLaterId, ruleKey: "release.later", title: "Expires later", updatedAt: new Date(now - 2 * 60_000), expiresAt: new Date(now + 2 * 60 * 60_000) },
+      { id: wheneverId, ruleKey: "release.whenever", title: "Can wait", updatedAt: new Date(now), expiresAt: new Date(now + 30 * 60_000) },
+      { id: snoozedId, ruleKey: "release.snoozed", title: "Snoozed", updatedAt: new Date(now - 3 * 60_000), expiresAt: new Date(now + 15 * 60_000) },
+    ];
+    await db.insert(decisions).values(decisionValues.map((value) => ({
+      ...value,
+      companyId,
+      originAgentId: workerId,
+      originIssueId,
+      originRunId: runId,
+      body: value.title,
+      options: [],
+      status: "open",
+      signedSpec: "test",
+      targetSnapshots: {},
+      createdAt: value.updatedAt,
+    })));
+
+    const queueId = randomUUID();
+    await db.insert(decisionQueues).values({
+      id: queueId,
+      companyId,
+      key: "urgent-releases",
+      title: "Urgent releases",
+      createdByType: "user",
+      createdByUserId: "board-user",
+    });
+    await db.insert(decisionQueueItems).values([expiringSoonId, expiringLaterId].map((sourceId) => ({
+      companyId,
+      queueId,
+      sourceKind: "decision",
+      sourceId,
+      addedByType: "user",
+      addedByUserId: "board-user",
+    })));
+    await db.insert(decisionTriage).values([
+      expiringSoonId,
+      expiringLaterId,
+      snoozedId,
+    ].map((sourceId) => ({
+      companyId,
+      sourceKind: "decision",
+      sourceId,
+      decideBy: "today",
+      setByType: "agent",
+      setByAgentId: workerId,
+      snoozedUntil: sourceId === snoozedId ? new Date(now + 60 * 60_000) : null,
+    })));
+    await db.insert(decisionTriage).values({
+      companyId,
+      sourceKind: "decision",
+      sourceId: wheneverId,
+      decideBy: "whenever",
+      setByType: "agent",
+      setByAgentId: workerId,
+    });
+
+    const approvalId = randomUUID();
+    await db.insert(approvals).values({
+      id: approvalId,
+      companyId,
+      type: "hire_agent",
+      status: "pending",
+      payload: { title: "Newer medium-severity approval" },
+      createdAt: new Date(now + 5 * 60_000),
+      updatedAt: new Date(now + 5 * 60_000),
+    });
+    await db.update(agents).set({ updatedAt: new Date(now - 5 * 60_000) }).where(eq(agents.id, errorAgentId));
+
+    const feed = await attentionService(db).list(companyId, {
+      userId: "board-user",
+      sort: "decide",
+      limit: 20,
+    });
+    expect(feed.decideNowCount).toBe(2);
+    expect(feed.items.some((item) => item.subject.id === snoozedId)).toBe(false);
+    expect(feed.items.slice(0, 3).map((item) => item.subject.id)).toEqual([
+      expiringSoonId,
+      expiringLaterId,
+      wheneverId,
+    ]);
+    const erroredAgentIndex = feed.items.findIndex((item) => item.subject.id === errorAgentId);
+    const approvalIndex = feed.items.findIndex((item) => item.subject.id === approvalId);
+    expect(erroredAgentIndex).toBeGreaterThan(-1);
+    expect(erroredAgentIndex).toBeLessThan(approvalIndex);
+
+    const enriched = feed.items.find((item) => item.subject.id === expiringSoonId);
+    expect(enriched).toMatchObject({
+      expiresAt: decisionValues[0]!.expiresAt.toISOString(),
+      ruleKey: "release.soon",
+      originAgentName: "Worker",
+      queues: [{ key: "urgent-releases", title: "Urgent releases" }],
+      decideBy: "today",
+      decideByAttribution: {
+        type: "agent",
+        agentId: workerId,
+        agentName: "Worker",
+      },
+      snoozedUntil: null,
+    });
+
+    const firstPage = await attentionService(db).list(companyId, {
+      userId: "board-user",
+      queue: "urgent-releases",
+      sort: "decide",
+      limit: 1,
+    });
+    expect(firstPage).toMatchObject({ totalCount: 2, decideNowCount: 2 });
+    expect(firstPage.items.map((item) => item.subject.id)).toEqual([expiringSoonId]);
+    expect(firstPage.nextCursor).toBeTruthy();
+    const secondPage = await attentionService(db).list(companyId, {
+      userId: "board-user",
+      queue: "urgent-releases",
+      sort: "decide",
+      limit: 1,
+      cursor: firstPage.nextCursor!,
+    });
+    expect(secondPage.items.map((item) => item.subject.id)).toEqual([expiringLaterId]);
+    expect(secondPage.nextCursor).toBeNull();
+
+    const dateFiltered = await attentionService(db).list(companyId, {
+      userId: "board-user",
+      queue: "urgent-releases",
+      activitySince: new Date(now - 90_000).toISOString(),
+      activityUntil: new Date(now).toISOString(),
+    });
+    expect(dateFiltered.items.map((item) => item.subject.id)).toEqual([expiringSoonId]);
+
+    const withSnoozed = await attentionService(db).list(companyId, {
+      userId: "board-user",
+      includeDismissed: true,
+      limit: 20,
+    });
+    expect(withSnoozed.items.find((item) => item.subject.id === snoozedId)?.snoozedUntil)
+      .toBe(new Date(now + 60 * 60_000).toISOString());
+  });
+
+  it("keeps this-week deadlines in the current UTC week", async () => {
+    const { companyId, workerId } = await seedCompany("ATW");
+    const now = Date.parse("2026-08-02T12:00:00.000Z"); // Sunday in an ISO Monday-Sunday week.
+    const originIssueId = await insertIssue({
+      companyId,
+      identifier: "ATW-1",
+      title: "Decision origin",
+      status: "in_progress",
+      assigneeAgentId: workerId,
+      updatedAt: new Date(now),
+    });
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId: workerId,
+      status: "succeeded",
+      contextSnapshot: { issueId: originIssueId },
+    });
+
+    const thisWeekId = randomUUID();
+    const nextWeekId = randomUUID();
+    await db.insert(decisions).values([
+      { id: thisWeekId, title: "This week", expiresAt: new Date("2026-08-09T12:00:00.000Z") },
+      { id: nextWeekId, title: "Next week", expiresAt: new Date("2026-08-03T12:00:00.000Z") },
+    ].map((value) => ({
+      ...value,
+      companyId,
+      originAgentId: workerId,
+      originIssueId,
+      originRunId: runId,
+      body: value.title,
+      options: [],
+      status: "open" as const,
+      signedSpec: "test",
+      targetSnapshots: {},
+      createdAt: new Date(now),
+      updatedAt: new Date(now),
+    })));
+    await db.insert(decisionTriage).values([
+      {
+        companyId,
+        sourceKind: "decision",
+        sourceId: thisWeekId,
+        decideBy: "this_week",
+        setByType: "user",
+        setByUserId: "board-user",
+      },
+      {
+        companyId,
+        sourceKind: "decision",
+        sourceId: nextWeekId,
+        decideBy: "date",
+        decideByDate: "2026-08-03",
+        setByType: "user",
+        setByUserId: "board-user",
+      },
+    ]);
+
+    const feed = await attentionService(db, { now: () => now }).list(companyId, {
+      userId: "board-user",
+      sort: "decide",
+      limit: 20,
+    });
+    const decisionItems = feed.items.filter((item) => item.sourceKind === "decision");
+
+    expect(decisionItems.map((item) => item.subject.id)).toEqual([thisWeekId, nextWeekId]);
+    expect(decisionItems[0]).toMatchObject({
+      decideBy: "this_week",
+      expiresAt: "2026-08-09T12:00:00.000Z",
+    });
+    expect(decisionItems[1]).toMatchObject({
+      decideBy: "2026-08-03",
+      expiresAt: "2026-08-03T12:00:00.000Z",
+    });
+  });
+
   it("serves the route for board users and rejects agent callers", async () => {
     const { companyId } = await seedCompany("ATR");
 
@@ -1112,6 +1362,12 @@ describeEmbeddedPostgres("attention service", () => {
     };
 
     await request(app(board)).get(`/api/companies/${companyId}/attention`).expect(200);
+    await request(app(board))
+      .get(`/api/companies/${companyId}/attention?activitySince=yesterday`)
+      .expect(400, { error: "activitySince must be an ISO timestamp" });
+    await request(app(board))
+      .get(`/api/companies/${companyId}/attention?sort=oldest`)
+      .expect(400, { error: "sort must be 'activity' or 'decide'" });
     await request(app(agent)).get(`/api/companies/${companyId}/attention`).expect(403);
   });
 });

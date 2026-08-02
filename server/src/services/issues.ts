@@ -1317,6 +1317,64 @@ async function getWorkspaceInheritanceIssue(
   return issue;
 }
 
+// Mine participation fails closed. Add new user-authored issue mutation actions
+// here instead of admitting every issue activity, because reads, previews, and
+// denied resource requests are audited too.
+const ISSUE_USER_PARTICIPATION_ACTIVITY_ACTIONS = [
+  "issue.accepted_plan_decomposition_updated",
+  "issue.admin_force_release",
+  "issue.approval_linked",
+  "issue.approval_unlinked",
+  "issue.approvers_updated",
+  "issue.assigned",
+  "issue.attachment_added",
+  "issue.attachment_removed",
+  "issue.blockers.updated",
+  "issue.blockers_updated",
+  "issue.checked_out",
+  "issue.checkout",
+  "issue.child_created",
+  "issue.comment_cancelled",
+  "issue.document_annotation_comment_added",
+  "issue.document_annotation_remapped",
+  "issue.document_annotation_thread_created",
+  "issue.document_annotation_thread_resolved",
+  "issue.document_deleted",
+  "issue.document_locked",
+  "issue.document_restored",
+  "issue.document_unlocked",
+  "issue.document_updated",
+  "issue.document_upserted",
+  "issue.feedback_vote_saved",
+  "issue.inbox_touched",
+  "issue.low_trust_output_promoted",
+  "issue.monitor_cleared",
+  "issue.monitor_scheduled",
+  "issue.recovery_action_resolved",
+  "issue.relations.updated",
+  "issue.released",
+  "issue.reviewers_updated",
+  "issue.scheduled_retry_retry_now",
+  "issue.successful_run_handoff_resolved",
+  "issue.task_watchdog_fingerprint_reviewed",
+  "issue.thread_interaction_accepted",
+  "issue.thread_interaction_answered",
+  "issue.thread_interaction_cancelled",
+  "issue.thread_interaction_created",
+  "issue.thread_interaction_item_verdicts_submitted",
+  "issue.thread_interaction_withdrawn",
+  "issue.tree_cancel_status_updated",
+  "issue.tree_hold_created",
+  "issue.tree_hold_released",
+  "issue.tree_restore_status_updated",
+  "issue.updated",
+  "issue.watchdog_created",
+  "issue.watchdog_removed",
+  "issue.work_product_created",
+  "issue.work_product_deleted",
+  "issue.work_product_updated",
+] as const;
+
 function touchedByUserCondition(companyId: string, userId: string) {
   return sql<boolean>`
     (
@@ -1324,10 +1382,16 @@ function touchedByUserCondition(companyId: string, userId: string) {
       OR ${issues.assigneeUserId} = ${userId}
       OR EXISTS (
         SELECT 1
-        FROM ${issueReadStates}
-        WHERE ${issueReadStates.issueId} = ${issues.id}
-          AND ${issueReadStates.companyId} = ${companyId}
-          AND ${issueReadStates.userId} = ${userId}
+        FROM ${activityLog}
+        WHERE ${activityLog.entityType} = 'issue'
+          AND ${activityLog.entityId} = ${issues.id}::text
+          AND ${activityLog.companyId} = ${companyId}
+          AND ${activityLog.actorType} = 'user'
+          AND ${activityLog.actorId} = ${userId}
+          AND ${activityLog.action} IN (${sql.join(
+            ISSUE_USER_PARTICIPATION_ACTIVITY_ACTIONS.map((action) => sql`${action}`),
+            sql`, `,
+          )})
       )
       OR EXISTS (
         SELECT 1
@@ -5338,6 +5402,52 @@ export function issueService(db: Db) {
         activity?.latestLogAt ?? null,
       ) ?? issue.updatedAt;
       return activeInboxArchiveFields(archive, lastActivityAt);
+    },
+
+    /**
+     * Walk the full parent chain from `parentIssueId` (inclusive) looking for
+     * a still-open ancestor created by `agentId`. Used to refuse agent
+     * delegation cycles: an agent assigning a new child to the agent that
+     * created an open ancestor is handing the same work back to its own
+     * delegator (A→B→A hot-potato). One recursive query covers the entire
+     * chain regardless of depth; `UNION` (not `UNION ALL`) deduplicates
+     * revisited rows, so a parent graph corrupted into a loop terminates
+     * instead of recursing forever.
+     */
+    findOpenAncestorCreatedByAgent: async (
+      parentIssueId: string,
+      agentId: string,
+    ): Promise<{
+      id: string;
+      identifier: string | null;
+      parentId: string | null;
+      createdByAgentId: string | null;
+      status: string;
+    } | null> => {
+      const rows = await db.execute(sql`
+        WITH RECURSIVE ancestors(id, parent_id) AS (
+          SELECT id, parent_id FROM issues WHERE id = ${parentIssueId}
+          UNION
+          SELECT parent.id, parent.parent_id
+          FROM issues parent
+          JOIN ancestors ON parent.id = ancestors.parent_id
+        )
+        SELECT i.id, i.identifier, i.parent_id, i.created_by_agent_id, i.status
+        FROM issues i
+        JOIN ancestors a ON a.id = i.id
+        WHERE i.created_by_agent_id = ${agentId}
+          AND i.status NOT IN ('done', 'cancelled')
+        LIMIT 1
+      `);
+      const first = (Array.isArray(rows) ? rows[0] : null) as Record<string, unknown> | null;
+      if (!first) return null;
+      return {
+        id: String(first.id),
+        identifier: typeof first.identifier === "string" ? first.identifier : null,
+        parentId: typeof first.parent_id === "string" ? first.parent_id : null,
+        createdByAgentId: typeof first.created_by_agent_id === "string" ? first.created_by_agent_id : null,
+        status: String(first.status),
+      };
     },
 
     getById: async (raw: string) => {

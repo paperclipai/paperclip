@@ -45,6 +45,13 @@ function buildItem(overrides: Partial<AttentionItem> = {}): AttentionItem {
     relatedIssue: null,
     project: null,
     workspace: null,
+    expiresAt: null,
+    ruleKey: null,
+    originAgentName: null,
+    queues: [],
+    decideBy: null,
+    decideByAttribution: null,
+    snoozedUntil: null,
     detail: null,
     dismissal: null,
     ...overrides,
@@ -94,15 +101,17 @@ describe("isInlineResolvable", () => {
 });
 
 describe("attentionBadgeCount", () => {
-  it("counts every queue row as a decision (mentions/unread never enter the feed)", () => {
+  it("uses the server's pre-pagination decide-now count", () => {
     const feed: AttentionFeed = {
       companyId: "c1",
       generatedAt: "2026-07-09T12:00:00Z",
       totalCount: 3,
+      decideNowCount: 2,
+      nextCursor: "next-page",
       countsBySourceKind: {} as AttentionFeed["countsBySourceKind"],
       items: [buildItem({ id: "1" }), buildItem({ id: "2" }), buildItem({ id: "3" })],
     };
-    expect(attentionBadgeCount(feed)).toBe(3);
+    expect(attentionBadgeCount(feed)).toBe(2);
   });
 
   it("is zero for an empty or missing feed", () => {

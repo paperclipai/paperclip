@@ -6,7 +6,10 @@ import {
   assets,
   companies,
   decisionBundles,
+  decisionQueueItems,
+  decisionQueues,
   decisionTrainingExamples,
+  decisionTriage,
   decisions,
   heartbeatRunEvents,
   heartbeatRuns,
@@ -28,20 +31,26 @@ import { deriveProjectUrlKey } from "@paperclipai/shared";
 import type {
   AttentionDecisionVerb,
   AttentionFeed,
+  AttentionFeedQuery,
   AttentionDetailImage,
   AttentionItem,
   AttentionItemDetail,
   AttentionProjectRef,
+  AttentionQueueRef,
   AttentionSeverity,
+  AttentionSortMode,
   AttentionSourceKind,
   AttentionSubject,
+  AttentionTriageAttribution,
   AttentionWorkspaceRef,
 } from "@paperclipai/shared";
+import { badRequest } from "../errors.js";
 import { PRODUCTIVITY_REVIEW_ORIGIN_KIND } from "./productivity-review.js";
 import { budgetService } from "./budgets.js";
 import { issueService } from "./issues.js";
 import { parseIssueExecutionState } from "./issue-execution-policy.js";
 import { isProspectiveBlockedTransition } from "./routable-blocked.js";
+import { decisionQueueService } from "./decision-queues.js";
 
 const ATTENTION_SOURCE_KINDS: AttentionSourceKind[] = [
   "approval",
@@ -87,6 +96,8 @@ const DETAIL_EXCERPT_LENGTH = 160;
 const DETAIL_IMAGE_LIMIT = 3;
 const OPEN_DECISION_DEFAULT_LIMIT = 500;
 const OPEN_DECISION_MAX_LIMIT = 1_000;
+const ATTENTION_PAGE_DEFAULT_LIMIT = 50;
+const ATTENTION_PAGE_MAX_LIMIT = 100;
 
 type IssueSummaryRow = {
   id: string;
@@ -122,13 +133,13 @@ type BlockingIssueSummary = {
   title: string | null;
 };
 
-type AttentionListOptions = {
+type AttentionListOptions = AttentionFeedQuery & {
   userId?: string | null;
-  includeDismissed?: boolean;
 };
 
 type AttentionServiceOptions = {
   openDecisionLimit?: number;
+  now?: () => number;
 };
 
 function emptyCounts(): Record<AttentionSourceKind, number> {
@@ -322,9 +333,28 @@ function decisionVerbs(...verbs: AttentionDecisionVerb[]): AttentionDecisionVerb
   return verbs;
 }
 
-type CreateAttentionItemInput = Omit<AttentionItem, "id" | "dismissalKey" | "rank" | "dismissal" | "project" | "workspace" | "detail" | "trainingExampleId"> & {
+type CreateAttentionItemInput = Omit<AttentionItem,
+  | "id"
+  | "dismissalKey"
+  | "rank"
+  | "dismissal"
+  | "project"
+  | "workspace"
+  | "expiresAt"
+  | "ruleKey"
+  | "originAgentName"
+  | "queues"
+  | "decideBy"
+  | "decideByAttribution"
+  | "snoozedUntil"
+  | "detail"
+  | "trainingExampleId"
+> & {
   project?: AttentionProjectRef | null;
   workspace?: AttentionWorkspaceRef | null;
+  expiresAt?: string | null;
+  ruleKey?: string | null;
+  originAgentName?: string | null;
   detail?: AttentionItemDetail | null;
 };
 
@@ -336,6 +366,13 @@ function createItem(input: CreateAttentionItemInput): AttentionItem {
     dismissal: null,
     project: input.project ?? null,
     workspace: input.workspace ?? null,
+    expiresAt: input.expiresAt ?? null,
+    ruleKey: input.ruleKey ?? null,
+    originAgentName: input.originAgentName ?? null,
+    queues: [],
+    decideBy: null,
+    decideByAttribution: null,
+    snoozedUntil: null,
     detail: input.detail ?? null,
     trainingExampleId: null,
     rank: 0,
@@ -350,6 +387,170 @@ function compareAttentionItems(left: AttentionItem, right: AttentionItem) {
   const sourceDiff = SOURCE_RANK[left.sourceKind] - SOURCE_RANK[right.sourceKind];
   if (sourceDiff !== 0) return sourceDiff;
   return left.dedupKey.localeCompare(right.dedupKey);
+}
+
+function sourceKey(sourceKind: AttentionSourceKind, sourceId: string) {
+  return `${sourceKind}:${sourceId}`;
+}
+
+function itemSourceKey(item: AttentionItem) {
+  return sourceKey(item.sourceKind, item.subject.id);
+}
+
+function readMetadataAgentId(item: AttentionItem) {
+  const metadata = item.subject.metadata;
+  const value = metadata?.originAgentId ?? metadata?.createdByAgentId ?? metadata?.requestedByAgentId
+    ?? metadata?.agentId ?? (item.subject.kind === "agent" ? item.subject.id : null);
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function startOfUtcDay(now: number) {
+  const value = new Date(now);
+  return Date.UTC(value.getUTCFullYear(), value.getUTCMonth(), value.getUTCDate());
+}
+
+function endOfUtcDay(now: number) {
+  return startOfUtcDay(now) + 24 * 60 * 60 * 1_000 - 1;
+}
+
+function endOfUtcWeek(now: number) {
+  const start = startOfUtcDay(now);
+  const weekday = new Date(start).getUTCDay();
+  // Use an ISO-style Monday-Sunday week. Sunday (0) is already the last
+  // day of the current week; every other day advances only to that Sunday.
+  const daysUntilSunday = weekday === 0 ? 0 : 7 - weekday;
+  return start + (daysUntilSunday + 1) * 24 * 60 * 60 * 1_000 - 1;
+}
+
+function decideOrder(item: AttentionItem, now: number): [number, number] {
+  if (item.decideBy === "today") return [0, endOfUtcDay(now)];
+  if (item.decideBy === "this_week") return [0, endOfUtcWeek(now)];
+  if (item.decideBy && /^\d{4}-\d{2}-\d{2}$/.test(item.decideBy)) {
+    const deadline = Date.parse(`${item.decideBy}T23:59:59.999Z`);
+    if (Number.isFinite(deadline)) return [0, deadline];
+  }
+  if (item.decideBy === "whenever") return [1, Number.MAX_SAFE_INTEGER];
+  return [2, Number.MAX_SAFE_INTEGER];
+}
+
+function isDecideNow(item: AttentionItem, now: number) {
+  const [bucket, deadline] = decideOrder(item, now);
+  return bucket === 0 && deadline <= endOfUtcDay(now);
+}
+
+function compareDecideItems(left: AttentionItem, right: AttentionItem, now: number) {
+  const [leftBucket, leftDeadline] = decideOrder(left, now);
+  const [rightBucket, rightDeadline] = decideOrder(right, now);
+  if (leftBucket !== rightBucket) return leftBucket - rightBucket;
+  if (leftDeadline !== rightDeadline) return leftDeadline - rightDeadline;
+
+  const leftExpiry = left.expiresAt ? timestamp(left.expiresAt) : Number.MAX_SAFE_INTEGER;
+  const rightExpiry = right.expiresAt ? timestamp(right.expiresAt) : Number.MAX_SAFE_INTEGER;
+  if (leftExpiry !== rightExpiry) return leftExpiry - rightExpiry;
+
+  const severityDiff = SEVERITY_RANK[left.severity] - SEVERITY_RANK[right.severity];
+  if (severityDiff !== 0) return severityDiff;
+  return compareAttentionItems(left, right);
+}
+
+function encodeCursor(sort: AttentionSortMode, item: AttentionItem) {
+  return Buffer.from(JSON.stringify({ v: 1, sort, id: item.id }), "utf8").toString("base64url");
+}
+
+function decodeCursor(cursor: string, sort: AttentionSortMode) {
+  try {
+    const decoded = JSON.parse(Buffer.from(cursor, "base64url").toString("utf8")) as Record<string, unknown>;
+    if (decoded.v !== 1 || decoded.sort !== sort || typeof decoded.id !== "string" || !decoded.id) {
+      throw new Error("invalid cursor shape");
+    }
+    return decoded.id;
+  } catch {
+    throw badRequest("Invalid attention cursor");
+  }
+}
+
+function parseActivityBoundary(value: string | undefined, field: "activitySince" | "activityUntil") {
+  if (value === undefined) return null;
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,3})?(?:Z|[+-]\d{2}:\d{2})$/.test(value)) {
+    throw badRequest(`${field} must be an ISO timestamp`);
+  }
+  const parsed = Date.parse(value);
+  if (!Number.isFinite(parsed)) throw badRequest(`${field} must be an ISO timestamp`);
+  return parsed;
+}
+
+async function enrichAttentionItems(db: Db, companyId: string, items: AttentionItem[]) {
+  if (items.length === 0) return items;
+  const sourceIds = [...new Set(items.map((item) => item.subject.id))];
+  const queueRows = await db
+    .select({
+      sourceKind: decisionQueueItems.sourceKind,
+      sourceId: decisionQueueItems.sourceId,
+      key: decisionQueues.key,
+      title: decisionQueues.title,
+    })
+    .from(decisionQueueItems)
+    .innerJoin(decisionQueues, and(
+      eq(decisionQueueItems.queueId, decisionQueues.id),
+      eq(decisionQueues.companyId, companyId),
+    ))
+    .where(and(
+      eq(decisionQueueItems.companyId, companyId),
+      inArray(decisionQueueItems.sourceId, sourceIds),
+    ))
+    .orderBy(asc(decisionQueues.title), asc(decisionQueues.key));
+  const queuesBySource = new Map<string, AttentionQueueRef[]>();
+  for (const row of queueRows) {
+    const key = sourceKey(row.sourceKind as AttentionSourceKind, row.sourceId);
+    const queues = queuesBySource.get(key) ?? [];
+    queues.push({ key: row.key, title: row.title });
+    queuesBySource.set(key, queues);
+  }
+
+  const triageRows = await db
+    .select()
+    .from(decisionTriage)
+    .where(and(
+      eq(decisionTriage.companyId, companyId),
+      inArray(decisionTriage.sourceId, sourceIds),
+    ));
+  const triageBySource = new Map(triageRows.map((row) => [
+    sourceKey(row.sourceKind as AttentionSourceKind, row.sourceId),
+    row,
+  ]));
+
+  const agentIds = [...new Set([
+    ...items.map(readMetadataAgentId),
+    ...triageRows.map((row) => row.setByAgentId),
+  ].filter((value): value is string => Boolean(value)))];
+  const agentNameById = new Map(agentIds.length === 0 ? [] : await db
+    .select({ id: agents.id, name: agents.name })
+    .from(agents)
+    .where(and(eq(agents.companyId, companyId), inArray(agents.id, agentIds)))
+    .then((rows) => rows.map((row) => [row.id, row.name] as const)));
+
+  return items.map((item) => {
+    const triage = triageBySource.get(itemSourceKey(item));
+    const decideBy = triage?.decideBy === "date" ? triage.decideByDate : triage?.decideBy ?? null;
+    const decideByAttribution: AttentionTriageAttribution | null = triage ? {
+      type: triage.setByType as AttentionTriageAttribution["type"],
+      agentId: triage.setByAgentId ?? null,
+      agentName: triage.setByAgentId ? agentNameById.get(triage.setByAgentId) ?? null : null,
+      userId: triage.setByUserId ?? null,
+      runId: triage.setByRunId ?? null,
+      responsibleUserId: triage.responsibleUserId ?? null,
+      updatedAt: toIso(triage.updatedAt),
+    } : null;
+    const originAgentId = readMetadataAgentId(item);
+    return {
+      ...item,
+      originAgentName: originAgentId ? agentNameById.get(originAgentId) ?? null : null,
+      queues: queuesBySource.get(itemSourceKey(item)) ?? [],
+      decideBy,
+      decideByAttribution,
+      snoozedUntil: triage?.snoozedUntil ? toIso(triage.snoozedUntil) : null,
+    };
+  });
 }
 
 function betterDuplicate(left: AttentionItem, right: AttentionItem) {
@@ -616,9 +817,9 @@ function readRunIssueId(contextSnapshot: Record<string, unknown> | null) {
   return typeof issueId === "string" && issueId.length > 0 ? issueId : null;
 }
 
-export function attentionService(db: Db, options: AttentionServiceOptions = {}) {
+export function attentionService(db: Db, serviceOptions: AttentionServiceOptions = {}) {
   const openDecisionLimit = Math.min(
-    Math.max(Math.trunc(options.openDecisionLimit ?? OPEN_DECISION_DEFAULT_LIMIT), 1),
+    Math.max(Math.trunc(serviceOptions.openDecisionLimit ?? OPEN_DECISION_DEFAULT_LIMIT), 1),
     OPEN_DECISION_MAX_LIMIT,
   );
   return {
@@ -626,7 +827,7 @@ export function attentionService(db: Db, options: AttentionServiceOptions = {}) 
       const prefix = await companyPrefix(db, companyId);
       const dismissals = await dismissalByKey(db, companyId, options.userId);
       const includeDismissed = options.includeDismissed === true;
-      const now = Date.now();
+      const now = serviceOptions.now?.() ?? Date.now();
       const collected: AttentionItem[] = [];
 
       const add = (item: AttentionItem) => {
@@ -715,6 +916,7 @@ export function attentionService(db: Db, options: AttentionServiceOptions = {}) 
           title: issueThreadInteractions.title,
           summary: issueThreadInteractions.summary,
           payload: issueThreadInteractions.payload,
+          createdByAgentId: issueThreadInteractions.createdByAgentId,
           createdAt: issueThreadInteractions.createdAt,
           updatedAt: issueThreadInteractions.updatedAt,
         })
@@ -754,6 +956,7 @@ export function attentionService(db: Db, options: AttentionServiceOptions = {}) 
             metadata: {
               kind: interaction.kind,
               issueId: interaction.issueId,
+              createdByAgentId: interaction.createdByAgentId,
               isPlanTarget,
               targetDocumentKey: isPlanTarget ? "plan" : null,
             },
@@ -778,9 +981,11 @@ export function attentionService(db: Db, options: AttentionServiceOptions = {}) 
         id: decisions.id,
         bundleId: decisions.bundleId,
         originAgentId: decisions.originAgentId,
+        ruleKey: decisions.ruleKey,
         title: decisions.title,
         body: decisions.body,
         status: decisions.status,
+        expiresAt: decisions.expiresAt,
         originIssueId: decisions.originIssueId,
         createdAt: decisions.createdAt,
         updatedAt: decisions.updatedAt,
@@ -813,6 +1018,8 @@ export function attentionService(db: Db, options: AttentionServiceOptions = {}) 
           exitRule: "Decision is decided, expired, or cancelled.",
           dedupKey: `decision:${decision.id}`,
           severity: "medium",
+          expiresAt: decision.expiresAt ? toIso(decision.expiresAt) : null,
+          ruleKey: decision.ruleKey,
           activityAt: toIso(decision.updatedAt),
           createdAt: toIso(decision.createdAt),
           updatedAt: toIso(decision.updatedAt),
@@ -1383,9 +1590,47 @@ export function attentionService(db: Db, options: AttentionServiceOptions = {}) 
         deduped.set(item.dedupKey, current ? betterDuplicate(current, item) : item);
       }
 
-      const items = [...deduped.values()]
-        .sort(compareAttentionItems)
+      const collectedItems = [...deduped.values()].sort(compareAttentionItems);
+      await decisionQueueService(db).materializeSeededQueues(companyId, collectedItems);
+      const enrichedItems = await enrichAttentionItems(db, companyId, collectedItems);
+
+      const activitySince = parseActivityBoundary(options.activitySince, "activitySince");
+      const activityUntil = parseActivityBoundary(options.activityUntil, "activityUntil");
+      if (activitySince != null && activityUntil != null && activitySince > activityUntil) {
+        throw badRequest("activitySince must be before or equal to activityUntil");
+      }
+      const queueKey = options.queue?.trim() || null;
+      const visibleItems = enrichedItems.filter((item) => {
+        if (!includeDismissed && item.snoozedUntil && timestamp(item.snoozedUntil) > now) return false;
+        const activity = timestamp(item.activityAt);
+        if (activitySince != null && activity < activitySince) return false;
+        if (activityUntil != null && activity > activityUntil) return false;
+        if (queueKey && !item.queues.some((queue) => queue.key === queueKey)) return false;
+        return true;
+      });
+
+      const sort = options.sort ?? "activity";
+      if (sort !== "activity" && sort !== "decide") throw badRequest("sort must be 'activity' or 'decide'");
+      const rankedItems = visibleItems
+        .sort(sort === "decide"
+          ? (left, right) => compareDecideItems(left, right, now)
+          : compareAttentionItems)
         .map((item, index) => ({ ...item, rank: index + 1 }));
+      const limit = options.limit ?? ATTENTION_PAGE_DEFAULT_LIMIT;
+      if (!Number.isInteger(limit) || limit < 1 || limit > ATTENTION_PAGE_MAX_LIMIT) {
+        throw badRequest(`limit must be an integer between 1 and ${ATTENTION_PAGE_MAX_LIMIT}`);
+      }
+      let pageStart = 0;
+      if (options.cursor) {
+        const cursorItemId = decodeCursor(options.cursor, sort);
+        const cursorIndex = rankedItems.findIndex((item) => item.id === cursorItemId);
+        if (cursorIndex < 0) throw badRequest("Attention cursor no longer matches the filtered feed");
+        pageStart = cursorIndex + 1;
+      }
+      const items = rankedItems.slice(pageStart, pageStart + limit);
+      const hasNextPage = pageStart + items.length < rankedItems.length;
+      const nextCursor = hasNextPage && items.length > 0 ? encodeCursor(sort, items[items.length - 1]!) : null;
+
       if (options.userId) {
         const trainable: Array<{ sourceKind: "approval" | "interaction"; sourceId: string }> = [];
         for (const item of items) {
@@ -1423,12 +1668,14 @@ export function attentionService(db: Db, options: AttentionServiceOptions = {}) 
         }
       }
       const countsBySourceKind = emptyCounts();
-      for (const item of items) countsBySourceKind[item.sourceKind] += 1;
+      for (const item of rankedItems) countsBySourceKind[item.sourceKind] += 1;
 
       return {
         companyId,
         generatedAt: new Date().toISOString(),
-        totalCount: items.length,
+        totalCount: rankedItems.length,
+        decideNowCount: rankedItems.filter((item) => isDecideNow(item, now)).length,
+        nextCursor,
         countsBySourceKind,
         items,
       };

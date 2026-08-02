@@ -78,6 +78,13 @@ function item(
     detail: null,
     dismissal: null,
     ...overrides,
+    expiresAt: overrides.expiresAt ?? null,
+    ruleKey: overrides.ruleKey ?? null,
+    originAgentName: overrides.originAgentName ?? null,
+    queues: overrides.queues ?? [],
+    decideBy: overrides.decideBy ?? null,
+    decideByAttribution: overrides.decideByAttribution ?? null,
+    snoozedUntil: overrides.snoozedUntil ?? null,
     trainingExampleId: overrides.trainingExampleId ?? null,
   };
 }

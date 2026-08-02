@@ -142,3 +142,18 @@ test("pr.yml keeps a stable aggregate check named e2e over the shard matrix", ()
     assert.equal(entry.shardLabel, `${entry.shardIndex + 1}/${SHARD_COUNT}`, "each shard label must match its index");
   }
 });
+
+test("pr.yml passes the shard's spec filter to Playwright without a literal --", () => {
+  // `pnpm run test:e2e -- $specs` forwards the literal separator to Playwright,
+  // so the specs after it are not applied as file filters.
+  const workflow = readFileSync(prWorkflow, "utf8");
+  assert.ok(
+    !/pnpm run test:e2e --\s/.test(workflow),
+    "pr.yml must not insert a literal `--` between `pnpm run test:e2e` and the spec filter",
+  );
+  assert.match(
+    workflow,
+    /pnpm run test:e2e \$specs/,
+    "pr.yml e2e_shards must invoke `pnpm run test:e2e $specs`",
+  );
+});

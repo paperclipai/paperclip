@@ -455,6 +455,14 @@ The current implementation includes additional V1-control-plane tables beyond th
 - Plugins and routines: `plugins`, plugin config/state/entities/jobs/logs/webhooks, plugin database namespaces/migrations, plugin company settings, `routines`, `routine_revisions`, `routine_triggers`, and `routine_runs`.
 - Access and operations: company memberships, instance roles, principal permission grants, invites, join requests, board API keys, CLI auth challenges, budget policies/incidents, feedback exports/votes, company skills, sidebar preferences, and company logos.
 
+Decision-desk triage uses company-scoped sidecars rather than adding queue fields to every attention source:
+
+- `decision_queues` stores durable named queues, optional retention overrides, server-derived creator/run provenance, and data-backed seed rules.
+- `decision_queue_items` keys membership by `(queue_id, source_kind, source_id)` and repeats `company_id` for company-consistent joins.
+- `decision_triage` keys current decide-by/snooze state by `(company_id, source_kind, source_id)` and preserves the latest setter attribution.
+- `decision_triage_events` is the immutable mutation history for queue membership and triage overrides, including actor, run, API-key, and responsible-user provenance.
+- Queue membership never grants source visibility. Item writes re-authorize the referenced source, and queue reads re-authorize every member before returning rows or counts.
+
 ## 8. State Machines
 
 ## 8.1 Agent Status
@@ -818,6 +826,7 @@ Core authorization follows these rules:
 - An agent targeting any user other than its resolved responsible user requires an explicit `inbox:manage` grant. Grants may be unscoped or constrained by `scope.userIds`.
 - Archive and unarchive operations are company-scoped, reversible, and activity logged with actor, agent, run, target user, target-resolution source, and policy mode.
 - New qualifying issue activity may invalidate an archive so the item resurfaces; archival is not a substitute for resolving or closing work.
+- Viewing an issue may update its per-user read receipt, but read receipts alone do not enroll the issue in Mine. Mine participation begins with a user-authored comment, issue creation/assignment, or another audited user mutation; explicit product actions such as manually running a routine may record an audited inbox touch.
 
 Ownership split:
 
@@ -974,6 +983,15 @@ The current app also exposes V1-supporting surfaces for:
 - plugin installation, configuration, state, jobs, logs, webhooks, and plugin database namespace migration
 - company import/export preview/apply, feedback export/vote routes, instance backup/config routes, invites, join requests, memberships, and permission grants
 - company skill policy read/replace/reset/simulation, enforced by the same core evaluator used by skill mutation routes
+- decision queues and per-attention-item triage:
+  - `GET|POST /companies/:companyId/decision-queues`
+  - `PATCH /companies/:companyId/decision-queues/:key`
+  - `GET|POST /companies/:companyId/decision-queues/:key/items`
+  - `DELETE /companies/:companyId/decision-queues/:key/items/:sourceKind/:sourceId`
+  - `GET /companies/:companyId/decision-queue-seed-rules`
+  - `GET|PUT /companies/:companyId/decision-triage/:sourceKind/:sourceId`
+
+Queue and triage mutations accept board non-viewers and active standard-scope agents, apply responsible-user intersection for run JWTs, and reject low-trust, `task_bridge`, and `skill_test` contexts. Missing, cross-company, and unauthorized attention sources share the same not-found response.
 
 ## 11. Heartbeat and Adapter Contract
 

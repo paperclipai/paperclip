@@ -95,13 +95,39 @@ export type {
   AttentionItem,
   AttentionItemDetail,
   AttentionItemDismissal,
+  AttentionFeedQuery,
   AttentionProjectRef,
+  AttentionQueueRef,
   AttentionSeverity,
+  AttentionSortMode,
   AttentionSourceKind,
   AttentionSubject,
   AttentionSubjectKind,
+  AttentionTriageAttribution,
   AttentionWorkspaceRef,
 } from "./types/attention.js";
+export { ATTENTION_SOURCE_KINDS } from "./types/attention.js";
+export type {
+  DecisionQueue,
+  DecisionQueueItem,
+  DecisionQueueSeedRule,
+  DecisionQueueSeedRuleSignal,
+  DecisionTriage,
+  DecisionTriageDecideBy,
+} from "./types/decision-queue.js";
+export {
+  decisionAttentionSourceKindSchema,
+  decisionQueueKeySchema,
+  createDecisionQueueSchema,
+  updateDecisionQueueSchema,
+  addDecisionQueueItemSchema,
+  decisionTriageDecideBySchema,
+  updateDecisionTriageSchema,
+  type CreateDecisionQueueInput,
+  type UpdateDecisionQueueInput,
+  type AddDecisionQueueItemInput,
+  type UpdateDecisionTriageInput,
+} from "./validators/decision-queue.js";
 export type {
   DecisionTrainingExample,
   DecisionTrainingNotesHistoryEntry,

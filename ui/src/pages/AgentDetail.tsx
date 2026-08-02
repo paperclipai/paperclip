@@ -1051,6 +1051,7 @@ export function AgentDetail() {
   }
   const isPendingApproval = agent.status === "pending_approval";
   const hasInvalidOrgChain = agent.orgChainHealth?.status === "invalid_org_chain";
+  const pausedEscalationWarning = !hasInvalidOrgChain ? agent.orgChainHealth?.escalationWarning ?? null : null;
   const showConfigActionBar = (activeView === "configuration" || activeView === "instructions") && (configDirty || configSaving);
   const showLeftAgentNotice = agentMembershipState === "left" && !dismissedLeftAgentIds.has(agent.id);
   const agentMembershipPending =
@@ -1095,6 +1096,15 @@ export function AgentDetail() {
           >
             ×
           </button>
+        </div>
+      ) : null}
+      {pausedEscalationWarning ? (
+        <div className="flex items-start gap-3 border border-amber-300/35 bg-amber-300/10 px-3 py-2 text-sm text-amber-900 dark:text-amber-100">
+          <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+          <div className="min-w-0 space-y-1">
+            <p className="font-medium">Escalation path is paused</p>
+            <p className="text-amber-900/90 dark:text-amber-100/90">{pausedEscalationWarning}</p>
+          </div>
         </div>
       ) : null}
       {hasInvalidOrgChain ? (

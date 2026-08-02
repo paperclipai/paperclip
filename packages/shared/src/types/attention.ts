@@ -1,17 +1,20 @@
 import type { InboxDismissalKind } from "./inbox-dismissal.js";
 
-export type AttentionSourceKind =
-  | "approval"
-  | "decision"
-  | "issue_thread_interaction"
-  | "join_request"
-  | "recovery_action"
-  | "productivity_review"
-  | "blocker_attention"
-  | "review"
-  | "failed_run"
-  | "budget_alert"
-  | "agent_error_alert";
+export const ATTENTION_SOURCE_KINDS = [
+  "approval",
+  "decision",
+  "issue_thread_interaction",
+  "join_request",
+  "recovery_action",
+  "productivity_review",
+  "blocker_attention",
+  "review",
+  "failed_run",
+  "budget_alert",
+  "agent_error_alert",
+] as const;
+
+export type AttentionSourceKind = (typeof ATTENTION_SOURCE_KINDS)[number];
 
 export type AttentionSubjectKind =
   | "approval"
@@ -54,6 +57,33 @@ export interface AttentionProjectRef {
 export interface AttentionWorkspaceRef {
   id: string;
   name: string;
+}
+
+export interface AttentionQueueRef {
+  key: string;
+  title: string;
+}
+
+export interface AttentionTriageAttribution {
+  type: "agent" | "user";
+  agentId: string | null;
+  agentName: string | null;
+  userId: string | null;
+  runId: string | null;
+  responsibleUserId: string | null;
+  updatedAt: string;
+}
+
+export type AttentionSortMode = "activity" | "decide";
+
+export interface AttentionFeedQuery {
+  includeDismissed?: boolean;
+  activitySince?: string;
+  activityUntil?: string;
+  queue?: string;
+  sort?: AttentionSortMode;
+  cursor?: string;
+  limit?: number;
 }
 
 export interface AttentionDetailImage {
@@ -167,6 +197,13 @@ export interface AttentionItem {
   relatedIssue: AttentionSubject | null;
   project: AttentionProjectRef | null;
   workspace: AttentionWorkspaceRef | null;
+  expiresAt: string | null;
+  ruleKey: string | null;
+  originAgentName: string | null;
+  queues: AttentionQueueRef[];
+  decideBy: string | null;
+  decideByAttribution: AttentionTriageAttribution | null;
+  snoozedUntil: string | null;
   detail: AttentionItemDetail | null;
   trainingExampleId: string | null;
 }
@@ -175,6 +212,8 @@ export interface AttentionFeed {
   companyId: string;
   generatedAt: string;
   totalCount: number;
+  decideNowCount: number;
+  nextCursor: string | null;
   countsBySourceKind: Record<AttentionSourceKind, number>;
   items: AttentionItem[];
 }
