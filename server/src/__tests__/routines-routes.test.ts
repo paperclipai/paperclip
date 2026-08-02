@@ -197,7 +197,7 @@ describe("routine routes", () => {
     vi.clearAllMocks();
     mockGetTelemetryClient.mockReturnValue({ track: vi.fn() });
     mockRoutineService.list.mockResolvedValue([routine]);
-    mockRoutineService.create.mockResolvedValue(routine);
+    mockRoutineService.create.mockResolvedValue({ ...routine, triggers: [] });
     mockRoutineService.get.mockResolvedValue(routine);
     mockRoutineService.getTrigger.mockResolvedValue(trigger);
     mockRoutineService.update.mockResolvedValue({ ...routine, assigneeAgentId: otherAgentId });

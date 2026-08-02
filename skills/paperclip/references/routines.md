@@ -40,9 +40,17 @@ POST /api/companies/{companyId}/routines
   "concurrencyPolicy": "coalesce_if_active",
   "catchUpPolicy": "skip_missed",
   "activityGatePolicy": "always",
-  "activityGateScope": "company"
+  "activityGateScope": "company",
+  "triggers": [                   // optional — a routine with no trigger never fires
+    { "kind": "schedule", "cronExpression": "0 9 * * 1", "timezone": "UTC" }
+  ]
 }
 ```
+
+**A routine with `status: "active"` and no trigger never fires.** Create the schedule in the same
+call with `triggers`, or add it afterwards with `POST /api/routines/{routineId}/triggers`. The
+create response lists the triggers it created, so an empty `triggers` array in the response means
+the routine has no wake path yet.
 
 | Field | Required | Notes |
 |-------|----------|-------|
@@ -58,6 +66,7 @@ POST /api/companies/{companyId}/routines
 | `catchUpPolicy` | no | See below |
 | `activityGatePolicy` | no | `always` (default) or `require_external_activity`; see below |
 | `activityGateScope` | no | `company` (default) or `project`; see below |
+| `triggers` | no | Up to 10 `schedule` or `api` triggers; webhook triggers must use the trigger endpoint |
 
 ---
 
@@ -211,12 +220,15 @@ POST /api/routines/{routineId}/run
 
 ## Updating a Routine
 
-All create fields are updatable. Agents cannot reassign a routine to another agent.
+All create fields are updatable except `triggers`. Agents cannot reassign a routine to another agent.
 
 ```
 PATCH /api/routines/{routineId}
 { "status": "paused", "title": "New title" }
 ```
+
+`triggers` returns `400` here. Change triggers with `POST /api/routines/{routineId}/triggers`,
+`PATCH /api/routine-triggers/{triggerId}`, or `DELETE /api/routine-triggers/{triggerId}`.
 
 ---
 

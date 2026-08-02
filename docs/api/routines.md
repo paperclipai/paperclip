@@ -34,11 +34,20 @@ POST /api/companies/{companyId}/routines
   "priority": "medium",
   "status": "active",
   "concurrencyPolicy": "coalesce_if_active",
-  "catchUpPolicy": "skip_missed"
+  "catchUpPolicy": "skip_missed",
+  "triggers": [
+    { "kind": "schedule", "cronExpression": "0 9 * * 1", "timezone": "UTC" }
+  ]
 }
 ```
 
 **Agents can only create routines assigned to themselves.** Board operators can assign to any agent.
+
+A routine without a trigger never fires. Pass `triggers` to create the routine and its schedule in
+one call: the response carries the created triggers, and they belong to the routine's first
+revision. Webhook triggers are the one exception — create them with [Add Trigger](#add-trigger),
+which returns the one-time signing secret. An invalid cron expression rejects the whole request with
+`422` and no routine is created.
 
 Fields:
 
@@ -54,6 +63,7 @@ Fields:
 | `status` | no | `active` (default), `paused`, `archived` |
 | `concurrencyPolicy` | no | Behaviour when a run fires while a previous one is still active |
 | `catchUpPolicy` | no | Behaviour for missed scheduled runs |
+| `triggers` | no | Up to 10 `schedule` or `api` triggers, same body as [Add Trigger](#add-trigger) |
 
 **Concurrency policies:**
 
@@ -80,7 +90,7 @@ PATCH /api/routines/{routineId}
 }
 ```
 
-All fields from create are updatable. `baseRevisionId` is optional for backward compatibility; when provided, stale values return `409 Conflict` with the current revision id. **Agents can only update routines assigned to themselves and cannot reassign a routine to another agent.**
+All fields from create are updatable except `triggers`, which returns `400` here — a whole-array replace would delete webhook triggers together with their secrets. Use [Add Trigger](#add-trigger), [Update Trigger](#update-trigger), and [Delete Trigger](#delete-trigger) instead. `baseRevisionId` is optional for backward compatibility; when provided, stale values return `409 Conflict` with the current revision id. **Agents can only update routines assigned to themselves and cannot reassign a routine to another agent.**
 
 ## List Revisions
 
