@@ -19,6 +19,7 @@ import {
   DEFAULT_PRODUCTIVITY_REVIEW_MAX_REFRESH_COMMENTS,
   DEFAULT_PRODUCTIVITY_REVIEW_NO_COMMENT_STREAK_RUNS,
   DEFAULT_PRODUCTIVITY_REVIEW_REFRESH_INTERVAL_MS,
+  MAX_OPEN_REVIEWS_PER_RECONCILE,
   PRODUCTIVITY_REVIEW_AUTO_RESOLVE_COMMENT_PREFIX,
   PRODUCTIVITY_REVIEW_REFRESH_COMMENT_PREFIX,
   PRODUCTIVITY_REVIEW_ORIGIN_KIND,
@@ -169,6 +170,64 @@ describeEmbeddedPostgres("productivity review service", () => {
       .orderBy(issues.createdAt);
   }
 
+  async function listAutoResolveComments(reviewIssueId: string) {
+    return db
+      .select()
+      .from(issueComments)
+      .where(and(
+        eq(issueComments.issueId, reviewIssueId),
+        sql`${issueComments.body} like ${`${PRODUCTIVITY_REVIEW_AUTO_RESOLVE_COMMENT_PREFIX}%`}`,
+      ));
+  }
+
+  // Inserts a source issue plus the productivity review that points at it,
+  // bypassing the creation path so a test can build many pairs cheaply.
+  async function seedReviewPair(input: {
+    companyId: string;
+    issuePrefix: string;
+    assigneeAgentId: string;
+    managerAgentId: string;
+    index: number;
+    sourceStatus: "in_progress" | "done" | "cancelled";
+    createdAt: Date;
+  }) {
+    const sourceIssueId = randomUUID();
+    const reviewIssueId = randomUUID();
+    const sourceNumber = 1000 + input.index * 2;
+    await db.insert(issues).values([
+      {
+        id: sourceIssueId,
+        companyId: input.companyId,
+        title: `Source ${input.index}`,
+        status: input.sourceStatus,
+        priority: "medium",
+        assigneeAgentId: input.assigneeAgentId,
+        originKind: "manual",
+        issueNumber: sourceNumber,
+        identifier: `${input.issuePrefix}-${sourceNumber}`,
+        createdAt: input.createdAt,
+        updatedAt: input.createdAt,
+      },
+      {
+        id: reviewIssueId,
+        companyId: input.companyId,
+        title: `Productivity review ${input.index}`,
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: input.managerAgentId,
+        parentId: sourceIssueId,
+        originKind: PRODUCTIVITY_REVIEW_ORIGIN_KIND,
+        originId: sourceIssueId,
+        originFingerprint: `productivity-review:${sourceIssueId}`,
+        issueNumber: sourceNumber + 1,
+        identifier: `${input.issuePrefix}-${sourceNumber + 1}`,
+        createdAt: input.createdAt,
+        updatedAt: input.createdAt,
+      },
+    ]);
+    return { sourceIssueId, reviewIssueId };
+  }
+
   async function listRefreshComments(reviewIssueId: string) {
     return db
       .select()
@@ -272,6 +331,73 @@ describeEmbeddedPostgres("productivity review service", () => {
     const [review] = await listProductivityReviews(seeded.companyId);
     expect(review?.status).toBe("todo");
   });
+
+  it("does not repeat the audit comment when an earlier pass commented but failed to cancel", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue();
+    const pair = await seedReviewPair({
+      companyId: seeded.companyId,
+      issuePrefix: seeded.issuePrefix,
+      assigneeAgentId: seeded.coderId,
+      managerAgentId: seeded.managerId,
+      index: 0,
+      sourceStatus: "done",
+      createdAt: seeded.createdAt,
+    });
+    // The state a partial write leaves behind: audit comment present, review still open.
+    await db.insert(issueComments).values({
+      companyId: seeded.companyId,
+      issueId: pair.reviewIssueId,
+      authorAgentId: seeded.managerId,
+      body: `${PRODUCTIVITY_REVIEW_AUTO_RESOLVE_COMMENT_PREFIX} The source issue reached terminal status \`done\`, so no productivity decision is necessary.`,
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    const service = productivityReviewService(db);
+    const result = await service.reconcileProductivityReviews({ now, companyId: seeded.companyId });
+
+    expect(result.autoResolved).toBe(1);
+    expect(result.autoResolvedIssueIds).toEqual([pair.reviewIssueId]);
+    expect(await listAutoResolveComments(pair.reviewIssueId)).toHaveLength(1);
+    const [review] = await db.select().from(issues).where(eq(issues.id, pair.reviewIssueId));
+    expect(review?.status).toBe("cancelled");
+  });
+
+  it("auto-resolves a terminal-source review that sits behind a full page of older open reviews", async () => {
+    const now = new Date("2026-04-28T12:00:00.000Z");
+    const seeded = await seedAssignedIssue();
+
+    // Older than the actionable review and never resolvable: under an
+    // oldest-first scan of all open reviews these would fill the page forever.
+    for (let index = 0; index < MAX_OPEN_REVIEWS_PER_RECONCILE; index += 1) {
+      await seedReviewPair({
+        companyId: seeded.companyId,
+        issuePrefix: seeded.issuePrefix,
+        assigneeAgentId: seeded.coderId,
+        managerAgentId: seeded.managerId,
+        index,
+        sourceStatus: "in_progress",
+        createdAt: new Date(seeded.createdAt.getTime() + index * 1_000),
+      });
+    }
+    const actionable = await seedReviewPair({
+      companyId: seeded.companyId,
+      issuePrefix: seeded.issuePrefix,
+      assigneeAgentId: seeded.coderId,
+      managerAgentId: seeded.managerId,
+      index: MAX_OPEN_REVIEWS_PER_RECONCILE,
+      sourceStatus: "done",
+      createdAt: new Date(seeded.createdAt.getTime() + MAX_OPEN_REVIEWS_PER_RECONCILE * 1_000),
+    });
+
+    const service = productivityReviewService(db);
+    const result = await service.reconcileProductivityReviews({ now, companyId: seeded.companyId });
+
+    expect(result.autoResolvedIssueIds).toEqual([actionable.reviewIssueId]);
+    const [review] = await db.select().from(issues).where(eq(issues.id, actionable.reviewIssueId));
+    expect(review?.status).toBe("cancelled");
+  }, 30_000);
 
   it("refreshes open productivity reviews only once per interval and caps refresh comments", async () => {
     const now = new Date("2026-04-28T12:00:00.000Z");

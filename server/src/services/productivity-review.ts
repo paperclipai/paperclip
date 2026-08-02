@@ -1,4 +1,5 @@
 import { and, asc, desc, eq, gt, gte, inArray, isNull, notInArray, sql } from "drizzle-orm";
+import { alias } from "drizzle-orm/pg-core";
 import type { Db } from "@paperclipai/db";
 import { clampIssueRequestDepth } from "@paperclipai/shared";
 import {
@@ -35,9 +36,11 @@ export const DEFAULT_PRODUCTIVITY_REVIEW_MAX_CREATIONS_PER_WINDOW = 1;
 export const DEFAULT_PRODUCTIVITY_REVIEW_MAX_CONSECUTIVE_NO_ACTION_REVIEWS = 3;
 
 const TERMINAL_RUN_STATUSES = ["succeeded", "interrupted", "failed", "cancelled", "timed_out"] as const;
+const TERMINAL_ISSUE_STATUSES = ["done", "cancelled"] as const;
+const sourceIssues = alias(issues, "source_issues");
 const ACTIVE_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const MAX_CANDIDATE_ISSUES = 250;
-const MAX_OPEN_REVIEWS_PER_RECONCILE = 250;
+export const MAX_OPEN_REVIEWS_PER_RECONCILE = 250;
 const MAX_RUNS_FOR_STREAK = 100;
 const MAX_PARENT_WALK_DEPTH = 25;
 export const PRODUCTIVITY_REVIEW_REFRESH_COMMENT_PREFIX = "Productivity review evidence refreshed.";
@@ -269,21 +272,56 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       .then((rows) => rows[0] ?? null);
   }
 
-  async function listOpenProductivityReviews(companyId?: string) {
+  // Select on the source status rather than filtering in the loop, so the page
+  // holds only reviews this pass can act on. A page of open-but-not-actionable
+  // reviews would otherwise sit at the head of every scan and starve the rest.
+  async function listTerminalSourceOpenReviews(companyId?: string) {
     return db
-      .select()
+      .select({
+        id: issues.id,
+        companyId: issues.companyId,
+        assigneeAgentId: issues.assigneeAgentId,
+        sourceIssueId: sourceIssues.id,
+        sourceIssueStatus: sourceIssues.status,
+      })
       .from(issues)
+      .innerJoin(
+        sourceIssues,
+        and(
+          // `origin_id` is text and does not always hold a uuid, so widen the
+          // uuid side rather than casting the column and risking a parse error.
+          sql`${sourceIssues.id}::text = ${issues.originId}`,
+          eq(sourceIssues.companyId, issues.companyId),
+        ),
+      )
       .where(
         and(
           companyId ? eq(issues.companyId, companyId) : undefined,
           eq(issues.originKind, PRODUCTIVITY_REVIEW_ORIGIN_KIND),
           visibleIssueCondition(),
           notInArray(issues.status, ["done", "cancelled"]),
-          sql`${issues.originId} is not null`,
+          inArray(sourceIssues.status, [...TERMINAL_ISSUE_STATUSES]),
         ),
       )
       .orderBy(asc(issues.createdAt), asc(issues.id))
       .limit(MAX_OPEN_REVIEWS_PER_RECONCILE);
+  }
+
+  // The status update and the audit comment are separate writes. If the update
+  // fails after the comment lands, the retry must not comment a second time.
+  async function hasAutoResolveComment(companyId: string, reviewIssueId: string) {
+    return db
+      .select({ id: issueComments.id })
+      .from(issueComments)
+      .where(
+        and(
+          eq(issueComments.companyId, companyId),
+          eq(issueComments.issueId, reviewIssueId),
+          sql`${issueComments.body} like ${`${PRODUCTIVITY_REVIEW_AUTO_RESOLVE_COMMENT_PREFIX}%`}`,
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows.length > 0);
   }
 
   async function hasActiveRunForIssue(companyId: string, issueId: string) {
@@ -862,30 +900,25 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
   // decision closes it. Close those reviews automatically: there is no work left
   // to judge once the source reaches a terminal status.
   async function autoResolveTerminalSourceReviews(companyId?: string) {
-    const openReviews = await listOpenProductivityReviews(companyId);
+    const openReviews = await listTerminalSourceOpenReviews(companyId);
     const autoResolvedIssueIds: string[] = [];
 
     for (const review of openReviews) {
-      if (!review.originId) continue;
-      const sourceIssue = await db
-        .select({ id: issues.id, status: issues.status })
-        .from(issues)
-        .where(and(eq(issues.companyId, review.companyId), eq(issues.id, review.originId)))
-        .then((rows) => rows[0] ?? null);
-      if (!sourceIssue || !["done", "cancelled"].includes(sourceIssue.status)) continue;
       // Do not close a review that an agent is judging right now.
       if (await hasActiveRunForIssue(review.companyId, review.id)) continue;
 
       try {
-        await issuesSvc.addComment(
-          review.id,
-          `${PRODUCTIVITY_REVIEW_AUTO_RESOLVE_COMMENT_PREFIX} The source issue reached terminal status \`${sourceIssue.status}\`, so no productivity decision is necessary.`,
-          {},
-        );
+        if (!(await hasAutoResolveComment(review.companyId, review.id))) {
+          await issuesSvc.addComment(
+            review.id,
+            `${PRODUCTIVITY_REVIEW_AUTO_RESOLVE_COMMENT_PREFIX} The source issue reached terminal status \`${review.sourceIssueStatus}\`, so no productivity decision is necessary.`,
+            {},
+          );
+        }
         await issuesSvc.update(review.id, { status: "cancelled" });
       } catch (err) {
         logger.warn(
-          { err, companyId: review.companyId, issueId: review.id, sourceIssueId: sourceIssue.id },
+          { err, companyId: review.companyId, issueId: review.id, sourceIssueId: review.sourceIssueId },
           "productivity review auto-resolution failed",
         );
         continue;
@@ -901,8 +934,8 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
         agentId: review.assigneeAgentId,
         details: {
           source: "productivity_review.reconcile",
-          sourceIssueId: sourceIssue.id,
-          sourceIssueStatus: sourceIssue.status,
+          sourceIssueId: review.sourceIssueId,
+          sourceIssueStatus: review.sourceIssueStatus,
         },
       });
       autoResolvedIssueIds.push(review.id);
