@@ -67,6 +67,8 @@ MAX_INFLIGHT_JOBS = 3       # gleichzeitig auf dem Knoten
 JOB_TIMEOUT_SEC = 300       # gemessen: 72 s kalt, 8 s warm
 UNREACHABLE_ALERT_CYCLES = 30   # 30 Zyklen a 60 s = 30 Minuten
 
+MAX_SEED = 18446744073709551615  # KSampler.seed max from ComfyUI node schema
+
 # --- ComfyUI-Renderknoten (MacBook M5 Max) ---
 COMFY_BASE = "http://192.168.2.40:8189"
 COMFY_HTTP_TIMEOUT = 30          # Sekunden je HTTP-Aufruf

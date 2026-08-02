@@ -90,3 +90,22 @@ def test_openai_size_maps_unsupported_format():
 def test_openai_size_passes_supported_format_through():
     b = parse_brief("prompt: x\nformat: 1024x1536")
     assert b["openai_size"] == "1024x1536"
+
+
+def test_negative_seed_falls_back_to_none():
+    assert parse_brief("prompt: x\nseed: -1")["seed"] is None
+
+
+def test_seed_too_large_falls_back_to_none():
+    assert parse_brief("prompt: x\nseed: 18446744073709551616")["seed"] is None
+
+
+def test_seed_zero_is_accepted():
+    b = parse_brief("prompt: x\nseed: 0")
+    assert b["seed"] == 0
+    assert b["seed"] is not None
+
+
+def test_seed_at_max_is_accepted():
+    b = parse_brief("prompt: x\nseed: 18446744073709551615")
+    assert b["seed"] == 18446744073709551615

@@ -1,6 +1,6 @@
 from config import (ALLOWED_QUALITIES, DEFAULT_QUALITY,
                     ALLOWED_FORMATS, DEFAULT_FORMAT,
-                    ALLOWED_MODELS, DEFAULT_MODEL, OPENAI_FORMAT_MAP)
+                    ALLOWED_MODELS, DEFAULT_MODEL, OPENAI_FORMAT_MAP, MAX_SEED)
 
 
 def _fields(text):
@@ -16,7 +16,10 @@ def _fields(text):
 
 def _seed(raw):
     try:
-        return int(raw)
+        n = int(raw)
+        if 0 <= n <= MAX_SEED:
+            return n
+        return None
     except (TypeError, ValueError):
         return None
 
