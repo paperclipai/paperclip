@@ -4,9 +4,22 @@ import {
   applyExperimentalSettingsPatch,
   normalizeExperimentalSettings,
   resolveWorktreeRunExecutionActivationState,
+  serializeInstanceRunControls,
 } from "../services/instance-settings.js";
 
 describe("instance settings service", () => {
+  it("persists the global run concurrency cap with the other controls", () => {
+    const stored = serializeInstanceRunControls({
+      pauseAll: null,
+      adapterPauses: {},
+      adapterConcurrency: { default: 4 },
+      adapterDailyRunBudgets: {},
+      globalConcurrency: 1,
+    });
+
+    expect(stored.globalConcurrency).toBe(1);
+  });
+
   it("ignores retired experimental flags without resetting current settings", () => {
     expect(normalizeExperimentalSettings({
       enableEnvironments: true,

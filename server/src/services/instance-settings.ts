@@ -184,6 +184,31 @@ export async function resolveWorktreeRunExecutionActivationState(options: {
   }
 }
 
+export function serializeInstanceRunControls(controls: InstanceRunControls) {
+  return {
+    pauseAll: controls.pauseAll
+      ? {
+          reason: controls.pauseAll.reason,
+          pausedAt: controls.pauseAll.pausedAt?.toISOString() ?? null,
+          pausedBy: controls.pauseAll.pausedBy,
+        }
+      : null,
+    adapterPauses: Object.fromEntries(
+      Object.entries(controls.adapterPauses).map(([adapterType, pause]) => [
+        adapterType,
+        {
+          reason: pause.reason,
+          pausedAt: pause.pausedAt?.toISOString() ?? null,
+          pausedBy: pause.pausedBy,
+        },
+      ]),
+    ),
+    adapterConcurrency: controls.adapterConcurrency,
+    adapterDailyRunBudgets: controls.adapterDailyRunBudgets,
+    globalConcurrency: controls.globalConcurrency,
+  };
+}
+
 function normalizeGeneralSettings(raw: unknown): InstanceGeneralSettings {
   const parsed = instanceGeneralSettingsStorageSchema.safeParse(raw ?? {});
   if (parsed.success) {
@@ -450,27 +475,7 @@ export function instanceSettingsService(db: Db, options: InstanceSettingsService
       const [updated] = await db
         .update(instanceSettings)
         .set({
-          runControls: {
-            pauseAll: next.pauseAll
-              ? {
-                  reason: next.pauseAll.reason,
-                  pausedAt: next.pauseAll.pausedAt?.toISOString() ?? null,
-                  pausedBy: next.pauseAll.pausedBy,
-                }
-              : null,
-            adapterPauses: Object.fromEntries(
-              Object.entries(next.adapterPauses).map(([adapterType, pause]) => [
-                adapterType,
-                {
-                  reason: pause.reason,
-                  pausedAt: pause.pausedAt?.toISOString() ?? null,
-                  pausedBy: pause.pausedBy,
-                },
-              ]),
-            ),
-            adapterConcurrency: next.adapterConcurrency,
-            adapterDailyRunBudgets: next.adapterDailyRunBudgets,
-          },
+          runControls: serializeInstanceRunControls(next),
           updatedAt: now,
         })
         .where(eq(instanceSettings.id, current.id))
