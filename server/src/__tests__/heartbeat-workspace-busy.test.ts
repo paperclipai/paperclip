@@ -175,6 +175,7 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
     holderRunId: string;
     agentId: string;
     issueId: string;
+    nonAssigneeAgentId: string;
   }
 
   async function seedWorkspaceFixture(input?: {
@@ -189,6 +190,7 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
     const holderRunId = randomUUID();
     const agentId = randomUUID();
     const issueId = randomUUID();
+    const nonAssigneeAgentId = randomUUID();
     const issuePrefix = `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`;
     const now = new Date();
 
@@ -231,6 +233,7 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
     for (const [id, name] of [
       [holderAgentId, "HolderCoder"],
       [agentId, "DeferredCoder"],
+      [nonAssigneeAgentId, "CommenterCoder"],
     ] as const) {
       await db.insert(agents).values({
         id,
@@ -309,6 +312,7 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
       holderRunId,
       agentId,
       issueId,
+      nonAssigneeAgentId,
     };
   }
 
@@ -428,6 +432,107 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
     const finishedRetry = await waitForRunToLeaveActiveStates(retryRun!.id);
     expect(finishedRetry?.status).toBe("succeeded");
     expect(executedRunIds).toContain(retryRun!.id);
+  });
+
+  it("defers a non-assignee run and executes its retry despite the assignee mismatch", async () => {
+    const fixture = await seedWorkspaceFixture();
+
+    // A comment-mention wake for an agent that is NOT the issue assignee —
+    // the interaction-wake shape that legitimately reaches adapter dispatch
+    // without assignee-ship.
+    const run = await heartbeat.invoke(
+      fixture.nonAssigneeAgentId,
+      "on_demand",
+      {
+        issueId: fixture.issueId,
+        wakeReason: "issue_comment_mentioned",
+        commentId: randomUUID(),
+      },
+      "system",
+    );
+    expect(run).not.toBeNull();
+
+    const deferred = await waitForRunToLeaveActiveStates(run!.id);
+    expect(deferred?.status).toBe("cancelled");
+    expect(deferred?.errorCode).toBe(WORKSPACE_BUSY_ERROR_CODE);
+    expect(executedRunIds).not.toContain(run!.id);
+
+    const retryRun = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.retryOfRunId, run!.id))
+      .then((rows) => rows[0] ?? null);
+    expect(retryRun).toMatchObject({
+      status: "scheduled_retry",
+      scheduledRetryReason: WORKSPACE_BUSY_RETRY_REASON,
+    });
+    expect(
+      (retryRun?.contextSnapshot as Record<string, unknown> | null)?.workspaceBusyDeferredWhileAssignee,
+    ).toBe(false);
+
+    // The non-assignee run never held the issue execution lock, so the
+    // deferral must not have stolen or released it.
+    const issueRow = await db
+      .select({ executionRunId: issues.executionRunId })
+      .from(issues)
+      .where(eq(issues.id, fixture.issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(issueRow?.executionRunId).toBeNull();
+
+    // The holder finishes; the retry must survive the promotion gate even
+    // though the retry's agent is not the issue assignee.
+    await db
+      .update(heartbeatRuns)
+      .set({ status: "succeeded", finishedAt: new Date() })
+      .where(eq(heartbeatRuns.id, fixture.holderRunId));
+
+    const afterDue = new Date(new Date(retryRun!.scheduledRetryAt!).getTime() + 1_000);
+    const promotion = await heartbeat.promoteDueScheduledRetries(afterDue);
+    expect(promotion.runIds).toContain(retryRun!.id);
+
+    await heartbeat.resumeQueuedRuns();
+    const finishedRetry = await waitForRunToLeaveActiveStates(retryRun!.id);
+    expect(finishedRetry?.status).toBe("succeeded");
+    expect(executedRunIds).toContain(retryRun!.id);
+  });
+
+  it("still cancels an assignee retry at promotion when the issue is reassigned", async () => {
+    const fixture = await seedWorkspaceFixture();
+
+    const run = await heartbeat.invoke(
+      fixture.agentId,
+      "assignment",
+      { issueId: fixture.issueId, wakeReason: "issue_assigned" },
+      "system",
+    );
+    expect(run).not.toBeNull();
+    const deferred = await waitForRunToLeaveActiveStates(run!.id);
+    expect(deferred?.status).toBe("cancelled");
+
+    const retryRun = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.retryOfRunId, run!.id))
+      .then((rows) => rows[0] ?? null);
+    expect(retryRun?.status).toBe("scheduled_retry");
+    expect(
+      (retryRun?.contextSnapshot as Record<string, unknown> | null)?.workspaceBusyDeferredWhileAssignee,
+    ).toBe(true);
+
+    // Ownership changes while the retry pends: the deferral was taken under
+    // assignee-ship, so the reassignment protection must still cancel it.
+    await db
+      .update(issues)
+      .set({ assigneeAgentId: fixture.nonAssigneeAgentId, executionRunId: null })
+      .where(eq(issues.id, fixture.issueId));
+
+    const afterDue = new Date(new Date(retryRun!.scheduledRetryAt!).getTime() + 1_000);
+    const promotion = await heartbeat.promoteDueScheduledRetries(afterDue);
+    expect(promotion.runIds).not.toContain(retryRun!.id);
+
+    const cancelledRetry = await heartbeat.getRun(retryRun!.id);
+    expect(cancelledRetry?.status).toBe("cancelled");
+    expect(cancelledRetry?.errorCode).toBe("issue_reassigned");
   });
 
   it("does not defer when the holder issue explicitly uses an isolated workspace", async () => {

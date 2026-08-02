@@ -459,11 +459,13 @@ export class WorkspaceBusyDeferral extends Error {
   holder: SharedWorkspaceHolder;
   projectWorkspaceId: string;
   deferralAttempt: number;
+  wasIssueAssignee: boolean;
 
   constructor(input: {
     holder: SharedWorkspaceHolder;
     projectWorkspaceId: string;
     deferralAttempt: number;
+    wasIssueAssignee: boolean;
   }) {
     super(
       `Shared project workspace is busy: run ${input.holder.runId} (issue ${
@@ -474,6 +476,7 @@ export class WorkspaceBusyDeferral extends Error {
     this.holder = input.holder;
     this.projectWorkspaceId = input.projectWorkspaceId;
     this.deferralAttempt = input.deferralAttempt;
+    this.wasIssueAssignee = input.wasIssueAssignee;
   }
 }
 
@@ -484,6 +487,22 @@ function isWorkspaceBusyDeferral(error: unknown): error is WorkspaceBusyDeferral
 export function computeWorkspaceBusyRetryDelayMs(random: () => number = Math.random) {
   const jitter = Math.min(Math.max(random(), 0), 1);
   return WORKSPACE_BUSY_RETRY_BASE_DELAY_MS + Math.floor(jitter * WORKSPACE_BUSY_RETRY_JITTER_MS);
+}
+
+// True for the retry of a workspace-busy deferral whose original run did NOT
+// execute under assignee-ship (a comment or review-participant wake). For such
+// a retry an assignee mismatch is the expected state, so the reassignment
+// protections in the promotion gate and the claim-time staleness check must
+// not cancel it — cancelling would silently drop the wake the deferral
+// promised to replay.
+export function isNonAssigneeWorkspaceBusyRetry(
+  retryReason: string | null | undefined,
+  contextSnapshot: Record<string, unknown>,
+) {
+  return (
+    retryReason === WORKSPACE_BUSY_RETRY_REASON &&
+    contextSnapshot.workspaceBusyDeferredWhileAssignee === false
+  );
 }
 
 function resolveCodexTransientFallbackMode(attempt: number): CodexTransientFallbackMode {
@@ -10285,17 +10304,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     }
 
     if (issue.assigneeAgentId !== run.agentId) {
-      return {
-        allowed: false,
-        reason: "Scheduled retry suppressed because issue ownership changed",
-        errorCode: "issue_reassigned",
-        issueId,
-        details: {
+      if (!isNonAssigneeWorkspaceBusyRetry(retryReason, contextSnapshot)) {
+        return {
+          allowed: false,
+          reason: "Scheduled retry suppressed because issue ownership changed",
+          errorCode: "issue_reassigned",
           issueId,
-          previousAssigneeAgentId: run.agentId,
-          currentAssigneeAgentId: issue.assigneeAgentId,
-        },
-      };
+          details: {
+            issueId,
+            previousAssigneeAgentId: run.agentId,
+            currentAssigneeAgentId: issue.assigneeAgentId,
+          },
+        };
+      }
     }
 
     if (issue.status === "cancelled" || issue.status === "done") {
@@ -11314,6 +11335,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           deferralAttempt: deferral.deferralAttempt,
         },
       },
+      // Recorded on the run (and inherited by the scheduled retry's context)
+      // so the retry promotion gate can tell a non-assignee wake — where an
+      // assignee mismatch is the expected state — from a reassignment race.
+      contextSnapshot: {
+        ...parseObject(run.contextSnapshot),
+        workspaceBusyDeferredWhileAssignee: deferral.wasIssueAssignee,
+      },
     });
     if (!cancelWrite.updated) {
       logger.info(
@@ -12177,7 +12205,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const isCurrentReviewParticipant = reviewParticipant?.type === "agent" &&
       reviewParticipant.agentId === run.agentId;
 
-    if (issue.assigneeAgentId !== run.agentId && !isInteractionWake && !isCurrentReviewParticipant) {
+    if (
+      issue.assigneeAgentId !== run.agentId &&
+      !isInteractionWake &&
+      !isCurrentReviewParticipant &&
+      !isNonAssigneeWorkspaceBusyRetry(retryReason, context)
+    ) {
       return {
         stale: true,
         errorCode: "issue_assignee_changed",
@@ -13439,18 +13472,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     // Serialize shared-workspace execution: two runs mutating the same project
     // working tree concurrently corrupt each other's uncommitted state, so a
     // run whose issue targets a busy shared workspace is deferred (bounded
-    // retry) instead of dispatched. After WORKSPACE_BUSY_MAX_DEFERRALS the
-    // gate fails open — proceeding risks a merge race that downstream
-    // sync-conflict handling absorbs, while deferring forever strands the
-    // issue behind a stuck holder. Only the issue assignee's own execution
-    // runs defer: the promotion gate cancels a scheduled retry whose agent is
-    // not the issue assignee, so deferring a non-assignee run (e.g. a comment
-    // wake) would silently drop it instead of retrying it.
-    if (
-      issueRef?.projectWorkspaceId &&
-      effectiveExecutionWorkspaceMode === "shared_workspace" &&
-      issueContext?.assigneeAgentId === agent.id
-    ) {
+    // retry) instead of dispatched. This covers non-assignee runs (comment and
+    // review wakes) too — their deferral records that the run never executed
+    // under assignee-ship, so the retry promotion gate does not cancel it as a
+    // reassignment. After WORKSPACE_BUSY_MAX_DEFERRALS the gate fails open —
+    // proceeding risks a merge race that downstream sync-conflict handling
+    // absorbs, while deferring forever strands the issue behind a stuck
+    // holder.
+    if (issueRef?.projectWorkspaceId && effectiveExecutionWorkspaceMode === "shared_workspace") {
       const workspaceHolder = await findSharedWorkspaceHolder({
         companyId: agent.companyId,
         projectWorkspaceId: issueRef.projectWorkspaceId,
@@ -13491,6 +13520,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             holder: workspaceHolder,
             projectWorkspaceId: issueRef.projectWorkspaceId,
             deferralAttempt,
+            wasIssueAssignee: issueContext?.assigneeAgentId === agent.id,
           });
         }
       }
