@@ -5,6 +5,7 @@ import {
   lstatSync,
   mkdirSync,
   mkdtempSync,
+  readdirSync,
   readFileSync,
   rmSync,
   writeFileSync,
@@ -41,6 +42,41 @@ test("published packages preserve the patched ACPX runtime", () => {
   assert.deepEqual(adapterUtilsPackage.bundleDependencies, ["acpx"]);
   assert.equal(bundledCliNpmDependencies.has("acpx"), true);
   assert.equal(cliEsbuildConfig.external.includes("acpx"), false);
+});
+
+test("ACPX persisted key policy allows session env map keys only at the env entry level", async () => {
+  const acpxDist = new URL("../packages/adapter-utils/node_modules/acpx/dist/", import.meta.url);
+  const liveCheckpointFile = readdirSync(acpxDist)
+    .find((entry) => /^live-checkpoint-.*\.js$/.test(entry));
+  assert.notEqual(liveCheckpointFile, undefined);
+
+  const { Z: assertPersistedKeyPolicy } = await import(new URL(liveCheckpointFile, acpxDist).href);
+
+  assert.doesNotThrow(() => assertPersistedKeyPolicy({
+    acpx: {
+      session_options: {
+        env: {
+          PAPERCLIP_API_KEY: "token",
+          PAPERCLIP_API_URL: "http://127.0.0.1:3100",
+        },
+      },
+    },
+  }));
+
+  assert.throws(
+    () => assertPersistedKeyPolicy({
+      acpx: {
+        session_options: {
+          env: {
+            PAPERCLIP_RUNTIME: {
+              NotSnakeCase: true,
+            },
+          },
+        },
+      },
+    }),
+    /acpx\.session_options\.env\.PAPERCLIP_RUNTIME\.NotSnakeCase/,
+  );
 });
 
 test("published packages preserve the patched embedded-postgres runtime", () => {
