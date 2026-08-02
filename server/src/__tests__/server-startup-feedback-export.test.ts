@@ -465,6 +465,36 @@ describe("startServer feedback export wiring", () => {
     }
   });
 
+  it("keeps external object refresh active when heartbeat scheduling is disabled", async () => {
+    loadConfigMock.mockReturnValue(buildTestConfig({
+      heartbeatSchedulerEnabled: false,
+      heartbeatSchedulerIntervalMs: 30000,
+    }));
+    let intervalCallback: (() => void) | null = null;
+    const setIntervalSpy = vi
+      .spyOn(globalThis, "setInterval")
+      .mockImplementation(((callback: () => void) => {
+        intervalCallback = callback;
+        return 1 as unknown as ReturnType<typeof setInterval>;
+      }) as typeof setInterval);
+
+    try {
+      await startServer();
+
+      expect(heartbeatServiceFactoryMock).not.toHaveBeenCalled();
+      expect(intervalCallback).not.toBeNull();
+      intervalCallback?.();
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(externalObjectsServiceMock.refreshDueObjectsForActiveCompanies).toHaveBeenCalledTimes(1);
+      expect(routineServiceMock.tickScheduledTriggers).not.toHaveBeenCalled();
+      expect(environmentCustomImagesServiceMock.cleanupExpiredSetupSessions).not.toHaveBeenCalled();
+    } finally {
+      setIntervalSpy.mockRestore();
+    }
+  });
+
   it("does not replay hot-restart adoption when the orphan reaper retries", async () => {
     loadConfigMock.mockReturnValue(buildTestConfig({
       heartbeatSchedulerEnabled: true,

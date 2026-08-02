@@ -768,26 +768,18 @@ export function externalObjectService(
     return summarizeObjectPayloads(objects, 25);
   }
 
-  async function refreshObject(
-    objectId: string,
-    input: {
-      companyId: string;
-      actor?: Pick<LogActivityInput, "actorType" | "actorId" | "agentId" | "runId">;
-      force?: boolean;
-      now?: Date;
-    },
-  ) {
-    const now = input.now ?? new Date();
-    const object = await db
-      .select()
-      .from(externalObjects)
-      .where(and(eq(externalObjects.id, objectId), eq(externalObjects.companyId, input.companyId)))
-      .then((rows) => rows[0] ?? null);
-    if (!object) throw notFound("External object not found");
-    if (!input.force && object.nextRefreshAt && object.nextRefreshAt > now) {
-      return { object: toObjectPayload(object, now), refreshed: false, reason: "backoff" as const };
-    }
+  type RefreshObjectInput = {
+    companyId: string;
+    actor?: Pick<LogActivityInput, "actorType" | "actorId" | "agentId" | "runId">;
+    force?: boolean;
+    now?: Date;
+  };
 
+  async function resolveObjectRefresh(
+    object: ExternalObjectRecord,
+    input: RefreshObjectInput,
+    now: Date,
+  ) {
     const pluginResult = await resolveViaPluginProvider(db, opts.pluginWorkerManager, object);
     const resolver = pluginResult ? null : resolverRegistry.find(object);
     if (!pluginResult && !resolver) {
@@ -884,6 +876,34 @@ export function externalObjectService(
       payload: { objectId: object.id, statusCategory: next.statusCategory, liveness: next.liveness },
     });
     return { object: toObjectPayload(next, now), refreshed: true, reason: "resolved" as const };
+  }
+
+  const objectRefreshesInFlight = new Map<string, Promise<Awaited<ReturnType<typeof resolveObjectRefresh>>>>();
+
+  async function refreshObject(
+    objectId: string,
+    input: RefreshObjectInput,
+  ) {
+    const now = input.now ?? new Date();
+    const object = await db
+      .select()
+      .from(externalObjects)
+      .where(and(eq(externalObjects.id, objectId), eq(externalObjects.companyId, input.companyId)))
+      .then((rows) => rows[0] ?? null);
+    if (!object) throw notFound("External object not found");
+    if (!input.force && object.nextRefreshAt && object.nextRefreshAt > now) {
+      return { object: toObjectPayload(object, now), refreshed: false, reason: "backoff" as const };
+    }
+
+    const refreshKey = `${object.companyId}:${object.id}`;
+    const existingRefresh = objectRefreshesInFlight.get(refreshKey);
+    if (existingRefresh) return existingRefresh;
+
+    const refresh = resolveObjectRefresh(object, input, now).finally(() => {
+      objectRefreshesInFlight.delete(refreshKey);
+    });
+    objectRefreshesInFlight.set(refreshKey, refresh);
+    return refresh;
   }
 
   async function refreshIssueObjects(issueId: string, input: {

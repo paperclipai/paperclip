@@ -529,6 +529,53 @@ describeEmbeddedPostgres("externalObjectService", () => {
     expect(resolve).toHaveBeenCalledTimes(1);
   });
 
+  it("coalesces automatic and manual refreshes for the same object", async () => {
+    const { companyId, issueId } = await createIssue();
+    let markResolverStarted!: () => void;
+    const resolverStarted = new Promise<void>((resolve) => {
+      markResolverStarted = resolve;
+    });
+    let finishResolver!: () => void;
+    const resolverCanFinish = new Promise<void>((resolve) => {
+      finishResolver = resolve;
+    });
+    const resolve = vi.fn(async () => {
+      markResolverStarted();
+      await resolverCanFinish;
+      return {
+        ok: true as const,
+        snapshot: {
+          statusCategory: "open" as const,
+          statusTone: "info" as const,
+          statusKey: "open",
+          statusLabel: "Open",
+          ttlSeconds: 300,
+        },
+      };
+    });
+    const resolver: ExternalObjectResolver = {
+      providerKey: "url",
+      objectType: "link",
+      resolve,
+    };
+    const svc = externalObjectService(db, { resolvers: [resolver], github: false });
+    await svc.syncIssue(issueId);
+    const object = await db.select().from(externalObjects).then((rows) => rows[0]!);
+
+    const dueRefresh = svc.refreshDueObjects(companyId, 50, new Date(Date.now() + 1_000));
+    await resolverStarted;
+    const manualRefresh = svc.refreshObject(object.id, { companyId, force: true });
+    finishResolver();
+
+    const [dueResults, manualResult] = await Promise.all([dueRefresh, manualRefresh]);
+
+    expect(dueResults).toHaveLength(1);
+    expect(dueResults[0]?.refreshed).toBe(true);
+    expect(manualResult.refreshed).toBe(true);
+    expect(manualResult.object.statusLabel).toBe("Open");
+    expect(resolve).toHaveBeenCalledTimes(1);
+  });
+
   it("refreshes due objects for active companies only", async () => {
     const active = await createIssue();
     const paused = await createIssue();
