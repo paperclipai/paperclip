@@ -48,10 +48,10 @@ import {
   readPaperclipIssueWorkModeFromContext,
   removeMaintainerOnlySkillSymlinks,
   resolvePaperclipDesiredSkillNames,
-  resolveJcodeSkillsHome,
   DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
 } from "@paperclipai/adapter-utils/server-utils";
 import { isJcodeUnknownSessionError, parseJcodeNdjson } from "./parse.js";
+import { resolveJcodeSkillsHome } from "./skills.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 
 const __moduleDir = path.dirname(fileURLToPath(import.meta.url));
