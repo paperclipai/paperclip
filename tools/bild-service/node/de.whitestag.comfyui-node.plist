@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>de.whitestag.comfyui-node</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>__HOME__/ComfyUI-Installs/ComfyUI/ComfyUI/.venv/bin/python</string>
+    <string>__HOME__/ComfyUI-Installs/ComfyUI/ComfyUI/main.py</string>
+    <string>--listen</string><string>0.0.0.0</string>
+    <string>--port</string><string>8189</string>
+    <string>--extra-model-paths-config</string>
+    <string>__HOME__/Library/Application Support/Comfy Desktop/shared_model_paths.yaml</string>
+    <string>--input-directory</string><string>__HOME__/ComfyUI-Shared/input</string>
+    <string>--output-directory</string><string>__HOME__/ComfyUI-Shared/output</string>
+  </array>
+  <key>WorkingDirectory</key>
+  <string>__HOME__/ComfyUI-Installs/ComfyUI/ComfyUI</string>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+  <key>StandardOutPath</key><string>__HOME__/Library/Logs/comfyui-node.out.log</string>
+  <key>StandardErrorPath</key><string>__HOME__/Library/Logs/comfyui-node.err.log</string>
+</dict>
+</plist>
