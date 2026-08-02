@@ -468,8 +468,37 @@ const CONTINUATION_RECOVERY_DEFAULT_MAX_ATTEMPTS = 1;
 const CONTINUATION_RECOVERY_TRANSIENT_BASE_BACKOFF_MS = 60_000;
 export const PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS = 60 * 60 * 1000;
 
+export const ADAPTER_FAILURE_RECOVERY_ERROR_CODES: ReadonlySet<string> = new Set([
+  "adapter_failed",
+  "provider_quota",
+  "configuration_incomplete",
+  "acpx_turn_failed",
+  "acpx_session_init_failed",
+  "acpx_stream_idle_timeout",
+  "paperclip_control_plane_unreachable",
+  "process_lost",
+]);
+
+const TRANSIENT_INFRA_ADAPTER_FAILURE_ERROR_CODES: ReadonlySet<string> = new Set([
+  "acpx_turn_failed",
+  "acpx_session_init_failed",
+  "acpx_stream_idle_timeout",
+  "paperclip_control_plane_unreachable",
+  "process_lost",
+]);
+
+export const INTENTIONALLY_UNCLASSIFIED_ADAPTER_FAILURE_ERROR_CODES: ReadonlySet<string> = new Set([
+  "acpx_timeout",
+  "acpx_auth_required",
+  "acpx_backend_missing",
+  "acpx_backend_unavailable",
+  "acpx_protocol_error",
+  "acpx_runtime_error",
+  "acpx_session_config_failed",
+]);
+
 const PROVIDER_QUOTA_ERROR_RE =
-  /(?:you(?:'|’)ve hit your usage limit|usage limit(?: reached| exceeded)?|provider quota|quota (?:limit )?exceeded|model (?:is )?at capacity)/i;
+  /(?:you(?:'|’)ve hit your (?:usage limit|(?:session|weekly) limit|monthly spend limit)|usage limit(?: reached| exceeded)?|weekly limit reached|provider quota|quota (?:limit )?exceeded|model (?:is )?at capacity)/i;
 const PROVIDER_QUOTA_RESET_DATE_RE =
   /\bresets?\s+(?:at\s+)?(jan|feb|mar|apr|may|jun|jul|aug|sep|sept|oct|nov|dec)\.?\s+(\d{1,2})(?:,\s*(\d{4}))?\s+at\s+(\d{1,2})(?::(\d{2}))?\s*([ap])\.?\s*m\.?(?:\s*\(([^)]+)\))?/i;
 const CONFIGURATION_INCOMPLETE_ERROR_RE =
@@ -477,8 +506,13 @@ const CONFIGURATION_INCOMPLETE_ERROR_RE =
 
 export type AdapterFailureRecoveryClassification =
   | { kind: "provider_quota"; retryAt: Date; parsedResetTime: boolean }
+  | { kind: "transient_infra" }
   | { kind: "configuration_incomplete" }
   | null;
+
+export function isRecoveryEligibleAdapterFailureErrorCode(errorCode: string | null | undefined) {
+  return Boolean(errorCode && ADAPTER_FAILURE_RECOVERY_ERROR_CODES.has(errorCode));
+}
 
 function parseProviderQuotaClockReset(error: string, now: Date) {
   const monthMatch = error.match(PROVIDER_QUOTA_RESET_DATE_RE);
@@ -602,11 +636,7 @@ export function classifyAdapterFailureForRecovery(
   latestRun: Pick<NonNullable<LatestIssueRun>, "error" | "errorCode" | "resultJson">,
   now = new Date(),
 ): AdapterFailureRecoveryClassification {
-  if (
-    latestRun.errorCode !== "adapter_failed" &&
-    latestRun.errorCode !== "provider_quota" &&
-    latestRun.errorCode !== "configuration_incomplete"
-  ) {
+  if (!isRecoveryEligibleAdapterFailureErrorCode(latestRun.errorCode)) {
     return null;
   }
   const resultJson = parseObject(latestRun.resultJson);
@@ -614,8 +644,6 @@ export function classifyAdapterFailureForRecovery(
   if (latestRun.errorCode === "configuration_incomplete" || CONFIGURATION_INCOMPLETE_ERROR_RE.test(error)) {
     return { kind: "configuration_incomplete" };
   }
-  if (latestRun.errorCode !== "provider_quota" && !PROVIDER_QUOTA_ERROR_RE.test(error)) return null;
-
   const persistedRetryAt = readNonEmptyString(resultJson.retryNotBefore) ??
     readNonEmptyString(resultJson.transientRetryNotBefore) ??
     readNonEmptyString(resultJson.providerQuotaRetryNotBefore);
@@ -628,11 +656,15 @@ export function classifyAdapterFailureForRecovery(
   if (parsedClockReset) {
     return { kind: "provider_quota", retryAt: parsedClockReset, parsedResetTime: true };
   }
-  return {
-    kind: "provider_quota",
-    retryAt: new Date(now.getTime() + PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS),
-    parsedResetTime: false,
-  };
+  if (latestRun.errorCode === "provider_quota" || PROVIDER_QUOTA_ERROR_RE.test(error)) {
+    return {
+      kind: "provider_quota",
+      retryAt: new Date(now.getTime() + PROVIDER_QUOTA_RECOVERY_DEFAULT_BACKOFF_MS),
+      parsedResetTime: false,
+    };
+  }
+  if (!TRANSIENT_INFRA_ADAPTER_FAILURE_ERROR_CODES.has(latestRun.errorCode ?? "")) return null;
+  return { kind: "transient_infra" };
 }
 
 type ContinuationRetryClassification = {
