@@ -218,7 +218,7 @@ import {
   recoveryAssigneeAdapterOverrides,
   withRecoveryModelProfileHint,
 } from "./recovery/model-profile-hint.js";
-import { recoveryService } from "./recovery/service.js";
+import { ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS as RECOVERY_ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS, recoveryService } from "./recovery/service.js";
 import { productivityReviewService } from "./productivity-review.js";
 import { resolveRequiredSuccessfulRunHandoffOnValidPath } from "./successful-run-handoff-state.js";
 import { taskWatchdogService } from "./task-watchdogs.js";
@@ -396,9 +396,17 @@ const MAX_TURN_CONTINUATION_LIVE_RUN_STATUSES = ["scheduled_retry", "queued", "r
 export const WORKSPACE_BUSY_RETRY_REASON = "workspace_busy";
 export const WORKSPACE_BUSY_RETRY_WAKE_REASON = "workspace_busy_retry";
 export const WORKSPACE_BUSY_ERROR_CODE = "workspace_busy";
-export const WORKSPACE_BUSY_MAX_DEFERRALS = 10;
 export const WORKSPACE_BUSY_RETRY_BASE_DELAY_MS = 60 * 1000;
 export const WORKSPACE_BUSY_RETRY_JITTER_MS = 60 * 1000;
+// A running run stops counting as a shared-workspace holder once it has been
+// silent this long. This is recovery's own "suspicious silence" bar for active
+// runs (scanSilentActiveRuns escalates such runs), so a zombie holder cannot
+// park other work on the workspace forever: it stops blocking here at the same
+// moment the recovery machinery starts treating it as stuck. A LIVE holder, in
+// contrast, never gets overtaken — a deferred run keeps rescheduling until the
+// workspace frees, because dispatching alongside a live holder is exactly the
+// concurrent-mutation failure this gate exists to prevent.
+export const WORKSPACE_BUSY_HOLDER_STALE_AFTER_MS = RECOVERY_ACTIVE_RUN_OUTPUT_SUSPICION_THRESHOLD_MS;
 // Issue-level executionWorkspaceSettings.mode values that unambiguously opt an
 // issue's runs out of the shared project workspace, and therefore out of
 // shared-workspace serialization ("isolated" is the legacy alias
@@ -11255,19 +11263,26 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
   // Finds a running heartbeat run (other than the caller's) whose context
   // issue shares the same project workspace, i.e. the run that currently
-  // "holds" the shared working tree. When isolated workspaces are enabled,
-  // holders whose issue explicitly opted into an isolated workspace never
-  // touch the shared tree, so they are excluded; a NULL/agent_default mode
-  // may resolve to the shared tree and counts as a holder (over-serializing
-  // is the safe direction). When the isolated-workspaces experiment is off,
-  // every run resolves to the shared tree, so no holder is excluded.
+  // "holds" the shared working tree. Runs that have been silent past
+  // WORKSPACE_BUSY_HOLDER_STALE_AFTER_MS do not count — a zombie holder must
+  // not park other work forever, and recovery's silent-run escalation is
+  // already reaping it. When isolated workspaces are enabled, holders whose
+  // issue explicitly opted into an isolated workspace never touch the shared
+  // tree, so they are excluded; a NULL/agent_default mode may resolve to the
+  // shared tree and counts as a holder (over-serializing is the safe
+  // direction). When the isolated-workspaces experiment is off, every run
+  // resolves to the shared tree, so no holder is excluded.
   async function findSharedWorkspaceHolder(input: {
     companyId: string;
     projectWorkspaceId: string;
     excludeIssueId: string;
     excludeRunId: string;
     honorIsolatedWorkspaceModes: boolean;
+    now?: Date;
   }): Promise<SharedWorkspaceHolder | null> {
+    const staleCutoff = new Date(
+      (input.now ?? new Date()).getTime() - WORKSPACE_BUSY_HOLDER_STALE_AFTER_MS,
+    );
     return await db
       .select({
         runId: heartbeatRuns.id,
@@ -11288,6 +11303,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           eq(heartbeatRuns.companyId, input.companyId),
           eq(heartbeatRuns.status, "running"),
           ne(heartbeatRuns.id, input.excludeRunId),
+          // Last observed activity: output beats start beats creation. A run
+          // that started recently but has not written output yet is live.
+          sql`coalesce(${heartbeatRuns.lastOutputAt}, ${heartbeatRuns.startedAt}, ${heartbeatRuns.createdAt}) >= ${staleCutoff.toISOString()}::timestamptz`,
           eq(issues.projectWorkspaceId, input.projectWorkspaceId),
           ne(sql`${issues.id}::text`, input.excludeIssueId),
           ...(input.honorIsolatedWorkspaceModes
@@ -11311,12 +11329,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   }
 
   // Terminal handling for a WorkspaceBusyDeferral thrown by the pre-dispatch
-  // gate: cancel the run (contention is not a failure), schedule a bounded
+  // gate: cancel the run (contention is not a failure), schedule a
   // workspace_busy retry, and leave the agent idle. The issue execution lock
   // transfers to the scheduled retry run inside scheduleBoundedRetryForRun, so
-  // the issue keeps an active execution path and recovery leaves it alone. If
-  // no retry could be scheduled (agent no longer invokable, attempts
-  // exhausted), the lock is released so the issue does not strand on a
+  // the issue keeps an active execution path and recovery leaves it alone.
+  // Deferral has no attempt ceiling — the retry keeps rescheduling while a
+  // live holder exists, and holder staleness (not a counter) is what prevents
+  // waiting on a zombie. If no retry could be scheduled (agent no longer
+  // invokable), the lock is released so the issue does not strand on a
   // cancelled run.
   async function finalizeWorkspaceBusyDeferral(
     run: typeof heartbeatRuns.$inferSelect,
@@ -11363,7 +11383,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         now,
         retryReason: WORKSPACE_BUSY_RETRY_REASON,
         wakeReason: WORKSPACE_BUSY_RETRY_WAKE_REASON,
-        maxAttempts: WORKSPACE_BUSY_MAX_DEFERRALS,
+        // Always admit the next attempt: workspace-busy deferral is bounded by
+        // holder liveness, not by an attempt counter.
+        maxAttempts: (cancelledRun.scheduledRetryAttempt ?? 0) + 1,
         delayMs: computeWorkspaceBusyRetryDelayMs(),
       }).catch((scheduleErr) => {
         logger.error(
@@ -11382,7 +11404,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         level: "info",
         message:
           scheduleOutcome === "scheduled"
-            ? `Deferred: ${deferral.message}. Retry ${deferral.deferralAttempt + 1}/${WORKSPACE_BUSY_MAX_DEFERRALS} scheduled.`
+            ? `Deferred: ${deferral.message}. Retry ${deferral.deferralAttempt + 1} scheduled; the run waits for the workspace to free.`
             : `Deferred: ${deferral.message}. No retry could be scheduled; releasing the issue for other runs.`,
         payload: {
           projectWorkspaceId: deferral.projectWorkspaceId,
@@ -13471,14 +13493,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       requestedExecutionWorkspaceMode;
     // Serialize shared-workspace execution: two runs mutating the same project
     // working tree concurrently corrupt each other's uncommitted state, so a
-    // run whose issue targets a busy shared workspace is deferred (bounded
-    // retry) instead of dispatched. This covers non-assignee runs (comment and
+    // run whose issue targets a busy shared workspace is deferred (rescheduled
+    // retry) instead of dispatched, and keeps deferring until the workspace
+    // frees — an adapter never dispatches alongside a live holder. Deadlock
+    // safety comes from the holder query itself: a holder silent past
+    // WORKSPACE_BUSY_HOLDER_STALE_AFTER_MS stops counting (recovery's
+    // silent-run escalation is already reaping it), so a zombie can only delay
+    // work, never park it forever. This covers non-assignee runs (comment and
     // review wakes) too — their deferral records that the run never executed
     // under assignee-ship, so the retry promotion gate does not cancel it as a
-    // reassignment. After WORKSPACE_BUSY_MAX_DEFERRALS the gate fails open —
-    // proceeding risks a merge race that downstream sync-conflict handling
-    // absorbs, while deferring forever strands the issue behind a stuck
-    // holder.
+    // reassignment.
     if (issueRef?.projectWorkspaceId && effectiveExecutionWorkspaceMode === "shared_workspace") {
       const workspaceHolder = await findSharedWorkspaceHolder({
         companyId: agent.companyId,
@@ -13488,41 +13512,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         honorIsolatedWorkspaceModes: isolatedWorkspacesEnabled,
       });
       if (workspaceHolder) {
-        const deferralAttempt =
-          run.scheduledRetryReason === WORKSPACE_BUSY_RETRY_REASON
-            ? (run.scheduledRetryAttempt ?? 0)
-            : 0;
-        if (deferralAttempt >= WORKSPACE_BUSY_MAX_DEFERRALS) {
-          logger.warn(
-            {
-              runId: run.id,
-              issueId: issueRef.id,
-              projectWorkspaceId: issueRef.projectWorkspaceId,
-              holderRunId: workspaceHolder.runId,
-              deferralAttempt,
-            },
-            "shared workspace still busy after max deferrals; proceeding anyway",
-          );
-          await appendRunEvent(run, await nextRunEventSeq(run.id), {
-            eventType: "lifecycle",
-            stream: "system",
-            level: "warn",
-            message: `Shared workspace still busy after ${deferralAttempt} deferrals; proceeding anyway`,
-            payload: {
-              projectWorkspaceId: issueRef.projectWorkspaceId,
-              holderRunId: workspaceHolder.runId,
-              holderIssueId: workspaceHolder.issueId,
-              deferralAttempt,
-            },
-          }).catch(() => undefined);
-        } else {
-          throw new WorkspaceBusyDeferral({
-            holder: workspaceHolder,
-            projectWorkspaceId: issueRef.projectWorkspaceId,
-            deferralAttempt,
-            wasIssueAssignee: issueContext?.assigneeAgentId === agent.id,
-          });
-        }
+        throw new WorkspaceBusyDeferral({
+          holder: workspaceHolder,
+          projectWorkspaceId: issueRef.projectWorkspaceId,
+          deferralAttempt:
+            run.scheduledRetryReason === WORKSPACE_BUSY_RETRY_REASON
+              ? (run.scheduledRetryAttempt ?? 0)
+              : 0,
+          wasIssueAssignee: issueContext?.assigneeAgentId === agent.id,
+        });
       }
     }
     const executionPolicy = { executionMode: (await instanceSettings.getGeneral()).executionMode };

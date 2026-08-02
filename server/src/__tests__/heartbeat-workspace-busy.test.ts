@@ -31,7 +31,7 @@ import { drainHeartbeatRunsToQuiescence } from "./helpers/drain-heartbeat-runs.j
 import { registerServerAdapter, unregisterServerAdapter } from "../adapters/index.ts";
 import {
   WORKSPACE_BUSY_ERROR_CODE,
-  WORKSPACE_BUSY_MAX_DEFERRALS,
+  WORKSPACE_BUSY_HOLDER_STALE_AFTER_MS,
   WORKSPACE_BUSY_RETRY_BASE_DELAY_MS,
   WORKSPACE_BUSY_RETRY_JITTER_MS,
   WORKSPACE_BUSY_RETRY_REASON,
@@ -181,6 +181,7 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
   async function seedWorkspaceFixture(input?: {
     holderIssueWorkspaceSettings?: Record<string, unknown> | null;
     holderProjectWorkspaceId?: string;
+    holderActivityAt?: Date;
   }): Promise<WorkspaceFixture> {
     const companyId = randomUUID();
     const projectId = randomUUID();
@@ -253,6 +254,7 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
       });
     }
 
+    const holderActivityAt = input?.holderActivityAt ?? now;
     await db.insert(heartbeatRuns).values({
       id: holderRunId,
       companyId,
@@ -260,13 +262,14 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
       invocationSource: "assignment",
       triggerDetail: "system",
       status: "running",
-      startedAt: now,
+      startedAt: holderActivityAt,
+      lastOutputAt: holderActivityAt,
       contextSnapshot: {
         issueId: holderIssueId,
         wakeReason: "issue_assigned",
       },
-      createdAt: now,
-      updatedAt: now,
+      createdAt: holderActivityAt,
+      updatedAt: holderActivityAt,
     });
 
     await db.insert(issues).values({
@@ -594,11 +597,34 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
     expect(retryRuns).toBe(0);
   });
 
-  it("fails open and executes once the deferral budget is exhausted", async () => {
+  it("does not defer when the only holder has been silent past the staleness threshold", async () => {
+    const fixture = await seedWorkspaceFixture({
+      holderActivityAt: new Date(Date.now() - WORKSPACE_BUSY_HOLDER_STALE_AFTER_MS - 60_000),
+    });
+
+    const run = await heartbeat.invoke(
+      fixture.agentId,
+      "assignment",
+      { issueId: fixture.issueId, wakeReason: "issue_assigned" },
+      "system",
+    );
+    expect(run).not.toBeNull();
+
+    // The holder row is still "running", but it has been silent past the
+    // staleness bar, so it no longer blocks the workspace.
+    const finishedRun = await waitForRunToLeaveActiveStates(run!.id);
+    expect(finishedRun?.status).toBe("succeeded");
+    expect(finishedRun?.errorCode).not.toBe(WORKSPACE_BUSY_ERROR_CODE);
+    expect(executedRunIds).toContain(run!.id);
+  });
+
+  it("keeps deferring past earlier attempts while the holder is still live", async () => {
     const fixture = await seedWorkspaceFixture();
 
     // Seed the promoted continuation of a run that has already been deferred
-    // WORKSPACE_BUSY_MAX_DEFERRALS times while the holder is still running.
+    // many times while the holder is still live: it must defer again, not
+    // dispatch alongside the live holder.
+    const priorAttempts = 10;
     const priorRunId = randomUUID();
     const wakeupId = randomUUID();
     const retryRunId = randomUUID();
@@ -614,7 +640,7 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
       status: "cancelled",
       errorCode: WORKSPACE_BUSY_ERROR_CODE,
       finishedAt: now,
-      scheduledRetryAttempt: WORKSPACE_BUSY_MAX_DEFERRALS - 1,
+      scheduledRetryAttempt: priorAttempts - 1,
       scheduledRetryReason: WORKSPACE_BUSY_RETRY_REASON,
       contextSnapshot: {
         issueId: fixture.issueId,
@@ -635,7 +661,7 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
         issueId: fixture.issueId,
         retryOfRunId: priorRunId,
         retryReason: WORKSPACE_BUSY_RETRY_REASON,
-        scheduledRetryAttempt: WORKSPACE_BUSY_MAX_DEFERRALS,
+        scheduledRetryAttempt: priorAttempts,
       },
       status: "queued",
       requestedByActorType: "system",
@@ -651,12 +677,13 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
       wakeupRequestId: wakeupId,
       retryOfRunId: priorRunId,
       scheduledRetryAt: dueAt,
-      scheduledRetryAttempt: WORKSPACE_BUSY_MAX_DEFERRALS,
+      scheduledRetryAttempt: priorAttempts,
       scheduledRetryReason: WORKSPACE_BUSY_RETRY_REASON,
       contextSnapshot: {
         issueId: fixture.issueId,
         wakeReason: WORKSPACE_BUSY_RETRY_WAKE_REASON,
         retryReason: WORKSPACE_BUSY_RETRY_REASON,
+        workspaceBusyDeferredWhileAssignee: true,
       },
       createdAt: now,
       updatedAt: now,
@@ -672,10 +699,21 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
     await heartbeat.resumeQueuedRuns();
     const finishedRun = await waitForRunToLeaveActiveStates(retryRunId);
 
-    // The holder never finished, but the deferral budget is spent: the run
-    // proceeds instead of deferring again.
-    expect(finishedRun?.status).toBe("succeeded");
-    expect(executedRunIds).toContain(retryRunId);
+    expect(finishedRun?.status).toBe("cancelled");
+    expect(finishedRun?.errorCode).toBe(WORKSPACE_BUSY_ERROR_CODE);
+    expect(executedRunIds).not.toContain(retryRunId);
+
+    const nextRetry = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.retryOfRunId, retryRunId))
+      .then((rows) => rows[0] ?? null);
+    expect(nextRetry).toMatchObject({
+      status: "scheduled_retry",
+      scheduledRetryAttempt: priorAttempts + 1,
+      scheduledRetryReason: WORKSPACE_BUSY_RETRY_REASON,
+    });
+
     const holderRun = await heartbeat.getRun(fixture.holderRunId);
     expect(holderRun?.status).toBe("running");
   });
