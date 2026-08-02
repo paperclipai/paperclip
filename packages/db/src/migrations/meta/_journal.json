@@ -1674,6 +1674,13 @@
       "when": 1788600000000,
       "tag": "0240_cost_event_rate_card",
       "breakpoints": true
+    },
+    {
+      "idx": 241,
+      "version": "7",
+      "when": 1788600000001,
+      "tag": "0241_pricing_methodology",
+      "breakpoints": true
     }
   ]
 }

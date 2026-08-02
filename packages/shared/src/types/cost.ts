@@ -1,4 +1,4 @@
-import type { BillingType, CostStatus } from "../constants.js";
+import type { BillingType, CostStatus, PricingMethodology } from "../constants.js";
 
 export interface CostEvent {
   id: string;
@@ -21,8 +21,14 @@ export interface CostEvent {
   cacheWriteTokens: number;
   /** Cash actually billed. 0 for subscription_included. Feeds budget enforcement. */
   costCents: number;
-  /** Notional tokens x list-price figure. Not an invoice; not budget input. */
-  rateCardCents: number;
+  /**
+   * Notional tokens x list-price figure. Not an invoice; not budget input.
+   * `null` when the row has no measurable rate (subscription auth, unlisted
+   * model) — companion `pricingMethodology` carries that signal.
+   */
+  rateCardCents: number | null;
+  /** See PRICING_METHODOLOGIES. Always set; default `'measured'`. */
+  pricingMethodology: PricingMethodology;
   occurredAt: Date;
   createdAt: Date;
 }

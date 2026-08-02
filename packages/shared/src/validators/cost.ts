@@ -1,5 +1,5 @@
 import { z } from "zod";
-import { BILLING_TYPES, COST_STATUSES } from "../constants.js";
+import { BILLING_TYPES, COST_STATUSES, PRICING_METHODOLOGIES } from "../constants.js";
 
 export const createCostEventSchema = z.object({
   agentId: z.string().guid(),
@@ -18,7 +18,10 @@ export const createCostEventSchema = z.object({
   outputTokens: z.number().int().nonnegative().optional().default(0),
   cacheWriteTokens: z.number().int().nonnegative().optional().default(0),
   costCents: z.number().int().nonnegative(),
-  rateCardCents: z.number().int().nonnegative().optional().default(0),
+  // Nullable since 0199_pricing_methodology: a row with no measurable rate
+  // records NULL. `pricing_methodology='unpriced'` is the companion signal.
+  rateCardCents: z.number().int().nonnegative().nullable().optional(),
+  pricingMethodology: z.enum(PRICING_METHODOLOGIES).optional().default("measured"),
   occurredAt: z.string().datetime(),
 }).transform((value) => ({
   ...value,

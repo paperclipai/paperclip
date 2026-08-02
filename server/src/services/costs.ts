@@ -82,8 +82,11 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
           cachedInputTokens: data.cachedInputTokens ?? 0,
           cacheWriteTokens: data.cacheWriteTokens ?? 0,
           // Notional list-price figure only — deliberately excluded from the
-          // spentMonthlyCents recompute and budget evaluation below.
-          rateCardCents: data.rateCardCents ?? 0,
+          // spentMonthlyCents recompute and budget evaluation below. Nullable
+          // since 0199_pricing_methodology: subscription auth / unlisted model
+          // records NULL with `pricingMethodology='unpriced'` rather than zero.
+          rateCardCents: data.rateCardCents ?? null,
+          pricingMethodology: data.pricingMethodology ?? "measured",
         })
         .returning()
         .then((rows) => rows[0]);
