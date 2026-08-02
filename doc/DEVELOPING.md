@@ -718,6 +718,11 @@ schemas. Defaults:
 - retain 30 days
 - backup dir: `~/.paperclip/instances/default/data/backups`
 
+On server startup, automatic backups perform a catch-up backup only when the
+configured backup directory has no existing `paperclip-*.sql` / `paperclip-*.sql.gz`
+backup, or when the newest backup is older than the configured interval. Fresh
+backups are skipped so frequent restarts do not force extra backups.
+
 Automatic backups are disabled for isolated worktree instances created with
 `paperclipai worktree init` or `paperclipai worktree:make`. Existing worktree
 configs are migrated to the disabled setting when their server next starts. The
