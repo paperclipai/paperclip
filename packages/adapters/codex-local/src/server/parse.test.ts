@@ -106,6 +106,8 @@ describe("parseCodexJsonl", () => {
       },
       usageBasis: "per_run",
       errorMessage: null,
+      sawProtocolEvent: true,
+      sawProtocolTerminalEvent: true,
       disposition: {
         status: "done",
         hasBlocker: false,
