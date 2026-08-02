@@ -91,9 +91,12 @@ import {
   appendServerLifecycleEvent,
   beginServerLifecycle,
   claimEmbeddedPostgresHandoff,
+  claimEmbeddedPostgresOwnershipRecovery,
   claimEmbeddedPostgresStartupRecovery,
   readEmbeddedPostgresProcessIdentity,
   readHotRestartIntent,
+  releaseEmbeddedPostgresOwnership,
+  releaseEmbeddedPostgresStartupRecovery,
   writeEmbeddedPostgresHandoff,
   writeEmbeddedPostgresStartupRecovery,
   type EmbeddedPostgresProcessIdentity,
@@ -194,6 +197,7 @@ export async function startServer(): Promise<StartedServer> {
             cleanupPostgresPid = postgres.pid;
             await writeEmbeddedPostgresStartupRecovery({
               predecessorServerPid: process.pid,
+              predecessorServerStartedAtEpochMs: serverStartedAtEpochMs,
               postgres,
             });
           }
@@ -551,18 +555,29 @@ async function startServerInternal(
       if (runningIdentity?.pid === runningPid) {
         port = runningIdentity.port;
         let handoffClaim = null;
+        let ownershipRecoveryClaim = null;
         let startupRecoveryClaim = null;
         try {
-          startupRecoveryClaim = await claimEmbeddedPostgresStartupRecovery({
-            expectedPostgres: runningIdentity,
-          });
           const hotRestartIntent = await readHotRestartIntent();
-          if (!startupRecoveryClaim && hotRestartIntent?.shutdownSnapshot) {
+          if (hotRestartIntent?.shutdownSnapshot) {
             handoffClaim = await claimEmbeddedPostgresHandoff({
               expectedHotRestartRequestedAt: hotRestartIntent.requestedAt,
               expectedShutdownSnapshotCapturedAt: hotRestartIntent.shutdownSnapshot.capturedAt,
               expectedPredecessorServerPid: hotRestartIntent.previousServerPid,
               expectedPostgres: runningIdentity,
+              replacementServerStartedAtEpochMs: serverStartedAtEpochMs,
+            });
+          }
+          if (!handoffClaim) {
+            ownershipRecoveryClaim = await claimEmbeddedPostgresOwnershipRecovery({
+              expectedPostgres: runningIdentity,
+              replacementServerStartedAtEpochMs: serverStartedAtEpochMs,
+            });
+          }
+          if (!handoffClaim && !ownershipRecoveryClaim) {
+            startupRecoveryClaim = await claimEmbeddedPostgresStartupRecovery({
+              expectedPostgres: runningIdentity,
+              replacementServerStartedAtEpochMs: serverStartedAtEpochMs,
             });
           }
         } catch (err) {
@@ -572,23 +587,49 @@ async function startServerInternal(
         if (startupRecoveryClaim) {
           embeddedPostgres = createEmbeddedPostgres(port);
           embeddedPostgres.adopt();
-          stopOwnedEmbeddedPostgres = () => embeddedPostgres!.stop();
+          stopOwnedEmbeddedPostgres = async () => {
+            await embeddedPostgres!.stop();
+            try {
+              await releaseEmbeddedPostgresStartupRecovery({
+                ownerServerStartedAtEpochMs: serverStartedAtEpochMs,
+                expectedPostgres: runningIdentity,
+              });
+            } catch (err) {
+              logger.error({ err }, "Failed to clear stopped embedded PostgreSQL startup-recovery ownership");
+            }
+          };
           setStartupCleanup({ stop: stopOwnedEmbeddedPostgres, dataDir });
           ownedEmbeddedPostgresIdentity = runningIdentity;
           logger.warn(
             { postgresPid: runningIdentity.pid, port },
             "Recovered embedded PostgreSQL ownership after failed predecessor startup cleanup",
           );
-        } else if (handoffClaim) {
+        } else if (handoffClaim || ownershipRecoveryClaim) {
+          const ownershipClaim = handoffClaim ?? ownershipRecoveryClaim!;
           embeddedPostgres = createEmbeddedPostgres(port);
-          stopOwnedEmbeddedPostgres = adoptEmbeddedPostgres(embeddedPostgres, handoffClaim);
+          const stopAdoptedPostgres = adoptEmbeddedPostgres(embeddedPostgres, ownershipClaim);
+          stopOwnedEmbeddedPostgres = stopAdoptedPostgres
+            ? async () => {
+                await stopAdoptedPostgres();
+                try {
+                  await releaseEmbeddedPostgresOwnership({
+                    ownerServerStartedAtEpochMs: serverStartedAtEpochMs,
+                    expectedPostgres: runningIdentity,
+                  });
+                } catch (err) {
+                  logger.error({ err }, "Failed to clear stopped embedded PostgreSQL ownership receipt");
+                }
+              }
+            : null;
           if (stopOwnedEmbeddedPostgres) {
             setStartupCleanup({ stop: stopOwnedEmbeddedPostgres, dataDir });
           }
           ownedEmbeddedPostgresIdentity = runningIdentity;
           logger.warn(
-            createEmbeddedPostgresHandoffLogContext(handoffClaim),
-            "Embedded PostgreSQL hot-restart ownership handoff claimed",
+            createEmbeddedPostgresHandoffLogContext(ownershipClaim),
+            handoffClaim
+              ? "Embedded PostgreSQL hot-restart ownership handoff claimed"
+              : "Recovered embedded PostgreSQL ownership after replacement exit",
           );
         } else {
           logger.warn(

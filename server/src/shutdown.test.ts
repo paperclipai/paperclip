@@ -5,8 +5,11 @@ import { dirname, resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
   claimEmbeddedPostgresHandoff,
+  claimEmbeddedPostgresOwnershipRecovery,
   readEmbeddedPostgresProcessIdentity,
   resolveEmbeddedPostgresHandoffPath,
+  resolveEmbeddedPostgresOwnershipPath,
+  releaseEmbeddedPostgresOwnership,
   writeEmbeddedPostgresHandoff,
   type EmbeddedPostgresProcessIdentity,
 } from "./services/hot-restart.js";
@@ -414,6 +417,89 @@ describe("coordinateEmbeddedPostgresShutdown", () => {
     });
   });
 
+  it("recovers durable ownership after the claiming replacement exits abruptly", async () => {
+    await withHandoffHome(async (homeDir, postgres) => {
+      const handoffPath = resolveEmbeddedPostgresHandoffPath(homeDir);
+      const ownershipPath = resolveEmbeddedPostgresOwnershipPath(homeDir);
+      const transferToken = (JSON.parse(await fs.readFile(handoffPath, "utf8")) as {
+        transferToken: string;
+      }).transferToken;
+      const hotRestartModuleUrl = new URL("./services/hot-restart.ts", import.meta.url).href;
+      const shutdownModuleUrl = new URL("./shutdown.ts", import.meta.url).href;
+      const child = spawnSync(
+        process.execPath,
+        [
+          resolve(process.cwd(), "server/node_modules/tsx/dist/cli.mjs"),
+          "--eval",
+          [
+            "void (async () => {",
+            `const { claimEmbeddedPostgresHandoff } = await import(${JSON.stringify(hotRestartModuleUrl)});`,
+            `const { adoptEmbeddedPostgres } = await import(${JSON.stringify(shutdownModuleUrl)});`,
+            `const claim = await claimEmbeddedPostgresHandoff(${JSON.stringify({
+              expectedHotRestartRequestedAt: hotRestartRequestedAt,
+              expectedShutdownSnapshotCapturedAt: shutdownSnapshotCapturedAt,
+              expectedPredecessorServerPid: predecessorServerPid,
+              expectedPostgres: postgres,
+              replacementServerStartedAtEpochMs: 1_754_000_100_000,
+              now: new Date("2026-07-31T15:00:06.000Z"),
+              homeDir,
+            }).replace('"2026-07-31T15:00:06.000Z"', 'new Date("2026-07-31T15:00:06.000Z")')});`,
+            "const stop = adoptEmbeddedPostgres({ adopt: () => undefined, stop: async () => undefined }, claim);",
+            "process.exit(claim && stop ? 77 : 2);",
+            "})();",
+          ].join("\n"),
+        ],
+        {
+          cwd: process.cwd(),
+          encoding: "utf8",
+          timeout: 5_000,
+        },
+      );
+
+      expect(child.error).toBeUndefined();
+      expect(child.status, child.stderr || child.stdout).toBe(77);
+      expect(await fs.readFile(ownershipPath, "utf8")).not.toContain(transferToken);
+
+      await expect(claimEmbeddedPostgresOwnershipRecovery({
+        expectedPostgres: postgres,
+        replacementServerPid: 4444,
+        replacementServerStartedAtEpochMs: 1_754_000_200_000,
+        isProcessAlive: () => true,
+        homeDir,
+      })).resolves.toBeNull();
+
+      const recovered = await claimEmbeddedPostgresOwnershipRecovery({
+        expectedPostgres: postgres,
+        replacementServerPid: 4444,
+        replacementServerStartedAtEpochMs: 1_754_000_200_000,
+        isProcessAlive: () => false,
+        now: new Date("2026-07-31T15:00:07.000Z"),
+        homeDir,
+      });
+      const replacement = {
+        adopt: vi.fn(),
+        stop: vi.fn(async () => undefined),
+      };
+      const stop = adoptEmbeddedPostgres(replacement, recovered);
+      await stop?.();
+      await releaseEmbeddedPostgresOwnership({
+        ownerServerPid: 4444,
+        ownerServerStartedAtEpochMs: 1_754_000_200_000,
+        expectedPostgres: postgres,
+        homeDir,
+      });
+
+      expect(recovered).toMatchObject({
+        replacementServerPid: 4444,
+        replacementServerStartedAtEpochMs: 1_754_000_200_000,
+        postgres,
+      });
+      expect(replacement.adopt).toHaveBeenCalledOnce();
+      expect(replacement.stop).toHaveBeenCalledOnce();
+      await expect(fs.stat(ownershipPath)).rejects.toMatchObject({ code: "ENOENT" });
+    });
+  });
+
   it("transfers ownership so a replacement can stop the preserved database", async () => {
     const originalStop = vi.fn(async () => undefined);
     const replacement = {
@@ -433,8 +519,8 @@ describe("coordinateEmbeddedPostgresShutdown", () => {
 
     const stopAdoptedDatabase = adoptEmbeddedPostgres(replacement, {
       version: 1,
-      transferToken: "test-transfer",
-      createdAt: "2026-07-31T15:00:05.000Z",
+      claimId: "test-claim-id",
+      claimedAt: "2026-07-31T15:00:06.000Z",
       expiresAt: "2026-07-31T15:10:05.000Z",
       hotRestartRequestedAt,
       shutdownSnapshotCapturedAt,
@@ -447,6 +533,7 @@ describe("coordinateEmbeddedPostgresShutdown", () => {
         port: 5432,
       },
       replacementServerPid: 4343,
+      replacementServerStartedAtEpochMs: 1_754_000_100_000,
     });
     const result = await coordinateEmbeddedPostgresShutdown({
       ownedByThisProcess: true,

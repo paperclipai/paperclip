@@ -11,6 +11,7 @@ import {
   readHotRestartIntent,
   readServerLifecycleJournal,
   readProcessStartedAt,
+  releaseEmbeddedPostgresStartupRecovery,
   removeHotRestartIntent,
   resolveHotRestartIntentPath,
   resolveLegacyHotRestartIntentPath,
@@ -550,7 +551,7 @@ describe("hot-restart path compatibility", () => {
     });
   });
 
-  it("grants failed-startup PostgreSQL recovery authority once to an exact replacement identity", async () => {
+  it("keeps failed-startup PostgreSQL recovery authority durable across replacement exits", async () => {
     await withTempHome(async (homeDir) => {
       const postgres = {
         pid: 7201,
@@ -561,6 +562,7 @@ describe("hot-restart path compatibility", () => {
       await writeEmbeddedPostgresStartupRecovery({
         homeDir,
         predecessorServerPid: 7200,
+        predecessorServerStartedAtEpochMs: 1_754_000_000_000,
         postgres,
         now: new Date("2026-08-02T01:10:00.000Z"),
       });
@@ -578,11 +580,36 @@ describe("hot-restart path compatibility", () => {
       await expect(claimEmbeddedPostgresStartupRecovery({
         homeDir,
         expectedPostgres: postgres,
+        replacementServerPid: 7202,
+        replacementServerStartedAtEpochMs: 1_754_000_200_000,
         isProcessAlive: () => false,
       })).resolves.toEqual(expect.objectContaining({
-        predecessorServerPid: 7200,
+        predecessorServerPid: 7202,
+        predecessorServerStartedAtEpochMs: 1_754_000_200_000,
         postgres,
       }));
+      await expect(claimEmbeddedPostgresStartupRecovery({
+        homeDir,
+        expectedPostgres: postgres,
+        isProcessAlive: () => true,
+      })).resolves.toBeNull();
+      await expect(claimEmbeddedPostgresStartupRecovery({
+        homeDir,
+        expectedPostgres: postgres,
+        replacementServerPid: 7203,
+        replacementServerStartedAtEpochMs: 1_754_000_300_000,
+        isProcessAlive: () => false,
+      })).resolves.toEqual(expect.objectContaining({
+        predecessorServerPid: 7203,
+        predecessorServerStartedAtEpochMs: 1_754_000_300_000,
+        postgres,
+      }));
+      await expect(releaseEmbeddedPostgresStartupRecovery({
+        homeDir,
+        ownerServerPid: 7203,
+        ownerServerStartedAtEpochMs: 1_754_000_300_000,
+        expectedPostgres: postgres,
+      })).resolves.toBe(true);
       await expect(claimEmbeddedPostgresStartupRecovery({
         homeDir,
         expectedPostgres: postgres,
