@@ -3,7 +3,7 @@ import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { createHash, randomUUID } from "node:crypto";
-import { and, asc, desc, eq, getTableColumns, gt, gte, inArray, isNull, lt, lte, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, getTableColumns, gt, gte, inArray, isNull, lt, lte, ne, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
@@ -393,6 +393,19 @@ const MAX_TURN_CONTINUATION_MAX_ATTEMPTS_CAP = 10;
 const MAX_TURN_CONTINUATION_DEFAULT_DELAY_MS = 1_000;
 const MAX_TURN_CONTINUATION_MAX_DELAY_MS = 5 * 60 * 1000;
 const MAX_TURN_CONTINUATION_LIVE_RUN_STATUSES = ["scheduled_retry", "queued", "running"] as const;
+export const WORKSPACE_BUSY_RETRY_REASON = "workspace_busy";
+export const WORKSPACE_BUSY_RETRY_WAKE_REASON = "workspace_busy_retry";
+export const WORKSPACE_BUSY_ERROR_CODE = "workspace_busy";
+export const WORKSPACE_BUSY_MAX_DEFERRALS = 10;
+export const WORKSPACE_BUSY_RETRY_BASE_DELAY_MS = 60 * 1000;
+export const WORKSPACE_BUSY_RETRY_JITTER_MS = 60 * 1000;
+// Issue-level executionWorkspaceSettings.mode values that unambiguously opt an
+// issue's runs out of the shared project workspace, and therefore out of
+// shared-workspace serialization ("isolated" is the legacy alias
+// parseIssueExecutionWorkspaceSettings normalizes to isolated_workspace). Any
+// other value — including agent_default and an absent mode — may still resolve
+// to the shared workspace and counts as a holder.
+const ISOLATED_EXECUTION_WORKSPACE_MODES = ["isolated_workspace", "operator_branch", "isolated"] as const;
 type CodexTransientFallbackMode =
   | "same_session"
   | "safer_invocation"
@@ -428,6 +441,49 @@ export class ConfigurationIncompleteFailure extends Error {
     this.name = "ConfigurationIncompleteFailure";
     this.resultJson = resultJson;
   }
+}
+
+export interface SharedWorkspaceHolder {
+  runId: string;
+  agentId: string;
+  issueId: string;
+  issueIdentifier: string | null;
+}
+
+// Pre-dispatch gate outcome: another running run currently holds the issue's
+// shared project workspace. Not a failure — the run is parked as a bounded
+// scheduled retry and re-attempted once the holder finishes, so two agents
+// never mutate the same working tree concurrently.
+export class WorkspaceBusyDeferral extends Error {
+  code = WORKSPACE_BUSY_ERROR_CODE;
+  holder: SharedWorkspaceHolder;
+  projectWorkspaceId: string;
+  deferralAttempt: number;
+
+  constructor(input: {
+    holder: SharedWorkspaceHolder;
+    projectWorkspaceId: string;
+    deferralAttempt: number;
+  }) {
+    super(
+      `Shared project workspace is busy: run ${input.holder.runId} (issue ${
+        input.holder.issueIdentifier ?? input.holder.issueId
+      }) is still running`,
+    );
+    this.name = "WorkspaceBusyDeferral";
+    this.holder = input.holder;
+    this.projectWorkspaceId = input.projectWorkspaceId;
+    this.deferralAttempt = input.deferralAttempt;
+  }
+}
+
+function isWorkspaceBusyDeferral(error: unknown): error is WorkspaceBusyDeferral {
+  return error instanceof WorkspaceBusyDeferral;
+}
+
+export function computeWorkspaceBusyRetryDelayMs(random: () => number = Math.random) {
+  const jitter = Math.min(Math.max(random(), 0), 1);
+  return WORKSPACE_BUSY_RETRY_BASE_DELAY_MS + Math.floor(jitter * WORKSPACE_BUSY_RETRY_JITTER_MS);
 }
 
 function resolveCodexTransientFallbackMode(attempt: number): CodexTransientFallbackMode {
@@ -11176,6 +11232,154 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     };
   }
 
+  // Finds a running heartbeat run (other than the caller's) whose context
+  // issue shares the same project workspace, i.e. the run that currently
+  // "holds" the shared working tree. When isolated workspaces are enabled,
+  // holders whose issue explicitly opted into an isolated workspace never
+  // touch the shared tree, so they are excluded; a NULL/agent_default mode
+  // may resolve to the shared tree and counts as a holder (over-serializing
+  // is the safe direction). When the isolated-workspaces experiment is off,
+  // every run resolves to the shared tree, so no holder is excluded.
+  async function findSharedWorkspaceHolder(input: {
+    companyId: string;
+    projectWorkspaceId: string;
+    excludeIssueId: string;
+    excludeRunId: string;
+    honorIsolatedWorkspaceModes: boolean;
+  }): Promise<SharedWorkspaceHolder | null> {
+    return await db
+      .select({
+        runId: heartbeatRuns.id,
+        agentId: heartbeatRuns.agentId,
+        issueId: sql<string>`${issues.id}::text`,
+        issueIdentifier: issues.identifier,
+      })
+      .from(heartbeatRuns)
+      .innerJoin(
+        issues,
+        and(
+          eq(issues.companyId, heartbeatRuns.companyId),
+          sql`${issues.id}::text = ${heartbeatRuns.contextSnapshot} ->> 'issueId'`,
+        ),
+      )
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, input.companyId),
+          eq(heartbeatRuns.status, "running"),
+          ne(heartbeatRuns.id, input.excludeRunId),
+          eq(issues.projectWorkspaceId, input.projectWorkspaceId),
+          ne(sql`${issues.id}::text`, input.excludeIssueId),
+          ...(input.honorIsolatedWorkspaceModes
+            ? [
+                or(
+                  // Covers both a NULL settings blob and a blob without a mode
+                  // key; either may still resolve to the shared workspace.
+                  sql`${issues.executionWorkspaceSettings} ->> 'mode' is null`,
+                  notInArray(
+                    sql`${issues.executionWorkspaceSettings} ->> 'mode'`,
+                    [...ISOLATED_EXECUTION_WORKSPACE_MODES],
+                  ),
+                ),
+              ]
+            : []),
+        ),
+      )
+      .orderBy(asc(heartbeatRuns.createdAt), asc(heartbeatRuns.id))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  }
+
+  // Terminal handling for a WorkspaceBusyDeferral thrown by the pre-dispatch
+  // gate: cancel the run (contention is not a failure), schedule a bounded
+  // workspace_busy retry, and leave the agent idle. The issue execution lock
+  // transfers to the scheduled retry run inside scheduleBoundedRetryForRun, so
+  // the issue keeps an active execution path and recovery leaves it alone. If
+  // no retry could be scheduled (agent no longer invokable, attempts
+  // exhausted), the lock is released so the issue does not strand on a
+  // cancelled run.
+  async function finalizeWorkspaceBusyDeferral(
+    run: typeof heartbeatRuns.$inferSelect,
+    deferral: WorkspaceBusyDeferral,
+  ) {
+    const now = new Date();
+    const cancelWrite = await setRunStatusIfRunning(run.id, "cancelled", {
+      error: deferral.message,
+      errorCode: WORKSPACE_BUSY_ERROR_CODE,
+      finishedAt: now,
+      resultJson: {
+        workspaceBusy: {
+          projectWorkspaceId: deferral.projectWorkspaceId,
+          holderRunId: deferral.holder.runId,
+          holderIssueId: deferral.holder.issueId,
+          deferralAttempt: deferral.deferralAttempt,
+        },
+      },
+    });
+    if (!cancelWrite.updated) {
+      logger.info(
+        { runId: run.id, currentStatus: cancelWrite.run?.status ?? null },
+        "skipping workspace-busy deferral finalization because the run already left running state",
+      );
+      return;
+    }
+    await setWakeupStatus(run.wakeupRequestId, "cancelled", {
+      finishedAt: now,
+      error: deferral.message,
+    }).catch(() => undefined);
+
+    const cancelledRun = cancelWrite.run ?? (await getRun(run.id).catch(() => null));
+    const agentRow = await getAgent(run.agentId).catch(() => null);
+    let scheduleOutcome: string | null = null;
+    if (cancelledRun && agentRow) {
+      const scheduleResult = await scheduleBoundedRetryForRun(cancelledRun, agentRow, {
+        now,
+        retryReason: WORKSPACE_BUSY_RETRY_REASON,
+        wakeReason: WORKSPACE_BUSY_RETRY_WAKE_REASON,
+        maxAttempts: WORKSPACE_BUSY_MAX_DEFERRALS,
+        delayMs: computeWorkspaceBusyRetryDelayMs(),
+      }).catch((scheduleErr) => {
+        logger.error(
+          { err: scheduleErr, runId: run.id },
+          "failed to schedule workspace-busy retry after deferral",
+        );
+        return null;
+      });
+      scheduleOutcome = scheduleResult?.outcome ?? null;
+    }
+
+    if (cancelledRun) {
+      await appendRunEvent(cancelledRun, await nextRunEventSeq(cancelledRun.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "info",
+        message:
+          scheduleOutcome === "scheduled"
+            ? `Deferred: ${deferral.message}. Retry ${deferral.deferralAttempt + 1}/${WORKSPACE_BUSY_MAX_DEFERRALS} scheduled.`
+            : `Deferred: ${deferral.message}. No retry could be scheduled; releasing the issue for other runs.`,
+        payload: {
+          projectWorkspaceId: deferral.projectWorkspaceId,
+          holderRunId: deferral.holder.runId,
+          holderIssueId: deferral.holder.issueId,
+          deferralAttempt: deferral.deferralAttempt,
+          retryScheduled: scheduleOutcome === "scheduled",
+        },
+      }).catch(() => undefined);
+    }
+
+    if (cancelledRun && scheduleOutcome !== "scheduled") {
+      await releaseIssueExecutionAndPromote(cancelledRun).catch((releaseErr) => {
+        logger.error(
+          { err: releaseErr, runId: run.id },
+          "failed to release issue execution after workspace-busy deferral",
+        );
+      });
+    }
+
+    await finalizeAgentStatus(run.agentId, "cancelled", null, {
+      wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
+    }).catch(() => undefined);
+  }
+
   async function scheduleInteractionContinuationInfrastructureRetryIfEligible(
     run: typeof heartbeatRuns.$inferSelect,
     agent: typeof agents.$inferSelect,
@@ -13232,6 +13436,65 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     });
     const effectiveExecutionWorkspaceMode: ReturnType<typeof resolveExecutionWorkspaceMode> =
       requestedExecutionWorkspaceMode;
+    // Serialize shared-workspace execution: two runs mutating the same project
+    // working tree concurrently corrupt each other's uncommitted state, so a
+    // run whose issue targets a busy shared workspace is deferred (bounded
+    // retry) instead of dispatched. After WORKSPACE_BUSY_MAX_DEFERRALS the
+    // gate fails open — proceeding risks a merge race that downstream
+    // sync-conflict handling absorbs, while deferring forever strands the
+    // issue behind a stuck holder. Only the issue assignee's own execution
+    // runs defer: the promotion gate cancels a scheduled retry whose agent is
+    // not the issue assignee, so deferring a non-assignee run (e.g. a comment
+    // wake) would silently drop it instead of retrying it.
+    if (
+      issueRef?.projectWorkspaceId &&
+      effectiveExecutionWorkspaceMode === "shared_workspace" &&
+      issueContext?.assigneeAgentId === agent.id
+    ) {
+      const workspaceHolder = await findSharedWorkspaceHolder({
+        companyId: agent.companyId,
+        projectWorkspaceId: issueRef.projectWorkspaceId,
+        excludeIssueId: issueRef.id,
+        excludeRunId: run.id,
+        honorIsolatedWorkspaceModes: isolatedWorkspacesEnabled,
+      });
+      if (workspaceHolder) {
+        const deferralAttempt =
+          run.scheduledRetryReason === WORKSPACE_BUSY_RETRY_REASON
+            ? (run.scheduledRetryAttempt ?? 0)
+            : 0;
+        if (deferralAttempt >= WORKSPACE_BUSY_MAX_DEFERRALS) {
+          logger.warn(
+            {
+              runId: run.id,
+              issueId: issueRef.id,
+              projectWorkspaceId: issueRef.projectWorkspaceId,
+              holderRunId: workspaceHolder.runId,
+              deferralAttempt,
+            },
+            "shared workspace still busy after max deferrals; proceeding anyway",
+          );
+          await appendRunEvent(run, await nextRunEventSeq(run.id), {
+            eventType: "lifecycle",
+            stream: "system",
+            level: "warn",
+            message: `Shared workspace still busy after ${deferralAttempt} deferrals; proceeding anyway`,
+            payload: {
+              projectWorkspaceId: issueRef.projectWorkspaceId,
+              holderRunId: workspaceHolder.runId,
+              holderIssueId: workspaceHolder.issueId,
+              deferralAttempt,
+            },
+          }).catch(() => undefined);
+        } else {
+          throw new WorkspaceBusyDeferral({
+            holder: workspaceHolder,
+            projectWorkspaceId: issueRef.projectWorkspaceId,
+            deferralAttempt,
+          });
+        }
+      }
+    }
     const executionPolicy = { executionMode: (await instanceSettings.getGeneral()).executionMode };
     let selectedEnvironmentId = environmentResolution.environmentId;
     if (isExecutionForcedToKubernetes(executionPolicy)) {
@@ -15339,6 +15602,18 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       });
     }
     } catch (outerErr) {
+          if (isWorkspaceBusyDeferral(outerErr)) {
+            // Expected contention on a shared project workspace, not a
+            // failure: park the run as a bounded scheduled retry and leave the
+            // holder undisturbed. The finally block below still releases
+            // leases, runtime services, and scratch for this run.
+            await finalizeWorkspaceBusyDeferral(run, outerErr).catch((deferralErr) => {
+              logger.error(
+                { err: deferralErr, runId },
+                "failed to finalize workspace-busy deferral",
+              );
+            });
+          } else {
           // Setup code before adapter.execute threw (e.g. ensureRuntimeState, resolveWorkspaceForRun).
           // The inner catch did not fire, so we must record the failure here.
           const message = redactCurrentUserText(
@@ -15439,6 +15714,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             await finalizeAgentStatus(run.agentId, "failed", message, {
               wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
             }).catch(() => undefined);
+          }
           }
         } finally {
           const latestRun = await getRun(run.id).catch(() => null);
