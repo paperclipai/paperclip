@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { cloneElement, isValidElement, useState } from "react";
 import { CalendarRange } from "lucide-react";
 import {
   ATTENTION_DATE_RANGE_OPTIONS,
@@ -108,8 +108,15 @@ function ChipButton({
       : "border-border text-muted-foreground hover:bg-accent/50 hover:text-foreground",
   );
   if (asChild) {
-    // The child is a real <button>; clone the class onto it via a wrapper span
-    // is avoided — instead we style the child directly through the caller.
+    // The child is a real <button>; merge the chip class straight onto it so the
+    // flex layout (icon + label inline) lands on the button, not a wrapper span.
+    // A bare wrapper span left the button unstyled → its icon stacked above the
+    // label and the chip grew taller than its siblings.
+    if (isValidElement<{ className?: string }>(children)) {
+      return cloneElement(children, {
+        className: cn(className, children.props.className),
+      });
+    }
     return <span className={className}>{children}</span>;
   }
   return (

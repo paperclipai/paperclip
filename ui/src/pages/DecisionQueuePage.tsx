@@ -21,6 +21,17 @@ import { AttentionQueueRow } from "../components/AttentionQueueRow";
 import { DecisionQueueRail } from "../components/DecisionQueueRail";
 import { Button } from "../components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "../components/ui/popover";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+  AlertDialogTrigger,
+} from "../components/ui/alert-dialog";
 
 type BulkAction = "accept" | "reject";
 
@@ -177,20 +188,35 @@ export function DecisionQueuePage() {
         </div>
         {eligible.length > 0 && (
           <div className="flex items-center gap-2">
-            <Button
-              type="button"
-              variant="outline"
-              size="sm"
-              disabled={bulk.isPending}
-              onClick={() => bulk.mutate("reject")}
-            >
-              {bulk.isPending && bulk.variables === "reject" ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              ) : (
-                <X className="h-3.5 w-3.5" />
-              )}
-              Reject all ({eligible.length})
-            </Button>
+            <AlertDialog>
+              <AlertDialogTrigger asChild>
+                <Button type="button" variant="outline" size="sm" disabled={bulk.isPending}>
+                  {bulk.isPending && bulk.variables === "reject" ? (
+                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                  ) : (
+                    <X className="h-3.5 w-3.5" />
+                  )}
+                  Reject all ({eligible.length})
+                </Button>
+              </AlertDialogTrigger>
+              <AlertDialogContent>
+                <AlertDialogHeader>
+                  <AlertDialogTitle>
+                    Reject {eligible.length} {eligible.length === 1 ? "decision" : "decisions"}?
+                  </AlertDialogTitle>
+                  <AlertDialogDescription>
+                    This rejects every eligible decision in this queue at once. It can't be undone —
+                    each one resolves against its source.
+                  </AlertDialogDescription>
+                </AlertDialogHeader>
+                <AlertDialogFooter>
+                  <AlertDialogCancel>Cancel</AlertDialogCancel>
+                  <AlertDialogAction onClick={() => bulk.mutate("reject")}>
+                    Reject all
+                  </AlertDialogAction>
+                </AlertDialogFooter>
+              </AlertDialogContent>
+            </AlertDialog>
             <Button type="button" size="sm" disabled={bulk.isPending} onClick={() => bulk.mutate("accept")}>
               {bulk.isPending && bulk.variables === "accept" ? (
                 <Loader2 className="h-3.5 w-3.5 animate-spin" />

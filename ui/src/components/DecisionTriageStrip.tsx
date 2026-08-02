@@ -140,12 +140,6 @@ export function DecisionTriageStrip({ item, companyId, agents }: DecisionTriageS
   const pending = setDecideBy.isPending || setSnooze.isPending || addToQueue.isPending || removeFromQueue.isPending;
   const decideBy = item.decideBy;
   const isDatePreset = decideBy != null && /^\d{4}-\d{2}-\d{2}$/.test(decideBy);
-  const attribution = item.decideByAttribution;
-  const attributionName = attribution?.type === "agent"
-    ? attribution.agentName ?? "an agent"
-    : attribution?.type === "user"
-      ? "you"
-      : null;
 
   return (
     <div
@@ -200,9 +194,9 @@ export function DecisionTriageStrip({ item, companyId, agents }: DecisionTriageS
             </PopoverContent>
           </Popover>
         </div>
-        {attributionName && decideBy && (
-          <span className="text-(length:--text-nano) text-muted-foreground">· set by {attributionName}</span>
-        )}
+        {/* Provenance ("· set by …") is rendered once, in the card meta row
+            (AttentionQueueRow), which shows in both collapsed and expanded
+            states — repeating it here duplicated it on the expanded card. */}
       </div>
 
       {/* Queues — current membership as removable chips + add/create. */}
