@@ -769,6 +769,91 @@ describe.sequential("issue comment reopen routes", () => {
     );
   });
 
+  it("rejects a stale agent run that tries to overwrite a terminal issue status", async () => {
+    const assigneeAgentId = "22222222-2222-4222-8222-222222222222";
+    const completedAt = new Date("2026-08-02T09:00:53.000Z");
+    mockIssueService.getById.mockResolvedValue({
+      ...makeIssue("done"),
+      completedAt,
+      updatedAt: completedAt,
+    });
+    mockHeartbeatService.getRun.mockResolvedValue({
+      id: "run-stale",
+      companyId: "company-1",
+      agentId: assigneeAgentId,
+      startedAt: new Date("2026-08-02T08:59:00.000Z"),
+      createdAt: new Date("2026-08-02T08:58:59.000Z"),
+    });
+
+    const res = await request(
+      await installActor(createApp(), {
+        type: "agent",
+        agentId: assigneeAgentId,
+        companyId: "company-1",
+        runId: "run-stale",
+      }),
+    )
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({
+        status: "blocked",
+        comment: "obsolete continuation result",
+        unblockDescriptor: {
+          owner: { agentId: assigneeAgentId },
+          action: "Resume old work",
+        },
+      });
+
+    expect(res.status).toBe(409);
+    expect(res.body).toEqual({
+      error: "Stale agent run cannot change a terminal issue",
+      code: "stale_terminal_issue_mutation",
+      issueStatus: "done",
+      requestedStatus: "blocked",
+    });
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ action: "issue.updated" }),
+    );
+  });
+
+  it("requires explicit resume intent for a fresh agent run changing a terminal status", async () => {
+    const assigneeAgentId = "22222222-2222-4222-8222-222222222222";
+    const completedAt = new Date("2026-08-02T09:00:53.000Z");
+    mockIssueService.getById.mockResolvedValue({
+      ...makeIssue("done"),
+      completedAt,
+      updatedAt: completedAt,
+    });
+    mockHeartbeatService.getRun.mockResolvedValue({
+      id: "run-fresh",
+      companyId: "company-1",
+      agentId: assigneeAgentId,
+      startedAt: new Date("2026-08-02T09:01:00.000Z"),
+      createdAt: new Date("2026-08-02T09:00:59.000Z"),
+    });
+
+    const res = await request(
+      await installActor(createApp(), {
+        type: "agent",
+        agentId: assigneeAgentId,
+        companyId: "company-1",
+        runId: "run-fresh",
+      }),
+    )
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ status: "todo" });
+
+    expect(res.status).toBe(409);
+    expect(res.body).toEqual({
+      error: "Agent status changes on terminal issues require explicit resume intent",
+      code: "terminal_issue_resume_required",
+      issueStatus: "done",
+      requestedStatus: "todo",
+    });
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
   // The guard compares against the issue's current assignee, not the requested
   // one — so an admin agent reassigning a different agent's terminal issue to
   // themselves with comment + reopen=true still reopens as today (AC-3).

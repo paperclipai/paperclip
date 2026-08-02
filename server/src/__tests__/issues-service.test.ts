@@ -338,6 +338,81 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     return companyId;
   }
 
+  it("rejects stale agent status writes against a terminal issue at the service boundary", async () => {
+    const companyId = await seedAssignableAgentCompany();
+    const issueId = randomUUID();
+    const completedAt = new Date("2026-08-02T09:00:53.000Z");
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Terminal issue must stay terminal",
+      status: "done",
+      priority: "medium",
+      completedAt,
+      updatedAt: completedAt,
+    });
+
+    await expect(svc.update(issueId, {
+      status: "blocked",
+      terminalStatusGuard: {
+        runStartedAt: new Date("2026-08-02T08:59:00.000Z"),
+        explicitResume: true,
+      },
+    })).rejects.toMatchObject({
+      status: 409,
+      details: {
+        code: "stale_terminal_issue_mutation",
+        issueStatus: "done",
+        requestedStatus: "blocked",
+      },
+    });
+
+    const persisted = await db
+      .select({ status: issues.status, completedAt: issues.completedAt })
+      .from(issues)
+      .where(eq(issues.id, issueId))
+      .then((rows) => rows[0] ?? null);
+    expect(persisted).toEqual({ status: "done", completedAt });
+  });
+
+  it("requires explicit intent before a fresh agent run resumes a terminal issue", async () => {
+    const companyId = await seedAssignableAgentCompany();
+    const issueId = randomUUID();
+    const completedAt = new Date("2026-08-02T09:00:53.000Z");
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Fresh resume requires intent",
+      status: "done",
+      priority: "medium",
+      completedAt,
+      updatedAt: completedAt,
+    });
+
+    await expect(svc.update(issueId, {
+      status: "todo",
+      terminalStatusGuard: {
+        runStartedAt: new Date("2026-08-02T09:01:00.000Z"),
+        explicitResume: false,
+      },
+    })).rejects.toMatchObject({
+      status: 409,
+      details: {
+        code: "terminal_issue_resume_required",
+        issueStatus: "done",
+        requestedStatus: "todo",
+      },
+    });
+
+    await expect(svc.update(issueId, {
+      status: "todo",
+      terminalStatusGuard: {
+        runStartedAt: new Date("2026-08-02T09:01:00.000Z"),
+        explicitResume: true,
+      },
+    })).resolves.toMatchObject({ status: "todo", completedAt: null });
+  });
+
   it("does not treat passive issue activity as touching it, but includes real user mutations", async () => {
     const companyId = await seedAssignableAgentCompany();
     const issueId = randomUUID();
