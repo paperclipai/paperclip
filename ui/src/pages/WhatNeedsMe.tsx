@@ -1,8 +1,8 @@
 import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { useQuery } from "@tanstack/react-query";
-import { ArrowUpDown, Check, CheckCircle2, GraduationCap, Inbox, Layers, ListFilter } from "lucide-react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { ArrowUpDown, Check, CheckCircle2, GraduationCap, Inbox, Layers, ListFilter, Loader2, Sun } from "lucide-react";
 import type { Agent, AttentionItem, AttentionSubject } from "@paperclipai/shared";
-import { useNavigate } from "@/lib/router";
+import { useNavigate, useSearchParams } from "@/lib/router";
 import { attentionApi } from "../api/attention";
 import { agentsApi } from "../api/agents";
 import { authApi } from "../api/auth";
@@ -13,8 +13,12 @@ import { useToastActions } from "../context/ToastContext";
 import { useInboxDismissals } from "../hooks/useInboxBadge";
 import { queryKeys } from "../lib/queryKeys";
 import {
+  ATTENTION_AGING_DAYS,
   ATTENTION_GROUP_BY_OPTIONS,
   ATTENTION_SORT_OPTIONS,
+  attentionDecideOrder,
+  attentionIdleDays,
+  attentionIsAging,
   buildAttentionFilterOptions,
   countActiveAttentionFilters,
   defaultAttentionFilterState,
@@ -26,22 +30,29 @@ import {
   loadAttentionSortOrder,
   loadCollapsedAttentionGroupKeys,
   NO_GROUP_SENTINEL,
+  partitionDecideNow,
   planAttentionRenderRows,
+  resolveAttentionDateRange,
   saveAttentionFilters,
   saveAttentionGroupBy,
   saveAttentionSortOrder,
   saveCollapsedAttentionGroupKeys,
   sortAttentionItems,
   sourceMeta,
+  type AttentionDateRangeId,
   type AttentionFilterState,
+  type AttentionGroup,
   type AttentionGroupBy,
   type AttentionSortOrder,
 } from "../lib/attention";
+import { decisionQueuesApi } from "../api/decisionQueues";
 import { decisionTrainingHref } from "../lib/decisionTraining";
 import { cn } from "../lib/utils";
 import { hasBlockingShortcutDialog, resolveAttentionQueueKeyAction } from "../lib/keyboardShortcuts";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { AttentionQueueRow } from "../components/AttentionQueueRow";
+import { DecisionQueueRail } from "../components/DecisionQueueRail";
+import { DecisionDateChips, type AttentionCustomRange } from "../components/DecisionDateChips";
 import { DecisionResolver } from "../components/DecisionResolver";
 import { DecisionTrainingDrawer } from "../components/DecisionTrainingDrawer";
 import { IssueGroupHeader } from "../components/IssueGroupHeader";
@@ -116,8 +127,18 @@ export function WhatNeedsMe() {
   const [collapsedGroupKeys, setCollapsedGroupKeys] = useState<Set<string>>(() => new Set());
   const [snoozedOpen, setSnoozedOpen] = useState(false);
   const [dismissedOpen, setDismissedOpen] = useState(false);
+  const [agingOpen, setAgingOpen] = useState(false);
   const [decidedOpen, setDecidedOpen] = useState(false);
   const [expiredOpen, setExpiredOpen] = useState(false);
+
+  // Date-range chips (PAP-16032 §4.2) — resolve to server-side activity bounds.
+  const [dateRange, setDateRange] = useState<AttentionDateRangeId>("all");
+  const [customRange, setCustomRange] = useState<AttentionCustomRange>({ from: null, to: null });
+
+  // `?decisionId=` deep link (PAP-16032 §4.7) — focus/expand the referenced card.
+  const [searchParams, setSearchParams] = useSearchParams();
+  const deepLinkDecisionId = searchParams.get("decisionId");
+  const [deepLinkConsumed, setDeepLinkConsumed] = useState(false);
 
   // Optimistic hide/restore. Reset whenever a fresh feed lands (server truth).
   const [pendingHide, setPendingHide] = useState<Set<string>>(() => new Set());
@@ -126,6 +147,15 @@ export function WhatNeedsMe() {
   const { dismiss, snooze, restore } = useInboxDismissals(selectedCompanyId);
   const { pushToast } = useToastActions();
   const navigate = useNavigate();
+  const queryClient = useQueryClient();
+
+  // Date chips resolve to server-side activity bounds. Anchored to start-of-day,
+  // so the resolved ISO strings are stable across renders within the same day —
+  // safe to key the feed query on without thrashing.
+  const activityBounds = useMemo(
+    () => resolveAttentionDateRange(dateRange, Date.now(), customRange),
+    [dateRange, customRange],
+  );
 
   useEffect(() => {
     setBreadcrumbs([{ label: "Decisions" }]);
@@ -145,8 +175,13 @@ export function WhatNeedsMe() {
     // Distinct from the sidebar badge's `queryKeys.attention` so dismissed rows
     // (needed for the curtains) never inflate the badge count. Invalidating the
     // `["attention", companyId]` prefix still cascades to this query.
-    queryKey: [...queryKeys.attention(selectedCompanyId!), "with-dismissed"],
-    queryFn: () => attentionApi.list(selectedCompanyId!, { includeDismissed: true }),
+    queryKey: [
+      ...queryKeys.attention(selectedCompanyId!),
+      "with-dismissed",
+      activityBounds.activitySince ?? null,
+      activityBounds.activityUntil ?? null,
+    ],
+    queryFn: () => attentionApi.list(selectedCompanyId!, { includeDismissed: true, ...activityBounds }),
     enabled: !!selectedCompanyId,
     refetchOnWindowFocus: true,
   });
@@ -199,6 +234,19 @@ export function WhatNeedsMe() {
       ),
     [allItems, pendingHide, pendingRestore],
   );
+
+  // The server's clock at feed time — used for the decide-by split and the aging
+  // idle labels so they match `decideNowCount` and the sidebar badge exactly,
+  // and stay stable across renders (Date.now() only as a pre-load fallback).
+  const now = useMemo(
+    () => (feed?.generatedAt ? new Date(feed.generatedAt).getTime() : Date.now()),
+    [feed?.generatedAt],
+  );
+
+  // Aging shelf (§4.4): items the server flags as idle past retention leave the
+  // live desk for their own curtain, so today's desk shows only fresh decisions.
+  const agingItems = useMemo(() => activeItems.filter(attentionIsAging), [activeItems]);
+  const deskItems = useMemo(() => activeItems.filter((item) => !attentionIsAging(item)), [activeItems]);
   const snoozedItems = useMemo(
     () =>
       allItems.filter(
@@ -216,14 +264,37 @@ export function WhatNeedsMe() {
     [allItems, pendingRestore],
   );
 
-  const filterOptions = useMemo(() => buildAttentionFilterOptions(activeItems), [activeItems]);
+  const filterOptions = useMemo(() => buildAttentionFilterOptions(deskItems), [deskItems]);
 
-  // Filter → sort → group, all client-side so switching re-buckets without a refetch.
-  const groups = useMemo(() => {
-    const filtered = filterAttentionItems(activeItems, filters);
+  // Filter → sort → group, all client-side so switching re-buckets without a
+  // refetch. In the default (ungrouped) view the desk splits into the two §4.3
+  // shelves — "Decide now" (due today / overdue) and "Can wait" — ordered by
+  // decide-by; any explicit group-by keeps the Inbox-style activity grouping.
+  const groups = useMemo<AttentionGroup[]>(() => {
+    const filtered = filterAttentionItems(deskItems, filters);
+    if (groupBy === "none") {
+      const ordered = [...filtered].sort((a, b) => {
+        const [aBucket, aDeadline] = attentionDecideOrder(a, now);
+        const [bBucket, bDeadline] = attentionDecideOrder(b, now);
+        if (aBucket !== bBucket) return aBucket - bBucket;
+        if (aDeadline !== bDeadline) return aDeadline - bDeadline;
+        return a.rank - b.rank;
+      });
+      const { decideNow, canWait } = partitionDecideNow(ordered, now);
+      const shelves: AttentionGroup[] = [];
+      if (decideNow.length > 0) shelves.push({ key: "desk:decide-now", label: "Decide now", items: decideNow });
+      if (canWait.length > 0) shelves.push({ key: "desk:can-wait", label: "Can wait", items: canWait });
+      return shelves;
+    }
     const sorted = sortAttentionItems(filtered, sortOrder);
     return groupAttentionItems(sorted, groupBy);
-  }, [activeItems, filters, sortOrder, groupBy]);
+  }, [deskItems, filters, sortOrder, groupBy, now]);
+
+  // "Today is clear" — the desk has decisions but none are due today.
+  const deskClearToday = useMemo(
+    () => groupBy === "none" && deskItems.length > 0 && !groups.some((group) => group.key === "desk:decide-now"),
+    [groupBy, deskItems, groups],
+  );
 
   const visibleCount = useMemo(() => groups.reduce((sum, group) => sum + group.items.length, 0), [groups]);
   const keyboardItems = useMemo(
@@ -317,14 +388,39 @@ export function WhatNeedsMe() {
     document.getElementById(`attention-row-${selectedAttentionId}`)?.scrollIntoView({ block: "nearest" });
   }, [selectedAttentionId]);
 
+  // `?decisionId=` deep link (§4.7): focus and expand the referenced decision
+  // card once the feed lands, then drop the param so a later manual collapse is
+  // not re-forced on the next refetch. Wins over the generic auto-expand below.
+  useEffect(() => {
+    if (deepLinkConsumed || !deepLinkDecisionId || allItems.length === 0) return;
+    const target = allItems.find(
+      (item) => item.sourceKind === "decision" && item.subject.id === deepLinkDecisionId,
+    );
+    setDeepLinkConsumed(true);
+    setAutoExpandDone(true);
+    if (target) {
+      setExpandedId(target.id);
+      setSelectedAttentionId(target.id);
+      setSelectionFromKeyboard(true);
+      setSearchParams(
+        (prev) => {
+          const next = new URLSearchParams(prev);
+          next.delete("decisionId");
+          return next;
+        },
+        { replace: true },
+      );
+    }
+  }, [allItems, deepLinkConsumed, deepLinkDecisionId, setSearchParams]);
+
   // Auto-expand the topmost inline-capable decision, once.
   useEffect(() => {
-    if (autoExpandDone || activeItems.length === 0) return;
-    const sorted = sortAttentionItems(activeItems, sortOrder);
+    if (autoExpandDone || deskItems.length === 0) return;
+    const sorted = sortAttentionItems(deskItems, sortOrder);
     const topInline = sorted.find((item) => isInlineResolvable(item));
     if (topInline) setExpandedId(topInline.id);
     setAutoExpandDone(true);
-  }, [activeItems, autoExpandDone, sortOrder]);
+  }, [deskItems, autoExpandDone, sortOrder]);
 
   const updateGroupBy = (next: AttentionGroupBy) => {
     setGroupBy(next);
@@ -572,6 +668,20 @@ export function WhatNeedsMe() {
         </div>
       </div>
 
+      {/* Queue quicklinks + date-range chips (§4.1–§4.2). The rail self-hides
+          when the company has no queues; the chips filter the desk server-side. */}
+      <div className="space-y-2">
+        <DecisionQueueRail companyId={selectedCompanyId} activeQueueKey={null} />
+        <DecisionDateChips
+          value={dateRange}
+          custom={customRange}
+          onChange={(value, custom) => {
+            setDateRange(value);
+            setCustomRange(custom);
+          }}
+        />
+      </div>
+
       {error && <p className="text-sm text-destructive">{(error as Error).message}</p>}
 
       {!hasAnything ? (
@@ -579,9 +689,11 @@ export function WhatNeedsMe() {
       ) : (
         <div className="space-y-4">
           {visibleCount === 0 ? (
-            <CaughtUpNote filtered={activeItems.length > 0} />
+            <CaughtUpNote filtered={deskItems.length > 0} />
           ) : (
-            groups.map((group) => {
+            <>
+              {deskClearToday && <TodayClearNote />}
+              {groups.map((group) => {
               const groupLabel = group.label;
               const collapsed = groupLabel !== null && collapsedGroupKeys.has(group.key);
               return (
@@ -638,6 +750,8 @@ export function WhatNeedsMe() {
                                   onSnooze={handleSnooze}
                                   onTrain={handleTrain}
                                   agentMap={agentMap}
+                                  agents={agents}
+                                  showTriage
                                   currentUserId={currentUserId}
                                   selected={selectionFromKeyboard && selectedAttentionId === item.id}
                                 />
@@ -650,7 +764,8 @@ export function WhatNeedsMe() {
                   )}
                 </section>
               );
-            })
+              })}
+            </>
           )}
 
           {snoozedItems.length > 0 && (
@@ -696,6 +811,35 @@ export function WhatNeedsMe() {
                   onRestore={handleRestore}
                   agentMap={agentMap}
                   currentUserId={currentUserId}
+                />
+              ))}
+            </Curtain>
+          )}
+
+          {agingItems.length > 0 && (
+            <Curtain
+              label="Aging"
+              count={agingItems.length}
+              open={agingOpen}
+              onToggle={() => setAgingOpen((prev) => !prev)}
+            >
+              <p className="text-xs text-muted-foreground">
+                Idle past {ATTENTION_AGING_DAYS} days — kept off the desk. Keep any you still want surfaced.
+              </p>
+              {agingItems.map((item) => (
+                <AgingItemRow
+                  key={item.id}
+                  item={item}
+                  companyId={selectedCompanyId}
+                  now={now}
+                  agentMap={agentMap}
+                  agents={agents}
+                  currentUserId={currentUserId}
+                  expanded={expandedId === item.id}
+                  onToggleExpand={handleToggleExpand}
+                  onDismiss={handleDismiss}
+                  onSnooze={handleSnooze}
+                  onTrain={handleTrain}
                 />
               ))}
             </Curtain>
@@ -961,6 +1105,106 @@ function Curtain({
       />
       {open && <div className="space-y-4">{children}</div>}
     </section>
+  );
+}
+
+/**
+ * Slim banner shown at the top of the desk when there are decisions but none
+ * are due today — the "Decide now" shelf is empty, so we say so rather than
+ * leading with a bare "Can wait" header (§4.3 "empty state when today is clear").
+ */
+function TodayClearNote() {
+  return (
+    <div className="flex items-center gap-2 rounded-lg border border-dashed border-border bg-muted/20 px-4 py-3">
+      <Sun className="h-4 w-4 shrink-0 text-green-500" />
+      <p className="text-sm text-foreground">
+        Nothing needs a decision <span className="font-medium">today</span>. Everything below can wait.
+      </p>
+    </div>
+  );
+}
+
+/**
+ * An aging-shelf row (§4.4): the standard card, prefaced by an idle-duration
+ * label and a "Keep on desk" affordance that clears the shelf flag server-side
+ * (P1 retention `keep`). Archival/sweeper mechanics are P5 — this is the split
+ * plus the Keep stub only.
+ */
+function AgingItemRow({
+  item,
+  companyId,
+  now,
+  agentMap,
+  agents,
+  currentUserId,
+  expanded,
+  onToggleExpand,
+  onDismiss,
+  onSnooze,
+  onTrain,
+}: {
+  item: AttentionItem;
+  companyId: string;
+  now: number;
+  agentMap: Map<string, Agent>;
+  agents: Agent[] | undefined;
+  currentUserId: string | null;
+  expanded: boolean;
+  onToggleExpand: (item: AttentionItem) => void;
+  onDismiss: (item: AttentionItem) => void;
+  onSnooze: (item: AttentionItem, snoozedUntil: string) => void;
+  onTrain: (item: AttentionItem) => void;
+}) {
+  const queryClient = useQueryClient();
+  const { pushToast } = useToastActions();
+  const idleDays = attentionIdleDays(item, now);
+  const keep = useMutation({
+    mutationFn: () => decisionQueuesApi.setKeep(companyId, item.sourceKind, item.subject.id, true),
+    onSuccess: () => {
+      queryClient.invalidateQueries({ queryKey: queryKeys.attention(companyId) });
+      pushToast({ title: "Kept on desk", body: item.subject.title ?? undefined, tone: "success" });
+    },
+    onError: (error) =>
+      pushToast({
+        title: "Could not keep this decision",
+        body: error instanceof Error ? error.message : "Please try again.",
+        tone: "error",
+      }),
+  });
+
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-center justify-between gap-2 px-1">
+        <span className="text-(length:--text-nano) text-muted-foreground">
+          Idle {idleDays} {idleDays === 1 ? "day" : "days"}
+        </span>
+        <Button
+          type="button"
+          variant="outline"
+          size="xs"
+          className="h-7 gap-1"
+          disabled={keep.isPending || item.keep}
+          onClick={() => keep.mutate()}
+        >
+          {keep.isPending && <Loader2 className="h-3 w-3 animate-spin" />}
+          <Sun className="h-3.5 w-3.5" />
+          {item.keep ? "Kept" : "Keep on desk"}
+        </Button>
+      </div>
+      <AttentionQueueRow
+        item={item}
+        companyId={companyId}
+        expanded={expanded}
+        onToggleExpand={onToggleExpand}
+        onDismiss={onDismiss}
+        onSnooze={onSnooze}
+        onTrain={onTrain}
+        agentMap={agentMap}
+        agents={agents}
+        showTriage
+        currentUserId={currentUserId}
+      />
+    </div>
   );
 }
 

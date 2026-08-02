@@ -45,6 +45,7 @@ import { Activity } from "./pages/Activity";
 import { CompanyAudit } from "./pages/audit/CompanyAudit";
 import { Inbox } from "./pages/Inbox";
 import { WhatNeedsMe } from "./pages/WhatNeedsMe";
+import { DecisionQueuePage } from "./pages/DecisionQueuePage";
 import { TrainingInspector, TrainingLibrary } from "./pages/Training";
 import { BoardChat } from "./pages/BoardChat";
 import { CompanySettings } from "./pages/CompanySettings";
@@ -280,6 +281,7 @@ function boardRoutes() {
         </Route>
       ) : null}
       <Route path="decisions" element={<WhatNeedsMe />} />
+      <Route path="decisions/queues/:key" element={<DecisionQueuePage />} />
       <Route path="decisions/training" element={<TrainingLibrary />} />
       <Route path="decisions/training/:id" element={<TrainingInspector />} />
       <Route path="training" element={<Navigate to="/decisions/training" replace />} />
