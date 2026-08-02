@@ -37,9 +37,11 @@ export const DEFAULT_PRODUCTIVITY_REVIEW_MAX_CONSECUTIVE_NO_ACTION_REVIEWS = 3;
 const TERMINAL_RUN_STATUSES = ["succeeded", "interrupted", "failed", "cancelled", "timed_out"] as const;
 const ACTIVE_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const MAX_CANDIDATE_ISSUES = 250;
+const MAX_OPEN_REVIEWS_PER_RECONCILE = 250;
 const MAX_RUNS_FOR_STREAK = 100;
 const MAX_PARENT_WALK_DEPTH = 25;
 export const PRODUCTIVITY_REVIEW_REFRESH_COMMENT_PREFIX = "Productivity review evidence refreshed.";
+export const PRODUCTIVITY_REVIEW_AUTO_RESOLVE_COMMENT_PREFIX = "Productivity review resolved automatically.";
 
 type IssueRow = typeof issues.$inferSelect;
 type AgentRow = typeof agents.$inferSelect;
@@ -265,6 +267,38 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       .orderBy(desc(issues.updatedAt))
       .limit(1)
       .then((rows) => rows[0] ?? null);
+  }
+
+  async function listOpenProductivityReviews(companyId?: string) {
+    return db
+      .select()
+      .from(issues)
+      .where(
+        and(
+          companyId ? eq(issues.companyId, companyId) : undefined,
+          eq(issues.originKind, PRODUCTIVITY_REVIEW_ORIGIN_KIND),
+          visibleIssueCondition(),
+          notInArray(issues.status, ["done", "cancelled"]),
+          sql`${issues.originId} is not null`,
+        ),
+      )
+      .orderBy(asc(issues.createdAt), asc(issues.id))
+      .limit(MAX_OPEN_REVIEWS_PER_RECONCILE);
+  }
+
+  async function hasActiveRunForIssue(companyId: string, issueId: string) {
+    return db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.companyId, companyId),
+          inArray(heartbeatRuns.status, [...ACTIVE_RUN_STATUSES]),
+          issueRunScopeSql(issueId),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows.length > 0);
   }
 
   async function findRecentTerminalProductivityReview(
@@ -824,6 +858,59 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
     return { kind: "created" as const, reviewIssueId: review.id };
   }
 
+  // A review stays open after its source issue finishes, because only a manager
+  // decision closes it. Close those reviews automatically: there is no work left
+  // to judge once the source reaches a terminal status.
+  async function autoResolveTerminalSourceReviews(companyId?: string) {
+    const openReviews = await listOpenProductivityReviews(companyId);
+    const autoResolvedIssueIds: string[] = [];
+
+    for (const review of openReviews) {
+      if (!review.originId) continue;
+      const sourceIssue = await db
+        .select({ id: issues.id, status: issues.status })
+        .from(issues)
+        .where(and(eq(issues.companyId, review.companyId), eq(issues.id, review.originId)))
+        .then((rows) => rows[0] ?? null);
+      if (!sourceIssue || !["done", "cancelled"].includes(sourceIssue.status)) continue;
+      // Do not close a review that an agent is judging right now.
+      if (await hasActiveRunForIssue(review.companyId, review.id)) continue;
+
+      try {
+        await issuesSvc.addComment(
+          review.id,
+          `${PRODUCTIVITY_REVIEW_AUTO_RESOLVE_COMMENT_PREFIX} The source issue reached terminal status \`${sourceIssue.status}\`, so no productivity decision is necessary.`,
+          {},
+        );
+        await issuesSvc.update(review.id, { status: "cancelled" });
+      } catch (err) {
+        logger.warn(
+          { err, companyId: review.companyId, issueId: review.id, sourceIssueId: sourceIssue.id },
+          "productivity review auto-resolution failed",
+        );
+        continue;
+      }
+
+      await logActivity(db, {
+        companyId: review.companyId,
+        actorType: "system",
+        actorId: "system",
+        action: "issue.productivity_review_auto_resolved",
+        entityType: "issue",
+        entityId: review.id,
+        agentId: review.assigneeAgentId,
+        details: {
+          source: "productivity_review.reconcile",
+          sourceIssueId: sourceIssue.id,
+          sourceIssueStatus: sourceIssue.status,
+        },
+      });
+      autoResolvedIssueIds.push(review.id);
+    }
+
+    return autoResolvedIssueIds;
+  }
+
   async function reconcileProductivityReviews(opts?: {
     now?: Date;
     companyId?: string;
@@ -832,6 +919,7 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
   }) {
     const now = opts?.now ?? new Date();
     const thresholds = buildThresholds(opts?.thresholds);
+    const autoResolvedIssueIds = await autoResolveTerminalSourceReviews(opts?.companyId);
     const candidates = await db
       .select()
       .from(issues)
@@ -859,8 +947,10 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
       noActionSuppressed: 0,
       skipped: 0,
       failed: 0,
+      autoResolved: autoResolvedIssueIds.length,
       reviewIssueIds: [] as string[],
       failedIssueIds: [] as string[],
+      autoResolvedIssueIds,
     };
 
     const prefixCache = new Map<string, string>();
