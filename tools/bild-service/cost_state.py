@@ -1,6 +1,6 @@
-import json, os, tempfile
 from config import (STATE_FILE as _DEFAULT_STATE, DAILY_IMAGE_LIMIT,
                     COST_ESTIMATE, DAILY_LOCAL_LIMIT)
+import state_io
 
 STATE_FILE = _DEFAULT_STATE
 
@@ -11,18 +11,10 @@ def monthly_spent(month_str):
                      for k, day in st.items() if k.startswith(month_str)), 4)
 
 def _load():
-    try:
-        with open(STATE_FILE) as f:
-            return json.load(f)
-    except (FileNotFoundError, json.JSONDecodeError):
-        return {}
+    return state_io.load(STATE_FILE)
 
 def _save(state):
-    os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
-    fd, tmp = tempfile.mkstemp(dir=os.path.dirname(STATE_FILE))
-    with os.fdopen(fd, "w") as f:
-        json.dump(state, f)
-    os.replace(tmp, STATE_FILE)
+    state_io.save(STATE_FILE, state)
 
 def remaining_today(date_str):
     st = _load()

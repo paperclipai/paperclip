@@ -51,5 +51,26 @@ def test_pruning_keeps_jobs_key():
     # 40 Tage aufzeichnen -> Beschneidung greift
     for day in range(1, 41):
         cost_state.record("2026-03-%02d" % day, "medium")
+    # Das 'jobs' Schluessel ueberlebt, weil es unabhaengig von Sortierung ist
     assert job_state.get("issue-1") is not None
     assert len([k for k in cost_state._load() if k.startswith("2026-")]) <= 31
+    # Auch nicht-Datumsschluessel, die vor Datumsschluesseln sortieren, ueberlebenâ
+    # (Beweis, dass Pruning Design-basiert ist, nicht alphabetisch)
+
+
+def test_pruning_keeps_non_date_keys_that_sort_before_dates():
+    path = setup_tmp()
+    # Manuell einen Schluessel adden, der vor Datumsschluesseln sortiert
+    import json
+    state = json.loads('{"0-fake": {"data": "should-survive"}}')
+    cost_state.STATE_FILE = path
+    # Fuege die 0-fake Daten hinzu
+    with open(path, "w") as f:
+        json.dump(state, f)
+    # 40 Tage aufzeichnen -> Beschneidung greift, die alte 0-fake Schluessel zaehlt nicht
+    for day in range(1, 41):
+        cost_state.record("2026-03-%02d" % day, "medium")
+    # "0-fake" muss ueberleben (mit shape-basiert Pruning), aber nicht mit altem Algorithmus
+    loaded = cost_state._load()
+    assert "0-fake" in loaded, "Non-date key should survive pruning"
+    assert loaded["0-fake"]["data"] == "should-survive"
