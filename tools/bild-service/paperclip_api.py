@@ -51,13 +51,13 @@ def upload_attachment(company_id, issue_id, filename, png_bytes):
         multipart=(filename, png_bytes))
 
 def mail_alarm(subject, text):
-    mail_secret = read_secret(MAIL_SECRET_ENV, "MAILHUB_SECRET")
-    body = json.dumps({"from": MAIL_FROM, "to": MAIL_TO,
-                       "subject": subject, "text": text}).encode()
-    req = urllib.request.Request(MAIL_WEBHOOK, data=body,
-        headers={"Content-Type": "application/json", "X-Mailhub-Secret": mail_secret},
-        method="POST")
     try:
+        mail_secret = read_secret(MAIL_SECRET_ENV, "MAILHUB_SECRET")
+        body = json.dumps({"from": MAIL_FROM, "to": MAIL_TO,
+                           "subject": subject, "text": text}).encode()
+        req = urllib.request.Request(MAIL_WEBHOOK, data=body,
+            headers={"Content-Type": "application/json", "X-Mailhub-Secret": mail_secret},
+            method="POST")
         urllib.request.urlopen(req, timeout=20)
     except Exception:
         pass
