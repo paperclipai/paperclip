@@ -142,6 +142,13 @@ The active-lock lifecycle is part of the checkout contract:
 - checkout and checkout-owner checks may self-heal lock columns that point at terminal or missing runs before evaluating conflicts
 - the recovery sweeper may clear rows whose checkout and execution locks all point at terminal or missing runs
 
+When `PAPERCLIP_NO_DEAD_BLOCKS_STAGE_2B_ENABLED=true`, the existing routine scheduler also registers an hourly
+No-Dead-Blocks Stage 2b sweep per active company. It reuses the blocker-attention classifier to surface leaderless
+or stale blocked issues, posts a system comment mentioning the dynamically resolved company CEO with a three-part
+unblock ask, and persists a cooldown marker in that comment to prevent duplicate escalation. The flag is off by
+default; routine run records are the operator-visible cadence and summary register, and covered/fresh blocks are not
+escalated.
+
 Stale-lock recovery is crash recovery, not a retry loop. Paperclip must not clear or adopt locks held by non-terminal runs. After stale cleanup, a checkout `409` should mean a real live owner, status/assignee mismatch, unresolved blocker, or active gate still prevents checkout. Agents must treat that `409` as an ownership conflict and stop rather than retrying the same checkout.
 
 ### Pre-dispatch configuration validation
