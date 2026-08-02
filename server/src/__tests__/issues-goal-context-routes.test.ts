@@ -65,6 +65,11 @@ const mockInstanceSettingsService = vi.hoisted(() => ({
       feedbackDataSharingPreference: "prompt",
     },
   })),
+  getGeneral: vi.fn(async () => ({
+    censorUsernameInLogs: false,
+    feedbackDataSharingPreference: "prompt",
+  })),
+  getExperimental: vi.fn(async () => ({})),
   listCompanyIds: vi.fn(async () => ["company-1"]),
 }));
 
@@ -99,6 +104,17 @@ const mockDb = vi.hoisted(() => ({
   execute: vi.fn(),
 }));
 
+vi.mock("../services/instance-settings.js", () => ({
+  instanceSettingsService: () => mockInstanceSettingsService,
+}));
+vi.mock("../services/environment-runtime.js", () => ({
+  environmentRuntimeService: () => ({
+    destroyReusableSandboxLeases: vi.fn(async () => undefined),
+  }),
+}));
+vi.mock("../services/environments.js", () => ({
+  environmentService: () => mockEnvironmentService,
+}));
 vi.mock("../services/index.js", () => ({
   companyService: () => ({
     getById: vi.fn(async () => ({ id: "company-1", attachmentMaxBytes: 10 * 1024 * 1024 })),
@@ -172,6 +188,7 @@ const legacyProjectLinkedIssue = {
   assigneeUserId: null,
   updatedAt: new Date("2026-03-24T12:00:00Z"),
   executionWorkspaceId: null,
+  version: 1,
   labels: [],
   labelIds: [],
 };
