@@ -120,6 +120,8 @@ import {
 import { logActivity, publishPluginDomainEvent, type LogActivityInput } from "./activity-log.js";
 import {
   buildWorkspaceReadyComment,
+  buildWorkspaceReadyMetadata,
+  buildWorkspaceReadyPresentation,
   cleanupExecutionWorkspaceArtifacts,
   ensureGitWorktreeBranchCoherent,
   ensurePersistedExecutionWorkspaceAvailable,
@@ -131,6 +133,7 @@ import {
   releaseRuntimeServicesForRun,
   type ExecutionWorkspaceInput,
   type RealizedExecutionWorkspace,
+  type RuntimeServiceRef,
   sanitizeRuntimeServiceBaseEnv,
 } from "./workspace-runtime.js";
 import { issueService } from "./issues.js";
@@ -637,14 +640,44 @@ function hasGithubPrWorkflowSkill(desiredSkills: string[]) {
   });
 }
 
+/**
+ * Conservative, verb-anchored patterns for an issue whose deliverable is a
+ * pushed branch or opened pull request. Verb anchoring keeps passing mentions
+ * ("the PR merged yesterday") from triggering the credential preflight.
+ */
+const PR_DELIVERABLE_TEXT_PATTERNS = [
+  /\bopen(?:s|ed|ing)?\s+(?:a\s+|the\s+|an?\s+draft\s+)?(?:pull\s+request|pr)\b/i,
+  /\b(?:create|creates|created|creating|raise|raises|raised|raising|submit|submits|submitted|submitting)\s+(?:a\s+|the\s+|an?\s+draft\s+)?(?:pull\s+request|pr)\b/i,
+  // "push back" (an objection or a date) is never a git push, and bare
+  // proximity to words like "upstream" over-matches ("push back on the
+  // upstream dependency change"); require the git object shape instead.
+  /\bpush(?:es|ed|ing)?\b(?!\s+back\b)[^.\n]{0,40}\bbranch(?:es)?\b/i,
+  /\bpush(?:es|ed|ing)?\s+(?:[^.\n]{0,30}\s)?to\s+(?:origin|remote|upstream|github)\b/i,
+];
+
+export function issueTextImpliesPrDeliverable(text: string | null | undefined): boolean {
+  if (!text) return false;
+  return PR_DELIVERABLE_TEXT_PATTERNS.some((pattern) => pattern.test(text));
+}
+
 export function requiresPushCapabilityPreflight(input: {
   adapterType: string;
   issueId: string | null | undefined;
   explicitRunScopedSkillKeys: string[];
+  /**
+   * Issue title + description. Routine-created issues and agent-to-agent
+   * handoffs rarely mention the GitHub PR workflow skill explicitly, yet
+   * state the PR deliverable in plain text — without this, the credential
+   * gap only surfaces after the implementation and review work is done.
+   */
+  issueText?: string | null;
 }) {
   return Boolean(input.issueId)
     && GIT_SENSITIVE_LOCAL_ADAPTER_TYPES.has(input.adapterType)
-    && hasGithubPrWorkflowSkill(input.explicitRunScopedSkillKeys);
+    && (
+      hasGithubPrWorkflowSkill(input.explicitRunScopedSkillKeys)
+      || issueTextImpliesPrDeliverable(input.issueText)
+    );
 }
 
 const LOW_TRUST_SENSITIVE_ENV_KEY_RE =
@@ -3413,6 +3446,21 @@ export function resolveLedgerCostStatus(input: {
   return input.costUsd == null && hasTokenUsage ? "unpriced" : "reported";
 }
 
+export function resolveCacheAdjustedCostUsd(input: {
+  costUsd?: number | null;
+  cacheAdjustedCostUsd?: number | null;
+}) {
+  const explicit = input.cacheAdjustedCostUsd;
+  if (typeof explicit === "number" && Number.isFinite(explicit) && explicit >= 0) {
+    return explicit;
+  }
+  const reported = input.costUsd;
+  if (typeof reported === "number" && Number.isFinite(reported) && reported >= 0) {
+    return reported;
+  }
+  return null;
+}
+
 export async function resolveLedgerScopeForRun(
   db: Db,
   companyId: string,
@@ -3857,6 +3905,26 @@ export function describeSessionResetReason(
     return "wake reason is heartbeat_timer (unscoped timer wake starts fresh)";
   }
   return null;
+}
+
+/**
+ * Failure signatures from sandbox→host git workspace reconciliation. These
+ * describe the state of the SHARED workspace (divergent histories written by
+ * different runs), not a defect in the agent that happened to run last —
+ * putting the agent into a sticky `error` state over them removes a healthy
+ * agent from rotation while leaving the actual problem (the workspace)
+ * untouched. The run still fails and carries the full message.
+ */
+const WORKSPACE_SYNC_CONFLICT_SIGNATURES = [
+  "Failed to merge concurrent remote git histories",
+  "Failed to integrate concurrent remote git history",
+  "did not send all necessary objects",
+  "lacks these prerequisite commits",
+];
+
+export function isWorkspaceSyncConflictFailure(message: string | null | undefined): boolean {
+  if (!message) return false;
+  return WORKSPACE_SYNC_CONFLICT_SIGNATURES.some((signature) => message.includes(signature));
 }
 
 export function shouldDeferFollowupWakeForSameIssue(input: {
@@ -6176,6 +6244,41 @@ export interface HeartbeatServiceOptions {
   pluginWorkerManager?: PluginWorkerManager;
   environmentRuntime?: HeartbeatEnvironmentRuntime;
   runtimeEnv?: Record<string, string | undefined>;
+}
+
+type WorkspaceReadyCommentWriter = {
+  addComment: (
+    issueId: string,
+    body: string,
+    actor: { agentId?: string; userId?: string; runId?: string | null },
+    options?: {
+      presentation?: ReturnType<typeof buildWorkspaceReadyPresentation>;
+      metadata?: ReturnType<typeof buildWorkspaceReadyMetadata>;
+    },
+  ) => Promise<unknown>;
+};
+
+export function postWorkspaceReadyComment(input: {
+  issuesSvc: WorkspaceReadyCommentWriter;
+  issueId: string;
+  agentId: string;
+  runId: string;
+  workspace: RealizedExecutionWorkspace;
+  runtimeServices: RuntimeServiceRef[];
+}) {
+  const workspaceReadyInput = {
+    workspace: input.workspace,
+    runtimeServices: input.runtimeServices,
+  };
+  return input.issuesSvc.addComment(
+    input.issueId,
+    buildWorkspaceReadyComment(workspaceReadyInput),
+    { agentId: input.agentId, runId: input.runId },
+    {
+      presentation: buildWorkspaceReadyPresentation(workspaceReadyInput),
+      metadata: buildWorkspaceReadyMetadata(workspaceReadyInput),
+    },
+  );
 }
 
 function isTruthyRuntimeEnvValue(value: string | undefined) {
@@ -12551,10 +12654,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const outputTokens = usage?.outputTokens ?? 0;
     const cachedInputTokens = usage?.cachedInputTokens ?? 0;
     const billingType = normalizeLedgerBillingType(result.billingType);
-    const additionalCostCents = normalizeBilledCostCents(result.costUsd, billingType);
+    const billedCostUsd = resolveCacheAdjustedCostUsd(result);
+    const additionalCostCents = normalizeBilledCostCents(billedCostUsd, billingType);
     const hasTokenUsage = inputTokens > 0 || outputTokens > 0 || cachedInputTokens > 0;
     const costStatus = resolveLedgerCostStatus({
-      costUsd: result.costUsd,
+      costUsd: billedCostUsd,
       inputTokens,
       cachedInputTokens,
       outputTokens,
@@ -13240,6 +13344,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       adapterType: agent.adapterType,
       issueId,
       explicitRunScopedSkillKeys: runScopedMentionedSkillKeys,
+      issueText: issueRef ? `${issueRef.title ?? ""}\n${issueRef.description ?? ""}` : null,
     });
     const { resolvedConfig, secretKeys, secretManifest } = await resolveExecutionRunAdapterConfig({
       companyId: agent.companyId,
@@ -14317,14 +14422,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
       if (issueId && (executionWorkspace.created || runtimeServices.some((service) => !service.reused))) {
         try {
-          await issuesSvc.addComment(
+          await postWorkspaceReadyComment({
+            issuesSvc,
             issueId,
-            buildWorkspaceReadyComment({
-              workspace: executionWorkspace,
-              runtimeServices,
-            }),
-            { agentId: agent.id, runId: run.id },
-          );
+            agentId: agent.id,
+            runId: run.id,
+            workspace: executionWorkspace,
+            runtimeServices,
+          });
         } catch (err) {
           await onLog(
             "stderr",
@@ -14724,14 +14829,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           .where(eq(heartbeatRuns.id, run.id));
         if (issueId) {
           try {
-            await issuesSvc.addComment(
+            await postWorkspaceReadyComment({
+              issuesSvc,
               issueId,
-              buildWorkspaceReadyComment({
-                workspace: executionWorkspace,
-                runtimeServices: adapterManagedRuntimeServices,
-              }),
-              { agentId: agent.id, runId: run.id },
-            );
+              agentId: agent.id,
+              runId: run.id,
+              workspace: executionWorkspace,
+              runtimeServices: adapterManagedRuntimeServices,
+            });
           } catch (err) {
             await onLog(
               "stderr",
@@ -14809,8 +14914,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               ? "timed_out"
               : "failed";
 
+      const cacheAdjustedCostUsd = resolveCacheAdjustedCostUsd(adapterResult);
       const usageJson =
-        normalizedUsage || adapterResult.costUsd != null
+        normalizedUsage || adapterResult.costUsd != null || cacheAdjustedCostUsd != null
           ? ({
               ...(normalizedUsage ?? {}),
               ...(rawUsage ? {
@@ -14836,8 +14942,9 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               biller: resolveLedgerBiller(adapterResult),
               model: readNonEmptyString(adapterResult.model) ?? "unknown",
               ...(adapterResult.costUsd != null ? { costUsd: adapterResult.costUsd } : {}),
+              ...(cacheAdjustedCostUsd != null ? { cacheAdjustedCostUsd } : {}),
               costStatus: resolveLedgerCostStatus({
-                costUsd: adapterResult.costUsd,
+                costUsd: cacheAdjustedCostUsd,
                 inputTokens: normalizedUsage?.inputTokens ?? 0,
                 cachedInputTokens: normalizedUsage?.cachedInputTokens ?? 0,
                 outputTokens: normalizedUsage?.outputTokens ?? 0,
@@ -15052,7 +15159,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         {
           keepIdleOnFailure:
             outcome === "failed" &&
-            (finalizedRun ? readHeartbeatRunErrorFamily(finalizedRun) === "provider_quota" : runErrorCode === "provider_quota"),
+            ((finalizedRun ? readHeartbeatRunErrorFamily(finalizedRun) === "provider_quota" : runErrorCode === "provider_quota") ||
+              isWorkspaceSyncConflictFailure(adapterResult.errorMessage)),
           wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
         },
       );
@@ -15179,6 +15287,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
       await finalizeAgentStatus(agent.id, "failed", message, {
         wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
+        keepIdleOnFailure: isWorkspaceSyncConflictFailure(message),
       });
     }
     } catch (outerErr) {
