@@ -669,9 +669,28 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       // (e.g. a CLI that only exists in the sandbox image) a real run would
       // never hit. The raw id is sent even for a local environment — the
       // server resolves the driver and probes the host in that case.
+      //
+      // Test can be clicked before the settings query settles (or after it
+      // failed with retry:false), so resolve the settings here rather than
+      // trusting the render-time cache — silently probing the host because a
+      // query hadn't finished would resurrect the exact false failure this
+      // resolution exists to fix. ensureQueryData reuses the cached value
+      // when present; a fetch that still fails leaves the honest host probe.
+      let instanceDefaultEnvironmentId = instanceSettings?.defaultEnvironmentId ?? null;
+      if (instanceSettings === undefined) {
+        try {
+          const settings = await queryClient.ensureQueryData({
+            queryKey: queryKeys.instance.settings,
+            queryFn: () => instanceSettingsApi.get(),
+          });
+          instanceDefaultEnvironmentId = settings?.defaultEnvironmentId ?? null;
+        } catch {
+          instanceDefaultEnvironmentId = null;
+        }
+      }
       const environmentId = resolveAdapterTestEnvironmentId({
         agentDefaultEnvironmentId: rawCurrentDefaultEnvironmentId || null,
-        instanceDefaultEnvironmentId: instanceSettings?.defaultEnvironmentId ?? null,
+        instanceDefaultEnvironmentId,
       });
       const testResults: Array<{ label: string; model: string | null; result: AdapterEnvironmentTestResult }> = [
         {
