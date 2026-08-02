@@ -4,7 +4,7 @@ Completed: 2026-08-02 (Europe/Dublin)
 
 ## Outcome
 
-The supervised Paperclip reinstall is complete. The served API is healthy on Node 22, the dependency layout is internally consistent, rollback artifacts verify, and the reopened Codex/shell cohort completed 25 post-resume runs with zero failures or process loss in the observation window.
+The supervised Paperclip reinstall is complete. The served API is healthy on Node 22, the dependency layout is internally consistent, rollback artifacts verify, and the reopened Codex cohort completed cleanly with no process loss. A deterministic shell recovery handler produced one policy-gate failure after reopening, so all nine shell fallback handlers were re-paused under existing platform issue TSMC-18853.
 
 Hermes itself is updated and its gateway is healthy, but one bounded xAI canary produced no model output for 180 seconds. It was cancelled without retry. The 38 Hermes lanes that were enabled before maintenance remain paused under follow-up TSMC-19096.
 
@@ -12,7 +12,7 @@ Hermes itself is updated and its gateway is healthy, but one bounded xAI canary 
 
 The 796 unrecovered failures on 2026-08-01 did not have one common cause:
 
-- `adapter_failed` (547) was mainly lane/configuration-specific: 357 Codex managed-home TOML duplicate-key failures, 86 Hermes credential/provider failures, 56 Codex model/configuration failures (including CLI/model version skew), 35 shell-handler failures, and 13 other adapter failures.
+- `adapter_failed` (547) was mainly lane/configuration-specific: 357 Codex managed-home TOML duplicate-key failures, 86 Hermes credential/provider failures, 56 Codex model/configuration failures (including CLI/model version skew), 35 shell-handler failures, and 13 other adapter failures. Final canary evidence confirmed a shell recovery handler also exits fatally when the strict blocked-status gate returns HTTP 409 for a disposition without `blockedByIssueIds` or an external owner/action.
 - `process_lost` (210) clustered around service reload/restart and child-process EPIPE/finalization races. The dirty source files were not themselves proven to kill processes; the unsafe shared `node_modules` layout and repeated reloads made the served tree vulnerable to dependency relinking and process loss.
 - The remaining 39 session-init, timeout, quota, and configuration failures require separate auth/quota/session remediation. They should not be retried as generic adapter failures.
 - No evidence established database corruption or a fleet-wide OOM event as the common cause.
@@ -51,13 +51,13 @@ The broader dirty-tree recovery bundle was not committed: its focused suite pass
 - ACPX tests: 90/90 passed; adapter-utils typecheck passed.
 - Codex canary `82747ae4-772e-42ca-82e6-d15ad84122d3`: succeeded.
 - Post-upgrade `gpt-5.6-terra` canary `e593be76-87a7-4808-be0f-1559b28c5f54`: succeeded in 4.4 seconds under Codex CLI 0.146.0.
-- Post-resume observation: 25 succeeded, 0 failed, 0 `process_lost`, 0 live runs remaining.
+- Post-resume observation: 59 succeeded, 1 deterministic shell-handler `adapter_failed`, 2 queued shell runs cancelled by containment, and 0 `process_lost`. The shell failure is recorded on TSMC-18853.
 - Hermes: v0.19.1 (2026.7.30), upstream `0a62610f`, local `70b4f067` with seven carried commits; update check says Up to date; launchd gateway running.
 
 ## Resume and containment state
 
-- Resumed: 70 Codex and 9 deterministic shell-handler agents.
-- Still paused: the original 93 paused agents, 38 Hermes agents pending TSMC-19096, and one agent whose adapter changed from Codex to Claude after the pre-window snapshot. The changed Claude lane was not silently reopened without quota/auth validation.
+- Resumed: 70 Codex agents after the Codex 0.146.0 canary passed.
+- Still paused: the original 93 paused agents, 38 Hermes agents pending TSMC-19096, all 9 deterministic shell handlers pending TSMC-18853, and one agent whose adapter changed from Codex to Claude after the pre-window snapshot. The changed Claude lane was not silently reopened without quota/auth validation.
 - Do not auto-retry quota, auth, session-init, or provider-timeout failures. Resume Hermes only in small cohorts after TSMC-19096 records a successful bounded canary with real output and clean finalization.
 
 ## Rollback
