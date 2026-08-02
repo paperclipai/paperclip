@@ -13,10 +13,10 @@ und hängt das PNG ans Issue. Grenzen: 15 Bilder pro Tag, 4,50 USD pro Monat.
 
 Der Weg wird kaum genutzt — seit dem 15.06.2026 wurde genau ein Bild erzeugt.
 
-ComfyUI Desktop ist auf beiden Macs installiert. Auf dem Mac Studio (seit
-27.04.2026, v0.8.36, MPS) liegen ausschließlich Video-Modelle: LTX-Video 2b
-(5,9 GB) und Hunyuan-Video t2v 720p Q8 (13 GB). Ein Bild-Checkpoint existiert
-nirgends.
+Auf dem MacBook M5 Max ist Comfy Desktop 2 mit ComfyUI 0.29.2 installiert, samt
+Qwen-Image 2512 und Beschleuniger-LoRAs. Ein Messlauf am 02.08.2026 liefert ein
+1024er Bild in **8,1 Sekunden**. Damit ist lokales Rendern nicht nur billiger,
+sondern auch schneller als der Weg über die OpenAI-API.
 
 ## Ziele
 
@@ -25,60 +25,94 @@ nirgends.
 3. **Kontrolle über den Look** — eigene Workflows, feste Seeds, Wiederholbarkeit
 4. Video als Fernziel — die Infrastruktur muss es tragen, diese Spec baut es nicht
 
+## Bestandsaufnahme MacBook (geprüft am 02.08.2026)
+
+| | |
+|---|---|
+| Zugang | `walterschonenbrocher@192.168.2.40`, Schlüssel `~/.ssh/id_ed25519` hinterlegt |
+| Rechner | M4Max.fritz.box, 128 GB RAM, macOS 26.6, 2,4 TiB frei |
+| Anwendung | Comfy Desktop 2 (`/Applications/Comfy Desktop.app`), ComfyUI 0.29.2 |
+| ComfyUI-Quelle | `~/ComfyUI-Installs/ComfyUI/ComfyUI/main.py` |
+| Python | `~/ComfyUI-Installs/ComfyUI/ComfyUI/.venv/bin/python`, 3.13.12, torch 2.12.1, MPS |
+| Modelle | `~/ComfyUI-Shared/models`, eingebunden über `shared_model_paths.yaml` |
+| Ein-/Ausgabe | `~/ComfyUI-Shared/input`, `~/ComfyUI-Shared/output` |
+
+**Falle:** Es gibt zwei Python-Umgebungen. Die naheliegende,
+`~/ComfyUI-Installs/ComfyUI/standalone-env/`, enthält **kein torch** und ist
+unbrauchbar. Nur die versteckte `.venv` innerhalb des ComfyUI-Quellordners
+funktioniert. Das Manifest deklariert torch 2.12.1, installiert ist es
+ausschließlich dort.
+
+**Vorhandene Modelle** (rund 31 GB, nichts weiter herunterzuladen):
+
+| Datei | Größe | Ordner |
+|---|---|---|
+| `qwen_image_2512_fp8_e4m3fn.safetensors` | 19 GB | `diffusion_models/` |
+| `qwen_2.5_vl_7b_fp8_scaled.safetensors` | 8,7 GB | `text_encoders/` |
+| `qwen_image_vae.safetensors` | 242 MB | `vae/` |
+| `Wuli-Qwen-Image-2512-Turbo-LoRA-2steps-V1.0-bf16.safetensors` | 2,2 GB | `loras/` |
+| `Qwen-Image-Edit-2511-Lightning-4steps-V1.0-bf16.safetensors` | 810 MB | `loras/` |
+
 ## Entscheidungen
 
 ### Renderknoten: MacBook M5 Max (192.168.2.40)
 
 Beide Macs laufen 24/7 mit je 128 GB. LM Studio belegt auf dem Studio rund
 63 GB (qwen3.6-35b, qwen3-coder-30b, gemma-4-12b, bge-m3), auf dem MacBook rund
-39 GB (gemma-4-31b, openbiollm). Der Studio bleibt Paperclip- und Agenten-Host,
-das MacBook wird reiner Renderknoten. RAM-Konkurrenz zwischen Render und
-LLM-Inferenz hat bereits zweimal Fehlerwellen ausgelöst; die Trennung vermeidet
-das Muster.
+39 GB. Der Studio bleibt Paperclip- und Agenten-Host, das MacBook wird reiner
+Renderknoten. RAM-Konkurrenz zwischen Render und LLM-Inferenz hat bereits
+zweimal Fehlerwellen ausgelöst; die Trennung vermeidet das Muster.
 
 ### Headless statt Desktop-App
 
-ComfyUI Desktop ist eine Electron-App — der API-Server lebt nur, solange das
-Fenster offen ist. Ein Agent, der nachts um 03:00 ein Bild bestellt, liefe ins
-Leere. Die App bringt aber alles mit, was für einen Serverbetrieb nötig ist:
-`main.py` unter `/Applications/ComfyUI.app/Contents/Resources/ComfyUI/` und eine
-venv mit torch 2.11 und funktionierendem MPS unter `~/Documents/ComfyUI/.venv/`.
+Comfy Desktop ist eine Electron-App — der API-Server lebt nur, solange das
+Fenster offen ist, und lauscht dann auf `127.0.0.1:8188`, also **nur lokal**.
+Vom Studio aus ist er nicht erreichbar, und ein Agent, der nachts um 03:00 ein
+Bild bestellt, liefe ins Leere.
 
 LaunchAgent `de.whitestag.comfyui-node` auf dem MacBook:
 
 ```
-~/Documents/ComfyUI/.venv/bin/python \
-  /Applications/ComfyUI.app/Contents/Resources/ComfyUI/main.py \
-  --listen 0.0.0.0 --port 8189 --base-directory ~/Documents/ComfyUI
+~/ComfyUI-Installs/ComfyUI/ComfyUI/.venv/bin/python \
+  ~/ComfyUI-Installs/ComfyUI/ComfyUI/main.py \
+  --listen 0.0.0.0 --port 8189 \
+  --extra-model-paths-config "$HOME/Library/Application Support/Comfy Desktop/shared_model_paths.yaml" \
+  --input-directory  ~/ComfyUI-Shared/input \
+  --output-directory ~/ComfyUI-Shared/output
 ```
 
 `RunAtLoad`, `KeepAlive`, Logs nach `~/Library/Logs/comfyui-node.{out,err}.log`.
 Gesundheitsprüfung über `GET /system_stats`.
 
-**Port 8189, nicht 8188.** Belegt der Dienst den Standardport, startet die
-Desktop-App daneben nicht mehr — sie will ihren eigenen Server hochziehen. Auf
-8189 bleibt die App zum Bauen und Exportieren von Workflows nutzbar; genau dafür
-wird sie gebraucht.
+**Port 8189, nicht 8188.** Auf 8188 liegt die Desktop-App. Auf 8189 bleibt sie
+daneben nutzbar, und genau dafür wird sie gebraucht: neue Workflows baust du in
+der GUI und exportierst sie als Vorlage für den Dienst.
+
+**Betriebshinweis:** Rendern Desktop-App und Knoten gleichzeitig, liegen die
+Modelle doppelt im Speicher — rund 28 GB je Instanz. Die App ist zum Bauen von
+Workflows da, nicht zum Dauerbetrieb; wer sie nicht braucht, schließt sie.
 
 **Kein Auth.** ComfyUI hat keine Authentifizierung. Mit `--listen 0.0.0.0` kann
 jeder im LAN Aufträge einstellen. Für das Heimnetz bewusst akzeptiert. Falls
 später nötig: macOS-Firewall auf die Studio-IP einschränken.
 
-### Modelle: FLUX.1 [schnell] und Qwen-Image, beide Apache 2.0
+### Ein Modell: Qwen-Image 2512 mit Turbo-LoRA
 
-Bilder landen in Kundendeliverables, deshalb ist die Modellwahl eine
-Lizenzfrage.
+Ursprünglich war FLUX.1 [schnell] als schneller Standard geplant und Qwen als
+langsame Qualitätsstufe daneben. Der Messlauf hat diese Annahme widerlegt: Die
+Turbo-LoRA bringt Qwen auf **2 Steps**, und damit ist es selbst der schnelle
+Weg. Flux wären 17 GB zusätzlicher Download und eine zweite Workflow-Vorlage
+ohne erkennbaren Gewinn. Es entfällt und kann jederzeit als zweite Vorlage
+nachgerüstet werden, falls Tempo oder Bildsprache doch nicht genügen.
 
-| Modell | Lizenz | Größe (fp8) | Einsatz |
-|---|---|---|---|
-| FLUX.1 [schnell] | Apache 2.0 | ~17 GB | Standard, 4 Steps, Sekunden pro Bild |
-| Qwen-Image | Apache 2.0 | ~29 GB inkl. Text-Encoder + VAE | Schrift im Bild, Minuten pro Bild |
-| FLUX.1/2 [dev] | nicht-kommerziell | — | **ausgeschlossen** |
+Damit gibt es lokal genau ein Modell, eine Vorlage und keinen Umschalter
+zwischen lokalen Modellen.
 
-FLUX.1 [dev] und FLUX.2 [dev] erlauben kommerzielle Nutzung nur über die
-BFL-API oder eine gekaufte Self-Hosting-Lizenz und scheiden damit aus.
-
-Zusammen rund 46 GB Download auf das MacBook.
+Lizenz: Qwen-Image steht unter Apache 2.0 und ist kommerziell frei nutzbar.
+FLUX.1 [dev] und FLUX.2 [dev] wären ohnehin ausgeschieden — nicht-kommerzielle
+Lizenz, kommerzielle Nutzung nur über die BFL-API oder eine gekaufte
+Self-Hosting-Lizenz. Die Lizenz der Turbo-LoRA ist noch zu prüfen (siehe Offene
+Punkte).
 
 ### Kein Cloud-Fallback
 
@@ -96,10 +130,24 @@ würde sie duplizieren, und Duplikate driften — Deploy-Drift hat hier schon
 mehrfach Dienste stillgelegt.
 
 Verworfen wurde außerdem der direkte Werkzeugzugriff der Agenten auf ComfyUI:
-ein Qwen-Render dauert Minuten und läuft in jeden Agenten-Timeout, und die
-lokalen LM-Studio-Agenten erreicht nur `AGENTS.md` — sie haben kein
-verlässliches Werkzeug-Framework. Warteschlange und Wiederholung müssten neu
-gebaut werden.
+die lokalen LM-Studio-Agenten erreicht nur `AGENTS.md`, sie haben kein
+verlässliches Werkzeug-Framework, und Warteschlange samt Wiederholung müssten
+neu gebaut werden.
+
+## Messung (02.08.2026)
+
+1024×1024, 2 Steps, cfg 1.0, euler/simple, `ModelSamplingAuraFlow` shift 3.1,
+Turbo-LoRA bei Stärke 1.0, gegen die laufende Desktop-Instanz:
+
+| Lauf | Dauer |
+|---|---|
+| kalt (Modelle von Platte) | 72,5 s |
+| warm (Modelle im Speicher) | 8,1 s |
+
+Ergebnisqualität geprüft: fotorealistisch, saubere Tiefenschärfe, korrekte
+Anatomie. Für Agentenaufträge ohne Nacharbeit brauchbar.
+
+Diese Zahlen setzen die Zeitüberschreitungen weiter unten.
 
 ## Komponenten
 
@@ -117,23 +165,35 @@ Kennt nur ComfyUI, nichts von Paperclip.
 
 ### `workflow_template.py` — Vorlagen füllen
 
-Lädt eine Vorlage aus `workflows/` und ersetzt die Platzhalter `__PROMPT__`,
+Lädt `workflows/qwen-image.api.json` und ersetzt die Platzhalter `__PROMPT__`,
 `__SEED__`, `__WIDTH__`, `__HEIGHT__`.
 
-Die Vorlagen liegen im **ComfyUI-API-Format** (`Save (API Format)`), nicht im
-normalen UI-Export — die Strukturen unterscheiden sich, das ist die häufigste
-Fehlerquelle. Platzhalter statt Node-IDs, damit ein in der Desktop-App
-umgebauter und neu exportierter Workflow ohne Codeänderung weiterläuft.
+Die Vorlage liegt im **ComfyUI-API-Format**, nicht im normalen UI-Export — die
+Strukturen unterscheiden sich, das ist die häufigste Fehlerquelle. Platzhalter
+statt Node-IDs, damit ein in der Desktop-App umgebauter und neu exportierter
+Workflow ohne Codeänderung weiterläuft.
 
-- `workflows/flux-schnell.api.json`
-- `workflows/qwen-image.api.json`
+Der Graph ist gegen `/object_info` der laufenden Instanz verifiziert:
+
+| ID | Knoten | Wesentliche Eingaben |
+|---|---|---|
+| 1 | `UNETLoader` | `qwen_image_2512_fp8_e4m3fn.safetensors`, `default` |
+| 2 | `CLIPLoader` | `qwen_2.5_vl_7b_fp8_scaled.safetensors`, Typ `qwen_image` |
+| 3 | `VAELoader` | `qwen_image_vae.safetensors` |
+| 4 | `LoraLoaderModelOnly` | Turbo-LoRA, Stärke 1.0 |
+| 5 | `ModelSamplingAuraFlow` | shift 3.1 |
+| 6 / 7 | `CLIPTextEncode` | `__PROMPT__` / leer |
+| 8 | `EmptySD3LatentImage` | `__WIDTH__`, `__HEIGHT__` |
+| 9 | `KSampler` | `__SEED__`, 2 Steps, cfg 1.0, euler, simple |
+| 10 | `VAEDecode` | |
+| 11 | `SaveImage` | Präfix `whitestag` |
 
 ### `job_state.py` — Warteschlange über Neustarts hinweg
 
 Erweitert die bestehende State-Datei
 `~/.paperclip/instances/default/state/bild-service.json` um einen Abschnitt
-`jobs`: Issue-ID → `{prompt_id, modell, company_id, abgesendet_am, versuche}`.
-Die bestehende Tageskosten-Struktur bleibt unverändert daneben stehen.
+`jobs`: Issue-ID → `{prompt_id, company_id, abgesendet_am, versuche}`. Die
+bestehende Tageskosten-Struktur bleibt unverändert daneben stehen.
 
 - `add`, `all`, `drop`, `bump_attempt`
 - `age_seconds(job)` für die Zeitüberschreitung
@@ -152,24 +212,27 @@ Weiterhin 60-Sekunden-Takt, weiterhin flock-Single-Instance.
 2. **Absenden** — neue Issues mit Bild-Label ohne laufenden Auftrag → Brief
    parsen, Vorlage füllen, `submit()`, `prompt_id` merken.
 
-Höchstens **drei Aufträge gleichzeitig** unterwegs. Sonst tauscht ComfyUI
-dauernd zwischen Flux und Qwen die Modelle im Speicher, und der Wechsel kostet
-mehr Zeit als der Render.
+Zwei Phasen, obwohl ein warmer Render nur 8 Sekunden dauert: ein kalter Start
+kostet über eine Minute, und mehrere Aufträge hintereinander würden den
+60-Sekunden-Takt sonst überziehen. Der Dienst wartet nie auf einen Render.
+
+Höchstens **drei Aufträge gleichzeitig** unterwegs, damit ein einzelner Agent
+den Knoten nicht monopolisiert.
 
 Der OpenAI-Pfad (`openai_image.py`) bleibt synchron und unverändert.
 
 ## Auftragsformat
 
 ```
-prompt: Ein Hirsch im Nebel, fotorealistisch, kaltes Morgenlicht
-modell: schnell          # schnell (Standard) | qwen | openai
+prompt: Ein Hirsch im Morgennebel, fotorealistisch, kaltes Gegenlicht
+modell: qwen             # qwen (Standard) | openai
 format: 1536x1024        # Standard 1024x1024
 seed: 42                 # optional, sonst zufällig
 ```
 
-**`modell`** — Standard `schnell`: lokal, kostenlos, ohne Deckel. `qwen`, wenn
-Schrift im Bild stehen soll. `openai` ist ab jetzt die bewusste Ausnahme und
-läuft weiter unter 15 Bildern pro Tag und 4,50 USD pro Monat.
+**`modell`** — Standard `qwen`: lokal, kostenlos, ohne Deckel. `openai` ist die
+bewusste Ausnahme und läuft weiter unter 15 Bildern pro Tag und 4,50 USD pro
+Monat.
 
 **`seed`** — ohne Angabe zufällig, aber der verwendete Seed steht *immer* im
 Abschlusskommentar. Damit kann ein Agent ein gelungenes Bild gezielt variieren
@@ -177,18 +240,18 @@ statt neu zu würfeln. Mit der OpenAI-API ist das grundsätzlich nicht möglich.
 
 **`format`** — Positivliste: 1024×1024, 1024×1536, 1536×1024, 1344×768,
 768×1344. Ohne Liste fordert irgendwann ein Agent 4096×4096 an und belegt den
-Knoten eine halbe Stunde.
+Knoten minutenlang.
 
 Die letzten beiden Formate kennt die OpenAI-API nicht. Bei `modell: openai`
 wird deshalb auf das nächstliegende erlaubte Format abgebildet — 1344×768 →
 1536×1024, 768×1344 → 1024×1536 — und die Abweichung im Abschlusskommentar
 genannt. Der Auftrag scheitert daran nicht.
 
-**`quality`** gilt nur auf dem OpenAI-Pfad; für die lokalen Modelle ist es
-bedeutungslos und wird ignoriert. Umgekehrt gilt **`seed`** nur lokal — die
-OpenAI-API nimmt keinen Seed entgegen. Wird beides gesetzt, wird das jeweils
-unwirksame Feld stillschweigend übergangen; der Abschlusskommentar nennt immer
-nur die tatsächlich verwendeten Einstellungen.
+**`quality`** gilt nur auf dem OpenAI-Pfad; lokal ist es bedeutungslos und wird
+ignoriert. Umgekehrt gilt **`seed`** nur lokal — die OpenAI-API nimmt keinen
+Seed entgegen. Wird beides gesetzt, wird das jeweils unwirksame Feld
+stillschweigend übergangen; der Abschlusskommentar nennt immer nur die
+tatsächlich verwendeten Einstellungen.
 
 ### Label-Umbenennung
 
@@ -216,9 +279,10 @@ Kommentar an jedem betroffenen Issue — also jedem mit Bild-Label in `todo` ode
 ws@whitestag.ai. Zähler bei Erfolg zurücksetzen. Kein Spam, aber keine stille
 Warteschlange.
 
-**Auftrag hängt** — schnell über 10 Minuten, qwen über 45 Minuten: ein
-Wiederholungsversuch mit neuer `prompt_id`. Beim zweiten Mal Kommentar, Status
-`cancelled`, Mail.
+**Auftrag hängt** — über 5 Minuten ohne Ergebnis: ein Wiederholungsversuch mit
+neuer `prompt_id`. Beim zweiten Mal Kommentar, Status `cancelled`, Mail. Fünf
+Minuten sind großzügig gegenüber den gemessenen 72 Sekunden im kalten Fall und
+lassen Raum für eine kurze Warteschlange auf dem Knoten.
 
 **ComfyUI meldet Ausführungsfehler** — Kommentar mit der Node-Fehlermeldung,
 Status `cancelled`, **kein** Wiederholungsversuch. Ein kaputter Prompt oder ein
@@ -241,32 +305,31 @@ pytest neben den Modulen, wie im Dienst bereits üblich.
 
 - `test_brief_parser.py` (erweitert) — neue Felder, Standardwerte, ungültige
   Werte fallen zurück statt zu scheitern
-- `test_workflow_template.py` — jede Vorlage enthält alle vier Platzhalter;
-  nach der Substitution bleibt keiner übrig und das Ergebnis ist gültiges JSON
+- `test_workflow_template.py` — die Vorlage enthält alle vier Platzhalter; nach
+  der Substitution bleibt keiner übrig und das Ergebnis ist gültiges JSON
 - `test_comfy_client.py` — Antworten auf `/prompt` und `/history` (läuft /
   fertig / Fehler) gegen Fixtures parsen, `/view`-URL korrekt bauen; kein Netz
 - `test_job_state.py` — Auftrag anlegen, einsammeln, Zeitüberschreitung,
   Wiederholung, Entfernen; Zustand übersteht einen Neustart
-- `smoke_comfy.py` — manuelles Skript gegen den echten Knoten: ein 512er
-  Testbild von Ende zu Ende. Läuft bei der Einrichtung, nicht in der Suite.
+- `smoke_comfy.py` — manuelles Skript gegen den echten Knoten, Ende zu Ende.
+  Läuft bei der Einrichtung, nicht in der Suite. Der Messlauf vom 02.08.2026
+  (`qwen_bench.py`) ist die Vorlage dafür.
 
-## Offene Punkte und Reihenfolge
+## Offene Punkte
 
-1. **SSH-Zugang zum MacBook fehlt.** `ssh 192.168.2.40` scheitert mit
-   `Permission denied (publickey,password,keyboard-interactive)`. Ohne ihn kann
-   weder der LaunchAgent eingerichtet noch der Modell-Download angestoßen
-   werden. Entweder Key hinterlegen oder diesen Schritt am Gerät selbst
-   ausführen. **Das ist der erste Schritt der Umsetzung, alles andere hängt
-   daran.**
-2. **Freier Speicher auf dem MacBook unbekannt** — 46 GB Modelle müssen passen.
-   Vor dem Download prüfen.
-3. **Basisverzeichnis auf dem MacBook unbestätigt** — auf dem Studio ist es
-   `~/Documents/ComfyUI`; auf dem MacBook nicht überprüfbar, weil kein
-   SSH-Zugang. Beim Einrichten aus
-   `~/Library/Application Support/ComfyUI/config.json` (`basePath`) auslesen.
-4. **Video-Spec** — LTX und Hunyuan liegen auf dem Studio, nicht auf dem
-   MacBook. Ob die Modelle umziehen oder ein zweiter Knoten entsteht, entscheidet
-   die Video-Spec.
+1. **Lizenz der Turbo-LoRA prüfen.** `Wuli-Qwen-Image-2512-Turbo-LoRA-2steps`
+   ist eine Drittanbieter-LoRA; Qwen-Image selbst ist Apache 2.0, die LoRA
+   nicht automatisch mit. Vor dem produktiven Einsatz in Kundenmaterial klären.
+   Fällt sie aus, bleibt Qwen ohne LoRA nutzbar — dann mit deutlich mehr Steps
+   und entsprechend längerer Renderzeit.
+2. **Abgebrochener Download aufräumen.** In
+   `~/ComfyUI-Shared/models/.desktop2-downloads/` liegen 10 GB einer nie
+   fertiggestellten `qwen_image_edit_2511_int8_convrot.safetensors.tmp`.
+   Löschen oder den Download zu Ende führen — Letzteres nur, wenn Bildbearbeitung
+   (img2img, Inpainting) wirklich gebraucht wird. Diese Spec braucht sie nicht.
+3. **Video-Spec.** LTX und Hunyuan liegen auf dem Mac Studio, nicht auf dem
+   MacBook. Ob die Modelle umziehen oder ein zweiter Knoten entsteht,
+   entscheidet die Video-Spec.
 
 ## Quellen
 
