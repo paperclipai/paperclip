@@ -301,7 +301,39 @@ Paperclip is a full control plane, not a wrapper. Before you build any of this y
 Open source. Self-hosted. No Paperclip account required.
 
 ```bash
-npx paperclipai onboard --yes
+curl -fsSLO https://paperclip.ing/install.sh
+curl -fsSLO https://paperclip.ing/install.sh.sha256
+if command -v sha256sum >/dev/null 2>&1; then
+  sha256sum -c install.sh.sha256
+else
+  shasum -a 256 -c install.sh.sha256
+fi
+bash install.sh
+```
+
+The installer ensures Node.js 20 or newer is available, installs a managed
+Paperclip CLI under `~/.paperclip/cli`, and starts interactive onboarding. It
+can also install Paperclip as a background service on supported Linux and
+macOS systems. The checksum detects transfer or publishing mistakes, but it is
+served from the same origin as the script; use a release-tag or commit-pinned
+GitHub copy when you need an independently hosted source.
+
+For a non-interactive managed install:
+
+```bash
+curl -fsSL https://paperclip.ing/install.sh | bash -s -- --no-prompt --no-onboard
+paperclipai onboard --yes
+```
+
+The piped form requires supported Node.js, npm, and npx to already be present.
+If Node.js bootstrap is required, download and review `install.sh` before
+running it so no privileged dependency-install command is accepted through a
+pipe.
+
+To try Paperclip without installing anything permanently:
+
+```bash
+npx --registry https://registry.npmjs.org paperclipai onboard --yes
 ```
 
 > **Troubleshooting: private npm registry `.npmrc`**
@@ -323,12 +355,15 @@ npx paperclipai onboard --yes
 That quickstart path now defaults to trusted local loopback mode for the fastest first run. To start in authenticated/private mode instead, choose a bind preset explicitly:
 
 ```bash
-npx paperclipai onboard --yes --bind lan
+paperclipai onboard --yes --bind lan
 # or:
-npx paperclipai onboard --yes --bind tailnet
+paperclipai onboard --yes --bind tailnet
 ```
 
 If you already have Paperclip configured, rerunning `onboard` keeps the existing config in place. Use `paperclipai configure` to edit settings.
+
+See [`doc/INSTALLING.md`](doc/INSTALLING.md) for pinned versions, canary and
+git-ref installs, updates, rollback, service management, and uninstalling.
 
 Or manually:
 

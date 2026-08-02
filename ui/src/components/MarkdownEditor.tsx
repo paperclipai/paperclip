@@ -48,6 +48,7 @@ import { MentionAwareLinkNode, mentionAwareLinkNodeReplacement } from "../lib/me
 import { mentionDeletionPlugin } from "../lib/mention-deletion";
 import { looksLikeMarkdownPaste } from "../lib/markdownPaste";
 import { normalizeMarkdown } from "../lib/normalize-markdown";
+import { unescapeBlockquoteMarkers } from "../lib/blockquote-markdown";
 import { pasteNormalizationPlugin } from "../lib/paste-normalization";
 import { cn } from "../lib/utils";
 import { useEditorAutocomplete, type SlashCommandOption } from "../context/EditorAutocompleteContext";
@@ -141,7 +142,10 @@ function convertHtmlImagesToMarkdown(text: string): string {
 
 function prepareMarkdownForEditor(value: string): string {
   const normalizedLineEndings = value.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
-  return convertHtmlImagesToMarkdown(normalizedLineEndings);
+  // Recover escaped blockquotes (`\>`) so `>`-prefixed content renders as a real
+  // blockquote in the editor as well as on display (keeps import/export in sync).
+  const withBlockquotes = unescapeBlockquoteMarkers(normalizedLineEndings);
+  return convertHtmlImagesToMarkdown(withBlockquotes);
 }
 
 function escapeRegExp(value: string): string {
@@ -1324,8 +1328,13 @@ export const MarkdownEditor = forwardRef<MarkdownEditorRef, MarkdownEditorProps>
           suppressHtmlProcessing
           placeholder={placeholder}
           readOnly={readOnly}
-          onChange={(next) => {
+          onChange={(rawNext) => {
             if (readOnly) return;
+            // Recover blockquotes the exporter escaped as `\>` (see
+            // unescapeBlockquoteMarkers) so a `>`-prefixed line the user typed
+            // always survives as a real blockquote, even when the WYSIWYG
+            // shortcut didn't fire.
+            const next = unescapeBlockquoteMarkers(rawNext);
             const echo = echoIgnoreMarkdownRef.current;
             if (echo !== null && next === echo) {
               echoIgnoreMarkdownRef.current = null;

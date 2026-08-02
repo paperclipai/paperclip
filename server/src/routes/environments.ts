@@ -429,6 +429,17 @@ export function environmentRoutes(
     return await resolveCustomImageCompanyId(req);
   }
 
+  /**
+   * Pick the company context used to create new secrets from raw-pasted
+   * values, normalize env-var bindings, and resolve probe secrets. An
+   * explicit route param / query wins, then the single company the
+   * environment's bindings already live in, then the actor's own company.
+   * Bindings must never veto an explicit caller context: config-derived
+   * bindings live in the company that owns each referenced secret (see
+   * `replaceSecretRefsForInstanceTarget`), so an environment's bindings may
+   * legitimately sit in a different company — or several — than the board
+   * that is editing it.
+   */
   async function resolveEnvironmentSecretContextCompanyId(
     req: Request,
     environmentId: string,
@@ -440,18 +451,12 @@ export function environmentRoutes(
         : typeof req.query.companyId === "string" && req.query.companyId.trim().length > 0
           ? req.query.companyId.trim()
           : null;
+    if (routeCompanyId) return routeCompanyId;
     const bindingCompanyIds = await secrets.listBindingCompanyIdsForTarget({
       targetType: "environment",
       targetId: environmentId,
     });
-    if (routeCompanyId && bindingCompanyIds.length > 0 && !bindingCompanyIds.includes(routeCompanyId)) {
-      throw conflict("Environment secret bindings already use a different company context.");
-    }
-    if (routeCompanyId) return routeCompanyId;
     if (bindingCompanyIds.length === 1) return bindingCompanyIds[0] ?? null;
-    if (bindingCompanyIds.length > 1) {
-      throw conflict("Environment secret bindings span multiple companies and require explicit companyId context.");
-    }
     if (req.actor.type === "agent" && req.actor.companyId) return req.actor.companyId;
     if (req.actor.type === "board" && Array.isArray(req.actor.companyIds) && req.actor.companyIds.length === 1) {
       return req.actor.companyIds[0] ?? null;
@@ -887,17 +892,23 @@ export function environmentRoutes(
         pluginWorkerManager: options.pluginWorkerManager,
       }),
     };
-    const environment = await svc.create(input);
-    await secrets.syncSecretRefsForTarget(
-      companyId,
-      { targetType: "environment", targetId: environment.id },
-      await collectEnvironmentSecretRefs({ db, environment }),
-    );
-    await secrets.syncEnvBindingsForTarget(
-      companyId,
-      { targetType: "environment", targetId: environment.id },
-      environment.envVars,
-    );
+    // Create the row and its binding rows atomically so an invalid secret
+    // ref cannot leave an environment persisted without its bindings.
+    const environment = await db.transaction(async (tx) => {
+      const created = await svc.create(input, undefined, { db: tx });
+      await secrets.replaceSecretRefsForInstanceTarget(
+        { targetType: "environment", targetId: created.id },
+        await collectEnvironmentSecretRefs({ db, environment: created }),
+        { db: tx },
+      );
+      await secrets.syncEnvBindingsForTarget(
+        companyId,
+        { targetType: "environment", targetId: created.id },
+        created.envVars,
+        { db: tx },
+      );
+      return created;
+    });
     await logInstanceEnvironmentActivity({
       actor,
       action: "environment.created",
@@ -919,6 +930,22 @@ export function environmentRoutes(
       return;
     }
     res.json(presentEnvironmentForRead(req, environment));
+  });
+
+  router.get("/environments/:id/secret-refs", async (req, res) => {
+    assertCanAccessInstanceEnvironments(req);
+    const environment = await svc.getById(req.params.id as string);
+    if (!environment) {
+      res.status(404).json({ error: "Environment not found" });
+      return;
+    }
+    // Metadata only (name / status / owning company) — never secret values.
+    // Environments are instance-scoped while secrets are company-scoped, so
+    // the editor needs this to render refs whose secret a given company's
+    // picker cannot list. Gated by the same instance-level access check as
+    // environment editing.
+    const refs = await collectEnvironmentSecretRefs({ db, environment });
+    res.json({ refs: await secrets.describeSecretRefs(refs) });
   });
 
   router.get("/environments/:id/leases", async (req, res) => {
@@ -1006,7 +1033,29 @@ export function environmentRoutes(
           }
         : {}),
     };
-    const environment = await svc.update(existing.id, patch);
+    // Persist the config change and its binding rows atomically: a binding
+    // ref that fails validation (e.g. a deleted secret) must roll the whole
+    // save back instead of leaving the config re-pointed with stale bindings.
+    const environment = await db.transaction(async (tx) => {
+      const updated = await svc.update(existing.id, patch, { db: tx });
+      if (!updated) return null;
+      if (patch.config !== undefined || patch.driver !== undefined) {
+        await secrets.replaceSecretRefsForInstanceTarget(
+          { targetType: "environment", targetId: updated.id },
+          await collectEnvironmentSecretRefs({ db, environment: updated }),
+          { db: tx },
+        );
+      }
+      if (patch.envVars !== undefined) {
+        await secrets.syncEnvBindingsForTarget(
+          companyIdForSecrets!,
+          { targetType: "environment", targetId: updated.id },
+          updated.envVars,
+          { db: tx },
+        );
+      }
+      return updated;
+    });
     if (!environment) {
       res.status(404).json({ error: "Environment not found" });
       return;
@@ -1015,11 +1064,6 @@ export function environmentRoutes(
       ReturnType<typeof customImages.reconcileActiveTemplateForConfigChange>
     > = { action: "none" };
     if (patch.config !== undefined || patch.driver !== undefined) {
-      await secrets.syncSecretRefsForTarget(
-        companyIdForSecrets!,
-        { targetType: "environment", targetId: environment.id },
-        await collectEnvironmentSecretRefs({ db, environment }),
-      );
       try {
         customImageReconciliation = await customImages.reconcileActiveTemplateForConfigChange({
           environmentId: environment.id,
@@ -1029,13 +1073,6 @@ export function environmentRoutes(
       } catch {
         // Reconciliation is best-effort; a failure must not fail the save.
       }
-    }
-    if (patch.envVars !== undefined) {
-      await secrets.syncEnvBindingsForTarget(
-        companyIdForSecrets!,
-        { targetType: "environment", targetId: environment.id },
-        environment.envVars,
-      );
     }
     await logInstanceEnvironmentActivity({
       actor,

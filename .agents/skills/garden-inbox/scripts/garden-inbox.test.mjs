@@ -5,6 +5,7 @@ import {
   acceptedCandidates,
   archiveTargetBody,
   classify,
+  confirmationBody,
   decodeJwtPayload,
   fetchMineInboxRows,
   normalizeApiBase,
@@ -74,6 +75,35 @@ test("returns only accepted options from the originating scan", () => {
     result: { outcome: "accepted", selectedOptionIds: ["issue-1"] },
   };
   assert.deepEqual(acceptedCandidates(interaction, scan, new Map([[candidate.issueId, candidate]])), [candidate]);
+});
+
+test("unselected candidates start unchecked and are labelled as previously declined", () => {
+  const scan = { scanId: "scan-1", staleDays: 60 };
+  const candidates = [
+    { issueId: "issue-1", identifier: "PAP-1", title: "Kept before", bucket: "B", lastActivityAt: "2026-05-01T00:00:00.000Z", reason: { message: "Stale." } },
+    { issueId: "issue-2", identifier: "PAP-2", title: "New candidate", bucket: "B", lastActivityAt: "2026-05-01T00:00:00.000Z", reason: { message: "Stale." } },
+  ];
+  const body = confirmationBody(scan, candidates, 0, 1, new Set(["issue-1"]));
+  assert.deepEqual(body.payload.defaultSelectedOptionIds, ["issue-2"]);
+  assert.match(body.payload.options[0].description, /Declined in a previous pass; starts unchecked\./);
+  assert.doesNotMatch(body.payload.options[1].description, /Declined in a previous pass/);
+  assert.notEqual(body.idempotencyKey, "garden-inbox:scan-1:1:1");
+  assert.equal(
+    body.idempotencyKey,
+    confirmationBody(scan, candidates, 0, 1, new Set(["issue-1"])).idempotencyKey,
+  );
+  assert.notEqual(
+    body.idempotencyKey,
+    confirmationBody(scan, candidates, 0, 1, new Set(["issue-2"])).idempotencyKey,
+  );
+  assert.equal(
+    confirmationBody(scan, candidates, 0, 1).idempotencyKey,
+    "garden-inbox:scan-1:1:1",
+  );
+  assert.equal(
+    confirmationBody(scan, [candidates[1]], 1, 2, new Set(["issue-1"])).idempotencyKey,
+    "garden-inbox:scan-1:2:2",
+  );
 });
 
 test("preserves an overridden scan user for archive and undo requests", () => {

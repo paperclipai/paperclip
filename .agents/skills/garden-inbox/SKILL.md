@@ -57,6 +57,8 @@ node .agents/skills/garden-inbox/scripts/garden-inbox.mjs confirm \
 
 The script posts sequential cards when a scan has more than 200 candidates. Re-running `confirm` with the same scan file is idempotent. Leave the driving issue in the waiting posture required by the surrounding Paperclip heartbeat workflow.
 
+When a candidate was declined by the user in an earlier pass, pass `--unselect <issueId>` (repeatable) so it starts unchecked and its description notes the earlier decline. Never re-offer previously declined items as default-checked.
+
 For development or payload review, suppress the POST:
 
 ```bash

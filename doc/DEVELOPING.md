@@ -115,7 +115,27 @@ pnpm --filter @paperclipai/server exec tsx ../scripts/request-hot-restart.ts --s
 systemctl restart paperclip.service
 ```
 
-Use `--drain-required` only when the deploy intentionally requires the old terminate-and-retry behavior. Without that flag, the old server verifies that the marker targets its own PID, snapshots currently running heartbeat run IDs and child PIDs, and skips the shutdown drain so eligible detached local-agent processes can keep running. On startup the new server writes `$PAPERCLIP_HOME/hot-restart-report.json` with `previousServerPid`, `newServerPid`, `previousServerVersion`, `newServerVersion`, `adoptedRunIds`, `finalizedWhileDownRunIds`, `lostRunIds`, and per-run classifications before the normal orphan reaper runs.
+The staged command records the target server's boot identity and operating
+system process start time with the PID. It reads process metadata through
+`/proc` on Linux, `ps` on macOS and BSD, and PowerShell on Windows. These
+identities let a later request reclaim an abandoned marker after the operating
+system recycles the numeric PID. Older markers stay compatible and use process
+start metadata when available. When OS metadata is unavailable, the current
+server's health-reported boot time can still prove that a legacy marker predates
+the process now using its PID. Paperclip refuses to create a new request without
+at least one identity source. Supported-platform process probes fail explicitly
+instead of silently treating a live PID as either the original owner or a
+recycled process when identity cannot be established.
+
+Use `--drain-required` only when the deploy intentionally requires the old terminate-and-retry behavior. Without that flag, the old server verifies that the marker targets its own PID, snapshots currently running heartbeat run IDs and child PIDs, and skips the shutdown drain so eligible detached local-agent processes can keep running. On startup the new server writes `$PAPERCLIP_HOME/instances/${PAPERCLIP_INSTANCE_ID:-default}/hot-restart-report.json` with `previousServerPid`, `newServerPid`, `previousServerVersion`, `newServerVersion`, `adoptedRunIds`, `finalizedWhileDownRunIds`, `lostRunIds`, and per-run classifications before the normal orphan reaper runs.
+
+The request command records the preflight set of running heartbeat IDs and writes
+an instance-scoped marker plus a PID-targeted legacy home-root handoff marker.
+This lets a previous server version capture its snapshot at the old path while
+the new server correlates that snapshot back to the authoritative instance
+request. If any preflight run ID is absent from the shutdown snapshot, the
+startup report includes it in `lostRunIds`; a missing snapshot therefore cannot
+look like a zero-loss restart.
 
 A healthy guarded deploy must compare the report against `/api/health` (`version` or `serverVersion`) and treat any `lostRunIds` entry as a continuity failure that needs recovery before marking deployment complete.
 
