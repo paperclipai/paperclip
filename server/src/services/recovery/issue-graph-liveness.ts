@@ -1,4 +1,5 @@
 import { getAgentWorkEligibility, isAgentInvokable } from "@paperclipai/shared";
+import { hasExternalWaitDescription } from "./external-wait.js";
 import { buildIssueGraphLivenessIncidentKey } from "./origins.js";
 
 export type IssueLivenessSeverity = "warning" | "critical";
@@ -16,6 +17,7 @@ export interface IssueLivenessIssueInput {
   companyId: string;
   identifier: string | null;
   title: string;
+  description?: string | null;
   status: string;
   projectId?: string | null;
   goalId?: string | null;
@@ -405,7 +407,8 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
       hasActiveExecutionPath(issue.companyId, issue.id, activeRuns, queuedWakeRequests) ||
       hasWaitingPath(issue.companyId, issue.id, pendingInteractions) ||
       hasWaitingPath(issue.companyId, issue.id, pendingApprovals) ||
-      hasWaitingPath(issue.companyId, issue.id, openRecoveryIssues);
+      hasWaitingPath(issue.companyId, issue.id, openRecoveryIssues) ||
+      hasExternalWaitDescription(issue.description);
   }
 
   function reviewFinding(
@@ -612,6 +615,29 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
     if (issue.status === "in_review" && !chainFinding && !unresolvedBlockers.has(issue.id)) {
       const review = reviewFinding(issue, issue, [issue]);
       if (review) findings.push(review);
+    }
+
+    if (
+      issue.status === "blocked" &&
+      !chainFinding &&
+      !hasUnresolvedBlockerEdge &&
+      !issue.assigneeAgentId &&
+      !issue.assigneeUserId &&
+      !hasExplicitWaitingPath(issue)
+    ) {
+      const ownerCandidates = ownerCandidatesForRecoveryIssue(issue, input.agents, agentsById);
+      findings.push(finding({
+        issue,
+        state: "blocked_by_unassigned_issue",
+        reason: `${issueLabel(issue)} is blocked, unassigned, and has no unresolved blocker, user owner, wake, interaction, approval, monitor, or recovery issue owning the next action.`,
+        dependencyPath: [issue],
+        recoveryIssue: issue,
+        recommendedOwnerCandidateAgentIds: ownerCandidates.map((candidate) => candidate.agentId),
+        recommendedOwnerCandidates: ownerCandidates,
+        recommendedAction:
+          `Assign ${issueLabel(issue)} to an owner, add a first-class blocker that owns the wait, or record an intentional manual resolution.`,
+        blockerIssueId: issue.id,
+      }));
     }
   }
 

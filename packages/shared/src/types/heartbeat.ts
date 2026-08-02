@@ -99,6 +99,9 @@ export interface HeartbeatRun {
   lastOutputStream: "stdout" | "stderr" | null;
   lastOutputBytes: number | null;
   retryOfRunId: string | null;
+  failureClass?: "failed" | "cancelled" | "skipped" | null;
+  failureReasonCode?: string | null;
+  safeReasonSummary?: string | null;
   processLossRetryCount: number;
   scheduledRetryAt?: Date | null;
   scheduledRetryAttempt?: number;

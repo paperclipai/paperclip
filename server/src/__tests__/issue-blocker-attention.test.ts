@@ -687,6 +687,38 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     await expect(svc.count(companyId, { attention: "blocked", q: "Public context" })).resolves.toBe(1);
   });
 
+  it("redacts one-character external wait details from blocked inbox payloads and search", async () => {
+    const { companyId } = await createCompany("BIXS");
+    const owner = "A";
+    const action = "B";
+    const issueId = await insertIssue({
+      companyId,
+      identifier: "BIXS-1",
+      title: "Blocked on short marker",
+      status: "blocked",
+      description: [
+        "Public context stays visible.",
+        `external owner: ${owner}`,
+        `external action: ${action}`,
+      ].join("\n"),
+    });
+
+    const rows = await svc.list(companyId, { attention: "blocked" });
+    const issue = rows.find((row) => row.id === issueId);
+
+    expect(issue?.description).toBe("Public context stays visible.");
+    expect(issue?.description).not.toContain(`external owner: ${owner}`);
+    expect(issue?.description).not.toContain(`external action: ${action}`);
+    expect(issue?.blockedInboxAttention).toMatchObject({
+      state: "external_wait",
+      reason: "external_owner_action",
+      redaction: { externalDetailsRedacted: true, secretFieldsOmitted: true },
+    });
+
+    await expect(svc.list(companyId, { attention: "blocked", q: "external owner: A" })).resolves.toEqual([]);
+    await expect(svc.count(companyId, { attention: "blocked", q: "Public context" })).resolves.toBe(1);
+  });
+
   it("excludes healthy active blockers from blocked inbox attention", async () => {
     const { companyId, agentId } = await createCompany("BIB");
     const parentId = await insertIssue({ companyId, identifier: "BIB-1", title: "Blocked source", status: "blocked" });
