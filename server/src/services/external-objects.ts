@@ -1,6 +1,6 @@
 import { and, asc, eq, inArray, isNull, lte, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { documents, externalObjectMentions, externalObjects, issueComments, issueDocuments, issues, plugins } from "@paperclipai/db";
+import { companies, documents, externalObjectMentions, externalObjects, issueComments, issueDocuments, issues, plugins } from "@paperclipai/db";
 import {
   formatExternalObjectMentionSourceLabel,
   type ExternalObjectCanonicalUrl,
@@ -903,8 +903,7 @@ export function externalObjectService(
     return results;
   }
 
-  async function refreshDueObjects(companyId: string, limit = 50, now = new Date()) {
-    if (!(await isEnabled())) return [];
+  async function refreshDueObjectsUnchecked(companyId: string, limit = 50, now = new Date()) {
     const due = await db
       .select({ id: externalObjects.id })
       .from(externalObjects)
@@ -927,6 +926,27 @@ export function externalObjectService(
     return results;
   }
 
+  async function refreshDueObjects(companyId: string, limit = 50, now = new Date()) {
+    if (!(await isEnabled())) return [];
+    return refreshDueObjectsUnchecked(companyId, limit, now);
+  }
+
+  async function refreshDueObjectsForActiveCompanies(limitPerCompany = 50, now = new Date()) {
+    if (!(await isEnabled())) return { companies: 0, checked: 0, refreshed: 0 };
+    const activeCompanies = await db
+      .select({ id: companies.id })
+      .from(companies)
+      .where(eq(companies.status, "active"));
+    let checked = 0;
+    let refreshed = 0;
+    for (const company of activeCompanies) {
+      const results = await refreshDueObjectsUnchecked(company.id, limitPerCompany, now);
+      checked += results.length;
+      refreshed += results.filter((result) => result.refreshed).length;
+    }
+    return { companies: activeCompanies.length, checked, refreshed };
+  }
+
   return {
     syncIssue,
     syncComment,
@@ -941,5 +961,6 @@ export function externalObjectService(
     refreshObject,
     refreshIssueObjects,
     refreshDueObjects,
+    refreshDueObjectsForActiveCompanies,
   };
 }

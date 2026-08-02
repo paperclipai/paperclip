@@ -49,6 +49,7 @@ import {
   environmentCustomImageService,
   decisionService,
   decisionRetentionService,
+  externalObjectService,
   heartbeatService,
   issueService,
   instanceSettingsService,
@@ -921,6 +922,10 @@ export async function startServer(): Promise<StartedServer> {
     drainHeartbeatRunsForShutdown = heartbeat.drainRunningRunsForShutdown;
     prepareHotRestartShutdown = heartbeat.prepareHotRestartShutdown;
     const environmentCustomImages = environmentCustomImageService(db as any, { pluginWorkerManager });
+    const externalObjects = externalObjectService(db as any, {
+      pluginWorkerManager,
+      enabled: async () => (await instanceSettingsService(db).getExperimental()).enableExternalObjects === true,
+    });
     const routines = routineService(db as any, { pluginWorkerManager });
     const statusCards = statusCardService(db as any);
     const issues = issueService(db as any);
@@ -1105,6 +1110,18 @@ export async function startServer(): Promise<StartedServer> {
               logger.error({ err }, "heartbeat timer tick failed");
             }));
         }
+
+        if (heartbeatSchedulerStopped) return;
+        trackHeartbeatSchedulerWork(externalObjects
+          .refreshDueObjectsForActiveCompanies(50, new Date())
+          .then((result) => {
+            if (result.checked > 0 || result.refreshed > 0) {
+              logger.info({ ...result }, "external-object scheduler tick refreshed due objects");
+            }
+          })
+          .catch((err) => {
+            logger.error({ err }, "external-object scheduler tick failed");
+          }));
 
         if (heartbeatSchedulerStopped) return;
         trackHeartbeatSchedulerWork(routines

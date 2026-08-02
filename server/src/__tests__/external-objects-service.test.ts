@@ -529,6 +529,43 @@ describeEmbeddedPostgres("externalObjectService", () => {
     expect(resolve).toHaveBeenCalledTimes(1);
   });
 
+  it("refreshes due objects for active companies only", async () => {
+    const active = await createIssue();
+    const paused = await createIssue();
+    await db
+      .update(companies)
+      .set({ status: "paused" })
+      .where(eq(companies.id, paused.companyId));
+    const resolve = vi.fn(async () => ({
+      ok: true as const,
+      snapshot: {
+        statusCategory: "open" as const,
+        statusTone: "info" as const,
+        statusKey: "open",
+        statusLabel: "Open",
+        ttlSeconds: 300,
+      },
+    }));
+    const resolver: ExternalObjectResolver = {
+      providerKey: "url",
+      objectType: "link",
+      resolve,
+    };
+    const svc = externalObjectService(db, { resolvers: [resolver], github: false });
+    await svc.syncIssue(active.issueId);
+    await svc.syncIssue(paused.issueId);
+
+    const result = await svc.refreshDueObjectsForActiveCompanies(50, new Date(Date.now() + 1_000));
+
+    expect(result).toEqual({ companies: 1, checked: 1, refreshed: 1 });
+    expect(resolve).toHaveBeenCalledTimes(1);
+    const rows = await db.select().from(externalObjects);
+    const activeObject = rows.find((row) => row.companyId === active.companyId);
+    const pausedObject = rows.find((row) => row.companyId === paused.companyId);
+    expect(activeObject?.statusLabel).toBe("Open");
+    expect(pausedObject?.statusLabel).toBeNull();
+  });
+
   it("removes comment mentions when a synced comment is hard-deleted", async () => {
     const { companyId, issueId } = await createIssue();
     const commentId = randomUUID();
