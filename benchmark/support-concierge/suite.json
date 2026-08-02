@@ -1,0 +1,64 @@
+{
+  "role": "support-concierge",
+  "description": "Dastardly Print buyer-support and Concierge work: customer message triage, Etsy-style response drafting, review recovery, and handoff discipline under brand and policy constraints. The tasks are single-turn benchmark prompts that represent the DP support surface without editing or invoking live DP lanes.",
+  "tasks": [
+    {
+      "id": "support-late-download",
+      "title": "Resolve a buyer's missing digital-download access",
+      "prompt": "You are the Dastardly Print buyer-support concierge. A buyer writes: \"I bought the printable wall art pack yesterday, but the download link says expired. I need it for a gift tonight. Can you just email me the files?\" Known facts: the order exists, the buyer's email matches the order, the storefront policy allows re-sending the official download link, and support must not send files directly from a personal address.\n\nReturn ONLY JSON: {\"tone\": \"friendly\"|\"defensive\", \"action\": string, \"reply\": string, \"handoff\": string|null}. The reply must be <=90 words, apologize briefly, say you will refresh/re-send the official download link, and must NOT promise a refund or ask the buyer to repurchase.",
+      "rubric": {
+        "deterministic": [
+          { "type": "json_valid", "weight": 2 },
+          { "type": "json_path_equals", "path": "tone", "value": "friendly", "weight": 2 },
+          { "type": "contains_any", "values": ["official download link", "refresh", "re-send", "resend", "new link"], "weight": 3 },
+          { "type": "not_contains", "value": "repurchase", "weight": 2 },
+          { "type": "not_contains", "value": "refund", "weight": 1 }
+        ],
+        "judge": {
+          "criteria": [
+            { "name": "support_quality", "weight": 3, "guidance": "Helpful, fast, and policy-safe: acknowledges urgency, uses the official download-link path, avoids personal file email, refund promises, or making the buyer repurchase." }
+          ]
+        }
+      }
+    },
+    {
+      "id": "support-review-recovery",
+      "title": "Recover a low review without arguing publicly",
+      "prompt": "A buyer left a 2-star public review: \"Colors printed way darker than the listing photo. Disappointed.\" Facts: this is a digital printable file; print color can vary by printer/paper/settings; the listing includes a short print-settings note; the buyer has not contacted support yet. Write a public reply and private next action. Do not blame the buyer, the printer, Etsy, or the customer. Do not guarantee a 5-star review change.\n\nReturn ONLY JSON: {\"publicReply\": string, \"privateAction\": string, \"avoid\": string}. publicReply <=70 words.",
+      "rubric": {
+        "deterministic": [
+          { "type": "json_valid", "weight": 2 },
+          { "type": "json_path_exists", "path": "publicReply", "weight": 1 },
+          { "type": "json_path_exists", "path": "privateAction", "weight": 1 },
+          { "type": "not_contains", "value": "your printer", "weight": 2 },
+          { "type": "not_contains", "value": "change your review", "weight": 2 },
+          { "type": "contains_any", "values": ["help", "support", "message", "settings", "print"], "weight": 2 }
+        ],
+        "judge": {
+          "criteria": [
+            { "name": "review_recovery", "weight": 3, "guidance": "Public reply is calm, non-defensive, buyer-facing, and invites support. Private action should troubleshoot print settings or replacement help without guaranteeing review manipulation." }
+          ]
+        }
+      }
+    },
+    {
+      "id": "support-custom-scope",
+      "title": "Scope a custom request and route design work",
+      "prompt": "A repeat buyer asks: \"Can you turn the poster into a Canva template and add my restaurant's logo? I need it by tomorrow.\" Facts: Concierge handles buyer communication, not custom design production; logo use requires buyer-owned rights confirmation; Canva-template conversion is a new custom deliverable that needs BrandDesigner or FoundingEngineer review before quoting. Decide the support response.\n\nReturn ONLY JSON: {\"decision\": \"handle\"|\"handoff_designer\"|\"decline\", \"needsRightsConfirmation\": true|false, \"buyerReply\": string, \"handoffNote\": string}. buyerReply <=80 words.",
+      "rubric": {
+        "deterministic": [
+          { "type": "json_valid", "weight": 2 },
+          { "type": "json_path_equals", "path": "decision", "value": "handoff_designer", "weight": 4 },
+          { "type": "json_path_equals", "path": "needsRightsConfirmation", "value": true, "weight": 3 },
+          { "type": "contains_any", "values": ["BrandDesigner", "designer", "design", "review"], "weight": 1 },
+          { "type": "not_contains", "value": "I can do that by tomorrow", "weight": 2 }
+        ],
+        "judge": {
+          "criteria": [
+            { "name": "handoff_discipline", "weight": 3, "guidance": "Keeps Concierge in support lane, confirms logo rights, avoids promising deadline/quote before review, and creates a precise handoff to the design/technical owner." }
+          ]
+        }
+      }
+    }
+  ]
+}

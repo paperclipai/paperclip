@@ -1,0 +1,55 @@
+=== TSBC Task Probe · probe-20260730-205955 ===
+role   : engineer
+tasks  : eng-failure-classify, eng-scorecard-sql-bug, eng-prefix-router, eng-concurrency-race, eng-stale-reap-default-bug, eng-token-normalizer, eng-nplus1-fix, eng-sql-injection, eng-flaky-test-diagnose, eng-unsafe-migration, eng-idempotency-bug, eng-timezone-offbyone
+models : grok-4.5-hermes-current
+cell   : current+none
+effort : cli_default
+frames : grok-4.5-hermes-current=single_shot_concat
+agent  : /Users/glad0s/.paperclip/instances/default/companies/e6361895-a6a4-438d-bb76-b17a0ad026cb/agents/7349cc4f-460f-4f39-9eed-ab9a0c188cfa/instructions/AGENTS.md
+skills : /Users/glad0s/.paperclip/instances/default/skills/e6361895-a6a4-438d-bb76-b17a0ad026cb/__runtime__
+suite  : /Users/glad0s/paperclip/benchmark/engineer/suite.json
+judge  : claude-opus
+reps   : 3
+power  : 1 worker(s)
+
+[ 1/36] grok-4.5-hermes-current eng-failure-classify       rep01 frame=single_shot_concat  ok=True  q=1.000 out= 298
+[ 2/36] grok-4.5-hermes-current eng-scorecard-sql-bug      rep01 frame=single_shot_concat  ok=True  q=0.989 out= 781
+[ 3/36] grok-4.5-hermes-current eng-prefix-router          rep01 frame=single_shot_concat  ok=True  q=0.990 out= 182
+[ 4/36] grok-4.5-hermes-current eng-concurrency-race       rep01 frame=single_shot_concat  ok=True  q=0.969 out= 738
+[ 5/36] grok-4.5-hermes-current eng-stale-reap-default-bug rep01 frame=single_shot_concat  ok=True  q=0.992 out=5057
+[ 6/36] grok-4.5-hermes-current eng-token-normalizer       rep01 frame=single_shot_concat  ok=True  q=1.000 out= 244
+[ 7/36] grok-4.5-hermes-current eng-nplus1-fix             rep01 frame=single_shot_concat  ok=True  q=0.989 out=4955
+[ 8/36] grok-4.5-hermes-current eng-sql-injection          rep01 frame=single_shot_concat  ok=True  q=0.983 out= 390
+[ 9/36] grok-4.5-hermes-current eng-flaky-test-diagnose    rep01 frame=single_shot_concat  ok=True  q=0.983 out=5255
+[10/36] grok-4.5-hermes-current eng-unsafe-migration       rep01 frame=single_shot_concat  ok=True  q=0.964 out=3769
+[11/36] grok-4.5-hermes-current eng-idempotency-bug        rep01 frame=single_shot_concat  ok=True  q=0.981 out=4539
+[12/36] grok-4.5-hermes-current eng-timezone-offbyone      rep01 frame=single_shot_concat  ok=True  q=0.989 out=3326
+[13/36] grok-4.5-hermes-current eng-failure-classify       rep02 frame=single_shot_concat  ok=True  q=1.000 out= 292
+[14/36] grok-4.5-hermes-current eng-scorecard-sql-bug      rep02 frame=single_shot_concat  ok=True  q=0.989 out=1033
+[15/36] grok-4.5-hermes-current eng-prefix-router          rep02 frame=single_shot_concat  ok=True  q=1.000 out= 182
+[16/36] grok-4.5-hermes-current eng-concurrency-race       rep02 frame=single_shot_concat  ok=True  q=0.958 out= 842
+[17/36] grok-4.5-hermes-current eng-stale-reap-default-bug rep02 frame=single_shot_concat  ok=True  q=0.989 out=2209
+[18/36] grok-4.5-hermes-current eng-token-normalizer       rep02 frame=single_shot_concat  ok=True  q=0.990 out= 244
+[19/36] grok-4.5-hermes-current eng-nplus1-fix             rep02 frame=single_shot_concat  ok=True  q=0.977 out= 600
+[20/36] grok-4.5-hermes-current eng-sql-injection          rep02 frame=single_shot_concat  ok=True  q=0.981 out= 446
+[21/36] grok-4.5-hermes-current eng-flaky-test-diagnose    rep02 frame=single_shot_concat  ok=True  q=0.983 out=4170
+[22/36] grok-4.5-hermes-current eng-unsafe-migration       rep02 frame=single_shot_concat  ok=True  q=0.968 out=4686
+[23/36] grok-4.5-hermes-current eng-idempotency-bug        rep02 frame=single_shot_concat  ok=True  q=0.975 out= 528
+[24/36] grok-4.5-hermes-current eng-timezone-offbyone      rep02 frame=single_shot_concat  ok=True  q=0.989 out=2963
+[25/36] grok-4.5-hermes-current eng-failure-classify       rep03 frame=single_shot_concat  ok=True  q=1.000 out= 298
+[26/36] grok-4.5-hermes-current eng-scorecard-sql-bug      rep03 frame=single_shot_concat  ok=True  q=0.964 out= 622
+[27/36] grok-4.5-hermes-current eng-prefix-router          rep03 frame=single_shot_concat  ok=True  q=1.000 out= 182
+[28/36] grok-4.5-hermes-current eng-concurrency-race       rep03 frame=single_shot_concat  ok=True  q=0.975 out=2874
+[29/36] grok-4.5-hermes-current eng-stale-reap-default-bug rep03 frame=single_shot_concat  ok=True  q=0.572 out=2249
+[30/36] grok-4.5-hermes-current eng-token-normalizer       rep03 frame=single_shot_concat  ok=True  q=1.000 out= 264
+[31/36] grok-4.5-hermes-current eng-nplus1-fix             rep03 frame=single_shot_concat  ok=True  q=0.984 out= 463
+[32/36] grok-4.5-hermes-current eng-sql-injection          rep03 frame=single_shot_concat  ok=True  q=0.989 out= 277
+[33/36] grok-4.5-hermes-current eng-flaky-test-diagnose    rep03 frame=single_shot_concat  ok=True  q=0.983 out=6041
+[34/36] grok-4.5-hermes-current eng-unsafe-migration       rep03 frame=single_shot_concat  ok=True  q=0.964 out=4643
+[35/36] grok-4.5-hermes-current eng-idempotency-bug        rep03 frame=single_shot_concat  ok=True  q=0.989 out=2477
+[36/36] grok-4.5-hermes-current eng-timezone-offbyone      rep03 frame=single_shot_concat  ok=True  q=0.989 out=2799
+
+============================================================
+grok-4.5-hermes-current (cli_default): meanQ=0.973 minQ=0.572 ok=36/36 meanOut=1969.9
+wrote /Users/glad0s/paperclip/benchmark/results/probe-20260730-205955/report.md
+recorded 12 probe rows to /Users/glad0s/paperclip/benchmark/ledger/results.jsonl

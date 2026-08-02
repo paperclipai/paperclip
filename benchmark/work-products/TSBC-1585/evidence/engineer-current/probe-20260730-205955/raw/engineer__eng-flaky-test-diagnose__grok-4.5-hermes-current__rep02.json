@@ -1,0 +1,86 @@
+{
+  "sample_id": "rep02",
+  "rep": 2,
+  "role": "engineer",
+  "task_id": "eng-flaky-test-diagnose",
+  "task_title": "Diagnose a flaky benchmark test",
+  "model": "grok-4.5-hermes-current",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "agentFile": "current",
+  "skills": "none",
+  "judge": "claude-opus",
+  "generationFrame": "single_shot_concat",
+  "ok": true,
+  "error": null,
+  "output": "(1) Why flaky: Both score quality 0.92. Python\u2019s sorted is stable, so ties keep results order. run_bench appends from a thread pool as each call returns, so that order is a finish-time race. ranked[0] is whichever call completed first among ties\u2014not a quality winner.\n\n(2) Local vs CI: Quiet local (and solo re-run) timing almost always yields the same finisher first. CI load/jitter flips completion order ~1/5, so the name assertion fails intermittently; re-running alone often restores the lucky order.\n\n(3) Fix: deterministic tie-break, e.g. sorted(results, key=lambda r: (-r[\"quality\"], r[\"model\"])), or assert the tied top set\u2014not one model after quality-only sort.\n\nTest bug (underspecified ties), not a product bug unless ranking claims a total order without a tie-break.",
+  "model_reported": "grok-4.5",
+  "inputTokens": 41606,
+  "outputTokens": 4170,
+  "totalTokens": 45776,
+  "tokensEstimated": false,
+  "costUsd": null,
+  "agentFileSha256": "034125e8b1a32beb43ab724ebd0caea09da96ea2abb08cd6f2ead03816cbc4db",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "b7373c2152d432ffadaa313c61133d110457a1e56402bf122dab21c5460d183f",
+  "wallMs": 73834,
+  "stderrTail": "",
+  "promptChars": 21803,
+  "stagedSkills": 0,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 3.0,
+      "spec": {
+        "values": [
+          "tie",
+          "tied",
+          "equal",
+          "0.92",
+          "same quality",
+          "same score"
+        ]
+      }
+    },
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {
+        "values": [
+          "nondeterministic",
+          "non-deterministic",
+          "order",
+          "ordering",
+          "stable sort",
+          "tie-break",
+          "tiebreak",
+          "completion order",
+          "race"
+        ]
+      }
+    },
+    {
+      "check": "max_words",
+      "ok": true,
+      "weight": 1.0,
+      "spec": {
+        "value": 150
+      }
+    }
+  ],
+  "judgeScore": 0.9650000000000001,
+  "judgeDetail": {
+    "perCriterion": {
+      "correctness": 0.97,
+      "specificity": 0.95
+    },
+    "rationale": "Nails tie + stable-sort + thread-completion-order mechanism, correct CI-vs-local reasoning, deterministic secondary-key fix, and correctly frames it as a test bug \u2014 only minor prose compression keeps it from flawless.",
+    "judgeModel": "opus"
+  },
+  "quality": 0.9825,
+  "qualityPer1kTokens": 0.021463212163579166
+}

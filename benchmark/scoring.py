@@ -170,7 +170,15 @@ def judge_output(task, output, judge_cfg, adapters_cfg, timeout_sec):
         + (output or "(empty answer)").strip()
         + "\n\n=== END ===\nReturn the JSON now."
     )
-    judge_row = {"adapter": judge_cfg["adapter"], "model_arg": judge_cfg.get("model_arg")}
+    judge_row = {
+        "id": judge_cfg.get("id"),
+        "label": judge_cfg.get("label"),
+        "lane": judge_cfg.get("lane"),
+        "adapter": judge_cfg["adapter"],
+        "model_arg": judge_cfg.get("model_arg"),
+        "effort": judge_cfg.get("effort"),
+        "reasoning_effort": judge_cfg.get("reasoning_effort"),
+    }
     res = run_model(prompt, judge_row, adapters_cfg, timeout_sec)
     parsed = benchlib.extract_json(res.get("output"))
     if not isinstance(parsed, dict) or "scores" not in parsed:
@@ -226,6 +234,19 @@ def score_run(task, raw_result, cfg, adapters_cfg, judge_timeout):
     Full scoring for one (task, model) run. Returns a dict merged into the run record.
     Skips the judge entirely if the model produced no usable output.
     """
+    if benchlib.is_infra_quota_no_score(raw_result):
+        return {
+            "deterministicScore": None,
+            "deterministicDetails": [],
+            "judgeScore": None,
+            "judgeDetail": None,
+            "quality": None,
+            "qualityPer1kTokens": None,
+            "failureReason": benchlib.INFRA_QUOTA_NO_SCORE,
+            "failureProvider": benchlib.PROVIDER_QUOTA,
+            "scoreDisposition": benchlib.INFRA_QUOTA_NO_SCORE,
+            "qualityExcluded": True,
+        }
     if raw_result.get("skipped") or raw_result.get("servedModelMismatch"):
         return {
             "deterministicScore": None,

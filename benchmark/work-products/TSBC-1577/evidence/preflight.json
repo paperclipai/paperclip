@@ -1,0 +1,306 @@
+{
+  "power": {
+    "maxWorkers": 2,
+    "runsPerSample": 5,
+    "oneModelPerAdapter": true,
+    "heavyTasksAllowed": false,
+    "mode": "low",
+    "dream": false,
+    "sleep": false,
+    "paused": false,
+    "reason": "ThinkStack Capital sprint 13-23; ThinkStack Media sprint 09-03",
+    "updatedAt": "2026-07-30T20:01:05+01:00"
+  },
+  "blockers": [
+    "TSBC power gate heavyTasksAllowed=false (mode=low, reason=ThinkStack Capital sprint 13-23; ThinkStack Media sprint 09-03)",
+    "claude-sonnet-5 agent Bench-claude-sonnet-5 is paused (manual)"
+  ],
+  "warnings": [],
+  "agents": {
+    "grok-4.3": {
+      "id": "7fffa42f-467a-4f76-b802-4dc8bd552bd9",
+      "companyId": "e212ce50-b524-408c-b3d4-0c6108d8c2e2",
+      "name": "Bench-grok-4.3",
+      "role": "engineer",
+      "title": "Agentic Bench grok-4.3",
+      "icon": "bot",
+      "status": "idle",
+      "reportsTo": "b610338d-b340-48a3-8e73-f2ecd015e4bb",
+      "capabilities": "Throwaway bench agent.",
+      "adapterType": "hermes_local",
+      "adapterConfig": {},
+      "runtimeConfig": {},
+      "defaultEnvironmentId": null,
+      "budgetMonthlyCents": 0,
+      "spentMonthlyCents": 0,
+      "pauseReason": null,
+      "pausedAt": null,
+      "errorReason": null,
+      "permissions": {
+        "canCreateAgents": false,
+        "canCreateSkills": true
+      },
+      "lastHeartbeatAt": "2026-07-30T16:33:47.201Z",
+      "metadata": null,
+      "createdAt": "2026-06-18T00:28:26.096Z",
+      "updatedAt": "2026-07-30T18:01:34.586Z",
+      "urlKey": "bench-grok-4-3",
+      "orgChainHealth": {
+        "status": "healthy",
+        "reason": "healthy",
+        "fullChain": [
+          {
+            "id": "7fffa42f-467a-4f76-b802-4dc8bd552bd9",
+            "companyId": "e212ce50-b524-408c-b3d4-0c6108d8c2e2",
+            "name": "Bench-grok-4.3",
+            "status": "idle",
+            "reportsTo": "b610338d-b340-48a3-8e73-f2ecd015e4bb",
+            "depth": 0,
+            "relation": "self"
+          },
+          {
+            "id": "b610338d-b340-48a3-8e73-f2ecd015e4bb",
+            "companyId": "e212ce50-b524-408c-b3d4-0c6108d8c2e2",
+            "name": "Bench-Manager",
+            "status": "running",
+            "reportsTo": null,
+            "depth": 1,
+            "relation": "ancestor"
+          }
+        ],
+        "firstInvalidAncestor": null,
+        "invalidAncestors": [],
+        "repairGuidance": null
+      },
+      "configRedacted": true,
+      "adapterConfigPresent": true,
+      "runtimeConfigPresent": true,
+      "configRevisionsCount": 6,
+      "chainOfCommand": [
+        {
+          "id": "b610338d-b340-48a3-8e73-f2ecd015e4bb",
+          "name": "Bench-Manager",
+          "role": "engineer",
+          "title": "Drillmaster \u2014 TSBC benchmark lead"
+        }
+      ],
+      "access": {
+        "canAssignTasks": true,
+        "taskAssignSource": "explicit_grant",
+        "membership": {
+          "id": "8314f7a2-c7bb-4ed5-851e-5283b6c59ab0",
+          "companyId": "e212ce50-b524-408c-b3d4-0c6108d8c2e2",
+          "principalType": "agent",
+          "principalId": "7fffa42f-467a-4f76-b802-4dc8bd552bd9",
+          "status": "active",
+          "membershipRole": "member",
+          "createdAt": "2026-06-18T00:28:26.109Z",
+          "updatedAt": "2026-06-18T00:28:26.109Z"
+        },
+        "grants": [
+          {
+            "id": "30d9dfaa-8fc5-45ee-ae92-bf76d8217af9",
+            "companyId": "e212ce50-b524-408c-b3d4-0c6108d8c2e2",
+            "principalType": "agent",
+            "principalId": "7fffa42f-467a-4f76-b802-4dc8bd552bd9",
+            "permissionKey": "tasks:assign",
+            "scope": null,
+            "grantedByUserId": "local-board",
+            "createdAt": "2026-06-18T00:28:26.115Z",
+            "updatedAt": "2026-06-18T00:28:26.115Z"
+          }
+        ]
+      }
+    },
+    "codex-gpt-5.4": {
+      "id": "5bcc7a94-6715-43eb-ad53-da7bd300ef79",
+      "companyId": "e212ce50-b524-408c-b3d4-0c6108d8c2e2",
+      "name": "Bench-codex-gpt-5.4",
+      "role": "engineer",
+      "title": null,
+      "icon": null,
+      "status": "idle",
+      "reportsTo": "b610338d-b340-48a3-8e73-f2ecd015e4bb",
+      "capabilities": null,
+      "adapterType": "codex_local",
+      "adapterConfig": {},
+      "runtimeConfig": {},
+      "defaultEnvironmentId": null,
+      "budgetMonthlyCents": 0,
+      "spentMonthlyCents": 0,
+      "pauseReason": null,
+      "pausedAt": null,
+      "errorReason": null,
+      "permissions": {
+        "canCreateAgents": false,
+        "canCreateSkills": true
+      },
+      "lastHeartbeatAt": "2026-07-30T07:48:59.255Z",
+      "metadata": null,
+      "createdAt": "2026-06-20T19:25:26.100Z",
+      "updatedAt": "2026-07-30T07:48:59.255Z",
+      "urlKey": "bench-codex-gpt-5-4",
+      "orgChainHealth": {
+        "status": "healthy",
+        "reason": "healthy",
+        "fullChain": [
+          {
+            "id": "5bcc7a94-6715-43eb-ad53-da7bd300ef79",
+            "companyId": "e212ce50-b524-408c-b3d4-0c6108d8c2e2",
+            "name": "Bench-codex-gpt-5.4",
+            "status": "idle",
+            "reportsTo": "b610338d-b340-48a3-8e73-f2ecd015e4bb",
+            "depth": 0,
+            "relation": "self"
+          },
+          {
+            "id": "b610338d-b340-48a3-8e73-f2ecd015e4bb",
+            "companyId": "e212ce50-b524-408c-b3d4-0c6108d8c2e2",
+            "name": "Bench-Manager",
+            "status": "running",
+            "reportsTo": null,
+            "depth": 1,
+            "relation": "ancestor"
+          }
+        ],
+        "firstInvalidAncestor": null,
+        "invalidAncestors": [],
+        "repairGuidance": null
+      },
+      "configRedacted": true,
+      "adapterConfigPresent": true,
+      "runtimeConfigPresent": true,
+      "configRevisionsCount": 1,
+      "chainOfCommand": [
+        {
+          "id": "b610338d-b340-48a3-8e73-f2ecd015e4bb",
+          "name": "Bench-Manager",
+          "role": "engineer",
+          "title": "Drillmaster \u2014 TSBC benchmark lead"
+        }
+      ],
+      "access": {
+        "canAssignTasks": true,
+        "taskAssignSource": "explicit_grant",
+        "membership": {
+          "id": "9a6db960-8e6a-41b0-bd0a-ea047bd46dab",
+          "companyId": "e212ce50-b524-408c-b3d4-0c6108d8c2e2",
+          "principalType": "agent",
+          "principalId": "5bcc7a94-6715-43eb-ad53-da7bd300ef79",
+          "status": "active",
+          "membershipRole": "member",
+          "createdAt": "2026-06-20T19:25:26.643Z",
+          "updatedAt": "2026-06-20T19:25:26.643Z"
+        },
+        "grants": [
+          {
+            "id": "425963cd-a501-4aaf-a158-f6155dfd56cf",
+            "companyId": "e212ce50-b524-408c-b3d4-0c6108d8c2e2",
+            "principalType": "agent",
+            "principalId": "5bcc7a94-6715-43eb-ad53-da7bd300ef79",
+            "permissionKey": "tasks:assign",
+            "scope": null,
+            "grantedByUserId": "local-board",
+            "createdAt": "2026-06-20T19:25:26.861Z",
+            "updatedAt": "2026-06-20T19:25:26.861Z"
+          }
+        ]
+      }
+    },
+    "claude-sonnet-5": {
+      "id": "53a4e9d3-81b1-4d86-8f87-e19447412f0e",
+      "companyId": "e212ce50-b524-408c-b3d4-0c6108d8c2e2",
+      "name": "Bench-claude-sonnet-5",
+      "role": "engineer",
+      "title": null,
+      "icon": null,
+      "status": "paused",
+      "reportsTo": "b610338d-b340-48a3-8e73-f2ecd015e4bb",
+      "capabilities": null,
+      "adapterType": "claude_local",
+      "adapterConfig": {},
+      "runtimeConfig": {},
+      "defaultEnvironmentId": null,
+      "budgetMonthlyCents": 0,
+      "spentMonthlyCents": 0,
+      "pauseReason": "manual",
+      "pausedAt": "2026-07-20T01:21:49.889Z",
+      "errorReason": null,
+      "permissions": {
+        "canCreateAgents": false,
+        "canCreateSkills": true
+      },
+      "lastHeartbeatAt": "2026-07-02T09:21:02.635Z",
+      "metadata": null,
+      "createdAt": "2026-06-20T20:05:29.962Z",
+      "updatedAt": "2026-07-21T03:37:53.756Z",
+      "urlKey": "bench-claude-sonnet-5",
+      "orgChainHealth": {
+        "status": "healthy",
+        "reason": "healthy",
+        "fullChain": [
+          {
+            "id": "53a4e9d3-81b1-4d86-8f87-e19447412f0e",
+            "companyId": "e212ce50-b524-408c-b3d4-0c6108d8c2e2",
+            "name": "Bench-claude-sonnet-5",
+            "status": "paused",
+            "reportsTo": "b610338d-b340-48a3-8e73-f2ecd015e4bb",
+            "depth": 0,
+            "relation": "self"
+          },
+          {
+            "id": "b610338d-b340-48a3-8e73-f2ecd015e4bb",
+            "companyId": "e212ce50-b524-408c-b3d4-0c6108d8c2e2",
+            "name": "Bench-Manager",
+            "status": "running",
+            "reportsTo": null,
+            "depth": 1,
+            "relation": "ancestor"
+          }
+        ],
+        "firstInvalidAncestor": null,
+        "invalidAncestors": [],
+        "repairGuidance": null
+      },
+      "configRedacted": true,
+      "adapterConfigPresent": true,
+      "runtimeConfigPresent": true,
+      "configRevisionsCount": 1,
+      "chainOfCommand": [
+        {
+          "id": "b610338d-b340-48a3-8e73-f2ecd015e4bb",
+          "name": "Bench-Manager",
+          "role": "engineer",
+          "title": "Drillmaster \u2014 TSBC benchmark lead"
+        }
+      ],
+      "access": {
+        "canAssignTasks": true,
+        "taskAssignSource": "explicit_grant",
+        "membership": {
+          "id": "53cbc261-e3fb-4f4d-8cd1-db0e80d2eeb5",
+          "companyId": "e212ce50-b524-408c-b3d4-0c6108d8c2e2",
+          "principalType": "agent",
+          "principalId": "53a4e9d3-81b1-4d86-8f87-e19447412f0e",
+          "status": "active",
+          "membershipRole": "member",
+          "createdAt": "2026-06-20T20:05:29.969Z",
+          "updatedAt": "2026-06-20T20:05:29.969Z"
+        },
+        "grants": [
+          {
+            "id": "2b7769b8-e1d3-439a-8544-8da33a73b533",
+            "companyId": "e212ce50-b524-408c-b3d4-0c6108d8c2e2",
+            "principalType": "agent",
+            "principalId": "53a4e9d3-81b1-4d86-8f87-e19447412f0e",
+            "permissionKey": "tasks:assign",
+            "scope": null,
+            "grantedByUserId": "local-board",
+            "createdAt": "2026-06-20T20:05:29.970Z",
+            "updatedAt": "2026-06-20T20:05:29.970Z"
+          }
+        ]
+      }
+    }
+  }
+}

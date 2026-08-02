@@ -72,7 +72,10 @@ def _adapter_quota_skip(model_row, detail, adapter_key):
     r["model"] = model_row.get("model_arg") or model_row.get("id")
     r["error"] = detail or f"{adapter_key} bench halted by quota guard"
     r["skipped"] = True
-    r["skipReason"] = f"{adapter_key}_quota_halt"
+    r["skipReason"] = benchlib.INFRA_QUOTA_NO_SCORE
+    r["quotaError"] = True
+    r["failureReason"] = benchlib.INFRA_QUOTA_NO_SCORE
+    r["failureProvider"] = benchlib.PROVIDER_QUOTA
     return r
 
 
@@ -256,7 +259,9 @@ def execute(cells, cfg, run_dir):
                 raw = run_model(task["prompt"], m, adapters_cfg, timeout)
             if adapter_key and raw.get("quotaError"):
                 raw["skipped"] = True
-                raw["skipReason"] = f"{adapter_key}_quota_halt"
+                raw["skipReason"] = benchlib.INFRA_QUOTA_NO_SCORE
+                raw["failureReason"] = benchlib.INFRA_QUOTA_NO_SCORE
+                raw["failureProvider"] = benchlib.PROVIDER_QUOTA
                 with adapter_quota_halts_lock:
                     adapter_quota_halts.setdefault(
                         adapter_key,
@@ -281,6 +286,8 @@ def execute(cells, cfg, run_dir):
             "effort": benchlib.model_effort_label(m),
             "ok": raw.get("ok"), "error": raw.get("error"),
             "failureReason": raw.get("failureReason"),
+            "failureProvider": raw.get("failureProvider"),
+            "quotaError": bool(raw.get("quotaError")),
             "output": raw.get("output"),
             "model_reported": raw.get("model"),
             "servedModel": raw.get("model") or "unknown",

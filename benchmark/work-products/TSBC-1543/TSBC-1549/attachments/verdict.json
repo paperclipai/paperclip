@@ -1,0 +1,291 @@
+{
+  "issue": "TSBC-1549",
+  "parent": "TSBC-1543",
+  "model": "grok-4.5-hermes-lean",
+  "adapter": "hermes",
+  "adapterType_paperclip_agent": "hermes_local",
+  "paperclipAgentId": "95135c2f-1233-4c04-baa4-b46a0963743d",
+  "paperclipAgentName": "Bench-grok-4.5-hermes-lean",
+  "generatedAt": "2026-07-30T15:41:28+00:00",
+  "liveRoutingChanged": false,
+  "published": false,
+  "duplicated_TSBC_1542": false,
+  "overall_verdict": "decision_grade_bank",
+  "provenance_caveats": [
+    {
+      "code": "lean_hermes_home_shared_with_clean",
+      "severity": "high",
+      "detail": "Bench-grok-4.5-hermes-lean adapterConfig.HERMES_HOME points at hermes-clean-profile-v2/.hermes (same path as hermes-clean). Harness cannot distinguish lean vs clean via isolated Hermes profile home. Lean identity is carried by model label grok-4.5-hermes-lean + lean cell agent-file SHA + issue/agent id. Do NOT merge these rows into clean/current/minimal verdict classes.",
+      "hermes_home": "/Users/glad0s/.paperclip/instances/default/companies/e212ce50-b524-408c-b3d4-0c6108d8c2e2/work-products/TSBC-1153/hermes-clean-profile-v2/.hermes",
+      "lean_agent_file_sha256": "a3fe5d96277ee604cb0acd75532bcf2f403afa514220ea1430ca68c218546715"
+    },
+    {
+      "code": "agent_file_mode_labeled_current_with_lean_override",
+      "severity": "info",
+      "detail": "tsbc_task_probe only accepts agent-file bare|minimal|current; lean cell was injected via --agent-file current --current-agent-file-path TSBC-1549-lean-cell.md. Meta agentFile=current but agentFileSourceKind=override and agentFileSha256 is the lean cell, not production current."
+    }
+  ],
+  "suites": {
+    "engineer": {
+      "decision_grade": true,
+      "rerun": true,
+      "reason": "fresh lean probe probe-20260730-161626: 36/36 ok, meanQ=0.9640, minQ=0.7833, reps=3",
+      "run_id": "probe-20260730-161626",
+      "tasks": 12,
+      "reps": 3,
+      "samples": 36,
+      "okCount": 36,
+      "skipCount": 0,
+      "failCount": 0,
+      "successRate": 1.0,
+      "meanQuality": 0.964024470899471,
+      "minQuality": 0.7833333333333333,
+      "meanQPer1kOut": 6.829821262101334,
+      "meanOutputTokens": 175.02777777777777,
+      "meanInputTokens": 423.3333333333333,
+      "adapter": "hermes",
+      "generationFrame": "single_shot_concat",
+      "requested_model": "grok-4.5-hermes-lean",
+      "model_arg": "grok-4.5",
+      "served_reported": [
+        "grok-4.5"
+      ],
+      "suite_sha256": "b7373c2152d432ffadaa313c61133d110457a1e56402bf122dab21c5460d183f",
+      "prompt_packet_sha256": "beed9cf7bee25221637413b48da327168da33e217c2c4542cdda4f96cc730b89",
+      "probe_context_sha256": "989122a4ec186f6726a40c5aa03c447c17cc147b333814fa2e1b4d8d43a5afbd",
+      "agent_file": "current",
+      "agent_file_source_path": "/Users/glad0s/.paperclip/instances/default/companies/e212ce50-b524-408c-b3d4-0c6108d8c2e2/work-products/TSBC-1543/TSBC-1549/agent-files/TSBC-1549-lean-cell.md",
+      "agent_file_sha256": "a3fe5d96277ee604cb0acd75532bcf2f403afa514220ea1430ca68c218546715",
+      "skills": "none",
+      "skills_bundle_sha256": "none",
+      "judge": "claude-opus",
+      "source_paths": [
+        "/Users/glad0s/paperclip/benchmark/results/probe-20260730-161626",
+        "/Users/glad0s/.paperclip/instances/default/companies/e212ce50-b524-408c-b3d4-0c6108d8c2e2/work-products/TSBC-1543/TSBC-1549/engineer/probe-20260730-161626",
+        "/Users/glad0s/.paperclip/instances/default/companies/e212ce50-b524-408c-b3d4-0c6108d8c2e2/work-products/TSBC-1543/TSBC-1549/engineer"
+      ],
+      "per_task": [
+        {
+          "task_id": "eng-concurrency-race",
+          "samples": 3,
+          "okCount": 3,
+          "meanQuality": 0.9645833333333333,
+          "minQuality": 0.9575
+        },
+        {
+          "task_id": "eng-failure-classify",
+          "samples": 3,
+          "okCount": 3,
+          "meanQuality": 1.0,
+          "minQuality": 1.0
+        },
+        {
+          "task_id": "eng-flaky-test-diagnose",
+          "samples": 3,
+          "okCount": 3,
+          "meanQuality": 0.96875,
+          "minQuality": 0.9525
+        },
+        {
+          "task_id": "eng-idempotency-bug",
+          "samples": 3,
+          "okCount": 3,
+          "meanQuality": 0.95875,
+          "minQuality": 0.95625
+        },
+        {
+          "task_id": "eng-nplus1-fix",
+          "samples": 3,
+          "okCount": 3,
+          "meanQuality": 0.985,
+          "minQuality": 0.9774999999999999
+        },
+        {
+          "task_id": "eng-prefix-router",
+          "samples": 3,
+          "okCount": 3,
+          "meanQuality": 1.0,
+          "minQuality": 1.0
+        },
+        {
+          "task_id": "eng-scorecard-sql-bug",
+          "samples": 3,
+          "okCount": 3,
+          "meanQuality": 0.98,
+          "minQuality": 0.9625
+        },
+        {
+          "task_id": "eng-sql-injection",
+          "samples": 3,
+          "okCount": 3,
+          "meanQuality": 0.9758333333333333,
+          "minQuality": 0.95625
+        },
+        {
+          "task_id": "eng-stale-reap-default-bug",
+          "samples": 3,
+          "okCount": 3,
+          "meanQuality": 0.8605555555555556,
+          "minQuality": 0.7833333333333333
+        },
+        {
+          "task_id": "eng-timezone-offbyone",
+          "samples": 3,
+          "okCount": 3,
+          "meanQuality": 0.9866666666666667,
+          "minQuality": 0.9825
+        },
+        {
+          "task_id": "eng-token-normalizer",
+          "samples": 3,
+          "okCount": 3,
+          "meanQuality": 0.9966666666666667,
+          "minQuality": 0.99
+        },
+        {
+          "task_id": "eng-unsafe-migration",
+          "samples": 3,
+          "okCount": 3,
+          "meanQuality": 0.8914880952380952,
+          "minQuality": 0.8473214285714286
+        }
+      ]
+    },
+    "cto": {
+      "decision_grade": true,
+      "rerun": true,
+      "reason": "fresh lean probe probe-20260730-162918: 34/36 ok, meanQ=0.9616, minQ=0.7286, reps=3",
+      "run_id": "probe-20260730-162918",
+      "tasks": 12,
+      "reps": 3,
+      "samples": 36,
+      "okCount": 34,
+      "skipCount": 0,
+      "failCount": 2,
+      "successRate": 0.944444,
+      "meanQuality": 0.9616220238095239,
+      "minQuality": 0.7285714285714285,
+      "meanQPer1kOut": 21.513235505230213,
+      "meanOutputTokens": 69.41666666666667,
+      "meanInputTokens": 452.8333333333333,
+      "adapter": "hermes",
+      "generationFrame": "single_shot_concat",
+      "requested_model": "grok-4.5-hermes-lean",
+      "model_arg": "grok-4.5",
+      "served_reported": [
+        "grok-4.5"
+      ],
+      "suite_sha256": "9178417ea7411729ec604cd6f0f72637a785d4d0f99ddd564fdfd0d4d603c31d",
+      "prompt_packet_sha256": "f6db83e6192b3aeff74fc255e4ebbcaff47c0b3df38b77cc86952e360fb7ed0c",
+      "probe_context_sha256": "c5d1c04a58aa09412af53e30d54d576c59b5e2b925bcd51c9982ec48e1f9b764",
+      "agent_file": "current",
+      "agent_file_source_path": "/Users/glad0s/.paperclip/instances/default/companies/e212ce50-b524-408c-b3d4-0c6108d8c2e2/work-products/TSBC-1543/TSBC-1549/agent-files/TSBC-1549-lean-cell.md",
+      "agent_file_sha256": "a3fe5d96277ee604cb0acd75532bcf2f403afa514220ea1430ca68c218546715",
+      "skills": "none",
+      "skills_bundle_sha256": "none",
+      "judge": "claude-opus",
+      "source_paths": [
+        "/Users/glad0s/paperclip/benchmark/results/probe-20260730-162918",
+        "/Users/glad0s/.paperclip/instances/default/companies/e212ce50-b524-408c-b3d4-0c6108d8c2e2/work-products/TSBC-1543/TSBC-1549/cto/probe-20260730-162918",
+        "/Users/glad0s/.paperclip/instances/default/companies/e212ce50-b524-408c-b3d4-0c6108d8c2e2/work-products/TSBC-1543/TSBC-1549/cto"
+      ],
+      "per_task": [
+        {
+          "task_id": "cto-build-vs-buy-judge",
+          "samples": 3,
+          "okCount": 3,
+          "meanQuality": 0.9645833333333333,
+          "minQuality": 0.95
+        },
+        {
+          "task_id": "cto-code-review-security-bug",
+          "samples": 3,
+          "okCount": 3,
+          "meanQuality": 0.9766666666666667,
+          "minQuality": 0.96875
+        },
+        {
+          "task_id": "cto-eng-load-balance",
+          "samples": 3,
+          "okCount": 2,
+          "meanQuality": 0.9875,
+          "minQuality": 0.9875
+        },
+        {
+          "task_id": "cto-escalate-to-mc",
+          "samples": 3,
+          "okCount": 2,
+          "meanQuality": 1.0,
+          "minQuality": 1.0
+        },
+        {
+          "task_id": "cto-fallback-monitor-adapter-trap",
+          "samples": 3,
+          "okCount": 3,
+          "meanQuality": 0.9125000000000001,
+          "minQuality": 0.83875
+        },
+        {
+          "task_id": "cto-fallback-monitor-option",
+          "samples": 3,
+          "okCount": 3,
+          "meanQuality": 0.9833333333333334,
+          "minQuality": 0.97875
+        },
+        {
+          "task_id": "cto-gate-keeper-capability-design",
+          "samples": 3,
+          "okCount": 3,
+          "meanQuality": 0.839047619047619,
+          "minQuality": 0.7285714285714285
+        },
+        {
+          "task_id": "cto-local-only-relay-mismatch",
+          "samples": 3,
+          "okCount": 3,
+          "meanQuality": 0.9520833333333334,
+          "minQuality": 0.9437500000000001
+        },
+        {
+          "task_id": "cto-plan-approval-gate",
+          "samples": 3,
+          "okCount": 3,
+          "meanQuality": 0.9766666666666666,
+          "minQuality": 0.975
+        },
+        {
+          "task_id": "cto-reject-overengineering",
+          "samples": 3,
+          "okCount": 3,
+          "meanQuality": 0.99125,
+          "minQuality": 0.98625
+        },
+        {
+          "task_id": "cto-reject-restart-race-default",
+          "samples": 3,
+          "okCount": 3,
+          "meanQuality": 0.9716666666666667,
+          "minQuality": 0.96875
+        },
+        {
+          "task_id": "cto-reversibility-rollout",
+          "samples": 3,
+          "okCount": 3,
+          "meanQuality": 0.9841666666666667,
+          "minQuality": 0.9825
+        }
+      ]
+    }
+  },
+  "quant": {
+    "ran": false,
+    "reason": "Priority was engineer+cto; both decision-grade. quant deferred (not required for this packet close)."
+  },
+  "mandate": {
+    "cli_subscription_only": true,
+    "maxConcurrentRuns_lane": 1,
+    "text_benchmark_only": true,
+    "no_publish": true,
+    "no_live_routing_changes": true
+  }
+}

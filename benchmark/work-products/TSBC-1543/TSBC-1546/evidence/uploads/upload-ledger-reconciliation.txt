@@ -1,0 +1,10 @@
+Uploaded artifact
+
+- Attachment: [TSBC-1546 ledger reconciliation note](/api/attachments/83341e25-9116-4e1d-a891-28f58ef95768/content)
+- Download: [TSBC-1546 ledger reconciliation note](/api/attachments/83341e25-9116-4e1d-a891-28f58ef95768/content?download=1)
+- Attachment ID: `83341e25-9116-4e1d-a891-28f58ef95768`
+- Work product ID: `fe06d36a-cfe7-4f1c-affb-4f26b4d27a52`
+
+Final comment snippet:
+
+- Artifact: [TSBC-1546 ledger reconciliation note](/api/attachments/83341e25-9116-4e1d-a891-28f58ef95768/content)

@@ -43,6 +43,17 @@
       "minimalAgentFile": "variants/minimal/intake.md",
       "skillsDir": "/Users/glad0s/.paperclip/instances/default/skills/e7507bfa-ecfd-4dde-bd2a-7b19947ffdde/__runtime__"
     },
+    "support-concierge": {
+      "representativeAgent": "Concierge (DP)",
+      "currentAgentFile": "/Users/glad0s/.paperclip/instances/default/companies/e7507bfa-ecfd-4dde-bd2a-7b19947ffdde/agents/b1d136d4-c553-4ff1-84e9-c32aa6041298/instructions/AGENTS.md",
+      "currentAgentFiles": {
+        "Concierge": "/Users/glad0s/.paperclip/instances/default/companies/e7507bfa-ecfd-4dde-bd2a-7b19947ffdde/agents/b1d136d4-c553-4ff1-84e9-c32aa6041298/instructions/AGENTS.md",
+        "Concierge-Codex": "/Users/glad0s/.paperclip/instances/default/companies/e7507bfa-ecfd-4dde-bd2a-7b19947ffdde/agents/12f817a5-8cba-4edb-ab96-4a8a7f12ee0e/instructions/AGENTS.md"
+      },
+      "minimalAgentFile": "variants/minimal/support-concierge.md",
+      "suiteFile": "support-concierge/suite.json",
+      "skillsDir": "/Users/glad0s/.paperclip/instances/default/skills/e7507bfa-ecfd-4dde-bd2a-7b19947ffdde/__runtime__"
+    },
     "researcher": {
       "representativeAgent": "ResearchAnalyst (DP)",
       "currentAgentFile": "/Users/glad0s/.paperclip/instances/default/companies/e7507bfa-ecfd-4dde-bd2a-7b19947ffdde/agents/e5b217ae-20a6-473e-ad83-3495d34a2830/instructions/AGENTS.md",
@@ -102,6 +113,18 @@
       "currentAgentFile": "/Users/glad0s/paperclip/benchmark/variants/agentfiles/reasoning.md",
       "minimalAgentFile": "variants/minimal/reasoning.md",
       "skillsDir": "/Users/glad0s/paperclip/benchmark/variants/skills/reasoning"
+    },
+    "summarize-extract": {
+      "representativeAgent": "(synthetic config \u2014 production task)",
+      "currentAgentFile": "variants/minimal/summarize-extract.md",
+      "minimalAgentFile": "variants/minimal/summarize-extract.md",
+      "skillsDir": null
+    },
+    "social-post": {
+      "representativeAgent": "(synthetic config \u2014 production task)",
+      "currentAgentFile": "variants/minimal/social-post.md",
+      "minimalAgentFile": "variants/minimal/social-post.md",
+      "skillsDir": null
     }
   }
 }

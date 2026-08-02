@@ -1,0 +1,113 @@
+{
+  "issue": "TSBC-1394",
+  "runStartedAt": "2026-07-30T06:01:40+00:00",
+  "passStartedAt": "2026-07-30T06:08:28+00:00",
+  "passFinishedAt": "2026-07-30T06:08:54+00:00",
+  "surfaceKey": "cv_review_bare_none",
+  "surfaceLabel": "CV-review hard cases (bare + none)",
+  "surfaceRetired": false,
+  "role": "cv-review",
+  "task_id": "cv-team-metric-attribution",
+  "task_title": "Verify team metrics without rejecting a plausible candidate",
+  "model_id": "grok-4.3",
+  "model_label": "Grok 4.3 corrected baseline",
+  "lane": "hermes",
+  "effort": "cli_default",
+  "rep": 1,
+  "reps": 3,
+  "agentFile": "bare",
+  "skills": "none",
+  "agentFileSha256": "none",
+  "skillsBundleSha256": "none",
+  "promptSha256": "252b4641a6773dd7233639824ea1c9e6e0f0a29b47c506213538ef420040d142",
+  "suiteSha256": "4a12f7840060d3340e31887045177b943ccfc26aece2989d42f2e6f31a2b2c61",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/cv-review/suite.json",
+  "ok": true,
+  "error": null,
+  "failureReason": null,
+  "output": "{\n  \"concerns\": [\n    \"Attribution mismatch: CV claims 'Drove 45% ARR growth and doubled activation' but details explicitly state the role was support-only (built dashboards/readouts, coordinated two tests) while 'PM and lifecycle lead owned roadmap and launch decisions'\",\n    \"Title/responsibility mismatch for PM Growth role: both listed positions are analyst titles with no evidence of product ownership, roadmap ownership, experiment decision-making, or end-to-end growth initiative leadership\"\n  ],\n  \"recommendation\": \"clarify\",\n  \"verify\": [\n    \"Exact scope of contribution to the 45% ARR growth and activation doubling (was the candidate a decision owner or execution support?)\",\n    \"Any unlisted PM/Growth ownership or launch decisions not described in the provided details\"\n  ]\n}",
+  "inputTokens": 22050,
+  "outputTokens": 1293,
+  "totalTokens": 23343,
+  "tokensEstimated": false,
+  "cacheTokens": null,
+  "costUsd": null,
+  "wallMs": 15119,
+  "taskWallMs": null,
+  "selfReportWallMs": null,
+  "selfReportInputTokens": null,
+  "selfReportOutputTokens": null,
+  "stderrTail": "",
+  "skipped": false,
+  "skipReason": null,
+  "qualityPer1kOut": 0.7733952049497294,
+  "resolvedAgentId": "7fffa42f-467a-4f76-b802-4dc8bd552bd9",
+  "resolvedAgentName": "Bench-grok-4.3",
+  "agentIdentityKind": "bench_agent",
+  "productionAdapterType": "hermes_local",
+  "benchAgentId": "7fffa42f-467a-4f76-b802-4dc8bd552bd9",
+  "benchAgentName": "Bench-grok-4.3",
+  "benchAgentSource": "TSBC-1391 resolved current-company bench roster; corrected baseline for the old TSBC-980 grok-4-fast row.",
+  "adapterType": "hermes",
+  "benchAdapterType": "hermes",
+  "requestedModelId": "grok-4.3",
+  "requestedModelArg": "grok-4.3",
+  "requestedModel": "Grok 4.3 corrected baseline",
+  "model_reported": "grok-4.3",
+  "servedModel": "grok-4.3",
+  "servedModelSelfReport": null,
+  "servedModelVerified": true,
+  "servedModelMismatch": false,
+  "trueModelId": "grok-4.3",
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "json_valid",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {}
+    },
+    {
+      "check": "json_path_in",
+      "ok": true,
+      "weight": 3.0,
+      "spec": {
+        "values": [
+          "clarify",
+          "advance"
+        ],
+        "path": "recommendation"
+      }
+    },
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 3.0,
+      "spec": {
+        "values": [
+          "attribution",
+          "team",
+          "owned",
+          "verify",
+          "45%",
+          "ARR",
+          "activation",
+          "roadmap",
+          "PM",
+          "lifecycle"
+        ]
+      }
+    }
+  ],
+  "judgeScore": 1.0,
+  "judgeDetail": {
+    "perCriterion": {
+      "metric_attribution": 1.0
+    },
+    "rationale": "The candidate answer flawlessly flagged the attribution mismatch, requested targeted verification of the candidate's actual contribution, and selected 'clarify' as required.",
+    "judgeModel": "Gemini 3.6 Flash"
+  },
+  "quality": 1.0,
+  "qualityPer1kTokens": 0.042839395107741075,
+  "runFinishedAt": "2026-07-30T06:30:35+00:00"
+}

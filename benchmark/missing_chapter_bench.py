@@ -33,6 +33,7 @@ from datetime import datetime
 from pathlib import Path
 
 import benchlib
+import judge_policy
 from adapters import run_model
 from scoring import score_run
 
@@ -148,6 +149,7 @@ def main():
     args = ap.parse_args()
 
     cfg = benchlib.load_config(args.config)
+    cfg["judge"] = judge_policy.opus_reserve_judge()
     adapters_cfg = cfg["adapters"]
     timeout = cfg["run"]["timeout_sec"]
     suite = json.load(open(SUITE))

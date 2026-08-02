@@ -17,7 +17,9 @@ cd /Users/glad0s/paperclip/benchmark || exit 1
 PY=/Library/Frameworks/Python.framework/Versions/3.14/bin/python3
 LOG=/Users/glad0s/paperclip/.devlogs/tsbc-drill.log
 AGY_LAST_RUN=/Users/glad0s/paperclip/.devlogs/tsbc-drill-agy-last-run.log
-CHEAP="grok-4.1-fast,grok-4-fast,gpt-5.4-mini,gpt-5.6-luna"
+GROK_BURN_UNTIL="${TSBC_GROK_BURN_UNTIL:-2026-07-31T14:30:00+0100}"
+CHEAP_NORMAL="gpt-5.4-mini,gpt-5.6-luna"
+CHEAP_GROK_BURN="grok-4.3,grok-4.20,grok-4.5"
 TASKS=(content book-chapter video-hook social-post designer summarize-extract cv-review intake ops)
 AGY="agy-claude-opus-4.6,agy-claude-sonnet-4.6,agy-gpt-oss-120b"
 AGY_TASKS=(engineer ceo cto ledger auditor quant)
@@ -38,9 +40,26 @@ VTASKS=(content book-chapter designer cv-review intake ops)
 #     the headless permission gate (killed at the adapter's timeout). No CLI single-shot/no-tools mode
 #     exists. For gemini skill-lift, eval AGENTICALLY in a separate quota-bounded path — not in this 24/7
 #     single-shot drill. The base matrix above is restricted to the approved Grok/ChatGPT lanes.
-VCHEAP="grok-4.1-fast,grok-4-fast,gpt-5.4-mini,gpt-5.6-luna"
+VCHEAP_NORMAL="gpt-5.4-mini,gpt-5.6-luna"
+VCHEAP_GROK_BURN="$CHEAP_GROK_BURN"
 TARGET=10
 ts(){ date '+%F %T'; }
+grok_burn_cutoff_epoch(){
+  date -j -f "%Y-%m-%dT%H:%M:%S%z" "$GROK_BURN_UNTIL" +%s 2>/dev/null \
+    || date -d "$GROK_BURN_UNTIL" +%s 2>/dev/null \
+    || echo 0
+}
+is_grok_burn(){
+  cutoff="$(grok_burn_cutoff_epoch)"
+  [ "${cutoff:-0}" -gt 0 ] && [ "$(date +%s)" -lt "$cutoff" ]
+}
+if is_grok_burn; then
+  CHEAP="$CHEAP_GROK_BURN"
+  VCHEAP="$VCHEAP_GROK_BURN"
+else
+  CHEAP="$CHEAP_NORMAL"
+  VCHEAP="$VCHEAP_NORMAL"
+fi
 quota_sleep_seconds(){
   "$PY" - "$1" <<'PYEOF'
 import re, sys
@@ -102,7 +121,11 @@ PYEOF
   # quota exhaustion left the matrix partial and the cheap drill would otherwise sleep
   # forever because it only tracks the old cheap pack. Refill the missing AGY role pack
   # whenever a role lacks one publishable (success-floor-clearing) sample per AGY model.
-  NEXT_AGY="$("$PY" - "$AGY" "$AGY_TARGET" "${AGY_TASKS[@]}" <<'PYEOF'
+  if is_grok_burn; then
+    NEXT_AGY=""
+    echo "$(ts) grok burn active until $GROK_BURN_UNTIL — skipping AGY pack and keeping drill on Grok lanes" >>"$LOG"
+  else
+    NEXT_AGY="$("$PY" - "$AGY" "$AGY_TARGET" "${AGY_TASKS[@]}" <<'PYEOF'
 import collections, json, sys
 
 models = [m for m in sys.argv[1].split(",") if m]
@@ -137,6 +160,7 @@ for role in roles:
 print(best or "")
 PYEOF
 )"
+  fi
   if [ -n "$NEXT_AGY" ]; then
     pm="$("$PY" -c "import json;p=json.load(open('.tsbc-power.json'));print(p['mode'],p['maxWorkers'])" 2>/dev/null || echo "?")"
     echo "$(ts) drilling AGY: $NEXT_AGY  (target=$AGY_TARGET role-pass/model; power=$pm)" >>"$LOG"

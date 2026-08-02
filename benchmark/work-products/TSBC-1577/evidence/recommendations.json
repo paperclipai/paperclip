@@ -1,0 +1,39 @@
+{
+  "judge": "deterministic-va1-harness",
+  "summary": {
+    "overallAdherencePct": null,
+    "sampleCount": 0,
+    "perModel": {},
+    "perGate": {},
+    "perModelFamily": {},
+    "flaggedBelow75": []
+  },
+  "meta": {
+    "started_at": "2026-07-30T19:37:22+00:00",
+    "reps": 3,
+    "models": [
+      "grok-4.3",
+      "codex-gpt-5.4",
+      "claude-sonnet-5"
+    ],
+    "tasks": [
+      "P1-quota-tally",
+      "P2-no-early-close",
+      "P3-custody",
+      "P4-artifact-quoting"
+    ],
+    "verdict": "blocked",
+    "run_id": "va1-20260730-203722",
+    "finished_at": "2026-07-30T19:37:22+00:00",
+    "n_runs": 0,
+    "n_fail": 0,
+    "n_skipped": 0,
+    "suiteShaByRole": {
+      "va1_compliance": "83a4dba5e21fe520a46be96a12aab68029dc7f5abd62140ebfb94c9ff5ddc01b"
+    },
+    "suiteSourcePathByRole": {
+      "va1_compliance": "/Users/glad0s/paperclip/benchmark/va1_compliance/suite.json"
+    },
+    "minRepsForDecision": 3
+  }
+}

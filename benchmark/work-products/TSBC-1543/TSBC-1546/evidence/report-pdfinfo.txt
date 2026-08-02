@@ -1,0 +1,19 @@
+Title:           tmplrcjgr4j.html
+Creator:         Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) HeadlessChrome/151.0.0.0 Safari/537.36
+Producer:        Skia/PDF m151
+CreationDate:    Thu Jul 30 17:52:50 2026 IST
+ModDate:         Thu Jul 30 17:52:50 2026 IST
+Custom Metadata: no
+Metadata Stream: no
+Tagged:          yes
+UserProperties:  no
+Suspects:        no
+Form:            none
+JavaScript:      no
+Pages:           3
+Encrypted:       no
+Page size:       594.96 x 841.92 pts (A4)
+Page rot:        0
+File size:       166661 bytes
+Optimized:       no
+PDF version:     1.4

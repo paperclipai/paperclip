@@ -47,6 +47,22 @@ Model-watch follow-ups that could move a live lane must run the refinement loop
 in [`benchmark/model-watch/TSKB0056-model-watch-runbook.md`](./model-watch/TSKB0056-model-watch-runbook.md)
 and record both raw and refined scores.
 
+**Standing rule (TSBC-1658):** an adoption/relane decision cites `config_variant`
+(agent-file-aware) evidence, never a bare `model_eval` row. Baseline `bench.py`
+recommendations are base-model capability at `agentFile=bare, skills=none` and
+must not be used for lane/adoption decisions on their own.
+
+Company-local variant mappings are explicit inputs, not live lane edits. Use
+`python3 variants.py --variants-config variants/overrides/tsm.json ...` or the
+same flag on `variants_agentic.py` / `tsbc_task_probe.py` when a role-global
+mapping in `variants.json` would point at the wrong OpCo's current agent file.
+The default stays `variants.json` for existing cross-portfolio sweeps.
+Roles that share one suite across multiple production agents can define
+`currentAgentFiles` in `variants.json`; select one with
+`python3 variants.py --roles support-concierge --current-agent Concierge-Codex ...`
+or use `--current-agent-file-path` for an issue-local explicit current-file
+override. These are benchmark inputs only and do not edit live agent lanes.
+
 ## What it measures
 
 Each model is invoked through its own CLI in a **fresh, empty temp working
@@ -122,12 +138,47 @@ to `"total"` to rank on total instead.
 
 ### Judge choice
 
-The judge defaults to **`claude-opus`** — the sharpest available grader, and it gives
-real partial credit (0.8/0.92/0.97) where a lenient judge hands out flat 1.0s. It is a
-contestant too, but the judge is blind to which model produced an output and applied
-uniformly, so rankings are fair (mild self-preference is the one caveat). To conserve
-claude quota, flip `config.json → judge` to `gemini-pro`. `python3 bench.py report
-<run-id>` re-aggregates without re-judging; re-run `all` to re-judge.
+The default blind bench judge is **`spark-medium`** on the Codex surface:
+`gpt-5.3-codex-spark` with `model_reasoning_effort=medium`.
+
+TSBC-1651 made this the default after TSBC-1642 calibration:
+
+- `spark-medium`: run `tsbc-1642-judge-calibration-20260731-021743`,
+  10/10 samples within 0.10 of `claude-opus`, mean abs delta `0.0386`.
+- `spark-high`: run `tsbc-1642-judge-calibration-high-20260731-022117`,
+  10/10 samples within 0.10 of `claude-opus`, mean abs delta `0.0378`.
+
+The high-effort result was equivalent but costlier, so use medium by default.
+The current policy is encoded in `config.json -> judge_policy` and
+`judge_policy.py`.
+
+Reserve **`claude-opus`** for:
+
+- blind holdouts;
+- verdict-deciding cells, including primary flips and adoption gates;
+- reference-fidelity judging, especially the missing-chapter class;
+- any spot-check cell where `spark-medium` and `claude-opus` disagree by more
+  than `0.10`.
+
+The monthly standing drift check is:
+
+```bash
+python3 judge_drift_check.py --n 10
+```
+
+It runs a 10-sample `spark-medium` vs `claude-opus` calibration. If mean abs
+delta exceeds `0.05`, the script rewrites `config.json -> judge` back to
+`claude-opus` and writes `.judge-drift-revert.json` plus
+`model-watch/judge-drift-state.json`.
+
+To re-score saved outputs without regenerating model answers:
+
+```bash
+python3 judge_rescore.py --source-run <run-id> --role <role>
+```
+
+`python3 bench.py report <run-id>` only re-aggregates saved scores; re-run
+`all`, `tsbc_task_probe.py`, or `judge_rescore.py` when the judge itself changes.
 
 ## The suites (`<role>/suite.json`)
 
@@ -138,6 +189,7 @@ claude quota, flip `config.json → judge` to `gemini-pro`. `python3 bench.py re
 | `ops` | 5 | recovery-loop + 3-defect restart-race diagnosis, escalate-after-3, failover routing, pseudo-stop classify |
 | `content` | 5 | KDP blurb, launch tweet, forbidden-word trap, exact 3-line structure, tighten-to-40-words |
 | `designer` | 5 | grok-imagine prompt, status pill, exact-geometry bar chart, hex palette, accessible badge |
+| `support-concierge` | 3 | DP buyer support, review recovery, custom-request handoff |
 
 Adding a task = appending one object to a suite's `tasks[]`. Task schema:
 

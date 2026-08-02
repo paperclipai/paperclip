@@ -1,0 +1,503 @@
+STACK LAB
+
+TSBC-1270 R1 bare ops x10 full suite - Grok 4.3
+TSBC-1270 TSBC-1141 R1 bare ops x10 full suite - Grok 4.3
+Source issue: TSBC-1270
+Parent cell: TSBC-1261
+Campaign parent: TSBC-1141
+PDF filename: TSBC-1270-report.pdf
+Report date: 2026-07-25
+Brand pack: stack-lab
+Hypothesis verdict: CONFIRMED
+Dispatched follow-up key: TSBC-1261
+
+Hypothesis
+The preregistered rung-1 bare ops Grok 4.3 cell can be executed for n=10 with the frozen TSBC-1261 runner while
+preserving the declared bare controls, served-model proof, fresh-session posture, and immediate stop-on-auth-failure rule.
+
+Method
+Runner entrypoint: work-products/TSBC-1141/TSBC-1261/tsbc_1261_r1_runner.py .
+Exact command: python3 work-products/TSBC-1141/TSBC-1261/tsbc_1261_r1_runner.py run-suite --suite ops
+--reps 10 .
+
+Frozen config: /Users/glad0s/.paperclip/instances/default/projects/e212ce50-b524-408c-b3d40c6108d8c2e2/f71e8665-3f38-4920-b777-348ec85b9071/_default/work-products/TSBC-1141/frozeninputs/config.json .
+
+Preregistration: /Users/glad0s/.paperclip/instances/default/projects/e212ce50-b524-408c-b3d40c6108d8c2e2/f71e8665-3f38-4920-b777-348ec85b9071/_default/work-products/TSBC-1141/ladderpreregistration-v1.json .
+
+Bare controls preserved by the runner: adapterType=hermes_local , agentFileSha256=none ,
+skillsBundleSha256=none , persistSession=false , fresh per-sample HOME / HERMES_HOME , and Hermes extra args
+--ignore-user-config --ignore-rules with HERMES_IGNORE_RULES=1 .
+
+Generated run root: /Users/glad0s/.paperclip/instances/default/projects/e212ce50-b524-408c-b3d40c6108d8c2e2/f71e8665-3f38-4920-b777-348ec85b9071/_default/work-products/TSBC-1141/TSBC-1261/runs/ops20260725-220101 .
+
+Data
+Expected records: 100 .
+Actual records: 100 .
+ok rows: 100 .
+
+Completion rate: 100.0% .
+Served models observed: grok-4.3 .
+
+Metric
+
+Value
+
+Mean quality
+
+0.960
+
+Minimum quality
+
+0.714
+
+Mean input tokens
+
+16303
+
+Mean output tokens
+
+685
+
+Mean total tokens
+
+16987
+
+Mean latency ms
+
+10235
+
+Mean quality per 1k output tokens
+
+0.057
+
+Per-task low-tail summary
+Task
+
+Samples
+
+Mean quality
+
+Min quality
+
+ops-diagnose-recovery-loop
+
+10
+
+0.920
+
+0.749
+
+ops-escalation-decision
+
+10
+
+1.000
+
+1.000
+
+ops-diagnose-restart-race
+
+10
+
+0.986
+
+0.971
+
+ops-failover-routing
+
+10
+
+1.000
+
+1.000
+
+ops-pseudo-stop-classify
+
+10
+
+1.000
+
+1.000
+
+ops-incident-triage
+
+10
+
+1.000
+
+1.000
+
+ops-cascade-rootcause
+
+10
+
+0.972
+
+0.958
+
+ops-alert-actionable
+
+10
+
+0.983
+
+0.975
+
+ops-rollback-decision
+
+10
+
+0.941
+
+0.901
+
+ops-runbook-ordering
+
+10
+
+0.800
+
+0.714
+
+Verdict
+CONFIRMED - The preregistered x10 ops cell completed under the frozen runner without an auth/quota halt, and every
+record preserved served-model proof.
+
+Deterministic misses
+Rep
+
+Task
+
+Deterministic
+
+Judge
+
+Quality
+
+/Users/glad0s/.paperclip/instances/default/projects/e212ce50-
+
+ops-
+
+1
+
+runbook-
+
+0.714
+
+-
+
+0.714
+
+ordering
+
+2
+
+ops-
+
+/Users/glad0s/.paperclip/instances/default/projects/e212ce50b524-408c-b3d4-0c6108d8c2e2/f71e8665-3f38-4920-b777-
+
+recovery-
+
+0.600
+
+0.898
+
+0.749
+
+runbook-
+
+/Users/glad0s/.paperclip/instances/default/projects/e212ce50-
+
+0.714
+
+-
+
+0.714
+
+0.714
+
+-
+
+0.714
+
+0.714
+
+-
+
+0.714
+
+348ec85b9071/_default/work-products/TSBC-1141/hermes-r1-ops-
+
+ops-
+
+/Users/glad0s/.paperclip/instances/default/projects/e212ce50-
+
+diagnose-
+
+b524-408c-b3d4-0c6108d8c2e2/f71e8665-3f38-4920-b777-
+
+recovery-
+
+0.600
+
+0.908
+
+0.754
+
+runbook-
+
+/Users/glad0s/.paperclip/instances/default/projects/e212ce50-
+
+0.714
+
+-
+
+0.714
+
+ordering
+
+0.714
+
+-
+
+0.714
+
+b524-408c-b3d4-0c6108d8c2e2/f71e8665-3f38-4920-b777348ec85b9071/_default/work-products/TSBC-1141/hermes-r1-opsgrok-4.3/sample-r07-ops-runbook-ordering/record.json
+/Users/glad0s/.paperclip/instances/default/projects/e212ce50-
+
+opsordering
+
+348ec85b9071/_default/work-products/TSBC-1141/hermes-r1-ops-
+
+/Users/glad0s/.paperclip/instances/default/projects/e212ce50-
+
+ordering
+
+runbook-
+
+b524-408c-b3d4-0c6108d8c2e2/f71e8665-3f38-4920-b777grok-4.3/sample-r06-ops-runbook-ordering/record.json
+
+opsrunbook-
+
+348ec85b9071/_default/work-products/TSBC-1141/hermes-r1-opsgrok-4.3/sample-r06-ops-diagnose-recovery-loop/record.json
+
+ops-
+
+9
+
+b524-408c-b3d4-0c6108d8c2e2/f71e8665-3f38-4920-b777grok-4.3/sample-r05-ops-runbook-ordering/record.json
+
+loop
+
+7
+
+348ec85b9071/_default/work-products/TSBC-1141/hermes-r1-ops-
+
+/Users/glad0s/.paperclip/instances/default/projects/e212ce50-
+
+ordering
+
+6
+
+b524-408c-b3d4-0c6108d8c2e2/f71e8665-3f38-4920-b777grok-4.3/sample-r03-ops-runbook-ordering/record.json
+
+ops-
+
+6
+
+348ec85b9071/_default/work-products/TSBC-1141/hermes-r1-ops-
+
+/Users/glad0s/.paperclip/instances/default/projects/e212ce50-
+
+ordering
+
+runbook-
+
+b524-408c-b3d4-0c6108d8c2e2/f71e8665-3f38-4920-b777grok-4.3/sample-r02-ops-runbook-ordering/record.json
+
+opsrunbook-
+
+348ec85b9071/_default/work-products/TSBC-1141/hermes-r1-opsgrok-4.3/sample-r02-ops-diagnose-recovery-loop/record.json
+
+ordering
+
+5
+
+348ec85b9071/_default/work-products/TSBC-1141/hermes-r1-ops-
+
+diagnose-
+
+ops-
+
+3
+
+b524-408c-b3d4-0c6108d8c2e2/f71e8665-3f38-4920-b777grok-4.3/sample-r01-ops-runbook-ordering/record.json
+
+loop
+
+2
+
+Record
+
+0.714
+
+-
+
+0.714
+
+b524-408c-b3d4-0c6108d8c2e2/f71e8665-3f38-4920-b777348ec85b9071/_default/work-products/TSBC-1141/hermes-r1-opsgrok-4.3/sample-r09-ops-runbook-ordering/record.json
+
+Judge sub-0.90 rows
+Rep
+
+2
+
+Task
+
+Judge
+
+Quality
+
+ops-
+
+/Users/glad0s/.paperclip/instances/default/projects/e212ce50-b524-408c-
+
+diagnose-
+
+b3d4-0c6108d8c2e2/f71e8665-3f38-4920-b777-348ec85b9071/_default/work-
+
+recovery-
+
+0.898
+
+0.749
+
+loop
+
+rollback-
+
+/Users/glad0s/.paperclip/instances/default/projects/e212ce50-b524-408c-
+
+0.802
+
+0.901
+
+decision
+
+rollback-
+
+0.858
+
+0.929
+
+0.842
+
+0.921
+
+0.894
+
+0.947
+
+products/TSBC-1141/hermes-r1-ops-grok-4.3/sample-r08-ops-rollback-
+
+/Users/glad0s/.paperclip/instances/default/projects/e212ce50-b524-408c-
+
+0.858
+
+0.929
+
+decision
+
+10
+
+b3d4-0c6108d8c2e2/f71e8665-3f38-4920-b777-348ec85b9071/_default/workdecision/record.json
+
+opsrollback-
+
+products/TSBC-1141/hermes-r1-ops-grok-4.3/sample-r06-ops-rollback-
+
+/Users/glad0s/.paperclip/instances/default/projects/e212ce50-b524-408c-
+
+decision
+
+9
+
+b3d4-0c6108d8c2e2/f71e8665-3f38-4920-b777-348ec85b9071/_default/workdecision/record.json
+
+opsrollback-
+
+products/TSBC-1141/hermes-r1-ops-grok-4.3/sample-r05-ops-rollback-
+
+/Users/glad0s/.paperclip/instances/default/projects/e212ce50-b524-408c-
+
+decision
+
+8
+
+b3d4-0c6108d8c2e2/f71e8665-3f38-4920-b777-348ec85b9071/_default/workdecision/record.json
+
+opsrollback-
+
+products/TSBC-1141/hermes-r1-ops-grok-4.3/sample-r03-ops-rollback-
+
+/Users/glad0s/.paperclip/instances/default/projects/e212ce50-b524-408c-
+
+decision
+
+6
+
+b3d4-0c6108d8c2e2/f71e8665-3f38-4920-b777-348ec85b9071/_default/workdecision/record.json
+
+ops-
+
+5
+
+products/TSBC-1141/hermes-r1-ops-grok-4.3/sample-r02-ops-diagnoserecovery-loop/record.json
+
+ops-
+
+3
+
+Record
+
+b3d4-0c6108d8c2e2/f71e8665-3f38-4920-b777-348ec85b9071/_default/workproducts/TSBC-1141/hermes-r1-ops-grok-4.3/sample-r09-ops-rollbackdecision/record.json
+
+ops-
+
+/Users/glad0s/.paperclip/instances/default/projects/e212ce50-b524-408c-
+
+diagnose-
+
+b3d4-0c6108d8c2e2/f71e8665-3f38-4920-b777-348ec85b9071/_default/work-
+
+recovery-
+
+0.870
+
+0.935
+
+loop
+
+products/TSBC-1141/hermes-r1-ops-grok-4.3/sample-r10-ops-diagnoserecovery-loop/record.json
+
+Bare-control observations
+The runner preserved the requested input posture before each sample and recorded exact served-model proof from
+Hermes session exports.
+Hermes still auto-generated local .hermes/SOUL.md , .skills_prompt_snapshot.json , skills/ , and memories/
+after execution; these were recorded as post-run artifacts rather than treated as pre-run inputs.
+Post-run artifact counts across the cell: {".skills_prompt_snapshot.json": 100, "SOUL.md": 100, "memories":
+100, "skills": 100} .
+
+Evidence and custody
+Run root: /Users/glad0s/.paperclip/instances/default/projects/e212ce50-b524-408c-b3d40c6108d8c2e2/f71e8665-3f38-4920-b777-348ec85b9071/_default/work-products/TSBC-1141/TSBC-1261/runs/ops20260725-220101 .
+
+Machine summary: work-products/TSBC-1270/summary.json .
+Markdown closeout: work-products/TSBC-1270/TSBC-1270-report.md .
+Runner log: work-products/TSBC-1270/ops-x10-run.log .
+Raw per-sample outputs, session exports, and record JSON: work-products/TSBC-1141/hermes-r1-ops-grok-4.3/ .
+Reusable TSKB delta: none. This heartbeat produced issue-specific benchmark evidence only.
+
+Render command
+brandsuite pdf --brand stack-lab -- --input work-products/TSBC-1270/TSBC-1270-report.md --out work-products/TS
+
+

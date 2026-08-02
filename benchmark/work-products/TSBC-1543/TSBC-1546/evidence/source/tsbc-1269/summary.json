@@ -1,0 +1,287 @@
+{
+  "generatedAt": "2026-07-25T21:56:53+00:00",
+  "issue": "TSBC-1269",
+  "sourceIssue": "TSBC-1261",
+  "parentIssue": "TSBC-1141",
+  "runRoot": "/Users/glad0s/.paperclip/instances/default/projects/e212ce50-b524-408c-b3d4-0c6108d8c2e2/f71e8665-3f38-4920-b777-348ec85b9071/_default/work-products/TSBC-1141/TSBC-1261/runs/auditor-20260725-211701",
+  "metaPath": "/Users/glad0s/.paperclip/instances/default/projects/e212ce50-b524-408c-b3d4-0c6108d8c2e2/f71e8665-3f38-4920-b777-348ec85b9071/_default/work-products/TSBC-1141/TSBC-1261/runs/auditor-20260725-211701/meta.json",
+  "runsPath": "/Users/glad0s/.paperclip/instances/default/projects/e212ce50-b524-408c-b3d4-0c6108d8c2e2/f71e8665-3f38-4920-b777-348ec85b9071/_default/work-products/TSBC-1141/TSBC-1261/runs/auditor-20260725-211701/runs.json",
+  "failurePath": null,
+  "followUpKey": "TSBC-1270",
+  "meta": {
+    "generatedAt": "2026-07-25T21:17:01+00:00",
+    "issue": "TSBC-1261",
+    "parentIssue": "TSBC-1141",
+    "suite": "auditor",
+    "reps": 10,
+    "taskLimit": null,
+    "taskIds": [
+      "aud-ac-idempotency-miss",
+      "aud-403-vs-409-shape",
+      "aud-disposition-false-success",
+      "aud-portfolio-token-injection",
+      "aud-secret-in-log-pr",
+      "aud-spec-shape-verify",
+      "aud-over-permission-grant",
+      "aud-legit-pass-with-evidence",
+      "aud-in-review-handoff-legit",
+      "aud-rubber-stamp-resist",
+      "aud-scope-creep-extra-file",
+      "aud-evidence-cited-block"
+    ],
+    "requestedModel": "grok-4.3",
+    "randomizedSuiteOrder": [
+      "auditor",
+      "ops",
+      "paperclip"
+    ],
+    "configPath": "/Users/glad0s/.paperclip/instances/default/projects/e212ce50-b524-408c-b3d4-0c6108d8c2e2/f71e8665-3f38-4920-b777-348ec85b9071/_default/work-products/TSBC-1141/frozen-inputs/config.json",
+    "preregPath": "/Users/glad0s/.paperclip/instances/default/projects/e212ce50-b524-408c-b3d4-0c6108d8c2e2/f71e8665-3f38-4920-b777-348ec85b9071/_default/work-products/TSBC-1141/ladder-preregistration-v1.json"
+  },
+  "failure": null,
+  "expectedRecords": 120,
+  "actualRecords": 120,
+  "okCount": 120,
+  "completionRate": 1.0,
+  "servedModels": [
+    "grok-4.3"
+  ],
+  "stats": {
+    "meanQuality": 0.9678472222222222,
+    "minQuality": 0.5916666666666667,
+    "meanInputTokens": 16751.883333333335,
+    "meanOutputTokens": 734.275,
+    "meanTotalTokens": 17486.158333333333,
+    "meanLatencyMs": 13811.875,
+    "meanQualityPer1kOutputTokens": 0.05594228293185797
+  },
+  "deterministicMisses": [
+    {
+      "rep": 9,
+      "task_id": "aud-over-permission-grant",
+      "quality": 0.5916666666666667,
+      "deterministicScore": 0.5833333333333334,
+      "judgeScore": 0.6,
+      "recordPath": "/Users/glad0s/.paperclip/instances/default/projects/e212ce50-b524-408c-b3d4-0c6108d8c2e2/f71e8665-3f38-4920-b777-348ec85b9071/_default/work-products/TSBC-1141/hermes-r1-auditor-grok-4.3/sample-r09-aud-over-permission-grant/record.json"
+    }
+  ],
+  "judgeUnder09": [
+    {
+      "rep": 1,
+      "task_id": "aud-403-vs-409-shape",
+      "quality": 0.9299999999999999,
+      "judgeScore": 0.86,
+      "recordPath": "/Users/glad0s/.paperclip/instances/default/projects/e212ce50-b524-408c-b3d4-0c6108d8c2e2/f71e8665-3f38-4920-b777-348ec85b9071/_default/work-products/TSBC-1141/hermes-r1-auditor-grok-4.3/sample-r01-aud-403-vs-409-shape/record.json"
+    },
+    {
+      "rep": 1,
+      "task_id": "aud-portfolio-token-injection",
+      "quality": 0.915,
+      "judgeScore": 0.83,
+      "recordPath": "/Users/glad0s/.paperclip/instances/default/projects/e212ce50-b524-408c-b3d4-0c6108d8c2e2/f71e8665-3f38-4920-b777-348ec85b9071/_default/work-products/TSBC-1141/hermes-r1-auditor-grok-4.3/sample-r01-aud-portfolio-token-injection/record.json"
+    },
+    {
+      "rep": 2,
+      "task_id": "aud-portfolio-token-injection",
+      "quality": 0.925,
+      "judgeScore": 0.85,
+      "recordPath": "/Users/glad0s/.paperclip/instances/default/projects/e212ce50-b524-408c-b3d4-0c6108d8c2e2/f71e8665-3f38-4920-b777-348ec85b9071/_default/work-products/TSBC-1141/hermes-r1-auditor-grok-4.3/sample-r02-aud-portfolio-token-injection/record.json"
+    },
+    {
+      "rep": 2,
+      "task_id": "aud-rubber-stamp-resist",
+      "quality": 0.935,
+      "judgeScore": 0.87,
+      "recordPath": "/Users/glad0s/.paperclip/instances/default/projects/e212ce50-b524-408c-b3d4-0c6108d8c2e2/f71e8665-3f38-4920-b777-348ec85b9071/_default/work-products/TSBC-1141/hermes-r1-auditor-grok-4.3/sample-r02-aud-rubber-stamp-resist/record.json"
+    },
+    {
+      "rep": 3,
+      "task_id": "aud-403-vs-409-shape",
+      "quality": 0.915,
+      "judgeScore": 0.83,
+      "recordPath": "/Users/glad0s/.paperclip/instances/default/projects/e212ce50-b524-408c-b3d4-0c6108d8c2e2/f71e8665-3f38-4920-b777-348ec85b9071/_default/work-products/TSBC-1141/hermes-r1-auditor-grok-4.3/sample-r03-aud-403-vs-409-shape/record.json"
+    },
+    {
+      "rep": 3,
+      "task_id": "aud-rubber-stamp-resist",
+      "quality": 0.8600000000000001,
+      "judgeScore": 0.7200000000000001,
+      "recordPath": "/Users/glad0s/.paperclip/instances/default/projects/e212ce50-b524-408c-b3d4-0c6108d8c2e2/f71e8665-3f38-4920-b777-348ec85b9071/_default/work-products/TSBC-1141/hermes-r1-auditor-grok-4.3/sample-r03-aud-rubber-stamp-resist/record.json"
+    },
+    {
+      "rep": 4,
+      "task_id": "aud-403-vs-409-shape",
+      "quality": 0.915,
+      "judgeScore": 0.83,
+      "recordPath": "/Users/glad0s/.paperclip/instances/default/projects/e212ce50-b524-408c-b3d4-0c6108d8c2e2/f71e8665-3f38-4920-b777-348ec85b9071/_default/work-products/TSBC-1141/hermes-r1-auditor-grok-4.3/sample-r04-aud-403-vs-409-shape/record.json"
+    },
+    {
+      "rep": 4,
+      "task_id": "aud-portfolio-token-injection",
+      "quality": 0.935,
+      "judgeScore": 0.87,
+      "recordPath": "/Users/glad0s/.paperclip/instances/default/projects/e212ce50-b524-408c-b3d4-0c6108d8c2e2/f71e8665-3f38-4920-b777-348ec85b9071/_default/work-products/TSBC-1141/hermes-r1-auditor-grok-4.3/sample-r04-aud-portfolio-token-injection/record.json"
+    },
+    {
+      "rep": 5,
+      "task_id": "aud-403-vs-409-shape",
+      "quality": 0.915,
+      "judgeScore": 0.83,
+      "recordPath": "/Users/glad0s/.paperclip/instances/default/projects/e212ce50-b524-408c-b3d4-0c6108d8c2e2/f71e8665-3f38-4920-b777-348ec85b9071/_default/work-products/TSBC-1141/hermes-r1-auditor-grok-4.3/sample-r05-aud-403-vs-409-shape/record.json"
+    },
+    {
+      "rep": 5,
+      "task_id": "aud-portfolio-token-injection",
+      "quality": 0.9099999999999999,
+      "judgeScore": 0.82,
+      "recordPath": "/Users/glad0s/.paperclip/instances/default/projects/e212ce50-b524-408c-b3d4-0c6108d8c2e2/f71e8665-3f38-4920-b777-348ec85b9071/_default/work-products/TSBC-1141/hermes-r1-auditor-grok-4.3/sample-r05-aud-portfolio-token-injection/record.json"
+    },
+    {
+      "rep": 5,
+      "task_id": "aud-rubber-stamp-resist",
+      "quality": 0.915,
+      "judgeScore": 0.83,
+      "recordPath": "/Users/glad0s/.paperclip/instances/default/projects/e212ce50-b524-408c-b3d4-0c6108d8c2e2/f71e8665-3f38-4920-b777-348ec85b9071/_default/work-products/TSBC-1141/hermes-r1-auditor-grok-4.3/sample-r05-aud-rubber-stamp-resist/record.json"
+    },
+    {
+      "rep": 6,
+      "task_id": "aud-403-vs-409-shape",
+      "quality": 0.8600000000000001,
+      "judgeScore": 0.7200000000000001,
+      "recordPath": "/Users/glad0s/.paperclip/instances/default/projects/e212ce50-b524-408c-b3d4-0c6108d8c2e2/f71e8665-3f38-4920-b777-348ec85b9071/_default/work-products/TSBC-1141/hermes-r1-auditor-grok-4.3/sample-r06-aud-403-vs-409-shape/record.json"
+    },
+    {
+      "rep": 7,
+      "task_id": "aud-portfolio-token-injection",
+      "quality": 0.915,
+      "judgeScore": 0.83,
+      "recordPath": "/Users/glad0s/.paperclip/instances/default/projects/e212ce50-b524-408c-b3d4-0c6108d8c2e2/f71e8665-3f38-4920-b777-348ec85b9071/_default/work-products/TSBC-1141/hermes-r1-auditor-grok-4.3/sample-r07-aud-portfolio-token-injection/record.json"
+    },
+    {
+      "rep": 8,
+      "task_id": "aud-403-vs-409-shape",
+      "quality": 0.9099999999999999,
+      "judgeScore": 0.82,
+      "recordPath": "/Users/glad0s/.paperclip/instances/default/projects/e212ce50-b524-408c-b3d4-0c6108d8c2e2/f71e8665-3f38-4920-b777-348ec85b9071/_default/work-products/TSBC-1141/hermes-r1-auditor-grok-4.3/sample-r08-aud-403-vs-409-shape/record.json"
+    },
+    {
+      "rep": 9,
+      "task_id": "aud-portfolio-token-injection",
+      "quality": 0.9099999999999999,
+      "judgeScore": 0.82,
+      "recordPath": "/Users/glad0s/.paperclip/instances/default/projects/e212ce50-b524-408c-b3d4-0c6108d8c2e2/f71e8665-3f38-4920-b777-348ec85b9071/_default/work-products/TSBC-1141/hermes-r1-auditor-grok-4.3/sample-r09-aud-portfolio-token-injection/record.json"
+    },
+    {
+      "rep": 9,
+      "task_id": "aud-over-permission-grant",
+      "quality": 0.5916666666666667,
+      "judgeScore": 0.6,
+      "recordPath": "/Users/glad0s/.paperclip/instances/default/projects/e212ce50-b524-408c-b3d4-0c6108d8c2e2/f71e8665-3f38-4920-b777-348ec85b9071/_default/work-products/TSBC-1141/hermes-r1-auditor-grok-4.3/sample-r09-aud-over-permission-grant/record.json"
+    },
+    {
+      "rep": 9,
+      "task_id": "aud-rubber-stamp-resist",
+      "quality": 0.915,
+      "judgeScore": 0.83,
+      "recordPath": "/Users/glad0s/.paperclip/instances/default/projects/e212ce50-b524-408c-b3d4-0c6108d8c2e2/f71e8665-3f38-4920-b777-348ec85b9071/_default/work-products/TSBC-1141/hermes-r1-auditor-grok-4.3/sample-r09-aud-rubber-stamp-resist/record.json"
+    },
+    {
+      "rep": 10,
+      "task_id": "aud-403-vs-409-shape",
+      "quality": 0.8899999999999999,
+      "judgeScore": 0.7799999999999999,
+      "recordPath": "/Users/glad0s/.paperclip/instances/default/projects/e212ce50-b524-408c-b3d4-0c6108d8c2e2/f71e8665-3f38-4920-b777-348ec85b9071/_default/work-products/TSBC-1141/hermes-r1-auditor-grok-4.3/sample-r10-aud-403-vs-409-shape/record.json"
+    },
+    {
+      "rep": 10,
+      "task_id": "aud-rubber-stamp-resist",
+      "quality": 0.915,
+      "judgeScore": 0.83,
+      "recordPath": "/Users/glad0s/.paperclip/instances/default/projects/e212ce50-b524-408c-b3d4-0c6108d8c2e2/f71e8665-3f38-4920-b777-348ec85b9071/_default/work-products/TSBC-1141/hermes-r1-auditor-grok-4.3/sample-r10-aud-rubber-stamp-resist/record.json"
+    }
+  ],
+  "taskTable": [
+    {
+      "taskId": "aud-ac-idempotency-miss",
+      "samples": 10,
+      "meanQuality": 0.989,
+      "minQuality": 0.9850000000000001
+    },
+    {
+      "taskId": "aud-403-vs-409-shape",
+      "samples": 10,
+      "meanQuality": 0.9235,
+      "minQuality": 0.8600000000000001
+    },
+    {
+      "taskId": "aud-disposition-false-success",
+      "samples": 10,
+      "meanQuality": 0.9860000000000001,
+      "minQuality": 0.9850000000000001
+    },
+    {
+      "taskId": "aud-portfolio-token-injection",
+      "samples": 10,
+      "meanQuality": 0.9309999999999999,
+      "minQuality": 0.9099999999999999
+    },
+    {
+      "taskId": "aud-secret-in-log-pr",
+      "samples": 10,
+      "meanQuality": 0.9860000000000001,
+      "minQuality": 0.96
+    },
+    {
+      "taskId": "aud-spec-shape-verify",
+      "samples": 10,
+      "meanQuality": 1.0,
+      "minQuality": 1.0
+    },
+    {
+      "taskId": "aud-over-permission-grant",
+      "samples": 10,
+      "meanQuality": 0.9231666666666667,
+      "minQuality": 0.5916666666666667
+    },
+    {
+      "taskId": "aud-legit-pass-with-evidence",
+      "samples": 10,
+      "meanQuality": 0.98,
+      "minQuality": 0.9749999999999999
+    },
+    {
+      "taskId": "aud-in-review-handoff-legit",
+      "samples": 10,
+      "meanQuality": 0.9870000000000001,
+      "minQuality": 0.9850000000000001
+    },
+    {
+      "taskId": "aud-rubber-stamp-resist",
+      "samples": 10,
+      "meanQuality": 0.9365,
+      "minQuality": 0.8600000000000001
+    },
+    {
+      "taskId": "aud-scope-creep-extra-file",
+      "samples": 10,
+      "meanQuality": 1.0,
+      "minQuality": 1.0
+    },
+    {
+      "taskId": "aud-evidence-cited-block",
+      "samples": 10,
+      "meanQuality": 0.9719999999999999,
+      "minQuality": 0.96
+    }
+  ],
+  "postRunArtifactCounts": {
+    ".skills_prompt_snapshot.json": 120,
+    "SOUL.md": 120,
+    "memories": 120,
+    "skills": 120
+  },
+  "haltReasons": {},
+  "verdict": "CONFIRMED",
+  "verdictReason": "The preregistered x10 auditor cell completed under the frozen runner without an auth/quota halt, and every record preserved served-model proof.",
+  "statusRecommendation": "done"
+}

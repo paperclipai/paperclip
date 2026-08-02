@@ -20,7 +20,7 @@ PAIRS = [
 
 MODELS = [
     "gemini-flash",
-    "grok-4.1-fast",
+    "grok-4.3",
     "codex-gpt-5.4",
     "claude-opus",
 ]

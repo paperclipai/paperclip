@@ -33,7 +33,7 @@ suite = json.load(open(os.path.join(HERE, "paperclip", "suite.json")))
 tasks_by_id = {t["id"]: t for t in suite["tasks"]}
 timeout = cfg["paperclip"].get("cellTimeoutSec", 900)
 models_by_id = {m["id"]: m for m in (cfg["models"] + cfg.get("models_catalog", []))}
-GROK_IDS = ["grok-4.3", "grok-4.20", "grok-4-fast", "grok-4.1-fast"]
+GROK_IDS = ["grok-4.3", "grok-4.20", "grok-4.5"]
 
 RESULTS = os.path.join(HERE, "results", "_disposition_shadow.jsonl")
 os.makedirs(os.path.dirname(RESULTS), exist_ok=True)

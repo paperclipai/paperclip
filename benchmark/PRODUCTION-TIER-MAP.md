@@ -1,5 +1,15 @@
 # Production-Task Tier Map (benchmark #18 + #17)
 
+> **⚠ VOID-EVIDENCE WARNING (added 2026-08-01, TSKB0056 addendum + TSBC-1790):** every measurement below
+> was run 2026-06-20, before xAI's 2026-05-15 retirement of `grok-4-fast`/`grok-4.1-fast` was locked into
+> platform enforcement (TSBC-1571, 2026-07-30). Those aliases now serve as `grok-4.3` — so any head-to-head
+> row or "Recommended: grok-4.1-fast" line below comparing it against `grok-4.3` may be comparing the same
+> model against itself under two labels, and the gap is noise, not a finding (same class as TSMC-18559,
+> caught 2026-08-01). **Do not cite `grok-4.1-fast` from this doc as a live recommendation.** The `grok-4.3`
+> rows and the Gemini comparisons are unaffected (real, distinct models) and remain valid historical data.
+> Anyone re-deriving content-lane guidance should re-run the grok leg against `grok-4.3`/`grok-4.20`/`grok-4.5`
+> fresh rather than trust the old alias-labeled numbers.
+
 Cheap-vs-strong on real workflow-start deliverables, to decide where to tier down and how much
 scaffolding each task needs. cheap = **grok-4-fast**, strong = **grok-4.3**, judge = claude-opus (blind).
 Quality = 0.5 deterministic / 0.5 judge blend. Bar for "handled" = 0.85.
@@ -125,3 +135,6 @@ Bench agents created in the isolated Agentic Bench company (e212ce50).
 - **Single-pass technical/reasoning** → cheap models ceiling (Gemini Flash / grok-4.1) — no premium needed.
 - **Agentic / multi-step tool-use** → codex-gpt-5.4 OR gemini-pro OR claude-opus-4.8 (~0.90). NOT grok.
 - Gemini wins BOTH ends (Flash single-pass, Pro agentic). The grok-heavy fleet is suboptimal for both.
+
+## Live hermes pin posture (2026-07-31 — TSBC-1678)
+Board intentionally pinned **19** production-like `*-Hermes` sisters `grok-4.3 → grok-4.5` on 2026-07-30 (local-board patch). Live mix: 23×`grok-4.5`, 16×`grok-4.3`, 3×`grok-4.20*`. Cost/context vs 4.3: **500k vs 1M** prompt ceiling; list price **~1.6× in / ~2.4× out**; default effort **high** (was low/none). Treat those sisters as **premium-xAI last-resort**, not cheap grok. Drafters + Designer-Media + Capital engineer/MIDAS/Polymarket hermes remain on 4.3. Sister-registry membership unchanged (IDs only). Full reconciliation: `work-products/TSBC-1678/TSBC-1678-reconciliation.md`.

@@ -1,0 +1,127 @@
+{
+  "issue": "TSBC-1394",
+  "runStartedAt": "2026-07-30T06:01:40+00:00",
+  "passStartedAt": "2026-07-30T06:13:05+00:00",
+  "passFinishedAt": "2026-07-30T06:13:31+00:00",
+  "surfaceKey": "cv_review_current_all",
+  "surfaceLabel": "CV-review hard cases (current + all)",
+  "surfaceRetired": false,
+  "role": "cv-review",
+  "task_id": "cv-title-inflation-gap",
+  "task_title": "Catch seniority inflation + an unexplained gap",
+  "model_id": "grok-4.3",
+  "model_label": "Grok 4.3 corrected baseline",
+  "lane": "hermes",
+  "effort": "cli_default",
+  "rep": 1,
+  "reps": 3,
+  "agentFile": "current",
+  "skills": "all",
+  "agentFileSha256": "f8d177f294590ac8c153a4094e97ee4b335f39ec7a279528da64fb47700736e0",
+  "skillsBundleSha256": "a899b8c0151b5e2f13c2920aea8cd5edbbd0fa628efdff7fece7ac972730ff0a",
+  "promptSha256": "656b8dc42270df41c324ab51aadc7205dc4dc5b0686f7ef055846a76c3afb0e3",
+  "suiteSha256": "4a12f7840060d3340e31887045177b943ccfc26aece2989d42f2e6f31a2b2c61",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/cv-review/suite.json",
+  "ok": true,
+  "error": null,
+  "failureReason": null,
+  "output": "{\n  \"concerns\": [\n    \"Total relevant experience is only ~2.5 years (Jan 2021\u2013Jul 2021 + Sep 2022\u2013present), well short of the 5+ years required for Senior Backend Engineer.\",\n    \"Unexplained gap of ~14 months between the end of the CodeWorks role (Jul 2021) and the start of the Nimbus Apps role (Sep 2022).\",\n    \"Claimed title 'Senior Lead Backend Engineer' shows clear inflation: the current role is Backend Engineer on a 4-person team where one senior reviewed every PR, with scope limited to building REST endpoints; prior role was Junior Developer doing only bug fixes.\",\n    \"'led architecture' claim in skills has no supporting evidence of end-to-end service ownership or architecture decisions in any listed role.\"\n  ],\n  \"recommendation\": \"reject\"\n}",
+  "inputTokens": 23300,
+  "outputTokens": 1245,
+  "totalTokens": 24545,
+  "tokensEstimated": false,
+  "cacheTokens": null,
+  "costUsd": null,
+  "wallMs": 13536,
+  "taskWallMs": null,
+  "selfReportWallMs": null,
+  "selfReportInputTokens": null,
+  "selfReportOutputTokens": null,
+  "stderrTail": "",
+  "skipped": false,
+  "skipReason": null,
+  "qualityPer1kOut": 0.8032128514056224,
+  "resolvedAgentId": "7fffa42f-467a-4f76-b802-4dc8bd552bd9",
+  "resolvedAgentName": "Bench-grok-4.3",
+  "agentIdentityKind": "bench_agent",
+  "productionAdapterType": "hermes_local",
+  "benchAgentId": "7fffa42f-467a-4f76-b802-4dc8bd552bd9",
+  "benchAgentName": "Bench-grok-4.3",
+  "benchAgentSource": "TSBC-1391 resolved current-company bench roster; corrected baseline for the old TSBC-980 grok-4-fast row.",
+  "adapterType": "hermes",
+  "benchAdapterType": "hermes",
+  "requestedModelId": "grok-4.3",
+  "requestedModelArg": "grok-4.3",
+  "requestedModel": "Grok 4.3 corrected baseline",
+  "model_reported": "grok-4.3",
+  "servedModel": "grok-4.3",
+  "servedModelSelfReport": null,
+  "servedModelVerified": true,
+  "servedModelMismatch": false,
+  "trueModelId": "grok-4.3",
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "json_valid",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {}
+    },
+    {
+      "check": "json_path_in",
+      "ok": true,
+      "weight": 3.0,
+      "spec": {
+        "values": [
+          "clarify",
+          "reject"
+        ],
+        "path": "recommendation"
+      }
+    },
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {
+        "values": [
+          "title",
+          "senior",
+          "lead",
+          "inflat",
+          "scope",
+          "level",
+          "2 y",
+          "2.5",
+          "experience"
+        ]
+      }
+    },
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {
+        "values": [
+          "gap",
+          "2021",
+          "Jul",
+          "Sep 2022",
+          "14 month",
+          "year"
+        ]
+      }
+    }
+  ],
+  "judgeScore": 1.0,
+  "judgeDetail": {
+    "perCriterion": {
+      "catches_both": 1.0
+    },
+    "rationale": "The answer flawlessly identifies both the title inflation/lack of required experience and the 14-month employment gap while appropriately recommending rejection.",
+    "judgeModel": "Gemini 3.6 Flash"
+  },
+  "quality": 1.0,
+  "qualityPer1kTokens": 0.04074149521287431,
+  "runFinishedAt": "2026-07-30T06:30:35+00:00"
+}

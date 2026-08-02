@@ -24,6 +24,7 @@ import os
 import statistics
 
 import benchlib
+import model_provenance
 
 
 def _mean(xs):
@@ -35,6 +36,9 @@ def _norm(rec):
     """Normalize the three record dialects (variants: model/outputTokens; cascade: model/outTok;
     bench runs.json: model_id/outputTokens, no explicit ok)."""
     model = rec.get("model") or rec.get("model_id")
+    effective = model_provenance.effective_model_id_for_record(rec, key="model_id")
+    if effective:
+        model = effective
     out = rec.get("outputTokens")
     if out is None:
         out = rec.get("outTok")

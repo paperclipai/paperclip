@@ -1,0 +1,62 @@
+{
+  "issue": "TSBC-1546",
+  "parentIssue": "TSBC-1543",
+  "generatedAt": "2026-07-30T16:50:31Z",
+  "verdict": "CONFIRMED",
+  "decision": "locked_except_TSBC-1484",
+  "followUpKey": "locked_except_TSBC-1484",
+  "rerunStarted": false,
+  "newCliCalls": 0,
+  "consoleOrApiKeyUsed": false,
+  "published": false,
+  "liveRoutingChanged": false,
+  "reconciledRows": {
+    "total": 241,
+    "tsbc1269Auditor": 120,
+    "tsbc1270Ops": 100,
+    "tsbc1394Mixed": 21
+  },
+  "cells": [
+    {
+      "issue": "TSBC-1269",
+      "surface": "auditor",
+      "records": 120,
+      "okRows": 120,
+      "servedModel": "grok-4.3",
+      "decisionGrade": true
+    },
+    {
+      "issue": "TSBC-1270",
+      "surface": "ops",
+      "records": 100,
+      "okRows": 100,
+      "servedModel": "grok-4.3",
+      "decisionGrade": true
+    },
+    {
+      "issue": "TSBC-1394",
+      "surface": "mixed-cv-ops-engineer-summarize",
+      "records": 21,
+      "okRows": 21,
+      "servedModel": "grok-4.3",
+      "servedModelVerifiedRows": 21,
+      "decisionGrade": true
+    }
+  ],
+  "carveOut": {
+    "issue": "TSBC-1484",
+    "description": "fixture route remains the only missing Grok 4.3 cell",
+    "candidateIssue": "TSBC-1475",
+    "attemptedHere": false
+  },
+  "runnableNonCarveOutGapRemaining": false,
+  "artifacts": [
+    "work-products/TSBC-1543/TSBC-1546/TSBC-1546-report.md",
+    "work-products/TSBC-1543/TSBC-1546/TSBC-1546-report.pdf",
+    "work-products/TSBC-1543/TSBC-1546/reconciliation-TSBC-1546.md",
+    "work-products/TSBC-1543/TSBC-1546/raw-row-manifest.json",
+    "work-products/TSBC-1543/TSBC-1546/ledger-reconciliation.json",
+    "work-products/TSBC-1543/TSBC-1546/TSBC-1546-raw-session-evidence.zip"
+  ],
+  "tskbDelta": "none"
+}

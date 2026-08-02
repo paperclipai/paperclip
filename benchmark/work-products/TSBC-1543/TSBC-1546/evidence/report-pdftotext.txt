@@ -1,0 +1,241 @@
+STACK LAB
+
+TSBC-1546 Report - Grok 4.3 runnable-cell
+sweep
+TSBC-1546 Report - Grok 4.3 runnable-cell sweep
+excluding TSBC-1484
+Source issue: TSBC-1546
+Parent issue: TSBC-1543
+PDF filename: TSBC-1546-report.pdf
+Report generated: 2026-07-30T16:50:31Z
+Brand pack: stack-lab
+Hypothesis verdict: CONFIRMED
+Dispatched follow-up key: locked_except_TSBC-1484
+
+Hypothesis
+The non-TSBC-1484 Grok 4.3 text-benchmark cells can be reconciled to decision grade from
+existing artifacts without rerunning, using console/API keys, duplicating TSBC-1542, publishing,
+or changing live routing. If every runnable non-TSBC-1484 gap is already covered, close this issue
+with locked_except_TSBC-1484 .
+
+Method
+1. Used the scoped wake payload for TSBC-1546: reason=issue_status_changed ,
+fallbackFetchNeeded=false , 0 new comments, and harness-held checkout.
+
+2. Did not start a Grok CLI run. No console/API key was used or requested, and no live
+routing or publishing change was made.
+3. Checked the active power file /Users/glad0s/paperclip/benchmark/.tsbc-power.json ;
+because this was reconciliation-only, the lane ran at 0 new concurrent runs.
+4. Reconciled TSBC-1269, TSBC-1270, and local TSBC-1394 evidence through issue
+comments, work products, downloaded attachments, PDF text, and raw JSON rows.
+5. Preserved this issue's source plus render under work-products/TSBC-1543/TSBC-1546/ .
+
+Data
+Source
+
+Cell
+
+Records
+
+R1 bare
+auditor
+
+120/120
+
+1269
+
+x10 full
+
+ok
+
+suite
+
+1270
+
+R1 bare
+ops x10
+
+MeanQ
+
+MinQ
+
+0.968
+
+0.592
+
+0.960
+
+0.714
+
+0.957
+
+0.613
+
+uploaded runs.json , summary
+
+TSBC-
+
+TSBC-
+
+Served model evidence
+
+JSON, runner log, PDF; served
+models grok-4.3
+
+Decision
+
+decisiongrade
+
+uploaded PDF and closeout
+comment; PDF records fresh per-
+
+100/100
+
+full suite
+
+ok
+
+sample Hermes controls and
+
+grade
+
+served model grok-4.3
+
+corrected
+
+local raw JSON rows with
+
+TSBC-
+
+mixed
+
+21/21
+
+servedModelVerified=true ,
+
+1394
+
+Spark
+
+ok
+
+servedModelMismatch=false ,
+
+rerun
+
+decision-
+
+decisiongrade
+supplemental
+
+servedModel=grok-4.3
+
+Total reconciled non-carve-out Grok 4.3 rows in this sweep: 241 .
+
+Surface Coverage
+Surface
+
+Evidence
+
+Auditor
+
+TSBC-1269 full x10 suite
+
+Reconciled
+rows
+120
+
+TSBC-1270 full x10 suite
+Ops
+
+plus TSBC-1394 recency
+
+103
+
+rows
+CV-review
+Engineer/summarize
+supplemental recency
+Paperclip fixture route
+
+TSBC-1394 corrected mixed
+rerun, two CV bands
+
+12
+
+TSBC-1394 mixed rows
+
+6
+
+TSBC-1484 / TSBC-1475
+
+0 new rows
+
+chain
+
+here
+
+Result
+no supplemental run
+useful
+no supplemental run
+useful
+no supplemental run
+useful for this 4.3 sweep
+covered as supplemental
+context
+explicit carve-out
+
+Carve-Out
+The only missing cell remains the TSBC-1484 fixture route. I did not try to solve, substitute, or
+rerun that blocked cell. Per the parent instruction, TSBC-1475 R1 paperclip full cell remains the
+carve-out candidate until the parent performs the post-20:00 local check.
+
+Ledger Reconciliation
+TSBC-1546 created no new benchmark run, no Grok CLI calls, and no shared-ledger rows. The
+shared ledger did advance during the heartbeat due to other burn lanes, so this issue records a
+reconciliation note instead of claiming a ledger delta.
+
+Artifacts
+Artifact
+
+Path
+
+Human reconciliation
+
+work-products/TSBC-1543/TSBC-1546/reconciliation-TSBC-
+
+source
+
+1546.md
+
+Raw/session evidence
+manifest
+Ledger reconciliation note
+Machine-readable verdict
+Evidence bundle
+PDF render
+
+work-products/TSBC-1543/TSBC-1546/raw-row-manifest.json
+work-products/TSBC-1543/TSBC-1546/ledgerreconciliation.json
+work-products/TSBC-1543/TSBC-1546/verdict.json
+work-products/TSBC-1543/TSBC-1546/TSBC-1546-raw-sessionevidence.zip
+work-products/TSBC-1543/TSBC-1546/TSBC-1546-report.pdf
+
+Verdict
+CONFIRMED .
+
+All runnable non-TSBC-1484 Grok 4.3 gaps named in this issue are decision-grade from existing
+evidence. Close disposition: locked_except_TSBC-1484 .
+
+TSKB Delta
+None. This heartbeat applied existing TSBC artifact and closeout rules; it did not create reusable
+new process knowledge.
+
+Render Command
+~/scripts/brand-suite/brandsuite pdf --brand stack-lab -- \
+--input work-products/TSBC-1543/TSBC-1546/TSBC-1546-report.md \
+--out work-products/TSBC-1543/TSBC-1546/TSBC-1546-report.pdf \
+--title "TSBC-1546 Report - Grok 4.3 runnable-cell sweep"
+
+

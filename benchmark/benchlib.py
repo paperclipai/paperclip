@@ -21,6 +21,75 @@ RESULTS_DIR = ROOT / "results"
 CONFIG_PATH = ROOT / "config.json"
 MODEL_HOLDS_PATH = ROOT / ".tsbc-model-holds.json"
 
+INFRA_QUOTA_NO_SCORE = "infra_quota_no_score"
+PROVIDER_QUOTA = "provider_quota"
+
+_PROVIDER_QUOTA_RE = re.compile(
+    r"usage limit|hit your usage limit|try again at|switch to another model|"
+    r"quota|rate[ _-]?limit|resource[ _-]?exhausted|too many requests|429|"
+    r"ineligible\s*tier|ineligibletier",
+    re.IGNORECASE,
+)
+
+
+def is_provider_quota_text(text):
+    """True when provider output says the model exists but cannot serve now."""
+    return bool(_PROVIDER_QUOTA_RE.search(str(text or "")))
+
+
+def has_served_output(record):
+    return bool(str((record or {}).get("output") or "").strip())
+
+
+def _quota_record_text(record):
+    parts = []
+    for key in (
+        "error",
+        "stderrTail",
+        "failureReason",
+        "failure_reason",
+        "skipReason",
+        "skip_reason",
+        "failureProvider",
+        "failure_provider",
+    ):
+        value = (record or {}).get(key)
+        if value:
+            parts.append(str(value))
+    judge_detail = (record or {}).get("judgeDetail") or {}
+    if isinstance(judge_detail, dict):
+        for key in ("error", "judgeError"):
+            value = judge_detail.get(key)
+            if value:
+                parts.append(str(value))
+    return " ".join(parts)
+
+
+def is_infra_quota_no_score(record):
+    """Provider quota/no-served-output rows are infrastructure, not quality data."""
+    if not isinstance(record, dict):
+        return False
+    if has_served_output(record):
+        return False
+    if record.get("failureProvider") == PROVIDER_QUOTA or record.get("failure_provider") == PROVIDER_QUOTA:
+        return True
+    if record.get("failureReason") == INFRA_QUOTA_NO_SCORE or record.get("failure_reason") == INFRA_QUOTA_NO_SCORE:
+        return True
+    if record.get("skipReason") == INFRA_QUOTA_NO_SCORE or record.get("skip_reason") == INFRA_QUOTA_NO_SCORE:
+        return True
+    if bool(record.get("quotaError") or record.get("quota_error") or is_provider_quota_text(_quota_record_text(record))):
+        return True
+    # TSBC-1660: no served output AND no token counts is a non-run (adapter/quota failure with
+    # nothing captured in the scanned error fields), not a scoreable empty response. Without this,
+    # such a record silently falls through to normal scoring and can bank as quality:0.0, ok:true.
+    if (
+        record.get("ok") is True
+        and record.get("inputTokens") is None
+        and record.get("outputTokens") is None
+    ):
+        return True
+    return False
+
 
 # --------------------------------------------------------------------------
 # config + suites

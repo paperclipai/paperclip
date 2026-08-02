@@ -1,0 +1,23 @@
+{
+  "issue": "TSBC-1549",
+  "action": "probe_rows_appended_by_tsbc_task_probe",
+  "model": "grok-4.5-hermes-lean",
+  "runs": [
+    {
+      "run_id": "probe-20260730-161626",
+      "role": "engineer",
+      "rows": 12,
+      "kind": "task_probe"
+    },
+    {
+      "run_id": "probe-20260730-162918",
+      "role": "cto",
+      "rows": 12,
+      "kind": "task_probe"
+    }
+  ],
+  "ledger_path": "/Users/glad0s/paperclip/benchmark/ledger/results.jsonl",
+  "merge_policy": "do_not_merge_into_clean_current_or_minimal_verdicts",
+  "delta": "appended_24_task_probe_rows",
+  "generatedAt": "2026-07-30T15:41:28+00:00"
+}

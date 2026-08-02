@@ -35,6 +35,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import benchlib
+import model_provenance
 
 LEDGER_DIR = benchlib.ROOT / "ledger"
 LEDGER_PATH = LEDGER_DIR / "results.jsonl"
@@ -55,6 +56,8 @@ def _company():
 
 
 def _model_class(model_id):
+    info = model_provenance.retired_alias_info(model_id or "")
+    model_id = info["served_model"] if info else model_id
     m = model_id.lower()
     for fam in ("claude", "codex", "gpt", "gemini", "grok"):
         if fam in m:
@@ -99,6 +102,10 @@ def _success_suppression_reason(success_rate, cfg=None):
 
 def _row_is_decision_grade(row, cfg=None):
     metrics = row.get("metrics") or {}
+    if row.get("score_disposition") == benchlib.INFRA_QUOTA_NO_SCORE:
+        return False
+    if row.get("failure_provider") == benchlib.PROVIDER_QUOTA and metrics.get("quality") is None:
+        return False
     if row.get("verified") is False or row.get("unverified"):
         return False
     if metrics.get("quality") is None:
@@ -244,6 +251,8 @@ def _agent_id_for_record(record):
 def _failure_reason(record):
     if record.get("servedModelMismatch") or record.get("served_model_mismatch"):
         return "served_model_mismatch"
+    if benchlib.is_infra_quota_no_score(record):
+        return benchlib.INFRA_QUOTA_NO_SCORE
     raw_reason = record.get("failureReason") or record.get("failure_reason")
     if raw_reason:
         return str(raw_reason)
@@ -263,7 +272,7 @@ def _failure_reason(record):
     if any(s in text for s in ("unauth", "unauthorized", "401", "403", "permission denied", "auth")):
         return "auth"
     if any(s in text for s in ("quota", "rate limit", "rate-limit", "429", "resource exhausted")):
-        return "quota"
+        return benchlib.INFRA_QUOTA_NO_SCORE
     if any(s in text for s in ("unparseable", "parse", "json")):
         return "parse"
     if record.get("ok") and record.get("quality") is None:
@@ -273,11 +282,18 @@ def _failure_reason(record):
     return None
 
 
+def _failure_provider(record):
+    if benchlib.is_infra_quota_no_score(record):
+        return benchlib.PROVIDER_QUOTA
+    return record.get("failureProvider") or record.get("failure_provider")
+
+
 def _pass_succeeded(record):
     return (
         not record.get("skipped")
         and bool(record.get("ok"))
         and record.get("quality") is not None
+        and not benchlib.is_infra_quota_no_score(record)
         and not record.get("servedModelMismatch")
         and not record.get("served_model_mismatch")
     )
@@ -316,6 +332,7 @@ def _pass_ledger_row(record, run_id, company, judge, run_started_at, run_finishe
     model_id = record.get("model_id") or record.get("model")
     passed = _pass_succeeded(record)
     failure_reason = None if passed else _failure_reason(record)
+    failure_provider = None if passed else _failure_provider(record)
     served_model = _served_model_for_record(record)
     served_verified = bool(record.get("servedModelVerified") or record.get("served_model_verified"))
     if model_id == "gemini-pro":
@@ -365,6 +382,8 @@ def _pass_ledger_row(record, run_id, company, judge, run_started_at, run_finishe
         "pass_finished_at": pass_finished_at,
         "passed": passed,
         "failure_reason": failure_reason,
+        "failure_provider": failure_provider,
+        "score_disposition": benchlib.INFRA_QUOTA_NO_SCORE if failure_provider == benchlib.PROVIDER_QUOTA else None,
         "failure_detail": record.get("error"),
         "skipped": bool(record.get("skipped")),
         "skip_reason": record.get("skipReason"),
@@ -384,6 +403,7 @@ def _pass_ledger_row(record, run_id, company, judge, run_started_at, run_finishe
             "selfReportInputTokens": _r(record.get("selfReportInputTokens"), 0),
             "selfReportOutputTokens": _r(record.get("selfReportOutputTokens"), 0),
             "costUsd": _r(record.get("costUsd")),
+            "qualityExcluded": bool(record.get("qualityExcluded") or failure_provider == benchlib.PROVIDER_QUOTA),
         },
         "run_id": run_id,
         "pass_id": _pass_id(run_id, record),
@@ -469,7 +489,7 @@ def read_all():
             if not line:
                 continue
             try:
-                out.append(json.loads(line))
+                out.append(model_provenance.row_for_reporting(json.loads(line)))
             except json.JSONDecodeError:
                 continue
     return out
@@ -521,15 +541,25 @@ def record_bench_run(run_id, company=None):
     for pass_row in pass_rows:
         grouped.setdefault((pass_row["test_class"], pass_row["model"]), []).append(pass_row)
     for (role, model_id), records in sorted(grouped.items()):
-        considered = [record for record in records if not record.get("skipped")]
+        infra_quota_records = [record for record in records if benchlib.is_infra_quota_no_score(record)]
+        considered = [
+            record for record in records
+            if not record.get("skipped") and not benchlib.is_infra_quota_no_score(record)
+        ]
         ran = [record for record in considered if record.get("passed") and record.get("metrics", {}).get("quality") is not None]
-        success_rate = (len(ran) / len(considered)) if considered else 0.0
+        success_rate = (len(ran) / len(considered)) if considered else None
         publish_quality = benchlib.success_rate_meets_quality_floor(success_rate, cfg)
         reps = _record_reps(considered)
         min_reps = benchlib.min_reps_for_decision(cfg)
         suppressed_reason = _success_suppression_reason(success_rate, cfg)
-        decision_grade = publish_quality and benchlib.reps_meet_decision_floor(reps, cfg)
-        if suppressed_reason:
+        decision_grade = bool(considered) and publish_quality and benchlib.reps_meet_decision_floor(reps, cfg)
+        if not considered and infra_quota_records:
+            decision_band = benchlib.INFRA_QUOTA_NO_SCORE
+            unverified_reason = "provider quota; excluded from quality means until served output exists"
+        elif not considered:
+            decision_band = "no_data"
+            unverified_reason = "no scored runs"
+        elif suppressed_reason:
             decision_band = "failed"
             unverified_reason = suppressed_reason
         elif not decision_grade:
@@ -596,6 +626,8 @@ def record_bench_run(run_id, company=None):
                 "meanDurationMs": _r(_mean([record.get("metrics", {}).get("durationMs") for record in considered]), 0),
                 "successRate": _r(success_rate),
                 "suppressed_reason": suppressed_reason,
+                "infraQuotaNoScore": len(infra_quota_records),
+                "providerQuotaFailures": len(infra_quota_records),
             },
             "n_tasks": _record_task_count(considered),
             "sample_count": len(considered),
@@ -609,6 +641,9 @@ def record_bench_run(run_id, company=None):
             "skill": None,
             "source": "bench.py",
         })
+        if infra_quota_records and not considered:
+            out[-1]["failure_provider"] = benchlib.PROVIDER_QUOTA
+            out[-1]["score_disposition"] = benchlib.INFRA_QUOTA_NO_SCORE
         if model_id == "gemini-pro":
             out[-1]["served_model_flag"] = "TSBC-1439: gemini-pro pin has historical AGY mislabel risk"
     return append_records(out), len(out)
@@ -835,6 +870,8 @@ def _r(x, default=None):
 
 def query(test_class, model, days=DEFAULT_DAYS, min_results=DEFAULT_MIN_RESULTS):
     cfg = benchlib.load_config()
+    requested_model = model
+    model = (model_provenance.retired_alias_info(model) or {}).get("served_model") or model
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
     hits = []
     pass_hits = []
@@ -864,6 +901,9 @@ def query(test_class, model, days=DEFAULT_DAYS, min_results=DEFAULT_MIN_RESULTS)
         "suppressedResults": len(hits) - n,
         "passRows": len(pass_hits),
     }
+    if requested_model != model:
+        result["requestedModelQuery"] = requested_model
+        result["queryFoldedTo"] = model
     if hits:
         result["kind"] = kind
         aggregate_hits = decision_hits
@@ -980,6 +1020,8 @@ def summary(days=DEFAULT_DAYS, min_results=DEFAULT_MIN_RESULTS):
 
 
 def passes(test_class, model, run_id=None, days=DEFAULT_DAYS):
+    requested_model = model
+    model = (model_provenance.retired_alias_info(model) or {}).get("served_model") or model
     cutoff = datetime.now(timezone.utc) - timedelta(days=days)
     out = []
     for r in read_all():
@@ -993,7 +1035,53 @@ def passes(test_class, model, run_id=None, days=DEFAULT_DAYS):
         if ts is None or ts < cutoff:
             continue
         out.append(r)
-    return sorted(out, key=lambda r: (r.get("run_id") or "", r.get("task_id") or "", str(r.get("rep") or "")))
+    rows = sorted(out, key=lambda r: (r.get("run_id") or "", r.get("task_id") or "", str(r.get("rep") or "")))
+    if requested_model != model:
+        for row in rows:
+            row.setdefault("query_folded_from", requested_model)
+    return rows
+
+
+def annotate_retired_aliases(path=LEDGER_PATH):
+    path = Path(path)
+    rows = []
+    if path.exists():
+        with open(path) as f:
+            rows = [json.loads(line) for line in f if line.strip()]
+    changed_rows = []
+    by_original_model = Counter()
+    for idx, row in enumerate(rows, start=1):
+        original_model = row.get("model") or row.get("model_id") or UNKNOWN
+        if model_provenance.annotate_row(row):
+            changed_rows.append({
+                "line": idx,
+                "kind": row.get("kind"),
+                "test_class": row.get("test_class"),
+                "model_original": row.get("model_original") or original_model,
+                "model_effective": row.get("model_effective"),
+                "run_id": row.get("run_id"),
+                "ts": row.get("ts"),
+            })
+            by_original_model[row.get("model_original") or original_model] += 1
+    backup = None
+    if changed_rows:
+        stamp = datetime.now(timezone.utc).strftime("%Y%m%d%H%M%S")
+        backup = path.with_name(f"{path.name}.bak-tsbc-1571-retired-alias-{stamp}")
+        if path.exists():
+            backup.write_bytes(path.read_bytes())
+        tmp = path.with_suffix(path.suffix + ".tmp-tsbc-1571")
+        with open(tmp, "w") as f:
+            for row in rows:
+                f.write(json.dumps(row, separators=(",", ":")) + "\n")
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp, path)
+    return {
+        "changed": len(changed_rows),
+        "by_model_original": dict(sorted(by_original_model.items())),
+        "rows": changed_rows,
+        "backup": str(backup) if backup else None,
+    }
 
 
 def backfill_success_floor(path=LEDGER_PATH, cfg=None):
@@ -1319,6 +1407,7 @@ def main():
     ps = sub.add_parser("summary"); ps.add_argument("--days", type=int, default=DEFAULT_DAYS)
     sub.add_parser("backfill-success-floor")
     sub.add_parser("backfill-expanded-schema")
+    sub.add_parser("annotate-retired-aliases")
     sub.add_parser("skills")
     args = ap.parse_args()
 
@@ -1368,6 +1457,10 @@ def main():
 
     elif args.cmd == "backfill-expanded-schema":
         res = backfill_expanded_schema()
+        print(json.dumps(res, indent=2))
+
+    elif args.cmd == "annotate-retired-aliases":
+        res = annotate_retired_aliases()
         print(json.dumps(res, indent=2))
 
     elif args.cmd == "passes":

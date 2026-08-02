@@ -1,0 +1,10 @@
+Uploaded artifact
+
+- Attachment: [TSBC-1546 machine verdict](/api/attachments/038b7f0e-8a62-422f-a1f7-c9dfa4d82552/content)
+- Download: [TSBC-1546 machine verdict](/api/attachments/038b7f0e-8a62-422f-a1f7-c9dfa4d82552/content?download=1)
+- Attachment ID: `038b7f0e-8a62-422f-a1f7-c9dfa4d82552`
+- Work product ID: `ebe8218e-6ca6-4415-8776-9cd51391f3e2`
+
+Final comment snippet:
+
+- Artifact: [TSBC-1546 machine verdict](/api/attachments/038b7f0e-8a62-422f-a1f7-c9dfa4d82552/content)

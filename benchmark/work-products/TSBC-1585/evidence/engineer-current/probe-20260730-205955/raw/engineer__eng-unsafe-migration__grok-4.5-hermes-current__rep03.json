@@ -1,0 +1,83 @@
+{
+  "sample_id": "rep03",
+  "rep": 3,
+  "role": "engineer",
+  "task_id": "eng-unsafe-migration",
+  "task_title": "Review an unsafe production DB migration",
+  "model": "grok-4.5-hermes-current",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "agentFile": "current",
+  "skills": "none",
+  "judge": "claude-opus",
+  "generationFrame": "single_shot_concat",
+  "ok": true,
+  "error": null,
+  "output": "Disposition: request changes\n\n(1) Locks that kill heartbeats\n- ALTER ADD COLUMN: ACCESS EXCLUSIVE to txn end; blocks all SQL. PG11+ constant DEFAULT skips rewrite; lock still exclusive.\n- CREATE INDEX (non-CONCURRENT): SHARE blocks INSERT/UPDATE/DELETE for the full 40M build \u2192 heartbeat writes stall.\n- One migration txn holds ALTER's ACCESS EXCLUSIVE across UPDATE+index \u2192 multi-hour total outage.\n\n(2) Single-txn backfill\nOne UPDATE of 40M rows: huge WAL, long XID, all-or-nothing rollback, bloat; no incremental ship.\n\n(3) Safe rewrite\nALTER TABLE heartbeat_runs ADD COLUMN cost_cents integer NOT NULL DEFAULT 0; COMMIT;  -- brief AX\n-- keyset batches, short txns:\nUPDATE heartbeat_runs SET cost_cents = COALESCE((usage_json->>'costUsd')::numeric*100,0)\n WHERE id>$a AND id<=$b; COMMIT;  -- repeat\nCREATE INDEX CONCURRENTLY idx_hr_cost ON heartbeat_runs (cost_cents);  -- no txn\nShip app writes to cost_cents first; run off-peak; watch autovacuum/bloat.\n\nArtifact: /Users/glad0s/.paperclip/instances/default/companies/e212ce50-b524-408c-b3d4-0c6108d8c2e2/work-products/TSBC-1585/migration-0042-review.txt (132 words). TSBC-1585 set done.",
+  "model_reported": "grok-4.5",
+  "inputTokens": 38426,
+  "outputTokens": 4643,
+  "totalTokens": 43069,
+  "tokensEstimated": false,
+  "costUsd": null,
+  "agentFileSha256": "034125e8b1a32beb43ab724ebd0caea09da96ea2abb08cd6f2ead03816cbc4db",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "b7373c2152d432ffadaa313c61133d110457a1e56402bf122dab21c5460d183f",
+  "wallMs": 87269,
+  "stderrTail": "",
+  "promptChars": 21751,
+  "stagedSkills": 0,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 3.0,
+      "spec": {
+        "values": [
+          "lock",
+          "locking",
+          "access exclusive",
+          "blocks write",
+          "block writes",
+          "blocking"
+        ]
+      }
+    },
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 3.0,
+      "spec": {
+        "values": [
+          "concurrently",
+          "CONCURRENTLY",
+          "batch",
+          "batched",
+          "chunk",
+          "backfill"
+        ]
+      }
+    },
+    {
+      "check": "max_words",
+      "ok": true,
+      "weight": 1.0,
+      "spec": {
+        "value": 170
+      }
+    }
+  ],
+  "judgeScore": 0.9275,
+  "judgeDetail": {
+    "perCriterion": {
+      "correctness": 0.92,
+      "specificity": 0.95
+    },
+    "rationale": "Catches all three hazards precisely \u2014 the metadata-only ADD COLUMN nuance, the SHARE-lock index build, and the single-txn UPDATE/WAL/XID/bloat problem \u2014 with a correct batched + CONCURRENTLY rewrite (validly using a constant NOT NULL DEFAULT instead of NOT VALID/VALIDATE); only misses lock_timeout guidance for the brief ALTER.",
+    "judgeModel": "opus"
+  },
+  "quality": 0.96375,
+  "qualityPer1kTokens": 0.022376883605377415
+}

@@ -1,0 +1,72 @@
+{
+  "sample_id": "rep03",
+  "rep": 3,
+  "role": "engineer",
+  "task_id": "eng-scorecard-sql-bug",
+  "task_title": "Find the token-accounting bug in the scorecard SQL",
+  "model": "grok-4.5-hermes-current",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "agentFile": "current",
+  "skills": "none",
+  "judge": "claude-opus",
+  "generationFrame": "single_shot_concat",
+  "ok": true,
+  "error": null,
+  "output": "**Bug:** The avg only sums `inputTokens` + `outputTokens` and drops `cacheReadInputTokens` and `cacheCreationInputTokens`, so cached-prompt usage is omitted from the scorecard total.\n\n**Why it matters:** Under subscription billing `cost_cents` is always 0, so tokens are the only cost signal; ignoring cache fields understates real token spend and skews cost and quality-per-token comparisons (especially for agents that hit the cache hard).\n\n**Corrected numerator:**\n```sql\nCOALESCE((hr.usage_json->>'inputTokens')::numeric, 0)\n+ COALESCE((hr.usage_json->>'outputTokens')::numeric, 0)\n+ COALESCE((hr.usage_json->>'cacheReadInputTokens')::numeric, 0)\n+ COALESCE((hr.usage_json->>'cacheCreationInputTokens')::numeric, 0)\n```",
+  "model_reported": "grok-4.5",
+  "inputTokens": 28094,
+  "outputTokens": 622,
+  "totalTokens": 28716,
+  "tokensEstimated": false,
+  "costUsd": null,
+  "agentFileSha256": "034125e8b1a32beb43ab724ebd0caea09da96ea2abb08cd6f2ead03816cbc4db",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "b7373c2152d432ffadaa313c61133d110457a1e56402bf122dab21c5460d183f",
+  "wallMs": 15022,
+  "stderrTail": "",
+  "promptChars": 21623,
+  "stagedSkills": 0,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "contains_all",
+      "ok": true,
+      "weight": 3.0,
+      "spec": {
+        "values": [
+          "cacheReadInputTokens",
+          "cacheCreationInputTokens"
+        ]
+      }
+    },
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 3.0,
+      "spec": {
+        "values": [
+          "coalesce",
+          "COALESCE",
+          "nullif",
+          "is null",
+          "is not null",
+          ", 0)",
+          ",0)"
+        ]
+      }
+    }
+  ],
+  "judgeScore": 0.9275,
+  "judgeDetail": {
+    "perCriterion": {
+      "correctness": 0.92,
+      "concision": 0.95
+    },
+    "rationale": "Correctly names the excluded cache fields, explains the cost-signal impact, and gives a null-safe COALESCE numerator summing all four fields; minor gap is it silently drops the original FILTER null-guard semantics without noting it.",
+    "judgeModel": "opus"
+  },
+  "quality": 0.96375,
+  "qualityPer1kTokens": 0.033561429168407854
+}

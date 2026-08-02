@@ -1,0 +1,61 @@
+{
+  "meta": {
+    "run_id": "probe-20260730-154720",
+    "label": "TSBC-1548 hermes-current ops full",
+    "role": "ops",
+    "taskIds": [
+      "ops-diagnose-recovery-loop",
+      "ops-escalation-decision",
+      "ops-diagnose-restart-race",
+      "ops-failover-routing",
+      "ops-pseudo-stop-classify",
+      "ops-incident-triage",
+      "ops-cascade-rootcause",
+      "ops-alert-actionable",
+      "ops-rollback-decision",
+      "ops-runbook-ordering"
+    ],
+    "models": [
+      "grok-4.5-hermes-current"
+    ],
+    "reps": 3,
+    "agentFile": "current",
+    "skills": "none",
+    "judge": "claude-opus",
+    "effortOverride": "cli_default",
+    "probeFramePolicy": "auto_agentic_antigravity_non_bare_for_book-content-cv",
+    "plannedGenerationMethods": {
+      "grok-4.5-hermes-current": "single_shot_concat"
+    },
+    "startedAt": "2026-07-30T14:47:20+00:00",
+    "workers": 1,
+    "agentFileSourcePath": "/Users/glad0s/.paperclip/instances/default/companies/baba1235-7f5b-4555-aed8-c06efa095125/agents/4984170a-f593-404d-bd46-6c1fc48b20ab/instructions/AGENTS.md",
+    "skillsSourcePath": "/Users/glad0s/.paperclip/instances/default/skills/baba1235-7f5b-4555-aed8-c06efa095125/__runtime__",
+    "agentFileSourceKind": "variants_json",
+    "skillsSourceKind": "variants_json",
+    "agentFileSha256": "3dfefe166a71880be1c4c885e3d7b9fd0bb35f4ac4fd13f1980000152958527f",
+    "skillsBundleSha256": "none",
+    "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/ops/suite.json",
+    "suiteSha256": "af81fcc8c8acf9b45aac20aa118d2e0116e4e875fd9b8b4e4f07df614a7bef25",
+    "probeContextSha256": "e17359767a14f7aed0803fd16fdde1da62bcd87f17365b75dfdd72f63719461d",
+    "promptPacketSha256": "ea2c6fd52ffa81e2a57d31131ceff1a8c010ef92bacdaad3e47ec4ce76099855",
+    "finishedAt": "2026-07-30T15:03:36+00:00",
+    "elapsedSec": 976.0
+  },
+  "overall": [
+    {
+      "model": "grok-4.5-hermes-current",
+      "effort": "cli_default",
+      "generationFrame": "single_shot_concat",
+      "tasks": 10,
+      "samples": 30,
+      "okCount": 30,
+      "meanQuality": 0.9641714285714286,
+      "minQuality": 0.7142857142857143,
+      "medianOutputTokens": 94.5,
+      "meanOutputTokens": 117.46666666666667,
+      "meanInputTokens": 2208,
+      "meanQPer1kOut": 22.821488419196946
+    }
+  ]
+}

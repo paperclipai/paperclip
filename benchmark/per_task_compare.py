@@ -6,7 +6,7 @@ recent run-* sweeps (so the 3-run confirm + the original sweeps combine into a s
 Answers "is one model better at some tasks than others?" — per task and per suite, with the
 winner flagged, not just an overall average.
 
-  python3 per_task_compare.py --models gemini-flash-low,grok-4.1-fast,grok-4.3
+  python3 per_task_compare.py --models gemini-flash-low,grok-4.3,grok-4.20
 """
 import argparse
 import glob
@@ -17,7 +17,7 @@ import statistics
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--models", default="gemini-flash-low,grok-4.1-fast,grok-4.3")
+    ap.add_argument("--models", default="gemini-flash-low,grok-4.3,grok-4.20")
     ap.add_argument("--runs", type=int, default=12, help="scan this many most-recent run-* dirs")
     a = ap.parse_args()
     models = [m.strip() for m in a.models.split(",")]

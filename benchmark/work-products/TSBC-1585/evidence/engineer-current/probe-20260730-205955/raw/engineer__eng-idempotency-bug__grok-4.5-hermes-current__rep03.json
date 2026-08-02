@@ -1,0 +1,88 @@
+{
+  "sample_id": "rep03",
+  "rep": 3,
+  "role": "engineer",
+  "task_id": "eng-idempotency-bug",
+  "task_title": "Find the retry-safety bug in payment processing",
+  "model": "grok-4.5-hermes-current",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "agentFile": "current",
+  "skills": "none",
+  "judge": "claude-opus",
+  "generationFrame": "single_shot_concat",
+  "ok": true,
+  "error": null,
+  "output": "(1) Bug class: non-idempotent side effects under at-least-once delivery (missing event/session dedupe).\n\n(2) On Stripe redelivery of the same `checkout.session.completed`, the handler inserts a second order for the same session, calls `grantProductAccess` again (another license email), and double-counts revenue via `incrementRevenueCounter`.\n\n(3) Fix: claim a durable idempotency key before side effects\u2014prefer Stripe `event.id`, else unique `session.id`. Use a unique index / insert-if-not-exists (or transactional claim). Run insert/grant/increment only on first claim; on conflict/already-processed, skip mutations and still return 200. Idempotent here means repeats are no-ops with the same observable outcome.",
+  "model_reported": "grok-4.5",
+  "inputTokens": 46792,
+  "outputTokens": 2477,
+  "totalTokens": 49269,
+  "tokensEstimated": false,
+  "costUsd": null,
+  "agentFileSha256": "034125e8b1a32beb43ab724ebd0caea09da96ea2abb08cd6f2ead03816cbc4db",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "b7373c2152d432ffadaa313c61133d110457a1e56402bf122dab21c5460d183f",
+  "wallMs": 48344,
+  "stderrTail": "",
+  "promptChars": 21842,
+  "stagedSkills": 0,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 3.0,
+      "spec": {
+        "values": [
+          "idempoten",
+          "at-least-once",
+          "at least once",
+          "duplicate",
+          "redeliver",
+          "replay",
+          "retry"
+        ]
+      }
+    },
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 3.0,
+      "spec": {
+        "values": [
+          "unique",
+          "dedup",
+          "deduplicat",
+          "event id",
+          "event.id",
+          "on conflict",
+          "upsert",
+          "ON CONFLICT",
+          "exactly once",
+          "processed"
+        ]
+      }
+    },
+    {
+      "check": "max_words",
+      "ok": true,
+      "weight": 1.0,
+      "spec": {
+        "value": 160
+      }
+    }
+  ],
+  "judgeScore": 0.9775,
+  "judgeDetail": {
+    "perCriterion": {
+      "correctness": 0.97,
+      "specificity": 1.0
+    },
+    "rationale": "Precisely names non-idempotency, all three duplicate side effects (order, license email, revenue double-count), and a durable event.id/unique-index claim-before-side-effects fix within the word limit.",
+    "judgeModel": "opus"
+  },
+  "quality": 0.98875,
+  "qualityPer1kTokens": 0.020068400008118697
+}

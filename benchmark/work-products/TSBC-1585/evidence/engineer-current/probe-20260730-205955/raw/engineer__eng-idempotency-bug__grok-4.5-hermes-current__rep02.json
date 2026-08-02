@@ -1,0 +1,88 @@
+{
+  "sample_id": "rep02",
+  "rep": 2,
+  "role": "engineer",
+  "task_id": "eng-idempotency-bug",
+  "task_title": "Find the retry-safety bug in payment processing",
+  "model": "grok-4.5-hermes-current",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "agentFile": "current",
+  "skills": "none",
+  "judge": "claude-opus",
+  "generationFrame": "single_shot_concat",
+  "ok": true,
+  "error": null,
+  "output": "(1) Bug class: non-idempotent at-least-once webhook handling (missing dedupe / replay safety).\n\n(2) On redelivery of the same `checkout.session.completed`, the handler inserts another order row, calls `grantProductAccess` again (extra license emails / access), and double-counts revenue via `incrementRevenueCounter`.\n\n(3) Fix: make side effects idempotent on a durable unique key (prefer Stripe `event.id`, or `sale.id` / session id). Enforce uniqueness (e.g. UNIQUE on `sessionId` or a `processed_events` table). On each delivery: claim the key in one atomic step (INSERT \u2026 ON CONFLICT DO NOTHING / transaction); run insert/grant/increment only if the claim is new; if already claimed, skip and still return 200.",
+  "model_reported": "grok-4.5",
+  "inputTokens": 30741,
+  "outputTokens": 528,
+  "totalTokens": 31269,
+  "tokensEstimated": false,
+  "costUsd": null,
+  "agentFileSha256": "034125e8b1a32beb43ab724ebd0caea09da96ea2abb08cd6f2ead03816cbc4db",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "b7373c2152d432ffadaa313c61133d110457a1e56402bf122dab21c5460d183f",
+  "wallMs": 17879,
+  "stderrTail": "",
+  "promptChars": 21842,
+  "stagedSkills": 0,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 3.0,
+      "spec": {
+        "values": [
+          "idempoten",
+          "at-least-once",
+          "at least once",
+          "duplicate",
+          "redeliver",
+          "replay",
+          "retry"
+        ]
+      }
+    },
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 3.0,
+      "spec": {
+        "values": [
+          "unique",
+          "dedup",
+          "deduplicat",
+          "event id",
+          "event.id",
+          "on conflict",
+          "upsert",
+          "ON CONFLICT",
+          "exactly once",
+          "processed"
+        ]
+      }
+    },
+    {
+      "check": "max_words",
+      "ok": true,
+      "weight": 1.0,
+      "spec": {
+        "value": 160
+      }
+    }
+  ],
+  "judgeScore": 0.95,
+  "judgeDetail": {
+    "perCriterion": {
+      "correctness": 0.95,
+      "specificity": 0.95
+    },
+    "rationale": "Explicitly names non-idempotent at-least-once handling, covers all three side effects including the revenue double-count, and prescribes event-id dedup with a unique key + ON CONFLICT/atomic claim gating all side effects, though it doesn't quite stress the single-transaction wrapping of check+effects.",
+    "judgeModel": "opus"
+  },
+  "quality": 0.975,
+  "qualityPer1kTokens": 0.031181041926508685
+}

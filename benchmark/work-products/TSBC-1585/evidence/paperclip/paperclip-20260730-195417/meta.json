@@ -1,0 +1,26 @@
+{
+  "generatedAt": "2026-07-30T19:54:17+00:00",
+  "issue": "TSBC-1585",
+  "parentIssue": "TSBC-1547",
+  "suite": "paperclip",
+  "reps": 3,
+  "taskLimit": null,
+  "taskIds": [
+    "01-read-comment-done",
+    "02-compute-comment-done",
+    "03-read-extract-token",
+    "04-in-review-handoff",
+    "05-request-confirmation",
+    "06-blocked-with-blocker",
+    "07-delegate-subtasks",
+    "08-plan-document",
+    "09-route-not-dangle",
+    "10-compound-gauntlet",
+    "11-board-approval",
+    "12-idempotent-restraint"
+  ],
+  "requestedModel": "grok-4.5",
+  "randomizedSuiteOrder": [],
+  "configPath": "/Users/glad0s/.paperclip/instances/default/projects/e212ce50-b524-408c-b3d4-0c6108d8c2e2/f71e8665-3f38-4920-b777-348ec85b9071/_default/work-products/TSBC-1141/TSBC-1262/config-grok-4.5-hermes-clean.json",
+  "preregPath": "/Users/glad0s/.paperclip/instances/default/projects/e212ce50-b524-408c-b3d4-0c6108d8c2e2/f71e8665-3f38-4920-b777-348ec85b9071/_default/work-products/TSBC-1141/ladder-preregistration-v1.json"
+}

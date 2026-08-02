@@ -1,0 +1,95 @@
+{
+  "sample_id": "rep01",
+  "rep": 1,
+  "role": "engineer",
+  "task_id": "eng-stale-reap-default-bug",
+  "task_title": "Find the wrong-default bug that fails live runs on restart",
+  "model": "grok-4.5-hermes-current",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "agentFile": "current",
+  "skills": "none",
+  "judge": "claude-opus",
+  "generationFrame": "single_shot_concat",
+  "ok": true,
+  "error": null,
+  "output": "(1) Bug: `reapOrphanedRuns` defaults `staleThresholdMs` to **0**. Startup calls it with no argument, so `cutoff = Date.now() - 0 = now`.\n\n(2) Why all fail: the check is `lastHeartbeatAt <= cutoff`. Every still-running run has `lastHeartbeatAt <= now`, so all match on a clean restart and `failRun(..., 'process_lost')` with `shouldRetry=false` \u2014 permanent, not resumed.\n\n(3) Fix: pass a non-zero startup grace (e.g. `staleThresholdMs: 60_000`) or raise the default above 0 so live runs have a window to heartbeat; never reap at boot with default 0.",
+  "model_reported": "grok-4.5",
+  "inputTokens": 72807,
+  "outputTokens": 5057,
+  "totalTokens": 77864,
+  "tokensEstimated": false,
+  "costUsd": null,
+  "agentFileSha256": "034125e8b1a32beb43ab724ebd0caea09da96ea2abb08cd6f2ead03816cbc4db",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "b7373c2152d432ffadaa313c61133d110457a1e56402bf122dab21c5460d183f",
+  "wallMs": 173977,
+  "stderrTail": "",
+  "promptChars": 21722,
+  "stagedSkills": 0,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {
+        "values": [
+          "default of 0",
+          "defaults to 0",
+          "default 0",
+          "default is 0",
+          "= 0",
+          "==0",
+          "== 0",
+          "zero",
+          "0 means",
+          "0 (",
+          "with 0",
+          "argument of 0",
+          "no argument"
+        ]
+      }
+    },
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 3.0,
+      "spec": {
+        "values": [
+          "grace",
+          "grace period",
+          "non-zero",
+          "nonzero",
+          "60",
+          "30 000",
+          "30000",
+          "pass a",
+          "raise the default",
+          "positive threshold",
+          "stale window"
+        ]
+      }
+    },
+    {
+      "check": "max_words",
+      "ok": true,
+      "weight": 1.0,
+      "spec": {
+        "value": 140
+      }
+    }
+  ],
+  "judgeScore": 0.985,
+  "judgeDetail": {
+    "perCriterion": {
+      "correctness": 0.98,
+      "specificity": 1.0
+    },
+    "rationale": "Nails the 0-default, cutoff==now, the <= comparison making every run stale, and fixes via a non-zero startup grace rather than touching shouldRetry.",
+    "judgeModel": "opus"
+  },
+  "quality": 0.9924999999999999,
+  "qualityPer1kTokens": 0.012746583787115996
+}

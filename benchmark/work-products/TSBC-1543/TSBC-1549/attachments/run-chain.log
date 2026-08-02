@@ -1,0 +1,4 @@
+=== START engineer 2026-07-30T16:16:26+01:00 tasks=eng-failure-classify,eng-scorecard-sql-bug,eng-prefix-router,eng-concurrency-race,eng-stale-reap-default-bug,eng-token-normalizer,eng-nplus1-fix,eng-sql-injection,eng-flaky-test-diagnose,eng-unsafe-migration,eng-idempotency-bug,eng-timezone-offbyone ===
+=== EXIT engineer  2026-07-30T16:28:45+01:00 ===
+=== START cto 2026-07-30T16:29:18+01:00 tasks=cto-reject-restart-race-default,cto-fallback-monitor-option,cto-local-only-relay-mismatch,cto-gate-keeper-capability-design,cto-code-review-security-bug,cto-build-vs-buy-judge,cto-plan-approval-gate,cto-escalate-to-mc,cto-eng-load-balance,cto-fallback-monitor-adapter-trap,cto-reversibility-rollout,cto-reject-overengineering ===
+=== EXIT cto  2026-07-30T16:40:25+01:00 ===

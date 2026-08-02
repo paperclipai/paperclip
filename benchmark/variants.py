@@ -56,9 +56,61 @@ def _read(path):
     return p.read_text() if p.exists() else ""
 
 
+def resolve_path(path):
+    """Resolve benchmark-local paths while preserving absolute runtime paths."""
+    if path is None:
+        return None
+    p = Path(path)
+    return p if p.is_absolute() else ROOT / p
+
+
+def load_variants_config(path=None):
+    cfg_path = resolve_path(path) if path else VARIANTS_CFG
+    with open(cfg_path) as f:
+        return json.load(f), cfg_path
+
+
+def suite_path_for_role(role, rc):
+    return resolve_path(rc.get("suiteFile")) if rc.get("suiteFile") else ROOT / role / "suite.json"
+
+
+def select_current_agent_file(rc, current_agent=None, current_agent_file_path=None):
+    if current_agent_file_path:
+        return current_agent_file_path, current_agent or "explicit_override", "cli_override"
+
+    if current_agent:
+        options = rc.get("currentAgentFiles") or {}
+        if current_agent not in options:
+            valid = ", ".join(sorted(options)) or "(none)"
+            raise SystemExit(f"current agent {current_agent!r} is not configured for this role; valid: {valid}")
+        return options[current_agent], current_agent, "currentAgentFiles"
+
+    return rc.get("currentAgentFile"), rc.get("representativeAgent"), "currentAgentFile"
+
+
+def role_source_meta(rc, variants_config_path, current_agent=None, current_agent_file_path=None):
+    selected_current, selected_agent, selected_kind = select_current_agent_file(
+        rc, current_agent=current_agent, current_agent_file_path=current_agent_file_path
+    )
+    current_options = {
+        name: str(resolve_path(path))
+        for name, path in (rc.get("currentAgentFiles") or {}).items()
+    }
+    return {
+        "representativeAgent": rc.get("representativeAgent"),
+        "variantsConfigPath": str(variants_config_path),
+        "currentAgentFilePath": str(resolve_path(selected_current)) if selected_current else None,
+        "currentAgentFileSelection": selected_agent,
+        "currentAgentFileSourceKind": selected_kind if selected_current else "none",
+        "currentAgentFileOptions": current_options,
+        "minimalAgentFilePath": str(resolve_path(rc.get("minimalAgentFile"))) if rc.get("minimalAgentFile") else None,
+        "skillsDirPath": str(resolve_path(rc.get("skillsDir"))) if rc.get("skillsDir") else None,
+    }
+
+
 def load_skill_bundle(skills_dir):
     """Concatenate every <skill>/SKILL.md under a runtime skills dir = the 'all' variant."""
-    d = Path(skills_dir)
+    d = resolve_path(skills_dir)
     if not d.exists():
         return ""
     parts = []
@@ -69,12 +121,15 @@ def load_skill_bundle(skills_dir):
     return "\n\n".join(parts)
 
 
-def resolve_role(role, rc):
+def resolve_role(role, rc, current_agent=None, current_agent_file_path=None):
     """Resolve a role's variant bodies from variants.json config."""
+    selected_current, _selected_agent, _selected_kind = select_current_agent_file(
+        rc, current_agent=current_agent, current_agent_file_path=current_agent_file_path
+    )
     af = {
         "bare": "",
-        "minimal": _read(ROOT / rc["minimalAgentFile"]) if rc.get("minimalAgentFile") else "",
-        "current": _read(rc["currentAgentFile"]) if rc.get("currentAgentFile") else "",
+        "minimal": _read(resolve_path(rc["minimalAgentFile"])) if rc.get("minimalAgentFile") else "",
+        "current": _read(resolve_path(selected_current)) if selected_current else "",
     }
     skills = {"none": "", "all": load_skill_bundle(rc["skillsDir"]) if rc.get("skillsDir") else ""}
     return af, skills
@@ -100,27 +155,32 @@ def _mean(xs):
     return statistics.mean(xs) if xs else None
 
 
-def run_cell(role, task, model_row, af_key, sk_key, af_bodies, sk_bodies, adapters_cfg, timeout):
+def run_cell(role, task, model_row, af_key, sk_key, af_bodies, sk_bodies, adapters_cfg,
+             timeout, suite_path, source_meta):
     prompt = build_prompt(af_bodies[af_key], sk_bodies[sk_key], task["prompt"])
     raw = run_model(prompt, model_row, adapters_cfg, timeout)
     scored = score_run(task, raw, _cfg, adapters_cfg, timeout)
     out_tok = raw.get("outputTokens")
     quality = scored.get("quality")
     qpk = (quality / (out_tok / 1000.0)) if (quality is not None and out_tok) else None
-    suite_path = ROOT / role / "suite.json"
     agent_file_sha = benchlib.sha256_text(af_bodies[af_key]) if af_bodies[af_key] else "none"
     skills_bundle_sha = benchlib.sha256_text(sk_bodies[sk_key]) if sk_bodies[sk_key] else "none"
+    # TSBC-1660: adapter-level ok:true is not proof of a real run — a scored infra/quota
+    # non-run (empty output, no token counts) must count as failed, not as a silent zero.
+    run_ok = bool(raw.get("ok")) and not scored.get("qualityExcluded")
     rec = {"role": role, "task": task["id"], "model": model_row["id"],
            "agentFile": af_key, "skills": sk_key, "quality": quality,
            "inputTokens": raw.get("inputTokens"), "outputTokens": out_tok,
-           "qPer1kOut": qpk, "ok": bool(raw.get("ok")),
+           "qPer1kOut": qpk, "ok": run_ok,
+           "failureReason": scored.get("failureReason"),
            "adapterType": model_row.get("adapter"),
            "effort": benchlib.model_effort_label(model_row),
            "model_reported": raw.get("model"),
            "agentFileSha256": agent_file_sha,
            "skillsBundleSha256": skills_bundle_sha,
            "suiteSha256": benchlib.file_sha256(suite_path),
-           "suiteSourcePath": str(suite_path)}
+           "suiteSourcePath": str(suite_path),
+           **source_meta}
     with PRINT_LOCK:
         print(f"  {role:<10} {model_row['id']:<12} af={af_key:<7} skills={sk_key:<4} "
               f"q={_q(quality)} q/1k={_q(qpk)} {task['id']}", flush=True)
@@ -182,12 +242,18 @@ def main():
     global _cfg
     ap = argparse.ArgumentParser(description="#17 config-variant matrix")
     ap.add_argument("--config", default=None)
+    ap.add_argument("--variants-config", default=None,
+                    help="path to a task/company-local variants config (default: benchmark/variants.json)")
     ap.add_argument("--roles", default=None, help="comma list (default: all in variants.json)")
     ap.add_argument("--models", default=None, help="comma list of model ids (default: config models)")
     ap.add_argument("--max-tasks-per-role", type=int, default=None, dest="max_tasks")
     ap.add_argument("--cells", default=None,
                     help="comma list of af:skills cells to run, e.g. 'current:none,current:all' "
                          "(default: full 6-cell grid)")
+    ap.add_argument("--current-agent", default=None,
+                    help="select a configured currentAgentFiles entry for the current agent-file cell")
+    ap.add_argument("--current-agent-file-path", default=None,
+                    help="override variants.json currentAgentFile with an explicit path")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
 
@@ -206,7 +272,8 @@ def main():
 
     _cfg = benchlib.load_config(args.config)
     adapters_cfg = _cfg["adapters"]
-    vcfg = json.load(open(VARIANTS_CFG))["roles"]
+    variants_doc, variants_config_path = load_variants_config(args.variants_config)
+    vcfg = variants_doc["roles"]
 
     want_roles = [r.strip() for r in args.roles.split(",")] if args.roles else list(vcfg)
     want_roles = [r for r in want_roles if r in vcfg]
@@ -225,13 +292,28 @@ def main():
     # build the task list per role + resolve variant bodies
     plan = []
     bodies = {}
+    suite_paths = {}
+    source_meta = {}
     for role in want_roles:
-        suite = json.load(open(ROOT / role / "suite.json"))
+        suite_path = suite_path_for_role(role, vcfg[role])
+        suite = json.load(open(suite_path))
         tasks = suite["tasks"]
         if args.max_tasks:
             tasks = tasks[: args.max_tasks]
-        af, sk = resolve_role(role, vcfg[role])
+        af, sk = resolve_role(
+            role,
+            vcfg[role],
+            current_agent=args.current_agent,
+            current_agent_file_path=args.current_agent_file_path,
+        )
         bodies[role] = (af, sk)
+        suite_paths[role] = suite_path
+        source_meta[role] = role_source_meta(
+            vcfg[role],
+            variants_config_path,
+            current_agent=args.current_agent,
+            current_agent_file_path=args.current_agent_file_path,
+        )
         for t in tasks:
             for m in models:
                 for af_key, sk_key in grid:
@@ -241,6 +323,7 @@ def main():
     print(f"=== Config-Variant Matrix (#17) · {run_id} ===")
     print(f"roles  : {', '.join(want_roles)}")
     print(f"models : {', '.join(m['id'] for m in models)}")
+    print(f"variant config : {variants_config_path}")
     print(f"grid   : {len(grid)} cells/model (agent-file × skills){' [subset via --cells]' if args.cells else ''}")
     print(f"plan   : {len(plan)} generations + {len(plan)} judge calls = {len(plan)*2} CLI invocations")
     if args.dry_run:
@@ -271,7 +354,8 @@ def main():
         role, t, m, af_key, sk_key = cell
         af, sk = bodies[role]
         try:
-            r = run_cell(role, t, m, af_key, sk_key, af, sk, adapters_cfg, timeout)
+            r = run_cell(role, t, m, af_key, sk_key, af, sk, adapters_cfg, timeout,
+                         suite_paths[role], source_meta[role])
         except Exception as e:
             r = {"role": role, "task": t["id"], "model": m["id"], "agentFile": af_key,
                  "skills": sk_key, "quality": None, "ok": False, "error": str(e)}
@@ -291,7 +375,9 @@ def main():
     json.dump(records, open(out_dir / "records.json", "w"), indent=2)
     json.dump({f"{k[0]}|{k[1]}|{k[2]}|{k[3]}": v for k, v in cells.items()},
               open(out_dir / "cells.json", "w"), indent=2)
-    meta = {"run_id": run_id, "judge": _cfg["judge"].get("id")}
+    meta = {"run_id": run_id, "judge": _cfg["judge"].get("id"),
+            "variants_config": str(variants_config_path)}
+    json.dump(meta, open(out_dir / "meta.json", "w"), indent=2)
     md = to_markdown(cells, want_roles, models, meta)
     (out_dir / "report.md").write_text(md)
     print("\n" + "=" * 60)

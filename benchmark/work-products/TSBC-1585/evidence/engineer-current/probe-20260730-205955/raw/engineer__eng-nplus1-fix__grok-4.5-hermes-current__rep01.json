@@ -1,0 +1,70 @@
+{
+  "sample_id": "rep01",
+  "rep": 1,
+  "role": "engineer",
+  "task_id": "eng-nplus1-fix",
+  "task_title": "Diagnose an N+1 query and write the batched fix",
+  "model": "grok-4.5-hermes-current",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "agentFile": "current",
+  "skills": "none",
+  "judge": "claude-opus",
+  "generationFrame": "single_shot_concat",
+  "ok": true,
+  "error": null,
+  "output": "Final answer trimmed to under 130 words:\n\n(1) Sequential N+1 / 2N query anti-pattern: per-id awaited `findFirst` + `findMany` inside a `for` loop.\n\n(2) Scales badly: DB round-trips and wall time grow as O(N) and stay serial, so pool use, latency, and lock/parse cost explode as `routineIds` lengthens under load.\n\n(3) Bound query count\u2014batch then assemble (or one windowed SQL):\n\n```ts\nasync function loadRoutineCards(ids: string[]) {\n  if (!ids.length) return [];\n  const routineList = await db.query.routines.findMany({\n    where: inArray(routines.id, ids),\n  });\n  const allRuns = await db.query.runs.findMany({\n    where: inArray(runs.routineId, ids),\n    orderBy: [desc(runs.createdAt)],\n  });\n  const by = new Map<string, typeof allRuns>();\n  for (const r of allRuns) {\n    const b = by.get(r.routineId) ?? [];\n    if (b.length < 5) { b.push(r); by.set(r.routineId, b); }\n  }\n  return routineList.map(routine => ({\n    routine,\n    runs: by.get(routine.id) ?? [],\n  }));\n}\n```\n\nTwo queries total (or one `ROW_NUMBER()` CTE for top-5-per-group).",
+  "model_reported": "grok-4.5",
+  "inputTokens": 43545,
+  "outputTokens": 4955,
+  "totalTokens": 48500,
+  "tokensEstimated": false,
+  "costUsd": null,
+  "agentFileSha256": "034125e8b1a32beb43ab724ebd0caea09da96ea2abb08cd6f2ead03816cbc4db",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "b7373c2152d432ffadaa313c61133d110457a1e56402bf122dab21c5460d183f",
+  "wallMs": 84032,
+  "stderrTail": "",
+  "promptChars": 21582,
+  "stagedSkills": 0,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 3.0,
+      "spec": {
+        "values": [
+          "N+1",
+          "n+1",
+          "per-routine",
+          "per routine",
+          "in a loop",
+          "inArray",
+          "IN (",
+          "batch"
+        ]
+      }
+    },
+    {
+      "check": "max_words",
+      "ok": true,
+      "weight": 1.0,
+      "spec": {
+        "value": 160
+      }
+    }
+  ],
+  "judgeScore": 0.9775,
+  "judgeDetail": {
+    "perCriterion": {
+      "correctness": 0.97,
+      "specificity": 1.0
+    },
+    "rationale": "Nails N+1/2N diagnosis and batches via inArray on both tables with correct in-memory top-5 grouping in two queries; only nit is the runs query lacks a limit so all runs load into memory before capping.",
+    "judgeModel": "opus"
+  },
+  "quality": 0.98875,
+  "qualityPer1kTokens": 0.02038659793814433
+}

@@ -1,0 +1,10 @@
+Uploaded artifact
+
+- Attachment: [TSBC-1546 raw/session evidence bundle](/api/attachments/ad40369a-b9e1-4b2e-8abc-ca5cb28800ec/content)
+- Download: [TSBC-1546 raw/session evidence bundle](/api/attachments/ad40369a-b9e1-4b2e-8abc-ca5cb28800ec/content?download=1)
+- Attachment ID: `ad40369a-b9e1-4b2e-8abc-ca5cb28800ec`
+- Work product ID: `edde052c-9345-4944-a19a-e5cd667ad4de`
+
+Final comment snippet:
+
+- Artifact: [TSBC-1546 raw/session evidence bundle](/api/attachments/ad40369a-b9e1-4b2e-8abc-ca5cb28800ec/content)

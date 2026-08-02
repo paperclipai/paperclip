@@ -1,0 +1,98 @@
+{
+  "issue": "TSBC-1394",
+  "runStartedAt": "2026-07-30T06:01:40+00:00",
+  "passStartedAt": "2026-07-30T06:21:12+00:00",
+  "passFinishedAt": "2026-07-30T06:21:31+00:00",
+  "surfaceKey": "summarize_extract",
+  "surfaceLabel": "Summarize/extract caveat preservation",
+  "surfaceRetired": false,
+  "role": "summarize-extract",
+  "task_id": "summarize-keep-caveat",
+  "task_title": "Summary must preserve the critical caveat",
+  "model_id": "grok-4.3",
+  "model_label": "Grok 4.3 corrected baseline",
+  "lane": "hermes",
+  "effort": "cli_default",
+  "rep": 1,
+  "reps": 3,
+  "agentFile": "bare",
+  "skills": "none",
+  "agentFileSha256": "none",
+  "skillsBundleSha256": "none",
+  "promptSha256": "e10ed785d5248fa7a2f540a14688667399725d64ced95d2c0d77329db7757103",
+  "suiteSha256": "69fbbfaa7e8ead015f86f9e0ea7afc3a795152569b29243913f0f3dc89be77b4",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/summarize-extract/suite.json",
+  "ok": true,
+  "error": null,
+  "failureReason": null,
+  "output": "Refunds available within 30 days of purchase, except digital downloads and personalized items which are non-refundable.",
+  "inputTokens": 20088,
+  "outputTokens": 380,
+  "totalTokens": 20468,
+  "tokensEstimated": false,
+  "cacheTokens": null,
+  "costUsd": null,
+  "wallMs": 8038,
+  "taskWallMs": null,
+  "selfReportWallMs": null,
+  "selfReportInputTokens": null,
+  "selfReportOutputTokens": null,
+  "stderrTail": "",
+  "skipped": false,
+  "skipReason": null,
+  "qualityPer1kOut": 2.6315789473684212,
+  "resolvedAgentId": "7fffa42f-467a-4f76-b802-4dc8bd552bd9",
+  "resolvedAgentName": "Bench-grok-4.3",
+  "agentIdentityKind": "bench_agent",
+  "productionAdapterType": "hermes_local",
+  "benchAgentId": "7fffa42f-467a-4f76-b802-4dc8bd552bd9",
+  "benchAgentName": "Bench-grok-4.3",
+  "benchAgentSource": "TSBC-1391 resolved current-company bench roster; corrected baseline for the old TSBC-980 grok-4-fast row.",
+  "adapterType": "hermes",
+  "benchAdapterType": "hermes",
+  "requestedModelId": "grok-4.3",
+  "requestedModelArg": "grok-4.3",
+  "requestedModel": "Grok 4.3 corrected baseline",
+  "model_reported": "grok-4.3",
+  "servedModel": "grok-4.3",
+  "servedModelSelfReport": null,
+  "servedModelVerified": true,
+  "servedModelMismatch": false,
+  "trueModelId": "grok-4.3",
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "max_words",
+      "ok": true,
+      "weight": 1.0,
+      "spec": {
+        "value": 35
+      }
+    },
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {
+        "values": [
+          "non-refundable",
+          "not refundable",
+          "cannot be refunded",
+          "except",
+          "exclud"
+        ]
+      }
+    }
+  ],
+  "judgeScore": 1.0,
+  "judgeDetail": {
+    "perCriterion": {
+      "keeps_exception": 1.0
+    },
+    "rationale": "The candidate accurately and concisely captures both the 30-day refund window and the non-refundable exceptions for digital downloads and personalized items.",
+    "judgeModel": "Gemini 3.6 Flash"
+  },
+  "quality": 1.0,
+  "qualityPer1kTokens": 0.048856752003126835,
+  "runFinishedAt": "2026-07-30T06:30:35+00:00"
+}

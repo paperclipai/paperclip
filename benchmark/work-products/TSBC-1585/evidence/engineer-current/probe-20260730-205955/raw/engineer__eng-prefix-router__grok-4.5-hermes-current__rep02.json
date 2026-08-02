@@ -1,0 +1,76 @@
+{
+  "sample_id": "rep02",
+  "rep": 2,
+  "role": "engineer",
+  "task_id": "eng-prefix-router",
+  "task_title": "Implement the MC-Compiler prefix router",
+  "model": "grok-4.5-hermes-current",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "agentFile": "current",
+  "skills": "none",
+  "judge": "claude-opus",
+  "generationFrame": "single_shot_concat",
+  "ok": true,
+  "error": null,
+  "output": "```python\ndef route_wake(parent_id: str, title: str, routes: list) -> str | None:\n    '''routes is a list of (route_parent, title_prefix, handler) tuples.\n    Return the handler for the FIRST route whose route_parent == parent_id\n    AND title (after stripping leading/trailing whitespace) startswith title_prefix.\n    If no route matches, return None (the caller escalates to the CTO).'''\n    stripped = title.strip()\n    for route_parent, title_prefix, handler in routes:\n        if route_parent == parent_id and stripped.startswith(title_prefix):\n            return handler\n    return None\n```",
+  "model_reported": "grok-4.5",
+  "inputTokens": 28050,
+  "outputTokens": 182,
+  "totalTokens": 28232,
+  "tokensEstimated": false,
+  "costUsd": null,
+  "agentFileSha256": "034125e8b1a32beb43ab724ebd0caea09da96ea2abb08cd6f2ead03816cbc4db",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "b7373c2152d432ffadaa313c61133d110457a1e56402bf122dab21c5460d183f",
+  "wallMs": 8060,
+  "stderrTail": "",
+  "promptChars": 21480,
+  "stagedSkills": 0,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "contains",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {
+        "value": "def route_wake"
+      }
+    },
+    {
+      "check": "regex",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {
+        "pattern": "\\.strip\\(\\)"
+      }
+    },
+    {
+      "check": "regex",
+      "ok": true,
+      "weight": 3.0,
+      "spec": {
+        "pattern": "\\.startswith\\("
+      }
+    },
+    {
+      "check": "regex",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {
+        "pattern": "return\\s+None|->\\s*None|=\\s*None"
+      }
+    }
+  ],
+  "judgeScore": 1.0,
+  "judgeDetail": {
+    "perCriterion": {
+      "correctness": 1.0
+    },
+    "rationale": "Correctly strips the title once, iterates in order returning the first handler matching parent equality AND prefix via startswith, and returns None otherwise \u2014 spec met exactly.",
+    "judgeModel": "opus"
+  },
+  "quality": 1.0,
+  "qualityPer1kTokens": 0.03542079909322755
+}

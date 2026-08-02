@@ -1,0 +1,290 @@
+{
+  "_comment": "TSBC-1959 TSM-local config-variant mapping. This is benchmark-only and does not edit live lanes. It replaces role-global representative current files with ThinkStack Media representative files, while sourceRows preserve the TSBC-1941 row paths/fingerprints for audit.",
+  "company": {
+    "name": "ThinkStack Media",
+    "prefix": "TSM",
+    "companyId": "d71c9e82-1a4b-497f-9bbc-5b9dd028c367"
+  },
+  "roles": {
+    "ceo": {
+      "representativeAgent": "Atlas (Media)",
+      "currentAgentFile": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/agents/29fddc38-cc02-490a-882a-6c7c2eabdb42/instructions/AGENTS.md",
+      "minimalAgentFile": "variants/minimal/ceo.md",
+      "suiteFile": "ceo/suite.json",
+      "skillsDir": "/Users/glad0s/.paperclip/instances/default/skills/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/__runtime__",
+      "sourceRows": [
+        {
+          "name": "Atlas",
+          "adapterType": "claude_local",
+          "benchmarkModelId": "claude-opus-4-8",
+          "currentAgentFile": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/agents/29fddc38-cc02-490a-882a-6c7c2eabdb42/instructions/AGENTS.md",
+          "adapterConfigFingerprint": "ba393ecee1febed5f26200575c6d74b7",
+          "runtimeConfigFingerprint": "18750e1424537c2061a6e3bb74f3adeb"
+        },
+        {
+          "name": "Atlas-Codex",
+          "adapterType": "codex_local",
+          "benchmarkModelId": "codex-gpt-5.4",
+          "currentAgentFile": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/agents/c02d3e59-dbed-447a-9ee9-314827ed5880/instructions/AGENTS.md",
+          "adapterConfigFingerprint": "12995c1b786eb067e0383f2c3f50a73c",
+          "runtimeConfigFingerprint": "21d6fd168f9907d8fbf98e326f752884"
+        },
+        {
+          "name": "Atlas-Gemini",
+          "adapterType": "antigravity_local",
+          "benchmarkModelId": "needs-probe:gemini-3.1-pro-high-denylisted",
+          "currentAgentFile": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/agents/b84346ab-6be1-4907-8646-712eda49b048/instructions/AGENTS.md",
+          "adapterConfigFingerprint": "4cf97eacbbd0ee243abda1ec95d135dc",
+          "runtimeConfigFingerprint": "a1b735603b385221d5a01d64ffb337c0"
+        },
+        {
+          "name": "Atlas-Hermes",
+          "adapterType": "hermes_local",
+          "benchmarkModelId": "needs-roster:hermes-grok-4.5",
+          "currentAgentFile": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/agents/a78946b1-3355-48a9-b710-771fc245ac38/instructions/AGENTS.md",
+          "adapterConfigFingerprint": "c6ec6920fc6479adbb7a961b56c09e79",
+          "runtimeConfigFingerprint": "a1b735603b385221d5a01d64ffb337c0"
+        }
+      ]
+    },
+    "cto": {
+      "representativeAgent": "Prometheus (Media)",
+      "currentAgentFile": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/agents/88180dcf-5ce8-4cf7-a1c8-483c035d6822/instructions/AGENTS.md",
+      "minimalAgentFile": "variants/minimal/cto.md",
+      "suiteFile": "cto/suite.json",
+      "skillsDir": "/Users/glad0s/.paperclip/instances/default/skills/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/__runtime__",
+      "sourceRows": [
+        {
+          "name": "Prometheus",
+          "adapterType": "claude_local",
+          "benchmarkModelId": "claude-opus-4-8",
+          "currentAgentFile": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/agents/88180dcf-5ce8-4cf7-a1c8-483c035d6822/instructions/AGENTS.md",
+          "adapterConfigFingerprint": "ced832d429df9bac3fe85be30f5da292",
+          "runtimeConfigFingerprint": "a1b735603b385221d5a01d64ffb337c0"
+        },
+        {
+          "name": "Prometheus-Codex",
+          "adapterType": "codex_local",
+          "benchmarkModelId": "codex-gpt-5.4",
+          "currentAgentFile": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/agents/d0a113ac-8b26-41d3-8e0c-d1c6a3448777/instructions/AGENTS.md",
+          "adapterConfigFingerprint": "13ce8da017ce3454e5cec8228f3ae13a",
+          "runtimeConfigFingerprint": "21d6fd168f9907d8fbf98e326f752884"
+        },
+        {
+          "name": "Prometheus-Gemini",
+          "adapterType": "antigravity_local",
+          "benchmarkModelId": "needs-probe:gemini-3.1-pro-high-denylisted",
+          "currentAgentFile": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/agents/e1cf7ab9-89f5-4dc4-89b5-a994c76c0c11/instructions/AGENTS.md",
+          "adapterConfigFingerprint": "039189f77241f464ebe03ea52bef5f6b",
+          "runtimeConfigFingerprint": "a1b735603b385221d5a01d64ffb337c0"
+        },
+        {
+          "name": "Prometheus-Hermes",
+          "adapterType": "hermes_local",
+          "benchmarkModelId": "needs-roster:hermes-grok-4.5",
+          "currentAgentFile": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/agents/530c41ac-8d5e-4b54-8e14-e92588630add/instructions/AGENTS.md",
+          "adapterConfigFingerprint": "f1df17736bde227afa29fed16a673d3f",
+          "runtimeConfigFingerprint": "1c98e750a7ccc62d78bc3db2eb9d62f4"
+        }
+      ]
+    },
+    "engineer": {
+      "representativeAgent": "Coder (Media)",
+      "currentAgentFile": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/agents/817fcb10-c754-4ea8-ac02-c6b34bc5759f/instructions/AGENTS.md",
+      "minimalAgentFile": "variants/minimal/engineer.md",
+      "suiteFile": "engineer/suite.json",
+      "skillsDir": "/Users/glad0s/.paperclip/instances/default/skills/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/__runtime__",
+      "sourceRows": [
+        {
+          "name": "Coder",
+          "adapterType": "claude_local",
+          "benchmarkModelId": "claude-opus-4-8",
+          "currentAgentFile": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/agents/817fcb10-c754-4ea8-ac02-c6b34bc5759f/instructions/AGENTS.md",
+          "adapterConfigFingerprint": "2f4feedc5cdfecc2200e3c69416505ef",
+          "runtimeConfigFingerprint": "1c98e750a7ccc62d78bc3db2eb9d62f4"
+        },
+        {
+          "name": "Coder-Codex",
+          "adapterType": "codex_local",
+          "benchmarkModelId": "codex-gpt-5.4",
+          "currentAgentFile": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/agents/d4813a45-db34-469e-945c-84acdbbf2131/instructions/AGENTS.md",
+          "adapterConfigFingerprint": "ed06139fa54f5670535a2f91a421372a",
+          "runtimeConfigFingerprint": "2288523886a7bd8418f567325b097c6b"
+        },
+        {
+          "name": "Designer-Media",
+          "adapterType": "hermes_local",
+          "benchmarkModelId": "needs-roster:hermes-grok-4.5",
+          "currentAgentFile": "",
+          "adapterConfigFingerprint": "638858d7650f0fc69979c6a9d9560691",
+          "runtimeConfigFingerprint": "1a3c60787e4692f129b9acfb7cd5b304"
+        }
+      ]
+    },
+    "designer": {
+      "representativeAgent": "Frame (Media)",
+      "currentAgentFile": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/agents/e4390812-252a-4a83-86e3-5f24124d150d/instructions/AGENTS.md",
+      "minimalAgentFile": "variants/minimal/designer.md",
+      "suiteFile": "designer/suite.json",
+      "skillsDir": "/Users/glad0s/.paperclip/instances/default/skills/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/__runtime__",
+      "sourceRows": [
+        {
+          "name": "Cerberus",
+          "adapterType": "codex_local",
+          "benchmarkModelId": "codex-gpt-5.4",
+          "currentAgentFile": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/agents/748e5f62-d59e-4dcd-90c2-051e453a3e05/instructions/AGENTS.md",
+          "adapterConfigFingerprint": "d7d3cf05fa12443d3a59a28b441ff4ce",
+          "runtimeConfigFingerprint": "a1b735603b385221d5a01d64ffb337c0"
+        },
+        {
+          "name": "Frame",
+          "adapterType": "claude_local",
+          "benchmarkModelId": "claude-sonnet",
+          "currentAgentFile": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/agents/e4390812-252a-4a83-86e3-5f24124d150d/instructions/AGENTS.md",
+          "adapterConfigFingerprint": "8a8588607a6e9a0e79673ce1ce617ea8",
+          "runtimeConfigFingerprint": "1c98e750a7ccc62d78bc3db2eb9d62f4"
+        },
+        {
+          "name": "Frame-Codex",
+          "adapterType": "codex_local",
+          "benchmarkModelId": "codex-gpt-5.4",
+          "currentAgentFile": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/agents/e8966b96-adb0-4a8a-8fce-9fb1ed519cb7/instructions/AGENTS.md",
+          "adapterConfigFingerprint": "124707ede84848c11ad8541f0791cf24",
+          "runtimeConfigFingerprint": "21d6fd168f9907d8fbf98e326f752884"
+        },
+        {
+          "name": "Storyboard-Codex",
+          "adapterType": "codex_local",
+          "benchmarkModelId": "codex-gpt-5.4",
+          "currentAgentFile": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/agents/8eabb003-7b08-4f91-84dc-0f41dd28390b/instructions/AGENTS.md",
+          "adapterConfigFingerprint": "f89b95d4f8824742ca568eb8c758ec12",
+          "runtimeConfigFingerprint": "21d6fd168f9907d8fbf98e326f752884"
+        }
+      ]
+    },
+    "content": {
+      "representativeAgent": "Media-Drafter (Media)",
+      "currentAgentFile": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/agents/55076cf8-2654-4a7c-ae59-56e8b40ca073/instructions/AGENTS.md",
+      "minimalAgentFile": "variants/minimal/content.md",
+      "suiteFile": "content/suite.json",
+      "skillsDir": "/Users/glad0s/.paperclip/instances/default/skills/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/__runtime__",
+      "sourceRows": [
+        {
+          "name": "Media-Drafter",
+          "adapterType": "antigravity_local",
+          "benchmarkModelId": "gemini-flash-low",
+          "currentAgentFile": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/agents/55076cf8-2654-4a7c-ae59-56e8b40ca073/instructions/AGENTS.md",
+          "adapterConfigFingerprint": "66d3c4deb563c858b5468922306d0f35",
+          "runtimeConfigFingerprint": "1c98e750a7ccc62d78bc3db2eb9d62f4"
+        },
+        {
+          "name": "Media-Drafter-Hermes",
+          "adapterType": "hermes_local",
+          "benchmarkModelId": "grok-4.3",
+          "currentAgentFile": "",
+          "adapterConfigFingerprint": "772c9c2dbc279e469af44857c04b6251",
+          "runtimeConfigFingerprint": "a1b735603b385221d5a01d64ffb337c0"
+        }
+      ]
+    },
+    "ops": {
+      "representativeAgent": "Summarizer (Media)",
+      "currentAgentFile": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/agents/946d55ef-eda6-427a-b62a-1a80b85c206a/instructions/AGENTS.md",
+      "minimalAgentFile": "variants/minimal/ops.md",
+      "suiteFile": "ops/suite.json",
+      "skillsDir": "/Users/glad0s/.paperclip/instances/default/skills/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/__runtime__",
+      "sourceRows": [
+        {
+          "name": "Summarizer",
+          "adapterType": "claude_local",
+          "benchmarkModelId": "claude-haiku-4-5",
+          "currentAgentFile": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/agents/946d55ef-eda6-427a-b62a-1a80b85c206a/instructions/AGENTS.md",
+          "adapterConfigFingerprint": "a5d1c0327aae5aad05700a45be77cf38",
+          "runtimeConfigFingerprint": "04d27ee561c499b452565e44d8a2ad95"
+        }
+      ]
+    },
+    "paperclip": {
+      "representativeAgent": "Showrunner (Media)",
+      "currentAgentFile": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/agents/48f649b9-a74b-4204-92ed-a222fef54c80/instructions/AGENTS.md",
+      "minimalAgentFile": "variants/minimal/paperclip.md",
+      "suiteFile": "paperclip/suite.json",
+      "skillsDir": "/Users/glad0s/.paperclip/instances/default/skills/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/__runtime__",
+      "sourceRows": [
+        {
+          "name": "Showrunner",
+          "adapterType": "codex_local",
+          "benchmarkModelId": "codex-gpt-5.4",
+          "currentAgentFile": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/agents/48f649b9-a74b-4204-92ed-a222fef54c80/instructions/AGENTS.md",
+          "adapterConfigFingerprint": "c0d9132bc6cb6ebed4735b38a28f504e",
+          "runtimeConfigFingerprint": "21d6fd168f9907d8fbf98e326f752884"
+        },
+        {
+          "name": "Showrunner-Gemini",
+          "adapterType": "antigravity_local",
+          "benchmarkModelId": "needs-probe:gemini-3.1-pro-high-denylisted",
+          "currentAgentFile": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/agents/8a509d7e-3763-4723-b5af-2eec1966b1ea/instructions/AGENTS.md",
+          "adapterConfigFingerprint": "74a5e75b0707ee22abfff2638c3198eb",
+          "runtimeConfigFingerprint": "a1b735603b385221d5a01d64ffb337c0"
+        },
+        {
+          "name": "Storyboard",
+          "adapterType": "claude_local",
+          "benchmarkModelId": "claude-sonnet",
+          "currentAgentFile": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/agents/1127a5fb-fdbb-4a66-8a45-66042216ceff/instructions/AGENTS.md",
+          "adapterConfigFingerprint": "3fe38ea86e778ee84d6de06a54d93f4a",
+          "runtimeConfigFingerprint": "1c98e750a7ccc62d78bc3db2eb9d62f4"
+        },
+        {
+          "name": "Storyboard-Gemini",
+          "adapterType": "antigravity_local",
+          "benchmarkModelId": "gemini-flash-low",
+          "currentAgentFile": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/agents/cea72b61-9d28-4faf-8a35-48931f48ddd9/instructions/AGENTS.md",
+          "adapterConfigFingerprint": "f2fc36fd7e350de56332fcf8d11c01b3",
+          "runtimeConfigFingerprint": "a1b735603b385221d5a01d64ffb337c0"
+        }
+      ]
+    },
+    "cmo": {
+      "representativeAgent": "ContentStrategist (Media)",
+      "currentAgentFile": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/agents/f6d985f3-403a-471a-b6f0-0586349041b5/instructions/AGENTS.md",
+      "minimalAgentFile": "variants/minimal/cmo.md",
+      "suiteFile": "cmo/suite.json",
+      "skillsDir": "/Users/glad0s/.paperclip/instances/default/skills/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/__runtime__",
+      "sourceRows": [
+        {
+          "name": "CMO",
+          "adapterType": "codex_local",
+          "benchmarkModelId": "codex-gpt-5.4",
+          "currentAgentFile": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/agents/0e448771-149e-427c-a584-37c123afbd59/instructions/AGENTS.md",
+          "adapterConfigFingerprint": "74cbf8c4c1e695b24bbd094d2394a182",
+          "runtimeConfigFingerprint": "21d6fd168f9907d8fbf98e326f752884"
+        },
+        {
+          "name": "ContentStrategist",
+          "adapterType": "claude_local",
+          "benchmarkModelId": "claude-sonnet",
+          "currentAgentFile": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/agents/f6d985f3-403a-471a-b6f0-0586349041b5/instructions/AGENTS.md",
+          "adapterConfigFingerprint": "50643df080743f3ffbad9a8f6372e3fb",
+          "runtimeConfigFingerprint": "1c98e750a7ccc62d78bc3db2eb9d62f4"
+        },
+        {
+          "name": "ContentStrategist-Codex",
+          "adapterType": "codex_local",
+          "benchmarkModelId": "codex-gpt-5.4",
+          "currentAgentFile": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/agents/2a0441ac-8688-47a8-b62b-a130e6dedc62/instructions/AGENTS.md",
+          "adapterConfigFingerprint": "8964827b20e0bf23d5fea57742101436",
+          "runtimeConfigFingerprint": "21d6fd168f9907d8fbf98e326f752884"
+        },
+        {
+          "name": "ContentStrategist-Gemini",
+          "adapterType": "antigravity_local",
+          "benchmarkModelId": "gemini-flash-low",
+          "currentAgentFile": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/agents/e9bb162f-d403-4504-a879-ec83c56d7983/instructions/AGENTS.md",
+          "adapterConfigFingerprint": "b64e98bb8dc48d19326f3a3d037484e6",
+          "runtimeConfigFingerprint": "a1b735603b385221d5a01d64ffb337c0"
+        }
+      ]
+    }
+  }
+}

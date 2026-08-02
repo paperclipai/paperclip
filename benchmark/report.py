@@ -11,6 +11,7 @@ import statistics
 from collections import Counter, defaultdict
 
 import benchlib
+import model_provenance
 
 
 def _mean(xs):
@@ -142,6 +143,17 @@ def aggregate(runs, cfg):
           role, task_id, model_id, quality, qualityPer1kTokens, totalTokens, ok...
     Returns the full report dict.
     """
+    normalized_runs = []
+    for run in runs:
+        normalized = dict(run)
+        effective = model_provenance.effective_model_id_for_record(normalized, key="model_id")
+        if effective and normalized.get("model_id") != effective:
+            normalized.setdefault("model_original", normalized.get("model_id"))
+            normalized["model_id"] = effective
+            normalized["model_label"] = effective
+        normalized_runs.append(normalized)
+    runs = normalized_runs
+
     # Show every model actually present in the run (including catalog variants run
     # via --models), ordered by the config roster (models then catalog), so cheap/
     # mid-tier variants appear — not just the default `models` lineup.
@@ -187,8 +199,12 @@ def aggregate(runs, cfg):
         model_stats = {}
         for mid in models:
             rs = cells.get((role, mid), [])
-            considered = [r for r in rs if not r.get("skipped")]
-            ran = [r for r in considered if r.get("ok")]
+            infra_quota = [r for r in rs if benchlib.is_infra_quota_no_score(r)]
+            considered = [r for r in rs if not r.get("skipped") and not benchlib.is_infra_quota_no_score(r)]
+            ran = [
+                r for r in considered
+                if r.get("ok") and r.get("quality") is not None
+            ]
             success_rate = (len(ran) / len(considered)) if considered else None
             publish_quality = benchlib.success_rate_meets_quality_floor(success_rate, cfg)
             qualities = [r.get("quality") for r in ran]
@@ -202,10 +218,15 @@ def aggregate(runs, cfg):
             mean_quality = _mean(qualities) if publish_quality else None
             suppressed_reason = _success_suppression_reason(success_rate, cfg)
             band, band_note = _decision_band(mean_quality, success_rate, reps, bool(considered), cfg)
+            if not considered and infra_quota:
+                band = benchlib.INFRA_QUOTA_NO_SCORE
+                band_note = "provider quota; excluded from quality means until served output exists"
             model_stats[mid] = {
                 "tasks": len(considered),
                 "nTasks": n_tasks,
                 "attempts": len(considered),
+                "infraQuotaNoScore": len(infra_quota),
+                "providerQuotaFailures": len(infra_quota),
                 "reps": reps,
                 "minRepsForDecision": benchlib.min_reps_for_decision(cfg),
                 "okRuns": len(ran),
@@ -446,7 +467,9 @@ def to_markdown(report, run_id, meta):
              "that would otherwise reward whichever CLI ships the smallest base prompt rather than "
              "the better model. `in`/`out` = mean input/output tokens. Quality and q/1k are "
              f"suppressed below the {success_floor:.0%} success floor. Reps below {min_reps} are "
-             "capped at `candidate`. Models run in a neutralized "
+             "capped at `candidate`. Usage-limit/no-served-output rows are marked "
+             f"`{benchlib.INFRA_QUOTA_NO_SCORE}` / `{benchlib.PROVIDER_QUOTA}` and excluded "
+             "from quality means until a served output exists. Models run in a neutralized "
              "temp CWD — base-model capability, not the local agent harness.\n")
 
     # overall
@@ -476,8 +499,8 @@ def to_markdown(report, run_id, meta):
         if gate:
             verdict = "pass" if gate.get("satisfied") else "VOID"
             L.append(f"_Deployed-baseline gate: **{verdict}** — {gate.get('reason')}._\n")
-        L.append("| Model | Quality | q/1k-out | in | out | Success | n_tasks | reps | Band |")
-        L.append("|---|---|---|---|---|---|---|---|---|")
+        L.append("| Model | Quality | q/1k-out | in | out | Success | n_tasks | reps | Infra quota | Band |")
+        L.append("|---|---|---|---|---|---|---|---|---|---|")
         for m in report["models"]:
             s = rd["models"][m["id"]]
             est = " *(est)*" if s["estimatedTokens"] else ""
@@ -488,8 +511,17 @@ def to_markdown(report, run_id, meta):
             L.append(f"| {m['label']} | {_fmt(s['meanQuality'])} | {_fmt(s.get('meanQualityPer1kOutput'))} "
                      f"| {_fmt_int(s['meanInputTokens'])} | {_fmt_int(s['meanOutputTokens'])}{est} "
                      f"| {_fmt(s['successRate'], pct=True)} | {s.get('nTasks', s.get('tasks', '—'))} "
-                     f"| {s.get('reps', '—')} | {band} |")
+                     f"| {s.get('reps', '—')} | {s.get('infraQuotaNoScore', 0)} | {band} |")
         rec = rd["recommendation"]
+        # TSBC-1658: a "Recommended for X" line comparing one model against itself is noise, not
+        # a verdict — it fired on all 21 roles in run-20260731-030453 (single-model sweep). Also
+        # flag that this table is raw_base (neutralized CWD, no agent file/skills) — see TSKB0056.
+        if len(report["models"]) <= 1:
+            L.append(f"\n_Recommendation suppressed: only one model in this run "
+                      f"({report['models'][0]['label'] if report['models'] else '—'}) — nothing to "
+                      f"recommend against. This table is **raw_base** capability (no agent file, no "
+                      f"skills); it is not a production-config prediction — see TSKB0056._\n")
+            continue
         L.append(f"\n**→ Recommended for `{role}`: {rec.get('pickLabel') or '—'}** — {rec.get('reason', '')}  ")
         extra = ""
         if rec.get("qualityGivenUp"):
@@ -526,13 +558,14 @@ def to_markdown(report, run_id, meta):
         for role in agentic:
             rd = report["roles"][role]
             L.append(f"### `{role}`\n")
-            L.append("| Model | Completion quality | Success | cases | reps | Band |")
-            L.append("|---|---|---|---|---|---|")
+            L.append("| Model | Completion quality | Success | cases | reps | Infra quota | Band |")
+            L.append("|---|---|---|---|---|---|---|")
             for m in report["models"]:
                 s = rd["models"][m["id"]]
                 L.append(f"| {m['label']} | {_fmt(s['meanQuality'])} | "
                          f"{_fmt(s['successRate'], pct=True)} | {s['tasks']} | "
-                         f"{s.get('reps', '—')} | {s.get('decisionBand') or '—'} |")
+                         f"{s.get('reps', '—')} | {s.get('infraQuotaNoScore', 0)} | "
+                         f"{s.get('decisionBand') or '—'} |")
             L.append("")
         identity_rows = [
             m for m in report["models"]

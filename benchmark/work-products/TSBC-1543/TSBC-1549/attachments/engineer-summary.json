@@ -1,0 +1,63 @@
+{
+  "meta": {
+    "run_id": "probe-20260730-161626",
+    "label": "TSBC-1549 hermes-lean engineer full",
+    "role": "engineer",
+    "taskIds": [
+      "eng-failure-classify",
+      "eng-scorecard-sql-bug",
+      "eng-prefix-router",
+      "eng-concurrency-race",
+      "eng-stale-reap-default-bug",
+      "eng-token-normalizer",
+      "eng-nplus1-fix",
+      "eng-sql-injection",
+      "eng-flaky-test-diagnose",
+      "eng-unsafe-migration",
+      "eng-idempotency-bug",
+      "eng-timezone-offbyone"
+    ],
+    "models": [
+      "grok-4.5-hermes-lean"
+    ],
+    "reps": 3,
+    "agentFile": "current",
+    "skills": "none",
+    "judge": "claude-opus",
+    "effortOverride": "cli_default",
+    "probeFramePolicy": "auto_agentic_antigravity_non_bare_for_book-content-cv",
+    "plannedGenerationMethods": {
+      "grok-4.5-hermes-lean": "single_shot_concat"
+    },
+    "startedAt": "2026-07-30T15:16:26+00:00",
+    "workers": 1,
+    "agentFileSourcePath": "/Users/glad0s/.paperclip/instances/default/companies/e212ce50-b524-408c-b3d4-0c6108d8c2e2/work-products/TSBC-1543/TSBC-1549/agent-files/TSBC-1549-lean-cell.md",
+    "skillsSourcePath": "/Users/glad0s/.paperclip/instances/default/skills/e6361895-a6a4-438d-bb76-b17a0ad026cb/__runtime__",
+    "agentFileSourceKind": "override",
+    "skillsSourceKind": "variants_json",
+    "agentFileSha256": "a3fe5d96277ee604cb0acd75532bcf2f403afa514220ea1430ca68c218546715",
+    "skillsBundleSha256": "none",
+    "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/engineer/suite.json",
+    "suiteSha256": "b7373c2152d432ffadaa313c61133d110457a1e56402bf122dab21c5460d183f",
+    "probeContextSha256": "989122a4ec186f6726a40c5aa03c447c17cc147b333814fa2e1b4d8d43a5afbd",
+    "promptPacketSha256": "beed9cf7bee25221637413b48da327168da33e217c2c4542cdda4f96cc730b89",
+    "finishedAt": "2026-07-30T15:28:45+00:00",
+    "elapsedSec": 739.8
+  },
+  "overall": [
+    {
+      "model": "grok-4.5-hermes-lean",
+      "effort": "cli_default",
+      "generationFrame": "single_shot_concat",
+      "tasks": 12,
+      "samples": 36,
+      "okCount": 36,
+      "meanQuality": 0.964024470899471,
+      "minQuality": 0.7833333333333333,
+      "medianOutputTokens": 166.0,
+      "meanOutputTokens": 175.02777777777777,
+      "meanInputTokens": 423.3333333333333,
+      "meanQPer1kOut": 6.829821262101334
+    }
+  ]
+}

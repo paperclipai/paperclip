@@ -1,0 +1,278 @@
+[
+  {
+    "model": "grok-4.5-hermes-lean",
+    "effort": "cli_default",
+    "task_id": "cto-build-vs-buy-judge",
+    "adapterType": "hermes",
+    "generationFrame": "single_shot_concat",
+    "reportedModels": [
+      "grok-4.5"
+    ],
+    "samples": 3,
+    "okCount": 3,
+    "meanQuality": 0.9645833333333333,
+    "minQuality": 0.95,
+    "medianOutputTokens": 85,
+    "meanOutputTokens": 87.66666666666667,
+    "meanInputTokens": 469,
+    "meanQPer1kOut": 11.036569769751871,
+    "runIds": [
+      "rep01",
+      "rep02",
+      "rep03"
+    ]
+  },
+  {
+    "model": "grok-4.5-hermes-lean",
+    "effort": "cli_default",
+    "task_id": "cto-code-review-security-bug",
+    "adapterType": "hermes",
+    "generationFrame": "single_shot_concat",
+    "reportedModels": [
+      "grok-4.5"
+    ],
+    "samples": 3,
+    "okCount": 3,
+    "meanQuality": 0.9766666666666667,
+    "minQuality": 0.96875,
+    "medianOutputTokens": 166,
+    "meanOutputTokens": 168,
+    "meanInputTokens": 432,
+    "meanQPer1kOut": 5.816794300836652,
+    "runIds": [
+      "rep01",
+      "rep02",
+      "rep03"
+    ]
+  },
+  {
+    "model": "grok-4.5-hermes-lean",
+    "effort": "cli_default",
+    "task_id": "cto-eng-load-balance",
+    "adapterType": "hermes",
+    "generationFrame": "single_shot_concat",
+    "reportedModels": [
+      "grok-4.5"
+    ],
+    "samples": 3,
+    "okCount": 2,
+    "meanQuality": 0.9875,
+    "minQuality": 0.9875,
+    "medianOutputTokens": 21,
+    "meanOutputTokens": 14,
+    "meanInputTokens": 468,
+    "meanQPer1kOut": 47.023809523809526,
+    "runIds": [
+      "rep01",
+      "rep02",
+      "rep03"
+    ]
+  },
+  {
+    "model": "grok-4.5-hermes-lean",
+    "effort": "cli_default",
+    "task_id": "cto-escalate-to-mc",
+    "adapterType": "hermes",
+    "generationFrame": "single_shot_concat",
+    "reportedModels": [
+      "grok-4.5"
+    ],
+    "samples": 3,
+    "okCount": 2,
+    "meanQuality": 1.0,
+    "minQuality": 1.0,
+    "medianOutputTokens": 21,
+    "meanOutputTokens": 14,
+    "meanInputTokens": 544,
+    "meanQPer1kOut": 47.61904761904761,
+    "runIds": [
+      "rep01",
+      "rep02",
+      "rep03"
+    ]
+  },
+  {
+    "model": "grok-4.5-hermes-lean",
+    "effort": "cli_default",
+    "task_id": "cto-fallback-monitor-adapter-trap",
+    "adapterType": "hermes",
+    "generationFrame": "single_shot_concat",
+    "reportedModels": [
+      "grok-4.5"
+    ],
+    "samples": 3,
+    "okCount": 3,
+    "meanQuality": 0.9125000000000001,
+    "minQuality": 0.83875,
+    "medianOutputTokens": 51,
+    "meanOutputTokens": 51.666666666666664,
+    "meanInputTokens": 383,
+    "meanQPer1kOut": 17.674310094408135,
+    "runIds": [
+      "rep01",
+      "rep02",
+      "rep03"
+    ]
+  },
+  {
+    "model": "grok-4.5-hermes-lean",
+    "effort": "cli_default",
+    "task_id": "cto-fallback-monitor-option",
+    "adapterType": "hermes",
+    "generationFrame": "single_shot_concat",
+    "reportedModels": [
+      "grok-4.5"
+    ],
+    "samples": 3,
+    "okCount": 3,
+    "meanQuality": 0.9833333333333334,
+    "minQuality": 0.97875,
+    "medianOutputTokens": 78,
+    "meanOutputTokens": 78.66666666666667,
+    "meanInputTokens": 511,
+    "meanQPer1kOut": 12.639037636900364,
+    "runIds": [
+      "rep01",
+      "rep02",
+      "rep03"
+    ]
+  },
+  {
+    "model": "grok-4.5-hermes-lean",
+    "effort": "cli_default",
+    "task_id": "cto-gate-keeper-capability-design",
+    "adapterType": "hermes",
+    "generationFrame": "single_shot_concat",
+    "reportedModels": [
+      "grok-4.5"
+    ],
+    "samples": 3,
+    "okCount": 3,
+    "meanQuality": 0.839047619047619,
+    "minQuality": 0.7285714285714285,
+    "medianOutputTokens": 16,
+    "meanOutputTokens": 16,
+    "meanInputTokens": 502,
+    "meanQPer1kOut": 52.44047619047619,
+    "runIds": [
+      "rep01",
+      "rep02",
+      "rep03"
+    ]
+  },
+  {
+    "model": "grok-4.5-hermes-lean",
+    "effort": "cli_default",
+    "task_id": "cto-local-only-relay-mismatch",
+    "adapterType": "hermes",
+    "generationFrame": "single_shot_concat",
+    "reportedModels": [
+      "grok-4.5"
+    ],
+    "samples": 3,
+    "okCount": 3,
+    "meanQuality": 0.9520833333333334,
+    "minQuality": 0.9437500000000001,
+    "medianOutputTokens": 67,
+    "meanOutputTokens": 67,
+    "meanInputTokens": 418,
+    "meanQPer1kOut": 14.292233253226346,
+    "runIds": [
+      "rep01",
+      "rep02",
+      "rep03"
+    ]
+  },
+  {
+    "model": "grok-4.5-hermes-lean",
+    "effort": "cli_default",
+    "task_id": "cto-plan-approval-gate",
+    "adapterType": "hermes",
+    "generationFrame": "single_shot_concat",
+    "reportedModels": [
+      "grok-4.5"
+    ],
+    "samples": 3,
+    "okCount": 3,
+    "meanQuality": 0.9766666666666666,
+    "minQuality": 0.975,
+    "medianOutputTokens": 129,
+    "meanOutputTokens": 123.33333333333333,
+    "meanInputTokens": 387,
+    "meanQPer1kOut": 7.954445828719084,
+    "runIds": [
+      "rep01",
+      "rep02",
+      "rep03"
+    ]
+  },
+  {
+    "model": "grok-4.5-hermes-lean",
+    "effort": "cli_default",
+    "task_id": "cto-reject-overengineering",
+    "adapterType": "hermes",
+    "generationFrame": "single_shot_concat",
+    "reportedModels": [
+      "grok-4.5"
+    ],
+    "samples": 3,
+    "okCount": 3,
+    "meanQuality": 0.99125,
+    "minQuality": 0.98625,
+    "medianOutputTokens": 72,
+    "meanOutputTokens": 73.66666666666667,
+    "meanInputTokens": 445,
+    "meanQPer1kOut": 13.478260051763574,
+    "runIds": [
+      "rep01",
+      "rep02",
+      "rep03"
+    ]
+  },
+  {
+    "model": "grok-4.5-hermes-lean",
+    "effort": "cli_default",
+    "task_id": "cto-reject-restart-race-default",
+    "adapterType": "hermes",
+    "generationFrame": "single_shot_concat",
+    "reportedModels": [
+      "grok-4.5"
+    ],
+    "samples": 3,
+    "okCount": 3,
+    "meanQuality": 0.9716666666666667,
+    "minQuality": 0.96875,
+    "medianOutputTokens": 71,
+    "meanOutputTokens": 69.66666666666667,
+    "meanInputTokens": 476,
+    "meanQPer1kOut": 13.9576764066989,
+    "runIds": [
+      "rep01",
+      "rep02",
+      "rep03"
+    ]
+  },
+  {
+    "model": "grok-4.5-hermes-lean",
+    "effort": "cli_default",
+    "task_id": "cto-reversibility-rollout",
+    "adapterType": "hermes",
+    "generationFrame": "single_shot_concat",
+    "reportedModels": [
+      "grok-4.5"
+    ],
+    "samples": 3,
+    "okCount": 3,
+    "meanQuality": 0.9841666666666667,
+    "minQuality": 0.9825,
+    "medianOutputTokens": 70,
+    "meanOutputTokens": 69.33333333333333,
+    "meanInputTokens": 399,
+    "meanQPer1kOut": 14.226165387124292,
+    "runIds": [
+      "rep01",
+      "rep02",
+      "rep03"
+    ]
+  }
+]

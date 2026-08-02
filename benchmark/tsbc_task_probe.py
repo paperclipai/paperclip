@@ -17,10 +17,18 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import benchlib
+import judge_policy
 import ledger
 from adapters import run_antigravity_agentic, run_model
 from scoring import score_run
-from variants import PREFIX_INSTR, build_prompt, load_skill_bundle, resolve_role
+from variants import (
+    PREFIX_INSTR,
+    build_prompt,
+    load_skill_bundle,
+    load_variants_config,
+    resolve_role,
+    select_current_agent_file,
+)
 
 
 def now_run_id():
@@ -49,6 +57,9 @@ def resolve_models(cfg, only):
 def resolve_judge(cfg, judge_id):
     if not judge_id:
         return cfg["judge"]
+    policy_judge = judge_policy.named_judge(judge_id)
+    if policy_judge:
+        return policy_judge
     roster = {m["id"]: m for m in (cfg.get("models", []) + cfg.get("models_catalog", []))}
     row = roster.get(judge_id)
     if not row:
@@ -168,8 +179,10 @@ def build_agentic_prompt(agent_body, staged_names, task_prompt):
     return "\n\n".join(blocks) + f"\n\n{PREFIX_INSTR}\n\n=== TASK ===\n{task_prompt}"
 
 
-def prompt_parts(role, agent_file, skills, current_agent_file_path=None, skills_dir_path=None):
-    rc = json.load(open(benchlib.ROOT / "variants.json"))["roles"].get(role)
+def prompt_parts(role, agent_file, skills, current_agent=None, current_agent_file_path=None, skills_dir_path=None,
+                 variants_config_path=None):
+    variants_doc, resolved_variants_config_path = load_variants_config(variants_config_path)
+    rc = variants_doc["roles"].get(role)
     source_meta = {
         "agentFileSourcePath": None,
         "skillsSourcePath": None,
@@ -179,12 +192,23 @@ def prompt_parts(role, agent_file, skills, current_agent_file_path=None, skills_
     af_bodies = {"bare": "", "minimal": "", "current": ""}
     skill_bodies = {"none": "", "all": ""}
     if rc:
-        af_bodies, skill_bodies = resolve_role(role, rc)
+        af_bodies, skill_bodies = resolve_role(
+            role,
+            rc,
+            current_agent=current_agent,
+            current_agent_file_path=current_agent_file_path,
+        )
+        selected_current, _selected_agent, selected_kind = select_current_agent_file(
+            rc,
+            current_agent=current_agent,
+            current_agent_file_path=current_agent_file_path,
+        )
         source_meta.update({
-            "agentFileSourcePath": rc.get("currentAgentFile"),
+            "agentFileSourcePath": selected_current,
             "skillsSourcePath": rc.get("skillsDir"),
-            "agentFileSourceKind": "variants_json",
-            "skillsSourceKind": "variants_json",
+            "agentFileSourceKind": selected_kind,
+            "skillsSourceKind": "variants_config",
+            "variantsConfigPath": str(resolved_variants_config_path),
         })
     if current_agent_file_path:
         af_bodies["current"] = Path(current_agent_file_path).read_text()
@@ -318,10 +342,24 @@ def write_report(out_dir, meta, per_task, overall):
         "| model | frame | effort | tasks | samples | ok | meanQ | minQ | meanOut | meanIn | q/1k-out |",
         "|---|---|---|---:|---:|---:|---:|---:|---:|---:|---:|",
     ]
+    def _fmt_row(template: str, row: dict) -> str:
+        # Fail-soft when a partial bank leaves quality/token means as None.
+        safe = {
+            k: (0.0 if v is None and k.endswith(("Quality", "Tokens", "QPer1kOut", "meanQPer1kOut")) else v)
+            for k, v in row.items()
+        }
+        try:
+            return template.format(**safe)
+        except (TypeError, KeyError, ValueError):
+            return template.format(**{k: (v if v is not None else "—") for k, v in row.items()})
+
     for row in overall:
         lines.append(
-            "| {model} | {generationFrame} | {effort} | {tasks} | {samples} | {okCount} | {meanQuality:.3f} | {minQuality:.3f} | "
-            "{meanOutputTokens:.1f} | {meanInputTokens:.1f} | {meanQPer1kOut:.3f} |".format(**row)
+            _fmt_row(
+                "| {model} | {generationFrame} | {effort} | {tasks} | {samples} | {okCount} | {meanQuality:.3f} | {minQuality:.3f} | "
+                "{meanOutputTokens:.1f} | {meanInputTokens:.1f} | {meanQPer1kOut:.3f} |",
+                row,
+            )
         )
     lines.extend([
         "",
@@ -332,8 +370,11 @@ def write_report(out_dir, meta, per_task, overall):
     ])
     for row in per_task:
         lines.append(
-            "| {model} | {generationFrame} | {effort} | {task_id} | {samples} | {okCount} | {meanQuality:.3f} | {minQuality:.3f} | "
-            "{meanOutputTokens:.1f} | {meanInputTokens:.1f} | {meanQPer1kOut:.3f} |".format(**row)
+            _fmt_row(
+                "| {model} | {generationFrame} | {effort} | {task_id} | {samples} | {okCount} | {meanQuality:.3f} | {minQuality:.3f} | "
+                "{meanOutputTokens:.1f} | {meanInputTokens:.1f} | {meanQPer1kOut:.3f} |",
+                row,
+            )
         )
     lines.extend([
         "",
@@ -419,12 +460,16 @@ def append_probe_rows(meta, per_task):
 def main():
     ap = argparse.ArgumentParser(description="TSBC bounded task-cluster probe")
     ap.add_argument("--config", default=None)
+    ap.add_argument("--variants-config", default=None,
+                    help="path to a task/company-local variants config (default: benchmark/variants.json)")
     ap.add_argument("--role", required=True)
     ap.add_argument("--task-ids", required=True, help="comma list")
     ap.add_argument("--models", required=True, help="comma list")
     ap.add_argument("--reps", type=int, default=5)
     ap.add_argument("--agent-file", choices=["bare", "minimal", "current"], default="minimal")
     ap.add_argument("--skills", choices=["none", "all"], default="none")
+    ap.add_argument("--current-agent", default=None,
+                    help="select a configured variants.json currentAgentFiles entry")
     ap.add_argument("--current-agent-file-path", default=None,
                     help="override variants.json currentAgentFile with an explicit path")
     ap.add_argument("--skills-dir-path", default=None,
@@ -444,8 +489,10 @@ def main():
         args.role,
         args.agent_file,
         args.skills,
+        current_agent=args.current_agent,
         current_agent_file_path=args.current_agent_file_path,
         skills_dir_path=args.skills_dir_path,
+        variants_config_path=args.variants_config,
     )
 
     workers = power_workers(default=1)

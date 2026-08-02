@@ -1,0 +1,80 @@
+{
+  "sample_id": "rep01",
+  "rep": 1,
+  "role": "engineer",
+  "task_id": "eng-sql-injection",
+  "task_title": "Spot the SQL injection in an OpCo admin endpoint",
+  "model": "grok-4.5-hermes-current",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "agentFile": "current",
+  "skills": "none",
+  "judge": "claude-opus",
+  "generationFrame": "single_shot_concat",
+  "ok": true,
+  "error": null,
+  "output": "(1) **SQL injection** (string-interpolated user input into raw SQL). Exploit: `x' OR '1'='1' --`\n\n(2) **Worst case on a shared multi-OpCo DB:** attacker can read/modify/delete *all* tenants\u2019 rows (or worse via stacked/UNION queries)\u2014cross-OpCo data theft, sabotage, or full DB compromise under the app\u2019s DB role\u2014not just their own routine.\n\n(3) **Fix \u2014 parameterized query:**\n```ts\nconst rows = await db.execute(\n  `SELECT id, schedule, last_run FROM routines WHERE name = $1`,\n  [name]\n);\n```\nThe value is bound as data, never parsed as SQL, so metacharacters cannot change the query structure.",
+  "model_reported": "grok-4.5",
+  "inputTokens": 27956,
+  "outputTokens": 390,
+  "totalTokens": 28346,
+  "tokensEstimated": false,
+  "costUsd": null,
+  "agentFileSha256": "034125e8b1a32beb43ab724ebd0caea09da96ea2abb08cd6f2ead03816cbc4db",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "b7373c2152d432ffadaa313c61133d110457a1e56402bf122dab21c5460d183f",
+  "wallMs": 12799,
+  "stderrTail": "",
+  "promptChars": 21622,
+  "stagedSkills": 0,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 3.0,
+      "spec": {
+        "values": [
+          "sql injection",
+          "injection"
+        ]
+      }
+    },
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 3.0,
+      "spec": {
+        "values": [
+          "parameteriz",
+          "parametriz",
+          "prepared statement",
+          "bind",
+          "placeholder",
+          "$1",
+          "?"
+        ]
+      }
+    },
+    {
+      "check": "max_words",
+      "ok": true,
+      "weight": 1.0,
+      "spec": {
+        "value": 150
+      }
+    }
+  ],
+  "judgeScore": 0.9650000000000001,
+  "judgeDetail": {
+    "perCriterion": {
+      "correctness": 0.97,
+      "specificity": 0.95
+    },
+    "rationale": "Names SQL injection with a working exploit string, gives parameterized query with $1 placeholder explaining data/code separation, and captures cross-OpCo impact; only nit is the exploit lacks explicit narration that it dumps all OpCos' rows.",
+    "judgeModel": "opus"
+  },
+  "quality": 0.9825,
+  "qualityPer1kTokens": 0.03466097509348762
+}

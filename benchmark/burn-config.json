@@ -42,7 +42,8 @@
       "adapter": "hermes",
       "model_arg": "grok-4.20-0309-reasoning",
       "label": "Grok 4.20 (reasoning)",
-      "lane": "hermes"
+      "lane": "hermes",
+      "note": "Tracked served-model family per TSBC-1674 radar (Hermes xAI OAuth live; probes OK for reasoning/non-reasoning/multi-agent variants). Distinct bench/routing cell from grok-4.3 and grok-4.5. Dedicated pins active for Bench-grok-4.20 + non-reasoning variant. CEO dispatch: explicit routing prefers reasoning for agentic work, non-reasoning for throughput."
     },
     {
       "id": "gemini-flash",
@@ -102,7 +103,7 @@
       "_comment": "Weekly Spark quota (~27M tok/wk), metered SEPARATELY from the general Codex bucket -- verified 2026-07-31 03:5x: the general codex account was quota-dead until Aug 5 while this model answered in 247 tokens. Unused Spark quota is wasted at the weekly reset, hence the burn."
     }
   ],
-  "_models_catalog_comment": "Validated within-family variants (confirmed callable via their CLI 2026-06-14 unless noted below). `bench.py all` runs the active `models` roster above; as of 2026-07-11 that includes the new codex mini tier (`gpt-5.4-mini`) and the Claude cheap-lane probe (`claude-sonnet-5`). Opt in per run for catalog-only variants such as `claude-haiku`, `gemini-flash`, or the direct-Grok `grok-4.5` flagship. GPT-5.6 family availability was re-confirmed on 2026-07-11 from the EU via Codex OAuth after upgrading codex-cli to 0.144.1. `grok-4.5` was re-confirmed callable on the direct EU `grok.com` lane on 2026-07-17 (`grok --prompt-file ... -m grok-4.5`), but the CLI still exposes no usage block so benchmark token accounting remains estimated on that lane. gpt-5.3-codex-spark IS a valid model (same as Paperclip's spark lane, invoked --model gpt-5.3-codex-spark with reasoning_effort=high) but is DAILY RATE-LIMITED \u2014 sweeps including it fail with a usage-limit error while exhausted (resets ~mid-afternoon). Genuinely NOT supported on this ChatGPT account (400 invalid_request, never works): plain gpt-5.3, gpt-5.3-codex, gpt-5-codex.",
+  "_models_catalog_comment": "Validated within-family variants (confirmed callable via their CLI 2026-06-14 unless noted below). `bench.py all` runs the active `models` roster above; as of 2026-07-11 that includes the new codex mini tier (`gpt-5.4-mini`) and the Claude cheap-lane probe (`claude-sonnet-5`). Opt in per run for catalog-only variants such as `claude-haiku`, `gemini-flash`, or the direct-Grok `grok-4.5` flagship. GPT-5.6 family availability was re-confirmed on 2026-07-11 from the EU via Codex OAuth after upgrading codex-cli to 0.144.1. `grok-4.5` was re-confirmed callable on the direct EU `grok.com` lane on 2026-07-17 (`grok --prompt-file ... -m grok-4.5`), but the CLI still exposes no usage block so benchmark token accounting remains estimated on that lane. AGY raw-Gemini rule locked by TSBC-1677 on 2026-07-31: only visible `agy models` entries or same-day probe-validated AGY slugs belong in future matrices. Raw `gemini-3.5-flash-lite` plus retired `gemini-2.0-flash` are denylisted because AGY 1.1.9 now rejects them instead of silently rerouting. gpt-5.3-codex-spark IS a valid model (same as Paperclip's spark lane, invoked --model gpt-5.3-codex-spark with reasoning_effort=high) but is DAILY RATE-LIMITED \u2014 sweeps including it fail with a usage-limit error while exhausted (resets ~mid-afternoon). Genuinely NOT supported on this ChatGPT account (400 invalid_request, never works): plain gpt-5.3, gpt-5.3-codex, gpt-5-codex.",
   "models_catalog": [
     {
       "id": "claude-sonnet",
@@ -228,7 +229,7 @@
       "model_arg": "gemini-3.5-flash",
       "label": "Gemini 3.5 Flash",
       "lane": "antigravity",
-      "note": "Stable Gemini Flash ID probe-verified on the EU agy lane 2026-07-13"
+      "note": "Historical AGY slug probe-verified on the EU lane 2026-07-13, but absent from the 2026-07-31 `agy models` catalog. Re-probe on the current AGY version before reuse; nearby raw slug `gemini-3.5-flash-lite` now fails fast (TSBC-1677)."
     },
     {
       "id": "gemini-3.1-flash-lite",
@@ -236,7 +237,7 @@
       "model_arg": "gemini-3.1-flash-lite",
       "label": "Gemini 3.1 Flash Lite",
       "lane": "antigravity",
-      "note": "Stable Flash Lite ID probe-verified on the EU agy lane 2026-07-13"
+      "note": "Historical AGY slug probe-verified on the EU lane 2026-07-13, but absent from the 2026-07-31 `agy models` catalog. Treat as catalog-external until a same-day AGY probe reconfirms it."
     },
     {
       "id": "gemini-flash",
@@ -275,6 +276,15 @@
       ],
       "source": "TSBC-1439",
       "reason": "Permanent bench guard after the July 28, 2026 AGY model-truth probe: gemini-3.1-pro-high self-reported Gemini 3.6 Flash both as a combined slug and as --model gemini-3.1-pro --effort high. The bare gemini-3.1-pro id fails loudly without effort, and gemini-3.1-pro-low self-reports correctly. Re-probe after AGY version bumps before removing."
+    },
+    {
+      "id": "agy-invalid-raw-gemini-slugs-20260731",
+      "models": [
+        "gemini-3.5-flash-lite",
+        "gemini-2.0-flash"
+      ],
+      "source": "TSBC-1677; TSBC-1671 AGY 1.1.9 probes",
+      "reason": "Permanent bench guard after the July 31, 2026 AGY 1.1.9 fail-fast shift: these raw Gemini slugs are not valid model selections on the AGY surface. Use only visible `agy models` entries or same-day validated AGY slugs; do not rely on silent reroute."
     },
     {
       "id": "xai-fast-alias-retirement-20260515",

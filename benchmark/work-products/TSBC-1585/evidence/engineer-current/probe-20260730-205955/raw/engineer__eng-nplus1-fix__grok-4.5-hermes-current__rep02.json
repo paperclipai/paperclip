@@ -1,0 +1,70 @@
+{
+  "sample_id": "rep02",
+  "rep": 2,
+  "role": "engineer",
+  "task_id": "eng-nplus1-fix",
+  "task_title": "Diagnose an N+1 query and write the batched fix",
+  "model": "grok-4.5-hermes-current",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "agentFile": "current",
+  "skills": "none",
+  "judge": "claude-opus",
+  "generationFrame": "single_shot_concat",
+  "ok": true,
+  "error": null,
+  "output": "(1) N+1 / 2N sequential query problem: one `findFirst` + one `findMany` per id, each `await`ed in the loop.\n\n(2) Cost is ~2N DB round-trips in series. Latency grows linearly with |routineIds|; under load connection pool and RTT dominate, so throughput collapses as N grows.\n\n(3) Bound to two queries, then join in memory:\n\n```ts\nasync function loadRoutineCards(routineIds: string[]) {\n  if (!routineIds.length) return [];\n  const routineRows = await db.query.routines.findMany({\n    where: inArray(routines.id, routineIds),\n  });\n  const runRows = await db.query.runs.findMany({\n    where: inArray(runs.routineId, routineIds),\n    // orderBy createdAt desc if needed; trim to 5 per id below\n  });\n  const runsByRoutine = new Map<string, typeof runRows>();\n  for (const r of runRows) {\n    const list = runsByRoutine.get(r.routineId) ?? [];\n    if (list.length < 5) list.push(r);\n    runsByRoutine.set(r.routineId, list);\n  }\n  return routineRows.map((routine) => ({\n    routine,\n    runs: runsByRoutine.get(routine.id) ?? [],\n  }));\n}\n```\n\n(Or one query with a relational `with: { runs: { limit: 5 } }` if the ORM supports it.)",
+  "model_reported": "grok-4.5",
+  "inputTokens": 22195,
+  "outputTokens": 600,
+  "totalTokens": 22795,
+  "tokensEstimated": false,
+  "costUsd": null,
+  "agentFileSha256": "034125e8b1a32beb43ab724ebd0caea09da96ea2abb08cd6f2ead03816cbc4db",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "b7373c2152d432ffadaa313c61133d110457a1e56402bf122dab21c5460d183f",
+  "wallMs": 14426,
+  "stderrTail": "",
+  "promptChars": 21582,
+  "stagedSkills": 0,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 3.0,
+      "spec": {
+        "values": [
+          "N+1",
+          "n+1",
+          "per-routine",
+          "per routine",
+          "in a loop",
+          "inArray",
+          "IN (",
+          "batch"
+        ]
+      }
+    },
+    {
+      "check": "max_words",
+      "ok": true,
+      "weight": 1.0,
+      "spec": {
+        "value": 160
+      }
+    }
+  ],
+  "judgeScore": 0.9549999999999998,
+  "judgeDetail": {
+    "perCriterion": {
+      "correctness": 0.95,
+      "specificity": 0.97
+    },
+    "rationale": "Nails N+1/2N diagnosis and batches both queries via inArray with in-memory Map grouping plus 5-per-id trim and orderBy caveat; only tiny gap is the unordered fetch relying on that noted caveat.",
+    "judgeModel": "opus"
+  },
+  "quality": 0.9774999999999999,
+  "qualityPer1kTokens": 0.04288221101118666
+}

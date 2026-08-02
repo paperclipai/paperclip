@@ -1,0 +1,80 @@
+{
+  "sample_id": "rep02",
+  "rep": 2,
+  "role": "engineer",
+  "task_id": "eng-sql-injection",
+  "task_title": "Spot the SQL injection in an OpCo admin endpoint",
+  "model": "grok-4.5-hermes-current",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "agentFile": "current",
+  "skills": "none",
+  "judge": "claude-opus",
+  "generationFrame": "single_shot_concat",
+  "ok": true,
+  "error": null,
+  "output": "(1) SQL injection (CWE-89) via string-interpolated user input. Exploit: `x' UNION SELECT id::text, email, secret FROM opco_credentials--`\n\n(2) Worst case on a shared multi-OpCo DB: full cross-tenant read/write (dump other OpCos\u2019 routines, creds, PII), schema damage, or privilege abuse\u2014breaks tenant isolation.\n\n(3) Parameterize; never concatenate:\n\n```ts\nconst rows = await db.execute(\n  `SELECT id, schedule, last_run FROM routines WHERE name = $1`,\n  [name]\n);\n```\n\nWhy: the driver binds `name` as data, not SQL text, so metacharacters cannot alter the statement structure or inject extra clauses.",
+  "model_reported": "grok-4.5",
+  "inputTokens": 27444,
+  "outputTokens": 446,
+  "totalTokens": 27890,
+  "tokensEstimated": false,
+  "costUsd": null,
+  "agentFileSha256": "034125e8b1a32beb43ab724ebd0caea09da96ea2abb08cd6f2ead03816cbc4db",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "b7373c2152d432ffadaa313c61133d110457a1e56402bf122dab21c5460d183f",
+  "wallMs": 13367,
+  "stderrTail": "",
+  "promptChars": 21622,
+  "stagedSkills": 0,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 3.0,
+      "spec": {
+        "values": [
+          "sql injection",
+          "injection"
+        ]
+      }
+    },
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 3.0,
+      "spec": {
+        "values": [
+          "parameteriz",
+          "parametriz",
+          "prepared statement",
+          "bind",
+          "placeholder",
+          "$1",
+          "?"
+        ]
+      }
+    },
+    {
+      "check": "max_words",
+      "ok": true,
+      "weight": 1.0,
+      "spec": {
+        "value": 150
+      }
+    }
+  ],
+  "judgeScore": 0.9624999999999999,
+  "judgeDetail": {
+    "perCriterion": {
+      "correctness": 0.95,
+      "specificity": 1.0
+    },
+    "rationale": "Precisely names SQLi via interpolation, gives a working UNION exploit, fixes with $1 bind parameters explaining code/data separation, and captures cross-OpCo tenant-isolation impact; only minor nit is the UNION exploit assumes an opco_credentials schema rather than the simpler routines dump.",
+    "judgeModel": "opus"
+  },
+  "quality": 0.98125,
+  "qualityPer1kTokens": 0.035182861240588024
+}

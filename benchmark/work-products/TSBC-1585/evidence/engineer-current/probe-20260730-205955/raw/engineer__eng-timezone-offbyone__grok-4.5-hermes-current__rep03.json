@@ -1,0 +1,96 @@
+{
+  "sample_id": "rep03",
+  "rep": 3,
+  "role": "engineer",
+  "task_id": "eng-timezone-offbyone",
+  "task_title": "Fix the timezone off-by-one in the daily report window",
+  "model": "grok-4.5-hermes-current",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "agentFile": "current",
+  "skills": "none",
+  "judge": "claude-opus",
+  "generationFrame": "single_shot_concat",
+  "ok": true,
+  "error": null,
+  "output": "(1) Defects: Timezone \u2014 day bounds use UTC (`\u2026Z`), not Europe/Dublin (UTC+1 in summer). Boundary \u2014 closed end `lte(\u2026, dayStrT23:59:59Z)` is not next-midnight and drops sub-second timestamps after that second.\n\n(2) Mis-buckets (summer, +01:00): Local day D is [D\u22121 23:00Z, D 23:00Z). Runs 00:00\u201300:59 local on D (D\u22121 23:00\u201300:00Z)\u2014e.g. 00:30 local\u2014land on UTC day D\u22121, missing from D. Runs D 23:00\u201323:59Z (00:00\u201300:59 local on D+1) are wrongly kept in D. Also any `created_at` after exactly 23:59:59.000Z UTC that day is excluded by `lte`.\n\n(3) Fix: half-open local window \u2014 `start = 2026-06-19T23:00:00.000Z`, `end = 2026-06-20T23:00:00.000Z` for `dayStr='2026-06-20'`; `gte(createdAt, start) AND lt(createdAt, end)` (derive via a TZ library, not fixed offset year-round).",
+  "model_reported": "grok-4.5",
+  "inputTokens": 31468,
+  "outputTokens": 2799,
+  "totalTokens": 34267,
+  "tokensEstimated": false,
+  "costUsd": null,
+  "agentFileSha256": "034125e8b1a32beb43ab724ebd0caea09da96ea2abb08cd6f2ead03816cbc4db",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "b7373c2152d432ffadaa313c61133d110457a1e56402bf122dab21c5460d183f",
+  "wallMs": 54689,
+  "stderrTail": "",
+  "promptChars": 21888,
+  "stagedSkills": 0,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {
+        "values": [
+          "23:00",
+          "previous day",
+          "prior day",
+          "day before",
+          "earlier day",
+          "next local midnight",
+          "local midnight",
+          "DST",
+          "IANA",
+          "Europe/Dublin",
+          "shifted",
+          "subtract an hour",
+          "minus one hour",
+          "-1 hour",
+          "one hour earlier"
+        ]
+      }
+    },
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 3.0,
+      "spec": {
+        "values": [
+          "half-open",
+          "half open",
+          "exclusive",
+          "< end",
+          "lt(",
+          "23:59:59.999",
+          "final second",
+          "last second",
+          "off-by-one",
+          "off by one"
+        ]
+      }
+    },
+    {
+      "check": "max_words",
+      "ok": true,
+      "weight": 1.0,
+      "spec": {
+        "value": 160
+      }
+    }
+  ],
+  "judgeScore": 0.9775,
+  "judgeDetail": {
+    "perCriterion": {
+      "correctness": 0.97,
+      "specificity": 1.0
+    },
+    "rationale": "Catches both defects with correct shift direction (00:30 local \u2192 previous UTC day), exact half-open UTC window 19T23:00\u201320T23:00, lt() boundary, and TZ-library/DST caveat \u2014 only the sub-second `lte` phrasing is slightly loose.",
+    "judgeModel": "opus"
+  },
+  "quality": 0.98875,
+  "qualityPer1kTokens": 0.02885429130066828
+}

@@ -1,0 +1,8 @@
+{
+  "suite": "paperclip",
+  "taskId": "01-read-comment-done",
+  "rep": 1,
+  "sampleRoot": "/Users/glad0s/.paperclip/instances/default/projects/e212ce50-b524-408c-b3d4-0c6108d8c2e2/f71e8665-3f38-4920-b777-348ec85b9071/_default/work-products/TSBC-1141/sample-runs/TSBC-1585-paperclip-r1-20260730T195417Z/hermes-r1-paperclip-grok-4.5-hermes-clean/sample-r01-01-read-comment-done",
+  "hermesHome": "/Users/glad0s/.paperclip/instances/default/projects/e212ce50-b524-408c-b3d4-0c6108d8c2e2/f71e8665-3f38-4920-b777-348ec85b9071/_default/work-products/TSBC-1141/sample-runs/TSBC-1585-paperclip-r1-20260730T195417Z/hermes-r1-paperclip-grok-4.5-hermes-clean/sample-r01-01-read-comment-done/.hermes",
+  "preparedAt": "2026-07-30T19:54:17+00:00"
+}

@@ -1,0 +1,278 @@
+[
+  {
+    "model": "grok-4.5-hermes-current",
+    "effort": "cli_default",
+    "task_id": "eng-concurrency-race",
+    "adapterType": "hermes",
+    "generationFrame": "single_shot_concat",
+    "reportedModels": [
+      "grok-4.5"
+    ],
+    "samples": 3,
+    "okCount": 3,
+    "meanQuality": 0.9670833333333333,
+    "minQuality": 0.9575,
+    "medianOutputTokens": 842,
+    "meanOutputTokens": 1484.6666666666667,
+    "meanInputTokens": 32705.666666666668,
+    "meanQPer1kOut": 0.9296970692021157,
+    "runIds": [
+      "rep01",
+      "rep02",
+      "rep03"
+    ]
+  },
+  {
+    "model": "grok-4.5-hermes-current",
+    "effort": "cli_default",
+    "task_id": "eng-failure-classify",
+    "adapterType": "hermes",
+    "generationFrame": "single_shot_concat",
+    "reportedModels": [
+      "grok-4.5"
+    ],
+    "samples": 3,
+    "okCount": 3,
+    "meanQuality": 1.0,
+    "minQuality": 1.0,
+    "medianOutputTokens": 298,
+    "meanOutputTokens": 296,
+    "meanInputTokens": 26488,
+    "meanQPer1kOut": 3.37868897673991,
+    "runIds": [
+      "rep01",
+      "rep02",
+      "rep03"
+    ]
+  },
+  {
+    "model": "grok-4.5-hermes-current",
+    "effort": "cli_default",
+    "task_id": "eng-flaky-test-diagnose",
+    "adapterType": "hermes",
+    "generationFrame": "single_shot_concat",
+    "reportedModels": [
+      "grok-4.5"
+    ],
+    "samples": 3,
+    "okCount": 3,
+    "meanQuality": 0.9825,
+    "minQuality": 0.9825,
+    "medianOutputTokens": 5255,
+    "meanOutputTokens": 5155.333333333333,
+    "meanInputTokens": 46463,
+    "meanQPer1kOut": 0.19507164740390243,
+    "runIds": [
+      "rep01",
+      "rep02",
+      "rep03"
+    ]
+  },
+  {
+    "model": "grok-4.5-hermes-current",
+    "effort": "cli_default",
+    "task_id": "eng-idempotency-bug",
+    "adapterType": "hermes",
+    "generationFrame": "single_shot_concat",
+    "reportedModels": [
+      "grok-4.5"
+    ],
+    "samples": 3,
+    "okCount": 3,
+    "meanQuality": 0.9816666666666667,
+    "minQuality": 0.975,
+    "medianOutputTokens": 2477,
+    "meanOutputTokens": 2514.6666666666665,
+    "meanInputTokens": 40084,
+    "meanQPer1kOut": 0.8206484244836657,
+    "runIds": [
+      "rep01",
+      "rep02",
+      "rep03"
+    ]
+  },
+  {
+    "model": "grok-4.5-hermes-current",
+    "effort": "cli_default",
+    "task_id": "eng-nplus1-fix",
+    "adapterType": "hermes",
+    "generationFrame": "single_shot_concat",
+    "reportedModels": [
+      "grok-4.5"
+    ],
+    "samples": 3,
+    "okCount": 3,
+    "meanQuality": 0.9833333333333333,
+    "minQuality": 0.9774999999999999,
+    "medianOutputTokens": 600,
+    "meanOutputTokens": 2006,
+    "meanInputTokens": 31189.333333333332,
+    "meanQPer1kOut": 1.3178142004946365,
+    "runIds": [
+      "rep01",
+      "rep02",
+      "rep03"
+    ]
+  },
+  {
+    "model": "grok-4.5-hermes-current",
+    "effort": "cli_default",
+    "task_id": "eng-prefix-router",
+    "adapterType": "hermes",
+    "generationFrame": "single_shot_concat",
+    "reportedModels": [
+      "grok-4.5"
+    ],
+    "samples": 3,
+    "okCount": 3,
+    "meanQuality": 0.9966666666666667,
+    "minQuality": 0.99,
+    "medianOutputTokens": 182,
+    "meanOutputTokens": 182,
+    "meanInputTokens": 26386.333333333332,
+    "meanQPer1kOut": 5.476190476190476,
+    "runIds": [
+      "rep01",
+      "rep02",
+      "rep03"
+    ]
+  },
+  {
+    "model": "grok-4.5-hermes-current",
+    "effort": "cli_default",
+    "task_id": "eng-scorecard-sql-bug",
+    "adapterType": "hermes",
+    "generationFrame": "single_shot_concat",
+    "reportedModels": [
+      "grok-4.5"
+    ],
+    "samples": 3,
+    "okCount": 3,
+    "meanQuality": 0.9804166666666667,
+    "minQuality": 0.96375,
+    "medianOutputTokens": 781,
+    "meanOutputTokens": 812,
+    "meanInputTokens": 29430.333333333332,
+    "meanQPer1kOut": 1.2575353406119865,
+    "runIds": [
+      "rep01",
+      "rep02",
+      "rep03"
+    ]
+  },
+  {
+    "model": "grok-4.5-hermes-current",
+    "effort": "cli_default",
+    "task_id": "eng-sql-injection",
+    "adapterType": "hermes",
+    "generationFrame": "single_shot_concat",
+    "reportedModels": [
+      "grok-4.5"
+    ],
+    "samples": 3,
+    "okCount": 3,
+    "meanQuality": 0.9841666666666666,
+    "minQuality": 0.98125,
+    "medianOutputTokens": 390,
+    "meanOutputTokens": 371,
+    "meanInputTokens": 27358.666666666668,
+    "meanQPer1kOut": 2.7629458205638775,
+    "runIds": [
+      "rep01",
+      "rep02",
+      "rep03"
+    ]
+  },
+  {
+    "model": "grok-4.5-hermes-current",
+    "effort": "cli_default",
+    "task_id": "eng-stale-reap-default-bug",
+    "adapterType": "hermes",
+    "generationFrame": "single_shot_concat",
+    "reportedModels": [
+      "grok-4.5"
+    ],
+    "samples": 3,
+    "okCount": 3,
+    "meanQuality": 0.8511111111111112,
+    "minQuality": 0.5720833333333334,
+    "medianOutputTokens": 2249,
+    "meanOutputTokens": 3171.6666666666665,
+    "meanInputTokens": 49217.333333333336,
+    "meanQPer1kOut": 0.2994118814062747,
+    "runIds": [
+      "rep01",
+      "rep02",
+      "rep03"
+    ]
+  },
+  {
+    "model": "grok-4.5-hermes-current",
+    "effort": "cli_default",
+    "task_id": "eng-timezone-offbyone",
+    "adapterType": "hermes",
+    "generationFrame": "single_shot_concat",
+    "reportedModels": [
+      "grok-4.5"
+    ],
+    "samples": 3,
+    "okCount": 3,
+    "meanQuality": 0.98875,
+    "minQuality": 0.98875,
+    "medianOutputTokens": 2963,
+    "meanOutputTokens": 3029.3333333333335,
+    "meanInputTokens": 37327,
+    "meanQPer1kOut": 0.32807637624082653,
+    "runIds": [
+      "rep01",
+      "rep02",
+      "rep03"
+    ]
+  },
+  {
+    "model": "grok-4.5-hermes-current",
+    "effort": "cli_default",
+    "task_id": "eng-token-normalizer",
+    "adapterType": "hermes",
+    "generationFrame": "single_shot_concat",
+    "reportedModels": [
+      "grok-4.5"
+    ],
+    "samples": 3,
+    "okCount": 3,
+    "meanQuality": 0.9966666666666667,
+    "minQuality": 0.99,
+    "medianOutputTokens": 244,
+    "meanOutputTokens": 250.66666666666666,
+    "meanInputTokens": 25440,
+    "meanQPer1kOut": 3.98120549759894,
+    "runIds": [
+      "rep01",
+      "rep02",
+      "rep03"
+    ]
+  },
+  {
+    "model": "grok-4.5-hermes-current",
+    "effort": "cli_default",
+    "task_id": "eng-unsafe-migration",
+    "adapterType": "hermes",
+    "generationFrame": "single_shot_concat",
+    "reportedModels": [
+      "grok-4.5"
+    ],
+    "samples": 3,
+    "okCount": 3,
+    "meanQuality": 0.965,
+    "minQuality": 0.96375,
+    "medianOutputTokens": 4643,
+    "meanOutputTokens": 4366,
+    "meanInputTokens": 38315.333333333336,
+    "meanQPer1kOut": 0.22324701210561332,
+    "runIds": [
+      "rep01",
+      "rep02",
+      "rep03"
+    ]
+  }
+]

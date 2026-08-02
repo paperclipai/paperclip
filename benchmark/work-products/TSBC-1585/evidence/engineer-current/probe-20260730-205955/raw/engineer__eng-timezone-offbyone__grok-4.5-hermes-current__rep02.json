@@ -1,0 +1,96 @@
+{
+  "sample_id": "rep02",
+  "rep": 2,
+  "role": "engineer",
+  "task_id": "eng-timezone-offbyone",
+  "task_title": "Fix the timezone off-by-one in the daily report window",
+  "model": "grok-4.5-hermes-current",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "agentFile": "current",
+  "skills": "none",
+  "judge": "claude-opus",
+  "generationFrame": "single_shot_concat",
+  "ok": true,
+  "error": null,
+  "output": "(1) Defects: Timezone \u2014 window is built as UTC midnights (`\u2026Z`), not Europe/Dublin local midnights (IST, UTC+1 in summer). Boundary \u2014 closed `lte` end at `T23:59:59Z` (second resolution) drops sub-second times after `:59.000` and is not half-open to next midnight.\n\n(2) Mis-bucketing (Dublin UTC+1): A run at local 00:30 on day D is 23:30 UTC on D\u22121 \u2192 lands in D\u22121\u2019s report, missing from D. Runs 23:00\u201323:59 UTC on D are local 00:00\u201300:59 on D+1 \u2192 counted on D, missing from D+1. Fractional seconds past `23:59:59.000Z` can fall in neither day.\n\n(3) Corrected window (half-open, Dublin):\n`start = local 00:00 dayStr` \u2192 summer `(dayStr)T00:00+01:00` = prior calendar day `T23:00:00.000Z`;\n`end = local 00:00 dayStr+1` \u2192 summer `dayStr T23:00:00.000Z`;\n`createdAt >= start AND createdAt < end`.",
+  "model_reported": "grok-4.5",
+  "inputTokens": 40058,
+  "outputTokens": 2963,
+  "totalTokens": 43021,
+  "tokensEstimated": false,
+  "costUsd": null,
+  "agentFileSha256": "034125e8b1a32beb43ab724ebd0caea09da96ea2abb08cd6f2ead03816cbc4db",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "b7373c2152d432ffadaa313c61133d110457a1e56402bf122dab21c5460d183f",
+  "wallMs": 55963,
+  "stderrTail": "",
+  "promptChars": 21888,
+  "stagedSkills": 0,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {
+        "values": [
+          "23:00",
+          "previous day",
+          "prior day",
+          "day before",
+          "earlier day",
+          "next local midnight",
+          "local midnight",
+          "DST",
+          "IANA",
+          "Europe/Dublin",
+          "shifted",
+          "subtract an hour",
+          "minus one hour",
+          "-1 hour",
+          "one hour earlier"
+        ]
+      }
+    },
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 3.0,
+      "spec": {
+        "values": [
+          "half-open",
+          "half open",
+          "exclusive",
+          "< end",
+          "lt(",
+          "23:59:59.999",
+          "final second",
+          "last second",
+          "off-by-one",
+          "off by one"
+        ]
+      }
+    },
+    {
+      "check": "max_words",
+      "ok": true,
+      "weight": 1.0,
+      "spec": {
+        "value": 160
+      }
+    }
+  ],
+  "judgeScore": 0.9775,
+  "judgeDetail": {
+    "perCriterion": {
+      "correctness": 0.97,
+      "specificity": 1.0
+    },
+    "rationale": "Catches both defects with correct shift direction (00:30 local \u2192 23:30 UTC prev day \u2192 D\u22121), exact half-open UTC window 19T23:00\u219220T23:00, and the boundary bleed; only minor gap is not explicitly flagging IANA/DST handling beyond noting 'summer'/IST.",
+    "judgeModel": "opus"
+  },
+  "quality": 0.98875,
+  "qualityPer1kTokens": 0.02298296180934892
+}

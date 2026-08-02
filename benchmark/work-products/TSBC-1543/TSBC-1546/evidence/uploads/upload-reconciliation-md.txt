@@ -1,0 +1,10 @@
+Uploaded artifact
+
+- Attachment: [TSBC-1546 reconciliation report](/api/attachments/74553278-6256-42f5-913c-33e96b853d53/content)
+- Download: [TSBC-1546 reconciliation report](/api/attachments/74553278-6256-42f5-913c-33e96b853d53/content?download=1)
+- Attachment ID: `74553278-6256-42f5-913c-33e96b853d53`
+- Work product ID: `b9b6364e-fb3e-4f93-a6a3-ade825f69a6b`
+
+Final comment snippet:
+
+- Artifact: [TSBC-1546 reconciliation report](/api/attachments/74553278-6256-42f5-913c-33e96b853d53/content)

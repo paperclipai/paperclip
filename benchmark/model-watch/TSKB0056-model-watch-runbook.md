@@ -27,6 +27,18 @@ change a live lane.
    - the best refined score produced by the post-bench refinement loop
 5. Every refinement artifact must preserve source paths and hashes for the
    agent file and skills bundle used.
+6. Retired provider aliases are not benchmarkable model ids. As of TSBC-1571
+   (2026-07-30), xAI aliases retired on 2026-05-15 (`grok-4-fast-*`,
+   `grok-4-1-fast-*`, `grok-4.1-fast-*`, `grok-4-0709`) must fail served-model
+   verification and aggregate as `grok-4.3`; `grok-code-fast-1` migrates to
+   `grok-build-0.1`. Do not add retired aliases to `benchmark/config.json`,
+   live lane configs, or a probe matrix.
+7. AGY raw Gemini ids are benchmarkable only when they are visible in the
+   current `agy models` catalog or proven by a same-day AGY probe on the
+   current AGY version. TSBC-1677 locked the initial denylist on 2026-07-31:
+   raw `gemini-3.5-flash-lite` and retired `gemini-2.0-flash` now fail fast on
+   AGY 1.1.9 and must not be carried as silent-reroute assumptions in future
+   matrices.
 
 ## Required sequence
 
@@ -51,6 +63,8 @@ Before any adoption claim, answer:
 - Which skills bundle did the run load?
 - Were they benchmark-owned copies or live company files?
 - Are the compared rows from the same batch and same context class?
+- Does any model id, `model_arg`, or live lane config still name a retired
+  alias from `benchmark/model_provenance.py`?
 
 If any answer is missing, the verdict is audit-incomplete and cannot drive a
 lane change.

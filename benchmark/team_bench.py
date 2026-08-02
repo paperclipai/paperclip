@@ -21,7 +21,7 @@ even when it loses tokens). Recorded to the shared ledger under namespace
 so it never mixes with the model/skill/variant evals.
 
   python3 team_bench.py --single claude-haiku --workers claude-haiku --dry-run
-  python3 team_bench.py --single gemini-flash-low --workers grok-4-fast,gemini-flash-low --team-size 3
+  python3 team_bench.py --single gemini-flash-low --workers grok-4.3,gemini-flash-low --team-size 3
   python3 team_bench.py --roles book-chapter --single claude-haiku --max-tasks 1   # smoke
 """
 

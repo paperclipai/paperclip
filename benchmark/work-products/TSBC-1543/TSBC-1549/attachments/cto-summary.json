@@ -1,0 +1,63 @@
+{
+  "meta": {
+    "run_id": "probe-20260730-162918",
+    "label": "TSBC-1549 hermes-lean cto full",
+    "role": "cto",
+    "taskIds": [
+      "cto-reject-restart-race-default",
+      "cto-fallback-monitor-option",
+      "cto-local-only-relay-mismatch",
+      "cto-gate-keeper-capability-design",
+      "cto-code-review-security-bug",
+      "cto-build-vs-buy-judge",
+      "cto-plan-approval-gate",
+      "cto-escalate-to-mc",
+      "cto-eng-load-balance",
+      "cto-fallback-monitor-adapter-trap",
+      "cto-reversibility-rollout",
+      "cto-reject-overengineering"
+    ],
+    "models": [
+      "grok-4.5-hermes-lean"
+    ],
+    "reps": 3,
+    "agentFile": "current",
+    "skills": "none",
+    "judge": "claude-opus",
+    "effortOverride": "cli_default",
+    "probeFramePolicy": "auto_agentic_antigravity_non_bare_for_book-content-cv",
+    "plannedGenerationMethods": {
+      "grok-4.5-hermes-lean": "single_shot_concat"
+    },
+    "startedAt": "2026-07-30T15:29:18+00:00",
+    "workers": 1,
+    "agentFileSourcePath": "/Users/glad0s/.paperclip/instances/default/companies/e212ce50-b524-408c-b3d4-0c6108d8c2e2/work-products/TSBC-1543/TSBC-1549/agent-files/TSBC-1549-lean-cell.md",
+    "skillsSourcePath": "/Users/glad0s/.paperclip/instances/default/skills/e6361895-a6a4-438d-bb76-b17a0ad026cb/__runtime__",
+    "agentFileSourceKind": "override",
+    "skillsSourceKind": "variants_json",
+    "agentFileSha256": "a3fe5d96277ee604cb0acd75532bcf2f403afa514220ea1430ca68c218546715",
+    "skillsBundleSha256": "none",
+    "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/cto/suite.json",
+    "suiteSha256": "9178417ea7411729ec604cd6f0f72637a785d4d0f99ddd564fdfd0d4d603c31d",
+    "probeContextSha256": "c5d1c04a58aa09412af53e30d54d576c59b5e2b925bcd51c9982ec48e1f9b764",
+    "promptPacketSha256": "f6db83e6192b3aeff74fc255e4ebbcaff47c0b3df38b77cc86952e360fb7ed0c",
+    "finishedAt": "2026-07-30T15:40:25+00:00",
+    "elapsedSec": 666.4
+  },
+  "overall": [
+    {
+      "model": "grok-4.5-hermes-lean",
+      "effort": "cli_default",
+      "generationFrame": "single_shot_concat",
+      "tasks": 12,
+      "samples": 36,
+      "okCount": 34,
+      "meanQuality": 0.9616220238095239,
+      "minQuality": 0.7285714285714285,
+      "medianOutputTokens": 70.5,
+      "meanOutputTokens": 69.41666666666667,
+      "meanInputTokens": 452.8333333333333,
+      "meanQPer1kOut": 21.513235505230213
+    }
+  ]
+}

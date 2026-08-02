@@ -1,0 +1,24 @@
+{
+  "type": "artifact",
+  "provider": "workspace",
+  "title": "TSBC-1577 VA1 preflight evidence packet",
+  "status": "ready_for_review",
+  "reviewState": "none",
+  "isPrimary": true,
+  "healthStatus": "unknown",
+  "summary": "Governed local work-product packet for the blocked VA1 live matrix preflight; attachment upload returned HTTP 500 twice in this heartbeat.",
+  "createdByRunId": "2493d609-9ca5-4451-bdfd-7c8547ce77a3",
+  "metadata": {
+    "issueIdentifier": "TSBC-1577",
+    "parentIdentifier": "TSBC-1573",
+    "governedRoot": "/Users/glad0s/paperclip/benchmark/work-products/TSBC-1577",
+    "reportPdf": "/Users/glad0s/paperclip/benchmark/work-products/TSBC-1577/TSBC-1577-report.pdf",
+    "reportMarkdown": "/Users/glad0s/paperclip/benchmark/work-products/TSBC-1577/TSBC-1577-report.md",
+    "evidenceZip": "/Users/glad0s/paperclip/benchmark/work-products/TSBC-1577/TSBC-1577-evidence.zip",
+    "shaInventory": "/Users/glad0s/paperclip/benchmark/work-products/TSBC-1577/sha256-inventory.txt",
+    "sourceRunRoot": "/Users/glad0s/paperclip/benchmark/results/va1-20260730-203722",
+    "reportPdfSha256": "84b72e1331ccc0098a29dde7b52d7a60fe3329308e285fe0a86e326697b002c0",
+    "evidenceZipSha256": "afa6321ea2de0c8be4d74c544d3a5120641585944326cd90fb45f4fcce042f47",
+    "attachmentUploadStatus": "failed_http_500_twice"
+  }
+}

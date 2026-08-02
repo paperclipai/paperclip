@@ -1,0 +1,10 @@
+Uploaded artifact
+
+- Attachment: [TSBC-1546 report source](/api/attachments/2297cb4b-3613-4763-bc14-b70ff8403c36/content)
+- Download: [TSBC-1546 report source](/api/attachments/2297cb4b-3613-4763-bc14-b70ff8403c36/content?download=1)
+- Attachment ID: `2297cb4b-3613-4763-bc14-b70ff8403c36`
+- Work product ID: `dd7a4c44-3d29-4955-bb5d-b810ea2148f6`
+
+Final comment snippet:
+
+- Artifact: [TSBC-1546 report source](/api/attachments/2297cb4b-3613-4763-bc14-b70ff8403c36/content)

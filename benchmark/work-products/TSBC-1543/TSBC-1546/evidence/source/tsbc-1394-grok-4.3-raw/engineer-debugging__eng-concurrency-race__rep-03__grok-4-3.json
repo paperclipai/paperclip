@@ -1,0 +1,115 @@
+{
+  "issue": "TSBC-1394",
+  "runStartedAt": "2026-07-30T06:01:40+00:00",
+  "passStartedAt": "2026-07-30T06:24:51+00:00",
+  "passFinishedAt": "2026-07-30T06:25:21+00:00",
+  "surfaceKey": "engineer_debugging",
+  "surfaceLabel": "Engineer/debugging race diagnosis",
+  "surfaceRetired": false,
+  "role": "engineer",
+  "task_id": "eng-concurrency-race",
+  "task_title": "Spot the concurrency race in session-token attribution",
+  "model_id": "grok-4.3",
+  "model_label": "Grok 4.3 corrected baseline",
+  "lane": "hermes",
+  "effort": "cli_default",
+  "rep": 3,
+  "reps": 3,
+  "agentFile": "bare",
+  "skills": "none",
+  "agentFileSha256": "none",
+  "skillsBundleSha256": "none",
+  "promptSha256": "0b7bce17cae9a6d7e365fab69f946b92aef0ade8541c96d3199545be153cd6bd",
+  "suiteSha256": "b7373c2152d432ffadaa313c61133d110457a1e56402bf122dab21c5460d183f",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/engineer/suite.json",
+  "ok": true,
+  "error": null,
+  "failureReason": null,
+  "output": "**Race name:** max(new_ids) attribution race (TOCTOU on shared session list).\n\n**How it happens:** Two threads both snapshot the same `before` set. Thread A creates sess 10; Thread B creates 11. A's `after` sees {10,11}, `max(new_ids)=11`, so A exports B's (wrong) tokens.\n\n**Fix:** Change `run_cli` to return the session ID it just created (or its token count directly); eliminate the list-diff + `max()` inference entirely.",
+  "inputTokens": 18588,
+  "outputTokens": 1022,
+  "totalTokens": 19610,
+  "tokensEstimated": false,
+  "cacheTokens": null,
+  "costUsd": null,
+  "wallMs": 13744,
+  "taskWallMs": null,
+  "selfReportWallMs": null,
+  "selfReportInputTokens": null,
+  "selfReportOutputTokens": null,
+  "stderrTail": "",
+  "skipped": false,
+  "skipReason": null,
+  "qualityPer1kOut": 0.9601272015655576,
+  "resolvedAgentId": "7fffa42f-467a-4f76-b802-4dc8bd552bd9",
+  "resolvedAgentName": "Bench-grok-4.3",
+  "agentIdentityKind": "bench_agent",
+  "productionAdapterType": "hermes_local",
+  "benchAgentId": "7fffa42f-467a-4f76-b802-4dc8bd552bd9",
+  "benchAgentName": "Bench-grok-4.3",
+  "benchAgentSource": "TSBC-1391 resolved current-company bench roster; corrected baseline for the old TSBC-980 grok-4-fast row.",
+  "adapterType": "hermes",
+  "benchAdapterType": "hermes",
+  "requestedModelId": "grok-4.3",
+  "requestedModelArg": "grok-4.3",
+  "requestedModel": "Grok 4.3 corrected baseline",
+  "model_reported": "grok-4.3",
+  "servedModel": "grok-4.3",
+  "servedModelSelfReport": null,
+  "servedModelVerified": true,
+  "servedModelMismatch": false,
+  "trueModelId": "grok-4.3",
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {
+        "values": [
+          "race",
+          "concurren",
+          "interleav",
+          "TOCTOU",
+          "time-of-check"
+        ]
+      }
+    },
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {
+        "values": [
+          "lock",
+          "serial",
+          "mutex",
+          "per-thread",
+          "session id",
+          "session_id",
+          "unique"
+        ]
+      }
+    },
+    {
+      "check": "max_words",
+      "ok": true,
+      "weight": 1.0,
+      "spec": {
+        "value": 150
+      }
+    }
+  ],
+  "judgeScore": 0.9624999999999999,
+  "judgeDetail": {
+    "perCriterion": {
+      "correctness": 0.95,
+      "specificity": 1.0
+    },
+    "rationale": "The candidate accurately and concisely isolated the exact non-atomic diff race using a clear two-thread trace, and proposed an ideal direct fix by modifying run_cli.",
+    "judgeModel": "Gemini 3.6 Flash"
+  },
+  "quality": 0.98125,
+  "qualityPer1kTokens": 0.050038245792962774,
+  "runFinishedAt": "2026-07-30T06:30:35+00:00"
+}

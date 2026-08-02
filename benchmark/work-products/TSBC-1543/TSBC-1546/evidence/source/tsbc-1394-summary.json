@@ -1,0 +1,1718 @@
+{
+  "meta": {
+    "issue": "TSBC-1394",
+    "runId": "tsbc-1394-20260730-070140",
+    "startedAt": "2026-07-30T06:01:40+00:00",
+    "finishedAt": "2026-07-30T06:30:35+00:00",
+    "benchmarkRoot": "/Users/glad0s/paperclip/benchmark",
+    "canonicalRunDir": "/Users/glad0s/paperclip/benchmark/results/tsbc-1394-20260730-070140",
+    "evidenceCopy": "/Users/glad0s/.paperclip/instances/default/workspaces/b610338d-b340-48a3-8e73-f2ecd015e4bb/work-products/TSBC-1394/evidence/benchmark/tsbc-1394-20260730-070140",
+    "reps": 3,
+    "models": [
+      "gpt-5.3-codex-spark-low",
+      "gpt-5.3-codex-spark-medium",
+      "gpt-5.3-codex-spark-high",
+      "codex-gpt-5.4",
+      "grok-4.3",
+      "gemini-flash"
+    ],
+    "surfaces": [
+      {
+        "key": "cv_review_bare_none",
+        "label": "CV-review hard cases (bare + none)",
+        "role": "cv-review",
+        "taskIds": [
+          "cv-title-inflation-gap",
+          "cv-team-metric-attribution"
+        ],
+        "agentFile": "bare",
+        "skills": "none"
+      },
+      {
+        "key": "cv_review_current_all",
+        "label": "CV-review hard cases (current + all)",
+        "role": "cv-review",
+        "taskIds": [
+          "cv-title-inflation-gap",
+          "cv-team-metric-attribution"
+        ],
+        "agentFile": "current",
+        "skills": "all"
+      },
+      {
+        "key": "summarize_extract",
+        "label": "Summarize/extract caveat preservation",
+        "role": "summarize-extract",
+        "taskIds": [
+          "summarize-keep-caveat"
+        ],
+        "agentFile": "bare",
+        "skills": "none"
+      },
+      {
+        "key": "engineer_debugging",
+        "label": "Engineer/debugging race diagnosis",
+        "role": "engineer",
+        "taskIds": [
+          "eng-concurrency-race"
+        ],
+        "agentFile": "bare",
+        "skills": "none"
+      },
+      {
+        "key": "ops_failover",
+        "label": "Ops failover routing",
+        "role": "ops",
+        "taskIds": [
+          "ops-failover-routing"
+        ],
+        "agentFile": "bare",
+        "skills": "none"
+      }
+    ],
+    "paperclipSurface": {
+      "surfaceKey": "paperclip_agentic_tool_use",
+      "surfaceLabel": "Paperclip agentic/tool-use smoke",
+      "status": "formally_retired_from_this_spark_pack",
+      "decision": "retired",
+      "reason": "The old TSBC-980 single-prompt Paperclip smoke universally scored 0.000 for every model and therefore did not discriminate model capability. TSBC-1262 reran the real isolated live-fixture surface and produced non-universal scored rows before halting on agent-auth failure, so the valid Paperclip tool-use measurement now belongs to that fixture harness and TSBC-1141 rather than this bounded Spark pack.",
+      "evidence": [
+        "work-products/TSBC-1392/evidence/tsbc-980-report.md",
+        "work-products/TSBC-1394/evidence/TSBC-1262-report.md",
+        "work-products/TSBC-1394/evidence/TSBC-1262-rerun-report.json"
+      ]
+    },
+    "judge": {
+      "id": "gemini-3.6-flash-high",
+      "adapter": "antigravity",
+      "model_arg": "gemini-3.6-flash-high",
+      "_comment": "Issue-scoped uniform blind judge selected because the benchmark root has an active .claude-bench-halt budget guard."
+    },
+    "cells": 126,
+    "repair": {
+      "repairedKeys": [
+        [
+          "cv_review_bare_none",
+          "cv-team-metric-attribution",
+          "gemini-flash",
+          3
+        ],
+        [
+          "cv_review_bare_none",
+          "cv-title-inflation-gap",
+          "gemini-flash",
+          3
+        ],
+        [
+          "cv_review_current_all",
+          "cv-team-metric-attribution",
+          "gemini-flash",
+          1
+        ]
+      ],
+      "timeoutSec": 600,
+      "method": "serial rerun of failed Gemini baseline cells only"
+    }
+  },
+  "paperclipSurface": {
+    "surfaceKey": "paperclip_agentic_tool_use",
+    "surfaceLabel": "Paperclip agentic/tool-use smoke",
+    "status": "formally_retired_from_this_spark_pack",
+    "decision": "retired",
+    "reason": "The old TSBC-980 single-prompt Paperclip smoke universally scored 0.000 for every model and therefore did not discriminate model capability. TSBC-1262 reran the real isolated live-fixture surface and produced non-universal scored rows before halting on agent-auth failure, so the valid Paperclip tool-use measurement now belongs to that fixture harness and TSBC-1141 rather than this bounded Spark pack.",
+    "evidence": [
+      "work-products/TSBC-1392/evidence/tsbc-980-report.md",
+      "work-products/TSBC-1394/evidence/TSBC-1262-report.md",
+      "work-products/TSBC-1394/evidence/TSBC-1262-rerun-report.json"
+    ]
+  },
+  "surfaceSummary": [
+    {
+      "surfaceKey": "cv_review_bare_none",
+      "surfaceLabel": "CV-review hard cases (bare + none)",
+      "role": "cv-review",
+      "model_id": "codex-gpt-5.4",
+      "model_label": "Codex GPT-5.4",
+      "attempts": 6,
+      "okCount": 6,
+      "qualityCount": 6,
+      "successRate": 1.0,
+      "qualityRate": 1.0,
+      "taskIds": [
+        "cv-team-metric-attribution",
+        "cv-title-inflation-gap"
+      ],
+      "minAttemptRepsPerTask": 3,
+      "minOkRepsPerTask": 3,
+      "minQualityRepsPerTask": 3,
+      "decisionGrade": true,
+      "meanQuality": 0.8625,
+      "minQuality": 0.65,
+      "stdevQuality": 0.1427045315795309,
+      "meanInputTokens": 17119.833333333332,
+      "meanOutputTokens": 360.6666666666667,
+      "meanTotalTokens": 17480.5,
+      "meanQualityPer1kOut": 2.3790732973757094,
+      "tokensEstimated": false,
+      "band": "limited_candidate",
+      "identity": {
+        "resolvedAgentId": "5bcc7a94-6715-43eb-ad53-da7bd300ef79",
+        "resolvedAgentName": "Bench-codex-gpt-5.4",
+        "agentIdentityKind": "bench_agent",
+        "adapterType": "codex",
+        "benchAdapterType": "codex",
+        "productionAdapterType": "codex_local",
+        "requestedModelId": "codex-gpt-5.4",
+        "requestedModelArg": "gpt-5.4",
+        "trueModelIds": [
+          "gpt-5.4"
+        ],
+        "servedModelVerifiedAll": false,
+        "servedModelMismatchAny": false
+      }
+    },
+    {
+      "surfaceKey": "cv_review_bare_none",
+      "surfaceLabel": "CV-review hard cases (bare + none)",
+      "role": "cv-review",
+      "model_id": "gemini-flash",
+      "model_label": "Gemini 3.5 Flash deployed CV baseline",
+      "attempts": 6,
+      "okCount": 6,
+      "qualityCount": 6,
+      "successRate": 1.0,
+      "qualityRate": 1.0,
+      "taskIds": [
+        "cv-team-metric-attribution",
+        "cv-title-inflation-gap"
+      ],
+      "minAttemptRepsPerTask": 3,
+      "minOkRepsPerTask": 3,
+      "minQualityRepsPerTask": 3,
+      "decisionGrade": true,
+      "meanQuality": 0.6333333333333333,
+      "minQuality": 0.0,
+      "stdevQuality": 0.4089918160007062,
+      "meanInputTokens": 154.0,
+      "meanOutputTokens": 146.5,
+      "meanTotalTokens": 300.5,
+      "meanQualityPer1kOut": 4.016332190787304,
+      "tokensEstimated": true,
+      "band": "drop_only",
+      "identity": {
+        "resolvedAgentId": "8af1215f-3e03-4560-9622-13c5eeeb4864",
+        "resolvedAgentName": "ApplicationWriter-Gemini",
+        "agentIdentityKind": "deployed_cross_company_baseline",
+        "adapterType": "antigravity",
+        "benchAdapterType": "antigravity",
+        "productionAdapterType": "antigravity_local",
+        "requestedModelId": "gemini-flash",
+        "requestedModelArg": "Gemini 3.5 Flash (Medium)",
+        "trueModelIds": [
+          "Gemini 3.5 Flash (Medium)"
+        ],
+        "servedModelVerifiedAll": true,
+        "servedModelMismatchAny": false
+      }
+    },
+    {
+      "surfaceKey": "cv_review_bare_none",
+      "surfaceLabel": "CV-review hard cases (bare + none)",
+      "role": "cv-review",
+      "model_id": "gpt-5.3-codex-spark-high",
+      "model_label": "Codex GPT-5.3 Spark (high)",
+      "attempts": 6,
+      "okCount": 6,
+      "qualityCount": 6,
+      "successRate": 1.0,
+      "qualityRate": 1.0,
+      "taskIds": [
+        "cv-team-metric-attribution",
+        "cv-title-inflation-gap"
+      ],
+      "minAttemptRepsPerTask": 3,
+      "minOkRepsPerTask": 3,
+      "minQualityRepsPerTask": 3,
+      "decisionGrade": true,
+      "meanQuality": 0.9458333333333333,
+      "minQuality": 0.8,
+      "stdevQuality": 0.06984606089266751,
+      "meanInputTokens": 14118.166666666666,
+      "meanOutputTokens": 1048.8333333333333,
+      "meanTotalTokens": 15167.0,
+      "meanQualityPer1kOut": 0.9073197360893777,
+      "tokensEstimated": false,
+      "band": "strong_fallback",
+      "identity": {
+        "resolvedAgentId": null,
+        "resolvedAgentName": "not_applicable:neutral-cli",
+        "agentIdentityKind": "neutral_cli_no_agent",
+        "adapterType": "codex",
+        "benchAdapterType": "codex",
+        "productionAdapterType": "codex_local",
+        "requestedModelId": "gpt-5.3-codex-spark-high",
+        "requestedModelArg": "gpt-5.3-codex-spark",
+        "trueModelIds": [
+          "gpt-5.3-codex-spark"
+        ],
+        "servedModelVerifiedAll": false,
+        "servedModelMismatchAny": false
+      }
+    },
+    {
+      "surfaceKey": "cv_review_bare_none",
+      "surfaceLabel": "CV-review hard cases (bare + none)",
+      "role": "cv-review",
+      "model_id": "gpt-5.3-codex-spark-low",
+      "model_label": "Codex GPT-5.3 Spark (low)",
+      "attempts": 6,
+      "okCount": 6,
+      "qualityCount": 6,
+      "successRate": 1.0,
+      "qualityRate": 1.0,
+      "taskIds": [
+        "cv-team-metric-attribution",
+        "cv-title-inflation-gap"
+      ],
+      "minAttemptRepsPerTask": 3,
+      "minOkRepsPerTask": 3,
+      "minQualityRepsPerTask": 3,
+      "decisionGrade": true,
+      "meanQuality": 0.9375,
+      "minQuality": 0.8,
+      "stdevQuality": 0.07465197027987046,
+      "meanInputTokens": 14152.166666666666,
+      "meanOutputTokens": 557.6666666666666,
+      "meanTotalTokens": 14709.833333333334,
+      "meanQualityPer1kOut": 1.716657343070092,
+      "tokensEstimated": false,
+      "band": "strong_fallback",
+      "identity": {
+        "resolvedAgentId": null,
+        "resolvedAgentName": "not_applicable:neutral-cli",
+        "agentIdentityKind": "neutral_cli_no_agent",
+        "adapterType": "codex",
+        "benchAdapterType": "codex",
+        "productionAdapterType": "codex_local",
+        "requestedModelId": "gpt-5.3-codex-spark-low",
+        "requestedModelArg": "gpt-5.3-codex-spark",
+        "trueModelIds": [
+          "gpt-5.3-codex-spark"
+        ],
+        "servedModelVerifiedAll": false,
+        "servedModelMismatchAny": false
+      }
+    },
+    {
+      "surfaceKey": "cv_review_bare_none",
+      "surfaceLabel": "CV-review hard cases (bare + none)",
+      "role": "cv-review",
+      "model_id": "gpt-5.3-codex-spark-medium",
+      "model_label": "Codex GPT-5.3 Spark (medium)",
+      "attempts": 6,
+      "okCount": 6,
+      "qualityCount": 6,
+      "successRate": 1.0,
+      "qualityRate": 1.0,
+      "taskIds": [
+        "cv-team-metric-attribution",
+        "cv-title-inflation-gap"
+      ],
+      "minAttemptRepsPerTask": 3,
+      "minOkRepsPerTask": 3,
+      "minQualityRepsPerTask": 3,
+      "decisionGrade": true,
+      "meanQuality": 0.9541666666666666,
+      "minQuality": 0.75,
+      "stdevQuality": 0.09176131477310516,
+      "meanInputTokens": 14152.166666666666,
+      "meanOutputTokens": 834.1666666666666,
+      "meanTotalTokens": 14986.333333333334,
+      "meanQualityPer1kOut": 1.2086061819928196,
+      "tokensEstimated": false,
+      "band": "strong_fallback",
+      "identity": {
+        "resolvedAgentId": null,
+        "resolvedAgentName": "not_applicable:neutral-cli",
+        "agentIdentityKind": "neutral_cli_no_agent",
+        "adapterType": "codex",
+        "benchAdapterType": "codex",
+        "productionAdapterType": "codex_local",
+        "requestedModelId": "gpt-5.3-codex-spark-medium",
+        "requestedModelArg": "gpt-5.3-codex-spark",
+        "trueModelIds": [
+          "gpt-5.3-codex-spark"
+        ],
+        "servedModelVerifiedAll": false,
+        "servedModelMismatchAny": false
+      }
+    },
+    {
+      "surfaceKey": "cv_review_bare_none",
+      "surfaceLabel": "CV-review hard cases (bare + none)",
+      "role": "cv-review",
+      "model_id": "grok-4.3",
+      "model_label": "Grok 4.3 corrected baseline",
+      "attempts": 6,
+      "okCount": 6,
+      "qualityCount": 6,
+      "successRate": 1.0,
+      "qualityRate": 1.0,
+      "taskIds": [
+        "cv-team-metric-attribution",
+        "cv-title-inflation-gap"
+      ],
+      "minAttemptRepsPerTask": 3,
+      "minOkRepsPerTask": 3,
+      "minQualityRepsPerTask": 3,
+      "decisionGrade": true,
+      "meanQuality": 0.8954166666666666,
+      "minQuality": 0.6125,
+      "stdevQuality": 0.14498862503275517,
+      "meanInputTokens": 21584.333333333332,
+      "meanOutputTokens": 1049.3333333333333,
+      "meanTotalTokens": 22633.666666666668,
+      "meanQualityPer1kOut": 0.874456843916846,
+      "tokensEstimated": false,
+      "band": "limited_candidate",
+      "identity": {
+        "resolvedAgentId": "7fffa42f-467a-4f76-b802-4dc8bd552bd9",
+        "resolvedAgentName": "Bench-grok-4.3",
+        "agentIdentityKind": "bench_agent",
+        "adapterType": "hermes",
+        "benchAdapterType": "hermes",
+        "productionAdapterType": "hermes_local",
+        "requestedModelId": "grok-4.3",
+        "requestedModelArg": "grok-4.3",
+        "trueModelIds": [
+          "grok-4.3"
+        ],
+        "servedModelVerifiedAll": true,
+        "servedModelMismatchAny": false
+      }
+    },
+    {
+      "surfaceKey": "cv_review_current_all",
+      "surfaceLabel": "CV-review hard cases (current + all)",
+      "role": "cv-review",
+      "model_id": "codex-gpt-5.4",
+      "model_label": "Codex GPT-5.4",
+      "attempts": 6,
+      "okCount": 6,
+      "qualityCount": 6,
+      "successRate": 1.0,
+      "qualityRate": 1.0,
+      "taskIds": [
+        "cv-team-metric-attribution",
+        "cv-title-inflation-gap"
+      ],
+      "minAttemptRepsPerTask": 3,
+      "minOkRepsPerTask": 3,
+      "minQualityRepsPerTask": 3,
+      "decisionGrade": true,
+      "meanQuality": 0.8333333333333334,
+      "minQuality": 0.48749999999999993,
+      "stdevQuality": 0.2358127199471837,
+      "meanInputTokens": 19311.833333333332,
+      "meanOutputTokens": 413.6666666666667,
+      "meanTotalTokens": 19725.5,
+      "meanQualityPer1kOut": 2.123077356634109,
+      "tokensEstimated": false,
+      "band": "limited_candidate",
+      "identity": {
+        "resolvedAgentId": "5bcc7a94-6715-43eb-ad53-da7bd300ef79",
+        "resolvedAgentName": "Bench-codex-gpt-5.4",
+        "agentIdentityKind": "bench_agent",
+        "adapterType": "codex",
+        "benchAdapterType": "codex",
+        "productionAdapterType": "codex_local",
+        "requestedModelId": "codex-gpt-5.4",
+        "requestedModelArg": "gpt-5.4",
+        "trueModelIds": [
+          "gpt-5.4"
+        ],
+        "servedModelVerifiedAll": false,
+        "servedModelMismatchAny": false
+      }
+    },
+    {
+      "surfaceKey": "cv_review_current_all",
+      "surfaceLabel": "CV-review hard cases (current + all)",
+      "role": "cv-review",
+      "model_id": "gemini-flash",
+      "model_label": "Gemini 3.5 Flash deployed CV baseline",
+      "attempts": 6,
+      "okCount": 6,
+      "qualityCount": 6,
+      "successRate": 1.0,
+      "qualityRate": 1.0,
+      "taskIds": [
+        "cv-team-metric-attribution",
+        "cv-title-inflation-gap"
+      ],
+      "minAttemptRepsPerTask": 3,
+      "minOkRepsPerTask": 3,
+      "minQualityRepsPerTask": 3,
+      "decisionGrade": true,
+      "meanQuality": 1.0,
+      "minQuality": 1.0,
+      "stdevQuality": 0.0,
+      "meanInputTokens": 2810.0,
+      "meanOutputTokens": 185.33333333333334,
+      "meanTotalTokens": 2995.3333333333335,
+      "meanQualityPer1kOut": 5.7151022165188055,
+      "tokensEstimated": true,
+      "band": "possible_primary",
+      "identity": {
+        "resolvedAgentId": "8af1215f-3e03-4560-9622-13c5eeeb4864",
+        "resolvedAgentName": "ApplicationWriter-Gemini",
+        "agentIdentityKind": "deployed_cross_company_baseline",
+        "adapterType": "antigravity",
+        "benchAdapterType": "antigravity",
+        "productionAdapterType": "antigravity_local",
+        "requestedModelId": "gemini-flash",
+        "requestedModelArg": "Gemini 3.5 Flash (Medium)",
+        "trueModelIds": [
+          "Gemini 3.5 Flash (Medium)"
+        ],
+        "servedModelVerifiedAll": true,
+        "servedModelMismatchAny": false
+      }
+    },
+    {
+      "surfaceKey": "cv_review_current_all",
+      "surfaceLabel": "CV-review hard cases (current + all)",
+      "role": "cv-review",
+      "model_id": "gpt-5.3-codex-spark-high",
+      "model_label": "Codex GPT-5.3 Spark (high)",
+      "attempts": 6,
+      "okCount": 6,
+      "qualityCount": 6,
+      "successRate": 1.0,
+      "qualityRate": 1.0,
+      "taskIds": [
+        "cv-team-metric-attribution",
+        "cv-title-inflation-gap"
+      ],
+      "minAttemptRepsPerTask": 3,
+      "minOkRepsPerTask": 3,
+      "minQualityRepsPerTask": 3,
+      "decisionGrade": true,
+      "meanQuality": 0.9791666666666666,
+      "minQuality": 0.925,
+      "stdevQuality": 0.02667968432263686,
+      "meanInputTokens": 16381.5,
+      "meanOutputTokens": 1190.3333333333333,
+      "meanTotalTokens": 17571.833333333332,
+      "meanQualityPer1kOut": 0.8381861848912703,
+      "tokensEstimated": false,
+      "band": "possible_primary",
+      "identity": {
+        "resolvedAgentId": null,
+        "resolvedAgentName": "not_applicable:neutral-cli",
+        "agentIdentityKind": "neutral_cli_no_agent",
+        "adapterType": "codex",
+        "benchAdapterType": "codex",
+        "productionAdapterType": "codex_local",
+        "requestedModelId": "gpt-5.3-codex-spark-high",
+        "requestedModelArg": "gpt-5.3-codex-spark",
+        "trueModelIds": [
+          "gpt-5.3-codex-spark"
+        ],
+        "servedModelVerifiedAll": false,
+        "servedModelMismatchAny": false
+      }
+    },
+    {
+      "surfaceKey": "cv_review_current_all",
+      "surfaceLabel": "CV-review hard cases (current + all)",
+      "role": "cv-review",
+      "model_id": "gpt-5.3-codex-spark-low",
+      "model_label": "Codex GPT-5.3 Spark (low)",
+      "attempts": 6,
+      "okCount": 6,
+      "qualityCount": 6,
+      "successRate": 1.0,
+      "qualityRate": 1.0,
+      "taskIds": [
+        "cv-team-metric-attribution",
+        "cv-title-inflation-gap"
+      ],
+      "minAttemptRepsPerTask": 3,
+      "minOkRepsPerTask": 3,
+      "minQualityRepsPerTask": 3,
+      "decisionGrade": true,
+      "meanQuality": 0.9833333333333333,
+      "minQuality": 0.925,
+      "stdevQuality": 0.02763853991962832,
+      "meanInputTokens": 16309.5,
+      "meanOutputTokens": 684.0,
+      "meanTotalTokens": 16993.5,
+      "meanQualityPer1kOut": 1.4667158800631033,
+      "tokensEstimated": false,
+      "band": "possible_primary",
+      "identity": {
+        "resolvedAgentId": null,
+        "resolvedAgentName": "not_applicable:neutral-cli",
+        "agentIdentityKind": "neutral_cli_no_agent",
+        "adapterType": "codex",
+        "benchAdapterType": "codex",
+        "productionAdapterType": "codex_local",
+        "requestedModelId": "gpt-5.3-codex-spark-low",
+        "requestedModelArg": "gpt-5.3-codex-spark",
+        "trueModelIds": [
+          "gpt-5.3-codex-spark"
+        ],
+        "servedModelVerifiedAll": false,
+        "servedModelMismatchAny": false
+      }
+    },
+    {
+      "surfaceKey": "cv_review_current_all",
+      "surfaceLabel": "CV-review hard cases (current + all)",
+      "role": "cv-review",
+      "model_id": "gpt-5.3-codex-spark-medium",
+      "model_label": "Codex GPT-5.3 Spark (medium)",
+      "attempts": 6,
+      "okCount": 6,
+      "qualityCount": 6,
+      "successRate": 1.0,
+      "qualityRate": 1.0,
+      "taskIds": [
+        "cv-team-metric-attribution",
+        "cv-title-inflation-gap"
+      ],
+      "minAttemptRepsPerTask": 3,
+      "minOkRepsPerTask": 3,
+      "minQualityRepsPerTask": 3,
+      "decisionGrade": true,
+      "meanQuality": 0.9958333333333333,
+      "minQuality": 0.9749999999999999,
+      "stdevQuality": 0.009316949906249173,
+      "meanInputTokens": 16309.833333333334,
+      "meanOutputTokens": 1012.3333333333334,
+      "meanTotalTokens": 17322.166666666668,
+      "meanQualityPer1kOut": 1.0722479344976337,
+      "tokensEstimated": false,
+      "band": "possible_primary",
+      "identity": {
+        "resolvedAgentId": null,
+        "resolvedAgentName": "not_applicable:neutral-cli",
+        "agentIdentityKind": "neutral_cli_no_agent",
+        "adapterType": "codex",
+        "benchAdapterType": "codex",
+        "productionAdapterType": "codex_local",
+        "requestedModelId": "gpt-5.3-codex-spark-medium",
+        "requestedModelArg": "gpt-5.3-codex-spark",
+        "trueModelIds": [
+          "gpt-5.3-codex-spark"
+        ],
+        "servedModelVerifiedAll": false,
+        "servedModelMismatchAny": false
+      }
+    },
+    {
+      "surfaceKey": "cv_review_current_all",
+      "surfaceLabel": "CV-review hard cases (current + all)",
+      "role": "cv-review",
+      "model_id": "grok-4.3",
+      "model_label": "Grok 4.3 corrected baseline",
+      "attempts": 6,
+      "okCount": 6,
+      "qualityCount": 6,
+      "successRate": 1.0,
+      "qualityRate": 1.0,
+      "taskIds": [
+        "cv-team-metric-attribution",
+        "cv-title-inflation-gap"
+      ],
+      "minAttemptRepsPerTask": 3,
+      "minOkRepsPerTask": 3,
+      "minQualityRepsPerTask": 3,
+      "decisionGrade": true,
+      "meanQuality": 1.0,
+      "minQuality": 1.0,
+      "stdevQuality": 0.0,
+      "meanInputTokens": 23546.5,
+      "meanOutputTokens": 1444.6666666666667,
+      "meanTotalTokens": 24991.166666666668,
+      "meanQualityPer1kOut": 0.7524259391738423,
+      "tokensEstimated": false,
+      "band": "possible_primary",
+      "identity": {
+        "resolvedAgentId": "7fffa42f-467a-4f76-b802-4dc8bd552bd9",
+        "resolvedAgentName": "Bench-grok-4.3",
+        "agentIdentityKind": "bench_agent",
+        "adapterType": "hermes",
+        "benchAdapterType": "hermes",
+        "productionAdapterType": "hermes_local",
+        "requestedModelId": "grok-4.3",
+        "requestedModelArg": "grok-4.3",
+        "trueModelIds": [
+          "grok-4.3"
+        ],
+        "servedModelVerifiedAll": true,
+        "servedModelMismatchAny": false
+      }
+    },
+    {
+      "surfaceKey": "engineer_debugging",
+      "surfaceLabel": "Engineer/debugging race diagnosis",
+      "role": "engineer",
+      "model_id": "codex-gpt-5.4",
+      "model_label": "Codex GPT-5.4",
+      "attempts": 3,
+      "okCount": 3,
+      "qualityCount": 3,
+      "successRate": 1.0,
+      "qualityRate": 1.0,
+      "taskIds": [
+        "eng-concurrency-race"
+      ],
+      "minAttemptRepsPerTask": 3,
+      "minOkRepsPerTask": 3,
+      "minQualityRepsPerTask": 3,
+      "decisionGrade": true,
+      "meanQuality": 0.9833333333333333,
+      "minQuality": 0.975,
+      "stdevQuality": 0.011785113019775802,
+      "meanInputTokens": 17036.666666666668,
+      "meanOutputTokens": 182.0,
+      "meanTotalTokens": 17218.666666666668,
+      "meanQualityPer1kOut": 5.4050893313778765,
+      "tokensEstimated": false,
+      "band": "possible_primary",
+      "identity": {
+        "resolvedAgentId": "5bcc7a94-6715-43eb-ad53-da7bd300ef79",
+        "resolvedAgentName": "Bench-codex-gpt-5.4",
+        "agentIdentityKind": "bench_agent",
+        "adapterType": "codex",
+        "benchAdapterType": "codex",
+        "productionAdapterType": "codex_local",
+        "requestedModelId": "codex-gpt-5.4",
+        "requestedModelArg": "gpt-5.4",
+        "trueModelIds": [
+          "gpt-5.4"
+        ],
+        "servedModelVerifiedAll": false,
+        "servedModelMismatchAny": false
+      }
+    },
+    {
+      "surfaceKey": "engineer_debugging",
+      "surfaceLabel": "Engineer/debugging race diagnosis",
+      "role": "engineer",
+      "model_id": "gemini-flash",
+      "model_label": "Gemini 3.5 Flash deployed CV baseline",
+      "attempts": 3,
+      "okCount": 3,
+      "qualityCount": 3,
+      "successRate": 1.0,
+      "qualityRate": 1.0,
+      "taskIds": [
+        "eng-concurrency-race"
+      ],
+      "minAttemptRepsPerTask": 3,
+      "minOkRepsPerTask": 3,
+      "minQualityRepsPerTask": 3,
+      "decisionGrade": true,
+      "meanQuality": 0.9770833333333333,
+      "minQuality": 0.975,
+      "stdevQuality": 0.0029462782549439376,
+      "meanInputTokens": 226.0,
+      "meanOutputTokens": 157.33333333333334,
+      "meanTotalTokens": 383.3333333333333,
+      "meanQualityPer1kOut": 6.215901797175866,
+      "tokensEstimated": true,
+      "band": "possible_primary",
+      "identity": {
+        "resolvedAgentId": "8af1215f-3e03-4560-9622-13c5eeeb4864",
+        "resolvedAgentName": "ApplicationWriter-Gemini",
+        "agentIdentityKind": "deployed_cross_company_baseline",
+        "adapterType": "antigravity",
+        "benchAdapterType": "antigravity",
+        "productionAdapterType": "antigravity_local",
+        "requestedModelId": "gemini-flash",
+        "requestedModelArg": "Gemini 3.5 Flash (Medium)",
+        "trueModelIds": [
+          "Gemini 3.5 Flash (Medium)"
+        ],
+        "servedModelVerifiedAll": true,
+        "servedModelMismatchAny": false
+      }
+    },
+    {
+      "surfaceKey": "engineer_debugging",
+      "surfaceLabel": "Engineer/debugging race diagnosis",
+      "role": "engineer",
+      "model_id": "gpt-5.3-codex-spark-high",
+      "model_label": "Codex GPT-5.3 Spark (high)",
+      "attempts": 3,
+      "okCount": 3,
+      "qualityCount": 3,
+      "successRate": 1.0,
+      "qualityRate": 1.0,
+      "taskIds": [
+        "eng-concurrency-race"
+      ],
+      "minAttemptRepsPerTask": 3,
+      "minOkRepsPerTask": 3,
+      "minQualityRepsPerTask": 3,
+      "decisionGrade": true,
+      "meanQuality": 0.9625,
+      "minQuality": 0.95625,
+      "stdevQuality": 0.008838834764831813,
+      "meanInputTokens": 14203.666666666666,
+      "meanOutputTokens": 932.0,
+      "meanTotalTokens": 15135.666666666666,
+      "meanQualityPer1kOut": 1.0590129239247734,
+      "tokensEstimated": false,
+      "band": "possible_primary",
+      "identity": {
+        "resolvedAgentId": null,
+        "resolvedAgentName": "not_applicable:neutral-cli",
+        "agentIdentityKind": "neutral_cli_no_agent",
+        "adapterType": "codex",
+        "benchAdapterType": "codex",
+        "productionAdapterType": "codex_local",
+        "requestedModelId": "gpt-5.3-codex-spark-high",
+        "requestedModelArg": "gpt-5.3-codex-spark",
+        "trueModelIds": [
+          "gpt-5.3-codex-spark"
+        ],
+        "servedModelVerifiedAll": false,
+        "servedModelMismatchAny": false
+      }
+    },
+    {
+      "surfaceKey": "engineer_debugging",
+      "surfaceLabel": "Engineer/debugging race diagnosis",
+      "role": "engineer",
+      "model_id": "gpt-5.3-codex-spark-low",
+      "model_label": "Codex GPT-5.3 Spark (low)",
+      "attempts": 3,
+      "okCount": 3,
+      "qualityCount": 3,
+      "successRate": 1.0,
+      "qualityRate": 1.0,
+      "taskIds": [
+        "eng-concurrency-race"
+      ],
+      "minAttemptRepsPerTask": 3,
+      "minOkRepsPerTask": 3,
+      "minQualityRepsPerTask": 3,
+      "decisionGrade": true,
+      "meanQuality": 0.965,
+      "minQuality": 0.9312499999999999,
+      "stdevQuality": 0.028080984075823778,
+      "meanInputTokens": 14206.333333333334,
+      "meanOutputTokens": 331.3333333333333,
+      "meanTotalTokens": 14537.666666666666,
+      "meanQualityPer1kOut": 2.9420390457794547,
+      "tokensEstimated": false,
+      "band": "possible_primary",
+      "identity": {
+        "resolvedAgentId": null,
+        "resolvedAgentName": "not_applicable:neutral-cli",
+        "agentIdentityKind": "neutral_cli_no_agent",
+        "adapterType": "codex",
+        "benchAdapterType": "codex",
+        "productionAdapterType": "codex_local",
+        "requestedModelId": "gpt-5.3-codex-spark-low",
+        "requestedModelArg": "gpt-5.3-codex-spark",
+        "trueModelIds": [
+          "gpt-5.3-codex-spark"
+        ],
+        "servedModelVerifiedAll": false,
+        "servedModelMismatchAny": false
+      }
+    },
+    {
+      "surfaceKey": "engineer_debugging",
+      "surfaceLabel": "Engineer/debugging race diagnosis",
+      "role": "engineer",
+      "model_id": "gpt-5.3-codex-spark-medium",
+      "model_label": "Codex GPT-5.3 Spark (medium)",
+      "attempts": 3,
+      "okCount": 3,
+      "qualityCount": 3,
+      "successRate": 1.0,
+      "qualityRate": 1.0,
+      "taskIds": [
+        "eng-concurrency-race"
+      ],
+      "minAttemptRepsPerTask": 3,
+      "minOkRepsPerTask": 3,
+      "minQualityRepsPerTask": 3,
+      "decisionGrade": true,
+      "meanQuality": 0.9170833333333334,
+      "minQuality": 0.8425,
+      "stdevQuality": 0.05329099882302409,
+      "meanInputTokens": 14207.666666666666,
+      "meanOutputTokens": 605.6666666666666,
+      "meanTotalTokens": 14813.333333333334,
+      "meanQualityPer1kOut": 1.638998329388028,
+      "tokensEstimated": false,
+      "band": "strong_fallback",
+      "identity": {
+        "resolvedAgentId": null,
+        "resolvedAgentName": "not_applicable:neutral-cli",
+        "agentIdentityKind": "neutral_cli_no_agent",
+        "adapterType": "codex",
+        "benchAdapterType": "codex",
+        "productionAdapterType": "codex_local",
+        "requestedModelId": "gpt-5.3-codex-spark-medium",
+        "requestedModelArg": "gpt-5.3-codex-spark",
+        "trueModelIds": [
+          "gpt-5.3-codex-spark"
+        ],
+        "servedModelVerifiedAll": false,
+        "servedModelMismatchAny": false
+      }
+    },
+    {
+      "surfaceKey": "engineer_debugging",
+      "surfaceLabel": "Engineer/debugging race diagnosis",
+      "role": "engineer",
+      "model_id": "grok-4.3",
+      "model_label": "Grok 4.3 corrected baseline",
+      "attempts": 3,
+      "okCount": 3,
+      "qualityCount": 3,
+      "successRate": 1.0,
+      "qualityRate": 1.0,
+      "taskIds": [
+        "eng-concurrency-race"
+      ],
+      "minAttemptRepsPerTask": 3,
+      "minOkRepsPerTask": 3,
+      "minQualityRepsPerTask": 3,
+      "decisionGrade": true,
+      "meanQuality": 0.90875,
+      "minQuality": 0.78125,
+      "stdevQuality": 0.09043874538419175,
+      "meanInputTokens": 18742.0,
+      "meanOutputTokens": 1204.0,
+      "meanTotalTokens": 19946.0,
+      "meanQualityPer1kOut": 0.7753683200106919,
+      "tokensEstimated": false,
+      "band": "strong_fallback",
+      "identity": {
+        "resolvedAgentId": "7fffa42f-467a-4f76-b802-4dc8bd552bd9",
+        "resolvedAgentName": "Bench-grok-4.3",
+        "agentIdentityKind": "bench_agent",
+        "adapterType": "hermes",
+        "benchAdapterType": "hermes",
+        "productionAdapterType": "hermes_local",
+        "requestedModelId": "grok-4.3",
+        "requestedModelArg": "grok-4.3",
+        "trueModelIds": [
+          "grok-4.3"
+        ],
+        "servedModelVerifiedAll": true,
+        "servedModelMismatchAny": false
+      }
+    },
+    {
+      "surfaceKey": "ops_failover",
+      "surfaceLabel": "Ops failover routing",
+      "role": "ops",
+      "model_id": "codex-gpt-5.4",
+      "model_label": "Codex GPT-5.4",
+      "attempts": 3,
+      "okCount": 3,
+      "qualityCount": 3,
+      "successRate": 1.0,
+      "qualityRate": 1.0,
+      "taskIds": [
+        "ops-failover-routing"
+      ],
+      "minAttemptRepsPerTask": 3,
+      "minOkRepsPerTask": 3,
+      "minQualityRepsPerTask": 3,
+      "decisionGrade": true,
+      "meanQuality": 1.0,
+      "minQuality": 1.0,
+      "stdevQuality": 0.0,
+      "meanInputTokens": 17058.333333333332,
+      "meanOutputTokens": 64.66666666666667,
+      "meanTotalTokens": 17123.0,
+      "meanQualityPer1kOut": 15.503732082046408,
+      "tokensEstimated": false,
+      "band": "possible_primary",
+      "identity": {
+        "resolvedAgentId": "5bcc7a94-6715-43eb-ad53-da7bd300ef79",
+        "resolvedAgentName": "Bench-codex-gpt-5.4",
+        "agentIdentityKind": "bench_agent",
+        "adapterType": "codex",
+        "benchAdapterType": "codex",
+        "productionAdapterType": "codex_local",
+        "requestedModelId": "codex-gpt-5.4",
+        "requestedModelArg": "gpt-5.4",
+        "trueModelIds": [
+          "gpt-5.4"
+        ],
+        "servedModelVerifiedAll": false,
+        "servedModelMismatchAny": false
+      }
+    },
+    {
+      "surfaceKey": "ops_failover",
+      "surfaceLabel": "Ops failover routing",
+      "role": "ops",
+      "model_id": "gemini-flash",
+      "model_label": "Gemini 3.5 Flash deployed CV baseline",
+      "attempts": 3,
+      "okCount": 3,
+      "qualityCount": 3,
+      "successRate": 1.0,
+      "qualityRate": 1.0,
+      "taskIds": [
+        "ops-failover-routing"
+      ],
+      "minAttemptRepsPerTask": 3,
+      "minOkRepsPerTask": 3,
+      "minQualityRepsPerTask": 3,
+      "decisionGrade": true,
+      "meanQuality": 1.0,
+      "minQuality": 1.0,
+      "stdevQuality": 0.0,
+      "meanInputTokens": 154.0,
+      "meanOutputTokens": 36.0,
+      "meanTotalTokens": 190.0,
+      "meanQualityPer1kOut": 28.138528138528137,
+      "tokensEstimated": true,
+      "band": "possible_primary",
+      "identity": {
+        "resolvedAgentId": "8af1215f-3e03-4560-9622-13c5eeeb4864",
+        "resolvedAgentName": "ApplicationWriter-Gemini",
+        "agentIdentityKind": "deployed_cross_company_baseline",
+        "adapterType": "antigravity",
+        "benchAdapterType": "antigravity",
+        "productionAdapterType": "antigravity_local",
+        "requestedModelId": "gemini-flash",
+        "requestedModelArg": "Gemini 3.5 Flash (Medium)",
+        "trueModelIds": [
+          "Gemini 3.5 Flash (Medium)"
+        ],
+        "servedModelVerifiedAll": true,
+        "servedModelMismatchAny": false
+      }
+    },
+    {
+      "surfaceKey": "ops_failover",
+      "surfaceLabel": "Ops failover routing",
+      "role": "ops",
+      "model_id": "gpt-5.3-codex-spark-high",
+      "model_label": "Codex GPT-5.3 Spark (high)",
+      "attempts": 3,
+      "okCount": 3,
+      "qualityCount": 3,
+      "successRate": 1.0,
+      "qualityRate": 1.0,
+      "taskIds": [
+        "ops-failover-routing"
+      ],
+      "minAttemptRepsPerTask": 3,
+      "minOkRepsPerTask": 3,
+      "minQualityRepsPerTask": 3,
+      "decisionGrade": true,
+      "meanQuality": 1.0,
+      "minQuality": 1.0,
+      "stdevQuality": 0.0,
+      "meanInputTokens": 14162.0,
+      "meanOutputTokens": 159.0,
+      "meanTotalTokens": 14321.0,
+      "meanQualityPer1kOut": 6.8779786521722,
+      "tokensEstimated": false,
+      "band": "possible_primary",
+      "identity": {
+        "resolvedAgentId": null,
+        "resolvedAgentName": "not_applicable:neutral-cli",
+        "agentIdentityKind": "neutral_cli_no_agent",
+        "adapterType": "codex",
+        "benchAdapterType": "codex",
+        "productionAdapterType": "codex_local",
+        "requestedModelId": "gpt-5.3-codex-spark-high",
+        "requestedModelArg": "gpt-5.3-codex-spark",
+        "trueModelIds": [
+          "gpt-5.3-codex-spark"
+        ],
+        "servedModelVerifiedAll": false,
+        "servedModelMismatchAny": false
+      }
+    },
+    {
+      "surfaceKey": "ops_failover",
+      "surfaceLabel": "Ops failover routing",
+      "role": "ops",
+      "model_id": "gpt-5.3-codex-spark-low",
+      "model_label": "Codex GPT-5.3 Spark (low)",
+      "attempts": 3,
+      "okCount": 3,
+      "qualityCount": 3,
+      "successRate": 1.0,
+      "qualityRate": 1.0,
+      "taskIds": [
+        "ops-failover-routing"
+      ],
+      "minAttemptRepsPerTask": 3,
+      "minOkRepsPerTask": 3,
+      "minQualityRepsPerTask": 3,
+      "decisionGrade": true,
+      "meanQuality": 1.0,
+      "minQuality": 1.0,
+      "stdevQuality": 0.0,
+      "meanInputTokens": 14162.666666666666,
+      "meanOutputTokens": 89.0,
+      "meanTotalTokens": 14251.666666666666,
+      "meanQualityPer1kOut": 11.359011359011358,
+      "tokensEstimated": false,
+      "band": "possible_primary",
+      "identity": {
+        "resolvedAgentId": null,
+        "resolvedAgentName": "not_applicable:neutral-cli",
+        "agentIdentityKind": "neutral_cli_no_agent",
+        "adapterType": "codex",
+        "benchAdapterType": "codex",
+        "productionAdapterType": "codex_local",
+        "requestedModelId": "gpt-5.3-codex-spark-low",
+        "requestedModelArg": "gpt-5.3-codex-spark",
+        "trueModelIds": [
+          "gpt-5.3-codex-spark"
+        ],
+        "servedModelVerifiedAll": false,
+        "servedModelMismatchAny": false
+      }
+    },
+    {
+      "surfaceKey": "ops_failover",
+      "surfaceLabel": "Ops failover routing",
+      "role": "ops",
+      "model_id": "gpt-5.3-codex-spark-medium",
+      "model_label": "Codex GPT-5.3 Spark (medium)",
+      "attempts": 3,
+      "okCount": 3,
+      "qualityCount": 3,
+      "successRate": 1.0,
+      "qualityRate": 1.0,
+      "taskIds": [
+        "ops-failover-routing"
+      ],
+      "minAttemptRepsPerTask": 3,
+      "minOkRepsPerTask": 3,
+      "minQualityRepsPerTask": 3,
+      "decisionGrade": true,
+      "meanQuality": 1.0,
+      "minQuality": 1.0,
+      "stdevQuality": 0.0,
+      "meanInputTokens": 14160.666666666666,
+      "meanOutputTokens": 107.0,
+      "meanTotalTokens": 14267.666666666666,
+      "meanQualityPer1kOut": 9.504937005992304,
+      "tokensEstimated": false,
+      "band": "possible_primary",
+      "identity": {
+        "resolvedAgentId": null,
+        "resolvedAgentName": "not_applicable:neutral-cli",
+        "agentIdentityKind": "neutral_cli_no_agent",
+        "adapterType": "codex",
+        "benchAdapterType": "codex",
+        "productionAdapterType": "codex_local",
+        "requestedModelId": "gpt-5.3-codex-spark-medium",
+        "requestedModelArg": "gpt-5.3-codex-spark",
+        "trueModelIds": [
+          "gpt-5.3-codex-spark"
+        ],
+        "servedModelVerifiedAll": false,
+        "servedModelMismatchAny": false
+      }
+    },
+    {
+      "surfaceKey": "ops_failover",
+      "surfaceLabel": "Ops failover routing",
+      "role": "ops",
+      "model_id": "grok-4.3",
+      "model_label": "Grok 4.3 corrected baseline",
+      "attempts": 3,
+      "okCount": 3,
+      "qualityCount": 3,
+      "successRate": 1.0,
+      "qualityRate": 1.0,
+      "taskIds": [
+        "ops-failover-routing"
+      ],
+      "minAttemptRepsPerTask": 3,
+      "minOkRepsPerTask": 3,
+      "minQualityRepsPerTask": 3,
+      "decisionGrade": true,
+      "meanQuality": 1.0,
+      "minQuality": 1.0,
+      "stdevQuality": 0.0,
+      "meanInputTokens": 20021.666666666668,
+      "meanOutputTokens": 378.0,
+      "meanTotalTokens": 20399.666666666668,
+      "meanQualityPer1kOut": 2.6506337149264483,
+      "tokensEstimated": false,
+      "band": "possible_primary",
+      "identity": {
+        "resolvedAgentId": "7fffa42f-467a-4f76-b802-4dc8bd552bd9",
+        "resolvedAgentName": "Bench-grok-4.3",
+        "agentIdentityKind": "bench_agent",
+        "adapterType": "hermes",
+        "benchAdapterType": "hermes",
+        "productionAdapterType": "hermes_local",
+        "requestedModelId": "grok-4.3",
+        "requestedModelArg": "grok-4.3",
+        "trueModelIds": [
+          "grok-4.3"
+        ],
+        "servedModelVerifiedAll": true,
+        "servedModelMismatchAny": false
+      }
+    },
+    {
+      "surfaceKey": "summarize_extract",
+      "surfaceLabel": "Summarize/extract caveat preservation",
+      "role": "summarize-extract",
+      "model_id": "codex-gpt-5.4",
+      "model_label": "Codex GPT-5.4",
+      "attempts": 3,
+      "okCount": 3,
+      "qualityCount": 3,
+      "successRate": 1.0,
+      "qualityRate": 1.0,
+      "taskIds": [
+        "summarize-keep-caveat"
+      ],
+      "minAttemptRepsPerTask": 3,
+      "minOkRepsPerTask": 3,
+      "minQualityRepsPerTask": 3,
+      "decisionGrade": true,
+      "meanQuality": 1.0,
+      "minQuality": 1.0,
+      "stdevQuality": 0.0,
+      "meanInputTokens": 17010.666666666668,
+      "meanOutputTokens": 40.666666666666664,
+      "meanTotalTokens": 17051.333333333332,
+      "meanQualityPer1kOut": 24.644945697577274,
+      "tokensEstimated": false,
+      "band": "possible_primary",
+      "identity": {
+        "resolvedAgentId": "5bcc7a94-6715-43eb-ad53-da7bd300ef79",
+        "resolvedAgentName": "Bench-codex-gpt-5.4",
+        "agentIdentityKind": "bench_agent",
+        "adapterType": "codex",
+        "benchAdapterType": "codex",
+        "productionAdapterType": "codex_local",
+        "requestedModelId": "codex-gpt-5.4",
+        "requestedModelArg": "gpt-5.4",
+        "trueModelIds": [
+          "gpt-5.4"
+        ],
+        "servedModelVerifiedAll": false,
+        "servedModelMismatchAny": false
+      }
+    },
+    {
+      "surfaceKey": "summarize_extract",
+      "surfaceLabel": "Summarize/extract caveat preservation",
+      "role": "summarize-extract",
+      "model_id": "gemini-flash",
+      "model_label": "Gemini 3.5 Flash deployed CV baseline",
+      "attempts": 3,
+      "okCount": 3,
+      "qualityCount": 3,
+      "successRate": 1.0,
+      "qualityRate": 1.0,
+      "taskIds": [
+        "summarize-keep-caveat"
+      ],
+      "minAttemptRepsPerTask": 3,
+      "minOkRepsPerTask": 3,
+      "minQualityRepsPerTask": 3,
+      "decisionGrade": true,
+      "meanQuality": 0.9916666666666666,
+      "minQuality": 0.9749999999999999,
+      "stdevQuality": 0.011785113019775854,
+      "meanInputTokens": 53.0,
+      "meanOutputTokens": 30.0,
+      "meanTotalTokens": 83.0,
+      "meanQualityPer1kOut": 33.333333333333336,
+      "tokensEstimated": true,
+      "band": "possible_primary",
+      "identity": {
+        "resolvedAgentId": "8af1215f-3e03-4560-9622-13c5eeeb4864",
+        "resolvedAgentName": "ApplicationWriter-Gemini",
+        "agentIdentityKind": "deployed_cross_company_baseline",
+        "adapterType": "antigravity",
+        "benchAdapterType": "antigravity",
+        "productionAdapterType": "antigravity_local",
+        "requestedModelId": "gemini-flash",
+        "requestedModelArg": "Gemini 3.5 Flash (Medium)",
+        "trueModelIds": [
+          "Gemini 3.5 Flash (Medium)"
+        ],
+        "servedModelVerifiedAll": true,
+        "servedModelMismatchAny": false
+      }
+    },
+    {
+      "surfaceKey": "summarize_extract",
+      "surfaceLabel": "Summarize/extract caveat preservation",
+      "role": "summarize-extract",
+      "model_id": "gpt-5.3-codex-spark-high",
+      "model_label": "Codex GPT-5.3 Spark (high)",
+      "attempts": 3,
+      "okCount": 3,
+      "qualityCount": 3,
+      "successRate": 1.0,
+      "qualityRate": 1.0,
+      "taskIds": [
+        "summarize-keep-caveat"
+      ],
+      "minAttemptRepsPerTask": 3,
+      "minOkRepsPerTask": 3,
+      "minQualityRepsPerTask": 3,
+      "decisionGrade": true,
+      "meanQuality": 0.8888888888888888,
+      "minQuality": 0.6666666666666666,
+      "stdevQuality": 0.15713484026367724,
+      "meanInputTokens": 14042.333333333334,
+      "meanOutputTokens": 147.33333333333334,
+      "meanTotalTokens": 14189.666666666666,
+      "meanQualityPer1kOut": 6.195107004594957,
+      "tokensEstimated": false,
+      "band": "limited_candidate",
+      "identity": {
+        "resolvedAgentId": null,
+        "resolvedAgentName": "not_applicable:neutral-cli",
+        "agentIdentityKind": "neutral_cli_no_agent",
+        "adapterType": "codex",
+        "benchAdapterType": "codex",
+        "productionAdapterType": "codex_local",
+        "requestedModelId": "gpt-5.3-codex-spark-high",
+        "requestedModelArg": "gpt-5.3-codex-spark",
+        "trueModelIds": [
+          "gpt-5.3-codex-spark"
+        ],
+        "servedModelVerifiedAll": false,
+        "servedModelMismatchAny": false
+      }
+    },
+    {
+      "surfaceKey": "summarize_extract",
+      "surfaceLabel": "Summarize/extract caveat preservation",
+      "role": "summarize-extract",
+      "model_id": "gpt-5.3-codex-spark-low",
+      "model_label": "Codex GPT-5.3 Spark (low)",
+      "attempts": 3,
+      "okCount": 3,
+      "qualityCount": 3,
+      "successRate": 1.0,
+      "qualityRate": 1.0,
+      "taskIds": [
+        "summarize-keep-caveat"
+      ],
+      "minAttemptRepsPerTask": 3,
+      "minOkRepsPerTask": 3,
+      "minQualityRepsPerTask": 3,
+      "decisionGrade": true,
+      "meanQuality": 1.0,
+      "minQuality": 1.0,
+      "stdevQuality": 0.0,
+      "meanInputTokens": 13973.666666666666,
+      "meanOutputTokens": 72.33333333333333,
+      "meanTotalTokens": 14046.0,
+      "meanQualityPer1kOut": 20.645050473019396,
+      "tokensEstimated": false,
+      "band": "possible_primary",
+      "identity": {
+        "resolvedAgentId": null,
+        "resolvedAgentName": "not_applicable:neutral-cli",
+        "agentIdentityKind": "neutral_cli_no_agent",
+        "adapterType": "codex",
+        "benchAdapterType": "codex",
+        "productionAdapterType": "codex_local",
+        "requestedModelId": "gpt-5.3-codex-spark-low",
+        "requestedModelArg": "gpt-5.3-codex-spark",
+        "trueModelIds": [
+          "gpt-5.3-codex-spark"
+        ],
+        "servedModelVerifiedAll": false,
+        "servedModelMismatchAny": false
+      }
+    },
+    {
+      "surfaceKey": "summarize_extract",
+      "surfaceLabel": "Summarize/extract caveat preservation",
+      "role": "summarize-extract",
+      "model_id": "gpt-5.3-codex-spark-medium",
+      "model_label": "Codex GPT-5.3 Spark (medium)",
+      "attempts": 3,
+      "okCount": 3,
+      "qualityCount": 3,
+      "successRate": 1.0,
+      "qualityRate": 1.0,
+      "taskIds": [
+        "summarize-keep-caveat"
+      ],
+      "minAttemptRepsPerTask": 3,
+      "minOkRepsPerTask": 3,
+      "minQualityRepsPerTask": 3,
+      "decisionGrade": true,
+      "meanQuality": 0.7777777777777778,
+      "minQuality": 0.6666666666666666,
+      "stdevQuality": 0.15713484026367724,
+      "meanInputTokens": 14044.333333333334,
+      "meanOutputTokens": 151.0,
+      "meanTotalTokens": 14195.333333333334,
+      "meanQualityPer1kOut": 5.2698121922387395,
+      "tokensEstimated": false,
+      "band": "limited_candidate",
+      "identity": {
+        "resolvedAgentId": null,
+        "resolvedAgentName": "not_applicable:neutral-cli",
+        "agentIdentityKind": "neutral_cli_no_agent",
+        "adapterType": "codex",
+        "benchAdapterType": "codex",
+        "productionAdapterType": "codex_local",
+        "requestedModelId": "gpt-5.3-codex-spark-medium",
+        "requestedModelArg": "gpt-5.3-codex-spark",
+        "trueModelIds": [
+          "gpt-5.3-codex-spark"
+        ],
+        "servedModelVerifiedAll": false,
+        "servedModelMismatchAny": false
+      }
+    },
+    {
+      "surfaceKey": "summarize_extract",
+      "surfaceLabel": "Summarize/extract caveat preservation",
+      "role": "summarize-extract",
+      "model_id": "grok-4.3",
+      "model_label": "Grok 4.3 corrected baseline",
+      "attempts": 3,
+      "okCount": 3,
+      "qualityCount": 3,
+      "successRate": 1.0,
+      "qualityRate": 1.0,
+      "taskIds": [
+        "summarize-keep-caveat"
+      ],
+      "minAttemptRepsPerTask": 3,
+      "minOkRepsPerTask": 3,
+      "minQualityRepsPerTask": 3,
+      "decisionGrade": true,
+      "meanQuality": 1.0,
+      "minQuality": 1.0,
+      "stdevQuality": 0.0,
+      "meanInputTokens": 20749.0,
+      "meanOutputTokens": 356.0,
+      "meanTotalTokens": 21105.0,
+      "meanQualityPer1kOut": 2.836637047163363,
+      "tokensEstimated": false,
+      "band": "possible_primary",
+      "identity": {
+        "resolvedAgentId": "7fffa42f-467a-4f76-b802-4dc8bd552bd9",
+        "resolvedAgentName": "Bench-grok-4.3",
+        "agentIdentityKind": "bench_agent",
+        "adapterType": "hermes",
+        "benchAdapterType": "hermes",
+        "productionAdapterType": "hermes_local",
+        "requestedModelId": "grok-4.3",
+        "requestedModelArg": "grok-4.3",
+        "trueModelIds": [
+          "grok-4.3"
+        ],
+        "servedModelVerifiedAll": true,
+        "servedModelMismatchAny": false
+      }
+    }
+  ],
+  "overallSummary": [
+    {
+      "model_id": "codex-gpt-5.4",
+      "model_label": "Codex GPT-5.4",
+      "surfaceCount": 5,
+      "decisionGrade": true,
+      "meanSurfaceQuality": 0.9358333333333333,
+      "minSurfaceQuality": 0.8333333333333334,
+      "meanSurfaceOutputTokens": 212.33333333333334,
+      "bands": {
+        "cv_review_bare_none": "limited_candidate",
+        "cv_review_current_all": "limited_candidate",
+        "engineer_debugging": "possible_primary",
+        "ops_failover": "possible_primary",
+        "summarize_extract": "possible_primary"
+      }
+    },
+    {
+      "model_id": "gemini-flash",
+      "model_label": "Gemini 3.5 Flash deployed CV baseline",
+      "surfaceCount": 5,
+      "decisionGrade": true,
+      "meanSurfaceQuality": 0.9204166666666667,
+      "minSurfaceQuality": 0.6333333333333333,
+      "meanSurfaceOutputTokens": 111.03333333333333,
+      "bands": {
+        "cv_review_bare_none": "drop_only",
+        "cv_review_current_all": "possible_primary",
+        "engineer_debugging": "possible_primary",
+        "ops_failover": "possible_primary",
+        "summarize_extract": "possible_primary"
+      }
+    },
+    {
+      "model_id": "gpt-5.3-codex-spark-high",
+      "model_label": "Codex GPT-5.3 Spark (high)",
+      "surfaceCount": 5,
+      "decisionGrade": true,
+      "meanSurfaceQuality": 0.9552777777777778,
+      "minSurfaceQuality": 0.8888888888888888,
+      "meanSurfaceOutputTokens": 695.5,
+      "bands": {
+        "cv_review_bare_none": "strong_fallback",
+        "cv_review_current_all": "possible_primary",
+        "engineer_debugging": "possible_primary",
+        "ops_failover": "possible_primary",
+        "summarize_extract": "limited_candidate"
+      }
+    },
+    {
+      "model_id": "gpt-5.3-codex-spark-low",
+      "model_label": "Codex GPT-5.3 Spark (low)",
+      "surfaceCount": 5,
+      "decisionGrade": true,
+      "meanSurfaceQuality": 0.9771666666666666,
+      "minSurfaceQuality": 0.9375,
+      "meanSurfaceOutputTokens": 346.8666666666667,
+      "bands": {
+        "cv_review_bare_none": "strong_fallback",
+        "cv_review_current_all": "possible_primary",
+        "engineer_debugging": "possible_primary",
+        "ops_failover": "possible_primary",
+        "summarize_extract": "possible_primary"
+      }
+    },
+    {
+      "model_id": "gpt-5.3-codex-spark-medium",
+      "model_label": "Codex GPT-5.3 Spark (medium)",
+      "surfaceCount": 5,
+      "decisionGrade": true,
+      "meanSurfaceQuality": 0.9289722222222222,
+      "minSurfaceQuality": 0.7777777777777778,
+      "meanSurfaceOutputTokens": 542.0333333333333,
+      "bands": {
+        "cv_review_bare_none": "strong_fallback",
+        "cv_review_current_all": "possible_primary",
+        "engineer_debugging": "strong_fallback",
+        "ops_failover": "possible_primary",
+        "summarize_extract": "limited_candidate"
+      }
+    },
+    {
+      "model_id": "grok-4.3",
+      "model_label": "Grok 4.3 corrected baseline",
+      "surfaceCount": 5,
+      "decisionGrade": true,
+      "meanSurfaceQuality": 0.9608333333333333,
+      "minSurfaceQuality": 0.8954166666666666,
+      "meanSurfaceOutputTokens": 886.4,
+      "bands": {
+        "cv_review_bare_none": "limited_candidate",
+        "cv_review_current_all": "possible_primary",
+        "engineer_debugging": "strong_fallback",
+        "ops_failover": "possible_primary",
+        "summarize_extract": "possible_primary"
+      }
+    }
+  ],
+  "cvVerdicts": [
+    {
+      "model_id": "gpt-5.3-codex-spark-low",
+      "verdict": "sister/fallback",
+      "meanQuality": 0.9604166666666667,
+      "minQuality": 0.8,
+      "meanOutputTokens": 620.8333333333334,
+      "meanQualityPer1kOut": 1.5916866115665977,
+      "qualityDeltaVsComparatorBest": 0.012708333333333321,
+      "outputRatioVsComparatorBest": 0.4978615343491046,
+      "bareBand": "strong_fallback",
+      "bareMeanQuality": 0.9375,
+      "bareMeanOutputTokens": 557.6666666666666,
+      "currentAllBand": "possible_primary",
+      "currentAllMeanQuality": 0.9833333333333333,
+      "currentAllMeanOutputTokens": 684.0,
+      "comparedAgainst": [
+        "codex-gpt-5.4",
+        "grok-4.3",
+        "gemini-flash"
+      ],
+      "comparatorBestMeanQuality": 0.9477083333333334,
+      "comparatorBestOutputTokens": 1247.0,
+      "rationale": "CV quality is usable, but the corrected Grok/Codex/Gemini comparison or token economics do not justify primary placement."
+    },
+    {
+      "model_id": "gpt-5.3-codex-spark-medium",
+      "verdict": "sister/fallback",
+      "meanQuality": 0.975,
+      "minQuality": 0.75,
+      "meanOutputTokens": 923.25,
+      "meanQualityPer1kOut": 1.1404270582452267,
+      "qualityDeltaVsComparatorBest": 0.027291666666666603,
+      "outputRatioVsComparatorBest": 0.7403769045709703,
+      "bareBand": "strong_fallback",
+      "bareMeanQuality": 0.9541666666666666,
+      "bareMeanOutputTokens": 834.1666666666666,
+      "currentAllBand": "possible_primary",
+      "currentAllMeanQuality": 0.9958333333333333,
+      "currentAllMeanOutputTokens": 1012.3333333333334,
+      "comparedAgainst": [
+        "codex-gpt-5.4",
+        "grok-4.3",
+        "gemini-flash"
+      ],
+      "comparatorBestMeanQuality": 0.9477083333333334,
+      "comparatorBestOutputTokens": 1247.0,
+      "rationale": "CV quality is usable, but the corrected Grok/Codex/Gemini comparison or token economics do not justify primary placement."
+    },
+    {
+      "model_id": "gpt-5.3-codex-spark-high",
+      "verdict": "sister/fallback",
+      "meanQuality": 0.9624999999999999,
+      "minQuality": 0.8,
+      "meanOutputTokens": 1119.5833333333333,
+      "meanQualityPer1kOut": 0.8727529604903239,
+      "qualityDeltaVsComparatorBest": 0.014791666666666536,
+      "outputRatioVsComparatorBest": 0.8978214381181502,
+      "bareBand": "strong_fallback",
+      "bareMeanQuality": 0.9458333333333333,
+      "bareMeanOutputTokens": 1048.8333333333333,
+      "currentAllBand": "possible_primary",
+      "currentAllMeanQuality": 0.9791666666666666,
+      "currentAllMeanOutputTokens": 1190.3333333333333,
+      "comparedAgainst": [
+        "codex-gpt-5.4",
+        "grok-4.3",
+        "gemini-flash"
+      ],
+      "comparatorBestMeanQuality": 0.9477083333333334,
+      "comparatorBestOutputTokens": 1247.0,
+      "rationale": "CV quality is usable, but the corrected Grok/Codex/Gemini comparison or token economics do not justify primary placement."
+    }
+  ],
+  "identityRows": [
+    {
+      "model_id": "codex-gpt-5.4",
+      "resolvedAgentId": "5bcc7a94-6715-43eb-ad53-da7bd300ef79",
+      "resolvedAgentName": "Bench-codex-gpt-5.4",
+      "agentIdentityKind": "bench_agent",
+      "adapterType": "codex",
+      "benchAdapterType": "codex",
+      "productionAdapterType": "codex_local",
+      "requestedModelId": "codex-gpt-5.4",
+      "requestedModelArg": "gpt-5.4",
+      "trueModelIds": [
+        "gpt-5.4"
+      ],
+      "servedModelVerifiedRows": 0,
+      "totalRows": 21,
+      "servedModelMismatchRows": 0
+    },
+    {
+      "model_id": "gemini-flash",
+      "resolvedAgentId": "8af1215f-3e03-4560-9622-13c5eeeb4864",
+      "resolvedAgentName": "ApplicationWriter-Gemini",
+      "agentIdentityKind": "deployed_cross_company_baseline",
+      "adapterType": "antigravity",
+      "benchAdapterType": "antigravity",
+      "productionAdapterType": "antigravity_local",
+      "requestedModelId": "gemini-flash",
+      "requestedModelArg": "Gemini 3.5 Flash (Medium)",
+      "trueModelIds": [
+        "Gemini 3.5 Flash (Medium)"
+      ],
+      "servedModelVerifiedRows": 21,
+      "totalRows": 21,
+      "servedModelMismatchRows": 0
+    },
+    {
+      "model_id": "gpt-5.3-codex-spark-high",
+      "resolvedAgentId": null,
+      "resolvedAgentName": "not_applicable:neutral-cli",
+      "agentIdentityKind": "neutral_cli_no_agent",
+      "adapterType": "codex",
+      "benchAdapterType": "codex",
+      "productionAdapterType": "codex_local",
+      "requestedModelId": "gpt-5.3-codex-spark-high",
+      "requestedModelArg": "gpt-5.3-codex-spark",
+      "trueModelIds": [
+        "gpt-5.3-codex-spark"
+      ],
+      "servedModelVerifiedRows": 0,
+      "totalRows": 21,
+      "servedModelMismatchRows": 0
+    },
+    {
+      "model_id": "gpt-5.3-codex-spark-low",
+      "resolvedAgentId": null,
+      "resolvedAgentName": "not_applicable:neutral-cli",
+      "agentIdentityKind": "neutral_cli_no_agent",
+      "adapterType": "codex",
+      "benchAdapterType": "codex",
+      "productionAdapterType": "codex_local",
+      "requestedModelId": "gpt-5.3-codex-spark-low",
+      "requestedModelArg": "gpt-5.3-codex-spark",
+      "trueModelIds": [
+        "gpt-5.3-codex-spark"
+      ],
+      "servedModelVerifiedRows": 0,
+      "totalRows": 21,
+      "servedModelMismatchRows": 0
+    },
+    {
+      "model_id": "gpt-5.3-codex-spark-medium",
+      "resolvedAgentId": null,
+      "resolvedAgentName": "not_applicable:neutral-cli",
+      "agentIdentityKind": "neutral_cli_no_agent",
+      "adapterType": "codex",
+      "benchAdapterType": "codex",
+      "productionAdapterType": "codex_local",
+      "requestedModelId": "gpt-5.3-codex-spark-medium",
+      "requestedModelArg": "gpt-5.3-codex-spark",
+      "trueModelIds": [
+        "gpt-5.3-codex-spark"
+      ],
+      "servedModelVerifiedRows": 0,
+      "totalRows": 21,
+      "servedModelMismatchRows": 0
+    },
+    {
+      "model_id": "grok-4.3",
+      "resolvedAgentId": "7fffa42f-467a-4f76-b802-4dc8bd552bd9",
+      "resolvedAgentName": "Bench-grok-4.3",
+      "agentIdentityKind": "bench_agent",
+      "adapterType": "hermes",
+      "benchAdapterType": "hermes",
+      "productionAdapterType": "hermes_local",
+      "requestedModelId": "grok-4.3",
+      "requestedModelArg": "grok-4.3",
+      "trueModelIds": [
+        "grok-4.3"
+      ],
+      "servedModelVerifiedRows": 21,
+      "totalRows": 21,
+      "servedModelMismatchRows": 0
+    }
+  ],
+  "acceptance": {
+    "minNPerCell": 3,
+    "activeSurfaceDecisionGrade": true,
+    "allCvSparkCandidatesNamed": true,
+    "rowIdentityFieldsPresent": true,
+    "generationOrScoringFailureCount": 0,
+    "complete": true,
+    "hypothesisVerdict": "CONFIRMED"
+  }
+}

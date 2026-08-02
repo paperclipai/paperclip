@@ -25,6 +25,7 @@ import time
 from pathlib import Path
 
 import benchlib
+import model_provenance
 
 # hermes attributes token usage by diffing the shared session store before/after a
 # run. Concurrent hermes runs (grok-4.3 + grok-4.20 share this CLI and run the SAME
@@ -43,6 +44,19 @@ _AGY_SEM = threading.BoundedSemaphore(2)
 
 def run_model(prompt, model_row, adapters_cfg, timeout_sec):
     """Dispatch to the right adapter by model_row['adapter']."""
+    retired_error = model_provenance.retired_alias_error(
+        model_row.get("model_arg") or model_row.get("id")
+    )
+    if retired_error:
+        r = benchlib.empty_result()
+        r["model"] = model_provenance.retired_alias_info(
+            model_row.get("model_arg") or model_row.get("id")
+        )["served_model"]
+        r["error"] = retired_error
+        r["failureReason"] = "retired_model_alias"
+        r["servedModelVerified"] = False
+        r["servedModelMismatch"] = True
+        return _attach_request_metadata(r, model_row)
     guard = benchlib.first_model_guard(model_row)
     if guard:
         r = benchlib.empty_result()
@@ -229,8 +243,14 @@ def _run_codex(prompt, model_arg, extra, timeout_sec, effort=None):
         reported_model = _codex_model(events)
         r["model"] = reported_model or model_arg
         r["servedModelVerified"] = bool(reported_model)
+        quota_text = "\n".join([out or "", err or ""])
         if timed_out:
             r["error"] = "timeout"
+        elif not r["output"] and benchlib.is_provider_quota_text(quota_text):
+            r["error"] = _tail(err or out, 240) or "codex provider quota"
+            r["quotaError"] = True
+            r["failureReason"] = benchlib.INFRA_QUOTA_NO_SCORE
+            r["failureProvider"] = benchlib.PROVIDER_QUOTA
         elif rc not in (0, None) and not r["output"]:
             r["error"] = f"codex: rc={rc}"
         r["ok"] = bool(r["output"]) and not r["error"]
@@ -294,6 +314,8 @@ def _model_identity_tokens(value):
 
 
 def _served_model_matches_pin(pin, served_model):
+    if model_provenance.retired_alias_for_value(pin):
+        return False
     pin_tokens = set(_model_identity_tokens(pin))
     served_tokens = set(_model_identity_tokens(served_model))
     if not pin_tokens or not served_tokens:
@@ -381,10 +403,18 @@ def _run_antigravity(prompt, model_arg, extra, timeout_sec, effort=None):
             r["wallMs"] = probe.get("wallMs")
             if antigravity_is_quota_error(detail + " " + (probe.get("stderrTail") or "")):
                 r["quotaError"] = True
-                r["failureReason"] = "quota"
+                r["failureReason"] = benchlib.INFRA_QUOTA_NO_SCORE
+                r["failureProvider"] = benchlib.PROVIDER_QUOTA
             return r
         served_model = probe.get("servedModel")
         r["model"] = served_model
+        retired_error = model_provenance.retired_alias_error(model_arg, served_model)
+        if retired_error:
+            r["error"] = retired_error
+            r["failureReason"] = "retired_model_alias"
+            r["servedModelMismatch"] = True
+            r["wallMs"] = probe.get("wallMs")
+            return r
         if not _served_model_matches_pin(model_arg, served_model):
             r["error"] = f"served_model_mismatch: requested {model_arg}, self-reported {served_model}"
             r["failureReason"] = "served_model_mismatch"
@@ -408,7 +438,8 @@ def _run_antigravity(prompt, model_arg, extra, timeout_sec, effort=None):
             r["error"] = f"agy: rc={rc}: {_tail(err, 160)}"
         if r["error"] and antigravity_is_quota_error((err or "") + (out or "")):
             r["quotaError"] = True
-            r["failureReason"] = "quota"
+            r["failureReason"] = benchlib.INFRA_QUOTA_NO_SCORE
+            r["failureProvider"] = benchlib.PROVIDER_QUOTA
         r["model"] = served_model
         # agy print mode emits no usage JSON -> estimate tokens (flagged)
         r["inputTokens"] = benchlib.estimate_tokens(prompt)
@@ -463,10 +494,18 @@ def run_antigravity_agentic(prompt, model_arg, extra, timeout_sec, cwd, skip_per
             r["wallMs"] = probe.get("wallMs")
             if antigravity_is_quota_error(detail + " " + (probe.get("stderrTail") or "")):
                 r["quotaError"] = True
-                r["failureReason"] = "quota"
+                r["failureReason"] = benchlib.INFRA_QUOTA_NO_SCORE
+                r["failureProvider"] = benchlib.PROVIDER_QUOTA
             return r
         served_model = probe.get("servedModel")
         r["model"] = served_model
+        retired_error = model_provenance.retired_alias_error(model_arg, served_model)
+        if retired_error:
+            r["error"] = retired_error
+            r["failureReason"] = "retired_model_alias"
+            r["servedModelMismatch"] = True
+            r["wallMs"] = probe.get("wallMs")
+            return r
         if not _served_model_matches_pin(model_arg, served_model):
             r["error"] = f"served_model_mismatch: requested {model_arg}, self-reported {served_model}"
             r["failureReason"] = "served_model_mismatch"
@@ -494,7 +533,8 @@ def run_antigravity_agentic(prompt, model_arg, extra, timeout_sec, cwd, skip_per
             r["error"] = f"agy: rc={rc}: {_tail(err, 160)}"
         if r["error"] and antigravity_is_quota_error((err or "") + (out or "")):
             r["quotaError"] = True
-            r["failureReason"] = "quota"
+            r["failureReason"] = benchlib.INFRA_QUOTA_NO_SCORE
+            r["failureProvider"] = benchlib.PROVIDER_QUOTA
         r["model"] = served_model
         r["inputTokens"] = benchlib.estimate_tokens(prompt)
         r["outputTokens"] = benchlib.estimate_tokens(r["output"])
@@ -628,6 +668,14 @@ def _parse_grok_jsonl(stdout):
 
 def _run_grok(prompt, model_arg, extra, timeout_sec, effort=None):
     r = benchlib.empty_result()
+    retired_error = model_provenance.retired_alias_error(model_arg)
+    if retired_error:
+        r["model"] = model_provenance.retired_alias_info(model_arg)["served_model"]
+        r["error"] = retired_error
+        r["failureReason"] = "retired_model_alias"
+        r["servedModelVerified"] = False
+        r["servedModelMismatch"] = True
+        return r
     with tempfile.TemporaryDirectory(prefix="bench-grok-") as cwd:
         prompt_path = Path(cwd) / "prompt.txt"
         prompt_path.write_text(prompt)
@@ -705,6 +753,14 @@ def _prepare_hermes_home(reasoning_effort):
 
 def _run_hermes(prompt, model_arg, extra, timeout_sec, effort=None):
     r = benchlib.empty_result()
+    retired_error = model_provenance.retired_alias_error(model_arg)
+    if retired_error:
+        r["model"] = model_provenance.retired_alias_info(model_arg)["served_model"]
+        r["error"] = retired_error
+        r["failureReason"] = "retired_model_alias"
+        r["servedModelVerified"] = False
+        r["servedModelMismatch"] = True
+        return r
     hermes_home = None
     env = None
     if effort and effort != "cli_default":

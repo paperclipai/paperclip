@@ -42,7 +42,8 @@
       "adapter": "hermes",
       "model_arg": "grok-4.20-0309-reasoning",
       "label": "Grok 4.20 (reasoning)",
-      "lane": "hermes"
+      "lane": "hermes",
+      "note": "Tracked served-model family per TSBC-1674 radar (Hermes xAI OAuth live; probes OK for reasoning/non-reasoning/multi-agent variants). Distinct bench/routing cell from grok-4.3 and grok-4.5. Dedicated pins active for Bench-grok-4.20 + non-reasoning variant. CEO dispatch: explicit routing prefers reasoning for agentic work, non-reasoning for throughput."
     },
     {
       "id": "gemini-flash",
@@ -57,20 +58,6 @@
       "model_arg": "gemini-3.5-flash-low",
       "label": "Gemini 3.5 Flash (Low)",
       "lane": "antigravity"
-    },
-    {
-      "id": "grok-4.1-fast",
-      "adapter": "hermes",
-      "model_arg": "grok-4-1-fast-non-reasoning",
-      "label": "Grok 4.1 Fast",
-      "lane": "hermes"
-    },
-    {
-      "id": "grok-4-fast",
-      "adapter": "hermes",
-      "model_arg": "grok-4-fast-non-reasoning",
-      "label": "Grok 4 Fast",
-      "lane": "hermes"
     },
     {
       "id": "gpt-5.4-mini",
@@ -108,7 +95,7 @@
       "lane": "antigravity"
     }
   ],
-  "_models_catalog_comment": "Validated within-family variants (confirmed callable via their CLI 2026-06-14 unless noted below). `bench.py all` runs the active `models` roster above; as of 2026-07-11 that includes the new codex mini tier (`gpt-5.4-mini`) and the Claude cheap-lane probe (`claude-sonnet-5`). Opt in per run for catalog-only variants such as `claude-haiku`, `gemini-flash`, or the direct-Grok `grok-4.5` flagship. GPT-5.6 family availability was re-confirmed on 2026-07-11 from the EU via Codex OAuth after upgrading codex-cli to 0.144.1. `grok-4.5` was re-confirmed callable on the direct EU `grok.com` lane on 2026-07-17 (`grok --prompt-file ... -m grok-4.5`), but the CLI still exposes no usage block so benchmark token accounting remains estimated on that lane. gpt-5.3-codex-spark IS a valid model (same as Paperclip's spark lane, invoked --model gpt-5.3-codex-spark with reasoning_effort=high) but is DAILY RATE-LIMITED \u2014 sweeps including it fail with a usage-limit error while exhausted (resets ~mid-afternoon). Genuinely NOT supported on this ChatGPT account (400 invalid_request, never works): plain gpt-5.3, gpt-5.3-codex, gpt-5-codex.",
+  "_models_catalog_comment": "Validated within-family variants (confirmed callable via their CLI 2026-06-14 unless noted below). `bench.py all` runs the active `models` roster above; as of 2026-07-31 includes grok-4.20 family catalog entries + active note (TSBC-1674). grok-4.20 now tracked served model family on Hermes xAI OAuth (live variants per radar); explicit bench/routing implications per CEO dispatch: distinct family with dedicated bench cells/pins (reasoning for Bench-grok-4.20 agentic, non-reasoning separate lane, no shared lock with 4.3/4.5). Opt in per run for catalog-only variants such as `claude-haiku`, `gemini-flash`, `grok-4.20-*`, or the direct-Grok `grok-4.5` flagship. GPT-5.6 family availability was re-confirmed on 2026-07-11 from the EU via Codex OAuth after upgrading codex-cli to 0.144.1. `grok-4.5` was re-confirmed callable on the direct EU `grok.com` lane on 2026-07-17 (`grok --prompt-file ... -m grok-4.5`), but the CLI still exposes no usage block so benchmark token accounting remains estimated on that lane. AGY raw-Gemini rule locked by TSBC-1677 on 2026-07-31: only visible `agy models` entries or same-day probe-validated AGY slugs belong in future matrices. Raw `gemini-3.5-flash-lite` plus retired `gemini-2.0-flash` are denylisted because AGY 1.1.9 now rejects them instead of silently rerouting. gpt-5.3-codex-spark IS a valid model (same as Paperclip's spark lane, invoked --model gpt-5.3-codex-spark with reasoning_effort=high) but is DAILY RATE-LIMITED \u2014 sweeps including it fail with a usage-limit error while exhausted (resets ~mid-afternoon). Genuinely NOT supported on this ChatGPT account (400 invalid_request, never works): plain gpt-5.3, gpt-5.3-codex, gpt-5-codex.",
   "models_catalog": [
     {
       "id": "claude-sonnet",
@@ -207,20 +194,6 @@
       "note": "Paperclip's cheap codex lane; daily rate-limited"
     },
     {
-      "id": "grok-4-fast",
-      "adapter": "hermes",
-      "model_arg": "grok-4-fast-non-reasoning",
-      "label": "Grok 4 Fast",
-      "lane": "hermes"
-    },
-    {
-      "id": "grok-4.1-fast",
-      "adapter": "hermes",
-      "model_arg": "grok-4-1-fast-non-reasoning",
-      "label": "Grok 4.1 Fast",
-      "lane": "hermes"
-    },
-    {
       "id": "grok-3-mini",
       "adapter": "hermes",
       "model_arg": "grok-3-mini",
@@ -236,6 +209,38 @@
       "note": "Direct `grok.com` EU lane confirmed callable on 2026-07-17; token usage is estimated because the CLI stream does not emit usage blocks"
     },
     {
+      "id": "hermes-grok-4.5",
+      "adapter": "hermes",
+      "model_arg": "grok-4.5",
+      "label": "Grok 4.5 (Hermes)",
+      "lane": "hermes",
+      "note": "Same-surface roster id for hermes_local agents pinned to grok-4.5 (TSBC-1984). Do not substitute the direct `grok` row for Hermes-deployed lanes; adoption still requires same-batch n>=3 config_variant evidence."
+    },
+    {
+      "id": "grok-4.20-reasoning",
+      "adapter": "hermes",
+      "model_arg": "grok-4.20-0309-reasoning",
+      "label": "Grok 4.20 (reasoning)",
+      "lane": "hermes",
+      "note": "Live on Hermes xAI OAuth (Ireland-origin host OK per TSBC-1674/TSBC-1671). First-class tracked family; dedicated Bench-grok-4.20 pin. Routing: preferred for agentic bench cells (reasoning variant)."
+    },
+    {
+      "id": "grok-4.20-non-reasoning",
+      "adapter": "hermes",
+      "model_arg": "grok-4.20-0309-non-reasoning",
+      "label": "Grok 4.20 (non-reasoning)",
+      "lane": "hermes",
+      "note": "Live on Hermes xAI OAuth per TSBC-1674. Bench-grok-4.20-non-reasoning pin active. Explicit routing implication: use for latency/throughput paths separate from grok-4.3/grok-4.5."
+    },
+    {
+      "id": "grok-4.20-multi-agent",
+      "adapter": "hermes",
+      "model_arg": "grok-4.20-multi-agent-0309",
+      "label": "Grok 4.20 Multi-Agent",
+      "lane": "hermes",
+      "note": "New variant exposed on Hermes xAI OAuth (TSBC-1674). Candidate for multi-agent workflow routing; add dedicated cell if usage grows."
+    },
+    {
       "id": "gemini-pro-low",
       "adapter": "antigravity",
       "model_arg": "gemini-3.1-pro-low",
@@ -243,12 +248,20 @@
       "lane": "antigravity"
     },
     {
+      "id": "gemini-pro-high",
+      "adapter": "antigravity",
+      "model_arg": "Gemini 3.1 Pro (High)",
+      "label": "Gemini 3.1 Pro (High)",
+      "lane": "antigravity",
+      "note": "Same-surface roster id for antigravity_local agents pinned to the visible AGY Pro High label (TSBC-1984). Do not substitute Gemini Pro Low evidence; adoption still requires same-batch n>=3 config_variant evidence with served-model verification."
+    },
+    {
       "id": "gemini-3.5-flash",
       "adapter": "antigravity",
       "model_arg": "gemini-3.5-flash",
       "label": "Gemini 3.5 Flash",
       "lane": "antigravity",
-      "note": "Stable Gemini Flash ID probe-verified on the EU agy lane 2026-07-13"
+      "note": "Historical AGY slug probe-verified on the EU lane 2026-07-13, but absent from the 2026-07-31 `agy models` catalog. Re-probe on the current AGY version before reuse; nearby raw slug `gemini-3.5-flash-lite` now fails fast (TSBC-1677)."
     },
     {
       "id": "gemini-3.1-flash-lite",
@@ -256,7 +269,7 @@
       "model_arg": "gemini-3.1-flash-lite",
       "label": "Gemini 3.1 Flash Lite",
       "lane": "antigravity",
-      "note": "Stable Flash Lite ID probe-verified on the EU agy lane 2026-07-13"
+      "note": "Historical AGY slug probe-verified on the EU lane 2026-07-13, but absent from the 2026-07-31 `agy models` catalog. Treat as catalog-external until a same-day AGY probe reconfirms it."
     },
     {
       "id": "gemini-flash",
@@ -295,13 +308,77 @@
       ],
       "source": "TSBC-1439",
       "reason": "Permanent bench guard after the July 28, 2026 AGY model-truth probe: gemini-3.1-pro-high self-reported Gemini 3.6 Flash both as a combined slug and as --model gemini-3.1-pro --effort high. The bare gemini-3.1-pro id fails loudly without effort, and gemini-3.1-pro-low self-reports correctly. Re-probe after AGY version bumps before removing."
+    },
+    {
+      "id": "agy-invalid-raw-gemini-slugs-20260731",
+      "models": [
+        "gemini-3.5-flash-lite",
+        "gemini-2.0-flash"
+      ],
+      "source": "TSBC-1677; TSBC-1671 AGY 1.1.9 probes",
+      "reason": "Permanent bench guard after the July 31, 2026 AGY 1.1.9 fail-fast shift: these raw Gemini slugs are not valid model selections on the AGY surface. Use only visible `agy models` entries or same-day validated AGY slugs; do not rely on silent reroute."
+    },
+    {
+      "id": "xai-fast-alias-retirement-20260515",
+      "models": [
+        "grok-4-fast",
+        "grok-4-fast-reasoning",
+        "grok-4-fast-non-reasoning",
+        "grok-4-1-fast",
+        "grok-4-1-fast-reasoning",
+        "grok-4-1-fast-non-reasoning",
+        "grok-4.1-fast",
+        "grok-4.1-fast-reasoning",
+        "grok-4.1-fast-non-reasoning",
+        "grok-4-0709",
+        "grok-code-fast-1"
+      ],
+      "prefixes": [
+        "grok-4-fast-",
+        "grok-4-1-fast-",
+        "grok-4.1-fast-"
+      ],
+      "source": "TSBC-1571; docs.x.ai May-15 retirement; Hermes xai-oauth catalog excludes these aliases",
+      "reason": "Permanent bench guard: xAI retired these aliases on 2026-05-15. Fast Grok 4/4.1 rows aggregate as served grok-4.3; grok-code-fast-1 migrates to grok-build-0.1. Do not add these retired aliases to future matrices or live lane configs."
     }
   ],
+  "judge_policy": {
+    "defaultJudge": "spark-medium",
+    "opusReserveJudge": "claude-opus",
+    "calibrationSource": "TSBC-1642",
+    "calibrationRunIds": {
+      "spark-medium": "tsbc-1642-judge-calibration-20260731-021743",
+      "spark-high": "tsbc-1642-judge-calibration-high-20260731-022117"
+    },
+    "calibrationSetSha256": "6f15bbae0a0f5471a64f50703368bebc79c3bb449bbda6b4fe1f86ebbfce1fdf",
+    "sparkMediumMeanAbsDeltaVsOpus": 0.038642857142857145,
+    "sparkMediumWithin0_10": "10/10",
+    "sparkHighMeanAbsDeltaVsOpus": 0.037821428571428575,
+    "sparkHighWithin0_10": "10/10",
+    "opusReserveList": [
+      "blind holdouts",
+      "verdict-deciding cells: primary flips and adoption gates",
+      "reference-fidelity judging: missing-chapter class",
+      "spot-check cells where spark-medium and claude-opus disagree by >0.10"
+    ],
+    "monthlyDriftCheck": {
+      "command": "python3 judge_drift_check.py --n 10",
+      "cadence": "monthly",
+      "sampleCount": 10,
+      "meanAbsDeltaAutoRevertThreshold": 0.05,
+      "spotCheckAbsDeltaOpusThreshold": 0.10,
+      "autoRevertDefaultJudgeTo": "claude-opus"
+    },
+    "_comment": "TSBC-1651 relane: spark-medium is the default blind bench judge after TSBC-1642 calibration. Claude Opus remains the reserve judge for the listed verdict/reference cases and for drift/spot-check escalation."
+  },
   "judge": {
-    "id": "claude-opus",
-    "adapter": "claude",
-    "model_arg": "opus",
-    "_comment": "Judge = claude-opus (user authorized heavy claude use 2026-06-14). Sharpest available grader and most neutral (it is a contestant too, but the judge is blind to which model produced an output and applied uniformly, so rankings are fair; its mild self-preference is the one caveat). The gemini-judge baseline (run-20260614-044003) is archived for a cross-judge agreement check. Swap back to {\"id\":\"gemini-pro\",\"adapter\":\"gemini\",\"model_arg\":null} to conserve claude quota."
+    "id": "spark-medium",
+    "adapter": "codex",
+    "model_arg": "gpt-5.3-codex-spark",
+    "reasoning_effort": "medium",
+    "label": "Codex GPT-5.3 Spark (medium) blind judge",
+    "lane": "codex",
+    "_comment": "Default bench judge per TSBC-1651. TSBC-1642 calibrated spark-medium against claude-opus: run tsbc-1642-judge-calibration-20260731-021743, 10/10 within 0.10, mean abs delta 0.038642857142857145. spark-high run tsbc-1642-judge-calibration-high-20260731-022117 was equivalent (0.037821428571428575) but costlier. Use claude-opus only for the judge_policy opusReserveList or after drift auto-revert."
   },
   "roles": [
     "engineer",
@@ -330,7 +407,7 @@
     "paperclip"
   ],
   "paperclip": {
-    "_comment": "Agentic 'Paperclip function' lane (paperclip_lane.py). OPT-IN: never part of a default `all` sweep \u2014 run with `--roles paperclip --models grok-4.3,grok-4-fast,grok-4.1-fast`. Requires PAPERCLIP_API_URL + PAPERCLIP_API_KEY (board token) in env. Maps each benchmark model id -> a DEDICATED bench AGENT that runs that model; the lane creates a fixture issue assigned to that agent, triggers a fresh-session run, and scores whether it reaches a VALID disposition. SAFE-BY-DEFAULT: `agents` is empty so a stray run is a no-op (the lane skips models with no configured agent). DO NOT point this at live fleet agents \u2014 that commandeers real lanes. Provision dedicated throwaway bench Hermes agents (one per grok model) in a sandbox/bench company, then fill `agents` + `benchCompanyId`. Candidate models to bench: grok-4.3 (reasoning, the working baseline), grok-4-fast / grok-4.1-fast (the deployed non-reasoning variants under suspicion), grok-4.20. For reference, the live TSC (211e0f96) agents on these models are MIDAS-Hermes=8e90bc2f (grok-4.3), Compiler-Hermes=94d53f33 (grok-4-fast-non-reasoning), Engineer-Hermes=a201c6a0 (grok-4-1-fast-non-reasoning) \u2014 use these ONLY to model dedicated bench agents after them, not as bench subjects.",
+    "_comment": "Agentic 'Paperclip function' lane (paperclip_lane.py). OPT-IN: never part of a default `all` sweep - run with `--roles paperclip --models grok-4.3,grok-4.20,grok-4.5`. Requires PAPERCLIP_API_URL + PAPERCLIP_API_KEY (board token) in env. Maps each benchmark model id -> a DEDICATED bench AGENT that runs that model; the lane creates a fixture issue assigned to that agent, triggers a fresh-session run, and scores whether it reaches a VALID disposition. SAFE-BY-DEFAULT: `agents` is empty so a stray run is a no-op (the lane skips models with no configured agent). DO NOT point this at live fleet agents - that commandeers real lanes. Provision dedicated throwaway bench Hermes agents (one per current grok model) in a sandbox/bench company, then fill `agents` + `benchCompanyId`. Candidate models to bench: grok-4.3 (reasoning, the working baseline), grok-4.20, grok-4.5. Former fast-alias TSC agents are intentionally omitted after the 2026-05-15 xAI retirement; do not model new dedicated bench agents after those retired configs.",
     "benchCompanyId": "e212ce50-b524-408c-b3d4-0c6108d8c2e2",
     "benchProjectId": "f71e8665-3f38-4920-b777-348ec85b9071",
     "maxWorkers": 1,
@@ -338,8 +415,6 @@
     "_runtime_comment": "maxWorkers=1 (SERIAL) is REQUIRED: parallel rapid-fire invokes fight the platform's GLOBAL heartbeat machinery (heartbeat.wakeup() coalesces/dedups concurrent wakeups -> 'skipped'; run-recovery reapers cancel queued runs), which company isolation can't avoid. Single-model/serial runs were clean (grok-4.3=0.94); every parallel 4-model sweep collapsed to skipped/cancelled. cellTimeoutSec=900 (raised from 600) because the grok-4.20 REASONING model legitimately runs 313-444s/cell; the lane retries transient timeouts + waits for agent-idle around each invoke. NOTE 2026-06-18: paperclip_lane SOCKET_TIMEOUT_SEC raised 45->120 \u2014 the old 45s socket timeout made a slow grok-4.20 run get abandoned mid-poll, leaving a lease-holding zombie that cascaded Errno 60 ('Operation timed out') into every following cell from ~stage 6 on. Runs in the dedicated isolated company (see _isolation_comment) so nothing acts on fixtures mid-run. ~70-90 min for the 4-model grok sweep, serial.",
     "agents": {
       "grok-4.3": "7fffa42f-467a-4f76-b802-4dc8bd552bd9",
-      "grok-4-fast": "bdaef356-7877-40f1-a8aa-768861e427d2",
-      "grok-4.1-fast": "0b73fa6f-a50c-4a2c-8c03-773298398259",
       "grok-4.20": "fc866269-900a-42b4-84e7-df4159f98f54",
       "claude-opus": "c7024122-7589-444a-a58f-597515d5a211",
       "codex-gpt-5.4": "5bcc7a94-6715-43eb-ad53-da7bd300ef79",
@@ -348,7 +423,10 @@
       "gpt-5.6-sol": "9cde1342-a63e-48e5-ae32-769778cd5408",
       "gpt-5.6-terra": "9dc76a01-420e-440f-a76e-2c0d097acf7d",
       "gpt-5.6-luna": "aaecdcd0-dc5b-41d1-a6fd-0ff7a56776a0",
-      "claude-sonnet-5": "53a4e9d3-81b1-4d86-8f87-e19447412f0e"
+      "claude-sonnet-5": "53a4e9d3-81b1-4d86-8f87-e19447412f0e",
+      "agy-claude-opus-4.6": "636fe8bf-9ac0-4b94-bb6a-3d77a0b0b17e",
+      "agy-claude-sonnet-4.6": "c2b21163-472c-4729-85ac-b531cd184c0b",
+      "agy-gpt-oss-120b": "7daf75eb-719e-4ccd-a2db-113efe1ade53"
     },
     "_isolation_comment": "Bench runs in a DEDICATED ISOLATED company (Agentic Bench, e212ce50) with NO CEO/routines/active agents, so nothing in the company acts on bench fixtures mid-run (TSMC's GLaD0S + cleanup machinery was the interference that quiet-TSMC couldn't stop). reportsTo for the 4 agents = paused Bench-Manager b610338d."
   },
@@ -432,7 +510,7 @@
       "extra_args": []
     }
   },
-  "_pricing_comment": "NOTIONAL API list prices in USD per MILLION tokens, {in, out}, for the optional $ cost basis in costreport.py (#19). LEFT NULL ON PURPOSE \u2014 fill with REAL rates you can verify (operator-supplied; not fabricated). Caveat: lanes are subscription/OAuth-billed so marginal $ is ~0 today; these model the cost IF scaled via API. Output-token efficiency (q/1k-out) is the live signal and needs no prices.",
+  "_pricing_comment": "NOTIONAL API list prices in USD per MILLION tokens, {in, out}, for the optional $ cost basis in costreport.py (#19). Rates must come from verified provider pricing. GPT-5.6 and GPT-5.4 mini standard short-context rates were refreshed from OpenAI's official pricing page on 2026-07-31 (TSBC-1673); long-context, cache-write, and Fast-mode rates remain in the governed TSBC-1673 pricing artifact because this compact schema only prices standard input/output. Caveat: lanes are subscription/OAuth-billed so marginal $ is ~0 today; these model cost IF scaled via API. Output-token efficiency (q/1k-out) remains the live signal.",
   "pricing": {
     "claude-opus": {
       "in": null,
@@ -471,30 +549,22 @@
       "out": null
     },
     "gpt-5.6-sol": {
-      "in": null,
-      "out": null
+      "in": 5.0,
+      "out": 30.0
     },
     "gpt-5.6-terra": {
-      "in": null,
-      "out": null
+      "in": 2.0,
+      "out": 12.0
     },
     "gpt-5.6-luna": {
-      "in": null,
-      "out": null
+      "in": 0.2,
+      "out": 1.2
     },
     "gpt-5.4-mini": {
-      "in": null,
-      "out": null
+      "in": 0.75,
+      "out": 4.5
     },
     "gpt-5.3-codex-spark": {
-      "in": null,
-      "out": null
-    },
-    "grok-4-fast": {
-      "in": null,
-      "out": null
-    },
-    "grok-4.1-fast": {
       "in": null,
       "out": null
     },
@@ -506,7 +576,15 @@
       "in": null,
       "out": null
     },
+    "hermes-grok-4.5": {
+      "in": null,
+      "out": null
+    },
     "gemini-pro-low": {
+      "in": null,
+      "out": null
+    },
+    "gemini-pro-high": {
       "in": null,
       "out": null
     },

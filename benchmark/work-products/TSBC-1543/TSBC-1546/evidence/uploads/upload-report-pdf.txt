@@ -1,0 +1,10 @@
+Uploaded artifact
+
+- Attachment: [TSBC-1546 branded closeout PDF](/api/attachments/cd4096b3-d712-4142-bd6c-d265eee1667a/content)
+- Download: [TSBC-1546 branded closeout PDF](/api/attachments/cd4096b3-d712-4142-bd6c-d265eee1667a/content?download=1)
+- Attachment ID: `cd4096b3-d712-4142-bd6c-d265eee1667a`
+- Work product ID: `ad3bf2e5-d63e-40a0-9631-553d3907e1da`
+
+Final comment snippet:
+
+- Artifact: [TSBC-1546 branded closeout PDF](/api/attachments/cd4096b3-d712-4142-bd6c-d265eee1667a/content)

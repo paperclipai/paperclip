@@ -34,5 +34,5 @@ ENV_FILE="$HOME/.paperclip/instances/default/companies/e6361895-a6a4-438d-bb76-b
 set -a; source "$ENV_FILE"; set +a
 
 cd "$HOME/paperclip/benchmark"
-python3 bench.py all --roles paperclip --models grok-4.3,grok-4-fast,grok-4.1-fast,grok-4.20
+python3 bench.py all --roles paperclip --models grok-4.3,grok-4.20,grok-4.5
 # EXIT trap restores the janitors here, even on Ctrl-C / error.

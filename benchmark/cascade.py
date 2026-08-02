@@ -19,7 +19,7 @@ Reading it:
   - LOW det-detectable           -> failures are subjective; you'd pay a strong review on the
                                     rest to catch them -> savings erode toward "burn the same". KEEP PREMIUM.
 
-  python3 cascade.py --roles intake,ledger,cto,quant --cheap grok-4-fast --strong grok-4.3
+  python3 cascade.py --roles intake,ledger,cto,quant --cheap gpt-5.4-mini --strong grok-4.3
   python3 cascade.py --bar 0.85 --dry-run
 """
 import argparse
@@ -62,7 +62,7 @@ def main():
     global _cfg
     ap = argparse.ArgumentParser(description="#18 cascade economics")
     ap.add_argument("--roles", default="intake,ledger,cto,quant")
-    ap.add_argument("--cheap", default="grok-4-fast")
+    ap.add_argument("--cheap", default="gpt-5.4-mini")
     ap.add_argument("--strong", default="grok-4.3")
     ap.add_argument("--bar", type=float, default=0.85, help="quality bar for 'handled correctly'")
     ap.add_argument("--max-tasks-per-role", type=int, default=None, dest="maxt")

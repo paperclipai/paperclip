@@ -90,7 +90,7 @@ def build_agentic_prompt(af_body, staged_names, task_prompt):
 
 
 def run_cell_agentic(role, task, model_row, af_key, sk_key, af_bodies, skills_dir,
-                     skills_bundle_body,
+                     skills_bundle_body, suite_path, source_meta,
                      adapters_cfg, timeout, halt):
     """One agentic cell. Stages skills (if sk=all) into a temp cwd, runs agy agentically there,
     scores on the bare rubric. Sets the halt Event on a quota/auth failure so the run stops."""
@@ -110,7 +110,6 @@ def run_cell_agentic(role, task, model_row, af_key, sk_key, af_bodies, skills_di
     out_tok = raw.get("outputTokens")
     quality = scored.get("quality")
     qpk = (quality / (out_tok / 1000.0)) if (quality is not None and out_tok) else None
-    suite_path = ROOT / role / "suite.json"
     agent_file_sha = benchlib.sha256_text(af_bodies[af_key]) if af_bodies[af_key] else "none"
     skills_bundle_sha = benchlib.sha256_text(skills_bundle_body) if sk_key == "all" and skills_bundle_body else "none"
     rec = {"role": role, "task": task["id"], "model": model_row["id"],
@@ -124,6 +123,7 @@ def run_cell_agentic(role, task, model_row, af_key, sk_key, af_bodies, skills_di
            "skillsBundleSha256": skills_bundle_sha,
            "suiteSha256": benchlib.file_sha256(suite_path),
            "suiteSourcePath": str(suite_path),
+           **source_meta,
            "stagedSkills": len(staged), "promptChars": len(prompt),
            "wallMs": raw.get("wallMs"), "error": raw.get("error"),
            # keep a truncated output sample so derails/flakes (occasional agy 0.0s) are debuggable
@@ -170,6 +170,8 @@ def main():
     global _cfg
     ap = argparse.ArgumentParser(description="agentic config-variant matrix (antigravity lane)")
     ap.add_argument("--config", default=None)
+    ap.add_argument("--variants-config", default=None,
+                    help="path to a task/company-local variants config (default: benchmark/variants.json)")
     ap.add_argument("--roles", default=None, help="comma list (default: all in variants.json)")
     ap.add_argument("--models", default=None, help="comma list of model ids (default: all antigravity models in config)")
     ap.add_argument("--max-tasks-per-role", type=int, default=None, dest="max_tasks")
@@ -193,7 +195,8 @@ def main():
 
     _cfg = benchlib.load_config(args.config)
     adapters_cfg = _cfg["adapters"]
-    vcfg = json.load(open(VARIANTS_CFG))["roles"]
+    variants_doc, variants_config_path = variants.load_variants_config(args.variants_config)
+    vcfg = variants_doc["roles"]
 
     want_roles = [r.strip() for r in args.roles.split(",")] if args.roles else list(vcfg)
     want_roles = [r for r in want_roles if r in vcfg]
@@ -219,8 +222,11 @@ def main():
     bodies = {}
     skills_dirs = {}
     skills_bundles = {}
+    suite_paths = {}
+    source_meta = {}
     for role in want_roles:
-        suite = json.load(open(ROOT / role / "suite.json"))
+        suite_path = variants.suite_path_for_role(role, vcfg[role])
+        suite = json.load(open(suite_path))
         tasks = suite["tasks"]
         if args.max_tasks:
             tasks = tasks[: args.max_tasks]
@@ -228,6 +234,8 @@ def main():
         bodies[role] = af
         skills_dirs[role] = vcfg[role].get("skillsDir", "")
         skills_bundles[role] = variants.load_skill_bundle(skills_dirs[role]) if skills_dirs[role] else ""
+        suite_paths[role] = suite_path
+        source_meta[role] = variants.role_source_meta(vcfg[role], variants_config_path)
         for t in tasks:
             for m in models:
                 for af_key, sk_key in grid:
@@ -237,6 +245,7 @@ def main():
     print(f"=== Agentic Config-Variant Matrix · {run_id} ===")
     print(f"roles  : {', '.join(want_roles)}")
     print(f"models : {', '.join(m['id'] for m in models)} (antigravity)")
+    print(f"variant config : {variants_config_path}")
     print(f"grid   : {len(grid)} cells/model: {['%s:%s' % g for g in grid]}")
     print(f"plan   : {len(plan)} agentic generations + {len(plan)} judge calls")
     if args.dry_run:
@@ -272,7 +281,7 @@ def main():
         role, t, m, af_key, sk_key = cell
         try:
             r = run_cell_agentic(role, t, m, af_key, sk_key, bodies[role], skills_dirs[role],
-                                 skills_bundles[role],
+                                 skills_bundles[role], suite_paths[role], source_meta[role],
                                  adapters_cfg, timeout, halt)
         except Exception as e:
             r = {"role": role, "task": t["id"], "model": m["id"], "agentFile": af_key,
@@ -297,7 +306,9 @@ def main():
     json.dump(records, open(out_dir / "records.json", "w"), indent=2)
     json.dump({f"{k[0]}|{k[1]}|{k[2]}|{k[3]}": v for k, v in cells.items()},
               open(out_dir / "cells.json", "w"), indent=2)
-    meta = {"run_id": run_id, "judge": _cfg["judge"].get("id")}
+    meta = {"run_id": run_id, "judge": _cfg["judge"].get("id"),
+            "variants_config": str(variants_config_path)}
+    json.dump(meta, open(out_dir / "meta.json", "w"), indent=2)
     md = to_markdown(cells, want_roles, models, meta)
     (out_dir / "report.md").write_text(md)
     print("\n" + "=" * 60)

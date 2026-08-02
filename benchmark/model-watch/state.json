@@ -1,26 +1,31 @@
 {
-  "date": "2026-07-28",
-  "fire": "Tuesday",
+  "date": "2026-07-31",
+  "fire": "Friday",
   "weekStart": "2026-07-27",
   "cliVersions": {
     "codex": "0.144.1",
-    "claude": "2.1.211 (Claude Code)",
-    "agy": "1.1.8",
-    "grok": "0.2.77 (44e77bec3af6) [stable]",
-    "hermes": "v0.17.0 (2026.6.19) · upstream 3be565fb · local f2cb8773 (+1 carried commit)",
-    "hermesUpdateAvailable": "4935 commits behind"
+    "claude": "2.1.220 (Claude Code)",
+    "agy": "1.1.9",
+    "grok": "0.2.112 (9bbd559437aa) [stable]",
+    "hermes": "v0.19.1 (2026.7.30) · upstream f3cda0ce · local 4f4fb2c1 (+6 carried commits)",
+    "hermesUpdateAvailable": "19 commits behind",
+    "opencode": "1.17.11"
   },
   "cliCatalogs": {
     "grok": {
-      "authenticated": false,
+      "authenticated": true,
       "defaultModel": "grok-4.5",
       "availableModels": [
         "grok-4.5"
       ],
       "rejectedCandidateIds": {
-        "grok-build": "invalid params / unknown model id on the consumer Grok CLI lane"
+        "grok-build": "invalid params / unknown model id"
       },
-      "splitSurfaceStatus": "Tuesday, July 28, 2026: the direct consumer Grok CLI still exposes `grok-4.5` as the default available model on the Ireland host, direct `grok-4.5` returns `OK`, direct `grok-build` is still rejected as an unknown model id, and served `grok_local` notes still describe `grok-build` as the default model id."
+      "probeSummary": {
+        "grok-4.5": "OK",
+        "grok-build": "invalid params / unknown model id"
+      },
+      "splitSurfaceStatus": "Friday, July 31, 2026: consumer Grok CLI remains at 0.2.112 and `grok models` reports logged in with grok.com, default/available model only `grok-4.5`; direct `grok-4.5` probe returns OK and `grok-build` remains an unknown model id."
     },
     "agy": {
       "availableModels": [
@@ -37,13 +42,183 @@
         "gpt-oss-120b-medium"
       ],
       "probeSummary": {
-        "gemini-3.6-flash": "executes; self-identifies as Gemini 3.6 Flash",
-        "Gemini 3.6 Flash (High)": "executes; self-identifies as Gemini 3.6 Flash",
-        "Gemini 3.6 Flash (Medium)": "executes; self-identifies as Gemini 3.6 Flash",
-        "Gemini 3.1 Pro (High)": "executes; self-identifies as Gemini 3.6 Flash (High)",
-        "gemini-3.5-flash-lite": "executes; self-identifies as Gemini 3.6 Flash",
-        "gemini-2.0-flash": "executes; self-identifies as Gemini 3.6 Flash"
+        "gemini-3.6-flash-high": "OK on AGY 1.1.9",
+        "gemini-3.1-pro-low": "OK on AGY 1.1.9",
+        "Gemini 3.1 Pro (High)": "OK on AGY 1.1.9",
+        "Gemini 3.5 Flash (Low)": "OK on AGY 1.1.9",
+        "Gemini 3.5 Flash (Medium)": "OK on AGY 1.1.9",
+        "gemini-3.5-flash-lite": "invalid model selection on AGY 1.1.9; no longer silently reroutes",
+        "gemini-2.0-flash": "invalid model selection on AGY 1.1.9; no longer silently reroutes"
+      },
+      "status": "AGY 1.1.9 still lists the same 11 native model choices, but raw `gemini-3.5-flash-lite` and retired `gemini-2.0-flash` now fail fast instead of rerouting to Gemini 3.6 Flash."
+    },
+    "codex": {
+      "catalogCommand": "no native catalog command found in `codex exec --help`",
+      "probes": {
+        "gpt-5.5": "OK",
+        "gpt-5.3-codex-spark": "exists/available to account but quota-limited until Aug 5, 2026 7:34 AM",
+        "gpt-5.3-codex": "400/not supported when using Codex with a ChatGPT account",
+        "gpt-5.6": "400/not supported when using Codex with a ChatGPT account",
+        "gpt-5.6-sol": "OK",
+        "gpt-5.6-terra": "OK",
+        "gpt-5.6-luna": "OK"
+      },
+      "sparkStatus": "2026-07-31: two live Recruitment codex_local agents now name `gpt-5.3-codex-spark`; Codex CLI recognizes the model but the OAuth lane is usage-limited until Aug 5, 2026 7:34 AM, and the served codex_local adapter catalog still omits the id."
+    },
+    "claude": {
+      "catalogCommand": "no noninteractive native catalog command found in `claude --help`",
+      "probes": {
+        "claude-sonnet-5": "OK",
+        "claude-opus-5": "OK",
+        "claude-haiku-4-5": "OK",
+        "claude-mythos-5": "model/no-access error on this Claude Code lane"
+      },
+      "status": "2026-07-31: Claude Code subscription lane serves claude-sonnet-5, claude-opus-5, and claude-haiku-4-5; claude-mythos-5 remains model/no-access on this lane. CLI updated from 2.1.211 to 2.1.220 outside this routine."
+    },
+    "hermes": {
+      "catalogCommand": "`hermes models` is not available; `hermes model --help` remains interactive only.",
+      "versionStatus": "2026-07-31: Hermes is now v0.19.1, 19 commits behind, with 6 carried commits; this routine did not run a shared CLI update.",
+      "xaiOAuthProbes": {
+        "grok-4.20-0309-reasoning": "OK",
+        "grok-4.20-0309-non-reasoning": "OK",
+        "grok-4.5": "OK",
+        "grok-4.3": "OK"
+      },
+      "xaiPublicModelExtract": {
+        "source": "work-products/TSBC-1671/evidence/xai-public-models-2026-07-31.json",
+        "languageModelNames": [
+          "grok-4.20-0309-non-reasoning",
+          "grok-4.20-0309-reasoning",
+          "grok-4.20-multi-agent-0309",
+          "grok-4.3",
+          "grok-4.5",
+          "grok-build-0.1"
+        ],
+        "videoModelNames": [
+          "grok-imagine-video",
+          "grok-imagine-video-1.5"
+        ]
       }
+    },
+    "opencode": {
+      "version": "1.17.11",
+      "availableModelsCount": 113,
+      "diffVs20260728": "byte-identical to the prior reference; work-products/TSBC-1671/evidence/opencode-models-vs-2026-07-28.diff is empty",
+      "availableModels": [
+        "opencode/big-pickle",
+        "opencode/deepseek-v4-flash-free",
+        "opencode/laguna-s-2.1-free",
+        "opencode/ling-3.0-flash-free",
+        "opencode/mimo-v2.5-free",
+        "opencode/nemotron-3-ultra-free",
+        "opencode/north-mini-code-free",
+        "cloudflare-ai-gateway/anthropic/claude-3-5-haiku",
+        "cloudflare-ai-gateway/anthropic/claude-3-haiku",
+        "cloudflare-ai-gateway/anthropic/claude-3-opus",
+        "cloudflare-ai-gateway/anthropic/claude-3-sonnet",
+        "cloudflare-ai-gateway/anthropic/claude-3.5-haiku",
+        "cloudflare-ai-gateway/anthropic/claude-3.5-sonnet",
+        "cloudflare-ai-gateway/anthropic/claude-fable-5",
+        "cloudflare-ai-gateway/anthropic/claude-haiku-4-5",
+        "cloudflare-ai-gateway/anthropic/claude-opus-4",
+        "cloudflare-ai-gateway/anthropic/claude-opus-4-1",
+        "cloudflare-ai-gateway/anthropic/claude-opus-4-5",
+        "cloudflare-ai-gateway/anthropic/claude-opus-4-6",
+        "cloudflare-ai-gateway/anthropic/claude-opus-4-7",
+        "cloudflare-ai-gateway/anthropic/claude-opus-4-8",
+        "cloudflare-ai-gateway/anthropic/claude-opus-5",
+        "cloudflare-ai-gateway/anthropic/claude-sonnet-4",
+        "cloudflare-ai-gateway/anthropic/claude-sonnet-4-5",
+        "cloudflare-ai-gateway/anthropic/claude-sonnet-4-6",
+        "cloudflare-ai-gateway/anthropic/claude-sonnet-5",
+        "cloudflare-ai-gateway/moonshotai/kimi-k3",
+        "cloudflare-ai-gateway/openai/gpt-3.5-turbo",
+        "cloudflare-ai-gateway/openai/gpt-4",
+        "cloudflare-ai-gateway/openai/gpt-4-turbo",
+        "cloudflare-ai-gateway/openai/gpt-4o",
+        "cloudflare-ai-gateway/openai/gpt-4o-mini",
+        "cloudflare-ai-gateway/openai/gpt-5.1",
+        "cloudflare-ai-gateway/openai/gpt-5.1-codex",
+        "cloudflare-ai-gateway/openai/gpt-5.2",
+        "cloudflare-ai-gateway/openai/gpt-5.2-codex",
+        "cloudflare-ai-gateway/openai/gpt-5.3-codex",
+        "cloudflare-ai-gateway/openai/gpt-5.4",
+        "cloudflare-ai-gateway/openai/gpt-5.5",
+        "cloudflare-ai-gateway/openai/gpt-5.6-luna",
+        "cloudflare-ai-gateway/openai/gpt-5.6-sol",
+        "cloudflare-ai-gateway/openai/gpt-5.6-terra",
+        "cloudflare-ai-gateway/openai/o1",
+        "cloudflare-ai-gateway/openai/o3",
+        "cloudflare-ai-gateway/openai/o3-mini",
+        "cloudflare-ai-gateway/openai/o3-pro",
+        "cloudflare-ai-gateway/openai/o4-mini",
+        "cloudflare-ai-gateway/workers-ai/@cf/ai4bharat/indictrans2-en-indic-1B",
+        "cloudflare-ai-gateway/workers-ai/@cf/aisingapore/gemma-sea-lion-v4-27b-it",
+        "cloudflare-ai-gateway/workers-ai/@cf/baai/bge-base-en-v1.5",
+        "cloudflare-ai-gateway/workers-ai/@cf/baai/bge-large-en-v1.5",
+        "cloudflare-ai-gateway/workers-ai/@cf/baai/bge-m3",
+        "cloudflare-ai-gateway/workers-ai/@cf/baai/bge-reranker-base",
+        "cloudflare-ai-gateway/workers-ai/@cf/baai/bge-small-en-v1.5",
+        "cloudflare-ai-gateway/workers-ai/@cf/deepgram/aura-2-en",
+        "cloudflare-ai-gateway/workers-ai/@cf/deepgram/aura-2-es",
+        "cloudflare-ai-gateway/workers-ai/@cf/deepgram/nova-3",
+        "cloudflare-ai-gateway/workers-ai/@cf/deepseek-ai/deepseek-r1-distill-qwen-32b",
+        "cloudflare-ai-gateway/workers-ai/@cf/facebook/bart-large-cnn",
+        "cloudflare-ai-gateway/workers-ai/@cf/google/gemma-3-12b-it",
+        "cloudflare-ai-gateway/workers-ai/@cf/huggingface/distilbert-sst-2-int8",
+        "cloudflare-ai-gateway/workers-ai/@cf/ibm-granite/granite-4.0-h-micro",
+        "cloudflare-ai-gateway/workers-ai/@cf/meta/llama-2-7b-chat-fp16",
+        "cloudflare-ai-gateway/workers-ai/@cf/meta/llama-3-8b-instruct",
+        "cloudflare-ai-gateway/workers-ai/@cf/meta/llama-3-8b-instruct-awq",
+        "cloudflare-ai-gateway/workers-ai/@cf/meta/llama-3.1-8b-instruct",
+        "cloudflare-ai-gateway/workers-ai/@cf/meta/llama-3.1-8b-instruct-awq",
+        "cloudflare-ai-gateway/workers-ai/@cf/meta/llama-3.1-8b-instruct-fp8",
+        "cloudflare-ai-gateway/workers-ai/@cf/meta/llama-3.2-11b-vision-instruct",
+        "cloudflare-ai-gateway/workers-ai/@cf/meta/llama-3.2-1b-instruct",
+        "cloudflare-ai-gateway/workers-ai/@cf/meta/llama-3.2-3b-instruct",
+        "cloudflare-ai-gateway/workers-ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+        "cloudflare-ai-gateway/workers-ai/@cf/meta/llama-4-scout-17b-16e-instruct",
+        "cloudflare-ai-gateway/workers-ai/@cf/meta/llama-guard-3-8b",
+        "cloudflare-ai-gateway/workers-ai/@cf/meta/m2m100-1.2b",
+        "cloudflare-ai-gateway/workers-ai/@cf/mistral/mistral-7b-instruct-v0.1",
+        "cloudflare-ai-gateway/workers-ai/@cf/mistralai/mistral-small-3.1-24b-instruct",
+        "cloudflare-ai-gateway/workers-ai/@cf/moonshotai/kimi-k2.5",
+        "cloudflare-ai-gateway/workers-ai/@cf/moonshotai/kimi-k2.6",
+        "cloudflare-ai-gateway/workers-ai/@cf/myshell-ai/melotts",
+        "cloudflare-ai-gateway/workers-ai/@cf/nvidia/nemotron-3-120b-a12b",
+        "cloudflare-ai-gateway/workers-ai/@cf/openai/gpt-oss-120b",
+        "cloudflare-ai-gateway/workers-ai/@cf/openai/gpt-oss-20b",
+        "cloudflare-ai-gateway/workers-ai/@cf/pfnet/plamo-embedding-1b",
+        "cloudflare-ai-gateway/workers-ai/@cf/pipecat-ai/smart-turn-v2",
+        "cloudflare-ai-gateway/workers-ai/@cf/qwen/qwen2.5-coder-32b-instruct",
+        "cloudflare-ai-gateway/workers-ai/@cf/qwen/qwen3-30b-a3b-fp8",
+        "cloudflare-ai-gateway/workers-ai/@cf/qwen/qwen3-embedding-0.6b",
+        "cloudflare-ai-gateway/workers-ai/@cf/qwen/qwq-32b",
+        "cloudflare-ai-gateway/workers-ai/@cf/zai-org/glm-4.7-flash",
+        "cloudflare-ai-gateway/workers-ai/@cf/zai-org/glm-5.2",
+        "cloudflare-workers-ai/@cf/aisingapore/gemma-sea-lion-v4-27b-it",
+        "cloudflare-workers-ai/@cf/deepseek-ai/deepseek-r1-distill-qwen-32b",
+        "cloudflare-workers-ai/@cf/google/gemma-4-26b-a4b-it",
+        "cloudflare-workers-ai/@cf/ibm-granite/granite-4.0-h-micro",
+        "cloudflare-workers-ai/@cf/meta/llama-3.1-8b-instruct-fp8",
+        "cloudflare-workers-ai/@cf/meta/llama-3.2-11b-vision-instruct",
+        "cloudflare-workers-ai/@cf/meta/llama-3.2-1b-instruct",
+        "cloudflare-workers-ai/@cf/meta/llama-3.2-3b-instruct",
+        "cloudflare-workers-ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+        "cloudflare-workers-ai/@cf/meta/llama-4-scout-17b-16e-instruct",
+        "cloudflare-workers-ai/@cf/meta/llama-guard-3-8b",
+        "cloudflare-workers-ai/@cf/mistralai/mistral-small-3.1-24b-instruct",
+        "cloudflare-workers-ai/@cf/moonshotai/kimi-k2.6",
+        "cloudflare-workers-ai/@cf/moonshotai/kimi-k2.7-code",
+        "cloudflare-workers-ai/@cf/nvidia/nemotron-3-120b-a12b",
+        "cloudflare-workers-ai/@cf/openai/gpt-oss-120b",
+        "cloudflare-workers-ai/@cf/openai/gpt-oss-20b",
+        "cloudflare-workers-ai/@cf/qwen/qwen2.5-coder-32b-instruct",
+        "cloudflare-workers-ai/@cf/qwen/qwen3-30b-a3b-fp8",
+        "cloudflare-workers-ai/@cf/qwen/qwq-32b",
+        "cloudflare-workers-ai/@cf/zai-org/glm-4.7-flash",
+        "cloudflare-workers-ai/@cf/zai-org/glm-5.2"
+      ]
     }
   },
   "adapterModelLists": {
@@ -54,7 +229,6 @@
       "gpt-5.6-luna",
       "gpt-5.4",
       "gpt-5.4-mini",
-      "gpt-5.3-codex-spark",
       "gpt-5",
       "o3",
       "o4-mini",
@@ -92,28 +266,6 @@
     "grok_local": [
       "grok-build"
     ],
-    "opencode_local": {
-      "count": 113,
-      "notables": [
-        "cloudflare-ai-gateway/anthropic/claude-fable-5",
-        "cloudflare-ai-gateway/anthropic/claude-opus-4-8",
-        "cloudflare-ai-gateway/anthropic/claude-opus-5",
-        "cloudflare-ai-gateway/anthropic/claude-sonnet-5",
-        "cloudflare-ai-gateway/moonshotai/kimi-k3",
-        "cloudflare-ai-gateway/openai/gpt-5.6-sol",
-        "cloudflare-ai-gateway/openai/gpt-5.6-terra",
-        "cloudflare-ai-gateway/openai/gpt-5.6-luna",
-        "cloudflare-workers-ai/@cf/google/gemma-4-26b-a4b-it",
-        "cloudflare-workers-ai/@cf/openai/gpt-oss-20b",
-        "cloudflare-workers-ai/@cf/zai-org/glm-5.2",
-        "opencode/laguna-s-2.1-free",
-        "opencode/ling-3.0-flash-free"
-      ]
-    },
-    "pi_local": [],
-    "cursor_cloud": [],
-    "hermes_local": [],
-    "hermes_gateway": [],
     "antigravity_local": [
       "antigravity",
       "Gemini 3.6 Flash (High)",
@@ -127,22 +279,167 @@
       "Claude Sonnet 4.6 (Thinking)",
       "Claude Opus 4.6 (Thinking)",
       "GPT-OSS 120B (Medium)"
-    ]
+    ],
+    "hermes_local": [],
+    "opencode_local": {
+      "count": 113,
+      "ids": [
+        "cloudflare-ai-gateway/anthropic/claude-3-5-haiku",
+        "cloudflare-ai-gateway/anthropic/claude-3-haiku",
+        "cloudflare-ai-gateway/anthropic/claude-3-opus",
+        "cloudflare-ai-gateway/anthropic/claude-3-sonnet",
+        "cloudflare-ai-gateway/anthropic/claude-3.5-haiku",
+        "cloudflare-ai-gateway/anthropic/claude-3.5-sonnet",
+        "cloudflare-ai-gateway/anthropic/claude-fable-5",
+        "cloudflare-ai-gateway/anthropic/claude-haiku-4-5",
+        "cloudflare-ai-gateway/anthropic/claude-opus-4",
+        "cloudflare-ai-gateway/anthropic/claude-opus-4-1",
+        "cloudflare-ai-gateway/anthropic/claude-opus-4-5",
+        "cloudflare-ai-gateway/anthropic/claude-opus-4-6",
+        "cloudflare-ai-gateway/anthropic/claude-opus-4-7",
+        "cloudflare-ai-gateway/anthropic/claude-opus-4-8",
+        "cloudflare-ai-gateway/anthropic/claude-opus-5",
+        "cloudflare-ai-gateway/anthropic/claude-sonnet-4",
+        "cloudflare-ai-gateway/anthropic/claude-sonnet-4-5",
+        "cloudflare-ai-gateway/anthropic/claude-sonnet-4-6",
+        "cloudflare-ai-gateway/anthropic/claude-sonnet-5",
+        "cloudflare-ai-gateway/moonshotai/kimi-k3",
+        "cloudflare-ai-gateway/openai/gpt-3.5-turbo",
+        "cloudflare-ai-gateway/openai/gpt-4",
+        "cloudflare-ai-gateway/openai/gpt-4-turbo",
+        "cloudflare-ai-gateway/openai/gpt-4o",
+        "cloudflare-ai-gateway/openai/gpt-4o-mini",
+        "cloudflare-ai-gateway/openai/gpt-5.1",
+        "cloudflare-ai-gateway/openai/gpt-5.1-codex",
+        "cloudflare-ai-gateway/openai/gpt-5.2",
+        "cloudflare-ai-gateway/openai/gpt-5.2-codex",
+        "cloudflare-ai-gateway/openai/gpt-5.3-codex",
+        "cloudflare-ai-gateway/openai/gpt-5.4",
+        "cloudflare-ai-gateway/openai/gpt-5.5",
+        "cloudflare-ai-gateway/openai/gpt-5.6-luna",
+        "cloudflare-ai-gateway/openai/gpt-5.6-sol",
+        "cloudflare-ai-gateway/openai/gpt-5.6-terra",
+        "cloudflare-ai-gateway/openai/o1",
+        "cloudflare-ai-gateway/openai/o3",
+        "cloudflare-ai-gateway/openai/o3-mini",
+        "cloudflare-ai-gateway/openai/o3-pro",
+        "cloudflare-ai-gateway/openai/o4-mini",
+        "cloudflare-ai-gateway/workers-ai/@cf/ai4bharat/indictrans2-en-indic-1B",
+        "cloudflare-ai-gateway/workers-ai/@cf/aisingapore/gemma-sea-lion-v4-27b-it",
+        "cloudflare-ai-gateway/workers-ai/@cf/baai/bge-base-en-v1.5",
+        "cloudflare-ai-gateway/workers-ai/@cf/baai/bge-large-en-v1.5",
+        "cloudflare-ai-gateway/workers-ai/@cf/baai/bge-m3",
+        "cloudflare-ai-gateway/workers-ai/@cf/baai/bge-reranker-base",
+        "cloudflare-ai-gateway/workers-ai/@cf/baai/bge-small-en-v1.5",
+        "cloudflare-ai-gateway/workers-ai/@cf/deepgram/aura-2-en",
+        "cloudflare-ai-gateway/workers-ai/@cf/deepgram/aura-2-es",
+        "cloudflare-ai-gateway/workers-ai/@cf/deepgram/nova-3",
+        "cloudflare-ai-gateway/workers-ai/@cf/deepseek-ai/deepseek-r1-distill-qwen-32b",
+        "cloudflare-ai-gateway/workers-ai/@cf/facebook/bart-large-cnn",
+        "cloudflare-ai-gateway/workers-ai/@cf/google/gemma-3-12b-it",
+        "cloudflare-ai-gateway/workers-ai/@cf/huggingface/distilbert-sst-2-int8",
+        "cloudflare-ai-gateway/workers-ai/@cf/ibm-granite/granite-4.0-h-micro",
+        "cloudflare-ai-gateway/workers-ai/@cf/meta/llama-2-7b-chat-fp16",
+        "cloudflare-ai-gateway/workers-ai/@cf/meta/llama-3-8b-instruct",
+        "cloudflare-ai-gateway/workers-ai/@cf/meta/llama-3-8b-instruct-awq",
+        "cloudflare-ai-gateway/workers-ai/@cf/meta/llama-3.1-8b-instruct",
+        "cloudflare-ai-gateway/workers-ai/@cf/meta/llama-3.1-8b-instruct-awq",
+        "cloudflare-ai-gateway/workers-ai/@cf/meta/llama-3.1-8b-instruct-fp8",
+        "cloudflare-ai-gateway/workers-ai/@cf/meta/llama-3.2-1b-instruct",
+        "cloudflare-ai-gateway/workers-ai/@cf/meta/llama-3.2-3b-instruct",
+        "cloudflare-ai-gateway/workers-ai/@cf/meta/llama-3.2-11b-vision-instruct",
+        "cloudflare-ai-gateway/workers-ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+        "cloudflare-ai-gateway/workers-ai/@cf/meta/llama-4-scout-17b-16e-instruct",
+        "cloudflare-ai-gateway/workers-ai/@cf/meta/llama-guard-3-8b",
+        "cloudflare-ai-gateway/workers-ai/@cf/meta/m2m100-1.2b",
+        "cloudflare-ai-gateway/workers-ai/@cf/mistral/mistral-7b-instruct-v0.1",
+        "cloudflare-ai-gateway/workers-ai/@cf/mistralai/mistral-small-3.1-24b-instruct",
+        "cloudflare-ai-gateway/workers-ai/@cf/moonshotai/kimi-k2.5",
+        "cloudflare-ai-gateway/workers-ai/@cf/moonshotai/kimi-k2.6",
+        "cloudflare-ai-gateway/workers-ai/@cf/myshell-ai/melotts",
+        "cloudflare-ai-gateway/workers-ai/@cf/nvidia/nemotron-3-120b-a12b",
+        "cloudflare-ai-gateway/workers-ai/@cf/openai/gpt-oss-20b",
+        "cloudflare-ai-gateway/workers-ai/@cf/openai/gpt-oss-120b",
+        "cloudflare-ai-gateway/workers-ai/@cf/pfnet/plamo-embedding-1b",
+        "cloudflare-ai-gateway/workers-ai/@cf/pipecat-ai/smart-turn-v2",
+        "cloudflare-ai-gateway/workers-ai/@cf/qwen/qwen2.5-coder-32b-instruct",
+        "cloudflare-ai-gateway/workers-ai/@cf/qwen/qwen3-30b-a3b-fp8",
+        "cloudflare-ai-gateway/workers-ai/@cf/qwen/qwen3-embedding-0.6b",
+        "cloudflare-ai-gateway/workers-ai/@cf/qwen/qwq-32b",
+        "cloudflare-ai-gateway/workers-ai/@cf/zai-org/glm-4.7-flash",
+        "cloudflare-ai-gateway/workers-ai/@cf/zai-org/glm-5.2",
+        "cloudflare-workers-ai/@cf/aisingapore/gemma-sea-lion-v4-27b-it",
+        "cloudflare-workers-ai/@cf/deepseek-ai/deepseek-r1-distill-qwen-32b",
+        "cloudflare-workers-ai/@cf/google/gemma-4-26b-a4b-it",
+        "cloudflare-workers-ai/@cf/ibm-granite/granite-4.0-h-micro",
+        "cloudflare-workers-ai/@cf/meta/llama-3.1-8b-instruct-fp8",
+        "cloudflare-workers-ai/@cf/meta/llama-3.2-1b-instruct",
+        "cloudflare-workers-ai/@cf/meta/llama-3.2-3b-instruct",
+        "cloudflare-workers-ai/@cf/meta/llama-3.2-11b-vision-instruct",
+        "cloudflare-workers-ai/@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+        "cloudflare-workers-ai/@cf/meta/llama-4-scout-17b-16e-instruct",
+        "cloudflare-workers-ai/@cf/meta/llama-guard-3-8b",
+        "cloudflare-workers-ai/@cf/mistralai/mistral-small-3.1-24b-instruct",
+        "cloudflare-workers-ai/@cf/moonshotai/kimi-k2.6",
+        "cloudflare-workers-ai/@cf/moonshotai/kimi-k2.7-code",
+        "cloudflare-workers-ai/@cf/nvidia/nemotron-3-120b-a12b",
+        "cloudflare-workers-ai/@cf/openai/gpt-oss-20b",
+        "cloudflare-workers-ai/@cf/openai/gpt-oss-120b",
+        "cloudflare-workers-ai/@cf/qwen/qwen2.5-coder-32b-instruct",
+        "cloudflare-workers-ai/@cf/qwen/qwen3-30b-a3b-fp8",
+        "cloudflare-workers-ai/@cf/qwen/qwq-32b",
+        "cloudflare-workers-ai/@cf/zai-org/glm-4.7-flash",
+        "cloudflare-workers-ai/@cf/zai-org/glm-5.2",
+        "opencode/big-pickle",
+        "opencode/deepseek-v4-flash-free",
+        "opencode/laguna-s-2.1-free",
+        "opencode/ling-3.0-flash-free",
+        "opencode/mimo-v2.5-free",
+        "opencode/nemotron-3-ultra-free",
+        "opencode/north-mini-code-free"
+      ]
+    }
   },
   "agentModelReconciliation": {
     "checkedToday": true,
     "query": "SELECT c.name, a.name, a.adapter_type, a.adapter_config->>'model' FROM agents a JOIN companies c ON c.id=a.company_id WHERE a.status <> 'terminated' ORDER BY a.adapter_type;",
+    "evidence": {
+      "tsv": "work-products/TSBC-1671/evidence/agent-model-reconciliation-2026-07-31-stable.tsv",
+      "diffVsYesterday": "work-products/TSBC-1671/evidence/agent-model-reconciliation-vs-2026-07-30.sorted.diff"
+    },
+    "activeRows": 205,
+    "activeAdapterCounts": {
+      "antigravity_local": {
+        "activeAgents": 29,
+        "configuredModels": 29
+      },
+      "claude_local": {
+        "activeAgents": 50,
+        "configuredModels": 47
+      },
+      "codex_local": {
+        "activeAgents": 75,
+        "configuredModels": 70
+      },
+      "hermes_local": {
+        "activeAgents": 42,
+        "configuredModels": 42
+      },
+      "paperclip_shell_handler": {
+        "activeAgents": 9,
+        "configuredModels": 0
+      }
+    },
     "findings": {
       "antigravityConfiguredLabelCollapse": [
         {
           "model": "Gemini 3.1 Pro (High)",
-          "count": 14,
-          "companyCount": 7,
+          "count": 13,
+          "companyCount": 6,
           "companies": [
             "Dastardly Print",
             "TSMC",
             "ThinkStack Books",
-            "ThinkStack BootCamp",
             "ThinkStack Capital",
             "ThinkStack KISS",
             "ThinkStack Media"
@@ -155,7 +452,6 @@
             "TSMC/GLaD0S-Gemini",
             "TSMC/Ledger-Gemini",
             "ThinkStack Books/Marlowe-Gemini",
-            "ThinkStack BootCamp/Bench-gemini-pro",
             "ThinkStack Capital/MIDAS-Gemini",
             "ThinkStack KISS/GrowthSEO-Gemini",
             "ThinkStack KISS/Kestrel-Gemini",
@@ -204,217 +500,239 @@
           ]
         }
       ],
-      "sampleAgentRows": {
-        "Gemini 3.1 Pro (High)": [
-          {
-            "company": "Dastardly Print",
-            "agent": "Fionn-Gemini",
-            "configuredModel": "Gemini 3.1 Pro (High)"
-          },
-          {
-            "company": "TSMC",
-            "agent": "Astra-Gemini",
-            "configuredModel": "Gemini 3.1 Pro (High)"
-          },
-          {
-            "company": "TSMC",
-            "agent": "Auditor-Gemini",
-            "configuredModel": "Gemini 3.1 Pro (High)"
-          },
-          {
-            "company": "TSMC",
-            "agent": "Engineer-Gemini",
-            "configuredModel": "Gemini 3.1 Pro (High)"
-          },
-          {
-            "company": "TSMC",
-            "agent": "GLaD0S-Gemini",
-            "configuredModel": "Gemini 3.1 Pro (High)"
-          },
-          {
-            "company": "TSMC",
-            "agent": "Ledger-Gemini",
-            "configuredModel": "Gemini 3.1 Pro (High)"
-          },
-          {
-            "company": "ThinkStack Books",
-            "agent": "Marlowe-Gemini",
-            "configuredModel": "Gemini 3.1 Pro (High)"
-          },
+      "antigravityUnsupportedVsServedAdapterCatalog": {
+        "count": 1,
+        "rows": [
           {
             "company": "ThinkStack BootCamp",
             "agent": "Bench-gemini-pro",
-            "configuredModel": "Gemini 3.1 Pro (High)"
-          },
-          {
-            "company": "ThinkStack Capital",
-            "agent": "MIDAS-Gemini",
-            "configuredModel": "Gemini 3.1 Pro (High)"
-          },
-          {
-            "company": "ThinkStack KISS",
-            "agent": "GrowthSEO-Gemini",
-            "configuredModel": "Gemini 3.1 Pro (High)"
-          },
-          {
-            "company": "ThinkStack KISS",
-            "agent": "Kestrel-Gemini",
-            "configuredModel": "Gemini 3.1 Pro (High)"
-          },
-          {
-            "company": "ThinkStack Media",
-            "agent": "Atlas-Gemini",
-            "configuredModel": "Gemini 3.1 Pro (High)"
-          },
-          {
-            "company": "ThinkStack Media",
-            "agent": "Prometheus-Gemini",
-            "configuredModel": "Gemini 3.1 Pro (High)"
-          },
-          {
-            "company": "ThinkStack Media",
-            "agent": "Showrunner-Gemini",
-            "configuredModel": "Gemini 3.1 Pro (High)"
-          }
-        ],
-        "Gemini 3.5 Flash (Low)": [
-          {
-            "company": "Dastardly Print",
-            "agent": "DP-Drafter-Gemini",
-            "configuredModel": "Gemini 3.5 Flash (Low)"
-          },
-          {
-            "company": "ThinkStack Books",
-            "agent": "Author-Gemini",
-            "configuredModel": "Gemini 3.5 Flash (Low)"
-          },
-          {
-            "company": "ThinkStack Books",
-            "agent": "Designer-Gemini",
-            "configuredModel": "Gemini 3.5 Flash (Low)"
-          },
-          {
-            "company": "ThinkStack Books",
-            "agent": "Editor-Gemini",
-            "configuredModel": "Gemini 3.5 Flash (Low)"
-          },
-          {
-            "company": "ThinkStack Books",
-            "agent": "Quill-Gemini",
-            "configuredModel": "Gemini 3.5 Flash (Low)"
-          },
-          {
-            "company": "ThinkStack KISS",
-            "agent": "KISS-Drafter-Gemini",
-            "configuredModel": "Gemini 3.5 Flash (Low)"
-          },
-          {
-            "company": "ThinkStack KISS",
-            "agent": "Scribe-Gemini",
-            "configuredModel": "Gemini 3.5 Flash (Low)"
-          },
-          {
-            "company": "ThinkStack Media",
-            "agent": "ContentStrategist-Gemini",
-            "configuredModel": "Gemini 3.5 Flash (Low)"
-          },
-          {
-            "company": "ThinkStack Media",
-            "agent": "Media-Drafter",
-            "configuredModel": "Gemini 3.5 Flash (Low)"
-          },
-          {
-            "company": "ThinkStack Media",
-            "agent": "Storyboard-Gemini",
-            "configuredModel": "Gemini 3.5 Flash (Low)"
-          },
-          {
-            "company": "ThinkStack Recruitment",
-            "agent": "Recruitment-Drafter-Gemini",
-            "configuredModel": "Gemini 3.5 Flash (Low)"
-          }
-        ],
-        "Gemini 3.5 Flash (Medium)": [
-          {
-            "company": "ThinkStack Recruitment",
-            "agent": "ApplicationWriter-Gemini",
-            "configuredModel": "Gemini 3.5 Flash (Medium)"
-          },
-          {
-            "company": "ThinkStack Recruitment",
-            "agent": "Athena-Gemini",
-            "configuredModel": "Gemini 3.5 Flash (Medium)"
-          },
-          {
-            "company": "ThinkStack Recruitment",
-            "agent": "Daedalus-Gemini",
-            "configuredModel": "Gemini 3.5 Flash (Medium)"
-          },
-          {
-            "company": "ThinkStack Recruitment",
-            "agent": "RecruitmentManager-Gemini",
-            "configuredModel": "Gemini 3.5 Flash (Medium)"
+            "adapter_type": "antigravity_local",
+            "model": "gemini-3.1-pro-low"
           }
         ]
       },
-      "resolvedGrokBenchPin": {
-        "company": "ThinkStack BootCamp",
-        "agent": "Bench-grok-build",
-        "configuredModel": "grok-4.5",
-        "consumerCliCatalog": [
-          "grok-4.5"
+      "codexUnsupportedVsServedAdapterCatalog": {
+        "count": 4,
+        "rows": [
+          {
+            "company": "ThinkStack BootCamp",
+            "agent": "Bench-Manager",
+            "adapter_type": "codex_local",
+            "model": "gpt-5.5"
+          },
+          {
+            "company": "ThinkStack BootCamp",
+            "agent": "Bench-gpt-5.5",
+            "adapter_type": "codex_local",
+            "model": "gpt-5.5"
+          },
+          {
+            "company": "ThinkStack Recruitment",
+            "agent": "ApplicationWriter-Codex",
+            "adapter_type": "codex_local",
+            "model": "gpt-5.3-codex-spark"
+          },
+          {
+            "company": "ThinkStack Recruitment",
+            "agent": "ApplicationWriter-Codex-Medium",
+            "adapter_type": "codex_local",
+            "model": "gpt-5.3-codex-spark"
+          }
+        ]
+      },
+      "claudeUnsupportedVsServedAdapterCatalog": {
+        "count": 0,
+        "rows": []
+      },
+      "codexSparkAffectedAgents": {
+        "count": 2,
+        "rows": [
+          {
+            "company": "ThinkStack Recruitment",
+            "agent": "ApplicationWriter-Codex",
+            "adapter_type": "codex_local",
+            "model": "gpt-5.3-codex-spark"
+          },
+          {
+            "company": "ThinkStack Recruitment",
+            "agent": "ApplicationWriter-Codex-Medium",
+            "adapter_type": "codex_local",
+            "model": "gpt-5.3-codex-spark"
+          }
         ],
-        "consumerCliStatus": "consumer Grok CLI exposes and executes grok-4.5 on Monday, July 27, 2026",
-        "consumerCliProbe": "grok-4.5 OK; grok-build unknown model id",
-        "hermesApiProbe": "grok-4.5 OK via xai-oauth",
-        "status": "split-surface"
+        "status": "Active live-agent gate: configured model exists on Codex OAuth but is quota-limited until Aug 5, 2026 7:34 AM; adapter catalog omits it."
+      },
+      "hermesConfiguredModelCounts": [
+        {
+          "model": "grok-4.5",
+          "count": 23,
+          "companyCount": 8,
+          "companies": [
+            "Dastardly Print",
+            "TSMC",
+            "ThinkStack Books",
+            "ThinkStack BootCamp",
+            "ThinkStack Capital",
+            "ThinkStack KISS",
+            "ThinkStack Media",
+            "ThinkStack Recruitment"
+          ]
+        },
+        {
+          "model": "grok-4.3",
+          "count": 16,
+          "companyCount": 8,
+          "companies": [
+            "Dastardly Print",
+            "TSMC",
+            "ThinkStack Books",
+            "ThinkStack BootCamp",
+            "ThinkStack Capital",
+            "ThinkStack KISS",
+            "ThinkStack Media",
+            "ThinkStack Recruitment"
+          ]
+        },
+        {
+          "model": "grok-4.20-0309-reasoning",
+          "count": 2,
+          "companyCount": 2,
+          "companies": [
+            "ThinkStack BootCamp",
+            "ThinkStack Recruitment"
+          ]
+        },
+        {
+          "model": "grok-4.20-0309-non-reasoning",
+          "count": 1,
+          "companyCount": 1,
+          "companies": [
+            "ThinkStack BootCamp"
+          ]
+        }
+      ],
+      "hermesGrok420ActivePins": {
+        "count": 3,
+        "rows": [
+          {
+            "company": "ThinkStack BootCamp",
+            "agent": "Bench-grok-4.20",
+            "adapter_type": "hermes_local",
+            "model": "grok-4.20-0309-reasoning"
+          },
+          {
+            "company": "ThinkStack Recruitment",
+            "agent": "Recruitment-Drafter",
+            "adapter_type": "hermes_local",
+            "model": "grok-4.20-0309-reasoning"
+          },
+          {
+            "company": "ThinkStack BootCamp",
+            "agent": "Bench-grok-4.20-non-reasoning",
+            "adapter_type": "hermes_local",
+            "model": "grok-4.20-0309-non-reasoning"
+          }
+        ],
+        "probeSummary": {
+          "grok-4.20-0309-reasoning": "OK",
+          "grok-4.20-0309-non-reasoning": "OK"
+        },
+        "status": "Newly detected by this routine and verified live on Hermes xAI OAuth."
+      },
+      "hermesGrok45Migration": {
+        "currentGrok45Pins": 23,
+        "currentGrok43Pins": 16,
+        "status": "Many Hermes lanes moved from grok-4.3 to grok-4.5 since the 2026-07-30 snapshot; this changes cost/context assumptions and needs registry review."
+      },
+      "grokActiveAgents": {
+        "count": 0,
+        "status": "No active grok_local agents in the 2026-07-31 directive SQL output."
+      },
+      "opencodeActiveAgents": {
+        "count": 0,
+        "status": "No active opencode_local agents in the 2026-07-31 directive SQL output."
       }
     },
-    "summary": "Tuesday, July 28, 2026: 29 live antigravity_local agents across 8 companies still record configured Gemini labels that collapse onto Gemini 3.6 execution truth on the Ireland AGY 1.1.8 lane: 14 x `Gemini 3.1 Pro (High)`, 11 x `Gemini 3.5 Flash (Low)`, and 4 x `Gemini 3.5 Flash (Medium)`. Tuesday shifted `Gemini 3.1 Pro (High)` back onto `Gemini 3.6 Flash (High)` while configured `Gemini 3.5 Flash (Medium)` now resolves to plain `Gemini 3.6 Flash`. `Bench-grok-build` still records `grok-4.5`, and the direct consumer Grok CLI continues to serve `grok-4.5` while the served `grok_local` docs still default to `grok-build`."
+    "mismatchSummary": "Findings today are active Codex Spark quota/catalog gate, Hermes grok-4.20 newly detected live pins, and Hermes grok-4.3->4.5 pin migration; no retired xAI fast alias is present in live agent configs."
   },
   "providerDocs": {
     "openai": {
-      "url": "https://platform.openai.com/docs/models",
-      "summary": "OpenAI remained unchanged on Tuesday, July 28, 2026 at the alert threshold: the explicit GPT-5.6 family ids (`gpt-5.6-sol`, `gpt-5.6-terra`, `gpt-5.6-luna`) still return OK on the Ireland Codex OAuth lane, while base `gpt-5.6` still fails on the ChatGPT-account lane.",
+      "url": "https://developers.openai.com/api/docs/models/all",
+      "summary": "OpenAI docs/changelog on Friday, July 31, 2026 show a July 30 pricing update: GPT-5.6 Luna costs 80% less and GPT-5.6 Terra costs 20% less; Fast mode replaces Priority Processing for GPT-5.6 Sol at up to 2.5x speed for 2x price. Codex OAuth probes still serve explicit Sol/Terra/Luna ids; base `gpt-5.6` and canonical `gpt-5.3-codex` remain unsupported on this ChatGPT-backed Codex lane.",
       "liveProbes": {
+        "gpt-5.5": "OK",
+        "gpt-5.3-codex-spark": "exists/available to account but quota-limited until Aug 5, 2026 7:34 AM",
+        "gpt-5.3-codex": "400/not supported when using Codex with a ChatGPT account",
         "gpt-5.6": "400/not supported when using Codex with a ChatGPT account",
         "gpt-5.6-sol": "OK",
         "gpt-5.6-terra": "OK",
         "gpt-5.6-luna": "OK"
-      }
+      },
+      "sourceUrls": [
+        "https://developers.openai.com/api/docs/models/all",
+        "https://developers.openai.com/api/docs/changelog"
+      ],
+      "evidence": [
+        "work-products/TSBC-1671/evidence/raw/source-https___developers.openai.com_api_docs_changelog.md",
+        "work-products/TSBC-1671/evidence/codex-probes-summary.txt"
+      ]
     },
     "anthropic": {
-      "url": "https://docs.anthropic.com/en/docs/about-claude/models/overview",
-      "summary": "Anthropic's public docs remained available on Tuesday, July 28, 2026, but the live Ireland Claude Code subscription lane hit a weekly-limit gate: `claude-fable-5`, `claude-sonnet-5`, `claude-opus-5`, and `claude-haiku-4-5` now return `You've hit your weekly limit · resets 9am (Europe/Dublin)`, while `claude-mythos-5` still returns a separate model/no-access error.",
+      "url": "https://platform.claude.com/docs/en/about-claude/models/overview",
+      "summary": "Anthropic docs still list Claude Fable 5, Opus 5, Sonnet 5, and Haiku 4.5. Claude Code probes for Sonnet 5, Opus 5, and Haiku 4.5 returned OK; Mythos 5 remains model/no-access on this lane. No same-day Anthropic alert fired.",
       "liveProbes": {
-        "claude-fable-5": "weekly limit reached; resets 9am (Europe/Dublin)",
-        "claude-sonnet-5": "weekly limit reached; resets 9am (Europe/Dublin)",
-        "claude-opus-5": "weekly limit reached; resets 9am (Europe/Dublin)",
-        "claude-haiku-4-5": "weekly limit reached; resets 9am (Europe/Dublin)",
+        "claude-sonnet-5": "OK",
+        "claude-opus-5": "OK",
+        "claude-haiku-4-5": "OK",
         "claude-mythos-5": "model/no-access error on this Claude Code lane"
-      }
+      },
+      "sourceUrls": [
+        "https://platform.claude.com/docs/en/about-claude/models/overview",
+        "https://platform.claude.com/docs/en/release-notes/overview"
+      ]
     },
     "google": {
-      "url": "https://ai.google.dev/gemini-api/docs/models/gemini-3.6-flash",
-      "summary": "Google's public Gemini docs remained stable on Tuesday, July 28, 2026, still surfacing `gemini-3.6-flash` and the now-GA `gemini-3.5-flash-lite`, but the live Ireland AGY 1.1.8 lane shifted execution truth again while the served `antigravity_local` catalog simultaneously began surfacing explicit labels. Tuesday's live probes now resolve raw `gemini-3.6-flash`, `Gemini 3.6 Flash (High)`, and `Gemini 3.6 Flash (Medium)` to plain `Gemini 3.6 Flash`, while `Gemini 3.1 Pro (High)` now resolves to `Gemini 3.6 Flash (High)` and configured `Gemini 3.5 Flash (Medium)` falls back to plain `Gemini 3.6 Flash`.",
+      "url": "https://ai.google.dev/gemini-api/docs/models",
+      "summary": "Google Gemini docs/changelog remained stable at the model-release threshold: Gemini 3.6 Flash and Gemini 3.5 Flash-Lite remain the latest GA model items, and Gemini 2.0 Flash remains shut down in Google docs. The live AGY 1.1.9 CLI behavior changed by rejecting raw `gemini-3.5-flash-lite` and retired `gemini-2.0-flash` ids instead of rerouting them.",
       "liveProbes": {
-        "gemini-3.6-flash": "executes; self-identifies as Gemini 3.6 Flash",
-        "Gemini 3.6 Flash (High)": "executes; self-identifies as Gemini 3.6 Flash",
-        "Gemini 3.6 Flash (Medium)": "executes; self-identifies as Gemini 3.6 Flash",
-        "Gemini 3.1 Pro (High)": "executes; self-identifies as Gemini 3.6 Flash (High)",
-        "gemini-3.5-flash-lite": "executes; self-identifies as Gemini 3.6 Flash",
-        "gemini-2.0-flash": "executes; self-identifies as Gemini 3.6 Flash"
-      }
+        "gemini-3.6-flash-high": "OK on AGY 1.1.9",
+        "gemini-3.1-pro-low": "OK on AGY 1.1.9",
+        "Gemini 3.1 Pro (High)": "OK on AGY 1.1.9",
+        "Gemini 3.5 Flash (Low)": "OK on AGY 1.1.9",
+        "Gemini 3.5 Flash (Medium)": "OK on AGY 1.1.9",
+        "gemini-3.5-flash-lite": "invalid model selection on AGY 1.1.9; no longer silently reroutes",
+        "gemini-2.0-flash": "invalid model selection on AGY 1.1.9; no longer silently reroutes"
+      },
+      "sourceUrls": [
+        "https://ai.google.dev/gemini-api/docs/models",
+        "https://ai.google.dev/gemini-api/docs/changelog",
+        "https://ai.google.dev/gemini-api/docs/speech-generation",
+        "https://ai.google.dev/gemini-api/docs/pricing"
+      ]
     },
     "xai": {
-      "url": "https://docs.x.ai/docs/models",
-      "summary": "xAI docs remained unchanged on Tuesday, July 28, 2026 at the alert threshold: the native consumer Grok CLI still lists `grok-4.5` as the default available model on the Ireland host, direct `grok-4.5` returns OK, direct `grok-build` is still rejected as an unknown model id, and Hermes `xai-oauth` still returns OK for `grok-4.5`.",
-      "hostProbe": "grok models -> unauthenticated banner, default model `grok-4.5`, available models [`grok-4.5`]",
+      "url": "https://docs.x.ai/developers/models",
+      "summary": "xAI docs/public model data and Hermes probes show `grok-4.20-0309-reasoning` and `grok-4.20-0309-non-reasoning` are live on the Hermes xAI OAuth surface; three active Hermes agents already pin those ids. The consumer Grok CLI still exposes only `grok-4.5`. xAI Imagine docs and local Hermes wrapper now support `1080p` for `grok-imagine-video-1.5` image-to-video, while base text-to-video remains 480p/720p and video editing remains capped at 720p. xAI voice findings from TSBC-1516 remain open without authenticated EU proof.",
+      "hostProbe": "grok models final saved output -> logged in with grok.com, default model `grok-4.5`, available models [`grok-4.5`]",
       "liveProbe": {
-        "grok-4.5": "consumer Grok CLI: OK",
-        "grok-build": "consumer Grok CLI: invalid params / unknown model id",
-        "hermes-xai-oauth/grok-4.5": "OK via https://api.x.ai/v1"
-      }
+        "grok-4.5": "OK",
+        "grok-build": "invalid params / unknown model id",
+        "grok-4.20-0309-reasoning": "OK",
+        "grok-4.20-0309-non-reasoning": "OK",
+        "grok-4.3": "OK"
+      },
+      "sourceUrls": [
+        "https://docs.x.ai/developers/models",
+        "https://docs.x.ai/developers/model-capabilities/imagine",
+        "https://docs.x.ai/developers/model-capabilities/video/generation",
+        "https://docs.x.ai/developers/model-capabilities/audio/speech-to-speech",
+        "https://x.ai/news/grok-voice-think-fast-2"
+      ],
+      "evidence": [
+        "work-products/TSBC-1671/evidence/xai-public-models-2026-07-31.json",
+        "work-products/TSBC-1671/evidence/hermes-xai-model-probes-summary.txt",
+        "work-products/TSBC-1671/evidence/xai-media-api-parity-2026-07-31.txt"
+      ]
     }
   },
   "voiceTtsSurfaces": {
@@ -422,24 +740,77 @@
     "schemaIntroducedOn": "2026-07-21",
     "alertsToday": [],
     "xai": {
-      "url": "https://docs.x.ai/developers/models/text-to-speech",
-      "summary": "xAI public voice/TTS docs remained unchanged on Tuesday, July 28, 2026 at the alert threshold: TTS is still priced at $15.00 / 1M chars, and the public model blob still exposes `grok-tts`, `grok-stt`, and `grok-realtime` for both `us-east-1` and `eu-west-1`. No new Tuesday roster or pricing alert fired.",
-      "pricing": {
-        "ttsPer1MCharsUsd": 15,
-        "voiceAgentRealtimeUsdPerHour": 3
+      "url": "https://docs.x.ai/developers/model-capabilities/audio/speech-to-speech",
+      "summary": "Friday, July 31, 2026: no new TTS roster change after TSBC-1516. xAI docs still list `grok-voice-think-fast-2.0` and the `grok-voice-latest` alias transition; docs are internally inconsistent about whether latest already points to 2.0 or switches on Aug 5, so production should pin explicit voice ids. EU/Ireland authenticated availability remains unconfirmed; no API key was created or funded.",
+      "speechToSpeechModels": [
+        "grok-voice-latest",
+        "grok-voice-think-fast-2.0",
+        "grok-voice-think-fast-1.0"
+      ],
+      "aliasChange": {
+        "alias": "grok-voice-latest",
+        "currentTarget": "ambiguous in docs: table says 1.0 until 2026-08-05; later note says currently 2.0",
+        "scheduledTarget": "grok-voice-think-fast-2.0",
+        "scheduledDate": "2026-08-05"
       },
-      "availability": "public model blob exposes both us-east-1 and eu-west-1 clusters; no separate Ireland-authenticated proof exists on our lane",
-      "rosterNotables": [
-        "eve",
+      "pricing": {
+        "voiceThinkFast20UsdPerAudioMinute": 0.08,
+        "ttsPer1MCharsUsd": 15,
+        "voiceAgentRealtimeStartingUsdPerMinute": 0.05,
+        "sttBatchUsdPerHour": 0.1,
+        "sttStreamingUsdPerHour": 0.2
+      },
+      "availability": "Speech to Speech EU/Ireland availability: not stated in public docs and not authenticated from Ireland in this $0 routine. TTS model page lists us-east-1; Custom Voices docs remain United States-only except Illinois.",
+      "rosterCount": 26,
+      "roster": [
+        "carina",
+        "zagan",
+        "helix",
         "orion",
+        "luna",
+        "iris",
+        "altair",
+        "zenith",
         "perseus",
+        "helios",
         "lux",
-        "cosmo"
-      ]
+        "kepler",
+        "rigel",
+        "cosmo",
+        "celeste",
+        "ursa",
+        "sirius",
+        "lumen",
+        "castor",
+        "naksh",
+        "atlas",
+        "ara",
+        "eve",
+        "leo",
+        "rex",
+        "sal"
+      ],
+      "controls": [
+        "text_normalization",
+        "with_timestamps",
+        "streaming",
+        "batch",
+        "MP3",
+        "WAV",
+        "PCM",
+        "mu-law",
+        "A-law",
+        "Speech to Speech reasoning.effort",
+        "server_vad threshold",
+        "session resumption",
+        "audio transport binary/json",
+        "pronunciation replacements"
+      ],
+      "radarIssue": "TSBC-1516"
     },
     "google": {
       "url": "https://ai.google.dev/gemini-api/docs/speech-generation",
-      "summary": "Google's TTS surface remained unchanged on Tuesday, July 28, 2026: 30 public voices and the same three supported TTS model surfaces (`gemini-3.1-flash-tts-preview`, `gemini-2.5-flash-preview-tts`, and `gemini-2.5-pro-preview-tts`). No Tuesday roster, pricing, or explicit Ireland/EU availability flip was detected for TSBC-996.",
+      "summary": "Google TTS surface remained unchanged on Friday, July 31, 2026: 30 public voices and the same supported TTS model surfaces. No TSBC-996 EU availability flip detected.",
       "supportedModels": [
         "gemini-3.1-flash-tts-preview",
         "gemini-2.5-flash-preview-tts",
@@ -478,9 +849,6 @@
           "batchOutputAudioPer1MUsd": 10
         }
       }
-    },
-    "openRadar": {
-      "TSBC-996": "Unchanged Tuesday, July 28, 2026: xAI public voice docs still preserve the prior pricing and roster assumptions, with `grok-tts`, `grok-stt`, and `grok-realtime` visible in the captured public model blob for `eu-west-1` as well as `us-east-1`. No new roster or price alert fired."
     }
   },
   "localCatalog": {
@@ -490,39 +858,183 @@
       "version": "0.32.3",
       "apiVersion": null,
       "installedCatalog": "`ollama list` last returned `gemma3:12b` (8.1 GB, modified 4 weeks ago) and `qwen3:8b` (5.2 GB, modified 4 weeks ago).",
-      "onlineWatchSummary": "Tuesday, July 28, 2026 was not the Monday local-model leg. Monday's local/Ollama observation still stands: the host shows `gemma3:12b` and `qwen3:8b` installed, the client binary reports `0.32.3`, and no stronger new sub-12B / <=10GB alert has been promoted since that pass."
+      "onlineWatchSummary": "Friday, July 31, 2026 was not the Monday local-model leg. Monday local/Ollama observation still stands; no `ollama pull` was run."
     }
   },
   "openRadar": {
-    "grok-4.5": "Unchanged 2026-07-27: the Ireland consumer Grok host still exposes `grok-4.5`, `grok models` still lists `grok-4.5` as the default available model, direct `grok-4.5` still returns OK, and direct `grok-build` is still an invalid model id. Served `grok_local` notes still default to `grok-build`. Radar issue: TSBC-1294.",
-    "grok-local-default-drift": "Unchanged 2026-07-27: served `grok_local` adapter docs still default to `grok-build`, but the native consumer Grok CLI continues to expose and execute `grok-4.5` directly on the Ireland host. Radar issue: TSBC-1294.",
+    "grok-4.5": "Unchanged 2026-07-29: Grok CLI version moved to 0.2.112, but the Ireland consumer Grok host still exposes `grok-4.5`, `grok models` still lists `grok-4.5` as the default available model, direct `grok-4.5` returns OK, and direct `grok-build` remains an invalid model id. Radar issue: TSBC-1294.",
+    "grok-local-default-drift": "Unchanged 2026-07-29: served `grok_local` adapter docs still default to `grok-build`, but the native consumer Grok CLI continues to expose and execute `grok-4.5` directly on the Ireland host. Radar issue: TSBC-1294.",
     "gemini-catalog-drift": "Updated 2026-07-28: the live `gemini_local` catalog still omits AGY-native names such as `gemini-3.6-flash-high` / `gemini-3.6-flash-medium` / `gemini-3.6-flash-low`, still advertises retired `gemini-2.0-flash*` ids, and still does not expose the GA `gemini-3.5-flash-lite` id that Google docs now front. Tuesday's served `antigravity_local` catalog now surfaces explicit labels for those AGY-visible families, but live execution truth still drifts under them. Radar issues: TSBC-1235, TSBC-1296, TSBC-1309, and TSBC-1340.",
     "agy-gemini-routing-drift": "Updated 2026-07-28: AGY 1.1.8 still lists the same visible `gemini-3.6-flash*` family on the Ireland surface, but Tuesday execution truth shifted again while served `antigravity_local` began surfacing explicit labels. Raw `gemini-3.6-flash`, `Gemini 3.6 Flash (High)`, and `Gemini 3.6 Flash (Medium)` now identify as plain `Gemini 3.6 Flash`, while raw `Gemini 3.1 Pro (High)` and configured `Gemini 3.1 Pro (Low)` now identify as `Gemini 3.6 Flash (High)`. Treat AGY name acceptance as routing/name-surface drift unless the lane emits stronger served-model proof. Radar issues: TSBC-1188, TSBC-1206, TSBC-1235, TSBC-1296, TSBC-1309, and TSBC-1340.",
     "gemini-2.0-retirement-drift": "Updated 2026-07-28: Google's official docs still mark `gemini-2.0-flash` and `gemini-2.0-flash-lite` shut down, but the live `gemini_local` catalog still advertises both ids. Tuesday's AGY 1.1.8 lane reroutes `gemini-2.0-flash` to plain `Gemini 3.6 Flash`. Historical radar issue: TSBC-1111; current drift packets: TSBC-1309 and TSBC-1340.",
     "antigravity-model-truth-drift": "Updated 2026-07-28: 29 live `antigravity_local` agents across 8 companies still record configured Gemini labels that collapse onto Gemini 3.6 execution truth on the Ireland AGY 1.1.8 lane, and Tuesday's served `antigravity_local` catalog now surfaces explicit labels without resolving that truth gap. TSBC radars: TSBC-1188, TSBC-1206, TSBC-1235, TSBC-1296, TSBC-1309, and TSBC-1340. TSBC same-company defect issue: TSBC-1190.",
     "claude-haiku-4.6-removal": "Unchanged 2026-07-26: `claude-haiku-4-6` remains absent from `claude_local`, and direct Ireland Claude Code probes still do not elevate it above `claude-haiku-4-5`. Radar issue: TSBC-1136.",
     "opencode-hy3-free-removal": "Unchanged 2026-07-26: Tuesday's `opencode/hy3-free` removal remains unreversed. Sunday, July 26, 2026 added `opencode/ling-3.0-flash-free` as a separate new catalog event rather than restoring `opencode/hy3-free`. Historical radar issue: TSBC-1137.",
-    "opencode-laguna-s-2.1-free": "Updated 2026-07-26: served `opencode_local` still includes `opencode/laguna-s-2.1-free`, and the catalog count is now 112 after adding `opencode/ling-3.0-flash-free`. New radar issue: TSBC-1295.",
+    "opencode-laguna-s-2.1-free": "Updated 2026-07-29: served `opencode_local` still includes `opencode/laguna-s-2.1-free`, and the catalog count remains 113 after Tuesday's `cloudflare-ai-gateway/anthropic/claude-opus-5` addition. Historical radar issue: TSBC-1295.",
     "claude-mythos-5": "Unchanged 2026-07-27: docs and `claude_local` still list it, but Claude Code still returns a model/no-access error on this lane; this still matches limited-availability positioning rather than a public GA flip.",
     "codex-gpt-5.6-base-id-gate": "Unchanged 2026-07-27: the adapter catalog still lists `gpt-5.6` and the docs front-door still route `gpt-5.6` to Sol, but the ChatGPT-backed Codex lane still rejects base `gpt-5.6` while `gpt-5.6-sol`, `gpt-5.6-terra`, and `gpt-5.6-luna` return OK. Keep explicit family ids in matrices and smoke tests.",
-    "claude-opus-5": "Updated 2026-07-28: direct Ireland Claude Code probes for `claude-opus-5` are now quota-gated with `You've hit your weekly limit · resets 9am (Europe/Dublin)`, while the served `claude_local` catalog still advertises that id. Treat Tuesday as a live lane-gate event rather than a catalog removal. Radar lineage: TSBC-1293, TSBC-1298, and TSBC-1341.",
+    "claude-opus-5": "Resolved/monitored 2026-07-30: direct Ireland Claude Code probe for `claude-opus-5` returned OK again after the Tuesday weekly-limit event. Existing radar lineage: TSBC-1293, TSBC-1298, TSBC-1341, TSBC-1343.",
     "gemini-3.5-flash-lite": "Updated 2026-07-28: Google docs still mark `gemini-3.5-flash-lite` generally available, but Tuesday's Ireland AGY 1.1.8 lane still routes raw `gemini-3.5-flash-lite` to plain `Gemini 3.6 Flash`, and the served `gemini_local` catalog still omits the GA id. Radar issues: TSBC-1296, TSBC-1309, and TSBC-1340.",
     "opencode-ling-3.0-flash-free": "New 2026-07-26: served `opencode_local` added `opencode/ling-3.0-flash-free`, increasing the visible catalog count from 111 to 112 ids. Radar issue: TSBC-1295.",
-    "claude-code-weekly-limit-gate": "New 2026-07-28: the Ireland Claude Code subscription lane now returns `You've hit your weekly limit · resets 9am (Europe/Dublin)` for `claude-fable-5`, `claude-sonnet-5`, `claude-opus-5`, and `claude-haiku-4-5`. This is a live lane-capacity gate rather than a docs or catalog removal. Radar issue: TSBC-1341.",
-    "opencode-claude-opus-5": "New 2026-07-28: served `opencode_local` added `cloudflare-ai-gateway/anthropic/claude-opus-5`, increasing the visible catalog count from 112 to 113 ids on the Ireland host. Direct OpenCode gateway proof remains blocked by TSBC-1300. Radar issue: TSBC-1342."
+    "claude-code-weekly-limit-gate": "Resolved/monitored 2026-07-29: the Ireland Claude Code subscription lane no longer returns Tuesday's weekly-limit gate; `claude-sonnet-5`, `claude-opus-5`, and `claude-haiku-4-5` returned OK. Radar issue TSBC-1341 and reset follow-up TSBC-1343 cover the event; no new Wednesday radar fired.",
+    "opencode-claude-opus-5": "Unchanged 2026-07-29: served `opencode_local` count remains 113 and still includes `cloudflare-ai-gateway/anthropic/claude-opus-5`. Direct OpenCode gateway proof remains blocked by TSBC-1300. Radar issue: TSBC-1342.",
+    "codex-gpt-5.3-codex-spark-adapter-removal": "New 2026-07-29: served codex_local removed gpt-5.3-codex-spark while Codex CLI 0.144.1 still executes it on the Ireland ChatGPT/OAuth lane. Official docs list canonical gpt-5.3-codex, but this account rejects that canonical slug. Zero active agents name either slug, so this is adapter/catalog drift rather than live-agent substitution. Radar issue: TSBC-1453.",
+    "xai-tts-custom-voices-eu-status": "Unchanged 2026-07-30: xAI Custom Voices docs still state United States-only except Illinois; built-in TTS model page lists us-east-1. Radar issue: TSBC-1454.",
+    "xai-grok-voice-think-fast-2.0": "Refreshed 2026-07-31: x_search repeated alias/pricing warning. Official docs remain ambiguous: table says `grok-voice-latest` moves from 1.0 to 2.0 on 2026-08-05; later note says currently 2.0. Keep TSBC-1516 open, pin explicit voice ids, and wait for authenticated EU/Ireland availability. Follow-up: TSBC-1679.",
+    "openai-gpt-5.6-luna-terra-price-fast-mode": "New 2026-07-31: OpenAI July 30 changelog cuts GPT-5.6 Luna by 80% and Terra by 20%; GPT-5.6 Sol Fast mode replaces Priority Processing at 2x price for up to 2.5x speed. Codex OAuth probes for Sol/Terra/Luna returned OK. Radar follow-up required: cost tables, bench economics, and any priority-tagged requests. Follow-up: TSBC-1673.",
+    "codex-gpt-5.3-codex-spark-active-quota-gate": "New 2026-07-31: two live ThinkStack Recruitment codex_local agents name `gpt-5.3-codex-spark`; Codex CLI recognizes the model but reports usage limit until Aug 5, 2026 7:34 AM; served codex_local catalog still omits it. Highest live-pin severity short of retired alias. Follow-up: TSBC-1676.",
+    "agy-raw-gemini-slug-fail-fast": "Updated 2026-07-31: AGY 1.1.9 no longer reroutes raw `gemini-3.5-flash-lite` or retired `gemini-2.0-flash`; both now fail with invalid model selection. Active AGY agents use listed labels/slugs, so this is catalog/probe behavior drift, not a live-agent outage. Follow-up: TSBC-1677.",
+    "xai-grok-4.20": "Newly detected 2026-07-31: xAI public model data contains grok-4.20 0309 reasoning/non-reasoning/multi-agent families, and Hermes xAI OAuth probes for `grok-4.20-0309-reasoning` plus `grok-4.20-0309-non-reasoning` returned OK. Three active Hermes agents already pin these ids; create/refresh radar and registry review. Follow-up: TSBC-1674.",
+    "xai-media-api-1080p-image-to-video": "New 2026-07-31: xAI Imagine docs and Hermes wrapper confirm 1080p support for `grok-imagine-video-1.5` image-to-video. No post-generation upscale and no base text-to-video 1080p confirmed. Re-open/re-evaluate media 1.5 production-readiness. Follow-up: TSBC-1675.",
+    "hermes-grok-4.5-pin-migration": "New 2026-07-31: 23 Hermes local agents now pin `grok-4.5` and 16 still pin `grok-4.3`; yesterday many were `grok-4.3`. Since xAI pricing/context differ, update sister registry/cost assumptions and verify migration owner. Follow-up: TSBC-1678."
   },
   "changesSincePrevious": [
-    "Tuesday, July 28, 2026: the Ireland AGY lane moved from 1.1.7 to 1.1.8, shifted execution truth again, and the served antigravity_local catalog now surfaces explicit model labels while live routing remains unstable. TSBC radar issue: TSBC-1340.",
-    "Tuesday, July 28, 2026: the Ireland Claude Code subscription lane hit a weekly-limit gate across claude-fable-5, claude-sonnet-5, claude-opus-5, and claude-haiku-4-5. TSBC radar issue: TSBC-1341.",
-    "Tuesday, July 28, 2026: served opencode_local added cloudflare-ai-gateway/anthropic/claude-opus-5, increasing the visible catalog count from 112 to 113 ids. Direct OpenCode proof remains blocked by TSBC-1300. TSBC radar issue: TSBC-1342."
+    "2026-07-31: OpenAI July 30 changelog cuts GPT-5.6 Luna by 80% and Terra by 20%; GPT-5.6 Sol Fast mode replaces Priority Processing at 2x price for up to 2.5x speed. Codex Sol/Terra/Luna probes returned OK.",
+    "2026-07-31: xAI grok-4.20 family newly detected in public xAI model data; Hermes xAI OAuth probes for `grok-4.20-0309-reasoning` and `grok-4.20-0309-non-reasoning` returned OK; 3 active Hermes agents already pin those ids.",
+    "2026-07-31: xAI media API parity partially flipped: docs and Hermes wrapper now allow 1080p for `grok-imagine-video-1.5` image-to-video. Base text-to-video remains 480p/720p and video editing remains capped at 720p; no upscale operation confirmed.",
+    "2026-07-31: active Codex Spark gate: ThinkStack Recruitment/ApplicationWriter-Codex and ApplicationWriter-Codex-Medium now pin `gpt-5.3-codex-spark`; probe confirms the id exists but the OAuth lane is usage-limited until Aug 5, 2026 7:34 AM; codex_local adapter catalog still omits the id.",
+    "2026-07-31: AGY updated to 1.1.9 and raw `gemini-3.5-flash-lite` plus retired `gemini-2.0-flash` now fail fast instead of silently rerouting to Gemini 3.6 Flash. Listed AGY labels/slugs still probe OK.",
+    "2026-07-31: Hermes CLI is now v0.19.1 with 6 carried commits and only 19 commits behind; many live Hermes agents moved from `grok-4.3` to `grok-4.5`, changing cost/context assumptions. No shared CLI auto-upgrade was run by this routine.",
+    "2026-07-31: retired xAI fast-alias check found zero live-agent or benchmark/matrix defects; only TSBC-1671 self-reference appeared in open issue text."
   ],
   "weeklyLiveness": {
     "fireDates": [
       "2026-07-27",
-      "2026-07-28"
+      "2026-07-28",
+      "2026-07-29",
+      "2026-07-30",
+      "2026-07-31"
     ],
-    "firesThisWeek": 2,
-    "changesThisWeek": 2,
-    "line": "model-watch alive: 2/7 fires this week, changes: 2"
+    "firesThisWeek": 5,
+    "changesThisWeek": 5,
+    "line": "model-watch alive: 5/7 fires this week, changes: 5"
+  },
+  "retiredAliasCheck": {
+    "checkedToday": true,
+    "aliases": [
+      "grok-4-fast-*",
+      "grok-4-1-fast-*",
+      "grok-4.1-fast-*",
+      "grok-4-0709",
+      "grok-code-fast-1"
+    ],
+    "liveAgentConfigHits": 0,
+    "benchmarkAndReportHits": 0,
+    "openIssueHits": [
+      "TSBC-1671 self-reference only"
+    ],
+    "evidence": {
+      "liveAgentSql": "work-products/TSBC-1671/evidence/retired-alias-live-agent-sql.tsv",
+      "benchmarkReportRg": "work-products/TSBC-1671/evidence/retired-alias-benchmark-report-rg.txt",
+      "openIssues": "work-products/TSBC-1671/evidence/retired-alias-open-tsbc-issues.tsv"
+    },
+    "verdict": "No same-day retired-alias defect in live agent configs, benchmark config/matrices, or proposed TSBC bench rows. The xAI public catalog still lists `grok-code-fast-1` as an alias of `grok-build-0.1`; no active Paperclip pin uses it."
+  },
+  "xSearchProbe": {
+    "checkedToday": true,
+    "command": "hermes chat -q \"Daily model-watch x_search probe for 2026-07-31...\" -t x_search -Q --yolo --source tool",
+    "exit": 0,
+    "sessionId": "20260731_100954_a88b91",
+    "evidence": "work-products/TSBC-1671/evidence/hermes-x-search-2026-07-31.txt",
+    "actionableHits": [
+      "OpenAI official same-day GPT-5.6 Luna/Terra price cuts and Sol Fast-mode/Priority migration.",
+      "OpenAI auto-review route GPT-5.4 -> GPT-5.6 Luna named; relevant to Codex/auto-review cost assumptions.",
+      "xAI voice latest alias cutover warning repeated; refresh TSBC-1516 rather than create duplicate.",
+      "xAI/Grok composer/user-report removals and floating alias warnings require source cross-check before catalog edits; no live retired fast alias pins found."
+    ],
+    "crossCheck": "OpenAI pricing/Fast-mode confirmed in official OpenAI changelog. xAI voice latest ambiguity confirmed in official xAI docs/news. Retired-alias grep found no live Paperclip config/matrix hit beyond TSBC-1671 self-reference."
+  },
+  "xAiMediaApiParity": {
+    "checkedToday": true,
+    "trigger": "Friday extra check because channel 6 surfaced a same-day official provider hit.",
+    "baseline": "TSBC-1574 / 2026-07-30: Hermes v0.19 exposed only 480p/720p; no upscale op; served explicit 1080p requests returned 720p on the xAI media API v1.5 surface.",
+    "status": "PARTIAL PARITY FLIP: provider docs and local Hermes wrapper now confirm 1080p support for `grok-imagine-video-1.5` image-to-video only. Base `grok-imagine-video` text-to-video remains 480p/720p in wrapper; video editing docs still cap output at 720p. No post-generation upscale support confirmed.",
+    "evidence": [
+      "work-products/TSBC-1671/evidence/xai-media-api-parity-2026-07-31.txt",
+      "work-products/TSBC-1671/evidence/xai-media-wrapper-1080p-lines.txt",
+      "https://docs.x.ai/developers/model-capabilities/video/generation",
+      "https://docs.x.ai/developers/model-capabilities/imagine"
+    ],
+    "followUpRequired": true
+  },
+  "radarIssues": {
+    "openai-gpt-5.6-luna-terra-price-fast-mode": {
+      "identifier": "TSBC-1673",
+      "id": "adc27dbb-f5ac-4722-88ad-28dc0b8ab282",
+      "url": "/TSBC/issues/TSBC-1673",
+      "title": "Radar: OpenAI GPT-5.6 Luna/Terra price cuts and Sol Fast mode (2026-07-31)",
+      "status": "todo",
+      "priority": "high",
+      "contentSource": true
+    },
+    "xai-grok-4.20": {
+      "identifier": "TSBC-1674",
+      "id": "cc93fad0-4129-4573-9ef1-fc8f1fff1c39",
+      "url": "/TSBC/issues/TSBC-1674",
+      "title": "Radar: xAI grok-4.20 family live on Hermes xAI OAuth (2026-07-31)",
+      "status": "todo",
+      "priority": "high",
+      "contentSource": true
+    },
+    "xai-media-api-1080p-image-to-video": {
+      "identifier": "TSBC-1675",
+      "id": "43842d24-4fce-46bb-b6e9-065ddc539c5b",
+      "url": "/TSBC/issues/TSBC-1675",
+      "title": "Radar: xAI Imagine 1.5 1080p image-to-video parity flipped (2026-07-31)",
+      "status": "todo",
+      "priority": "high",
+      "contentSource": true
+    },
+    "codex-gpt-5.3-codex-spark-active-quota-gate": {
+      "identifier": "TSBC-1676",
+      "id": "21bb1f5a-d793-4623-9292-e1094db5d45e",
+      "url": "/TSBC/issues/TSBC-1676",
+      "title": "[DEFECT] Active Recruitment Codex Spark pins are quota-limited and absent from codex_local catalog (2026-07-31)",
+      "status": "todo",
+      "priority": "critical",
+      "contentSource": true
+    },
+    "agy-raw-gemini-slug-fail-fast": {
+      "identifier": "TSBC-1677",
+      "id": "4b7c659b-9f16-4e46-b4b8-222c02bf4b33",
+      "url": "/TSBC/issues/TSBC-1677",
+      "title": "Radar: AGY 1.1.9 fails fast for raw Gemini Flash-Lite and retired 2.0 slugs (2026-07-31)",
+      "status": "todo",
+      "priority": "high",
+      "contentSource": true
+    },
+    "hermes-grok-4.5-pin-migration": {
+      "identifier": "TSBC-1678",
+      "id": "ff04714f-ca74-4add-9a7b-d4b4ba35e1e7",
+      "url": "/TSBC/issues/TSBC-1678",
+      "title": "Radar: Hermes grok-4.3 to grok-4.5 pin migration changes cost and context assumptions (2026-07-31)",
+      "status": "todo",
+      "priority": "high",
+      "contentSource": true
+    },
+    "xai-grok-voice-think-fast-2.0": {
+      "identifier": "TSBC-1679",
+      "id": "efc67b76-119d-45ba-be72-0ce2dda3cbb0",
+      "url": "/TSBC/issues/TSBC-1679",
+      "title": "Radar refresh: xAI Grok Voice latest alias ambiguity before Aug 5 cutover (2026-07-31)",
+      "status": "todo",
+      "priority": "high",
+      "contentSource": true
+    }
+  },
+  "operatorDigest": {
+    "identifier": "OPS-8",
+    "title": "INFO: model-watch 2026-07-31 - OpenAI price cuts, xAI grok-4.20, media 1080p, Codex Spark quota gate",
+    "path": "/Users/glad0s/TSKB/Operator/OPS-DAY - 31-07-2026.md",
+    "source": "/Users/glad0s/.operator-console/manual_tasks.json",
+    "links": [
+      "/TSBC/issues/TSBC-1673",
+      "/TSBC/issues/TSBC-1674",
+      "/TSBC/issues/TSBC-1675",
+      "/TSBC/issues/TSBC-1676",
+      "/TSBC/issues/TSBC-1677",
+      "/TSBC/issues/TSBC-1678",
+      "/TSBC/issues/TSBC-1679"
+    ]
   }
 }

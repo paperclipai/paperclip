@@ -1,0 +1,59 @@
+{
+  "issue": "TSBC-1546",
+  "generatedAt": "2026-07-30T16:50:31Z",
+  "ledgerPath": "/Users/glad0s/paperclip/benchmark/ledger/results.jsonl",
+  "powerPath": "/Users/glad0s/paperclip/benchmark/.tsbc-power.json",
+  "tsbc1546NewBenchmarkRuns": 0,
+  "tsbc1546NewCliCalls": 0,
+  "tsbc1546NewLedgerRows": 0,
+  "reason": "The target Grok 4.3 non-TSBC-1484 cells were already decision-grade, so this heartbeat performed artifact reconciliation only.",
+  "sharedLedgerNote": "The shared ledger advanced during the heartbeat from other burn lanes. TSBC-1546 did not append rows and therefore records this reconciliation note instead of a delta.",
+  "reconciledEvidence": [
+    {
+      "issue": "TSBC-1269",
+      "records": 120,
+      "okRows": 120,
+      "artifactIds": [
+        "61ccc8b3-1cb6-4195-b6ad-bcc51d5131ed",
+        "f115c9cd-5cde-4827-81ed-63896c7c371e",
+        "88b9771d-3cce-4bd8-9a52-3df9a3d32bd7",
+        "729643e0-c380-43a2-9baf-05bb91ecf74c"
+      ]
+    },
+    {
+      "issue": "TSBC-1270",
+      "records": 100,
+      "okRows": 100,
+      "artifactIds": [
+        "b59c8374-de28-44fc-a3d1-548f95bd40ca"
+      ]
+    },
+    {
+      "issue": "TSBC-1394",
+      "records": 21,
+      "okRows": 21,
+      "rawPath": "work-products/TSBC-1394/evidence/benchmark/tsbc-1394-20260730-070140/raw/"
+    }
+  ],
+  "ledgerSnapshot": {
+    "observedAt": "2026-07-30T17:50:31+01:00",
+    "mtime": "2026-07-30T16:49:47.180Z",
+    "byteSize": 13074249,
+    "totalJsonlLines": 9533,
+    "grok43MatchingRows": 561
+  },
+  "powerSnapshot": {
+    "maxWorkers": 2,
+    "runsPerSample": 5,
+    "oneModelPerAdapter": true,
+    "heavyTasksAllowed": false,
+    "mode": "low",
+    "dream": false,
+    "sleep": false,
+    "paused": false,
+    "reason": "ThinkStack Capital sprint 13-23; ThinkStack Media sprint 09-03",
+    "updatedAt": "2026-07-30T17:01:05+01:00"
+  },
+  "runnableNonCarveOutGapRemaining": false,
+  "onlyMissingCell": "TSBC-1484 fixture route"
+}
