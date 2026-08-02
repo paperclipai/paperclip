@@ -1267,6 +1267,63 @@ describeEmbeddedPostgres("attention service", () => {
       .toBe(new Date(now + 60 * 60_000).toISOString());
   });
 
+  it("returns a complete queue snapshot beyond the normal page limit", async () => {
+    const { companyId } = await seedCompany("ATS");
+    const queueId = randomUUID();
+    await db.insert(decisionQueues).values({
+      id: queueId,
+      companyId,
+      key: "bulk-review",
+      title: "Bulk review",
+      createdByType: "user",
+      createdByUserId: "board-user",
+    });
+
+    const approvalRows = Array.from({ length: 51 }, (_, index) => ({
+      id: randomUUID(),
+      companyId,
+      type: "hire_agent",
+      status: "pending",
+      payload: { title: `Review ${index + 1}` },
+      createdAt: new Date(Date.UTC(2026, 7, 2, 12, 0, index)),
+      updatedAt: new Date(Date.UTC(2026, 7, 2, 12, 0, index)),
+    }));
+    await db.insert(approvals).values(approvalRows);
+    await db.insert(decisionQueueItems).values(approvalRows.map((approval) => ({
+      companyId,
+      queueId,
+      sourceKind: "approval",
+      sourceId: approval.id,
+      addedByType: "user",
+      addedByUserId: "board-user",
+    })));
+
+    const firstPage = await attentionService(db).list(companyId, {
+      userId: "board-user",
+      queue: "bulk-review",
+    });
+    expect(firstPage.items).toHaveLength(50);
+    expect(firstPage.nextCursor).toBeTruthy();
+
+    const completeSnapshot = await attentionService(db).list(companyId, {
+      userId: "board-user",
+      queue: "bulk-review",
+      all: true,
+    });
+    expect(completeSnapshot.items).toHaveLength(51);
+    expect(new Set(completeSnapshot.items.map((item) => item.id)).size).toBe(51);
+    expect(completeSnapshot.nextCursor).toBeNull();
+
+    await expect(attentionService(db).list(companyId, { userId: "board-user", all: true }))
+      .rejects.toThrow("all requires a queue filter");
+    await expect(attentionService(db).list(companyId, {
+      userId: "board-user",
+      queue: "bulk-review",
+      all: true,
+      limit: 25,
+    })).rejects.toThrow("all cannot be combined with cursor or limit");
+  });
+
   it("keeps this-week deadlines in the current UTC week", async () => {
     const { companyId, workerId } = await seedCompany("ATW");
     const now = Date.parse("2026-08-02T12:00:00.000Z"); // Sunday in an ISO Monday-Sunday week.

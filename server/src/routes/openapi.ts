@@ -3279,7 +3279,20 @@ registry.registerPath({
   path: "/api/companies/{companyId}/attention",
   tags: ["inbox"],
   summary: "List decision-only attention feed items",
-  request: { params: z.object({ companyId: z.string() }) },
+  request: {
+    params: z.object({ companyId: z.string() }),
+    query: z.object({
+      includeDismissed: z.enum(["true", "false"]).optional(),
+      archived: z.enum(["true", "false"]).optional(),
+      all: z.enum(["true", "false"]).optional(),
+      activitySince: z.string().datetime().optional(),
+      activityUntil: z.string().datetime().optional(),
+      queue: z.string().min(1).optional(),
+      sort: z.enum(["activity", "decide"]).optional(),
+      cursor: z.string().min(1).optional(),
+      limit: z.coerce.number().int().min(1).max(100).optional(),
+    }),
+  },
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
 });
 
