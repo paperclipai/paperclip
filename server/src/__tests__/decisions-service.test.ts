@@ -88,6 +88,16 @@ describePg("decisionService", () => {
     ...extra,
   });
 
+  // Make an existing decision TTL-expired for the next sweep. Creating a
+  // decision that is already expired is impossible (create rejects a past
+  // expiresAt), and creating one that expires a few milliseconds later races
+  // the service's own clock read — under CI load the create itself can fail
+  // with "expiresAt must be within 30 days". Create with a comfortable future
+  // expiry instead, then move expiresAt into the past directly in the store.
+  const nearFutureExpiry = () => new Date(Date.now() + 60_000);
+  const expireDecisionNow = (id: string) =>
+    db.update(decisions).set({ expiresAt: new Date(Date.now() - 1_000) }).where(eq(decisions.id, id));
+
   it("returns the existing decision for concurrent idempotent creates", async () => {
     const input = {
       companyId, actor: agentActor(), agentId, runId, title: "Same?", body: "Body", idempotencyKey: "concurrent-create",
@@ -501,27 +511,29 @@ describePg("decisionService", () => {
 
   it("bounds expiration work to the configured batch size", async () => {
     process.env.PAPERCLIP_DECISIONS_SWEEP_BATCH_SIZE = "1";
-    await createCommentDecision("lenient", { idempotencyKey: "batch-1", expiresAt: new Date(Date.now() + 5) });
-    await createCommentDecision("lenient", { idempotencyKey: "batch-2", expiresAt: new Date(Date.now() + 5) });
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    const first = await createCommentDecision("lenient", { idempotencyKey: "batch-1", expiresAt: nearFutureExpiry() });
+    const second = await createCommentDecision("lenient", { idempotencyKey: "batch-2", expiresAt: nearFutureExpiry() });
+    await expireDecisionNow(first.id);
+    await expireDecisionNow(second.id);
     expect((await service().sweepExpired()).expired).toBe(1);
     expect((await service().sweepExpired()).expired).toBe(1);
   });
 
   it("falls back to the default sweep batch size for invalid configuration", async () => {
     process.env.PAPERCLIP_DECISIONS_SWEEP_BATCH_SIZE = "not-a-number";
-    await createCommentDecision("lenient", { idempotencyKey: "invalid-batch-1", expiresAt: new Date(Date.now() + 5) });
-    await createCommentDecision("lenient", { idempotencyKey: "invalid-batch-2", expiresAt: new Date(Date.now() + 5) });
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    const first = await createCommentDecision("lenient", { idempotencyKey: "invalid-batch-1", expiresAt: nearFutureExpiry() });
+    const second = await createCommentDecision("lenient", { idempotencyKey: "invalid-batch-2", expiresAt: nearFutureExpiry() });
+    await expireDecisionNow(first.id);
+    await expireDecisionNow(second.id);
 
     await expect(service().sweepExpired()).resolves.toMatchObject({ expired: 2 });
   });
 
   it("expires TTL and target-gone decisions and wakes the origin agent", async () => {
-    const ttl = await createCommentDecision("lenient", { expiresAt: new Date(Date.now() + 5) });
+    const ttl = await createCommentDecision("lenient", { expiresAt: nearFutureExpiry() });
     const gone = await createCommentDecision("strict", { idempotencyKey: "gone" });
     await db.update(issues).set({ status: "cancelled" }).where(eq(issues.id, targetIssueId));
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    await expireDecisionNow(ttl.id);
     expect((await service().sweepExpired()).expired).toBe(2);
     const rows = await db.select().from(decisions);
     expect(rows.find((row) => row.id === ttl.id)?.metadata).toMatchObject({ expiredReason: "ttl" });
@@ -542,14 +554,14 @@ describePg("decisionService", () => {
       companyId, actor: agentActor(), agentId, runId, ruleKey: "routing.assign", title: "Assign again?", body: "Body",
       options: [{ id: "assign", label: "Assign", effects: [] }, { id: "skip", label: "Skip", effects: [] }],
     });
-    await service().create({
+    const stale = await service().create({
       companyId, actor: agentActor(), agentId, runId, ruleKey: "cleanup.stale", title: "Clean up?", body: "Body",
-      options: [{ id: "clean", label: "Clean", effects: [] }], expiresAt: new Date(Date.now() + 5),
+      options: [{ id: "clean", label: "Clean", effects: [] }], expiresAt: nearFutureExpiry(),
     });
     await service().decide({ id: accepted.id, optionId: "assign", decidedByUserId, userActor: boardActor() });
     await service().decide({ id: acceptedAgain.id, optionId: "assign", decidedByUserId, userActor: boardActor() });
     await service().dismiss(rejected.id, decidedByUserId, boardActor(), "Not this time");
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    await expireDecisionNow(stale.id);
     await service().sweepExpired();
 
     const stats = await service().stats(companyId, { originAgentId: agentId });
