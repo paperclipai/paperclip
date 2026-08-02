@@ -77,6 +77,7 @@ import {
   type IssueTimelineAssignee,
   type IssueTimelineEvent,
   type IssueTimelineWorkspace,
+  type IssueWorkModeChange,
 } from "../lib/issue-timeline-events";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
@@ -428,6 +429,13 @@ interface IssueChatThreadProps {
   feedbackTermsUrl?: string | null;
   linkedRuns?: IssueChatLinkedRun[];
   timelineEvents?: IssueTimelineEvent[];
+  /**
+   * Work-mode switch history from the activity feed. Only the redesigned
+   * TaskChatThread consumes this (flag: enableTaskChatRedesign) to tag each
+   * agent reply with the mode its request ran under; the legacy thread
+   * ignores it.
+   */
+  workModeChanges?: IssueWorkModeChange[];
   liveRuns?: LiveRunForIssue[];
   activeRun?: ActiveRunForIssue | null;
   issueId?: string | null;
@@ -492,6 +500,13 @@ interface IssueChatThreadProps {
   autoScrollToHashOnInitialLoad?: boolean;
   emptyMessage?: string;
   footer?: ReactNode;
+  /**
+   * Issue header content (title row, badges, plugin toolbars) rendered INSIDE
+   * the thread's scroll viewport so it scrolls away with the messages. Only the
+   * redesigned TaskChatThread consumes this (flag: enableTaskChatRedesign);
+   * the legacy thread ignores it — its header stays in the page flow.
+   */
+  threadHeader?: ReactNode;
   variant?: "full" | "embedded";
   enableLiveTranscriptPolling?: boolean;
   transcriptsByRunId?: ReadonlyMap<string, readonly IssueChatTranscriptEntry[]>;

@@ -2333,7 +2333,17 @@ async function emitAcpxLog(ctx: AdapterExecutionContext, payload: Record<string,
   await ctx.onLog("stdout", `${JSON.stringify(payload)}\n`);
 }
 
-async function emitRuntimeEvent(ctx: AdapterExecutionContext, event: AcpRuntimeEvent) {
+// acpx substitutes a literal "tool call" title when an ACP tool_call_update
+// omits one, which would persist a generic name over the real one ("Terminal",
+// "Read", …) in the stored run log. Remember each call's real title so update
+// lines keep the name durably.
+const GENERIC_ACP_TOOL_TITLE = "tool call";
+
+async function emitRuntimeEvent(
+  ctx: AdapterExecutionContext,
+  event: AcpRuntimeEvent,
+  toolTitles?: Map<string, string>,
+) {
   if (event.type === "text_delta") {
     await emitAcpxLog(ctx, {
       type: "acpx.text_delta",
@@ -2346,9 +2356,21 @@ async function emitRuntimeEvent(ctx: AdapterExecutionContext, event: AcpRuntimeE
   if (event.type === "tool_call") {
     const eventRecord = event as Record<string, unknown>;
     const toolInput = eventRecord.input;
+    let name = event.title ?? "acp_tool";
+    const toolCallId = typeof event.toolCallId === "string" ? event.toolCallId : "";
+    if (toolTitles && toolCallId) {
+      if (event.title && event.title !== GENERIC_ACP_TOOL_TITLE) {
+        // First real title is the call's identity; later retitles (ACP swaps
+        // in the invocation, e.g. "Terminal" → "ls -la") keep their own line
+        // but don't become the remembered name.
+        if (!toolTitles.has(toolCallId)) toolTitles.set(toolCallId, event.title);
+      } else {
+        name = toolTitles.get(toolCallId) ?? name;
+      }
+    }
     await emitAcpxLog(ctx, {
       type: "acpx.tool_call",
-      name: event.title ?? "acp_tool",
+      name,
       toolCallId: event.toolCallId,
       status: event.status,
       text: event.text,
@@ -3294,13 +3316,14 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
       cancelActiveTurn = async (reason: string) => {
         await turn.cancel({ reason });
       };
+      const toolTitles = new Map<string, string>();
       for await (const event of turn.events) {
         if (event.type === "text_delta") textParts.push(event.text);
         if (event.type === "status" && event.tag === "usage_update") {
           eventBreakdown = event.breakdown ?? eventBreakdown;
           eventCostUsd = usdCostAmount(event.cost) ?? eventCostUsd;
         }
-        await emitRuntimeEvent(ctx, event);
+        await emitRuntimeEvent(ctx, event, toolTitles);
       }
       const terminal = await turn.result;
       if (timeout) clearTimeout(timeout);

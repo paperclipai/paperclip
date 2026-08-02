@@ -1,10 +1,23 @@
 import { Router } from "express";
 import { z } from "zod";
 import type { Db } from "@paperclipai/db";
-import { decisionInputsSchema, decisionOptionsSchema } from "@paperclipai/shared";
+import {
+  createDecisionArchiveProposalSchema,
+  decisionInputsSchema,
+  decisionOptionsSchema,
+  type AttentionArchiveManifestEntry,
+  type AttentionArchiveTargetSnapshot,
+  type AttentionItem,
+  type CreateDecisionArchiveProposalInput,
+} from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import { decisionService, type DecisionServiceOptions } from "../services/decisions.js";
 import { assertBoard, assertBoardOrAgent, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
+import { attentionService } from "../services/attention.js";
+import { authorizationDeniedDetails, authorizationService } from "../services/authorization.js";
+import { canReadDecisionSource } from "../services/decision-queues.js";
+import { hashAttentionArchiveManifest } from "../services/decision-retention.js";
+import { forbidden, unprocessable } from "../errors.js";
 
 const createSchema = z.object({
   title: z.string().trim().min(1).max(500),
@@ -39,6 +52,89 @@ function boardUserId(req: Parameters<typeof getActorInfo>[0]) {
 export function decisionRoutes(db: Db, options: DecisionServiceOptions) {
   const router = Router();
   const svc = decisionService(db, options);
+  router.post(
+    "/companies/:companyId/decision-archive-proposals",
+    validate(createDecisionArchiveProposalSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      assertCompanyAccess(req, companyId);
+      const agent = agentContext(req);
+      if (!agent) {
+        res.status(403).json({ error: "Agent run context required" });
+        return;
+      }
+      const access = await authorizationService(db).decide({
+        actor: req.actor,
+        action: "decision_triage:manage",
+        resource: { type: "company", companyId },
+      });
+      if (!access.allowed) throw forbidden(access.explanation, authorizationDeniedDetails(access));
+
+      const proposal = req.body as CreateDecisionArchiveProposalInput;
+      const requested = new Map<string, CreateDecisionArchiveProposalInput["items"][number]>(proposal.items.map((item) => [
+        `${item.sourceKind}:${item.sourceId}`,
+        item,
+      ]));
+      const found = new Map<string, AttentionItem>();
+      const snapshot = await db.transaction(async (tx) => attentionService(tx as unknown as Db).list(companyId, {
+        includeDismissed: true,
+        all: true,
+        allowUnscopedAll: true,
+      }), { isolationLevel: "repeatable read" });
+      for (const item of snapshot.items) {
+        const key = `${item.sourceKind}:${item.subject.id}`;
+        if (requested.has(key)) found.set(key, item);
+      }
+
+      const manifest: AttentionArchiveManifestEntry[] = [];
+      for (const [key, item] of [...requested.entries()].sort(([left], [right]) => left.localeCompare(right))) {
+        const attentionItem = found.get(key);
+        if (!attentionItem || !attentionItem.shelf || attentionItem.archivedAt) {
+          throw unprocessable("Every archive proposal item must be on the current aging shelf");
+        }
+        if (!(await canReadDecisionSource(db, req.actor, companyId, attentionItem.sourceKind, attentionItem.subject.id))) {
+          throw unprocessable("Every archive proposal item must be on the current aging shelf");
+        }
+        manifest.push({
+          companyId,
+          sourceKind: attentionItem.sourceKind,
+          sourceId: attentionItem.subject.id,
+          expectedVersion: attentionItem.retentionVersion,
+          activityAt: attentionItem.activityAt,
+          reason: item.reason,
+        });
+      }
+      const manifestHash = hashAttentionArchiveManifest(manifest);
+      const targetSnapshots = Object.fromEntries(manifest.map((entry) => [
+        `attention:${entry.sourceKind}:${entry.sourceId}`,
+        {
+          status: "attention",
+          assigneeAgentId: null,
+          assigneeUserId: null,
+          updatedAt: entry.activityAt,
+          attentionArchive: entry,
+        } satisfies AttentionArchiveTargetSnapshot,
+      ]));
+      const body = manifest.map((entry) => `- **${entry.sourceKind}:${entry.sourceId}** — ${entry.reason}`).join("\n");
+      const created = await svc.create({
+        companyId,
+        actor: req.actor,
+        ...agent,
+        title: `Archive ${manifest.length} aging decision${manifest.length === 1 ? "" : "s"}?`,
+        body,
+        ruleKey: "attention.bulk_archive",
+        idempotencyKey: proposal.idempotencyKey ?? `attention-archive:${manifestHash}:${agent.runId}`,
+        continuationPolicy: "wake_origin_agent",
+        options: [
+          { id: "archive", label: "Archive reviewed items", style: "destructive", effects: [] },
+          { id: "keep", label: "Keep items", effects: [] },
+        ],
+        metadata: { kind: "attention_archive_proposal", manifestHash },
+        additionalTargetSnapshots: targetSnapshots,
+      });
+      res.status(201).json(created);
+    },
+  );
   router.post("/companies/:companyId/decisions", validate(createSchema), async (req, res) => {
     const companyId = req.params.companyId as string; assertCompanyAccess(req, companyId);
     const agent = agentContext(req); if (!agent) { res.status(403).json({ error: "Agent run context required" }); return; }

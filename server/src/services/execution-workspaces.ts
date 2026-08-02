@@ -680,6 +680,7 @@ export function readExecutionWorkspaceConfig(metadata: Record<string, unknown> |
   const config: ExecutionWorkspaceConfig = {
     environmentId: readNullableString(raw.environmentId),
     provisionCommand: readNullableString(raw.provisionCommand),
+    runtimeProvisionCommand: readNullableString(raw.runtimeProvisionCommand),
     teardownCommand: readNullableString(raw.teardownCommand),
     cleanupCommand: readNullableString(raw.cleanupCommand),
     workspaceRuntime: cloneRecord(raw.workspaceRuntime),
@@ -704,6 +705,7 @@ export function mergeExecutionWorkspaceConfig(
   const current = readExecutionWorkspaceConfig(metadata) ?? {
     environmentId: null,
     provisionCommand: null,
+    runtimeProvisionCommand: null,
     teardownCommand: null,
     cleanupCommand: null,
     workspaceRuntime: null,
@@ -719,6 +721,10 @@ export function mergeExecutionWorkspaceConfig(
   const nextConfig: ExecutionWorkspaceConfig = {
     environmentId: patch.environmentId !== undefined ? readNullableString(patch.environmentId) : current.environmentId,
     provisionCommand: patch.provisionCommand !== undefined ? readNullableString(patch.provisionCommand) : current.provisionCommand,
+    runtimeProvisionCommand:
+      patch.runtimeProvisionCommand !== undefined
+        ? readNullableString(patch.runtimeProvisionCommand)
+        : current.runtimeProvisionCommand,
     teardownCommand: patch.teardownCommand !== undefined ? readNullableString(patch.teardownCommand) : current.teardownCommand,
     cleanupCommand: patch.cleanupCommand !== undefined ? readNullableString(patch.cleanupCommand) : current.cleanupCommand,
     workspaceRuntime: patch.workspaceRuntime !== undefined ? cloneRecord(patch.workspaceRuntime) : current.workspaceRuntime,
@@ -740,6 +746,7 @@ export function mergeExecutionWorkspaceConfig(
     nextMetadata.config = {
       environmentId: nextConfig.environmentId,
       provisionCommand: nextConfig.provisionCommand,
+      runtimeProvisionCommand: nextConfig.runtimeProvisionCommand,
       teardownCommand: nextConfig.teardownCommand,
       cleanupCommand: nextConfig.cleanupCommand,
       workspaceRuntime: nextConfig.workspaceRuntime,

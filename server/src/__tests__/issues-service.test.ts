@@ -18,6 +18,7 @@ import {
   issueInboxArchives,
   issueDocuments,
   issuePlanDecompositions,
+  issueReadStates,
   issueRelations,
   issueThreadInteractions,
   issues,
@@ -308,6 +309,7 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     await db.delete(issueRelations);
     await db.delete(issueDocuments);
     await db.delete(issueInboxArchives);
+    await db.delete(issueReadStates);
     await db.delete(activityLog);
     await db.delete(issues);
     await db.delete(documents);
@@ -335,6 +337,70 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     });
     return companyId;
   }
+
+  it("does not treat passive issue activity as touching it, but includes real user mutations", async () => {
+    const companyId = await seedAssignableAgentCompany();
+    const issueId = randomUUID();
+    const userId = "board-user";
+
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Issue viewed without participation",
+      status: "todo",
+      priority: "medium",
+    });
+    await svc.markRead(companyId, issueId, userId);
+    await db.insert(activityLog).values([
+      {
+        companyId,
+        actorType: "user",
+        actorId: userId,
+        action: "issue.read_marked",
+        entityType: "issue",
+        entityId: issueId,
+      },
+      {
+        companyId,
+        actorType: "user",
+        actorId: userId,
+        action: "issue.file_resource_content_read",
+        entityType: "issue",
+        entityId: issueId,
+      },
+      {
+        companyId,
+        actorType: "user",
+        actorId: userId,
+        action: "issue.file_resource_download_denied",
+        entityType: "issue",
+        entityId: issueId,
+      },
+      {
+        companyId,
+        actorType: "user",
+        actorId: userId,
+        action: "issue.tree_control_previewed",
+        entityType: "issue",
+        entityId: issueId,
+      },
+    ]);
+
+    await expect(svc.list(companyId, { touchedByUserId: userId })).resolves.toEqual([]);
+
+    await db.insert(activityLog).values({
+      companyId,
+      actorType: "user",
+      actorId: userId,
+      action: "issue.comment_cancelled",
+      entityType: "issue",
+      entityId: issueId,
+    });
+
+    await expect(svc.list(companyId, { touchedByUserId: userId })).resolves.toEqual([
+      expect.objectContaining({ id: issueId }),
+    ]);
+  });
 
   function agentRow(companyId: string, input: {
     id: string;
@@ -2448,6 +2514,127 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
 
     expect(result?.description).toHaveLength(1200);
     expect(result?.description?.endsWith("—")).toBe(true);
+  });
+});
+
+describeEmbeddedPostgres("issueService.findOpenAncestorCreatedByAgent", () => {
+  let db!: ReturnType<typeof createDb>;
+  let svc!: ReturnType<typeof issueService>;
+  let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
+
+  beforeAll(async () => {
+    tempDb = await startEmbeddedPostgresTestDatabase("paperclip-issues-ancestor-");
+    db = createDb(tempDb.connectionString);
+    svc = issueService(db);
+    await ensureIssueRelationsTable(db);
+  }, 20_000);
+
+  afterEach(async () => {
+    await db.delete(issues);
+    await db.delete(agents);
+    await db.delete(companies);
+  });
+
+  afterAll(async () => {
+    await tempDb?.cleanup();
+  });
+
+  async function seedChain() {
+    const companyId = randomUUID();
+    const delegatorId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Chain Co",
+      issuePrefix: `C${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: delegatorId,
+      companyId,
+      name: "Delegator",
+      role: "engineer",
+      status: "idle",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    const rootId = randomUUID();
+    const midId = randomUUID();
+    await db.insert(issues).values([
+      {
+        id: rootId,
+        companyId,
+        title: "Root task",
+        status: "in_progress",
+        priority: "medium",
+        issueNumber: 1,
+        identifier: "CHAIN-1",
+      },
+      {
+        id: midId,
+        companyId,
+        title: "Delegated review",
+        status: "in_progress",
+        priority: "medium",
+        parentId: rootId,
+        createdByAgentId: delegatorId,
+        issueNumber: 2,
+        identifier: "CHAIN-2",
+      },
+    ]);
+    return { companyId, delegatorId, rootId, midId };
+  }
+
+  it("finds an open ancestor created by the agent, at any depth", async () => {
+    const { delegatorId, midId } = await seedChain();
+
+    const direct = await svc.findOpenAncestorCreatedByAgent(midId, delegatorId);
+    expect(direct?.id).toBe(midId);
+
+    const other = await svc.findOpenAncestorCreatedByAgent(midId, randomUUID());
+    expect(other).toBeNull();
+  });
+
+  it("ignores closed ancestors created by the agent", async () => {
+    const { delegatorId, midId } = await seedChain();
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, midId));
+
+    expect(await svc.findOpenAncestorCreatedByAgent(midId, delegatorId)).toBeNull();
+  });
+
+  it("finds the ancestor through an arbitrarily deep chain", async () => {
+    const { companyId, delegatorId, midId } = await seedChain();
+    // Extend the chain 60 levels below the delegator-created ancestor so the
+    // match sits far above the new child's parent.
+    let parentId = midId;
+    for (let index = 0; index < 60; index += 1) {
+      const childId = randomUUID();
+      await db.insert(issues).values({
+        id: childId,
+        companyId,
+        title: `Deep child ${index}`,
+        status: "in_progress",
+        priority: "medium",
+        parentId,
+        issueNumber: index + 10,
+        identifier: `CHAIN-${index + 10}`,
+      });
+      parentId = childId;
+    }
+
+    const found = await svc.findOpenAncestorCreatedByAgent(parentId, delegatorId);
+    expect(found?.id).toBe(midId);
+  });
+
+  it("terminates on a corrupted parent-graph cycle", async () => {
+    const { delegatorId, rootId, midId } = await seedChain();
+    // Corrupt the graph: root's parent points back at mid.
+    await db.update(issues).set({ parentId: midId }).where(eq(issues.id, rootId));
+
+    const found = await svc.findOpenAncestorCreatedByAgent(midId, delegatorId);
+    expect(found?.id).toBe(midId);
+    expect(await svc.findOpenAncestorCreatedByAgent(midId, randomUUID())).toBeNull();
   });
 });
 
@@ -4854,6 +5041,7 @@ describeEmbeddedPostgres("issueService.create workspace inheritance", () => {
       config: {
         environmentId: null,
         provisionCommand: "bash ./scripts/provision-new.sh",
+        runtimeProvisionCommand: null,
         teardownCommand: "bash ./scripts/teardown-new.sh",
         cleanupCommand: null,
         workspaceRuntime: { profile: "new" },

@@ -42,11 +42,13 @@ import { setupLiveEventsWebSocketServer } from "./realtime/live-events-ws.js";
 import {
   feedbackService,
   applyManagedEnvironments,
+  attentionService,
   backfillPrincipalAccessCompatibility,
   backfillLegacyToolOAuthTokens,
   bootstrapExecutionPolicyFromEnv,
   environmentCustomImageService,
   decisionService,
+  decisionRetentionService,
   heartbeatService,
   issueService,
   instanceSettingsService,
@@ -82,7 +84,7 @@ import {
   restoreAbortedHotRestartPredecessor,
 } from "./shutdown.js";
 import { ensureDecisionSigningSecret } from "./services/decision-signing.js";
-import { createDecisionWakeOriginAgent } from "./services/decision-wakeup.js";
+import { createDecisionRetentionNotifyOriginAgent, createDecisionWakeOriginAgent } from "./services/decision-wakeup.js";
 import { systemdNotify } from "./services/systemd-notify.js";
 import { flushInFlightRunLogMirrors } from "./services/run-log-store.js";
 import {
@@ -1089,6 +1091,9 @@ async function startServerInternal(
 
   if (heartbeat) {
     const decisionExecutor = decisionService(db as any, decisionServiceOptions);
+    const retentionExecutor = decisionRetentionService(db as any, {
+      notifyOriginAgent: createDecisionRetentionNotifyOriginAgent(heartbeat.wakeup),
+    });
     drainHeartbeatRunsForShutdown = heartbeat.drainRunningRunsForShutdown;
     prepareHotRestartShutdown = heartbeat.prepareHotRestartShutdown;
     const environmentCustomImages = environmentCustomImageService(db as any, { pluginWorkerManager });
@@ -1222,6 +1227,27 @@ async function startServerInternal(
       logger.warn({ ...toolHealthSweep }, "startup tool connection health sweep found failing connections");
     }
     await decisionExecutor.sweepExpired();
+    const runRetentionSweep = async () => {
+      const activeCompanies = await db.select({ id: companies.id }).from(companies).where(eq(companies.status, "active"));
+      let archived = 0;
+      for (const company of activeCompanies) {
+        const items = [];
+        let cursor: string | undefined;
+        do {
+          const page = await attentionService(db as any).list(company.id, {
+            includeDismissed: true,
+            limit: 100,
+            cursor,
+          });
+          items.push(...page.items);
+          cursor = page.nextCursor ?? undefined;
+        } while (cursor);
+        archived += await retentionExecutor.autoArchive({ companyId: company.id, items });
+      }
+      const notifications = await retentionExecutor.deliverNotifications();
+      return { archived, ...notifications };
+    };
+    await runRetentionSweep();
 
     heartbeatSchedulerInterval = setInterval(() => {
       // Async so the suppression checks below can honor the override-aware
@@ -1231,6 +1257,9 @@ async function startServerInternal(
         if (heartbeatSchedulerStopped) return;
         trackHeartbeatSchedulerWork(decisionExecutor.sweepExpired().catch((err: unknown) => {
           logger.error({ err }, "decision expiry sweep failed");
+        }));
+        trackHeartbeatSchedulerWork(runRetentionSweep().catch((err: unknown) => {
+          logger.error({ err }, "decision retention sweep failed");
         }));
         const sweptRuntimeStatuses = heartbeat.sweepExpiredRuntimeStatuses();
         if (sweptRuntimeStatuses > 0) {

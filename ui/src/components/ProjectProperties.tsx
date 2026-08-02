@@ -55,6 +55,7 @@ export type ProjectConfigFieldKey =
   | "execution_workspace_branch_template"
   | "execution_workspace_worktree_parent_dir"
   | "execution_workspace_provision_command"
+  | "execution_workspace_runtime_provision_command"
   | "execution_workspace_teardown_command";
 
 function SaveIndicator({ state }: { state: ProjectFieldSaveState }) {
@@ -1134,6 +1135,33 @@ export function ProjectProperties({ project, onUpdate, onFieldUpdate, getFieldSa
                             className="w-full rounded border border-border bg-transparent px-2 py-1 text-xs font-mono outline-none"
                             placeholder="bash ./scripts/provision-worktree.sh"
                           />
+                        </div>
+                        <div>
+                          <div className="mb-1 flex items-center gap-1.5">
+                            <label className="flex items-center gap-2 text-xs text-muted-foreground">
+                              <span>Runtime provision command</span>
+                              <SaveIndicator state={fieldState("execution_workspace_runtime_provision_command")} />
+                            </label>
+                          </div>
+                          <DraftInput
+                            value={executionWorkspaceStrategy.runtimeProvisionCommand ?? ""}
+                            onCommit={(value) =>
+                              commitField("execution_workspace_runtime_provision_command", {
+                                ...updateExecutionWorkspacePolicy({
+                                  workspaceStrategy: {
+                                    ...executionWorkspaceStrategy,
+                                    type: "git_worktree",
+                                    runtimeProvisionCommand: value || null,
+                                  },
+                                })!,
+                              })}
+                            immediate
+                            className="w-full rounded border border-border bg-transparent px-2 py-1 text-xs font-mono outline-none"
+                            placeholder="bash ./scripts/provision-worktree-runtime.sh"
+                          />
+                          <p className="mt-1 text-xs text-muted-foreground">
+                            Runs once before the first runtime-service start (heavy setup, e.g. DB seed). Leave empty to keep eager provisioning.
+                          </p>
                         </div>
                         <div>
                           <div className="mb-1 flex items-center gap-1.5">

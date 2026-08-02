@@ -66,6 +66,7 @@ export { workTimelineService, normalizeTimelineWindow } from "./work-timeline.js
 export { attentionService } from "./attention.js";
 export { captureDecisionSnapshot, decisionTrainingService } from "./decision-training.js";
 export { decisionService } from "./decisions.js";
+export { decisionRetentionService } from "./decision-retention.js";
 export type {
   WorkTimelineActor,
   WorkTimelineEdge,
@@ -148,7 +149,13 @@ export { executionWorkspaceService } from "./execution-workspaces.js";
 export { workspaceOperationService } from "./workspace-operations.js";
 export { workspaceFileResourceService } from "./workspace-file-resources.js";
 export { workProductService } from "./work-products.js";
-export { logActivity, type LogActivityInput } from "./activity-log.js";
+export {
+  logActivity,
+  persistActivity,
+  publishActivity,
+  type ActivityPublication,
+  type LogActivityInput,
+} from "./activity-log.js";
 export { summarySlotService, SUMMARIZER_BUILT_IN_KEY } from "./summary-slots.js";
 export { notifyHireApproved, type NotifyHireApprovedInput } from "./hire-hook.js";
 export { publishLiveEvent, subscribeCompanyLiveEvents } from "./live-events.js";

@@ -113,6 +113,18 @@ function buildItem(overrides: Partial<AttentionItem> = {}): AttentionItem {
     detail: null,
     dismissal: null,
     ...overrides,
+    expiresAt: overrides.expiresAt ?? null,
+    ruleKey: overrides.ruleKey ?? null,
+    originAgentName: overrides.originAgentName ?? null,
+    queues: overrides.queues ?? [],
+    shelf: overrides.shelf ?? false,
+    retentionDays: overrides.retentionDays ?? 30,
+    keep: overrides.keep ?? false,
+    archivedAt: overrides.archivedAt ?? null,
+    retentionVersion: overrides.retentionVersion ?? 1,
+    decideBy: overrides.decideBy ?? null,
+    decideByAttribution: overrides.decideByAttribution ?? null,
+    snoozedUntil: overrides.snoozedUntil ?? null,
     trainingExampleId: overrides.trainingExampleId ?? null,
   };
 }

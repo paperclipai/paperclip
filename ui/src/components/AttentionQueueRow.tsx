@@ -2,6 +2,7 @@ import { memo, useState, type KeyboardEvent, type ReactNode } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   AlarmClock,
+  CalendarClock,
   ChevronDown,
   ChevronUp,
   ExternalLink,
@@ -24,11 +25,13 @@ import {
   attentionImageUrl,
   attentionStatus,
   attentionTaskRef,
+  decideByLabel,
   isInlineResolvable,
   sourceMeta,
 } from "../lib/attention";
 import { isTrainable } from "../lib/decisionTraining";
 import { cn, relativeTime } from "../lib/utils";
+import { DecisionTriageStrip } from "./DecisionTriageStrip";
 import { StatusGlyph } from "./StatusGlyph";
 import { Button } from "./ui/button";
 import { Collapsible, CollapsibleContent } from "./ui/collapsible";
@@ -86,6 +89,10 @@ interface AttentionQueueRowProps {
   /** "active" renders the live queue row; "hidden" renders a curtain row. */
   variant?: "active" | "hidden";
   agentMap?: Map<string, Agent>;
+  /** Company agents, for the triage strip's route-to-agent picker. */
+  agents?: Agent[];
+  /** Render the per-card triage strip (queue/decide-by/snooze/route) when expanded. */
+  showTriage?: boolean;
   currentUserId?: string | null;
   userLabelMap?: ReadonlyMap<string, string> | null;
   selected?: boolean;
@@ -109,6 +116,8 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
   onRestore,
   variant = "active",
   agentMap,
+  agents,
+  showTriage = false,
   currentUserId,
   userLabelMap,
   selected = false,
@@ -130,10 +139,12 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
   // "n more" affordance in the expanded gallery.
   const issueHref = item.relatedIssue?.href ?? href;
   // Inline-resolvable active rows expand to reveal their resolver; rows with
-  // images expand to reveal a larger gallery (PAP-13544). Either case gives a
-  // header/thumbnail click somewhere to go. Non-inline, image-less rows keep the
-  // explicit Open button and never toggle on a stray click.
-  const expandable = inline || (!isHidden && hasImages);
+  // images expand to reveal a larger gallery (PAP-13544); triage-enabled rows
+  // expand to reveal the per-card triage strip (PAP-16032 §4.5). Any of these
+  // gives a header/thumbnail click somewhere to go. Non-inline, image-less rows
+  // with no triage keep the explicit Open button and never toggle on a stray click.
+  const triageEnabled = showTriage && !isHidden;
+  const expandable = inline || (!isHidden && hasImages) || triageEnabled;
   // Any issue-anchored approval or interaction is
   // trainable at any time (pending or resolved). Trained/untrained renders
   // purely from the feed's `trainingExampleId` — no per-row fetch.
@@ -254,6 +265,22 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
               >
                 {taskRef.identifier}
               </Link>
+            </>
+          )}
+          {item.decideBy && (
+            <>
+              <EyebrowSeparator />
+              <span
+                className="inline-flex items-center gap-1 text-(length:--text-nano) text-muted-foreground"
+                data-attention-decide-by={item.decideBy}
+                title={decideByProvenance(item) ? `Set by ${decideByProvenance(item)}` : undefined}
+              >
+                <CalendarClock className="h-3 w-3" />
+                {decideByLabel(item.decideBy)}
+                {decideByProvenance(item) && (
+                  <span className="text-muted-foreground/80">· set by {decideByProvenance(item)}</span>
+                )}
+              </span>
             </>
           )}
           {trainable && trained && (
@@ -378,6 +405,7 @@ export const AttentionQueueRow = memo(function AttentionQueueRow({
         <CollapsibleContent data-decision-disclosure className="-mt-4">
           <div className="flex flex-col gap-4 pt-4">
             {hasImages && <ExpandedImages images={images} issueHref={issueHref} />}
+            {triageEnabled && <DecisionTriageStrip item={item} companyId={companyId} agents={agents} />}
             {inline && (
               <InlineResolver
                 item={item}
@@ -702,6 +730,18 @@ function SnoozeSubmenu({ onSnooze }: { onSnooze: (snoozedUntil: string) => void 
       </DropdownMenuSubContent>
     </DropdownMenuSub>
   );
+}
+
+/**
+ * Who set this row's decide-by deadline, for the card's provenance line
+ * ("· set by Prioritizer"). Returns null when unattributed so the chip shows
+ * the deadline alone rather than a hollow "set by".
+ */
+function decideByProvenance(item: AttentionItem): string | null {
+  const attribution = item.decideByAttribution;
+  if (!attribution) return null;
+  if (attribution.type === "agent") return attribution.agentName ?? "an agent";
+  return "you";
 }
 
 /** Compact "when does this snooze end" label, e.g. `in 2h`, `in 3d`. */

@@ -159,7 +159,9 @@ export function buildWorkspaceRuntimeControlSections(input: {
   const otherServices = runtimeServices
     .filter((runtimeService) =>
       !matchedRuntimeServiceIds.has(runtimeService.id)
-      && (runtimeService.status === "starting" || runtimeService.status === "running"))
+      && (runtimeService.status === "provisioning"
+        || runtimeService.status === "starting"
+        || runtimeService.status === "running"))
     .map((runtimeService) => ({
       key: `runtime:${runtimeService.id}`,
       title: runtimeService.serviceName,
@@ -208,7 +210,7 @@ export function getRunningRuntimeServiceUrl(
 }
 
 function isActiveStatusLabel(statusLabel: string) {
-  return statusLabel === "running" || statusLabel === "starting";
+  return statusLabel === "running" || statusLabel === "starting" || statusLabel === "provisioning";
 }
 
 /**
@@ -233,11 +235,13 @@ export function buildWorkspaceServiceControlEntries(input: {
     let state: WorkspaceServiceControlEntry["state"] =
       item.statusLabel === "running"
         ? "running"
-        : item.statusLabel === "starting"
-          ? "starting"
-          : item.statusLabel === "failed"
-            ? "failed"
-            : "stopped";
+        : item.statusLabel === "provisioning"
+          ? "provisioning"
+          : item.statusLabel === "starting"
+            ? "starting"
+            : item.statusLabel === "failed"
+              ? "failed"
+              : "stopped";
 
     const pendingRequest = pendingRequests.find((request) =>
       request.action !== "run"

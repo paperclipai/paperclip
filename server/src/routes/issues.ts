@@ -117,11 +117,13 @@ import {
   ISSUE_LIST_MAX_LIMIT,
   issueReferenceService,
   issueService,
+  type ActivityPublication,
   type IssueFilters,
   clampIssueListLimit,
   documentService,
   documentAnnotationService,
   logActivity,
+  publishActivity,
   projectService,
   routineService,
   workProductService,
@@ -4396,9 +4398,38 @@ export function issueRoutes(
     };
   }
 
+  /**
+   * Refuse an agent creating a child issue assigned to the agent that created
+   * a still-open ancestor in the same chain. That shape is a delegation cycle
+   * (A delegates to B, B delegates the same work back to A): each agent lacks
+   * something the other assumed it had, the chain of blocked issues grows,
+   * and no one tells the human. Humans are unaffected, and closed ancestors
+   * do not count — re-engaging the creator of finished work is normal.
+   */
+  async function assertNoAgentDelegationCycle(input: {
+    actorType: string;
+    parentIssueId: string | null | undefined;
+    assigneeAgentId: string | null | undefined;
+  }) {
+    if (input.actorType !== "agent") return;
+    if (!input.parentIssueId || !input.assigneeAgentId) return;
+    const ancestor = await svc.findOpenAncestorCreatedByAgent(input.parentIssueId, input.assigneeAgentId);
+    if (!ancestor) return;
+    throw conflict(
+      `Delegation cycle: ${ancestor.identifier ?? "an ancestor issue"} in this chain was created by the agent this child would be assigned to. ` +
+        "Complete the remaining work in your own issue, leave the child unassigned, or escalate to a board operator — do not delegate the work back to the agent that delegated it to you.",
+      {
+        code: "delegation_cycle",
+        ancestorIssueId: ancestor.id,
+        assigneeAgentId: input.assigneeAgentId,
+      },
+    );
+  }
+
   async function normalizeIssueAssigneeAgentReference(
     companyId: string,
     rawAssigneeAgentId: string | null | undefined,
+    options: { actorType?: string } = {},
   ) {
     if (rawAssigneeAgentId === undefined || rawAssigneeAgentId === null) {
       return rawAssigneeAgentId;
@@ -4421,6 +4452,18 @@ export function issueRoutes(
     }
     if (resolved.agent.status === "terminated") {
       throw conflict("Cannot assign work to terminated agents");
+    }
+    // Agents must not route work to a paused peer/manager: the assignment is
+    // accepted silently, nothing will ever run it, and the issue becomes an
+    // invisible dead letter (e.g. escalation issues assigned to a paused
+    // manager via the org chart). Humans may still assign to paused agents
+    // deliberately — the pause state is visible in the UI and staging work
+    // for a later unpause is a legitimate workflow.
+    if (options.actorType === "agent" && resolved.agent.status === "paused") {
+      throw conflict(
+        "Cannot assign work to a paused agent. Assign an invokable agent, leave the issue unassigned, or escalate to a board operator instead.",
+        { assigneeAgentId: resolved.agent.id, assigneeStatus: "paused" },
+      );
     }
     if (resolved.agent.orgChainHealth?.status === "invalid_org_chain") {
       throw conflict(
@@ -4646,6 +4689,7 @@ export function issueRoutes(
         ? {
             environmentId: workspace.config.environmentId,
             provisionCommand: workspace.config.provisionCommand,
+            runtimeProvisionCommand: workspace.config.runtimeProvisionCommand,
             teardownCommand: workspace.config.teardownCommand,
             cleanupCommand: workspace.config.cleanupCommand,
             workspaceRuntime: workspace.config.workspaceRuntime,
@@ -4655,7 +4699,9 @@ export function issueRoutes(
         : null,
       metadata: null,
       runtimeServices: (workspace.runtimeServices ?? [])
-        .filter((service) => service.status === "starting" || service.status === "running")
+        .filter((service) =>
+          service.status === "provisioning" || service.status === "starting" || service.status === "running"
+        )
         .map(compactIssueRuntimeService),
       createdAt: workspace.createdAt,
       updatedAt: workspace.updatedAt,
@@ -5693,6 +5739,7 @@ export function issueRoutes(
     });
 
     const actionStatus = outcome === "cancelled" ? "cancelled" : "resolved";
+    const postCommitActivityPublications: ActivityPublication[] = [];
     const result = await db.transaction(async (tx) => {
       let issue = existing;
       if (outcome === "blocked") {
@@ -5724,6 +5771,7 @@ export function issueRoutes(
             actorUserId: actor.actorType === "user" ? actor.actorId : null,
           },
           tx,
+          postCommitActivityPublications,
         );
         if (!updatedIssue) throw notFound("Issue not found");
         issue = updatedIssue;
@@ -5744,6 +5792,7 @@ export function issueRoutes(
 
       return { issue, recoveryAction };
     });
+    for (const publication of postCommitActivityPublications) publishActivity(publication);
 
     await routinesSvc.syncRunStatusForIssue(result.issue.id);
 
@@ -7128,7 +7177,13 @@ export function issueRoutes(
     const normalizedAssigneeAgentId = await normalizeIssueAssigneeAgentReference(
       companyId,
       rawCreateBody.assigneeAgentId as string | null | undefined,
+      { actorType: req.actor.type },
     );
+    await assertNoAgentDelegationCycle({
+      actorType: req.actor.type,
+      parentIssueId: typeof effectiveParentId === "string" ? effectiveParentId : null,
+      assigneeAgentId: normalizedAssigneeAgentId ?? null,
+    });
     const actor = getActorInfo(req);
     const runWorkspaceInheritanceSourceIssueId = hasExplicitIssueWorkspaceCreateSelection(rawCreateBody)
       ? null
@@ -7343,7 +7398,13 @@ export function issueRoutes(
     const normalizedAssigneeAgentId = await normalizeIssueAssigneeAgentReference(
       parent.companyId,
       sanitizedBody.assigneeAgentId as string | null | undefined,
+      { actorType: req.actor.type },
     );
+    await assertNoAgentDelegationCycle({
+      actorType: req.actor.type,
+      parentIssueId: parent.id,
+      assigneeAgentId: normalizedAssigneeAgentId ?? null,
+    });
     const createBody = {
       ...sanitizedBody,
       ...(normalizedAssigneeAgentId !== undefined ? { assigneeAgentId: normalizedAssigneeAgentId } : {}),
@@ -7519,6 +7580,7 @@ export function issueRoutes(
       const normalizedAssigneeAgentId = await normalizeIssueAssigneeAgentReference(
         sourceIssue.companyId,
         sanitizedChild.assigneeAgentId as string | null | undefined,
+        { actorType: req.actor.type },
       );
       const childBody = {
         ...sanitizedChild,
@@ -7768,6 +7830,7 @@ export function issueRoutes(
     const normalizedAssigneeAgentId = await normalizeIssueAssigneeAgentReference(
       existing.companyId,
       req.body.assigneeAgentId as string | null | undefined,
+      { actorType: req.actor.type },
     );
     const titleOrDescriptionChanged = req.body.title !== undefined || req.body.description !== undefined;
     const existingRelations =
@@ -7988,6 +8051,7 @@ export function issueRoutes(
         agentId: actor.agentId ?? null,
         userId: actor.actorType === "user" ? actor.actorId : null,
       },
+      allowBoardOverride: req.actor.type === "board",
       commentBody,
       reviewRequest: reviewRequest === undefined ? undefined : reviewRequest,
       monitorExplicitlyUpdated: req.body.executionPolicy !== undefined && monitorChanged,
@@ -8143,20 +8207,30 @@ export function issueRoutes(
     const stopRelayResult: {
       value: Awaited<ReturnType<typeof svc.addStopRelayCommentIfNeeded>>;
     } = { value: null };
+    const postCommitActivityPublications: ActivityPublication[] = [];
+    const issueUpdateData = {
+      ...updateFields,
+      actorAgentId: actor.agentId ?? null,
+      actorUserId: actor.actorType === "user" ? actor.actorId : null,
+    };
+    const shouldCollectCompletionPublication =
+      actor.actorType === "user" && existing.status !== "done" && updateFields.status === "done";
+    const updateIssue = (tx?: Parameters<typeof svc.update>[2]) => {
+      if (tx) {
+        return shouldCollectCompletionPublication
+          ? svc.update(id, issueUpdateData, tx, postCommitActivityPublications)
+          : svc.update(id, issueUpdateData, tx);
+      }
+      return shouldCollectCompletionPublication
+        ? svc.update(id, issueUpdateData, db, postCommitActivityPublications)
+        : svc.update(id, issueUpdateData);
+    };
     let issue: Awaited<ReturnType<typeof svc.update>>;
     try {
       if (transition.decision && decisionId) {
         const decision = transition.decision;
         issue = await db.transaction(async (tx) => {
-          const updated = await svc.update(
-            id,
-            {
-              ...updateFields,
-              actorAgentId: actor.agentId ?? null,
-              actorUserId: actor.actorType === "user" ? actor.actorId : null,
-            },
-            tx,
-          );
+          const updated = await updateIssue(tx);
           if (!updated) return null;
 
           await tx.insert(issueExecutionDecisions).values({
@@ -8180,21 +8254,13 @@ export function issueRoutes(
         });
       } else if (shouldRelayStop) {
         issue = await db.transaction(async (tx) => {
-          const updated = await svc.update(id, {
-            ...updateFields,
-            actorAgentId: actor.agentId ?? null,
-            actorUserId: actor.actorType === "user" ? actor.actorId : null,
-          }, tx);
+          const updated = await updateIssue(tx);
           if (!updated) return null;
           stopRelayResult.value = await svc.addStopRelayCommentIfNeeded(updated, tx);
           return updated;
         });
       } else {
-        issue = await svc.update(id, {
-          ...updateFields,
-          actorAgentId: actor.agentId ?? null,
-          actorUserId: actor.actorType === "user" ? actor.actorId : null,
-        });
+        issue = await updateIssue();
       }
     } catch (err) {
       if (err instanceof HttpError && err.status === 422) {
@@ -8223,6 +8289,7 @@ export function issueRoutes(
       res.status(404).json({ error: "Issue not found" });
       return;
     }
+    for (const publication of postCommitActivityPublications) publishActivity(publication);
 
     if (enteringBlocked) {
       const blockedIssue = issue;
@@ -10272,6 +10339,7 @@ export function issueRoutes(
         sourceTrust,
       };
       let txResult: { comment: Awaited<ReturnType<typeof svc.addComment>>; issue: NonNullable<Awaited<ReturnType<typeof svc.update>>> };
+      const postCommitActivityPublications: ActivityPublication[] = [];
       try {
         txResult = await db.transaction(async (tx) => {
           const insertedComment = await svc.addComment(
@@ -10285,7 +10353,9 @@ export function issueRoutes(
             commentOptions,
             tx,
           );
-          const updated = await svc.update(id, updatePatch, tx);
+          const updated = actor.actorType === "user" && currentIssue.status !== "done"
+            ? await svc.update(id, updatePatch, tx, postCommitActivityPublications)
+            : await svc.update(id, updatePatch, tx);
           // Throw (not return null) so drizzle rolls back the inserted comment when the issue
           // has been concurrently deleted between the initial fetch and the in-transaction update.
           if (!updated) throw new AutoApprovalIssueMissingError();
@@ -10314,6 +10384,7 @@ export function issueRoutes(
         }
         throw err;
       }
+      for (const publication of postCommitActivityPublications) publishActivity(publication);
       comment = txResult.comment;
       currentIssue = txResult.issue;
       // Mirror the normal status-change audit trail: every other in_review -> done path

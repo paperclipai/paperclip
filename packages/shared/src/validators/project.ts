@@ -10,6 +10,7 @@ const executionWorkspaceStrategySchema = z
     branchTemplate: z.string().optional().nullable(),
     worktreeParentDir: z.string().optional().nullable(),
     provisionCommand: z.string().optional().nullable(),
+    runtimeProvisionCommand: z.string().optional().nullable(),
     teardownCommand: z.string().optional().nullable(),
   })
   .strict();

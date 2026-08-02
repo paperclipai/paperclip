@@ -1,6 +1,7 @@
 import type {
   AttentionDetailImage,
   AttentionFeed,
+  AttentionFeedQuery,
   AttentionItem,
   AttentionItemDetail,
   AttentionProjectRef,
@@ -8,6 +9,8 @@ import type {
   AttentionSourceKind,
   AttentionWorkspaceRef,
 } from "@paperclipai/shared";
+
+export type AttentionListOptions = AttentionFeedQuery;
 
 /**
  * Source kinds the queue can fully resolve in-row. Everything else deep-links
@@ -252,13 +255,199 @@ export function attentionImageUrl(assetId: string): string {
 }
 
 /**
- * Decisions-only badge count. Every feed row *is* a pending decision (the
- * server drops anything without a decision verb into Activity, per the §0
- * invariant), and mentions/unread never enter the feed — so the row count is
- * the decisions-only number. `/inbox` keeps its own unread count untouched.
+ * The sidebar intentionally reflects only items whose decide-by deadline is
+ * due now. The count is computed before pagination, so badge polling can fetch
+ * a small first page without losing the company-wide urgency signal.
  */
 export function attentionBadgeCount(feed: AttentionFeed | null | undefined): number {
-  return feed?.items.length ?? 0;
+  return feed?.decideNowCount ?? 0;
+}
+
+// ---------------------------------------------------------------------------
+// Decide-by / today's desk (PAP-16032 §4.3)
+//
+// The desk splits items into "Decide now" and "Can wait" and orders them by a
+// per-item `decideBy` field. The server owns the authoritative ranking
+// (`sort=decide`) and the badge's `decideNowCount`; these client helpers mirror
+// that logic *exactly* (same UTC day/week boundaries) so the on-page split and
+// the badge never disagree. Keep in lockstep with
+// `server/src/services/attention.ts` (`decideOrder`/`isDecideNow`).
+// ---------------------------------------------------------------------------
+
+const MS_PER_DAY_DECIDE = 24 * 60 * 60 * 1_000;
+
+function startOfUtcDay(now: number): number {
+  const value = new Date(now);
+  return Date.UTC(value.getUTCFullYear(), value.getUTCMonth(), value.getUTCDate());
+}
+
+function endOfUtcDay(now: number): number {
+  return startOfUtcDay(now) + MS_PER_DAY_DECIDE - 1;
+}
+
+function endOfUtcWeek(now: number): number {
+  const start = startOfUtcDay(now);
+  const weekday = new Date(start).getUTCDay();
+  const daysUntilSunday = weekday === 0 ? 0 : 7 - weekday;
+  return start + (daysUntilSunday + 1) * MS_PER_DAY_DECIDE - 1;
+}
+
+/** [bucket, deadline] — lower bucket / earlier deadline sorts first. */
+export function attentionDecideOrder(item: AttentionItem, now: number): [number, number] {
+  if (item.decideBy === "today") return [0, endOfUtcDay(now)];
+  if (item.decideBy === "this_week") return [0, endOfUtcWeek(now)];
+  if (item.decideBy && /^\d{4}-\d{2}-\d{2}$/.test(item.decideBy)) {
+    const deadline = Date.parse(`${item.decideBy}T23:59:59.999Z`);
+    if (Number.isFinite(deadline)) return [0, deadline];
+  }
+  if (item.decideBy === "whenever") return [1, Number.MAX_SAFE_INTEGER];
+  return [2, Number.MAX_SAFE_INTEGER];
+}
+
+/** Due today or overdue — the "Decide now" shelf, and what the badge counts. */
+export function attentionIsDecideNow(item: AttentionItem, now: number): boolean {
+  const [bucket, deadline] = attentionDecideOrder(item, now);
+  return bucket === 0 && deadline <= endOfUtcDay(now);
+}
+
+/** Split the desk into its two shelves, preserving input order within each. */
+export function partitionDecideNow(
+  items: AttentionItem[],
+  now: number,
+): { decideNow: AttentionItem[]; canWait: AttentionItem[] } {
+  const decideNow: AttentionItem[] = [];
+  const canWait: AttentionItem[] = [];
+  for (const item of items) {
+    if (attentionIsDecideNow(item, now)) decideNow.push(item);
+    else canWait.push(item);
+  }
+  return { decideNow, canWait };
+}
+
+// ---------------------------------------------------------------------------
+// Aging shelf (PAP-16032 §4.4) — items idle past the threshold leave the desk.
+// ---------------------------------------------------------------------------
+
+/** Default idle threshold before an item drops from the desk to the shelf. */
+export const ATTENTION_AGING_DAYS = 30;
+
+/** Milliseconds since the item last saw activity. */
+export function attentionIdleMs(item: AttentionItem, now: number): number {
+  const ts = new Date(item.activityAt).getTime();
+  return Number.isFinite(ts) ? Math.max(0, now - ts) : 0;
+}
+
+/** Server-computed shelf membership, including per-queue retention overrides. */
+export function attentionIsAging(item: AttentionItem): boolean {
+  return item.shelf;
+}
+
+/** Idle duration in whole days, for the shelf's "idle N days" label. */
+export function attentionIdleDays(item: AttentionItem, now: number): number {
+  return Math.floor(attentionIdleMs(item, now) / MS_PER_DAY_DECIDE);
+}
+
+// ---------------------------------------------------------------------------
+// Decide-by control (triage strip) — the segmented options an operator/agent
+// picks from. `date` is handled separately by a date input.
+// ---------------------------------------------------------------------------
+
+export type DecideByPreset = "today" | "this_week" | "whenever";
+
+export const DECIDE_BY_OPTIONS: ReadonlyArray<[DecideByPreset, string]> = [
+  ["today", "Today"],
+  ["this_week", "This week"],
+  ["whenever", "Whenever"],
+];
+
+/** Human label for any stored `decideBy` value (preset or `YYYY-MM-DD`). */
+export function decideByLabel(decideBy: string | null): string {
+  if (!decideBy) return "Not set";
+  if (decideBy === "today") return "Today";
+  if (decideBy === "this_week") return "This week";
+  if (decideBy === "whenever") return "Whenever";
+  if (/^\d{4}-\d{2}-\d{2}$/.test(decideBy)) {
+    const parsed = new Date(`${decideBy}T00:00:00.000Z`);
+    return Number.isFinite(parsed.getTime())
+      ? parsed.toLocaleDateString(undefined, { month: "short", day: "numeric", timeZone: "UTC" })
+      : decideBy;
+  }
+  return decideBy;
+}
+
+// ---------------------------------------------------------------------------
+// Date-range chips (PAP-16032 §4.2) — resolve to server-side activity bounds.
+// The desk filters `activityAt` server-side (activitySince/Until) rather than
+// shipping the whole feed and filtering on the client.
+// ---------------------------------------------------------------------------
+
+export type AttentionDateRangeId = "all" | "today" | "yesterday" | "last_7_days" | "this_month" | "custom";
+
+export const ATTENTION_DATE_RANGE_OPTIONS: ReadonlyArray<[AttentionDateRangeId, string]> = [
+  ["all", "All"],
+  ["today", "Today"],
+  ["yesterday", "Yesterday"],
+  ["last_7_days", "Last 7 days"],
+  ["this_month", "This month"],
+];
+
+export interface AttentionActivityBounds {
+  activitySince?: string;
+  activityUntil?: string;
+}
+
+/**
+ * Resolve a range chip to `{activitySince, activityUntil}` ISO bounds. Uses
+ * local calendar boundaries (what the operator means by "today"); `custom`
+ * takes the caller's explicit from/to dates.
+ */
+export function resolveAttentionDateRange(
+  range: AttentionDateRangeId,
+  now: number,
+  custom?: { from?: string | null; to?: string | null },
+): AttentionActivityBounds {
+  const startOfLocalDay = (ms: number) => {
+    const d = new Date(ms);
+    d.setHours(0, 0, 0, 0);
+    return d;
+  };
+  const endOfLocalDay = (ms: number) => {
+    const d = new Date(ms);
+    d.setHours(23, 59, 59, 999);
+    return d;
+  };
+  switch (range) {
+    case "all":
+      return {};
+    case "today":
+      return { activitySince: startOfLocalDay(now).toISOString() };
+    case "yesterday": {
+      const start = startOfLocalDay(now - MS_PER_DAY_DECIDE);
+      const end = endOfLocalDay(now - MS_PER_DAY_DECIDE);
+      return { activitySince: start.toISOString(), activityUntil: end.toISOString() };
+    }
+    case "last_7_days":
+      return { activitySince: startOfLocalDay(now - 6 * MS_PER_DAY_DECIDE).toISOString() };
+    case "this_month": {
+      const d = new Date(now);
+      const start = new Date(d.getFullYear(), d.getMonth(), 1, 0, 0, 0, 0);
+      return { activitySince: start.toISOString() };
+    }
+    case "custom": {
+      const bounds: AttentionActivityBounds = {};
+      if (custom?.from) {
+        const from = new Date(`${custom.from}T00:00:00`);
+        if (Number.isFinite(from.getTime())) bounds.activitySince = from.toISOString();
+      }
+      if (custom?.to) {
+        const to = new Date(`${custom.to}T23:59:59.999`);
+        if (Number.isFinite(to.getTime())) bounds.activityUntil = to.toISOString();
+      }
+      return bounds;
+    }
+    default:
+      return {};
+  }
 }
 
 // ---------------------------------------------------------------------------

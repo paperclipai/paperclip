@@ -101,6 +101,12 @@ export interface AdapterExecutionResult {
   model?: string | null;
   billingType?: AdapterBillingType | null;
   costUsd?: number | null;
+  /**
+   * Provider-billed cost after prompt-cache discounts. Adapters should set
+   * this when they expose it separately; otherwise the server treats a
+   * provider-reported `costUsd` as the cache-adjusted billed amount.
+   */
+  cacheAdjustedCostUsd?: number | null;
   resultJson?: Record<string, unknown> | null;
   runtimeServices?: AdapterRuntimeServiceReport[];
   /**

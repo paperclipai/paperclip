@@ -84,6 +84,14 @@ export { userInboxAgentPolicies } from "./user_inbox_agent_policies.js";
 export { inboxDismissals } from "./inbox_dismissals.js";
 export { feedbackVotes } from "./feedback_votes.js";
 export { decisionTrainingExamples } from "./decision_training_examples.js";
+export {
+  decisionQueues,
+  decisionQueueItems,
+  decisionTriage,
+  decisionTriageEvents,
+  decisionRetention,
+  decisionArchiveNotificationOutbox,
+} from "./decision_queues.js";
 export { feedbackExports } from "./feedback_exports.js";
 export { issueReadStates } from "./issue_read_states.js";
 export { assets } from "./assets.js";

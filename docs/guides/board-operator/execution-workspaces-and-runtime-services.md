@@ -19,14 +19,15 @@ You can define how to run a project on the project workspace itself.
 - This is the default runtime configuration that child execution workspaces may inherit.
 - Defining the config does not start anything by itself.
 
-## Manual runtime control
+## Runtime control: manual and heartbeat-driven
 
-Workspace commands are manually controlled from the UI.
+Workspace commands can be controlled manually from the UI, and heartbeat runs also start services automatically.
 
 - Project workspace services are started and stopped from the project workspace UI, and project jobs can be run on demand there.
 - Execution workspace services are started and stopped from the execution workspace UI, and execution-workspace jobs can be run on demand there.
-- Paperclip does not automatically start or stop these workspace services as part of issue execution.
-- Paperclip also does not automatically restart workspace services on server boot.
+- Heartbeat runs also auto-start the workspace's runtime services at the beginning of an issue run. `ensureRuntimeServicesForRun` (`server/src/services/workspace-runtime.ts`, called from `server/src/services/heartbeat.ts`) starts each service whose desired state resolves to `running` — which is the default when no explicit per-service desired state is set. A running service that matches an existing reuse key is reused rather than restarted.
+- You can opt a service out of that auto-start by setting its desired state to `stopped`/`manual` in the runtime config; those services stay UI-controlled.
+- Paperclip does not automatically restart workspace services on server boot — services only come back up when the next run (or a manual start) brings them up.
 
 ## Execution workspace inheritance
 
@@ -44,7 +45,7 @@ Issues are attached to execution workspace behavior, not to automatic runtime ma
 - An issue may create a new execution workspace when you choose an isolated workspace mode.
 - An issue may reuse an existing execution workspace when you choose reuse.
 - Multiple issues may intentionally share one execution workspace so they can work against the same branch and running runtime services.
-- Assigning or running an issue does not automatically start or stop workspace services for that workspace.
+- Running an issue auto-starts the workspace's `running`-desired runtime services for the duration of the run (see "Runtime control" above); it does not stop them when the run ends unless they are ephemeral and no other run holds a lease.
 
 ## Execution workspace lifecycle
 
@@ -56,13 +57,25 @@ Execution workspaces are durable until a human closes them.
 
 ## Resolved workspace logic during heartbeat runs
 
-Heartbeat still resolves a workspace for the run, but that is about code location and session continuity, not runtime-service control.
+Heartbeat resolves a workspace for the run (code location and session continuity) and also brings up that workspace's runtime services.
 
 1. Heartbeat resolves a base workspace for the run.
 2. Paperclip realizes the effective execution workspace, including creating or reusing a worktree when needed.
 3. Paperclip persists execution-workspace metadata such as paths, refs, and provisioning settings.
 4. Heartbeat passes the resolved code workspace to the agent run.
-5. Workspace runtime services remain manual UI-managed controls rather than automatic heartbeat-managed services.
+5. Heartbeat calls `ensureRuntimeServicesForRun` to start the workspace's `running`-desired runtime services, running the lazy runtime provision command first if one is configured and has not yet run (see "Lazy runtime provisioning" below).
+
+## Lazy runtime provisioning
+
+Some workspaces need heavy one-time setup — seeding a database, warming caches — before their runtime services can start. That work can be deferred to the first runtime-service start instead of running eagerly during workspace preparation.
+
+- Configure a **runtime provision command** on the project's workspace strategy (Project properties → execution workspace), or override it per execution workspace on the workspace's Configuration tab.
+- When set, workspace preparation stays lean and the command runs exactly once, immediately before the first runtime-service start for that workspace. Leaving it empty keeps the legacy eager path (all setup during workspace provisioning).
+- The command's outcome is recorded as a `workspace_runtime_provision` operation on the execution workspace and surfaced on the workspace detail page:
+  - **Deferred** — configured but not yet run (no runtime service has started yet).
+  - **Provisioned at &lt;time&gt;** — the command completed successfully.
+  - **Provisioning failed** — the command failed; the workspace detail links to the runtime logs for the failing operation.
+- While the command runs, the runtime service shows a **Provisioning…** state before it transitions to starting/running.
 
 ## Cross-run persistence (no-remote-git contract)
 
@@ -81,5 +94,6 @@ With the current implementation:
 
 - Project workspace command config is the fallback for execution workspace UI controls.
 - Execution workspace runtime overrides are stored on the execution workspace.
-- Heartbeat runs do not auto-start workspace services.
+- Heartbeat runs auto-start the workspace's `running`-desired runtime services (via `ensureRuntimeServicesForRun`); services set to `stopped`/`manual` stay UI-controlled.
+- A configured runtime provision command runs once, lazily, before the first runtime-service start.
 - Server startup does not auto-restart workspace services.

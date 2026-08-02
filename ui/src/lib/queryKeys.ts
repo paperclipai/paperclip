@@ -395,6 +395,13 @@ export const queryKeys = {
     forTargetIssue: (companyId: string, issueId: string) =>
       ["decisions", companyId, "target", issueId] as const,
   },
+  decisionQueues: {
+    list: (companyId: string) => ["decision-queues", companyId] as const,
+    items: (companyId: string, key: string) => ["decision-queues", companyId, "items", key] as const,
+    seedRules: (companyId: string) => ["decision-queues", companyId, "seed-rules"] as const,
+    triage: (companyId: string, sourceKind: string, sourceId: string) =>
+      ["decision-triage", companyId, sourceKind, sourceId] as const,
+  },
   workTimeline: (companyId: string, lens?: string) => ["work-timeline", companyId, lens ?? "all"] as const,
   userProfile: (companyId: string, userSlug: string) =>
     ["user-profile", companyId, userSlug] as const,

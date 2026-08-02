@@ -1,4 +1,5 @@
 import type { DecisionServiceOptions } from "./decisions.js";
+import type { ArchiveNotificationBatch } from "./decision-retention.js";
 
 type HeartbeatWakeup = (
   agentId: string,
@@ -27,6 +28,25 @@ export function createDecisionWakeOriginAgent(
       issueId: input.issueId,
       decisionId: input.decisionId,
       outcome: input.outcome,
+    },
+  });
+}
+
+export function createDecisionRetentionNotifyOriginAgent(
+  wakeup: HeartbeatWakeup | null,
+): (batch: ArchiveNotificationBatch) => Promise<unknown> {
+  if (!wakeup) return async () => null;
+  return async (batch) => wakeup(batch.agentId, {
+    source: "automation",
+    triggerDetail: "system",
+    reason: "attention_auto_archived",
+    payload: {
+      issueIds: [...new Set(batch.items.map((item) => item.issueId))],
+      archives: batch.items.map((item) => ({
+        sourceKind: item.sourceKind,
+        sourceId: item.sourceId,
+        archiveVersion: item.archiveVersion,
+      })),
     },
   });
 }

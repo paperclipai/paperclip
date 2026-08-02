@@ -101,3 +101,20 @@ export interface DecisionStatsResponse {
   totals: DecisionStatsCounts;
   groups: DecisionRuleKeyStats[];
 }
+
+export interface AttentionArchiveManifestEntry {
+  companyId: string;
+  sourceKind: string;
+  sourceId: string;
+  expectedVersion: number;
+  activityAt: string;
+  reason: string;
+}
+
+export interface AttentionArchiveTargetSnapshot {
+  status: "attention";
+  assigneeAgentId: null;
+  assigneeUserId: null;
+  updatedAt: string;
+  attentionArchive: AttentionArchiveManifestEntry;
+}

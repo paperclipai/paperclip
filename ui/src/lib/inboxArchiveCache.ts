@@ -5,7 +5,7 @@ import { queryKeys } from "./queryKeys";
 
 export type InboxIssueCacheSnapshot = Array<readonly [QueryKey, Issue[] | undefined]>;
 
-const INBOX_ARCHIVE_CONFIRMATION_GRACE_MS = 5_000;
+export const INBOX_ARCHIVE_CONFIRMATION_GRACE_MS = 5_000;
 const INBOX_ARCHIVE_MAX_GUARD_MS = 30_000;
 const EMPTY_ARCHIVED_ISSUE_IDS: ReadonlySet<string> = new Set();
 

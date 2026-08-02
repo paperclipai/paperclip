@@ -48,8 +48,16 @@ import {
   companyArtifactsQuerySchema,
   companyArtifactsResponseSchema,
   // Decisions
+  addDecisionQueueItemSchema,
+  createDecisionQueueSchema,
+  createDecisionArchiveProposalSchema,
+  decisionAttentionSourceKindSchema,
   decisionInputsSchema,
   decisionOptionsSchema,
+  removeDecisionQueueItemSchema,
+  updateDecisionQueueSchema,
+  updateDecisionTriageSchema,
+  updateDecisionRetentionSchema,
   // Routine
   createRoutineSchema,
   updateRoutineSchema,
@@ -111,6 +119,8 @@ import {
   companySkillFileDeleteSchema,
   companySkillFileUpdateSchema,
   companySkillImportSchema,
+  companySkillProjectBrowseRequestSchema,
+  companySkillProjectBrowseResultSchema,
   companySkillProjectScanRequestSchema,
   companySkillProjectScanResultSchema,
   companySkillRenameResultSchema,
@@ -3271,11 +3281,254 @@ registry.registerPath({
   path: "/api/companies/{companyId}/attention",
   tags: ["inbox"],
   summary: "List decision-only attention feed items",
-  request: { params: z.object({ companyId: z.string() }) },
+  request: {
+    params: z.object({ companyId: z.string() }),
+    query: z.object({
+      includeDismissed: z.enum(["true", "false"]).optional(),
+      archived: z.enum(["true", "false"]).optional(),
+      all: z.enum(["true", "false"]).optional(),
+      activitySince: z.string().datetime().optional(),
+      activityUntil: z.string().datetime().optional(),
+      queue: z.string().min(1).optional(),
+      sort: z.enum(["activity", "decide"]).optional(),
+      cursor: z.string().min(1).optional(),
+      limit: z.coerce.number().int().min(1).max(100).optional(),
+    }),
+  },
   responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden },
 });
 
 // ─── Decisions ──────────────────────────────────────────────────────────────
+
+// Decision queues and triage
+
+const decisionQueueSeedRuleSchema = z.object({
+  key: z.string(),
+  description: z.string(),
+  signal: z.enum([
+    "issue_has_pull_request_work_product",
+    "plan_document_confirmation",
+    "ask_user_questions",
+  ]),
+}).strict();
+
+const decisionQueueSchema = z.object({
+  id: z.string(),
+  companyId: z.string(),
+  key: z.string(),
+  title: z.string(),
+  description: z.string().nullable(),
+  createdByType: z.enum(["agent", "user", "system"]),
+  createdByAgentId: z.string().nullable(),
+  createdByUserId: z.string().nullable(),
+  createdByRunId: z.string().nullable(),
+  retentionDays: z.number().int().nullable(),
+  seedRules: z.array(decisionQueueSeedRuleSchema),
+  seedRulesEnabled: z.boolean(),
+  itemCount: z.number().int().nonnegative(),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+}).strict();
+
+const decisionQueueItemSchema = z.object({
+  id: z.string(),
+  companyId: z.string(),
+  queueId: z.string(),
+  sourceKind: decisionAttentionSourceKindSchema,
+  sourceId: z.string(),
+  addedByType: z.enum(["agent", "user", "system"]),
+  addedByAgentId: z.string().nullable(),
+  addedByUserId: z.string().nullable(),
+  addedByRunId: z.string().nullable(),
+  responsibleUserId: z.string().nullable(),
+  createdAt: z.string().datetime(),
+}).strict();
+
+const decisionTriageSchema = z.object({
+  id: z.string(),
+  companyId: z.string(),
+  sourceKind: decisionAttentionSourceKindSchema,
+  sourceId: z.string(),
+  decideBy: z.string().nullable(),
+  snoozedUntil: z.string().datetime().nullable(),
+  setByType: z.enum(["agent", "user"]),
+  setByAgentId: z.string().nullable(),
+  setByUserId: z.string().nullable(),
+  setByRunId: z.string().nullable(),
+  responsibleUserId: z.string().nullable(),
+  version: z.number().int().positive(),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+}).strict();
+
+const decisionRetentionSchema = z.object({
+  id: z.string(),
+  companyId: z.string(),
+  sourceKind: decisionAttentionSourceKindSchema,
+  sourceId: z.string(),
+  sourceActivityAt: z.string().datetime(),
+  keep: z.boolean(),
+  archivedAt: z.string().datetime().nullable(),
+  archivedReason: z.string().nullable(),
+  archivedByType: z.enum(["agent", "user", "system"]).nullable(),
+  archivedByAgentId: z.string().nullable(),
+  archivedByUserId: z.string().nullable(),
+  archivedByRunId: z.string().nullable(),
+  version: z.number().int().positive(),
+  archiveVersion: z.number().int().nonnegative(),
+  createdAt: z.string().datetime(),
+  updatedAt: z.string().datetime(),
+}).strict();
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/companies/{companyId}/decision-queue-seed-rules",
+  tags: ["decision-queues"],
+  summary: "List built-in decision queue seed rules",
+  responses: { 200: r.ok(z.array(decisionQueueSeedRuleSchema)), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/companies/{companyId}/decision-queues",
+  tags: ["decision-queues"],
+  summary: "List decision queues",
+  responses: { 200: r.ok(z.array(decisionQueueSchema)), 401: r.unauthorized, 403: r.forbidden },
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/decision-queues",
+  tags: ["decision-queues"],
+  summary: "Create a decision queue",
+  body: createDecisionQueueSchema,
+  responses: {
+    200: r.ok(decisionQueueSchema),
+    201: r.ok(decisionQueueSchema),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+  },
+});
+
+registerCurrentRoute({
+  method: "patch",
+  path: "/api/companies/{companyId}/decision-queues/{key}",
+  tags: ["decision-queues"],
+  summary: "Update a decision queue",
+  body: updateDecisionQueueSchema,
+  responses: {
+    200: r.ok(decisionQueueSchema),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+  },
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/companies/{companyId}/decision-queues/{key}/items",
+  tags: ["decision-queues"],
+  summary: "List visible items in a decision queue",
+  responses: {
+    200: r.ok(z.array(decisionQueueItemSchema)),
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+  },
+});
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/decision-queues/{key}/items",
+  tags: ["decision-queues"],
+  summary: "Add an item to a decision queue",
+  body: addDecisionQueueItemSchema,
+  responses: {
+    200: r.ok(decisionQueueItemSchema),
+    201: r.ok(decisionQueueItemSchema),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+  },
+});
+
+registerCurrentRoute({
+  method: "delete",
+  path: "/api/companies/{companyId}/decision-queues/{key}/items/{sourceKind}/{sourceId}",
+  tags: ["decision-queues"],
+  summary: "Remove an item from a decision queue",
+  body: removeDecisionQueueItemSchema,
+  responses: {
+    200: r.ok(decisionQueueItemSchema),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+  },
+});
+
+registerCurrentRoute({
+  method: "get",
+  path: "/api/companies/{companyId}/decision-triage/{sourceKind}/{sourceId}",
+  tags: ["decision-queues"],
+  summary: "Get decision triage for an attention source",
+  responses: {
+    200: r.ok(decisionTriageSchema.nullable()),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+  },
+});
+
+registerCurrentRoute({
+  method: "put",
+  path: "/api/companies/{companyId}/decision-triage/{sourceKind}/{sourceId}",
+  tags: ["decision-queues"],
+  summary: "Set decision triage for an attention source",
+  body: updateDecisionTriageSchema,
+  responses: {
+    200: r.ok(decisionTriageSchema),
+    400: r.badRequest,
+    401: r.unauthorized,
+    403: r.forbidden,
+    404: r.notFound,
+    422: r.unprocessable,
+  },
+});
+
+registerCurrentRoute({
+  method: "patch",
+  path: "/api/companies/{companyId}/decision-retention/{sourceKind}/{sourceId}",
+  tags: ["decision-queues"],
+  summary: "Set Keep for an attention source",
+  body: updateDecisionRetentionSchema,
+  responses: { 200: r.ok(decisionRetentionSchema), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+
+for (const action of ["archive", "revive"] as const) {
+  registerCurrentRoute({
+    method: "post",
+    path: `/api/companies/{companyId}/decision-retention/{sourceKind}/{sourceId}/${action}`,
+    tags: ["decision-queues"],
+    summary: action === "archive" ? "Archive an attention source" : "Revive an archived attention source",
+    responses: { 200: r.ok(decisionRetentionSchema), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+  });
+}
+
+registerCurrentRoute({
+  method: "post",
+  path: "/api/companies/{companyId}/decision-archive-proposals",
+  tags: ["decisions"],
+  summary: "Propose one signed bulk archive decision",
+  body: createDecisionArchiveProposalSchema,
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 409: r.conflict, 422: r.unprocessable },
+});
+
+// Decisions
 
 const createDecisionBodySchema = z.object({
   title: z.string().trim().min(1).max(500),
@@ -4473,6 +4726,18 @@ registry.registerPath({
     body: jsonBody(companySkillImportSchema),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/skills/browse-project",
+  tags: ["skills"],
+  summary: "Browse a project workspace for skills",
+  request: {
+    params: z.object({ companyId: z.string() }),
+    body: jsonBody(companySkillProjectBrowseRequestSchema),
+  },
+  responses: { 200: r.ok(companySkillProjectBrowseResultSchema), 400: r.badRequest, 401: r.unauthorized },
 });
 
 registry.registerPath({

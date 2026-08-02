@@ -97,6 +97,7 @@ export function readWorkspaceRealizationRequest(value: unknown): WorkspaceRealiz
     additionalSources: readAdditionalSources(parsed.additionalSources),
     runtimeOverlay: {
       provisionCommand: readString(runtimeOverlay.provisionCommand),
+      runtimeProvisionCommand: readString(runtimeOverlay.runtimeProvisionCommand),
       teardownCommand: readString(runtimeOverlay.teardownCommand),
       cleanupCommand: readString(runtimeOverlay.cleanupCommand),
       workspaceRuntime: Object.keys(parseObject(runtimeOverlay.workspaceRuntime)).length > 0
@@ -152,6 +153,7 @@ export function buildWorkspaceRealizationRequest(input: {
     })),
     runtimeOverlay: {
       provisionCommand: input.workspaceConfig?.provisionCommand ?? null,
+      runtimeProvisionCommand: input.workspaceConfig?.runtimeProvisionCommand ?? null,
       teardownCommand: input.workspaceConfig?.teardownCommand ?? null,
       cleanupCommand: input.workspaceConfig?.cleanupCommand ?? null,
       workspaceRuntime: input.workspaceConfig?.workspaceRuntime ?? null,

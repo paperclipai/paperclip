@@ -16,6 +16,7 @@ import { cn } from "@/lib/utils";
 
 export type WorkspaceServiceControlState =
   | "stopped"
+  | "provisioning"
   | "starting"
   | "running"
   | "stopping"
@@ -48,7 +49,7 @@ export type WorkspaceServiceControlBarProps = {
   className?: string;
 };
 
-const TRANSITIONAL_STATES: WorkspaceServiceControlState[] = ["starting", "stopping", "restarting"];
+const TRANSITIONAL_STATES: WorkspaceServiceControlState[] = ["provisioning", "starting", "stopping", "restarting"];
 
 function isTransitional(state: WorkspaceServiceControlState) {
   return TRANSITIONAL_STATES.includes(state);
@@ -61,6 +62,8 @@ function formatServiceUrl(url: string | null | undefined) {
 
 function statusMeta(entry: WorkspaceServiceControlEntry): { label: string; unhealthy: boolean } {
   switch (entry.state) {
+    case "provisioning":
+      return { label: "Provisioning…", unhealthy: false };
     case "starting":
       return { label: "Starting…", unhealthy: false };
     case "stopping":

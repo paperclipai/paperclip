@@ -186,6 +186,7 @@ describe("execution workspace policy helpers", () => {
           type: "git_worktree",
           baseRef: "origin/main",
           provisionCommand: "bash ./scripts/provision-worktree.sh",
+          runtimeProvisionCommand: "bash ./scripts/provision-runtime.sh",
         },
         workspaceRuntime: {
           services: [{ name: "web", command: "pnpm dev" }],
@@ -200,6 +201,7 @@ describe("execution workspace policy helpers", () => {
       type: "git_worktree",
       baseRef: "origin/main",
       provisionCommand: "bash ./scripts/provision-worktree.sh",
+      runtimeProvisionCommand: "bash ./scripts/provision-runtime.sh",
     });
     expect(result.workspaceRuntime).toEqual({
       services: [{ name: "web", command: "pnpm dev" }],
@@ -259,6 +261,7 @@ describe("execution workspace policy helpers", () => {
           type: "git_worktree",
           worktreeParentDir: ".paperclip/worktrees",
           provisionCommand: "bash ./scripts/provision-worktree.sh",
+          runtimeProvisionCommand: "bash ./scripts/provision-runtime.sh",
           teardownCommand: "bash ./scripts/teardown-worktree.sh",
         },
       }),
@@ -269,6 +272,7 @@ describe("execution workspace policy helpers", () => {
         type: "git_worktree",
         worktreeParentDir: ".paperclip/worktrees",
         provisionCommand: "bash ./scripts/provision-worktree.sh",
+        runtimeProvisionCommand: "bash ./scripts/provision-runtime.sh",
         teardownCommand: "bash ./scripts/teardown-worktree.sh",
       },
     });

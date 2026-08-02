@@ -631,6 +631,12 @@ export interface IssueExecutionPolicy {
   monitor?: IssueExecutionMonitorPolicy | null;
   reviewPreset?: LowTrustReviewPresetPolicy;
   authorizationPolicy?: TrustAuthorizationPolicy;
+  /**
+   * Maximum consecutive agent-initiated changes-requested rounds before the
+   * pending stage escalates to the responsible human. Null uses the server
+   * default. Human decisions reset the round counter.
+   */
+  maxReviewRounds?: number | null;
 }
 
 export interface IssueExecutionMonitorState {
@@ -666,6 +672,8 @@ export interface IssueExecutionState {
   lastDecisionId: string | null;
   lastDecisionOutcome: IssueExecutionDecisionOutcome | null;
   monitor?: IssueExecutionMonitorState | null;
+  /** Consecutive agent-initiated changes-requested rounds on the current stage. */
+  changesRequestedCount?: number;
 }
 
 export interface IssueExecutionDecision {

@@ -28,6 +28,7 @@ import {
   issueApprovals,
   issueComments,
   issueDocuments,
+  issueInboxArchives,
   issueRelations,
   issues,
   issueThreadInteractions,
@@ -723,6 +724,7 @@ describeEmbeddedPostgres("low-trust red-team HTTP route regression suite", () =>
     await db.delete(documents);
     await db.delete(issueComments);
     await db.delete(issueRelations);
+    await db.delete(issueInboxArchives);
     await db.delete(activityLog);
     await db.delete(heartbeatRunEvents);
     await deleteHeartbeatRunsAndWakeupsAfterActivityLogDrains(db);

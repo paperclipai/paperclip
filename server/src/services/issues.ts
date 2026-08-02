@@ -115,7 +115,12 @@ import { classifyIssueGraphLiveness, type IssueLivenessFinding } from "./recover
 import { visibleIssueCondition } from "./issue-visibility.js";
 import { finalizeStatusCardsForStalledGeneration } from "./status-card-finalization.js";
 import { finalizeSummarySlotsForTerminalIssue } from "./summary-slot-finalization.js";
-import { logActivity } from "./activity-log.js";
+import {
+  logActivity,
+  persistActivity,
+  publishActivity,
+  type ActivityPublication,
+} from "./activity-log.js";
 import { buildIssueChanges } from "./issue-change-receipt.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
@@ -300,6 +305,7 @@ function buildReusedExecutionWorkspaceConfigPatchFromIssueSettings(
   return {
     environmentId: settings?.environmentId ?? null,
     provisionCommand: settings?.workspaceStrategy?.provisionCommand ?? null,
+    runtimeProvisionCommand: settings?.workspaceStrategy?.runtimeProvisionCommand ?? null,
     teardownCommand: settings?.workspaceStrategy?.teardownCommand ?? null,
     workspaceRuntime: settings?.workspaceRuntime ?? null,
   };
@@ -325,6 +331,9 @@ function buildPreRealizationExecutionWorkspaceSettings(raw: unknown): Record<str
       ...(settings.workspaceStrategy.branchTemplate ? { branchTemplate: settings.workspaceStrategy.branchTemplate } : {}),
       ...(settings.workspaceStrategy.worktreeParentDir ? { worktreeParentDir: settings.workspaceStrategy.worktreeParentDir } : {}),
       ...(settings.workspaceStrategy.provisionCommand ? { provisionCommand: settings.workspaceStrategy.provisionCommand } : {}),
+      ...(settings.workspaceStrategy.runtimeProvisionCommand
+        ? { runtimeProvisionCommand: settings.workspaceStrategy.runtimeProvisionCommand }
+        : {}),
       ...(settings.workspaceStrategy.teardownCommand ? { teardownCommand: settings.workspaceStrategy.teardownCommand } : {}),
     };
   }
@@ -1317,6 +1326,64 @@ async function getWorkspaceInheritanceIssue(
   return issue;
 }
 
+// Mine participation fails closed. Add new user-authored issue mutation actions
+// here instead of admitting every issue activity, because reads, previews, and
+// denied resource requests are audited too.
+const ISSUE_USER_PARTICIPATION_ACTIVITY_ACTIONS = [
+  "issue.accepted_plan_decomposition_updated",
+  "issue.admin_force_release",
+  "issue.approval_linked",
+  "issue.approval_unlinked",
+  "issue.approvers_updated",
+  "issue.assigned",
+  "issue.attachment_added",
+  "issue.attachment_removed",
+  "issue.blockers.updated",
+  "issue.blockers_updated",
+  "issue.checked_out",
+  "issue.checkout",
+  "issue.child_created",
+  "issue.comment_cancelled",
+  "issue.document_annotation_comment_added",
+  "issue.document_annotation_remapped",
+  "issue.document_annotation_thread_created",
+  "issue.document_annotation_thread_resolved",
+  "issue.document_deleted",
+  "issue.document_locked",
+  "issue.document_restored",
+  "issue.document_unlocked",
+  "issue.document_updated",
+  "issue.document_upserted",
+  "issue.feedback_vote_saved",
+  "issue.inbox_touched",
+  "issue.low_trust_output_promoted",
+  "issue.monitor_cleared",
+  "issue.monitor_scheduled",
+  "issue.recovery_action_resolved",
+  "issue.relations.updated",
+  "issue.released",
+  "issue.reviewers_updated",
+  "issue.scheduled_retry_retry_now",
+  "issue.successful_run_handoff_resolved",
+  "issue.task_watchdog_fingerprint_reviewed",
+  "issue.thread_interaction_accepted",
+  "issue.thread_interaction_answered",
+  "issue.thread_interaction_cancelled",
+  "issue.thread_interaction_created",
+  "issue.thread_interaction_item_verdicts_submitted",
+  "issue.thread_interaction_withdrawn",
+  "issue.tree_cancel_status_updated",
+  "issue.tree_hold_created",
+  "issue.tree_hold_released",
+  "issue.tree_restore_status_updated",
+  "issue.updated",
+  "issue.watchdog_created",
+  "issue.watchdog_removed",
+  "issue.work_product_created",
+  "issue.work_product_deleted",
+  "issue.work_product_updated",
+] as const;
+
 function touchedByUserCondition(companyId: string, userId: string) {
   return sql<boolean>`
     (
@@ -1324,10 +1391,16 @@ function touchedByUserCondition(companyId: string, userId: string) {
       OR ${issues.assigneeUserId} = ${userId}
       OR EXISTS (
         SELECT 1
-        FROM ${issueReadStates}
-        WHERE ${issueReadStates.issueId} = ${issues.id}
-          AND ${issueReadStates.companyId} = ${companyId}
-          AND ${issueReadStates.userId} = ${userId}
+        FROM ${activityLog}
+        WHERE ${activityLog.entityType} = 'issue'
+          AND ${activityLog.entityId} = ${issues.id}::text
+          AND ${activityLog.companyId} = ${companyId}
+          AND ${activityLog.actorType} = 'user'
+          AND ${activityLog.actorId} = ${userId}
+          AND ${activityLog.action} IN (${sql.join(
+            ISSUE_USER_PARTICIPATION_ACTIVITY_ACTIONS.map((action) => sql`${action}`),
+            sql`, `,
+          )})
       )
       OR EXISTS (
         SELECT 1
@@ -1500,6 +1573,11 @@ function inboxVisibleForUserCondition(companyId: string, userId: string) {
               AND ${activityLog.details}->>'status' IN ('in_review', 'blocked', 'done')
               AND ${activityLog.details}->'_previous'->>'status'
                 IS DISTINCT FROM ${activityLog.details}->>'status'
+              AND NOT (
+                ${activityLog.details}->>'status' = 'done'
+                AND ${issues.completedAt} IS NOT NULL
+                AND ${issueInboxArchives.archivedAt} >= ${issues.completedAt}
+              )
           )
           OR EXISTS (
             SELECT 1
@@ -4879,6 +4957,45 @@ export function issueService(db: Db) {
     return { comment, parent };
   }
 
+  async function archiveInbox(
+    companyId: string,
+    issueId: string,
+    userId: string,
+    archivedAt: Date = new Date(),
+    attribution?: {
+      archivedByActorType: "user" | "agent";
+      archivedByAgentId?: string | null;
+      archivedByRunId?: string | null;
+    },
+    dbOrTx: any = db,
+  ) {
+    const now = new Date();
+    const [row] = await dbOrTx
+      .insert(issueInboxArchives)
+      .values({
+        companyId,
+        issueId,
+        userId,
+        archivedByActorType: attribution?.archivedByActorType ?? "user",
+        archivedByAgentId: attribution?.archivedByAgentId ?? null,
+        archivedByRunId: attribution?.archivedByRunId ?? null,
+        archivedAt,
+        updatedAt: now,
+      })
+      .onConflictDoUpdate({
+        target: [issueInboxArchives.companyId, issueInboxArchives.issueId, issueInboxArchives.userId],
+        set: {
+          archivedAt,
+          archivedByActorType: attribution?.archivedByActorType ?? "user",
+          archivedByAgentId: attribution?.archivedByAgentId ?? null,
+          archivedByRunId: attribution?.archivedByRunId ?? null,
+          updatedAt: now,
+        },
+      })
+      .returning();
+    return row;
+  }
+
   return {
     clearExecutionRunIfTerminal,
     clearCheckoutRunIfTerminal,
@@ -5238,43 +5355,7 @@ export function issueService(db: Db) {
       return deleted.length > 0;
     },
 
-    archiveInbox: async (
-      companyId: string,
-      issueId: string,
-      userId: string,
-      archivedAt: Date = new Date(),
-      attribution?: {
-        archivedByActorType: "user" | "agent";
-        archivedByAgentId?: string | null;
-        archivedByRunId?: string | null;
-      },
-    ) => {
-      const now = new Date();
-      const [row] = await db
-        .insert(issueInboxArchives)
-        .values({
-          companyId,
-          issueId,
-          userId,
-          archivedByActorType: attribution?.archivedByActorType ?? "user",
-          archivedByAgentId: attribution?.archivedByAgentId ?? null,
-          archivedByRunId: attribution?.archivedByRunId ?? null,
-          archivedAt,
-          updatedAt: now,
-        })
-        .onConflictDoUpdate({
-          target: [issueInboxArchives.companyId, issueInboxArchives.issueId, issueInboxArchives.userId],
-          set: {
-            archivedAt,
-            archivedByActorType: attribution?.archivedByActorType ?? "user",
-            archivedByAgentId: attribution?.archivedByAgentId ?? null,
-            archivedByRunId: attribution?.archivedByRunId ?? null,
-            updatedAt: now,
-          },
-        })
-        .returning();
-      return row;
-    },
+    archiveInbox,
 
     /**
      * Seed inbox archives for a batch of freshly imported issues so a company
@@ -5338,6 +5419,52 @@ export function issueService(db: Db) {
         activity?.latestLogAt ?? null,
       ) ?? issue.updatedAt;
       return activeInboxArchiveFields(archive, lastActivityAt);
+    },
+
+    /**
+     * Walk the full parent chain from `parentIssueId` (inclusive) looking for
+     * a still-open ancestor created by `agentId`. Used to refuse agent
+     * delegation cycles: an agent assigning a new child to the agent that
+     * created an open ancestor is handing the same work back to its own
+     * delegator (A→B→A hot-potato). One recursive query covers the entire
+     * chain regardless of depth; `UNION` (not `UNION ALL`) deduplicates
+     * revisited rows, so a parent graph corrupted into a loop terminates
+     * instead of recursing forever.
+     */
+    findOpenAncestorCreatedByAgent: async (
+      parentIssueId: string,
+      agentId: string,
+    ): Promise<{
+      id: string;
+      identifier: string | null;
+      parentId: string | null;
+      createdByAgentId: string | null;
+      status: string;
+    } | null> => {
+      const rows = await db.execute(sql`
+        WITH RECURSIVE ancestors(id, parent_id) AS (
+          SELECT id, parent_id FROM issues WHERE id = ${parentIssueId}
+          UNION
+          SELECT parent.id, parent.parent_id
+          FROM issues parent
+          JOIN ancestors ON parent.id = ancestors.parent_id
+        )
+        SELECT i.id, i.identifier, i.parent_id, i.created_by_agent_id, i.status
+        FROM issues i
+        JOIN ancestors a ON a.id = i.id
+        WHERE i.created_by_agent_id = ${agentId}
+          AND i.status NOT IN ('done', 'cancelled')
+        LIMIT 1
+      `);
+      const first = (Array.isArray(rows) ? rows[0] : null) as Record<string, unknown> | null;
+      if (!first) return null;
+      return {
+        id: String(first.id),
+        identifier: typeof first.identifier === "string" ? first.identifier : null,
+        parentId: typeof first.parent_id === "string" ? first.parent_id : null,
+        createdByAgentId: typeof first.created_by_agent_id === "string" ? first.created_by_agent_id : null,
+        status: String(first.status),
+      };
     },
 
     getById: async (raw: string) => {
@@ -6906,7 +7033,10 @@ export function issueService(db: Db) {
         actorUserId?: string | null;
       },
       dbOrTx: any = db,
+      postCommitActivityPublications?: ActivityPublication[],
     ) => {
+      const ownedActivityPublications: ActivityPublication[] = [];
+      const activityPublications = postCommitActivityPublications ?? ownedActivityPublications;
       const existing = await dbOrTx
         .select()
         .from(issues)
@@ -7243,6 +7373,35 @@ export function issueService(db: Db) {
               );
           }
         }
+        if (actorUserId && receiptExisting.status !== "done" && updated.status === "done") {
+          if (dbOrTx !== db && !postCommitActivityPublications) {
+            throw new Error("Human completion in an external transaction requires a post-commit activity queue");
+          }
+          const now = new Date();
+          const archiveState = await archiveInbox(
+            updated.companyId,
+            updated.id,
+            actorUserId,
+            now,
+            undefined,
+            tx,
+          );
+          const { publication } = await persistActivity(tx as unknown as Db, {
+            companyId: updated.companyId,
+            actorType: "user",
+            actorId: actorUserId,
+            action: "issue.inbox_archived",
+            entityType: "issue",
+            entityId: updated.id,
+            details: {
+              userId: actorUserId,
+              archivedAt: archiveState.archivedAt,
+              targetResolvedFrom: "responsible_user",
+              source: "issue_status_done",
+            },
+          });
+          activityPublications.push(publication);
+        }
         return {
           ...enriched,
           ...(nextBlockedByIssueIds !== undefined ? { blockedByIssueIds: nextBlockedByIssueIds } : {}),
@@ -7250,7 +7409,11 @@ export function issueService(db: Db) {
         };
       };
 
-      return dbOrTx === db ? db.transaction(runUpdate) : runUpdate(dbOrTx);
+      const result = await (dbOrTx === db ? db.transaction(runUpdate) : runUpdate(dbOrTx));
+      if (dbOrTx === db && !postCommitActivityPublications) {
+        for (const publication of ownedActivityPublications) publishActivity(publication);
+      }
+      return result;
     },
 
     clearExecutionWorkspaceEnvironmentSelection: async (companyId: string, environmentId: string) => {

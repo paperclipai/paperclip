@@ -1890,6 +1890,7 @@ describe.sequential("issue comment reopen routes", () => {
         }),
       }),
       mockTx,
+      expect.any(Array),
     );
     const updatePatch = mockIssueService.update.mock.calls[0]?.[1] as Record<string, any>;
     const decisionId = updatePatch.executionState.lastDecisionId;

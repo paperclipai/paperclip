@@ -99,6 +99,23 @@ describe("issue validators", () => {
     }).success).toBe(false);
   });
 
+  it("accepts a lazy runtime provision command in workspace settings", () => {
+    const parsed = updateIssueSchema.parse({
+      executionWorkspaceSettings: {
+        workspaceStrategy: {
+          type: "git_worktree",
+          provisionCommand: "bash ./scripts/provision-worktree.sh",
+          runtimeProvisionCommand: "bash ./scripts/provision-runtime.sh",
+        },
+      },
+    });
+
+    expect(parsed.executionWorkspaceSettings?.workspaceStrategy).toMatchObject({
+      provisionCommand: "bash ./scripts/provision-worktree.sh",
+      runtimeProvisionCommand: "bash ./scripts/provision-runtime.sh",
+    });
+  });
+
   it("keeps issue attribution fields create-only", () => {
     const created = createIssueSchema.parse({
       title: "Preserve attribution input for route checks",
