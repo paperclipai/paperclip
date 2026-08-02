@@ -74,6 +74,18 @@ describe("buildHeartbeatRunIssueComment", () => {
     expect(buildHeartbeatRunIssueComment({ summary: '[{"tool":"bash"}]' })).toBeNull();
   });
 
+  // Greptile P2 (PR #8942): the guard must also catch inline leaks — prose
+  // followed by a tool-call payload — not just whole-string JSON.
+  it("returns null when a tool-call payload is embedded after prose", () => {
+    const leaked = `Sure, let me check that.\n${JSON.stringify({ name: "bash", arguments: { command: "ls" } })}`;
+    expect(buildHeartbeatRunIssueComment({ summary: leaked })).toBeNull();
+  });
+
+  it("returns null for the OpenCode bridge dialect embedded inline", () => {
+    const leaked = `Working on it.\n${JSON.stringify({ tool: "webfetch", args: { url: "https://example.com" } })}\nDone.`;
+    expect(buildHeartbeatRunIssueComment({ summary: leaked })).toBeNull();
+  });
+
   it("passes through natural-language summaries unchanged", () => {
     const text = "Moved issue to in_progress and posted update.";
     expect(buildHeartbeatRunIssueComment({ summary: text })).toBe(text);

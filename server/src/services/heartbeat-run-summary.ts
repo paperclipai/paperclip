@@ -93,7 +93,7 @@ export function summarizeHeartbeatRunResultJson(
 }
 
 // SAG-722 regression guard: suppress a comment that is pure JSON (leaked tool-call payload).
-function isLeakedToolCallJson(text: string): boolean {
+function isPureJson(text: string): boolean {
   const t = text.trim();
   if (t.length < 2) return false;
   const first = t[0];
@@ -104,6 +104,23 @@ function isLeakedToolCallJson(text: string): boolean {
   } catch {
     return false;
   }
+}
+
+// Same inline dialects the opencode-local adapter strips at the source (see
+// packages/adapters/opencode-local/src/server/parse.ts) — kept here too as a
+// defense-in-depth backstop for adapters that don't sanitize before summarizing.
+const INLINE_TOOL_CALL_PATTERNS: RegExp[] = [
+  // OpenAI-style: {"type":"function", ...}
+  /\{\s*"type"\s*:\s*"function"/i,
+  // Bare-name dialect (Llama/Qwen 8b): {"name":"<ident>", ..., "parameters"|"arguments": ...}
+  /\{\s*"name"\s*:\s*"[A-Za-z_][\w.\-]*"[\s\S]{0,200}?"(?:parameters|arguments)"\s*:/i,
+  // OpenCode bridge dialect: {"tool":"<ident>", ..., "args"|"input": ...}
+  /\{\s*"tool"\s*:\s*"[A-Za-z_][\w.\-]*"[\s\S]{0,200}?"(?:args|input|arguments|parameters)"\s*:/i,
+];
+
+function isLeakedToolCallJson(text: string): boolean {
+  if (isPureJson(text)) return true;
+  return INLINE_TOOL_CALL_PATTERNS.some((re) => re.test(text));
 }
 
 export function buildHeartbeatRunIssueComment(
@@ -121,7 +138,7 @@ export function buildHeartbeatRunIssueComment(
 
   if (candidate && isLeakedToolCallJson(candidate)) {
     console.error(
-      `[paperclip] SAG-722: Suppressed comment that is pure JSON (likely leaked tool-call). First 200 chars: ${candidate.slice(0, 200)}`,
+      `[paperclip] SAG-722: Suppressed comment containing leaked tool-call JSON. First 200 chars: ${candidate.slice(0, 200)}`,
     );
     return null;
   }
