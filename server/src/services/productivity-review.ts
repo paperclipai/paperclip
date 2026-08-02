@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, gt, gte, inArray, isNull, notInArray, sql } from "drizzle-orm";
+import { and, asc, desc, eq, gt, gte, inArray, isNull, notExists, notInArray, sql } from "drizzle-orm";
 import { alias } from "drizzle-orm/pg-core";
 import type { Db } from "@paperclipai/db";
 import { clampIssueRequestDepth } from "@paperclipai/shared";
@@ -38,6 +38,7 @@ export const DEFAULT_PRODUCTIVITY_REVIEW_MAX_CONSECUTIVE_NO_ACTION_REVIEWS = 3;
 const TERMINAL_RUN_STATUSES = ["succeeded", "interrupted", "failed", "cancelled", "timed_out"] as const;
 const TERMINAL_ISSUE_STATUSES = ["done", "cancelled"] as const;
 const sourceIssues = alias(issues, "source_issues");
+const activeRuns = alias(heartbeatRuns, "active_runs");
 const ACTIVE_RUN_STATUSES = ["queued", "running", "scheduled_retry"] as const;
 const MAX_CANDIDATE_ISSUES = 250;
 export const MAX_OPEN_REVIEWS_PER_RECONCILE = 250;
@@ -301,6 +302,25 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
           visibleIssueCondition(),
           notInArray(issues.status, ["done", "cancelled"]),
           inArray(sourceIssues.status, [...TERMINAL_ISSUE_STATUSES]),
+          // A review an agent is judging right now is skipped, so excluding it
+          // here as well keeps it from holding a slot the page owes to a review
+          // the pass can actually resolve.
+          notExists(
+            db
+              .select({ one: sql`1` })
+              .from(activeRuns)
+              .where(
+                and(
+                  eq(activeRuns.companyId, issues.companyId),
+                  inArray(activeRuns.status, [...ACTIVE_RUN_STATUSES]),
+                  sql`(
+                    ${activeRuns.contextSnapshot}->>'issueId' = ${issues.id}::text
+                    or ${activeRuns.contextSnapshot}->>'taskId' = ${issues.id}::text
+                    or ${activeRuns.contextSnapshot}->>'taskKey' = ${issues.id}::text
+                  )`,
+                ),
+              ),
+          ),
         ),
       )
       .orderBy(asc(issues.createdAt), asc(issues.id))
@@ -899,12 +919,34 @@ export function productivityReviewService(db: Db, deps?: { enqueueWakeup?: Enque
   // A review stays open after its source issue finishes, because only a manager
   // decision closes it. Close those reviews automatically: there is no work left
   // to judge once the source reaches a terminal status.
+  //
+  // The pass runs under an advisory lock. Reading a review and writing its audit
+  // comment are separate statements, so two overlapping reconciliations would
+  // both read the review as uncommented and both write the comment. `try` rather
+  // than a blocking acquire: a second pass has nothing to add, so it should skip
+  // and let the next cycle pick the work up instead of queueing behind this one.
+  // The lock is transaction-scoped, so a pass that throws cannot strand it.
   async function autoResolveTerminalSourceReviews(companyId?: string) {
+    return db.transaction(async (tx) => {
+      const lockKey = `paperclip:productivity-review:auto-resolve:${companyId ?? "all"}`;
+      const acquired = await tx
+        .execute(sql<{ acquired: boolean }>`
+          select pg_try_advisory_xact_lock(hashtextextended(${lockKey}, 0)) as acquired
+        `)
+        .then((rows) => Boolean(Array.from(rows as Iterable<{ acquired: boolean }>)[0]?.acquired));
+      if (!acquired) return [] as string[];
+      return runAutoResolvePass(companyId);
+    });
+  }
+
+  async function runAutoResolvePass(companyId?: string) {
     const openReviews = await listTerminalSourceOpenReviews(companyId);
     const autoResolvedIssueIds: string[] = [];
 
     for (const review of openReviews) {
-      // Do not close a review that an agent is judging right now.
+      // The scan already excludes reviews with an active run, so this only
+      // catches a run that started since. It cannot starve the page: a row that
+      // reaches this point was actionable when the page was built.
       if (await hasActiveRunForIssue(review.companyId, review.id)) continue;
 
       try {
