@@ -90,6 +90,21 @@ describe("buildHeartbeatRunIssueComment", () => {
     const text = "Moved issue to in_progress and posted update.";
     expect(buildHeartbeatRunIssueComment({ summary: text })).toBe(text);
   });
+
+  // Greptile (PR #8942): a leaked summary must not short-circuit the fallback —
+  // result/message should still be checked and used if they are clean.
+  it("falls back to result or message when summary is a leaked payload", () => {
+    const leaked = JSON.stringify({ type: "function", name: "fetch_issue", parameters: { issue_id: "SAG-704" } });
+    expect(buildHeartbeatRunIssueComment({ summary: leaked, result: "Moved issue to in_progress." }))
+      .toBe("Moved issue to in_progress.");
+    expect(buildHeartbeatRunIssueComment({ summary: leaked, message: "Posted update." }))
+      .toBe("Posted update.");
+  });
+
+  it("returns null when every candidate field is a leaked payload", () => {
+    const leaked = JSON.stringify({ type: "function", name: "fetch_issue", parameters: { issue_id: "SAG-704" } });
+    expect(buildHeartbeatRunIssueComment({ summary: leaked, result: leaked, message: leaked })).toBeNull();
+  });
 });
 
 describe("mergeHeartbeatRunResultJson", () => {

@@ -130,18 +130,17 @@ export function buildHeartbeatRunIssueComment(
     return null;
   }
 
-  const candidate =
-    readCommentText(resultJson.summary)
-    ?? readCommentText(resultJson.result)
-    ?? readCommentText(resultJson.message)
-    ?? null;
-
-  if (candidate && isLeakedToolCallJson(candidate)) {
-    console.error(
-      `[paperclip] SAG-722: Suppressed comment containing leaked tool-call JSON. First 200 chars: ${candidate.slice(0, 200)}`,
-    );
-    return null;
+  for (const field of ["summary", "result", "message"] as const) {
+    const candidate = readCommentText(resultJson[field]);
+    if (candidate === null) continue;
+    if (isLeakedToolCallJson(candidate)) {
+      console.error(
+        `[paperclip] SAG-722: Suppressed comment containing leaked tool-call JSON. First 200 chars: ${candidate.slice(0, 200)}`,
+      );
+      continue;
+    }
+    return candidate;
   }
 
-  return candidate;
+  return null;
 }
