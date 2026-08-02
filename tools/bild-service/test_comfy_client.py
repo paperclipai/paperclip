@@ -51,3 +51,46 @@ def test_view_path_encodes_query():
     assert "filename=a+b.png" in p or "filename=a%20b.png" in p
     assert "subfolder=sub" in p
     assert "type=output" in p
+
+
+def test_parse_prompt_response_raises_comfy_error():
+    """parse_prompt_response should raise ComfyError (which is a RuntimeError)."""
+    with pytest.raises(cc.ComfyError):
+        cc.parse_prompt_response({"error": "kaputt"})
+
+
+def test_parse_history_completed_without_images():
+    """Completed job with no images should return error status."""
+    hist = {"abc": {
+        "status": {"completed": True, "status_str": "success"},
+        "outputs": {}
+    }}
+    status, payload = cc.parse_history("abc", hist)
+    assert status == "error"
+    assert "Bild" in payload
+
+
+def test_poll_handles_malformed_json():
+    """poll() should raise ComfyError on malformed JSON, not JSONDecodeError."""
+    import urllib.request
+
+    # Monkeypatch urlopen to return malformed JSON
+    original_urlopen = urllib.request.urlopen
+
+    class FakeResponse:
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            pass
+        def read(self):
+            return b"<html>502 Bad Gateway</html>"
+
+    def fake_urlopen(url, *args, **kwargs):
+        return FakeResponse()
+
+    try:
+        urllib.request.urlopen = fake_urlopen
+        with pytest.raises(cc.ComfyError):
+            cc.poll("test-id")
+    finally:
+        urllib.request.urlopen = original_urlopen

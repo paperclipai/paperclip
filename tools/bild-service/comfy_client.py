@@ -18,7 +18,7 @@ class ComfyError(RuntimeError):
 def parse_prompt_response(data):
     pid = (data or {}).get("prompt_id")
     if not pid:
-        raise RuntimeError("ComfyUI lieferte keine prompt_id: %s" % json.dumps(data)[:300])
+        raise ComfyError("ComfyUI lieferte keine prompt_id: %s" % json.dumps(data)[:300])
     return pid
 
 
@@ -85,7 +85,11 @@ def submit(workflow):
                                  method="POST")
     try:
         with urllib.request.urlopen(req, timeout=COMFY_HTTP_TIMEOUT) as resp:
-            return parse_prompt_response(json.loads(resp.read()))
+            raw = resp.read()
+            try:
+                return parse_prompt_response(json.loads(raw))
+            except ValueError as e:
+                raise ComfyError("ComfyUI antwortet ungültiges JSON auf /prompt: %s" % raw.decode(errors="replace")[:200])
     except urllib.error.HTTPError as e:
         raise ComfyError("ComfyUI HTTP %s: %s" % (e.code, e.read().decode(errors="replace")[:400]))
     except (urllib.error.URLError, OSError) as e:
@@ -94,7 +98,10 @@ def submit(workflow):
 
 def poll(prompt_id):
     raw = _get("/history/%s" % urllib.parse.quote(prompt_id))
-    return parse_history(prompt_id, json.loads(raw))
+    try:
+        return parse_history(prompt_id, json.loads(raw))
+    except ValueError as e:
+        raise ComfyError("ComfyUI antwortet ungültiges JSON auf /history: %s" % raw.decode(errors="replace")[:200])
 
 
 def fetch_image(image):
