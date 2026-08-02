@@ -1819,7 +1819,8 @@ export function executionWorkspaceService(db: Db) {
         );
         const lockedRuntimeServices = (lockedRuntimeServicesByWorkspaceId.get(lockedRow.id) ?? []).map(toRuntimeService);
         const lockedWorkspace = toExecutionWorkspace(lockedRow, lockedRuntimeServices);
-        if (!lockedWorkspace.sourceIssueId) {
+        const sourceIssueId = lockedWorkspace.sourceIssueId;
+        if (!sourceIssueId) {
           throw unprocessable("Execution workspace needs a source issue before Paperclip can audit branch reconciliation");
         }
 
@@ -1883,7 +1884,7 @@ export function executionWorkspaceService(db: Db) {
         let recoveryAction = await recoveryActionsSvc.resolveActiveForIssue(
           {
             companyId: lockedWorkspace.companyId,
-            sourceIssueId: lockedWorkspace.sourceIssueId,
+            sourceIssueId,
             kind: "workspace_validation",
             cause: WORKSPACE_VALIDATION_RECOVERY_CAUSE,
             fingerprint: inspection.fingerprint,
@@ -1901,7 +1902,7 @@ export function executionWorkspaceService(db: Db) {
             recoveryAction = await recoveryActionsSvc.resolveActiveForIssue(
               {
                 companyId: existing.companyId,
-                sourceIssueId: existing.sourceIssueId!,
+                sourceIssueId,
                 kind: "workspace_validation",
                 cause: WORKSPACE_VALIDATION_RECOVERY_CAUSE,
                 fingerprint: alternateFingerprint,
@@ -1938,7 +1939,7 @@ export function executionWorkspaceService(db: Db) {
               monitorScheduledBy: issues.monitorScheduledBy,
             })
             .from(issues)
-            .where(eq(issues.id, lockedWorkspace.sourceIssueId))
+            .where(eq(issues.id, sourceIssueId))
             .for("update");
           if (!sourceBefore) throw notFound("Source issue not found");
 
@@ -1957,14 +1958,14 @@ export function executionWorkspaceService(db: Db) {
             commentBody: null,
           });
           const mutation = await runIssueMutation(tx, {
-            issueId: lockedWorkspace.sourceIssueId,
+            issueId: sourceIssueId,
             now,
             mutate: async (mtx, current) => {
               const [auditComment] = await mtx
                 .insert(issueComments)
                 .values({
                   companyId: lockedWorkspace.companyId,
-                  issueId: lockedWorkspace.sourceIssueId,
+                  issueId: sourceIssueId,
                   authorAgentId: input.actor.actorType === "agent" ? input.actor.agentId : null,
                   authorUserId: input.actor.actorType === "user" ? input.actor.actorId : null,
                   authorType: input.actor.actorType,
@@ -2002,14 +2003,14 @@ export function executionWorkspaceService(db: Db) {
           reconcileAuditCommentId = mutation.result.auditCommentId;
         } else {
           const mutation = await runIssueMutation(tx, {
-            issueId: lockedWorkspace.sourceIssueId,
+            issueId: sourceIssueId,
             now,
             mutate: async (mtx) => {
               const [auditComment] = await mtx
                 .insert(issueComments)
                 .values({
                   companyId: lockedWorkspace.companyId,
-                  issueId: lockedWorkspace.sourceIssueId,
+                  issueId: sourceIssueId,
                   authorAgentId: input.actor.actorType === "agent" ? input.actor.agentId : null,
                   authorUserId: input.actor.actorType === "user" ? input.actor.actorId : null,
                   authorType: input.actor.actorType,

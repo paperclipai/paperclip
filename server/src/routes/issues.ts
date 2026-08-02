@@ -2168,6 +2168,13 @@ function buildExecutionStageWakeup(input: {
   return null;
 }
 
+class AutoApprovalIssueMissingError extends Error {
+  constructor() {
+    super("Issue not found during auto-approval transaction");
+    this.name = "AutoApprovalIssueMissingError";
+  }
+}
+
 function toCompactIssue(issue: any): CompactIssue {
   return {
     id: issue.id,
