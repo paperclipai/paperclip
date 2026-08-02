@@ -27,6 +27,7 @@ When a heartbeat fires, Paperclip:
 | Hermes | `hermes_local` | Runs the local Hermes CLI through `@paperclipai/hermes-paperclip-adapter` |
 | Hermes Gateway | `hermes_gateway` | Calls an already-running Hermes API server through `@paperclipai/hermes-paperclip-adapter/gateway` |
 | OpenClaw Gateway | `openclaw_gateway` | Connects to an OpenClaw gateway endpoint |
+| [AgentSky](/adapters/agentsky-cloud) | `agentsky_cloud` | Drives an AgentSky cloud-hosted persistent agent (agentsky.dev) |
 | [Process](/adapters/process) | `process` | Executes arbitrary shell commands |
 | [HTTP](/adapters/http) | `http` | Sends webhooks to external agents |
 

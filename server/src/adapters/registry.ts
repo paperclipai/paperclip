@@ -59,6 +59,13 @@ import {
 } from "@paperclipai/adapter-cursor-cloud/server";
 import { agentConfigurationDoc as cursorCloudAgentConfigurationDoc } from "@paperclipai/adapter-cursor-cloud";
 import {
+  execute as agentskyCloudExecute,
+  getConfigSchema as getAgentskyCloudConfigSchema,
+  sessionCodec as agentskyCloudSessionCodec,
+  testEnvironment as agentskyCloudTestEnvironment,
+} from "@paperclipai/adapter-agentsky-cloud/server";
+import { agentConfigurationDoc as agentskyCloudAgentConfigurationDoc } from "@paperclipai/adapter-agentsky-cloud";
+import {
   execute as geminiExecute,
   listGeminiSkills,
   syncGeminiSkills,
@@ -318,6 +325,21 @@ const cursorCloudAdapter: ServerAdapterModule = {
   getConfigSchema: getCursorCloudConfigSchema,
 };
 
+const agentskyCloudAdapter: ServerAdapterModule = {
+  type: "agentsky_cloud",
+  execute: agentskyCloudExecute,
+  testEnvironment: agentskyCloudTestEnvironment,
+  sessionCodec: agentskyCloudSessionCodec,
+  sessionManagement: getAdapterSessionManagement("agentsky_cloud") ?? undefined,
+  models: [],
+  supportsLocalAgentJwt: false,
+  supportsInstructionsBundle: true,
+  instructionsPathKey: "instructionsFilePath",
+  requiresMaterializedRuntimeSkills: false,
+  agentConfigurationDoc: agentskyCloudAgentConfigurationDoc,
+  getConfigSchema: getAgentskyCloudConfigSchema,
+};
+
 const geminiLocalAdapter: ServerAdapterModule = {
   type: "gemini_local",
   execute: geminiExecute,
@@ -440,6 +462,7 @@ function registerBuiltInAdapters() {
     openCodeLocalAdapter,
     piLocalAdapter,
     cursorCloudAdapter,
+    agentskyCloudAdapter,
     cursorLocalAdapter,
     geminiLocalAdapter,
     grokLocalAdapter,

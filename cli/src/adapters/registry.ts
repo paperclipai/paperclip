@@ -3,6 +3,7 @@ import { printClaudeStreamEvent } from "@paperclipai/adapter-claude-local/cli";
 import { printCodexStreamEvent } from "@paperclipai/adapter-codex-local/cli";
 import { printCursorStreamEvent } from "@paperclipai/adapter-cursor-local/cli";
 import { printCursorCloudEvent } from "@paperclipai/adapter-cursor-cloud/cli";
+import { printAgentskyCloudEvent } from "@paperclipai/adapter-agentsky-cloud/cli";
 import { printGeminiStreamEvent } from "@paperclipai/adapter-gemini-local/cli";
 import { printGrokStreamEvent } from "@paperclipai/adapter-grok-local/cli";
 import { formatStdoutEvent as printHermesGatewayStreamEvent } from "@paperclipai/hermes-paperclip-adapter/gateway/cli";
@@ -43,6 +44,11 @@ const cursorCloudCLIAdapter: CLIAdapterModule = {
   formatStdoutEvent: printCursorCloudEvent,
 };
 
+const agentskyCloudCLIAdapter: CLIAdapterModule = {
+  type: "agentsky_cloud",
+  formatStdoutEvent: printAgentskyCloudEvent,
+};
+
 const geminiLocalCLIAdapter: CLIAdapterModule = {
   type: "gemini_local",
   formatStdoutEvent: printGeminiStreamEvent,
@@ -76,6 +82,7 @@ const adaptersByType = new Map<string, CLIAdapterModule>(
     piLocalCLIAdapter,
     cursorLocalCLIAdapter,
     cursorCloudCLIAdapter,
+    agentskyCloudCLIAdapter,
     geminiLocalCLIAdapter,
     grokLocalCLIAdapter,
     hermesGatewayCLIAdapter,

@@ -37,6 +37,7 @@ const ADAPTER_MANAGED_SESSION_POLICY: SessionCompactionPolicy = {
 };
 
 export const LEGACY_SESSIONED_ADAPTER_TYPES = new Set([
+  "agentsky_cloud",
   "claude_local",
   "codex_local",
   "cursor_cloud",
@@ -48,6 +49,13 @@ export const LEGACY_SESSIONED_ADAPTER_TYPES = new Set([
 ]);
 
 export const ADAPTER_SESSION_MANAGEMENT: Record<string, AdapterSessionManagement> = {
+  // AgentSky pods are long-lived agents that manage their own context;
+  // threshold-based rotation would abandon a healthy remote session.
+  agentsky_cloud: {
+    supportsSessionResume: true,
+    nativeContextManagement: "confirmed",
+    defaultSessionCompaction: ADAPTER_MANAGED_SESSION_POLICY,
+  },
   claude_local: {
     supportsSessionResume: true,
     nativeContextManagement: "confirmed",

@@ -52,6 +52,9 @@ importers:
       '@clack/prompts':
         specifier: ^0.11.0
         version: 0.11.0
+      '@paperclipai/adapter-agentsky-cloud':
+        specifier: workspace:*
+        version: link:../packages/adapters/agentsky-cloud
       '@paperclipai/adapter-claude-local':
         specifier: workspace:*
         version: link:../packages/adapters/claude-local
@@ -125,6 +128,22 @@ importers:
       acpx:
         specifier: 0.12.0
         version: 0.12.0(patch_hash=tb5cdbd7kiiblhylbkroxfdcha)
+      picocolors:
+        specifier: ^1.1.1
+        version: 1.1.1
+    devDependencies:
+      '@types/node':
+        specifier: ^22.20.1
+        version: 22.20.1
+      typescript:
+        specifier: ^5.7.3
+        version: 5.9.3
+
+  packages/adapters/agentsky-cloud:
+    dependencies:
+      '@paperclipai/adapter-utils':
+        specifier: workspace:*
+        version: link:../../adapter-utils
       picocolors:
         specifier: ^1.1.1
         version: 1.1.1
@@ -725,6 +744,9 @@ importers:
       '@aws-sdk/client-s3':
         specifier: ^3.1075.0
         version: 3.1075.0
+      '@paperclipai/adapter-agentsky-cloud':
+        specifier: workspace:*
+        version: link:../packages/adapters/agentsky-cloud
       '@paperclipai/adapter-claude-local':
         specifier: workspace:*
         version: link:../packages/adapters/claude-local
@@ -894,6 +916,9 @@ importers:
       '@mdxeditor/editor':
         specifier: ^3.55.0
         version: 3.55.0(@codemirror/language@6.12.4)(@lezer/highlight@1.2.3)(@types/react-dom@19.2.3(@types/react@19.2.17))(@types/react@19.2.17)(react-dom@19.2.7(react@19.2.7))(react@19.2.7)(typescript@5.9.3)(yjs@13.6.29)
+      '@paperclipai/adapter-agentsky-cloud':
+        specifier: workspace:*
+        version: link:../packages/adapters/agentsky-cloud
       '@paperclipai/adapter-claude-local':
         specifier: workspace:*
         version: link:../packages/adapters/claude-local

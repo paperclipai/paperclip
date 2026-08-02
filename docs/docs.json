@@ -99,6 +99,7 @@
             "group": "Agent Adapters",
             "pages": [
               "adapters/overview",
+              "adapters/agentsky-cloud",
               "adapters/claude-local",
               "adapters/codex-local",
               "adapters/process",

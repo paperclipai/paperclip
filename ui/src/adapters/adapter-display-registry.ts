@@ -8,6 +8,7 @@
 import type { ComponentType } from "react";
 import {
   Bot,
+  Cloud,
   Code,
   Gem,
   MousePointer2,
@@ -119,6 +120,11 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
     label: "Cursor Cloud",
     description: "Managed remote Cursor agent",
     icon: MousePointer2,
+  },
+  agentsky_cloud: {
+    label: "AgentSky",
+    description: "AgentSky cloud-hosted persistent agent",
+    icon: Cloud,
   },
   openclaw_gateway: {
     label: "OpenClaw Gateway",
