@@ -697,6 +697,19 @@ export function createPluginWorkerHandle(
       if (proactiveCompanyId && proactiveCompanyScopes.has(proactiveCompanyId)) {
         return { invocationScope: { companyId: proactiveCompanyId } };
       }
+      // Single-company fallback: a no-invocation company-scoped read that names
+      // no company (e.g. config.get() with no companyId) resolves to the
+      // plugin's only configured company. Ambiguity (0 or 2+ configured
+      // companies) keeps the existing deny-by-default behavior, so this never
+      // widens access beyond the plugin's configured companies.
+      if (
+        !proactiveCompanyId &&
+        message.method === "config.get" &&
+        proactiveCompanyScopes.size === 1
+      ) {
+        const onlyCompanyId = proactiveCompanyScopes.values().next().value;
+        if (onlyCompanyId) return { invocationScope: { companyId: onlyCompanyId } };
+      }
       const hasActiveInvocation = activeInvocations.size > 0 ||
         Array.from(pendingRequests.values()).some((pending) => pending.invocationId);
       return hasActiveInvocation ? { invalidInvocationScope: true } : {};

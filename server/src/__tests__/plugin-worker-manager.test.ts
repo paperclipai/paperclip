@@ -779,3 +779,79 @@ describe("plugin proactive events.subscribe: options-seeded scope + filter parit
     }
   });
 });
+
+
+describe('plugin proactive config.get: single-company fallback', () => {
+  // Chat-style plugins (telegram/discord gateway) call ctx.config.get() from
+  // setup() with NO company argument. That arrives as a proactive (no-invocation)
+  // config.get with no company reference, and used to be rejected with
+  // "company context is required" even when the plugin had exactly one
+  // configured company - leaving such plugins dead on activation.
+  // The fallback resolves only that case: exactly one configured company, and
+  // only for config.get with no explicit company reference. Everything else
+  // (no configured company, multiple companies, explicit other company) still
+  // denies by default.
+  function makeConfigHandle(seededCompanies) {
+    const configGet = vi.fn(async () => ({ ok: true }));
+    const hostHandlers = createHostClientHandlers({
+      pluginId: "test.plugin",
+      capabilities: [],
+      services: {
+        config: { get: configGet },
+      },
+    });
+    const handle = createPluginWorkerHandle("test.plugin", {
+      entrypointPath: INVOCATION_SCOPE_WORKER_ENTRYPOINT,
+      manifest: TEST_MANIFEST,
+      config: {},
+      instanceInfo: { instanceId: "instance-1", hostVersion: "1.0.0" },
+      apiVersion: 1,
+      hostHandlers,
+      proactiveCompanyScopes: seededCompanies,
+    });
+    return { handle, configGet };
+  }
+
+  it("admits an unscoped proactive config.get when the plugin has exactly one configured company", async () => {
+    const { handle, configGet } = makeConfigHandle(["company-1"]);
+    try {
+      await handle.start();
+      await handle.call("getData", {
+        params: { mode: "omit", hostMethod: "config.get", requestedCompanyId: undefined },
+      });
+      expect(configGet).toHaveBeenCalledTimes(1);
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("still denies an unscoped proactive config.get when no company is configured", async () => {
+    const { handle, configGet } = makeConfigHandle([]);
+    try {
+      await handle.start();
+      await expect(handle.call("getData", {
+        params: { mode: "omit", hostMethod: "config.get", requestedCompanyId: undefined },
+      })).rejects.toMatchObject({
+        code: PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED,
+      });
+      expect(configGet).not.toHaveBeenCalled();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+
+  it("still denies an unscoped proactive config.get when several companies are configured (ambiguity)", async () => {
+    const { handle, configGet } = makeConfigHandle(["company-1", "company-2"]);
+    try {
+      await handle.start();
+      await expect(handle.call("getData", {
+        params: { mode: "omit", hostMethod: "config.get", requestedCompanyId: undefined },
+      })).rejects.toMatchObject({
+        code: PLUGIN_RPC_ERROR_CODES.INVOCATION_SCOPE_DENIED,
+      });
+      expect(configGet).not.toHaveBeenCalled();
+    } finally {
+      await handle.stop().catch(() => undefined);
+    }
+  });
+});
