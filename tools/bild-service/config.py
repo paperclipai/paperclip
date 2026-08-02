@@ -1,8 +1,34 @@
 import os
 
+def read_secret(path, key):
+    """Read a secret value from a KEY=value file.
+
+    Args:
+        path: Path to the secrets file
+        key: The key to look for (e.g. "OPENAI_API_KEY")
+
+    Returns:
+        The value part, stripped of whitespace
+
+    Raises:
+        RuntimeError: If key is not found in file
+    """
+    try:
+        with open(path) as f:
+            prefix = key + "="
+            for line in f:
+                stripped = line.lstrip()
+                if stripped.startswith(prefix):
+                    return stripped[len(prefix):].strip()
+    except FileNotFoundError:
+        raise RuntimeError(f"Secrets-File nicht gefunden: {path}")
+
+    raise RuntimeError(f"{key} nicht in Secrets-File gefunden: {path}")
+
 PAPERCLIP_BASE = "http://localhost:3100"
 AUTH_JSON = os.path.expanduser("~/.paperclip/auth.json")
 SECRETS_ENV = os.path.expanduser("~/.paperclip/instances/default/secrets/openai_image.env")
+MAIL_SECRET_ENV = os.path.expanduser("~/.paperclip/instances/default/secrets/mailhub.env")
 STATE_FILE = os.path.expanduser("~/.paperclip/instances/default/state/bild-service.json")
 
 COMPANIES = [
@@ -23,6 +49,5 @@ MONTHLY_BUDGET_USD = 4.50   # Puffer unter dem $5/Monat-API-Budget
 COST_ESTIMATE = {"low": 0.02, "medium": 0.04, "high": 0.17, "auto": 0.04}
 
 MAIL_WEBHOOK = "http://127.0.0.1:5678/webhook/mailhub/send"
-MAIL_SECRET = "mailhub-812a27b07c73e64d7df192c98a3883eb"
 MAIL_FROM = "office@whitestag.ai"
 MAIL_TO = "ws@whitestag.ai"

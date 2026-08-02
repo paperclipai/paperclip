@@ -1,12 +1,8 @@
 import json, base64, urllib.request, urllib.error
-from config import SECRETS_ENV
+from config import SECRETS_ENV, read_secret
 
 def _load_openai_key():
-    with open(SECRETS_ENV) as f:
-        for line in f:
-            if line.startswith("OPENAI_API_KEY="):
-                return line.split("=", 1)[1].strip()
-    raise RuntimeError("OPENAI_API_KEY nicht in Secrets-File gefunden.")
+    return read_secret(SECRETS_ENV, "OPENAI_API_KEY")
 
 def build_request_body(brief):
     return {
