@@ -1,5 +1,6 @@
 import json, os, tempfile
-from config import STATE_FILE as _DEFAULT_STATE, DAILY_IMAGE_LIMIT, COST_ESTIMATE
+from config import (STATE_FILE as _DEFAULT_STATE, DAILY_IMAGE_LIMIT,
+                    COST_ESTIMATE, DAILY_LOCAL_LIMIT)
 
 STATE_FILE = _DEFAULT_STATE
 
@@ -33,6 +34,29 @@ def record(date_str, quality):
     day = st.setdefault(date_str, {"count": 0, "cost_usd": 0.0})
     day["count"] += 1
     day["cost_usd"] = round(day["cost_usd"] + COST_ESTIMATE.get(quality, 0.04), 4)
-    for k in sorted(st.keys())[:-31]:   # vollen Monat behalten (für monthly_spent)
-        del st[k]
+    _prune(st)
     _save(st)
+
+
+def _is_day_key(key):
+    return len(key) == 10 and key[4] == "-" and key[7] == "-"
+
+
+def _prune(state):
+    """Nur Datumsschluessel beschneiden — 'jobs' und kuenftige Schluessel bleiben."""
+    days = sorted(k for k in state if _is_day_key(k))
+    for k in days[:-31]:
+        del state[k]
+
+
+def record_local(date_str):
+    st = _load()
+    day = st.setdefault(date_str, {"count": 0, "cost_usd": 0.0})
+    day["local_count"] = int(day.get("local_count", 0)) + 1
+    _prune(st)
+    _save(st)
+
+
+def remaining_local_today(date_str):
+    day = _load().get(date_str, {})
+    return DAILY_LOCAL_LIMIT - int(day.get("local_count", 0))

@@ -25,3 +25,31 @@ def test_monthly_spent_sums_across_days():
     assert cost_state.monthly_spent("2026-06") == 0.21
     assert cost_state.monthly_spent("2026-07") == 0.04
     assert cost_state.monthly_spent("2026-05") == 0.0
+
+
+def test_local_counter_is_separate_from_openai_counter():
+    setup_tmp()
+    cost_state.record_local("2026-08-02")
+    assert cost_state.remaining_local_today("2026-08-02") == cost_state.DAILY_LOCAL_LIMIT - 1
+    # Der OpenAI-Zaehler bleibt unberuehrt
+    assert cost_state.remaining_today("2026-08-02") == cost_state.DAILY_IMAGE_LIMIT
+    # ... und kostet nichts
+    assert cost_state.monthly_spent("2026-08") == 0.0
+
+
+def test_local_counter_resets_next_day():
+    setup_tmp()
+    cost_state.record_local("2026-08-02")
+    assert cost_state.remaining_local_today("2026-08-03") == cost_state.DAILY_LOCAL_LIMIT
+
+
+def test_pruning_keeps_jobs_key():
+    path = setup_tmp()
+    import job_state
+    job_state.STATE_FILE = path
+    job_state.add("issue-1", "prompt-1", "company-a", now=1000.0)
+    # 40 Tage aufzeichnen -> Beschneidung greift
+    for day in range(1, 41):
+        cost_state.record("2026-03-%02d" % day, "medium")
+    assert job_state.get("issue-1") is not None
+    assert len([k for k in cost_state._load() if k.startswith("2026-")]) <= 31
