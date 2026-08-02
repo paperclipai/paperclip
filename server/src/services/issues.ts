@@ -1813,6 +1813,9 @@ type IssueBlockerAttentionActivePathRow = {
 type IssueBlockerAttentionAgentRow = {
   id: string;
   companyId: string;
+  name: string;
+  role: string;
+  reportsTo: string | null;
   status: string;
 };
 
@@ -2417,15 +2420,23 @@ async function listIssueBlockerAttentionMap(
     for (const row of recoveryActionRows) explicitWaitingIssueIds.add(row.sourceIssueId);
   }
 
-  const agentRows: IssueBlockerAttentionAgentRow[] = agentIds.size > 0
+  const loadAllCompanyAgents = [...nodesById.values()].some((node) => node.monitorNextCheckAt);
+  const agentRows: IssueBlockerAttentionAgentRow[] = loadAllCompanyAgents || agentIds.size > 0
     ? await dbOrTx
         .select({
           id: agents.id,
           companyId: agents.companyId,
+          name: agents.name,
+          role: agents.role,
+          reportsTo: agents.reportsTo,
           status: agents.status,
         })
         .from(agents)
-        .where(and(eq(agents.companyId, companyId), inArray(agents.id, [...agentIds])))
+        .where(
+          loadAllCompanyAgents
+            ? eq(agents.companyId, companyId)
+            : and(eq(agents.companyId, companyId), inArray(agents.id, [...agentIds])),
+        )
     : [];
   const agentsById = new Map(agentRows.map((agent) => [agent.id, agent]));
   const nowMs = Date.now();
@@ -2455,7 +2466,7 @@ async function listIssueBlockerAttentionMap(
     if (explicitWaitingIssueIds.has(node.id)) {
       return { covered: true, stalled: false, sampleBlockerIdentifier: nodeSample, sampleStalledBlockerIdentifier: null };
     }
-    if (hasScheduledMonitorWaitingPath(node, nowMs)) {
+    if (hasScheduledMonitorWaitingPath(node, nowMs, agentsById)) {
       return { covered: true, stalled: false, sampleBlockerIdentifier: nodeSample, sampleStalledBlockerIdentifier: null };
     }
     if (node.assigneeUserId && node.status !== "cancelled") {
