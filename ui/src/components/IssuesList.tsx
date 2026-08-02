@@ -2097,7 +2097,6 @@ export function IssuesList({
                         onMouseEnter={() => setNavSelectionFromPointer(`issue:${issue.id}`)}
                         treeGuides={depth}
                         chevronInGuide={depth > 0 && hasChildren}
-                        hideDivider={hasChildren && isExpanded}
                         checklistStepNumber={checklistStepNumber}
                         checklistCurrentStep={checklistMeta?.currentStepIssueId === issue.id}
                         checklistDependencyChips={checklistDependencyChips}
