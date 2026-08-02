@@ -27,6 +27,7 @@ import {
 import { Button } from "@/components/ui/button";
 import { FolderOpen, Heart, ChevronDown, X } from "lucide-react";
 import { asBoolean, asFiniteNumber, asObject, cn } from "../lib/utils";
+import { resolveAdapterTestEnvironmentId } from "../lib/adapter-test-environment";
 import { extractModelName, extractProviderId } from "../lib/model-utils";
 import { queryKeys } from "../lib/queryKeys";
 import { useCompany } from "../context/CompanyContext";
@@ -662,7 +663,16 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       const adapterConfigPatch = flushedEnv ? { env: flushedEnv } : undefined;
       const primaryModel = currentModelId.trim() || null;
       const cheapTestCase = getCheapModelTestCase(adapterConfigPatch);
-      const environmentId = currentDefaultEnvironmentId || null;
+      // Probe where a real run would actually execute: the agent's own
+      // environment, else the instance default. Testing the host for an
+      // agent that runs in the instance-default sandbox reports failures
+      // (e.g. a CLI that only exists in the sandbox image) a real run would
+      // never hit. The raw id is sent even for a local environment — the
+      // server resolves the driver and probes the host in that case.
+      const environmentId = resolveAdapterTestEnvironmentId({
+        agentDefaultEnvironmentId: rawCurrentDefaultEnvironmentId || null,
+        instanceDefaultEnvironmentId: instanceSettings?.defaultEnvironmentId ?? null,
+      });
       const testResults: Array<{ label: string; model: string | null; result: AdapterEnvironmentTestResult }> = [
         {
           label: "Primary model",
