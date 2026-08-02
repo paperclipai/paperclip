@@ -575,6 +575,20 @@ On startup and on the periodic recovery loop, Paperclip now does five things in 
 
 The stranded-work pass closes the gap where issue state survives a crash but the wake/run path does not. The silent-run scan covers the separate case where a live process exists but has stopped producing observable output. The productivity-review pass is later and separate; it reviews unusual progression patterns on assigned source issues, not stale run handles after a source issue already has a valid disposition.
 
+### Detached-process dead-start recovery
+
+A local-adapter run can survive in the database with a live recorded child PID but no in-memory process handle or output stream. Continuing to treat that row as healthy leaves the run nonterminal and unobservable, so orphan recovery uses a bounded policy:
+
+- the first orphan pass conditionally marks the still-running row with `errorCode: process_detached` and emits a warning lifecycle event
+- hot-restart-adopted runs remain exempt while their adoption metadata is valid
+- if no handle is restored within a five-minute grace, the reaper terminates the recorded PID/process group, conditionally terminalizes the row as `failed`/`process_lost`, fails its wakeup, and emits an error lifecycle event with `detachedProcessCleanup` evidence
+- the terminal run may enqueue one normal-model process-loss retry; `processLossRetryCount` and the retry context are preserved across both immediate cleanup and periodic stranded-work reconciliation
+- if that retry also loses its process, recovery blocks the source and creates a source-scoped recovery action instead of converting it into a fresh generic dispatch, continuation, or reviewer retry
+
+Operators can monitor `process_detached` warnings, `process_lost` terminal rows, `detachedProcessCleanup` result/event payloads, `reaped orphaned heartbeat runs` log entries, and source-scoped `process_lost` recovery actions. A termination failure leaves the row marked `process_detached`; the next periodic pass retries cleanup and the scheduler logs the failed reap.
+
+This path adds no schema or API compatibility requirement. The main rollout risk is terminating a still-productive local child whose output handle cannot be recovered; the grace limits false positives, adopted hot-restart runs are excluded, and the retry resumes from durable context. Rollback is a code-only revert with no data migration: existing `process_detached`, `process_lost`, retry-count, event, and JSON evidence remain readable. Reverting restores the prior risk that detached live children can remain nonterminal until they exit independently, so operators should retain the run/recovery evidence before rollback.
+
 ## 11. Task Watchdog for Issue Trees
 
 A task watchdog watches a configured issue subtree after that subtree has stopped moving. It is a product-level verification and recovery mechanism for selected work, not a process monitor.

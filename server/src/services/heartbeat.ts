@@ -327,6 +327,7 @@ const PAPERCLIP_WAKE_PAYLOAD_KEY = "paperclipWake";
 const PAPERCLIP_AGENT_MESSAGE_KEY = "paperclipAgentMessage";
 const PAPERCLIP_HARNESS_CHECKOUT_KEY = "paperclipHarnessCheckedOut";
 const DETACHED_PROCESS_ERROR_CODE = "process_detached";
+export const DETACHED_PROCESS_RECOVERY_GRACE_MS = 5 * 60 * 1000;
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
 const MAX_INLINE_WAKE_COMMENTS = 8;
@@ -3385,6 +3386,18 @@ function didAutomaticRecoveryFail(
   );
 }
 
+function isProcessLossRetryRun(
+  run: Pick<typeof heartbeatRuns.$inferSelect, "contextSnapshot" | "errorCode" | "processLossRetryCount"> | null,
+) {
+  if (!run || run.errorCode !== "process_lost") return false;
+  const context = parseObject(run.contextSnapshot);
+  return (
+    (run.processLossRetryCount ?? 0) > 0 ||
+    readNonEmptyString(context.wakeReason) === "process_lost_retry" ||
+    readNonEmptyString(context.retryReason) === "process_lost"
+  );
+}
+
 function isExecutionReviewParticipantRecoveryRun(
   run: Pick<typeof heartbeatRuns.$inferSelect, "contextSnapshot"> | null,
 ) {
@@ -5957,7 +5970,10 @@ async function terminateHeartbeatRunProcess(input: {
 function buildProcessLossMessage(run: {
   processPid: number | null;
   processGroupId: number | null;
-}, options?: { descendantOnly?: boolean }) {
+}, options?: { descendantOnly?: boolean; detachedGraceExpired?: boolean }) {
+  if (options?.detachedGraceExpired) {
+    return `Process lost -- in-memory handle did not recover within the detached-process grace; child pid ${run.processPid ?? "unknown"} was terminated`;
+  }
   if (options?.descendantOnly && run.processGroupId) {
     return `Process lost -- parent pid ${run.processPid ?? "unknown"} exited, but descendant process group ${run.processGroupId} was still alive and was terminated`;
   }
@@ -12368,9 +12384,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .then((rows) => rows[0] ?? null);
   }
 
-  async function reapOrphanedRuns(opts?: { staleThresholdMs?: number }) {
+  async function reapOrphanedRuns(opts?: {
+    staleThresholdMs?: number;
+    detachedProcessGraceMs?: number;
+    now?: Date;
+  }) {
     const staleThresholdMs = opts?.staleThresholdMs ?? 0;
-    const now = new Date();
+    const detachedProcessGraceMs = Math.max(0, opts?.detachedProcessGraceMs ?? DETACHED_PROCESS_RECOVERY_GRACE_MS);
+    const now = opts?.now ?? new Date();
 
     // Find all runs stuck in "running" state (queued runs are legitimately waiting; resumeQueuedRuns handles them)
     const activeRuns = await db
@@ -12426,13 +12447,15 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       ) {
         continue;
       }
+      let detachedProcessCleanup = false;
       if (processPidAlive) {
         if (run.errorCode !== DETACHED_PROCESS_ERROR_CODE) {
           const detachedMessage = `Lost in-memory process handle, but child pid ${run.processPid} is still alive`;
-          const detachedRun = await setRunStatus(run.id, "running", {
+          const detachedUpdate = await setRunStatusIfRunning(run.id, "running", {
             error: detachedMessage,
             errorCode: DETACHED_PROCESS_ERROR_CODE,
           });
+          const detachedRun = detachedUpdate.updated ? detachedUpdate.run : null;
           if (detachedRun) {
             await appendRunEvent(detachedRun, await nextRunEventSeq(detachedRun.id), {
               eventType: "lifecycle",
@@ -12444,12 +12467,21 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               },
             });
           }
+          continue;
         }
-        continue;
+
+        const detachedDetectedAt = run.updatedAt ?? run.processStartedAt ?? run.startedAt ?? run.createdAt;
+        if (now.getTime() - detachedDetectedAt.getTime() < detachedProcessGraceMs) continue;
+
+        await terminateHeartbeatRunProcess({
+          pid: run.processPid,
+          processGroupId: run.processGroupId,
+        });
+        detachedProcessCleanup = true;
       }
 
       let descendantOnlyCleanup = false;
-      if (processGroupAlive) {
+      if (!detachedProcessCleanup && processGroupAlive) {
         descendantOnlyCleanup = true;
         await terminateHeartbeatRunProcess({
           pid: run.processPid,
@@ -12470,7 +12502,14 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         (tracksLocalChild && (!!run.processPid || !!run.processGroupId)) ||
         monitorDispatchLostWithoutFutureWake
       );
-      const baseMessage = buildProcessLossMessage(run, descendantOnlyCleanup ? { descendantOnly: true } : undefined);
+      const baseMessage = buildProcessLossMessage(
+        run,
+        detachedProcessCleanup
+          ? { detachedGraceExpired: true }
+          : descendantOnlyCleanup
+            ? { descendantOnly: true }
+            : undefined,
+      );
       const unmanagedBackgroundTaskEvidence = descendantOnlyCleanup
         ? {
           kind: "orphaned_process_group_cleanup",
@@ -12481,8 +12520,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           processGroupId: run.processGroupId ?? null,
         }
         : null;
+      const detachedProcessCleanupEvidence = detachedProcessCleanup
+        ? {
+          kind: "detached_process_grace_expired",
+          detectedAt: run.updatedAt?.toISOString() ?? null,
+          graceMs: detachedProcessGraceMs,
+          processPid: run.processPid ?? null,
+          processGroupId: run.processGroupId ?? null,
+        }
+        : null;
 
-      let finalizedRun = await setRunStatus(run.id, "failed", {
+      const terminalUpdate = await setRunStatusIfRunning(run.id, "failed", {
         error: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
         errorCode: "process_lost",
         finishedAt: now,
@@ -12496,21 +12544,27 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               errorMessage: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
             },
           );
-          return unmanagedBackgroundTaskEvidence
-            ? {
+          if (unmanagedBackgroundTaskEvidence) {
+            return {
               ...result,
               stopReason: UNMANAGED_BACKGROUND_TASK_STOP_REASON,
               unmanagedBackgroundTask: unmanagedBackgroundTaskEvidence,
+            };
+          }
+          return detachedProcessCleanupEvidence
+            ? {
+              ...result,
+              detachedProcessCleanup: detachedProcessCleanupEvidence,
             }
             : result;
         })(),
       });
+      if (!terminalUpdate.updated || !terminalUpdate.run) continue;
+      let finalizedRun = terminalUpdate.run;
       await setWakeupStatus(run.wakeupRequestId, "failed", {
         finishedAt: now,
         error: shouldRetry ? `${baseMessage}; retrying once` : baseMessage,
       });
-      if (!finalizedRun) finalizedRun = await getRun(run.id);
-      if (!finalizedRun) continue;
       finalizedRun = await classifyAndPersistRunLiveness(finalizedRun, parseObject(finalizedRun.resultJson)) ?? finalizedRun;
       await releaseEnvironmentLeasesForRun({
         runId: finalizedRun.id,
@@ -12546,6 +12600,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           ...(run.processPid ? { processPid: run.processPid } : {}),
           ...(run.processGroupId ? { processGroupId: run.processGroupId } : {}),
           ...(descendantOnlyCleanup ? { descendantOnlyCleanup: true } : {}),
+          ...(detachedProcessCleanup ? { detachedProcessCleanup: true, detachedProcessGraceMs } : {}),
           ...(retriedRun ? { retryRunId: retriedRun.id } : {}),
         },
       });
@@ -16109,6 +16164,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         !recoveryAgent ||
         isWorkspaceValidationFailedRun(run) ||
         isConfigurationIncompleteFailedRun(run) ||
+        isProcessLossRetryRun(run) ||
         didAutomaticRecoveryFail(run, issue.status === "todo" ? "assignment_recovery" : "issue_continuation_needed");
       if (shouldBlockImmediately) {
         const workspaceValidationFailure = isWorkspaceValidationFailedRun(run);

@@ -147,6 +147,7 @@ type LatestIssueRun = Pick<
   | "errorCode"
   | "contextSnapshot"
   | "livenessState"
+  | "processLossRetryCount"
   | "startedAt"
   | "createdAt"
 > & {
@@ -669,6 +670,20 @@ function isUnsuccessfulTerminalIssueRun(latestRun: LatestIssueRun) {
   );
 }
 
+function isExhaustedProcessLossRetryRun(latestRun: LatestIssueRun) {
+  if (
+    !isUnsuccessfulTerminalIssueRun(latestRun) ||
+    !latestRun ||
+    latestRun.errorCode !== "process_lost"
+  ) return false;
+  const context = parseObject(latestRun.contextSnapshot);
+  return (
+    (latestRun.processLossRetryCount ?? 0) > 0 ||
+    readNonEmptyString(context.wakeReason) === "process_lost_retry" ||
+    readNonEmptyString(context.retryReason) === "process_lost"
+  );
+}
+
 function isSuccessfulInProgressContinuationRun(latestRun: LatestIssueRun): latestRun is SuccessfulLatestIssueRun {
   return latestRun?.status === "succeeded";
 }
@@ -806,6 +821,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         errorCode: heartbeatRuns.errorCode,
         contextSnapshot: heartbeatRuns.contextSnapshot,
         livenessState: heartbeatRuns.livenessState,
+        processLossRetryCount: heartbeatRuns.processLossRetryCount,
         resultJson: heartbeatRuns.resultJson,
         startedAt: heartbeatRuns.startedAt,
         createdAt: heartbeatRuns.createdAt,
@@ -836,6 +852,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         errorCode: heartbeatRuns.errorCode,
         contextSnapshot: heartbeatRuns.contextSnapshot,
         livenessState: heartbeatRuns.livenessState,
+        processLossRetryCount: heartbeatRuns.processLossRetryCount,
         resultJson: heartbeatRuns.resultJson,
         startedAt: heartbeatRuns.startedAt,
         createdAt: heartbeatRuns.createdAt,
@@ -1075,6 +1092,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         errorCode: heartbeatRuns.errorCode,
         contextSnapshot: heartbeatRuns.contextSnapshot,
         livenessState: heartbeatRuns.livenessState,
+        processLossRetryCount: heartbeatRuns.processLossRetryCount,
         resultJson: heartbeatRuns.resultJson,
         startedAt: heartbeatRuns.startedAt,
         createdAt: heartbeatRuns.createdAt,
@@ -3967,6 +3985,26 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           continue;
         }
 
+        if (isExhaustedProcessLossRetryRun(participantLatestRun)) {
+          const updated = await escalateStrandedAssignedIssue({
+            issue,
+            previousStatus: "in_review",
+            latestRun: participantLatestRun,
+            recoveryCause: "process_lost",
+            recoveryOwnerAgentId: participantAgentId,
+            comment:
+              "Paperclip's one bounded process-loss retry for the active review participant also ended without a live " +
+              "execution path. Moving the issue to `blocked` instead of resetting the retry budget through generic reviewer recovery.",
+          });
+          if (updated) {
+            result.escalated += 1;
+            result.issueIds.push(issue.id);
+          } else {
+            result.skipped += 1;
+          }
+          continue;
+        }
+
         if (!agentInvokable) {
           const updated = await escalateStrandedAssignedIssue({
             issue,
@@ -4063,6 +4101,26 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
           !(await wasTodoHandedBackDuringOrAfterLatestRun(issue, latestRun))
         ) {
           result.skipped += 1;
+          continue;
+        }
+
+        if (isExhaustedProcessLossRetryRun(latestRun)) {
+          const failureSummary = summarizeRunFailureForIssueComment(latestRun);
+          const updated = await escalateStrandedAssignedIssue({
+            issue,
+            previousStatus: "todo",
+            latestRun,
+            recoveryCause: "process_lost",
+            comment:
+              "Paperclip's one bounded process-loss retry for this assigned `todo` issue also ended without a live " +
+              `execution path.${failureSummary ?? ""} Moving it to \`blocked\` instead of resetting the retry budget through generic dispatch recovery.`,
+          });
+          if (updated) {
+            result.escalated += 1;
+            result.issueIds.push(issue.id);
+          } else {
+            result.skipped += 1;
+          }
           continue;
         }
 
@@ -4196,6 +4254,26 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         continue;
       }
       if (isUnsuccessfulTerminalIssueRun(latestRun)) {
+        if (isExhaustedProcessLossRetryRun(latestRun)) {
+          const failureSummary = summarizeRunFailureForIssueComment(latestRun);
+          const updated = await escalateStrandedAssignedIssue({
+            issue,
+            previousStatus: "in_progress",
+            latestRun,
+            recoveryCause: "process_lost",
+            comment:
+              "Paperclip's one bounded process-loss retry for this assigned `in_progress` issue also ended without a live " +
+              `execution path.${failureSummary ?? ""} Moving it to \`blocked\` instead of resetting the retry budget through generic continuation recovery.`,
+          });
+          if (updated) {
+            result.escalated += 1;
+            result.issueIds.push(issue.id);
+          } else {
+            result.skipped += 1;
+          }
+          continue;
+        }
+
         const classification = classifyContinuationFailure(latestRun);
 
         if (classification.errorCode === CONTINUATION_WAITING_ON_REVIEW_ERROR_CODE) {
