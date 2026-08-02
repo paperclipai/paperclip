@@ -7,6 +7,7 @@ const CREATED_AGENT_ID = "22222222-2222-4222-8222-222222222222";
 
 const mockIssueService = vi.hoisted(() => ({
   getById: vi.fn(),
+  listReviewAttention: vi.fn(),
 }));
 
 const mockInteractionService = vi.hoisted(() => ({
@@ -187,6 +188,7 @@ describe.sequential("issue thread interaction routes", () => {
     registerModuleMocks();
     vi.clearAllMocks();
     mockIssueService.getById.mockResolvedValue(createIssue());
+    mockIssueService.listReviewAttention.mockResolvedValue(new Map());
     mockInteractionService.listForIssue.mockResolvedValue([]);
     mockInteractionService.expireRequestConfirmationsSupersededByHistoricalComments.mockResolvedValue([]);
     mockInteractionService.expirePendingInteractionsForTerminalIssue.mockResolvedValue([]);
@@ -455,6 +457,43 @@ describe.sequential("issue thread interaction routes", () => {
         }),
       }),
     );
+  });
+
+  it("queues one bounded recovery when historical-comment catch-up expires the final review interactions", async () => {
+    mockIssueService.getById.mockResolvedValue(createIssue({
+      status: "in_review",
+      assigneeAgentId: ASSIGNEE_AGENT_ID,
+    }));
+    mockInteractionService.expireRequestConfirmationsSupersededByHistoricalComments.mockResolvedValueOnce([
+      { id: "interaction-z", kind: "request_confirmation", status: "expired" },
+      { id: "interaction-a", kind: "request_item_verdicts", status: "expired" },
+    ]);
+    mockIssueService.listReviewAttention.mockResolvedValueOnce(new Map([[
+      "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      { state: "stalled", paths: [], reason: "Historical comments consumed the final paths" },
+    ]]));
+    mockInteractionService.listForIssue.mockResolvedValue([]);
+    mockHeartbeatService.wakeup.mockResolvedValueOnce({ id: "catchup-recovery-run" });
+
+    await request(await createApp())
+      .get("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions")
+      .expect(200);
+
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(ASSIGNEE_AGENT_ID, expect.objectContaining({
+      reason: "issue_review_path_lost",
+      idempotencyKey: expect.stringMatching(
+        /^issue_review_path_lost:aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa:/,
+      ),
+      payload: expect.objectContaining({
+        reviewPathConsumedRef: "interactions:interaction-a,interaction-z",
+        reviewPathRecoveryAttempt: 1,
+      }),
+      contextSnapshot: expect.objectContaining({
+        source: "issue.interactions.catchup_superseded_by_comment",
+        wakeReason: "issue_review_path_lost",
+      }),
+    }));
   });
 
   it("accepts suggested tasks and wakes created assignees plus the current assignee", async () => {
@@ -1248,6 +1287,50 @@ describe.sequential("issue thread interaction routes", () => {
 
     expect(res.status).toBe(200);
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
+  });
+
+  it("overrides accept-only continuation when rejection consumes the last review path", async () => {
+    const issue = createIssue({ status: "in_review" });
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.listReviewAttention.mockResolvedValue(new Map([[
+      issue.id,
+      { state: "stalled", paths: [], reason: "review path consumed" },
+    ]]));
+    mockInteractionService.rejectInteraction.mockResolvedValueOnce({
+      id: "interaction-last-review-path",
+      companyId: "company-1",
+      issueId: issue.id,
+      kind: "request_confirmation",
+      status: "rejected",
+      continuationPolicy: "wake_assignee_on_accept",
+      idempotencyKey: null,
+      sourceCommentId: null,
+      sourceRunId: "run-last-review-path",
+      payload: { version: 1, prompt: "Approve this?" },
+      result: { version: 1, outcome: "rejected", reason: "Needs changes" },
+      createdAt: "2026-04-20T12:00:00.000Z",
+      updatedAt: "2026-04-20T12:05:00.000Z",
+      resolvedAt: "2026-04-20T12:05:00.000Z",
+    });
+
+    const res = await request(await createApp())
+      .post(`/api/issues/${issue.id}/interactions/interaction-last-review-path/reject`)
+      .send({ reason: "Needs changes" });
+
+    expect(res.status).toBe(200);
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith(
+      ASSIGNEE_AGENT_ID,
+      expect.objectContaining({
+        payload: expect.objectContaining({
+          reviewPathLost: true,
+          reviewPathConsumedRef: "interaction-last-review-path",
+        }),
+        contextSnapshot: expect.objectContaining({
+          reviewPathLost: true,
+          reviewPathInstruction: expect.stringContaining("Restore a reviewer"),
+        }),
+      }),
+    );
   });
 
   it("wakes with decline instructions when a tool-action confirmation is rejected", async () => {

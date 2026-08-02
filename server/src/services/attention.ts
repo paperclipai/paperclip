@@ -1317,6 +1317,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
             eq(approvals.status, "pending"),
           ));
       const pendingApprovalByIssueId = new Map(pendingReviewApprovalRows.map((row) => [row.issueId, row.approvalId]));
+      const reviewAttentionByIssueId = await issueService(db).listReviewAttention(companyId, reviewRows);
       const reviewIssueMap = await issueSummaryMap(db, companyId, reviewIssueIds);
       const reviewImageMap = await issueImageMap(db, companyId, reviewIssueIds);
 
@@ -1325,7 +1326,9 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
         const currentParticipant = state?.status === "pending" ? state.currentParticipant : null;
         const hasHumanParticipant = currentParticipant?.type === "user";
         const pendingApprovalId = pendingApprovalByIssueId.get(review.id) ?? null;
-        if (!hasHumanParticipant && !review.assigneeUserId && !pendingApprovalId) continue;
+        const reviewAttention = reviewAttentionByIssueId.get(review.id);
+        const stalled = reviewAttention?.state === "stalled";
+        if (!hasHumanParticipant && !review.assigneeUserId && !pendingApprovalId && !stalled) continue;
         const issue = reviewIssueMap.get(review.id);
         if (!issue) continue;
         const dedupKey = `review:${review.id}`;
@@ -1333,20 +1336,29 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           companyId,
           sourceKind: "review",
           subject: issueSubject(prefix, issue),
-          whyNow: pendingApprovalId
+          whyNow: stalled
+            ? "Issue is in review without a maintained reviewer, interaction, approval, monitor, run, wake, or recovery path."
+            : pendingApprovalId
             ? "Issue is in review with a linked pending approval."
             : hasHumanParticipant
               ? "Issue is in review and the current execution participant is a user."
               : "Issue is in review and assigned to a user.",
-          decisionVerbs: decisionVerbs(
-            { id: "approve", label: "Approve", description: "Approve the review and advance the issue." },
-            { id: "request_changes", label: "Request changes", description: "Return the issue to the assignee with changes requested." },
-          ),
+          decisionVerbs: stalled
+            ? decisionVerbs(
+                { id: "choose_review_path", label: "Choose review path", description: "Add a reviewer or waiting path, return the issue to work, or accept it." },
+                { id: "request_changes", label: "Request changes", description: "Return the issue to the assignee with changes requested." },
+              )
+            : decisionVerbs(
+                { id: "approve", label: "Approve", description: "Approve the review and advance the issue." },
+                { id: "request_changes", label: "Request changes", description: "Return the issue to the assignee with changes requested." },
+              ),
           inlineResolvable: false,
-          entryRule: "issues.status = 'in_review' and human reviewer, user assignee, or linked pending approval exists.",
+          entryRule: stalled
+            ? "issues.status = 'in_review' and reviewAttention.state = 'stalled'."
+            : "issues.status = 'in_review' and human reviewer, user assignee, or linked pending approval exists.",
           exitRule: "Issue leaves in_review or the human review path resolves.",
           dedupKey,
-          severity: "medium",
+          severity: stalled ? "high" : "medium",
           activityAt: toIso(review.updatedAt),
           createdAt: toIso(review.createdAt),
           updatedAt: toIso(review.updatedAt),

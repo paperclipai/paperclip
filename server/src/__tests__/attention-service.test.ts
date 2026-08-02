@@ -556,7 +556,7 @@ describeEmbeddedPostgres("attention service", () => {
 
     const feed = await attentionService(db).list(companyId, { userId: "board-user" });
 
-    expect(feed.totalCount).toBe(11);
+    expect(feed.totalCount).toBe(12);
     expect(feed.countsBySourceKind).toMatchObject({
       approval: 1,
       issue_thread_interaction: 1,
@@ -564,7 +564,7 @@ describeEmbeddedPostgres("attention service", () => {
       recovery_action: 1,
       productivity_review: 1,
       blocker_attention: 1,
-      review: 1,
+      review: 2,
       failed_run: 1,
       budget_alert: 2,
       agent_error_alert: 1,
@@ -608,6 +608,14 @@ describeEmbeddedPostgres("attention service", () => {
     expect(feed.items.find((item) => item.sourceKind === "blocker_attention")?.detail).toMatchObject({
       kind: "blocker",
       blockingIssue: { identifier: "ATN-5", title: "Stalled review blocker" },
+    });
+    expect(feed.items.find((item) =>
+      item.sourceKind === "review" && item.subject.title === "Stalled review blocker"
+    )).toMatchObject({
+      whyNow: expect.stringContaining("without a maintained"),
+      decisionVerbs: expect.arrayContaining([
+        expect.objectContaining({ id: "choose_review_path", label: "Choose review path" }),
+      ]),
     });
     expect(feed.items.find((item) => item.sourceKind === "failed_run")?.detail).toMatchObject({
       kind: "failed_run",

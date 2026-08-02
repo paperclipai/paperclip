@@ -440,27 +440,27 @@ describePg("decisionService", () => {
 
   it("bounds expiration work to the configured batch size", async () => {
     process.env.PAPERCLIP_DECISIONS_SWEEP_BATCH_SIZE = "1";
-    await createCommentDecision("lenient", { idempotencyKey: "batch-1", expiresAt: new Date(Date.now() + 5) });
-    await createCommentDecision("lenient", { idempotencyKey: "batch-2", expiresAt: new Date(Date.now() + 5) });
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    await createCommentDecision("lenient", { idempotencyKey: "batch-1" });
+    await createCommentDecision("lenient", { idempotencyKey: "batch-2" });
+    await db.update(decisions).set({ expiresAt: new Date(0) }).where(eq(decisions.companyId, companyId));
     expect((await service().sweepExpired()).expired).toBe(1);
     expect((await service().sweepExpired()).expired).toBe(1);
   });
 
   it("falls back to the default sweep batch size for invalid configuration", async () => {
     process.env.PAPERCLIP_DECISIONS_SWEEP_BATCH_SIZE = "not-a-number";
-    await createCommentDecision("lenient", { idempotencyKey: "invalid-batch-1", expiresAt: new Date(Date.now() + 5) });
-    await createCommentDecision("lenient", { idempotencyKey: "invalid-batch-2", expiresAt: new Date(Date.now() + 5) });
-    await new Promise((resolve) => setTimeout(resolve, 10));
+    await createCommentDecision("lenient", { idempotencyKey: "invalid-batch-1" });
+    await createCommentDecision("lenient", { idempotencyKey: "invalid-batch-2" });
+    await db.update(decisions).set({ expiresAt: new Date(0) }).where(eq(decisions.companyId, companyId));
 
     await expect(service().sweepExpired()).resolves.toMatchObject({ expired: 2 });
   });
 
   it("expires TTL and target-gone decisions and wakes the origin agent", async () => {
-    const ttl = await createCommentDecision("lenient", { expiresAt: new Date(Date.now() + 5) });
+    const ttl = await createCommentDecision("lenient");
     const gone = await createCommentDecision("strict", { idempotencyKey: "gone" });
+    await db.update(decisions).set({ expiresAt: new Date(0) }).where(eq(decisions.id, ttl.id));
     await db.update(issues).set({ status: "cancelled" }).where(eq(issues.id, targetIssueId));
-    await new Promise((resolve) => setTimeout(resolve, 10));
     expect((await service().sweepExpired()).expired).toBe(2);
     const rows = await db.select().from(decisions);
     expect(rows.find((row) => row.id === ttl.id)?.metadata).toMatchObject({ expiredReason: "ttl" });
