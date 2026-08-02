@@ -63,6 +63,9 @@ export type AuthorizationAction =
   | "agent:read"
   | "agent:wake"
   | "company_scope:read"
+  | "decision_queue:manage"
+  | "decision_queue:read"
+  | "decision_triage:manage"
   | "issue:comment"
   | "issue:mutate"
   | "issue:read"
@@ -145,6 +148,9 @@ function permissionForAction(action: AuthorizationAction): PermissionKey | null 
     action === "agent:read" ||
     action === "agent:wake" ||
     action === "company_scope:read" ||
+    action === "decision_queue:manage" ||
+    action === "decision_queue:read" ||
+    action === "decision_triage:manage" ||
     action === "issue:read" ||
     action === "project:read" ||
     action === "runtime:manage" ||
@@ -969,6 +975,9 @@ export function authorizationService(db: Db) {
 
     if (
       input.action === "company_scope:read" ||
+      input.action === "decision_queue:manage" ||
+      input.action === "decision_queue:read" ||
+      input.action === "decision_triage:manage" ||
       input.action === "agent_config:read" ||
       input.action === "agent_config:update" ||
       input.action === "skill_config:update" ||
@@ -1140,6 +1149,9 @@ export function authorizationService(db: Db) {
 
     if (
       input.action === "company_scope:read" ||
+      input.action === "decision_queue:manage" ||
+      input.action === "decision_queue:read" ||
+      input.action === "decision_triage:manage" ||
       input.action === "agent:read" ||
       input.action === "agent:wake" ||
       input.action === "project:read" ||
@@ -1206,6 +1218,9 @@ export function authorizationService(db: Db) {
 
     if (
       input.action === "company_scope:read" ||
+      input.action === "decision_queue:manage" ||
+      input.action === "decision_queue:read" ||
+      input.action === "decision_triage:manage" ||
       input.action === "agent:read" ||
       input.action === "agent:wake" ||
       input.action === "project:read" ||
@@ -1570,6 +1585,7 @@ export function authorizationService(db: Db) {
           if (
             input.action === "agent:read" ||
             input.action === "company_scope:read" ||
+            input.action === "decision_queue:read" ||
             input.action === "issue:read" ||
             input.action === "project:read"
           ) {
@@ -1580,7 +1596,12 @@ export function authorizationService(db: Db) {
             });
           }
           if (
-            (input.action === "issue:comment" || input.action === "issue:mutate") &&
+            (
+              input.action === "issue:comment" ||
+              input.action === "issue:mutate" ||
+              input.action === "decision_queue:manage" ||
+              input.action === "decision_triage:manage"
+            ) &&
             membership.membershipRole !== "viewer"
           ) {
             return allow({
@@ -1638,6 +1659,9 @@ export function authorizationService(db: Db) {
         if (
           input.action === "agent:read" ||
           input.action === "company_scope:read" ||
+          input.action === "decision_queue:manage" ||
+          input.action === "decision_queue:read" ||
+          input.action === "decision_triage:manage" ||
           input.action === "issue:read" ||
           input.action === "project:read" ||
           input.action === "runtime:manage" ||
@@ -1647,7 +1671,10 @@ export function authorizationService(db: Db) {
           // Mirroring the tasks:assign carve-out above, viewers keep the
           // read-only visibility actions but not the privileged ones.
           const requiresNonViewer =
-            input.action === "runtime:manage" || input.action === "secrets:read";
+            input.action === "runtime:manage" ||
+            input.action === "secrets:read" ||
+            input.action === "decision_queue:manage" ||
+            input.action === "decision_triage:manage";
           if (membership && (!requiresNonViewer || membership.membershipRole !== "viewer")) {
             return allow({
               action: input.action,
@@ -1725,7 +1752,7 @@ export function authorizationService(db: Db) {
       if (skillTestDecision) return skillTestDecision;
     }
 
-    if (input.actor.source === "agent_key" && input.actor.keyScope?.kind === "task_bridge") {
+    if (input.actor.keyScope?.kind === "task_bridge") {
       const keyId = input.actor.keyId ?? null;
       if (!keyId) {
         return deny({
@@ -1771,6 +1798,7 @@ export function authorizationService(db: Db) {
         input.action === "agent:read" ||
         input.action === "agent:wake" ||
         input.action === "company_scope:read" ||
+        input.action === "decision_queue:read" ||
         input.action === "issue:comment" ||
         input.action === "issue:read" ||
         input.action === "project:read" ||
@@ -1907,6 +1935,7 @@ export function authorizationService(db: Db) {
     if (
       input.action === "agent:read" ||
       input.action === "company_scope:read" ||
+      input.action === "decision_queue:read" ||
       input.action === "issue:read" ||
       input.action === "project:read" ||
       input.action === "runtime:manage" ||
@@ -1916,6 +1945,21 @@ export function authorizationService(db: Db) {
         action: input.action,
         reason: "allow_company_agent",
         explanation: "Allowed by standard same-company agent visibility.",
+      });
+    }
+
+    if (input.action === "decision_queue:manage" || input.action === "decision_triage:manage") {
+      if (!isSimpleAssignableAgentStatus(actorAgent.status)) {
+        return deny({
+          action: input.action,
+          reason: "deny_missing_membership",
+          explanation: "Actor agent is not active in the target company.",
+        });
+      }
+      return allow({
+        action: input.action,
+        reason: "allow_company_agent",
+        explanation: "Allowed for an active standard-scope company agent.",
       });
     }
 

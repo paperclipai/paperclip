@@ -8,7 +8,7 @@ import {
   startEmbeddedPostgresTestDatabase,
 } from "./test-embedded-postgres.js";
 
-const MIGRATION_FILE = "0198_issue_version.sql";
+const MIGRATION_FILE = "0200_issue_version.sql";
 const cleanups: Array<() => Promise<void>> = [];
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -111,3 +111,4 @@ describeEmbeddedPostgres("issue version migration", () => {
     60_000,
   );
 });
+

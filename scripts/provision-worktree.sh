@@ -9,6 +9,22 @@ paperclip_dir="$worktree_cwd/.paperclip"
 worktree_config_path="$paperclip_dir/config.json"
 worktree_env_path="$paperclip_dir/.env"
 worktree_name="${PAPERCLIP_WORKSPACE_BRANCH:-$(basename "$worktree_cwd")}"
+worktree_instance_id="$(WORKTREE_CWD="$worktree_cwd" node <<'EOF'
+const crypto = require("node:crypto");
+const path = require("node:path");
+
+const resolvedWorkspacePath = path.resolve(process.env.WORKTREE_CWD);
+const normalized = path.basename(resolvedWorkspacePath)
+  .trim()
+  .toLowerCase()
+  .replace(/[^a-z0-9_-]+/g, "-")
+  .replace(/-+/g, "-")
+  .replace(/^[-_]+|[-_]+$/g, "");
+const prefix = (normalized || "worktree").slice(0, 48);
+const pathHash = crypto.createHash("sha256").update(resolvedWorkspacePath).digest("hex").slice(0, 12);
+process.stdout.write(`${prefix}-${pathHash}`);
+EOF
+)"
 
 if [[ ! -d "$base_cwd" ]]; then
   echo "Base workspace does not exist: $base_cwd" >&2
@@ -95,7 +111,7 @@ run_isolated_worktree_init() {
   if ensure_base_cli_healthy; then
     (
       cd "$worktree_cwd" &&
-        node "$base_cli_runner_path" "$base_cli_entry_path" worktree init --force --seed-mode minimal --name "$worktree_name" --from-config "$source_config_path"
+        node "$base_cli_runner_path" "$base_cli_entry_path" worktree init --force --seed-mode minimal --name "$worktree_name" --instance "$worktree_instance_id" --from-config "$source_config_path"
     )
     return
   fi
@@ -103,7 +119,7 @@ run_isolated_worktree_init() {
   if command -v pnpm >/dev/null 2>&1 && pnpm paperclipai --help >/dev/null 2>&1; then
     (
       cd "$worktree_cwd" &&
-        pnpm paperclipai worktree init --force --seed-mode minimal --name "$worktree_name" --from-config "$source_config_path"
+        pnpm paperclipai worktree init --force --seed-mode minimal --name "$worktree_name" --instance "$worktree_instance_id" --from-config "$source_config_path"
     )
     return
   fi
@@ -111,7 +127,7 @@ run_isolated_worktree_init() {
   if command -v paperclipai >/dev/null 2>&1; then
     (
       cd "$worktree_cwd" &&
-        paperclipai worktree init --force --seed-mode minimal --name "$worktree_name" --from-config "$source_config_path"
+        paperclipai worktree init --force --seed-mode minimal --name "$worktree_name" --instance "$worktree_instance_id" --from-config "$source_config_path"
     )
     return
   fi
@@ -138,6 +154,7 @@ paperclipai_command_available() {
 existing_worktree_config_is_usable() {
   WORKTREE_CONFIG_PATH="$worktree_config_path" \
   WORKTREE_ENV_PATH="$worktree_env_path" \
+  WORKTREE_INSTANCE_ID="$worktree_instance_id" \
   node <<'EOF'
 const fs = require("node:fs");
 const os = require("node:os");
@@ -187,8 +204,12 @@ if (envConfigPath && path.resolve(envConfigPath) !== configPath) {
 
 const homeDir = expandHomePrefix(env.PAPERCLIP_HOME);
 const instanceId = env.PAPERCLIP_INSTANCE_ID;
+const expectedInstanceId = process.env.WORKTREE_INSTANCE_ID;
 if (!homeDir || !instanceId) {
   fail("existing worktree env is missing PAPERCLIP_HOME or PAPERCLIP_INSTANCE_ID");
+}
+if (instanceId !== expectedInstanceId) {
+  fail(`existing worktree env names legacy or mismatched instance ${instanceId}, expected ${expectedInstanceId}`);
 }
 if (!fs.existsSync(homeDir)) {
   fail(`existing worktree home does not exist on this host: ${homeDir}`);
@@ -220,6 +241,7 @@ write_fallback_worktree_config() {
   PAPERCLIP_DIR="$paperclip_dir" \
   SOURCE_CONFIG_PATH="$source_config_path" \
   SOURCE_ENV_PATH="$source_env_path" \
+  WORKTREE_INSTANCE_ID="$worktree_instance_id" \
   PAPERCLIP_WORKTREES_DIR="${PAPERCLIP_WORKTREES_DIR:-}" \
   node <<'EOF'
 const fs = require("node:fs");
@@ -236,15 +258,6 @@ function expandHomePrefix(value) {
 
 function nonEmpty(value) {
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
-}
-
-function sanitizeInstanceId(value) {
-  const trimmed = String(value ?? "").trim().toLowerCase();
-  const normalized = trimmed
-    .replace(/[^a-z0-9_-]+/g, "-")
-    .replace(/-+/g, "-")
-    .replace(/^[-_]+|[-_]+$/g, "");
-  return normalized || "worktree";
 }
 
 function parseEnvFile(contents) {
@@ -334,7 +347,10 @@ async function main() {
   const sourceConfigPath = process.env.SOURCE_CONFIG_PATH;
   const sourceEnvPath = process.env.SOURCE_ENV_PATH;
   const worktreeHome = path.resolve(expandHomePrefix(nonEmpty(process.env.PAPERCLIP_WORKTREES_DIR) ?? "~/.paperclip-worktrees"));
-  const instanceId = sanitizeInstanceId(worktreeName);
+  const instanceId = process.env.WORKTREE_INSTANCE_ID;
+  if (!/^[A-Za-z0-9_-]+$/.test(instanceId ?? "")) {
+    throw new Error("WORKTREE_INSTANCE_ID is missing or unsafe");
+  }
   const instanceRoot = path.resolve(worktreeHome, "instances", instanceId);
   const configPath = path.resolve(paperclipDir, "config.json");
   const envPath = path.resolve(paperclipDir, ".env");

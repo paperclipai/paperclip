@@ -1,6 +1,7 @@
 import type {
   AttentionDetailImage,
   AttentionFeed,
+  AttentionFeedQuery,
   AttentionItem,
   AttentionItemDetail,
   AttentionProjectRef,
@@ -8,6 +9,8 @@ import type {
   AttentionSourceKind,
   AttentionWorkspaceRef,
 } from "@paperclipai/shared";
+
+export type AttentionListOptions = AttentionFeedQuery;
 
 /**
  * Source kinds the queue can fully resolve in-row. Everything else deep-links
@@ -252,13 +255,12 @@ export function attentionImageUrl(assetId: string): string {
 }
 
 /**
- * Decisions-only badge count. Every feed row *is* a pending decision (the
- * server drops anything without a decision verb into Activity, per the §0
- * invariant), and mentions/unread never enter the feed — so the row count is
- * the decisions-only number. `/inbox` keeps its own unread count untouched.
+ * The sidebar intentionally reflects only items whose decide-by deadline is
+ * due now. The count is computed before pagination, so badge polling can fetch
+ * a small first page without losing the company-wide urgency signal.
  */
 export function attentionBadgeCount(feed: AttentionFeed | null | undefined): number {
-  return feed?.items.length ?? 0;
+  return feed?.decideNowCount ?? 0;
 }
 
 // ---------------------------------------------------------------------------
