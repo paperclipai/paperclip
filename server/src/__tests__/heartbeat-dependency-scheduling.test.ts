@@ -684,6 +684,200 @@ describeEmbeddedPostgres("heartbeat dependency-aware queued run selection", () =
     }
   }, 40_000);
 
+  it("does not let an old never-executed run consume the only concurrency slot", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const orphanRunId = randomUUID();
+    const staleAt = new Date(Date.now() - 10 * 60 * 1000);
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "Hermes",
+      role: "messenger",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {
+        heartbeat: {
+          wakeOnDemand: true,
+          maxConcurrentRuns: 1,
+        },
+      },
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Queued Hermes work",
+      status: "todo",
+      priority: "critical",
+      assigneeAgentId: agentId,
+      responsibleUserId: "responsible-user",
+    });
+    await db.insert(heartbeatRuns).values({
+      id: orphanRunId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "running",
+      startedAt: staleAt,
+      processPid: null,
+      processGroupId: null,
+      lastOutputAt: null,
+      createdAt: staleAt,
+      updatedAt: staleAt,
+    });
+
+    try {
+      const wake = await heartbeat.wakeup(agentId, {
+        source: "assignment",
+        triggerDetail: "system",
+        reason: "issue_assigned",
+        payload: { issueId },
+        contextSnapshot: { issueId, wakeReason: "issue_assigned" },
+      });
+      expect(wake).not.toBeNull();
+
+      const queuedRunStarted = await waitForCondition(async () => {
+        const run = await db
+          .select({ status: heartbeatRuns.status })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.id, wake!.id))
+          .then((rows) => rows[0] ?? null);
+        return run?.status === "running" || run?.status === "succeeded";
+      });
+
+      expect(queuedRunStarted).toBe(true);
+      const adapterStarted = await waitForCondition(
+        async () => mockAdapterExecute.mock.calls.length === 1,
+        30_000,
+      );
+      expect(adapterStarted).toBe(true);
+      expect(mockAdapterExecute).toHaveBeenCalledTimes(1);
+
+      const orphan = await db
+        .select({ status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, orphanRunId))
+        .then((rows) => rows[0] ?? null);
+      expect(orphan).toEqual({ status: "running", errorCode: null });
+    } finally {
+      await db
+        .update(heartbeatRuns)
+        .set({ status: "cancelled", finishedAt: new Date(), updatedAt: new Date() })
+        .where(eq(heartbeatRuns.id, orphanRunId));
+    }
+  });
+
+  it.each([
+    {
+      name: "a pid",
+      processPid: process.pid,
+      processGroupId: null,
+      lastOutputAt: null,
+    },
+    {
+      name: "recent output",
+      processPid: null,
+      processGroupId: null,
+      lastOutputAt: new Date(),
+    },
+    {
+      name: "no execution evidence inside the startup grace period",
+      processPid: null,
+      processGroupId: null,
+      lastOutputAt: null,
+      startedAt: new Date(),
+    },
+  ])("still counts a running row with $name against the concurrency budget", async (runEvidence) => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const issueId = randomUUID();
+    const activeRunId = randomUUID();
+    const staleAt = new Date(Date.now() - 10 * 60 * 1000);
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+      defaultResponsibleUserId: "responsible-user",
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "SerialAgent",
+      role: "operator",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {
+        heartbeat: {
+          wakeOnDemand: true,
+          maxConcurrentRuns: 1,
+        },
+      },
+      permissions: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Must remain queued",
+      status: "todo",
+      priority: "high",
+      assigneeAgentId: agentId,
+      responsibleUserId: "responsible-user",
+    });
+    await db.insert(heartbeatRuns).values({
+      id: activeRunId,
+      companyId,
+      agentId,
+      invocationSource: "assignment",
+      triggerDetail: "system",
+      status: "running",
+      startedAt: staleAt,
+      ...runEvidence,
+      createdAt: staleAt,
+      updatedAt: staleAt,
+    });
+
+    const wake = await heartbeat.wakeup(agentId, {
+      source: "assignment",
+      triggerDetail: "system",
+      reason: "issue_assigned",
+      payload: { issueId },
+      contextSnapshot: { issueId, wakeReason: "issue_assigned" },
+    });
+    expect(wake).not.toBeNull();
+
+    const queuedRun = await db
+      .select({ status: heartbeatRuns.status })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, wake!.id))
+      .then((rows) => rows[0] ?? null);
+    expect(queuedRun?.status).toBe("queued");
+    expect(mockAdapterExecute).not.toHaveBeenCalled();
+
+    await db
+      .update(heartbeatRuns)
+      .set({ status: "cancelled", finishedAt: new Date(), updatedAt: new Date() })
+      .where(eq(heartbeatRuns.id, wake!.id));
+    await db
+      .update(heartbeatRuns)
+      .set({ status: "succeeded", finishedAt: new Date(), updatedAt: new Date() })
+      .where(eq(heartbeatRuns.id, activeRunId));
+  });
+
   it("cancels stale queued runs when issue blockers are still unresolved", async () => {
     const companyId = randomUUID();
     const agentId = randomUUID();

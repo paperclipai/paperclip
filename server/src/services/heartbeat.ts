@@ -3,7 +3,7 @@ import path from "node:path";
 import { execFile as execFileCallback } from "node:child_process";
 import { promisify } from "node:util";
 import { createHash, randomUUID } from "node:crypto";
-import { and, asc, desc, eq, getTableColumns, gt, gte, inArray, isNull, lt, lte, notInArray, or, sql } from "drizzle-orm";
+import { and, asc, desc, eq, getTableColumns, gt, gte, inArray, isNotNull, isNull, lt, lte, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
@@ -349,6 +349,7 @@ export {
 } from "./recovery/service.js";
 export const ACTIVE_RUN_OUTPUT_PROGRESS_FLUSH_INTERVAL_MS = 60 * 1000;
 export const ACTIVE_RUN_LOG_RUNTIME_STATUS_REFRESH_INTERVAL_MS = 5 * 1000;
+const NEVER_EXECUTED_RUN_SLOT_GRACE_MS = 5 * 60 * 1000;
 export const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS = [
   2 * 60 * 1000,
   10 * 60 * 1000,
@@ -12020,10 +12021,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
   }
 
   async function countRunningRunsForAgent(agentId: string) {
+    const neverExecutedCutoff = new Date(Date.now() - NEVER_EXECUTED_RUN_SLOT_GRACE_MS);
     const [{ count }] = await db
       .select({ count: sql<number>`count(*)` })
       .from(heartbeatRuns)
-      .where(and(eq(heartbeatRuns.agentId, agentId), eq(heartbeatRuns.status, "running")));
+      .where(and(
+        eq(heartbeatRuns.agentId, agentId),
+        eq(heartbeatRuns.status, "running"),
+        // Slot accounting is intentionally narrower than reaping. Old rows that
+        // never acquired process metadata and never emitted output stay running
+        // for fail-closed recovery, but must not deadlock a one-slot agent.
+        or(
+          isNotNull(heartbeatRuns.processPid),
+          isNotNull(heartbeatRuns.processGroupId),
+          isNotNull(heartbeatRuns.lastOutputAt),
+          isNull(heartbeatRuns.startedAt),
+          gte(heartbeatRuns.startedAt, neverExecutedCutoff),
+        ),
+      ));
     return Number(count ?? 0);
   }
 
