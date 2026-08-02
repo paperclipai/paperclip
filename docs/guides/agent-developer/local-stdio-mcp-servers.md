@@ -83,3 +83,9 @@ To confirm the agent actually received them, read the `system` stream event with
 for the server process — a server can be spawned and still fail to register.
 
 Malformed entries never abort a run: they are skipped with a warning on stderr.
+A warning is logged on every lane, including a remote run that applies nothing.
+
+Each local server joins the session identity as `{name, command, args, envHash}`,
+so editing the config — including an `env` value — invalidates a warm handle and
+the next run starts a session that has the change. Env values are hashed rather
+than stored, because session parameters are persisted.

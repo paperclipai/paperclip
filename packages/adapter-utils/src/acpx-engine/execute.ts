@@ -103,7 +103,7 @@ const defaultModuleDir = path.dirname(fileURLToPath(import.meta.url));
 // session sees.
 type AcpxMcpIdentityEntry =
   | { name: string; url: string; connectionId: string }
-  | { name: string; command: string; args: string[] };
+  | { name: string; command: string; args: string[]; envHash: string };
 const PAPERCLIP_MANAGED_CODEX_SKILLS_MANIFEST = ".paperclip-managed-skills.json";
 const BENIGN_NES_CLOSE_STDERR = /method: ['"]nes\/close['"].*-32601/;
 
@@ -1614,38 +1614,42 @@ async function buildRuntime(input: {
   //
   // Local-execution only: the command paths are host paths, so a remote/sandbox
   // execution target would spawn something that does not exist there.
-  if (executionTargetIsRemote) {
-    const remoteLocalMcp = await resolveLocalStdioMcpServers({
-      instanceRoot: defaultPaperclipInstanceDir(),
-      env,
-      adapterConfigValue: config.mcpServers,
-    });
-    if (remoteLocalMcp.servers.length > 0) {
+  const localMcp = await resolveLocalStdioMcpServers({
+    instanceRoot: defaultPaperclipInstanceDir(),
+    env,
+    adapterConfigValue: config.mcpServers,
+    reservedNames: mcpServers.map((server) => server.name),
+  });
+  // Config problems are worth reporting on every lane, including the remote one
+  // that ends up applying nothing — otherwise an unreadable or malformed file is
+  // completely silent there.
+  for (const warning of localMcp.warnings) {
+    await input.ctx.onLog("stderr", `[paperclip] Local MCP config: ${warning}\n`);
+  }
+  if (localMcp.servers.length > 0) {
+    if (executionTargetIsRemote) {
       await input.ctx.onLog(
         "stderr",
-        `[paperclip] Skipping ${remoteLocalMcp.servers.length} locally-configured stdio MCP server(s) — this run targets a remote execution environment where the host command paths do not exist.\n`,
+        `[paperclip] Skipping ${localMcp.servers.length} locally-configured stdio MCP server(s) — this run targets a remote execution environment where the host command paths do not exist.\n`,
       );
-    }
-  } else {
-    const localMcp = await resolveLocalStdioMcpServers({
-      instanceRoot: defaultPaperclipInstanceDir(),
-      env,
-      adapterConfigValue: config.mcpServers,
-      reservedNames: mcpServers.map((server) => server.name),
-    });
-    for (const warning of localMcp.warnings) {
-      await input.ctx.onLog("stderr", `[paperclip] Local MCP config: ${warning}\n`);
-    }
-    for (const server of localMcp.servers) {
-      mcpServers.push({
-        name: server.name,
-        command: server.command,
-        args: server.args,
-        env: server.env,
-      });
-      mcpIdentity.push({ name: server.name, command: server.command, args: server.args });
-    }
-    if (localMcp.servers.length > 0) {
+    } else {
+      for (const server of localMcp.servers) {
+        mcpServers.push({
+          name: server.name,
+          command: server.command,
+          args: server.args,
+          env: server.env,
+        });
+        // Hash the env rather than carrying it: a changed value (rotated
+        // credential, different profile) must still invalidate a warm handle,
+        // but session params are persisted and must not hold secret values.
+        mcpIdentity.push({
+          name: server.name,
+          command: server.command,
+          args: server.args,
+          envHash: shortHash(server.env),
+        });
+      }
       await input.ctx.onLog(
         "stderr",
         `[paperclip] Passing ${localMcp.servers.length} locally-configured stdio MCP server(s) to the agent: ${localMcp.servers
