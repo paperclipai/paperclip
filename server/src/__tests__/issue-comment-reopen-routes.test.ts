@@ -817,6 +817,62 @@ describe.sequential("issue comment reopen routes", () => {
     );
   });
 
+  it("rejects a stale PATCH comment when resume derives the terminal status change", async () => {
+    const assigneeAgentId = "22222222-2222-4222-8222-222222222222";
+    const completedAt = new Date("2026-08-02T09:00:53.000Z");
+    mockIssueService.getById.mockResolvedValue({
+      ...makeIssue("done"),
+      completedAt,
+      updatedAt: completedAt,
+    });
+    mockHeartbeatService.getRun.mockResolvedValue({
+      id: "run-stale",
+      companyId: "company-1",
+      agentId: assigneeAgentId,
+      startedAt: new Date("2026-08-02T08:59:00.000Z"),
+      createdAt: new Date("2026-08-02T08:58:59.000Z"),
+    });
+
+    const res = await request(
+      await installActor(createApp(), {
+        type: "agent",
+        agentId: assigneeAgentId,
+        companyId: "company-1",
+        runId: "run-stale",
+      }),
+    )
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ comment: "obsolete continuation result", resume: true });
+
+    expect(res.status).toBe(409);
+    expect(res.body).toEqual({
+      error: "Stale agent run cannot change a terminal issue",
+      code: "stale_terminal_issue_mutation",
+      issueStatus: "done",
+      requestedStatus: "todo",
+    });
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  });
+
+  it("rejects a terminal status change when agent run metadata is unavailable", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("done"));
+    mockHeartbeatService.getRun.mockResolvedValue(null);
+
+    const res = await request(await installActor(createApp(), agentActor()))
+      .patch("/api/issues/11111111-1111-4111-8111-111111111111")
+      .send({ status: "todo", comment: "resume without verifiable run", resume: true });
+
+    expect(res.status).toBe(409);
+    expect(res.body).toEqual({
+      error: "Agent run context is required to change a terminal issue",
+      code: "terminal_issue_run_context_required",
+      issueStatus: "done",
+      requestedStatus: "todo",
+    });
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
   it("requires explicit resume intent for a fresh agent run changing a terminal status", async () => {
     const assigneeAgentId = "22222222-2222-4222-8222-222222222222";
     const completedAt = new Date("2026-08-02T09:00:53.000Z");
@@ -870,6 +926,13 @@ describe.sequential("issue comment reopen routes", () => {
       ...makeIssue("done"),
       ...patch,
     }));
+    mockHeartbeatService.getRun.mockResolvedValue({
+      id: "run-other",
+      companyId: "company-1",
+      agentId: otherAgentId,
+      startedAt: new Date("2026-08-02T09:01:00.000Z"),
+      createdAt: new Date("2026-08-02T09:00:59.000Z"),
+    });
 
     const res = await request(
       await installActor(createApp(), {
@@ -1643,6 +1706,13 @@ describe.sequential("issue comment reopen routes", () => {
 
   it("explicit same-agent resume works through the PATCH comment path", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("done"));
+    mockHeartbeatService.getRun.mockResolvedValue({
+      id: "run-1",
+      companyId: "company-1",
+      agentId: "22222222-2222-4222-8222-222222222222",
+      startedAt: new Date("2026-08-02T09:01:00.000Z"),
+      createdAt: new Date("2026-08-02T09:00:59.000Z"),
+    });
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
       ...makeIssue("done"),
       ...patch,
@@ -1785,6 +1855,25 @@ describe.sequential("issue comment reopen routes", () => {
     expect(res.body).toEqual({
       error: "Stale agent run cannot change a terminal issue",
       code: "stale_terminal_issue_mutation",
+      issueStatus: "done",
+      requestedStatus: "todo",
+    });
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+  });
+
+  it("rejects a terminal comment resume when agent run metadata is unavailable", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue("done"));
+    mockHeartbeatService.getRun.mockResolvedValue(null);
+
+    const res = await request(await installActor(createApp(), agentActor()))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "resume without verifiable run", resume: true });
+
+    expect(res.status).toBe(409);
+    expect(res.body).toEqual({
+      error: "Agent run context is required to change a terminal issue",
+      code: "terminal_issue_run_context_required",
       issueStatus: "done",
       requestedStatus: "todo",
     });

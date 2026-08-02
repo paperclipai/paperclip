@@ -7052,8 +7052,14 @@ export function issueService(db: Db) {
           ? current.completedAt ?? current.updatedAt
           : current.cancelledAt ?? current.updatedAt;
         const runStartedAt = terminalStatusGuard.runStartedAt;
+        if (!runStartedAt) {
+          throw conflict("Agent run context is required to change a terminal issue", {
+            code: "terminal_issue_run_context_required",
+            issueStatus: current.status,
+            requestedStatus: issueData.status,
+          });
+        }
         if (
-          runStartedAt &&
           terminalAt &&
           new Date(runStartedAt).getTime() <= new Date(terminalAt).getTime()
         ) {

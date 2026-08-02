@@ -375,6 +375,36 @@ describeEmbeddedPostgres("issueService.list participantAgentId", () => {
     expect(persisted).toEqual({ status: "done", completedAt });
   });
 
+  it("rejects unverifiable agent status writes against a terminal issue at the service boundary", async () => {
+    const companyId = await seedAssignableAgentCompany();
+    const issueId = randomUUID();
+    const completedAt = new Date("2026-08-02T09:00:53.000Z");
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Terminal issue requires run context",
+      status: "done",
+      priority: "medium",
+      completedAt,
+      updatedAt: completedAt,
+    });
+
+    await expect(svc.update(issueId, {
+      status: "todo",
+      terminalStatusGuard: {
+        runStartedAt: null,
+        explicitResume: true,
+      },
+    })).rejects.toMatchObject({
+      status: 409,
+      details: {
+        code: "terminal_issue_run_context_required",
+        issueStatus: "done",
+        requestedStatus: "todo",
+      },
+    });
+  });
+
   it("requires explicit intent before a fresh agent run resumes a terminal issue", async () => {
     const companyId = await seedAssignableAgentCompany();
     const issueId = randomUUID();

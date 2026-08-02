@@ -7844,53 +7844,9 @@ export function issueRoutes(
       res.status(400).json({ error: "Follow-up intent requires a comment" });
       return;
     }
-    const requestedStatusChange =
-      typeof updateFields.status === "string" && updateFields.status !== existing.status
-        ? updateFields.status
-        : null;
     let terminalStatusGuard:
       | { runStartedAt: Date | string | null; explicitResume: boolean }
       | undefined;
-    if (req.actor.type === "agent" && requestedStatusChange) {
-      const actorRun = actor.runId
-        ? await heartbeat.getRun(actor.runId).catch(() => null)
-        : null;
-      const runStartedAt = actorRun?.startedAt ?? actorRun?.createdAt ?? null;
-      terminalStatusGuard = {
-        runStartedAt:
-          actorRun?.agentId === actor.agentId && actorRun.companyId === existing.companyId
-            ? runStartedAt
-            : null,
-        explicitResume: reopenRequested === true || resumeRequested === true,
-      };
-      if (isClosed) {
-        const terminalAt = existing.status === "done"
-          ? existing.completedAt ?? existing.updatedAt
-          : existing.cancelledAt ?? existing.updatedAt;
-        if (
-          terminalStatusGuard.runStartedAt &&
-          terminalAt &&
-          new Date(terminalStatusGuard.runStartedAt).getTime() <= new Date(terminalAt).getTime()
-        ) {
-          res.status(409).json({
-            error: "Stale agent run cannot change a terminal issue",
-            code: "stale_terminal_issue_mutation",
-            issueStatus: existing.status,
-            requestedStatus: requestedStatusChange,
-          });
-          return;
-        }
-        if (!terminalStatusGuard.explicitResume) {
-          res.status(409).json({
-            error: "Agent status changes on terminal issues require explicit resume intent",
-            code: "terminal_issue_resume_required",
-            issueStatus: existing.status,
-            requestedStatus: requestedStatusChange,
-          });
-          return;
-        }
-      }
-    }
     if (
       (reopenRequested === true ||
         resumeRequested === true ||
@@ -8040,6 +7996,58 @@ export function issueRoutes(
       updateFields.status === undefined
     ) {
       updateFields.status = "todo";
+    }
+    const requestedStatusChange =
+      typeof updateFields.status === "string" && updateFields.status !== existing.status
+        ? updateFields.status
+        : null;
+    if (req.actor.type === "agent" && requestedStatusChange) {
+      const actorRun = actor.runId
+        ? await heartbeat.getRun(actor.runId).catch(() => null)
+        : null;
+      const runStartedAt = actorRun?.startedAt ?? actorRun?.createdAt ?? null;
+      terminalStatusGuard = {
+        runStartedAt:
+          actorRun?.agentId === actor.agentId && actorRun.companyId === existing.companyId
+            ? runStartedAt
+            : null,
+        explicitResume: reopenRequested === true || resumeRequested === true,
+      };
+      if (isClosed) {
+        if (!terminalStatusGuard.runStartedAt) {
+          res.status(409).json({
+            error: "Agent run context is required to change a terminal issue",
+            code: "terminal_issue_run_context_required",
+            issueStatus: existing.status,
+            requestedStatus: requestedStatusChange,
+          });
+          return;
+        }
+        const terminalAt = existing.status === "done"
+          ? existing.completedAt ?? existing.updatedAt
+          : existing.cancelledAt ?? existing.updatedAt;
+        if (
+          terminalAt &&
+          new Date(terminalStatusGuard.runStartedAt).getTime() <= new Date(terminalAt).getTime()
+        ) {
+          res.status(409).json({
+            error: "Stale agent run cannot change a terminal issue",
+            code: "stale_terminal_issue_mutation",
+            issueStatus: existing.status,
+            requestedStatus: requestedStatusChange,
+          });
+          return;
+        }
+        if (!terminalStatusGuard.explicitResume) {
+          res.status(409).json({
+            error: "Agent status changes on terminal issues require explicit resume intent",
+            code: "terminal_issue_resume_required",
+            issueStatus: existing.status,
+            requestedStatus: requestedStatusChange,
+          });
+          return;
+        }
+      }
     }
     let cancelledScheduledRetryRunId: string | null = null;
     if (
@@ -10225,7 +10233,7 @@ export function issueRoutes(
     let terminalStatusGuard:
       | { runStartedAt: Date | string | null; explicitResume: boolean }
       | undefined;
-    if (isClosed && req.actor.type === "agent" && effectiveMoveToTodoRequested) {
+    if (req.actor.type === "agent" && effectiveMoveToTodoRequested) {
       const actorRun = actor.runId
         ? await heartbeat.getRun(actor.runId).catch(() => null)
         : null;
@@ -10237,30 +10245,40 @@ export function issueRoutes(
             : null,
         explicitResume: effectiveReopenRequested || effectiveResumeRequested,
       };
-      const terminalAt = issue.status === "done"
-        ? issue.completedAt ?? issue.updatedAt
-        : issue.cancelledAt ?? issue.updatedAt;
-      if (
-        terminalStatusGuard.runStartedAt &&
-        terminalAt &&
-        new Date(terminalStatusGuard.runStartedAt).getTime() <= new Date(terminalAt).getTime()
-      ) {
-        res.status(409).json({
-          error: "Stale agent run cannot change a terminal issue",
-          code: "stale_terminal_issue_mutation",
-          issueStatus: issue.status,
-          requestedStatus: "todo",
-        });
-        return;
-      }
-      if (!terminalStatusGuard.explicitResume) {
-        res.status(409).json({
-          error: "Agent status changes on terminal issues require explicit resume intent",
-          code: "terminal_issue_resume_required",
-          issueStatus: issue.status,
-          requestedStatus: "todo",
-        });
-        return;
+      if (isClosed) {
+        if (!terminalStatusGuard.runStartedAt) {
+          res.status(409).json({
+            error: "Agent run context is required to change a terminal issue",
+            code: "terminal_issue_run_context_required",
+            issueStatus: issue.status,
+            requestedStatus: "todo",
+          });
+          return;
+        }
+        const terminalAt = issue.status === "done"
+          ? issue.completedAt ?? issue.updatedAt
+          : issue.cancelledAt ?? issue.updatedAt;
+        if (
+          terminalAt &&
+          new Date(terminalStatusGuard.runStartedAt).getTime() <= new Date(terminalAt).getTime()
+        ) {
+          res.status(409).json({
+            error: "Stale agent run cannot change a terminal issue",
+            code: "stale_terminal_issue_mutation",
+            issueStatus: issue.status,
+            requestedStatus: "todo",
+          });
+          return;
+        }
+        if (!terminalStatusGuard.explicitResume) {
+          res.status(409).json({
+            error: "Agent status changes on terminal issues require explicit resume intent",
+            code: "terminal_issue_resume_required",
+            issueStatus: issue.status,
+            requestedStatus: "todo",
+          });
+          return;
+        }
       }
     }
     const hasUnresolvedFirstClassBlockers =
