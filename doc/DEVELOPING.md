@@ -369,6 +369,8 @@ After `worktree init`, both the server and the CLI auto-load the repo-local `.pa
 
 `pnpm dev` now fails fast in a linked git worktree when `.paperclip/.env` is missing, instead of silently booting against the default instance/port. If that happens, run `paperclipai worktree init` in the worktree first.
 
+`pnpm install` now also fails fast in a linked git worktree when the worktree still shares its root `node_modules` with another checkout. That shared layout lets pnpm overwrite the other checkout's `node_modules/.modules.yaml`, which can make the served tree uninstallable and can repoint shared workspace links into the wrong checkout. Safe path: initialize the worktree through the isolated Paperclip worktree flow first, let it replace the shared symlink with a local `node_modules`, then rerun `pnpm install`.
+
 Provisioned git worktrees also pause seeded routines that still have enabled schedule triggers in the isolated worktree database by default. This prevents copied daily/cron routines from firing unexpectedly inside the new workspace instance during development without disabling webhook/API-only routines.
 
 That repo-local env also sets:
