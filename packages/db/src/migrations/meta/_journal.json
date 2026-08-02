@@ -1380,6 +1380,13 @@
       "when": 1785175200001,
       "tag": "0198_cost_event_rate_card",
       "breakpoints": true
+    },
+    {
+      "idx": 199,
+      "version": "7",
+      "when": 1785175201001,
+      "tag": "0199_pricing_methodology",
+      "breakpoints": true
     }
   ]
 }

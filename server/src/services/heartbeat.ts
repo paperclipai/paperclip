@@ -12665,7 +12665,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         outputTokens,
         cacheWriteTokens,
         costCents: additionalCostCents,
-        rateCardCents: rateCardCents ?? 0,
+        // New rows are always `measured`: the application code populates a
+        // real `cache_write_tokens` and a real `rate_card_cents` (or NULL when
+        // the model is unlisted). Pre-migration rows were reclassified by the
+        // 0199 migration backfill and are not reached by this write path.
+        rateCardCents: rateCardCents,
+        pricingMethodology: rateCardCents == null ? "unpriced" : "measured",
         occurredAt,
       });
     }

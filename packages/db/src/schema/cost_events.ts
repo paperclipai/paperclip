@@ -31,7 +31,15 @@ export const costEvents = pgTable(
     // Cash actually billed. Stays 0 for subscription_included. Feeds budgets.
     costCents: integer("cost_cents").notNull(),
     // Notional tokens x list-price figure. Never an invoice, never budget input.
-    rateCardCents: integer("rate_card_cents").notNull().default(0),
+    // Nullable: a row with no measurable rate (subscription auth, unlisted
+    // model) records NULL instead of zero so dashboards don't read the silence
+    // as a fact. The companion `pricing_methodology` column tells readers what
+    // shape the figure (or its absence) is.
+    rateCardCents: integer("rate_card_cents"),
+    // How `rateCardCents` (and `cacheWriteTokens`) were arrived at. Always set:
+    // see PRICING_METHODOLOGIES for the three legal values and the PHA-1643
+    // research doc for why a non-nullable flag is the enforcement mechanism.
+    pricingMethodology: text("pricing_methodology").notNull().default("measured"),
     occurredAt: timestamp("occurred_at", { withTimezone: true }).notNull(),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
   },
