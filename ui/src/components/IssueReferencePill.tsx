@@ -36,8 +36,8 @@ export function IssueReferencePill({
       <span
         data-mention-kind="issue"
         className={classNames}
-        title={issue.title}
-        aria-label={`Task: ${issue.title}`}
+        title={issue.title ?? undefined}
+        aria-label={`Task: ${issue.title ?? "Untitled task"}`}
       >
         {content}
       </span>
@@ -49,8 +49,8 @@ export function IssueReferencePill({
       to={`/issues/${issueLabel}`}
       data-mention-kind="issue"
       className={classNames}
-      title={issue.title}
-      aria-label={`Task ${issueLabel}: ${issue.title}`}
+      title={issue.title ?? undefined}
+      aria-label={`Task ${issueLabel}: ${issue.title ?? issueLabel}`}
     >
       {content}
     </Link>

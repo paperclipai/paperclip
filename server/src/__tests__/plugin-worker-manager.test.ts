@@ -13,6 +13,7 @@ import {
   appendStderrExcerpt,
   createPluginWorkerHandle,
   formatWorkerFailureMessage,
+  resolveRpcCallTimeoutMs,
 } from "../services/plugin-worker-manager.js";
 
 const FIXTURES_DIR = path.join(path.dirname(fileURLToPath(import.meta.url)), "fixtures");
@@ -34,6 +35,56 @@ const TEST_MANIFEST: PaperclipPluginManifestV1 = {
   capabilities: [],
   entrypoints: { worker: "dist/worker.js" },
 };
+
+describe("resolveRpcCallTimeoutMs", () => {
+  const MAX_RPC_TIMEOUT_MS = 15 * 60 * 1_000;
+  const MAX_NODE_TIMER_TIMEOUT_MS = 2_147_483_647;
+  const DEFAULT_RPC_TIMEOUT_MS = 30_000;
+
+  it("honors an explicit timeout above the 15-minute default ceiling", () => {
+    // The sandbox environment driver requests ~4h + 30s buffer for
+    // environmentExecute; this must not be clamped to 15 minutes.
+    const fourHoursPlusBuffer = 4 * 60 * 60 * 1_000 + 30_000;
+    expect(resolveRpcCallTimeoutMs(fourHoursPlusBuffer, DEFAULT_RPC_TIMEOUT_MS)).toBe(
+      fourHoursPlusBuffer,
+    );
+  });
+
+  it("honors an explicit timeout below the ceiling", () => {
+    expect(resolveRpcCallTimeoutMs(100, DEFAULT_RPC_TIMEOUT_MS)).toBe(100);
+    expect(resolveRpcCallTimeoutMs(MAX_RPC_TIMEOUT_MS - 1, DEFAULT_RPC_TIMEOUT_MS)).toBe(
+      MAX_RPC_TIMEOUT_MS - 1,
+    );
+  });
+
+  it("truncates fractional explicit timeouts", () => {
+    expect(resolveRpcCallTimeoutMs(1_000.9, DEFAULT_RPC_TIMEOUT_MS)).toBe(1_000);
+  });
+
+  it("normalizes explicit timeouts to Node's timer-safe range", () => {
+    expect(resolveRpcCallTimeoutMs(0.5, DEFAULT_RPC_TIMEOUT_MS)).toBe(1);
+    expect(resolveRpcCallTimeoutMs(MAX_NODE_TIMER_TIMEOUT_MS + 1, DEFAULT_RPC_TIMEOUT_MS)).toBe(
+      MAX_NODE_TIMER_TIMEOUT_MS,
+    );
+  });
+
+  it("uses the default timeout when no explicit timeout is provided", () => {
+    expect(resolveRpcCallTimeoutMs(undefined, DEFAULT_RPC_TIMEOUT_MS)).toBe(
+      DEFAULT_RPC_TIMEOUT_MS,
+    );
+  });
+
+  it("clamps only the default path to the 15-minute ceiling", () => {
+    expect(resolveRpcCallTimeoutMs(undefined, 24 * 60 * 60 * 1_000)).toBe(MAX_RPC_TIMEOUT_MS);
+  });
+
+  it("falls back to the clamped default for unusable explicit timeouts", () => {
+    for (const bad of [0, -1, Number.NaN, Number.POSITIVE_INFINITY]) {
+      expect(resolveRpcCallTimeoutMs(bad, DEFAULT_RPC_TIMEOUT_MS)).toBe(DEFAULT_RPC_TIMEOUT_MS);
+    }
+    expect(resolveRpcCallTimeoutMs(Number.NaN, 24 * 60 * 60 * 1_000)).toBe(MAX_RPC_TIMEOUT_MS);
+  });
+});
 
 describe("plugin-worker-manager stderr failure context", () => {
   it("appends worker stderr context to failure messages", () => {

@@ -35,4 +35,15 @@ describe("codex local adapter metadata", () => {
     expect(normalizeCodexModel("")).toBe("");
     expect(normalizeCodexModel(null)).toBe("");
   });
+
+  it("normalizes the legacy bare gpt-5.6 alias to the concrete gpt-5.6-sol slug", () => {
+    expect(normalizeCodexModel("gpt-5.6")).toBe("gpt-5.6-sol");
+    expect(normalizeCodexModel("  gpt-5.6  ")).toBe("gpt-5.6-sol");
+    // Concrete slugs and unknown/manual model IDs pass through untouched.
+    expect(normalizeCodexModel("gpt-5.6-sol")).toBe("gpt-5.6-sol");
+    expect(normalizeCodexModel("gpt-5.5")).toBe("gpt-5.5");
+    expect(normalizeCodexModel("future-model")).toBe("future-model");
+    expect(normalizeCodexModel("")).toBe("");
+    expect(normalizeCodexModel(null)).toBe("");
+  });
 });

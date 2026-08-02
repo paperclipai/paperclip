@@ -13,6 +13,8 @@ import {
   type GitWorktreeBranchAncestryVerdict,
   type GitWorktreeBranchIncoherenceEvidence as SharedGitWorktreeBranchIncoherenceEvidence,
   type GitWorktreeInProgressOperation,
+  type IssueCommentMetadata,
+  type IssueCommentPresentation,
   type WorkspaceOperationPhase,
   type WorkspaceRuntimeDesiredState,
   type WorkspaceRuntimeServiceStateMap,
@@ -36,6 +38,12 @@ import type { WorkspaceOperationRecorder } from "./workspace-operations.js";
 import { executionWorkspaceService, readExecutionWorkspaceConfig } from "./execution-workspaces.js";
 import { logActivity } from "./activity-log.js";
 import { readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
+import {
+  cleanupWorktreeInstanceArtifacts,
+  deriveWorktreeInstanceId,
+  readWorktreeInstancePointer,
+  type WorktreeInstancePointer,
+} from "./workspace-instance-cleanup.js";
 
 export function resolveShell(): string {
   const fallback = process.platform === "win32" ? "sh" : "/bin/sh";
@@ -45,6 +53,19 @@ export function resolveShell(): string {
   return shell;
 }
 
+/**
+ * A read-only referenced (mentioned) project workspace carried alongside the anchor. Additive and
+ * backward-compatible: it defaults to an empty array. Additional workspaces never get git-worktree
+ * realization; the anchor keeps the single scalar realization path.
+ */
+export interface ExecutionWorkspaceAdditionalInput {
+  cwd: string;
+  projectId: string;
+  workspaceId: string | null;
+  repoUrl: string | null;
+  repoRef: string | null;
+}
+
 export interface ExecutionWorkspaceInput {
   baseCwd: string;
   source: "project_primary" | "task_session" | "agent_home";
@@ -52,6 +73,7 @@ export interface ExecutionWorkspaceInput {
   workspaceId: string | null;
   repoUrl: string | null;
   repoRef: string | null;
+  additionalWorkspaces?: ExecutionWorkspaceAdditionalInput[];
 }
 
 export interface ExecutionWorkspaceIssueRef {
@@ -1744,14 +1766,24 @@ export async function ensureGitWorktreeBranchCoherent(input: {
     };
   }
 
+  // A recorded branch that no longer exists anywhere has no commits to lose, so
+  // adopting the clean checked-out branch is trivially forward-only. This is the
+  // steady state left behind when an agent renames its task branch (e.g. to a
+  // feat/* PR branch) and the recorded branch was never created or was deleted.
+  const recordedBranchMissingButAdoptable =
+    !evidence.provenance.expectedBranchExists &&
+    evidence.provenance.actualBranchExists === true &&
+    evidence.provenance.registeredBranchMatchesHead;
   if (
     input.enableWorkspaceBranchReconcileForward === true &&
-    evidence.provenance.ancestryVerdict === "ancestor" &&
-    !evidence.provenance.sameHead &&
     evidence.cleanliness === "clean" &&
-    currentBranch
+    currentBranch &&
+    ((evidence.provenance.ancestryVerdict === "ancestor" && !evidence.provenance.sameHead) ||
+      recordedBranchMissingButAdoptable)
   ) {
-    const reason = "Automatic forward reconciliation: recorded branch is an ancestor of the checked-out branch.";
+    const reason = evidence.provenance.expectedBranchExists
+      ? "Automatic forward reconciliation: recorded branch is an ancestor of the checked-out branch."
+      : "Automatic forward reconciliation: the recorded branch no longer exists, so Paperclip adopted the clean checked-out branch.";
     if (input.executionWorkspaceId && input.persistForwardReconcile !== false) {
       if (!input.db) {
         evidence.safeRepair.reason = "forward reconciliation requires database access to update the execution workspace record";
@@ -2932,6 +2964,7 @@ export async function ensurePersistedExecutionWorkspaceAvailable(input: {
     workspaceId: input.workspace.projectWorkspaceId ?? input.base.workspaceId,
     repoUrl: input.workspace.repoUrl ?? input.base.repoUrl,
     repoRef: input.workspace.baseRef ?? input.base.repoRef,
+    additionalWorkspaces: input.base.additionalWorkspaces ?? [],
     strategy,
     cwd,
     branchName: input.workspace.branchName ?? null,
@@ -3168,6 +3201,17 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
     workspace: input.workspace,
     projectWorkspaceCwd: input.projectWorkspace?.cwd ?? null,
   });
+  let worktreeInstancePointer: WorktreeInstancePointer | null = null;
+  let expectedWorktreeInstanceId: string | null = null;
+  if (input.workspace.providerType === "git_worktree" && workspacePath) {
+    expectedWorktreeInstanceId = deriveWorktreeInstanceId(workspacePath);
+    try {
+      // Capture the pointer before custom cleanup commands can remove the repo-local env file.
+      worktreeInstancePointer = await readWorktreeInstancePointer(workspacePath);
+    } catch (err) {
+      warnings.push(`Could not read worktree instance pointer: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
   const createdByRuntime = input.workspace.metadata?.createdByRuntime === true;
   const cleanupCommands = [
     input.cleanupCommand ?? null,
@@ -3200,6 +3244,21 @@ export async function cleanupExecutionWorkspaceArtifacts(input: {
       });
     } catch (err) {
       warnings.push(err instanceof Error ? err.message : String(err));
+    }
+  }
+
+  if (worktreeInstancePointer && workspacePath && expectedWorktreeInstanceId) {
+    try {
+      const result = await cleanupWorktreeInstanceArtifacts({
+        pointer: worktreeInstancePointer,
+        workspaceId: input.workspace.id,
+        workspacePath,
+        expectedInstanceId: expectedWorktreeInstanceId,
+        recorder: input.recorder,
+      });
+      if (result.status === "refused") warnings.push(result.warning);
+    } catch (err) {
+      warnings.push(`Failed to clean worktree instance: ${err instanceof Error ? err.message : String(err)}`);
     }
   }
 
@@ -5065,10 +5124,73 @@ export async function persistAdapterManagedRuntimeServices(input: {
   return refs;
 }
 
-export function buildWorkspaceReadyComment(input: {
+type WorkspaceReadyCommentInput = {
   workspace: RealizedExecutionWorkspace;
   runtimeServices: RuntimeServiceRef[];
-}) {
+};
+
+const COMMENT_METADATA_LABEL_MAX_LENGTH = 120;
+
+function workspaceReadyServiceLabel(serviceName: string): string {
+  const label = serviceName.trim() || "Service";
+  return label.length > COMMENT_METADATA_LABEL_MAX_LENGTH
+    ? `${label.slice(0, COMMENT_METADATA_LABEL_MAX_LENGTH - 1)}…`
+    : label;
+}
+
+export function buildWorkspaceReadyPresentation(
+  input: WorkspaceReadyCommentInput,
+): IssueCommentPresentation {
+  const workspaceLabel = input.workspace.branchName ?? input.workspace.strategy;
+  const title = `Workspace ready · ${workspaceLabel}`;
+  const hasWarnings = input.workspace.warnings.length > 0;
+
+  return {
+    kind: "system_notice",
+    tone: hasWarnings ? "warning" : "info",
+    title: title.length > 160 ? `${title.slice(0, 159)}…` : title,
+    density: "compact",
+    detailsDefaultOpen: hasWarnings,
+  };
+}
+
+export function buildWorkspaceReadyMetadata(
+  input: WorkspaceReadyCommentInput,
+): IssueCommentMetadata {
+  const workspaceRows: IssueCommentMetadata["sections"][number]["rows"] = [
+    { type: "key_value", label: "Strategy", value: input.workspace.strategy },
+    ...(input.workspace.branchName
+      ? [{ type: "key_value" as const, label: "Branch", value: input.workspace.branchName }]
+      : []),
+    { type: "key_value", label: "CWD", value: input.workspace.cwd },
+    ...(input.workspace.worktreePath && input.workspace.worktreePath !== input.workspace.cwd
+      ? [{ type: "key_value" as const, label: "Worktree", value: input.workspace.worktreePath }]
+      : []),
+  ];
+  const serviceRows: IssueCommentMetadata["sections"][number]["rows"] = input.runtimeServices.map(
+    (service) => ({
+      type: "key_value",
+      label: workspaceReadyServiceLabel(service.serviceName),
+      value: `${service.url ?? "running"}${service.reused ? " (reused)" : ""}`,
+    }),
+  );
+
+  return {
+    version: 1,
+    sections: [
+      { title: "Workspace", rows: workspaceRows },
+      ...(serviceRows.length > 0 ? [{ title: "Services", rows: serviceRows }] : []),
+      ...(input.workspace.warnings.length > 0
+        ? [{
+            title: "Warnings",
+            rows: input.workspace.warnings.map((warning) => ({ type: "text" as const, text: warning })),
+          }]
+        : []),
+    ],
+  };
+}
+
+export function buildWorkspaceReadyComment(input: WorkspaceReadyCommentInput) {
   const lines = ["## Workspace Ready", ""];
   lines.push(`- Strategy: \`${input.workspace.strategy}\``);
   if (input.workspace.branchName) lines.push(`- Branch: \`${input.workspace.branchName}\``);

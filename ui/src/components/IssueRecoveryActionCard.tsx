@@ -116,6 +116,7 @@ export interface IssueRecoveryActionCardProps {
 
 const KIND_LABEL: Record<IssueRecoveryActionKind, string> = {
   missing_disposition: "Missing Disposition",
+  close_evidence_unmet: "Close Evidence Unmet",
   stranded_assigned_issue: "Stranded Task",
   workspace_validation: "Workspace Validation",
   configuration_validation: "Configuration Validation",
@@ -126,6 +127,8 @@ const KIND_LABEL: Record<IssueRecoveryActionKind, string> = {
 const KIND_HEADLINE: Record<IssueRecoveryActionKind, string> = {
   missing_disposition:
     "This task's run finished, but no next step was chosen. Choose what happens next — try the task again, mark it done, or send it for review.",
+  close_evidence_unmet:
+    "Paperclip could not verify the evidence required to close this task. Add or confirm the missing evidence before trying to close it again.",
   stranded_assigned_issue:
     "Paperclip retried this task's last run, but there is still no queued run, reviewer, blocker, or other next owner. To get it moving, choose what happens next — try the task again, mark it done, or send it for review.",
   workspace_validation:

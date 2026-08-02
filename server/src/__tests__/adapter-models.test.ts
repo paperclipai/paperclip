@@ -70,6 +70,8 @@ describe("adapter model listing", () => {
     expect(models.some((model) => model.id === "claude-fable-5")).toBe(true);
     expect(models.some((model) => model.id === "claude-sonnet-5")).toBe(true);
     expect(models.some((model) => model.id === "claude-mythos-5")).toBe(true);
+    // Opus 5 is a current GA flagship and must be offered even when live discovery is unavailable.
+    expect(models.some((model) => model.id === "claude-opus-5")).toBe(true);
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 

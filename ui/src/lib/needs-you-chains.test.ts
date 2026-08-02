@@ -1,8 +1,16 @@
 import { describe, expect, it } from "vitest";
-import type { Issue, IssueBlockedInboxAttention, IssueRelationIssueSummary } from "@paperclipai/shared";
+import type {
+  Issue,
+  IssueBlockedInboxAttention,
+  IssueBlockedInboxIssueRef,
+  IssueRelationIssueSummary,
+} from "@paperclipai/shared";
 import { buildNeedsYouForest, chainStats, isActionableAsk } from "./needs-you-chains";
 
-function blockerRef(id: string, terminalBlockers?: IssueRelationIssueSummary[]): IssueRelationIssueSummary {
+function blockerRef(
+  id: string,
+  terminalBlockers?: IssueRelationIssueSummary[],
+): IssueRelationIssueSummary & IssueBlockedInboxIssueRef {
   return {
     id,
     identifier: id.toUpperCase(),

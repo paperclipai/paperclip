@@ -33,6 +33,7 @@ function makeCompany(overrides: Partial<Company>): Company {
     createdAt: new Date(),
     updatedAt: new Date(),
     ...overrides,
+    workProductsRoot: overrides.workProductsRoot ?? null,
   };
 }
 

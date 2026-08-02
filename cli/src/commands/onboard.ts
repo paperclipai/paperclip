@@ -43,6 +43,8 @@ import {
   trackInstallStarted,
   trackInstallCompleted,
 } from "../telemetry.js";
+import { handleOnboardService } from "../onboard-service.js";
+import { readInstallManifest, isManagedExecutable } from "../install-store.js";
 
 type SetupMode = "quickstart" | "advanced";
 
@@ -52,6 +54,7 @@ type OnboardOptions = {
   yes?: boolean;
   invokedByRun?: boolean;
   bind?: BindMode;
+  installService?: boolean;
 };
 
 type OnboardDefaults = Pick<PaperclipConfig, "database" | "logging" | "server" | "auth" | "storage" | "secrets">;
@@ -322,6 +325,21 @@ function canCreateBootstrapInviteImmediately(config: Pick<PaperclipConfig, "data
   return config.server.deploymentMode === "authenticated" && config.database.mode !== "embedded-postgres";
 }
 
+export function isEphemeralNpxExecution(entrypoint = process.argv[1]): boolean {
+  if (!entrypoint) return false;
+  const normalized = entrypoint.replaceAll("\\", "/");
+  return normalized.includes("/_npx/") || normalized.includes("/npm/_npx/");
+}
+
+function printManagedInstallHint(): void {
+  const manifest = readInstallManifest();
+  if (manifest && isManagedExecutable(process.argv[1], manifest)) return;
+  if (!isEphemeralNpxExecution()) return;
+  p.log.info(
+    `This npx run is temporary. Use ${pc.cyan("paperclipai install")} for atomic updates, rollback, and service support.`,
+  );
+}
+
 export async function onboard(opts: OnboardOptions): Promise<void> {
   if (opts.bind && !["loopback", "lan", "tailnet"].includes(opts.bind)) {
     throw new Error(`Unsupported bind preset for onboard: ${opts.bind}. Use loopback, lan, or tailnet.`);
@@ -400,7 +418,10 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
       "Next commands",
     );
 
-    let shouldRunNow = opts.run === true || opts.yes === true;
+    printManagedInstallHint();
+    const serviceInstalled = await handleOnboardService(opts);
+
+    let shouldRunNow = !serviceInstalled && (opts.run === true || opts.yes === true);
     if (!shouldRunNow && !opts.invokedByRun && process.stdin.isTTY && process.stdout.isTTY) {
       const answer = await p.confirm({
         message: "Start Paperclip now?",
@@ -655,12 +676,16 @@ export async function onboard(opts: OnboardOptions): Promise<void> {
     "Next commands",
   );
 
+  printManagedInstallHint();
+
   if (canCreateBootstrapInviteImmediately({ database, server })) {
     p.log.step("Generating bootstrap CEO invite");
     await bootstrapCeoInvite({ config: configPath });
   }
 
-  let shouldRunNow = opts.run === true || opts.yes === true;
+  const serviceInstalled = await handleOnboardService(opts);
+
+  let shouldRunNow = !serviceInstalled && (opts.run === true || opts.yes === true);
   if (!shouldRunNow && !opts.invokedByRun && process.stdin.isTTY && process.stdout.isTTY) {
     const answer = await p.confirm({
       message: "Start Paperclip now?",

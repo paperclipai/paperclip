@@ -32,6 +32,8 @@ import plugin, {
   setDaytonaTimingClockForTest,
   setDaytonaHandleFreshnessClockForTest,
   __resetDaytonaSandboxHandleCacheForTest,
+  __getDaytonaWritableDirsForTest,
+  buildBwrapCommand,
 } from "./plugin.js";
 import manifest from "./manifest.js";
 
@@ -1101,11 +1103,12 @@ describe("Daytona sandbox provider plugin", () => {
     const [command, cwdArg, envArg, timeoutArg] = sandbox.process.executeCommand.mock.calls[0] as [string, unknown, unknown, number];
     expect(command).toMatch(/\/etc\/profile/);
     expect(command).toMatch(/"\$HOME\/\.profile"/);
-    expect(command).toMatch(/cd '\/workspace'/);
+    expect(command).not.toMatch(/nvm\.sh/);
+    expect(command).toMatch(/&& cd '\/workspace'/);
     expect(command).toMatch(/&& env GIT_TERMINAL_PROMPT='0' GCM_INTERACTIVE='Never' GIT_ASKPASS='echo' SSH_ASKPASS='echo' SSH_ASKPASS_REQUIRE='force' FOO='bar' 'printf' 'hello'$/);
     expect(command).not.toMatch(/(?:^|&& )exec /);
-    // cwd/env are baked into the login-shell command itself; we pass undefined
-    // to the SDK so it doesn't run the cd before profile sourcing.
+    // cwd/env are baked into the command itself; we pass undefined to the SDK
+    // so its own cwd argument does not run before the caller env is applied.
     expect(cwdArg).toBeUndefined();
     expect(envArg).toBeUndefined();
     expect(timeoutArg).toBe(1);
@@ -1182,7 +1185,8 @@ describe("Daytona sandbox provider plugin", () => {
     );
     const [command] = sandbox.process.executeCommand.mock.calls[0] as [string];
     expect(command).toMatch(/\/etc\/profile/);
-    expect(command).toMatch(/cd '\/workspace'/);
+    expect(command).not.toMatch(/nvm\.sh/);
+    expect(command).toMatch(/&& cd '\/workspace'/);
     expect(command).toMatch(/env .* 'cat' < '\/tmp\/paperclip-stdin-/);
     expect(command).not.toMatch(/(?:^|&& )exec /);
     expect(sandbox.fs.deleteFile).toHaveBeenCalledWith(expect.stringMatching(/^\/tmp\/paperclip-stdin-/));
@@ -1190,6 +1194,241 @@ describe("Daytona sandbox provider plugin", () => {
       exitCode: 0,
       timedOut: false,
     });
+  });
+
+  it("wraps the command when the lease reports bwrap available and uid/gid known", async () => {
+    process.env.DAYTONA_API_KEY = "host-key";
+    const sandbox = createMockSandbox();
+    mockGet.mockResolvedValue(sandbox);
+
+    await plugin.definition.onEnvironmentExecute?.({
+      driverKey: "daytona",
+      companyId: "company-1",
+      environmentId: "env-1",
+      config: { timeoutMs: 300000, reuseLease: false },
+      lease: {
+        providerLeaseId: "sandbox-123",
+        metadata: {
+          remoteCwd: "/home/daytona/paperclip-workspace",
+          bwrapAvailable: true,
+          sandboxUid: 1000,
+          sandboxGid: 1000,
+        },
+      },
+      command: "printf",
+      args: ["hello"],
+      timeoutMs: 1000,
+    });
+
+    const [command] = sandbox.process.executeCommand.mock.calls[0] as [string];
+    // The wrapper runs `sudo -n bwrap`, re-enters the sandbox user through the
+    // user namespace, and binds the workspace directory read-write.
+    expect(command.startsWith("sudo -n bwrap")).toBe(true);
+    expect(command).toContain("--unshare-user --uid 1000 --gid 1000");
+    expect(command).toContain(
+      "--bind-try '/home/daytona/paperclip-workspace' '/home/daytona/paperclip-workspace'",
+    );
+    // The login-shell script still rides inside the wrapper through `sh -c`.
+    expect(command).toContain("/etc/profile");
+  });
+
+  it("binds collected rw sync directories", async () => {
+    process.env.DAYTONA_API_KEY = "host-key";
+    const remoteCwd = "/home/daytona/paperclip-workspace";
+    const collectedDir = `${remoteCwd}/data`;
+    const hostDir = await fs.mkdtemp(path.join(os.tmpdir(), "daytona-bwrap-test-"));
+    const source = path.join(hostDir, "in-place.txt");
+    await fs.writeFile(source, "bytes");
+    const sandbox = createMockSandbox();
+    mockGet.mockResolvedValue(sandbox);
+
+    const scopeParams = {
+      driverKey: "daytona",
+      companyId: "company-1",
+      environmentId: "env-1",
+      config: { timeoutMs: 300000, reuseLease: false },
+    };
+
+    // Record a read-write sync destination under the shared scope. The execute
+    // hook reads the same scope, so the wrapper must bind this directory too.
+    await plugin.definition.onEnvironmentSyncIn?.({
+      ...scopeParams,
+      lease: { providerLeaseId: "sandbox-123", metadata: { remoteCwd } },
+      operations: [
+        {
+          operationId: "sync-op-rw",
+          files: [
+            {
+              sourcePath: source,
+              targetPath: `${collectedDir}/in-place.txt`,
+              kind: "file" as const,
+              access: "rw" as const,
+            },
+          ],
+        },
+      ],
+    });
+    sandbox.process.executeCommand.mockClear();
+
+    await plugin.definition.onEnvironmentExecute?.({
+      ...scopeParams,
+      lease: {
+        providerLeaseId: "sandbox-123",
+        metadata: { remoteCwd, bwrapAvailable: true, sandboxUid: 1000, sandboxGid: 1000 },
+      },
+      command: "printf",
+      args: ["hello"],
+      timeoutMs: 1000,
+    });
+
+    const [command] = sandbox.process.executeCommand.mock.calls[0] as [string];
+    expect(command).toContain(`--bind-try '${collectedDir}' '${collectedDir}'`);
+    await fs.rm(hostDir, { recursive: true, force: true });
+  });
+
+  it("keeps binding a collected rw directory after a later sync deletes it, so a stale path does not abort a later command", async () => {
+    // A sync records a read-write destination, then a later operation removes
+    // that path in the sandbox. The store still holds the path, so the wrapper
+    // still adds it to the command. `--bind-try` skips a missing source, so the
+    // command still runs. This test proves the wrapper uses `--bind-try` (not
+    // `--bind`) for the collected path, which stops a stale path from failing
+    // every later command for the scope.
+    process.env.DAYTONA_API_KEY = "host-key";
+    const remoteCwd = "/home/daytona/paperclip-workspace";
+    const collectedDir = `${remoteCwd}/scratch`;
+    const hostDir = await fs.mkdtemp(path.join(os.tmpdir(), "daytona-bwrap-stale-"));
+    const source = path.join(hostDir, "note.txt");
+    await fs.writeFile(source, "bytes");
+    const sandbox = createMockSandbox();
+    mockGet.mockResolvedValue(sandbox);
+
+    const scopeParams = {
+      driverKey: "daytona",
+      companyId: "company-1",
+      environmentId: "env-1",
+      config: { timeoutMs: 300000, reuseLease: false },
+    };
+
+    await plugin.definition.onEnvironmentSyncIn?.({
+      ...scopeParams,
+      lease: { providerLeaseId: "sandbox-123", metadata: { remoteCwd } },
+      operations: [
+        {
+          operationId: "sync-op-rw",
+          files: [
+            {
+              sourcePath: source,
+              targetPath: `${collectedDir}/note.txt`,
+              kind: "file" as const,
+              access: "rw" as const,
+            },
+          ],
+        },
+      ],
+    });
+    sandbox.process.executeCommand.mockClear();
+
+    await plugin.definition.onEnvironmentExecute?.({
+      ...scopeParams,
+      lease: {
+        providerLeaseId: "sandbox-123",
+        metadata: { remoteCwd, bwrapAvailable: true, sandboxUid: 1000, sandboxGid: 1000 },
+      },
+      command: "printf",
+      args: ["hello"],
+      timeoutMs: 1000,
+    });
+
+    const [command] = sandbox.process.executeCommand.mock.calls[0] as [string];
+    // The stale collected path binds with `--bind-try`, so a missing source is
+    // skipped and the command still runs.
+    expect(command).toContain(`--bind-try '${collectedDir}' '${collectedDir}'`);
+    // No writable directory uses a plain `--bind`, so no stale source can abort.
+    expect(command).not.toMatch(/(^| )--bind '/);
+    await fs.rm(hostDir, { recursive: true, force: true });
+  });
+
+  it("re-binds the stdin path when stdin is present and bwrap is available", async () => {
+    process.env.DAYTONA_API_KEY = "host-key";
+    const sandbox = createMockSandbox();
+    mockGet.mockResolvedValue(sandbox);
+
+    await plugin.definition.onEnvironmentExecute?.({
+      driverKey: "daytona",
+      companyId: "company-1",
+      environmentId: "env-1",
+      config: { timeoutMs: 300000, reuseLease: false },
+      lease: {
+        providerLeaseId: "sandbox-123",
+        metadata: {
+          remoteCwd: "/home/daytona/paperclip-workspace",
+          bwrapAvailable: true,
+          sandboxUid: 1000,
+          sandboxGid: 1000,
+        },
+      },
+      command: "cat",
+      args: [],
+      stdin: "input payload",
+      timeoutMs: 1000,
+    });
+
+    const stdinPath = sandbox.fs.uploadFile.mock.calls[0][1] as string;
+    expect(stdinPath).toMatch(/^\/tmp\/paperclip-stdin-/);
+    const [command] = sandbox.process.executeCommand.mock.calls[0] as [string];
+    // The `--tmpfs /tmp` flag hides the uploaded stdin file, so the wrapper must
+    // re-bind it read-only after the tmpfs.
+    expect(command).toContain(`--ro-bind '${stdinPath}' '${stdinPath}'`);
+  });
+
+  it("runs the plain command when bwrap is unavailable or uid/gid is unknown", async () => {
+    process.env.DAYTONA_API_KEY = "host-key";
+    const sandbox = createMockSandbox();
+    mockGet.mockResolvedValue(sandbox);
+
+    // Case 1: the probe reported bwrap unavailable.
+    await plugin.definition.onEnvironmentExecute?.({
+      driverKey: "daytona",
+      companyId: "company-1",
+      environmentId: "env-1",
+      config: { timeoutMs: 300000, reuseLease: false },
+      lease: {
+        providerLeaseId: "sandbox-123",
+        metadata: {
+          remoteCwd: "/home/daytona/paperclip-workspace",
+          bwrapAvailable: false,
+          sandboxUid: 1000,
+          sandboxGid: 1000,
+        },
+      },
+      command: "printf",
+      args: ["hello"],
+      timeoutMs: 1000,
+    });
+    expect((sandbox.process.executeCommand.mock.calls[0] as [string])[0]).not.toContain("bwrap");
+
+    // Case 2: bwrap is available but the uid/gid is unknown. A wrap without a
+    // uid/gid would run as root, so the seam keeps the plain command.
+    sandbox.process.executeCommand.mockClear();
+    await plugin.definition.onEnvironmentExecute?.({
+      driverKey: "daytona",
+      companyId: "company-1",
+      environmentId: "env-1",
+      config: { timeoutMs: 300000, reuseLease: false },
+      lease: {
+        providerLeaseId: "sandbox-123",
+        metadata: {
+          remoteCwd: "/home/daytona/paperclip-workspace",
+          bwrapAvailable: true,
+          sandboxUid: null,
+          sandboxGid: null,
+        },
+      },
+      command: "printf",
+      args: ["hello"],
+      timeoutMs: 1000,
+    });
+    expect((sandbox.process.executeCommand.mock.calls[0] as [string])[0]).not.toContain("bwrap");
   });
 
   it("rejects invalid shell env keys before execution", async () => {
@@ -1307,37 +1546,12 @@ describe("Daytona sandbox provider plugin", () => {
     expect(result?.stderr).toMatch(/unreachable|credentials/i);
   });
 
-  // ─── No-profile fast path (A2) ─────────────────────────────────────────────
-  // The opt-in `noProfile` flag sheds the ~600 ms login-shell profile/nvm
-  // sourcing for command classes whose binary resolves on the default PATH
-  // (file-sync `tar`/`base64`/`mkdir`/`mv`), while every other exec surface
-  // (env prefix, cwd, quoting, stdin, durationMs) is preserved byte-for-byte.
-  it("test_no_profile_fast_path_omits_profile_sourcing", async () => {
-    process.env.DAYTONA_API_KEY = "host-key";
-    const sandbox = createMockSandbox();
-    mockGet.mockResolvedValue(sandbox);
-
-    await plugin.definition.onEnvironmentExecute?.({
-      driverKey: "daytona",
-      companyId: "company-1",
-      environmentId: "env-1",
-      config: { timeoutMs: 300000, reuseLease: false },
-      lease: { providerLeaseId: "sandbox-123", metadata: {} },
-      command: "tar",
-      args: ["-xf", "/workspace/upload.tar", "-C", "/workspace"],
-      cwd: "/workspace",
-      noProfile: true,
-      timeoutMs: 1000,
-    });
-
-    const [command] = sandbox.process.executeCommand.mock.calls[0] as [string];
-    expect(command).not.toMatch(/\/etc\/profile/);
-    expect(command).not.toMatch(/nvm\.sh/);
-    expect(command).not.toMatch(/NVM_DIR/);
-    expect(command).not.toMatch(/\.bash_profile/);
-  });
-
-  it("test_no_profile_fast_path_preserves_env_cwd_and_duration", async () => {
+  // ─── Exec command shape ────────────────────────────────────────────────────
+  // The wrapper sources the login profiles so `node` resolves on the reference
+  // image, then runs the command. It no longer sources `nvm.sh`, while every
+  // other exec surface (env prefix, cwd, quoting, stdin, durationMs) stays
+  // intact.
+  it("test_exec_command_preserves_env_cwd_and_duration", async () => {
     process.env.DAYTONA_API_KEY = "host-key";
     const sandbox = createMockSandbox();
     sandbox.process.executeCommand.mockResolvedValue({
@@ -1357,29 +1571,30 @@ describe("Daytona sandbox provider plugin", () => {
       args: ["-d"],
       cwd: "/workspace",
       env: { FOO: "bar" },
-      noProfile: true,
       timeoutMs: 1000,
     });
 
     const [command] = sandbox.process.executeCommand.mock.calls[0] as [string];
-    // The full exec surface is preserved on the fast path — only profile sourcing
-    // is dropped. The command must still start with the `cd` (no profile lines
-    // ahead of it) and carry the env prefix and noninteractive git defaults.
-    expect(command).toMatch(/^cd '\/workspace' && env /);
+    // The command sources the login profiles first, then runs the `cd` and the
+    // env prefix with the noninteractive git defaults.
+    expect(command).toMatch(/^if \[ -f \/etc\/profile \]/);
+    expect(command).toMatch(/&& cd '\/workspace' && env /);
     expect(command).toMatch(/GIT_TERMINAL_PROMPT='0'/);
     expect(command).toMatch(/FOO='bar' 'base64' '-d'$/);
-    expect(command).not.toMatch(/\/etc\/profile/);
-    // durationMs attribution is unchanged on the fast path.
+    expect(command).toMatch(/\/etc\/profile/);
+    expect(command).not.toMatch(/nvm\.sh/);
+    // durationMs attribution stays intact.
     expect(typeof (result!.metadata as Record<string, unknown>)?.durationMs).toBe("number");
   });
 
-  it("test_default_path_still_sources_profile", async () => {
+  it("test_exec_command_sources_profile_without_nvm", async () => {
     process.env.DAYTONA_API_KEY = "host-key";
     const sandbox = createMockSandbox();
     mockGet.mockResolvedValue(sandbox);
 
-    // No `noProfile` flag: the fail-safe default must still source the login
-    // profile so node-launching execs resolve their nvm/profile PATH.
+    // A node-launching exec resolves `node` through the login profiles, which
+    // Daytona's non-login `executeCommand` shell does not source on its own. The
+    // wrapper sources the profiles but no longer sources `nvm.sh`.
     await plugin.definition.onEnvironmentExecute?.({
       driverKey: "daytona",
       companyId: "company-1",
@@ -1394,7 +1609,9 @@ describe("Daytona sandbox provider plugin", () => {
 
     const [command] = sandbox.process.executeCommand.mock.calls[0] as [string];
     expect(command).toMatch(/\/etc\/profile/);
-    expect(command).toMatch(/nvm\.sh/);
+    expect(command).toMatch(/"\$HOME\/\.profile"/);
+    expect(command).not.toMatch(/nvm\.sh/);
+    expect(command).not.toMatch(/NVM_DIR/);
   });
 
   // ─── Per-lease started-sandbox handle cache ────────────────────────────────
@@ -2156,6 +2373,35 @@ describe("Daytona sandbox provider plugin", () => {
       expect(mockGet).toHaveBeenCalledTimes(2);
       expect(second.process.executeCommand).toHaveBeenCalledTimes(1);
     });
+
+    it("realizes the workspace from the acquire-seeded handle without a client.get", async () => {
+      process.env.DAYTONA_API_KEY = "host-key";
+      const sandbox = createMockSandbox({ id: "sandbox-seed" });
+      mockCreate.mockResolvedValue(sandbox);
+
+      const base = { driverKey: "daytona", companyId: "company-1", environmentId: "env-1" };
+      const config = { image: "node:20", timeoutMs: 300000, reuseLease: false };
+
+      const lease = await plugin.definition.onEnvironmentAcquireLease?.({
+        ...base,
+        runId: "run-1",
+        config,
+      });
+      expect(lease?.providerLeaseId).toBe("sandbox-seed");
+
+      const realize = await plugin.definition.onEnvironmentRealizeWorkspace?.({
+        ...base,
+        lease: { providerLeaseId: lease!.providerLeaseId, metadata: lease!.metadata },
+        workspace: { remotePath: "/home/daytona/paperclip-workspace" },
+        config,
+      });
+
+      // Acquire seeded the handle under the exact scope realize reads, so realize
+      // reuses it and never pays a real REST re-fetch.
+      expect(mockGet).not.toHaveBeenCalled();
+      expect(sandbox.fs.createFolder).toHaveBeenCalledWith("/home/daytona/paperclip-workspace", "755");
+      expect(realize?.cwd).toBe("/home/daytona/paperclip-workspace");
+    });
   });
 });
 
@@ -2189,6 +2435,124 @@ describe("daytona native file-sync hooks", () => {
   it("declares both sync hooks so the worker advertises the native transport", () => {
     expect(plugin.definition.onEnvironmentSyncIn).toBeTypeOf("function");
     expect(plugin.definition.onEnvironmentSyncOut).toBeTypeOf("function");
+  });
+
+  it("records the writablePath destination of a staging-tar rw mapping, not the staging parent", async () => {
+    const hostDir = await makeHostDir();
+    const source = path.join(hostDir, "workspace.tar");
+    await fs.writeFile(source, "bytes");
+
+    const sandbox = createMockSandbox();
+    mockGet.mockResolvedValue(sandbox);
+
+    const params = {
+      driverKey: "daytona",
+      companyId: "company-1",
+      environmentId: "env-1",
+      config: { timeoutMs: 300000, reuseLease: false },
+      lease: syncLease(),
+      operations: [
+        {
+          operationId: "sync-op-rw",
+          files: [
+            {
+              // The mapping uploads a staging tar under the runtime root, and a
+              // post-upload command extracts it into the workspace directory. So
+              // `writablePath` names the real read-write destination.
+              sourcePath: source,
+              targetPath: `${REMOTE_DIR}/.paperclip-runtime/workspace-upload.tar`,
+              kind: "file" as const,
+              access: "rw" as const,
+              writablePath: REMOTE_DIR,
+            },
+          ],
+        },
+      ],
+    };
+    await plugin.definition.onEnvironmentSyncIn?.(params);
+
+    // The set holds the extract destination, not the staging archive parent.
+    const recorded = __getDaytonaWritableDirsForTest(params);
+    expect(recorded).toContain(REMOTE_DIR);
+    expect(recorded).not.toContain(`${REMOTE_DIR}/.paperclip-runtime`);
+  });
+
+  it("falls back to the parent directory of an rw mapping with no writablePath", async () => {
+    const hostDir = await makeHostDir();
+    const source = path.join(hostDir, "in-place.txt");
+    await fs.writeFile(source, "bytes");
+
+    const sandbox = createMockSandbox();
+    mockGet.mockResolvedValue(sandbox);
+
+    const params = {
+      driverKey: "daytona",
+      companyId: "company-1",
+      environmentId: "env-1",
+      config: { timeoutMs: 300000, reuseLease: false },
+      lease: syncLease(),
+      operations: [
+        {
+          operationId: "sync-op-rw-inplace",
+          files: [
+            {
+              // No post-upload extract, so the mapping writes `targetPath` in
+              // place and the parent directory is the read-write destination.
+              sourcePath: source,
+              targetPath: `${REMOTE_DIR}/data/in-place.txt`,
+              kind: "file" as const,
+              access: "rw" as const,
+            },
+          ],
+        },
+      ],
+    };
+    await plugin.definition.onEnvironmentSyncIn?.(params);
+
+    expect(__getDaytonaWritableDirsForTest(params)).toContain(`${REMOTE_DIR}/data`);
+  });
+
+  it("skips ro and access-absent sync targets in the advisory writable set", async () => {
+    const hostDir = await makeHostDir();
+    const roSource = path.join(hostDir, "referenced");
+    const defaultSource = path.join(hostDir, "default.tar");
+    await fs.mkdir(roSource, { recursive: true });
+    await fs.writeFile(path.join(roSource, "notes.md"), "reference");
+    await fs.writeFile(defaultSource, "bytes");
+
+    const sandbox = createMockSandbox();
+    mockGet.mockResolvedValue(sandbox);
+
+    const params = {
+      driverKey: "daytona",
+      companyId: "company-1",
+      environmentId: "env-1",
+      config: { timeoutMs: 300000, reuseLease: false },
+      lease: syncLease(),
+      operations: [
+        {
+          operationId: "sync-op-ro",
+          files: [
+            {
+              sourcePath: roSource,
+              targetPath: `${REMOTE_DIR}/.paperclip-runtime/project-proj-first`,
+              kind: "directory" as const,
+              access: "ro" as const,
+            },
+            {
+              // An absent `access` defaults to read-only, so it is not recorded.
+              sourcePath: defaultSource,
+              targetPath: `${REMOTE_DIR}/.paperclip-runtime/default-upload.tar`,
+              kind: "file" as const,
+            },
+          ],
+        },
+      ],
+    };
+    await plugin.definition.onEnvironmentSyncIn?.(params);
+
+    // Neither the ro directory nor the access-absent file directory is recorded.
+    expect(__getDaytonaWritableDirsForTest(params)).toEqual([]);
   });
 
   it("syncIn coalesces file mappings into one uploadFiles batch to reserved temp destinations, then one batched mv, applying secret mode via setFilePermissions before the rename", async () => {
@@ -2947,6 +3311,159 @@ describe("daytona native file-sync hooks", () => {
     ).toBe(false);
   });
 
+  // -------------------------------------------------------------------------
+  // Merged git-workspace operation. A git-backed workspace stage-sync rides ONE
+  // operation whose `files` carry the git-history tar and the workspace-overlay
+  // tar, with the two extract commands as ordered `postUploadCommands`. The
+  // operation shares one mkdir, one confine guard, one `uploadFiles`, and one
+  // rename exec.
+  // -------------------------------------------------------------------------
+
+  it("stages a merged git-workspace operation as one uploadFiles batch and one rename exec, both extracts in order", async () => {
+    const hostDir = await makeHostDir();
+    const gitTar = path.join(hostDir, "git-workspace.tar");
+    const overlayTar = path.join(hostDir, "workspace.tar");
+    await fs.writeFile(gitTar, "git-bytes");
+    await fs.writeFile(overlayTar, "overlay-bytes");
+    const runtimeDir = `${REMOTE_DIR}/.paperclip-runtime/adapter`;
+
+    const sandbox = createMockSandbox();
+    mockGet.mockResolvedValue(sandbox);
+
+    const gitExtract = "git-history-extract";
+    const overlayExtract = "workspace-overlay-extract";
+    const result = await plugin.definition.onEnvironmentSyncIn?.({
+      driverKey: "daytona",
+      companyId: "company-1",
+      environmentId: "env-1",
+      config: { timeoutMs: 300000, reuseLease: false },
+      lease: syncLease(),
+      operations: [
+        {
+          operationId: "merged-workspace",
+          files: [
+            { sourcePath: gitTar, targetPath: `${runtimeDir}/git-workspace-upload.tar`, kind: "file" },
+            { sourcePath: overlayTar, targetPath: `${runtimeDir}/workspace-upload.tar`, kind: "file" },
+          ],
+          postUploadCommands: [{ command: gitExtract }, { command: overlayExtract }],
+        },
+      ],
+    });
+
+    // One bulk upload carries BOTH tars; one rename exec promotes both temps.
+    expect(sandbox.fs.uploadFiles).toHaveBeenCalledTimes(1);
+    const [uploads] = sandbox.fs.uploadFiles.mock.calls[0] as [Array<{ source: string; destination: string }>];
+    expect(uploads).toHaveLength(2);
+    const mvCalls = sandbox.process.executeCommand.mock.calls.filter(([cmd]: [string]) =>
+      String(cmd).includes("mv -f"),
+    );
+    expect(mvCalls).toHaveLength(1);
+    expect(String(mvCalls[0][0]).match(/mv -f /g)).toHaveLength(2);
+
+    // Both extract commands ran, in array order, AFTER the upload (git first).
+    const orderOf = (cmd: string) => {
+      const idx = sandbox.process.executeCommand.mock.calls.findIndex(([c]: [string]) => c === cmd);
+      return sandbox.process.executeCommand.mock.invocationCallOrder[idx];
+    };
+    expect(orderOf(gitExtract)).toBeLessThan(orderOf(overlayExtract));
+    expect(sandbox.fs.uploadFiles.mock.invocationCallOrder[0]).toBeLessThan(orderOf(gitExtract));
+
+    expect(result).toEqual({
+      operations: [{
+        operationId: "merged-workspace",
+        filesTransferred: 2,
+        bytesTransferred: "git-bytes".length + "overlay-bytes".length,
+      }],
+    });
+  });
+
+  it("rejects a merged operation when either tar mapping target escapes the remote dir, before uploading", async () => {
+    const hostDir = await makeHostDir();
+    const gitTar = path.join(hostDir, "git-workspace.tar");
+    const overlayTar = path.join(hostDir, "workspace.tar");
+    await fs.writeFile(gitTar, "git-bytes");
+    await fs.writeFile(overlayTar, "overlay-bytes");
+    const runtimeDir = `${REMOTE_DIR}/.paperclip-runtime/adapter`;
+
+    const sandbox = createMockSandbox();
+    mockGet.mockResolvedValue(sandbox);
+
+    await expect(
+      plugin.definition.onEnvironmentSyncIn?.({
+        driverKey: "daytona",
+        companyId: "company-1",
+        environmentId: "env-1",
+        config: { timeoutMs: 300000, reuseLease: false },
+        lease: syncLease(),
+        operations: [
+          {
+            operationId: "merged-escape",
+            files: [
+              { sourcePath: gitTar, targetPath: `${runtimeDir}/git-workspace-upload.tar`, kind: "file" },
+              // The overlay mapping target escapes the workspace remote dir.
+              { sourcePath: overlayTar, targetPath: `${REMOTE_DIR}/../../etc/workspace-upload.tar`, kind: "file" },
+            ],
+            postUploadCommands: [{ command: "git-history-extract" }, { command: "workspace-overlay-extract" }],
+          },
+        ],
+      }),
+    ).rejects.toThrow(/escapes the workspace remote dir|not a confined absolute path/);
+
+    // Neither tar uploaded: the confine check on the escaping mapping trips first.
+    expect(sandbox.fs.uploadFiles).not.toHaveBeenCalled();
+  });
+
+  it("stops the overlay and remove-deleted commands when the git extract fails (merged operation fail-fast)", async () => {
+    const hostDir = await makeHostDir();
+    const gitTar = path.join(hostDir, "git-workspace.tar");
+    const overlayTar = path.join(hostDir, "workspace.tar");
+    await fs.writeFile(gitTar, "git-bytes");
+    await fs.writeFile(overlayTar, "overlay-bytes");
+    const runtimeDir = `${REMOTE_DIR}/.paperclip-runtime/adapter`;
+
+    const sandbox = createMockSandbox();
+    // The first (git-history) extract exits non-zero; every transfer/guard script
+    // stays green so the fail-fast loop is the only thing that can trip this test.
+    sandbox.process.executeCommand.mockImplementation(async (command: string) => {
+      if (command === "git-history-extract") {
+        return { exitCode: 5, result: "boom", artifacts: { stdout: "boom" } };
+      }
+      return { exitCode: 0, result: "", artifacts: { stdout: "" } };
+    });
+    mockGet.mockResolvedValue(sandbox);
+
+    await expect(
+      plugin.definition.onEnvironmentSyncIn?.({
+        driverKey: "daytona",
+        companyId: "company-1",
+        environmentId: "env-1",
+        config: { timeoutMs: 300000, reuseLease: false },
+        lease: syncLease(),
+        operations: [
+          {
+            operationId: "merged-failfast",
+            files: [
+              { sourcePath: gitTar, targetPath: `${runtimeDir}/git-workspace-upload.tar`, kind: "file" },
+              { sourcePath: overlayTar, targetPath: `${runtimeDir}/workspace-upload.tar`, kind: "file" },
+            ],
+            postUploadCommands: [
+              { command: "git-history-extract" },
+              { command: "workspace-overlay-extract" },
+              { command: "remove-deleted-paths" },
+            ],
+          },
+        ],
+      }),
+    ).rejects.toThrow(/post-upload command failed \(exit 5\)/);
+
+    // Fail-fast: the overlay extract and the remove-deleted command never ran.
+    const ran = (cmd: string) =>
+      sandbox.process.executeCommand.mock.calls.some(([c]: [string]) => c === cmd);
+    expect(ran("git-history-extract")).toBe(true);
+    expect(ran("workspace-overlay-extract")).toBe(false);
+    expect(ran("remove-deleted-paths")).toBe(false);
+  });
+
   it("rejects a post-upload command cwd that escapes the remote dir lexically, before any exec (C2)", async () => {
     const hostDir = await makeHostDir();
     const source = path.join(hostDir, "config.txt");
@@ -3037,6 +3554,11 @@ describe("daytona native file-sync hooks", () => {
 
     // Same operation, now with an (empty) postUploadCommands array — must be
     // byte-identical: an absent/empty command list adds zero execs.
+    // Reset the process-scoped handle cache so the second operation fetches its
+    // own `withEmpty` handle. Both operations reuse the same providerLeaseId, so
+    // without this reset the cache serves the first `baseline` handle again and
+    // `withEmpty` records zero execs.
+    __resetDaytonaSandboxHandleCacheForTest();
     const withEmpty = createMockSandbox();
     mockGet.mockResolvedValue(withEmpty);
     await plugin.definition.onEnvironmentSyncIn?.({
@@ -3075,5 +3597,246 @@ describe("daytona manifest memory config", () => {
 
   it("keeps memory optional so the blank/default selection stays valid", () => {
     expect(memorySchema.required ?? []).not.toContain("memory");
+  });
+});
+
+describe("buildBwrapCommand advisory wrapper builder", () => {
+  it("emits user-namespace, ro-bind root, fresh dev/proc/tmp, writable binds, new-session, and sh -c", () => {
+    const command = buildBwrapCommand(
+      "echo hi",
+      ["/home/daytona/paperclip-workspace"],
+      null,
+      { uid: 1000, gid: 1000 },
+    );
+
+    expect(command).toBe(
+      "sudo -n bwrap --unshare-user --uid 1000 --gid 1000 "
+      + "--ro-bind / / --dev /dev --proc /proc --tmpfs /tmp "
+      + "--bind-try '/home/daytona/paperclip-workspace' '/home/daytona/paperclip-workspace' "
+      + "--new-session -- sh -c 'echo hi'",
+    );
+  });
+
+  it("re-binds the stdin path after tmpfs /tmp", () => {
+    const command = buildBwrapCommand(
+      "run-cmd",
+      ["/work"],
+      "/tmp/stdin.bin",
+      { uid: 1000, gid: 1000 },
+    );
+
+    expect(command).toBe(
+      "sudo -n bwrap --unshare-user --uid 1000 --gid 1000 "
+      + "--ro-bind / / --dev /dev --proc /proc --tmpfs /tmp "
+      + "--bind-try '/work' '/work' "
+      + "--ro-bind '/tmp/stdin.bin' '/tmp/stdin.bin' "
+      + "--new-session -- sh -c 'run-cmd'",
+    );
+    // The stdin re-bind must come after the tmpfs, so the tmpfs does not hide it.
+    expect(command.indexOf("--ro-bind '/tmp/stdin.bin'")).toBeGreaterThan(command.indexOf("--tmpfs /tmp"));
+  });
+
+  it("quotes writable paths and inner script with single quotes", () => {
+    const command = buildBwrapCommand(
+      "echo 'hello'",
+      ["/data/o'brien"],
+      null,
+      { uid: 1000, gid: 1000 },
+    );
+
+    // shellQuote rewrites each embedded single quote as the `'"'"'` token.
+    expect(command).toContain(`'"'"'`);
+    expect(command).toContain(`--bind-try '/data/o'"'"'brien' '/data/o'"'"'brien'`);
+    expect(command).toContain(`-- sh -c 'echo '"'"'hello'"'"''`);
+  });
+
+  it("omits the stdin re-bind when no stdin path is given and omits user-namespace flags when no uid/gid is given", () => {
+    const command = buildBwrapCommand("plain", ["/w"], null, null);
+
+    expect(command).toBe(
+      "sudo -n bwrap "
+      + "--ro-bind / / --dev /dev --proc /proc --tmpfs /tmp "
+      + "--bind-try '/w' '/w' "
+      + "--new-session -- sh -c 'plain'",
+    );
+    expect(command).not.toContain("--unshare-user");
+    expect(command).not.toContain("--uid");
+    expect(command).not.toContain("--gid");
+  });
+
+  it("binds each writable directory with --bind-try so a stale or deleted path does not abort bwrap", () => {
+    // The writable set holds advisory sandbox paths. A later sync can delete or
+    // replace one. `--bind` aborts when the source is absent; `--bind-try` skips
+    // a missing source and runs the command. Assert the builder emits
+    // `--bind-try` for every writable directory and never a plain `--bind` for
+    // them, so one stale path never poisons a later command.
+    const command = buildBwrapCommand(
+      "echo hi",
+      ["/home/daytona/paperclip-workspace", "/home/daytona/data"],
+      null,
+      { uid: 1000, gid: 1000 },
+    );
+
+    expect(command).toContain(
+      "--bind-try '/home/daytona/paperclip-workspace' '/home/daytona/paperclip-workspace'",
+    );
+    expect(command).toContain("--bind-try '/home/daytona/data' '/home/daytona/data'");
+    // The only plain `--bind` family in the command is the read-only bind
+    // (`--ro-bind`). No writable directory uses a plain `--bind`.
+    expect(command).not.toMatch(/(^| )--bind '/);
+  });
+});
+
+describe("advisory bwrap capability probe at lease time", () => {
+  // Route each probed command to a deterministic result so the hook exercises
+  // the real end-to-end path: shell detect, bwrap capability, and uid/gid read.
+  function bwrapExecMock(opts: {
+    bwrapExit?: number;
+    uid?: string;
+    gid?: string;
+    uidExit?: number;
+    gidExit?: number;
+    sentinelToken?: string;
+  } = {}) {
+    return async (command: string) => {
+      if (command.startsWith("cat ")) {
+        const token = opts.sentinelToken ?? "sentinel-token";
+        return { exitCode: 0, result: JSON.stringify({ token }), artifacts: { stdout: JSON.stringify({ token }) } };
+      }
+      if (command.includes("command -v bash")) {
+        return { exitCode: 0, result: "bash", artifacts: { stdout: "bash" } };
+      }
+      if (command.startsWith("sudo -n bwrap")) {
+        return { exitCode: opts.bwrapExit ?? 0, result: "", artifacts: { stdout: "" } };
+      }
+      if (command === "id -u") {
+        const uid = opts.uid ?? "1000";
+        return { exitCode: opts.uidExit ?? 0, result: uid, artifacts: { stdout: uid } };
+      }
+      if (command === "id -g") {
+        const gid = opts.gid ?? "1000";
+        return { exitCode: opts.gidExit ?? 0, result: gid, artifacts: { stdout: gid } };
+      }
+      return { exitCode: 0, result: "", artifacts: { stdout: "" } };
+    };
+  }
+
+  const acquireParams = {
+    driverKey: "daytona",
+    companyId: "company-1",
+    environmentId: "env-1",
+    runId: "run-1",
+    agentId: "agent-1",
+    executionWorkspaceId: "workspace-1",
+    adapterType: "codex_local",
+    config: { image: "node:20", timeoutMs: 300000, reuseLease: true },
+  };
+
+  it("records bwrap available and reads uid/gid when the probe exits zero", async () => {
+    process.env.DAYTONA_API_KEY = "host-key";
+    const sandbox = createMockSandbox();
+    sandbox.process.executeCommand.mockImplementation(bwrapExecMock({ bwrapExit: 0, uid: "1000", gid: "1001" }));
+    mockCreate.mockResolvedValue(sandbox);
+
+    const lease = await plugin.definition.onEnvironmentAcquireLease?.(acquireParams);
+
+    expect(lease).toMatchObject({
+      metadata: {
+        bwrapAvailable: true,
+        sandboxUid: 1000,
+        sandboxGid: 1001,
+      },
+    });
+  });
+
+  it("bounds the probe timeout well under the hook deadline so the hook returns fallback metadata", async () => {
+    process.env.DAYTONA_API_KEY = "host-key";
+    const sandbox = createMockSandbox();
+    sandbox.process.executeCommand.mockImplementation(bwrapExecMock({ bwrapExit: 0, uid: "1000", gid: "1000" }));
+    mockCreate.mockResolvedValue(sandbox);
+
+    // The hook deadline is 300 s; the probe must cap far below it.
+    await plugin.definition.onEnvironmentAcquireLease?.(acquireParams);
+
+    const probeCalls = sandbox.process.executeCommand.mock.calls.filter(
+      ([command]: [string]) => command === "id -u" || command === "id -g" || command.startsWith("sudo -n bwrap"),
+    );
+    expect(probeCalls.length).toBeGreaterThan(0);
+    for (const call of probeCalls) {
+      const timeoutArg = call[3] as number;
+      expect(timeoutArg).toBe(10);
+    }
+  });
+
+  it("records bwrap unavailable when the capability probe exits non-zero", async () => {
+    process.env.DAYTONA_API_KEY = "host-key";
+    const sandbox = createMockSandbox();
+    sandbox.process.executeCommand.mockImplementation(bwrapExecMock({ bwrapExit: 1, uid: "1000", gid: "1000" }));
+    mockCreate.mockResolvedValue(sandbox);
+
+    const lease = await plugin.definition.onEnvironmentAcquireLease?.(acquireParams);
+
+    expect(lease?.metadata).toMatchObject({ bwrapAvailable: false });
+  });
+
+  it("records bwrap unavailable and does not throw when the probe throws", async () => {
+    process.env.DAYTONA_API_KEY = "host-key";
+    const sandbox = createMockSandbox();
+    sandbox.process.executeCommand.mockRejectedValue(new Error("sandbox exec failed"));
+    mockCreate.mockResolvedValue(sandbox);
+
+    const lease = await plugin.definition.onEnvironmentAcquireLease?.(acquireParams);
+
+    expect(lease?.metadata).toMatchObject({
+      bwrapAvailable: false,
+      sandboxUid: null,
+      sandboxGid: null,
+    });
+  });
+
+  it("runs the probe on the environment probe hook", async () => {
+    process.env.DAYTONA_API_KEY = "host-key";
+    const sandbox = createMockSandbox();
+    sandbox.process.executeCommand.mockImplementation(bwrapExecMock({ bwrapExit: 0, uid: "1000", gid: "1000" }));
+    mockCreate.mockResolvedValue(sandbox);
+
+    const result = await plugin.definition.onEnvironmentProbe?.({
+      driverKey: "daytona",
+      companyId: "company-1",
+      environmentId: "env-1",
+      config: { snapshot: "base-snapshot", timeoutMs: 300000, reuseLease: false },
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      metadata: { bwrapAvailable: true, sandboxUid: 1000, sandboxGid: 1000 },
+    });
+  });
+
+  it("runs the probe on the resume-lease hook", async () => {
+    process.env.DAYTONA_API_KEY = "host-key";
+    const sandbox = createMockSandbox({ id: "sandbox-reuse", state: "stopped" });
+    sandbox.process.executeCommand.mockImplementation(bwrapExecMock({ bwrapExit: 0, uid: "1000", gid: "1000" }));
+    mockGet.mockResolvedValue(sandbox);
+
+    const lease = await plugin.definition.onEnvironmentResumeLease?.({
+      driverKey: "daytona",
+      companyId: "company-1",
+      environmentId: "env-1",
+      providerLeaseId: "sandbox-reuse",
+      config: { timeoutMs: 300000, reuseLease: true },
+      leaseMetadata: {
+        workspaceSentinel: {
+          path: "/home/daytona/paperclip-workspace/.paperclip-runtime/reusable-sandbox-lease.json",
+          token: "sentinel-token",
+          result: "written",
+        },
+      },
+    });
+
+    expect(lease).toMatchObject({
+      providerLeaseId: "sandbox-reuse",
+      metadata: { bwrapAvailable: true, sandboxUid: 1000, sandboxGid: 1000 },
+    });
   });
 });

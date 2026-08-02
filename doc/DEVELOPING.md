@@ -115,7 +115,27 @@ pnpm --filter @paperclipai/server exec tsx ../scripts/request-hot-restart.ts --s
 systemctl restart paperclip.service
 ```
 
-Use `--drain-required` only when the deploy intentionally requires the old terminate-and-retry behavior. Without that flag, the old server verifies that the marker targets its own PID, snapshots currently running heartbeat run IDs and child PIDs, and skips the shutdown drain so eligible detached local-agent processes can keep running. On startup the new server writes `$PAPERCLIP_HOME/hot-restart-report.json` with `previousServerPid`, `newServerPid`, `previousServerVersion`, `newServerVersion`, `adoptedRunIds`, `finalizedWhileDownRunIds`, `lostRunIds`, and per-run classifications before the normal orphan reaper runs.
+The staged command records the target server's boot identity and operating
+system process start time with the PID. It reads process metadata through
+`/proc` on Linux, `ps` on macOS and BSD, and PowerShell on Windows. These
+identities let a later request reclaim an abandoned marker after the operating
+system recycles the numeric PID. Older markers stay compatible and use process
+start metadata when available. When OS metadata is unavailable, the current
+server's health-reported boot time can still prove that a legacy marker predates
+the process now using its PID. Paperclip refuses to create a new request without
+at least one identity source. Supported-platform process probes fail explicitly
+instead of silently treating a live PID as either the original owner or a
+recycled process when identity cannot be established.
+
+Use `--drain-required` only when the deploy intentionally requires the old terminate-and-retry behavior. Without that flag, the old server verifies that the marker targets its own PID, snapshots currently running heartbeat run IDs and child PIDs, and skips the shutdown drain so eligible detached local-agent processes can keep running. On startup the new server writes `$PAPERCLIP_HOME/instances/${PAPERCLIP_INSTANCE_ID:-default}/hot-restart-report.json` with `previousServerPid`, `newServerPid`, `previousServerVersion`, `newServerVersion`, `adoptedRunIds`, `finalizedWhileDownRunIds`, `lostRunIds`, and per-run classifications before the normal orphan reaper runs.
+
+The request command records the preflight set of running heartbeat IDs and writes
+an instance-scoped marker plus a PID-targeted legacy home-root handoff marker.
+This lets a previous server version capture its snapshot at the old path while
+the new server correlates that snapshot back to the authoritative instance
+request. If any preflight run ID is absent from the shutdown snapshot, the
+startup report includes it in `lostRunIds`; a missing snapshot therefore cannot
+look like a zero-loss restart.
 
 A healthy guarded deploy must compare the report against `/api/health` (`version` or `serverVersion`) and treat any `lostRunIds` entry as a continuity failure that needs recovery before marking deployment complete.
 
@@ -394,6 +414,7 @@ This command:
 - creates an isolated instance under `~/.paperclip-worktrees/instances/<worktree-id>/`
 - when run inside a linked git worktree, mirrors the effective git hooks into that worktree's private git dir
 - picks a free app port and embedded PostgreSQL port
+- disables automatic database backups for the isolated instance
 - by default seeds the isolated DB in `minimal` mode from the current effective Paperclip instance/config (repo-local worktree config when present, otherwise the default instance) via a logical SQL snapshot
 
 Seed modes:
@@ -415,12 +436,15 @@ Provisioned git worktrees also pause seeded routines that still have enabled sch
 That repo-local env also sets:
 
 - `PAPERCLIP_IN_WORKTREE=true`
+- `PAPERCLIP_DB_BACKUP_ENABLED=false`
 - `PAPERCLIP_WORKTREE_NAME=<worktree-name>`
 - `PAPERCLIP_WORKTREE_COLOR=<hex-color>`
 
 The server/UI use those values for worktree-specific branding such as the top banner and dynamically colored favicon.
 Authenticated worktree servers also use the `PAPERCLIP_INSTANCE_ID` value to scope Better Auth cookie names.
 Browser cookies are shared by host rather than port, so this prevents logging into one `127.0.0.1:<port>` worktree from replacing another worktree server's session cookie.
+
+When Paperclip closes a server-managed git worktree, it also reclaims the isolated instance referenced by that worktree's repo-local `.paperclip/.env`. New server-managed worktrees use a collision-resistant instance id derived from the resolved absolute worktree path. Cleanup requires that exact id, stops a running embedded PostgreSQL process, and then removes the instance directory. The deletion guard only accepts canonical instance paths below `PAPERCLIP_WORKTREES_DIR/instances/`; legacy or mismatched ids, pointers to the default/live Paperclip home, and all other locations are logged and left untouched.
 
 Print shell exports explicitly when needed:
 
@@ -695,6 +719,11 @@ schemas. Defaults:
 - every 60 minutes
 - retain 30 days
 - backup dir: `~/.paperclip/instances/default/data/backups`
+
+Automatic backups are disabled for isolated worktree instances created with
+`paperclipai worktree init` or `paperclipai worktree:make`. Existing worktree
+configs are migrated to the disabled setting when their server next starts. The
+main/default instance keeps the normal enabled-by-default behavior.
 
 Configure these in:
 

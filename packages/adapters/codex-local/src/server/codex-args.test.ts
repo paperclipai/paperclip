@@ -156,4 +156,45 @@ describe("buildCodexExecArgs", () => {
       "-",
     ]);
   });
+
+  it("does not add a second --skip-git-repo-check when extraArgs already carry it", () => {
+    const result = buildCodexExecArgs(
+      {
+        model: "gpt-5.5",
+        extraArgs: ["--skip-git-repo-check"],
+      },
+      { skipGitRepoCheck: true },
+    );
+
+    expect(result.args.filter((arg) => arg === "--skip-git-repo-check")).toHaveLength(1);
+    expect(result.args).toEqual([
+      "exec",
+      "--json",
+      "--model",
+      "gpt-5.5",
+      "--skip-git-repo-check",
+      "-",
+    ]);
+  });
+
+  it("does not add a second --skip-git-repo-check when the legacy args field carries it", () => {
+    const result = buildCodexExecArgs(
+      {
+        model: "gpt-5.5",
+        args: ["--skip-git-repo-check"],
+      },
+      { skipGitRepoCheck: true },
+    );
+
+    expect(result.args.filter((arg) => arg === "--skip-git-repo-check")).toHaveLength(1);
+  });
+
+  it("keeps the operator's --skip-git-repo-check when the sandbox injection is not requested", () => {
+    const result = buildCodexExecArgs({
+      model: "gpt-5.5",
+      extraArgs: ["--skip-git-repo-check"],
+    });
+
+    expect(result.args.filter((arg) => arg === "--skip-git-repo-check")).toHaveLength(1);
+  });
 });

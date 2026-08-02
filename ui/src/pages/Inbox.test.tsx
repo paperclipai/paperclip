@@ -528,16 +528,15 @@ describe("Inbox toolbar", () => {
 
     const rows = Array.from(container.querySelectorAll("[data-inbox-item]"));
     const rowFor = (text: string) => rows.find((row) => row.textContent?.includes(text));
-    const linkOf = (row: Element) => row.querySelector<HTMLAnchorElement>("a[data-inbox-issue-link]");
     const markReadButton = (row: Element) => row.querySelector('button[aria-label="Mark as read"]');
     // The empty spacer that reserves the chevron column on every leaf row.
     // Excludes the tree-guide span (`.self-stretch`), which only renders on
     // nested rows.
     const hasLeadingSpacer = (row: Element) =>
-      !!linkOf(row)?.querySelector("span.hidden.w-4.shrink-0.sm\\:block:not(.self-stretch)");
+      !!row.querySelector("span.hidden.w-4.shrink-0.sm\\:block:not(.self-stretch)");
     // The reserved leading dot slot, present on read AND unread rows.
     const dotSlot = (row: Element) =>
-      linkOf(row)?.querySelector('[data-testid="issue-row-unread-slot"]') ?? null;
+      row.querySelector('[data-testid="issue-row-unread-slot"]');
 
     const unreadRow = rowFor("Unread inbox row")!;
     const readRow = rowFor("Read inbox row")!;
@@ -626,6 +625,107 @@ describe("Inbox toolbar", () => {
       expect(selectedRowIndex()).toBe(2);
     } finally {
       generalSettingsMock.keyboardShortcutsEnabled = false;
+      act(() => {
+        root.unmount();
+      });
+    }
+  });
+
+  it("holds the inbox order across a reordering poll, then re-sorts at an attention boundary (PAP-16015)", async () => {
+    routerMock.location.pathname = "/inbox/mine";
+    const base = new Date("2026-03-11T00:00:00.000Z").getTime();
+    const issueA = createIssue({
+      id: "issue-a",
+      identifier: "PAP-3001",
+      title: "Pin row A",
+      lastActivityAt: new Date(base + 3000),
+    });
+    const issueB = createIssue({
+      id: "issue-b",
+      identifier: "PAP-3002",
+      title: "Pin row B",
+      lastActivityAt: new Date(base + 2000),
+    });
+    const issueC = createIssue({
+      id: "issue-c",
+      identifier: "PAP-3003",
+      title: "Pin row C",
+      lastActivityAt: new Date(base + 1000),
+    });
+    apiMocks.issuesList.mockResolvedValue([issueA, issueB, issueC]);
+
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false, staleTime: 0, gcTime: 0 } },
+    });
+    const root = createRoot(container);
+
+    // Collapse each displayed row to its A/B/C identity so we can assert order.
+    const orderOf = () =>
+      [...container.querySelectorAll("[data-inbox-item]")].flatMap((row) => {
+        const text = row.textContent ?? "";
+        if (text.includes("Pin row A")) return ["A"];
+        if (text.includes("Pin row B")) return ["B"];
+        if (text.includes("Pin row C")) return ["C"];
+        return [];
+      });
+
+    const visibilityDescriptor = Object.getOwnPropertyDescriptor(document, "visibilityState");
+    const setVisibility = (state: DocumentVisibilityState) => {
+      Object.defineProperty(document, "visibilityState", { configurable: true, get: () => state });
+    };
+    let nowValue = base + 1_000_000;
+    const nowSpy = vi.spyOn(Date, "now").mockImplementation(() => nowValue);
+
+    try {
+      await act(async () => {
+        root.render(
+          <QueryClientProvider client={queryClient}>
+            <Inbox />
+          </QueryClientProvider>,
+        );
+      });
+      await vi.waitFor(() => {
+        expect(container.querySelectorAll("[data-inbox-item]").length).toBeGreaterThanOrEqual(3);
+      });
+      expect(orderOf()).toEqual(["A", "B", "C"]);
+
+      // A poll makes row C the most-recently-active: the fresh sort is now [C, A, B].
+      apiMocks.issuesList.mockResolvedValue([
+        { ...issueA },
+        { ...issueB },
+        { ...issueC, lastActivityAt: new Date(base + 9000) },
+      ]);
+      await act(async () => {
+        await queryClient.invalidateQueries();
+      });
+      await vi.waitFor(() => {
+        expect(container.textContent).toContain("Pin row C");
+      });
+
+      // No attention boundary has fired, so the displayed order is held, not reshuffled.
+      expect(orderOf()).toEqual(["A", "B", "C"]);
+
+      // The tab is hidden long enough to lose attention, then regains focus: that
+      // visibility boundary is a commit point, so the inbox adopts the fresh order.
+      await act(async () => {
+        setVisibility("hidden");
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+      nowValue += 31_000;
+      await act(async () => {
+        setVisibility("visible");
+        document.dispatchEvent(new Event("visibilitychange"));
+      });
+      await vi.waitFor(() => {
+        expect(orderOf()).toEqual(["C", "A", "B"]);
+      });
+    } finally {
+      nowSpy.mockRestore();
+      if (visibilityDescriptor) {
+        Object.defineProperty(document, "visibilityState", visibilityDescriptor);
+      } else {
+        setVisibility("visible");
+      }
       act(() => {
         root.unmount();
       });

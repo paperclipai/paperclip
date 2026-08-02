@@ -5,6 +5,7 @@ import type {
   IssueCommentMetadataRowType,
   IssueCommentPresentationKind,
   IssueCommentPresentationTone,
+  IssueCommentPresentationDensity,
   IssueExecutionMonitorClearReason,
   IssueExecutionMonitorKind,
   IssueExecutionMonitorRecoveryPolicy,
@@ -421,6 +422,7 @@ export interface IssueBlockerAttention {
   coveredBlockerCount: number;
   stalledBlockerCount: number;
   attentionBlockerCount: number;
+  pendingFinalizeBlockerIssueIds?: string[];
   sampleBlockerIdentifier: string | null;
   sampleStalledBlockerIdentifier: string | null;
 }
@@ -651,6 +653,12 @@ export interface IssueExecutionPolicy {
   monitor?: IssueExecutionMonitorPolicy | null;
   reviewPreset?: LowTrustReviewPresetPolicy;
   authorizationPolicy?: TrustAuthorizationPolicy;
+  /**
+   * Maximum consecutive agent-initiated changes-requested rounds before the
+   * pending stage escalates to the responsible human. Null uses the server
+   * default. Human decisions reset the round counter.
+   */
+  maxReviewRounds?: number | null;
 }
 
 export interface IssueExecutionMonitorState {
@@ -686,6 +694,8 @@ export interface IssueExecutionState {
   lastDecisionId: string | null;
   lastDecisionOutcome: IssueExecutionDecisionOutcome | null;
   monitor?: IssueExecutionMonitorState | null;
+  /** Consecutive agent-initiated changes-requested rounds on the current stage. */
+  changesRequestedCount?: number;
 }
 
 export interface IssueExecutionDecision {
@@ -730,6 +740,14 @@ export interface IssueWatchdog extends IssueWatchdogSummary {
   updatedByUserId: string | null;
   updatedByRunId: string | null;
 }
+
+export interface IssueChangeReceiptEntry {
+  from: unknown;
+  to: unknown;
+  updated?: true;
+}
+
+export type IssueChanges = Record<string, IssueChangeReceiptEntry>;
 
 export interface Issue {
   id: string;
@@ -998,6 +1016,7 @@ export interface IssueCommentPresentation {
   tone: IssueCommentPresentationTone;
   title?: string | null;
   detailsDefaultOpen: boolean;
+  density?: IssueCommentPresentationDensity;
 }
 
 export interface IssueThreadInteractionActorFields {

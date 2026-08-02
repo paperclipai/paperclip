@@ -52,10 +52,10 @@ export interface InstanceExperimentalSettings {
   enablePipelines: boolean;
   enableCases: boolean;
   enableConferenceRoomChat: boolean;
+  enableTaskChatRedesign: boolean;
   enableTaskWatchdogs: boolean;
   enableIssuePlanDecompositions: boolean;
   enableExperimentalFileViewer: boolean;
-  enableCloudSync: boolean;
   enableExternalObjects: boolean;
   enableSmokeLab: boolean;
   enableBuiltInAgents: boolean;

@@ -202,6 +202,9 @@ function countFromRows(rows: Array<{ count: number | string | null | undefined }
   return Number(rows[0]?.count ?? 0);
 }
 
+type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
+type EnvironmentWriteDb = Pick<Db | DbTransaction, "select" | "insert" | "update" | "delete">;
+
 export function environmentService(db: Db) {
   /** The single Paperclip-managed sandbox row (`environments_managed_sandbox_idx`), if present. */
   const findManagedSandboxRow = () =>
@@ -537,10 +540,11 @@ export function environmentService(db: Db) {
     create: async (
       companyIdOrInput: string | CreateEnvironment,
       maybeInput?: CreateEnvironment,
+      options?: { db?: EnvironmentWriteDb },
     ): Promise<Environment> => {
       const input = resolveCreateInput(companyIdOrInput, maybeInput);
       const now = new Date();
-      const row = await db
+      const row = await (options?.db ?? db)
         .insert(environments)
         .values({
           name: input.name,
@@ -570,7 +574,11 @@ export function environmentService(db: Db) {
       return toEnvironment(row);
     },
 
-    update: async (id: string, patch: UpdateEnvironment): Promise<Environment | null> => {
+    update: async (
+      id: string,
+      patch: UpdateEnvironment,
+      options?: { db?: EnvironmentWriteDb },
+    ): Promise<Environment | null> => {
       const values: Partial<typeof environments.$inferInsert> = {
         updatedAt: new Date(),
       };
@@ -584,7 +592,7 @@ export function environmentService(db: Db) {
       }
       if (patch.metadata !== undefined) values.metadata = patch.metadata ?? null;
 
-      const row = await db
+      const row = await (options?.db ?? db)
         .update(environments)
         .set(values)
         .where(eq(environments.id, id))

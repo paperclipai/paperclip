@@ -84,14 +84,22 @@ test.describe.serial("applications lifecycle", () => {
 
     await gotoApps(page, seed.prefix);
 
+    // The status pill ("Healthy" / "Not connected") is derived from two separate
+    // react-query fetches (applications + connections). A row can paint as soon as
+    // the applications fetch resolves, but the pill only renders once the
+    // connections fetch also settles. Under CI load that second fetch can land
+    // after Playwright's default 5s assertion timeout, so give the pill
+    // assertions the same generous window used by the rest of this spec — this is
+    // a polling wait on the real rendered label, not a fixed sleep, so coverage of
+    // the exact status text is preserved.
     const connectedRow = page.locator("tbody tr", { hasText: connectedName });
     await expect(connectedRow).toBeVisible();
-    await expect(connectedRow.getByText("Healthy")).toBeVisible();
+    await expect(connectedRow.getByText("Healthy")).toBeVisible({ timeout: 30_000 });
     await expect(connectedRow.getByRole("button", { name: "Open" })).toBeVisible();
 
     const notConnectedRow = page.locator("tbody tr", { hasText: notConnectedName });
     await expect(notConnectedRow).toBeVisible();
-    await expect(notConnectedRow.getByText("Not connected")).toBeVisible();
+    await expect(notConnectedRow.getByText("Not connected")).toBeVisible({ timeout: 30_000 });
     await expect(notConnectedRow.getByRole("button", { name: "Connect" })).toBeVisible();
     await page.screenshot({ path: `${SCREENSHOT_DIR}/applications-crud-current-list.png`, fullPage: true });
 

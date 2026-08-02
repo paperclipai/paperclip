@@ -80,6 +80,7 @@ describe("GET /health", () => {
       version: serverVersion,
       serverVersion,
       instance: getInstanceIdentity(),
+      commit: testServerInfo.git.fullSha,
       serverInfo: testServerInfo,
     });
   }, 15_000);
@@ -114,6 +115,7 @@ describe("GET /health", () => {
       status: "unhealthy",
       version: serverVersion,
       serverVersion,
+      commit: testServerInfo.git.fullSha,
       error: "database_unreachable",
       instance: getInstanceIdentity(),
       serverInfo: testServerInfo,
@@ -139,6 +141,8 @@ describe("GET /health", () => {
         unavailableReason: "git_unavailable",
       },
     });
+    // With no git metadata baked in, the exposed commit is null (not omitted).
+    expect(res.body.commit).toBeNull();
   });
 
   it("surfaces a stale database backup warning in full health details", async () => {
@@ -289,6 +293,7 @@ describe("GET /health", () => {
       status: "ok",
       deploymentMode: "authenticated",
       deploymentExposure: "public",
+      commit: testServerInfo.git.fullSha,
       bootstrapStatus: "ready",
       bootstrapInviteActive: false,
       databaseBackup: {
@@ -345,6 +350,7 @@ describe("GET /health", () => {
       status: "ok",
       deploymentMode: "authenticated",
       deploymentExposure: "public",
+      commit: testServerInfo.git.fullSha,
       bootstrapStatus: "ready",
       bootstrapInviteActive: false,
     });
@@ -382,6 +388,7 @@ describe("GET /health", () => {
       status: "ok",
       deploymentMode: "authenticated",
       deploymentExposure: "public",
+      commit: testServerInfo.git.fullSha,
       bootstrapStatus: "ready",
       bootstrapInviteActive: false,
     });

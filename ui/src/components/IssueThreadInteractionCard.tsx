@@ -65,6 +65,8 @@ interface IssueThreadInteractionCardProps {
   onCancelInteraction?: (
     interaction: AskUserQuestionsInteraction,
   ) => Promise<void> | void;
+  /** Render confirmation CTAs with the primary action rightmost (task-chat grammar). */
+  primaryActionOnRight?: boolean;
   onSubmitInteractionVerdicts?: (
     interaction: RequestItemVerdictsInteraction,
     verdicts: { id: string; verdict: RequestItemVerdictValue; reason?: string }[],
@@ -1910,6 +1912,7 @@ function RequestToolActionCard({
 function RequestConfirmationCard({
   interaction,
   isPlan = false,
+  primaryActionOnRight = false,
   onAcceptInteraction,
   onRejectInteraction,
   onUploadImage,
@@ -1917,6 +1920,7 @@ function RequestConfirmationCard({
 }: {
   interaction: RequestConfirmationInteraction;
   isPlan?: boolean;
+  primaryActionOnRight?: boolean;
   onAcceptInteraction?: (
     interaction: RequestConfirmationInteraction,
   ) => Promise<void> | void;
@@ -2037,7 +2041,12 @@ function RequestConfirmationCard({
 
       {interaction.status === "pending" ? (
         <div className="space-y-3">
-          <div className="flex flex-wrap items-center justify-end gap-2">
+          <div
+            className={cn(
+              "flex flex-wrap items-center justify-end gap-2",
+              primaryActionOnRight && "flex-row-reverse justify-start",
+            )}
+          >
             <Button
               size="sm"
               variant={rejecting ? "outline" : isPlan ? "cta" : "default"}
@@ -3137,6 +3146,7 @@ export function IssueThreadInteractionCard({
   onRejectInteraction,
   onSubmitInteractionAnswers,
   onCancelInteraction,
+  primaryActionOnRight,
   onSubmitInteractionVerdicts,
   onUploadImage,
   externalReferences,
@@ -3272,6 +3282,7 @@ export function IssueThreadInteractionCard({
           <RequestConfirmationCard
             interaction={interaction}
             isPlan={isPlan}
+            primaryActionOnRight={primaryActionOnRight}
             onAcceptInteraction={onAcceptInteraction}
             onRejectInteraction={onRejectInteraction}
             onUploadImage={onUploadImage}

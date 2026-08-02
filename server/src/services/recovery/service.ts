@@ -6,6 +6,8 @@ import {
   MAX_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
   MIN_ISSUE_GRAPH_LIVENESS_AUTO_RECOVERY_LOOKBACK_HOURS,
   PROVIDER_QUOTA_MONITOR_SERVICE_NAME,
+  type IssueCommentMetadata,
+  type IssueCommentPresentation,
   type IssueGraphLivenessAutoRecoveryPreview,
   type IssueGraphLivenessAutoRecoveryPreviewItem,
 } from "@paperclipai/shared";
@@ -171,7 +173,15 @@ type ResolvedDependencyWakeBackstopOptions = {
 
 type LatestIssueRun = Pick<
   typeof heartbeatRuns.$inferSelect,
-  "id" | "agentId" | "status" | "error" | "errorCode" | "contextSnapshot" | "livenessState"
+  | "id"
+  | "agentId"
+  | "status"
+  | "error"
+  | "errorCode"
+  | "contextSnapshot"
+  | "livenessState"
+  | "startedAt"
+  | "createdAt"
 > & {
   resultJson?: unknown;
 } | null;
@@ -198,6 +208,76 @@ type SuccessfulRunHandoffRecoveryEvidence = {
   handoffAttempt: number;
   maxHandoffAttempts: number;
 };
+
+function compactRecoveryPresentation(title: string): IssueCommentPresentation {
+  const normalizedTitle = title.trim();
+  return {
+    kind: "system_notice",
+    tone: "warning",
+    title: normalizedTitle.length > 160 ? `${normalizedTitle.slice(0, 159)}…` : normalizedTitle,
+    detailsDefaultOpen: false,
+    density: "compact",
+  };
+}
+
+function recoveryCauseTitle(cause: StrandedRecoveryCause) {
+  switch (cause) {
+    case "process_lost":
+      return "retries exhausted";
+    case "codex_output_inactivity_monitor":
+      return "output-inactivity retry exhausted";
+    case "workspace_validation_failed":
+      return "workspace validation failed";
+    case "configuration_incomplete":
+      return "configuration incomplete";
+    case "execution_review_participant_recovery":
+      return "reviewer recovery failed";
+    case "provider_quota":
+      return "provider quota unavailable";
+    case SUCCESSFUL_RUN_MISSING_STATE_REASON:
+      return "missing disposition recovery failed";
+    default:
+      return "execution path recovery failed";
+  }
+}
+
+function recoveryNoticeMetadata(input: {
+  cause: string;
+  latestRun: LatestIssueRun;
+  recoveryActionId?: string | null;
+  previousStatus: string;
+  recoveryOwner?: Pick<typeof agents.$inferSelect, "id" | "name"> | null;
+}): IssueCommentMetadata {
+  const rows: IssueCommentMetadata["sections"][number]["rows"] = [
+    ...(input.recoveryActionId
+      ? [{ type: "key_value" as const, label: "Recovery action", value: input.recoveryActionId }]
+      : []),
+    { type: "key_value", label: "Cause", value: input.cause },
+    { type: "key_value", label: "Previous status", value: input.previousStatus },
+    ...(input.recoveryOwner
+      ? [{
+          type: "agent_link" as const,
+          label: "Recovery owner",
+          agentId: input.recoveryOwner.id,
+          name: input.recoveryOwner.name.slice(0, 160),
+        }]
+      : [{ type: "key_value" as const, label: "Recovery owner", value: "board" }]),
+    ...(input.latestRun
+      ? [{
+          type: "run_link" as const,
+          label: "Latest run",
+          runId: input.latestRun.id,
+          title: input.latestRun.status,
+        }]
+      : []),
+  ];
+
+  return {
+    version: 1,
+    sourceRunId: input.latestRun?.id ?? null,
+    sections: [{ title: "Recovery", rows }],
+  };
+}
 
 function readRecoveryRunErrorFamily(latestRun: LatestIssueRun) {
   const result = parseObject(latestRun?.resultJson);
@@ -664,6 +744,21 @@ function isStrandedIssueRecoveryIssue(issue: Pick<typeof issues.$inferSelect, "o
   return isStrandedIssueRecoveryOriginKind(issue.originKind);
 }
 
+/**
+ * True when the issue's latest run was cancelled by a board operator (the
+ * board cancel route stamps the attribution; interrupt-by-comment uses the
+ * operator_interrupted error code). While such a run is the latest activity
+ * on an issue, recovery stands down entirely: the operator deliberately
+ * stopped the agent, and re-waking it — or escalating "stranding" — would
+ * fight the human. Any newer run or wake supersedes the exemption.
+ */
+function isOperatorCancelledRun(latestRun: LatestIssueRun): boolean {
+  if (!latestRun || latestRun.status !== "cancelled") return false;
+  if (latestRun.errorCode === "operator_interrupted") return true;
+  const result = parseObject(latestRun.resultJson);
+  return result.cancelledByActorType === "user" || result.cancelledByActorType === "board";
+}
+
 function isUnsuccessfulTerminalIssueRun(latestRun: LatestIssueRun) {
   return Boolean(
     latestRun &&
@@ -869,6 +964,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         resultJson: heartbeatRuns.resultJson,
         contextSnapshot: heartbeatRuns.contextSnapshot,
         livenessState: heartbeatRuns.livenessState,
+        startedAt: heartbeatRuns.startedAt,
+        createdAt: heartbeatRuns.createdAt,
       })
       .from(heartbeatRuns)
       .where(
@@ -897,6 +994,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         contextSnapshot: heartbeatRuns.contextSnapshot,
         livenessState: heartbeatRuns.livenessState,
         resultJson: heartbeatRuns.resultJson,
+        startedAt: heartbeatRuns.startedAt,
+        createdAt: heartbeatRuns.createdAt,
       })
       .from(heartbeatRuns)
       .where(
@@ -1033,6 +1132,29 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       .then((rows) => Boolean(rows[0]));
   }
 
+  async function wasTodoHandedBackDuringOrAfterLatestRun(
+    issue: typeof issues.$inferSelect,
+    latestRun: LatestIssueRun,
+  ) {
+    if (issue.status !== "todo" || latestRun?.status !== "succeeded") return false;
+    const runBeganAt = latestRun.startedAt ?? latestRun.createdAt;
+
+    return db
+      .select({ id: issueRecoveryActions.id })
+      .from(issueRecoveryActions)
+      .where(
+        and(
+          eq(issueRecoveryActions.companyId, issue.companyId),
+          eq(issueRecoveryActions.sourceIssueId, issue.id),
+          eq(issueRecoveryActions.status, "resolved"),
+          eq(issueRecoveryActions.outcome, "handed_back"),
+          gte(issueRecoveryActions.resolvedAt, runBeganAt),
+        ),
+      )
+      .limit(1)
+      .then((rows) => Boolean(rows[0]));
+  }
+
   async function hasQueuedIssueWake(companyId: string, issueId: string, agentId?: string | null) {
     return db
       .select({ id: agentWakeupRequests.id })
@@ -1113,6 +1235,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         contextSnapshot: heartbeatRuns.contextSnapshot,
         livenessState: heartbeatRuns.livenessState,
         resultJson: heartbeatRuns.resultJson,
+        startedAt: heartbeatRuns.startedAt,
+        createdAt: heartbeatRuns.createdAt,
       })
       .from(heartbeatRuns)
       .where(
@@ -4084,6 +4208,29 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         prefix,
       }),
       {},
+      {
+        authorType: "system",
+        presentation: compactRecoveryPresentation("Recovery: recovery attempt failed — remains blocked"),
+        metadata: {
+          version: 1,
+          sourceRunId: input.latestRun?.id ?? null,
+          sections: [{
+            title: "Recovery",
+            rows: [
+              { type: "key_value", label: "Cause", value: "recovery_issue_failed" },
+              { type: "key_value", label: "Previous status", value: input.previousStatus },
+              ...(input.latestRun
+                ? [{
+                    type: "run_link" as const,
+                    label: "Latest run",
+                    runId: input.latestRun.id,
+                    title: input.latestRun.status,
+                  }]
+                : []),
+            ],
+          }],
+        },
+      },
     );
 
     await logActivity(db, {
@@ -4177,7 +4324,25 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         "(It was paused because the latest run reported it was waiting for review/approval; " +
         "Paperclip turned that into a normal dependency wait instead of flagging it as stuck.)",
       {},
-      { authorType: "system" },
+      {
+        authorType: "system",
+        presentation: compactRecoveryPresentation("Recovery: waiting on dependencies — moved to blocked"),
+        metadata: {
+          version: 1,
+          sections: [{
+            title: "Recovery",
+            rows: [
+              { type: "key_value", label: "Cause", value: "continuation_waiting_on_review" },
+              { type: "key_value", label: "Previous status", value: issue.status },
+              {
+                type: "key_value",
+                label: "Blocking issues",
+                value: blockedByIssueIds.join(", ").slice(0, 2000),
+              },
+            ],
+          }],
+        },
+      },
     );
     await logActivity(db, {
       companyId: issue.companyId,
@@ -4427,8 +4592,8 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         .orderBy(desc(issueComments.createdAt))
         .limit(50)
         .then((rows) => rows.some((row) =>
-          (row.body ?? "").includes(escalationCommentMarker) ||
-          noticeMetadataReferencesRecoveryAction(row.metadata, recoveryAction.id),
+          noticeMetadataReferencesRecoveryAction(row.metadata, recoveryAction.id) ||
+          (row.body ?? "").includes(escalationCommentMarker),
         ));
 
       if (!hasEscalationComment) {
@@ -4441,6 +4606,17 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         } else {
           await issuesSvc.addComment(input.issue.id, `${input.comment ?? ""}${recoveryLine}`, {}, {
             authorType: "system",
+            presentation: compactRecoveryPresentation(
+              `Recovery: ${recoveryCauseTitle(recoveryCause)} — moved to blocked ` +
+              `(owner: ${recoveryOwner?.name ?? "board"})`,
+            ),
+            metadata: recoveryNoticeMetadata({
+              cause: recoveryCause,
+              latestRun: input.latestRun,
+              recoveryActionId: recoveryAction.id,
+              previousStatus: input.previousStatus,
+              recoveryOwner,
+            }),
           });
         }
       }
@@ -4679,6 +4855,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       waitingOnReviewResolved: 0,
       providerQuotaMonitored: 0,
       recentProgressExempted: 0,
+      operatorCancelExempted: 0,
       skipped: 0,
       issueIds: [] as string[],
     };
@@ -4761,6 +4938,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         }
 
         let latestRun = await getLatestIssueRun(freshIssue.companyId, freshIssue.id);
+        if (isOperatorCancelledRun(latestRun)) {
+          result.operatorCancelExempted += 1;
+          continue;
+        }
         if (freshIssue.status !== "in_review" && !agentInvokable) {
           // A paused first-run assignee is an intentional containment state, not
           // evidence that the issue itself has failed. Leave untouched `todo`
@@ -5149,7 +5330,10 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             continue;
           }
 
-          if (latestRun.status === "succeeded") {
+          if (
+            latestRun.status === "succeeded" &&
+            !(await wasTodoHandedBackDuringOrAfterLatestRun(issue, latestRun))
+          ) {
             result.skipped += 1;
             continue;
           }

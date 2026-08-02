@@ -49,9 +49,16 @@ import {
   readLocalServicePortOwner,
   writeLocalServiceRegistryRecord,
 } from "../services/local-service-supervisor.ts";
+import {
+  buildWorkspaceRealizationRecord,
+  buildWorkspaceRealizationRequest,
+  readWorkspaceRealizationRequest,
+} from "../services/workspace-realization.ts";
+import type { Environment, EnvironmentLease } from "@paperclipai/shared";
 import { resolvePaperclipConfigPath } from "../paths.ts";
 import type { WorkspaceOperation } from "@paperclipai/shared";
 import type { WorkspaceOperationRecorder } from "../services/workspace-operations.ts";
+import { deriveWorktreeInstanceId } from "../services/workspace-instance-cleanup.ts";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -1371,7 +1378,7 @@ describe("realizeExecutionWorkspace", () => {
       const envContents = await fs.readFile(envPath, "utf8");
       const configContents = JSON.parse(await fs.readFile(configPath, "utf8"));
       const configStats = await fs.lstat(configPath);
-      const expectedInstanceId = "pap-885-show-worktree-banner";
+      const expectedInstanceId = deriveWorktreeInstanceId(workspace.cwd);
       const expectedInstanceRoot = path.join(
         isolatedWorktreeHome,
         "instances",
@@ -2684,7 +2691,7 @@ describe("realizeExecutionWorkspace", () => {
     });
   }, 15_000);
 
-  it("classifies persisted git worktree branch incoherence as unknown when the recorded branch was deleted", async () => {
+  it("routes a deleted recorded branch with a clean worktree to forward adoption when reconcile-forward is enabled", async () => {
     const repoRoot = await createTempRepo();
     const expectedBranch = "PAP-458-deleted-recorded-branch";
     const actualBranch = "PAP-458-actual-work";
@@ -2734,6 +2741,8 @@ describe("realizeExecutionWorkspace", () => {
       error = err;
     }
 
+    // Without a database the adoption cannot be audited, so it still fails closed —
+    // but through the forward-adoption path rather than "expected branch does not exist".
     expect(error).toMatchObject({
       code: "workspace_validation_failed",
       resultJson: {
@@ -2752,6 +2761,76 @@ describe("realizeExecutionWorkspace", () => {
             sameHead: false,
             ancestryVerdict: "unknown",
             plainLanguageReason: expect.stringContaining("missing a resolvable HEAD commit"),
+          }),
+          safeRepair: expect.objectContaining({
+            attempted: false,
+            succeeded: false,
+            reason: "forward reconciliation adoption requires database access to audit after workspace realization",
+          }),
+        }),
+      },
+    });
+  }, 15_000);
+
+  it("keeps a deleted recorded branch fail-closed when reconcile-forward is disabled", async () => {
+    const repoRoot = await createTempRepo();
+    const expectedBranch = "PAP-458-deleted-recorded-branch-flag-off";
+    const actualBranch = "PAP-458-actual-work-flag-off";
+    const worktreePath = path.join(repoRoot, ".paperclip", "worktrees", expectedBranch);
+
+    await fs.mkdir(path.dirname(worktreePath), { recursive: true });
+    await runGit(repoRoot, ["branch", expectedBranch]);
+    await runGit(repoRoot, ["worktree", "add", "-b", actualBranch, worktreePath, "HEAD"]);
+    await runGit(repoRoot, ["branch", "-D", expectedBranch]);
+
+    let error: unknown = null;
+    try {
+      await ensurePersistedExecutionWorkspaceAvailable({
+        base: {
+          baseCwd: repoRoot,
+          source: "project_primary",
+          projectId: "project-1",
+          workspaceId: "workspace-1",
+          repoUrl: null,
+          repoRef: "HEAD",
+        },
+        workspace: {
+          id: "execution-workspace-deleted-branch-flag-off",
+          mode: "isolated_workspace",
+          strategyType: "git_worktree",
+          cwd: worktreePath,
+          providerRef: worktreePath,
+          projectId: "project-1",
+          projectWorkspaceId: "workspace-1",
+          repoUrl: null,
+          baseRef: "HEAD",
+          branchName: expectedBranch,
+        },
+        issue: {
+          id: "issue-deleted-branch-flag-off",
+          identifier: "PAP-458",
+          title: "Classify deleted branch ancestry",
+        },
+        agent: {
+          id: "agent-1",
+          name: "Codex Coder",
+          companyId: "company-1",
+        },
+        enableWorkspaceBranchReconcileForward: false,
+      });
+    } catch (err) {
+      error = err;
+    }
+
+    expect(error).toMatchObject({
+      code: "workspace_validation_failed",
+      resultJson: {
+        workspaceValidation: expect.objectContaining({
+          cleanliness: "clean",
+          provenance: expect.objectContaining({
+            expectedBranchExists: false,
+            actualBranchExists: true,
+            ancestryVerdict: "unknown",
           }),
           safeRepair: expect.objectContaining({
             eligible: false,
@@ -3236,6 +3315,19 @@ describe("realizeExecutionWorkspace", () => {
       },
     });
 
+    const worktreesDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-cleanup-instances-"));
+    const instanceId = deriveWorktreeInstanceId(workspace.cwd);
+    const instanceRoot = path.join(worktreesDir, "instances", instanceId);
+    await fs.mkdir(path.join(instanceRoot, "db"), { recursive: true });
+    const expectedInstanceRoot = await fs.realpath(instanceRoot);
+    await fs.mkdir(path.join(workspace.cwd, ".paperclip"), { recursive: true });
+    await fs.writeFile(
+      path.join(workspace.cwd, ".paperclip", ".env"),
+      `PAPERCLIP_HOME=${JSON.stringify(worktreesDir)}\nPAPERCLIP_INSTANCE_ID=${JSON.stringify(instanceId)}\n`,
+      "utf8",
+    );
+    process.env.PAPERCLIP_WORKTREES_DIR = worktreesDir;
+
     await cleanupExecutionWorkspaceArtifacts({
       workspace: {
         id: "execution-workspace-1",
@@ -3261,16 +3353,23 @@ describe("realizeExecutionWorkspace", () => {
 
     expect(operations.map((operation) => operation.phase)).toEqual([
       "workspace_teardown",
+      "workspace_teardown",
       "worktree_cleanup",
       "worktree_cleanup",
     ]);
     expect(operations[0]?.command).toBe("printf 'cleanup ok\\n'");
     expect(operations[1]?.metadata).toMatchObject({
-      cleanupAction: "worktree_remove",
+      cleanupAction: "remove_worktree_instance",
+      instanceRoot: expectedInstanceRoot,
     });
     expect(operations[2]?.metadata).toMatchObject({
+      cleanupAction: "worktree_remove",
+    });
+    expect(operations[3]?.metadata).toMatchObject({
       cleanupAction: "branch_delete",
     });
+    await expect(fs.stat(instanceRoot)).rejects.toMatchObject({ code: "ENOENT" });
+    await fs.rm(worktreesDir, { recursive: true, force: true });
   });
 });
 
@@ -6192,5 +6291,182 @@ describe("normalizeAdapterManagedRuntimeServices", () => {
       scopeId: "execution-workspace-1",
       executionWorkspaceId: "execution-workspace-1",
     });
+  });
+});
+
+describe("workspace realization request additionalSources", () => {
+  function buildRealizedWorkspace(
+    overrides: Partial<RealizedExecutionWorkspace> = {},
+  ): RealizedExecutionWorkspace {
+    return {
+      baseCwd: "/anchor",
+      source: "project_primary",
+      projectId: "project-anchor",
+      workspaceId: "workspace-anchor",
+      repoUrl: "https://example.test/anchor.git",
+      repoRef: "main",
+      strategy: "project_primary",
+      cwd: "/anchor",
+      branchName: null,
+      worktreePath: null,
+      warnings: [],
+      created: false,
+      ...overrides,
+    };
+  }
+
+  it("round-trips additionalSources through build/read realization request", () => {
+    const workspace = buildRealizedWorkspace({
+      additionalWorkspaces: [
+        {
+          cwd: "/managed/project-b",
+          projectId: "project-b",
+          workspaceId: "workspace-b",
+          repoUrl: "https://example.test/b.git",
+          repoRef: "release",
+        },
+      ],
+    });
+
+    const request = buildWorkspaceRealizationRequest({
+      adapterType: "codex",
+      companyId: "company-1",
+      environmentId: "environment-1",
+      executionWorkspaceId: "execution-workspace-1",
+      issueId: "issue-1",
+      heartbeatRunId: "run-1",
+      requestedMode: "shared_workspace",
+      workspace,
+      workspaceConfig: null,
+    });
+
+    expect(request.additionalSources).toEqual([
+      {
+        localPath: "/managed/project-b",
+        projectId: "project-b",
+        projectWorkspaceId: "workspace-b",
+        repoUrl: "https://example.test/b.git",
+        repoRef: "release",
+      },
+    ]);
+    // The anchor source stays scalar and unchanged alongside the new plural field.
+    expect(request.source.localPath).toBe("/anchor");
+
+    // A serialize/deserialize round-trip preserves additionalSources.
+    const roundTripped = readWorkspaceRealizationRequest(
+      JSON.parse(JSON.stringify(request)),
+    );
+    expect(roundTripped?.additionalSources).toEqual(request.additionalSources);
+  });
+
+  it("exposes additionalSources on the realization record so targets receive the paths", () => {
+    const workspace = buildRealizedWorkspace({
+      additionalWorkspaces: [
+        {
+          cwd: "/managed/project-b",
+          projectId: "project-b",
+          workspaceId: "workspace-b",
+          repoUrl: "https://example.test/b.git",
+          repoRef: "release",
+        },
+      ],
+    });
+
+    const request = buildWorkspaceRealizationRequest({
+      adapterType: "codex",
+      companyId: "company-1",
+      environmentId: "environment-1",
+      executionWorkspaceId: "execution-workspace-1",
+      issueId: "issue-1",
+      heartbeatRunId: "run-1",
+      requestedMode: "shared_workspace",
+      workspace,
+      workspaceConfig: null,
+    });
+
+    const now = new Date(0);
+    const environment: Environment = {
+      id: "environment-1",
+      name: "local",
+      description: null,
+      driver: "local",
+      status: "active",
+      config: {},
+      envVars: {},
+      metadata: null,
+      createdAt: now,
+      updatedAt: now,
+    };
+    const lease: EnvironmentLease = {
+      id: "lease-1",
+      companyId: "company-1",
+      environmentId: "environment-1",
+      executionWorkspaceId: "execution-workspace-1",
+      issueId: "issue-1",
+      heartbeatRunId: "run-1",
+      status: "active",
+      leasePolicy: "ephemeral",
+      provider: "local",
+      providerLeaseId: null,
+      acquiredAt: now,
+      lastUsedAt: now,
+      expiresAt: null,
+      releasedAt: null,
+      failureReason: null,
+      cleanupStatus: null,
+      metadata: null,
+      createdAt: now,
+      updatedAt: now,
+    };
+
+    const record = buildWorkspaceRealizationRecord({ environment, lease, request });
+
+    // The record carries the resolved referenced-project path so the execution target can expose it.
+    expect(record.additional).toEqual([
+      {
+        path: "/managed/project-b",
+        projectId: "project-b",
+        projectWorkspaceId: "workspace-b",
+        repoUrl: "https://example.test/b.git",
+        repoRef: "release",
+      },
+    ]);
+    // The anchor stays scalar and unchanged alongside the new plural field.
+    expect(record.local.path).toBe("/anchor");
+  });
+
+  it("reads a legacy request without additionalSources as an empty array", () => {
+    const legacyRequest = {
+      version: 1,
+      adapterType: "codex",
+      companyId: "company-1",
+      environmentId: "environment-1",
+      executionWorkspaceId: null,
+      issueId: null,
+      heartbeatRunId: "run-1",
+      requestedMode: null,
+      source: {
+        kind: "project_primary",
+        localPath: "/anchor",
+        projectId: null,
+        projectWorkspaceId: null,
+        repoUrl: null,
+        repoRef: null,
+        strategy: "project_primary",
+        branchName: null,
+        worktreePath: null,
+      },
+      runtimeOverlay: {
+        provisionCommand: null,
+        teardownCommand: null,
+        cleanupCommand: null,
+        workspaceRuntime: null,
+      },
+    };
+
+    const parsed = readWorkspaceRealizationRequest(legacyRequest);
+
+    expect(parsed).not.toBeNull();
+    expect(parsed?.additionalSources).toEqual([]);
   });
 });

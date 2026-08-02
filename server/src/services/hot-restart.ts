@@ -1,9 +1,20 @@
+import { execFile } from "node:child_process";
 import fs from "node:fs/promises";
 import path from "node:path";
-import { resolvePaperclipHomeDir } from "../home-paths.js";
+import {
+  resolvePaperclipHomeDir,
+  resolvePaperclipInstanceId,
+  resolvePaperclipInstanceRoot,
+} from "../home-paths.js";
 
 export const HOT_RESTART_INTENT_FILENAME = "hot-restart-intent.json";
 export const HOT_RESTART_REPORT_FILENAME = "hot-restart-report.json";
+const HOT_RESTART_LOCK_SUFFIX = ".lock";
+const HOT_RESTART_LOCK_STALE_MS = 30_000;
+const HOT_RESTART_LOCK_TIMEOUT_MS = 10_000;
+
+type ProcessCommandRunner = (command: string, args: string[]) => Promise<string>;
+type ProcessStatReader = (target: string) => Promise<{ ctimeMs: number }>;
 
 export type HotRestartIntentRun = {
   runId: string;
@@ -20,9 +31,12 @@ export type HotRestartIntent = {
   version: 1;
   requestedAt: string;
   previousServerPid: number;
+  previousServerIdentity?: string | null;
+  previousServerStartedAt?: string | null;
   previousServerVersion: string | null;
   drainRequired: boolean;
   requestedByRunId: string | null;
+  preflightActiveRunIds: string[];
   shutdownSnapshot?: {
     capturedAt: string;
     signal: "SIGINT" | "SIGTERM";
@@ -56,11 +70,19 @@ export type HotRestartReport = {
 };
 
 function resolveHotRestartPath(filename: string, homeDir?: string) {
+  return path.join(resolvePaperclipInstanceRoot({ homeDir }), filename);
+}
+
+function resolveLegacyHotRestartPath(filename: string, homeDir?: string) {
   return path.join(resolvePaperclipHomeDir(homeDir), filename);
 }
 
 export function resolveHotRestartIntentPath(homeDir?: string) {
   return resolveHotRestartPath(HOT_RESTART_INTENT_FILENAME, homeDir);
+}
+
+export function resolveLegacyHotRestartIntentPath(homeDir?: string) {
+  return resolveLegacyHotRestartPath(HOT_RESTART_INTENT_FILENAME, homeDir);
 }
 
 export function resolveHotRestartReportPath(homeDir?: string) {
@@ -72,6 +94,17 @@ async function writeJsonFileAtomic(filePath: string, value: unknown) {
   const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
   await fs.writeFile(tempPath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
   await fs.rename(tempPath, filePath);
+}
+
+async function writeJsonFileExclusiveAtomic(filePath: string, value: unknown) {
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
+  await fs.writeFile(tempPath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+  try {
+    await fs.link(tempPath, filePath);
+  } finally {
+    await fs.unlink(tempPath).catch(() => undefined);
+  }
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -88,6 +121,261 @@ function asNumber(value: unknown): number | null {
 
 function asBoolean(value: unknown): boolean {
   return value === true;
+}
+
+function asDateString(value: unknown): string | null {
+  const candidate = asString(value);
+  if (!candidate) return null;
+  const timestamp = Date.parse(candidate);
+  return Number.isFinite(timestamp) ? new Date(timestamp).toISOString() : null;
+}
+
+function asStringArray(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return [...new Set(value.map(asString).filter((entry): entry is string => entry !== null))];
+}
+
+function isProcessAlive(pid: number) {
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException | undefined)?.code === "EPERM";
+  }
+}
+
+function runProcessCommand(command: string, args: string[]) {
+  return new Promise<string>((resolve, reject) => {
+    execFile(
+      command,
+      args,
+      {
+        encoding: "utf8",
+        timeout: 1_500,
+        windowsHide: true,
+      },
+      (error, stdout) => {
+        if (error) reject(error);
+        else resolve(stdout);
+      },
+    );
+  });
+}
+
+export async function readProcessStartedAt(
+  pid: number,
+  options: {
+    platform?: NodeJS.Platform;
+    stat?: ProcessStatReader;
+    runCommand?: ProcessCommandRunner;
+  } = {},
+) {
+  const platform = options.platform ?? process.platform;
+  const stat = options.stat ?? fs.stat;
+  const runCommand = options.runCommand ?? runProcessCommand;
+
+  if (platform === "linux") {
+    const processStat = await stat(`/proc/${pid}`);
+    return new Date(processStat.ctimeMs).toISOString();
+  }
+
+  if (["darwin", "freebsd", "openbsd", "aix", "sunos"].includes(platform)) {
+    const stdout = await runCommand("ps", ["-o", "lstart=", "-p", String(pid)]);
+    const startedAt = asDateString(stdout.trim());
+    if (!startedAt) {
+      throw new Error(`Could not parse ${platform} process start time for PID ${pid}`);
+    }
+    return startedAt;
+  }
+
+  if (platform === "win32") {
+    const script = [
+      `$process = Get-Process -Id ${pid} -ErrorAction Stop`,
+      "$process.StartTime.ToUniversalTime().ToString('o')",
+    ].join("; ");
+    let stdout: string;
+    try {
+      stdout = await runCommand("powershell.exe", [
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        script,
+      ]);
+    } catch {
+      stdout = await runCommand("pwsh.exe", [
+        "-NoLogo",
+        "-NoProfile",
+        "-NonInteractive",
+        "-Command",
+        script,
+      ]);
+    }
+    const startedAt = asDateString(stdout.trim());
+    if (!startedAt) {
+      throw new Error(`Could not parse Windows process start time for PID ${pid}`);
+    }
+    return startedAt;
+  }
+
+  return null;
+}
+
+export function isObservedHotRestartTargetAlive(
+  intent: HotRestartIntent,
+  observation: {
+    alive: boolean;
+    startedAt: string | null;
+    replacement?: Pick<
+      HotRestartIntent,
+      "previousServerPid" | "previousServerIdentity" | "previousServerStartedAt"
+    >;
+  },
+) {
+  if (!observation.alive) return false;
+
+  if (observation.replacement?.previousServerPid === intent.previousServerPid) {
+    if (
+      observation.replacement.previousServerIdentity
+      && intent.previousServerIdentity
+    ) {
+      return observation.replacement.previousServerIdentity
+        === intent.previousServerIdentity;
+    }
+
+    if (
+      observation.replacement.previousServerIdentity
+      && !intent.previousServerIdentity
+    ) {
+      const replacementStartedAt = Date.parse(
+        observation.replacement.previousServerIdentity,
+      );
+      const requestedAt = Date.parse(intent.requestedAt);
+      if (Number.isFinite(replacementStartedAt) && Number.isFinite(requestedAt)) {
+        // The health endpoint's processStartedAt value is also the current
+        // server boot identity. If that process started after an older marker
+        // was requested, the shared numeric PID was necessarily recycled.
+        return replacementStartedAt <= requestedAt;
+      }
+    }
+
+    if (!intent.previousServerIdentity) {
+      const replacementStartedAt = observation.replacement.previousServerStartedAt
+        ? Date.parse(observation.replacement.previousServerStartedAt)
+        : Number.NaN;
+      const requestedAt = Date.parse(intent.requestedAt);
+      if (Number.isFinite(replacementStartedAt) && Number.isFinite(requestedAt)) {
+        return replacementStartedAt <= requestedAt;
+      }
+    }
+  }
+
+  const observedStartedAt = observation.startedAt
+    ? Date.parse(observation.startedAt)
+    : Number.NaN;
+  const recordedStartedAt = intent.previousServerStartedAt
+    ? Date.parse(intent.previousServerStartedAt)
+    : Number.NaN;
+  if (Number.isFinite(observedStartedAt) && Number.isFinite(recordedStartedAt)) {
+    return observedStartedAt === recordedStartedAt;
+  }
+
+  const requestedAt = Date.parse(intent.requestedAt);
+  if (Number.isFinite(observedStartedAt) && Number.isFinite(requestedAt)) {
+    // Older markers have no recorded process start. A process that started
+    // after the request necessarily reused the marker's numeric PID.
+    return observedStartedAt <= requestedAt;
+  }
+
+  throw new Error(
+    `Cannot establish process identity for live hot-restart target PID ${intent.previousServerPid}`,
+  );
+}
+
+async function isOriginalServerProcessAlive(
+  intent: HotRestartIntent,
+  replacement: HotRestartIntent,
+) {
+  const alive = isProcessAlive(intent.previousServerPid);
+  const startedAt = alive
+    ? await readProcessStartedAt(intent.previousServerPid)
+    : null;
+  return isObservedHotRestartTargetAlive(intent, {
+    alive,
+    startedAt,
+    replacement,
+  });
+}
+
+async function removeStaleHotRestartLock(lockDir: string) {
+  let shouldRemove = false;
+  try {
+    const owner = JSON.parse(
+      await fs.readFile(path.join(lockDir, "owner.json"), "utf8"),
+    ) as { pid?: unknown; createdAt?: unknown };
+    const pid = typeof owner.pid === "number" ? owner.pid : 0;
+    const createdAt = typeof owner.createdAt === "string"
+      ? Date.parse(owner.createdAt)
+      : Number.NaN;
+    const ageMs = Number.isFinite(createdAt)
+      ? Date.now() - createdAt
+      : HOT_RESTART_LOCK_STALE_MS + 1;
+    shouldRemove = !isProcessAlive(pid) || ageMs > HOT_RESTART_LOCK_STALE_MS;
+  } catch {
+    const stat = await fs.stat(lockDir).catch(() => null);
+    shouldRemove = !stat
+      || Date.now() - stat.mtimeMs > HOT_RESTART_LOCK_STALE_MS;
+  }
+  if (!shouldRemove) return false;
+  await fs.rm(lockDir, { recursive: true, force: true }).catch(() => undefined);
+  return true;
+}
+
+async function acquireHotRestartPathLock(filePath: string) {
+  const lockDir = `${filePath}${HOT_RESTART_LOCK_SUFFIX}`;
+  const deadline = Date.now() + HOT_RESTART_LOCK_TIMEOUT_MS;
+  while (true) {
+    try {
+      await fs.mkdir(lockDir);
+      try {
+        await fs.writeFile(
+          path.join(lockDir, "owner.json"),
+          `${JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString() })}\n`,
+          "utf8",
+        );
+      } catch (error) {
+        await fs.rm(lockDir, { recursive: true, force: true }).catch(() => undefined);
+        throw error;
+      }
+      return async () => {
+        await fs.rm(lockDir, { recursive: true, force: true });
+      };
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+      if (await removeStaleHotRestartLock(lockDir)) continue;
+      if (Date.now() >= deadline) {
+        throw new Error(`Timed out waiting for hot-restart compatibility lock at ${lockDir}`);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+  }
+}
+
+async function withHotRestartPathLock<T>(filePath: string, operation: () => Promise<T>) {
+  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  const release = await acquireHotRestartPathLock(filePath);
+  try {
+    return await operation();
+  } finally {
+    await release();
+  }
+}
+
+function isSameHotRestartRequest(left: HotRestartIntent, right: HotRestartIntent) {
+  return left.requestedAt === right.requestedAt
+    && left.previousServerPid === right.previousServerPid
+    && left.drainRequired === right.drainRequired
+    && left.requestedByRunId === right.requestedByRunId;
 }
 
 function parseRun(value: unknown): HotRestartIntentRun | null {
@@ -120,9 +408,12 @@ export function parseHotRestartIntent(value: unknown): HotRestartIntent | null {
     version: 1,
     requestedAt,
     previousServerPid,
+    previousServerIdentity: asString(value.previousServerIdentity),
+    previousServerStartedAt: asDateString(value.previousServerStartedAt),
     previousServerVersion: asString(value.previousServerVersion),
     drainRequired: asBoolean(value.drainRequired),
     requestedByRunId: asString(value.requestedByRunId),
+    preflightActiveRunIds: asStringArray(value.preflightActiveRunIds),
   };
 
   const snapshot = isRecord(value.shutdownSnapshot) ? value.shutdownSnapshot : null;
@@ -140,9 +431,9 @@ export function parseHotRestartIntent(value: unknown): HotRestartIntent | null {
   return intent;
 }
 
-export async function readHotRestartIntent(homeDir?: string) {
+async function readHotRestartIntentAtPath(filePath: string) {
   try {
-    const raw = await fs.readFile(resolveHotRestartIntentPath(homeDir), "utf8");
+    const raw = await fs.readFile(filePath, "utf8");
     return parseHotRestartIntent(JSON.parse(raw));
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
@@ -150,23 +441,85 @@ export async function readHotRestartIntent(homeDir?: string) {
   }
 }
 
+export async function readHotRestartIntent(homeDir?: string) {
+  const instanceIntent = await readHotRestartIntentAtPath(resolveHotRestartIntentPath(homeDir));
+  let legacyIntent: HotRestartIntent | null;
+  try {
+    legacyIntent = await readHotRestartIntentAtPath(resolveLegacyHotRestartIntentPath(homeDir));
+  } catch (error) {
+    if (instanceIntent) return instanceIntent;
+    throw error;
+  }
+
+  if (!instanceIntent) {
+    // The home-root marker predates instances. Only the default instance may
+    // consume it without an instance-root request to correlate against.
+    return resolvePaperclipInstanceId() === "default" ? legacyIntent : null;
+  }
+  if (!legacyIntent || !isSameHotRestartRequest(instanceIntent, legacyIntent)) {
+    return instanceIntent;
+  }
+
+  // A pre-instance server rewrites only the legacy marker when it captures
+  // its shutdown snapshot. Preserve the instance-scoped request fields while
+  // importing that snapshot only after the immutable request identity matches.
+  return legacyIntent.shutdownSnapshot
+    ? { ...instanceIntent, shutdownSnapshot: legacyIntent.shutdownSnapshot }
+    : instanceIntent;
+}
+
+export function findMissingHotRestartSnapshotRunIds(intent: HotRestartIntent) {
+  const snapshotRunIds = new Set(intent.shutdownSnapshot?.activeRuns.map((run) => run.runId) ?? []);
+  return intent.preflightActiveRunIds.filter((runId) => !snapshotRunIds.has(runId));
+}
+
 export async function writeHotRestartIntent(input: {
   previousServerPid: number;
+  previousServerIdentity?: string | null;
+  previousServerStartedAt?: string | null;
   previousServerVersion?: string | null;
   drainRequired?: boolean;
   requestedByRunId?: string | null;
+  preflightActiveRunIds?: string[];
   requestedAt?: Date;
   homeDir?: string;
 }) {
+  const previousServerStartedAt = input.previousServerStartedAt === undefined
+    ? await readProcessStartedAt(input.previousServerPid)
+    : asDateString(input.previousServerStartedAt);
+  const previousServerIdentity = asString(input.previousServerIdentity);
+  if (!previousServerIdentity && !previousServerStartedAt) {
+    throw new Error(
+      `Cannot create hot-restart intent for PID ${input.previousServerPid}: `
+      + "server boot identity and operating-system process start time are unavailable",
+    );
+  }
   const intent: HotRestartIntent = {
     version: 1,
     requestedAt: (input.requestedAt ?? new Date()).toISOString(),
     previousServerPid: input.previousServerPid,
+    previousServerIdentity,
+    previousServerStartedAt,
     previousServerVersion: input.previousServerVersion ?? null,
     drainRequired: input.drainRequired ?? false,
     requestedByRunId: input.requestedByRunId ?? null,
+    preflightActiveRunIds: asStringArray(input.preflightActiveRunIds),
   };
-  await writeJsonFileAtomic(resolveHotRestartIntentPath(input.homeDir), intent);
+  const instancePath = resolveHotRestartIntentPath(input.homeDir);
+  const legacyPath = resolveLegacyHotRestartIntentPath(input.homeDir);
+  // The legacy location is shared by every instance under PAPERCLIP_HOME.
+  // Claim it without replacement so concurrent staged restarts fail closed
+  // instead of making the first old server consume another instance's PID.
+  await withHotRestartPathLock(legacyPath, () => claimLegacyHotRestartIntent(legacyPath, intent));
+  try {
+    await withHotRestartPathLock(instancePath, () => writeJsonFileAtomic(instancePath, intent));
+  } catch (error) {
+    await withHotRestartPathLock(
+      legacyPath,
+      () => removeMatchingHotRestartIntent(legacyPath, intent),
+    ).catch(() => undefined);
+    throw error;
+  }
   return intent;
 }
 
@@ -185,7 +538,15 @@ export async function writeHotRestartShutdownSnapshot(input: {
       activeRuns: input.activeRuns,
     },
   };
-  await writeJsonFileAtomic(resolveHotRestartIntentPath(input.homeDir), updated);
+  const instancePath = resolveHotRestartIntentPath(input.homeDir);
+  await withHotRestartPathLock(instancePath, () => writeJsonFileAtomic(instancePath, updated));
+  const legacyPath = resolveLegacyHotRestartIntentPath(input.homeDir);
+  await withHotRestartPathLock(legacyPath, async () => {
+    const legacyIntent = await readHotRestartIntentAtPath(legacyPath).catch(() => null);
+    if (legacyIntent && isSameHotRestartRequest(legacyIntent, input.intent)) {
+      await writeJsonFileAtomic(legacyPath, updated);
+    }
+  });
   return updated;
 }
 
@@ -194,12 +555,52 @@ export async function writeHotRestartReport(report: HotRestartReport, homeDir?: 
   return report;
 }
 
-export async function removeHotRestartIntent(homeDir?: string) {
+async function removeMatchingHotRestartIntent(filePath: string, expected?: HotRestartIntent) {
   try {
-    await fs.unlink(resolveHotRestartIntentPath(homeDir));
+    if (expected) {
+      const current = await readHotRestartIntentAtPath(filePath);
+      if (!current || !isSameHotRestartRequest(current, expected)) return;
+    }
+    await fs.unlink(filePath);
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
   }
+}
+
+async function claimLegacyHotRestartIntent(filePath: string, intent: HotRestartIntent) {
+  try {
+    await writeJsonFileExclusiveAtomic(filePath, intent);
+    return;
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== "EEXIST") throw error;
+
+    const existing = await readHotRestartIntentAtPath(filePath).catch(() => null);
+    if (
+      !existing
+      || await isOriginalServerProcessAlive(existing, intent)
+    ) {
+      throw error;
+    }
+
+    // An interrupted restart can leave the shared claim behind after its
+    // target server exits. Remove only that exact abandoned request, then
+    // compete normally for a fresh exclusive claim.
+    await removeMatchingHotRestartIntent(filePath, existing);
+    await writeJsonFileExclusiveAtomic(filePath, intent);
+  }
+}
+
+export async function removeHotRestartIntent(homeDir?: string, expected?: HotRestartIntent) {
+  const instancePath = resolveHotRestartIntentPath(homeDir);
+  await withHotRestartPathLock(
+    instancePath,
+    () => removeMatchingHotRestartIntent(instancePath, expected),
+  );
+  const legacyPath = resolveLegacyHotRestartIntentPath(homeDir);
+  await withHotRestartPathLock(
+    legacyPath,
+    () => removeMatchingHotRestartIntent(legacyPath, expected),
+  );
 }
 
 export function shouldHonorHotRestartIntentForProcess(

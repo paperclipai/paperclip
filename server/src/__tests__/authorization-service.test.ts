@@ -1829,7 +1829,7 @@ describeEmbeddedPostgres("authorization service", () => {
     });
   });
 
-  it("scopes task bridge keys away from company-wide reads and unrelated issue writes", async () => {
+  it("scopes task bridge JWTs away from company-wide reads and unrelated issue writes", async () => {
     const company = await createCompany(db, "TaskBridge");
     const bridgeAgent = await createAgent(db, company.id);
     const targetAgent = await createAgent(db, company.id);
@@ -1846,7 +1846,7 @@ describeEmbeddedPostgres("authorization service", () => {
       type: "agent" as const,
       agentId: bridgeAgent.id,
       companyId: company.id,
-      source: "agent_key" as const,
+      source: "agent_jwt" as const,
       keyId,
       keyScope: {
         kind: "task_bridge" as const,

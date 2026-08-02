@@ -14,7 +14,7 @@ const durationsManifest = path.join(repoRoot, "scripts", "e2e-shard-durations.js
 const playwrightConfig = path.join(repoRoot, "tests", "e2e", "playwright.config.ts");
 const prWorkflow = path.join(repoRoot, ".github", "workflows", "pr.yml");
 
-const SHARD_COUNT = 2;
+const SHARD_COUNT = 3;
 
 function runShard(args) {
   const result = spawnSync(process.execPath, [script, ...args], { cwd: repoRoot, encoding: "utf8" });
@@ -65,11 +65,16 @@ test("the weighted partition keeps the shards close to balanced", () => {
   const heaviest = Math.max(...weights);
   const total = weights.reduce((sum, weight) => sum + weight, 0);
   // Round-robin/count-based sharding would strand the ~168s smoke-lab spec on
-  // one runner. Assert the weighted split stays within 15% of an even cut so a
-  // future spec-time regression surfaces here instead of on the PR critical path.
+  // one runner alongside other specs. Assert the weighted split stays within
+  // 15% of an even cut so a future spec-time regression surfaces here instead
+  // of on the PR critical path. A single indivisible spec (smoke-lab) can
+  // legitimately exceed the even cut on its own, so the bound is floored at
+  // the largest per-spec weight — the best any file-level partition can do.
+  const largestSpec = Math.max(...specs.map((file) => durations[file] ?? 0));
+  const bound = Math.max((total / SHARD_COUNT) * 1.15, largestSpec);
   assert.ok(
-    heaviest <= (total / SHARD_COUNT) * 1.15,
-    `heaviest shard ${heaviest}ms exceeds 115% of the even cut (${total / SHARD_COUNT}ms)`,
+    heaviest <= bound,
+    `heaviest shard ${heaviest}ms exceeds the balance bound (${bound}ms)`,
   );
 });
 
@@ -86,7 +91,7 @@ test("shard arguments are validated", () => {
 
 test("pr.yml keeps a stable aggregate check named e2e over the shard matrix", () => {
   // Branch protection requires a check literally named `e2e`. The shards run
-  // as `e2e shard (n/2)`, so the aggregate job below is what keeps the
+  // as `e2e shard (n/3)`, so the aggregate job below is what keeps the
   // required-check contract intact — same pattern as the `verify` aggregate.
   const workflow = readFileSync(prWorkflow, "utf8");
   const jobs = new Map();
@@ -116,5 +121,39 @@ test("pr.yml keeps a stable aggregate check named e2e over the shard matrix", ()
 
   const shards = jobs.get("e2e_shards");
   assert.ok(shards, "pr.yml must define the `e2e_shards` matrix job");
-  assert.match(shards, /shard_count: 2/, "the shard matrix must match SHARD_COUNT");
+  const matrixEntries = [
+    ...shards.matchAll(
+      /^ {10}- shard_index: (?<shardIndex>\d+)\n {12}shard_count: (?<shardCount>\d+)\n {12}shard_label: (?<shardLabel>\d+\/\d+)$/gm,
+    ),
+  ].map((match) => ({
+    shardIndex: Number(match.groups.shardIndex),
+    shardCount: Number(match.groups.shardCount),
+    shardLabel: match.groups.shardLabel,
+  }));
+
+  assert.equal(matrixEntries.length, SHARD_COUNT, "the shard matrix must define exactly SHARD_COUNT entries");
+  assert.deepEqual(
+    matrixEntries.map((entry) => entry.shardIndex).sort((a, b) => a - b),
+    Array.from({ length: SHARD_COUNT }, (_, index) => index),
+    "the shard matrix must define each shard index exactly once",
+  );
+  for (const entry of matrixEntries) {
+    assert.equal(entry.shardCount, SHARD_COUNT, "each shard matrix entry must use the same SHARD_COUNT");
+    assert.equal(entry.shardLabel, `${entry.shardIndex + 1}/${SHARD_COUNT}`, "each shard label must match its index");
+  }
+});
+
+test("pr.yml passes the shard's spec filter to Playwright without a literal --", () => {
+  // `pnpm run test:e2e -- $specs` forwards the literal separator to Playwright,
+  // so the specs after it are not applied as file filters.
+  const workflow = readFileSync(prWorkflow, "utf8");
+  assert.ok(
+    !/pnpm run test:e2e --\s/.test(workflow),
+    "pr.yml must not insert a literal `--` between `pnpm run test:e2e` and the spec filter",
+  );
+  assert.match(
+    workflow,
+    /pnpm run test:e2e \$specs/,
+    "pr.yml e2e_shards must invoke `pnpm run test:e2e $specs`",
+  );
 });

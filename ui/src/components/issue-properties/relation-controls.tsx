@@ -64,8 +64,8 @@ export function RemovableIssueReferencePill({
             to={`/issues/${issueLabel}`}
             data-mention-kind="issue"
             className={chipClassName}
-            title={issue.title}
-            aria-label={`Task ${issueLabel}: ${issue.title}`}
+            title={issue.title ?? undefined}
+            aria-label={`Task ${issueLabel}: ${issue.title ?? issueLabel}`}
           >
             {content}
           </Link>
@@ -73,8 +73,8 @@ export function RemovableIssueReferencePill({
           <span
             data-mention-kind="issue"
             className={chipClassName}
-            title={issue.title}
-            aria-label={`Task: ${issue.title}`}
+            title={issue.title ?? undefined}
+            aria-label={`Task: ${issue.title ?? "Untitled task"}`}
           >
             {content}
           </span>
