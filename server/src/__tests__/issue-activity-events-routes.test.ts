@@ -40,10 +40,21 @@ const mockInstanceSettingsService = vi.hoisted(() => ({
       feedbackDataSharingPreference: "prompt",
     },
   })),
+  getGeneral: vi.fn(async () => ({
+    censorUsernameInLogs: false,
+    feedbackDataSharingPreference: "prompt",
+  })),
+  getExperimental: vi.fn(async () => ({})),
   listCompanyIds: vi.fn(async () => ["company-1"]),
 }));
 const mockRoutineService = vi.hoisted(() => ({
   syncRunStatusForIssue: vi.fn(async () => undefined),
+}));
+const mockEnvironmentRuntimeService = vi.hoisted(() => ({
+  destroyReusableSandboxLeases: vi.fn(async () => undefined),
+}));
+const mockEnvironmentService = vi.hoisted(() => ({
+  getById: vi.fn(async () => null),
 }));
 
 function registerModuleMocks() {
@@ -73,6 +84,21 @@ function registerModuleMocks() {
 
   vi.doMock("../services/routines.js", () => ({
     routineService: () => mockRoutineService,
+  }));
+
+  vi.doMock("../services/environment-runtime.js", () => ({
+    environmentRuntimeService: () => mockEnvironmentRuntimeService,
+  }));
+
+  vi.doMock("../services/environments.js", () => ({
+    environmentService: () => mockEnvironmentService,
+  }));
+
+  vi.doMock("../services/external-objects.js", () => ({
+    externalObjectService: () => ({
+      syncCommentSafely: vi.fn(async () => undefined),
+      syncIssueSafely: vi.fn(async () => undefined),
+    }),
   }));
 
   vi.doMock("../services/index.js", () => ({
@@ -121,6 +147,7 @@ function registerModuleMocks() {
     projectService: () => ({}),
     routineService: () => mockRoutineService,
     workProductService: () => ({}),
+    environmentService: () => mockEnvironmentService,
   }));
 }
 
@@ -150,6 +177,8 @@ function makeIssue() {
   return {
     id: "11111111-1111-4111-8111-111111111111",
     companyId: "company-1",
+    projectId: null,
+    parentId: null,
     status: "todo",
     assigneeAgentId: "22222222-2222-4222-8222-222222222222",
     assigneeUserId: null,
@@ -158,8 +187,10 @@ function makeIssue() {
     title: "Activity event issue",
     description: null,
     priority: "medium",
+    version: 1,
     executionPolicy: null,
     executionState: null,
+    executionWorkspaceId: null,
     updatedAt: new Date("2026-07-30T12:00:00.000Z"),
   };
 }
@@ -193,10 +224,13 @@ describe("issue activity event routes", () => {
     vi.doUnmock("../services/instance-settings.js");
     vi.doUnmock("../services/issues.js");
     vi.doUnmock("../services/routines.js");
-    vi.doUnmock("../routes/issues.js");
-    vi.doUnmock("../routes/authz.js");
-    vi.doUnmock("../middleware/index.js");
-    registerModuleMocks();
+        vi.doUnmock("../services/environment-runtime.js");
+        vi.doUnmock("../services/environments.js");
+        vi.doUnmock("../services/external-objects.js");
+        vi.doUnmock("../routes/issues.js");
+        vi.doUnmock("../routes/authz.js");
+        vi.doUnmock("../middleware/index.js");
+        registerModuleMocks();
     vi.clearAllMocks();
     mockIssueService.assertCheckoutOwner.mockResolvedValue({ adoptedFromRunId: null });
     mockIssueService.findMentionedAgents.mockResolvedValue([]);
@@ -223,20 +257,26 @@ describe("issue activity event routes", () => {
         feedbackDataSharingPreference: "prompt",
       },
     });
-    mockInstanceSettingsService.listCompanyIds.mockResolvedValue(["company-1"]);
-    mockRoutineService.syncRunStatusForIssue.mockResolvedValue(undefined);
-  });
+        mockInstanceSettingsService.getGeneral.mockResolvedValue({
+          censorUsernameInLogs: false,
+          feedbackDataSharingPreference: "prompt",
+        });
+        mockInstanceSettingsService.getExperimental.mockResolvedValue({});
+        mockInstanceSettingsService.listCompanyIds.mockResolvedValue(["company-1"]);
+        mockRoutineService.syncRunStatusForIssue.mockResolvedValue(undefined);
+        mockEnvironmentRuntimeService.destroyReusableSandboxLeases.mockResolvedValue(undefined);
+      });
 
-  it("returns a field-change receipt and omits a requested no-op field", async () => {
-    const issue = makeIssue();
-    mockIssueService.getById.mockResolvedValue(issue);
-    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) =>
-      issueUpdateWithReceipt(issue, patch));
+      it("returns a field-change receipt and omits a requested no-op field", async () => {
+        const issue = makeIssue();
+        mockIssueService.getById.mockResolvedValue(issue);
+        mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) =>
+          issueUpdateWithReceipt(issue, patch));
 
-    const changed = await request(await createApp())
-      .patch(`/api/issues/${issue.id}`)
-      .send({ priority: "high" });
-    expect(changed.status).toBe(200);
+        const changed = await request(await createApp())
+          .patch(`/api/issues/${issue.id}`)
+          .send({ priority: "high" });
+        expect(changed.status, JSON.stringify(changed.body)).toBe(200);
     expect(changed.body.changes).toEqual({
       priority: { from: "medium", to: "high" },
     });
@@ -372,12 +412,16 @@ describe("issue activity event routes", () => {
         "description": null,
         "executionPolicy": null,
         "executionState": null,
+        "executionWorkspaceId": null,
         "id": "11111111-1111-4111-8111-111111111111",
         "identifier": "PAP-580",
+        "parentId": null,
         "priority": "high",
+        "projectId": null,
         "status": "todo",
         "title": "Activity event issue",
         "updatedAt": "2026-07-30T12:01:00.000Z",
+        "version": 1,
       }
     `);
   });

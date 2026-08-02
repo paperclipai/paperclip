@@ -2168,13 +2168,6 @@ function buildExecutionStageWakeup(input: {
   return null;
 }
 
-class AutoApprovalIssueMissingError extends Error {
-  constructor() {
-    super("Issue not found during auto-approval transaction");
-    this.name = "AutoApprovalIssueMissingError";
-  }
-}
-
 function toCompactIssue(issue: any): CompactIssue {
   return {
     id: issue.id,
@@ -10487,7 +10480,7 @@ export function issueRoutes(
     };
     const commentOptions = {
       authorType: req.body.authorType ?? (actor.actorType === "agent" ? "agent" : "user"),
-      presentation: req.body.presentation ?? null,
+          presentation: commentPresentation,
       metadata: req.body.metadata ?? null,
       sourceTrust: await sourceTrustForActorWrite(currentIssue, actor),
     };
@@ -10532,265 +10525,171 @@ export function issueRoutes(
 
         issueBeforeCommentDecision = currentIssue;
         const result = await svc.updateWithInlineComment(
-          id,
-          {
-            ...plannedCommentIssuePatch,
-            ...transition.patch,
-            status: typeof transition.patch.status === "string" ? transition.patch.status : "done",
-            actorAgentId: actor.agentId ?? null,
-            actorUserId: actor.actorType === "user" ? actor.actorId : null,
-          },
-          {
-            body: req.body.body,
-            actor: commentActor,
-            options: commentOptions,
-            beforeCommit: cancelScheduledRetryBeforeCommit,
-            afterUpdate: transition.decision && decisionId
-              ? async (tx, updated) => {
-                  await tx.insert(issueExecutionDecisions).values({
-                    id: decisionId,
-                    companyId: updated.companyId,
-                    issueId: updated.id,
-                    stageId: transition.decision!.stageId,
-                    stageType: transition.decision!.stageType,
+                  id,
+                  {
+                    ...plannedCommentIssuePatch,
+                    ...transition.patch,
+                    status: typeof transition.patch.status === "string" ? transition.patch.status : "done",
                     actorAgentId: actor.agentId ?? null,
                     actorUserId: actor.actorType === "user" ? actor.actorId : null,
-                    outcome: transition.decision!.outcome,
-                    body: transition.decision!.body,
-                    createdByRunId: actor.runId ?? null,
-                  });
+                  },
+                  {
+                    body: req.body.body,
+                    actor: commentActor,
+                    options: commentOptions,
+                    beforeCommit: cancelScheduledRetryBeforeCommit,
+                    afterUpdate: transition.decision && decisionId
+                      ? async (tx, updated) => {
+                          await tx.insert(issueExecutionDecisions).values({
+                            id: decisionId,
+                            companyId: updated.companyId,
+                            issueId: updated.id,
+                            stageId: transition.decision!.stageId,
+                            stageType: transition.decision!.stageType,
+                            actorAgentId: actor.agentId ?? null,
+                            actorUserId: actor.actorType === "user" ? actor.actorId : null,
+                            outcome: transition.decision!.outcome,
+                            body: transition.decision!.body,
+                            createdByRunId: actor.runId ?? null,
+                          });
+                        }
+                      : undefined,
+                  },
+                );
+                if (!result) {
+                  res.status(404).json({ error: "Issue not found" });
+                  return;
                 }
-              : undefined,
-          },
-        );
-        if (!result) {
-          res.status(404).json({ error: "Issue not found" });
-          return;
-        }
-        comment = result.comment;
-        currentIssue = result.issue;
-      } else {
-        const result = await svc.updateWithInlineComment(
-          id,
-          plannedCommentIssuePatch,
-          {
-            body: req.body.body,
-            actor: commentActor,
-            options: commentOptions,
-            beforeCommit: cancelScheduledRetryBeforeCommit,
-          },
-        );
-        if (!result) {
-          res.status(404).json({ error: "Issue not found" });
-          return;
-        }
-        comment = result.comment;
-        currentIssue = result.issue;
-      }
-    } catch (err) {
-      if (err instanceof IssueVersionConflictError) {
-        respondIssueVersionConflict(res, err.currentVersion);
-        return;
-      }
-      throw err;
-    }
-    if (scheduledRetryCancellation.value) {
-      cancelledScheduledRetryRunId = scheduledRetryCancellation.value.runId;
-      await finalizeScheduledRetryCancellation({
-        cancellation: scheduledRetryCancellation.value,
-        issue,
-        actor,
-      });
-    }
-
-    if (runToInterrupt) {
-      const cancelled = await heartbeat.cancelRun(
-        runToInterrupt.id,
-        "Interrupted by board comment",
-        operatorInterruptCancelOptions({ issueId: currentIssue.id, actor }),
-      );
-      if (cancelled) {
-        interruptedRunId = cancelled.id;
-        await logActivity(db, {
-          companyId: cancelled.companyId,
-          actorType: actor.actorType,
-          actorId: actor.actorId,
-          agentId: actor.agentId,
-          runId: actor.runId,
-          agentApiKeyId: actor.agentApiKeyId,
-          action: "heartbeat.cancelled",
-          entityType: "heartbeat_run",
-          entityId: cancelled.id,
-          issueId: currentIssue.id,
-          details: {
-            agentId: cancelled.agentId,
-            source: "issue_comment_interrupt",
-            issueId: currentIssue.id,
-            cancellationKind: "operator_interrupted",
-            operatorInterrupted: true,
-          },
-        });
-      }
-    }
-
-    if (
-      plannedCommentIssuePatch.status === "todo" &&
-      issue.status !== currentIssue.status
-    ) {
-      await logActivity(db, {
-        companyId: currentIssue.companyId,
-        actorType: actor.actorType,
-        actorId: actor.actorId,
-        agentId: actor.agentId,
-        runId: actor.runId,
-        agentApiKeyId: actor.agentApiKeyId,
-        action: "issue.updated",
-        entityType: "issue",
-        entityId: currentIssue.id,
-        details: {
-          status: "todo",
-          ...(reopened ? { reopened: true, reopenedFrom: reopenFromStatus } : {}),
-          ...(scheduledRetrySupersededByComment
-            ? {
-                scheduledRetrySupersededByComment: true,
-                scheduledRetryRunId: scheduledRetryForHumanComment?.runId ?? null,
-                ...(cancelledScheduledRetryRunId ? { cancelledScheduledRetryRunId } : {}),
+                comment = result.comment;
+                currentIssue = result.issue;
+              } else {
+                const result = await svc.updateWithInlineComment(
+                  id,
+                  plannedCommentIssuePatch,
+                  {
+                    body: req.body.body,
+                    actor: commentActor,
+                    options: commentOptions,
+                    beforeCommit: cancelScheduledRetryBeforeCommit,
+                  },
+                );
+                if (!result) {
+                  res.status(404).json({ error: "Issue not found" });
+                  return;
+                }
+                comment = result.comment;
+                currentIssue = result.issue;
               }
-            : {}),
-          source: "comment",
-          ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true } : {}),
-          identifier: currentIssue.identifier,
-        },
-      });
-    }
+            } catch (err) {
+              if (err instanceof IssueVersionConflictError) {
+                respondIssueVersionConflict(res, err.currentVersion);
+                return;
+              }
+              throw err;
+            }
+            if (scheduledRetryCancellation.value) {
+              cancelledScheduledRetryRunId = scheduledRetryCancellation.value.runId;
+              await finalizeScheduledRetryCancellation({
+                cancellation: scheduledRetryCancellation.value,
+                issue,
+                actor,
+              });
+            }
 
-    if (shouldAutoApproveReviewComment) {
-      const transition = applyIssueExecutionPolicyTransition({
-        issue: currentIssue,
-        policy: currentExecutionPolicy,
-        requestedStatus: "done",
-        requestedAssigneePatch: {},
-        actor: {
-          agentId: actor.agentId ?? null,
-          userId: actor.actorType === "user" ? actor.actorId : null,
-        },
-        commentBody: req.body.body,
-      });
-      const decisionId = transition.decision ? randomUUID() : null;
-      if (decisionId) {
-        const nextExecutionState = transition.patch.executionState;
-        if (!nextExecutionState || typeof nextExecutionState !== "object") {
-          throw new Error("Execution policy decision patch is missing executionState");
-        }
-        transition.patch.executionState = {
-          ...nextExecutionState,
-          lastDecisionId: decisionId,
-        };
-      }
+            if (runToInterrupt) {
+              const cancelled = await heartbeat.cancelRun(
+                runToInterrupt.id,
+                "Interrupted by board comment",
+                operatorInterruptCancelOptions({ issueId: currentIssue.id, actor }),
+              );
+              if (cancelled) {
+                interruptedRunId = cancelled.id;
+                await logActivity(db, {
+                  companyId: cancelled.companyId,
+                  actorType: actor.actorType,
+                  actorId: actor.actorId,
+                  agentId: actor.agentId,
+                  runId: actor.runId,
+                  agentApiKeyId: actor.agentApiKeyId,
+                  action: "heartbeat.cancelled",
+                  entityType: "heartbeat_run",
+                  entityId: cancelled.id,
+                  issueId: currentIssue.id,
+                  details: {
+                    agentId: cancelled.agentId,
+                    source: "issue_comment_interrupt",
+                    issueId: currentIssue.id,
+                    cancellationKind: "operator_interrupted",
+                    operatorInterrupted: true,
+                  },
+                });
+              }
+            }
 
-      issueBeforeCommentDecision = currentIssue;
-      const updatePatch = {
-        ...transition.patch,
-        status: typeof transition.patch.status === "string" ? transition.patch.status : "done",
-        actorAgentId: actor.agentId ?? null,
-        actorUserId: actor.actorType === "user" ? actor.actorId : null,
-      };
+            if (
+              plannedCommentIssuePatch.status === "todo" &&
+              issue.status !== currentIssue.status
+            ) {
+              await logActivity(db, {
+                companyId: currentIssue.companyId,
+                actorType: actor.actorType,
+                actorId: actor.actorId,
+                agentId: actor.agentId,
+                runId: actor.runId,
+                agentApiKeyId: actor.agentApiKeyId,
+                action: "issue.updated",
+                entityType: "issue",
+                entityId: currentIssue.id,
+                details: {
+                  status: "todo",
+                  ...(reopened ? { reopened: true, reopenedFrom: reopenFromStatus } : {}),
+                  ...(scheduledRetrySupersededByComment
+                    ? {
+                        scheduledRetrySupersededByComment: true,
+                        scheduledRetryRunId: scheduledRetryForHumanComment?.runId ?? null,
+                        ...(cancelledScheduledRetryRunId ? { cancelledScheduledRetryRunId } : {}),
+                      }
+                    : {}),
+                  source: "comment",
+                  ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true } : {}),
+                  identifier: currentIssue.identifier,
+                },
+              });
+            }
 
-      const sourceTrust = await sourceTrustForActorWrite(currentIssue, actor);
-      const commentOptions = {
-        authorType: req.body.authorType ?? (actor.actorType === "agent" ? "agent" : "user"),
-        presentation: commentPresentation,
-        metadata: req.body.metadata ?? null,
-        sourceTrust,
-      };
-      let txResult: { comment: Awaited<ReturnType<typeof svc.addComment>>; issue: NonNullable<Awaited<ReturnType<typeof svc.update>>> };
-      try {
-        txResult = await db.transaction(async (tx) => {
-          const insertedComment = await svc.addComment(
-            id,
-            req.body.body,
-            {
-              agentId: actor.agentId ?? undefined,
-              userId: actor.actorType === "user" ? actor.actorId : undefined,
-              runId: actor.runId,
-            },
-            commentOptions,
-            tx,
-          );
-          const updated = await svc.update(id, updatePatch, tx);
-          // Throw (not return null) so drizzle rolls back the inserted comment when the issue
-          // has been concurrently deleted between the initial fetch and the in-transaction update.
-          if (!updated) throw new AutoApprovalIssueMissingError();
+            if (shouldAutoApproveReviewComment) {
+              // Mirror the normal status-change audit trail: every other in_review -> done path
+              // emits an `issue.updated` activity, so emit one here too for the auto-approval path.
+              if (issueBeforeCommentDecision.status !== currentIssue.status) {
+                await logActivity(db, {
+                  companyId: currentIssue.companyId,
+                  actorType: actor.actorType,
+                  actorId: actor.actorId,
+                  agentId: actor.agentId,
+                  runId: actor.runId,
+                  agentApiKeyId: actor.agentApiKeyId,
+                  action: "issue.updated",
+                  entityType: "issue",
+                  entityId: currentIssue.id,
+                  details: {
+                    status: currentIssue.status,
+                    identifier: currentIssue.identifier,
+                    source: "auto_approval_comment",
+                    _previous: { status: issueBeforeCommentDecision.status },
+                  },
+                });
+              }
+              commentDecisionStageWakeup = buildExecutionStageWakeup({
+                issueId: currentIssue.id,
+                previousState: currentExecutionState,
+                nextState: parseIssueExecutionState(currentIssue.executionState),
+                interruptedRunId,
+                requestedByActorType: actor.actorType,
+                requestedByActorId: actor.actorId,
+              });
+            }
 
-          if (transition.decision && decisionId) {
-            await tx.insert(issueExecutionDecisions).values({
-              id: decisionId,
-              companyId: updated.companyId,
-              issueId: updated.id,
-              stageId: transition.decision.stageId,
-              stageType: transition.decision.stageType,
-              actorAgentId: actor.agentId ?? null,
-              actorUserId: actor.actorType === "user" ? actor.actorId : null,
-              outcome: transition.decision.outcome,
-              body: transition.decision.body,
-              createdByRunId: actor.runId ?? null,
-            });
-          }
-
-          return { comment: insertedComment, issue: updated };
-        });
-      } catch (err) {
-        if (err instanceof AutoApprovalIssueMissingError) {
-          res.status(404).json({ error: "Issue not found" });
-          return;
-        }
-        throw err;
-      }
-      comment = txResult.comment;
-      currentIssue = txResult.issue;
-      // Mirror the normal status-change audit trail: every other in_review -> done path
-      // emits an `issue.updated` activity, so emit one here too for the auto-approval path.
-      if (issueBeforeCommentDecision.status !== currentIssue.status) {
-        await logActivity(db, {
-          companyId: currentIssue.companyId,
-          actorType: actor.actorType,
-          actorId: actor.actorId,
-          agentId: actor.agentId,
-          runId: actor.runId,
-          agentApiKeyId: actor.agentApiKeyId,
-          action: "issue.updated",
-          entityType: "issue",
-          entityId: currentIssue.id,
-          details: {
-            status: currentIssue.status,
-            identifier: currentIssue.identifier,
-            source: "auto_approval_comment",
-            _previous: { status: issueBeforeCommentDecision.status },
-          },
-        });
-      }
-      commentDecisionStageWakeup = buildExecutionStageWakeup({
-        issueId: currentIssue.id,
-        previousState: currentExecutionState,
-        nextState: parseIssueExecutionState(currentIssue.executionState),
-        interruptedRunId,
-        requestedByActorType: actor.actorType,
-        requestedByActorId: actor.actorId,
-      });
-    } else {
-      comment = await svc.addComment(id, req.body.body, {
-        agentId: actor.agentId ?? undefined,
-        userId: actor.actorType === "user" ? actor.actorId : undefined,
-        runId: actor.runId,
-      }, {
-        authorType: req.body.authorType ?? (actor.actorType === "agent" ? "agent" : "user"),
-        presentation: commentPresentation,
-        metadata: req.body.metadata ?? null,
-        sourceTrust: await sourceTrustForActorWrite(currentIssue, actor),
-      });
-    }
-
-    await issueReferencesSvc.syncComment(comment.id);
+            await issueReferencesSvc.syncComment(comment.id);
     await externalObjectsSvc.syncCommentSafely(comment.id);
     const commentReferenceSummaryAfter = await issueReferencesSvc.listIssueReferenceSummary(currentIssue.id);
     const commentReferenceDiff = issueReferencesSvc.diffIssueReferenceSummary(

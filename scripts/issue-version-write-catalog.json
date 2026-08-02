@@ -1,8 +1,8 @@
 {
   "schemaVersion": "paperclip_issue_version_write_catalog_v2",
   "baseline": {
-    "acceptedEntryDigestSha256": "F26431F3813CC2D60A696208B6719CFCEE8BE8F7B1713BB8E60F241CCFBBDB08",
-    "observedDigestSha256": "591B4E27B3BBE9E98B041E8179FFF58F7D814C9696C17D721E8273562F9BCBF8",
+    "acceptedEntryDigestSha256": "0E44264263AC64F5E38D1DE39F89FA7F9D5C5099D616EA5B52933DBAD287078A",
+    "observedDigestSha256": "638E9F4251E1DDACAA1E17FD0503ACFC027A84D60C031575DEACA38335A24F2F",
     "counts": {
       "total": 76,
       "issues": 58,
@@ -178,14 +178,14 @@
     {
       "id": "M008",
       "path": "server/src/routes/issues.ts",
-      "line": 6711,
+      "line": 6704,
       "receiver": "tx",
       "operation": "update",
       "table": "issues",
       "tableToken": "issueRows",
       "containingFunction": "issueRoutes",
       "containingFunctionLine": 2577,
-      "sourceFileSha256": "2A06F098CD80A818DBB49E2D0D66B16AFB435153C562053C474A3B6CC830C3A9",
+      "sourceFileSha256": "963E9BE627EB4E3F952AA615107F0101BFABC59CF5BE7FF451BD7ABF069979C3",
       "classification": "versioned",
       "state": "versioned",
       "resolution": {
@@ -197,14 +197,14 @@
     {
       "id": "M009",
       "path": "server/src/routes/issues.ts",
-      "line": 6721,
+      "line": 6714,
       "receiver": "tx",
       "operation": "update",
       "table": "issueComments",
       "tableToken": "issueComments",
       "containingFunction": "issueRoutes",
       "containingFunctionLine": 2577,
-      "sourceFileSha256": "2A06F098CD80A818DBB49E2D0D66B16AFB435153C562053C474A3B6CC830C3A9",
+      "sourceFileSha256": "963E9BE627EB4E3F952AA615107F0101BFABC59CF5BE7FF451BD7ABF069979C3",
       "classification": "versioned",
       "state": "versioned",
       "resolution": {
