@@ -1,14 +1,11 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, CheckCheck, Loader2, Settings2, X } from "lucide-react";
+import { Check, Loader2, Settings2, X } from "lucide-react";
 import type { Agent, AttentionItem } from "@paperclipai/shared";
 import { useParams } from "@/lib/router";
 import { attentionApi } from "../api/attention";
 import { agentsApi } from "../api/agents";
 import { authApi } from "../api/auth";
-import { accessApi } from "../api/access";
-import { approvalsApi } from "../api/approvals";
-import { issuesApi } from "../api/issues";
 import { decisionQueuesApi } from "../api/decisionQueues";
 import { useCompany } from "../context/CompanyContext";
 import { useBreadcrumbs } from "../context/BreadcrumbContext";
@@ -21,60 +18,12 @@ import { AttentionQueueRow } from "../components/AttentionQueueRow";
 import { DecisionQueueRail } from "../components/DecisionQueueRail";
 import { Button } from "../components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "../components/ui/popover";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-  AlertDialogTrigger,
-} from "../components/ui/alert-dialog";
-
-type BulkAction = "accept" | "reject";
-
-/**
- * Can this row be bulk accepted / rejected from the queue page? Approvals, join
- * requests and confirmation interactions carry a symmetric accept/reject; open
- * decisions need a specific verb, so they resolve individually in-row and are
- * excluded from the bulk count.
- */
-function bulkEligible(item: AttentionItem): boolean {
-  if (item.sourceKind === "approval" || item.sourceKind === "join_request") return true;
-  if (item.sourceKind === "issue_thread_interaction") {
-    return item.subject.metadata?.kind === "request_confirmation";
-  }
-  return false;
-}
-
-/** Run a single bulk accept/reject against the source's native decision API. */
-function resolveQueueDecision(companyId: string, item: AttentionItem, action: BulkAction): Promise<unknown> {
-  if (item.sourceKind === "approval") {
-    return action === "accept" ? approvalsApi.approve(item.subject.id) : approvalsApi.reject(item.subject.id);
-  }
-  if (item.sourceKind === "join_request") {
-    return action === "accept"
-      ? accessApi.approveJoinRequest(companyId, item.subject.id)
-      : accessApi.rejectJoinRequest(companyId, item.subject.id);
-  }
-  if (item.sourceKind === "issue_thread_interaction") {
-    const issueId = (item.subject.metadata?.issueId as string | undefined) ?? item.relatedIssue?.id;
-    if (!issueId) return Promise.reject(new Error("Missing issue reference for this decision."));
-    return action === "accept"
-      ? issuesApi.acceptInteraction(issueId, item.subject.id)
-      : issuesApi.rejectInteraction(issueId, item.subject.id);
-  }
-  return Promise.reject(new Error("This decision must be completed from its detail view."));
-}
-
 /**
  * Queue page (PAP-16032 §4.1 / wireframe screen 2). A homogeneous list of one
- * queue's pending decisions with bulk accept/reject across the eligible rows,
- * per-item exclusion (with an optional reason), and the queue's seed-rules card
- * with an enable/disable toggle. The list reuses the desk's card so a decision
- * looks and resolves the same wherever it is surfaced.
+ * queue's pending decisions with per-item resolution, exclusion (with an
+ * optional reason), and the queue's seed-rules card with an enable/disable
+ * toggle. The list reuses the desk's card so a decision looks and resolves the
+ * same wherever it is surfaced.
  */
 export function DecisionQueuePage() {
   const { selectedCompanyId } = useCompany();
@@ -129,36 +78,11 @@ export function DecisionQueuePage() {
     () => (feed?.items ?? []).filter((item) => !(item.dismissal?.isActive ?? false)),
     [feed],
   );
-  const eligible = useMemo(() => items.filter(bulkEligible), [items]);
 
   const invalidate = () => {
     queryClient.invalidateQueries({ queryKey: queryKeys.attention(selectedCompanyId!) });
     queryClient.invalidateQueries({ queryKey: queryKeys.decisionQueues.list(selectedCompanyId!) });
   };
-
-  const bulk = useMutation<{ ok: number; failed: number }, Error, BulkAction>({
-    mutationFn: async (action) => {
-      const results = await Promise.allSettled(
-        eligible.map((item) => resolveQueueDecision(selectedCompanyId!, item, action)),
-      );
-      const ok = results.filter((r) => r.status === "fulfilled").length;
-      return { ok, failed: results.length - ok };
-    },
-    onSuccess: ({ ok, failed }, action) => {
-      invalidate();
-      pushToast({
-        title: `${action === "accept" ? "Accepted" : "Rejected"} ${ok} ${ok === 1 ? "decision" : "decisions"}`,
-        body: failed > 0 ? `${failed} could not be completed here.` : undefined,
-        tone: failed > 0 ? "info" : "success",
-      });
-    },
-    onError: (err) =>
-      pushToast({
-        title: "Bulk action failed",
-        body: err instanceof Error ? err.message : "Please try again.",
-        tone: "error",
-      }),
-  });
 
   const toggleSeedRules = useMutation({
     mutationFn: (enabled: boolean) =>
@@ -186,47 +110,6 @@ export function DecisionQueuePage() {
           <h1 className="text-xl font-bold">{queue?.title ?? queueKey}</h1>
           {queue?.description && <p className="mt-0.5 text-sm text-muted-foreground">{queue.description}</p>}
         </div>
-        {eligible.length > 0 && (
-          <div className="flex items-center gap-2">
-            <AlertDialog>
-              <AlertDialogTrigger asChild>
-                <Button type="button" variant="outline" size="sm" disabled={bulk.isPending}>
-                  {bulk.isPending && bulk.variables === "reject" ? (
-                    <Loader2 className="h-3.5 w-3.5 animate-spin" />
-                  ) : (
-                    <X className="h-3.5 w-3.5" />
-                  )}
-                  Reject all ({eligible.length})
-                </Button>
-              </AlertDialogTrigger>
-              <AlertDialogContent>
-                <AlertDialogHeader>
-                  <AlertDialogTitle>
-                    Reject {eligible.length} {eligible.length === 1 ? "decision" : "decisions"}?
-                  </AlertDialogTitle>
-                  <AlertDialogDescription>
-                    This rejects every eligible decision in this queue at once. It can't be undone —
-                    each one resolves against its source.
-                  </AlertDialogDescription>
-                </AlertDialogHeader>
-                <AlertDialogFooter>
-                  <AlertDialogCancel>Cancel</AlertDialogCancel>
-                  <AlertDialogAction onClick={() => bulk.mutate("reject")}>
-                    Reject all
-                  </AlertDialogAction>
-                </AlertDialogFooter>
-              </AlertDialogContent>
-            </AlertDialog>
-            <Button type="button" size="sm" disabled={bulk.isPending} onClick={() => bulk.mutate("accept")}>
-              {bulk.isPending && bulk.variables === "accept" ? (
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
-              ) : (
-                <CheckCheck className="h-3.5 w-3.5" />
-              )}
-              Accept all ({eligible.length})
-            </Button>
-          </div>
-        )}
       </div>
 
       <DecisionQueueRail companyId={selectedCompanyId} activeQueueKey={queueKey} />
