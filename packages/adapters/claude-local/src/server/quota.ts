@@ -85,13 +85,7 @@ function trimToLatestUsagePanel(text: string): string | null {
   return tail;
 }
 
-async function readClaudeTokenFromFile(credPath: string): Promise<string | null> {
-  let raw: string;
-  try {
-    raw = await fs.readFile(credPath, "utf8");
-  } catch {
-    return null;
-  }
+function parseClaudeCredentialsJson(raw: string): string | null {
   let parsed: unknown;
   try {
     parsed = JSON.parse(raw);
@@ -104,6 +98,36 @@ async function readClaudeTokenFromFile(credPath: string): Promise<string | null>
   if (typeof oauth !== "object" || oauth === null) return null;
   const token = (oauth as Record<string, unknown>)["accessToken"];
   return typeof token === "string" && token.length > 0 ? token : null;
+}
+
+async function readClaudeTokenFromFile(credPath: string): Promise<string | null> {
+  let raw: string;
+  try {
+    raw = await fs.readFile(credPath, "utf8");
+  } catch {
+    return null;
+  }
+  return parseClaudeCredentialsJson(raw);
+}
+
+const MACOS_KEYCHAIN_CLAUDE_SERVICE = "Claude Code-credentials";
+
+/** On macOS, the Claude Code CLI stores its OAuth credentials in the system
+ *  Keychain instead of a credentials file — read them from there so
+ *  quota polling isn't blind on every default macOS install. */
+async function readClaudeTokenFromMacKeychain(): Promise<string | null> {
+  if (process.platform !== "darwin") return null;
+  try {
+    const { stdout } = await execFileAsync("security", [
+      "find-generic-password",
+      "-s",
+      MACOS_KEYCHAIN_CLAUDE_SERVICE,
+      "-w",
+    ]);
+    return parseClaudeCredentialsJson(stdout);
+  } catch {
+    return null;
+  }
 }
 
 interface ClaudeAuthStatus {
@@ -143,7 +167,7 @@ export async function readClaudeToken(): Promise<string | null> {
     const token = await readClaudeTokenFromFile(path.join(configDir, filename));
     if (token) return token;
   }
-  return null;
+  return readClaudeTokenFromMacKeychain();
 }
 
 interface AnthropicUsageWindow {
