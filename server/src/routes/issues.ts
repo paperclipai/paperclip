@@ -10222,6 +10222,47 @@ export function issueRoutes(
           executionRunId: issue.executionRunId,
         }) ||
         shouldResumeInProgressScheduledRetry);
+    let terminalStatusGuard:
+      | { runStartedAt: Date | string | null; explicitResume: boolean }
+      | undefined;
+    if (isClosed && req.actor.type === "agent" && effectiveMoveToTodoRequested) {
+      const actorRun = actor.runId
+        ? await heartbeat.getRun(actor.runId).catch(() => null)
+        : null;
+      const runStartedAt = actorRun?.startedAt ?? actorRun?.createdAt ?? null;
+      terminalStatusGuard = {
+        runStartedAt:
+          actorRun?.agentId === actor.agentId && actorRun.companyId === issue.companyId
+            ? runStartedAt
+            : null,
+        explicitResume: effectiveReopenRequested || effectiveResumeRequested,
+      };
+      const terminalAt = issue.status === "done"
+        ? issue.completedAt ?? issue.updatedAt
+        : issue.cancelledAt ?? issue.updatedAt;
+      if (
+        terminalStatusGuard.runStartedAt &&
+        terminalAt &&
+        new Date(terminalStatusGuard.runStartedAt).getTime() <= new Date(terminalAt).getTime()
+      ) {
+        res.status(409).json({
+          error: "Stale agent run cannot change a terminal issue",
+          code: "stale_terminal_issue_mutation",
+          issueStatus: issue.status,
+          requestedStatus: "todo",
+        });
+        return;
+      }
+      if (!terminalStatusGuard.explicitResume) {
+        res.status(409).json({
+          error: "Agent status changes on terminal issues require explicit resume intent",
+          code: "terminal_issue_resume_required",
+          issueStatus: issue.status,
+          requestedStatus: "todo",
+        });
+        return;
+      }
+    }
     const hasUnresolvedFirstClassBlockers =
       isBlocked && effectiveMoveToTodoRequested
         ? (await svc.getDependencyReadiness(issue.id)).unresolvedBlockerCount > 0
@@ -10252,7 +10293,10 @@ export function issueRoutes(
             actor,
           })
         : null;
-      const reopenedIssue = await svc.update(id, { status: "todo" });
+      const reopenedIssue = await svc.update(id, {
+        status: "todo",
+        ...(terminalStatusGuard ? { terminalStatusGuard } : {}),
+      });
       if (!reopenedIssue) {
         res.status(404).json({ error: "Issue not found" });
         return;

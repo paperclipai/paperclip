@@ -1699,7 +1699,19 @@ describe.sequential("issue comment reopen routes", () => {
   });
 
   it("explicit same-agent resume comments reopen closed issues and mark the wake payload", async () => {
-    mockIssueService.getById.mockResolvedValue(makeIssue("done"));
+    const completedAt = new Date("2026-08-02T09:00:53.000Z");
+    mockIssueService.getById.mockResolvedValue({
+      ...makeIssue("done"),
+      completedAt,
+      updatedAt: completedAt,
+    });
+    mockHeartbeatService.getRun.mockResolvedValue({
+      id: "run-1",
+      companyId: "company-1",
+      agentId: "22222222-2222-4222-8222-222222222222",
+      startedAt: new Date("2026-08-02T09:01:00.000Z"),
+      createdAt: new Date("2026-08-02T09:00:59.000Z"),
+    });
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
       ...makeIssue("done"),
       ...patch,
@@ -1712,7 +1724,13 @@ describe.sequential("issue comment reopen routes", () => {
     expect(res.status).toBe(201);
     expect(mockIssueService.update).toHaveBeenCalledWith(
       "11111111-1111-4111-8111-111111111111",
-      { status: "todo" },
+      {
+        status: "todo",
+        terminalStatusGuard: {
+          runStartedAt: new Date("2026-08-02T09:01:00.000Z"),
+          explicitResume: true,
+        },
+      },
     );
     expect(mockLogActivity).toHaveBeenCalledWith(
       expect.anything(),
@@ -1742,6 +1760,36 @@ describe.sequential("issue comment reopen routes", () => {
         }),
       }),
     );
+  });
+
+  it("rejects a stale agent run that tries to resume a terminal issue through a comment", async () => {
+    const completedAt = new Date("2026-08-02T09:00:53.000Z");
+    mockIssueService.getById.mockResolvedValue({
+      ...makeIssue("done"),
+      completedAt,
+      updatedAt: completedAt,
+    });
+    mockHeartbeatService.getRun.mockResolvedValue({
+      id: "run-1",
+      companyId: "company-1",
+      agentId: "22222222-2222-4222-8222-222222222222",
+      startedAt: new Date("2026-08-02T08:59:00.000Z"),
+      createdAt: new Date("2026-08-02T08:58:59.000Z"),
+    });
+
+    const res = await request(await installActor(createApp(), agentActor()))
+      .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
+      .send({ body: "obsolete continuation result", resume: true });
+
+    expect(res.status).toBe(409);
+    expect(res.body).toEqual({
+      error: "Stale agent run cannot change a terminal issue",
+      code: "stale_terminal_issue_mutation",
+      issueStatus: "done",
+      requestedStatus: "todo",
+    });
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
   });
 
   it("rejects explicit agent resume intent from a non-assignee", async () => {
