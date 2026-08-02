@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, isNull, lte, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, lte, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { companies, documents, externalObjectMentions, externalObjects, issueComments, issueDocuments, issues, plugins } from "@paperclipai/db";
 import {
@@ -788,6 +788,7 @@ export function externalObjectService(
         .set({
           liveness: visibleLiveness(object, now) === "fresh" ? "stale" : object.liveness,
           nextRefreshAt: addSeconds(now, DEFAULT_RETRY_AFTER_SECONDS),
+          refreshStartedAt: null,
           updatedAt: now,
         })
         .where(and(eq(externalObjects.id, object.id), eq(externalObjects.companyId, object.companyId)))
@@ -805,6 +806,7 @@ export function externalObjectService(
           lastErrorCode: result.errorCode,
           lastErrorMessage: sanitizeErrorMessage(result.errorMessage),
           nextRefreshAt: addSeconds(now, result.retryAfterSeconds ?? DEFAULT_RETRY_AFTER_SECONDS),
+          refreshStartedAt: null,
           updatedAt: now,
         })
         .where(and(eq(externalObjects.id, object.id), eq(externalObjects.companyId, object.companyId)))
@@ -837,6 +839,7 @@ export function externalObjectService(
       lastErrorCode: null,
       lastErrorMessage: null,
       nextRefreshAt: addSeconds(now, snapshot.ttlSeconds ?? DEFAULT_REFRESH_TTL_SECONDS),
+      refreshStartedAt: null,
       updatedAt: now,
     };
     const [updated] = await db
@@ -878,6 +881,37 @@ export function externalObjectService(
     return { object: toObjectPayload(next, now), refreshed: true, reason: "resolved" as const };
   }
 
+  async function claimObjectRefresh(
+    object: ExternalObjectRecord,
+    input: RefreshObjectInput,
+    now: Date,
+  ) {
+    const staleRefreshStartedBefore = new Date(now.getTime() - DEFAULT_RETRY_AFTER_SECONDS * 1000);
+    const leaseAvailable = or(
+      isNull(externalObjects.refreshStartedAt),
+      lte(externalObjects.refreshStartedAt, staleRefreshStartedBefore),
+    )!;
+    const dueOrForced = input.force
+      ? leaseAvailable
+      : and(
+          leaseAvailable,
+          or(isNull(externalObjects.nextRefreshAt), lte(externalObjects.nextRefreshAt, now))!,
+        )!;
+    const [claimed] = await db
+      .update(externalObjects)
+      .set({
+        refreshStartedAt: now,
+        updatedAt: now,
+      })
+      .where(and(
+        eq(externalObjects.id, object.id),
+        eq(externalObjects.companyId, object.companyId),
+        dueOrForced,
+      ))
+      .returning();
+    return claimed ?? null;
+  }
+
   const objectRefreshesInFlight = new Map<string, Promise<Awaited<ReturnType<typeof resolveObjectRefresh>>>>();
 
   async function refreshObject(
@@ -898,6 +932,17 @@ export function externalObjectService(
     const refreshKey = `${object.companyId}:${object.id}`;
     const existingRefresh = objectRefreshesInFlight.get(refreshKey);
     if (existingRefresh) return existingRefresh;
+
+    const claimed = await claimObjectRefresh(object, input, now);
+    if (!claimed) {
+      const latest = await db
+        .select()
+        .from(externalObjects)
+        .where(and(eq(externalObjects.id, object.id), eq(externalObjects.companyId, object.companyId)))
+        .then((rows) => rows[0] ?? null);
+      if (!latest) throw notFound("External object not found");
+      return { object: toObjectPayload(latest, now), refreshed: false, reason: "refresh_in_progress" as const };
+    }
 
     const refresh = resolveObjectRefresh(object, input, now).finally(() => {
       objectRefreshesInFlight.delete(refreshKey);
@@ -924,6 +969,7 @@ export function externalObjectService(
   }
 
   async function refreshDueObjectsUnchecked(companyId: string, limit = 50, now = new Date()) {
+    const staleRefreshStartedBefore = new Date(now.getTime() - DEFAULT_RETRY_AFTER_SECONDS * 1000);
     const due = await db
       .select({ id: externalObjects.id })
       .from(externalObjects)
@@ -932,6 +978,10 @@ export function externalObjectService(
           eq(externalObjects.companyId, companyId),
           eq(externalObjects.isTerminal, false),
           lte(externalObjects.nextRefreshAt, now),
+          or(
+            isNull(externalObjects.refreshStartedAt),
+            lte(externalObjects.refreshStartedAt, staleRefreshStartedBefore),
+          ),
         ),
       )
       .limit(limit);

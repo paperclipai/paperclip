@@ -576,6 +576,56 @@ describeEmbeddedPostgres("externalObjectService", () => {
     expect(resolve).toHaveBeenCalledTimes(1);
   });
 
+  it("prevents duplicate refreshes across service instances", async () => {
+    const { companyId, issueId } = await createIssue();
+    let markResolverStarted!: () => void;
+    const resolverStarted = new Promise<void>((resolve) => {
+      markResolverStarted = resolve;
+    });
+    let finishResolver!: () => void;
+    const resolverCanFinish = new Promise<void>((resolve) => {
+      finishResolver = resolve;
+    });
+    const resolve = vi.fn(async () => {
+      markResolverStarted();
+      await resolverCanFinish;
+      return {
+        ok: true as const,
+        snapshot: {
+          statusCategory: "open" as const,
+          statusTone: "info" as const,
+          statusKey: "open",
+          statusLabel: "Open",
+          ttlSeconds: 300,
+        },
+      };
+    });
+    const resolver: ExternalObjectResolver = {
+      providerKey: "url",
+      objectType: "link",
+      resolve,
+    };
+    const scheduledService = externalObjectService(db, { resolvers: [resolver], github: false });
+    const manualService = externalObjectService(db, { resolvers: [resolver], github: false });
+    await scheduledService.syncIssue(issueId);
+    const object = await db.select().from(externalObjects).then((rows) => rows[0]!);
+
+    const dueRefresh = scheduledService.refreshDueObjects(companyId, 50, new Date(Date.now() + 1_000));
+    await resolverStarted;
+    const manualRefresh = await manualService.refreshObject(object.id, { companyId, force: true });
+    finishResolver();
+    const dueResults = await dueRefresh;
+
+    expect(dueResults).toHaveLength(1);
+    expect(dueResults[0]?.refreshed).toBe(true);
+    expect(manualRefresh.refreshed).toBe(false);
+    expect(manualRefresh.reason).toBe("refresh_in_progress");
+    expect(resolve).toHaveBeenCalledTimes(1);
+    await expect(
+      db.select().from(externalObjects).then((rows) => rows[0]?.refreshStartedAt ?? null),
+    ).resolves.toBeNull();
+  });
+
   it("refreshes due objects for active companies only", async () => {
     const active = await createIssue();
     const paused = await createIssue();
