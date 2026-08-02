@@ -59,6 +59,7 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
   });
 
   it("provisions one gateway per installed connection and mints short-lived run tokens", async () => {
+    delete process.env.PAPERCLIP_RUNTIME_API_URL;
     process.env.PAPERCLIP_API_URL = "https://paperclip.example.test";
     const [company] = await db.insert(companies).values({
       name: `Runtime MCP ${randomUUID()}`,
@@ -153,6 +154,72 @@ describeEmbeddedPostgres("heartbeat runtime MCP servers", () => {
       expect(token.expiresAt!.getTime()).toBeLessThanOrEqual(Date.now() + 61 * 60 * 1000);
     }
     expect(JSON.stringify(tokens)).not.toContain(first[0]!.token);
+  });
+
+  it("prefers PAPERCLIP_RUNTIME_API_URL for managed runtime gateway delivery", async () => {
+    process.env.PAPERCLIP_API_URL = "https://paperclip-gated.example.test";
+    process.env.PAPERCLIP_RUNTIME_API_URL = "http://127.0.0.1:3100/api";
+    const [company] = await db.insert(companies).values({
+      name: `Runtime MCP ${randomUUID()}`,
+      issuePrefix: `RM${randomUUID().slice(0, 5).toUpperCase()}`,
+    }).returning();
+    const [agent] = await db.insert(agents).values({
+      companyId: company!.id,
+      name: "Runtime MCP Agent",
+      role: "engineer",
+      adapterType: "codex_local",
+      adapterConfig: {},
+    }).returning();
+    const [application] = await db.insert(toolApplications).values({
+      companyId: company!.id,
+      applicationKey: `runtime-${randomUUID().slice(0, 8)}`,
+      name: "Runtime MCP App",
+      type: "mcp_http",
+      status: "active",
+    }).returning();
+    const [connection] = await db.insert(toolConnections).values({
+      companyId: company!.id,
+      applicationId: application!.id,
+      name: "Installed MCP",
+      uid: `test/${randomUUID()}`,
+      transport: "mcp_remote",
+      status: "active",
+      enabled: true,
+      config: { url: "https://installed.example.test/mcp" },
+    }).returning();
+    const [profile] = await db.insert(toolProfiles).values({
+      companyId: company!.id,
+      profileKey: `app:${connection!.id}`,
+      name: "Installed MCP",
+      defaultAction: "deny",
+    }).returning();
+    await db.insert(toolProfileEntries).values({
+      companyId: company!.id,
+      profileId: profile!.id,
+      selectorType: "connection",
+      effect: "include",
+      applicationId: application!.id,
+      connectionId: connection!.id,
+    });
+    await db.insert(toolProfileBindings).values({
+      companyId: company!.id,
+      profileId: profile!.id,
+      targetType: "agent",
+      targetId: agent!.id,
+    });
+    await db.insert(toolConnectionInstalls).values({
+      companyId: company!.id,
+      connectionId: connection!.id,
+      targetType: "agent",
+      targetId: agent!.id,
+    });
+
+    const [server] = await buildPaperclipRuntimeMcpServers({ db, agent: agent!, runId: randomUUID() });
+
+    expect(server).toMatchObject({
+      url: expect.stringMatching(/^http:\/\/127\.0\.0\.1:3100\/api\/tool-gateway\/gateways\/.+\/mcp$/),
+    });
+    expect(server?.url).not.toContain("paperclip-gated.example.test");
   });
 
   it("audits permitted remote MCP connections that were not installed when delivery is empty", async () => {

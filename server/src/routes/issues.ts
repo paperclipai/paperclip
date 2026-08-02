@@ -3682,6 +3682,137 @@ export function issueRoutes(
     return false;
   }
 
+  type SupervisoryNormalizationScope =
+    | { kind: "none" }
+    | { kind: "invalid"; detail: string }
+    | {
+        kind: "supervisor";
+        companyId: string;
+        supervisorIssueId: string;
+        supervisorIssueIdentifier: string | null;
+        supervisorRunId: string;
+      };
+
+  function readSupervisoryIssueIdFromRunContext(contextSnapshot: unknown) {
+    if (!contextSnapshot || typeof contextSnapshot !== "object" || Array.isArray(contextSnapshot)) return null;
+    const context = contextSnapshot as Record<string, unknown>;
+    const marker = context.supervisoryNormalization;
+    if (!marker || typeof marker !== "object" || Array.isArray(marker)) return null;
+    const parsedMarker = marker as Record<string, unknown>;
+    const candidates = [parsedMarker.supervisorIssueId, parsedMarker.issueId];
+    for (const candidate of candidates) {
+      if (typeof candidate === "string" && candidate.trim().length > 0) return candidate.trim();
+    }
+    return null;
+  }
+
+  async function resolveSupervisoryNormalizationScope(req: Request): Promise<SupervisoryNormalizationScope> {
+    if (req.actor.type !== "agent") return { kind: "none" };
+    const actorAgentId = req.actor.agentId?.trim();
+    const actorCompanyId = req.actor.companyId?.trim();
+    const runId = req.actor.runId?.trim();
+    if (!actorAgentId || !actorCompanyId || !runId) return { kind: "none" };
+
+    const run = await db
+      .select({
+        id: heartbeatRuns.id,
+        companyId: heartbeatRuns.companyId,
+        agentId: heartbeatRuns.agentId,
+        contextSnapshot: heartbeatRuns.contextSnapshot,
+      })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+
+    if (!run) return { kind: "none" };
+    if (run.agentId !== actorAgentId || run.companyId !== actorCompanyId) {
+      return { kind: "invalid", detail: "Supervisory normalization run context does not belong to this agent." };
+    }
+
+    const supervisorIssueId = readSupervisoryIssueIdFromRunContext(run.contextSnapshot);
+    if (!supervisorIssueId) return { kind: "none" };
+
+    const supervisorIssue = await db
+      .select({
+        id: issueRows.id,
+        companyId: issueRows.companyId,
+        identifier: issueRows.identifier,
+        assigneeAgentId: issueRows.assigneeAgentId,
+      })
+      .from(issueRows)
+      .where(and(eq(issueRows.id, supervisorIssueId), eq(issueRows.companyId, run.companyId)))
+      .then((rows) => rows[0] ?? null);
+
+    if (!supervisorIssue) {
+      return { kind: "invalid", detail: "Supervisory normalization source issue no longer exists in this company." };
+    }
+    if (supervisorIssue.assigneeAgentId !== actorAgentId) {
+      return {
+        kind: "invalid",
+        detail: "Supervisory normalization is only allowed from an issue currently assigned to this agent.",
+      };
+    }
+
+    return {
+      kind: "supervisor",
+      companyId: supervisorIssue.companyId,
+      supervisorIssueId: supervisorIssue.id,
+      supervisorIssueIdentifier: supervisorIssue.identifier ?? null,
+      supervisorRunId: run.id,
+    };
+  }
+
+  async function issueIsDescendantOfSupervisor(companyId: string, issueId: string, supervisorIssueId: string) {
+    let currentId: string | null = issueId;
+    const seen = new Set<string>();
+    let depth = 0;
+
+    while (currentId && depth < 100) {
+      if (seen.has(currentId)) return false;
+      seen.add(currentId);
+      const row: { id: string; companyId: string; parentId: string | null } | null = (await db
+        .select({ id: issueRows.id, companyId: issueRows.companyId, parentId: issueRows.parentId })
+        .from(issueRows)
+        .where(and(eq(issueRows.id, currentId), eq(issueRows.companyId, companyId))))[0] ?? null;
+      if (!row) return false;
+      if (row.id === supervisorIssueId) return depth > 0;
+      currentId = row.parentId ?? null;
+      depth += 1;
+    }
+    return false;
+  }
+
+  async function resolveSupervisoryNormalizationForIssue(
+    req: Request,
+    res: Response,
+    issue: { id: string; companyId: string },
+  ) {
+    const scope = await resolveSupervisoryNormalizationScope(req);
+    if (scope.kind === "none" || scope.kind === "invalid") return null;
+    if (issue.companyId !== scope.companyId) {
+      res.status(403).json({ error: "Supervisory normalization target is outside the supervising company." });
+      return false;
+    }
+    if (!(await issueIsDescendantOfSupervisor(scope.companyId, issue.id, scope.supervisorIssueId))) return null;
+    return scope;
+  }
+
+  function supervisoryUpdateUsesOnlyNormalizationFields(body: Record<string, unknown>) {
+    const allowedKeys = new Set(["status", "blockedByIssueIds", "comment"]);
+    return Object.keys(body).every((key) => body[key] === undefined || allowedKeys.has(key));
+  }
+
+  function buildSupervisoryNormalizationActivityDetails(scope: SupervisoryNormalizationScope | null) {
+    if (!scope || scope.kind !== "supervisor") return {};
+    return {
+      supervisoryNormalization: {
+        supervisorIssueId: scope.supervisorIssueId,
+        supervisorIssueIdentifier: scope.supervisorIssueIdentifier,
+        supervisorRunId: scope.supervisorRunId,
+      },
+    };
+  }
+
   async function rejectTaskWatchdogConfigMutation(req: Request, res: Response) {
     if (req.actor.type !== "agent") return false;
     const scope = await resolveTaskWatchdogMutationScope(db, req.actor);
@@ -7813,7 +7944,16 @@ export function issueRoutes(
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
     if (!existing) return;
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
-    if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
+    const supervisoryNormalizationScope = await resolveSupervisoryNormalizationForIssue(req, res, existing);
+    if (supervisoryNormalizationScope === false) return;
+    if (supervisoryNormalizationScope?.kind === "supervisor") {
+      if (!supervisoryUpdateUsesOnlyNormalizationFields(req.body)) {
+        res.status(403).json({
+          error: "Supervisory normalization only allows descendant status changes, blocker updates, and explanatory comments.",
+        });
+        return;
+      }
+    } else if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, existing, req.body))) return;
 
     const actor = getActorInfo(req);
@@ -8449,6 +8589,7 @@ export function issueRoutes(
         ...updateFields,
         identifier: issue.identifier,
         ...(commentBody ? { source: "comment" } : {}),
+        ...buildSupervisoryNormalizationActivityDetails(supervisoryNormalizationScope),
         ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true } : {}),
         ...(reopened ? { reopened: true, reopenedFrom: reopenFromStatus } : {}),
         ...(scheduledRetrySupersededByComment
@@ -8523,6 +8664,7 @@ export function issueRoutes(
           details: {
             identifier: issue.identifier,
             blockedByIssueIds: req.body.blockedByIssueIds,
+            ...buildSupervisoryNormalizationActivityDetails(supervisoryNormalizationScope),
             addedBlockedByIssueIds,
             removedBlockedByIssueIds,
             blockedByIssues: nextBlockedByRelations.map(summarizeIssueRelationForActivity),
@@ -8715,6 +8857,7 @@ export function issueRoutes(
           bodySnippet: comment.body.slice(0, 120),
           identifier: issue.identifier,
           issueTitle: issue.title,
+          ...buildSupervisoryNormalizationActivityDetails(supervisoryNormalizationScope),
           ...(resumeRequested === true ? { resumeIntent: true, followUpRequested: true } : {}),
           ...(reopened ? { reopened: true, reopenedFrom: reopenFromStatus, source: "comment" } : {}),
           ...(scheduledRetrySupersededByComment
@@ -9641,6 +9784,55 @@ export function issueRoutes(
   );
 
   router.post(
+    "/issues/:id/interactions/:interactionId/withdraw",
+    validate(withdrawIssueThreadInteractionSchema),
+    async (req, res) => {
+      const id = req.params.id as string;
+      const interactionId = req.params.interactionId as string;
+      const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
+      if (!issue) return;
+
+      const interactionSvc = issueThreadInteractionService(db);
+      const current = await interactionSvc.getForIssue(issue, interactionId);
+      if (!(await assertIssueThreadInteractionWithdrawalAllowed(req, res, issue, current))) return;
+
+      const actor = getActorInfo(req);
+      const interaction = await interactionSvc.withdrawInteraction(issue, interactionId, req.body, {
+        agentId: actor.agentId,
+        userId: actor.actorType === "user" ? actor.actorId : null,
+      });
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        agentApiKeyId: actor.agentApiKeyId,
+        action: "issue.thread_interaction_withdrawn",
+        entityType: "issue",
+        entityId: issue.id,
+        details: {
+          interactionId: interaction.id,
+          interactionKind: interaction.kind,
+          interactionStatus: interaction.status,
+          reason: interaction.result && "reason" in interaction.result ? interaction.result.reason ?? null : null,
+        },
+      });
+
+      if (actor.agentId !== issue.assigneeAgentId) {
+        queueResolvedInteractionContinuationWakeup({
+          heartbeat,
+          issue,
+          interaction,
+          actor,
+          source: "issue.interaction.withdraw",
+        });
+      }
+      res.json(interaction);
+    },
+  );
+
+  router.post(
     "/issues/:id/interactions/:interactionId/respond",
     validate(respondIssueThreadInteractionSchema),
     async (req, res) => {
@@ -9753,55 +9945,6 @@ export function issueRoutes(
         });
       }
 
-      res.json(interaction);
-    },
-  );
-
-  router.post(
-    "/issues/:id/interactions/:interactionId/withdraw",
-    validate(withdrawIssueThreadInteractionSchema),
-    async (req, res) => {
-      const id = req.params.id as string;
-      const interactionId = req.params.interactionId as string;
-      const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
-      if (!issue) return;
-
-      const interactionSvc = issueThreadInteractionService(db);
-      const current = await interactionSvc.getForIssue(issue, interactionId);
-      if (!(await assertIssueThreadInteractionWithdrawalAllowed(req, res, issue, current))) return;
-
-      const actor = getActorInfo(req);
-      const interaction = await interactionSvc.withdrawInteraction(issue, interactionId, req.body, {
-        agentId: actor.agentId,
-        userId: actor.actorType === "user" ? actor.actorId : null,
-      });
-      await logActivity(db, {
-        companyId: issue.companyId,
-        actorType: actor.actorType,
-        actorId: actor.actorId,
-        agentId: actor.agentId,
-        runId: actor.runId,
-        agentApiKeyId: actor.agentApiKeyId,
-        action: "issue.thread_interaction_withdrawn",
-        entityType: "issue",
-        entityId: issue.id,
-        details: {
-          interactionId: interaction.id,
-          interactionKind: interaction.kind,
-          interactionStatus: interaction.status,
-          reason: interaction.result && "reason" in interaction.result ? interaction.result.reason ?? null : null,
-        },
-      });
-
-      if (actor.agentId !== issue.assigneeAgentId) {
-        queueResolvedInteractionContinuationWakeup({
-          heartbeat,
-          issue,
-          interaction,
-          actor,
-          source: "issue.interaction.withdraw",
-        });
-      }
       res.json(interaction);
     },
   );
@@ -10094,8 +10237,13 @@ export function issueRoutes(
     const id = req.params.id as string;
     const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
     if (!issue) return;
-    const commentAccessDecision = await assertAgentIssueCommentAllowed(req, res, issue);
-    if (!commentAccessDecision) return;
+    const supervisoryNormalizationScope = await resolveSupervisoryNormalizationForIssue(req, res, issue);
+    if (supervisoryNormalizationScope === false) return;
+    let commentAccessDecision: Awaited<ReturnType<typeof assertAgentIssueCommentAllowed>> = true;
+    if (supervisoryNormalizationScope?.kind !== "supervisor") {
+      commentAccessDecision = await assertAgentIssueCommentAllowed(req, res, issue);
+      if (!commentAccessDecision) return;
+    }
     if (!assertStructuredCommentFieldsAllowed(req, res, {
       presentation: req.body.presentation,
       metadata: req.body.metadata,
@@ -10442,6 +10590,7 @@ export function issueRoutes(
         bodySnippet: comment.body.slice(0, 120),
         identifier: currentIssue.identifier,
         issueTitle: currentIssue.title,
+        ...buildSupervisoryNormalizationActivityDetails(supervisoryNormalizationScope),
         ...(isDirectParentReportDecision(commentAccessDecision)
           ? { directParentReportGrant: true }
           : {}),

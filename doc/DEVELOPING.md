@@ -267,6 +267,12 @@ pnpm paperclipai run
 2. `paperclipai doctor` with repair enabled
 3. starts the server when checks pass
 
+When `paperclipai run` starts from a repo checkout and the server import fails with
+`ERR_MODULE_NOT_FOUND` from torn `node_modules`, a broken pnpm store, or stale
+workspace package links, it now attempts a frozen `pnpm install`, reruns the
+workspace-link preflight, verifies `@paperclipai/server` still builds, and then
+retries startup once before surfacing the boot failure.
+
 ## Docker Quickstart (No local Node install)
 
 Build and run Paperclip in Docker:
@@ -312,6 +318,14 @@ Every local install keeps runtime state directly under the selected instance roo
   companies/<company-id>/agents/<agent-id>/codex-home/
                                                    # per-agent codex_local home
 ```
+
+The server writes `logs/server.log`. When the live file would exceed 500,000,000
+bytes, the logging transport closes and renames it, immediately reopens
+`server.log`, and compresses the archive as
+`server.log.<UTC timestamp>[.<collision>].gz`. It retains the five newest
+compressed archives. If shutdown interrupts compression, the uncompressed
+archive is recovered on the next server start while the live log remains
+writable.
 
 `PAPERCLIP_HOME` and `PAPERCLIP_INSTANCE_ID` override the home root and instance id respectively. `paperclipai onboard` echoes the resolved values in its banner (`Local home: <home> | instance: <id> | config: <path>`) so you can confirm where state will land before continuing.
 

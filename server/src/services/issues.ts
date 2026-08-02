@@ -3398,6 +3398,11 @@ async function listIssueBlockedInboxAttentionMap(
     issueId: row.issueId,
     status: "pending",
   }));
+  const issuesWithLiveExecution = new Set<string>([
+    ...(activeRunRows as Array<{ issueId: string | null }>),
+    ...(wakeRows as Array<{ issueId: string | null }>),
+    ...(scheduledRetryRows as Array<{ issueId: string | null }>),
+  ].flatMap((row) => row.issueId ? [row.issueId] : []));
 
   const openRecoveryIssues = graphIssues
     .filter((issue) => BLOCKED_INBOX_RECOVERY_ORIGIN_KINDS.includes(issue.originKind as typeof BLOCKED_INBOX_RECOVERY_ORIGIN_KINDS[number]))

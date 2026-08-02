@@ -1,4 +1,7 @@
 import { Command } from "commander";
+import fs from "node:fs";
+import os from "node:os";
+import path from "node:path";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CompanyPortabilityPreviewResult } from "@paperclipai/shared";
 import {
@@ -68,12 +71,15 @@ describe("company CLI commands", () => {
   let fetchMock: ReturnType<typeof vi.fn>;
   let logSpy: ReturnType<typeof vi.spyOn>;
   let errorSpy: ReturnType<typeof vi.spyOn>;
+  let contextDir: string;
 
   beforeEach(() => {
     process.env = { ...ORIGINAL_ENV };
     delete process.env.PAPERCLIP_API_URL;
     delete process.env.PAPERCLIP_API_KEY;
     delete process.env.PAPERCLIP_COMPANY_ID;
+    contextDir = fs.mkdtempSync(path.join(os.tmpdir(), "paperclip-company-context-"));
+    process.env.PAPERCLIP_CONTEXT = path.join(contextDir, "context.json");
     fetchMock = vi.fn();
     vi.stubGlobal("fetch", fetchMock);
     logSpy = vi.spyOn(console, "log").mockImplementation(() => undefined);
@@ -81,6 +87,7 @@ describe("company CLI commands", () => {
   });
 
   afterEach(() => {
+    fs.rmSync(contextDir, { recursive: true, force: true });
     process.env = { ...ORIGINAL_ENV };
     vi.unstubAllGlobals();
     vi.restoreAllMocks();

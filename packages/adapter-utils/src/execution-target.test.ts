@@ -1,9 +1,13 @@
+import fs from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import * as ssh from "./ssh.js";
 import * as serverUtils from "./server-utils.js";
 import {
   adapterExecutionTargetUsesManagedHome,
   ensureAdapterExecutionTargetRuntimeCommandInstalled,
+  preparePaperclipControlPlaneEnvForAdapterRun,
   resolveAdapterExecutionTargetCwd,
   runAdapterExecutionTargetProcess,
   runAdapterExecutionTargetShellCommand,
@@ -279,6 +283,297 @@ describe("runAdapterExecutionTargetProcess", () => {
         },
       }),
     );
+  });
+});
+
+describe("preparePaperclipControlPlaneEnvForAdapterRun", () => {
+  afterEach(() => {
+    vi.restoreAllMocks();
+    vi.unstubAllEnvs();
+  });
+
+  it(
+    "keeps the probe alive long enough to reach a later candidate when earlier candidates consume the old 5s budget",
+    async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-preflight-budget-"));
+    const delayedCandidates = [
+      "http://127.0.0.1:41001",
+      "http://127.0.0.1:41002",
+    ];
+    const reachableUrl = "http://127.0.0.1:41003";
+
+    vi.stubEnv("PAPERCLIP_RUNTIME_API_URL", delayedCandidates[0]);
+    vi.stubEnv(
+      "PAPERCLIP_RUNTIME_API_CANDIDATES_JSON",
+      JSON.stringify([...delayedCandidates, reachableUrl]),
+    );
+
+    const runChildProcessSpy = vi.spyOn(serverUtils, "runChildProcess").mockResolvedValue({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout: JSON.stringify({
+        ok: true,
+        url: reachableUrl,
+        status: 200,
+        attempts: [
+          {
+            url: delayedCandidates[0],
+            status: null,
+            error: "The operation was aborted",
+          },
+          {
+            url: delayedCandidates[1],
+            status: null,
+            error: "The operation was aborted",
+          },
+          {
+            url: reachableUrl,
+            status: 200,
+            contentType: "application/json",
+          },
+        ],
+      }),
+      stderr: "",
+      pid: null,
+      startedAt: new Date().toISOString(),
+    });
+    const env: Record<string, string> = {
+      PAPERCLIP_API_KEY: "run-jwt-token",
+      PAPERCLIP_API_URL: delayedCandidates[0]!,
+    };
+
+    try {
+      const result = await preparePaperclipControlPlaneEnvForAdapterRun({
+        adapterLabel: "codex",
+        runId: "run-preflight-time-budget",
+        target: null,
+        cwd,
+        env,
+        timeoutSec: 0,
+        graceSec: 2,
+      });
+
+      expect(result).toMatchObject({
+        ok: true,
+        skipped: false,
+        changed: true,
+        url: reachableUrl,
+      });
+      expect(env.PAPERCLIP_API_URL).toBe(reachableUrl);
+      expect(result.attempts).toHaveLength(3);
+      expect(result.attempts.at(-1)).toMatchObject({
+        url: reachableUrl,
+        status: 200,
+      });
+      expect(runChildProcessSpy).toHaveBeenCalledWith(
+        expect.any(String),
+        process.execPath,
+        expect.any(Array),
+        expect.objectContaining({
+          timeoutSec: 21,
+        }),
+      );
+    } finally {
+      await fs.rm(cwd, { recursive: true, force: true });
+    }
+    },
+    20_000,
+  );
+
+  it("prefers a private runtime candidate when the probe process dies before producing a verdict", async () => {
+    vi.stubEnv("PAPERCLIP_RUNTIME_API_URL", "https://gated.example.test");
+    vi.stubEnv(
+      "PAPERCLIP_RUNTIME_API_CANDIDATES_JSON",
+      JSON.stringify(["https://gated.example.test", "http://127.0.0.1:3100"]),
+    );
+    vi.spyOn(serverUtils, "runChildProcess").mockResolvedValue({
+      exitCode: null,
+      signal: "SIGTERM",
+      timedOut: false,
+      stdout: "",
+      stderr: "",
+      pid: null,
+      startedAt: new Date().toISOString(),
+    });
+
+    const env: Record<string, string> = {
+      PAPERCLIP_API_KEY: "run-jwt-token",
+      PAPERCLIP_API_URL: "https://gated.example.test",
+    };
+    const logs: string[] = [];
+
+    const result = await preparePaperclipControlPlaneEnvForAdapterRun({
+      adapterLabel: "claude ACPX",
+      runId: "run-preflight-fail-open",
+      target: null,
+      cwd: process.cwd(),
+      env,
+      timeoutSec: 0,
+      graceSec: 2,
+      onLog: async (_stream, chunk) => {
+        logs.push(chunk);
+      },
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      skipped: true,
+      changed: true,
+      url: "http://127.0.0.1:3100",
+      reasons: ["probe_infra_failure"],
+    });
+    expect(env.PAPERCLIP_API_URL).toBe("http://127.0.0.1:3100");
+    expect(logs.join("")).toContain("fail-open -> http://127.0.0.1:3100 instead of https://gated.example.test");
+  });
+
+  it("treats a 200 text/html candidate as unreachable and advances to a JSON API origin", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-preflight-html-"));
+    const htmlUrl = "http://127.0.0.1:42001";
+    const reachableUrl = "http://127.0.0.1:42002";
+
+    vi.stubEnv("PAPERCLIP_RUNTIME_API_URL", htmlUrl);
+    vi.stubEnv(
+      "PAPERCLIP_RUNTIME_API_CANDIDATES_JSON",
+      JSON.stringify([htmlUrl, reachableUrl]),
+    );
+    vi.spyOn(serverUtils, "runChildProcess").mockResolvedValue({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout: JSON.stringify({
+        ok: true,
+        url: reachableUrl,
+        status: 200,
+        attempts: [
+          {
+            url: htmlUrl,
+            status: 200,
+            contentType: "text/html",
+          },
+          {
+            url: reachableUrl,
+            status: 200,
+            contentType: "application/json",
+          },
+        ],
+      }),
+      stderr: "",
+      pid: null,
+      startedAt: new Date().toISOString(),
+    });
+
+    const env: Record<string, string> = {
+      PAPERCLIP_API_KEY: "run-jwt-token",
+      PAPERCLIP_API_URL: htmlUrl,
+    };
+
+    try {
+      const result = await preparePaperclipControlPlaneEnvForAdapterRun({
+        adapterLabel: "codex",
+        runId: "run-preflight-html",
+        target: null,
+        cwd,
+        env,
+        timeoutSec: 0,
+        graceSec: 2,
+      });
+
+      expect(result).toMatchObject({
+        ok: true,
+        skipped: false,
+        changed: true,
+        url: reachableUrl,
+      });
+      expect(env.PAPERCLIP_API_URL).toBe(reachableUrl);
+      expect(result.attempts).toMatchObject([
+        {
+          url: htmlUrl,
+          status: 200,
+          contentType: "text/html",
+        },
+        {
+          url: reachableUrl,
+          status: 200,
+          contentType: "application/json",
+        },
+      ]);
+    } finally {
+      await fs.rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("falls back to the runtime listen loopback when the exported API URL is gateway-gated", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-preflight-loopback-"));
+    const reachableUrl = "http://127.0.0.1:43001";
+
+    vi.stubEnv("PAPERCLIP_RUNTIME_API_URL", "https://paperclip.quote-to-invoice.ai");
+    vi.stubEnv("PAPERCLIP_RUNTIME_API_CANDIDATES_JSON", JSON.stringify(["https://paperclip.quote-to-invoice.ai"]));
+    vi.stubEnv("PAPERCLIP_LISTEN_HOST", "127.0.0.1");
+    vi.stubEnv("PAPERCLIP_LISTEN_PORT", "43001");
+    vi.spyOn(serverUtils, "runChildProcess").mockResolvedValue({
+      exitCode: 0,
+      signal: null,
+      timedOut: false,
+      stdout: JSON.stringify({
+        ok: true,
+        url: reachableUrl,
+        status: 200,
+        attempts: [
+          {
+            url: "https://paperclip.quote-to-invoice.ai",
+            status: 302,
+            location: "https://quote-to-invoice.cloudflareaccess.com/cdn-cgi/access/login/paperclip",
+            contentType: "text/html",
+          },
+          {
+            url: reachableUrl,
+            status: 200,
+            contentType: "application/json",
+          },
+        ],
+      }),
+      stderr: "",
+      pid: null,
+      startedAt: new Date().toISOString(),
+    });
+
+    const env: Record<string, string> = {
+      PAPERCLIP_API_KEY: "run-jwt-token",
+      PAPERCLIP_API_URL: "https://paperclip.quote-to-invoice.ai",
+    };
+
+    try {
+      const result = await preparePaperclipControlPlaneEnvForAdapterRun({
+        adapterLabel: "codex",
+        runId: "run-preflight-loopback",
+        target: null,
+        cwd,
+        env,
+        timeoutSec: 0,
+        graceSec: 2,
+      });
+
+      expect(result).toMatchObject({
+        ok: true,
+        skipped: false,
+        changed: true,
+        url: reachableUrl,
+      });
+      expect(env.PAPERCLIP_API_URL).toBe(reachableUrl);
+      expect(result.attempts).toMatchObject([
+        {
+          url: "https://paperclip.quote-to-invoice.ai",
+        },
+        {
+          url: reachableUrl,
+          status: 200,
+          contentType: "application/json",
+        },
+      ]);
+    } finally {
+      await fs.rm(cwd, { recursive: true, force: true });
+    }
   });
 });
 
