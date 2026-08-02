@@ -28,6 +28,7 @@ import {
   executionWorkspaces,
   heartbeatRunEvents,
   heartbeatRuns,
+  instanceSettings,
   issueComments,
   issueDocuments,
   issuePlanDecompositions,
@@ -685,6 +686,90 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     releaseAdapter();
     const settledRun = await waitForRunToSettle(executorHeartbeat, runId, 5_000);
     expect(settledRun?.status).toBe("succeeded");
+  });
+
+  it("admits only one run across concurrent company schedulers at the global cap", async () => {
+    let resolveExecution: (() => void) | null = null;
+    mockAdapterExecute.mockImplementation(async () => {
+      await new Promise<void>((release) => {
+        // The first admitted run holds its slot open while every other
+        // scheduler attempts admission, making an over-admission observable.
+        resolveExecution = release;
+      });
+      return {
+        exitCode: 0,
+        signal: null,
+        timedOut: false,
+        errorMessage: null,
+        summary: "Atomic admission test execution completed.",
+        provider: "test",
+        model: "test-model",
+      };
+    });
+
+    const settings = await db
+      .select({ runControls: instanceSettings.runControls })
+      .from(instanceSettings)
+      .where(eq(instanceSettings.singletonKey, "default"))
+      .then((rows) => rows[0]);
+    if (!settings) throw new Error("Expected default instance settings");
+
+    await db
+      .update(instanceSettings)
+      .set({
+        runControls: {
+          globalConcurrency: 1,
+          adapterConcurrency: { codex_local: 7 },
+        },
+      })
+      .where(eq(instanceSettings.singletonKey, "default"));
+
+    try {
+      const fixtures = await Promise.all(
+        Array.from({ length: 7 }, () => seedRunFixture({
+          adapterType: "codex_local",
+          agentStatus: "idle",
+          runStatus: "queued",
+          includeIssue: false,
+        })),
+      );
+      const schedulers = fixtures.map(() => heartbeatService(createDb(tempDb!.connectionString)));
+
+      await Promise.all(schedulers.map((scheduler) => scheduler.resumeQueuedRuns()));
+      await waitForValue(async () => {
+        const running = await db
+          .select({ id: heartbeatRuns.id })
+          .from(heartbeatRuns)
+          .where(eq(heartbeatRuns.status, "running"));
+        return running.length === 1 ? running : null;
+      }, 5_000);
+
+      const running = await db
+        .select({ id: heartbeatRuns.id })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.status, "running"));
+      expect(running).toHaveLength(1);
+
+      const deferred = await db
+        .select({ resultJson: heartbeatRuns.resultJson })
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.status, "queued"));
+      expect(deferred).toHaveLength(6);
+      for (const run of deferred) {
+        expect(run.resultJson).toMatchObject({
+          runGateThrottle: {
+            kind: "global_concurrency_limit",
+          },
+        });
+      }
+    } finally {
+      if (resolveExecution) resolveExecution();
+      await db
+        .update(instanceSettings)
+        .set({ runControls: settings.runControls })
+        .where(eq(instanceSettings.singletonKey, "default"));
+    }
+    await waitForHeartbeatIdle(db, 5_000);
   });
 
   async function seedStrandedIssueFixture(input: {
