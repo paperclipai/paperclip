@@ -419,9 +419,12 @@ export const AgingShelf: Story = {
 };
 
 /**
- * Screen 2 — a queue page. Homogeneous list with bulk accept/reject across the
- * eligible rows, the queue rail (active chip), and the seed-rules card with its
- * enable/disable toggle.
+ * Screen 2 — a queue page. Homogeneous list where each source-native decision
+ * resolves per item (approve/reject on the card, plus Exclude-with-reason);
+ * the queue rail (active chip) and the seed-rules card with its enable/disable
+ * toggle sit above. Bulk accept/reject was pulled until a cross-domain
+ * exact-set transaction can preserve side effects atomically (see PAP-16032
+ * follow-up); screen 2 ships per-item-only for now.
  */
 export const QueuePage: Story = {
   render: () => (
