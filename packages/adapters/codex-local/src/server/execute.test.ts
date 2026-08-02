@@ -86,6 +86,7 @@ prepareAdapterExecutionTargetRuntime.mockImplementation(async (input: { assets?:
 describe("codex execute — outbound auth copy-back restore contribution", () => {
   const cleanupDirs: string[] = [];
   let savedCodexHomeEnv: string | undefined;
+  let savedPaperclipHomeEnv: string | undefined;
 
   afterEach(async () => {
     vi.clearAllMocks();
@@ -93,6 +94,11 @@ describe("codex execute — outbound auth copy-back restore contribution", () =>
       delete process.env.CODEX_HOME;
     } else {
       process.env.CODEX_HOME = savedCodexHomeEnv;
+    }
+    if (savedPaperclipHomeEnv === undefined) {
+      delete process.env.PAPERCLIP_HOME;
+    } else {
+      process.env.PAPERCLIP_HOME = savedPaperclipHomeEnv;
     }
     while (cleanupDirs.length > 0) {
       const dir = cleanupDirs.pop();
@@ -230,5 +236,44 @@ describe("codex execute — outbound auth copy-back restore contribution", () =>
       expect(result.finalHostAuth, entry.name).toBe(entry.hostAuth);
       expect(result.finalHostMode, entry.name).toBe(0o600);
     }
+  });
+
+  it("initializes a Paperclip-managed local workspace before launching Codex", async () => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-codex-trusted-cwd-"));
+    cleanupDirs.push(rootDir);
+    const workspaceDir = path.join(rootDir, "instances", "default", "workspaces", "reflection-coach");
+    const sharedHome = path.join(rootDir, "external-codex-home");
+    await mkdir(workspaceDir, { recursive: true });
+    await mkdir(sharedHome, { recursive: true });
+    await writeFile(sharedHome + "/auth.json", subscriptionAuth({ accountId: "acct", marker: "trusted-cwd" }));
+
+    savedPaperclipHomeEnv = process.env.PAPERCLIP_HOME;
+    process.env.PAPERCLIP_HOME = rootDir;
+    savedCodexHomeEnv = process.env.CODEX_HOME;
+    process.env.CODEX_HOME = sharedHome;
+
+    const logs: string[] = [];
+    await execute({
+      runId: "run-trusted-cwd",
+      agent: {
+        id: "agent-1",
+        companyId: "company-1",
+        name: "Reflection Coach",
+        adapterType: "codex_local",
+        adapterConfig: {},
+      },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: { command: "codex", engine: "cli", env: { CODEX_HOME: sharedHome } },
+      context: { paperclipWorkspace: { cwd: workspaceDir, source: "project_primary" } },
+      onLog: async (_stream, line) => { logs.push(line); },
+    });
+
+    expect(logs.join("")).toContain("Initialized managed Codex workspace git repo");
+    expect(runChildProcess).toHaveBeenCalledWith(
+      "run-trusted-cwd-codex-git-init",
+      "git",
+      ["init", "--quiet"],
+      expect.objectContaining({ cwd: workspaceDir }),
+    );
   });
 });

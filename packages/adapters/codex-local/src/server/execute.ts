@@ -64,10 +64,13 @@ import {
   isManagedCodexHomePath,
   pathExists,
   prepareManagedCodexHome,
+  resolveManagedTrustedProjectCwd,
   resolveManagedCodexHomeDir,
   resolveSharedCodexHomeDir,
   seedManagedCodexHome,
   stageCodexHomeForSync,
+  trustManagedCodexWorkspace,
+  validateCodexConfigTomlFile,
   mergeManagedCodexMcpGateways,
   writeManagedCodexMcpConfig,
   type ManagedCodexMcpGateway,
@@ -165,6 +168,64 @@ function resolveCodexBiller(env: Record<string, string>, billingType: "api" | "s
   const openAiCompatibleBiller = inferOpenAiCompatibleBiller(env, "openai");
   if (openAiCompatibleBiller === "openrouter") return "openrouter";
   return billingType === "subscription" ? "chatgpt" : openAiCompatibleBiller ?? "openai";
+}
+
+async function ensureLocalManagedCodexWorkspaceRepo(input: {
+  runId: string;
+  companyId: string;
+  cwd: string;
+  executionTarget: ReturnType<typeof readAdapterExecutionTarget>;
+  onLog: AdapterExecutionContext["onLog"];
+}) {
+  if (adapterExecutionTargetIsRemote(input.executionTarget)) return;
+  if (!resolveManagedTrustedProjectCwd(process.env, input.companyId, input.cwd)) return;
+
+  const quietLog: AdapterExecutionContext["onLog"] = async () => {};
+  const processEnv = Object.fromEntries(
+    Object.entries(ensurePathInEnv({ ...process.env })).filter(
+      (entry): entry is [string, string] => typeof entry[1] === "string",
+    ),
+  );
+  const probe = await runAdapterExecutionTargetProcess(
+    `${input.runId}-codex-git-probe`,
+    input.executionTarget,
+    "git",
+    ["rev-parse", "--is-inside-work-tree"],
+    {
+      cwd: input.cwd,
+      env: processEnv,
+      timeoutSec: 15,
+      graceSec: 5,
+      onLog: quietLog,
+    },
+  ).catch(() => null);
+  if (probe && (probe.exitCode ?? 1) === 0 && /\btrue\b/i.test(probe.stdout)) return;
+
+  const initialized = await runAdapterExecutionTargetProcess(
+    `${input.runId}-codex-git-init`,
+    input.executionTarget,
+    "git",
+    ["init", "--quiet"],
+    {
+      cwd: input.cwd,
+      env: processEnv,
+      timeoutSec: 30,
+      graceSec: 5,
+      onLog: quietLog,
+    },
+  );
+  if ((initialized.exitCode ?? 1) !== 0) {
+    const detail = [initialized.stderr, initialized.stdout].filter(Boolean).join("\n").trim();
+    throw new Error(
+      `Failed to initialize managed Codex workspace git repo at "${input.cwd}"` +
+        (detail ? `: ${detail}` : "."),
+    );
+  }
+
+  await input.onLog(
+    "stdout",
+    `[paperclip] Initialized managed Codex workspace git repo at ${input.cwd} so codex_local can launch inside a trusted local workspace.\n`,
+  );
 }
 
 async function isLikelyPaperclipRepoRoot(candidate: string): Promise<boolean> {
@@ -541,6 +602,26 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const defaultCodexHome = resolveManagedCodexHomeDir(process.env, agent.companyId);
   const effectiveCodexHome = configuredCodexHome ?? defaultCodexHome;
   await fs.mkdir(effectiveCodexHome, { recursive: true });
+  await ensureLocalManagedCodexWorkspaceRepo({
+    runId,
+    companyId: agent.companyId,
+    cwd,
+    executionTarget,
+    onLog,
+  });
+  if (!executionTargetIsRemote && (configuredCodexHome == null || configuredHomeIsManaged)) {
+    await trustManagedCodexWorkspace({
+      env: process.env,
+      companyId: agent.companyId,
+      codexHome: effectiveCodexHome,
+      cwd,
+      onLog,
+    });
+  }
+  const configTomlPath = path.join(effectiveCodexHome, "config.toml");
+  if (await pathExists(configTomlPath)) {
+    await validateCodexConfigTomlFile(configTomlPath);
+  }
 
   // Never launch a managed CODEX_HOME with no credentials. Without auth.json and
   // with OPENAI_API_KEY="" the provider rejects every request with

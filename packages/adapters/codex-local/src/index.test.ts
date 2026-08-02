@@ -6,14 +6,15 @@ describe("codex local adapter metadata", () => {
     const modelIds = models.map((model) => model.id);
 
     expect(DEFAULT_CODEX_LOCAL_MODEL).toBe("gpt-5.6");
-    expect(modelIds.slice(0, 4)).toEqual([
+    expect(modelIds.slice(0, 5)).toEqual([
       "gpt-5.6",
       "gpt-5.6-sol",
       "gpt-5.6-terra",
       "gpt-5.6-luna",
+      "gpt-5.3-codex-spark",
     ]);
     expect(isCodexLocalFastModeSupported(DEFAULT_CODEX_LOCAL_MODEL)).toBe(true);
     expect(modelIds).not.toContain("gpt-5.3-codex");
-    expect(modelIds).not.toContain("gpt-5.3-codex-spark");
+    expect(modelIds).toContain("gpt-5.3-codex-spark");
   });
 });

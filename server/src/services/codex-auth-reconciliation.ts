@@ -1,6 +1,12 @@
+import fs from "node:fs/promises";
+import path from "node:path";
 import type { Db } from "@paperclipai/db";
 import { agents } from "@paperclipai/db";
-import { reconcileManagedCodexHome } from "@paperclipai/adapter-codex-local/server";
+import {
+  reconcileManagedCodexHome,
+  resolveManagedCodexHomeDir,
+  validateCodexConfigTomlFile,
+} from "@paperclipai/adapter-codex-local/server";
 import { eq } from "drizzle-orm";
 import { logger } from "../middleware/logger.js";
 
@@ -107,6 +113,14 @@ export async function reconcileCodexLocalManagedHomesOnStartup(
         apiKey: apiKeyBinding.kind === "plain" ? apiKeyBinding.value : null,
         apiKeySecretBound: apiKeyBinding.kind === "secret",
       });
+      const effectiveManagedHome =
+        result.home ??
+        resolveManagedCodexHomeDir(process.env, row.companyId);
+      const configTomlPath = path.join(effectiveManagedHome, "config.toml");
+      await fs.access(configTomlPath).then(
+        async () => validateCodexConfigTomlFile(configTomlPath),
+        () => undefined,
+      );
       switch (result.status) {
         case "seeded":
           summary.seeded += 1;

@@ -120,6 +120,49 @@ describe("reconcileCodexLocalManagedHomesOnStartup", () => {
     );
   });
 
+  it("fails startup reconciliation loudly when a default managed home already has duplicate trusted-project tables", async () => {
+    const managedCompanyHome = path.join(
+      paperclipHome,
+      "instances",
+      "default",
+      "companies",
+      "company-1",
+      "codex-home",
+    );
+    const duplicateWorkspace = path.join(
+      paperclipHome,
+      "instances",
+      "default",
+      "companies",
+      "company-1",
+      "workspaces",
+      "repo",
+    );
+    await fs.mkdir(managedCompanyHome, { recursive: true });
+    await fs.writeFile(
+      path.join(managedCompanyHome, "config.toml"),
+      [
+        `[projects."${duplicateWorkspace}"]`,
+        'trust_level = "trusted"',
+        "",
+        `[projects."${duplicateWorkspace}"]`,
+        'trust_level = "trusted"',
+        "",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const summary = await reconcileCodexLocalManagedHomesOnStartup(
+      makeDb([{ id: "agent-default-home", companyId: "company-1", adapterConfig: { env: {} } }]),
+    );
+
+    expect(summary).toMatchObject({
+      scanned: 1,
+      noManagedHome: 0,
+      failed: 1,
+    });
+  });
+
   it("does not write a secret-bound OPENAI_API_KEY placeholder as the API key", async () => {
     const agentHome = managedAgentHome("company-2", "agent-9");
     // A secret binding must never be written verbatim into auth.json; the home

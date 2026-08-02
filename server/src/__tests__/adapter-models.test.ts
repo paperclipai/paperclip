@@ -52,7 +52,8 @@ describe("adapter model listing", () => {
     expect(models.some((model) => model.id === "gpt-5.6-sol")).toBe(true);
     expect(models.some((model) => model.id === "gpt-5.6-terra")).toBe(true);
     expect(models.some((model) => model.id === "gpt-5.6-luna")).toBe(true);
-    expect(models.some((model) => model.id === "gpt-5.3-codex-spark")).toBe(false);
+    expect(models.some((model) => model.id === "gpt-5.3-codex-spark")).toBe(true);
+    expect(models.some((model) => model.id === "gpt-5.3-codex")).toBe(false);
     expect(fetchSpy).not.toHaveBeenCalled();
   });
 
@@ -146,6 +147,7 @@ describe("adapter model listing", () => {
     expect(fetchSpy).toHaveBeenCalledTimes(1);
     expect(first).toEqual(second);
     expect(first.some((model) => model.id === "gpt-5-pro")).toBe(true);
+    expect(first.some((model) => model.id === "gpt-5.3-codex-spark")).toBe(true);
     expect(first.some((model) => model.id === "codex-mini-latest")).toBe(true);
   });
 
