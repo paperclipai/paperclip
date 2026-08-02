@@ -27,3 +27,66 @@ def test_invalid_size_falls_back_to_default():
 def test_invalid_quality_falls_back():
     b = parse_brief("prompt: x\nquality: ultra")
     assert b["quality"] == "medium"
+
+
+def test_model_defaults_to_qwen():
+    b = parse_brief("prompt: x")
+    assert b["modell"] == "qwen"
+
+
+def test_model_openai_is_accepted():
+    b = parse_brief("prompt: x\nmodell: openai")
+    assert b["modell"] == "openai"
+
+
+def test_invalid_model_falls_back_to_default():
+    b = parse_brief("prompt: x\nmodell: midjourney")
+    assert b["modell"] == "qwen"
+
+
+def test_format_sets_width_and_height():
+    b = parse_brief("prompt: x\nformat: 1536x1024")
+    assert b["width"] == 1536
+    assert b["height"] == 1024
+    assert b["size"] == "1536x1024"
+
+
+def test_format_falls_back_when_not_allowed():
+    b = parse_brief("prompt: x\nformat: 4096x4096")
+    assert b["size"] == "1024x1024"
+    assert b["width"] == 1024
+
+
+def test_size_still_accepted_as_alias_for_format():
+    b = parse_brief("prompt: x\nsize: 1024x1536")
+    assert b["size"] == "1024x1536"
+    assert b["height"] == 1536
+
+
+def test_format_wins_over_size_when_both_given():
+    b = parse_brief("prompt: x\nsize: 1024x1536\nformat: 1536x1024")
+    assert b["size"] == "1536x1024"
+
+
+def test_seed_is_parsed_as_int():
+    b = parse_brief("prompt: x\nseed: 4711")
+    assert b["seed"] == 4711
+
+
+def test_seed_absent_is_none():
+    assert parse_brief("prompt: x")["seed"] is None
+
+
+def test_invalid_seed_is_none():
+    assert parse_brief("prompt: x\nseed: viele")["seed"] is None
+
+
+def test_openai_size_maps_unsupported_format():
+    b = parse_brief("prompt: x\nformat: 1344x768")
+    assert b["size"] == "1344x768"
+    assert b["openai_size"] == "1536x1024"
+
+
+def test_openai_size_passes_supported_format_through():
+    b = parse_brief("prompt: x\nformat: 1024x1536")
+    assert b["openai_size"] == "1024x1536"

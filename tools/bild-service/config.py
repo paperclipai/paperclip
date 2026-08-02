@@ -52,6 +52,21 @@ MAIL_WEBHOOK = "http://127.0.0.1:5678/webhook/mailhub/send"
 MAIL_FROM = "office@whitestag.ai"
 MAIL_TO = "ws@whitestag.ai"
 
+# --- Lokales Rendern ---
+ALLOWED_MODELS = {"qwen", "openai"}
+DEFAULT_MODEL = "qwen"
+
+ALLOWED_FORMATS = {"1024x1024", "1024x1536", "1536x1024", "1344x768", "768x1344"}
+DEFAULT_FORMAT = "1024x1024"
+
+# Formate, die die OpenAI-API nicht kennt, auf das naechstliegende abbilden.
+OPENAI_FORMAT_MAP = {"1344x768": "1536x1024", "768x1344": "1024x1536"}
+
+DAILY_LOCAL_LIMIT = 60      # Amoklauf-Bremse, kostet nichts, schuetzt den Knoten
+MAX_INFLIGHT_JOBS = 3       # gleichzeitig auf dem Knoten
+JOB_TIMEOUT_SEC = 300       # gemessen: 72 s kalt, 8 s warm
+UNREACHABLE_ALERT_CYCLES = 30   # 30 Zyklen a 60 s = 30 Minuten
+
 # --- ComfyUI-Renderknoten (MacBook M5 Max) ---
 COMFY_BASE = "http://192.168.2.40:8189"
 COMFY_HTTP_TIMEOUT = 30          # Sekunden je HTTP-Aufruf
