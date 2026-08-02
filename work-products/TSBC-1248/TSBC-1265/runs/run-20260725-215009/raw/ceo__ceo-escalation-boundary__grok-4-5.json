@@ -1,0 +1,67 @@
+{
+  "role": "ceo",
+  "task_id": "ceo-escalation-boundary",
+  "task_title": "Handle locally vs escalate to Mission Control",
+  "model_id": "grok-4.5",
+  "model_label": "Grok 4.5",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "ok": true,
+  "error": null,
+  "output": "{\"s1\": \"local\", \"s2\": \"escalate\", \"s3\": \"local\"}",
+  "model_reported": "grok-4.5",
+  "inputTokens": 143,
+  "outputTokens": 12,
+  "totalTokens": 155,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "wallMs": 6546,
+  "stderrTail": "",
+  "agentFileSha256": "none",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "7b79fdf5d2ce80570fcfa85a1d04cd2c61e7093b8d2d1c735f7c4a07197a28c3",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/ceo/suite.json",
+  "skipped": false,
+  "skipReason": null,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "json_valid",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {}
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 3.0,
+      "spec": {
+        "value": "local",
+        "path": "s1"
+      }
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 3.0,
+      "spec": {
+        "value": "escalate",
+        "path": "s2"
+      }
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 3.0,
+      "spec": {
+        "value": "local",
+        "path": "s3"
+      }
+    }
+  ],
+  "judgeScore": null,
+  "judgeDetail": null,
+  "quality": 1.0,
+  "qualityPer1kTokens": 6.451612903225807
+}

@@ -1,0 +1,4 @@
+interface:
+  display_name: "Sprint Report Protocol"
+  short_description: "Daily delta and CEO verdict rail"
+  default_prompt: "Use $sprint-report-protocol to file or consume the latest CEO sprint-report rail."

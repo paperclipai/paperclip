@@ -1,0 +1,69 @@
+{
+  "role": "auditor",
+  "task_id": "aud-disposition-false-success",
+  "task_title": "Disposition validation: catch a 'done' that actually failed",
+  "model_id": "grok-4.5",
+  "model_label": "Grok 4.5",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "ok": true,
+  "error": null,
+  "output": "{\"dispositionValid\": false, \"correctedStatus\": \"blocked\", \"evidence\": \"Publish API returned HTTP 500; public URL returns 404; run log ends with 'retry 3/3 failed'; acceptance criterion 'release notes live at the public URL' is unmet.\", \"action\": \"Reject the done move; set THIAA-204 to blocked until publish succeeds and the public URL serves the release notes.\"}",
+  "model_reported": "grok-4.5",
+  "inputTokens": 187,
+  "outputTokens": 90,
+  "totalTokens": 277,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "wallMs": 8643,
+  "stderrTail": "",
+  "agentFileSha256": "none",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "2a04b6f827eda607af0693e4fbbe2fe425b9ea1c5fb0574b0550ceaac640d913",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/auditor/suite.json",
+  "skipped": false,
+  "skipReason": null,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "json_valid",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {}
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 5.0,
+      "spec": {
+        "value": false,
+        "path": "dispositionValid"
+      }
+    },
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {
+        "values": [
+          "500",
+          "404",
+          "retry",
+          "3/3",
+          "failed"
+        ]
+      }
+    }
+  ],
+  "judgeScore": 0.98,
+  "judgeDetail": {
+    "perCriterion": {
+      "verification": 0.98
+    },
+    "rationale": "Correctly rejects 'done' as invalid, sets status to blocked, cites all four concrete contradicting signals, and specifies a re-run/blocker action with no hedging.",
+    "judgeModel": "opus"
+  },
+  "quality": 0.99,
+  "qualityPer1kTokens": 3.574007220216606
+}

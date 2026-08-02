@@ -1,0 +1,1 @@
+hermes -z: agent failed: No LLM provider configured. Run `hermes model` to select a provider, or run `hermes setup` for first-time configuration.

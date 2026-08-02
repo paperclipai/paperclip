@@ -1,0 +1,58 @@
+[
+  {
+    "id": "e8bd11b7-1c43-4768-b017-177c8beb944d",
+    "title": "R2 probe summary (probe-20260730-094016)",
+    "type": "artifact",
+    "status": "ready_for_review",
+    "isPrimary": true
+  },
+  {
+    "id": "f0ecef9b-8fc7-4688-994e-6fb1a4ea7b47",
+    "title": "R2 probe report",
+    "type": "artifact",
+    "status": "ready_for_review",
+    "isPrimary": false
+  },
+  {
+    "id": "04af0396-95e0-42a3-94d3-5baca26279e7",
+    "title": "R2 probe records",
+    "type": "artifact",
+    "status": "ready_for_review",
+    "isPrimary": false
+  },
+  {
+    "id": "a23cb4a3-2d5c-4943-a311-fe8cd1fd18bc",
+    "title": "R2 per-task metrics",
+    "type": "artifact",
+    "status": "ready_for_review",
+    "isPrimary": false
+  },
+  {
+    "id": "5b81d87a-424a-464e-b245-ef52220a72d1",
+    "title": "R2 vs bare baseline and r1 comparison",
+    "type": "artifact",
+    "status": "ready_for_review",
+    "isPrimary": false
+  },
+  {
+    "id": "688991c8-7830-41c7-a5f2-7cc75787741e",
+    "title": "R2 cell outcome",
+    "type": "artifact",
+    "status": "ready_for_review",
+    "isPrimary": false
+  },
+  {
+    "id": "f3f90055-7fcf-4863-a3c7-a34e57f00786",
+    "title": "TSBC-1527 closeout",
+    "type": "artifact",
+    "status": "ready_for_review",
+    "isPrimary": false
+  },
+  {
+    "id": "bd3d94ac-cc8b-4ed9-a4d1-9cb0a2f556e7",
+    "title": "R2 preregistration",
+    "type": "artifact",
+    "status": "ready_for_review",
+    "isPrimary": false
+  }
+]

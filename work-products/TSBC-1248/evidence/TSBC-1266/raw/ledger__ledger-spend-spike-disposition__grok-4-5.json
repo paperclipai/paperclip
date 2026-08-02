@@ -1,0 +1,70 @@
+{
+  "role": "ledger",
+  "task_id": "ledger-spend-spike-disposition",
+  "task_title": "Decide what to do about a quality-negative spend spike",
+  "model_id": "grok-4.5",
+  "model_label": "Grok 4.5",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "ok": true,
+  "error": null,
+  "output": "{\"action\":\"revert_lane\",\"reason\":\"Spend tripled after a verbose-lane move while q/1k-out dropped, so extra tokens bought less quality; board did not authorize higher spend.\",\"nextStep\":\"Revert to the prior lane and pin lane + max output budget in role config with a spend/q-per-1k alert so the change cannot drift again.\"}",
+  "model_reported": "grok-4.5",
+  "inputTokens": 149,
+  "outputTokens": 80,
+  "totalTokens": 229,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "wallMs": 9899,
+  "stderrTail": "",
+  "agentFileSha256": "none",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "22a4d94c78402d54f39f0cd1b4eb6a12005acecfa3e2d429551928eca686300e",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/ledger/suite.json",
+  "skipped": false,
+  "skipReason": null,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "json_valid",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {}
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 5.0,
+      "spec": {
+        "value": "revert_lane",
+        "path": "action"
+      }
+    },
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {
+        "values": [
+          "q/1k",
+          "q/1k-out",
+          "per token",
+          "per-token",
+          "efficiency",
+          "quality per"
+        ]
+      }
+    }
+  ],
+  "judgeScore": 0.96,
+  "judgeDetail": {
+    "perCriterion": {
+      "judgment": 0.96
+    },
+    "rationale": "Chooses revert_lane, reason explicitly cites the q/1k-out drop plus unauthorized spend, and nextStep pins lane+budget with a regression alert making it durable \u2014 essentially the ideal answer.",
+    "judgeModel": "opus"
+  },
+  "quality": 0.98,
+  "qualityPer1kTokens": 4.279475982532751
+}

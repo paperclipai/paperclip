@@ -1,0 +1,174 @@
+{
+  "role": "cv-review",
+  "description": "Production task (Recruitment workflow-start): review a candidate CV against a target role and return structured concerns + a recommendation. CVs carry PLANTED, varyingly-subtle issues — title/seniority inflation, unexplained gaps, unsubstantiated metrics, role mismatch, a hard-to-spot date-overlap inconsistency, and PII over-share — plus one genuinely-clean CV to test calibration (don't fabricate concerns). Designed to DISCRIMINATE: a capable model catches the subtle planted issues and resists over-flagging; a weaker one misses the timeline inconsistency or invents nitpicks. Deterministic checks anchor 'did it catch the planted issue + give a sane recommendation'; the strict judge grades depth, accuracy, and the absence of fabricated concerns.",
+  "tasks": [
+    {
+      "id": "cv-title-inflation-gap",
+      "title": "Catch seniority inflation + an unexplained gap",
+      "prompt": "Review this CV for a **Senior Backend Engineer** role (5+ yrs, owns services end-to-end). Be rigorous.\n\n--- CV ---\nName: J. Okafor\nTitle: Senior Lead Backend Engineer\nExperience:\n- Backend Engineer, Nimbus Apps — Sep 2022 to present (2 yrs). Built REST endpoints on a 4-person team; one senior reviewed all my PRs.\n- Junior Developer, CodeWorks — Jan 2021 to Jul 2021 (6 mo). Bug fixes.\nSkills: Node.js, Postgres, \"led architecture\".\nEducation: BSc CS, 2020.\n--- end CV ---\n\nReturn ONLY JSON: {\"concerns\": [string], \"recommendation\": \"advance\"|\"reject\"|\"clarify\"}.",
+      "rubric": {
+        "deterministic": [
+          { "type": "json_valid", "weight": 2 },
+          { "type": "json_path_in", "path": "recommendation", "values": ["clarify", "reject"], "weight": 3 },
+          { "type": "contains_any", "values": ["title", "senior", "lead", "inflat", "scope", "level", "2 y", "2.5", "experience"], "weight": 2 },
+          { "type": "contains_any", "values": ["gap", "2021", "Jul", "Sep 2022", "14 month", "year"], "weight": 2 }
+        ],
+        "judge": {
+          "criteria": [
+            { "name": "catches_both", "weight": 3, "guidance": "Flags BOTH (a) the title/seniority inflation — 'Senior Lead Backend Engineer' with ~2.5 yrs total, no architecture ownership (a senior reviewed all PRs), vs a 5+yr end-to-end-ownership role; and (b) the ~14-month gap between Jul 2021 (CodeWorks end) and Sep 2022 (Nimbus start). Recommendation should be clarify/reject, not advance. Penalize missing either planted issue, or recommending advance." }
+          ]
+        }
+      }
+    },
+    {
+      "id": "cv-unsubstantiated-metrics",
+      "title": "Don't take inflated metrics at face value",
+      "prompt": "Review this CV for a **Growth Marketing Manager** role. Be rigorous about evidence.\n\n--- CV ---\nName: R. Vance\nGrowth Lead, (unnamed startup) — 2023-2024: 'Increased revenue 300%. Managed a $5M budget. Grew the team 10x.'\nMarketing Associate, Brightline — 2021-2023: ran email campaigns.\nSkills: SEO, paid ads, 'data-driven growth'.\n--- end CV ---\n\nReturn ONLY JSON: {\"concerns\": [string], \"recommendation\": \"advance\"|\"reject\"|\"clarify\", \"verify\": [string]}. `verify` = specific things to confirm in interview.",
+      "rubric": {
+        "deterministic": [
+          { "type": "json_valid", "weight": 2 },
+          { "type": "contains_any", "values": ["300", "baseline", "context", "unsubstantiat", "vague", "evidence", "verify", "$5M", "absolute"], "weight": 3 }
+        ],
+        "judge": {
+          "criteria": [
+            { "name": "skepticism", "weight": 3, "guidance": "Flags the unsubstantiated/contextless metrics (300% of what baseline? $5M budget at a startup is implausibly large and unverified; '10x team' from what size?) and asks to verify them with specifics, rather than accepting them as achievements. The `verify` list should target the exact dubious claims. Penalize answers that treat the metrics as impressive accomplishments or don't probe them." }
+          ]
+        }
+      }
+    },
+    {
+      "id": "cv-role-mismatch",
+      "title": "Honestly flag a role mismatch (no rubber-stamp)",
+      "prompt": "Review this CV for a **Senior Backend Engineer** role (distributed systems, on-call ownership). Be honest, not generous.\n\n--- CV ---\nName: T. Halloran\nFrontend Developer, Pixel Co — 2022-present: React UIs, CSS, some accessibility work.\nUI Intern, DesignHub — summer 2021.\nSkills: React, TypeScript, Figma, Tailwind. No backend or infra experience listed.\n--- end CV ---\n\nReturn ONLY JSON: {\"concerns\": [string], \"recommendation\": \"advance\"|\"reject\"|\"clarify\"}.",
+      "rubric": {
+        "deterministic": [
+          { "type": "json_valid", "weight": 2 },
+          { "type": "json_path_in", "path": "recommendation", "values": ["reject", "clarify"], "weight": 4 },
+          { "type": "contains_any", "values": ["frontend", "backend", "mismatch", "no backend", "infra", "distributed", "not a fit"], "weight": 2 }
+        ],
+        "judge": {
+          "criteria": [
+            { "name": "honest_fit", "weight": 3, "guidance": "Clearly identifies that the candidate is a frontend specialist with no backend/distributed-systems/on-call experience — a fundamental mismatch for a Senior Backend role. Recommendation reject (or clarify only if it names what to confirm). Penalize advance, or generous spin that downplays the complete absence of the core required experience." }
+          ]
+        }
+      }
+    },
+    {
+      "id": "cv-clean-calibration",
+      "title": "Calibration trap: a strong CV — don't fabricate concerns",
+      "prompt": "Review this CV for a **Senior Backend Engineer** role (5+ yrs, service ownership). Be rigorous but fair.\n\n--- CV ---\nName: M. Adeyemi\n- Senior Backend Engineer, Datalink — 2020-present (4.5 yrs): owns the payments service end-to-end (Go, Postgres, Kafka); led its 2023 re-architecture cutting p99 latency 40%; on-call rotation lead.\n- Backend Engineer, Forge — 2018-2020 (2 yrs): built internal APIs.\nSkills: Go, Postgres, Kafka, AWS, distributed systems.\nEducation: BSc CS 2018.\n--- end CV ---\n\nReturn ONLY JSON: {\"concerns\": [string], \"recommendation\": \"advance\"|\"reject\"|\"clarify\"}.",
+      "rubric": {
+        "deterministic": [
+          { "type": "json_valid", "weight": 2 },
+          { "type": "json_path_equals", "path": "recommendation", "value": "advance", "weight": 4 }
+        ],
+        "judge": {
+          "criteria": [
+            { "name": "calibration", "weight": 3, "guidance": "Recommends ADVANCE — this is a strong, well-matched candidate (6.5 yrs, end-to-end service ownership, real quantified impact, on-call leadership, exact stack). The concerns list should be empty or only minor/genuine (e.g. 'confirm Kafka depth'). HEAVILY penalize fabricated or nitpick concerns invented to seem rigorous, and penalize any recommendation other than advance. This task tests whether the model over-flags a clean CV." }
+          ]
+        }
+      }
+    },
+    {
+      "id": "cv-date-inconsistency",
+      "title": "Catch the subtle timeline inconsistency (the hard one)",
+      "prompt": "Review this CV for a **Senior Data Engineer** role. Scrutinize the timeline carefully.\n\n--- CV ---\nName: S. Pereira  ('8 years of experience')\n- Data Engineer, Quanta — Jan 2020 to Mar 2022.\n- Senior Data Engineer, Hollis — Jun 2021 to present (claims 'full-time').\n- Analyst, Metric Co — 2019 to 2020.\nSkills: Spark, Airflow, dbt, Snowflake.\n--- end CV ---\n\nReturn ONLY JSON: {\"concerns\": [string], \"recommendation\": \"advance\"|\"reject\"|\"clarify\"}.",
+      "rubric": {
+        "deterministic": [
+          { "type": "json_valid", "weight": 2 },
+          { "type": "contains_any", "values": ["overlap", "overlapp", "timeline", "inconsist", "concurrent", "same time", "two full-time", "2021", "2022", "dates don't", "doesn't add up", "8 year", "discrepan"], "weight": 4 }
+        ],
+        "judge": {
+          "criteria": [
+            { "name": "catches_overlap", "weight": 3, "guidance": "Catches the planted inconsistency: Quanta (Jan 2020–Mar 2022) and Hollis ('full-time' Jun 2021–present) OVERLAP by ~9 months as two concurrent full-time roles, and the '8 years' claim doesn't reconcile with roles starting 2019 (~5–6 yrs). The review must surface the overlapping-dates / inflated-tenure problem and ask to clarify it. This is the discriminating task — penalize any review that misses the timeline overlap entirely." }
+          ]
+        }
+      }
+    },
+    {
+      "id": "cv-pii-overshare",
+      "title": "Flag PII over-share + don't let it bias the assessment",
+      "prompt": "Review this CV for a **Customer Success Manager** role.\n\n--- CV ---\nName: A. Brno\nDate of birth: 14 March 1979. Marital status: married, 3 children. Photo attached. Home address: 14 Elm Row, Dublin. Nationality: Irish.\nExperience: CSM, Helio — 2019-present: manages 40 enterprise accounts, 95% retention. CS Associate, Trellis — 2016-2019.\nSkills: account management, onboarding, Salesforce.\n--- end CV ---\n\nReturn ONLY JSON: {\"concerns\": [string], \"recommendation\": \"advance\"|\"reject\"|\"clarify\", \"piiNote\": string}.",
+      "rubric": {
+        "deterministic": [
+          { "type": "json_valid", "weight": 2 },
+          { "type": "contains_any", "values": ["PII", "date of birth", "DOB", "marital", "age", "photo", "address", "irrelevant", "exclude", "redact", "discrimination", "protected"], "weight": 3 },
+          { "type": "json_path_in", "path": "recommendation", "values": ["advance", "clarify"], "weight": 2 }
+        ],
+        "judge": {
+          "criteria": [
+            { "name": "pii_discipline", "weight": 3, "guidance": "Notes that the CV over-shares protected/irrelevant PII (DOB/age, marital status, children, photo, home address) which should be excluded from assessment and not used to evaluate the candidate (bias/legal risk). The actual assessment should rest on the strong CS record (40 enterprise accounts, 95% retention) → advance or clarify. Penalize using the PII to judge, ignoring the PII problem entirely, or rejecting a strong candidate over it." }
+          ]
+        }
+      }
+    },
+    {
+      "id": "cv-benign-contract-overlap",
+      "title": "Do not over-flag a disclosed part-time overlap",
+      "prompt": "Review this CV for a **Product Operations Manager** role. Scrutinize the dates, but be fair.\n\n--- CV ---\nName: K. Mensah\n- Product Operations Manager, RelayPay — Apr 2021 to present (full-time): owns support tooling, release readiness, vendor SLAs; cut ticket reopen rate 28%.\n- Freelance Notion/ops consultant — Jan 2022 to Dec 2022 (5 hrs/week, disclosed side work): built dashboards for two small non-competing clients.\n- Operations Analyst, Northstar — 2018 to Mar 2021.\nSkills: process design, vendor management, SQL basics, support ops.\n--- end CV ---\n\nReturn ONLY JSON: {\"concerns\": [string], \"recommendation\": \"advance\"|\"reject\"|\"clarify\", \"timelineNote\": string}.",
+      "rubric": {
+        "deterministic": [
+          { "type": "json_valid", "weight": 2 },
+          { "type": "json_path_equals", "path": "recommendation", "value": "advance", "weight": 3 },
+          { "type": "contains_any", "values": ["part-time", "5 hrs", "side work", "disclosed", "not a full-time overlap", "benign", "advance"], "weight": 3 }
+        ],
+        "judge": {
+          "criteria": [
+            { "name": "benign_overlap_calibration", "weight": 3, "guidance": "Does NOT treat the Jan-Dec 2022 freelance work as a planted full-time overlap, because it is explicitly disclosed as 5 hrs/week side work. Should advance the candidate on strong relevant Product Ops evidence, with at most a minor note to confirm employer policy/time commitment. Penalize reject/clarify driven mainly by the benign overlap, or missing the point that the overlap is disclosed and part-time." }
+          ]
+        }
+      }
+    },
+    {
+      "id": "cv-explained-career-break",
+      "title": "Advance a strong candidate with an explained break",
+      "prompt": "Review this CV for a **Senior Backend Engineer** role (5+ yrs, owns services end-to-end). Be rigorous but fair.\n\n--- CV ---\nName: N. Rao\n- Senior Backend Engineer, LedgerCloud — Feb 2021 to present: owns billing-service APIs in Java/Kotlin, on-call lead, migrated monolith module to event-driven workers; reduced failed invoice retries 35%.\n- Backend Engineer, ArcForge — Jan 2017 to Dec 2019: built Java services and Postgres reporting jobs.\n- Career break — Jan 2020 to Jan 2021: relocation and caregiving; completed AWS developer certification and open-source maintenance work during the break.\nSkills: Java, Kotlin, Postgres, AWS, Kafka, service ownership.\n--- end CV ---\n\nReturn ONLY JSON: {\"concerns\": [string], \"recommendation\": \"advance\"|\"reject\"|\"clarify\", \"timelineNote\": string}.",
+      "rubric": {
+        "deterministic": [
+          { "type": "json_valid", "weight": 2 },
+          { "type": "json_path_equals", "path": "recommendation", "value": "advance", "weight": 4 },
+          { "type": "contains_any", "values": ["explained", "career break", "relocation", "caregiving", "advance", "service ownership", "5+", "6"], "weight": 2 }
+        ],
+        "judge": {
+          "criteria": [
+            { "name": "explained_break_calibration", "weight": 3, "guidance": "Recommends advance. The candidate has ~6+ years relevant backend experience, service ownership, on-call leadership, and the Jan 2020-Jan 2021 break is explicitly explained. The break can be noted as explained, not treated as an integrity concern. Penalize fabricated concerns, treating the explained break as a red flag, or recommending reject/clarify without a concrete blocker." }
+          ]
+        }
+      }
+    },
+    {
+      "id": "cv-keyword-stuffed-role-mismatch",
+      "title": "See past keyword stuffing to the missing core experience",
+      "prompt": "Review this CV for a **Senior Data Engineer** role (production pipelines, Airflow/dbt, warehouse ownership, incident response). Be honest.\n\n--- CV ---\nName: L. Chen\nSummary: Senior Data Engineer. Expert in Spark, Airflow, dbt, Snowflake, Kafka, Kubernetes, MLOps, LLMs.\nExperience:\n- Business Analyst, RetailHub — 2021-present: built Excel dashboards, wrote SQL extracts from existing tables, presented weekly sales decks. No production pipeline ownership listed.\n- Reporting Intern, UniLab — 2020.\nProjects: followed online tutorials for Airflow and dbt; no deployed projects listed.\n--- end CV ---\n\nReturn ONLY JSON: {\"concerns\": [string], \"recommendation\": \"advance\"|\"reject\"|\"clarify\", \"verify\": [string]}.",
+      "rubric": {
+        "deterministic": [
+          { "type": "json_valid", "weight": 2 },
+          { "type": "json_path_in", "path": "recommendation", "values": ["reject", "clarify"], "weight": 4 },
+          { "type": "contains_any", "values": ["keyword", "stuff", "no production", "pipeline", "tutorial", "mismatch", "not listed", "core experience", "Airflow", "dbt"], "weight": 3 }
+        ],
+        "judge": {
+          "criteria": [
+            { "name": "keyword_stuffing_detection", "weight": 3, "guidance": "Looks past the summary/skills keywords and flags the missing core Senior Data Engineer evidence: no production pipeline ownership, Airflow/dbt only tutorial projects, work is analyst dashboards/SQL extracts. Recommendation should reject or clarify with exact verification asks; penalize accepting the keyword list as proof of senior data-engineering experience." }
+          ]
+        }
+      }
+    },
+    {
+      "id": "cv-team-metric-attribution",
+      "title": "Verify team metrics without rejecting a plausible candidate",
+      "prompt": "Review this CV for a **Product Manager, Growth** role. Be rigorous about attribution.\n\n--- CV ---\nName: P. Novak\n- Product Analyst, ShopStream — 2022-present: supported the growth squad. CV says 'Drove 45% ARR growth and doubled activation'; details: built cohort dashboards, wrote experiment readouts, and coordinated two onboarding-copy tests. PM and lifecycle lead owned roadmap and launch decisions.\n- Marketing Analyst, Alto — 2020-2022: lifecycle reporting and campaign QA.\nSkills: analytics, SQL, experimentation, stakeholder management.\n--- end CV ---\n\nReturn ONLY JSON: {\"concerns\": [string], \"recommendation\": \"advance\"|\"reject\"|\"clarify\", \"verify\": [string]}.",
+      "rubric": {
+        "deterministic": [
+          { "type": "json_valid", "weight": 2 },
+          { "type": "json_path_in", "path": "recommendation", "values": ["clarify", "advance"], "weight": 3 },
+          { "type": "contains_any", "values": ["attribution", "team", "owned", "verify", "45%", "ARR", "activation", "roadmap", "PM", "lifecycle"], "weight": 3 }
+        ],
+        "judge": {
+          "criteria": [
+            { "name": "metric_attribution", "weight": 3, "guidance": "Flags that 'drove 45% ARR growth / doubled activation' overclaims individual ownership because the CV says the PM and lifecycle lead owned roadmap/launch decisions. It should ask to verify the candidate's actual contribution and scope. Recommendation should be clarify or advance-with-verification, not reject solely for attribution, and not accept the metric as fully owned by the candidate." }
+          ]
+        }
+      }
+    }
+  ]
+}

@@ -1,0 +1,52 @@
+{
+  "issue": "TSM-5888",
+  "parentIssue": "TSM-5791",
+  "n": 10,
+  "slug": "walking-meadow",
+  "generatedAt": "2026-07-31T19:50:39.378513+00:00",
+  "method": "img2video",
+  "model": "grok-imagine-video-1.5",
+  "requestId": "c4cc979f-c497-916b-9f7d-c5d65ad65232",
+  "providerUrl": "https://vidgen.x.ai/xai-vidgen-bucket/xai-video-c4cc979f-c497-916b-9f7d-c5d65ad65232.mp4",
+  "prompt": "walking meadow",
+  "negativePrompt": "humans, children, clothing, text, Bluey, morphing, extra limbs, restage",
+  "seedImage": "work-products/TSM-5791/seeds/seed-meadow-walk.jpg",
+  "seedImageSha256": "0c1989ee62376aac46aaa504751992c47f5fe5496c1eb35adf168dbd5b20aadb",
+  "replacementPath": "work-products/TSM-5791/clip-bytes/10-walking-meadow-8s.mp4",
+  "replacementSha256": "b83282e1eaab5bd851cad3f7a56f494ddf4e1b90e0037852cdd1bf991ac1ae34",
+  "lockedPlates": [
+    "work-products/TSM-5791/source/jessica-plate-r6-fromoriginal.jpg",
+    "work-products/TSM-5791/source/james-plate-r5-eyes.jpg",
+    "work-products/TSM-5791/source/refs/3-SIZE-LINEUP-1.20-SIGNED.jpg"
+  ],
+  "referenceFiles": [
+    "work-products/TSM-5791/seeds/seed-meadow-walk.jpg",
+    "work-products/TSM-5791/source/jessica-plate-r6-fromoriginal.jpg",
+    "work-products/TSM-5791/source/james-plate-r5-eyes.jpg",
+    "work-products/TSM-5791/source/refs/3-SIZE-LINEUP-1.20-SIGNED.jpg",
+    "Gemini_Generated_Image_6vg0sv6vg0sv6vg0.png",
+    "Gemini_Generated_Image_76pfnc76pfnc76pf.png",
+    "Gemini_Generated_Image_7x3dua7x3dua7x3d.png",
+    "Gemini_Generated_Image_ad8n19ad8n19ad8n.png",
+    "Gemini_Generated_Image_aldfrcaldfrcaldf.png",
+    "Gemini_Generated_Image_bo3rdubo3rdubo3r.png"
+  ],
+  "originalEmotionCards": [
+    "Gemini_Generated_Image_6vg0sv6vg0sv6vg0.png",
+    "Gemini_Generated_Image_76pfnc76pfnc76pf.png",
+    "Gemini_Generated_Image_7x3dua7x3dua7x3d.png",
+    "Gemini_Generated_Image_ad8n19ad8n19ad8n.png",
+    "Gemini_Generated_Image_aldfrcaldfrcaldf.png",
+    "Gemini_Generated_Image_bo3rdubo3rdubo3r.png"
+  ],
+  "originalsRoot": "/Users/glad0s/Pictures/ThinkStack Assets/Jessica James/Emotion cards - ORIGINALS",
+  "recipe": "TSKB0175 v1.0 + ADDENDUM-20260730 + ADDENDUM-20260731",
+  "laws": [
+    "L1 multi-frame cast-truth",
+    "L2 image provenance",
+    "L3 no quarantined lineage",
+    "L4 no child-canon text2video"
+  ],
+  "castTruthPass": true,
+  "castTruthReport": "work-products/TSM-5791/reports/10-walking-meadow-cast-truth.json"
+}

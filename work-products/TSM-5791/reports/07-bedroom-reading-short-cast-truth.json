@@ -1,0 +1,31 @@
+{
+  "n": 7,
+  "slug": "bedroom-reading-short",
+  "path": "/Users/glad0s/paperclip/work-products/TSM-5791/clip-bytes/07-bedroom-reading-short-8s.mp4",
+  "pass": true,
+  "violations": [],
+  "averages": {
+    "slateGreyRatio": 0.10958984374999999,
+    "cinnamonRatio": 0.511984230324074,
+    "nearBlackRatio": 0.00904369212962963,
+    "skinRatio": 0.0395652488425926,
+    "animalCoatRatio": 0.6215740740740742
+  },
+  "durationSeconds": 8.041667,
+  "sampleTimestampsSeconds": [
+    1.0,
+    4.0,
+    7.0
+  ],
+  "framesSampled": 3,
+  "mode": "two_shot",
+  "method": "ffmpeg-multiframe-animal-vs-human-v2",
+  "thresholds": {
+    "nearBlackRatio_max": 0.08,
+    "animalCoatRatio_min_two_shot": 0.12,
+    "animalCoatRatio_min_solo": 0.08,
+    "james_slate_min_solo": 0.04,
+    "jessica_cinnamon_min_solo": 0.08,
+    "skinRatio_max_when_weak_animal": 0.12
+  }
+}

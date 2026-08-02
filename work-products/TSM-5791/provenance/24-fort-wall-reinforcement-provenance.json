@@ -1,0 +1,52 @@
+{
+  "issue": "TSM-5888",
+  "parentIssue": "TSM-5791",
+  "n": 24,
+  "slug": "fort-wall-reinforcement",
+  "generatedAt": "2026-07-31T20:01:48.207152+00:00",
+  "method": "img2video",
+  "model": "grok-imagine-video-1.5",
+  "requestId": "381c2653-2733-9ce6-84f3-57701962f827",
+  "providerUrl": "https://vidgen.x.ai/xai-vidgen-bucket/xai-video-381c2653-2733-9ce6-84f3-57701962f827.mp4",
+  "prompt": "Animate THIS EXACT IMAGE; do not re-stage the scene. Do not change the character or style. Motion only: both steady the fort sides together; wobble settles; relieved soft smiles; camera locked. Keep purple flower on Jessica and straw in James mouth entire clip.",
+  "negativePrompt": "humans, children, clothing, text, Bluey, morphing, extra limbs, restage",
+  "seedImage": "work-products/TSM-5791/seeds/seed-barn-wall-two.jpg",
+  "seedImageSha256": "b9dd2c3a6f42207cb6c8a9c4d7ec8f70b6707cf818b7b94b52b86f2155e40df2",
+  "replacementPath": "work-products/TSM-5791/clip-bytes/24-fort-wall-reinforcement-8s.mp4",
+  "replacementSha256": "d6a8b9c1edb9b56ecaa4fd8de5361d5030223c43d2b8c47275675174277b8dc0",
+  "lockedPlates": [
+    "work-products/TSM-5791/source/jessica-plate-r6-fromoriginal.jpg",
+    "work-products/TSM-5791/source/james-plate-r5-eyes.jpg",
+    "work-products/TSM-5791/source/refs/3-SIZE-LINEUP-1.20-SIGNED.jpg"
+  ],
+  "referenceFiles": [
+    "work-products/TSM-5791/seeds/seed-barn-wall-two.jpg",
+    "work-products/TSM-5791/source/jessica-plate-r6-fromoriginal.jpg",
+    "work-products/TSM-5791/source/james-plate-r5-eyes.jpg",
+    "work-products/TSM-5791/source/refs/3-SIZE-LINEUP-1.20-SIGNED.jpg",
+    "Gemini_Generated_Image_6vg0sv6vg0sv6vg0.png",
+    "Gemini_Generated_Image_76pfnc76pfnc76pf.png",
+    "Gemini_Generated_Image_7x3dua7x3dua7x3d.png",
+    "Gemini_Generated_Image_ad8n19ad8n19ad8n.png",
+    "Gemini_Generated_Image_aldfrcaldfrcaldf.png",
+    "Gemini_Generated_Image_bo3rdubo3rdubo3r.png"
+  ],
+  "originalEmotionCards": [
+    "Gemini_Generated_Image_6vg0sv6vg0sv6vg0.png",
+    "Gemini_Generated_Image_76pfnc76pfnc76pf.png",
+    "Gemini_Generated_Image_7x3dua7x3dua7x3d.png",
+    "Gemini_Generated_Image_ad8n19ad8n19ad8n.png",
+    "Gemini_Generated_Image_aldfrcaldfrcaldf.png",
+    "Gemini_Generated_Image_bo3rdubo3rdubo3r.png"
+  ],
+  "originalsRoot": "/Users/glad0s/Pictures/ThinkStack Assets/Jessica James/Emotion cards - ORIGINALS",
+  "recipe": "TSKB0175 v1.0 + ADDENDUM-20260730 + ADDENDUM-20260731",
+  "laws": [
+    "L1 multi-frame cast-truth",
+    "L2 image provenance",
+    "L3 no quarantined lineage",
+    "L4 no child-canon text2video"
+  ],
+  "castTruthPass": true,
+  "castTruthReport": "work-products/TSM-5791/reports/24-fort-wall-reinforcement-cast-truth.json"
+}

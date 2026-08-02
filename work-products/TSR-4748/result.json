@@ -1,0 +1,26 @@
+{
+  "issue": "TSR-4748",
+  "parent": "TSR-4723",
+  "incumbent": {
+    "run_id": "probe-20260731-175238",
+    "model": "grok-4.3",
+    "n": 10,
+    "ok": 10,
+    "meanQ": 0.99,
+    "minQ": 0.95,
+    "meanOut": 1457.8
+  },
+  "r2": {
+    "run_id": "probe-20260731-175733",
+    "model": "grok-4.5",
+    "agentFileSha256": "fd189e4b279ac47e366984b2ab9f1b8c1b4782cc2433cd91d77ee3c19da0c7bf",
+    "n": 10,
+    "ok": 10,
+    "meanQ": 0.995,
+    "minQ": 0.975,
+    "meanOut": 175.5
+  },
+  "meanQ_delta_r2_minus_incumbent": 0.005,
+  "verdict": "R2 non-inferior on quality at ~8x fewer output tokens; meanQ gate PASS",
+  "apiSpendUsd": 0.0
+}

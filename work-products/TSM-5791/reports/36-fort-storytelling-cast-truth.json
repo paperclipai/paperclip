@@ -1,0 +1,31 @@
+{
+  "n": 36,
+  "slug": "fort-storytelling",
+  "path": "/Users/glad0s/paperclip/work-products/TSM-5791/clip-bytes/36-fort-storytelling-8s.mp4",
+  "pass": true,
+  "violations": [],
+  "averages": {
+    "slateGreyRatio": 0.036500651041666665,
+    "cinnamonRatio": 0.7720869502314814,
+    "nearBlackRatio": 0.016637731481481483,
+    "skinRatio": 0.004151475694444445,
+    "animalCoatRatio": 0.8085876012731482
+  },
+  "durationSeconds": 8.041667,
+  "sampleTimestampsSeconds": [
+    1.0,
+    4.0,
+    7.0
+  ],
+  "framesSampled": 3,
+  "mode": "two_shot",
+  "method": "ffmpeg-multiframe-animal-vs-human-v2",
+  "thresholds": {
+    "nearBlackRatio_max": 0.08,
+    "animalCoatRatio_min_two_shot": 0.12,
+    "animalCoatRatio_min_solo": 0.08,
+    "james_slate_min_solo": 0.04,
+    "jessica_cinnamon_min_solo": 0.08,
+    "skinRatio_max_when_weak_animal": 0.12
+  }
+}

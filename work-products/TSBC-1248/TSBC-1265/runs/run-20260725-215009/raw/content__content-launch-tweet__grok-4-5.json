@@ -1,0 +1,72 @@
+{
+  "role": "content",
+  "task_id": "content-launch-tweet",
+  "task_title": "Write a launch tweet within platform + style limits",
+  "model_id": "grok-4.5",
+  "model_label": "Grok 4.5",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "ok": true,
+  "error": null,
+  "output": "Ledger is live \u2014 a tiny menu-bar app that shows your remaining AI quota across providers at a glance. Free during beta. Download it today and stop guessing what's left. #AI #MacApp",
+  "model_reported": "grok-4.5",
+  "inputTokens": 103,
+  "outputTokens": 45,
+  "totalTokens": 148,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "wallMs": 7590,
+  "stderrTail": "",
+  "agentFileSha256": "none",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "033a0a832aabf01236564fdbacb17e2fd0b3701f5a3f5242226a5c4149ea7f96",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/content/suite.json",
+  "skipped": false,
+  "skipReason": null,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "max_chars",
+      "ok": true,
+      "weight": 4.0,
+      "spec": {
+        "value": 280
+      }
+    },
+    {
+      "check": "not_regex",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {
+        "pattern": "(#\\w+[^#]*){3,}"
+      }
+    },
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {
+        "values": [
+          "try",
+          "download",
+          "get ",
+          "start",
+          "grab",
+          "install"
+        ]
+      }
+    }
+  ],
+  "judgeScore": 0.7350000000000001,
+  "judgeDetail": {
+    "perCriterion": {
+      "punch": 0.55,
+      "on_brief": 0.92
+    },
+    "rationale": "Fully on-brief with a clear CTA and free-beta mention, but the punch is blunted by a slow \"Ledger is live \u2014\" opener plus a long full-sentence definition instead of leading with sharp value.",
+    "judgeModel": "opus"
+  },
+  "quality": 0.8675,
+  "qualityPer1kTokens": 5.861486486486487
+}

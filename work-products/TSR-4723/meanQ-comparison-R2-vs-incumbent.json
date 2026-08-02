@@ -1,0 +1,195 @@
+{
+  "issue": "TSR-4723",
+  "title": "grok-4.5 R2 adoption gate re-cut \u2014 dev-suite meanQ comparison",
+  "createdAt": "2026-07-31T16:35:45+00:00",
+  "paperclipRunId": "5b6f9a22-ade2-47fa-b4a2-6b898b81847a",
+  "gateRecut": {
+    "from": "Block adoption on next 3 real [PHASE-0-WEDGE] CV-polish shadow orders (TSR-4709)",
+    "to": "Validate R2 on cv-review dev suite (or past cases); require meanQ >= incumbent ladder baseline before proceeding. Live-order shadow becomes a separate later gate that arms when first real order lands. Board gate before paid flip unchanged.",
+    "rationale": "Zero real CV-polish orders exist; wedge marketing parked; shadow gate was unsatisfiable and permanently stalled adoption."
+  },
+  "suite": {
+    "path": "/Users/glad0s/paperclip/benchmark/cv-review/suite.json",
+    "sha256": "4a12f7840060d3340e31887045177b943ccfc26aece2989d42f2e6f31a2b2c61",
+    "tasks": 10,
+    "reps": 3,
+    "n_samples": 30
+  },
+  "r2_agent_file": {
+    "path": "/Users/glad0s/paperclip/work-products/TSR-4704/cv-review-agent-file-R2.md",
+    "sha256": "fd189e4b279ac47e366984b2ab9f1b8c1b4782cc2433cd91d77ee3c19da0c7bf",
+    "skills": "none"
+  },
+  "lanes": {
+    "incumbent_ladder_baseline_bare": {
+      "label": "Incumbent (ladder bare Hermes grok-4.5)",
+      "run_id": "probe-20260730-040556",
+      "model": "grok-4.5-hermes-clean",
+      "served_model": "grok-4.5",
+      "adapter": "hermes",
+      "agent_file_sha256": "none",
+      "skills": "none",
+      "n": 30,
+      "ok": "30/30",
+      "meanQ": 0.897420634920635,
+      "minQ": 0.3333333333333333,
+      "meanOutputTokens": 244.86666666666667
+    },
+    "prior_candidate_r1": {
+      "label": "Prior candidate R1 lean-zero-skill",
+      "run_id": "probe-20260730-090121",
+      "model": "grok-4.5-hermes-clean",
+      "served_model": "grok-4.5",
+      "adapter": "hermes",
+      "agent_file_sha256": "28da1e97d8a312aca0cd50602d712ffb8a243d0f564213632b72374c7371ab04",
+      "skills": "none",
+      "n": 30,
+      "ok": "30/30",
+      "meanQ": 0.9625,
+      "minQ": 0.625,
+      "meanOutputTokens": 160.06666666666666
+    },
+    "r2": {
+      "label": "R2 adoption candidate",
+      "run_id": "probe-20260730-094016",
+      "model": "grok-4.5-hermes-clean",
+      "served_model": "grok-4.5",
+      "adapter": "hermes",
+      "agent_file_sha256": "fd189e4b279ac47e366984b2ab9f1b8c1b4782cc2433cd91d77ee3c19da0c7bf",
+      "skills": "none",
+      "n": 30,
+      "ok": "30/30",
+      "meanQ": 1.0,
+      "minQ": 1.0,
+      "meanOutputTokens": 154.96666666666667
+    }
+  },
+  "gate": {
+    "criterion": "R2 meanQ >= incumbent ladder baseline meanQ",
+    "incumbent_meanQ": 0.897420634920635,
+    "r2_meanQ": 1.0,
+    "delta": 0.10257936507936505,
+    "pass": true,
+    "also_vs_r1": {
+      "r1_meanQ": 0.9625,
+      "delta": 0.03749999999999998,
+      "pass": true
+    }
+  },
+  "per_task": [
+    {
+      "task_id": "cv-benign-contract-overlap",
+      "incumbent_bare_meanQ": 1.0,
+      "r1_meanQ": 1.0,
+      "r2_meanQ": 1.0,
+      "delta_r2_minus_incumbent": 0.0,
+      "incumbent_bare_n": 3,
+      "r2_n": 3,
+      "r2_ok": "3/3"
+    },
+    {
+      "task_id": "cv-clean-calibration",
+      "incumbent_bare_meanQ": 0.7777777777777778,
+      "r1_meanQ": 1.0,
+      "r2_meanQ": 1.0,
+      "delta_r2_minus_incumbent": 0.2222222222222222,
+      "incumbent_bare_n": 3,
+      "r2_n": 3,
+      "r2_ok": "3/3"
+    },
+    {
+      "task_id": "cv-date-inconsistency",
+      "incumbent_bare_meanQ": 1.0,
+      "r1_meanQ": 1.0,
+      "r2_meanQ": 1.0,
+      "delta_r2_minus_incumbent": 0.0,
+      "incumbent_bare_n": 3,
+      "r2_n": 3,
+      "r2_ok": "3/3"
+    },
+    {
+      "task_id": "cv-explained-career-break",
+      "incumbent_bare_meanQ": 0.6666666666666666,
+      "r1_meanQ": 1.0,
+      "r2_meanQ": 1.0,
+      "delta_r2_minus_incumbent": 0.33333333333333337,
+      "incumbent_bare_n": 3,
+      "r2_n": 3,
+      "r2_ok": "3/3"
+    },
+    {
+      "task_id": "cv-keyword-stuffed-role-mismatch",
+      "incumbent_bare_meanQ": 1.0,
+      "r1_meanQ": 1.0,
+      "r2_meanQ": 1.0,
+      "delta_r2_minus_incumbent": 0.0,
+      "incumbent_bare_n": 3,
+      "r2_n": 3,
+      "r2_ok": "3/3"
+    },
+    {
+      "task_id": "cv-pii-overshare",
+      "incumbent_bare_meanQ": 0.9047619047619048,
+      "r1_meanQ": 1.0,
+      "r2_meanQ": 1.0,
+      "delta_r2_minus_incumbent": 0.09523809523809523,
+      "incumbent_bare_n": 3,
+      "r2_n": 3,
+      "r2_ok": "3/3"
+    },
+    {
+      "task_id": "cv-role-mismatch",
+      "incumbent_bare_meanQ": 1.0,
+      "r1_meanQ": 1.0,
+      "r2_meanQ": 1.0,
+      "delta_r2_minus_incumbent": 0.0,
+      "incumbent_bare_n": 3,
+      "r2_n": 3,
+      "r2_ok": "3/3"
+    },
+    {
+      "task_id": "cv-team-metric-attribution",
+      "incumbent_bare_meanQ": 0.625,
+      "r1_meanQ": 0.625,
+      "r2_meanQ": 1.0,
+      "delta_r2_minus_incumbent": 0.375,
+      "incumbent_bare_n": 3,
+      "r2_n": 3,
+      "r2_ok": "3/3"
+    },
+    {
+      "task_id": "cv-title-inflation-gap",
+      "incumbent_bare_meanQ": 1.0,
+      "r1_meanQ": 1.0,
+      "r2_meanQ": 1.0,
+      "delta_r2_minus_incumbent": 0.0,
+      "incumbent_bare_n": 3,
+      "r2_n": 3,
+      "r2_ok": "3/3"
+    },
+    {
+      "task_id": "cv-unsubstantiated-metrics",
+      "incumbent_bare_meanQ": 1.0,
+      "r1_meanQ": 1.0,
+      "r2_meanQ": 1.0,
+      "delta_r2_minus_incumbent": 0.0,
+      "incumbent_bare_n": 3,
+      "r2_n": 3,
+      "r2_ok": "3/3"
+    }
+  ],
+  "freshness_checks_2026_07_31": {
+    "r2_file_sha256_matches_pin": true,
+    "suite_sha256_matches_probe": true,
+    "spot_probe_run_id": "probe-20260731-173229",
+    "spot_probe_note": "Single-task current-none R2 on grok-4.5 (grok adapter) scored quality 1.0 on cv-clean-calibration; full n=30 comparison remains probe-20260730-094016."
+  },
+  "production_notes": {
+    "deployed_incumbent_config": "config.json incumbent_baselines.cv-review = gemini-flash / antigravity_local (ApplicationWriter-Gemini, RecruitmentManager-Gemini)",
+    "gemini_same_suite_caveat": "run-20260728-194159 gemini-flash successRate 0.6000 below floor; quality suppressed \u2014 not used as decision-grade apples-to-apples incumbent for this agent-file gate. Ladder bare Hermes is the same-frame incumbent for R2 agent-file adoption step 2.",
+    "board_gate_before_paid_flip": "UNCHANGED \u2014 still required before any paid-order routing flip",
+    "live_order_shadow": "SEPARATE later gate (TSR-4709); arms when first real CV-polish order lands; does NOT block validation/adoption step 2"
+  },
+  "source_comparison_json": "/Users/glad0s/paperclip/work-products/TSBC-1171/scores/r2-vs-baseline-r1-comparison.json",
+  "tsbc_verdict": "TSBC-1174 / TSKB0047 reports/TSBC-1174-cv-ladder-verdict-20260730.md"
+}

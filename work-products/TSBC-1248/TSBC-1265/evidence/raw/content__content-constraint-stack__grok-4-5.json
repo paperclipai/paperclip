@@ -1,0 +1,120 @@
+{
+  "role": "content",
+  "task_id": "content-constraint-stack",
+  "task_title": "Stacked hard constraints (instruction-following stress test)",
+  "model_id": "grok-4.5",
+  "model_label": "Grok 4.5",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "ok": true,
+  "error": null,
+  "output": "Pulse keeps your team informed during every incident with clear status updates your users can trust. Ready to show customers exactly what's happening when systems fail?",
+  "model_reported": "grok-4.5",
+  "inputTokens": 92,
+  "outputTokens": 42,
+  "totalTokens": 134,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "wallMs": 11727,
+  "stderrTail": "",
+  "agentFileSha256": "none",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "033a0a832aabf01236564fdbacb17e2fd0b3701f5a3f5242226a5c4149ea7f96",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/content/suite.json",
+  "skipped": false,
+  "skipReason": null,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "min_words",
+      "ok": true,
+      "weight": 1.0,
+      "spec": {
+        "value": 25
+      }
+    },
+    {
+      "check": "max_words",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {
+        "value": 45
+      }
+    },
+    {
+      "check": "contains",
+      "ok": true,
+      "weight": 1.0,
+      "spec": {
+        "value": "incident"
+      }
+    },
+    {
+      "check": "contains",
+      "ok": true,
+      "weight": 1.0,
+      "spec": {
+        "value": "status"
+      }
+    },
+    {
+      "check": "not_contains",
+      "ok": true,
+      "weight": 1.0,
+      "spec": {
+        "value": "world-class"
+      }
+    },
+    {
+      "check": "not_contains",
+      "ok": true,
+      "weight": 1.0,
+      "spec": {
+        "value": "robust"
+      }
+    },
+    {
+      "check": "not_contains",
+      "ok": true,
+      "weight": 1.0,
+      "spec": {
+        "value": "cutting-edge"
+      }
+    },
+    {
+      "check": "not_contains",
+      "ok": true,
+      "weight": 1.0,
+      "spec": {
+        "value": "solution"
+      }
+    },
+    {
+      "check": "regex",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {
+        "pattern": "\\?\\s*$"
+      }
+    },
+    {
+      "check": "regex",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {
+        "pattern": "^[^.!?]*[.!?][^.!?]*[.!?]\\s*$"
+      }
+    }
+  ],
+  "judgeScore": 0.75,
+  "judgeDetail": {
+    "perCriterion": {
+      "quality": 0.75
+    },
+    "rationale": "All hard constraints hold (2 sentences, 26 words, has 'incident'/'status', no banned words, ends with '?'), and it reads naturally, but the copy is competent-generic rather than distinctive or memorable.",
+    "judgeModel": "opus"
+  },
+  "quality": 0.875,
+  "qualityPer1kTokens": 6.529850746268656
+}

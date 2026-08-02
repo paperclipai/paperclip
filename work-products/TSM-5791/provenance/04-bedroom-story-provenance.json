@@ -1,0 +1,52 @@
+{
+  "issue": "TSM-5888",
+  "parentIssue": "TSM-5791",
+  "n": 4,
+  "slug": "bedroom-story",
+  "generatedAt": "2026-07-31T19:47:22.263006+00:00",
+  "method": "img2video",
+  "model": "grok-imagine-video-1.5",
+  "requestId": "c19920d8-cd7e-947a-952a-d3da19717580",
+  "providerUrl": "https://vidgen.x.ai/xai-vidgen-bucket/xai-video-c19920d8-cd7e-947a-952a-d3da19717580.mp4",
+  "prompt": "bedroom story",
+  "negativePrompt": "humans, children, clothing, text, Bluey, morphing, extra limbs, restage",
+  "seedImage": "work-products/TSM-5791/seeds/seed-bedroom-two.jpg",
+  "seedImageSha256": "14dddbbfb75fd635465b1caff83259d3ab73546d8b871c5e8b5e47c64209e593",
+  "replacementPath": "work-products/TSM-5791/clip-bytes/04-bedroom-story-8s.mp4",
+  "replacementSha256": "a90856de2fb15b5958a24eefc520bb2a6200bfe813f1b7341a1a3b8500714737",
+  "lockedPlates": [
+    "work-products/TSM-5791/source/jessica-plate-r6-fromoriginal.jpg",
+    "work-products/TSM-5791/source/james-plate-r5-eyes.jpg",
+    "work-products/TSM-5791/source/refs/3-SIZE-LINEUP-1.20-SIGNED.jpg"
+  ],
+  "referenceFiles": [
+    "work-products/TSM-5791/seeds/seed-bedroom-two.jpg",
+    "work-products/TSM-5791/source/jessica-plate-r6-fromoriginal.jpg",
+    "work-products/TSM-5791/source/james-plate-r5-eyes.jpg",
+    "work-products/TSM-5791/source/refs/3-SIZE-LINEUP-1.20-SIGNED.jpg",
+    "Gemini_Generated_Image_6vg0sv6vg0sv6vg0.png",
+    "Gemini_Generated_Image_76pfnc76pfnc76pf.png",
+    "Gemini_Generated_Image_7x3dua7x3dua7x3d.png",
+    "Gemini_Generated_Image_ad8n19ad8n19ad8n.png",
+    "Gemini_Generated_Image_aldfrcaldfrcaldf.png",
+    "Gemini_Generated_Image_bo3rdubo3rdubo3r.png"
+  ],
+  "originalEmotionCards": [
+    "Gemini_Generated_Image_6vg0sv6vg0sv6vg0.png",
+    "Gemini_Generated_Image_76pfnc76pfnc76pf.png",
+    "Gemini_Generated_Image_7x3dua7x3dua7x3d.png",
+    "Gemini_Generated_Image_ad8n19ad8n19ad8n.png",
+    "Gemini_Generated_Image_aldfrcaldfrcaldf.png",
+    "Gemini_Generated_Image_bo3rdubo3rdubo3r.png"
+  ],
+  "originalsRoot": "/Users/glad0s/Pictures/ThinkStack Assets/Jessica James/Emotion cards - ORIGINALS",
+  "recipe": "TSKB0175 v1.0 + ADDENDUM-20260730 + ADDENDUM-20260731",
+  "laws": [
+    "L1 multi-frame cast-truth",
+    "L2 image provenance",
+    "L3 no quarantined lineage",
+    "L4 no child-canon text2video"
+  ],
+  "castTruthPass": true,
+  "castTruthReport": "work-products/TSM-5791/reports/04-bedroom-story-cast-truth.json"
+}

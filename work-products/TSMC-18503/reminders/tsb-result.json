@@ -1,0 +1,32 @@
+{
+  "slug": "tsb",
+  "ref": "daily-summary-reminder:2026-07-29:tsb:catchup-TSMC-18503",
+  "exitCode": 0,
+  "summary": {
+    "opcoSlug": "tsb",
+    "transport": "auto",
+    "outbox": {
+      "url": "http://127.0.0.1:3100/api/outbox",
+      "status": 404,
+      "body": "{\"error\":\"API route not found\"}",
+      "networkError": null,
+      "idempotencyKey": "daily-summary-reminder:2026-07-29:tsb:catchup-TSMC-18503",
+      "destinationCompanyId": "baba1235-7f5b-4555-aed8-c06efa095125",
+      "request": null,
+      "dryRun": false,
+      "duplicate": false
+    },
+    "primary": {
+      "label": "primary",
+      "url": "http://127.0.0.1:3100/api/routine-triggers/public/dedaad93648ac8fb60092d02/fire",
+      "status": 202,
+      "body": "{\"id\":\"d5e811a4-1a38-4e06-92cd-08a68f7a8231\",\"companyId\":\"baba1235-7f5b-4555-aed8-c06efa095125\",\"routineId\":\"751c2dc4-7181-4b31-bafb-4fc4a11ea1ee\",\"triggerId\":\"78aed358-6b3c-46d4-9578-7ec3ddcfb0d0\",\"source\":\"webhook\",\"status\":\"failed\",\"triggeredAt\":\"2026-07-31T02:14:26.797Z\",\"routineRevisionId\":\"bafe6617-93cf-4d81-865f-58d764d9c857\",\"responsibleUserId\":\"local-board\",\"idempotencyKey\":null,\"triggerPayload\":{\"ask\":\"ThinkStack Books (TSB) has not landed the daily_summary for the 2026-07-29 intake check as of the TSMC-18503 catch-up window. Please post the canonical <=300-token daily_summary payload to MC Portfolio Intake now, covering prior-24h progress, blockers, callouts, success stories, pending board decisions, next action, and Q-E-C/CASH notes.\",\"why\":\"Catch-up after MC Portfolio Intake dispatch env restore (TSMC-18503). Parent intake window TSMC-18493 still missing tsb.\",\"type\":\"portfolio_input_request\",\"context\":{\"kind\":\"daily_summary_reminder\",\"source\":\"TSMC-18503\",\"opcoSlug\":\"tsb\",\"targetDate\":\"2026-07-29\",\"parentIssue\":\"TSMC-18493\"},\"callback\":{\"url\":\"http://127.0.0.1:3100/api/routine-triggers/public/badfffb5272d4320ecd24887/fire\"},\"deadline\":\"2026-07-29 15:00 Europe/Dublin\",\"ackCallback\":{\"url\":\"http://127.0.0.1:3100/api/routine-triggers/public/badfffb5272d4320ecd24887/fire\",\"bearer\":\"9efe63b059320eb10beabb78ec17df22ab96a41ce8853ef8\",\"authMode\":\"inline_bearer\",\"secondaryUrl\":\"http://127.0.0.1:3100/api/routine-triggers/public/3b6cf3029d70799a0c438fa5/fire\",\"bearerSecretRef\":\".secrets/portfolio-intake-bearer\",\"secondaryBearer\":\"f0d1c5e177aa94c9686f07a03b66e180bf0f9f9aeeeea0fa\",\"secondaryBearerSecretRef\":\".secrets/portfolio-intake-bearer-secondary\"},\"requiresAck\":true,\"sourceCompany\":\"MissionControl\",\"idempotencyKey\":\"daily-summary-reminder:2026-07-29:tsb:catchup-TSMC-18503\",\"ackDeadlineMinutes\":10},\"dispatchFingerprint\":\"478181cb57eed83bb125d1e42fbe11a0ed65e1c91c647d180319d994d457135e\",\"linkedIssueId\":null,\"coalescedIntoRunId\":null,\"failureReason\":\"Agent is not invokable in its current state\",\"completedAt\":\"2026-07-31T02:14:26.998Z\",\"createdAt\":\"2026-07-31T02:14:26.796Z\",\"updatedAt\":\"2026-07-31T02:14:26.998Z\",\"issueId\":null}",
+      "networkError": null
+    },
+    "secondary": null,
+    "final": "primary",
+    "ackRef": "daily-summary-reminder:2026-07-29:tsb:catchup-TSMC-18503"
+  },
+  "stderr": "opco-dispatch: 'tsb' outbox route unavailable; degrading to webhook callback path",
+  "at": "2026-07-31T02:14:27.013255+00:00"
+}

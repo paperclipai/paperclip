@@ -1,0 +1,76 @@
+{
+  "role": "ops",
+  "task_id": "ops-incident-triage",
+  "task_title": "Order incidents by severity (objective triage)",
+  "model_id": "grok-4.5",
+  "model_label": "Grok 4.5",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "ok": true,
+  "error": null,
+  "output": "[\"all-stalled\",\"capital-down\",\"slow-board\",\"ui-badge\"]",
+  "model_reported": "grok-4.5",
+  "inputTokens": 158,
+  "outputTokens": 13,
+  "totalTokens": 171,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "wallMs": 7811,
+  "stderrTail": "",
+  "agentFileSha256": "none",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "af81fcc8c8acf9b45aac20aa118d2e0116e4e875fd9b8b4e4f07df614a7bef25",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/ops/suite.json",
+  "skipped": false,
+  "skipReason": null,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "json_valid",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {}
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 3.0,
+      "spec": {
+        "value": "all-stalled",
+        "path": "0"
+      }
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {
+        "value": "capital-down",
+        "path": "1"
+      }
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {
+        "value": "slow-board",
+        "path": "2"
+      }
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 1.0,
+      "spec": {
+        "value": "ui-badge",
+        "path": "3"
+      }
+    }
+  ],
+  "judgeScore": null,
+  "judgeDetail": null,
+  "quality": 1.0,
+  "qualityPer1kTokens": 5.847953216374268
+}

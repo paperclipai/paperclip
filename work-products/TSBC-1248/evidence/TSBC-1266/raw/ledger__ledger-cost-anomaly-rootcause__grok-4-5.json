@@ -1,0 +1,71 @@
+{
+  "role": "ledger",
+  "task_id": "ledger-cost-anomaly-rootcause",
+  "task_title": "Spot the cost-spiked agent and name the real root cause",
+  "model_id": "grok-4.5",
+  "model_label": "Grok 4.5",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "ok": true,
+  "error": null,
+  "output": "{\"anomalyDay\": 6, \"approxBaselineOutput\": 1216, \"spikeMultiple\": 7.5, \"rootCause\": \"Lane switched from terse codex to verbose Claude config; flat workload so output tokens spiked from verbosity.\"}",
+  "model_reported": "grok-4.5",
+  "inputTokens": 144,
+  "outputTokens": 49,
+  "totalTokens": 193,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "wallMs": 13339,
+  "stderrTail": "",
+  "agentFileSha256": "none",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "22a4d94c78402d54f39f0cd1b4eb6a12005acecfa3e2d429551928eca686300e",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/ledger/suite.json",
+  "skipped": false,
+  "skipReason": null,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 3.0,
+      "spec": {
+        "value": 6,
+        "path": "anomalyDay"
+      }
+    },
+    {
+      "check": "json_valid",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {}
+    },
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 3.0,
+      "spec": {
+        "values": [
+          "lane",
+          "model",
+          "switch",
+          "claude",
+          "codex",
+          "verbose",
+          "config"
+        ]
+      }
+    }
+  ],
+  "judgeScore": 0.85,
+  "judgeDetail": {
+    "perCriterion": {
+      "rootcause": 0.85
+    },
+    "rationale": "Correctly names day 6, ~1216 baseline, 7.5x, and the terse-to-verbose lane switch under flat workload, but omits the q/1k-out quality-drop nuance the criterion rewards.",
+    "judgeModel": "opus"
+  },
+  "quality": 0.925,
+  "qualityPer1kTokens": 4.7927461139896375
+}

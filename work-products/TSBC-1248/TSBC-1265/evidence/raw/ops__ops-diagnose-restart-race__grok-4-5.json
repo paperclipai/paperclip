@@ -1,0 +1,91 @@
+{
+  "role": "ops",
+  "task_id": "ops-diagnose-restart-race",
+  "task_title": "Diagnose the three compounding defects in the restart race",
+  "model_id": "grok-4.5",
+  "model_label": "Grok 4.5",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "ok": true,
+  "error": null,
+  "output": "Root cause \u2014 three compounding defects\n\n1. Restart race / no single-instance guard  \nlaunchd KeepAlive re-execs the start script the moment `pnpm dev` exits while the old embedded-Postgres postmaster and detached workspace-runtime (port 13100) are still up. The script only frees 3100 and has no lock, so you get postmaster.pid / port-in-use failures.  \nFix: single-instance lock + full cleanup (Postgres + 13100 and any other owned ports/PIDs) before start; throttle KeepAlive until cleanup succeeds.\n\n2. Ungraceful SIGTERM  \nThe handler neither drains in-flight runs nor kills detached children before exit, so orphans and half-dead workspaces survive the restart.  \nFix: on SIGTERM, stop accepting work, drain/cancel in-flight runs with a bounded timeout, then kill the process group (including detached children), then exit.\n\n3. Over-aggressive orphan reaping  \n`reapOrphanedRuns()` runs at startup with stale-threshold 0, so every row still marked `running` is immediately `process_lost`\u2014including runs that would have finished or been reattached after a clean handoff.  \nFix: require a real stale threshold (and/or heartbeat/lease check) before marking `process_lost`; only reap when the owner PID/lease is gone past that window.",
+  "model_reported": "grok-4.5",
+  "inputTokens": 237,
+  "outputTokens": 308,
+  "totalTokens": 545,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "wallMs": 15900,
+  "stderrTail": "",
+  "agentFileSha256": "none",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "af81fcc8c8acf9b45aac20aa118d2e0116e4e875fd9b8b4e4f07df614a7bef25",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/ops/suite.json",
+  "skipped": false,
+  "skipReason": null,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {
+        "values": [
+          "lock",
+          "flock",
+          "single-instance",
+          "postmaster",
+          "13100"
+        ]
+      }
+    },
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {
+        "values": [
+          "SIGTERM",
+          "drain",
+          "teardown",
+          "children",
+          "graceful"
+        ]
+      }
+    },
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {
+        "values": [
+          "threshold",
+          "grace",
+          "reap",
+          "default",
+          "0"
+        ]
+      }
+    },
+    {
+      "check": "max_words",
+      "ok": true,
+      "weight": 1.0,
+      "spec": {
+        "value": 220
+      }
+    }
+  ],
+  "judgeScore": 1.0,
+  "judgeDetail": {
+    "perCriterion": {
+      "all_three": 1.0,
+      "fixes": 1.0
+    },
+    "rationale": "All three compounding defects are cleanly separated with specific, correct fixes\u2014single-instance lock plus ordered old-PG/port-13100 teardown, bounded SIGTERM drain plus process-group kill of detached children, and a real stale/lease threshold before reaping.",
+    "judgeModel": "opus"
+  },
+  "quality": 1.0,
+  "qualityPer1kTokens": 1.8348623853211008
+}

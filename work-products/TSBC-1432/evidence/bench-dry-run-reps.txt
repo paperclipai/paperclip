@@ -1,0 +1,12 @@
+=== Paperclip Model Benchmark · run-20260728-174322 ===
+roles  : cto
+models : grok-4.3
+reps   : 3 (decision floor 3)
+judge  : claude-opus
+plan:
+  generations : 3 model calls
+  judge calls : 3 (all via judge=claude-opus)
+  total CLI    : 6 invocations
+  per-model generations: grok-4.3=3
+
+(dry run — nothing executed)

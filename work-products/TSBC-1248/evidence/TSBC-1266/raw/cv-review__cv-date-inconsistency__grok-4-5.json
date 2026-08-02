@@ -1,0 +1,68 @@
+{
+  "role": "cv-review",
+  "task_id": "cv-date-inconsistency",
+  "task_title": "Catch the subtle timeline inconsistency (the hard one)",
+  "model_id": "grok-4.5",
+  "model_label": "Grok 4.5",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "ok": true,
+  "error": null,
+  "output": "{\"concerns\": [\"Full-time overlap Jun 2021\u2013Mar 2022: Quanta (Data Engineer, through Mar 2022) and Hollis (Senior Data Engineer, full-time from Jun 2021) cannot both be full-time for ~10 months without explanation\", \"Claimed '8 years of experience' not supported by listed history: earliest role is 2019; with present ~Jul 2026 the span is ~7\u20137.5 years even if continuous from start of 2019\", \"Metric Co (2019\u20132020) and Quanta (from Jan 2020) may also overlap depending on Metric end month; years-only dates prevent verification\", \"Concurrent employment while stepping up to Senior title at Hollis weakens credibility of tenure/level claims\"], \"recommendation\": \"reject\"}",
+  "model_reported": "grok-4.5",
+  "inputTokens": 112,
+  "outputTokens": 167,
+  "totalTokens": 279,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "wallMs": 38292,
+  "stderrTail": "",
+  "agentFileSha256": "none",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "4a12f7840060d3340e31887045177b943ccfc26aece2989d42f2e6f31a2b2c61",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/cv-review/suite.json",
+  "skipped": false,
+  "skipReason": null,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "json_valid",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {}
+    },
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 4.0,
+      "spec": {
+        "values": [
+          "overlap",
+          "overlapp",
+          "timeline",
+          "inconsist",
+          "concurrent",
+          "same time",
+          "two full-time",
+          "2021",
+          "2022",
+          "dates don't",
+          "doesn't add up",
+          "8 year",
+          "discrepan"
+        ]
+      }
+    }
+  ],
+  "judgeScore": 0.9700000000000001,
+  "judgeDetail": {
+    "perCriterion": {
+      "catches_overlap": 0.97
+    },
+    "rationale": "Clearly surfaces the ~10-month full-time Quanta/Hollis overlap and debunks the '8 years' claim against a 2019 start, precisely as required; only nit is choosing 'reject' over 'clarify' when the data is ambiguous.",
+    "judgeModel": "opus"
+  },
+  "quality": 0.9850000000000001,
+  "qualityPer1kTokens": 3.5304659498207887
+}

@@ -1,0 +1,27 @@
+{
+    "id": "e73544da-2ff4-4370-8510-79bcefc24ffd",
+    "name": "CV-Review-Grok-R2",
+    "model": "grok-4.5",
+    "metadata": {
+        "lane": "cv-review-r2",
+        "paidPrimary": false,
+        "shadowIssue": "TSR-4709",
+        "adoptionIssue": "TSR-4704",
+        "customerFacing": false,
+        "agentFileSha256": "fd189e4b279ac47e366984b2ab9f1b8c1b4782cc2433cd91d77ee3c19da0c7bf",
+        "maxConcurrentRuns": 1
+    },
+    "reports_to": "8ea6b227-07aa-4874-8d1e-a919d2436a34",
+    "permissions": {
+        "trustPreset": "low_trust_review",
+        "canCreateAgents": false,
+        "canCreateSkills": false
+    },
+    "adapter_type": "hermes_local",
+    "wakeOnDemand": "true",
+    "desiredSkills": [
+    ],
+    "heartbeatEnabled": "false",
+    "maxConcurrentRuns": "1",
+    "instructionsFilePath": "/Users/glad0s/.paperclip/instances/default/companies/cefbbf68-0ca7-4383-967e-03bc1b037ae7/agents/e73544da-2ff4-4370-8510-79bcefc24ffd/instructions/AGENTS.md"
+}

@@ -1,0 +1,80 @@
+{
+  "role": "auditor",
+  "task_id": "aud-ac-idempotency-miss",
+  "task_title": "Catch the one failed acceptance criterion (AC-1 idempotency)",
+  "model_id": "grok-4.5",
+  "model_label": "Grok 4.5",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "ok": true,
+  "error": null,
+  "output": "{\"verdict\": \"block\", \"failedAc\": \"AC-1\", \"evidence\": \"Repeated checkout with the same idempotency key returns 200 twice, but the DB ends up with two checkout rows for that key; the test never asserts row-count and the new code inserts unconditionally, so idempotency (same result + no duplicate row) is not met.\", \"requiredFix\": \"Make checkout insert conditional on the idempotency key (lookup existing row first; return it on replay without inserting). Add a test that asserts a single DB row after two requests with the same key.\"}",
+  "model_reported": "grok-4.5",
+  "inputTokens": 277,
+  "outputTokens": 133,
+  "totalTokens": 410,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "wallMs": 8197,
+  "stderrTail": "",
+  "agentFileSha256": "none",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "2a04b6f827eda607af0693e4fbbe2fe425b9ea1c5fb0574b0550ceaac640d913",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/auditor/suite.json",
+  "skipped": false,
+  "skipReason": null,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "json_valid",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {}
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 5.0,
+      "spec": {
+        "value": "block",
+        "path": "verdict"
+      }
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 4.0,
+      "spec": {
+        "value": "AC-1",
+        "path": "failedAc"
+      }
+    },
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {
+        "values": [
+          "duplicate",
+          "two row",
+          "2 row",
+          "row count",
+          "row-count",
+          "insert",
+          "idempot"
+        ]
+      }
+    }
+  ],
+  "judgeScore": 0.98,
+  "judgeDetail": {
+    "perCriterion": {
+      "ac_rigor": 0.98
+    },
+    "rationale": "Correctly blocks on AC-1, cites duplicate row + unconditional insert + missing row-count assertion, and requires a conditional/dedupe insert plus a row-count test.",
+    "judgeModel": "opus"
+  },
+  "quality": 0.99,
+  "qualityPer1kTokens": 2.4146341463414633
+}

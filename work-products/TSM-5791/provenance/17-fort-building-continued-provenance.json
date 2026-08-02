@@ -1,0 +1,52 @@
+{
+  "issue": "TSM-5888",
+  "parentIssue": "TSM-5791",
+  "n": 17,
+  "slug": "fort-building-continued",
+  "generatedAt": "2026-07-31T19:53:45.294332+00:00",
+  "method": "img2video",
+  "model": "grok-imagine-video-1.5",
+  "requestId": "9d2a2119-dc8a-933a-b4bc-c711d46a9c46",
+  "providerUrl": "https://vidgen.x.ai/xai-vidgen-bucket/xai-video-9d2a2119-dc8a-933a-b4bc-c711d46a9c46.mp4",
+  "prompt": "fort building continued",
+  "negativePrompt": "humans, children, clothing, text, Bluey, morphing, extra limbs, restage",
+  "seedImage": "work-products/TSM-5791/seeds/seed-barn-james-build.jpg",
+  "seedImageSha256": "2fcd96fcf7cc2405b85de956c860d24ec72b26ccf883552ca0ac862bc6f12abb",
+  "replacementPath": "work-products/TSM-5791/clip-bytes/17-fort-building-continued-8s.mp4",
+  "replacementSha256": "39043c3a53fb7c3ed0b76a5c842dde215013bbfa5044c4254bef0ef2ba7c7f37",
+  "lockedPlates": [
+    "work-products/TSM-5791/source/jessica-plate-r6-fromoriginal.jpg",
+    "work-products/TSM-5791/source/james-plate-r5-eyes.jpg",
+    "work-products/TSM-5791/source/refs/3-SIZE-LINEUP-1.20-SIGNED.jpg"
+  ],
+  "referenceFiles": [
+    "work-products/TSM-5791/seeds/seed-barn-james-build.jpg",
+    "work-products/TSM-5791/source/jessica-plate-r6-fromoriginal.jpg",
+    "work-products/TSM-5791/source/james-plate-r5-eyes.jpg",
+    "work-products/TSM-5791/source/refs/3-SIZE-LINEUP-1.20-SIGNED.jpg",
+    "Gemini_Generated_Image_6vg0sv6vg0sv6vg0.png",
+    "Gemini_Generated_Image_76pfnc76pfnc76pf.png",
+    "Gemini_Generated_Image_7x3dua7x3dua7x3d.png",
+    "Gemini_Generated_Image_ad8n19ad8n19ad8n.png",
+    "Gemini_Generated_Image_aldfrcaldfrcaldf.png",
+    "Gemini_Generated_Image_bo3rdubo3rdubo3r.png"
+  ],
+  "originalEmotionCards": [
+    "Gemini_Generated_Image_6vg0sv6vg0sv6vg0.png",
+    "Gemini_Generated_Image_76pfnc76pfnc76pf.png",
+    "Gemini_Generated_Image_7x3dua7x3dua7x3d.png",
+    "Gemini_Generated_Image_ad8n19ad8n19ad8n.png",
+    "Gemini_Generated_Image_aldfrcaldfrcaldf.png",
+    "Gemini_Generated_Image_bo3rdubo3rdubo3r.png"
+  ],
+  "originalsRoot": "/Users/glad0s/Pictures/ThinkStack Assets/Jessica James/Emotion cards - ORIGINALS",
+  "recipe": "TSKB0175 v1.0 + ADDENDUM-20260730 + ADDENDUM-20260731",
+  "laws": [
+    "L1 multi-frame cast-truth",
+    "L2 image provenance",
+    "L3 no quarantined lineage",
+    "L4 no child-canon text2video"
+  ],
+  "castTruthPass": true,
+  "castTruthReport": "work-products/TSM-5791/reports/17-fort-building-continued-cast-truth.json"
+}

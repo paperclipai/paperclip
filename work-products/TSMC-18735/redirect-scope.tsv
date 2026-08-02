@@ -1,0 +1,29 @@
+TSB	ThinkStack Books	Architect	Architect-Codex	idle	idle	would_redirect_pre_fix
+TSB	ThinkStack Books	Author	Author-Codex	idle	idle	would_redirect_pre_fix
+TSB	ThinkStack Books	Author	Author-Gemini	idle	idle	would_redirect_pre_fix
+TSB	ThinkStack Books	Books-Drafter	Books-Drafter-Hermes	idle	idle	would_redirect_pre_fix
+TSB	ThinkStack Books	Designer	Designer-Codex	idle	idle	would_redirect_pre_fix
+TSB	ThinkStack Books	Designer	Designer-Gemini	idle	idle	would_redirect_pre_fix
+TSB	ThinkStack Books	Editor	Editor-Codex	idle	idle	would_redirect_pre_fix
+TSB	ThinkStack Books	Editor	Editor-Gemini	idle	idle	would_redirect_pre_fix
+TSB	ThinkStack Books	Forge	Forge-Codex	idle	idle	would_redirect_pre_fix
+TSB	ThinkStack Books	Forge	Forge-Hermes	idle	idle	would_redirect_pre_fix
+TSB	ThinkStack Books	Marlowe-Codex	Marlowe	idle	paused	would_redirect_pre_fix
+TSB	ThinkStack Books	Marlowe-Codex	Marlowe-Gemini	idle	idle	would_redirect_pre_fix
+TSB	ThinkStack Books	Marlowe-Codex	Marlowe-Hermes	idle	idle	would_redirect_pre_fix
+TSB	ThinkStack Books	Press	Press-Hermes	idle	idle	would_redirect_pre_fix
+TSB	ThinkStack Books	Quill	Quill-Codex	idle	idle	would_redirect_pre_fix
+TSB	ThinkStack Books	Quill	Quill-Gemini	idle	idle	would_redirect_pre_fix
+TSB	ThinkStack Books	Researcher	Researcher-Codex	idle	idle	would_redirect_pre_fix
+TSB	ThinkStack Books	TSB Compiler	TSB Compiler-Hermes	idle	idle	would_redirect_pre_fix
+TSMC	TSMC	Astra	Astra-Codex	paused	running	would_not_redirect_pre_fix
+TSMC	TSMC	Astra	Astra-Hermes	paused	idle	would_not_redirect_pre_fix
+TSMC	TSMC	Astra	Astra-Gemini	paused	idle	would_not_redirect_pre_fix
+TSMC	TSMC	Auditor	Auditor-Codex	running	idle	would_redirect_pre_fix
+TSMC	TSMC	Auditor	Auditor-Gemini	running	idle	would_redirect_pre_fix
+TSMC	TSMC	Engineer-Codex	Engineer-Gemini	running	idle	would_redirect_pre_fix
+TSMC	TSMC	Engineer-Codex	Engineer-Hermes	running	idle	would_redirect_pre_fix
+TSMC	TSMC	GLaD0S	GLaD0S-Hermes	paused	idle	would_not_redirect_pre_fix
+TSMC	TSMC	GLaD0S	GLaD0S-Gemini	paused	idle	would_not_redirect_pre_fix
+TSMC	TSMC	Ledger	Ledger-Codex	idle	idle	would_redirect_pre_fix
+TSMC	TSMC	Ledger	Ledger-Gemini	idle	idle	would_redirect_pre_fix

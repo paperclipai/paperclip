@@ -1,0 +1,79 @@
+{
+  "sample_id": "rep02",
+  "rep": 2,
+  "role": "cv-review",
+  "task_id": "cv-keyword-stuffed-role-mismatch",
+  "task_title": "See past keyword stuffing to the missing core experience",
+  "model": "grok-4.5-hermes-clean",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "agentFile": "current",
+  "skills": "none",
+  "judge": "claude-opus",
+  "generationFrame": "single_shot_concat",
+  "ok": true,
+  "error": null,
+  "output": "{\"concerns\":[\"Title/summary claims Senior Data Engineer and expert Airflow/dbt/Spark/Snowflake/Kafka/K8s/MLOps/LLMs, but listed experience is Business Analyst (RetailHub 2021-present) with Excel dashboards, SQL extracts from existing tables, and weekly sales decks only\u2014no production pipeline ownership listed.\",\"Projects section states only online tutorials for Airflow and dbt with no deployed projects listed; no evidence of production pipelines, warehouse ownership, or incident response.\",\"Only other role is Reporting Intern (UniLab 2020); CV shows no senior data engineering production scope matching the target role.\"],\"recommendation\":\"reject\",\"verify\":[]}",
+  "model_reported": "grok-4.5",
+  "inputTokens": 587,
+  "outputTokens": 166,
+  "totalTokens": 753,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "agentFileSha256": "fd189e4b279ac47e366984b2ab9f1b8c1b4782cc2433cd91d77ee3c19da0c7bf",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "4a12f7840060d3340e31887045177b943ccfc26aece2989d42f2e6f31a2b2c61",
+  "wallMs": 15647,
+  "stderrTail": "",
+  "promptChars": 2350,
+  "stagedSkills": 0,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "json_valid",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {}
+    },
+    {
+      "check": "json_path_in",
+      "ok": true,
+      "weight": 4.0,
+      "spec": {
+        "values": [
+          "reject",
+          "clarify"
+        ],
+        "path": "recommendation"
+      }
+    },
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 3.0,
+      "spec": {
+        "values": [
+          "keyword",
+          "stuff",
+          "no production",
+          "pipeline",
+          "tutorial",
+          "mismatch",
+          "not listed",
+          "core experience",
+          "Airflow",
+          "dbt"
+        ]
+      }
+    }
+  ],
+  "judgeScore": null,
+  "judgeDetail": {
+    "error": "judge: unparseable",
+    "raw": "Not logged in \u00b7 Please run /login",
+    "judgeError": "claude reported error: Not logged in \u00b7 Please run /login"
+  },
+  "quality": 1.0,
+  "qualityPer1kTokens": 1.3280212483399734
+}

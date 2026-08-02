@@ -1,0 +1,18 @@
+{
+  "sourceCompany": "MissionControl",
+  "type": "portfolio_input_request",
+  "idempotencyKey": "daily-summary-reminder:2026-07-29:tsc:catchup-TSMC-18503",
+  "ask": "ThinkStack Capital (TSC) has not landed the daily_summary for the 2026-07-29 intake check as of the TSMC-18503 catch-up window. Please post the canonical <=300-token daily_summary payload to MC Portfolio Intake now, covering prior-24h progress, blockers, callouts, success stories, pending board decisions, next action, and Q-E-C/CASH notes.",
+  "why": "Catch-up after MC Portfolio Intake dispatch env restore (TSMC-18503). Parent intake window TSMC-18493 still missing tsc.",
+  "deadline": "2026-07-29 15:00 Europe/Dublin",
+  "context": {
+    "kind": "daily_summary_reminder",
+    "targetDate": "2026-07-29",
+    "opcoSlug": "tsc",
+    "source": "TSMC-18503",
+    "parentIssue": "TSMC-18493"
+  },
+  "callback": {
+    "url": "http://127.0.0.1:3100/api/routine-triggers/public/badfffb5272d4320ecd24887/fire"
+  }
+}

@@ -1,0 +1,93 @@
+{
+  "sample_id": "rep02",
+  "rep": 2,
+  "role": "cv-review",
+  "task_id": "cv-title-inflation-gap",
+  "task_title": "Catch seniority inflation + an unexplained gap",
+  "model": "grok-4.5-hermes-clean",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "agentFile": "current",
+  "skills": "none",
+  "judge": "claude-opus",
+  "generationFrame": "single_shot_concat",
+  "ok": true,
+  "error": null,
+  "output": "{\"concerns\":[\"Total listed experience is ~2.5 years (CodeWorks Jan 2021\u2013Jul 2021, 6 mo; Nimbus Apps Sep 2022\u2013present, stated 2 yrs), well below the role\u2019s 5+ years requirement.\",\"Nimbus work is described as building REST endpoints on a 4-person team with one senior reviewing all PRs \u2014 no evidence of end-to-end service ownership.\",\"CV title is \u201cSenior Lead Backend Engineer\u201d while the only backend role listed is \u201cBackend Engineer\u201d with mandatory senior PR review, which undercuts the senior/lead claim.\",\"Skills list includes \u201cled architecture\u201d with no supporting bullets, scope, or outcomes in experience.\",\"Unexplained gap between CodeWorks end (Jul 2021) and Nimbus start (Sep 2022).\"],\"recommendation\":\"reject\"}",
+  "model_reported": "grok-4.5",
+  "inputTokens": 551,
+  "outputTokens": 179,
+  "totalTokens": 730,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "agentFileSha256": "fd189e4b279ac47e366984b2ab9f1b8c1b4782cc2433cd91d77ee3c19da0c7bf",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "4a12f7840060d3340e31887045177b943ccfc26aece2989d42f2e6f31a2b2c61",
+  "wallMs": 18499,
+  "stderrTail": "",
+  "promptChars": 2204,
+  "stagedSkills": 0,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "json_valid",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {}
+    },
+    {
+      "check": "json_path_in",
+      "ok": true,
+      "weight": 3.0,
+      "spec": {
+        "values": [
+          "clarify",
+          "reject"
+        ],
+        "path": "recommendation"
+      }
+    },
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {
+        "values": [
+          "title",
+          "senior",
+          "lead",
+          "inflat",
+          "scope",
+          "level",
+          "2 y",
+          "2.5",
+          "experience"
+        ]
+      }
+    },
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {
+        "values": [
+          "gap",
+          "2021",
+          "Jul",
+          "Sep 2022",
+          "14 month",
+          "year"
+        ]
+      }
+    }
+  ],
+  "judgeScore": null,
+  "judgeDetail": {
+    "error": "judge: unparseable",
+    "raw": "Not logged in \u00b7 Please run /login",
+    "judgeError": "claude reported error: Not logged in \u00b7 Please run /login"
+  },
+  "quality": 1.0,
+  "qualityPer1kTokens": 1.36986301369863
+}

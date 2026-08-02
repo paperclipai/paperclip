@@ -1,0 +1,73 @@
+{
+  "issue": "TSBC-1171",
+  "stage": "agent-file-optimize",
+  "revision": "r1",
+  "createdAt": "2026-07-21",
+  "authorAgent": "Bench-Manager",
+  "hypothesis": "Adding a minimal zero-skill operating file that fixes deliverable shape, evidence restraint, timeline reconciliation, and verification discipline will improve mean development quality over the true bare Hermes baseline without worsening low-tail behavior.",
+  "variableChanged": "Introduced the first task-specific zero-skill agent file from the bare baseline.",
+  "frozenControls": {
+    "model": "grok-4.5",
+    "adapterType": "hermes_local",
+    "runnerAgentName": "Bench-grok-4.5-hermes-clean",
+    "runnerAgentId": "07080a39-0255-48af-9b39-2a9a4589f182",
+    "desiredSkills": [],
+    "exclude": [
+      "Hermes rules",
+      "memory",
+      "SOUL",
+      "global skills",
+      "persistent-session contamination"
+    ],
+    "developmentSuitePath": "/Users/glad0s/paperclip/benchmark/cv-review/suite.json",
+    "developmentSuiteSha256": "4a12f7840060d3340e31887045177b943ccfc26aece2989d42f2e6f31a2b2c61",
+    "taskIds": [
+      "cv-title-inflation-gap",
+      "cv-unsubstantiated-metrics",
+      "cv-role-mismatch",
+      "cv-clean-calibration",
+      "cv-date-inconsistency",
+      "cv-pii-overshare",
+      "cv-benign-contract-overlap",
+      "cv-explained-career-break",
+      "cv-keyword-stuffed-role-mismatch",
+      "cv-team-metric-attribution"
+    ],
+    "repetitionsPerCase": 3,
+    "holdoutVisibleToTuner": false,
+    "suitePromptScorerThresholdEdits": false
+  },
+  "candidate": {
+    "path": "work-products/TSBC-1171/candidates/r1-lean-zero-skill.md",
+    "sha256": "28da1e97d8a312aca0cd50602d712ffb8a243d0f564213632b72374c7371ab04",
+    "description": "Lean zero-skill CV-review operating file with output-contract, factual-restraint, timeline, and tool-boundary rules only."
+  },
+  "acceptanceRule": {
+    "replaceIncumbentIf": ">= +0.03 mean lift over the bare baseline, or equal quality with material efficiency gain and no low-tail loss.",
+    "doNotReplaceIf": [
+      "Any fabricated-facts failure appears",
+      "Mean lift is below +0.03 without a material efficiency win",
+      "Low-tail quality regresses",
+      "Fresh/cache/output tokens, latency, or tool-call cost worsen without quality justification"
+    ]
+  },
+  "baselineReference": {
+    "sourceIssue": "TSBC-1170",
+    "successfulRunCommentId": "d02462e6-b031-415f-a724-9c99fc187be9",
+    "successfulRunIdMentioned": "b420dbb3-15d6-4a43-b712-1d3d9a3f26d5",
+    "durableArtifactGap": "TSBC-1170 has no issue attachments or work products yet, so the exact baseline summary still needs recovery from preserved run data before an incumbent replacement decision."
+  },
+  "requiredEvidenceFromRun": [
+    "raw outputs",
+    "records.json",
+    "per_task.json",
+    "summary.json",
+    "report.md",
+    "requested and served model/provider/adapter",
+    "effective prompt or session evidence showing the candidate file hash and desiredSkills empty",
+    "fresh/cache/output tokens",
+    "latency",
+    "tool calls",
+    "failures and rejection reasons"
+  ]
+}

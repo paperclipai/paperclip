@@ -1,0 +1,72 @@
+{
+  "role": "cv-review",
+  "task_id": "cv-explained-career-break",
+  "task_title": "Advance a strong candidate with an explained break",
+  "model_id": "grok-4.5",
+  "model_label": "Grok 4.5",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "ok": true,
+  "error": null,
+  "output": "{\"concerns\":[\"CV is extremely thin for a senior screen: almost no depth on scale (QPS/volume), SLAs, multi-service boundaries, data model complexity, or failure modes for billing-service.\",\"End-to-end ownership is asserted (APIs, on-call lead, migration) but missing usual senior signals: design docs/RFCs, observability/alerting ownership, deploy/rollback, schema migrations, testing strategy, cost/security, or mentoring.\",\"Kafka listed in skills but not evidenced in role bullets; event-driven workers may or may not imply Kafka\u2014unclear production messaging depth.\",\"ArcForge tenure is a single vague line (Java services + Postgres jobs)\u2014hard to validate early backend strength or progression quality.\",\"No education, links (GitHub/cert), stack versions, or team/context size\u2014raises bar for interview to prove depth.\",\"Career break is explained and partly productive (AWS cert, OSS), but still a 2020\u2013early 2021 continuity gap that needs a quick verbal check on currency of skills at return.\"],\"recommendation\":\"advance\",\"timelineNote\":\"ArcForge ~3y (2017\u20132019) + LedgerCloud ~5y5m (Feb 2021\u2013present as of 2026-07) \u2248 8.5y total backend time; meets 5+ yrs. Title senior only at LedgerCloud; 12-month break (Jan 2020\u2013Jan 2021) for relocation/caregiving with cert/OSS\u2014acceptable if skills current.\"}",
+  "model_reported": "grok-4.5",
+  "inputTokens": 197,
+  "outputTokens": 324,
+  "totalTokens": 521,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "wallMs": 24808,
+  "stderrTail": "",
+  "agentFileSha256": "none",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "4a12f7840060d3340e31887045177b943ccfc26aece2989d42f2e6f31a2b2c61",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/cv-review/suite.json",
+  "skipped": false,
+  "skipReason": null,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "json_valid",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {}
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 4.0,
+      "spec": {
+        "value": "advance",
+        "path": "recommendation"
+      }
+    },
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {
+        "values": [
+          "explained",
+          "career break",
+          "relocation",
+          "caregiving",
+          "advance",
+          "service ownership",
+          "5+",
+          "6"
+        ]
+      }
+    }
+  ],
+  "judgeScore": 0.9499999999999998,
+  "judgeDetail": {
+    "perCriterion": {
+      "explained_break_calibration": 0.95
+    },
+    "rationale": "Recommends advance, explicitly treats the break as explained and merely warranting a quick verbal skills-currency check rather than a red flag, with an accurate timeline computation and no fabricated integrity concerns.",
+    "judgeModel": "opus"
+  },
+  "quality": 0.9749999999999999,
+  "qualityPer1kTokens": 1.8714011516314777
+}

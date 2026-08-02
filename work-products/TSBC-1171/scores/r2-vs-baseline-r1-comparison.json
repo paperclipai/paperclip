@@ -1,0 +1,439 @@
+{
+  "issue": "TSBC-1527",
+  "parentIssue": "TSBC-1171",
+  "cell": "r2-ambiguous-ownership-clarify",
+  "createdAt": "2026-07-30T09:59:45.203599+00:00",
+  "candidate": {
+    "path": "work-products/TSBC-1171/candidates/r2-ambiguous-ownership-clarify.md",
+    "sha256": "fd189e4b279ac47e366984b2ab9f1b8c1b4782cc2433cd91d77ee3c19da0c7bf",
+    "desiredSkills": [],
+    "adapter": "hermes_local"
+  },
+  "suite": {
+    "path": "/Users/glad0s/paperclip/benchmark/cv-review/suite.json",
+    "sha256": "4a12f7840060d3340e31887045177b943ccfc26aece2989d42f2e6f31a2b2c61"
+  },
+  "probes": {
+    "bare_baseline": {
+      "sourceIssue": "TSBC-1170",
+      "probeId": "probe-20260730-040556",
+      "path": "/Users/glad0s/paperclip/benchmark/results/probe-20260730-040556",
+      "agentFileSha256": "none",
+      "skills": "none",
+      "overall": {
+        "model": "grok-4.5-hermes-clean",
+        "effort": "cli_default",
+        "generationFrame": "single_shot_concat",
+        "tasks": 10,
+        "samples": 30,
+        "okCount": 30,
+        "meanQuality": 0.897420634920635,
+        "minQuality": 0.3333333333333333,
+        "medianOutputTokens": 213.0,
+        "meanOutputTokens": 244.86666666666667,
+        "meanInputTokens": 147.9,
+        "meanQPer1kOut": 4.599560978533446
+      }
+    },
+    "r1_lean_zero_skill": {
+      "sourceIssue": "TSBC-1176",
+      "probeId": "probe-20260730-090121",
+      "path": "/Users/glad0s/paperclip/benchmark/results/probe-20260730-090121",
+      "agentFileSha256": "28da1e97d8a312aca0cd50602d712ffb8a243d0f564213632b72374c7371ab04",
+      "skills": "none",
+      "overall": {
+        "model": "grok-4.5-hermes-clean",
+        "effort": "cli_default",
+        "generationFrame": "single_shot_concat",
+        "tasks": 10,
+        "samples": 30,
+        "okCount": 30,
+        "meanQuality": 0.9625,
+        "minQuality": 0.625,
+        "medianOutputTokens": 144.5,
+        "meanOutputTokens": 160.06666666666666,
+        "meanInputTokens": 511.3,
+        "meanQPer1kOut": 12.55774520469718
+      }
+    },
+    "r2_ambiguous_ownership_clarify": {
+      "sourceIssue": "TSBC-1527",
+      "resumeIssue": "TSBC-1536",
+      "probeId": "probe-20260730-094016",
+      "path": "/Users/glad0s/paperclip/benchmark/results/probe-20260730-094016",
+      "durablePath": "/Users/glad0s/paperclip/work-products/TSBC-1171/runs/r2-ambiguous-ownership-clarify/probe-20260730-094016",
+      "agentFileSha256": "fd189e4b279ac47e366984b2ab9f1b8c1b4782cc2433cd91d77ee3c19da0c7bf",
+      "skills": "none",
+      "overall": {
+        "model": "grok-4.5-hermes-clean",
+        "effort": "cli_default",
+        "generationFrame": "single_shot_concat",
+        "tasks": 10,
+        "samples": 30,
+        "okCount": 30,
+        "meanQuality": 1.0,
+        "minQuality": 1.0,
+        "medianOutputTokens": 128.5,
+        "meanOutputTokens": 154.96666666666667,
+        "meanInputTokens": 557.9,
+        "meanQPer1kOut": 15.61985887097585
+      },
+      "laneControls": {
+        "samples": 30,
+        "okCount": 30,
+        "agentFileSha256_unique": [
+          "fd189e4b279ac47e366984b2ab9f1b8c1b4782cc2433cd91d77ee3c19da0c7bf"
+        ],
+        "suiteSha256_unique": [
+          "4a12f7840060d3340e31887045177b943ccfc26aece2989d42f2e6f31a2b2c61"
+        ],
+        "skills_unique": [
+          "none"
+        ],
+        "stagedSkills_unique": [
+          0
+        ],
+        "adapterType_unique": [
+          "hermes"
+        ],
+        "model_unique": [
+          "grok-4.5-hermes-clean"
+        ],
+        "model_reported_unique": [
+          "grok-4.5"
+        ],
+        "allPinned": true
+      }
+    }
+  },
+  "headline": {
+    "bare": {
+      "meanQuality": 0.897420634920635,
+      "minQuality": 0.3333333333333333,
+      "meanOutputTokens": 244.86666666666667,
+      "ok": "30/30"
+    },
+    "r1": {
+      "meanQuality": 0.9625,
+      "minQuality": 0.625,
+      "meanOutputTokens": 160.06666666666666,
+      "ok": "30/30"
+    },
+    "r2": {
+      "meanQuality": 1.0,
+      "minQuality": 1.0,
+      "meanOutputTokens": 154.96666666666667,
+      "ok": "30/30"
+    },
+    "delta_r2_minus_bare": {
+      "meanQuality": 0.10257936507936505,
+      "minQuality": 0.6666666666666667,
+      "meanOutputTokens": -89.9
+    },
+    "delta_r2_minus_r1": {
+      "meanQuality": 0.03749999999999998,
+      "minQuality": 0.375,
+      "meanOutputTokens": -5.099999999999994
+    }
+  },
+  "r1_low_tail_tasks": [
+    {
+      "task_id": "cv-team-metric-attribution",
+      "meanQuality": 0.625,
+      "minQuality": 0.625,
+      "meanOutputTokens": 210.66666666666666
+    }
+  ],
+  "per_task": [
+    {
+      "task_id": "cv-benign-contract-overlap",
+      "bare": {
+        "meanQuality": 1.0,
+        "minQuality": 1.0,
+        "meanOutputTokens": 146.66666666666666,
+        "okCount": 3,
+        "samples": 3
+      },
+      "r1": {
+        "meanQuality": 1.0,
+        "minQuality": 1.0,
+        "meanOutputTokens": 156.66666666666666,
+        "okCount": 3,
+        "samples": 3
+      },
+      "r2": {
+        "meanQuality": 1.0,
+        "minQuality": 1.0,
+        "meanOutputTokens": 87.33333333333333,
+        "okCount": 3,
+        "samples": 3
+      },
+      "delta_r2_minus_bare_meanQ": 0.0,
+      "delta_r2_minus_r1_meanQ": 0.0,
+      "delta_r2_minus_bare_meanOut": -59.33333333333333,
+      "delta_r2_minus_r1_meanOut": -69.33333333333333
+    },
+    {
+      "task_id": "cv-clean-calibration",
+      "bare": {
+        "meanQuality": 0.7777777777777778,
+        "minQuality": 0.3333333333333333,
+        "meanOutputTokens": 198.33333333333334,
+        "okCount": 3,
+        "samples": 3
+      },
+      "r1": {
+        "meanQuality": 1.0,
+        "minQuality": 1.0,
+        "meanOutputTokens": 38.333333333333336,
+        "okCount": 3,
+        "samples": 3
+      },
+      "r2": {
+        "meanQuality": 1.0,
+        "minQuality": 1.0,
+        "meanOutputTokens": 11,
+        "okCount": 3,
+        "samples": 3
+      },
+      "delta_r2_minus_bare_meanQ": 0.2222222222222222,
+      "delta_r2_minus_r1_meanQ": 0.0,
+      "delta_r2_minus_bare_meanOut": -187.33333333333334,
+      "delta_r2_minus_r1_meanOut": -27.333333333333336
+    },
+    {
+      "task_id": "cv-date-inconsistency",
+      "bare": {
+        "meanQuality": 1.0,
+        "minQuality": 1.0,
+        "meanOutputTokens": 138.66666666666666,
+        "okCount": 3,
+        "samples": 3
+      },
+      "r1": {
+        "meanQuality": 1.0,
+        "minQuality": 1.0,
+        "meanOutputTokens": 108.33333333333333,
+        "okCount": 3,
+        "samples": 3
+      },
+      "r2": {
+        "meanQuality": 1.0,
+        "minQuality": 1.0,
+        "meanOutputTokens": 132.33333333333334,
+        "okCount": 3,
+        "samples": 3
+      },
+      "delta_r2_minus_bare_meanQ": 0.0,
+      "delta_r2_minus_r1_meanQ": 0.0,
+      "delta_r2_minus_bare_meanOut": -6.333333333333314,
+      "delta_r2_minus_r1_meanOut": 24.000000000000014
+    },
+    {
+      "task_id": "cv-explained-career-break",
+      "bare": {
+        "meanQuality": 0.6666666666666666,
+        "minQuality": 0.5,
+        "meanOutputTokens": 373.6666666666667,
+        "okCount": 3,
+        "samples": 3
+      },
+      "r1": {
+        "meanQuality": 1.0,
+        "minQuality": 1.0,
+        "meanOutputTokens": 104.66666666666667,
+        "okCount": 3,
+        "samples": 3
+      },
+      "r2": {
+        "meanQuality": 1.0,
+        "minQuality": 1.0,
+        "meanOutputTokens": 108.33333333333333,
+        "okCount": 3,
+        "samples": 3
+      },
+      "delta_r2_minus_bare_meanQ": 0.33333333333333337,
+      "delta_r2_minus_r1_meanQ": 0.0,
+      "delta_r2_minus_bare_meanOut": -265.33333333333337,
+      "delta_r2_minus_r1_meanOut": 3.666666666666657
+    },
+    {
+      "task_id": "cv-keyword-stuffed-role-mismatch",
+      "bare": {
+        "meanQuality": 1.0,
+        "minQuality": 1.0,
+        "meanOutputTokens": 247.66666666666666,
+        "okCount": 3,
+        "samples": 3
+      },
+      "r1": {
+        "meanQuality": 1.0,
+        "minQuality": 1.0,
+        "meanOutputTokens": 172,
+        "okCount": 3,
+        "samples": 3
+      },
+      "r2": {
+        "meanQuality": 1.0,
+        "minQuality": 1.0,
+        "meanOutputTokens": 163.66666666666666,
+        "okCount": 3,
+        "samples": 3
+      },
+      "delta_r2_minus_bare_meanQ": 0.0,
+      "delta_r2_minus_r1_meanQ": 0.0,
+      "delta_r2_minus_bare_meanOut": -84.0,
+      "delta_r2_minus_r1_meanOut": -8.333333333333343
+    },
+    {
+      "task_id": "cv-pii-overshare",
+      "bare": {
+        "meanQuality": 0.9047619047619048,
+        "minQuality": 0.7142857142857143,
+        "meanOutputTokens": 220.33333333333334,
+        "okCount": 3,
+        "samples": 3
+      },
+      "r1": {
+        "meanQuality": 1.0,
+        "minQuality": 1.0,
+        "meanOutputTokens": 123.66666666666667,
+        "okCount": 3,
+        "samples": 3
+      },
+      "r2": {
+        "meanQuality": 1.0,
+        "minQuality": 1.0,
+        "meanOutputTokens": 134.66666666666666,
+        "okCount": 3,
+        "samples": 3
+      },
+      "delta_r2_minus_bare_meanQ": 0.09523809523809523,
+      "delta_r2_minus_r1_meanQ": 0.0,
+      "delta_r2_minus_bare_meanOut": -85.66666666666669,
+      "delta_r2_minus_r1_meanOut": 10.999999999999986
+    },
+    {
+      "task_id": "cv-role-mismatch",
+      "bare": {
+        "meanQuality": 1.0,
+        "minQuality": 1.0,
+        "meanOutputTokens": 150.66666666666666,
+        "okCount": 3,
+        "samples": 3
+      },
+      "r1": {
+        "meanQuality": 1.0,
+        "minQuality": 1.0,
+        "meanOutputTokens": 99.33333333333333,
+        "okCount": 3,
+        "samples": 3
+      },
+      "r2": {
+        "meanQuality": 1.0,
+        "minQuality": 1.0,
+        "meanOutputTokens": 109,
+        "okCount": 3,
+        "samples": 3
+      },
+      "delta_r2_minus_bare_meanQ": 0.0,
+      "delta_r2_minus_r1_meanQ": 0.0,
+      "delta_r2_minus_bare_meanOut": -41.66666666666666,
+      "delta_r2_minus_r1_meanOut": 9.666666666666671
+    },
+    {
+      "task_id": "cv-team-metric-attribution",
+      "bare": {
+        "meanQuality": 0.625,
+        "minQuality": 0.625,
+        "meanOutputTokens": 394.3333333333333,
+        "okCount": 3,
+        "samples": 3
+      },
+      "r1": {
+        "meanQuality": 0.625,
+        "minQuality": 0.625,
+        "meanOutputTokens": 210.66666666666666,
+        "okCount": 3,
+        "samples": 3
+      },
+      "r2": {
+        "meanQuality": 1.0,
+        "minQuality": 1.0,
+        "meanOutputTokens": 279.6666666666667,
+        "okCount": 3,
+        "samples": 3
+      },
+      "delta_r2_minus_bare_meanQ": 0.375,
+      "delta_r2_minus_r1_meanQ": 0.375,
+      "delta_r2_minus_bare_meanOut": -114.66666666666663,
+      "delta_r2_minus_r1_meanOut": 69.00000000000003
+    },
+    {
+      "task_id": "cv-title-inflation-gap",
+      "bare": {
+        "meanQuality": 1.0,
+        "minQuality": 1.0,
+        "meanOutputTokens": 143.66666666666666,
+        "okCount": 3,
+        "samples": 3
+      },
+      "r1": {
+        "meanQuality": 1.0,
+        "minQuality": 1.0,
+        "meanOutputTokens": 168.66666666666666,
+        "okCount": 3,
+        "samples": 3
+      },
+      "r2": {
+        "meanQuality": 1.0,
+        "minQuality": 1.0,
+        "meanOutputTokens": 163.66666666666666,
+        "okCount": 3,
+        "samples": 3
+      },
+      "delta_r2_minus_bare_meanQ": 0.0,
+      "delta_r2_minus_r1_meanQ": 0.0,
+      "delta_r2_minus_bare_meanOut": 20.0,
+      "delta_r2_minus_r1_meanOut": -5.0
+    },
+    {
+      "task_id": "cv-unsubstantiated-metrics",
+      "bare": {
+        "meanQuality": 1.0,
+        "minQuality": 1.0,
+        "meanOutputTokens": 434.6666666666667,
+        "okCount": 3,
+        "samples": 3
+      },
+      "r1": {
+        "meanQuality": 1.0,
+        "minQuality": 1.0,
+        "meanOutputTokens": 418.3333333333333,
+        "okCount": 3,
+        "samples": 3
+      },
+      "r2": {
+        "meanQuality": 1.0,
+        "minQuality": 1.0,
+        "meanOutputTokens": 360,
+        "okCount": 3,
+        "samples": 3
+      },
+      "delta_r2_minus_bare_meanQ": 0.0,
+      "delta_r2_minus_r1_meanQ": 0.0,
+      "delta_r2_minus_bare_meanOut": -74.66666666666669,
+      "delta_r2_minus_r1_meanOut": -58.333333333333314
+    }
+  ],
+  "verdict": {
+    "result": "CONFIRMED",
+    "notes": [
+      "R2 zero-skill agent-file cell completed 30/30 ok under hermes adapter with pinned candidate and suite hashes.",
+      "Mean and min quality both reached 1.0, improving on bare (meanQ 0.897 / minQ 0.333) and r1 (meanQ 0.9625 / minQ 0.625).",
+      "Mean output tokens dropped vs bare (~245\u2192155) and slightly vs r1 (~160\u2192155).",
+      "Hypothesis target (ambiguous ownership clarify-over-reject) is consistent with perfect scores including cv-team-metric-attribution.",
+      "No holdout material accessed. desiredSkills=[] / skills none / stagedSkills 0 across all samples."
+    ]
+  }
+}

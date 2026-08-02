@@ -1,0 +1,72 @@
+{
+  "role": "ledger",
+  "task_id": "ledger-cache-token-undercount",
+  "task_title": "Catch the cache-token undercount in the agent scorecard",
+  "model_id": "grok-4.5",
+  "model_label": "Grok 4.5",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "ok": true,
+  "error": null,
+  "output": "{\"correctTotalTokens\": 30000, \"undercountTokens\": 20000, \"why\": \"Cache read and creation tokens are real billed prompt tokens, so they must count in total cost-tokens like input and output.\"}",
+  "model_reported": "grok-4.5",
+  "inputTokens": 178,
+  "outputTokens": 47,
+  "totalTokens": 225,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "wallMs": 7452,
+  "stderrTail": "",
+  "agentFileSha256": "none",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "22a4d94c78402d54f39f0cd1b4eb6a12005acecfa3e2d429551928eca686300e",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/ledger/suite.json",
+  "skipped": false,
+  "skipReason": null,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "json_valid",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {}
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 4.0,
+      "spec": {
+        "value": 30000,
+        "path": "correctTotalTokens"
+      }
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 4.0,
+      "spec": {
+        "value": 20000,
+        "path": "undercountTokens"
+      }
+    },
+    {
+      "check": "max_words",
+      "ok": true,
+      "weight": 1.0,
+      "spec": {
+        "value": 40
+      }
+    }
+  ],
+  "judgeScore": 1.0,
+  "judgeDetail": {
+    "perCriterion": {
+      "correctness": 1.0
+    },
+    "rationale": "Total 30000 and undercount 20000 are exact, and the why correctly names both cache fields as real billed prompt tokens belonging in the cost total.",
+    "judgeModel": "opus"
+  },
+  "quality": 1.0,
+  "qualityPer1kTokens": 4.444444444444445
+}

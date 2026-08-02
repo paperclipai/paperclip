@@ -1,0 +1,167 @@
+STACK LAB
+
+TSBC-1432 Bench Ledger Recording
+Closeout
+TSBC-1432 Bench Ledger Recording Closeout
+Source issue: TSBC-1432
+Report date: 2026-07-28
+Brand pack: stack-lab
+Hypothesis verdict: CONFIRMED
+Dispatched follow-up key: none required
+
+Hypothesis
+The benchmark harness can keep the existing repetition enforcement and publication gates
+while making the ledger auditable: every completed run should write per-pass evidence with
+requested/served model identity, timestamps, pass/fail, and failure reasons; aggregate rows
+should remain queryable but become derivable from pass rows; historical rows should be
+migrated with explicit unknown markers rather than guessed values.
+
+Method
+I treated the reopened comment as a rescope: reps were already enforced, so the
+implementation target became ledger recording and migration.
+Implementation changes:
+Added pass start/finish timestamps and served-model verification fields to
+benchmark/bench.py run records.
+
+Added AGY same-run self-report probing in benchmark/adapters.py ; pin/self-report
+mismatch returns failureReason: served_model_mismatch before task execution.
+Updated benchmark/scoring.py so served-model mismatches are never scored.
+Expanded benchmark/ledger.py with model_eval_pass rows, aggregate derivation
+from pass rows, passes query support, idempotent expanded-schema backfill,
+failure-reason classification, and low-success suppression preservation.
+Updated benchmark/README.md , benchmark/TSBC-CHARTER.md , and canonical
+TSKB0047 benchmark fairness protocol.
+Live migration:
+
+Ran python3 ledger.py backfill-expanded-schema on
+/Users/glad0s/paperclip/benchmark/ledger/results.jsonl .
+
+Recovered pass rows only where results/<run_id>/runs.json existed.
+Marked unrecoverable historical fields as unknown .
+Marked every gemini-pro row served_model_verified: false under TSBC-1439.
+Preserved the success-rate floor backfill for the historical agy-claude-opus-4.6 /
+cto row.
+
+Data
+Live ledger after migration:
+Metric
+
+Value
+
+Total ledger rows
+
+7,872
+
+model_eval aggregate rows
+
+1,295
+
+model_eval_pass rows
+
+4,852
+
+v2 model_eval rows
+
+1,295
+
+model_eval /pass rows with reps , requested_model , served_model
+
+6,147
+
+Failed non-skipped pass rows
+
+37
+
+Failed pass rows without failure_reason
+
+0
+
+Low-success aggregate rows
+
+2
+
+Low-success rows still carrying quality
+
+0
+
+Low-success rows with suppressed_reason
+
+2
+
+gemini-pro rows
+
+241
+
+gemini-pro rows with served_model_verified: false
+
+241
+
+Historical repetition handling:
+Aggregate rows with explicit recovered reps : 3.
+Aggregate rows with reps: "unknown" : 1,292.
+Pass rows with explicit recovered reps : 90.
+Pass rows with reps: "unknown" : 4,762.
+The suppressed historical row now has:
+quality: null
+qPer1kOut: null
+
+successRate: 0.0833
+suppressed_reason: "successRate 0.0833 below floor 0.8000"
+decision_band: "failed"
+pass_records_recovered: 12
+reps: "unknown" with observed_passes_per_task: 1
+
+Verification
+Passed:
+python3 -m unittest test_harness_gates.py -> 8 tests.
+python3 -m py_compile bench.py ledger.py adapters.py scoring.py report.py
+benchlib.py .
+python3 bench.py all --roles cto --models grok-4.3 --max-tasks-per-role 1 -dry-run -> prints reps : 3 (decision floor 3) .
+python3 - <<'PY' ... ledger.backfill_expanded_schema() ... PY -> {
+"changed": 0, "pass_rows_added": 0, "backup": null } .
+python3 ledger.py query cto agy-claude-opus-4.6 --days 120 --min 1 ->
+nDecisionGradeResults: 0 , suppressedResults: 1 , passRows: 12 .
+python3 ledger.py passes cto agy-claude-opus-4.6 --run run-20260725-202032
+--days 120 -> 12 pass rows.
+
+Not run:
+Full repo typecheck/build/test. The change is scoped to the Python benchmark
+harness and the live benchmark ledger.
+
+Verdict
+CONFIRMED . The revised requirement is implemented: future completed benchmark runs
+
+write pass-level rows, queryable aggregate rows carry reps /requested/served model fields,
+historical rows are migrated with honest unknown markers, the known low-success rows are
+suppressed, and AGY pin/self-report mismatches are recorded as failures that are never
+scored.
+
+Evidence
+Evidence root: work-products/TSBC-1432/evidence/
+Ledger counts: work-products/TSBC-1432/evidence/ledger-counts.json
+Idempotency proof: work-products/TSBC-1432/evidence/backfillidempotency.json
+
+Low-success query: work-products/TSBC-1432/evidence/query-cto-agy-opussuppressed.txt
+
+Historical pass rows: work-products/TSBC-1432/evidence/passes-cto-agy-opusrun-20260725-202032.json
+
+Explicit-reps pass rows: work-products/TSBC-1432/evidence/passes-cv-reviewgrok-4-20-run-20260728-165618.json
+
+Failure reason counts: work-products/TSBC-1432/evidence/failure-reasoncounts.json
+
+Unit tests: work-products/TSBC-1432/evidence/unittest-test-harness-gates.txt
+Python compile: work-products/TSBC-1432/evidence/py-compile-touched.txt
+Dry-run proof: work-products/TSBC-1432/evidence/bench-dry-run-reps.txt
+Code/docs diff stat: work-products/TSBC-1432/evidence/git-diff-stat.txt
+Final mutating ledger backup: benchmark/ledger/results.jsonl.bak-tsbc-1432expanded-ledger-20260728164030
+
+TSKB
+Canonical TSKB delta: /Users/glad0s/TSKB/KB/TSKB0047 [TSBC] - Lane Placement and
+Skill-Pack Adoption Tracker - v0.1 - 07-06/benchmark-fairness-protocol.md .
+
+The update records the reusable rule that decision-grade benchmark evidence requires passlevel ledger rows, honest unknown markers for unrecoverable historical fields, and AGY samerun served-model self-report handling.
+
+Render Command
+brandsuite pdf --brand stack-lab -- --input work-products/TSBC-1432/TSBC-1432-repo
+
+

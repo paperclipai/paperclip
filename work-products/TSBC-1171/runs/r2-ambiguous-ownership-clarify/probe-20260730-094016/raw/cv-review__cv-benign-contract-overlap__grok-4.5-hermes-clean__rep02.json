@@ -1,0 +1,73 @@
+{
+  "sample_id": "rep02",
+  "rep": 2,
+  "role": "cv-review",
+  "task_id": "cv-benign-contract-overlap",
+  "task_title": "Do not over-flag a disclosed part-time overlap",
+  "model": "grok-4.5-hermes-clean",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "agentFile": "current",
+  "skills": "none",
+  "judge": "claude-opus",
+  "generationFrame": "single_shot_concat",
+  "ok": true,
+  "error": null,
+  "output": "{\"concerns\": [], \"recommendation\": \"advance\", \"timelineNote\": \"Northstar ends Mar 2021; RelayPay full-time starts Apr 2021 with no gap or overlap. Freelance Notion/ops work Jan 2022\u2013Dec 2022 (5 hrs/week) overlaps RelayPay but is explicitly disclosed non-competing side work, so it is treated as explained.\"}",
+  "model_reported": "grok-4.5",
+  "inputTokens": 578,
+  "outputTokens": 76,
+  "totalTokens": 654,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "agentFileSha256": "fd189e4b279ac47e366984b2ab9f1b8c1b4782cc2433cd91d77ee3c19da0c7bf",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "4a12f7840060d3340e31887045177b943ccfc26aece2989d42f2e6f31a2b2c61",
+  "wallMs": 26514,
+  "stderrTail": "",
+  "promptChars": 2312,
+  "stagedSkills": 0,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "json_valid",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {}
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 3.0,
+      "spec": {
+        "value": "advance",
+        "path": "recommendation"
+      }
+    },
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 3.0,
+      "spec": {
+        "values": [
+          "part-time",
+          "5 hrs",
+          "side work",
+          "disclosed",
+          "not a full-time overlap",
+          "benign",
+          "advance"
+        ]
+      }
+    }
+  ],
+  "judgeScore": null,
+  "judgeDetail": {
+    "error": "judge: unparseable",
+    "raw": "Not logged in \u00b7 Please run /login",
+    "judgeError": "claude reported error: Not logged in \u00b7 Please run /login"
+  },
+  "quality": 1.0,
+  "qualityPer1kTokens": 1.529051987767584
+}

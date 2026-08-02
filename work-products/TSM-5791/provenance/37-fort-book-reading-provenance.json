@@ -1,0 +1,52 @@
+{
+  "issue": "TSM-5888",
+  "parentIssue": "TSM-5791",
+  "n": 37,
+  "slug": "fort-book-reading",
+  "generatedAt": "2026-07-31T20:11:52.944607+00:00",
+  "method": "img2video",
+  "model": "grok-imagine-video-1.5",
+  "requestId": "9728fbc1-410c-9998-8969-9a68256afce2",
+  "providerUrl": "https://vidgen.x.ai/xai-vidgen-bucket/xai-video-9728fbc1-410c-9998-8969-9a68256afce2.mp4",
+  "prompt": "Animate THIS EXACT IMAGE; do not re-stage the scene. Do not change the character or style. Motion only: both read a picture book under warm lantern light; gentle page turn; quiet cozy motion; camera locked. Keep purple flower on Jessica and straw in James mouth entire clip.",
+  "negativePrompt": "humans, children, clothing, text, Bluey, morphing, extra limbs, restage",
+  "seedImage": "work-products/TSM-5791/seeds/seed-interior-read.jpg",
+  "seedImageSha256": "de915079b26f1b8250474cb29bff72878c5fd3815cf2901a44e5228e1c6b58f9",
+  "replacementPath": "work-products/TSM-5791/clip-bytes/37-fort-book-reading-8s.mp4",
+  "replacementSha256": "657a6e49aa735e90f2bac929f58c986a7a5b844b1ca286946c41bb781bea8eb3",
+  "lockedPlates": [
+    "work-products/TSM-5791/source/jessica-plate-r6-fromoriginal.jpg",
+    "work-products/TSM-5791/source/james-plate-r5-eyes.jpg",
+    "work-products/TSM-5791/source/refs/3-SIZE-LINEUP-1.20-SIGNED.jpg"
+  ],
+  "referenceFiles": [
+    "work-products/TSM-5791/seeds/seed-interior-read.jpg",
+    "work-products/TSM-5791/source/jessica-plate-r6-fromoriginal.jpg",
+    "work-products/TSM-5791/source/james-plate-r5-eyes.jpg",
+    "work-products/TSM-5791/source/refs/3-SIZE-LINEUP-1.20-SIGNED.jpg",
+    "Gemini_Generated_Image_6vg0sv6vg0sv6vg0.png",
+    "Gemini_Generated_Image_76pfnc76pfnc76pf.png",
+    "Gemini_Generated_Image_7x3dua7x3dua7x3d.png",
+    "Gemini_Generated_Image_ad8n19ad8n19ad8n.png",
+    "Gemini_Generated_Image_aldfrcaldfrcaldf.png",
+    "Gemini_Generated_Image_bo3rdubo3rdubo3r.png"
+  ],
+  "originalEmotionCards": [
+    "Gemini_Generated_Image_6vg0sv6vg0sv6vg0.png",
+    "Gemini_Generated_Image_76pfnc76pfnc76pf.png",
+    "Gemini_Generated_Image_7x3dua7x3dua7x3d.png",
+    "Gemini_Generated_Image_ad8n19ad8n19ad8n.png",
+    "Gemini_Generated_Image_aldfrcaldfrcaldf.png",
+    "Gemini_Generated_Image_bo3rdubo3rdubo3r.png"
+  ],
+  "originalsRoot": "/Users/glad0s/Pictures/ThinkStack Assets/Jessica James/Emotion cards - ORIGINALS",
+  "recipe": "TSKB0175 v1.0 + ADDENDUM-20260730 + ADDENDUM-20260731",
+  "laws": [
+    "L1 multi-frame cast-truth",
+    "L2 image provenance",
+    "L3 no quarantined lineage",
+    "L4 no child-canon text2video"
+  ],
+  "castTruthPass": true,
+  "castTruthReport": "work-products/TSM-5791/reports/37-fort-book-reading-cast-truth.json"
+}

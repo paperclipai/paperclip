@@ -1,0 +1,636 @@
+{
+  "issue": "TSM-5791",
+  "sourceManifest": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-5786/jj-ep001-authoritative-delivery-manifest.json",
+  "sourceMasterSha256": null,
+  "clipCount": 39,
+  "passCount": 1,
+  "failCount": 38,
+  "fullySalvageable": false,
+  "results": [
+    {
+      "n": 1,
+      "slug": "bedroom-intro",
+      "path": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-5719/jj-ep001-canon-expansion/jj-ep001-canon-expansion-bedroom-intro-8s.mp4",
+      "sha256": "2b45e5737864522f5c52df3b3ff883d03c43dc8356268c7aa1816217659fbd1c",
+      "pass": false,
+      "violations": [
+        "rendered JJ cast lacks James's operator-locked slate blue-grey coat in aggregate (avg greyRatio 0.044732 < 0.086975)",
+        "rendered JJ cast no longer carries James's originals-calibrated slate body tone (avg slateGreyRatio 0.044732 < 0.086975)",
+        "rendered JJ cast is too near-black against the operator reference pack (avg nearBlackRatio 0.144518 > 0.047679)"
+      ],
+      "averages": {},
+      "thresholds": {},
+      "sampleTimestampsSeconds": []
+    },
+    {
+      "n": 2,
+      "slug": "bedroom-intro-continued",
+      "path": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-5737/jj-ep001-canon-expansion-continued/jj-ep001-canon-expansion-bedroom-intro-continued-8s.mp4",
+      "sha256": "7795156cd8ad33cafc4b0d98555b9c9e6a2cc9a10e569891aff1437938061234",
+      "pass": false,
+      "violations": [
+        "rendered JJ cast lacks James's operator-locked slate blue-grey coat in aggregate (avg greyRatio 0.009405 < 0.086975)",
+        "rendered JJ cast no longer carries James's originals-calibrated slate body tone (avg slateGreyRatio 0.009405 < 0.086975)",
+        "rendered JJ cast no longer carries James's few soft darker patches from the originals (avg darkPatchRatio 0.076785 < 0.09339)",
+        "rendered JJ cast does not carry enough combined originals-calibrated Jessica+James signal for the locked bipedal toddler read (avg combinedCharacterRatio 0.188857 < 0.189101)",
+        "rendered JJ cast is too near-black against the operator reference pack (avg nearBlackRatio 0.057649 > 0.047679)"
+      ],
+      "averages": {},
+      "thresholds": {},
+      "sampleTimestampsSeconds": []
+    },
+    {
+      "n": 3,
+      "slug": "bedroom-decor",
+      "path": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-5719/jj-ep001-canon-expansion/jj-ep001-canon-expansion-bedroom-decor-8s-20260725.mp4",
+      "sha256": "f0518872ef68f081968ae3b734c3416faa0e8c07304f356f968a0bd1401c657c",
+      "pass": false,
+      "violations": [
+        "rendered JJ cast lacks James's operator-locked slate blue-grey coat in aggregate (avg greyRatio 0.076107 < 0.086975)",
+        "rendered JJ cast no longer carries James's originals-calibrated slate body tone (avg slateGreyRatio 0.076107 < 0.086975)",
+        "rendered JJ cast no longer carries James's few soft darker patches from the originals (avg darkPatchRatio 0.049899 < 0.09339)",
+        "rendered JJ cast no longer carries James's broad dark-slate nose signal from the originals (avg jamesDarkNoseRatio 0.044756 < 0.072285)"
+      ],
+      "averages": {},
+      "thresholds": {},
+      "sampleTimestampsSeconds": []
+    },
+    {
+      "n": 4,
+      "slug": "bedroom-story",
+      "path": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-5719/jj-ep001-canon-expansion/jj-ep001-canon-expansion-bedroom-story-8s.mp4",
+      "sha256": "315dbd83e57f10f67e2e20ba9da12c15603e9d541db5ddaf8f8855265daaa0a6",
+      "pass": false,
+      "violations": [
+        "rendered JJ cast lacks James's operator-locked slate blue-grey coat in aggregate (avg greyRatio 0.03625 < 0.086975)",
+        "rendered JJ cast no longer carries James's originals-calibrated slate body tone (avg slateGreyRatio 0.03625 < 0.086975)",
+        "rendered JJ cast no longer carries James's few soft darker patches from the originals (avg darkPatchRatio 0.088536 < 0.09339)",
+        "rendered JJ cast no longer carries James's broad dark-slate nose signal from the originals (avg jamesDarkNoseRatio 0.038185 < 0.072285)",
+        "rendered JJ cast is too near-black against the operator reference pack (avg nearBlackRatio 0.139911 > 0.047679)"
+      ],
+      "averages": {},
+      "thresholds": {},
+      "sampleTimestampsSeconds": []
+    },
+    {
+      "n": 5,
+      "slug": "bedroom-storytelling-continued",
+      "path": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-5737/jj-ep001-canon-expansion-continued/jj-ep001-canon-expansion-bedroom-storytelling-continued-8s.mp4",
+      "sha256": "76fccd0936ab20683886a59a0df5fa7223720e41c30c3c5fa7199b6de6e6b8f2",
+      "pass": false,
+      "violations": [
+        "rendered JJ cast lacks James's operator-locked slate blue-grey coat in aggregate (avg greyRatio 0.026827 < 0.086975)",
+        "rendered JJ cast no longer carries James's originals-calibrated slate body tone (avg slateGreyRatio 0.026827 < 0.086975)",
+        "rendered JJ cast no longer carries James's few soft darker patches from the originals (avg darkPatchRatio 0.076197 < 0.09339)",
+        "rendered JJ cast no longer carries James's broad dark-slate nose signal from the originals (avg jamesDarkNoseRatio 0.052976 < 0.072285)",
+        "rendered JJ cast is too near-black against the operator reference pack (avg nearBlackRatio 0.134464 > 0.047679)"
+      ],
+      "averages": {},
+      "thresholds": {},
+      "sampleTimestampsSeconds": []
+    },
+    {
+      "n": 6,
+      "slug": "bedroom-reading-long",
+      "path": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-5737/jj-ep001-canon-expansion-continued-2/jj-ep001-canon-expansion-bedroom-reading-9s.mp4",
+      "sha256": "23dfce22d0b62c6b968484081b39f0eff67dcc61910a420ca120f59d9272dda6",
+      "pass": false,
+      "violations": [
+        "rendered JJ cast lacks James's operator-locked slate blue-grey coat in aggregate (avg greyRatio 0.079655 < 0.086975)",
+        "rendered JJ cast no longer carries James's originals-calibrated slate body tone (avg slateGreyRatio 0.079655 < 0.086975)",
+        "rendered JJ cast is too near-black against the operator reference pack (avg nearBlackRatio 0.137542 > 0.047679)"
+      ],
+      "averages": {},
+      "thresholds": {},
+      "sampleTimestampsSeconds": []
+    },
+    {
+      "n": 7,
+      "slug": "bedroom-reading-short",
+      "path": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-5737/jj-ep001-canon-expansion-continued-3/jj-ep001-canon-expansion-bedroom-reading-8s.mp4",
+      "sha256": "90e868602cffe29a5ade84a9382d9095a718c9475fcaa57b9e600ba9e3f75685",
+      "pass": false,
+      "violations": [
+        "rendered JJ cast lacks James's operator-locked slate blue-grey coat in aggregate (avg greyRatio 0.040178 < 0.086975)",
+        "rendered JJ cast no longer carries James's originals-calibrated slate body tone (avg slateGreyRatio 0.040178 < 0.086975)",
+        "rendered JJ cast no longer carries James's broad dark-slate nose signal from the originals (avg jamesDarkNoseRatio 0.009958 < 0.072285)"
+      ],
+      "averages": {},
+      "thresholds": {},
+      "sampleTimestampsSeconds": []
+    },
+    {
+      "n": 8,
+      "slug": "bedroom-map-drawing",
+      "path": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-5737/jj-ep001-canon-expansion-continued-4/jj-ep001-canon-expansion-bedroom-map-drawing-8s.mp4",
+      "sha256": "795f9afabbce7ee30b03ed321117e6c623634a621ec71c9c4b390c3bb6066197",
+      "pass": false,
+      "violations": [
+        "rendered JJ cast lacks James's operator-locked slate blue-grey coat in aggregate (avg greyRatio 0.062357 < 0.086975)",
+        "rendered JJ cast no longer carries James's originals-calibrated slate body tone (avg slateGreyRatio 0.062357 < 0.086975)",
+        "rendered JJ cast no longer carries James's few soft darker patches from the originals (avg darkPatchRatio 0.084322 < 0.09339)",
+        "rendered JJ cast no longer carries James's broad dark-slate nose signal from the originals (avg jamesDarkNoseRatio 0.06922 < 0.072285)"
+      ],
+      "averages": {},
+      "thresholds": {},
+      "sampleTimestampsSeconds": []
+    },
+    {
+      "n": 9,
+      "slug": "fort-map-drawing",
+      "path": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-5737/jj-ep001-canon-expansion-continued-5/jj-ep001-canon-expansion-map-drawing-8s.mp4",
+      "sha256": "ab37c9dd27fdb62d2c38abf224d0dc855690df8f2de987dda03981619269b976",
+      "pass": false,
+      "violations": [
+        "rendered JJ cast lacks James's operator-locked slate blue-grey coat in aggregate (avg greyRatio 0.063018 < 0.086975)",
+        "rendered JJ cast no longer carries James's originals-calibrated slate body tone (avg slateGreyRatio 0.063018 < 0.086975)",
+        "rendered JJ cast no longer carries James's few soft darker patches from the originals (avg darkPatchRatio 0.068708 < 0.09339)",
+        "rendered JJ cast no longer carries James's broad dark-slate nose signal from the originals (avg jamesDarkNoseRatio 0.06422 < 0.072285)",
+        "rendered JJ cast is too near-black against the operator reference pack (avg nearBlackRatio 0.090458 > 0.047679)"
+      ],
+      "averages": {},
+      "thresholds": {},
+      "sampleTimestampsSeconds": []
+    },
+    {
+      "n": 10,
+      "slug": "walking-meadow",
+      "path": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-5718/clips/jj-2d-ep001-expansion-walking-meadow.mp4",
+      "sha256": "5633c34f92780ba65745125993a45c5743c3788c4060881d23c4d6867308d267",
+      "pass": false,
+      "violations": [
+        "rendered JJ cast lacks James's operator-locked slate blue-grey coat in aggregate (avg greyRatio 0.052595 < 0.086975)",
+        "rendered JJ cast no longer carries James's originals-calibrated slate body tone (avg slateGreyRatio 0.052595 < 0.086975)",
+        "rendered JJ cast no longer carries James's few soft darker patches from the originals (avg darkPatchRatio 0.075214 < 0.09339)",
+        "rendered JJ cast no longer carries James's broad dark-slate nose signal from the originals (avg jamesDarkNoseRatio 0.05294 < 0.072285)"
+      ],
+      "averages": {},
+      "thresholds": {},
+      "sampleTimestampsSeconds": []
+    },
+    {
+      "n": 11,
+      "slug": "garden-exploring",
+      "path": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-5737/jj-ep001-canon-expansion-continued-2/jj-ep001-canon-expansion-garden-exploring-11s.mp4",
+      "sha256": "271a743c447fb0f63a8b6714a10cb2df595a3cdac27977344856569826662d0f",
+      "pass": false,
+      "violations": [
+        "rendered JJ cast lacks James's operator-locked slate blue-grey coat in aggregate (avg greyRatio 0.040083 < 0.086975)",
+        "rendered JJ cast no longer carries James's originals-calibrated slate body tone (avg slateGreyRatio 0.040083 < 0.086975)",
+        "rendered JJ cast no longer carries James's few soft darker patches from the originals (avg darkPatchRatio 0.089821 < 0.09339)",
+        "rendered JJ cast no longer carries James's broad dark-slate nose signal from the originals (avg jamesDarkNoseRatio 0.04144 < 0.072285)",
+        "rendered JJ cast is too near-black against the operator reference pack (avg nearBlackRatio 0.058964 > 0.047679)"
+      ],
+      "averages": {},
+      "thresholds": {},
+      "sampleTimestampsSeconds": []
+    },
+    {
+      "n": 12,
+      "slug": "garden-planting",
+      "path": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-5737/jj-ep001-canon-expansion-continued-4/jj-ep001-canon-expansion-garden-planting-8s.mp4",
+      "sha256": "daeee2fd486207969ce86b43c575da041001e3b20d2be15630781ad802d6f3b0",
+      "pass": false,
+      "violations": [
+        "rendered JJ cast lacks James's operator-locked slate blue-grey coat in aggregate (avg greyRatio 0.030268 < 0.086975)",
+        "rendered JJ cast no longer carries James's originals-calibrated slate body tone (avg slateGreyRatio 0.030268 < 0.086975)",
+        "rendered JJ cast no longer carries James's few soft darker patches from the originals (avg darkPatchRatio 0.034685 < 0.09339)",
+        "rendered JJ cast no longer carries James's broad dark-slate nose signal from the originals (avg jamesDarkNoseRatio 0.030071 < 0.072285)",
+        "rendered JJ cast does not carry enough combined originals-calibrated Jessica+James signal for the locked bipedal toddler read (avg combinedCharacterRatio 0.144613 < 0.189101)"
+      ],
+      "averages": {},
+      "thresholds": {},
+      "sampleTimestampsSeconds": []
+    },
+    {
+      "n": 13,
+      "slug": "garden-watering",
+      "path": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-5737/jj-ep001-canon-expansion-continued-3/jj-ep001-canon-expansion-garden-watering-8s.mp4",
+      "sha256": "3590b5f7c4b6e47e4c45afaf82463f4acf9b167b3d9434517edd88a0de649a2e",
+      "pass": false,
+      "violations": [
+        "rendered JJ cast lacks James's operator-locked slate blue-grey coat in aggregate (avg greyRatio 0.053291 < 0.086975)",
+        "rendered JJ cast no longer carries James's originals-calibrated slate body tone (avg slateGreyRatio 0.053291 < 0.086975)",
+        "rendered JJ cast no longer carries James's few soft darker patches from the originals (avg darkPatchRatio 0.06003 < 0.09339)",
+        "rendered JJ cast no longer carries James's broad dark-slate nose signal from the originals (avg jamesDarkNoseRatio 0.017964 < 0.072285)",
+        "rendered JJ cast does not carry enough combined originals-calibrated Jessica+James signal for the locked bipedal toddler read (avg combinedCharacterRatio 0.170101 < 0.189101)",
+        "rendered JJ cast is too near-black against the operator reference pack (avg nearBlackRatio 0.060589 > 0.047679)"
+      ],
+      "averages": {},
+      "thresholds": {},
+      "sampleTimestampsSeconds": []
+    },
+    {
+      "n": 14,
+      "slug": "garden-watering-seeds",
+      "path": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-5737/jj-ep001-canon-expansion-continued-5/jj-ep001-canon-expansion-garden-watering-seeds-8s.mp4",
+      "sha256": "7711b0522a27521c884cc0a42dcc9c9428bfaa077e640553a5b67fa97255b288",
+      "pass": false,
+      "violations": [
+        "rendered JJ cast lacks James's operator-locked slate blue-grey coat in aggregate (avg greyRatio 0.047678 < 0.086975)",
+        "rendered JJ cast no longer carries James's originals-calibrated slate body tone (avg slateGreyRatio 0.047678 < 0.086975)",
+        "rendered JJ cast no longer carries James's few soft darker patches from the originals (avg darkPatchRatio 0.068167 < 0.09339)",
+        "rendered JJ cast no longer carries James's broad dark-slate nose signal from the originals (avg jamesDarkNoseRatio 0.026613 < 0.072285)",
+        "rendered JJ cast no longer carries Jessica's flower-only marker from the originals (avg purpleFlowerRatio 0.004821 < 0.008226)"
+      ],
+      "averages": {},
+      "thresholds": {},
+      "sampleTimestampsSeconds": []
+    },
+    {
+      "n": 15,
+      "slug": "fort-building-main",
+      "path": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-5718/clips/jj-ep001-beat1-fort-building-15s.mp4",
+      "sha256": "b6fafc8a877246fdfdf2bd839892caa0227bb79e306f47ef271d5f50c1d38273",
+      "pass": false,
+      "violations": [
+        "rendered JJ cast lacks James's operator-locked slate blue-grey coat in aggregate (avg greyRatio 0.046042 < 0.086975)",
+        "rendered JJ cast no longer carries James's originals-calibrated slate body tone (avg slateGreyRatio 0.046042 < 0.086975)",
+        "rendered JJ cast no longer carries James's few soft darker patches from the originals (avg darkPatchRatio 0.017167 < 0.09339)",
+        "rendered JJ cast no longer carries James's broad dark-slate nose signal from the originals (avg jamesDarkNoseRatio 0.010827 < 0.072285)"
+      ],
+      "averages": {},
+      "thresholds": {},
+      "sampleTimestampsSeconds": []
+    },
+    {
+      "n": 16,
+      "slug": "fort-building-expansion",
+      "path": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-5719/jj-ep001-canon-expansion/jj-ep001-canon-expansion-fort-building-8s.mp4",
+      "sha256": "443cf1ba7375de6cf648e86c19c4b89b4c5280d7f0b8ca54b797f256ea3d8334",
+      "pass": false,
+      "violations": [
+        "rendered JJ cast lacks Jessica's operator-locked cinnamon palette in aggregate (avg cinnamonRatio 0.021375 < 0.091689)",
+        "rendered JJ cast no longer carries Jessica's flower-only marker from the originals (avg purpleFlowerRatio 0.005012 < 0.008226)",
+        "rendered JJ cast no longer carries James's straw-only marker from the originals (avg strawGoldRatio 0.00175 < 0.02012)",
+        "rendered JJ cast is too near-black against the operator reference pack (avg nearBlackRatio 0.201024 > 0.047679)"
+      ],
+      "averages": {},
+      "thresholds": {},
+      "sampleTimestampsSeconds": []
+    },
+    {
+      "n": 17,
+      "slug": "fort-building-continued",
+      "path": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-5737/jj-ep001-canon-expansion-continued/jj-ep001-canon-expansion-fort-building-continued-8s.mp4",
+      "sha256": "0b2dbee4b7af84fc80d79526fc116090fccf1fd01eec47ffed27c24a51bbc1d8",
+      "pass": false,
+      "violations": [
+        "rendered JJ cast lacks James's operator-locked slate blue-grey coat in aggregate (avg greyRatio 0.03194 < 0.086975)",
+        "rendered JJ cast no longer carries James's originals-calibrated slate body tone (avg slateGreyRatio 0.03194 < 0.086975)",
+        "rendered JJ cast no longer carries James's few soft darker patches from the originals (avg darkPatchRatio 0.043667 < 0.09339)",
+        "rendered JJ cast no longer carries James's broad dark-slate nose signal from the originals (avg jamesDarkNoseRatio 0.026768 < 0.072285)",
+        "rendered JJ cast is too near-black against the operator reference pack (avg nearBlackRatio 0.06228 > 0.047679)"
+      ],
+      "averages": {},
+      "thresholds": {},
+      "sampleTimestampsSeconds": []
+    },
+    {
+      "n": 18,
+      "slug": "fort-model-building",
+      "path": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-5737/jj-ep001-canon-expansion-continued-2/jj-ep001-canon-expansion-fort-model-building-10s.mp4",
+      "sha256": "3e608f2c15403085c888e1bf0fcc4d654c6359c656cdc7faf9be69059f03b82b",
+      "pass": false,
+      "violations": [
+        "rendered JJ cast lacks James's operator-locked slate blue-grey coat in aggregate (avg greyRatio 0.030881 < 0.086975)",
+        "rendered JJ cast no longer carries James's originals-calibrated slate body tone (avg slateGreyRatio 0.030881 < 0.086975)",
+        "rendered JJ cast no longer carries James's broad dark-slate nose signal from the originals (avg jamesDarkNoseRatio 0.027631 < 0.072285)"
+      ],
+      "averages": {},
+      "thresholds": {},
+      "sampleTimestampsSeconds": []
+    },
+    {
+      "n": 19,
+      "slug": "fort-decorating-main",
+      "path": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-5718/clips/jj-ep001-beat2-fort-decorating-15s.mp4",
+      "sha256": "d57b3a47e8d1fe0cffda4d0d65348955bc4e93ebd444e31e12c54cab8671bad8",
+      "pass": false,
+      "violations": [
+        "rendered JJ cast no longer carries James's few soft darker patches from the originals (avg darkPatchRatio 0.074042 < 0.09339)"
+      ],
+      "averages": {},
+      "thresholds": {},
+      "sampleTimestampsSeconds": []
+    },
+    {
+      "n": 20,
+      "slug": "fort-decorating-continuation",
+      "path": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-5718/clips/jj-ep001-beat3-fort-decorating-continuation-8s.mp4",
+      "sha256": "d575709fec63e8cb2220587f7216b0690c29cea7347195a3103221fb7260c619",
+      "pass": false,
+      "violations": [
+        "rendered JJ cast lacks James's operator-locked slate blue-grey coat in aggregate (avg greyRatio 0.033042 < 0.086975)",
+        "rendered JJ cast no longer carries James's originals-calibrated slate body tone (avg slateGreyRatio 0.033042 < 0.086975)",
+        "rendered JJ cast no longer carries James's few soft darker patches from the originals (avg darkPatchRatio 0.053066 < 0.09339)",
+        "rendered JJ cast no longer carries James's broad dark-slate nose signal from the originals (avg jamesDarkNoseRatio 0.044238 < 0.072285)",
+        "rendered JJ cast does not carry enough combined originals-calibrated Jessica+James signal for the locked bipedal toddler read (avg combinedCharacterRatio 0.189053 < 0.189101)"
+      ],
+      "averages": {},
+      "thresholds": {},
+      "sampleTimestampsSeconds": []
+    },
+    {
+      "n": 21,
+      "slug": "fort-decorating-expansion",
+      "path": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-5719/jj-ep001-canon-expansion/jj-ep001-canon-expansion-fort-decorating-8s.mp4",
+      "sha256": "e02f0eb96b9d14327418be6208d9ada6177a51282c9f89f7892779a465acce3e",
+      "pass": false,
+      "violations": [
+        "rendered JJ cast lacks James's operator-locked slate blue-grey coat in aggregate (avg greyRatio 0.038429 < 0.086975)",
+        "rendered JJ cast no longer carries James's originals-calibrated slate body tone (avg slateGreyRatio 0.038429 < 0.086975)",
+        "rendered JJ cast no longer carries James's few soft darker patches from the originals (avg darkPatchRatio 0.008125 < 0.09339)",
+        "rendered JJ cast no longer carries James's broad dark-slate nose signal from the originals (avg jamesDarkNoseRatio 0.001286 < 0.072285)",
+        "rendered JJ cast no longer carries Jessica's flower-only marker from the originals (avg purpleFlowerRatio 0.001405 < 0.008226)",
+        "rendered JJ cast is too near-black against the operator reference pack (avg nearBlackRatio 0.138851 > 0.047679)"
+      ],
+      "averages": {},
+      "thresholds": {},
+      "sampleTimestampsSeconds": []
+    },
+    {
+      "n": 22,
+      "slug": "fort-painting",
+      "path": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-5737/jj-ep001-canon-expansion-continued-3/jj-ep001-canon-expansion-fort-painting-8s.mp4",
+      "sha256": "d9572d892cef06acae35c640788e01e94be3791138f73cdc5070b641a49aa64c",
+      "pass": false,
+      "violations": [
+        "rendered JJ cast lacks James's operator-locked slate blue-grey coat in aggregate (avg greyRatio 0.053893 < 0.086975)",
+        "rendered JJ cast no longer carries James's originals-calibrated slate body tone (avg slateGreyRatio 0.053893 < 0.086975)",
+        "rendered JJ cast no longer carries James's few soft darker patches from the originals (avg darkPatchRatio 0.064589 < 0.09339)",
+        "rendered JJ cast no longer carries James's broad dark-slate nose signal from the originals (avg jamesDarkNoseRatio 0.05653 < 0.072285)"
+      ],
+      "averages": {},
+      "thresholds": {},
+      "sampleTimestampsSeconds": []
+    },
+    {
+      "n": 23,
+      "slug": "fort-wall-building-main",
+      "path": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-5718/clips/jj-ep001-beat6-fort-wall-building-8s.mp4",
+      "sha256": "6ffe2e80d30c38132ce194cd3d3994e8db9aa5af81a5870798dea107e566811c",
+      "pass": false,
+      "violations": [
+        "rendered JJ cast lacks James's operator-locked slate blue-grey coat in aggregate (avg greyRatio 0.041946 < 0.086975)",
+        "rendered JJ cast no longer carries James's originals-calibrated slate body tone (avg slateGreyRatio 0.041946 < 0.086975)",
+        "rendered JJ cast no longer carries James's few soft darker patches from the originals (avg darkPatchRatio 0.080309 < 0.09339)",
+        "rendered JJ cast no longer carries James's broad dark-slate nose signal from the originals (avg jamesDarkNoseRatio 0.052012 < 0.072285)",
+        "rendered JJ cast is too near-black against the operator reference pack (avg nearBlackRatio 0.05272 > 0.047679)"
+      ],
+      "averages": {},
+      "thresholds": {},
+      "sampleTimestampsSeconds": []
+    },
+    {
+      "n": 24,
+      "slug": "fort-wall-reinforcement",
+      "path": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-5718/clips/jj-ep001-beat7-fort-wall-reinforcement-8s.mp4",
+      "sha256": "7945ac22b06a042c6c62de2dc037e3c2eab0a21a0b4799cd445cd1d7e2f5d688",
+      "pass": false,
+      "violations": [
+        "rendered JJ cast lacks James's operator-locked slate blue-grey coat in aggregate (avg greyRatio 0.023125 < 0.086975)",
+        "rendered JJ cast no longer carries James's originals-calibrated slate body tone (avg slateGreyRatio 0.023125 < 0.086975)",
+        "rendered JJ cast is too near-black against the operator reference pack (avg nearBlackRatio 0.100678 > 0.047679)"
+      ],
+      "averages": {},
+      "thresholds": {},
+      "sampleTimestampsSeconds": []
+    },
+    {
+      "n": 25,
+      "slug": "fort-wall-building-expansion",
+      "path": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-5737/jj-ep001-canon-expansion-continued-5/jj-ep001-canon-expansion-fort-wall-building-8s.mp4",
+      "sha256": "af98db572319a58f30f7a30accf594ec2f38ee3b814acf4545123796a64287fb",
+      "pass": false,
+      "violations": [
+        "rendered JJ cast lacks James's operator-locked slate blue-grey coat in aggregate (avg greyRatio 0.005232 < 0.086975)",
+        "rendered JJ cast no longer carries James's originals-calibrated slate body tone (avg slateGreyRatio 0.005232 < 0.086975)",
+        "rendered JJ cast no longer carries James's few soft darker patches from the originals (avg darkPatchRatio 0.02994 < 0.09339)",
+        "rendered JJ cast no longer carries James's broad dark-slate nose signal from the originals (avg jamesDarkNoseRatio 0.003179 < 0.072285)",
+        "rendered JJ cast no longer carries Jessica's flower-only marker from the originals (avg purpleFlowerRatio 0.003994 < 0.008226)"
+      ],
+      "averages": {},
+      "thresholds": {},
+      "sampleTimestampsSeconds": []
+    },
+    {
+      "n": 26,
+      "slug": "fort-shelf-building",
+      "path": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-5737/jj-ep001-canon-expansion-continued-4/jj-ep001-canon-expansion-fort-shelf-building-8s.mp4",
+      "sha256": "8d9d72664da6d894c5cd059726b3efb87f4d4c6ac3effbaeeaf587208bfeefe4",
+      "pass": false,
+      "violations": [
+        "rendered JJ cast lacks James's operator-locked slate blue-grey coat in aggregate (avg greyRatio 0.018441 < 0.086975)",
+        "rendered JJ cast no longer carries James's originals-calibrated slate body tone (avg slateGreyRatio 0.018441 < 0.086975)",
+        "rendered JJ cast no longer carries James's few soft darker patches from the originals (avg darkPatchRatio 0.059839 < 0.09339)",
+        "rendered JJ cast no longer carries James's broad dark-slate nose signal from the originals (avg jamesDarkNoseRatio 0.032327 < 0.072285)"
+      ],
+      "averages": {},
+      "thresholds": {},
+      "sampleTimestampsSeconds": []
+    },
+    {
+      "n": 27,
+      "slug": "fort-continuation",
+      "path": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-5719/clips/jj-ep001-beat8-fort-continuation-8s.mp4",
+      "sha256": "9615c56c7dcc931f6223097c8db6775628109c15963f401e8d963af0fd7bc76a",
+      "pass": false,
+      "violations": [
+        "rendered JJ cast lacks James's operator-locked slate blue-grey coat in aggregate (avg greyRatio 0.030732 < 0.086975)",
+        "rendered JJ cast no longer carries James's originals-calibrated slate body tone (avg slateGreyRatio 0.030732 < 0.086975)",
+        "rendered JJ cast no longer carries James's few soft darker patches from the originals (avg darkPatchRatio 0.069869 < 0.09339)",
+        "rendered JJ cast no longer carries James's broad dark-slate nose signal from the originals (avg jamesDarkNoseRatio 0.023804 < 0.072285)"
+      ],
+      "averages": {},
+      "thresholds": {},
+      "sampleTimestampsSeconds": []
+    },
+    {
+      "n": 28,
+      "slug": "fort-drawing-continued",
+      "path": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-5737/jj-ep001-canon-expansion-continued/jj-ep001-canon-expansion-fort-drawing-continued-8s.mp4",
+      "sha256": "e319f23269085a7603780c3900834ad4fc246beb0ae1713f1a39f80ee57cc01a",
+      "pass": false,
+      "violations": [
+        "rendered JJ cast lacks James's operator-locked slate blue-grey coat in aggregate (avg greyRatio 0.045935 < 0.086975)",
+        "rendered JJ cast no longer carries James's originals-calibrated slate body tone (avg slateGreyRatio 0.045935 < 0.086975)",
+        "rendered JJ cast no longer carries James's few soft darker patches from the originals (avg darkPatchRatio 0.057322 < 0.09339)",
+        "rendered JJ cast no longer carries James's broad dark-slate nose signal from the originals (avg jamesDarkNoseRatio 0.042631 < 0.072285)"
+      ],
+      "averages": {},
+      "thresholds": {},
+      "sampleTimestampsSeconds": []
+    },
+    {
+      "n": 29,
+      "slug": "fort-map-exploring",
+      "path": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-5737/jj-ep001-canon-expansion-continued/jj-ep001-canon-expansion-fort-map-exploring-continued-8s.mp4",
+      "sha256": "29240a2d5e4e55da53ce71d35d82a9d980a9b16598bc8dfaa10be7cd604fe5a0",
+      "pass": false,
+      "violations": [
+        "rendered JJ cast lacks James's operator-locked slate blue-grey coat in aggregate (avg greyRatio 0.005024 < 0.086975)",
+        "rendered JJ cast no longer carries James's originals-calibrated slate body tone (avg slateGreyRatio 0.005024 < 0.086975)",
+        "rendered JJ cast no longer carries James's few soft darker patches from the originals (avg darkPatchRatio 0.042179 < 0.09339)",
+        "rendered JJ cast no longer carries James's broad dark-slate nose signal from the originals (avg jamesDarkNoseRatio 0.003018 < 0.072285)"
+      ],
+      "averages": {},
+      "thresholds": {},
+      "sampleTimestampsSeconds": []
+    },
+    {
+      "n": 30,
+      "slug": "fort-interior-story",
+      "path": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-5718/clips/jj-ep001-beat4-fort-interior-story-12s.mp4",
+      "sha256": "5358ba1f319ecb6e50ca44e2a182d59f4fa29012c9997a8f2dd2b538eea2cdad",
+      "pass": false,
+      "violations": [
+        "rendered JJ cast lacks James's operator-locked slate blue-grey coat in aggregate (avg greyRatio 0.026006 < 0.086975)",
+        "rendered JJ cast no longer carries James's originals-calibrated slate body tone (avg slateGreyRatio 0.026006 < 0.086975)",
+        "rendered JJ cast no longer carries James's broad dark-slate nose signal from the originals (avg jamesDarkNoseRatio 0.025589 < 0.072285)"
+      ],
+      "averages": {},
+      "thresholds": {},
+      "sampleTimestampsSeconds": []
+    },
+    {
+      "n": 31,
+      "slug": "fort-interior-storytelling",
+      "path": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-5718/clips/jj-ep001-beat5-fort-interior-storytelling-8s.mp4",
+      "sha256": "2bd3328d516640de0a98aeda7e8a5f44e87f7cdd3081c82f646b73f3e6e2dd9e",
+      "pass": false,
+      "violations": [
+        "rendered JJ cast lacks James's operator-locked slate blue-grey coat in aggregate (avg greyRatio 0.024982 < 0.086975)",
+        "rendered JJ cast no longer carries James's originals-calibrated slate body tone (avg slateGreyRatio 0.024982 < 0.086975)",
+        "rendered JJ cast no longer carries James's few soft darker patches from the originals (avg darkPatchRatio 0.08481 < 0.09339)",
+        "rendered JJ cast no longer carries James's broad dark-slate nose signal from the originals (avg jamesDarkNoseRatio 0.032077 < 0.072285)",
+        "rendered JJ cast is too near-black against the operator reference pack (avg nearBlackRatio 0.049125 > 0.047679)"
+      ],
+      "averages": {},
+      "thresholds": {},
+      "sampleTimestampsSeconds": []
+    },
+    {
+      "n": 32,
+      "slug": "fort-interior",
+      "path": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-5719/jj-ep001-canon-expansion/jj-ep001-canon-expansion-fort-interior-8s.mp4",
+      "sha256": "a1ea573f189609bdf21059ff0183ec32940f77a3093aed27519d4c4d28d96bda",
+      "pass": false,
+      "violations": [
+        "rendered JJ cast lacks James's operator-locked slate blue-grey coat in aggregate (avg greyRatio 0.003928 < 0.086975)",
+        "rendered JJ cast no longer carries James's originals-calibrated slate body tone (avg slateGreyRatio 0.003928 < 0.086975)",
+        "rendered JJ cast no longer carries James's few soft darker patches from the originals (avg darkPatchRatio 0.057345 < 0.09339)",
+        "rendered JJ cast no longer carries James's broad dark-slate nose signal from the originals (avg jamesDarkNoseRatio 0.008857 < 0.072285)",
+        "rendered JJ cast is too near-black against the operator reference pack (avg nearBlackRatio 0.091071 > 0.047679)"
+      ],
+      "averages": {},
+      "thresholds": {},
+      "sampleTimestampsSeconds": []
+    },
+    {
+      "n": 33,
+      "slug": "fort-interior-continued",
+      "path": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-5737/jj-ep001-canon-expansion-continued/jj-ep001-canon-expansion-fort-interior-continued-8s.mp4",
+      "sha256": "d34c34b7aadf286412803240a8ae02010a0a458aa93f57ae0ef6a3d1252f73d6",
+      "pass": true,
+      "violations": [],
+      "averages": {},
+      "thresholds": {},
+      "sampleTimestampsSeconds": []
+    },
+    {
+      "n": 34,
+      "slug": "fort-interior-play",
+      "path": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-5719/jj-ep001-canon-expansion/jj-ep001-canon-expansion-fort-interior-play-8s.mp4",
+      "sha256": "8a3d055dc3779ec327ee71637d8ee7e1b55860044824d41232363f0a32f3eb91",
+      "pass": false,
+      "violations": [
+        "rendered JJ cast lacks James's operator-locked slate blue-grey coat in aggregate (avg greyRatio 0.003589 < 0.086975)",
+        "rendered JJ cast no longer carries James's originals-calibrated slate body tone (avg slateGreyRatio 0.003589 < 0.086975)",
+        "rendered JJ cast no longer carries James's few soft darker patches from the originals (avg darkPatchRatio 0.048 < 0.09339)",
+        "rendered JJ cast no longer carries James's broad dark-slate nose signal from the originals (avg jamesDarkNoseRatio 0.003292 < 0.072285)",
+        "rendered JJ cast is too near-black against the operator reference pack (avg nearBlackRatio 0.054869 > 0.047679)"
+      ],
+      "averages": {},
+      "thresholds": {},
+      "sampleTimestampsSeconds": []
+    },
+    {
+      "n": 35,
+      "slug": "fort-play",
+      "path": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-5719/jj-ep001-canon-expansion/jj-ep001-canon-expansion-fort-play-8s-20260725.mp4",
+      "sha256": "ecdc10dd419512e3fd7e62bbb7b443029950fd553beb23ddfe67599e3a4fbbf2",
+      "pass": false,
+      "violations": [
+        "rendered JJ cast no longer carries James's few soft darker patches from the originals (avg darkPatchRatio 0.093321 < 0.09339)",
+        "rendered JJ cast is too near-black against the operator reference pack (avg nearBlackRatio 0.070434 > 0.047679)"
+      ],
+      "averages": {},
+      "thresholds": {},
+      "sampleTimestampsSeconds": []
+    },
+    {
+      "n": 36,
+      "slug": "fort-storytelling",
+      "path": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-5737/jj-ep001-canon-expansion-continued-4/jj-ep001-canon-expansion-fort-storytelling-8s.mp4",
+      "sha256": "3e691247ff8628a4b976a4334eb88b3148f0d07f84e951a418368764ad252a20",
+      "pass": false,
+      "violations": [
+        "rendered JJ cast lacks James's operator-locked slate blue-grey coat in aggregate (avg greyRatio 0.053899 < 0.086975)",
+        "rendered JJ cast no longer carries James's originals-calibrated slate body tone (avg slateGreyRatio 0.053899 < 0.086975)",
+        "rendered JJ cast no longer carries James's few soft darker patches from the originals (avg darkPatchRatio 0.048006 < 0.09339)",
+        "rendered JJ cast no longer carries James's broad dark-slate nose signal from the originals (avg jamesDarkNoseRatio 0.04406 < 0.072285)"
+      ],
+      "averages": {},
+      "thresholds": {},
+      "sampleTimestampsSeconds": []
+    },
+    {
+      "n": 37,
+      "slug": "fort-book-reading",
+      "path": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-5737/jj-ep001-canon-expansion-continued-5/jj-ep001-canon-expansion-fort-book-reading-8s.mp4",
+      "sha256": "9c36f87ee5a940e3021a028aad570694599c1e4a70837cf8127dff7e77f9776b",
+      "pass": false,
+      "violations": [
+        "rendered JJ cast lacks Jessica's operator-locked cinnamon palette in aggregate (avg cinnamonRatio 0.064286 < 0.091689)",
+        "rendered JJ cast is too near-black against the operator reference pack (avg nearBlackRatio 0.13569 > 0.047679)"
+      ],
+      "averages": {},
+      "thresholds": {},
+      "sampleTimestampsSeconds": []
+    },
+    {
+      "n": 38,
+      "slug": "fort-evening-gathering",
+      "path": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-5737/jj-ep001-canon-expansion-continued/jj-ep001-canon-expansion-fort-evening-gathering-continued-8s.mp4",
+      "sha256": "29dc8ad264d2e7c24f0076742f2ce82a1b8e5638e57466b71eb2638dd24a295c",
+      "pass": false,
+      "violations": [
+        "rendered JJ cast lacks James's operator-locked slate blue-grey coat in aggregate (avg greyRatio 0.066202 < 0.086975)",
+        "rendered JJ cast no longer carries James's originals-calibrated slate body tone (avg slateGreyRatio 0.066202 < 0.086975)",
+        "rendered JJ cast no longer carries James's few soft darker patches from the originals (avg darkPatchRatio 0.031667 < 0.09339)",
+        "rendered JJ cast no longer carries James's broad dark-slate nose signal from the originals (avg jamesDarkNoseRatio 0.036637 < 0.072285)",
+        "rendered JJ cast is too near-black against the operator reference pack (avg nearBlackRatio 0.136447 > 0.047679)"
+      ],
+      "averages": {},
+      "thresholds": {},
+      "sampleTimestampsSeconds": []
+    },
+    {
+      "n": 39,
+      "slug": "toy-show",
+      "path": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-5737/jj-ep001-canon-expansion-continued-5/jj-ep001-canon-expansion-toy-show-8s.mp4",
+      "sha256": "f3ffe7c80151497b0a7a662238b0f9cd08b7e9346db3dcf09be78ed9e75dc549",
+      "pass": false,
+      "violations": [
+        "rendered JJ cast lacks James's operator-locked slate blue-grey coat in aggregate (avg greyRatio 0.060905 < 0.086975)",
+        "rendered JJ cast no longer carries James's originals-calibrated slate body tone (avg slateGreyRatio 0.060905 < 0.086975)",
+        "rendered JJ cast no longer carries James's few soft darker patches from the originals (avg darkPatchRatio 0.066792 < 0.09339)",
+        "rendered JJ cast no longer carries James's broad dark-slate nose signal from the originals (avg jamesDarkNoseRatio 0.051964 < 0.072285)"
+      ],
+      "averages": {},
+      "thresholds": {},
+      "sampleTimestampsSeconds": []
+    }
+  ]
+}

@@ -1,0 +1,71 @@
+{
+  "role": "cv-review",
+  "task_id": "cv-benign-contract-overlap",
+  "task_title": "Do not over-flag a disclosed part-time overlap",
+  "model_id": "grok-4.5",
+  "model_label": "Grok 4.5",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "ok": true,
+  "error": null,
+  "output": "{\n  \"concerns\": [\n    \"Northstar start date is year-only (2018), so exact tenure length is unclear.\",\n    \"Skills list is thin for a Product Operations Manager bar (SQL basics only; no tooling stack, metrics/OKR, or release/change-management depth stated).\",\n    \"Freelance overlap with full-time RelayPay is disclosed and low-hours/non-competing, so not a integrity red flag, but some employers may still want written dual-employment clearance confirmed.\"\n  ],\n  \"recommendation\": \"advance\",\n  \"timelineNote\": \"Northstar ends Mar 2021 and RelayPay starts Apr 2021 \u2014 clean handoff with no gap or double full-time claim. Freelance Jan\u2013Dec 2022 sits inside RelayPay but is explicitly side work at ~5 hrs/week and disclosed; no chronological contradiction.\"\n}",
+  "model_reported": "grok-4.5",
+  "inputTokens": 168,
+  "outputTokens": 189,
+  "totalTokens": 357,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "wallMs": 18497,
+  "stderrTail": "",
+  "agentFileSha256": "none",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "4a12f7840060d3340e31887045177b943ccfc26aece2989d42f2e6f31a2b2c61",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/cv-review/suite.json",
+  "skipped": false,
+  "skipReason": null,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "json_valid",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {}
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 3.0,
+      "spec": {
+        "value": "advance",
+        "path": "recommendation"
+      }
+    },
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 3.0,
+      "spec": {
+        "values": [
+          "part-time",
+          "5 hrs",
+          "side work",
+          "disclosed",
+          "not a full-time overlap",
+          "benign",
+          "advance"
+        ]
+      }
+    }
+  ],
+  "judgeScore": 0.9499999999999998,
+  "judgeDetail": {
+    "perCriterion": {
+      "benign_overlap_calibration": 0.95
+    },
+    "rationale": "Correctly advances on strong Product Ops evidence and treats the disclosed 5 hrs/week freelance as a non-red-flag with only a minor policy-confirmation note, exactly as required.",
+    "judgeModel": "opus"
+  },
+  "quality": 0.9749999999999999,
+  "qualityPer1kTokens": 2.7310924369747895
+}

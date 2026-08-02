@@ -1,0 +1,86 @@
+{
+  "role": "quant",
+  "task_id": "quant-lookahead-backtest",
+  "task_title": "Catch the look-ahead bias in a great-looking backtest",
+  "model_id": "grok-4.5",
+  "model_label": "Grok 4.5",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "ok": true,
+  "error": null,
+  "output": "{\"edgeReal\": false, \"flaw\": \"look-ahead bias\", \"fix\": \"Form signal only from completed bars before entry, e.g. signal[t] = +1 if close[t-1] > open[t-1] else -1, and enter at open[t] (or next available price after t-1 close); never use close[t] in the decision for a trade entered at t.\"}",
+  "model_reported": "grok-4.5",
+  "inputTokens": 165,
+  "outputTokens": 71,
+  "totalTokens": 236,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "wallMs": 12382,
+  "stderrTail": "",
+  "agentFileSha256": "none",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "32b3563885d9e20631634bbef99975027564a4a43c6c29a6e45c153467654e2e",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/quant/suite.json",
+  "skipped": false,
+  "skipReason": null,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "json_valid",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {}
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 5.0,
+      "spec": {
+        "value": false,
+        "path": "edgeReal"
+      }
+    },
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {
+        "values": [
+          "look-ahead",
+          "lookahead",
+          "look ahead",
+          "future",
+          "hindsight"
+        ]
+      }
+    },
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 1.0,
+      "spec": {
+        "values": [
+          "close[t]",
+          "before",
+          "lag",
+          "prior",
+          "shift",
+          "t-1",
+          "t - 1",
+          "available"
+        ]
+      }
+    }
+  ],
+  "judgeScore": 0.9700000000000001,
+  "judgeDetail": {
+    "perCriterion": {
+      "bias_detection": 0.97
+    },
+    "rationale": "Correctly names look-ahead bias, declares the edge unreal, and the fix removes contemporaneous close[t] by using completed prior-bar data (close[t-1]/open[t-1]) with entry at open[t].",
+    "judgeModel": "opus"
+  },
+  "quality": 0.9850000000000001,
+  "qualityPer1kTokens": 4.173728813559323
+}

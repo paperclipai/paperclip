@@ -1,0 +1,111 @@
+{
+  "role": "content",
+  "task_id": "content-tone-shift-rewrite",
+  "task_title": "Tone-shift rewrite: same facts, new audience (engineers -> CFOs)",
+  "model_id": "grok-4.5",
+  "model_label": "Grok 4.5",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "ok": true,
+  "error": null,
+  "output": "Corrected cost accounting so cache usage is included in each run\u2019s input total. The prior method dropped those tokens, undercounting per-run cost by ~30% on cache-heavy agents. Reported costs are now complete and reliable.",
+  "model_reported": "grok-4.5",
+  "inputTokens": 217,
+  "outputTokens": 55,
+  "totalTokens": 272,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "wallMs": 15159,
+  "stderrTail": "",
+  "agentFileSha256": "none",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "033a0a832aabf01236564fdbacb17e2fd0b3701f5a3f5242226a5c4149ea7f96",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/content/suite.json",
+  "skipped": false,
+  "skipReason": null,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "max_words",
+      "ok": true,
+      "weight": 3.0,
+      "spec": {
+        "value": 55
+      }
+    },
+    {
+      "check": "not_contains",
+      "ok": true,
+      "weight": 1.0,
+      "spec": {
+        "value": "COALESCE"
+      }
+    },
+    {
+      "check": "not_contains",
+      "ok": true,
+      "weight": 1.0,
+      "spec": {
+        "value": "heartbeat_runs"
+      }
+    },
+    {
+      "check": "not_contains",
+      "ok": true,
+      "weight": 1.0,
+      "spec": {
+        "value": "cacheReadInputTokens"
+      }
+    },
+    {
+      "check": "not_contains",
+      "ok": true,
+      "weight": 1.0,
+      "spec": {
+        "value": "cacheCreationInputTokens"
+      }
+    },
+    {
+      "check": "not_contains",
+      "ok": true,
+      "weight": 1.0,
+      "spec": {
+        "value": "null"
+      }
+    },
+    {
+      "check": "not_contains",
+      "ok": true,
+      "weight": 1.0,
+      "spec": {
+        "value": "query"
+      }
+    },
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {
+        "values": [
+          "30%",
+          "30 percent",
+          "~30",
+          "a third",
+          "third"
+        ]
+      }
+    }
+  ],
+  "judgeScore": 0.835,
+  "judgeDetail": {
+    "perCriterion": {
+      "audience_fit": 0.72,
+      "fidelity": 0.95
+    },
+    "rationale": "Facts are accurate and the ~30% undercount is preserved, but it still opens with 'cost accounting'/'input total' framing rather than leading cleanly with the CFO-relevant budgeting/billing-trust impact.",
+    "judgeModel": "claude-opus-4-8"
+  },
+  "quality": 0.9175,
+  "qualityPer1kTokens": 3.3731617647058822
+}

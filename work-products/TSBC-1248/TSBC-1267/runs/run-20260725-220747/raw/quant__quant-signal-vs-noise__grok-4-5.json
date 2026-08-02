@@ -1,0 +1,90 @@
+{
+  "role": "quant",
+  "task_id": "quant-signal-vs-noise",
+  "task_title": "Separate signal from noise in a daily PnL series",
+  "model_id": "grok-4.5",
+  "model_label": "Grok 4.5",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "ok": true,
+  "error": null,
+  "output": "{\"equivalent\": false, \"noisier\": \"B\", \"reason\": \"B\u2019s daily swings (~$300) dwarf its ~$22 net; high variance vs net means the small profit is noise-dominated. A\u2019s moves are small vs its +$24 net, so more consistent.\", \"moreLikelyLuck\": \"B\"}",
+  "model_reported": "grok-4.5",
+  "inputTokens": 197,
+  "outputTokens": 59,
+  "totalTokens": 256,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "wallMs": 8790,
+  "stderrTail": "",
+  "agentFileSha256": "none",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "32b3563885d9e20631634bbef99975027564a4a43c6c29a6e45c153467654e2e",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/quant/suite.json",
+  "skipped": false,
+  "skipReason": null,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "json_valid",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {}
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 3.0,
+      "spec": {
+        "value": false,
+        "path": "equivalent"
+      }
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 4.0,
+      "spec": {
+        "value": "B",
+        "path": "noisier"
+      }
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 3.0,
+      "spec": {
+        "value": "B",
+        "path": "moreLikelyLuck"
+      }
+    },
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 1.0,
+      "spec": {
+        "values": [
+          "varianc",
+          "volatil",
+          "noise",
+          "swing",
+          "std",
+          "deviation",
+          "signal-to-noise",
+          "signal to noise"
+        ]
+      }
+    }
+  ],
+  "judgeScore": 0.95,
+  "judgeDetail": {
+    "perCriterion": {
+      "signal_noise_judgment": 0.95
+    },
+    "rationale": "Correctly picks B as noisier and more likely luck, explicitly contrasting B's ~$300 swings against its ~$22 net versus A's small moves relative to its net.",
+    "judgeModel": "claude-opus-4-8"
+  },
+  "quality": 0.975,
+  "qualityPer1kTokens": 3.80859375
+}

@@ -1,0 +1,58 @@
+{
+  "canvas": {
+    "width": 1920,
+    "height": 1080,
+    "fpsReference": 30
+  },
+  "templates": {
+    "lowerThird": {
+      "mode": "speaker",
+      "eyebrow": "Build Breakdown",
+      "title": "Maya Chen",
+      "subtitle": "Founding Engineer",
+      "aside": "Live hotfix"
+    },
+    "statCard": {
+      "phase": "hold",
+      "eyebrow": "Spoken Number Sync",
+      "value": "43%",
+      "label": "Build time recovered after trimming the duplicate test lane",
+      "support": "Bring in at the number callout, hold 1.6s, then clear before the next cut."
+    },
+    "listReveal": {
+      "revealCount": 3,
+      "eyebrow": "Read-Aloud List",
+      "title": "Why the fix finally held",
+      "items": [
+        "The broken step was isolated to one queue, not the whole pipeline",
+        "Validation moved to the exported artifact instead of the diff",
+        "The handoff named the next owner and the exact stop condition",
+        "The rerun proved the output contract, not just the patch"
+      ]
+    },
+    "progressiveBuild": {
+      "stepCount": 2,
+      "eyebrow": "Progressive Build",
+      "title": "Operator-grade rollout",
+      "summary": "Add one component only when the narration lands on it.",
+      "steps": [
+        {
+          "label": "Scope the failure",
+          "value": "Find the one step that lies"
+        },
+        {
+          "label": "Patch the contract",
+          "value": "Add the missing guardrail"
+        },
+        {
+          "label": "Prove the output",
+          "value": "Open the render and check timing"
+        },
+        {
+          "label": "Route the handoff",
+          "value": "Name the next owner and artifact"
+        }
+      ]
+    }
+  }
+}

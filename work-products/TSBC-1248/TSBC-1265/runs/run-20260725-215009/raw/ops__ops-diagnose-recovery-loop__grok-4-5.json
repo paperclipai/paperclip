@@ -1,0 +1,74 @@
+{
+  "role": "ops",
+  "task_id": "ops-diagnose-recovery-loop",
+  "task_title": "Diagnose a recovery-loop and propose a bounded fix",
+  "model_id": "grok-4.5",
+  "model_label": "Grok 4.5",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "ok": true,
+  "error": null,
+  "output": "(a) Root cause\n`reconcileStrandedAssignedIssues` treats assigned work with no active run as stranded and keeps enqueueing recovery wakes. Deliberate pause (weekly rate-limit, fixed resume) is not treated as a terminal non-invoke state, so the same 13 leadership primaries stay \u201cstranded,\u201d every sweep retries them, and ~986/day die with \u201cAgent is not invokable (paused)\u201d\u2014a tight detect\u2192wake\u2192fail loop, not real recovery.\n\n(b) One product rule\nIf the assignee is paused (or otherwise non-invokable by design), do not schedule stranded-issue recovery wakes for their assignments until they are invokable again; hold that work under the pause as the acknowledged stop.\n\n(c) Invariants\n(1) Unpaused agents and other work still recover and run. (2) Only real stops apply\u2014planned pause is intentional; crash/OOM-style stranding still recovers. (3) No loop: once paused assignees are out of the recovery set, the ~110/hr hammer ends until resume.",
+  "model_reported": "grok-4.5",
+  "inputTokens": 192,
+  "outputTokens": 234,
+  "totalTokens": 426,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "wallMs": 40414,
+  "stderrTail": "",
+  "agentFileSha256": "none",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "af81fcc8c8acf9b45aac20aa118d2e0116e4e875fd9b8b4e4f07df614a7bef25",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/ops/suite.json",
+  "skipped": false,
+  "skipReason": null,
+  "deterministicScore": 0.6,
+  "deterministicDetails": [
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {
+        "values": [
+          "paused",
+          "pause"
+        ]
+      }
+    },
+    {
+      "check": "contains_any",
+      "ok": false,
+      "weight": 2.0,
+      "spec": {
+        "values": [
+          "skip",
+          "exclude",
+          "filter",
+          "guard"
+        ]
+      }
+    },
+    {
+      "check": "max_words",
+      "ok": true,
+      "weight": 1.0,
+      "spec": {
+        "value": 190
+      }
+    }
+  ],
+  "judgeScore": 0.9516666666666668,
+  "judgeDetail": {
+    "perCriterion": {
+      "correctness": 0.97,
+      "invariants": 0.95,
+      "actionability": 0.9
+    },
+    "rationale": "Correctly roots the cause in recovery re-invoking deliberately-paused agents and fixes it by excluding paused assignees from the sweep until resume, with a valid, explicit walk-through of all three invariants.",
+    "judgeModel": "opus"
+  },
+  "quality": 0.7758333333333334,
+  "qualityPer1kTokens": 1.8212050078247264
+}

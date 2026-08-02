@@ -1,0 +1,79 @@
+{
+  "role": "auditor",
+  "task_id": "aud-evidence-cited-block",
+  "task_title": "Block with cited evidence, not vibes",
+  "model_id": "grok-4.5",
+  "model_label": "Grok 4.5",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "ok": true,
+  "error": null,
+  "output": "{\"verdict\": \"block\", \"evidence\": [\"handler.ts inserts a webhook_event row with no UNIQUE/primary-key/upsert guard on the event id, so repeat delivery of the same event id performs another INSERT\", \"test fires the same event twice and only asserts HTTP 200 on both responses; it never asserts webhook_event row count (or equivalent) remains 1 after the second delivery\"], \"reproSteps\": \"Send the same webhook payload (same event id) twice to the handler. Both requests return 200. Query webhook_event: two rows exist for that event id because the insert path has no uniqueness constraint or idempotent upsert and the test never failed on duplicate rows.\"}",
+  "model_reported": "grok-4.5",
+  "inputTokens": 202,
+  "outputTokens": 163,
+  "totalTokens": 365,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "wallMs": 9776,
+  "stderrTail": "",
+  "agentFileSha256": "none",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "2a04b6f827eda607af0693e4fbbe2fe425b9ea1c5fb0574b0550ceaac640d913",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/auditor/suite.json",
+  "skipped": false,
+  "skipReason": null,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "json_valid",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {}
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {
+        "value": "block",
+        "path": "verdict"
+      }
+    },
+    {
+      "check": "json_path_exists",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {
+        "path": "evidence.0"
+      }
+    },
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 3.0,
+      "spec": {
+        "values": [
+          "uniqueness",
+          "unique",
+          "row count",
+          "row-count",
+          "no guard",
+          "insert",
+          "duplicate"
+        ]
+      }
+    }
+  ],
+  "judgeScore": 0.9499999999999998,
+  "judgeDetail": {
+    "perCriterion": {
+      "evidence_quality": 0.95
+    },
+    "rationale": "Both required facts are cited concretely \u2014 the missing uniqueness/upsert guard in handler.ts and the test asserting only 200/200 without a row-count check \u2014 and reproSteps concretely traces same-event \u2192 two rows via the unguarded insert; only slight imprecision is the absence of literal line numbers.",
+    "judgeModel": "opus"
+  },
+  "quality": 0.9749999999999999,
+  "qualityPer1kTokens": 2.6712328767123283
+}

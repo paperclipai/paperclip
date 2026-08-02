@@ -1,0 +1,66 @@
+{
+  "role": "content",
+  "task_id": "content-kdp-blurb",
+  "task_title": "Write a KDP back-cover blurb under a hard word cap",
+  "model_id": "grok-4.5",
+  "model_label": "Grok 4.5",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "ok": true,
+  "error": null,
+  "output": "For knowledge workers pulled in every direction, The Quiet Hour offers a simple 60-minute deep-work ritual. Clear steps, gentle structure, and realistic habits help you reclaim focus without overhauling your life. One protected hour each day can steady the scatter. Begin tomorrow, and see what quiet attention returns.",
+  "model_reported": "grok-4.5",
+  "inputTokens": 121,
+  "outputTokens": 79,
+  "totalTokens": 200,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "wallMs": 8333,
+  "stderrTail": "",
+  "agentFileSha256": "none",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "033a0a832aabf01236564fdbacb17e2fd0b3701f5a3f5242226a5c4149ea7f96",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/content/suite.json",
+  "skipped": false,
+  "skipReason": null,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "max_words",
+      "ok": true,
+      "weight": 4.0,
+      "spec": {
+        "value": 60
+      }
+    },
+    {
+      "check": "min_words",
+      "ok": true,
+      "weight": 1.0,
+      "spec": {
+        "value": 20
+      }
+    },
+    {
+      "check": "not_contains",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {
+        "value": "!"
+      }
+    }
+  ],
+  "judgeScore": 0.778,
+  "judgeDetail": {
+    "perCriterion": {
+      "hook": 0.62,
+      "on_brief": 0.9,
+      "clarity": 0.85
+    },
+    "rationale": "Tone, 60-minute ritual framing, constraints, and inviting close are all nailed, but the opening 'pulled in every direction' is a somewhat generic pain phrase rather than a sharp hook.",
+    "judgeModel": "opus"
+  },
+  "quality": 0.889,
+  "qualityPer1kTokens": 4.444999999999999
+}

@@ -1,0 +1,86 @@
+{
+  "role": "cto",
+  "task_id": "cto-plan-approval-gate",
+  "task_title": "Approve a destructive plan only with a rollback gate",
+  "model_id": "grok-4.5",
+  "model_label": "Grok 4.5",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "ok": true,
+  "error": null,
+  "output": "{\"decision\":\"reject\",\"requiredGuards\":[\"full offline backup + restore drill before any drop\",\"dual-write or expand-contract migration with old table retained until validated\",\"tested rollback path that restores billing signal\",\"run off-peak with feature flag and canary\",\"row-count/checksum parity gates before cutover\",\"subscription billing read-path verified on new schema\"],\"why\":\"Irreversible prod drop of sole billing signal, no backup or rollback, at peak\u2014unacceptable data and revenue risk.\"}",
+  "model_reported": "grok-4.5",
+  "inputTokens": 166,
+  "outputTokens": 124,
+  "totalTokens": 290,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "wallMs": 9381,
+  "stderrTail": "",
+  "agentFileSha256": "none",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "9178417ea7411729ec604cd6f0f72637a785d4d0f99ddd564fdfd0d4d603c31d",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/cto/suite.json",
+  "skipped": false,
+  "skipReason": null,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "json_valid",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {}
+    },
+    {
+      "check": "json_path_in",
+      "ok": true,
+      "weight": 4.0,
+      "spec": {
+        "values": [
+          "reject",
+          "approve_with_changes"
+        ],
+        "path": "decision"
+      }
+    },
+    {
+      "check": "json_path_exists",
+      "ok": true,
+      "weight": 1.0,
+      "spec": {
+        "path": "requiredGuards.0"
+      }
+    },
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 3.0,
+      "spec": {
+        "values": [
+          "backup",
+          "rollback",
+          "reversible",
+          "snapshot",
+          "dual-write",
+          "dual write",
+          "off-peak",
+          "off peak",
+          "expand-contract",
+          "expand/contract"
+        ]
+      }
+    }
+  ],
+  "judgeScore": 0.9574999999999999,
+  "judgeDetail": {
+    "perCriterion": {
+      "risk_judgment": 0.95,
+      "specificity": 0.98
+    },
+    "rationale": "Rejects the plan and attaches all core guards\u2014verified backup+restore drill, tested rollback, expand-contract retention, off-peak, and parity gates\u2014while noting heartbeat_runs is the sole billing signal.",
+    "judgeModel": "opus"
+  },
+  "quality": 0.97875,
+  "qualityPer1kTokens": 3.3750000000000004
+}

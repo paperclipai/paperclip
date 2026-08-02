@@ -1,0 +1,58 @@
+{
+  "summary": {
+    "id": "a1fd5a27-6df0-4011-a74a-890043403056",
+    "sha256": "25809847b4b047e62e5d860cb4fbe985cfc688c9af909be8905252a866e77cc9",
+    "byteSize": 2560,
+    "originalFilename": "probe-20260730-094016-summary.json",
+    "contentType": "application/octet-stream"
+  },
+  "report": {
+    "id": "9a380338-f645-4266-a96e-8f6fd033660b",
+    "sha256": "19a54d65e1384e91dc3f4b65bce58124a6b86d38b189423729508185e3137b1e",
+    "byteSize": 5886,
+    "originalFilename": "probe-20260730-094016-report.md",
+    "contentType": "application/octet-stream"
+  },
+  "records": {
+    "id": "f92161cd-c9ac-4b8d-b04a-b1ce57a12d70",
+    "sha256": "b3bd58612655670b1f41e84a6c34c97c51ea7c6d53ba787e57abb86fd80c56b4",
+    "byteSize": 78045,
+    "originalFilename": "probe-20260730-094016-records.json",
+    "contentType": "application/octet-stream"
+  },
+  "per_task": {
+    "id": "d25e83c8-733f-4906-b154-84e38561b836",
+    "sha256": "dc9b10c351942857775b1f875f339adf4bae57b7235871c11604bc6e7d8aaf4d",
+    "byteSize": 5275,
+    "originalFilename": "probe-20260730-094016-per_task.json",
+    "contentType": "application/octet-stream"
+  },
+  "comparison": {
+    "id": "51ea19c7-17fc-48ee-b820-0b91745e6a5e",
+    "sha256": "bd489e48a26cb8b0eb9035ed05264210dae026c12ca23d7ed579e98794581fa8",
+    "byteSize": 12826,
+    "originalFilename": "r2-vs-baseline-r1-comparison.json",
+    "contentType": "application/octet-stream"
+  },
+  "outcome": {
+    "id": "853824ce-328c-4571-9f86-ea4229eaaf32",
+    "sha256": "9178f21333e3937511a8843c83a9f4945e174125756b34611dc0e9be41cd20e7",
+    "byteSize": 1901,
+    "originalFilename": "r2-outcome.json",
+    "contentType": "application/octet-stream"
+  },
+  "closeout": {
+    "id": "dc3425fc-6ab7-4470-b792-a212e0fc3d31",
+    "sha256": "66808b7bc9023f04025f495fa6905e0b19b3584da8045c98bbfafff57bd23fe3",
+    "byteSize": 2191,
+    "originalFilename": "TSBC-1527-closeout.md",
+    "contentType": "application/octet-stream"
+  },
+  "prereg": {
+    "id": "117d2ac3-ac77-4acb-b52d-214abec8d13a",
+    "sha256": "44690abe4a43b56f2ecc543d67ba9aea0671bd6016efd7695db9ca53729c53da",
+    "byteSize": 4556,
+    "originalFilename": "prereg-r2-ambiguous-ownership-clarify.json",
+    "contentType": "application/octet-stream"
+  }
+}

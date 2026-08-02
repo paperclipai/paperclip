@@ -1,0 +1,4 @@
+interface:
+  display_name: "Never Again Gates"
+  short_description: "Defect-register closeout guardrails"
+  default_prompt: "Use $never-again-gates to close a defect, review pack, or external artifact without repeating known failure classes."

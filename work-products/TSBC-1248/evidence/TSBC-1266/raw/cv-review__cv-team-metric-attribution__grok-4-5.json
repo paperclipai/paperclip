@@ -1,0 +1,77 @@
+{
+  "role": "cv-review",
+  "task_id": "cv-team-metric-attribution",
+  "task_title": "Verify team metrics without rejecting a plausible candidate",
+  "model_id": "grok-4.5",
+  "model_label": "Grok 4.5",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "ok": true,
+  "error": null,
+  "output": "{\n  \"concerns\": [\n    \"Outcome claim 'Drove 45% ARR growth and doubled activation' is misattributed: candidate built dashboards, wrote experiment readouts, and coordinated two copy tests while PM and lifecycle lead owned roadmap and launch decisions\u2014support work is inflated to ownership of squad-level results.\",\n    \"Title/level mismatch: Product Analyst (and prior Marketing Analyst) experience, not Product Manager; no evidence of owning roadmap, prioritization, launches, or growth product decisions.\",\n    \"Growth PM signal is thin: analytics/experiment support and campaign QA only; no clear ownership of activation/retention strategy, experiment design authority, or cross-functional product delivery.\",\n    \"Skills skew analyst (SQL, analytics, experimentation support, stakeholder management) without demonstrated PM competencies (strategy, discovery, roadmap ownership, shipping).\"\n  ],\n  \"recommendation\": \"reject\",\n  \"verify\": [\n    \"Exact wording on CV/resume vs. interview of the 45% ARR and doubled-activation claims and who owned those outcomes.\",\n    \"Whether candidate designed experiments or only wrote readouts/coordinated copy tests under others' decisions.\",\n    \"Any real product ownership (roadmap items, launches, OKRs) vs. pure analytics support on the growth squad.\"\n  ]\n}",
+  "model_reported": "grok-4.5",
+  "inputTokens": 167,
+  "outputTokens": 325,
+  "totalTokens": 492,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "wallMs": 16947,
+  "stderrTail": "",
+  "agentFileSha256": "none",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "4a12f7840060d3340e31887045177b943ccfc26aece2989d42f2e6f31a2b2c61",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/cv-review/suite.json",
+  "skipped": false,
+  "skipReason": null,
+  "deterministicScore": 0.625,
+  "deterministicDetails": [
+    {
+      "check": "json_valid",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {}
+    },
+    {
+      "check": "json_path_in",
+      "ok": false,
+      "weight": 3.0,
+      "spec": {
+        "values": [
+          "clarify",
+          "advance"
+        ],
+        "path": "recommendation"
+      }
+    },
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 3.0,
+      "spec": {
+        "values": [
+          "attribution",
+          "team",
+          "owned",
+          "verify",
+          "45%",
+          "ARR",
+          "activation",
+          "roadmap",
+          "PM",
+          "lifecycle"
+        ]
+      }
+    }
+  ],
+  "judgeScore": 0.45,
+  "judgeDetail": {
+    "perCriterion": {
+      "metric_attribution": 0.45
+    },
+    "rationale": "It correctly flags the attribution overclaim and asks to verify actual contribution, but the criterion explicitly says not to reject solely on attribution\u2014yet the answer recommends 'reject,' violating the required clarify/advance-with-verification disposition.",
+    "judgeModel": "opus"
+  },
+  "quality": 0.5375,
+  "qualityPer1kTokens": 1.092479674796748
+}

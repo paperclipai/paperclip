@@ -1,0 +1,69 @@
+{
+  "role": "ceo",
+  "task_id": "ceo-catch-false-success",
+  "task_title": "Catch a deliverable that reports success but failed",
+  "model_id": "grok-4.5",
+  "model_label": "Grok 4.5",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "ok": true,
+  "error": null,
+  "output": "{\"accept\": false, \"reason\": \"Claimed success is contradicted by evidence: publish API returned HTTP 500, pasted post URL returns 404, and run log ends with 'retry 3/3 failed'.\", \"action\": \"Reject the deliverable; re-run publish with working credentials/endpoint, verify a live non-404 post URL, and only then mark success.\"}",
+  "model_reported": "grok-4.5",
+  "inputTokens": 118,
+  "outputTokens": 81,
+  "totalTokens": 199,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "wallMs": 7940,
+  "stderrTail": "",
+  "agentFileSha256": "none",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "7b79fdf5d2ce80570fcfa85a1d04cd2c61e7093b8d2d1c735f7c4a07197a28c3",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/ceo/suite.json",
+  "skipped": false,
+  "skipReason": null,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "json_valid",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {}
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 5.0,
+      "spec": {
+        "value": false,
+        "path": "accept"
+      }
+    },
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {
+        "values": [
+          "500",
+          "404",
+          "retry",
+          "failed",
+          "evidence"
+        ]
+      }
+    }
+  ],
+  "judgeScore": 0.98,
+  "judgeDetail": {
+    "perCriterion": {
+      "verification": 0.98
+    },
+    "rationale": "Correctly rejects, cites all three contradicting evidence items (HTTP 500, 404 URL, retry 3/3 failed), and prescribes a re-run-then-verify action with no hedging.",
+    "judgeModel": "opus"
+  },
+  "quality": 0.99,
+  "qualityPer1kTokens": 4.974874371859296
+}

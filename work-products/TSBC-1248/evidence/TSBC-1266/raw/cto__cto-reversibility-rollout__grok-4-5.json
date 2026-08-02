@@ -1,0 +1,74 @@
+{
+  "role": "cto",
+  "task_id": "cto-reversibility-rollout",
+  "task_title": "Choose a reversible rollout over a risky big-bang",
+  "model_id": "grok-4.5",
+  "model_label": "Grok 4.5",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "ok": true,
+  "error": null,
+  "output": "{\"plan\":\"B\",\"reason\":\"Dispatch touches every agent; big-bang risks fleet-wide outage. Feature flag lets you ramp, compare, and prove the new loop before deleting the old path.\",\"rollbackPlan\":\"Flip the runtime flag OFF to restore the old dispatch path instantly.\"}",
+  "model_reported": "grok-4.5",
+  "inputTokens": 178,
+  "outputTokens": 66,
+  "totalTokens": 244,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "wallMs": 7136,
+  "stderrTail": "",
+  "agentFileSha256": "none",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "9178417ea7411729ec604cd6f0f72637a785d4d0f99ddd564fdfd0d4d603c31d",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/cto/suite.json",
+  "skipped": false,
+  "skipReason": null,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "json_valid",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {}
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 5.0,
+      "spec": {
+        "value": "B",
+        "path": "plan"
+      }
+    },
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {
+        "values": [
+          "flag",
+          "flip",
+          "toggle",
+          "old path",
+          "ramp",
+          "instant",
+          "revert",
+          "roll back",
+          "rollback"
+        ]
+      }
+    }
+  ],
+  "judgeScore": 0.9424999999999999,
+  "judgeDetail": {
+    "perCriterion": {
+      "judgment": 0.95,
+      "reasoning": 0.92
+    },
+    "rationale": "Picks Plan B with a fast, concrete flag-flip rollback to the retained old path, and the reason explicitly cites fleet-wide blast radius and proving before deletion.",
+    "judgeModel": "opus"
+  },
+  "quality": 0.97125,
+  "qualityPer1kTokens": 3.9805327868852456
+}

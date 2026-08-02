@@ -1,0 +1,91 @@
+{
+  "role": "cv-review",
+  "task_id": "cv-title-inflation-gap",
+  "task_title": "Catch seniority inflation + an unexplained gap",
+  "model_id": "grok-4.5",
+  "model_label": "Grok 4.5",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "ok": true,
+  "error": null,
+  "output": "{\"concerns\": [\"Total experience ~2.5 years vs required 5+ years\", \"Title inflation: CV title 'Senior Lead Backend Engineer' but actual roles are Backend Engineer and Junior Developer\", \"No end-to-end ownership signal: 'one senior reviewed all my PRs' indicates supervised IC work, not owning services\", \"Thin/vague skills: only Node.js, Postgres, and unsubstantiated 'led architecture' claim that conflicts with heavy PR oversight\", \"Scope described is narrow (REST endpoints, bug fixes) with no evidence of system design, production ownership, on-call, scalability, or mentoring expected at senior level\", \"Career timeline too junior for the bar (grad 2020 \u2192 junior 2021 \u2192 mid-level backend 2022\u2013present)\"], \"recommendation\": \"reject\"}",
+  "model_reported": "grok-4.5",
+  "inputTokens": 141,
+  "outputTokens": 184,
+  "totalTokens": 325,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "wallMs": 13452,
+  "stderrTail": "",
+  "agentFileSha256": "none",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "4a12f7840060d3340e31887045177b943ccfc26aece2989d42f2e6f31a2b2c61",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/cv-review/suite.json",
+  "skipped": false,
+  "skipReason": null,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "json_valid",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {}
+    },
+    {
+      "check": "json_path_in",
+      "ok": true,
+      "weight": 3.0,
+      "spec": {
+        "values": [
+          "clarify",
+          "reject"
+        ],
+        "path": "recommendation"
+      }
+    },
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {
+        "values": [
+          "title",
+          "senior",
+          "lead",
+          "inflat",
+          "scope",
+          "level",
+          "2 y",
+          "2.5",
+          "experience"
+        ]
+      }
+    },
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {
+        "values": [
+          "gap",
+          "2021",
+          "Jul",
+          "Sep 2022",
+          "14 month",
+          "year"
+        ]
+      }
+    }
+  ],
+  "judgeScore": 0.4000000000000001,
+  "judgeDetail": {
+    "perCriterion": {
+      "catches_both": 0.4
+    },
+    "rationale": "Nails the title/seniority inflation and no-ownership issue and correctly rejects, but never flags the ~14-month Jul-2021\u2192Sep-2022 employment gap, one of the two planted issues.",
+    "judgeModel": "opus"
+  },
+  "quality": 0.7000000000000001,
+  "qualityPer1kTokens": 2.153846153846154
+}

@@ -1,0 +1,82 @@
+{
+  "role": "auditor",
+  "task_id": "aud-legit-pass-with-evidence",
+  "task_title": "Pass a deliverable that genuinely meets every AC (don't over-block)",
+  "model_id": "grok-4.5",
+  "model_label": "Grok 4.5",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "ok": true,
+  "error": null,
+  "output": "{\"verdict\": \"pass\", \"acStatus\": {\"AC-1\": \"met\", \"AC-2\": \"met\", \"AC-3\": \"met\"}, \"evidence\": \"AC-1: create path tested and returns 201; tests pass and code matches. AC-2: second create with same idempotency key returns 200, row count remains 1, returned id identical \u2014 same row, no duplicate; tests pass and code matches. AC-3: malformed body returns 400 with validation error; tests pass and code matches. No other ACs; nothing out of scope.\"}",
+  "model_reported": "grok-4.5",
+  "inputTokens": 241,
+  "outputTokens": 110,
+  "totalTokens": 351,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "wallMs": 8742,
+  "stderrTail": "",
+  "agentFileSha256": "none",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "2a04b6f827eda607af0693e4fbbe2fe425b9ea1c5fb0574b0550ceaac640d913",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/auditor/suite.json",
+  "skipped": false,
+  "skipReason": null,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "json_valid",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {}
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 5.0,
+      "spec": {
+        "value": "pass",
+        "path": "verdict"
+      }
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 1.0,
+      "spec": {
+        "value": "met",
+        "path": "acStatus.AC-1"
+      }
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {
+        "value": "met",
+        "path": "acStatus.AC-2"
+      }
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 1.0,
+      "spec": {
+        "value": "met",
+        "path": "acStatus.AC-3"
+      }
+    }
+  ],
+  "judgeScore": 0.9,
+  "judgeDetail": {
+    "perCriterion": {
+      "calibrated_pass": 0.9
+    },
+    "rationale": "Correctly passes all three ACs and cites the concrete AC-2 assertions (row count remains 1, identical id), though the per-AC evidence leans partly on generic 'tests pass and code matches' rather than naming each specific assertion for AC-1/AC-3.",
+    "judgeModel": "opus"
+  },
+  "quality": 0.95,
+  "qualityPer1kTokens": 2.7065527065527064
+}

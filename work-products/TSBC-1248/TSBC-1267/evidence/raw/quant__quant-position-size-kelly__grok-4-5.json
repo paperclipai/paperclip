@@ -1,0 +1,91 @@
+{
+  "role": "quant",
+  "task_id": "quant-position-size-kelly",
+  "task_title": "Size a position under two binding risk caps (math)",
+  "model_id": "grok-4.5",
+  "model_label": "Grok 4.5",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "ok": true,
+  "error": null,
+  "output": "{\"riskLimitShares\": 600, \"notionalLimitShares\": 266, \"bindingLimit\": \"notional\", \"maxShares\": 266, \"maxRiskUsd\": 79.80}",
+  "model_reported": "grok-4.5",
+  "inputTokens": 239,
+  "outputTokens": 29,
+  "totalTokens": 268,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "wallMs": 13381,
+  "stderrTail": "",
+  "agentFileSha256": "none",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "32b3563885d9e20631634bbef99975027564a4a43c6c29a6e45c153467654e2e",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/quant/suite.json",
+  "skipped": false,
+  "skipReason": null,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "json_valid",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {}
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {
+        "value": 600,
+        "path": "riskLimitShares"
+      }
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {
+        "value": 266,
+        "path": "notionalLimitShares"
+      }
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 3.0,
+      "spec": {
+        "value": "notional",
+        "path": "bindingLimit"
+      }
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 4.0,
+      "spec": {
+        "value": 266,
+        "path": "maxShares"
+      }
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {
+        "value": 79.8,
+        "path": "maxRiskUsd"
+      }
+    }
+  ],
+  "judgeScore": 1.0,
+  "judgeDetail": {
+    "perCriterion": {
+      "risk_math": 1.0
+    },
+    "rationale": "All values exactly match the correct answer: riskLimitShares 600, notionalLimitShares 266 (floored), notional binds, maxShares 266, maxRiskUsd 79.80 with no conflation of the two per-share figures.",
+    "judgeModel": "claude-opus-4-8"
+  },
+  "quality": 1.0,
+  "qualityPer1kTokens": 3.731343283582089
+}

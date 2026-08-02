@@ -1,0 +1,73 @@
+{
+  "role": "ledger",
+  "task_id": "ledger-q-per-1k-out",
+  "task_title": "Pick the more cost-efficient agent on quality-per-1k-output-tokens",
+  "model_id": "grok-4.5",
+  "model_label": "Grok 4.5",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "ok": true,
+  "error": null,
+  "output": "{\"qPer1kA\": 0.6, \"qPer1kB\": 1.4, \"pick\": \"B\", \"why\": \"B yields higher quality per 1k output tokens (1.4 vs 0.6), so more cost-efficient.\"}",
+  "model_reported": "grok-4.5",
+  "inputTokens": 121,
+  "outputTokens": 34,
+  "totalTokens": 155,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "wallMs": 12493,
+  "stderrTail": "",
+  "agentFileSha256": "none",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "22a4d94c78402d54f39f0cd1b4eb6a12005acecfa3e2d429551928eca686300e",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/ledger/suite.json",
+  "skipped": false,
+  "skipReason": null,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "json_valid",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {}
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 3.0,
+      "spec": {
+        "value": 0.6,
+        "path": "qPer1kA"
+      }
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 3.0,
+      "spec": {
+        "value": 1.4,
+        "path": "qPer1kB"
+      }
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 4.0,
+      "spec": {
+        "value": "B",
+        "path": "pick"
+      }
+    }
+  ],
+  "judgeScore": 1.0,
+  "judgeDetail": {
+    "perCriterion": {
+      "reasoning": 1.0
+    },
+    "rationale": "Both q/1k-out values correct (0.6, 1.4), picks B on efficiency, and the why cites quality-per-output-token rather than raw quality.",
+    "judgeModel": "opus"
+  },
+  "quality": 1.0,
+  "qualityPer1kTokens": 6.451612903225807
+}

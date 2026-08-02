@@ -1,0 +1,41 @@
+[preflight] served_head=7439bc49747bb6fd3b3615c37bc195447c985f56
+[preflight] eda7c53dc is an ancestor of served HEAD
+[preflight] initial health: {"status":"ok","version":"2026.722.0+344.git.7439bc497.dirty","serverVersion":"2026.722.0+344.git.7439bc497.dirty","deploymentMode":"local_trusted","deploymentExposure":"private","authReady":true,"bootstrapStatus":"ready","bootstrapInviteActive":false,"features":{"companyDeletionEnabled":true},"instance":{"sourceDir":"/Users/glad0s/paperclip/server","commit":"7439bc497","pid":72592,"startedAt":"2026-08-01T21:01:02.082Z"},"serverInfo":{"processStartedAt":"2026-08-01T20:55:29.280Z","git":{"available":true,"fullSha":"7439bc49747bb6fd3b3615c37bc195447c985f56","shortSha":"7439bc497","branchName":"live","subject":"fix(recovery): exempt standing anchors","committedAt":"2026-08-01T19:43:35.000Z","localChanges":{"available":true,"hasLocalChanges":true,"stagedFileCount":0,"unstagedFileCount":94,"untrackedFileCount":86}}},"databaseBackup":{"enabled":true,"status":"ok","backupDir":"/Users/glad0s/.paperclip/instances/default/data/backups","maxAgeHours":26,"latestBackup":{"name":"paperclip-20260801-212456.sql.gz","path":"/Users/glad0s/.paperclip/instances/default/data/backups/paperclip-20260801-212456.sql.gz","mtime":"2026-08-01T20:30:46.181Z","ageHours":0.5,"sizeBytes":3514555622},"lastFailure":null,"warnings":[]}}
+[lifecycle] booting out managed source service gui/501/ie.thinkstack.paperclip-source
+[holder] binding :3100 and releasing it after 4000ms
+[holder] bound 3100
+[server] starting served tree directly with PORT=3100 PAPERCLIP_PORT_WAIT_MS=10000
+[server] isolated tsx TMPDIR=/var/folders/_d/wj54v8k12s11fy0fh8gfh3y80000gn/T/paperclip-run-tsmc-18987-8b0e1152-dcc-AhoNv0/tsx-race.IXGCFj
+
+> paperclip@ dev /Users/glad0s/paperclip
+> pnpm --filter @paperclipai/server exec tsx ../scripts/dev-runner.ts watch
+
+[paperclip] dev mode: local_trusted (default)
+node:net:1886
+      const error = new UVExceptionWithHostPort(rval, 'listen', address, port);
+                    ^
+
+Error: listen EADDRINUSE: address already in use /var/folders/_d/wj54v8k12s11fy0fh8gfh3y80000gn/T/paperclip-run-tsmc-18987-8b0e1152-dcc-AhoNv0/tsx-race.IXGCFj/tsx-501/87638.pipe
+    at Server.setupListenHandle [as _listen2] (node:net:1886:21)
+    at listenInCluster (node:net:1965:12)
+    at Server.listen (node:net:2084:5)
+    at file:///Users/glad0s/paperclip/node_modules/.pnpm/tsx@4.23.1/node_modules/tsx/dist/cli.mjs:53:31472
+    at new Promise (<anonymous>)
+    at createIpcServer (file:///Users/glad0s/paperclip/node_modules/.pnpm/tsx@4.23.1/node_modules/tsx/dist/cli.mjs:53:31450)
+    at async file:///Users/glad0s/paperclip/node_modules/.pnpm/tsx@4.23.1/node_modules/tsx/dist/cli.mjs:55:500 {
+  code: 'EADDRINUSE',
+  errno: -48,
+  syscall: 'listen',
+  address: '/var/folders/_d/wj54v8k12s11fy0fh8gfh3y80000gn/T/paperclip-run-tsmc-18987-8b0e1152-dcc-AhoNv0/tsx-race.IXGCFj/tsx-501/87638.pipe',
+  port: -1
+}
+
+Node.js v20.20.2
+undefined
+/Users/glad0s/paperclip/server:
+ ERR_PNPM_RECURSIVE_EXEC_FIRST_FAIL  Command failed with exit code 1: tsx ../scripts/dev-runner.ts watch
+ ELIFECYCLE  Command failed with exit code 1.
+[blocker] direct served-tree dev process exited before proof
+[cleanup] status=22
+[cleanup] stopping temporary holder 87464
+[cleanup] restoring managed source service

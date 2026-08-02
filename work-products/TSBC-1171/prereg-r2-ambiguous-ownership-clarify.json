@@ -1,0 +1,99 @@
+{
+  "issue": "TSBC-1171",
+  "stage": "agent-file-optimize",
+  "revision": "r2",
+  "createdAt": "2026-07-30",
+  "authorAgent": "Bench-Manager",
+  "hypothesis": "R1's only low-tail failure is over-rejecting a plausible adjacent candidate when ownership and impact are ambiguous. Adding one general threshold rule that ambiguous ownership with adjacent evidence should be clarified, not rejected, should improve low-tail quality without changing factual restraint or suite controls.",
+  "variableChanged": "Added one recommendation-threshold rule: when the CV shows adjacent relevant work but ownership or impact is unclear, choose clarify with targeted checks instead of reject; do not turn uncertainty into a negative fact.",
+  "nonBehavioralLabelChange": "The file header labels the candidate as R2; the substantive operating change is the single threshold rule above.",
+  "frozenControls": {
+    "model": "grok-4.5",
+    "adapterType": "hermes_local",
+    "runnerAgentName": "Bench-grok-4.5-hermes-clean",
+    "runnerAgentId": "07080a39-0255-48af-9b39-2a9a4589f182",
+    "desiredSkills": [],
+    "exclude": [
+      "Hermes rules",
+      "memory",
+      "SOUL",
+      "global skills",
+      "persistent-session contamination"
+    ],
+    "developmentSuitePath": "/Users/glad0s/paperclip/benchmark/cv-review/suite.json",
+    "developmentSuiteSha256": "4a12f7840060d3340e31887045177b943ccfc26aece2989d42f2e6f31a2b2c61",
+    "taskIds": [
+      "cv-title-inflation-gap",
+      "cv-unsubstantiated-metrics",
+      "cv-role-mismatch",
+      "cv-clean-calibration",
+      "cv-date-inconsistency",
+      "cv-pii-overshare",
+      "cv-benign-contract-overlap",
+      "cv-explained-career-break",
+      "cv-keyword-stuffed-role-mismatch",
+      "cv-team-metric-attribution"
+    ],
+    "repetitionsPerCase": 3,
+    "holdoutVisibleToTuner": false,
+    "suitePromptScorerThresholdEdits": false
+  },
+  "candidate": {
+    "path": "work-products/TSBC-1171/candidates/r2-ambiguous-ownership-clarify.md",
+    "sha256": "fd189e4b279ac47e366984b2ab9f1b8c1b4782cc2433cd91d77ee3c19da0c7bf",
+    "description": "R1 lean zero-skill operating file plus one general clarify-over-reject threshold for ambiguous ownership or impact with adjacent evidence."
+  },
+  "priorEvidence": {
+    "bareBaseline": {
+      "sourceIssue": "TSBC-1170",
+      "probeId": "probe-20260730-040556",
+      "meanQuality": 0.897420634920635,
+      "minQuality": 0.3333333333333333,
+      "meanOutputTokens": 244.86666666666667,
+      "elapsedSec": 847.4,
+      "evidencePath": "work-products/TSBC-1331/evidence/1170-outcome.json"
+    },
+    "r1": {
+      "sourceIssue": "TSBC-1176",
+      "probeId": "probe-20260730-090121",
+      "meanQuality": 0.9625,
+      "minQuality": 0.625,
+      "meanOutputTokens": 160.06666666666666,
+      "meanInputTokens": 511.3,
+      "elapsedSec": 822.3,
+      "agentFileSha256": "28da1e97d8a312aca0cd50602d712ffb8a243d0f564213632b72374c7371ab04",
+      "weakTask": "cv-team-metric-attribution",
+      "weakTaskObservedFailure": "All three r1 samples selected reject; deterministic scorer accepted clarify or advance and all three otherwise passed JSON and keyword evidence checks.",
+      "evidencePath": "work-products/TSBC-1176/probe-20260730-090121/"
+    }
+  },
+  "acceptanceRule": {
+    "replaceIncumbentIf": ">= +0.03 mean lift over the bare baseline, or equal quality with material efficiency gain and no low-tail loss.",
+    "candidateComparison": "R2 must beat or tie R1 without new hard-gate failures before replacing R1 as the lean agent-file winner.",
+    "doNotReplaceIf": [
+      "Any fabricated-facts failure appears",
+      "Mean quality falls below R1 without a material efficiency win accepted by the manager",
+      "Low-tail quality regresses below R1",
+      "Fresh/cache/output tokens, latency, or tool-call cost worsen without quality justification"
+    ]
+  },
+  "plannedRun": {
+    "serialChildTitle": "[CV ladder 3/6 run 02] Clean Hermes execution - r2 ambiguous ownership clarify",
+    "minimumRepetitionsPerCase": 3,
+    "mustGenerateThrough": "Bench-grok-4.5-hermes-clean using hermes_local",
+    "managerMayNotGenerateOutputs": true,
+    "expectedArtifacts": [
+      "raw outputs",
+      "records.json",
+      "per_task.json",
+      "summary.json",
+      "report.md",
+      "requested and served model/provider/adapter",
+      "effective prompt or session evidence showing the candidate file hash and desiredSkills empty",
+      "fresh/cache/output tokens",
+      "latency",
+      "tool calls",
+      "failures and rejection reasons"
+    ]
+  }
+}

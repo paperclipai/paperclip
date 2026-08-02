@@ -1,0 +1,102 @@
+[preflight] served_head=7439bc49747bb6fd3b3615c37bc195447c985f56
+[preflight] eda7c53dc is an ancestor of served HEAD
+[preflight] initial health: {"status":"ok","version":"2026.722.0+344.git.7439bc497.dirty","serverVersion":"2026.722.0+344.git.7439bc497.dirty","deploymentMode":"local_trusted","deploymentExposure":"private","authReady":true,"bootstrapStatus":"ready","bootstrapInviteActive":false,"features":{"companyDeletionEnabled":true},"instance":{"sourceDir":"/Users/glad0s/paperclip/server","commit":"7439bc497","pid":88567,"startedAt":"2026-08-01T21:16:17.200Z"},"serverInfo":{"processStartedAt":"2026-08-01T21:02:01.460Z","git":{"available":true,"fullSha":"7439bc49747bb6fd3b3615c37bc195447c985f56","shortSha":"7439bc497","branchName":"live","subject":"fix(recovery): exempt standing anchors","committedAt":"2026-08-01T19:43:35.000Z","localChanges":{"available":true,"hasLocalChanges":true,"stagedFileCount":0,"unstagedFileCount":94,"untrackedFileCount":86}}},"databaseBackup":{"enabled":true,"status":"ok","backupDir":"/Users/glad0s/.paperclip/instances/default/data/backups","maxAgeHours":26,"latestBackup":{"name":"paperclip-20260801-212456.sql.gz","path":"/Users/glad0s/.paperclip/instances/default/data/backups/paperclip-20260801-212456.sql.gz","mtime":"2026-08-01T20:30:46.181Z","ageHours":0.8,"sizeBytes":3514555622},"lastFailure":null,"warnings":[]}}
+[lifecycle] booting out managed source service gui/501/ie.thinkstack.paperclip-source
+[holder] binding :3100 and releasing it after 8000ms
+[holder] bound 3100
+[server] starting served tree's server entrypoint directly with PORT=3100 PAPERCLIP_PORT_WAIT_MS=30000
+[22:16:23] [32mINFO[39m: [36mLoading external adapter package[39m [90m{"packageName":"/Users/glad0s/.paperclip/local-adapter-plugins/paperclip-shell-handler-adapter","packageDir":"/Users/glad0s/.paperclip/local-adapter-plugins/paperclip-shell-handler-adapter","entryPoint":"./index.js","modulePath":"/Users/glad0s/.paperclip/local-adapter-plugins/paperclip-shell-handler-adapter/index.js","hasUiParser":false}[39m
+[22:16:24] [32mINFO[39m: [36mLoaded external adapters from plugin store[39m [90m{"count":1,"adapters":["paperclip_shell_handler"]}[39m
+[22:16:24] [32mINFO[39m: [36mUsing external PostgreSQL via DATABASE_URL/config[39m
+[22:16:24] [33mWARN[39m: [36mRequested port 3100 is busy; waiting up to 30000ms for it to free (usually the outgoing process during a restart).[39m
+[22:16:25] [32mINFO[39m: [36mRequested port 3100 became available; binding it.[39m
+curl: (7) Failed to connect to 127.0.0.1 port 3100 after 0 ms: Couldn't connect to server
+[22:16:26] [32mINFO[39m: [36mplugin job coordinator started — listening to lifecycle events[39m [90m{"service":"plugin-job-coordinator"}[39m
+[22:16:26] [32mINFO[39m: [36mplugin job scheduler started[39m [90m{"service":"plugin-job-scheduler","tickIntervalMs":30000,"maxConcurrentJobs":10}[39m
+[22:16:26] [32mINFO[39m: [36minitializing plugin tool dispatcher[39m [90m{"service":"plugin-tool-dispatcher"}[39m
+[22:16:26] [32mINFO[39m: [36mplugin-dev-watcher: initialized[39m [90m{"service":"plugin-dev-watcher","resolvesInstalledPlugins":true}[39m
+[22:16:26] [32mINFO[39m: [36mworktree run-execution cutoff state[39m [90m{"state":"disarmed","cutoff":null}[39m
+[22:16:26] [32mINFO[39m: [36mbundled plugin bundle not present; skipping auto-install[39m [90m{"pluginKey":"paperclip.kubernetes-sandbox-provider","pluginPath":"/app/packages/plugins/sandbox-providers/kubernetes"}[39m
+[22:16:26] [32mINFO[39m: [36mplugin-loader: loading all ready plugins[39m [90m{"service":"plugin-loader"}[39m
+[22:16:26] [32mINFO[39m: [36mplugin-loader: found ready plugins to load[39m [90m{"service":"plugin-loader","count":1}[39m
+[22:16:26] [32mINFO[39m: [36mplugin-loader: activating plugin[39m [90m{"service":"plugin-loader","pluginId":"26495964-59d5-4bbd-8290-1d6f4867227a","pluginKey":"thinkstack.mc-liveness","version":"0.1.0"}[39m
+[22:16:26] [32mINFO[39m: [36mloaded tools from ready plugins[39m [90m{"service":"plugin-tool-dispatcher","readyPlugins":1,"registeredTools":0}[39m
+[22:16:26] [32mINFO[39m: [36mplugin tool dispatcher initialized[39m [90m{"service":"plugin-tool-dispatcher","totalTools":0}[39m
+[22:16:26] [32mINFO[39m: [36mstarting plugin worker[39m [90m{"service":"plugin-worker-manager","pluginId":"26495964-59d5-4bbd-8290-1d6f4867227a"}[39m
+[22:16:26] [32mINFO[39m: [36mstartup reap of orphaned heartbeat runs complete[39m [90m{"reaped":0,"runIds":[]}[39m
+curl: (7) Failed to connect to 127.0.0.1 port 3100 after 0 ms: Couldn't connect to server
+[22:16:26] [32mINFO[39m: [36mworker process started and initialized[39m [90m{"service":"plugin-worker","pluginId":"26495964-59d5-4bbd-8290-1d6f4867227a"}[39m
+[22:16:26] [32mINFO[39m: [36mplugin-loader: worker started[39m [90m{"service":"plugin-loader","pluginId":"26495964-59d5-4bbd-8290-1d6f4867227a","pluginKey":"thinkstack.mc-liveness"}[39m
+[22:16:26] [32mINFO[39m: [36mplugin-loader: webhook endpoints declared in manifest[39m [90m{"service":"plugin-loader","pluginId":"26495964-59d5-4bbd-8290-1d6f4867227a","pluginKey":"thinkstack.mc-liveness","webhooks":1}[39m
+[22:16:26] [32mINFO[39m: [36mplugin-loader: plugin activated successfully[39m [90m{"service":"plugin-loader","pluginId":"26495964-59d5-4bbd-8290-1d6f4867227a","pluginKey":"thinkstack.mc-liveness","version":"0.1.0","registered":{"worker":true,"eventSubscriptions":0,"jobs":0,"webhooks":1,"tools":0}}[39m
+[22:16:26] [32mINFO[39m: [36mplugin-loader: loadAll complete[39m [90m{"service":"plugin-loader","total":1,"succeeded":1,"failed":0}[39m
+[22:16:26] [32mINFO[39m: [36mplugin-dev-watcher: watching local plugin for changes[39m [90m{"service":"plugin-dev-watcher","pluginId":"26495964-59d5-4bbd-8290-1d6f4867227a","packagePath":"/Users/glad0s/dev/paperclip-plugins/mc-liveness","watchTargets":[{"path":"/Users/glad0s/dev/paperclip-plugins/mc-liveness/dist/manifest.js","kind":"file"},{"path":"/Users/glad0s/dev/paperclip-plugins/mc-liveness/dist/ui/index.js","kind":"file"},{"path":"/Users/glad0s/dev/paperclip-plugins/mc-liveness/dist/worker.js","kind":"file"},{"path":"/Users/glad0s/dev/paperclip-plugins/mc-liveness/package.json","kind":"file"}]}[39m
+curl: (7) Failed to connect to 127.0.0.1 port 3100 after 0 ms: Couldn't connect to server
+curl: (7) Failed to connect to 127.0.0.1 port 3100 after 0 ms: Couldn't connect to server
+curl: (7) Failed to connect to 127.0.0.1 port 3100 after 3 ms: Couldn't connect to server
+curl: (7) Failed to connect to 127.0.0.1 port 3100 after 0 ms: Couldn't connect to server
+curl: (7) Failed to connect to 127.0.0.1 port 3100 after 1 ms: Couldn't connect to server
+curl: (7) Failed to connect to 127.0.0.1 port 3100 after 0 ms: Couldn't connect to server
+curl: (7) Failed to connect to 127.0.0.1 port 3100 after 1 ms: Couldn't connect to server
+curl: (7) Failed to connect to 127.0.0.1 port 3100 after 2 ms: Couldn't connect to server
+curl: (7) Failed to connect to 127.0.0.1 port 3100 after 0 ms: Couldn't connect to server
+curl: (7) Failed to connect to 127.0.0.1 port 3100 after 0 ms: Couldn't connect to server
+curl: (7) Failed to connect to 127.0.0.1 port 3100 after 0 ms: Couldn't connect to server
+curl: (7) Failed to connect to 127.0.0.1 port 3100 after 0 ms: Couldn't connect to server
+curl: (7) Failed to connect to 127.0.0.1 port 3100 after 0 ms: Couldn't connect to server
+curl: (7) Failed to connect to 127.0.0.1 port 3100 after 0 ms: Couldn't connect to server
+curl: (7) Failed to connect to 127.0.0.1 port 3100 after 0 ms: Couldn't connect to server
+curl: (7) Failed to connect to 127.0.0.1 port 3100 after 0 ms: Couldn't connect to server
+curl: (7) Failed to connect to 127.0.0.1 port 3100 after 4 ms: Couldn't connect to server
+curl: (7) Failed to connect to 127.0.0.1 port 3100 after 0 ms: Couldn't connect to server
+curl: (7) Failed to connect to 127.0.0.1 port 3100 after 0 ms: Couldn't connect to server
+curl: (7) Failed to connect to 127.0.0.1 port 3100 after 0 ms: Couldn't connect to server
+curl: (7) Failed to connect to 127.0.0.1 port 3100 after 0 ms: Couldn't connect to server
+[22:16:32] [33mWARN[39m: [36mstartup reconciliation of built-in agents complete[39m [90m{"scanned":16,"reconciled":16,"unknown":0,"duplicates":0,"autoEnsured":16,"pendingApprovals":0,"defaultGrantsEnsured":20}[39m
+curl: (7) Failed to connect to 127.0.0.1 port 3100 after 0 ms: Couldn't connect to server
+curl: (7) Failed to connect to 127.0.0.1 port 3100 after 0 ms: Couldn't connect to server
+curl: (7) Failed to connect to 127.0.0.1 port 3100 after 0 ms: Couldn't connect to server
+curl: (7) Failed to connect to 127.0.0.1 port 3100 after 0 ms: Couldn't connect to server
+curl: (7) Failed to connect to 127.0.0.1 port 3100 after 0 ms: Couldn't connect to server
+curl: (7) Failed to connect to 127.0.0.1 port 3100 after 0 ms: Couldn't connect to server
+curl: (7) Failed to connect to 127.0.0.1 port 3100 after 0 ms: Couldn't connect to server
+
+[36m██████╗  █████╗ ██████╗ ███████╗██████╗  ██████╗██╗     ██╗██████╗ [0m
+[36m██╔══██╗██╔══██╗██╔══██╗██╔════╝██╔══██╗██╔════╝██║     ██║██╔══██╗[0m
+[36m██████╔╝███████║██████╔╝█████╗  ██████╔╝██║     ██║     ██║██████╔╝[0m
+[36m██╔═══╝ ██╔══██║██╔═══╝ ██╔══╝  ██╔══██╗██║     ██║     ██║██╔═══╝ [0m
+[36m██║     ██║  ██║██║     ███████╗██║  ██║╚██████╗███████╗██║██║     [0m
+[36m╚═╝     ╚═╝  ╚═╝╚═╝     ╚══════╝╚═╝  ╚═╝ ╚═════╝╚══════╝╚═╝╚═╝     [0m
+[34m  ───────────────────────────────────────────────────────[0m
+[2mMode            [0m [33mexternal-postgres[0m  |  [35mstatic-ui[0m
+[2mDeploy          [0m local_trusted (private)
+[2mBind            [0m loopback [2m(127.0.0.1)[0m
+[2mAuth            [0m [32mready[0m
+[2mServer          [0m 3100
+[2mAPI             [0m http://127.0.0.1:3100/api [2m(health: http://127.0.0.1:3100/api/health)[0m
+[2mUI              [0m http://127.0.0.1:3100
+[2mDatabase        [0m postgres://paperclip:***@127.0.0.1:54329/paperclip
+[2mMigrations      [0m already applied
+[2mAgent JWT       [0m [32mset[0m
+[2mHeartbeat       [0m enabled [2m(30000ms)[0m
+[2mDB Backup       [0m enabled [2m(every 60m, keep 30d)[0m
+[2mBackup Dir      [0m /Users/glad0s/.paperclip/instances/default/data/backups
+[2mConfig          [0m /Users/glad0s/.paperclip/instances/default/config.json
+[34m  ───────────────────────────────────────────────────────[0m
+
+[proof] health captured at /Users/glad0s/paperclip/work-products/TSMC-18923/restart-race-20260801T211616Z-health.json
+[22:16:24] [33mWARN[39m: [36mRequested port 3100 is busy; waiting up to 30000ms for it to free (usually the outgoing process during a restart).[39m
+[22:16:25] [32mINFO[39m: [36mRequested port 3100 became available; binding it.[39m
+[proof] health status=ok port=3100 servedCommit=7439bc497 pid=71441
+[proof] PASS
+[cleanup] status=0
+[cleanup] stopping direct served-tree dev process group 71428
+[22:16:35] [32mINFO[39m: [36mAutomatic database backups enabled[39m [90m{"intervalMinutes":60,"retentionSource":"instance-settings-db","backupDir":"/Users/glad0s/.paperclip/instances/default/data/backups"}[39m
+[22:16:35] [32mINFO[39m: [36mServer listening on 127.0.0.1:3100[39m
+[22:16:37] [32mINFO[39m: [36mGET /companies/cefbbf68-0ca7-4383-967e-03bc1b037ae7/agents 200[39m
+[22:16:37] [32mINFO[39m: [36mGET /companies/cefbbf68-0ca7-4383-967e-03bc1b037ae7/agents 200[39m
+[22:16:37] [32mINFO[39m: [36mGET /companies/cefbbf68-0ca7-4383-967e-03bc1b037ae7/heartbeat-runs?status=failed&limit=100 200[39m
+[22:16:37] [32mINFO[39m: [36mGET /companies/cefbbf68-0ca7-4383-967e-03bc1b037ae7/agents 200[39m
+[22:16:37] [32mINFO[39m: [36mGET /companies/cefbbf68-0ca7-4383-967e-03bc1b037ae7/issues?status=todo%2Cin_progress%2Cin_review%2Cblocked&limit=200&sortField=updated&sortDir=desc&excludeRoutineExecutions=1 200[39m
+[cleanup] stopping temporary holder 71425
+[cleanup] restoring managed source service

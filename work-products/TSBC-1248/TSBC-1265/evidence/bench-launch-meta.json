@@ -1,0 +1,32 @@
+{
+  "launchedAt": "2026-07-25T20:50:09+00:00",
+  "HERMES_HOME": "/Users/glad0s/paperclip/work-products/TSBC-1248/TSBC-1265/hermes-clean-profile/.hermes",
+  "HERMES_IGNORE_RULES": "1",
+  "config": "/Users/glad0s/paperclip/work-products/TSBC-1248/TSBC-1265/evidence/config-r1-hermes-grok-4.5.json",
+  "roles": [
+    "ceo",
+    "ops",
+    "content"
+  ],
+  "model": "grok-4.5",
+  "judge": "claude-opus",
+  "preRunHome": [
+    ".env",
+    ".skills_prompt_snapshot.json",
+    "audio_cache",
+    "auth",
+    "auth.json",
+    "auth.lock",
+    "cache",
+    "config.yaml",
+    "cron",
+    "hooks",
+    "image_cache",
+    "logs",
+    "models_dev_cache.json",
+    "pairing",
+    "sessions",
+    "state.db"
+  ],
+  "paperclipRunId": "b0f9830c-b301-431b-b6d3-e0803014bc4a"
+}

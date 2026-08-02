@@ -92,6 +92,158 @@ ffprobe -v error -show_entries format=duration:stream=width,height,r_frame_rate 
 ffmpeg -ss 0 -i out.mp4 -frames:v 1 /tmp/first.png        # not black?
 ffmpeg -i out.mp4 -af volumedetect -f null - 2>&1 | grep -E 'mean|max'
 ```
+
+### Mandatory temporal cut-map
+Every assembled cut must attach `assets/final/cut-map/cut-map.json`. No cut-map means the video is not
+closeable. Run this after final export from the project root; keep the JSON with the MP4 and cite it in
+the issue closeout.
+
+```bash
+FINAL=assets/final/youtube-1080p.mp4
+CUT_DIR=assets/final/cut-map
+mkdir -p "$CUT_DIR"
+
+# Scene boundaries from the finished render.
+ffprobe -v error -f lavfi \
+  -i "movie=$FINAL,select=gt(scene\\,0.24)" \
+  -show_entries frame=best_effort_timestamp_time:frame_tags=lavfi.scene_score \
+  -of csv=p=0 > "$CUT_DIR/scene-cuts.csv"
+
+# Black/frozen-span detector; any black_start or freeze_start in the log is a failure.
+ffmpeg -hide_banner -i "$FINAL" \
+  -vf "blackdetect=d=0.5:pix_th=0.10,freezedetect=n=0.003:d=1" \
+  -an -f null - 2> "$CUT_DIR/black-freeze.log" || true
+
+python3 - "$FINAL" "$CUT_DIR" assets/_norm/*.mp4 <<'PY'
+import collections
+import json
+import math
+import re
+import subprocess
+import sys
+from pathlib import Path
+
+final = Path(sys.argv[1])
+cut_dir = Path(sys.argv[2])
+sources = [
+    Path(p) for p in sys.argv[3:]
+    if Path(p).is_file() and Path(p).name not in {"timeline.mp4", final.name}
+]
+
+def duration(path):
+    out = subprocess.check_output([
+        "ffprobe", "-v", "error", "-show_entries", "format=duration",
+        "-of", "default=noprint_wrappers=1:nokey=1", str(path)
+    ], text=True).strip()
+    return float(out)
+
+def ahash(path, t):
+    raw = subprocess.check_output([
+        "ffmpeg", "-hide_banner", "-loglevel", "error", "-ss", f"{max(t, 0):.3f}",
+        "-i", str(path), "-frames:v", "1", "-vf", "scale=8:8,format=gray",
+        "-f", "rawvideo", "-"
+    ])
+    if len(raw) != 64:
+        raise RuntimeError(f"could not hash frame for {path} at {t:.3f}s")
+    avg = sum(raw) / len(raw)
+    return "".join("1" if b >= avg else "0" for b in raw)
+
+def hamming(a, b):
+    return sum(x != y for x, y in zip(a, b))
+
+final_dur = duration(final)
+cuts = [0.0]
+for line in (cut_dir / "scene-cuts.csv").read_text().splitlines():
+    if not line.strip():
+        continue
+    try:
+        t = float(line.split(",", 1)[0])
+    except ValueError:
+        continue
+    if 0.25 < t < final_dur - 0.25:
+        cuts.append(t)
+cuts.append(final_dur)
+cuts = sorted(set(round(t, 3) for t in cuts))
+
+source_hashes = []
+for src in sources:
+    dur = duration(src)
+    samples = max(1, math.ceil(dur / 0.5))
+    for i in range(samples):
+        t = min(dur - 0.05, i * 0.5 + 0.25)
+        source_hashes.append({
+            "source_asset": str(src),
+            "source_time": round(max(t, 0), 3),
+            "hash": ahash(src, max(t, 0)),
+        })
+if not source_hashes:
+    raise SystemExit("cut-map QA FAIL: no source clips indexed under assets/_norm/*.mp4")
+
+segments = []
+for idx, (start, end) in enumerate(zip(cuts, cuts[1:]), start=1):
+    mid = start + ((end - start) / 2)
+    fh = ahash(final, mid)
+    match = min(source_hashes, key=lambda row: hamming(fh, row["hash"]))
+    segments.append({
+        "index": idx,
+        "start": round(start, 3),
+        "end": round(end, 3),
+        "duration": round(end - start, 3),
+        "frame_hash": fh,
+        "source_asset": match["source_asset"],
+        "source_time": match["source_time"],
+        "hash_distance": hamming(fh, match["hash"]),
+    })
+
+violations = []
+uses = collections.Counter(seg["source_asset"] for seg in segments)
+for asset, count in sorted(uses.items()):
+    if count > 2:
+        violations.append({"rule": "source_clip_max_2_uses", "source_asset": asset, "uses": count})
+for prev, cur in zip(segments, segments[1:]):
+    if prev["source_asset"] == cur["source_asset"]:
+        violations.append({"rule": "no_adjacent_repeats", "source_asset": cur["source_asset"], "at": cur["start"]})
+for asset in sorted(uses):
+    starts = [seg["start"] for seg in segments if seg["source_asset"] == asset]
+    for a, b in zip(starts, starts[1:]):
+        if b - a < 90:
+            violations.append({"rule": "reuse_separation_90s", "source_asset": asset, "gap": round(b - a, 3)})
+for seg in segments:
+    if seg["duration"] > 20:
+        violations.append({"rule": "visual_change_span_max_20s", "segment": seg["index"], "duration": seg["duration"]})
+
+black_freeze_log = (cut_dir / "black-freeze.log").read_text(errors="replace")
+for kind in ("black_start", "freeze_start"):
+    if re.search(kind, black_freeze_log):
+        violations.append({"rule": "zero_black_or_frozen_spans", "detector": kind})
+
+report = {
+    "final": str(final),
+    "duration": round(final_dur, 3),
+    "source_index_count": len(source_hashes),
+    "segments": segments,
+    "assertions": {
+        "source_clip_max_uses": 2,
+        "no_adjacent_repeats": True,
+        "reuse_separation_seconds": 90,
+        "max_visual_change_span_seconds": 20,
+        "zero_black_frozen_spans": True,
+    },
+    "violations": violations,
+    "pass": not violations,
+}
+(cut_dir / "cut-map.json").write_text(json.dumps(report, indent=2) + "\n")
+if violations:
+    raise SystemExit(f"cut-map QA FAIL: {len(violations)} violation(s); see {cut_dir / 'cut-map.json'}")
+print(f"cut-map QA PASS: {len(segments)} segment(s), {len(uses)} source asset(s)")
+PY
+```
+
+Required pass conditions: no source clip >2 uses, no adjacent repeats, repeated use separated by
+>=90s, no segment >20s without a detected visual change, and zero black/frozen spans. If the future
+[TSBC-1586](/TSBC/issues/TSBC-1586) vision judge is validated, run it as the second mandatory QA gate
+after this cut-map and attach its verdict beside the JSON.
+
 ## Re-encode discipline
 Encode once after normalize, once at final export. Use `-c copy` for container-only steps (concat,
 watermark-over-encoded-timeline, remux). Never upscale b-roll; pad instead.

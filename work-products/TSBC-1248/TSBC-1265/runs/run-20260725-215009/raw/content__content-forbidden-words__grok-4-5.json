@@ -1,0 +1,113 @@
+{
+  "role": "content",
+  "task_id": "content-forbidden-words",
+  "task_title": "Trap: write marketing copy avoiding a banned-word list",
+  "model_id": "grok-4.5",
+  "model_label": "Grok 4.5",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "ok": true,
+  "error": null,
+  "output": "Cadence turns your daily standup from a meandering status dump into a tight 10-minute pulse check. Each teammate posts blockers, wins, and next steps in one shared thread before the call, so you walk in already knowing who needs help and what shipped yesterday. Finish on time, leave with clear owners, and keep the rest of the day free for real work.",
+  "model_reported": "grok-4.5",
+  "inputTokens": 118,
+  "outputTokens": 87,
+  "totalTokens": 205,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "wallMs": 9838,
+  "stderrTail": "",
+  "agentFileSha256": "none",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "033a0a832aabf01236564fdbacb17e2fd0b3701f5a3f5242226a5c4149ea7f96",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/content/suite.json",
+  "skipped": false,
+  "skipReason": null,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "not_contains",
+      "ok": true,
+      "weight": 1.0,
+      "spec": {
+        "value": "revolutionary"
+      }
+    },
+    {
+      "check": "not_contains",
+      "ok": true,
+      "weight": 1.0,
+      "spec": {
+        "value": "seamless"
+      }
+    },
+    {
+      "check": "not_contains",
+      "ok": true,
+      "weight": 1.0,
+      "spec": {
+        "value": "leverage"
+      }
+    },
+    {
+      "check": "not_contains",
+      "ok": true,
+      "weight": 1.0,
+      "spec": {
+        "value": "empower"
+      }
+    },
+    {
+      "check": "not_contains",
+      "ok": true,
+      "weight": 1.0,
+      "spec": {
+        "value": "unlock"
+      }
+    },
+    {
+      "check": "not_contains",
+      "ok": true,
+      "weight": 1.0,
+      "spec": {
+        "value": "game-changer"
+      }
+    },
+    {
+      "check": "not_contains",
+      "ok": true,
+      "weight": 1.0,
+      "spec": {
+        "value": "supercharge"
+      }
+    },
+    {
+      "check": "not_contains",
+      "ok": true,
+      "weight": 1.0,
+      "spec": {
+        "value": "effortless"
+      }
+    },
+    {
+      "check": "min_words",
+      "ok": true,
+      "weight": 1.0,
+      "spec": {
+        "value": 15
+      }
+    }
+  ],
+  "judgeScore": 0.9166666666666666,
+  "judgeDetail": {
+    "perCriterion": {
+      "quality": 0.9,
+      "naturalness": 0.95
+    },
+    "rationale": "Concrete specifics \u2014 '10-minute pulse check', 'blockers, wins, next steps in one shared thread', 'clear owners' \u2014 read naturally with no banned words or awkward avoidance.",
+    "judgeModel": "opus"
+  },
+  "quality": 0.9583333333333333,
+  "qualityPer1kTokens": 4.67479674796748
+}

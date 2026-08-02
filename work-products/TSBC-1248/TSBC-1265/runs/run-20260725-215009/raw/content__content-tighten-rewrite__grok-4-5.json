@@ -1,0 +1,71 @@
+{
+  "role": "content",
+  "task_id": "content-tighten-rewrite",
+  "task_title": "Tighten a verbose paragraph to <=40 words, meaning preserved",
+  "model_id": "grok-4.5",
+  "model_label": "Grok 4.5",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "ok": true,
+  "error": null,
+  "output": "After several months of work, our team built a comprehensive, powerful new dashboard that shows all key metrics at a glance in one centralized place\u2014no clicking through multiple screens.",
+  "model_reported": "grok-4.5",
+  "inputTokens": 162,
+  "outputTokens": 46,
+  "totalTokens": 208,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "wallMs": 11325,
+  "stderrTail": "",
+  "agentFileSha256": "none",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "033a0a832aabf01236564fdbacb17e2fd0b3701f5a3f5242226a5c4149ea7f96",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/content/suite.json",
+  "skipped": false,
+  "skipReason": null,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "max_words",
+      "ok": true,
+      "weight": 4.0,
+      "spec": {
+        "value": 40
+      }
+    },
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 1.0,
+      "spec": {
+        "values": [
+          "dashboard",
+          "metrics",
+          "glance",
+          "one place",
+          "single"
+        ]
+      }
+    },
+    {
+      "check": "not_contains",
+      "ok": true,
+      "weight": 1.0,
+      "spec": {
+        "value": "very excited"
+      }
+    }
+  ],
+  "judgeScore": 0.94,
+  "judgeDetail": {
+    "perCriterion": {
+      "fidelity": 0.98,
+      "tightness": 0.9
+    },
+    "rationale": "All core facts preserved with every hedge removed; 'comprehensive, powerful' faithfully carries the original's kept claims, and at ~29 words it's tight though 'centralized' plus 'in one place' is mildly redundant.",
+    "judgeModel": "opus"
+  },
+  "quality": 0.97,
+  "qualityPer1kTokens": 4.663461538461538
+}

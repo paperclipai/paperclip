@@ -1,0 +1,18 @@
+{
+  "aggregate_explicit_reps": 3,
+  "aggregate_unknown_reps": 1292,
+  "failed_pass_rows": 37,
+  "failed_pass_rows_without_failure_reason": 0,
+  "gemini_pro_rows": 241,
+  "gemini_pro_served_model_verified_false": 241,
+  "low_success_rows": 2,
+  "low_success_rows_with_quality": 0,
+  "low_success_rows_with_suppressed_reason": 2,
+  "model_eval_or_pass_rows_with_reps_requested_served": 6147,
+  "model_eval_pass_rows": 4852,
+  "model_eval_rows": 1295,
+  "pass_explicit_reps": 90,
+  "pass_unknown_reps": 4762,
+  "total_rows": 7872,
+  "v2_model_eval_rows": 1295
+}

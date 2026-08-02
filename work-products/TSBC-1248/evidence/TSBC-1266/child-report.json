@@ -1,0 +1,151 @@
+{
+  "issue": "TSBC-1266",
+  "parent": "TSBC-1248",
+  "run_id": "run-20260725-214841",
+  "kind": "model_eval",
+  "rung": 1,
+  "bare": true,
+  "model": "grok-4.5",
+  "adapter_type": "hermes",
+  "provider": "xai-oauth",
+  "judge": "claude-opus",
+  "agent_file_sha256": "none",
+  "skills_bundle_sha256": "none",
+  "hermes_home": "/Users/glad0s/.paperclip/instances/default/companies/e212ce50-b524-408c-b3d4-0c6108d8c2e2/work-products/TSBC-1248/hermes-r1-1266-current-clean/.hermes",
+  "isolation": {
+    "HERMES_IGNORE_RULES": "1",
+    "extra_args": [
+      "--provider",
+      "xai-oauth",
+      "--ignore-user-config",
+      "--ignore-rules"
+    ]
+  },
+  "finished_at": "2026-07-25T21:01:39+00:00",
+  "roles": {
+    "cto": {
+      "n_tasks": 12,
+      "n_ok": 12,
+      "n_fail": 0,
+      "mean_quality": 0.9748,
+      "mean_output_tokens": 67.8,
+      "q_per_1k_out": 14.3881,
+      "suite_sha256": "9178417ea7411729ec604cd6f0f72637a785d4d0f99ddd564fdfd0d4d603c31d",
+      "min_quality": 0.9187,
+      "max_quality": 1.0,
+      "errors": [],
+      "adapterType": "hermes",
+      "effort": "cli_default",
+      "model_reported_set": [
+        "grok-4.5"
+      ]
+    },
+    "cv-review": {
+      "n_tasks": 10,
+      "n_ok": 10,
+      "n_fail": 0,
+      "mean_quality": 0.8637,
+      "mean_output_tokens": 236.8,
+      "q_per_1k_out": 3.6476,
+      "suite_sha256": "4a12f7840060d3340e31887045177b943ccfc26aece2989d42f2e6f31a2b2c61",
+      "min_quality": 0.5375,
+      "max_quality": 0.985,
+      "errors": [],
+      "adapterType": "hermes",
+      "effort": "cli_default",
+      "model_reported_set": [
+        "grok-4.5"
+      ]
+    },
+    "ledger": {
+      "n_tasks": 12,
+      "n_ok": 12,
+      "n_fail": 0,
+      "mean_quality": 0.9921,
+      "mean_output_tokens": 41.2,
+      "q_per_1k_out": 24.0992,
+      "suite_sha256": "22a4d94c78402d54f39f0cd1b4eb6a12005acecfa3e2d429551928eca686300e",
+      "min_quality": 0.925,
+      "max_quality": 1.0,
+      "errors": [],
+      "adapterType": "hermes",
+      "effort": "cli_default",
+      "model_reported_set": [
+        "grok-4.5"
+      ]
+    }
+  },
+  "auth_or_quota_failures": [],
+  "halt": false,
+  "ledger_rows": [
+    {
+      "ts": "2026-07-25T21:01:39+00:00",
+      "kind": "model_eval",
+      "test_class": "cto",
+      "model": "grok-4.5",
+      "model_reported": "grok-4.5",
+      "adapter_type": "hermes",
+      "effort": "cli_default",
+      "agent_file_sha256": "none",
+      "skills_bundle_sha256": "none",
+      "suite_sha256": "9178417ea7411729ec604cd6f0f72637a785d4d0f99ddd564fdfd0d4d603c31d",
+      "metrics": {
+        "quality": 0.9748,
+        "qPer1kOut": 22.8527,
+        "meanOutputTokens": 67.75,
+        "meanInputTokens": 232.0833,
+        "successRate": 1.0
+      },
+      "n_tasks": 12,
+      "run_id": "run-20260725-214841",
+      "judge": "claude-opus",
+      "source": "bench.py"
+    },
+    {
+      "ts": "2026-07-25T21:01:39+00:00",
+      "kind": "model_eval",
+      "test_class": "cv-review",
+      "model": "grok-4.5",
+      "model_reported": "grok-4.5",
+      "adapter_type": "hermes",
+      "effort": "cli_default",
+      "agent_file_sha256": "none",
+      "skills_bundle_sha256": "none",
+      "suite_sha256": "4a12f7840060d3340e31887045177b943ccfc26aece2989d42f2e6f31a2b2c61",
+      "metrics": {
+        "quality": 0.8638,
+        "qPer1kOut": 4.2333,
+        "meanOutputTokens": 236.8,
+        "meanInputTokens": 147.9,
+        "successRate": 1.0
+      },
+      "n_tasks": 10,
+      "run_id": "run-20260725-214841",
+      "judge": "claude-opus",
+      "source": "bench.py"
+    },
+    {
+      "ts": "2026-07-25T21:01:39+00:00",
+      "kind": "model_eval",
+      "test_class": "ledger",
+      "model": "grok-4.5",
+      "model_reported": "grok-4.5",
+      "adapter_type": "hermes",
+      "effort": "cli_default",
+      "agent_file_sha256": "none",
+      "skills_bundle_sha256": "none",
+      "suite_sha256": "22a4d94c78402d54f39f0cd1b4eb6a12005acecfa3e2d429551928eca686300e",
+      "metrics": {
+        "quality": 0.9921,
+        "qPer1kOut": 26.5475,
+        "meanOutputTokens": 41.1667,
+        "meanInputTokens": 137.1667,
+        "successRate": 1.0
+      },
+      "n_tasks": 12,
+      "run_id": "run-20260725-214841",
+      "judge": "claude-opus",
+      "source": "bench.py"
+    }
+  ]
+}

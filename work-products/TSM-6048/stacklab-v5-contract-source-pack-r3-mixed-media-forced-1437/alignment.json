@@ -1,0 +1,8630 @@
+{
+  "audio": "narration.wav",
+  "language": "en",
+  "method": "forced-alignment",
+  "wordCount": 1437,
+  "words": [
+    {
+      "word": "**Title:**",
+      "start": 0.12,
+      "end": 0.22,
+      "score": 0.0
+    },
+    {
+      "word": "Fixes",
+      "start": 0.26,
+      "end": 0.36,
+      "score": 0.0
+    },
+    {
+      "word": "That",
+      "start": 0.38,
+      "end": 0.46,
+      "score": 0.0
+    },
+    {
+      "word": "Cut",
+      "start": 0.48,
+      "end": 10.1,
+      "score": 0.333
+    },
+    {
+      "word": "Your",
+      "start": 10.12,
+      "end": 10.2,
+      "score": 0.0
+    },
+    {
+      "word": "CI",
+      "start": 10.22,
+      "end": 10.26,
+      "score": 0.0
+    },
+    {
+      "word": "Build",
+      "start": 10.28,
+      "end": 10.38,
+      "score": 0.0
+    },
+    {
+      "word": "from",
+      "start": 10.4,
+      "end": 10.48,
+      "score": 0.0
+    },
+    {
+      "word": "Minutes",
+      "start": 10.52,
+      "end": 10.66,
+      "score": 0.0
+    },
+    {
+      "word": "to",
+      "start": 10.68,
+      "end": 10.72,
+      "score": 0.0
+    },
+    {
+      "word": "Seconds",
+      "start": 11.74,
+      "end": 11.901,
+      "score": 0.063
+    },
+    {
+      "word": "**Issue:**",
+      "start": 11.921,
+      "end": 12.021,
+      "score": 0.172
+    },
+    {
+      "word": "TSM-5973",
+      "start": 12.041,
+      "end": 12.181,
+      "score": 0.475
+    },
+    {
+      "word": "|",
+      "start": 12.201,
+      "end": 12.221,
+      "score": 0.528
+    },
+    {
+      "word": "**Date:**",
+      "start": 12.241,
+      "end": 12.361,
+      "score": 0.166
+    },
+    {
+      "word": "2026-08-01",
+      "start": 12.381,
+      "end": 12.421,
+      "score": 0.845
+    },
+    {
+      "word": "|",
+      "start": 12.441,
+      "end": 12.461,
+      "score": 0.376
+    },
+    {
+      "word": "**Audience:**",
+      "start": 12.481,
+      "end": 12.641,
+      "score": 0.001
+    },
+    {
+      "word": "Working",
+      "start": 12.661,
+      "end": 12.821,
+      "score": 0.078
+    },
+    {
+      "word": "software",
+      "start": 12.841,
+      "end": 13.001,
+      "score": 0.0
+    },
+    {
+      "word": "engineers,",
+      "start": 13.021,
+      "end": 13.201,
+      "score": 0.297
+    },
+    {
+      "word": "mid-level",
+      "start": 13.221,
+      "end": 13.481,
+      "score": 0.194
+    },
+    {
+      "word": "**Target",
+      "start": 13.501,
+      "end": 13.641,
+      "score": 0.086
+    },
+    {
+      "word": "runtime:**",
+      "start": 13.661,
+      "end": 13.801,
+      "score": 0.001
+    },
+    {
+      "word": "minutes",
+      "start": 13.841,
+      "end": 13.981,
+      "score": 0.0
+    },
+    {
+      "word": "|",
+      "start": 14.001,
+      "end": 14.021,
+      "score": 0.003
+    },
+    {
+      "word": "**Voice:**",
+      "start": 14.041,
+      "end": 14.141,
+      "score": 0.001
+    },
+    {
+      "word": "Charon",
+      "start": 14.161,
+      "end": 14.301,
+      "score": 0.084
+    },
+    {
+      "word": "(Sam)",
+      "start": 14.321,
+      "end": 14.401,
+      "score": 0.259
+    },
+    {
+      "word": "**Pacing",
+      "start": 14.421,
+      "end": 15.701,
+      "score": 0.531
+    },
+    {
+      "word": "notation:**",
+      "start": 15.721,
+      "end": 15.881,
+      "score": 0.124
+    },
+    {
+      "word": "authored",
+      "start": 15.961,
+      "end": 16.121,
+      "score": 0.008
+    },
+    {
+      "word": "silence;",
+      "start": 16.141,
+      "end": 16.281,
+      "score": 0.018
+    },
+    {
+      "word": "TTS",
+      "start": 16.301,
+      "end": 16.361,
+      "score": 0.334
+    },
+    {
+      "word": "must",
+      "start": 16.421,
+      "end": 16.501,
+      "score": 0.0
+    },
+    {
+      "word": "honour",
+      "start": 16.521,
+      "end": 16.681,
+      "score": 0.167
+    },
+    {
+      "word": "these",
+      "start": 16.701,
+      "end": 16.801,
+      "score": 0.364
+    },
+    {
+      "word": "do",
+      "start": 16.841,
+      "end": 16.881,
+      "score": 0.0
+    },
+    {
+      "word": "not",
+      "start": 16.901,
+      "end": 16.961,
+      "score": 0.0
+    },
+    {
+      "word": "strip",
+      "start": 16.981,
+      "end": 17.081,
+      "score": 0.395
+    },
+    {
+      "word": "**Pronunciation",
+      "start": 17.101,
+      "end": 17.381,
+      "score": 0.044
+    },
+    {
+      "word": "notation:**",
+      "start": 17.401,
+      "end": 17.561,
+      "score": 0.033
+    },
+    {
+      "word": "`(pr:",
+      "start": 17.581,
+      "end": 17.641,
+      "score": 0.248
+    },
+    {
+      "word": "IPA-free",
+      "start": 17.701,
+      "end": 17.881,
+      "score": 0.288
+    },
+    {
+      "word": "phonetic",
+      "start": 17.901,
+      "end": 18.061,
+      "score": 0.0
+    },
+    {
+      "word": "guide",
+      "start": 18.081,
+      "end": 18.181,
+      "score": 0.003
+    },
+    {
+      "word": "for",
+      "start": 18.201,
+      "end": 18.261,
+      "score": 0.0
+    },
+    {
+      "word": "the",
+      "start": 18.281,
+      "end": 18.341,
+      "score": 0.0
+    },
+    {
+      "word": "TTS",
+      "start": 18.361,
+      "end": 18.421,
+      "score": 0.006
+    },
+    {
+      "word": "pronunciation",
+      "start": 18.441,
+      "end": 18.701,
+      "score": 0.005
+    },
+    {
+      "word": "dictionary",
+      "start": 18.721,
+      "end": 18.921,
+      "score": 0.0
+    },
+    {
+      "word": "---",
+      "start": 18.941,
+      "end": 19.001,
+      "score": 1.0
+    },
+    {
+      "word": "|",
+      "start": 19.021,
+      "end": 19.041,
+      "score": 0.0
+    },
+    {
+      "word": "Term",
+      "start": 19.061,
+      "end": 19.161,
+      "score": 0.006
+    },
+    {
+      "word": "|",
+      "start": 19.181,
+      "end": 19.201,
+      "score": 0.946
+    },
+    {
+      "word": "Correct",
+      "start": 19.221,
+      "end": 19.401,
+      "score": 0.147
+    },
+    {
+      "word": "|",
+      "start": 19.421,
+      "end": 19.441,
+      "score": 0.001
+    },
+    {
+      "word": "Wrong",
+      "start": 19.461,
+      "end": 19.561,
+      "score": 0.059
+    },
+    {
+      "word": "(flag/reject)",
+      "start": 19.601,
+      "end": 19.841,
+      "score": 0.085
+    },
+    {
+      "word": "|",
+      "start": 19.861,
+      "end": 19.881,
+      "score": 0.958
+    },
+    {
+      "word": "|---|---|---|",
+      "start": 19.901,
+      "end": 20.201,
+      "score": 0.737
+    },
+    {
+      "word": "|",
+      "start": 20.221,
+      "end": 20.241,
+      "score": 0.0
+    },
+    {
+      "word": "Docker",
+      "start": 20.261,
+      "end": 20.881,
+      "score": 0.16
+    },
+    {
+      "word": "|",
+      "start": 20.901,
+      "end": 20.921,
+      "score": 0.0
+    },
+    {
+      "word": "\"dock-er\"",
+      "start": 20.941,
+      "end": 21.121,
+      "score": 0.238
+    },
+    {
+      "word": "|",
+      "start": 21.141,
+      "end": 21.181,
+      "score": 0.5
+    },
+    {
+      "word": "\"dook-er\",",
+      "start": 21.201,
+      "end": 21.341,
+      "score": 0.08
+    },
+    {
+      "word": "\"dock-ur\"",
+      "start": 21.361,
+      "end": 21.501,
+      "score": 0.276
+    },
+    {
+      "word": "|",
+      "start": 21.521,
+      "end": 21.561,
+      "score": 0.061
+    },
+    {
+      "word": "|",
+      "start": 21.581,
+      "end": 21.601,
+      "score": 0.438
+    },
+    {
+      "word": "Dockerfile",
+      "start": 21.621,
+      "end": 21.861,
+      "score": 0.242
+    },
+    {
+      "word": "|",
+      "start": 21.881,
+      "end": 21.901,
+      "score": 0.922
+    },
+    {
+      "word": "\"dock-er",
+      "start": 21.921,
+      "end": 22.061,
+      "score": 0.108
+    },
+    {
+      "word": "file\"",
+      "start": 22.081,
+      "end": 22.241,
+      "score": 0.351
+    },
+    {
+      "word": "|",
+      "start": 22.261,
+      "end": 22.281,
+      "score": 0.374
+    },
+    {
+      "word": "\"dook-er",
+      "start": 22.301,
+      "end": 22.441,
+      "score": 0.029
+    },
+    {
+      "word": "file\"",
+      "start": 22.461,
+      "end": 22.541,
+      "score": 0.016
+    },
+    {
+      "word": "|",
+      "start": 22.561,
+      "end": 22.581,
+      "score": 0.034
+    },
+    {
+      "word": "|",
+      "start": 22.601,
+      "end": 22.621,
+      "score": 0.0
+    },
+    {
+      "word": "npm",
+      "start": 22.641,
+      "end": 22.701,
+      "score": 0.001
+    },
+    {
+      "word": "|",
+      "start": 22.721,
+      "end": 22.741,
+      "score": 0.883
+    },
+    {
+      "word": "\"N-P-M\"",
+      "start": 22.761,
+      "end": 22.861,
+      "score": 0.389
+    },
+    {
+      "word": "(three",
+      "start": 22.881,
+      "end": 22.981,
+      "score": 0.016
+    },
+    {
+      "word": "letters)",
+      "start": 23.001,
+      "end": 23.201,
+      "score": 0.461
+    },
+    {
+      "word": "|",
+      "start": 23.221,
+      "end": 23.241,
+      "score": 0.863
+    },
+    {
+      "word": "\"num\",",
+      "start": 23.261,
+      "end": 23.321,
+      "score": 0.0
+    },
+    {
+      "word": "\"num-pee-em\"",
+      "start": 23.341,
+      "end": 23.561,
+      "score": 0.186
+    },
+    {
+      "word": "|",
+      "start": 23.581,
+      "end": 23.601,
+      "score": 0.896
+    },
+    {
+      "word": "|",
+      "start": 23.621,
+      "end": 23.641,
+      "score": 0.0
+    },
+    {
+      "word": "YAML",
+      "start": 23.661,
+      "end": 23.781,
+      "score": 0.282
+    },
+    {
+      "word": "|",
+      "start": 23.801,
+      "end": 23.821,
+      "score": 0.999
+    },
+    {
+      "word": "\"yam-ul\"",
+      "start": 25.641,
+      "end": 25.881,
+      "score": 0.289
+    },
+    {
+      "word": "|",
+      "start": 25.901,
+      "end": 25.921,
+      "score": 0.884
+    },
+    {
+      "word": "\"ya-mel\",",
+      "start": 25.941,
+      "end": 26.061,
+      "score": 0.1
+    },
+    {
+      "word": "\"yam-ul\"",
+      "start": 26.081,
+      "end": 26.201,
+      "score": 0.156
+    },
+    {
+      "word": "|",
+      "start": 26.261,
+      "end": 26.301,
+      "score": 0.0
+    },
+    {
+      "word": "|",
+      "start": 26.321,
+      "end": 26.341,
+      "score": 0.998
+    },
+    {
+      "word": "SHA",
+      "start": 26.361,
+      "end": 26.441,
+      "score": 0.332
+    },
+    {
+      "word": "|",
+      "start": 26.461,
+      "end": 26.481,
+      "score": 0.0
+    },
+    {
+      "word": "\"shah\"",
+      "start": 26.501,
+      "end": 26.581,
+      "score": 0.234
+    },
+    {
+      "word": "(one",
+      "start": 26.601,
+      "end": 26.661,
+      "score": 0.0
+    },
+    {
+      "word": "syllable)",
+      "start": 26.681,
+      "end": 26.841,
+      "score": 0.025
+    },
+    {
+      "word": "|",
+      "start": 26.861,
+      "end": 26.881,
+      "score": 0.965
+    },
+    {
+      "word": "\"shaw\",",
+      "start": 26.901,
+      "end": 27.061,
+      "score": 0.433
+    },
+    {
+      "word": "\"shuh\"",
+      "start": 27.101,
+      "end": 27.181,
+      "score": 0.0
+    },
+    {
+      "word": "|",
+      "start": 27.201,
+      "end": 27.221,
+      "score": 0.006
+    },
+    {
+      "word": "|",
+      "start": 27.261,
+      "end": 27.281,
+      "score": 0.0
+    },
+    {
+      "word": "package-lock.json",
+      "start": 27.301,
+      "end": 27.621,
+      "score": 0.125
+    },
+    {
+      "word": "|",
+      "start": 27.641,
+      "end": 27.661,
+      "score": 0.857
+    },
+    {
+      "word": "\"package",
+      "start": 27.681,
+      "end": 27.861,
+      "score": 0.237
+    },
+    {
+      "word": "lock",
+      "start": 27.881,
+      "end": 27.981,
+      "score": 0.111
+    },
+    {
+      "word": "dot",
+      "start": 28.001,
+      "end": 28.101,
+      "score": 0.482
+    },
+    {
+      "word": "jay-son\"",
+      "start": 28.121,
+      "end": 28.261,
+      "score": 0.122
+    },
+    {
+      "word": "|",
+      "start": 28.281,
+      "end": 28.301,
+      "score": 0.006
+    },
+    {
+      "word": "\"package",
+      "start": 28.321,
+      "end": 28.541,
+      "score": 0.38
+    },
+    {
+      "word": "lock",
+      "start": 28.561,
+      "end": 28.881,
+      "score": 0.233
+    },
+    {
+      "word": "dot",
+      "start": 28.901,
+      "end": 29.021,
+      "score": 0.811
+    },
+    {
+      "word": "json\"",
+      "start": 29.041,
+      "end": 29.141,
+      "score": 0.126
+    },
+    {
+      "word": "|",
+      "start": 29.161,
+      "end": 29.181,
+      "score": 0.628
+    },
+    {
+      "word": "|",
+      "start": 29.201,
+      "end": 29.221,
+      "score": 0.775
+    },
+    {
+      "word": "BuildKit",
+      "start": 29.241,
+      "end": 29.441,
+      "score": 0.12
+    },
+    {
+      "word": "|",
+      "start": 29.461,
+      "end": 29.481,
+      "score": 0.945
+    },
+    {
+      "word": "\"build-kit\"",
+      "start": 29.501,
+      "end": 29.841,
+      "score": 0.262
+    },
+    {
+      "word": "|",
+      "start": 29.861,
+      "end": 29.881,
+      "score": 0.903
+    },
+    {
+      "word": "\"build-keet\"",
+      "start": 29.901,
+      "end": 30.201,
+      "score": 0.274
+    },
+    {
+      "word": "|",
+      "start": 30.221,
+      "end": 30.241,
+      "score": 0.005
+    },
+    {
+      "word": "|",
+      "start": 30.261,
+      "end": 30.281,
+      "score": 0.324
+    },
+    {
+      "word": "CI",
+      "start": 30.301,
+      "end": 30.361,
+      "score": 0.248
+    },
+    {
+      "word": "|",
+      "start": 30.381,
+      "end": 30.401,
+      "score": 0.926
+    },
+    {
+      "word": "\"C-I\"",
+      "start": 30.421,
+      "end": 30.501,
+      "score": 0.333
+    },
+    {
+      "word": "(two",
+      "start": 30.521,
+      "end": 30.601,
+      "score": 0.167
+    },
+    {
+      "word": "letters)",
+      "start": 30.621,
+      "end": 30.761,
+      "score": 0.129
+    },
+    {
+      "word": "|",
+      "start": 30.781,
+      "end": 30.801,
+      "score": 0.912
+    },
+    {
+      "word": "\"see-eye\"",
+      "start": 30.821,
+      "end": 30.981,
+      "score": 0.214
+    },
+    {
+      "word": "|",
+      "start": 31.021,
+      "end": 31.041,
+      "score": 0.237
+    },
+    {
+      "word": "|",
+      "start": 31.061,
+      "end": 31.081,
+      "score": 0.0
+    },
+    {
+      "word": "ghcr.io",
+      "start": 31.121,
+      "end": 31.241,
+      "score": 0.014
+    },
+    {
+      "word": "|",
+      "start": 31.261,
+      "end": 31.281,
+      "score": 0.0
+    },
+    {
+      "word": "\"G-H-C-R",
+      "start": 31.301,
+      "end": 31.441,
+      "score": 0.311
+    },
+    {
+      "word": "dot",
+      "start": 31.461,
+      "end": 32.821,
+      "score": 0.578
+    },
+    {
+      "word": "eye-oh\"",
+      "start": 32.841,
+      "end": 32.961,
+      "score": 0.166
+    },
+    {
+      "word": "|",
+      "start": 32.981,
+      "end": 33.001,
+      "score": 0.931
+    },
+    {
+      "word": "\"gee-hee-see-ar\"",
+      "start": 33.021,
+      "end": 33.301,
+      "score": 0.137
+    },
+    {
+      "word": "|",
+      "start": 33.321,
+      "end": 33.341,
+      "score": 0.0
+    },
+    {
+      "word": "|",
+      "start": 33.361,
+      "end": 33.381,
+      "score": 0.987
+    },
+    {
+      "word": "devDependencies",
+      "start": 33.401,
+      "end": 33.781,
+      "score": 0.127
+    },
+    {
+      "word": "|",
+      "start": 33.801,
+      "end": 33.821,
+      "score": 0.912
+    },
+    {
+      "word": "\"dev",
+      "start": 33.841,
+      "end": 33.921,
+      "score": 0.164
+    },
+    {
+      "word": "deh-pen-den-seez\"",
+      "start": 33.941,
+      "end": 34.321,
+      "score": 0.183
+    },
+    {
+      "word": "|",
+      "start": 34.341,
+      "end": 34.361,
+      "score": 0.005
+    },
+    {
+      "word": "|",
+      "start": 34.401,
+      "end": 34.421,
+      "score": 0.0
+    },
+    {
+      "word": "|",
+      "start": 34.441,
+      "end": 34.541,
+      "score": 0.8
+    },
+    {
+      "word": "hashFiles",
+      "start": 34.601,
+      "end": 34.781,
+      "score": 0.0
+    },
+    {
+      "word": "|",
+      "start": 34.801,
+      "end": 34.821,
+      "score": 0.994
+    },
+    {
+      "word": "\"hash",
+      "start": 34.861,
+      "end": 34.961,
+      "score": 0.54
+    },
+    {
+      "word": "files\"",
+      "start": 34.981,
+      "end": 35.101,
+      "score": 0.091
+    },
+    {
+      "word": "|",
+      "start": 35.121,
+      "end": 35.141,
+      "score": 0.974
+    },
+    {
+      "word": "\"hash-files\"",
+      "start": 35.161,
+      "end": 35.422,
+      "score": 0.26
+    },
+    {
+      "word": "|",
+      "start": 35.442,
+      "end": 35.462,
+      "score": 0.422
+    },
+    {
+      "word": "|",
+      "start": 35.482,
+      "end": 35.502,
+      "score": 0.016
+    },
+    {
+      "word": "lockfile",
+      "start": 35.522,
+      "end": 35.682,
+      "score": 0.118
+    },
+    {
+      "word": "|",
+      "start": 35.702,
+      "end": 35.722,
+      "score": 0.001
+    },
+    {
+      "word": "\"lock",
+      "start": 35.742,
+      "end": 35.842,
+      "score": 0.132
+    },
+    {
+      "word": "file\"",
+      "start": 35.882,
+      "end": 35.982,
+      "score": 0.126
+    },
+    {
+      "word": "|",
+      "start": 36.002,
+      "end": 36.042,
+      "score": 0.491
+    },
+    {
+      "word": "|",
+      "start": 36.082,
+      "end": 36.102,
+      "score": 0.0
+    },
+    {
+      "word": "|",
+      "start": 36.122,
+      "end": 36.142,
+      "score": 0.9
+    },
+    {
+      "word": "GitHub",
+      "start": 36.162,
+      "end": 36.282,
+      "score": 0.0
+    },
+    {
+      "word": "Actions",
+      "start": 36.302,
+      "end": 36.442,
+      "score": 0.137
+    },
+    {
+      "word": "|",
+      "start": 36.462,
+      "end": 36.482,
+      "score": 1.0
+    },
+    {
+      "word": "\"git-hub",
+      "start": 36.762,
+      "end": 39.062,
+      "score": 0.277
+    },
+    {
+      "word": "ack-shuns\"",
+      "start": 39.082,
+      "end": 39.262,
+      "score": 0.061
+    },
+    {
+      "word": "|",
+      "start": 39.282,
+      "end": 39.302,
+      "score": 0.032
+    },
+    {
+      "word": "|",
+      "start": 39.342,
+      "end": 39.362,
+      "score": 0.0
+    },
+    {
+      "word": "|",
+      "start": 39.382,
+      "end": 39.402,
+      "score": 0.991
+    },
+    {
+      "word": "COPY",
+      "start": 39.422,
+      "end": 39.522,
+      "score": 0.125
+    },
+    {
+      "word": "(Dockerfile",
+      "start": 39.542,
+      "end": 39.742,
+      "score": 0.017
+    },
+    {
+      "word": "instruction)",
+      "start": 39.762,
+      "end": 39.982,
+      "score": 0.054
+    },
+    {
+      "word": "|",
+      "start": 40.002,
+      "end": 40.022,
+      "score": 0.21
+    },
+    {
+      "word": "\"copy\"",
+      "start": 40.042,
+      "end": 40.122,
+      "score": 0.002
+    },
+    {
+      "word": "|",
+      "start": 40.142,
+      "end": 40.162,
+      "score": 0.0
+    },
+    {
+      "word": "|",
+      "start": 40.202,
+      "end": 40.222,
+      "score": 0.002
+    },
+    {
+      "word": "|",
+      "start": 40.242,
+      "end": 40.262,
+      "score": 0.007
+    },
+    {
+      "word": "restore-keys",
+      "start": 40.282,
+      "end": 40.562,
+      "score": 0.226
+    },
+    {
+      "word": "|",
+      "start": 40.582,
+      "end": 40.602,
+      "score": 0.909
+    },
+    {
+      "word": "\"restore",
+      "start": 40.642,
+      "end": 40.822,
+      "score": 0.097
+    },
+    {
+      "word": "keys\"",
+      "start": 40.842,
+      "end": 40.962,
+      "score": 0.176
+    },
+    {
+      "word": "|",
+      "start": 40.982,
+      "end": 41.002,
+      "score": 0.828
+    },
+    {
+      "word": "|",
+      "start": 41.042,
+      "end": 41.062,
+      "score": 0.001
+    },
+    {
+      "word": "|",
+      "start": 41.102,
+      "end": 41.122,
+      "score": 0.0
+    },
+    {
+      "word": "ubuntu-latest",
+      "start": 41.142,
+      "end": 41.402,
+      "score": 0.17
+    },
+    {
+      "word": "|",
+      "start": 41.422,
+      "end": 41.442,
+      "score": 0.955
+    },
+    {
+      "word": "\"oo-bun-too",
+      "start": 41.462,
+      "end": 42.842,
+      "score": 0.463
+    },
+    {
+      "word": "lay-test\"",
+      "start": 42.862,
+      "end": 43.022,
+      "score": 0.139
+    },
+    {
+      "word": "|",
+      "start": 43.042,
+      "end": 43.062,
+      "score": 0.183
+    },
+    {
+      "word": "|",
+      "start": 43.102,
+      "end": 43.122,
+      "score": 0.0
+    },
+    {
+      "word": "---",
+      "start": 43.142,
+      "end": 43.202,
+      "score": 0.666
+    },
+    {
+      "word": "---",
+      "start": 43.222,
+      "end": 43.282,
+      "score": 0.703
+    },
+    {
+      "word": "Every",
+      "start": 43.302,
+      "end": 43.422,
+      "score": 0.283
+    },
+    {
+      "word": "push",
+      "start": 43.442,
+      "end": 43.522,
+      "score": 0.186
+    },
+    {
+      "word": "you",
+      "start": 43.542,
+      "end": 43.842,
+      "score": 0.55
+    },
+    {
+      "word": "make",
+      "start": 44.542,
+      "end": 44.882,
+      "score": 0.232
+    },
+    {
+      "word": "kicks",
+      "start": 44.902,
+      "end": 45.002,
+      "score": 0.0
+    },
+    {
+      "word": "off",
+      "start": 45.022,
+      "end": 45.082,
+      "score": 0.0
+    },
+    {
+      "word": "this",
+      "start": 45.102,
+      "end": 45.182,
+      "score": 0.002
+    },
+    {
+      "word": "whole",
+      "start": 45.202,
+      "end": 45.302,
+      "score": 0.0
+    },
+    {
+      "word": "pipeline.",
+      "start": 45.322,
+      "end": 45.502,
+      "score": 0.059
+    },
+    {
+      "word": "The",
+      "start": 45.522,
+      "end": 45.582,
+      "score": 0.0
+    },
+    {
+      "word": "real",
+      "start": 45.602,
+      "end": 45.682,
+      "score": 0.454
+    },
+    {
+      "word": "question",
+      "start": 45.702,
+      "end": 45.942,
+      "score": 0.377
+    },
+    {
+      "word": "is",
+      "start": 45.962,
+      "end": 46.002,
+      "score": 0.0
+    },
+    {
+      "word": "how",
+      "start": 46.042,
+      "end": 46.102,
+      "score": 0.0
+    },
+    {
+      "word": "long",
+      "start": 46.122,
+      "end": 46.202,
+      "score": 0.001
+    },
+    {
+      "word": "are",
+      "start": 46.222,
+      "end": 46.282,
+      "score": 0.027
+    },
+    {
+      "word": "you",
+      "start": 46.302,
+      "end": 46.362,
+      "score": 0.0
+    },
+    {
+      "word": "sitting",
+      "start": 46.382,
+      "end": 46.562,
+      "score": 0.092
+    },
+    {
+      "word": "here",
+      "start": 46.582,
+      "end": 46.702,
+      "score": 0.388
+    },
+    {
+      "word": "waiting",
+      "start": 46.762,
+      "end": 46.902,
+      "score": 0.141
+    },
+    {
+      "word": "for",
+      "start": 46.922,
+      "end": 46.982,
+      "score": 0.0
+    },
+    {
+      "word": "it?",
+      "start": 47.002,
+      "end": 47.042,
+      "score": 0.0
+    },
+    {
+      "word": "Eight",
+      "start": 47.082,
+      "end": 47.182,
+      "score": 0.195
+    },
+    {
+      "word": "minutes.",
+      "start": 47.202,
+      "end": 47.382,
+      "score": 0.419
+    },
+    {
+      "word": "Forty-two",
+      "start": 47.402,
+      "end": 48.882,
+      "score": 0.277
+    },
+    {
+      "word": "seconds.",
+      "start": 48.902,
+      "end": 49.042,
+      "score": 0.002
+    },
+    {
+      "word": "That",
+      "start": 49.062,
+      "end": 49.202,
+      "score": 0.192
+    },
+    {
+      "word": "is",
+      "start": 49.222,
+      "end": 49.262,
+      "score": 0.0
+    },
+    {
+      "word": "how",
+      "start": 49.282,
+      "end": 49.342,
+      "score": 0.003
+    },
+    {
+      "word": "long",
+      "start": 49.362,
+      "end": 49.462,
+      "score": 0.125
+    },
+    {
+      "word": "this",
+      "start": 49.482,
+      "end": 49.562,
+      "score": 0.0
+    },
+    {
+      "word": "build",
+      "start": 49.602,
+      "end": 49.722,
+      "score": 0.266
+    },
+    {
+      "word": "takes,",
+      "start": 49.742,
+      "end": 49.862,
+      "score": 0.351
+    },
+    {
+      "word": "on",
+      "start": 49.882,
+      "end": 50.182,
+      "score": 0.958
+    },
+    {
+      "word": "every",
+      "start": 50.222,
+      "end": 50.382,
+      "score": 0.374
+    },
+    {
+      "word": "single",
+      "start": 50.402,
+      "end": 50.522,
+      "score": 0.178
+    },
+    {
+      "word": "push.",
+      "start": 50.542,
+      "end": 50.642,
+      "score": 0.073
+    },
+    {
+      "word": "Node",
+      "start": 50.662,
+      "end": 50.782,
+      "score": 0.424
+    },
+    {
+      "word": "project,",
+      "start": 50.802,
+      "end": 52.202,
+      "score": 0.395
+    },
+    {
+      "word": "three-stage",
+      "start": 52.222,
+      "end": 52.442,
+      "score": 0.154
+    },
+    {
+      "word": "GitHub",
+      "start": 52.462,
+      "end": 52.582,
+      "score": 0.042
+    },
+    {
+      "word": "Actions",
+      "start": 52.602,
+      "end": 52.782,
+      "score": 0.343
+    },
+    {
+      "word": "(pr:",
+      "start": 52.802,
+      "end": 52.842,
+      "score": 0.0
+    },
+    {
+      "word": "\"git-hub",
+      "start": 52.862,
+      "end": 53.002,
+      "score": 0.284
+    },
+    {
+      "word": "ack-shuns\")",
+      "start": 53.022,
+      "end": 53.522,
+      "score": 0.349
+    },
+    {
+      "word": "pipeline,",
+      "start": 53.542,
+      "end": 53.702,
+      "score": 0.073
+    },
+    {
+      "word": "one",
+      "start": 53.722,
+      "end": 53.802,
+      "score": 0.174
+    },
+    {
+      "word": "Docker",
+      "start": 53.822,
+      "end": 53.982,
+      "score": 0.274
+    },
+    {
+      "word": "(pr:",
+      "start": 54.002,
+      "end": 54.042,
+      "score": 0.0
+    },
+    {
+      "word": "\"dock-er\")",
+      "start": 54.062,
+      "end": 54.242,
+      "score": 0.281
+    },
+    {
+      "word": "image.",
+      "start": 54.262,
+      "end": 56.342,
+      "score": 0.379
+    },
+    {
+      "word": "Numbers",
+      "start": 56.362,
+      "end": 56.502,
+      "score": 0.062
+    },
+    {
+      "word": "you",
+      "start": 56.522,
+      "end": 56.582,
+      "score": 0.0
+    },
+    {
+      "word": "will",
+      "start": 56.602,
+      "end": 56.702,
+      "score": 0.125
+    },
+    {
+      "word": "see",
+      "start": 56.722,
+      "end": 56.782,
+      "score": 0.0
+    },
+    {
+      "word": "on",
+      "start": 56.802,
+      "end": 56.842,
+      "score": 0.0
+    },
+    {
+      "word": "screen",
+      "start": 56.862,
+      "end": 56.982,
+      "score": 0.209
+    },
+    {
+      "word": "exactly",
+      "start": 57.022,
+      "end": 57.162,
+      "score": 0.017
+    },
+    {
+      "word": "as",
+      "start": 57.182,
+      "end": 57.222,
+      "score": 0.162
+    },
+    {
+      "word": "I",
+      "start": 57.242,
+      "end": 57.262,
+      "score": 0.0
+    },
+    {
+      "word": "say",
+      "start": 57.282,
+      "end": 57.342,
+      "score": 0.0
+    },
+    {
+      "word": "them.",
+      "start": 57.362,
+      "end": 57.442,
+      "score": 0.029
+    },
+    {
+      "word": "By",
+      "start": 57.462,
+      "end": 57.502,
+      "score": 0.0
+    },
+    {
+      "word": "the",
+      "start": 57.522,
+      "end": 57.582,
+      "score": 0.584
+    },
+    {
+      "word": "end",
+      "start": 57.602,
+      "end": 57.662,
+      "score": 0.058
+    },
+    {
+      "word": "of",
+      "start": 57.722,
+      "end": 57.762,
+      "score": 0.365
+    },
+    {
+      "word": "this,",
+      "start": 57.782,
+      "end": 57.862,
+      "score": 0.001
+    },
+    {
+      "word": "three",
+      "start": 57.882,
+      "end": 57.982,
+      "score": 0.201
+    },
+    {
+      "word": "changes",
+      "start": 58.002,
+      "end": 58.182,
+      "score": 0.074
+    },
+    {
+      "word": "nothing",
+      "start": 58.222,
+      "end": 58.362,
+      "score": 0.143
+    },
+    {
+      "word": "you",
+      "start": 58.382,
+      "end": 58.482,
+      "score": 0.191
+    },
+    {
+      "word": "need",
+      "start": 58.502,
+      "end": 58.582,
+      "score": 0.25
+    },
+    {
+      "word": "to",
+      "start": 58.602,
+      "end": 58.642,
+      "score": 0.0
+    },
+    {
+      "word": "install,",
+      "start": 58.662,
+      "end": 58.802,
+      "score": 0.002
+    },
+    {
+      "word": "nothing",
+      "start": 58.822,
+      "end": 58.963,
+      "score": 0.0
+    },
+    {
+      "word": "new",
+      "start": 58.983,
+      "end": 59.043,
+      "score": 0.332
+    },
+    {
+      "word": "to",
+      "start": 59.063,
+      "end": 59.103,
+      "score": 0.002
+    },
+    {
+      "word": "maintain",
+      "start": 59.123,
+      "end": 59.283,
+      "score": 0.005
+    },
+    {
+      "word": "cut",
+      "start": 59.323,
+      "end": 59.403,
+      "score": 0.174
+    },
+    {
+      "word": "that",
+      "start": 59.423,
+      "end": 59.503,
+      "score": 0.057
+    },
+    {
+      "word": "to",
+      "start": 59.523,
+      "end": 59.583,
+      "score": 0.25
+    },
+    {
+      "word": "seventy-two",
+      "start": 59.603,
+      "end": 59.843,
+      "score": 0.201
+    },
+    {
+      "word": "seconds.",
+      "start": 59.863,
+      "end": 60.003,
+      "score": 0.001
+    },
+    {
+      "word": "Let",
+      "start": 60.023,
+      "end": 60.083,
+      "score": 0.0
+    },
+    {
+      "word": "me",
+      "start": 60.103,
+      "end": 60.143,
+      "score": 0.446
+    },
+    {
+      "word": "show",
+      "start": 60.163,
+      "end": 60.243,
+      "score": 0.003
+    },
+    {
+      "word": "you",
+      "start": 60.263,
+      "end": 60.323,
+      "score": 0.0
+    },
+    {
+      "word": "where",
+      "start": 60.343,
+      "end": 60.443,
+      "score": 0.182
+    },
+    {
+      "word": "the",
+      "start": 60.463,
+      "end": 60.523,
+      "score": 0.284
+    },
+    {
+      "word": "time",
+      "start": 60.543,
+      "end": 60.623,
+      "score": 0.0
+    },
+    {
+      "word": "goes,",
+      "start": 60.643,
+      "end": 60.723,
+      "score": 0.007
+    },
+    {
+      "word": "and",
+      "start": 60.743,
+      "end": 60.803,
+      "score": 0.001
+    },
+    {
+      "word": "what",
+      "start": 60.823,
+      "end": 61.983,
+      "score": 0.37
+    },
+    {
+      "word": "you",
+      "start": 62.003,
+      "end": 62.083,
+      "score": 0.167
+    },
+    {
+      "word": "change",
+      "start": 62.103,
+      "end": 62.223,
+      "score": 0.163
+    },
+    {
+      "word": "to",
+      "start": 62.243,
+      "end": 62.283,
+      "score": 0.0
+    },
+    {
+      "word": "stop",
+      "start": 62.303,
+      "end": 62.383,
+      "score": 0.013
+    },
+    {
+      "word": "paying",
+      "start": 62.403,
+      "end": 62.543,
+      "score": 0.192
+    },
+    {
+      "word": "for",
+      "start": 62.563,
+      "end": 62.623,
+      "score": 0.0
+    },
+    {
+      "word": "it.",
+      "start": 62.643,
+      "end": 62.683,
+      "score": 0.0
+    },
+    {
+      "word": "---",
+      "start": 62.703,
+      "end": 62.763,
+      "score": 0.333
+    },
+    {
+      "word": "Here",
+      "start": 62.783,
+      "end": 62.863,
+      "score": 0.497
+    },
+    {
+      "word": "is",
+      "start": 62.883,
+      "end": 62.923,
+      "score": 0.0
+    },
+    {
+      "word": "the",
+      "start": 62.943,
+      "end": 63.043,
+      "score": 0.22
+    },
+    {
+      "word": "GitHub",
+      "start": 63.063,
+      "end": 63.203,
+      "score": 0.25
+    },
+    {
+      "word": "Actions",
+      "start": 63.223,
+      "end": 63.363,
+      "score": 0.005
+    },
+    {
+      "word": "(pr:",
+      "start": 63.383,
+      "end": 63.423,
+      "score": 0.0
+    },
+    {
+      "word": "\"git-hub",
+      "start": 63.443,
+      "end": 63.623,
+      "score": 0.261
+    },
+    {
+      "word": "ack-shuns\")",
+      "start": 63.683,
+      "end": 63.903,
+      "score": 0.163
+    },
+    {
+      "word": "timeline",
+      "start": 63.923,
+      "end": 64.083,
+      "score": 0.125
+    },
+    {
+      "word": "for",
+      "start": 64.103,
+      "end": 64.163,
+      "score": 0.008
+    },
+    {
+      "word": "that",
+      "start": 64.183,
+      "end": 64.263,
+      "score": 0.033
+    },
+    {
+      "word": "build.",
+      "start": 64.283,
+      "end": 64.403,
+      "score": 0.38
+    },
+    {
+      "word": "Three",
+      "start": 64.443,
+      "end": 64.583,
+      "score": 0.134
+    },
+    {
+      "word": "stages.",
+      "start": 64.603,
+      "end": 64.723,
+      "score": 0.016
+    },
+    {
+      "word": "npm",
+      "start": 64.743,
+      "end": 64.823,
+      "score": 0.166
+    },
+    {
+      "word": "(pr:",
+      "start": 66.883,
+      "end": 66.943,
+      "score": 0.25
+    },
+    {
+      "word": "\"N-P-M\")",
+      "start": 66.963,
+      "end": 67.063,
+      "score": 0.09
+    },
+    {
+      "word": "install:",
+      "start": 67.103,
+      "end": 67.263,
+      "score": 0.267
+    },
+    {
+      "word": "two",
+      "start": 67.283,
+      "end": 67.363,
+      "score": 0.166
+    },
+    {
+      "word": "minutes,",
+      "start": 67.383,
+      "end": 67.523,
+      "score": 0.111
+    },
+    {
+      "word": "seventeen",
+      "start": 68.743,
+      "end": 68.943,
+      "score": 0.23
+    },
+    {
+      "word": "seconds.",
+      "start": 68.963,
+      "end": 69.143,
+      "score": 0.12
+    },
+    {
+      "word": "Docker",
+      "start": 69.163,
+      "end": 69.323,
+      "score": 0.115
+    },
+    {
+      "word": "(pr:",
+      "start": 69.343,
+      "end": 69.403,
+      "score": 0.418
+    },
+    {
+      "word": "\"dock-er\")",
+      "start": 69.423,
+      "end": 69.603,
+      "score": 0.338
+    },
+    {
+      "word": "build:",
+      "start": 69.643,
+      "end": 69.763,
+      "score": 0.1
+    },
+    {
+      "word": "five",
+      "start": 69.783,
+      "end": 69.863,
+      "score": 0.0
+    },
+    {
+      "word": "minutes,",
+      "start": 69.883,
+      "end": 70.023,
+      "score": 0.0
+    },
+    {
+      "word": "nine",
+      "start": 70.043,
+      "end": 70.143,
+      "score": 0.25
+    },
+    {
+      "word": "seconds.",
+      "start": 70.163,
+      "end": 70.383,
+      "score": 0.266
+    },
+    {
+      "word": "Test",
+      "start": 70.423,
+      "end": 70.523,
+      "score": 0.428
+    },
+    {
+      "word": "run:",
+      "start": 70.543,
+      "end": 70.623,
+      "score": 0.095
+    },
+    {
+      "word": "one",
+      "start": 70.643,
+      "end": 70.723,
+      "score": 0.285
+    },
+    {
+      "word": "minute,",
+      "start": 70.763,
+      "end": 70.983,
+      "score": 0.311
+    },
+    {
+      "word": "sixteen",
+      "start": 71.003,
+      "end": 72.463,
+      "score": 0.389
+    },
+    {
+      "word": "seconds.",
+      "start": 72.483,
+      "end": 72.643,
+      "score": 0.288
+    },
+    {
+      "word": "The",
+      "start": 72.663,
+      "end": 72.743,
+      "score": 0.122
+    },
+    {
+      "word": "npm",
+      "start": 72.763,
+      "end": 72.823,
+      "score": 0.0
+    },
+    {
+      "word": "(pr:",
+      "start": 72.843,
+      "end": 72.883,
+      "score": 0.0
+    },
+    {
+      "word": "\"N-P-M\")",
+      "start": 72.923,
+      "end": 73.023,
+      "score": 0.322
+    },
+    {
+      "word": "install",
+      "start": 73.043,
+      "end": 73.183,
+      "score": 0.0
+    },
+    {
+      "word": "and",
+      "start": 73.203,
+      "end": 73.263,
+      "score": 0.0
+    },
+    {
+      "word": "the",
+      "start": 73.283,
+      "end": 73.363,
+      "score": 0.177
+    },
+    {
+      "word": "Docker",
+      "start": 73.383,
+      "end": 73.503,
+      "score": 0.148
+    },
+    {
+      "word": "(pr:",
+      "start": 73.523,
+      "end": 73.583,
+      "score": 0.16
+    },
+    {
+      "word": "\"dock-er\")",
+      "start": 73.603,
+      "end": 73.863,
+      "score": 0.289
+    },
+    {
+      "word": "build",
+      "start": 73.883,
+      "end": 74.003,
+      "score": 0.101
+    },
+    {
+      "word": "together",
+      "start": 74.023,
+      "end": 74.203,
+      "score": 0.114
+    },
+    {
+      "word": "eat",
+      "start": 74.223,
+      "end": 74.283,
+      "score": 0.001
+    },
+    {
+      "word": "seven",
+      "start": 74.303,
+      "end": 74.423,
+      "score": 0.385
+    },
+    {
+      "word": "and",
+      "start": 74.443,
+      "end": 74.503,
+      "score": 0.001
+    },
+    {
+      "word": "a",
+      "start": 74.523,
+      "end": 74.543,
+      "score": 0.0
+    },
+    {
+      "word": "half",
+      "start": 74.563,
+      "end": 74.703,
+      "score": 0.486
+    },
+    {
+      "word": "minutes",
+      "start": 74.723,
+      "end": 74.883,
+      "score": 0.118
+    },
+    {
+      "word": "of",
+      "start": 74.903,
+      "end": 74.943,
+      "score": 0.0
+    },
+    {
+      "word": "that",
+      "start": 74.963,
+      "end": 75.083,
+      "score": 0.447
+    },
+    {
+      "word": "eight",
+      "start": 75.103,
+      "end": 75.203,
+      "score": 0.196
+    },
+    {
+      "word": "forty-two.",
+      "start": 75.223,
+      "end": 75.403,
+      "score": 0.039
+    },
+    {
+      "word": "Those",
+      "start": 75.423,
+      "end": 75.523,
+      "score": 0.046
+    },
+    {
+      "word": "are",
+      "start": 75.543,
+      "end": 75.603,
+      "score": 0.0
+    },
+    {
+      "word": "also",
+      "start": 75.623,
+      "end": 75.703,
+      "score": 0.01
+    },
+    {
+      "word": "the",
+      "start": 75.723,
+      "end": 75.783,
+      "score": 0.027
+    },
+    {
+      "word": "two",
+      "start": 75.803,
+      "end": 75.863,
+      "score": 0.001
+    },
+    {
+      "word": "that",
+      "start": 75.883,
+      "end": 75.963,
+      "score": 0.0
+    },
+    {
+      "word": "did",
+      "start": 75.983,
+      "end": 76.043,
+      "score": 0.002
+    },
+    {
+      "word": "not",
+      "start": 76.063,
+      "end": 76.123,
+      "score": 0.264
+    },
+    {
+      "word": "need",
+      "start": 76.143,
+      "end": 76.223,
+      "score": 0.079
+    },
+    {
+      "word": "to",
+      "start": 76.243,
+      "end": 76.283,
+      "score": 0.0
+    },
+    {
+      "word": "run",
+      "start": 76.303,
+      "end": 77.363,
+      "score": 0.859
+    },
+    {
+      "word": "at",
+      "start": 77.383,
+      "end": 77.423,
+      "score": 0.0
+    },
+    {
+      "word": "full",
+      "start": 77.443,
+      "end": 77.563,
+      "score": 0.167
+    },
+    {
+      "word": "cost.",
+      "start": 77.583,
+      "end": 77.663,
+      "score": 0.002
+    },
+    {
+      "word": "Here",
+      "start": 77.683,
+      "end": 77.763,
+      "score": 0.001
+    },
+    {
+      "word": "is",
+      "start": 77.783,
+      "end": 77.823,
+      "score": 0.465
+    },
+    {
+      "word": "why.",
+      "start": 77.843,
+      "end": 77.903,
+      "score": 0.0
+    },
+    {
+      "word": "Your",
+      "start": 77.923,
+      "end": 78.003,
+      "score": 0.002
+    },
+    {
+      "word": "CI",
+      "start": 78.023,
+      "end": 78.063,
+      "score": 0.0
+    },
+    {
+      "word": "runner",
+      "start": 78.083,
+      "end": 78.203,
+      "score": 0.295
+    },
+    {
+      "word": "has",
+      "start": 78.223,
+      "end": 78.283,
+      "score": 0.0
+    },
+    {
+      "word": "no",
+      "start": 78.303,
+      "end": 78.363,
+      "score": 0.023
+    },
+    {
+      "word": "memory",
+      "start": 78.383,
+      "end": 78.503,
+      "score": 0.0
+    },
+    {
+      "word": "between",
+      "start": 78.523,
+      "end": 78.703,
+      "score": 0.338
+    },
+    {
+      "word": "builds.",
+      "start": 78.723,
+      "end": 78.843,
+      "score": 0.0
+    },
+    {
+      "word": "It",
+      "start": 78.863,
+      "end": 78.923,
+      "score": 0.008
+    },
+    {
+      "word": "does",
+      "start": 78.943,
+      "end": 79.023,
+      "score": 0.002
+    },
+    {
+      "word": "not",
+      "start": 79.043,
+      "end": 79.103,
+      "score": 0.0
+    },
+    {
+      "word": "know",
+      "start": 79.123,
+      "end": 79.203,
+      "score": 0.25
+    },
+    {
+      "word": "your",
+      "start": 79.223,
+      "end": 79.323,
+      "score": 0.125
+    },
+    {
+      "word": "package-lock.json",
+      "start": 79.343,
+      "end": 79.683,
+      "score": 0.17
+    },
+    {
+      "word": "(pr:",
+      "start": 79.703,
+      "end": 79.743,
+      "score": 0.494
+    },
+    {
+      "word": "\"package",
+      "start": 79.763,
+      "end": 79.903,
+      "score": 0.143
+    },
+    {
+      "word": "lock",
+      "start": 79.923,
+      "end": 80.003,
+      "score": 0.0
+    },
+    {
+      "word": "dot",
+      "start": 80.023,
+      "end": 80.083,
+      "score": 0.0
+    },
+    {
+      "word": "jay-son\")",
+      "start": 80.103,
+      "end": 80.243,
+      "score": 0.142
+    },
+    {
+      "word": "has",
+      "start": 80.263,
+      "end": 80.323,
+      "score": 0.0
+    },
+    {
+      "word": "not",
+      "start": 80.343,
+      "end": 80.403,
+      "score": 0.0
+    },
+    {
+      "word": "changed",
+      "start": 80.423,
+      "end": 80.563,
+      "score": 0.007
+    },
+    {
+      "word": "since",
+      "start": 80.583,
+      "end": 80.723,
+      "score": 0.135
+    },
+    {
+      "word": "last",
+      "start": 80.763,
+      "end": 80.863,
+      "score": 0.124
+    },
+    {
+      "word": "Thursday.",
+      "start": 80.883,
+      "end": 81.083,
+      "score": 0.093
+    },
+    {
+      "word": "It",
+      "start": 81.103,
+      "end": 81.143,
+      "score": 0.0
+    },
+    {
+      "word": "does",
+      "start": 81.163,
+      "end": 81.243,
+      "score": 0.188
+    },
+    {
+      "word": "not",
+      "start": 81.263,
+      "end": 81.323,
+      "score": 0.624
+    },
+    {
+      "word": "know",
+      "start": 81.343,
+      "end": 81.423,
+      "score": 0.0
+    },
+    {
+      "word": "that",
+      "start": 81.443,
+      "end": 81.523,
+      "score": 0.242
+    },
+    {
+      "word": "eleven",
+      "start": 81.543,
+      "end": 81.663,
+      "score": 0.016
+    },
+    {
+      "word": "of",
+      "start": 81.683,
+      "end": 81.723,
+      "score": 0.5
+    },
+    {
+      "word": "your",
+      "start": 81.763,
+      "end": 81.843,
+      "score": 0.0
+    },
+    {
+      "word": "twelve",
+      "start": 81.863,
+      "end": 81.983,
+      "score": 0.0
+    },
+    {
+      "word": "Docker",
+      "start": 82.003,
+      "end": 82.123,
+      "score": 0.001
+    },
+    {
+      "word": "(pr:",
+      "start": 82.143,
+      "end": 82.183,
+      "score": 0.0
+    },
+    {
+      "word": "\"dock-er\")",
+      "start": 82.203,
+      "end": 82.343,
+      "score": 0.008
+    },
+    {
+      "word": "layers",
+      "start": 82.363,
+      "end": 82.484,
+      "score": 0.0
+    },
+    {
+      "word": "are",
+      "start": 82.504,
+      "end": 82.564,
+      "score": 0.0
+    },
+    {
+      "word": "byte-for-byte",
+      "start": 82.624,
+      "end": 83.824,
+      "score": 0.472
+    },
+    {
+      "word": "identical",
+      "start": 83.844,
+      "end": 84.024,
+      "score": 0.107
+    },
+    {
+      "word": "to",
+      "start": 84.044,
+      "end": 84.104,
+      "score": 0.106
+    },
+    {
+      "word": "the",
+      "start": 84.124,
+      "end": 84.184,
+      "score": 0.001
+    },
+    {
+      "word": "last",
+      "start": 84.204,
+      "end": 84.284,
+      "score": 0.137
+    },
+    {
+      "word": "commit.",
+      "start": 84.304,
+      "end": 84.464,
+      "score": 0.514
+    },
+    {
+      "word": "It",
+      "start": 84.484,
+      "end": 84.524,
+      "score": 0.0
+    },
+    {
+      "word": "starts",
+      "start": 84.544,
+      "end": 84.684,
+      "score": 0.286
+    },
+    {
+      "word": "from",
+      "start": 84.704,
+      "end": 84.784,
+      "score": 0.0
+    },
+    {
+      "word": "scratch",
+      "start": 84.804,
+      "end": 84.944,
+      "score": 0.001
+    },
+    {
+      "word": "every",
+      "start": 84.964,
+      "end": 85.184,
+      "score": 0.562
+    },
+    {
+      "word": "time",
+      "start": 85.244,
+      "end": 85.484,
+      "score": 0.88
+    },
+    {
+      "word": "even",
+      "start": 85.604,
+      "end": 85.804,
+      "score": 0.718
+    },
+    {
+      "word": "when",
+      "start": 85.824,
+      "end": 86.024,
+      "score": 0.887
+    },
+    {
+      "word": "scratch",
+      "start": 86.044,
+      "end": 86.344,
+      "score": 0.855
+    },
+    {
+      "word": "means",
+      "start": 86.384,
+      "end": 86.584,
+      "score": 0.509
+    },
+    {
+      "word": "identical",
+      "start": 86.644,
+      "end": 87.164,
+      "score": 0.593
+    },
+    {
+      "word": "to",
+      "start": 87.184,
+      "end": 87.264,
+      "score": 0.834
+    },
+    {
+      "word": "what",
+      "start": 87.304,
+      "end": 87.424,
+      "score": 0.899
+    },
+    {
+      "word": "it",
+      "start": 87.464,
+      "end": 87.544,
+      "score": 0.526
+    },
+    {
+      "word": "did",
+      "start": 87.564,
+      "end": 87.704,
+      "score": 0.86
+    },
+    {
+      "word": "three",
+      "start": 87.724,
+      "end": 87.944,
+      "score": 0.779
+    },
+    {
+      "word": "minutes",
+      "start": 87.984,
+      "end": 88.224,
+      "score": 0.776
+    },
+    {
+      "word": "ago.",
+      "start": 88.284,
+      "end": 88.564,
+      "score": 0.486
+    },
+    {
+      "word": "And",
+      "start": 90.564,
+      "end": 90.664,
+      "score": 0.744
+    },
+    {
+      "word": "here",
+      "start": 90.684,
+      "end": 90.864,
+      "score": 0.81
+    },
+    {
+      "word": "is",
+      "start": 90.924,
+      "end": 91.004,
+      "score": 0.728
+    },
+    {
+      "word": "the",
+      "start": 91.024,
+      "end": 91.124,
+      "score": 0.694
+    },
+    {
+      "word": "thing",
+      "start": 91.144,
+      "end": 91.324,
+      "score": 0.817
+    },
+    {
+      "word": "about",
+      "start": 91.364,
+      "end": 91.584,
+      "score": 0.811
+    },
+    {
+      "word": "that:",
+      "start": 91.624,
+      "end": 91.784,
+      "score": 0.904
+    },
+    {
+      "word": "on",
+      "start": 91.904,
+      "end": 91.984,
+      "score": 0.816
+    },
+    {
+      "word": "a",
+      "start": 92.024,
+      "end": 92.084,
+      "score": 0.568
+    },
+    {
+      "word": "typical",
+      "start": 92.124,
+      "end": 92.504,
+      "score": 0.844
+    },
+    {
+      "word": "feature",
+      "start": 92.524,
+      "end": 92.864,
+      "score": 0.584
+    },
+    {
+      "word": "branch",
+      "start": 92.904,
+      "end": 93.184,
+      "score": 0.788
+    },
+    {
+      "word": "workflow,",
+      "start": 93.224,
+      "end": 93.684,
+      "score": 0.898
+    },
+    {
+      "word": "maybe",
+      "start": 94.024,
+      "end": 94.304,
+      "score": 0.768
+    },
+    {
+      "word": "twenty",
+      "start": 94.344,
+      "end": 94.644,
+      "score": 0.775
+    },
+    {
+      "word": "percent",
+      "start": 94.684,
+      "end": 95.004,
+      "score": 0.767
+    },
+    {
+      "word": "of",
+      "start": 95.024,
+      "end": 95.064,
+      "score": 0.998
+    },
+    {
+      "word": "your",
+      "start": 95.104,
+      "end": 95.244,
+      "score": 0.92
+    },
+    {
+      "word": "pushes",
+      "start": 95.284,
+      "end": 95.644,
+      "score": 0.718
+    },
+    {
+      "word": "actually",
+      "start": 95.744,
+      "end": 96.144,
+      "score": 0.586
+    },
+    {
+      "word": "touch",
+      "start": 96.184,
+      "end": 96.384,
+      "score": 0.694
+    },
+    {
+      "word": "a",
+      "start": 96.424,
+      "end": 96.484,
+      "score": 0.509
+    },
+    {
+      "word": "dependency.",
+      "start": 96.504,
+      "end": 97.184,
+      "score": 0.854
+    },
+    {
+      "word": "The",
+      "start": 98.564,
+      "end": 98.684,
+      "score": 0.817
+    },
+    {
+      "word": "other",
+      "start": 98.744,
+      "end": 98.984,
+      "score": 0.73
+    },
+    {
+      "word": "eighty",
+      "start": 99.024,
+      "end": 99.244,
+      "score": 0.48
+    },
+    {
+      "word": "percent",
+      "start": 99.284,
+      "end": 99.584,
+      "score": 0.844
+    },
+    {
+      "word": "are",
+      "start": 99.644,
+      "end": 99.724,
+      "score": 0.478
+    },
+    {
+      "word": "paying",
+      "start": 99.764,
+      "end": 99.944,
+      "score": 0.491
+    },
+    {
+      "word": "the",
+      "start": 99.964,
+      "end": 100.044,
+      "score": 0.957
+    },
+    {
+      "word": "full",
+      "start": 100.084,
+      "end": 100.244,
+      "score": 0.929
+    },
+    {
+      "word": "install",
+      "start": 100.284,
+      "end": 100.644,
+      "score": 0.759
+    },
+    {
+      "word": "cost",
+      "start": 100.684,
+      "end": 100.944,
+      "score": 0.817
+    },
+    {
+      "word": "for",
+      "start": 100.984,
+      "end": 101.104,
+      "score": 0.735
+    },
+    {
+      "word": "no",
+      "start": 101.144,
+      "end": 101.264,
+      "score": 0.938
+    },
+    {
+      "word": "reason",
+      "start": 101.324,
+      "end": 101.584,
+      "score": 0.774
+    },
+    {
+      "word": "at",
+      "start": 101.604,
+      "end": 101.684,
+      "score": 0.816
+    },
+    {
+      "word": "all.",
+      "start": 101.724,
+      "end": 101.884,
+      "score": 0.847
+    },
+    {
+      "word": "---",
+      "start": 101.904,
+      "end": 104.384,
+      "score": 0.961
+    },
+    {
+      "word": "Fix",
+      "start": 104.404,
+      "end": 104.584,
+      "score": 0.98
+    },
+    {
+      "word": "one",
+      "start": 104.724,
+      "end": 104.804,
+      "score": 0.713
+    },
+    {
+      "word": "is",
+      "start": 104.844,
+      "end": 104.944,
+      "score": 0.688
+    },
+    {
+      "word": "the",
+      "start": 104.984,
+      "end": 105.084,
+      "score": 0.675
+    },
+    {
+      "word": "GitHub",
+      "start": 105.124,
+      "end": 105.284,
+      "score": 0.248
+    },
+    {
+      "word": "Actions",
+      "start": 105.304,
+      "end": 105.464,
+      "score": 0.096
+    },
+    {
+      "word": "(pr:",
+      "start": 105.484,
+      "end": 105.524,
+      "score": 0.0
+    },
+    {
+      "word": "\"git-hub",
+      "start": 105.544,
+      "end": 105.684,
+      "score": 0.073
+    },
+    {
+      "word": "ack-shuns\")",
+      "start": 105.704,
+      "end": 106.045,
+      "score": 0.338
+    },
+    {
+      "word": "cache,",
+      "start": 106.065,
+      "end": 106.365,
+      "score": 0.691
+    },
+    {
+      "word": "keyed",
+      "start": 106.685,
+      "end": 106.885,
+      "score": 0.376
+    },
+    {
+      "word": "to",
+      "start": 106.905,
+      "end": 107.005,
+      "score": 0.746
+    },
+    {
+      "word": "your",
+      "start": 107.025,
+      "end": 107.145,
+      "score": 0.589
+    },
+    {
+      "word": "lockfile",
+      "start": 107.205,
+      "end": 107.405,
+      "score": 0.228
+    },
+    {
+      "word": "(pr:",
+      "start": 107.425,
+      "end": 107.465,
+      "score": 0.013
+    },
+    {
+      "word": "\"lock",
+      "start": 107.485,
+      "end": 107.605,
+      "score": 0.247
+    },
+    {
+      "word": "file\").",
+      "start": 107.625,
+      "end": 107.725,
+      "score": 0.158
+    },
+    {
+      "word": "Here",
+      "start": 109.025,
+      "end": 109.185,
+      "score": 0.746
+    },
+    {
+      "word": "is",
+      "start": 109.205,
+      "end": 109.285,
+      "score": 0.803
+    },
+    {
+      "word": "the",
+      "start": 109.325,
+      "end": 109.405,
+      "score": 0.92
+    },
+    {
+      "word": "YAML",
+      "start": 109.445,
+      "end": 109.625,
+      "score": 0.344
+    },
+    {
+      "word": "(pr:",
+      "start": 109.645,
+      "end": 109.685,
+      "score": 0.0
+    },
+    {
+      "word": "\"yam-ul\")",
+      "start": 109.705,
+      "end": 109.845,
+      "score": 0.261
+    },
+    {
+      "word": "most",
+      "start": 109.865,
+      "end": 110.085,
+      "score": 0.703
+    },
+    {
+      "word": "teams",
+      "start": 110.105,
+      "end": 110.365,
+      "score": 0.618
+    },
+    {
+      "word": "start",
+      "start": 110.405,
+      "end": 110.645,
+      "score": 0.866
+    },
+    {
+      "word": "with:",
+      "start": 110.685,
+      "end": 110.865,
+      "score": 0.86
+    },
+    {
+      "word": "The",
+      "start": 113.705,
+      "end": 113.805,
+      "score": 0.831
+    },
+    {
+      "word": "cache",
+      "start": 113.825,
+      "end": 114.085,
+      "score": 0.642
+    },
+    {
+      "word": "key",
+      "start": 114.125,
+      "end": 114.285,
+      "score": 0.708
+    },
+    {
+      "word": "is",
+      "start": 114.325,
+      "end": 114.385,
+      "score": 0.926
+    },
+    {
+      "word": "tied",
+      "start": 114.465,
+      "end": 114.705,
+      "score": 0.647
+    },
+    {
+      "word": "to",
+      "start": 114.725,
+      "end": 114.805,
+      "score": 0.684
+    },
+    {
+      "word": "the",
+      "start": 114.845,
+      "end": 114.925,
+      "score": 0.831
+    },
+    {
+      "word": "commit",
+      "start": 114.945,
+      "end": 115.085,
+      "score": 0.429
+    },
+    {
+      "word": "SHA",
+      "start": 115.105,
+      "end": 115.165,
+      "score": 0.0
+    },
+    {
+      "word": "(pr:",
+      "start": 115.185,
+      "end": 115.225,
+      "score": 0.0
+    },
+    {
+      "word": "\"shah\").",
+      "start": 115.245,
+      "end": 115.465,
+      "score": 0.774
+    },
+    {
+      "word": "That",
+      "start": 116.745,
+      "end": 116.885,
+      "score": 0.874
+    },
+    {
+      "word": "means",
+      "start": 116.925,
+      "end": 117.125,
+      "score": 0.651
+    },
+    {
+      "word": "every",
+      "start": 117.185,
+      "end": 117.425,
+      "score": 0.747
+    },
+    {
+      "word": "commit",
+      "start": 117.465,
+      "end": 117.665,
+      "score": 0.983
+    },
+    {
+      "word": "even",
+      "start": 117.725,
+      "end": 117.905,
+      "score": 0.785
+    },
+    {
+      "word": "a",
+      "start": 117.925,
+      "end": 117.985,
+      "score": 0.47
+    },
+    {
+      "word": "one-line",
+      "start": 118.085,
+      "end": 118.425,
+      "score": 0.724
+    },
+    {
+      "word": "comment",
+      "start": 118.465,
+      "end": 118.825,
+      "score": 0.774
+    },
+    {
+      "word": "change",
+      "start": 118.865,
+      "end": 119.165,
+      "score": 0.8
+    },
+    {
+      "word": "busts",
+      "start": 119.205,
+      "end": 119.465,
+      "score": 0.58
+    },
+    {
+      "word": "the",
+      "start": 119.505,
+      "end": 119.605,
+      "score": 0.789
+    },
+    {
+      "word": "cache.",
+      "start": 119.625,
+      "end": 119.945,
+      "score": 0.604
+    },
+    {
+      "word": "You",
+      "start": 121.265,
+      "end": 121.365,
+      "score": 0.848
+    },
+    {
+      "word": "are",
+      "start": 121.405,
+      "end": 121.505,
+      "score": 0.6
+    },
+    {
+      "word": "downloading",
+      "start": 121.525,
+      "end": 122.005,
+      "score": 0.818
+    },
+    {
+      "word": "the",
+      "start": 122.025,
+      "end": 122.105,
+      "score": 0.968
+    },
+    {
+      "word": "same",
+      "start": 122.145,
+      "end": 122.365,
+      "score": 0.728
+    },
+    {
+      "word": "two",
+      "start": 122.385,
+      "end": 122.565,
+      "score": 0.719
+    },
+    {
+      "word": "hundred",
+      "start": 122.625,
+      "end": 122.945,
+      "score": 0.892
+    },
+    {
+      "word": "and",
+      "start": 122.985,
+      "end": 123.085,
+      "score": 0.786
+    },
+    {
+      "word": "forty",
+      "start": 123.145,
+      "end": 123.445,
+      "score": 0.876
+    },
+    {
+      "word": "packages",
+      "start": 123.485,
+      "end": 123.985,
+      "score": 0.853
+    },
+    {
+      "word": "from",
+      "start": 124.025,
+      "end": 124.165,
+      "score": 0.707
+    },
+    {
+      "word": "the",
+      "start": 124.205,
+      "end": 124.285,
+      "score": 0.96
+    },
+    {
+      "word": "npm",
+      "start": 124.385,
+      "end": 124.465,
+      "score": 0.476
+    },
+    {
+      "word": "(pr:",
+      "start": 124.505,
+      "end": 124.645,
+      "score": 0.499
+    },
+    {
+      "word": "\"N-P-M\")",
+      "start": 124.665,
+      "end": 124.765,
+      "score": 0.356
+    },
+    {
+      "word": "registry,",
+      "start": 124.785,
+      "end": 125.345,
+      "score": 0.76
+    },
+    {
+      "word": "on",
+      "start": 125.665,
+      "end": 125.745,
+      "score": 0.846
+    },
+    {
+      "word": "every",
+      "start": 125.805,
+      "end": 126.025,
+      "score": 0.695
+    },
+    {
+      "word": "push,",
+      "start": 126.045,
+      "end": 126.285,
+      "score": 0.864
+    },
+    {
+      "word": "regardless",
+      "start": 126.605,
+      "end": 127.105,
+      "score": 0.818
+    },
+    {
+      "word": "of",
+      "start": 127.145,
+      "end": 127.205,
+      "score": 0.962
+    },
+    {
+      "word": "whether",
+      "start": 127.265,
+      "end": 127.525,
+      "score": 0.68
+    },
+    {
+      "word": "anything",
+      "start": 127.585,
+      "end": 127.925,
+      "score": 0.8
+    },
+    {
+      "word": "changed.",
+      "start": 127.965,
+      "end": 128.325,
+      "score": 0.835
+    },
+    {
+      "word": "Here",
+      "start": 130.406,
+      "end": 130.586,
+      "score": 0.722
+    },
+    {
+      "word": "is",
+      "start": 130.626,
+      "end": 130.706,
+      "score": 0.614
+    },
+    {
+      "word": "the",
+      "start": 130.746,
+      "end": 130.826,
+      "score": 0.911
+    },
+    {
+      "word": "fix.",
+      "start": 130.866,
+      "end": 131.166,
+      "score": 0.882
+    },
+    {
+      "word": "Four",
+      "start": 132.226,
+      "end": 132.446,
+      "score": 0.777
+    },
+    {
+      "word": "lines,",
+      "start": 132.486,
+      "end": 132.786,
+      "score": 0.751
+    },
+    {
+      "word": "already",
+      "start": 132.866,
+      "end": 133.166,
+      "score": 0.897
+    },
+    {
+      "word": "in",
+      "start": 133.206,
+      "end": 133.266,
+      "score": 0.891
+    },
+    {
+      "word": "your",
+      "start": 133.306,
+      "end": 133.426,
+      "score": 0.852
+    },
+    {
+      "word": "workflow",
+      "start": 133.466,
+      "end": 133.826,
+      "score": 0.552
+    },
+    {
+      "word": "file:",
+      "start": 133.866,
+      "end": 134.146,
+      "score": 0.821
+    },
+    {
+      "word": "The",
+      "start": 136.866,
+      "end": 136.986,
+      "score": 0.735
+    },
+    {
+      "word": "key",
+      "start": 137.006,
+      "end": 137.146,
+      "score": 0.586
+    },
+    {
+      "word": "is",
+      "start": 137.186,
+      "end": 137.266,
+      "score": 0.524
+    },
+    {
+      "word": "now",
+      "start": 137.306,
+      "end": 137.466,
+      "score": 0.683
+    },
+    {
+      "word": "the",
+      "start": 137.486,
+      "end": 137.566,
+      "score": 0.821
+    },
+    {
+      "word": "hash",
+      "start": 137.586,
+      "end": 137.806,
+      "score": 0.868
+    },
+    {
+      "word": "of",
+      "start": 137.846,
+      "end": 137.886,
+      "score": 0.996
+    },
+    {
+      "word": "your",
+      "start": 137.926,
+      "end": 138.046,
+      "score": 0.812
+    },
+    {
+      "word": "package-lock.json",
+      "start": 138.086,
+      "end": 138.706,
+      "score": 0.509
+    },
+    {
+      "word": "(pr:",
+      "start": 138.726,
+      "end": 138.766,
+      "score": 0.0
+    },
+    {
+      "word": "\"package",
+      "start": 138.786,
+      "end": 138.986,
+      "score": 0.226
+    },
+    {
+      "word": "lock",
+      "start": 139.006,
+      "end": 139.086,
+      "score": 0.0
+    },
+    {
+      "word": "dot",
+      "start": 139.106,
+      "end": 139.166,
+      "score": 0.0
+    },
+    {
+      "word": "jay-son\").",
+      "start": 139.186,
+      "end": 139.406,
+      "score": 0.316
+    },
+    {
+      "word": "If",
+      "start": 140.746,
+      "end": 140.826,
+      "score": 0.636
+    },
+    {
+      "word": "that",
+      "start": 140.866,
+      "end": 141.066,
+      "score": 0.939
+    },
+    {
+      "word": "file",
+      "start": 141.106,
+      "end": 141.366,
+      "score": 0.824
+    },
+    {
+      "word": "has",
+      "start": 141.406,
+      "end": 141.506,
+      "score": 0.8
+    },
+    {
+      "word": "not",
+      "start": 141.546,
+      "end": 141.686,
+      "score": 0.745
+    },
+    {
+      "word": "changed",
+      "start": 141.726,
+      "end": 142.046,
+      "score": 0.812
+    },
+    {
+      "word": "and",
+      "start": 142.406,
+      "end": 142.506,
+      "score": 0.72
+    },
+    {
+      "word": "in",
+      "start": 142.546,
+      "end": 142.606,
+      "score": 0.486
+    },
+    {
+      "word": "eighty",
+      "start": 142.686,
+      "end": 142.886,
+      "score": 0.926
+    },
+    {
+      "word": "percent",
+      "start": 142.926,
+      "end": 143.246,
+      "score": 0.593
+    },
+    {
+      "word": "of",
+      "start": 143.286,
+      "end": 143.366,
+      "score": 0.718
+    },
+    {
+      "word": "pushes,",
+      "start": 143.406,
+      "end": 143.786,
+      "score": 0.704
+    },
+    {
+      "word": "it",
+      "start": 144.186,
+      "end": 144.246,
+      "score": 0.822
+    },
+    {
+      "word": "has",
+      "start": 144.266,
+      "end": 144.406,
+      "score": 0.249
+    },
+    {
+      "word": "not",
+      "start": 144.446,
+      "end": 144.586,
+      "score": 0.838
+    },
+    {
+      "word": "you",
+      "start": 144.626,
+      "end": 144.726,
+      "score": 0.968
+    },
+    {
+      "word": "get",
+      "start": 144.766,
+      "end": 144.886,
+      "score": 0.876
+    },
+    {
+      "word": "a",
+      "start": 144.926,
+      "end": 144.966,
+      "score": 0.753
+    },
+    {
+      "word": "full",
+      "start": 144.986,
+      "end": 145.166,
+      "score": 0.888
+    },
+    {
+      "word": "cache",
+      "start": 145.206,
+      "end": 145.506,
+      "score": 0.637
+    },
+    {
+      "word": "hit.",
+      "start": 145.546,
+      "end": 145.706,
+      "score": 0.49
+    },
+    {
+      "word": "npm",
+      "start": 147.086,
+      "end": 147.186,
+      "score": 0.441
+    },
+    {
+      "word": "(pr:",
+      "start": 147.206,
+      "end": 147.346,
+      "score": 0.818
+    },
+    {
+      "word": "\"N-P-M\")",
+      "start": 147.366,
+      "end": 147.506,
+      "score": 0.352
+    },
+    {
+      "word": "install",
+      "start": 147.526,
+      "end": 147.906,
+      "score": 0.74
+    },
+    {
+      "word": "drops",
+      "start": 147.926,
+      "end": 148.226,
+      "score": 0.795
+    },
+    {
+      "word": "from",
+      "start": 148.266,
+      "end": 148.426,
+      "score": 0.691
+    },
+    {
+      "word": "two",
+      "start": 148.466,
+      "end": 148.646,
+      "score": 0.668
+    },
+    {
+      "word": "minutes",
+      "start": 148.686,
+      "end": 148.986,
+      "score": 0.852
+    },
+    {
+      "word": "seventeen",
+      "start": 149.026,
+      "end": 149.566,
+      "score": 0.765
+    },
+    {
+      "word": "to",
+      "start": 149.586,
+      "end": 149.666,
+      "score": 0.974
+    },
+    {
+      "word": "about",
+      "start": 149.726,
+      "end": 149.966,
+      "score": 0.923
+    },
+    {
+      "word": "four",
+      "start": 150.006,
+      "end": 150.206,
+      "score": 0.672
+    },
+    {
+      "word": "seconds.",
+      "start": 150.246,
+      "end": 150.646,
+      "score": 0.838
+    },
+    {
+      "word": "The",
+      "start": 152.666,
+      "end": 152.746,
+      "score": 0.818
+    },
+    {
+      "word": "restore-keys",
+      "start": 152.766,
+      "end": 153.006,
+      "score": 0.044
+    },
+    {
+      "word": "(pr:",
+      "start": 153.026,
+      "end": 153.086,
+      "score": 0.522
+    },
+    {
+      "word": "\"restore",
+      "start": 153.106,
+      "end": 153.267,
+      "score": 0.221
+    },
+    {
+      "word": "keys\")",
+      "start": 153.287,
+      "end": 153.407,
+      "score": 0.242
+    },
+    {
+      "word": "line",
+      "start": 153.427,
+      "end": 153.607,
+      "score": 0.822
+    },
+    {
+      "word": "is",
+      "start": 153.627,
+      "end": 153.707,
+      "score": 0.706
+    },
+    {
+      "word": "the",
+      "start": 153.747,
+      "end": 153.847,
+      "score": 0.793
+    },
+    {
+      "word": "fallback.",
+      "start": 153.887,
+      "end": 154.347,
+      "score": 0.802
+    },
+    {
+      "word": "If",
+      "start": 155.687,
+      "end": 155.747,
+      "score": 0.55
+    },
+    {
+      "word": "your",
+      "start": 155.767,
+      "end": 155.927,
+      "score": 0.6
+    },
+    {
+      "word": "lockfile",
+      "start": 155.967,
+      "end": 156.187,
+      "score": 0.232
+    },
+    {
+      "word": "(pr:",
+      "start": 156.207,
+      "end": 156.247,
+      "score": 0.028
+    },
+    {
+      "word": "\"lock",
+      "start": 156.267,
+      "end": 156.367,
+      "score": 0.118
+    },
+    {
+      "word": "file\")",
+      "start": 156.387,
+      "end": 156.487,
+      "score": 0.147
+    },
+    {
+      "word": "did",
+      "start": 156.527,
+      "end": 156.667,
+      "score": 0.79
+    },
+    {
+      "word": "change,",
+      "start": 156.707,
+      "end": 157.007,
+      "score": 0.889
+    },
+    {
+      "word": "you",
+      "start": 157.367,
+      "end": 157.527,
+      "score": 0.89
+    },
+    {
+      "word": "still",
+      "start": 157.547,
+      "end": 157.727,
+      "score": 0.9
+    },
+    {
+      "word": "restore",
+      "start": 157.787,
+      "end": 158.107,
+      "score": 0.706
+    },
+    {
+      "word": "the",
+      "start": 158.127,
+      "end": 158.227,
+      "score": 0.608
+    },
+    {
+      "word": "closest",
+      "start": 158.267,
+      "end": 158.647,
+      "score": 0.824
+    },
+    {
+      "word": "previous",
+      "start": 158.707,
+      "end": 159.107,
+      "score": 0.867
+    },
+    {
+      "word": "cache",
+      "start": 159.127,
+      "end": 159.427,
+      "score": 0.673
+    },
+    {
+      "word": "and",
+      "start": 159.647,
+      "end": 159.747,
+      "score": 0.709
+    },
+    {
+      "word": "install",
+      "start": 159.787,
+      "end": 160.167,
+      "score": 0.814
+    },
+    {
+      "word": "only",
+      "start": 160.227,
+      "end": 160.407,
+      "score": 0.96
+    },
+    {
+      "word": "the",
+      "start": 160.447,
+      "end": 160.527,
+      "score": 0.949
+    },
+    {
+      "word": "delta",
+      "start": 160.587,
+      "end": 160.827,
+      "score": 0.639
+    },
+    {
+      "word": "not",
+      "start": 160.887,
+      "end": 161.047,
+      "score": 0.876
+    },
+    {
+      "word": "every",
+      "start": 161.067,
+      "end": 161.287,
+      "score": 0.732
+    },
+    {
+      "word": "package",
+      "start": 161.327,
+      "end": 161.687,
+      "score": 0.802
+    },
+    {
+      "word": "from",
+      "start": 161.727,
+      "end": 161.887,
+      "score": 0.74
+    },
+    {
+      "word": "scratch.",
+      "start": 161.927,
+      "end": 162.287,
+      "score": 0.766
+    },
+    {
+      "word": "On",
+      "start": 164.347,
+      "end": 164.427,
+      "score": 0.964
+    },
+    {
+      "word": "the",
+      "start": 164.467,
+      "end": 164.547,
+      "score": 0.966
+    },
+    {
+      "word": "timeline:",
+      "start": 164.587,
+      "end": 165.047,
+      "score": 0.848
+    },
+    {
+      "word": "fix",
+      "start": 165.087,
+      "end": 165.327,
+      "score": 0.766
+    },
+    {
+      "word": "one",
+      "start": 165.427,
+      "end": 165.507,
+      "score": 0.88
+    },
+    {
+      "word": "alone",
+      "start": 165.567,
+      "end": 165.807,
+      "score": 0.892
+    },
+    {
+      "word": "brings",
+      "start": 166.207,
+      "end": 166.487,
+      "score": 0.684
+    },
+    {
+      "word": "the",
+      "start": 166.527,
+      "end": 166.607,
+      "score": 0.988
+    },
+    {
+      "word": "pipeline",
+      "start": 166.647,
+      "end": 167.127,
+      "score": 0.803
+    },
+    {
+      "word": "from",
+      "start": 167.167,
+      "end": 167.287,
+      "score": 0.85
+    },
+    {
+      "word": "eight",
+      "start": 167.387,
+      "end": 167.527,
+      "score": 0.302
+    },
+    {
+      "word": "forty-two",
+      "start": 167.567,
+      "end": 168.067,
+      "score": 0.876
+    },
+    {
+      "word": "to",
+      "start": 168.107,
+      "end": 168.187,
+      "score": 0.788
+    },
+    {
+      "word": "six",
+      "start": 168.227,
+      "end": 168.447,
+      "score": 0.837
+    },
+    {
+      "word": "twenty-five",
+      "start": 168.507,
+      "end": 169.087,
+      "score": 0.817
+    },
+    {
+      "word": "on",
+      "start": 169.127,
+      "end": 169.227,
+      "score": 0.8
+    },
+    {
+      "word": "any",
+      "start": 169.287,
+      "end": 169.467,
+      "score": 0.923
+    },
+    {
+      "word": "push",
+      "start": 169.507,
+      "end": 169.727,
+      "score": 0.796
+    },
+    {
+      "word": "that",
+      "start": 169.747,
+      "end": 169.887,
+      "score": 0.624
+    },
+    {
+      "word": "does",
+      "start": 169.907,
+      "end": 170.087,
+      "score": 0.603
+    },
+    {
+      "word": "not",
+      "start": 170.147,
+      "end": 170.307,
+      "score": 0.79
+    },
+    {
+      "word": "touch",
+      "start": 170.347,
+      "end": 170.547,
+      "score": 0.679
+    },
+    {
+      "word": "a",
+      "start": 170.567,
+      "end": 170.647,
+      "score": 0.584
+    },
+    {
+      "word": "dependency.",
+      "start": 170.667,
+      "end": 171.287,
+      "score": 0.824
+    },
+    {
+      "word": "That",
+      "start": 172.567,
+      "end": 172.707,
+      "score": 0.874
+    },
+    {
+      "word": "is",
+      "start": 172.747,
+      "end": 172.847,
+      "score": 0.596
+    },
+    {
+      "word": "eighty",
+      "start": 172.907,
+      "end": 173.107,
+      "score": 0.821
+    },
+    {
+      "word": "percent",
+      "start": 173.147,
+      "end": 173.447,
+      "score": 0.735
+    },
+    {
+      "word": "of",
+      "start": 173.467,
+      "end": 173.507,
+      "score": 0.998
+    },
+    {
+      "word": "your",
+      "start": 173.547,
+      "end": 173.687,
+      "score": 0.879
+    },
+    {
+      "word": "pushes",
+      "start": 173.727,
+      "end": 174.047,
+      "score": 0.779
+    },
+    {
+      "word": "running",
+      "start": 174.087,
+      "end": 174.327,
+      "score": 0.824
+    },
+    {
+      "word": "close",
+      "start": 174.387,
+      "end": 174.627,
+      "score": 0.917
+    },
+    {
+      "word": "to",
+      "start": 174.667,
+      "end": 174.767,
+      "score": 0.832
+    },
+    {
+      "word": "two",
+      "start": 174.807,
+      "end": 174.967,
+      "score": 0.803
+    },
+    {
+      "word": "minutes",
+      "start": 175.007,
+      "end": 175.267,
+      "score": 0.734
+    },
+    {
+      "word": "faster.",
+      "start": 175.327,
+      "end": 175.787,
+      "score": 0.809
+    },
+    {
+      "word": "---",
+      "start": 175.807,
+      "end": 178.228,
+      "score": 0.682
+    },
+    {
+      "word": "Fix",
+      "start": 178.248,
+      "end": 178.368,
+      "score": 0.971
+    },
+    {
+      "word": "two",
+      "start": 178.388,
+      "end": 178.448,
+      "score": 0.0
+    },
+    {
+      "word": "is",
+      "start": 178.468,
+      "end": 178.508,
+      "score": 0.0
+    },
+    {
+      "word": "Dockerfile",
+      "start": 178.528,
+      "end": 178.788,
+      "score": 0.133
+    },
+    {
+      "word": "(pr:",
+      "start": 178.808,
+      "end": 178.848,
+      "score": 0.0
+    },
+    {
+      "word": "\"dock-er",
+      "start": 178.908,
+      "end": 179.168,
+      "score": 0.662
+    },
+    {
+      "word": "file\")",
+      "start": 179.208,
+      "end": 179.428,
+      "score": 0.681
+    },
+    {
+      "word": "layer",
+      "start": 179.448,
+      "end": 179.688,
+      "score": 0.775
+    },
+    {
+      "word": "ordering.",
+      "start": 179.768,
+      "end": 180.108,
+      "score": 0.706
+    },
+    {
+      "word": "This",
+      "start": 181.428,
+      "end": 181.568,
+      "score": 0.656
+    },
+    {
+      "word": "is",
+      "start": 181.648,
+      "end": 181.728,
+      "score": 0.8
+    },
+    {
+      "word": "where",
+      "start": 181.748,
+      "end": 181.908,
+      "score": 0.722
+    },
+    {
+      "word": "the",
+      "start": 181.948,
+      "end": 182.028,
+      "score": 0.966
+    },
+    {
+      "word": "Docker",
+      "start": 182.068,
+      "end": 182.288,
+      "score": 0.573
+    },
+    {
+      "word": "(pr:",
+      "start": 182.308,
+      "end": 182.348,
+      "score": 0.498
+    },
+    {
+      "word": "\"dock-er\")",
+      "start": 182.368,
+      "end": 182.508,
+      "score": 0.094
+    },
+    {
+      "word": "build",
+      "start": 182.528,
+      "end": 182.628,
+      "score": 0.04
+    },
+    {
+      "word": "time",
+      "start": 182.668,
+      "end": 182.908,
+      "score": 0.825
+    },
+    {
+      "word": "drops",
+      "start": 182.928,
+      "end": 183.208,
+      "score": 0.862
+    },
+    {
+      "word": "by",
+      "start": 183.268,
+      "end": 183.448,
+      "score": 0.8
+    },
+    {
+      "word": "about",
+      "start": 183.468,
+      "end": 183.728,
+      "score": 0.792
+    },
+    {
+      "word": "seventy",
+      "start": 183.748,
+      "end": 184.108,
+      "score": 0.887
+    },
+    {
+      "word": "percent.",
+      "start": 184.148,
+      "end": 184.568,
+      "score": 0.823
+    },
+    {
+      "word": "Here",
+      "start": 186.588,
+      "end": 186.728,
+      "score": 0.874
+    },
+    {
+      "word": "is",
+      "start": 186.768,
+      "end": 186.828,
+      "score": 0.752
+    },
+    {
+      "word": "the",
+      "start": 186.868,
+      "end": 186.948,
+      "score": 0.982
+    },
+    {
+      "word": "Dockerfile",
+      "start": 186.988,
+      "end": 187.308,
+      "score": 0.364
+    },
+    {
+      "word": "(pr:",
+      "start": 187.328,
+      "end": 187.368,
+      "score": 0.018
+    },
+    {
+      "word": "\"dock-er",
+      "start": 187.388,
+      "end": 187.528,
+      "score": 0.143
+    },
+    {
+      "word": "file\")",
+      "start": 187.548,
+      "end": 187.628,
+      "score": 0.009
+    },
+    {
+      "word": "most",
+      "start": 187.648,
+      "end": 187.828,
+      "score": 0.792
+    },
+    {
+      "word": "people",
+      "start": 187.888,
+      "end": 188.168,
+      "score": 0.858
+    },
+    {
+      "word": "write",
+      "start": 188.208,
+      "end": 188.388,
+      "score": 0.53
+    },
+    {
+      "word": "first:",
+      "start": 188.428,
+      "end": 188.568,
+      "score": 0.552
+    },
+    {
+      "word": "Docker",
+      "start": 188.588,
+      "end": 188.728,
+      "score": 0.088
+    },
+    {
+      "word": "(pr:",
+      "start": 188.748,
+      "end": 191.548,
+      "score": 0.496
+    },
+    {
+      "word": "\"dock-er\")",
+      "start": 191.568,
+      "end": 191.888,
+      "score": 0.876
+    },
+    {
+      "word": "builds",
+      "start": 191.928,
+      "end": 192.168,
+      "score": 0.732
+    },
+    {
+      "word": "in",
+      "start": 192.208,
+      "end": 192.288,
+      "score": 0.54
+    },
+    {
+      "word": "layers.",
+      "start": 192.328,
+      "end": 192.628,
+      "score": 0.683
+    },
+    {
+      "word": "Every",
+      "start": 194.008,
+      "end": 194.228,
+      "score": 0.856
+    },
+    {
+      "word": "COPY",
+      "start": 194.268,
+      "end": 194.408,
+      "score": 0.449
+    },
+    {
+      "word": "(pr:",
+      "start": 194.428,
+      "end": 194.468,
+      "score": 0.392
+    },
+    {
+      "word": "\"copy\")",
+      "start": 194.488,
+      "end": 194.568,
+      "score": 0.0
+    },
+    {
+      "word": "and",
+      "start": 194.588,
+      "end": 194.668,
+      "score": 0.548
+    },
+    {
+      "word": "RUN",
+      "start": 194.708,
+      "end": 194.848,
+      "score": 0.671
+    },
+    {
+      "word": "is",
+      "start": 194.888,
+      "end": 194.968,
+      "score": 0.713
+    },
+    {
+      "word": "a",
+      "start": 195.028,
+      "end": 195.048,
+      "score": 0.836
+    },
+    {
+      "word": "layer.",
+      "start": 195.088,
+      "end": 195.328,
+      "score": 0.733
+    },
+    {
+      "word": "When",
+      "start": 196.668,
+      "end": 196.808,
+      "score": 0.8
+    },
+    {
+      "word": "any",
+      "start": 196.888,
+      "end": 197.068,
+      "score": 0.823
+    },
+    {
+      "word": "file",
+      "start": 197.128,
+      "end": 197.348,
+      "score": 0.743
+    },
+    {
+      "word": "in",
+      "start": 197.368,
+      "end": 197.428,
+      "score": 0.34
+    },
+    {
+      "word": "the",
+      "start": 197.468,
+      "end": 197.528,
+      "score": 0.191
+    },
+    {
+      "word": "layer",
+      "start": 197.568,
+      "end": 197.808,
+      "score": 0.635
+    },
+    {
+      "word": "changes,",
+      "start": 197.868,
+      "end": 198.188,
+      "score": 0.711
+    },
+    {
+      "word": "Docker",
+      "start": 198.208,
+      "end": 198.328,
+      "score": 0.0
+    },
+    {
+      "word": "(pr:",
+      "start": 198.668,
+      "end": 198.728,
+      "score": 0.236
+    },
+    {
+      "word": "\"dock-er\")",
+      "start": 198.768,
+      "end": 199.008,
+      "score": 0.731
+    },
+    {
+      "word": "invalidates",
+      "start": 199.028,
+      "end": 199.628,
+      "score": 0.695
+    },
+    {
+      "word": "that",
+      "start": 199.668,
+      "end": 199.808,
+      "score": 0.909
+    },
+    {
+      "word": "layer",
+      "start": 199.848,
+      "end": 200.068,
+      "score": 0.757
+    },
+    {
+      "word": "and",
+      "start": 200.108,
+      "end": 200.208,
+      "score": 0.76
+    },
+    {
+      "word": "every",
+      "start": 200.309,
+      "end": 200.509,
+      "score": 0.808
+    },
+    {
+      "word": "layer",
+      "start": 200.549,
+      "end": 200.789,
+      "score": 0.718
+    },
+    {
+      "word": "below",
+      "start": 200.809,
+      "end": 201.089,
+      "score": 0.858
+    },
+    {
+      "word": "it.",
+      "start": 201.169,
+      "end": 201.229,
+      "score": 0.737
+    },
+    {
+      "word": "That",
+      "start": 202.749,
+      "end": 202.829,
+      "score": 0.448
+    },
+    {
+      "word": "COPY",
+      "start": 202.849,
+      "end": 202.929,
+      "score": 0.005
+    },
+    {
+      "word": "(pr:",
+      "start": 202.949,
+      "end": 202.989,
+      "score": 0.002
+    },
+    {
+      "word": "\"copy\")",
+      "start": 203.009,
+      "end": 203.109,
+      "score": 0.336
+    },
+    {
+      "word": "dot",
+      "start": 203.129,
+      "end": 203.189,
+      "score": 0.0
+    },
+    {
+      "word": "dot",
+      "start": 203.209,
+      "end": 203.269,
+      "score": 0.0
+    },
+    {
+      "word": "line",
+      "start": 203.289,
+      "end": 203.369,
+      "score": 0.0
+    },
+    {
+      "word": "copies",
+      "start": 203.389,
+      "end": 203.509,
+      "score": 0.008
+    },
+    {
+      "word": "your",
+      "start": 203.529,
+      "end": 203.609,
+      "score": 0.0
+    },
+    {
+      "word": "entire",
+      "start": 203.629,
+      "end": 203.749,
+      "score": 0.002
+    },
+    {
+      "word": "project",
+      "start": 203.769,
+      "end": 203.909,
+      "score": 0.099
+    },
+    {
+      "word": "directory.",
+      "start": 203.949,
+      "end": 204.169,
+      "score": 0.11
+    },
+    {
+      "word": "A",
+      "start": 204.189,
+      "end": 204.209,
+      "score": 0.0
+    },
+    {
+      "word": "one-line",
+      "start": 204.229,
+      "end": 204.409,
+      "score": 0.077
+    },
+    {
+      "word": "change",
+      "start": 204.429,
+      "end": 204.549,
+      "score": 0.236
+    },
+    {
+      "word": "to",
+      "start": 204.569,
+      "end": 204.609,
+      "score": 0.499
+    },
+    {
+      "word": "a",
+      "start": 204.669,
+      "end": 204.689,
+      "score": 0.01
+    },
+    {
+      "word": "source",
+      "start": 204.709,
+      "end": 204.829,
+      "score": 0.11
+    },
+    {
+      "word": "file",
+      "start": 204.849,
+      "end": 204.929,
+      "score": 0.0
+    },
+    {
+      "word": "one",
+      "start": 204.969,
+      "end": 205.029,
+      "score": 0.207
+    },
+    {
+      "word": "character",
+      "start": 205.049,
+      "end": 205.229,
+      "score": 0.287
+    },
+    {
+      "word": "touches",
+      "start": 205.269,
+      "end": 205.409,
+      "score": 0.038
+    },
+    {
+      "word": "that",
+      "start": 205.429,
+      "end": 205.509,
+      "score": 0.1
+    },
+    {
+      "word": "layer.",
+      "start": 205.529,
+      "end": 205.629,
+      "score": 0.048
+    },
+    {
+      "word": "Which",
+      "start": 205.649,
+      "end": 205.749,
+      "score": 0.0
+    },
+    {
+      "word": "invalidates",
+      "start": 205.769,
+      "end": 207.109,
+      "score": 0.412
+    },
+    {
+      "word": "the",
+      "start": 207.129,
+      "end": 207.209,
+      "score": 0.156
+    },
+    {
+      "word": "npm",
+      "start": 207.229,
+      "end": 207.289,
+      "score": 0.331
+    },
+    {
+      "word": "(pr:",
+      "start": 207.309,
+      "end": 207.349,
+      "score": 0.0
+    },
+    {
+      "word": "\"N-P-M\")",
+      "start": 207.369,
+      "end": 207.469,
+      "score": 0.384
+    },
+    {
+      "word": "install",
+      "start": 207.489,
+      "end": 207.669,
+      "score": 0.208
+    },
+    {
+      "word": "layer",
+      "start": 207.709,
+      "end": 207.809,
+      "score": 0.2
+    },
+    {
+      "word": "below",
+      "start": 207.829,
+      "end": 207.929,
+      "score": 0.001
+    },
+    {
+      "word": "it.",
+      "start": 207.949,
+      "end": 208.049,
+      "score": 0.311
+    },
+    {
+      "word": "Which",
+      "start": 208.069,
+      "end": 208.169,
+      "score": 0.097
+    },
+    {
+      "word": "rebuilds",
+      "start": 208.209,
+      "end": 208.369,
+      "score": 0.001
+    },
+    {
+      "word": "all",
+      "start": 208.389,
+      "end": 208.449,
+      "score": 0.0
+    },
+    {
+      "word": "twelve",
+      "start": 208.469,
+      "end": 208.589,
+      "score": 0.0
+    },
+    {
+      "word": "layers",
+      "start": 208.609,
+      "end": 208.729,
+      "score": 0.147
+    },
+    {
+      "word": "from",
+      "start": 208.749,
+      "end": 208.849,
+      "score": 0.371
+    },
+    {
+      "word": "scratch.",
+      "start": 208.869,
+      "end": 209.009,
+      "score": 0.201
+    },
+    {
+      "word": "The",
+      "start": 209.029,
+      "end": 209.089,
+      "score": 0.017
+    },
+    {
+      "word": "fix",
+      "start": 209.109,
+      "end": 209.169,
+      "score": 0.0
+    },
+    {
+      "word": "is",
+      "start": 209.189,
+      "end": 209.229,
+      "score": 0.0
+    },
+    {
+      "word": "to",
+      "start": 209.249,
+      "end": 209.309,
+      "score": 0.614
+    },
+    {
+      "word": "copy",
+      "start": 209.329,
+      "end": 209.409,
+      "score": 0.0
+    },
+    {
+      "word": "only",
+      "start": 209.429,
+      "end": 209.509,
+      "score": 0.0
+    },
+    {
+      "word": "what",
+      "start": 209.529,
+      "end": 209.609,
+      "score": 0.232
+    },
+    {
+      "word": "npm",
+      "start": 209.629,
+      "end": 209.709,
+      "score": 0.026
+    },
+    {
+      "word": "(pr:",
+      "start": 209.729,
+      "end": 209.769,
+      "score": 0.0
+    },
+    {
+      "word": "\"N-P-M\")",
+      "start": 209.789,
+      "end": 209.889,
+      "score": 0.285
+    },
+    {
+      "word": "needs",
+      "start": 209.909,
+      "end": 210.009,
+      "score": 0.003
+    },
+    {
+      "word": "first,",
+      "start": 210.029,
+      "end": 210.129,
+      "score": 0.195
+    },
+    {
+      "word": "install",
+      "start": 210.149,
+      "end": 211.449,
+      "score": 0.236
+    },
+    {
+      "word": "dependencies,",
+      "start": 211.469,
+      "end": 211.709,
+      "score": 0.057
+    },
+    {
+      "word": "then",
+      "start": 211.729,
+      "end": 211.809,
+      "score": 0.014
+    },
+    {
+      "word": "copy",
+      "start": 211.829,
+      "end": 211.909,
+      "score": 0.0
+    },
+    {
+      "word": "your",
+      "start": 211.929,
+      "end": 212.009,
+      "score": 0.05
+    },
+    {
+      "word": "source",
+      "start": 212.029,
+      "end": 212.169,
+      "score": 0.085
+    },
+    {
+      "word": "code:",
+      "start": 212.189,
+      "end": 212.309,
+      "score": 0.369
+    },
+    {
+      "word": "Now",
+      "start": 212.329,
+      "end": 212.389,
+      "score": 0.0
+    },
+    {
+      "word": "when",
+      "start": 212.409,
+      "end": 212.489,
+      "score": 0.251
+    },
+    {
+      "word": "you",
+      "start": 212.509,
+      "end": 212.569,
+      "score": 0.0
+    },
+    {
+      "word": "change",
+      "start": 212.589,
+      "end": 212.709,
+      "score": 0.01
+    },
+    {
+      "word": "a",
+      "start": 212.729,
+      "end": 212.749,
+      "score": 0.0
+    },
+    {
+      "word": "source",
+      "start": 212.769,
+      "end": 212.909,
+      "score": 0.083
+    },
+    {
+      "word": "file,",
+      "start": 212.949,
+      "end": 213.029,
+      "score": 0.0
+    },
+    {
+      "word": "Docker",
+      "start": 213.049,
+      "end": 213.169,
+      "score": 0.005
+    },
+    {
+      "word": "(pr:",
+      "start": 213.189,
+      "end": 213.229,
+      "score": 0.0
+    },
+    {
+      "word": "\"dock-er\")",
+      "start": 213.249,
+      "end": 213.409,
+      "score": 0.171
+    },
+    {
+      "word": "replays",
+      "start": 213.429,
+      "end": 213.569,
+      "score": 0.145
+    },
+    {
+      "word": "from",
+      "start": 213.589,
+      "end": 213.669,
+      "score": 0.25
+    },
+    {
+      "word": "that",
+      "start": 213.689,
+      "end": 213.769,
+      "score": 0.0
+    },
+    {
+      "word": "second",
+      "start": 213.789,
+      "end": 213.929,
+      "score": 0.25
+    },
+    {
+      "word": "COPY",
+      "start": 213.949,
+      "end": 214.029,
+      "score": 0.0
+    },
+    {
+      "word": "(pr:",
+      "start": 214.049,
+      "end": 214.089,
+      "score": 0.0
+    },
+    {
+      "word": "\"copy\")",
+      "start": 214.109,
+      "end": 214.269,
+      "score": 0.312
+    },
+    {
+      "word": "it",
+      "start": 214.329,
+      "end": 214.369,
+      "score": 0.0
+    },
+    {
+      "word": "skips",
+      "start": 214.629,
+      "end": 214.749,
+      "score": 0.1
+    },
+    {
+      "word": "the",
+      "start": 214.769,
+      "end": 214.849,
+      "score": 0.167
+    },
+    {
+      "word": "npm",
+      "start": 214.889,
+      "end": 214.949,
+      "score": 0.0
+    },
+    {
+      "word": "(pr:",
+      "start": 214.969,
+      "end": 215.009,
+      "score": 0.0
+    },
+    {
+      "word": "\"N-P-M\")",
+      "start": 215.029,
+      "end": 215.149,
+      "score": 0.5
+    },
+    {
+      "word": "install",
+      "start": 215.169,
+      "end": 215.369,
+      "score": 0.167
+    },
+    {
+      "word": "layer",
+      "start": 215.389,
+      "end": 215.489,
+      "score": 0.002
+    },
+    {
+      "word": "entirely",
+      "start": 215.509,
+      "end": 215.669,
+      "score": 0.081
+    },
+    {
+      "word": "because",
+      "start": 215.689,
+      "end": 215.829,
+      "score": 0.143
+    },
+    {
+      "word": "nothing",
+      "start": 215.849,
+      "end": 215.989,
+      "score": 0.0
+    },
+    {
+      "word": "above",
+      "start": 216.009,
+      "end": 216.109,
+      "score": 0.003
+    },
+    {
+      "word": "it",
+      "start": 216.129,
+      "end": 216.169,
+      "score": 0.492
+    },
+    {
+      "word": "changed.",
+      "start": 216.189,
+      "end": 216.329,
+      "score": 0.0
+    },
+    {
+      "word": "The",
+      "start": 216.349,
+      "end": 216.409,
+      "score": 0.101
+    },
+    {
+      "word": "build",
+      "start": 216.429,
+      "end": 216.569,
+      "score": 0.148
+    },
+    {
+      "word": "log",
+      "start": 216.589,
+      "end": 216.649,
+      "score": 0.0
+    },
+    {
+      "word": "goes",
+      "start": 216.669,
+      "end": 216.749,
+      "score": 0.002
+    },
+    {
+      "word": "from",
+      "start": 216.769,
+      "end": 216.869,
+      "score": 0.886
+    },
+    {
+      "word": "every",
+      "start": 216.889,
+      "end": 216.989,
+      "score": 0.0
+    },
+    {
+      "word": "step",
+      "start": 217.009,
+      "end": 217.089,
+      "score": 0.129
+    },
+    {
+      "word": "rebuilding,",
+      "start": 217.109,
+      "end": 217.309,
+      "score": 0.096
+    },
+    {
+      "word": "to",
+      "start": 217.329,
+      "end": 217.369,
+      "score": 0.0
+    },
+    {
+      "word": "this:",
+      "start": 217.389,
+      "end": 219.369,
+      "score": 0.447
+    },
+    {
+      "word": "Step",
+      "start": 219.389,
+      "end": 219.469,
+      "score": 0.249
+    },
+    {
+      "word": "four",
+      "start": 219.489,
+      "end": 219.569,
+      "score": 0.0
+    },
+    {
+      "word": "of",
+      "start": 219.589,
+      "end": 219.629,
+      "score": 0.0
+    },
+    {
+      "word": "seven:",
+      "start": 219.649,
+      "end": 219.769,
+      "score": 0.1
+    },
+    {
+      "word": "RUN",
+      "start": 219.789,
+      "end": 219.849,
+      "score": 0.0
+    },
+    {
+      "word": "npm",
+      "start": 219.869,
+      "end": 219.929,
+      "score": 0.0
+    },
+    {
+      "word": "install",
+      "start": 219.949,
+      "end": 220.089,
+      "score": 0.023
+    },
+    {
+      "word": "CACHED.",
+      "start": 220.129,
+      "end": 220.309,
+      "score": 0.18
+    },
+    {
+      "word": "Zero",
+      "start": 220.349,
+      "end": 220.429,
+      "score": 0.07
+    },
+    {
+      "word": "point",
+      "start": 220.449,
+      "end": 220.549,
+      "score": 0.4
+    },
+    {
+      "word": "zero",
+      "start": 220.569,
+      "end": 220.689,
+      "score": 0.116
+    },
+    {
+      "word": "seconds.",
+      "start": 220.709,
+      "end": 220.849,
+      "score": 0.001
+    },
+    {
+      "word": "On",
+      "start": 220.909,
+      "end": 220.949,
+      "score": 0.477
+    },
+    {
+      "word": "the",
+      "start": 220.969,
+      "end": 221.029,
+      "score": 0.0
+    },
+    {
+      "word": "timeline:",
+      "start": 221.049,
+      "end": 221.209,
+      "score": 0.0
+    },
+    {
+      "word": "five",
+      "start": 221.269,
+      "end": 221.349,
+      "score": 0.0
+    },
+    {
+      "word": "minutes",
+      "start": 221.369,
+      "end": 221.569,
+      "score": 0.389
+    },
+    {
+      "word": "nine",
+      "start": 221.589,
+      "end": 221.689,
+      "score": 0.125
+    },
+    {
+      "word": "in",
+      "start": 221.709,
+      "end": 221.769,
+      "score": 0.494
+    },
+    {
+      "word": "Docker",
+      "start": 221.789,
+      "end": 221.909,
+      "score": 0.0
+    },
+    {
+      "word": "(pr:",
+      "start": 221.929,
+      "end": 221.969,
+      "score": 0.0
+    },
+    {
+      "word": "\"dock-er\")",
+      "start": 222.249,
+      "end": 222.409,
+      "score": 0.177
+    },
+    {
+      "word": "build",
+      "start": 222.429,
+      "end": 222.529,
+      "score": 0.0
+    },
+    {
+      "word": "becomes",
+      "start": 222.549,
+      "end": 222.709,
+      "score": 0.071
+    },
+    {
+      "word": "one",
+      "start": 222.729,
+      "end": 222.789,
+      "score": 0.167
+    },
+    {
+      "word": "minute",
+      "start": 222.849,
+      "end": 222.989,
+      "score": 0.248
+    },
+    {
+      "word": "twenty.",
+      "start": 223.009,
+      "end": 223.129,
+      "score": 0.32
+    },
+    {
+      "word": "Combined",
+      "start": 223.149,
+      "end": 223.369,
+      "score": 0.378
+    },
+    {
+      "word": "with",
+      "start": 223.389,
+      "end": 223.629,
+      "score": 0.717
+    },
+    {
+      "word": "fix",
+      "start": 223.649,
+      "end": 223.709,
+      "score": 0.0
+    },
+    {
+      "word": "one,",
+      "start": 223.729,
+      "end": 223.789,
+      "score": 0.0
+    },
+    {
+      "word": "you",
+      "start": 223.809,
+      "end": 223.97,
+      "score": 0.772
+    },
+    {
+      "word": "are",
+      "start": 224.03,
+      "end": 224.09,
+      "score": 0.0
+    },
+    {
+      "word": "now",
+      "start": 224.11,
+      "end": 224.17,
+      "score": 0.258
+    },
+    {
+      "word": "at",
+      "start": 224.19,
+      "end": 224.25,
+      "score": 0.218
+    },
+    {
+      "word": "two",
+      "start": 224.27,
+      "end": 224.33,
+      "score": 0.001
+    },
+    {
+      "word": "minutes",
+      "start": 224.35,
+      "end": 224.49,
+      "score": 0.015
+    },
+    {
+      "word": "fifty-five,",
+      "start": 224.51,
+      "end": 224.73,
+      "score": 0.188
+    },
+    {
+      "word": "for",
+      "start": 224.75,
+      "end": 224.81,
+      "score": 0.0
+    },
+    {
+      "word": "eighty",
+      "start": 224.83,
+      "end": 227.73,
+      "score": 0.27
+    },
+    {
+      "word": "percent",
+      "start": 227.75,
+      "end": 227.89,
+      "score": 0.284
+    },
+    {
+      "word": "of",
+      "start": 227.91,
+      "end": 227.95,
+      "score": 0.0
+    },
+    {
+      "word": "pushes.",
+      "start": 227.97,
+      "end": 228.09,
+      "score": 0.149
+    },
+    {
+      "word": "---",
+      "start": 228.11,
+      "end": 228.17,
+      "score": 0.668
+    },
+    {
+      "word": "Fix",
+      "start": 228.19,
+      "end": 228.25,
+      "score": 0.002
+    },
+    {
+      "word": "three",
+      "start": 228.27,
+      "end": 228.37,
+      "score": 0.0
+    },
+    {
+      "word": "is",
+      "start": 228.39,
+      "end": 228.43,
+      "score": 0.056
+    },
+    {
+      "word": "build",
+      "start": 228.45,
+      "end": 228.55,
+      "score": 0.0
+    },
+    {
+      "word": "once,",
+      "start": 228.57,
+      "end": 228.65,
+      "score": 0.001
+    },
+    {
+      "word": "use",
+      "start": 228.67,
+      "end": 228.73,
+      "score": 0.031
+    },
+    {
+      "word": "everywhere.",
+      "start": 228.75,
+      "end": 228.95,
+      "score": 0.007
+    },
+    {
+      "word": "Most",
+      "start": 228.97,
+      "end": 229.07,
+      "score": 0.084
+    },
+    {
+      "word": "multi-job",
+      "start": 229.11,
+      "end": 229.53,
+      "score": 0.354
+    },
+    {
+      "word": "pipelines",
+      "start": 229.55,
+      "end": 229.85,
+      "score": 0.306
+    },
+    {
+      "word": "have",
+      "start": 229.87,
+      "end": 229.95,
+      "score": 0.001
+    },
+    {
+      "word": "a",
+      "start": 229.97,
+      "end": 229.99,
+      "score": 0.98
+    },
+    {
+      "word": "hidden",
+      "start": 230.01,
+      "end": 230.13,
+      "score": 0.001
+    },
+    {
+      "word": "tax.",
+      "start": 230.15,
+      "end": 230.29,
+      "score": 0.038
+    },
+    {
+      "word": "The",
+      "start": 230.33,
+      "end": 230.41,
+      "score": 0.658
+    },
+    {
+      "word": "test",
+      "start": 230.43,
+      "end": 230.51,
+      "score": 0.25
+    },
+    {
+      "word": "job",
+      "start": 230.53,
+      "end": 230.61,
+      "score": 0.165
+    },
+    {
+      "word": "triggers",
+      "start": 230.65,
+      "end": 230.81,
+      "score": 0.02
+    },
+    {
+      "word": "a",
+      "start": 230.83,
+      "end": 230.85,
+      "score": 0.0
+    },
+    {
+      "word": "docker",
+      "start": 230.87,
+      "end": 230.99,
+      "score": 0.116
+    },
+    {
+      "word": "build.",
+      "start": 231.01,
+      "end": 231.11,
+      "score": 0.0
+    },
+    {
+      "word": "The",
+      "start": 231.13,
+      "end": 231.19,
+      "score": 0.002
+    },
+    {
+      "word": "deploy",
+      "start": 231.21,
+      "end": 231.33,
+      "score": 0.01
+    },
+    {
+      "word": "job",
+      "start": 231.35,
+      "end": 231.41,
+      "score": 0.0
+    },
+    {
+      "word": "triggers",
+      "start": 231.43,
+      "end": 231.61,
+      "score": 0.303
+    },
+    {
+      "word": "its",
+      "start": 231.63,
+      "end": 231.69,
+      "score": 0.331
+    },
+    {
+      "word": "own",
+      "start": 231.71,
+      "end": 231.77,
+      "score": 0.0
+    },
+    {
+      "word": "docker",
+      "start": 231.79,
+      "end": 231.99,
+      "score": 0.244
+    },
+    {
+      "word": "build.",
+      "start": 232.01,
+      "end": 232.15,
+      "score": 0.134
+    },
+    {
+      "word": "That",
+      "start": 232.19,
+      "end": 232.27,
+      "score": 0.0
+    },
+    {
+      "word": "is",
+      "start": 232.29,
+      "end": 232.33,
+      "score": 0.259
+    },
+    {
+      "word": "the",
+      "start": 232.35,
+      "end": 232.41,
+      "score": 0.005
+    },
+    {
+      "word": "same",
+      "start": 232.43,
+      "end": 232.51,
+      "score": 0.248
+    },
+    {
+      "word": "five",
+      "start": 232.53,
+      "end": 232.63,
+      "score": 0.117
+    },
+    {
+      "word": "minutes",
+      "start": 232.65,
+      "end": 232.83,
+      "score": 0.274
+    },
+    {
+      "word": "paid",
+      "start": 232.85,
+      "end": 232.93,
+      "score": 0.07
+    },
+    {
+      "word": "twice",
+      "start": 232.95,
+      "end": 233.05,
+      "score": 0.0
+    },
+    {
+      "word": "or",
+      "start": 233.09,
+      "end": 233.13,
+      "score": 0.0
+    },
+    {
+      "word": "three",
+      "start": 233.15,
+      "end": 233.25,
+      "score": 0.361
+    },
+    {
+      "word": "times,",
+      "start": 233.27,
+      "end": 233.41,
+      "score": 0.197
+    },
+    {
+      "word": "if",
+      "start": 233.73,
+      "end": 233.77,
+      "score": 0.0
+    },
+    {
+      "word": "you",
+      "start": 233.79,
+      "end": 233.85,
+      "score": 0.0
+    },
+    {
+      "word": "have",
+      "start": 233.87,
+      "end": 233.97,
+      "score": 0.374
+    },
+    {
+      "word": "a",
+      "start": 233.99,
+      "end": 234.01,
+      "score": 0.0
+    },
+    {
+      "word": "separate",
+      "start": 234.03,
+      "end": 234.23,
+      "score": 0.143
+    },
+    {
+      "word": "lint",
+      "start": 234.25,
+      "end": 234.35,
+      "score": 0.407
+    },
+    {
+      "word": "job",
+      "start": 234.37,
+      "end": 234.47,
+      "score": 0.239
+    },
+    {
+      "word": "doing",
+      "start": 234.49,
+      "end": 234.59,
+      "score": 0.0
+    },
+    {
+      "word": "the",
+      "start": 234.61,
+      "end": 234.67,
+      "score": 0.048
+    },
+    {
+      "word": "same",
+      "start": 234.69,
+      "end": 234.77,
+      "score": 0.084
+    },
+    {
+      "word": "thing.",
+      "start": 234.81,
+      "end": 235.03,
+      "score": 0.563
+    },
+    {
+      "word": "Here",
+      "start": 235.05,
+      "end": 235.13,
+      "score": 0.21
+    },
+    {
+      "word": "is",
+      "start": 235.15,
+      "end": 237.19,
+      "score": 0.495
+    },
+    {
+      "word": "the",
+      "start": 237.21,
+      "end": 237.29,
+      "score": 0.843
+    },
+    {
+      "word": "fix:",
+      "start": 237.31,
+      "end": 237.39,
+      "score": 0.098
+    },
+    {
+      "word": "add",
+      "start": 237.41,
+      "end": 237.47,
+      "score": 0.0
+    },
+    {
+      "word": "a",
+      "start": 237.49,
+      "end": 237.51,
+      "score": 0.0
+    },
+    {
+      "word": "build",
+      "start": 237.53,
+      "end": 237.63,
+      "score": 0.197
+    },
+    {
+      "word": "job",
+      "start": 237.65,
+      "end": 237.71,
+      "score": 0.001
+    },
+    {
+      "word": "that",
+      "start": 237.73,
+      "end": 237.81,
+      "score": 0.0
+    },
+    {
+      "word": "builds",
+      "start": 237.83,
+      "end": 237.95,
+      "score": 0.025
+    },
+    {
+      "word": "and",
+      "start": 237.97,
+      "end": 238.03,
+      "score": 0.0
+    },
+    {
+      "word": "pushes",
+      "start": 238.05,
+      "end": 238.19,
+      "score": 0.002
+    },
+    {
+      "word": "the",
+      "start": 238.21,
+      "end": 238.29,
+      "score": 0.487
+    },
+    {
+      "word": "image",
+      "start": 238.31,
+      "end": 238.41,
+      "score": 0.005
+    },
+    {
+      "word": "once.",
+      "start": 238.43,
+      "end": 238.51,
+      "score": 0.022
+    },
+    {
+      "word": "Test",
+      "start": 238.53,
+      "end": 238.61,
+      "score": 0.246
+    },
+    {
+      "word": "and",
+      "start": 238.65,
+      "end": 238.75,
+      "score": 0.619
+    },
+    {
+      "word": "deploy",
+      "start": 238.77,
+      "end": 238.91,
+      "score": 0.079
+    },
+    {
+      "word": "pull",
+      "start": 238.93,
+      "end": 239.01,
+      "score": 0.07
+    },
+    {
+      "word": "that",
+      "start": 239.03,
+      "end": 239.11,
+      "score": 0.0
+    },
+    {
+      "word": "same",
+      "start": 239.13,
+      "end": 239.21,
+      "score": 0.012
+    },
+    {
+      "word": "image",
+      "start": 239.23,
+      "end": 239.33,
+      "score": 0.0
+    },
+    {
+      "word": "tag",
+      "start": 239.35,
+      "end": 239.41,
+      "score": 0.0
+    },
+    {
+      "word": "they",
+      "start": 239.45,
+      "end": 239.55,
+      "score": 0.396
+    },
+    {
+      "word": "do",
+      "start": 239.57,
+      "end": 239.61,
+      "score": 0.006
+    },
+    {
+      "word": "not",
+      "start": 239.63,
+      "end": 239.71,
+      "score": 0.165
+    },
+    {
+      "word": "rebuild:",
+      "start": 239.73,
+      "end": 240.07,
+      "score": 0.238
+    },
+    {
+      "word": "Build",
+      "start": 240.09,
+      "end": 240.25,
+      "score": 0.3
+    },
+    {
+      "word": "once.",
+      "start": 241.01,
+      "end": 241.13,
+      "score": 0.25
+    },
+    {
+      "word": "Pull",
+      "start": 241.15,
+      "end": 241.25,
+      "score": 0.125
+    },
+    {
+      "word": "twice.",
+      "start": 241.27,
+      "end": 241.45,
+      "score": 0.16
+    },
+    {
+      "word": "Test",
+      "start": 241.47,
+      "end": 241.55,
+      "score": 0.216
+    },
+    {
+      "word": "and",
+      "start": 241.59,
+      "end": 241.69,
+      "score": 0.451
+    },
+    {
+      "word": "deploy",
+      "start": 241.71,
+      "end": 241.85,
+      "score": 0.101
+    },
+    {
+      "word": "run",
+      "start": 241.87,
+      "end": 241.93,
+      "score": 0.156
+    },
+    {
+      "word": "on",
+      "start": 241.95,
+      "end": 242.01,
+      "score": 0.367
+    },
+    {
+      "word": "exactly",
+      "start": 242.03,
+      "end": 242.19,
+      "score": 0.08
+    },
+    {
+      "word": "the",
+      "start": 242.21,
+      "end": 242.27,
+      "score": 0.005
+    },
+    {
+      "word": "same",
+      "start": 242.29,
+      "end": 242.37,
+      "score": 0.0
+    },
+    {
+      "word": "artifact.",
+      "start": 242.39,
+      "end": 242.59,
+      "score": 0.179
+    },
+    {
+      "word": "And",
+      "start": 242.63,
+      "end": 242.75,
+      "score": 0.663
+    },
+    {
+      "word": "you",
+      "start": 242.77,
+      "end": 242.85,
+      "score": 0.166
+    },
+    {
+      "word": "get",
+      "start": 242.87,
+      "end": 242.93,
+      "score": 0.0
+    },
+    {
+      "word": "a",
+      "start": 242.95,
+      "end": 242.99,
+      "score": 0.5
+    },
+    {
+      "word": "consistency",
+      "start": 243.01,
+      "end": 243.23,
+      "score": 0.049
+    },
+    {
+      "word": "guarantee",
+      "start": 243.25,
+      "end": 243.47,
+      "score": 0.22
+    },
+    {
+      "word": "for",
+      "start": 243.49,
+      "end": 244.31,
+      "score": 0.547
+    },
+    {
+      "word": "free",
+      "start": 244.33,
+      "end": 244.47,
+      "score": 0.188
+    },
+    {
+      "word": "the",
+      "start": 244.51,
+      "end": 244.57,
+      "score": 0.016
+    },
+    {
+      "word": "image",
+      "start": 244.59,
+      "end": 244.69,
+      "score": 0.195
+    },
+    {
+      "word": "that",
+      "start": 244.71,
+      "end": 244.83,
+      "score": 0.562
+    },
+    {
+      "word": "passes",
+      "start": 245.81,
+      "end": 245.95,
+      "score": 0.165
+    },
+    {
+      "word": "your",
+      "start": 245.97,
+      "end": 246.05,
+      "score": 0.254
+    },
+    {
+      "word": "tests",
+      "start": 246.07,
+      "end": 246.17,
+      "score": 0.014
+    },
+    {
+      "word": "is",
+      "start": 246.19,
+      "end": 246.23,
+      "score": 0.0
+    },
+    {
+      "word": "the",
+      "start": 246.25,
+      "end": 246.33,
+      "score": 0.131
+    },
+    {
+      "word": "image",
+      "start": 246.35,
+      "end": 246.47,
+      "score": 0.259
+    },
+    {
+      "word": "that",
+      "start": 246.49,
+      "end": 246.57,
+      "score": 0.005
+    },
+    {
+      "word": "gets",
+      "start": 246.59,
+      "end": 246.67,
+      "score": 0.003
+    },
+    {
+      "word": "deployed.",
+      "start": 246.69,
+      "end": 246.85,
+      "score": 0.119
+    },
+    {
+      "word": "On",
+      "start": 246.87,
+      "end": 246.91,
+      "score": 0.0
+    },
+    {
+      "word": "the",
+      "start": 246.93,
+      "end": 247.01,
+      "score": 0.469
+    },
+    {
+      "word": "wall-clock:",
+      "start": 247.03,
+      "end": 247.23,
+      "score": 0.1
+    },
+    {
+      "word": "two",
+      "start": 247.25,
+      "end": 247.31,
+      "score": 0.0
+    },
+    {
+      "word": "jobs",
+      "start": 247.33,
+      "end": 248.171,
+      "score": 0.758
+    },
+    {
+      "word": "that",
+      "start": 248.191,
+      "end": 248.571,
+      "score": 0.234
+    },
+    {
+      "word": "each",
+      "start": 248.811,
+      "end": 249.231,
+      "score": 0.615
+    },
+    {
+      "word": "took",
+      "start": 249.251,
+      "end": 249.331,
+      "score": 0.0
+    },
+    {
+      "word": "over",
+      "start": 249.351,
+      "end": 249.451,
+      "score": 0.236
+    },
+    {
+      "word": "five",
+      "start": 249.471,
+      "end": 249.551,
+      "score": 0.249
+    },
+    {
+      "word": "minutes",
+      "start": 249.571,
+      "end": 249.731,
+      "score": 0.074
+    },
+    {
+      "word": "now",
+      "start": 249.771,
+      "end": 249.851,
+      "score": 0.182
+    },
+    {
+      "word": "each",
+      "start": 249.871,
+      "end": 249.951,
+      "score": 0.001
+    },
+    {
+      "word": "take",
+      "start": 249.971,
+      "end": 250.071,
+      "score": 0.217
+    },
+    {
+      "word": "twelve",
+      "start": 250.091,
+      "end": 250.211,
+      "score": 0.0
+    },
+    {
+      "word": "seconds",
+      "start": 250.231,
+      "end": 250.371,
+      "score": 0.0
+    },
+    {
+      "word": "to",
+      "start": 250.391,
+      "end": 250.431,
+      "score": 0.0
+    },
+    {
+      "word": "pull",
+      "start": 250.451,
+      "end": 250.531,
+      "score": 0.0
+    },
+    {
+      "word": "the",
+      "start": 250.551,
+      "end": 250.611,
+      "score": 0.616
+    },
+    {
+      "word": "already-built",
+      "start": 250.631,
+      "end": 250.891,
+      "score": 0.076
+    },
+    {
+      "word": "image.",
+      "start": 250.911,
+      "end": 251.011,
+      "score": 0.074
+    },
+    {
+      "word": "The",
+      "start": 251.031,
+      "end": 251.091,
+      "score": 0.0
+    },
+    {
+      "word": "full",
+      "start": 251.111,
+      "end": 251.191,
+      "score": 0.001
+    },
+    {
+      "word": "pipeline",
+      "start": 251.211,
+      "end": 251.371,
+      "score": 0.013
+    },
+    {
+      "word": "build,",
+      "start": 251.411,
+      "end": 251.511,
+      "score": 0.312
+    },
+    {
+      "word": "test,",
+      "start": 251.531,
+      "end": 251.611,
+      "score": 0.004
+    },
+    {
+      "word": "deploy",
+      "start": 251.631,
+      "end": 251.771,
+      "score": 0.085
+    },
+    {
+      "word": "in",
+      "start": 251.791,
+      "end": 251.831,
+      "score": 0.0
+    },
+    {
+      "word": "sequence",
+      "start": 251.851,
+      "end": 252.011,
+      "score": 0.125
+    },
+    {
+      "word": "lands",
+      "start": 252.071,
+      "end": 252.171,
+      "score": 0.2
+    },
+    {
+      "word": "at",
+      "start": 252.191,
+      "end": 252.231,
+      "score": 0.0
+    },
+    {
+      "word": "one",
+      "start": 252.251,
+      "end": 252.311,
+      "score": 0.0
+    },
+    {
+      "word": "minute",
+      "start": 252.331,
+      "end": 252.451,
+      "score": 0.295
+    },
+    {
+      "word": "twelve.",
+      "start": 252.471,
+      "end": 252.591,
+      "score": 0.043
+    },
+    {
+      "word": "---",
+      "start": 252.611,
+      "end": 252.671,
+      "score": 0.519
+    },
+    {
+      "word": "\"If",
+      "start": 252.711,
+      "end": 252.751,
+      "score": 0.02
+    },
+    {
+      "word": "this",
+      "start": 252.771,
+      "end": 252.851,
+      "score": 0.0
+    },
+    {
+      "word": "is",
+      "start": 252.891,
+      "end": 253.091,
+      "score": 0.8
+    },
+    {
+      "word": "useful",
+      "start": 253.611,
+      "end": 253.731,
+      "score": 0.0
+    },
+    {
+      "word": "there",
+      "start": 253.771,
+      "end": 253.871,
+      "score": 0.0
+    },
+    {
+      "word": "is",
+      "start": 253.891,
+      "end": 253.931,
+      "score": 0.0
+    },
+    {
+      "word": "a",
+      "start": 253.951,
+      "end": 253.971,
+      "score": 0.0
+    },
+    {
+      "word": "one-page",
+      "start": 253.991,
+      "end": 254.191,
+      "score": 0.242
+    },
+    {
+      "word": "checklist",
+      "start": 254.231,
+      "end": 254.431,
+      "score": 0.056
+    },
+    {
+      "word": "for",
+      "start": 254.451,
+      "end": 254.511,
+      "score": 0.0
+    },
+    {
+      "word": "every",
+      "start": 254.531,
+      "end": 254.631,
+      "score": 0.0
+    },
+    {
+      "word": "fix",
+      "start": 254.651,
+      "end": 254.711,
+      "score": 0.309
+    },
+    {
+      "word": "in",
+      "start": 254.731,
+      "end": 254.771,
+      "score": 0.496
+    },
+    {
+      "word": "this",
+      "start": 254.791,
+      "end": 254.871,
+      "score": 0.005
+    },
+    {
+      "word": "video",
+      "start": 254.891,
+      "end": 254.991,
+      "score": 0.0
+    },
+    {
+      "word": "linked",
+      "start": 255.011,
+      "end": 255.131,
+      "score": 0.241
+    },
+    {
+      "word": "in",
+      "start": 255.151,
+      "end": 255.191,
+      "score": 0.0
+    },
+    {
+      "word": "the",
+      "start": 255.411,
+      "end": 255.511,
+      "score": 0.167
+    },
+    {
+      "word": "description.",
+      "start": 255.531,
+      "end": 255.831,
+      "score": 0.228
+    },
+    {
+      "word": "Takes",
+      "start": 255.851,
+      "end": 255.951,
+      "score": 0.146
+    },
+    {
+      "word": "two",
+      "start": 255.991,
+      "end": 256.091,
+      "score": 0.992
+    },
+    {
+      "word": "minutes",
+      "start": 256.111,
+      "end": 256.251,
+      "score": 0.0
+    },
+    {
+      "word": "to",
+      "start": 256.271,
+      "end": 256.311,
+      "score": 0.0
+    },
+    {
+      "word": "check",
+      "start": 256.331,
+      "end": 256.431,
+      "score": 0.023
+    },
+    {
+      "word": "against",
+      "start": 256.451,
+      "end": 256.611,
+      "score": 0.062
+    },
+    {
+      "word": "your",
+      "start": 256.631,
+      "end": 256.711,
+      "score": 0.0
+    },
+    {
+      "word": "own",
+      "start": 256.731,
+      "end": 256.791,
+      "score": 0.0
+    },
+    {
+      "word": "pipeline.\"",
+      "start": 256.811,
+      "end": 257.011,
+      "score": 0.191
+    },
+    {
+      "word": "---",
+      "start": 257.031,
+      "end": 257.111,
+      "score": 0.429
+    },
+    {
+      "word": "Three",
+      "start": 257.151,
+      "end": 257.251,
+      "score": 0.001
+    },
+    {
+      "word": "quick",
+      "start": 257.271,
+      "end": 257.371,
+      "score": 0.0
+    },
+    {
+      "word": "additions",
+      "start": 257.391,
+      "end": 257.571,
+      "score": 0.003
+    },
+    {
+      "word": "that",
+      "start": 257.591,
+      "end": 257.671,
+      "score": 0.0
+    },
+    {
+      "word": "compound",
+      "start": 257.691,
+      "end": 257.851,
+      "score": 0.063
+    },
+    {
+      "word": "on",
+      "start": 257.871,
+      "end": 257.911,
+      "score": 0.106
+    },
+    {
+      "word": "these",
+      "start": 257.931,
+      "end": 258.031,
+      "score": 0.035
+    },
+    {
+      "word": "three",
+      "start": 258.051,
+      "end": 258.151,
+      "score": 0.0
+    },
+    {
+      "word": "fixes.",
+      "start": 258.171,
+      "end": 258.271,
+      "score": 0.0
+    },
+    {
+      "word": "First:",
+      "start": 258.291,
+      "end": 258.431,
+      "score": 0.331
+    },
+    {
+      "word": "BuildKit",
+      "start": 258.451,
+      "end": 260.931,
+      "score": 0.301
+    },
+    {
+      "word": "(pr:",
+      "start": 260.951,
+      "end": 260.991,
+      "score": 0.0
+    },
+    {
+      "word": "\"build-kit\").",
+      "start": 261.011,
+      "end": 261.191,
+      "score": 0.221
+    },
+    {
+      "word": "Docker",
+      "start": 261.211,
+      "end": 261.331,
+      "score": 0.167
+    },
+    {
+      "word": "(pr:",
+      "start": 261.351,
+      "end": 261.391,
+      "score": 0.0
+    },
+    {
+      "word": "\"dock-er\")",
+      "start": 261.411,
+      "end": 261.571,
+      "score": 0.113
+    },
+    {
+      "word": "BuildKit",
+      "start": 261.591,
+      "end": 261.791,
+      "score": 0.434
+    },
+    {
+      "word": "(pr:",
+      "start": 261.811,
+      "end": 261.851,
+      "score": 0.0
+    },
+    {
+      "word": "\"build-kit\")",
+      "start": 261.871,
+      "end": 262.071,
+      "score": 0.166
+    },
+    {
+      "word": "is",
+      "start": 262.091,
+      "end": 262.151,
+      "score": 0.232
+    },
+    {
+      "word": "on",
+      "start": 262.171,
+      "end": 262.451,
+      "score": 0.844
+    },
+    {
+      "word": "by",
+      "start": 262.471,
+      "end": 262.511,
+      "score": 0.13
+    },
+    {
+      "word": "default",
+      "start": 262.531,
+      "end": 262.671,
+      "score": 0.018
+    },
+    {
+      "word": "since",
+      "start": 262.691,
+      "end": 262.791,
+      "score": 0.018
+    },
+    {
+      "word": "Docker",
+      "start": 262.811,
+      "end": 262.951,
+      "score": 0.078
+    },
+    {
+      "word": "(pr:",
+      "start": 262.991,
+      "end": 263.031,
+      "score": 0.0
+    },
+    {
+      "word": "\"dock-er\")",
+      "start": 263.051,
+      "end": 263.191,
+      "score": 0.033
+    },
+    {
+      "word": "and",
+      "start": 264.491,
+      "end": 264.551,
+      "score": 0.0
+    },
+    {
+      "word": "it",
+      "start": 264.571,
+      "end": 264.611,
+      "score": 0.0
+    },
+    {
+      "word": "gives",
+      "start": 264.631,
+      "end": 264.731,
+      "score": 0.166
+    },
+    {
+      "word": "you",
+      "start": 264.751,
+      "end": 264.811,
+      "score": 0.0
+    },
+    {
+      "word": "parallel",
+      "start": 264.831,
+      "end": 264.991,
+      "score": 0.214
+    },
+    {
+      "word": "layer",
+      "start": 265.011,
+      "end": 265.171,
+      "score": 0.378
+    },
+    {
+      "word": "builds.",
+      "start": 265.191,
+      "end": 265.351,
+      "score": 0.112
+    },
+    {
+      "word": "If",
+      "start": 265.371,
+      "end": 265.411,
+      "score": 0.0
+    },
+    {
+      "word": "your",
+      "start": 265.431,
+      "end": 265.511,
+      "score": 0.0
+    },
+    {
+      "word": "Dockerfile",
+      "start": 265.531,
+      "end": 265.751,
+      "score": 0.084
+    },
+    {
+      "word": "(pr:",
+      "start": 265.771,
+      "end": 265.831,
+      "score": 0.246
+    },
+    {
+      "word": "\"dock-er",
+      "start": 265.851,
+      "end": 265.991,
+      "score": 0.018
+    },
+    {
+      "word": "file\")",
+      "start": 266.011,
+      "end": 266.091,
+      "score": 0.222
+    },
+    {
+      "word": "has",
+      "start": 266.111,
+      "end": 266.191,
+      "score": 0.291
+    },
+    {
+      "word": "independent",
+      "start": 266.251,
+      "end": 266.491,
+      "score": 0.39
+    },
+    {
+      "word": "build",
+      "start": 266.571,
+      "end": 266.671,
+      "score": 0.0
+    },
+    {
+      "word": "stages",
+      "start": 266.691,
+      "end": 266.811,
+      "score": 0.03
+    },
+    {
+      "word": "a",
+      "start": 268.171,
+      "end": 268.191,
+      "score": 0.0
+    },
+    {
+      "word": "separate",
+      "start": 268.211,
+      "end": 268.371,
+      "score": 0.248
+    },
+    {
+      "word": "assets",
+      "start": 268.391,
+      "end": 268.531,
+      "score": 0.207
+    },
+    {
+      "word": "stage",
+      "start": 268.551,
+      "end": 268.651,
+      "score": 0.018
+    },
+    {
+      "word": "and",
+      "start": 268.691,
+      "end": 268.811,
+      "score": 0.516
+    },
+    {
+      "word": "a",
+      "start": 268.831,
+      "end": 268.851,
+      "score": 0.0
+    },
+    {
+      "word": "server",
+      "start": 268.871,
+      "end": 269.011,
+      "score": 0.25
+    },
+    {
+      "word": "stage",
+      "start": 269.031,
+      "end": 269.171,
+      "score": 0.053
+    },
+    {
+      "word": "they",
+      "start": 269.211,
+      "end": 269.291,
+      "score": 0.059
+    },
+    {
+      "word": "run",
+      "start": 269.311,
+      "end": 269.371,
+      "score": 0.0
+    },
+    {
+      "word": "concurrently.",
+      "start": 269.411,
+      "end": 269.651,
+      "score": 0.071
+    },
+    {
+      "word": "If",
+      "start": 269.671,
+      "end": 269.711,
+      "score": 0.0
+    },
+    {
+      "word": "you",
+      "start": 269.731,
+      "end": 269.791,
+      "score": 0.0
+    },
+    {
+      "word": "are",
+      "start": 269.811,
+      "end": 269.871,
+      "score": 0.008
+    },
+    {
+      "word": "on",
+      "start": 269.891,
+      "end": 269.931,
+      "score": 0.0
+    },
+    {
+      "word": "an",
+      "start": 269.951,
+      "end": 271.272,
+      "score": 0.958
+    },
+    {
+      "word": "older",
+      "start": 271.292,
+      "end": 271.392,
+      "score": 0.192
+    },
+    {
+      "word": "version,",
+      "start": 271.412,
+      "end": 271.552,
+      "score": 0.002
+    },
+    {
+      "word": "DOCKER_BUILDKIT",
+      "start": 271.572,
+      "end": 271.852,
+      "score": 0.013
+    },
+    {
+      "word": "equals",
+      "start": 271.872,
+      "end": 272.052,
+      "score": 0.191
+    },
+    {
+      "word": "one",
+      "start": 272.072,
+      "end": 272.132,
+      "score": 0.0
+    },
+    {
+      "word": "in",
+      "start": 272.172,
+      "end": 272.232,
+      "score": 0.747
+    },
+    {
+      "word": "your",
+      "start": 272.252,
+      "end": 272.352,
+      "score": 0.374
+    },
+    {
+      "word": "environment",
+      "start": 272.372,
+      "end": 272.592,
+      "score": 0.001
+    },
+    {
+      "word": "enables",
+      "start": 272.652,
+      "end": 272.792,
+      "score": 0.001
+    },
+    {
+      "word": "it",
+      "start": 272.812,
+      "end": 272.852,
+      "score": 0.0
+    },
+    {
+      "word": "today.",
+      "start": 272.872,
+      "end": 272.992,
+      "score": 0.233
+    },
+    {
+      "word": "Second:",
+      "start": 273.012,
+      "end": 273.152,
+      "score": 0.062
+    },
+    {
+      "word": "multi-stage",
+      "start": 273.172,
+      "end": 273.412,
+      "score": 0.139
+    },
+    {
+      "word": "builds.",
+      "start": 273.432,
+      "end": 274.752,
+      "score": 0.164
+    },
+    {
+      "word": "Your",
+      "start": 274.772,
+      "end": 274.872,
+      "score": 0.011
+    },
+    {
+      "word": "build",
+      "start": 274.892,
+      "end": 275.032,
+      "score": 0.325
+    },
+    {
+      "word": "stage",
+      "start": 275.052,
+      "end": 275.152,
+      "score": 0.399
+    },
+    {
+      "word": "does",
+      "start": 275.172,
+      "end": 275.252,
+      "score": 0.0
+    },
+    {
+      "word": "not",
+      "start": 275.272,
+      "end": 275.332,
+      "score": 0.0
+    },
+    {
+      "word": "need",
+      "start": 275.352,
+      "end": 275.432,
+      "score": 0.225
+    },
+    {
+      "word": "to",
+      "start": 275.472,
+      "end": 275.592,
+      "score": 0.397
+    },
+    {
+      "word": "ship",
+      "start": 275.612,
+      "end": 275.712,
+      "score": 0.072
+    },
+    {
+      "word": "with",
+      "start": 275.732,
+      "end": 275.832,
+      "score": 0.373
+    },
+    {
+      "word": "your",
+      "start": 275.852,
+      "end": 275.932,
+      "score": 0.0
+    },
+    {
+      "word": "source",
+      "start": 275.972,
+      "end": 276.112,
+      "score": 0.245
+    },
+    {
+      "word": "code,",
+      "start": 276.132,
+      "end": 276.232,
+      "score": 0.124
+    },
+    {
+      "word": "your",
+      "start": 276.252,
+      "end": 276.332,
+      "score": 0.003
+    },
+    {
+      "word": "devDependencies",
+      "start": 276.352,
+      "end": 276.652,
+      "score": 0.09
+    },
+    {
+      "word": "(pr:",
+      "start": 276.672,
+      "end": 276.712,
+      "score": 0.0
+    },
+    {
+      "word": "\"dev",
+      "start": 276.732,
+      "end": 276.792,
+      "score": 0.004
+    },
+    {
+      "word": "deh-pen-den-seez\"),",
+      "start": 276.812,
+      "end": 277.132,
+      "score": 0.173
+    },
+    {
+      "word": "or",
+      "start": 277.152,
+      "end": 277.192,
+      "score": 0.0
+    },
+    {
+      "word": "your",
+      "start": 277.212,
+      "end": 277.292,
+      "score": 0.0
+    },
+    {
+      "word": "compiler.",
+      "start": 277.312,
+      "end": 277.492,
+      "score": 0.187
+    },
+    {
+      "word": "A",
+      "start": 277.512,
+      "end": 277.532,
+      "score": 0.0
+    },
+    {
+      "word": "two-stage",
+      "start": 277.612,
+      "end": 277.832,
+      "score": 0.222
+    },
+    {
+      "word": "Dockerfile",
+      "start": 277.852,
+      "end": 278.072,
+      "score": 0.05
+    },
+    {
+      "word": "(pr:",
+      "start": 278.092,
+      "end": 278.132,
+      "score": 0.0
+    },
+    {
+      "word": "\"dock-er",
+      "start": 278.152,
+      "end": 278.292,
+      "score": 0.251
+    },
+    {
+      "word": "file\")",
+      "start": 278.312,
+      "end": 278.392,
+      "score": 0.0
+    },
+    {
+      "word": "that",
+      "start": 278.412,
+      "end": 278.512,
+      "score": 0.126
+    },
+    {
+      "word": "builds",
+      "start": 278.532,
+      "end": 278.652,
+      "score": 0.0
+    },
+    {
+      "word": "in",
+      "start": 278.672,
+      "end": 278.712,
+      "score": 0.026
+    },
+    {
+      "word": "one",
+      "start": 278.732,
+      "end": 278.792,
+      "score": 0.001
+    },
+    {
+      "word": "stage",
+      "start": 278.812,
+      "end": 278.932,
+      "score": 0.102
+    },
+    {
+      "word": "and",
+      "start": 278.952,
+      "end": 279.012,
+      "score": 0.001
+    },
+    {
+      "word": "copies",
+      "start": 279.032,
+      "end": 279.272,
+      "score": 0.282
+    },
+    {
+      "word": "only",
+      "start": 279.292,
+      "end": 279.372,
+      "score": 0.0
+    },
+    {
+      "word": "the",
+      "start": 279.392,
+      "end": 279.452,
+      "score": 0.005
+    },
+    {
+      "word": "output",
+      "start": 279.472,
+      "end": 279.592,
+      "score": 0.0
+    },
+    {
+      "word": "to",
+      "start": 279.612,
+      "end": 279.652,
+      "score": 0.007
+    },
+    {
+      "word": "a",
+      "start": 279.672,
+      "end": 279.692,
+      "score": 0.0
+    },
+    {
+      "word": "lean",
+      "start": 279.712,
+      "end": 279.812,
+      "score": 0.347
+    },
+    {
+      "word": "runtime",
+      "start": 279.832,
+      "end": 279.972,
+      "score": 0.131
+    },
+    {
+      "word": "image",
+      "start": 279.992,
+      "end": 280.092,
+      "score": 0.319
+    },
+    {
+      "word": "can",
+      "start": 280.112,
+      "end": 282.152,
+      "score": 0.64
+    },
+    {
+      "word": "cut",
+      "start": 282.172,
+      "end": 282.232,
+      "score": 0.0
+    },
+    {
+      "word": "your",
+      "start": 282.252,
+      "end": 282.352,
+      "score": 0.117
+    },
+    {
+      "word": "final",
+      "start": 282.372,
+      "end": 282.492,
+      "score": 0.295
+    },
+    {
+      "word": "image",
+      "start": 282.512,
+      "end": 282.612,
+      "score": 0.0
+    },
+    {
+      "word": "from",
+      "start": 282.632,
+      "end": 282.752,
+      "score": 0.363
+    },
+    {
+      "word": "eight",
+      "start": 282.772,
+      "end": 282.872,
+      "score": 0.002
+    },
+    {
+      "word": "hundred",
+      "start": 282.892,
+      "end": 283.052,
+      "score": 0.105
+    },
+    {
+      "word": "megabytes",
+      "start": 283.072,
+      "end": 283.252,
+      "score": 0.0
+    },
+    {
+      "word": "to",
+      "start": 283.272,
+      "end": 283.312,
+      "score": 0.0
+    },
+    {
+      "word": "sixty.",
+      "start": 283.332,
+      "end": 283.452,
+      "score": 0.1
+    },
+    {
+      "word": "Smaller",
+      "start": 283.512,
+      "end": 283.652,
+      "score": 0.002
+    },
+    {
+      "word": "image:",
+      "start": 283.672,
+      "end": 283.812,
+      "score": 0.3
+    },
+    {
+      "word": "faster",
+      "start": 283.832,
+      "end": 283.992,
+      "score": 0.164
+    },
+    {
+      "word": "push",
+      "start": 284.012,
+      "end": 284.092,
+      "score": 0.154
+    },
+    {
+      "word": "to",
+      "start": 284.112,
+      "end": 284.172,
+      "score": 0.251
+    },
+    {
+      "word": "the",
+      "start": 284.192,
+      "end": 284.252,
+      "score": 0.0
+    },
+    {
+      "word": "registry,",
+      "start": 284.272,
+      "end": 284.472,
+      "score": 0.207
+    },
+    {
+      "word": "faster",
+      "start": 284.492,
+      "end": 284.612,
+      "score": 0.078
+    },
+    {
+      "word": "pull",
+      "start": 284.632,
+      "end": 284.752,
+      "score": 0.166
+    },
+    {
+      "word": "in",
+      "start": 284.792,
+      "end": 284.832,
+      "score": 0.456
+    },
+    {
+      "word": "CI,",
+      "start": 284.852,
+      "end": 284.892,
+      "score": 0.0
+    },
+    {
+      "word": "and",
+      "start": 284.912,
+      "end": 284.972,
+      "score": 0.026
+    },
+    {
+      "word": "a",
+      "start": 284.992,
+      "end": 285.012,
+      "score": 0.0
+    },
+    {
+      "word": "smaller",
+      "start": 285.032,
+      "end": 285.192,
+      "score": 0.054
+    },
+    {
+      "word": "attack",
+      "start": 285.212,
+      "end": 285.332,
+      "score": 0.1
+    },
+    {
+      "word": "surface",
+      "start": 286.632,
+      "end": 286.792,
+      "score": 0.163
+    },
+    {
+      "word": "in",
+      "start": 286.812,
+      "end": 286.852,
+      "score": 0.0
+    },
+    {
+      "word": "production.",
+      "start": 286.872,
+      "end": 287.112,
+      "score": 0.046
+    },
+    {
+      "word": "Third:",
+      "start": 287.132,
+      "end": 287.232,
+      "score": 0.032
+    },
+    {
+      "word": "how",
+      "start": 287.252,
+      "end": 287.312,
+      "score": 0.0
+    },
+    {
+      "word": "to",
+      "start": 287.332,
+      "end": 287.372,
+      "score": 0.49
+    },
+    {
+      "word": "find",
+      "start": 287.392,
+      "end": 287.472,
+      "score": 0.009
+    },
+    {
+      "word": "your",
+      "start": 287.512,
+      "end": 287.592,
+      "score": 0.237
+    },
+    {
+      "word": "own",
+      "start": 287.632,
+      "end": 287.692,
+      "score": 0.0
+    },
+    {
+      "word": "bottleneck.",
+      "start": 287.712,
+      "end": 287.932,
+      "score": 0.151
+    },
+    {
+      "word": "In",
+      "start": 287.952,
+      "end": 287.992,
+      "score": 0.102
+    },
+    {
+      "word": "GitHub",
+      "start": 288.012,
+      "end": 288.132,
+      "score": 0.007
+    },
+    {
+      "word": "Actions",
+      "start": 288.152,
+      "end": 288.292,
+      "score": 0.001
+    },
+    {
+      "word": "(pr:",
+      "start": 288.312,
+      "end": 288.352,
+      "score": 0.0
+    },
+    {
+      "word": "\"git-hub",
+      "start": 288.372,
+      "end": 288.512,
+      "score": 0.285
+    },
+    {
+      "word": "ack-shuns\"),",
+      "start": 288.532,
+      "end": 288.712,
+      "score": 0.209
+    },
+    {
+      "word": "click",
+      "start": 288.752,
+      "end": 288.852,
+      "score": 0.0
+    },
+    {
+      "word": "into",
+      "start": 288.872,
+      "end": 288.952,
+      "score": 0.0
+    },
+    {
+      "word": "any",
+      "start": 288.972,
+      "end": 289.032,
+      "score": 0.0
+    },
+    {
+      "word": "run,",
+      "start": 289.052,
+      "end": 289.112,
+      "score": 0.309
+    },
+    {
+      "word": "expand",
+      "start": 289.132,
+      "end": 289.252,
+      "score": 0.0
+    },
+    {
+      "word": "the",
+      "start": 289.272,
+      "end": 289.332,
+      "score": 0.313
+    },
+    {
+      "word": "job,",
+      "start": 289.352,
+      "end": 289.432,
+      "score": 0.314
+    },
+    {
+      "word": "and",
+      "start": 289.452,
+      "end": 289.512,
+      "score": 0.0
+    },
+    {
+      "word": "look",
+      "start": 289.532,
+      "end": 289.612,
+      "score": 0.065
+    },
+    {
+      "word": "at",
+      "start": 289.632,
+      "end": 289.672,
+      "score": 0.0
+    },
+    {
+      "word": "the",
+      "start": 292.472,
+      "end": 292.532,
+      "score": 0.024
+    },
+    {
+      "word": "step",
+      "start": 292.552,
+      "end": 292.632,
+      "score": 0.0
+    },
+    {
+      "word": "durations.",
+      "start": 292.652,
+      "end": 292.892,
+      "score": 0.384
+    },
+    {
+      "word": "Sort",
+      "start": 292.912,
+      "end": 292.992,
+      "score": 0.0
+    },
+    {
+      "word": "by",
+      "start": 294.012,
+      "end": 294.052,
+      "score": 0.0
+    },
+    {
+      "word": "slowest.",
+      "start": 294.072,
+      "end": 294.212,
+      "score": 0.091
+    },
+    {
+      "word": "The",
+      "start": 294.232,
+      "end": 294.292,
+      "score": 0.321
+    },
+    {
+      "word": "longest",
+      "start": 294.312,
+      "end": 294.452,
+      "score": 0.0
+    },
+    {
+      "word": "step",
+      "start": 294.472,
+      "end": 294.552,
+      "score": 0.077
+    },
+    {
+      "word": "is",
+      "start": 294.573,
+      "end": 295.873,
+      "score": 0.492
+    },
+    {
+      "word": "your",
+      "start": 295.893,
+      "end": 295.993,
+      "score": 0.125
+    },
+    {
+      "word": "fix-one",
+      "start": 296.033,
+      "end": 296.173,
+      "score": 0.11
+    },
+    {
+      "word": "target.",
+      "start": 296.193,
+      "end": 296.373,
+      "score": 0.226
+    },
+    {
+      "word": "Apply",
+      "start": 296.433,
+      "end": 296.533,
+      "score": 0.023
+    },
+    {
+      "word": "the",
+      "start": 296.553,
+      "end": 296.613,
+      "score": 0.002
+    },
+    {
+      "word": "fix,",
+      "start": 296.633,
+      "end": 296.693,
+      "score": 0.028
+    },
+    {
+      "word": "run",
+      "start": 296.713,
+      "end": 296.773,
+      "score": 0.001
+    },
+    {
+      "word": "again,",
+      "start": 296.793,
+      "end": 296.893,
+      "score": 0.175
+    },
+    {
+      "word": "and",
+      "start": 296.933,
+      "end": 296.993,
+      "score": 0.347
+    },
+    {
+      "word": "repeat",
+      "start": 297.013,
+      "end": 297.173,
+      "score": 0.157
+    },
+    {
+      "word": "the",
+      "start": 297.193,
+      "end": 297.253,
+      "score": 0.002
+    },
+    {
+      "word": "process.",
+      "start": 297.273,
+      "end": 297.433,
+      "score": 0.016
+    },
+    {
+      "word": "You",
+      "start": 297.453,
+      "end": 297.513,
+      "score": 0.288
+    },
+    {
+      "word": "are",
+      "start": 297.553,
+      "end": 297.613,
+      "score": 0.326
+    },
+    {
+      "word": "looking",
+      "start": 297.633,
+      "end": 297.813,
+      "score": 0.113
+    },
+    {
+      "word": "for",
+      "start": 297.833,
+      "end": 297.953,
+      "score": 0.516
+    },
+    {
+      "word": "the",
+      "start": 297.973,
+      "end": 298.033,
+      "score": 0.356
+    },
+    {
+      "word": "step",
+      "start": 298.053,
+      "end": 298.133,
+      "score": 0.005
+    },
+    {
+      "word": "where",
+      "start": 298.153,
+      "end": 298.273,
+      "score": 0.098
+    },
+    {
+      "word": "the",
+      "start": 298.293,
+      "end": 298.373,
+      "score": 0.224
+    },
+    {
+      "word": "duration",
+      "start": 298.393,
+      "end": 299.773,
+      "score": 0.486
+    },
+    {
+      "word": "drops",
+      "start": 299.793,
+      "end": 299.893,
+      "score": 0.192
+    },
+    {
+      "word": "by",
+      "start": 299.913,
+      "end": 299.953,
+      "score": 0.0
+    },
+    {
+      "word": "ninety",
+      "start": 299.973,
+      "end": 300.093,
+      "score": 0.002
+    },
+    {
+      "word": "percent",
+      "start": 300.113,
+      "end": 300.273,
+      "score": 0.175
+    },
+    {
+      "word": "on",
+      "start": 300.293,
+      "end": 300.333,
+      "score": 0.0
+    },
+    {
+      "word": "the",
+      "start": 300.353,
+      "end": 300.413,
+      "score": 0.0
+    },
+    {
+      "word": "second",
+      "start": 300.433,
+      "end": 300.553,
+      "score": 0.061
+    },
+    {
+      "word": "run",
+      "start": 300.573,
+      "end": 300.633,
+      "score": 0.333
+    },
+    {
+      "word": "that",
+      "start": 300.673,
+      "end": 300.753,
+      "score": 0.002
+    },
+    {
+      "word": "is",
+      "start": 300.773,
+      "end": 300.833,
+      "score": 0.254
+    },
+    {
+      "word": "the",
+      "start": 300.853,
+      "end": 301.013,
+      "score": 0.281
+    },
+    {
+      "word": "cache",
+      "start": 301.033,
+      "end": 301.133,
+      "score": 0.139
+    },
+    {
+      "word": "working.",
+      "start": 301.173,
+      "end": 301.333,
+      "score": 0.078
+    },
+    {
+      "word": "---",
+      "start": 301.353,
+      "end": 301.413,
+      "score": 0.315
+    },
+    {
+      "word": "Before",
+      "start": 301.433,
+      "end": 301.693,
+      "score": 0.498
+    },
+    {
+      "word": "this:",
+      "start": 301.733,
+      "end": 301.833,
+      "score": 0.552
+    },
+    {
+      "word": "eight",
+      "start": 301.853,
+      "end": 301.953,
+      "score": 0.196
+    },
+    {
+      "word": "minutes,",
+      "start": 301.973,
+      "end": 302.113,
+      "score": 0.128
+    },
+    {
+      "word": "forty-two",
+      "start": 302.133,
+      "end": 302.433,
+      "score": 0.172
+    },
+    {
+      "word": "seconds.",
+      "start": 302.453,
+      "end": 302.593,
+      "score": 0.014
+    },
+    {
+      "word": "Every",
+      "start": 302.613,
+      "end": 302.713,
+      "score": 0.192
+    },
+    {
+      "word": "push.",
+      "start": 302.733,
+      "end": 302.813,
+      "score": 0.238
+    },
+    {
+      "word": "Every",
+      "start": 302.833,
+      "end": 302.933,
+      "score": 0.0
+    },
+    {
+      "word": "developer",
+      "start": 302.953,
+      "end": 303.153,
+      "score": 0.034
+    },
+    {
+      "word": "on",
+      "start": 303.213,
+      "end": 303.253,
+      "score": 0.0
+    },
+    {
+      "word": "the",
+      "start": 303.273,
+      "end": 303.333,
+      "score": 0.0
+    },
+    {
+      "word": "team.",
+      "start": 303.353,
+      "end": 303.453,
+      "score": 0.128
+    },
+    {
+      "word": "Three",
+      "start": 303.473,
+      "end": 303.573,
+      "score": 0.0
+    },
+    {
+      "word": "changes:",
+      "start": 303.593,
+      "end": 303.733,
+      "score": 0.279
+    },
+    {
+      "word": "Fix",
+      "start": 303.753,
+      "end": 303.813,
+      "score": 0.0
+    },
+    {
+      "word": "one",
+      "start": 303.853,
+      "end": 303.913,
+      "score": 0.0
+    },
+    {
+      "word": "cache",
+      "start": 303.953,
+      "end": 304.053,
+      "score": 0.0
+    },
+    {
+      "word": "by",
+      "start": 304.073,
+      "end": 304.113,
+      "score": 0.0
+    },
+    {
+      "word": "lockfile",
+      "start": 304.133,
+      "end": 304.313,
+      "score": 0.063
+    },
+    {
+      "word": "(pr:",
+      "start": 304.333,
+      "end": 304.373,
+      "score": 0.498
+    },
+    {
+      "word": "\"lock",
+      "start": 304.393,
+      "end": 304.473,
+      "score": 0.216
+    },
+    {
+      "word": "file\"),",
+      "start": 304.493,
+      "end": 304.573,
+      "score": 0.042
+    },
+    {
+      "word": "not",
+      "start": 304.593,
+      "end": 304.653,
+      "score": 0.011
+    },
+    {
+      "word": "by",
+      "start": 304.673,
+      "end": 304.933,
+      "score": 0.458
+    },
+    {
+      "word": "commit.",
+      "start": 305.053,
+      "end": 306.573,
+      "score": 0.446
+    },
+    {
+      "word": "Fix",
+      "start": 306.593,
+      "end": 306.653,
+      "score": 0.0
+    },
+    {
+      "word": "two",
+      "start": 306.673,
+      "end": 306.733,
+      "score": 0.0
+    },
+    {
+      "word": "order",
+      "start": 306.773,
+      "end": 306.873,
+      "score": 0.2
+    },
+    {
+      "word": "your",
+      "start": 306.893,
+      "end": 306.973,
+      "score": 0.0
+    },
+    {
+      "word": "Dockerfile",
+      "start": 306.993,
+      "end": 307.193,
+      "score": 0.063
+    },
+    {
+      "word": "(pr:",
+      "start": 307.233,
+      "end": 307.293,
+      "score": 0.254
+    },
+    {
+      "word": "\"dock-er",
+      "start": 307.313,
+      "end": 307.493,
+      "score": 0.47
+    },
+    {
+      "word": "file\")",
+      "start": 307.513,
+      "end": 307.593,
+      "score": 0.0
+    },
+    {
+      "word": "stable",
+      "start": 307.613,
+      "end": 307.733,
+      "score": 0.0
+    },
+    {
+      "word": "to",
+      "start": 307.753,
+      "end": 307.793,
+      "score": 0.0
+    },
+    {
+      "word": "volatile.",
+      "start": 307.813,
+      "end": 307.993,
+      "score": 0.094
+    },
+    {
+      "word": "Fix",
+      "start": 308.013,
+      "end": 308.073,
+      "score": 0.0
+    },
+    {
+      "word": "three",
+      "start": 308.093,
+      "end": 308.193,
+      "score": 0.4
+    },
+    {
+      "word": "build",
+      "start": 308.233,
+      "end": 308.333,
+      "score": 0.002
+    },
+    {
+      "word": "your",
+      "start": 308.353,
+      "end": 308.433,
+      "score": 0.0
+    },
+    {
+      "word": "artifact",
+      "start": 308.453,
+      "end": 308.613,
+      "score": 0.0
+    },
+    {
+      "word": "once",
+      "start": 308.633,
+      "end": 308.733,
+      "score": 0.454
+    },
+    {
+      "word": "and",
+      "start": 308.753,
+      "end": 308.813,
+      "score": 0.0
+    },
+    {
+      "word": "pull",
+      "start": 308.833,
+      "end": 308.913,
+      "score": 0.004
+    },
+    {
+      "word": "it",
+      "start": 308.933,
+      "end": 308.973,
+      "score": 0.432
+    },
+    {
+      "word": "downstream.",
+      "start": 308.993,
+      "end": 309.233,
+      "score": 0.058
+    },
+    {
+      "word": "After:",
+      "start": 309.253,
+      "end": 309.353,
+      "score": 0.198
+    },
+    {
+      "word": "one",
+      "start": 309.373,
+      "end": 309.433,
+      "score": 0.0
+    },
+    {
+      "word": "minute,",
+      "start": 309.533,
+      "end": 309.753,
+      "score": 0.139
+    },
+    {
+      "word": "twelve",
+      "start": 309.773,
+      "end": 309.893,
+      "score": 0.0
+    },
+    {
+      "word": "seconds.",
+      "start": 309.913,
+      "end": 310.073,
+      "score": 0.177
+    },
+    {
+      "word": "Same",
+      "start": 310.093,
+      "end": 310.173,
+      "score": 0.002
+    },
+    {
+      "word": "pipeline.",
+      "start": 310.193,
+      "end": 310.353,
+      "score": 0.119
+    },
+    {
+      "word": "Same",
+      "start": 310.373,
+      "end": 310.453,
+      "score": 0.249
+    },
+    {
+      "word": "tests.",
+      "start": 310.473,
+      "end": 310.573,
+      "score": 0.0
+    },
+    {
+      "word": "Same",
+      "start": 310.593,
+      "end": 310.673,
+      "score": 0.003
+    },
+    {
+      "word": "team.",
+      "start": 310.693,
+      "end": 310.773,
+      "score": 0.19
+    },
+    {
+      "word": "Seven",
+      "start": 310.793,
+      "end": 310.893,
+      "score": 0.247
+    },
+    {
+      "word": "times",
+      "start": 310.913,
+      "end": 311.013,
+      "score": 0.003
+    },
+    {
+      "word": "faster,",
+      "start": 311.033,
+      "end": 311.173,
+      "score": 0.01
+    },
+    {
+      "word": "with",
+      "start": 311.193,
+      "end": 311.353,
+      "score": 0.327
+    },
+    {
+      "word": "nothing",
+      "start": 311.373,
+      "end": 311.513,
+      "score": 0.284
+    },
+    {
+      "word": "new",
+      "start": 311.533,
+      "end": 311.593,
+      "score": 0.0
+    },
+    {
+      "word": "to",
+      "start": 311.613,
+      "end": 311.653,
+      "score": 0.0
+    },
+    {
+      "word": "maintain.",
+      "start": 311.673,
+      "end": 311.833,
+      "score": 0.037
+    },
+    {
+      "word": "If",
+      "start": 311.853,
+      "end": 311.893,
+      "score": 0.004
+    },
+    {
+      "word": "your",
+      "start": 311.913,
+      "end": 311.993,
+      "score": 0.0
+    },
+    {
+      "word": "build",
+      "start": 312.013,
+      "end": 312.113,
+      "score": 0.077
+    },
+    {
+      "word": "is",
+      "start": 312.133,
+      "end": 312.173,
+      "score": 0.054
+    },
+    {
+      "word": "over",
+      "start": 312.193,
+      "end": 312.273,
+      "score": 0.022
+    },
+    {
+      "word": "ten",
+      "start": 312.293,
+      "end": 312.353,
+      "score": 0.001
+    },
+    {
+      "word": "minutes,",
+      "start": 312.373,
+      "end": 312.513,
+      "score": 0.013
+    },
+    {
+      "word": "the",
+      "start": 312.833,
+      "end": 313.613,
+      "score": 0.624
+    },
+    {
+      "word": "same",
+      "start": 313.633,
+      "end": 313.793,
+      "score": 0.312
+    },
+    {
+      "word": "three",
+      "start": 313.813,
+      "end": 313.913,
+      "score": 0.603
+    },
+    {
+      "word": "fixes",
+      "start": 313.953,
+      "end": 314.113,
+      "score": 0.279
+    },
+    {
+      "word": "apply",
+      "start": 314.133,
+      "end": 314.253,
+      "score": 0.295
+    },
+    {
+      "word": "the",
+      "start": 314.293,
+      "end": 314.353,
+      "score": 0.05
+    },
+    {
+      "word": "savings",
+      "start": 314.373,
+      "end": 314.593,
+      "score": 0.354
+    },
+    {
+      "word": "scale",
+      "start": 314.613,
+      "end": 314.833,
+      "score": 0.319
+    },
+    {
+      "word": "with",
+      "start": 314.853,
+      "end": 314.933,
+      "score": 0.001
+    },
+    {
+      "word": "the",
+      "start": 314.973,
+      "end": 315.033,
+      "score": 0.333
+    },
+    {
+      "word": "problem.",
+      "start": 315.053,
+      "end": 315.193,
+      "score": 0.001
+    },
+    {
+      "word": "If",
+      "start": 315.213,
+      "end": 315.253,
+      "score": 0.0
+    },
+    {
+      "word": "you",
+      "start": 315.273,
+      "end": 315.573,
+      "score": 0.304
+    },
+    {
+      "word": "are",
+      "start": 315.593,
+      "end": 315.653,
+      "score": 0.001
+    },
+    {
+      "word": "already",
+      "start": 315.673,
+      "end": 315.873,
+      "score": 0.327
+    },
+    {
+      "word": "under",
+      "start": 315.893,
+      "end": 315.993,
+      "score": 0.2
+    },
+    {
+      "word": "two",
+      "start": 316.013,
+      "end": 316.073,
+      "score": 0.0
+    },
+    {
+      "word": "minutes,",
+      "start": 316.093,
+      "end": 316.233,
+      "score": 0.005
+    },
+    {
+      "word": "look",
+      "start": 316.253,
+      "end": 316.333,
+      "score": 0.0
+    },
+    {
+      "word": "at",
+      "start": 316.353,
+      "end": 316.393,
+      "score": 0.002
+    },
+    {
+      "word": "test",
+      "start": 316.413,
+      "end": 316.493,
+      "score": 0.018
+    },
+    {
+      "word": "parallelism",
+      "start": 316.513,
+      "end": 316.773,
+      "score": 0.218
+    },
+    {
+      "word": "next",
+      "start": 316.793,
+      "end": 316.873,
+      "score": 0.25
+    },
+    {
+      "word": "different",
+      "start": 316.913,
+      "end": 317.093,
+      "score": 0.111
+    },
+    {
+      "word": "bottleneck,",
+      "start": 317.113,
+      "end": 317.333,
+      "score": 0.049
+    },
+    {
+      "word": "different",
+      "start": 317.353,
+      "end": 317.533,
+      "score": 0.074
+    },
+    {
+      "word": "playbook.",
+      "start": 317.553,
+      "end": 319.914,
+      "score": 0.318
+    },
+    {
+      "word": "---",
+      "start": 319.934,
+      "end": 320.074,
+      "score": 1.0
+    },
+    {
+      "word": "\"The",
+      "start": 320.114,
+      "end": 320.194,
+      "score": 0.539
+    },
+    {
+      "word": "CI",
+      "start": 320.214,
+      "end": 320.254,
+      "score": 0.0
+    },
+    {
+      "word": "cache",
+      "start": 320.274,
+      "end": 320.374,
+      "score": 0.0
+    },
+    {
+      "word": "checklist",
+      "start": 320.394,
+      "end": 320.654,
+      "score": 0.309
+    },
+    {
+      "word": "is",
+      "start": 320.674,
+      "end": 320.734,
+      "score": 0.25
+    },
+    {
+      "word": "in",
+      "start": 320.754,
+      "end": 320.794,
+      "score": 0.499
+    },
+    {
+      "word": "the",
+      "start": 320.814,
+      "end": 320.934,
+      "score": 0.432
+    },
+    {
+      "word": "description",
+      "start": 320.974,
+      "end": 321.214,
+      "score": 0.169
+    },
+    {
+      "word": "one",
+      "start": 321.254,
+      "end": 321.334,
+      "score": 0.166
+    },
+    {
+      "word": "page,",
+      "start": 321.354,
+      "end": 321.434,
+      "score": 0.036
+    },
+    {
+      "word": "three",
+      "start": 321.454,
+      "end": 321.554,
+      "score": 0.0
+    },
+    {
+      "word": "fixes,",
+      "start": 321.574,
+      "end": 321.694,
+      "score": 0.09
+    },
+    {
+      "word": "a",
+      "start": 321.714,
+      "end": 321.734,
+      "score": 0.0
+    },
+    {
+      "word": "column",
+      "start": 321.754,
+      "end": 321.874,
+      "score": 0.16
+    },
+    {
+      "word": "for",
+      "start": 321.894,
+      "end": 321.954,
+      "score": 0.0
+    },
+    {
+      "word": "your",
+      "start": 321.974,
+      "end": 322.074,
+      "score": 0.076
+    },
+    {
+      "word": "before",
+      "start": 322.094,
+      "end": 322.214,
+      "score": 0.305
+    },
+    {
+      "word": "and",
+      "start": 322.254,
+      "end": 322.314,
+      "score": 0.002
+    },
+    {
+      "word": "after",
+      "start": 322.334,
+      "end": 322.534,
+      "score": 0.439
+    },
+    {
+      "word": "numbers.\"",
+      "start": 322.554,
+      "end": 322.794,
+      "score": 0.343
+    },
+    {
+      "word": "---",
+      "start": 322.814,
+      "end": 322.954,
+      "score": 1.0
+    },
+    {
+      "word": "---",
+      "start": 322.974,
+      "end": 323.034,
+      "score": 1.0
+    },
+    {
+      "word": "**Word",
+      "start": 323.934,
+      "end": 324.174,
+      "score": 0.5
+    },
+    {
+      "word": "count:**",
+      "start": 324.194,
+      "end": 324.294,
+      "score": 0.004
+    },
+    {
+      "word": "words",
+      "start": 324.334,
+      "end": 324.434,
+      "score": 0.209
+    },
+    {
+      "word": "**Estimated",
+      "start": 324.454,
+      "end": 324.654,
+      "score": 0.07
+    },
+    {
+      "word": "runtime",
+      "start": 324.674,
+      "end": 324.814,
+      "score": 0.0
+    },
+    {
+      "word": "at",
+      "start": 324.834,
+      "end": 324.874,
+      "score": 0.0
+    },
+    {
+      "word": "Charon",
+      "start": 324.894,
+      "end": 325.014,
+      "score": 0.014
+    },
+    {
+      "word": "TTS",
+      "start": 325.034,
+      "end": 325.094,
+      "score": 0.338
+    },
+    {
+      "word": "pace",
+      "start": 325.154,
+      "end": 325.334,
+      "score": 0.542
+    },
+    {
+      "word": "wpm):**",
+      "start": 326.034,
+      "end": 326.134,
+      "score": 0.222
+    },
+    {
+      "word": "minutes",
+      "start": 326.174,
+      "end": 326.354,
+      "score": 0.143
+    },
+    {
+      "word": "(including",
+      "start": 326.374,
+      "end": 326.554,
+      "score": 0.001
+    },
+    {
+      "word": "pauses)",
+      "start": 326.574,
+      "end": 326.694,
+      "score": 0.007
+    },
+    {
+      "word": "**CTA",
+      "start": 326.714,
+      "end": 326.774,
+      "score": 0.0
+    },
+    {
+      "word": "slots:**",
+      "start": 326.794,
+      "end": 326.914,
+      "score": 0.144
+    },
+    {
+      "word": "mid-video",
+      "start": 326.974,
+      "end": 327.154,
+      "score": 0.183
+    },
+    {
+      "word": "at",
+      "start": 327.174,
+      "end": 327.214,
+      "score": 0.032
+    },
+    {
+      "word": "lead",
+      "start": 327.254,
+      "end": 327.394,
+      "score": 0.263
+    },
+    {
+      "word": "magnet",
+      "start": 327.434,
+      "end": 327.614,
+      "score": 0.243
+    },
+    {
+      "word": "at",
+      "start": 327.634,
+      "end": 327.674,
+      "score": 0.018
+    },
+    {
+      "word": "**Pause",
+      "start": 327.714,
+      "end": 328.994,
+      "score": 0.33
+    },
+    {
+      "word": "markup:**",
+      "start": 329.014,
+      "end": 430.978,
+      "score": 0.25
+    },
+    {
+      "word": "present",
+      "start": 430.998,
+      "end": 431.138,
+      "score": 0.0
+    },
+    {
+      "word": "throughout",
+      "start": 431.158,
+      "end": 431.358,
+      "score": 0.0
+    },
+    {
+      "word": "TTS",
+      "start": 431.398,
+      "end": 431.458,
+      "score": 0.0
+    },
+    {
+      "word": "must",
+      "start": 431.478,
+      "end": 431.558,
+      "score": 0.15
+    },
+    {
+      "word": "render",
+      "start": 431.578,
+      "end": 446.559,
+      "score": 0.33
+    },
+    {
+      "word": "these",
+      "start": 446.579,
+      "end": 446.679,
+      "score": 0.0
+    },
+    {
+      "word": "as",
+      "start": 446.699,
+      "end": 446.739,
+      "score": 0.0
+    },
+    {
+      "word": "real",
+      "start": 446.759,
+      "end": 446.839,
+      "score": 0.0
+    },
+    {
+      "word": "silence,",
+      "start": 446.859,
+      "end": 446.999,
+      "score": 0.0
+    },
+    {
+      "word": "not",
+      "start": 447.019,
+      "end": 447.079,
+      "score": 0.0
+    },
+    {
+      "word": "strip",
+      "start": 447.099,
+      "end": 447.199,
+      "score": 0.0
+    },
+    {
+      "word": "them",
+      "start": 447.219,
+      "end": 447.739,
+      "score": 0.444
+    }
+  ]
+}

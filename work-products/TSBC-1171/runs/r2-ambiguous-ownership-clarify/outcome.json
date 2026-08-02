@@ -1,0 +1,54 @@
+{
+  "issue": "TSBC-1527",
+  "resumeIssue": "TSBC-1536",
+  "parentIssue": "TSBC-1171",
+  "run_id": "probe-20260730-094016",
+  "ok": 30,
+  "samples": 30,
+  "meanQuality": 1.0,
+  "minQuality": 1.0,
+  "meanOutputTokens": 154.96666666666667,
+  "meanInputTokens": 557.9,
+  "candidateSha256": "fd189e4b279ac47e366984b2ab9f1b8c1b4782cc2433cd91d77ee3c19da0c7bf",
+  "suiteSha256": "4a12f7840060d3340e31887045177b943ccfc26aece2989d42f2e6f31a2b2c61",
+  "agentFileSha256": "fd189e4b279ac47e366984b2ab9f1b8c1b4782cc2433cd91d77ee3c19da0c7bf",
+  "desiredSkills": [],
+  "adapterType": "hermes",
+  "laneControlsPinned": true,
+  "probePath": "/Users/glad0s/paperclip/benchmark/results/probe-20260730-094016",
+  "durableProbePath": "/Users/glad0s/paperclip/work-products/TSBC-1171/runs/r2-ambiguous-ownership-clarify/probe-20260730-094016",
+  "comparisonPath": "/Users/glad0s/paperclip/work-products/TSBC-1171/scores/r2-vs-baseline-r1-comparison.json",
+  "closeoutPath": "/Users/glad0s/paperclip/work-products/TSBC-1171/runs/r2-ambiguous-ownership-clarify/TSBC-1527-closeout.md",
+  "headline": {
+    "bare": {
+      "meanQuality": 0.897420634920635,
+      "minQuality": 0.3333333333333333,
+      "meanOutputTokens": 244.86666666666667,
+      "ok": "30/30"
+    },
+    "r1": {
+      "meanQuality": 0.9625,
+      "minQuality": 0.625,
+      "meanOutputTokens": 160.06666666666666,
+      "ok": "30/30"
+    },
+    "r2": {
+      "meanQuality": 1.0,
+      "minQuality": 1.0,
+      "meanOutputTokens": 154.96666666666667,
+      "ok": "30/30"
+    },
+    "delta_r2_minus_bare": {
+      "meanQuality": 0.10257936507936505,
+      "minQuality": 0.6666666666666667,
+      "meanOutputTokens": -89.9
+    },
+    "delta_r2_minus_r1": {
+      "meanQuality": 0.03749999999999998,
+      "minQuality": 0.375,
+      "meanOutputTokens": -5.099999999999994
+    }
+  },
+  "verdict": "CONFIRMED",
+  "finishedAt": "2026-07-30T09:59:45.204425+00:00"
+}

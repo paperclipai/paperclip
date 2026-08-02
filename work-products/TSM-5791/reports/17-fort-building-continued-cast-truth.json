@@ -1,0 +1,31 @@
+{
+  "n": 17,
+  "slug": "fort-building-continued",
+  "path": "/Users/glad0s/paperclip/work-products/TSM-5791/clip-bytes/17-fort-building-continued-8s.mp4",
+  "pass": true,
+  "violations": [],
+  "averages": {
+    "slateGreyRatio": 0.22095594618055556,
+    "cinnamonRatio": 0.5249931278935185,
+    "nearBlackRatio": 0.0035478153935185187,
+    "skinRatio": 0.011556712962962963,
+    "animalCoatRatio": 0.7459490740740741
+  },
+  "durationSeconds": 8.041667,
+  "sampleTimestampsSeconds": [
+    1.0,
+    4.0,
+    7.0
+  ],
+  "framesSampled": 3,
+  "mode": "james_solo",
+  "method": "ffmpeg-multiframe-animal-vs-human-v2",
+  "thresholds": {
+    "nearBlackRatio_max": 0.08,
+    "animalCoatRatio_min_two_shot": 0.12,
+    "animalCoatRatio_min_solo": 0.08,
+    "james_slate_min_solo": 0.04,
+    "jessica_cinnamon_min_solo": 0.08,
+    "skinRatio_max_when_weak_animal": 0.12
+  }
+}

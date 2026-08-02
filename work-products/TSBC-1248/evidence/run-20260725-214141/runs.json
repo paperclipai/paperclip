@@ -1,0 +1,723 @@
+[
+  {
+    "role": "ops",
+    "task_id": "ops-alert-actionable",
+    "task_title": "Decide if a 3am page is actionable or noise",
+    "model_id": "grok-4.5",
+    "model_label": "Grok 4.5",
+    "lane": "hermes",
+    "adapterType": "hermes",
+    "effort": "cli_default",
+    "ok": true,
+    "error": null,
+    "output": "{\"verdict\": \"noise\", \"page_now\": false, \"fix\": \"Exclude deliberately paused/weekly-rate-limited agents from agent-invoke-failed; do not page on expected 'not invokable (paused)' for known paused primaries.\", \"reason\": \"Deliberately paused rate-limited primaries auto-resume in 2 days; other lanes healthy; nothing stuck; same nightly false page all week.\"}",
+    "model_reported": "grok-4.5",
+    "inputTokens": 20955,
+    "outputTokens": 393,
+    "totalTokens": 21348,
+    "tokensEstimated": false,
+    "costUsd": null,
+    "wallMs": 10772,
+    "stderrTail": "",
+    "agentFileSha256": "none",
+    "skillsBundleSha256": "none",
+    "suiteSha256": "af81fcc8c8acf9b45aac20aa118d2e0116e4e875fd9b8b4e4f07df614a7bef25",
+    "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/ops/suite.json",
+    "skipped": false,
+    "skipReason": null,
+    "deterministicScore": 1.0,
+    "deterministicDetails": [
+      {
+        "check": "json_valid",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {}
+      },
+      {
+        "check": "json_path_equals",
+        "ok": true,
+        "weight": 5.0,
+        "spec": {
+          "value": "noise",
+          "path": "verdict"
+        }
+      },
+      {
+        "check": "json_path_equals",
+        "ok": true,
+        "weight": 3.0,
+        "spec": {
+          "value": false,
+          "path": "page_now"
+        }
+      },
+      {
+        "check": "json_path_exists",
+        "ok": true,
+        "weight": 1.0,
+        "spec": {
+          "path": "fix"
+        }
+      }
+    ],
+    "judgeScore": 0.975,
+    "judgeDetail": {
+      "perCriterion": {
+        "call_correct": 1.0,
+        "fix_quality": 0.95
+      },
+      "rationale": "Correctly classifies as noise with page_now=false and proposes excluding deliberately-paused agents from the alert rule; fix is precise though it stops just short of the extra nuance of alerting only when paused-state actually blocks work.",
+      "judgeModel": "opus"
+    },
+    "quality": 0.9875,
+    "qualityPer1kTokens": 0.046257260633314604
+  },
+  {
+    "role": "ops",
+    "task_id": "ops-cascade-rootcause",
+    "task_title": "Separate root cause from downstream symptoms in a cascade",
+    "model_id": "grok-4.5",
+    "model_label": "Grok 4.5",
+    "lane": "hermes",
+    "adapterType": "hermes",
+    "effort": "cli_default",
+    "ok": true,
+    "error": null,
+    "output": "{\"root_cause\": \"embedded Postgres connection pool exhausted \u2014 slow migration held all 20 connections\",\"symptoms\": [\"heartbeat writes hang / heartbeats stop landing\",\"liveness monitor marks healthy runs process_lost\",\"board UI shows all agents offline\",\"PagerDuty FULL-OUTAGE page\"],\"fix\": \"stop/kill the blocking migration and release held connections; add statement/idle timeouts and prevent migrations from monopolizing the pool (or run them with a bounded separate pool)\",\"why_not_symptom\": \"Restart or raising liveness only hides stale heartbeats and reaps more runs; pool stays blocked until the migration releases connections.\"}",
+    "model_reported": "grok-4.5",
+    "inputTokens": 21695,
+    "outputTokens": 341,
+    "totalTokens": 22036,
+    "tokensEstimated": false,
+    "costUsd": null,
+    "wallMs": 10448,
+    "stderrTail": "",
+    "agentFileSha256": "none",
+    "skillsBundleSha256": "none",
+    "suiteSha256": "af81fcc8c8acf9b45aac20aa118d2e0116e4e875fd9b8b4e4f07df614a7bef25",
+    "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/ops/suite.json",
+    "skipped": false,
+    "skipReason": null,
+    "deterministicScore": 1.0,
+    "deterministicDetails": [
+      {
+        "check": "json_valid",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {}
+      },
+      {
+        "check": "contains_any",
+        "ok": true,
+        "weight": 3.0,
+        "spec": {
+          "values": [
+            "connection pool",
+            "pool exhaust",
+            "connection",
+            "pool",
+            "migration"
+          ]
+        }
+      },
+      {
+        "check": "json_path_exists",
+        "ok": true,
+        "weight": 1.0,
+        "spec": {
+          "path": "symptoms"
+        }
+      },
+      {
+        "check": "json_path_exists",
+        "ok": true,
+        "weight": 1.0,
+        "spec": {
+          "path": "fix"
+        }
+      }
+    ],
+    "judgeScore": 0.9585714285714287,
+    "judgeDetail": {
+      "perCriterion": {
+        "root_cause_correct": 0.97,
+        "symptom_separation": 0.95,
+        "fix_targets_cause": 0.95
+      },
+      "rationale": "Correctly names the migration-held pool as root cause, lists the four downstream effects as symptoms in the right causal order, and targets the migration/pool (kill migration, add timeouts, bounded pool) while explicitly rejecting the restart/threshold traps.",
+      "judgeModel": "opus"
+    },
+    "quality": 0.9792857142857143,
+    "qualityPer1kTokens": 0.04444026657677048
+  },
+  {
+    "role": "ops",
+    "task_id": "ops-diagnose-recovery-loop",
+    "task_title": "Diagnose a recovery-loop and propose a bounded fix",
+    "model_id": "grok-4.5",
+    "model_label": "Grok 4.5",
+    "lane": "hermes",
+    "adapterType": "hermes",
+    "effort": "cli_default",
+    "ok": true,
+    "error": null,
+    "output": "(a) Root cause: Issues stay assigned to deliberately paused primaries with no live run. Recovery treats that as stranded work and keeps re-invoking. A deliberate pause (known resume) is not a first-class waiting path, so each sweep retries and gets \"Agent is not invokable (paused)\" \u2014 a churn loop, not a real strand.\n\n(b) One product rule: Deliberate assignee pause with a known resume is a live wait, not a strand. Until resumeAt (or a one-shot fallback handoff), do not re-invoke that assignee and exclude those issues from stranded recovery.\n\n(c) Invariants: (1) Other lanes/fallback keep productive work moving. (2) Only real failures escalate; intentional pause is not a blocker. (3) No infinite loop \u2014 one defer or handoff ends retries for that pause epoch.",
+    "model_reported": "grok-4.5",
+    "inputTokens": 67364,
+    "outputTokens": 4080,
+    "totalTokens": 71444,
+    "tokensEstimated": false,
+    "costUsd": null,
+    "wallMs": 109015,
+    "stderrTail": "",
+    "agentFileSha256": "none",
+    "skillsBundleSha256": "none",
+    "suiteSha256": "af81fcc8c8acf9b45aac20aa118d2e0116e4e875fd9b8b4e4f07df614a7bef25",
+    "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/ops/suite.json",
+    "skipped": false,
+    "skipReason": null,
+    "deterministicScore": 1.0,
+    "deterministicDetails": [
+      {
+        "check": "contains_any",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {
+          "values": [
+            "paused",
+            "pause"
+          ]
+        }
+      },
+      {
+        "check": "contains_any",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {
+          "values": [
+            "skip",
+            "exclude",
+            "filter",
+            "guard"
+          ]
+        }
+      },
+      {
+        "check": "max_words",
+        "ok": true,
+        "weight": 1.0,
+        "spec": {
+          "value": 190
+        }
+      }
+    ],
+    "judgeScore": 0.9216666666666665,
+    "judgeDetail": {
+      "perCriterion": {
+        "correctness": 0.95,
+        "invariants": 0.9,
+        "actionability": 0.88
+      },
+      "rationale": "Correctly roots the cause in recovery re-invoking deliberately-paused primaries and fixes it by excluding those issues from stranded recovery until resume (not unpausing/backoff), with all three invariants validly addressed; slight fuzziness in bundling a handoff fallback into the single rule.",
+      "judgeModel": "opus"
+    },
+    "quality": 0.9608333333333332,
+    "qualityPer1kTokens": 0.013448761734132092
+  },
+  {
+    "role": "ops",
+    "task_id": "ops-diagnose-restart-race",
+    "task_title": "Diagnose the three compounding defects in the restart race",
+    "model_id": "grok-4.5",
+    "model_label": "Grok 4.5",
+    "lane": "hermes",
+    "adapterType": "hermes",
+    "effort": "cli_default",
+    "ok": true,
+    "error": null,
+    "output": "Root cause \u2014 three compounding defects\n\n1) Restart race / incomplete reclamation\nlaunchd KeepAlive re-execs the start script as soon as pnpm dev exits, while the old embedded-Postgres postmaster and a detached workspace-runtime (:13100) still hold postmaster.pid and the port. The script only frees :3100 and has no single-instance lock, so the new boot collides with leftovers.\nFix: Single-instance lock + wait-and-reclaim of owned ports/PIDs (Postgres + runtime) before exec; do not start until free.\n\n2) Non-draining shutdown\nOn SIGTERM the server exits without draining in-flight runs or signaling detached children, so work and children outlive the parent and become orphans that block the next boot and stay \u201crunning\u201d in DB.\nFix: Shutdown handler: stop accepting work \u2192 SIGTERM process groups \u2192 grace \u2192 SIGKILL stragglers \u2192 then exit.\n\n3) Eager false orphan reap\nStartup calls reapOrphanedRuns() with stale-threshold 0, so every still-running row is immediately process_lost\u2014even live work from the prior instance or a racing restart.\nFix: Reap only after a real stale threshold (and/or heartbeat/PID liveness); never mark process_lost at t=0 on boot.\n\nTogether: unclean exit \u2192 sticky children \u2192 hostile relaunch \u2192 mass false process_lost.",
+    "model_reported": "grok-4.5",
+    "inputTokens": 27745,
+    "outputTokens": 1165,
+    "totalTokens": 28910,
+    "tokensEstimated": false,
+    "costUsd": null,
+    "wallMs": 32542,
+    "stderrTail": "",
+    "agentFileSha256": "none",
+    "skillsBundleSha256": "none",
+    "suiteSha256": "af81fcc8c8acf9b45aac20aa118d2e0116e4e875fd9b8b4e4f07df614a7bef25",
+    "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/ops/suite.json",
+    "skipped": false,
+    "skipReason": null,
+    "deterministicScore": 1.0,
+    "deterministicDetails": [
+      {
+        "check": "contains_any",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {
+          "values": [
+            "lock",
+            "flock",
+            "single-instance",
+            "postmaster",
+            "13100"
+          ]
+        }
+      },
+      {
+        "check": "contains_any",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {
+          "values": [
+            "SIGTERM",
+            "drain",
+            "teardown",
+            "children",
+            "graceful"
+          ]
+        }
+      },
+      {
+        "check": "contains_any",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {
+          "values": [
+            "threshold",
+            "grace",
+            "reap",
+            "default",
+            "0"
+          ]
+        }
+      },
+      {
+        "check": "max_words",
+        "ok": true,
+        "weight": 1.0,
+        "spec": {
+          "value": 220
+        }
+      }
+    ],
+    "judgeScore": 0.942,
+    "judgeDetail": {
+      "perCriterion": {
+        "all_three": 0.97,
+        "fixes": 0.9
+      },
+      "rationale": "All three compounding defects are cleanly separated with specific correct fixes (lock+reclaim, drain\u2192SIGTERM group\u2192SIGKILL, non-zero stale threshold); only the SIGTERM fix omits explicitly resetting in-flight runs to queued.",
+      "judgeModel": "opus"
+    },
+    "quality": 0.971,
+    "qualityPer1kTokens": 0.03358699411968177
+  },
+  {
+    "role": "ops",
+    "task_id": "ops-escalation-decision",
+    "task_title": "Apply the escalate-after-3 review policy",
+    "model_id": "grok-4.5",
+    "model_label": "Grok 4.5",
+    "lane": "hermes",
+    "adapterType": "hermes",
+    "effort": "cli_default",
+    "ok": true,
+    "error": null,
+    "output": "{\"action\": \"escalate\", \"target\": \"leadership\", \"reason\": \"3rd consecutive unresolved review; tree never escalated before\"}",
+    "model_reported": "grok-4.5",
+    "inputTokens": 20255,
+    "outputTokens": 197,
+    "totalTokens": 20452,
+    "tokensEstimated": false,
+    "costUsd": null,
+    "wallMs": 6850,
+    "stderrTail": "",
+    "agentFileSha256": "none",
+    "skillsBundleSha256": "none",
+    "suiteSha256": "af81fcc8c8acf9b45aac20aa118d2e0116e4e875fd9b8b4e4f07df614a7bef25",
+    "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/ops/suite.json",
+    "skipped": false,
+    "skipReason": null,
+    "deterministicScore": 1.0,
+    "deterministicDetails": [
+      {
+        "check": "json_valid",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {}
+      },
+      {
+        "check": "json_path_equals",
+        "ok": true,
+        "weight": 5.0,
+        "spec": {
+          "value": "escalate",
+          "path": "action"
+        }
+      },
+      {
+        "check": "json_path_exists",
+        "ok": true,
+        "weight": 1.0,
+        "spec": {
+          "path": "reason"
+        }
+      }
+    ],
+    "judgeScore": null,
+    "judgeDetail": null,
+    "quality": 1.0,
+    "qualityPer1kTokens": 0.048894973596714256
+  },
+  {
+    "role": "ops",
+    "task_id": "ops-failover-routing",
+    "task_title": "Choose a failover lane under quota constraints",
+    "model_id": "grok-4.5",
+    "model_label": "Grok 4.5",
+    "lane": "hermes",
+    "adapterType": "hermes",
+    "effort": "cli_default",
+    "ok": true,
+    "error": null,
+    "output": "{\"lane\": \"codex\", \"reason\": \"claude is paused (weekly limit); codex is the first available lane in failover order\"}",
+    "model_reported": "grok-4.5",
+    "inputTokens": 20308,
+    "outputTokens": 171,
+    "totalTokens": 20479,
+    "tokensEstimated": false,
+    "costUsd": null,
+    "wallMs": 8037,
+    "stderrTail": "",
+    "agentFileSha256": "none",
+    "skillsBundleSha256": "none",
+    "suiteSha256": "af81fcc8c8acf9b45aac20aa118d2e0116e4e875fd9b8b4e4f07df614a7bef25",
+    "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/ops/suite.json",
+    "skipped": false,
+    "skipReason": null,
+    "deterministicScore": 1.0,
+    "deterministicDetails": [
+      {
+        "check": "json_valid",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {}
+      },
+      {
+        "check": "json_path_equals",
+        "ok": true,
+        "weight": 6.0,
+        "spec": {
+          "value": "codex",
+          "path": "lane"
+        }
+      },
+      {
+        "check": "json_path_exists",
+        "ok": true,
+        "weight": 1.0,
+        "spec": {
+          "path": "reason"
+        }
+      }
+    ],
+    "judgeScore": null,
+    "judgeDetail": null,
+    "quality": 1.0,
+    "qualityPer1kTokens": 0.04883050930221203
+  },
+  {
+    "role": "ops",
+    "task_id": "ops-incident-triage",
+    "task_title": "Order incidents by severity (objective triage)",
+    "model_id": "grok-4.5",
+    "model_label": "Grok 4.5",
+    "lane": "hermes",
+    "adapterType": "hermes",
+    "effort": "cli_default",
+    "ok": true,
+    "error": null,
+    "output": "[\"all-stalled\",\"capital-down\",\"slow-board\",\"ui-badge\"]",
+    "model_reported": "grok-4.5",
+    "inputTokens": 21346,
+    "outputTokens": 201,
+    "totalTokens": 21547,
+    "tokensEstimated": false,
+    "costUsd": null,
+    "wallMs": 6999,
+    "stderrTail": "",
+    "agentFileSha256": "none",
+    "skillsBundleSha256": "none",
+    "suiteSha256": "af81fcc8c8acf9b45aac20aa118d2e0116e4e875fd9b8b4e4f07df614a7bef25",
+    "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/ops/suite.json",
+    "skipped": false,
+    "skipReason": null,
+    "deterministicScore": 1.0,
+    "deterministicDetails": [
+      {
+        "check": "json_valid",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {}
+      },
+      {
+        "check": "json_path_equals",
+        "ok": true,
+        "weight": 3.0,
+        "spec": {
+          "value": "all-stalled",
+          "path": "0"
+        }
+      },
+      {
+        "check": "json_path_equals",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {
+          "value": "capital-down",
+          "path": "1"
+        }
+      },
+      {
+        "check": "json_path_equals",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {
+          "value": "slow-board",
+          "path": "2"
+        }
+      },
+      {
+        "check": "json_path_equals",
+        "ok": true,
+        "weight": 1.0,
+        "spec": {
+          "value": "ui-badge",
+          "path": "3"
+        }
+      }
+    ],
+    "judgeScore": null,
+    "judgeDetail": null,
+    "quality": 1.0,
+    "qualityPer1kTokens": 0.0464101731099457
+  },
+  {
+    "role": "ops",
+    "task_id": "ops-pseudo-stop-classify",
+    "task_title": "Classify real blocker vs pseudo-stop",
+    "model_id": "grok-4.5",
+    "model_label": "Grok 4.5",
+    "lane": "hermes",
+    "adapterType": "hermes",
+    "effort": "cli_default",
+    "ok": true,
+    "error": null,
+    "output": "{\"classification\":\"pseudo_stop\",\"next_action\":\"Assign a reviewer or move the issue out of in_review (e.g. back to in_progress/ready or forward to done) so work is not left idle\",\"reason\":\"in_review for 240h with no reviewer, approval request, or waiting participant is the canonical idle pseudo-stop; nothing external blocks progress\"}",
+    "model_reported": "grok-4.5",
+    "inputTokens": 21519,
+    "outputTokens": 318,
+    "totalTokens": 21837,
+    "tokensEstimated": false,
+    "costUsd": null,
+    "wallMs": 9470,
+    "stderrTail": "",
+    "agentFileSha256": "none",
+    "skillsBundleSha256": "none",
+    "suiteSha256": "af81fcc8c8acf9b45aac20aa118d2e0116e4e875fd9b8b4e4f07df614a7bef25",
+    "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/ops/suite.json",
+    "skipped": false,
+    "skipReason": null,
+    "deterministicScore": 1.0,
+    "deterministicDetails": [
+      {
+        "check": "json_valid",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {}
+      },
+      {
+        "check": "json_path_equals",
+        "ok": true,
+        "weight": 6.0,
+        "spec": {
+          "value": "pseudo_stop",
+          "path": "classification"
+        }
+      },
+      {
+        "check": "json_path_exists",
+        "ok": true,
+        "weight": 1.0,
+        "spec": {
+          "path": "next_action"
+        }
+      }
+    ],
+    "judgeScore": null,
+    "judgeDetail": null,
+    "quality": 1.0,
+    "qualityPer1kTokens": 0.04579383614965426
+  },
+  {
+    "role": "ops",
+    "task_id": "ops-rollback-decision",
+    "task_title": "Roll back vs forward-fix a bad deploy",
+    "model_id": "grok-4.5",
+    "model_label": "Grok 4.5",
+    "lane": "hermes",
+    "adapterType": "hermes",
+    "effort": "cli_default",
+    "ok": true,
+    "error": null,
+    "output": "{\"action\":\"roll_back\",\"reason\":\"Rollback stops silent data loss in ~30s via known-good blue/green cut. Old release is schema-compatible. Forward-fix is unwritten (40+ min more loss) and risks the half-applied migration.\",\"followup\":\"After cutover, freeze deploys; finish/verify the rename migration and a tested patch; redeploy forward only after dual-write or backfill and staging proof.\"}",
+    "model_reported": "grok-4.5",
+    "inputTokens": 21323,
+    "outputTokens": 405,
+    "totalTokens": 21728,
+    "tokensEstimated": false,
+    "costUsd": null,
+    "wallMs": 10511,
+    "stderrTail": "",
+    "agentFileSha256": "none",
+    "skillsBundleSha256": "none",
+    "suiteSha256": "af81fcc8c8acf9b45aac20aa118d2e0116e4e875fd9b8b4e4f07df614a7bef25",
+    "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/ops/suite.json",
+    "skipped": false,
+    "skipReason": null,
+    "deterministicScore": 1.0,
+    "deterministicDetails": [
+      {
+        "check": "json_valid",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {}
+      },
+      {
+        "check": "json_path_equals",
+        "ok": true,
+        "weight": 5.0,
+        "spec": {
+          "value": "roll_back",
+          "path": "action"
+        }
+      },
+      {
+        "check": "json_path_exists",
+        "ok": true,
+        "weight": 1.0,
+        "spec": {
+          "path": "followup"
+        }
+      }
+    ],
+    "judgeScore": 0.942,
+    "judgeDetail": {
+      "perCriterion": {
+        "decision_correct": 0.97,
+        "followup_quality": 0.9
+      },
+      "rationale": "Correctly picks roll_back citing the ~30s blue/green cut, schema-compatibility, and 40+ min forward-fix risk; followup freezes deploys and fixes the migration off the hot path, though it omits auditing/quantifying already-lost runs.",
+      "judgeModel": "opus"
+    },
+    "quality": 0.971,
+    "qualityPer1kTokens": 0.04468888070692194
+  },
+  {
+    "role": "ops",
+    "task_id": "ops-runbook-ordering",
+    "task_title": "Order the recovery runbook steps correctly",
+    "model_id": "grok-4.5",
+    "model_label": "Grok 4.5",
+    "lane": "hermes",
+    "adapterType": "hermes",
+    "effort": "cli_default",
+    "ok": true,
+    "error": null,
+    "output": "[\"halt-supervisor\",\"clean\",\"start\",\"reap\",\"reenable-supervisor\",\"verify\"]",
+    "model_reported": "grok-4.5",
+    "inputTokens": 20640,
+    "outputTokens": 796,
+    "totalTokens": 21436,
+    "tokensEstimated": false,
+    "costUsd": null,
+    "wallMs": 17946,
+    "stderrTail": "",
+    "agentFileSha256": "none",
+    "skillsBundleSha256": "none",
+    "suiteSha256": "af81fcc8c8acf9b45aac20aa118d2e0116e4e875fd9b8b4e4f07df614a7bef25",
+    "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/ops/suite.json",
+    "skipped": false,
+    "skipReason": null,
+    "deterministicScore": 1.0,
+    "deterministicDetails": [
+      {
+        "check": "json_valid",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {}
+      },
+      {
+        "check": "json_path_equals",
+        "ok": true,
+        "weight": 3.0,
+        "spec": {
+          "value": "halt-supervisor",
+          "path": "0"
+        }
+      },
+      {
+        "check": "json_path_equals",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {
+          "value": "clean",
+          "path": "1"
+        }
+      },
+      {
+        "check": "json_path_equals",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {
+          "value": "start",
+          "path": "2"
+        }
+      },
+      {
+        "check": "json_path_equals",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {
+          "value": "reap",
+          "path": "3"
+        }
+      },
+      {
+        "check": "json_path_equals",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {
+          "value": "reenable-supervisor",
+          "path": "4"
+        }
+      },
+      {
+        "check": "json_path_equals",
+        "ok": true,
+        "weight": 1.0,
+        "spec": {
+          "value": "verify",
+          "path": "5"
+        }
+      }
+    ],
+    "judgeScore": null,
+    "judgeDetail": null,
+    "quality": 1.0,
+    "qualityPer1kTokens": 0.04665049449524165
+  }
+]

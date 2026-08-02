@@ -1,0 +1,75 @@
+{
+  "role": "quant",
+  "task_id": "quant-survivorship-bias",
+  "task_title": "Spot survivorship bias in a market-selection backtest",
+  "model_id": "grok-4.5",
+  "model_label": "Grok 4.5",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "ok": true,
+  "error": null,
+  "output": "{\"biasPresent\": true, \"biasName\": \"survivorship bias\", \"effectOnEdge\": \"overstated\", \"fix\": \"Rebuild the backtest on a complete point-in-time universe that includes delisted, voided, and purged markets (with explicit handling of non-resolution outcomes), not only markets that survived into the current database and resolved cleanly.\"}",
+  "model_reported": "grok-4.5",
+  "inputTokens": 142,
+  "outputTokens": 83,
+  "totalTokens": 225,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "wallMs": 12393,
+  "stderrTail": "",
+  "agentFileSha256": "none",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "32b3563885d9e20631634bbef99975027564a4a43c6c29a6e45c153467654e2e",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/quant/suite.json",
+  "skipped": false,
+  "skipReason": null,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "json_valid",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {}
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 3.0,
+      "spec": {
+        "value": true,
+        "path": "biasPresent"
+      }
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 4.0,
+      "spec": {
+        "value": "overstated",
+        "path": "effectOnEdge"
+      }
+    },
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {
+        "values": [
+          "survivor",
+          "survivorship"
+        ]
+      }
+    }
+  ],
+  "judgeScore": 0.9700000000000001,
+  "judgeDetail": {
+    "perCriterion": {
+      "bias_detection": 0.97
+    },
+    "rationale": "Correctly names survivorship bias, marks the edge as overstated, and the fix reconstructs a point-in-time universe including delisted/voided/purged markets.",
+    "judgeModel": "opus"
+  },
+  "quality": 0.9850000000000001,
+  "qualityPer1kTokens": 4.377777777777778
+}

@@ -1,0 +1,73 @@
+{
+  "role": "cto",
+  "task_id": "cto-build-vs-buy-judge",
+  "task_title": "Build vs buy on auth \u2014 pick the reversible path",
+  "model_id": "grok-4.5",
+  "model_label": "Grok 4.5",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "ok": true,
+  "error": null,
+  "output": "{\"decision\": \"buy\", \"reason\": \"Auth is commodity and security-critical, not a differentiator. Buy ships faster, offloads CVEs, and beats DIY total cost/risk. Control and learning don't justify delay or breach exposure.\", \"hedge\": \"Thin adapter over Vercel Marketplace auth; swap by reimplementing adapter to Auth.js/Clerk/OIDC without rewriting app code.\"}",
+  "model_reported": "grok-4.5",
+  "inputTokens": 249,
+  "outputTokens": 89,
+  "totalTokens": 338,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "wallMs": 14344,
+  "stderrTail": "",
+  "agentFileSha256": "none",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "9178417ea7411729ec604cd6f0f72637a785d4d0f99ddd564fdfd0d4d603c31d",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/cto/suite.json",
+  "skipped": false,
+  "skipReason": null,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "json_valid",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {}
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 5.0,
+      "spec": {
+        "value": "buy",
+        "path": "decision"
+      }
+    },
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {
+        "values": [
+          "adapter",
+          "abstraction",
+          "swap",
+          "lock-in",
+          "lock in",
+          "interface",
+          "wrapper",
+          "reversible"
+        ]
+      }
+    }
+  ],
+  "judgeScore": 0.95,
+  "judgeDetail": {
+    "perCriterion": {
+      "judgment": 0.95,
+      "reasoning": 0.95
+    },
+    "rationale": "Correct BUY call with a concrete named swap path (adapter reimplemented to Auth.js/Clerk/OIDC) and a direct rebuttal that control/learning don't justify breach exposure, though 'total cost/risk' compresses the unbounded-CVE-liability argument slightly.",
+    "judgeModel": "opus"
+  },
+  "quality": 0.975,
+  "qualityPer1kTokens": 2.884615384615384
+}

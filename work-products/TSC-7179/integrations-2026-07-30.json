@@ -1,0 +1,92 @@
+{
+  "integrations": [
+    {
+      "name": "thearoidatlas",
+      "id": "cmrc887er0001s574kuhe3hsb",
+      "identifier": "pinterest",
+      "display": "thearoidatlas",
+      "disabled": false,
+      "refreshNeeded": false
+    },
+    {
+      "name": "dastardlyprint",
+      "id": "cmrc8dhfn0003s5748imahdxc",
+      "identifier": "pinterest",
+      "display": "dastardlyprint",
+      "disabled": false,
+      "refreshNeeded": false
+    },
+    {
+      "name": "margaretashbridge",
+      "id": "cmrf5uwpx001es57431tf9hwc",
+      "identifier": "pinterest",
+      "display": "margaretashbridge",
+      "disabled": false,
+      "refreshNeeded": false
+    },
+    {
+      "name": "Dastardly Print",
+      "id": "cmr7x6fok000gp86xffh86m78",
+      "identifier": "facebook",
+      "display": "",
+      "disabled": false,
+      "refreshNeeded": false
+    },
+    {
+      "name": "The Aroid Atlas",
+      "id": "cmr7x97tq000ip86xv24wkm6y",
+      "identifier": "facebook",
+      "display": "",
+      "disabled": false,
+      "refreshNeeded": false
+    },
+    {
+      "name": "Dastardly Print",
+      "id": "cmr3ao07g0001p86xwu8urgcj",
+      "identifier": "instagram",
+      "display": "dastardlyprint",
+      "disabled": false,
+      "refreshNeeded": false
+    },
+    {
+      "name": "The Aroid Atlas",
+      "id": "cmr3aojbg0003p86xcjnt12gd",
+      "identifier": "instagram",
+      "display": "thearoidatlas",
+      "disabled": false,
+      "refreshNeeded": false
+    },
+    {
+      "name": "thearoidatlas",
+      "id": "cmr7yjjsn0001nv76aazog0aj",
+      "identifier": "threads",
+      "display": "thearoidatlas",
+      "disabled": false,
+      "refreshNeeded": false
+    },
+    {
+      "name": "dastardlyprint",
+      "id": "cmr7ykw5p0003nv76a25oj212",
+      "identifier": "threads",
+      "display": "dastardlyprint",
+      "disabled": false,
+      "refreshNeeded": false
+    },
+    {
+      "name": "margaretashbridge.bsky.social",
+      "id": "cmqvr8ege0001qm728i3t1toa",
+      "identifier": "bluesky",
+      "display": "margaretashbridge.bsky.social",
+      "disabled": false,
+      "refreshNeeded": false
+    },
+    {
+      "name": "clarahatherleigh",
+      "id": "cmru3733r002ys57473jhch5y",
+      "identifier": "bluesky",
+      "display": "clarahatherleigh.bsky.social",
+      "disabled": false,
+      "refreshNeeded": false
+    }
+  ]
+}

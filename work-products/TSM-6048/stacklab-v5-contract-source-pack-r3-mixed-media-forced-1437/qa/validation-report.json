@@ -1,0 +1,1240 @@
+{
+  "checks": [
+    {
+      "name": "hash:audio/narration.wav",
+      "pass": true,
+      "detail": "ff790ce9c0cb5583e5325d44af019329e7eaaad807dea7f85de0fb57edb5f039"
+    },
+    {
+      "name": "hash:script/script-v5.md",
+      "pass": true,
+      "detail": "f97c8db973819ff354bdf55e952fda899ae14f61dbc7ad4aecb4804e6ade3a2e"
+    },
+    {
+      "name": "hash:visuals/beat-24.mp4",
+      "pass": true,
+      "detail": "1973c97888601ef4c4627fa7e2d9acc4d369b1d4f4b06245d86b68e841210e4d"
+    },
+    {
+      "name": "hash:visuals/beat-33.mp4",
+      "pass": true,
+      "detail": "583c813ac7263dab83e5408351ef6f335e65944c9f03303a45cb98652abb180d"
+    },
+    {
+      "name": "hash:visuals/beat-34.mp4",
+      "pass": true,
+      "detail": "585fd3d48e90f9e7dab4e37209a441988032647b9db11fc41bd88f562f68c336"
+    },
+    {
+      "name": "visual:01",
+      "pass": true,
+      "detail": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-6048/stacklab-v5-contract-source-pack-r3-mixed-media-forced-1437/visuals/beat-01.mp4"
+    },
+    {
+      "name": "visual:02",
+      "pass": true,
+      "detail": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-6048/stacklab-v5-contract-source-pack-r3-mixed-media-forced-1437/visuals/beat-02.mp4"
+    },
+    {
+      "name": "visual:03",
+      "pass": true,
+      "detail": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-6048/stacklab-v5-contract-source-pack-r3-mixed-media-forced-1437/visuals/beat-03.mp4"
+    },
+    {
+      "name": "visual:04",
+      "pass": true,
+      "detail": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-6048/stacklab-v5-contract-source-pack-r3-mixed-media-forced-1437/visuals/beat-04.mp4"
+    },
+    {
+      "name": "visual:05",
+      "pass": true,
+      "detail": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-6048/stacklab-v5-contract-source-pack-r3-mixed-media-forced-1437/visuals/beat-05.mp4"
+    },
+    {
+      "name": "visual:06",
+      "pass": true,
+      "detail": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-6048/stacklab-v5-contract-source-pack-r3-mixed-media-forced-1437/visuals/beat-06.mp4"
+    },
+    {
+      "name": "visual:07",
+      "pass": true,
+      "detail": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-6048/stacklab-v5-contract-source-pack-r3-mixed-media-forced-1437/visuals/beat-07.mp4"
+    },
+    {
+      "name": "visual:08",
+      "pass": true,
+      "detail": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-6048/stacklab-v5-contract-source-pack-r3-mixed-media-forced-1437/visuals/beat-08.mp4"
+    },
+    {
+      "name": "visual:09",
+      "pass": true,
+      "detail": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-6048/stacklab-v5-contract-source-pack-r3-mixed-media-forced-1437/visuals/beat-09.mp4"
+    },
+    {
+      "name": "visual:10",
+      "pass": true,
+      "detail": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-6048/stacklab-v5-contract-source-pack-r3-mixed-media-forced-1437/visuals/beat-10.mp4"
+    },
+    {
+      "name": "visual:11",
+      "pass": true,
+      "detail": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-6048/stacklab-v5-contract-source-pack-r3-mixed-media-forced-1437/visuals/beat-11.mp4"
+    },
+    {
+      "name": "visual:12",
+      "pass": true,
+      "detail": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-6048/stacklab-v5-contract-source-pack-r3-mixed-media-forced-1437/visuals/beat-12.mp4"
+    },
+    {
+      "name": "visual:13",
+      "pass": true,
+      "detail": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-6048/stacklab-v5-contract-source-pack-r3-mixed-media-forced-1437/visuals/beat-13.mp4"
+    },
+    {
+      "name": "visual:14",
+      "pass": true,
+      "detail": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-6048/stacklab-v5-contract-source-pack-r3-mixed-media-forced-1437/visuals/beat-14.mp4"
+    },
+    {
+      "name": "visual:15",
+      "pass": true,
+      "detail": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-6048/stacklab-v5-contract-source-pack-r3-mixed-media-forced-1437/visuals/beat-15.mp4"
+    },
+    {
+      "name": "visual:16",
+      "pass": true,
+      "detail": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-6048/stacklab-v5-contract-source-pack-r3-mixed-media-forced-1437/visuals/beat-16.mp4"
+    },
+    {
+      "name": "visual:17",
+      "pass": true,
+      "detail": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-6048/stacklab-v5-contract-source-pack-r3-mixed-media-forced-1437/visuals/beat-17.mp4"
+    },
+    {
+      "name": "visual:18",
+      "pass": true,
+      "detail": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-6048/stacklab-v5-contract-source-pack-r3-mixed-media-forced-1437/visuals/beat-18.mp4"
+    },
+    {
+      "name": "visual:19",
+      "pass": true,
+      "detail": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-6048/stacklab-v5-contract-source-pack-r3-mixed-media-forced-1437/visuals/beat-19.mp4"
+    },
+    {
+      "name": "visual:20",
+      "pass": true,
+      "detail": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-6048/stacklab-v5-contract-source-pack-r3-mixed-media-forced-1437/visuals/beat-20.mp4"
+    },
+    {
+      "name": "visual:21",
+      "pass": true,
+      "detail": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-6048/stacklab-v5-contract-source-pack-r3-mixed-media-forced-1437/visuals/beat-21.mp4"
+    },
+    {
+      "name": "visual:22",
+      "pass": true,
+      "detail": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-6048/stacklab-v5-contract-source-pack-r3-mixed-media-forced-1437/visuals/beat-22.mp4"
+    },
+    {
+      "name": "visual:23",
+      "pass": true,
+      "detail": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-6048/stacklab-v5-contract-source-pack-r3-mixed-media-forced-1437/visuals/beat-23.mp4"
+    },
+    {
+      "name": "visual:24",
+      "pass": true,
+      "detail": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-6048/stacklab-v5-contract-source-pack-r3-mixed-media-forced-1437/visuals/beat-24.mp4"
+    },
+    {
+      "name": "visual:25",
+      "pass": true,
+      "detail": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-6048/stacklab-v5-contract-source-pack-r3-mixed-media-forced-1437/visuals/beat-25.mp4"
+    },
+    {
+      "name": "visual:26",
+      "pass": true,
+      "detail": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-6048/stacklab-v5-contract-source-pack-r3-mixed-media-forced-1437/visuals/beat-26.mp4"
+    },
+    {
+      "name": "visual:27",
+      "pass": true,
+      "detail": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-6048/stacklab-v5-contract-source-pack-r3-mixed-media-forced-1437/visuals/beat-27.mp4"
+    },
+    {
+      "name": "visual:28",
+      "pass": true,
+      "detail": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-6048/stacklab-v5-contract-source-pack-r3-mixed-media-forced-1437/visuals/beat-28.mp4"
+    },
+    {
+      "name": "visual:29",
+      "pass": true,
+      "detail": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-6048/stacklab-v5-contract-source-pack-r3-mixed-media-forced-1437/visuals/beat-29.mp4"
+    },
+    {
+      "name": "visual:30",
+      "pass": true,
+      "detail": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-6048/stacklab-v5-contract-source-pack-r3-mixed-media-forced-1437/visuals/beat-30.mp4"
+    },
+    {
+      "name": "visual:31",
+      "pass": true,
+      "detail": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-6048/stacklab-v5-contract-source-pack-r3-mixed-media-forced-1437/visuals/beat-31.mp4"
+    },
+    {
+      "name": "visual:32",
+      "pass": true,
+      "detail": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-6048/stacklab-v5-contract-source-pack-r3-mixed-media-forced-1437/visuals/beat-32.mp4"
+    },
+    {
+      "name": "visual:33",
+      "pass": true,
+      "detail": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-6048/stacklab-v5-contract-source-pack-r3-mixed-media-forced-1437/visuals/beat-33.mp4"
+    },
+    {
+      "name": "visual:34",
+      "pass": true,
+      "detail": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-6048/stacklab-v5-contract-source-pack-r3-mixed-media-forced-1437/visuals/beat-34.mp4"
+    },
+    {
+      "name": "alignment words",
+      "pass": true,
+      "detail": "count=1437"
+    },
+    {
+      "name": "cut-plan count",
+      "pass": true,
+      "detail": "34"
+    },
+    {
+      "name": "cut-plan order",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "cut-plan beat 1 words",
+      "pass": true,
+      "detail": "0-223 prev=-1"
+    },
+    {
+      "name": "cut-plan source exists 1",
+      "pass": true,
+      "detail": "visuals/beat-01.mp4"
+    },
+    {
+      "name": "cut-plan beat 2 words",
+      "pass": true,
+      "detail": "224-259 prev=223"
+    },
+    {
+      "name": "cut-plan source exists 2",
+      "pass": true,
+      "detail": "visuals/beat-02.mp4"
+    },
+    {
+      "name": "cut-plan beat 3 words",
+      "pass": true,
+      "detail": "260-280 prev=259"
+    },
+    {
+      "name": "cut-plan source exists 3",
+      "pass": true,
+      "detail": "visuals/beat-03.mp4"
+    },
+    {
+      "name": "cut-plan beat 4 words",
+      "pass": true,
+      "detail": "281-297 prev=280"
+    },
+    {
+      "name": "cut-plan source exists 4",
+      "pass": true,
+      "detail": "visuals/beat-04.mp4"
+    },
+    {
+      "name": "cut-plan beat 5 words",
+      "pass": true,
+      "detail": "298-334 prev=297"
+    },
+    {
+      "name": "cut-plan source exists 5",
+      "pass": true,
+      "detail": "visuals/beat-05.mp4"
+    },
+    {
+      "name": "cut-plan beat 6 words",
+      "pass": true,
+      "detail": "335-370 prev=334"
+    },
+    {
+      "name": "cut-plan source exists 6",
+      "pass": true,
+      "detail": "visuals/beat-06.mp4"
+    },
+    {
+      "name": "cut-plan beat 7 words",
+      "pass": true,
+      "detail": "371-436 prev=370"
+    },
+    {
+      "name": "cut-plan source exists 7",
+      "pass": true,
+      "detail": "visuals/beat-07.mp4"
+    },
+    {
+      "name": "cut-plan beat 8 words",
+      "pass": true,
+      "detail": "437-474 prev=436"
+    },
+    {
+      "name": "cut-plan source exists 8",
+      "pass": true,
+      "detail": "visuals/beat-08.mp4"
+    },
+    {
+      "name": "cut-plan beat 9 words",
+      "pass": true,
+      "detail": "475-489 prev=474"
+    },
+    {
+      "name": "cut-plan source exists 9",
+      "pass": true,
+      "detail": "visuals/beat-09.mp4"
+    },
+    {
+      "name": "cut-plan beat 10 words",
+      "pass": true,
+      "detail": "490-549 prev=489"
+    },
+    {
+      "name": "cut-plan source exists 10",
+      "pass": true,
+      "detail": "visuals/beat-10.mp4"
+    },
+    {
+      "name": "cut-plan beat 11 words",
+      "pass": true,
+      "detail": "550-595 prev=549"
+    },
+    {
+      "name": "cut-plan source exists 11",
+      "pass": true,
+      "detail": "visuals/beat-11.mp4"
+    },
+    {
+      "name": "cut-plan beat 12 words",
+      "pass": true,
+      "detail": "596-608 prev=595"
+    },
+    {
+      "name": "cut-plan source exists 12",
+      "pass": true,
+      "detail": "visuals/beat-12.mp4"
+    },
+    {
+      "name": "cut-plan beat 13 words",
+      "pass": true,
+      "detail": "609-679 prev=608"
+    },
+    {
+      "name": "cut-plan source exists 13",
+      "pass": true,
+      "detail": "visuals/beat-13.mp4"
+    },
+    {
+      "name": "cut-plan beat 14 words",
+      "pass": true,
+      "detail": "680-703 prev=679"
+    },
+    {
+      "name": "cut-plan source exists 14",
+      "pass": true,
+      "detail": "visuals/beat-14.mp4"
+    },
+    {
+      "name": "cut-plan beat 15 words",
+      "pass": true,
+      "detail": "704-788 prev=703"
+    },
+    {
+      "name": "cut-plan source exists 15",
+      "pass": true,
+      "detail": "visuals/beat-15.mp4"
+    },
+    {
+      "name": "cut-plan beat 16 words",
+      "pass": true,
+      "detail": "789-838 prev=788"
+    },
+    {
+      "name": "cut-plan source exists 16",
+      "pass": true,
+      "detail": "visuals/beat-16.mp4"
+    },
+    {
+      "name": "cut-plan beat 17 words",
+      "pass": true,
+      "detail": "839-860 prev=838"
+    },
+    {
+      "name": "cut-plan source exists 17",
+      "pass": true,
+      "detail": "visuals/beat-17.mp4"
+    },
+    {
+      "name": "cut-plan beat 18 words",
+      "pass": true,
+      "detail": "861-891 prev=860"
+    },
+    {
+      "name": "cut-plan source exists 18",
+      "pass": true,
+      "detail": "visuals/beat-18.mp4"
+    },
+    {
+      "name": "cut-plan beat 19 words",
+      "pass": true,
+      "detail": "892-899 prev=891"
+    },
+    {
+      "name": "cut-plan source exists 19",
+      "pass": true,
+      "detail": "visuals/beat-19.mp4"
+    },
+    {
+      "name": "cut-plan beat 20 words",
+      "pass": true,
+      "detail": "900-943 prev=899"
+    },
+    {
+      "name": "cut-plan source exists 20",
+      "pass": true,
+      "detail": "visuals/beat-20.mp4"
+    },
+    {
+      "name": "cut-plan beat 21 words",
+      "pass": true,
+      "detail": "944-970 prev=943"
+    },
+    {
+      "name": "cut-plan source exists 21",
+      "pass": true,
+      "detail": "visuals/beat-21.mp4"
+    },
+    {
+      "name": "cut-plan beat 22 words",
+      "pass": true,
+      "detail": "971-1003 prev=970"
+    },
+    {
+      "name": "cut-plan source exists 22",
+      "pass": true,
+      "detail": "visuals/beat-22.mp4"
+    },
+    {
+      "name": "cut-plan beat 23 words",
+      "pass": true,
+      "detail": "1004-1036 prev=1003"
+    },
+    {
+      "name": "cut-plan source exists 23",
+      "pass": true,
+      "detail": "visuals/beat-23.mp4"
+    },
+    {
+      "name": "cut-plan beat 24 words",
+      "pass": true,
+      "detail": "1037-1037 prev=1036"
+    },
+    {
+      "name": "cut-plan source exists 24",
+      "pass": true,
+      "detail": "visuals/beat-24.mp4"
+    },
+    {
+      "name": "cut-plan beat 25 words",
+      "pass": true,
+      "detail": "1038-1076 prev=1037"
+    },
+    {
+      "name": "cut-plan source exists 25",
+      "pass": true,
+      "detail": "visuals/beat-25.mp4"
+    },
+    {
+      "name": "cut-plan beat 26 words",
+      "pass": true,
+      "detail": "1077-1138 prev=1076"
+    },
+    {
+      "name": "cut-plan source exists 26",
+      "pass": true,
+      "detail": "visuals/beat-26.mp4"
+    },
+    {
+      "name": "cut-plan beat 27 words",
+      "pass": true,
+      "detail": "1139-1211 prev=1138"
+    },
+    {
+      "name": "cut-plan source exists 27",
+      "pass": true,
+      "detail": "visuals/beat-27.mp4"
+    },
+    {
+      "name": "cut-plan beat 28 words",
+      "pass": true,
+      "detail": "1212-1278 prev=1211"
+    },
+    {
+      "name": "cut-plan source exists 28",
+      "pass": true,
+      "detail": "visuals/beat-28.mp4"
+    },
+    {
+      "name": "cut-plan beat 29 words",
+      "pass": true,
+      "detail": "1279-1292 prev=1278"
+    },
+    {
+      "name": "cut-plan source exists 29",
+      "pass": true,
+      "detail": "visuals/beat-29.mp4"
+    },
+    {
+      "name": "cut-plan beat 30 words",
+      "pass": true,
+      "detail": "1293-1326 prev=1292"
+    },
+    {
+      "name": "cut-plan source exists 30",
+      "pass": true,
+      "detail": "visuals/beat-30.mp4"
+    },
+    {
+      "name": "cut-plan beat 31 words",
+      "pass": true,
+      "detail": "1327-1345 prev=1326"
+    },
+    {
+      "name": "cut-plan source exists 31",
+      "pass": true,
+      "detail": "visuals/beat-31.mp4"
+    },
+    {
+      "name": "cut-plan beat 32 words",
+      "pass": true,
+      "detail": "1346-1434 prev=1345"
+    },
+    {
+      "name": "cut-plan source exists 32",
+      "pass": true,
+      "detail": "visuals/beat-32.mp4"
+    },
+    {
+      "name": "cut-plan beat 33 words",
+      "pass": true,
+      "detail": "1435-1435 prev=1434"
+    },
+    {
+      "name": "cut-plan source exists 33",
+      "pass": true,
+      "detail": "visuals/beat-33.mp4"
+    },
+    {
+      "name": "cut-plan beat 34 words",
+      "pass": true,
+      "detail": "1436-1436 prev=1435"
+    },
+    {
+      "name": "cut-plan source exists 34",
+      "pass": true,
+      "detail": "visuals/beat-34.mp4"
+    },
+    {
+      "name": "motion beat 01",
+      "pass": true,
+      "detail": "dur=49.667 distinctMotionSamples=4/4"
+    },
+    {
+      "name": "motion beat 02",
+      "pass": true,
+      "detail": "dur=9.433 distinctMotionSamples=4/4"
+    },
+    {
+      "name": "motion beat 03",
+      "pass": true,
+      "detail": "dur=3.633 distinctMotionSamples=4/4"
+    },
+    {
+      "name": "motion beat 04",
+      "pass": true,
+      "detail": "dur=3.733 distinctMotionSamples=4/4"
+    },
+    {
+      "name": "motion beat 05",
+      "pass": true,
+      "detail": "dur=10.967 distinctMotionSamples=4/4"
+    },
+    {
+      "name": "motion beat 06",
+      "pass": true,
+      "detail": "dur=6.033 distinctMotionSamples=4/4"
+    },
+    {
+      "name": "motion beat 07",
+      "pass": true,
+      "detail": "dur=11.900 distinctMotionSamples=4/4"
+    },
+    {
+      "name": "motion beat 08",
+      "pass": true,
+      "detail": "dur=12.333 distinctMotionSamples=4/4"
+    },
+    {
+      "name": "motion beat 09",
+      "pass": true,
+      "detail": "dur=6.567 distinctMotionSamples=4/4"
+    },
+    {
+      "name": "motion beat 10",
+      "pass": true,
+      "detail": "dur=21.833 distinctMotionSamples=4/4"
+    },
+    {
+      "name": "motion beat 11",
+      "pass": true,
+      "detail": "dur=16.267 distinctMotionSamples=4/4"
+    },
+    {
+      "name": "motion beat 12",
+      "pass": true,
+      "detail": "dur=4.633 distinctMotionSamples=4/4"
+    },
+    {
+      "name": "motion beat 13",
+      "pass": true,
+      "detail": "dur=24.067 distinctMotionSamples=4/4"
+    },
+    {
+      "name": "motion beat 14",
+      "pass": true,
+      "detail": "dur=9.733 distinctMotionSamples=4/4"
+    },
+    {
+      "name": "motion beat 15",
+      "pass": true,
+      "detail": "dur=23.367 distinctMotionSamples=4/4"
+    },
+    {
+      "name": "motion beat 16",
+      "pass": true,
+      "detail": "dur=8.333 distinctMotionSamples=4/4"
+    },
+    {
+      "name": "motion beat 17",
+      "pass": true,
+      "detail": "dur=5.533 distinctMotionSamples=4/4"
+    },
+    {
+      "name": "motion beat 18",
+      "pass": true,
+      "detail": "dur=8.233 distinctMotionSamples=4/4"
+    },
+    {
+      "name": "motion beat 19",
+      "pass": true,
+      "detail": "dur=1.967 distinctMotionSamples=4/4"
+    },
+    {
+      "name": "motion beat 20",
+      "pass": true,
+      "detail": "dur=7.100 distinctMotionSamples=4/4"
+    },
+    {
+      "name": "motion beat 21",
+      "pass": true,
+      "detail": "dur=6.067 distinctMotionSamples=4/4"
+    },
+    {
+      "name": "motion beat 22",
+      "pass": true,
+      "detail": "dur=7.800 distinctMotionSamples=4/4"
+    },
+    {
+      "name": "motion beat 23",
+      "pass": true,
+      "detail": "dur=6.633 distinctMotionSamples=4/4"
+    },
+    {
+      "name": "motion beat 25",
+      "pass": true,
+      "detail": "dur=6.700 distinctMotionSamples=4/4"
+    },
+    {
+      "name": "motion beat 26",
+      "pass": true,
+      "detail": "dur=15.700 distinctMotionSamples=4/4"
+    },
+    {
+      "name": "motion beat 27",
+      "pass": true,
+      "detail": "dur=15.066 distinctMotionSamples=4/4"
+    },
+    {
+      "name": "motion beat 28",
+      "pass": true,
+      "detail": "dur=15.200 distinctMotionSamples=4/4"
+    },
+    {
+      "name": "motion beat 29",
+      "pass": true,
+      "detail": "dur=3.167 distinctMotionSamples=4/4"
+    },
+    {
+      "name": "motion beat 30",
+      "pass": true,
+      "detail": "dur=6.800 distinctMotionSamples=4/4"
+    },
+    {
+      "name": "motion beat 31",
+      "pass": true,
+      "detail": "dur=3.667 distinctMotionSamples=4/4"
+    },
+    {
+      "name": "motion beat 32",
+      "pass": true,
+      "detail": "dur=135.400 distinctMotionSamples=4/4"
+    },
+    {
+      "name": "duration headroom beat 01",
+      "pass": true,
+      "detail": "have=49.667 need=48.922"
+    },
+    {
+      "name": "duration headroom beat 02",
+      "pass": true,
+      "detail": "have=9.433 need=8.380"
+    },
+    {
+      "name": "duration headroom beat 03",
+      "pass": true,
+      "detail": "have=3.633 need=2.541"
+    },
+    {
+      "name": "duration headroom beat 04",
+      "pass": true,
+      "detail": "have=3.733 need=2.660"
+    },
+    {
+      "name": "duration headroom beat 05",
+      "pass": true,
+      "detail": "have=10.967 need=9.940"
+    },
+    {
+      "name": "duration headroom beat 06",
+      "pass": true,
+      "detail": "have=6.033 need=5.000"
+    },
+    {
+      "name": "duration headroom beat 07",
+      "pass": true,
+      "detail": "have=11.900 need=10.881"
+    },
+    {
+      "name": "duration headroom beat 08",
+      "pass": true,
+      "detail": "have=12.333 need=11.320"
+    },
+    {
+      "name": "duration headroom beat 09",
+      "pass": true,
+      "detail": "have=6.567 need=5.501"
+    },
+    {
+      "name": "duration headroom beat 10",
+      "pass": true,
+      "detail": "have=21.833 need=20.900"
+    },
+    {
+      "name": "duration headroom beat 11",
+      "pass": true,
+      "detail": "have=16.267 need=15.300"
+    },
+    {
+      "name": "duration headroom beat 12",
+      "pass": true,
+      "detail": "have=4.633 need=3.560"
+    },
+    {
+      "name": "duration headroom beat 13",
+      "pass": true,
+      "detail": "have=24.067 need=23.121"
+    },
+    {
+      "name": "duration headroom beat 14",
+      "pass": true,
+      "detail": "have=9.733 need=8.761"
+    },
+    {
+      "name": "duration headroom beat 15",
+      "pass": true,
+      "detail": "have=23.367 need=22.421"
+    },
+    {
+      "name": "duration headroom beat 16",
+      "pass": true,
+      "detail": "have=8.333 need=7.300"
+    },
+    {
+      "name": "duration headroom beat 17",
+      "pass": true,
+      "detail": "have=5.533 need=4.500"
+    },
+    {
+      "name": "duration headroom beat 18",
+      "pass": true,
+      "detail": "have=8.233 need=7.181"
+    },
+    {
+      "name": "duration headroom beat 19",
+      "pass": true,
+      "detail": "have=1.967 need=0.840"
+    },
+    {
+      "name": "duration headroom beat 20",
+      "pass": true,
+      "detail": "have=7.100 need=6.060"
+    },
+    {
+      "name": "duration headroom beat 21",
+      "pass": true,
+      "detail": "have=6.067 need=5.020"
+    },
+    {
+      "name": "duration headroom beat 22",
+      "pass": true,
+      "detail": "have=7.800 need=6.760"
+    },
+    {
+      "name": "duration headroom beat 23",
+      "pass": true,
+      "detail": "have=6.633 need=5.581"
+    },
+    {
+      "name": "duration headroom beat 25",
+      "pass": true,
+      "detail": "have=6.700 need=5.660"
+    },
+    {
+      "name": "duration headroom beat 26",
+      "pass": true,
+      "detail": "have=15.700 need=14.701"
+    },
+    {
+      "name": "duration headroom beat 27",
+      "pass": true,
+      "detail": "have=15.066 need=14.100"
+    },
+    {
+      "name": "duration headroom beat 28",
+      "pass": true,
+      "detail": "have=15.200 need=14.201"
+    },
+    {
+      "name": "duration headroom beat 29",
+      "pass": true,
+      "detail": "have=3.167 need=2.100"
+    },
+    {
+      "name": "duration headroom beat 30",
+      "pass": true,
+      "detail": "have=6.800 need=5.760"
+    },
+    {
+      "name": "duration headroom beat 31",
+      "pass": true,
+      "detail": "have=3.667 need=2.580"
+    },
+    {
+      "name": "duration headroom beat 32",
+      "pass": true,
+      "detail": "have=135.400 need=135.226"
+    },
+    {
+      "name": "insert duration beat 24",
+      "pass": true,
+      "detail": "have=5.000 exp=5.0"
+    },
+    {
+      "name": "insert duration beat 33",
+      "pass": true,
+      "detail": "have=6.000 exp=6.0"
+    },
+    {
+      "name": "insert duration beat 34",
+      "pass": true,
+      "detail": "have=9.940 exp=9.94"
+    },
+    {
+      "name": "timing map",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "cut-plan file",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "alignment file",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "spoken transcript file",
+      "pass": true,
+      "detail": ""
+    },
+    {
+      "name": "spoken transcript/source word count",
+      "pass": true,
+      "detail": "spoken=1437 aligned=1437"
+    },
+    {
+      "name": "spoken transcript/alignment equivalence",
+      "pass": true,
+      "detail": "spoken=1468 aligned=1468"
+    },
+    {
+      "name": "visual type beat 01",
+      "pass": true,
+      "detail": "{\"actualSeconds\": 49.667, \"prohibited\": [\"still_slide\", \"Ken Burns\", \"loop\", \"end-frame hold\"], \"requiredSeconds\": 48.922, \"shots\": 11, \"treatment\": \"distinct moving b-roll shots with hard editorial cuts\", \"visual_type\": \"mixed\"}"
+    },
+    {
+      "name": "no Ken-Burns beat 01",
+      "pass": true,
+      "detail": "shots=11 treatment=distinct moving b-roll shots with hard editorial cuts"
+    },
+    {
+      "name": "visual type beat 02",
+      "pass": true,
+      "detail": "{\"actualSeconds\": 9.433, \"prohibited\": [\"still_slide\", \"Ken Burns\", \"loop\", \"end-frame hold\"], \"requiredSeconds\": 8.38, \"shots\": 2, \"treatment\": \"distinct moving b-roll shots with hard editorial cuts\", \"visual_type\": \"mixed\"}"
+    },
+    {
+      "name": "no Ken-Burns beat 02",
+      "pass": true,
+      "detail": "shots=2 treatment=distinct moving b-roll shots with hard editorial cuts"
+    },
+    {
+      "name": "visual type beat 03",
+      "pass": true,
+      "detail": "{\"actualSeconds\": 3.633, \"prohibited\": [\"still_slide\", \"Ken Burns\", \"loop\", \"end-frame hold\"], \"requiredSeconds\": 2.541, \"shots\": 1, \"treatment\": \"distinct moving b-roll shots with hard editorial cuts\", \"visual_type\": \"mixed\"}"
+    },
+    {
+      "name": "no Ken-Burns beat 03",
+      "pass": true,
+      "detail": "shots=1 treatment=distinct moving b-roll shots with hard editorial cuts"
+    },
+    {
+      "name": "visual type beat 04",
+      "pass": true,
+      "detail": "{\"actualSeconds\": 3.733, \"prohibited\": [\"still_slide\", \"Ken Burns\", \"loop\", \"end-frame hold\"], \"requiredSeconds\": 2.66, \"shots\": 1, \"treatment\": \"distinct moving b-roll shots with hard editorial cuts\", \"visual_type\": \"mixed\"}"
+    },
+    {
+      "name": "no Ken-Burns beat 04",
+      "pass": true,
+      "detail": "shots=1 treatment=distinct moving b-roll shots with hard editorial cuts"
+    },
+    {
+      "name": "visual type beat 05",
+      "pass": true,
+      "detail": "{\"actualSeconds\": 10.967, \"prohibited\": [\"still_slide\", \"Ken Burns\", \"loop\", \"end-frame hold\"], \"requiredSeconds\": 9.94, \"shots\": 3, \"treatment\": \"distinct moving b-roll shots with hard editorial cuts\", \"visual_type\": \"mixed\"}"
+    },
+    {
+      "name": "no Ken-Burns beat 05",
+      "pass": true,
+      "detail": "shots=3 treatment=distinct moving b-roll shots with hard editorial cuts"
+    },
+    {
+      "name": "visual type beat 06",
+      "pass": true,
+      "detail": "{\"actualSeconds\": 6.033, \"prohibited\": [\"still_slide\", \"Ken Burns\", \"loop\", \"end-frame hold\"], \"requiredSeconds\": 5.0, \"shots\": 2, \"treatment\": \"distinct moving b-roll shots with hard editorial cuts\", \"visual_type\": \"mixed\"}"
+    },
+    {
+      "name": "no Ken-Burns beat 06",
+      "pass": true,
+      "detail": "shots=2 treatment=distinct moving b-roll shots with hard editorial cuts"
+    },
+    {
+      "name": "visual type beat 07",
+      "pass": true,
+      "detail": "{\"actualSeconds\": 11.9, \"prohibited\": [\"still_slide\", \"Ken Burns\", \"loop\", \"end-frame hold\"], \"requiredSeconds\": 10.881, \"shots\": 3, \"treatment\": \"distinct moving b-roll shots with hard editorial cuts\", \"visual_type\": \"mixed\"}"
+    },
+    {
+      "name": "no Ken-Burns beat 07",
+      "pass": true,
+      "detail": "shots=3 treatment=distinct moving b-roll shots with hard editorial cuts"
+    },
+    {
+      "name": "visual type beat 08",
+      "pass": true,
+      "detail": "{\"actualSeconds\": 12.333, \"prohibited\": [\"still_slide\", \"Ken Burns\", \"loop\", \"end-frame hold\"], \"requiredSeconds\": 11.32, \"shots\": 3, \"treatment\": \"distinct moving b-roll shots with hard editorial cuts\", \"visual_type\": \"mixed\"}"
+    },
+    {
+      "name": "no Ken-Burns beat 08",
+      "pass": true,
+      "detail": "shots=3 treatment=distinct moving b-roll shots with hard editorial cuts"
+    },
+    {
+      "name": "visual type beat 09",
+      "pass": true,
+      "detail": "{\"actualSeconds\": 6.567, \"prohibited\": [\"still_slide\", \"Ken Burns\", \"loop\", \"end-frame hold\"], \"requiredSeconds\": 5.501, \"shots\": 2, \"treatment\": \"distinct moving b-roll shots with hard editorial cuts\", \"visual_type\": \"mixed\"}"
+    },
+    {
+      "name": "no Ken-Burns beat 09",
+      "pass": true,
+      "detail": "shots=2 treatment=distinct moving b-roll shots with hard editorial cuts"
+    },
+    {
+      "name": "visual type beat 10",
+      "pass": true,
+      "detail": "{\"actualSeconds\": 21.833, \"prohibited\": [\"still_slide\", \"Ken Burns\", \"loop\", \"end-frame hold\"], \"requiredSeconds\": 20.9, \"shots\": 5, \"treatment\": \"distinct moving b-roll shots with hard editorial cuts\", \"visual_type\": \"mixed\"}"
+    },
+    {
+      "name": "no Ken-Burns beat 10",
+      "pass": true,
+      "detail": "shots=5 treatment=distinct moving b-roll shots with hard editorial cuts"
+    },
+    {
+      "name": "visual type beat 11",
+      "pass": true,
+      "detail": "{\"actualSeconds\": 16.267, \"prohibited\": [\"still_slide\", \"Ken Burns\", \"loop\", \"end-frame hold\"], \"requiredSeconds\": 15.3, \"shots\": 4, \"treatment\": \"distinct moving b-roll shots with hard editorial cuts\", \"visual_type\": \"mixed\"}"
+    },
+    {
+      "name": "no Ken-Burns beat 11",
+      "pass": true,
+      "detail": "shots=4 treatment=distinct moving b-roll shots with hard editorial cuts"
+    },
+    {
+      "name": "visual type beat 12",
+      "pass": true,
+      "detail": "{\"actualSeconds\": 4.633, \"prohibited\": [\"still_slide\", \"Ken Burns\", \"loop\", \"end-frame hold\"], \"requiredSeconds\": 3.56, \"shots\": 1, \"treatment\": \"distinct moving b-roll shots with hard editorial cuts\", \"visual_type\": \"mixed\"}"
+    },
+    {
+      "name": "no Ken-Burns beat 12",
+      "pass": true,
+      "detail": "shots=1 treatment=distinct moving b-roll shots with hard editorial cuts"
+    },
+    {
+      "name": "visual type beat 13",
+      "pass": true,
+      "detail": "{\"actualSeconds\": 24.067, \"prohibited\": [\"still_slide\", \"Ken Burns\", \"loop\", \"end-frame hold\"], \"requiredSeconds\": 23.121, \"shots\": 5, \"treatment\": \"distinct moving b-roll shots with hard editorial cuts\", \"visual_type\": \"mixed\"}"
+    },
+    {
+      "name": "no Ken-Burns beat 13",
+      "pass": true,
+      "detail": "shots=5 treatment=distinct moving b-roll shots with hard editorial cuts"
+    },
+    {
+      "name": "visual type beat 14",
+      "pass": true,
+      "detail": "{\"actualSeconds\": 9.733, \"prohibited\": [\"still_slide\", \"Ken Burns\", \"loop\", \"end-frame hold\"], \"requiredSeconds\": 8.761, \"shots\": 2, \"treatment\": \"distinct moving b-roll shots with hard editorial cuts\", \"visual_type\": \"mixed\"}"
+    },
+    {
+      "name": "no Ken-Burns beat 14",
+      "pass": true,
+      "detail": "shots=2 treatment=distinct moving b-roll shots with hard editorial cuts"
+    },
+    {
+      "name": "visual type beat 15",
+      "pass": true,
+      "detail": "{\"actualSeconds\": 23.367, \"prohibited\": [\"still_slide\", \"Ken Burns\", \"loop\", \"end-frame hold\"], \"requiredSeconds\": 22.421, \"shots\": 5, \"treatment\": \"distinct moving b-roll shots with hard editorial cuts\", \"visual_type\": \"mixed\"}"
+    },
+    {
+      "name": "no Ken-Burns beat 15",
+      "pass": true,
+      "detail": "shots=5 treatment=distinct moving b-roll shots with hard editorial cuts"
+    },
+    {
+      "name": "visual type beat 16",
+      "pass": true,
+      "detail": "{\"actualSeconds\": 8.333, \"prohibited\": [\"still_slide\", \"Ken Burns\", \"loop\", \"end-frame hold\"], \"requiredSeconds\": 7.3, \"shots\": 2, \"treatment\": \"distinct moving b-roll shots with hard editorial cuts\", \"visual_type\": \"mixed\"}"
+    },
+    {
+      "name": "no Ken-Burns beat 16",
+      "pass": true,
+      "detail": "shots=2 treatment=distinct moving b-roll shots with hard editorial cuts"
+    },
+    {
+      "name": "visual type beat 17",
+      "pass": true,
+      "detail": "{\"actualSeconds\": 5.533, \"prohibited\": [\"still_slide\", \"Ken Burns\", \"loop\", \"end-frame hold\"], \"requiredSeconds\": 4.5, \"shots\": 2, \"treatment\": \"distinct moving b-roll shots with hard editorial cuts\", \"visual_type\": \"mixed\"}"
+    },
+    {
+      "name": "no Ken-Burns beat 17",
+      "pass": true,
+      "detail": "shots=2 treatment=distinct moving b-roll shots with hard editorial cuts"
+    },
+    {
+      "name": "visual type beat 18",
+      "pass": true,
+      "detail": "{\"actualSeconds\": 8.233, \"prohibited\": [\"still_slide\", \"Ken Burns\", \"loop\", \"end-frame hold\"], \"requiredSeconds\": 7.181, \"shots\": 2, \"treatment\": \"distinct moving b-roll shots with hard editorial cuts\", \"visual_type\": \"mixed\"}"
+    },
+    {
+      "name": "no Ken-Burns beat 18",
+      "pass": true,
+      "detail": "shots=2 treatment=distinct moving b-roll shots with hard editorial cuts"
+    },
+    {
+      "name": "visual type beat 19",
+      "pass": true,
+      "detail": "{\"actualSeconds\": 1.967, \"prohibited\": [\"still_slide\", \"Ken Burns\", \"loop\", \"end-frame hold\"], \"requiredSeconds\": 0.84, \"shots\": 1, \"treatment\": \"distinct moving b-roll shots with hard editorial cuts\", \"visual_type\": \"mixed\"}"
+    },
+    {
+      "name": "no Ken-Burns beat 19",
+      "pass": true,
+      "detail": "shots=1 treatment=distinct moving b-roll shots with hard editorial cuts"
+    },
+    {
+      "name": "visual type beat 20",
+      "pass": true,
+      "detail": "{\"actualSeconds\": 7.1, \"prohibited\": [\"still_slide\", \"Ken Burns\", \"loop\", \"end-frame hold\"], \"requiredSeconds\": 6.06, \"shots\": 2, \"treatment\": \"distinct moving b-roll shots with hard editorial cuts\", \"visual_type\": \"mixed\"}"
+    },
+    {
+      "name": "no Ken-Burns beat 20",
+      "pass": true,
+      "detail": "shots=2 treatment=distinct moving b-roll shots with hard editorial cuts"
+    },
+    {
+      "name": "visual type beat 21",
+      "pass": true,
+      "detail": "{\"actualSeconds\": 6.067, \"prohibited\": [\"still_slide\", \"Ken Burns\", \"loop\", \"end-frame hold\"], \"requiredSeconds\": 5.02, \"shots\": 2, \"treatment\": \"distinct moving b-roll shots with hard editorial cuts\", \"visual_type\": \"mixed\"}"
+    },
+    {
+      "name": "no Ken-Burns beat 21",
+      "pass": true,
+      "detail": "shots=2 treatment=distinct moving b-roll shots with hard editorial cuts"
+    },
+    {
+      "name": "visual type beat 22",
+      "pass": true,
+      "detail": "{\"actualSeconds\": 7.8, \"prohibited\": [\"still_slide\", \"Ken Burns\", \"loop\", \"end-frame hold\"], \"requiredSeconds\": 6.76, \"shots\": 2, \"treatment\": \"distinct moving b-roll shots with hard editorial cuts\", \"visual_type\": \"mixed\"}"
+    },
+    {
+      "name": "no Ken-Burns beat 22",
+      "pass": true,
+      "detail": "shots=2 treatment=distinct moving b-roll shots with hard editorial cuts"
+    },
+    {
+      "name": "visual type beat 23",
+      "pass": true,
+      "detail": "{\"actualSeconds\": 6.633, \"prohibited\": [\"still_slide\", \"Ken Burns\", \"loop\", \"end-frame hold\"], \"requiredSeconds\": 5.581, \"shots\": 2, \"treatment\": \"distinct moving b-roll shots with hard editorial cuts\", \"visual_type\": \"mixed\"}"
+    },
+    {
+      "name": "no Ken-Burns beat 23",
+      "pass": true,
+      "detail": "shots=2 treatment=distinct moving b-roll shots with hard editorial cuts"
+    },
+    {
+      "name": "visual type beat 25",
+      "pass": true,
+      "detail": "{\"actualSeconds\": 6.7, \"prohibited\": [\"still_slide\", \"Ken Burns\", \"loop\", \"end-frame hold\"], \"requiredSeconds\": 5.66, \"shots\": 2, \"treatment\": \"distinct moving b-roll shots with hard editorial cuts\", \"visual_type\": \"mixed\"}"
+    },
+    {
+      "name": "no Ken-Burns beat 25",
+      "pass": true,
+      "detail": "shots=2 treatment=distinct moving b-roll shots with hard editorial cuts"
+    },
+    {
+      "name": "visual type beat 26",
+      "pass": true,
+      "detail": "{\"actualSeconds\": 15.7, \"prohibited\": [\"still_slide\", \"Ken Burns\", \"loop\", \"end-frame hold\"], \"requiredSeconds\": 14.701, \"shots\": 4, \"treatment\": \"distinct moving b-roll shots with hard editorial cuts\", \"visual_type\": \"mixed\"}"
+    },
+    {
+      "name": "no Ken-Burns beat 26",
+      "pass": true,
+      "detail": "shots=4 treatment=distinct moving b-roll shots with hard editorial cuts"
+    },
+    {
+      "name": "visual type beat 27",
+      "pass": true,
+      "detail": "{\"actualSeconds\": 15.066, \"prohibited\": [\"still_slide\", \"Ken Burns\", \"loop\", \"end-frame hold\"], \"requiredSeconds\": 14.1, \"shots\": 4, \"treatment\": \"distinct moving b-roll shots with hard editorial cuts\", \"visual_type\": \"mixed\"}"
+    },
+    {
+      "name": "no Ken-Burns beat 27",
+      "pass": true,
+      "detail": "shots=4 treatment=distinct moving b-roll shots with hard editorial cuts"
+    },
+    {
+      "name": "visual type beat 28",
+      "pass": true,
+      "detail": "{\"actualSeconds\": 15.2, \"prohibited\": [\"still_slide\", \"Ken Burns\", \"loop\", \"end-frame hold\"], \"requiredSeconds\": 14.201, \"shots\": 4, \"treatment\": \"distinct moving b-roll shots with hard editorial cuts\", \"visual_type\": \"mixed\"}"
+    },
+    {
+      "name": "no Ken-Burns beat 28",
+      "pass": true,
+      "detail": "shots=4 treatment=distinct moving b-roll shots with hard editorial cuts"
+    },
+    {
+      "name": "visual type beat 29",
+      "pass": true,
+      "detail": "{\"actualSeconds\": 3.167, \"prohibited\": [\"still_slide\", \"Ken Burns\", \"loop\", \"end-frame hold\"], \"requiredSeconds\": 2.1, \"shots\": 1, \"treatment\": \"distinct moving b-roll shots with hard editorial cuts\", \"visual_type\": \"mixed\"}"
+    },
+    {
+      "name": "no Ken-Burns beat 29",
+      "pass": true,
+      "detail": "shots=1 treatment=distinct moving b-roll shots with hard editorial cuts"
+    },
+    {
+      "name": "visual type beat 30",
+      "pass": true,
+      "detail": "{\"actualSeconds\": 6.8, \"prohibited\": [\"still_slide\", \"Ken Burns\", \"loop\", \"end-frame hold\"], \"requiredSeconds\": 5.76, \"shots\": 2, \"treatment\": \"distinct moving b-roll shots with hard editorial cuts\", \"visual_type\": \"mixed\"}"
+    },
+    {
+      "name": "no Ken-Burns beat 30",
+      "pass": true,
+      "detail": "shots=2 treatment=distinct moving b-roll shots with hard editorial cuts"
+    },
+    {
+      "name": "visual type beat 31",
+      "pass": true,
+      "detail": "{\"actualSeconds\": 3.667, \"prohibited\": [\"still_slide\", \"Ken Burns\", \"loop\", \"end-frame hold\"], \"requiredSeconds\": 2.58, \"shots\": 1, \"treatment\": \"distinct moving b-roll shots with hard editorial cuts\", \"visual_type\": \"mixed\"}"
+    },
+    {
+      "name": "no Ken-Burns beat 31",
+      "pass": true,
+      "detail": "shots=1 treatment=distinct moving b-roll shots with hard editorial cuts"
+    },
+    {
+      "name": "visual type beat 32",
+      "pass": true,
+      "detail": "{\"actualSeconds\": 135.4, \"prohibited\": [\"still_slide\", \"Ken Burns\", \"loop\", \"end-frame hold\"], \"requiredSeconds\": 135.226, \"shots\": 28, \"treatment\": \"distinct moving b-roll shots with hard editorial cuts\", \"visual_type\": \"mixed\"}"
+    },
+    {
+      "name": "no Ken-Burns beat 32",
+      "pass": true,
+      "detail": "shots=28 treatment=distinct moving b-roll shots with hard editorial cuts"
+    },
+    {
+      "name": "moving-shot provenance",
+      "pass": true,
+      "detail": "shots=111 unique_paths=111 unique_bytes=101 max_path_uses=1"
+    },
+    {
+      "name": "contact sheet 34 beats",
+      "pass": true,
+      "detail": "/Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-6048/stacklab-v5-contract-source-pack-r3-mixed-media-forced-1437/qa/contact-sheet/contact-sheet-34-beats.jpg"
+    }
+  ],
+  "ok": true,
+  "summary": {
+    "passed": 245,
+    "failed": 0,
+    "total": 245
+  },
+  "visualQa": {
+    "classRule": "still_slide + text + Ken Burns hard fail",
+    "contactSheet": "qa/contact-sheet/contact-sheet-34-beats.jpg",
+    "provenance": "qa/broll-provenance.json"
+  }
+}

@@ -1,0 +1,84 @@
+{
+  "role": "engineer",
+  "task_id": "eng-idempotency-bug",
+  "task_title": "Find the retry-safety bug in payment processing",
+  "model_id": "grok-4.5",
+  "model_label": "Grok 4.5",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "ok": true,
+  "error": null,
+  "output": "**(1) Bug class:** Non-idempotent webhook handler under at-least-once delivery (missing idempotency / duplicate-event protection).\n\n**(2) Bad outcome on redelivery:** The same `checkout.session.completed` runs again \u2192 duplicate `orders` rows, another license email + access grant, and double-counted revenue for one payment.\n\n**(3) Fix:** Key processing on a stable unique id (`event.id` or `sale.id`). Before side effects, claim it (e.g. insert into `processed_events` with unique `event_id`, or `INSERT ... ON CONFLICT DO NOTHING` on `orders.sessionId`). If already claimed, return 200 and skip. Only then grant access and increment revenue\u2014so each sale\u2019s side effects run once.",
+  "model_reported": "grok-4.5",
+  "inputTokens": 233,
+  "outputTokens": 170,
+  "totalTokens": 403,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "wallMs": 13151,
+  "stderrTail": "",
+  "agentFileSha256": "none",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "b7373c2152d432ffadaa313c61133d110457a1e56402bf122dab21c5460d183f",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/engineer/suite.json",
+  "skipped": false,
+  "skipReason": null,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 3.0,
+      "spec": {
+        "values": [
+          "idempoten",
+          "at-least-once",
+          "at least once",
+          "duplicate",
+          "redeliver",
+          "replay",
+          "retry"
+        ]
+      }
+    },
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 3.0,
+      "spec": {
+        "values": [
+          "unique",
+          "dedup",
+          "deduplicat",
+          "event id",
+          "event.id",
+          "on conflict",
+          "upsert",
+          "ON CONFLICT",
+          "exactly once",
+          "processed"
+        ]
+      }
+    },
+    {
+      "check": "max_words",
+      "ok": true,
+      "weight": 1.0,
+      "spec": {
+        "value": 160
+      }
+    }
+  ],
+  "judgeScore": 0.95,
+  "judgeDetail": {
+    "perCriterion": {
+      "correctness": 0.95,
+      "specificity": 0.95
+    },
+    "rationale": "Precisely names non-idempotency, covers all three duplicated side effects including revenue double-count, and fixes with event-id/processed_events claim or ON CONFLICT before running side effects; only minor gap is not explicitly wrapping dedup+side-effects in one transaction.",
+    "judgeModel": "opus"
+  },
+  "quality": 0.975,
+  "qualityPer1kTokens": 2.419354838709677
+}

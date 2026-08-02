@@ -1,0 +1,73 @@
+{
+  "role": "ledger",
+  "task_id": "ledger-cost-line-classify",
+  "task_title": "Classify cost behavior including a semi-variable trap line",
+  "model_id": "grok-4.5",
+  "model_label": "Grok 4.5",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "ok": true,
+  "error": null,
+  "output": "{\"s1\": \"mixed\", \"s2\": \"fixed\", \"s3\": \"variable\", \"why_s1\": \"Base $300 is fixed; overage $0.002/run beyond 50k scales with volume.\"}",
+  "model_reported": "grok-4.5",
+  "inputTokens": 268,
+  "outputTokens": 32,
+  "totalTokens": 300,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "wallMs": 8374,
+  "stderrTail": "",
+  "agentFileSha256": "none",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "22a4d94c78402d54f39f0cd1b4eb6a12005acecfa3e2d429551928eca686300e",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/ledger/suite.json",
+  "skipped": false,
+  "skipReason": null,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "json_valid",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {}
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 4.0,
+      "spec": {
+        "value": "mixed",
+        "path": "s1"
+      }
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 3.0,
+      "spec": {
+        "value": "fixed",
+        "path": "s2"
+      }
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 3.0,
+      "spec": {
+        "value": "variable",
+        "path": "s3"
+      }
+    }
+  ],
+  "judgeScore": 1.0,
+  "judgeDetail": {
+    "perCriterion": {
+      "correctness": 1.0
+    },
+    "rationale": "s1=mixed, s2=fixed, s3=variable all correct, and why_s1 names both the fixed $300 base and the per-run overage within the word limit.",
+    "judgeModel": "opus"
+  },
+  "quality": 1.0,
+  "qualityPer1kTokens": 3.3333333333333335
+}

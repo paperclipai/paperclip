@@ -1,0 +1,92 @@
+{
+  "role": "cto",
+  "task_id": "cto-gate-keeper-capability-design",
+  "task_title": "Design the gate_keeper_write capability scope",
+  "model_id": "grok-4.5",
+  "model_label": "Grok 4.5",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "ok": true,
+  "error": null,
+  "output": "{\"Q1\": \"c\", \"Q2\": \"b\", \"Q3\": \"b\", \"Q4\": \"b\", \"worstDefault\": \"Q4a\"}",
+  "model_reported": "grok-4.5",
+  "inputTokens": 282,
+  "outputTokens": 16,
+  "totalTokens": 298,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "wallMs": 40283,
+  "stderrTail": "",
+  "agentFileSha256": "none",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "9178417ea7411729ec604cd6f0f72637a785d4d0f99ddd564fdfd0d4d603c31d",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/cto/suite.json",
+  "skipped": false,
+  "skipReason": null,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "json_valid",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {}
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 3.0,
+      "spec": {
+        "value": "c",
+        "path": "Q1"
+      }
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {
+        "value": "b",
+        "path": "Q2"
+      }
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {
+        "value": "b",
+        "path": "Q3"
+      }
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 3.0,
+      "spec": {
+        "value": "b",
+        "path": "Q4"
+      }
+    },
+    {
+      "check": "json_path_in",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {
+        "values": [
+          "Q4a",
+          "Q1a"
+        ],
+        "path": "worstDefault"
+      }
+    }
+  ],
+  "judgeScore": null,
+  "judgeDetail": {
+    "error": "judge: unparseable",
+    "raw": "```json\n{\"Q1\": \"c\", \"Q2\": \"b\", \"Q3\": \"b\", \"Q4\": \"b\", \"worstDefault\": \"Q4a\"}\n```",
+    "judgeError": null
+  },
+  "quality": 1.0,
+  "qualityPer1kTokens": 3.3557046979865772
+}

@@ -1,0 +1,64 @@
+{
+  "role": "cv-review",
+  "task_id": "cv-unsubstantiated-metrics",
+  "task_title": "Don't take inflated metrics at face value",
+  "model_id": "grok-4.5",
+  "model_label": "Grok 4.5",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "ok": true,
+  "error": null,
+  "output": "{\n  \"concerns\": [\n    \"Company for Growth Lead role is unnamed \u2014 cannot verify employment, industry, stage, or claims.\",\n    \"Extraordinary claims (300% revenue, $5M budget, 10x team) with zero baselines, time windows, attribution, or proof (no metrics, channels, experiments, or references).\",\n    \"Implausible scope jump: Marketing Associate who only 'ran email campaigns' (2021\u20132023) \u2192 Growth Lead managing $5M and 10x headcount within ~1 year, with no bridging evidence.\",\n    \"Growth Lead tenure is only ~1 year; claims read as unscoped and uncorroborated.\",\n    \"Skills are generic buzzwords (SEO, paid ads, 'data-driven growth') with no tools, channels, budgets, CAC/LTV/payback, experiment cadence, or outcomes.\",\n    \"No education, certifications, portfolio, case studies, or quant results from Brightline.\",\n    \"CV is too thin and non-specific to assess fit for Growth Marketing Manager (strategy, full-funnel ownership, measurement, team leadership).\"\n  ],\n  \"recommendation\": \"reject\",\n  \"verify\": [\n    \"Legal name of the startup, role title on record, employment dates, and reporting line.\",\n    \"Baseline and ending revenue, exact period for the 300% claim, and what share was causally tied to candidate-led growth work vs. product/market/funding.\",\n    \"What the $5M covered (media, people, total opex), approval authority, and spend by channel with ROAS/CAC/payback.\",\n    \"Team size before/after '10x', which roles were hired, and whether candidate had hiring/manager authority.\",\n    \"Concrete growth system: primary channels, experiment velocity, north-star metrics, attribution model, and 2\u20133 specific wins with before/after numbers.\",\n    \"Brightline: actual scope beyond 'email' (lists, ESP, lift, revenue influenced) and why promoted/hired into Growth Lead.\",\n    \"References from founder/CEO/finance who can confirm budget, revenue, and headcount claims.\"\n  ]\n}",
+  "model_reported": "grok-4.5",
+  "inputTokens": 127,
+  "outputTokens": 471,
+  "totalTokens": 598,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "wallMs": 25217,
+  "stderrTail": "",
+  "agentFileSha256": "none",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "4a12f7840060d3340e31887045177b943ccfc26aece2989d42f2e6f31a2b2c61",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/cv-review/suite.json",
+  "skipped": false,
+  "skipReason": null,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "json_valid",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {}
+    },
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 3.0,
+      "spec": {
+        "values": [
+          "300",
+          "baseline",
+          "context",
+          "unsubstantiat",
+          "vague",
+          "evidence",
+          "verify",
+          "$5M",
+          "absolute"
+        ]
+      }
+    }
+  ],
+  "judgeScore": 0.93,
+  "judgeDetail": {
+    "perCriterion": {
+      "skepticism": 0.93
+    },
+    "rationale": "Rigorously flags every unsubstantiated metric with the exact missing baselines/attribution and targets each dubious claim in the verify list; only minor tension is choosing 'reject' while still listing interview-verification items (arguably 'clarify').",
+    "judgeModel": "opus"
+  },
+  "quality": 0.9650000000000001,
+  "qualityPer1kTokens": 1.61371237458194
+}

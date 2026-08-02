@@ -1,0 +1,92 @@
+{
+  "role": "engineer",
+  "task_id": "eng-timezone-offbyone",
+  "task_title": "Fix the timezone off-by-one in the daily report window",
+  "model_id": "grok-4.5",
+  "model_label": "Grok 4.5",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "ok": true,
+  "error": null,
+  "output": "(1) Defects\n- Timezone: window is built in UTC (`\u2026Z`), not Europe/Dublin (UTC+1 in summer).\n- Boundary: inclusive end at `23:59:59` (lte) \u2014 not a half-open day; drops sub-second times after that instant.\n\n(2) Mis-bucketing (summer, UTC+1)\n- Local 00:00\u201300:59 on day D (= prior day 23:00\u201323:59 UTC) is missing from D\u2019s report and lands in D\u22121\u2019s UTC window (e.g. 00:30 local \u2192 previous day).\n- Local 00:00\u201300:59 on D+1 (= D 23:00\u201323:59 UTC) is wrongly included in D\u2019s report.\n\n(3) Corrected window\n```ts\n// dayStr in Europe/Dublin; half-open [start, end)\nconst start = fromZonedTime(`${dayStr}T00:00:00`, 'Europe/Dublin');\n// e.g. 2026-06-20 \u2192 2026-06-19T23:00:00.000Z\nconst end = fromZonedTime(`${nextDay(dayStr)}T00:00:00`, 'Europe/Dublin');\n// e.g. \u2192 2026-06-20T23:00:00.000Z\n.where(and(gte(createdAt, start), lt(createdAt, end)))\n```",
+  "model_reported": "grok-4.5",
+  "inputTokens": 244,
+  "outputTokens": 208,
+  "totalTokens": 452,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "wallMs": 24495,
+  "stderrTail": "",
+  "agentFileSha256": "none",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "b7373c2152d432ffadaa313c61133d110457a1e56402bf122dab21c5460d183f",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/engineer/suite.json",
+  "skipped": false,
+  "skipReason": null,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {
+        "values": [
+          "23:00",
+          "previous day",
+          "prior day",
+          "day before",
+          "earlier day",
+          "next local midnight",
+          "local midnight",
+          "DST",
+          "IANA",
+          "Europe/Dublin",
+          "shifted",
+          "subtract an hour",
+          "minus one hour",
+          "-1 hour",
+          "one hour earlier"
+        ]
+      }
+    },
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 3.0,
+      "spec": {
+        "values": [
+          "half-open",
+          "half open",
+          "exclusive",
+          "< end",
+          "lt(",
+          "23:59:59.999",
+          "final second",
+          "last second",
+          "off-by-one",
+          "off by one"
+        ]
+      }
+    },
+    {
+      "check": "max_words",
+      "ok": true,
+      "weight": 1.0,
+      "spec": {
+        "value": 160
+      }
+    }
+  ],
+  "judgeScore": 0.9775,
+  "judgeDetail": {
+    "perCriterion": {
+      "correctness": 0.97,
+      "specificity": 1.0
+    },
+    "rationale": "Both defects nailed with correct shift direction (00:30 local \u2192 prior day), exact UTC window 19T23:00\u219220T23:00 and half-open lt(); only minor gap is not explicitly flagging DST/IANA generality beyond using fromZonedTime.",
+    "judgeModel": "opus"
+  },
+  "quality": 0.98875,
+  "qualityPer1kTokens": 2.1875
+}

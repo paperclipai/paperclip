@@ -1,0 +1,75 @@
+{
+  "role": "cto",
+  "task_id": "cto-reject-overengineering",
+  "task_title": "Right-size a fix: reject the gold-plated rewrite",
+  "model_id": "grok-4.5",
+  "model_label": "Grok 4.5",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "ok": true,
+  "error": null,
+  "output": "{\"decision\":\"approve_minimal\",\"reason\":\"Narrow cruft bug; proven one-step reaper reuses existing predicate and tick. A GC framework is YAGNI overkill for dozens of inert rows.\",\"scope\":\"Add reapOrphanedWakeups on recovery tick with same done/cancelled predicate; default-on flag; no new framework.\"}",
+  "model_reported": "grok-4.5",
+  "inputTokens": 225,
+  "outputTokens": 74,
+  "totalTokens": 299,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "wallMs": 9240,
+  "stderrTail": "",
+  "agentFileSha256": "none",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "9178417ea7411729ec604cd6f0f72637a785d4d0f99ddd564fdfd0d4d603c31d",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/cto/suite.json",
+  "skipped": false,
+  "skipReason": null,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "json_valid",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {}
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 5.0,
+      "spec": {
+        "value": "approve_minimal",
+        "path": "decision"
+      }
+    },
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {
+        "values": [
+          "reapOrphanedWakeups",
+          "reap",
+          "same predicate",
+          "terminal-status",
+          "terminal status",
+          "recovery tick",
+          "existing",
+          "small",
+          "minimal",
+          "YAGNI"
+        ]
+      }
+    }
+  ],
+  "judgeScore": 0.9875,
+  "judgeDetail": {
+    "perCriterion": {
+      "right_sizing": 1.0,
+      "reasoning": 0.95
+    },
+    "rationale": "Correctly approves the minimal reapOrphanedWakeups fix with exact scope (same predicate, same tick, default-on flag) and names YAGNI/over-engineering cost mismatch for a few-dozen-row bug.",
+    "judgeModel": "opus"
+  },
+  "quality": 0.99375,
+  "qualityPer1kTokens": 3.323578595317726
+}

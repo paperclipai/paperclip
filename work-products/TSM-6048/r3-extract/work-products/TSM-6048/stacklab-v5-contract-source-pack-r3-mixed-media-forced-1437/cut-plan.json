@@ -1,0 +1,252 @@
+{
+  "version": 1,
+  "method": "whisperx-forced-alignment-word-ranges",
+  "audio": "audio/narration.wav",
+  "beats": [
+    {
+      "beat": 1,
+      "startWord": 0,
+      "endWord": 223,
+      "source": "visuals/beat-01.mp4",
+      "role": "narrated-treatment"
+    },
+    {
+      "beat": 2,
+      "startWord": 224,
+      "endWord": 259,
+      "source": "visuals/beat-02.mp4",
+      "role": "narrated-treatment"
+    },
+    {
+      "beat": 3,
+      "startWord": 260,
+      "endWord": 280,
+      "source": "visuals/beat-03.mp4",
+      "role": "narrated-treatment"
+    },
+    {
+      "beat": 4,
+      "startWord": 281,
+      "endWord": 297,
+      "source": "visuals/beat-04.mp4",
+      "role": "narrated-treatment"
+    },
+    {
+      "beat": 5,
+      "startWord": 298,
+      "endWord": 334,
+      "source": "visuals/beat-05.mp4",
+      "role": "narrated-treatment"
+    },
+    {
+      "beat": 6,
+      "startWord": 335,
+      "endWord": 370,
+      "source": "visuals/beat-06.mp4",
+      "role": "narrated-treatment"
+    },
+    {
+      "beat": 7,
+      "startWord": 371,
+      "endWord": 436,
+      "source": "visuals/beat-07.mp4",
+      "role": "narrated-treatment"
+    },
+    {
+      "beat": 8,
+      "startWord": 437,
+      "endWord": 474,
+      "source": "visuals/beat-08.mp4",
+      "role": "narrated-treatment"
+    },
+    {
+      "beat": 9,
+      "startWord": 475,
+      "endWord": 489,
+      "source": "visuals/beat-09.mp4",
+      "role": "narrated-treatment"
+    },
+    {
+      "beat": 10,
+      "startWord": 490,
+      "endWord": 549,
+      "source": "visuals/beat-10.mp4",
+      "role": "narrated-treatment"
+    },
+    {
+      "beat": 11,
+      "startWord": 550,
+      "endWord": 595,
+      "source": "visuals/beat-11.mp4",
+      "role": "narrated-treatment"
+    },
+    {
+      "beat": 12,
+      "startWord": 596,
+      "endWord": 608,
+      "source": "visuals/beat-12.mp4",
+      "role": "narrated-treatment"
+    },
+    {
+      "beat": 13,
+      "startWord": 609,
+      "endWord": 679,
+      "source": "visuals/beat-13.mp4",
+      "role": "narrated-treatment"
+    },
+    {
+      "beat": 14,
+      "startWord": 680,
+      "endWord": 703,
+      "source": "visuals/beat-14.mp4",
+      "role": "narrated-treatment"
+    },
+    {
+      "beat": 15,
+      "startWord": 704,
+      "endWord": 788,
+      "source": "visuals/beat-15.mp4",
+      "role": "narrated-treatment"
+    },
+    {
+      "beat": 16,
+      "startWord": 789,
+      "endWord": 838,
+      "source": "visuals/beat-16.mp4",
+      "role": "narrated-treatment"
+    },
+    {
+      "beat": 17,
+      "startWord": 839,
+      "endWord": 860,
+      "source": "visuals/beat-17.mp4",
+      "role": "narrated-treatment"
+    },
+    {
+      "beat": 18,
+      "startWord": 861,
+      "endWord": 891,
+      "source": "visuals/beat-18.mp4",
+      "role": "narrated-treatment"
+    },
+    {
+      "beat": 19,
+      "startWord": 892,
+      "endWord": 899,
+      "source": "visuals/beat-19.mp4",
+      "role": "narrated-treatment"
+    },
+    {
+      "beat": 20,
+      "startWord": 900,
+      "endWord": 943,
+      "source": "visuals/beat-20.mp4",
+      "role": "narrated-treatment"
+    },
+    {
+      "beat": 21,
+      "startWord": 944,
+      "endWord": 970,
+      "source": "visuals/beat-21.mp4",
+      "role": "narrated-treatment"
+    },
+    {
+      "beat": 22,
+      "startWord": 971,
+      "endWord": 1003,
+      "source": "visuals/beat-22.mp4",
+      "role": "narrated-treatment"
+    },
+    {
+      "beat": 23,
+      "startWord": 1004,
+      "endWord": 1036,
+      "source": "visuals/beat-23.mp4",
+      "role": "narrated-treatment"
+    },
+    {
+      "beat": 24,
+      "startWord": 1037,
+      "endWord": 1037,
+      "source": "visuals/beat-24.mp4",
+      "role": "locked-insert",
+      "fixedSeconds": 5.0
+    },
+    {
+      "beat": 25,
+      "startWord": 1038,
+      "endWord": 1076,
+      "source": "visuals/beat-25.mp4",
+      "role": "narrated-treatment"
+    },
+    {
+      "beat": 26,
+      "startWord": 1077,
+      "endWord": 1138,
+      "source": "visuals/beat-26.mp4",
+      "role": "narrated-treatment"
+    },
+    {
+      "beat": 27,
+      "startWord": 1139,
+      "endWord": 1211,
+      "source": "visuals/beat-27.mp4",
+      "role": "narrated-treatment"
+    },
+    {
+      "beat": 28,
+      "startWord": 1212,
+      "endWord": 1278,
+      "source": "visuals/beat-28.mp4",
+      "role": "narrated-treatment"
+    },
+    {
+      "beat": 29,
+      "startWord": 1279,
+      "endWord": 1292,
+      "source": "visuals/beat-29.mp4",
+      "role": "narrated-treatment"
+    },
+    {
+      "beat": 30,
+      "startWord": 1293,
+      "endWord": 1326,
+      "source": "visuals/beat-30.mp4",
+      "role": "narrated-treatment"
+    },
+    {
+      "beat": 31,
+      "startWord": 1327,
+      "endWord": 1345,
+      "source": "visuals/beat-31.mp4",
+      "role": "narrated-treatment"
+    },
+    {
+      "beat": 32,
+      "startWord": 1346,
+      "endWord": 1434,
+      "source": "visuals/beat-32.mp4",
+      "role": "narrated-treatment"
+    },
+    {
+      "beat": 33,
+      "startWord": 1435,
+      "endWord": 1435,
+      "source": "visuals/beat-33.mp4",
+      "role": "locked-insert",
+      "fixedSeconds": 6.0
+    },
+    {
+      "beat": 34,
+      "startWord": 1436,
+      "endWord": 1436,
+      "source": "visuals/beat-34.mp4",
+      "role": "locked-insert",
+      "fixedSeconds": 9.94
+    }
+  ],
+  "wordCount": 1437,
+  "insertPolicy": "locked-templates-with-single-boundary-word; fixedSeconds authoritative for additive master",
+  "expectedMasterSeconds": 478.618792,
+  "bodySeconds": 447.738792
+}

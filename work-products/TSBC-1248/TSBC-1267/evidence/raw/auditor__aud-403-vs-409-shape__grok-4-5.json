@@ -1,0 +1,79 @@
+{
+  "role": "auditor",
+  "task_id": "aud-403-vs-409-shape",
+  "task_title": "Verify the error-code shape: 403 vs 409 are not interchangeable",
+  "model_id": "grok-4.5",
+  "model_label": "Grok 4.5",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "ok": true,
+  "error": null,
+  "output": "{\"verdict\": \"block\", \"wrongCode\": \"409\", \"correctCode\": \"403\", \"whyItMatters\": \"409 invites retry as if the issue is freeable; 403 means no permission. Collapsing them breaks auth handling, audits, and client logic.\"}",
+  "model_reported": "grok-4.5",
+  "inputTokens": 209,
+  "outputTokens": 54,
+  "totalTokens": 263,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "wallMs": 9868,
+  "stderrTail": "",
+  "agentFileSha256": "none",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "2a04b6f827eda607af0693e4fbbe2fe425b9ea1c5fb0574b0550ceaac640d913",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/auditor/suite.json",
+  "skipped": false,
+  "skipReason": null,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "json_valid",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {}
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 5.0,
+      "spec": {
+        "value": "block",
+        "path": "verdict"
+      }
+    },
+    {
+      "check": "contains_all",
+      "ok": true,
+      "weight": 3.0,
+      "spec": {
+        "values": [
+          "403",
+          "409"
+        ]
+      }
+    },
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 1.0,
+      "spec": {
+        "values": [
+          "retry",
+          "permission",
+          "forbidden",
+          "conflict"
+        ]
+      }
+    }
+  ],
+  "judgeScore": 0.9499999999999998,
+  "judgeDetail": {
+    "perCriterion": {
+      "code_semantics": 0.95
+    },
+    "rationale": "Correctly blocks with wrongCode 409/correctCode 403 and explains retry-loop and hidden-auth-bug consequences, though slightly terser on burned heartbeats than an ideal answer.",
+    "judgeModel": "opus"
+  },
+  "quality": 0.9749999999999999,
+  "qualityPer1kTokens": 3.7072243346007596
+}

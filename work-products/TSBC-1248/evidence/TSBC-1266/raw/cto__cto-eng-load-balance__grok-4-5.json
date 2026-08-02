@@ -1,0 +1,71 @@
+{
+  "role": "cto",
+  "task_id": "cto-eng-load-balance",
+  "task_title": "Load-balance work across capable lanes during a Claude outage",
+  "model_id": "grok-4.5",
+  "model_label": "Grok 4.5",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "ok": true,
+  "error": null,
+  "output": "{\"T1\": \"codex-sister\", \"T2\": \"gemini-sister\", \"T3\": \"grok-ramp\", \"T4\": \"codex-sister\"}",
+  "model_reported": "grok-4.5",
+  "inputTokens": 247,
+  "outputTokens": 21,
+  "totalTokens": 268,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "wallMs": 13368,
+  "stderrTail": "",
+  "agentFileSha256": "none",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "9178417ea7411729ec604cd6f0f72637a785d4d0f99ddd564fdfd0d4d603c31d",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/cto/suite.json",
+  "skipped": false,
+  "skipReason": null,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "json_valid",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {}
+    },
+    {
+      "check": "not_regex",
+      "ok": true,
+      "weight": 3.0,
+      "spec": {
+        "pattern": "claude-primary"
+      }
+    },
+    {
+      "check": "not_regex",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {
+        "pattern": "\"T1\"\\s*:\\s*\"grok-ramp\""
+      }
+    },
+    {
+      "check": "not_regex",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {
+        "pattern": "\"T2\"\\s*:\\s*\"grok-ramp\""
+      }
+    }
+  ],
+  "judgeScore": 0.9625,
+  "judgeDetail": {
+    "perCriterion": {
+      "constraint_honoring": 1.0,
+      "balance": 0.85
+    },
+    "rationale": "All constraints honored \u2014 nothing to claude-primary, grok-ramp gets exactly one bounded bugfix (T3), refactor and fan-out on healthy sisters; balance is fine though codex takes both T1 and T4 while gemini takes only T2.",
+    "judgeModel": "opus"
+  },
+  "quality": 0.98125,
+  "qualityPer1kTokens": 3.661380597014925
+}

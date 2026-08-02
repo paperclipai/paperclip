@@ -1,0 +1,71 @@
+{
+  "role": "cto",
+  "task_id": "cto-fallback-monitor-option",
+  "task_title": "Pick the durable fix for the fallback-monitor permission gap",
+  "model_id": "grok-4.5",
+  "model_label": "Grok 4.5",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "ok": true,
+  "error": null,
+  "output": "{\"option\": 1, \"reason\": \"Least-privilege, auditable, revocable server path keeps reassignment automated without handing the monitor god-mode write access across companies.\", \"rejectedRisk\": \"Option 2: permanent cross-company write blast radius if the monitor is compromised or buggy.\"}",
+  "model_reported": "grok-4.5",
+  "inputTokens": 290,
+  "outputTokens": 71,
+  "totalTokens": 361,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "wallMs": 10258,
+  "stderrTail": "",
+  "agentFileSha256": "none",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "9178417ea7411729ec604cd6f0f72637a785d4d0f99ddd564fdfd0d4d603c31d",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/cto/suite.json",
+  "skipped": false,
+  "skipReason": null,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "json_valid",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {}
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 5.0,
+      "spec": {
+        "value": 1,
+        "path": "option"
+      }
+    },
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {
+        "values": [
+          "least privilege",
+          "least-privilege",
+          "scoped",
+          "revocable",
+          "audit",
+          "label"
+        ]
+      }
+    }
+  ],
+  "judgeScore": 0.9775,
+  "judgeDetail": {
+    "perCriterion": {
+      "judgment": 0.97,
+      "risk_framing": 1.0
+    },
+    "rationale": "Correctly picks Option 1 tying to least-privilege/auditable/revocable and names Option 2's concrete cross-company write blast radius as the chief rejected risk.",
+    "judgeModel": "opus"
+  },
+  "quality": 0.98875,
+  "qualityPer1kTokens": 2.738919667590028
+}

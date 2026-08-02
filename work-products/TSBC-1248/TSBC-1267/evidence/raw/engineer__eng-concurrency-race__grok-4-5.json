@@ -1,0 +1,79 @@
+{
+  "role": "engineer",
+  "task_id": "eng-concurrency-race",
+  "task_title": "Spot the concurrency race in session-token attribution",
+  "model_id": "grok-4.5",
+  "model_label": "Grok 4.5",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "ok": true,
+  "error": null,
+  "output": "**(1) Race:** TOCTOU on shared session-ID set-diff (check `before` \u2192 create \u2192 re-list `after`).\n\n**(2) Mis-attribution:** Two workers snapshot the same `before`. Both create sessions. Each `after - before` can contain *both* new IDs (or the \u201cwrong\u201d one). `max(new_ids)` then picks the same/other run\u2019s session, so tokens (e.g. 19k) attach to the wrong call (e.g. reported as 200).\n\n**(3) Fix:** Don\u2019t infer by diff. Have `run_cli` return (or accept a pre-generated) session id for that invocation, and export tokens for *that* id only. (A global lock around before/run/after also works but serializes runs.)",
+  "model_reported": "grok-4.5",
+  "inputTokens": 226,
+  "outputTokens": 151,
+  "totalTokens": 377,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "wallMs": 23292,
+  "stderrTail": "",
+  "agentFileSha256": "none",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "b7373c2152d432ffadaa313c61133d110457a1e56402bf122dab21c5460d183f",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/engineer/suite.json",
+  "skipped": false,
+  "skipReason": null,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {
+        "values": [
+          "race",
+          "concurren",
+          "interleav",
+          "TOCTOU",
+          "time-of-check"
+        ]
+      }
+    },
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {
+        "values": [
+          "lock",
+          "serial",
+          "mutex",
+          "per-thread",
+          "session id",
+          "session_id",
+          "unique"
+        ]
+      }
+    },
+    {
+      "check": "max_words",
+      "ok": true,
+      "weight": 1.0,
+      "spec": {
+        "value": 150
+      }
+    }
+  ],
+  "judgeScore": 0.9025000000000001,
+  "judgeDetail": {
+    "perCriterion": {
+      "correctness": 0.92,
+      "specificity": 0.85
+    },
+    "rationale": "Correctly nails the non-atomic diff with both new IDs landing in `after` and max() picking the wrong session, plus a valid per-call id fix, but omits the same-prompt-indistinguishability bonus and doesn't explicitly explain why 200-vs-19k maps to picking the smaller/other id.",
+    "judgeModel": "opus"
+  },
+  "quality": 0.95125,
+  "qualityPer1kTokens": 2.523209549071618
+}

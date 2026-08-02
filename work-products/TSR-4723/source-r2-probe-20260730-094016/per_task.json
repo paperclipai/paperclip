@@ -1,0 +1,232 @@
+[
+  {
+    "model": "grok-4.5-hermes-clean",
+    "effort": "cli_default",
+    "task_id": "cv-benign-contract-overlap",
+    "adapterType": "hermes",
+    "generationFrame": "single_shot_concat",
+    "reportedModels": [
+      "grok-4.5"
+    ],
+    "samples": 3,
+    "okCount": 3,
+    "meanQuality": 1.0,
+    "minQuality": 1.0,
+    "medianOutputTokens": 86,
+    "meanOutputTokens": 87.33333333333333,
+    "meanInputTokens": 578,
+    "meanQPer1kOut": 11.595267237862098,
+    "runIds": [
+      "rep01",
+      "rep02",
+      "rep03"
+    ]
+  },
+  {
+    "model": "grok-4.5-hermes-clean",
+    "effort": "cli_default",
+    "task_id": "cv-clean-calibration",
+    "adapterType": "hermes",
+    "generationFrame": "single_shot_concat",
+    "reportedModels": [
+      "grok-4.5"
+    ],
+    "samples": 3,
+    "okCount": 3,
+    "meanQuality": 1.0,
+    "minQuality": 1.0,
+    "medianOutputTokens": 11,
+    "meanOutputTokens": 11,
+    "meanInputTokens": 556,
+    "meanQPer1kOut": 90.90909090909092,
+    "runIds": [
+      "rep01",
+      "rep02",
+      "rep03"
+    ]
+  },
+  {
+    "model": "grok-4.5-hermes-clean",
+    "effort": "cli_default",
+    "task_id": "cv-date-inconsistency",
+    "adapterType": "hermes",
+    "generationFrame": "single_shot_concat",
+    "reportedModels": [
+      "grok-4.5"
+    ],
+    "samples": 3,
+    "okCount": 3,
+    "meanQuality": 1.0,
+    "minQuality": 1.0,
+    "medianOutputTokens": 130,
+    "meanOutputTokens": 132.33333333333334,
+    "meanInputTokens": 522,
+    "meanQPer1kOut": 7.6784572359793595,
+    "runIds": [
+      "rep01",
+      "rep02",
+      "rep03"
+    ]
+  },
+  {
+    "model": "grok-4.5-hermes-clean",
+    "effort": "cli_default",
+    "task_id": "cv-explained-career-break",
+    "adapterType": "hermes",
+    "generationFrame": "single_shot_concat",
+    "reportedModels": [
+      "grok-4.5"
+    ],
+    "samples": 3,
+    "okCount": 3,
+    "meanQuality": 1.0,
+    "minQuality": 1.0,
+    "medianOutputTokens": 91,
+    "meanOutputTokens": 108.33333333333333,
+    "meanInputTokens": 607,
+    "meanQPer1kOut": 10.299607083406965,
+    "runIds": [
+      "rep01",
+      "rep02",
+      "rep03"
+    ]
+  },
+  {
+    "model": "grok-4.5-hermes-clean",
+    "effort": "cli_default",
+    "task_id": "cv-keyword-stuffed-role-mismatch",
+    "adapterType": "hermes",
+    "generationFrame": "single_shot_concat",
+    "reportedModels": [
+      "grok-4.5"
+    ],
+    "samples": 3,
+    "okCount": 3,
+    "meanQuality": 1.0,
+    "minQuality": 1.0,
+    "medianOutputTokens": 166,
+    "meanOutputTokens": 163.66666666666666,
+    "meanInputTokens": 587,
+    "meanQPer1kOut": 6.231553895895472,
+    "runIds": [
+      "rep01",
+      "rep02",
+      "rep03"
+    ]
+  },
+  {
+    "model": "grok-4.5-hermes-clean",
+    "effort": "cli_default",
+    "task_id": "cv-pii-overshare",
+    "adapterType": "hermes",
+    "generationFrame": "single_shot_concat",
+    "reportedModels": [
+      "grok-4.5"
+    ],
+    "samples": 3,
+    "okCount": 3,
+    "meanQuality": 1.0,
+    "minQuality": 1.0,
+    "medianOutputTokens": 127,
+    "meanOutputTokens": 134.66666666666666,
+    "meanInputTokens": 539,
+    "meanQPer1kOut": 7.568628509142504,
+    "runIds": [
+      "rep01",
+      "rep02",
+      "rep03"
+    ]
+  },
+  {
+    "model": "grok-4.5-hermes-clean",
+    "effort": "cli_default",
+    "task_id": "cv-role-mismatch",
+    "adapterType": "hermes",
+    "generationFrame": "single_shot_concat",
+    "reportedModels": [
+      "grok-4.5"
+    ],
+    "samples": 3,
+    "okCount": 3,
+    "meanQuality": 1.0,
+    "minQuality": 1.0,
+    "medianOutputTokens": 105,
+    "meanOutputTokens": 109,
+    "meanInputTokens": 525,
+    "meanQPer1kOut": 9.36189414450284,
+    "runIds": [
+      "rep01",
+      "rep02",
+      "rep03"
+    ]
+  },
+  {
+    "model": "grok-4.5-hermes-clean",
+    "effort": "cli_default",
+    "task_id": "cv-team-metric-attribution",
+    "adapterType": "hermes",
+    "generationFrame": "single_shot_concat",
+    "reportedModels": [
+      "grok-4.5"
+    ],
+    "samples": 3,
+    "okCount": 3,
+    "meanQuality": 1.0,
+    "minQuality": 1.0,
+    "medianOutputTokens": 274,
+    "meanOutputTokens": 279.6666666666667,
+    "meanInputTokens": 577,
+    "meanQPer1kOut": 3.5990033718534113,
+    "runIds": [
+      "rep01",
+      "rep02",
+      "rep03"
+    ]
+  },
+  {
+    "model": "grok-4.5-hermes-clean",
+    "effort": "cli_default",
+    "task_id": "cv-title-inflation-gap",
+    "adapterType": "hermes",
+    "generationFrame": "single_shot_concat",
+    "reportedModels": [
+      "grok-4.5"
+    ],
+    "samples": 3,
+    "okCount": 3,
+    "meanQuality": 1.0,
+    "minQuality": 1.0,
+    "medianOutputTokens": 158,
+    "meanOutputTokens": 163.66666666666666,
+    "meanInputTokens": 551,
+    "meanQPer1kOut": 6.136404198776026,
+    "runIds": [
+      "rep01",
+      "rep02",
+      "rep03"
+    ]
+  },
+  {
+    "model": "grok-4.5-hermes-clean",
+    "effort": "cli_default",
+    "task_id": "cv-unsubstantiated-metrics",
+    "adapterType": "hermes",
+    "generationFrame": "single_shot_concat",
+    "reportedModels": [
+      "grok-4.5"
+    ],
+    "samples": 3,
+    "okCount": 3,
+    "meanQuality": 1.0,
+    "minQuality": 1.0,
+    "medianOutputTokens": 379,
+    "meanOutputTokens": 360,
+    "meanInputTokens": 537,
+    "meanQPer1kOut": 2.8186821232489097,
+    "runIds": [
+      "rep01",
+      "rep02",
+      "rep03"
+    ]
+  }
+]

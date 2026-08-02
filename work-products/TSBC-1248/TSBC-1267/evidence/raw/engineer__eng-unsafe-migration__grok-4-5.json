@@ -1,0 +1,79 @@
+{
+  "role": "engineer",
+  "task_id": "eng-unsafe-migration",
+  "task_title": "Review an unsafe production DB migration",
+  "model_id": "grok-4.5",
+  "model_label": "Grok 4.5",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "ok": true,
+  "error": null,
+  "output": "**(1) Locks / heartbeat impact**\n- `ALTER TABLE ... ADD COLUMN` takes **ACCESS EXCLUSIVE** (blocks all reads/writes). Brief on PG11+ with a constant `DEFAULT`, but still a hard stall of the heartbeat writer.\n- `UPDATE` of ~40M rows is one long txn: heavy WAL/IO, row locks, bloat, replication lag; under a single migration txn it keeps the stronger lock open \u2192 heartbeats block or time out.\n- `CREATE INDEX` (non-concurrent) takes **ShareLock** \u2192 blocks INSERTs/UPDATEs for the whole build.\n\n**(2) Single-txn backfill**\nOne `UPDATE` on 40M rows = multi\u2011GB WAL, huge undo risk, hours held open; often wrapped with the `ALTER` so **ACCESS EXCLUSIVE** lasts the entire backfill and takes production write path down.\n\n**(3) Safe rewrite**\n```text\nALTER TABLE heartbeat_runs\n  ADD COLUMN cost_cents integer NOT NULL DEFAULT 0;  -- PG11+: metadata-only, brief AX\n\n-- backfill outside one txn, batches, commit each:\nUPDATE heartbeat_runs SET cost_cents = ((usage_json->>'costUsd')::numeric * 100)::int\n WHERE id > $start AND id <= $end AND cost_cents = 0;\n-- repeat by id/keyset\n\nCREATE INDEX CONCURRENTLY idx_hr_cost ON heartbeat_runs (cost_cents);\n```\nRun off-peak if possible; never one txn for alter+full backfill+index.",
+  "model_reported": "grok-4.5",
+  "inputTokens": 210,
+  "outputTokens": 304,
+  "totalTokens": 514,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "wallMs": 32781,
+  "stderrTail": "",
+  "agentFileSha256": "none",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "b7373c2152d432ffadaa313c61133d110457a1e56402bf122dab21c5460d183f",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/engineer/suite.json",
+  "skipped": false,
+  "skipReason": null,
+  "deterministicScore": 0.8571428571428571,
+  "deterministicDetails": [
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 3.0,
+      "spec": {
+        "values": [
+          "lock",
+          "locking",
+          "access exclusive",
+          "blocks write",
+          "block writes",
+          "blocking"
+        ]
+      }
+    },
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 3.0,
+      "spec": {
+        "values": [
+          "concurrently",
+          "CONCURRENTLY",
+          "batch",
+          "batched",
+          "chunk",
+          "backfill"
+        ]
+      }
+    },
+    {
+      "check": "max_words",
+      "ok": false,
+      "weight": 1.0,
+      "spec": {
+        "value": 170
+      }
+    }
+  ],
+  "judgeScore": 0.865,
+  "judgeDetail": {
+    "perCriterion": {
+      "correctness": 0.87,
+      "specificity": 0.85
+    },
+    "rationale": "Catches all three hazards precisely (AX on ADD COLUMN noted cheap on PG11+, single-txn UPDATE WAL/row-lock/bloat, ShareLock on non-concurrent index) with batched backfill and CONCURRENTLY, but omits the NOT VALID/VALIDATE constraint pattern the criteria call out.",
+    "judgeModel": "opus"
+  },
+  "quality": 0.8610714285714285,
+  "qualityPer1kTokens": 1.6752362423568647
+}

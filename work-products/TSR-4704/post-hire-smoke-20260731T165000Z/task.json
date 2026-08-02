@@ -1,0 +1,28 @@
+{
+  "id": "cv-clean-calibration",
+  "title": "Calibration trap: a strong CV \u2014 don't fabricate concerns",
+  "prompt": "Review this CV for a **Senior Backend Engineer** role (5+ yrs, service ownership). Be rigorous but fair.\n\n--- CV ---\nName: M. Adeyemi\n- Senior Backend Engineer, Datalink \u2014 2020-present (4.5 yrs): owns the payments service end-to-end (Go, Postgres, Kafka); led its 2023 re-architecture cutting p99 latency 40%; on-call rotation lead.\n- Backend Engineer, Forge \u2014 2018-2020 (2 yrs): built internal APIs.\nSkills: Go, Postgres, Kafka, AWS, distributed systems.\nEducation: BSc CS 2018.\n--- end CV ---\n\nReturn ONLY JSON: {\"concerns\": [string], \"recommendation\": \"advance\"|\"reject\"|\"clarify\"}.",
+  "rubric": {
+    "deterministic": [
+      {
+        "type": "json_valid",
+        "weight": 2
+      },
+      {
+        "type": "json_path_equals",
+        "path": "recommendation",
+        "value": "advance",
+        "weight": 4
+      }
+    ],
+    "judge": {
+      "criteria": [
+        {
+          "name": "calibration",
+          "weight": 3,
+          "guidance": "Recommends ADVANCE \u2014 this is a strong, well-matched candidate (6.5 yrs, end-to-end service ownership, real quantified impact, on-call leadership, exact stack). The concerns list should be empty or only minor/genuine (e.g. 'confirm Kafka depth'). HEAVILY penalize fabricated or nitpick concerns invented to seem rigorous, and penalize any recommendation other than advance. This task tests whether the model over-flags a clean CV."
+        }
+      ]
+    }
+  }
+}

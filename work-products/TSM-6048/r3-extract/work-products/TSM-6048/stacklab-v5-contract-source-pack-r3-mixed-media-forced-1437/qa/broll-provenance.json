@@ -1,0 +1,779 @@
+[
+  {
+    "beat": 1,
+    "shot": 1,
+    "source": "/Users/glad0s/scripts/brand/broll video/CC-01.mp4",
+    "sourceSha256": "b0a0ac1a05b687498d23ba2520e4b4983077ceb8aa1789f6434cc7ff425d9f15",
+    "durationSeconds": 4.867
+  },
+  {
+    "beat": 1,
+    "shot": 2,
+    "source": "/Users/glad0s/scripts/brand/broll video/CC-02.mp4",
+    "sourceSha256": "fa57294c25f8f4616c73ee42bdd23f67664f6d20a2570edbdf1491192f7d125e",
+    "durationSeconds": 4.867
+  },
+  {
+    "beat": 1,
+    "shot": 3,
+    "source": "/Users/glad0s/scripts/brand/broll video/CC-03.mp4",
+    "sourceSha256": "23b71cddf822d1392b8826eaa4ae8a969e6aca26d144a64b343fc8553ed98ac3",
+    "durationSeconds": 4.867
+  },
+  {
+    "beat": 1,
+    "shot": 4,
+    "source": "/Users/glad0s/scripts/brand/broll video/GW-CC-01.mp4",
+    "sourceSha256": "bc9d83a55c309ef843aede8047801cd6ce101e665f6fb32f3f2ab66fcf12d423",
+    "durationSeconds": 4.867
+  },
+  {
+    "beat": 1,
+    "shot": 5,
+    "source": "/Users/glad0s/scripts/brand/broll video/GW-SL-01.mp4",
+    "sourceSha256": "f17263131aa9822bea5feb6bb9dee81762d629751cb06d15321f499ce5f65064",
+    "durationSeconds": 4.867
+  },
+  {
+    "beat": 1,
+    "shot": 6,
+    "source": "/Users/glad0s/scripts/brand/broll video/GW-VC-01.mp4",
+    "sourceSha256": "7b80334c3204e119109ed54bee3ae273f2bdace2c3ee2c5b05bad2d77c8600b5",
+    "durationSeconds": 4.867
+  },
+  {
+    "beat": 1,
+    "shot": 7,
+    "source": "/Users/glad0s/scripts/brand/broll video/GW-VC-02.mp4",
+    "sourceSha256": "0494b9b65c1466c7c9a798f707d32a79b477c153b1834029c41cfeeb3ea0fb61",
+    "durationSeconds": 4.867
+  },
+  {
+    "beat": 1,
+    "shot": 8,
+    "source": "/Users/glad0s/scripts/brand/broll video/SL-01.mp4",
+    "sourceSha256": "b849763503b7f2bb8580b831303b9728b3f5e8e1e31b4ae0b0fe08d6b9611142",
+    "durationSeconds": 4.867
+  },
+  {
+    "beat": 1,
+    "shot": 9,
+    "source": "/Users/glad0s/scripts/brand/broll video/SL-02.mp4",
+    "sourceSha256": "0742408276fdabacbe3670b74b870f05a3b59f06f8e04547e5450fb44c886934",
+    "durationSeconds": 4.867
+  },
+  {
+    "beat": 1,
+    "shot": 10,
+    "source": "/Users/glad0s/scripts/brand/broll video/SL-03.mp4",
+    "sourceSha256": "374067b9380a3dea5727edb9115cdf15095f0a843f15853008309e700a65e9cf",
+    "durationSeconds": 4.867
+  },
+  {
+    "beat": 1,
+    "shot": 11,
+    "source": "/Users/glad0s/scripts/brand/broll video/VC-01.mp4",
+    "sourceSha256": "a298a16e4bf5d813ca216093c4d064e5cb80846848100b5fe5f952dc99dd9a87",
+    "durationSeconds": 1.0
+  },
+  {
+    "beat": 2,
+    "shot": 1,
+    "source": "/Users/glad0s/scripts/brand/broll video/VC-02.mp4",
+    "sourceSha256": "e0307682d53a45bf2fbe2aba8c8663b89c0c24eac936eb9825d034a5d2403a6f",
+    "durationSeconds": 4.867
+  },
+  {
+    "beat": 2,
+    "shot": 2,
+    "source": "/Users/glad0s/scripts/brand/broll video/VC-03.mp4",
+    "sourceSha256": "01b2ffa4a2e795ae6a16049ee3ed151691f6a86b25ca8f121ee5f16fc645721d",
+    "durationSeconds": 4.567
+  },
+  {
+    "beat": 3,
+    "shot": 1,
+    "source": "/Users/glad0s/scripts/brand/broll video/_july24-cashflow-drop/hermes/cashflow-compass_01_16x9_6s.mp4",
+    "sourceSha256": "3087dfae6004c9c44729e1bfa192c5adc682d15d48b73a8ee80cc6d002124e0e",
+    "durationSeconds": 3.633
+  },
+  {
+    "beat": 4,
+    "shot": 1,
+    "source": "/Users/glad0s/scripts/brand/broll video/_july24-cashflow-drop/hermes/cashflow-compass_01_9x16_6s.mp4",
+    "sourceSha256": "d66db36a4943a9abd0d726a28f16f78f5c7f689dc68ff81ae3d9cc6f18baa343",
+    "durationSeconds": 3.733
+  },
+  {
+    "beat": 5,
+    "shot": 1,
+    "source": "/Users/glad0s/scripts/brand/broll video/_july24-cashflow-drop/hermes/cashflow-compass_04_16x9_6s.mp4",
+    "sourceSha256": "caae4bef7e5eff45950ef9f14da7f9ac8065210992d41a2e9545a269486bb977",
+    "durationSeconds": 4.867
+  },
+  {
+    "beat": 5,
+    "shot": 2,
+    "source": "/Users/glad0s/scripts/brand/broll video/_july24-cashflow-drop/hermes/cashflow-compass_06_16x9_6s.mp4",
+    "sourceSha256": "5a4914f876286e01ee4dcdc592f6431130b246fe42bf789aa8837c679d57fdb2",
+    "durationSeconds": 4.867
+  },
+  {
+    "beat": 5,
+    "shot": 3,
+    "source": "/Users/glad0s/scripts/brand/broll video/_july24-cashflow-drop/hermes/cashflow-compass_08_16x9_6s.mp4",
+    "sourceSha256": "3373d1ff715110d6b74cbb90789131bc9c36416e6e6ec9280a1ff26162073183",
+    "durationSeconds": 1.233
+  },
+  {
+    "beat": 6,
+    "shot": 1,
+    "source": "/Users/glad0s/scripts/brand/broll video/_july24-cashflow-drop/hermes/cashflow-compass_11_16x9_6s.mp4",
+    "sourceSha256": "ac7e69f8ece74d7210228ba8cee354dad97935ef2da7a051fbcb03347076eb0b",
+    "durationSeconds": 4.867
+  },
+  {
+    "beat": 6,
+    "shot": 2,
+    "source": "/Users/glad0s/scripts/brand/broll video/_july24-cashflow-drop/hermes/cashflow-compass_13_16x9_6s.mp4",
+    "sourceSha256": "d0f0d8dcb10a0eeb18e44cbffe2103de5ffa7cabb2ee787cb49bfa5271ce1bc6",
+    "durationSeconds": 1.167
+  },
+  {
+    "beat": 7,
+    "shot": 1,
+    "source": "/Users/glad0s/scripts/brand/broll video/_july24-cashflow-drop/hermes/cashflow-compass_13_9x16_6s.mp4",
+    "sourceSha256": "6e279fb53b1a1f5a95fbe8ccf529c57f176252adf271ef2f637e7ee0b34c457d",
+    "durationSeconds": 4.867
+  },
+  {
+    "beat": 7,
+    "shot": 2,
+    "source": "/Users/glad0s/scripts/brand/broll video/_july24-cashflow-drop/hermes/cashflow-compass_16_16x9_6s.mp4",
+    "sourceSha256": "a28f2731c625f068cd5518755fee7a5218292a5f5e82db9b4ddf256979d8b942",
+    "durationSeconds": 4.867
+  },
+  {
+    "beat": 7,
+    "shot": 3,
+    "source": "/Users/glad0s/scripts/brand/broll video/_july24-cashflow-drop/hermes/cashflow-compass_18_16x9_6s.mp4",
+    "sourceSha256": "01b074f5eca3b7152b1ffd3a94b68a88f40c1aa83ab668bf00c0be04dd1c2dec",
+    "durationSeconds": 2.167
+  },
+  {
+    "beat": 8,
+    "shot": 1,
+    "source": "/Users/glad0s/scripts/brand/broll video/_july24-cashflow-drop/hermes/cashflow-compass_20_16x9_6s.mp4",
+    "sourceSha256": "e6956c7189e224bfafbe51837beb705b52ce5553050fd545ac1571db1370690e",
+    "durationSeconds": 4.867
+  },
+  {
+    "beat": 8,
+    "shot": 2,
+    "source": "/Users/glad0s/scripts/brand/broll video/_july24-cashflow-drop/hermes/cashflow-compass_22_16x9_6s.mp4",
+    "sourceSha256": "f761ee773df88af2b724f9f38f408b73483eaa54183fb25b0006ef1a4701ce18",
+    "durationSeconds": 4.867
+  },
+  {
+    "beat": 8,
+    "shot": 3,
+    "source": "/Users/glad0s/scripts/brand/broll video/_july24-cashflow-drop/hermes/cashflow-compass_24_16x9_6s.mp4",
+    "sourceSha256": "e945e52ef2fd1638283bc488ca79f33fb2c8e7e054500a748eea9a8b8851bf52",
+    "durationSeconds": 2.6
+  },
+  {
+    "beat": 9,
+    "shot": 1,
+    "source": "/Users/glad0s/scripts/brand/broll video/_july24-cashflow-drop/hermes/cashflow-compass_24_9x16_6s.mp4",
+    "sourceSha256": "4141f6c1151464e24a056a4778389aeae825cb367f8703cfd1f9f17773f4c42b",
+    "durationSeconds": 4.867
+  },
+  {
+    "beat": 9,
+    "shot": 2,
+    "source": "/Users/glad0s/scripts/brand/broll video/_july24-cashflow-drop/hermes/cashflow-compass_27_16x9_6s.mp4",
+    "sourceSha256": "6dffed109b73fb7e562c8fba14f9c8d96244923c271db7a7cf0e10b79c446f19",
+    "durationSeconds": 1.7
+  },
+  {
+    "beat": 10,
+    "shot": 1,
+    "source": "/Users/glad0s/scripts/brand/broll video/_july24-cashflow-drop/hermes/cashflow-compass_29_16x9_6s.mp4",
+    "sourceSha256": "9a6ba74bfcd987a51d2082996aa9664a3b1ae0441342f92874293fe12d544885",
+    "durationSeconds": 4.867
+  },
+  {
+    "beat": 10,
+    "shot": 2,
+    "source": "/Users/glad0s/scripts/brand/broll video/_july24-cashflow-drop/hermes/cashflow-compass_29_9x16_6s.mp4",
+    "sourceSha256": "168228babd3617b164e6ac62561bdb88a2bbaa1c99ea3369f3591c23d879e3f9",
+    "durationSeconds": 4.867
+  },
+  {
+    "beat": 10,
+    "shot": 3,
+    "source": "/Users/glad0s/scripts/brand/broll video/_july24-cashflow-drop/hermes/cashflow-compass_31_16x9_6s.mp4",
+    "sourceSha256": "efcb31ad7e80eb65394e7541a2a3a335b9db1e2454f131d15efe9148f7310306",
+    "durationSeconds": 4.867
+  },
+  {
+    "beat": 10,
+    "shot": 4,
+    "source": "/Users/glad0s/scripts/brand/broll video/_july24-cashflow-drop/hermes/cashflow-compass_33_16x9_6s.mp4",
+    "sourceSha256": "84e84404af4ffc93bccab946febaea06e0aff11f3e48be1e346ffd12369839c6",
+    "durationSeconds": 4.867
+  },
+  {
+    "beat": 10,
+    "shot": 5,
+    "source": "/Users/glad0s/scripts/brand/broll video/_july24-cashflow-drop/hermes/cashflow-compass_35_16x9_6s.mp4",
+    "sourceSha256": "0ef4cbf8606043fc3261533e451ca2d75294a5d9c77fccf7d1a12b24940c72bc",
+    "durationSeconds": 2.367
+  },
+  {
+    "beat": 11,
+    "shot": 1,
+    "source": "/Users/glad0s/scripts/brand/broll video/_july24-cashflow-drop/hermes/cashflow-compass_35_9x16_6s.mp4",
+    "sourceSha256": "050ac42e140622446aff362c9db73552e06415074f8cc88c83e7859dc1ce61a3",
+    "durationSeconds": 4.867
+  },
+  {
+    "beat": 11,
+    "shot": 2,
+    "source": "/Users/glad0s/scripts/brand/broll video/_july24-cashflow-drop/hermes/cashflow-compass_37_16x9_6s.mp4",
+    "sourceSha256": "8ba81d013be3d441a89750bd170669dd34b55ea2f8614e54bb1ce51bfdbbcc6d",
+    "durationSeconds": 4.867
+  },
+  {
+    "beat": 11,
+    "shot": 3,
+    "source": "/Users/glad0s/scripts/brand/broll video/_july24-cashflow-drop/hermes/cashflow-compass_39_16x9_6s.mp4",
+    "sourceSha256": "9a6b77f10fc26288f3a835d6a919be50583e096ac1b689b754b992335b59e54d",
+    "durationSeconds": 4.867
+  },
+  {
+    "beat": 11,
+    "shot": 4,
+    "source": "/Users/glad0s/scripts/brand/broll video/_july24-cashflow-drop/hermes/cashflow-compass_41_16x9_6s.mp4",
+    "sourceSha256": "d062562921672396d4f0a21d9f02b786b3aa32e81f311c3927e468326beb1c07",
+    "durationSeconds": 1.667
+  },
+  {
+    "beat": 12,
+    "shot": 1,
+    "source": "/Users/glad0s/scripts/brand/broll video/_july24-cashflow-drop/hermes/cashflow-compass_43_16x9_6s.mp4",
+    "sourceSha256": "b224551751854fcb96f2696b0ed31e9bf193ca8bb6c7798536f87da42a47c3c2",
+    "durationSeconds": 4.633
+  },
+  {
+    "beat": 13,
+    "shot": 1,
+    "source": "/Users/glad0s/scripts/brand/broll video/_july24-cashflow-drop/hermes/cashflow-compass_45_16x9_6s.mp4",
+    "sourceSha256": "fd604849d480db9c1f0a17110d94f2ca3a1003a09d91294bc107180682082179",
+    "durationSeconds": 4.867
+  },
+  {
+    "beat": 13,
+    "shot": 2,
+    "source": "/Users/glad0s/scripts/brand/broll video/_july24-cashflow-drop/veo/veo-cc-coffee-laptop-morning.mp4",
+    "sourceSha256": "930d92db8f3871edbbad51e78433701a2c52aa503a8892b41562a5860c92faf9",
+    "durationSeconds": 4.867
+  },
+  {
+    "beat": 13,
+    "shot": 3,
+    "source": "/Users/glad0s/scripts/brand/broll video/_july24-cashflow-drop/veo/veo-cc-coin-cascade-macro.mp4",
+    "sourceSha256": "a8a972f33980e6a0b53551708932487b361ee27fdb739ea56e6daf7ee74ee5b9",
+    "durationSeconds": 4.867
+  },
+  {
+    "beat": 13,
+    "shot": 4,
+    "source": "/Users/glad0s/scripts/brand/broll video/_july24-cashflow-drop/veo/veo-cc-coldopen-compass-to-path.mp4",
+    "sourceSha256": "eaa2b1d0eafd9ae7b999011bc49a26258f014833c6ed1e090b0f276f3c92a5e8",
+    "durationSeconds": 4.867
+  },
+  {
+    "beat": 13,
+    "shot": 5,
+    "source": "/Users/glad0s/scripts/brand/broll video/_july24-cashflow-drop/veo/veo-cc-compounding-coin-tree.mp4",
+    "sourceSha256": "8c87b07de17a18e30c32bf859118c8d357dfcdd1550e30bcf3e5c8c54c52feac",
+    "durationSeconds": 4.6
+  },
+  {
+    "beat": 14,
+    "shot": 1,
+    "source": "/Users/glad0s/scripts/brand/broll video/_july24-cashflow-drop/veo/veo-cc-debt-creditcard-dominoes.mp4",
+    "sourceSha256": "323e95767dd81fdac04ca8b7ed23ee35dd5c419e1f487361dc24191b9aeceebf",
+    "durationSeconds": 4.867
+  },
+  {
+    "beat": 14,
+    "shot": 2,
+    "source": "/Users/glad0s/scripts/brand/broll video/_july24-cashflow-drop/veo/veo-cc-feedrag-dollar-embers.mp4",
+    "sourceSha256": "15ffc04f64048f8e26ee0cc461783cc5677f9aaa4a38cf487fc405543a1bfbb6",
+    "durationSeconds": 4.867
+  },
+  {
+    "beat": 15,
+    "shot": 1,
+    "source": "/Users/glad0s/scripts/brand/broll video/_july24-cashflow-drop/veo/veo-cc-financial-district-dawn.mp4",
+    "sourceSha256": "003a3eba6ef91ea77b5175e5ad3b31808039032e7c568223bf7164181c833b5d",
+    "durationSeconds": 4.867
+  },
+  {
+    "beat": 15,
+    "shot": 2,
+    "source": "/Users/glad0s/scripts/brand/broll video/_july24-cashflow-drop/veo/veo-cc-green-linegraph-skyline.mp4",
+    "sourceSha256": "aba1fd7c2af5db891cf3ac8e1b5b7138f150cc7abccebd9ef606ddce1a294f84",
+    "durationSeconds": 4.867
+  },
+  {
+    "beat": 15,
+    "shot": 3,
+    "source": "/Users/glad0s/scripts/brand/broll video/_july24-cashflow-drop/veo/veo-cc-hourglass-coins-compounding.mp4",
+    "sourceSha256": "bde1f263667e8f601b2f9d41d251d85996fc657f0b29dc4aa492ff7c9a3c2ff8",
+    "durationSeconds": 4.867
+  },
+  {
+    "beat": 15,
+    "shot": 4,
+    "source": "/Users/glad0s/scripts/brand/broll video/_july24-cashflow-drop/veo/veo-cc-ledger-budgeting-macro.mp4",
+    "sourceSha256": "975c3c837d7371cbd9d2c69611cd18e40e66dfcabb7b3712a8b222d8274611cc",
+    "durationSeconds": 4.867
+  },
+  {
+    "beat": 15,
+    "shot": 5,
+    "source": "/Users/glad0s/scripts/brand/broll video/_july24-cashflow-drop/veo/veo-cc-savings-jar-coin-stack.mp4",
+    "sourceSha256": "c6e8245175dc03a4d691e68b9871e1fc484c41a6dc2c40175ed3ad7835d0dc0f",
+    "durationSeconds": 3.9
+  },
+  {
+    "beat": 16,
+    "shot": 1,
+    "source": "/Users/glad0s/scripts/brand/broll video/_july24-cashflow-drop/veo/veo-cc-stinger-green-light-bloom.mp4",
+    "sourceSha256": "409b286216aea82e929e3255eacddea49508684db207522487f985d6d5539438",
+    "durationSeconds": 4.867
+  },
+  {
+    "beat": 16,
+    "shot": 2,
+    "source": "/Users/glad0s/scripts/brand/broll video/_july24-cashflow-drop/veo/veo-cc-subscription-drain.mp4",
+    "sourceSha256": "526f781e6bc7b0277e45cec14ab67abc3f1362d76e8e5ec93975b448a1e9db04",
+    "durationSeconds": 3.467
+  },
+  {
+    "beat": 17,
+    "shot": 1,
+    "source": "/Users/glad0s/scripts/brand/broll video/cashflow-compass-growth-charts-16x9-6s.mp4",
+    "sourceSha256": "04cb1c2635c282b9ce740fdada5722477fa6a56d8b2d5f558d0d5fd42726d1db",
+    "durationSeconds": 4.867
+  },
+  {
+    "beat": 17,
+    "shot": 2,
+    "source": "/Users/glad0s/scripts/brand/broll video/cashflow-compass-growth-charts-9x16-6s.mp4",
+    "sourceSha256": "663bcf6fb3fdbd5aafdcbbdec7a65c6d33e5ec6da760da8f7aa9b40b2ef9497a",
+    "durationSeconds": 0.667
+  },
+  {
+    "beat": 18,
+    "shot": 1,
+    "source": "/Users/glad0s/scripts/brand/broll video/cashflow_16x9_20260630_191410.mp4",
+    "sourceSha256": "52e7b154bcce4683afa1bb4a157cbb18a9f460fe37758eb051ceb1bd3eda9daf",
+    "durationSeconds": 4.867
+  },
+  {
+    "beat": 18,
+    "shot": 2,
+    "source": "/Users/glad0s/scripts/brand/broll video/cashflow_9x16_20260630_191411.mp4",
+    "sourceSha256": "d7fb70511ee358b644df9ec73e09ccd2440a7d6c56dae9c353daba435463de91",
+    "durationSeconds": 3.367
+  },
+  {
+    "beat": 19,
+    "shot": 1,
+    "source": "/Users/glad0s/scripts/brand/broll video/cashflow_base_20260701_110009.mp4",
+    "sourceSha256": "a081e649f52150b97e96cf0f505bd01baa4725941a7b84f318ddb11df3a02639",
+    "durationSeconds": 1.967
+  },
+  {
+    "beat": 20,
+    "shot": 1,
+    "source": "/Users/glad0s/scripts/brand/broll video/cashflow_coins_16x9_20260701_001446.mp4",
+    "sourceSha256": "529b834902bf7423ba6e01e06f97d4e461e51ec86e23aeb1635076fa53b0948d",
+    "durationSeconds": 4.867
+  },
+  {
+    "beat": 20,
+    "shot": 2,
+    "source": "/Users/glad0s/scripts/brand/broll video/cashflow_extended_20260701_110010.mp4",
+    "sourceSha256": "3272abc01534ffa6498ad497ea81d9f3303d85f4a6c539bd0eefbe0805bf41e6",
+    "durationSeconds": 2.233
+  },
+  {
+    "beat": 21,
+    "shot": 1,
+    "source": "/Users/glad0s/scripts/brand/broll video/cashflow_graphs_16x9_20260630_231948.mp4",
+    "sourceSha256": "f3393cad0eae4611b673bacca803515ed43dde33543c2207b0d7ae36e5b82012",
+    "durationSeconds": 4.867
+  },
+  {
+    "beat": 21,
+    "shot": 2,
+    "source": "/Users/glad0s/scripts/brand/broll video/cashflow_graphs_9x16_20260630_231949.mp4",
+    "sourceSha256": "841960c00ecf15bdbde97ee4671ec82120d359a5c40c4b5ca23296a9e724014c",
+    "durationSeconds": 1.2
+  },
+  {
+    "beat": 22,
+    "shot": 1,
+    "source": "/Users/glad0s/scripts/brand/broll video/cashflow_growth_16x9_20260630_224028.mp4",
+    "sourceSha256": "b0c45a188a8acb4b304021207353562fc1432b9258220566f4e195549050b258",
+    "durationSeconds": 4.867
+  },
+  {
+    "beat": 22,
+    "shot": 2,
+    "source": "/Users/glad0s/scripts/brand/broll video/cashflow_growth_9x16_20260630_224029.mp4",
+    "sourceSha256": "737d13b070218a542a8002a56f2e71408492d0c27529655a09c37ec04fbc74cd",
+    "durationSeconds": 2.933
+  },
+  {
+    "beat": 23,
+    "shot": 1,
+    "source": "/Users/glad0s/scripts/brand/broll video/cashflow_lines_9x16_20260701_004522.mp4",
+    "sourceSha256": "d794b371d1e5d2fae16eda63c4f8a7910adf2443592926c11c06885b4450175e",
+    "durationSeconds": 4.867
+  },
+  {
+    "beat": 23,
+    "shot": 2,
+    "source": "/Users/glad0s/scripts/brand/broll video/cashflow_orbs_16x9_20260701_010044.mp4",
+    "sourceSha256": "8ab3d82ac6d1043942978190cb50d154267bbdbd3e5dddde8bc91f1811f8f1b5",
+    "durationSeconds": 1.767
+  },
+  {
+    "beat": 25,
+    "shot": 1,
+    "source": "/Users/glad0s/scripts/brand/broll video/cashflow_patterns_16x9_20260701_010045.mp4",
+    "sourceSha256": "d5aa513013edf116cdf395b4b646ac7f931986b281a45bd48d75260dae9c371b",
+    "durationSeconds": 4.867
+  },
+  {
+    "beat": 25,
+    "shot": 2,
+    "source": "/Users/glad0s/scripts/brand/broll video/cashflow_portfolio_16x9_20260630_212659.mp4",
+    "sourceSha256": "1df4e87020ec196b76b1f20dd640142b3c8172cfdb4e23270c26547f5c35ac72",
+    "durationSeconds": 1.833
+  },
+  {
+    "beat": 26,
+    "shot": 1,
+    "source": "/Users/glad0s/scripts/brand/broll video/cashflow_portfolio_9x16_20260630_212700.mp4",
+    "sourceSha256": "7b828fd45eaa670b6c08f5c13100ab82f39fef7bbe75c30b032d06f645840529",
+    "durationSeconds": 4.867
+  },
+  {
+    "beat": 26,
+    "shot": 2,
+    "source": "/Users/glad0s/scripts/brand/broll video/cashflow_v10_20260701_121729.mp4",
+    "sourceSha256": "0127542ed3e7bcf2ed576baa14e72ae4001a909c161381fecc96b7a4633ba8f4",
+    "durationSeconds": 4.867
+  },
+  {
+    "beat": 26,
+    "shot": 3,
+    "source": "/Users/glad0s/scripts/brand/broll video/cashflow_v11_20260701_124722.mp4",
+    "sourceSha256": "4eaf08e4b099e1f6803ab2588263cb619e62bba5099223d63efec2c88cdfe940",
+    "durationSeconds": 4.867
+  },
+  {
+    "beat": 26,
+    "shot": 4,
+    "source": "/Users/glad0s/scripts/brand/broll video/cashflow_v12_20260701_124723.mp4",
+    "sourceSha256": "003a1559c9a2b5872cbb8d0c087d62f752c6a1858e04bbe6328d40395f76fc3c",
+    "durationSeconds": 1.1
+  },
+  {
+    "beat": 27,
+    "shot": 1,
+    "source": "/Users/glad0s/scripts/brand/broll video/cashflow_v13_20260701_125313.mp4",
+    "sourceSha256": "bd333e8ba3276718c06ce3026ef81349208305debc440836a2b619603e1cc30f",
+    "durationSeconds": 4.867
+  },
+  {
+    "beat": 27,
+    "shot": 2,
+    "source": "/Users/glad0s/scripts/brand/broll video/cashflow_v14_20260701_125314.mp4",
+    "sourceSha256": "4eaf08e4b099e1f6803ab2588263cb619e62bba5099223d63efec2c88cdfe940",
+    "durationSeconds": 4.867
+  },
+  {
+    "beat": 27,
+    "shot": 3,
+    "source": "/Users/glad0s/scripts/brand/broll video/cashflow_v15_20260701_125849.mp4",
+    "sourceSha256": "bd333e8ba3276718c06ce3026ef81349208305debc440836a2b619603e1cc30f",
+    "durationSeconds": 4.867
+  },
+  {
+    "beat": 27,
+    "shot": 4,
+    "source": "/Users/glad0s/scripts/brand/broll video/cashflow_v16_20260701_125849.mp4",
+    "sourceSha256": "4eaf08e4b099e1f6803ab2588263cb619e62bba5099223d63efec2c88cdfe940",
+    "durationSeconds": 0.467
+  },
+  {
+    "beat": 28,
+    "shot": 1,
+    "source": "/Users/glad0s/scripts/brand/broll video/cashflow_v17_20260701_130455.mp4",
+    "sourceSha256": "bd333e8ba3276718c06ce3026ef81349208305debc440836a2b619603e1cc30f",
+    "durationSeconds": 4.867
+  },
+  {
+    "beat": 28,
+    "shot": 2,
+    "source": "/Users/glad0s/scripts/brand/broll video/cashflow_v18_20260701_130455.mp4",
+    "sourceSha256": "4eaf08e4b099e1f6803ab2588263cb619e62bba5099223d63efec2c88cdfe940",
+    "durationSeconds": 4.867
+  },
+  {
+    "beat": 28,
+    "shot": 3,
+    "source": "/Users/glad0s/scripts/brand/broll video/cashflow_v19_20260701_131026.mp4",
+    "sourceSha256": "3883551e3f072dfa30563c1659082fc1d448b95e32f95ca2d831a4e615dd5c24",
+    "durationSeconds": 4.867
+  },
+  {
+    "beat": 28,
+    "shot": 4,
+    "source": "/Users/glad0s/scripts/brand/broll video/cashflow_v20_20260701_131027.mp4",
+    "sourceSha256": "bd333e8ba3276718c06ce3026ef81349208305debc440836a2b619603e1cc30f",
+    "durationSeconds": 0.6
+  },
+  {
+    "beat": 29,
+    "shot": 1,
+    "source": "/Users/glad0s/scripts/brand/broll video/cashflow_v7_20260701_120634.mp4",
+    "sourceSha256": "f545b57c281383a88bf4af23b571b2112fac3922f5a1bb13e7439099d5cea8ab",
+    "durationSeconds": 3.167
+  },
+  {
+    "beat": 30,
+    "shot": 1,
+    "source": "/Users/glad0s/scripts/brand/broll video/cashflow_v8_20260701_120635.mp4",
+    "sourceSha256": "94ee256f1c405e64d4dc79457c436b6988c1265246b39e42eaedcd312a45858a",
+    "durationSeconds": 4.867
+  },
+  {
+    "beat": 30,
+    "shot": 2,
+    "source": "/Users/glad0s/scripts/brand/broll video/cashflow_v9_20260701_121728.mp4",
+    "sourceSha256": "003a1559c9a2b5872cbb8d0c087d62f752c6a1858e04bbe6328d40395f76fc3c",
+    "durationSeconds": 1.933
+  },
+  {
+    "beat": 31,
+    "shot": 1,
+    "source": "/Users/glad0s/scripts/brand/broll video/cashflow_wealth_16x9_20260701_001442.mp4",
+    "sourceSha256": "76584a03f701545797e1ab4e6ecf81ce0fb2d7675ddc95b1045fe1d51bd29e6b",
+    "durationSeconds": 3.667
+  },
+  {
+    "beat": 32,
+    "shot": 1,
+    "source": "/Users/glad0s/scripts/brand/broll video/grok-video-7c7d0b8f-5168-4f9d-9d0d-31ce462f713c-2.mp4",
+    "sourceSha256": "2f460436b871476c9c335e7713a9a942719789b2f3196dcc1f47f0d032ebb03a",
+    "durationSeconds": 4.867
+  },
+  {
+    "beat": 32,
+    "shot": 2,
+    "source": "/Users/glad0s/scripts/brand/broll video/stack-lab-tech-workspace-16x9-6s.mp4",
+    "sourceSha256": "22c5878c58f84adea0b9c76f63294aeff42abd50b415966f13309a920ca982a9",
+    "durationSeconds": 4.867
+  },
+  {
+    "beat": 32,
+    "shot": 3,
+    "source": "/Users/glad0s/scripts/brand/broll video/stack-lab-tech-workspace-9x16-6s.mp4",
+    "sourceSha256": "2db5dd2b66c659cbfa83d1b9ef6a077b8e379c814f6f9c3d989e7f251eb2af2a",
+    "durationSeconds": 4.867
+  },
+  {
+    "beat": 32,
+    "shot": 4,
+    "source": "/Users/glad0s/scripts/brand/broll video/stacklab_16x9_20260630_191408.mp4",
+    "sourceSha256": "391fe4219dc10c511724aa427e5a40e1cee649145c33f7321f4aaf80d96f3e6c",
+    "durationSeconds": 4.867
+  },
+  {
+    "beat": 32,
+    "shot": 5,
+    "source": "/Users/glad0s/scripts/brand/broll video/stacklab_16x9_real_20260630_095934.mp4",
+    "sourceSha256": "471954320a71de32f63678bb1876346cdd81292c39903fb73f468b6b2884accc",
+    "durationSeconds": 4.867
+  },
+  {
+    "beat": 32,
+    "shot": 6,
+    "source": "/Users/glad0s/scripts/brand/broll video/stacklab_9x16_20260630_191409.mp4",
+    "sourceSha256": "dc82a7b42c77899742211e578cc8ceeb5a738ebe849c3a4a1454637186a668c6",
+    "durationSeconds": 4.867
+  },
+  {
+    "beat": 32,
+    "shot": 7,
+    "source": "/Users/glad0s/scripts/brand/broll video/stacklab_base_20260701_110007.mp4",
+    "sourceSha256": "e92668c13a5c6007ebadece40e3572c7273ed27bca12e5d66c140952419fc2a1",
+    "durationSeconds": 4.867
+  },
+  {
+    "beat": 32,
+    "shot": 8,
+    "source": "/Users/glad0s/scripts/brand/broll video/stacklab_cubes_16x9_20260701_010043.mp4",
+    "sourceSha256": "006646a0f1a23a057566d7f2353920a8644f739977009f9bacf92fc0765ec2b9",
+    "durationSeconds": 4.867
+  },
+  {
+    "beat": 32,
+    "shot": 9,
+    "source": "/Users/glad0s/scripts/brand/broll video/stacklab_extended_20260701_110008.mp4",
+    "sourceSha256": "3df32287963282fc8790f471eada416fcc1e4bceac3c12f715178017de19c743",
+    "durationSeconds": 4.867
+  },
+  {
+    "beat": 32,
+    "shot": 10,
+    "source": "/Users/glad0s/scripts/brand/broll video/stacklab_grid_9x16_20260701_004521.mp4",
+    "sourceSha256": "4fcead520461b7322d3123c9c45277fa41dbcc0532f8576f50248d422eec249e",
+    "durationSeconds": 4.867
+  },
+  {
+    "beat": 32,
+    "shot": 11,
+    "source": "/Users/glad0s/scripts/brand/broll video/stacklab_holo2_16x9_20260630_231947.mp4",
+    "sourceSha256": "4943d24ebf1aa1c33398288e6885879d0982627dcf7666c1b1fa0b65f64928d5",
+    "durationSeconds": 4.867
+  },
+  {
+    "beat": 32,
+    "shot": 12,
+    "source": "/Users/glad0s/scripts/brand/broll video/stacklab_holo2_9x16_20260630_231947.mp4",
+    "sourceSha256": "04892f1e5ee060643c0766011dcd85d0dd8fde1cc61b13af8ce2550b2e7f23f8",
+    "durationSeconds": 4.867
+  },
+  {
+    "beat": 32,
+    "shot": 13,
+    "source": "/Users/glad0s/scripts/brand/broll video/stacklab_holo3_16x9_20260701_001440.mp4",
+    "sourceSha256": "d3d1ddffa7af1ec8e2c205415d1bd72c8376248b970bc854a1964b156e37b2c5",
+    "durationSeconds": 4.867
+  },
+  {
+    "beat": 32,
+    "shot": 14,
+    "source": "/Users/glad0s/scripts/brand/broll video/stacklab_holo3_9x16_20260701_001440.mp4",
+    "sourceSha256": "9323ad878d4f0ba31d54d5b811626995f48bbc4c026690b5b84d2076cac0fc7a",
+    "durationSeconds": 4.867
+  },
+  {
+    "beat": 32,
+    "shot": 15,
+    "source": "/Users/glad0s/scripts/brand/broll video/stacklab_holo_16x9_20260630_224027.mp4",
+    "sourceSha256": "027327b21dd9c563c83d1348b79f772263f8c1bbe526bf300d76844d5b40caf7",
+    "durationSeconds": 4.867
+  },
+  {
+    "beat": 32,
+    "shot": 16,
+    "source": "/Users/glad0s/scripts/brand/broll video/stacklab_holo_9x16_20260630_224027.mp4",
+    "sourceSha256": "afc1f030aa0e061c15e19eb3c44deb64b6409c526e5d2f694f86dfd332e93527",
+    "durationSeconds": 4.867
+  },
+  {
+    "beat": 32,
+    "shot": 17,
+    "source": "/Users/glad0s/scripts/brand/broll video/stacklab_lines_16x9_20260701_010044.mp4",
+    "sourceSha256": "b2d538e1daec7545def6f9ed9d32b4a5a9d1f858127972e16bebc10fc138de7b",
+    "durationSeconds": 4.867
+  },
+  {
+    "beat": 32,
+    "shot": 18,
+    "source": "/Users/glad0s/scripts/brand/broll video/stacklab_network_16x9_20260701_001446.mp4",
+    "sourceSha256": "40b3e3a856b24f3285f8232becc33608c0223faac779168c57977ce7f0b61012",
+    "durationSeconds": 4.867
+  },
+  {
+    "beat": 32,
+    "shot": 19,
+    "source": "/Users/glad0s/scripts/brand/broll video/stacklab_techlab_16x9_20260630_212658.mp4",
+    "sourceSha256": "5ae0282ed8d6dddb693d72036772622fa259de4dfef9ceee56f21d4e0ba9e639",
+    "durationSeconds": 4.867
+  },
+  {
+    "beat": 32,
+    "shot": 20,
+    "source": "/Users/glad0s/scripts/brand/broll video/stacklab_techlab_9x16_20260630_212659.mp4",
+    "sourceSha256": "edc3fd412ead459edefe2c86b4ad0c5b032eefaae9cbeb3fd5e3054b46f8ca89",
+    "durationSeconds": 4.867
+  },
+  {
+    "beat": 32,
+    "shot": 21,
+    "source": "/Users/glad0s/scripts/brand/broll video/stacklab_v10_20260701_121727.mp4",
+    "sourceSha256": "90a4ae083a16759b0c641355018274440d937148b45caed55d4ebd77982fc611",
+    "durationSeconds": 4.867
+  },
+  {
+    "beat": 32,
+    "shot": 22,
+    "source": "/Users/glad0s/scripts/brand/broll video/stacklab_v11_20260701_124721.mp4",
+    "sourceSha256": "634b24258fcc2e471f03c20c735f031c97222c99b0bcb399bf925930f9b3b2ac",
+    "durationSeconds": 4.867
+  },
+  {
+    "beat": 32,
+    "shot": 23,
+    "source": "/Users/glad0s/scripts/brand/broll video/stacklab_v12_20260701_124722.mp4",
+    "sourceSha256": "85e3e2e6c043696ea7c20d6ae2e4cf1698d7174009df84ea3be9e7dd9cb55f05",
+    "durationSeconds": 4.867
+  },
+  {
+    "beat": 32,
+    "shot": 24,
+    "source": "/Users/glad0s/scripts/brand/broll video/stacklab_v13_20260701_125312.mp4",
+    "sourceSha256": "17960b03261624765d03e81e6d878a894bcf912d293aa477d0ce7ceb8d37b81c",
+    "durationSeconds": 4.867
+  },
+  {
+    "beat": 32,
+    "shot": 25,
+    "source": "/Users/glad0s/scripts/brand/broll video/stacklab_v14_20260701_125313.mp4",
+    "sourceSha256": "634b24258fcc2e471f03c20c735f031c97222c99b0bcb399bf925930f9b3b2ac",
+    "durationSeconds": 4.867
+  },
+  {
+    "beat": 32,
+    "shot": 26,
+    "source": "/Users/glad0s/scripts/brand/broll video/stacklab_v15_20260701_125848.mp4",
+    "sourceSha256": "1a2126cdedcd28bec6d235abf9d087a31b43cca48810334c47198e221c666a19",
+    "durationSeconds": 4.867
+  },
+  {
+    "beat": 32,
+    "shot": 27,
+    "source": "/Users/glad0s/scripts/brand/broll video/stacklab_v16_20260701_125848.mp4",
+    "sourceSha256": "85e3e2e6c043696ea7c20d6ae2e4cf1698d7174009df84ea3be9e7dd9cb55f05",
+    "durationSeconds": 4.867
+  },
+  {
+    "beat": 32,
+    "shot": 28,
+    "source": "/Users/glad0s/scripts/brand/broll video/stacklab_v17_20260701_130455.mp4",
+    "sourceSha256": "1a2126cdedcd28bec6d235abf9d087a31b43cca48810334c47198e221c666a19",
+    "durationSeconds": 4.0
+  }
+]

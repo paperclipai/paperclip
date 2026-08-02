@@ -1,0 +1,73 @@
+{
+  "role": "ledger",
+  "task_id": "ledger-blended-token-cost",
+  "task_title": "Compute output-weighted blended token cost per run across two lanes",
+  "model_id": "grok-4.5",
+  "model_label": "Grok 4.5",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "ok": true,
+  "error": null,
+  "output": "{\"claudeWeightPerRun\": 27250, \"codexWeightPerRun\": 10750, \"blendedWeightPerRun\": 17350, \"why\": \"Per-run weights use in+5*out; blended is run-count-weighted mean across 400 claude and 600 codex runs.\"}",
+  "model_reported": "grok-4.5",
+  "inputTokens": 136,
+  "outputTokens": 50,
+  "totalTokens": 186,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "wallMs": 11778,
+  "stderrTail": "",
+  "agentFileSha256": "none",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "22a4d94c78402d54f39f0cd1b4eb6a12005acecfa3e2d429551928eca686300e",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/ledger/suite.json",
+  "skipped": false,
+  "skipReason": null,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "json_valid",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {}
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 3.0,
+      "spec": {
+        "value": 27250,
+        "path": "claudeWeightPerRun"
+      }
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 3.0,
+      "spec": {
+        "value": 10750,
+        "path": "codexWeightPerRun"
+      }
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 4.0,
+      "spec": {
+        "value": 17350,
+        "path": "blendedWeightPerRun"
+      }
+    }
+  ],
+  "judgeScore": 1.0,
+  "judgeDetail": {
+    "perCriterion": {
+      "correctness": 1.0
+    },
+    "rationale": "All three values exact (27250, 10750, 17350) using the 5x multiplier and run-count-weighted blend, with a correct concise why under 30 words.",
+    "judgeModel": "opus"
+  },
+  "quality": 1.0,
+  "qualityPer1kTokens": 5.376344086021505
+}

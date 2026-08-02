@@ -1,0 +1,4 @@
+exits=218 baseline=218 post_baseline_exits=0 epipe_total=79 elapsed_s=7233 api=200
+last_exit_line=[dev-watch 02:46:17] server exited unexpectedly (code 1); exiting for supervisor restart
+log=/Users/glad0s/paperclip/.devlogs/launchd.err.log
+SOAK_PASS

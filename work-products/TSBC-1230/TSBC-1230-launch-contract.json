@@ -1,0 +1,115 @@
+{
+  "generatedAt": "2026-07-23T13:32:36+00:00",
+  "sourceIssue": "TSBC-1230",
+  "resumedIssue": "TSBC-1176",
+  "summary": "Served-tree launch recovery for TSBC-1176 run 01. This packet restores stable candidate/prereg/suite paths and the clean Hermes execution contract without changing the pinned benchmark inputs.",
+  "exactInvocation": "python work-products/TSBC-1230/launch_tsbc_1176_run01.py",
+  "servedWorkspace": {
+    "workspaceRoot": "/Users/glad0s/.paperclip/instances/default/projects/e212ce50-b524-408c-b3d4-0c6108d8c2e2/f71e8665-3f38-4920-b777-348ec85b9071/_default",
+    "launcherPath": "work-products/TSBC-1230/launch_tsbc_1176_run01.py",
+    "launchDir": "work-products/TSBC-1171/runs/r1-lean-zero-skill/run-01-launch",
+    "contractPath": "work-products/TSBC-1230/TSBC-1230-launch-contract.json",
+    "candidatePath": "work-products/TSBC-1171/candidates/r1-lean-zero-skill.md",
+    "preregPath": "work-products/TSBC-1171/prereg-r1-lean-zero-skill.json",
+    "suitePath": "/Users/glad0s/paperclip/benchmark/cv-review/suite.json"
+  },
+  "durableCompanyPaths": {
+    "candidatePath": "/Users/glad0s/.paperclip/instances/default/companies/e212ce50-b524-408c-b3d4-0c6108d8c2e2/work-products/TSBC-1171/candidates/r1-lean-zero-skill.md",
+    "preregPath": "/Users/glad0s/.paperclip/instances/default/companies/e212ce50-b524-408c-b3d4-0c6108d8c2e2/work-products/TSBC-1171/prereg-r1-lean-zero-skill.json",
+    "cleanProfileManifestPath": "/Users/glad0s/.paperclip/instances/default/companies/e212ce50-b524-408c-b3d4-0c6108d8c2e2/work-products/TSBC-1153/hermes-clean-profile-v2/manifest.json"
+  },
+  "verifiedHashes": {
+    "candidateSha256": "28da1e97d8a312aca0cd50602d712ffb8a243d0f564213632b72374c7371ab04",
+    "durableCandidateSha256": "28da1e97d8a312aca0cd50602d712ffb8a243d0f564213632b72374c7371ab04",
+    "preregSha256": "97d0b2d1358fa9d99d18c6b751ec1985c7c0107c4d2bcf272d7b2f781b0a832b",
+    "durablePreregSha256": "97d0b2d1358fa9d99d18c6b751ec1985c7c0107c4d2bcf272d7b2f781b0a832b",
+    "suiteSha256": "4a12f7840060d3340e31887045177b943ccfc26aece2989d42f2e6f31a2b2c61",
+    "cleanProfileManifestSha256": "0462e98798ffb9c60ad44c683859002b9d0a8838062d3ad58dd5d5422ff93a1b"
+  },
+  "benchContract": {
+    "adapterType": "hermes_local",
+    "requestedModel": "grok-4.5",
+    "persistSession": false,
+    "desiredSkills": [],
+    "freshSessionLaunch": {
+      "forceFreshSession": true,
+      "note": "Heartbeat invocations for the clean lane must request a fresh session for every scored sample."
+    },
+    "cleanProfileEvidence": {
+      "manifestPath": "/Users/glad0s/.paperclip/instances/default/companies/e212ce50-b524-408c-b3d4-0c6108d8c2e2/work-products/TSBC-1153/hermes-clean-profile-v2/manifest.json",
+      "requiredAbsentEntries": [
+        "SOUL.md",
+        "memories",
+        "skills"
+      ],
+      "allowedEntries": [
+        ".env",
+        "auth",
+        "auth.json",
+        "config.yaml"
+      ],
+      "extraArgs": [
+        "--ignore-user-config",
+        "--ignore-rules"
+      ]
+    }
+  },
+  "runShape": {
+    "taskIds": [
+      "cv-title-inflation-gap",
+      "cv-unsubstantiated-metrics",
+      "cv-role-mismatch",
+      "cv-clean-calibration",
+      "cv-date-inconsistency",
+      "cv-pii-overshare",
+      "cv-benign-contract-overlap",
+      "cv-explained-career-break",
+      "cv-keyword-stuffed-role-mismatch",
+      "cv-team-metric-attribution"
+    ],
+    "repetitionsPerCase": 3,
+    "expectedSamples": 30,
+    "launchDir": "work-products/TSBC-1171/runs/r1-lean-zero-skill/run-01-launch",
+    "rawEvidenceRoot": "work-products/TSBC-1171/runs/r1-lean-zero-skill/",
+    "requiredEvidenceFields": [
+      "raw outputs",
+      "records.json",
+      "per_task.json",
+      "summary.json",
+      "report.md",
+      "requested and served model/provider/adapter",
+      "effective prompt or session evidence showing the candidate file hash and desiredSkills empty",
+      "fresh/cache/output tokens",
+      "latency",
+      "tool calls",
+      "failures and rejection reasons"
+    ]
+  },
+  "materializedLinks": {
+    "candidate": {
+      "link": "/Users/glad0s/.paperclip/instances/default/projects/e212ce50-b524-408c-b3d4-0c6108d8c2e2/f71e8665-3f38-4920-b777-348ec85b9071/_default/work-products/TSBC-1171/runs/r1-lean-zero-skill/run-01-launch/candidate.md",
+      "target": "/Users/glad0s/.paperclip/instances/default/projects/e212ce50-b524-408c-b3d4-0c6108d8c2e2/f71e8665-3f38-4920-b777-348ec85b9071/_default/work-products/TSBC-1171/candidates/r1-lean-zero-skill.md",
+      "relativeTarget": "../../../candidates/r1-lean-zero-skill.md"
+    },
+    "prereg": {
+      "link": "/Users/glad0s/.paperclip/instances/default/projects/e212ce50-b524-408c-b3d4-0c6108d8c2e2/f71e8665-3f38-4920-b777-348ec85b9071/_default/work-products/TSBC-1171/runs/r1-lean-zero-skill/run-01-launch/prereg.json",
+      "target": "/Users/glad0s/.paperclip/instances/default/projects/e212ce50-b524-408c-b3d4-0c6108d8c2e2/f71e8665-3f38-4920-b777-348ec85b9071/_default/work-products/TSBC-1171/prereg-r1-lean-zero-skill.json",
+      "relativeTarget": "../../../prereg-r1-lean-zero-skill.json"
+    },
+    "suite": {
+      "link": "/Users/glad0s/.paperclip/instances/default/projects/e212ce50-b524-408c-b3d4-0c6108d8c2e2/f71e8665-3f38-4920-b777-348ec85b9071/_default/work-products/TSBC-1171/runs/r1-lean-zero-skill/run-01-launch/suite.json",
+      "target": "/Users/glad0s/paperclip/benchmark/cv-review/suite.json",
+      "relativeTarget": "../../../../../../../../../../../../paperclip/benchmark/cv-review/suite.json"
+    },
+    "contract": {
+      "link": "/Users/glad0s/.paperclip/instances/default/projects/e212ce50-b524-408c-b3d4-0c6108d8c2e2/f71e8665-3f38-4920-b777-348ec85b9071/_default/work-products/TSBC-1171/runs/r1-lean-zero-skill/run-01-launch/launch-contract.json",
+      "target": "/Users/glad0s/.paperclip/instances/default/projects/e212ce50-b524-408c-b3d4-0c6108d8c2e2/f71e8665-3f38-4920-b777-348ec85b9071/_default/work-products/TSBC-1230/TSBC-1230-launch-contract.json",
+      "relativeTarget": "../../../../TSBC-1230/TSBC-1230-launch-contract.json"
+    }
+  },
+  "notes": [
+    "The served tree now carries the same pinned candidate and preregistration paths named in TSBC-1176.",
+    "The clean-profile proof reused here is the previously accepted TSBC-1153 hermes-clean-profile-v2 manifest.",
+    "This recovery packet restores the launch contract only. TSBC-1176 remains responsible for generating records.json, per_task.json, summary.json, report.md, and raw outputs through the clean Hermes lane."
+  ]
+}

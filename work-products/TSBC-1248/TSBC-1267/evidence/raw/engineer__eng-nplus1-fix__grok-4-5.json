@@ -1,0 +1,66 @@
+{
+  "role": "engineer",
+  "task_id": "eng-nplus1-fix",
+  "task_title": "Diagnose an N+1 query and write the batched fix",
+  "model_id": "grok-4.5",
+  "model_label": "Grok 4.5",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "ok": true,
+  "error": null,
+  "output": "**Problem:** N+1 (here 2N) sequential DB queries.\n\n**Why it scales badly:** Each `routineId` awaits two round-trips (`findFirst` + `findMany`). Latency is O(n) network/DB time, so under load or many IDs the loop stacks up and throughput collapses.\n\n**Fix:** Two bounded queries, then join in memory:\n\n```ts\nasync function loadRoutineCards(routineIds: string[]) {\n  if (!routineIds.length) return [];\n  const routineList = await db.query.routines.findMany({\n    where: inArray(routines.id, routineIds),\n  });\n  const runList = await db.query.runs.findMany({\n    where: inArray(runs.routineId, routineIds),\n    // optional: orderBy + window/limit-per-group in SQL if you need exactly 5 each\n  });\n  const runsByRoutine = Map.groupBy(runList, (r) => r.routineId);\n  return routineList.map((routine) => ({\n    routine,\n    runs: (runsByRoutine.get(routine.id) ?? []).slice(0, 5),\n  }));\n}\n```\n\nPrefer SQL `ROW_NUMBER() ... PARTITION BY routine_id` (or a lateral join) if you must cap runs at 5 per routine in the DB.",
+  "model_reported": "grok-4.5",
+  "inputTokens": 168,
+  "outputTokens": 253,
+  "totalTokens": 421,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "wallMs": 11835,
+  "stderrTail": "",
+  "agentFileSha256": "none",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "b7373c2152d432ffadaa313c61133d110457a1e56402bf122dab21c5460d183f",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/engineer/suite.json",
+  "skipped": false,
+  "skipReason": null,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 3.0,
+      "spec": {
+        "values": [
+          "N+1",
+          "n+1",
+          "per-routine",
+          "per routine",
+          "in a loop",
+          "inArray",
+          "IN (",
+          "batch"
+        ]
+      }
+    },
+    {
+      "check": "max_words",
+      "ok": true,
+      "weight": 1.0,
+      "spec": {
+        "value": 160
+      }
+    }
+  ],
+  "judgeScore": 0.9775,
+  "judgeDetail": {
+    "perCriterion": {
+      "correctness": 0.97,
+      "specificity": 1.0
+    },
+    "rationale": "Correctly names the 2N/N+1 pattern, batches with inArray for both tables, groups via Map, and even flags the per-group top-5 caveat with a ROW_NUMBER/lateral fix.",
+    "judgeModel": "opus"
+  },
+  "quality": 0.98875,
+  "qualityPer1kTokens": 2.348574821852732
+}

@@ -1,0 +1,94 @@
+{
+  "role": "ops",
+  "task_id": "ops-runbook-ordering",
+  "task_title": "Order the recovery runbook steps correctly",
+  "model_id": "grok-4.5",
+  "model_label": "Grok 4.5",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "ok": true,
+  "error": null,
+  "output": "[\"halt-supervisor\",\"clean\",\"start\",\"reap\",\"reenable-supervisor\",\"verify\"]",
+  "model_reported": "grok-4.5",
+  "inputTokens": 371,
+  "outputTokens": 18,
+  "totalTokens": 389,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "wallMs": 26620,
+  "stderrTail": "",
+  "agentFileSha256": "none",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "af81fcc8c8acf9b45aac20aa118d2e0116e4e875fd9b8b4e4f07df614a7bef25",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/ops/suite.json",
+  "skipped": false,
+  "skipReason": null,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "json_valid",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {}
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 3.0,
+      "spec": {
+        "value": "halt-supervisor",
+        "path": "0"
+      }
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {
+        "value": "clean",
+        "path": "1"
+      }
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {
+        "value": "start",
+        "path": "2"
+      }
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {
+        "value": "reap",
+        "path": "3"
+      }
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {
+        "value": "reenable-supervisor",
+        "path": "4"
+      }
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 1.0,
+      "spec": {
+        "value": "verify",
+        "path": "5"
+      }
+    }
+  ],
+  "judgeScore": null,
+  "judgeDetail": null,
+  "quality": 1.0,
+  "qualityPer1kTokens": 2.570694087403599
+}

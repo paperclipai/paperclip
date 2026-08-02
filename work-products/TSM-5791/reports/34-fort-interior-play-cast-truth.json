@@ -1,0 +1,31 @@
+{
+  "n": 34,
+  "slug": "fort-interior-play",
+  "path": "/Users/glad0s/paperclip/work-products/TSM-5791/clip-bytes/34-fort-interior-play-8s.mp4",
+  "pass": true,
+  "violations": [],
+  "averages": {
+    "slateGreyRatio": 0.034339192708333334,
+    "cinnamonRatio": 0.7667838541666666,
+    "nearBlackRatio": 0.016828703703703703,
+    "skinRatio": 0.003120659722222222,
+    "animalCoatRatio": 0.801123046875
+  },
+  "durationSeconds": 8.041667,
+  "sampleTimestampsSeconds": [
+    1.0,
+    4.0,
+    7.0
+  ],
+  "framesSampled": 3,
+  "mode": "two_shot",
+  "method": "ffmpeg-multiframe-animal-vs-human-v2",
+  "thresholds": {
+    "nearBlackRatio_max": 0.08,
+    "animalCoatRatio_min_two_shot": 0.12,
+    "animalCoatRatio_min_solo": 0.08,
+    "james_slate_min_solo": 0.04,
+    "jessica_cinnamon_min_solo": 0.08,
+    "skinRatio_max_when_weak_animal": 0.12
+  }
+}

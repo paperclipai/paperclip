@@ -1,0 +1,4 @@
+HERMES_HOME=/Users/glad0s/.paperclip/instances/default/companies/e212ce50-b524-408c-b3d4-0c6108d8c2e2/work-products/TSBC-1248/hermes-r1-1266-current-clean/.hermes
+HERMES_IGNORE_RULES=1
+2026-07-25T20:46:26Z
+rc=1

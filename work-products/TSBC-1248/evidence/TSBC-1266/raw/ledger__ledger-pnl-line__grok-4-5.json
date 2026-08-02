@@ -1,0 +1,73 @@
+{
+  "role": "ledger",
+  "task_id": "ledger-pnl-line",
+  "task_title": "Compute the P&L for a subscription product line",
+  "model_id": "grok-4.5",
+  "model_label": "Grok 4.5",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "ok": true,
+  "error": null,
+  "output": "{\"contributionPerSub\": 12, \"monthlyProfit\": 1040, \"decision\": \"continue\", \"why\": \"Strong $12 contribution covers $400 fixed overhead; line earns $1040/month profit.\"}",
+  "model_reported": "grok-4.5",
+  "inputTokens": 109,
+  "outputTokens": 41,
+  "totalTokens": 150,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "wallMs": 14026,
+  "stderrTail": "",
+  "agentFileSha256": "none",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "22a4d94c78402d54f39f0cd1b4eb6a12005acecfa3e2d429551928eca686300e",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/ledger/suite.json",
+  "skipped": false,
+  "skipReason": null,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "json_valid",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {}
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 3.0,
+      "spec": {
+        "value": 12,
+        "path": "contributionPerSub"
+      }
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 4.0,
+      "spec": {
+        "value": 1040,
+        "path": "monthlyProfit"
+      }
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {
+        "value": "continue",
+        "path": "decision"
+      }
+    }
+  ],
+  "judgeScore": 1.0,
+  "judgeDetail": {
+    "perCriterion": {
+      "reasoning": 1.0
+    },
+    "rationale": "Correct 12 and 1040 with fixed overhead properly deducted, continue decision, and a concise why noting the profit.",
+    "judgeModel": "opus"
+  },
+  "quality": 1.0,
+  "qualityPer1kTokens": 6.666666666666667
+}

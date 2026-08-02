@@ -1,0 +1,27 @@
+{"phase":"start","parentPid":90481,"n":20,"promptBytes":262144,"childPath":"/tmp/tsmc-18808-90459/tsmc-18808-repro-vR16cW/die.mjs"}
+{
+  "phase": "done",
+  "parentPid": 90481,
+  "stillAlive": true,
+  "elapsedMs": 34,
+  "runs": 20,
+  "epipeUncaught": 0,
+  "sample": [
+    {
+      "i": 0,
+      "exitCode": null,
+      "signal": "SIGKILL"
+    },
+    {
+      "i": 1,
+      "exitCode": null,
+      "signal": "SIGKILL"
+    },
+    {
+      "i": 2,
+      "exitCode": null,
+      "signal": "SIGKILL"
+    }
+  ],
+  "ok": true
+}

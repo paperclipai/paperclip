@@ -1,0 +1,75 @@
+{
+  "role": "content",
+  "task_id": "content-meta-description-exact-length",
+  "task_title": "SEO meta description landing inside a tight character band",
+  "model_id": "grok-4.5",
+  "model_label": "Grok 4.5",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "ok": true,
+  "error": null,
+  "output": "Tally is self-hosted, privacy-first web analytics\u2014no cookies, you own your data. Measure growth without compromising visitor privacy. Start now.",
+  "model_reported": "grok-4.5",
+  "inputTokens": 165,
+  "outputTokens": 36,
+  "totalTokens": 201,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "wallMs": 28183,
+  "stderrTail": "",
+  "agentFileSha256": "none",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "033a0a832aabf01236564fdbacb17e2fd0b3701f5a3f5242226a5c4149ea7f96",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/content/suite.json",
+  "skipped": false,
+  "skipReason": null,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "min_chars",
+      "ok": true,
+      "weight": 3.0,
+      "spec": {
+        "value": 140
+      }
+    },
+    {
+      "check": "max_chars",
+      "ok": true,
+      "weight": 4.0,
+      "spec": {
+        "value": 156
+      }
+    },
+    {
+      "check": "contains",
+      "ok": true,
+      "weight": 1.0,
+      "spec": {
+        "value": "self-hosted"
+      }
+    },
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 1.0,
+      "spec": {
+        "values": [
+          "privacy",
+          "private"
+        ]
+      }
+    }
+  ],
+  "judgeScore": 0.86,
+  "judgeDetail": {
+    "perCriterion": {
+      "meta_quality": 0.86
+    },
+    "rationale": "144 chars, in-range, mentions self-hosted and privacy twice, with a genuine value hook plus soft CTA that reads naturally\u2014only nit is it runs to three sentence-units ('Start now.' as a fragment) rather than the ideal one-or-two.",
+    "judgeModel": "opus"
+  },
+  "quality": 0.9299999999999999,
+  "qualityPer1kTokens": 4.626865671641791
+}

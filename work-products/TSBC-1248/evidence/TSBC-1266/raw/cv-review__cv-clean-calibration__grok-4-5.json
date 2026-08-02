@@ -1,0 +1,55 @@
+{
+  "role": "cv-review",
+  "task_id": "cv-clean-calibration",
+  "task_title": "Calibration trap: a strong CV \u2014 don't fabricate concerns",
+  "model_id": "grok-4.5",
+  "model_label": "Grok 4.5",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "ok": true,
+  "error": null,
+  "output": "{\"concerns\": [\"Date inconsistency: '2020-present (4.5 yrs)' understates tenure if present is mid-2025+ (would be ~5.5\u20136.5 yrs at Datalink alone); CV may be stale or mislabeled.\", \"Forge (2018\u20132020) is extremely thin\u2014'built internal APIs' with no stack, scale, ownership, or impact for two full years.\", \"AWS and 'distributed systems' appear only in skills; no bullets show AWS usage, multi-service design, or production ops beyond Kafka/Postgres on the payments service.\", \"CV overall is sparse for senior bar: no scale (QPS, $ volume, SLOs), team size, mentoring/hiring, incident examples beyond on-call lead, or testing/observability depth.\", \"Senior title and E2E ownership are concentrated in one role; little evidence of cross-service influence or org-level technical leadership.\"], \"recommendation\": \"advance\"}",
+  "model_reported": "grok-4.5",
+  "inputTokens": 146,
+  "outputTokens": 204,
+  "totalTokens": 350,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "wallMs": 22706,
+  "stderrTail": "",
+  "agentFileSha256": "none",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "4a12f7840060d3340e31887045177b943ccfc26aece2989d42f2e6f31a2b2c61",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/cv-review/suite.json",
+  "skipped": false,
+  "skipReason": null,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "json_valid",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {}
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 4.0,
+      "spec": {
+        "value": "advance",
+        "path": "recommendation"
+      }
+    }
+  ],
+  "judgeScore": 0.28,
+  "judgeDetail": {
+    "perCriterion": {
+      "calibration": 0.28
+    },
+    "rationale": "Correctly recommends advance but pads the concerns list with five over-flagged nitpicks (sparse CV, AWS-not-in-bullets, date quibble) on a clean, well-matched CV \u2014 exactly the over-flagging the criterion heavily penalizes.",
+    "judgeModel": "opus"
+  },
+  "quality": 0.64,
+  "qualityPer1kTokens": 1.8285714285714287
+}

@@ -1,0 +1,73 @@
+{
+  "role": "ceo",
+  "task_id": "ceo-unit-economics",
+  "task_title": "Compute unit economics and make a continue/kill call",
+  "model_id": "grok-4.5",
+  "model_label": "Grok 4.5",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "ok": true,
+  "error": null,
+  "output": "{\"marginPerCustomer\": 3, \"monthlyProfit\": -80, \"decision\": \"fix_or_kill\", \"why\": \"Positive $3 unit margin but fixed $200 tooling exceeds $120 total contribution; losing $80/mo. Raise price, cut fixed cost, or grow customers past ~67 breakeven.\"}",
+  "model_reported": "grok-4.5",
+  "inputTokens": 132,
+  "outputTokens": 61,
+  "totalTokens": 193,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "wallMs": 9015,
+  "stderrTail": "",
+  "agentFileSha256": "none",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "7b79fdf5d2ce80570fcfa85a1d04cd2c61e7093b8d2d1c735f7c4a07197a28c3",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/ceo/suite.json",
+  "skipped": false,
+  "skipReason": null,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "json_valid",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {}
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 3.0,
+      "spec": {
+        "value": 3,
+        "path": "marginPerCustomer"
+      }
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 4.0,
+      "spec": {
+        "value": -80,
+        "path": "monthlyProfit"
+      }
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {
+        "value": "fix_or_kill",
+        "path": "decision"
+      }
+    }
+  ],
+  "judgeScore": 1.0,
+  "judgeDetail": {
+    "perCriterion": {
+      "reasoning": 1.0
+    },
+    "rationale": "Correct margin ($3), P/L (-$80), fix_or_kill decision, and a why that names all three real levers including the ~67-customer breakeven.",
+    "judgeModel": "opus"
+  },
+  "quality": 1.0,
+  "qualityPer1kTokens": 5.181347150259067
+}

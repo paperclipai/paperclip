@@ -1,0 +1,57 @@
+{
+  "role": "ops",
+  "task_id": "ops-failover-routing",
+  "task_title": "Choose a failover lane under quota constraints",
+  "model_id": "grok-4.5",
+  "model_label": "Grok 4.5",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "ok": true,
+  "error": null,
+  "output": "{\"lane\": \"codex\", \"reason\": \"claude is paused (weekly limit); codex is the first available lane in failover order\"}",
+  "model_reported": "grok-4.5",
+  "inputTokens": 154,
+  "outputTokens": 28,
+  "totalTokens": 182,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "wallMs": 6525,
+  "stderrTail": "",
+  "agentFileSha256": "none",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "af81fcc8c8acf9b45aac20aa118d2e0116e4e875fd9b8b4e4f07df614a7bef25",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/ops/suite.json",
+  "skipped": false,
+  "skipReason": null,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "json_valid",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {}
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 6.0,
+      "spec": {
+        "value": "codex",
+        "path": "lane"
+      }
+    },
+    {
+      "check": "json_path_exists",
+      "ok": true,
+      "weight": 1.0,
+      "spec": {
+        "path": "reason"
+      }
+    }
+  ],
+  "judgeScore": null,
+  "judgeDetail": null,
+  "quality": 1.0,
+  "qualityPer1kTokens": 5.4945054945054945
+}

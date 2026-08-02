@@ -1,0 +1,79 @@
+{
+  "role": "content",
+  "task_id": "content-headlines-with-rationale",
+  "task_title": "Three headlines with a stated one-line rationale each",
+  "model_id": "grok-4.5",
+  "model_label": "Grok 4.5",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "ok": true,
+  "error": null,
+  "output": "{\"headlines\": [{\"text\": \"Stop Fielding Is It Down Pings\", \"angle\": \"pain-relief\", \"rationale\": \"Speaks directly to on-call and support leads exhausted by repetitive status questions from stakeholders and customers.\"}, {\"text\": \"Incident Updates That Post Themselves\", \"angle\": \"speed/automation\", \"rationale\": \"Highlights Pulse\u2019s core automation for engineering teams who want status communication without manual busywork.\"}, {\"text\": \"Status Transparency Customers Actually Trust\", \"angle\": \"trust/transparency\", \"rationale\": \"Appeals to product and CS leaders who know proactive, honest status pages cut churn and ticket volume.\"}]}",
+  "model_reported": "grok-4.5",
+  "inputTokens": 206,
+  "outputTokens": 158,
+  "totalTokens": 364,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "wallMs": 17651,
+  "stderrTail": "",
+  "agentFileSha256": "none",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "033a0a832aabf01236564fdbacb17e2fd0b3701f5a3f5242226a5c4149ea7f96",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/content/suite.json",
+  "skipped": false,
+  "skipReason": null,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "json_valid",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {}
+    },
+    {
+      "check": "json_path_exists",
+      "ok": true,
+      "weight": 1.0,
+      "spec": {
+        "path": "headlines.0.text"
+      }
+    },
+    {
+      "check": "json_path_exists",
+      "ok": true,
+      "weight": 1.0,
+      "spec": {
+        "path": "headlines.1.angle"
+      }
+    },
+    {
+      "check": "json_path_exists",
+      "ok": true,
+      "weight": 1.0,
+      "spec": {
+        "path": "headlines.2.rationale"
+      }
+    },
+    {
+      "check": "not_regex",
+      "ok": true,
+      "weight": 1.0,
+      "spec": {
+        "pattern": "\"headlines\"\\s*:\\s*\\[(?:[^\\]]*?\\{[^}]*\\}){4,}"
+      }
+    }
+  ],
+  "judgeScore": 0.925,
+  "judgeDetail": {
+    "perCriterion": {
+      "distinct_angles": 0.95,
+      "rationale_quality": 0.9
+    },
+    "rationale": "All three headlines are \u22649 words with genuinely distinct angles, and each rationale names a specific target reader and lever rather than restating the headline, though rationales 1 and 3 both lean on ticket-volume relief slightly reducing their separation.",
+    "judgeModel": "opus"
+  },
+  "quality": 0.9625,
+  "qualityPer1kTokens": 2.644230769230769
+}

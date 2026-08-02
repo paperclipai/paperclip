@@ -1,0 +1,21 @@
+
+ RUN  v4.1.10 /Users/glad0s/paperclip
+
+[06:21:39] [32mINFO[39m: [36mLoading external adapter package[39m [90m{"packageName":"/Users/glad0s/.paperclip/local-adapter-plugins/paperclip-shell-handler-adapter","packageDir":"/Users/glad0s/.paperclip/local-adapter-plugins/paperclip-shell-handler-adapter","entryPoint":"./index.js","modulePath":"/Users/glad0s/.paperclip/local-adapter-plugins/paperclip-shell-handler-adapter/index.js","hasUiParser":false}[39m
+[06:21:39] [32mINFO[39m: [36mLoaded external adapters from plugin store[39m [90m{"count":1,"adapters":["paperclip_shell_handler"]}[39m
+[06:21:54] [32mINFO[39m: [36mclaimQueuedRun: cancelled stale queued run[39m [90m{"runId":"48444d0e-14ec-45ea-a15c-2d200156d3b8","issueId":"d484c101-d32b-479b-bc8f-a145f6c5a7f1","errorCode":"issue_assignee_changed"}[39m
+[06:21:54] [32mINFO[39m: [36mclaimQueuedRun: cancelled stale queued run[39m [90m{"runId":"4c8e802c-946c-4464-a599-430c752299d7","issueId":"808006c1-8508-41e4-951f-15a8ea3151be","errorCode":"issue_assignee_changed"}[39m
+[06:21:55] [32mINFO[39m: [36mclaimQueuedRun: cancelled stale queued run[39m [90m{"runId":"36b4b20f-8014-4736-b8dc-5d6af1582695","issueId":"9c6449ee-38d6-4627-b721-c165195ef3b6","errorCode":"issue_terminal_status"}[39m
+[06:21:57] [32mINFO[39m: [36mclaimQueuedRun: cancelled stale queued run[39m [90m{"runId":"106c0e20-9c5f-447f-bfa8-4548698d1a00","issueId":"3fea1d36-94fc-4e0d-8f23-9227c164fd8a","errorCode":"issue_not_in_progress"}[39m
+[06:21:58] [32mINFO[39m: [36mclaimQueuedRun: cancelled stale queued run[39m [90m{"runId":"65beffed-8d66-40b2-8a91-7ac1b385e03a","issueId":"c96f429e-a2cb-455e-85b8-1d9281a2eadd","errorCode":"issue_execution_lock_changed"}[39m
+[06:22:00] [32mINFO[39m: [36mclaimQueuedRun: cancelled stale queued run[39m [90m{"runId":"a44f3532-3a88-4f88-93cd-74a3d6608368","issueId":"bf682d2b-30de-489e-8407-bb909e68bb2d","errorCode":"issue_review_participant_changed"}[39m
+[06:22:02] [32mINFO[39m: [36mclaimQueuedRun: cancelled stale queued run[39m [90m{"runId":"aa03233c-1904-435d-8958-093761afebff","issueId":"fe69b1ef-751f-4159-97c9-6d98d43af223","errorCode":"issue_continuation_waiting_on_review"}[39m
+[06:22:03] [32mINFO[39m: [36mclaimQueuedRun: cancelled stale queued run[39m [90m{"runId":"abc7c17f-156d-4627-a7c8-27ecd8630782","issueId":"1c1df5b8-5ced-4b90-916d-12eb54fe5bd0","errorCode":"issue_continuation_waiting_on_monitor"}[39m
+[06:22:08] [32mINFO[39m: [36mLoading external adapter package[39m [90m{"packageName":"/Users/glad0s/.paperclip/local-adapter-plugins/paperclip-shell-handler-adapter","packageDir":"/Users/glad0s/.paperclip/local-adapter-plugins/paperclip-shell-handler-adapter","entryPoint":"./index.js","modulePath":"/Users/glad0s/.paperclip/local-adapter-plugins/paperclip-shell-handler-adapter/index.js","hasUiParser":false}[39m
+[06:22:08] [32mINFO[39m: [36mLoaded external adapters from plugin store[39m [90m{"count":1,"adapters":["paperclip_shell_handler"]}[39m
+
+ Test Files  2 passed (2)
+      Tests  31 passed (31)
+   Start at  06:21:36
+   Duration  32.56s (transform 2.96s, setup 283ms, import 7.38s, tests 24.52s, environment 0ms)
+

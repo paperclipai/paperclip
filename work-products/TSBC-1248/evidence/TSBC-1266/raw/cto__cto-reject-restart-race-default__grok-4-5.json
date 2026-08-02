@@ -1,0 +1,80 @@
+{
+  "role": "cto",
+  "task_id": "cto-reject-restart-race-default",
+  "task_title": "Reject a startup-reaper PR whose default bricks live runs",
+  "model_id": "grok-4.5",
+  "model_label": "Grok 4.5",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "ok": true,
+  "error": null,
+  "output": "{\"decision\":\"reject\",\"rootCause\":\"Default staleThresholdMs=0 makes cutoff=now, so every running run fails permanently on boot.\",\"requiredChange\":\"Require a positive stale threshold (e.g. minutes); never default to 0 on startup reap.\"}",
+  "model_reported": "grok-4.5",
+  "inputTokens": 255,
+  "outputTokens": 58,
+  "totalTokens": 313,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "wallMs": 11645,
+  "stderrTail": "",
+  "agentFileSha256": "none",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "9178417ea7411729ec604cd6f0f72637a785d4d0f99ddd564fdfd0d4d603c31d",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/cto/suite.json",
+  "skipped": false,
+  "skipReason": null,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "json_valid",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {}
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 5.0,
+      "spec": {
+        "value": "reject",
+        "path": "decision"
+      }
+    },
+    {
+      "check": "regex",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {
+        "pattern": "(default(s|ed|ing)?|=)\\s*(to\\s*)?(0|zero)|stalethresholdms\\s*(default|=|of|is|to)|threshold\\s*(default|=|of|is|to)?\\s*(0|zero)|(0|zero)\\b[^.]*\\b(default|threshold|cutoff)"
+      }
+    },
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 1.0,
+      "spec": {
+        "values": [
+          "grace",
+          "non-zero",
+          "nonzero",
+          "staleThresholdMs",
+          "60s",
+          "grace window",
+          "grace period"
+        ]
+      }
+    }
+  ],
+  "judgeScore": 0.915,
+  "judgeDetail": {
+    "perCriterion": {
+      "correctness": 0.92,
+      "discipline": 0.9
+    },
+    "rationale": "Correctly rejects and names the staleThresholdMs=0 \u2192 cutoff=now defect with a minimal grace-window fix, though it omits the explicit non-zero value (e.g. 60s) the criterion cites.",
+    "judgeModel": "opus"
+  },
+  "quality": 0.9575,
+  "qualityPer1kTokens": 3.0591054313099044
+}

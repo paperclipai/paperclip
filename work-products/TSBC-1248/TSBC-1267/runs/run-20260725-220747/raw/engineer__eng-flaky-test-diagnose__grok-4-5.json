@@ -1,0 +1,82 @@
+{
+  "role": "engineer",
+  "task_id": "eng-flaky-test-diagnose",
+  "task_title": "Diagnose a flaky benchmark test",
+  "model_id": "grok-4.5",
+  "model_label": "Grok 4.5",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "ok": true,
+  "error": null,
+  "output": "(1) Why flaky: `run_bench` appends in completion order from a thread pool. Both scores are 0.92, so `sorted(..., key=quality)` keeps that race-dependent input order (stable sort). Which model is `ranked[0]` is a finish-order race.\n\n(2) Local/isolation: one model almost always finishes first (less load, stable timing). CI has variable CPU/network contention, so either thread can win ~1/5 runs. Solo re-runs remove the concurrent race.\n\n(3) Fix: secondary key for ties, e.g. `sorted(results, key=lambda r: (-r['quality'], r['model']))`, and assert on that full order\u2014or assert top quality and membership among ties.\n\nTest bug (brittle assertion on undefined tie order), not a product bug unless product ranking must also be deterministic.",
+  "model_reported": "grok-4.5",
+  "inputTokens": 223,
+  "outputTokens": 184,
+  "totalTokens": 407,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "wallMs": 16905,
+  "stderrTail": "",
+  "agentFileSha256": "none",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "b7373c2152d432ffadaa313c61133d110457a1e56402bf122dab21c5460d183f",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/engineer/suite.json",
+  "skipped": false,
+  "skipReason": null,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 3.0,
+      "spec": {
+        "values": [
+          "tie",
+          "tied",
+          "equal",
+          "0.92",
+          "same quality",
+          "same score"
+        ]
+      }
+    },
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {
+        "values": [
+          "nondeterministic",
+          "non-deterministic",
+          "order",
+          "ordering",
+          "stable sort",
+          "tie-break",
+          "tiebreak",
+          "completion order",
+          "race"
+        ]
+      }
+    },
+    {
+      "check": "max_words",
+      "ok": true,
+      "weight": 1.0,
+      "spec": {
+        "value": 150
+      }
+    }
+  ],
+  "judgeScore": 0.95,
+  "judgeDetail": {
+    "perCriterion": {
+      "correctness": 0.95,
+      "specificity": 0.95
+    },
+    "rationale": "Nails the tie + stable-sort + thread-completion-order mechanism, correctly frames it as a test bug, and gives the deterministic secondary-key fix; only slightly imprecise in mentioning 'network' contention for a CPU-bound race.",
+    "judgeModel": "opus"
+  },
+  "quality": 0.975,
+  "qualityPer1kTokens": 2.3955773955773956
+}

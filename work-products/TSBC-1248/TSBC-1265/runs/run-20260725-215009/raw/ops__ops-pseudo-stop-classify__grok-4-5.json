@@ -1,0 +1,57 @@
+{
+  "role": "ops",
+  "task_id": "ops-pseudo-stop-classify",
+  "task_title": "Classify real blocker vs pseudo-stop",
+  "model_id": "grok-4.5",
+  "model_label": "Grok 4.5",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "ok": true,
+  "error": null,
+  "output": "{\"classification\":\"pseudo_stop\",\"next_action\":\"Move out of in_review: assign a reviewer or mark done/merge since work is complete and nothing is waiting\",\"reason\":\"in_review with no reviewer, approval request, or waiting participant is the canonical pseudo-stop; idle 240h with complete work and no external dependency must be routed back to productive work\"}",
+  "model_reported": "grok-4.5",
+  "inputTokens": 176,
+  "outputTokens": 89,
+  "totalTokens": 265,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "wallMs": 9282,
+  "stderrTail": "",
+  "agentFileSha256": "none",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "af81fcc8c8acf9b45aac20aa118d2e0116e4e875fd9b8b4e4f07df614a7bef25",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/ops/suite.json",
+  "skipped": false,
+  "skipReason": null,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "json_valid",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {}
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 6.0,
+      "spec": {
+        "value": "pseudo_stop",
+        "path": "classification"
+      }
+    },
+    {
+      "check": "json_path_exists",
+      "ok": true,
+      "weight": 1.0,
+      "spec": {
+        "path": "next_action"
+      }
+    }
+  ],
+  "judgeScore": null,
+  "judgeDetail": null,
+  "quality": 1.0,
+  "qualityPer1kTokens": 3.773584905660377
+}

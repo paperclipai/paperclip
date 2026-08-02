@@ -1,0 +1,55 @@
+{
+  "role": "ceo",
+  "task_id": "ceo-scope-discipline",
+  "task_title": "Hold the line on scope mid-sprint",
+  "model_id": "grok-4.5",
+  "model_label": "Grok 4.5",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "ok": true,
+  "error": null,
+  "output": "{\"decision\":\"stay_course\",\"reason\":\"Paid feature ships in three days; pivot is off-charter, unvalidated, and would slip revenue. Trends fade; committed delivery builds trust.\",\"followUp\":\"Park the meme idea in a backlog note; schedule a 30-min post-ship review to assess demand and fit before any spike.\"}",
+  "model_reported": "grok-4.5",
+  "inputTokens": 116,
+  "outputTokens": 76,
+  "totalTokens": 192,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "wallMs": 8121,
+  "stderrTail": "",
+  "agentFileSha256": "none",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "7b79fdf5d2ce80570fcfa85a1d04cd2c61e7093b8d2d1c735f7c4a07197a28c3",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/ceo/suite.json",
+  "skipped": false,
+  "skipReason": null,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "json_valid",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {}
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 4.0,
+      "spec": {
+        "value": "stay_course",
+        "path": "decision"
+      }
+    }
+  ],
+  "judgeScore": 0.9499999999999998,
+  "judgeDetail": {
+    "perCriterion": {
+      "discipline": 0.95
+    },
+    "rationale": "Stays the course citing revenue commitment and constructively parks the idea in the backlog with a concrete time-boxed post-ship review to validate demand before spiking.",
+    "judgeModel": "opus"
+  },
+  "quality": 0.9749999999999999,
+  "qualityPer1kTokens": 5.078124999999999
+}

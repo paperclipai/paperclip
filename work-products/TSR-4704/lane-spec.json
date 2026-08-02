@@ -1,0 +1,40 @@
+{
+  "issue": "TSR-4704",
+  "laneName": "CV-Review-Grok-R2",
+  "purpose": "shadow-ready CV-review lane; NOT paid primary until board flip after TSR-4709",
+  "adapterType": "hermes_local",
+  "model": "grok-4.5",
+  "servedModelTruthNote": "request label grok-4.5; CLI sub surface only; no API keys",
+  "maxConcurrentRuns": 1,
+  "skillPacks": [],
+  "skillPackPolicy": "NONE — TSBC-1174 skill pack REFUTED/dropped (noise-band for grok)",
+  "agentFile": {
+    "pathCanonical": "/Users/glad0s/paperclip/work-products/TSR-4704/cv-review-agent-file-R2.md",
+    "pathProjectWorkProduct": "work-products/TSR-4704/cv-review-agent-file-R2.md",
+    "sha256": "fd189e4b279ac47e366984b2ab9f1b8c1b4782cc2433cd91d77ee3c19da0c7bf",
+    "source": "TSBC-1171/candidates/r2-ambiguous-ownership-clarify.md",
+    "verdictIssue": "TSBC-1174"
+  },
+  "harness": {
+    "probe": "/Users/glad0s/paperclip/benchmark/tsbc_task_probe.py",
+    "suite": "/Users/glad0s/paperclip/benchmark/cv-review/suite.json",
+    "suiteSha256": "4a12f7840060d3340e31887045177b943ccfc26aece2989d42f2e6f31a2b2c61",
+    "variantLabel": "grok-4.5-hermes-clean + R2 agent file + skills none"
+  },
+  "routing": {
+    "customerFacing": false,
+    "shadowOnlyUntil": "TSR-4709 done (3 real CV-polish orders) + separate paid-flip confirmation",
+    "incumbentProductionPrimary": "Gemini CV-review primary (TSBC-1639 primary_stands, meanQ 0.980 n=5 current:all)",
+    "doNotModifySop": "recruitment-pipeline-ops governs intake/delivery; shadow is additive only"
+  },
+  "reportsToRole": "pm",
+  "reportsToAgentIdPreferred": "8ea6b227-07aa-4874-8d1e-a919d2436a34",
+  "reportsToName": "RecruitmentManager",
+  "permissions": {
+    "canCreateAgents": false,
+    "canCreateSkills": false,
+    "trustPreset": "low_trust_review"
+  },
+  "createdAt": "2026-07-31T17:40:00Z",
+  "createdBy": "Daedalus-Hermes / TSR-4704"
+}

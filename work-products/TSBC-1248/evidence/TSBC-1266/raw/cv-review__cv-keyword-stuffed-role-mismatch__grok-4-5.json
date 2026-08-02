@@ -1,0 +1,77 @@
+{
+  "role": "cv-review",
+  "task_id": "cv-keyword-stuffed-role-mismatch",
+  "task_title": "See past keyword stuffing to the missing core experience",
+  "model_id": "grok-4.5",
+  "model_label": "Grok 4.5",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "ok": true,
+  "error": null,
+  "output": "{\"concerns\": [\"Title/summary claims Senior DE expertise (Spark, Airflow, dbt, Snowflake, Kafka, K8s, MLOps, LLMs) with zero matching production evidence\", \"Only roles are Business Analyst (Excel dashboards, ad-hoc SQL extracts, sales decks) and a 2020 reporting internship \u2014 no pipeline ownership, warehouse ownership, or incident response\", \"Airflow/dbt limited to following online tutorials; no deployed, owned, or production projects listed\", \"Experience level and scope are junior/reporting-analyst, not senior data engineering\", \"Severe resume inflation risk: skills laundry list unsupported by work history\"], \"recommendation\": \"reject\", \"verify\": []}",
+  "model_reported": "grok-4.5",
+  "inputTokens": 177,
+  "outputTokens": 164,
+  "totalTokens": 341,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "wallMs": 10534,
+  "stderrTail": "",
+  "agentFileSha256": "none",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "4a12f7840060d3340e31887045177b943ccfc26aece2989d42f2e6f31a2b2c61",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/cv-review/suite.json",
+  "skipped": false,
+  "skipReason": null,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "json_valid",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {}
+    },
+    {
+      "check": "json_path_in",
+      "ok": true,
+      "weight": 4.0,
+      "spec": {
+        "values": [
+          "reject",
+          "clarify"
+        ],
+        "path": "recommendation"
+      }
+    },
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 3.0,
+      "spec": {
+        "values": [
+          "keyword",
+          "stuff",
+          "no production",
+          "pipeline",
+          "tutorial",
+          "mismatch",
+          "not listed",
+          "core experience",
+          "Airflow",
+          "dbt"
+        ]
+      }
+    }
+  ],
+  "judgeScore": 0.83,
+  "judgeDetail": {
+    "perCriterion": {
+      "keyword_stuffing_detection": 0.83
+    },
+    "rationale": "Sharply flags the keyword-stuffing vs. missing production evidence and correctly rejects, but leaves the requested 'verify' array empty rather than listing exact verification asks.",
+    "judgeModel": "opus"
+  },
+  "quality": 0.915,
+  "qualityPer1kTokens": 2.6832844574780057
+}

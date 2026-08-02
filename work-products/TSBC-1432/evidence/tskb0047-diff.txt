@@ -1,0 +1,48 @@
+diff --git a/KB/TSKB0047 [TSBC] - Lane Placement and Skill-Pack Adoption Tracker - v0.1 - 07-06/benchmark-fairness-protocol.md b/KB/TSKB0047 [TSBC] - Lane Placement and Skill-Pack Adoption Tracker - v0.1 - 07-06/benchmark-fairness-protocol.md
+index d884ca7..e167c0e 100644
+--- a/KB/TSKB0047 [TSBC] - Lane Placement and Skill-Pack Adoption Tracker - v0.1 - 07-06/benchmark-fairness-protocol.md	
++++ b/KB/TSKB0047 [TSBC] - Lane Placement and Skill-Pack Adoption Tracker - v0.1 - 07-06/benchmark-fairness-protocol.md	
+@@ -58,6 +58,30 @@ Default minimums:
+ 
+ Customer-final, fallback, medical/legal/financial, or public-claim surfaces can require a higher bar.
+ 
++### TSBC-1432 harness gates - 2026-07-28
++
++The benchmark harness must fail closed on three common false-verdict paths:
++
++- Success-rate floor: if a cell's `successRate` is below `0.8`, publish
++  `quality = null` / `qPer1kOut = null`, carry a `suppressed_reason`, and treat
++  the cell as failed rather than absent or high-scoring.
++- Repetition accounting: `reps` is its own field and is not `n_tasks`. A cell
++  with `reps < 3` may be shown as internal evidence only and must be capped at
++  `candidate`; it cannot produce a decision-grade pick.
++- Pass-level ledger evidence: aggregate `model_eval` rows must be backed by
++  durable `model_eval_pass` rows that record the task id, rep, requested model,
++  served model, served-model verification flag, pass/fail, failure reason,
++  token counts, duration, and start/finish timestamps. If historical artifacts
++  do not prove a field, the row says `unknown`; do not infer or guess.
++- Antigravity truth: until AGY exposes a structured served-model field, every
++  AGY benchmark run must capture the same-run model self-report beside the
++  requested pin. A pin/self-report mismatch is recorded as
++  `failure_reason: served_model_mismatch` and is never scored.
++- Deployed incumbent baseline: any evaluation that could replace or supplement a
++  deployed lane must include the deployed agent, adapter, and true served model
++  as a same-run baseline. A model-name-only substitute is not sufficient; if the
++  deployed baseline is missing, the verdict is `void`.
++
+ ## Hard-Case Requirement
+ 
+ Every candidate or stronger suite must include hard cases that represent known live failures:
+@@ -119,6 +143,12 @@ Do not promote a row when:
+ - the model saw different task inputs without disclosure;
+ - the skill or prompt changed mid-comparison without separate row/version;
+ - the scorer used hidden context unavailable to the tested lane;
++- the cell has `successRate < 0.8` but still carries a quality figure;
++- the cell has no `reps` field, or has `reps < 3`, for a decision-grade claim;
++- the aggregate has no pass-level evidence for a newly-run benchmark cell;
++- an AGY row has no same-run served-model self-report, or the self-report
++  disagrees with the requested pin;
++- a live-lane replacement claim omits the same-run deployed incumbent baseline;
+ - only mean quality is recorded and low-tail behavior is unknown on a risky workflow;
+ - the output target changed between baseline and treatment;
+ - failure cases were discarded rather than logged.

@@ -1,0 +1,63 @@
+{
+  "role": "ceo",
+  "task_id": "ceo-prioritize-revenue",
+  "task_title": "Pick the highest-leverage work toward first revenue",
+  "model_id": "grok-4.5",
+  "model_label": "Grok 4.5",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "ok": true,
+  "error": null,
+  "output": "{\"first\": \"B\", \"runnerUp\": \"D\", \"why\": \"B shortest time-to-revenue: unblocks first $29 sale now; 1h starts checkout. D next (~8 weeks SEO), ahead of zero-revenue A/C/E.\"}",
+  "model_reported": "grok-4.5",
+  "inputTokens": 188,
+  "outputTokens": 42,
+  "totalTokens": 230,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "wallMs": 23350,
+  "stderrTail": "",
+  "agentFileSha256": "none",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "7b79fdf5d2ce80570fcfa85a1d04cd2c61e7093b8d2d1c735f7c4a07197a28c3",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/ceo/suite.json",
+  "skipped": false,
+  "skipReason": null,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "json_valid",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {}
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 5.0,
+      "spec": {
+        "value": "B",
+        "path": "first"
+      }
+    },
+    {
+      "check": "max_words",
+      "ok": true,
+      "weight": 1.0,
+      "spec": {
+        "value": 45
+      }
+    }
+  ],
+  "judgeScore": 0.95,
+  "judgeDetail": {
+    "perCriterion": {
+      "reasoning": 0.95
+    },
+    "rationale": "Correctly picks B as shortest path to first dollar with D as the only other real revenue path, explicitly referencing time-to-revenue within the word limit.",
+    "judgeModel": "opus"
+  },
+  "quality": 0.975,
+  "qualityPer1kTokens": 4.239130434782608
+}

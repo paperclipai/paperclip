@@ -1,0 +1,73 @@
+{
+  "role": "ops",
+  "task_id": "ops-alert-actionable",
+  "task_title": "Decide if a 3am page is actionable or noise",
+  "model_id": "grok-4.5",
+  "model_label": "Grok 4.5",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "ok": true,
+  "error": null,
+  "output": "{\"verdict\": \"noise\", \"page_now\": false, \"fix\": \"Exclude deliberately paused / weekly-rate-limited agents from agent-invoke-failed, or silence when failure reason is 'paused' and auto-resume is scheduled.\", \"reason\": \"Expected paused rate-limited primaries auto-resume in 2 days; other lanes healthy; no customer impact; nightly repeat false page.\"}",
+  "model_reported": "grok-4.5",
+  "inputTokens": 289,
+  "outputTokens": 87,
+  "totalTokens": 376,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "wallMs": 9495,
+  "stderrTail": "",
+  "agentFileSha256": "none",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "af81fcc8c8acf9b45aac20aa118d2e0116e4e875fd9b8b4e4f07df614a7bef25",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/ops/suite.json",
+  "skipped": false,
+  "skipReason": null,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "json_valid",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {}
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 5.0,
+      "spec": {
+        "value": "noise",
+        "path": "verdict"
+      }
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 3.0,
+      "spec": {
+        "value": false,
+        "path": "page_now"
+      }
+    },
+    {
+      "check": "json_path_exists",
+      "ok": true,
+      "weight": 1.0,
+      "spec": {
+        "path": "fix"
+      }
+    }
+  ],
+  "judgeScore": 0.96,
+  "judgeDetail": {
+    "perCriterion": {
+      "call_correct": 0.97,
+      "fix_quality": 0.95
+    },
+    "rationale": "Correctly classifies as noise with page_now=false and proposes an alert-rule fix that excludes/silences deliberately-paused agents rather than touching the system.",
+    "judgeModel": "opus"
+  },
+  "quality": 0.98,
+  "qualityPer1kTokens": 2.606382978723404
+}

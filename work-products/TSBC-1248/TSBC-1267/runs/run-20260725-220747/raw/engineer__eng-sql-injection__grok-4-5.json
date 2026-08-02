@@ -1,0 +1,76 @@
+{
+  "role": "engineer",
+  "task_id": "eng-sql-injection",
+  "task_title": "Spot the SQL injection in an OpCo admin endpoint",
+  "model_id": "grok-4.5",
+  "model_label": "Grok 4.5",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "ok": true,
+  "error": null,
+  "output": "**(1) Vulnerability:** SQL injection (CWE-89) via string interpolation of `req.query.name`.  \nExploit input: `' OR 1=1; DROP TABLE routines; --`\n\n**(2) Worst-case impact:** On a shared multi-OpCo Postgres DB, any OpCo CEO can read/alter/delete other OpCos\u2019 routines (and any other tables the DB role can touch), dump data, or destroy shared schema\u2014full cross-tenant breach.\n\n**(3) Fix (parameterized query):**\n```ts\nconst rows = await db.execute(\n  `SELECT id, schedule, last_run FROM routines WHERE name = $1`,\n  [name]\n);\n```\nParameters bind `name` as data, never as SQL text, so quotes/semicolons cannot change the query structure or inject extra statements.",
+  "model_reported": "grok-4.5",
+  "inputTokens": 178,
+  "outputTokens": 165,
+  "totalTokens": 343,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "wallMs": 14229,
+  "stderrTail": "",
+  "agentFileSha256": "none",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "b7373c2152d432ffadaa313c61133d110457a1e56402bf122dab21c5460d183f",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/engineer/suite.json",
+  "skipped": false,
+  "skipReason": null,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 3.0,
+      "spec": {
+        "values": [
+          "sql injection",
+          "injection"
+        ]
+      }
+    },
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 3.0,
+      "spec": {
+        "values": [
+          "parameteriz",
+          "parametriz",
+          "prepared statement",
+          "bind",
+          "placeholder",
+          "$1",
+          "?"
+        ]
+      }
+    },
+    {
+      "check": "max_words",
+      "ok": true,
+      "weight": 1.0,
+      "spec": {
+        "value": 150
+      }
+    }
+  ],
+  "judgeScore": 0.95,
+  "judgeDetail": {
+    "perCriterion": {
+      "correctness": 0.95,
+      "specificity": 0.95
+    },
+    "rationale": "Precisely names SQLi/CWE-89 via interpolation, gives a working exploit, the correct $1 parameterized fix with the separation-of-code-from-data rationale, and the cross-OpCo impact \u2014 only nit is the DROP-TABLE payload assumes multi-statement execution.",
+    "judgeModel": "opus"
+  },
+  "quality": 0.975,
+  "qualityPer1kTokens": 2.842565597667638
+}

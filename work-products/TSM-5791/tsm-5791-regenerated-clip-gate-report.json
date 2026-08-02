@@ -1,0 +1,390 @@
+{
+  "issue": "TSM-5791",
+  "manifestPath": "work-products/TSM-5791/source/tsm-5791-regenerated-clip-manifest.template.json",
+  "quarantinedLineageRoots": [
+    "work-products/TSM-5718",
+    "work-products/TSM-5719",
+    "work-products/TSM-5737"
+  ],
+  "requiredSeedRoot": "/Users/glad0s/Pictures/ThinkStack Assets/Jessica James/Emotion cards - ORIGINALS",
+  "requiredSeedFilenames": [
+    "Gemini_Generated_Image_6vg0sv6vg0sv6vg0.png",
+    "Gemini_Generated_Image_76pfnc76pfnc76pf.png",
+    "Gemini_Generated_Image_7x3dua7x3dua7x3d.png",
+    "Gemini_Generated_Image_ad8n19ad8n19ad8n.png",
+    "Gemini_Generated_Image_aldfrcaldfrcaldf.png",
+    "Gemini_Generated_Image_bo3rdubo3rdubo3r.png",
+    "Gemini_Generated_Image_isowgyisowgyisow.png",
+    "Gemini_Generated_Image_l4277ll4277ll427.png",
+    "Gemini_Generated_Image_oxunzdoxunzdoxun.png",
+    "Gemini_Generated_Image_q0yqi9q0yqi9q0yq.png",
+    "Gemini_Generated_Image_r9d2d8r9d2d8r9d2.png",
+    "Gemini_Generated_Image_t0w013t0w013t0w0.png",
+    "Gemini_Generated_Image_tkenlytkenlytken.png",
+    "Gemini_Generated_Image_tp4xh4tp4xh4tp4x.png",
+    "Gemini_Generated_Image_vvrhbfvvrhbfvvrh.png"
+  ],
+  "expectedClipCount": 39,
+  "manifestClipCount": 39,
+  "passCount": 39,
+  "failCount": 0,
+  "assemblyEligible": true,
+  "clips": [
+    {
+      "n": 1,
+      "slug": "bedroom-intro",
+      "replacementPath": "work-products/TSM-5791/clip-bytes/01-bedroom-intro-8s.mp4",
+      "perClipCastTruthReport": "work-products/TSM-5791/reports/01-bedroom-intro-cast-truth.json",
+      "provenanceRecord": "work-products/TSM-5791/provenance/01-bedroom-intro-provenance.json",
+      "pass": true,
+      "violations": []
+    },
+    {
+      "n": 2,
+      "slug": "bedroom-intro-continued",
+      "replacementPath": "work-products/TSM-5791/clip-bytes/02-bedroom-intro-continued-8s.mp4",
+      "perClipCastTruthReport": "work-products/TSM-5791/reports/02-bedroom-intro-continued-cast-truth.json",
+      "provenanceRecord": "work-products/TSM-5791/provenance/02-bedroom-intro-continued-provenance.json",
+      "pass": true,
+      "violations": []
+    },
+    {
+      "n": 3,
+      "slug": "bedroom-decor",
+      "replacementPath": "work-products/TSM-5791/clip-bytes/03-bedroom-decor-8s.mp4",
+      "perClipCastTruthReport": "work-products/TSM-5791/reports/03-bedroom-decor-cast-truth.json",
+      "provenanceRecord": "work-products/TSM-5791/provenance/03-bedroom-decor-provenance.json",
+      "pass": true,
+      "violations": []
+    },
+    {
+      "n": 4,
+      "slug": "bedroom-story",
+      "replacementPath": "work-products/TSM-5791/clip-bytes/04-bedroom-story-8s.mp4",
+      "perClipCastTruthReport": "work-products/TSM-5791/reports/04-bedroom-story-cast-truth.json",
+      "provenanceRecord": "work-products/TSM-5791/provenance/04-bedroom-story-provenance.json",
+      "pass": true,
+      "violations": []
+    },
+    {
+      "n": 5,
+      "slug": "bedroom-storytelling-continued",
+      "replacementPath": "work-products/TSM-5791/clip-bytes/05-bedroom-storytelling-continued-8s.mp4",
+      "perClipCastTruthReport": "work-products/TSM-5791/reports/05-bedroom-storytelling-continued-cast-truth.json",
+      "provenanceRecord": "work-products/TSM-5791/provenance/05-bedroom-storytelling-continued-provenance.json",
+      "pass": true,
+      "violations": []
+    },
+    {
+      "n": 6,
+      "slug": "bedroom-reading-long",
+      "replacementPath": "work-products/TSM-5791/clip-bytes/06-bedroom-reading-long-8s.mp4",
+      "perClipCastTruthReport": "work-products/TSM-5791/reports/06-bedroom-reading-long-cast-truth.json",
+      "provenanceRecord": "work-products/TSM-5791/provenance/06-bedroom-reading-long-provenance.json",
+      "pass": true,
+      "violations": []
+    },
+    {
+      "n": 7,
+      "slug": "bedroom-reading-short",
+      "replacementPath": "work-products/TSM-5791/clip-bytes/07-bedroom-reading-short-8s.mp4",
+      "perClipCastTruthReport": "work-products/TSM-5791/reports/07-bedroom-reading-short-cast-truth.json",
+      "provenanceRecord": "work-products/TSM-5791/provenance/07-bedroom-reading-short-provenance.json",
+      "pass": true,
+      "violations": []
+    },
+    {
+      "n": 8,
+      "slug": "bedroom-map-drawing",
+      "replacementPath": "work-products/TSM-5791/clip-bytes/08-bedroom-map-drawing-8s.mp4",
+      "perClipCastTruthReport": "work-products/TSM-5791/reports/08-bedroom-map-drawing-cast-truth.json",
+      "provenanceRecord": "work-products/TSM-5791/provenance/08-bedroom-map-drawing-provenance.json",
+      "pass": true,
+      "violations": []
+    },
+    {
+      "n": 9,
+      "slug": "fort-map-drawing",
+      "replacementPath": "work-products/TSM-5791/clip-bytes/09-fort-map-drawing-8s.mp4",
+      "perClipCastTruthReport": "work-products/TSM-5791/reports/09-fort-map-drawing-cast-truth.json",
+      "provenanceRecord": "work-products/TSM-5791/provenance/09-fort-map-drawing-provenance.json",
+      "pass": true,
+      "violations": []
+    },
+    {
+      "n": 10,
+      "slug": "walking-meadow",
+      "replacementPath": "work-products/TSM-5791/clip-bytes/10-walking-meadow-8s.mp4",
+      "perClipCastTruthReport": "work-products/TSM-5791/reports/10-walking-meadow-cast-truth.json",
+      "provenanceRecord": "work-products/TSM-5791/provenance/10-walking-meadow-provenance.json",
+      "pass": true,
+      "violations": []
+    },
+    {
+      "n": 11,
+      "slug": "garden-exploring",
+      "replacementPath": "work-products/TSM-5791/clip-bytes/11-garden-exploring-8s.mp4",
+      "perClipCastTruthReport": "work-products/TSM-5791/reports/11-garden-exploring-cast-truth.json",
+      "provenanceRecord": "work-products/TSM-5791/provenance/11-garden-exploring-provenance.json",
+      "pass": true,
+      "violations": []
+    },
+    {
+      "n": 12,
+      "slug": "garden-planting",
+      "replacementPath": "work-products/TSM-5791/clip-bytes/12-garden-planting-8s.mp4",
+      "perClipCastTruthReport": "work-products/TSM-5791/reports/12-garden-planting-cast-truth.json",
+      "provenanceRecord": "work-products/TSM-5791/provenance/12-garden-planting-provenance.json",
+      "pass": true,
+      "violations": []
+    },
+    {
+      "n": 13,
+      "slug": "garden-watering",
+      "replacementPath": "work-products/TSM-5791/clip-bytes/13-garden-watering-8s.mp4",
+      "perClipCastTruthReport": "work-products/TSM-5791/reports/13-garden-watering-cast-truth.json",
+      "provenanceRecord": "work-products/TSM-5791/provenance/13-garden-watering-provenance.json",
+      "pass": true,
+      "violations": []
+    },
+    {
+      "n": 14,
+      "slug": "garden-watering-seeds",
+      "replacementPath": "work-products/TSM-5791/clip-bytes/14-garden-watering-seeds-8s.mp4",
+      "perClipCastTruthReport": "work-products/TSM-5791/reports/14-garden-watering-seeds-cast-truth.json",
+      "provenanceRecord": "work-products/TSM-5791/provenance/14-garden-watering-seeds-provenance.json",
+      "pass": true,
+      "violations": []
+    },
+    {
+      "n": 15,
+      "slug": "fort-building-main",
+      "replacementPath": "work-products/TSM-5791/clip-bytes/15-fort-building-main-8s.mp4",
+      "perClipCastTruthReport": "work-products/TSM-5791/reports/15-fort-building-main-cast-truth.json",
+      "provenanceRecord": "work-products/TSM-5791/provenance/15-fort-building-main-provenance.json",
+      "pass": true,
+      "violations": []
+    },
+    {
+      "n": 16,
+      "slug": "fort-building-expansion",
+      "replacementPath": "work-products/TSM-5791/clip-bytes/16-fort-building-expansion-8s.mp4",
+      "perClipCastTruthReport": "work-products/TSM-5791/reports/16-fort-building-expansion-cast-truth.json",
+      "provenanceRecord": "work-products/TSM-5791/provenance/16-fort-building-expansion-provenance.json",
+      "pass": true,
+      "violations": []
+    },
+    {
+      "n": 17,
+      "slug": "fort-building-continued",
+      "replacementPath": "work-products/TSM-5791/clip-bytes/17-fort-building-continued-8s.mp4",
+      "perClipCastTruthReport": "work-products/TSM-5791/reports/17-fort-building-continued-cast-truth.json",
+      "provenanceRecord": "work-products/TSM-5791/provenance/17-fort-building-continued-provenance.json",
+      "pass": true,
+      "violations": []
+    },
+    {
+      "n": 18,
+      "slug": "fort-model-building",
+      "replacementPath": "work-products/TSM-5791/clip-bytes/18-fort-model-building-10s.mp4",
+      "perClipCastTruthReport": "work-products/TSM-5791/reports/18-fort-model-building-cast-truth.json",
+      "provenanceRecord": "work-products/TSM-5791/provenance/18-fort-model-building-provenance.json",
+      "pass": true,
+      "violations": []
+    },
+    {
+      "n": 19,
+      "slug": "fort-decorating-main",
+      "replacementPath": "work-products/TSM-5791/clip-bytes/19-fort-decorating-main-8s.mp4",
+      "perClipCastTruthReport": "work-products/TSM-5791/reports/19-fort-decorating-main-cast-truth.json",
+      "provenanceRecord": "work-products/TSM-5791/provenance/19-fort-decorating-main-provenance.json",
+      "pass": true,
+      "violations": []
+    },
+    {
+      "n": 20,
+      "slug": "fort-decorating-continuation",
+      "replacementPath": "work-products/TSM-5791/clip-bytes/20-fort-decorating-continuation-8s.mp4",
+      "perClipCastTruthReport": "work-products/TSM-5791/reports/20-fort-decorating-continuation-cast-truth.json",
+      "provenanceRecord": "work-products/TSM-5791/provenance/20-fort-decorating-continuation-provenance.json",
+      "pass": true,
+      "violations": []
+    },
+    {
+      "n": 21,
+      "slug": "fort-decorating-expansion",
+      "replacementPath": "work-products/TSM-5791/clip-bytes/21-fort-decorating-expansion-8s.mp4",
+      "perClipCastTruthReport": "work-products/TSM-5791/reports/21-fort-decorating-expansion-cast-truth.json",
+      "provenanceRecord": "work-products/TSM-5791/provenance/21-fort-decorating-expansion-provenance.json",
+      "pass": true,
+      "violations": []
+    },
+    {
+      "n": 22,
+      "slug": "fort-painting",
+      "replacementPath": "work-products/TSM-5791/clip-bytes/22-fort-painting-8s.mp4",
+      "perClipCastTruthReport": "work-products/TSM-5791/reports/22-fort-painting-cast-truth.json",
+      "provenanceRecord": "work-products/TSM-5791/provenance/22-fort-painting-provenance.json",
+      "pass": true,
+      "violations": []
+    },
+    {
+      "n": 23,
+      "slug": "fort-wall-building-main",
+      "replacementPath": "work-products/TSM-5791/clip-bytes/23-fort-wall-building-main-8s.mp4",
+      "perClipCastTruthReport": "work-products/TSM-5791/reports/23-fort-wall-building-main-cast-truth.json",
+      "provenanceRecord": "work-products/TSM-5791/provenance/23-fort-wall-building-main-provenance.json",
+      "pass": true,
+      "violations": []
+    },
+    {
+      "n": 24,
+      "slug": "fort-wall-reinforcement",
+      "replacementPath": "work-products/TSM-5791/clip-bytes/24-fort-wall-reinforcement-8s.mp4",
+      "perClipCastTruthReport": "work-products/TSM-5791/reports/24-fort-wall-reinforcement-cast-truth.json",
+      "provenanceRecord": "work-products/TSM-5791/provenance/24-fort-wall-reinforcement-provenance.json",
+      "pass": true,
+      "violations": []
+    },
+    {
+      "n": 25,
+      "slug": "fort-wall-building-expansion",
+      "replacementPath": "work-products/TSM-5791/clip-bytes/25-fort-wall-building-expansion-8s.mp4",
+      "perClipCastTruthReport": "work-products/TSM-5791/reports/25-fort-wall-building-expansion-cast-truth.json",
+      "provenanceRecord": "work-products/TSM-5791/provenance/25-fort-wall-building-expansion-provenance.json",
+      "pass": true,
+      "violations": []
+    },
+    {
+      "n": 26,
+      "slug": "fort-shelf-building",
+      "replacementPath": "work-products/TSM-5791/clip-bytes/26-fort-shelf-building-8s.mp4",
+      "perClipCastTruthReport": "work-products/TSM-5791/reports/26-fort-shelf-building-cast-truth.json",
+      "provenanceRecord": "work-products/TSM-5791/provenance/26-fort-shelf-building-provenance.json",
+      "pass": true,
+      "violations": []
+    },
+    {
+      "n": 27,
+      "slug": "fort-continuation",
+      "replacementPath": "work-products/TSM-5791/clip-bytes/27-fort-continuation-8s.mp4",
+      "perClipCastTruthReport": "work-products/TSM-5791/reports/27-fort-continuation-cast-truth.json",
+      "provenanceRecord": "work-products/TSM-5791/provenance/27-fort-continuation-provenance.json",
+      "pass": true,
+      "violations": []
+    },
+    {
+      "n": 28,
+      "slug": "fort-drawing-continued",
+      "replacementPath": "work-products/TSM-5791/clip-bytes/28-fort-drawing-continued-8s.mp4",
+      "perClipCastTruthReport": "work-products/TSM-5791/reports/28-fort-drawing-continued-cast-truth.json",
+      "provenanceRecord": "work-products/TSM-5791/provenance/28-fort-drawing-continued-provenance.json",
+      "pass": true,
+      "violations": []
+    },
+    {
+      "n": 29,
+      "slug": "fort-map-exploring",
+      "replacementPath": "work-products/TSM-5791/clip-bytes/29-fort-map-exploring-8s.mp4",
+      "perClipCastTruthReport": "work-products/TSM-5791/reports/29-fort-map-exploring-cast-truth.json",
+      "provenanceRecord": "work-products/TSM-5791/provenance/29-fort-map-exploring-provenance.json",
+      "pass": true,
+      "violations": []
+    },
+    {
+      "n": 30,
+      "slug": "fort-interior-story",
+      "replacementPath": "work-products/TSM-5791/clip-bytes/30-fort-interior-story-8s.mp4",
+      "perClipCastTruthReport": "work-products/TSM-5791/reports/30-fort-interior-story-cast-truth.json",
+      "provenanceRecord": "work-products/TSM-5791/provenance/30-fort-interior-story-provenance.json",
+      "pass": true,
+      "violations": []
+    },
+    {
+      "n": 31,
+      "slug": "fort-interior-storytelling",
+      "replacementPath": "work-products/TSM-5791/clip-bytes/31-fort-interior-storytelling-8s.mp4",
+      "perClipCastTruthReport": "work-products/TSM-5791/reports/31-fort-interior-storytelling-cast-truth.json",
+      "provenanceRecord": "work-products/TSM-5791/provenance/31-fort-interior-storytelling-provenance.json",
+      "pass": true,
+      "violations": []
+    },
+    {
+      "n": 32,
+      "slug": "fort-interior",
+      "replacementPath": "work-products/TSM-5791/clip-bytes/32-fort-interior-8s.mp4",
+      "perClipCastTruthReport": "work-products/TSM-5791/reports/32-fort-interior-cast-truth.json",
+      "provenanceRecord": "work-products/TSM-5791/provenance/32-fort-interior-provenance.json",
+      "pass": true,
+      "violations": []
+    },
+    {
+      "n": 33,
+      "slug": "fort-interior-continued",
+      "replacementPath": "work-products/TSM-5791/clip-bytes/33-fort-interior-continued-8s.mp4",
+      "perClipCastTruthReport": "work-products/TSM-5791/reports/33-fort-interior-continued-cast-truth.json",
+      "provenanceRecord": "work-products/TSM-5791/provenance/33-fort-interior-continued-provenance.json",
+      "pass": true,
+      "violations": []
+    },
+    {
+      "n": 34,
+      "slug": "fort-interior-play",
+      "replacementPath": "work-products/TSM-5791/clip-bytes/34-fort-interior-play-8s.mp4",
+      "perClipCastTruthReport": "work-products/TSM-5791/reports/34-fort-interior-play-cast-truth.json",
+      "provenanceRecord": "work-products/TSM-5791/provenance/34-fort-interior-play-provenance.json",
+      "pass": true,
+      "violations": []
+    },
+    {
+      "n": 35,
+      "slug": "fort-play",
+      "replacementPath": "work-products/TSM-5791/clip-bytes/35-fort-play-8s.mp4",
+      "perClipCastTruthReport": "work-products/TSM-5791/reports/35-fort-play-cast-truth.json",
+      "provenanceRecord": "work-products/TSM-5791/provenance/35-fort-play-provenance.json",
+      "pass": true,
+      "violations": []
+    },
+    {
+      "n": 36,
+      "slug": "fort-storytelling",
+      "replacementPath": "work-products/TSM-5791/clip-bytes/36-fort-storytelling-8s.mp4",
+      "perClipCastTruthReport": "work-products/TSM-5791/reports/36-fort-storytelling-cast-truth.json",
+      "provenanceRecord": "work-products/TSM-5791/provenance/36-fort-storytelling-provenance.json",
+      "pass": true,
+      "violations": []
+    },
+    {
+      "n": 37,
+      "slug": "fort-book-reading",
+      "replacementPath": "work-products/TSM-5791/clip-bytes/37-fort-book-reading-8s.mp4",
+      "perClipCastTruthReport": "work-products/TSM-5791/reports/37-fort-book-reading-cast-truth.json",
+      "provenanceRecord": "work-products/TSM-5791/provenance/37-fort-book-reading-provenance.json",
+      "pass": true,
+      "violations": []
+    },
+    {
+      "n": 38,
+      "slug": "fort-evening-gathering",
+      "replacementPath": "work-products/TSM-5791/clip-bytes/38-fort-evening-gathering-8s.mp4",
+      "perClipCastTruthReport": "work-products/TSM-5791/reports/38-fort-evening-gathering-cast-truth.json",
+      "provenanceRecord": "work-products/TSM-5791/provenance/38-fort-evening-gathering-provenance.json",
+      "pass": true,
+      "violations": []
+    },
+    {
+      "n": 39,
+      "slug": "toy-show",
+      "replacementPath": "work-products/TSM-5791/clip-bytes/39-toy-show-8s.mp4",
+      "perClipCastTruthReport": "work-products/TSM-5791/reports/39-toy-show-cast-truth.json",
+      "provenanceRecord": "work-products/TSM-5791/provenance/39-toy-show-provenance.json",
+      "pass": true,
+      "violations": []
+    }
+  ],
+  "sourceAudit": {
+    "path": "work-products/TSM-5791/tsm-5791-per-clip-cast-truth-audit-2026-07-29.json",
+    "fullySalvageable": null,
+    "sourceManifest": null
+  }
+}

@@ -1,0 +1,414 @@
+{
+  "version": 1,
+  "rule": "no still-slide plus Ken Burns",
+  "beats": {
+    "1": {
+      "visual_type": "mixed",
+      "treatment": "distinct moving b-roll shots with hard editorial cuts",
+      "shots": 11,
+      "requiredSeconds": 48.922,
+      "actualSeconds": 49.667,
+      "prohibited": [
+        "still_slide",
+        "Ken Burns",
+        "loop",
+        "end-frame hold"
+      ]
+    },
+    "2": {
+      "visual_type": "mixed",
+      "treatment": "distinct moving b-roll shots with hard editorial cuts",
+      "shots": 2,
+      "requiredSeconds": 8.38,
+      "actualSeconds": 9.433,
+      "prohibited": [
+        "still_slide",
+        "Ken Burns",
+        "loop",
+        "end-frame hold"
+      ]
+    },
+    "3": {
+      "visual_type": "mixed",
+      "treatment": "distinct moving b-roll shots with hard editorial cuts",
+      "shots": 1,
+      "requiredSeconds": 2.541,
+      "actualSeconds": 3.633,
+      "prohibited": [
+        "still_slide",
+        "Ken Burns",
+        "loop",
+        "end-frame hold"
+      ]
+    },
+    "4": {
+      "visual_type": "mixed",
+      "treatment": "distinct moving b-roll shots with hard editorial cuts",
+      "shots": 1,
+      "requiredSeconds": 2.66,
+      "actualSeconds": 3.733,
+      "prohibited": [
+        "still_slide",
+        "Ken Burns",
+        "loop",
+        "end-frame hold"
+      ]
+    },
+    "5": {
+      "visual_type": "mixed",
+      "treatment": "distinct moving b-roll shots with hard editorial cuts",
+      "shots": 3,
+      "requiredSeconds": 9.94,
+      "actualSeconds": 10.967,
+      "prohibited": [
+        "still_slide",
+        "Ken Burns",
+        "loop",
+        "end-frame hold"
+      ]
+    },
+    "6": {
+      "visual_type": "mixed",
+      "treatment": "distinct moving b-roll shots with hard editorial cuts",
+      "shots": 2,
+      "requiredSeconds": 5.0,
+      "actualSeconds": 6.033,
+      "prohibited": [
+        "still_slide",
+        "Ken Burns",
+        "loop",
+        "end-frame hold"
+      ]
+    },
+    "7": {
+      "visual_type": "mixed",
+      "treatment": "distinct moving b-roll shots with hard editorial cuts",
+      "shots": 3,
+      "requiredSeconds": 10.881,
+      "actualSeconds": 11.9,
+      "prohibited": [
+        "still_slide",
+        "Ken Burns",
+        "loop",
+        "end-frame hold"
+      ]
+    },
+    "8": {
+      "visual_type": "mixed",
+      "treatment": "distinct moving b-roll shots with hard editorial cuts",
+      "shots": 3,
+      "requiredSeconds": 11.32,
+      "actualSeconds": 12.333,
+      "prohibited": [
+        "still_slide",
+        "Ken Burns",
+        "loop",
+        "end-frame hold"
+      ]
+    },
+    "9": {
+      "visual_type": "mixed",
+      "treatment": "distinct moving b-roll shots with hard editorial cuts",
+      "shots": 2,
+      "requiredSeconds": 5.501,
+      "actualSeconds": 6.567,
+      "prohibited": [
+        "still_slide",
+        "Ken Burns",
+        "loop",
+        "end-frame hold"
+      ]
+    },
+    "10": {
+      "visual_type": "mixed",
+      "treatment": "distinct moving b-roll shots with hard editorial cuts",
+      "shots": 5,
+      "requiredSeconds": 20.9,
+      "actualSeconds": 21.833,
+      "prohibited": [
+        "still_slide",
+        "Ken Burns",
+        "loop",
+        "end-frame hold"
+      ]
+    },
+    "11": {
+      "visual_type": "mixed",
+      "treatment": "distinct moving b-roll shots with hard editorial cuts",
+      "shots": 4,
+      "requiredSeconds": 15.3,
+      "actualSeconds": 16.267,
+      "prohibited": [
+        "still_slide",
+        "Ken Burns",
+        "loop",
+        "end-frame hold"
+      ]
+    },
+    "12": {
+      "visual_type": "mixed",
+      "treatment": "distinct moving b-roll shots with hard editorial cuts",
+      "shots": 1,
+      "requiredSeconds": 3.56,
+      "actualSeconds": 4.633,
+      "prohibited": [
+        "still_slide",
+        "Ken Burns",
+        "loop",
+        "end-frame hold"
+      ]
+    },
+    "13": {
+      "visual_type": "mixed",
+      "treatment": "distinct moving b-roll shots with hard editorial cuts",
+      "shots": 5,
+      "requiredSeconds": 23.121,
+      "actualSeconds": 24.067,
+      "prohibited": [
+        "still_slide",
+        "Ken Burns",
+        "loop",
+        "end-frame hold"
+      ]
+    },
+    "14": {
+      "visual_type": "mixed",
+      "treatment": "distinct moving b-roll shots with hard editorial cuts",
+      "shots": 2,
+      "requiredSeconds": 8.761,
+      "actualSeconds": 9.733,
+      "prohibited": [
+        "still_slide",
+        "Ken Burns",
+        "loop",
+        "end-frame hold"
+      ]
+    },
+    "15": {
+      "visual_type": "mixed",
+      "treatment": "distinct moving b-roll shots with hard editorial cuts",
+      "shots": 5,
+      "requiredSeconds": 22.421,
+      "actualSeconds": 23.367,
+      "prohibited": [
+        "still_slide",
+        "Ken Burns",
+        "loop",
+        "end-frame hold"
+      ]
+    },
+    "16": {
+      "visual_type": "mixed",
+      "treatment": "distinct moving b-roll shots with hard editorial cuts",
+      "shots": 2,
+      "requiredSeconds": 7.3,
+      "actualSeconds": 8.333,
+      "prohibited": [
+        "still_slide",
+        "Ken Burns",
+        "loop",
+        "end-frame hold"
+      ]
+    },
+    "17": {
+      "visual_type": "mixed",
+      "treatment": "distinct moving b-roll shots with hard editorial cuts",
+      "shots": 2,
+      "requiredSeconds": 4.5,
+      "actualSeconds": 5.533,
+      "prohibited": [
+        "still_slide",
+        "Ken Burns",
+        "loop",
+        "end-frame hold"
+      ]
+    },
+    "18": {
+      "visual_type": "mixed",
+      "treatment": "distinct moving b-roll shots with hard editorial cuts",
+      "shots": 2,
+      "requiredSeconds": 7.181,
+      "actualSeconds": 8.233,
+      "prohibited": [
+        "still_slide",
+        "Ken Burns",
+        "loop",
+        "end-frame hold"
+      ]
+    },
+    "19": {
+      "visual_type": "mixed",
+      "treatment": "distinct moving b-roll shots with hard editorial cuts",
+      "shots": 1,
+      "requiredSeconds": 0.84,
+      "actualSeconds": 1.967,
+      "prohibited": [
+        "still_slide",
+        "Ken Burns",
+        "loop",
+        "end-frame hold"
+      ]
+    },
+    "20": {
+      "visual_type": "mixed",
+      "treatment": "distinct moving b-roll shots with hard editorial cuts",
+      "shots": 2,
+      "requiredSeconds": 6.06,
+      "actualSeconds": 7.1,
+      "prohibited": [
+        "still_slide",
+        "Ken Burns",
+        "loop",
+        "end-frame hold"
+      ]
+    },
+    "21": {
+      "visual_type": "mixed",
+      "treatment": "distinct moving b-roll shots with hard editorial cuts",
+      "shots": 2,
+      "requiredSeconds": 5.02,
+      "actualSeconds": 6.067,
+      "prohibited": [
+        "still_slide",
+        "Ken Burns",
+        "loop",
+        "end-frame hold"
+      ]
+    },
+    "22": {
+      "visual_type": "mixed",
+      "treatment": "distinct moving b-roll shots with hard editorial cuts",
+      "shots": 2,
+      "requiredSeconds": 6.76,
+      "actualSeconds": 7.8,
+      "prohibited": [
+        "still_slide",
+        "Ken Burns",
+        "loop",
+        "end-frame hold"
+      ]
+    },
+    "23": {
+      "visual_type": "mixed",
+      "treatment": "distinct moving b-roll shots with hard editorial cuts",
+      "shots": 2,
+      "requiredSeconds": 5.581,
+      "actualSeconds": 6.633,
+      "prohibited": [
+        "still_slide",
+        "Ken Burns",
+        "loop",
+        "end-frame hold"
+      ]
+    },
+    "25": {
+      "visual_type": "mixed",
+      "treatment": "distinct moving b-roll shots with hard editorial cuts",
+      "shots": 2,
+      "requiredSeconds": 5.66,
+      "actualSeconds": 6.7,
+      "prohibited": [
+        "still_slide",
+        "Ken Burns",
+        "loop",
+        "end-frame hold"
+      ]
+    },
+    "26": {
+      "visual_type": "mixed",
+      "treatment": "distinct moving b-roll shots with hard editorial cuts",
+      "shots": 4,
+      "requiredSeconds": 14.701,
+      "actualSeconds": 15.7,
+      "prohibited": [
+        "still_slide",
+        "Ken Burns",
+        "loop",
+        "end-frame hold"
+      ]
+    },
+    "27": {
+      "visual_type": "mixed",
+      "treatment": "distinct moving b-roll shots with hard editorial cuts",
+      "shots": 4,
+      "requiredSeconds": 14.1,
+      "actualSeconds": 15.066,
+      "prohibited": [
+        "still_slide",
+        "Ken Burns",
+        "loop",
+        "end-frame hold"
+      ]
+    },
+    "28": {
+      "visual_type": "mixed",
+      "treatment": "distinct moving b-roll shots with hard editorial cuts",
+      "shots": 4,
+      "requiredSeconds": 14.201,
+      "actualSeconds": 15.2,
+      "prohibited": [
+        "still_slide",
+        "Ken Burns",
+        "loop",
+        "end-frame hold"
+      ]
+    },
+    "29": {
+      "visual_type": "mixed",
+      "treatment": "distinct moving b-roll shots with hard editorial cuts",
+      "shots": 1,
+      "requiredSeconds": 2.1,
+      "actualSeconds": 3.167,
+      "prohibited": [
+        "still_slide",
+        "Ken Burns",
+        "loop",
+        "end-frame hold"
+      ]
+    },
+    "30": {
+      "visual_type": "mixed",
+      "treatment": "distinct moving b-roll shots with hard editorial cuts",
+      "shots": 2,
+      "requiredSeconds": 5.76,
+      "actualSeconds": 6.8,
+      "prohibited": [
+        "still_slide",
+        "Ken Burns",
+        "loop",
+        "end-frame hold"
+      ]
+    },
+    "31": {
+      "visual_type": "mixed",
+      "treatment": "distinct moving b-roll shots with hard editorial cuts",
+      "shots": 1,
+      "requiredSeconds": 2.58,
+      "actualSeconds": 3.667,
+      "prohibited": [
+        "still_slide",
+        "Ken Burns",
+        "loop",
+        "end-frame hold"
+      ]
+    },
+    "32": {
+      "visual_type": "mixed",
+      "treatment": "distinct moving b-roll shots with hard editorial cuts",
+      "shots": 28,
+      "requiredSeconds": 135.226,
+      "actualSeconds": 135.4,
+      "prohibited": [
+        "still_slide",
+        "Ken Burns",
+        "loop",
+        "end-frame hold"
+      ]
+    }
+  },
+  "lockedInserts": [
+    24,
+    33,
+    34
+  ]
+}

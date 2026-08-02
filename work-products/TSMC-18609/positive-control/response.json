@@ -1,0 +1,9 @@
+{
+  "format": "raw_audio_mpeg",
+  "content_type": "audio/mpeg",
+  "note": "xAI /v1/tts returned raw MPEG audio body (not JSON envelope)",
+  "body_bytes": 176640,
+  "body_sha256": "5d06a3c3b95a535b76e4b66d1635602ee6d88f46d731ff1b5f1d22a8e2223e72",
+  "headers_path": "/Users/glad0s/.paperclip/instances/default/companies/e6361895-a6a4-438d-bb76-b17a0ad026cb/work-products/TSMC-18609/positive-control/response.headers.txt",
+  "response_bin_path": "/Users/glad0s/.paperclip/instances/default/companies/e6361895-a6a4-438d-bb76-b17a0ad026cb/work-products/TSMC-18609/positive-control/response.bin"
+}

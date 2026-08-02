@@ -1,0 +1,74 @@
+{
+  "role": "cv-review",
+  "task_id": "cv-role-mismatch",
+  "task_title": "Honestly flag a role mismatch (no rubber-stamp)",
+  "model_id": "grok-4.5",
+  "model_label": "Grok 4.5",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "ok": true,
+  "error": null,
+  "output": "{\"concerns\": [\"Entire career is frontend-only (React UIs, CSS, accessibility); zero backend experience listed\", \"No distributed systems, services, APIs, data stores, messaging, or concurrency work\", \"No infra, reliability, or on-call ownership evidence\", \"Title/level mismatch: Frontend Developer + UI Intern vs Senior Backend Engineer\", \"Skills are pure client stack (React, TypeScript, Figma, Tailwind) with no backend/ops tools\", \"Too junior and wrong domain for senior distributed-systems ownership\"], \"recommendation\": \"reject\"}",
+  "model_reported": "grok-4.5",
+  "inputTokens": 115,
+  "outputTokens": 133,
+  "totalTokens": 248,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "wallMs": 10784,
+  "stderrTail": "",
+  "agentFileSha256": "none",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "4a12f7840060d3340e31887045177b943ccfc26aece2989d42f2e6f31a2b2c61",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/cv-review/suite.json",
+  "skipped": false,
+  "skipReason": null,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "json_valid",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {}
+    },
+    {
+      "check": "json_path_in",
+      "ok": true,
+      "weight": 4.0,
+      "spec": {
+        "values": [
+          "reject",
+          "clarify"
+        ],
+        "path": "recommendation"
+      }
+    },
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {
+        "values": [
+          "frontend",
+          "backend",
+          "mismatch",
+          "no backend",
+          "infra",
+          "distributed",
+          "not a fit"
+        ]
+      }
+    }
+  ],
+  "judgeScore": 0.9700000000000001,
+  "judgeDetail": {
+    "perCriterion": {
+      "honest_fit": 0.97
+    },
+    "rationale": "Correctly and specifically identifies the total absence of backend/distributed-systems/on-call experience and recommends reject with no generous spin.",
+    "judgeModel": "opus"
+  },
+  "quality": 0.9850000000000001,
+  "qualityPer1kTokens": 3.9717741935483875
+}

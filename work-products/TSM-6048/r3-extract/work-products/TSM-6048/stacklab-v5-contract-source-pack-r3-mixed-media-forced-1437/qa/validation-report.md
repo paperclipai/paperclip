@@ -1,0 +1,249 @@
+# TSM-6048 R3 mixed-media forced-alignment validation
+
+OK=True passed=245 failed=0
+
+- [PASS] hash:audio/narration.wav — ff790ce9c0cb5583e5325d44af019329e7eaaad807dea7f85de0fb57edb5f039
+- [PASS] hash:script/script-v5.md — f97c8db973819ff354bdf55e952fda899ae14f61dbc7ad4aecb4804e6ade3a2e
+- [PASS] hash:visuals/beat-24.mp4 — 1973c97888601ef4c4627fa7e2d9acc4d369b1d4f4b06245d86b68e841210e4d
+- [PASS] hash:visuals/beat-33.mp4 — 583c813ac7263dab83e5408351ef6f335e65944c9f03303a45cb98652abb180d
+- [PASS] hash:visuals/beat-34.mp4 — 585fd3d48e90f9e7dab4e37209a441988032647b9db11fc41bd88f562f68c336
+- [PASS] visual:01 — /Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-6048/stacklab-v5-contract-source-pack-r3-mixed-media-forced-1437/visuals/beat-01.mp4
+- [PASS] visual:02 — /Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-6048/stacklab-v5-contract-source-pack-r3-mixed-media-forced-1437/visuals/beat-02.mp4
+- [PASS] visual:03 — /Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-6048/stacklab-v5-contract-source-pack-r3-mixed-media-forced-1437/visuals/beat-03.mp4
+- [PASS] visual:04 — /Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-6048/stacklab-v5-contract-source-pack-r3-mixed-media-forced-1437/visuals/beat-04.mp4
+- [PASS] visual:05 — /Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-6048/stacklab-v5-contract-source-pack-r3-mixed-media-forced-1437/visuals/beat-05.mp4
+- [PASS] visual:06 — /Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-6048/stacklab-v5-contract-source-pack-r3-mixed-media-forced-1437/visuals/beat-06.mp4
+- [PASS] visual:07 — /Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-6048/stacklab-v5-contract-source-pack-r3-mixed-media-forced-1437/visuals/beat-07.mp4
+- [PASS] visual:08 — /Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-6048/stacklab-v5-contract-source-pack-r3-mixed-media-forced-1437/visuals/beat-08.mp4
+- [PASS] visual:09 — /Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-6048/stacklab-v5-contract-source-pack-r3-mixed-media-forced-1437/visuals/beat-09.mp4
+- [PASS] visual:10 — /Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-6048/stacklab-v5-contract-source-pack-r3-mixed-media-forced-1437/visuals/beat-10.mp4
+- [PASS] visual:11 — /Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-6048/stacklab-v5-contract-source-pack-r3-mixed-media-forced-1437/visuals/beat-11.mp4
+- [PASS] visual:12 — /Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-6048/stacklab-v5-contract-source-pack-r3-mixed-media-forced-1437/visuals/beat-12.mp4
+- [PASS] visual:13 — /Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-6048/stacklab-v5-contract-source-pack-r3-mixed-media-forced-1437/visuals/beat-13.mp4
+- [PASS] visual:14 — /Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-6048/stacklab-v5-contract-source-pack-r3-mixed-media-forced-1437/visuals/beat-14.mp4
+- [PASS] visual:15 — /Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-6048/stacklab-v5-contract-source-pack-r3-mixed-media-forced-1437/visuals/beat-15.mp4
+- [PASS] visual:16 — /Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-6048/stacklab-v5-contract-source-pack-r3-mixed-media-forced-1437/visuals/beat-16.mp4
+- [PASS] visual:17 — /Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-6048/stacklab-v5-contract-source-pack-r3-mixed-media-forced-1437/visuals/beat-17.mp4
+- [PASS] visual:18 — /Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-6048/stacklab-v5-contract-source-pack-r3-mixed-media-forced-1437/visuals/beat-18.mp4
+- [PASS] visual:19 — /Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-6048/stacklab-v5-contract-source-pack-r3-mixed-media-forced-1437/visuals/beat-19.mp4
+- [PASS] visual:20 — /Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-6048/stacklab-v5-contract-source-pack-r3-mixed-media-forced-1437/visuals/beat-20.mp4
+- [PASS] visual:21 — /Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-6048/stacklab-v5-contract-source-pack-r3-mixed-media-forced-1437/visuals/beat-21.mp4
+- [PASS] visual:22 — /Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-6048/stacklab-v5-contract-source-pack-r3-mixed-media-forced-1437/visuals/beat-22.mp4
+- [PASS] visual:23 — /Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-6048/stacklab-v5-contract-source-pack-r3-mixed-media-forced-1437/visuals/beat-23.mp4
+- [PASS] visual:24 — /Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-6048/stacklab-v5-contract-source-pack-r3-mixed-media-forced-1437/visuals/beat-24.mp4
+- [PASS] visual:25 — /Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-6048/stacklab-v5-contract-source-pack-r3-mixed-media-forced-1437/visuals/beat-25.mp4
+- [PASS] visual:26 — /Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-6048/stacklab-v5-contract-source-pack-r3-mixed-media-forced-1437/visuals/beat-26.mp4
+- [PASS] visual:27 — /Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-6048/stacklab-v5-contract-source-pack-r3-mixed-media-forced-1437/visuals/beat-27.mp4
+- [PASS] visual:28 — /Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-6048/stacklab-v5-contract-source-pack-r3-mixed-media-forced-1437/visuals/beat-28.mp4
+- [PASS] visual:29 — /Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-6048/stacklab-v5-contract-source-pack-r3-mixed-media-forced-1437/visuals/beat-29.mp4
+- [PASS] visual:30 — /Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-6048/stacklab-v5-contract-source-pack-r3-mixed-media-forced-1437/visuals/beat-30.mp4
+- [PASS] visual:31 — /Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-6048/stacklab-v5-contract-source-pack-r3-mixed-media-forced-1437/visuals/beat-31.mp4
+- [PASS] visual:32 — /Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-6048/stacklab-v5-contract-source-pack-r3-mixed-media-forced-1437/visuals/beat-32.mp4
+- [PASS] visual:33 — /Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-6048/stacklab-v5-contract-source-pack-r3-mixed-media-forced-1437/visuals/beat-33.mp4
+- [PASS] visual:34 — /Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-6048/stacklab-v5-contract-source-pack-r3-mixed-media-forced-1437/visuals/beat-34.mp4
+- [PASS] alignment words — count=1437
+- [PASS] cut-plan count — 34
+- [PASS] cut-plan order — 
+- [PASS] cut-plan beat 1 words — 0-223 prev=-1
+- [PASS] cut-plan source exists 1 — visuals/beat-01.mp4
+- [PASS] cut-plan beat 2 words — 224-259 prev=223
+- [PASS] cut-plan source exists 2 — visuals/beat-02.mp4
+- [PASS] cut-plan beat 3 words — 260-280 prev=259
+- [PASS] cut-plan source exists 3 — visuals/beat-03.mp4
+- [PASS] cut-plan beat 4 words — 281-297 prev=280
+- [PASS] cut-plan source exists 4 — visuals/beat-04.mp4
+- [PASS] cut-plan beat 5 words — 298-334 prev=297
+- [PASS] cut-plan source exists 5 — visuals/beat-05.mp4
+- [PASS] cut-plan beat 6 words — 335-370 prev=334
+- [PASS] cut-plan source exists 6 — visuals/beat-06.mp4
+- [PASS] cut-plan beat 7 words — 371-436 prev=370
+- [PASS] cut-plan source exists 7 — visuals/beat-07.mp4
+- [PASS] cut-plan beat 8 words — 437-474 prev=436
+- [PASS] cut-plan source exists 8 — visuals/beat-08.mp4
+- [PASS] cut-plan beat 9 words — 475-489 prev=474
+- [PASS] cut-plan source exists 9 — visuals/beat-09.mp4
+- [PASS] cut-plan beat 10 words — 490-549 prev=489
+- [PASS] cut-plan source exists 10 — visuals/beat-10.mp4
+- [PASS] cut-plan beat 11 words — 550-595 prev=549
+- [PASS] cut-plan source exists 11 — visuals/beat-11.mp4
+- [PASS] cut-plan beat 12 words — 596-608 prev=595
+- [PASS] cut-plan source exists 12 — visuals/beat-12.mp4
+- [PASS] cut-plan beat 13 words — 609-679 prev=608
+- [PASS] cut-plan source exists 13 — visuals/beat-13.mp4
+- [PASS] cut-plan beat 14 words — 680-703 prev=679
+- [PASS] cut-plan source exists 14 — visuals/beat-14.mp4
+- [PASS] cut-plan beat 15 words — 704-788 prev=703
+- [PASS] cut-plan source exists 15 — visuals/beat-15.mp4
+- [PASS] cut-plan beat 16 words — 789-838 prev=788
+- [PASS] cut-plan source exists 16 — visuals/beat-16.mp4
+- [PASS] cut-plan beat 17 words — 839-860 prev=838
+- [PASS] cut-plan source exists 17 — visuals/beat-17.mp4
+- [PASS] cut-plan beat 18 words — 861-891 prev=860
+- [PASS] cut-plan source exists 18 — visuals/beat-18.mp4
+- [PASS] cut-plan beat 19 words — 892-899 prev=891
+- [PASS] cut-plan source exists 19 — visuals/beat-19.mp4
+- [PASS] cut-plan beat 20 words — 900-943 prev=899
+- [PASS] cut-plan source exists 20 — visuals/beat-20.mp4
+- [PASS] cut-plan beat 21 words — 944-970 prev=943
+- [PASS] cut-plan source exists 21 — visuals/beat-21.mp4
+- [PASS] cut-plan beat 22 words — 971-1003 prev=970
+- [PASS] cut-plan source exists 22 — visuals/beat-22.mp4
+- [PASS] cut-plan beat 23 words — 1004-1036 prev=1003
+- [PASS] cut-plan source exists 23 — visuals/beat-23.mp4
+- [PASS] cut-plan beat 24 words — 1037-1037 prev=1036
+- [PASS] cut-plan source exists 24 — visuals/beat-24.mp4
+- [PASS] cut-plan beat 25 words — 1038-1076 prev=1037
+- [PASS] cut-plan source exists 25 — visuals/beat-25.mp4
+- [PASS] cut-plan beat 26 words — 1077-1138 prev=1076
+- [PASS] cut-plan source exists 26 — visuals/beat-26.mp4
+- [PASS] cut-plan beat 27 words — 1139-1211 prev=1138
+- [PASS] cut-plan source exists 27 — visuals/beat-27.mp4
+- [PASS] cut-plan beat 28 words — 1212-1278 prev=1211
+- [PASS] cut-plan source exists 28 — visuals/beat-28.mp4
+- [PASS] cut-plan beat 29 words — 1279-1292 prev=1278
+- [PASS] cut-plan source exists 29 — visuals/beat-29.mp4
+- [PASS] cut-plan beat 30 words — 1293-1326 prev=1292
+- [PASS] cut-plan source exists 30 — visuals/beat-30.mp4
+- [PASS] cut-plan beat 31 words — 1327-1345 prev=1326
+- [PASS] cut-plan source exists 31 — visuals/beat-31.mp4
+- [PASS] cut-plan beat 32 words — 1346-1434 prev=1345
+- [PASS] cut-plan source exists 32 — visuals/beat-32.mp4
+- [PASS] cut-plan beat 33 words — 1435-1435 prev=1434
+- [PASS] cut-plan source exists 33 — visuals/beat-33.mp4
+- [PASS] cut-plan beat 34 words — 1436-1436 prev=1435
+- [PASS] cut-plan source exists 34 — visuals/beat-34.mp4
+- [PASS] motion beat 01 — dur=49.667 distinctMotionSamples=4/4
+- [PASS] motion beat 02 — dur=9.433 distinctMotionSamples=4/4
+- [PASS] motion beat 03 — dur=3.633 distinctMotionSamples=4/4
+- [PASS] motion beat 04 — dur=3.733 distinctMotionSamples=4/4
+- [PASS] motion beat 05 — dur=10.967 distinctMotionSamples=4/4
+- [PASS] motion beat 06 — dur=6.033 distinctMotionSamples=4/4
+- [PASS] motion beat 07 — dur=11.900 distinctMotionSamples=4/4
+- [PASS] motion beat 08 — dur=12.333 distinctMotionSamples=4/4
+- [PASS] motion beat 09 — dur=6.567 distinctMotionSamples=4/4
+- [PASS] motion beat 10 — dur=21.833 distinctMotionSamples=4/4
+- [PASS] motion beat 11 — dur=16.267 distinctMotionSamples=4/4
+- [PASS] motion beat 12 — dur=4.633 distinctMotionSamples=4/4
+- [PASS] motion beat 13 — dur=24.067 distinctMotionSamples=4/4
+- [PASS] motion beat 14 — dur=9.733 distinctMotionSamples=4/4
+- [PASS] motion beat 15 — dur=23.367 distinctMotionSamples=4/4
+- [PASS] motion beat 16 — dur=8.333 distinctMotionSamples=4/4
+- [PASS] motion beat 17 — dur=5.533 distinctMotionSamples=4/4
+- [PASS] motion beat 18 — dur=8.233 distinctMotionSamples=4/4
+- [PASS] motion beat 19 — dur=1.967 distinctMotionSamples=4/4
+- [PASS] motion beat 20 — dur=7.100 distinctMotionSamples=4/4
+- [PASS] motion beat 21 — dur=6.067 distinctMotionSamples=4/4
+- [PASS] motion beat 22 — dur=7.800 distinctMotionSamples=4/4
+- [PASS] motion beat 23 — dur=6.633 distinctMotionSamples=4/4
+- [PASS] motion beat 25 — dur=6.700 distinctMotionSamples=4/4
+- [PASS] motion beat 26 — dur=15.700 distinctMotionSamples=4/4
+- [PASS] motion beat 27 — dur=15.066 distinctMotionSamples=4/4
+- [PASS] motion beat 28 — dur=15.200 distinctMotionSamples=4/4
+- [PASS] motion beat 29 — dur=3.167 distinctMotionSamples=4/4
+- [PASS] motion beat 30 — dur=6.800 distinctMotionSamples=4/4
+- [PASS] motion beat 31 — dur=3.667 distinctMotionSamples=4/4
+- [PASS] motion beat 32 — dur=135.400 distinctMotionSamples=4/4
+- [PASS] duration headroom beat 01 — have=49.667 need=48.922
+- [PASS] duration headroom beat 02 — have=9.433 need=8.380
+- [PASS] duration headroom beat 03 — have=3.633 need=2.541
+- [PASS] duration headroom beat 04 — have=3.733 need=2.660
+- [PASS] duration headroom beat 05 — have=10.967 need=9.940
+- [PASS] duration headroom beat 06 — have=6.033 need=5.000
+- [PASS] duration headroom beat 07 — have=11.900 need=10.881
+- [PASS] duration headroom beat 08 — have=12.333 need=11.320
+- [PASS] duration headroom beat 09 — have=6.567 need=5.501
+- [PASS] duration headroom beat 10 — have=21.833 need=20.900
+- [PASS] duration headroom beat 11 — have=16.267 need=15.300
+- [PASS] duration headroom beat 12 — have=4.633 need=3.560
+- [PASS] duration headroom beat 13 — have=24.067 need=23.121
+- [PASS] duration headroom beat 14 — have=9.733 need=8.761
+- [PASS] duration headroom beat 15 — have=23.367 need=22.421
+- [PASS] duration headroom beat 16 — have=8.333 need=7.300
+- [PASS] duration headroom beat 17 — have=5.533 need=4.500
+- [PASS] duration headroom beat 18 — have=8.233 need=7.181
+- [PASS] duration headroom beat 19 — have=1.967 need=0.840
+- [PASS] duration headroom beat 20 — have=7.100 need=6.060
+- [PASS] duration headroom beat 21 — have=6.067 need=5.020
+- [PASS] duration headroom beat 22 — have=7.800 need=6.760
+- [PASS] duration headroom beat 23 — have=6.633 need=5.581
+- [PASS] duration headroom beat 25 — have=6.700 need=5.660
+- [PASS] duration headroom beat 26 — have=15.700 need=14.701
+- [PASS] duration headroom beat 27 — have=15.066 need=14.100
+- [PASS] duration headroom beat 28 — have=15.200 need=14.201
+- [PASS] duration headroom beat 29 — have=3.167 need=2.100
+- [PASS] duration headroom beat 30 — have=6.800 need=5.760
+- [PASS] duration headroom beat 31 — have=3.667 need=2.580
+- [PASS] duration headroom beat 32 — have=135.400 need=135.226
+- [PASS] insert duration beat 24 — have=5.000 exp=5.0
+- [PASS] insert duration beat 33 — have=6.000 exp=6.0
+- [PASS] insert duration beat 34 — have=9.940 exp=9.94
+- [PASS] timing map — 
+- [PASS] cut-plan file — 
+- [PASS] alignment file — 
+- [PASS] spoken transcript file — 
+- [PASS] spoken transcript/source word count — spoken=1437 aligned=1437
+- [PASS] spoken transcript/alignment equivalence — spoken=1468 aligned=1468
+- [PASS] visual type beat 01 — {"actualSeconds": 49.667, "prohibited": ["still_slide", "Ken Burns", "loop", "end-frame hold"], "requiredSeconds": 48.922, "shots": 11, "treatment": "distinct moving b-roll shots with hard editorial cuts", "visual_type": "mixed"}
+- [PASS] no Ken-Burns beat 01 — shots=11 treatment=distinct moving b-roll shots with hard editorial cuts
+- [PASS] visual type beat 02 — {"actualSeconds": 9.433, "prohibited": ["still_slide", "Ken Burns", "loop", "end-frame hold"], "requiredSeconds": 8.38, "shots": 2, "treatment": "distinct moving b-roll shots with hard editorial cuts", "visual_type": "mixed"}
+- [PASS] no Ken-Burns beat 02 — shots=2 treatment=distinct moving b-roll shots with hard editorial cuts
+- [PASS] visual type beat 03 — {"actualSeconds": 3.633, "prohibited": ["still_slide", "Ken Burns", "loop", "end-frame hold"], "requiredSeconds": 2.541, "shots": 1, "treatment": "distinct moving b-roll shots with hard editorial cuts", "visual_type": "mixed"}
+- [PASS] no Ken-Burns beat 03 — shots=1 treatment=distinct moving b-roll shots with hard editorial cuts
+- [PASS] visual type beat 04 — {"actualSeconds": 3.733, "prohibited": ["still_slide", "Ken Burns", "loop", "end-frame hold"], "requiredSeconds": 2.66, "shots": 1, "treatment": "distinct moving b-roll shots with hard editorial cuts", "visual_type": "mixed"}
+- [PASS] no Ken-Burns beat 04 — shots=1 treatment=distinct moving b-roll shots with hard editorial cuts
+- [PASS] visual type beat 05 — {"actualSeconds": 10.967, "prohibited": ["still_slide", "Ken Burns", "loop", "end-frame hold"], "requiredSeconds": 9.94, "shots": 3, "treatment": "distinct moving b-roll shots with hard editorial cuts", "visual_type": "mixed"}
+- [PASS] no Ken-Burns beat 05 — shots=3 treatment=distinct moving b-roll shots with hard editorial cuts
+- [PASS] visual type beat 06 — {"actualSeconds": 6.033, "prohibited": ["still_slide", "Ken Burns", "loop", "end-frame hold"], "requiredSeconds": 5.0, "shots": 2, "treatment": "distinct moving b-roll shots with hard editorial cuts", "visual_type": "mixed"}
+- [PASS] no Ken-Burns beat 06 — shots=2 treatment=distinct moving b-roll shots with hard editorial cuts
+- [PASS] visual type beat 07 — {"actualSeconds": 11.9, "prohibited": ["still_slide", "Ken Burns", "loop", "end-frame hold"], "requiredSeconds": 10.881, "shots": 3, "treatment": "distinct moving b-roll shots with hard editorial cuts", "visual_type": "mixed"}
+- [PASS] no Ken-Burns beat 07 — shots=3 treatment=distinct moving b-roll shots with hard editorial cuts
+- [PASS] visual type beat 08 — {"actualSeconds": 12.333, "prohibited": ["still_slide", "Ken Burns", "loop", "end-frame hold"], "requiredSeconds": 11.32, "shots": 3, "treatment": "distinct moving b-roll shots with hard editorial cuts", "visual_type": "mixed"}
+- [PASS] no Ken-Burns beat 08 — shots=3 treatment=distinct moving b-roll shots with hard editorial cuts
+- [PASS] visual type beat 09 — {"actualSeconds": 6.567, "prohibited": ["still_slide", "Ken Burns", "loop", "end-frame hold"], "requiredSeconds": 5.501, "shots": 2, "treatment": "distinct moving b-roll shots with hard editorial cuts", "visual_type": "mixed"}
+- [PASS] no Ken-Burns beat 09 — shots=2 treatment=distinct moving b-roll shots with hard editorial cuts
+- [PASS] visual type beat 10 — {"actualSeconds": 21.833, "prohibited": ["still_slide", "Ken Burns", "loop", "end-frame hold"], "requiredSeconds": 20.9, "shots": 5, "treatment": "distinct moving b-roll shots with hard editorial cuts", "visual_type": "mixed"}
+- [PASS] no Ken-Burns beat 10 — shots=5 treatment=distinct moving b-roll shots with hard editorial cuts
+- [PASS] visual type beat 11 — {"actualSeconds": 16.267, "prohibited": ["still_slide", "Ken Burns", "loop", "end-frame hold"], "requiredSeconds": 15.3, "shots": 4, "treatment": "distinct moving b-roll shots with hard editorial cuts", "visual_type": "mixed"}
+- [PASS] no Ken-Burns beat 11 — shots=4 treatment=distinct moving b-roll shots with hard editorial cuts
+- [PASS] visual type beat 12 — {"actualSeconds": 4.633, "prohibited": ["still_slide", "Ken Burns", "loop", "end-frame hold"], "requiredSeconds": 3.56, "shots": 1, "treatment": "distinct moving b-roll shots with hard editorial cuts", "visual_type": "mixed"}
+- [PASS] no Ken-Burns beat 12 — shots=1 treatment=distinct moving b-roll shots with hard editorial cuts
+- [PASS] visual type beat 13 — {"actualSeconds": 24.067, "prohibited": ["still_slide", "Ken Burns", "loop", "end-frame hold"], "requiredSeconds": 23.121, "shots": 5, "treatment": "distinct moving b-roll shots with hard editorial cuts", "visual_type": "mixed"}
+- [PASS] no Ken-Burns beat 13 — shots=5 treatment=distinct moving b-roll shots with hard editorial cuts
+- [PASS] visual type beat 14 — {"actualSeconds": 9.733, "prohibited": ["still_slide", "Ken Burns", "loop", "end-frame hold"], "requiredSeconds": 8.761, "shots": 2, "treatment": "distinct moving b-roll shots with hard editorial cuts", "visual_type": "mixed"}
+- [PASS] no Ken-Burns beat 14 — shots=2 treatment=distinct moving b-roll shots with hard editorial cuts
+- [PASS] visual type beat 15 — {"actualSeconds": 23.367, "prohibited": ["still_slide", "Ken Burns", "loop", "end-frame hold"], "requiredSeconds": 22.421, "shots": 5, "treatment": "distinct moving b-roll shots with hard editorial cuts", "visual_type": "mixed"}
+- [PASS] no Ken-Burns beat 15 — shots=5 treatment=distinct moving b-roll shots with hard editorial cuts
+- [PASS] visual type beat 16 — {"actualSeconds": 8.333, "prohibited": ["still_slide", "Ken Burns", "loop", "end-frame hold"], "requiredSeconds": 7.3, "shots": 2, "treatment": "distinct moving b-roll shots with hard editorial cuts", "visual_type": "mixed"}
+- [PASS] no Ken-Burns beat 16 — shots=2 treatment=distinct moving b-roll shots with hard editorial cuts
+- [PASS] visual type beat 17 — {"actualSeconds": 5.533, "prohibited": ["still_slide", "Ken Burns", "loop", "end-frame hold"], "requiredSeconds": 4.5, "shots": 2, "treatment": "distinct moving b-roll shots with hard editorial cuts", "visual_type": "mixed"}
+- [PASS] no Ken-Burns beat 17 — shots=2 treatment=distinct moving b-roll shots with hard editorial cuts
+- [PASS] visual type beat 18 — {"actualSeconds": 8.233, "prohibited": ["still_slide", "Ken Burns", "loop", "end-frame hold"], "requiredSeconds": 7.181, "shots": 2, "treatment": "distinct moving b-roll shots with hard editorial cuts", "visual_type": "mixed"}
+- [PASS] no Ken-Burns beat 18 — shots=2 treatment=distinct moving b-roll shots with hard editorial cuts
+- [PASS] visual type beat 19 — {"actualSeconds": 1.967, "prohibited": ["still_slide", "Ken Burns", "loop", "end-frame hold"], "requiredSeconds": 0.84, "shots": 1, "treatment": "distinct moving b-roll shots with hard editorial cuts", "visual_type": "mixed"}
+- [PASS] no Ken-Burns beat 19 — shots=1 treatment=distinct moving b-roll shots with hard editorial cuts
+- [PASS] visual type beat 20 — {"actualSeconds": 7.1, "prohibited": ["still_slide", "Ken Burns", "loop", "end-frame hold"], "requiredSeconds": 6.06, "shots": 2, "treatment": "distinct moving b-roll shots with hard editorial cuts", "visual_type": "mixed"}
+- [PASS] no Ken-Burns beat 20 — shots=2 treatment=distinct moving b-roll shots with hard editorial cuts
+- [PASS] visual type beat 21 — {"actualSeconds": 6.067, "prohibited": ["still_slide", "Ken Burns", "loop", "end-frame hold"], "requiredSeconds": 5.02, "shots": 2, "treatment": "distinct moving b-roll shots with hard editorial cuts", "visual_type": "mixed"}
+- [PASS] no Ken-Burns beat 21 — shots=2 treatment=distinct moving b-roll shots with hard editorial cuts
+- [PASS] visual type beat 22 — {"actualSeconds": 7.8, "prohibited": ["still_slide", "Ken Burns", "loop", "end-frame hold"], "requiredSeconds": 6.76, "shots": 2, "treatment": "distinct moving b-roll shots with hard editorial cuts", "visual_type": "mixed"}
+- [PASS] no Ken-Burns beat 22 — shots=2 treatment=distinct moving b-roll shots with hard editorial cuts
+- [PASS] visual type beat 23 — {"actualSeconds": 6.633, "prohibited": ["still_slide", "Ken Burns", "loop", "end-frame hold"], "requiredSeconds": 5.581, "shots": 2, "treatment": "distinct moving b-roll shots with hard editorial cuts", "visual_type": "mixed"}
+- [PASS] no Ken-Burns beat 23 — shots=2 treatment=distinct moving b-roll shots with hard editorial cuts
+- [PASS] visual type beat 25 — {"actualSeconds": 6.7, "prohibited": ["still_slide", "Ken Burns", "loop", "end-frame hold"], "requiredSeconds": 5.66, "shots": 2, "treatment": "distinct moving b-roll shots with hard editorial cuts", "visual_type": "mixed"}
+- [PASS] no Ken-Burns beat 25 — shots=2 treatment=distinct moving b-roll shots with hard editorial cuts
+- [PASS] visual type beat 26 — {"actualSeconds": 15.7, "prohibited": ["still_slide", "Ken Burns", "loop", "end-frame hold"], "requiredSeconds": 14.701, "shots": 4, "treatment": "distinct moving b-roll shots with hard editorial cuts", "visual_type": "mixed"}
+- [PASS] no Ken-Burns beat 26 — shots=4 treatment=distinct moving b-roll shots with hard editorial cuts
+- [PASS] visual type beat 27 — {"actualSeconds": 15.066, "prohibited": ["still_slide", "Ken Burns", "loop", "end-frame hold"], "requiredSeconds": 14.1, "shots": 4, "treatment": "distinct moving b-roll shots with hard editorial cuts", "visual_type": "mixed"}
+- [PASS] no Ken-Burns beat 27 — shots=4 treatment=distinct moving b-roll shots with hard editorial cuts
+- [PASS] visual type beat 28 — {"actualSeconds": 15.2, "prohibited": ["still_slide", "Ken Burns", "loop", "end-frame hold"], "requiredSeconds": 14.201, "shots": 4, "treatment": "distinct moving b-roll shots with hard editorial cuts", "visual_type": "mixed"}
+- [PASS] no Ken-Burns beat 28 — shots=4 treatment=distinct moving b-roll shots with hard editorial cuts
+- [PASS] visual type beat 29 — {"actualSeconds": 3.167, "prohibited": ["still_slide", "Ken Burns", "loop", "end-frame hold"], "requiredSeconds": 2.1, "shots": 1, "treatment": "distinct moving b-roll shots with hard editorial cuts", "visual_type": "mixed"}
+- [PASS] no Ken-Burns beat 29 — shots=1 treatment=distinct moving b-roll shots with hard editorial cuts
+- [PASS] visual type beat 30 — {"actualSeconds": 6.8, "prohibited": ["still_slide", "Ken Burns", "loop", "end-frame hold"], "requiredSeconds": 5.76, "shots": 2, "treatment": "distinct moving b-roll shots with hard editorial cuts", "visual_type": "mixed"}
+- [PASS] no Ken-Burns beat 30 — shots=2 treatment=distinct moving b-roll shots with hard editorial cuts
+- [PASS] visual type beat 31 — {"actualSeconds": 3.667, "prohibited": ["still_slide", "Ken Burns", "loop", "end-frame hold"], "requiredSeconds": 2.58, "shots": 1, "treatment": "distinct moving b-roll shots with hard editorial cuts", "visual_type": "mixed"}
+- [PASS] no Ken-Burns beat 31 — shots=1 treatment=distinct moving b-roll shots with hard editorial cuts
+- [PASS] visual type beat 32 — {"actualSeconds": 135.4, "prohibited": ["still_slide", "Ken Burns", "loop", "end-frame hold"], "requiredSeconds": 135.226, "shots": 28, "treatment": "distinct moving b-roll shots with hard editorial cuts", "visual_type": "mixed"}
+- [PASS] no Ken-Burns beat 32 — shots=28 treatment=distinct moving b-roll shots with hard editorial cuts
+- [PASS] moving-shot provenance — shots=111 unique_paths=111 unique_bytes=101 max_path_uses=1
+- [PASS] contact sheet 34 beats — /Users/glad0s/.paperclip/instances/default/companies/d71c9e82-1a4b-497f-9bbc-5b9dd028c367/work-products/TSM-6048/stacklab-v5-contract-source-pack-r3-mixed-media-forced-1437/qa/contact-sheet/contact-sheet-34-beats.jpg

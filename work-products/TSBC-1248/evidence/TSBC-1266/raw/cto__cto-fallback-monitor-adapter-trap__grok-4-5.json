@@ -1,0 +1,74 @@
+{
+  "role": "cto",
+  "task_id": "cto-fallback-monitor-adapter-trap",
+  "task_title": "Catch the self-defeating adapter choice in a redesign",
+  "model_id": "grok-4.5",
+  "model_label": "Grok 4.5",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "ok": true,
+  "error": null,
+  "output": "{\"accept\": false, \"invariant\": \"The fallback-monitor must not run on Claude; it has to stay alive when Claude hits its usage limit.\", \"correctAdapter\": \"non-Claude sister-lane adapter\"}",
+  "model_reported": "grok-4.5",
+  "inputTokens": 162,
+  "outputTokens": 46,
+  "totalTokens": 208,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "wallMs": 125909,
+  "stderrTail": "",
+  "agentFileSha256": "none",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "9178417ea7411729ec604cd6f0f72637a785d4d0f99ddd564fdfd0d4d603c31d",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/cto/suite.json",
+  "skipped": false,
+  "skipReason": null,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "json_valid",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {}
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 5.0,
+      "spec": {
+        "value": false,
+        "path": "accept"
+      }
+    },
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {
+        "values": [
+          "non-claude",
+          "non claude",
+          "not claude",
+          "codex",
+          "grok",
+          "gemini",
+          "hermes",
+          "different adapter",
+          "other adapter"
+        ]
+      }
+    }
+  ],
+  "judgeScore": 0.8374999999999999,
+  "judgeDetail": {
+    "perCriterion": {
+      "correctness": 0.85,
+      "specificity": 0.8
+    },
+    "rationale": "Correctly rejects and nails the survive-its-own-outage point, but correctAdapter stays generic ('non-Claude sister-lane adapter') rather than naming a concrete lane like codex/grok.",
+    "judgeModel": "opus"
+  },
+  "quality": 0.91875,
+  "qualityPer1kTokens": 4.4170673076923075
+}

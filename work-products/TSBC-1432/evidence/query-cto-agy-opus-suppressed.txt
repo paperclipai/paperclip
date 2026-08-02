@@ -1,0 +1,24 @@
+{
+  "test_class": "cto",
+  "model": "agy-claude-opus-4.6",
+  "windowDays": 120,
+  "nResults": 1,
+  "nDecisionGradeResults": 0,
+  "minResults": 1,
+  "decision": "BENCHMARK_YOURSELF",
+  "companies": [
+    "TSBC"
+  ],
+  "suppressedResults": 1,
+  "passRows": 12,
+  "kind": "model_eval",
+  "aggregate": {
+    "n": 0,
+    "medianQPer1kOut": null
+  },
+  "latest": "2026-07-25T19:45:41+00:00",
+  "action": "Only 0 decision-grade result(s) in 120d (need 1). Run the benchmark yourself, trust your output, and record it: `ledger.py record --run <your-run>`."
+}
+
+>>> BENCHMARK_YOURSELF: 0/1 decision-grade results in 120d (raw rows: 1)
+    Only 0 decision-grade result(s) in 120d (need 1). Run the benchmark yourself, trust your output, and record it: `ledger.py record --run <your-run>`.

@@ -1,0 +1,73 @@
+{
+  "role": "quant",
+  "task_id": "quant-killswitch-drawdown",
+  "task_title": "Decide kill-switch behavior at a drawdown threshold",
+  "model_id": "grok-4.5",
+  "model_label": "Grok 4.5",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "ok": true,
+  "error": null,
+  "output": "{\"drawdownPct\": -5.25, \"thresholdBreached\": true, \"action\": \"halt_new_entries\"}",
+  "model_reported": "grok-4.5",
+  "inputTokens": 140,
+  "outputTokens": 19,
+  "totalTokens": 159,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "wallMs": 10323,
+  "stderrTail": "",
+  "agentFileSha256": "none",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "32b3563885d9e20631634bbef99975027564a4a43c6c29a6e45c153467654e2e",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/quant/suite.json",
+  "skipped": false,
+  "skipReason": null,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "json_valid",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {}
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 4.0,
+      "spec": {
+        "value": -5.25,
+        "path": "drawdownPct"
+      }
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 3.0,
+      "spec": {
+        "value": true,
+        "path": "thresholdBreached"
+      }
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 3.0,
+      "spec": {
+        "value": "halt_new_entries",
+        "path": "action"
+      }
+    }
+  ],
+  "judgeScore": 1.0,
+  "judgeDetail": {
+    "perCriterion": {
+      "control_correctness": 1.0
+    },
+    "rationale": "Correct drawdown (-5.25%), threshold breached true, and halt_new_entries action, matching the exact-format spec.",
+    "judgeModel": "claude-opus-4-8"
+  },
+  "quality": 1.0,
+  "qualityPer1kTokens": 6.289308176100628
+}

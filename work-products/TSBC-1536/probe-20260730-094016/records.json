@@ -1,0 +1,2246 @@
+[
+  {
+    "sample_id": "rep01",
+    "rep": 1,
+    "role": "cv-review",
+    "task_id": "cv-title-inflation-gap",
+    "task_title": "Catch seniority inflation + an unexplained gap",
+    "model": "grok-4.5-hermes-clean",
+    "lane": "hermes",
+    "adapterType": "hermes",
+    "effort": "cli_default",
+    "agentFile": "current",
+    "skills": "none",
+    "judge": "claude-opus",
+    "generationFrame": "single_shot_concat",
+    "ok": true,
+    "error": null,
+    "output": "{\"concerns\":[\"Total paid experience is ~2.5 years (CodeWorks Jan 2021\u2013Jul 2021; Nimbus Apps Sep 2022\u2013present), well below the role\u2019s 5+ years requirement.\",\"Nimbus work is described as building REST endpoints on a 4-person team with one senior reviewing all PRs \u2014 no evidence of end-to-end service ownership required by the role.\",\"Self-title \u201cSenior Lead Backend Engineer\u201d and skill claim \u201cled architecture\u201d are unsupported by the experience bullets (Backend Engineer; PR gate by a senior; Junior Developer bug fixes only).\",\"Unexplained gap between CodeWorks end (Jul 2021) and Nimbus start (Sep 2022).\"],\"recommendation\":\"reject\"}",
+    "model_reported": "grok-4.5",
+    "inputTokens": 551,
+    "outputTokens": 158,
+    "totalTokens": 709,
+    "tokensEstimated": true,
+    "costUsd": null,
+    "agentFileSha256": "fd189e4b279ac47e366984b2ab9f1b8c1b4782cc2433cd91d77ee3c19da0c7bf",
+    "skillsBundleSha256": "none",
+    "suiteSha256": "4a12f7840060d3340e31887045177b943ccfc26aece2989d42f2e6f31a2b2c61",
+    "wallMs": 14677,
+    "stderrTail": "",
+    "promptChars": 2204,
+    "stagedSkills": 0,
+    "deterministicScore": 1.0,
+    "deterministicDetails": [
+      {
+        "check": "json_valid",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {}
+      },
+      {
+        "check": "json_path_in",
+        "ok": true,
+        "weight": 3.0,
+        "spec": {
+          "values": [
+            "clarify",
+            "reject"
+          ],
+          "path": "recommendation"
+        }
+      },
+      {
+        "check": "contains_any",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {
+          "values": [
+            "title",
+            "senior",
+            "lead",
+            "inflat",
+            "scope",
+            "level",
+            "2 y",
+            "2.5",
+            "experience"
+          ]
+        }
+      },
+      {
+        "check": "contains_any",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {
+          "values": [
+            "gap",
+            "2021",
+            "Jul",
+            "Sep 2022",
+            "14 month",
+            "year"
+          ]
+        }
+      }
+    ],
+    "judgeScore": null,
+    "judgeDetail": {
+      "error": "judge: unparseable",
+      "raw": "Not logged in \u00b7 Please run /login",
+      "judgeError": "claude reported error: Not logged in \u00b7 Please run /login"
+    },
+    "quality": 1.0,
+    "qualityPer1kTokens": 1.4104372355430184
+  },
+  {
+    "sample_id": "rep01",
+    "rep": 1,
+    "role": "cv-review",
+    "task_id": "cv-unsubstantiated-metrics",
+    "task_title": "Don't take inflated metrics at face value",
+    "model": "grok-4.5-hermes-clean",
+    "lane": "hermes",
+    "adapterType": "hermes",
+    "effort": "cli_default",
+    "agentFile": "current",
+    "skills": "none",
+    "judge": "claude-opus",
+    "generationFrame": "single_shot_concat",
+    "ok": true,
+    "error": null,
+    "output": "{\"concerns\":[\"Growth Lead employer is unnamed (2023-2024), so company context, stage, and claim credibility cannot be assessed from the CV.\",\"Growth Lead outcomes are stated without baselines, timeframe detail, or ownership scope: 'Increased revenue 300%. Managed a $5M budget. Grew the team 10x.'\",\"Prior role evidence is narrow relative to a Growth Marketing Manager scope: Marketing Associate, Brightline (2021-2023) only notes 'ran email campaigns.'\",\"Total dated marketing timeline is short and thinly evidenced (Associate 2021-2023; Growth Lead 2023-2024) with no channel/program detail beyond email plus listed skills.\",\"Skills are self-listed (SEO, paid ads, 'data-driven growth') without CV examples tying them to campaigns, spend, or results.\"],\"recommendation\":\"clarify\",\"verify\":[\"Confirm employer name, business model, stage, and Vance's exact title/scope for the 2023-2024 Growth Lead role.\",\"Verify the 300% revenue increase: baseline revenue, period, Vance's direct ownership vs. team/company factors, and proof (dashboards, board decks, references).\",\"Verify the $5M budget: what it covered (paid, lifecycle, brand, etc.), approval authority, and performance against targets.\",\"Verify 'grew the team 10x': starting vs. ending headcount, hiring vs. matrixed reports, and Vance's management responsibilities.\",\"Probe Brightline (2021-2023) email work: list size, lifecycle vs. promo, tools, metrics (open/click/revenue), and any broader growth duties.\",\"Confirm hands-on depth in SEO and paid ads with concrete campaigns, spend levels, and measured outcomes\u2014not skills-list only.\"]}",
+    "model_reported": "grok-4.5",
+    "inputTokens": 537,
+    "outputTokens": 399,
+    "totalTokens": 936,
+    "tokensEstimated": true,
+    "costUsd": null,
+    "agentFileSha256": "fd189e4b279ac47e366984b2ab9f1b8c1b4782cc2433cd91d77ee3c19da0c7bf",
+    "skillsBundleSha256": "none",
+    "suiteSha256": "4a12f7840060d3340e31887045177b943ccfc26aece2989d42f2e6f31a2b2c61",
+    "wallMs": 20224,
+    "stderrTail": "",
+    "promptChars": 2150,
+    "stagedSkills": 0,
+    "deterministicScore": 1.0,
+    "deterministicDetails": [
+      {
+        "check": "json_valid",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {}
+      },
+      {
+        "check": "contains_any",
+        "ok": true,
+        "weight": 3.0,
+        "spec": {
+          "values": [
+            "300",
+            "baseline",
+            "context",
+            "unsubstantiat",
+            "vague",
+            "evidence",
+            "verify",
+            "$5M",
+            "absolute"
+          ]
+        }
+      }
+    ],
+    "judgeScore": null,
+    "judgeDetail": {
+      "error": "judge: unparseable",
+      "raw": "Not logged in \u00b7 Please run /login",
+      "judgeError": "claude reported error: Not logged in \u00b7 Please run /login"
+    },
+    "quality": 1.0,
+    "qualityPer1kTokens": 1.0683760683760684
+  },
+  {
+    "sample_id": "rep01",
+    "rep": 1,
+    "role": "cv-review",
+    "task_id": "cv-role-mismatch",
+    "task_title": "Honestly flag a role mismatch (no rubber-stamp)",
+    "model": "grok-4.5-hermes-clean",
+    "lane": "hermes",
+    "adapterType": "hermes",
+    "effort": "cli_default",
+    "agentFile": "current",
+    "skills": "none",
+    "judge": "claude-opus",
+    "generationFrame": "single_shot_concat",
+    "ok": true,
+    "error": null,
+    "output": "{\"concerns\": [\"CV shows only frontend work: Frontend Developer at Pixel Co (2022-present) doing React UIs, CSS, and accessibility; UI Intern at DesignHub (summer 2021).\", \"Skills listed are React, TypeScript, Figma, Tailwind only; CV states no backend or infra experience.\", \"No evidence of backend engineering, distributed systems, or on-call ownership required for Senior Backend Engineer.\"], \"recommendation\": \"reject\"}",
+    "model_reported": "grok-4.5",
+    "inputTokens": 525,
+    "outputTokens": 105,
+    "totalTokens": 630,
+    "tokensEstimated": true,
+    "costUsd": null,
+    "agentFileSha256": "fd189e4b279ac47e366984b2ab9f1b8c1b4782cc2433cd91d77ee3c19da0c7bf",
+    "skillsBundleSha256": "none",
+    "suiteSha256": "4a12f7840060d3340e31887045177b943ccfc26aece2989d42f2e6f31a2b2c61",
+    "wallMs": 10622,
+    "stderrTail": "",
+    "promptChars": 2101,
+    "stagedSkills": 0,
+    "deterministicScore": 1.0,
+    "deterministicDetails": [
+      {
+        "check": "json_valid",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {}
+      },
+      {
+        "check": "json_path_in",
+        "ok": true,
+        "weight": 4.0,
+        "spec": {
+          "values": [
+            "reject",
+            "clarify"
+          ],
+          "path": "recommendation"
+        }
+      },
+      {
+        "check": "contains_any",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {
+          "values": [
+            "frontend",
+            "backend",
+            "mismatch",
+            "no backend",
+            "infra",
+            "distributed",
+            "not a fit"
+          ]
+        }
+      }
+    ],
+    "judgeScore": null,
+    "judgeDetail": {
+      "error": "judge: unparseable",
+      "raw": "Not logged in \u00b7 Please run /login",
+      "judgeError": "claude reported error: Not logged in \u00b7 Please run /login"
+    },
+    "quality": 1.0,
+    "qualityPer1kTokens": 1.5873015873015872
+  },
+  {
+    "sample_id": "rep01",
+    "rep": 1,
+    "role": "cv-review",
+    "task_id": "cv-clean-calibration",
+    "task_title": "Calibration trap: a strong CV \u2014 don't fabricate concerns",
+    "model": "grok-4.5-hermes-clean",
+    "lane": "hermes",
+    "adapterType": "hermes",
+    "effort": "cli_default",
+    "agentFile": "current",
+    "skills": "none",
+    "judge": "claude-opus",
+    "generationFrame": "single_shot_concat",
+    "ok": true,
+    "error": null,
+    "output": "{\"concerns\": [], \"recommendation\": \"advance\"}",
+    "model_reported": "grok-4.5",
+    "inputTokens": 556,
+    "outputTokens": 11,
+    "totalTokens": 567,
+    "tokensEstimated": true,
+    "costUsd": null,
+    "agentFileSha256": "fd189e4b279ac47e366984b2ab9f1b8c1b4782cc2433cd91d77ee3c19da0c7bf",
+    "skillsBundleSha256": "none",
+    "suiteSha256": "4a12f7840060d3340e31887045177b943ccfc26aece2989d42f2e6f31a2b2c61",
+    "wallMs": 36401,
+    "stderrTail": "",
+    "promptChars": 2225,
+    "stagedSkills": 0,
+    "deterministicScore": 1.0,
+    "deterministicDetails": [
+      {
+        "check": "json_valid",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {}
+      },
+      {
+        "check": "json_path_equals",
+        "ok": true,
+        "weight": 4.0,
+        "spec": {
+          "value": "advance",
+          "path": "recommendation"
+        }
+      }
+    ],
+    "judgeScore": null,
+    "judgeDetail": {
+      "error": "judge: unparseable",
+      "raw": "Not logged in \u00b7 Please run /login",
+      "judgeError": "claude reported error: Not logged in \u00b7 Please run /login"
+    },
+    "quality": 1.0,
+    "qualityPer1kTokens": 1.7636684303350971
+  },
+  {
+    "sample_id": "rep01",
+    "rep": 1,
+    "role": "cv-review",
+    "task_id": "cv-date-inconsistency",
+    "task_title": "Catch the subtle timeline inconsistency (the hard one)",
+    "model": "grok-4.5-hermes-clean",
+    "lane": "hermes",
+    "adapterType": "hermes",
+    "effort": "cli_default",
+    "agentFile": "current",
+    "skills": "none",
+    "judge": "claude-opus",
+    "generationFrame": "single_shot_concat",
+    "ok": true,
+    "error": null,
+    "output": "{\"concerns\": [\"Timeline overlap: Data Engineer at Quanta (Jan 2020\u2013Mar 2022) concurrent with Senior Data Engineer at Hollis (Jun 2021\u2013present, claimed full-time) for Jun 2021\u2013Mar 2022 with no explanation of dual/part-time status.\", \"Claimed '8 years of experience' is inconsistent with listed roles starting 2019 (Analyst, Metric Co 2019\u20132020; DE work from Jan 2020), which is under 8 years through present.\", \"Metric Co (2019\u20132020) and Quanta (from Jan 2020) may briefly overlap at the 2019/2020 boundary depending on Metric Co end month; months for Metric Co are not fully specified.\"], \"recommendation\": \"reject\"}",
+    "model_reported": "grok-4.5",
+    "inputTokens": 522,
+    "outputTokens": 154,
+    "totalTokens": 676,
+    "tokensEstimated": true,
+    "costUsd": null,
+    "agentFileSha256": "fd189e4b279ac47e366984b2ab9f1b8c1b4782cc2433cd91d77ee3c19da0c7bf",
+    "skillsBundleSha256": "none",
+    "suiteSha256": "4a12f7840060d3340e31887045177b943ccfc26aece2989d42f2e6f31a2b2c61",
+    "wallMs": 19961,
+    "stderrTail": "",
+    "promptChars": 2088,
+    "stagedSkills": 0,
+    "deterministicScore": 1.0,
+    "deterministicDetails": [
+      {
+        "check": "json_valid",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {}
+      },
+      {
+        "check": "contains_any",
+        "ok": true,
+        "weight": 4.0,
+        "spec": {
+          "values": [
+            "overlap",
+            "overlapp",
+            "timeline",
+            "inconsist",
+            "concurrent",
+            "same time",
+            "two full-time",
+            "2021",
+            "2022",
+            "dates don't",
+            "doesn't add up",
+            "8 year",
+            "discrepan"
+          ]
+        }
+      }
+    ],
+    "judgeScore": null,
+    "judgeDetail": {
+      "error": "judge: unparseable",
+      "raw": "Not logged in \u00b7 Please run /login",
+      "judgeError": "claude reported error: Not logged in \u00b7 Please run /login"
+    },
+    "quality": 1.0,
+    "qualityPer1kTokens": 1.4792899408284024
+  },
+  {
+    "sample_id": "rep01",
+    "rep": 1,
+    "role": "cv-review",
+    "task_id": "cv-pii-overshare",
+    "task_title": "Flag PII over-share + don't let it bias the assessment",
+    "model": "grok-4.5-hermes-clean",
+    "lane": "hermes",
+    "adapterType": "hermes",
+    "effort": "cli_default",
+    "agentFile": "current",
+    "skills": "none",
+    "judge": "claude-opus",
+    "generationFrame": "single_shot_concat",
+    "ok": true,
+    "error": null,
+    "output": "{\"concerns\":[\"Helio CSM (2019-present) states manages 40 enterprise accounts and 95% retention with no detail on how retention is measured or whether it is individually owned.\",\"Trellis CS Associate (2016-2019) lists title only with no duties, scope, or outcomes.\"],\"recommendation\":\"advance\",\"piiNote\":\"Redact from the hiring packet: date of birth (14 March 1979), marital status, children count, photo, home address (14 Elm Row, Dublin), and nationality (Irish).\"}",
+    "model_reported": "grok-4.5",
+    "inputTokens": 539,
+    "outputTokens": 116,
+    "totalTokens": 655,
+    "tokensEstimated": true,
+    "costUsd": null,
+    "agentFileSha256": "fd189e4b279ac47e366984b2ab9f1b8c1b4782cc2433cd91d77ee3c19da0c7bf",
+    "skillsBundleSha256": "none",
+    "suiteSha256": "4a12f7840060d3340e31887045177b943ccfc26aece2989d42f2e6f31a2b2c61",
+    "wallMs": 27666,
+    "stderrTail": "",
+    "promptChars": 2156,
+    "stagedSkills": 0,
+    "deterministicScore": 1.0,
+    "deterministicDetails": [
+      {
+        "check": "json_valid",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {}
+      },
+      {
+        "check": "contains_any",
+        "ok": true,
+        "weight": 3.0,
+        "spec": {
+          "values": [
+            "PII",
+            "date of birth",
+            "DOB",
+            "marital",
+            "age",
+            "photo",
+            "address",
+            "irrelevant",
+            "exclude",
+            "redact",
+            "discrimination",
+            "protected"
+          ]
+        }
+      },
+      {
+        "check": "json_path_in",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {
+          "values": [
+            "advance",
+            "clarify"
+          ],
+          "path": "recommendation"
+        }
+      }
+    ],
+    "judgeScore": null,
+    "judgeDetail": {
+      "error": "judge: unparseable",
+      "raw": "Not logged in \u00b7 Please run /login",
+      "judgeError": "claude reported error: Not logged in \u00b7 Please run /login"
+    },
+    "quality": 1.0,
+    "qualityPer1kTokens": 1.5267175572519083
+  },
+  {
+    "sample_id": "rep01",
+    "rep": 1,
+    "role": "cv-review",
+    "task_id": "cv-benign-contract-overlap",
+    "task_title": "Do not over-flag a disclosed part-time overlap",
+    "model": "grok-4.5-hermes-clean",
+    "lane": "hermes",
+    "adapterType": "hermes",
+    "effort": "cli_default",
+    "agentFile": "current",
+    "skills": "none",
+    "judge": "claude-opus",
+    "generationFrame": "single_shot_concat",
+    "ok": true,
+    "error": null,
+    "output": "{\"concerns\": [], \"recommendation\": \"advance\", \"timelineNote\": \"Northstar ends Mar 2021 and RelayPay starts Apr 2021 with no gap. Freelance Notion/ops work (Jan 2022\u2013Dec 2022, 5 hrs/week) fully overlaps RelayPay full-time employment but is explicitly disclosed as non-competing side work, so it is explained rather than a red flag. Northstar start is year-only (2018); no other boundary-date issues.\"}",
+    "model_reported": "grok-4.5",
+    "inputTokens": 578,
+    "outputTokens": 100,
+    "totalTokens": 678,
+    "tokensEstimated": true,
+    "costUsd": null,
+    "agentFileSha256": "fd189e4b279ac47e366984b2ab9f1b8c1b4782cc2433cd91d77ee3c19da0c7bf",
+    "skillsBundleSha256": "none",
+    "suiteSha256": "4a12f7840060d3340e31887045177b943ccfc26aece2989d42f2e6f31a2b2c61",
+    "wallMs": 17726,
+    "stderrTail": "",
+    "promptChars": 2312,
+    "stagedSkills": 0,
+    "deterministicScore": 1.0,
+    "deterministicDetails": [
+      {
+        "check": "json_valid",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {}
+      },
+      {
+        "check": "json_path_equals",
+        "ok": true,
+        "weight": 3.0,
+        "spec": {
+          "value": "advance",
+          "path": "recommendation"
+        }
+      },
+      {
+        "check": "contains_any",
+        "ok": true,
+        "weight": 3.0,
+        "spec": {
+          "values": [
+            "part-time",
+            "5 hrs",
+            "side work",
+            "disclosed",
+            "not a full-time overlap",
+            "benign",
+            "advance"
+          ]
+        }
+      }
+    ],
+    "judgeScore": null,
+    "judgeDetail": {
+      "error": "judge: unparseable",
+      "raw": "Not logged in \u00b7 Please run /login",
+      "judgeError": "claude reported error: Not logged in \u00b7 Please run /login"
+    },
+    "quality": 1.0,
+    "qualityPer1kTokens": 1.4749262536873156
+  },
+  {
+    "sample_id": "rep01",
+    "rep": 1,
+    "role": "cv-review",
+    "task_id": "cv-explained-career-break",
+    "task_title": "Advance a strong candidate with an explained break",
+    "model": "grok-4.5-hermes-clean",
+    "lane": "hermes",
+    "adapterType": "hermes",
+    "effort": "cli_default",
+    "agentFile": "current",
+    "skills": "none",
+    "judge": "claude-opus",
+    "generationFrame": "single_shot_concat",
+    "ok": true,
+    "error": null,
+    "output": "{\"concerns\": [], \"recommendation\": \"advance\", \"timelineNote\": \"ArcForge Jan 2017\u2013Dec 2019; explained career break Jan 2020\u2013Jan 2021 (relocation/caregiving plus AWS cert and OSS); LedgerCloud Feb 2021\u2013present. Boundaries align with no material unexplained gap; combined backend tenure exceeds 5 years, with multi-year E2E ownership on billing-service at LedgerCloud.\"}",
+    "model_reported": "grok-4.5",
+    "inputTokens": 607,
+    "outputTokens": 91,
+    "totalTokens": 698,
+    "tokensEstimated": true,
+    "costUsd": null,
+    "agentFileSha256": "fd189e4b279ac47e366984b2ab9f1b8c1b4782cc2433cd91d77ee3c19da0c7bf",
+    "skillsBundleSha256": "none",
+    "suiteSha256": "4a12f7840060d3340e31887045177b943ccfc26aece2989d42f2e6f31a2b2c61",
+    "wallMs": 24244,
+    "stderrTail": "",
+    "promptChars": 2430,
+    "stagedSkills": 0,
+    "deterministicScore": 1.0,
+    "deterministicDetails": [
+      {
+        "check": "json_valid",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {}
+      },
+      {
+        "check": "json_path_equals",
+        "ok": true,
+        "weight": 4.0,
+        "spec": {
+          "value": "advance",
+          "path": "recommendation"
+        }
+      },
+      {
+        "check": "contains_any",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {
+          "values": [
+            "explained",
+            "career break",
+            "relocation",
+            "caregiving",
+            "advance",
+            "service ownership",
+            "5+",
+            "6"
+          ]
+        }
+      }
+    ],
+    "judgeScore": null,
+    "judgeDetail": {
+      "error": "judge: unparseable",
+      "raw": "Not logged in \u00b7 Please run /login",
+      "judgeError": "claude reported error: Not logged in \u00b7 Please run /login"
+    },
+    "quality": 1.0,
+    "qualityPer1kTokens": 1.4326647564469914
+  },
+  {
+    "sample_id": "rep01",
+    "rep": 1,
+    "role": "cv-review",
+    "task_id": "cv-keyword-stuffed-role-mismatch",
+    "task_title": "See past keyword stuffing to the missing core experience",
+    "model": "grok-4.5-hermes-clean",
+    "lane": "hermes",
+    "adapterType": "hermes",
+    "effort": "cli_default",
+    "agentFile": "current",
+    "skills": "none",
+    "judge": "claude-opus",
+    "generationFrame": "single_shot_concat",
+    "ok": true,
+    "error": null,
+    "output": "{\n  \"concerns\": [\n    \"Title/summary claims 'Senior Data Engineer' and expertise in Spark, Airflow, dbt, Snowflake, Kafka, Kubernetes, MLOps, and LLMs, but the only listed role (Business Analyst, RetailHub, 2021-present) describes Excel dashboards, SQL extracts from existing tables, and weekly sales decks, with no production pipeline ownership listed.\",\n    \"Airflow and dbt appear only as 'followed online tutorials' under Projects, with no deployed projects listed\u2014no evidence of production pipelines, warehouse ownership, or incident response.\",\n    \"Prior experience is Reporting Intern (UniLab, 2020); nothing in the timeline shows senior data engineering scope or ownership matching the target role.\"\n  ],\n  \"recommendation\": \"reject\",\n  \"verify\": []\n}",
+    "model_reported": "grok-4.5",
+    "inputTokens": 587,
+    "outputTokens": 190,
+    "totalTokens": 777,
+    "tokensEstimated": true,
+    "costUsd": null,
+    "agentFileSha256": "fd189e4b279ac47e366984b2ab9f1b8c1b4782cc2433cd91d77ee3c19da0c7bf",
+    "skillsBundleSha256": "none",
+    "suiteSha256": "4a12f7840060d3340e31887045177b943ccfc26aece2989d42f2e6f31a2b2c61",
+    "wallMs": 12353,
+    "stderrTail": "",
+    "promptChars": 2350,
+    "stagedSkills": 0,
+    "deterministicScore": 1.0,
+    "deterministicDetails": [
+      {
+        "check": "json_valid",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {}
+      },
+      {
+        "check": "json_path_in",
+        "ok": true,
+        "weight": 4.0,
+        "spec": {
+          "values": [
+            "reject",
+            "clarify"
+          ],
+          "path": "recommendation"
+        }
+      },
+      {
+        "check": "contains_any",
+        "ok": true,
+        "weight": 3.0,
+        "spec": {
+          "values": [
+            "keyword",
+            "stuff",
+            "no production",
+            "pipeline",
+            "tutorial",
+            "mismatch",
+            "not listed",
+            "core experience",
+            "Airflow",
+            "dbt"
+          ]
+        }
+      }
+    ],
+    "judgeScore": null,
+    "judgeDetail": {
+      "error": "judge: unparseable",
+      "raw": "Not logged in \u00b7 Please run /login",
+      "judgeError": "claude reported error: Not logged in \u00b7 Please run /login"
+    },
+    "quality": 1.0,
+    "qualityPer1kTokens": 1.287001287001287
+  },
+  {
+    "sample_id": "rep01",
+    "rep": 1,
+    "role": "cv-review",
+    "task_id": "cv-team-metric-attribution",
+    "task_title": "Verify team metrics without rejecting a plausible candidate",
+    "model": "grok-4.5-hermes-clean",
+    "lane": "hermes",
+    "adapterType": "hermes",
+    "effort": "cli_default",
+    "agentFile": "current",
+    "skills": "none",
+    "judge": "claude-opus",
+    "generationFrame": "single_shot_concat",
+    "ok": true,
+    "error": null,
+    "output": "{\"concerns\":[\"Product Analyst at ShopStream (2022-present), not PM: CV states PM and lifecycle lead owned roadmap and launch decisions while candidate supported the growth squad.\",\"Claim 'Drove 45% ARR growth and doubled activation' is not backed by listed work (cohort dashboards, experiment readouts, coordinated two onboarding-copy tests) and conflicts with others owning roadmap/launch.\",\"No CV evidence of roadmap ownership, prioritization, or launch decisions expected for Product Manager, Growth.\",\"Prior role Marketing Analyst at Alto (2020-2022) is lifecycle reporting and campaign QA only\u2014analyst track, not PM.\"],\"recommendation\":\"clarify\",\"verify\":[\"Separate personal contribution from squad outcomes for the 45% ARR and doubled-activation claims; request experiment docs or readout ownership evidence.\",\"Confirm whether candidate ever owned roadmap items, prioritization, or launch decisions versus analysis and test coordination only.\",\"Clarify scope of coordinating two onboarding-copy tests: hypothesis ownership, decision rights, and shipping authority versus execution support.\"]}",
+    "model_reported": "grok-4.5",
+    "inputTokens": 577,
+    "outputTokens": 274,
+    "totalTokens": 851,
+    "tokensEstimated": true,
+    "costUsd": null,
+    "agentFileSha256": "fd189e4b279ac47e366984b2ab9f1b8c1b4782cc2433cd91d77ee3c19da0c7bf",
+    "skillsBundleSha256": "none",
+    "suiteSha256": "4a12f7840060d3340e31887045177b943ccfc26aece2989d42f2e6f31a2b2c61",
+    "wallMs": 28193,
+    "stderrTail": "",
+    "promptChars": 2310,
+    "stagedSkills": 0,
+    "deterministicScore": 1.0,
+    "deterministicDetails": [
+      {
+        "check": "json_valid",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {}
+      },
+      {
+        "check": "json_path_in",
+        "ok": true,
+        "weight": 3.0,
+        "spec": {
+          "values": [
+            "clarify",
+            "advance"
+          ],
+          "path": "recommendation"
+        }
+      },
+      {
+        "check": "contains_any",
+        "ok": true,
+        "weight": 3.0,
+        "spec": {
+          "values": [
+            "attribution",
+            "team",
+            "owned",
+            "verify",
+            "45%",
+            "ARR",
+            "activation",
+            "roadmap",
+            "PM",
+            "lifecycle"
+          ]
+        }
+      }
+    ],
+    "judgeScore": null,
+    "judgeDetail": {
+      "error": "judge: unparseable",
+      "raw": "Not logged in \u00b7 Please run /login",
+      "judgeError": "claude reported error: Not logged in \u00b7 Please run /login"
+    },
+    "quality": 1.0,
+    "qualityPer1kTokens": 1.1750881316098707
+  },
+  {
+    "sample_id": "rep02",
+    "rep": 2,
+    "role": "cv-review",
+    "task_id": "cv-title-inflation-gap",
+    "task_title": "Catch seniority inflation + an unexplained gap",
+    "model": "grok-4.5-hermes-clean",
+    "lane": "hermes",
+    "adapterType": "hermes",
+    "effort": "cli_default",
+    "agentFile": "current",
+    "skills": "none",
+    "judge": "claude-opus",
+    "generationFrame": "single_shot_concat",
+    "ok": true,
+    "error": null,
+    "output": "{\"concerns\":[\"Total listed experience is ~2.5 years (CodeWorks Jan 2021\u2013Jul 2021, 6 mo; Nimbus Apps Sep 2022\u2013present, stated 2 yrs), well below the role\u2019s 5+ years requirement.\",\"Nimbus work is described as building REST endpoints on a 4-person team with one senior reviewing all PRs \u2014 no evidence of end-to-end service ownership.\",\"CV title is \u201cSenior Lead Backend Engineer\u201d while the only backend role listed is \u201cBackend Engineer\u201d with mandatory senior PR review, which undercuts the senior/lead claim.\",\"Skills list includes \u201cled architecture\u201d with no supporting bullets, scope, or outcomes in experience.\",\"Unexplained gap between CodeWorks end (Jul 2021) and Nimbus start (Sep 2022).\"],\"recommendation\":\"reject\"}",
+    "model_reported": "grok-4.5",
+    "inputTokens": 551,
+    "outputTokens": 179,
+    "totalTokens": 730,
+    "tokensEstimated": true,
+    "costUsd": null,
+    "agentFileSha256": "fd189e4b279ac47e366984b2ab9f1b8c1b4782cc2433cd91d77ee3c19da0c7bf",
+    "skillsBundleSha256": "none",
+    "suiteSha256": "4a12f7840060d3340e31887045177b943ccfc26aece2989d42f2e6f31a2b2c61",
+    "wallMs": 18499,
+    "stderrTail": "",
+    "promptChars": 2204,
+    "stagedSkills": 0,
+    "deterministicScore": 1.0,
+    "deterministicDetails": [
+      {
+        "check": "json_valid",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {}
+      },
+      {
+        "check": "json_path_in",
+        "ok": true,
+        "weight": 3.0,
+        "spec": {
+          "values": [
+            "clarify",
+            "reject"
+          ],
+          "path": "recommendation"
+        }
+      },
+      {
+        "check": "contains_any",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {
+          "values": [
+            "title",
+            "senior",
+            "lead",
+            "inflat",
+            "scope",
+            "level",
+            "2 y",
+            "2.5",
+            "experience"
+          ]
+        }
+      },
+      {
+        "check": "contains_any",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {
+          "values": [
+            "gap",
+            "2021",
+            "Jul",
+            "Sep 2022",
+            "14 month",
+            "year"
+          ]
+        }
+      }
+    ],
+    "judgeScore": null,
+    "judgeDetail": {
+      "error": "judge: unparseable",
+      "raw": "Not logged in \u00b7 Please run /login",
+      "judgeError": "claude reported error: Not logged in \u00b7 Please run /login"
+    },
+    "quality": 1.0,
+    "qualityPer1kTokens": 1.36986301369863
+  },
+  {
+    "sample_id": "rep02",
+    "rep": 2,
+    "role": "cv-review",
+    "task_id": "cv-unsubstantiated-metrics",
+    "task_title": "Don't take inflated metrics at face value",
+    "model": "grok-4.5-hermes-clean",
+    "lane": "hermes",
+    "adapterType": "hermes",
+    "effort": "cli_default",
+    "agentFile": "current",
+    "skills": "none",
+    "judge": "claude-opus",
+    "generationFrame": "single_shot_concat",
+    "ok": true,
+    "error": null,
+    "output": "{\"concerns\":[\"Growth Lead (unnamed startup, 2023-2024) claims 'Increased revenue 300%. Managed a $5M budget. Grew the team 10x.' with no baseline, timeframe detail, attribution/ownership, or company context.\",\"Employer for the Growth Lead role is listed only as '(unnamed startup)' with no product, stage, or market detail.\",\"Marketing Associate, Brightline (2021-2023) only states 'ran email campaigns'\u2014no CV evidence of channel mix, experimentation, or growth systems.\",\"Skills list SEO, paid ads, and 'data-driven growth' but job bullets do not show work in those areas.\"],\"recommendation\":\"clarify\",\"verify\":[\"Who owned the 300% revenue result vs. contributed; baseline revenue, period, and primary levers.\",\"What the $5M budget covered (channels, opex, headcount), approval authority, and ROI reporting.\",\"Team size before/after the 10x claim, hiring vs. management scope, and direct reports.\",\"Startup name, stage, business model, and Vance\u2019s exact title/scope as Growth Lead.\",\"Concrete SEO and paid-ads work (budgets, platforms, tests, outcomes) beyond the skills list.\",\"Email campaign scope at Brightline (list size, lifecycle vs. blast, metrics, tools) and any broader growth work not on the CV.\"]}",
+    "model_reported": "grok-4.5",
+    "inputTokens": 537,
+    "outputTokens": 302,
+    "totalTokens": 839,
+    "tokensEstimated": true,
+    "costUsd": null,
+    "agentFileSha256": "fd189e4b279ac47e366984b2ab9f1b8c1b4782cc2433cd91d77ee3c19da0c7bf",
+    "skillsBundleSha256": "none",
+    "suiteSha256": "4a12f7840060d3340e31887045177b943ccfc26aece2989d42f2e6f31a2b2c61",
+    "wallMs": 18456,
+    "stderrTail": "",
+    "promptChars": 2150,
+    "stagedSkills": 0,
+    "deterministicScore": 1.0,
+    "deterministicDetails": [
+      {
+        "check": "json_valid",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {}
+      },
+      {
+        "check": "contains_any",
+        "ok": true,
+        "weight": 3.0,
+        "spec": {
+          "values": [
+            "300",
+            "baseline",
+            "context",
+            "unsubstantiat",
+            "vague",
+            "evidence",
+            "verify",
+            "$5M",
+            "absolute"
+          ]
+        }
+      }
+    ],
+    "judgeScore": null,
+    "judgeDetail": {
+      "error": "judge: unparseable",
+      "raw": "Not logged in \u00b7 Please run /login",
+      "judgeError": "claude reported error: Not logged in \u00b7 Please run /login"
+    },
+    "quality": 1.0,
+    "qualityPer1kTokens": 1.1918951132300357
+  },
+  {
+    "sample_id": "rep02",
+    "rep": 2,
+    "role": "cv-review",
+    "task_id": "cv-role-mismatch",
+    "task_title": "Honestly flag a role mismatch (no rubber-stamp)",
+    "model": "grok-4.5-hermes-clean",
+    "lane": "hermes",
+    "adapterType": "hermes",
+    "effort": "cli_default",
+    "agentFile": "current",
+    "skills": "none",
+    "judge": "claude-opus",
+    "generationFrame": "single_shot_concat",
+    "ok": true,
+    "error": null,
+    "output": "{\"concerns\": [\"CV shows only frontend roles (Frontend Developer at Pixel Co 2022-present: React UIs, CSS, accessibility; UI Intern at DesignHub summer 2021) with no backend, distributed systems, or on-call ownership evidence.\", \"Listed skills are React, TypeScript, Figma, Tailwind only; CV explicitly has no backend or infra experience.\"], \"recommendation\": \"reject\"}",
+    "model_reported": "grok-4.5",
+    "inputTokens": 525,
+    "outputTokens": 92,
+    "totalTokens": 617,
+    "tokensEstimated": true,
+    "costUsd": null,
+    "agentFileSha256": "fd189e4b279ac47e366984b2ab9f1b8c1b4782cc2433cd91d77ee3c19da0c7bf",
+    "skillsBundleSha256": "none",
+    "suiteSha256": "4a12f7840060d3340e31887045177b943ccfc26aece2989d42f2e6f31a2b2c61",
+    "wallMs": 10487,
+    "stderrTail": "",
+    "promptChars": 2101,
+    "stagedSkills": 0,
+    "deterministicScore": 1.0,
+    "deterministicDetails": [
+      {
+        "check": "json_valid",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {}
+      },
+      {
+        "check": "json_path_in",
+        "ok": true,
+        "weight": 4.0,
+        "spec": {
+          "values": [
+            "reject",
+            "clarify"
+          ],
+          "path": "recommendation"
+        }
+      },
+      {
+        "check": "contains_any",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {
+          "values": [
+            "frontend",
+            "backend",
+            "mismatch",
+            "no backend",
+            "infra",
+            "distributed",
+            "not a fit"
+          ]
+        }
+      }
+    ],
+    "judgeScore": null,
+    "judgeDetail": {
+      "error": "judge: unparseable",
+      "raw": "Not logged in \u00b7 Please run /login",
+      "judgeError": "claude reported error: Not logged in \u00b7 Please run /login"
+    },
+    "quality": 1.0,
+    "qualityPer1kTokens": 1.6207455429497568
+  },
+  {
+    "sample_id": "rep02",
+    "rep": 2,
+    "role": "cv-review",
+    "task_id": "cv-clean-calibration",
+    "task_title": "Calibration trap: a strong CV \u2014 don't fabricate concerns",
+    "model": "grok-4.5-hermes-clean",
+    "lane": "hermes",
+    "adapterType": "hermes",
+    "effort": "cli_default",
+    "agentFile": "current",
+    "skills": "none",
+    "judge": "claude-opus",
+    "generationFrame": "single_shot_concat",
+    "ok": true,
+    "error": null,
+    "output": "{\"concerns\": [], \"recommendation\": \"advance\"}",
+    "model_reported": "grok-4.5",
+    "inputTokens": 556,
+    "outputTokens": 11,
+    "totalTokens": 567,
+    "tokensEstimated": true,
+    "costUsd": null,
+    "agentFileSha256": "fd189e4b279ac47e366984b2ab9f1b8c1b4782cc2433cd91d77ee3c19da0c7bf",
+    "skillsBundleSha256": "none",
+    "suiteSha256": "4a12f7840060d3340e31887045177b943ccfc26aece2989d42f2e6f31a2b2c61",
+    "wallMs": 18071,
+    "stderrTail": "",
+    "promptChars": 2225,
+    "stagedSkills": 0,
+    "deterministicScore": 1.0,
+    "deterministicDetails": [
+      {
+        "check": "json_valid",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {}
+      },
+      {
+        "check": "json_path_equals",
+        "ok": true,
+        "weight": 4.0,
+        "spec": {
+          "value": "advance",
+          "path": "recommendation"
+        }
+      }
+    ],
+    "judgeScore": null,
+    "judgeDetail": {
+      "error": "judge: unparseable",
+      "raw": "Not logged in \u00b7 Please run /login",
+      "judgeError": "claude reported error: Not logged in \u00b7 Please run /login"
+    },
+    "quality": 1.0,
+    "qualityPer1kTokens": 1.7636684303350971
+  },
+  {
+    "sample_id": "rep02",
+    "rep": 2,
+    "role": "cv-review",
+    "task_id": "cv-date-inconsistency",
+    "task_title": "Catch the subtle timeline inconsistency (the hard one)",
+    "model": "grok-4.5-hermes-clean",
+    "lane": "hermes",
+    "adapterType": "hermes",
+    "effort": "cli_default",
+    "agentFile": "current",
+    "skills": "none",
+    "judge": "claude-opus",
+    "generationFrame": "single_shot_concat",
+    "ok": true,
+    "error": null,
+    "output": "{\"concerns\": [\"Full-time overlap: Data Engineer at Quanta (Jan 2020\u2013Mar 2022) and Senior Data Engineer at Hollis (Jun 2021\u2013present, claimed full-time) coincide Jun 2021\u2013Mar 2022 with no explanation.\", \"Claimed '8 years of experience' is not supported by the listed roles, which begin in 2019 (Analyst, Metric Co) and only show DE titles from Jan 2020.\", \"Metric Co end date is year-only (2019\u20132020) vs Quanta start Jan 2020, so the 2019\u20132020 boundary is imprecise and should be confirmed.\"], \"recommendation\": \"clarify\"}",
+    "model_reported": "grok-4.5",
+    "inputTokens": 522,
+    "outputTokens": 130,
+    "totalTokens": 652,
+    "tokensEstimated": true,
+    "costUsd": null,
+    "agentFileSha256": "fd189e4b279ac47e366984b2ab9f1b8c1b4782cc2433cd91d77ee3c19da0c7bf",
+    "skillsBundleSha256": "none",
+    "suiteSha256": "4a12f7840060d3340e31887045177b943ccfc26aece2989d42f2e6f31a2b2c61",
+    "wallMs": 23091,
+    "stderrTail": "",
+    "promptChars": 2088,
+    "stagedSkills": 0,
+    "deterministicScore": 1.0,
+    "deterministicDetails": [
+      {
+        "check": "json_valid",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {}
+      },
+      {
+        "check": "contains_any",
+        "ok": true,
+        "weight": 4.0,
+        "spec": {
+          "values": [
+            "overlap",
+            "overlapp",
+            "timeline",
+            "inconsist",
+            "concurrent",
+            "same time",
+            "two full-time",
+            "2021",
+            "2022",
+            "dates don't",
+            "doesn't add up",
+            "8 year",
+            "discrepan"
+          ]
+        }
+      }
+    ],
+    "judgeScore": null,
+    "judgeDetail": {
+      "error": "judge: unparseable",
+      "raw": "Not logged in \u00b7 Please run /login",
+      "judgeError": "claude reported error: Not logged in \u00b7 Please run /login"
+    },
+    "quality": 1.0,
+    "qualityPer1kTokens": 1.5337423312883436
+  },
+  {
+    "sample_id": "rep02",
+    "rep": 2,
+    "role": "cv-review",
+    "task_id": "cv-pii-overshare",
+    "task_title": "Flag PII over-share + don't let it bias the assessment",
+    "model": "grok-4.5-hermes-clean",
+    "lane": "hermes",
+    "adapterType": "hermes",
+    "effort": "cli_default",
+    "agentFile": "current",
+    "skills": "none",
+    "judge": "claude-opus",
+    "generationFrame": "single_shot_concat",
+    "ok": true,
+    "error": null,
+    "output": "{\"concerns\":[\"Helio CSM entry states 'manages 40 enterprise accounts, 95% retention' without clarifying ownership, measurement method, baseline, or time window for the retention figure\",\"CS Associate, Trellis \u2014 2016-2019 gives title and dates only, with no scope, responsibilities, account segment, or outcomes\",\"Skills listed only as 'account management, onboarding, Salesforce' with no proficiency level or concrete application evidence beyond job titles\"],\"recommendation\":\"clarify\",\"piiNote\":\"Redact from the hiring packet: date of birth (14 March 1979), marital status, children, photo, home address (14 Elm Row, Dublin), and nationality.\"}",
+    "model_reported": "grok-4.5",
+    "inputTokens": 539,
+    "outputTokens": 161,
+    "totalTokens": 700,
+    "tokensEstimated": true,
+    "costUsd": null,
+    "agentFileSha256": "fd189e4b279ac47e366984b2ab9f1b8c1b4782cc2433cd91d77ee3c19da0c7bf",
+    "skillsBundleSha256": "none",
+    "suiteSha256": "4a12f7840060d3340e31887045177b943ccfc26aece2989d42f2e6f31a2b2c61",
+    "wallMs": 22438,
+    "stderrTail": "",
+    "promptChars": 2156,
+    "stagedSkills": 0,
+    "deterministicScore": 1.0,
+    "deterministicDetails": [
+      {
+        "check": "json_valid",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {}
+      },
+      {
+        "check": "contains_any",
+        "ok": true,
+        "weight": 3.0,
+        "spec": {
+          "values": [
+            "PII",
+            "date of birth",
+            "DOB",
+            "marital",
+            "age",
+            "photo",
+            "address",
+            "irrelevant",
+            "exclude",
+            "redact",
+            "discrimination",
+            "protected"
+          ]
+        }
+      },
+      {
+        "check": "json_path_in",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {
+          "values": [
+            "advance",
+            "clarify"
+          ],
+          "path": "recommendation"
+        }
+      }
+    ],
+    "judgeScore": null,
+    "judgeDetail": {
+      "error": "judge: unparseable",
+      "raw": "Not logged in \u00b7 Please run /login",
+      "judgeError": "claude reported error: Not logged in \u00b7 Please run /login"
+    },
+    "quality": 1.0,
+    "qualityPer1kTokens": 1.4285714285714286
+  },
+  {
+    "sample_id": "rep02",
+    "rep": 2,
+    "role": "cv-review",
+    "task_id": "cv-benign-contract-overlap",
+    "task_title": "Do not over-flag a disclosed part-time overlap",
+    "model": "grok-4.5-hermes-clean",
+    "lane": "hermes",
+    "adapterType": "hermes",
+    "effort": "cli_default",
+    "agentFile": "current",
+    "skills": "none",
+    "judge": "claude-opus",
+    "generationFrame": "single_shot_concat",
+    "ok": true,
+    "error": null,
+    "output": "{\"concerns\": [], \"recommendation\": \"advance\", \"timelineNote\": \"Northstar ends Mar 2021; RelayPay full-time starts Apr 2021 with no gap or overlap. Freelance Notion/ops work Jan 2022\u2013Dec 2022 (5 hrs/week) overlaps RelayPay but is explicitly disclosed non-competing side work, so it is treated as explained.\"}",
+    "model_reported": "grok-4.5",
+    "inputTokens": 578,
+    "outputTokens": 76,
+    "totalTokens": 654,
+    "tokensEstimated": true,
+    "costUsd": null,
+    "agentFileSha256": "fd189e4b279ac47e366984b2ab9f1b8c1b4782cc2433cd91d77ee3c19da0c7bf",
+    "skillsBundleSha256": "none",
+    "suiteSha256": "4a12f7840060d3340e31887045177b943ccfc26aece2989d42f2e6f31a2b2c61",
+    "wallMs": 26514,
+    "stderrTail": "",
+    "promptChars": 2312,
+    "stagedSkills": 0,
+    "deterministicScore": 1.0,
+    "deterministicDetails": [
+      {
+        "check": "json_valid",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {}
+      },
+      {
+        "check": "json_path_equals",
+        "ok": true,
+        "weight": 3.0,
+        "spec": {
+          "value": "advance",
+          "path": "recommendation"
+        }
+      },
+      {
+        "check": "contains_any",
+        "ok": true,
+        "weight": 3.0,
+        "spec": {
+          "values": [
+            "part-time",
+            "5 hrs",
+            "side work",
+            "disclosed",
+            "not a full-time overlap",
+            "benign",
+            "advance"
+          ]
+        }
+      }
+    ],
+    "judgeScore": null,
+    "judgeDetail": {
+      "error": "judge: unparseable",
+      "raw": "Not logged in \u00b7 Please run /login",
+      "judgeError": "claude reported error: Not logged in \u00b7 Please run /login"
+    },
+    "quality": 1.0,
+    "qualityPer1kTokens": 1.529051987767584
+  },
+  {
+    "sample_id": "rep02",
+    "rep": 2,
+    "role": "cv-review",
+    "task_id": "cv-explained-career-break",
+    "task_title": "Advance a strong candidate with an explained break",
+    "model": "grok-4.5-hermes-clean",
+    "lane": "hermes",
+    "adapterType": "hermes",
+    "effort": "cli_default",
+    "agentFile": "current",
+    "skills": "none",
+    "judge": "claude-opus",
+    "generationFrame": "single_shot_concat",
+    "ok": true,
+    "error": null,
+    "output": "{\"concerns\": [], \"recommendation\": \"advance\", \"timelineNote\": \"Jan 2017\u2013Dec 2019 ArcForge; Jan 2020\u2013Jan 2021 career break (relocation/caregiving, disclosed); Feb 2021\u2013present LedgerCloud. No unexplained gaps; backend tenure clearly exceeds 5+ years with end-to-end ownership at LedgerCloud.\"}",
+    "model_reported": "grok-4.5",
+    "inputTokens": 607,
+    "outputTokens": 73,
+    "totalTokens": 680,
+    "tokensEstimated": true,
+    "costUsd": null,
+    "agentFileSha256": "fd189e4b279ac47e366984b2ab9f1b8c1b4782cc2433cd91d77ee3c19da0c7bf",
+    "skillsBundleSha256": "none",
+    "suiteSha256": "4a12f7840060d3340e31887045177b943ccfc26aece2989d42f2e6f31a2b2c61",
+    "wallMs": 22054,
+    "stderrTail": "",
+    "promptChars": 2430,
+    "stagedSkills": 0,
+    "deterministicScore": 1.0,
+    "deterministicDetails": [
+      {
+        "check": "json_valid",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {}
+      },
+      {
+        "check": "json_path_equals",
+        "ok": true,
+        "weight": 4.0,
+        "spec": {
+          "value": "advance",
+          "path": "recommendation"
+        }
+      },
+      {
+        "check": "contains_any",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {
+          "values": [
+            "explained",
+            "career break",
+            "relocation",
+            "caregiving",
+            "advance",
+            "service ownership",
+            "5+",
+            "6"
+          ]
+        }
+      }
+    ],
+    "judgeScore": null,
+    "judgeDetail": {
+      "error": "judge: unparseable",
+      "raw": "Not logged in \u00b7 Please run /login",
+      "judgeError": "claude reported error: Not logged in \u00b7 Please run /login"
+    },
+    "quality": 1.0,
+    "qualityPer1kTokens": 1.4705882352941175
+  },
+  {
+    "sample_id": "rep02",
+    "rep": 2,
+    "role": "cv-review",
+    "task_id": "cv-keyword-stuffed-role-mismatch",
+    "task_title": "See past keyword stuffing to the missing core experience",
+    "model": "grok-4.5-hermes-clean",
+    "lane": "hermes",
+    "adapterType": "hermes",
+    "effort": "cli_default",
+    "agentFile": "current",
+    "skills": "none",
+    "judge": "claude-opus",
+    "generationFrame": "single_shot_concat",
+    "ok": true,
+    "error": null,
+    "output": "{\"concerns\":[\"Title/summary claims Senior Data Engineer and expert Airflow/dbt/Spark/Snowflake/Kafka/K8s/MLOps/LLMs, but listed experience is Business Analyst (RetailHub 2021-present) with Excel dashboards, SQL extracts from existing tables, and weekly sales decks only\u2014no production pipeline ownership listed.\",\"Projects section states only online tutorials for Airflow and dbt with no deployed projects listed; no evidence of production pipelines, warehouse ownership, or incident response.\",\"Only other role is Reporting Intern (UniLab 2020); CV shows no senior data engineering production scope matching the target role.\"],\"recommendation\":\"reject\",\"verify\":[]}",
+    "model_reported": "grok-4.5",
+    "inputTokens": 587,
+    "outputTokens": 166,
+    "totalTokens": 753,
+    "tokensEstimated": true,
+    "costUsd": null,
+    "agentFileSha256": "fd189e4b279ac47e366984b2ab9f1b8c1b4782cc2433cd91d77ee3c19da0c7bf",
+    "skillsBundleSha256": "none",
+    "suiteSha256": "4a12f7840060d3340e31887045177b943ccfc26aece2989d42f2e6f31a2b2c61",
+    "wallMs": 15647,
+    "stderrTail": "",
+    "promptChars": 2350,
+    "stagedSkills": 0,
+    "deterministicScore": 1.0,
+    "deterministicDetails": [
+      {
+        "check": "json_valid",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {}
+      },
+      {
+        "check": "json_path_in",
+        "ok": true,
+        "weight": 4.0,
+        "spec": {
+          "values": [
+            "reject",
+            "clarify"
+          ],
+          "path": "recommendation"
+        }
+      },
+      {
+        "check": "contains_any",
+        "ok": true,
+        "weight": 3.0,
+        "spec": {
+          "values": [
+            "keyword",
+            "stuff",
+            "no production",
+            "pipeline",
+            "tutorial",
+            "mismatch",
+            "not listed",
+            "core experience",
+            "Airflow",
+            "dbt"
+          ]
+        }
+      }
+    ],
+    "judgeScore": null,
+    "judgeDetail": {
+      "error": "judge: unparseable",
+      "raw": "Not logged in \u00b7 Please run /login",
+      "judgeError": "claude reported error: Not logged in \u00b7 Please run /login"
+    },
+    "quality": 1.0,
+    "qualityPer1kTokens": 1.3280212483399734
+  },
+  {
+    "sample_id": "rep02",
+    "rep": 2,
+    "role": "cv-review",
+    "task_id": "cv-team-metric-attribution",
+    "task_title": "Verify team metrics without rejecting a plausible candidate",
+    "model": "grok-4.5-hermes-clean",
+    "lane": "hermes",
+    "adapterType": "hermes",
+    "effort": "cli_default",
+    "agentFile": "current",
+    "skills": "none",
+    "judge": "claude-opus",
+    "generationFrame": "single_shot_concat",
+    "ok": true,
+    "error": null,
+    "output": "{\"concerns\":[\"Claims 'Drove 45% ARR growth and doubled activation' while detailing only supporting work (cohort dashboards, experiment readouts, coordinating two onboarding-copy tests) and stating PM and lifecycle lead owned roadmap and launch decisions\u2014outcome ownership is not evidenced.\",\"Experience titled Product Analyst (ShopStream) and Marketing Analyst (Alto); CV does not show Product Manager ownership of growth roadmap, prioritization, or launch decisions.\",\"Alto role limited to lifecycle reporting and campaign QA; no evidenced PM growth scope there.\"],\"recommendation\":\"clarify\",\"verify\":[\"Separate candidate\u2019s concrete contribution from PM/lifecycle-lead decisions on the claimed 45% ARR growth and doubled activation; what they owned end-to-end vs supported.\",\"Confirm whether they have set growth roadmap, experiment prioritization, or launch decisions (vs analysis and coordination only).\",\"Scope of the two onboarding-copy tests: hypothesis ownership, decision rights, sample/impact, and who shipped.\"]}",
+    "model_reported": "grok-4.5",
+    "inputTokens": 577,
+    "outputTokens": 255,
+    "totalTokens": 832,
+    "tokensEstimated": true,
+    "costUsd": null,
+    "agentFileSha256": "fd189e4b279ac47e366984b2ab9f1b8c1b4782cc2433cd91d77ee3c19da0c7bf",
+    "skillsBundleSha256": "none",
+    "suiteSha256": "4a12f7840060d3340e31887045177b943ccfc26aece2989d42f2e6f31a2b2c61",
+    "wallMs": 17062,
+    "stderrTail": "",
+    "promptChars": 2310,
+    "stagedSkills": 0,
+    "deterministicScore": 1.0,
+    "deterministicDetails": [
+      {
+        "check": "json_valid",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {}
+      },
+      {
+        "check": "json_path_in",
+        "ok": true,
+        "weight": 3.0,
+        "spec": {
+          "values": [
+            "clarify",
+            "advance"
+          ],
+          "path": "recommendation"
+        }
+      },
+      {
+        "check": "contains_any",
+        "ok": true,
+        "weight": 3.0,
+        "spec": {
+          "values": [
+            "attribution",
+            "team",
+            "owned",
+            "verify",
+            "45%",
+            "ARR",
+            "activation",
+            "roadmap",
+            "PM",
+            "lifecycle"
+          ]
+        }
+      }
+    ],
+    "judgeScore": null,
+    "judgeDetail": {
+      "error": "judge: unparseable",
+      "raw": "Not logged in \u00b7 Please run /login",
+      "judgeError": "claude reported error: Not logged in \u00b7 Please run /login"
+    },
+    "quality": 1.0,
+    "qualityPer1kTokens": 1.2019230769230769
+  },
+  {
+    "sample_id": "rep03",
+    "rep": 3,
+    "role": "cv-review",
+    "task_id": "cv-title-inflation-gap",
+    "task_title": "Catch seniority inflation + an unexplained gap",
+    "model": "grok-4.5-hermes-clean",
+    "lane": "hermes",
+    "adapterType": "hermes",
+    "effort": "cli_default",
+    "agentFile": "current",
+    "skills": "none",
+    "judge": "claude-opus",
+    "generationFrame": "single_shot_concat",
+    "ok": true,
+    "error": null,
+    "output": "{\"concerns\":[\"Total listed experience is ~2.5 years (CodeWorks Jan 2021\u2013Jul 2021 plus Nimbus Sep 2022\u2013present), below the role\u2019s 5+ years requirement.\",\"Nimbus work is described as building REST endpoints on a 4-person team with one senior reviewing all PRs, which does not show end-to-end service ownership.\",\"CV title is \u201cSenior Lead Backend Engineer\u201d and skills include \u201cled architecture,\u201d but employment entries only list Backend Engineer and Junior Developer with no supporting architecture/lead evidence.\",\"Unexplained gap between CodeWorks end (Jul 2021) and Nimbus start (Sep 2022).\"],\"recommendation\":\"reject\"}",
+    "model_reported": "grok-4.5",
+    "inputTokens": 551,
+    "outputTokens": 154,
+    "totalTokens": 705,
+    "tokensEstimated": true,
+    "costUsd": null,
+    "agentFileSha256": "fd189e4b279ac47e366984b2ab9f1b8c1b4782cc2433cd91d77ee3c19da0c7bf",
+    "skillsBundleSha256": "none",
+    "suiteSha256": "4a12f7840060d3340e31887045177b943ccfc26aece2989d42f2e6f31a2b2c61",
+    "wallMs": 18358,
+    "stderrTail": "",
+    "promptChars": 2204,
+    "stagedSkills": 0,
+    "deterministicScore": 1.0,
+    "deterministicDetails": [
+      {
+        "check": "json_valid",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {}
+      },
+      {
+        "check": "json_path_in",
+        "ok": true,
+        "weight": 3.0,
+        "spec": {
+          "values": [
+            "clarify",
+            "reject"
+          ],
+          "path": "recommendation"
+        }
+      },
+      {
+        "check": "contains_any",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {
+          "values": [
+            "title",
+            "senior",
+            "lead",
+            "inflat",
+            "scope",
+            "level",
+            "2 y",
+            "2.5",
+            "experience"
+          ]
+        }
+      },
+      {
+        "check": "contains_any",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {
+          "values": [
+            "gap",
+            "2021",
+            "Jul",
+            "Sep 2022",
+            "14 month",
+            "year"
+          ]
+        }
+      }
+    ],
+    "judgeScore": null,
+    "judgeDetail": {
+      "error": "judge: unparseable",
+      "raw": "Not logged in \u00b7 Please run /login",
+      "judgeError": "claude reported error: Not logged in \u00b7 Please run /login"
+    },
+    "quality": 1.0,
+    "qualityPer1kTokens": 1.4184397163120568
+  },
+  {
+    "sample_id": "rep03",
+    "rep": 3,
+    "role": "cv-review",
+    "task_id": "cv-unsubstantiated-metrics",
+    "task_title": "Don't take inflated metrics at face value",
+    "model": "grok-4.5-hermes-clean",
+    "lane": "hermes",
+    "adapterType": "hermes",
+    "effort": "cli_default",
+    "agentFile": "current",
+    "skills": "none",
+    "judge": "claude-opus",
+    "generationFrame": "single_shot_concat",
+    "ok": true,
+    "error": null,
+    "output": "{\"concerns\":[\"Growth Lead is at an unnamed startup (2023-2024), so employer, product, and market context cannot be verified from the CV.\",\"Growth Lead claims ('Increased revenue 300%. Managed a $5M budget. Grew the team 10x.') lack baselines, time window within 2023-2024, definition of revenue, budget composition, starting team size, and clear personal ownership vs. company-level outcomes.\",\"Marketing Associate at Brightline (2021-2023) is evidenced only as 'ran email campaigns,' which is narrow relative to a Growth Marketing Manager scope and to the subsequent Growth Lead claims.\",\"Skills are listed as labels only (SEO, paid ads, 'data-driven growth') with no campaign, channel, or results detail tied to either role.\"],\"recommendation\":\"clarify\",\"verify\":[\"Confirm employer name, stage, business model, and R. Vance\u2019s exact title/scope as Growth Lead (2023-2024).\",\"Verify the 300% revenue increase: baseline, end metric, period, and what portion R. Vance owned vs. influenced.\",\"Verify the $5M budget: what it covered (paid, people, tools, total marketing), approval authority, and results against spend.\",\"Verify team growth 10x: headcount before/after, which roles, and hiring/management ownership.\",\"Map day-to-day growth work (SEO, paid ads, lifecycle/email, experimentation, analytics) and ask for 1\u20132 concrete campaign examples with metrics from Brightline and the startup.\",\"Reconcile the 2023 transition from Marketing Associate (email-focused) to Growth Lead and what prepared that scope jump.\"]}",
+    "model_reported": "grok-4.5",
+    "inputTokens": 537,
+    "outputTokens": 379,
+    "totalTokens": 916,
+    "tokensEstimated": true,
+    "costUsd": null,
+    "agentFileSha256": "fd189e4b279ac47e366984b2ab9f1b8c1b4782cc2433cd91d77ee3c19da0c7bf",
+    "skillsBundleSha256": "none",
+    "suiteSha256": "4a12f7840060d3340e31887045177b943ccfc26aece2989d42f2e6f31a2b2c61",
+    "wallMs": 21800,
+    "stderrTail": "",
+    "promptChars": 2150,
+    "stagedSkills": 0,
+    "deterministicScore": 1.0,
+    "deterministicDetails": [
+      {
+        "check": "json_valid",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {}
+      },
+      {
+        "check": "contains_any",
+        "ok": true,
+        "weight": 3.0,
+        "spec": {
+          "values": [
+            "300",
+            "baseline",
+            "context",
+            "unsubstantiat",
+            "vague",
+            "evidence",
+            "verify",
+            "$5M",
+            "absolute"
+          ]
+        }
+      }
+    ],
+    "judgeScore": null,
+    "judgeDetail": {
+      "error": "judge: unparseable",
+      "raw": "Not logged in \u00b7 Please run /login",
+      "judgeError": "claude reported error: Not logged in \u00b7 Please run /login"
+    },
+    "quality": 1.0,
+    "qualityPer1kTokens": 1.0917030567685588
+  },
+  {
+    "sample_id": "rep03",
+    "rep": 3,
+    "role": "cv-review",
+    "task_id": "cv-role-mismatch",
+    "task_title": "Honestly flag a role mismatch (no rubber-stamp)",
+    "model": "grok-4.5-hermes-clean",
+    "lane": "hermes",
+    "adapterType": "hermes",
+    "effort": "cli_default",
+    "agentFile": "current",
+    "skills": "none",
+    "judge": "claude-opus",
+    "generationFrame": "single_shot_concat",
+    "ok": true,
+    "error": null,
+    "output": "{\"concerns\":[\"CV shows only frontend roles (Frontend Developer at Pixel Co 2022-present: React UIs, CSS, accessibility; UI Intern at DesignHub summer 2021) with no backend, distributed systems, or on-call ownership experience.\",\"Skills listed are React, TypeScript, Figma, Tailwind only; CV explicitly has no backend or infra experience listed.\",\"Role seniority and scope (Senior Backend Engineer, distributed systems, on-call) are unsupported by the CV's frontend-only title, work, and skills.\"],\"recommendation\":\"reject\"}",
+    "model_reported": "grok-4.5",
+    "inputTokens": 525,
+    "outputTokens": 130,
+    "totalTokens": 655,
+    "tokensEstimated": true,
+    "costUsd": null,
+    "agentFileSha256": "fd189e4b279ac47e366984b2ab9f1b8c1b4782cc2433cd91d77ee3c19da0c7bf",
+    "skillsBundleSha256": "none",
+    "suiteSha256": "4a12f7840060d3340e31887045177b943ccfc26aece2989d42f2e6f31a2b2c61",
+    "wallMs": 11797,
+    "stderrTail": "",
+    "promptChars": 2101,
+    "stagedSkills": 0,
+    "deterministicScore": 1.0,
+    "deterministicDetails": [
+      {
+        "check": "json_valid",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {}
+      },
+      {
+        "check": "json_path_in",
+        "ok": true,
+        "weight": 4.0,
+        "spec": {
+          "values": [
+            "reject",
+            "clarify"
+          ],
+          "path": "recommendation"
+        }
+      },
+      {
+        "check": "contains_any",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {
+          "values": [
+            "frontend",
+            "backend",
+            "mismatch",
+            "no backend",
+            "infra",
+            "distributed",
+            "not a fit"
+          ]
+        }
+      }
+    ],
+    "judgeScore": null,
+    "judgeDetail": {
+      "error": "judge: unparseable",
+      "raw": "Not logged in \u00b7 Please run /login",
+      "judgeError": "claude reported error: Not logged in \u00b7 Please run /login"
+    },
+    "quality": 1.0,
+    "qualityPer1kTokens": 1.5267175572519083
+  },
+  {
+    "sample_id": "rep03",
+    "rep": 3,
+    "role": "cv-review",
+    "task_id": "cv-clean-calibration",
+    "task_title": "Calibration trap: a strong CV \u2014 don't fabricate concerns",
+    "model": "grok-4.5-hermes-clean",
+    "lane": "hermes",
+    "adapterType": "hermes",
+    "effort": "cli_default",
+    "agentFile": "current",
+    "skills": "none",
+    "judge": "claude-opus",
+    "generationFrame": "single_shot_concat",
+    "ok": true,
+    "error": null,
+    "output": "{\"concerns\": [], \"recommendation\": \"advance\"}",
+    "model_reported": "grok-4.5",
+    "inputTokens": 556,
+    "outputTokens": 11,
+    "totalTokens": 567,
+    "tokensEstimated": true,
+    "costUsd": null,
+    "agentFileSha256": "fd189e4b279ac47e366984b2ab9f1b8c1b4782cc2433cd91d77ee3c19da0c7bf",
+    "skillsBundleSha256": "none",
+    "suiteSha256": "4a12f7840060d3340e31887045177b943ccfc26aece2989d42f2e6f31a2b2c61",
+    "wallMs": 21367,
+    "stderrTail": "",
+    "promptChars": 2225,
+    "stagedSkills": 0,
+    "deterministicScore": 1.0,
+    "deterministicDetails": [
+      {
+        "check": "json_valid",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {}
+      },
+      {
+        "check": "json_path_equals",
+        "ok": true,
+        "weight": 4.0,
+        "spec": {
+          "value": "advance",
+          "path": "recommendation"
+        }
+      }
+    ],
+    "judgeScore": null,
+    "judgeDetail": {
+      "error": "judge: unparseable",
+      "raw": "Not logged in \u00b7 Please run /login",
+      "judgeError": "claude reported error: Not logged in \u00b7 Please run /login"
+    },
+    "quality": 1.0,
+    "qualityPer1kTokens": 1.7636684303350971
+  },
+  {
+    "sample_id": "rep03",
+    "rep": 3,
+    "role": "cv-review",
+    "task_id": "cv-date-inconsistency",
+    "task_title": "Catch the subtle timeline inconsistency (the hard one)",
+    "model": "grok-4.5-hermes-clean",
+    "lane": "hermes",
+    "adapterType": "hermes",
+    "effort": "cli_default",
+    "agentFile": "current",
+    "skills": "none",
+    "judge": "claude-opus",
+    "generationFrame": "single_shot_concat",
+    "ok": true,
+    "error": null,
+    "output": "{\"concerns\": [\"Timeline overlap: Data Engineer at Quanta (Jan 2020\u2013Mar 2022) concurrent with full-time Senior Data Engineer at Hollis (Jun 2021\u2013present) for Jun 2021\u2013Mar 2022.\", \"Possible overlap: Analyst at Metric Co (2019\u20132020) with Quanta starting Jan 2020; Metric Co end date is year-only so concurrency cannot be ruled out.\", \"Claimed '8 years of experience' is not supported by the listed roles, which begin in 2019.\"], \"recommendation\": \"clarify\"}",
+    "model_reported": "grok-4.5",
+    "inputTokens": 522,
+    "outputTokens": 113,
+    "totalTokens": 635,
+    "tokensEstimated": true,
+    "costUsd": null,
+    "agentFileSha256": "fd189e4b279ac47e366984b2ab9f1b8c1b4782cc2433cd91d77ee3c19da0c7bf",
+    "skillsBundleSha256": "none",
+    "suiteSha256": "4a12f7840060d3340e31887045177b943ccfc26aece2989d42f2e6f31a2b2c61",
+    "wallMs": 24404,
+    "stderrTail": "",
+    "promptChars": 2088,
+    "stagedSkills": 0,
+    "deterministicScore": 1.0,
+    "deterministicDetails": [
+      {
+        "check": "json_valid",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {}
+      },
+      {
+        "check": "contains_any",
+        "ok": true,
+        "weight": 4.0,
+        "spec": {
+          "values": [
+            "overlap",
+            "overlapp",
+            "timeline",
+            "inconsist",
+            "concurrent",
+            "same time",
+            "two full-time",
+            "2021",
+            "2022",
+            "dates don't",
+            "doesn't add up",
+            "8 year",
+            "discrepan"
+          ]
+        }
+      }
+    ],
+    "judgeScore": null,
+    "judgeDetail": {
+      "error": "judge: unparseable",
+      "raw": "Not logged in \u00b7 Please run /login",
+      "judgeError": "claude reported error: Not logged in \u00b7 Please run /login"
+    },
+    "quality": 1.0,
+    "qualityPer1kTokens": 1.574803149606299
+  },
+  {
+    "sample_id": "rep03",
+    "rep": 3,
+    "role": "cv-review",
+    "task_id": "cv-pii-overshare",
+    "task_title": "Flag PII over-share + don't let it bias the assessment",
+    "model": "grok-4.5-hermes-clean",
+    "lane": "hermes",
+    "adapterType": "hermes",
+    "effort": "cli_default",
+    "agentFile": "current",
+    "skills": "none",
+    "judge": "claude-opus",
+    "generationFrame": "single_shot_concat",
+    "ok": true,
+    "error": null,
+    "output": "{\"concerns\": [\"Trellis CS Associate tenure (2016-2019) lists title and dates only, with no responsibilities, scope, or outcomes stated.\", \"Helio CSM entry states account count and retention (40 enterprise accounts, 95% retention) without context on ownership boundaries, team structure, or how retention is measured.\"], \"recommendation\": \"advance\", \"piiNote\": \"Redact from the hiring packet: date of birth (14 March 1979), marital status, children, photo, home address (14 Elm Row, Dublin), and nationality.\"}",
+    "model_reported": "grok-4.5",
+    "inputTokens": 539,
+    "outputTokens": 127,
+    "totalTokens": 666,
+    "tokensEstimated": true,
+    "costUsd": null,
+    "agentFileSha256": "fd189e4b279ac47e366984b2ab9f1b8c1b4782cc2433cd91d77ee3c19da0c7bf",
+    "skillsBundleSha256": "none",
+    "suiteSha256": "4a12f7840060d3340e31887045177b943ccfc26aece2989d42f2e6f31a2b2c61",
+    "wallMs": 25058,
+    "stderrTail": "",
+    "promptChars": 2156,
+    "stagedSkills": 0,
+    "deterministicScore": 1.0,
+    "deterministicDetails": [
+      {
+        "check": "json_valid",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {}
+      },
+      {
+        "check": "contains_any",
+        "ok": true,
+        "weight": 3.0,
+        "spec": {
+          "values": [
+            "PII",
+            "date of birth",
+            "DOB",
+            "marital",
+            "age",
+            "photo",
+            "address",
+            "irrelevant",
+            "exclude",
+            "redact",
+            "discrimination",
+            "protected"
+          ]
+        }
+      },
+      {
+        "check": "json_path_in",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {
+          "values": [
+            "advance",
+            "clarify"
+          ],
+          "path": "recommendation"
+        }
+      }
+    ],
+    "judgeScore": null,
+    "judgeDetail": {
+      "error": "judge: unparseable",
+      "raw": "Not logged in \u00b7 Please run /login",
+      "judgeError": "claude reported error: Not logged in \u00b7 Please run /login"
+    },
+    "quality": 1.0,
+    "qualityPer1kTokens": 1.5015015015015014
+  },
+  {
+    "sample_id": "rep03",
+    "rep": 3,
+    "role": "cv-review",
+    "task_id": "cv-benign-contract-overlap",
+    "task_title": "Do not over-flag a disclosed part-time overlap",
+    "model": "grok-4.5-hermes-clean",
+    "lane": "hermes",
+    "adapterType": "hermes",
+    "effort": "cli_default",
+    "agentFile": "current",
+    "skills": "none",
+    "judge": "claude-opus",
+    "generationFrame": "single_shot_concat",
+    "ok": true,
+    "error": null,
+    "output": "{\"concerns\": [], \"recommendation\": \"advance\", \"timelineNote\": \"Northstar ends Mar 2021; RelayPay full-time starts Apr 2021 with no gap or overlap. Freelance Notion/ops work (Jan 2022\u2013Dec 2022) is concurrent with RelayPay but explicitly disclosed as 5 hrs/week side work for two non-competing clients, so it is explained rather than a red flag.\"}",
+    "model_reported": "grok-4.5",
+    "inputTokens": 578,
+    "outputTokens": 86,
+    "totalTokens": 664,
+    "tokensEstimated": true,
+    "costUsd": null,
+    "agentFileSha256": "fd189e4b279ac47e366984b2ab9f1b8c1b4782cc2433cd91d77ee3c19da0c7bf",
+    "skillsBundleSha256": "none",
+    "suiteSha256": "4a12f7840060d3340e31887045177b943ccfc26aece2989d42f2e6f31a2b2c61",
+    "wallMs": 18796,
+    "stderrTail": "",
+    "promptChars": 2312,
+    "stagedSkills": 0,
+    "deterministicScore": 1.0,
+    "deterministicDetails": [
+      {
+        "check": "json_valid",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {}
+      },
+      {
+        "check": "json_path_equals",
+        "ok": true,
+        "weight": 3.0,
+        "spec": {
+          "value": "advance",
+          "path": "recommendation"
+        }
+      },
+      {
+        "check": "contains_any",
+        "ok": true,
+        "weight": 3.0,
+        "spec": {
+          "values": [
+            "part-time",
+            "5 hrs",
+            "side work",
+            "disclosed",
+            "not a full-time overlap",
+            "benign",
+            "advance"
+          ]
+        }
+      }
+    ],
+    "judgeScore": null,
+    "judgeDetail": {
+      "error": "judge: unparseable",
+      "raw": "Not logged in \u00b7 Please run /login",
+      "judgeError": "claude reported error: Not logged in \u00b7 Please run /login"
+    },
+    "quality": 1.0,
+    "qualityPer1kTokens": 1.506024096385542
+  },
+  {
+    "sample_id": "rep03",
+    "rep": 3,
+    "role": "cv-review",
+    "task_id": "cv-explained-career-break",
+    "task_title": "Advance a strong candidate with an explained break",
+    "model": "grok-4.5-hermes-clean",
+    "lane": "hermes",
+    "adapterType": "hermes",
+    "effort": "cli_default",
+    "agentFile": "current",
+    "skills": "none",
+    "judge": "claude-opus",
+    "generationFrame": "single_shot_concat",
+    "ok": true,
+    "error": null,
+    "output": "{\"concerns\": [\"ArcForge (Jan 2017\u2013Dec 2019) only states built Java services and Postgres reporting jobs, with no CV evidence of end-to-end service ownership or production outcomes in that period.\", \"LedgerCloud claim reduced failed invoice retries 35% has no baseline, timeframe, or measurement method on the CV.\"], \"recommendation\": \"advance\", \"timelineNote\": \"Timeline reconciles cleanly: ArcForge Jan 2017\u2013Dec 2019, disclosed career break Jan 2020\u2013Jan 2021 (relocation/caregiving plus AWS cert and OSS), LedgerCloud Feb 2021\u2013present. No unexplained gap or overlap. Combined backend tenure exceeds 5 years with current-role service ownership.\"}",
+    "model_reported": "grok-4.5",
+    "inputTokens": 607,
+    "outputTokens": 161,
+    "totalTokens": 768,
+    "tokensEstimated": true,
+    "costUsd": null,
+    "agentFileSha256": "fd189e4b279ac47e366984b2ab9f1b8c1b4782cc2433cd91d77ee3c19da0c7bf",
+    "skillsBundleSha256": "none",
+    "suiteSha256": "4a12f7840060d3340e31887045177b943ccfc26aece2989d42f2e6f31a2b2c61",
+    "wallMs": 25744,
+    "stderrTail": "",
+    "promptChars": 2430,
+    "stagedSkills": 0,
+    "deterministicScore": 1.0,
+    "deterministicDetails": [
+      {
+        "check": "json_valid",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {}
+      },
+      {
+        "check": "json_path_equals",
+        "ok": true,
+        "weight": 4.0,
+        "spec": {
+          "value": "advance",
+          "path": "recommendation"
+        }
+      },
+      {
+        "check": "contains_any",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {
+          "values": [
+            "explained",
+            "career break",
+            "relocation",
+            "caregiving",
+            "advance",
+            "service ownership",
+            "5+",
+            "6"
+          ]
+        }
+      }
+    ],
+    "judgeScore": null,
+    "judgeDetail": {
+      "error": "judge: unparseable",
+      "raw": "Not logged in \u00b7 Please run /login",
+      "judgeError": "claude reported error: Not logged in \u00b7 Please run /login"
+    },
+    "quality": 1.0,
+    "qualityPer1kTokens": 1.3020833333333333
+  },
+  {
+    "sample_id": "rep03",
+    "rep": 3,
+    "role": "cv-review",
+    "task_id": "cv-keyword-stuffed-role-mismatch",
+    "task_title": "See past keyword stuffing to the missing core experience",
+    "model": "grok-4.5-hermes-clean",
+    "lane": "hermes",
+    "adapterType": "hermes",
+    "effort": "cli_default",
+    "agentFile": "current",
+    "skills": "none",
+    "judge": "claude-opus",
+    "generationFrame": "single_shot_concat",
+    "ok": true,
+    "error": null,
+    "output": "{\"concerns\":[\"Title/summary claims Senior Data Engineer and expert Airflow/dbt/Snowflake/Spark/Kafka/K8s/MLOps/LLMs, but listed roles are Business Analyst (RetailHub, 2021-present) and Reporting Intern (UniLab, 2020) with only Excel dashboards, SQL extracts from existing tables, and weekly sales decks\u2014no production pipeline ownership\",\"Airflow/dbt limited to following online tutorials; no deployed projects listed\",\"No CV evidence of warehouse ownership, production pipelines, or incident response\"],\"recommendation\":\"reject\",\"verify\":[]}",
+    "model_reported": "grok-4.5",
+    "inputTokens": 587,
+    "outputTokens": 135,
+    "totalTokens": 722,
+    "tokensEstimated": true,
+    "costUsd": null,
+    "agentFileSha256": "fd189e4b279ac47e366984b2ab9f1b8c1b4782cc2433cd91d77ee3c19da0c7bf",
+    "skillsBundleSha256": "none",
+    "suiteSha256": "4a12f7840060d3340e31887045177b943ccfc26aece2989d42f2e6f31a2b2c61",
+    "wallMs": 13410,
+    "stderrTail": "",
+    "promptChars": 2350,
+    "stagedSkills": 0,
+    "deterministicScore": 1.0,
+    "deterministicDetails": [
+      {
+        "check": "json_valid",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {}
+      },
+      {
+        "check": "json_path_in",
+        "ok": true,
+        "weight": 4.0,
+        "spec": {
+          "values": [
+            "reject",
+            "clarify"
+          ],
+          "path": "recommendation"
+        }
+      },
+      {
+        "check": "contains_any",
+        "ok": true,
+        "weight": 3.0,
+        "spec": {
+          "values": [
+            "keyword",
+            "stuff",
+            "no production",
+            "pipeline",
+            "tutorial",
+            "mismatch",
+            "not listed",
+            "core experience",
+            "Airflow",
+            "dbt"
+          ]
+        }
+      }
+    ],
+    "judgeScore": null,
+    "judgeDetail": {
+      "error": "judge: unparseable",
+      "raw": "Not logged in \u00b7 Please run /login",
+      "judgeError": "claude reported error: Not logged in \u00b7 Please run /login"
+    },
+    "quality": 1.0,
+    "qualityPer1kTokens": 1.3850415512465375
+  },
+  {
+    "sample_id": "rep03",
+    "rep": 3,
+    "role": "cv-review",
+    "task_id": "cv-team-metric-attribution",
+    "task_title": "Verify team metrics without rejecting a plausible candidate",
+    "model": "grok-4.5-hermes-clean",
+    "lane": "hermes",
+    "adapterType": "hermes",
+    "effort": "cli_default",
+    "agentFile": "current",
+    "skills": "none",
+    "judge": "claude-opus",
+    "generationFrame": "single_shot_concat",
+    "ok": true,
+    "error": null,
+    "output": "{\"concerns\":[\"CV headline claim 'Drove 45% ARR growth and doubled activation' at ShopStream conflicts with stated scope: built cohort dashboards, wrote experiment readouts, and coordinated two onboarding-copy tests, while 'PM and lifecycle lead owned roadmap and launch decisions'\u2014impact is not clearly attributable to this candidate.\",\"Role history is Product Analyst (ShopStream, 2022-present) and Marketing Analyst (Alto, 2020-2022); no titled Product Manager experience or evidence of owning growth roadmap, prioritization, or launch decisions.\",\"Alto work is limited to lifecycle reporting and campaign QA\u2014no product ownership or growth PM scope shown.\"],\"recommendation\":\"clarify\",\"verify\":[\"Ask candidate to separate their specific contributions from the PM/lifecycle lead on the 45% ARR and doubled-activation outcomes, with metrics they personally influenced vs. squad-level results.\",\"Confirm whether they ever owned roadmap, experiment prioritization, or launch decisions (vs. analysis and coordination only) on the ShopStream growth squad.\",\"Probe for any IC or acting PM ownership of growth initiatives, success metrics, and stakeholder decision rights beyond dashboards, readouts, and coordinating two onboarding-copy tests.\"]}",
+    "model_reported": "grok-4.5",
+    "inputTokens": 577,
+    "outputTokens": 310,
+    "totalTokens": 887,
+    "tokensEstimated": true,
+    "costUsd": null,
+    "agentFileSha256": "fd189e4b279ac47e366984b2ab9f1b8c1b4782cc2433cd91d77ee3c19da0c7bf",
+    "skillsBundleSha256": "none",
+    "suiteSha256": "4a12f7840060d3340e31887045177b943ccfc26aece2989d42f2e6f31a2b2c61",
+    "wallMs": 19749,
+    "stderrTail": "",
+    "promptChars": 2310,
+    "stagedSkills": 0,
+    "deterministicScore": 1.0,
+    "deterministicDetails": [
+      {
+        "check": "json_valid",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {}
+      },
+      {
+        "check": "json_path_in",
+        "ok": true,
+        "weight": 3.0,
+        "spec": {
+          "values": [
+            "clarify",
+            "advance"
+          ],
+          "path": "recommendation"
+        }
+      },
+      {
+        "check": "contains_any",
+        "ok": true,
+        "weight": 3.0,
+        "spec": {
+          "values": [
+            "attribution",
+            "team",
+            "owned",
+            "verify",
+            "45%",
+            "ARR",
+            "activation",
+            "roadmap",
+            "PM",
+            "lifecycle"
+          ]
+        }
+      }
+    ],
+    "judgeScore": null,
+    "judgeDetail": {
+      "error": "judge: unparseable",
+      "raw": "Not logged in \u00b7 Please run /login",
+      "judgeError": "claude reported error: Not logged in \u00b7 Please run /login"
+    },
+    "quality": 1.0,
+    "qualityPer1kTokens": 1.1273957158962795
+  }
+]

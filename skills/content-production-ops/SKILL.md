@@ -25,7 +25,7 @@ Any compound-primitive or pipeline task divides into:
 - **In-repo code slice** — modules, adapters, unit tests, fixtures, sample scripts, typecheck. Needs no runner. Ship it `done` on its own issue.
 - **Operational render verification** — actual captures, sample MP4s, TTS sync, acceptance renders. Runner-gated. Its own issue, `blocked` on the infra issue with the owner named.
 
-If you're assigned a combined issue, split it as your first act and say so. The runner spec of record (THIAAAAA-52, still the gating infra): GHA self-hosted, Xvfb 1920x1080x24, ≥8GB, OpenVoice v2 + WhisperX + ffmpeg + headless Chromium. TODO: confirm runner provisioning status before relying on it — it was blocked at last mining.
+If you're assigned a combined issue, split it as your first act and say so. The render spec of record is Mini-first: Mac Mini local render for production output, with GitHub Actions/self-hosted runner retained as fallback, reproducibility evidence, or CI smoke coverage. Do not rely on GitHub Actions as the primary render lane when the Mini route can execute the same governed source package.
 
 ## Hitlists ("10-video launch hitlist — <Channel>")
 
@@ -50,9 +50,46 @@ Chart-and-narrate renders additionally go through `packages/chart-and-narrate`: 
 - **Stack Lab**: UI walkthroughs are synthesized via the Playwright/Puppeteer bake-off primitive; OAuth/tenant wiring is a board handoff (THIAAAAA "Stack Lab OAuth token mint" pattern).
 - TTS of record: **OpenVoice v2** (XTTS-v2 dropped per tech-stack v3 §2). Stack is sub-only / multi-account constrained (tech stack v2/v3 re-picks) — don't reach for paid APIs the budget guardrail rules out.
 
+## Mac Mini render route
+
+For TSM episode/content renders, especially Stack Lab, treat the local Mac Mini render node as the default production route. GitHub Actions is a fallback/CI evidence lane, not the first place to burn production retries.
+
+- Deck/body render scripts already default to Mini offload through `~/scripts/deck/mini-offload-lib.sh`; use `~/scripts/deck/build-deck.sh` or `~/scripts/deck/build-episode.sh` without setting `MINI_RENDER=0`.
+- One-off ffmpeg, headless-Chrome, Whisper, or content render jobs should create a self-contained job directory with executable `render.sh`, then run `~/scripts/mini-render.sh <jobdir>`.
+- Only run heavy renders on the Studio with `MINI_RENDER=0` when `STUDIO_RENDER_OK=1` is set and the issue comment records why local Studio render was approved.
+- Use GitHub Actions after Mini only when Mini is unavailable, when CI parity is required, or when a platform-specific runner defect is the thing being tested.
+- If GitHub Actions fails from dependency drift, venv permissions, missing packages, or hosted/self-hosted runner state, do not burn retries first. Reuse the same governed source inputs on the Mini route and attach the returned MP4/SRT/cut map/metrics/frame checks.
+- If the Mini route itself fails, record the job directory path and the relevant `~/scripts/logs/mini-render-queue.log` excerpt, then block on the concrete Mini access/runtime cause.
+
 ## Acceptance verdicts
 
 Sample renders (e.g. the 3-chart CC sample) close with an explicit **ContentStrategist no-slop verdict** against the rubric — not just "renders fine". Bake-offs produce a `winner.yaml` and the loser stays as fallback adapter, not deleted.
+
+## Shared visual QA gate (Stack Lab / Cashflow Compass / Vault Cases)
+
+Slide-format and motion rules are shared TSM memory. Channel brand treatment may vary, but a format defect found in one channel applies to all TSM renders unless the board explicitly grants an exception.
+
+- **Ken Burns over still text slides is banned**. Pan/zoom on a static slide does not count as motion, and it is a hard fail when the slide carries readable text.
+- **Slide-only videos are not b-roll**. A beat needs real visual substance: live UI capture, product footage, sourced b-roll, chart/data animation, archive media with rights, or an authored motion graphic with meaningful internal change.
+- **No seam jumps**. Consecutive frames that only change crop/scale/position on a repeated slide template fail visual QA, even if the audio alignment and duration gates pass.
+- **Beat source packs must classify visual type** before render. Duration/headroom checks are necessary but not sufficient; the source package must label still slide, UI capture, b-roll, chart, archive, motion graphic, or mixed media so QA can reject banned combinations early.
+- **Shared gates apply before channel-specific gates**. Stack Lab, Cashflow Compass and Vault Cases all inherit these rules; CC's stricter slide/motion treatment is the baseline, not a one-channel preference.
+- **If a contact sheet suggests no b-roll**, stop and inspect the source pack before rendering again. Do not spend Mini/GitHub cycles lengthening or looping static slides.
+
+## Storage retention is part of production closeout
+
+Render and bench issues must preserve decision evidence, not every regenerated scaffold. Before marking media/bench output done or asking the board to review it:
+
+- Keep final artifacts: MP4s, thumbnails, scripts, manifests, QA reports, cut maps, benchmark `record.json`/summary files, and ledger references.
+- Prune regenerated TSM `work/` folders after promotion/QA.
+- For TSBC sample benches, prune per-sample `.hermes` homes once the sibling `record.json` exists and the issue is no longer active.
+- Use the standard retention path instead of manual one-off deletion:
+
+```bash
+~/scripts/paperclip-retention.sh
+```
+
+If raw bench homes are needed for an active investigation, say so in the issue closeout and keep the issue `in_progress` or explicitly exempt that path in the evidence note.
 
 ## Known failure points
 

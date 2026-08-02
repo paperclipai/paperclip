@@ -1,0 +1,79 @@
+{
+  "role": "engineer",
+  "task_id": "eng-token-normalizer",
+  "task_title": "Implement a null-safe token-cost normalizer",
+  "model_id": "grok-4.5",
+  "model_label": "Grok 4.5",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "ok": true,
+  "error": null,
+  "output": "```python\ndef normalize_usage(raw: dict) -> dict:\n    '''Return {'input': int, 'output': int, 'total': int} where:\n    - input  = (raw['inputTokens'] or 0) + (raw['cacheReadInputTokens'] or 0) + (raw['cacheCreationInputTokens'] or 0)\n    - output = raw['outputTokens'] or 0\n    - total  = input + output\n    Any of those keys may be ABSENT or None. Never raise KeyError or TypeError.\n    Always return ints (never None).'''\n    input_tokens = (raw.get('inputTokens') or 0) + (raw.get('cacheReadInputTokens') or 0) + (raw.get('cacheCreationInputTokens') or 0)\n    output_tokens = raw.get('outputTokens') or 0\n    return {\n        'input': int(input_tokens),\n        'output': int(output_tokens),\n        'total': int(input_tokens + output_tokens),\n    }\n```",
+  "model_reported": "grok-4.5",
+  "inputTokens": 162,
+  "outputTokens": 189,
+  "totalTokens": 351,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "wallMs": 8542,
+  "stderrTail": "",
+  "agentFileSha256": "none",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "b7373c2152d432ffadaa313c61133d110457a1e56402bf122dab21c5460d183f",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/engineer/suite.json",
+  "skipped": false,
+  "skipReason": null,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "contains",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {
+        "value": "def normalize_usage"
+      }
+    },
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {
+        "values": [
+          ".get(",
+          "raw.get"
+        ]
+      }
+    },
+    {
+      "check": "regex",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {
+        "pattern": "or\\s+0"
+      }
+    },
+    {
+      "check": "contains_all",
+      "ok": true,
+      "weight": 1.0,
+      "spec": {
+        "values": [
+          "'input'",
+          "'output'",
+          "'total'"
+        ]
+      }
+    }
+  ],
+  "judgeScore": 1.0,
+  "judgeDetail": {
+    "perCriterion": {
+      "correctness": 1.0
+    },
+    "rationale": "Uses (raw.get(k) or 0) for all fields including both cache fields, sums correctly, total=input+output, and wraps every value in int() \u2014 safe against missing keys and explicit None.",
+    "judgeModel": "opus"
+  },
+  "quality": 1.0,
+  "qualityPer1kTokens": 2.8490028490028494
+}

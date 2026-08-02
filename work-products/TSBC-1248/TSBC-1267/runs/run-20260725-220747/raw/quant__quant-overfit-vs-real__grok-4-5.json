@@ -1,0 +1,90 @@
+{
+  "role": "quant",
+  "task_id": "quant-overfit-vs-real",
+  "task_title": "Real edge vs overfit parameter sweep",
+  "model_id": "grok-4.5",
+  "model_label": "Grok 4.5",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "ok": true,
+  "error": null,
+  "output": "{\"trustAsRealEdge\": false, \"problem\": \"multiple-testing / in-sample overfitting (best-of-400 selected on the same data used to score it)\", \"requiredValidation\": [\"true out-of-sample holdout on unseen periods\", \"walk-forward or rolling re-optimization with embargo\", \"multiple-testing correction or deflated Sharpe / white\u2019s reality check across the 400 trials\", \"stability checks across regimes and nearby parameter neighbors\", \"paper/live forward test before capital\"]}",
+  "model_reported": "grok-4.5",
+  "inputTokens": 152,
+  "outputTokens": 117,
+  "totalTokens": 269,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "wallMs": 8661,
+  "stderrTail": "",
+  "agentFileSha256": "none",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "32b3563885d9e20631634bbef99975027564a4a43c6c29a6e45c153467654e2e",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/quant/suite.json",
+  "skipped": false,
+  "skipReason": null,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "json_valid",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {}
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 5.0,
+      "spec": {
+        "value": false,
+        "path": "trustAsRealEdge"
+      }
+    },
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {
+        "values": [
+          "overfit",
+          "over-fit",
+          "overfitting",
+          "curve fit",
+          "curve-fit",
+          "p-hack",
+          "multiple comparison",
+          "data mining",
+          "data-mining"
+        ]
+      }
+    },
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 1.0,
+      "spec": {
+        "values": [
+          "out-of-sample",
+          "out of sample",
+          "walk-forward",
+          "walk forward",
+          "oos",
+          "holdout",
+          "hold-out",
+          "cross-valid"
+        ]
+      }
+    }
+  ],
+  "judgeScore": 0.9700000000000001,
+  "judgeDetail": {
+    "perCriterion": {
+      "overfit_detection": 0.97
+    },
+    "rationale": "Correctly names best-of-400 in-sample selection as multiple-testing/overfitting and requires genuine OOS/walk-forward plus deflated-Sharpe/reality-check correction, without blaming look-ahead or re-testing on the same window.",
+    "judgeModel": "claude-opus-4-8"
+  },
+  "quality": 0.9850000000000001,
+  "qualityPer1kTokens": 3.6617100371747213
+}

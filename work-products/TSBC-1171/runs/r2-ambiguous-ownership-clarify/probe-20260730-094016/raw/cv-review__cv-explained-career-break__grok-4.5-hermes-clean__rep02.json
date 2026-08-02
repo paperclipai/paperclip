@@ -1,0 +1,74 @@
+{
+  "sample_id": "rep02",
+  "rep": 2,
+  "role": "cv-review",
+  "task_id": "cv-explained-career-break",
+  "task_title": "Advance a strong candidate with an explained break",
+  "model": "grok-4.5-hermes-clean",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "agentFile": "current",
+  "skills": "none",
+  "judge": "claude-opus",
+  "generationFrame": "single_shot_concat",
+  "ok": true,
+  "error": null,
+  "output": "{\"concerns\": [], \"recommendation\": \"advance\", \"timelineNote\": \"Jan 2017\u2013Dec 2019 ArcForge; Jan 2020\u2013Jan 2021 career break (relocation/caregiving, disclosed); Feb 2021\u2013present LedgerCloud. No unexplained gaps; backend tenure clearly exceeds 5+ years with end-to-end ownership at LedgerCloud.\"}",
+  "model_reported": "grok-4.5",
+  "inputTokens": 607,
+  "outputTokens": 73,
+  "totalTokens": 680,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "agentFileSha256": "fd189e4b279ac47e366984b2ab9f1b8c1b4782cc2433cd91d77ee3c19da0c7bf",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "4a12f7840060d3340e31887045177b943ccfc26aece2989d42f2e6f31a2b2c61",
+  "wallMs": 22054,
+  "stderrTail": "",
+  "promptChars": 2430,
+  "stagedSkills": 0,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "json_valid",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {}
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 4.0,
+      "spec": {
+        "value": "advance",
+        "path": "recommendation"
+      }
+    },
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {
+        "values": [
+          "explained",
+          "career break",
+          "relocation",
+          "caregiving",
+          "advance",
+          "service ownership",
+          "5+",
+          "6"
+        ]
+      }
+    }
+  ],
+  "judgeScore": null,
+  "judgeDetail": {
+    "error": "judge: unparseable",
+    "raw": "Not logged in \u00b7 Please run /login",
+    "judgeError": "claude reported error: Not logged in \u00b7 Please run /login"
+  },
+  "quality": 1.0,
+  "qualityPer1kTokens": 1.4705882352941175
+}

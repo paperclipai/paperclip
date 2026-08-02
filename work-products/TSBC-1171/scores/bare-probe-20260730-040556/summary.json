@@ -1,0 +1,61 @@
+{
+  "meta": {
+    "run_id": "probe-20260730-040556",
+    "label": "TSBC-1170 true Hermes bare baseline",
+    "role": "cv-review",
+    "taskIds": [
+      "cv-title-inflation-gap",
+      "cv-unsubstantiated-metrics",
+      "cv-role-mismatch",
+      "cv-clean-calibration",
+      "cv-date-inconsistency",
+      "cv-pii-overshare",
+      "cv-benign-contract-overlap",
+      "cv-explained-career-break",
+      "cv-keyword-stuffed-role-mismatch",
+      "cv-team-metric-attribution"
+    ],
+    "models": [
+      "grok-4.5-hermes-clean"
+    ],
+    "reps": 3,
+    "agentFile": "bare",
+    "skills": "none",
+    "judge": "claude-opus",
+    "effortOverride": "cli_default",
+    "probeFramePolicy": "auto_agentic_antigravity_non_bare_for_book-content-cv",
+    "plannedGenerationMethods": {
+      "grok-4.5-hermes-clean": "single_shot_concat"
+    },
+    "startedAt": "2026-07-30T03:05:56+00:00",
+    "workers": 1,
+    "agentFileSourcePath": "/Users/glad0s/paperclip/benchmark/variants/agentfiles/cv-review.md",
+    "skillsSourcePath": "/Users/glad0s/paperclip/benchmark/variants/skills/cv-review",
+    "agentFileSourceKind": "variants_json",
+    "skillsSourceKind": "variants_json",
+    "agentFileSha256": "none",
+    "skillsBundleSha256": "none",
+    "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/cv-review/suite.json",
+    "suiteSha256": "4a12f7840060d3340e31887045177b943ccfc26aece2989d42f2e6f31a2b2c61",
+    "probeContextSha256": "55302cafd6158dc086dbe70f70b68e1d79352ce3d756e7f30a29074d732d2445",
+    "promptPacketSha256": "6b35df56f07dd0b847d3da27a5699cf01ae1803fe55201f84d13f2f3681a5039",
+    "finishedAt": "2026-07-30T03:20:04+00:00",
+    "elapsedSec": 847.4
+  },
+  "overall": [
+    {
+      "model": "grok-4.5-hermes-clean",
+      "effort": "cli_default",
+      "generationFrame": "single_shot_concat",
+      "tasks": 10,
+      "samples": 30,
+      "okCount": 30,
+      "meanQuality": 0.897420634920635,
+      "minQuality": 0.3333333333333333,
+      "medianOutputTokens": 213.0,
+      "meanOutputTokens": 244.86666666666667,
+      "meanInputTokens": 147.9,
+      "meanQPer1kOut": 4.599560978533446
+    }
+  ]
+}

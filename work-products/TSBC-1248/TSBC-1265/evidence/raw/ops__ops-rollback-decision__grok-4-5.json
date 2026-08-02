@@ -1,0 +1,64 @@
+{
+  "role": "ops",
+  "task_id": "ops-rollback-decision",
+  "task_title": "Roll back vs forward-fix a bad deploy",
+  "model_id": "grok-4.5",
+  "model_label": "Grok 4.5",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "ok": true,
+  "error": null,
+  "output": "{\"action\": \"roll_back\", \"reason\": \"Rollback stops silent data loss in ~30s via blue/green; old release is known-good and schema-compatible. Forward-fix is unwritten (40+ min) and risks the half-applied migration further.\", \"followup\": \"After cutover, halt GC if possible, preserve remaining data, then craft and carefully deploy a complete migration+code fix on a branch before re-releasing.\"}",
+  "model_reported": "grok-4.5",
+  "inputTokens": 288,
+  "outputTokens": 98,
+  "totalTokens": 386,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "wallMs": 9867,
+  "stderrTail": "",
+  "agentFileSha256": "none",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "af81fcc8c8acf9b45aac20aa118d2e0116e4e875fd9b8b4e4f07df614a7bef25",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/ops/suite.json",
+  "skipped": false,
+  "skipReason": null,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "json_valid",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {}
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 5.0,
+      "spec": {
+        "value": "roll_back",
+        "path": "action"
+      }
+    },
+    {
+      "check": "json_path_exists",
+      "ok": true,
+      "weight": 1.0,
+      "spec": {
+        "path": "followup"
+      }
+    }
+  ],
+  "judgeScore": 0.916,
+  "judgeDetail": {
+    "perCriterion": {
+      "decision_correct": 0.98,
+      "followup_quality": 0.82
+    },
+    "rationale": "Correctly chooses roll_back citing the 30s blue/green switch, schema-compat, and the 40+ min migration risk; followup stabilizes and defers a careful full fix but only weakly addresses fixing the half-applied migration and never audits/quantifies the runs already lost.",
+    "judgeModel": "opus"
+  },
+  "quality": 0.958,
+  "qualityPer1kTokens": 2.481865284974093
+}

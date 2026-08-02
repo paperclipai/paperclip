@@ -1,0 +1,64 @@
+{
+  "role": "ledger",
+  "task_id": "ledger-fixed-cost-allocation",
+  "task_title": "Allocate a shared fixed cost by usage",
+  "model_id": "grok-4.5",
+  "model_label": "Grok 4.5",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "ok": true,
+  "error": null,
+  "output": "{\"allocX\": 75, \"allocY\": 225, \"why\": \"Usage-based: X 2000/8000=25%, Y 75% of $300 seat.\"}",
+  "model_reported": "grok-4.5",
+  "inputTokens": 87,
+  "outputTokens": 22,
+  "totalTokens": 109,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "wallMs": 8067,
+  "stderrTail": "",
+  "agentFileSha256": "none",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "22a4d94c78402d54f39f0cd1b4eb6a12005acecfa3e2d429551928eca686300e",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/ledger/suite.json",
+  "skipped": false,
+  "skipReason": null,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "json_valid",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {}
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 4.0,
+      "spec": {
+        "value": 75,
+        "path": "allocX"
+      }
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 4.0,
+      "spec": {
+        "value": 225,
+        "path": "allocY"
+      }
+    }
+  ],
+  "judgeScore": 1.0,
+  "judgeDetail": {
+    "perCriterion": {
+      "correctness": 1.0
+    },
+    "rationale": "Correctly allocates $75/$225 by usage share, sums to exactly 300 with proper X/Y assignment and a compliant why string.",
+    "judgeModel": "opus"
+  },
+  "quality": 1.0,
+  "qualityPer1kTokens": 9.174311926605505
+}

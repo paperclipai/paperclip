@@ -1,0 +1,65 @@
+{
+  "meta": {
+    "run_id": "probe-20260730-094016",
+    "label": "TSBC-1527/1536 resume r2 ambiguous-ownership-clarify",
+    "role": "cv-review",
+    "taskIds": [
+      "cv-title-inflation-gap",
+      "cv-unsubstantiated-metrics",
+      "cv-role-mismatch",
+      "cv-clean-calibration",
+      "cv-date-inconsistency",
+      "cv-pii-overshare",
+      "cv-benign-contract-overlap",
+      "cv-explained-career-break",
+      "cv-keyword-stuffed-role-mismatch",
+      "cv-team-metric-attribution"
+    ],
+    "models": [
+      "grok-4.5-hermes-clean"
+    ],
+    "reps": 3,
+    "agentFile": "current",
+    "skills": "none",
+    "judge": "claude-opus",
+    "effortOverride": "cli_default",
+    "probeFramePolicy": "auto_agentic_antigravity_non_bare_for_book-content-cv",
+    "plannedGenerationMethods": {
+      "grok-4.5-hermes-clean": "single_shot_concat"
+    },
+    "startedAt": "2026-07-30T08:40:16+00:00",
+    "workers": 1,
+    "agentFileSourcePath": "/Users/glad0s/.paperclip/instances/default/projects/e212ce50-b524-408c-b3d4-0c6108d8c2e2/f71e8665-3f38-4920-b777-348ec85b9071/_default/work-products/TSBC-1171/candidates/r2-ambiguous-ownership-clarify.md",
+    "skillsSourcePath": "/Users/glad0s/paperclip/benchmark/variants/skills/cv-review",
+    "agentFileSourceKind": "override",
+    "skillsSourceKind": "variants_json",
+    "agentFileSha256": "fd189e4b279ac47e366984b2ab9f1b8c1b4782cc2433cd91d77ee3c19da0c7bf",
+    "skillsBundleSha256": "none",
+    "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/cv-review/suite.json",
+    "suiteSha256": "4a12f7840060d3340e31887045177b943ccfc26aece2989d42f2e6f31a2b2c61",
+    "resumedAt": "2026-07-30T09:55:15+00:00",
+    "resumeIssue": "TSBC-1536",
+    "resumeNote": "Completed 5 missing rep03 samples after prior partial stop at 25/30",
+    "finishedAt": "2026-07-30T09:55:15+00:00",
+    "elapsedSec": 113.4,
+    "elapsedSecNote": "elapsedSec is resume segment only; original partial wall ~9m before stop",
+    "probeContextSha256": "b24e1f194117c088bc560d31a52722fd67adff2566f29f29954a7927dd61d7f4",
+    "promptPacketSha256": "8069ff0722c0da366b96d62c19da8b367ea4503dd8a08b895e7af48039ef9fa4"
+  },
+  "overall": [
+    {
+      "model": "grok-4.5-hermes-clean",
+      "effort": "cli_default",
+      "generationFrame": "single_shot_concat",
+      "tasks": 10,
+      "samples": 30,
+      "okCount": 30,
+      "meanQuality": 1.0,
+      "minQuality": 1.0,
+      "medianOutputTokens": 128.5,
+      "meanOutputTokens": 154.96666666666667,
+      "meanInputTokens": 557.9,
+      "meanQPer1kOut": 15.61985887097585
+    }
+  ]
+}

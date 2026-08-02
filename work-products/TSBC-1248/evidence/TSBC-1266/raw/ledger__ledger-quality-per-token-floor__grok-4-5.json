@@ -1,0 +1,55 @@
+{
+  "role": "ledger",
+  "task_id": "ledger-quality-per-token-floor",
+  "task_title": "Pick the model on q/1k-out subject to a quality floor",
+  "model_id": "grok-4.5",
+  "model_label": "Grok 4.5",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "ok": true,
+  "error": null,
+  "output": "{\"pick\": \"B\", \"qPer1kPick\": 1.329, \"why\": \"C fails 0.90 floor. Among A/B, B has higher quality per 1k output tokens (1.329 vs 0.404).\"}",
+  "model_reported": "grok-4.5",
+  "inputTokens": 112,
+  "outputTokens": 33,
+  "totalTokens": 145,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "wallMs": 10327,
+  "stderrTail": "",
+  "agentFileSha256": "none",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "22a4d94c78402d54f39f0cd1b4eb6a12005acecfa3e2d429551928eca686300e",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/ledger/suite.json",
+  "skipped": false,
+  "skipReason": null,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "json_valid",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {}
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 5.0,
+      "spec": {
+        "value": "B",
+        "path": "pick"
+      }
+    }
+  ],
+  "judgeScore": 1.0,
+  "judgeDetail": {
+    "perCriterion": {
+      "reasoning": 1.0
+    },
+    "rationale": "Correctly disqualifies C on the 0.90 floor and picks B with accurate qPer1kPick 1.329 and sound justification.",
+    "judgeModel": "opus"
+  },
+  "quality": 1.0,
+  "qualityPer1kTokens": 6.8965517241379315
+}

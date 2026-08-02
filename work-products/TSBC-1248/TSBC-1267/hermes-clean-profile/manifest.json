@@ -1,0 +1,37 @@
+{
+  "builtAt": "2026-07-25T21:06:57+00:00",
+  "issue": "TSBC-1267",
+  "parent": "TSBC-1248",
+  "clonedFrom": "TSBC-1153 hermes-clean-profile-v2 pattern + models_dev_cache seed",
+  "profileRoot": "/Users/glad0s/paperclip/work-products/TSBC-1248/TSBC-1267/hermes-clean-profile",
+  "hermesHome": "/Users/glad0s/paperclip/work-products/TSBC-1248/TSBC-1267/hermes-clean-profile/.hermes",
+  "seedEntries": [
+    ".env",
+    "auth",
+    "auth.json",
+    "config.yaml",
+    "models_dev_cache.json"
+  ],
+  "presentEntries": [
+    ".env",
+    "auth",
+    "auth.json",
+    "config.yaml",
+    "models_dev_cache.json"
+  ],
+  "requiredAbsentBeforeCell": [
+    "SOUL.md",
+    "memories",
+    "skills"
+  ],
+  "note": "models_dev_cache.json required; credential-only home fails with No LLM provider configured",
+  "adapterRequest": {
+    "adapterType": "hermes_local",
+    "model": "grok-4.5",
+    "persistSession": false,
+    "extraArgs": [
+      "--ignore-user-config",
+      "--ignore-rules"
+    ]
+  }
+}

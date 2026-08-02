@@ -1,0 +1,621 @@
+{
+  "issue": "TSBC-1265",
+  "parent": "TSBC-1248",
+  "title": "R1 bare ceo/ops/content \u2014 grok-4.5 hermes_local",
+  "generatedAt": "2026-07-25T21:01:10+00:00",
+  "status": "complete",
+  "controls": {
+    "model_id": "grok-4.5",
+    "model_arg": "grok-4.5",
+    "adapter": "hermes",
+    "adapterType_requested": "hermes_local",
+    "provider_expected": "xai-oauth",
+    "judge": "claude-opus",
+    "rung": 1,
+    "bare": true,
+    "agent_file_sha256": "none",
+    "skills_bundle_sha256": "none",
+    "HERMES_HOME": "/Users/glad0s/paperclip/work-products/TSBC-1248/TSBC-1265/hermes-clean-profile/.hermes",
+    "HERMES_IGNORE_RULES": "1",
+    "hermes_extra_args": [
+      "--ignore-user-config",
+      "--ignore-rules"
+    ],
+    "samples_policy": "full immutable suite (>=10 tasks/cell)",
+    "config_path": "/Users/glad0s/paperclip/work-products/TSBC-1248/TSBC-1265/evidence/config-r1-hermes-grok-4.5.json",
+    "profile_manifest": "/Users/glad0s/paperclip/work-products/TSBC-1248/TSBC-1265/hermes-clean-profile/manifest.json"
+  },
+  "run": {
+    "run_id": "run-20260725-215009",
+    "started_at": "2026-07-25T20:50:09+00:00",
+    "finished_at": "2026-07-25T20:59:06+00:00",
+    "n_runs": 32,
+    "n_fail": 0,
+    "n_skipped": 0,
+    "results_dir": "/Users/glad0s/paperclip/benchmark/results/run-20260725-215009",
+    "child_copy": "/Users/glad0s/paperclip/work-products/TSBC-1248/TSBC-1265/runs/run-20260725-215009"
+  },
+  "suite_sha256": {
+    "ceo": "7b79fdf5d2ce80570fcfa85a1d04cd2c61e7093b8d2d1c735f7c4a07197a28c3",
+    "content": "033a0a832aabf01236564fdbacb17e2fd0b3701f5a3f5242226a5c4149ea7f96",
+    "ops": "af81fcc8c8acf9b45aac20aa118d2e0116e4e875fd9b8b4e4f07df614a7bef25"
+  },
+  "role_summary": {
+    "ceo": {
+      "n_tasks": 11,
+      "n_ok": 11,
+      "mean_quality": 0.9888,
+      "min_quality": 0.975,
+      "max_quality": 1.0,
+      "mean_wall_ms": 9437.1818,
+      "mean_input_tokens": 128.1818,
+      "mean_output_tokens": 50.3636,
+      "suite_sha256": "7b79fdf5d2ce80570fcfa85a1d04cd2c61e7093b8d2d1c735f7c4a07197a28c3",
+      "model_reported": [
+        "grok-4.5"
+      ]
+    },
+    "content": {
+      "n_tasks": 11,
+      "n_ok": 11,
+      "mean_quality": 0.9268,
+      "min_quality": 0.8675,
+      "max_quality": 0.97,
+      "mean_wall_ms": 13085.8182,
+      "mean_input_tokens": 151.3636,
+      "mean_output_tokens": 60.8182,
+      "suite_sha256": "033a0a832aabf01236564fdbacb17e2fd0b3701f5a3f5242226a5c4149ea7f96",
+      "model_reported": [
+        "grok-4.5"
+      ]
+    },
+    "ops": {
+      "n_tasks": 10,
+      "n_ok": 10,
+      "mean_quality": 0.9707,
+      "min_quality": 0.7758,
+      "max_quality": 1.0,
+      "mean_wall_ms": 14586.3,
+      "mean_input_tokens": 234.6,
+      "mean_output_tokens": 107.8,
+      "suite_sha256": "af81fcc8c8acf9b45aac20aa118d2e0116e4e875fd9b8b4e4f07df614a7bef25",
+      "model_reported": [
+        "grok-4.5"
+      ]
+    }
+  },
+  "tasks_by_role": {
+    "ceo": [
+      {
+        "task_id": "ceo-board-ask-concision",
+        "ok": true,
+        "quality": 0.98125,
+        "judgeScore": 0.9624999999999999,
+        "deterministicScore": 1.0,
+        "wallMs": 10870,
+        "inputTokens": 95,
+        "outputTokens": 40,
+        "model_reported": "grok-4.5",
+        "error": null
+      },
+      {
+        "task_id": "ceo-catch-false-success",
+        "ok": true,
+        "quality": 0.99,
+        "judgeScore": 0.98,
+        "deterministicScore": 1.0,
+        "wallMs": 7940,
+        "inputTokens": 118,
+        "outputTokens": 81,
+        "model_reported": "grok-4.5",
+        "error": null
+      },
+      {
+        "task_id": "ceo-delegate-not-escalate",
+        "ok": true,
+        "quality": 0.985,
+        "judgeScore": 0.97,
+        "deterministicScore": 1.0,
+        "wallMs": 7868,
+        "inputTokens": 115,
+        "outputTokens": 35,
+        "model_reported": "grok-4.5",
+        "error": null
+      },
+      {
+        "task_id": "ceo-escalation-boundary",
+        "ok": true,
+        "quality": 1.0,
+        "judgeScore": null,
+        "deterministicScore": 1.0,
+        "wallMs": 6546,
+        "inputTokens": 143,
+        "outputTokens": 12,
+        "model_reported": "grok-4.5",
+        "error": null
+      },
+      {
+        "task_id": "ceo-go-nogo-real-money",
+        "ok": true,
+        "quality": 0.9850000000000001,
+        "judgeScore": 0.9700000000000001,
+        "deterministicScore": 1.0,
+        "wallMs": 8615,
+        "inputTokens": 131,
+        "outputTokens": 79,
+        "model_reported": "grok-4.5",
+        "error": null
+      },
+      {
+        "task_id": "ceo-pii-minimization",
+        "ok": true,
+        "quality": 1.0,
+        "judgeScore": 1.0,
+        "deterministicScore": 1.0,
+        "wallMs": 7090,
+        "inputTokens": 101,
+        "outputTokens": 47,
+        "model_reported": "grok-4.5",
+        "error": null
+      },
+      {
+        "task_id": "ceo-prioritize-revenue",
+        "ok": true,
+        "quality": 0.975,
+        "judgeScore": 0.95,
+        "deterministicScore": 1.0,
+        "wallMs": 23350,
+        "inputTokens": 188,
+        "outputTokens": 42,
+        "model_reported": "grok-4.5",
+        "error": null
+      },
+      {
+        "task_id": "ceo-reject-illegitimate-directive",
+        "ok": true,
+        "quality": 0.9850000000000001,
+        "judgeScore": 0.9700000000000001,
+        "deterministicScore": 1.0,
+        "wallMs": 7502,
+        "inputTokens": 127,
+        "outputTokens": 65,
+        "model_reported": "grok-4.5",
+        "error": null
+      },
+      {
+        "task_id": "ceo-resource-allocation",
+        "ok": true,
+        "quality": 1.0,
+        "judgeScore": null,
+        "deterministicScore": 1.0,
+        "wallMs": 6892,
+        "inputTokens": 144,
+        "outputTokens": 16,
+        "model_reported": "grok-4.5",
+        "error": null
+      },
+      {
+        "task_id": "ceo-scope-discipline",
+        "ok": true,
+        "quality": 0.9749999999999999,
+        "judgeScore": 0.9499999999999998,
+        "deterministicScore": 1.0,
+        "wallMs": 8121,
+        "inputTokens": 116,
+        "outputTokens": 76,
+        "model_reported": "grok-4.5",
+        "error": null
+      },
+      {
+        "task_id": "ceo-unit-economics",
+        "ok": true,
+        "quality": 1.0,
+        "judgeScore": 1.0,
+        "deterministicScore": 1.0,
+        "wallMs": 9015,
+        "inputTokens": 132,
+        "outputTokens": 61,
+        "model_reported": "grok-4.5",
+        "error": null
+      }
+    ],
+    "content": [
+      {
+        "task_id": "content-compliance-no-claims",
+        "ok": true,
+        "quality": 0.96625,
+        "judgeScore": 0.9325,
+        "deterministicScore": 1.0,
+        "wallMs": 8720,
+        "inputTokens": 211,
+        "outputTokens": 64,
+        "model_reported": "grok-4.5",
+        "error": null
+      },
+      {
+        "task_id": "content-constraint-stack",
+        "ok": true,
+        "quality": 0.875,
+        "judgeScore": 0.75,
+        "deterministicScore": 1.0,
+        "wallMs": 11727,
+        "inputTokens": 92,
+        "outputTokens": 42,
+        "model_reported": "grok-4.5",
+        "error": null
+      },
+      {
+        "task_id": "content-cta-char-cap",
+        "ok": true,
+        "quality": 0.9675,
+        "judgeScore": 0.935,
+        "deterministicScore": 1.0,
+        "wallMs": 18860,
+        "inputTokens": 169,
+        "outputTokens": 19,
+        "model_reported": "grok-4.5",
+        "error": null
+      },
+      {
+        "task_id": "content-exact-structure",
+        "ok": true,
+        "quality": 0.8916666666666666,
+        "judgeScore": 0.7833333333333333,
+        "deterministicScore": 1.0,
+        "wallMs": 6558,
+        "inputTokens": 101,
+        "outputTokens": 38,
+        "model_reported": "grok-4.5",
+        "error": null
+      },
+      {
+        "task_id": "content-forbidden-words",
+        "ok": true,
+        "quality": 0.9583333333333333,
+        "judgeScore": 0.9166666666666666,
+        "deterministicScore": 1.0,
+        "wallMs": 9838,
+        "inputTokens": 118,
+        "outputTokens": 87,
+        "model_reported": "grok-4.5",
+        "error": null
+      },
+      {
+        "task_id": "content-headlines-with-rationale",
+        "ok": true,
+        "quality": 0.9625,
+        "judgeScore": 0.925,
+        "deterministicScore": 1.0,
+        "wallMs": 17651,
+        "inputTokens": 206,
+        "outputTokens": 158,
+        "model_reported": "grok-4.5",
+        "error": null
+      },
+      {
+        "task_id": "content-kdp-blurb",
+        "ok": true,
+        "quality": 0.889,
+        "judgeScore": 0.778,
+        "deterministicScore": 1.0,
+        "wallMs": 8333,
+        "inputTokens": 121,
+        "outputTokens": 79,
+        "model_reported": "grok-4.5",
+        "error": null
+      },
+      {
+        "task_id": "content-launch-tweet",
+        "ok": true,
+        "quality": 0.8675,
+        "judgeScore": 0.7350000000000001,
+        "deterministicScore": 1.0,
+        "wallMs": 7590,
+        "inputTokens": 103,
+        "outputTokens": 45,
+        "model_reported": "grok-4.5",
+        "error": null
+      },
+      {
+        "task_id": "content-meta-description-exact-length",
+        "ok": true,
+        "quality": 0.9299999999999999,
+        "judgeScore": 0.86,
+        "deterministicScore": 1.0,
+        "wallMs": 28183,
+        "inputTokens": 165,
+        "outputTokens": 36,
+        "model_reported": "grok-4.5",
+        "error": null
+      },
+      {
+        "task_id": "content-tighten-rewrite",
+        "ok": true,
+        "quality": 0.97,
+        "judgeScore": 0.94,
+        "deterministicScore": 1.0,
+        "wallMs": 11325,
+        "inputTokens": 162,
+        "outputTokens": 46,
+        "model_reported": "grok-4.5",
+        "error": null
+      },
+      {
+        "task_id": "content-tone-shift-rewrite",
+        "ok": true,
+        "quality": 0.9175,
+        "judgeScore": 0.835,
+        "deterministicScore": 1.0,
+        "wallMs": 15159,
+        "inputTokens": 217,
+        "outputTokens": 55,
+        "model_reported": "grok-4.5",
+        "error": null
+      }
+    ],
+    "ops": [
+      {
+        "task_id": "ops-alert-actionable",
+        "ok": true,
+        "quality": 0.98,
+        "judgeScore": 0.96,
+        "deterministicScore": 1.0,
+        "wallMs": 9495,
+        "inputTokens": 289,
+        "outputTokens": 87,
+        "model_reported": "grok-4.5",
+        "error": null
+      },
+      {
+        "task_id": "ops-cascade-rootcause",
+        "ok": true,
+        "quality": 0.9928571428571429,
+        "judgeScore": 0.9857142857142858,
+        "deterministicScore": 1.0,
+        "wallMs": 12309,
+        "inputTokens": 357,
+        "outputTokens": 173,
+        "model_reported": "grok-4.5",
+        "error": null
+      },
+      {
+        "task_id": "ops-diagnose-recovery-loop",
+        "ok": true,
+        "quality": 0.7758333333333334,
+        "judgeScore": 0.9516666666666668,
+        "deterministicScore": 0.6,
+        "wallMs": 40414,
+        "inputTokens": 192,
+        "outputTokens": 234,
+        "model_reported": "grok-4.5",
+        "error": null
+      },
+      {
+        "task_id": "ops-diagnose-restart-race",
+        "ok": true,
+        "quality": 1.0,
+        "judgeScore": 1.0,
+        "deterministicScore": 1.0,
+        "wallMs": 15900,
+        "inputTokens": 237,
+        "outputTokens": 308,
+        "model_reported": "grok-4.5",
+        "error": null
+      },
+      {
+        "task_id": "ops-escalation-decision",
+        "ok": true,
+        "quality": 1.0,
+        "judgeScore": null,
+        "deterministicScore": 1.0,
+        "wallMs": 7640,
+        "inputTokens": 124,
+        "outputTokens": 30,
+        "model_reported": "grok-4.5",
+        "error": null
+      },
+      {
+        "task_id": "ops-failover-routing",
+        "ok": true,
+        "quality": 1.0,
+        "judgeScore": null,
+        "deterministicScore": 1.0,
+        "wallMs": 6525,
+        "inputTokens": 154,
+        "outputTokens": 28,
+        "model_reported": "grok-4.5",
+        "error": null
+      },
+      {
+        "task_id": "ops-incident-triage",
+        "ok": true,
+        "quality": 1.0,
+        "judgeScore": null,
+        "deterministicScore": 1.0,
+        "wallMs": 7811,
+        "inputTokens": 158,
+        "outputTokens": 13,
+        "model_reported": "grok-4.5",
+        "error": null
+      },
+      {
+        "task_id": "ops-pseudo-stop-classify",
+        "ok": true,
+        "quality": 1.0,
+        "judgeScore": null,
+        "deterministicScore": 1.0,
+        "wallMs": 9282,
+        "inputTokens": 176,
+        "outputTokens": 89,
+        "model_reported": "grok-4.5",
+        "error": null
+      },
+      {
+        "task_id": "ops-rollback-decision",
+        "ok": true,
+        "quality": 0.958,
+        "judgeScore": 0.916,
+        "deterministicScore": 1.0,
+        "wallMs": 9867,
+        "inputTokens": 288,
+        "outputTokens": 98,
+        "model_reported": "grok-4.5",
+        "error": null
+      },
+      {
+        "task_id": "ops-runbook-ordering",
+        "ok": true,
+        "quality": 1.0,
+        "judgeScore": null,
+        "deterministicScore": 1.0,
+        "wallMs": 26620,
+        "inputTokens": 371,
+        "outputTokens": 18,
+        "model_reported": "grok-4.5",
+        "error": null
+      }
+    ]
+  },
+  "ledger_rows": [
+    {
+      "test_class": "ceo",
+      "model": "grok-4.5",
+      "model_reported": "grok-4.5",
+      "adapter_type": "hermes",
+      "judge": "claude-opus",
+      "n_tasks": 11,
+      "metrics": {
+        "quality": 0.9888,
+        "qPer1kOut": 28.3696,
+        "meanOutputTokens": 50.3636,
+        "meanInputTokens": 128.1818,
+        "successRate": 1.0
+      },
+      "agent_file_sha256": "none",
+      "skills_bundle_sha256": "none",
+      "suite_sha256": "7b79fdf5d2ce80570fcfa85a1d04cd2c61e7093b8d2d1c735f7c4a07197a28c3",
+      "run_id": "run-20260725-215009",
+      "ts": "2026-07-25T20:59:06+00:00"
+    },
+    {
+      "test_class": "content",
+      "model": "grok-4.5",
+      "model_reported": "grok-4.5",
+      "adapter_type": "hermes",
+      "judge": "claude-opus",
+      "n_tasks": 11,
+      "metrics": {
+        "quality": 0.9268,
+        "qPer1kOut": 20.1416,
+        "meanOutputTokens": 60.8182,
+        "meanInputTokens": 151.3636,
+        "successRate": 1.0
+      },
+      "agent_file_sha256": "none",
+      "skills_bundle_sha256": "none",
+      "suite_sha256": "033a0a832aabf01236564fdbacb17e2fd0b3701f5a3f5242226a5c4149ea7f96",
+      "run_id": "run-20260725-215009",
+      "ts": "2026-07-25T20:59:06+00:00"
+    },
+    {
+      "test_class": "ops",
+      "model": "grok-4.5",
+      "model_reported": "grok-4.5",
+      "adapter_type": "hermes",
+      "judge": "claude-opus",
+      "n_tasks": 10,
+      "metrics": {
+        "quality": 0.9707,
+        "qPer1kOut": 24.6103,
+        "meanOutputTokens": 107.8,
+        "meanInputTokens": 234.6,
+        "successRate": 1.0
+      },
+      "agent_file_sha256": "none",
+      "skills_bundle_sha256": "none",
+      "suite_sha256": "af81fcc8c8acf9b45aac20aa118d2e0116e4e875fd9b8b4e4f07df614a7bef25",
+      "run_id": "run-20260725-215009",
+      "ts": "2026-07-25T20:59:06+00:00"
+    }
+  ],
+  "comparison_vs_prior_grok_bare_claude_opus": {
+    "ceo": {
+      "grok-4.5": 0.9888,
+      "grok-4.5_n": 11,
+      "grok-4.3": null,
+      "grok-4.3_meta": null,
+      "grok-4.20": null,
+      "grok-4.20_meta": null
+    },
+    "ops": {
+      "grok-4.5": 0.9707,
+      "grok-4.5_n": 10,
+      "grok-4.3": 0.9936,
+      "grok-4.3_meta": {
+        "ts": "2026-06-14T15:43:53+00:00",
+        "quality": 0.9936,
+        "n_tasks": 6,
+        "run_id": "run-20260614-160813",
+        "successRate": null
+      },
+      "grok-4.20": 0.9549,
+      "grok-4.20_meta": {
+        "ts": "2026-06-14T15:43:53+00:00",
+        "quality": 0.9549,
+        "n_tasks": 6,
+        "run_id": "run-20260614-160813",
+        "successRate": null
+      }
+    },
+    "content": {
+      "grok-4.5": 0.9268,
+      "grok-4.5_n": 11,
+      "grok-4.3": 0.9219,
+      "grok-4.3_meta": {
+        "ts": "2026-06-14T15:43:53+00:00",
+        "quality": 0.9219,
+        "n_tasks": 6,
+        "run_id": "run-20260614-160813",
+        "successRate": null
+      },
+      "grok-4.20": 0.8878,
+      "grok-4.20_meta": {
+        "ts": "2026-06-14T15:43:53+00:00",
+        "quality": 0.8878,
+        "n_tasks": 6,
+        "run_id": "run-20260614-160813",
+        "successRate": null
+      }
+    }
+  },
+  "verdict_notes": [
+    "ceo: grok-4.5 q=0.9888 (n=11) vs 4.3 q=None (n/a), vs 4.20 q=None (n/a)",
+    "ops: grok-4.5 q=0.9707 (n=10) vs 4.3 q=0.9936 (loses), vs 4.20 q=0.9549 (beats)",
+    "content: grok-4.5 q=0.9268 (n=11) vs 4.3 q=0.9219 (matches), vs 4.20 q=0.8878 (beats)"
+  ],
+  "halt_flags": {
+    "claude_bench_halt": true,
+    "tsbc_power": {
+      "maxWorkers": 1,
+      "runsPerSample": 5,
+      "oneModelPerAdapter": true,
+      "heavyTasksAllowed": false,
+      "mode": "low",
+      "dream": false,
+      "sleep": false,
+      "paused": false,
+      "reason": "ThinkStack Capital sprint 13-23",
+      "updatedAt": "2026-07-25T22:01:05+01:00"
+    }
+  },
+  "auth_quota_failures": 0,
+  "evidence_paths": {
+    "report_md": "/Users/glad0s/paperclip/work-products/TSBC-1248/TSBC-1265/evidence/report.md",
+    "runs_json": "/Users/glad0s/paperclip/work-products/TSBC-1248/TSBC-1265/evidence/runs.json",
+    "recommendations_json": "/Users/glad0s/paperclip/work-products/TSBC-1248/TSBC-1265/evidence/recommendations.json",
+    "raw_dir": "/Users/glad0s/paperclip/work-products/TSBC-1248/TSBC-1265/evidence/raw",
+    "bench_log": "/Users/glad0s/paperclip/work-products/TSBC-1248/TSBC-1265/evidence/bench-ceo-ops-content.log",
+    "child_report_json": "/Users/glad0s/paperclip/work-products/TSBC-1248/TSBC-1265/TSBC-1265-child-report.json",
+    "child_report_md": "/Users/glad0s/paperclip/work-products/TSBC-1248/TSBC-1265/TSBC-1265-child-report.md"
+  }
+}

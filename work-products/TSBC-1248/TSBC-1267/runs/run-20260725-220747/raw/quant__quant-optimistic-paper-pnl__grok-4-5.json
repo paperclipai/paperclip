@@ -1,0 +1,79 @@
+{
+  "role": "quant",
+  "task_id": "quant-optimistic-paper-pnl",
+  "task_title": "Don't treat optimistic paper PnL as real",
+  "model_id": "grok-4.5",
+  "model_label": "Grok 4.5",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "ok": true,
+  "error": null,
+  "output": "{\"trustworthy\": false, \"isUpperBound\": true, \"reason\": \"Paper engine fills full size at exact limit on touch\u2014no depth, queue, partials, slippage, or adverse selection\u2014so 100% fills and +$348 PnL are an optimistic upper bound, not live-realistic.\", \"recommendation\": \"Keep paper-only; add realistic fill model (queue, depth, partials, slippage) before any live capital.\"}",
+  "model_reported": "grok-4.5",
+  "inputTokens": 184,
+  "outputTokens": 92,
+  "totalTokens": 276,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "wallMs": 8668,
+  "stderrTail": "",
+  "agentFileSha256": "none",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "32b3563885d9e20631634bbef99975027564a4a43c6c29a6e45c153467654e2e",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/quant/suite.json",
+  "skipped": false,
+  "skipReason": null,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "json_valid",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {}
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 4.0,
+      "spec": {
+        "value": false,
+        "path": "trustworthy"
+      }
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 3.0,
+      "spec": {
+        "value": true,
+        "path": "isUpperBound"
+      }
+    },
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 1.0,
+      "spec": {
+        "values": [
+          "slippage",
+          "partial",
+          "queue",
+          "depth",
+          "adverse",
+          "fill"
+        ]
+      }
+    }
+  ],
+  "judgeScore": 0.9700000000000001,
+  "judgeDetail": {
+    "perCriterion": {
+      "fill_model_skepticism": 0.97
+    },
+    "rationale": "Correctly identifies the 100%-fill-at-limit pattern as an optimistic upper bound (not real edge), names the missing microstructure factors, and recommends a realistic fill model before any live decision instead of going live.",
+    "judgeModel": "opus"
+  },
+  "quality": 0.9850000000000001,
+  "qualityPer1kTokens": 3.568840579710145
+}

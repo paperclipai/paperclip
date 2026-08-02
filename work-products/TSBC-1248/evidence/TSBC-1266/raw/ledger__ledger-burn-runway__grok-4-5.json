@@ -1,0 +1,64 @@
+{
+  "role": "ledger",
+  "task_id": "ledger-burn-runway",
+  "task_title": "Compute runway and make a spend call",
+  "model_id": "grok-4.5",
+  "model_label": "Grok 4.5",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "ok": true,
+  "error": null,
+  "output": "{\"runwayMonths\": 3, \"decision\": \"reject\", \"why\": \"Adding $900/mo cuts runway from 3 to 1.92 months, below the 4-month no-revenue period.\"}",
+  "model_reported": "grok-4.5",
+  "inputTokens": 107,
+  "outputTokens": 34,
+  "totalTokens": 141,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "wallMs": 10894,
+  "stderrTail": "",
+  "agentFileSha256": "none",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "22a4d94c78402d54f39f0cd1b4eb6a12005acecfa3e2d429551928eca686300e",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/ledger/suite.json",
+  "skipped": false,
+  "skipReason": null,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "json_valid",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {}
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 4.0,
+      "spec": {
+        "value": 3,
+        "path": "runwayMonths"
+      }
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 3.0,
+      "spec": {
+        "value": "reject",
+        "path": "decision"
+      }
+    }
+  ],
+  "judgeScore": 1.0,
+  "judgeDetail": {
+    "perCriterion": {
+      "judgment": 1.0
+    },
+    "rationale": "Correct runway of 3, reject decision, and the why cites the drop to 1.92 months falling below the 4-month no-revenue window.",
+    "judgeModel": "opus"
+  },
+  "quality": 1.0,
+  "qualityPer1kTokens": 7.092198581560284
+}

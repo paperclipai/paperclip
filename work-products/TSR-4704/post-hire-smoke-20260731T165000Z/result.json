@@ -1,0 +1,23 @@
+{
+  "ts": "2026-07-31T16:51:12+00:00",
+  "issue": "TSR-4704",
+  "kind": "post_hire_smoke",
+  "agentId": "e73544da-2ff4-4370-8510-79bcefc24ffd",
+  "agentName": "CV-Review-Grok-R2",
+  "modelRequest": "grok-4.5",
+  "provider": "xai-oauth",
+  "taskId": "cv-clean-calibration",
+  "agentFileSha256": "fd189e4b279ac47e366984b2ab9f1b8c1b4782cc2433cd91d77ee3c19da0c7bf",
+  "skills": [],
+  "rc": 0,
+  "wallSec": 24.7,
+  "outputChars": 45,
+  "jsonParsed": true,
+  "recommendation": "advance",
+  "concernsCount": 0,
+  "rawJson": {
+    "concerns": [],
+    "recommendation": "advance"
+  },
+  "smokePass": true
+}

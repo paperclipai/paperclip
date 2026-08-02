@@ -1,0 +1,42 @@
+[
+  {
+    "slug": "tsk",
+    "exitCode": 0,
+    "final": "primary",
+    "primaryStatus": 202,
+    "secondaryStatus": null,
+    "outboxStatus": 404,
+    "transport": "auto",
+    "stderrHead": "opco-dispatch: 'tsk' outbox route unavailable; degrading to webhook callback path"
+  },
+  {
+    "slug": "tsb",
+    "exitCode": 0,
+    "final": "primary",
+    "primaryStatus": 202,
+    "secondaryStatus": null,
+    "outboxStatus": 404,
+    "transport": "auto",
+    "stderrHead": "opco-dispatch: 'tsb' outbox route unavailable; degrading to webhook callback path"
+  },
+  {
+    "slug": "tsc",
+    "exitCode": 0,
+    "final": "primary",
+    "primaryStatus": 202,
+    "secondaryStatus": null,
+    "outboxStatus": 404,
+    "transport": "auto",
+    "stderrHead": "opco-dispatch: 'tsc' outbox route unavailable; degrading to webhook callback path"
+  },
+  {
+    "slug": "tsr",
+    "exitCode": 0,
+    "final": "primary",
+    "primaryStatus": 202,
+    "secondaryStatus": null,
+    "outboxStatus": 404,
+    "transport": "auto",
+    "stderrHead": "opco-dispatch: 'tsr' outbox route unavailable; degrading to webhook callback path"
+  }
+]

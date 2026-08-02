@@ -1,0 +1,652 @@
+{
+  "issue": "TSBC-1267",
+  "parent": "TSBC-1248",
+  "title": "R1 bare engineer/auditor/quant \u2014 grok-4.5 hermes_local",
+  "generatedAt": "2026-07-25T21:18:42+00:00",
+  "status": "complete",
+  "controls": {
+    "model_id": "grok-4.5",
+    "model_arg": "grok-4.5",
+    "adapter": "hermes",
+    "adapterType_requested": "hermes_local",
+    "provider_expected": "xai-oauth",
+    "judge": "claude-opus",
+    "rung": 1,
+    "bare": true,
+    "agent_file_sha256": "none",
+    "skills_bundle_sha256": "none",
+    "HERMES_HOME": "/Users/glad0s/paperclip/work-products/TSBC-1248/TSBC-1267/hermes-clean-profile/.hermes",
+    "HERMES_IGNORE_RULES": "1",
+    "hermes_extra_args": [
+      "--ignore-user-config",
+      "--ignore-rules"
+    ],
+    "samples_policy": "full immutable suite (>=10 tasks/cell)",
+    "config_path": "/Users/glad0s/paperclip/work-products/TSBC-1248/TSBC-1267/evidence/config-r1-hermes-grok-4.5.json",
+    "profile_manifest": "/Users/glad0s/paperclip/work-products/TSBC-1248/TSBC-1267/hermes-clean-profile/manifest.json"
+  },
+  "run": {
+    "run_id": "run-20260725-220747",
+    "started_at": "2026-07-25T21:07:47+00:00",
+    "finished_at": "2026-07-25T21:18:42+00:00",
+    "n_runs": 36,
+    "n_fail": 0,
+    "n_skipped": 0,
+    "results_dir": "/Users/glad0s/paperclip/benchmark/results/run-20260725-220747",
+    "child_copy": "/Users/glad0s/paperclip/work-products/TSBC-1248/TSBC-1267/runs/run-20260725-220747"
+  },
+  "suite_sha256": {
+    "auditor": "2a04b6f827eda607af0693e4fbbe2fe425b9ea1c5fb0574b0550ceaac640d913",
+    "engineer": "b7373c2152d432ffadaa313c61133d110457a1e56402bf122dab21c5460d183f",
+    "quant": "32b3563885d9e20631634bbef99975027564a4a43c6c29a6e45c153467654e2e"
+  },
+  "role_summary": {
+    "auditor": {
+      "n_tasks": 12,
+      "n_ok": 12,
+      "mean_quality": 0.9821,
+      "min_quality": 0.95,
+      "max_quality": 1.0,
+      "mean_wall_ms": 11319.0833,
+      "mean_input_tokens": 204.0833,
+      "mean_output_tokens": 81.5,
+      "tokens_estimated": true,
+      "suite_sha256": "2a04b6f827eda607af0693e4fbbe2fe425b9ea1c5fb0574b0550ceaac640d913",
+      "model_reported": [
+        "grok-4.5"
+      ],
+      "adapterType": [
+        "hermes"
+      ],
+      "agentFileSha256": [
+        "none"
+      ],
+      "skillsBundleSha256": [
+        "none"
+      ]
+    },
+    "engineer": {
+      "n_tasks": 12,
+      "n_ok": 12,
+      "mean_quality": 0.9584,
+      "min_quality": 0.7971,
+      "max_quality": 1.0,
+      "mean_wall_ms": 16290.5833,
+      "mean_input_tokens": 202.3333,
+      "mean_output_tokens": 176.1667,
+      "tokens_estimated": true,
+      "suite_sha256": "b7373c2152d432ffadaa313c61133d110457a1e56402bf122dab21c5460d183f",
+      "model_reported": [
+        "grok-4.5"
+      ],
+      "adapterType": [
+        "hermes"
+      ],
+      "agentFileSha256": [
+        "none"
+      ],
+      "skillsBundleSha256": [
+        "none"
+      ]
+    },
+    "quant": {
+      "n_tasks": 12,
+      "n_ok": 12,
+      "mean_quality": 0.9904,
+      "min_quality": 0.975,
+      "max_quality": 1.0,
+      "mean_wall_ms": 9570.5,
+      "mean_input_tokens": 163.8333,
+      "mean_output_tokens": 60.0,
+      "tokens_estimated": true,
+      "suite_sha256": "32b3563885d9e20631634bbef99975027564a4a43c6c29a6e45c153467654e2e",
+      "model_reported": [
+        "grok-4.5"
+      ],
+      "adapterType": [
+        "hermes"
+      ],
+      "agentFileSha256": [
+        "none"
+      ],
+      "skillsBundleSha256": [
+        "none"
+      ]
+    }
+  },
+  "tasks_by_role": {
+    "auditor": [
+      {
+        "task_id": "aud-403-vs-409-shape",
+        "ok": true,
+        "quality": 0.9749999999999999,
+        "judgeScore": 0.9499999999999998,
+        "deterministicScore": 1.0,
+        "wallMs": 9868,
+        "inputTokens": 209,
+        "outputTokens": 54,
+        "tokensEstimated": true,
+        "model_reported": "grok-4.5",
+        "error": null
+      },
+      {
+        "task_id": "aud-ac-idempotency-miss",
+        "ok": true,
+        "quality": 0.99,
+        "judgeScore": 0.98,
+        "deterministicScore": 1.0,
+        "wallMs": 8197,
+        "inputTokens": 277,
+        "outputTokens": 133,
+        "tokensEstimated": true,
+        "model_reported": "grok-4.5",
+        "error": null
+      },
+      {
+        "task_id": "aud-disposition-false-success",
+        "ok": true,
+        "quality": 0.99,
+        "judgeScore": 0.98,
+        "deterministicScore": 1.0,
+        "wallMs": 8643,
+        "inputTokens": 187,
+        "outputTokens": 90,
+        "tokensEstimated": true,
+        "model_reported": "grok-4.5",
+        "error": null
+      },
+      {
+        "task_id": "aud-evidence-cited-block",
+        "ok": true,
+        "quality": 0.9749999999999999,
+        "judgeScore": 0.9499999999999998,
+        "deterministicScore": 1.0,
+        "wallMs": 9776,
+        "inputTokens": 202,
+        "outputTokens": 163,
+        "tokensEstimated": true,
+        "model_reported": "grok-4.5",
+        "error": null
+      },
+      {
+        "task_id": "aud-in-review-handoff-legit",
+        "ok": true,
+        "quality": 0.9850000000000001,
+        "judgeScore": 0.9700000000000001,
+        "deterministicScore": 1.0,
+        "wallMs": 7065,
+        "inputTokens": 215,
+        "outputTokens": 72,
+        "tokensEstimated": true,
+        "model_reported": "grok-4.5",
+        "error": null
+      },
+      {
+        "task_id": "aud-legit-pass-with-evidence",
+        "ok": true,
+        "quality": 0.95,
+        "judgeScore": 0.9,
+        "deterministicScore": 1.0,
+        "wallMs": 8742,
+        "inputTokens": 241,
+        "outputTokens": 110,
+        "tokensEstimated": true,
+        "model_reported": "grok-4.5",
+        "error": null
+      },
+      {
+        "task_id": "aud-over-permission-grant",
+        "ok": true,
+        "quality": 0.9749999999999999,
+        "judgeScore": 0.9499999999999998,
+        "deterministicScore": 1.0,
+        "wallMs": 38491,
+        "inputTokens": 202,
+        "outputTokens": 39,
+        "tokensEstimated": true,
+        "model_reported": "grok-4.5",
+        "error": null
+      },
+      {
+        "task_id": "aud-portfolio-token-injection",
+        "ok": true,
+        "quality": 0.9850000000000001,
+        "judgeScore": 0.9700000000000001,
+        "deterministicScore": 1.0,
+        "wallMs": 9155,
+        "inputTokens": 210,
+        "outputTokens": 63,
+        "tokensEstimated": true,
+        "model_reported": "grok-4.5",
+        "error": null
+      },
+      {
+        "task_id": "aud-rubber-stamp-resist",
+        "ok": true,
+        "quality": 0.9749999999999999,
+        "judgeScore": 0.9499999999999998,
+        "deterministicScore": 1.0,
+        "wallMs": 10797,
+        "inputTokens": 189,
+        "outputTokens": 77,
+        "tokensEstimated": true,
+        "model_reported": "grok-4.5",
+        "error": null
+      },
+      {
+        "task_id": "aud-scope-creep-extra-file",
+        "ok": true,
+        "quality": 1.0,
+        "judgeScore": 1.0,
+        "deterministicScore": 1.0,
+        "wallMs": 7552,
+        "inputTokens": 200,
+        "outputTokens": 66,
+        "tokensEstimated": true,
+        "model_reported": "grok-4.5",
+        "error": null
+      },
+      {
+        "task_id": "aud-secret-in-log-pr",
+        "ok": true,
+        "quality": 0.9850000000000001,
+        "judgeScore": 0.9700000000000001,
+        "deterministicScore": 1.0,
+        "wallMs": 9232,
+        "inputTokens": 154,
+        "outputTokens": 54,
+        "tokensEstimated": true,
+        "model_reported": "grok-4.5",
+        "error": null
+      },
+      {
+        "task_id": "aud-spec-shape-verify",
+        "ok": true,
+        "quality": 1.0,
+        "judgeScore": 1.0,
+        "deterministicScore": 1.0,
+        "wallMs": 8311,
+        "inputTokens": 163,
+        "outputTokens": 57,
+        "tokensEstimated": true,
+        "model_reported": "grok-4.5",
+        "error": null
+      }
+    ],
+    "engineer": [
+      {
+        "task_id": "eng-concurrency-race",
+        "ok": true,
+        "quality": 0.95125,
+        "judgeScore": 0.9025000000000001,
+        "deterministicScore": 1.0,
+        "wallMs": 23292,
+        "inputTokens": 226,
+        "outputTokens": 151,
+        "tokensEstimated": true,
+        "model_reported": "grok-4.5",
+        "error": null
+      },
+      {
+        "task_id": "eng-failure-classify",
+        "ok": true,
+        "quality": 1.0,
+        "judgeScore": null,
+        "deterministicScore": 1.0,
+        "wallMs": 9415,
+        "inputTokens": 261,
+        "outputTokens": 55,
+        "tokensEstimated": true,
+        "model_reported": "grok-4.5",
+        "error": null
+      },
+      {
+        "task_id": "eng-flaky-test-diagnose",
+        "ok": true,
+        "quality": 0.975,
+        "judgeScore": 0.95,
+        "deterministicScore": 1.0,
+        "wallMs": 16905,
+        "inputTokens": 223,
+        "outputTokens": 184,
+        "tokensEstimated": true,
+        "model_reported": "grok-4.5",
+        "error": null
+      },
+      {
+        "task_id": "eng-idempotency-bug",
+        "ok": true,
+        "quality": 0.975,
+        "judgeScore": 0.95,
+        "deterministicScore": 1.0,
+        "wallMs": 13151,
+        "inputTokens": 233,
+        "outputTokens": 170,
+        "tokensEstimated": true,
+        "model_reported": "grok-4.5",
+        "error": null
+      },
+      {
+        "task_id": "eng-nplus1-fix",
+        "ok": true,
+        "quality": 0.98875,
+        "judgeScore": 0.9775,
+        "deterministicScore": 1.0,
+        "wallMs": 11835,
+        "inputTokens": 168,
+        "outputTokens": 253,
+        "tokensEstimated": true,
+        "model_reported": "grok-4.5",
+        "error": null
+      },
+      {
+        "task_id": "eng-prefix-router",
+        "ok": true,
+        "quality": 1.0,
+        "judgeScore": 1.0,
+        "deterministicScore": 1.0,
+        "wallMs": 10364,
+        "inputTokens": 142,
+        "outputTokens": 149,
+        "tokensEstimated": true,
+        "model_reported": "grok-4.5",
+        "error": null
+      },
+      {
+        "task_id": "eng-scorecard-sql-bug",
+        "ok": true,
+        "quality": 0.98875,
+        "judgeScore": 0.9775,
+        "deterministicScore": 1.0,
+        "wallMs": 10260,
+        "inputTokens": 178,
+        "outputTokens": 158,
+        "tokensEstimated": true,
+        "model_reported": "grok-4.5",
+        "error": null
+      },
+      {
+        "task_id": "eng-sql-injection",
+        "ok": true,
+        "quality": 0.975,
+        "judgeScore": 0.95,
+        "deterministicScore": 1.0,
+        "wallMs": 14229,
+        "inputTokens": 178,
+        "outputTokens": 165,
+        "tokensEstimated": true,
+        "model_reported": "grok-4.5",
+        "error": null
+      },
+      {
+        "task_id": "eng-stale-reap-default-bug",
+        "ok": true,
+        "quality": 0.7970833333333334,
+        "judgeScore": 0.9275,
+        "deterministicScore": 0.6666666666666666,
+        "wallMs": 20218,
+        "inputTokens": 203,
+        "outputTokens": 128,
+        "tokensEstimated": true,
+        "model_reported": "grok-4.5",
+        "error": null
+      },
+      {
+        "task_id": "eng-timezone-offbyone",
+        "ok": true,
+        "quality": 0.98875,
+        "judgeScore": 0.9775,
+        "deterministicScore": 1.0,
+        "wallMs": 24495,
+        "inputTokens": 244,
+        "outputTokens": 208,
+        "tokensEstimated": true,
+        "model_reported": "grok-4.5",
+        "error": null
+      },
+      {
+        "task_id": "eng-token-normalizer",
+        "ok": true,
+        "quality": 1.0,
+        "judgeScore": 1.0,
+        "deterministicScore": 1.0,
+        "wallMs": 8542,
+        "inputTokens": 162,
+        "outputTokens": 189,
+        "tokensEstimated": true,
+        "model_reported": "grok-4.5",
+        "error": null
+      },
+      {
+        "task_id": "eng-unsafe-migration",
+        "ok": true,
+        "quality": 0.8610714285714285,
+        "judgeScore": 0.865,
+        "deterministicScore": 0.8571428571428571,
+        "wallMs": 32781,
+        "inputTokens": 210,
+        "outputTokens": 304,
+        "tokensEstimated": true,
+        "model_reported": "grok-4.5",
+        "error": null
+      }
+    ],
+    "quant": [
+      {
+        "task_id": "quant-fee-aware-edge",
+        "ok": true,
+        "quality": 1.0,
+        "judgeScore": 1.0,
+        "deterministicScore": 1.0,
+        "wallMs": 7072,
+        "inputTokens": 146,
+        "outputTokens": 16,
+        "tokensEstimated": true,
+        "model_reported": "grok-4.5",
+        "error": null
+      },
+      {
+        "task_id": "quant-killswitch-drawdown",
+        "ok": true,
+        "quality": 1.0,
+        "judgeScore": 1.0,
+        "deterministicScore": 1.0,
+        "wallMs": 10323,
+        "inputTokens": 140,
+        "outputTokens": 19,
+        "tokensEstimated": true,
+        "model_reported": "grok-4.5",
+        "error": null
+      },
+      {
+        "task_id": "quant-kraken-live-nogo",
+        "ok": true,
+        "quality": 0.9850000000000001,
+        "judgeScore": 0.9700000000000001,
+        "deterministicScore": 1.0,
+        "wallMs": 7861,
+        "inputTokens": 148,
+        "outputTokens": 82,
+        "tokensEstimated": true,
+        "model_reported": "grok-4.5",
+        "error": null
+      },
+      {
+        "task_id": "quant-lookahead-backtest",
+        "ok": true,
+        "quality": 0.9850000000000001,
+        "judgeScore": 0.9700000000000001,
+        "deterministicScore": 1.0,
+        "wallMs": 12382,
+        "inputTokens": 165,
+        "outputTokens": 71,
+        "tokensEstimated": true,
+        "model_reported": "grok-4.5",
+        "error": null
+      },
+      {
+        "task_id": "quant-optimistic-paper-pnl",
+        "ok": true,
+        "quality": 0.9850000000000001,
+        "judgeScore": 0.9700000000000001,
+        "deterministicScore": 1.0,
+        "wallMs": 8668,
+        "inputTokens": 184,
+        "outputTokens": 92,
+        "tokensEstimated": true,
+        "model_reported": "grok-4.5",
+        "error": null
+      },
+      {
+        "task_id": "quant-overfit-vs-real",
+        "ok": true,
+        "quality": 0.9850000000000001,
+        "judgeScore": 0.9700000000000001,
+        "deterministicScore": 1.0,
+        "wallMs": 8661,
+        "inputTokens": 152,
+        "outputTokens": 117,
+        "tokensEstimated": true,
+        "model_reported": "grok-4.5",
+        "error": null
+      },
+      {
+        "task_id": "quant-paper-vs-realistic-gap",
+        "ok": true,
+        "quality": 1.0,
+        "judgeScore": 1.0,
+        "deterministicScore": 1.0,
+        "wallMs": 7184,
+        "inputTokens": 134,
+        "outputTokens": 27,
+        "tokensEstimated": true,
+        "model_reported": "grok-4.5",
+        "error": null
+      },
+      {
+        "task_id": "quant-position-size-kelly",
+        "ok": true,
+        "quality": 1.0,
+        "judgeScore": 1.0,
+        "deterministicScore": 1.0,
+        "wallMs": 13381,
+        "inputTokens": 239,
+        "outputTokens": 29,
+        "tokensEstimated": true,
+        "model_reported": "grok-4.5",
+        "error": null
+      },
+      {
+        "task_id": "quant-prelive-checklist",
+        "ok": true,
+        "quality": 1.0,
+        "judgeScore": 1.0,
+        "deterministicScore": 1.0,
+        "wallMs": 6689,
+        "inputTokens": 164,
+        "outputTokens": 16,
+        "tokensEstimated": true,
+        "model_reported": "grok-4.5",
+        "error": null
+      },
+      {
+        "task_id": "quant-signal-vs-noise",
+        "ok": true,
+        "quality": 0.975,
+        "judgeScore": 0.95,
+        "deterministicScore": 1.0,
+        "wallMs": 8790,
+        "inputTokens": 197,
+        "outputTokens": 59,
+        "tokensEstimated": true,
+        "model_reported": "grok-4.5",
+        "error": null
+      },
+      {
+        "task_id": "quant-survivorship-bias",
+        "ok": true,
+        "quality": 0.9850000000000001,
+        "judgeScore": 0.9700000000000001,
+        "deterministicScore": 1.0,
+        "wallMs": 12393,
+        "inputTokens": 142,
+        "outputTokens": 83,
+        "tokensEstimated": true,
+        "model_reported": "grok-4.5",
+        "error": null
+      },
+      {
+        "task_id": "quant-too-few-trades",
+        "ok": true,
+        "quality": 0.9850000000000001,
+        "judgeScore": 0.9700000000000001,
+        "deterministicScore": 1.0,
+        "wallMs": 11442,
+        "inputTokens": 155,
+        "outputTokens": 109,
+        "tokensEstimated": true,
+        "model_reported": "grok-4.5",
+        "error": null
+      }
+    ]
+  },
+  "comparison_vs_prior_bare_grok_judge_claude_opus": {
+    "auditor": {
+      "grok_4_5": 0.9821,
+      "grok_4_3": 0.9783,
+      "grok_4_20": 0.9533,
+      "note": "grok-4.5 q=0.9821 (n=12); vs 4.3 q=0.9783 (matches; prior n=3); vs 4.20 q=0.9533 (beats; prior n=3)",
+      "prior_caveat": "Prior 4.3/4.20 cells on these roles used smaller n and may predate full suite growth; treat as directional only."
+    },
+    "engineer": {
+      "grok_4_5": 0.9584,
+      "grok_4_3": 0.9839,
+      "grok_4_20": 0.9793,
+      "note": "grok-4.5 q=0.9584 (n=12); vs 4.3 q=0.9839 (loses; prior n=7); vs 4.20 q=0.9793 (loses; prior n=7)",
+      "prior_caveat": "Prior 4.3/4.20 cells on these roles used smaller n and may predate full suite growth; treat as directional only."
+    },
+    "quant": {
+      "grok_4_5": 0.9904,
+      "grok_4_3": 0.9817,
+      "grok_4_20": 0.9817,
+      "note": "grok-4.5 q=0.9904 (n=12); vs 4.3 q=0.9817 (matches; prior n=3); vs 4.20 q=0.9817 (matches; prior n=3)",
+      "prior_caveat": "Prior 4.3/4.20 cells on these roles used smaller n and may predate full suite growth; treat as directional only."
+    }
+  },
+  "ledger": {
+    "appended": true,
+    "kind": "model_eval",
+    "rows": [
+      {
+        "test_class": "auditor",
+        "n_tasks": 12,
+        "quality": 0.9821,
+        "successRate": 1.0,
+        "run_id": "run-20260725-220747"
+      },
+      {
+        "test_class": "engineer",
+        "n_tasks": 12,
+        "quality": 0.9584,
+        "successRate": 1.0,
+        "run_id": "run-20260725-220747"
+      },
+      {
+        "test_class": "quant",
+        "n_tasks": 12,
+        "quality": 0.9904,
+        "successRate": 1.0,
+        "run_id": "run-20260725-220747"
+      }
+    ]
+  },
+  "auth_quota_failures": 0,
+  "notes": [
+    "Full immutable suites used (engineer=12, auditor=12, quant=12); meets n>=10 samples/cell.",
+    "No Grok 403/quota/auth failures.",
+    "Token counts flagged tokensEstimated=true on cells (session export fallback); quality/success unaffected.",
+    "Bench auto-appended 3 bare model_eval ledger rows; manual re-record duplicate removed (backup .bak-tsbc-1267-dedupe).",
+    "No paperclip suite; no rung 2-5.",
+    "No canonical TSKB delta; process note stays in this child report only."
+  ]
+}

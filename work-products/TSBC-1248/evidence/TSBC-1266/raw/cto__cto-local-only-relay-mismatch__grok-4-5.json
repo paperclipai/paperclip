@@ -1,0 +1,73 @@
+{
+  "role": "cto",
+  "task_id": "cto-local-only-relay-mismatch",
+  "task_title": "Catch the local-only vs cloud-relay architecture mismatch",
+  "model_id": "grok-4.5",
+  "model_label": "Grok 4.5",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "ok": true,
+  "error": null,
+  "output": "{\"viable\": false, \"flaw\": \"Vercel runs in the cloud and cannot reach local-only 127.0.0.1:3100; no public URL or tunnel exists for fetch().\", \"betterPath\": \"Keep the backup leg inside the local instance (local cron/worker or in-process retry) that can hit 127.0.0.1 directly.\"}",
+  "model_reported": "grok-4.5",
+  "inputTokens": 197,
+  "outputTokens": 69,
+  "totalTokens": 266,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "wallMs": 10433,
+  "stderrTail": "",
+  "agentFileSha256": "none",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "9178417ea7411729ec604cd6f0f72637a785d4d0f99ddd564fdfd0d4d603c31d",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/cto/suite.json",
+  "skipped": false,
+  "skipReason": null,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "json_valid",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {}
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 5.0,
+      "spec": {
+        "value": false,
+        "path": "viable"
+      }
+    },
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {
+        "values": [
+          "127.0.0.1",
+          "loopback",
+          "localhost",
+          "local-only",
+          "local only",
+          "no public",
+          "not reachable",
+          "unreachable"
+        ]
+      }
+    }
+  ],
+  "judgeScore": 0.9,
+  "judgeDetail": {
+    "perCriterion": {
+      "correctness": 0.9,
+      "specificity": 0.9
+    },
+    "rationale": "Correctly rules it non-viable, names the cloud-cannot-reach-loopback mechanism, and gives a valid intra-instance betterPath, though it doesn't mention the alternative tunnel path or bearer detail.",
+    "judgeModel": "opus"
+  },
+  "quality": 0.95,
+  "qualityPer1kTokens": 3.571428571428571
+}

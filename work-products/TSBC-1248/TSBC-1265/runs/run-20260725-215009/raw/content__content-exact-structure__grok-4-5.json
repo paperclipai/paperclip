@@ -1,0 +1,65 @@
+{
+  "role": "content",
+  "task_id": "content-exact-structure",
+  "task_title": "Exact structure: 3 lines, each a complete sentence under 12 words",
+  "model_id": "grok-4.5",
+  "model_label": "Grok 4.5",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "ok": true,
+  "error": null,
+  "output": "Cloud analytics leak data and lock you into vendors.\nTally runs self-hosted analytics you fully control.\nKeep insights private, portable, and free forever.",
+  "model_reported": "grok-4.5",
+  "inputTokens": 101,
+  "outputTokens": 38,
+  "totalTokens": 139,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "wallMs": 6558,
+  "stderrTail": "",
+  "agentFileSha256": "none",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "033a0a832aabf01236564fdbacb17e2fd0b3701f5a3f5242226a5c4149ea7f96",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/content/suite.json",
+  "skipped": false,
+  "skipReason": null,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "regex",
+      "ok": true,
+      "weight": 4.0,
+      "spec": {
+        "pattern": "^[^\\n]+\\.\\s*\\n[^\\n]+\\.\\s*\\n[^\\n]+\\.\\s*$"
+      }
+    },
+    {
+      "check": "not_contains",
+      "ok": true,
+      "weight": 1.0,
+      "spec": {
+        "value": "1."
+      }
+    },
+    {
+      "check": "not_regex",
+      "ok": true,
+      "weight": 1.0,
+      "spec": {
+        "pattern": "\\n\\s*\\n"
+      }
+    }
+  ],
+  "judgeScore": 0.7833333333333333,
+  "judgeDetail": {
+    "perCriterion": {
+      "structure_fidelity": 0.75,
+      "quality": 0.85
+    },
+    "rationale": "Line 3 ('Keep insights private, portable, and free forever.') is a benefit but reads as an imperative rather than a payoff statement and lacks a subject, weakening role fidelity, though all three lines are well under 12 words and roles are otherwise correct.",
+    "judgeModel": "opus"
+  },
+  "quality": 0.8916666666666666,
+  "qualityPer1kTokens": 6.414868105515587
+}

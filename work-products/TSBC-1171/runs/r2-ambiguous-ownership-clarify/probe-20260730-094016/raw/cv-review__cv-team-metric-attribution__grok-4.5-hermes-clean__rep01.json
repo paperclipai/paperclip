@@ -1,0 +1,79 @@
+{
+  "sample_id": "rep01",
+  "rep": 1,
+  "role": "cv-review",
+  "task_id": "cv-team-metric-attribution",
+  "task_title": "Verify team metrics without rejecting a plausible candidate",
+  "model": "grok-4.5-hermes-clean",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "agentFile": "current",
+  "skills": "none",
+  "judge": "claude-opus",
+  "generationFrame": "single_shot_concat",
+  "ok": true,
+  "error": null,
+  "output": "{\"concerns\":[\"Product Analyst at ShopStream (2022-present), not PM: CV states PM and lifecycle lead owned roadmap and launch decisions while candidate supported the growth squad.\",\"Claim 'Drove 45% ARR growth and doubled activation' is not backed by listed work (cohort dashboards, experiment readouts, coordinated two onboarding-copy tests) and conflicts with others owning roadmap/launch.\",\"No CV evidence of roadmap ownership, prioritization, or launch decisions expected for Product Manager, Growth.\",\"Prior role Marketing Analyst at Alto (2020-2022) is lifecycle reporting and campaign QA only\u2014analyst track, not PM.\"],\"recommendation\":\"clarify\",\"verify\":[\"Separate personal contribution from squad outcomes for the 45% ARR and doubled-activation claims; request experiment docs or readout ownership evidence.\",\"Confirm whether candidate ever owned roadmap items, prioritization, or launch decisions versus analysis and test coordination only.\",\"Clarify scope of coordinating two onboarding-copy tests: hypothesis ownership, decision rights, and shipping authority versus execution support.\"]}",
+  "model_reported": "grok-4.5",
+  "inputTokens": 577,
+  "outputTokens": 274,
+  "totalTokens": 851,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "agentFileSha256": "fd189e4b279ac47e366984b2ab9f1b8c1b4782cc2433cd91d77ee3c19da0c7bf",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "4a12f7840060d3340e31887045177b943ccfc26aece2989d42f2e6f31a2b2c61",
+  "wallMs": 28193,
+  "stderrTail": "",
+  "promptChars": 2310,
+  "stagedSkills": 0,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "json_valid",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {}
+    },
+    {
+      "check": "json_path_in",
+      "ok": true,
+      "weight": 3.0,
+      "spec": {
+        "values": [
+          "clarify",
+          "advance"
+        ],
+        "path": "recommendation"
+      }
+    },
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 3.0,
+      "spec": {
+        "values": [
+          "attribution",
+          "team",
+          "owned",
+          "verify",
+          "45%",
+          "ARR",
+          "activation",
+          "roadmap",
+          "PM",
+          "lifecycle"
+        ]
+      }
+    }
+  ],
+  "judgeScore": null,
+  "judgeDetail": {
+    "error": "judge: unparseable",
+    "raw": "Not logged in \u00b7 Please run /login",
+    "judgeError": "claude reported error: Not logged in \u00b7 Please run /login"
+  },
+  "quality": 1.0,
+  "qualityPer1kTokens": 1.1750881316098707
+}

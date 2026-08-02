@@ -1,0 +1,77 @@
+{
+  "role": "auditor",
+  "task_id": "aud-spec-shape-verify",
+  "task_title": "Verify a deliverable matches the exact required schema shape",
+  "model_id": "grok-4.5",
+  "model_label": "Grok 4.5",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "ok": true,
+  "error": null,
+  "output": "{\"verdict\":\"block\",\"violations\":[\"enabled: must be boolean, got string \\\"true\\\"\",\"retries: must be integer in 0-5, got 8\",\"tags: must be array of strings, got string \\\"prod\\\"\",\"owner: disallowed top-level key\"],\"violationCount\":4}",
+  "model_reported": "grok-4.5",
+  "inputTokens": 163,
+  "outputTokens": 57,
+  "totalTokens": 220,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "wallMs": 8311,
+  "stderrTail": "",
+  "agentFileSha256": "none",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "2a04b6f827eda607af0693e4fbbe2fe425b9ea1c5fb0574b0550ceaac640d913",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/auditor/suite.json",
+  "skipped": false,
+  "skipReason": null,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "json_valid",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {}
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 4.0,
+      "spec": {
+        "value": "block",
+        "path": "verdict"
+      }
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 4.0,
+      "spec": {
+        "value": 4,
+        "path": "violationCount"
+      }
+    },
+    {
+      "check": "contains_all",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {
+        "values": [
+          "enabled",
+          "retries",
+          "tags",
+          "owner"
+        ]
+      }
+    }
+  ],
+  "judgeScore": 1.0,
+  "judgeDetail": {
+    "perCriterion": {
+      "shape_rigor": 1.0
+    },
+    "rationale": "Blocks with exactly the four required violations (string enabled, retries>5, string tags, extra owner), violationCount 4, no invented violations.",
+    "judgeModel": "opus"
+  },
+  "quality": 1.0,
+  "qualityPer1kTokens": 4.545454545454546
+}

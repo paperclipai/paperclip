@@ -1,0 +1,2496 @@
+[
+  {
+    "role": "cto",
+    "task_id": "cto-build-vs-buy-judge",
+    "task_title": "Build vs buy on auth \u2014 pick the reversible path",
+    "model_id": "grok-4.5",
+    "model_label": "Grok 4.5",
+    "lane": "hermes",
+    "adapterType": "hermes",
+    "effort": "cli_default",
+    "ok": true,
+    "error": null,
+    "output": "{\"decision\": \"buy\", \"reason\": \"Auth is commodity and security-critical, not a differentiator. Buy ships faster, offloads CVEs, and beats DIY total cost/risk. Control and learning don't justify delay or breach exposure.\", \"hedge\": \"Thin adapter over Vercel Marketplace auth; swap by reimplementing adapter to Auth.js/Clerk/OIDC without rewriting app code.\"}",
+    "model_reported": "grok-4.5",
+    "inputTokens": 249,
+    "outputTokens": 89,
+    "totalTokens": 338,
+    "tokensEstimated": true,
+    "costUsd": null,
+    "wallMs": 14344,
+    "stderrTail": "",
+    "agentFileSha256": "none",
+    "skillsBundleSha256": "none",
+    "suiteSha256": "9178417ea7411729ec604cd6f0f72637a785d4d0f99ddd564fdfd0d4d603c31d",
+    "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/cto/suite.json",
+    "skipped": false,
+    "skipReason": null,
+    "deterministicScore": 1.0,
+    "deterministicDetails": [
+      {
+        "check": "json_valid",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {}
+      },
+      {
+        "check": "json_path_equals",
+        "ok": true,
+        "weight": 5.0,
+        "spec": {
+          "value": "buy",
+          "path": "decision"
+        }
+      },
+      {
+        "check": "contains_any",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {
+          "values": [
+            "adapter",
+            "abstraction",
+            "swap",
+            "lock-in",
+            "lock in",
+            "interface",
+            "wrapper",
+            "reversible"
+          ]
+        }
+      }
+    ],
+    "judgeScore": 0.95,
+    "judgeDetail": {
+      "perCriterion": {
+        "judgment": 0.95,
+        "reasoning": 0.95
+      },
+      "rationale": "Correct BUY call with a concrete named swap path (adapter reimplemented to Auth.js/Clerk/OIDC) and a direct rebuttal that control/learning don't justify breach exposure, though 'total cost/risk' compresses the unbounded-CVE-liability argument slightly.",
+      "judgeModel": "opus"
+    },
+    "quality": 0.975,
+    "qualityPer1kTokens": 2.884615384615384
+  },
+  {
+    "role": "cto",
+    "task_id": "cto-code-review-security-bug",
+    "task_title": "Catch the broken-auth bug in a permission-check diff",
+    "model_id": "grok-4.5",
+    "model_label": "Grok 4.5",
+    "lane": "hermes",
+    "adapterType": "hermes",
+    "effort": "cli_default",
+    "ok": true,
+    "error": null,
+    "output": "**Flaw:** Missing authorization \u2014 grant existence-only check (no permissionKey or label-scope validation).\n\n**Escalation:** Any same-company grant (e.g. read-only or unrelated labels) lets the gate-keeper write the issue, bypassing label-scoped `tasks:gate_keeper_write` and enabling cross-label issue mutation.\n\n**Fix:**\n```js\nfunction canGateKeeperWrite(actor, issue, grant) {\n  if (actor.companyId !== issue.companyId) return false;\n  if (!grant || grant.permissionKey !== 'tasks:gate_keeper_write') return false;\n  const issueLabels = new Set(issue.labels ?? []);\n  return (grant.labels ?? []).some(l => issueLabels.has(l));\n}\n```",
+    "model_reported": "grok-4.5",
+    "inputTokens": 211,
+    "outputTokens": 158,
+    "totalTokens": 369,
+    "tokensEstimated": true,
+    "costUsd": null,
+    "wallMs": 10801,
+    "stderrTail": "",
+    "agentFileSha256": "none",
+    "skillsBundleSha256": "none",
+    "suiteSha256": "9178417ea7411729ec604cd6f0f72637a785d4d0f99ddd564fdfd0d4d603c31d",
+    "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/cto/suite.json",
+    "skipped": false,
+    "skipReason": null,
+    "deterministicScore": 1.0,
+    "deterministicDetails": [
+      {
+        "check": "contains_any",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {
+          "values": [
+            "permissionKey",
+            "permission key",
+            "tasks:gate_keeper_write"
+          ]
+        }
+      },
+      {
+        "check": "contains_any",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {
+          "values": [
+            "label",
+            "binding",
+            "scope binding",
+            "label-scoped",
+            "label overlap"
+          ]
+        }
+      },
+      {
+        "check": "contains_any",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {
+          "values": [
+            "privilege",
+            "escalation",
+            "any grant",
+            "any issue",
+            "unscoped",
+            "over-broad"
+          ]
+        }
+      },
+      {
+        "check": "max_words",
+        "ok": true,
+        "weight": 1.0,
+        "spec": {
+          "value": 120
+        }
+      }
+    ],
+    "judgeScore": 0.9650000000000001,
+    "judgeDetail": {
+      "perCriterion": {
+        "correctness": 0.97,
+        "specificity": 0.95
+      },
+      "rationale": "The fix correctly checks both permissionKey AND label-overlap, names the existence-only flaw, and describes the cross-label/company escalation path concretely.",
+      "judgeModel": "opus"
+    },
+    "quality": 0.9825,
+    "qualityPer1kTokens": 2.66260162601626
+  },
+  {
+    "role": "cto",
+    "task_id": "cto-eng-load-balance",
+    "task_title": "Load-balance work across capable lanes during a Claude outage",
+    "model_id": "grok-4.5",
+    "model_label": "Grok 4.5",
+    "lane": "hermes",
+    "adapterType": "hermes",
+    "effort": "cli_default",
+    "ok": true,
+    "error": null,
+    "output": "{\"T1\": \"codex-sister\", \"T2\": \"gemini-sister\", \"T3\": \"grok-ramp\", \"T4\": \"codex-sister\"}",
+    "model_reported": "grok-4.5",
+    "inputTokens": 247,
+    "outputTokens": 21,
+    "totalTokens": 268,
+    "tokensEstimated": true,
+    "costUsd": null,
+    "wallMs": 13368,
+    "stderrTail": "",
+    "agentFileSha256": "none",
+    "skillsBundleSha256": "none",
+    "suiteSha256": "9178417ea7411729ec604cd6f0f72637a785d4d0f99ddd564fdfd0d4d603c31d",
+    "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/cto/suite.json",
+    "skipped": false,
+    "skipReason": null,
+    "deterministicScore": 1.0,
+    "deterministicDetails": [
+      {
+        "check": "json_valid",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {}
+      },
+      {
+        "check": "not_regex",
+        "ok": true,
+        "weight": 3.0,
+        "spec": {
+          "pattern": "claude-primary"
+        }
+      },
+      {
+        "check": "not_regex",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {
+          "pattern": "\"T1\"\\s*:\\s*\"grok-ramp\""
+        }
+      },
+      {
+        "check": "not_regex",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {
+          "pattern": "\"T2\"\\s*:\\s*\"grok-ramp\""
+        }
+      }
+    ],
+    "judgeScore": 0.9625,
+    "judgeDetail": {
+      "perCriterion": {
+        "constraint_honoring": 1.0,
+        "balance": 0.85
+      },
+      "rationale": "All constraints honored \u2014 nothing to claude-primary, grok-ramp gets exactly one bounded bugfix (T3), refactor and fan-out on healthy sisters; balance is fine though codex takes both T1 and T4 while gemini takes only T2.",
+      "judgeModel": "opus"
+    },
+    "quality": 0.98125,
+    "qualityPer1kTokens": 3.661380597014925
+  },
+  {
+    "role": "cto",
+    "task_id": "cto-escalate-to-mc",
+    "task_title": "Decide which work to escalate to Mission Control",
+    "model_id": "grok-4.5",
+    "model_label": "Grok 4.5",
+    "lane": "hermes",
+    "adapterType": "hermes",
+    "effort": "cli_default",
+    "ok": true,
+    "error": null,
+    "output": "{\"s1\": \"local\", \"s2\": \"escalate\", \"s3\": \"local\", \"s4\": \"escalate\", \"s5\": \"escalate\"}",
+    "model_reported": "grok-4.5",
+    "inputTokens": 323,
+    "outputTokens": 21,
+    "totalTokens": 344,
+    "tokensEstimated": true,
+    "costUsd": null,
+    "wallMs": 9525,
+    "stderrTail": "",
+    "agentFileSha256": "none",
+    "skillsBundleSha256": "none",
+    "suiteSha256": "9178417ea7411729ec604cd6f0f72637a785d4d0f99ddd564fdfd0d4d603c31d",
+    "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/cto/suite.json",
+    "skipped": false,
+    "skipReason": null,
+    "deterministicScore": 1.0,
+    "deterministicDetails": [
+      {
+        "check": "json_valid",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {}
+      },
+      {
+        "check": "json_path_equals",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {
+          "value": "local",
+          "path": "s1"
+        }
+      },
+      {
+        "check": "json_path_equals",
+        "ok": true,
+        "weight": 3.0,
+        "spec": {
+          "value": "escalate",
+          "path": "s2"
+        }
+      },
+      {
+        "check": "json_path_equals",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {
+          "value": "local",
+          "path": "s3"
+        }
+      },
+      {
+        "check": "json_path_equals",
+        "ok": true,
+        "weight": 3.0,
+        "spec": {
+          "value": "escalate",
+          "path": "s4"
+        }
+      },
+      {
+        "check": "json_path_equals",
+        "ok": true,
+        "weight": 4.0,
+        "spec": {
+          "value": "escalate",
+          "path": "s5"
+        }
+      }
+    ],
+    "judgeScore": 1.0,
+    "judgeDetail": {
+      "perCriterion": {
+        "boundary_judgment": 1.0
+      },
+      "rationale": "All five classifications match the key exactly, including the s5 trap correctly escalated because the fix edits shared platform code.",
+      "judgeModel": "opus"
+    },
+    "quality": 1.0,
+    "qualityPer1kTokens": 2.906976744186047
+  },
+  {
+    "role": "cto",
+    "task_id": "cto-fallback-monitor-adapter-trap",
+    "task_title": "Catch the self-defeating adapter choice in a redesign",
+    "model_id": "grok-4.5",
+    "model_label": "Grok 4.5",
+    "lane": "hermes",
+    "adapterType": "hermes",
+    "effort": "cli_default",
+    "ok": true,
+    "error": null,
+    "output": "{\"accept\": false, \"invariant\": \"The fallback-monitor must not run on Claude; it has to stay alive when Claude hits its usage limit.\", \"correctAdapter\": \"non-Claude sister-lane adapter\"}",
+    "model_reported": "grok-4.5",
+    "inputTokens": 162,
+    "outputTokens": 46,
+    "totalTokens": 208,
+    "tokensEstimated": true,
+    "costUsd": null,
+    "wallMs": 125909,
+    "stderrTail": "",
+    "agentFileSha256": "none",
+    "skillsBundleSha256": "none",
+    "suiteSha256": "9178417ea7411729ec604cd6f0f72637a785d4d0f99ddd564fdfd0d4d603c31d",
+    "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/cto/suite.json",
+    "skipped": false,
+    "skipReason": null,
+    "deterministicScore": 1.0,
+    "deterministicDetails": [
+      {
+        "check": "json_valid",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {}
+      },
+      {
+        "check": "json_path_equals",
+        "ok": true,
+        "weight": 5.0,
+        "spec": {
+          "value": false,
+          "path": "accept"
+        }
+      },
+      {
+        "check": "contains_any",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {
+          "values": [
+            "non-claude",
+            "non claude",
+            "not claude",
+            "codex",
+            "grok",
+            "gemini",
+            "hermes",
+            "different adapter",
+            "other adapter"
+          ]
+        }
+      }
+    ],
+    "judgeScore": 0.8374999999999999,
+    "judgeDetail": {
+      "perCriterion": {
+        "correctness": 0.85,
+        "specificity": 0.8
+      },
+      "rationale": "Correctly rejects and nails the survive-its-own-outage point, but correctAdapter stays generic ('non-Claude sister-lane adapter') rather than naming a concrete lane like codex/grok.",
+      "judgeModel": "opus"
+    },
+    "quality": 0.91875,
+    "qualityPer1kTokens": 4.4170673076923075
+  },
+  {
+    "role": "cto",
+    "task_id": "cto-fallback-monitor-option",
+    "task_title": "Pick the durable fix for the fallback-monitor permission gap",
+    "model_id": "grok-4.5",
+    "model_label": "Grok 4.5",
+    "lane": "hermes",
+    "adapterType": "hermes",
+    "effort": "cli_default",
+    "ok": true,
+    "error": null,
+    "output": "{\"option\": 1, \"reason\": \"Least-privilege, auditable, revocable server path keeps reassignment automated without handing the monitor god-mode write access across companies.\", \"rejectedRisk\": \"Option 2: permanent cross-company write blast radius if the monitor is compromised or buggy.\"}",
+    "model_reported": "grok-4.5",
+    "inputTokens": 290,
+    "outputTokens": 71,
+    "totalTokens": 361,
+    "tokensEstimated": true,
+    "costUsd": null,
+    "wallMs": 10258,
+    "stderrTail": "",
+    "agentFileSha256": "none",
+    "skillsBundleSha256": "none",
+    "suiteSha256": "9178417ea7411729ec604cd6f0f72637a785d4d0f99ddd564fdfd0d4d603c31d",
+    "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/cto/suite.json",
+    "skipped": false,
+    "skipReason": null,
+    "deterministicScore": 1.0,
+    "deterministicDetails": [
+      {
+        "check": "json_valid",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {}
+      },
+      {
+        "check": "json_path_equals",
+        "ok": true,
+        "weight": 5.0,
+        "spec": {
+          "value": 1,
+          "path": "option"
+        }
+      },
+      {
+        "check": "contains_any",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {
+          "values": [
+            "least privilege",
+            "least-privilege",
+            "scoped",
+            "revocable",
+            "audit",
+            "label"
+          ]
+        }
+      }
+    ],
+    "judgeScore": 0.9775,
+    "judgeDetail": {
+      "perCriterion": {
+        "judgment": 0.97,
+        "risk_framing": 1.0
+      },
+      "rationale": "Correctly picks Option 1 tying to least-privilege/auditable/revocable and names Option 2's concrete cross-company write blast radius as the chief rejected risk.",
+      "judgeModel": "opus"
+    },
+    "quality": 0.98875,
+    "qualityPer1kTokens": 2.738919667590028
+  },
+  {
+    "role": "cto",
+    "task_id": "cto-gate-keeper-capability-design",
+    "task_title": "Design the gate_keeper_write capability scope",
+    "model_id": "grok-4.5",
+    "model_label": "Grok 4.5",
+    "lane": "hermes",
+    "adapterType": "hermes",
+    "effort": "cli_default",
+    "ok": true,
+    "error": null,
+    "output": "{\"Q1\": \"c\", \"Q2\": \"b\", \"Q3\": \"b\", \"Q4\": \"b\", \"worstDefault\": \"Q4a\"}",
+    "model_reported": "grok-4.5",
+    "inputTokens": 282,
+    "outputTokens": 16,
+    "totalTokens": 298,
+    "tokensEstimated": true,
+    "costUsd": null,
+    "wallMs": 40283,
+    "stderrTail": "",
+    "agentFileSha256": "none",
+    "skillsBundleSha256": "none",
+    "suiteSha256": "9178417ea7411729ec604cd6f0f72637a785d4d0f99ddd564fdfd0d4d603c31d",
+    "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/cto/suite.json",
+    "skipped": false,
+    "skipReason": null,
+    "deterministicScore": 1.0,
+    "deterministicDetails": [
+      {
+        "check": "json_valid",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {}
+      },
+      {
+        "check": "json_path_equals",
+        "ok": true,
+        "weight": 3.0,
+        "spec": {
+          "value": "c",
+          "path": "Q1"
+        }
+      },
+      {
+        "check": "json_path_equals",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {
+          "value": "b",
+          "path": "Q2"
+        }
+      },
+      {
+        "check": "json_path_equals",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {
+          "value": "b",
+          "path": "Q3"
+        }
+      },
+      {
+        "check": "json_path_equals",
+        "ok": true,
+        "weight": 3.0,
+        "spec": {
+          "value": "b",
+          "path": "Q4"
+        }
+      },
+      {
+        "check": "json_path_in",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {
+          "values": [
+            "Q4a",
+            "Q1a"
+          ],
+          "path": "worstDefault"
+        }
+      }
+    ],
+    "judgeScore": null,
+    "judgeDetail": {
+      "error": "judge: unparseable",
+      "raw": "```json\n{\"Q1\": \"c\", \"Q2\": \"b\", \"Q3\": \"b\", \"Q4\": \"b\", \"worstDefault\": \"Q4a\"}\n```",
+      "judgeError": null
+    },
+    "quality": 1.0,
+    "qualityPer1kTokens": 3.3557046979865772
+  },
+  {
+    "role": "cto",
+    "task_id": "cto-local-only-relay-mismatch",
+    "task_title": "Catch the local-only vs cloud-relay architecture mismatch",
+    "model_id": "grok-4.5",
+    "model_label": "Grok 4.5",
+    "lane": "hermes",
+    "adapterType": "hermes",
+    "effort": "cli_default",
+    "ok": true,
+    "error": null,
+    "output": "{\"viable\": false, \"flaw\": \"Vercel runs in the cloud and cannot reach local-only 127.0.0.1:3100; no public URL or tunnel exists for fetch().\", \"betterPath\": \"Keep the backup leg inside the local instance (local cron/worker or in-process retry) that can hit 127.0.0.1 directly.\"}",
+    "model_reported": "grok-4.5",
+    "inputTokens": 197,
+    "outputTokens": 69,
+    "totalTokens": 266,
+    "tokensEstimated": true,
+    "costUsd": null,
+    "wallMs": 10433,
+    "stderrTail": "",
+    "agentFileSha256": "none",
+    "skillsBundleSha256": "none",
+    "suiteSha256": "9178417ea7411729ec604cd6f0f72637a785d4d0f99ddd564fdfd0d4d603c31d",
+    "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/cto/suite.json",
+    "skipped": false,
+    "skipReason": null,
+    "deterministicScore": 1.0,
+    "deterministicDetails": [
+      {
+        "check": "json_valid",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {}
+      },
+      {
+        "check": "json_path_equals",
+        "ok": true,
+        "weight": 5.0,
+        "spec": {
+          "value": false,
+          "path": "viable"
+        }
+      },
+      {
+        "check": "contains_any",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {
+          "values": [
+            "127.0.0.1",
+            "loopback",
+            "localhost",
+            "local-only",
+            "local only",
+            "no public",
+            "not reachable",
+            "unreachable"
+          ]
+        }
+      }
+    ],
+    "judgeScore": 0.9,
+    "judgeDetail": {
+      "perCriterion": {
+        "correctness": 0.9,
+        "specificity": 0.9
+      },
+      "rationale": "Correctly rules it non-viable, names the cloud-cannot-reach-loopback mechanism, and gives a valid intra-instance betterPath, though it doesn't mention the alternative tunnel path or bearer detail.",
+      "judgeModel": "opus"
+    },
+    "quality": 0.95,
+    "qualityPer1kTokens": 3.571428571428571
+  },
+  {
+    "role": "cto",
+    "task_id": "cto-plan-approval-gate",
+    "task_title": "Approve a destructive plan only with a rollback gate",
+    "model_id": "grok-4.5",
+    "model_label": "Grok 4.5",
+    "lane": "hermes",
+    "adapterType": "hermes",
+    "effort": "cli_default",
+    "ok": true,
+    "error": null,
+    "output": "{\"decision\":\"reject\",\"requiredGuards\":[\"full offline backup + restore drill before any drop\",\"dual-write or expand-contract migration with old table retained until validated\",\"tested rollback path that restores billing signal\",\"run off-peak with feature flag and canary\",\"row-count/checksum parity gates before cutover\",\"subscription billing read-path verified on new schema\"],\"why\":\"Irreversible prod drop of sole billing signal, no backup or rollback, at peak\u2014unacceptable data and revenue risk.\"}",
+    "model_reported": "grok-4.5",
+    "inputTokens": 166,
+    "outputTokens": 124,
+    "totalTokens": 290,
+    "tokensEstimated": true,
+    "costUsd": null,
+    "wallMs": 9381,
+    "stderrTail": "",
+    "agentFileSha256": "none",
+    "skillsBundleSha256": "none",
+    "suiteSha256": "9178417ea7411729ec604cd6f0f72637a785d4d0f99ddd564fdfd0d4d603c31d",
+    "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/cto/suite.json",
+    "skipped": false,
+    "skipReason": null,
+    "deterministicScore": 1.0,
+    "deterministicDetails": [
+      {
+        "check": "json_valid",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {}
+      },
+      {
+        "check": "json_path_in",
+        "ok": true,
+        "weight": 4.0,
+        "spec": {
+          "values": [
+            "reject",
+            "approve_with_changes"
+          ],
+          "path": "decision"
+        }
+      },
+      {
+        "check": "json_path_exists",
+        "ok": true,
+        "weight": 1.0,
+        "spec": {
+          "path": "requiredGuards.0"
+        }
+      },
+      {
+        "check": "contains_any",
+        "ok": true,
+        "weight": 3.0,
+        "spec": {
+          "values": [
+            "backup",
+            "rollback",
+            "reversible",
+            "snapshot",
+            "dual-write",
+            "dual write",
+            "off-peak",
+            "off peak",
+            "expand-contract",
+            "expand/contract"
+          ]
+        }
+      }
+    ],
+    "judgeScore": 0.9574999999999999,
+    "judgeDetail": {
+      "perCriterion": {
+        "risk_judgment": 0.95,
+        "specificity": 0.98
+      },
+      "rationale": "Rejects the plan and attaches all core guards\u2014verified backup+restore drill, tested rollback, expand-contract retention, off-peak, and parity gates\u2014while noting heartbeat_runs is the sole billing signal.",
+      "judgeModel": "opus"
+    },
+    "quality": 0.97875,
+    "qualityPer1kTokens": 3.3750000000000004
+  },
+  {
+    "role": "cto",
+    "task_id": "cto-reject-overengineering",
+    "task_title": "Right-size a fix: reject the gold-plated rewrite",
+    "model_id": "grok-4.5",
+    "model_label": "Grok 4.5",
+    "lane": "hermes",
+    "adapterType": "hermes",
+    "effort": "cli_default",
+    "ok": true,
+    "error": null,
+    "output": "{\"decision\":\"approve_minimal\",\"reason\":\"Narrow cruft bug; proven one-step reaper reuses existing predicate and tick. A GC framework is YAGNI overkill for dozens of inert rows.\",\"scope\":\"Add reapOrphanedWakeups on recovery tick with same done/cancelled predicate; default-on flag; no new framework.\"}",
+    "model_reported": "grok-4.5",
+    "inputTokens": 225,
+    "outputTokens": 74,
+    "totalTokens": 299,
+    "tokensEstimated": true,
+    "costUsd": null,
+    "wallMs": 9240,
+    "stderrTail": "",
+    "agentFileSha256": "none",
+    "skillsBundleSha256": "none",
+    "suiteSha256": "9178417ea7411729ec604cd6f0f72637a785d4d0f99ddd564fdfd0d4d603c31d",
+    "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/cto/suite.json",
+    "skipped": false,
+    "skipReason": null,
+    "deterministicScore": 1.0,
+    "deterministicDetails": [
+      {
+        "check": "json_valid",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {}
+      },
+      {
+        "check": "json_path_equals",
+        "ok": true,
+        "weight": 5.0,
+        "spec": {
+          "value": "approve_minimal",
+          "path": "decision"
+        }
+      },
+      {
+        "check": "contains_any",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {
+          "values": [
+            "reapOrphanedWakeups",
+            "reap",
+            "same predicate",
+            "terminal-status",
+            "terminal status",
+            "recovery tick",
+            "existing",
+            "small",
+            "minimal",
+            "YAGNI"
+          ]
+        }
+      }
+    ],
+    "judgeScore": 0.9875,
+    "judgeDetail": {
+      "perCriterion": {
+        "right_sizing": 1.0,
+        "reasoning": 0.95
+      },
+      "rationale": "Correctly approves the minimal reapOrphanedWakeups fix with exact scope (same predicate, same tick, default-on flag) and names YAGNI/over-engineering cost mismatch for a few-dozen-row bug.",
+      "judgeModel": "opus"
+    },
+    "quality": 0.99375,
+    "qualityPer1kTokens": 3.323578595317726
+  },
+  {
+    "role": "cto",
+    "task_id": "cto-reject-restart-race-default",
+    "task_title": "Reject a startup-reaper PR whose default bricks live runs",
+    "model_id": "grok-4.5",
+    "model_label": "Grok 4.5",
+    "lane": "hermes",
+    "adapterType": "hermes",
+    "effort": "cli_default",
+    "ok": true,
+    "error": null,
+    "output": "{\"decision\":\"reject\",\"rootCause\":\"Default staleThresholdMs=0 makes cutoff=now, so every running run fails permanently on boot.\",\"requiredChange\":\"Require a positive stale threshold (e.g. minutes); never default to 0 on startup reap.\"}",
+    "model_reported": "grok-4.5",
+    "inputTokens": 255,
+    "outputTokens": 58,
+    "totalTokens": 313,
+    "tokensEstimated": true,
+    "costUsd": null,
+    "wallMs": 11645,
+    "stderrTail": "",
+    "agentFileSha256": "none",
+    "skillsBundleSha256": "none",
+    "suiteSha256": "9178417ea7411729ec604cd6f0f72637a785d4d0f99ddd564fdfd0d4d603c31d",
+    "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/cto/suite.json",
+    "skipped": false,
+    "skipReason": null,
+    "deterministicScore": 1.0,
+    "deterministicDetails": [
+      {
+        "check": "json_valid",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {}
+      },
+      {
+        "check": "json_path_equals",
+        "ok": true,
+        "weight": 5.0,
+        "spec": {
+          "value": "reject",
+          "path": "decision"
+        }
+      },
+      {
+        "check": "regex",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {
+          "pattern": "(default(s|ed|ing)?|=)\\s*(to\\s*)?(0|zero)|stalethresholdms\\s*(default|=|of|is|to)|threshold\\s*(default|=|of|is|to)?\\s*(0|zero)|(0|zero)\\b[^.]*\\b(default|threshold|cutoff)"
+        }
+      },
+      {
+        "check": "contains_any",
+        "ok": true,
+        "weight": 1.0,
+        "spec": {
+          "values": [
+            "grace",
+            "non-zero",
+            "nonzero",
+            "staleThresholdMs",
+            "60s",
+            "grace window",
+            "grace period"
+          ]
+        }
+      }
+    ],
+    "judgeScore": 0.915,
+    "judgeDetail": {
+      "perCriterion": {
+        "correctness": 0.92,
+        "discipline": 0.9
+      },
+      "rationale": "Correctly rejects and names the staleThresholdMs=0 \u2192 cutoff=now defect with a minimal grace-window fix, though it omits the explicit non-zero value (e.g. 60s) the criterion cites.",
+      "judgeModel": "opus"
+    },
+    "quality": 0.9575,
+    "qualityPer1kTokens": 3.0591054313099044
+  },
+  {
+    "role": "cto",
+    "task_id": "cto-reversibility-rollout",
+    "task_title": "Choose a reversible rollout over a risky big-bang",
+    "model_id": "grok-4.5",
+    "model_label": "Grok 4.5",
+    "lane": "hermes",
+    "adapterType": "hermes",
+    "effort": "cli_default",
+    "ok": true,
+    "error": null,
+    "output": "{\"plan\":\"B\",\"reason\":\"Dispatch touches every agent; big-bang risks fleet-wide outage. Feature flag lets you ramp, compare, and prove the new loop before deleting the old path.\",\"rollbackPlan\":\"Flip the runtime flag OFF to restore the old dispatch path instantly.\"}",
+    "model_reported": "grok-4.5",
+    "inputTokens": 178,
+    "outputTokens": 66,
+    "totalTokens": 244,
+    "tokensEstimated": true,
+    "costUsd": null,
+    "wallMs": 7136,
+    "stderrTail": "",
+    "agentFileSha256": "none",
+    "skillsBundleSha256": "none",
+    "suiteSha256": "9178417ea7411729ec604cd6f0f72637a785d4d0f99ddd564fdfd0d4d603c31d",
+    "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/cto/suite.json",
+    "skipped": false,
+    "skipReason": null,
+    "deterministicScore": 1.0,
+    "deterministicDetails": [
+      {
+        "check": "json_valid",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {}
+      },
+      {
+        "check": "json_path_equals",
+        "ok": true,
+        "weight": 5.0,
+        "spec": {
+          "value": "B",
+          "path": "plan"
+        }
+      },
+      {
+        "check": "contains_any",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {
+          "values": [
+            "flag",
+            "flip",
+            "toggle",
+            "old path",
+            "ramp",
+            "instant",
+            "revert",
+            "roll back",
+            "rollback"
+          ]
+        }
+      }
+    ],
+    "judgeScore": 0.9424999999999999,
+    "judgeDetail": {
+      "perCriterion": {
+        "judgment": 0.95,
+        "reasoning": 0.92
+      },
+      "rationale": "Picks Plan B with a fast, concrete flag-flip rollback to the retained old path, and the reason explicitly cites fleet-wide blast radius and proving before deletion.",
+      "judgeModel": "opus"
+    },
+    "quality": 0.97125,
+    "qualityPer1kTokens": 3.9805327868852456
+  },
+  {
+    "role": "cv-review",
+    "task_id": "cv-benign-contract-overlap",
+    "task_title": "Do not over-flag a disclosed part-time overlap",
+    "model_id": "grok-4.5",
+    "model_label": "Grok 4.5",
+    "lane": "hermes",
+    "adapterType": "hermes",
+    "effort": "cli_default",
+    "ok": true,
+    "error": null,
+    "output": "{\n  \"concerns\": [\n    \"Northstar start date is year-only (2018), so exact tenure length is unclear.\",\n    \"Skills list is thin for a Product Operations Manager bar (SQL basics only; no tooling stack, metrics/OKR, or release/change-management depth stated).\",\n    \"Freelance overlap with full-time RelayPay is disclosed and low-hours/non-competing, so not a integrity red flag, but some employers may still want written dual-employment clearance confirmed.\"\n  ],\n  \"recommendation\": \"advance\",\n  \"timelineNote\": \"Northstar ends Mar 2021 and RelayPay starts Apr 2021 \u2014 clean handoff with no gap or double full-time claim. Freelance Jan\u2013Dec 2022 sits inside RelayPay but is explicitly side work at ~5 hrs/week and disclosed; no chronological contradiction.\"\n}",
+    "model_reported": "grok-4.5",
+    "inputTokens": 168,
+    "outputTokens": 189,
+    "totalTokens": 357,
+    "tokensEstimated": true,
+    "costUsd": null,
+    "wallMs": 18497,
+    "stderrTail": "",
+    "agentFileSha256": "none",
+    "skillsBundleSha256": "none",
+    "suiteSha256": "4a12f7840060d3340e31887045177b943ccfc26aece2989d42f2e6f31a2b2c61",
+    "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/cv-review/suite.json",
+    "skipped": false,
+    "skipReason": null,
+    "deterministicScore": 1.0,
+    "deterministicDetails": [
+      {
+        "check": "json_valid",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {}
+      },
+      {
+        "check": "json_path_equals",
+        "ok": true,
+        "weight": 3.0,
+        "spec": {
+          "value": "advance",
+          "path": "recommendation"
+        }
+      },
+      {
+        "check": "contains_any",
+        "ok": true,
+        "weight": 3.0,
+        "spec": {
+          "values": [
+            "part-time",
+            "5 hrs",
+            "side work",
+            "disclosed",
+            "not a full-time overlap",
+            "benign",
+            "advance"
+          ]
+        }
+      }
+    ],
+    "judgeScore": 0.9499999999999998,
+    "judgeDetail": {
+      "perCriterion": {
+        "benign_overlap_calibration": 0.95
+      },
+      "rationale": "Correctly advances on strong Product Ops evidence and treats the disclosed 5 hrs/week freelance as a non-red-flag with only a minor policy-confirmation note, exactly as required.",
+      "judgeModel": "opus"
+    },
+    "quality": 0.9749999999999999,
+    "qualityPer1kTokens": 2.7310924369747895
+  },
+  {
+    "role": "cv-review",
+    "task_id": "cv-clean-calibration",
+    "task_title": "Calibration trap: a strong CV \u2014 don't fabricate concerns",
+    "model_id": "grok-4.5",
+    "model_label": "Grok 4.5",
+    "lane": "hermes",
+    "adapterType": "hermes",
+    "effort": "cli_default",
+    "ok": true,
+    "error": null,
+    "output": "{\"concerns\": [\"Date inconsistency: '2020-present (4.5 yrs)' understates tenure if present is mid-2025+ (would be ~5.5\u20136.5 yrs at Datalink alone); CV may be stale or mislabeled.\", \"Forge (2018\u20132020) is extremely thin\u2014'built internal APIs' with no stack, scale, ownership, or impact for two full years.\", \"AWS and 'distributed systems' appear only in skills; no bullets show AWS usage, multi-service design, or production ops beyond Kafka/Postgres on the payments service.\", \"CV overall is sparse for senior bar: no scale (QPS, $ volume, SLOs), team size, mentoring/hiring, incident examples beyond on-call lead, or testing/observability depth.\", \"Senior title and E2E ownership are concentrated in one role; little evidence of cross-service influence or org-level technical leadership.\"], \"recommendation\": \"advance\"}",
+    "model_reported": "grok-4.5",
+    "inputTokens": 146,
+    "outputTokens": 204,
+    "totalTokens": 350,
+    "tokensEstimated": true,
+    "costUsd": null,
+    "wallMs": 22706,
+    "stderrTail": "",
+    "agentFileSha256": "none",
+    "skillsBundleSha256": "none",
+    "suiteSha256": "4a12f7840060d3340e31887045177b943ccfc26aece2989d42f2e6f31a2b2c61",
+    "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/cv-review/suite.json",
+    "skipped": false,
+    "skipReason": null,
+    "deterministicScore": 1.0,
+    "deterministicDetails": [
+      {
+        "check": "json_valid",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {}
+      },
+      {
+        "check": "json_path_equals",
+        "ok": true,
+        "weight": 4.0,
+        "spec": {
+          "value": "advance",
+          "path": "recommendation"
+        }
+      }
+    ],
+    "judgeScore": 0.28,
+    "judgeDetail": {
+      "perCriterion": {
+        "calibration": 0.28
+      },
+      "rationale": "Correctly recommends advance but pads the concerns list with five over-flagged nitpicks (sparse CV, AWS-not-in-bullets, date quibble) on a clean, well-matched CV \u2014 exactly the over-flagging the criterion heavily penalizes.",
+      "judgeModel": "opus"
+    },
+    "quality": 0.64,
+    "qualityPer1kTokens": 1.8285714285714287
+  },
+  {
+    "role": "cv-review",
+    "task_id": "cv-date-inconsistency",
+    "task_title": "Catch the subtle timeline inconsistency (the hard one)",
+    "model_id": "grok-4.5",
+    "model_label": "Grok 4.5",
+    "lane": "hermes",
+    "adapterType": "hermes",
+    "effort": "cli_default",
+    "ok": true,
+    "error": null,
+    "output": "{\"concerns\": [\"Full-time overlap Jun 2021\u2013Mar 2022: Quanta (Data Engineer, through Mar 2022) and Hollis (Senior Data Engineer, full-time from Jun 2021) cannot both be full-time for ~10 months without explanation\", \"Claimed '8 years of experience' not supported by listed history: earliest role is 2019; with present ~Jul 2026 the span is ~7\u20137.5 years even if continuous from start of 2019\", \"Metric Co (2019\u20132020) and Quanta (from Jan 2020) may also overlap depending on Metric end month; years-only dates prevent verification\", \"Concurrent employment while stepping up to Senior title at Hollis weakens credibility of tenure/level claims\"], \"recommendation\": \"reject\"}",
+    "model_reported": "grok-4.5",
+    "inputTokens": 112,
+    "outputTokens": 167,
+    "totalTokens": 279,
+    "tokensEstimated": true,
+    "costUsd": null,
+    "wallMs": 38292,
+    "stderrTail": "",
+    "agentFileSha256": "none",
+    "skillsBundleSha256": "none",
+    "suiteSha256": "4a12f7840060d3340e31887045177b943ccfc26aece2989d42f2e6f31a2b2c61",
+    "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/cv-review/suite.json",
+    "skipped": false,
+    "skipReason": null,
+    "deterministicScore": 1.0,
+    "deterministicDetails": [
+      {
+        "check": "json_valid",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {}
+      },
+      {
+        "check": "contains_any",
+        "ok": true,
+        "weight": 4.0,
+        "spec": {
+          "values": [
+            "overlap",
+            "overlapp",
+            "timeline",
+            "inconsist",
+            "concurrent",
+            "same time",
+            "two full-time",
+            "2021",
+            "2022",
+            "dates don't",
+            "doesn't add up",
+            "8 year",
+            "discrepan"
+          ]
+        }
+      }
+    ],
+    "judgeScore": 0.9700000000000001,
+    "judgeDetail": {
+      "perCriterion": {
+        "catches_overlap": 0.97
+      },
+      "rationale": "Clearly surfaces the ~10-month full-time Quanta/Hollis overlap and debunks the '8 years' claim against a 2019 start, precisely as required; only nit is choosing 'reject' over 'clarify' when the data is ambiguous.",
+      "judgeModel": "opus"
+    },
+    "quality": 0.9850000000000001,
+    "qualityPer1kTokens": 3.5304659498207887
+  },
+  {
+    "role": "cv-review",
+    "task_id": "cv-explained-career-break",
+    "task_title": "Advance a strong candidate with an explained break",
+    "model_id": "grok-4.5",
+    "model_label": "Grok 4.5",
+    "lane": "hermes",
+    "adapterType": "hermes",
+    "effort": "cli_default",
+    "ok": true,
+    "error": null,
+    "output": "{\"concerns\":[\"CV is extremely thin for a senior screen: almost no depth on scale (QPS/volume), SLAs, multi-service boundaries, data model complexity, or failure modes for billing-service.\",\"End-to-end ownership is asserted (APIs, on-call lead, migration) but missing usual senior signals: design docs/RFCs, observability/alerting ownership, deploy/rollback, schema migrations, testing strategy, cost/security, or mentoring.\",\"Kafka listed in skills but not evidenced in role bullets; event-driven workers may or may not imply Kafka\u2014unclear production messaging depth.\",\"ArcForge tenure is a single vague line (Java services + Postgres jobs)\u2014hard to validate early backend strength or progression quality.\",\"No education, links (GitHub/cert), stack versions, or team/context size\u2014raises bar for interview to prove depth.\",\"Career break is explained and partly productive (AWS cert, OSS), but still a 2020\u2013early 2021 continuity gap that needs a quick verbal check on currency of skills at return.\"],\"recommendation\":\"advance\",\"timelineNote\":\"ArcForge ~3y (2017\u20132019) + LedgerCloud ~5y5m (Feb 2021\u2013present as of 2026-07) \u2248 8.5y total backend time; meets 5+ yrs. Title senior only at LedgerCloud; 12-month break (Jan 2020\u2013Jan 2021) for relocation/caregiving with cert/OSS\u2014acceptable if skills current.\"}",
+    "model_reported": "grok-4.5",
+    "inputTokens": 197,
+    "outputTokens": 324,
+    "totalTokens": 521,
+    "tokensEstimated": true,
+    "costUsd": null,
+    "wallMs": 24808,
+    "stderrTail": "",
+    "agentFileSha256": "none",
+    "skillsBundleSha256": "none",
+    "suiteSha256": "4a12f7840060d3340e31887045177b943ccfc26aece2989d42f2e6f31a2b2c61",
+    "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/cv-review/suite.json",
+    "skipped": false,
+    "skipReason": null,
+    "deterministicScore": 1.0,
+    "deterministicDetails": [
+      {
+        "check": "json_valid",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {}
+      },
+      {
+        "check": "json_path_equals",
+        "ok": true,
+        "weight": 4.0,
+        "spec": {
+          "value": "advance",
+          "path": "recommendation"
+        }
+      },
+      {
+        "check": "contains_any",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {
+          "values": [
+            "explained",
+            "career break",
+            "relocation",
+            "caregiving",
+            "advance",
+            "service ownership",
+            "5+",
+            "6"
+          ]
+        }
+      }
+    ],
+    "judgeScore": 0.9499999999999998,
+    "judgeDetail": {
+      "perCriterion": {
+        "explained_break_calibration": 0.95
+      },
+      "rationale": "Recommends advance, explicitly treats the break as explained and merely warranting a quick verbal skills-currency check rather than a red flag, with an accurate timeline computation and no fabricated integrity concerns.",
+      "judgeModel": "opus"
+    },
+    "quality": 0.9749999999999999,
+    "qualityPer1kTokens": 1.8714011516314777
+  },
+  {
+    "role": "cv-review",
+    "task_id": "cv-keyword-stuffed-role-mismatch",
+    "task_title": "See past keyword stuffing to the missing core experience",
+    "model_id": "grok-4.5",
+    "model_label": "Grok 4.5",
+    "lane": "hermes",
+    "adapterType": "hermes",
+    "effort": "cli_default",
+    "ok": true,
+    "error": null,
+    "output": "{\"concerns\": [\"Title/summary claims Senior DE expertise (Spark, Airflow, dbt, Snowflake, Kafka, K8s, MLOps, LLMs) with zero matching production evidence\", \"Only roles are Business Analyst (Excel dashboards, ad-hoc SQL extracts, sales decks) and a 2020 reporting internship \u2014 no pipeline ownership, warehouse ownership, or incident response\", \"Airflow/dbt limited to following online tutorials; no deployed, owned, or production projects listed\", \"Experience level and scope are junior/reporting-analyst, not senior data engineering\", \"Severe resume inflation risk: skills laundry list unsupported by work history\"], \"recommendation\": \"reject\", \"verify\": []}",
+    "model_reported": "grok-4.5",
+    "inputTokens": 177,
+    "outputTokens": 164,
+    "totalTokens": 341,
+    "tokensEstimated": true,
+    "costUsd": null,
+    "wallMs": 10534,
+    "stderrTail": "",
+    "agentFileSha256": "none",
+    "skillsBundleSha256": "none",
+    "suiteSha256": "4a12f7840060d3340e31887045177b943ccfc26aece2989d42f2e6f31a2b2c61",
+    "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/cv-review/suite.json",
+    "skipped": false,
+    "skipReason": null,
+    "deterministicScore": 1.0,
+    "deterministicDetails": [
+      {
+        "check": "json_valid",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {}
+      },
+      {
+        "check": "json_path_in",
+        "ok": true,
+        "weight": 4.0,
+        "spec": {
+          "values": [
+            "reject",
+            "clarify"
+          ],
+          "path": "recommendation"
+        }
+      },
+      {
+        "check": "contains_any",
+        "ok": true,
+        "weight": 3.0,
+        "spec": {
+          "values": [
+            "keyword",
+            "stuff",
+            "no production",
+            "pipeline",
+            "tutorial",
+            "mismatch",
+            "not listed",
+            "core experience",
+            "Airflow",
+            "dbt"
+          ]
+        }
+      }
+    ],
+    "judgeScore": 0.83,
+    "judgeDetail": {
+      "perCriterion": {
+        "keyword_stuffing_detection": 0.83
+      },
+      "rationale": "Sharply flags the keyword-stuffing vs. missing production evidence and correctly rejects, but leaves the requested 'verify' array empty rather than listing exact verification asks.",
+      "judgeModel": "opus"
+    },
+    "quality": 0.915,
+    "qualityPer1kTokens": 2.6832844574780057
+  },
+  {
+    "role": "cv-review",
+    "task_id": "cv-pii-overshare",
+    "task_title": "Flag PII over-share + don't let it bias the assessment",
+    "model_id": "grok-4.5",
+    "model_label": "Grok 4.5",
+    "lane": "hermes",
+    "adapterType": "hermes",
+    "effort": "cli_default",
+    "ok": true,
+    "error": null,
+    "output": "{\"concerns\": [\"Excessive non-job PII: full DOB, marital status, 3 children, photo, home address, nationality (bias/GDPR risk in IE/EU)\", \"Extremely thin CV: almost no duties, impact, tools, stakeholders, or career narrative beyond two short bullets\", \"Incomplete identity (initial + surname only); no education, certifications, or soft/CS skills beyond three keywords\", \"Metrics limited to one retention figure; no churn, NRR/GRR, expansion, CSAT/NPS, or onboarding outcomes\", \"Photo attached is unnecessary and can introduce appearance bias\"], \"recommendation\": \"clarify\", \"piiNote\": \"CV contains high-risk personal data (DOB, family status/children, photo, home address, nationality) that is irrelevant to CSM hiring and should be removed before any sharing or processing; retain only professional contact details if needed.\"}",
+    "model_reported": "grok-4.5",
+    "inputTokens": 129,
+    "outputTokens": 207,
+    "totalTokens": 336,
+    "tokensEstimated": true,
+    "costUsd": null,
+    "wallMs": 20132,
+    "stderrTail": "",
+    "agentFileSha256": "none",
+    "skillsBundleSha256": "none",
+    "suiteSha256": "4a12f7840060d3340e31887045177b943ccfc26aece2989d42f2e6f31a2b2c61",
+    "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/cv-review/suite.json",
+    "skipped": false,
+    "skipReason": null,
+    "deterministicScore": 1.0,
+    "deterministicDetails": [
+      {
+        "check": "json_valid",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {}
+      },
+      {
+        "check": "contains_any",
+        "ok": true,
+        "weight": 3.0,
+        "spec": {
+          "values": [
+            "PII",
+            "date of birth",
+            "DOB",
+            "marital",
+            "age",
+            "photo",
+            "address",
+            "irrelevant",
+            "exclude",
+            "redact",
+            "discrimination",
+            "protected"
+          ]
+        }
+      },
+      {
+        "check": "json_path_in",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {
+          "values": [
+            "advance",
+            "clarify"
+          ],
+          "path": "recommendation"
+        }
+      }
+    ],
+    "judgeScore": 0.92,
+    "judgeDetail": {
+      "perCriterion": {
+        "pii_discipline": 0.92
+      },
+      "rationale": "Correctly flags all over-shared PII as bias/GDPR risk to be removed and recommends 'clarify' rather than rejecting a strong candidate, though it leans on generic CV-thinness gripes rather than foregrounding the 40-account/95%-retention record as the basis for advancing.",
+      "judgeModel": "claude-opus-4-8"
+    },
+    "quality": 0.96,
+    "qualityPer1kTokens": 2.8571428571428568
+  },
+  {
+    "role": "cv-review",
+    "task_id": "cv-role-mismatch",
+    "task_title": "Honestly flag a role mismatch (no rubber-stamp)",
+    "model_id": "grok-4.5",
+    "model_label": "Grok 4.5",
+    "lane": "hermes",
+    "adapterType": "hermes",
+    "effort": "cli_default",
+    "ok": true,
+    "error": null,
+    "output": "{\"concerns\": [\"Entire career is frontend-only (React UIs, CSS, accessibility); zero backend experience listed\", \"No distributed systems, services, APIs, data stores, messaging, or concurrency work\", \"No infra, reliability, or on-call ownership evidence\", \"Title/level mismatch: Frontend Developer + UI Intern vs Senior Backend Engineer\", \"Skills are pure client stack (React, TypeScript, Figma, Tailwind) with no backend/ops tools\", \"Too junior and wrong domain for senior distributed-systems ownership\"], \"recommendation\": \"reject\"}",
+    "model_reported": "grok-4.5",
+    "inputTokens": 115,
+    "outputTokens": 133,
+    "totalTokens": 248,
+    "tokensEstimated": true,
+    "costUsd": null,
+    "wallMs": 10784,
+    "stderrTail": "",
+    "agentFileSha256": "none",
+    "skillsBundleSha256": "none",
+    "suiteSha256": "4a12f7840060d3340e31887045177b943ccfc26aece2989d42f2e6f31a2b2c61",
+    "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/cv-review/suite.json",
+    "skipped": false,
+    "skipReason": null,
+    "deterministicScore": 1.0,
+    "deterministicDetails": [
+      {
+        "check": "json_valid",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {}
+      },
+      {
+        "check": "json_path_in",
+        "ok": true,
+        "weight": 4.0,
+        "spec": {
+          "values": [
+            "reject",
+            "clarify"
+          ],
+          "path": "recommendation"
+        }
+      },
+      {
+        "check": "contains_any",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {
+          "values": [
+            "frontend",
+            "backend",
+            "mismatch",
+            "no backend",
+            "infra",
+            "distributed",
+            "not a fit"
+          ]
+        }
+      }
+    ],
+    "judgeScore": 0.9700000000000001,
+    "judgeDetail": {
+      "perCriterion": {
+        "honest_fit": 0.97
+      },
+      "rationale": "Correctly and specifically identifies the total absence of backend/distributed-systems/on-call experience and recommends reject with no generous spin.",
+      "judgeModel": "opus"
+    },
+    "quality": 0.9850000000000001,
+    "qualityPer1kTokens": 3.9717741935483875
+  },
+  {
+    "role": "cv-review",
+    "task_id": "cv-team-metric-attribution",
+    "task_title": "Verify team metrics without rejecting a plausible candidate",
+    "model_id": "grok-4.5",
+    "model_label": "Grok 4.5",
+    "lane": "hermes",
+    "adapterType": "hermes",
+    "effort": "cli_default",
+    "ok": true,
+    "error": null,
+    "output": "{\n  \"concerns\": [\n    \"Outcome claim 'Drove 45% ARR growth and doubled activation' is misattributed: candidate built dashboards, wrote experiment readouts, and coordinated two copy tests while PM and lifecycle lead owned roadmap and launch decisions\u2014support work is inflated to ownership of squad-level results.\",\n    \"Title/level mismatch: Product Analyst (and prior Marketing Analyst) experience, not Product Manager; no evidence of owning roadmap, prioritization, launches, or growth product decisions.\",\n    \"Growth PM signal is thin: analytics/experiment support and campaign QA only; no clear ownership of activation/retention strategy, experiment design authority, or cross-functional product delivery.\",\n    \"Skills skew analyst (SQL, analytics, experimentation support, stakeholder management) without demonstrated PM competencies (strategy, discovery, roadmap ownership, shipping).\"\n  ],\n  \"recommendation\": \"reject\",\n  \"verify\": [\n    \"Exact wording on CV/resume vs. interview of the 45% ARR and doubled-activation claims and who owned those outcomes.\",\n    \"Whether candidate designed experiments or only wrote readouts/coordinated copy tests under others' decisions.\",\n    \"Any real product ownership (roadmap items, launches, OKRs) vs. pure analytics support on the growth squad.\"\n  ]\n}",
+    "model_reported": "grok-4.5",
+    "inputTokens": 167,
+    "outputTokens": 325,
+    "totalTokens": 492,
+    "tokensEstimated": true,
+    "costUsd": null,
+    "wallMs": 16947,
+    "stderrTail": "",
+    "agentFileSha256": "none",
+    "skillsBundleSha256": "none",
+    "suiteSha256": "4a12f7840060d3340e31887045177b943ccfc26aece2989d42f2e6f31a2b2c61",
+    "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/cv-review/suite.json",
+    "skipped": false,
+    "skipReason": null,
+    "deterministicScore": 0.625,
+    "deterministicDetails": [
+      {
+        "check": "json_valid",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {}
+      },
+      {
+        "check": "json_path_in",
+        "ok": false,
+        "weight": 3.0,
+        "spec": {
+          "values": [
+            "clarify",
+            "advance"
+          ],
+          "path": "recommendation"
+        }
+      },
+      {
+        "check": "contains_any",
+        "ok": true,
+        "weight": 3.0,
+        "spec": {
+          "values": [
+            "attribution",
+            "team",
+            "owned",
+            "verify",
+            "45%",
+            "ARR",
+            "activation",
+            "roadmap",
+            "PM",
+            "lifecycle"
+          ]
+        }
+      }
+    ],
+    "judgeScore": 0.45,
+    "judgeDetail": {
+      "perCriterion": {
+        "metric_attribution": 0.45
+      },
+      "rationale": "It correctly flags the attribution overclaim and asks to verify actual contribution, but the criterion explicitly says not to reject solely on attribution\u2014yet the answer recommends 'reject,' violating the required clarify/advance-with-verification disposition.",
+      "judgeModel": "opus"
+    },
+    "quality": 0.5375,
+    "qualityPer1kTokens": 1.092479674796748
+  },
+  {
+    "role": "cv-review",
+    "task_id": "cv-title-inflation-gap",
+    "task_title": "Catch seniority inflation + an unexplained gap",
+    "model_id": "grok-4.5",
+    "model_label": "Grok 4.5",
+    "lane": "hermes",
+    "adapterType": "hermes",
+    "effort": "cli_default",
+    "ok": true,
+    "error": null,
+    "output": "{\"concerns\": [\"Total experience ~2.5 years vs required 5+ years\", \"Title inflation: CV title 'Senior Lead Backend Engineer' but actual roles are Backend Engineer and Junior Developer\", \"No end-to-end ownership signal: 'one senior reviewed all my PRs' indicates supervised IC work, not owning services\", \"Thin/vague skills: only Node.js, Postgres, and unsubstantiated 'led architecture' claim that conflicts with heavy PR oversight\", \"Scope described is narrow (REST endpoints, bug fixes) with no evidence of system design, production ownership, on-call, scalability, or mentoring expected at senior level\", \"Career timeline too junior for the bar (grad 2020 \u2192 junior 2021 \u2192 mid-level backend 2022\u2013present)\"], \"recommendation\": \"reject\"}",
+    "model_reported": "grok-4.5",
+    "inputTokens": 141,
+    "outputTokens": 184,
+    "totalTokens": 325,
+    "tokensEstimated": true,
+    "costUsd": null,
+    "wallMs": 13452,
+    "stderrTail": "",
+    "agentFileSha256": "none",
+    "skillsBundleSha256": "none",
+    "suiteSha256": "4a12f7840060d3340e31887045177b943ccfc26aece2989d42f2e6f31a2b2c61",
+    "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/cv-review/suite.json",
+    "skipped": false,
+    "skipReason": null,
+    "deterministicScore": 1.0,
+    "deterministicDetails": [
+      {
+        "check": "json_valid",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {}
+      },
+      {
+        "check": "json_path_in",
+        "ok": true,
+        "weight": 3.0,
+        "spec": {
+          "values": [
+            "clarify",
+            "reject"
+          ],
+          "path": "recommendation"
+        }
+      },
+      {
+        "check": "contains_any",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {
+          "values": [
+            "title",
+            "senior",
+            "lead",
+            "inflat",
+            "scope",
+            "level",
+            "2 y",
+            "2.5",
+            "experience"
+          ]
+        }
+      },
+      {
+        "check": "contains_any",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {
+          "values": [
+            "gap",
+            "2021",
+            "Jul",
+            "Sep 2022",
+            "14 month",
+            "year"
+          ]
+        }
+      }
+    ],
+    "judgeScore": 0.4000000000000001,
+    "judgeDetail": {
+      "perCriterion": {
+        "catches_both": 0.4
+      },
+      "rationale": "Nails the title/seniority inflation and no-ownership issue and correctly rejects, but never flags the ~14-month Jul-2021\u2192Sep-2022 employment gap, one of the two planted issues.",
+      "judgeModel": "opus"
+    },
+    "quality": 0.7000000000000001,
+    "qualityPer1kTokens": 2.153846153846154
+  },
+  {
+    "role": "cv-review",
+    "task_id": "cv-unsubstantiated-metrics",
+    "task_title": "Don't take inflated metrics at face value",
+    "model_id": "grok-4.5",
+    "model_label": "Grok 4.5",
+    "lane": "hermes",
+    "adapterType": "hermes",
+    "effort": "cli_default",
+    "ok": true,
+    "error": null,
+    "output": "{\n  \"concerns\": [\n    \"Company for Growth Lead role is unnamed \u2014 cannot verify employment, industry, stage, or claims.\",\n    \"Extraordinary claims (300% revenue, $5M budget, 10x team) with zero baselines, time windows, attribution, or proof (no metrics, channels, experiments, or references).\",\n    \"Implausible scope jump: Marketing Associate who only 'ran email campaigns' (2021\u20132023) \u2192 Growth Lead managing $5M and 10x headcount within ~1 year, with no bridging evidence.\",\n    \"Growth Lead tenure is only ~1 year; claims read as unscoped and uncorroborated.\",\n    \"Skills are generic buzzwords (SEO, paid ads, 'data-driven growth') with no tools, channels, budgets, CAC/LTV/payback, experiment cadence, or outcomes.\",\n    \"No education, certifications, portfolio, case studies, or quant results from Brightline.\",\n    \"CV is too thin and non-specific to assess fit for Growth Marketing Manager (strategy, full-funnel ownership, measurement, team leadership).\"\n  ],\n  \"recommendation\": \"reject\",\n  \"verify\": [\n    \"Legal name of the startup, role title on record, employment dates, and reporting line.\",\n    \"Baseline and ending revenue, exact period for the 300% claim, and what share was causally tied to candidate-led growth work vs. product/market/funding.\",\n    \"What the $5M covered (media, people, total opex), approval authority, and spend by channel with ROAS/CAC/payback.\",\n    \"Team size before/after '10x', which roles were hired, and whether candidate had hiring/manager authority.\",\n    \"Concrete growth system: primary channels, experiment velocity, north-star metrics, attribution model, and 2\u20133 specific wins with before/after numbers.\",\n    \"Brightline: actual scope beyond 'email' (lists, ESP, lift, revenue influenced) and why promoted/hired into Growth Lead.\",\n    \"References from founder/CEO/finance who can confirm budget, revenue, and headcount claims.\"\n  ]\n}",
+    "model_reported": "grok-4.5",
+    "inputTokens": 127,
+    "outputTokens": 471,
+    "totalTokens": 598,
+    "tokensEstimated": true,
+    "costUsd": null,
+    "wallMs": 25217,
+    "stderrTail": "",
+    "agentFileSha256": "none",
+    "skillsBundleSha256": "none",
+    "suiteSha256": "4a12f7840060d3340e31887045177b943ccfc26aece2989d42f2e6f31a2b2c61",
+    "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/cv-review/suite.json",
+    "skipped": false,
+    "skipReason": null,
+    "deterministicScore": 1.0,
+    "deterministicDetails": [
+      {
+        "check": "json_valid",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {}
+      },
+      {
+        "check": "contains_any",
+        "ok": true,
+        "weight": 3.0,
+        "spec": {
+          "values": [
+            "300",
+            "baseline",
+            "context",
+            "unsubstantiat",
+            "vague",
+            "evidence",
+            "verify",
+            "$5M",
+            "absolute"
+          ]
+        }
+      }
+    ],
+    "judgeScore": 0.93,
+    "judgeDetail": {
+      "perCriterion": {
+        "skepticism": 0.93
+      },
+      "rationale": "Rigorously flags every unsubstantiated metric with the exact missing baselines/attribution and targets each dubious claim in the verify list; only minor tension is choosing 'reject' while still listing interview-verification items (arguably 'clarify').",
+      "judgeModel": "opus"
+    },
+    "quality": 0.9650000000000001,
+    "qualityPer1kTokens": 1.61371237458194
+  },
+  {
+    "role": "ledger",
+    "task_id": "ledger-blended-token-cost",
+    "task_title": "Compute output-weighted blended token cost per run across two lanes",
+    "model_id": "grok-4.5",
+    "model_label": "Grok 4.5",
+    "lane": "hermes",
+    "adapterType": "hermes",
+    "effort": "cli_default",
+    "ok": true,
+    "error": null,
+    "output": "{\"claudeWeightPerRun\": 27250, \"codexWeightPerRun\": 10750, \"blendedWeightPerRun\": 17350, \"why\": \"Per-run weights use in+5*out; blended is run-count-weighted mean across 400 claude and 600 codex runs.\"}",
+    "model_reported": "grok-4.5",
+    "inputTokens": 136,
+    "outputTokens": 50,
+    "totalTokens": 186,
+    "tokensEstimated": true,
+    "costUsd": null,
+    "wallMs": 11778,
+    "stderrTail": "",
+    "agentFileSha256": "none",
+    "skillsBundleSha256": "none",
+    "suiteSha256": "22a4d94c78402d54f39f0cd1b4eb6a12005acecfa3e2d429551928eca686300e",
+    "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/ledger/suite.json",
+    "skipped": false,
+    "skipReason": null,
+    "deterministicScore": 1.0,
+    "deterministicDetails": [
+      {
+        "check": "json_valid",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {}
+      },
+      {
+        "check": "json_path_equals",
+        "ok": true,
+        "weight": 3.0,
+        "spec": {
+          "value": 27250,
+          "path": "claudeWeightPerRun"
+        }
+      },
+      {
+        "check": "json_path_equals",
+        "ok": true,
+        "weight": 3.0,
+        "spec": {
+          "value": 10750,
+          "path": "codexWeightPerRun"
+        }
+      },
+      {
+        "check": "json_path_equals",
+        "ok": true,
+        "weight": 4.0,
+        "spec": {
+          "value": 17350,
+          "path": "blendedWeightPerRun"
+        }
+      }
+    ],
+    "judgeScore": 1.0,
+    "judgeDetail": {
+      "perCriterion": {
+        "correctness": 1.0
+      },
+      "rationale": "All three values exact (27250, 10750, 17350) using the 5x multiplier and run-count-weighted blend, with a correct concise why under 30 words.",
+      "judgeModel": "opus"
+    },
+    "quality": 1.0,
+    "qualityPer1kTokens": 5.376344086021505
+  },
+  {
+    "role": "ledger",
+    "task_id": "ledger-breakeven-runs",
+    "task_title": "Compute the breakeven run count for a product line",
+    "model_id": "grok-4.5",
+    "model_label": "Grok 4.5",
+    "lane": "hermes",
+    "adapterType": "hermes",
+    "effort": "cli_default",
+    "ok": true,
+    "error": null,
+    "output": "{\"contributionPerRun\": 0.7, \"breakevenRuns\": 286, \"why\": \"Contribution is $1.10-$0.40=$0.70/run. $200/0.70\u2248285.71; round up since partial runs do not count.\"}",
+    "model_reported": "grok-4.5",
+    "inputTokens": 112,
+    "outputTokens": 39,
+    "totalTokens": 151,
+    "tokensEstimated": true,
+    "costUsd": null,
+    "wallMs": 8427,
+    "stderrTail": "",
+    "agentFileSha256": "none",
+    "skillsBundleSha256": "none",
+    "suiteSha256": "22a4d94c78402d54f39f0cd1b4eb6a12005acecfa3e2d429551928eca686300e",
+    "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/ledger/suite.json",
+    "skipped": false,
+    "skipReason": null,
+    "deterministicScore": 1.0,
+    "deterministicDetails": [
+      {
+        "check": "json_valid",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {}
+      },
+      {
+        "check": "json_path_equals",
+        "ok": true,
+        "weight": 3.0,
+        "spec": {
+          "value": 0.7,
+          "path": "contributionPerRun"
+        }
+      },
+      {
+        "check": "json_path_equals",
+        "ok": true,
+        "weight": 5.0,
+        "spec": {
+          "value": 286,
+          "path": "breakevenRuns"
+        }
+      }
+    ],
+    "judgeScore": 1.0,
+    "judgeDetail": {
+      "perCriterion": {
+        "correctness": 1.0
+      },
+      "rationale": "Contribution 0.70, breakeven correctly rounded up to 286, with accurate concise reasoning.",
+      "judgeModel": "opus"
+    },
+    "quality": 1.0,
+    "qualityPer1kTokens": 6.622516556291391
+  },
+  {
+    "role": "ledger",
+    "task_id": "ledger-burn-runway",
+    "task_title": "Compute runway and make a spend call",
+    "model_id": "grok-4.5",
+    "model_label": "Grok 4.5",
+    "lane": "hermes",
+    "adapterType": "hermes",
+    "effort": "cli_default",
+    "ok": true,
+    "error": null,
+    "output": "{\"runwayMonths\": 3, \"decision\": \"reject\", \"why\": \"Adding $900/mo cuts runway from 3 to 1.92 months, below the 4-month no-revenue period.\"}",
+    "model_reported": "grok-4.5",
+    "inputTokens": 107,
+    "outputTokens": 34,
+    "totalTokens": 141,
+    "tokensEstimated": true,
+    "costUsd": null,
+    "wallMs": 10894,
+    "stderrTail": "",
+    "agentFileSha256": "none",
+    "skillsBundleSha256": "none",
+    "suiteSha256": "22a4d94c78402d54f39f0cd1b4eb6a12005acecfa3e2d429551928eca686300e",
+    "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/ledger/suite.json",
+    "skipped": false,
+    "skipReason": null,
+    "deterministicScore": 1.0,
+    "deterministicDetails": [
+      {
+        "check": "json_valid",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {}
+      },
+      {
+        "check": "json_path_equals",
+        "ok": true,
+        "weight": 4.0,
+        "spec": {
+          "value": 3,
+          "path": "runwayMonths"
+        }
+      },
+      {
+        "check": "json_path_equals",
+        "ok": true,
+        "weight": 3.0,
+        "spec": {
+          "value": "reject",
+          "path": "decision"
+        }
+      }
+    ],
+    "judgeScore": 1.0,
+    "judgeDetail": {
+      "perCriterion": {
+        "judgment": 1.0
+      },
+      "rationale": "Correct runway of 3, reject decision, and the why cites the drop to 1.92 months falling below the 4-month no-revenue window.",
+      "judgeModel": "opus"
+    },
+    "quality": 1.0,
+    "qualityPer1kTokens": 7.092198581560284
+  },
+  {
+    "role": "ledger",
+    "task_id": "ledger-cache-token-undercount",
+    "task_title": "Catch the cache-token undercount in the agent scorecard",
+    "model_id": "grok-4.5",
+    "model_label": "Grok 4.5",
+    "lane": "hermes",
+    "adapterType": "hermes",
+    "effort": "cli_default",
+    "ok": true,
+    "error": null,
+    "output": "{\"correctTotalTokens\": 30000, \"undercountTokens\": 20000, \"why\": \"Cache read and creation tokens are real billed prompt tokens, so they must count in total cost-tokens like input and output.\"}",
+    "model_reported": "grok-4.5",
+    "inputTokens": 178,
+    "outputTokens": 47,
+    "totalTokens": 225,
+    "tokensEstimated": true,
+    "costUsd": null,
+    "wallMs": 7452,
+    "stderrTail": "",
+    "agentFileSha256": "none",
+    "skillsBundleSha256": "none",
+    "suiteSha256": "22a4d94c78402d54f39f0cd1b4eb6a12005acecfa3e2d429551928eca686300e",
+    "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/ledger/suite.json",
+    "skipped": false,
+    "skipReason": null,
+    "deterministicScore": 1.0,
+    "deterministicDetails": [
+      {
+        "check": "json_valid",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {}
+      },
+      {
+        "check": "json_path_equals",
+        "ok": true,
+        "weight": 4.0,
+        "spec": {
+          "value": 30000,
+          "path": "correctTotalTokens"
+        }
+      },
+      {
+        "check": "json_path_equals",
+        "ok": true,
+        "weight": 4.0,
+        "spec": {
+          "value": 20000,
+          "path": "undercountTokens"
+        }
+      },
+      {
+        "check": "max_words",
+        "ok": true,
+        "weight": 1.0,
+        "spec": {
+          "value": 40
+        }
+      }
+    ],
+    "judgeScore": 1.0,
+    "judgeDetail": {
+      "perCriterion": {
+        "correctness": 1.0
+      },
+      "rationale": "Total 30000 and undercount 20000 are exact, and the why correctly names both cache fields as real billed prompt tokens belonging in the cost total.",
+      "judgeModel": "opus"
+    },
+    "quality": 1.0,
+    "qualityPer1kTokens": 4.444444444444445
+  },
+  {
+    "role": "ledger",
+    "task_id": "ledger-cost-anomaly-rootcause",
+    "task_title": "Spot the cost-spiked agent and name the real root cause",
+    "model_id": "grok-4.5",
+    "model_label": "Grok 4.5",
+    "lane": "hermes",
+    "adapterType": "hermes",
+    "effort": "cli_default",
+    "ok": true,
+    "error": null,
+    "output": "{\"anomalyDay\": 6, \"approxBaselineOutput\": 1216, \"spikeMultiple\": 7.5, \"rootCause\": \"Lane switched from terse codex to verbose Claude config; flat workload so output tokens spiked from verbosity.\"}",
+    "model_reported": "grok-4.5",
+    "inputTokens": 144,
+    "outputTokens": 49,
+    "totalTokens": 193,
+    "tokensEstimated": true,
+    "costUsd": null,
+    "wallMs": 13339,
+    "stderrTail": "",
+    "agentFileSha256": "none",
+    "skillsBundleSha256": "none",
+    "suiteSha256": "22a4d94c78402d54f39f0cd1b4eb6a12005acecfa3e2d429551928eca686300e",
+    "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/ledger/suite.json",
+    "skipped": false,
+    "skipReason": null,
+    "deterministicScore": 1.0,
+    "deterministicDetails": [
+      {
+        "check": "json_path_equals",
+        "ok": true,
+        "weight": 3.0,
+        "spec": {
+          "value": 6,
+          "path": "anomalyDay"
+        }
+      },
+      {
+        "check": "json_valid",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {}
+      },
+      {
+        "check": "contains_any",
+        "ok": true,
+        "weight": 3.0,
+        "spec": {
+          "values": [
+            "lane",
+            "model",
+            "switch",
+            "claude",
+            "codex",
+            "verbose",
+            "config"
+          ]
+        }
+      }
+    ],
+    "judgeScore": 0.85,
+    "judgeDetail": {
+      "perCriterion": {
+        "rootcause": 0.85
+      },
+      "rationale": "Correctly names day 6, ~1216 baseline, 7.5x, and the terse-to-verbose lane switch under flat workload, but omits the q/1k-out quality-drop nuance the criterion rewards.",
+      "judgeModel": "opus"
+    },
+    "quality": 0.925,
+    "qualityPer1kTokens": 4.7927461139896375
+  },
+  {
+    "role": "ledger",
+    "task_id": "ledger-cost-line-classify",
+    "task_title": "Classify cost behavior including a semi-variable trap line",
+    "model_id": "grok-4.5",
+    "model_label": "Grok 4.5",
+    "lane": "hermes",
+    "adapterType": "hermes",
+    "effort": "cli_default",
+    "ok": true,
+    "error": null,
+    "output": "{\"s1\": \"mixed\", \"s2\": \"fixed\", \"s3\": \"variable\", \"why_s1\": \"Base $300 is fixed; overage $0.002/run beyond 50k scales with volume.\"}",
+    "model_reported": "grok-4.5",
+    "inputTokens": 268,
+    "outputTokens": 32,
+    "totalTokens": 300,
+    "tokensEstimated": true,
+    "costUsd": null,
+    "wallMs": 8374,
+    "stderrTail": "",
+    "agentFileSha256": "none",
+    "skillsBundleSha256": "none",
+    "suiteSha256": "22a4d94c78402d54f39f0cd1b4eb6a12005acecfa3e2d429551928eca686300e",
+    "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/ledger/suite.json",
+    "skipped": false,
+    "skipReason": null,
+    "deterministicScore": 1.0,
+    "deterministicDetails": [
+      {
+        "check": "json_valid",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {}
+      },
+      {
+        "check": "json_path_equals",
+        "ok": true,
+        "weight": 4.0,
+        "spec": {
+          "value": "mixed",
+          "path": "s1"
+        }
+      },
+      {
+        "check": "json_path_equals",
+        "ok": true,
+        "weight": 3.0,
+        "spec": {
+          "value": "fixed",
+          "path": "s2"
+        }
+      },
+      {
+        "check": "json_path_equals",
+        "ok": true,
+        "weight": 3.0,
+        "spec": {
+          "value": "variable",
+          "path": "s3"
+        }
+      }
+    ],
+    "judgeScore": 1.0,
+    "judgeDetail": {
+      "perCriterion": {
+        "correctness": 1.0
+      },
+      "rationale": "s1=mixed, s2=fixed, s3=variable all correct, and why_s1 names both the fixed $300 base and the per-run overage within the word limit.",
+      "judgeModel": "opus"
+    },
+    "quality": 1.0,
+    "qualityPer1kTokens": 3.3333333333333335
+  },
+  {
+    "role": "ledger",
+    "task_id": "ledger-fixed-cost-allocation",
+    "task_title": "Allocate a shared fixed cost by usage",
+    "model_id": "grok-4.5",
+    "model_label": "Grok 4.5",
+    "lane": "hermes",
+    "adapterType": "hermes",
+    "effort": "cli_default",
+    "ok": true,
+    "error": null,
+    "output": "{\"allocX\": 75, \"allocY\": 225, \"why\": \"Usage-based: X 2000/8000=25%, Y 75% of $300 seat.\"}",
+    "model_reported": "grok-4.5",
+    "inputTokens": 87,
+    "outputTokens": 22,
+    "totalTokens": 109,
+    "tokensEstimated": true,
+    "costUsd": null,
+    "wallMs": 8067,
+    "stderrTail": "",
+    "agentFileSha256": "none",
+    "skillsBundleSha256": "none",
+    "suiteSha256": "22a4d94c78402d54f39f0cd1b4eb6a12005acecfa3e2d429551928eca686300e",
+    "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/ledger/suite.json",
+    "skipped": false,
+    "skipReason": null,
+    "deterministicScore": 1.0,
+    "deterministicDetails": [
+      {
+        "check": "json_valid",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {}
+      },
+      {
+        "check": "json_path_equals",
+        "ok": true,
+        "weight": 4.0,
+        "spec": {
+          "value": 75,
+          "path": "allocX"
+        }
+      },
+      {
+        "check": "json_path_equals",
+        "ok": true,
+        "weight": 4.0,
+        "spec": {
+          "value": 225,
+          "path": "allocY"
+        }
+      }
+    ],
+    "judgeScore": 1.0,
+    "judgeDetail": {
+      "perCriterion": {
+        "correctness": 1.0
+      },
+      "rationale": "Correctly allocates $75/$225 by usage share, sums to exactly 300 with proper X/Y assignment and a compliant why string.",
+      "judgeModel": "opus"
+    },
+    "quality": 1.0,
+    "qualityPer1kTokens": 9.174311926605505
+  },
+  {
+    "role": "ledger",
+    "task_id": "ledger-fixed-vs-variable",
+    "task_title": "Classify and split fixed vs variable monthly cost",
+    "model_id": "grok-4.5",
+    "model_label": "Grok 4.5",
+    "lane": "hermes",
+    "adapterType": "hermes",
+    "effort": "cli_default",
+    "ok": true,
+    "error": null,
+    "output": "{\"fixedTotal\": 250, \"variableTotal\": 2.7, \"dominantBucket\": \"fixed\", \"why\": \"Flat SaaS and seat fees total $250 vs $2.70 token spend.\"}",
+    "model_reported": "grok-4.5",
+    "inputTokens": 123,
+    "outputTokens": 33,
+    "totalTokens": 156,
+    "tokensEstimated": true,
+    "costUsd": null,
+    "wallMs": 7596,
+    "stderrTail": "",
+    "agentFileSha256": "none",
+    "skillsBundleSha256": "none",
+    "suiteSha256": "22a4d94c78402d54f39f0cd1b4eb6a12005acecfa3e2d429551928eca686300e",
+    "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/ledger/suite.json",
+    "skipped": false,
+    "skipReason": null,
+    "deterministicScore": 1.0,
+    "deterministicDetails": [
+      {
+        "check": "json_valid",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {}
+      },
+      {
+        "check": "json_path_equals",
+        "ok": true,
+        "weight": 4.0,
+        "spec": {
+          "value": 250,
+          "path": "fixedTotal"
+        }
+      },
+      {
+        "check": "json_path_equals",
+        "ok": true,
+        "weight": 3.0,
+        "spec": {
+          "value": "fixed",
+          "path": "dominantBucket"
+        }
+      }
+    ],
+    "judgeScore": 1.0,
+    "judgeDetail": {
+      "perCriterion": {
+        "correctness": 1.0
+      },
+      "rationale": "Fixed=250, variable=2.70, dominant=fixed all correct, and the why concisely contrasts the flat $250 against trivial $2.70 token spend within word limit.",
+      "judgeModel": "opus"
+    },
+    "quality": 1.0,
+    "qualityPer1kTokens": 6.410256410256411
+  },
+  {
+    "role": "ledger",
+    "task_id": "ledger-pnl-line",
+    "task_title": "Compute the P&L for a subscription product line",
+    "model_id": "grok-4.5",
+    "model_label": "Grok 4.5",
+    "lane": "hermes",
+    "adapterType": "hermes",
+    "effort": "cli_default",
+    "ok": true,
+    "error": null,
+    "output": "{\"contributionPerSub\": 12, \"monthlyProfit\": 1040, \"decision\": \"continue\", \"why\": \"Strong $12 contribution covers $400 fixed overhead; line earns $1040/month profit.\"}",
+    "model_reported": "grok-4.5",
+    "inputTokens": 109,
+    "outputTokens": 41,
+    "totalTokens": 150,
+    "tokensEstimated": true,
+    "costUsd": null,
+    "wallMs": 14026,
+    "stderrTail": "",
+    "agentFileSha256": "none",
+    "skillsBundleSha256": "none",
+    "suiteSha256": "22a4d94c78402d54f39f0cd1b4eb6a12005acecfa3e2d429551928eca686300e",
+    "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/ledger/suite.json",
+    "skipped": false,
+    "skipReason": null,
+    "deterministicScore": 1.0,
+    "deterministicDetails": [
+      {
+        "check": "json_valid",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {}
+      },
+      {
+        "check": "json_path_equals",
+        "ok": true,
+        "weight": 3.0,
+        "spec": {
+          "value": 12,
+          "path": "contributionPerSub"
+        }
+      },
+      {
+        "check": "json_path_equals",
+        "ok": true,
+        "weight": 4.0,
+        "spec": {
+          "value": 1040,
+          "path": "monthlyProfit"
+        }
+      },
+      {
+        "check": "json_path_equals",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {
+          "value": "continue",
+          "path": "decision"
+        }
+      }
+    ],
+    "judgeScore": 1.0,
+    "judgeDetail": {
+      "perCriterion": {
+        "reasoning": 1.0
+      },
+      "rationale": "Correct 12 and 1040 with fixed overhead properly deducted, continue decision, and a concise why noting the profit.",
+      "judgeModel": "opus"
+    },
+    "quality": 1.0,
+    "qualityPer1kTokens": 6.666666666666667
+  },
+  {
+    "role": "ledger",
+    "task_id": "ledger-q-per-1k-out",
+    "task_title": "Pick the more cost-efficient agent on quality-per-1k-output-tokens",
+    "model_id": "grok-4.5",
+    "model_label": "Grok 4.5",
+    "lane": "hermes",
+    "adapterType": "hermes",
+    "effort": "cli_default",
+    "ok": true,
+    "error": null,
+    "output": "{\"qPer1kA\": 0.6, \"qPer1kB\": 1.4, \"pick\": \"B\", \"why\": \"B yields higher quality per 1k output tokens (1.4 vs 0.6), so more cost-efficient.\"}",
+    "model_reported": "grok-4.5",
+    "inputTokens": 121,
+    "outputTokens": 34,
+    "totalTokens": 155,
+    "tokensEstimated": true,
+    "costUsd": null,
+    "wallMs": 12493,
+    "stderrTail": "",
+    "agentFileSha256": "none",
+    "skillsBundleSha256": "none",
+    "suiteSha256": "22a4d94c78402d54f39f0cd1b4eb6a12005acecfa3e2d429551928eca686300e",
+    "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/ledger/suite.json",
+    "skipped": false,
+    "skipReason": null,
+    "deterministicScore": 1.0,
+    "deterministicDetails": [
+      {
+        "check": "json_valid",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {}
+      },
+      {
+        "check": "json_path_equals",
+        "ok": true,
+        "weight": 3.0,
+        "spec": {
+          "value": 0.6,
+          "path": "qPer1kA"
+        }
+      },
+      {
+        "check": "json_path_equals",
+        "ok": true,
+        "weight": 3.0,
+        "spec": {
+          "value": 1.4,
+          "path": "qPer1kB"
+        }
+      },
+      {
+        "check": "json_path_equals",
+        "ok": true,
+        "weight": 4.0,
+        "spec": {
+          "value": "B",
+          "path": "pick"
+        }
+      }
+    ],
+    "judgeScore": 1.0,
+    "judgeDetail": {
+      "perCriterion": {
+        "reasoning": 1.0
+      },
+      "rationale": "Both q/1k-out values correct (0.6, 1.4), picks B on efficiency, and the why cites quality-per-output-token rather than raw quality.",
+      "judgeModel": "opus"
+    },
+    "quality": 1.0,
+    "qualityPer1kTokens": 6.451612903225807
+  },
+  {
+    "role": "ledger",
+    "task_id": "ledger-quality-per-token-floor",
+    "task_title": "Pick the model on q/1k-out subject to a quality floor",
+    "model_id": "grok-4.5",
+    "model_label": "Grok 4.5",
+    "lane": "hermes",
+    "adapterType": "hermes",
+    "effort": "cli_default",
+    "ok": true,
+    "error": null,
+    "output": "{\"pick\": \"B\", \"qPer1kPick\": 1.329, \"why\": \"C fails 0.90 floor. Among A/B, B has higher quality per 1k output tokens (1.329 vs 0.404).\"}",
+    "model_reported": "grok-4.5",
+    "inputTokens": 112,
+    "outputTokens": 33,
+    "totalTokens": 145,
+    "tokensEstimated": true,
+    "costUsd": null,
+    "wallMs": 10327,
+    "stderrTail": "",
+    "agentFileSha256": "none",
+    "skillsBundleSha256": "none",
+    "suiteSha256": "22a4d94c78402d54f39f0cd1b4eb6a12005acecfa3e2d429551928eca686300e",
+    "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/ledger/suite.json",
+    "skipped": false,
+    "skipReason": null,
+    "deterministicScore": 1.0,
+    "deterministicDetails": [
+      {
+        "check": "json_valid",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {}
+      },
+      {
+        "check": "json_path_equals",
+        "ok": true,
+        "weight": 5.0,
+        "spec": {
+          "value": "B",
+          "path": "pick"
+        }
+      }
+    ],
+    "judgeScore": 1.0,
+    "judgeDetail": {
+      "perCriterion": {
+        "reasoning": 1.0
+      },
+      "rationale": "Correctly disqualifies C on the 0.90 floor and picks B with accurate qPer1kPick 1.329 and sound justification.",
+      "judgeModel": "opus"
+    },
+    "quality": 1.0,
+    "qualityPer1kTokens": 6.8965517241379315
+  },
+  {
+    "role": "ledger",
+    "task_id": "ledger-spend-spike-disposition",
+    "task_title": "Decide what to do about a quality-negative spend spike",
+    "model_id": "grok-4.5",
+    "model_label": "Grok 4.5",
+    "lane": "hermes",
+    "adapterType": "hermes",
+    "effort": "cli_default",
+    "ok": true,
+    "error": null,
+    "output": "{\"action\":\"revert_lane\",\"reason\":\"Spend tripled after a verbose-lane move while q/1k-out dropped, so extra tokens bought less quality; board did not authorize higher spend.\",\"nextStep\":\"Revert to the prior lane and pin lane + max output budget in role config with a spend/q-per-1k alert so the change cannot drift again.\"}",
+    "model_reported": "grok-4.5",
+    "inputTokens": 149,
+    "outputTokens": 80,
+    "totalTokens": 229,
+    "tokensEstimated": true,
+    "costUsd": null,
+    "wallMs": 9899,
+    "stderrTail": "",
+    "agentFileSha256": "none",
+    "skillsBundleSha256": "none",
+    "suiteSha256": "22a4d94c78402d54f39f0cd1b4eb6a12005acecfa3e2d429551928eca686300e",
+    "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/ledger/suite.json",
+    "skipped": false,
+    "skipReason": null,
+    "deterministicScore": 1.0,
+    "deterministicDetails": [
+      {
+        "check": "json_valid",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {}
+      },
+      {
+        "check": "json_path_equals",
+        "ok": true,
+        "weight": 5.0,
+        "spec": {
+          "value": "revert_lane",
+          "path": "action"
+        }
+      },
+      {
+        "check": "contains_any",
+        "ok": true,
+        "weight": 2.0,
+        "spec": {
+          "values": [
+            "q/1k",
+            "q/1k-out",
+            "per token",
+            "per-token",
+            "efficiency",
+            "quality per"
+          ]
+        }
+      }
+    ],
+    "judgeScore": 0.96,
+    "judgeDetail": {
+      "perCriterion": {
+        "judgment": 0.96
+      },
+      "rationale": "Chooses revert_lane, reason explicitly cites the q/1k-out drop plus unauthorized spend, and nextStep pins lane+budget with a regression alert making it durable \u2014 essentially the ideal answer.",
+      "judgeModel": "opus"
+    },
+    "quality": 0.98,
+    "qualityPer1kTokens": 4.279475982532751
+  }
+]

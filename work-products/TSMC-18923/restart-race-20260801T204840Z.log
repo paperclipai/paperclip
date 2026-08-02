@@ -1,0 +1,72 @@
++ trap cleanup EXIT INT TERM
+++ git -C /Users/glad0s/paperclip rev-parse HEAD
++ echo '[preflight] served_head=7439bc49747bb6fd3b3615c37bc195447c985f56'
+[preflight] served_head=7439bc49747bb6fd3b3615c37bc195447c985f56
++ git -C /Users/glad0s/paperclip merge-base --is-ancestor eda7c53dc HEAD
++ echo '[preflight] eda7c53dc is an ancestor of served HEAD'
+[preflight] eda7c53dc is an ancestor of served HEAD
+++ curl -fsS --max-time 5 http://127.0.0.1:3100/api/health
+++ tr -d '\n'
++ echo '[preflight] initial health: {"status":"ok","version":"2026.722.0+343.git.eda7c53dc.dirty","serverVersion":"2026.722.0+343.git.eda7c53dc.dirty","deploymentMode":"local_trusted","deploymentExposure":"private","authReady":true,"bootstrapStatus":"ready","bootstrapInviteActive":false,"features":{"companyDeletionEnabled":true},"instance":{"sourceDir":"/Users/glad0s/paperclip/server","commit":"7439bc497","pid":96174,"startedAt":"2026-08-01T20:06:05.942Z"},"serverInfo":{"processStartedAt":"2026-08-01T19:24:49.990Z","git":{"available":true,"fullSha":"7439bc49747bb6fd3b3615c37bc195447c985f56","shortSha":"7439bc497","branchName":"live","subject":"fix(recovery): exempt standing anchors","committedAt":"2026-08-01T19:43:35.000Z","localChanges":{"available":true,"hasLocalChanges":true,"stagedFileCount":0,"unstagedFileCount":94,"untrackedFileCount":86}}},"databaseBackup":{"enabled":true,"status":"ok","backupDir":"/Users/glad0s/.paperclip/instances/default/data/backups","maxAgeHours":26,"latestBackup":{"name":"paperclip-20260801-212456.sql.gz","path":"/Users/glad0s/.paperclip/instances/default/data/backups/paperclip-20260801-212456.sql.gz","mtime":"2026-08-01T20:30:46.181Z","ageHours":0.3,"sizeBytes":3514555622},"lastFailure":null,"warnings":[]}}'
+[preflight] initial health: {"status":"ok","version":"2026.722.0+343.git.eda7c53dc.dirty","serverVersion":"2026.722.0+343.git.eda7c53dc.dirty","deploymentMode":"local_trusted","deploymentExposure":"private","authReady":true,"bootstrapStatus":"ready","bootstrapInviteActive":false,"features":{"companyDeletionEnabled":true},"instance":{"sourceDir":"/Users/glad0s/paperclip/server","commit":"7439bc497","pid":96174,"startedAt":"2026-08-01T20:06:05.942Z"},"serverInfo":{"processStartedAt":"2026-08-01T19:24:49.990Z","git":{"available":true,"fullSha":"7439bc49747bb6fd3b3615c37bc195447c985f56","shortSha":"7439bc497","branchName":"live","subject":"fix(recovery): exempt standing anchors","committedAt":"2026-08-01T19:43:35.000Z","localChanges":{"available":true,"hasLocalChanges":true,"stagedFileCount":0,"unstagedFileCount":94,"untrackedFileCount":86}}},"databaseBackup":{"enabled":true,"status":"ok","backupDir":"/Users/glad0s/.paperclip/instances/default/data/backups","maxAgeHours":26,"latestBackup":{"name":"paperclip-20260801-212456.sql.gz","path":"/Users/glad0s/.paperclip/instances/default/data/backups/paperclip-20260801-212456.sql.gz","mtime":"2026-08-01T20:30:46.181Z","ageHours":0.3,"sizeBytes":3514555622},"lastFailure":null,"warnings":[]}}
++ echo '[lifecycle] booting out managed source service gui/501/ie.thinkstack.paperclip-source'
+[lifecycle] booting out managed source service gui/501/ie.thinkstack.paperclip-source
++ launchctl bootout gui/501/ie.thinkstack.paperclip-source
++ SERVICE_STOPPED=1
+++ seq 1 40
++ for _ in '$(seq 1 40)'
++ lsof -tiTCP:3100 -sTCP:LISTEN
++ sleep 0.25
++ for _ in '$(seq 1 40)'
++ lsof -tiTCP:3100 -sTCP:LISTEN
++ break
++ lsof -tiTCP:3100 -sTCP:LISTEN
++ echo '[holder] binding :3100 and releasing it after 4000ms'
+[holder] binding :3100 and releasing it after 4000ms
++ HOLDER_PID=54422
++ sleep 0.25
++ node -e '
+  const net=require("net");
+  const server=net.createServer();
+  server.listen({host:"127.0.0.1",port:3100},()=>{
+    console.log("[holder] bound 3100");
+    setTimeout(()=>server.close(()=>{console.log("[holder] released 3100"); process.exit(0)}),4000);
+  });
+  server.on("error", err=>{console.error("[holder] error",err);process.exit(2)});
+'
+[holder] bound 3100
++ kill -0 54422
++ echo '[server] starting served tree directly with PORT=3100 PAPERCLIP_PORT_WAIT_MS=10000'
+[server] starting served tree directly with PORT=3100 PAPERCLIP_PORT_WAIT_MS=10000
++ SERVER_PID=54427
++ deadline=36
++ '[' 1 -lt 36 ']'
++ grep -Fq 'Requested port 3100 became available; binding it.' /Users/glad0s/paperclip/work-products/TSMC-18923/restart-race-20260801T204840Z.log
++ cd /Users/glad0s/paperclip
++ exec setsid env PORT=3100 PAPERCLIP_PORT_WAIT_MS=10000 pnpm dev
+/Users/glad0s/paperclip/work-products/TSMC-18923/run-canonical-port-race.sh: line 85: exec: setsid: not found
++ curl -fsS --max-time 2 http://127.0.0.1:3100/api/health
+curl: (28) Operation timed out after 2009 milliseconds with 0 bytes received
++ kill -0 54427
++ echo '[blocker] direct served-tree dev process exited before proof'
+[blocker] direct served-tree dev process exited before proof
++ exit 22
++ cleanup
++ status=22
++ echo '[cleanup] status=22'
+[cleanup] status=22
++ '[' -n 54427 ']'
++ kill -0 54427
++ '[' -n 54422 ']'
++ kill -0 54422
++ echo '[cleanup] stopping temporary holder 54422'
+[cleanup] stopping temporary holder 54422
++ kill -TERM 54422
++ '[' 1 = 1 ']'
++ echo '[cleanup] restoring managed source service'
+[cleanup] restoring managed source service
++ launchctl bootstrap gui/501 /Users/glad0s/Library/LaunchAgents/ie.thinkstack.paperclip-source.plist
++ echo LOG=/Users/glad0s/paperclip/work-products/TSMC-18923/restart-race-20260801T204840Z.log
++ echo HEALTH=/Users/glad0s/paperclip/work-products/TSMC-18923/restart-race-20260801T204840Z-health.json
++ echo RESULT=/Users/glad0s/paperclip/work-products/TSMC-18923/restart-race-20260801T204840Z-result.env
++ exit 22

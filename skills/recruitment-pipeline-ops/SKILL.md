@@ -18,6 +18,17 @@ Each candidate gets a **parent issue** ("<Name> — recruitment") holding the `c
 5. **On reply**: route answers to **CandidateIntakeSpecialist** to fold into the candidate-profile doc; gate clears; the job-market-scan child wakes via `issue_blockers_resolved`.
 6. **Submissions** (Stage 9): submission records have tightened requirements per the Stage-9 workflow issue — TODO: read the workflow doc on THIAA before first real submission; no submission has run end-to-end yet.
 
+### CV/CL positioning gate
+
+Every CV and cover letter must frame the candidate as the strongest truthful answer to the target role, not as someone asking permission to stretch.
+
+- **Held-title integrity:** experience headings may use only titles the candidate actually held. Never use the target job title as the CV headline if it can read as a held title. Use truthful positioning instead, for example `Technical Support & Customer Operations Leader | Enterprise Support, Escalations, Enablement`.
+- **Value thesis first:** the top third of the CV must answer "why this candidate is a missed opportunity if ignored" using evidence: scope led, customer outcomes, business impact, systems improved, and relevant domain exposure.
+- **Stretch handling:** do not lead with apologies or gap confessions. Gaps belong in interview prep or a short honest bridge only after the value thesis is clear. The cover letter may acknowledge a stretch area, but it must pivot immediately to the evidence-backed adjacent strength.
+- **Cover-letter alignment:** the cover letter must carry the same thesis as the CV headline and summary. If the CV positions the candidate as a customer-facing systems/support leader, the letter should deepen that story with one or two concrete outcomes, not reframe them as an associate applicant.
+- **Role-fit language:** use target-role wording as future-facing intent (`targeting`, `applying for`, `relevant to`) or capability mapping, never as invented employment history.
+- **QA check before send:** explicitly scan the rendered PDF text for target-title leakage, over-apologetic phrasing, weak "I have not..." paragraphs, fabricated title risk, and title/experience mismatches. A recipient-visible attachment proof is not content approval.
+
 ### The routing pattern that actually works (THIAA-464/466/469)
 
 Least-privilege blocks comments on issues you don't own, and checkouts of owned issues return 409 (never retry). When you need a comment posted on someone else's issue:

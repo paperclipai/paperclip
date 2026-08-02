@@ -1,0 +1,68 @@
+{
+  "role": "auditor",
+  "task_id": "aud-in-review-handoff-legit",
+  "task_title": "Validate whether an in_review handoff is legitimate",
+  "model_id": "grok-4.5",
+  "model_label": "Grok 4.5",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "ok": true,
+  "error": null,
+  "output": "{\"dispositionValid\": true, \"reason\": \"in_review is legitimate: implementation is complete, a concrete diff is attached with green CI, and work was handed to named gate_keeper_write holder AuditorAgent with no open blocker; implementer stopped pending review.\", \"nextOwner\": \"AuditorAgent\"}",
+  "model_reported": "grok-4.5",
+  "inputTokens": 215,
+  "outputTokens": 72,
+  "totalTokens": 287,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "wallMs": 7065,
+  "stderrTail": "",
+  "agentFileSha256": "none",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "2a04b6f827eda607af0693e4fbbe2fe425b9ea1c5fb0574b0550ceaac640d913",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/auditor/suite.json",
+  "skipped": false,
+  "skipReason": null,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "json_valid",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {}
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 5.0,
+      "spec": {
+        "value": true,
+        "path": "dispositionValid"
+      }
+    },
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {
+        "values": [
+          "Auditor",
+          "reviewer",
+          "gate_keeper",
+          "gate keeper"
+        ]
+      }
+    }
+  ],
+  "judgeScore": 0.9700000000000001,
+  "judgeDetail": {
+    "perCriterion": {
+      "disposition_calibration": 0.97
+    },
+    "rationale": "Correctly marks valid, ties reason to all three legitimacy conditions plus no-blocker, and names AuditorAgent as nextOwner.",
+    "judgeModel": "opus"
+  },
+  "quality": 0.9850000000000001,
+  "qualityPer1kTokens": 3.4320557491289203
+}

@@ -1,0 +1,69 @@
+{
+  "role": "ceo",
+  "task_id": "ceo-go-nogo-real-money",
+  "task_title": "Go/no-go on a real-money pilot with missing risk controls",
+  "model_id": "grok-4.5",
+  "model_label": "Grok 4.5",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "ok": true,
+  "error": null,
+  "output": "{\"decision\": \"no_go\", \"blocker\": \"live-execution path has no order-size cap, no kill-switch, and no mocked live-path test proving controls fire\", \"nextStep\": \"engineering: add order-size cap, kill-switch, and mocked live-path tests that prove controls fire; re-request pilot only after risk sign-off on those controls\"}",
+  "model_reported": "grok-4.5",
+  "inputTokens": 131,
+  "outputTokens": 79,
+  "totalTokens": 210,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "wallMs": 8615,
+  "stderrTail": "",
+  "agentFileSha256": "none",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "7b79fdf5d2ce80570fcfa85a1d04cd2c61e7093b8d2d1c735f7c4a07197a28c3",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/ceo/suite.json",
+  "skipped": false,
+  "skipReason": null,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "json_valid",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {}
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 5.0,
+      "spec": {
+        "value": "no_go",
+        "path": "decision"
+      }
+    },
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {
+        "values": [
+          "cap",
+          "kill",
+          "switch",
+          "test",
+          "control"
+        ]
+      }
+    }
+  ],
+  "judgeScore": 0.9700000000000001,
+  "judgeDetail": {
+    "perCriterion": {
+      "risk_judgment": 0.97
+    },
+    "rationale": "Clean no_go that names all three missing controls and delegates the fix to engineering with re-review gating, never routing the as-is order to the board.",
+    "judgeModel": "opus"
+  },
+  "quality": 0.9850000000000001,
+  "qualityPer1kTokens": 4.690476190476191
+}

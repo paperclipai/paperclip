@@ -1,0 +1,31 @@
+{
+  "n": 37,
+  "slug": "fort-book-reading",
+  "path": "/Users/glad0s/paperclip/work-products/TSM-5791/clip-bytes/37-fort-book-reading-8s.mp4",
+  "pass": true,
+  "violations": [],
+  "averages": {
+    "slateGreyRatio": 0.03533239293981482,
+    "cinnamonRatio": 0.7448914930555556,
+    "nearBlackRatio": 0.013166232638888888,
+    "skinRatio": 0.004769241898148148,
+    "animalCoatRatio": 0.7802238859953704
+  },
+  "durationSeconds": 8.041667,
+  "sampleTimestampsSeconds": [
+    1.0,
+    4.0,
+    7.0
+  ],
+  "framesSampled": 3,
+  "mode": "two_shot",
+  "method": "ffmpeg-multiframe-animal-vs-human-v2",
+  "thresholds": {
+    "nearBlackRatio_max": 0.08,
+    "animalCoatRatio_min_two_shot": 0.12,
+    "animalCoatRatio_min_solo": 0.08,
+    "james_slate_min_solo": 0.04,
+    "jessica_cinnamon_min_solo": 0.08,
+    "skinRatio_max_when_weak_animal": 0.12
+  }
+}

@@ -1,0 +1,64 @@
+{
+  "role": "ledger",
+  "task_id": "ledger-fixed-vs-variable",
+  "task_title": "Classify and split fixed vs variable monthly cost",
+  "model_id": "grok-4.5",
+  "model_label": "Grok 4.5",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "ok": true,
+  "error": null,
+  "output": "{\"fixedTotal\": 250, \"variableTotal\": 2.7, \"dominantBucket\": \"fixed\", \"why\": \"Flat SaaS and seat fees total $250 vs $2.70 token spend.\"}",
+  "model_reported": "grok-4.5",
+  "inputTokens": 123,
+  "outputTokens": 33,
+  "totalTokens": 156,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "wallMs": 7596,
+  "stderrTail": "",
+  "agentFileSha256": "none",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "22a4d94c78402d54f39f0cd1b4eb6a12005acecfa3e2d429551928eca686300e",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/ledger/suite.json",
+  "skipped": false,
+  "skipReason": null,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "json_valid",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {}
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 4.0,
+      "spec": {
+        "value": 250,
+        "path": "fixedTotal"
+      }
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 3.0,
+      "spec": {
+        "value": "fixed",
+        "path": "dominantBucket"
+      }
+    }
+  ],
+  "judgeScore": 1.0,
+  "judgeDetail": {
+    "perCriterion": {
+      "correctness": 1.0
+    },
+    "rationale": "Fixed=250, variable=2.70, dominant=fixed all correct, and the why concisely contrasts the flat $250 against trivial $2.70 token spend within word limit.",
+    "judgeModel": "opus"
+  },
+  "quality": 1.0,
+  "qualityPer1kTokens": 6.410256410256411
+}

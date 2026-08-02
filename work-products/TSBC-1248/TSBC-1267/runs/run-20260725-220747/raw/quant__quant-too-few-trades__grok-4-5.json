@@ -1,0 +1,74 @@
+{
+  "role": "quant",
+  "task_id": "quant-too-few-trades",
+  "task_title": "Reject a result with too few trades to be significant",
+  "model_id": "grok-4.5",
+  "model_label": "Grok 4.5",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "ok": true,
+  "error": null,
+  "output": "{\"sufficient\": false, \"reason\": \"n=9 trades is far too small for statistical significance; under a 50% null, P(\u22657 wins) is ~9%, so a coin-flip process readily produces a 78% sample win rate, and 3 days cannot establish edge or regime stability.\", \"recommendation\": \"Paper-trade or run a pre-registered larger sample (dozens\u2013hundreds of trades across regimes) with proper significance testing and risk limits before any live allocation.\"}",
+  "model_reported": "grok-4.5",
+  "inputTokens": 155,
+  "outputTokens": 109,
+  "totalTokens": 264,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "wallMs": 11442,
+  "stderrTail": "",
+  "agentFileSha256": "none",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "32b3563885d9e20631634bbef99975027564a4a43c6c29a6e45c153467654e2e",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/quant/suite.json",
+  "skipped": false,
+  "skipReason": null,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "json_valid",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {}
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 5.0,
+      "spec": {
+        "value": false,
+        "path": "sufficient"
+      }
+    },
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {
+        "values": [
+          "sample",
+          "significan",
+          "chance",
+          "luck",
+          "noise",
+          "n=",
+          "9 trades",
+          "too few",
+          "underpowered",
+          "random"
+        ]
+      }
+    }
+  ],
+  "judgeScore": 0.9700000000000001,
+  "judgeDetail": {
+    "perCriterion": {
+      "significance_judgment": 0.97
+    },
+    "rationale": "Correctly rules insufficient with an accurate binomial figure (P(\u22657/9)\u22489% under a fair coin), cites both small n and lack of regime coverage, and recommends paper-trading/larger pre-registered sample instead of live allocation.",
+    "judgeModel": "claude-opus-4-8"
+  },
+  "quality": 0.9850000000000001,
+  "qualityPer1kTokens": 3.7310606060606064
+}

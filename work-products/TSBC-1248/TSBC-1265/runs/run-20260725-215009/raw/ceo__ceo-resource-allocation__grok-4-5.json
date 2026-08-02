@@ -1,0 +1,67 @@
+{
+  "role": "ceo",
+  "task_id": "ceo-resource-allocation",
+  "task_title": "Assign work to the right agent by capability",
+  "model_id": "grok-4.5",
+  "model_label": "Grok 4.5",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "ok": true,
+  "error": null,
+  "output": "{\"T1\": \"EngineerAgent\", \"T2\": \"WriterAgent\", \"T3\": \"DesignerAgent\"}",
+  "model_reported": "grok-4.5",
+  "inputTokens": 144,
+  "outputTokens": 16,
+  "totalTokens": 160,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "wallMs": 6892,
+  "stderrTail": "",
+  "agentFileSha256": "none",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "7b79fdf5d2ce80570fcfa85a1d04cd2c61e7093b8d2d1c735f7c4a07197a28c3",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/ceo/suite.json",
+  "skipped": false,
+  "skipReason": null,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "json_valid",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {}
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 3.0,
+      "spec": {
+        "value": "EngineerAgent",
+        "path": "T1"
+      }
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 3.0,
+      "spec": {
+        "value": "WriterAgent",
+        "path": "T2"
+      }
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 3.0,
+      "spec": {
+        "value": "DesignerAgent",
+        "path": "T3"
+      }
+    }
+  ],
+  "judgeScore": null,
+  "judgeDetail": null,
+  "quality": 1.0,
+  "qualityPer1kTokens": 6.25
+}

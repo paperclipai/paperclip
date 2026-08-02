@@ -1,0 +1,90 @@
+{
+  "role": "cto",
+  "task_id": "cto-code-review-security-bug",
+  "task_title": "Catch the broken-auth bug in a permission-check diff",
+  "model_id": "grok-4.5",
+  "model_label": "Grok 4.5",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "ok": true,
+  "error": null,
+  "output": "**Flaw:** Missing authorization \u2014 grant existence-only check (no permissionKey or label-scope validation).\n\n**Escalation:** Any same-company grant (e.g. read-only or unrelated labels) lets the gate-keeper write the issue, bypassing label-scoped `tasks:gate_keeper_write` and enabling cross-label issue mutation.\n\n**Fix:**\n```js\nfunction canGateKeeperWrite(actor, issue, grant) {\n  if (actor.companyId !== issue.companyId) return false;\n  if (!grant || grant.permissionKey !== 'tasks:gate_keeper_write') return false;\n  const issueLabels = new Set(issue.labels ?? []);\n  return (grant.labels ?? []).some(l => issueLabels.has(l));\n}\n```",
+  "model_reported": "grok-4.5",
+  "inputTokens": 211,
+  "outputTokens": 158,
+  "totalTokens": 369,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "wallMs": 10801,
+  "stderrTail": "",
+  "agentFileSha256": "none",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "9178417ea7411729ec604cd6f0f72637a785d4d0f99ddd564fdfd0d4d603c31d",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/cto/suite.json",
+  "skipped": false,
+  "skipReason": null,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {
+        "values": [
+          "permissionKey",
+          "permission key",
+          "tasks:gate_keeper_write"
+        ]
+      }
+    },
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {
+        "values": [
+          "label",
+          "binding",
+          "scope binding",
+          "label-scoped",
+          "label overlap"
+        ]
+      }
+    },
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {
+        "values": [
+          "privilege",
+          "escalation",
+          "any grant",
+          "any issue",
+          "unscoped",
+          "over-broad"
+        ]
+      }
+    },
+    {
+      "check": "max_words",
+      "ok": true,
+      "weight": 1.0,
+      "spec": {
+        "value": 120
+      }
+    }
+  ],
+  "judgeScore": 0.9650000000000001,
+  "judgeDetail": {
+    "perCriterion": {
+      "correctness": 0.97,
+      "specificity": 0.95
+    },
+    "rationale": "The fix correctly checks both permissionKey AND label-overlap, names the existence-only flaw, and describes the cross-label/company escalation path concretely.",
+    "judgeModel": "opus"
+  },
+  "quality": 0.9825,
+  "qualityPer1kTokens": 2.66260162601626
+}

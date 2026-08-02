@@ -1,0 +1,594 @@
+{
+  "models": [
+    {
+      "id": "grok-4.5",
+      "label": "Grok 4.5",
+      "adapter": "hermes",
+      "model_arg": "grok-4.5",
+      "lane": "hermes"
+    }
+  ],
+  "judge": "claude-opus",
+  "roles": {
+    "engineer": {
+      "models": {
+        "grok-4.5": {
+          "tasks": 0,
+          "okRuns": 0,
+          "successRate": null,
+          "meanQuality": null,
+          "meanQualityPer1k": null,
+          "meanQualityPer1kOutput": null,
+          "meanTokens": null,
+          "meanInputTokens": null,
+          "meanOutputTokens": null,
+          "estimatedTokens": false,
+          "skippedRuns": 0
+        }
+      },
+      "recommendation": {
+        "pick": null,
+        "reason": "no successful runs"
+      },
+      "grokHeadToHead": {
+        "resolved": false,
+        "note": "insufficient data for grok-4.3 vs grok-4.20"
+      }
+    },
+    "designer": {
+      "models": {
+        "grok-4.5": {
+          "tasks": 0,
+          "okRuns": 0,
+          "successRate": null,
+          "meanQuality": null,
+          "meanQualityPer1k": null,
+          "meanQualityPer1kOutput": null,
+          "meanTokens": null,
+          "meanInputTokens": null,
+          "meanOutputTokens": null,
+          "estimatedTokens": false,
+          "skippedRuns": 0
+        }
+      },
+      "recommendation": {
+        "pick": null,
+        "reason": "no successful runs"
+      },
+      "grokHeadToHead": {
+        "resolved": false,
+        "note": "insufficient data for grok-4.3 vs grok-4.20"
+      }
+    },
+    "content": {
+      "models": {
+        "grok-4.5": {
+          "tasks": 0,
+          "okRuns": 0,
+          "successRate": null,
+          "meanQuality": null,
+          "meanQualityPer1k": null,
+          "meanQualityPer1kOutput": null,
+          "meanTokens": null,
+          "meanInputTokens": null,
+          "meanOutputTokens": null,
+          "estimatedTokens": false,
+          "skippedRuns": 0
+        }
+      },
+      "recommendation": {
+        "pick": null,
+        "reason": "no successful runs"
+      },
+      "grokHeadToHead": {
+        "resolved": false,
+        "note": "insufficient data for grok-4.3 vs grok-4.20"
+      }
+    },
+    "intake": {
+      "models": {
+        "grok-4.5": {
+          "tasks": 0,
+          "okRuns": 0,
+          "successRate": null,
+          "meanQuality": null,
+          "meanQualityPer1k": null,
+          "meanQualityPer1kOutput": null,
+          "meanTokens": null,
+          "meanInputTokens": null,
+          "meanOutputTokens": null,
+          "estimatedTokens": false,
+          "skippedRuns": 0
+        }
+      },
+      "recommendation": {
+        "pick": null,
+        "reason": "no successful runs"
+      },
+      "grokHeadToHead": {
+        "resolved": false,
+        "note": "insufficient data for grok-4.3 vs grok-4.20"
+      }
+    },
+    "ops": {
+      "models": {
+        "grok-4.5": {
+          "tasks": 10,
+          "okRuns": 10,
+          "successRate": 1.0,
+          "meanQuality": 0.9869619047619047,
+          "meanQualityPer1k": 0.041900215042458874,
+          "meanQualityPer1kOutput": 2.915118910666082,
+          "meanTokens": 27121.7,
+          "meanInputTokens": 26315,
+          "meanOutputTokens": 806.7,
+          "estimatedTokens": false,
+          "skippedRuns": 0
+        }
+      },
+      "recommendation": {
+        "pick": "grok-4.5",
+        "pickLabel": "Grok 4.5",
+        "objective": "peak_quality_cost_aware",
+        "reason": "peak quality Grok 4.5 (0.987) is also the cheapest near-peak",
+        "qualityGivenUp": 0.0,
+        "outputCostRatioVsPeak": 1.0,
+        "bestQuality": "grok-4.5",
+        "bestQualityLabel": "Grok 4.5",
+        "bestValue": "grok-4.5",
+        "bestValueLabel": "Grok 4.5"
+      },
+      "grokHeadToHead": {
+        "resolved": false,
+        "note": "insufficient data for grok-4.3 vs grok-4.20"
+      }
+    },
+    "ceo": {
+      "models": {
+        "grok-4.5": {
+          "tasks": 0,
+          "okRuns": 0,
+          "successRate": null,
+          "meanQuality": null,
+          "meanQualityPer1k": null,
+          "meanQualityPer1kOutput": null,
+          "meanTokens": null,
+          "meanInputTokens": null,
+          "meanOutputTokens": null,
+          "estimatedTokens": false,
+          "skippedRuns": 0
+        }
+      },
+      "recommendation": {
+        "pick": null,
+        "reason": "no successful runs"
+      },
+      "grokHeadToHead": {
+        "resolved": false,
+        "note": "insufficient data for grok-4.3 vs grok-4.20"
+      }
+    },
+    "cto": {
+      "models": {
+        "grok-4.5": {
+          "tasks": 0,
+          "okRuns": 0,
+          "successRate": null,
+          "meanQuality": null,
+          "meanQualityPer1k": null,
+          "meanQualityPer1kOutput": null,
+          "meanTokens": null,
+          "meanInputTokens": null,
+          "meanOutputTokens": null,
+          "estimatedTokens": false,
+          "skippedRuns": 0
+        }
+      },
+      "recommendation": {
+        "pick": null,
+        "reason": "no successful runs"
+      },
+      "grokHeadToHead": {
+        "resolved": false,
+        "note": "insufficient data for grok-4.3 vs grok-4.20"
+      }
+    },
+    "researcher": {
+      "models": {
+        "grok-4.5": {
+          "tasks": 0,
+          "okRuns": 0,
+          "successRate": null,
+          "meanQuality": null,
+          "meanQualityPer1k": null,
+          "meanQualityPer1kOutput": null,
+          "meanTokens": null,
+          "meanInputTokens": null,
+          "meanOutputTokens": null,
+          "estimatedTokens": false,
+          "skippedRuns": 0
+        }
+      },
+      "recommendation": {
+        "pick": null,
+        "reason": "no successful runs"
+      },
+      "grokHeadToHead": {
+        "resolved": false,
+        "note": "insufficient data for grok-4.3 vs grok-4.20"
+      }
+    },
+    "seo": {
+      "models": {
+        "grok-4.5": {
+          "tasks": 0,
+          "okRuns": 0,
+          "successRate": null,
+          "meanQuality": null,
+          "meanQualityPer1k": null,
+          "meanQualityPer1kOutput": null,
+          "meanTokens": null,
+          "meanInputTokens": null,
+          "meanOutputTokens": null,
+          "estimatedTokens": false,
+          "skippedRuns": 0
+        }
+      },
+      "recommendation": {
+        "pick": null,
+        "reason": "no successful runs"
+      },
+      "grokHeadToHead": {
+        "resolved": false,
+        "note": "insufficient data for grok-4.3 vs grok-4.20"
+      }
+    },
+    "cmo": {
+      "models": {
+        "grok-4.5": {
+          "tasks": 0,
+          "okRuns": 0,
+          "successRate": null,
+          "meanQuality": null,
+          "meanQualityPer1k": null,
+          "meanQualityPer1kOutput": null,
+          "meanTokens": null,
+          "meanInputTokens": null,
+          "meanOutputTokens": null,
+          "estimatedTokens": false,
+          "skippedRuns": 0
+        }
+      },
+      "recommendation": {
+        "pick": null,
+        "reason": "no successful runs"
+      },
+      "grokHeadToHead": {
+        "resolved": false,
+        "note": "insufficient data for grok-4.3 vs grok-4.20"
+      }
+    },
+    "ledger": {
+      "models": {
+        "grok-4.5": {
+          "tasks": 0,
+          "okRuns": 0,
+          "successRate": null,
+          "meanQuality": null,
+          "meanQualityPer1k": null,
+          "meanQualityPer1kOutput": null,
+          "meanTokens": null,
+          "meanInputTokens": null,
+          "meanOutputTokens": null,
+          "estimatedTokens": false,
+          "skippedRuns": 0
+        }
+      },
+      "recommendation": {
+        "pick": null,
+        "reason": "no successful runs"
+      },
+      "grokHeadToHead": {
+        "resolved": false,
+        "note": "insufficient data for grok-4.3 vs grok-4.20"
+      }
+    },
+    "recruiter": {
+      "models": {
+        "grok-4.5": {
+          "tasks": 0,
+          "okRuns": 0,
+          "successRate": null,
+          "meanQuality": null,
+          "meanQualityPer1k": null,
+          "meanQualityPer1kOutput": null,
+          "meanTokens": null,
+          "meanInputTokens": null,
+          "meanOutputTokens": null,
+          "estimatedTokens": false,
+          "skippedRuns": 0
+        }
+      },
+      "recommendation": {
+        "pick": null,
+        "reason": "no successful runs"
+      },
+      "grokHeadToHead": {
+        "resolved": false,
+        "note": "insufficient data for grok-4.3 vs grok-4.20"
+      }
+    },
+    "auditor": {
+      "models": {
+        "grok-4.5": {
+          "tasks": 0,
+          "okRuns": 0,
+          "successRate": null,
+          "meanQuality": null,
+          "meanQualityPer1k": null,
+          "meanQualityPer1kOutput": null,
+          "meanTokens": null,
+          "meanInputTokens": null,
+          "meanOutputTokens": null,
+          "estimatedTokens": false,
+          "skippedRuns": 0
+        }
+      },
+      "recommendation": {
+        "pick": null,
+        "reason": "no successful runs"
+      },
+      "grokHeadToHead": {
+        "resolved": false,
+        "note": "insufficient data for grok-4.3 vs grok-4.20"
+      }
+    },
+    "quant": {
+      "models": {
+        "grok-4.5": {
+          "tasks": 0,
+          "okRuns": 0,
+          "successRate": null,
+          "meanQuality": null,
+          "meanQualityPer1k": null,
+          "meanQualityPer1kOutput": null,
+          "meanTokens": null,
+          "meanInputTokens": null,
+          "meanOutputTokens": null,
+          "estimatedTokens": false,
+          "skippedRuns": 0
+        }
+      },
+      "recommendation": {
+        "pick": null,
+        "reason": "no successful runs"
+      },
+      "grokHeadToHead": {
+        "resolved": false,
+        "note": "insufficient data for grok-4.3 vs grok-4.20"
+      }
+    },
+    "onboarding": {
+      "models": {
+        "grok-4.5": {
+          "tasks": 0,
+          "okRuns": 0,
+          "successRate": null,
+          "meanQuality": null,
+          "meanQualityPer1k": null,
+          "meanQualityPer1kOutput": null,
+          "meanTokens": null,
+          "meanInputTokens": null,
+          "meanOutputTokens": null,
+          "estimatedTokens": false,
+          "skippedRuns": 0
+        }
+      },
+      "recommendation": {
+        "pick": null,
+        "reason": "no successful runs"
+      },
+      "grokHeadToHead": {
+        "resolved": false,
+        "note": "insufficient data for grok-4.3 vs grok-4.20"
+      }
+    },
+    "cv-review": {
+      "models": {
+        "grok-4.5": {
+          "tasks": 0,
+          "okRuns": 0,
+          "successRate": null,
+          "meanQuality": null,
+          "meanQualityPer1k": null,
+          "meanQualityPer1kOutput": null,
+          "meanTokens": null,
+          "meanInputTokens": null,
+          "meanOutputTokens": null,
+          "estimatedTokens": false,
+          "skippedRuns": 0
+        }
+      },
+      "recommendation": {
+        "pick": null,
+        "reason": "no successful runs"
+      },
+      "grokHeadToHead": {
+        "resolved": false,
+        "note": "insufficient data for grok-4.3 vs grok-4.20"
+      }
+    },
+    "video-hook": {
+      "models": {
+        "grok-4.5": {
+          "tasks": 0,
+          "okRuns": 0,
+          "successRate": null,
+          "meanQuality": null,
+          "meanQualityPer1k": null,
+          "meanQualityPer1kOutput": null,
+          "meanTokens": null,
+          "meanInputTokens": null,
+          "meanOutputTokens": null,
+          "estimatedTokens": false,
+          "skippedRuns": 0
+        }
+      },
+      "recommendation": {
+        "pick": null,
+        "reason": "no successful runs"
+      },
+      "grokHeadToHead": {
+        "resolved": false,
+        "note": "insufficient data for grok-4.3 vs grok-4.20"
+      }
+    },
+    "social-post": {
+      "models": {
+        "grok-4.5": {
+          "tasks": 0,
+          "okRuns": 0,
+          "successRate": null,
+          "meanQuality": null,
+          "meanQualityPer1k": null,
+          "meanQualityPer1kOutput": null,
+          "meanTokens": null,
+          "meanInputTokens": null,
+          "meanOutputTokens": null,
+          "estimatedTokens": false,
+          "skippedRuns": 0
+        }
+      },
+      "recommendation": {
+        "pick": null,
+        "reason": "no successful runs"
+      },
+      "grokHeadToHead": {
+        "resolved": false,
+        "note": "insufficient data for grok-4.3 vs grok-4.20"
+      }
+    },
+    "book-chapter": {
+      "models": {
+        "grok-4.5": {
+          "tasks": 0,
+          "okRuns": 0,
+          "successRate": null,
+          "meanQuality": null,
+          "meanQualityPer1k": null,
+          "meanQualityPer1kOutput": null,
+          "meanTokens": null,
+          "meanInputTokens": null,
+          "meanOutputTokens": null,
+          "estimatedTokens": false,
+          "skippedRuns": 0
+        }
+      },
+      "recommendation": {
+        "pick": null,
+        "reason": "no successful runs"
+      },
+      "grokHeadToHead": {
+        "resolved": false,
+        "note": "insufficient data for grok-4.3 vs grok-4.20"
+      }
+    },
+    "reasoning": {
+      "models": {
+        "grok-4.5": {
+          "tasks": 0,
+          "okRuns": 0,
+          "successRate": null,
+          "meanQuality": null,
+          "meanQualityPer1k": null,
+          "meanQualityPer1kOutput": null,
+          "meanTokens": null,
+          "meanInputTokens": null,
+          "meanOutputTokens": null,
+          "estimatedTokens": false,
+          "skippedRuns": 0
+        }
+      },
+      "recommendation": {
+        "pick": null,
+        "reason": "no successful runs"
+      },
+      "grokHeadToHead": {
+        "resolved": false,
+        "note": "insufficient data for grok-4.3 vs grok-4.20"
+      }
+    },
+    "summarize-extract": {
+      "models": {
+        "grok-4.5": {
+          "tasks": 0,
+          "okRuns": 0,
+          "successRate": null,
+          "meanQuality": null,
+          "meanQualityPer1k": null,
+          "meanQualityPer1kOutput": null,
+          "meanTokens": null,
+          "meanInputTokens": null,
+          "meanOutputTokens": null,
+          "estimatedTokens": false,
+          "skippedRuns": 0
+        }
+      },
+      "recommendation": {
+        "pick": null,
+        "reason": "no successful runs"
+      },
+      "grokHeadToHead": {
+        "resolved": false,
+        "note": "insufficient data for grok-4.3 vs grok-4.20"
+      }
+    }
+  },
+  "agenticRoles": [],
+  "overall": {
+    "perModel": {
+      "grok-4.5": {
+        "meanQuality": 0.9869619047619047,
+        "meanQualityPer1k": 0.041900215042458874,
+        "meanQualityPer1kOutput": 2.915118910666082
+      }
+    },
+    "bestOverallQuality": "grok-4.5",
+    "bestOverallQualityLabel": "Grok 4.5"
+  },
+  "config": {
+    "scoring": {
+      "deterministic_weight": 0.5,
+      "judge_weight": 0.5,
+      "_comment": "Per-task blend. If a task has only deterministic checks (e.g. intake ground-truth), quality = deterministic. If only judge criteria, quality = judge. If both, quality = normalized weighted blend of the two."
+    },
+    "recommendation": {
+      "objective": "peak_quality_cost_aware",
+      "quality_floor": 0.6,
+      "value_metric": "output",
+      "quality_epsilon": 0.02,
+      "cost_ratio_trigger": 1.5,
+      "_comment": "objective=peak_quality_cost_aware (davin's policy 2026-06-14): TIER FOR PEAK QUALITY, but don't pay multiples for marginal gains. Rule per role: start from the highest-quality model; among models within quality_epsilon (0.02) of it, pick the one with the LOWEST mean output tokens \u2014 BUT only drop from the peak if the cheaper model is materially cheaper (peak_output / cheaper_output >= cost_ratio_trigger, default 1.5x). Otherwise keep the peak. Report shows peak, the cost-aware pick, quality given up, and the output-cost ratio so the tradeoff is explicit. Set quality_epsilon=0 to always take true peak. value_metric=output because total tokens are ~95% fixed CLI overhead (a harness artifact)."
+    }
+  },
+  "meta": {
+    "finished_at": "2026-07-25T20:45:59+00:00",
+    "started_at": "2026-07-25T20:41:41+00:00",
+    "n_runs": 10,
+    "n_fail": 0,
+    "n_skipped": 0,
+    "run_id": "run-20260725-214141",
+    "suiteShaByRole": {
+      "ops": "af81fcc8c8acf9b45aac20aa118d2e0116e4e875fd9b8b4e4f07df614a7bef25"
+    },
+    "suiteSourcePathByRole": {
+      "ops": "/Users/glad0s/paperclip/benchmark/ops/suite.json"
+    },
+    "modelEffortById": {
+      "grok-4.5": "cli_default"
+    },
+    "adapterTypeById": {
+      "grok-4.5": "hermes"
+    }
+  }
+}

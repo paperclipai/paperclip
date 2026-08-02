@@ -1,0 +1,94 @@
+=== TSR-4748 R2-vs-incumbent driver start 2026-07-31T16:36:33Z ===
+>>> INCUMBENT LANE (grok-4.3, current+all)
+=== TSBC Task Probe · probe-20260731-173633 ===
+role   : cv-review
+tasks  : cv-title-inflation-gap, cv-unsubstantiated-metrics, cv-role-mismatch, cv-clean-calibration, cv-date-inconsistency, cv-pii-overshare, cv-benign-contract-overlap, cv-explained-career-break, cv-keyword-stuffed-role-mismatch, cv-team-metric-attribution
+models : grok-4.3
+cell   : current+all
+effort : cli_default
+frames : grok-4.3=single_shot_concat
+agent  : /Users/glad0s/paperclip/benchmark/variants/agentfiles/cv-review.md
+skills : /Users/glad0s/paperclip/benchmark/variants/skills/cv-review
+suite  : /Users/glad0s/paperclip/benchmark/cv-review/suite.json
+judge  : grok-4.3
+reps   : 3
+power  : 1 worker(s)
+
+[ 1/30] grok-4.3     cv-title-inflation-gap     rep01 frame=single_shot_concat  ok=True  q=1.000 out=2723
+[ 2/30] grok-4.3     cv-unsubstantiated-metrics rep01 frame=single_shot_concat  ok=True  q=0.975 out=1476
+[ 3/30] grok-4.3     cv-role-mismatch           rep01 frame=single_shot_concat  ok=False q=—     out=   ?
+[ 4/30] grok-4.3     cv-clean-calibration       rep01 frame=single_shot_concat  ok=False q=—     out=   ?
+[ 5/30] grok-4.3     cv-date-inconsistency      rep01 frame=single_shot_concat  ok=False q=—     out=   ?
+[ 6/30] grok-4.3     cv-pii-overshare           rep01 frame=single_shot_concat  ok=False q=—     out=   ?
+[ 7/30] grok-4.3     cv-benign-contract-overlap rep01 frame=single_shot_concat  ok=False q=—     out=   ?
+[ 8/30] grok-4.3     cv-explained-career-break  rep01 frame=single_shot_concat  ok=False q=—     out=   ?
+[ 9/30] grok-4.3     cv-keyword-stuffed-role-mismatch rep01 frame=single_shot_concat  ok=False q=—     out=   ?
+[10/30] grok-4.3     cv-team-metric-attribution rep01 frame=single_shot_concat  ok=False q=—     out=   ?
+[11/30] grok-4.3     cv-title-inflation-gap     rep02 frame=single_shot_concat  ok=False q=—     out=   ?
+[12/30] grok-4.3     cv-unsubstantiated-metrics rep02 frame=single_shot_concat  ok=False q=—     out=   ?
+[13/30] grok-4.3     cv-role-mismatch           rep02 frame=single_shot_concat  ok=False q=—     out=   ?
+[14/30] grok-4.3     cv-clean-calibration       rep02 frame=single_shot_concat  ok=False q=—     out=   ?
+[15/30] grok-4.3     cv-date-inconsistency      rep02 frame=single_shot_concat  ok=False q=—     out=   ?
+[16/30] grok-4.3     cv-pii-overshare           rep02 frame=single_shot_concat  ok=False q=—     out=   ?
+[17/30] grok-4.3     cv-benign-contract-overlap rep02 frame=single_shot_concat  ok=False q=—     out=   ?
+[18/30] grok-4.3     cv-explained-career-break  rep02 frame=single_shot_concat  ok=False q=—     out=   ?
+[19/30] grok-4.3     cv-keyword-stuffed-role-mismatch rep02 frame=single_shot_concat  ok=False q=—     out=   ?
+[20/30] grok-4.3     cv-team-metric-attribution rep02 frame=single_shot_concat  ok=False q=—     out=   ?
+[21/30] grok-4.3     cv-title-inflation-gap     rep03 frame=single_shot_concat  ok=False q=—     out=   ?
+[22/30] grok-4.3     cv-unsubstantiated-metrics rep03 frame=single_shot_concat  ok=False q=—     out=   ?
+[23/30] grok-4.3     cv-role-mismatch           rep03 frame=single_shot_concat  ok=False q=—     out=   ?
+[24/30] grok-4.3     cv-clean-calibration       rep03 frame=single_shot_concat  ok=False q=—     out=   ?
+[25/30] grok-4.3     cv-date-inconsistency      rep03 frame=single_shot_concat  ok=False q=—     out=   ?
+[26/30] grok-4.3     cv-pii-overshare           rep03 frame=single_shot_concat  ok=False q=—     out=   ?
+[27/30] grok-4.3     cv-benign-contract-overlap rep03 frame=single_shot_concat  ok=False q=—     out=   ?
+[28/30] grok-4.3     cv-explained-career-break  rep03 frame=single_shot_concat  ok=False q=—     out=   ?
+[29/30] grok-4.3     cv-keyword-stuffed-role-mismatch rep03 frame=single_shot_concat  ok=False q=—     out=   ?
+[30/30] grok-4.3     cv-team-metric-attribution rep03 frame=single_shot_concat  ok=False q=—     out=   ?
+Traceback (most recent call last):
+  File "/Users/glad0s/paperclip/benchmark/tsbc_task_probe.py", line 647, in <module>
+    main()
+    ~~~~^^
+  File "/Users/glad0s/paperclip/benchmark/tsbc_task_probe.py", line 633, in main
+    n_ledger = append_probe_rows(meta, per_task)
+  File "/Users/glad0s/paperclip/benchmark/tsbc_task_probe.py", line 432, in append_probe_rows
+    ledger.append_records(records)
+    ~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^
+  File "/Users/glad0s/paperclip/benchmark/ledger.py", line 473, in append_records
+    _validate_bench_record(r)
+    ~~~~~~~~~~~~~~~~~~~~~~^^^
+  File "/Users/glad0s/paperclip/benchmark/ledger.py", line 438, in _validate_bench_record
+    _validate_bench_metadata(record)
+    ~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^
+  File "/Users/glad0s/paperclip/benchmark/ledger.py", line 431, in _validate_bench_metadata
+    raise ValueError(
+    ...<2 lines>...
+    )
+ValueError: bench ledger row missing reproducibility metadata for task_probe probe:cv-review:cv-benign-contract-overlap:current-all:cli_default:6128929b76e3 grok-4.3: model_reported
+INCUMBENT_RUN=results/probe-20260731-173633
+>>> R2 LANE (grok-4.5, R2 AF + skills none)
+=== TSBC Task Probe · probe-20260731-173804 ===
+role   : cv-review
+tasks  : cv-title-inflation-gap, cv-unsubstantiated-metrics, cv-role-mismatch, cv-clean-calibration, cv-date-inconsistency, cv-pii-overshare, cv-benign-contract-overlap, cv-explained-career-break, cv-keyword-stuffed-role-mismatch, cv-team-metric-attribution
+models : grok-4.5
+cell   : current+none
+effort : cli_default
+frames : grok-4.5=single_shot_concat
+agent  : /Users/glad0s/paperclip/work-products/TSR-4704/cv-review-agent-file-R2.md
+skills : /Users/glad0s/paperclip/benchmark/variants/skills/cv-review
+suite  : /Users/glad0s/paperclip/benchmark/cv-review/suite.json
+judge  : grok-4.3
+reps   : 3
+power  : 1 worker(s)
+
+[ 1/30] grok-4.5     cv-title-inflation-gap     rep01 frame=single_shot_concat  ok=True  q=1.000 out= 223
+[ 2/30] grok-4.5     cv-unsubstantiated-metrics rep01 frame=single_shot_concat  ok=True  q=0.975 out= 428
+[ 3/30] grok-4.5     cv-role-mismatch           rep01 frame=single_shot_concat  ok=True  q=1.000 out= 121
+[ 4/30] grok-4.5     cv-clean-calibration       rep01 frame=single_shot_concat  ok=True  q=1.000 out=  14
+[ 5/30] grok-4.5     cv-date-inconsistency      rep01 frame=single_shot_concat  ok=True  q=1.000 out= 115
+[ 6/30] grok-4.5     cv-pii-overshare           rep01 frame=single_shot_concat  ok=True  q=1.000 out=  55
+[ 7/30] grok-4.5     cv-benign-contract-overlap rep01 frame=single_shot_concat  ok=True  q=1.000 out=  82
+[ 8/30] grok-4.5     cv-explained-career-break  rep01 frame=single_shot_concat  ok=True  q=1.000 out= 126
+[ 9/30] grok-4.5     cv-keyword-stuffed-role-mismatch rep01 frame=single_shot_concat  ok=True  q=1.000 out= 213
+[10/30] grok-4.5     cv-team-metric-attribution rep01 frame=single_shot_concat  ok=True  q=0.975 out= 263
+[11/30] grok-4.5     cv-title-inflation-gap     rep02 frame=single_shot_concat  ok=True  q=1.000 out= 194
+[12/30] grok-4.5     cv-unsubstantiated-metrics rep02 frame=single_shot_concat  ok=True  q=0.960 out= 439

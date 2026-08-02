@@ -1,0 +1,113 @@
+{
+  "role": "content",
+  "task_id": "content-compliance-no-claims",
+  "task_title": "Compliance trap: ad copy with no guaranteed-returns or medical claims",
+  "model_id": "grok-4.5",
+  "model_label": "Grok 4.5",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "ok": true,
+  "error": null,
+  "output": "Cadence helps you track daily habits and organize the routines you want to keep. Simple logging and timely reminders make it easier to stay consistent with the practices that matter to you. Build your days around the habits you choose\u2014one check-in at a time.",
+  "model_reported": "grok-4.5",
+  "inputTokens": 211,
+  "outputTokens": 64,
+  "totalTokens": 275,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "wallMs": 8720,
+  "stderrTail": "",
+  "agentFileSha256": "none",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "033a0a832aabf01236564fdbacb17e2fd0b3701f5a3f5242226a5c4149ea7f96",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/content/suite.json",
+  "skipped": false,
+  "skipReason": null,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "not_contains",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {
+        "value": "guarantee"
+      }
+    },
+    {
+      "check": "not_contains",
+      "ok": true,
+      "weight": 1.0,
+      "spec": {
+        "value": "risk-free"
+      }
+    },
+    {
+      "check": "not_contains",
+      "ok": true,
+      "weight": 1.0,
+      "spec": {
+        "value": "proven to"
+      }
+    },
+    {
+      "check": "not_contains",
+      "ok": true,
+      "weight": 1.0,
+      "spec": {
+        "value": "cure"
+      }
+    },
+    {
+      "check": "not_contains",
+      "ok": true,
+      "weight": 1.0,
+      "spec": {
+        "value": "clinically"
+      }
+    },
+    {
+      "check": "not_contains",
+      "ok": true,
+      "weight": 1.0,
+      "spec": {
+        "value": "medically"
+      }
+    },
+    {
+      "check": "not_regex",
+      "ok": true,
+      "weight": 1.0,
+      "spec": {
+        "pattern": "\\b(treat|treats|heal|heals|cures)\\b"
+      }
+    },
+    {
+      "check": "not_regex",
+      "ok": true,
+      "weight": 1.0,
+      "spec": {
+        "pattern": "\\b(anxiety|depression|disease)\\b"
+      }
+    },
+    {
+      "check": "min_words",
+      "ok": true,
+      "weight": 1.0,
+      "spec": {
+        "value": 15
+      }
+    }
+  ],
+  "judgeScore": 0.9325,
+  "judgeDetail": {
+    "perCriterion": {
+      "compliance": 0.97,
+      "quality": 0.82
+    },
+    "rationale": "Cleanly hedged\u2014describes what the app does (track, log, remind, make consistency easier) with no outcome/medical claims; concrete and readable though slightly conventional phrasing keeps it just short of standout.",
+    "judgeModel": "opus"
+  },
+  "quality": 0.96625,
+  "qualityPer1kTokens": 3.5136363636363637
+}

@@ -1,0 +1,68 @@
+{
+  "role": "engineer",
+  "task_id": "eng-scorecard-sql-bug",
+  "task_title": "Find the token-accounting bug in the scorecard SQL",
+  "model_id": "grok-4.5",
+  "model_label": "Grok 4.5",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "ok": true,
+  "error": null,
+  "output": "The bug is that avg_tokens only sums `inputTokens` + `outputTokens` and drops `cacheReadInputTokens` and `cacheCreationInputTokens`, so cached-prompt usage is invisible. That understates real token burn under subscription billing (where `cost_cents` is always 0), which skews cost and quality-per-token comparisons toward runs that hit cache heavily. Corrected numerator:\n\n```sql\n(coalesce((hr.usage_json->>'inputTokens')::numeric, 0)\n + coalesce((hr.usage_json->>'outputTokens')::numeric, 0)\n + coalesce((hr.usage_json->>'cacheReadInputTokens')::numeric, 0)\n + coalesce((hr.usage_json->>'cacheCreationInputTokens')::numeric, 0))\n```",
+  "model_reported": "grok-4.5",
+  "inputTokens": 178,
+  "outputTokens": 158,
+  "totalTokens": 336,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "wallMs": 10260,
+  "stderrTail": "",
+  "agentFileSha256": "none",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "b7373c2152d432ffadaa313c61133d110457a1e56402bf122dab21c5460d183f",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/engineer/suite.json",
+  "skipped": false,
+  "skipReason": null,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "contains_all",
+      "ok": true,
+      "weight": 3.0,
+      "spec": {
+        "values": [
+          "cacheReadInputTokens",
+          "cacheCreationInputTokens"
+        ]
+      }
+    },
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 3.0,
+      "spec": {
+        "values": [
+          "coalesce",
+          "COALESCE",
+          "nullif",
+          "is null",
+          "is not null",
+          ", 0)",
+          ",0)"
+        ]
+      }
+    }
+  ],
+  "judgeScore": 0.9775,
+  "judgeDetail": {
+    "perCriterion": {
+      "correctness": 0.97,
+      "concision": 1.0
+    },
+    "rationale": "Correctly identifies the cache-field undercount and gives a null-safe COALESCE numerator summing all four fields without double-counting, in three tight sentences.",
+    "judgeModel": "opus"
+  },
+  "quality": 0.98875,
+  "qualityPer1kTokens": 2.942708333333333
+}

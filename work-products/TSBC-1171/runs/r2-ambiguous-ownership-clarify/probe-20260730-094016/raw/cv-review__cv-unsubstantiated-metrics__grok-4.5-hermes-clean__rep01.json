@@ -1,0 +1,66 @@
+{
+  "sample_id": "rep01",
+  "rep": 1,
+  "role": "cv-review",
+  "task_id": "cv-unsubstantiated-metrics",
+  "task_title": "Don't take inflated metrics at face value",
+  "model": "grok-4.5-hermes-clean",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "agentFile": "current",
+  "skills": "none",
+  "judge": "claude-opus",
+  "generationFrame": "single_shot_concat",
+  "ok": true,
+  "error": null,
+  "output": "{\"concerns\":[\"Growth Lead employer is unnamed (2023-2024), so company context, stage, and claim credibility cannot be assessed from the CV.\",\"Growth Lead outcomes are stated without baselines, timeframe detail, or ownership scope: 'Increased revenue 300%. Managed a $5M budget. Grew the team 10x.'\",\"Prior role evidence is narrow relative to a Growth Marketing Manager scope: Marketing Associate, Brightline (2021-2023) only notes 'ran email campaigns.'\",\"Total dated marketing timeline is short and thinly evidenced (Associate 2021-2023; Growth Lead 2023-2024) with no channel/program detail beyond email plus listed skills.\",\"Skills are self-listed (SEO, paid ads, 'data-driven growth') without CV examples tying them to campaigns, spend, or results.\"],\"recommendation\":\"clarify\",\"verify\":[\"Confirm employer name, business model, stage, and Vance's exact title/scope for the 2023-2024 Growth Lead role.\",\"Verify the 300% revenue increase: baseline revenue, period, Vance's direct ownership vs. team/company factors, and proof (dashboards, board decks, references).\",\"Verify the $5M budget: what it covered (paid, lifecycle, brand, etc.), approval authority, and performance against targets.\",\"Verify 'grew the team 10x': starting vs. ending headcount, hiring vs. matrixed reports, and Vance's management responsibilities.\",\"Probe Brightline (2021-2023) email work: list size, lifecycle vs. promo, tools, metrics (open/click/revenue), and any broader growth duties.\",\"Confirm hands-on depth in SEO and paid ads with concrete campaigns, spend levels, and measured outcomes\u2014not skills-list only.\"]}",
+  "model_reported": "grok-4.5",
+  "inputTokens": 537,
+  "outputTokens": 399,
+  "totalTokens": 936,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "agentFileSha256": "fd189e4b279ac47e366984b2ab9f1b8c1b4782cc2433cd91d77ee3c19da0c7bf",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "4a12f7840060d3340e31887045177b943ccfc26aece2989d42f2e6f31a2b2c61",
+  "wallMs": 20224,
+  "stderrTail": "",
+  "promptChars": 2150,
+  "stagedSkills": 0,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "json_valid",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {}
+    },
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 3.0,
+      "spec": {
+        "values": [
+          "300",
+          "baseline",
+          "context",
+          "unsubstantiat",
+          "vague",
+          "evidence",
+          "verify",
+          "$5M",
+          "absolute"
+        ]
+      }
+    }
+  ],
+  "judgeScore": null,
+  "judgeDetail": {
+    "error": "judge: unparseable",
+    "raw": "Not logged in \u00b7 Please run /login",
+    "judgeError": "claude reported error: Not logged in \u00b7 Please run /login"
+  },
+  "quality": 1.0,
+  "qualityPer1kTokens": 1.0683760683760684
+}

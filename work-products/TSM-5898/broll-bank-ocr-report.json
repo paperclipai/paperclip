@@ -1,0 +1,17 @@
+{
+  "report_date": "2026-07-31",
+  "bank_path": "work-products/TSM-5886/b-roll-bank/",
+  "gate_version": "TSM-5898 OCR gate v1",
+  "summary": "Full scan after quarantine update: 0 files with legible text/numbers in bank root. All 10 flagged assets successfully in quarantine-wave1-slop/. Replacements dir empty (0 clips). No stray quarantine-wave1-s/ dir present.",
+  "quarantine_wave1_slop_ls": [
+    "README.md"
+  ],
+  "root_ls_after": [
+    "quarantine/",
+    "replacements/",
+    "quarantine-wave1-slop/"
+  ],
+  "replacements_ls": [],
+  "verdict": "Quarantine complete (10/10). Replacements: 0/8 — generation required. No text in root. Ready for replacement renders + OCR re-scan.",
+  "recommendation": "Generate ≥8 abstract no-text mp4 clips into replacements/, run OCR gate again, update manifest with video_urls and text_check=self-QA, then close TSM-5897 with ls evidence."
+}

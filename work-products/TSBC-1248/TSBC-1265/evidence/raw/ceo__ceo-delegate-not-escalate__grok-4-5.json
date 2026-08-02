@@ -1,0 +1,66 @@
+{
+  "role": "ceo",
+  "task_id": "ceo-delegate-not-escalate",
+  "task_title": "Delegate to an agent instead of bouncing to the human",
+  "model_id": "grok-4.5",
+  "model_label": "Grok 4.5",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "ok": true,
+  "error": null,
+  "output": "{\"action\": \"delegate\", \"assignee\": \"Engineer\", \"note\": \"Engineer is idle, capable, and has the Cloudflare API token; add the CNAME directly.\"}",
+  "model_reported": "grok-4.5",
+  "inputTokens": 115,
+  "outputTokens": 35,
+  "totalTokens": 150,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "wallMs": 7868,
+  "stderrTail": "",
+  "agentFileSha256": "none",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "7b79fdf5d2ce80570fcfa85a1d04cd2c61e7093b8d2d1c735f7c4a07197a28c3",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/ceo/suite.json",
+  "skipped": false,
+  "skipReason": null,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "json_valid",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {}
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 5.0,
+      "spec": {
+        "value": "delegate",
+        "path": "action"
+      }
+    },
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {
+        "values": [
+          "Engineer",
+          "engineer"
+        ]
+      }
+    }
+  ],
+  "judgeScore": 0.97,
+  "judgeDetail": {
+    "perCriterion": {
+      "judgment": 0.97
+    },
+    "rationale": "Correctly delegates to the Engineer, explicitly citing the existing API token, idle status, and capability without inventing any blocker or escalating.",
+    "judgeModel": "claude-opus-4-8"
+  },
+  "quality": 0.985,
+  "qualityPer1kTokens": 6.566666666666666
+}

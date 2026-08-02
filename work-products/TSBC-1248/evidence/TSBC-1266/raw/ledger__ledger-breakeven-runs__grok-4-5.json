@@ -1,0 +1,64 @@
+{
+  "role": "ledger",
+  "task_id": "ledger-breakeven-runs",
+  "task_title": "Compute the breakeven run count for a product line",
+  "model_id": "grok-4.5",
+  "model_label": "Grok 4.5",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "ok": true,
+  "error": null,
+  "output": "{\"contributionPerRun\": 0.7, \"breakevenRuns\": 286, \"why\": \"Contribution is $1.10-$0.40=$0.70/run. $200/0.70\u2248285.71; round up since partial runs do not count.\"}",
+  "model_reported": "grok-4.5",
+  "inputTokens": 112,
+  "outputTokens": 39,
+  "totalTokens": 151,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "wallMs": 8427,
+  "stderrTail": "",
+  "agentFileSha256": "none",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "22a4d94c78402d54f39f0cd1b4eb6a12005acecfa3e2d429551928eca686300e",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/ledger/suite.json",
+  "skipped": false,
+  "skipReason": null,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "json_valid",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {}
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 3.0,
+      "spec": {
+        "value": 0.7,
+        "path": "contributionPerRun"
+      }
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 5.0,
+      "spec": {
+        "value": 286,
+        "path": "breakevenRuns"
+      }
+    }
+  ],
+  "judgeScore": 1.0,
+  "judgeDetail": {
+    "perCriterion": {
+      "correctness": 1.0
+    },
+    "rationale": "Contribution 0.70, breakeven correctly rounded up to 286, with accurate concise reasoning.",
+    "judgeModel": "opus"
+  },
+  "quality": 1.0,
+  "qualityPer1kTokens": 6.622516556291391
+}

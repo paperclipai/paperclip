@@ -1,0 +1,78 @@
+{
+  "role": "ops",
+  "task_id": "ops-cascade-rootcause",
+  "task_title": "Separate root cause from downstream symptoms in a cascade",
+  "model_id": "grok-4.5",
+  "model_label": "Grok 4.5",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "ok": true,
+  "error": null,
+  "output": "{\"root_cause\": \"embedded Postgres connection pool exhausted: slow migration held all 20 connections\", \"symptoms\": [\"heartbeat.ts DB writes hang so heartbeats stop landing\", \"liveness monitor marks healthy in-flight runs process_lost\", \"board UI shows all agents offline (reads blocked on pool)\", \"PagerDuty FULL-OUTAGE page (instance down)\"], \"fix\": \"stop/rollback the migration holding connections and restore pool capacity (or raise pool only after fixing the holder); do not restart instance or bump liveness threshold\", \"why_not_symptom\": \"Stale heartbeats, process_lost, offline UI, and the page are effects of blocked DB I/O; restart/threshold changes mask them and worsen run reaping.\"}",
+  "model_reported": "grok-4.5",
+  "inputTokens": 357,
+  "outputTokens": 173,
+  "totalTokens": 530,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "wallMs": 12309,
+  "stderrTail": "",
+  "agentFileSha256": "none",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "af81fcc8c8acf9b45aac20aa118d2e0116e4e875fd9b8b4e4f07df614a7bef25",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/ops/suite.json",
+  "skipped": false,
+  "skipReason": null,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "json_valid",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {}
+    },
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 3.0,
+      "spec": {
+        "values": [
+          "connection pool",
+          "pool exhaust",
+          "connection",
+          "pool",
+          "migration"
+        ]
+      }
+    },
+    {
+      "check": "json_path_exists",
+      "ok": true,
+      "weight": 1.0,
+      "spec": {
+        "path": "symptoms"
+      }
+    },
+    {
+      "check": "json_path_exists",
+      "ok": true,
+      "weight": 1.0,
+      "spec": {
+        "path": "fix"
+      }
+    }
+  ],
+  "judgeScore": 0.9857142857142858,
+  "judgeDetail": {
+    "perCriterion": {
+      "root_cause_correct": 1.0,
+      "symptom_separation": 1.0,
+      "fix_targets_cause": 0.95
+    },
+    "rationale": "Names pool exhaustion from the migration as the single root cause, lists all four downstream effects as symptoms in correct causal order, and targets the fix at rolling back the migration while explicitly rejecting both trap fixes.",
+    "judgeModel": "opus"
+  },
+  "quality": 0.9928571428571429,
+  "qualityPer1kTokens": 1.8733153638814015
+}

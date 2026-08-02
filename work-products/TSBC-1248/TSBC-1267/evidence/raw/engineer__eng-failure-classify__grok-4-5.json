@@ -1,0 +1,66 @@
+{
+  "role": "engineer",
+  "task_id": "eng-failure-classify",
+  "task_title": "Classify a run failure as infra vs model fault (retry-exhaustion trap)",
+  "model_id": "grok-4.5",
+  "model_label": "Grok 4.5",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "ok": true,
+  "error": null,
+  "output": "{\"category\": \"infra\", \"retryable\": false, \"reason\": \"Process lost after server restart with no model turn; attempt_count=4 exceeds max_retries=3 so the automatic retry budget is exhausted and the failure must escalate.\"}",
+  "model_reported": "grok-4.5",
+  "inputTokens": 261,
+  "outputTokens": 55,
+  "totalTokens": 316,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "wallMs": 9415,
+  "stderrTail": "",
+  "agentFileSha256": "none",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "b7373c2152d432ffadaa313c61133d110457a1e56402bf122dab21c5460d183f",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/engineer/suite.json",
+  "skipped": false,
+  "skipReason": null,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "json_valid",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {}
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 3.0,
+      "spec": {
+        "value": "infra",
+        "path": "category"
+      }
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 5.0,
+      "spec": {
+        "value": false,
+        "path": "retryable"
+      }
+    },
+    {
+      "check": "regex",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {
+        "pattern": "(retr|attempt|budget|exhaust|max|cap|3|escalat)"
+      }
+    }
+  ],
+  "judgeScore": null,
+  "judgeDetail": null,
+  "quality": 1.0,
+  "qualityPer1kTokens": 3.1645569620253164
+}

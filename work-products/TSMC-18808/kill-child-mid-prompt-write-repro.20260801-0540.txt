@@ -1,0 +1,27 @@
+{"phase":"start","parentPid":61112,"n":20,"promptBytes":262144,"childPath":"/tmp/epipe-repro-60917/tsmc-18808-repro-KxDF4G/die.mjs"}
+{
+  "phase": "done",
+  "parentPid": 61112,
+  "stillAlive": true,
+  "elapsedMs": 38,
+  "runs": 20,
+  "epipeUncaught": 0,
+  "sample": [
+    {
+      "i": 0,
+      "exitCode": null,
+      "signal": "SIGKILL"
+    },
+    {
+      "i": 1,
+      "exitCode": null,
+      "signal": "SIGKILL"
+    },
+    {
+      "i": 2,
+      "exitCode": null,
+      "signal": "SIGKILL"
+    }
+  ],
+  "ok": true
+}

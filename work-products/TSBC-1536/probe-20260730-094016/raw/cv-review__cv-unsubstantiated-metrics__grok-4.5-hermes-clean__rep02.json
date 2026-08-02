@@ -1,0 +1,66 @@
+{
+  "sample_id": "rep02",
+  "rep": 2,
+  "role": "cv-review",
+  "task_id": "cv-unsubstantiated-metrics",
+  "task_title": "Don't take inflated metrics at face value",
+  "model": "grok-4.5-hermes-clean",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "agentFile": "current",
+  "skills": "none",
+  "judge": "claude-opus",
+  "generationFrame": "single_shot_concat",
+  "ok": true,
+  "error": null,
+  "output": "{\"concerns\":[\"Growth Lead (unnamed startup, 2023-2024) claims 'Increased revenue 300%. Managed a $5M budget. Grew the team 10x.' with no baseline, timeframe detail, attribution/ownership, or company context.\",\"Employer for the Growth Lead role is listed only as '(unnamed startup)' with no product, stage, or market detail.\",\"Marketing Associate, Brightline (2021-2023) only states 'ran email campaigns'\u2014no CV evidence of channel mix, experimentation, or growth systems.\",\"Skills list SEO, paid ads, and 'data-driven growth' but job bullets do not show work in those areas.\"],\"recommendation\":\"clarify\",\"verify\":[\"Who owned the 300% revenue result vs. contributed; baseline revenue, period, and primary levers.\",\"What the $5M budget covered (channels, opex, headcount), approval authority, and ROI reporting.\",\"Team size before/after the 10x claim, hiring vs. management scope, and direct reports.\",\"Startup name, stage, business model, and Vance\u2019s exact title/scope as Growth Lead.\",\"Concrete SEO and paid-ads work (budgets, platforms, tests, outcomes) beyond the skills list.\",\"Email campaign scope at Brightline (list size, lifecycle vs. blast, metrics, tools) and any broader growth work not on the CV.\"]}",
+  "model_reported": "grok-4.5",
+  "inputTokens": 537,
+  "outputTokens": 302,
+  "totalTokens": 839,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "agentFileSha256": "fd189e4b279ac47e366984b2ab9f1b8c1b4782cc2433cd91d77ee3c19da0c7bf",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "4a12f7840060d3340e31887045177b943ccfc26aece2989d42f2e6f31a2b2c61",
+  "wallMs": 18456,
+  "stderrTail": "",
+  "promptChars": 2150,
+  "stagedSkills": 0,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "json_valid",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {}
+    },
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 3.0,
+      "spec": {
+        "values": [
+          "300",
+          "baseline",
+          "context",
+          "unsubstantiat",
+          "vague",
+          "evidence",
+          "verify",
+          "$5M",
+          "absolute"
+        ]
+      }
+    }
+  ],
+  "judgeScore": null,
+  "judgeDetail": {
+    "error": "judge: unparseable",
+    "raw": "Not logged in \u00b7 Please run /login",
+    "judgeError": "claude reported error: Not logged in \u00b7 Please run /login"
+  },
+  "quality": 1.0,
+  "qualityPer1kTokens": 1.1918951132300357
+}

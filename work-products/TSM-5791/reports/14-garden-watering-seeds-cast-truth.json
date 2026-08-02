@@ -1,0 +1,31 @@
+{
+  "n": 14,
+  "slug": "garden-watering-seeds",
+  "path": "/Users/glad0s/paperclip/work-products/TSM-5791/clip-bytes/14-garden-watering-seeds-8s.mp4",
+  "pass": true,
+  "violations": [],
+  "averages": {
+    "slateGreyRatio": 0.0984790943287037,
+    "cinnamonRatio": 0.4650542534722222,
+    "nearBlackRatio": 0.006222873263888889,
+    "skinRatio": 0.021282552083333333,
+    "animalCoatRatio": 0.5635333478009259
+  },
+  "durationSeconds": 8.041667,
+  "sampleTimestampsSeconds": [
+    1.0,
+    4.0,
+    7.0
+  ],
+  "framesSampled": 3,
+  "mode": "two_shot",
+  "method": "ffmpeg-multiframe-animal-vs-human-v2",
+  "thresholds": {
+    "nearBlackRatio_max": 0.08,
+    "animalCoatRatio_min_two_shot": 0.12,
+    "animalCoatRatio_min_solo": 0.08,
+    "james_slate_min_solo": 0.04,
+    "jessica_cinnamon_min_solo": 0.08,
+    "skinRatio_max_when_weak_animal": 0.12
+  }
+}

@@ -1,0 +1,31 @@
+{
+  "n": 18,
+  "slug": "fort-model-building",
+  "path": "/Users/glad0s/paperclip/work-products/TSM-5791/clip-bytes/18-fort-model-building-10s.mp4",
+  "pass": true,
+  "violations": [],
+  "averages": {
+    "slateGreyRatio": 0.0385304542824074,
+    "cinnamonRatio": 0.7667180266203704,
+    "nearBlackRatio": 0.010501302083333332,
+    "skinRatio": 0.002151692708333333,
+    "animalCoatRatio": 0.8052484809027778
+  },
+  "durationSeconds": 10.041667,
+  "sampleTimestampsSeconds": [
+    1.0,
+    4.0,
+    7.0
+  ],
+  "framesSampled": 3,
+  "mode": "two_shot",
+  "method": "ffmpeg-multiframe-animal-vs-human-v2",
+  "thresholds": {
+    "nearBlackRatio_max": 0.08,
+    "animalCoatRatio_min_two_shot": 0.12,
+    "animalCoatRatio_min_solo": 0.08,
+    "james_slate_min_solo": 0.04,
+    "jessica_cinnamon_min_solo": 0.08,
+    "skinRatio_max_when_weak_animal": 0.12
+  }
+}

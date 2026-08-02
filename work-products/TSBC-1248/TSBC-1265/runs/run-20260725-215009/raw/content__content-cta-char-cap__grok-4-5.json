@@ -1,0 +1,78 @@
+{
+  "role": "content",
+  "task_id": "content-cta-char-cap",
+  "task_title": "CTA button + subline under a hard character cap",
+  "model_id": "grok-4.5",
+  "model_label": "Grok 4.5",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "ok": true,
+  "error": null,
+  "output": "{\"button\": \"Try Ledger Free\", \"subline\": \"Free during beta. No card needed.\"}",
+  "model_reported": "grok-4.5",
+  "inputTokens": 169,
+  "outputTokens": 19,
+  "totalTokens": 188,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "wallMs": 18860,
+  "stderrTail": "",
+  "agentFileSha256": "none",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "033a0a832aabf01236564fdbacb17e2fd0b3701f5a3f5242226a5c4149ea7f96",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/content/suite.json",
+  "skipped": false,
+  "skipReason": null,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "json_valid",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {}
+    },
+    {
+      "check": "regex",
+      "ok": true,
+      "weight": 3.0,
+      "spec": {
+        "pattern": "\"button\"\\s*:\\s*\"[^\"]{1,20}\""
+      }
+    },
+    {
+      "check": "regex",
+      "ok": true,
+      "weight": 3.0,
+      "spec": {
+        "pattern": "\"subline\"\\s*:\\s*\"[^\"]{1,50}\""
+      }
+    },
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 1.0,
+      "spec": {
+        "values": [
+          "free",
+          "no card",
+          "no credit",
+          "beta",
+          "$0",
+          "without"
+        ]
+      }
+    }
+  ],
+  "judgeScore": 0.935,
+  "judgeDetail": {
+    "perCriterion": {
+      "cta_quality": 0.92,
+      "subline_value": 0.95
+    },
+    "rationale": "Button 'Try Ledger Free' (15 chars) is a crisp verb-led CTA under cap, and the 33-char subline stacks two genuine reassurances (free during beta, no card) without repeating the button.",
+    "judgeModel": "opus"
+  },
+  "quality": 0.9675,
+  "qualityPer1kTokens": 5.1462765957446805
+}

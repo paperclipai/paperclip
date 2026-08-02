@@ -1,0 +1,11 @@
+
+ RUN  v4.1.10 /Users/glad0s/paperclip
+
+[06:21:39] [32mINFO[39m: [36mLoading external adapter package[39m [90m{"packageName":"/Users/glad0s/.paperclip/local-adapter-plugins/paperclip-shell-handler-adapter","packageDir":"/Users/glad0s/.paperclip/local-adapter-plugins/paperclip-shell-handler-adapter","entryPoint":"./index.js","modulePath":"/Users/glad0s/.paperclip/local-adapter-plugins/paperclip-shell-handler-adapter/index.js","hasUiParser":false}[39m
+[06:21:39] [32mINFO[39m: [36mLoaded external adapters from plugin store[39m [90m{"count":1,"adapters":["paperclip_shell_handler"]}[39m
+
+ Test Files  1 passed (1)
+      Tests  1 passed | 123 skipped (124)
+   Start at  06:21:36
+   Duration  10.28s (transform 3.04s, setup 129ms, import 6.05s, tests 3.88s, environment 0ms)
+

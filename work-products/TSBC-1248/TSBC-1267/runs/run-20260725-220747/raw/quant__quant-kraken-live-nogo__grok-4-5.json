@@ -1,0 +1,80 @@
+{
+  "role": "quant",
+  "task_id": "quant-kraken-live-nogo",
+  "task_title": "Go/no-go on the live crypto pilot with missing controls",
+  "model_id": "grok-4.5",
+  "model_label": "Grok 4.5",
+  "lane": "hermes",
+  "adapterType": "hermes",
+  "effort": "cli_default",
+  "ok": true,
+  "error": null,
+  "output": "{\"decision\":\"no_go\",\"missingControls\":[\"per-order size cap\",\"kill-switch\",\"mocked live-path test proving controls fire\"],\"nextStep\":\"Engineering: implement per-order size cap and kill-switch on the Kraken live path, add mocked live-path tests that prove both controls fire, then re-submit for risk review before any LIVE flip.\"}",
+  "model_reported": "grok-4.5",
+  "inputTokens": 148,
+  "outputTokens": 82,
+  "totalTokens": 230,
+  "tokensEstimated": true,
+  "costUsd": null,
+  "wallMs": 7861,
+  "stderrTail": "",
+  "agentFileSha256": "none",
+  "skillsBundleSha256": "none",
+  "suiteSha256": "32b3563885d9e20631634bbef99975027564a4a43c6c29a6e45c153467654e2e",
+  "suiteSourcePath": "/Users/glad0s/paperclip/benchmark/quant/suite.json",
+  "skipped": false,
+  "skipReason": null,
+  "deterministicScore": 1.0,
+  "deterministicDetails": [
+    {
+      "check": "json_valid",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {}
+    },
+    {
+      "check": "json_path_equals",
+      "ok": true,
+      "weight": 5.0,
+      "spec": {
+        "value": "no_go",
+        "path": "decision"
+      }
+    },
+    {
+      "check": "contains_all",
+      "ok": true,
+      "weight": 2.0,
+      "spec": {
+        "values": [
+          "cap",
+          "kill"
+        ]
+      }
+    },
+    {
+      "check": "contains_any",
+      "ok": true,
+      "weight": 1.0,
+      "spec": {
+        "values": [
+          "test",
+          "mock",
+          "proven",
+          "unproven",
+          "fire"
+        ]
+      }
+    }
+  ],
+  "judgeScore": 0.9700000000000001,
+  "judgeDetail": {
+    "perCriterion": {
+      "risk_judgment": 0.97
+    },
+    "rationale": "Clean no_go naming all three missing controls and delegating build+test of cap and kill-switch with mocked live-path proof before re-review, with no board-approval laundering.",
+    "judgeModel": "opus"
+  },
+  "quality": 0.9850000000000001,
+  "qualityPer1kTokens": 4.282608695652174
+}

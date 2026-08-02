@@ -1,0 +1,11 @@
+Review this CV for a **Senior Backend Engineer** role (5+ yrs, service ownership). Be rigorous but fair.
+
+--- CV ---
+Name: M. Adeyemi
+- Senior Backend Engineer, Datalink — 2020-present (4.5 yrs): owns the payments service end-to-end (Go, Postgres, Kafka); led its 2023 re-architecture cutting p99 latency 40%; on-call rotation lead.
+- Backend Engineer, Forge — 2018-2020 (2 yrs): built internal APIs.
+Skills: Go, Postgres, Kafka, AWS, distributed systems.
+Education: BSc CS 2018.
+--- end CV ---
+
+Return ONLY JSON: {"concerns": [string], "recommendation": "advance"|"reject"|"clarify"}.
