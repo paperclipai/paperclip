@@ -25,6 +25,8 @@ import {
   testAdapterEnvironmentSchema,
   // Issue
   createIssueSchema,
+  previewLinearIssueImportSchema,
+  applyLinearIssueImportSchema,
   updateIssueSchema,
   createIssueLabelSchema,
   addIssueCommentSchema,
@@ -753,6 +755,9 @@ const BOARD_ONLY_OPERATIONS = new Set([
   "GET /api/companies/stats",
   "GET /api/companies/issues",
   "GET /api/companies/import/jobs/{jobId}",
+  "POST /api/companies/{companyId}/issue-imports/preview",
+  "POST /api/companies/{companyId}/issue-imports/apply",
+  "GET /api/companies/{companyId}/issue-imports/{runId}",
   "POST /api/board-claim/{token}/claim",
   "GET /api/cli-auth/me",
   "POST /api/companies/{companyId}/invites",
@@ -2031,6 +2036,41 @@ registry.registerPath({
     body: jsonBody(createIssueSchema),
   },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/issue-imports/preview",
+  tags: ["issues"],
+  summary: "Preview a staged Linear issue import",
+  description: "Board-authorized, non-mutating issue preview. Persists only bounded import audit records; it never assigns issues or schedules agent wakes.",
+  request: {
+    params: z.object({ companyId: z.string().uuid() }),
+    body: jsonBody(previewLinearIssueImportSchema),
+  },
+  responses: { 201: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 422: r.unprocessable },
+});
+
+registry.registerPath({
+  method: "post",
+  path: "/api/companies/{companyId}/issue-imports/apply",
+  tags: ["issues"],
+  summary: "Apply an approved staged Linear issue preview",
+  description: "Applies one unexpired preview transactionally. Imported issues remain unassigned and staged; activation is rejected.",
+  request: {
+    params: z.object({ companyId: z.string().uuid() }),
+    body: jsonBody(applyLinearIssueImportSchema),
+  },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized, 403: r.forbidden, 409: r.conflict, 422: r.unprocessable },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/companies/{companyId}/issue-imports/{runId}",
+  tags: ["issues"],
+  summary: "Get a Linear issue import reconciliation report",
+  request: { params: z.object({ companyId: z.string().uuid(), runId: z.string().uuid() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });
 
 registry.registerPath({

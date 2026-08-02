@@ -862,6 +862,9 @@ All endpoints are under `/api` and return JSON.
 
 - `GET /companies/:companyId/issues`
 - `POST /companies/:companyId/issues`
+- `POST /companies/:companyId/issue-imports/preview` (board-only, Linear provider, no issue/comment/relation/wake mutation)
+- `POST /companies/:companyId/issue-imports/apply` (board-only, staged/unassigned, `activate=true` rejected)
+- `GET /companies/:companyId/issue-imports/:runId` (reconciliation and audit report)
 - `GET /issues/:issueId`
 - `PATCH /issues/:issueId`
 - `GET /issues/:issueId/documents`
