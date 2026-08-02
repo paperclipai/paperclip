@@ -137,17 +137,27 @@ neu gebaut werden.
 ## Messung (02.08.2026)
 
 1024×1024, 2 Steps, cfg 1.0, euler/simple, `ModelSamplingAuraFlow` shift 3.1,
-Turbo-LoRA bei Stärke 1.0, gegen die laufende Desktop-Instanz:
+Turbo-LoRA bei Stärke 1.0.
 
-| Lauf | Dauer |
-|---|---|
-| kalt (Modelle von Platte) | 72,5 s |
-| warm (Modelle im Speicher) | 8,1 s |
+| Lauf | Desktop-Instanz | Headless-Knoten |
+|---|---|---|
+| warm (Modelle im Speicher) | 8,1 s | **14,1 s** |
+| nach Neustart | 72,5 s | **35 s** |
+| Server nach `kickstart` erreichbar | — | 4 s |
+
+**Maßgeblich sind die Headless-Zahlen** — das ist die Instanz, die der Dienst
+anspricht. Sie wurden am 02.08.2026 nachgemessen, nachdem der Knoten stand.
+Der Warmlauf ist langsamer als auf der Desktop-Instanz, weil beide Prozesse
+gleichzeitig Modelle im Speicher halten; der Neustart ist deutlich schneller
+als befürchtet, weil die Modelle im Page-Cache bleiben und nicht erneut von
+Platte gelesen werden.
 
 Ergebnisqualität geprüft: fotorealistisch, saubere Tiefenschärfe, korrekte
 Anatomie. Für Agentenaufträge ohne Nacharbeit brauchbar.
 
-Diese Zahlen setzen die Zeitüberschreitungen weiter unten.
+Diese Zahlen setzen die Zeitüberschreitungen weiter unten: 300 s für einen
+einzelnen Render, das Zehnfache davon als absolute Obergrenze, ab der ein
+Auftrag als hängend gilt und abgeräumt wird.
 
 ## Komponenten
 
@@ -322,14 +332,32 @@ pytest neben den Modulen, wie im Dienst bereits üblich.
    nicht automatisch mit. Vor dem produktiven Einsatz in Kundenmaterial klären.
    Fällt sie aus, bleibt Qwen ohne LoRA nutzbar — dann mit deutlich mehr Steps
    und entsprechend längerer Renderzeit.
-2. **Abgebrochener Download aufräumen.** In
-   `~/ComfyUI-Shared/models/.desktop2-downloads/` liegen 10 GB einer nie
-   fertiggestellten `qwen_image_edit_2511_int8_convrot.safetensors.tmp`.
-   Löschen oder den Download zu Ende führen — Letzteres nur, wenn Bildbearbeitung
-   (img2img, Inpainting) wirklich gebraucht wird. Diese Spec braucht sie nicht.
+2. ~~Abgebrochener Download aufräumen.~~ **Erledigt.** Der Download lief
+   inzwischen durch: `qwen_image_edit_2511_int8_convrot.safetensors` liegt
+   vollständig mit 19 GB in `diffusion_models/`, `.desktop2-downloads/` ist
+   leer. Damit wäre Bildbearbeitung (img2img, Inpainting) ohne weiteren
+   Download möglich — diese Spec nutzt sie nicht, aber eine Folge-Spec könnte.
 3. **Video-Spec.** LTX und Hunyuan liegen auf dem Mac Studio, nicht auf dem
    MacBook. Ob die Modelle umziehen oder ein zweiter Knoten entsteht,
    entscheidet die Video-Spec.
+4. **Kein Label-Umbenennungs-Endpunkt.** Der Server kennt für Labels nur
+   `GET`, `POST` und `DELETE` — kein `PATCH`/`PUT`. Die Umbenennung
+   `bild:openai` → `bild` wurde deshalb direkt per SQL in der Datenbank
+   ausgeführt, ID-erhaltend. Das Ergebnis ist konsistent (die API liest
+   `bild`, Labelnamen sind nirgends denormalisiert), aber es fehlt der
+   `label.*`-Eintrag im Aktivitätsprotokoll der drei Companies.
+5. **Der Agent „Bild & Video" verspricht mehr, als der Knoten kann.**
+   `cmo`, `cto`, `cpo` und `adobe.role.md` beschreiben ihn als „KI-Bild +
+   KI-Video via ComfyUI (FLUX schnell/dev/2, Wan 2.2 14B, HunyuanVideo,
+   LTX-Video)". Keines dieser Modelle liegt auf dem Renderknoten. Die
+   Rollentexte wurden bewusst nicht angefasst — welchen Zuschnitt dieser Agent
+   haben soll, ist eine Entscheidung über die Organisation, nicht über den
+   Dienst.
+6. **`size: auto` wird nicht mehr angenommen.** Die alte Positivliste kannte
+   `auto` (die OpenAI-API wählt dann selbst), die neue Formatliste nicht.
+   Ein Altauftrag mit `size: auto` rendert jetzt still auf 1024×1024 statt zu
+   scheitern — konsistent mit dem Grundsatz „zurückfallen statt scheitern",
+   aber eine stille Verhaltensänderung.
 
 ## Quellen
 
