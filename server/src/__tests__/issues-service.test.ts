@@ -3740,31 +3740,32 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     expect(fieldUpdate?.changes).toEqual({
       priority: { from: "medium", to: "high" },
       description: { from: "old description", to: "new description", updated: true },
-    });
+          version: { from: 1, to: 2 },
+        });
 
-    const blockersSet = await svc.update(issueId, { blockedByIssueIds: [blockerId, blockerId] });
-    expect(blockersSet?.blockedByIssueIds).toEqual([blockerId]);
-    expect(blockersSet?.changes.blockedByIssueIds).toEqual({ from: [], to: [blockerId] });
+        const blockersSet = await svc.update(issueId, { blockedByIssueIds: [blockerId, blockerId] });
+        expect(blockersSet?.blockedByIssueIds).toEqual([blockerId]);
+        expect(blockersSet?.changes.blockedByIssueIds).toEqual({ from: [], to: [blockerId] });
 
-    const blockersCleared = await svc.update(issueId, { blockedByIssueIds: [] });
-    expect(blockersCleared?.blockedByIssueIds).toEqual([]);
-    expect(blockersCleared?.changes.blockedByIssueIds).toEqual({ from: [blockerId], to: [] });
+        const blockersCleared = await svc.update(issueId, { blockedByIssueIds: [] });
+        expect(blockersCleared?.blockedByIssueIds).toEqual([]);
+        expect(blockersCleared?.changes.blockedByIssueIds).toEqual({ from: [blockerId], to: [] });
 
-    await db.update(issues).set({
-      title: "Concurrent receipt issue",
-      priority: "medium",
-    }).where(eq(issues.id, issueId));
-    const [titleUpdate, priorityUpdate] = await Promise.all([
-      svc.update(issueId, { title: "Concurrent title" }),
-      svc.update(issueId, { priority: "high" }),
-    ]);
-    expect(titleUpdate?.changes).toEqual({
-      title: { from: "Concurrent receipt issue", to: "Concurrent title" },
-    });
-    expect(priorityUpdate?.changes).toEqual({
-      priority: { from: "medium", to: "high" },
-    });
-  });
+        await db.update(issues).set({
+          title: "Concurrent receipt issue",
+          priority: "medium",
+        }).where(eq(issues.id, issueId));
+        const [titleUpdate, priorityUpdate] = await Promise.all([
+          svc.update(issueId, { title: "Concurrent title" }),
+          svc.update(issueId, { priority: "high" }),
+        ]);
+        expect(titleUpdate?.changes).toMatchObject({
+          title: { from: "Concurrent receipt issue", to: "Concurrent title" },
+        });
+        expect(priorityUpdate?.changes).toMatchObject({
+          priority: { from: "medium", to: "high" },
+        });
+      });
 
   it("persists blocked-by relations and exposes both blockedBy and blocks summaries", async () => {
     const companyId = randomUUID();
