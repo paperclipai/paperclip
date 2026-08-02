@@ -168,14 +168,14 @@ export function NewGoalDialog() {
         </div>
 
         {/* Description */}
-        <div className="px-4 pb-2 overflow-y-auto max-h-[50vh]">
+        <div className="px-4 pb-2 overflow-y-auto max-h-(--sz-50vh)">
           <MarkdownEditor
             ref={descriptionEditorRef}
             value={description}
             onChange={setDescription}
             placeholder="Add description..."
             bordered={false}
-            contentClassName={cn("text-sm text-muted-foreground", expanded ? "min-h-[220px]" : "min-h-[120px]")}
+            contentClassName={cn("text-sm text-muted-foreground", expanded ? "min-h-(--sz-220px)" : "min-h-(--sz-120px)")}
             imageUploadHandler={async (file) => {
               const asset = await uploadDescriptionImage.mutateAsync(file);
               return asset.contentPath;

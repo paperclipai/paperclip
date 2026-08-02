@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { resolveViteHmrPort } from "../app.ts";
+import { resolveViteHmrHost, resolveViteHmrPort } from "../app.ts";
 
 describe("resolveViteHmrPort", () => {
   it("uses serverPort + 10000 when the result stays in range", () => {
@@ -15,5 +15,17 @@ describe("resolveViteHmrPort", () => {
   it("never returns a privileged or invalid port", () => {
     expect(resolveViteHmrPort(65_535)).toBe(55_535);
     expect(resolveViteHmrPort(9_000)).toBe(19_000);
+  });
+});
+
+describe("resolveViteHmrHost", () => {
+  it("omits wildcard bind hosts so Vite uses the browser hostname", () => {
+    expect(resolveViteHmrHost("0.0.0.0")).toBeUndefined();
+    expect(resolveViteHmrHost("::")).toBeUndefined();
+  });
+
+  it("keeps concrete bind hosts", () => {
+    expect(resolveViteHmrHost("127.0.0.1")).toBe("127.0.0.1");
+    expect(resolveViteHmrHost("paperclip-dev")).toBe("paperclip-dev");
   });
 });

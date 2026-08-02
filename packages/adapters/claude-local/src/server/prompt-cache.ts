@@ -1,12 +1,13 @@
 import { constants as fsConstants } from "node:fs";
 import fs from "node:fs/promises";
-import os from "node:os";
 import path from "node:path";
 import { createHash, type Hash } from "node:crypto";
 import type { AdapterExecutionContext } from "@paperclipai/adapter-utils";
-import { ensurePaperclipSkillSymlink, type PaperclipSkillEntry } from "@paperclipai/adapter-utils/server-utils";
-
-const DEFAULT_PAPERCLIP_INSTANCE_ID = "default";
+import {
+  ensurePaperclipSkillSymlink,
+  resolvePaperclipInstanceRootForAdapter,
+  type PaperclipSkillEntry,
+} from "@paperclipai/adapter-utils/server-utils";
 
 type SkillEntry = PaperclipSkillEntry;
 
@@ -25,12 +26,13 @@ function resolveManagedClaudePromptCacheRoot(
   env: NodeJS.ProcessEnv,
   companyId: string,
 ): string {
-  const paperclipHome = nonEmpty(env.PAPERCLIP_HOME) ?? path.resolve(os.homedir(), ".paperclip");
-  const instanceId = nonEmpty(env.PAPERCLIP_INSTANCE_ID) ?? DEFAULT_PAPERCLIP_INSTANCE_ID;
+  const instanceRoot = resolvePaperclipInstanceRootForAdapter({
+    homeDir: nonEmpty(env.PAPERCLIP_HOME) ?? undefined,
+    instanceId: nonEmpty(env.PAPERCLIP_INSTANCE_ID) ?? undefined,
+    env,
+  });
   return path.resolve(
-    paperclipHome,
-    "instances",
-    instanceId,
+    instanceRoot,
     "companies",
     companyId,
     "claude-prompt-cache",

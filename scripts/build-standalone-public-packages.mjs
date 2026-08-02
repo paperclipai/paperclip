@@ -1,10 +1,16 @@
 #!/usr/bin/env node
 
-import { execFileSync } from "node:child_process";
+import { execFile, execFileSync } from "node:child_process";
 import { existsSync, readFileSync, rmSync } from "node:fs";
+import { availableParallelism } from "node:os";
 import path, { dirname } from "node:path";
 import process from "node:process";
 import { fileURLToPath } from "node:url";
+import { promisify } from "node:util";
+
+import { linkSdkInto } from "./link-plugin-dev-sdk.mjs";
+
+const execFileAsync = promisify(execFile);
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(scriptDir, "..");
@@ -90,34 +96,41 @@ function readPackageJson(pkgDir) {
   );
 }
 
-function run(command, args, cwd) {
-  execFileSync(command, args, {
-    cwd,
-    env: {
-      ...process.env,
-      CI: "true",
-    },
-    stdio: "inherit",
-  });
+async function runCaptured(command, args, cwd, log) {
+  try {
+    const { stdout, stderr } = await execFileAsync(command, args, {
+      cwd,
+      env: {
+        ...process.env,
+        CI: "true",
+      },
+      maxBuffer: 64 * 1024 * 1024,
+    });
+    if (stdout?.trim()) log(stdout.trimEnd());
+    if (stderr?.trim()) log(stderr.trimEnd());
+  } catch (error) {
+    if (error.stdout?.toString().trim()) log(error.stdout.toString().trimEnd());
+    if (error.stderr?.toString().trim()) log(error.stderr.toString().trimEnd());
+    throw error;
+  }
 }
 
-function main() {
-  const workspaceEntries = parseWorkspaceEntries(readFileSync(workspacePath, "utf8"));
-  const standalonePackages = listPublicPackages()
-    .filter(({ dir }) => !isWorkspacePackage(dir, workspaceEntries));
+// Each standalone package installs into its own directory (`--ignore-workspace`)
+// and builds into its own `dist`, so there is no shared mutable state between
+// packages beyond pnpm's content-addressable global store, which is safe for
+// concurrent access. Buffer each package's output and flush it as one block so
+// interleaved parallel logs stay readable.
+async function prepareAndBuildPackage(pkg) {
+  const logs = [];
+  const log = (line) => logs.push(line);
 
-  if (standalonePackages.length === 0) {
-    console.log("  i No standalone public packages detected outside the pnpm workspace");
-    return;
-  }
+  const pkgDir = path.join(repoRoot, pkg.dir);
+  const pkgJson = readPackageJson(pkg.dir);
+  const nodeModulesDir = path.join(pkgDir, "node_modules");
+  const packageLockfilePath = path.join(pkgDir, "pnpm-lock.yaml");
 
-  for (const pkg of standalonePackages) {
-    const pkgDir = path.join(repoRoot, pkg.dir);
-    const pkgJson = readPackageJson(pkg.dir);
-    const nodeModulesDir = path.join(pkgDir, "node_modules");
-    const packageLockfilePath = path.join(pkgDir, "pnpm-lock.yaml");
-
-    console.log(`  Preparing standalone package ${pkg.name} (${pkg.dir})`);
+  log(`  Preparing standalone package ${pkg.name} (${pkg.dir})`);
+  try {
     if (existsSync(nodeModulesDir)) {
       rmSync(nodeModulesDir, { force: true, recursive: true });
     }
@@ -131,14 +144,121 @@ function main() {
         // Standalone packages intentionally avoid committed lockfile churn in the repo.
       ];
 
-    run("pnpm", installArgs, pkgDir);
+    await runCaptured("pnpm", installArgs, pkgDir, log);
+
+    // The fresh install above wipes node_modules and no longer fires a
+    // per-plugin postinstall (removed for supply-chain safety), so link the
+    // in-repo @paperclipai/plugin-sdk that the build's tsc resolves against.
+    linkSdkInto(pkgDir);
 
     if (pkgJson.scripts?.build) {
-      run("pnpm", ["run", "build"], pkgDir);
+      await runCaptured("pnpm", ["run", "build"], pkgDir, log);
     } else {
-      console.log("    i No build script; skipped build");
+      log("    i No build script; skipped build");
+    }
+  } finally {
+    if (logs.length > 0) {
+      console.log(logs.join("\n"));
     }
   }
 }
 
-main();
+export function resolveConcurrency(packageCount) {
+  const raw = process.env.STANDALONE_BUILD_CONCURRENCY;
+  if (raw !== undefined && raw !== "") {
+    const parsed = Number.parseInt(raw, 10);
+    if (Number.isFinite(parsed) && parsed > 0) {
+      return Math.max(1, Math.min(parsed, packageCount));
+    }
+  }
+
+  let cpus = 4;
+  try {
+    cpus = availableParallelism();
+  } catch {
+    // Fall back to the default when parallelism cannot be determined.
+  }
+  return Math.max(1, Math.min(cpus, packageCount));
+}
+
+// Bounded-concurrency task pool. Workers pull from a shared cursor so no more
+// than `limit` tasks run at once. Every task is awaited even if an earlier one
+// fails, and failures are aggregated (sorted by original index) so a single bad
+// package neither aborts the others mid-flight nor hides which one broke.
+export async function runWithConcurrency(items, limit, worker) {
+  const results = new Array(items.length);
+  const failures = [];
+  let nextIndex = 0;
+
+  async function runWorker() {
+    while (true) {
+      const current = nextIndex;
+      nextIndex += 1;
+      if (current >= items.length) {
+        return;
+      }
+      try {
+        results[current] = await worker(items[current], current);
+      } catch (error) {
+        failures.push({ index: current, error });
+      }
+    }
+  }
+
+  const poolSize = Math.max(1, Math.min(limit, items.length));
+  await Promise.all(Array.from({ length: poolSize }, () => runWorker()));
+
+  if (failures.length > 0) {
+    failures.sort((a, b) => a.index - b.index);
+    const aggregate = new Error(
+      `${failures.length} standalone package build(s) failed`,
+    );
+    aggregate.failures = failures;
+    throw aggregate;
+  }
+
+  return results;
+}
+
+async function main() {
+  const workspaceEntries = parseWorkspaceEntries(readFileSync(workspacePath, "utf8"));
+  const standalonePackages = listPublicPackages()
+    .filter(({ dir }) => !isWorkspacePackage(dir, workspaceEntries));
+
+  if (standalonePackages.length === 0) {
+    console.log("  i No standalone public packages detected outside the pnpm workspace");
+    return;
+  }
+
+  const concurrency = resolveConcurrency(standalonePackages.length);
+  console.log(
+    `  Building ${standalonePackages.length} standalone package(s) with concurrency ${concurrency}`,
+  );
+
+  try {
+    await runWithConcurrency(
+      standalonePackages,
+      concurrency,
+      prepareAndBuildPackage,
+    );
+  } catch (error) {
+    if (Array.isArray(error.failures)) {
+      const names = error.failures
+        .map(({ index }) => standalonePackages[index]?.name)
+        .filter(Boolean)
+        .join(", ");
+      console.error(`  ✗ Failed standalone package build(s): ${names}`);
+    }
+    throw error;
+  }
+}
+
+const invokedDirectly =
+  process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+
+if (invokedDirectly) {
+  main().catch((error) => {
+    console.error(error);
+    process.exit(1);
+  });
+}

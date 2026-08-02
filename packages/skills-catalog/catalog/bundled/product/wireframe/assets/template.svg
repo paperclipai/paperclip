@@ -1,0 +1,24 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1280" height="800" viewBox="0 0 1280 800"
+     font-family="-apple-system, system-ui, sans-serif" fill="#fff" stroke="#000" stroke-width="1.5">
+  <!-- canvas -->
+  <rect x="0" y="0" width="1280" height="800" />
+
+  <!-- 8px grid guides (toggle visibility by removing or commenting this group) -->
+  <g data-region="grid" stroke="#e6e6e6" stroke-width="0.5" fill="none">
+    <!-- vertical lines every 8px -->
+    <path d="M 8 0 V 800 M 16 0 V 800 M 24 0 V 800 M 32 0 V 800 M 40 0 V 800 M 48 0 V 800 M 56 0 V 800 M 64 0 V 800 M 72 0 V 800 M 80 0 V 800 M 88 0 V 800 M 96 0 V 800" />
+    <!-- column ruler at 24px outer margin + 12 columns of 88 with 8 gutter -->
+    <path d="M 48 0 V 800" stroke="#d33" stroke-dasharray="2 4" />
+    <path d="M 1232 0 V 800" stroke="#d33" stroke-dasharray="2 4" />
+  </g>
+
+  <!-- replace this comment block with your wireframe primitives.
+       Each primitive should be wrapped in its own <g transform="translate(x, y)"> with a numbered comment:
+         <!- - 1: navbar - ->
+         <g transform="translate(0, 0)" data-region="navbar"> ... </g>
+       Then in your reply, list:
+         1 - navbar with global search
+         2 - sidebar with primary nav
+         ...
+   -->
+</svg>

@@ -30,14 +30,14 @@ afterEach(() => {
 
 describe("buildPaperclipEnv", () => {
   it("prefers an explicit PAPERCLIP_RUNTIME_API_URL", () => {
-    process.env.PAPERCLIP_RUNTIME_API_URL = "http://100.104.161.29:3102";
+    process.env.PAPERCLIP_RUNTIME_API_URL = "http://203.0.113.42:3102";
     process.env.PAPERCLIP_API_URL = "http://localhost:4100";
     process.env.PAPERCLIP_LISTEN_HOST = "127.0.0.1";
     process.env.PAPERCLIP_LISTEN_PORT = "3101";
 
     const env = buildPaperclipEnv({ id: "agent-1", companyId: "company-1" });
 
-    expect(env.PAPERCLIP_API_URL).toBe("http://100.104.161.29:3102");
+    expect(env.PAPERCLIP_API_URL).toBe("http://203.0.113.42:3102");
   });
 
   it("falls back to PAPERCLIP_API_URL when no runtime URL is configured", () => {
@@ -52,6 +52,7 @@ describe("buildPaperclipEnv", () => {
   });
 
   it("uses runtime listen host/port when explicit URL is not set", () => {
+    delete process.env.PAPERCLIP_RUNTIME_API_URL;
     delete process.env.PAPERCLIP_API_URL;
     process.env.PAPERCLIP_LISTEN_HOST = "0.0.0.0";
     process.env.PAPERCLIP_LISTEN_PORT = "3101";
@@ -63,6 +64,7 @@ describe("buildPaperclipEnv", () => {
   });
 
   it("formats IPv6 hosts safely in fallback URL generation", () => {
+    delete process.env.PAPERCLIP_RUNTIME_API_URL;
     delete process.env.PAPERCLIP_API_URL;
     process.env.PAPERCLIP_LISTEN_HOST = "::1";
     process.env.PAPERCLIP_LISTEN_PORT = "3101";

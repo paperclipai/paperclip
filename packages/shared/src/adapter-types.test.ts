@@ -26,6 +26,20 @@ describe("dynamic adapter type validation schemas", () => {
     ).toThrow();
   });
 
+  it("accepts an explicit managed instructions bundle for new agents", () => {
+    expect(
+      createAgentSchema.parse({
+        name: "Bundle Agent",
+        adapterType: "codex_local",
+        instructionsBundle: {
+          files: {
+            "AGENTS.md": "Use AGENTS.md.",
+          },
+        },
+      }).instructionsBundle?.files["AGENTS.md"],
+    ).toBe("Use AGENTS.md.");
+  });
+
   it("accepts external adapter types in invite acceptance schema", () => {
     expect(
       acceptInviteSchema.parse({

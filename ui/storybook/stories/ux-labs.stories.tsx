@@ -2,6 +2,7 @@ import type { Meta, StoryObj } from "@storybook/react-vite";
 import { IssueChatUxLab } from "@/pages/IssueChatUxLab";
 import { InviteUxLab } from "@/pages/InviteUxLab";
 import { RunTranscriptUxLab } from "@/pages/RunTranscriptUxLab";
+import { SystemNoticeUxLab } from "@/pages/SystemNoticeUxLab";
 
 function StoryFrame({ children }: { children: React.ReactNode }) {
   return (
@@ -56,6 +57,23 @@ export const RunTranscriptFixtures: Story = {
       description: {
         story:
           "Exercises run transcript presentation across the run detail page, issue live widget, and dashboard card density.",
+      },
+    },
+  },
+};
+
+export const SystemNoticeTreatment: Story = {
+  name: "System Notice Treatment",
+  render: () => (
+    <StoryFrame>
+      <SystemNoticeUxLab />
+    </StoryFrame>
+  ),
+  parameters: {
+    docs: {
+      description: {
+        story:
+          "Renders the first-class system notice (PAP-3525 plan): warning, danger, and neutral tones in collapsed and expanded states, an in-thread hierarchy comparison against user and agent bubbles, and a before/after replacement of the current nested user-bubble + warning-callout pattern.",
       },
     },
   },

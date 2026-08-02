@@ -57,13 +57,13 @@ Use it for every path: exact template, adjacent template, or generic fallback.
 - [ ] `sourceIssueId` (or `sourceIssueIds`) is set when the hire was triggered by an issue
 - [ ] `desiredSkills` lists only skills that already exist in the company library, or will be installed first via the company-skills workflow
 - [ ] Adapter config matches this Paperclip instance (cwd, model, credentials) per `/llms/agent-configuration/<adapter>.txt`
-- [ ] `adapterConfig.promptTemplate` holds the adapted `AGENTS.md` for local managed-bundle adapters (unless you are intentionally managing bundle paths)
+- [ ] Local managed-bundle adapters send custom instructions through top-level `instructionsBundle.files["AGENTS.md"]` and do not set `adapterConfig.promptTemplate` or `bootstrapPromptTemplate`
 - [ ] Placeholders like `{{companyName}}`, `{{managerTitle}}`, `{{issuePrefix}}`, and any URL stubs are replaced with real values
 
 ## H. Safety and permissions (least privilege)
 
 - [ ] The hire grants only the access the role needs — no "just in case" permissions
-- [ ] No secrets are embedded in plain text in `adapterConfig` or `promptTemplate` unless the adapter explicitly requires it; prefer environment-injected credentials or scoped skills
+- [ ] No secrets are embedded in plain text in `adapterConfig`, `instructionsBundle`, or any legacy prompt field; prefer environment-injected credentials or scoped skills
 - [ ] Any `desiredSkills` or adapter settings that expand external-system access, browser/network reach, filesystem scope, or secret-handling capability are individually justified in the hire comment
 - [ ] `runtimeConfig.heartbeat.enabled` is `false` unless the role genuinely needs scheduled recurring work AND `intervalSec` is justified in the hire comment
 - [ ] `AGENTS.md` explicitly names anything the role must never do (external posts, shared infra changes, destructive ops without approval)

@@ -23,6 +23,7 @@ import type {
   EnvironmentLeaseStatus,
   ExecutionWorkspace,
   ExecutionWorkspaceConfig,
+  IssueExecutionWorkspaceSettings,
 } from "@paperclipai/shared";
 import { environmentService } from "./environments.js";
 import {
@@ -39,6 +40,7 @@ import {
   adapterExecutionTargetToRemoteSpec,
   type AdapterExecutionTarget,
   type AdapterRemoteExecutionSpec,
+  type AdapterWorkspaceRealization,
 } from "@paperclipai/adapter-utils/execution-target";
 import { buildWorkspaceRealizationRequest } from "./workspace-realization.js";
 import { executionWorkspaceService } from "./execution-workspaces.js";
@@ -114,6 +116,33 @@ export interface EnvironmentReleaseResult {
   errors: Array<{ leaseId: string; error: unknown }>;
 }
 
+function firstNonEmptyLine(text: string | null | undefined): string | null {
+  if (!text) return null;
+  for (const rawLine of text.split(/\r?\n/)) {
+    const line = rawLine.trim();
+    if (line) return line;
+  }
+  return null;
+}
+
+function formatProvisionFailureDetail(result: {
+  exitCode: number | null;
+  signal?: string | null;
+  timedOut: boolean;
+  stdout: string;
+  stderr: string;
+}): string {
+  if (result.timedOut) {
+    return "provision command timed out";
+  }
+  const signal = typeof result.signal === "string" && result.signal.trim().length > 0
+    ? ` (signal ${result.signal.trim()})`
+    : "";
+  const detail = firstNonEmptyLine(result.stderr) ?? firstNonEmptyLine(result.stdout);
+  const status = `exit code ${result.exitCode ?? "null"}${signal}`;
+  return detail ? `${status}: ${detail}` : status;
+}
+
 // ---------------------------------------------------------------------------
 // Service factory
 // ---------------------------------------------------------------------------
@@ -132,31 +161,24 @@ export function environmentRunOrchestrator(
   });
 
   /**
-   * Resolve the selected environment for a run. Ensures a local default
-   * exists and resolves the priority chain:
-   *   execution workspace config > issue settings > project policy > agent default > company default
+   * Resolve the selected environment for a run. The caller passes the concrete
+   * selected environment id plus the built-in local fallback id used to lazily
+   * ensure the local environment row exists.
    */
   async function resolveEnvironment(input: {
     companyId: string;
     selectedEnvironmentId: string;
-    defaultEnvironmentId: string;
+    localEnvironmentId: string;
   }): Promise<Environment> {
-    const environmentId =
-      input.selectedEnvironmentId || input.defaultEnvironmentId;
+    const environmentId = input.selectedEnvironmentId || input.localEnvironmentId;
 
     const environment =
-      environmentId === input.defaultEnvironmentId
+      environmentId === input.localEnvironmentId
         ? await environmentsSvc.ensureLocalEnvironment(input.companyId)
         : await environmentsSvc.getById(environmentId);
 
     if (!environment) {
       throw new EnvironmentRunError("environment_not_found", `Environment "${environmentId}" not found.`, {
-        environmentId,
-      });
-    }
-
-    if (environment.companyId !== input.companyId) {
-      throw new EnvironmentRunError("environment_not_found", `Environment "${environmentId}" does not belong to this company.`, {
         environmentId,
       });
     }
@@ -179,8 +201,11 @@ export function environmentRunOrchestrator(
     companyId: string;
     environment: Environment;
     issueId: string | null;
+    agentId: string;
     heartbeatRunId: string;
     persistedExecutionWorkspace: Pick<ExecutionWorkspace, "id" | "mode"> | null;
+    executionWorkspaceSettings: IssueExecutionWorkspaceSettings | null;
+    adapterType: string | null;
   }): Promise<EnvironmentRuntimeLeaseRecord> {
     try {
       return await environmentRuntime.acquireRunLease(input);
@@ -234,18 +259,19 @@ export function environmentRunOrchestrator(
   async function acquireForRun(input: {
     companyId: string;
     selectedEnvironmentId: string;
-    defaultEnvironmentId: string;
+    localEnvironmentId: string;
     adapterType: string;
     issueId: string | null;
     heartbeatRunId: string;
     agentId: string;
     persistedExecutionWorkspace: Pick<ExecutionWorkspace, "id" | "mode"> | null;
+    executionWorkspaceSettings: IssueExecutionWorkspaceSettings | null;
   }): Promise<EnvironmentAcquisitionResult> {
     // Step 1: Resolve environment
     const environment = await resolveEnvironment({
       companyId: input.companyId,
       selectedEnvironmentId: input.selectedEnvironmentId,
-      defaultEnvironmentId: input.defaultEnvironmentId,
+      localEnvironmentId: input.localEnvironmentId,
     });
 
     // Step 2: Acquire lease
@@ -253,8 +279,11 @@ export function environmentRunOrchestrator(
       companyId: input.companyId,
       environment,
       issueId: input.issueId,
+      agentId: input.agentId,
       heartbeatRunId: input.heartbeatRunId,
       persistedExecutionWorkspace: input.persistedExecutionWorkspace,
+      executionWorkspaceSettings: input.executionWorkspaceSettings,
+      adapterType: input.adapterType ?? null,
     });
 
     // Step 3: Log lease acquisition activity
@@ -267,6 +296,7 @@ export function environmentRunOrchestrator(
       action: "environment.lease_acquired",
       entityType: "environment_lease",
       entityId: leaseRecord.lease.id,
+      issueId: input.issueId,
       details: {
         environmentId: environment.id,
         driver: environment.driver,
@@ -274,6 +304,7 @@ export function environmentRunOrchestrator(
         provider: leaseRecord.lease.provider,
         executionWorkspaceId: leaseRecord.leaseContext.executionWorkspaceId,
         issueId: input.issueId,
+        networkEgress: input.executionWorkspaceSettings?.networkEgress ?? null,
       },
     });
 
@@ -342,6 +373,7 @@ export function environmentRunOrchestrator(
 
     // Step 2: Realize workspace in the environment via the runtime driver
     let workspaceRealization: Record<string, unknown> = {};
+    let realizedWorkspaceCwd: string | null = null;
     if (
       environment.driver === "local" ||
       environment.driver === "ssh" ||
@@ -364,11 +396,50 @@ export function environmentRunOrchestrator(
             },
           },
         });
+        realizedWorkspaceCwd =
+          typeof workspaceRealizationResult.cwd === "string" && workspaceRealizationResult.cwd.trim().length > 0
+            ? workspaceRealizationResult.cwd.trim()
+            : null;
         workspaceRealization = parseObject(workspaceRealizationResult.metadata?.workspaceRealization);
       } catch (err) {
         throw new EnvironmentRunError(
           "workspace_realization_failed",
           `Failed to realize workspace for environment "${environment.name}" (${environment.driver}): ${err instanceof Error ? err.message : String(err)}`,
+          {
+            environmentId: environment.id,
+            driver: environment.driver,
+            cause: err,
+          },
+        );
+      }
+    }
+
+    const provisionCommand = workspaceRealizationRequest.runtimeOverlay.provisionCommand?.trim() ?? "";
+    const realizedCwd =
+      realizedWorkspaceCwd ??
+      (typeof lease.metadata?.remoteCwd === "string" && lease.metadata.remoteCwd.trim().length > 0
+        ? lease.metadata.remoteCwd.trim()
+        : executionWorkspace.cwd);
+    if (provisionCommand && environment.driver !== "local") {
+      try {
+        const provisionResult = await environmentRuntime.execute({
+          environment,
+          lease,
+          command: "bash",
+          args: ["-lc", provisionCommand],
+          cwd: realizedCwd,
+          env: {
+            SHELL: "/bin/bash",
+          },
+          timeoutMs: 300_000,
+        });
+        if (provisionResult.exitCode !== 0 || provisionResult.timedOut) {
+          throw new Error(formatProvisionFailureDetail(provisionResult));
+        }
+      } catch (err) {
+        throw new EnvironmentRunError(
+          "workspace_realization_failed",
+          `Failed to provision workspace for environment "${environment.name}" (${environment.driver}): ${err instanceof Error ? err.message : String(err)}`,
           {
             environmentId: environment.id,
             driver: environment.driver,
@@ -415,6 +486,35 @@ export function environmentRunOrchestrator(
         lease,
         environmentRuntime,
       });
+      const realizationMode = workspaceRealization.mode === "in_place" ? "in_place" : "copy";
+      const authoritativeRoot =
+        typeof workspaceRealization.authoritativeRoot === "string" && workspaceRealization.authoritativeRoot.trim().length > 0
+          ? workspaceRealization.authoritativeRoot.trim()
+          : realizedCwd;
+      const workspaceTargetMetadata: AdapterWorkspaceRealization = {
+        mode: realizationMode,
+        authoritativeRoot,
+        pathAliases: Array.isArray(workspaceRealization.pathAliases)
+          ? workspaceRealization.pathAliases.filter(
+              (entry): entry is { path: string; target: string } =>
+                typeof entry === "object" && entry !== null &&
+                typeof (entry as { path?: unknown }).path === "string" &&
+                typeof (entry as { target?: unknown }).target === "string",
+            )
+          : [],
+        outboundRestorePaths: Array.isArray(workspaceRealization.outboundRestorePaths)
+          ? workspaceRealization.outboundRestorePaths.filter((entry): entry is string => typeof entry === "string")
+          : [],
+      };
+      if (executionTarget) {
+        executionTarget = {
+          ...executionTarget,
+          ...(executionTarget.kind === "remote" && realizationMode === "in_place"
+            ? { remoteCwd: authoritativeRoot }
+            : {}),
+          workspaceRealization: workspaceTargetMetadata,
+        } as AdapterExecutionTarget;
+      }
     } catch (err) {
       throw new EnvironmentRunError(
         "transport_resolution_failed",
@@ -471,6 +571,7 @@ export function environmentRunOrchestrator(
           action: "environment.lease_released",
           entityType: "environment_lease",
           entityId: released.lease.id,
+          issueId: released.lease.issueId,
           details: {
             environmentId: released.lease.environmentId,
             driver: released.environment.driver,

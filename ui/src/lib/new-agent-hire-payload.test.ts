@@ -41,4 +41,53 @@ describe("buildNewAgentHirePayload", () => {
       defaultEnvironmentId: null,
     });
   });
+
+  it("includes core trust preset permissions when provided", () => {
+    expect(
+      buildNewAgentHirePayload({
+        name: "PR Reviewer",
+        effectiveRole: "engineer",
+        configValues: {
+          ...defaultCreateValues,
+          adapterType: "codex_local",
+        },
+        adapterConfig: {},
+        permissions: {
+          canCreateAgents: false,
+          trustPreset: "low_trust_review",
+          authorizationPolicy: {
+            trustPreset: "low_trust_review",
+            reviewPreset: {
+              id: "low_trust_review",
+              version: 1,
+              rawOutputDisposition: "quarantine",
+            },
+            trustBoundary: {
+              mode: "low_trust_review",
+              companyId: "company-1",
+              rootIssueId: "issue-root",
+            },
+          },
+        },
+      }),
+    ).toMatchObject({
+      permissions: {
+        canCreateAgents: false,
+        trustPreset: "low_trust_review",
+        authorizationPolicy: {
+          trustPreset: "low_trust_review",
+          reviewPreset: {
+            id: "low_trust_review",
+            version: 1,
+            rawOutputDisposition: "quarantine",
+          },
+          trustBoundary: {
+            mode: "low_trust_review",
+            companyId: "company-1",
+            rootIssueId: "issue-root",
+          },
+        },
+      },
+    });
+  });
 });
