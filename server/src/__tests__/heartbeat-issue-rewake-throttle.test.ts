@@ -158,6 +158,8 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
     status?: string;
     finishedSecondsAgo: number;
     startedSecondsAgo?: number;
+    wakeReason?: string;
+    usageJson?: Record<string, unknown>;
   }) {
     const runId = randomUUID();
     const finishedAt = new Date(Date.now() - input.finishedSecondsAgo * 1000);
@@ -174,7 +176,8 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
       createdAt: startedAt,
       startedAt,
       finishedAt,
-      contextSnapshot: { issueId: input.issueId, wakeReason: "issue_assigned" },
+      usageJson: input.usageJson,
+      contextSnapshot: { issueId: input.issueId, wakeReason: input.wakeReason ?? "issue_assigned" },
     });
     return runId;
   }
@@ -342,5 +345,141 @@ describeEmbeddedPostgres("heartbeat issue rewake throttle", () => {
     const wake = await assignmentWake(agentId, issueId);
     expect(wake).toBeNull();
     expect((await latestWakeRequest(agentId))?.reason).toBe("issue_rewake_throttled");
+  });
+
+  it("pauses the agent and blocks the issue when same-issue recovery wakes trip the circuit breaker", async () => {
+    const { companyId, agentId, issueId } = await seedCompanyAgentIssue();
+
+    for (const finishedSecondsAgo of [290, 230, 170, 110, 50]) {
+      await seedTerminalRun({
+        companyId,
+        agentId,
+        issueId,
+        finishedSecondsAgo,
+        wakeReason: "source_scoped_recovery_action",
+        usageJson: {
+          inputTokens: 100_000,
+          outputTokens: 10_000,
+        },
+      });
+    }
+
+    const wake = await heartbeat.wakeup(agentId, {
+      source: "automation",
+      triggerDetail: "system",
+      reason: "source_scoped_recovery_action",
+      payload: { issueId },
+      contextSnapshot: { issueId, wakeReason: "source_scoped_recovery_action" },
+      requestedByActorType: "system",
+      requestedByActorId: "test",
+    });
+
+    expect(wake).toBeNull();
+
+    const skipped = await latestWakeRequest(agentId);
+    expect(skipped?.status).toBe("skipped");
+    expect(skipped?.reason).toBe("heartbeat_circuit_breaker_tripped");
+
+    const [agent] = await db
+      .select({ status: agents.status, pauseReason: agents.pauseReason })
+      .from(agents)
+      .where(eq(agents.id, agentId));
+    expect(agent).toEqual({ status: "paused", pauseReason: "system" });
+
+    const [issue] = await db
+      .select({ status: issues.status })
+      .from(issues)
+      .where(eq(issues.id, issueId));
+    expect(issue?.status).toBe("blocked");
+
+    const comments = await db
+      .select({ body: issueComments.body })
+      .from(issueComments)
+      .where(and(eq(issueComments.issueId, issueId), eq(issueComments.companyId, companyId)));
+    expect(comments.some((comment) => comment.body.includes("Heartbeat circuit breaker tripped"))).toBe(true);
+  });
+
+  it("cancels deferred wake promotion when the circuit breaker has already tripped", async () => {
+    const { companyId, agentId, issueId } = await seedCompanyAgentIssue();
+
+    for (const finishedSecondsAgo of [290, 230, 170, 110, 50]) {
+      await seedTerminalRun({
+        companyId,
+        agentId,
+        issueId,
+        finishedSecondsAgo,
+        wakeReason: "finish_successful_run_handoff",
+        usageJson: {
+          inputTokens: 95_000,
+          outputTokens: 8_000,
+        },
+      });
+    }
+
+    const activeRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: activeRunId,
+      companyId,
+      agentId,
+      invocationSource: "automation",
+      triggerDetail: "system",
+      status: "running",
+      startedAt: new Date(Date.now() - 5_000),
+      responsibleUserId: "responsible-user",
+      contextSnapshot: { issueId, wakeReason: "source_scoped_recovery_action" },
+    });
+    await db
+      .update(issues)
+      .set({
+        executionRunId: activeRunId,
+        executionLockedAt: new Date(Date.now() - 5_000),
+      })
+      .where(eq(issues.id, issueId));
+
+    const deferredWakeupId = randomUUID();
+    await db.insert(agentWakeupRequests).values({
+      id: deferredWakeupId,
+      companyId,
+      agentId,
+      source: "automation",
+      triggerDetail: "system",
+      reason: "finish_successful_run_handoff",
+      payload: {
+        issueId,
+        _paperclipWakeContext: {
+          issueId,
+          wakeReason: "finish_successful_run_handoff",
+        },
+      },
+      status: "deferred_issue_execution",
+      requestedByActorType: "system",
+      requestedByActorId: "test",
+    });
+
+    await heartbeat.cancelRun(activeRunId, "test cancellation releases issue execution");
+    await drainHeartbeatRunsToQuiescence(db, heartbeat);
+
+    const promotedRuns = await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(and(
+        eq(heartbeatRuns.agentId, agentId),
+        sql`${heartbeatRuns.contextSnapshot} ->> 'wakeReason' = 'finish_successful_run_handoff'`,
+        sql`${heartbeatRuns.id} <> ${activeRunId}`,
+      ));
+    expect(promotedRuns).toHaveLength(5);
+
+    const [deferredWakeup] = await db
+      .select({ status: agentWakeupRequests.status, error: agentWakeupRequests.error })
+      .from(agentWakeupRequests)
+      .where(eq(agentWakeupRequests.id, deferredWakeupId));
+    expect(deferredWakeup?.status).toBe("cancelled");
+    expect(deferredWakeup?.error).toContain("heartbeat circuit breaker");
+
+    const [agent] = await db
+      .select({ status: agents.status, pauseReason: agents.pauseReason })
+      .from(agents)
+      .where(eq(agents.id, agentId));
+    expect(agent).toEqual({ status: "paused", pauseReason: "system" });
   });
 });

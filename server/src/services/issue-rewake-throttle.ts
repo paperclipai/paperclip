@@ -37,6 +37,13 @@ export const ISSUE_REWAKE_LOOKBACK_MS = 6 * 60 * 60_000;
 /** How many recent terminal runs to sample when computing the streak. */
 export const ISSUE_REWAKE_RUN_SAMPLE_LIMIT = 8;
 
+export const HEARTBEAT_CIRCUIT_BREAKER_REASON = "heartbeat_circuit_breaker_tripped";
+export const HEARTBEAT_CIRCUIT_BREAKER_RUN_WINDOW_MS = 60 * 60_000;
+export const HEARTBEAT_CIRCUIT_BREAKER_REASON_WINDOW_MS = 30 * 60_000;
+export const HEARTBEAT_CIRCUIT_BREAKER_RUN_THRESHOLD = 20;
+export const HEARTBEAT_CIRCUIT_BREAKER_ACTIVE_TOKEN_THRESHOLD = 500_000;
+export const HEARTBEAT_CIRCUIT_BREAKER_SAME_REASON_THRESHOLD = 5;
+
 /**
  * Wake reasons that assert issue state rather than deliver a new event.
  * These (plus reason-less on-demand invokes) are the only wakes the throttle
@@ -120,6 +127,11 @@ export interface RecentIssueRunSample {
   finishedAt: Date | null;
 }
 
+export interface HeartbeatCircuitBreakerRunSample extends RecentIssueRunSample {
+  contextSnapshot?: Record<string, unknown> | null;
+  usageJson?: Record<string, unknown> | null;
+}
+
 export interface IssueRewakeThrottleInput {
   now: Date;
   /** Terminal runs for the same (agent, issue), newest finish first. */
@@ -174,4 +186,89 @@ export function evaluateIssueRewakeThrottle(input: IssueRewakeThrottleInput): Is
     return { blocked: true, noProgressStreak, cooldownMs, lastRunFinishedAt, nextAllowedAt };
   }
   return { blocked: false, noProgressStreak };
+}
+
+export interface HeartbeatCircuitBreakerInput {
+  now: Date;
+  requestedWakeReason: string | null;
+  recentTerminalRuns: HeartbeatCircuitBreakerRunSample[];
+}
+
+export type HeartbeatCircuitBreakerDecision =
+  | { blocked: false; runCount: number; activeTokens: number; sameReasonCount: number }
+  | {
+      blocked: true;
+      reason: "run_count" | "active_tokens" | "same_wake_reason";
+      runCount: number;
+      activeTokens: number;
+      sameReasonCount: number;
+      windowStart: Date;
+    };
+
+function readNumber(value: unknown) {
+  const numeric = typeof value === "number" ? value : Number(value);
+  return Number.isFinite(numeric) ? Math.max(0, Math.floor(numeric)) : 0;
+}
+
+function activeTokens(usageJson: Record<string, unknown> | null | undefined) {
+  if (!usageJson) return 0;
+  return readNumber(usageJson.inputTokens ?? usageJson.input_tokens) +
+    readNumber(usageJson.outputTokens ?? usageJson.output_tokens);
+}
+
+function readWakeReason(contextSnapshot: Record<string, unknown> | null | undefined) {
+  const value = contextSnapshot?.wakeReason;
+  return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+export function evaluateHeartbeatCircuitBreaker(
+  input: HeartbeatCircuitBreakerInput,
+): HeartbeatCircuitBreakerDecision {
+  const runWindowStart = new Date(input.now.getTime() - HEARTBEAT_CIRCUIT_BREAKER_RUN_WINDOW_MS);
+  const reasonWindowStart = new Date(input.now.getTime() - HEARTBEAT_CIRCUIT_BREAKER_REASON_WINDOW_MS);
+  const runWindowRuns = input.recentTerminalRuns.filter((run) =>
+    run.finishedAt && run.finishedAt.getTime() >= runWindowStart.getTime()
+  );
+  const reasonWindowRuns = input.requestedWakeReason
+    ? input.recentTerminalRuns.filter((run) =>
+        run.finishedAt &&
+        run.finishedAt.getTime() >= reasonWindowStart.getTime() &&
+        readWakeReason(run.contextSnapshot) === input.requestedWakeReason
+      )
+    : [];
+  const runCount = runWindowRuns.length;
+  const activeTokenCount = runWindowRuns.reduce((sum, run) => sum + activeTokens(run.usageJson), 0);
+  const sameReasonCount = reasonWindowRuns.length;
+
+  if (sameReasonCount >= HEARTBEAT_CIRCUIT_BREAKER_SAME_REASON_THRESHOLD) {
+    return {
+      blocked: true,
+      reason: "same_wake_reason",
+      runCount,
+      activeTokens: activeTokenCount,
+      sameReasonCount,
+      windowStart: reasonWindowStart,
+    };
+  }
+  if (runCount >= HEARTBEAT_CIRCUIT_BREAKER_RUN_THRESHOLD) {
+    return {
+      blocked: true,
+      reason: "run_count",
+      runCount,
+      activeTokens: activeTokenCount,
+      sameReasonCount,
+      windowStart: runWindowStart,
+    };
+  }
+  if (activeTokenCount >= HEARTBEAT_CIRCUIT_BREAKER_ACTIVE_TOKEN_THRESHOLD) {
+    return {
+      blocked: true,
+      reason: "active_tokens",
+      runCount,
+      activeTokens: activeTokenCount,
+      sameReasonCount,
+      windowStart: runWindowStart,
+    };
+  }
+  return { blocked: false, runCount, activeTokens: activeTokenCount, sameReasonCount };
 }
