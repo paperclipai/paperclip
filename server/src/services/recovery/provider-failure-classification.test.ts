@@ -85,6 +85,57 @@ describe("classifyAdapterFailureForRecovery", () => {
     })).toBeNull();
   });
 
+  // The ACP engine reports the phase that noticed the failure, so a subscription
+  // running out mid-turn reaches recovery as `acpx_turn_failed`. Without this the
+  // run is retried on every heartbeat until the plan resets.
+  it("classifies a Claude weekly limit reported through the ACP turn phase", () => {
+    const now = new Date("2026-07-31T09:00:00.000Z");
+    const classification = classifyAdapterFailureForRecovery({
+      errorCode: "acpx_turn_failed",
+      error: "You've hit your weekly limit · resets Aug 1 at 10am (Europe/Moscow)",
+      resultJson: null,
+    }, now);
+
+    expect(classification).toEqual({
+      kind: "provider_quota",
+      retryAt: new Date("2026-08-01T07:00:00.000Z"),
+      parsedResetTime: true,
+    });
+  });
+
+  // Reverse control for the case above: an ordinary turn failure keeps its
+  // previous classification and is not deferred to a made-up reset time.
+  it("leaves an ordinary ACP turn failure unclassified", () => {
+    expect(classifyAdapterFailureForRecovery({
+      errorCode: "acpx_turn_failed",
+      error: "Tool 'Bash' failed: exit code 1",
+      resultJson: null,
+    }, new Date("2026-07-31T09:00:00.000Z"))).toBeNull();
+  });
+
+  // An ACP failure is eligible for the quota branch only; misconfiguration
+  // reported through a phase code keeps whatever handling it had before.
+  it("does not route an ACP failure into the configuration branch", () => {
+    expect(classifyAdapterFailureForRecovery({
+      errorCode: "acpx_session_init_failed",
+      error: "No API credentials were found for this provider",
+      resultJson: null,
+    })).toBeNull();
+  });
+
+  it("prefers the reset persisted by the adapter over the message text", () => {
+    const now = new Date("2026-07-31T09:00:00.000Z");
+    expect(classifyAdapterFailureForRecovery({
+      errorCode: "acpx_turn_failed",
+      error: "You've hit your weekly limit · resets Aug 1 at 10am (Europe/Moscow)",
+      resultJson: { providerQuotaRetryNotBefore: "2026-08-01T09:00:00.000Z" },
+    }, now)).toEqual({
+      kind: "provider_quota",
+      retryAt: new Date("2026-08-01T09:00:00.000Z"),
+      parsedResetTime: true,
+    });
+  });
+
   it("does not treat a generic capacity limit as provider quota", () => {
     expect(classifyAdapterFailureForRecovery({
       errorCode: "adapter_failed",
