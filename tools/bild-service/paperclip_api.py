@@ -39,6 +39,9 @@ def list_issues(company_id, status, label_id, limit=100):
     return _request("GET",
         f"/api/companies/{company_id}/issues?status={status}&labelId={label_id}&limit={limit}")
 
+def get_issue(issue_id):
+    return _request("GET", f"/api/issues/{issue_id}")
+
 def patch_status(issue_id, status):
     return _request("PATCH", f"/api/issues/{issue_id}", json_body={"status": status})
 
