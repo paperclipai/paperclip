@@ -134,7 +134,7 @@ export function ExternalObjectPill({
     tone.split(" ").filter((c) => c.startsWith("text-")).join(" "),
     overlay,
     interactive
-      && "hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring",
+      && "hover:bg-accent/50 focus-visible:outline-none focus-visible:ring-(length:--rad-3) focus-visible:ring-ring",
     className,
   );
   const titleAttr = sourceSummary
@@ -149,11 +149,11 @@ export function ExternalObjectPill({
         sizeClassName="h-3 w-3"
         label={`${providerLabel}: ${statusLabel}`}
       />
-      <span className="max-w-[16rem] truncate font-medium">{valueLabel}</span>
+      <span className="max-w-(--sz-16rem) truncate font-medium">{valueLabel}</span>
     </>
   );
   const countSuffix = typeof sourceCount === "number" && sourceCount > 1 ? (
-    <span className="tabular-nums text-[10px] font-medium opacity-80">×{sourceCount}</span>
+    <span className="tabular-nums text-(length:--text-nano) font-medium opacity-80">×{sourceCount}</span>
   ) : null;
   const innerContent = (
     <>

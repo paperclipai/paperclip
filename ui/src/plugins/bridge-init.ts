@@ -44,6 +44,7 @@ import {
 } from "@/lib/company-members";
 import { collectLiveIssueIds } from "@/lib/liveIssueIds";
 import { useProjectOrder } from "@/hooks/useProjectOrder";
+import { usePublishSharedQueryData, useSharedPollingQuery } from "@/hooks/useSharedPolling";
 import {
   assigneeValueFromSelection,
   currentUserAssigneeOption,
@@ -266,16 +267,27 @@ function PluginSdkIssuesList({
     enabled: !!companyId,
   });
   const { data: projects } = useQuery({
-    queryKey: queryKeys.projects.list(companyId ?? "__no-company__"),
-    queryFn: () => projectsApi.list(companyId!),
+    queryKey: queryKeys.projects.list(companyId ?? "__no-company__", { includeArchived: true }),
+    queryFn: () => projectsApi.list(companyId!, { includeArchived: true }),
     enabled: !!companyId,
   });
-  const { data: liveRuns } = useQuery({
-    queryKey: queryKeys.liveRuns(companyId ?? "__no-company__"),
+  const liveRunsQueryKey = queryKeys.liveRuns(companyId ?? "__no-company__");
+  const sharedLiveRuns = useSharedPollingQuery({
+    companyId,
+    resourceKey: "live-runs",
+    queryKey: liveRunsQueryKey,
+    enabled: !!companyId,
+    // Event-sourced via LiveUpdatesProvider (#9627); no interval poll needed.
+    refetchInterval: false,
+    leaderOnly: true,
+  });
+  const { data: liveRuns, dataUpdatedAt: liveRunsUpdatedAt } = useQuery({
+    queryKey: liveRunsQueryKey,
     queryFn: () => heartbeatsApi.liveRunsForCompany(companyId!),
-    enabled: !!companyId,
-    refetchInterval: 5000,
+    enabled: sharedLiveRuns.enabled,
+    refetchInterval: sharedLiveRuns.refetchInterval,
   });
+  usePublishSharedQueryData(sharedLiveRuns, liveRuns, liveRunsUpdatedAt);
   const liveIssueIds = useMemo(() => collectLiveIssueIds(liveRuns), [liveRuns]);
 
   const { data: issues, isLoading, error } = useQuery({
@@ -326,10 +338,10 @@ function PluginSdkAssigneePicker({
   companyId,
   value,
   onChange,
-  placeholder = "Assignee",
-  noneLabel = "No assignee",
-  searchPlaceholder = "Search assignees...",
-  emptyMessage = "No assignees found.",
+  placeholder = "Responsible",
+  noneLabel = "No responsible",
+  searchPlaceholder = "Search responsible...",
+  emptyMessage = "No responsible found.",
   includeUsers = true,
   includeTerminatedAgents = false,
   className,
@@ -452,8 +464,8 @@ function PluginSdkProjectPicker({
   });
   const currentUserId = session?.user?.id ?? session?.session?.userId ?? null;
   const { data: projects } = useQuery({
-    queryKey: queryKeys.projects.list(resolvedCompanyId ?? "__no-company__"),
-    queryFn: () => projectsApi.list(resolvedCompanyId!),
+    queryKey: queryKeys.projects.list(resolvedCompanyId ?? "__no-company__", { includeArchived }),
+    queryFn: () => projectsApi.list(resolvedCompanyId!, { includeArchived }),
     enabled: !!resolvedCompanyId,
   });
   const visibleProjects = useMemo(

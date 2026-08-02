@@ -11,6 +11,7 @@ import {
 } from "@/lib/issue-output";
 import { OutputVideoPlayer } from "./OutputVideoPlayer";
 import { OutputFileTile } from "./OutputFileTile";
+import { Card } from "@/components/ui/card";
 
 interface OutputPrimaryCardProps {
   item: IssueOutputItem;
@@ -34,7 +35,7 @@ export function OutputPrimaryCard({ item, creatorName, onMediaClick }: OutputPri
   const isVideo = Boolean(meta && isVideoLikeOutput(contentType, meta.originalFilename));
 
   return (
-    <div className="overflow-hidden rounded-md border border-border bg-card">
+    <Card className="block overflow-hidden py-0">
       {/* Media region */}
       {isVideo && meta ? (
         <OutputVideoPlayer src={meta.contentPath} title={filename} />
@@ -70,13 +71,13 @@ export function OutputPrimaryCard({ item, creatorName, onMediaClick }: OutputPri
         <div className="min-w-0 flex-1">
           <p className="break-words text-sm font-semibold text-foreground">{filename}</p>
           {item.degraded ? (
-            <p className="mt-0.5 text-[11px] text-destructive">
+            <p className="mt-0.5 text-(length:--text-micro) text-destructive">
               Output metadata is unavailable — this file can’t be played or downloaded here.
             </p>
           ) : (
-            <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-[11px] text-muted-foreground">
+            <div className="mt-0.5 flex flex-wrap items-center gap-x-1.5 gap-y-0.5 text-(length:--text-micro) text-muted-foreground">
               {item.isPrimary && (
-                <Badge variant="secondary" className="px-1.5 py-0 text-[10px]">
+                <Badge variant="secondary" className="px-1.5 py-0 text-(length:--text-nano)">
                   Primary
                 </Badge>
               )}
@@ -121,6 +122,6 @@ export function OutputPrimaryCard({ item, creatorName, onMediaClick }: OutputPri
           </div>
         ) : null}
       </div>
-    </div>
+    </Card>
   );
 }

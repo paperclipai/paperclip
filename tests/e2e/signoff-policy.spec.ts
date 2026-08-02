@@ -75,18 +75,74 @@ async function getIssueRunLockState(board: APIRequestContext, issueId: string): 
   };
 }
 
-/** PATCH an issue as an agent with a fresh heartbeat run ID. */
+async function retryAgentPatchWithCurrentLockOnConflict(
+  board: APIRequestContext,
+  agent: AgentAuth,
+  issueId: string,
+  failedRes: Awaited<ReturnType<APIRequestContext["patch"]>>,
+  patchData: Record<string, unknown>,
+) {
+  if (failedRes.status() !== 409) return failedRes;
+  const issueRunLock = await getIssueRunLockState(board, issueId);
+  if (issueRunLock.assigneeAgentId !== agent.agentId) return failedRes;
+
+  const lockedRunId = issueRunLock.checkoutRunId ?? issueRunLock.executionRunId;
+  if (!lockedRunId) return failedRes;
+
+  const retryRes = await agent.request.patch(`${BASE_URL}/api/issues/${issueId}`, {
+    headers: { "X-Paperclip-Run-Id": lockedRunId },
+    data: patchData,
+  });
+  return retryRes.ok() ? retryRes : failedRes;
+}
+
+/**
+ * PATCH an issue as an agent, using a freshly invoked heartbeat run.
+ *
+ * Invoking a heartbeat starts a background run that races this PATCH for the
+ * issue's run-lock: the background run may check the issue out (flipping it to
+ * `in_progress` under its own run id) a moment before — or after — this PATCH
+ * lands, and the server answers the loser with a 409 ("Issue is checked out by
+ * another agent"). With `retries: 0` / `workers: 1` a single transient 409
+ * fails the whole shard, so we retry a run-lock 409 under the issue's *current*
+ * lock, bounded by escalating backoff to cover the race window.
+ *
+ * The retry is intentionally narrow so the suite's negative paths keep failing
+ * for the right reason:
+ *   - It only re-PATCHes while the issue is still assigned to the acting agent,
+ *     so a non-participant's genuine 409/403 rejection is returned untouched.
+ *   - It re-PATCHes under the winning run id (or the invoked run id once the
+ *     background run has released its lock), so a real validation error such as
+ *     the missing-comment 400 surfaces instead of a masking transient 409.
+ */
 async function agentPatch(
   board: APIRequestContext,
   agent: AgentAuth,
   issueId: string,
   data: Record<string, unknown>,
+  {
+    maxAttempts = 8,
+    backoffMs = 50,
+    maxBackoffMs = 500,
+  }: { maxAttempts?: number; backoffMs?: number; maxBackoffMs?: number } = {},
 ) {
   const runId = await invokeHeartbeat(board, agent.agentId);
-  const res = await agent.request.patch(`${BASE_URL}/api/issues/${issueId}`, {
-    headers: { "X-Paperclip-Run-Id": runId },
-    data,
-  });
+  const patchWith = (patchRunId: string) =>
+    agent.request.patch(`${BASE_URL}/api/issues/${issueId}`, {
+      headers: { "X-Paperclip-Run-Id": patchRunId },
+      data,
+    });
+
+  let res = await patchWith(runId);
+  for (let attempt = 1; attempt < maxAttempts && res.status() === 409; attempt++) {
+    await new Promise((resolve) => setTimeout(resolve, Math.min(maxBackoffMs, backoffMs * 2 ** (attempt - 1))));
+    const issueRunLock = await getIssueRunLockState(board, issueId);
+    // A 409 on an issue no longer assigned to us is a genuine rejection, not a
+    // run-lock race — leave it for the caller to assert on.
+    if (issueRunLock.assigneeAgentId !== agent.agentId) break;
+    const retryRunId = issueRunLock.checkoutRunId ?? issueRunLock.executionRunId ?? runId;
+    res = await patchWith(retryRunId);
+  }
   return res;
 }
 
@@ -99,6 +155,12 @@ async function agentCheckoutAndPatch(
   patchData: Record<string, unknown>,
 ) {
   const runId = await invokeHeartbeat(board, agent.agentId);
+  const directPatchRes = await agent.request.patch(`${BASE_URL}/api/issues/${issueId}`, {
+    headers: { "X-Paperclip-Run-Id": runId },
+    data: patchData,
+  });
+  if (directPatchRes.ok()) return directPatchRes;
+
   // Checkout (sets executionRunId so PATCH is allowed)
   const checkoutRes = await agent.request.post(`${BASE_URL}/api/issues/${issueId}/checkout`, {
     headers: { "X-Paperclip-Run-Id": runId },
@@ -106,13 +168,8 @@ async function agentCheckoutAndPatch(
   });
   if (!checkoutRes.ok()) {
     if (checkoutRes.status() === 409) {
-      const issueRunLock = await getIssueRunLockState(board, issueId);
-      const lockedRunId = issueRunLock.checkoutRunId ?? issueRunLock.executionRunId;
-      const res = await agent.request.patch(`${BASE_URL}/api/issues/${issueId}`, {
-        headers: { "X-Paperclip-Run-Id": lockedRunId ?? runId },
-        data: patchData,
-      });
-      if (res.ok() && issueRunLock.assigneeAgentId === agent.agentId) {
+      const res = await retryAgentPatchWithCurrentLockOnConflict(board, agent, issueId, checkoutRes, patchData);
+      if (res.ok()) {
         return res;
       }
     }
@@ -135,7 +192,7 @@ async function agentCheckoutAndPatch(
     headers: { "X-Paperclip-Run-Id": runId },
     data: patchData,
   });
-  return res;
+  return retryAgentPatchWithCurrentLockOnConflict(board, agent, issueId, res, patchData);
 }
 
 async function setupCompany(boardRequest: APIRequestContext): Promise<TestContext> {
@@ -374,10 +431,14 @@ test.describe("Signoff execution policy", () => {
     const issueId = issue.id;
 
     // Executor marks done → routes to reviewer
-    await agentCheckoutAndPatch(
+    const doneRes = await agentCheckoutAndPatch(
       ctx.boardRequest, ctx.executor, issueId, ["in_progress"],
       { status: "done", comment: "Done." },
     );
+    expect(doneRes.ok()).toBe(true);
+    const doneIssue = await doneRes.json();
+    expect(doneIssue.status).toBe("in_review");
+    expect(doneIssue.assigneeAgentId).toBe(ctx.reviewer.agentId);
 
     // Reviewer tries to approve without comment → should fail
     const noCommentRes = await agentPatch(

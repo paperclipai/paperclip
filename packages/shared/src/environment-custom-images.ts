@@ -86,6 +86,16 @@ export interface EnvironmentCustomImageSetupSessionRedactionInput {
 export function redactEnvironmentCustomImageSetupSession<
   T extends EnvironmentCustomImageSetupSessionRedactionInput,
 >(session: T): T {
+  const connectionSummary = session.connectionSummary == null
+    ? session.connectionSummary
+    : {
+        ...redactEnvironmentCustomImageValue(session.connectionSummary),
+        ...(
+          Object.prototype.hasOwnProperty.call(session.connectionSummary, "username")
+            ? { username: REDACTED_ENVIRONMENT_CUSTOM_IMAGE_VALUE }
+            : {}
+        ),
+      };
   return {
     ...session,
     providerLeaseId: session.providerLeaseId == null
@@ -97,9 +107,7 @@ export function redactEnvironmentCustomImageSetupSession<
     connectionSecretRef: session.connectionSecretRef == null
       ? session.connectionSecretRef
       : REDACTED_ENVIRONMENT_CUSTOM_IMAGE_VALUE,
-    connectionSummary: session.connectionSummary == null
-      ? session.connectionSummary
-      : redactEnvironmentCustomImageValue(session.connectionSummary),
+    connectionSummary,
     metadata: session.metadata == null
       ? session.metadata
       : redactEnvironmentCustomImageValue(session.metadata),

@@ -112,6 +112,7 @@ describe("SidebarServerInfo", () => {
           available: true,
           fullSha: "abcdef1234567890abcdef1234567890abcdef12",
           shortSha: "abcdef1",
+          branchName: "master",
           subject: "Add server info debug view",
           committedAt: "2026-06-25T23:00:00.000Z",
           localChanges: {
@@ -160,6 +161,7 @@ describe("SidebarServerInfo", () => {
           available: true,
           fullSha: "abcdef1234567890abcdef1234567890abcdef12",
           shortSha: "abcdef1",
+          branchName: "master",
           subject: "Add server info debug view",
           committedAt: "2026-06-25T23:00:00.000Z",
           localChanges: {
@@ -204,6 +206,7 @@ describe("SidebarServerInfo", () => {
           available: true,
           fullSha: "abcdef1234567890abcdef1234567890abcdef12",
           shortSha: "abcdef1",
+          branchName: "master",
           subject: "Add server info debug view",
           committedAt: "2026-06-25T23:00:00.000Z",
           localChanges: {
@@ -233,6 +236,7 @@ describe("SidebarServerInfo", () => {
           available: true,
           fullSha: "1111111111111111111111111111111111111111",
           shortSha: "1111111",
+          branchName: "master",
           subject: "First boot",
           committedAt: "2026-06-25T23:00:00.000Z",
           localChanges: {
@@ -279,6 +283,7 @@ describe("SidebarServerInfo", () => {
           available: true,
           fullSha: "2222222222222222222222222222222222222222",
           shortSha: "2222222",
+          branchName: "master",
           subject: "After restart",
           committedAt: "2026-06-26T01:30:00.000Z",
           localChanges: {

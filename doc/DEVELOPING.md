@@ -56,6 +56,46 @@ pnpm build-storybook
 
 These run the `@paperclipai/ui` Storybook on port `6006` and build the static output to `ui/storybook-static/`.
 
+The Storybook visual regression suite uses external PNG baselines instead of
+committed screenshots:
+
+```sh
+pnpm test:storybook-visual
+pnpm test:storybook-visual:update
+```
+
+`pnpm test:storybook-visual` downloads and verifies the baseline archive from
+`tests/storybook-visual/baseline-manifest.json` before running Playwright.
+Accepted visual changes should update the manifest metadata and publish a new
+immutable archive with `pnpm storybook-visual:baseline pack` and
+`pnpm storybook-visual:baseline upload`; do not commit generated PNG snapshots.
+
+Known limitation: Storybook visual baselines are Linux/Ubuntu-only. The manifest
+pins the capture environment to `ubuntu-24.04` and the Playwright suite uses
+pixel-exact comparison, so local runs on macOS, Windows, or other non-matching
+platforms can report false-positive diffs from font rasterization and subpixel
+rendering. Use the `Storybook Visual` GitHub Actions workflow on `ubuntu-latest`
+as the source of truth, or run locally in a matching Linux environment before
+accepting or updating baselines.
+
+PR visual checks are opt-in while the suite stabilizes. Add the
+`storybook-visual` label to a PR, or run the `Storybook Visual` GitHub Actions
+workflow manually, to produce downloadable Playwright report/test-result
+artifacts. Normal PR visual runs use read-only repository permissions and do not
+upload or mutate baseline objects.
+
+## UI Fonts And Screenshots
+
+The board UI ships its own sans-serif webfont assets in `ui/public/fonts/`.
+`ui/src/index.css` declares Inter v4.1 variable regular and italic faces and wires
+the Tailwind `font-sans` token to those bundled files before system fallbacks.
+Linux screenshot or Storybook capture jobs should not install host Inter packages
+or inject external font CSS to make Paperclip text render correctly.
+
+Font assets live in Vite's public directory so `pnpm --filter @paperclipai/ui build`
+emits them under `ui/dist/fonts/`. The server package copies the same output into
+`server/ui-dist/fonts/` through `scripts/prepare-server-ui-dist.sh`.
+
 Inspect or stop the current repo's managed dev runner:
 
 ```sh
@@ -64,6 +104,79 @@ pnpm dev:stop
 ```
 
 `pnpm dev:once` now tracks backend-relevant file changes and pending migrations. When the current boot is stale, the board UI shows a `Restart required` banner. You can also enable guarded auto-restart in `Instance Settings > Experimental`, which waits for queued/running local agent runs to finish before restarting the dev server.
+
+## Hot-Restart Deploys
+
+Primary-instance rebuilds that restart `paperclip.service` can request one-shot live-run adoption instead of using the normal graceful shutdown drain. Before restarting the service, write the marker from the newly staged app with the current service PID:
+
+```sh
+old_main_pid="$(systemctl show paperclip.service -p MainPID --value)"
+pnpm --filter @paperclipai/server exec tsx ../scripts/request-hot-restart.ts --server-pid "$old_main_pid"
+systemctl restart paperclip.service
+```
+
+The staged command records the target server's boot identity and operating
+system process start time with the PID. It reads process metadata through
+`/proc` on Linux, `ps` on macOS and BSD, and PowerShell on Windows. These
+identities let a later request reclaim an abandoned marker after the operating
+system recycles the numeric PID. Older markers stay compatible and use process
+start metadata when available. When OS metadata is unavailable, the current
+server's health-reported boot time can still prove that a legacy marker predates
+the process now using its PID. Paperclip refuses to create a new request without
+at least one identity source. Supported-platform process probes fail explicitly
+instead of silently treating a live PID as either the original owner or a
+recycled process when identity cannot be established.
+
+Use `--drain-required` only when the deploy intentionally requires the old terminate-and-retry behavior. Without that flag, the old server verifies that the marker targets its own PID, snapshots currently running heartbeat run IDs and child PIDs, and skips the shutdown drain so eligible detached local-agent processes can keep running. On startup the new server writes `$PAPERCLIP_HOME/instances/${PAPERCLIP_INSTANCE_ID:-default}/hot-restart-report.json` with `previousServerPid`, `newServerPid`, `previousServerVersion`, `newServerVersion`, `adoptedRunIds`, `finalizedWhileDownRunIds`, `lostRunIds`, and per-run classifications before the normal orphan reaper runs.
+
+The request command records the preflight set of running heartbeat IDs and writes
+an instance-scoped marker plus a PID-targeted legacy home-root handoff marker.
+This lets a previous server version capture its snapshot at the old path while
+the new server correlates that snapshot back to the authoritative instance
+request. If any preflight run ID is absent from the shutdown snapshot, the
+startup report includes it in `lostRunIds`; a missing snapshot therefore cannot
+look like a zero-loss restart.
+
+A healthy guarded deploy must compare the report against `/api/health` (`version` or `serverVersion`) and treat any `lostRunIds` entry as a continuity failure that needs recovery before marking deployment complete.
+
+### Recovering a deploy blocked by missing process metadata
+
+If the currently installed version already has a running local-agent heartbeat
+whose `processPid` and `processGroupId` are both null, that pre-fix run cannot be
+made adoptable retroactively. Cross that version boundary once with the normal
+drain-and-retry path:
+
+```sh
+old_main_pid="$(systemctl show paperclip.service -p MainPID --value)"
+pnpm --filter @paperclipai/server exec tsx ../scripts/request-hot-restart.ts \
+  --server-pid "$old_main_pid" --drain-required
+systemctl restart paperclip.service
+```
+
+After the fixed server starts, wait for the replacement `codex_local` heartbeat
+to spawn, then confirm its run record has an identity (use an authenticated API
+request in authenticated mode):
+
+```sh
+PAPERCLIP_API_BASE="${PAPERCLIP_API_URL:-http://127.0.0.1:3100}"
+PAPERCLIP_API_BASE="${PAPERCLIP_API_BASE%/api}"
+curl -fsS "$PAPERCLIP_API_BASE/api/heartbeat-runs/$RUN_ID" \
+  | jq -e '.status == "running" and (.processPid != null or .processGroupId != null)'
+```
+
+The next continuity check should use the ordinary marker without
+`--drain-required`. After restart, require both an empty loss list and an
+explicit outcome for the run that was live before restart:
+
+```sh
+jq -e --arg run "$RUN_ID" \
+  '(.lostRunIds | length) == 0 and ((.adoptedRunIds + .finalizedWhileDownRunIds) | index($run) != null)' \
+  "$PAPERCLIP_HOME/hot-restart-report.json"
+```
+
+An alive child appears in `adoptedRunIds`; a child that completed during the
+restart window appears in `finalizedWhileDownRunIds`. Either is continuous. A
+`lostRunIds` entry remains a failed deploy and must not be waived.
 
 Tailscale/private-auth dev mode:
 
@@ -301,6 +414,7 @@ This command:
 - creates an isolated instance under `~/.paperclip-worktrees/instances/<worktree-id>/`
 - when run inside a linked git worktree, mirrors the effective git hooks into that worktree's private git dir
 - picks a free app port and embedded PostgreSQL port
+- disables automatic database backups for the isolated instance
 - by default seeds the isolated DB in `minimal` mode from the current effective Paperclip instance/config (repo-local worktree config when present, otherwise the default instance) via a logical SQL snapshot
 
 Seed modes:
@@ -320,6 +434,7 @@ Provisioned git worktrees also pause seeded routines that still have enabled sch
 That repo-local env also sets:
 
 - `PAPERCLIP_IN_WORKTREE=true`
+- `PAPERCLIP_DB_BACKUP_ENABLED=false`
 - `PAPERCLIP_WORKTREE_NAME=<worktree-name>`
 - `PAPERCLIP_WORKTREE_COLOR=<hex-color>`
 
@@ -601,6 +716,11 @@ schemas. Defaults:
 - retain 30 days
 - backup dir: `~/.paperclip/instances/default/data/backups`
 
+Automatic backups are disabled for isolated worktree instances created with
+`paperclipai worktree init` or `paperclipai worktree:make`. Existing worktree
+configs are migrated to the disabled setting when their server next starts. The
+main/default instance keeps the normal enabled-by-default behavior.
+
 Configure these in:
 
 ```sh
@@ -621,6 +741,14 @@ Environment overrides:
 - `PAPERCLIP_DB_BACKUP_INTERVAL_MINUTES=<minutes>`
 - `PAPERCLIP_DB_BACKUP_RETENTION_DAYS=<days>`
 - `PAPERCLIP_DB_BACKUP_DIR=/absolute/or/~/path`
+- `PAPERCLIP_DB_BACKUP_MAX_AGE_HOURS=<hours>` controls the `/api/health`
+  stale-backup warning threshold
+- `PAPERCLIP_DB_BACKUP_ALERT_FILE=/path/to/failure-marker` lets external cron
+  wrappers surface the last failed backup in `/api/health`
+
+Without `PAPERCLIP_DB_BACKUP_ALERT_FILE`, health checks look for
+`db-backup-to-s3.failure` in the backup directory, beside the backup directory,
+and in the default sibling `health/` directory.
 
 DB backups are not full instance filesystem backups. For full local disaster
 recovery, also back up local storage files and the local encrypted secrets key if

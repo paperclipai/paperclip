@@ -432,8 +432,31 @@ describe("routine routes", () => {
 
     const res = await request(app).get(`/api/routines/${routineId}/revisions`);
 
-    expect(res.status).toBe(403);
+    expect(res.status).toBe(404);
     expect(mockRoutineService.listRevisions).not.toHaveBeenCalled();
+  });
+
+  it("returns an identical 404 body for missing and cross-tenant routine triggers", async () => {
+    const crossTenantApp = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "session",
+      isInstanceAdmin: false,
+      companyIds: ["99999999-9999-4999-8999-999999999999"],
+    });
+    const crossTenant = await request(crossTenantApp)
+      .patch(`/api/routine-triggers/${trigger.id}`)
+      .send({ kind: "cron", config: { expression: "0 9 * * *" } });
+
+    mockRoutineService.getTrigger.mockResolvedValue(null);
+    const missing = await request(crossTenantApp)
+      .patch(`/api/routine-triggers/${trigger.id}`)
+      .send({ kind: "cron", config: { expression: "0 9 * * *" } });
+
+    expect(crossTenant.status).toBe(404);
+    expect(missing.status).toBe(404);
+    expect(crossTenant.body).toEqual(missing.body);
+    expect(mockRoutineService.updateTrigger).not.toHaveBeenCalled();
   });
 
   it("requires an assigned agent for routine revision history access", async () => {

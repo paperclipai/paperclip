@@ -6,6 +6,7 @@ import { formatMonitorOffset } from "@/lib/issue-monitor";
 import { formatRetryReason } from "@/lib/runRetryState";
 import type { IssueScheduledRetry } from "@paperclipai/shared";
 import { useRetryNowMutation, type RetryNowError } from "../hooks/useRetryNowMutation";
+import { Badge } from "@/components/ui/badge";
 
 const MAX_TURN_CONTINUATION = "max_turns_continuation";
 
@@ -69,15 +70,15 @@ export function IssueScheduledRetryCard({
   return (
     <div
       data-testid="issue-scheduled-retry-card"
-      className="mb-3 rounded-lg border border-cyan-500/30 bg-cyan-500/5 px-3 py-3"
+      className="mb-3 rounded-lg border border-blue-500/30 bg-blue-500/5 px-3 py-3"
     >
       <div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
         <div className="min-w-0 flex-1">
           <div className="flex flex-wrap items-center gap-2 text-xs">
-            <span className="inline-flex items-center gap-1 rounded-full border border-cyan-500/30 bg-cyan-500/10 px-2 py-0.5 font-medium text-cyan-700 dark:text-cyan-300">
+            <Badge variant="outline" className="border-blue-500/30 bg-blue-500/10 text-blue-700 dark:text-blue-300">
               <Clock className="h-3 w-3" aria-hidden="true" />
               {badgeLabel}
-            </span>
+            </Badge>
             {attempt !== null ? (
               <span className="text-muted-foreground">Attempt {attempt}</span>
             ) : null}
@@ -145,7 +146,7 @@ export function IssueScheduledRetryCard({
               </span>
             )}
           </Button>
-          <span className="text-right text-xs text-muted-foreground sm:max-w-[12rem]">
+          <span className="text-right text-xs text-muted-foreground sm:max-w-(--sz-12rem)">
             {retryNow.isPending
               ? "Promoting scheduled retry"
               : isSuccessTransient

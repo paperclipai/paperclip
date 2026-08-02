@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { createContext, useContext, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertCircle, KeyRound, Loader2, Plus, X } from "lucide-react";
 import type { CompanySecret, SecretVersionSelector } from "@paperclipai/shared";
@@ -15,6 +15,32 @@ export interface SecretBindingValue {
   secretId: string;
   version?: SecretVersionSelector;
 }
+
+/**
+ * Metadata for bound secrets the current company's list cannot show — e.g.
+ * an instance-scoped environment referencing a secret owned by another
+ * company. Keyed by secret id. Editors that can read instance-level
+ * secret-ref descriptors provide it; everywhere else the context is absent
+ * and the picker falls back to its generic missing-secret treatment.
+ */
+export interface SecretRefHint {
+  name: string;
+  status: string;
+  companyId: string;
+  companyName: string | null;
+}
+
+/**
+ * `status` reports the descriptor request itself, so the picker never claims
+ * a secret is missing while the lookup is still loading or has failed —
+ * only a `ready` map is authoritative about unknown ids.
+ */
+export interface SecretRefHintsContextValue {
+  status: "loading" | "error" | "ready";
+  hints: Record<string, SecretRefHint>;
+}
+
+export const SecretRefHintsContext = createContext<SecretRefHintsContextValue | undefined>(undefined);
 
 interface SecretBindingPickerProps {
   value: SecretBindingValue | null;
@@ -96,6 +122,14 @@ export function SecretBindingPicker({
   }, [secretsQuery.data, value]);
 
   const selectedMissing = Boolean(value && !selectedSecret);
+  const hintsContext = useContext(SecretRefHintsContext);
+  const missingHint = selectedMissing && value ? hintsContext?.hints[value.secretId] : undefined;
+  // Only an active cross-company secret is healthy: runtime resolution
+  // rejects disabled/archived/deleted secrets, so those must not be
+  // presented as working bindings.
+  const crossCompanyHint = missingHint && missingHint.status === "active" ? missingHint : undefined;
+  const hintsPending = selectedMissing && !missingHint && hintsContext !== undefined && hintsContext.status !== "ready";
+  const calmMissing = Boolean(crossCompanyHint) || hintsPending;
 
   const createMutation = useMutation({
     mutationFn: () =>
@@ -131,7 +165,7 @@ export function SecretBindingPicker({
           {value ? (
             <button
               type="button"
-              className="text-[11px] text-muted-foreground hover:text-foreground inline-flex items-center gap-1"
+              className="text-(length:--text-micro) text-muted-foreground hover:text-foreground inline-flex items-center gap-1"
               onClick={() => onChange(null)}
               disabled={disabled}
             >
@@ -146,7 +180,7 @@ export function SecretBindingPicker({
           <select
             className={cn(
               "h-9 w-full rounded-md border border-border bg-background pl-7 pr-2 text-sm outline-none disabled:cursor-not-allowed disabled:opacity-60",
-              selectedMissing && "border-destructive text-destructive",
+              selectedMissing && !calmMissing && "border-destructive text-destructive",
             )}
             value={value?.secretId ?? ""}
             onChange={(event) => {
@@ -161,7 +195,13 @@ export function SecretBindingPicker({
           >
             <option value="">{secretsQuery.isPending ? "Loading…" : placeholder}</option>
             {selectedMissing && value ? (
-              <option value={value.secretId}>Missing secret ({value.secretId.slice(0, 8)}…)</option>
+              <option value={value.secretId}>
+                {missingHint
+                  ? `${missingHint.name} — ${missingHint.companyName ?? "another company"}`
+                  : hintsPending
+                    ? `Secret (${value.secretId.slice(0, 8)}…)`
+                    : `Missing secret (${value.secretId.slice(0, 8)}…)`}
+              </option>
             ) : null}
             {filteredSecrets.map((secret) => (
               <option key={secret.id} value={secret.id}>
@@ -210,17 +250,36 @@ export function SecretBindingPicker({
       </div>
 
       {selectedSecret ? (
-        <p className={cn("text-[11px] text-muted-foreground", statusTone(selectedSecret.status))}>
+        <p className={cn("text-(length:--text-micro) text-muted-foreground", statusTone(selectedSecret.status))}>
           {selectedSecret.status !== "active" ? `Status: ${selectedSecret.status}. ` : null}
           Bound to {versionDisplay(value?.version)} · {selectedSecret.key}
         </p>
+      ) : crossCompanyHint ? (
+        <p className="text-(length:--text-micro) text-muted-foreground flex items-center gap-1">
+          <AlertCircle className="h-3 w-3" />
+          Owned by {crossCompanyHint.companyName ? `the ${crossCompanyHint.companyName} company` : "another company"}. The binding keeps working; selecting a secret from this list re-points it here.
+        </p>
+      ) : missingHint ? (
+        <p className="text-(length:--text-micro) text-destructive flex items-center gap-1">
+          <AlertCircle className="h-3 w-3" />
+          {missingHint.status === "deleted"
+            ? "The previously selected secret was deleted. Pick another or remove the binding."
+            : `This secret is ${missingHint.status}; runs cannot resolve it until it is active again.`}
+        </p>
+      ) : hintsPending ? (
+        <p className="text-(length:--text-micro) text-muted-foreground flex items-center gap-1">
+          <AlertCircle className="h-3 w-3" />
+          {hintsContext?.status === "error"
+            ? "Could not load this secret reference's details."
+            : "Checking this secret reference…"}
+        </p>
       ) : selectedMissing ? (
-        <p className="text-[11px] text-destructive flex items-center gap-1">
+        <p className="text-(length:--text-micro) text-destructive flex items-center gap-1">
           <AlertCircle className="h-3 w-3" />
           The previously selected secret is no longer available. Pick another or remove the binding.
         </p>
       ) : (filteredSecrets.length === 0 && !secretsQuery.isPending) ? (
-        <p className="text-[11px] text-muted-foreground">{emptyHint}</p>
+        <p className="text-(length:--text-micro) text-muted-foreground">{emptyHint}</p>
       ) : null}
 
       <Dialog open={createOpen} onOpenChange={setCreateOpen}>
@@ -249,7 +308,7 @@ export function SecretBindingPicker({
                 placeholder="Paste the secret value"
                 className="font-mono text-xs"
               />
-              <p className="text-[11px] text-muted-foreground mt-1">
+              <p className="text-(length:--text-micro) text-muted-foreground mt-1">
                 The value is stored once and never re-displayed. Rotate to replace.
               </p>
             </div>

@@ -116,7 +116,7 @@ The plugin loader calls `createServerAdapter()` from your package root. This fun
 
 ```ts
 export const type = "my_adapter";     // snake_case, globally unique
-export const label = "My Agent (local)";
+export const label = "My Agent";
 
 export const models = [
   { id: "model-a", label: "Model A" },

@@ -3,11 +3,14 @@ import {
   buildExecutionWorkspaceAdapterConfig,
   defaultIssueExecutionWorkspaceSettingsForProject,
   gateProjectExecutionWorkspacePolicy,
+  isUnrunnableWorktreeCombo,
   issueExecutionWorkspaceModeForPersistedWorkspace,
   parseIssueExecutionWorkspaceSettings,
   parseProjectExecutionWorkspacePolicy,
   resolveExecutionWorkspaceEnvironmentId,
+  resolvePinnedIssueWorkspaceStrategyType,
   resolveExecutionWorkspaceMode,
+  selectEnvironmentExecutionWorkspaceSettings,
 } from "../services/execution-workspace-policy.ts";
 
 describe("execution workspace policy helpers", () => {
@@ -35,6 +38,123 @@ describe("execution workspace policy helpers", () => {
         legacyUseProjectWorkspace: false,
       }),
     ).toBe("isolated_workspace");
+  });
+
+  it("centralizes unrunnable isolated worktree detection", () => {
+    expect(
+      isUnrunnableWorktreeCombo({
+        issue: {
+          projectId: null,
+          projectWorkspaceId: null,
+          executionWorkspaceId: null,
+          executionWorkspacePreference: null,
+        },
+        resolvedMode: "isolated_workspace",
+        resolvedStrategy: "git_worktree",
+      }),
+    ).toBe(true);
+    expect(
+      isUnrunnableWorktreeCombo({
+        issue: {
+          projectId: "project-1",
+          projectWorkspaceId: null,
+          executionWorkspaceId: null,
+          executionWorkspacePreference: null,
+        },
+        resolvedMode: "isolated_workspace",
+        resolvedStrategy: "git_worktree",
+      }),
+    ).toBe(false);
+    expect(
+      isUnrunnableWorktreeCombo({
+        issue: {
+          projectId: null,
+          projectWorkspaceId: null,
+          executionWorkspaceId: "workspace-1",
+          executionWorkspacePreference: "reuse_existing",
+        },
+        resolvedMode: "isolated_workspace",
+        resolvedStrategy: "git_worktree",
+      }),
+    ).toBe(false);
+    expect(
+      isUnrunnableWorktreeCombo({
+        issue: {
+          projectId: null,
+          projectWorkspaceId: null,
+          executionWorkspaceId: null,
+          executionWorkspacePreference: null,
+        },
+        resolvedMode: "shared_workspace",
+        resolvedStrategy: "git_worktree",
+      }),
+    ).toBe(false);
+    expect(
+      isUnrunnableWorktreeCombo({
+        issue: {
+          projectId: null,
+          projectWorkspaceId: null,
+          executionWorkspaceId: null,
+          executionWorkspacePreference: null,
+        },
+        resolvedMode: "agent_default",
+        resolvedStrategy: "git_worktree",
+      }),
+    ).toBe(false);
+    expect(
+      isUnrunnableWorktreeCombo({
+        issue: {
+          projectId: null,
+          projectWorkspaceId: null,
+          executionWorkspaceId: null,
+          executionWorkspacePreference: null,
+        },
+        resolvedMode: "operator_branch",
+        resolvedStrategy: "git_worktree",
+      }),
+    ).toBe(true);
+    expect(
+      isUnrunnableWorktreeCombo({
+        issue: {
+          projectId: null,
+          projectWorkspaceId: null,
+          executionWorkspaceId: null,
+          executionWorkspacePreference: null,
+        },
+        resolvedMode: "isolated_workspace",
+        resolvedStrategy: "git_worktree",
+        hasResolvablePriorSessionWorkspace: true,
+      }),
+    ).toBe(false);
+  });
+
+  it("mirrors runtime default (project_primary) when pinned settings omit strategy type", () => {
+    // Mode-only pin without explicit workspaceStrategy.type → same project_primary default as runtime.
+    expect(
+      resolvePinnedIssueWorkspaceStrategyType({
+        mode: "isolated_workspace",
+        issueSettings: { mode: "isolated_workspace" },
+      }),
+    ).toBe("project_primary");
+    // Explicit strategy type is always respected.
+    expect(
+      resolvePinnedIssueWorkspaceStrategyType({
+        mode: "isolated_workspace",
+        issueSettings: {
+          mode: "isolated_workspace",
+          workspaceStrategy: { type: "git_worktree" },
+        },
+      }),
+    ).toBe("git_worktree");
+    expect(
+      resolvePinnedIssueWorkspaceStrategyType({
+        mode: "isolated_workspace",
+        issueSettings: {
+          mode: "isolated_workspace",
+          workspaceStrategy: { type: "project_primary" },
+        },
+      }),
+    ).toBe("project_primary");
   });
 
   it("falls back to project policy before legacy project-workspace compatibility flag", () => {
@@ -155,10 +275,55 @@ describe("execution workspace policy helpers", () => {
     expect(
       parseIssueExecutionWorkspaceSettings({
         mode: "project_primary",
+        environmentId: "11111111-1111-4111-8111-111111111111",
       }),
     ).toEqual({
       mode: "shared_workspace",
     });
+    expect(
+      parseIssueExecutionWorkspaceSettings(
+        {
+          mode: "project_primary",
+          environmentId: "11111111-1111-4111-8111-111111111111",
+        },
+        { includeEnvironmentId: true },
+      ),
+    ).toEqual({
+      mode: "shared_workspace",
+      environmentId: "11111111-1111-4111-8111-111111111111",
+    });
+    expect(
+      parseIssueExecutionWorkspaceSettings({
+        mode: "isolated_workspace",
+        networkEgress: {
+          allowFqdns: ["github.com", "pypi.org"],
+          allowCidrs: ["203.0.113.0/24"],
+        },
+      }),
+    ).toEqual({
+      mode: "isolated_workspace",
+      networkEgress: {
+        allowFqdns: ["github.com", "pypi.org"],
+        allowCidrs: ["203.0.113.0/24"],
+      },
+    });
+  });
+
+  it("keeps egress grants independent from isolated workspace mode", () => {
+    const parsedSettings = {
+      mode: "isolated_workspace" as const,
+      workspaceRuntime: { image: "example/image" },
+      networkEgress: {
+        allowFqdns: ["github.com"],
+        allowCidrs: ["203.0.113.0/24"],
+      },
+    };
+
+    expect(selectEnvironmentExecutionWorkspaceSettings(parsedSettings, false)).toEqual({
+      networkEgress: parsedSettings.networkEgress,
+    });
+    expect(selectEnvironmentExecutionWorkspaceSettings(parsedSettings, true)).toEqual(parsedSettings);
+    expect(selectEnvironmentExecutionWorkspaceSettings({ mode: "isolated_workspace" }, false)).toBeNull();
   });
 
   it("prefers the agent default environment", () => {

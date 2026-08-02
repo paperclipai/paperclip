@@ -232,8 +232,12 @@ After setup:
 Install-path check:
 
 ```bash
-npx paperclipai@canary onboard
+npm install --prefix "$(mktemp -d)" paperclipai@canary --no-audit --no-fund
 ```
+
+The release script runs this clean-prefix install after publishing every workspace
+package dependency-first and publishing `paperclipai` last. A package that is not
+yet registry-visible stops the train before the channel entrypoint can advance.
 
 ## 12. Verify the Stable Workflow
 

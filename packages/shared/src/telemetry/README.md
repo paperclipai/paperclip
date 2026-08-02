@@ -26,6 +26,7 @@ Use these files when reviewing or changing telemetry code:
 | Shared reusable enum domains | Named exports in `constants.ts` |
 | First-party typed emit helpers | `events.ts` |
 | Generic client behavior | `client.ts` |
+| Retention windows and event class assignments | `RETENTION_DAYS` and `EVENT_RETENTION_CLASS` in `retention.ts` |
 
 Do not copy generated event lists or dimension tables into this README. They
 will drift as the generated contract changes.
@@ -53,6 +54,68 @@ the generated telemetry contract specifically requires that emitted value.
 If a dimension is privacy-protected before emission, emit only the protected
 value and its matching public marker as defined by the typed helper or generated
 contract. Do not emit private source material in telemetry dimensions.
+
+## Sandbox Startup Trace Spans
+
+Paperclip opens OpenTelemetry spans on the sandbox start path. These spans are a
+separate telemetry surface from the first-party events above. The generated
+telemetry contract does not cover them, so this section is their canonical
+contract.
+
+The spans are opt-in. Paperclip exports them only when an OTLP endpoint is
+configured. With no endpoint the whole span path is a no-op. Paperclip opens the
+spans only for a run that targets a remote sandbox. A local run and an SSH run
+stay out of these spans.
+
+Span attributes use a closed allowlist. A command, an argument, an environment
+value, a file path, an identifier, or program output never rides a span. It rides
+neither as an attribute nor as an event. Each numeric attribute is finite.
+Paperclip omits an attribute when its value is absent.
+
+### Spans
+
+| Span | Scope | Parent |
+| --- | --- | --- |
+| `sandbox.startup` | The one root span for a sandbox bring-up. | none (root) |
+| `workspace.resolve` | Workspace resolution step. | `sandbox.startup` |
+| `codex-home.seed` | Managed-home seed step. | `sandbox.startup` |
+| `skills.reconcile` | Skills reconcile step. | `sandbox.startup` |
+| `stage.sync` | Workspace stage-sync step. | `sandbox.startup` |
+| `bridge.paperclip` | Paperclip bridge start step. | `sandbox.startup` |
+| `bridge.process-session` | Process-session bridge start step. | `sandbox.startup` |
+| `acp.handshake` | ACP session handshake step. | `sandbox.startup` |
+| `provider.execute` | One host-to-sandbox provider exec call. | none |
+
+The root span sets the error status when the bring-up fails. Each step span sets
+the error status when its step fails.
+
+### Startup span attributes
+
+The bring-up step spans use this closed attribute allowlist.
+
+| Attribute | Type | Optional | Meaning |
+| --- | --- | --- | --- |
+| `step` | string | no | The bring-up step name. |
+| `provider` | string | yes | The normalized provider family. |
+| `roundTrips` | number | yes | Host-to-sandbox round trips for the step. |
+| `providerExecMs` | number | yes | Provider-reported exec time for the step, in milliseconds. |
+| `providerGetMs` | number | yes | Provider-reported fetch time for the step, in milliseconds. |
+
+### Provider exec span attributes
+
+The `provider.execute` span uses this closed attribute allowlist. Paperclip omits
+a duration attribute when the provider does not report the value.
+
+| Attribute | Type | Optional | Meaning |
+| --- | --- | --- | --- |
+| `provider` | string | no | The normalized provider family. |
+| `exit` | string | no | `ok` when the exit code is 0, else `error`. |
+| `provider.exec.duration_ms` | number | yes | Provider-reported exec wall time, in milliseconds. |
+| `provider.get.duration_ms` | number | yes | Provider-reported fetch wall time, in milliseconds. |
+
+To add a startup span attribute or a provider span attribute, extend the
+allowlist in the code first. Keep the attribute low-cardinality and free of user
+content.
 
 ## Dimension Values
 
@@ -86,10 +149,16 @@ and let the receiving layer canonicalize it.
 ## Adding Or Changing Telemetry
 
 Client code is responsible for emitting approved telemetry events at the right
-place in the product. It is not responsible for deciding which new events should
-exist. Do not introduce ad hoc event names, dimensions, or enum domains in client
-code; they must exist in the generated telemetry contract before emitters use
-them.
+place in the product. Stable event names, dimensions, and enum domains must come
+from the generated telemetry contract before normal emitters use them.
+
+For product work that needs to propose a new first-party event before schema
+registration, use the proposal marker workflow in `doc/TELEMETRY_WORKFLOW.md`.
+Those proposed calls stay on `client.track()`, carry an `@ts-expect-error`
+marker on the event-name argument, and are swallowed at runtime until the
+generated schema registers the event name.
+
+For stable event work:
 
 1. Start from `generated/paperclip-telemetry.ts`. The generated types are what
    reviewers use to verify event names, dimensions, optionality, value types,
@@ -114,3 +183,25 @@ them.
 Before opening a pull request, verify that the emitted code, typed helpers, and
 generated telemetry contract agree. If they disagree, fix the contract or code
 rather than documenting around the mismatch in this README.
+
+For new first-party events that are not in the generated contract yet, follow
+the public proposal and promotion workflow in
+[`doc/TELEMETRY_WORKFLOW.md`](../../../../doc/TELEMETRY_WORKFLOW.md).
+
+## Retention
+
+Retention windows are documented in `retention.ts`. Each event is assigned a
+retention class; the class determines the window in days. This is a
+housekeeping and query-cost concern managed by data-infra, not a schema
+concern — updating a retention window does not require a schema version bump.
+
+Current classes:
+
+| Class | Window | Description |
+| --- | --- | --- |
+| `operational_enum_count` | 90 days | Enum/boolean/count/bucket events. No token material, no PII. |
+
+When a new event carries only enums, booleans, counts, or coarse buckets and
+no token material or PII, assign it to `operational_enum_count` in
+`EVENT_RETENTION_CLASS`. If no existing class fits, define a new class in
+`RETENTION_DAYS` and document it here.

@@ -10,6 +10,12 @@ import {
 import { Activity, ExternalLink, Loader2, Play, RotateCcw, Square } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
+import { Badge } from "@/components/ui/badge";
+import { timeAgo } from "@/lib/timeAgo";
+import type {
+  WorkspaceServiceControlAction,
+  WorkspaceServiceControlEntry,
+} from "@/components/WorkspaceServiceControlBar";
 
 export type WorkspaceRuntimeAction = "start" | "stop" | "restart" | "run";
 
@@ -201,6 +207,101 @@ export function getRunningRuntimeServiceUrl(
   return runningService?.url ?? null;
 }
 
+function isActiveStatusLabel(statusLabel: string) {
+  return statusLabel === "running" || statusLabel === "starting";
+}
+
+/**
+ * Maps runtime control sections onto the fixed-geometry service control bar
+ * model. In-flight mutations overlay the transitional states (starting /
+ * stopping / restarting) that the server status enum does not carry.
+ */
+export function buildWorkspaceServiceControlEntries(input: {
+  sections: WorkspaceRuntimeControlSections;
+  runtimeServices?: WorkspaceRuntimeService[] | null;
+  isPending?: boolean;
+  pendingRequest?: WorkspaceRuntimeControlRequest | null;
+  pendingRequests?: WorkspaceRuntimeControlRequest[];
+}): WorkspaceServiceControlEntry[] {
+  const runtimeServicesById = new Map(
+    (input.runtimeServices ?? []).map((runtimeService) => [runtimeService.id, runtimeService]),
+  );
+  const pendingRequests = input.pendingRequests
+    ?? (input.isPending && input.pendingRequest ? [input.pendingRequest] : []);
+
+  return [...input.sections.services, ...input.sections.otherServices].map((item) => {
+    let state: WorkspaceServiceControlEntry["state"] =
+      item.statusLabel === "running"
+        ? "running"
+        : item.statusLabel === "starting"
+          ? "starting"
+          : item.statusLabel === "failed"
+            ? "failed"
+            : "stopped";
+
+    const pendingRequest = pendingRequests.find((request) =>
+      request.action !== "run"
+      && (request.workspaceCommandId ?? null) === (item.workspaceCommandId ?? null)
+      && (request.runtimeServiceId ?? null) === (item.runtimeServiceId ?? null)
+      && (request.serviceIndex ?? null) === (item.serviceIndex ?? null));
+    if (pendingRequest) {
+      state = pendingRequest.action === "stop"
+        ? "stopping"
+        : pendingRequest.action === "restart"
+          ? "restarting"
+          : "starting";
+    }
+
+    const runtimeService = item.runtimeServiceId ? runtimeServicesById.get(item.runtimeServiceId) ?? null : null;
+    const failureDetail = state === "failed"
+      ? `Service failed${runtimeService?.stoppedAt ? ` · ${timeAgo(runtimeService.stoppedAt)}` : ""}`
+      : null;
+
+    return {
+      key: item.key,
+      name: item.title,
+      state,
+      healthStatus: item.healthStatus,
+      url: item.url,
+      port: item.port,
+      failureDetail,
+      canStart: item.canStart,
+    };
+  });
+}
+
+/**
+ * Resolves a control-bar action into the runtime control requests to fire.
+ * A null serviceKey targets every applicable service (the aggregate bar and
+ * popover bulk actions).
+ */
+export function resolveWorkspaceServiceControlRequests(
+  sections: WorkspaceRuntimeControlSections,
+  action: WorkspaceServiceControlAction,
+  serviceKey: string | null,
+): WorkspaceRuntimeControlRequest[] {
+  const items = [...sections.services, ...sections.otherServices];
+  if (serviceKey !== null) {
+    const item = items.find((candidate) => candidate.key === serviceKey);
+    return item ? [buildRequest(item, action)] : [];
+  }
+  if (action === "stop") {
+    return items
+      .filter((item) => isActiveStatusLabel(item.statusLabel))
+      .map((item) => buildRequest(item, "stop"));
+  }
+  if (action === "start") {
+    return items
+      .filter((item) => !isActiveStatusLabel(item.statusLabel) && item.canStart)
+      .map((item) => buildRequest(item, "start"));
+  }
+  return items.flatMap((item) => {
+    if (isActiveStatusLabel(item.statusLabel)) return [buildRequest(item, "restart")];
+    if (item.canStart) return [buildRequest(item, "start")];
+    return [];
+  });
+}
+
 function requestMatchesPending(
   pendingRequest: WorkspaceRuntimeControlRequest | null | undefined,
   nextRequest: WorkspaceRuntimeControlRequest,
@@ -353,8 +454,8 @@ function CommandSection({
                 </div>
                 {item.healthStatus && item.statusLabel !== "stopped" ? (
                   <div className="flex items-center gap-2">
-                    <span className={cn(
-                      "inline-flex items-center rounded-full border px-2.5 py-1 text-[11px]",
+                    <Badge variant="outline" className={cn(
+                      "px-2.5 py-1 text-(length:--text-micro)",
                       item.healthStatus === "healthy"
                         ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
                         : item.healthStatus === "unhealthy"
@@ -362,7 +463,7 @@ function CommandSection({
                           : "border-border text-muted-foreground",
                     )}>
                       {item.healthStatus}
-                    </span>
+                    </Badge>
                   </div>
                 ) : null}
               </div>
@@ -405,11 +506,11 @@ export function WorkspaceRuntimeControls({
     <div className={cn("space-y-4", className)}>
       <div className={cn("border border-border/70 bg-background p-3", square ? "rounded-none" : "rounded-xl")}>
         <div className="space-y-1">
-          <div className="text-xs font-medium uppercase tracking-[0.16em] text-muted-foreground">Workspace commands</div>
+          <div className="text-xs font-medium uppercase tracking-(--tracking-eyebrow) text-muted-foreground">Workspace commands</div>
           <div className="flex flex-wrap items-center gap-2">
-            <span
+            <Badge variant="outline"
               className={cn(
-                "inline-flex items-center gap-1.5 rounded-full border px-2.5 py-1 text-xs font-medium",
+                "gap-1.5 px-2.5 py-1",
                 runningCount > 0
                   ? "border-emerald-500/30 bg-emerald-500/10 text-emerald-700 dark:text-emerald-300"
                   : "border-border bg-background text-muted-foreground",
@@ -417,7 +518,7 @@ export function WorkspaceRuntimeControls({
             >
               <Activity className="h-3.5 w-3.5" />
               {runningCount > 0 ? `${runningCount} services running` : "No services running"}
-            </span>
+            </Badge>
             <span className="text-xs text-muted-foreground">
               {resolvedSections.jobs.length > 0
                 ? `${resolvedSections.jobs.length} job${resolvedSections.jobs.length === 1 ? "" : "s"} available to run on demand.`

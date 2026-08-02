@@ -1,6 +1,6 @@
 import { Buffer } from "node:buffer";
-import { createHash } from "node:crypto";
-import { and, asc, desc, eq, gt, inArray, isNull, like, lt, ne, notInArray, or, sql, type SQL } from "drizzle-orm";
+import { createHash, randomUUID } from "node:crypto";
+import { and, asc, desc, eq, gt, gte, inArray, isNull, like, lt, ne, notInArray, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog,
@@ -15,9 +15,11 @@ import {
   documents,
   goals,
   heartbeatRuns,
+  routineRuns,
   executionWorkspaces,
   issueApprovals,
   issueAttachments,
+  issueCreateIdempotencyKeys,
   issueInboxArchives,
   issueLabels,
   issueWatchdogs,
@@ -65,11 +67,21 @@ import { conflict, HttpError, notFound, unprocessable } from "../errors.js";
 import { logger } from "../middleware/logger.js";
 import { parseObject } from "../adapters/utils.js";
 import {
+  hydrateSuccessfulRunHandoffLiveness,
+  SUCCESSFUL_RUN_HANDOFF_LIVE_WAKE_STATUSES,
+} from "./successful-run-handoff-state.js";
+import {
   defaultIssueExecutionWorkspaceSettingsForProject,
   gateProjectExecutionWorkspacePolicy,
   issueExecutionWorkspaceModeForPersistedWorkspace,
+  isUnrunnableWorktreeCombo,
   parseIssueExecutionWorkspaceSettings,
   parseProjectExecutionWorkspacePolicy,
+  resolvePinnedIssueWorkspaceStrategyType,
+  WORKSPACE_WORKTREE_REQUIRES_PROJECT_CODE,
+  WORKSPACE_WORKTREE_REQUIRES_PROJECT_MESSAGE,
+  WORKSPACE_WORKTREE_REQUIRES_PROJECT_REMEDIATION,
+  type ParsedExecutionWorkspaceMode,
 } from "./execution-workspace-policy.js";
 import { mergeExecutionWorkspaceConfig } from "./execution-workspaces.js";
 import { buildInitialIssueMonitorFields, normalizeIssueExecutionPolicy } from "./issue-execution-policy.js";
@@ -80,6 +92,12 @@ import { resolveIssueGoalId, resolveNextIssueGoalId } from "./issue-goal-fallbac
 import { getRunLogStore } from "./run-log-store.js";
 import { getDefaultCompanyGoal } from "./goals.js";
 import { assertAssignableAgent } from "./agent-assignability.js";
+import { insertRowsInChunks } from "./batch-insert.js";
+import type {
+  ImportIssueRow,
+  ImportIssueCommentRow,
+  ImportIssueAttachmentRow,
+} from "./import-write-types.js";
 import {
   summarizeIssueWatchdog,
   upsertIssueWatchdogForIssue,
@@ -94,11 +112,25 @@ import {
   RECOVERY_ORIGIN_KINDS,
 } from "./recovery/origins.js";
 import { classifyIssueGraphLiveness, type IssueLivenessFinding } from "./recovery/issue-graph-liveness.js";
+import { visibleIssueCondition } from "./issue-visibility.js";
+import { finalizeStatusCardsForStalledGeneration } from "./status-card-finalization.js";
+import { finalizeSummarySlotsForTerminalIssue } from "./summary-slot-finalization.js";
+import { logActivity } from "./activity-log.js";
+import { buildIssueChanges } from "./issue-change-receipt.js";
 
 const ALL_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked", "done", "cancelled"];
 const MAX_ISSUE_COMMENT_PAGE_LIMIT = 500;
 export const ISSUE_LIST_DEFAULT_LIMIT = 500;
 export const ISSUE_LIST_MAX_LIMIT = 1000;
+export const ISSUE_BLOCKER_DIAGNOSTICS_MAX_BLOCKERS = 100;
+export const ISSUE_WAKE_DIAGNOSTICS_MAX_WAKE_REQUESTS = 50;
+export const ISSUE_WAKE_DIAGNOSTICS_MAX_ACTIVITY_RECORDS = 50;
+export const ISSUE_WAKE_DIAGNOSTICS_LOOKBACK_DAYS = 14;
+export const ISSUE_SUBTREE_DIAGNOSTICS_MAX_DEPTH = 8;
+export const ISSUE_SUBTREE_DIAGNOSTICS_MAX_NODES = 100;
+export const ISSUE_SUBTREE_DIAGNOSTICS_MAX_BLOCKERS_PER_NODE = 20;
+export const ISSUE_SUBTREE_DIAGNOSTICS_MAX_WAKE_REQUESTS_PER_NODE = 5;
+export const ISSUE_SUBTREE_DIAGNOSTICS_MAX_ACTIVITY_RECORDS_PER_NODE = 5;
 const ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE = 500;
 export const MAX_CHILD_ISSUES_CREATED_BY_HELPER = 25;
 const MAX_CHILD_COMPLETION_SUMMARIES = 20;
@@ -112,7 +144,29 @@ const ISSUE_COMMENT_RUN_LOG_DERIVATION_MAX_LOG_BYTES = 2_000_000;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_CHUNK_BYTES = 256_000;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_END_SLACK_MS = 60_000;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_MAX_PARALLEL_READS = 8;
+export const ISSUE_CREATE_IDEMPOTENCY_KEY_RETENTION_DAYS = 7;
+const ISSUE_CREATE_IDEMPOTENCY_KEY_RETENTION_MS = ISSUE_CREATE_IDEMPOTENCY_KEY_RETENTION_DAYS * 24 * 60 * 60 * 1000;
+const ISSUE_CREATE_IDEMPOTENCY_KEY_CLEANUP_BATCH_SIZE = 500;
 const DELETED_ISSUE_COMMENT_BODY = "";
+const ISSUE_WAKE_DIAGNOSTICS_ACTIVITY_ACTIONS = ["issue.tree_hold_wakeup_deferred"] as const;
+
+function wakeRequestTargetsIssue(issueId: string) {
+  return sql`(
+    ${agentWakeupRequests.payload} ->> 'issueId' = ${issueId}
+    or ${agentWakeupRequests.payload} ->> 'taskId' = ${issueId}
+    or ${agentWakeupRequests.payload} -> '_paperclipWakeContext' ->> 'issueId' = ${issueId}
+    or ${agentWakeupRequests.payload} -> '_paperclipWakeContext' ->> 'taskId' = ${issueId}
+  )`;
+}
+
+function wakeDiagnosticActivityTargetsIssue(issueId: string) {
+  return sql`(
+    (${activityLog.entityType} = 'issue' and ${activityLog.entityId} = ${issueId})
+    or ${activityLog.details} ->> 'issueId' = ${issueId}
+    or ${activityLog.details} ->> 'rootIssueId' = ${issueId}
+  )`;
+}
+
 function assertTransition(from: string, to: string) {
   if (from === to) return;
   if (!ALL_ISSUE_STATUSES.includes(to)) {
@@ -138,10 +192,106 @@ function applyStatusSideEffects(
   return patch;
 }
 
+function workspaceWorktreeRequiresProjectDetails() {
+  return {
+    code: WORKSPACE_WORKTREE_REQUIRES_PROJECT_CODE,
+    remediation: WORKSPACE_WORKTREE_REQUIRES_PROJECT_REMEDIATION,
+  };
+}
+
+function assertExplicitPinnedWorktreeIssueRunnable(input: {
+  projectId: string | null | undefined;
+  projectWorkspaceId: string | null | undefined;
+  executionWorkspaceId: string | null | undefined;
+  executionWorkspacePreference: string | null | undefined;
+  executionWorkspaceSettings: unknown;
+}) {
+  const settings = parseIssueExecutionWorkspaceSettings(input.executionWorkspaceSettings);
+  const mode = settings?.mode;
+  if (mode !== "isolated_workspace" && mode !== "operator_branch") return;
+
+  const resolvedMode = mode as ParsedExecutionWorkspaceMode;
+  if (
+    isUnrunnableWorktreeCombo({
+      issue: {
+        projectId: input.projectId ?? null,
+        projectWorkspaceId: input.projectWorkspaceId ?? null,
+        executionWorkspaceId: input.executionWorkspaceId ?? null,
+        executionWorkspacePreference: input.executionWorkspacePreference ?? null,
+      },
+      resolvedMode,
+      resolvedStrategy: resolvePinnedIssueWorkspaceStrategyType({
+        mode: resolvedMode,
+        issueSettings: settings,
+      }),
+      hasResolvablePriorSessionWorkspace: false,
+    })
+  ) {
+    throw unprocessable(
+      WORKSPACE_WORKTREE_REQUIRES_PROJECT_MESSAGE,
+      workspaceWorktreeRequiresProjectDetails(),
+    );
+  }
+}
+
 function readStringFromRecord(record: unknown, key: string) {
   if (!record || typeof record !== "object") return null;
   const value = (record as Record<string, unknown>)[key];
   return typeof value === "string" && value.trim().length > 0 ? value.trim() : null;
+}
+
+async function resolveResponsibleUserIdForIssueCreate(
+  reader: DbReader,
+  companyId: string,
+  input: {
+    explicitResponsibleUserId?: string | null;
+    createdByUserId?: string | null;
+    parentId?: string | null;
+    originKind?: string | null;
+    originRunId?: string | null;
+    actorRunId?: string | null;
+    actorResponsibleUserId?: string | null;
+    trustExplicitResponsibleUserId?: boolean;
+  },
+) {
+  const explicitResponsibleUserId = readStringFromRecord(input, "explicitResponsibleUserId");
+  if (explicitResponsibleUserId && input.trustExplicitResponsibleUserId === true) return explicitResponsibleUserId;
+
+  if (input.originKind === "routine_execution" && input.originRunId) {
+    const routineRun = await reader
+      .select({ responsibleUserId: routineRuns.responsibleUserId })
+      .from(routineRuns)
+      .where(and(eq(routineRuns.companyId, companyId), eq(routineRuns.id, input.originRunId)))
+      .then((rows) => rows[0] ?? null);
+    if (routineRun?.responsibleUserId) return routineRun.responsibleUserId;
+  }
+
+  const actorResponsibleUserId = readStringFromRecord(input, "actorResponsibleUserId");
+  if (actorResponsibleUserId) return actorResponsibleUserId;
+
+  if (input.actorRunId) {
+    const actorRun = await reader
+      .select({ responsibleUserId: heartbeatRuns.responsibleUserId })
+      .from(heartbeatRuns)
+      .where(and(eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, input.actorRunId)))
+      .then((rows) => rows[0] ?? null);
+    if (actorRun?.responsibleUserId) return actorRun.responsibleUserId;
+  }
+
+  if (input.parentId) {
+    const parent = await reader
+      .select({
+        responsibleUserId: issues.responsibleUserId,
+        createdByUserId: issues.createdByUserId,
+      })
+      .from(issues)
+      .where(and(eq(issues.companyId, companyId), eq(issues.id, input.parentId)))
+      .then((rows) => rows[0] ?? null);
+    if (parent?.responsibleUserId) return parent.responsibleUserId;
+    if (parent?.createdByUserId) return parent.createdByUserId;
+  }
+
+  return input.createdByUserId ?? null;
 }
 
 function buildReusedExecutionWorkspaceConfigPatchFromIssueSettings(
@@ -153,6 +303,32 @@ function buildReusedExecutionWorkspaceConfigPatchFromIssueSettings(
     teardownCommand: settings?.workspaceStrategy?.teardownCommand ?? null,
     workspaceRuntime: settings?.workspaceRuntime ?? null,
   };
+}
+
+// Accepted-plan children are not realized yet, so carry only unresolved
+// workspace intent and let the first child run render/persist its own branch.
+function buildPreRealizationExecutionWorkspaceSettings(raw: unknown): Record<string, unknown> | null {
+  const settings = parseIssueExecutionWorkspaceSettings(raw, { includeEnvironmentId: true });
+  if (!settings) return null;
+  const mode =
+    settings.mode && settings.mode !== "inherit" && settings.mode !== "reuse_existing"
+      ? settings.mode
+      : null;
+  const next: Record<string, unknown> = {};
+  if (mode) next.mode = mode;
+  if (settings.environmentId !== undefined) next.environmentId = settings.environmentId;
+  if (settings.workspaceRuntime) next.workspaceRuntime = settings.workspaceRuntime;
+  if (settings.workspaceStrategy) {
+    next.workspaceStrategy = {
+      type: settings.workspaceStrategy.type,
+      ...(settings.workspaceStrategy.baseRef ? { baseRef: settings.workspaceStrategy.baseRef } : {}),
+      ...(settings.workspaceStrategy.branchTemplate ? { branchTemplate: settings.workspaceStrategy.branchTemplate } : {}),
+      ...(settings.workspaceStrategy.worktreeParentDir ? { worktreeParentDir: settings.workspaceStrategy.worktreeParentDir } : {}),
+      ...(settings.workspaceStrategy.provisionCommand ? { provisionCommand: settings.workspaceStrategy.provisionCommand } : {}),
+      ...(settings.workspaceStrategy.teardownCommand ? { teardownCommand: settings.workspaceStrategy.teardownCommand } : {}),
+    };
+  }
+  return Object.keys(next).length > 0 ? next : null;
 }
 
 function toTimestampMs(value: Date | string | null | undefined) {
@@ -187,6 +363,25 @@ type DerivedIssueCommentAttribution = {
   derivedCreatedByRunId: string;
   derivedAuthorSource: IssueCommentDerivedAuthorSource;
 };
+
+/**
+ * Resolve a `created_by_run_id` safe for the heartbeat_runs FK; returns null for
+ * missing/invalid ids so an unknown run id never 500s a comment insert.
+ */
+async function resolveCommentCreatedByRunId(
+  dbOrTx: any,
+  companyId: string,
+  runId: string | null | undefined,
+): Promise<string | null> {
+  const normalized = typeof runId === "string" ? runId.trim() : "";
+  if (!normalized || !isUuidLike(normalized)) return null;
+  const existing = await dbOrTx
+    .select({ id: heartbeatRuns.id })
+    .from(heartbeatRuns)
+    .where(and(eq(heartbeatRuns.id, normalized), eq(heartbeatRuns.companyId, companyId)))
+    .then((rows: Array<{ id: string }>) => rows[0] ?? null);
+  return existing?.id ?? null;
+}
 
 /**
  * Best-effort agent attribution for comments whose stored author is a non-human
@@ -411,12 +606,20 @@ type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId"> & {
   labelIds?: string[];
   blockedByIssueIds?: string[];
   inheritExecutionWorkspaceFromIssueId?: string | null;
+  skipExecutionWorkspaceInheritance?: boolean;
   watchdog?: { agentId: string; instructions?: string | null } | null;
   watchdogActorRunId?: string | null;
+  actorRunId?: string | null;
+  actorResponsibleUserId?: string | null;
+  trustExplicitResponsibleUserId?: boolean;
+  idempotencyKey?: string | null;
+  allowDuplicate?: boolean;
+  onDeduplicated?: (reason: "idempotency_key" | "recent_open_title") => void;
 };
 type IssueChildCreateInput = IssueCreateInput & {
   acceptanceCriteria?: string[];
   blockParentUntilDone?: boolean;
+  executionWorkspaceInheritanceMode?: "linkage" | "strategy_only";
   actorAgentId?: string | null;
   actorUserId?: string | null;
 };
@@ -433,6 +636,63 @@ type AcceptedPlanDocumentInteraction = {
 type IssueRelationSummaryMap = {
   blockedBy: IssueRelationIssueSummary[];
   blocks: IssueRelationIssueSummary[];
+};
+type IssueBlockerDiagnosticsIssueRow = {
+  id: string;
+  companyId: string;
+  projectId: string | null;
+  parentId: string | null;
+  identifier: string | null;
+  title: string;
+  status: typeof ALL_ISSUE_STATUSES[number];
+  priority: string;
+  assigneeAgentId: string | null;
+  assigneeUserId: string | null;
+};
+type IssueWakeDiagnosticsWakeRequestRow = {
+  agentId: string;
+  source: string;
+  reason: string | null;
+  status: string;
+  coalescedCount: number;
+  runId: string | null;
+  requestedAt: Date;
+  claimedAt: Date | null;
+  finishedAt: Date | null;
+  error: string | null;
+};
+type IssueWakeDiagnosticsActivityRow = {
+  action: string;
+  entityType: string;
+  entityId: string;
+  agentId: string | null;
+  runId: string | null;
+  details: Record<string, unknown> | null;
+  createdAt: Date;
+};
+type IssueSubtreeDiagnosticsIssueRow = IssueBlockerDiagnosticsIssueRow & {
+  depth: number;
+  createdAt: Date;
+  updatedAt: Date;
+};
+type IssueSubtreeDiagnosticsBlockerRow = IssueBlockerDiagnosticsIssueRow & {
+  blockedIssueId: string;
+  relationCreatedAt: Date;
+};
+type IssueSubtreeDiagnosticsWakeRequestRow = IssueWakeDiagnosticsWakeRequestRow & {
+  issueId: string;
+};
+type IssueSubtreeDiagnosticsActivityRow = IssueWakeDiagnosticsActivityRow & {
+  issueId: string;
+};
+type IssueSubtreeDiagnosticsBlockerResultRow = IssueSubtreeDiagnosticsBlockerRow & {
+  rowNumber: number | string;
+};
+type IssueSubtreeDiagnosticsWakeRequestResultRow = IssueSubtreeDiagnosticsWakeRequestRow & {
+  rowNumber: number | string;
+};
+type IssueSubtreeDiagnosticsActivityResultRow = IssueSubtreeDiagnosticsActivityRow & {
+  rowNumber: number | string;
 };
 export type IssueDependencyReadiness = {
   issueId: string;
@@ -461,7 +721,7 @@ function sameRunLock(checkoutRunId: string | null, actorRunId: string | null) {
   return checkoutRunId == null;
 }
 
-export const TERMINAL_HEARTBEAT_RUN_STATUSES = new Set(["succeeded", "failed", "cancelled", "timed_out"]);
+export const TERMINAL_HEARTBEAT_RUN_STATUSES = new Set(["succeeded", "interrupted", "failed", "cancelled", "timed_out"]);
 const ISSUE_LIST_DESCRIPTION_MAX_CHARS = 1200;
 const ISSUE_LIST_DESCRIPTION_MAX_BYTES = ISSUE_LIST_DESCRIPTION_MAX_CHARS * 4;
 
@@ -550,6 +810,8 @@ const ACCEPTED_PLAN_DECOMPOSITION_FINGERPRINT_CHILD_METADATA_KEYS = new Set([
   "updatedByUserId",
   "actorAgentId",
   "actorUserId",
+  "executionWorkspaceInheritanceMode",
+  "skipExecutionWorkspaceInheritance",
 ]);
 
 function normalizeAcceptedPlanDecompositionFingerprintChild(child: IssueChildCreateInput) {
@@ -762,14 +1024,20 @@ async function listPendingFinalizeBlockerIssueIds(
       and(
         eq(workspaceOperations.companyId, companyId),
         inArray(workspaceOperations.executionWorkspaceId, executionWorkspaceIds),
-        or(inArray(workspaceOperations.issueId, blockerIssueIds), isNull(workspaceOperations.issueId)),
       ),
     );
 
   const latestAttributedByBlockerWorkspace = new Map<string, { phase: string; status: string; startedAt: Date }>();
   const latestUnattributedByWorkspace = new Map<string, { phase: string; status: string; startedAt: Date }>();
+  const latestSuccessfulFinalizeByWorkspace = new Map<string, Date>();
   for (const row of rows) {
     if (!row.executionWorkspaceId) continue;
+    if (row.phase === "workspace_finalize" && row.status === "succeeded") {
+      const current = latestSuccessfulFinalizeByWorkspace.get(row.executionWorkspaceId);
+      if (!current || row.startedAt > current) {
+        latestSuccessfulFinalizeByWorkspace.set(row.executionWorkspaceId, row.startedAt);
+      }
+    }
     if (row.issueId) {
       const key = `${row.issueId}:${row.executionWorkspaceId}`;
       if (!blockerWorkspaceKeys.has(key)) continue;
@@ -799,6 +1067,8 @@ async function listPendingFinalizeBlockerIssueIds(
       ?? latestUnattributedByWorkspace.get(pair.executionWorkspaceId);
     if (!latest) continue; // no ops recorded -> nothing to finalize for this blocker
     if (latest.phase === "workspace_finalize" && latest.status === "succeeded") continue;
+    const laterSuccessfulFinalize = latestSuccessfulFinalizeByWorkspace.get(pair.executionWorkspaceId);
+    if (laterSuccessfulFinalize && laterSuccessfulFinalize > latest.startedAt) continue;
     pending.add(pair.blockerIssueId);
   }
 
@@ -806,11 +1076,42 @@ async function listPendingFinalizeBlockerIssueIds(
 }
 
 /**
- * Returns whether a specific run's operations on a specific execution workspace
- * reached the workspace_finalize barrier.
+ * Whether a heartbeat run has reached a terminal state or no longer exists.
+ * A terminal/missing run can make no further progress on its execution
+ * workspace, so callers must not wait on it to advance an in-flight operation.
+ */
+export async function heartbeatRunIsTerminalOrMissing(
+  dbOrTx: Pick<Db, "select">,
+  runId: string,
+): Promise<boolean> {
+  const run = await dbOrTx
+    .select({ status: heartbeatRuns.status })
+    .from(heartbeatRuns)
+    .where(eq(heartbeatRuns.id, runId))
+    .then((rows: Array<{ status: string }>) => rows[0] ?? null);
+  if (!run) return true;
+  return TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status);
+}
+
+/**
+ * Returns whether a specific run's sync-back on a specific execution workspace
+ * has settled — i.e. the accept/review gates that guard against a still-in-flight
+ * worktree sync no longer need to block on this run.
  *
- * Runs with no operations on the workspace are considered finalized because
- * they never touched the workspace state that accept/review gates protect.
+ * Semantics:
+ * - No operations recorded → settled. The run never touched the workspace state
+ *   the gates protect.
+ * - Earlier phases recorded but no `workspace_finalize` yet → NOT settled. The
+ *   sync-back hasn't been attempted; the gate should wait for it.
+ * - Latest `workspace_finalize` reached a terminal status (`succeeded`, `failed`,
+ *   or `skipped`) → settled. A finalize that ran and finished is done even if it
+ *   failed: it will not retry within this run, so continuing to block would wedge
+ *   the gate forever — a failed sync-back must not permanently block a
+ *   confirmation accept behind a misleading "still syncing" error.
+ * - Latest `workspace_finalize` is still `running` → in flight, so NOT settled —
+ *   unless the owning run has itself ended, in which case the `running` record is
+ *   stale (the process died mid-finalize) and we treat it as settled rather than
+ *   wait on a run that can never make progress.
  */
 export async function runWorkspaceIsFinalized(
   dbOrTx: Pick<Db, "select">,
@@ -833,13 +1134,24 @@ export async function runWorkspaceIsFinalized(
       ),
     );
 
-  let latest: { phase: string; status: string; startedAt: Date } | null = null;
+  if (rows.length === 0) return true;
+
+  let latestFinalize: { status: string; startedAt: Date } | null = null;
   for (const row of rows) {
-    if (!latest || row.startedAt > latest.startedAt) latest = row;
+    if (row.phase !== "workspace_finalize") continue;
+    if (!latestFinalize || row.startedAt > latestFinalize.startedAt) latestFinalize = row;
   }
 
-  if (!latest) return true;
-  return latest.phase === "workspace_finalize" && latest.status === "succeeded";
+  // The run touched the workspace but hasn't reached the sync-back phase yet.
+  if (!latestFinalize) return false;
+
+  // A finalize that reached any terminal status is settled — including `failed`
+  // and `skipped`. It will not retry within this run, so gates must stop waiting.
+  if (latestFinalize.status !== "running") return true;
+
+  // Finalize is still marked `running`. It is only genuinely in flight while the
+  // owning run is alive; a `running` record left behind by an ended run is stale.
+  return heartbeatRunIsTerminalOrMissing(dbOrTx, runId);
 }
 
 async function listIssueDependencyReadinessMap(
@@ -919,6 +1231,34 @@ async function listIssueDependencyReadinessMap(
   }
 
   return readinessMap;
+}
+
+async function listUnresolvedBlockerDetails(
+  dbOrTx: Pick<Db, "select">,
+  companyId: string,
+  unresolvedBlockerIssueIds: string[],
+  pendingFinalizeBlockerIssueIds: string[] = [],
+) {
+  if (unresolvedBlockerIssueIds.length === 0) return [];
+  const pendingFinalizeIds = new Set(pendingFinalizeBlockerIssueIds);
+  const rows = await dbOrTx
+    .select({
+      issueId: issues.id,
+      identifier: issues.identifier,
+      title: issues.title,
+    })
+    .from(issues)
+    .where(and(eq(issues.companyId, companyId), inArray(issues.id, unresolvedBlockerIssueIds)));
+  const rowsById = new Map(rows.map((row) => [row.issueId, row]));
+  return unresolvedBlockerIssueIds.map((issueId) => {
+    const row = rowsById.get(issueId);
+    return {
+      issueId,
+      identifier: row?.identifier ?? null,
+      title: row?.title ?? null,
+      reason: pendingFinalizeIds.has(issueId) ? "pending_finalize" as const : "not_done" as const,
+    };
+  });
 }
 
 async function listUnresolvedBlockerIssueIds(
@@ -1061,36 +1401,6 @@ function myLastTouchAtExpr(companyId: string, userId: string) {
   `;
 }
 
-function lastExternalCommentAtExpr(companyId: string, userId: string) {
-  return sql<Date | null>`
-    (
-      SELECT MAX(${issueComments.createdAt})
-      FROM ${issueComments}
-      WHERE ${issueComments.issueId} = ${issues.id}
-        AND ${issueComments.companyId} = ${companyId}
-        AND (
-          ${issueComments.authorUserId} IS NULL
-          OR ${issueComments.authorUserId} <> ${userId}
-        )
-    )
-  `;
-}
-
-function issueLastActivityAtExpr(companyId: string, userId: string) {
-  const lastExternalCommentAt = lastExternalCommentAtExpr(companyId, userId);
-  const myLastTouchAt = myLastTouchAtExpr(companyId, userId);
-  return sql<Date>`
-    GREATEST(
-      COALESCE(${lastExternalCommentAt}, to_timestamp(0)),
-      CASE
-        WHEN ${issues.updatedAt} > COALESCE(${myLastTouchAt}, to_timestamp(0))
-        THEN ${issues.updatedAt}
-        ELSE to_timestamp(0)
-      END
-    )
-  `;
-}
-
 const ISSUE_LOCAL_INBOX_ACTIVITY_ACTIONS = [
   "issue.read_marked",
   "issue.read_unmarked",
@@ -1159,7 +1469,6 @@ function unreadForUserCondition(companyId: string, userId: string) {
 }
 
 function inboxVisibleForUserCondition(companyId: string, userId: string) {
-  const issueLastActivityAt = issueLastActivityAtExpr(companyId, userId);
   return sql<boolean>`
     NOT EXISTS (
       SELECT 1
@@ -1167,7 +1476,49 @@ function inboxVisibleForUserCondition(companyId: string, userId: string) {
       WHERE ${issueInboxArchives.issueId} = ${issues.id}
         AND ${issueInboxArchives.companyId} = ${companyId}
         AND ${issueInboxArchives.userId} = ${userId}
-        AND ${issueInboxArchives.archivedAt} >= ${issueLastActivityAt}
+        AND NOT (
+          EXISTS (
+            SELECT 1
+            FROM ${issueThreadInteractions}
+            WHERE ${issueThreadInteractions.issueId} = ${issues.id}
+              AND ${issueThreadInteractions.companyId} = ${companyId}
+              AND ${issueThreadInteractions.kind} IN (
+                'suggest_tasks',
+                'ask_user_questions',
+                'request_confirmation'
+              )
+              AND ${issueThreadInteractions.createdAt} > ${issueInboxArchives.archivedAt}
+          )
+          OR EXISTS (
+            SELECT 1
+            FROM ${activityLog}
+            WHERE ${activityLog.companyId} = ${companyId}
+              AND ${activityLog.entityType} = 'issue'
+              AND ${activityLog.entityId} = ${issues.id}::text
+              AND ${activityLog.action} = 'issue.updated'
+              AND ${activityLog.createdAt} > ${issueInboxArchives.archivedAt}
+              AND ${activityLog.details}->>'status' IN ('in_review', 'blocked', 'done')
+              AND ${activityLog.details}->'_previous'->>'status'
+                IS DISTINCT FROM ${activityLog.details}->>'status'
+          )
+          OR EXISTS (
+            SELECT 1
+            FROM ${issueComments}
+            WHERE ${issueComments.issueId} = ${issues.id}
+              AND ${issueComments.companyId} = ${companyId}
+              AND ${issueComments.createdAt} > ${issueInboxArchives.archivedAt}
+              AND ${issueComments.deletedAt} IS NULL
+              AND (
+                (
+                  ${issueComments.authorUserId} IS NOT NULL
+                  AND ${issueComments.authorUserId} <> ${userId}
+                  AND ${issueComments.authorAgentId} IS NULL
+                  AND ${issueComments.derivedAuthorAgentId} IS NULL
+                )
+                OR POSITION(${`](user://${userId})`} IN ${issueComments.body}) > 0
+              )
+          )
+        )
     )
   `;
 }
@@ -1247,6 +1598,50 @@ function latestIssueActivityAt(...values: Array<Date | string | null | undefined
     .filter((value): value is Date => value instanceof Date)
     .sort((a, b) => b.getTime() - a.getTime());
   return normalized[0] ?? null;
+}
+
+type InboxArchiveAttributionRow = {
+  issueId: string;
+  archivedAt: Date;
+  archivedByActorType: "user" | "agent";
+  archivedByAgentId: string | null;
+  archivedByRunId: string | null;
+};
+
+async function inboxArchiveRowsForIssues(
+  dbOrTx: Db,
+  companyId: string,
+  userId: string,
+  issueIds: string[],
+): Promise<InboxArchiveAttributionRow[]> {
+  if (issueIds.length === 0) return [];
+  return dbOrTx
+    .select({
+      issueId: issueInboxArchives.issueId,
+      archivedAt: issueInboxArchives.archivedAt,
+      archivedByActorType: issueInboxArchives.archivedByActorType,
+      archivedByAgentId: issueInboxArchives.archivedByAgentId,
+      archivedByRunId: issueInboxArchives.archivedByRunId,
+    })
+    .from(issueInboxArchives)
+    .where(and(
+      eq(issueInboxArchives.companyId, companyId),
+      eq(issueInboxArchives.userId, userId),
+      inArray(issueInboxArchives.issueId, issueIds),
+    ));
+}
+
+function activeInboxArchiveFields(
+  archive: InboxArchiveAttributionRow | undefined,
+  lastActivityAt: Date,
+) {
+  if (!archive || archive.archivedAt.getTime() < lastActivityAt.getTime()) return {};
+  return {
+    archivedAt: archive.archivedAt,
+    archivedByActorType: archive.archivedByActorType,
+    archivedByAgentId: archive.archivedByAgentId,
+    archivedByRunId: archive.archivedByRunId,
+  };
 }
 
 function issueListOrderBy(
@@ -1507,6 +1902,7 @@ async function liveDescendantCountMapForIssues(
           JOIN heartbeat_runs live_run ON live_run.id = live_issue.execution_run_id
           WHERE live_issue.company_id = ${companyId}
             AND live_issue.hidden_at IS NULL
+            AND live_issue.harness_kind IS NULL
             AND live_run.company_id = ${companyId}
             AND live_run.status IN ('queued', 'running')
           UNION
@@ -1515,6 +1911,7 @@ async function liveDescendantCountMapForIssues(
           JOIN issues live_issue ON live_issue.id::text = (live_run.context_snapshot ->> 'issueId')
           WHERE live_issue.company_id = ${companyId}
             AND live_issue.hidden_at IS NULL
+            AND live_issue.harness_kind IS NULL
             AND live_run.company_id = ${companyId}
             AND live_run.status IN ('queued', 'running')
         ),
@@ -1524,6 +1921,7 @@ async function liveDescendantCountMapForIssues(
           JOIN issues parent ON parent.id = live_issues.parent_id
           WHERE parent.company_id = ${companyId}
             AND parent.hidden_at IS NULL
+            AND parent.harness_kind IS NULL
           UNION ALL
           SELECT
             live_ancestors.live_issue_id,
@@ -1534,6 +1932,7 @@ async function liveDescendantCountMapForIssues(
           JOIN issues parent ON parent.id = live_ancestors.next_parent_id
           WHERE parent.company_id = ${companyId}
             AND parent.hidden_at IS NULL
+            AND parent.harness_kind IS NULL
             AND NOT parent.id = ANY(live_ancestors.visited_issue_ids)
         )
       SELECT
@@ -1569,6 +1968,7 @@ function createIssueBlockerAttention(input: Partial<IssueBlockerAttention> = {})
     coveredBlockerCount: input.coveredBlockerCount ?? 0,
     stalledBlockerCount: input.stalledBlockerCount ?? 0,
     attentionBlockerCount: input.attentionBlockerCount ?? 0,
+    pendingFinalizeBlockerIssueIds: input.pendingFinalizeBlockerIssueIds ?? [],
     sampleBlockerIdentifier: input.sampleBlockerIdentifier ?? null,
     sampleStalledBlockerIdentifier: input.sampleStalledBlockerIdentifier ?? null,
   };
@@ -1740,7 +2140,7 @@ async function listIssueProductivityReviewMap(
           eq(issues.companyId, companyId),
           eq(issues.originKind, PRODUCTIVITY_REVIEW_ORIGIN_KIND),
           inArray(issues.originId, chunk),
-          isNull(issues.hiddenAt),
+          visibleIssueCondition(),
           notInArray(issues.status, PRODUCTIVITY_REVIEW_TERMINAL_STATUSES),
         ),
       )
@@ -1824,10 +2224,17 @@ async function listIssueBlockerAttentionMap(
 
   let frontier = roots.map((root) => root.id);
   let truncated = false;
+  const pendingFinalizeBlockerIssueIds = new Set<string>();
   for (let depth = 0; frontier.length > 0 && depth < BLOCKER_ATTENTION_MAX_DEPTH; depth += 1) {
     const nextFrontier = new Set<string>();
 
     for (const chunk of chunkList([...new Set(frontier)], ISSUE_LIST_RELATED_QUERY_CHUNK_SIZE)) {
+      const readinessByIssueId = await listIssueDependencyReadinessMap(dbOrTx, companyId, chunk);
+      for (const readiness of readinessByIssueId.values()) {
+        for (const blockerIssueId of readiness.pendingFinalizeBlockerIssueIds) {
+          pendingFinalizeBlockerIssueIds.add(blockerIssueId);
+        }
+      }
       const explicitBlockerRowsPromise: Promise<IssueBlockerAttentionQueryRow[]> = dbOrTx
         .select({
           issueId: issueRelations.relatedIssueId,
@@ -1850,7 +2257,6 @@ async function listIssueBlockerAttentionMap(
             eq(issueRelations.type, "blocks"),
             inArray(issueRelations.relatedIssueId, chunk),
             eq(issues.companyId, companyId),
-            ne(issues.status, "done"),
           ),
         );
       const childRowsPromise: Promise<IssueBlockerAttentionQueryRow[]> = dbOrTx
@@ -1880,8 +2286,11 @@ async function listIssueBlockerAttentionMap(
         childRowsPromise,
       ]);
 
+      const unresolvedExplicitBlockerRows = explicitBlockerRows.filter(
+        (row) => row.status !== "done" || pendingFinalizeBlockerIssueIds.has(row.blockerIssueId),
+      );
       appendBlockerAttentionEdges(edgesByIssueId, [
-        ...explicitBlockerRows
+        ...unresolvedExplicitBlockerRows
           .filter((row): row is IssueBlockerAttentionQueryRow & { issueId: string } => row.issueId !== null)
           .map((row) => ({ issueId: row.issueId, blockerIssueId: row.blockerIssueId })),
         ...childRows
@@ -1889,7 +2298,7 @@ async function listIssueBlockerAttentionMap(
           .map((row) => ({ issueId: row.issueId, blockerIssueId: row.blockerIssueId })),
       ]);
 
-      for (const row of [...explicitBlockerRows, ...childRows]) {
+      for (const row of [...unresolvedExplicitBlockerRows, ...childRows]) {
         if (!row.issueId || nodesById.has(row.blockerIssueId)) continue;
         nodesById.set(row.blockerIssueId, {
           id: row.blockerIssueId,
@@ -2005,7 +2414,7 @@ async function listIssueBlockerAttentionMap(
         and(
           eq(issues.companyId, companyId),
           eq(issues.originKind, BLOCKER_ATTENTION_OPEN_RECOVERY_ORIGIN_KIND),
-          isNull(issues.hiddenAt),
+          visibleIssueCondition(),
           notInArray(issues.status, BLOCKER_ATTENTION_OPEN_RECOVERY_TERMINAL_STATUSES),
         ),
       );
@@ -2061,7 +2470,7 @@ async function listIssueBlockerAttentionMap(
       return { covered: false, stalled: false, sampleBlockerIdentifier: nodeId, sampleStalledBlockerIdentifier: null };
     }
     const nodeSample = blockerSampleIdentifier(node);
-    if (node.status === "done") {
+    if (node.status === "done" && !pendingFinalizeBlockerIssueIds.has(node.id)) {
       return { covered: true, stalled: false, sampleBlockerIdentifier: nodeSample, sampleStalledBlockerIdentifier: null };
     }
     if (explicitWaitingIssueIds.has(node.id)) {
@@ -2087,7 +2496,10 @@ async function listIssueBlockerAttentionMap(
       return { covered: false, stalled: false, sampleBlockerIdentifier: nodeSample, sampleStalledBlockerIdentifier: null };
     }
 
-    const downstream = (edgesByIssueId.get(node.id) ?? []).filter((edge) => nodesById.get(edge.blockerIssueId)?.status !== "done");
+    const downstream = (edgesByIssueId.get(node.id) ?? []).filter((edge) => {
+      const blocker = nodesById.get(edge.blockerIssueId);
+      return blocker?.status !== "done" || pendingFinalizeBlockerIssueIds.has(edge.blockerIssueId);
+    });
     if (downstream.length > 0) {
       const nextSeen = new Set(seen);
       nextSeen.add(nodeId);
@@ -2131,7 +2543,10 @@ async function listIssueBlockerAttentionMap(
   };
 
   for (const root of roots) {
-    const topLevelEdges = (edgesByIssueId.get(root.id) ?? []).filter((edge) => nodesById.get(edge.blockerIssueId)?.status !== "done");
+    const topLevelEdges = (edgesByIssueId.get(root.id) ?? []).filter((edge) => {
+      const blocker = nodesById.get(edge.blockerIssueId);
+      return blocker?.status !== "done" || pendingFinalizeBlockerIssueIds.has(edge.blockerIssueId);
+    });
     if (topLevelEdges.length === 0) {
       attentionMap.set(root.id, createIssueBlockerAttention({
         state: "needs_attention",
@@ -2177,6 +2592,9 @@ async function listIssueBlockerAttentionMap(
       coveredBlockerCount,
       stalledBlockerCount,
       attentionBlockerCount,
+      pendingFinalizeBlockerIssueIds: topLevelEdges
+        .map((edge) => edge.blockerIssueId)
+        .filter((blockerIssueId) => pendingFinalizeBlockerIssueIds.has(blockerIssueId)),
       sampleBlockerIdentifier: sampleEntry?.result.sampleBlockerIdentifier ?? blockerSampleIdentifier(sampleNode),
       sampleStalledBlockerIdentifier:
         stalledEntry?.result.sampleStalledBlockerIdentifier ?? sampleStalledFromChain ?? null,
@@ -2208,6 +2626,7 @@ const issueListSelect = {
   `,
   status: issues.status,
   workMode: issues.workMode,
+  harnessKind: issues.harnessKind,
   priority: issues.priority,
   assigneeAgentId: issues.assigneeAgentId,
   assigneeUserId: issues.assigneeUserId,
@@ -2217,6 +2636,7 @@ const issueListSelect = {
   executionLockedAt: issues.executionLockedAt,
   createdByAgentId: issues.createdByAgentId,
   createdByUserId: issues.createdByUserId,
+  responsibleUserId: issues.responsibleUserId,
   issueNumber: issues.issueNumber,
   identifier: issues.identifier,
   originKind: issues.originKind,
@@ -2238,6 +2658,9 @@ const issueListSelect = {
   executionWorkspacePreference: issues.executionWorkspacePreference,
   executionWorkspaceSettings: sql<null>`null`,
   sourceTrust: issues.sourceTrust,
+  unblockDescriptor: issues.unblockDescriptor,
+  blockedTransitionAt: issues.blockedTransitionAt,
+  blockedOwnerNotifiedAt: issues.blockedOwnerNotifiedAt,
   startedAt: issues.startedAt,
   completedAt: issues.completedAt,
   cancelledAt: issues.cancelledAt,
@@ -2440,7 +2863,7 @@ async function blockedByMapForIssues(
 
 const BLOCKED_INBOX_TERMINAL_STATUSES = ["done", "cancelled"] as const;
 const BLOCKED_INBOX_ACTIVE_RUN_STATUSES = ["queued", "running"] as const;
-const BLOCKED_INBOX_ACTIVE_WAKE_STATUSES = ["queued", "deferred_issue_execution"] as const;
+const BLOCKED_INBOX_ACTIVE_WAKE_STATUSES = SUCCESSFUL_RUN_HANDOFF_LIVE_WAKE_STATUSES;
 const BLOCKED_INBOX_PENDING_INTERACTION_STATUSES = ["pending"] as const;
 const BLOCKED_INBOX_PENDING_APPROVAL_STATUSES = ["pending", "revision_requested"] as const;
 const BLOCKED_INBOX_RECOVERY_ORIGIN_KINDS = ["harness_liveness_escalation", "stranded_issue_recovery"] as const;
@@ -2562,6 +2985,7 @@ function readSuccessfulRunHandoffFromActivity(row: {
   return {
     state,
     required: state === "required",
+    hasLiveContinuation: false,
     sourceRunId:
       readStringFromRecord(details, "sourceRunId")
       ?? readStringFromRecord(details, "source_run_id")
@@ -2586,6 +3010,7 @@ async function listSuccessfulRunHandoffMapForIssues(
   dbOrTx: any,
   companyId: string,
   issueIds: string[],
+  options?: { hydrateLiveness?: boolean },
 ): Promise<Map<string, SuccessfulRunHandoffState>> {
   const uniqueIssueIds = [...new Set(issueIds)];
   const states = new Map<string, SuccessfulRunHandoffState>();
@@ -2624,7 +3049,9 @@ async function listSuccessfulRunHandoffMapForIssues(
     }
   }
 
-  return states;
+  return options?.hydrateLiveness === false
+    ? states
+    : hydrateSuccessfulRunHandoffLiveness(dbOrTx, companyId, states);
 }
 
 function externalWaitFromDescription(description: string | null): { owner: string; action: string } | null {
@@ -2756,8 +3183,8 @@ async function listIssueBlockedInboxAttentionMap(
       .from(issues)
       .where(and(
         eq(issues.companyId, companyId),
-        isNull(issues.hiddenAt),
-        notInArray(issues.status, [...BLOCKED_INBOX_TERMINAL_STATUSES]),
+        visibleIssueCondition(),
+        ne(issues.status, "done"),
       )),
     dbOrTx
       .select({
@@ -2801,7 +3228,10 @@ async function listIssueBlockedInboxAttentionMap(
       : dbOrTx
           .select({
             companyId: heartbeatRuns.companyId,
-            issueId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`,
+            issueId: sql<string | null>`coalesce(
+              ${heartbeatRuns.contextSnapshot} ->> 'issueId',
+              ${heartbeatRuns.contextSnapshot} ->> 'taskId'
+            )`,
             agentId: heartbeatRuns.agentId,
             status: heartbeatRuns.status,
           })
@@ -2809,14 +3239,22 @@ async function listIssueBlockedInboxAttentionMap(
           .where(and(
             eq(heartbeatRuns.companyId, companyId),
             inArray(heartbeatRuns.status, [...BLOCKED_INBOX_ACTIVE_RUN_STATUSES]),
-            inArray(sql<string>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`, graphIssueIds),
+            inArray(sql<string>`coalesce(
+              ${heartbeatRuns.contextSnapshot} ->> 'issueId',
+              ${heartbeatRuns.contextSnapshot} ->> 'taskId'
+            )`, graphIssueIds),
           )),
     graphIssueIds.length === 0
       ? Promise.resolve([])
       : dbOrTx
           .select({
             companyId: agentWakeupRequests.companyId,
-            issueId: sql<string | null>`${agentWakeupRequests.payload} ->> 'issueId'`,
+            issueId: sql<string | null>`coalesce(
+              ${agentWakeupRequests.payload} ->> 'issueId',
+              ${agentWakeupRequests.payload} ->> 'taskId',
+              ${agentWakeupRequests.payload} -> '_paperclipWakeContext' ->> 'issueId',
+              ${agentWakeupRequests.payload} -> '_paperclipWakeContext' ->> 'taskId'
+            )`,
             agentId: agentWakeupRequests.agentId,
             status: agentWakeupRequests.status,
           })
@@ -2824,15 +3262,22 @@ async function listIssueBlockedInboxAttentionMap(
           .where(and(
             eq(agentWakeupRequests.companyId, companyId),
             inArray(agentWakeupRequests.status, [...BLOCKED_INBOX_ACTIVE_WAKE_STATUSES]),
-            sql`${agentWakeupRequests.runId} is null`,
-            inArray(sql<string>`${agentWakeupRequests.payload} ->> 'issueId'`, graphIssueIds),
+            inArray(sql<string>`coalesce(
+              ${agentWakeupRequests.payload} ->> 'issueId',
+              ${agentWakeupRequests.payload} ->> 'taskId',
+              ${agentWakeupRequests.payload} -> '_paperclipWakeContext' ->> 'issueId',
+              ${agentWakeupRequests.payload} -> '_paperclipWakeContext' ->> 'taskId'
+            )`, graphIssueIds),
           )),
     graphIssueIds.length === 0
       ? Promise.resolve([])
       : dbOrTx
           .select({
             companyId: heartbeatRuns.companyId,
-            issueId: sql<string | null>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`,
+            issueId: sql<string | null>`coalesce(
+              ${heartbeatRuns.contextSnapshot} ->> 'issueId',
+              ${heartbeatRuns.contextSnapshot} ->> 'taskId'
+            )`,
             agentId: heartbeatRuns.agentId,
             status: heartbeatRuns.status,
           })
@@ -2840,7 +3285,10 @@ async function listIssueBlockedInboxAttentionMap(
           .where(and(
             eq(heartbeatRuns.companyId, companyId),
             eq(heartbeatRuns.status, "scheduled_retry"),
-            inArray(sql<string>`${heartbeatRuns.contextSnapshot} ->> 'issueId'`, graphIssueIds),
+            inArray(sql<string>`coalesce(
+              ${heartbeatRuns.contextSnapshot} ->> 'issueId',
+              ${heartbeatRuns.contextSnapshot} ->> 'taskId'
+            )`, graphIssueIds),
           )),
     graphIssueIds.length === 0
       ? Promise.resolve([])
@@ -2873,7 +3321,7 @@ async function listIssueBlockedInboxAttentionMap(
             inArray(approvals.status, [...BLOCKED_INBOX_PENDING_APPROVAL_STATUSES]),
             inArray(issueApprovals.issueId, graphIssueIds),
           )),
-    listSuccessfulRunHandoffMapForIssues(dbOrTx, companyId, rowIssueIds),
+    listSuccessfulRunHandoffMapForIssues(dbOrTx, companyId, rowIssueIds, { hydrateLiveness: false }),
   ]);
 
   const pendingInteractions = (interactionRows as BlockedInboxInteractionRow[]).map((row) => ({
@@ -2889,6 +3337,7 @@ async function listIssueBlockedInboxAttentionMap(
 
   const openRecoveryIssues = graphIssues
     .filter((issue) => BLOCKED_INBOX_RECOVERY_ORIGIN_KINDS.includes(issue.originKind as typeof BLOCKED_INBOX_RECOVERY_ORIGIN_KINDS[number]))
+    .filter((issue) => !BLOCKED_INBOX_TERMINAL_STATUSES.includes(issue.status as typeof BLOCKED_INBOX_TERMINAL_STATUSES[number]))
     .flatMap((issue) => {
       const entries = [{ companyId, issueId: issue.id, status: issue.status }];
       if (issue.originKind === "harness_liveness_escalation") {
@@ -2953,6 +3402,13 @@ async function listIssueBlockedInboxAttentionMap(
   for (const row of approvalRows as BlockedInboxApprovalRow[]) {
     if (!approvalByIssueId.has(row.issueId)) approvalByIssueId.set(row.issueId, row);
   }
+  const liveHandoffRunIssueIds = new Set([
+    ...(activeRunRows as Array<{ issueId: string | null }>),
+    ...(scheduledRetryRows as Array<{ issueId: string | null }>),
+  ].flatMap((row) => row.issueId ? [row.issueId] : []));
+  const liveHandoffWakeIssueIds = new Set(
+    (wakeRows as Array<{ issueId: string | null }>).flatMap((row) => row.issueId ? [row.issueId] : []),
+  );
 
   for (const row of issueRows) {
     if (row.companyId !== companyId || BLOCKED_INBOX_TERMINAL_STATUSES.includes(row.status as typeof BLOCKED_INBOX_TERMINAL_STATUSES[number]) || row.hiddenAt) {
@@ -2960,7 +3416,11 @@ async function listIssueBlockedInboxAttentionMap(
     }
     const source = issueRef(row);
     const handoff = handoffMap.get(row.id);
-    if (handoff && (handoff.required || handoff.state === "escalated")) {
+    const hasLiveHandoffContinuation = Boolean(
+      handoff?.state === "required"
+      && (liveHandoffRunIssueIds.has(row.id) || liveHandoffWakeIssueIds.has(row.id))
+    );
+    if (handoff && !hasLiveHandoffContinuation && (handoff.required || handoff.state === "escalated")) {
       result.set(row.id, attentionBase({
         state: "missing_disposition",
         reason: "missing_successful_run_disposition",
@@ -3166,7 +3626,7 @@ async function blockedInboxIssueConditions(
 ) {
   const conditions = [
     eq(issues.companyId, companyId),
-    isNull(issues.hiddenAt),
+    visibleIssueCondition(),
     notInArray(issues.status, [...BLOCKED_INBOX_TERMINAL_STATUSES]),
   ];
   const touchedByUserId = filters?.touchedByUserId?.trim() || undefined;
@@ -3406,6 +3866,10 @@ async function countBlockedInboxIssues(dbOrTx: any, companyId: string, filters?:
 export function issueService(db: Db) {
   const instanceSettings = instanceSettingsService(db);
   const treeControlSvc = issueTreeControlService(db);
+
+  function normalizeCreateIssueTitle(title: string) {
+    return title.trim().replace(/\s+/g, " ").toLowerCase();
+  }
 
   async function getIssueByUuid(id: string) {
     const row = await db
@@ -3991,6 +4455,23 @@ export function issueService(db: Db) {
     return empty;
   }
 
+  async function withIssueRelationSummaries<T extends { id: string }>(
+    companyId: string,
+    rows: T[],
+    dbOrTx: DbReader = db,
+  ): Promise<Array<T & IssueRelationSummaryMap>> {
+    if (rows.length === 0) return [];
+    const relationMap = await getIssueRelationSummaryMap(
+      companyId,
+      rows.map((row) => row.id),
+      dbOrTx,
+    );
+    return rows.map((row) => ({
+      ...row,
+      ...(relationMap.get(row.id) ?? { blockedBy: [], blocks: [] }),
+    }));
+  }
+
   async function assertNoBlockingCycles(
     companyId: string,
     issueId: string,
@@ -4084,13 +4565,7 @@ export function issueService(db: Db) {
   }
 
   async function isTerminalOrMissingHeartbeatRun(runId: string, dbOrTx: DbReader = db) {
-    const run = await dbOrTx
-      .select({ status: heartbeatRuns.status })
-      .from(heartbeatRuns)
-      .where(eq(heartbeatRuns.id, runId))
-      .then((rows) => rows[0] ?? null);
-    if (!run) return true;
-    return TERMINAL_HEARTBEAT_RUN_STATUSES.has(run.status);
+    return heartbeatRunIsTerminalOrMissing(dbOrTx, runId);
   }
 
   async function adoptStaleCheckoutRun(input: {
@@ -4348,9 +4823,66 @@ export function issueService(db: Db) {
     });
   }
 
+  async function addStopRelayCommentIfNeeded(
+    child: typeof issues.$inferSelect,
+    dbOrTx: any = db,
+  ) {
+    if (!child.parentId || (child.status !== "blocked" && child.status !== "cancelled")) return null;
+
+    const relayKey = `issue-stop-relay:${child.id}:${child.status}`;
+    await dbOrTx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${relayKey}, 0))`);
+
+    const childIdentifier = child.identifier?.trim() || child.id;
+    const childPrefix = childIdentifier.split("-")[0] || "PAP";
+    const body = `System relay: [${childIdentifier}](/${childPrefix}/issues/${childIdentifier}) transitioned to \`${child.status}\`.`;
+    const existingRelay = await dbOrTx
+      .select({ id: issueComments.id })
+      .from(issueComments)
+      .where(and(
+        eq(issueComments.companyId, child.companyId),
+        eq(issueComments.issueId, child.parentId),
+        eq(issueComments.authorType, "system"),
+        eq(issueComments.body, body),
+      ))
+      .limit(1)
+      .then((rows: Array<{ id: string }>) => rows[0] ?? null);
+    if (existingRelay) return null;
+
+    const parent = await dbOrTx
+      .select({
+        id: issues.id,
+        companyId: issues.companyId,
+        assigneeAgentId: issues.assigneeAgentId,
+        status: issues.status,
+      })
+      .from(issues)
+      .where(and(eq(issues.id, child.parentId), eq(issues.companyId, child.companyId)))
+      .then((rows: Array<{
+        id: string;
+        companyId: string;
+        assigneeAgentId: string | null;
+        status: string;
+      }>) => rows[0] ?? null);
+    if (!parent) return null;
+
+    const [comment] = await dbOrTx
+      .insert(issueComments)
+      .values({
+        companyId: child.companyId,
+        issueId: parent.id,
+        authorType: "system",
+        body,
+      })
+      .returning();
+    await dbOrTx.update(issues).set({ updatedAt: new Date() }).where(eq(issues.id, parent.id));
+
+    return { comment, parent };
+  }
+
   return {
     clearExecutionRunIfTerminal,
     clearCheckoutRunIfTerminal,
+    addStopRelayCommentIfNeeded,
 
     list: async (companyId: string, filters?: IssueFilters) => {
       if (filters?.attention === "blocked") {
@@ -4361,7 +4893,7 @@ export function issueService(db: Db) {
         });
       }
 
-      const conditions = [eq(issues.companyId, companyId)];
+      const conditions = [eq(issues.companyId, companyId), visibleIssueCondition()];
       const assigneeAgentFilter = parseIssueAssigneeAgentFilter(filters?.assigneeAgentId);
       assertValidAssigneeAgentFilter(assigneeAgentFilter);
       const limit = typeof filters?.limit === "number" && Number.isFinite(filters.limit)
@@ -4484,8 +5016,6 @@ export function issueService(db: Db) {
       if (filters?.excludeRoutineExecutions && !filters?.originKind && !filters?.originId) {
         conditions.push(ne(issues.originKind, "routine_execution"));
       }
-      conditions.push(isNull(issues.hiddenAt));
-
       const priorityOrder = sql`CASE ${issues.priority} WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END`;
       const searchOrder = sql<number>`
         CASE
@@ -4524,7 +5054,7 @@ export function issueService(db: Db) {
       }
 
       const issueIds = withRuns.map((row) => row.id);
-      const [statsRows, readRows, lastActivityRows, blockedByMap, liveDescendantCountByIssueId] = await Promise.all([
+      const [statsRows, readRows, lastActivityRows, archiveRows, blockedByMap, liveDescendantCountByIssueId] = await Promise.all([
         contextUserId
           ? userCommentStatsForIssues(db, companyId, contextUserId, issueIds)
           : Promise.resolve([]),
@@ -4532,6 +5062,9 @@ export function issueService(db: Db) {
           ? userReadStatsForIssues(db, companyId, contextUserId, issueIds)
           : Promise.resolve([]),
         lastActivityStatsForIssues(db, companyId, issueIds),
+        contextUserId
+          ? inboxArchiveRowsForIssues(db, companyId, contextUserId, issueIds)
+          : Promise.resolve([]),
         includeBlockedBy
           ? blockedByMapForIssues(db, companyId, issueIds)
           : Promise.resolve(new Map<string, IssueRelationIssueSummary[]>()),
@@ -4541,6 +5074,7 @@ export function issueService(db: Db) {
       ]);
       const statsByIssueId = new Map(statsRows.map((row) => [row.issueId, row]));
       const lastActivityByIssueId = new Map(lastActivityRows.map((row) => [row.issueId, row]));
+      const archiveByIssueId = new Map(archiveRows.map((row) => [row.issueId, row]));
       const [
         blockerAttentionByIssueId,
         productivityReviewByIssueId,
@@ -4586,6 +5120,7 @@ export function issueService(db: Db) {
         ) ?? row.updatedAt;
         return {
           ...row,
+          ...activeInboxArchiveFields(archiveByIssueId.get(row.id), lastActivityAt),
           ...(includeBlockedBy ? { blockedBy: blockedByMap.get(row.id) ?? [] } : {}),
           lastActivityAt,
           ...(blockerAttentionByIssueId.has(row.id) ? { blockerAttention: blockerAttentionByIssueId.get(row.id) } : {}),
@@ -4608,7 +5143,7 @@ export function issueService(db: Db) {
         return countBlockedInboxIssues(db, companyId, filters);
       }
 
-      const conditions = [eq(issues.companyId, companyId), isNull(issues.hiddenAt)];
+      const conditions = [eq(issues.companyId, companyId), visibleIssueCondition()];
       const statuses = parseStatusFilter(filters?.status);
       if (statuses.length === 1) conditions.push(eq(issues.status, statuses[0]!));
       else if (statuses.length > 1) conditions.push(inArray(issues.status, statuses));
@@ -4650,7 +5185,7 @@ export function issueService(db: Db) {
     ) => {
       const conditions = [
         eq(issues.companyId, companyId),
-        isNull(issues.hiddenAt),
+        visibleIssueCondition(),
         nonPluginOperationIssueCondition(),
         unreadForUserCondition(companyId, userId),
       ];
@@ -4703,7 +5238,17 @@ export function issueService(db: Db) {
       return deleted.length > 0;
     },
 
-    archiveInbox: async (companyId: string, issueId: string, userId: string, archivedAt: Date = new Date()) => {
+    archiveInbox: async (
+      companyId: string,
+      issueId: string,
+      userId: string,
+      archivedAt: Date = new Date(),
+      attribution?: {
+        archivedByActorType: "user" | "agent";
+        archivedByAgentId?: string | null;
+        archivedByRunId?: string | null;
+      },
+    ) => {
       const now = new Date();
       const [row] = await db
         .insert(issueInboxArchives)
@@ -4711,6 +5256,9 @@ export function issueService(db: Db) {
           companyId,
           issueId,
           userId,
+          archivedByActorType: attribution?.archivedByActorType ?? "user",
+          archivedByAgentId: attribution?.archivedByAgentId ?? null,
+          archivedByRunId: attribution?.archivedByRunId ?? null,
           archivedAt,
           updatedAt: now,
         })
@@ -4718,11 +5266,48 @@ export function issueService(db: Db) {
           target: [issueInboxArchives.companyId, issueInboxArchives.issueId, issueInboxArchives.userId],
           set: {
             archivedAt,
+            archivedByActorType: attribution?.archivedByActorType ?? "user",
+            archivedByAgentId: attribution?.archivedByAgentId ?? null,
+            archivedByRunId: attribution?.archivedByRunId ?? null,
             updatedAt: now,
           },
         })
         .returning();
       return row;
+    },
+
+    /**
+     * Seed inbox archives for a batch of freshly imported issues so a company
+     * import does not flood the importing user's inbox. Imported issues are
+     * historical work, not new inbox items, but the inbox "mine" query surfaces
+     * every touched-and-not-archived issue; a 1000-task import would otherwise
+     * bury the inbox. Seeding a per-user inbox archive keeps them hidden via
+     * `inboxVisibleForUserCondition`, while genuine new activity on an imported
+     * issue still resurfaces it. This runs only on import (mirroring how
+     * `pauseAutomations` threads an import-only suppression) and never touches
+     * normal issue creation. Rows carry the same "user"-attributed shape a
+     * manual inbox archive writes, batched to stay under Postgres bind limits.
+     */
+    archiveImportedInbox: async (
+      companyId: string,
+      issueIds: string[],
+      userId: string,
+      archivedAt: Date = new Date(),
+    ): Promise<void> => {
+      if (issueIds.length === 0) return;
+      const now = new Date();
+      const rows = issueIds.map((issueId) => ({
+        companyId,
+        issueId,
+        userId,
+        archivedByActorType: "user" as const,
+        archivedByAgentId: null,
+        archivedByRunId: null,
+        archivedAt,
+        createdAt: now,
+        updatedAt: now,
+      }));
+      await insertRowsInChunks(db, issueInboxArchives, rows);
     },
 
     unarchiveInbox: async (companyId: string, issueId: string, userId: string) => {
@@ -4737,6 +5322,22 @@ export function issueService(db: Db) {
         )
         .returning();
       return row ?? null;
+    },
+
+    getActiveInboxArchiveFields: async (
+      issue: Pick<IssueRow, "id" | "companyId" | "updatedAt">,
+      userId: string,
+    ) => {
+      const [[activity], [archive]] = await Promise.all([
+        lastActivityStatsForIssues(db, issue.companyId, [issue.id]),
+        inboxArchiveRowsForIssues(db, issue.companyId, userId, [issue.id]),
+      ]);
+      const lastActivityAt = latestIssueActivityAt(
+        issue.updatedAt,
+        activity?.latestCommentAt ?? null,
+        activity?.latestLogAt ?? null,
+      ) ?? issue.updatedAt;
+      return activeInboxArchiveFields(archive, lastActivityAt);
     },
 
     getById: async (raw: string) => {
@@ -4774,6 +5375,450 @@ export function issueService(db: Db) {
       if (!issue) throw notFound("Issue not found");
       const relations = await getIssueRelationSummaryMap(issue.companyId, [issueId], db);
       return relations.get(issueId) ?? { blockedBy: [], blocks: [] };
+    },
+
+    getBlockerDiagnostics: async (
+      issueId: string,
+      maxBlockers = ISSUE_BLOCKER_DIAGNOSTICS_MAX_BLOCKERS,
+    ) => {
+      const issue = await db
+        .select({ id: issues.id, companyId: issues.companyId })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null);
+      if (!issue) throw notFound("Issue not found");
+
+      const cappedMax = Math.max(0, Math.min(maxBlockers, ISSUE_BLOCKER_DIAGNOSTICS_MAX_BLOCKERS));
+      const blockerRows = await db
+        .select({
+          id: issues.id,
+          companyId: issues.companyId,
+          projectId: issues.projectId,
+          parentId: issues.parentId,
+          identifier: issues.identifier,
+          title: issues.title,
+          status: issues.status,
+          priority: issues.priority,
+          assigneeAgentId: issues.assigneeAgentId,
+          assigneeUserId: issues.assigneeUserId,
+        })
+        .from(issueRelations)
+        .innerJoin(issues, eq(issueRelations.issueId, issues.id))
+        .where(
+          and(
+            eq(issueRelations.companyId, issue.companyId),
+            eq(issueRelations.type, "blocks"),
+            eq(issueRelations.relatedIssueId, issue.id),
+            eq(issues.companyId, issue.companyId),
+          ),
+        )
+        .orderBy(asc(issues.title), asc(issues.id))
+        .limit(cappedMax + 1);
+
+      const readiness = await listIssueDependencyReadinessMap(db, issue.companyId, [issue.id]);
+
+      return {
+        blockers: blockerRows.slice(0, cappedMax) as IssueBlockerDiagnosticsIssueRow[],
+        readiness: readiness.get(issue.id) ?? createIssueDependencyReadiness(issue.id),
+        truncated: blockerRows.length > cappedMax,
+      };
+    },
+
+    getWakeDiagnostics: async (
+      issueId: string,
+      opts?: {
+        maxWakeRequests?: number;
+        maxActivityRecords?: number;
+        lookbackDays?: number;
+      },
+    ) => {
+      const issue = await db
+        .select({ id: issues.id, companyId: issues.companyId })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null);
+      if (!issue) throw notFound("Issue not found");
+
+      const maxWakeRequests = Math.max(
+        0,
+        Math.min(
+          opts?.maxWakeRequests ?? ISSUE_WAKE_DIAGNOSTICS_MAX_WAKE_REQUESTS,
+          ISSUE_WAKE_DIAGNOSTICS_MAX_WAKE_REQUESTS,
+        ),
+      );
+      const maxActivityRecords = Math.max(
+        0,
+        Math.min(
+          opts?.maxActivityRecords ?? ISSUE_WAKE_DIAGNOSTICS_MAX_ACTIVITY_RECORDS,
+          ISSUE_WAKE_DIAGNOSTICS_MAX_ACTIVITY_RECORDS,
+        ),
+      );
+      const lookbackDays = Math.max(
+        1,
+        Math.min(
+          opts?.lookbackDays ?? ISSUE_WAKE_DIAGNOSTICS_LOOKBACK_DAYS,
+          ISSUE_WAKE_DIAGNOSTICS_LOOKBACK_DAYS,
+        ),
+      );
+      const since = new Date(Date.now() - lookbackDays * 24 * 60 * 60 * 1000);
+
+      const wakeRows = await db
+        .select({
+          agentId: agentWakeupRequests.agentId,
+          source: agentWakeupRequests.source,
+          reason: agentWakeupRequests.reason,
+          status: agentWakeupRequests.status,
+          coalescedCount: agentWakeupRequests.coalescedCount,
+          runId: agentWakeupRequests.runId,
+          requestedAt: agentWakeupRequests.requestedAt,
+          claimedAt: agentWakeupRequests.claimedAt,
+          finishedAt: agentWakeupRequests.finishedAt,
+          error: agentWakeupRequests.error,
+        })
+        .from(agentWakeupRequests)
+        .where(
+          and(
+            eq(agentWakeupRequests.companyId, issue.companyId),
+            gte(agentWakeupRequests.requestedAt, since),
+            wakeRequestTargetsIssue(issue.id),
+          ),
+        )
+        .orderBy(desc(agentWakeupRequests.requestedAt), desc(agentWakeupRequests.createdAt))
+        .limit(maxWakeRequests + 1);
+
+      const activityRows = await db
+        .select({
+          action: activityLog.action,
+          entityType: activityLog.entityType,
+          entityId: activityLog.entityId,
+          agentId: activityLog.agentId,
+          runId: activityLog.runId,
+          details: activityLog.details,
+          createdAt: activityLog.createdAt,
+        })
+        .from(activityLog)
+        .where(
+          and(
+            eq(activityLog.companyId, issue.companyId),
+            gte(activityLog.createdAt, since),
+            inArray(activityLog.action, [...ISSUE_WAKE_DIAGNOSTICS_ACTIVITY_ACTIONS]),
+            wakeDiagnosticActivityTargetsIssue(issue.id),
+          ),
+        )
+        .orderBy(desc(activityLog.createdAt))
+        .limit(maxActivityRecords + 1);
+
+      return {
+        wakeRequests: wakeRows.slice(0, maxWakeRequests) as IssueWakeDiagnosticsWakeRequestRow[],
+        activityRecords: activityRows.slice(0, maxActivityRecords) as IssueWakeDiagnosticsActivityRow[],
+        truncatedWakeRequests: wakeRows.length > maxWakeRequests,
+        truncatedActivityRecords: activityRows.length > maxActivityRecords,
+        caps: {
+          maxWakeRequests: ISSUE_WAKE_DIAGNOSTICS_MAX_WAKE_REQUESTS,
+          maxActivityRecords: ISSUE_WAKE_DIAGNOSTICS_MAX_ACTIVITY_RECORDS,
+          lookbackDays: ISSUE_WAKE_DIAGNOSTICS_LOOKBACK_DAYS,
+        },
+      };
+    },
+
+    getSubtreeDiagnostics: async (
+      issueId: string,
+      opts?: {
+        maxDepth?: number;
+        maxNodes?: number;
+        maxBlockersPerNode?: number;
+        maxWakeRequestsPerNode?: number;
+        maxActivityRecordsPerNode?: number;
+        lookbackDays?: number;
+      },
+    ) => {
+      const issue = await db
+        .select({ id: issues.id, companyId: issues.companyId })
+        .from(issues)
+        .where(eq(issues.id, issueId))
+        .then((rows) => rows[0] ?? null);
+      if (!issue) throw notFound("Issue not found");
+
+      const maxDepth = Math.max(
+        0,
+        Math.min(opts?.maxDepth ?? ISSUE_SUBTREE_DIAGNOSTICS_MAX_DEPTH, ISSUE_SUBTREE_DIAGNOSTICS_MAX_DEPTH),
+      );
+      const maxNodes = Math.max(
+        1,
+        Math.min(opts?.maxNodes ?? ISSUE_SUBTREE_DIAGNOSTICS_MAX_NODES, ISSUE_SUBTREE_DIAGNOSTICS_MAX_NODES),
+      );
+      const maxBlockersPerNode = Math.max(
+        0,
+        Math.min(
+          opts?.maxBlockersPerNode ?? ISSUE_SUBTREE_DIAGNOSTICS_MAX_BLOCKERS_PER_NODE,
+          ISSUE_SUBTREE_DIAGNOSTICS_MAX_BLOCKERS_PER_NODE,
+        ),
+      );
+      const maxWakeRequestsPerNode = Math.max(
+        0,
+        Math.min(
+          opts?.maxWakeRequestsPerNode ?? ISSUE_SUBTREE_DIAGNOSTICS_MAX_WAKE_REQUESTS_PER_NODE,
+          ISSUE_SUBTREE_DIAGNOSTICS_MAX_WAKE_REQUESTS_PER_NODE,
+        ),
+      );
+      const maxActivityRecordsPerNode = Math.max(
+        0,
+        Math.min(
+          opts?.maxActivityRecordsPerNode ?? ISSUE_SUBTREE_DIAGNOSTICS_MAX_ACTIVITY_RECORDS_PER_NODE,
+          ISSUE_SUBTREE_DIAGNOSTICS_MAX_ACTIVITY_RECORDS_PER_NODE,
+        ),
+      );
+      const lookbackDays = Math.max(
+        1,
+        Math.min(opts?.lookbackDays ?? ISSUE_WAKE_DIAGNOSTICS_LOOKBACK_DAYS, ISSUE_WAKE_DIAGNOSTICS_LOOKBACK_DAYS),
+      );
+      const since = new Date(Date.now() - lookbackDays * 24 * 60 * 60 * 1000);
+      const sinceIso = since.toISOString();
+
+      const rawSubtreeRows = await db.execute(sql<IssueSubtreeDiagnosticsIssueRow>`
+        WITH RECURSIVE issue_tree AS (
+          SELECT
+            id,
+            company_id,
+            project_id,
+            parent_id,
+            identifier,
+            title,
+            status,
+            priority,
+            assignee_agent_id,
+            assignee_user_id,
+            created_at,
+            updated_at,
+            0 AS depth,
+            ARRAY[id] AS path
+          FROM issues
+          WHERE company_id = ${issue.companyId}
+            AND id = ${issue.id}
+            AND hidden_at IS NULL
+            AND harness_kind IS NULL
+          UNION ALL
+          SELECT
+            child.id,
+            child.company_id,
+            child.project_id,
+            child.parent_id,
+            child.identifier,
+            child.title,
+            child.status,
+            child.priority,
+            child.assignee_agent_id,
+            child.assignee_user_id,
+            child.created_at,
+            child.updated_at,
+            issue_tree.depth + 1,
+            issue_tree.path || child.id
+          FROM issues child
+          JOIN issue_tree ON child.parent_id = issue_tree.id
+          WHERE child.company_id = ${issue.companyId}
+            AND child.hidden_at IS NULL
+            AND child.harness_kind IS NULL
+            AND issue_tree.depth < ${maxDepth + 1}
+            AND NOT child.id = ANY(issue_tree.path)
+        )
+        SELECT
+          id,
+          company_id AS "companyId",
+          project_id AS "projectId",
+          parent_id AS "parentId",
+          identifier,
+          title,
+          status,
+          priority,
+          assignee_agent_id AS "assigneeAgentId",
+          assignee_user_id AS "assigneeUserId",
+          created_at AS "createdAt",
+          updated_at AS "updatedAt",
+          depth::int AS depth
+        FROM issue_tree
+        ORDER BY depth ASC, created_at ASC, id ASC
+        LIMIT ${maxNodes + 1}
+      `);
+      const subtreeRows = Array.from(rawSubtreeRows)
+        .map((row) => ({ ...row, depth: Number(row.depth) }));
+      const rowsWithinDepth = subtreeRows.filter((row) => row.depth <= maxDepth);
+      const nodes = rowsWithinDepth.slice(0, maxNodes) as IssueSubtreeDiagnosticsIssueRow[];
+      const truncatedNodes = rowsWithinDepth.length > maxNodes;
+      const truncatedDepth = truncatedNodes || subtreeRows.some((row) => row.depth > maxDepth);
+      const nodeIds = nodes.map((node) => node.id);
+
+      const readiness = nodeIds.length > 0
+        ? await listIssueDependencyReadinessMap(db, issue.companyId, nodeIds)
+        : new Map<string, IssueDependencyReadiness>();
+      const blockersByIssueId = new Map<string, IssueSubtreeDiagnosticsBlockerRow[]>();
+      const wakeRequestsByIssueId = new Map<string, IssueSubtreeDiagnosticsWakeRequestRow[]>();
+      const activityRecordsByIssueId = new Map<string, IssueSubtreeDiagnosticsActivityRow[]>();
+      const truncatedBlockerIssueIds = new Set<string>();
+      const truncatedWakeIssueIds = new Set<string>();
+      const truncatedActivityIssueIds = new Set<string>();
+
+      if (nodeIds.length > 0) {
+        const nodeIdValues = sql.join(nodeIds.map((id) => sql`${id}`), sql`, `);
+        const rawBlockerRows = Array.from(await db.execute(sql`
+          WITH blocker_rows AS (
+            SELECT
+              blocker.id,
+              blocker.company_id AS "companyId",
+              blocker.project_id AS "projectId",
+              blocker.parent_id AS "parentId",
+              blocker.identifier,
+              blocker.title,
+              blocker.status,
+              blocker.priority,
+              blocker.assignee_agent_id AS "assigneeAgentId",
+              blocker.assignee_user_id AS "assigneeUserId",
+              relation.related_issue_id AS "blockedIssueId",
+              relation.created_at AS "relationCreatedAt",
+              row_number() OVER (
+                PARTITION BY relation.related_issue_id
+                ORDER BY blocker.title ASC, blocker.id ASC
+              )::int AS "rowNumber"
+            FROM issue_relations relation
+            INNER JOIN issues blocker ON blocker.id = relation.issue_id
+            WHERE relation.company_id = ${issue.companyId}
+              AND relation.type = 'blocks'
+              AND blocker.company_id = ${issue.companyId}
+              AND blocker.hidden_at IS NULL
+              AND blocker.harness_kind IS NULL
+              AND relation.related_issue_id::text IN (${nodeIdValues})
+          )
+          SELECT *
+          FROM blocker_rows
+          WHERE "rowNumber" <= ${maxBlockersPerNode + 1}
+          ORDER BY "blockedIssueId" ASC, "rowNumber" ASC
+        `)) as IssueSubtreeDiagnosticsBlockerResultRow[];
+        for (const row of rawBlockerRows) {
+          const normalized = { ...row, rowNumber: Number(row.rowNumber) };
+          if (normalized.rowNumber > maxBlockersPerNode) {
+            truncatedBlockerIssueIds.add(normalized.blockedIssueId);
+            continue;
+          }
+          const rows = blockersByIssueId.get(normalized.blockedIssueId) ?? [];
+          rows.push(normalized);
+          blockersByIssueId.set(normalized.blockedIssueId, rows);
+        }
+
+        const wakeTargetIssueIdSql = sql<string>`
+          coalesce(
+            wake.payload ->> 'issueId',
+            wake.payload ->> 'taskId',
+            wake.payload -> '_paperclipWakeContext' ->> 'issueId',
+            wake.payload -> '_paperclipWakeContext' ->> 'taskId'
+          )
+        `;
+        const rawWakeRows = Array.from(await db.execute(sql`
+          WITH wake_rows AS (
+            SELECT
+              ${wakeTargetIssueIdSql} AS "issueId",
+              wake.agent_id AS "agentId",
+              wake.source,
+              wake.reason,
+              wake.status,
+              wake.coalesced_count AS "coalescedCount",
+              wake.run_id AS "runId",
+              wake.requested_at AS "requestedAt",
+              wake.claimed_at AS "claimedAt",
+              wake.finished_at AS "finishedAt",
+              wake.error,
+              row_number() OVER (
+                PARTITION BY ${wakeTargetIssueIdSql}
+                ORDER BY wake.requested_at DESC, wake.created_at DESC
+              )::int AS "rowNumber"
+            FROM agent_wakeup_requests wake
+            WHERE wake.company_id = ${issue.companyId}
+              AND wake.requested_at >= ${sinceIso}::timestamptz
+              AND ${wakeTargetIssueIdSql} IN (${nodeIdValues})
+          )
+          SELECT *
+          FROM wake_rows
+          WHERE "rowNumber" <= ${maxWakeRequestsPerNode + 1}
+          ORDER BY "issueId" ASC, "requestedAt" DESC
+        `)) as IssueSubtreeDiagnosticsWakeRequestResultRow[];
+        for (const row of rawWakeRows) {
+          const normalized = { ...row, rowNumber: Number(row.rowNumber) };
+          if (normalized.rowNumber > maxWakeRequestsPerNode) {
+            truncatedWakeIssueIds.add(normalized.issueId);
+            continue;
+          }
+          const rows = wakeRequestsByIssueId.get(normalized.issueId) ?? [];
+          rows.push(normalized);
+          wakeRequestsByIssueId.set(normalized.issueId, rows);
+        }
+
+        const activityTargetIssueIdSql = sql<string>`
+          coalesce(
+            CASE WHEN activity.entity_type = 'issue' THEN activity.entity_id ELSE NULL END,
+            activity.details ->> 'issueId',
+            activity.details ->> 'rootIssueId'
+          )
+        `;
+        const activityActionValues = sql.join(
+          ISSUE_WAKE_DIAGNOSTICS_ACTIVITY_ACTIONS.map((action) => sql`${action}`),
+          sql`, `,
+        );
+        const rawActivityRows = Array.from(await db.execute(sql`
+          WITH activity_rows AS (
+            SELECT
+              ${activityTargetIssueIdSql} AS "issueId",
+              activity.action,
+              activity.entity_type AS "entityType",
+              activity.entity_id AS "entityId",
+              activity.agent_id AS "agentId",
+              activity.run_id AS "runId",
+              activity.details,
+              activity.created_at AS "createdAt",
+              row_number() OVER (
+                PARTITION BY ${activityTargetIssueIdSql}
+                ORDER BY activity.created_at DESC, activity.id DESC
+              )::int AS "rowNumber"
+            FROM activity_log activity
+            WHERE activity.company_id = ${issue.companyId}
+              AND activity.created_at >= ${sinceIso}::timestamptz
+              AND activity.action IN (${activityActionValues})
+              AND ${activityTargetIssueIdSql} IN (${nodeIdValues})
+          )
+          SELECT *
+          FROM activity_rows
+          WHERE "rowNumber" <= ${maxActivityRecordsPerNode + 1}
+          ORDER BY "issueId" ASC, "createdAt" DESC
+        `)) as IssueSubtreeDiagnosticsActivityResultRow[];
+        for (const row of rawActivityRows) {
+          const normalized = { ...row, rowNumber: Number(row.rowNumber) };
+          if (normalized.rowNumber > maxActivityRecordsPerNode) {
+            truncatedActivityIssueIds.add(normalized.issueId);
+            continue;
+          }
+          const rows = activityRecordsByIssueId.get(normalized.issueId) ?? [];
+          rows.push(normalized);
+          activityRecordsByIssueId.set(normalized.issueId, rows);
+        }
+      }
+
+      return {
+        nodes,
+        blockersByIssueId,
+        readinessByIssueId: readiness,
+        wakeRequestsByIssueId,
+        activityRecordsByIssueId,
+        truncatedNodes,
+        truncatedDepth,
+        truncatedBlockerIssueIds,
+        truncatedWakeIssueIds,
+        truncatedActivityIssueIds,
+        caps: {
+          maxDepth,
+          maxNodes,
+          maxBlockersPerNode,
+          maxWakeRequestsPerNode,
+          maxActivityRecordsPerNode,
+          lookbackDays,
+        },
+      };
     },
 
     getDependencyReadiness: async (issueId: string, dbOrTx: any = db) => {
@@ -4956,20 +6001,38 @@ export function issueService(db: Db) {
       const {
         acceptanceCriteria,
         blockParentUntilDone,
+        executionWorkspaceInheritanceMode = "linkage",
         actorAgentId,
         actorUserId,
         ...issueData
       } = data;
-      const child = await issueService(db).create(parent.companyId, {
+      const inheritStrategyOnly = executionWorkspaceInheritanceMode === "strategy_only";
+      const hasExplicitExecutionWorkspaceOverride =
+        issueData.executionWorkspaceId !== undefined ||
+        issueData.executionWorkspacePreference !== undefined ||
+        issueData.executionWorkspaceSettings !== undefined;
+      const inheritedPreRealizationWorkspaceSettings =
+        inheritStrategyOnly && !hasExplicitExecutionWorkspaceOverride
+          ? buildPreRealizationExecutionWorkspaceSettings(parent.executionWorkspaceSettings)
+          : null;
+      let child = await issueService(db).create(parent.companyId, {
         ...issueData,
         parentId: parent.id,
         projectId: issueData.projectId ?? parent.projectId,
+        projectWorkspaceId: issueData.projectWorkspaceId ?? (inheritStrategyOnly ? parent.projectWorkspaceId : undefined),
         goalId: issueData.goalId ?? parent.goalId,
+        actorResponsibleUserId: issueData.actorResponsibleUserId ?? null,
+        trustExplicitResponsibleUserId: issueData.trustExplicitResponsibleUserId === true,
         requestDepth: clampIssueRequestDepth(
           Math.max(clampIssueRequestDepth(parent.requestDepth) + 1, issueData.requestDepth ?? 0),
         ),
         description: appendAcceptanceCriteriaToDescription(issueData.description, acceptanceCriteria),
-        inheritExecutionWorkspaceFromIssueId: parent.id,
+        ...(inheritedPreRealizationWorkspaceSettings
+          ? { executionWorkspaceSettings: inheritedPreRealizationWorkspaceSettings }
+          : {}),
+        ...(inheritStrategyOnly
+          ? { skipExecutionWorkspaceInheritance: true }
+          : { inheritExecutionWorkspaceFromIssueId: parent.id }),
       });
 
       if (blockParentUntilDone) {
@@ -4983,6 +6046,7 @@ export function issueService(db: Db) {
           [...new Set([...existingBlockers.map((row) => row.blockerIssueId), child.id])],
           { agentId: actorAgentId ?? null, userId: actorUserId ?? null },
         );
+        [child] = await withIssueRelationSummaries(parent.companyId, [child], db);
       }
 
       return {
@@ -5143,7 +6207,10 @@ export function issueService(db: Db) {
             throw new Error("Accepted-plan decomposition child cursor moved past the requested children");
           }
 
-          const createdChild = await issueService(tx as unknown as Db).createChild(sourceIssue.id, nextChildInput);
+          const createdChild = await issueService(tx as unknown as Db).createChild(sourceIssue.id, {
+            ...nextChildInput,
+            executionWorkspaceInheritanceMode: "strategy_only",
+          });
           const nextIds = [...existingChildIssueIds, createdChild.issue.id];
           const now = new Date();
           const nextStatus = nextIds.length === data.children.length ? "completed" : "in_flight";
@@ -5263,16 +6330,20 @@ export function issueService(db: Db) {
       });
     },
 
-    create: async (
-      companyId: string,
-      data: IssueCreateInput,
-    ) => {
+    create: async (companyId: string, data: IssueCreateInput) => {
       const {
         labelIds: inputLabelIds,
         blockedByIssueIds,
         inheritExecutionWorkspaceFromIssueId,
+        skipExecutionWorkspaceInheritance,
         watchdog,
         watchdogActorRunId,
+        actorRunId,
+        actorResponsibleUserId,
+        trustExplicitResponsibleUserId,
+        idempotencyKey: rawIdempotencyKey,
+        allowDuplicate,
+        onDeduplicated,
         ...issueData
       } = data;
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
@@ -5294,13 +6365,84 @@ export function issueService(db: Db) {
         throw unprocessable("in_progress issues require an assignee");
       }
       return db.transaction(async (tx) => {
+        const idempotencyKey = rawIdempotencyKey?.trim() || null;
+        const normalizedTitle = normalizeCreateIssueTitle(issueData.title);
+        if (allowDuplicate === false) {
+          const titleGuardKey =
+            `issue-create:title:${companyId}:${issueData.parentId ?? "root"}:${normalizedTitle}`;
+          await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${titleGuardKey}, 0))`);
+        }
+        if (idempotencyKey) {
+          const idempotencyGuardKey = `issue-create:idempotency:${companyId}:${idempotencyKey}`;
+          await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${idempotencyGuardKey}, 0))`);
+        }
+
+        let existingIssue: typeof issues.$inferSelect | undefined;
+        let deduplicationReason: "idempotency_key" | "recent_open_title" | null = null;
+        if (idempotencyKey) {
+          const idempotencyKeyRetentionCutoff = new Date(Date.now() - ISSUE_CREATE_IDEMPOTENCY_KEY_RETENTION_MS);
+          await tx.execute(sql`
+            delete from ${issueCreateIdempotencyKeys}
+            where ${issueCreateIdempotencyKeys.id} in (
+              select ${issueCreateIdempotencyKeys.id}
+              from ${issueCreateIdempotencyKeys}
+              where ${issueCreateIdempotencyKeys.companyId} = ${companyId}
+                and ${issueCreateIdempotencyKeys.createdAt} < ${idempotencyKeyRetentionCutoff.toISOString()}::timestamptz
+              order by ${issueCreateIdempotencyKeys.createdAt} asc, ${issueCreateIdempotencyKeys.id} asc
+              limit ${ISSUE_CREATE_IDEMPOTENCY_KEY_CLEANUP_BATCH_SIZE}
+            )
+          `);
+
+          [existingIssue] = await tx
+            .select()
+            .from(issueCreateIdempotencyKeys)
+            .innerJoin(issues, eq(issueCreateIdempotencyKeys.issueId, issues.id))
+            .where(and(
+              eq(issueCreateIdempotencyKeys.companyId, companyId),
+              eq(issueCreateIdempotencyKeys.idempotencyKey, idempotencyKey),
+            ))
+            .limit(1)
+            .then((rows) => rows.map((row) => row.issues));
+          if (existingIssue) deduplicationReason = "idempotency_key";
+        }
+        if (!existingIssue && allowDuplicate === false) {
+          [existingIssue] = await tx
+            .select()
+            .from(issues)
+            .where(and(
+              eq(issues.companyId, companyId),
+              issueData.parentId ? eq(issues.parentId, issueData.parentId) : isNull(issues.parentId),
+              isNull(issues.hiddenAt),
+              notInArray(issues.status, ["done", "cancelled"]),
+              gte(issues.createdAt, new Date(Date.now() - 48 * 60 * 60 * 1000)),
+              sql`lower(regexp_replace(btrim(${issues.title}), '\\s+', ' ', 'g')) = ${normalizedTitle}`,
+            ))
+            .orderBy(asc(issues.createdAt), asc(issues.id))
+            .limit(1);
+          if (existingIssue) deduplicationReason = "recent_open_title";
+        }
+        if (existingIssue) {
+          if (idempotencyKey) {
+            await tx
+              .insert(issueCreateIdempotencyKeys)
+              .values({ companyId, idempotencyKey, issueId: existingIssue.id })
+              .onConflictDoNothing();
+          }
+          if (deduplicationReason) onDeduplicated?.(deduplicationReason);
+          const [enriched] = await withIssueLabels(tx, [existingIssue]);
+          const [withRelations] = await withIssueRelationSummaries(companyId, [enriched], tx);
+          return withRelations;
+        }
+
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, companyId);
         let projectWorkspaceId = issueData.projectWorkspaceId ?? null;
         let executionWorkspaceId = issueData.executionWorkspaceId ?? null;
         let executionWorkspacePreference = issueData.executionWorkspacePreference ?? null;
         let executionWorkspaceSettings =
           (issueData.executionWorkspaceSettings as Record<string, unknown> | null | undefined) ?? null;
-        const workspaceInheritanceIssueId = inheritExecutionWorkspaceFromIssueId ?? issueData.parentId ?? null;
+        const workspaceInheritanceIssueId = skipExecutionWorkspaceInheritance
+          ? null
+          : inheritExecutionWorkspaceFromIssueId ?? issueData.parentId ?? null;
         const hasExplicitExecutionWorkspaceOverride =
           issueData.executionWorkspaceId !== undefined ||
           issueData.executionWorkspacePreference !== undefined ||
@@ -5400,6 +6542,15 @@ export function issueService(db: Db) {
         if (executionWorkspaceId) {
           await assertValidExecutionWorkspace(companyId, issueData.projectId, executionWorkspaceId, tx);
         }
+        if (isolatedWorkspacesEnabled && issueData.executionWorkspaceSettings !== undefined) {
+          assertExplicitPinnedWorktreeIssueRunnable({
+            projectId: issueData.projectId ?? null,
+            projectWorkspaceId,
+            executionWorkspaceId,
+            executionWorkspacePreference,
+            executionWorkspaceSettings: issueData.executionWorkspaceSettings,
+          });
+        }
         // Self-correcting counter: use MAX(issue_number) + 1 if the counter
         // has drifted below the actual max, preventing identifier collisions.
         const [maxRow] = await tx
@@ -5418,9 +6569,20 @@ export function issueService(db: Db) {
 
         const issueNumber = company.issueCounter;
         const identifier = `${company.issuePrefix}-${issueNumber}`;
+        const responsibleUserId = await resolveResponsibleUserIdForIssueCreate(tx, companyId, {
+          explicitResponsibleUserId: issueData.responsibleUserId ?? null,
+          createdByUserId: issueData.createdByUserId ?? null,
+          parentId: issueData.parentId ?? null,
+          originKind: issueData.originKind ?? "manual",
+          originRunId: issueData.originRunId ?? null,
+          actorRunId: actorRunId ?? null,
+          actorResponsibleUserId: actorResponsibleUserId ?? null,
+          trustExplicitResponsibleUserId: trustExplicitResponsibleUserId === true,
+        });
 
         const values = {
           ...issueData,
+          responsibleUserId,
           requestDepth: clampIssueRequestDepth(issueData.requestDepth),
           originKind: issueData.originKind ?? "manual",
           goalId: resolveIssueGoalId({
@@ -5457,6 +6619,13 @@ export function issueService(db: Db) {
         );
 
         const [issue] = await tx.insert(issues).values(values).returning();
+        if (idempotencyKey) {
+          await tx.insert(issueCreateIdempotencyKeys).values({
+            companyId,
+            idempotencyKey,
+            issueId: issue.id,
+          });
+        }
         if (watchdog) {
           await upsertIssueWatchdogForIssue(tx, companyId, issue.id, {
             agentId: watchdog.agentId,
@@ -5484,7 +6653,247 @@ export function issueService(db: Db) {
           );
         }
         const [enriched] = await withIssueLabels(tx, [issue]);
-        return enriched;
+        const [withRelations] = await withIssueRelationSummaries(companyId, [enriched], tx);
+        return withRelations;
+      });
+    },
+
+    /**
+     * Batched issue insert for company import.
+     *
+     * Company import used to call {@link create} once per issue — each call a
+     * separate network round-trip that inserted the issue, then serialized the
+     * issue's comments/documents behind the returned id. This inserts a whole
+     * bundle of pre-resolved issues (ids already generated by the caller) in
+     * chunked multi-row statements, so a thousand-issue import issues a handful
+     * of statements instead of thousands.
+     *
+     * The per-issue derivations {@link create} performs are reproduced for the
+     * import subset: a single contiguous identifier range is allocated from the
+     * company counter, per-project goal/workspace/policy defaults are computed
+     * once and cached, assignable-agent and workspace validation run per
+     * distinct id, and monitor notes land un-armed on the row. Dedup,
+     * idempotency, watchdogs, workspace inheritance and blocked-by wiring — none
+     * of which import uses — are intentionally omitted.
+     */
+    importIssues: async (companyId: string, rows: ImportIssueRow[]): Promise<void> => {
+      if (rows.length === 0) return;
+      const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
+      await db.transaction(async (tx) => {
+        // Self-correcting counter: seed from max(issue_number) so a drifted
+        // company counter cannot mint colliding identifiers, then reserve the
+        // whole range in one bump instead of one-per-issue.
+        const [maxRow] = await tx
+          .select({ maxNum: sql<number>`coalesce(max(${issues.issueNumber}), 0)` })
+          .from(issues)
+          .where(eq(issues.companyId, companyId));
+        const currentMax = maxRow?.maxNum ?? 0;
+        const [company] = await tx
+          .select({ issueCounter: companies.issueCounter, issuePrefix: companies.issuePrefix })
+          .from(companies)
+          .where(eq(companies.id, companyId));
+        if (!company) throw notFound("Target company not found");
+        const base = Math.max(company.issueCounter ?? 0, currentMax);
+        await tx
+          .update(companies)
+          .set({ issueCounter: base + rows.length })
+          .where(eq(companies.id, companyId));
+
+        const defaultCompanyGoal = await getDefaultCompanyGoal(tx, companyId);
+        const defaultGoalId = defaultCompanyGoal?.id ?? null;
+
+        // Project-scoped derivations depend only on the project, so resolve each
+        // distinct project once and reuse it across that project's issues.
+        const projectDerivedCache = new Map<
+          string,
+          {
+            goalId: string | null;
+            defaultProjectWorkspaceId: string | null;
+            defaultExecutionWorkspaceSettings: Record<string, unknown> | null;
+          }
+        >();
+        const loadProjectDerived = async (projectId: string) => {
+          const cached = projectDerivedCache.get(projectId);
+          if (cached) return cached;
+          const projectRow = await tx
+            .select({
+              goalId: projects.goalId,
+              executionWorkspacePolicy: projects.executionWorkspacePolicy,
+            })
+            .from(projects)
+            .where(and(eq(projects.id, projectId), eq(projects.companyId, companyId)))
+            .then((r) => r[0] ?? null);
+          const policy = parseProjectExecutionWorkspacePolicy(projectRow?.executionWorkspacePolicy);
+          let defaultProjectWorkspaceId = policy?.defaultProjectWorkspaceId ?? null;
+          if (!defaultProjectWorkspaceId) {
+            defaultProjectWorkspaceId = await tx
+              .select({ id: projectWorkspaces.id })
+              .from(projectWorkspaces)
+              .where(and(eq(projectWorkspaces.projectId, projectId), eq(projectWorkspaces.companyId, companyId)))
+              .orderBy(desc(projectWorkspaces.isPrimary), asc(projectWorkspaces.createdAt), asc(projectWorkspaces.id))
+              .then((r) => r[0]?.id ?? null);
+          }
+          const defaultExecutionWorkspaceSettings = defaultIssueExecutionWorkspaceSettingsForProject(
+            gateProjectExecutionWorkspacePolicy(policy, isolatedWorkspacesEnabled),
+          ) as Record<string, unknown> | null;
+          const derived = { goalId: projectRow?.goalId ?? null, defaultProjectWorkspaceId, defaultExecutionWorkspaceSettings };
+          projectDerivedCache.set(projectId, derived);
+          return derived;
+        };
+
+        const validatedAgentIds = new Set<string>();
+        const validatedWorkspaceKeys = new Set<string>();
+        const issueRows: Array<Record<string, unknown>> = [];
+        const labelRows: Array<{ issueId: string; labelId: string; companyId: string }> = [];
+
+        let counter = base;
+        for (const row of rows) {
+          counter += 1;
+          const issueNumber = counter;
+          const identifier = `${company.issuePrefix}-${issueNumber}`;
+
+          if (row.assigneeAgentId) {
+            if (!validatedAgentIds.has(row.assigneeAgentId)) {
+              await assertAssignableAgent(tx as unknown as Db, companyId, row.assigneeAgentId, { kind: "work" });
+              validatedAgentIds.add(row.assigneeAgentId);
+            }
+          }
+          if (row.status === "in_progress" && !row.assigneeAgentId) {
+            throw unprocessable("in_progress issues require an assignee");
+          }
+
+          const projectId = row.projectId ?? null;
+          let projectWorkspaceId = row.projectWorkspaceId ?? null;
+          // Isolated-workspace fields are gated the same way create() gates them:
+          // when the experiment is off the imported settings are dropped.
+          let executionWorkspaceSettings = isolatedWorkspacesEnabled
+            ? (row.executionWorkspaceSettings ?? null)
+            : null;
+          let projectGoalId: string | null = null;
+          if (projectId) {
+            const derived = await loadProjectDerived(projectId);
+            projectGoalId = derived.goalId;
+            if (!projectWorkspaceId) projectWorkspaceId = derived.defaultProjectWorkspaceId;
+            if (executionWorkspaceSettings == null) {
+              executionWorkspaceSettings = derived.defaultExecutionWorkspaceSettings;
+            }
+          }
+          if (projectWorkspaceId) {
+            const workspaceKey = `${projectId ?? ""}:${projectWorkspaceId}`;
+            if (!validatedWorkspaceKeys.has(workspaceKey)) {
+              await assertValidProjectWorkspace(companyId, projectId, projectWorkspaceId, tx);
+              validatedWorkspaceKeys.add(workspaceKey);
+            }
+          }
+
+          const goalId = resolveIssueGoalId({
+            projectId,
+            goalId: null,
+            projectGoalId,
+            defaultGoalId,
+          });
+
+          issueRows.push({
+            id: row.id,
+            companyId,
+            issueNumber,
+            identifier,
+            title: row.title,
+            description: row.description ?? null,
+            assigneeAgentId: row.assigneeAgentId ?? null,
+            status: row.status,
+            priority: row.priority,
+            billingCode: row.billingCode ?? null,
+            assigneeAdapterOverrides: row.assigneeAdapterOverrides ?? null,
+            projectId,
+            projectWorkspaceId,
+            executionWorkspaceSettings,
+            goalId,
+            responsibleUserId: null,
+            requestDepth: clampIssueRequestDepth(undefined),
+            originKind: "manual",
+            startedAt: row.status === "in_progress" ? new Date() : null,
+            completedAt: row.status === "done" ? new Date() : null,
+            cancelledAt: row.status === "cancelled" ? new Date() : null,
+            monitorNotes: row.monitorNotes ?? null,
+            monitorScheduledBy: row.monitorScheduledBy ?? null,
+          });
+          for (const labelId of new Set(row.labelIds ?? [])) {
+            labelRows.push({ issueId: row.id, labelId, companyId });
+          }
+        }
+
+        await insertRowsInChunks(tx, issues, issueRows);
+        await insertRowsInChunks(tx, issueLabels, labelRows);
+      });
+    },
+
+    /**
+     * Batched comment insert for company import. Comment ids are pre-generated
+     * by the caller so attachments can reference them without a round-trip.
+     */
+    addImportedComments: async (rows: ImportIssueCommentRow[]): Promise<void> => {
+      if (rows.length === 0) return;
+      const censorUsernameInLogs = (await instanceSettings.getGeneral()).censorUsernameInLogs;
+      await db.transaction(async (tx) => {
+        const commentRows = rows.map((row) => {
+          const createdAt = row.createdAt ? new Date(row.createdAt) : null;
+          return {
+            id: row.id,
+            companyId: row.companyId,
+            issueId: row.issueId,
+            authorAgentId: row.authorAgentId ?? null,
+            authorUserId: row.authorUserId ?? null,
+            authorType: row.authorType,
+            createdByRunId: null,
+            body: redactCurrentUserText(row.body, { enabled: censorUsernameInLogs }),
+            presentation: row.presentation ?? null,
+            metadata: row.metadata ?? null,
+            sourceTrust: null,
+            createdAt: createdAt && !Number.isNaN(createdAt.getTime()) ? createdAt : new Date(),
+          };
+        });
+        await insertRowsInChunks(tx, issueComments, commentRows);
+        // Mirror addComment's recency bump, once per affected issue.
+        const issueIds = [...new Set(rows.map((row) => row.issueId))];
+        if (issueIds.length > 0) {
+          await tx.update(issues).set({ updatedAt: new Date() }).where(inArray(issues.id, issueIds));
+        }
+      });
+    },
+
+    /**
+     * Batched attachment insert for company import: each row mints an asset and
+     * links it to its issue (and optionally comment) in two chunked statements.
+     */
+    addImportedAttachments: async (rows: ImportIssueAttachmentRow[]): Promise<void> => {
+      if (rows.length === 0) return;
+      await db.transaction(async (tx) => {
+        const assetRows: Array<Record<string, unknown>> = [];
+        const attachmentRows: Array<Record<string, unknown>> = [];
+        for (const row of rows) {
+          const assetId = randomUUID();
+          assetRows.push({
+            id: assetId,
+            companyId: row.companyId,
+            provider: row.provider,
+            objectKey: row.objectKey,
+            contentType: row.contentType,
+            byteSize: row.byteSize,
+            sha256: row.sha256,
+            originalFilename: row.originalFilename ?? null,
+            createdByAgentId: row.createdByAgentId ?? null,
+            createdByUserId: row.createdByUserId ?? null,
+          });
+          attachmentRows.push({
+            companyId: row.companyId,
+            issueId: row.issueId,
+            assetId,
+            issueCommentId: row.issueCommentId ?? null,
+          });
+        }
+        await insertRowsInChunks(tx, assets, assetRows);
+        await insertRowsInChunks(tx, issueAttachments, attachmentRows);
       });
     },
 
@@ -5527,6 +6936,14 @@ export function issueService(db: Db) {
         ...issueData,
         updatedAt: new Date(),
       };
+      if (existing.status !== "blocked" && issueData.status === "blocked") {
+        patch.blockedTransitionAt = patch.updatedAt;
+        patch.blockedOwnerNotifiedAt = null;
+      } else if (existing.status === "blocked" && issueData.status && issueData.status !== "blocked") {
+        patch.unblockDescriptor = null;
+        patch.blockedTransitionAt = null;
+        patch.blockedOwnerNotifiedAt = null;
+      }
       if (issueData.requestDepth !== undefined) {
         patch.requestDepth = clampIssueRequestDepth(issueData.requestDepth);
       }
@@ -5543,13 +6960,23 @@ export function issueService(db: Db) {
         throw unprocessable("in_progress issues require an assignee");
       }
       if (patch.status === "in_progress") {
+        const dependencyReadiness = blockedByIssueIds === undefined
+          ? (await listIssueDependencyReadinessMap(dbOrTx, existing.companyId, [id])).get(id)
+          : null;
         const unresolvedBlockerIssueIds = blockedByIssueIds !== undefined
           ? await listUnresolvedBlockerIssueIds(dbOrTx, existing.companyId, blockedByIssueIds)
-          : (
-              await listIssueDependencyReadinessMap(dbOrTx, existing.companyId, [id])
-            ).get(id)?.unresolvedBlockerIssueIds ?? [];
+          : dependencyReadiness?.unresolvedBlockerIssueIds ?? [];
         if (unresolvedBlockerIssueIds.length > 0) {
-          throw unprocessable("Issue is blocked by unresolved blockers", { unresolvedBlockerIssueIds });
+          const unresolvedBlockers = await listUnresolvedBlockerDetails(
+            dbOrTx,
+            existing.companyId,
+            unresolvedBlockerIssueIds,
+            dependencyReadiness?.pendingFinalizeBlockerIssueIds,
+          );
+          throw unprocessable("Issue is blocked by unresolved blockers", {
+            unresolvedBlockerIssueIds,
+            unresolvedBlockers,
+          });
         }
       }
       const shouldValidateNextAssignee =
@@ -5603,6 +7030,15 @@ export function issueService(db: Db) {
           await assertValidExecutionWorkspace(existing.companyId, nextProjectId, nextExecutionWorkspaceId);
         }
       }
+      if (isolatedWorkspacesEnabled && issueData.executionWorkspaceSettings !== undefined) {
+        assertExplicitPinnedWorktreeIssueRunnable({
+          projectId: nextProjectId ?? null,
+          projectWorkspaceId: nextProjectWorkspaceId ?? null,
+          executionWorkspaceId: nextExecutionWorkspaceId ?? null,
+          executionWorkspacePreference: nextExecutionWorkspacePreference ?? null,
+          executionWorkspaceSettings: issueData.executionWorkspaceSettings,
+        });
+      }
 
       applyStatusSideEffects(issueData.status, patch);
       if (issueData.status && issueData.status !== "done") {
@@ -5628,6 +7064,24 @@ export function issueService(db: Db) {
       }
 
       const runUpdate = async (tx: any) => {
+        // The receipt baseline must be read under the same row lock as the
+        // write. Otherwise a concurrent update can be mistaken for a change
+        // made by this request.
+        const receiptExisting = await tx
+          .select()
+          .from(issues)
+          .where(eq(issues.id, id))
+          .for("update")
+          .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
+        if (!receiptExisting) return null;
+        const [previousLabelsByIssueId, previousRelationSummaries] = await Promise.all([
+          nextLabelIds !== undefined
+            ? labelMapForIssues(tx, [id])
+            : Promise.resolve(new Map<string, IssueLabelRow[]>()),
+          blockedByIssueIds !== undefined
+            ? getIssueRelationSummaryMap(existing.companyId, [id], tx)
+            : Promise.resolve(new Map<string, IssueRelationSummaryMap>()),
+        ]);
         const defaultCompanyGoal = await getDefaultCompanyGoal(tx, existing.companyId);
         const [currentProjectGoalId, nextProjectGoalId] = await Promise.all([
           getProjectDefaultGoalId(tx, existing.companyId, existing.projectId),
@@ -5654,6 +7108,50 @@ export function issueService(db: Db) {
           .returning()
           .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
         if (!updated) return null;
+        if (existing.status !== updated.status) {
+          if (updated.status === "done" || updated.status === "cancelled") {
+            await finalizeSummarySlotsForTerminalIssue(tx, updated);
+            // Every terminal transition funnels through here, including direct
+            // service callers (tree control, recovery, pipelines, status cards)
+            // that never touch the HTTP routes, so pending interaction cards
+            // cannot outlive their issue. Dynamic import breaks the module
+            // cycle (issue-thread-interactions.js imports issueService).
+            const { issueThreadInteractionService } = await import("./issue-thread-interactions.js");
+            const expiredInteractions = await issueThreadInteractionService(tx).expirePendingInteractionsForTerminalIssue(
+              updated,
+              { agentId: actorAgentId ?? null, userId: actorUserId ?? null },
+            );
+            for (const interaction of expiredInteractions) {
+              await logActivity(tx as unknown as Db, {
+                companyId: updated.companyId,
+                actorType: actorAgentId ? "agent" : actorUserId ? "user" : "system",
+                actorId: actorAgentId ?? actorUserId ?? "issue_service",
+                agentId: actorAgentId ?? null,
+                action: "issue.thread_interaction_expired",
+                entityType: "issue",
+                entityId: updated.id,
+                details: {
+                  identifier: updated.identifier ?? null,
+                  interactionId: interaction.id,
+                  interactionKind: interaction.kind,
+                  interactionStatus: interaction.status,
+                  source: "issue.status_transition.issue_closed",
+                  result: interaction.result ?? null,
+                },
+              });
+            }
+          }
+          // A status-card generation task that goes done/cancelled/blocked stops
+          // making progress; release the card's generation claim so the board tile
+          // stops spinning and offers "Run now" again (blocked = stuck on a human).
+          if (
+            updated.status === "done" ||
+            updated.status === "cancelled" ||
+            updated.status === "blocked"
+          ) {
+            await finalizeStatusCardsForStalledGeneration(tx, updated);
+          }
+        }
         if (nextLabelIds !== undefined) {
           await syncIssueLabels(updated.id, existing.companyId, nextLabelIds, tx);
         }
@@ -5701,6 +7199,31 @@ export function issueService(db: Db) {
           }
         }
         const [enriched] = await withIssueLabels(tx, [updated]);
+        const nextBlockedByIssueIds = blockedByIssueIds === undefined
+          ? undefined
+          : [...new Set(blockedByIssueIds)].sort();
+        const changes = buildIssueChanges(
+          receiptExisting as unknown as Record<string, unknown>,
+          updated as unknown as Record<string, unknown>,
+          {
+            ...(nextLabelIds !== undefined
+              ? {
+                  labelIds: {
+                    from: (previousLabelsByIssueId.get(id) ?? []).map((label) => label.id),
+                    to: enriched.labelIds,
+                  },
+                }
+              : {}),
+            ...(nextBlockedByIssueIds !== undefined
+              ? {
+                  blockedByIssueIds: {
+                    from: (previousRelationSummaries.get(id)?.blockedBy ?? []).map((relation) => relation.id),
+                    to: nextBlockedByIssueIds,
+                  },
+                }
+              : {}),
+          },
+        );
         if (
           (issueData.status === "done" || issueData.status === "cancelled") &&
           existing.status !== issueData.status &&
@@ -5720,7 +7243,11 @@ export function issueService(db: Db) {
               );
           }
         }
-        return enriched;
+        return {
+          ...enriched,
+          ...(nextBlockedByIssueIds !== undefined ? { blockedByIssueIds: nextBlockedByIssueIds } : {}),
+          changes,
+        };
       };
 
       return dbOrTx === db ? db.transaction(runUpdate) : runUpdate(dbOrTx);
@@ -5737,7 +7264,10 @@ export function issueService(db: Db) {
 
       let cleared = 0;
       for (const row of rows) {
-        const settings = parseIssueExecutionWorkspaceSettings(row.executionWorkspaceSettings);
+        const settings = parseIssueExecutionWorkspaceSettings(
+          row.executionWorkspaceSettings,
+          { includeEnvironmentId: true },
+        );
         if (settings?.environmentId !== environmentId) continue;
 
         await db
@@ -5818,9 +7348,19 @@ export function issueService(db: Db) {
       await clearCheckoutRunIfTerminal(id);
 
       const dependencyReadiness = await listIssueDependencyReadinessMap(db, issueCompany.companyId, [id]);
-      const unresolvedBlockerIssueIds = dependencyReadiness.get(id)?.unresolvedBlockerIssueIds ?? [];
+      const readiness = dependencyReadiness.get(id);
+      const unresolvedBlockerIssueIds = readiness?.unresolvedBlockerIssueIds ?? [];
       if (unresolvedBlockerIssueIds.length > 0) {
-        throw unprocessable("Issue is blocked by unresolved blockers", { unresolvedBlockerIssueIds });
+        const unresolvedBlockers = await listUnresolvedBlockerDetails(
+          db,
+          issueCompany.companyId,
+          unresolvedBlockerIssueIds,
+          readiness?.pendingFinalizeBlockerIssueIds,
+        );
+        throw unprocessable("Issue is blocked by unresolved blockers", {
+          unresolvedBlockerIssueIds,
+          unresolvedBlockers,
+        });
       }
 
       const sameRunAssigneeCondition = checkoutRunId
@@ -6164,10 +7704,12 @@ export function issueService(db: Db) {
           }
         }
 
+        // Release clears checkout/assignee locks; only in_progress work re-queues to todo.
+        const releaseStatus = existing.status === "in_progress" ? "todo" : existing.status;
         const updated = await tx
           .update(issues)
           .set({
-            status: "todo",
+            status: releaseStatus,
             assigneeAgentId: null,
             checkoutRunId: null,
             executionRunId: null,
@@ -6464,6 +8006,14 @@ export function issueService(db: Db) {
       const presentation = issueCommentPresentationSchema.nullable().parse(options?.presentation ?? null);
       const metadata = issueCommentMetadataSchema.nullable().parse(options?.metadata ?? null);
       const createdAt = options?.createdAt ? new Date(options.createdAt) : null;
+      // Invalid/stale run ids must not 500 the insert — null out unknowns.
+      const createdByRunId = await resolveCommentCreatedByRunId(dbOrTx, issue.companyId, actor.runId);
+      if (actor.runId && !createdByRunId) {
+        logger.warn(
+          { issueId, companyId: issue.companyId, runId: actor.runId },
+          "dropping invalid createdByRunId for issue comment insert",
+        );
+      }
       const [comment] = await dbOrTx
         .insert(issueComments)
         .values({
@@ -6472,7 +8022,7 @@ export function issueService(db: Db) {
           authorAgentId: actor.agentId ?? null,
           authorUserId: actor.userId ?? null,
           authorType,
-          createdByRunId: actor.runId ?? null,
+          createdByRunId,
           body: redactedBody,
           presentation,
           metadata,

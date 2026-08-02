@@ -3,6 +3,7 @@ import type { Db } from "@paperclipai/db";
 import { agents, approvals, companies, costEvents, heartbeatRuns, issues } from "@paperclipai/db";
 import { notFound } from "../errors.js";
 import { budgetService } from "./budgets.js";
+import { visibleIssueCondition } from "./issue-visibility.js";
 
 const DASHBOARD_RUN_ACTIVITY_DAYS = 14;
 
@@ -43,7 +44,7 @@ export function dashboardService(db: Db) {
       const taskRows = await db
         .select({ status: issues.status, count: sql<number>`count(*)` })
         .from(issues)
-        .where(eq(issues.companyId, companyId))
+        .where(and(eq(issues.companyId, companyId), visibleIssueCondition()))
         .groupBy(issues.status);
 
       const pendingApprovals = await db
@@ -96,35 +97,79 @@ export function dashboardService(db: Db) {
         );
 
       const monthSpendCents = Number(monthSpend);
-      const runActivityDayExpr = sql<string>`to_char(${heartbeatRuns.createdAt} at time zone 'UTC', 'YYYY-MM-DD')`;
-      const runActivityRows = await db
-        .select({
-          date: runActivityDayExpr,
-          status: heartbeatRuns.status,
-          count: sql<number>`count(*)::double precision`,
-        })
-        .from(heartbeatRuns)
-        .where(
-          and(
-            eq(heartbeatRuns.companyId, companyId),
-            gte(heartbeatRuns.createdAt, runActivityStart),
-          ),
+      // Per-day run breakdown. A run is "recovered" when its retry chain later
+      // succeeded (recovered_runs = all ancestors of a succeeded retry), so a
+      // restart-killed run whose retry succeeded is pulled out of the headline
+      // failed count. error_code is carried through so a failure spike can be
+      // attributed to an error class (e.g. process_lost, provider_quota).
+      const runActivityRows = (await db.execute(sql`
+        WITH RECURSIVE recovered_runs(id) AS (
+          SELECT parent.id
+          FROM ${heartbeatRuns} AS child
+          JOIN ${heartbeatRuns} AS parent ON parent.id = child.retry_of_run_id
+          WHERE child.company_id = ${companyId}
+            AND child.status = 'succeeded'
+          UNION
+          SELECT parent.id
+          FROM recovered_runs rr
+          JOIN ${heartbeatRuns} AS child ON child.id = rr.id
+          JOIN ${heartbeatRuns} AS parent ON parent.id = child.retry_of_run_id
         )
-        .groupBy(runActivityDayExpr, heartbeatRuns.status);
+        SELECT
+          to_char(run.created_at AT TIME ZONE 'UTC', 'YYYY-MM-DD') AS date,
+          run.status AS status,
+          run.error_code AS error_code,
+          (run.id IN (SELECT id FROM recovered_runs)) AS recovered,
+          count(*)::double precision AS count
+        FROM ${heartbeatRuns} AS run
+        WHERE run.company_id = ${companyId}
+          AND run.created_at >= ${runActivityStart.toISOString()}::timestamptz
+        GROUP BY date, run.status, run.error_code, recovered
+      `)) as unknown as Iterable<{
+        date: string;
+        status: string;
+        error_code: string | null;
+        recovered: boolean | string;
+        count: number | string;
+      }>;
 
       const runActivity = new Map(
         runActivityDays.map((date) => [
           date,
-          { date, succeeded: 0, failed: 0, other: 0, total: 0 },
+          {
+            date,
+            succeeded: 0,
+            failed: 0,
+            recovered: 0,
+            other: 0,
+            total: 0,
+            failedByErrorCode: {} as Record<string, number>,
+          },
         ]),
       );
       for (const row of runActivityRows) {
-        const bucket = runActivity.get(row.date);
+        const bucket = runActivity.get(String(row.date));
         if (!bucket) continue;
         const count = Number(row.count);
-        if (row.status === "succeeded") bucket.succeeded += count;
-        else if (row.status === "failed" || row.status === "timed_out") bucket.failed += count;
-        else bucket.other += count;
+        const status = String(row.status);
+        // Postgres booleans can arrive as JS boolean or "t"/"true" depending on driver.
+        const recovered = row.recovered === true || row.recovered === "t" || row.recovered === "true";
+        if (status === "succeeded") {
+          bucket.succeeded += count;
+        } else if (status === "failed" || status === "timed_out") {
+          if (recovered) {
+            bucket.recovered += count;
+          } else {
+            bucket.failed += count;
+            const code =
+              typeof row.error_code === "string" && row.error_code.length > 0
+                ? row.error_code
+                : "unknown";
+            bucket.failedByErrorCode[code] = (bucket.failedByErrorCode[code] ?? 0) + count;
+          }
+        } else {
+          bucket.other += count;
+        }
         bucket.total += count;
       }
 

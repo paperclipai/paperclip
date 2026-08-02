@@ -43,9 +43,38 @@ const SENSITIVE_KEYS = new Set<string>([
 
 const MAX_DEPTH = 6;
 const REDACTED = "[REDACTED]";
+const URLISH_KEYS = new Set<string>([
+  "href",
+  "locator",
+  "source",
+  "source_locator",
+  "sourcelocator",
+  "source_url",
+  "sourceurl",
+  "uri",
+  "url",
+]);
 
 function isSensitiveKey(key: string): boolean {
   return SENSITIVE_KEYS.has(key.toLowerCase());
+}
+
+function isUrlishKey(key: string): boolean {
+  return URLISH_KEYS.has(key.toLowerCase());
+}
+
+function stripSecretBearingUrlParts(value: string): string {
+  try {
+    const url = new URL(value);
+    if (!url.username && !url.password && !url.search && !url.hash) return value;
+    url.username = "";
+    url.password = "";
+    url.search = "";
+    url.hash = "";
+    return url.toString();
+  } catch {
+    return value;
+  }
 }
 
 export function redactSensitive(value: unknown, depth = 0): unknown {
@@ -59,6 +88,10 @@ export function redactSensitive(value: unknown, depth = 0): unknown {
   for (const [key, entry] of Object.entries(value as Record<string, unknown>)) {
     if (isSensitiveKey(key)) {
       out[key] = REDACTED;
+      continue;
+    }
+    if (typeof entry === "string" && isUrlishKey(key)) {
+      out[key] = stripSecretBearingUrlParts(entry);
       continue;
     }
     out[key] = redactSensitive(entry, depth + 1);

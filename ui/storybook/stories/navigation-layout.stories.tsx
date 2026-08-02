@@ -335,6 +335,17 @@ function NavigationLayoutStories() {
 const meta = {
   title: "Product/Navigation & Layout",
   component: NavigationLayoutStories,
+  // Sidebar mounts PluginLauncherOutlet unconditionally once a company is
+  // selected; without this provider the story raced company selection and
+  // intermittently threw "usePluginLauncherRuntime must be used within
+  // PluginLauncherProvider".
+  decorators: [
+    (Story) => (
+      <PluginLauncherProvider>
+        <Story />
+      </PluginLauncherProvider>
+    ),
+  ],
   parameters: {
     docs: {
       description: {

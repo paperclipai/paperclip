@@ -63,6 +63,7 @@ function registerModuleMocks() {
       hasPermission: vi.fn(async () => true),
     }),
     approvalService: () => ({}),
+    builtInAgentService: () => ({ ensureCompanyDefaultAgentGrants: vi.fn() }),
     companySkillService: () => ({ listRuntimeSkillEntries: vi.fn() }),
     budgetService: () => ({}),
     heartbeatService: () => mockHeartbeatService,
@@ -316,6 +317,9 @@ describe("agent live run routes", () => {
       ...run,
       currentStatusMessage: "Syncing workspace to sandbox",
       currentStatusUpdatedAt: new Date("2026-04-10T09:30:05.000Z"),
+      currentToolName: "bash",
+      lastAssistantSnippet: "Inspecting files",
+      lastEventAt: new Date("2026-04-10T09:30:06.000Z"),
     }));
 
     const res = await requestApp(
@@ -331,6 +335,9 @@ describe("agent live run routes", () => {
     expect(res.body).toMatchObject({
       currentStatusMessage: "Syncing workspace to sandbox",
       currentStatusUpdatedAt: "2026-04-10T09:30:05.000Z",
+      currentToolName: "bash",
+      lastAssistantSnippet: "Inspecting files",
+      lastEventAt: "2026-04-10T09:30:06.000Z",
     });
   });
 

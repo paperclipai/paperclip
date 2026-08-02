@@ -41,6 +41,9 @@ export type ResolveIssueRecoveryActionInput = {
   companyId: string;
   sourceIssueId: string;
   actionId?: string | null;
+  kind?: IssueRecoveryActionKind | null;
+  cause?: string | null;
+  fingerprint?: string | null;
   status: Extract<IssueRecoveryActionStatus, "resolved" | "cancelled">;
   outcome: IssueRecoveryActionOutcome;
   resolutionNote?: string | null;
@@ -269,6 +272,15 @@ export function issueRecoveryActionService(db: Db) {
     ];
     if (input.actionId) {
       predicates.push(eq(issueRecoveryActions.id, input.actionId));
+    }
+    if (input.kind) {
+      predicates.push(eq(issueRecoveryActions.kind, input.kind));
+    }
+    if (input.cause) {
+      predicates.push(eq(issueRecoveryActions.cause, input.cause));
+    }
+    if (input.fingerprint) {
+      predicates.push(eq(issueRecoveryActions.fingerprint, input.fingerprint));
     }
 
     const [updated] = await dbOrTx

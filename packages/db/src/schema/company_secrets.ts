@@ -1,13 +1,18 @@
-import { pgTable, uuid, text, timestamp, integer, jsonb, index, uniqueIndex } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
+import { check, pgTable, uuid, text, timestamp, integer, jsonb, index, uniqueIndex } from "drizzle-orm/pg-core";
 import { companies } from "./companies.js";
 import { agents } from "./agents.js";
 import { companySecretProviderConfigs } from "./company_secret_provider_configs.js";
+import { userSecretDefinitions } from "./user_secret_definitions.js";
 
 export const companySecrets = pgTable(
   "company_secrets",
   {
     id: uuid("id").primaryKey().defaultRandom(),
     companyId: uuid("company_id").notNull().references(() => companies.id),
+    scope: text("scope").notNull().default("company"),
+    ownerUserId: text("owner_user_id"),
+    userSecretDefinitionId: uuid("user_secret_definition_id").references(() => userSecretDefinitions.id, { onDelete: "set null" }),
     key: text("key").notNull(),
     name: text("name").notNull(),
     provider: text("provider").notNull().default("local_encrypted"),
@@ -28,9 +33,35 @@ export const companySecrets = pgTable(
   },
   (table) => ({
     companyIdx: index("company_secrets_company_idx").on(table.companyId),
+    companyScopeIdx: index("company_secrets_company_scope_idx").on(table.companyId, table.scope),
+    companyOwnerIdx: index("company_secrets_company_owner_idx").on(table.companyId, table.ownerUserId),
+    userDefinitionOwnerIdx: index("company_secrets_user_definition_owner_idx").on(
+      table.companyId,
+      table.userSecretDefinitionId,
+      table.ownerUserId,
+    ),
     companyProviderIdx: index("company_secrets_company_provider_idx").on(table.companyId, table.provider),
     providerConfigIdx: index("company_secrets_provider_config_idx").on(table.providerConfigId),
-    companyNameUq: uniqueIndex("company_secrets_company_name_uq").on(table.companyId, table.name),
-    companyKeyUq: uniqueIndex("company_secrets_company_key_uq").on(table.companyId, table.key),
+    companyNameUq: uniqueIndex("company_secrets_company_name_uq")
+      .on(table.companyId, table.name)
+      .where(sql`${table.scope} = 'company' and ${table.deletedAt} is null`),
+    companyKeyUq: uniqueIndex("company_secrets_company_key_uq")
+      .on(table.companyId, table.key)
+      .where(sql`${table.scope} = 'company' and ${table.deletedAt} is null`),
+    userDefinitionOwnerUq: uniqueIndex("company_secrets_user_definition_owner_uq")
+      .on(table.companyId, table.userSecretDefinitionId, table.ownerUserId)
+      .where(sql`${table.scope} = 'user' and ${table.deletedAt} is null`),
+    scopeShapeCheck: check(
+      "company_secrets_scope_shape_check",
+      sql`(
+        ${table.scope} = 'company'
+        and ${table.ownerUserId} is null
+        and ${table.userSecretDefinitionId} is null
+      ) or (
+        ${table.scope} = 'user'
+        and ${table.ownerUserId} is not null
+        and ${table.userSecretDefinitionId} is not null
+      )`,
+    ),
   }),
 );

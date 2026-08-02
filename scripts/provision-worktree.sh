@@ -31,32 +31,89 @@ source_env_path="$(dirname "$source_config_path")/.env"
 
 mkdir -p "$paperclip_dir"
 
-run_isolated_worktree_init() {
-  local base_cli_runner="$base_cwd/cli/node_modules/tsx/dist/cli.mjs"
-  local base_cli_entry="$base_cwd/cli/src/index.ts"
+base_cli_runner_path="$base_cwd/cli/node_modules/tsx/dist/cli.mjs"
+base_cli_entry_path="$base_cwd/cli/src/index.ts"
 
-  if [[ -f "$base_cli_runner" && -f "$base_cli_entry" ]]; then
+base_cli_files_present() {
+  [[ -f "$base_cli_runner_path" && -f "$base_cli_entry_path" ]]
+}
+
+# File existence is not enough: pnpm links package node_modules into the
+# versioned virtual store, so a lockfile change plus a partial/filtered install
+# in the base workspace leaves dangling symlinks that fail ESM resolution at
+# runtime. Actually boot the CLI to prove its import graph resolves.
+base_cli_healthy() {
+  base_cli_files_present || return 1
+  (cd "$base_cwd" && node "$base_cli_runner_path" "$base_cli_entry_path" --help >/dev/null 2>&1)
+}
+
+repair_base_workspace_install() {
+  command -v pnpm >/dev/null 2>&1 || return 1
+  [[ -f "$base_cwd/package.json" && -f "$base_cwd/pnpm-lock.yaml" ]] || return 1
+  echo "Base workspace CLI at $base_cli_entry_path failed its health check (typically dangling pnpm symlinks after a partial install); repairing with pnpm install in $base_cwd." >&2
+  # --force guarantees relinking even when pnpm's up-to-date heuristics would
+  # otherwise skip the dangling symlinks; --frozen-lockfile keeps the repair
+  # from mutating the shared base workspace's lockfile.
+  local repair_cmd=(pnpm install --prod=false --force --frozen-lockfile --config.confirmModulesPurge=false)
+  # Resolve the real git dir so locking also covers base workspaces that are
+  # linked worktrees, where "$base_cwd/.git" is a file rather than a directory.
+  local repair_lock_dir=""
+  if command -v git >/dev/null 2>&1; then
+    repair_lock_dir="$(git -C "$base_cwd" rev-parse --absolute-git-dir 2>/dev/null || true)"
+  fi
+  if [[ ! -d "$repair_lock_dir" && -d "$base_cwd/.git" ]]; then
+    repair_lock_dir="$base_cwd/.git"
+  fi
+  if command -v flock >/dev/null 2>&1 && [[ -d "$repair_lock_dir" ]]; then
+    # The post-repair verification must run under the same lock: a concurrent
+    # provision's forced install could be mid-relink during an unlocked check
+    # and fail a repair that actually succeeded. Holding the lock also means a
+    # process that queued behind a peer's repair can skip its own reinstall.
     (
-      cd "$worktree_cwd"
-      node "$base_cli_runner" "$base_cli_entry" worktree init --force --seed-mode minimal --name "$worktree_name" --from-config "$source_config_path"
+      cd "$base_cwd" || exit 1
+      exec 9>"$repair_lock_dir/paperclip-provision-repair.lock"
+      flock 9
+      if base_cli_healthy; then
+        echo "Base workspace CLI became healthy while waiting for the repair lock; skipping reinstall." >&2
+        exit 0
+      fi
+      env -u NODE_ENV CI=true "${repair_cmd[@]}" >&2 || exit 1
+      base_cli_healthy
     )
-    return 0
+  else
+    (cd "$base_cwd" && env -u NODE_ENV CI=true "${repair_cmd[@]}" >&2 && base_cli_healthy)
+  fi
+}
+
+ensure_base_cli_healthy() {
+  base_cli_files_present || return 1
+  base_cli_healthy && return 0
+  repair_base_workspace_install
+}
+
+run_isolated_worktree_init() {
+  if ensure_base_cli_healthy; then
+    (
+      cd "$worktree_cwd" &&
+        node "$base_cli_runner_path" "$base_cli_entry_path" worktree init --force --seed-mode minimal --name "$worktree_name" --from-config "$source_config_path"
+    )
+    return
   fi
 
   if command -v pnpm >/dev/null 2>&1 && pnpm paperclipai --help >/dev/null 2>&1; then
     (
-      cd "$worktree_cwd"
-      pnpm paperclipai worktree init --force --seed-mode minimal --name "$worktree_name" --from-config "$source_config_path"
+      cd "$worktree_cwd" &&
+        pnpm paperclipai worktree init --force --seed-mode minimal --name "$worktree_name" --from-config "$source_config_path"
     )
-    return 0
+    return
   fi
 
   if command -v paperclipai >/dev/null 2>&1; then
     (
-      cd "$worktree_cwd"
-      paperclipai worktree init --force --seed-mode minimal --name "$worktree_name" --from-config "$source_config_path"
+      cd "$worktree_cwd" &&
+        paperclipai worktree init --force --seed-mode minimal --name "$worktree_name" --from-config "$source_config_path"
     )
-    return 0
+    return
   fi
 
   return 127
@@ -67,9 +124,7 @@ paperclipai_command_available() {
     return 0
   fi
 
-  local base_cli_tsx_path="$base_cwd/cli/node_modules/tsx/dist/cli.mjs"
-  local base_cli_entry_path="$base_cwd/cli/src/index.ts"
-  if command -v node >/dev/null 2>&1 && [[ -f "$base_cli_tsx_path" ]] && [[ -f "$base_cli_entry_path" ]]; then
+  if command -v node >/dev/null 2>&1 && base_cli_files_present; then
     return 0
   fi
 
@@ -395,9 +450,21 @@ async function main() {
     "PAPERCLIP_WORKTREE_NAME=" + JSON.stringify(worktreeName),
   ];
 
-  const agentJwtSecret = nonEmpty(sourceEnvEntries.PAPERCLIP_AGENT_JWT_SECRET);
-  if (agentJwtSecret) {
-    envLines.push("PAPERCLIP_AGENT_JWT_SECRET=" + JSON.stringify(agentJwtSecret));
+  // Secrets that must be carried over from the source instance so the worktree's
+  // dev server behaves like the real one. PAPERCLIP_TOOL_ACTION_SIGNING_SECRET is
+  // required for signed tool-gateway approvals (ask-first MCP policies); without
+  // it the first gated POST /tool-gateway/tools/call returns Internal server error.
+  // BETTER_AUTH_SECRET keeps auth tokens compatible across the source/worktree pair.
+  const propagatedSecretKeys = [
+    "PAPERCLIP_AGENT_JWT_SECRET",
+    "PAPERCLIP_TOOL_ACTION_SIGNING_SECRET",
+    "BETTER_AUTH_SECRET",
+  ];
+  for (const key of propagatedSecretKeys) {
+    const value = nonEmpty(sourceEnvEntries[key]);
+    if (value) {
+      envLines.push(key + "=" + JSON.stringify(value));
+    }
   }
 
   fs.writeFileSync(envPath, `${envLines.join("\n")}\n`, { mode: 0o600 });
@@ -417,9 +484,24 @@ else
     echo "Existing isolated Paperclip worktree config is stale for this host; regenerating." >&2
   fi
   if paperclipai_command_available; then
-    run_isolated_worktree_init
+    if run_isolated_worktree_init; then
+      :
+    else
+      init_exit_code=$?
+      if [[ "$init_exit_code" -eq 127 ]]; then
+        # Every CLI candidate was unusable (e.g. an unhealthy base install that
+        # the repair could not fix); degrade instead of stranding the run.
+        echo "No usable paperclipai CLI found; writing isolated fallback config without DB seeding." >&2
+        write_fallback_worktree_config
+      else
+        # A CLI that ran and failed signals a real problem; do not paper over
+        # it with an unseeded fallback config.
+        echo "paperclipai worktree init failed (exit $init_exit_code); failing provisioning instead of writing an unseeded fallback config." >&2
+        exit "$init_exit_code"
+      fi
+    fi
   else
-    echo "paperclipai CLI not available in this workspace; writing isolated fallback config without DB seeding." >&2
+    echo "paperclipai worktree init unavailable; writing isolated fallback config without DB seeding." >&2
     write_fallback_worktree_config
   fi
 fi
@@ -435,8 +517,60 @@ list_base_node_modules_paths() {
       ! -path './.paperclip/*' \
       | sed 's#^\./##'
 }
+
+compute_pnpm_install_fingerprint() {
+  WORKTREE_CWD="$worktree_cwd" node <<'EOF'
+const crypto = require("node:crypto");
+const fs = require("node:fs");
+const path = require("node:path");
+
+const root = process.env.WORKTREE_CWD;
+const ignoredDirs = new Set([".git", ".paperclip", "node_modules", "dist", "storybook-static"]);
+const files = [];
+
+function walk(dir) {
+  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
+    if (ignoredDirs.has(entry.name)) continue;
+
+    const absolutePath = path.join(dir, entry.name);
+    if (entry.isDirectory()) {
+      walk(absolutePath);
+      continue;
+    }
+
+    if (
+      entry.isFile()
+      && (entry.name === "package.json" || entry.name === "pnpm-lock.yaml" || entry.name === "pnpm-workspace.yaml")
+    ) {
+      files.push(absolutePath);
+    }
+  }
+}
+
+walk(root);
+files.sort((left, right) => path.relative(root, left).localeCompare(path.relative(root, right)));
+
+const hash = crypto.createHash("sha256");
+for (const file of files) {
+  const relativePath = path.relative(root, file).replaceAll(path.sep, "/");
+  hash.update(relativePath);
+  hash.update("\0");
+  hash.update(fs.readFileSync(file));
+  hash.update("\0");
+}
+
+process.stdout.write(hash.digest("hex"));
+EOF
+}
+
 if [[ -f "$worktree_cwd/package.json" && -f "$worktree_cwd/pnpm-lock.yaml" ]]; then
   needs_install=0
+  install_fingerprint_path="$paperclip_dir/pnpm-install-fingerprint"
+  current_install_fingerprint="$(compute_pnpm_install_fingerprint)"
+  previous_install_fingerprint=""
+  if [[ -f "$install_fingerprint_path" ]]; then
+    previous_install_fingerprint="$(cat "$install_fingerprint_path")"
+  fi
 
   while IFS= read -r relative_path; do
     [[ -n "$relative_path" ]] || continue
@@ -447,6 +581,10 @@ if [[ -f "$worktree_cwd/package.json" && -f "$worktree_cwd/pnpm-lock.yaml" ]]; t
       break
     fi
   done < <(list_base_node_modules_paths)
+
+  if [[ "$needs_install" -eq 0 && "$current_install_fingerprint" != "$previous_install_fingerprint" ]]; then
+    needs_install=1
+  fi
 
   if [[ "$needs_install" -eq 1 ]]; then
     backup_suffix=".paperclip-backup-${BASHPID:-$$}"
@@ -492,7 +630,7 @@ if [[ -f "$worktree_cwd/package.json" && -f "$worktree_cwd/pnpm-lock.yaml" ]]; t
 
       if (
         cd "$worktree_cwd"
-        pnpm install "$@"
+        pnpm install --prod=false "$@"
       ) >"$stdout_path" 2>"$stderr_path"; then
         cat "$stdout_path"
         cat "$stderr_path" >&2
@@ -529,6 +667,8 @@ if [[ -f "$worktree_cwd/package.json" && -f "$worktree_cwd/pnpm-lock.yaml" ]]; t
     fi
 
     cleanup_moved_symlinks
+    current_install_fingerprint="$(compute_pnpm_install_fingerprint)"
+    printf '%s\n' "$current_install_fingerprint" >"$install_fingerprint_path"
   fi
 
   exit 0

@@ -40,6 +40,7 @@ export const inboxIssueColumns = [
   "status",
   "id",
   "assignee",
+  "kickedOffBy",
   "project",
   "workspace",
   "parent",

@@ -27,15 +27,35 @@ const mockAnnotationsApi = vi.hoisted(() => {
     updateStatusForTarget: vi.fn(),
   };
   api.listForTarget.mockImplementation((target, options) =>
-    target.kind === "issue" ? api.list(target.issueId, target.documentKey, options) : api.list(target.routineId, target.documentKey, options));
+    target.kind === "issue"
+      ? api.list(target.issueId, target.documentKey, options)
+      : target.kind === "case"
+        ? api.list(target.caseId, target.documentKey, options)
+        : api.list(target.routineId, target.documentKey, options));
   api.getForTarget.mockImplementation((target, threadId) =>
-    target.kind === "issue" ? api.get(target.issueId, target.documentKey, threadId) : api.get(target.routineId, target.documentKey, threadId));
+    target.kind === "issue"
+      ? api.get(target.issueId, target.documentKey, threadId)
+      : target.kind === "case"
+        ? api.get(target.caseId, target.documentKey, threadId)
+        : api.get(target.routineId, target.documentKey, threadId));
   api.createForTarget.mockImplementation((target, data) =>
-    target.kind === "issue" ? api.create(target.issueId, target.documentKey, data) : api.create(target.routineId, target.documentKey, data));
+    target.kind === "issue"
+      ? api.create(target.issueId, target.documentKey, data)
+      : target.kind === "case"
+        ? api.create(target.caseId, target.documentKey, data)
+        : api.create(target.routineId, target.documentKey, data));
   api.addCommentForTarget.mockImplementation((target, threadId, data) =>
-    target.kind === "issue" ? api.addComment(target.issueId, target.documentKey, threadId, data) : api.addComment(target.routineId, target.documentKey, threadId, data));
+    target.kind === "issue"
+      ? api.addComment(target.issueId, target.documentKey, threadId, data)
+      : target.kind === "case"
+        ? api.addComment(target.caseId, target.documentKey, threadId, data)
+        : api.addComment(target.routineId, target.documentKey, threadId, data));
   api.updateStatusForTarget.mockImplementation((target, threadId, status) =>
-    target.kind === "issue" ? api.updateStatus(target.issueId, target.documentKey, threadId, status) : api.updateStatus(target.routineId, target.documentKey, threadId, status));
+    target.kind === "issue"
+      ? api.updateStatus(target.issueId, target.documentKey, threadId, status)
+      : target.kind === "case"
+        ? api.updateStatus(target.caseId, target.documentKey, threadId, status)
+        : api.updateStatus(target.routineId, target.documentKey, threadId, status));
   return api;
 });
 
@@ -306,7 +326,7 @@ describe("IssueDocumentAnnotations", () => {
     const anchor = container.querySelector('[data-testid="document-annotation-panel-anchor"]');
     expect(anchor).not.toBeNull();
     expect(anchor?.className).toContain("fixed");
-    expect(anchor?.className).toContain("z-[60]");
+    expect(anchor?.className).toContain("z-(--z-60)");
   });
 
   it("keeps the desktop annotation panel inside the issue content area when properties are visible", async () => {
@@ -982,7 +1002,7 @@ describe("IssueDocumentAnnotations", () => {
       expect(sheet).not.toBeNull();
       expect(sheet?.getAttribute("data-side")).toBe("bottom");
       expect(sheet?.className).toContain("paperclip-doc-annotation-sheet");
-      expect(sheet?.className).toContain("z-[60]");
+      expect(sheet?.className).toContain("z-(--z-60)");
       expect(sheet?.className).toContain("bg-popover");
     } finally {
       Object.defineProperty(window, "matchMedia", {
