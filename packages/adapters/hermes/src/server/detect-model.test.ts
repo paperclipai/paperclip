@@ -48,17 +48,17 @@ test("parseModelFromConfig tracks api_key presence without exposing the raw secr
   expect(Object.hasOwn(parsed ?? {}, "apiKey")).toBe(false);
 });
 
-test("resolveProvider does not fall through to model inference when Hermes config provider is unsupported but matches the requested model", () => {
+test("resolveProvider passes through a matching custom Hermes config provider name", () => {
   expect(resolveProvider({
     explicitProvider: undefined,
-    detectedProvider: "custom",
-    detectedModel: "oca/gpt-5.4",
-    detectedBaseUrl: "https://example.invalid/litellm",
+    detectedProvider: "xai-oauth",
+    detectedModel: "grok-4.5",
+    detectedBaseUrl: "https://api.x.ai/v1",
     detectedHasApiKey: true,
-    model: "oca/gpt-5.4",
+    model: "grok-4.5",
   })).toEqual({
-    provider: "auto",
-    resolvedFrom: "hermesConfigUnsupported:custom",
+    provider: "xai-oauth",
+    resolvedFrom: "hermesConfig",
   });
 });
 

@@ -276,18 +276,6 @@ async function checkProviderConsistency(
     };
   }
 
-  // If Hermes config matches the requested model but uses an adapter-unsupported
-  // provider such as "custom", do not report a false provider inference.
-  if (!explicitProvider && resolvedFrom.startsWith("hermesConfigUnsupported:")) {
-    const unsupportedProvider = resolvedFrom.split(":", 2)[1] || detectedConfig?.provider || "unknown";
-    return {
-      level: "info",
-      message: `Hermes config uses unsupported adapter provider "${unsupportedProvider}" for model "${model}" — deferring to Hermes auto-detection`,
-      hint: "Paperclip will avoid model-name provider inference here and let Hermes resolve the provider from ~/.hermes/config.yaml at runtime.",
-      code: "hermes_provider_unsupported",
-    };
-  }
-
   // If matching Hermes config provides runtime signals without an explicit provider,
   // also defer to Hermes rather than inventing a provider from the model name.
   if (!explicitProvider && resolvedFrom === "hermesConfigRuntime") {

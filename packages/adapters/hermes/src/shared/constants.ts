@@ -28,8 +28,11 @@ export const DEFAULT_GRACE_SEC = 10;
 export const DEFAULT_MODEL = "auto";
 
 /**
- * Valid --provider choices for the hermes CLI.
- * Must stay in sync with `hermes chat --help`.
+ * Built-in provider choices shown in the Paperclip config UI.
+ *
+ * Hermes also accepts user-defined provider names declared under
+ * `providers:` in `~/.hermes/config.yaml`, so this list is intentionally
+ * narrower than the full runtime surface.
  */
 export const VALID_PROVIDERS = [
   "auto",

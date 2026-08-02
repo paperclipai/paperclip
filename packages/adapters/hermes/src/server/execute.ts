@@ -286,7 +286,17 @@ function cleanResponse(raw: string): string {
       const t = line.trim();
       if (!t) return true; // keep blank lines for paragraph separation
       if (t.startsWith("[tool]") || t.startsWith("[hermes]") || t.startsWith("[paperclip]")) return false;
+      if (t.startsWith("Query:")) return false;
+      if (t.startsWith("Initializing agent")) return false;
+      if (t.startsWith("Resume this session with:")) return false;
+      if (t.startsWith("Session:") || t.startsWith("Duration:") || t.startsWith("Messages:")) return false;
+      if (t.startsWith("Warning: Unknown toolsets:")) return false;
+      if (t.startsWith("Warning: Input is not a terminal")) return false;
+      if (t.startsWith("Goodbye!")) return false;
       if (t.startsWith("session_id:")) return false;
+      if (t.startsWith("hermes --resume ")) return false;
+      if (/^[─━]+$/.test(t)) return false;
+      if (/^[╭╰│].*$/.test(t)) return false;
       if (/^\[\d{4}-\d{2}-\d{2}T/.test(t)) return false;
       if (/^\[done\]\s*┊/.test(t)) return false;
       if (/^┊\s*[\p{Emoji_Presentation}]/u.test(t) && !/^┊\s*💬/.test(t)) return false;
@@ -318,10 +328,9 @@ function parseHermesOutput(stdout: string, stderr: string): ParsedOutput {
   const sessionMatch = stdout.match(SESSION_ID_REGEX);
   if (sessionMatch?.[1]) {
     result.sessionId = sessionMatch?.[1] ?? null;
-    // The response is everything before the session_id line
-    const sessionLineIdx = stdout.lastIndexOf("\nsession_id:");
-    if (sessionLineIdx > 0) {
-      result.response = cleanResponse(stdout.slice(0, sessionLineIdx));
+    const cleaned = cleanResponse(stdout.replace(SESSION_ID_REGEX, ""));
+    if (cleaned.length > 0) {
+      result.response = cleaned;
     }
   } else {
     // Legacy format (non-quiet mode)
@@ -454,8 +463,9 @@ export async function execute(
   });
 
   // ── Build command args ─────────────────────────────────────────────────
-  // Use -Q (quiet) to get clean output: just response + session_id line
-  const useQuiet = cfgBoolean(config.quiet) === true; // default false
+  // Use -Q (quiet) by default so Hermes does not echo the query text or TUI chrome
+  // back into Paperclip comments/results. `quiet: false` remains as an escape hatch.
+  const useQuiet = cfgBoolean(config.quiet) !== false;
   const args: string[] = ["chat", "-q", prompt];
   if (useQuiet) args.push("-Q");
 
