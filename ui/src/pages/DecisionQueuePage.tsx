@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, CheckCheck, Loader2, Settings2, X } from "lucide-react";
-import type { Agent, AttentionFeed, AttentionItem } from "@paperclipai/shared";
+import type { Agent, AttentionItem } from "@paperclipai/shared";
 import { useParams } from "@/lib/router";
 import { attentionApi } from "../api/attention";
 import { agentsApi } from "../api/agents";
@@ -23,25 +23,6 @@ import { Button } from "../components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "../components/ui/popover";
 
 type BulkAction = "accept" | "reject";
-
-export async function listAllQueueAttention(companyId: string, queueKey: string): Promise<AttentionFeed> {
-  const items: AttentionItem[] = [];
-  const seenCursors = new Set<string>();
-  let cursor: string | undefined;
-  let firstPage: AttentionFeed | null = null;
-  do {
-    const page = await attentionApi.list(companyId, { queue: queueKey, limit: 100, cursor });
-    firstPage ??= page;
-    items.push(...page.items);
-    const nextCursor = page.nextCursor ?? undefined;
-    if (nextCursor && seenCursors.has(nextCursor)) {
-      throw new Error("Attention pagination returned a repeated cursor");
-    }
-    if (nextCursor) seenCursors.add(nextCursor);
-    cursor = nextCursor;
-  } while (cursor);
-  return { ...firstPage!, items, nextCursor: null };
-}
 
 /**
  * Can this row be bulk accepted / rejected from the queue page? Approvals, join
@@ -107,7 +88,7 @@ export function DecisionQueuePage() {
     error,
   } = useQuery({
     queryKey: [...queryKeys.attention(selectedCompanyId!), "queue", queueKey],
-    queryFn: () => listAllQueueAttention(selectedCompanyId!, queueKey),
+    queryFn: () => attentionApi.list(selectedCompanyId!, { queue: queueKey, all: true }),
     enabled: !!selectedCompanyId && !!queueKey,
     refetchOnWindowFocus: true,
   });

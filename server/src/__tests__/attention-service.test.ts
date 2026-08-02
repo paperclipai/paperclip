@@ -1241,6 +1241,15 @@ describeEmbeddedPostgres("attention service", () => {
     expect(secondPage.items.map((item) => item.subject.id)).toEqual([expiringLaterId]);
     expect(secondPage.nextCursor).toBeNull();
 
+    const completeSnapshot = await attentionService(db).list(companyId, {
+      userId: "board-user",
+      queue: "urgent-releases",
+      sort: "decide",
+      all: true,
+    });
+    expect(completeSnapshot.items.map((item) => item.subject.id)).toEqual([expiringSoonId, expiringLaterId]);
+    expect(completeSnapshot.nextCursor).toBeNull();
+
     const dateFiltered = await attentionService(db).list(companyId, {
       userId: "board-user",
       queue: "urgent-releases",

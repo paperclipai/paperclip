@@ -26,6 +26,7 @@ export function attentionRoutes(db: Db) {
 
     const includeDismissed = req.query.includeDismissed === "true";
     const archived = req.query.archived === "true";
+    const all = req.query.all === "true";
     const activitySince = optionalQueryString(req.query.activitySince, "activitySince");
     const activityUntil = optionalQueryString(req.query.activityUntil, "activityUntil");
     const queue = optionalQueryString(req.query.queue, "queue");
@@ -41,6 +42,7 @@ export function attentionRoutes(db: Db) {
       userId: req.actor.userId,
       includeDismissed,
       archived,
+      all,
       activitySince,
       activityUntil,
       queue,

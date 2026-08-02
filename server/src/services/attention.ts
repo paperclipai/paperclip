@@ -860,6 +860,9 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
   );
   return {
     list: async (companyId: string, options: AttentionListOptions = {}): Promise<AttentionFeed> => {
+      if (options.all && !options.queue) {
+        throw badRequest("all requires a queue filter");
+      }
       const prefix = await companyPrefix(db, companyId);
       const dismissals = await dismissalByKey(db, companyId, options.userId);
       const includeDismissed = options.includeDismissed === true;
@@ -1653,20 +1656,30 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
           ? (left, right) => compareDecideItems(left, right, now)
           : compareAttentionItems)
         .map((item, index) => ({ ...item, rank: index + 1 }));
-      const limit = options.limit ?? ATTENTION_PAGE_DEFAULT_LIMIT;
-      if (!Number.isInteger(limit) || limit < 1 || limit > ATTENTION_PAGE_MAX_LIMIT) {
-        throw badRequest(`limit must be an integer between 1 and ${ATTENTION_PAGE_MAX_LIMIT}`);
+      let items: AttentionItem[];
+      let nextCursor: string | null;
+      if (options.all) {
+        if (options.cursor || options.limit !== undefined) {
+          throw badRequest("all cannot be combined with cursor or limit");
+        }
+        items = rankedItems;
+        nextCursor = null;
+      } else {
+        const limit = options.limit ?? ATTENTION_PAGE_DEFAULT_LIMIT;
+        if (!Number.isInteger(limit) || limit < 1 || limit > ATTENTION_PAGE_MAX_LIMIT) {
+          throw badRequest(`limit must be an integer between 1 and ${ATTENTION_PAGE_MAX_LIMIT}`);
+        }
+        let pageStart = 0;
+        if (options.cursor) {
+          const cursorItemId = decodeCursor(options.cursor, sort);
+          const cursorIndex = rankedItems.findIndex((item) => item.id === cursorItemId);
+          if (cursorIndex < 0) throw badRequest("Attention cursor no longer matches the filtered feed");
+          pageStart = cursorIndex + 1;
+        }
+        items = rankedItems.slice(pageStart, pageStart + limit);
+        const hasNextPage = pageStart + items.length < rankedItems.length;
+        nextCursor = hasNextPage && items.length > 0 ? encodeCursor(sort, items[items.length - 1]!) : null;
       }
-      let pageStart = 0;
-      if (options.cursor) {
-        const cursorItemId = decodeCursor(options.cursor, sort);
-        const cursorIndex = rankedItems.findIndex((item) => item.id === cursorItemId);
-        if (cursorIndex < 0) throw badRequest("Attention cursor no longer matches the filtered feed");
-        pageStart = cursorIndex + 1;
-      }
-      const items = rankedItems.slice(pageStart, pageStart + limit);
-      const hasNextPage = pageStart + items.length < rankedItems.length;
-      const nextCursor = hasNextPage && items.length > 0 ? encodeCursor(sort, items[items.length - 1]!) : null;
 
       if (options.userId) {
         const trainable: Array<{ sourceKind: "approval" | "interaction"; sourceId: string }> = [];

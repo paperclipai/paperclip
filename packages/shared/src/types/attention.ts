@@ -79,6 +79,8 @@ export type AttentionSortMode = "activity" | "decide";
 export interface AttentionFeedQuery {
   includeDismissed?: boolean;
   archived?: boolean;
+  /** Return the complete filtered snapshot in one response. */
+  all?: boolean;
   activitySince?: string;
   activityUntil?: string;
   queue?: string;

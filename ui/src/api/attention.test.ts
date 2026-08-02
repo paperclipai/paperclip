@@ -29,6 +29,14 @@ describe("attentionApi.list", () => {
     );
   });
 
+  it("requests a complete filtered snapshot for complete-set actions", async () => {
+    await attentionApi.list("company-1", { queue: "release review", all: true });
+
+    expect(mockApi.get).toHaveBeenCalledWith(
+      "/companies/company-1/attention?all=true&queue=release+review",
+    );
+  });
+
   it("omits the query delimiter when no options are supplied", async () => {
     await attentionApi.list("company-1");
 
