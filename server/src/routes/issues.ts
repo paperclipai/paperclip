@@ -156,6 +156,10 @@ import {
   buildIssueBlockersResolvedWakeIdempotencyKey,
   findExistingIssueBlockersResolvedWake,
 } from "../services/issue-dependency-wakeups.js";
+import {
+  buildIssueChildrenCompletedWakeIdempotencyKey,
+  claimIssueChildrenCompletedWake,
+} from "../services/issue-children-completed-wakeup.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
 import { executionWorkspaceService as executionWorkspaceServiceDirect } from "../services/execution-workspaces.js";
 import { decisionTrainingService } from "../services/decision-training.js";
@@ -9060,30 +9064,51 @@ export function issueRoutes(
       if (becameTerminal && issue.parentId) {
         const parent = await svc.getWakeableParentAfterChildCompletion(issue.parentId);
         if (parent) {
-          addWakeup(parent.assigneeAgentId, {
-            source: "automation",
-            triggerDetail: "system",
-            reason: "issue_children_completed",
-            payload: {
-              issueId: parent.id,
-              completedChildIssueId: issue.id,
-              childIssueIds: parent.childIssueIds,
-              childIssueSummaries: parent.childIssueSummaries,
-              childIssueSummaryTruncated: parent.childIssueSummaryTruncated,
-            },
-            requestedByActorType: actor.actorType,
-            requestedByActorId: actor.actorId,
-            contextSnapshot: {
-              issueId: parent.id,
-              taskId: parent.id,
-              wakeReason: "issue_children_completed",
-              source: "issue.children_completed",
-              completedChildIssueId: issue.id,
-              childIssueIds: parent.childIssueIds,
-              childIssueSummaries: parent.childIssueSummaries,
-              childIssueSummaryTruncated: parent.childIssueSummaryTruncated,
-            },
+          const childrenCompletedIdempotencyKey = buildIssueChildrenCompletedWakeIdempotencyKey({
+            parentIssueId: parent.id,
+            completedChildIssueId: issue.id,
+            childIssueIds: parent.childIssueIds,
           });
+          try {
+            await claimIssueChildrenCompletedWake(
+              db,
+              { companyId: issue.companyId, idempotencyKey: childrenCompletedIdempotencyKey },
+              () =>
+                heartbeat.wakeup(parent.assigneeAgentId, {
+                  source: "automation",
+                  triggerDetail: "system",
+                  reason: "issue_children_completed",
+                  payload: {
+                    issueId: parent.id,
+                    completedChildIssueId: issue.id,
+                    childIssueIds: parent.childIssueIds,
+                    childIssueSummaries: parent.childIssueSummaries,
+                    childIssueSummaryTruncated: parent.childIssueSummaryTruncated,
+                  },
+                  idempotencyKey: childrenCompletedIdempotencyKey,
+                  requestedByActorType: actor.actorType,
+                  requestedByActorId: actor.actorId,
+                  contextSnapshot: {
+                    issueId: parent.id,
+                    taskId: parent.id,
+                    wakeReason: "issue_children_completed",
+                    source: "issue.children_completed",
+                    completedChildIssueId: issue.id,
+                    childIssueIds: parent.childIssueIds,
+                    childIssueSummaries: parent.childIssueSummaries,
+                    childIssueSummaryTruncated: parent.childIssueSummaryTruncated,
+                  },
+                }),
+            );
+          } catch (err) {
+            // Fail closed: if the atomic claim itself faults, skip the wake rather than
+            // risk duplicate emission (see claimIssueChildrenCompletedWake for why a
+            // failed check must not be treated as "no existing wake").
+            logger.warn(
+              { err, issueId: parent.id, idempotencyKey: childrenCompletedIdempotencyKey },
+              "failed to atomically claim children-completed wake on issue update; skipping to avoid duplicate emission",
+            );
+          }
         }
       }
 
@@ -10663,30 +10688,51 @@ export function issueRoutes(
       if (becameTerminal && currentIssue.parentId) {
         const parent = await svc.getWakeableParentAfterChildCompletion(currentIssue.parentId);
         if (parent) {
-          addWakeup(parent.assigneeAgentId, {
-            source: "automation",
-            triggerDetail: "system",
-            reason: "issue_children_completed",
-            payload: {
-              issueId: parent.id,
-              completedChildIssueId: currentIssue.id,
-              childIssueIds: parent.childIssueIds,
-              childIssueSummaries: parent.childIssueSummaries,
-              childIssueSummaryTruncated: parent.childIssueSummaryTruncated,
-            },
-            requestedByActorType: actor.actorType,
-            requestedByActorId: actor.actorId,
-            contextSnapshot: {
-              issueId: parent.id,
-              taskId: parent.id,
-              wakeReason: "issue_children_completed",
-              source: "issue.children_completed",
-              completedChildIssueId: currentIssue.id,
-              childIssueIds: parent.childIssueIds,
-              childIssueSummaries: parent.childIssueSummaries,
-              childIssueSummaryTruncated: parent.childIssueSummaryTruncated,
-            },
+          const childrenCompletedIdempotencyKey = buildIssueChildrenCompletedWakeIdempotencyKey({
+            parentIssueId: parent.id,
+            completedChildIssueId: currentIssue.id,
+            childIssueIds: parent.childIssueIds,
           });
+          try {
+            await claimIssueChildrenCompletedWake(
+              db,
+              { companyId: currentIssue.companyId, idempotencyKey: childrenCompletedIdempotencyKey },
+              () =>
+                heartbeat.wakeup(parent.assigneeAgentId, {
+                  source: "automation",
+                  triggerDetail: "system",
+                  reason: "issue_children_completed",
+                  payload: {
+                    issueId: parent.id,
+                    completedChildIssueId: currentIssue.id,
+                    childIssueIds: parent.childIssueIds,
+                    childIssueSummaries: parent.childIssueSummaries,
+                    childIssueSummaryTruncated: parent.childIssueSummaryTruncated,
+                  },
+                  idempotencyKey: childrenCompletedIdempotencyKey,
+                  requestedByActorType: actor.actorType,
+                  requestedByActorId: actor.actorId,
+                  contextSnapshot: {
+                    issueId: parent.id,
+                    taskId: parent.id,
+                    wakeReason: "issue_children_completed",
+                    source: "issue.children_completed",
+                    completedChildIssueId: currentIssue.id,
+                    childIssueIds: parent.childIssueIds,
+                    childIssueSummaries: parent.childIssueSummaries,
+                    childIssueSummaryTruncated: parent.childIssueSummaryTruncated,
+                  },
+                }),
+            );
+          } catch (err) {
+            // Fail closed: if the atomic claim itself faults, skip the wake rather than
+            // risk duplicate emission (see claimIssueChildrenCompletedWake for why a
+            // failed check must not be treated as "no existing wake").
+            logger.warn(
+              { err, issueId: parent.id, idempotencyKey: childrenCompletedIdempotencyKey },
+              "failed to atomically claim children-completed wake on issue comment; skipping to avoid duplicate emission",
+            );
+          }
         }
       }
 

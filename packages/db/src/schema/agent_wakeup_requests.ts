@@ -1,4 +1,5 @@
-import { pgTable, uuid, text, timestamp, jsonb, integer, index } from "drizzle-orm/pg-core";
+import { pgTable, uuid, text, timestamp, jsonb, integer, index, uniqueIndex } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import { companies } from "./companies.js";
 import { agents } from "./agents.js";
 
@@ -36,5 +37,14 @@ export const agentWakeupRequests = pgTable(
       table.requestedAt,
     ),
     agentRequestedIdx: index("agent_wakeup_requests_agent_requested_idx").on(table.agentId, table.requestedAt),
+    // Backstops the advisory-lock-guarded claim in claimIssueChildrenCompletedWake():
+    // the lock makes the check-then-enqueue atomic under normal operation, and this
+    // partial unique index turns any lock-bypass window into a hard DB conflict
+    // instead of a silently duplicated wake.
+    childrenCompletedIdempotencyKeyUq: uniqueIndex("agent_wakeup_requests_children_completed_key_uq")
+      .on(table.companyId, table.idempotencyKey)
+      .where(
+        sql`${table.reason} = 'issue_children_completed' and ${table.idempotencyKey} is not null and ${table.status} in ('queued', 'deferred_issue_execution', 'claimed', 'completed')`,
+      ),
   }),
 );
