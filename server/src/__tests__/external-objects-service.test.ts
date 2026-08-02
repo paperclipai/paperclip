@@ -465,6 +465,117 @@ describe("GitHub external object provider", () => {
     });
   });
 
+  it("does not report approval when the approver later requests changes", async () => {
+    const fetch = vi.fn(async (url: string) => {
+      if (url === "https://api.github.com/graphql") {
+        return response({
+          data: {
+            repository: {
+              pullRequest: {
+                latestOpinionatedReviews: {
+                  nodes: [{ author: { login: "WrightBot" }, state: "CHANGES_REQUESTED" }],
+                },
+              },
+            },
+          },
+        });
+      }
+      if (url.includes("/reviews?per_page=100")) {
+        return response([
+          { commit_id: "head-sha-2", state: "APPROVED", user: { login: "WrightBot" } },
+        ]);
+      }
+      return response({
+        state: "open",
+        draft: false,
+        merged: false,
+        title: "Ship it",
+        head: { ref: "main", sha: "head-sha-2" },
+      });
+    });
+    const provider = createGitHubExternalObjectProvider({} as any, { fetch, tokenProvider: null });
+    const resolver = provider.resolvers.find((entry) => entry.objectType === "pull_request")!;
+
+    const result = await resolver.resolve({
+      companyId: "company-1",
+      object: githubObject("pull/42", "pull_request"),
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      snapshot: expect.objectContaining({
+        data: expect.not.objectContaining({ reviewDecision: expect.any(String) }),
+      }),
+    });
+  });
+
+  it("follows REST and GraphQL pagination when resolving an approval", async () => {
+    const fetch = vi.fn(async (url: string, init?: RequestInit) => {
+      if (url === "https://api.github.com/graphql") {
+        const variables = JSON.parse(String(init?.body)).variables;
+        return variables.after
+          ? response({
+            data: {
+              repository: {
+                pullRequest: {
+                  latestOpinionatedReviews: {
+                    nodes: [{ author: { login: "WrightBot" }, state: "APPROVED" }],
+                    pageInfo: { hasNextPage: false, endCursor: null },
+                  },
+                },
+              },
+            },
+          })
+          : response({
+            data: {
+              repository: {
+                pullRequest: {
+                  latestOpinionatedReviews: {
+                    nodes: [],
+                    pageInfo: { hasNextPage: true, endCursor: "cursor-1" },
+                  },
+                },
+              },
+            },
+          });
+      }
+      if (url.endsWith("reviews?per_page=100")) {
+        return response([], {
+          headers: {
+            link: '<https://api.github.com/repos/acme/app/pulls/42/reviews?per_page=100&page=2>; rel="next"',
+          },
+        });
+      }
+      if (url.endsWith("reviews?per_page=100&page=2")) {
+        return response([
+          { commit_id: "head-sha-paged", state: "APPROVED", user: { login: "WrightBot" } },
+        ]);
+      }
+      return response({
+        state: "open",
+        draft: false,
+        merged: false,
+        title: "Ship it",
+        head: { ref: "main", sha: "head-sha-paged" },
+      });
+    });
+    const provider = createGitHubExternalObjectProvider({} as any, { fetch, tokenProvider: null });
+    const resolver = provider.resolvers.find((entry) => entry.objectType === "pull_request")!;
+
+    const result = await resolver.resolve({
+      companyId: "company-1",
+      object: githubObject("pull/42", "pull_request"),
+    });
+
+    expect(result).toEqual({
+      ok: true,
+      snapshot: expect.objectContaining({
+        data: expect.objectContaining({ reviewDecision: "APPROVED" }),
+      }),
+    });
+    expect(fetch).toHaveBeenCalledTimes(5);
+  });
+
   it("does not query pull request reviews for merged pull requests", async () => {
     const fetch = vi.fn(async () =>
       response({

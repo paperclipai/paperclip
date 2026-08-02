@@ -312,6 +312,21 @@ async function safeJson(response: Response) {
 
 type OpinionatedReviewMap = Map<string, string>;
 
+function graphQlUrlFor(apiBaseUrl: string) {
+  return apiBaseUrl.endsWith("/api/v3")
+    ? `${apiBaseUrl.slice(0, -"/api/v3".length)}/api/graphql`
+    : `${apiBaseUrl}/graphql`;
+}
+
+function parseNextPageUrl(linkHeader: string | null) {
+  if (!linkHeader) return null;
+  for (const link of linkHeader.split(",")) {
+    const match = /^\s*<([^>]+)>;\s*rel="([^"]+)"\s*$/.exec(link);
+    if (match?.[2] === "next") return match[1] ?? null;
+  }
+  return null;
+}
+
 async function fetchLatestOpinionatedReviews(
   fetchImpl: FetchLike,
   baseUrl: string,
@@ -321,15 +336,19 @@ async function fetchLatestOpinionatedReviews(
   number: number,
 ): Promise<OpinionatedReviewMap | null> {
   const query = `
-    query($owner: String!, $repo: String!, $number: Int!) {
+    query($owner: String!, $repo: String!, $number: Int!, $after: String) {
       repository(owner: $owner, name: $repo) {
         pullRequest(number: $number) {
-          latestOpinionatedReviews(first: 10) {
+          latestOpinionatedReviews(first: 100, after: $after) {
             nodes {
               author {
                 login
               }
               state
+            }
+            pageInfo {
+              hasNextPage
+              endCursor
             }
           }
         }
@@ -337,37 +356,46 @@ async function fetchLatestOpinionatedReviews(
     }
   `;
 
-  let response: Response;
-  try {
-    response = await fetchImpl(`${baseUrl}/graphql`, {
-      method: "POST",
-      headers: { ...headers, "content-type": "application/json" },
-      body: JSON.stringify({ query, variables: { owner, repo, number } }),
-    });
-  } catch {
-    return null;
-  }
-
-  if (!response.ok) return null;
-
-  const body = await safeJson(response);
-  if (!body) return null;
-  const data = asRecord(body.data);
-  const repository = asRecord(data?.repository);
-  const pullRequest = asRecord(repository?.pullRequest);
-  const latestOpinionatedReviews = asRecord(pullRequest?.latestOpinionatedReviews);
-  const nodes = asArray(latestOpinionatedReviews?.nodes);
-  if (!nodes) return new Map();
-
   const reviewStates = new Map<string, string>();
-  for (const node of nodes) {
-    const review = asRecord(node);
-    if (!review) continue;
-    const authorLogin = asNestedString(review, "author", "login");
-    const state = asString(review.state);
-    if (!authorLogin || !state || reviewStates.has(authorLogin)) continue;
-    reviewStates.set(authorLogin, state);
-  }
+  let after: string | null = null;
+
+  do {
+    let response: Response;
+    try {
+      response = await fetchImpl(graphQlUrlFor(baseUrl), {
+        method: "POST",
+        headers: { ...headers, "content-type": "application/json" },
+        body: JSON.stringify({ query, variables: { owner, repo, number, after } }),
+      });
+    } catch {
+      return null;
+    }
+
+    if (!response.ok) return null;
+
+    const body = await safeJson(response);
+    if (!body) return null;
+    const data = asRecord(body.data);
+    const repository = asRecord(data?.repository);
+    const pullRequest = asRecord(repository?.pullRequest);
+    const latestOpinionatedReviews = asRecord(pullRequest?.latestOpinionatedReviews);
+    const nodes = asArray(latestOpinionatedReviews?.nodes);
+    if (!nodes) return reviewStates;
+
+    for (const node of nodes) {
+      const review = asRecord(node);
+      if (!review) continue;
+      const authorLogin = asNestedString(review, "author", "login");
+      const state = asString(review.state);
+      if (!authorLogin || !state) continue;
+      reviewStates.set(authorLogin, state);
+    }
+
+    const pageInfo = asRecord(latestOpinionatedReviews?.pageInfo);
+    const hasNextPage = asBoolean(pageInfo?.hasNextPage) ?? false;
+    after = hasNextPage ? asString(pageInfo?.endCursor) : null;
+    if (hasNextPage && !after) return null;
+  } while (after);
 
   return reviewStates;
 }
@@ -379,38 +407,42 @@ async function hasApprovalAtHead(
   identity: GitHubObjectIdentity,
   headSha: string,
 ): Promise<boolean> {
-  const reviewsUrl = `${baseUrl}/repos/${encodeURIComponent(identity.owner)}/${encodeURIComponent(identity.repo)}/pulls/${
+  let reviewsUrl: string | null = `${baseUrl}/repos/${encodeURIComponent(identity.owner)}/${encodeURIComponent(identity.repo)}/pulls/${
     identity.number
   }/reviews?per_page=100`;
-  let reviewsResponse: Response;
-  try {
-    reviewsResponse = await fetchImpl(reviewsUrl, { headers });
-  } catch {
-    return false;
-  }
-
-  if (!reviewsResponse.ok) return false;
-  const reviewFailure = failureFromGitHubResponse(reviewsResponse);
-  if (reviewFailure) return false;
-
-  let reviewsJson: unknown;
-  try {
-    reviewsJson = await reviewsResponse.json();
-  } catch {
-    return false;
-  }
-  if (!reviewsJson) return false;
-  const reviews = asArray(reviewsJson);
-  if (!reviews) return false;
-
   const approverLogins = new Set<string>();
-  for (const review of reviews) {
-    const reviewRecord = asRecord(review);
-    if (!reviewRecord) continue;
-    if (asString(reviewRecord.commit_id) !== headSha) continue;
-    if (asString(reviewRecord.state) !== "APPROVED") continue;
-    const login = asNestedString(reviewRecord, "user", "login");
-    if (login) approverLogins.add(login);
+
+  while (reviewsUrl) {
+    let reviewsResponse: Response;
+    try {
+      reviewsResponse = await fetchImpl(reviewsUrl, { headers });
+    } catch {
+      return false;
+    }
+
+    if (!reviewsResponse.ok) return false;
+    const reviewFailure = failureFromGitHubResponse(reviewsResponse);
+    if (reviewFailure) return false;
+
+    let reviewsJson: unknown;
+    try {
+      reviewsJson = await reviewsResponse.json();
+    } catch {
+      return false;
+    }
+    const reviews = asArray(reviewsJson);
+    if (!reviews) return false;
+
+    for (const review of reviews) {
+      const reviewRecord = asRecord(review);
+      if (!reviewRecord) continue;
+      if (asString(reviewRecord.commit_id) !== headSha) continue;
+      if (asString(reviewRecord.state) !== "APPROVED") continue;
+      const login = asNestedString(reviewRecord, "user", "login");
+      if (login) approverLogins.add(login);
+    }
+
+    reviewsUrl = parseNextPageUrl(reviewsResponse.headers.get("link"));
   }
 
   if (approverLogins.size === 0) return false;
@@ -427,7 +459,7 @@ async function hasApprovalAtHead(
 
   for (const login of approverLogins) {
     const latestState = latestOpinionatedReviews.get(login);
-    if (latestState && latestState !== "DISMISSED") return true;
+    if (latestState === "APPROVED") return true;
   }
 
   return false;
