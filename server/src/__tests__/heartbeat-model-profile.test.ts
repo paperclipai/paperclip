@@ -182,6 +182,46 @@ describe("heartbeat model profile application", () => {
     );
   });
 
+  it("dispatches a status-only recovery hint on the base config when the adapter has no profiles", () => {
+    const modelProfile = resolveModelProfileApplication({
+      adapterModelProfiles: [],
+      agentRuntimeConfig: {},
+      issueModelProfile: null,
+      contextSnapshot: { modelProfile: "cheap", recoveryIntent: "status_only" },
+    });
+
+    expect(modelProfile).toMatchObject({
+      requested: "cheap",
+      requestedBy: "wake_context",
+      applied: null,
+      fallbackReason: "adapter_profile_not_supported",
+      bestEffortRecoveryHint: true,
+    });
+    // A best-effort recovery hint degrades to the base adapter config instead of
+    // failing the run closed; the missing-comment retry must still dispatch.
+    expect(() => assertRequestedModelProfileApplied(modelProfile)).not.toThrow();
+  });
+
+  it("keeps an explicit wake-context request fail-closed even when the adapter has no profiles", () => {
+    const modelProfile = resolveModelProfileApplication({
+      adapterModelProfiles: [],
+      agentRuntimeConfig: {},
+      issueModelProfile: null,
+      contextSnapshot: { modelProfile: "cheap" },
+    });
+
+    expect(modelProfile).toMatchObject({
+      requested: "cheap",
+      requestedBy: "wake_context",
+      applied: null,
+      fallbackReason: "adapter_profile_not_supported",
+      bestEffortRecoveryHint: false,
+    });
+    expect(() => assertRequestedModelProfileApplied(modelProfile)).toThrow(
+      /refusing to fall back to the primary adapter configuration/,
+    );
+  });
+
   it("normalizes a wake payload model profile into run context", () => {
     const contextSnapshot = normalizeModelProfileWakeContext({
       contextSnapshot: {},

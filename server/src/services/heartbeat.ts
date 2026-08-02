@@ -212,6 +212,7 @@ import {
 import { isAutomaticRecoverySuppressedByPauseHold } from "./recovery/pause-hold-guard.js";
 import {
   recoveryAssigneeAdapterOverrides,
+  STATUS_ONLY_RECOVERY_GUARD_CONTEXT,
   withRecoveryModelProfileHint,
 } from "./recovery/model-profile-hint.js";
 import { recoveryService } from "./recovery/service.js";
@@ -2291,6 +2292,13 @@ export interface ModelProfileApplication {
   configSource: AppliedModelProfileConfigSource | null;
   fallbackReason: string | null;
   adapterConfig: Record<string, unknown> | null;
+  /**
+   * True when the requested profile is a best-effort status-only recovery hint
+   * (see {@link withRecoveryModelProfileHint}) rather than an explicit issue/user
+   * request. Such hints degrade gracefully to the base adapter config when the
+   * adapter cannot provide the profile, instead of failing the run closed.
+   */
+  bestEffortRecoveryHint: boolean;
 }
 
 export function assertRequestedModelProfileApplied(
@@ -2299,6 +2307,17 @@ export function assertRequestedModelProfileApplied(
   if (!modelProfile.requested || modelProfile.applied) return;
 
   const fallbackReason = modelProfile.fallbackReason ?? "requested_model_profile_unavailable";
+  // A best-effort status-only recovery hint (the cheap-model preference attached
+  // by withRecoveryModelProfileHint) must still dispatch on the base adapter
+  // config when the adapter simply cannot provide the profile. It only fails
+  // closed when the operator explicitly disabled the profile, preserving the
+  // fail-closed guarantee for explicit issue/user requests.
+  if (
+    modelProfile.bestEffortRecoveryHint &&
+    fallbackReason !== "agent_runtime_profile_disabled"
+  ) {
+    return;
+  }
   const metadata = modelProfileRunMetadata(modelProfile);
   throw new ConfigurationIncompleteFailure(
     `configuration incomplete: requested model profile "${modelProfile.requested}" could not be applied ` +
@@ -3232,6 +3251,13 @@ export function resolveModelProfileApplication(input: {
     : contextModelProfile
       ? "wake_context"
       : null;
+  // A cheap-model preference attached by a status-only recovery run is a
+  // best-effort hint, not an explicit request. An explicit issue override always
+  // wins over the context hint, so only a wake-context request can be soft.
+  const bestEffortRecoveryHint =
+    requestedBy === "wake_context" &&
+    parseObject(input.contextSnapshot).recoveryIntent ===
+      STATUS_ONLY_RECOVERY_GUARD_CONTEXT.recoveryIntent;
 
   if (!requested) {
     return {
@@ -3241,6 +3267,7 @@ export function resolveModelProfileApplication(input: {
       configSource: null,
       fallbackReason: null,
       adapterConfig: null,
+      bestEffortRecoveryHint: false,
     };
   }
 
@@ -3253,6 +3280,7 @@ export function resolveModelProfileApplication(input: {
       configSource: null,
       fallbackReason: input.profileResolutionFallbackReason ?? "adapter_profile_not_supported",
       adapterConfig: null,
+      bestEffortRecoveryHint,
     };
   }
 
@@ -3265,6 +3293,7 @@ export function resolveModelProfileApplication(input: {
       configSource: null,
       fallbackReason: "agent_runtime_profile_disabled",
       adapterConfig: null,
+      bestEffortRecoveryHint,
     };
   }
 
@@ -3278,6 +3307,7 @@ export function resolveModelProfileApplication(input: {
       ...parseObject(adapterProfile.adapterConfig),
       ...runtimeProfile.adapterConfig,
     },
+    bestEffortRecoveryHint,
   };
 }
 
