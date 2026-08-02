@@ -1274,6 +1274,55 @@ async function readBridgeForwardResponseBody(response: Response, maxBodyBytes: n
 const PROCESS_SESSION_PROXY_SCRIPT = "paperclip-process-session-proxy.mjs";
 const PROCESS_SESSION_REMOTE_SCRIPT = "paperclip-process-session-remote.mjs";
 const PROCESS_SESSION_AUTH_TIMEOUT_MS = 5_000;
+const PROCESS_SESSION_STOP_NATURAL_GRACE_STEPS = 10;
+const PROCESS_SESSION_STOP_TERM_GRACE_STEPS = 40;
+const PROCESS_SESSION_STOP_KILL_GRACE_STEPS = 40;
+const PROCESS_SESSION_STOP_MAX_ATTEMPTS = 2;
+
+type RemoteProcessSessionState = {
+  version: 1;
+  sessionId: string;
+  bridgePid: number;
+  childPid: number | null;
+  childProcessGroupId: number | null;
+};
+
+function parseRemoteProcessSessionState(raw: string, expectedSessionId: string): RemoteProcessSessionState {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw.trim());
+  } catch (error) {
+    throw new Error(
+      `Sandbox ACP process session bridge wrote invalid state JSON: ${error instanceof Error ? error.message : String(error)}`,
+    );
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+    throw new Error("Sandbox ACP process session bridge wrote an invalid state payload.");
+  }
+  const state = parsed as Record<string, unknown>;
+  const bridgePid = typeof state.bridgePid === "number" && Number.isInteger(state.bridgePid) && state.bridgePid > 0
+    ? state.bridgePid
+    : null;
+  const childPid = typeof state.childPid === "number" && Number.isInteger(state.childPid) && state.childPid > 0
+    ? state.childPid
+    : null;
+  const childProcessGroupId =
+    typeof state.childProcessGroupId === "number"
+      && Number.isInteger(state.childProcessGroupId)
+      && state.childProcessGroupId > 0
+      ? state.childProcessGroupId
+      : null;
+  if (state.version !== 1 || state.sessionId !== expectedSessionId || bridgePid === null) {
+    throw new Error("Sandbox ACP process session bridge state did not match the launched session.");
+  }
+  return {
+    version: 1,
+    sessionId: expectedSessionId,
+    bridgePid,
+    childPid,
+    childProcessGroupId,
+  };
+}
 
 function jsonLine(value: unknown): string {
   return `${JSON.stringify(value)}\n`;
@@ -1387,6 +1436,7 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
   const sessionDir = path.posix.join(bridgeRuntimeDir, sessionId);
   const stdinDir = path.posix.join(sessionDir, "stdin");
   const eventsDir = path.posix.join(sessionDir, "events");
+  const stateFile = path.posix.join(sessionDir, "process-state.json");
   const remoteScriptPath = path.posix.join(bridgeRuntimeDir, PROCESS_SESSION_REMOTE_SCRIPT);
   const client = createCommandManagedSandboxCallbackBridgeQueueClient({
     runner,
@@ -1394,6 +1444,107 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
     timeoutMs,
     shellCommand,
   });
+  const cleanupTimeoutMs = Math.max(10_000, Math.min(timeoutMs ?? 15_000, 30_000));
+  const rollbackRemoteLaunch = async () => {
+    const sessionEnvMarker = `PAPERCLIP_PROCESS_SESSION_ID=${sessionId}`;
+    const rollbackResult = await runner.execute({
+      command: shellCommand,
+      args: shellCommandArgs(
+        [
+          `session_env_marker=${shellQuote(sessionEnvMarker)}`,
+          "pid_is_zombie() {",
+          "  pid=\"$1\"",
+          "  [ -r \"/proc/$pid/stat\" ] || return 1",
+          "  stat_line=$(cat \"/proc/$pid/stat\" 2>/dev/null) || return 1",
+          "  stat_tail=${stat_line##*) }",
+          "  set -- $stat_tail",
+          "  [ \"${1:-}\" = \"Z\" ]",
+          "}",
+          "pid_group() {",
+          "  pid=\"$1\"",
+          "  [ -r \"/proc/$pid/stat\" ] || return 1",
+          "  stat_line=$(cat \"/proc/$pid/stat\" 2>/dev/null) || return 1",
+          "  stat_tail=${stat_line##*) }",
+          "  set -- $stat_tail",
+          "  printf '%s\\n' \"${3:-0}\"",
+          "}",
+          "pid_has_session_marker() {",
+          "  pid=\"$1\"",
+          "  [ -r \"/proc/$pid/environ\" ] || return 1",
+          "  tr '\\000' '\\n' < \"/proc/$pid/environ\" | grep -Fqx \"$session_env_marker\"",
+          "}",
+          "session_processes_alive() {",
+          "  for environ_path in /proc/[0-9]*/environ; do",
+          "    [ -r \"$environ_path\" ] || continue",
+          "    pid=${environ_path#/proc/}",
+          "    pid=${pid%/environ}",
+          "    if pid_has_session_marker \"$pid\" && ! pid_is_zombie \"$pid\"; then return 0; fi",
+          "  done",
+          "  return 1",
+          "}",
+          "signal_session_processes() {",
+          "  signal=\"$1\"",
+          "  for environ_path in /proc/[0-9]*/environ; do",
+          "    [ -r \"$environ_path\" ] || continue",
+          "    pid=${environ_path#/proc/}",
+          "    pid=${pid%/environ}",
+          "    pid_has_session_marker \"$pid\" || continue",
+          "    group_id=$(pid_group \"$pid\" 2>/dev/null || printf '0\\n')",
+          "    if [ \"$group_id\" = \"$pid\" ]; then",
+          "      kill \"-$signal\" -- \"-$group_id\" 2>/dev/null || true",
+          "    else",
+          "      kill \"-$signal\" \"$pid\" 2>/dev/null || true",
+          "    fi",
+          "  done",
+          "}",
+          "wait_for_session_exit() {",
+          "  limit=\"$1\"",
+          "  i=0",
+          "  while session_processes_alive && [ \"$i\" -lt \"$limit\" ]; do",
+          "    i=$((i + 1))",
+          "    sleep 0.05",
+          "  done",
+          "  ! session_processes_alive",
+          "}",
+          "if [ ! -d /proc ]; then",
+          "  echo \"Cannot verify sandbox ACP process identities without /proc.\" >&2",
+          "  exit 1",
+          "fi",
+          "signal_session_processes TERM",
+          `if ! wait_for_session_exit ${PROCESS_SESSION_STOP_TERM_GRACE_STEPS}; then`,
+          "  signal_session_processes KILL",
+          `  wait_for_session_exit ${PROCESS_SESSION_STOP_KILL_GRACE_STEPS} || true`,
+          "fi",
+          "if session_processes_alive; then",
+          "  echo \"Sandbox ACP process session remained alive after launch rollback.\" >&2",
+          "  exit 1",
+          "fi",
+        ].join("\n"),
+      ),
+      cwd: target.remoteCwd,
+      env: {
+        PAPERCLIP_SANDBOX_EXEC_CHANNEL: "bridge",
+      },
+      timeoutMs: cleanupTimeoutMs,
+    });
+    if (rollbackResult.timedOut || (rollbackResult.exitCode ?? 1) !== 0) {
+      throw new Error(
+        `Failed to roll back sandbox ACP process session launch: ${rollbackResult.stderr || rollbackResult.stdout || "remote cleanup failed"}`,
+      );
+    }
+    await client.remove(sessionDir).catch(() => undefined);
+  };
+  const throwAfterLaunchRollback = async (launchError: unknown): Promise<never> => {
+    try {
+      await rollbackRemoteLaunch();
+    } catch (rollbackError) {
+      throw new AggregateError(
+        [launchError, rollbackError],
+        "Sandbox ACP process session launch failed and its remote rollback could not be confirmed.",
+      );
+    }
+    throw launchError;
+  };
 
   // The launch exec below re-creates stdinDir and eventsDir with one `mkdir -p`,
   // and the remote script also creates them on start. No reader touches the two
@@ -1419,29 +1570,59 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
   }), "utf8").toString("base64");
 
   await onLog("stdout", `[paperclip] Starting ACP process session bridge in sandbox (${target.providerKey ?? "provider"}).\n`);
-  const startResult = await runner.execute({
-    command: shellCommand,
-    args: shellCommandArgs(
-      [
-        `mkdir -p ${shellQuote(stdinDir)} ${shellQuote(eventsDir)}`,
-        `PAPERCLIP_PROCESS_SESSION_DIR=${shellQuote(sessionDir)} ` +
-          `PAPERCLIP_PROCESS_SESSION_COMMAND_B64=${shellQuote(commandPayload)} ` +
-          `nohup node ${shellQuote(remoteScriptPath)} >/dev/null 2>&1 < /dev/null &`,
-        "printf '%s\\n' \"$!\"",
-      ].join("\n"),
-    ),
-    cwd: target.remoteCwd,
-    env: {
-      PAPERCLIP_SANDBOX_EXEC_CHANNEL: "bridge",
-    },
-    timeoutMs,
-  });
+  let startResult: RunProcessResult;
+  try {
+    startResult = await runner.execute({
+      command: shellCommand,
+      args: shellCommandArgs(
+        [
+          `mkdir -p ${shellQuote(stdinDir)} ${shellQuote(eventsDir)}`,
+          `rm -f ${shellQuote(stateFile)}`,
+          `PAPERCLIP_PROCESS_SESSION_DIR=${shellQuote(sessionDir)} ` +
+            `PAPERCLIP_PROCESS_SESSION_ID=${shellQuote(sessionId)} ` +
+            `PAPERCLIP_PROCESS_SESSION_COMMAND_B64=${shellQuote(commandPayload)} ` +
+            `nohup node ${shellQuote(remoteScriptPath)} >/dev/null 2>&1 < /dev/null &`,
+          "bridge_pid=$!",
+          "i=0",
+          `while [ "$i" -lt 100 ] && [ ! -s ${shellQuote(stateFile)} ]; do`,
+          "  if ! kill -0 \"$bridge_pid\" 2>/dev/null; then",
+          "    echo \"Sandbox ACP process session bridge exited before writing process state.\" >&2",
+          "    exit 1",
+          "  fi",
+          "  i=$((i + 1))",
+          "  sleep 0.05",
+          "done",
+          `if [ ! -s ${shellQuote(stateFile)} ]; then`,
+          "  echo \"Timed out waiting for sandbox ACP process session bridge state.\" >&2",
+          "  exit 1",
+          "fi",
+          `cat ${shellQuote(stateFile)}`,
+        ].join("\n"),
+      ),
+      cwd: target.remoteCwd,
+      env: {
+        PAPERCLIP_SANDBOX_EXEC_CHANNEL: "bridge",
+      },
+      timeoutMs,
+    });
+  } catch (error) {
+    return await throwAfterLaunchRollback(error);
+  }
   if (startResult.timedOut || (startResult.exitCode ?? 1) !== 0) {
-    throw new Error(`Failed to start sandbox ACP process session bridge: ${startResult.stderr || startResult.stdout}`);
+    return await throwAfterLaunchRollback(
+      new Error(`Failed to start sandbox ACP process session bridge: ${startResult.stderr || startResult.stdout}`),
+    );
+  }
+  let remoteState: RemoteProcessSessionState;
+  try {
+    remoteState = parseRemoteProcessSessionState(startResult.stdout, sessionId);
+  } catch (error) {
+    return await throwAfterLaunchRollback(error);
   }
 
   let socket: net.Socket | null = null;
   let stopping = false;
+  let stopPromise: Promise<void> | null = null;
   let stdinSeq = 0;
   let pollTimer: NodeJS.Timeout | null = null;
   const pendingRemoteEvents: Array<{
@@ -1453,7 +1634,12 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
     message?: string;
   }> = [];
   const token = createSandboxCallbackBridgeToken(18);
-  const proxyDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-process-session-proxy-"));
+  let proxyDir: string;
+  try {
+    proxyDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-process-session-proxy-"));
+  } catch (error) {
+    return await throwAfterLaunchRollback(error);
+  }
 
   const writeRemoteEventToSocket = (event: (typeof pendingRemoteEvents)[number]) => {
     if (!socket) return false;
@@ -1578,24 +1764,231 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
     }
   };
 
-  const port = await waitForLocalServerListen(server);
-  const agentCommand = await writeProcessSessionProxyScript(proxyDir, port, token);
+  let agentCommand: string;
+  try {
+    const port = await waitForLocalServerListen(server);
+    agentCommand = await writeProcessSessionProxyScript(proxyDir, port, token);
+  } catch (error) {
+    stopping = true;
+    for (const liveSocket of liveSockets) liveSocket.destroy();
+    await new Promise<void>((resolve) => server.close(() => resolve())).catch(() => undefined);
+    await fs.rm(proxyDir, { recursive: true, force: true }).catch(() => undefined);
+    return await throwAfterLaunchRollback(error);
+  }
   pollTimer = setTimeout(() => void poll(), 100);
   pollTimer.unref?.();
+
+  const stopRemoteSession = async () => {
+    stopping = true;
+    if (pollTimer) clearTimeout(pollTimer);
+    pollTimer = null;
+    for (const liveSocket of liveSockets) liveSocket.destroy();
+    await new Promise<void>((resolve) => server.close(() => resolve())).catch(() => undefined);
+
+    stdinSeq += 1;
+    await client.writeTextFile(
+      path.posix.join(stdinDir, `${String(stdinSeq).padStart(12, "0")}.json`),
+      jsonLine({ type: "stdinEnd" }),
+    ).catch(() => undefined);
+
+    const bridgePid = String(remoteState.bridgePid);
+    const childPid = String(remoteState.childPid ?? 0);
+    const childProcessGroupId = String(remoteState.childProcessGroupId ?? 0);
+    const sessionEnvMarker = `PAPERCLIP_PROCESS_SESSION_ID=${sessionId}`;
+    const stopTimeoutMs = Math.max(10_000, Math.min(timeoutMs ?? 15_000, 30_000));
+    let remoteStopped = false;
+    try {
+      const stopResult = await runner.execute({
+        command: shellCommand,
+        args: shellCommandArgs(
+          [
+            `bridge_pid=${shellQuote(bridgePid)}`,
+            `child_pid=${shellQuote(childPid)}`,
+            `child_group_id=${shellQuote(childProcessGroupId)}`,
+            `session_env_marker=${shellQuote(sessionEnvMarker)}`,
+            "pid_exists() {",
+            "  [ \"$1\" -gt 0 ] 2>/dev/null || return 1",
+            "  if [ -d /proc ]; then [ -d \"/proc/$1\" ]; else kill -0 \"$1\" 2>/dev/null; fi",
+            "}",
+            "pid_is_zombie() {",
+            "  pid=\"$1\"",
+            "  [ -r \"/proc/$pid/stat\" ] || return 1",
+            "  stat_line=$(cat \"/proc/$pid/stat\" 2>/dev/null) || return 1",
+            "  stat_tail=${stat_line##*) }",
+            "  set -- $stat_tail",
+            "  [ \"${1:-}\" = \"Z\" ]",
+            "}",
+            "pid_active() { pid_exists \"$1\" && ! pid_is_zombie \"$1\"; }",
+            "pid_in_group() {",
+            "  pid=\"$1\"",
+            "  expected_group=\"$2\"",
+            "  [ -r \"/proc/$pid/stat\" ] || return 1",
+            "  stat_line=$(cat \"/proc/$pid/stat\" 2>/dev/null) || return 1",
+            "  stat_tail=${stat_line##*) }",
+            "  set -- $stat_tail",
+            "  [ \"${3:-}\" = \"$expected_group\" ]",
+            "}",
+            "group_has_active_members() {",
+            "  group_id=\"$1\"",
+            "  [ \"$group_id\" -gt 0 ] 2>/dev/null || return 1",
+            "  if [ -d /proc ]; then",
+            "    for stat_path in /proc/[0-9]*/stat; do",
+            "      [ -r \"$stat_path\" ] || continue",
+            "      candidate_pid=${stat_path#/proc/}",
+            "      candidate_pid=${candidate_pid%/stat}",
+            "      if pid_in_group \"$candidate_pid\" \"$group_id\" && ! pid_is_zombie \"$candidate_pid\"; then",
+            "        return 0",
+            "      fi",
+            "    done",
+            "    return 1",
+            "  fi",
+            "  kill -0 -- \"-$group_id\" 2>/dev/null",
+            "}",
+            "pid_has_session_marker() {",
+            "  pid=\"$1\"",
+            "  if [ -r \"/proc/$pid/environ\" ]; then",
+            "    tr '\\000' '\\n' < \"/proc/$pid/environ\" | grep -Fqx \"$session_env_marker\"",
+            "    return $?",
+            "  fi",
+            "  return 1",
+            "}",
+            "pid_matches_session() {",
+            "  pid=\"$1\"",
+            "  pid_active \"$pid\" || return 1",
+            "  if [ -d /proc ]; then pid_has_session_marker \"$pid\"; else return 1; fi",
+            "}",
+            "pid_identity_conflict() {",
+            "  pid=\"$1\"",
+            "  pid_active \"$pid\" && ! pid_matches_session \"$pid\" && pid_active \"$pid\"",
+            "}",
+            "group_matches_session() {",
+            "  group_id=\"$1\"",
+            "  group_has_active_members \"$group_id\" || return 1",
+            "  if pid_exists \"$child_pid\" && pid_is_zombie \"$child_pid\" && pid_in_group \"$child_pid\" \"$group_id\"; then",
+            "    return 0",
+            "  fi",
+            "  if [ -d /proc ]; then",
+            "    for stat_path in /proc/[0-9]*/stat; do",
+            "      [ -r \"$stat_path\" ] || continue",
+            "      candidate_pid=${stat_path#/proc/}",
+            "      candidate_pid=${candidate_pid%/stat}",
+            "      if pid_in_group \"$candidate_pid\" \"$group_id\" && pid_active \"$candidate_pid\" && pid_has_session_marker \"$candidate_pid\"; then",
+            "        return 0",
+            "      fi",
+            "    done",
+            "    return 1",
+            "  fi",
+            "  return 1",
+            "}",
+            "group_identity_conflict() {",
+            "  group_id=\"$1\"",
+            "  group_has_active_members \"$group_id\" && ! group_matches_session \"$group_id\" && group_has_active_members \"$group_id\"",
+            "}",
+            "bridge_alive() { pid_matches_session \"$bridge_pid\"; }",
+            "child_alive() {",
+            "  if [ \"$child_group_id\" -gt 0 ] 2>/dev/null; then",
+            "    group_matches_session \"$child_group_id\"",
+            "  else",
+            "    pid_matches_session \"$child_pid\"",
+            "  fi",
+            "}",
+            "session_alive() { bridge_alive || child_alive; }",
+            "session_identity_conflict() {",
+            "  pid_identity_conflict \"$bridge_pid\" && return 0",
+            "  if [ \"$child_group_id\" -gt 0 ] 2>/dev/null; then",
+            "    group_identity_conflict \"$child_group_id\"",
+            "  else",
+            "    pid_identity_conflict \"$child_pid\"",
+            "  fi",
+            "}",
+            "wait_for_exit() {",
+            "  limit=\"$1\"",
+            "  i=0",
+            "  while session_alive && [ \"$i\" -lt \"$limit\" ]; do",
+            "    i=$((i + 1))",
+            "    sleep 0.05",
+            "  done",
+            "  ! session_alive",
+            "}",
+            `if ! wait_for_exit ${PROCESS_SESSION_STOP_NATURAL_GRACE_STEPS}; then`,
+            "  if child_alive; then",
+            "    if [ \"$child_group_id\" -gt 0 ] 2>/dev/null; then",
+            "      kill -TERM -- \"-$child_group_id\" 2>/dev/null || true",
+            "    else",
+            "      kill -TERM \"$child_pid\" 2>/dev/null || true",
+            "    fi",
+            "  fi",
+            "  if bridge_alive; then kill -TERM \"$bridge_pid\" 2>/dev/null || true; fi",
+            `  if ! wait_for_exit ${PROCESS_SESSION_STOP_TERM_GRACE_STEPS}; then`,
+            "    if child_alive; then",
+            "      if [ \"$child_group_id\" -gt 0 ] 2>/dev/null; then",
+            "        kill -KILL -- \"-$child_group_id\" 2>/dev/null || true",
+            "      else",
+            "        kill -KILL \"$child_pid\" 2>/dev/null || true",
+            "      fi",
+            "    fi",
+            "    if bridge_alive; then kill -KILL \"$bridge_pid\" 2>/dev/null || true; fi",
+            `    wait_for_exit ${PROCESS_SESSION_STOP_KILL_GRACE_STEPS} || true`,
+            "  fi",
+            "fi",
+            "if session_alive; then",
+            "  echo \"Sandbox ACP process session bridge or child remained alive after SIGKILL.\" >&2",
+            "  exit 1",
+            "fi",
+            "if session_identity_conflict; then",
+            "  echo \"Refusing to signal a reused or unverifiable sandbox ACP process identity.\" >&2",
+            "  exit 1",
+            "fi",
+          ].join("\n"),
+        ),
+        cwd: target.remoteCwd,
+        env: {
+          PAPERCLIP_SANDBOX_EXEC_CHANNEL: "bridge",
+        },
+        timeoutMs: stopTimeoutMs,
+      });
+      if (stopResult.timedOut || (stopResult.exitCode ?? 1) !== 0) {
+        throw new Error(
+          `Failed to stop sandbox ACP process session bridge: ${stopResult.stderr || stopResult.stdout || "remote cleanup failed"}`,
+        );
+      }
+      remoteStopped = true;
+    } finally {
+      // The stdin marker directory is the remote bridge's control plane. Keep
+      // it intact unless the persisted bridge/child identities are confirmed
+      // dead, otherwise removing it strands pollStdin in a permanent empty loop.
+      if (remoteStopped) {
+        await client.remove(sessionDir).catch(() => undefined);
+      }
+      await fs.rm(proxyDir, { recursive: true, force: true }).catch(() => undefined);
+    }
+  };
 
   return {
     agentCommand,
     stop: async () => {
-      stopping = true;
-      if (pollTimer) clearTimeout(pollTimer);
-      for (const liveSocket of liveSockets) liveSocket.destroy();
-      await new Promise<void>((resolve) => server.close(() => resolve())).catch(() => undefined);
-      await client.writeTextFile(
-        path.posix.join(stdinDir, `${String(stdinSeq + 1).padStart(12, "0")}.json`),
-        jsonLine({ type: "stdinEnd" }),
-      ).catch(() => undefined);
-      await client.remove(sessionDir).catch(() => undefined);
-      await fs.rm(proxyDir, { recursive: true, force: true }).catch(() => undefined);
+      if (!stopPromise) {
+        stopPromise = (async () => {
+          let lastError: unknown;
+          for (let attempt = 1; attempt <= PROCESS_SESSION_STOP_MAX_ATTEMPTS; attempt += 1) {
+            try {
+              await stopRemoteSession();
+              return;
+            } catch (error) {
+              lastError = error;
+            }
+          }
+          throw lastError;
+        })();
+      }
+      try {
+        await stopPromise;
+      } catch (error) {
+        // A later teardown attempt must be able to retry a transient runner
+        // failure. The remote control directory remains intact on failure.
+        stopPromise = null;
+        throw error;
+      }
     },
   };
 }
@@ -1653,13 +2046,17 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 
 const sessionDir = process.env.PAPERCLIP_PROCESS_SESSION_DIR;
+const sessionId = process.env.PAPERCLIP_PROCESS_SESSION_ID;
 const commandPayload = process.env.PAPERCLIP_PROCESS_SESSION_COMMAND_B64;
-if (!sessionDir || !commandPayload) throw new Error("Missing process session bridge env.");
+if (!sessionDir || !sessionId || !commandPayload) throw new Error("Missing process session bridge env.");
 
 const stdinDir = path.posix.join(sessionDir, "stdin");
 const eventsDir = path.posix.join(sessionDir, "events");
+const stateFile = path.posix.join(sessionDir, "process-state.json");
 let seq = 0;
 let stdinClosed = false;
+let childClosed = false;
+let forceKillTimer = null;
 
 const config = JSON.parse(Buffer.from(commandPayload, "base64").toString("utf8"));
 await fs.mkdir(stdinDir, { recursive: true });
@@ -1680,19 +2077,66 @@ function writeEvent(event) {
 
 const child = spawn(config.command, Array.isArray(config.args) ? config.args : [], {
   cwd: config.cwd || process.cwd(),
-  env: { ...process.env, ...(config.env || {}) },
+  env: { ...process.env, ...(config.env || {}), PAPERCLIP_PROCESS_SESSION_ID: sessionId },
+  detached: process.platform !== "win32",
   stdio: ["pipe", "pipe", "pipe"],
 });
+const childPid = typeof child.pid === "number" ? child.pid : null;
+const childProcessGroupId = process.platform !== "win32" ? childPid : null;
+const stateWrite = fs
+  .writeFile(
+    stateFile + ".tmp",
+    JSON.stringify({
+      version: 1,
+      sessionId,
+      bridgePid: process.pid,
+      childPid,
+      childProcessGroupId,
+    }) + "\\n",
+    "utf8",
+  )
+  .then(() => fs.rename(stateFile + ".tmp", stateFile));
+
+function signalChildTree(signal) {
+  if (!childPid || childClosed) return;
+  try {
+    process.kill(childProcessGroupId ? -childProcessGroupId : childPid, signal);
+  } catch {
+    // Child/process-group exit races are expected during bounded cleanup.
+  }
+}
+
+function beginShutdown() {
+  stdinClosed = true;
+  if (!child.stdin.destroyed) child.stdin.end();
+  signalChildTree("SIGTERM");
+  if (!childClosed && !forceKillTimer) {
+    forceKillTimer = setTimeout(() => signalChildTree("SIGKILL"), 1000);
+    forceKillTimer.unref?.();
+  }
+}
 
 child.stdout.on("data", (chunk) => void writeEvent({ type: "data", stream: "stdout", data: Buffer.from(chunk).toString("base64") }));
 child.stderr.on("data", (chunk) => void writeEvent({ type: "data", stream: "stderr", data: Buffer.from(chunk).toString("base64") }));
-child.on("error", (error) => void writeEvent({ type: "error", message: error.message }));
+child.on("error", (error) => {
+  childClosed = true;
+  stdinClosed = true;
+  if (forceKillTimer) clearTimeout(forceKillTimer);
+  void writeEvent({ type: "error", message: error.message });
+});
 // "close" (not "exit") so stdout/stderr fully drain before the exit event;
 // the write chain then guarantees the exit file lands after every data file.
-child.on("close", (code, signal) => void writeEvent({ type: "exit", code, signal }));
+child.on("close", (code, signal) => {
+  childClosed = true;
+  stdinClosed = true;
+  if (forceKillTimer) clearTimeout(forceKillTimer);
+  void writeEvent({ type: "exit", code, signal });
+});
+process.on("SIGTERM", beginShutdown);
+process.on("SIGINT", beginShutdown);
 
 async function pollStdin() {
-  while (!stdinClosed) {
+  while (!stdinClosed && !childClosed) {
     const entries = (await fs.readdir(stdinDir).catch(() => [])).filter((name) => name.endsWith(".json")).sort();
     for (const name of entries) {
       const file = path.posix.join(stdinDir, name);
@@ -1701,18 +2145,25 @@ async function pollStdin() {
       if (!raw) continue;
       const message = JSON.parse(raw);
       if (message.type === "stdin" && typeof message.data === "string") {
-        child.stdin.write(Buffer.from(message.data, "base64"));
+        if (!childClosed && !child.stdin.destroyed) child.stdin.write(Buffer.from(message.data, "base64"));
       } else if (message.type === "stdinEnd") {
         stdinClosed = true;
-        child.stdin.end();
+        if (!child.stdin.destroyed) child.stdin.end();
         break;
       }
     }
-    if (!stdinClosed) await new Promise((resolve) => setTimeout(resolve, 50));
+    if (!stdinClosed && !childClosed) await new Promise((resolve) => setTimeout(resolve, 50));
   }
 }
 
-void pollStdin().catch((error) => void writeEvent({ type: "error", message: error instanceof Error ? error.message : String(error) }));
+await stateWrite;
+if (!childClosed) {
+  void pollStdin().catch((error) => {
+    stdinClosed = true;
+    void writeEvent({ type: "error", message: error instanceof Error ? error.message : String(error) });
+    beginShutdown();
+  });
+}
 `;
 }
 

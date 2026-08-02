@@ -14,6 +14,52 @@ import { createStoredZipArchive } from "./helpers/zip.js";
 
 const execFileAsync = promisify(execFile);
 type ServerProcess = ReturnType<typeof spawn>;
+const SERVER_PROCESS_TERM_GRACE_MS = 5_000;
+const SERVER_PROCESS_KILL_GRACE_MS = 2_000;
+
+function isProcessAlive(pid: number) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+function isProcessGroupAlive(processGroupId: number) {
+  if (process.platform === "win32" || !Number.isInteger(processGroupId) || processGroupId <= 0) {
+    return false;
+  }
+  try {
+    process.kill(-processGroupId, 0);
+    return true;
+  } catch (error) {
+    return (error as NodeJS.ErrnoException).code === "EPERM";
+  }
+}
+
+async function waitForProcessExit(predicate: () => boolean, timeoutMs: number) {
+  const deadline = Date.now() + timeoutMs;
+  while (predicate() && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 50));
+  }
+  return !predicate();
+}
+
+function spawnServerProcess(
+  command: string,
+  args: string[],
+  options: Parameters<typeof spawn>[2],
+) {
+  return spawn(command, args, {
+    ...options,
+    // POSIX descendants inherit this dedicated process group. Teardown can
+    // then terminate the actual server tree instead of only the pnpm wrapper.
+    detached: process.platform !== "win32",
+    windowsHide: true,
+  });
+}
 
 async function getAvailablePort(): Promise<number> {
   return await new Promise((resolve, reject) => {
@@ -188,17 +234,90 @@ function collectTextFiles(root: string, current: string, files: Record<string, s
 }
 
 async function stopServerProcess(child: ServerProcess | null) {
-  if (!child || child.exitCode !== null) return;
-  child.kill("SIGTERM");
-  await new Promise<void>((resolve) => {
-    child.once("exit", () => resolve());
-    setTimeout(() => {
-      if (child.exitCode === null) {
-        child.kill("SIGKILL");
-      }
-    }, 5_000);
-  });
+  const processId = child?.pid;
+  if (!child || !processId) return;
+
+  if (process.platform === "win32") {
+    await execFileAsync("taskkill", ["/PID", String(processId), "/T", "/F"]).catch((error) => {
+      if (isProcessAlive(processId)) throw error;
+    });
+    const stopped = await waitForProcessExit(
+      () => isProcessAlive(processId),
+      SERVER_PROCESS_KILL_GRACE_MS,
+    );
+    if (!stopped) {
+      throw new Error(`Failed to stop Paperclip test server process tree rooted at pid ${processId}.`);
+    }
+    return;
+  }
+
+  const signalGroup = (signal: NodeJS.Signals) => {
+    try {
+      process.kill(-processId, signal);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== "ESRCH") throw error;
+    }
+  };
+
+  signalGroup("SIGTERM");
+  if (await waitForProcessExit(() => isProcessGroupAlive(processId), SERVER_PROCESS_TERM_GRACE_MS)) {
+    return;
+  }
+
+  signalGroup("SIGKILL");
+  if (!(await waitForProcessExit(() => isProcessGroupAlive(processId), SERVER_PROCESS_KILL_GRACE_MS))) {
+    throw new Error(`Failed to stop Paperclip test server process group ${processId}.`);
+  }
 }
+
+describe("company import/export e2e process cleanup", () => {
+  it("terminates the pnpm-style wrapper and its descendants", async () => {
+    const tempRoot = mkdtempSync(path.join(os.tmpdir(), "paperclip-server-tree-cleanup-"));
+    const descendantPidPath = path.join(tempRoot, "descendant.pid");
+    const wrapperPath = path.join(tempRoot, "wrapper.cjs");
+    writeFileSync(
+      wrapperPath,
+      [
+        'const { spawn } = require("node:child_process");',
+        'const { writeFileSync } = require("node:fs");',
+        `const child = spawn(process.execPath, ["-e", "setInterval(() => {}, 1000)"], { stdio: "ignore" });`,
+        `writeFileSync(${JSON.stringify(descendantPidPath)}, String(child.pid));`,
+        "setInterval(() => {}, 1000);",
+      ].join("\n"),
+      "utf8",
+    );
+
+    const wrapper = spawnServerProcess(process.execPath, [wrapperPath], {
+      stdio: "ignore",
+    });
+    let descendantPid = 0;
+    try {
+      const markerReady = await waitForProcessExit(
+        () => !existsSync(descendantPidPath),
+        5_000,
+      );
+      expect(markerReady).toBe(true);
+      descendantPid = Number.parseInt(readFileSync(descendantPidPath, "utf8"), 10);
+      expect(isProcessAlive(wrapper.pid!)).toBe(true);
+      expect(isProcessAlive(descendantPid)).toBe(true);
+
+      await stopServerProcess(wrapper);
+
+      expect(isProcessAlive(wrapper.pid!)).toBe(false);
+      expect(isProcessAlive(descendantPid)).toBe(false);
+    } finally {
+      await stopServerProcess(wrapper).catch(() => undefined);
+      if (descendantPid > 0 && isProcessAlive(descendantPid)) {
+        try {
+          process.kill(descendantPid, "SIGKILL");
+        } catch {
+          // Best-effort test cleanup.
+        }
+      }
+      rmSync(tempRoot, { recursive: true, force: true });
+    }
+  }, 15_000);
+});
 
 async function api<T>(baseUrl: string, pathname: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${baseUrl}${pathname}`, init);
@@ -301,7 +420,7 @@ describeEmbeddedPostgres("paperclipai company import/export e2e", () => {
 
     const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "../../..");
     const output = { stdout: [] as string[], stderr: [] as string[] };
-    const child = spawn(
+    const child = spawnServerProcess(
       "pnpm",
       ["paperclipai", "run", "--config", configPath],
       {
