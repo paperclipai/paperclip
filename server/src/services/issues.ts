@@ -84,7 +84,13 @@ import {
   type ParsedExecutionWorkspaceMode,
 } from "./execution-workspace-policy.js";
 import { mergeExecutionWorkspaceConfig } from "./execution-workspaces.js";
-import { buildInitialIssueMonitorFields, normalizeIssueExecutionPolicy } from "./issue-execution-policy.js";
+import {
+  applyIssueMonitorPolicyTransition,
+  buildInitialIssueMonitorFields,
+  normalizeIssueExecutionPolicy,
+  parseIssueExecutionState,
+  stripMonitorFromExecutionPolicy,
+} from "./issue-execution-policy.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { redactCurrentUserText } from "../log-redaction.js";
 import { redactSensitiveText } from "../redaction.js";
@@ -138,6 +144,57 @@ const CHILD_COMPLETION_SUMMARY_BODY_MAX_CHARS = 500;
 // users — real signups with their own ids — are never reattributed.
 const NON_HUMAN_SENTINEL_AUTHOR_USER_IDS = new Set<string>(["local-board"]);
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_MAX_LOG_BYTES = 2_000_000;
+
+function hasLegacyMonitorPatchFields(input: Partial<typeof issues.$inferInsert>) {
+  return input.monitorNextCheckAt !== undefined
+    || input.monitorNotes !== undefined
+    || input.monitorScheduledBy !== undefined;
+}
+
+function normalizeLegacyMonitorScheduledBy(value: string | null | undefined) {
+  return value === "board" || value === "assignee" ? value : null;
+}
+
+function withLegacyMonitorPolicy(input: {
+  basePolicy: ReturnType<typeof normalizeIssueExecutionPolicy>;
+  baseState: ReturnType<typeof parseIssueExecutionState>;
+  fields: Partial<typeof issues.$inferInsert>;
+}) {
+  const baseMonitor = input.basePolicy?.monitor ?? input.baseState?.monitor ?? null;
+  const nextCheckAt = input.fields.monitorNextCheckAt !== undefined
+    ? input.fields.monitorNextCheckAt instanceof Date
+      ? input.fields.monitorNextCheckAt.toISOString()
+      : input.fields.monitorNextCheckAt
+    : baseMonitor?.nextCheckAt ?? null;
+
+  if (!nextCheckAt) {
+    return stripMonitorFromExecutionPolicy(input.basePolicy);
+  }
+
+  return normalizeIssueExecutionPolicy({
+    mode: input.basePolicy?.mode ?? "normal",
+    commentRequired: input.basePolicy?.commentRequired ?? true,
+    stages: input.basePolicy?.stages ?? [],
+    ...(input.basePolicy?.reviewPreset ? { reviewPreset: input.basePolicy.reviewPreset } : {}),
+    ...(input.basePolicy?.authorizationPolicy ? { authorizationPolicy: input.basePolicy.authorizationPolicy } : {}),
+    monitor: {
+      nextCheckAt,
+      notes: input.fields.monitorNotes !== undefined
+        ? input.fields.monitorNotes
+        : baseMonitor?.notes ?? null,
+      scheduledBy:
+        normalizeLegacyMonitorScheduledBy(input.fields.monitorScheduledBy)
+        ?? baseMonitor?.scheduledBy
+        ?? "assignee",
+      kind: input.basePolicy?.monitor?.kind ?? input.baseState?.monitor?.kind ?? null,
+      serviceName: input.basePolicy?.monitor?.serviceName ?? input.baseState?.monitor?.serviceName ?? null,
+      externalRef: input.basePolicy?.monitor?.externalRef ?? input.baseState?.monitor?.externalRef ?? null,
+      timeoutAt: input.basePolicy?.monitor?.timeoutAt ?? input.baseState?.monitor?.timeoutAt ?? null,
+      maxAttempts: input.basePolicy?.monitor?.maxAttempts ?? input.baseState?.monitor?.maxAttempts ?? null,
+      recoveryPolicy: input.basePolicy?.monitor?.recoveryPolicy ?? input.baseState?.monitor?.recoveryPolicy ?? null,
+    },
+  });
+}
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_CHUNK_BYTES = 256_000;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_END_SLACK_MS = 60_000;
 const ISSUE_COMMENT_RUN_LOG_DERIVATION_MAX_PARALLEL_READS = 8;
@@ -6296,6 +6353,20 @@ export function issueService(db: Db) {
         onDeduplicated,
         ...issueData
       } = data;
+      const explicitExecutionPolicy = normalizeIssueExecutionPolicy(issueData.executionPolicy ?? null);
+      const effectiveExecutionPolicy =
+        explicitExecutionPolicy?.monitor || !hasLegacyMonitorPatchFields(issueData)
+          ? explicitExecutionPolicy
+          : withLegacyMonitorPolicy({
+              basePolicy: explicitExecutionPolicy,
+              baseState: parseIssueExecutionState(issueData.executionState ?? null),
+              fields: issueData,
+            });
+      if (effectiveExecutionPolicy !== explicitExecutionPolicy) {
+        issueData.executionPolicy = effectiveExecutionPolicy as typeof issues.$inferInsert["executionPolicy"];
+      } else if (issueData.executionPolicy !== undefined) {
+        issueData.executionPolicy = explicitExecutionPolicy as typeof issues.$inferInsert["executionPolicy"];
+      }
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
       if (!isolatedWorkspacesEnabled) {
         delete issueData.executionWorkspaceId;
@@ -6561,7 +6632,7 @@ export function issueService(db: Db) {
         Object.assign(
           values,
           buildInitialIssueMonitorFields({
-            policy: normalizeIssueExecutionPolicy(issueData.executionPolicy ?? null),
+            policy: effectiveExecutionPolicy,
             status: values.status ?? "backlog",
             assigneeAgentId: values.assigneeAgentId ?? null,
             assigneeUserId: values.assigneeUserId ?? null,
@@ -6638,6 +6709,11 @@ export function issueService(db: Db) {
         delete issueData.executionWorkspacePreference;
         delete issueData.executionWorkspaceSettings;
       }
+      const previousExecutionPolicy = normalizeIssueExecutionPolicy(existing.executionPolicy ?? null);
+      const explicitExecutionPolicy =
+        issueData.executionPolicy !== undefined
+          ? normalizeIssueExecutionPolicy(issueData.executionPolicy ?? null)
+          : undefined;
 
       if (issueData.status) {
         assertTransition(existing.status, issueData.status);
@@ -6647,6 +6723,9 @@ export function issueService(db: Db) {
         ...issueData,
         updatedAt: new Date(),
       };
+      if (explicitExecutionPolicy !== undefined) {
+        patch.executionPolicy = explicitExecutionPolicy as typeof issues.$inferInsert["executionPolicy"];
+      }
       if (existing.status !== "blocked" && issueData.status === "blocked") {
         patch.blockedTransitionAt = patch.updatedAt;
         patch.blockedOwnerNotifiedAt = null;
@@ -6739,6 +6818,35 @@ export function issueService(db: Db) {
           executionWorkspacePreference: nextExecutionWorkspacePreference ?? null,
           executionWorkspaceSettings: issueData.executionWorkspaceSettings,
         });
+      }
+      const shouldMaterializeMonitorPolicy =
+        explicitExecutionPolicy !== undefined || hasLegacyMonitorPatchFields(issueData);
+      const baselineExecutionPolicy = explicitExecutionPolicy ?? previousExecutionPolicy;
+      const effectiveExecutionPolicy =
+        baselineExecutionPolicy?.monitor || !hasLegacyMonitorPatchFields(issueData)
+          ? baselineExecutionPolicy
+          : withLegacyMonitorPolicy({
+              basePolicy: baselineExecutionPolicy,
+              baseState: parseIssueExecutionState(existing.executionState ?? null),
+              fields: issueData,
+            });
+      if (shouldMaterializeMonitorPolicy) {
+        patch.executionPolicy = effectiveExecutionPolicy as typeof issues.$inferInsert["executionPolicy"];
+        Object.assign(
+          patch,
+          applyIssueMonitorPolicyTransition({
+            issue: existing,
+            policy: effectiveExecutionPolicy,
+            previousPolicy: previousExecutionPolicy,
+            requestedStatus: issueData.status,
+            requestedAssigneePatch: {
+              assigneeAgentId: issueData.assigneeAgentId,
+              assigneeUserId: issueData.assigneeUserId,
+            },
+            actor: { agentId: null, userId: null },
+            monitorExplicitlyUpdated: true,
+          }).patch,
+        );
       }
 
       applyStatusSideEffects(issueData.status, patch);
