@@ -1371,7 +1371,6 @@ export async function startServer(): Promise<StartedServer> {
   
   {
     const shutdown = async (signal: "SIGINT" | "SIGTERM") => {
-      await systemdNotify(["--stopping", `--status=Stopping after ${signal}`]);
       heartbeatSchedulerStopped = true;
 
       const heartbeatShutdown = await coordinateHeartbeatSchedulerShutdown({
@@ -1499,6 +1498,8 @@ export async function startServer(): Promise<StartedServer> {
         }
         logPostgresShutdown(postgresShutdown);
       }
+
+      await systemdNotify(["--stopping", `--status=Stopping after ${signal}`]);
 
       if (heartbeatSchedulerInterval) {
         clearInterval(heartbeatSchedulerInterval);

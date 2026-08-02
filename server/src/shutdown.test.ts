@@ -196,7 +196,7 @@ describe("coordinateEmbeddedPostgresShutdown", () => {
     expect(onHotRestartHandoffFailure).toHaveBeenCalledWith(writeError);
   });
 
-  it("keeps the predecessor operational when handoff persistence and database stop both fail", () => {
+  it("keeps the predecessor outside systemd's stop lifecycle when handoff and stop both fail", () => {
     const shutdownModuleUrl = new URL("./shutdown.ts", import.meta.url).href;
     const child = spawnSync(
       process.execPath,
@@ -212,8 +212,10 @@ describe("coordinateEmbeddedPostgresShutdown", () => {
           "let mirrorsRunning = true;",
           "let appRunning = true;",
           "const serviceManagerNotifications = [];",
+          "let serviceManagerStopping = false;",
           "let handoffAttempts = 0;",
           "let stopAttempts = 0;",
+          "const notifyServiceManager = async (args) => { serviceManagerNotifications.push(args); if (args[0] === '--stopping') serviceManagerStopping = true; return true; };",
           "const scheduler = setInterval(() => { if (!schedulerStopped) schedulerTicks += 1; }, 5);",
           "process.once('SIGTERM', async () => {",
           "  const result = await prepareEmbeddedPostgresForHotRestart({",
@@ -224,15 +226,15 @@ describe("coordinateEmbeddedPostgresShutdown", () => {
           "    restorePredecessor: () => restoreAbortedHotRestartPredecessor({",
           "      signal: 'SIGTERM',",
           "      restartHeartbeatScheduler: () => { schedulerStopped = false; },",
-          "      notifyServiceManager: async (args) => { serviceManagerNotifications.push(args); return true; },",
+          "      notifyServiceManager,",
           "    }),",
           "  });",
-          "  if (result !== 'aborted') { telemetryRunning = false; mirrorsRunning = false; appRunning = false; }",
+          "  if (result !== 'aborted') { await notifyServiceManager(['--stopping', '--status=Stopping after SIGTERM']); telemetryRunning = false; mirrorsRunning = false; appRunning = false; }",
           "  setTimeout(() => {",
-          "    const state = { result, schedulerTicks, telemetryRunning, mirrorsRunning, appRunning, serviceManagerNotifications, handoffAttempts, stopAttempts };",
+          "    const state = { result, schedulerTicks, telemetryRunning, mirrorsRunning, appRunning, serviceManagerStopping, serviceManagerNotifications, handoffAttempts, stopAttempts };",
           "    console.log(JSON.stringify(state));",
           "    clearInterval(scheduler);",
-          "    process.exit(result === 'aborted' && schedulerTicks > 0 && telemetryRunning && mirrorsRunning && appRunning && serviceManagerNotifications.length === 1 && serviceManagerNotifications[0][0] === '--ready' && serviceManagerNotifications[0][1] === '--status=Hot restart aborted after SIGTERM; predecessor remains operational' && handoffAttempts === 1 && stopAttempts === 1 ? 0 : 1);",
+          "    process.exit(result === 'aborted' && schedulerTicks > 0 && telemetryRunning && mirrorsRunning && appRunning && !serviceManagerStopping && serviceManagerNotifications.length === 1 && serviceManagerNotifications[0][0] === '--ready' && serviceManagerNotifications[0][1] === '--status=Hot restart aborted after SIGTERM; predecessor remains operational' && handoffAttempts === 1 && stopAttempts === 1 ? 0 : 1);",
           "  }, 50);",
           "});",
           "process.emit('SIGTERM');",
@@ -252,6 +254,7 @@ describe("coordinateEmbeddedPostgresShutdown", () => {
     expect(child.stdout).toContain('"telemetryRunning":true');
     expect(child.stdout).toContain('"mirrorsRunning":true');
     expect(child.stdout).toContain('"appRunning":true');
+    expect(child.stdout).toContain('"serviceManagerStopping":false');
     expect(child.stdout).toContain('"serviceManagerNotifications":[["--ready","--status=Hot restart aborted after SIGTERM; predecessor remains operational"]]');
     expect(child.stdout).toContain('"handoffAttempts":1');
     expect(child.stdout).toContain('"stopAttempts":1');
