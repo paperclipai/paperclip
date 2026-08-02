@@ -267,6 +267,37 @@ vi.mock("../services/plugin-worker-manager.js", () => ({
   createPluginWorkerManager: vi.fn(() => ({ id: "plugin-worker-manager" })),
 }));
 
+// Keep this startup wiring test focused on index-level orchestration. The
+// routine implementations import the full issue service and its schema graph,
+// while this test intentionally uses a minimal database mock.
+vi.mock("../services/recovery-sweeper.js", () => ({
+  RECOVERY_SWEEPER_ACTION_KEY: "recovery_sweeper_v1",
+  recoverySweeperRunner: {
+    run: vi.fn(async () => ({
+      actionKey: "recovery_sweeper_v1",
+      mode: "live",
+      exitStatus: 0,
+      stdoutSummary: "{}",
+      stderrSummary: "",
+      outcome: "completed",
+      summary: null,
+    })),
+  },
+}));
+
+vi.mock("../services/blocked-issue-escalation.js", () => ({
+  BLOCKED_ISSUE_ESCALATION_ACTION_KEY: "blocked_issue_escalation_v1",
+  createBlockedIssueEscalationRunner: vi.fn(() => ({
+    run: vi.fn(async () => ({})),
+  })),
+  disableBlockedIssueEscalationRoutines: vi.fn(async () => ({
+    routinesPaused: 0,
+    triggersDisabled: 0,
+  })),
+  ensureBlockedIssueEscalationRoutines: vi.fn(async () => ({})),
+  isBlockedIssueEscalationEnabled: vi.fn(() => false),
+}));
+
 vi.mock("../startup-banner.js", () => ({
   printStartupBanner: vi.fn(),
 }));
