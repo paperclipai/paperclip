@@ -14,6 +14,12 @@ const mockIssueService = vi.hoisted(() => ({
   getRelationSummaries: vi.fn(),
   listWakeableBlockedDependents: vi.fn(),
   getWakeableParentAfterChildCompletion: vi.fn(),
+  getCurrentScheduledRetry: vi.fn(async () => null),
+  getDependencyReadiness: vi.fn(async () => ({
+    blockerIssueIds: [],
+    isDependencyReady: false,
+    unresolvedBlockerCount: 0,
+  })),
 }));
 
 const mockHeartbeatService = vi.hoisted(() => ({
@@ -41,20 +47,53 @@ const mockDbSelectWhere = vi.hoisted(() => vi.fn(() => ({
 })));
 const mockDbSelectFrom = vi.hoisted(() => vi.fn(() => ({ where: mockDbSelectWhere })));
 const mockDbSelect = vi.hoisted(() => vi.fn(() => ({ from: mockDbSelectFrom })));
+const mockDbTx = vi.hoisted(() => ({
+  select: mockDbSelect,
+  insert: vi.fn(() => ({ values: vi.fn(() => ({ returning: vi.fn(async () => []) })) })),
+  update: vi.fn(() => ({ set: vi.fn(() => ({ where: vi.fn(async () => []) })) })),
+  delete: vi.fn(() => ({ where: vi.fn(async () => []) })),
+}));
 const mockDb = vi.hoisted(() => ({
   select: mockDbSelect,
+  insert: mockDbTx.insert,
+  update: mockDbTx.update,
+  delete: mockDbTx.delete,
+  transaction: vi.fn(async (fn: (tx: typeof mockDbTx) => unknown) => fn(mockDbTx)),
 }));
 
 const mockLogActivity = vi.hoisted(() => vi.fn(async () => undefined));
 const mockIssueThreadInteractionService = vi.hoisted(() => ({
   listForIssue: vi.fn(async () => []),
   expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
+  expireStaleRequestConfirmationsForIssueDocument: vi.fn(async () => []),
+  expireRequestConfirmationsSupersededByHistoricalComments: vi.fn(async () => []),
 }));
 const mockIssueApprovalService = vi.hoisted(() => ({
   listApprovalsForIssue: vi.fn(async () => []),
 }));
 
 function registerModuleMocks() {
+  vi.doMock("../services/instance-settings.js", () => ({
+    instanceSettingsService: () => ({
+      get: vi.fn(async () => ({
+        id: "instance-settings-1",
+        general: { censorUsernameInLogs: false, feedbackDataSharingPreference: "prompt" },
+      })),
+      getGeneral: vi.fn(async () => ({ censorUsernameInLogs: false, feedbackDataSharingPreference: "prompt" })),
+      getExperimental: vi.fn(async () => ({})),
+      listCompanyIds: vi.fn(async () => ["company-1"]),
+    }),
+  }));
+  vi.doMock("../services/environment-runtime.js", () => ({
+    environmentRuntimeService: () => ({
+      destroyReusableSandboxLeases: vi.fn(async () => undefined),
+    }),
+  }));
+  vi.doMock("../services/environments.js", () => ({
+    environmentService: () => ({
+      getById: vi.fn(async () => null),
+    }),
+  }));
   vi.doMock("../services/index.js", () => ({
     companyService: () => ({
       getById: vi.fn(async () => ({ id: "company-1", attachmentMaxBytes: 10 * 1024 * 1024 })),
@@ -99,8 +138,13 @@ function registerModuleMocks() {
           feedbackDataSharingPreference: "prompt",
         },
       })),
-      listCompanyIds: vi.fn(async () => ["company-1"]),
-    }),
+          getGeneral: vi.fn(async () => ({
+            censorUsernameInLogs: false,
+            feedbackDataSharingPreference: "prompt",
+          })),
+          getExperimental: vi.fn(async () => ({})),
+          listCompanyIds: vi.fn(async () => ["company-1"]),
+        }),
     issueApprovalService: () => mockIssueApprovalService,
     issueReferenceService: () => ({
       deleteDocumentSource: async () => undefined,
@@ -163,11 +207,14 @@ async function createApp(actor?: TestActor) {
     next();
   });
   app.use("/api", issueRoutes(mockDb as any, {} as any));
-  app.use(errorHandler);
-  return app;
-}
+    app.use(errorHandler);
+    return app;
+  }
 
 describe("issue execution policy routes", () => {
+  // resetModules + dynamic import pays a cold transform cost on the first test.
+  vi.setConfig({ testTimeout: 20_000 });
+
   beforeEach(() => {
     vi.resetModules();
     vi.doUnmock("../services/index.js");
@@ -235,6 +282,10 @@ describe("issue execution policy routes", () => {
       createdByUserId: "local-board",
       identifier: "PAP-1003",
       title: "Missing review path",
+      projectId: null,
+      parentId: null,
+      executionWorkspaceId: null,
+      version: 1,
       executionPolicy: null,
       executionState: null,
     };
@@ -269,6 +320,10 @@ describe("issue execution policy routes", () => {
       createdByUserId: "local-board",
       identifier: "PAP-1004",
       title: "Pending confirmation",
+      projectId: null,
+      parentId: null,
+      executionWorkspaceId: null,
+      version: 1,
       executionPolicy: null,
       executionState: null,
     };
@@ -279,6 +334,10 @@ describe("issue execution policy routes", () => {
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
       ...issue,
       ...patch,
+      version:
+        typeof patch.version === "number"
+          ? patch.version
+          : ((issue as { version?: number }).version ?? 1),
       updatedAt: new Date(),
     }));
 
@@ -308,6 +367,10 @@ describe("issue execution policy routes", () => {
       createdByUserId: "local-board",
       identifier: "PAP-1005",
       title: "Execution participant",
+      projectId: null,
+      parentId: null,
+      executionWorkspaceId: null,
+      version: 1,
       executionPolicy: null,
       executionState: null,
     };
@@ -324,6 +387,10 @@ describe("issue execution policy routes", () => {
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
       ...issue,
       ...patch,
+      version:
+        typeof patch.version === "number"
+          ? patch.version
+          : ((issue as { version?: number }).version ?? 1),
       updatedAt: new Date(),
     }));
 
@@ -362,6 +429,10 @@ describe("issue execution policy routes", () => {
       createdByUserId: "local-board",
       identifier: "PAP-1006",
       title: "External review monitor",
+      projectId: null,
+      parentId: null,
+      executionWorkspaceId: null,
+      version: 1,
       executionPolicy: null,
       executionState: null,
       monitorAttemptCount: 0,
@@ -374,6 +445,10 @@ describe("issue execution policy routes", () => {
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
       ...issue,
       ...patch,
+      version:
+        typeof patch.version === "number"
+          ? patch.version
+          : ((issue as { version?: number }).version ?? 1),
       updatedAt: new Date(),
     }));
 
@@ -415,6 +490,10 @@ describe("issue execution policy routes", () => {
       createdByUserId: "local-board",
       identifier: "PAP-1007",
       title: "Board repair",
+      projectId: null,
+      parentId: null,
+      executionWorkspaceId: null,
+      version: 1,
       executionPolicy: null,
       executionState: null,
     };
@@ -422,6 +501,10 @@ describe("issue execution policy routes", () => {
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
       ...issue,
       ...patch,
+      version:
+        typeof patch.version === "number"
+          ? patch.version
+          : ((issue as { version?: number }).version ?? 1),
       updatedAt: new Date(),
     }));
 
@@ -453,6 +536,10 @@ describe("issue execution policy routes", () => {
       createdByUserId: "local-board",
       identifier: "PAP-1008",
       title: "Active review",
+      projectId: null,
+      parentId: null,
+      executionWorkspaceId: null,
+      version: 1,
       executionPolicy: policy,
       executionState: {
         status: "pending",
@@ -470,6 +557,10 @@ describe("issue execution policy routes", () => {
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
       ...issue,
       ...patch,
+      version:
+        typeof patch.version === "number"
+          ? patch.version
+          : ((issue as { version?: number }).version ?? 1),
       updatedAt: new Date(),
     }));
 
@@ -509,6 +600,10 @@ describe("issue execution policy routes", () => {
       createdByUserId: "local-board",
       identifier: "PAP-1009",
       title: "Drifted active review",
+      projectId: null,
+      parentId: null,
+      executionWorkspaceId: null,
+      version: 1,
       executionPolicy: policy,
       executionState: {
         status: "pending",
@@ -526,6 +621,10 @@ describe("issue execution policy routes", () => {
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
       ...issue,
       ...patch,
+      version:
+        typeof patch.version === "number"
+          ? patch.version
+          : ((issue as { version?: number }).version ?? 1),
       updatedAt: new Date(),
     }));
 
@@ -572,6 +671,10 @@ describe("issue execution policy routes", () => {
       createdByUserId: "local-board",
       identifier: "PAP-1010",
       title: "Reassigned review",
+      projectId: null,
+      parentId: null,
+      executionWorkspaceId: null,
+      version: 1,
       executionPolicy: policy,
       executionState: {
         status: "pending",
@@ -589,6 +692,10 @@ describe("issue execution policy routes", () => {
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
       ...issue,
       ...patch,
+      version:
+        typeof patch.version === "number"
+          ? patch.version
+          : ((issue as { version?: number }).version ?? 1),
       updatedAt: new Date(),
     }));
 
@@ -630,6 +737,10 @@ describe("issue execution policy routes", () => {
       createdByUserId: "local-board",
       identifier: "PAP-1011",
       title: "Reassigned away from review",
+      projectId: null,
+      parentId: null,
+      executionWorkspaceId: null,
+      version: 1,
       executionPolicy: policy,
       executionState: {
         status: "pending",
@@ -647,6 +758,10 @@ describe("issue execution policy routes", () => {
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
       ...issue,
       ...patch,
+      version:
+        typeof patch.version === "number"
+          ? patch.version
+          : ((issue as { version?: number }).version ?? 1),
       updatedAt: new Date(),
     }));
 
@@ -681,6 +796,10 @@ describe("issue execution policy routes", () => {
       createdByUserId: "local-board",
       identifier: "PAP-999",
       title: "Execution policy edit",
+      projectId: null,
+      parentId: null,
+      executionWorkspaceId: null,
+      version: 1,
       executionPolicy: null,
       executionState: null,
     };
@@ -688,6 +807,10 @@ describe("issue execution policy routes", () => {
     mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
       ...issue,
       ...patch,
+      version:
+        typeof patch.version === "number"
+          ? patch.version
+          : ((issue as { version?: number }).version ?? 1),
       updatedAt: new Date(),
     }));
 
@@ -722,6 +845,10 @@ describe("issue execution policy routes", () => {
       createdByUserId: "local-board",
       identifier: "PAP-1001",
       title: "Manual monitor trigger",
+      projectId: null,
+      parentId: null,
+      executionWorkspaceId: null,
+      version: 1,
       executionPolicy: normalizeIssueExecutionPolicy({
         monitor: {
           nextCheckAt: "2026-04-11T12:30:00.000Z",
@@ -759,6 +886,10 @@ describe("issue execution policy routes", () => {
       createdByUserId: "local-board",
       identifier: "PAP-1001",
       title: "Parent issue",
+      projectId: null,
+      parentId: null,
+      executionWorkspaceId: null,
+      version: 1,
       executionPolicy: null,
       executionState: null,
     });
@@ -804,6 +935,10 @@ describe("issue execution policy routes", () => {
       createdByUserId: "local-board",
       identifier: "PAP-1001",
       title: "Parent issue",
+      projectId: null,
+      parentId: null,
+      executionWorkspaceId: null,
+      version: 1,
       executionPolicy: null,
       executionState: null,
     });
@@ -843,6 +978,10 @@ describe("issue execution policy routes", () => {
       createdByUserId: "local-board",
       identifier: "PAP-1001",
       title: "Parent issue",
+      projectId: null,
+      parentId: null,
+      executionWorkspaceId: null,
+      version: 1,
       executionPolicy: null,
       executionState: null,
     });

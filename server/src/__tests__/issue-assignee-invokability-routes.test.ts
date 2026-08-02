@@ -39,6 +39,27 @@ const mockHeartbeatService = vi.hoisted(() => ({
   cancelRun: vi.fn(async () => null),
 }));
 
+vi.mock("../services/instance-settings.js", () => ({
+  instanceSettingsService: () => ({
+    get: vi.fn(async () => ({
+      id: "instance-settings-1",
+      general: { censorUsernameInLogs: false, feedbackDataSharingPreference: "prompt" },
+    })),
+    getGeneral: vi.fn(async () => ({ censorUsernameInLogs: false, feedbackDataSharingPreference: "prompt" })),
+    getExperimental: vi.fn(async () => ({})),
+    listCompanyIds: vi.fn(async () => ["company-1"]),
+  }),
+}));
+vi.mock("../services/environment-runtime.js", () => ({
+  environmentRuntimeService: () => ({
+    destroyReusableSandboxLeases: vi.fn(async () => undefined),
+  }),
+}));
+vi.mock("../services/environments.js", () => ({
+  environmentService: () => ({
+    getById: vi.fn(async () => null),
+  }),
+}));
 vi.mock("../services/index.js", () => ({
   companyService: () => ({
     getById: vi.fn(async () => ({ id: "company-1", attachmentMaxBytes: 10 * 1024 * 1024 })),
@@ -89,8 +110,16 @@ vi.mock("../services/index.js", () => ({
         feedbackDataSharingPreference: "prompt",
       },
     })),
-    listCompanyIds: vi.fn(async () => ["company-1"]),
-  }),
+      getGeneral: vi.fn(async () => ({
+        censorUsernameInLogs: false,
+        feedbackDataSharingPreference: "prompt",
+      })),
+      getExperimental: vi.fn(async () => ({})),
+      listCompanyIds: vi.fn(async () => ["company-1"]),
+    }),
+    environmentService: () => ({
+      getById: vi.fn(async () => null),
+    }),
   issueApprovalService: () => ({}),
   issueReferenceService: () => ({
     deleteDocumentSource: async () => undefined,
@@ -154,11 +183,24 @@ function agentActor(): Actor {
 // actors) query the db directly rather than through the mocked services.
 function stubDb(): any {
   const query: any = {};
-  for (const method of ["select", "from", "where", "innerJoin", "leftJoin", "orderBy", "limit", "groupBy", "for"]) {
+  for (const method of ["select", "from", "where", "innerJoin", "leftJoin", "orderBy", "limit", "groupBy", "for", "offset", "values", "set", "returning", "insert", "update", "delete"]) {
     query[method] = () => query;
   }
-  query.then = (resolve: (rows: unknown[]) => unknown) => Promise.resolve(resolve([]));
-  return { select: () => query };
+  query.then = (resolve: (rows: unknown[]) => unknown, reject?: (err: unknown) => unknown) =>
+    Promise.resolve(resolve([])).catch(reject as any);
+  query.execute = async () => [];
+  return {
+    select: () => query,
+    insert: () => query,
+    update: () => query,
+    delete: () => query,
+    transaction: async (fn: (tx: any) => Promise<unknown>) => fn({
+      select: () => query,
+      insert: () => query,
+      update: () => query,
+      delete: () => query,
+    }),
+  };
 }
 
 function createApp(actor: Actor) {
@@ -169,9 +211,9 @@ function createApp(actor: Actor) {
     next();
   });
   app.use("/api", issueRoutes(stubDb() as any, {} as any));
-  app.use(errorHandler);
-  return app;
-}
+    app.use(errorHandler);
+    return app;
+  }
 
 function makeIssue(overrides: Record<string, unknown> = {}) {
   return {
@@ -189,7 +231,9 @@ function makeIssue(overrides: Record<string, unknown> = {}) {
     title: "Invokability test",
     executionPolicy: null,
     executionState: null,
+    executionWorkspaceId: null,
     hiddenAt: null,
+    version: 1,
     ...overrides,
   };
 }
@@ -247,7 +291,7 @@ describe("issue assignee invokability guard", () => {
       .patch(`/api/issues/${existing.id}`)
       .send({ assigneeAgentId: IDLE_AGENT_ID });
 
-    expect(res.status).toBe(200);
+      expect(res.status).toBe(200);
     expect(mockIssueService.update).toHaveBeenCalled();
   });
 
@@ -261,7 +305,7 @@ describe("issue assignee invokability guard", () => {
       .patch(`/api/issues/${existing.id}`)
       .send({ assigneeAgentId: PAUSED_AGENT_ID });
 
-    expect(res.status).toBe(200);
+      expect(res.status).toBe(200);
     expect(mockIssueService.update).toHaveBeenCalled();
   });
 });

@@ -7,10 +7,30 @@ const mockIssueService = vi.hoisted(() => ({
   getWakeableParentAfterChildCompletion: vi.fn(),
   listWakeableBlockedDependents: vi.fn(),
   update: vi.fn(),
+  assertCheckoutOwner: vi.fn(async () => ({ adoptedFromRunId: null })),
+  findMentionedAgents: vi.fn(async () => []),
+  getRelationSummaries: vi.fn(async () => ({ blockedBy: [], blocks: [] })),
+  findOpenAncestorCreatedByAgent: vi.fn(async () => null),
+  getCurrentScheduledRetry: vi.fn(async () => null),
+  getDependencyReadiness: vi.fn(async () => ({
+    blockerIssueIds: [],
+    isDependencyReady: false,
+    unresolvedBlockerCount: 0,
+  })),
+  addComment: vi.fn(),
 }));
 
 const mockAgentService = vi.hoisted(() => ({
   getById: vi.fn(),
+  resolveByReference: vi.fn(async (_companyId: string, raw: string) => ({
+    ambiguous: false,
+    agent: {
+      id: raw,
+      companyId: "company-1",
+      status: "idle",
+      orgChainHealth: { status: "healthy" },
+    },
+  })),
 }));
 
 const mockTrackAgentTaskCompleted = vi.hoisted(() => vi.fn());
@@ -21,8 +41,36 @@ const mockDbSelectWhere = vi.hoisted(() => vi.fn(() => ({
 })));
 const mockDbSelectFrom = vi.hoisted(() => vi.fn(() => ({ where: mockDbSelectWhere })));
 const mockDbSelect = vi.hoisted(() => vi.fn(() => ({ from: mockDbSelectFrom })));
-const mockDb = vi.hoisted(() => ({
-  select: mockDbSelect,
+const mockDb = vi.hoisted(() => {
+  const tx = {
+    select: mockDbSelect,
+    insert: vi.fn(() => ({ values: vi.fn(() => ({ returning: vi.fn(async () => []) })) })),
+    update: vi.fn(() => ({ set: vi.fn(() => ({ where: vi.fn(async () => []) })) })),
+    delete: vi.fn(() => ({ where: vi.fn(async () => []) })),
+  };
+  return {
+    select: mockDbSelect,
+    insert: tx.insert,
+    update: tx.update,
+    delete: tx.delete,
+    transaction: vi.fn(async (fn: (txArg: typeof tx) => unknown) => fn(tx)),
+  };
+});
+
+const mockInstanceSettingsService = vi.hoisted(() => ({
+  get: vi.fn(async () => ({
+    id: "instance-settings-1",
+    general: {
+      censorUsernameInLogs: false,
+      feedbackDataSharingPreference: "prompt",
+    },
+  })),
+  getGeneral: vi.fn(async () => ({
+    censorUsernameInLogs: false,
+    feedbackDataSharingPreference: "prompt",
+  })),
+  getExperimental: vi.fn(async () => ({})),
+  listCompanyIds: vi.fn(async () => ["company-1"]),
 }));
 
 function registerModuleMocks() {
@@ -33,6 +81,22 @@ function registerModuleMocks() {
 
   vi.doMock("../telemetry.js", () => ({
     getTelemetryClient: mockGetTelemetryClient,
+  }));
+
+  vi.doMock("../services/instance-settings.js", () => ({
+    instanceSettingsService: () => mockInstanceSettingsService,
+  }));
+
+  vi.doMock("../services/environment-runtime.js", () => ({
+    environmentRuntimeService: () => ({
+      destroyReusableSandboxLeases: vi.fn(async () => undefined),
+    }),
+  }));
+
+  vi.doMock("../services/environments.js", () => ({
+    environmentService: () => ({
+      getById: vi.fn(async () => null),
+    }),
   }));
 
   vi.doMock("../services/index.js", () => ({
@@ -61,8 +125,11 @@ function registerModuleMocks() {
     heartbeatService: () => ({
       wakeup: vi.fn(async () => undefined),
       reportRunActivity: vi.fn(async () => undefined),
+      getRun: vi.fn(async () => null),
+      getActiveRunForAgent: vi.fn(async () => null),
+      cancelRun: vi.fn(async () => null),
     }),
-    instanceSettingsService: () => ({}),
+    instanceSettingsService: () => mockInstanceSettingsService,
     issueApprovalService: () => ({}),
     issueReferenceService: () => ({
       deleteDocumentSource: async () => undefined,
@@ -93,6 +160,9 @@ function registerModuleMocks() {
       syncRunStatusForIssue: vi.fn(async () => undefined),
     }),
     workProductService: () => ({}),
+    environmentService: () => ({
+      getById: vi.fn(async () => null),
+    }),
   }));
 }
 
@@ -100,12 +170,18 @@ function makeIssue(status: "todo" | "done") {
   return {
     id: "11111111-1111-4111-8111-111111111111",
     companyId: "company-1",
+    projectId: null,
+    parentId: null,
     status,
     assigneeAgentId: "agent-1",
     assigneeUserId: null,
     createdByUserId: "local-board",
     identifier: "PAP-1018",
     title: "Telemetry test",
+    version: 1,
+    executionWorkspaceId: null,
+    executionPolicy: null,
+    executionState: null,
   };
 }
 
@@ -121,9 +197,9 @@ async function createApp(actor: Record<string, unknown>) {
     next();
   });
   app.use("/api", issueRoutes(mockDb as any, {} as any));
-  app.use(errorHandler);
-  return app;
-}
+    app.use(errorHandler);
+    return app;
+  }
 
 describe("issue telemetry routes", () => {
   beforeEach(() => {
