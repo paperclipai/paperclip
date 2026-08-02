@@ -1279,7 +1279,7 @@ describeEmbeddedPostgres("attention service", () => {
       createdByUserId: "board-user",
     });
 
-    const approvalRows = Array.from({ length: 51 }, (_, index) => ({
+    const approvalRows = Array.from({ length: 101 }, (_, index) => ({
       id: randomUUID(),
       companyId,
       type: "hire_agent",
@@ -1310,9 +1310,19 @@ describeEmbeddedPostgres("attention service", () => {
       queue: "bulk-review",
       all: true,
     });
-    expect(completeSnapshot.items).toHaveLength(51);
-    expect(new Set(completeSnapshot.items.map((item) => item.id)).size).toBe(51);
+    expect(completeSnapshot.items).toHaveLength(101);
+    expect(new Set(completeSnapshot.items.map((item) => item.id)).size).toBe(101);
     expect(completeSnapshot.nextCursor).toBeNull();
+
+    const internalSnapshot = await attentionService(db).list(companyId, {
+      userId: "board-user",
+      all: true,
+      allowUnscopedAll: true,
+    });
+    const internalSnapshotIds = new Set(internalSnapshot.items.map((item) => item.subject.id));
+    expect(approvalRows.every((approval) => internalSnapshotIds.has(approval.id))).toBe(true);
+    expect(internalSnapshot.items.length).toBeGreaterThan(100);
+    expect(internalSnapshot.nextCursor).toBeNull();
 
     await expect(attentionService(db).list(companyId, { userId: "board-user", all: true }))
       .rejects.toThrow("all requires a queue filter");

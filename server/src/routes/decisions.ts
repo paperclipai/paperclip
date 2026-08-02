@@ -76,15 +76,15 @@ export function decisionRoutes(db: Db, options: DecisionServiceOptions) {
         item,
       ]));
       const found = new Map<string, AttentionItem>();
-      let cursor: string | undefined;
-      do {
-        const page = await attentionService(db).list(companyId, { includeDismissed: true, limit: 100, cursor });
-        for (const item of page.items) {
-          const key = `${item.sourceKind}:${item.subject.id}`;
-          if (requested.has(key)) found.set(key, item);
-        }
-        cursor = page.nextCursor ?? undefined;
-      } while (cursor && found.size < requested.size);
+      const snapshot = await db.transaction(async (tx) => attentionService(tx as unknown as Db).list(companyId, {
+        includeDismissed: true,
+        all: true,
+        allowUnscopedAll: true,
+      }), { isolationLevel: "repeatable read" });
+      for (const item of snapshot.items) {
+        const key = `${item.sourceKind}:${item.subject.id}`;
+        if (requested.has(key)) found.set(key, item);
+      }
 
       const manifest: AttentionArchiveManifestEntry[] = [];
       for (const [key, item] of [...requested.entries()].sort(([left], [right]) => left.localeCompare(right))) {

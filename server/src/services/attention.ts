@@ -139,6 +139,8 @@ type BlockingIssueSummary = {
 
 type AttentionListOptions = AttentionFeedQuery & {
   userId?: string | null;
+  /** Internal-only escape hatch for callers that need one stable, unpaginated feed snapshot. */
+  allowUnscopedAll?: boolean;
 };
 
 type AttentionServiceOptions = {
@@ -860,7 +862,7 @@ export function attentionService(db: Db, serviceOptions: AttentionServiceOptions
   );
   return {
     list: async (companyId: string, options: AttentionListOptions = {}): Promise<AttentionFeed> => {
-      if (options.all && !options.queue) {
+      if (options.all && !options.queue && !options.allowUnscopedAll) {
         throw badRequest("all requires a queue filter");
       }
       const prefix = await companyPrefix(db, companyId);
