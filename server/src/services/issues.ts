@@ -7014,6 +7014,10 @@ export function issueService(db: Db) {
         blockedByIssueIds?: string[];
         actorAgentId?: string | null;
         actorUserId?: string | null;
+        terminalStatusGuard?: {
+          runStartedAt: Date | string | null;
+          explicitResume: boolean;
+        };
       },
       dbOrTx: any = db,
     ) => {
@@ -7029,8 +7033,50 @@ export function issueService(db: Db) {
         blockedByIssueIds,
         actorAgentId,
         actorUserId,
+        terminalStatusGuard,
         ...issueData
       } = data;
+
+      const assertTerminalStatusMutationAllowed = (
+        current: typeof issues.$inferSelect,
+      ) => {
+        if (
+          !terminalStatusGuard ||
+          !issueData.status ||
+          issueData.status === current.status ||
+          (current.status !== "done" && current.status !== "cancelled")
+        ) {
+          return;
+        }
+        const terminalAt = current.status === "done"
+          ? current.completedAt ?? current.updatedAt
+          : current.cancelledAt ?? current.updatedAt;
+        const runStartedAt = terminalStatusGuard.runStartedAt;
+        if (!runStartedAt) {
+          throw conflict("Agent run context is required to change a terminal issue", {
+            code: "terminal_issue_run_context_required",
+            issueStatus: current.status,
+            requestedStatus: issueData.status,
+          });
+        }
+        if (
+          terminalAt &&
+          new Date(runStartedAt).getTime() <= new Date(terminalAt).getTime()
+        ) {
+          throw conflict("Stale agent run cannot change a terminal issue", {
+            code: "stale_terminal_issue_mutation",
+            issueStatus: current.status,
+            requestedStatus: issueData.status,
+          });
+        }
+        if (!terminalStatusGuard.explicitResume) {
+          throw conflict("Agent status changes on terminal issues require explicit resume intent", {
+            code: "terminal_issue_resume_required",
+            issueStatus: current.status,
+            requestedStatus: issueData.status,
+          });
+        }
+      };
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
       if (!isolatedWorkspacesEnabled) {
         delete issueData.executionWorkspaceId;
@@ -7038,6 +7084,7 @@ export function issueService(db: Db) {
         delete issueData.executionWorkspaceSettings;
       }
 
+      assertTerminalStatusMutationAllowed(existing);
       if (issueData.status) {
         assertTransition(existing.status, issueData.status);
       }
@@ -7184,6 +7231,9 @@ export function issueService(db: Db) {
           .for("update")
           .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
         if (!receiptExisting) return null;
+        // Recheck under the same row lock as the write. The issue may have
+        // become terminal after the route or service performed its first read.
+        assertTerminalStatusMutationAllowed(receiptExisting);
         const [previousLabelsByIssueId, previousRelationSummaries] = await Promise.all([
           nextLabelIds !== undefined
             ? labelMapForIssues(tx, [id])
