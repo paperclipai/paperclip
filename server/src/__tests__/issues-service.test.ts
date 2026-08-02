@@ -6688,6 +6688,29 @@ describeEmbeddedPostgres("issueService.addComment createdByRunId", () => {
     expect(await createdByRunIdFor(comment.id)).toBeNull();
   });
 
+  it("does not record a user actor's comment as authored by a run", async () => {
+    // created_by_run_id answers "which run wrote this", and only an agent runs.
+    // A user may still name a run — that is provenance, and originRunId keeps it —
+    // but letting it land here makes the comment read as self-authored to
+    // shouldImplicitlyMoveCommentedIssueToTodo and deferredCommentWakeIsSelfAuthored,
+    // which swallows a wake that was owed.
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({
+      id: runId,
+      companyId,
+      agentId,
+      status: "running",
+    });
+
+    const comment = await svc.addComment(issueId, "a person naming an agent's run", {
+      runId,
+      userId: "some-user",
+    });
+
+    expect(comment.id).toBeTruthy();
+    expect(await createdByRunIdFor(comment.id)).toBeNull();
+  });
+
   it("preserves a valid runId that exists in heartbeat_runs for the company", async () => {
     const runId = randomUUID();
     await db.insert(heartbeatRuns).values({
