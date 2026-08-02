@@ -39,9 +39,7 @@ COMPANIES = [
 
 POLL_STATUSES = ["todo", "backlog"]
 
-DEFAULT_SIZE = "1024x1024"
 DEFAULT_QUALITY = "medium"
-ALLOWED_SIZES = {"1024x1024", "1024x1536", "1536x1024", "auto"}
 ALLOWED_QUALITIES = {"low", "medium", "high", "auto"}
 
 DAILY_IMAGE_LIMIT = 15
@@ -64,8 +62,15 @@ OPENAI_FORMAT_MAP = {"1344x768": "1536x1024", "768x1344": "1024x1536"}
 
 DAILY_LOCAL_LIMIT = 60      # Amoklauf-Bremse, kostet nichts, schuetzt den Knoten
 MAX_INFLIGHT_JOBS = 3       # gleichzeitig auf dem Knoten
-JOB_TIMEOUT_SEC = 300       # gemessen: 72 s kalt, 8 s warm
+JOB_TIMEOUT_SEC = 300       # gemessen auf dem Headless-Knoten: 14,1 s warm, 35 s nach Neustart
 UNREACHABLE_ALERT_CYCLES = 30   # 30 Zyklen a 60 s = 30 Minuten
+
+# Absoluter Notausstieg: Jobs, deren "done"-Verarbeitung wiederholt an einer
+# Exception scheitert (z.B. Issue geloescht, Ausgabedatei weg), wuerden sonst
+# fuer immer einen der drei Inflight-Plaetze blockieren. Vielfaches von
+# JOB_TIMEOUT_SEC, ab dem ein Job zwangsweise abgebrochen wird, egal was der
+# Knoten meldet.
+STUCK_JOB_AGE_MULTIPLIER = 10
 
 MAX_SEED = 18446744073709551615  # KSampler.seed max from ComfyUI node schema
 

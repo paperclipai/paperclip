@@ -92,7 +92,9 @@ def test_timeout_retries_once(monkeypatch, tmp_path):
         "error": None, "prompt": "Hirsch", "modell": "qwen", "size": "1024x1024",
         "width": 1024, "height": 1024, "openai_size": "1024x1024",
         "quality": "medium", "background": "opaque", "seed": 42})
-    result = bild_service.collect_one("issue-1", job_state.get("issue-1"), now=999999.0)
+    # now knapp ueber JOB_TIMEOUT_SEC (300), aber deutlich unter der Finding-2-
+    # Notausstiegsschwelle (10x = 3000) -- die soll hier nicht mitgreifen.
+    result = bild_service.collect_one("issue-1", job_state.get("issue-1"), now=400.0)
     assert result == "timeout"
     job = job_state.get("issue-1")
     assert job["attempts"] == 2
@@ -104,7 +106,7 @@ def test_second_timeout_cancels(monkeypatch, tmp_path):
     job_state.add("issue-1", "prompt-1", "company-a", now=0.0)
     job_state.bump_attempt("issue-1", "prompt-2", now=0.0)
     monkeypatch.setattr(comfy_client, "poll", lambda pid: ("running", None))
-    result = bild_service.collect_one("issue-1", job_state.get("issue-1"), now=999999.0)
+    result = bild_service.collect_one("issue-1", job_state.get("issue-1"), now=400.0)
     assert result == "error"
     assert api.status["issue-1"] == "cancelled"
     assert job_state.get("issue-1") is None
@@ -149,7 +151,7 @@ def test_timeout_retry_stores_the_newly_submitted_seed(monkeypatch, tmp_path):
         "error": None, "prompt": "Hirsch", "modell": "qwen", "size": "1024x1024",
         "width": 1024, "height": 1024, "openai_size": "1024x1024",
         "quality": "medium", "background": "opaque", "seed": 268313160})
-    result = bild_service.collect_one("issue-1", job_state.get("issue-1"), now=999999.0)
+    result = bild_service.collect_one("issue-1", job_state.get("issue-1"), now=400.0)
     assert result == "timeout"
     job = job_state.get("issue-1")
     assert job["prompt_id"] == "prompt-2"
@@ -257,8 +259,9 @@ def test_run_once_alerts_then_resets_after_recovery(monkeypatch, tmp_path):
 
     monkeypatch.setattr(comfy_client, "health", lambda: True)
     bild_service.run_once(now=1000.0)
-    assert bild_service._unreachable_cycles == 0
-    assert bild_service._unreachable_alerted is False
+    # Zaehler leben in job_state (Datei), nicht mehr als bild_service-Modul-Globals
+    assert job_state.unreachable_cycles() == 0
+    assert job_state.is_unreachable_alerted() is False
 
     monkeypatch.setattr(comfy_client, "health", lambda: False)
     for _ in range(UNREACHABLE_ALERT_CYCLES):
@@ -267,6 +270,161 @@ def test_run_once_alerts_then_resets_after_recovery(monkeypatch, tmp_path):
 
 
 # --- Fix round 1: Finding 5 — nicht-auth Paperclip-Fehler duerfen run_once nicht sprengen --
+
+# --- Fix round: Finding 1 (KRITISCH) — der Zaehler muss einen echten Prozess- ---
+# --- neustart ueberleben, nicht nur einen simulierten "in-memory reset".      ---
+# --- launchd startet fuer JEDEN Zyklus (StartInterval, kein KeepAlive) einen  ---
+# --- frischen Python-Prozess -- Modul-Globals in bild_service.py wuerden      ---
+# --- dabei jedes Mal auf 0 zurueckfallen und die Schwelle nie erreichen.      ---
+
+def test_unreachable_alert_survives_process_restart_between_cycles(monkeypatch, tmp_path):
+    api = setup(monkeypatch, tmp_path)
+    monkeypatch.setattr(comfy_client, "health", lambda: False)
+    monkeypatch.setattr(bild_service, "_waiting_issues",
+                        lambda: [("company-a", "issue-1")])
+
+    from config import UNREACHABLE_ALERT_CYCLES
+    half = UNREACHABLE_ALERT_CYCLES // 2
+    for _ in range(half):
+        bild_service.note_unreachable()
+    assert api.mails == []          # noch nicht an der Schwelle
+
+    # Echter Prozessneustart, wie launchd ihn zwischen zwei Zyklen erzeugt:
+    # bild_service komplett neu importieren. Ein Modul-Global-Zaehler wuerde
+    # hier auf 0 zurueckfallen (die alte, kaputte Implementierung); der
+    # persistente Zaehler in job_state (eigene Datei, ueberlebt den Reimport
+    # unveraendert) muss den Fortschritt behalten.
+    import importlib
+    restarted = importlib.reload(bild_service)
+    for name in ("add_comment", "patch_status", "upload_attachment", "mail_alarm"):
+        monkeypatch.setattr(restarted.api, name, getattr(api, name))
+    monkeypatch.setattr(restarted, "_waiting_issues",
+                        lambda: [("company-a", "issue-1")])
+    monkeypatch.setattr(comfy_client, "health", lambda: False)
+
+    for _ in range(UNREACHABLE_ALERT_CYCLES - half):
+        restarted.note_unreachable()
+    assert len(api.mails) == 1       # Schwelle wurde ueber den Neustart hinweg erreicht
+
+
+# --- Fix round 2: Finding 2 — absoluter Notausstieg fuer haengengebliebene Jobs ---
+
+def test_collect_one_reaps_job_stuck_past_absolute_age_ceiling(monkeypatch, tmp_path):
+    """Wenn die 'done'-Verarbeitung wiederholt scheitert (Issue geloescht,
+    Ausgabedatei weg, ...), bleibt der Job nie in job_state.drop() angekommen
+    und der Knoten meldet bei jedem Zyklus wieder 'done'. Ohne Backstop wuerde
+    das fuer immer einen der drei Inflight-Plaetze blockieren."""
+    api = setup(monkeypatch, tmp_path)
+    job_state.add("issue-1", "prompt-1", "company-a", now=0.0)
+    monkeypatch.setattr(comfy_client, "poll",
+                        lambda pid: ("done", [{"filename": "a.png", "subfolder": "", "type": "output"}]))
+    ceiling = config.JOB_TIMEOUT_SEC * config.STUCK_JOB_AGE_MULTIPLIER
+    result = bild_service.collect_one("issue-1", job_state.get("issue-1"), now=ceiling + 1)
+    assert result == "error"
+    assert api.status["issue-1"] == "cancelled"
+    assert job_state.get("issue-1") is None
+    assert api.mails
+
+
+def test_collect_one_does_not_reap_job_just_under_the_ceiling(monkeypatch, tmp_path):
+    """Gegenprobe: kurz VOR der Schwelle darf der Backstop nicht greifen,
+    sonst wuerde er den normalen Erfolgsfall kaputt machen."""
+    api = setup(monkeypatch, tmp_path)
+    job_state.add("issue-1", "prompt-1", "company-a", now=0.0)
+    monkeypatch.setattr(comfy_client, "poll",
+                        lambda pid: ("done", [{"filename": "a.png", "subfolder": "", "type": "output"}]))
+    monkeypatch.setattr(comfy_client, "fetch_image", lambda img: b"PNGDATA")
+    ceiling = config.JOB_TIMEOUT_SEC * config.STUCK_JOB_AGE_MULTIPLIER
+    result = bild_service.collect_one("issue-1", job_state.get("issue-1"), now=ceiling - 1)
+    assert result == "done"
+    assert api.status["issue-1"] == "done"
+
+
+# --- Fix round 2: Finding 3 — der 'done'-Pfad muss idempotent sein --------------
+
+def test_collect_done_does_not_reupload_after_comment_fails_on_first_try(monkeypatch, tmp_path):
+    """upload_attachment() klappt, add_comment() scheitert danach (z.B. weil
+    Paperclip gerade per kickstart neu gestartet wird). Der naechste Zyklus
+    pollt erneut 'done' -- er darf das PNG nicht ein zweites Mal hochladen,
+    muss den Auftrag aber trotzdem sauber abschliessen."""
+    api = setup(monkeypatch, tmp_path)
+    job_state.add("issue-1", "prompt-1", "company-a", now=1000.0)
+    monkeypatch.setattr(comfy_client, "poll",
+                        lambda pid: ("done", [{"filename": "a.png", "subfolder": "", "type": "output"}]))
+    monkeypatch.setattr(comfy_client, "fetch_image", lambda img: b"PNGDATA")
+
+    calls = {"n": 0}
+
+    def flaky_comment(issue_id, body):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            raise RuntimeError("Paperclip kickstart mittendrin")
+        api.comments.append((issue_id, body))
+
+    monkeypatch.setattr(bild_service.api, "add_comment", flaky_comment)
+
+    with pytest.raises(RuntimeError):
+        bild_service.collect_one("issue-1", job_state.get("issue-1"), now=1010.0)
+    assert api.attachments == [("issue-1", "bild-issue-1.png", 7)]
+    assert job_state.get("issue-1")["uploaded"] is True
+
+    # Naechster Zyklus: Kommentar klappt jetzt -- aber kein zweiter Upload
+    result = bild_service.collect_one("issue-1", job_state.get("issue-1"), now=1020.0)
+    assert result == "done"
+    assert api.attachments == [("issue-1", "bild-issue-1.png", 7)]   # unveraendert, kein zweiter Upload
+    assert api.status["issue-1"] == "done"
+    assert job_state.get("issue-1") is None
+
+
+# --- Fix round 2: Finding 4 — Retry-Zweig muss brief['error'] pruefen -----------
+
+def test_timeout_retry_cancels_when_brief_became_invalid(monkeypatch, tmp_path):
+    """Wenn die Beschreibung waehrend des Renderns geleert wurde, liefert
+    parse_brief() beim Wiederholversuch einen Fehler (prompt: None). Ohne
+    diese Pruefung wuerde workflow_template.fill() ein Bild des Worts 'ul'
+    rendern und den Auftrag trotzdem als 'done' schliessen."""
+    api = setup(monkeypatch, tmp_path)
+    job_state.add("issue-1", "prompt-1", "company-a", now=0.0)
+    monkeypatch.setattr(comfy_client, "poll", lambda pid: ("running", None))
+    submitted = []
+    monkeypatch.setattr(comfy_client, "submit", lambda wf: submitted.append(1) or "prompt-2")
+    monkeypatch.setattr(bild_service, "_brief_for_issue", lambda job: {
+        "error": "Pflichtfeld 'prompt' fehlt oder ist leer.", "prompt": None, "modell": "qwen",
+        "size": "1024x1024", "width": 1024, "height": 1024, "openai_size": "1024x1024",
+        "quality": "medium", "background": "opaque", "seed": None})
+    result = bild_service.collect_one("issue-1", job_state.get("issue-1"), now=400.0)
+    assert result == "error"
+    assert api.status["issue-1"] == "cancelled"
+    assert "Pflichtfeld" in api.comments[0][1]
+    assert job_state.get("issue-1") is None
+    assert submitted == []       # kein neuer Render-Versuch mit kaputtem Brief
+
+
+# --- Fix round 2: Finding 5 — voller Knoten muss der Agentin ein Signal geben ---
+
+def test_full_queue_comments_once_and_clears_notice_once_submitted(monkeypatch, tmp_path):
+    api = setup(monkeypatch, tmp_path)
+    for i in range(config.MAX_INFLIGHT_JOBS):
+        job_state.add("other-%d" % i, "prompt-%d" % i, "company-a", now=1000.0)
+    brief = {"error": None, "prompt": "Hirsch", "modell": "qwen", "size": "1024x1024",
+             "width": 1024, "height": 1024, "openai_size": "1024x1024",
+             "quality": "medium", "background": "opaque", "seed": 42}
+
+    bild_service.render_local(COMPANY, {"id": "issue-1"}, brief, now=1000.0)
+    bild_service.render_local(COMPANY, {"id": "issue-1"}, brief, now=1060.0)
+    bild_service.render_local(COMPANY, {"id": "issue-1"}, brief, now=1120.0)
+    assert len(api.comments) == 1        # nur einmal, nicht bei jedem Zyklus
+    assert "Warteschlange" in api.comments[0][1]
+    assert job_state.get("issue-1") is None
+
+    # Ein Slot wird frei -> naechster Zyklus rendert und der Marker wird geloescht
+    job_state.drop("other-0")
+    monkeypatch.setattr(comfy_client, "submit", lambda wf: "prompt-issue-1")
+    bild_service.render_local(COMPANY, {"id": "issue-1"}, brief, now=1180.0)
+    assert job_state.get("issue-1")["prompt_id"] == "prompt-issue-1"
+    assert job_state.has_queue_notice("issue-1") is False
+    assert len(api.comments) == 1        # weiterhin nur der eine Warteschlange-Kommentar
+
 
 def test_run_once_survives_broad_paperclip_failure(monkeypatch, tmp_path):
     api = setup(monkeypatch, tmp_path)

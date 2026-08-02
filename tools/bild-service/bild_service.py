@@ -22,18 +22,20 @@ FORMAT_HINT = ("Format:\n"
                "format: 1024x1024\n"
                "seed: 42")
 
-_unreachable_cycles = 0
-_unreachable_alerted = False
-
-
 def _today():
     return datetime.date.today().isoformat()
 
 
 def reset_unreachable_counter():
-    global _unreachable_cycles, _unreachable_alerted
-    _unreachable_cycles = 0
-    _unreachable_alerted = False
+    """Zaehler und Alarmiert-Flag zuruecksetzen.
+
+    Liegen persistent in job_state (State-File), NICHT als Modul-Globals:
+    launchd startet den Dienst per StartInterval ohne KeepAlive, also ist
+    jeder Zyklus ein frischer Prozess. Modul-Globals wuerden bei jedem Start
+    auf 0 zurueckfallen und die Alarmschwelle (UNREACHABLE_ALERT_CYCLES)
+    nie erreichen -- siehe job_state.py fuer die Details.
+    """
+    job_state.reset_unreachable()
 
 
 # --- Absenden ------------------------------------------------------------
@@ -41,7 +43,16 @@ def reset_unreachable_counter():
 def render_local(company, issue, brief, now):
     iid = issue["id"]
     if len(job_state.all()) >= config.MAX_INFLIGHT_JOBS:
-        return          # Knoten voll: Auftrag bleibt liegen, naechster Zyklus versucht erneut
+        # Knoten voll: Auftrag bleibt liegen, naechster Zyklus versucht erneut.
+        # blockParentUntilDone haengt die ordernde Agentin sonst ohne jedes
+        # Signal auf -- einmalig kommentieren, aber NICHT bei jedem Zyklus,
+        # sonst waere der Kommentarspam schlimmer als die Stille.
+        if not job_state.has_queue_notice(iid):
+            api.add_comment(iid, "⏳ Warteschlange voll (max. %d gleichzeitige lokale Renders). "
+                                 "Auftrag wird gerendert, sobald ein Platz frei wird."
+                                 % config.MAX_INFLIGHT_JOBS)
+            job_state.mark_queue_notice(iid)
+        return
     if cost_state.remaining_local_today(_today()) <= 0:
         api.add_comment(iid, "⚠️ Tageslimit (%d lokale Bilder) erreicht. "
                              "Morgen erneut versuchen." % config.DAILY_LOCAL_LIMIT)
@@ -55,6 +66,7 @@ def render_local(company, issue, brief, now):
     except comfy_client.ComfyError:
         return          # Knoten weg: Auftrag bleibt liegen, naechster Zyklus versucht erneut
     job_state.add(iid, prompt_id, company["id"], now, seed=seed)
+    job_state.clear_queue_notice(iid)
     cost_state.record_local(_today())
 
 
@@ -116,15 +128,43 @@ def _brief_for_issue(job):
 
 
 def collect_one(issue_id, job, now):
+    # Absoluter Notausstieg (Finding 2): wenn die 'done'-Verarbeitung weiter
+    # unten (fetch_image/upload_attachment/add_comment/patch_status) an
+    # irgendeiner Stelle scheitert, wird job_state.drop() nie erreicht -- der
+    # Knoten meldet beim naechsten Zyklus wieder 'done', und derselbe Schritt
+    # scheitert erneut, auf ewig. Deshalb VOR jeder Status-Verzweigung
+    # pruefen: ein Job, der laenger als das Vielfache von JOB_TIMEOUT_SEC lebt,
+    # wird zwangsweise abgebrochen, egal was der Knoten gerade meldet.
+    stuck_ceiling = config.JOB_TIMEOUT_SEC * config.STUCK_JOB_AGE_MULTIPLIER
+    if job_state.age_seconds(job, now) > stuck_ceiling:
+        api.add_comment(issue_id,
+                        "⚠️ Auftrag hängt seit über %d s fest und wurde zwangsweise "
+                        "abgebrochen." % stuck_ceiling)
+        api.patch_status(issue_id, "cancelled")
+        job_state.drop(issue_id)
+        api.mail_alarm("[Bilddienst] Auftrag hängengeblieben",
+                       "Issue %s, prompt_id %s hängt seit über %d s fest (vermutlich "
+                       "wiederholt gescheiterte Verarbeitung eines 'done'-Ergebnisses) "
+                       "und wurde zwangsweise abgebrochen."
+                       % (issue_id, job["prompt_id"], stuck_ceiling))
+        return "error"
+
     try:
         status, payload = comfy_client.poll(job["prompt_id"])
     except comfy_client.ComfyError:
         return "running"        # Knoten weg: nichts entscheiden, spaeter erneut
 
     if status == "done":
-        png = comfy_client.fetch_image(payload[0])
-        api.upload_attachment(job["company_id"], issue_id,
-                              "bild-%s.png" % issue_id[:8], png)
+        # Finding 3: idempotent machen. upload_attachment() kann erfolgreich
+        # sein, aber add_comment()/patch_status() danach scheitern (z.B.
+        # Paperclip-Restart per launchctl kickstart mittendrin) -- der
+        # naechste Zyklus pollt wieder 'done' und darf das PNG nicht ein
+        # zweites Mal hochladen.
+        if not job.get("uploaded"):
+            png = comfy_client.fetch_image(payload[0])
+            api.upload_attachment(job["company_id"], issue_id,
+                                  "bild-%s.png" % issue_id[:8], png)
+            job_state.mark_uploaded(issue_id)
         api.add_comment(issue_id,
                         "✅ Bild erzeugt (Qwen-Image 2512, lokal).\n"
                         "Seed: %s\nDauer: %.0f s"
@@ -142,6 +182,17 @@ def collect_one(issue_id, job, now):
     if job_state.age_seconds(job, now) > config.JOB_TIMEOUT_SEC:
         if int(job.get("attempts", 1)) < 2:
             brief = _brief_for_issue(dict(job, issue_id=issue_id))
+            # Finding 4: die Beschreibung kann waehrend des Renderns geleert
+            # oder kaputt bearbeitet worden sein -- parse_brief() liefert
+            # dann einen Fehler und prompt=None. Ohne diese Pruefung wuerde
+            # workflow_template.fill() mit json.dumps(None)[1:-1] == 'ul'
+            # ein Bild des Worts "ul" rendern und als 'done' schliessen.
+            if brief["error"]:
+                api.add_comment(issue_id,
+                                "⚠️ Bild nicht erzeugt: %s\n%s" % (brief["error"], FORMAT_HINT))
+                api.patch_status(issue_id, "cancelled")
+                job_state.drop(issue_id)
+                return "error"
             seed = brief["seed"] if brief["seed"] is not None else random.randint(1, 2 ** 31 - 1)
             workflow = wt.fill(wt.load_raw("qwen-image"), brief["prompt"], seed,
                                brief["width"], brief["height"])
@@ -175,9 +226,8 @@ def _waiting_issues():
 
 
 def note_unreachable():
-    global _unreachable_cycles, _unreachable_alerted
-    _unreachable_cycles += 1
-    if _unreachable_cycles < config.UNREACHABLE_ALERT_CYCLES or _unreachable_alerted:
+    cycles = job_state.increment_unreachable_cycles()
+    if cycles < config.UNREACHABLE_ALERT_CYCLES or job_state.is_unreachable_alerted():
         return
     try:
         waiting = _waiting_issues()
@@ -189,12 +239,12 @@ def note_unreachable():
         api.mail_alarm("[Bilddienst] Renderknoten nicht erreichbar",
                        "ComfyUI auf %s antwortet seit %d Zyklen nicht. "
                        "Wartende Aufträge: %d"
-                       % (config.COMFY_BASE, _unreachable_cycles, len(waiting)))
+                       % (config.COMFY_BASE, cycles, len(waiting)))
     except api.AuthError:
         raise            # Token-Ablauf gehoert nach oben, nicht verschluckt
     except Exception:
         return           # Sperre bleibt offen -> naechster Zyklus versucht es erneut
-    _unreachable_alerted = True
+    job_state.set_unreachable_alerted(True)
 
 
 # --- Zyklus --------------------------------------------------------------

@@ -5,6 +5,17 @@ from config import (PAPERCLIP_BASE, AUTH_JSON, MAIL_WEBHOOK, MAIL_SECRET_ENV,
 class AuthError(Exception):
     pass
 
+
+class PaperclipError(RuntimeError):
+    """Nicht-Auth-Fehler beim Reden mit Paperclip (HTTP-Status, Netzwerk, JSON).
+
+    Faengt alles ab, was _request() sonst als bare RuntimeError oder gar
+    nicht typisiert durchreichen wuerde. Erbt von RuntimeError, damit
+    bestehende breite except-Bloecke (except Exception / except RuntimeError)
+    weiterhin greifen.
+    """
+
+
 def _token():
     with open(AUTH_JSON) as f:
         return json.load(f)["credentials"][PAPERCLIP_BASE]["token"]
@@ -29,11 +40,22 @@ def _request(method, path, *, json_body=None, multipart=None, base=PAPERCLIP_BAS
     try:
         with urllib.request.urlopen(req, timeout=60) as resp:
             raw = resp.read()
-            return json.loads(raw) if raw else {}
+            try:
+                return json.loads(raw) if raw else {}
+            except json.JSONDecodeError as e:
+                raise PaperclipError(
+                    "Paperclip %s %s: ungueltiges JSON in der Antwort (%s): %s"
+                    % (method, path, e, raw.decode(errors="replace")[:300]))
     except urllib.error.HTTPError as e:
         if e.code in (401, 403):
             raise AuthError(f"Paperclip {e.code} — Board-Token abgelaufen.")
-        raise RuntimeError(f"Paperclip HTTP {e.code}: {e.read().decode(errors='replace')[:300]}")
+        raise PaperclipError(
+            "Paperclip %s %s: HTTP %s: %s"
+            % (method, path, e.code, e.read().decode(errors="replace")[:300]))
+    except urllib.error.URLError as e:
+        raise PaperclipError("Paperclip %s %s: nicht erreichbar: %s" % (method, path, e))
+    except OSError as e:
+        raise PaperclipError("Paperclip %s %s: OS-Fehler: %s" % (method, path, e))
 
 def list_issues(company_id, status, label_id, limit=100):
     return _request("GET",
