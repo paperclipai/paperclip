@@ -1,8 +1,8 @@
 {
   "schemaVersion": "paperclip_issue_version_write_catalog_v2",
   "baseline": {
-    "acceptedEntryDigestSha256": "009EFA18CB03E8763D99B8EF24CA370C5C403AFE22A31381211E98F09C75293E",
-    "observedDigestSha256": "D3F9961A424C24EC145CF5162DFFC4A8A4B60A1EF3D5E319FE57729A820B2938",
+    "acceptedEntryDigestSha256": "F26431F3813CC2D60A696208B6719CFCEE8BE8F7B1713BB8E60F241CCFBBDB08",
+    "observedDigestSha256": "591B4E27B3BBE9E98B041E8179FFF58F7D814C9696C17D721E8273562F9BCBF8",
     "counts": {
       "total": 76,
       "issues": 58,
@@ -178,14 +178,14 @@
     {
       "id": "M008",
       "path": "server/src/routes/issues.ts",
-      "line": 6704,
+      "line": 6711,
       "receiver": "tx",
       "operation": "update",
       "table": "issues",
       "tableToken": "issueRows",
       "containingFunction": "issueRoutes",
       "containingFunctionLine": 2577,
-      "sourceFileSha256": "C0D4B39EEFF25A1DA0E8EED8B4EFD0B5A33A3915786C275A88206032D299280D",
+      "sourceFileSha256": "2A06F098CD80A818DBB49E2D0D66B16AFB435153C562053C474A3B6CC830C3A9",
       "classification": "versioned",
       "state": "versioned",
       "resolution": {
@@ -197,14 +197,14 @@
     {
       "id": "M009",
       "path": "server/src/routes/issues.ts",
-      "line": 6714,
+      "line": 6721,
       "receiver": "tx",
       "operation": "update",
       "table": "issueComments",
       "tableToken": "issueComments",
       "containingFunction": "issueRoutes",
       "containingFunctionLine": 2577,
-      "sourceFileSha256": "C0D4B39EEFF25A1DA0E8EED8B4EFD0B5A33A3915786C275A88206032D299280D",
+      "sourceFileSha256": "2A06F098CD80A818DBB49E2D0D66B16AFB435153C562053C474A3B6CC830C3A9",
       "classification": "versioned",
       "state": "versioned",
       "resolution": {
@@ -366,14 +366,14 @@
     {
       "id": "M018",
       "path": "server/src/services/execution-workspaces.ts",
-      "line": 1963,
+      "line": 1964,
       "receiver": "mtx",
       "operation": "insert",
       "table": "issueComments",
       "tableToken": "issueComments",
       "containingFunction": "mutate",
       "containingFunctionLine": null,
-      "sourceFileSha256": "CAB6AC81D02A3D2C8DF24C6012BA1DA06578D1C41902F022E4FAA8CC37F2507A",
+      "sourceFileSha256": "2337841B54504C361EB6D0E013C43295AB36635C54EAE88C5F1631FBBE92D2C7",
       "classification": "versioned",
       "state": "versioned",
       "resolution": {
@@ -385,14 +385,14 @@
     {
       "id": "M019",
       "path": "server/src/services/execution-workspaces.ts",
-      "line": 2008,
+      "line": 2009,
       "receiver": "mtx",
       "operation": "insert",
       "table": "issueComments",
       "tableToken": "issueComments",
       "containingFunction": "mutate",
       "containingFunctionLine": null,
-      "sourceFileSha256": "CAB6AC81D02A3D2C8DF24C6012BA1DA06578D1C41902F022E4FAA8CC37F2507A",
+      "sourceFileSha256": "2337841B54504C361EB6D0E013C43295AB36635C54EAE88C5F1631FBBE92D2C7",
       "classification": "versioned",
       "state": "versioned",
       "resolution": {

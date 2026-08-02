@@ -1505,7 +1505,7 @@ test("C13 exact live proofs, certificates, and M055 authority", () => {
     const expectedNormalExits = new Map([
       ["M002", [["Block", 1195]]],
       ["M004", [["ReturnStatement", 2990]]],
-      ["M009", [["ReturnStatement", 6752]]],
+      ["M009", [["ReturnStatement", 6759]]],
       ["M014", [["ReturnStatement", 784]]],
     ]);
   const sourceFiles = new Map();
