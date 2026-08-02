@@ -21,6 +21,13 @@ const mockIssueService = vi.hoisted(() => ({
   getByIdentifier: vi.fn(),
 }));
 
+const mockAccessDecide = vi.hoisted(() => vi.fn(async (input: { action?: string }) => ({
+  allowed: true,
+  action: input.action,
+  reason: "allow_explicit_grant",
+  explanation: "Allowed by test grant.",
+})));
+
 const mockInstanceSettingsService = vi.hoisted(() => ({
   get: vi.fn(),
   getExperimental: vi.fn(),
@@ -54,12 +61,7 @@ function registerModuleMocks() {
     agentInstructionsService: () => ({}),
     accessService: () => ({
       canUser: vi.fn(async () => true),
-      decide: vi.fn(async (input: { action?: string }) => ({
-        allowed: true,
-        action: input.action,
-        reason: "allow_explicit_grant",
-        explanation: "Allowed by test grant.",
-      })),
+      decide: mockAccessDecide,
       hasPermission: vi.fn(async () => true),
     }),
     approvalService: () => ({}),
@@ -173,6 +175,9 @@ describe("agent live run routes", () => {
       companyId: "company-1",
       executionRunId: "run-1",
       assigneeAgentId: "agent-1",
+      assigneeUserId: null,
+      projectId: null,
+      parentId: null,
       status: "in_progress",
     });
     mockIssueService.getById.mockResolvedValue(null);
@@ -339,6 +344,69 @@ describe("agent live run routes", () => {
       lastAssistantSnippet: "Inspecting files",
       lastEventAt: "2026-04-10T09:30:06.000Z",
     });
+  });
+
+  it("filters issue active-run polling by selected targetAgentId", async () => {
+    mockHeartbeatService.getRunIssueSummary.mockResolvedValue({
+      id: "run-assignee",
+      status: "running",
+      invocationSource: "assignment",
+      triggerDetail: "callback",
+      startedAt: new Date("2026-04-10T10:00:00.000Z"),
+      finishedAt: null,
+      createdAt: new Date("2026-04-10T09:59:00.000Z"),
+      agentId: "agent-1",
+      issueId: "issue-1",
+    });
+    mockHeartbeatService.getActiveRunIssueSummaryForAgent.mockResolvedValue({
+      id: "run-target",
+      status: "running",
+      invocationSource: "automation",
+      triggerDetail: "system",
+      startedAt: new Date("2026-04-10T10:01:00.000Z"),
+      finishedAt: null,
+      createdAt: new Date("2026-04-10T10:00:59.000Z"),
+      agentId: routeAgentId,
+      issueId: "issue-1",
+    });
+    mockAgentService.getById.mockResolvedValue({
+      id: routeAgentId,
+      companyId: "company-1",
+      name: "Selected Agent",
+      adapterType: "codex_local",
+    });
+
+    const res = await requestApp(
+      await createApp(),
+      (baseUrl) => request(baseUrl).get(`/api/issues/PC1A2-1295/active-run?targetAgentId=${routeAgentId}`),
+    );
+
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockHeartbeatService.getActiveRunIssueSummaryForAgent).toHaveBeenCalledWith(routeAgentId);
+    expect(res.body).toMatchObject({
+      id: "run-target",
+      issueId: "issue-1",
+      agentId: routeAgentId,
+      agentName: "Selected Agent",
+    });
+  });
+
+  it("enforces issue read authorization before active-run polling", async () => {
+    mockAccessDecide.mockResolvedValueOnce({
+      allowed: false,
+      action: "issue:read",
+      reason: "deny_low_trust_boundary",
+      explanation: "Issue is outside this low-trust boundary.",
+    });
+
+    const res = await requestApp(
+      await createApp(),
+      (baseUrl) => request(baseUrl).get("/api/issues/PC1A2-1295/active-run"),
+    );
+
+    expect(res.status).toBe(403);
+    expect(res.body).toEqual({ error: "Issue is outside this actor's authorization boundary" });
+    expect(mockHeartbeatService.getRunIssueSummary).not.toHaveBeenCalled();
   });
 
   it("uses narrow run log metadata lookups for log polling", async () => {

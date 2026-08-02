@@ -54,6 +54,7 @@ import type {
   SuccessfulRunHandoffState,
 } from "@paperclipai/shared";
 import {
+  DEFAULT_HIDDEN_ISSUE_ORIGIN_KINDS,
   clampIssueRequestDepth,
   extractAgentMentionIds,
   extractProjectMentionIds,
@@ -521,6 +522,7 @@ export interface IssueFilters {
   includeRoutineExecutions?: boolean;
   excludeRoutineExecutions?: boolean;
   includePluginOperations?: boolean;
+  includeSpecialOrigins?: boolean;
   includeBlockedBy?: boolean;
   includeBlockedInboxAttention?: boolean;
   includeLiveDescendantSummary?: boolean;
@@ -1622,6 +1624,19 @@ function shouldIncludePluginOperationIssues(filters: IssueFilters | undefined) {
     filters?.originKindPrefix ||
     filters?.originId ||
     filters?.projectId,
+  );
+}
+
+function nonDefaultHiddenIssueOriginCondition() {
+  return notInArray(issues.originKind, [...DEFAULT_HIDDEN_ISSUE_ORIGIN_KINDS]);
+}
+
+function shouldIncludeDefaultHiddenIssueOrigins(filters: IssueFilters | undefined) {
+  return Boolean(
+    filters?.includeSpecialOrigins ||
+    filters?.originKind ||
+    filters?.originKindPrefix ||
+    filters?.originId,
   );
 }
 
@@ -3764,6 +3779,7 @@ async function blockedInboxIssueConditions(
     conditions.push(hasPlanDocumentCondition(companyId, filters.hasPlanDocument));
   }
   if (!shouldIncludePluginOperationIssues(filters)) conditions.push(nonPluginOperationIssueCondition());
+  if (!shouldIncludeDefaultHiddenIssueOrigins(filters)) conditions.push(nonDefaultHiddenIssueOriginCondition());
   if (filters?.labelId) {
     const labeledIssueIds = await dbOrTx
       .select({ issueId: issueLabels.issueId })
@@ -5112,6 +5128,9 @@ export function issueService(db: Db) {
       if (!shouldIncludePluginOperationIssues(filters)) {
         conditions.push(nonPluginOperationIssueCondition());
       }
+      if (!shouldIncludeDefaultHiddenIssueOrigins(filters)) {
+        conditions.push(nonDefaultHiddenIssueOriginCondition());
+      }
       if (filters?.labelId) {
         const labeledIssueIds = await db
           .select({ issueId: issueLabels.issueId })
@@ -5288,6 +5307,7 @@ export function issueService(db: Db) {
         conditions.push(hasPlanDocumentCondition(companyId, filters.hasPlanDocument));
       }
       if (!shouldIncludePluginOperationIssues(filters)) conditions.push(nonPluginOperationIssueCondition());
+      if (!shouldIncludeDefaultHiddenIssueOrigins(filters)) conditions.push(nonDefaultHiddenIssueOriginCondition());
       const [row] = await db
         .select({ count: sql<number>`count(*)` })
         .from(issues)
@@ -5304,6 +5324,7 @@ export function issueService(db: Db) {
         eq(issues.companyId, companyId),
         visibleIssueCondition(),
         nonPluginOperationIssueCondition(),
+        nonDefaultHiddenIssueOriginCondition(),
         unreadForUserCondition(companyId, userId),
       ];
       const statuses = parseStatusFilter(status);

@@ -270,6 +270,7 @@ function boardRoutes() {
           `/artifacts` in both modes. */}
       <Route element={<ConferenceRoomChatGate />}>
         <Route path="board-chat" element={<BoardChat />} />
+        <Route path="board-chat/:conversationRef" element={<BoardChat />} />
         <Route path="artifacts" element={<Artifacts />} />
       </Route>
       {/* Task Chat Redesign dev harness — dev builds only, and additionally

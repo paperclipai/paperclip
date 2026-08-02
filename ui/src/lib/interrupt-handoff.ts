@@ -105,6 +105,16 @@ export function bodyHasAgentMention(body: string): boolean {
   return extractAgentMentionIds(body).length > 0;
 }
 
+export function resolveMentionedAgentAssigneeValue(
+  body: string,
+  availableAssigneeValues: ReadonlySet<string>,
+): string | null {
+  const agentId = extractAgentMentionIds(body)[0];
+  if (!agentId) return null;
+  const assigneeValue = `agent:${agentId}`;
+  return availableAssigneeValues.has(assigneeValue) ? assigneeValue : null;
+}
+
 /** Strip every markdown link so chip labels/hrefs are not mistaken for plain text. */
 function plainTextOutsideLinks(body: string): string {
   return body.replace(MARKDOWN_LINK_RE, " ");

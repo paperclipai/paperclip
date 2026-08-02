@@ -111,6 +111,17 @@ See [SPEC.md](./SPEC.md) for the full technical specification and [TASKS.md](./T
 
 Paperclip’s core identity is a **control plane for autonomous AI companies**, centered on **companies, org charts, goals, issues/comments, heartbeats, budgets, approvals, and board governance**. The public docs are also explicit about the current boundaries: **tasks/comments are the built-in communication model**, Paperclip is **not a chatbot**, and it is **not a code review tool**. The roadmap already points toward **easier onboarding, cloud agents, easier agent configuration, plugins, better docs, and ClipMart/ClipHub-style reusable companies/templates**.
 
+## Conversational Work Surfaces
+
+Some Paperclip surfaces feel conversational, but they still use the same issue/comment control-plane model:
+
+- The issue detail chat tab is the issue's comment thread with run, interaction, and work-product context rendered inline.
+- The Conference Room is a board-facing entry point backed by ordinary company-scoped `board_chat` issues. History is issue history, not a separate conversation store.
+- Sending a Conference Room message posts a comment to the backing issue and wakes a real selected agent through `targetAgentId`. If no target is supplied, Paperclip selects the company's CEO.
+- Agent replies are real agent-authored issue comments and their live work is shown from the target agent's active run for that issue.
+
+This is why "Chat with CEO" still resolves to strategy threads, decisions, tasks, approvals, and work products. It is a fast path into the work graph, not a board-concierge subsystem or a general-purpose chatbot.
+
 ## What Paperclip should do vs. not do
 
 **Do**
@@ -141,7 +152,7 @@ Paperclip’s core identity is a **control plane for autonomous AI companies**, 
    The default UI should answer: what is the company doing, who is doing it, why does it matter, what did it cost, and what needs my approval.
 
 3. **Conversation stays attached to work objects**
-   “Chat with CEO” should still resolve to strategy threads, decisions, tasks, or approvals.
+   “Chat with CEO” should still resolve to issue-backed strategy threads, decisions, tasks, approvals, and work products.
 
 4. **Progressive disclosure**
    Top layer: human-readable summary. Middle layer: checklist/steps/artifacts. Bottom layer: raw logs/tool calls/transcript.

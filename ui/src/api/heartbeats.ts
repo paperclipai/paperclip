@@ -116,10 +116,14 @@ export const heartbeatsApi = {
       reason: input.reason ?? null,
       snoozedUntil: input.snoozedUntil ?? null,
     }),
-  liveRunsForIssue: (issueId: string) =>
-    api.get<LiveRunForIssue[]>(`/issues/${issueId}/live-runs`),
-  activeRunForIssue: (issueId: string) =>
-    api.get<ActiveRunForIssue | null>(`/issues/${issueId}/active-run`),
+  liveRunsForIssue: (issueId: string, targetAgentId?: string | null) =>
+    api.get<LiveRunForIssue[]>(
+      `/issues/${issueId}/live-runs${targetAgentId ? `?targetAgentId=${encodeURIComponent(targetAgentId)}` : ""}`,
+    ),
+  activeRunForIssue: (issueId: string, targetAgentId?: string | null) =>
+    api.get<ActiveRunForIssue | null>(
+      `/issues/${issueId}/active-run${targetAgentId ? `?targetAgentId=${encodeURIComponent(targetAgentId)}` : ""}`,
+    ),
   liveRunsForCompany: (
     companyId: string,
     options?: number | { minCount?: number; limit?: number },
