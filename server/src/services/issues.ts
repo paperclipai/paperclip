@@ -6353,7 +6353,8 @@ export function issueService(db: Db) {
         onDeduplicated,
         ...issueData
       } = data;
-      const explicitExecutionPolicy = normalizeIssueExecutionPolicy(issueData.executionPolicy ?? null);
+      const explicitExecutionPolicyInput = issueData.executionPolicy;
+      const explicitExecutionPolicy = normalizeIssueExecutionPolicy(explicitExecutionPolicyInput ?? null);
       const effectiveExecutionPolicy =
         explicitExecutionPolicy?.monitor || !hasLegacyMonitorPatchFields(issueData)
           ? explicitExecutionPolicy
@@ -6364,8 +6365,8 @@ export function issueService(db: Db) {
             });
       if (effectiveExecutionPolicy !== explicitExecutionPolicy) {
         issueData.executionPolicy = effectiveExecutionPolicy as typeof issues.$inferInsert["executionPolicy"];
-      } else if (issueData.executionPolicy !== undefined) {
-        issueData.executionPolicy = explicitExecutionPolicy as typeof issues.$inferInsert["executionPolicy"];
+      } else if (explicitExecutionPolicyInput !== undefined) {
+        issueData.executionPolicy = explicitExecutionPolicyInput as typeof issues.$inferInsert["executionPolicy"];
       }
       const isolatedWorkspacesEnabled = (await instanceSettings.getExperimental()).enableIsolatedWorkspaces;
       if (!isolatedWorkspacesEnabled) {
@@ -6710,9 +6711,10 @@ export function issueService(db: Db) {
         delete issueData.executionWorkspaceSettings;
       }
       const previousExecutionPolicy = normalizeIssueExecutionPolicy(existing.executionPolicy ?? null);
+      const explicitExecutionPolicyInput = issueData.executionPolicy;
       const explicitExecutionPolicy =
-        issueData.executionPolicy !== undefined
-          ? normalizeIssueExecutionPolicy(issueData.executionPolicy ?? null)
+        explicitExecutionPolicyInput !== undefined
+          ? normalizeIssueExecutionPolicy(explicitExecutionPolicyInput ?? null)
           : undefined;
 
       if (issueData.status) {
@@ -6723,8 +6725,8 @@ export function issueService(db: Db) {
         ...issueData,
         updatedAt: new Date(),
       };
-      if (explicitExecutionPolicy !== undefined) {
-        patch.executionPolicy = explicitExecutionPolicy as typeof issues.$inferInsert["executionPolicy"];
+      if (explicitExecutionPolicyInput !== undefined) {
+        patch.executionPolicy = explicitExecutionPolicyInput as typeof issues.$inferInsert["executionPolicy"];
       }
       if (existing.status !== "blocked" && issueData.status === "blocked") {
         patch.blockedTransitionAt = patch.updatedAt;
@@ -6831,7 +6833,10 @@ export function issueService(db: Db) {
               fields: issueData,
             });
       if (shouldMaterializeMonitorPolicy) {
-        patch.executionPolicy = effectiveExecutionPolicy as typeof issues.$inferInsert["executionPolicy"];
+        patch.executionPolicy =
+          effectiveExecutionPolicy === explicitExecutionPolicy && explicitExecutionPolicyInput !== undefined
+            ? explicitExecutionPolicyInput as typeof issues.$inferInsert["executionPolicy"]
+            : effectiveExecutionPolicy as typeof issues.$inferInsert["executionPolicy"];
         Object.assign(
           patch,
           applyIssueMonitorPolicyTransition({

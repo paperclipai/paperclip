@@ -3524,6 +3524,7 @@ describeEmbeddedPostgres("issueService monitor persistence normalization", () =>
           nextCheckAt: "2026-08-03T14:00:00.000Z",
           notes: "Canonical policy update.",
           scheduledBy: "assignee",
+          externalRef: "provider-run-123",
         },
       },
     });
@@ -3531,6 +3532,11 @@ describeEmbeddedPostgres("issueService monitor persistence normalization", () =>
     expect(updated?.monitorNextCheckAt?.toISOString()).toBe("2026-08-03T14:00:00.000Z");
     expect(updated?.monitorNotes).toBe("Canonical policy update.");
     expect(updated?.monitorScheduledBy).toBe("assignee");
+    expect(updated?.executionPolicy).toMatchObject({
+      monitor: {
+        externalRef: "provider-run-123",
+      },
+    });
     expect(updated?.executionState).toMatchObject({
       monitor: {
         status: "scheduled",
