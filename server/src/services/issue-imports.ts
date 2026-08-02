@@ -114,6 +114,8 @@ function issueCurrentSnapshot(issue: typeof issues.$inferSelect, blockers: Curre
     priority: issue.priority,
     projectId: issue.projectId,
     parentId: issue.parentId,
+    assigneeAgentId: issue.assigneeAgentId,
+    assigneeUserId: issue.assigneeUserId,
     blockedByIssueIds: blockers.map((blocker) => blocker.issueId).sort(),
     blockedBySourceIds: blockers
       .flatMap((blocker) => blocker.sourceId ? [blocker.sourceId] : [])
@@ -273,6 +275,9 @@ export function issueImportService(db: Db) {
       if (existing && existing.originFingerprint !== fingerprint) failures.push("origin_fingerprint_mismatch");
       if (existing && state && state.sourceVersion !== source.sourceVersion) conflicts.push("source_version_drift");
       const action = !existing ? "create" : !state ? "link" : state.sourceVersion === source.sourceVersion ? "unchanged" : "update";
+      if (action === "link" && (existing!.assigneeAgentId !== null || existing!.assigneeUserId !== null)) {
+        conflicts.push("first_link_assignment_conflict");
+      }
       const currentBlockers = existing ? currentBlockersByIssue.get(existing.id) ?? [] : [];
       if (existing) {
         const proposedParentIssueId = source.parentSourceId
@@ -461,6 +466,12 @@ export function issueImportService(db: Db) {
         const firstLinkSourceIds = new Set(existingIssues
           .filter((issue) => !reconciledSourceIds.has(issue.originId!))
           .map((issue) => issue.originId!));
+        const assignedFirstLinkExists = existingIssues.some((issue) =>
+          firstLinkSourceIds.has(issue.originId!)
+          && (issue.assigneeAgentId !== null || issue.assigneeUserId !== null));
+        if (assignedFirstLinkExists) {
+          throw conflict("Assigned pre-existing Linear origins must be unassigned before first link");
+        }
         const [company] = await tx.select().from(companies).where(eq(companies.id, companyId)).for("update");
         if (!company) throw notFound("Company not found");
         const currentMax = await tx.select({ value: max(issues.issueNumber) }).from(issues)
@@ -691,9 +702,9 @@ export function issueImportService(db: Db) {
           await tx.update(issueImportItems).set({
             applied: {
               issueId: issue.id,
-              staged: true,
-              assigneeAgentId: null,
-              assigneeUserId: null,
+              staged: issue.assigneeAgentId === null && issue.assigneeUserId === null,
+              assigneeAgentId: issue.assigneeAgentId,
+              assigneeUserId: issue.assigneeUserId,
               sourceVersion: item.sourceVersion,
               sourceUpdatedAt: item.sourceUpdatedAt.toISOString(),
             },

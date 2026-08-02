@@ -242,6 +242,109 @@ describePg("provider-aware staged issue imports", () => {
       .rejects.toThrow();
   });
 
+  it.each([
+    { assignmentKind: "agent", assigneeAgentId: randomUUID(), assigneeUserId: null },
+    { assignmentKind: "user", assigneeAgentId: null, assigneeUserId: "board-user-1" },
+  ])("rejects first-link of a pre-existing $assignmentKind-assigned origin without mutation", async ({
+    assignmentKind,
+    assigneeAgentId,
+    assigneeUserId,
+  }) => {
+    const { companyId, projectId } = await seed();
+    if (assigneeAgentId) {
+      await db.insert(agents).values({
+        id: assigneeAgentId,
+        companyId,
+        name: "Existing assignee",
+      });
+    }
+    const source = item({ sourceIdentifier: assignmentKind === "agent" ? "EXT-921" : "EXT-922" });
+    const [existingIssue] = await db.insert(issues).values({
+      companyId,
+      title: "Assigned pre-existing Linear origin",
+      assigneeAgentId,
+      assigneeUserId,
+      originKind: "linear_issue",
+      originId: source.sourceId,
+      originFingerprint: computeLinearIssueFingerprint(source.sourceId),
+    }).returning();
+
+    const preview = await request(app()).post(`/api/companies/${companyId}/issue-imports/preview`)
+      .send(manifest(projectId, [source]))
+      .expect(201);
+    expect(preview.body.items[0]).toMatchObject({
+      action: "link",
+      current: { assigneeAgentId, assigneeUserId },
+      conflicts: ["first_link_assignment_conflict"],
+    });
+
+    await request(app()).post(`/api/companies/${companyId}/issue-imports/apply`).send({
+      previewRunId: preview.body.previewRunId,
+      previewDigest: preview.body.previewDigest,
+      activate: false,
+    }).expect(409);
+
+    expect(await db.select().from(issues).where(eq(issues.id, existingIssue.id)).then((rows) => rows[0]))
+      .toMatchObject({ assigneeAgentId, assigneeUserId });
+    expect(await tableCount(issueOriginStates)).toBe(0);
+    expect(await tableCount(agentWakeupRequests)).toBe(0);
+  });
+
+  it.each([
+    { assignmentKind: "agent", assigneeAgentId: randomUUID(), assigneeUserId: null },
+    { assignmentKind: "user", assigneeAgentId: null, assigneeUserId: "board-user-2" },
+  ])("preserves $assignmentKind assignment after linking and reports persisted audit state", async ({
+    assigneeAgentId,
+    assigneeUserId,
+  }) => {
+    const { companyId, projectId } = await seed();
+    if (assigneeAgentId) {
+      await db.insert(agents).values({
+        id: assigneeAgentId,
+        companyId,
+        name: "Reconciliation assignee",
+      });
+    }
+    const source = item({ sourceIdentifier: "EXT-923" });
+    const payload = manifest(projectId, [source]);
+    const initialPreview = await request(app()).post(`/api/companies/${companyId}/issue-imports/preview`)
+      .send(payload)
+      .expect(201);
+    await request(app()).post(`/api/companies/${companyId}/issue-imports/apply`).send({
+      previewRunId: initialPreview.body.previewRunId,
+      previewDigest: initialPreview.body.previewDigest,
+      activate: false,
+    }).expect(200);
+    const [linkedIssue] = await db.select().from(issues).where(and(
+      eq(issues.companyId, companyId),
+      eq(issues.originId, source.sourceId),
+    ));
+    await db.update(issues).set({ assigneeAgentId, assigneeUserId }).where(eq(issues.id, linkedIssue.id));
+
+    const replayPreview = await request(app()).post(`/api/companies/${companyId}/issue-imports/preview`)
+      .send(payload)
+      .expect(201);
+    expect(replayPreview.body.items[0]).toMatchObject({
+      action: "unchanged",
+      current: { assigneeAgentId, assigneeUserId },
+    });
+    expect(replayPreview.body.items[0].conflicts).not.toContain("first_link_assignment_conflict");
+
+    const applied = await request(app()).post(`/api/companies/${companyId}/issue-imports/apply`).send({
+      previewRunId: replayPreview.body.previewRunId,
+      previewDigest: replayPreview.body.previewDigest,
+      activate: false,
+    }).expect(200);
+    expect(applied.body.items[0].applied).toMatchObject({
+      staged: false,
+      assigneeAgentId,
+      assigneeUserId,
+    });
+    expect(await db.select().from(issues).where(eq(issues.id, linkedIssue.id)).then((rows) => rows[0]))
+      .toMatchObject({ assigneeAgentId, assigneeUserId });
+    expect(await tableCount(agentWakeupRequests)).toBe(0);
+  });
+
   it("adopts a declared parent when first linking an origin with no current parent", async () => {
     const { companyId, projectId } = await seed();
     const parentSourceId = randomUUID();
