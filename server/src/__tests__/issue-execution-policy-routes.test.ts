@@ -8,6 +8,7 @@ const mockIssueService = vi.hoisted(() => ({
   findOpenAncestorCreatedByAgent: vi.fn(async () => null),
   assertCheckoutOwner: vi.fn(),
   update: vi.fn(),
+  submitExecutionChangesRequested: vi.fn(),
   createChild: vi.fn(),
   addComment: vi.fn(),
   findMentionedAgents: vi.fn(),
@@ -432,6 +433,128 @@ describe("issue execution policy routes", () => {
     expect(res.status).toBe(200);
     expect(mockIssueThreadInteractionService.listForIssue).not.toHaveBeenCalled();
     expect(mockIssueApprovalService.listApprovalsForIssue).not.toHaveBeenCalled();
+  });
+
+  it("strips the internal blocked-stage-return marker from API payloads", async () => {
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "todo",
+      assigneeAgentId: "33333333-3333-4333-8333-333333333333",
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1001",
+      title: "Blocked issue",
+      executionPolicy: null,
+      executionState: null,
+    };
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.update.mockImplementation(async (_id: string, patch: Record<string, unknown>) => ({
+      ...issue,
+      ...patch,
+      updatedAt: new Date(),
+    }));
+
+    const res = await request(await createApp())
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ status: "in_progress", allowUnresolvedBlockerStageReturn: true });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalled();
+    expect(mockIssueService.update.mock.calls[0]?.[1]).not.toHaveProperty(
+      "allowUnresolvedBlockerStageReturn",
+    );
+  });
+
+  it("uses the atomic service operation for a participant changes-requested return", async () => {
+    const qaAgentId = "33333333-3333-4333-8333-333333333333";
+    const returnAgentId = "44444444-4444-4444-8444-444444444444";
+    const stageId = "11111111-1111-4111-8111-111111111111";
+    const updatedAt = new Date("2026-07-30T12:00:00.000Z");
+    const executionPolicy = normalizeIssueExecutionPolicy({
+      stages: [{
+        id: stageId,
+        type: "review",
+        participants: [{ type: "agent", agentId: qaAgentId }],
+      }],
+    });
+    const executionState = {
+      status: "pending" as const,
+      currentStageId: stageId,
+      currentStageIndex: 0,
+      currentStageType: "review" as const,
+      currentParticipant: { type: "agent" as const, agentId: qaAgentId },
+      returnAssignee: { type: "agent" as const, agentId: returnAgentId },
+      reviewRequest: null,
+      completedStageIds: [],
+      lastDecisionId: null,
+      lastDecisionOutcome: null,
+      monitor: null,
+    };
+    const issue = {
+      id: "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa",
+      companyId: "company-1",
+      status: "in_review",
+      assigneeAgentId: qaAgentId,
+      assigneeUserId: null,
+      createdByUserId: "local-board",
+      identifier: "PAP-1001",
+      title: "Issue under review",
+      updatedAt,
+      executionPolicy,
+      executionState,
+    };
+    const decisionId = "55555555-5555-4555-8555-555555555555";
+    mockIssueService.getById.mockResolvedValue(issue);
+    mockIssueService.submitExecutionChangesRequested.mockResolvedValue({
+      decisionId,
+      issue: {
+        ...issue,
+        status: "in_progress",
+        assigneeAgentId: returnAgentId,
+        executionState: {
+          ...executionState,
+          status: "changes_requested",
+          lastDecisionId: decisionId,
+          lastDecisionOutcome: "changes_requested",
+        },
+      },
+    });
+    mockIssueService.addComment.mockResolvedValue({
+      id: "comment-1",
+      issueId: issue.id,
+      companyId: issue.companyId,
+      body: "Please address the race.",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+      authorAgentId: qaAgentId,
+      authorUserId: null,
+    });
+
+    const res = await request(await createApp({
+      type: "agent",
+      agentId: qaAgentId,
+      companyId: "company-1",
+      runId: "run-1",
+    }))
+      .patch("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa")
+      .send({ status: "in_progress", comment: "Please address the race." });
+
+    expect(res.status).toBe(200);
+    expect(mockIssueService.submitExecutionChangesRequested).toHaveBeenCalledWith(
+      issue.id,
+      expect.objectContaining({
+        expectedUpdatedAt: updatedAt,
+        requestedStatus: "in_progress",
+        requestedAssigneePatch: expect.objectContaining({
+          assigneeAgentId: undefined,
+          assigneeUserId: undefined,
+        }),
+        actor: { agentId: qaAgentId, userId: null, runId: "run-1" },
+        commentBody: "Please address the race.",
+      }),
+    );
+    expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
   it("allows a board user to cancel an active agent review task", async () => {
