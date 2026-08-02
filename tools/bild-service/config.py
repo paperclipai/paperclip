@@ -51,3 +51,7 @@ COST_ESTIMATE = {"low": 0.02, "medium": 0.04, "high": 0.17, "auto": 0.04}
 MAIL_WEBHOOK = "http://127.0.0.1:5678/webhook/mailhub/send"
 MAIL_FROM = "office@whitestag.ai"
 MAIL_TO = "ws@whitestag.ai"
+
+# --- ComfyUI-Renderknoten (MacBook M5 Max) ---
+COMFY_BASE = "http://192.168.2.40:8189"
+COMFY_HTTP_TIMEOUT = 30          # Sekunden je HTTP-Aufruf
