@@ -1,4 +1,4 @@
-import { createReadStream, createWriteStream, existsSync, mkdirSync, readdirSync, statSync, unlinkSync } from "node:fs";
+import { createReadStream, createWriteStream, existsSync, mkdirSync, readdirSync, renameSync, statSync, unlinkSync } from "node:fs";
 import { basename, resolve } from "node:path";
 import { createInterface } from "node:readline";
 import { spawn } from "node:child_process";
@@ -442,23 +442,27 @@ async function* readRestoreStatements(backupFile: string): AsyncGenerator<string
   }
 }
 
-export function createBufferedTextFileWriter(filePath: string, maxBufferedBytes = DEFAULT_BACKUP_WRITE_BUFFER_BYTES) {
-  const filePromise = openFile(filePath, "w");
-  const flushThreshold = Math.max(1, Math.trunc(maxBufferedBytes));
+type BufferedTextWriter = {
+  emit(line: string): void;
+  drain(): Promise<void>;
+  writeRaw(chunk: string | Buffer): Promise<void>;
+  close(): Promise<void>;
+  abort(): Promise<void>;
+};
+
+function createBufferedTextWriter(opts: {
+  label: string;
+  maxBufferedBytes?: number;
+  writeChunk: (chunk: string | Buffer) => Promise<void>;
+  closeTarget: () => Promise<void>;
+  abortTarget: () => Promise<void>;
+}): BufferedTextWriter {
+  const flushThreshold = Math.max(1, Math.trunc(opts.maxBufferedBytes ?? DEFAULT_BACKUP_WRITE_BUFFER_BYTES));
   let bufferedLines: string[] = [];
   let bufferedBytes = 0;
   let firstChunk = true;
   let closed = false;
   let pendingWrite = Promise.resolve();
-
-  const writeChunk = async (chunk: string | Buffer): Promise<void> => {
-    const file = await filePromise;
-    if (typeof chunk === "string") {
-      await file.write(chunk, null, "utf8");
-    } else {
-      await file.write(chunk);
-    }
-  };
 
   const flushBufferedLines = () => {
     if (bufferedLines.length === 0) return;
@@ -468,13 +472,13 @@ export function createBufferedTextFileWriter(filePath: string, maxBufferedBytes 
     const chunkBody = linesToWrite.join("\n");
     const chunk = firstChunk ? chunkBody : `\n${chunkBody}`;
     firstChunk = false;
-    pendingWrite = pendingWrite.then(() => writeChunk(chunk));
+    pendingWrite = pendingWrite.then(() => opts.writeChunk(chunk));
   };
 
   return {
     emit(line: string) {
       if (closed) {
-        throw new Error(`Cannot write to closed backup file: ${filePath}`);
+        throw new Error(`Cannot write to closed backup target: ${opts.label}`);
       }
       bufferedLines.push(line);
       bufferedBytes += Buffer.byteLength(line, "utf8") + 1;
@@ -484,18 +488,18 @@ export function createBufferedTextFileWriter(filePath: string, maxBufferedBytes 
     },
     async drain() {
       if (closed) {
-        throw new Error(`Cannot drain closed backup file: ${filePath}`);
+        throw new Error(`Cannot drain closed backup target: ${opts.label}`);
       }
       flushBufferedLines();
       await pendingWrite;
     },
     async writeRaw(chunk: string | Buffer) {
       if (closed) {
-        throw new Error(`Cannot write to closed backup file: ${filePath}`);
+        throw new Error(`Cannot write to closed backup target: ${opts.label}`);
       }
       flushBufferedLines();
       firstChunk = false;
-      pendingWrite = pendingWrite.then(() => writeChunk(chunk));
+      pendingWrite = pendingWrite.then(() => opts.writeChunk(chunk));
       await pendingWrite;
     },
     async close() {
@@ -503,8 +507,7 @@ export function createBufferedTextFileWriter(filePath: string, maxBufferedBytes 
       closed = true;
       flushBufferedLines();
       await pendingWrite;
-      const file = await filePromise;
-      await file.close();
+      await opts.closeTarget();
     },
     async abort() {
       if (closed) return;
@@ -512,6 +515,30 @@ export function createBufferedTextFileWriter(filePath: string, maxBufferedBytes 
       bufferedLines = [];
       bufferedBytes = 0;
       await pendingWrite.catch(() => {});
+      await opts.abortTarget();
+    },
+  };
+}
+
+export function createBufferedTextFileWriter(filePath: string, maxBufferedBytes = DEFAULT_BACKUP_WRITE_BUFFER_BYTES) {
+  const filePromise = openFile(filePath, "w");
+
+  return createBufferedTextWriter({
+    label: filePath,
+    maxBufferedBytes,
+    writeChunk: async (chunk) => {
+      const file = await filePromise;
+      if (typeof chunk === "string") {
+        await file.write(chunk, null, "utf8");
+      } else {
+        await file.write(chunk);
+      }
+    },
+    closeTarget: async () => {
+      const file = await filePromise;
+      await file.close();
+    },
+    abortTarget: async () => {
       await filePromise.then((file) => file.close()).catch(() => {});
       if (existsSync(filePath)) {
         try {
@@ -521,7 +548,75 @@ export function createBufferedTextFileWriter(filePath: string, maxBufferedBytes 
         }
       }
     },
-  };
+  });
+}
+
+function createBufferedTextGzipFileWriter(filePath: string, maxBufferedBytes = DEFAULT_BACKUP_WRITE_BUFFER_BYTES) {
+  const gzip = createGzip();
+  const output = createWriteStream(filePath);
+  const completion = pipeline(gzip, output);
+
+  const writeChunk = (chunk: string | Buffer) =>
+    new Promise<void>((resolve, reject) => {
+      const onError = (error: Error) => {
+        gzip.off("error", onError);
+        output.off("error", onError);
+        reject(error);
+      };
+      gzip.once("error", onError);
+      output.once("error", onError);
+      gzip.write(chunk, (error?: Error | null) => {
+        gzip.off("error", onError);
+        output.off("error", onError);
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve();
+      });
+    });
+
+  const endStream = () =>
+    new Promise<void>((resolve, reject) => {
+      const onError = (error: Error) => {
+        gzip.off("error", onError);
+        output.off("error", onError);
+        reject(error);
+      };
+      gzip.once("error", onError);
+      output.once("error", onError);
+      gzip.end((error?: Error | null) => {
+        gzip.off("error", onError);
+        output.off("error", onError);
+        if (error) {
+          reject(error);
+          return;
+        }
+        resolve();
+      });
+    });
+
+  return createBufferedTextWriter({
+    label: filePath,
+    maxBufferedBytes,
+    writeChunk,
+    closeTarget: async () => {
+      await endStream();
+      await completion;
+    },
+    abortTarget: async () => {
+      gzip.destroy();
+      output.destroy();
+      await completion.catch(() => {});
+      if (existsSync(filePath)) {
+        try {
+          unlinkSync(filePath);
+        } catch {
+          // Preserve the original backup failure if temporary file cleanup also fails.
+        }
+      }
+    },
+  });
 }
 
 export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise<RunDatabaseBackupResult> {
@@ -540,9 +635,9 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
     await sql.end();
   };
   mkdirSync(opts.backupDir, { recursive: true });
-  const sqlFile = resolve(opts.backupDir, `${filenamePrefix}-${timestamp()}.sql`);
-  const backupFile = `${sqlFile}.gz`;
-  const writer = createBufferedTextFileWriter(sqlFile);
+  const backupFile = resolve(opts.backupDir, `${filenamePrefix}-${timestamp()}.sql.gz`);
+  const tempBackupFile = `${backupFile}.part`;
+  let writer: BufferedTextWriter | null = null;
 
   try {
     if (backupEngine === "pg_dump" || (backupEngine === "auto" && canUsePgDump)) {
@@ -551,10 +646,10 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
         await closeSql();
         await runPgDumpBackup({
           connectionString: opts.connectionString,
-          backupFile,
+          backupFile: tempBackupFile,
           connectTimeout,
         });
-        await writer.abort();
+        renameSync(tempBackupFile, backupFile);
         const sizeBytes = statSync(backupFile).size;
         const prunedCount = pruneOldBackups(opts.backupDir, retention, filenamePrefix);
         return {
@@ -575,8 +670,10 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
     }
 
     await sql`SELECT 1`;
+    const activeWriter = createBufferedTextGzipFileWriter(tempBackupFile);
+    writer = activeWriter;
 
-    const emit = (line: string) => writer.emit(line);
+    const emit = (line: string) => activeWriter.emit(line);
     const emitStatement = (statement: string) => {
       emit(statement);
       emit(STATEMENT_BREAKPOINT);
@@ -904,19 +1001,19 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
       const nullifiedColumns = nullifiedColumnsByTable.get(currentTableKey) ?? new Set<string>();
       if (backupEngine !== "javascript" && nullifiedColumns.size === 0) {
         emit(`COPY ${qualifiedTableName} (${colNames}) FROM stdin;`);
-        await writer.writeRaw("\n");
-        const copySql = postgres(opts.connectionString, { max: 1, connect_timeout: connectTimeout });
+        await activeWriter.writeRaw("\n");
+        const copySql = await sql.reserve();
         try {
           const copyStream = await copySql
             .unsafe(`COPY ${qualifiedTableName} (${colNames}) TO STDOUT`)
             .readable();
           for await (const chunk of copyStream) {
-            await writer.writeRaw(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
+            await activeWriter.writeRaw(Buffer.isBuffer(chunk) ? chunk : Buffer.from(String(chunk)));
           }
         } finally {
-          await copySql.end();
+          copySql.release();
         }
-        await writer.writeRaw("\\.\n");
+        await activeWriter.writeRaw("\\.\n");
         emitStatementBoundary();
         emit("");
         continue;
@@ -933,7 +1030,7 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
           );
           emitStatement(`INSERT INTO ${qualifiedTableName} (${colNames}) VALUES (${values.join(", ")});`);
         }
-        await writer.drain();
+        await activeWriter.drain();
       }
       emit("");
     }
@@ -959,13 +1056,9 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
     emitStatement("COMMIT;");
     emit("");
 
-    await writer.close();
-
-    // Compress the SQL file with gzip
-    const sqlReadStream = createReadStream(sqlFile);
-    const gzWriteStream = createWriteStream(backupFile);
-    await pipeline(sqlReadStream, createGzip(), gzWriteStream);
-    unlinkSync(sqlFile);
+    await activeWriter.close();
+    writer = null;
+    renameSync(tempBackupFile, backupFile);
 
     const sizeBytes = statSync(backupFile).size;
     const prunedCount = pruneOldBackups(opts.backupDir, retention, filenamePrefix);
@@ -976,12 +1069,12 @@ export async function runDatabaseBackup(opts: RunDatabaseBackupOptions): Promise
       prunedCount,
     };
   } catch (error) {
-    await writer.abort();
+    await writer?.abort();
     if (existsSync(backupFile)) {
       try { unlinkSync(backupFile); } catch { /* ignore */ }
     }
-    if (existsSync(sqlFile)) {
-      try { unlinkSync(sqlFile); } catch { /* ignore */ }
+    if (existsSync(tempBackupFile)) {
+      try { unlinkSync(tempBackupFile); } catch { /* ignore */ }
     }
     throw error;
   } finally {
