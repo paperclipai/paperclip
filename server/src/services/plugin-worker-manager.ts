@@ -702,6 +702,13 @@ export function createPluginWorkerHandle(
       // plugin's only configured company. Ambiguity (0 or 2+ configured
       // companies) keeps the existing deny-by-default behavior, so this never
       // widens access beyond the plugin's configured companies.
+      const hasActiveInvocation = activeInvocations.size > 0 ||
+        Array.from(pendingRequests.values()).some((pending) => pending.invocationId);
+      if (hasActiveInvocation) return { invalidInvocationScope: true };
+      // Single-company fallback for unscoped proactive reads. Only applies when
+      // no host invocation is in flight: while one is active, an unscoped
+      // proactive call stays invalidInvocationScope (never acquires a scope
+      // belonging to a concurrent invocation).
       if (
         !proactiveCompanyId &&
         message.method === "config.get" &&
@@ -710,9 +717,7 @@ export function createPluginWorkerHandle(
         const onlyCompanyId = proactiveCompanyScopes.values().next().value;
         if (onlyCompanyId) return { invocationScope: { companyId: onlyCompanyId } };
       }
-      const hasActiveInvocation = activeInvocations.size > 0 ||
-        Array.from(pendingRequests.values()).some((pending) => pending.invocationId);
-      return hasActiveInvocation ? { invalidInvocationScope: true } : {};
+      return {};
     }
     const entry = activeInvocations.get(invocationId);
     if (!entry) return { invalidInvocationScope: true };
