@@ -671,26 +671,28 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
       // server resolves the driver and probes the host in that case.
       //
       // Test can be clicked before the settings query settles (or after it
-      // failed with retry:false), so resolve the settings here rather than
-      // trusting the render-time cache — silently probing the host because a
-      // query hadn't finished would resurrect the exact false failure this
-      // resolution exists to fix. ensureQueryData reuses the cached value
-      // when present; a fetch that still fails leaves the honest host probe.
-      let instanceDefaultEnvironmentId = instanceSettings?.defaultEnvironmentId ?? null;
-      if (instanceSettings === undefined) {
+      // failed with retry:false), so when the agent relies on the instance
+      // default, resolve the settings here rather than trusting the
+      // render-time cache. A fetch that still fails FAILS the test with an
+      // honest diagnostic — silently probing the host instead would report
+      // the exact false command-not-found failure this resolution exists to
+      // fix. Agents with their own environment never need the settings.
+      let settings = instanceSettings;
+      if (!rawCurrentDefaultEnvironmentId && settings === undefined) {
         try {
-          const settings = await queryClient.ensureQueryData({
+          settings = await queryClient.ensureQueryData({
             queryKey: queryKeys.instance.settings,
             queryFn: () => instanceSettingsApi.get(),
           });
-          instanceDefaultEnvironmentId = settings?.defaultEnvironmentId ?? null;
         } catch {
-          instanceDefaultEnvironmentId = null;
+          throw new Error(
+            "Could not load instance settings to determine which environment to test in. Retry the test.",
+          );
         }
       }
       const environmentId = resolveAdapterTestEnvironmentId({
         agentDefaultEnvironmentId: rawCurrentDefaultEnvironmentId || null,
-        instanceDefaultEnvironmentId,
+        instanceDefaultEnvironmentId: settings?.defaultEnvironmentId ?? null,
       });
       const testResults: Array<{ label: string; model: string | null; result: AdapterEnvironmentTestResult }> = [
         {
