@@ -6,14 +6,14 @@ describe("buildGrokLocalConfig", () => {
     expect(buildGrokLocalConfig({
       cwd: "/tmp/project",
       instructionsFilePath: "/tmp/AGENTS.md",
-      model: "grok-build",
+      model: "grok-4.5",
       thinkingEffort: "high",
       envVars: "XAI_API_KEY=secret\n",
       extraArgs: "--check, --verbatim",
     } as never)).toEqual({
       cwd: "/tmp/project",
       instructionsFilePath: "/tmp/AGENTS.md",
-      model: "grok-build",
+      model: "grok-4.5",
       timeoutSec: 0,
       graceSec: 20,
       reasoningEffort: "high",
