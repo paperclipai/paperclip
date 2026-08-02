@@ -168,17 +168,29 @@ export function resolveServerLifecycleJournalPath(homeDir?: string) {
   return resolveHotRestartPath(SERVER_LIFECYCLE_JOURNAL_FILENAME, homeDir);
 }
 
+async function ensurePrivateStateDirectory(filePath: string) {
+  const directoryPath = path.dirname(filePath);
+  await fs.mkdir(directoryPath, { recursive: true, mode: 0o700 });
+  if (process.platform !== "win32") await fs.chmod(directoryPath, 0o700);
+}
+
 async function writeJsonFileAtomic(filePath: string, value: unknown) {
-  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  await ensurePrivateStateDirectory(filePath);
   const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
-  await fs.writeFile(tempPath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+  await fs.writeFile(tempPath, `${JSON.stringify(value, null, 2)}\n`, {
+    encoding: "utf8",
+    mode: 0o600,
+  });
   await fs.rename(tempPath, filePath);
 }
 
 async function writeJsonFileExclusiveAtomic(filePath: string, value: unknown) {
-  await fs.mkdir(path.dirname(filePath), { recursive: true });
+  await ensurePrivateStateDirectory(filePath);
   const tempPath = `${filePath}.${process.pid}.${Date.now()}.tmp`;
-  await fs.writeFile(tempPath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+  await fs.writeFile(tempPath, `${JSON.stringify(value, null, 2)}\n`, {
+    encoding: "utf8",
+    mode: 0o600,
+  });
   try {
     await fs.link(tempPath, filePath);
   } finally {

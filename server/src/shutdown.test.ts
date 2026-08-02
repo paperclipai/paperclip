@@ -1,11 +1,12 @@
 import { spawnSync } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
-import { resolve } from "node:path";
+import { dirname, resolve } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import {
   claimEmbeddedPostgresHandoff,
   readEmbeddedPostgresProcessIdentity,
+  resolveEmbeddedPostgresHandoffPath,
   writeEmbeddedPostgresHandoff,
   type EmbeddedPostgresProcessIdentity,
 } from "./services/hot-restart.js";
@@ -47,6 +48,41 @@ describe("coordinateEmbeddedPostgresShutdown", () => {
       await fs.rm(homeDir, { recursive: true, force: true });
     }
   }
+
+  it.skipIf(process.platform === "win32")(
+    "keeps replacement handoff state owner-only under a permissive umask",
+    async () => {
+      const homeDir = await fs.mkdtemp(resolve(os.tmpdir(), "paperclip-postgres-handoff-mode-"));
+      const handoffPath = resolveEmbeddedPostgresHandoffPath(homeDir);
+      const originalUmask = process.umask(0o022);
+      try {
+        await fs.mkdir(dirname(handoffPath), { recursive: true });
+        await fs.writeFile(handoffPath, "stale handoff\n", { mode: 0o644 });
+        await fs.chmod(handoffPath, 0o644);
+
+        await writeEmbeddedPostgresHandoff({
+          hotRestartRequestedAt,
+          shutdownSnapshotCapturedAt,
+          predecessorServerPid,
+          predecessorServerStartedAtEpochMs: 1_753_999_900_000,
+          postgres: {
+            pid: 54321,
+            startedAtEpochSeconds: 1_754_000_000,
+            dataDir: resolve(homeDir, "postgres"),
+            port: 5432,
+          },
+          now: new Date("2026-07-31T15:00:05.000Z"),
+          homeDir,
+        });
+
+        expect((await fs.stat(handoffPath)).mode & 0o777).toBe(0o600);
+        expect((await fs.stat(dirname(handoffPath))).mode & 0o777).toBe(0o700);
+      } finally {
+        process.umask(originalUmask);
+        await fs.rm(homeDir, { recursive: true, force: true });
+      }
+    },
+  );
 
   it.each(["SIGINT", "SIGTERM", "SIGBREAK"] as const)(
     "leaves %s exclusively coordinated by the application when autoShutdown is false",
