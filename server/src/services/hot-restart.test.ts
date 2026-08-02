@@ -3,14 +3,19 @@ import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
+  appendServerLifecycleEvent,
+  beginServerLifecycle,
+  claimEmbeddedPostgresStartupRecovery,
   findMissingHotRestartSnapshotRunIds,
   isObservedHotRestartTargetAlive,
   readHotRestartIntent,
+  readServerLifecycleJournal,
   readProcessStartedAt,
   removeHotRestartIntent,
   resolveHotRestartIntentPath,
   resolveLegacyHotRestartIntentPath,
   writeHotRestartIntent,
+  writeEmbeddedPostgresStartupRecovery,
 } from "./hot-restart.js";
 
 const originalInstanceId = process.env.PAPERCLIP_INSTANCE_ID;
@@ -472,5 +477,117 @@ describe("hot-restart path compatibility", () => {
         }],
       },
     })).toEqual(["missing-run"]);
+  });
+
+  it("persists only allowlisted lifecycle provenance and closes intentional boots", async () => {
+    await withTempHome(async (homeDir) => {
+      const boot = await beginServerLifecycle({
+        homeDir,
+        serverPid: 7001,
+        serverStartedAtEpochMs: 1_754_000_000_000,
+        launcherIdentity: "node:paperclipai",
+        startedAt: new Date("2026-08-02T01:00:00.000Z"),
+        isProcessAlive: () => false,
+      });
+      await appendServerLifecycleEvent({
+        homeDir,
+        bootId: boot.bootId,
+        type: "hot_restart",
+        signal: "SIGBREAK",
+        exitCode: 0,
+        postgresPid: 7002,
+        cleanupOutcome: "not_applicable",
+        completeBoot: true,
+      });
+
+      const journal = await readServerLifecycleJournal(homeDir);
+      expect(journal.activeBoot).toBeNull();
+      expect(journal.completedBoots).toEqual([
+        expect.objectContaining({
+          bootId: boot.bootId,
+          serverPid: 7001,
+          launcherIdentity: "node:paperclipai",
+          events: [{
+            type: "hot_restart",
+            at: expect.any(String),
+            signal: "SIGBREAK",
+            exitCode: 0,
+            postgresPid: 7002,
+            cleanupOutcome: "not_applicable",
+          }],
+        }),
+      ]);
+      expect(JSON.stringify(journal)).not.toContain("DATABASE_URL");
+      expect(JSON.stringify(journal)).not.toContain("transferToken");
+    });
+  });
+
+  it("reconciles an unclosed prior boot as an unexpected exit on the next boot", async () => {
+    await withTempHome(async (homeDir) => {
+      const prior = await beginServerLifecycle({
+        homeDir,
+        serverPid: 7101,
+        serverStartedAtEpochMs: 1_754_000_000_000,
+        launcherIdentity: "node:paperclipai",
+        isProcessAlive: () => false,
+      });
+      const replacement = await beginServerLifecycle({
+        homeDir,
+        serverPid: 7102,
+        serverStartedAtEpochMs: 1_754_000_100_000,
+        launcherIdentity: "node:paperclipai",
+        isProcessAlive: () => false,
+      });
+
+      const journal = await readServerLifecycleJournal(homeDir);
+      expect(journal.activeBoot?.bootId).toBe(replacement.bootId);
+      expect(journal.completedBoots).toEqual([
+        expect.objectContaining({
+          bootId: prior.bootId,
+          events: [expect.objectContaining({ type: "unexpected_exit", exitCode: null })],
+        }),
+      ]);
+    });
+  });
+
+  it("grants failed-startup PostgreSQL recovery authority once to an exact replacement identity", async () => {
+    await withTempHome(async (homeDir) => {
+      const postgres = {
+        pid: 7201,
+        startedAtEpochSeconds: 1_754_000_000,
+        dataDir: path.resolve(homeDir, "postgres"),
+        port: 5432,
+      };
+      await writeEmbeddedPostgresStartupRecovery({
+        homeDir,
+        predecessorServerPid: 7200,
+        postgres,
+        now: new Date("2026-08-02T01:10:00.000Z"),
+      });
+
+      await expect(claimEmbeddedPostgresStartupRecovery({
+        homeDir,
+        expectedPostgres: postgres,
+        isProcessAlive: () => true,
+      })).resolves.toBeNull();
+      await expect(claimEmbeddedPostgresStartupRecovery({
+        homeDir,
+        expectedPostgres: { ...postgres, startedAtEpochSeconds: postgres.startedAtEpochSeconds + 1 },
+        isProcessAlive: () => false,
+      })).resolves.toBeNull();
+      await expect(claimEmbeddedPostgresStartupRecovery({
+        homeDir,
+        expectedPostgres: postgres,
+        isProcessAlive: () => false,
+      })).resolves.toEqual(expect.objectContaining({
+        predecessorServerPid: 7200,
+        postgres,
+      }));
+      await expect(claimEmbeddedPostgresStartupRecovery({
+        homeDir,
+        expectedPostgres: postgres,
+        isProcessAlive: () => false,
+      })).resolves.toBeNull();
+    });
   });
 });

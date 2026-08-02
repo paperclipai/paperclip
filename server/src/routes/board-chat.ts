@@ -249,6 +249,7 @@ export function boardChatRoutes(
 
     const proc = spawn("claude", args, {
       stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
       cwd: "/tmp",
       env: {
         ...process.env,

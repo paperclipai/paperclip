@@ -7,7 +7,7 @@ type HotRestartShutdownPreparation = {
   skipDrain: boolean;
 };
 
-export type ShutdownSignal = "SIGINT" | "SIGTERM";
+export type ShutdownSignal = "SIGINT" | "SIGTERM" | "SIGBREAK";
 
 export type ShutdownLifecycleContext = {
   controlEvent: ShutdownSignal;

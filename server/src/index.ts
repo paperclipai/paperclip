@@ -86,11 +86,16 @@ import { createDecisionWakeOriginAgent } from "./services/decision-wakeup.js";
 import { systemdNotify } from "./services/systemd-notify.js";
 import { flushInFlightRunLogMirrors } from "./services/run-log-store.js";
 import {
+  appendServerLifecycleEvent,
+  beginServerLifecycle,
   claimEmbeddedPostgresHandoff,
+  claimEmbeddedPostgresStartupRecovery,
   readEmbeddedPostgresProcessIdentity,
   readHotRestartIntent,
   writeEmbeddedPostgresHandoff,
+  writeEmbeddedPostgresStartupRecovery,
   type EmbeddedPostgresProcessIdentity,
+  type ServerLifecycleBoot,
 } from "./services/hot-restart.js";
 import type {
   InstanceDatabaseBackupRunResult,
@@ -125,6 +130,7 @@ type EmbeddedPostgresCtor = new (opts: {
   initdbFlags?: string[];
   onLog?: (message: unknown) => void;
   onError?: (message: unknown) => void;
+  onExit?: (event: { code: number | null; signal: string | null; expected: boolean }) => void;
 }) => EmbeddedPostgresInstance;
 
 
@@ -136,8 +142,83 @@ export interface StartedServer {
   databaseUrl: string;
 }
 
+function launcherIdentity() {
+  return [basename(process.execPath), process.argv[1] ? basename(process.argv[1]) : null]
+    .filter((part): part is string => Boolean(part))
+    .join(":");
+}
+
+const SERVER_STARTED_AT_EPOCH_MS = Math.round(Date.now() - process.uptime() * 1_000);
+type ServerShutdownSignal = "SIGINT" | "SIGTERM" | "SIGBREAK";
+let activeShutdownSignalHandler: ((signal: ServerShutdownSignal) => void) | null = null;
+let shutdownSignalDispatchInstalled = false;
+
+function installShutdownSignalHandler(handler: (signal: ServerShutdownSignal) => void) {
+  activeShutdownSignalHandler = handler;
+  if (shutdownSignalDispatchInstalled) return;
+  shutdownSignalDispatchInstalled = true;
+  for (const signal of ["SIGINT", "SIGTERM", "SIGBREAK"] as const) {
+    process.on(signal, () => activeShutdownSignalHandler?.(signal));
+  }
+}
+
 export async function startServer(): Promise<StartedServer> {
-  const serverStartedAtEpochMs = Math.round(Date.now() - process.uptime() * 1_000);
+  const serverStartedAtEpochMs = SERVER_STARTED_AT_EPOCH_MS;
+  const lifecycleBoot = await beginServerLifecycle({
+    serverStartedAtEpochMs,
+    launcherIdentity: launcherIdentity(),
+  });
+  const startupCleanup: {
+    value: { stop: () => Promise<void>; dataDir: string } | null;
+  } = { value: null };
+  try {
+    return await startServerInternal(lifecycleBoot, (cleanup) => {
+      startupCleanup.value = cleanup;
+    });
+  } catch (error) {
+    let cleanupOutcome: "not_applicable" | "stopped" | "failed" = "not_applicable";
+    const cleanupOwnedPostgres = startupCleanup.value;
+    let cleanupPostgresPid: number | null = null;
+    if (cleanupOwnedPostgres !== null) {
+      try {
+        await cleanupOwnedPostgres.stop();
+        cleanupOutcome = "stopped";
+      } catch (cleanupError) {
+        cleanupOutcome = "failed";
+        logger.error({ err: cleanupError }, "Failed to stop owned embedded PostgreSQL after startup failure");
+        try {
+          const postgres = await readEmbeddedPostgresProcessIdentity(cleanupOwnedPostgres.dataDir);
+          if (postgres) {
+            cleanupPostgresPid = postgres.pid;
+            await writeEmbeddedPostgresStartupRecovery({
+              predecessorServerPid: process.pid,
+              postgres,
+            });
+          }
+        } catch (recoveryError) {
+          logger.error({ err: recoveryError }, "Failed to persist embedded PostgreSQL startup recovery ownership");
+        }
+      }
+    }
+    await appendServerLifecycleEvent({
+      bootId: lifecycleBoot.bootId,
+      type: "startup_failure",
+      exitCode: 1,
+      postgresPid: cleanupPostgresPid,
+      cleanupOutcome,
+      completeBoot: true,
+    }).catch((journalError) => {
+      logger.error({ err: journalError }, "Failed to persist startup-failure lifecycle provenance");
+    });
+    throw error;
+  }
+}
+
+async function startServerInternal(
+  lifecycleBoot: ServerLifecycleBoot,
+  setStartupCleanup: (cleanup: { stop: () => Promise<void>; dataDir: string } | null) => void,
+): Promise<StartedServer> {
+  const serverStartedAtEpochMs = lifecycleBoot.serverStartedAtEpochMs;
   // Tracing must be active (or have failed and logged) before the first DB
   // connection or the HTTP server exists — see instrumentation.ts.
   await instrumentationReady;
@@ -419,6 +500,18 @@ export async function startServer(): Promise<StartedServer> {
       initdbFlags: ["--encoding=UTF8", "--locale=C", "--lc-messages=C"],
       onLog: appendEmbeddedPostgresLog,
       onError: appendEmbeddedPostgresLog,
+      onExit: ({ code, expected }) => {
+        if (expected) return;
+        void appendServerLifecycleEvent({
+          bootId: lifecycleBoot.bootId,
+          type: "embedded_postgres_unexpected_exit",
+          exitCode: code,
+          postgresPid: ownedEmbeddedPostgresIdentity?.pid ?? null,
+          cleanupOutcome: "not_applicable",
+        }).catch((journalError) => {
+          logger.error({ err: journalError }, "Failed to persist embedded PostgreSQL exit provenance");
+        });
+      },
     });
   
     if (config.databaseMode === "postgres") {
@@ -456,9 +549,13 @@ export async function startServer(): Promise<StartedServer> {
       if (runningIdentity?.pid === runningPid) {
         port = runningIdentity.port;
         let handoffClaim = null;
+        let startupRecoveryClaim = null;
         try {
+          startupRecoveryClaim = await claimEmbeddedPostgresStartupRecovery({
+            expectedPostgres: runningIdentity,
+          });
           const hotRestartIntent = await readHotRestartIntent();
-          if (hotRestartIntent?.shutdownSnapshot) {
+          if (!startupRecoveryClaim && hotRestartIntent?.shutdownSnapshot) {
             handoffClaim = await claimEmbeddedPostgresHandoff({
               expectedHotRestartRequestedAt: hotRestartIntent.requestedAt,
               expectedShutdownSnapshotCapturedAt: hotRestartIntent.shutdownSnapshot.capturedAt,
@@ -470,9 +567,22 @@ export async function startServer(): Promise<StartedServer> {
           logger.warn({ err }, "Embedded PostgreSQL handoff validation failed; continuing without stop authority");
         }
 
-        if (handoffClaim) {
+        if (startupRecoveryClaim) {
+          embeddedPostgres = createEmbeddedPostgres(port);
+          embeddedPostgres.adopt();
+          stopOwnedEmbeddedPostgres = () => embeddedPostgres!.stop();
+          setStartupCleanup({ stop: stopOwnedEmbeddedPostgres, dataDir });
+          ownedEmbeddedPostgresIdentity = runningIdentity;
+          logger.warn(
+            { postgresPid: runningIdentity.pid, port },
+            "Recovered embedded PostgreSQL ownership after failed predecessor startup cleanup",
+          );
+        } else if (handoffClaim) {
           embeddedPostgres = createEmbeddedPostgres(port);
           stopOwnedEmbeddedPostgres = adoptEmbeddedPostgres(embeddedPostgres, handoffClaim);
+          if (stopOwnedEmbeddedPostgres) {
+            setStartupCleanup({ stop: stopOwnedEmbeddedPostgres, dataDir });
+          }
           ownedEmbeddedPostgresIdentity = runningIdentity;
           logger.warn(
             createEmbeddedPostgresHandoffLogContext(handoffClaim),
@@ -541,6 +651,7 @@ export async function startServer(): Promise<StartedServer> {
           });
         }
         stopOwnedEmbeddedPostgres = () => embeddedPostgres!.stop();
+        setStartupCleanup({ stop: stopOwnedEmbeddedPostgres, dataDir });
         ownedEmbeddedPostgresIdentity = await readEmbeddedPostgresProcessIdentity(dataDir);
       }
     }
@@ -951,8 +1062,8 @@ export async function startServer(): Promise<StartedServer> {
     throw err;
   }
 
-  let drainHeartbeatRunsForShutdown: ((signal: "SIGINT" | "SIGTERM") => Promise<unknown>) | null = null;
-  let prepareHotRestartShutdown: ((signal: "SIGINT" | "SIGTERM") => Promise<{
+  let drainHeartbeatRunsForShutdown: ((signal: "SIGINT" | "SIGTERM" | "SIGBREAK") => Promise<unknown>) | null = null;
+  let prepareHotRestartShutdown: ((signal: "SIGINT" | "SIGTERM" | "SIGBREAK") => Promise<{
     skipDrain: boolean;
     previousServerPid?: number;
     requestedAt?: string;
@@ -1370,7 +1481,7 @@ export async function startServer(): Promise<StartedServer> {
   });
   
   {
-    const shutdown = async (signal: "SIGINT" | "SIGTERM") => {
+    const shutdown = async (signal: ServerShutdownSignal) => {
       heartbeatSchedulerStopped = true;
 
       const heartbeatShutdown = await coordinateHeartbeatSchedulerShutdown({
@@ -1382,9 +1493,7 @@ export async function startServer(): Promise<StartedServer> {
       const shutdownLifecycle = createShutdownLifecycleContext({
         signal,
         hotRestart: heartbeatShutdown.hotRestart,
-        launcherIdentity: [basename(process.execPath), process.argv[1] ? basename(process.argv[1]) : null]
-          .filter((part): part is string => Boolean(part))
-          .join(":"),
+        launcherIdentity: launcherIdentity(),
       });
       logger.info({ shutdownLifecycle }, "server shutdown initiated");
       if (skipHeartbeatDrain) {
@@ -1463,6 +1572,7 @@ export async function startServer(): Promise<StartedServer> {
         }
       };
 
+      let shutdownCleanupOutcome: "not_applicable" | "stopped" | "failed" = "not_applicable";
       if (shutdownLifecycle.preserveEmbeddedPostgres) {
         const postgresShutdown = await prepareEmbeddedPostgresForHotRestart({
           ownedByThisProcess: stopOwnedEmbeddedPostgres !== null,
@@ -1497,6 +1607,7 @@ export async function startServer(): Promise<StartedServer> {
           return;
         }
         logPostgresShutdown(postgresShutdown);
+        shutdownCleanupOutcome = postgresShutdown === "stopped" ? "stopped" : "not_applicable";
       }
 
       await systemdNotify(["--stopping", `--status=Stopping after ${signal}`]);
@@ -1542,7 +1653,9 @@ export async function startServer(): Promise<StartedServer> {
             lifecycle: shutdownLifecycle,
           });
           logPostgresShutdown(postgresShutdown);
+          shutdownCleanupOutcome = postgresShutdown === "stopped" ? "stopped" : "not_applicable";
         } catch (err) {
+          shutdownCleanupOutcome = "failed";
           logger.error({ err, shutdownLifecycle }, "Failed to stop embedded PostgreSQL cleanly");
         }
       }
@@ -1551,21 +1664,33 @@ export async function startServer(): Promise<StartedServer> {
       // await the exporter's final batch is dropped on exit.
       await shutdownInstrumentation();
 
+      await appendServerLifecycleEvent({
+        bootId: lifecycleBoot.bootId,
+        type: shutdownLifecycle.preserveEmbeddedPostgres ? "hot_restart" : "ordinary_shutdown",
+        signal,
+        exitCode: 0,
+        postgresPid: ownedEmbeddedPostgresIdentity?.pid ?? null,
+        cleanupOutcome: shutdownCleanupOutcome,
+        completeBoot: true,
+      }).catch((journalError) => {
+        logger.error({ err: journalError }, "Failed to persist completed shutdown lifecycle provenance");
+      });
+
       process.exit(0);
     };
 
     let shutdownInProgress = false;
-    const handleShutdownSignal = (signal: "SIGINT" | "SIGTERM") => {
+    const handleShutdownSignal = (signal: ServerShutdownSignal) => {
       if (shutdownInProgress) return;
       shutdownInProgress = true;
       void shutdown(signal).finally(() => {
         shutdownInProgress = false;
       });
     };
-    process.on("SIGINT", handleShutdownSignal);
-    process.on("SIGTERM", handleShutdownSignal);
+    installShutdownSignalHandler(handleShutdownSignal);
   }
 
+  setStartupCleanup(null);
   return {
     server,
     host: config.host,

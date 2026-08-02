@@ -265,6 +265,7 @@ import {
 import {
   findMissingHotRestartSnapshotRunIds,
   readHotRestartIntent,
+  readHotRestartReport,
   removeHotRestartIntent,
   shouldHonorHotRestartIntentForProcess,
   writeHotRestartReport,
@@ -5912,6 +5913,7 @@ function readHotRestartAdoptionMetadata(resultJson: Record<string, unknown> | nu
 function mergeHotRestartAdoptionResultJson(
   resultJson: Record<string, unknown> | null | undefined,
   input: {
+    adoptionId: string;
     adoptedAt: Date;
     previousServerPid: number;
     newServerPid: number;
@@ -5928,7 +5930,10 @@ function mergeHotRestartAdoptionResultJson(
     hotRestart: {
       ...existing,
       adopted: true,
-      adoptedAt: input.adoptedAt.toISOString(),
+      adoptionId: input.adoptionId,
+      adoptedAt: typeof existing.adoptedAt === "string"
+        ? existing.adoptedAt
+        : input.adoptedAt.toISOString(),
       previousServerPid: input.previousServerPid,
       newServerPid: input.newServerPid,
       previousServerVersion: input.previousServerVersion,
@@ -9628,7 +9633,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     };
   }
 
-  async function prepareHotRestartShutdown(signal: "SIGINT" | "SIGTERM", now = new Date()) {
+  async function prepareHotRestartShutdown(signal: "SIGINT" | "SIGTERM" | "SIGBREAK", now = new Date()) {
     let intent: Awaited<ReturnType<typeof readHotRestartIntent>>;
     try {
       intent = await readHotRestartIntent();
@@ -9723,6 +9728,24 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       };
     }
 
+    const completedReport = await readHotRestartReport().catch((err) => {
+      logger.warn({ err }, "failed to read prior hot-restart report; resuming reconciliation from intent");
+      return null;
+    });
+    if (
+      completedReport?.requestedAt === intent.requestedAt
+      && completedReport.previousServerPid === intent.previousServerPid
+    ) {
+      await removeHotRestartIntent(undefined, intent);
+      return {
+        mode: "reported" as const,
+        adoptedRunIds: completedReport.adoptedRunIds,
+        finalizedWhileDownRunIds: completedReport.finalizedWhileDownRunIds,
+        lostRunIds: completedReport.lostRunIds,
+        skippedRunIds: completedReport.skippedRunIds,
+      };
+    }
+
     if (!intent.shutdownSnapshot) {
       logger.warn(
         {
@@ -9772,7 +9795,16 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     for (const runId of missingSnapshotRunIds) {
       const current = currentByRunId.get(runId);
       if (!current) {
-        finalizedWhileDownRunIds.push(runId);
+        classify({
+          runId,
+          companyId: "unavailable",
+          agentId: "unavailable",
+          adapterType: "unknown",
+          status: "missing",
+          processPid: null,
+          processGroupId: null,
+          issueId: null,
+        }, "finalized_while_down", "run_row_missing");
         continue;
       }
 
@@ -9823,6 +9855,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
 
       const processPid = run.processPid ?? candidate.processPid;
       const processGroupId = run.processGroupId ?? candidate.processGroupId;
+      const adoptionId = `${intent.requestedAt}:${intent.previousServerPid}:${candidate.runId}`;
+      const existingAdoption = readHotRestartAdoptionMetadata(parseObject(run.resultJson));
+      if (existingAdoption?.adoptionId === adoptionId) {
+        classify(candidate, "adopted", "already_adopted", patch);
+        continue;
+      }
       const processPidAlive = isProcessAlive(processPid);
       const processGroupAlive = isProcessGroupAlive(processGroupId);
       if (!processPid && !processGroupId) {
@@ -9835,6 +9873,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
 
       const resultJson = mergeHotRestartAdoptionResultJson(parseObject(run.resultJson), {
+        adoptionId,
         adoptedAt: now,
         previousServerPid: intent.previousServerPid,
         newServerPid: process.pid,
@@ -9843,17 +9882,44 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         processPid,
         processGroupId,
       });
-      const updated = await db
-        .update(heartbeatRuns)
-        .set({
-          resultJson,
-          error: run.errorCode === DETACHED_PROCESS_ERROR_CODE ? null : run.error,
-          errorCode: run.errorCode === DETACHED_PROCESS_ERROR_CODE ? null : run.errorCode,
-          updatedAt: now,
-        })
-        .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "running")))
-        .returning()
-        .then((rows) => rows[0] ?? null);
+      const updated = await db.transaction(async (tx) => {
+        const updatedRun = await tx
+          .update(heartbeatRuns)
+          .set({
+            resultJson,
+            error: run.errorCode === DETACHED_PROCESS_ERROR_CODE ? null : run.error,
+            errorCode: run.errorCode === DETACHED_PROCESS_ERROR_CODE ? null : run.errorCode,
+            updatedAt: now,
+          })
+          .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "running")))
+          .returning()
+          .then((rows) => rows[0] ?? null);
+        if (!updatedRun) return null;
+        const [eventSeq] = await tx
+          .select({ maxSeq: sql<number | null>`max(${heartbeatRunEvents.seq})` })
+          .from(heartbeatRunEvents)
+          .where(eq(heartbeatRunEvents.runId, run.id));
+        await tx.insert(heartbeatRunEvents).values({
+          companyId: updatedRun.companyId,
+          runId: updatedRun.id,
+          agentId: updatedRun.agentId,
+          seq: Number(eventSeq?.maxSeq ?? 0) + 1,
+          eventType: "lifecycle",
+          stream: "system",
+          level: "info",
+          message: "Adopted live child process after hot restart",
+          payload: {
+            adoptionId,
+            previousServerPid: intent.previousServerPid,
+            newServerPid: process.pid,
+            previousServerVersion: intent.previousServerVersion,
+            newServerVersion: serverVersion,
+            processPid,
+            processGroupId,
+          },
+        });
+        return updatedRun;
+      });
 
       if (!updated) {
         const latest = await db
@@ -9869,20 +9935,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         continue;
       }
 
-      await appendRunEvent(updated, await nextRunEventSeq(run.id), {
-        eventType: "lifecycle",
-        stream: "system",
-        level: "info",
-        message: "Adopted live child process after hot restart",
-        payload: {
-          previousServerPid: intent.previousServerPid,
-          newServerPid: process.pid,
-          previousServerVersion: intent.previousServerVersion,
-          newServerVersion: serverVersion,
-          processPid,
-          processGroupId,
-        },
-      });
       classify(candidate, "adopted", processPidAlive ? "process_pid_alive" : "process_group_alive", patch);
     }
 
@@ -9925,7 +9977,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     };
   }
 
-  async function drainRunningRunsForShutdown(signal: "SIGINT" | "SIGTERM", now = new Date()) {
+  async function drainRunningRunsForShutdown(signal: "SIGINT" | "SIGTERM" | "SIGBREAK", now = new Date()) {
     const activeRuns = await db
       .select({
         run: heartbeatRuns,

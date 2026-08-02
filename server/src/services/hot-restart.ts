@@ -11,6 +11,8 @@ import {
 export const HOT_RESTART_INTENT_FILENAME = "hot-restart-intent.json";
 export const HOT_RESTART_REPORT_FILENAME = "hot-restart-report.json";
 export const EMBEDDED_POSTGRES_HANDOFF_FILENAME = "embedded-postgres-handoff.json";
+export const EMBEDDED_POSTGRES_STARTUP_RECOVERY_FILENAME = "embedded-postgres-startup-recovery.json";
+export const SERVER_LIFECYCLE_JOURNAL_FILENAME = "server-lifecycle.json";
 
 const EMBEDDED_POSTGRES_HANDOFF_TTL_MS = 10 * 60 * 1_000;
 
@@ -35,6 +37,12 @@ export type EmbeddedPostgresHandoff = {
 
 export type EmbeddedPostgresHandoffClaim = EmbeddedPostgresHandoff & {
   replacementServerPid: number;
+};
+export type EmbeddedPostgresStartupRecovery = {
+  version: 1;
+  createdAt: string;
+  predecessorServerPid: number;
+  postgres: EmbeddedPostgresProcessIdentity;
 };
 const HOT_RESTART_LOCK_SUFFIX = ".lock";
 const HOT_RESTART_LOCK_STALE_MS = 30_000;
@@ -66,9 +74,41 @@ export type HotRestartIntent = {
   preflightActiveRunIds: string[];
   shutdownSnapshot?: {
     capturedAt: string;
-    signal: "SIGINT" | "SIGTERM";
+    signal: "SIGINT" | "SIGTERM" | "SIGBREAK";
     activeRuns: HotRestartIntentRun[];
   };
+};
+
+export type ServerLifecycleEventType =
+  | "ordinary_shutdown"
+  | "hot_restart"
+  | "startup_failure"
+  | "unexpected_exit"
+  | "embedded_postgres_unexpected_exit"
+  | "embedded_postgres_stopped";
+
+export type ServerLifecycleEvent = {
+  type: ServerLifecycleEventType;
+  at: string;
+  signal: "SIGINT" | "SIGTERM" | "SIGBREAK" | null;
+  exitCode: number | null;
+  postgresPid: number | null;
+  cleanupOutcome: "not_applicable" | "stopped" | "failed" | null;
+};
+
+export type ServerLifecycleBoot = {
+  bootId: string;
+  serverPid: number;
+  serverStartedAtEpochMs: number;
+  launcherIdentity: string;
+  startedAt: string;
+  events: ServerLifecycleEvent[];
+};
+
+export type ServerLifecycleJournal = {
+  version: 1;
+  activeBoot: ServerLifecycleBoot | null;
+  completedBoots: ServerLifecycleBoot[];
 };
 
 export type HotRestartReportRun = HotRestartIntentRun & {
@@ -118,6 +158,14 @@ export function resolveHotRestartReportPath(homeDir?: string) {
 
 export function resolveEmbeddedPostgresHandoffPath(homeDir?: string) {
   return resolveHotRestartPath(EMBEDDED_POSTGRES_HANDOFF_FILENAME, homeDir);
+}
+
+export function resolveEmbeddedPostgresStartupRecoveryPath(homeDir?: string) {
+  return resolveHotRestartPath(EMBEDDED_POSTGRES_STARTUP_RECOVERY_FILENAME, homeDir);
+}
+
+export function resolveServerLifecycleJournalPath(homeDir?: string) {
+  return resolveHotRestartPath(SERVER_LIFECYCLE_JOURNAL_FILENAME, homeDir);
 }
 
 async function writeJsonFileAtomic(filePath: string, value: unknown) {
@@ -328,6 +376,225 @@ export async function claimEmbeddedPostgresHandoff(input: {
   }
   await fs.rm(claimedPath, { force: true });
   return { ...handoff, replacementServerPid };
+}
+
+export async function writeEmbeddedPostgresStartupRecovery(input: {
+  predecessorServerPid: number;
+  postgres: EmbeddedPostgresProcessIdentity;
+  now?: Date;
+  homeDir?: string;
+}) {
+  const recovery: EmbeddedPostgresStartupRecovery = {
+    version: 1,
+    createdAt: (input.now ?? new Date()).toISOString(),
+    predecessorServerPid: input.predecessorServerPid,
+    postgres: input.postgres,
+  };
+  await writeJsonFileAtomic(resolveEmbeddedPostgresStartupRecoveryPath(input.homeDir), recovery);
+  return recovery;
+}
+
+export async function claimEmbeddedPostgresStartupRecovery(input: {
+  expectedPostgres: EmbeddedPostgresProcessIdentity;
+  isProcessAlive?: (pid: number) => boolean;
+  homeDir?: string;
+}): Promise<EmbeddedPostgresStartupRecovery | null> {
+  const recoveryPath = resolveEmbeddedPostgresStartupRecoveryPath(input.homeDir);
+  let recovery: EmbeddedPostgresStartupRecovery | null = null;
+  try {
+    const value = JSON.parse(await fs.readFile(recoveryPath, "utf8")) as unknown;
+    if (isRecord(value) && value.version === 1) {
+      const createdAt = asDateString(value.createdAt);
+      const predecessorServerPid = asNumber(value.predecessorServerPid);
+      const postgres = parseEmbeddedPostgresProcessIdentity(value.postgres);
+      if (createdAt && predecessorServerPid && postgres) {
+        recovery = { version: 1, createdAt, predecessorServerPid, postgres };
+      }
+    }
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+  if (!recovery || !samePostgresIdentity(recovery.postgres, input.expectedPostgres)) return null;
+  const alive = input.isProcessAlive ?? isProcessAlive;
+  if (alive(recovery.predecessorServerPid)) return null;
+  const claimedPath = `${recoveryPath}.${process.pid}.claimed`;
+  try {
+    await fs.rename(recoveryPath, claimedPath);
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
+  await fs.rm(claimedPath, { force: true });
+  return recovery;
+}
+
+function parseServerLifecycleEvent(value: unknown): ServerLifecycleEvent | null {
+  if (!isRecord(value)) return null;
+  const type = asString(value.type);
+  const at = asDateString(value.at);
+  if (
+    !type
+    || !at
+    || ![
+      "ordinary_shutdown",
+      "hot_restart",
+      "startup_failure",
+      "unexpected_exit",
+      "embedded_postgres_unexpected_exit",
+      "embedded_postgres_stopped",
+    ].includes(type)
+  ) return null;
+  const signal = value.signal === "SIGINT" || value.signal === "SIGTERM" || value.signal === "SIGBREAK"
+    ? value.signal
+    : null;
+  const cleanupOutcome = value.cleanupOutcome === "not_applicable"
+    || value.cleanupOutcome === "stopped"
+    || value.cleanupOutcome === "failed"
+    ? value.cleanupOutcome
+    : null;
+  return {
+    type: type as ServerLifecycleEventType,
+    at,
+    signal,
+    exitCode: typeof value.exitCode === "number" && Number.isInteger(value.exitCode) ? value.exitCode : null,
+    postgresPid: asNumber(value.postgresPid),
+    cleanupOutcome,
+  };
+}
+
+function parseServerLifecycleBoot(value: unknown): ServerLifecycleBoot | null {
+  if (!isRecord(value)) return null;
+  const bootId = asString(value.bootId);
+  const serverPid = asNumber(value.serverPid);
+  const serverStartedAtEpochMs = asNumber(value.serverStartedAtEpochMs);
+  const launcherIdentity = asString(value.launcherIdentity);
+  const startedAt = asDateString(value.startedAt);
+  if (!bootId || !serverPid || !serverStartedAtEpochMs || !launcherIdentity || !startedAt) return null;
+  const events = Array.isArray(value.events)
+    ? value.events.map(parseServerLifecycleEvent).filter((event): event is ServerLifecycleEvent => event !== null)
+    : [];
+  return { bootId, serverPid, serverStartedAtEpochMs, launcherIdentity, startedAt, events };
+}
+
+function parseServerLifecycleJournal(value: unknown): ServerLifecycleJournal {
+  if (!isRecord(value) || value.version !== 1) {
+    return { version: 1, activeBoot: null, completedBoots: [] };
+  }
+  return {
+    version: 1,
+    activeBoot: parseServerLifecycleBoot(value.activeBoot),
+    completedBoots: Array.isArray(value.completedBoots)
+      ? value.completedBoots
+        .map(parseServerLifecycleBoot)
+        .filter((boot): boot is ServerLifecycleBoot => boot !== null)
+        .slice(-32)
+      : [],
+  };
+}
+
+async function readServerLifecycleJournalAtPath(filePath: string) {
+  try {
+    return parseServerLifecycleJournal(JSON.parse(await fs.readFile(filePath, "utf8")));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+      return { version: 1, activeBoot: null, completedBoots: [] } satisfies ServerLifecycleJournal;
+    }
+    throw error;
+  }
+}
+
+export async function readServerLifecycleJournal(homeDir?: string) {
+  return await readServerLifecycleJournalAtPath(resolveServerLifecycleJournalPath(homeDir));
+}
+
+function buildServerLifecycleEvent(input: {
+  type: ServerLifecycleEventType;
+  at?: Date;
+  signal?: "SIGINT" | "SIGTERM" | "SIGBREAK" | null;
+  exitCode?: number | null;
+  postgresPid?: number | null;
+  cleanupOutcome?: "not_applicable" | "stopped" | "failed" | null;
+}): ServerLifecycleEvent {
+  return {
+    type: input.type,
+    at: (input.at ?? new Date()).toISOString(),
+    signal: input.signal ?? null,
+    exitCode: Number.isInteger(input.exitCode) ? input.exitCode! : null,
+    postgresPid: asNumber(input.postgresPid),
+    cleanupOutcome: input.cleanupOutcome ?? null,
+  };
+}
+
+export async function beginServerLifecycle(input: {
+  serverPid?: number;
+  serverStartedAtEpochMs: number;
+  launcherIdentity: string;
+  startedAt?: Date;
+  bootId?: string;
+  homeDir?: string;
+  isProcessAlive?: (pid: number) => boolean;
+}) {
+  const filePath = resolveServerLifecycleJournalPath(input.homeDir);
+  return await withHotRestartPathLock(filePath, async () => {
+    const journal = await readServerLifecycleJournalAtPath(filePath);
+    const isAlive = input.isProcessAlive ?? isProcessAlive;
+    if (journal.activeBoot) {
+      if (
+        journal.activeBoot.serverPid === (input.serverPid ?? process.pid)
+        && journal.activeBoot.serverStartedAtEpochMs === input.serverStartedAtEpochMs
+      ) {
+        return journal.activeBoot;
+      }
+      if (isAlive(journal.activeBoot.serverPid)) {
+        throw new Error(`Paperclip lifecycle journal already has live server pid ${journal.activeBoot.serverPid}`);
+      }
+      journal.activeBoot.events.push(buildServerLifecycleEvent({
+        type: "unexpected_exit",
+        exitCode: null,
+        cleanupOutcome: "not_applicable",
+      }));
+      journal.completedBoots.push(journal.activeBoot);
+    }
+    const activeBoot: ServerLifecycleBoot = {
+      bootId: input.bootId ?? randomUUID(),
+      serverPid: input.serverPid ?? process.pid,
+      serverStartedAtEpochMs: input.serverStartedAtEpochMs,
+      launcherIdentity: input.launcherIdentity,
+      startedAt: (input.startedAt ?? new Date()).toISOString(),
+      events: [],
+    };
+    journal.activeBoot = activeBoot;
+    journal.completedBoots = journal.completedBoots.slice(-32);
+    await writeJsonFileAtomic(filePath, journal);
+    return activeBoot;
+  });
+}
+
+export async function appendServerLifecycleEvent(input: {
+  bootId: string;
+  type: ServerLifecycleEventType;
+  at?: Date;
+  signal?: "SIGINT" | "SIGTERM" | "SIGBREAK" | null;
+  exitCode?: number | null;
+  postgresPid?: number | null;
+  cleanupOutcome?: "not_applicable" | "stopped" | "failed" | null;
+  completeBoot?: boolean;
+  homeDir?: string;
+}) {
+  const filePath = resolveServerLifecycleJournalPath(input.homeDir);
+  return await withHotRestartPathLock(filePath, async () => {
+    const journal = await readServerLifecycleJournalAtPath(filePath);
+    if (!journal.activeBoot || journal.activeBoot.bootId !== input.bootId) return false;
+    journal.activeBoot.events.push(buildServerLifecycleEvent(input));
+    if (input.completeBoot) {
+      journal.completedBoots.push(journal.activeBoot);
+      journal.completedBoots = journal.completedBoots.slice(-32);
+      journal.activeBoot = null;
+    }
+    await writeJsonFileAtomic(filePath, journal);
+    return true;
+  });
 }
 
 function asDateString(value: unknown): string | null {
@@ -624,7 +891,7 @@ export function parseHotRestartIntent(value: unknown): HotRestartIntent | null {
   };
 
   const snapshot = isRecord(value.shutdownSnapshot) ? value.shutdownSnapshot : null;
-  const signal = snapshot?.signal === "SIGINT" || snapshot?.signal === "SIGTERM"
+  const signal = snapshot?.signal === "SIGINT" || snapshot?.signal === "SIGTERM" || snapshot?.signal === "SIGBREAK"
     ? snapshot.signal
     : null;
   const capturedAt = asString(snapshot?.capturedAt);
@@ -732,7 +999,7 @@ export async function writeHotRestartIntent(input: {
 
 export async function writeHotRestartShutdownSnapshot(input: {
   intent: HotRestartIntent;
-  signal: "SIGINT" | "SIGTERM";
+  signal: "SIGINT" | "SIGTERM" | "SIGBREAK";
   activeRuns: HotRestartIntentRun[];
   capturedAt?: Date;
   homeDir?: string;
@@ -760,6 +1027,47 @@ export async function writeHotRestartShutdownSnapshot(input: {
 export async function writeHotRestartReport(report: HotRestartReport, homeDir?: string) {
   await writeJsonFileAtomic(resolveHotRestartReportPath(homeDir), report);
   return report;
+}
+
+export async function readHotRestartReport(homeDir?: string): Promise<HotRestartReport | null> {
+  try {
+    const value = JSON.parse(await fs.readFile(resolveHotRestartReportPath(homeDir), "utf8")) as unknown;
+    if (!isRecord(value) || value.version !== 1) return null;
+    const requestedAt = asDateString(value.requestedAt);
+    const completedAt = asDateString(value.completedAt);
+    const previousServerPid = asNumber(value.previousServerPid);
+    const newServerPid = asNumber(value.newServerPid);
+    if (!requestedAt || !completedAt || !previousServerPid || !newServerPid) return null;
+    const runs = Array.isArray(value.runs)
+      ? value.runs.map((entry) => {
+        const run = parseRun(entry);
+        if (!run || !isRecord(entry)) return null;
+        const classification = ["adopted", "finalized_while_down", "lost", "skipped"].includes(String(entry.classification))
+          ? entry.classification as HotRestartReportRun["classification"]
+          : null;
+        const reason = asString(entry.reason);
+        return classification && reason ? { ...run, classification, reason } : null;
+      }).filter((run): run is HotRestartReportRun => run !== null)
+      : [];
+    return {
+      version: 1,
+      requestedAt,
+      completedAt,
+      drainRequired: asBoolean(value.drainRequired),
+      previousServerPid,
+      newServerPid,
+      previousServerVersion: asString(value.previousServerVersion),
+      newServerVersion: asString(value.newServerVersion) ?? "unknown",
+      adoptedRunIds: asStringArray(value.adoptedRunIds),
+      finalizedWhileDownRunIds: asStringArray(value.finalizedWhileDownRunIds),
+      lostRunIds: asStringArray(value.lostRunIds),
+      skippedRunIds: asStringArray(value.skippedRunIds),
+      runs,
+    };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === "ENOENT") return null;
+    throw error;
+  }
 }
 
 async function removeMatchingHotRestartIntent(filePath: string, expected?: HotRestartIntent) {

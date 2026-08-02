@@ -871,7 +871,8 @@ export function createPluginWorkerHandle(
       env: workerEnv,
       // Don't let the child keep the parent alive
       detached: false,
-    });
+      windowsHide: true,
+    } as Parameters<typeof fork>[2] & { windowsHide: boolean });
 
     return child;
   }

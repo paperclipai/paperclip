@@ -17,6 +17,10 @@ const {
   deriveAuthTrustedOriginsMock,
   environmentCustomImagesServiceMock,
   environmentCustomImagesServiceFactoryMock,
+  embeddedPostgresInitialiseMock,
+  embeddedPostgresStartMock,
+  embeddedPostgresStopMock,
+  ensurePostgresDatabaseMock,
   feedbackExportServiceMock,
   feedbackServiceFactoryMock,
   fakeServer,
@@ -74,6 +78,10 @@ const {
   const feedbackExportServiceMock = {
     flushPendingFeedbackTraces: vi.fn(async () => ({ attempted: 0, sent: 0, failed: 0 })),
   };
+  const embeddedPostgresInitialiseMock = vi.fn(async () => undefined);
+  const embeddedPostgresStartMock = vi.fn(async () => undefined);
+  const embeddedPostgresStopMock = vi.fn(async () => undefined);
+  const ensurePostgresDatabaseMock = vi.fn(async () => "existing" as const);
   const feedbackServiceFactoryMock = vi.fn(() => feedbackExportServiceMock);
   const fakeServer = {
     once: vi.fn().mockReturnThis(),
@@ -94,6 +102,10 @@ const {
     deriveAuthTrustedOriginsMock,
     environmentCustomImagesServiceMock,
     environmentCustomImagesServiceFactoryMock,
+    embeddedPostgresInitialiseMock,
+    embeddedPostgresStartMock,
+    embeddedPostgresStopMock,
+    ensurePostgresDatabaseMock,
     feedbackExportServiceMock,
     feedbackServiceFactoryMock,
     fakeServer,
@@ -157,17 +169,32 @@ vi.mock("detect-port", () => ({
 
 vi.mock("@paperclipai/db", () => ({
   createDb: createDbMock,
-  ensurePostgresDatabase: vi.fn(),
+  ensurePostgresDatabase: ensurePostgresDatabaseMock,
   getPostgresDataDirectory: vi.fn(),
   inspectMigrations: vi.fn(async () => ({ status: "upToDate" })),
   applyPendingMigrations: vi.fn(),
   reconcilePendingMigrationHistory: vi.fn(async () => ({ repairedMigrations: [] })),
   formatDatabaseBackupResult: vi.fn(() => "ok"),
   runDatabaseBackup: vi.fn(),
+  prepareEmbeddedPostgresNativeRuntime: vi.fn(async () => undefined),
+  createEmbeddedPostgresLogBuffer: vi.fn(() => ({
+    append: vi.fn(),
+    getRecentLogs: vi.fn(() => []),
+  })),
+  formatEmbeddedPostgresError: vi.fn((error: unknown) => error),
   authUsers: {},
   companies: {},
   companyMemberships: {},
   instanceUserRoles: {},
+}));
+
+vi.mock("embedded-postgres", () => ({
+  default: class EmbeddedPostgres {
+    initialise = embeddedPostgresInitialiseMock;
+    start = embeddedPostgresStartMock;
+    stop = embeddedPostgresStopMock;
+    adopt = vi.fn();
+  },
 }));
 
 vi.mock("../app.js", () => ({
@@ -483,6 +510,45 @@ describe("startServer feedback export wiring", () => {
       "authenticated public deployments require DATABASE_URL to be a postgres/postgresql connection string",
     );
     expect(createDbMock).not.toHaveBeenCalled();
+  });
+
+  it("stops application-owned embedded PostgreSQL and journals cleanup after a post-start failure", async () => {
+    const originalHome = process.env.PAPERCLIP_HOME;
+    const originalInstanceId = process.env.PAPERCLIP_INSTANCE_ID;
+    const tempHome = mkdtempSync(path.join(tmpdir(), "paperclip-failed-startup-cleanup-"));
+    process.env.PAPERCLIP_HOME = tempHome;
+    process.env.PAPERCLIP_INSTANCE_ID = "default";
+    loadConfigMock.mockReturnValue(buildTestConfig({
+      databaseMode: "embedded-postgres",
+      databaseUrl: undefined,
+      embeddedPostgresDataDir: path.join(tempHome, "postgres"),
+    }));
+    ensurePostgresDatabaseMock.mockRejectedValueOnce(new Error("forced post-start database failure"));
+
+    try {
+      await expect(startServer()).rejects.toThrow("forced post-start database failure");
+      expect(embeddedPostgresStartMock).toHaveBeenCalledOnce();
+      expect(embeddedPostgresStopMock).toHaveBeenCalledOnce();
+      const journal = JSON.parse(readFileSync(
+        path.join(tempHome, "instances", "default", "server-lifecycle.json"),
+        "utf8",
+      )) as { activeBoot?: unknown; completedBoots?: Array<{ events?: Array<Record<string, unknown>> }> };
+      expect(journal.activeBoot).toBeNull();
+      expect(journal.completedBoots?.at(-1)?.events).toEqual([
+        expect.objectContaining({
+          type: "startup_failure",
+          exitCode: 1,
+          cleanupOutcome: "stopped",
+        }),
+      ]);
+      expect(JSON.stringify(journal)).not.toContain("paperclip:paperclip");
+    } finally {
+      if (originalHome === undefined) delete process.env.PAPERCLIP_HOME;
+      else process.env.PAPERCLIP_HOME = originalHome;
+      if (originalInstanceId === undefined) delete process.env.PAPERCLIP_INSTANCE_ID;
+      else process.env.PAPERCLIP_INSTANCE_ID = originalInstanceId;
+      rmSync(tempHome, { recursive: true, force: true });
+    }
   });
 });
 

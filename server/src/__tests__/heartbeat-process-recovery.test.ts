@@ -1810,6 +1810,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       expect(adopted?.resultJson).toMatchObject({
         hotRestart: {
           adopted: true,
+          adoptionId: `2026-03-19T00:05:00.000Z:${process.pid}:${runId}`,
           adoptedAt: "2026-03-19T00:07:00.000Z",
           previousServerPid: process.pid,
           newServerPid: process.pid,
@@ -1817,6 +1818,43 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
           processPid: child.pid,
         },
       });
+
+      // Simulate a crash after the atomic run+event commit but before report
+      // finalization. Replaying the same intent must preserve first-adoption
+      // time and must not append another adoption event.
+      await fs.rm(resolveHotRestartReportPath(home));
+      await writeHotRestartIntent({
+        previousServerPid: process.pid,
+        previousServerVersion: "old-version",
+        requestedAt: new Date("2026-03-19T00:05:00.000Z"),
+      });
+      await heartbeat.prepareHotRestartShutdown(
+        "SIGBREAK",
+        new Date("2026-03-19T00:08:00.000Z"),
+      );
+      await expect(heartbeat.reconcileHotRestartAdoption(
+        new Date("2026-03-19T00:09:00.000Z"),
+      )).resolves.toMatchObject({ mode: "reported", adoptedRunIds: [runId] });
+
+      const replayed = await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, runId))
+        .then((rows) => rows[0] ?? null);
+      expect(replayed?.resultJson).toMatchObject({
+        hotRestart: {
+          adoptionId: `2026-03-19T00:05:00.000Z:${process.pid}:${runId}`,
+          adoptedAt: "2026-03-19T00:07:00.000Z",
+        },
+      });
+      const adoptionEvents = await db
+        .select()
+        .from(heartbeatRunEvents)
+        .where(and(
+          eq(heartbeatRunEvents.runId, runId),
+          eq(heartbeatRunEvents.message, "Adopted live child process after hot restart"),
+        ));
+      expect(adoptionEvents).toHaveLength(1);
     });
   });
 

@@ -139,6 +139,16 @@ look like a zero-loss restart.
 
 When the server owns embedded PostgreSQL, a validated hot restart leaves that database process running and opts out of the dependency's package-global signal hook. The predecessor issues a short-lived, one-time handoff bound to the validated restart intent and the PostgreSQL PID, start time, canonical data directory, and port. Exactly one replacement process can claim that handoff after the predecessor exits; an unrelated or mismatched server may reuse the live database but does not acquire authority to stop it. Normal shutdowns stop either the originally started or validly adopted embedded database.
 
+The instance directory also contains `server-lifecycle.json`, a bounded lifecycle
+journal with allowlisted process, signal, exit-code, PostgreSQL PID, and cleanup
+outcome fields. A normal shutdown closes its boot entry; the next server records
+an unclosed entry from a dead predecessor as an unexpected exit. If startup fails
+after embedded PostgreSQL is running and immediate cleanup fails, Paperclip writes
+an exact-identity, one-time startup recovery claim. The next server may claim and
+stop only that same database process after confirming that the failed predecessor
+is dead. These files never contain database URLs, credentials, or environment
+values.
+
 Handoff persistence fails closed. The predecessor resolves PostgreSQL ownership before stopping telemetry, schedulers, run-log mirrors, or app services. If the handoff cannot be written or the PostgreSQL identity changes before it is written, the predecessor stops its owned database instead of exiting and leaving it ownerless. If that stop also fails, the predecessor aborts teardown, restores scheduler activity, and remains operational so an operator can correct the failure and retry the signal.
 When managed by systemd, that aborted path also reports the server ready again with an explicit recovery status so the service-manager lifecycle matches the restored runtime state.
 

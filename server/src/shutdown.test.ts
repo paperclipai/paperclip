@@ -48,7 +48,9 @@ describe("coordinateEmbeddedPostgresShutdown", () => {
     }
   }
 
-  it("prevents the dependency signal hook from stopping an application-owned database", () => {
+  it.each(["SIGINT", "SIGTERM", "SIGBREAK"] as const)(
+    "leaves %s exclusively coordinated by the application when autoShutdown is false",
+    (signal) => {
     const child = spawnSync(
       process.execPath,
       [
@@ -58,20 +60,30 @@ describe("coordinateEmbeddedPostgresShutdown", () => {
           "const { default: EmbeddedPostgres } = await import('embedded-postgres');",
           "const instance = new EmbeddedPostgres({ autoShutdown: false });",
           "instance.stop = async () => console.log('UNCOMMANDED_DATABASE_STOP');",
-          "process.emit('SIGTERM');",
-          "setInterval(() => {}, 1_000);",
+          `process.once(${JSON.stringify(signal)}, async () => {`,
+          "  console.log('APP_HANDLER_STARTED');",
+          "  await new Promise((resolve) => setTimeout(resolve, 50));",
+          "  console.log('APP_HANDLER_COMPLETED');",
+          "  process.exit(0);",
+          "});",
+          `process.emit(${JSON.stringify(signal)});`,
         ].join("\n"),
       ],
       {
         cwd: resolve(process.cwd(), "server"),
         encoding: "utf8",
         timeout: 5_000,
+        windowsHide: true,
       },
     );
 
     expect(child.error).toBeUndefined();
+    expect(child.status, child.stderr || child.stdout).toBe(0);
+    expect(child.stdout).toContain("APP_HANDLER_STARTED");
+    expect(child.stdout).toContain("APP_HANDLER_COMPLETED");
     expect(child.stdout).not.toContain("UNCOMMANDED_DATABASE_STOP");
-  });
+    },
+  );
 
   it("preserves the database and active work for a validated hot restart", async () => {
     const activeWork = { transactionOpen: true, childRunAlive: true };
