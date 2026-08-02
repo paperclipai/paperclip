@@ -24,20 +24,16 @@ LOGIN_PATH="$(/bin/zsh -lic 'printf %s "$PATH"' 2>/dev/null)"
 if [ -n "$LOGIN_PATH" ]; then
   export PATH="$LOGIN_PATH"
 else
-  export PATH="/Users/glad0s/.grok/bin:/Users/glad0s/.local/bin:/Users/glad0s/.nvm/versions/node/v20.20.2/bin:/Applications/Codex.app/Contents/Resources:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
+  export PATH="/Users/glad0s/.grok/bin:/Users/glad0s/.local/bin:/Applications/Codex.app/Contents/Resources:/opt/homebrew/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 fi
 
-# Pin Node v20 ahead of whatever the login PATH places first. The login PATH
-# typically has ~/.local/bin (Node v22.22.2) before nvm's v20.20.2 dir, and on
-# 2026-06-15 the v22 binary hit a tsx 4.21 ESM-resolution race at preflight —
-# `Cannot find module '/Users/glad0s/paperclip/server/src/services/run-gate.js'
-# imported from .../services/index.ts` — even though the .ts file is present
-# and the same import works under v20. TSMC-10172. The rest of the login PATH
-# is kept so adapter CLIs (codex, claude, grok, hermes, agy, gemini) still
-# resolve.
-NODE_V20_BIN="/Users/glad0s/.nvm/versions/node/v20.20.2/bin"
-if [ -x "$NODE_V20_BIN/node" ]; then
-  export PATH="$NODE_V20_BIN:$PATH"
+# Pin the Node 22 runtime required by acpx 0.12 and the current workspace. The
+# earlier Node 22/tsx 4.21 preflight race (TSMC-10172) is no longer applicable:
+# the served lockfile now carries tsx 4.23. Keeping the pin here prevents
+# launchd from silently falling back to the retired Node 20 runtime.
+NODE_V22_BIN="/Users/glad0s/.local/bin"
+if [ -x "$NODE_V22_BIN/node" ]; then
+  export PATH="$NODE_V22_BIN:$PATH"
 fi
 export PAPERCLIP_UI_DEV_MIDDLEWARE=true
 # 2026-07-11 DB-wipe hardening: DATABASE_URL deliberately NOT exported. The server
