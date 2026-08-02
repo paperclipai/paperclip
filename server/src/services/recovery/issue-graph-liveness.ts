@@ -4,6 +4,7 @@ import { buildIssueGraphLivenessIncidentKey } from "./origins.js";
 export type IssueLivenessSeverity = "warning" | "critical";
 
 export type IssueLivenessState =
+  | "blocked_without_dependency"
   | "blocked_by_unassigned_issue"
   | "blocked_by_assigned_backlog_issue"
   | "blocked_by_uninvokable_assignee"
@@ -28,6 +29,7 @@ export interface IssueLivenessIssueInput {
   executionState?: Record<string, unknown> | null;
   monitorNextCheckAt?: Date | string | null;
   monitorAttemptCount?: number | null;
+  unblockDescriptor?: unknown;
 }
 
 export interface IssueLivenessRelationInput {
@@ -104,6 +106,7 @@ export interface IssueGraphLivenessInput {
   pendingInteractions?: IssueLivenessWaitingPathInput[];
   pendingApprovals?: IssueLivenessWaitingPathInput[];
   openRecoveryIssues?: IssueLivenessWaitingPathInput[];
+  explicitWaitingPaths?: IssueLivenessWaitingPathInput[];
   now?: Date | string;
 }
 
@@ -368,6 +371,7 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
   const pendingInteractions = input.pendingInteractions ?? [];
   const pendingApprovals = input.pendingApprovals ?? [];
   const openRecoveryIssues = input.openRecoveryIssues ?? [];
+  const explicitWaitingPaths = input.explicitWaitingPaths ?? [];
 
   for (const relation of input.relations) {
     const list = blockersByBlockedIssueId.get(relation.blockedIssueId) ?? [];
@@ -400,12 +404,14 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
   }
 
   function hasExplicitWaitingPath(issue: IssueLivenessIssueInput) {
-    return Boolean(issue.assigneeUserId) ||
+    return Boolean(issue.unblockDescriptor) ||
+      Boolean(issue.assigneeUserId) ||
       hasScheduledMonitor(issue, nowMs) ||
       hasActiveExecutionPath(issue.companyId, issue.id, activeRuns, queuedWakeRequests) ||
       hasWaitingPath(issue.companyId, issue.id, pendingInteractions) ||
       hasWaitingPath(issue.companyId, issue.id, pendingApprovals) ||
-      hasWaitingPath(issue.companyId, issue.id, openRecoveryIssues);
+      hasWaitingPath(issue.companyId, issue.id, openRecoveryIssues) ||
+      hasWaitingPath(issue.companyId, issue.id, explicitWaitingPaths);
   }
 
   function reviewFinding(
@@ -570,8 +576,10 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
     seen.add(current.id);
 
     const relations = blockersByBlockedIssueId.get(current.id) ?? [];
+    let hasFirstClassBlockerEdge = false;
     for (const relation of relations) {
       if (relation.companyId !== current.companyId || relation.companyId !== source.companyId) continue;
+      hasFirstClassBlockerEdge = true;
       const blocker = issuesById.get(relation.blockerIssueId);
       if (!blocker || blocker.companyId !== source.companyId || blocker.status === "done") continue;
       const path = [...dependencyPath, blocker];
@@ -584,6 +592,25 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
 
       const leafFinding = blockedFindingForLeaf(source, blocker, path);
       if (leafFinding) return leafFinding;
+    }
+
+    if (current.status === "blocked" && !hasFirstClassBlockerEdge && !hasExplicitWaitingPath(current)) {
+      const ownerCandidates = ownerCandidatesForRecoveryIssue(current, input.agents, agentsById, {
+        includeStalledAssignee: true,
+      });
+
+      return finding({
+        issue: source,
+        state: "blocked_without_dependency",
+        reason: `${issueLabel(current)} is blocked without a first-class blocker or explicit waiting path.`,
+        dependencyPath,
+        recoveryIssue: current,
+        recommendedOwnerCandidateAgentIds: ownerCandidates.map((candidate) => candidate.agentId),
+        recommendedOwnerCandidates: ownerCandidates,
+        recommendedAction:
+          `Review ${issueLabel(current)} and either resume it, complete it, add an actionable blocker, or make the intentional wait explicit with a user owner, interaction, approval, monitor, wake, active run, or bounded recovery issue.`,
+        blockerIssueId: current.id,
+      });
     }
 
     return null;
