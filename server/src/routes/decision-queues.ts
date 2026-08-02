@@ -4,6 +4,7 @@ import {
   addDecisionQueueItemSchema,
   createDecisionQueueSchema,
   decisionAttentionSourceKindSchema,
+  removeDecisionQueueItemSchema,
   updateDecisionQueueSchema,
   updateDecisionRetentionSchema,
   updateDecisionTriageSchema,
@@ -127,22 +128,27 @@ export function decisionQueueRoutes(db: Db) {
     },
   );
 
-  router.delete("/companies/:companyId/decision-queues/:key/items/:sourceKind/:sourceId", async (req, res) => {
-    const companyId = req.params.companyId as string;
-    await assertDecisionAccess(db, req, companyId, "decision_queue:manage");
-    const source = sourceParams(req);
-    if (!source) {
-      res.status(400).json({ error: "Invalid attention source identity" });
-      return;
-    }
-    res.json(await svc.removeItem({
-      companyId,
-      key: req.params.key as string,
-      ...source,
-      authActor: req.actor,
-      actor: mutationActor(req),
-    }));
-  });
+  router.delete(
+    "/companies/:companyId/decision-queues/:key/items/:sourceKind/:sourceId",
+    validate(removeDecisionQueueItemSchema),
+    async (req, res) => {
+      const companyId = req.params.companyId as string;
+      await assertDecisionAccess(db, req, companyId, "decision_queue:manage");
+      const source = sourceParams(req);
+      if (!source) {
+        res.status(400).json({ error: "Invalid attention source identity" });
+        return;
+      }
+      res.json(await svc.removeItem({
+        companyId,
+        key: req.params.key as string,
+        ...source,
+        reason: req.body.reason,
+        authActor: req.actor,
+        actor: mutationActor(req),
+      }));
+    },
+  );
 
   router.get("/companies/:companyId/decision-triage/:sourceKind/:sourceId", async (req, res) => {
     const companyId = req.params.companyId as string;

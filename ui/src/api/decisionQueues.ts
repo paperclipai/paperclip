@@ -97,9 +97,16 @@ export const decisionQueuesApi = {
       { sourceKind, sourceId },
     ),
 
-  removeItem: (companyId: string, key: string, sourceKind: AttentionSourceKind, sourceId: string) =>
+  removeItem: (
+    companyId: string,
+    key: string,
+    sourceKind: AttentionSourceKind,
+    sourceId: string,
+    reason?: string,
+  ) =>
     api.delete<DecisionQueueItemDto>(
       `/companies/${companyId}/decision-queues/${encodeURIComponent(key)}/items/${encodeURIComponent(sourceKind)}/${encodeURIComponent(sourceId)}`,
+      reason ? { reason } : {},
     ),
 
   getTriage: (companyId: string, sourceKind: AttentionSourceKind, sourceId: string) =>

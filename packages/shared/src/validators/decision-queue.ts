@@ -28,6 +28,10 @@ export const addDecisionQueueItemSchema = z.object({
   sourceId: z.string().trim().min(1).max(500),
 }).strict();
 
+export const removeDecisionQueueItemSchema = z.object({
+  reason: z.string().trim().max(2_000).optional(),
+}).strict().default({});
+
 const calendarDateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/).refine((value) => {
   const parsed = new Date(`${value}T00:00:00.000Z`);
   return Number.isFinite(parsed.getTime()) && parsed.toISOString().slice(0, 10) === value;
@@ -68,6 +72,7 @@ export const createDecisionArchiveProposalSchema = z.object({
 export type CreateDecisionQueueInput = z.infer<typeof createDecisionQueueSchema>;
 export type UpdateDecisionQueueInput = z.infer<typeof updateDecisionQueueSchema>;
 export type AddDecisionQueueItemInput = z.infer<typeof addDecisionQueueItemSchema>;
+export type RemoveDecisionQueueItemInput = z.infer<typeof removeDecisionQueueItemSchema>;
 export type UpdateDecisionTriageInput = z.infer<typeof updateDecisionTriageSchema>;
 export type UpdateDecisionRetentionInput = z.infer<typeof updateDecisionRetentionSchema>;
 export type CreateDecisionArchiveProposalInput = z.infer<typeof createDecisionArchiveProposalSchema>;

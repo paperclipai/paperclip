@@ -54,6 +54,7 @@ import {
   decisionAttentionSourceKindSchema,
   decisionInputsSchema,
   decisionOptionsSchema,
+  removeDecisionQueueItemSchema,
   updateDecisionQueueSchema,
   updateDecisionTriageSchema,
   updateDecisionRetentionSchema,
@@ -3444,6 +3445,7 @@ registerCurrentRoute({
   path: "/api/companies/{companyId}/decision-queues/{key}/items/{sourceKind}/{sourceId}",
   tags: ["decision-queues"],
   summary: "Remove an item from a decision queue",
+  body: removeDecisionQueueItemSchema,
   responses: {
     200: r.ok(decisionQueueItemSchema),
     400: r.badRequest,
