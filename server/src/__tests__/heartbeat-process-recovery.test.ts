@@ -3604,6 +3604,39 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const otherWakeId = randomUUID();
     const finishedAt = new Date("2026-03-19T00:05:00.000Z");
 
+  it("does not re-enqueue the DP-4234 terminalization fixture after a verified operator interrupt", async () => {
+    const { companyId, agentId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "todo",
+      runStatus: "cancelled",
+      runErrorCode: "operator_interrupted",
+    });
+    await db
+      .update(heartbeatRuns)
+      .set({
+        resultJson: {
+          operatorInterrupted: true,
+          interruptionSource: "issue_comment_interrupt",
+          interruptedIssueId: issueId,
+        },
+      })
+      .where(eq(heartbeatRuns.id, runId));
+
+    const heartbeat = heartbeatService(db);
+    const result = await heartbeat.reconcileStrandedAssignedIssues();
+
+    expect(result.dispatchRequeued).toBe(0);
+    expect(result.escalated).toBe(0);
+    expect(result.skipped).toBe(1);
+    expect(result.issueIds).toEqual([]);
+
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(1);
+    expect(runs[0]?.id).toBe(runId);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0] ?? null);
+    expect(issue?.status).toBe("todo");
+  });
+
     await db
       .update(heartbeatRuns)
       .set({

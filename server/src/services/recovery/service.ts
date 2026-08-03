@@ -232,6 +232,17 @@ function didAutomaticRecoveryFail(
     );
 }
 
+function isVerifiedOperatorInterruptedRunForIssue(latestRun: LatestIssueRun, issueId: string) {
+  if (latestRun?.status !== "cancelled" || latestRun.errorCode !== "operator_interrupted") return false;
+
+  const result = parseObject(latestRun.resultJson);
+  return (
+    asBoolean(result.operatorInterrupted) === true &&
+    readNonEmptyString(result.interruptionSource) === "issue_comment_interrupt" &&
+    readNonEmptyString(result.interruptedIssueId) === issueId
+  );
+}
+
 function isTerminalIssueRun(latestRun: LatestIssueRun) {
   if (!latestRun) return false;
   return TERMINAL_HEARTBEAT_RUN_STATUSES.has(latestRun.status);
@@ -3279,6 +3290,14 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         }
 
         if (latestRun.status === "succeeded") {
+          result.skipped += 1;
+          continue;
+        }
+
+        // An operator interruption is an explicit stop decision, not a lost
+        // execution path. Its issue-bound metadata prevents an unrelated
+        // cancelled run from disabling ordinary assignment recovery.
+        if (isVerifiedOperatorInterruptedRunForIssue(latestRun, issue.id)) {
           result.skipped += 1;
           continue;
         }
