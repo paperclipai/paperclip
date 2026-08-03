@@ -19,6 +19,7 @@ const companyId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const recoveryOwnerAgentId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 const originalAgentId = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
 const tamperedOriginalAgentId = "99999999-9999-4999-8999-999999999999";
+const crossCompanyAgentId = "88888888-8888-4888-8888-888888888888";
 
 const mockIssueService = vi.hoisted(() => ({
   addComment: vi.fn(),
@@ -280,9 +281,21 @@ function createSimpleDb() {
   const query = {
     innerJoin: vi.fn(() => query),
     leftJoin: vi.fn(() => query),
+    limit: vi.fn(() => query),
     where: vi.fn(() => ({
+      limit: vi.fn(() => ({
+        then: async (resolve: (rows: unknown[]) => unknown) => resolve([
+          { id: recoveryOwnerAgentId },
+          { id: originalAgentId },
+          { id: tamperedOriginalAgentId },
+        ]),
+      })),
       orderBy: vi.fn(async () => []),
-      then: async (resolve: (rows: unknown[]) => unknown) => resolve([]),
+      then: async (resolve: (rows: unknown[]) => unknown) => resolve([
+        { id: recoveryOwnerAgentId },
+        { id: originalAgentId },
+        { id: tamperedOriginalAgentId },
+      ]),
     })),
   };
   return {
@@ -546,6 +559,72 @@ describe("§14 recovery disposition gate (SAG-3377)", () => {
           previousAssigneeAgentId: originalAgentId,
         }),
       );
+    });
+
+    it("rejects a same-call handoff that fabricates the previous assignee", async () => {
+      mockIssueService.getById.mockResolvedValue(
+        makeRecoveryIssue({
+          assigneeAgentId: originalAgentId,
+          previousAssigneeAgentId: null,
+        }),
+      );
+      const app = await createApp(originalAgentActor());
+
+      const res = await request(app)
+        .patch(`/api/issues/${issueId}`)
+        .set("Content-Type", "application/json")
+        .send({
+          assigneeAgentId: recoveryOwnerAgentId,
+          previousAssigneeAgentId: tamperedOriginalAgentId,
+        });
+
+      expect(res.status).toBe(422);
+      expect(res.body.code).toBe("recovery_previous_assignee_mismatch");
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+    });
+
+    it("rejects a cross-company previous assignee in a same-call handoff", async () => {
+      mockIssueService.getById.mockResolvedValue(
+        makeRecoveryIssue({
+          assigneeAgentId: originalAgentId,
+          previousAssigneeAgentId: null,
+        }),
+      );
+      const app = await createApp(originalAgentActor());
+
+      const res = await request(app)
+        .patch(`/api/issues/${issueId}`)
+        .set("Content-Type", "application/json")
+        .send({
+          assigneeAgentId: recoveryOwnerAgentId,
+          previousAssigneeAgentId: crossCompanyAgentId,
+        });
+
+      expect(res.status).toBe(422);
+      expect(res.body.code).toBe("recovery_previous_assignee_mismatch");
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+    });
+
+    it("rejects overwriting an existing previous assignee during handoff", async () => {
+      mockIssueService.getById.mockResolvedValue(
+        makeRecoveryIssue({
+          assigneeAgentId: originalAgentId,
+          previousAssigneeAgentId: originalAgentId,
+        }),
+      );
+      const app = await createApp(originalAgentActor());
+
+      const res = await request(app)
+        .patch(`/api/issues/${issueId}`)
+        .set("Content-Type", "application/json")
+        .send({
+          assigneeAgentId: recoveryOwnerAgentId,
+          previousAssigneeAgentId: tamperedOriginalAgentId,
+        });
+
+      expect(res.status).toBe(422);
+      expect(res.body.code).toBe("recovery_previous_assignee_mismatch");
+      expect(mockIssueService.update).not.toHaveBeenCalled();
     });
   });
 

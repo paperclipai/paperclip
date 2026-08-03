@@ -3291,6 +3291,7 @@ export function issueRoutes(
   function assertRecoveryDispositionGate(input: {
     existing: {
       id: string;
+      companyId: string;
       assigneeAgentId: string | null;
       previousAssigneeAgentId: string | null | undefined;
       labels?: Array<{ name: string }>;
@@ -3418,15 +3419,16 @@ export function issueRoutes(
     return true;
   }
 
-  function assertRecoveryPreviousAssigneePatchAllowed(input: {
+  async function assertRecoveryPreviousAssigneePatchAllowed(input: {
     existing: {
       id: string;
+      companyId: string;
       assigneeAgentId: string | null;
       previousAssigneeAgentId: string | null | undefined;
     };
     updateFields: Record<string, unknown>;
     actorAgentId: string | null | undefined;
-  }, res: Response): boolean {
+  }, res: Response): Promise<boolean> {
     const actorAgentId = input.actorAgentId;
     if (!actorAgentId) return true;
 
@@ -3446,6 +3448,61 @@ export function issueRoutes(
       input.existing.assigneeAgentId === actorAgentId &&
       typeof nextAssigneeAgentId === "string" &&
       nextAssigneeAgentId !== actorAgentId;
+
+    if (suppliedPreviousAssigneeAgentId) {
+      const suppliedPreviousAssignee = await db.select({ id: agents.id }).from(agents).where(and(
+        eq(agents.id, suppliedPreviousAssigneeAgentId),
+        eq(agents.companyId, input.existing.companyId),
+      )).limit(1).then((rows) => rows[0] ?? null);
+      if (!suppliedPreviousAssignee) {
+        res.status(422).json({
+          error: "previousAssigneeAgentId must identify an agent in the issue company.",
+          code: "recovery_previous_assignee_invalid",
+          details: {
+            issueId: input.existing.id,
+            suppliedPreviousAssigneeAgentId,
+            securityPrinciples: ["Separation of Disposition Authority"],
+          },
+        });
+        return false;
+      }
+    }
+
+    if (
+      suppliedPreviousAssigneeAgentId &&
+      input.existing.previousAssigneeAgentId &&
+      suppliedPreviousAssigneeAgentId !== input.existing.previousAssigneeAgentId
+    ) {
+      res.status(422).json({
+        error: "previousAssigneeAgentId is immutable once recovery reassignment has been recorded.",
+        code: isTerminalDisposition
+          ? "recovery_disposition_previous_assignee_mismatch"
+          : "recovery_previous_assignee_mismatch",
+        details: {
+          issueId: input.existing.id,
+          previousAssigneeAgentId: input.existing.previousAssigneeAgentId,
+          suppliedPreviousAssigneeAgentId,
+          securityPrinciples: ["Separation of Disposition Authority"],
+        },
+      });
+      return false;
+    }
+
+    if (suppliedPreviousAssigneeAgentId && input.existing.previousAssigneeAgentId === null && movesAssigneeOffActor) {
+      if (suppliedPreviousAssigneeAgentId !== actorAgentId) {
+        res.status(422).json({
+          error: "A recovery handoff must record the acting agent as previousAssigneeAgentId.",
+          code: "recovery_previous_assignee_mismatch",
+          details: {
+            issueId: input.existing.id,
+            actorAgentId,
+            suppliedPreviousAssigneeAgentId,
+            securityPrinciples: ["Separation of Disposition Authority"],
+          },
+        });
+        return false;
+      }
+    }
 
     if (suppliedPreviousAssigneeAgentId && !isTerminalDisposition && !movesAssigneeOffActor) {
       res.status(422).json({
@@ -8374,10 +8431,11 @@ export function issueRoutes(
     });
 
     if (req.actor.type === "agent") {
-      if (!assertRecoveryPreviousAssigneePatchAllowed(
+      if (!(await assertRecoveryPreviousAssigneePatchAllowed(
         {
           existing: {
             id: existing.id,
+            companyId: existing.companyId,
             assigneeAgentId: existing.assigneeAgentId,
             previousAssigneeAgentId: existing.previousAssigneeAgentId ?? null,
           },
@@ -8385,12 +8443,13 @@ export function issueRoutes(
           actorAgentId: req.actor.agentId,
         },
         res,
-      )) return;
+      ))) return;
 
       if (!assertRecoveryDispositionGate(
         {
           existing: {
             id: existing.id,
+            companyId: existing.companyId,
             assigneeAgentId: existing.assigneeAgentId,
             previousAssigneeAgentId: existing.previousAssigneeAgentId ?? null,
             labels: existing.labels,

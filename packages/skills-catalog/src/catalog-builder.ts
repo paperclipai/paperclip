@@ -409,12 +409,6 @@ async function buildReferencedCatalogSkill(
     }
     return null;
   }
-  const nextErrors = errors.slice(errorStart);
-  if (fallbackSkill && canFallbackToExistingReferencedSkill(nextErrors)) {
-    errors.splice(errorStart, nextErrors.length);
-    return fallbackSkill;
-  }
-
   return {
     id,
     key,
