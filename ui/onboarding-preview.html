@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+    <title>Onboarding Preview</title>
+    <style>
+      /* Unlayered override beats Tailwind's @layer base: index.css pins
+         html,body to viewport height with overflow hidden (correct for the app
+         shell). This standalone page needs to scroll. */
+      html, body { height: auto; min-height: 100%; overflow-y: auto; }
+    </style>
+    <script>
+      document.documentElement.classList.add("dark");
+      document.documentElement.style.colorScheme = "dark";
+    </script>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/onboarding-preview-main.tsx"></script>
+  </body>
+</html>

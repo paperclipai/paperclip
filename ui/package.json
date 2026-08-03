@@ -59,6 +59,7 @@
     "lexical": "0.48.0",
     "lucide-react": "^0.577.0",
     "mermaid": "^11.16.0",
+    "motion": "^12.42.2",
     "radix-ui": "^1.6.4",
     "react": "^19.2.7",
     "react-dom": "^19.2.7",
@@ -67,7 +68,8 @@
     "react-resizable-panels": "^4.12.2",
     "react-router-dom": "^7.18.1",
     "remark-gfm": "^4.0.1",
-    "tailwind-merge": "^3.6.0"
+    "tailwind-merge": "^3.6.0",
+    "three": "^0.185.1"
   },
   "devDependencies": {
     "@storybook/addon-a11y": "10.5.4",
@@ -77,6 +79,7 @@
     "@types/node": "^22.20.1",
     "@types/react": "^19.2.17",
     "@types/react-dom": "^19.2.3",
+    "@types/three": "^0.185.1",
     "@vitejs/plugin-react": "^4.3.4",
     "storybook": "10.5.5",
     "tailwindcss": "^4.3.2",
