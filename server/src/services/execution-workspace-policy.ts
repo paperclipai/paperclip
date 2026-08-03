@@ -323,7 +323,7 @@ export function resolveSharedWorkspaceConcurrency(input: {
   issueSettings: IssueExecutionWorkspaceSettings | null;
 }): SharedWorkspaceConcurrency {
   return input.issueSettings?.sharedWorkspaceConcurrency
-    ?? input.projectPolicy?.sharedWorkspaceConcurrency
+    ?? (input.projectPolicy?.enabled ? input.projectPolicy.sharedWorkspaceConcurrency : undefined)
     ?? "auto";
 }
 

@@ -195,6 +195,7 @@ describeEmbeddedPostgres("shared-workspace run serialization", () => {
     issueWorkspaceSettings?: Record<string, unknown> | null;
     agentEnvironmentDriver?: "sandbox";
   }): Promise<WorkspaceFixture> {
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true });
     const companyId = randomUUID();
     const projectId = randomUUID();
     const projectWorkspaceId = randomUUID();

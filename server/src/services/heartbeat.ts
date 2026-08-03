@@ -13730,8 +13730,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         ? await environmentsSvc.getById(selectedEnvironmentId)
         : null;
     const sharedWorkspaceConcurrency = resolveSharedWorkspaceConcurrency({
-      projectPolicy: parsedProjectExecutionWorkspacePolicy,
-      issueSettings: parsedIssueExecutionWorkspaceSettings,
+      projectPolicy: projectExecutionWorkspacePolicy,
+      issueSettings: issueExecutionWorkspaceSettings,
     });
     // A live holder is always consulted for shared workspaces. Depending on policy and the final
     // execution target it either remains the existing deferral gate or becomes dispatch context.
