@@ -578,11 +578,15 @@ async function executeProcess(input: {
 }
 
 async function runGit(args: string[], cwd: string, opts?: { env?: NodeJS.ProcessEnv }): Promise<string> {
+  // Force C locale to ensure git outputs English messages regardless of system locale
+  const gitEnv = { ...process.env, LC_ALL: 'C', LANG: 'C', LANGUAGE: 'C' };
+  const mergedEnv = opts?.env ? { ...gitEnv, ...opts.env } : gitEnv;
+  
   const proc = await executeProcess({
     command: "git",
     args,
     cwd,
-    env: opts?.env,
+    env: mergedEnv,
   });
   if (proc.code !== 0) {
     throw new Error(proc.stderr.trim() || proc.stdout.trim() || `git ${args.join(" ")} failed`);
@@ -2939,7 +2943,7 @@ export async function realizeExecutionWorkspace(input: {
         failureLabel: `git worktree add ${worktreePath}`,
       });
     } catch (attachError) {
-      if (!gitErrorIncludes(attachError, "already checked out")) {
+      if (!gitErrorIncludes(attachError, "already checked out") && !gitErrorIncludes(attachError, "already used by worktree")) {
         throw attachError;
       }
       const reusablePath = await findRegisteredGitWorktreeByBranch(repoRoot, branchName);
