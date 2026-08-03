@@ -1279,6 +1279,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         stopRunVariant="pause"
         runFinalizationActions={runFinalizationActions}
         onAcceptInteraction={onAcceptInteraction}
+        onRefreshInteraction={onRefreshInteraction}
         onRejectInteraction={onRejectInteraction}
         onSubmitInteractionAnswers={(interaction, answers) =>
           onSubmitInteractionAnswers(interaction, answers)

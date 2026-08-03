@@ -24,6 +24,7 @@ const mockIssuesApi = vi.hoisted(() => ({
   listComments: vi.fn(),
   listAttachments: vi.fn(),
   listWorkProducts: vi.fn(),
+  listInteractions: vi.fn(),
   listFeedbackVotes: vi.fn(),
   markRead: vi.fn(),
   update: vi.fn(),
@@ -257,6 +258,7 @@ vi.mock("../components/IssueChatThread", () => ({
       onSelect: (runId: string) => Promise<void> | void;
     }[];
     footer?: ReactNode;
+    onRefreshInteraction?: () => Promise<void> | void;
   }) => {
     mockIssueChatThreadRender(props);
     return (
@@ -982,6 +984,7 @@ describe("IssueDetail", () => {
     mockIssuesApi.listComments.mockResolvedValue([]);
     mockIssuesApi.listAttachments.mockResolvedValue([]);
     mockIssuesApi.listWorkProducts.mockResolvedValue([]);
+    mockIssuesApi.listInteractions.mockResolvedValue([]);
     mockIssuesApi.listFeedbackVotes.mockResolvedValue([]);
     mockIssuesApi.markRead.mockResolvedValue({ id: "issue-1", lastReadAt: new Date().toISOString() });
     mockIssuesApi.archiveFromInbox.mockResolvedValue({ id: "issue-1", archivedAt: new Date() });
@@ -1057,6 +1060,32 @@ describe("IssueDetail", () => {
         String(call[0]).includes("React has detected a change in the order of Hooks"),
       ),
     ).toBe(false);
+  });
+
+  it("passes the interaction refresh callback through to the issue chat thread", async () => {
+    mockIssuesApi.get.mockResolvedValue(createIssue());
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueDetail />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+    await flushReact();
+
+    const props = mockIssueChatThreadRender.mock.calls.at(-1)?.[0] as {
+      onRefreshInteraction?: () => Promise<void> | void;
+    };
+    expect(props.onRefreshInteraction).toEqual(expect.any(Function));
+
+    mockIssuesApi.listInteractions.mockClear();
+    await act(async () => {
+      await props.onRefreshInteraction?.();
+    });
+
+    expect(mockIssuesApi.listInteractions).toHaveBeenCalledWith("PAP-1");
   });
 
   it("updates status and priority from the task header controls", async () => {
