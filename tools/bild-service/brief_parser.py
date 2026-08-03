@@ -1,5 +1,5 @@
 from config import (ALLOWED_QUALITIES, DEFAULT_QUALITY,
-                    ALLOWED_FORMATS, DEFAULT_FORMAT,
+                    ALLOWED_FORMATS, DEFAULT_FORMAT, MODEL_FORMATS,
                     ALLOWED_MODELS, DEFAULT_MODEL, OPENAI_FORMAT_MAP, MAX_SEED)
 
 
@@ -49,19 +49,25 @@ def parse_brief(text):
                        DEFAULT_FORMAT, DEFAULT_QUALITY, "opaque",
                        DEFAULT_MODEL, None)
 
+    # Das Modell wird VOR dem Format ausgewertet: 360 hat einen eigenen
+    # Formatvorrat, und ein 1024x1024-Panorama waere unbrauchbar.
+    modell = fields.get("modell", DEFAULT_MODEL).lower()
+    if modell not in ALLOWED_MODELS:
+        modell = DEFAULT_MODEL
+
+    spec = MODEL_FORMATS.get(modell)
+    allowed = spec["allowed"] if spec else ALLOWED_FORMATS
+    fallback = spec["default"] if spec else DEFAULT_FORMAT
+
     # 'format' ist der Name laut Spec, 'size' bleibt als Alias erlaubt,
     # damit bestehende Auftraege nicht brechen.
-    fmt = fields.get("format") or fields.get("size") or DEFAULT_FORMAT
-    if fmt not in ALLOWED_FORMATS:
-        fmt = DEFAULT_FORMAT
+    fmt = fields.get("format") or fields.get("size") or fallback
+    if fmt not in allowed:
+        fmt = fallback
 
     quality = fields.get("quality", DEFAULT_QUALITY)
     if quality not in ALLOWED_QUALITIES:
         quality = DEFAULT_QUALITY
-
-    modell = fields.get("modell", DEFAULT_MODEL).lower()
-    if modell not in ALLOWED_MODELS:
-        modell = DEFAULT_MODEL
 
     transparent = fields.get("transparent", "false").lower() in ("true", "1", "ja", "yes")
 

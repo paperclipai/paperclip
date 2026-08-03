@@ -436,3 +436,23 @@ def test_run_once_survives_broad_paperclip_failure(monkeypatch, tmp_path):
     monkeypatch.setattr(bild_service.api, "list_issues", raising_list_issues)
     bild_service.run_once(now=1000.0)     # darf nicht crashen
     assert api.mails == ["[Bilddienst] Zyklus abgebrochen"]
+
+
+# --- Modellabhaengige Vorlage und Zeitgrenze ------------------------------
+
+def test_workflow_name_per_model():
+    assert bild_service._workflow_name("qwen") == "qwen-image"
+    assert bild_service._workflow_name("qwen360") == "qwen-360"
+
+
+def test_workflow_name_unknown_falls_back_to_default():
+    assert bild_service._workflow_name("gibtsnicht") == "qwen-image"
+    assert bild_service._workflow_name(None) == "qwen-image"
+
+
+def test_job_timeout_is_longer_for_360():
+    """360 laeuft gemessen ~330 s; mit dem 300-s-Standarddeckel wuerde jeder
+    Lauf kurz vor dem Ziel abgeraeumt und sinnlos neu eingereiht."""
+    assert bild_service._job_timeout("qwen360") == 900
+    assert bild_service._job_timeout("qwen") == 300
+    assert bild_service._job_timeout(None) == 300

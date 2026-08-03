@@ -51,18 +51,42 @@ MAIL_FROM = "office@whitestag.ai"
 MAIL_TO = "ws@whitestag.ai"
 
 # --- Lokales Rendern ---
-ALLOWED_MODELS = {"qwen", "openai"}
+ALLOWED_MODELS = {"qwen", "qwen360", "openai"}
 DEFAULT_MODEL = "qwen"
+
+# Lokales Modell -> Workflow-Vorlage in workflows/<name>.api.json. Der Name
+# darf NICHT mehr im Code stehen: sonst rendert jeder neue Modellname still
+# das Standardbild.
+LOCAL_WORKFLOWS = {
+    "qwen": "qwen-image",
+    "qwen360": "qwen-360",
+}
 
 ALLOWED_FORMATS = {"1024x1024", "1024x1536", "1536x1024", "1344x768", "768x1344"}
 DEFAULT_FORMAT = "1024x1024"
 
+# Modelle mit eigenem Formatzwang. 360-Panoramen brauchen 2:1 -- bei anderen
+# Seitenverhaeltnissen verfehlt das Modell laut Modellkarte den Horizont, und
+# 2048x1024 ist die einzige Aufloesung, fuer die es trainiert wurde.
+MODEL_FORMATS = {
+    "qwen360": {"allowed": {"2048x1024", "1536x768", "1024x512"},
+                "default": "2048x1024"},
+}
+
 # Formate, die die OpenAI-API nicht kennt, auf das naechstliegende abbilden.
-OPENAI_FORMAT_MAP = {"1344x768": "1536x1024", "768x1344": "1024x1536"}
+OPENAI_FORMAT_MAP = {"1344x768": "1536x1024", "768x1344": "1024x1536",
+                     "2048x1024": "1536x1024", "1536x768": "1536x1024",
+                     "1024x512": "1536x1024"}
 
 DAILY_LOCAL_LIMIT = 60      # Amoklauf-Bremse, kostet nichts, schuetzt den Knoten
 MAX_INFLIGHT_JOBS = 3       # gleichzeitig auf dem Knoten
 JOB_TIMEOUT_SEC = 300       # gemessen auf dem Headless-Knoten: 14,1 s warm, 35 s nach Neustart
+
+# Modelle, die laenger brauchen als der Standarddeckel. 360 laeuft mit 20
+# Schritten auf 2048x1024 (~11 s je Schritt gemessen) und wuerde von den 300 s
+# mitten im Lauf abgeraeumt und sinnlos neu eingereiht.
+MODEL_JOB_TIMEOUT_SEC = {"qwen360": 900}
+
 UNREACHABLE_ALERT_CYCLES = 30   # 30 Zyklen a 60 s = 30 Minuten
 
 # Absoluter Notausstieg: Jobs, deren "done"-Verarbeitung wiederholt an einer

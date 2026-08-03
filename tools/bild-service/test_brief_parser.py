@@ -109,3 +109,39 @@ def test_seed_zero_is_accepted():
 def test_seed_at_max_is_accepted():
     b = parse_brief("prompt: x\nseed: 18446744073709551615")
     assert b["seed"] == 18446744073709551615
+
+
+# --- 360-Modell -----------------------------------------------------------
+
+def test_qwen360_is_accepted_as_model():
+    assert parse_brief("prompt: x\nmodell: qwen360")["modell"] == "qwen360"
+
+
+def test_qwen360_defaults_to_2to1_format():
+    """Ohne Formatangabe muss 360 auf 2048x1024 landen -- 1024x1024 waere
+    als Panorama unbrauchbar."""
+    b = parse_brief("prompt: x\nmodell: qwen360")
+    assert b["size"] == "2048x1024"
+    assert (b["width"], b["height"]) == (2048, 1024)
+
+
+def test_qwen360_rejects_non_panorama_format():
+    b = parse_brief("prompt: x\nmodell: qwen360\nformat: 1024x1024")
+    assert b["size"] == "2048x1024"
+
+
+def test_qwen360_accepts_other_2to1_formats():
+    b = parse_brief("prompt: x\nmodell: qwen360\nformat: 1536x768")
+    assert b["size"] == "1536x768"
+
+
+def test_normal_model_still_rejects_panorama_format():
+    """2048x1024 gehoert NUR zu 360; qwen darf nicht heimlich dorthin kippen."""
+    b = parse_brief("prompt: x\nmodell: qwen\nformat: 2048x1024")
+    assert b["size"] == "1024x1024"
+
+
+def test_unknown_model_falls_back_to_default_with_default_format():
+    b = parse_brief("prompt: x\nmodell: gibtsnicht")
+    assert b["modell"] == "qwen"
+    assert b["size"] == "1024x1024"

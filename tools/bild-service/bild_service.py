@@ -18,9 +18,24 @@ from openai_image import generate_png
 
 FORMAT_HINT = ("Format:\n"
                "prompt: <Beschreibung>\n"
-               "modell: qwen | openai\n"
-               "format: 1024x1024\n"
-               "seed: 42")
+               "modell: qwen | qwen360 | openai\n"
+               "format: 1024x1024   (bei qwen360: 2048x1024)\n"
+               "seed: 42\n"
+               "\n"
+               "modell: qwen360 erzeugt ein 360-Grad-Panorama in "
+               "equirektangularer Projektion (2:1). Das Auslösewort steht "
+               "bereits in der Vorlage — der Prompt beschreibt nur die Szene.")
+
+
+def _workflow_name(modell):
+    """Vorlagenname zum Modell. Unbekanntes Modell faellt bewusst auf die
+    Standardvorlage zurueck, weil der Brief-Parser ohnehin nur bekannte
+    Modelle durchlaesst."""
+    return config.LOCAL_WORKFLOWS.get(modell, config.LOCAL_WORKFLOWS["qwen"])
+
+
+def _job_timeout(modell):
+    return config.MODEL_JOB_TIMEOUT_SEC.get(modell, config.JOB_TIMEOUT_SEC)
 
 def _today():
     return datetime.date.today().isoformat()
@@ -59,13 +74,13 @@ def render_local(company, issue, brief, now):
         api.patch_status(iid, "cancelled")
         return
     seed = brief["seed"] if brief["seed"] is not None else random.randint(1, 2 ** 31 - 1)
-    workflow = wt.fill(wt.load_raw("qwen-image"), brief["prompt"], seed,
-                       brief["width"], brief["height"])
+    workflow = wt.fill(wt.load_raw(_workflow_name(brief["modell"])), brief["prompt"],
+                       seed, brief["width"], brief["height"])
     try:
         prompt_id = comfy_client.submit(workflow)
     except comfy_client.ComfyError:
         return          # Knoten weg: Auftrag bleibt liegen, naechster Zyklus versucht erneut
-    job_state.add(iid, prompt_id, company["id"], now, seed=seed)
+    job_state.add(iid, prompt_id, company["id"], now, seed=seed, modell=brief["modell"])
     job_state.clear_queue_notice(iid)
     cost_state.record_local(_today())
 
@@ -135,7 +150,8 @@ def collect_one(issue_id, job, now):
     # scheitert erneut, auf ewig. Deshalb VOR jeder Status-Verzweigung
     # pruefen: ein Job, der laenger als das Vielfache von JOB_TIMEOUT_SEC lebt,
     # wird zwangsweise abgebrochen, egal was der Knoten gerade meldet.
-    stuck_ceiling = config.JOB_TIMEOUT_SEC * config.STUCK_JOB_AGE_MULTIPLIER
+    timeout_sec = _job_timeout(job.get("modell"))
+    stuck_ceiling = timeout_sec * config.STUCK_JOB_AGE_MULTIPLIER
     if job_state.age_seconds(job, now) > stuck_ceiling:
         api.add_comment(issue_id,
                         "⚠️ Auftrag hängt seit über %d s fest und wurde zwangsweise "
@@ -165,10 +181,13 @@ def collect_one(issue_id, job, now):
             api.upload_attachment(job["company_id"], issue_id,
                                   "bild-%s.png" % issue_id[:8], png)
             job_state.mark_uploaded(issue_id)
+        label = ("Qwen-Image 2512 + 360-LoRA, equirektangular"
+                 if job.get("modell") == "qwen360" else "Qwen-Image 2512")
         api.add_comment(issue_id,
-                        "✅ Bild erzeugt (Qwen-Image 2512, lokal).\n"
+                        "✅ Bild erzeugt (%s, lokal).\n"
                         "Seed: %s\nDauer: %.0f s"
-                        % (job.get("seed", "—"), job_state.age_seconds(job, now)))
+                        % (label, job.get("seed", "—"),
+                           job_state.age_seconds(job, now)))
         api.patch_status(issue_id, "done")
         job_state.drop(issue_id)
         return "done"
@@ -179,7 +198,7 @@ def collect_one(issue_id, job, now):
         job_state.drop(issue_id)
         return "error"
 
-    if job_state.age_seconds(job, now) > config.JOB_TIMEOUT_SEC:
+    if job_state.age_seconds(job, now) > timeout_sec:
         if int(job.get("attempts", 1)) < 2:
             brief = _brief_for_issue(dict(job, issue_id=issue_id))
             # Finding 4: die Beschreibung kann waehrend des Renderns geleert
@@ -194,7 +213,8 @@ def collect_one(issue_id, job, now):
                 job_state.drop(issue_id)
                 return "error"
             seed = brief["seed"] if brief["seed"] is not None else random.randint(1, 2 ** 31 - 1)
-            workflow = wt.fill(wt.load_raw("qwen-image"), brief["prompt"], seed,
+            workflow = wt.fill(wt.load_raw(_workflow_name(brief["modell"])),
+                               brief["prompt"], seed,
                                brief["width"], brief["height"])
             try:
                 new_id = comfy_client.submit(workflow)
@@ -204,7 +224,7 @@ def collect_one(issue_id, job, now):
             return "timeout"
         api.add_comment(issue_id,
                         "⚠️ Render nach zwei Versuchen ohne Ergebnis "
-                        "(je über %d s). Auftrag abgebrochen." % config.JOB_TIMEOUT_SEC)
+                        "(je über %d s). Auftrag abgebrochen." % timeout_sec)
         api.patch_status(issue_id, "cancelled")
         job_state.drop(issue_id)
         api.mail_alarm("[Bilddienst] Render zweimal ohne Ergebnis",
