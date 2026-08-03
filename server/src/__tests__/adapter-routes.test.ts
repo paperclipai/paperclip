@@ -116,11 +116,21 @@ describe("adapter routes", () => {
           name: path.basename(dir),
           version: "1.0.0",
           keywords: ["paperclip-adapter-plugin"],
+          main: "./index.js",
         }),
+      );
+      // Round-5 validator requires the entry file to exist (file-
+      // mutation bypass closure). Seed a benign entry so the test
+      // exercises the happy path; the plugin-loader mock short-
+      // circuits the actual import.
+      await fs.writeFile(
+        path.join(dir, "index.js"),
+        `export function createServerAdapter() { return { type: "fake_${path.basename(dir).replace(/[^a-z0-9]/gi, "_")}", configSchema: {} }; }`,
       );
       // Backdate mtime so the 2-second floor is satisfied.
       const old = Date.now() / 1000 - 60;
       await fs.utimes(path.join(dir, "package.json"), old, old);
+      await fs.utimes(path.join(dir, "index.js"), old, old);
     }
     mockAdapterPluginStore.getAdapterPluginsDir.mockReturnValue(pluginsRoot);
     mockAdapterPluginStore.getDisabledAdapterTypes.mockReturnValue([]);
