@@ -66,6 +66,7 @@ import {
   updateIssueSchema,
   getClosedIsolatedExecutionWorkspaceMessage,
   isClosedIsolatedExecutionWorkspace,
+  isAgentFinalizableDocumentKey,
   isUuidLike,
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
   type CompactIssue,
@@ -3436,6 +3437,7 @@ export function issueRoutes(
       assigneeAgentId: string | null;
       assigneeUserId: string | null;
       status: string;
+      executionState?: unknown;
     },
     action: "issue:comment" | "issue:read" | "issue:mutate",
   ) {
@@ -3451,6 +3453,12 @@ export function issueRoutes(
         assigneeAgentId: issue.assigneeAgentId,
         assigneeUserId: issue.assigneeUserId,
         status: issue.status,
+        returnAssigneeAgentId: (() => {
+          const executionState = parseIssueExecutionState(issue.executionState ?? null);
+          if (issue.status !== "in_progress" || executionState?.status !== "changes_requested") return null;
+          const returnAssignee = executionState.returnAssignee;
+          return returnAssignee?.type === "agent" ? returnAssignee.agentId ?? null : null;
+        })(),
       },
       scope: {
         issueId: issue.id,
@@ -3513,6 +3521,10 @@ export function issueRoutes(
 
   function isIssueMentionGrantDecision(decision: true | Awaited<ReturnType<typeof decideIssueAccess>>) {
     return decision !== true && decision.reason === "allow_issue_mention_grant";
+  }
+
+  function isReturnAssigneeCommentDecision(decision: true | Awaited<ReturnType<typeof decideIssueAccess>>) {
+    return decision !== true && decision.reason === "allow_return_assignee_comment";
   }
 
   function isDirectParentReportDecision(decision: true | Awaited<ReturnType<typeof decideIssueAccess>>) {
@@ -6321,14 +6333,30 @@ export function issueRoutes(
     const id = req.params.id as string;
     const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
     if (!issue) return;
-    if (req.actor.type !== "board") {
-      res.status(403).json({ error: "Board authentication required" });
-      return;
-    }
+    if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
     const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
     if (!keyParsed.success) {
       res.status(400).json({ error: "Invalid document key", details: keyParsed.error.issues });
       return;
+    }
+
+    const isBoardActor = req.actor.type === "board";
+    const isAuthorizedAgentFinalizer =
+      req.actor.type === "agent" &&
+      !!req.actor.agentId &&
+      req.actor.agentId === issue.assigneeAgentId &&
+      isAgentFinalizableDocumentKey(keyParsed.data);
+    if (!isBoardActor && !isAuthorizedAgentFinalizer) {
+      res.status(403).json({ error: "Board authentication required" });
+      return;
+    }
+
+    if (isAuthorizedAgentFinalizer) {
+      const existingDoc = await documentsSvc.getIssueDocumentByKey(issue.id, keyParsed.data);
+      if (!existingDoc || !existingDoc.latestRevisionId) {
+        res.status(422).json({ error: "Document has no revision content to finalize" });
+        return;
+      }
     }
 
     const actor = getActorInfo(req);
@@ -6355,6 +6383,7 @@ export function issueRoutes(
           documentId: result.document.id,
           title: result.document.title,
           lockedAt: result.document.lockedAt,
+          lockedBy: isAuthorizedAgentFinalizer ? "agent" : "board",
         },
       });
     }
@@ -6366,14 +6395,29 @@ export function issueRoutes(
     const id = req.params.id as string;
     const issue = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
     if (!issue) return;
-    if (req.actor.type !== "board") {
-      res.status(403).json({ error: "Board authentication required" });
-      return;
-    }
+    if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
     const keyParsed = issueDocumentKeySchema.safeParse(String(req.params.key ?? "").trim().toLowerCase());
     if (!keyParsed.success) {
       res.status(400).json({ error: "Invalid document key", details: keyParsed.error.issues });
       return;
+    }
+
+    const isBoardActor = req.actor.type === "board";
+    const isAuthorizedAgentUnlocker =
+      req.actor.type === "agent" &&
+      !!req.actor.agentId &&
+      req.actor.agentId === issue.assigneeAgentId &&
+      isAgentFinalizableDocumentKey(keyParsed.data);
+    if (!isBoardActor && !isAuthorizedAgentUnlocker) {
+      res.status(403).json({ error: "Board authentication required" });
+      return;
+    }
+    if (isAuthorizedAgentUnlocker) {
+      const existingDoc = await documentsSvc.getIssueDocumentByKey(issue.id, keyParsed.data);
+      if (!existingDoc?.lockedAt || existingDoc.lockedByAgentId !== req.actor.agentId || existingDoc.lockedByUserId) {
+        res.status(403).json({ error: "Agents may only unlock a document they finalized themselves" });
+        return;
+      }
     }
 
     const actor = getActorInfo(req);
@@ -10134,6 +10178,7 @@ export function issueRoutes(
           !reopenRequested &&
           !resumeRequested &&
           isIssueMentionGrantDecision(commentAccessDecision)));
+    const returnAssigneeCommentOnlyGrant = isReturnAssigneeCommentDecision(commentAccessDecision);
     const effectiveReopenRequested = crossIssueCommentOnlyGrant ? false : reopenRequested;
     const effectiveResumeRequested = crossIssueCommentOnlyGrant ? false : resumeRequested;
     if (
@@ -10141,7 +10186,8 @@ export function issueRoutes(
       req.actor.type === "agent" &&
       issue.assigneeAgentId !== null &&
       issue.assigneeAgentId !== req.actor.agentId &&
-      !crossIssueCommentOnlyGrant
+      !crossIssueCommentOnlyGrant &&
+      !returnAssigneeCommentOnlyGrant
     ) {
       if (!(await assertAgentIssueMutationAllowed(req, res, issue))) return;
     }

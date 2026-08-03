@@ -464,6 +464,33 @@ describe("issue execution policy transitions", () => {
         currentParticipant: { type: "agent", agentId: qaAgentId },
       });
     });
+
+    it("requires a comment when executor re-submits after changes", () => {
+      expect(() => applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_progress",
+          assigneeAgentId: coderAgentId,
+          assigneeUserId: null,
+          executionPolicy: policy,
+          executionState: {
+            status: "changes_requested",
+            currentStageId: reviewStageId,
+            currentStageIndex: 0,
+            currentStageType: "review",
+            currentParticipant: { type: "agent", agentId: qaAgentId },
+            returnAssignee: { type: "agent", agentId: coderAgentId },
+            completedStageIds: [],
+            lastDecisionId: null,
+            lastDecisionOutcome: "changes_requested",
+          },
+        },
+        policy,
+        requestedStatus: "done",
+        requestedAssigneePatch: {},
+        actor: { agentId: coderAgentId },
+        commentBody: "   ",
+      })).toThrow("Resubmitting after changes requested requires a comment describing what changed");
+    });
   });
 
   describe("review-only policy (no approval stage)", () => {

@@ -971,6 +971,10 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
     return { patch };
   }
 
+  if (existingState?.status === CHANGES_REQUESTED_STATUS && !input.commentBody?.trim()) {
+    throw unprocessable("Resubmitting after changes requested requires a comment describing what changed");
+  }
+
   // A workflow whose execution already completed is terminal for approve/done:
   // closing the issue must not restart the chain at the first stage (#7893).
   if (requestedStatus === "done" && existingState?.status === COMPLETED_STATUS) {
