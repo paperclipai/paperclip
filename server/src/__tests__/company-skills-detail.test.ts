@@ -41,7 +41,7 @@ describeEmbeddedPostgres("companySkillService.detail", () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-company-skills-detail-");
     db = createDb(tempDb.connectionString);
     svc = companySkillService(db);
-  }, 20_000);
+  }, 60_000);
 
   afterEach(async () => {
     mockListSkills.mockClear();
