@@ -226,6 +226,31 @@ record, so a worker can never forge a parent. The host validates the
 trace context the worker sends no span, so the whole provider-span path is a
 no-op.
 
+## Sandbox Startup Run-Log Event
+
+Paperclip writes one `run.startup.step` event to the run log for each bring-up
+step. This event is a run-log record, not a first-party telemetry event. The
+generated telemetry contract does not cover it, so this section is its canonical
+contract.
+
+The event payload carries only three fields.
+
+| Field | Type | Meaning |
+| --- | --- | --- |
+| `step` | string | The bring-up step name, for example `stage.sync`. |
+| `durationMs` | number | The wall time of the step. A skipped step reports `0`. |
+| `outcome` | string | The step outcome (`ok`, `skipped`, or `failed`). |
+
+The event no longer carries the per-step round-trip count or the provider
+duration fields. It dropped `roundTrips`, `providerExecMs`, `providerGetMs`,
+`createRuntimeMs`, and `ensureSessionMs`. The startup spans in the section above
+carry that detail now. The `sandbox.exec` child spans hold the round-trip and
+provider durations. The `acp.handshake` step span holds the create-runtime and
+ensure-session sub-times.
+
+To read the detailed timing, use the startup spans. The spans need an OTLP
+endpoint. A run with no endpoint keeps only the three run-log fields above.
+
 ## Dimension Values
 
 Telemetry dimension values must be primitives. Use only the value types allowed
