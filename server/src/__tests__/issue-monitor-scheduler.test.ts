@@ -346,6 +346,25 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     );
   });
 
+  it("keeps dispatching past the default ceiling when the policy names a timeoutAt", async () => {
+    const { issueId } = await seedFixture({
+      monitorAttemptCount: DEFAULT_ISSUE_MONITOR_MAX_ATTEMPTS + 5,
+      monitor: { timeoutAt: "2027-01-01T00:00:00.000Z", recoveryPolicy: "wake_owner" },
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.tickTimers(new Date("2026-04-11T12:31:00.000Z"));
+
+    // timeoutAt is already a bound. The default ceiling must not end the
+    // monitor before its declared deadline.
+    expect(result.skipped).toBe(0);
+    expect(result.enqueued).toBe(1);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]!);
+    expect(issue.monitorNextCheckAt).not.toBeNull();
+    expect(parseIssueExecutionState(issue.executionState)?.monitor?.clearReason ?? null).toBeNull();
+  });
+
   it("stops a monitor that names no bounds at the default attempt ceiling", async () => {
     const { issueId } = await seedFixture({
       monitorAttemptCount: DEFAULT_ISSUE_MONITOR_MAX_ATTEMPTS,
