@@ -26,7 +26,7 @@
   - Attachment: `POST /api/companies/{companyId}/issues/{issueId}/attachments` (multipart, **Feldname `file`**)
   - Status-Enum: `backlog|todo|in_progress|in_review|done|blocked|cancelled`
 - **Wake:** Subtask → `done`/`cancelled` weckt den Parent automatisch (`issue_children_completed`), actor-unabhängig.
-- **Mail-Alarm:** `POST http://127.0.0.1:5678/webhook/mailhub/send`, Header `X-Mailhub-Secret: mailhub-812a27b07c73e64d7df192c98a3883eb`, Body `{from,to,subject,text}`.
+- **Mail-Alarm:** `POST http://127.0.0.1:5678/webhook/mailhub/send`, Header `X-Mailhub-Secret: $(sed -n 's/^MAILHUB_SECRET=//p' ~/.paperclip/instances/default/secrets/mailhub.env)`, Body `{from,to,subject,text}`.
 - **OpenAI:** `POST https://api.openai.com/v1/images/generations`, `{ model:"gpt-image-1", prompt, size, quality, background, output_format:"png", n:1 }`; Antwort `data[0].b64_json` (immer base64). `size ∈ {1024x1024,1024x1536,1536x1024,auto}`, `quality ∈ {low,medium,high,auto}`, `background ∈ {transparent,opaque}`.
 - **launchd-Gotcha:** launchd kann CloudStorage/SynologyDrive nicht lesen → Skript MUSS unter `~/.paperclip/scripts/` liegen, State unter `~/.paperclip/instances/default/state/`.
 
@@ -154,7 +154,7 @@ DAILY_IMAGE_LIMIT = 50
 COST_ESTIMATE = {"low": 0.02, "medium": 0.04, "high": 0.17, "auto": 0.04}
 
 MAIL_WEBHOOK = "http://127.0.0.1:5678/webhook/mailhub/send"
-MAIL_SECRET = "mailhub-812a27b07c73e64d7df192c98a3883eb"
+MAIL_SECRET = "$(sed -n 's/^MAILHUB_SECRET=//p' ~/.paperclip/instances/default/secrets/mailhub.env)"
 MAIL_FROM = "office@whitestag.ai"
 MAIL_TO = "ws@whitestag.ai"
 ```

@@ -15,7 +15,7 @@
 - Tests colocated, `unittest`-Stil (wie `tools/n8n-workflow-watcher/test_*.py`).
 - Test-Kommando: `python3 -m pytest <datei> -v` (pytest 8.4.2 vorhanden).
 - Company-ID: `9cebf3cf-efe8-4597-a400-f06488900a87` · Luna-Agent-ID: `e24b8d9d-143e-4141-b413-4361aa618771` · Walter-User-ID: `18r34Ghx5N0LHRptMCT6Fp1WaoGqhvc9`.
-- Mailhub-Send-Webhook: `http://localhost:5678/webhook/mailhub/send`, Header `X-Mailhub-Secret: mailhub-812a27b07c73e64d7df192c98a3883eb`, Absender `office@whitestag.ai`, Walter `ws@whitestag.ai`.
+- Mailhub-Send-Webhook: `http://localhost:5678/webhook/mailhub/send`, Header `X-Mailhub-Secret: $(sed -n 's/^MAILHUB_SECRET=//p' ~/.paperclip/instances/default/secrets/mailhub.env)`, Absender `office@whitestag.ai`, Walter `ws@whitestag.ai`.
 - Freigabe-Wort: **exakt „okay"** nach Normalisierung (trim, lowercase, End-Satzzeichen `.!` entfernt). Alles andere = Korrektur. Im Zweifel (unparsbar) = Korrektur, **nie senden**.
 - Token-Format: 4 Zeichen aus `A-Z2-7` (Base32-Alphabet ohne 0/1/8/9), Betreff-Marker `[Freigabe #<TOKEN>]`.
 - TTL pending-Einträge: **7 Tage** → `expired`, kein Versand, keine Meldung.
@@ -538,7 +538,7 @@ import approval_queue as q                      # noqa: E402
 import luna_mail_render as render               # noqa: E402
 
 WEBHOOK = "http://localhost:5678/webhook/mailhub/send"
-SECRET = "mailhub-812a27b07c73e64d7df192c98a3883eb"
+SECRET = "$(sed -n 's/^MAILHUB_SECRET=//p' ~/.paperclip/instances/default/secrets/mailhub.env)"
 FROM = "office@whitestag.ai"
 WALTER = "ws@whitestag.ai"
 
@@ -699,7 +699,7 @@ import json, urllib.request
 from pathlib import Path
 
 WEBHOOK = "http://localhost:5678/webhook/mailhub/send"
-WEBHOOK_SECRET = "mailhub-812a27b07c73e64d7df192c98a3883eb"
+WEBHOOK_SECRET = "$(sed -n 's/^MAILHUB_SECRET=//p' ~/.paperclip/instances/default/secrets/mailhub.env)"
 SECRET_FILE = Path.home() / ".paperclip" / "state" / "luna-approval-secret"
 FROM = "office@whitestag.ai"
 REPLY_TO = "ws@whitestag.ai"
@@ -1085,7 +1085,7 @@ sqlite3 database.sqlite "SELECT name, active, versionId, (SELECT activeVersionId
 ```bash
 SECRET=$(cat ~/.paperclip/state/luna-approval-secret)
 WH=http://localhost:5678/webhook/mailhub/send
-HDR='X-Mailhub-Secret: mailhub-812a27b07c73e64d7df192c98a3883eb'
+HDR='X-Mailhub-Secret: $(sed -n 's/^MAILHUB_SECRET=//p' ~/.paperclip/instances/default/secrets/mailhub.env)'
 
 # 6a) office@ -> ws@ ohne approval  => 200 (unverändert erlaubt)
 curl -s -o /dev/null -w "6a=%{http_code}\n" -X POST "$WH" -H "$HDR" -H 'Content-Type: application/json' \

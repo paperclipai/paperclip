@@ -13,7 +13,16 @@ import approval_queue as q                      # noqa: E402
 import luna_mail_render as render               # noqa: E402
 
 WEBHOOK = "http://localhost:5678/webhook/mailhub/send"
-SECRET = "mailhub-812a27b07c73e64d7df192c98a3883eb"
+def _load_mailhub_secret() -> str:
+    """Secret aus der zentralen Secrets-Datei lesen (Rotation 03.08.2026, nicht mehr im Code)."""
+    path = Path.home() / ".paperclip/instances/default/secrets/mailhub.env"
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.startswith("MAILHUB_SECRET="):
+            return line.split("=", 1)[1].strip().strip('"')
+    raise RuntimeError("MAILHUB_SECRET nicht gefunden in %s" % path)
+
+
+SECRET = _load_mailhub_secret()
 FROM = "office@whitestag.ai"
 WALTER = "ws@whitestag.ai"
 

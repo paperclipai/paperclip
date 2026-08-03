@@ -756,7 +756,7 @@ Expected: zeigt `WEBHOOK_URL=http://127.0.0.1:5678/webhook/mailhub/send`, `MAILH
 set -euo pipefail
 
 WEBHOOK_URL="http://127.0.0.1:5678/webhook/mailhub/send"
-MAILHUB_SECRET="mailhub-812a27b07c73e64d7df192c98a3883eb"
+MAILHUB_SECRET="$(sed -n 's/^MAILHUB_SECRET=//p' ~/.paperclip/instances/default/secrets/mailhub.env)"
 FROM_ADDR="cto@whitestag.ai"   # CTO = Modellauswahl-Owner
 TO_ADDR="ws@whitestag.ai"
 

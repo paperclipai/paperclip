@@ -7,7 +7,16 @@ import json, urllib.error, urllib.request
 from pathlib import Path
 
 WEBHOOK = "http://localhost:5678/webhook/mailhub/send"
-WEBHOOK_SECRET = "mailhub-812a27b07c73e64d7df192c98a3883eb"
+def _load_mailhub_secret() -> str:
+    """Secret aus der zentralen Secrets-Datei lesen (Rotation 03.08.2026, nicht mehr im Code)."""
+    path = Path.home() / ".paperclip/instances/default/secrets/mailhub.env"
+    for line in path.read_text(encoding="utf-8").splitlines():
+        if line.startswith("MAILHUB_SECRET="):
+            return line.split("=", 1)[1].strip().strip('"')
+    raise RuntimeError("MAILHUB_SECRET nicht gefunden in %s" % path)
+
+
+WEBHOOK_SECRET = _load_mailhub_secret()
 SECRET_FILE = Path.home() / ".paperclip" / "state" / "luna-approval-secret"
 FROM = "office@whitestag.ai"
 REPLY_TO = "ws@whitestag.ai"

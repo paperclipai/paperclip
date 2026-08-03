@@ -39,7 +39,17 @@ LMSTUDIO_URL = "http://localhost:1234/v1/chat/completions"
 LMSTUDIO_MODEL = "gemma-4-31b-it-mlx"
 
 MAILHUB_URL = "http://127.0.0.1:5678/webhook/mailhub/send"
-MAILHUB_SECRET = "mailhub-812a27b07c73e64d7df192c98a3883eb"
+def _load_mailhub_secret() -> str:
+    """Secret aus der zentralen Secrets-Datei lesen (Rotation 03.08.2026, nicht mehr im Code)."""
+    path = os.path.expanduser("~/.paperclip/instances/default/secrets/mailhub.env")
+    with open(path, encoding="utf-8") as fh:
+        for line in fh:
+            if line.startswith("MAILHUB_SECRET="):
+                return line.split("=", 1)[1].strip().strip('"')
+    raise RuntimeError("MAILHUB_SECRET nicht gefunden in " + path)
+
+
+MAILHUB_SECRET = _load_mailhub_secret()
 FROM_ADDR = "cto@whitestag.ai"
 TO_ADDR = "ws@whitestag.ai"
 
