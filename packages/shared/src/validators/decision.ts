@@ -58,6 +58,13 @@ export const resolveBlockerDecisionEffectSchema = z.object({
   removeBlockedByIssueIds: z.array(z.string().uuid()).min(1).max(100),
 });
 
+export const retireAgentSkillsDecisionEffectSchema = z.object({
+  type: z.literal("retire_agent_skills"),
+  ...decisionEffectBaseShape,
+  agentId: z.string().uuid(),
+  removeSkillKeys: z.array(z.string().trim().min(1).max(240)).min(1).max(100),
+});
+
 export const decisionEffectSchema = z.discriminatedUnion("type", [
   commentOnIssueDecisionEffectSchema,
   createIssueDecisionEffectSchema,
@@ -65,7 +72,12 @@ export const decisionEffectSchema = z.discriminatedUnion("type", [
   assignIssueDecisionEffectSchema,
   cancelIssueTreeDecisionEffectSchema,
   resolveBlockerDecisionEffectSchema,
+  retireAgentSkillsDecisionEffectSchema,
 ]).superRefine((effect, ctx) => {
+  if (effect.type === "retire_agent_skills" && new Set(effect.removeSkillKeys).size !== effect.removeSkillKeys.length) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Skill keys must be unique", path: ["removeSkillKeys"] });
+  }
+
   if (effect.type === "create_issue" && effect.draft.assigneeAgentId && effect.draft.assigneeUserId) {
     ctx.addIssue({
       code: z.ZodIssueCode.custom,

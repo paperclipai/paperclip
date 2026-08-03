@@ -59,13 +59,21 @@ export interface ResolveBlockerDecisionEffect extends DecisionEffectBase {
   removeBlockedByIssueIds: string[];
 }
 
+/** A board-approved, signed removal from exactly one agent's managed skills. */
+export interface RetireAgentSkillsDecisionEffect extends DecisionEffectBase {
+  type: "retire_agent_skills";
+  agentId: string;
+  removeSkillKeys: string[];
+}
+
 export type DecisionEffect =
   | CommentOnIssueDecisionEffect
   | CreateIssueDecisionEffect
   | UpdateIssueStatusDecisionEffect
   | AssignIssueDecisionEffect
   | CancelIssueTreeDecisionEffect
-  | ResolveBlockerDecisionEffect;
+  | ResolveBlockerDecisionEffect
+  | RetireAgentSkillsDecisionEffect;
 
 export interface DecisionOption {
   id: string;

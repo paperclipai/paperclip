@@ -22,6 +22,7 @@ import {
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { attentionService } from "../services/attention.js";
 import { decisionService } from "../services/decisions.js";
+import { readPaperclipSkillSyncPreference, writePaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/server-utils";
 
 const support = await getEmbeddedPostgresTestSupport();
 const describePg = support.supported ? describe : describe.skip;
@@ -140,6 +141,49 @@ describePg("decisionService", () => {
     await db.update(companyMemberships).set({ membershipRole: "viewer" }).where(eq(companyMemberships.principalId, originResponsibleUserId));
     const result = await service().decide({ id: created.id, optionId: "yes", decidedByUserId, userActor: boardActor() });
     expect(result.executions[0]).toMatchObject({ status: "failed", error: "deny_decision_intersection" });
+  });
+
+  it("dry-runs and executes only the board-approved agent skill retirement set", async () => {
+    const targetAgentId = randomUUID();
+    await db.insert(agents).values({
+      id: targetAgentId,
+      companyId,
+      name: "Skill target",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: writePaperclipSkillSyncPreference({}, ["keep", "retire"]),
+      runtimeConfig: {},
+      permissions: {},
+    });
+    const effect = {
+      type: "retire_agent_skills" as const,
+      targetIssueId: originIssueId,
+      staleness: "strict" as const,
+      agentId: targetAgentId,
+      removeSkillKeys: ["retire"],
+    };
+    const created = await service().create({
+      companyId,
+      actor: agentActor(),
+      agentId,
+      runId,
+      title: "Retire one skill",
+      body: "Board approval is required.",
+      options: [{ id: "apply", label: "Apply exact retirement", effects: [effect] }],
+    });
+    expect(created.options[0]?.effects).toEqual([effect]);
+
+    const result = await service().decide({ id: created.id, optionId: "apply", decidedByUserId, userActor: boardActor() });
+    expect(result.executionStatus).toBe("succeeded");
+    const updated = await db.select().from(agents).where(eq(agents.id, targetAgentId)).then((rows) => rows[0]!);
+    expect(readPaperclipSkillSyncPreference(updated.adapterConfig as Record<string, unknown>).desiredSkills).toEqual(["keep"]);
+    const audit = await db.select().from(activityLog).where(eq(activityLog.action, "decision.effect_executed"));
+    expect(audit.at(-1)?.details).toMatchObject({
+      decidedByUserId,
+      effectType: "retire_agent_skills",
+      removedSkillKeys: ["retire"],
+    });
   });
 
   it("removes inbound blockers without replacing them with outgoing relations", async () => {

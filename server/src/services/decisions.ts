@@ -1,13 +1,15 @@
 import { randomUUID } from "node:crypto";
 import { and, asc, count, desc, eq, gt, gte, inArray, lte, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { companyMemberships, decisionBundles, decisionEffectExecutions, decisions, decisionTargetIssues, heartbeatRuns, issueRelations, issues } from "@paperclipai/db";
+import { agents, companyMemberships, decisionBundles, decisionEffectExecutions, decisions, decisionTargetIssues, heartbeatRuns, issueRelations, issues } from "@paperclipai/db";
 import type { DecisionEffect, DecisionInput, DecisionOption, DecisionStatsCounts, DecisionStatsResponse } from "@paperclipai/shared";
 import { conflict, forbidden, notFound, tooManyRequests, unprocessable } from "../errors.js";
 import { authorizationService, type AuthorizationActor } from "./authorization.js";
 import { logActivity } from "./activity-log.js";
 import { signDecisionSpec, verifyDecisionSpec } from "./decision-signing.js";
 import { issueService } from "./issues.js";
+import { agentService } from "./agents.js";
+import { readPaperclipSkillSyncPreference, writePaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/server-utils";
 
 type Snapshot = { status: string; assigneeAgentId: string | null; assigneeUserId: string | null; updatedAt: string;
   descendantCount?: number; descendantIds?: string[]; childCount?: number };
@@ -23,6 +25,10 @@ function effectTargetIds(effect: DecisionEffect) {
   }
   if (effect.type === "resolve_blocker") for (const id of effect.removeBlockedByIssueIds) result.add(id);
   return [...result];
+}
+
+function affectedAgentIds(effect: DecisionEffect) {
+  return effect.type === "retire_agent_skills" ? [effect.agentId] : [];
 }
 
 function targetIds(options: DecisionOption[]) {
@@ -364,6 +370,11 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
         const referencedIssues = await tx.select().from(issues).where(and(eq(issues.companyId, decision.companyId), inArray(issues.id, [...referencedIds])));
         if (referencedIssues.length !== referencedIds.size) return finish("failed", "invalid_effect_reference", { reason: "invalid_effect_reference" });
         const target = referencedIssues.find((item) => item.id === effect.targetIssueId)!;
+        const agentIds = affectedAgentIds(effect);
+        const affectedAgents = agentIds.length
+          ? await tx.select().from(agents).where(and(eq(agents.companyId, decision.companyId), inArray(agents.id, agentIds)))
+          : [];
+        if (affectedAgents.length !== agentIds.length) return finish("failed", "invalid_effect_reference", { reason: "invalid_effect_reference" });
         const originActor: AuthorizationActor = { type: "agent", agentId: decision.originAgentId, companyId: decision.companyId,
           runId: decision.originRunId, onBehalfOfUserId: originResponsibleUserId, source: "agent_jwt" };
         const originAction = effect.type === "comment_on_issue" ? "issue:comment" : "issue:mutate";
@@ -416,6 +427,23 @@ export function decisionService(db: Db, options: DecisionServiceOptions) {
             goalId: draft.goalId ?? null, blockedByIssueIds: draft.blockedByIssueIds ?? [], createdByUserId: decidedByUserId, actorRunId: decision.originRunId,
             idempotencyKey: `decision-effect:${decision.id}:${effectIndex}` });
           result = { issueId: created.id };
+        } else if (effect.type === "retire_agent_skills") {
+          const agent = affectedAgents[0]!;
+          const requestedRemoval = new Set(effect.removeSkillKeys);
+          const current = readPaperclipSkillSyncPreference(agent.adapterConfig as Record<string, unknown>);
+          const before = current.desiredSkillEntries.map((entry) => entry.key);
+          const retained = current.desiredSkillEntries.filter((entry) => !requestedRemoval.has(entry.key));
+          const removedSkillKeys = before.filter((key) => requestedRemoval.has(key));
+          const updated = await agentService(tx as unknown as Db).update(agent.id, {
+            adapterConfig: writePaperclipSkillSyncPreference(agent.adapterConfig as Record<string, unknown>, retained),
+          }, { recordRevision: { createdByUserId: decidedByUserId, source: "board-approved-skill-retirement" } });
+          if (!updated) return finish("failed", "agent_not_found", { reason: "agent_not_found", agentId: effect.agentId });
+          result = {
+            agentId: agent.id,
+            removedSkillKeys,
+            unchangedRequestedSkillKeys: effect.removeSkillKeys.filter((key) => !removedSkillKeys.includes(key)),
+            retainedSkillKeys: retained.map((entry) => entry.key),
+          };
         } else {
           const cancelled = [target.id, ...cancellationDescendantIds!].reverse();
           for (const id of cancelled) await svc.update(id, { status: "cancelled", actorUserId: decidedByUserId }, tx);

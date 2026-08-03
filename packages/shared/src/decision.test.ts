@@ -10,7 +10,7 @@ const targetIssueId = "11111111-1111-4111-8111-111111111111";
 const secondIssueId = "22222222-2222-4222-8222-222222222222";
 
 describe("decision validators", () => {
-  it("accepts all six effect variants", () => {
+  it("accepts all seven effect variants", () => {
     const effects = [
       {
         type: "comment_on_issue",
@@ -48,6 +48,13 @@ describe("decision validators", () => {
         targetIssueId,
         staleness: "strict",
         removeBlockedByIssueIds: [secondIssueId],
+      },
+      {
+        type: "retire_agent_skills",
+        targetIssueId,
+        staleness: "strict",
+        agentId: secondIssueId,
+        removeSkillKeys: ["legacy-skill"],
       },
     ];
 

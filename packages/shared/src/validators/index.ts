@@ -7,6 +7,7 @@ export {
   assignIssueDecisionEffectSchema,
   cancelIssueTreeDecisionEffectSchema,
   resolveBlockerDecisionEffectSchema,
+  retireAgentSkillsDecisionEffectSchema,
   decisionEffectSchema,
   decisionInputSchema,
   decisionOptionSchema,

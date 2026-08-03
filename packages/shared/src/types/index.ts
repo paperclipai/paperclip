@@ -820,6 +820,7 @@ export type {
   AssignIssueDecisionEffect,
   CancelIssueTreeDecisionEffect,
   ResolveBlockerDecisionEffect,
+  RetireAgentSkillsDecisionEffect,
   DecisionEffect,
   DecisionOption,
   DecisionStatsCounts,
