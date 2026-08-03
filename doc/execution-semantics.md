@@ -783,7 +783,7 @@ A recovery owner acting on an issue whose `assigneeAgentId` is a different agent
 
 **Condition B — Explicit reassignment event recorded**: `assigneeAgentId` is updated to the recovery owner by an explicit reassignment event before any disposition action. The original assignee identity is preserved in the issue's `previousAssigneeAgentId` field.
 
-**Condition C — Recovery-kind label on closure**: The status transition to `done`/`cancelled` must carry a `recoveryKind` field (values: `liveness_exhausted`, `sweeper_recovery`, `explicit_recovery_owner`) distinguishing this closure from self-disposal by the original assignee.
+**Condition C — Recovery-kind label on closure**: The status transition to `done`/`cancelled` must carry a `recoveryKind` field. The allowed values are `recovery_completion` for a permitted non-measurement `done` transition and `measurement_bar` for a measurement-context `cancelled` transition, distinguishing this closure from self-disposal by the original assignee.
 
 **Condition D — Measurement-context bar**: For issues tagged as canary / bake-off / measurement, a recovery owner is barred from deliverable-work completion entirely. Its only allowed actions are route-to-`blocked` (named owner) or record the closure as `recoveryKind` + harness-FAIL. No deliverable answer is produced.
 
