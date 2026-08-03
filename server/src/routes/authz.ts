@@ -81,6 +81,13 @@ export function assertInstanceAdmin(req: Request) {
  * applied so an agent cannot use this to load arbitrary untrusted
  * code.
  *
+ * This helper is the auth half of the two-layer gate. The other
+ * half — the confused-deputy validator — lives in
+ * `services/adapter-plugin-validator.ts` and runs *after* this
+ * helper has accepted the actor but *before* any `import()` of the
+ * plugin code. Both gates run, in either order, and either failure
+ * short-circuits the load.
+ *
  * Mechanics:
  *  - board actor        → must be instance admin (local_implicit OR isInstanceAdmin)
  *  - agent actor        → must have a companyId set; tenant isolation
