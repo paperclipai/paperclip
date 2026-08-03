@@ -76,6 +76,9 @@ import {
   scrubGitCredentialText,
   type GitRemoteAuthProvider,
 } from "./git-credentials.js";
+// Re-exported because heartbeat's workspace surface exposed the scrubber before the
+// git-credentials module became its canonical home; existing importers keep working.
+export { scrubGitCredentialText };
 import { publishLiveEvent } from "./live-events.js";
 import { normalizeResponsibleUserDenialCode } from "./responsible-user-denial-run-outcomes.js";
 import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
@@ -2475,20 +2478,6 @@ export type WorkspaceMaterializationFailure = {
   repoUrl: string | null;
   error: string;
 };
-
-/**
- * Mask credential material embedded in URLs so it never reaches warnings, run errors, or
- * persisted payloads: userinfo on any scheme (`https://user:token@host`,
- * `ssh://user:pass@host`) and the entire query string of any URL (`?access_token=…` and
- * every other parameter — masked wholesale rather than by an inevitably incomplete
- * parameter-name list). Scp-style remotes (`git@host:path`) carry no password and are left
- * alone.
- */
-export function scrubGitCredentialText(text: string): string {
-  return text
-    .replace(/([a-z][a-z0-9+.-]*:\/\/)[^/@\s]+@/gi, "$1***@")
-    .replace(/([a-z][a-z0-9+.-]*:\/\/[^\s"'?]*)\?[^\s"']*/gi, "$1?***");
-}
 
 export type ResolvedWorkspaceForRun = {
   cwd: string;
