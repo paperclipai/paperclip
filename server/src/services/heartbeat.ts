@@ -9506,6 +9506,23 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       return { outcome: "not_applicable" as const, queuedRun: null };
     }
 
+    // A timeout has its own availability policy in finalizeAgentStatus (see
+    // issueNeedsImmediateRecovery above): the agent either stays idle for the
+    // normal scheduler to retry on the next tick, or latches into error under
+    // the consecutive-timeout cap. Queuing an immediate missing-comment retry
+    // here would claim the agent and flip it back to "running" right after
+    // that terminal state is persisted, silently undoing either outcome.
+    if (run.status === "timed_out") {
+      if (run.issueCommentStatus !== "not_applicable") {
+        await patchRunIssueCommentStatus(run.id, {
+          issueCommentStatus: "not_applicable",
+          issueCommentSatisfiedByCommentId: null,
+          issueCommentRetryQueuedAt: null,
+        });
+      }
+      return { outcome: "not_applicable" as const, queuedRun: null };
+    }
+
     const postedComment = await findRunIssueComment(run.id, run.companyId, issueId);
     if (postedComment) {
       await patchRunIssueCommentStatus(run.id, {
@@ -15039,6 +15056,31 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       });
 
       const finalizedRun = persistedRun ?? (await getRun(run.id));
+
+      // Persist this run's terminal agent status BEFORE any promotion/handoff
+      // below can queue and dispatch a continuation run for the same agent.
+      // releaseIssueExecutionAndPromote/handleRunLivenessContinuation/
+      // handleSuccessfulRunHandoff can claim a new run and flip the agent to
+      // "running" via a fire-and-forget executeRun (see
+      // startNextQueuedRunForAgent), which used to race this write: whichever
+      // update committed last won, so a promoted retry could silently
+      // overwrite this run's own terminal error/idle status (or vice versa).
+      // Finalizing first means the agent's status is already settled by the
+      // time any such claim reads it for invokability.
+      await finalizeAgentStatus(
+        agent.id,
+        outcome,
+        runErrorMessage,
+        {
+          keepIdleOnFailure:
+            outcome === "failed" &&
+            ((finalizedRun ? readHeartbeatRunErrorFamily(finalizedRun) === "provider_quota" : runErrorCode === "provider_quota") ||
+              isWorkspaceSyncConflictFailure(adapterResult.errorMessage)),
+          keepIdleOnTimeout: resolveKeepIdleOnTimeout(agent),
+          wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
+        },
+      );
+
       if (finalizedRun) {
         await appendRunEvent(finalizedRun, seq++, {
           eventType: "lifecycle",
@@ -15181,19 +15223,6 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           }
         }
       }
-      await finalizeAgentStatus(
-        agent.id,
-        outcome,
-        runErrorMessage,
-        {
-          keepIdleOnFailure:
-            outcome === "failed" &&
-            ((finalizedRun ? readHeartbeatRunErrorFamily(finalizedRun) === "provider_quota" : runErrorCode === "provider_quota") ||
-              isWorkspaceSyncConflictFailure(adapterResult.errorMessage)),
-          keepIdleOnTimeout: resolveKeepIdleOnTimeout(agent),
-          wasFirstHeartbeat: timerClaimWasFirstHeartbeat(run),
-        },
-      );
     } catch (err) {
       const message = redactCurrentUserText(
         err instanceof Error ? err.message : "Unknown adapter failure",
