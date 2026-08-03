@@ -48,7 +48,12 @@ describe("validateExternalPluginLoad", () => {
         name: "good-plugin",
         version: "1.2.3",
         keywords: [REQUIRED_PLUGIN_KEYWORD],
+        main: "./index.js",
       }),
+    );
+    await fs.writeFile(
+      path.join(pkgDir, "index.js"),
+      `export function createServerAdapter() { return { type: "good", configSchema: {} }; }`,
     );
     // Backdate the mtime so the floor is satisfied regardless of clock.
     const old = Date.now() / 1000 - 60;
@@ -63,17 +68,38 @@ describe("validateExternalPluginLoad", () => {
       // use this (not the original mutable packageDir) when loading the
       // module. The TOCTOU race fix relies on this.
       expect(decision.canonicalDir).toBe(fssync.realpathSync(pkgDir));
+      // canonicalEntryPath is the canonical realpath of the entry
+      // file (resolved at validation time). The loader uses this
+      // directly instead of re-resolving from the manifest, so a
+      // manifest mutation between validation and load cannot
+      // redirect the import.
+      expect(decision.canonicalEntryPath).toBe(fssync.realpathSync(path.join(pkgDir, "index.js")));
       // canonicalDirIdentity is the multi-field fingerprint
       // (dev/ino/ctime/mtime/size) captured at validation time. The
       // loader compares all five fields to detect a replace-at-
       // same-pathname between validation and load. st_ino alone is
       // not sufficient on ext4 with inode recycling.
-      const expectedStat = fssync.statSync(pkgDir);
-      expect(decision.canonicalDirIdentity.ino).toBe(expectedStat.ino);
-      expect(decision.canonicalDirIdentity.dev).toBe(expectedStat.dev);
-      expect(decision.canonicalDirIdentity.ctime).toBe(expectedStat.ctimeMs);
-      expect(decision.canonicalDirIdentity.mtime).toBe(expectedStat.mtimeMs);
-      expect(decision.canonicalDirIdentity.size).toBe(expectedStat.size);
+      const expectedDirStat = fssync.statSync(pkgDir);
+      expect(decision.canonicalDirIdentity.ino).toBe(expectedDirStat.ino);
+      expect(decision.canonicalDirIdentity.dev).toBe(expectedDirStat.dev);
+      expect(decision.canonicalDirIdentity.ctime).toBe(expectedDirStat.ctimeMs);
+      expect(decision.canonicalDirIdentity.mtime).toBe(expectedDirStat.mtimeMs);
+      expect(decision.canonicalDirIdentity.size).toBe(expectedDirStat.size);
+      // canonicalManifestIdentity is the package.json fingerprint
+      // (round 5): overwriting package.json changes its mtime/ctime/size,
+      // the loader catches it.
+      const expectedPkgStat = fssync.statSync(path.join(pkgDir, "package.json"));
+      expect(decision.canonicalManifestIdentity.ino).toBe(expectedPkgStat.ino);
+      expect(decision.canonicalManifestIdentity.size).toBe(expectedPkgStat.size);
+      expect(decision.canonicalManifestIdentity.mtime).toBe(expectedPkgStat.mtimeMs);
+      // canonicalEntryIdentity is the entry-file fingerprint (round 5):
+      // overwriting the entry file changes its mtime/ctime/size.
+      const expectedEntryStat = fssync.statSync(path.join(pkgDir, "index.js"));
+      expect(decision.canonicalEntryIdentity.ino).toBe(expectedEntryStat.ino);
+      expect(decision.canonicalEntryIdentity.size).toBe(expectedEntryStat.size);
+      // No ./ui-parser export → no ui-parser fingerprints.
+      expect(decision.canonicalUiParserPath).toBeUndefined();
+      expect(decision.canonicalUiParserIdentity).toBeUndefined();
     }
   });
 
@@ -172,7 +198,11 @@ describe("validateExternalPluginLoad", () => {
     await fs.mkdir(pkgDir, { recursive: true });
     await fs.writeFile(
       path.join(pkgDir, "package.json"),
-      JSON.stringify({ name: "edge", keywords: [REQUIRED_PLUGIN_KEYWORD] }),
+      JSON.stringify({ name: "edge", keywords: [REQUIRED_PLUGIN_KEYWORD], main: "./index.js" }),
+    );
+    await fs.writeFile(
+      path.join(pkgDir, "index.js"),
+      `export function createServerAdapter() { return { type: "edge", configSchema: {} }; }`,
     );
 
     // Pretend "now" is far in the future so mtime is "old enough".

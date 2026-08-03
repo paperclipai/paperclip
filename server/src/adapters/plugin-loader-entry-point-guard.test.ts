@@ -54,10 +54,13 @@ describe("plugin-loader entry-point containment guard", () => {
 
   it("rejects an absolute entry point in package.json (exports field)", async () => {
     // package.json declares `exports["."] = "/tmp/evil-outside/.../index.js"`
-    // — an absolute path. The loader must refuse to load this rather
-    // than silently importing code from outside the managed plugins
-    // dir. Without the absolute-entry-point guard, path.resolve(pkgDir,
-    // "/abs/path") returns just "/abs/path", bypassing containment.
+    // — an absolute path. The validator now catches this BEFORE the
+    // loader ever sees the package (round 5: the validator resolves
+    // the entry file at validation time and rejects absolutes). The
+    // old behavior — accepting the absolute at validate time and
+    // rejecting at load time — is preserved as a defense-in-depth
+    // check in the loader's `resolveCanonicalEntryPoint`, but the
+    // primary rejection is at validate time.
     const pkgDir = path.join(pluginsDir, "abs-entry");
     await fs.mkdir(pkgDir, { recursive: true });
     await fs.writeFile(
@@ -70,36 +73,27 @@ describe("plugin-loader entry-point containment guard", () => {
       }),
     );
 
-    // Validator still accepts this package (it can't see the
-    // malicious exports field; exports is just a string here). The
-    // entry-point guard runs at load time, not at validate time.
-    const validator = await import("../services/adapter-plugin-validator.js");
     const pkgJsonForMtime = path.join(pkgDir, "package.json");
     const old = Date.now() / 1000 - 60;
     await fs.utimes(pkgJsonForMtime, old, old);
-    const preflight = validator.validateExternalPluginLoad(pkgDir);
-    expect(preflight.ok).toBe(true);
-    if (!preflight.ok) return;
 
-    // The actual loader call should now refuse the absolute entry point.
-    const loader = await import("./plugin-loader.js");
-    await expect(
-      loader.loadExternalAdapterPackage(
-        "abs-entry",
-        pkgDir,
-        preflight.canonicalDir,
-        preflight.canonicalDirIdentity,
-      ),
-    ).rejects.toThrow(/absolute path/i);
+    // Validator now rejects the absolute entry point up front with
+    // a dedicated reason — fail closed before any loader call.
+    const validator = await import("../services/adapter-plugin-validator.js");
+    const preflight = validator.validateExternalPluginLoad(pkgDir);
+    expect(preflight.ok).toBe(false);
+    if (preflight.ok) return;
+    expect(preflight.reason).toBe("absolute_entry_point");
   });
 
   it("rejects a `../`-escape entry point in package.json (main field)", async () => {
     // `main: "../evil-outside-XXXX/evil-index.js"` would, after
     // path.resolve(pkgDir, "../evil-outside-XXXX/evil-index.js"),
     // land inside the evilOutsideDir rather than inside pkgDir. The
-    // realpath containment check must reject this. We must create
-    // the file at the escape target so realpath succeeds (otherwise
-    // the loader throws ENOENT first, before the containment check).
+    // validator's new entry-file containment check (round 5) catches
+    // this at validate time — realpath the joined entry, check
+    // containment, reject. The loader's `resolveCanonicalEntryPoint`
+    // keeps the same check as defense-in-depth.
     const pkgDir = path.join(pluginsDir, "escape-entry");
     await fs.mkdir(pkgDir, { recursive: true });
     const escapeRel = path.relative(pkgDir, evilOutsideDir);
@@ -124,18 +118,9 @@ describe("plugin-loader entry-point containment guard", () => {
 
     const validator = await import("../services/adapter-plugin-validator.js");
     const preflight = validator.validateExternalPluginLoad(pkgDir);
-    expect(preflight.ok).toBe(true);
-    if (!preflight.ok) return;
-
-    const loader = await import("./plugin-loader.js");
-    await expect(
-      loader.loadExternalAdapterPackage(
-        "escape-entry",
-        pkgDir,
-        preflight.canonicalDir,
-        preflight.canonicalDirIdentity,
-      ),
-    ).rejects.toThrow(/outside the canonical package dir/i);
+    expect(preflight.ok).toBe(false);
+    if (preflight.ok) return;
+    expect(preflight.reason).toBe("entry_file_outside_dir");
   });
 
   it("accepts a normal relative entry point inside the package dir", async () => {
@@ -239,8 +224,11 @@ describe("plugin-loader entry-point containment guard", () => {
         pkgDir,
         preflight.canonicalDir,
         preflight.canonicalDirIdentity,
+        preflight.canonicalManifestIdentity,
+        preflight.canonicalEntryIdentity,
+        preflight.canonicalEntryPath,
       ),
-    ).rejects.toThrow(/was replaced between validation and load/);
+    ).rejects.toThrow(/files were mutated between validation and load/i);
   });
 
   it("accepts when canonicalDirInode is omitted (legacy callers)", async () => {
@@ -276,5 +264,142 @@ describe("plugin-loader entry-point containment guard", () => {
       await (await import("node:fs")).realpathSync(pkgDir),
     );
     expect(mod.type).toBe("no_inode_arg_test");
+  });
+
+  it("rejects when package.json is overwritten between validation and load (file-mutation bypass)", async () => {
+    // Repro for Greptile P1/Security round-5 finding on PR #10706:
+    // "File mutations bypass fingerprint". The directory-only
+    // fingerprint from round 4 does NOT detect an overwrite of
+    // package.json (or the entry file) inside the same directory —
+    // the directory stat fields stay identical. The agent:
+    //   1. Writes a benign package to the plugins dir with the
+    //      required keyword and a backdated mtime.
+    //   2. Triggers validation — the validator captures the manifest
+    //      and entry fingerprints.
+    //   3. After validation returns, overwrites package.json with a
+    //      malicious one (still valid JSON + keyword, but the
+    //      entry now points to a different file). The directory
+    //      inode is unchanged but package.json's mtime / ctime /
+    //      size change.
+    //   4. The loader is called with the original canonicalDir +
+    //      fingerprints. Without the manifest fingerprint, the loader
+    //      would happily re-read the malicious package.json. With
+    //      the fingerprint, the manifest stat mismatch fires first
+    //      and we fail closed.
+    const pkgDir = path.join(pluginsDir, "manifest-tamper");
+    await fs.mkdir(pkgDir, { recursive: true });
+    await fs.writeFile(
+      path.join(pkgDir, "package.json"),
+      JSON.stringify({
+        name: "manifest-tamper",
+        version: "1.0.0",
+        keywords: [REQUIRED_PLUGIN_KEYWORD],
+        main: "./benign.js",
+      }),
+    );
+    await fs.writeFile(
+      path.join(pkgDir, "benign.js"),
+      `export function createServerAdapter() { return { type: "manifest_tamper_benign", configSchema: {} }; }`,
+    );
+    // Backdate both files so the mtime floor is satisfied regardless
+    // of clock and the post-overwrite mutation is detectable via
+    // mtime/ctime/size change.
+    const old = Date.now() / 1000 - 60;
+    await fs.utimes(path.join(pkgDir, "package.json"), old, old);
+    await fs.utimes(path.join(pkgDir, "benign.js"), old, old);
+
+    const validator = await import("../services/adapter-plugin-validator.js");
+    const preflight = validator.validateExternalPluginLoad(pkgDir);
+    expect(preflight.ok).toBe(true);
+    if (!preflight.ok) return;
+
+    // Tamper: overwrite package.json with a malicious manifest that
+    // still satisfies the validator's static checks (keyword present,
+    // mtime is "old enough" because we'll backdate after write) but
+    // redirects `main` to a file we control. The directory's stat
+    // fields do not change, so round 4's directory fingerprint alone
+    // would miss this.
+    await fs.writeFile(
+      path.join(pkgDir, "package.json"),
+      JSON.stringify({
+        name: "manifest-tamper",
+        version: "2.0.0",
+        keywords: [REQUIRED_PLUGIN_KEYWORD],
+        main: "./malicious.js",
+      }),
+    );
+    await fs.writeFile(
+      path.join(pkgDir, "malicious.js"),
+      `export function createServerAdapter() { return { type: "manifest_tamper_malicious", configSchema: {} }; }`,
+    );
+    // Backdate so the manifest_too_recent floor doesn't fire first;
+    // we want the fingerprint mismatch to be the rejection reason.
+    await fs.utimes(path.join(pkgDir, "package.json"), old, old);
+    await fs.utimes(path.join(pkgDir, "malicious.js"), old, old);
+
+    const loader = await import("./plugin-loader.js");
+    await expect(
+      loader.loadExternalAdapterPackage(
+        "manifest-tamper",
+        pkgDir,
+        preflight.canonicalDir,
+        preflight.canonicalDirIdentity,
+        preflight.canonicalManifestIdentity,
+        preflight.canonicalEntryIdentity,
+        preflight.canonicalEntryPath,
+      ),
+    ).rejects.toThrow(/files were mutated between validation and load/i);
+  });
+
+  it("rejects when the entry file is overwritten between validation and load (file-mutation bypass)", async () => {
+    // Round-5 second flavor: even with the manifest fingerprint,
+    // overwriting the entry file (without touching package.json) is
+    // a separate bypass. The loader re-stats the captured entry
+    // file path and rejects on mtime/ctime/size mismatch.
+    const pkgDir = path.join(pluginsDir, "entry-tamper");
+    await fs.mkdir(pkgDir, { recursive: true });
+    await fs.writeFile(
+      path.join(pkgDir, "package.json"),
+      JSON.stringify({
+        name: "entry-tamper",
+        version: "1.0.0",
+        keywords: [REQUIRED_PLUGIN_KEYWORD],
+        main: "./index.js",
+      }),
+    );
+    await fs.writeFile(
+      path.join(pkgDir, "index.js"),
+      `export function createServerAdapter() { return { type: "entry_tamper_benign", configSchema: {} }; }`,
+    );
+    const old = Date.now() / 1000 - 60;
+    await fs.utimes(path.join(pkgDir, "package.json"), old, old);
+    await fs.utimes(path.join(pkgDir, "index.js"), old, old);
+
+    const validator = await import("../services/adapter-plugin-validator.js");
+    const preflight = validator.validateExternalPluginLoad(pkgDir);
+    expect(preflight.ok).toBe(true);
+    if (!preflight.ok) return;
+
+    // Tamper: overwrite ONLY the entry file. package.json is
+    // untouched, so its fingerprint still matches. The entry file's
+    // mtime / ctime / size change.
+    await fs.writeFile(
+      path.join(pkgDir, "index.js"),
+      `export function createServerAdapter() { return { type: "entry_tamper_malicious", configSchema: {} }; }`,
+    );
+    await fs.utimes(path.join(pkgDir, "index.js"), old, old);
+
+    const loader = await import("./plugin-loader.js");
+    await expect(
+      loader.loadExternalAdapterPackage(
+        "entry-tamper",
+        pkgDir,
+        preflight.canonicalDir,
+        preflight.canonicalDirIdentity,
+        preflight.canonicalManifestIdentity,
+        preflight.canonicalEntryIdentity,
+        preflight.canonicalEntryPath,
+      ),
+    ).rejects.toThrow(/files were mutated between validation and load/i);
   });
 });

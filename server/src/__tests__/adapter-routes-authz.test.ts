@@ -280,11 +280,20 @@ function seedRealPluginsDir() {
   const pkgJsonPath = path.join(pkgDir, "package.json");
   fs.writeFileSync(
     pkgJsonPath,
-    JSON.stringify({ name: EXTERNAL_PACKAGE_NAME, version: "1.0.0-test", keywords: ["paperclip-adapter-plugin"] }),
+    JSON.stringify({ name: EXTERNAL_PACKAGE_NAME, version: "1.0.0-test", keywords: ["paperclip-adapter-plugin"], main: "./index.js" }),
   );
-  // Backdate so the mtime floor is satisfied.
+  // The validator now requires the entry file to exist (round 5:
+  // file-mutation bypass closure). Seed a benign entry so the test
+  // exercises the happy path; the plugin-loader mock then short-
+  // circuits the actual import.
+  fs.writeFileSync(
+    path.join(pkgDir, "index.js"),
+    `export function createServerAdapter() { return { type: "${EXTERNAL_ADAPTER_TYPE}", configSchema: {} }; }`,
+  );
+  // Backdate both so the mtime floor is satisfied.
   const old = Date.now() / 1000 - 60;
   fs.utimesSync(pkgJsonPath, old, old);
+  fs.utimesSync(path.join(pkgDir, "index.js"), old, old);
 }
 
 function resetInstalledExternalAdapterState() {
@@ -443,10 +452,15 @@ describe.sequential("adapter management route authorization", () => {
       fs.mkdirSync(pkgDir, { recursive: true });
       fs.writeFileSync(
         path.join(pkgDir, "package.json"),
-        JSON.stringify({ name: "paperclip-agent-test-pkg", version: "1.0.0", keywords: ["paperclip-adapter-plugin"] }),
+        JSON.stringify({ name: "paperclip-agent-test-pkg", version: "1.0.0", keywords: ["paperclip-adapter-plugin"], main: "./index.js" }),
+      );
+      fs.writeFileSync(
+        path.join(pkgDir, "index.js"),
+        `export function createServerAdapter() { return { type: "${EXTERNAL_ADAPTER_TYPE}", configSchema: {} }; }`,
       );
       const old = Date.now() / 1000 - 60;
       fs.utimesSync(path.join(pkgDir, "package.json"), old, old);
+      fs.utimesSync(path.join(pkgDir, "index.js"), old, old);
       mocks.getAdapterPluginsDir.mockReturnValue(tmpPluginsDir);
       mocks.externalRecords.clear();
       unregisterServerAdapter(EXTERNAL_ADAPTER_TYPE);
@@ -503,10 +517,15 @@ describe.sequential("adapter management route authorization", () => {
       fs.mkdirSync(pkgDir, { recursive: true });
       fs.writeFileSync(
         path.join(pkgDir, "package.json"),
-        JSON.stringify({ name: "reload-pkg", version: "2.0.0", keywords: ["paperclip-adapter-plugin"] }),
+        JSON.stringify({ name: "reload-pkg", version: "2.0.0", keywords: ["paperclip-adapter-plugin"], main: "./index.js" }),
+      );
+      fs.writeFileSync(
+        path.join(pkgDir, "index.js"),
+        `export function createServerAdapter() { return { type: "${EXTERNAL_ADAPTER_TYPE}", configSchema: {} }; }`,
       );
       const old = Date.now() / 1000 - 60;
       fs.utimesSync(path.join(pkgDir, "package.json"), old, old);
+      fs.utimesSync(path.join(pkgDir, "index.js"), old, old);
       mocks.getAdapterPluginsDir.mockReturnValue(tmpPluginsDir);
       // Install a record pointing at the temp dir so the validator has
       // a `localPath` to walk.
