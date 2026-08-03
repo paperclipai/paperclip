@@ -1,7 +1,7 @@
 # ComfyUI als lokaler Bild-Renderer für Paperclip-Agenten
 
 **Datum:** 2026-08-02
-**Status:** Design freigegeben, Umsetzung offen
+**Status:** Umgesetzt und live seit 2026-08-02 (Plan `docs/superpowers/plans/2026-08-02-comfyui-bild-renderer.md`, Ende-zu-Ende belegt an WHI-3454)
 **Nachfolge-Spec:** Video-Rendering (LTX / Hunyuan) auf derselben Infrastruktur — separat, später
 
 ## Ausgangslage
@@ -15,8 +15,9 @@ Der Weg wird kaum genutzt — seit dem 15.06.2026 wurde genau ein Bild erzeugt.
 
 Auf dem MacBook M5 Max ist Comfy Desktop 2 mit ComfyUI 0.29.2 installiert, samt
 Qwen-Image 2512 und Beschleuniger-LoRAs. Ein Messlauf am 02.08.2026 liefert ein
-1024er Bild in **8,1 Sekunden**. Damit ist lokales Rendern nicht nur billiger,
-sondern auch schneller als der Weg über die OpenAI-API.
+1024er Bild in **14,1 Sekunden** auf dem Renderknoten (8,1 s auf der
+Desktop-Instanz, siehe Messtabelle). Damit ist lokales Rendern nicht nur
+billiger, sondern auch schneller als der Weg über die OpenAI-API.
 
 ## Ziele
 
