@@ -185,6 +185,23 @@ function hasScheduledMonitor(issue: IssueLivenessIssueInput, nowMs: number) {
   return true;
 }
 
+/**
+ * Distinguishes a review-stage execution state from one that only carries
+ * monitor bookkeeping. Dispatching a monitor writes `executionState.monitor`
+ * onto issues that have no stages at all, so a bare non-null execution state is
+ * not evidence of a review participant — treating it as such reported a
+ * monitor-parked issue as `invalid_review_participant` and hid the real defect,
+ * which is that the issue has no action path at all.
+ */
+function hasExecutionStageState(executionState: Record<string, unknown> | null | undefined): boolean {
+  if (!executionState) return false;
+  if (typeof executionState.status === "string" && executionState.status !== "idle") return true;
+  if (executionState.currentStageId || executionState.currentStageType || executionState.currentParticipant) return true;
+  if (typeof executionState.currentStageIndex === "number") return true;
+  if (Array.isArray(executionState.completedStageIds) && executionState.completedStageIds.length > 0) return true;
+  return Boolean(executionState.lastDecisionId);
+}
+
 function readPrincipalAgentId(principal: unknown): string | null {
   if (!principal || typeof principal !== "object") return null;
   const value = principal as Record<string, unknown>;
@@ -444,7 +461,7 @@ export function classifyIssueGraphLiveness(input: IssueGraphLivenessInput): Issu
 
     if (principalIsResolvableUser(participant)) return null;
 
-    if (reviewIssue.executionState) {
+    if (hasExecutionStageState(reviewIssue.executionState)) {
       return finding({
         issue: source,
         state: "invalid_review_participant",
