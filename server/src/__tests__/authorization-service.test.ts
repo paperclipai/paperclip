@@ -1219,6 +1219,60 @@ describeEmbeddedPostgres("authorization service", () => {
     })).resolves.toMatchObject({ allowed: false, reason: "deny_low_trust_boundary" });
   });
 
+  it("allows an agent with the canCommentAnyIssue permission to comment on a peer's issue without widening mutations", async () => {
+    const company = await createCompany(db, "AgentCommentGrant");
+    const ownerAgent = await createAgent(db, company.id, { role: "engineer" });
+    const busAgent = await createAgent(db, company.id, {
+      role: "general",
+      permissions: { canCommentAnyIssue: true },
+    });
+    const plainAgent = await createAgent(db, company.id, { role: "general" });
+    const malformedAgent = await createAgent(db, company.id, {
+      role: "general",
+      permissions: { canCommentAnyIssue: "true" },
+    });
+    const issue = await createIssue(db, company.id, { assigneeAgentId: ownerAgent.id });
+
+    const authorization = authorizationService(db);
+    const resource = {
+      type: "issue",
+      companyId: company.id,
+      issueId: issue.id,
+      projectId: issue.projectId,
+      assigneeAgentId: ownerAgent.id,
+      status: issue.status,
+    } as const;
+    const busActor = { type: "agent", agentId: busAgent.id, companyId: company.id, source: "agent_key" } as const;
+    const plainActor = { type: "agent", agentId: plainAgent.id, companyId: company.id, source: "agent_key" } as const;
+
+    await expect(authorization.decide({
+      actor: busActor,
+      action: "issue:comment",
+      resource,
+    })).resolves.toMatchObject({
+      allowed: true,
+      reason: "allow_agent_comment_grant",
+    });
+
+    await expect(authorization.decide({
+      actor: busActor,
+      action: "issue:mutate",
+      resource,
+    })).resolves.toMatchObject({ allowed: false });
+
+    await expect(authorization.decide({
+      actor: plainActor,
+      action: "issue:comment",
+      resource,
+    })).resolves.toMatchObject({ allowed: false });
+
+    await expect(authorization.decide({
+      actor: { type: "agent", agentId: malformedAgent.id, companyId: company.id, source: "agent_key" },
+      action: "issue:comment",
+      resource,
+    })).resolves.toMatchObject({ allowed: false });
+  });
+
   it("allows a mentioned non-assignee to comment when the mention author is the issue assignee", async () => {
     const company = await createCompany(db, "MentionCommentAssigneeGrant");
     const allowedProject = await createProject(db, company.id, "MentionAssigneeAllowed");
