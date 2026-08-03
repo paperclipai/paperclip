@@ -531,6 +531,25 @@ export type IssueExecutionMonitorKind = (typeof ISSUE_EXECUTION_MONITOR_KINDS)[n
 
 export const PROVIDER_QUOTA_MONITOR_SERVICE_NAME = "AI provider quota";
 
+/**
+ * Cadence a monitor re-arms itself with after it dispatches a wake, when the
+ * policy does not name its own `intervalSeconds`. The re-armed check is the
+ * assignee's safety net: it keeps the issue reachable when the woken run dies
+ * before it can record a disposition or a new `nextCheckAt`. A healthy run
+ * overwrites it, so this value only ever governs the failure path.
+ */
+export const DEFAULT_ISSUE_MONITOR_INTERVAL_SECONDS = 6 * 60 * 60;
+export const MIN_ISSUE_MONITOR_INTERVAL_SECONDS = 60;
+export const MAX_ISSUE_MONITOR_INTERVAL_SECONDS = 30 * 24 * 60 * 60;
+
+/**
+ * Attempt ceiling applied when a monitor policy names neither `maxAttempts`
+ * nor `timeoutAt`. Recurring monitors must still terminate, and reaching the
+ * ceiling clears the monitor through the normal `recoveryPolicy` path rather
+ * than dropping the wake path silently.
+ */
+export const DEFAULT_ISSUE_MONITOR_MAX_ATTEMPTS = 40;
+
 export const ISSUE_EXECUTION_MONITOR_RECOVERY_POLICIES = [
   "wake_owner",
   "create_recovery_issue",

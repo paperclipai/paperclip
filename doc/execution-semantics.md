@@ -86,7 +86,7 @@ This requirement is prospective-only on rollout: it applies to transitions into 
 
 Execution work is paused because the next move belongs to a reviewer or approver, not the current executor.
 
-An external review service can also be a valid review path when the issue keeps an agent assignee and has an active one-shot monitor that will wake that assignee to check the service later.
+An external review service can also be a valid review path when the issue keeps an agent assignee and has an active issue monitor that will wake that assignee to check the service later.
 
 ### `done`
 
@@ -287,7 +287,7 @@ The valid action-path primitives are:
 - a queued wake or continuation that can be delivered to the responsible agent
 - a typed execution-policy participant, such as `executionState.currentParticipant`
 - a pending issue-thread interaction or linked approval that is waiting for a specific responder
-- a one-shot issue monitor (`executionPolicy.monitor.nextCheckAt`) that will wake the assignee for a future check
+- a scheduled issue monitor (`executionPolicy.monitor.nextCheckAt`) that will wake the assignee for a future check
 - a human owner via `assigneeUserId`
 - a first-class blocker chain whose unresolved leaf issues are themselves healthy
 - an open explicit recovery action that names the owner and action needed to restore liveness
@@ -296,11 +296,11 @@ The valid action-path primitives are:
 
 An external wait counts as a live or waiting path only when the next move survives the current heartbeat and is represented in Paperclip's durable control-plane state. Valid external-wait shapes are:
 
-- a one-shot issue monitor or other persisted scheduled wake that names the responsible assignee, next check time, and bounded timeout/attempt policy
+- a scheduled issue monitor or other persisted scheduled wake that names the responsible assignee, next check time, and bounded timeout/attempt policy
 - a first-class blocker or `blocked` disposition that names the external owner and concrete action required to unblock the issue
 - a delegated child issue with a responsible owner and its own healthy action path, plus a blocker edge when the source issue must wait for that child; `parentId` alone is not a dependency
 
-A one-shot issue monitor consumes its persisted `nextCheckAt` when it dispatches the assignee wake. If that monitor-consuming run is lost before it records a new disposition or future monitor, Paperclip restores exactly one bounded continuation using the existing process-loss retry limit; if that continuation is also lost, the normal recovery-action escalation owns the next step instead of creating another monitor loop.
+An issue monitor re-arms its persisted `nextCheckAt` when it dispatches the assignee wake, so a monitor-consuming run that dies without recording a disposition cannot leave the issue unreachable. If such a run is lost and no future check survives — because the monitor hit a bound, or the run cleared it and then died — Paperclip restores exactly one bounded continuation using the existing process-loss retry limit; if that continuation is also lost, the normal recovery-action escalation owns the next step instead of creating another monitor loop.
 
 An unmanaged local process is not a durable action path. Shell jobs started with `&`, `nohup`, local polling loops, detached PTY sessions, adapter child processes, or similar background watchers do not keep an issue live unless Paperclip persists them as a run or pairs a managed runtime service with a monitor, scheduled wake, blocker, or delegated issue that owns the next check. A PID, session id, log file, comment, or promise to check later is evidence only. The process may be killed when the adapter invocation or heartbeat exits and cannot be assumed observable or recoverable by another worker.
 
@@ -441,7 +441,7 @@ A healthy active-work state means at least one of these is true:
 
 - there is an active run for the issue
 - there is already a queued continuation wake
-- there is an active one-shot monitor that will wake the assignee for a future check
+- there is an active issue monitor that will wake the assignee for a future check
 - there is an open explicit recovery action for the lost execution path
 
 An agent-owned `in_progress` issue is stalled when it has no active run, no queued continuation, no persisted monitor, and no explicit recovery surface. An unmanaged local/background watcher does not satisfy any of those conditions. A Paperclip-tracked run that is still running but silent is not automatically stalled; it is handled by the active-run watchdog contract.
@@ -456,7 +456,7 @@ A healthy `in_review` issue has at least one valid action path:
 - a pending issue-thread interaction or linked approval waiting for a named responder
 - a human owner via `assigneeUserId`
 - an active run or queued wake that is expected to process the review state
-- an active one-shot monitor for an external service or async review loop that the assignee owns
+- an active issue monitor for an external service or async review loop that the assignee owns
 - an open explicit recovery action for an ambiguous review handoff
 
 Agent-assigned `in_review` with no typed participant is only healthy when one of the other paths exists. Assignment to the same agent that produced the handoff is not, by itself, a review path.
@@ -467,7 +467,7 @@ When an execution-policy review stage has a pending agent participant, the parti
 
 ### Issue monitors
 
-An issue monitor is a one-shot deferred action path for agent-owned issues in `in_progress` or `in_review`.
+An issue monitor is a bounded recurring deferred action path for agent-owned issues in `in_progress` or `in_review`.
 
 Use a monitor when the current assignee owns a future check against an async system or external service. Examples include Greptile review loops, GitHub checks, Vercel deployments, or provider jobs where the agent should come back later and decide what happens next.
 
@@ -477,13 +477,14 @@ Monitor policy lives under `executionPolicy.monitor` and includes:
 - `notes`: non-secret instructions for what the assignee should check
 - `serviceName`: optional non-secret external-service context
 - `externalRef`: optional external-service reference input; Paperclip treats it as secret-adjacent, redacts it before persistence/visibility, and omits it from activity and wake payloads
+- `intervalSeconds`: optional cadence the monitor re-arms itself with after each dispatch
 - `timeoutAt`, `maxAttempts`, and `recoveryPolicy`: optional recovery hints for bounded waits
 
-Monitors are not recurring intervals. When a monitor fires, Paperclip clears the scheduled monitor and queues an `issue_monitor_due` wake for the assignee. If the external service is still pending, the assignee must explicitly re-arm the monitor with a new `nextCheckAt`. If the issue moves to `done`, `cancelled`, an invalid status, or a human/unassigned owner, the monitor is cleared.
+When a monitor fires, Paperclip queues an `issue_monitor_due` wake for the assignee and re-arms `nextCheckAt` to `triggeredAt + intervalSeconds`, defaulting to six hours and clamped so the last check lands on `timeoutAt` rather than past it. The woken run still owns the decision: it normally overwrites `nextCheckAt` with the cadence the wait actually needs, or resolves the issue so the monitor clears. The re-armed check exists because queuing a wake is not proof that anything acted on it — a run lost to a provider quota, a crash, or a `SIGTERM` records no disposition, and under one-shot dispatch that left the issue with `monitorAttemptCount > 0` and no schedule at all: reachable by nothing, with no log and no alarm. If the issue moves to `done`, `cancelled`, an invalid status, or a human/unassigned owner, the monitor is cleared.
 
 Because `serviceName` and `notes` remain visible in issue activity and wake context, operators should keep them short and non-secret. Put enough context for the assignee to know what to inspect, but do not include signed URLs, bearer tokens, customer secrets, tenant-private identifiers, or provider links with embedded credentials.
 
-Monitor bounds are enforced. Paperclip rejects attempts to re-arm a monitor whose `timeoutAt` or `maxAttempts` is already exhausted. When a scheduled monitor reaches an exhausted bound at trigger time, Paperclip clears it and follows `recoveryPolicy`: `wake_owner` queues a bounded recovery wake for the assignee, `create_recovery_issue` opens visible issue-backed recovery work, and `escalate_to_board` records a board-visible escalation comment/activity.
+Monitor bounds are enforced, and they are what ends a recurring monitor. A policy that names neither `timeoutAt` nor `maxAttempts` falls back to a default attempt ceiling so a monitor can never wake its assignee forever. Paperclip rejects attempts to re-arm a monitor whose `timeoutAt` or `maxAttempts` is already exhausted. When a scheduled monitor reaches an exhausted bound at trigger time, Paperclip clears it and follows `recoveryPolicy`: `wake_owner` queues a bounded recovery wake for the assignee, `create_recovery_issue` opens visible issue-backed recovery work, and `escalate_to_board` records a board-visible escalation comment/activity.
 
 Use `blocked` instead of a monitor when no Paperclip assignee owns a responsible polling path. In that case, name the external owner/action or create first-class recovery/blocker work.
 

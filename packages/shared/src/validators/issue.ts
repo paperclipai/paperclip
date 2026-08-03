@@ -32,6 +32,8 @@ import {
   ISSUE_THREAD_INTERACTION_RESOLVER_POLICY_PROVENANCES,
   ISSUE_THREAD_INTERACTION_STATUSES,
   ISSUE_WATCHDOG_DISCOVERY_KINDS,
+  MAX_ISSUE_MONITOR_INTERVAL_SECONDS,
+  MIN_ISSUE_MONITOR_INTERVAL_SECONDS,
   MODEL_PROFILE_KEYS,
   REQUEST_CHECKBOX_CONFIRMATION_OPTION_LIMIT,
   REQUEST_ITEM_VERDICTS_ITEM_LIMIT,
@@ -289,6 +291,14 @@ export const issueExecutionMonitorPolicySchema = z.object({
   externalRef: z.string().trim().min(1).max(500).optional().nullable().default(null),
   timeoutAt: z.string().datetime().optional().nullable().default(null),
   maxAttempts: z.number().int().positive().max(100).optional().nullable().default(null),
+  intervalSeconds: z
+    .number()
+    .int()
+    .min(MIN_ISSUE_MONITOR_INTERVAL_SECONDS)
+    .max(MAX_ISSUE_MONITOR_INTERVAL_SECONDS)
+    .optional()
+    .nullable()
+    .default(null),
   recoveryPolicy: z.enum(ISSUE_EXECUTION_MONITOR_RECOVERY_POLICIES).optional().nullable().default(null),
 });
 
@@ -314,6 +324,14 @@ export const issueExecutionMonitorStateSchema = z.object({
   externalRef: z.string().trim().min(1).max(500).nullable().optional().default(null),
   timeoutAt: z.string().datetime().nullable().optional().default(null),
   maxAttempts: z.number().int().positive().max(100).nullable().optional().default(null),
+  intervalSeconds: z
+    .number()
+    .int()
+    .min(MIN_ISSUE_MONITOR_INTERVAL_SECONDS)
+    .max(MAX_ISSUE_MONITOR_INTERVAL_SECONDS)
+    .nullable()
+    .optional()
+    .default(null),
   recoveryPolicy: z.enum(ISSUE_EXECUTION_MONITOR_RECOVERY_POLICIES).nullable().optional().default(null),
   clearedAt: z.string().datetime().nullable(),
   clearReason: z.enum(ISSUE_EXECUTION_MONITOR_CLEAR_REASONS).nullable(),

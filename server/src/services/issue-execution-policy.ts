@@ -10,7 +10,12 @@ import type {
   IssueExecutionState,
   IssueMonitorScheduledBy,
 } from "@paperclipai/shared";
-import { issueExecutionPolicySchema, issueExecutionStateSchema } from "@paperclipai/shared";
+import {
+  DEFAULT_ISSUE_MONITOR_INTERVAL_SECONDS,
+  DEFAULT_ISSUE_MONITOR_MAX_ATTEMPTS,
+  issueExecutionPolicySchema,
+  issueExecutionStateSchema,
+} from "@paperclipai/shared";
 import { unprocessable } from "../errors.js";
 
 type AssigneeLike = {
@@ -99,6 +104,7 @@ function monitorMetadataFromPolicy(monitor: IssueExecutionMonitorPolicy) {
     externalRef: redactIssueMonitorExternalRef(monitor.externalRef),
     timeoutAt: monitor.timeoutAt ?? null,
     maxAttempts: monitor.maxAttempts ?? null,
+    intervalSeconds: monitor.intervalSeconds ?? null,
     recoveryPolicy: monitor.recoveryPolicy ?? null,
   };
 }
@@ -110,6 +116,7 @@ function monitorMetadataFromState(state: IssueExecutionMonitorState | null | und
     externalRef: redactIssueMonitorExternalRef(state?.externalRef),
     timeoutAt: state?.timeoutAt ?? null,
     maxAttempts: state?.maxAttempts ?? null,
+    intervalSeconds: state?.intervalSeconds ?? null,
     recoveryPolicy: state?.recoveryPolicy ?? null,
   };
 }
@@ -230,10 +237,11 @@ function buildScheduledMonitorState(
 function buildTriggeredMonitorState(input: {
   previous: IssueExecutionMonitorState | null;
   triggeredAt: Date;
+  rearmedNextCheckAt: string | null;
 }): IssueExecutionMonitorState {
   return {
-    status: "triggered",
-    nextCheckAt: null,
+    status: input.rearmedNextCheckAt ? "scheduled" : "triggered",
+    nextCheckAt: input.rearmedNextCheckAt,
     lastTriggeredAt: input.triggeredAt.toISOString(),
     attemptCount: (input.previous?.attemptCount ?? 0) + 1,
     notes: input.previous?.notes ?? null,
@@ -295,8 +303,10 @@ function exhaustedMonitorClearReason(input: {
   if (timeoutAt && input.now.getTime() >= timeoutAt.getTime()) {
     return "timeout_exceeded";
   }
-  const maxAttempts = input.monitor.maxAttempts ?? null;
-  if (maxAttempts !== null && input.attemptCount >= maxAttempts) {
+  // A monitor that names neither bound still terminates: recurring re-arm means
+  // an unbounded monitor would otherwise wake its assignee forever.
+  const maxAttempts = input.monitor.maxAttempts ?? DEFAULT_ISSUE_MONITOR_MAX_ATTEMPTS;
+  if (input.attemptCount >= maxAttempts) {
     return "max_attempts_exhausted";
   }
   return null;
@@ -394,6 +404,7 @@ export function normalizeIssueExecutionPolicy(input: unknown): IssueExecutionPol
       externalRef: redactIssueMonitorExternalRef(parsed.data.monitor.externalRef),
       timeoutAt: parsed.data.monitor.timeoutAt ?? null,
       maxAttempts: parsed.data.monitor.maxAttempts ?? null,
+      intervalSeconds: parsed.data.monitor.intervalSeconds ?? null,
       recoveryPolicy: parsed.data.monitor.recoveryPolicy ?? null,
     }
     : null;
@@ -1160,6 +1171,56 @@ export function buildInitialIssueMonitorFields(input: {
   };
 }
 
+/**
+ * A dispatched monitor re-arms itself at `triggeredAt + intervalSeconds` instead
+ * of dropping its schedule. The wake it just queued is not proof that anything
+ * will act on it — the woken run can die to a provider quota, a crash, or a
+ * SIGTERM before it records a disposition or a new `nextCheckAt`. Keeping the
+ * schedule armed means the issue never loses its wake path to a failed run; the
+ * woken run overwrites or clears it on the healthy path, and `timeoutAt` /
+ * `maxAttempts` still end the monitor through the normal recovery route.
+ *
+ * The re-armed check is clamped to `timeoutAt` so the final wake lands exactly
+ * on the declared deadline rather than an interval past it.
+ */
+export function resolveIssueMonitorRearmAt(input: {
+  monitor: IssueExecutionMonitorPolicy | null;
+  monitorState: IssueExecutionMonitorState | null;
+  triggeredAt: Date;
+}): Date | null {
+  const intervalSeconds = input.monitor?.intervalSeconds ??
+    input.monitorState?.intervalSeconds ??
+    DEFAULT_ISSUE_MONITOR_INTERVAL_SECONDS;
+  const rearmAt = new Date(input.triggeredAt.getTime() + intervalSeconds * 1000);
+  const timeoutAt = parseMonitorDate(input.monitor?.timeoutAt ?? input.monitorState?.timeoutAt ?? null);
+  if (!timeoutAt) return rearmAt;
+  if (timeoutAt.getTime() <= input.triggeredAt.getTime()) return null;
+  return timeoutAt.getTime() < rearmAt.getTime() ? timeoutAt : rearmAt;
+}
+
+/**
+ * Re-arms the stored policy in place. This deliberately builds on the persisted
+ * policy rather than the normalized one: normalization redacts
+ * `monitor.externalRef`, so writing the normalized policy back would replace a
+ * real external reference with the redaction marker.
+ */
+function withMonitorNextCheckAt(
+  storedPolicy: IssueExecutionPolicy | Record<string, unknown> | null | undefined,
+  normalizedPolicy: IssueExecutionPolicy | null,
+  nextCheckAt: string,
+): Record<string, unknown> | null {
+  const stored = storedPolicy && typeof storedPolicy === "object" ? storedPolicy as Record<string, unknown> : null;
+  const storedMonitor = stored?.monitor;
+  if (storedMonitor && typeof storedMonitor === "object") {
+    return { ...stored, monitor: { ...(storedMonitor as Record<string, unknown>), nextCheckAt } };
+  }
+  if (!normalizedPolicy?.monitor) return (normalizedPolicy as Record<string, unknown> | null) ?? null;
+  return {
+    ...normalizedPolicy,
+    monitor: { ...normalizedPolicy.monitor, nextCheckAt },
+  } as Record<string, unknown>;
+}
+
 export function buildIssueMonitorTriggeredPatch(input: {
   issue: IssueLike;
   policy: IssueExecutionPolicy | null;
@@ -1171,15 +1232,23 @@ export function buildIssueMonitorTriggeredPatch(input: {
     state: existingState,
     policy: input.policy,
   });
+  const rearmAt = resolveIssueMonitorRearmAt({
+    monitor: input.policy?.monitor ?? null,
+    monitorState: currentMonitorState,
+    triggeredAt: input.triggeredAt,
+  });
   const nextMonitorState = buildTriggeredMonitorState({
     previous: currentMonitorState,
     triggeredAt: input.triggeredAt,
+    rearmedNextCheckAt: rearmAt?.toISOString() ?? null,
   });
 
   return {
-    executionPolicy: stripMonitorFromExecutionPolicy(input.policy) as Record<string, unknown> | null,
+    executionPolicy: (rearmAt
+      ? withMonitorNextCheckAt(input.issue.executionPolicy, input.policy, rearmAt.toISOString())
+      : stripMonitorFromExecutionPolicy(input.policy)) as Record<string, unknown> | null,
     executionState: executionStateWithMonitor(existingState, nextMonitorState) as Record<string, unknown> | null,
-    monitorNextCheckAt: null,
+    monitorNextCheckAt: rearmAt,
     monitorWakeRequestedAt: null,
     monitorLastTriggeredAt: input.triggeredAt,
     monitorAttemptCount: nextMonitorState.attemptCount,

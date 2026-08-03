@@ -1,7 +1,11 @@
 import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { PROVIDER_QUOTA_MONITOR_SERVICE_NAME } from "@paperclipai/shared";
+import {
+  DEFAULT_ISSUE_MONITOR_INTERVAL_SECONDS,
+  DEFAULT_ISSUE_MONITOR_MAX_ATTEMPTS,
+  PROVIDER_QUOTA_MONITOR_SERVICE_NAME,
+} from "@paperclipai/shared";
 import {
   activityLog,
   agentRuntimeState,
@@ -236,22 +240,25 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     return { companyId, agentId, issueId, nextCheckAt };
   }
 
-  it("triggers due issue monitors once and clears the one-shot schedule", async () => {
+  it("triggers due issue monitors and re-arms the schedule at the default interval", async () => {
     const { issueId, agentId } = await seedFixture();
     const heartbeat = heartbeatService(db);
     const tickAt = new Date("2026-04-11T12:31:00.000Z");
+    const rearmedAt = new Date(tickAt.getTime() + DEFAULT_ISSUE_MONITOR_INTERVAL_SECONDS * 1000);
 
     const result = await heartbeat.tickTimers(tickAt);
 
     expect(result.enqueued).toBe(1);
 
     const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]!);
-    expect(issue.monitorNextCheckAt).toBeNull();
+    expect(issue.monitorNextCheckAt?.toISOString()).toBe(rearmedAt.toISOString());
     expect(issue.monitorAttemptCount).toBe(1);
     expect(issue.monitorLastTriggeredAt?.toISOString()).toBe(tickAt.toISOString());
-    expect(normalizeIssueExecutionPolicy(issue.executionPolicy ?? null)?.monitor ?? null).toBeNull();
+    expect(normalizeIssueExecutionPolicy(issue.executionPolicy ?? null)?.monitor?.nextCheckAt)
+      .toBe(rearmedAt.toISOString());
     expect(parseIssueExecutionState(issue.executionState)?.monitor).toMatchObject({
-      status: "triggered",
+      status: "scheduled",
+      nextCheckAt: rearmedAt.toISOString(),
       lastTriggeredAt: tickAt.toISOString(),
       attemptCount: 1,
     });
@@ -267,8 +274,96 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
       .select()
       .from(activityLog)
       .where(eq(activityLog.entityId, issueId))
-      .then((rows) => rows.map((row) => row.action));
-    expect(activity).toContain("issue.monitor_triggered");
+      .then((rows) => rows);
+    expect(activity.map((row) => row.action)).toContain("issue.monitor_triggered");
+    expect(activity.find((row) => row.action === "issue.monitor_triggered")?.details).toMatchObject({
+      rearmedNextCheckAt: rearmedAt.toISOString(),
+    });
+  });
+
+  it("keeps a wake path when the woken run fails terminally", async () => {
+    const { issueId, agentId } = await seedFixture();
+    const heartbeat = heartbeatService(db);
+    const tickAt = new Date("2026-04-11T12:31:00.000Z");
+    const rearmedAt = new Date(tickAt.getTime() + DEFAULT_ISSUE_MONITOR_INTERVAL_SECONDS * 1000);
+
+    await heartbeat.tickTimers(tickAt);
+    await waitForHeartbeatIdle();
+
+    // The woken run dies to a transient upstream failure without recording a
+    // disposition or a new nextCheckAt. Under one-shot dispatch that left the
+    // issue with monitorAttemptCount > 0 and no schedule at all — no log, no
+    // alarm, and nothing that could ever wake it again.
+    const wokenRun = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId))
+      .then((rows) => rows[0] ?? null);
+    expect(wokenRun).not.toBeNull();
+    await db
+      .update(heartbeatRuns)
+      .set({
+        status: "failed",
+        errorCode: "claude_transient_upstream",
+        error: "upstream returned 529",
+        finishedAt: tickAt,
+      })
+      .where(eq(heartbeatRuns.id, wokenRun!.id));
+
+    const stranded = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]!);
+    expect(stranded.status).toBe("in_progress");
+    expect(stranded.monitorAttemptCount).toBeGreaterThanOrEqual(1);
+    expect(stranded.monitorNextCheckAt).not.toBeNull();
+    expect(stranded.monitorNextCheckAt?.getTime()).toBe(
+      (stranded.monitorLastTriggeredAt?.getTime() ?? 0) + DEFAULT_ISSUE_MONITOR_INTERVAL_SECONDS * 1000,
+    );
+
+    const attemptsBeforeRewake = stranded.monitorAttemptCount ?? 0;
+    await heartbeat.tickTimers(stranded.monitorNextCheckAt!);
+
+    const rewoken = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]!);
+    expect(rewoken.monitorAttemptCount).toBeGreaterThan(attemptsBeforeRewake);
+    expect(rewoken.monitorLastTriggeredAt?.getTime()).toBeGreaterThan(stranded.monitorLastTriggeredAt!.getTime());
+  });
+
+  it("re-arms at the interval the policy names", async () => {
+    const { issueId } = await seedFixture({
+      monitor: {
+        intervalSeconds: 3600,
+        timeoutAt: "2027-01-01T00:00:00.000Z",
+      },
+    });
+    const heartbeat = heartbeatService(db);
+    const tickAt = new Date("2026-04-11T12:31:00.000Z");
+
+    await heartbeat.tickTimers(tickAt);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]!);
+    expect(issue.monitorAttemptCount).toBeGreaterThanOrEqual(1);
+    expect(normalizeIssueExecutionPolicy(issue.executionPolicy ?? null)?.monitor?.intervalSeconds).toBe(3600);
+    expect(issue.monitorNextCheckAt?.getTime()).toBe(
+      (issue.monitorLastTriggeredAt?.getTime() ?? 0) + 3600 * 1000,
+    );
+  });
+
+  it("stops a monitor that names no bounds at the default attempt ceiling", async () => {
+    const { issueId } = await seedFixture({
+      monitorAttemptCount: DEFAULT_ISSUE_MONITOR_MAX_ATTEMPTS,
+      monitor: { recoveryPolicy: "wake_owner" },
+    });
+    const heartbeat = heartbeatService(db);
+
+    const result = await heartbeat.tickTimers(new Date("2026-04-11T12:31:00.000Z"));
+
+    expect(result.enqueued).toBe(0);
+    expect(result.skipped).toBe(1);
+
+    const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]!);
+    expect(issue.monitorNextCheckAt).toBeNull();
+    expect(parseIssueExecutionState(issue.executionState)?.monitor).toMatchObject({
+      status: "cleared",
+      clearReason: "max_attempts_exhausted",
+    });
   });
 
   it("wakes a cross-agent review participant for provider quota monitors", async () => {
@@ -352,10 +447,10 @@ describeEmbeddedPostgres("issue monitor scheduler", () => {
     expect(result.outcome).toBe("triggered");
 
     const issue = await db.select().from(issues).where(eq(issues.id, issueId)).then((rows) => rows[0]!);
-    expect(issue.monitorNextCheckAt).toBeNull();
+    expect(issue.monitorNextCheckAt?.toISOString())
+      .toBe(new Date(triggeredAt.getTime() + DEFAULT_ISSUE_MONITOR_INTERVAL_SECONDS * 1000).toISOString());
     expect(issue.monitorLastTriggeredAt?.toISOString()).toBe(triggeredAt.toISOString());
     expect(issue.monitorAttemptCount).toBe(1);
-    expect(normalizeIssueExecutionPolicy(issue.executionPolicy ?? null)?.monitor ?? null).toBeNull();
 
     const wakeup = await db
       .select()
