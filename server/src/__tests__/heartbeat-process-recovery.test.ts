@@ -1209,6 +1209,12 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const heartbeat = heartbeatService(db);
     await heartbeat.resumeQueuedRuns();
     await waitForRunToSettle(heartbeat, fixture.runId);
+    // A run becomes terminal before its fire-and-forget execution has flushed
+    // the agent finalization and any continuation decisions. Drain that work
+    // before observing the agent, otherwise this fixture can read the brief
+    // `running`/`null` intermediate state between the run-row write and
+    // finalizeAgentStatus.
+    await heartbeat.drainActiveRunExecutions();
     const [agent] = await db.select().from(agents).where(eq(agents.id, fixture.agentId));
     const run = await heartbeat.getRun(fixture.runId);
     return { ...fixture, agent, run };
