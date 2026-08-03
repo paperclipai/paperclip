@@ -87,6 +87,7 @@ import {
 } from "@paperclipai/shared";
 import { z } from "zod";
 import { conflict, forbidden, notFound, unprocessable } from "../errors.js";
+import { logger } from "../middleware/logger.js";
 import { getTelemetryClient } from "../telemetry.js";
 import {
   logActivity,
@@ -2339,6 +2340,33 @@ export function issueThreadInteractionService(
     return result;
   }
 
+  async function recordResolutionReasonComment(args: {
+    issue: { id: string; companyId: string };
+    actor: InteractionActor;
+    interactionId: string;
+    label: string;
+    reason: string | null | undefined;
+  }): Promise<void> {
+    const reason = args.reason?.trim();
+    if (!reason) {
+      return;
+    }
+    try {
+      await issueService(db).addComment(
+        args.issue.id,
+        `**${args.label}** (interaction ${args.interactionId.slice(0, 8)}): ${reason}`,
+        { agentId: args.actor.agentId ?? undefined, userId: args.actor.userId ?? undefined },
+      );
+    } catch (error) {
+      // The resolution itself has already committed; failing to surface the
+      // reason as a comment must not fail the resolution.
+      logger.warn(
+        { issueId: args.issue.id, interactionId: args.interactionId, error },
+        "failed to record interaction resolution reason as issue comment",
+      );
+    }
+  }
+
   async function rejectRequestConfirmation(args: {
     issue: { id: string; companyId: string };
     current: IssueThreadInteractionRow;
@@ -2508,6 +2536,13 @@ export function issueThreadInteractionService(
       return resolved;
     });
 
+    await recordResolutionReasonComment({
+      issue: args.issue,
+      actor: args.actor,
+      interactionId: updated.id,
+      label: "Confirmation declined",
+      reason,
+    });
     const rejected = hydrateInteraction(updated);
     await emitInteractionResolvedTelemetry(db, rejected);
     return rejected;
@@ -4116,6 +4151,13 @@ export function issueThreadInteractionService(
       }
 
       await touchIssue(db, issue.id);
+      await recordResolutionReasonComment({
+        issue,
+        actor,
+        interactionId: updated.id,
+        label: "Suggested tasks declined",
+        reason: input.reason,
+      });
       const rejected = hydrateInteraction(updated);
       await emitInteractionResolvedTelemetry(db, rejected);
       return rejected;
@@ -4966,6 +5008,13 @@ export function issueThreadInteractionService(
       });
 
       await touchIssue(db, issue.id);
+      await recordResolutionReasonComment({
+        issue,
+        actor,
+        interactionId: updated.id,
+        label: "Questions cancelled",
+        reason,
+      });
       const cancelled = hydrateInteraction(updated);
       await emitInteractionResolvedTelemetry(db, cancelled);
       return cancelled;

@@ -12000,6 +12000,9 @@ export function issueService(db: Db) {
       },
       dbOrTx: any = db,
     ): Promise<IssueComment> {
+      if (body.trim().length === 0) {
+        throw unprocessable("Comment body cannot be empty");
+      }
       if (dbOrTx === db && (actor.runId || actor.userId)) {
         const append = () =>
           db.transaction(async (tx) => {
