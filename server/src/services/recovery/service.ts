@@ -495,6 +495,45 @@ export const INTENTIONALLY_UNCLASSIFIED_ADAPTER_FAILURE_ERROR_CODES: ReadonlySet
   "acpx_protocol_error",
   "acpx_runtime_error",
   "acpx_session_config_failed",
+  // Generic timeout is also emitted by the HTTP adapter, so it is too ambiguous for provider recovery.
+  "timeout",
+  // Authentication and model/session outcomes need operator or caller action, not automatic retries.
+  "claude_auth_required",
+  "model_not_found",
+  "max_turns_exhausted",
+  "claude_poisoned_previous_message_id",
+  "claude_refusal",
+  // Provider-specific transient families keep their existing retry owners outside this classifier.
+  "claude_transient_upstream",
+  "codex_transient_upstream",
+  "codex_harness_crash",
+  "codex_output_inactivity_monitor",
+  "gemini_network_unavailable",
+  // Gemini authentication requires credentials to change before another run can succeed.
+  "gemini_auth_required",
+  // Hermes gateway configuration, protocol, cancellation, and run outcomes are not provider quota failures.
+  "hermes_gateway_run_failed",
+  "hermes_gateway_cancelled",
+  "hermes_gateway_protocol_error",
+  "hermes_gateway_api_base_url_missing",
+  "hermes_gateway_api_base_url_invalid",
+  "hermes_gateway_plain_http_remote_denied",
+  "hermes_gateway_api_key_missing",
+  "hermes_gateway_timeout",
+  // OpenClaw setup, protocol, agent, wait, pairing, and request failures retain gateway-owned handling.
+  "openclaw_gateway_url_missing",
+  "openclaw_gateway_url_invalid",
+  "openclaw_gateway_url_protocol",
+  "openclaw_gateway_agent_error",
+  "openclaw_gateway_wait_timeout",
+  "openclaw_gateway_wait_error",
+  "openclaw_gateway_wait_status_unexpected",
+  "openclaw_gateway_timeout",
+  "openclaw_gateway_pairing_required",
+  "openclaw_gateway_request_failed",
+  // Workspace validation and setup failures have dedicated heartbeat recovery flows.
+  "workspace_validation_failed",
+  "setup_failed",
 ]);
 
 const PROVIDER_QUOTA_ERROR_RE =
