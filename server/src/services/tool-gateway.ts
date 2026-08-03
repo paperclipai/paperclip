@@ -5801,6 +5801,11 @@ export function createToolGatewayService(
                     companyId: session.companyId,
                     projectId: session.projectId ?? "",
                   },
+                  {
+                    agentId: session.agentId!,
+                    runId: session.runId!,
+                    companyId: session.companyId,
+                  },
                 ),
                 executionTimeoutMs,
               )
@@ -6095,9 +6100,25 @@ export function createToolGatewayService(
         },
       });
 
+      // Build agent-run scope from the authenticated actor so that
+      // `emitFromAgentRun` can bind events to this invocation. Only set when
+      // the actor is a verified agent with a known runId — board callers get
+      // no agent-run provenance.
+      const agentRunScope =
+        input.actor.type === "agent" &&
+        input.actor.agentId &&
+        input.actor.runId &&
+        input.actor.companyId
+          ? {
+              agentId: input.actor.agentId,
+              runId: input.actor.runId,
+              companyId: input.actor.companyId,
+            }
+          : undefined;
+
       const startedAt = Date.now();
       try {
-        const result = await pluginToolDispatcher.executeTool(input.tool, requestedParameters, input.runContext);
+        const result = await pluginToolDispatcher.executeTool(input.tool, requestedParameters, input.runContext, agentRunScope);
         const resultValidation = validateToolContent({
           value: result,
           direction: "result",

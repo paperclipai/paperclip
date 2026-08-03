@@ -706,7 +706,9 @@ describeEmbeddedPostgres("tool gateway service", () => {
       policyType: "require_approval",
       selectors: { toolName: "fixture:delete_everything" },
     });
-    const gateway = createTestToolGatewayService(db, { pluginToolDispatcher: fakePluginDispatcher() });
+    const pluginDispatcher = fakePluginDispatcher();
+    const executePluginTool = vi.spyOn(pluginDispatcher, "executeTool");
+    const gateway = createTestToolGatewayService(db, { pluginToolDispatcher: pluginDispatcher });
     const session = await gateway.createSession({
       companyId: company.id,
       agentId: agent.id,
@@ -768,6 +770,21 @@ describeEmbeddedPostgres("tool gateway service", () => {
     });
     expect(result.status).toBe("completed");
     expect((result.result as { result?: { data?: { target?: string } } }).result?.data?.target).toBe("repo");
+    expect(executePluginTool).toHaveBeenLastCalledWith(
+      "fixture:delete_everything",
+      { target: "repo" },
+      {
+        agentId: agent.id,
+        runId: run.id,
+        companyId: company.id,
+        projectId: "",
+      },
+      {
+        agentId: agent.id,
+        runId: run.id,
+        companyId: company.id,
+      },
+    );
   });
 
   it("maps remote MCP elicitation to a durable issue interaction", async () => {

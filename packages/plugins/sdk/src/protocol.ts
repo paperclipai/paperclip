@@ -277,11 +277,32 @@ export type PluginRpcErrorCode =
 // ---------------------------------------------------------------------------
 
 /**
+ * Host-owned binding of an `executeTool` invocation to the live agent run that
+ * triggered it. Derived exclusively by the host from the `executeTool`
+ * dispatch parameters — workers never supply or mutate these values.
+ */
+export interface PluginInvocationAgentRunScope {
+  /** UUID of the agent whose run invoked the tool. */
+  agentId: string;
+  /** UUID of the agent run (heartbeat run) that invoked the tool. */
+  runId: string;
+  /** UUID of the company the run belongs to. */
+  companyId: string;
+}
+
+/**
  * Company scope attached by the host to one top-level plugin invocation.
  * Absence of this metadata means the invocation is instance/global scoped.
  */
 export interface PluginInvocationScope {
   companyId: string;
+  /**
+   * Present only when the invocation is a host-dispatched `executeTool` call
+   * bound to an agent run. Other invocation kinds (`onEvent`, `performAction`,
+   * `runJob`, …) never carry this binding, so provenance cannot be laundered
+   * through them.
+   */
+  agentRun?: PluginInvocationAgentRunScope;
 }
 
 /**
@@ -449,6 +470,15 @@ export interface ExecuteToolParams {
   parameters: unknown;
   /** Agent run context. */
   runContext: ToolRunContext;
+  /**
+   * Host-internal: authenticated agent-run binding set by the host only when
+   * the caller has been verified as the named agent run. Never derived from
+   * the plugin-visible `runContext` — prevents board callers from forging
+   * agent-run provenance by supplying agentId/runId in the request body.
+   *
+   * Not forwarded to the plugin worker process.
+   */
+  _agentRunScope?: { agentId: string; runId: string; companyId: string };
 }
 
 export interface PluginExternalObjectUrlCandidate {
@@ -1213,6 +1243,10 @@ export interface WorkerToHostMethods {
   // Events
   "events.emit": [
     params: { name: string; companyId: string; payload: unknown },
+    result: void,
+  ];
+  "events.emitFromAgentRun": [
+    params: { name: string; payload: unknown },
     result: void,
   ];
   "events.subscribe": [

@@ -609,7 +609,26 @@ export function createPluginWorkerHandle(
 
     if (method === "executeTool" && isRecord(params.runContext)) {
       const companyId = readNonEmptyString(params.runContext.companyId);
-      return companyId ? { companyId } : null;
+      if (!companyId) return null;
+      // Agent-run binding comes exclusively from `_agentRunScope`, which the
+      // host sets only when the caller is authenticated as the named agent run.
+      // Reading from `runContext.agentId/runId` here would allow board callers
+      // to forge agent-run provenance by supplying arbitrary ids in the request
+      // body. `_agentRunScope` is a host-internal field never derived from the
+      // plugin-visible `runContext`.
+      if (isRecord(params._agentRunScope)) {
+        const src = params._agentRunScope;
+        const agentId = readNonEmptyString(src.agentId);
+        const runId = readNonEmptyString(src.runId);
+        const scopeCompanyId = readNonEmptyString(src.companyId);
+        if (agentId && runId && scopeCompanyId === companyId) {
+          return {
+            companyId: scopeCompanyId,
+            agentRun: { agentId, runId, companyId: scopeCompanyId },
+          };
+        }
+      }
+      return { companyId };
     }
 
     if (method === "onEvent" && isRecord(params.event)) {
@@ -618,6 +637,17 @@ export function createPluginWorkerHandle(
     }
 
     return null;
+  }
+
+  function stripHostOnlyInvocationFields<M extends HostToWorkerMethodName>(
+    method: M,
+    params: HostToWorkerMethods[M][0],
+  ): HostToWorkerMethods[M][0] {
+    if (method !== "executeTool" || !isRecord(params) || !("_agentRunScope" in params)) {
+      return params;
+    }
+    const { _agentRunScope: _hostOnlyScope, ...workerParams } = params;
+    return workerParams as HostToWorkerMethods[M][0];
   }
 
   function registerInvocation(scope: PluginInvocationScope, ttlMs?: number): PluginInvocationContext {
@@ -1319,8 +1349,9 @@ export function createPluginWorkerHandle(
       pendingRequests.set(id, pending);
 
       try {
+        const workerParams = stripHostOnlyInvocationFields(method, params);
         const request = {
-          ...createRequest(method, params, id),
+          ...createRequest(method, workerParams, id),
           ...(invocation ? { paperclipInvocation: invocation } : {}),
         };
         sendMessage(request);
@@ -1400,10 +1431,14 @@ export function createPluginWorkerHandle(
       // cleared on settlement, so they survive arbitrarily long call timeouts.
       const invocation = invocationScope ? registerInvocation(invocationScope, MAX_RPC_TIMEOUT_MS) : null;
       try {
+        const workerParams = stripHostOnlyInvocationFields(
+          method as HostToWorkerMethodName,
+          params as HostToWorkerMethods[HostToWorkerMethodName][0],
+        );
         sendMessage({
           jsonrpc: JSONRPC_VERSION,
           method,
-          params,
+          params: workerParams,
           ...(invocation ? { paperclipInvocation: invocation } : {}),
         });
       } catch {

@@ -177,6 +177,9 @@ export interface PluginToolRegistry {
    * @param namespacedName - Fully qualified tool name (e.g. `"acme.linear:search-issues"`)
    * @param parameters - The parsed parameters matching the tool's schema
    * @param runContext - Agent run context
+   * @param agentRunScope - Host-authenticated agent-run binding; set only when
+   *   the caller has been verified as the named agent run. When absent, the
+   *   invocation carries no agent-run provenance (board callers).
    * @returns The execution result with routing metadata
    * @throws {Error} if the tool is not found or the worker is not running
    */
@@ -184,6 +187,7 @@ export interface PluginToolRegistry {
     namespacedName: string,
     parameters: unknown,
     runContext: ToolRunContext,
+    agentRunScope?: { agentId: string; runId: string; companyId: string },
   ): Promise<ToolExecutionResult>;
 
   /**
@@ -385,6 +389,7 @@ export function createPluginToolRegistry(
       namespacedName: string,
       parameters: unknown,
       runContext: ToolRunContext,
+      agentRunScope?: { agentId: string; runId: string; companyId: string },
     ): Promise<ToolExecutionResult> {
       // 1. Resolve the namespaced name
       const parsed = parseName(namespacedName);
@@ -432,6 +437,7 @@ export function createPluginToolRegistry(
         toolName,
         parameters,
         runContext,
+        ...(agentRunScope ? { _agentRunScope: agentRunScope } : {}),
       };
 
       const result = await workerManager.call(dbId, "executeTool", rpcParams);

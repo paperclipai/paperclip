@@ -3854,8 +3854,8 @@ rl.on("line", (line) => {
         },
       ],
       getTool: () => null,
-      executeTool: async (tool, parameters, runContext) => {
-        calls.push({ tool, parameters, runContext });
+      executeTool: async (tool, parameters, runContext, agentRunScope) => {
+        calls.push({ tool, parameters, runContext, agentRunScope });
         return {
           pluginId: "demo-plugin",
           toolName: "read_status",
@@ -3903,6 +3903,11 @@ rl.on("line", (line) => {
       expect.objectContaining({
         tool: "demo-plugin:read_status",
         parameters: { id: "1" },
+        agentRunScope: {
+          agentId: agent.id,
+          runId: run.id,
+          companyId: company.id,
+        },
       }),
     ]);
   });

@@ -137,9 +137,20 @@ export interface HostServices {
     list(params: WorkerToHostMethods["entities.list"][0]): Promise<WorkerToHostMethods["entities.list"][1]>;
   };
 
-  /** Provides `events.emit` and `events.subscribe`. */
+  /** Provides `events.emit`, `events.emitFromAgentRun` and `events.subscribe`. */
   events: {
     emit(params: WorkerToHostMethods["events.emit"][0]): Promise<void>;
+    /**
+     * Emit an event bound to the agent run of the current `executeTool`
+     * invocation. The factory only routes this call after verifying the
+     * invocation carries a host-owned agent-run scope; the service must derive
+     * every identity from `context.invocationScope.agentRun`, never from
+     * `params`.
+     */
+    emitFromAgentRun(
+      params: WorkerToHostMethods["events.emitFromAgentRun"][0],
+      context?: WorkerHostCallContext,
+    ): Promise<void>;
     subscribe(params: WorkerToHostMethods["events.subscribe"][0]): Promise<void>;
   };
 
@@ -396,6 +407,9 @@ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | n
 
   // Events
   "events.emit": "events.emit",
+  // Deliberately reuses `events.emit`: emitting from an agent run is a strictly
+  // more restricted operation than plain emit, so no separate capability exists.
+  "events.emitFromAgentRun": "events.emit",
   "events.subscribe": "events.subscribe",
 
   // HTTP
@@ -752,6 +766,31 @@ export function createHostClientHandlers(
     // Events
     "events.emit": gated("events.emit", async (params) => {
       return services.events.emit(params);
+    }),
+    "events.emitFromAgentRun": gated("events.emitFromAgentRun", async (params, context) => {
+      // Params carry no company scope, so the generic company gate above is a
+      // no-op here — this handler must check the invocation itself.
+      if (context?.invalidInvocationScope) {
+        throw new InvocationScopeDeniedError(
+          pluginId,
+          "events.emitFromAgentRun",
+          "the worker referenced a missing, expired, or unknown invocation scope",
+        );
+      }
+      const agentRun = context?.invocationScope?.agentRun;
+      if (
+        !agentRun ||
+        !readNonEmptyString(agentRun.agentId) ||
+        !readNonEmptyString(agentRun.runId) ||
+        !readNonEmptyString(agentRun.companyId)
+      ) {
+        throw new InvocationScopeDeniedError(
+          pluginId,
+          "events.emitFromAgentRun",
+          "an active executeTool invocation bound to an agent run is required",
+        );
+      }
+      return services.events.emitFromAgentRun({ name: params.name, payload: params.payload }, context);
     }),
     "events.subscribe": gated("events.subscribe", async (params) => {
       return services.events.subscribe(params);
