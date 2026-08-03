@@ -1,8 +1,19 @@
 # test_watcher_approvals.py
 import unittest, tempfile
+from datetime import date
 from pathlib import Path
 import approval_queue as q
 import watcher as w
+
+
+def dated(name: str) -> str:
+    """Dateiname im aktuellen scan()-Fenster.
+
+    scan() filtert ueber das Datum im Dateinamen (p.name[:10] < cutoff). Feste
+    Daten fallen daher irgendwann aus dem Fenster: die assertIn-Tests werden rot,
+    die assertNotIn-Tests still gruen, ohne noch etwas zu pruefen.
+    """
+    return f"{date.today().isoformat()}-{name}"
 
 
 MAIL_OKAY = """---
@@ -145,12 +156,12 @@ class ApprovalScanTest(unittest.TestCase):
         self.assertTrue(any(r["action"] == "send-error" for r in res))
 
     def test_scan_separates_approval_replies(self):
-        self._write("2026-07-22-okay-split-w.schonenbrocher.md", MAIL_OKAY)
+        name = dated("okay-split-w.schonenbrocher.md")
+        self._write(name, MAIL_OKAY)
         # scan() (Kundenmail-/Entwurfspfad) darf die Freigabe-Antwort NICHT enthalten:
-        self.assertNotIn("2026-07-22-okay-split-w.schonenbrocher.md", w.scan(3))
+        self.assertNotIn(name, w.scan(3))
         # scan_approval_replies() MUSS sie enthalten (noch nicht in seen):
-        self.assertIn("2026-07-22-okay-split-w.schonenbrocher.md",
-                      w.scan_approval_replies(3, set()))
+        self.assertIn(name, w.scan_approval_replies(3, set()))
 
     def test_result_carries_file_and_action(self):
         self._write("2026-07-22-file-w.schonenbrocher.md", MAIL_OKAY)
@@ -271,31 +282,35 @@ class ApprovalScanTest(unittest.TestCase):
         bl.add("spam@x.de")
         mail = ("---\nvon: Spam Meier <spam@x.de>\n"
                 "subject: Angebot\n---\n\nKaufen Sie jetzt!\n")
-        self._write("2026-07-22-spam-eingang.md", mail)
-        self.assertNotIn("2026-07-22-spam-eingang.md", w.scan(3))
+        name = dated("spam-eingang.md")
+        self._write(name, mail)
+        self.assertNotIn(name, w.scan(3))
 
     def test_scan_skips_walters_own_sent_mail(self):
         # Walters eigene (gesendete) Mail im Vault ist KEINE Kundenpost → nicht triagieren.
         mail = ('---\nbetreff: "AW: VR Clips Haus"\n'
                 'von: "WHITESTAG - Walter Schönenbröcher <w.schonenbrocher@oubifb.hostedoffice.ag>"\n'
                 'an: "Steve Nemitz"\nordner: "Gesendete Elemente"\n---\n\nHallo Steve, anbei …\n')
-        self._write("2026-07-23-AW-VR-Clips-Haus-w.schonenbrocher.md", mail)
-        self.assertNotIn("2026-07-23-AW-VR-Clips-Haus-w.schonenbrocher.md", w.scan(3))
+        name = dated("AW-VR-Clips-Haus-w.schonenbrocher.md")
+        self._write(name, mail)
+        self.assertNotIn(name, w.scan(3))
 
     def test_scan_keeps_customer_named_walter(self):
         # Ein KUNDE mit Vornamen Walter darf NICHT herausgefiltert werden.
         mail = ('---\nbetreff: "Anfrage"\n'
                 'von: "Walter Müller <walter.mueller@fremdefirma.de>"\n---\n\nGuten Tag\n')
-        self._write("2026-07-23-Anfrage-walter.mueller.md", mail)
-        self.assertIn("2026-07-23-Anfrage-walter.mueller.md", w.scan(3))
+        name = dated("Anfrage-walter.mueller.md")
+        self._write(name, mail)
+        self.assertIn(name, w.scan(3))
 
     def test_scan_keeps_unblocked_sender(self):
         import blocklist as bl
         bl.STATE = self.dir / "luna-blocklist.json"  # leere Blocklist
         mail = ("---\nvon: Echt Kunde <kunde@x.de>\n"
                 "subject: Anfrage\n---\n\nHallo Luna\n")
-        self._write("2026-07-22-echt-eingang.md", mail)
-        self.assertIn("2026-07-22-echt-eingang.md", w.scan(3))
+        name = dated("echt-eingang.md")
+        self._write(name, mail)
+        self.assertIn(name, w.scan(3))
 
     def test_process_unblock_removes_from_blocklist(self):
         import blocklist as bl
