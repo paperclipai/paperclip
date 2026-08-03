@@ -60,6 +60,8 @@ import type {
   PluginIssueAttachmentContent,
   PluginIssueWakeupBatchResult,
   PluginIssueWakeupResult,
+  PluginIssueAssigneeEntityTransitionInput,
+  PluginIssueAssigneeEntityTransitionResult,
   PluginJobContext,
   PluginExecutionWorkspaceMetadata,
   PluginWorkspace,
@@ -1164,6 +1166,32 @@ export interface WorkerToHostMethods {
   ];
 
   // Entities
+  "entities.create": [
+    params: {
+      entityType: string;
+      scopeKind: PluginStateScopeKind;
+      scopeId?: string;
+      externalId?: string;
+      title?: string;
+      status?: string;
+      data: Record<string, unknown>;
+    },
+    result: {
+      created: boolean;
+      entity: {
+        id: string;
+        entityType: string;
+        scopeKind: PluginStateScopeKind;
+        scopeId: string | null;
+        externalId: string | null;
+        title: string | null;
+        status: string | null;
+        data: Record<string, unknown>;
+        createdAt: string;
+        updatedAt: string;
+      };
+    },
+  ];
   "entities.upsert": [
     params: {
       entityType: string;
@@ -1186,6 +1214,31 @@ export interface WorkerToHostMethods {
       createdAt: string;
       updatedAt: string;
     },
+  ];
+  "entities.upsertMany": [
+    params: {
+      inputs: Array<{
+        entityType: string;
+        scopeKind: PluginStateScopeKind;
+        scopeId?: string;
+        externalId?: string;
+        title?: string;
+        status?: string;
+        data: Record<string, unknown>;
+      }>;
+    },
+    result: Array<{
+      id: string;
+      entityType: string;
+      scopeKind: PluginStateScopeKind;
+      scopeId: string | null;
+      externalId: string | null;
+      title: string | null;
+      status: string | null;
+      data: Record<string, unknown>;
+      createdAt: string;
+      updatedAt: string;
+    }>,
   ];
   "entities.list": [
     params: {
@@ -1416,6 +1469,7 @@ export interface WorkerToHostMethods {
       originKind?: string | null;
       originId?: string | null;
       originRunId?: string | null;
+      idempotencyKey?: string | null;
       blockedByIssueIds?: string[];
       labelIds?: string[];
       executionWorkspaceId?: string | null;
@@ -1434,6 +1488,10 @@ export interface WorkerToHostMethods {
       companyId: string;
     },
     result: Issue,
+  ];
+  "issues.transitionAssigneeEntity": [
+    params: PluginIssueAssigneeEntityTransitionInput,
+    result: PluginIssueAssigneeEntityTransitionResult,
   ];
   "issues.relations.get": [
     params: { issueId: string; companyId: string },

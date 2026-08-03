@@ -657,6 +657,18 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
       },
 
       entities: {
+        async create(input) {
+          return callHost("entities.create", {
+            entityType: input.entityType,
+            scopeKind: input.scopeKind,
+            scopeId: input.scopeId,
+            externalId: input.externalId,
+            title: input.title,
+            status: input.status,
+            data: input.data,
+          });
+        },
+
         async upsert(input) {
           return callHost("entities.upsert", {
             entityType: input.entityType,
@@ -667,6 +679,10 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
             status: input.status,
             data: input.data,
           });
+        },
+
+        async upsertMany(inputs) {
+          return callHost("entities.upsertMany", { inputs });
         },
 
         async list(query) {
@@ -824,6 +840,7 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
             originKind: input.originKind,
             originId: input.originId,
             originRunId: input.originRunId,
+            idempotencyKey: input.idempotencyKey,
             blockedByIssueIds: input.blockedByIssueIds,
             labelIds: input.labelIds,
             executionWorkspaceId: input.executionWorkspaceId,
@@ -846,6 +863,10 @@ export function startWorkerRpcHost(options: WorkerRpcHostOptions): WorkerRpcHost
             },
             companyId,
           });
+        },
+
+        async transitionAssigneeEntity(input) {
+          return callHost("issues.transitionAssigneeEntity", input);
         },
 
         async assertCheckoutOwner(input) {

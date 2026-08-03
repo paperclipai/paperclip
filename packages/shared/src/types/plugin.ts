@@ -787,8 +787,14 @@ export interface PluginCompanySettings {
  * Query filter for `ctx.entities.list`.
  */
 export interface PluginEntityQuery {
+  /** Optional tenant filter. `null` selects instance-scope records. */
+  companyId?: string | null;
   /** Optional filter by entity type (e.g. 'project', 'issue'). */
   entityType?: string;
+  /** Optional filter by entity scope kind. */
+  scopeKind?: PluginStateScopeKind;
+  /** Optional filter by entity scope ID. */
+  scopeId?: string;
   /** Optional filter by external system identifier. */
   externalId?: string;
   /** Maximum number of records to return. Defaults to 100. */

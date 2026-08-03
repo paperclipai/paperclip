@@ -2,8 +2,10 @@ import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
+  activityLog,
   companies,
   createDb,
+  issues,
   pluginEntities,
   pluginJobs,
   pluginJobRuns,
@@ -13,6 +15,7 @@ import {
 } from "@paperclipai/db";
 import { buildHostServices, flushPluginLogBuffer } from "../services/plugin-host-services.js";
 import { pluginRegistryService } from "../services/plugin-registry.js";
+import { issueService } from "../services/issues.js";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -53,7 +56,9 @@ describeEmbeddedPostgres("plugin tenant isolation (company_id FK)", () => {
   }, 20_000);
 
   afterEach(async () => {
+    await db.delete(activityLog);
     await db.delete(pluginEntities);
+    await db.delete(issues);
     await db.delete(pluginJobRuns);
     await db.delete(pluginJobs);
     await db.delete(pluginLogs);
@@ -320,6 +325,123 @@ describeEmbeddedPostgres("plugin tenant isolation (company_id FK)", () => {
 
     const allRows = await db.select().from(pluginEntities);
     expect(allRows).toHaveLength(3);
+  });
+
+  it("plugin host entity services persist and list only the requested company scope", async () => {
+    const pluginId = await seedPlugin();
+    const companyA = await seedCompany();
+    const companyB = await seedCompany();
+    const services = buildHostServices(
+      db,
+      pluginId,
+      "paperclip.tenant-isolation-test",
+      createEventBusStub(),
+    );
+
+    await services.entities.upsert({
+      entityType: "human-profile",
+      scopeKind: "company",
+      scopeId: companyA,
+      externalId: "shared",
+      title: "Company A",
+      data: {},
+    });
+    await services.entities.upsert({
+      entityType: "human-profile",
+      scopeKind: "company",
+      scopeId: companyB,
+      externalId: "shared",
+      title: "Company B",
+      data: {},
+    });
+
+    const [companyARows, companyBRows, stored] = await Promise.all([
+      services.entities.list({
+        entityType: "human-profile",
+        scopeKind: "company",
+        scopeId: companyA,
+      }),
+      services.entities.list({
+        entityType: "human-profile",
+        scopeKind: "company",
+        scopeId: companyB,
+      }),
+      db.select().from(pluginEntities),
+    ]);
+
+    expect(companyARows).toMatchObject([{ title: "Company A", scopeId: companyA }]);
+    expect(companyBRows).toMatchObject([{ title: "Company B", scopeId: companyB }]);
+    expect(stored.map((row) => row.companyId).sort()).toEqual([companyA, companyB].sort());
+    services.dispose();
+  });
+
+  it("atomically serializes competing issue-assignee and plugin-entity transitions", async () => {
+    const pluginId = await seedPlugin();
+    const companyId = await seedCompany();
+    const services = buildHostServices(
+      db,
+      pluginId,
+      "paperclip.tenant-isolation-test",
+      createEventBusStub(),
+    );
+    const issue = await issueService(db).create(companyId, { title: "Concurrent human owner" });
+    const base = {
+      issueId: issue.id,
+      companyId,
+      expectedAssigneeAgentId: null,
+      expectedAssigneeUserId: null,
+      expectedEntity: { id: null, updatedAt: null, status: null, data: null },
+      assigneeAgentId: null,
+      assigneeUserId: null,
+    } as const;
+    const assignment = (humanExternalId: string) => ({
+      entityType: "human-assignment",
+      scopeKind: "company" as const,
+      scopeId: companyId,
+      externalId: `${companyId}:${issue.id}`,
+      status: "active",
+      data: { issueId: issue.id, humanExternalId },
+    });
+
+    const assignResults = await Promise.allSettled([
+      services.issues.transitionAssigneeEntity({ ...base, entity: assignment("human-a") }),
+      services.issues.transitionAssigneeEntity({ ...base, entity: assignment("human-b") }),
+    ]);
+    expect(assignResults.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(assignResults.filter((result) => result.status === "rejected")).toHaveLength(1);
+    const assigned = assignResults.find((result) => result.status === "fulfilled")!;
+    if (assigned.status !== "fulfilled") throw new Error("Expected one successful assignment");
+    const assignedEntity = assigned.value.entity as any;
+    const assignedIssue = assigned.value.issue;
+    const expectedAssignedEntity = {
+      id: assignedEntity.id,
+      updatedAt: assignedEntity.updatedAt.toISOString(),
+      status: assignedEntity.status,
+      data: assignedEntity.data,
+    };
+    const inactiveEntity = {
+      ...assignment((assignedEntity.data as { humanExternalId: string }).humanExternalId),
+      status: "inactive",
+    };
+    const unassignInput = {
+      issueId: issue.id,
+      companyId,
+      expectedAssigneeAgentId: assignedIssue.assigneeAgentId ?? null,
+      expectedAssigneeUserId: assignedIssue.assigneeUserId ?? null,
+      expectedEntity: expectedAssignedEntity,
+      assigneeAgentId: assignedIssue.assigneeAgentId ?? null,
+      assigneeUserId: assignedIssue.assigneeUserId ?? null,
+      entity: inactiveEntity,
+    };
+    const unassignResults = await Promise.allSettled([
+      services.issues.transitionAssigneeEntity(unassignInput),
+      services.issues.transitionAssigneeEntity(unassignInput),
+    ]);
+    expect(unassignResults.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(unassignResults.filter((result) => result.status === "rejected")).toHaveLength(1);
+    const [storedEntity] = await db.select().from(pluginEntities).where(eq(pluginEntities.id, assignedEntity.id));
+    expect(storedEntity?.status).toBe("inactive");
+    services.dispose();
   });
 
   it("pluginRegistryService.getEntityByExternalId scopes by companyId — never returns another tenant's row", async () => {

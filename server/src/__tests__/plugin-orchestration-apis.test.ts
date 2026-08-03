@@ -22,6 +22,7 @@ import {
   issueRelations,
   issueThreadInteractions,
   issues,
+  pluginEntities,
   pluginManagedResources,
   plugins,
   projects,
@@ -43,6 +44,7 @@ function createEventBusStub() {
       return {
         emit: async () => {},
         subscribe: () => {},
+        clear: () => {},
       };
     },
   } as any;
@@ -116,6 +118,7 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
     await db.delete(issues);
     await db.delete(executionWorkspaces);
     await db.delete(pluginManagedResources);
+    await db.delete(pluginEntities);
     await db.delete(projects);
     await db.delete(plugins);
     await db.delete(companyMemberships);
@@ -155,6 +158,226 @@ describeEmbeddedPostgres("plugin orchestration APIs", () => {
     tempRoots.push(root);
     return root;
   }
+
+  it("returns successive issue pages without applying offset twice", async () => {
+    const { companyId } = await seedCompanyAndAgent();
+    await db.insert(issues).values(Array.from({ length: 501 }, (_value, index) => ({
+      companyId,
+      title: `Issue ${index}`,
+      status: "todo",
+      priority: "medium",
+    })));
+    const services = buildHostServices(db, "plugin-record-id", "paperclip.missions", createEventBusStub());
+
+    const firstPage = await services.issues.list({ companyId, limit: 500, offset: 0 });
+    const secondPage = await services.issues.list({ companyId, limit: 500, offset: 500 });
+
+    expect(firstPage).toHaveLength(500);
+    expect(secondPage).toHaveLength(1);
+    expect(new Set([...firstPage, ...secondPage].map((issue) => issue.id))).toHaveLength(501);
+    services.dispose();
+  });
+
+  it("atomically deduplicates concurrent plugin issue creation by idempotency key", async () => {
+    const { companyId } = await seedCompanyAndAgent();
+    const services = buildHostServices(db, "plugin-record-id", "paperclip.missions", createEventBusStub());
+    const input = {
+      companyId,
+      title: "Concurrent human task",
+      status: "todo" as const,
+      originId: "human-task:request-atomic:exec-1",
+      idempotencyKey: "paperclipai.plugin-human-org:create:request-atomic",
+    };
+
+    const [first, second] = await Promise.all([
+      services.issues.create(input),
+      services.issues.create(input),
+    ]);
+    const stored = await services.issues.list({
+      companyId,
+      originId: input.originId,
+      limit: 10,
+      offset: 0,
+    });
+
+    expect(second.id).toBe(first.id);
+    expect(stored).toHaveLength(1);
+    services.dispose();
+  });
+
+  it("atomically rolls back batched plugin entity upserts", async () => {
+    const { companyId } = await seedCompanyAndAgent();
+    const pluginId = randomUUID();
+    await db.insert(plugins).values({
+      id: pluginId,
+      pluginKey: "paperclip.human-org-batch",
+      packageName: "@paperclipai/plugin-human-org",
+      version: "0.1.0",
+      manifestJson: {},
+    });
+    const services = buildHostServices(db, pluginId, "paperclip.human-org-batch", createEventBusStub());
+    const entities = services.entities as typeof services.entities & {
+      upsertMany(inputs: Array<Record<string, unknown>>): Promise<unknown[]>;
+    };
+
+    await expect(entities.upsertMany([
+      {
+        entityType: "human-profile",
+        scopeKind: "company",
+        scopeId: companyId,
+        externalId: `${companyId}:exec-1`,
+        title: "Asha Patel",
+        status: "active",
+        data: { externalId: "exec-1" },
+      },
+      {
+        entityType: "human-profile",
+        scopeKind: "company",
+        scopeId: companyId,
+        externalId: `${companyId}:eng-1`,
+        title: "x".repeat(301),
+        status: "active",
+        data: { externalId: "eng-1" },
+      },
+    ])).rejects.toThrow();
+
+    const stored = await db.select().from(pluginEntities).where(eq(pluginEntities.pluginId, pluginId));
+    expect(stored).toHaveLength(0);
+    services.dispose();
+  });
+
+  it("atomically grants one durable plugin entity claim under concurrency", async () => {
+    const { companyId } = await seedCompanyAndAgent();
+    const pluginId = randomUUID();
+    await db.insert(plugins).values({
+      id: pluginId,
+      pluginKey: "paperclip.human-org-claim",
+      packageName: "@paperclipai/plugin-human-org",
+      version: "0.1.0",
+      manifestJson: {},
+    });
+    const services = buildHostServices(db, pluginId, "paperclip.human-org-claim", createEventBusStub());
+    const entities = services.entities as typeof services.entities & {
+      create(input: Record<string, unknown>): Promise<{ created: boolean }>;
+    };
+    const input = {
+      entityType: "human-notification-claim",
+      scopeKind: "company",
+      scopeId: companyId,
+      externalId: `${companyId}:issue-1`,
+      title: "Notification claim",
+      status: "claimed",
+      data: { issueId: "issue-1" },
+    };
+
+    const [first, second] = await Promise.all([
+      entities.create(input),
+      entities.create(input),
+    ]);
+    expect([first.created, second.created].sort()).toEqual([false, true]);
+    const stored = await db.select().from(pluginEntities).where(eq(pluginEntities.pluginId, pluginId));
+    expect(stored).toHaveLength(1);
+    services.dispose();
+  });
+
+  it("atomically transitions an issue assignee and its plugin-owned assignment entity", async () => {
+    const { companyId, agentId: firstAgentId } = await seedCompanyAndAgent();
+    const secondAgentId = randomUUID();
+    const pluginId = randomUUID();
+    const issueId = randomUUID();
+    await db.insert(agents).values({
+      id: secondAgentId,
+      companyId,
+      name: "Second engineer",
+      role: "engineer",
+      status: "idle",
+      adapterType: "process",
+      adapterConfig: { command: "true" },
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(plugins).values({
+      id: pluginId,
+      pluginKey: "paperclip.human-org-transition",
+      packageName: "@paperclipai/plugin-human-org",
+      version: "0.1.0",
+      manifestJson: {},
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      title: "Atomic assignment",
+      status: "todo",
+      priority: "medium",
+    });
+    const services = buildHostServices(db, pluginId, "paperclip.human-org-transition", createEventBusStub());
+    const transition = (assigneeAgentId: string, humanExternalId: string) =>
+      services.issues.transitionAssigneeEntity({
+        companyId,
+        issueId,
+        expectedAssigneeAgentId: null,
+        expectedAssigneeUserId: null,
+        expectedEntity: {
+          id: null,
+          updatedAt: null,
+          status: null,
+          data: null,
+        },
+        assigneeAgentId,
+        assigneeUserId: null,
+        entity: {
+          entityType: "human-assignment",
+          scopeKind: "company",
+          scopeId: companyId,
+          externalId: issueId,
+          title: "Atomic assignment",
+          status: "active",
+          data: { issueId, humanExternalId },
+        },
+      });
+
+    const results = await Promise.allSettled([
+      transition(firstAgentId, "exec-1"),
+      transition(secondAgentId, "exec-2"),
+    ]);
+    const storedIssue = await db.select().from(issues).where(eq(issues.id, issueId));
+    const storedEntities = await db
+      .select()
+      .from(pluginEntities)
+      .where(and(eq(pluginEntities.pluginId, pluginId), eq(pluginEntities.externalId, issueId)));
+
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(results.filter((result) => result.status === "rejected")).toHaveLength(1);
+    expect([firstAgentId, secondAgentId]).toContain(storedIssue[0]?.assigneeAgentId);
+    expect(storedEntities).toHaveLength(1);
+    const winningHuman = (storedEntities[0]?.data as { humanExternalId?: string }).humanExternalId;
+    expect(["exec-1", "exec-2"]).toContain(winningHuman);
+    expect(winningHuman).toBe(
+      storedIssue[0]?.assigneeAgentId === firstAgentId ? "exec-1" : "exec-2",
+    );
+    services.dispose();
+  });
+
+  it("does not reflect malformed outbound HTTP URLs in host errors", async () => {
+    const secretValue = "mattermost-webhook-secret-SHOULD-NOT-LEAK";
+    const services = buildHostServices(
+      db,
+      "plugin-record-id",
+      "paperclip.http-redaction",
+      createEventBusStub(),
+    );
+
+    let errorMessage = "";
+    try {
+      await services.http.fetch({ url: secretValue });
+    } catch (error) {
+      errorMessage = error instanceof Error ? error.message : String(error);
+    }
+
+    expect(errorMessage).toContain("Invalid outbound HTTP URL");
+    expect(errorMessage).not.toContain(secretValue);
+    services.dispose();
+  });
 
   it("returns plugin-safe execution workspace metadata scoped to the company", async () => {
     const { companyId } = await seedCompanyAndAgent();

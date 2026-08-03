@@ -146,6 +146,200 @@ describe("createHostClientHandlers invocation company scope", () => {
     expect(stateGet).not.toHaveBeenCalled();
   });
 
+  it("rejects a non-company state scope hidden behind a matching companyId", async () => {
+    const stateGet = vi.fn(async () => null);
+    const services = { state: { get: stateGet } } as unknown as HostServices;
+    const handlers = createHostClientHandlers({
+      pluginId: "paperclip.test",
+      capabilities: ["plugin.state.read"],
+      services,
+    });
+
+    await expect(
+      (handlers as Record<string, (input: unknown, context: unknown) => Promise<unknown>>)["state.get"](
+        {
+          companyId: "company-a",
+          scopeKind: "instance",
+          scopeId: "company-b",
+          stateKey: "settings",
+        },
+        { invocationScope: { companyId: "company-a" } },
+      ),
+    ).rejects.toBeInstanceOf(InvocationScopeDeniedError);
+    expect(stateGet).not.toHaveBeenCalled();
+  });
+
+  it("rejects a non-company state scope without a companyId during a company invocation", async () => {
+    const stateGet = vi.fn(async () => null);
+    const services = { state: { get: stateGet } } as unknown as HostServices;
+    const handlers = createHostClientHandlers({
+      pluginId: "paperclip.test",
+      capabilities: ["plugin.state.read"],
+      services,
+    });
+
+    await expect(
+      handlers["state.get"](
+        { scopeKind: "instance", stateKey: "settings" },
+        { invocationScope: { companyId: "company-a" } },
+      ),
+    ).rejects.toBeInstanceOf(InvocationScopeDeniedError);
+    expect(stateGet).not.toHaveBeenCalled();
+  });
+
+  it("rejects unscoped entity reads instead of exposing every company", async () => {
+    const entitiesList = vi.fn(async () => []);
+    const services = {
+      entities: {
+        list: entitiesList,
+      },
+    } as unknown as HostServices;
+    const handlers = createHostClientHandlers({
+      pluginId: "paperclip.test",
+      capabilities: [],
+      services,
+    });
+
+    await expect(
+      handlers["entities.list"](
+        { entityType: "human-profile" },
+        { invocationScope: { companyId: "company-a" } },
+      ),
+    ).rejects.toBeInstanceOf(InvocationScopeDeniedError);
+    expect(entitiesList).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["entities.list", "list", { entityType: "human-profile", limit: 10, offset: 0 }],
+    ["entities.upsert", "upsert", { entityType: "human-profile", externalId: "shared", title: "Cross tenant", data: {} }],
+  ] as const)("rejects conflicting companyId and scopeId for %s", async (method, delegateName, baseParams) => {
+    const entitiesList = vi.fn(async () => []);
+    const entitiesUpsert = vi.fn(async () => ({ id: "entity-1" }));
+    const services = {
+      entities: {
+        list: entitiesList,
+        upsert: entitiesUpsert,
+      },
+    } as unknown as HostServices;
+    const handlers = createHostClientHandlers({
+      pluginId: "paperclip.test",
+      capabilities: [],
+      services,
+    });
+
+    await expect(
+      (handlers as Record<string, (input: unknown, context: unknown) => Promise<unknown>>)[method](
+        {
+          ...baseParams,
+          companyId: "company-a",
+          scopeKind: "company",
+          scopeId: "company-b",
+        },
+        { invocationScope: { companyId: "company-a" } },
+      ),
+    ).rejects.toBeInstanceOf(InvocationScopeDeniedError);
+    expect(delegateName === "list" ? entitiesList : entitiesUpsert).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["entities.list", "list", { entityType: "human-profile", limit: 10, offset: 0 }],
+    ["entities.create", "create", { entityType: "human-profile", data: {} }],
+    ["entities.upsert", "upsert", { entityType: "human-profile", externalId: "shared", data: {} }],
+  ] as const)(
+    "rejects non-company entity scope hidden behind a matching companyId for %s",
+    async (method, delegateName, baseParams) => {
+      const delegates = {
+        list: vi.fn(async () => []),
+        create: vi.fn(async () => ({ created: true, entity: { id: "entity-1" } })),
+        upsert: vi.fn(async () => ({ id: "entity-1" })),
+      };
+      const services = { entities: delegates } as unknown as HostServices;
+      const handlers = createHostClientHandlers({
+        pluginId: "paperclip.test",
+        capabilities: [],
+        services,
+      });
+
+      await expect(
+        (handlers as Record<string, (input: unknown, context: unknown) => Promise<unknown>>)[method](
+          {
+            ...baseParams,
+            companyId: "company-a",
+            scopeKind: "instance",
+            scopeId: "company-b",
+          },
+          { invocationScope: { companyId: "company-a" } },
+        ),
+      ).rejects.toBeInstanceOf(InvocationScopeDeniedError);
+      expect(delegates[delegateName]).not.toHaveBeenCalled();
+    },
+  );
+
+  it("rejects batched entity mutations that mix company scopes", async () => {
+    const upsertMany = vi.fn(async () => []);
+    const services = { entities: { upsertMany } } as unknown as HostServices;
+    const handlers = createHostClientHandlers({
+      pluginId: "paperclip.test",
+      capabilities: [],
+      services,
+    });
+
+    await expect(handlers["entities.upsertMany"]({
+      inputs: [
+        { entityType: "human-profile", scopeKind: "company", scopeId: "company-a", data: {} },
+        { entityType: "human-profile", scopeKind: "company", scopeId: "company-b", data: {} },
+      ],
+    }, { invocationScope: { companyId: "company-a" } })).rejects.toBeInstanceOf(InvocationScopeDeniedError);
+    expect(upsertMany).not.toHaveBeenCalled();
+  });
+
+  it("rejects a non-company entity scope hidden in a company-scoped batch", async () => {
+    const upsertMany = vi.fn(async () => []);
+    const services = { entities: { upsertMany } } as unknown as HostServices;
+    const handlers = createHostClientHandlers({
+      pluginId: "paperclip.test",
+      capabilities: [],
+      services,
+    });
+
+    await expect(handlers["entities.upsertMany"]({
+      inputs: [
+        { entityType: "human-profile", scopeKind: "company", scopeId: "company-a", data: {} },
+        { entityType: "human-profile", scopeKind: "instance", scopeId: "company-b", data: {} },
+      ],
+    }, { invocationScope: { companyId: "company-a" } })).rejects.toBeInstanceOf(InvocationScopeDeniedError);
+    expect(upsertMany).not.toHaveBeenCalled();
+  });
+
+  it("rejects an atomic issue/entity transition with a nested non-company decoy scope", async () => {
+    const transitionAssigneeEntity = vi.fn(async () => ({ issue: {}, entity: {} }));
+    const services = { issues: { transitionAssigneeEntity } } as unknown as HostServices;
+    const handlers = createHostClientHandlers({
+      pluginId: "paperclip.test",
+      capabilities: ["issues.update"],
+      services,
+    });
+
+    await expect(handlers["issues.transitionAssigneeEntity"]({
+      issueId: "issue-a",
+      companyId: "company-a",
+      expectedAssigneeAgentId: null,
+      expectedAssigneeUserId: null,
+      expectedEntity: { id: null, updatedAt: null, status: null, data: null },
+      assigneeAgentId: null,
+      assigneeUserId: null,
+      entity: {
+        entityType: "human-assignment",
+        scopeKind: "instance",
+        scopeId: "company-a",
+        externalId: "issue-a",
+        status: "active",
+        data: {},
+      },
+    }, { invocationScope: { companyId: "company-a" } })).rejects.toBeInstanceOf(InvocationScopeDeniedError);
+    expect(transitionAssigneeEntity).not.toHaveBeenCalled();
+  });
+
   it.each([
     [
       "access.members.list",
