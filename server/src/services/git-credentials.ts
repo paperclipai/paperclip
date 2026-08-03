@@ -20,10 +20,17 @@ export const DEFAULT_GITHUB_TOKEN_SECRET_NAMES = ["GITHUB_TOKEN", "GH_TOKEN", "P
 export const GIT_CREDENTIAL_TOKEN_ENV_KEY = "PAPERCLIP_GIT_TOKEN";
 
 // `!`-prefixed helpers run via `sh -c` with the credential action appended as "$1". Only the
-// `get` action answers; store/erase exit 0 silently. `x-access-token` authenticates classic
-// PATs, fine-grained PATs, and GitHub App installation tokens alike.
+// `get` action answers; store/erase drain stdin and exit 0 silently. `x-access-token`
+// authenticates classic PATs, fine-grained PATs, and GitHub App installation tokens alike.
+//
+// The helper re-validates the credential request from its stdin description and answers only
+// for `protocol=https` + `host=github.com`/`www.github.com`. The pre-invocation URL check
+// runs before git applies configuration like repository-local `url.<base>.insteadOf`
+// rewrites, so a rewritten remote could otherwise request the token for an arbitrary host.
+// The helper is additionally installed URL-scoped (`credential.https://github.com.helper`)
+// so git does not consult it for other hosts in the first place — two independent gates.
 const GIT_CREDENTIAL_HELPER =
-  `!f() { if [ "$1" = get ]; then printf 'username=x-access-token\\npassword=%s\\n' "$PAPERCLIP_GIT_TOKEN"; fi; }; f`;
+  `!f() { ok=; proto=; while IFS= read -r l && [ -n "$l" ]; do case "$l" in host=github.com|host=www.github.com) ok=1;; protocol=https) proto=1;; esac; done; if [ "$1" = get ] && [ -n "$ok" ] && [ -n "$proto" ]; then printf 'username=x-access-token\\npassword=%s\\n' "$PAPERCLIP_GIT_TOKEN"; fi; }; f`;
 
 export type GitCredential = {
   token: string;
@@ -83,8 +90,15 @@ export function scrubGitCredentialText(text: string): string {
 export function buildGitAuthInvocation(credential: GitCredential): GitAuthInvocation {
   return {
     // The leading empty helper clears ambient helpers (gh, osxkeychain, credential-store) so
-    // they neither outrank the resolved token nor receive store/erase callbacks for it.
-    configArgs: ["-c", "credential.helper=", "-c", `credential.helper=${GIT_CREDENTIAL_HELPER}`],
+    // they neither outrank the resolved token nor receive store/erase callbacks for it. The
+    // token helper is installed URL-scoped: git consults it only for credential requests
+    // whose context matches github.com over https, so an `insteadOf`-rewritten remote never
+    // reaches it (and the helper itself re-checks the request host — see above).
+    configArgs: [
+      "-c", "credential.helper=",
+      "-c", `credential.https://github.com.helper=${GIT_CREDENTIAL_HELPER}`,
+      "-c", `credential.https://www.github.com.helper=${GIT_CREDENTIAL_HELPER}`,
+    ],
     env: {
       [GIT_CREDENTIAL_TOKEN_ENV_KEY]: credential.token,
       GIT_TERMINAL_PROMPT: "0",

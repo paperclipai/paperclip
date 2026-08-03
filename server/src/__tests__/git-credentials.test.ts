@@ -142,7 +142,7 @@ describe("createGitRemoteAuthProvider", () => {
 });
 
 describe("buildGitAuthInvocation", () => {
-  it("keeps the token out of argv and carries it in env with prompts disabled", () => {
+  it("keeps the token out of argv and installs the helper URL-scoped to github.com", () => {
     const invocation = buildGitAuthInvocation({
       token: "super-secret-token",
       source: "company_secret",
@@ -151,14 +151,16 @@ describe("buildGitAuthInvocation", () => {
     expect(invocation.configArgs.join(" ")).not.toContain("super-secret-token");
     expect(invocation.configArgs[0]).toBe("-c");
     expect(invocation.configArgs[1]).toBe("credential.helper=");
+    expect(invocation.configArgs[3]).toContain("credential.https://github.com.helper=");
     expect(invocation.configArgs[3]).toContain("x-access-token");
+    expect(invocation.configArgs[5]).toContain("credential.https://www.github.com.helper=");
     expect(invocation.env[GIT_CREDENTIAL_TOKEN_ENV_KEY]).toBe("super-secret-token");
     expect(invocation.env.GIT_TERMINAL_PROMPT).toBe("0");
   });
 });
 
 describe("credential helper execution (real git, no network)", () => {
-  it("git credential fill answers with the env-carried token", async () => {
+  async function runCredentialFill(description: string) {
     const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-git-cred-fill-"));
     try {
       const invocation = buildGitAuthInvocation({
@@ -166,29 +168,49 @@ describe("credential helper execution (real git, no network)", () => {
         source: "company_secret",
         secretName: "GITHUB_TOKEN",
       });
-      const output = await new Promise<string>((resolve, reject) => {
-        const child = spawn("git", [...invocation.configArgs, "credential", "fill"], {
-          cwd,
-          env: { ...process.env, ...invocation.env },
-          stdio: ["pipe", "pipe", "pipe"],
-        });
-        let stdout = "";
-        let stderr = "";
-        child.stdout.on("data", (chunk) => { stdout += String(chunk); });
-        child.stderr.on("data", (chunk) => { stderr += String(chunk); });
-        child.on("error", reject);
-        child.on("close", (code) => {
-          if (code === 0) resolve(stdout);
-          else reject(new Error(`git credential fill exited ${code}: ${stderr}`));
-        });
-        child.stdin.write("protocol=https\nhost=github.com\n\n");
-        child.stdin.end();
-      });
-      expect(output).toContain("username=x-access-token");
-      expect(output).toContain("password=abc123");
+      return await new Promise<{ code: number | null; stdout: string; stderr: string }>(
+        (resolve, reject) => {
+          const child = spawn("git", [...invocation.configArgs, "credential", "fill"], {
+            cwd,
+            env: { ...process.env, ...invocation.env },
+            stdio: ["pipe", "pipe", "pipe"],
+          });
+          let stdout = "";
+          let stderr = "";
+          child.stdout.on("data", (chunk) => { stdout += String(chunk); });
+          child.stderr.on("data", (chunk) => { stderr += String(chunk); });
+          child.on("error", reject);
+          child.on("close", (code) => resolve({ code, stdout, stderr }));
+          child.stdin.write(description);
+          child.stdin.end();
+        },
+      );
     } finally {
       await fs.rm(cwd, { recursive: true, force: true });
     }
+  }
+
+  it("answers a github.com https request with the env-carried token", async () => {
+    const result = await runCredentialFill("protocol=https\nhost=github.com\n\n");
+    expect(result.code).toBe(0);
+    expect(result.stdout).toContain("username=x-access-token");
+    expect(result.stdout).toContain("password=abc123");
+  });
+
+  it("never hands the token to another host, even if git asks", async () => {
+    // Simulates a request whose effective host changed after our pre-invocation URL check
+    // (for example a repository-local url.<base>.insteadOf rewrite): the URL-scoped helper
+    // config keeps git from consulting the helper, prompts are disabled, so the fill fails
+    // and the token is never emitted.
+    const result = await runCredentialFill("protocol=https\nhost=evil.example\n\n");
+    expect(result.code).not.toBe(0);
+    expect(result.stdout).not.toContain("abc123");
+  });
+
+  it("never answers plain-http requests for github.com", async () => {
+    const result = await runCredentialFill("protocol=http\nhost=github.com\n\n");
+    expect(result.code).not.toBe(0);
+    expect(result.stdout).not.toContain("abc123");
   });
 });
 
