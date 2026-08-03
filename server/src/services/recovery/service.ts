@@ -120,6 +120,7 @@ type RecoveryWakeupOptions = {
   requestedByActorType?: "user" | "agent" | "system";
   requestedByActorId?: string | null;
   contextSnapshot?: Record<string, unknown>;
+  suppressIfIssueTerminal?: boolean;
 };
 
 type RecoveryWakeup = (
@@ -1147,6 +1148,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       source: "automation",
       triggerDetail: "system",
       reason: input.reason,
+      suppressIfIssueTerminal: true,
       payload: withRecoveryModelProfileHint({
         issueId: input.issueId,
         ...(input.retryOfRunId ? { retryOfRunId: input.retryOfRunId } : {}),
@@ -2980,6 +2982,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       source: "assignment",
       triggerDetail: "system",
       reason: "source_scoped_recovery_action",
+      suppressIfIssueTerminal: true,
       idempotencyKey: `source_scoped_recovery_action:${input.action.id}:${input.action.attemptCount}`,
       payload: withRecoveryModelProfileHint({
         issueId: input.issue.id,
@@ -3319,6 +3322,17 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
     recoveryOwnerAgentId?: string | null;
     successfulRunHandoffEvidence?: SuccessfulRunHandoffRecoveryEvidence | null;
   }) {
+    // Reconciliation may hold an in-progress snapshot while the run completes
+    // its final disposition. Do not create a recovery action from that stale
+    // snapshot; the scheduler also rechecks under its enqueue lock.
+    const currentSource = await db
+      .select({ status: issues.status })
+      .from(issues)
+      .where(and(eq(issues.id, input.issue.id), eq(issues.companyId, input.issue.companyId)))
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+    if (!currentSource || currentSource.status === "done" || currentSource.status === "cancelled") return null;
+
     if (isStrandedIssueRecoveryIssue(input.issue)) {
       return escalateStrandedRecoveryIssueInPlace({
         issue: input.issue,
