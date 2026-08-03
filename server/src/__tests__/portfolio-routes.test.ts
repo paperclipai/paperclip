@@ -3,7 +3,7 @@ import express from "express";
 import { eq } from "drizzle-orm";
 import request from "supertest";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
-import { agents, companies, createDb, financeEvents, heartbeatRuns, issues } from "@paperclipai/db";
+import { agents, companies, costEvents, createDb, financeEvents, heartbeatRuns, issues } from "@paperclipai/db";
 import { errorHandler } from "../middleware/index.js";
 import { portfolioRoutes } from "../routes/portfolio.js";
 import {
@@ -48,6 +48,7 @@ describeEmbeddedPostgres("portfolio routes", () => {
 
   afterEach(async () => {
     await db.delete(financeEvents);
+    await db.delete(costEvents);
     await db.delete(issues);
     await db.delete(heartbeatRuns);
     await db.delete(agents);
@@ -212,6 +213,9 @@ describeEmbeddedPostgres("portfolio routes", () => {
         "seconds_on_task",
         "distinct_issues",
         "heartbeats_avg",
+        "cost_cents",
+        "priced_cost_event_count",
+        "unpriced_cost_event_count",
       ],
     });
     expect(res.body.rows).toEqual([
@@ -224,6 +228,9 @@ describeEmbeddedPostgres("portfolio routes", () => {
         seconds_on_task: 300,
         distinct_issues: 2,
         heartbeats_avg: 1,
+        cost_cents: 0,
+        priced_cost_event_count: 0,
+        unpriced_cost_event_count: 0,
       },
     ]);
     expect(Object.keys(res.body.rows[0] ?? {})).toEqual([
@@ -235,7 +242,129 @@ describeEmbeddedPostgres("portfolio routes", () => {
       "seconds_on_task",
       "distinct_issues",
       "heartbeats_avg",
+      "cost_cents",
+      "priced_cost_event_count",
+      "unpriced_cost_event_count",
     ]);
+  });
+
+  it("renders source-attributed run costs while preserving unpriced evidence", async () => {
+    const opcoId = randomUUID();
+    const ledgerAgentId = randomUUID();
+    const opcoAgentId = randomUUID();
+    const pricedRunId = randomUUID();
+    const unpricedRunId = randomUUID();
+    const since = new Date("2026-06-08T00:00:00.000Z");
+    const until = new Date("2026-06-15T00:00:00.000Z");
+
+    await db.insert(companies).values([
+      {
+        id: TSMC_COMPANY_ID,
+        name: "TSMC",
+        issuePrefix: "TSMC",
+        requireBoardApprovalForNewAgents: false,
+      },
+      {
+        id: opcoId,
+        name: "ThinkStack Media",
+        issuePrefix: "TSM",
+        parentCompanyId: TSMC_COMPANY_ID,
+        requireBoardApprovalForNewAgents: false,
+      },
+    ]);
+    await db.insert(agents).values([
+      {
+        id: ledgerAgentId,
+        companyId: TSMC_COMPANY_ID,
+        name: "Ledger",
+        role: "analyst",
+        status: "idle",
+        capabilities: "portfolio_metrics:read",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: opcoAgentId,
+        companyId: opcoId,
+        name: "OpCo Agent",
+        role: "engineer",
+        status: "idle",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+    await db.insert(heartbeatRuns).values([
+      {
+        id: pricedRunId,
+        companyId: opcoId,
+        agentId: opcoAgentId,
+        invocationSource: "assignment",
+        status: "succeeded",
+        startedAt: new Date("2026-06-10T10:00:00.000Z"),
+        finishedAt: new Date("2026-06-10T10:01:00.000Z"),
+      },
+      {
+        id: unpricedRunId,
+        companyId: opcoId,
+        agentId: opcoAgentId,
+        invocationSource: "assignment",
+        status: "succeeded",
+        startedAt: new Date("2026-06-11T10:00:00.000Z"),
+        finishedAt: new Date("2026-06-11T10:01:00.000Z"),
+      },
+    ]);
+    await db.insert(costEvents).values([
+      {
+        companyId: opcoId,
+        agentId: opcoAgentId,
+        heartbeatRunId: pricedRunId,
+        provider: "openai",
+        biller: "openai",
+        billingType: "metered_api",
+        costStatus: "reported",
+        model: "gpt-5.6",
+        inputTokens: 100,
+        outputTokens: 10,
+        costCents: 125,
+        occurredAt: new Date("2026-06-10T10:01:00.000Z"),
+      },
+      {
+        companyId: opcoId,
+        agentId: opcoAgentId,
+        heartbeatRunId: unpricedRunId,
+        provider: "openai",
+        biller: "chatgpt",
+        billingType: "subscription_included",
+        costStatus: "unpriced",
+        model: "gpt-5.6",
+        inputTokens: 200,
+        outputTokens: 20,
+        costCents: 0,
+        occurredAt: new Date("2026-06-11T10:01:00.000Z"),
+      },
+    ]);
+
+    const res = await request(makeActor({
+      type: "agent",
+      agentId: ledgerAgentId,
+      companyId: TSMC_COMPANY_ID,
+      source: "agent_key",
+    }, db))
+      .get("/api/portfolio/runs")
+      .query({ since: since.toISOString(), until: until.toISOString(), companyIds: opcoId });
+
+    expect(res.status).toBe(200);
+    expect(res.body.rows).toEqual([expect.objectContaining({
+      company_id: opcoId,
+      agent_id: opcoAgentId,
+      cost_cents: 125,
+      priced_cost_event_count: 1,
+      unpriced_cost_event_count: 1,
+    })]);
   });
 
   it("rejects agents without the portfolio capability", async () => {

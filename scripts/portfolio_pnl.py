@@ -4,7 +4,7 @@
 Each Monday 09:00 Europe/Dublin, Ledger runs this for the *prior* week
 (Mon 00:00 .. next Mon 00:00, Europe/Dublin) against the live control plane:
 
-  - GET /api/portfolio/runs           -> per company+agent activity/effort rollup
+  - GET /api/portfolio/runs           -> per company+agent activity and run-cost rollup
   - GET /api/portfolio/finance_events -> recorded money (revenue/refund/fee/cost)
 
 It builds a markdown P&L and (unless --dry-run) posts it to the wake issue as a
@@ -165,20 +165,29 @@ def build_report(window, names, runs_rows, fin_rows):
         if kind in m:
             m[kind] += int(r.get("amount_cents") or 0)
 
-    # --- activity: aggregate runs per company ---
-    act = {}  # cid -> {runs, ok, fail, seconds, issues}
+    # --- activity and run-cost evidence: aggregate per company ---
+    # Cost is provider-reported from cost_events, not a token-price estimate. A $0
+    # with no source event is therefore unknown, while an explicit priced $0 is known.
+    act = {}  # cid -> {runs, ok, fail, seconds, issues, cost evidence}
     for r in runs_rows:
         cid = r["company_id"]
-        a = act.setdefault(cid, {"runs": 0, "ok": 0, "fail": 0, "seconds": 0, "issues": 0})
+        a = act.setdefault(cid, {
+            "runs": 0, "ok": 0, "fail": 0, "seconds": 0, "issues": 0,
+            "run_cost": 0, "priced_cost_events": 0, "unpriced_cost_events": 0,
+        })
         a["runs"] += int(r.get("runs_total") or 0)
         a["ok"] += int(r.get("runs_succeeded") or 0)
         a["fail"] += int(r.get("runs_failed") or 0)
         a["seconds"] += int(r.get("seconds_on_task") or 0)
         a["issues"] += int(r.get("distinct_issues") or 0)
+        a["run_cost"] += int(r.get("cost_cents") or 0)
+        a["priced_cost_events"] += int(r.get("priced_cost_event_count") or 0)
+        a["unpriced_cost_events"] += int(r.get("unpriced_cost_event_count") or 0)
 
     all_ids = sorted(set(money) | set(act), key=lambda c: names.get(c, c))
 
-    tot = {"revenue": 0, "refund": 0, "fee": 0, "cost": 0,
+    tot = {"revenue": 0, "refund": 0, "fee": 0, "cost": 0, "run_cost": 0,
+           "priced_cost_events": 0, "unpriced_cost_events": 0,
            "runs": 0, "ok": 0, "fail": 0, "seconds": 0, "issues": 0}
 
     def net(m):
@@ -198,24 +207,28 @@ def build_report(window, names, runs_rows, fin_rows):
     # --- P&L table (money) ---
     lines.append("## P&L — recorded money")
     lines.append("")
-    lines.append("| Company | Revenue | Refunds | Fees | Cost | **Net** |")
+    lines.append("| Company | Revenue | Refunds | Fees | Cost (cash + run) | **Net** |")
     lines.append("|---|--:|--:|--:|--:|--:|")
-    money_ids = [c for c in all_ids if c in money]
+    money_ids = [c for c in all_ids if c in money or act.get(c, {}).get("priced_cost_events", 0) > 0]
     if money_ids:
         for cid in money_ids:
-            m = money[cid]
+            m = money.get(cid, {"revenue": 0, "refund": 0, "fee": 0, "cost": 0})
+            run_cost = act.get(cid, {}).get("run_cost", 0)
             for k in ("revenue", "refund", "fee", "cost"):
                 tot[k] += m[k]
+            tot["run_cost"] += run_cost
+            m = {**m, "cost": m["cost"] + run_cost}
             lines.append(
                 f"| {names.get(cid, cid[:8])} | {usd(m['revenue'])} | {usd(m['refund'])} "
                 f"| {usd(m['fee'])} | {usd(m['cost'])} | **{usd(net(m))}** |"
             )
     else:
         lines.append("| _(no finance_events recorded)_ |  |  |  |  | **$0.00** |")
-    tot_net = tot["revenue"] - tot["refund"] - tot["fee"] - tot["cost"]
+    total_cost = tot["cost"] + tot["run_cost"]
+    tot_net = tot["revenue"] - tot["refund"] - tot["fee"] - total_cost
     lines.append(
         f"| **PORTFOLIO** | **{usd(tot['revenue'])}** | **{usd(tot['refund'])}** "
-        f"| **{usd(tot['fee'])}** | **{usd(tot['cost'])}** | **{usd(tot_net)}** |"
+        f"| **{usd(tot['fee'])}** | **{usd(total_cost)}** | **{usd(tot_net)}** |"
     )
     lines.append("")
 
@@ -230,6 +243,8 @@ def build_report(window, names, runs_rows, fin_rows):
             continue
         for k in ("runs", "ok", "fail", "seconds", "issues"):
             tot[k] += a[k]
+        tot["priced_cost_events"] += a["priced_cost_events"]
+        tot["unpriced_cost_events"] += a["unpriced_cost_events"]
         lines.append(
             f"| {names.get(cid, cid[:8])} | {a['runs']} | {a['ok']} | {a['fail']} "
             f"| {fmt_hours(a['seconds'])} | {a['issues']} |"
@@ -244,9 +259,26 @@ def build_report(window, names, runs_rows, fin_rows):
     lines.append("## Bottom line")
     lines.append("")
     hrs = tot["seconds"] / 3600.0
-    if tot["revenue"] == 0 and tot["cost"] == 0:
+    if tot["priced_cost_events"] == 0 and tot["unpriced_cost_events"] == 0:
         lines.append(
-            f"- **${0:,.2f} revenue and $0.00 cost recorded** across {tot['runs']:,} agent-runs "
+            "- **Run-cost attribution: unknown ($0.00)** — no source-attributed `cost_events` "
+            "exist in this window, so the report does not invent a token-price estimate."
+        )
+    elif tot["unpriced_cost_events"] > 0:
+        lines.append(
+            f"- **Run-cost attribution: partial.** {tot['priced_cost_events']} provider-priced event(s) "
+            f"rendered as {usd(tot['run_cost'])}; {tot['unpriced_cost_events']} token-bearing event(s) "
+            "remain explicitly unpriced because the provider supplied no cost."
+        )
+    else:
+        lines.append(
+            f"- **Run-cost attribution: known.** {tot['priced_cost_events']} provider-priced event(s) "
+            f"rendered as {usd(tot['run_cost'])}."
+        )
+
+    if tot["revenue"] == 0 and total_cost == 0:
+        lines.append(
+            f"- **${0:,.2f} revenue and $0.00 cost rendered** across {tot['runs']:,} agent-runs "
             f"/ {hrs:,.0f} agent-hours this week. Output is high; **tracked outcome is nil** — "
             f"the finance ledger is empty, so the portfolio cannot prove a single dollar earned or spent."
         )
@@ -259,7 +291,7 @@ def build_report(window, names, runs_rows, fin_rows):
     else:
         lines.append(
             f"- Portfolio net this week: **{usd(tot_net)}** "
-            f"({usd(tot['revenue'])} revenue − {usd(tot['refund'] + tot['fee'] + tot['cost'])} "
+            f"({usd(tot['revenue'])} revenue − {usd(tot['refund'] + tot['fee'] + total_cost)} "
             f"refunds/fees/cost) against {hrs:,.0f} agent-hours."
         )
         # Highest-leverage = best net contributor, else the biggest effort sink earning nothing.

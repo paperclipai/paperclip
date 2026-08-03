@@ -1,5 +1,5 @@
 import { and, eq, inArray, sql } from "drizzle-orm";
-import { agents, companies, financeEvents, routineTriggers } from "@paperclipai/db";
+import { agents, companies, costEvents, financeEvents, routineTriggers } from "@paperclipai/db";
 import type { Db } from "@paperclipai/db";
 import { badRequest, forbidden } from "../errors.js";
 
@@ -48,6 +48,12 @@ export interface PortfolioRunsRow {
   seconds_on_task: number;
   distinct_issues: number;
   heartbeats_avg: number;
+  /** Provider-reported, source-attributed spend in cents for this agent/window. */
+  cost_cents: number;
+  /** Cost-event rows with an explicit provider price (including explicit $0). */
+  priced_cost_event_count: number;
+  /** Token-bearing run rows whose provider price was not reported. */
+  unpriced_cost_event_count: number;
 }
 
 export interface PortfolioFinanceEventsQuery {
@@ -167,7 +173,7 @@ export function portfolioService(db: Db) {
       )}`;
 
       const result = await db.execute(sql`
-        WITH aggregated AS (
+        WITH run_aggregated AS (
           SELECT
             hr.company_id,
             hr.agent_id,
@@ -191,21 +197,39 @@ export function portfolioService(db: Db) {
             AND hr.started_at >= ${input.since.toISOString()}::timestamptz
             AND hr.started_at < ${input.until.toISOString()}::timestamptz
           GROUP BY hr.company_id, hr.agent_id
+        ), cost_aggregated AS (
+          SELECT
+            ce.company_id,
+            ce.agent_id,
+            COALESCE(SUM(ce.cost_cents), 0)::bigint AS cost_cents,
+            COUNT(*) FILTER (WHERE ce.cost_status <> 'unpriced')::int AS priced_cost_event_count,
+            COUNT(*) FILTER (WHERE ce.cost_status = 'unpriced')::int AS unpriced_cost_event_count
+          FROM cost_events ce
+          WHERE
+            ce.company_id IN (${companyIdsParam})
+            AND ce.occurred_at >= ${input.since.toISOString()}::timestamptz
+            AND ce.occurred_at < ${input.until.toISOString()}::timestamptz
+          GROUP BY ce.company_id, ce.agent_id
         )
         SELECT
-          company_id,
-          agent_id,
-          runs_total,
-          runs_succeeded,
-          runs_failed,
-          seconds_on_task,
-          distinct_issues,
+          COALESCE(r.company_id, c.company_id) AS company_id,
+          COALESCE(r.agent_id, c.agent_id) AS agent_id,
+          COALESCE(r.runs_total, 0)::int AS runs_total,
+          COALESCE(r.runs_succeeded, 0)::int AS runs_succeeded,
+          COALESCE(r.runs_failed, 0)::int AS runs_failed,
+          COALESCE(r.seconds_on_task, 0)::int AS seconds_on_task,
+          COALESCE(r.distinct_issues, 0)::int AS distinct_issues,
           CASE
-            WHEN distinct_issues > 0
-              THEN ROUND((runs_total::numeric / distinct_issues::numeric), 2)::double precision
+            WHEN COALESCE(r.distinct_issues, 0) > 0
+              THEN ROUND((r.runs_total::numeric / r.distinct_issues::numeric), 2)::double precision
             ELSE 0::double precision
-          END AS heartbeats_avg
-        FROM aggregated
+          END AS heartbeats_avg,
+          COALESCE(c.cost_cents, 0)::bigint AS cost_cents,
+          COALESCE(c.priced_cost_event_count, 0)::int AS priced_cost_event_count,
+          COALESCE(c.unpriced_cost_event_count, 0)::int AS unpriced_cost_event_count
+        FROM run_aggregated r
+        FULL OUTER JOIN cost_aggregated c
+          ON c.company_id = r.company_id AND c.agent_id = r.agent_id
         ORDER BY company_id ASC, agent_id ASC
       `);
 
@@ -219,6 +243,9 @@ export function portfolioService(db: Db) {
         seconds_on_task: Number(row.seconds_on_task ?? 0),
         distinct_issues: Number(row.distinct_issues ?? 0),
         heartbeats_avg: Number(row.heartbeats_avg ?? 0),
+        cost_cents: Number(row.cost_cents ?? 0),
+        priced_cost_event_count: Number(row.priced_cost_event_count ?? 0),
+        unpriced_cost_event_count: Number(row.unpriced_cost_event_count ?? 0),
       })) satisfies PortfolioRunsRow[];
     },
 
