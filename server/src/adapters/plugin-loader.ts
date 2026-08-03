@@ -75,6 +75,52 @@ function resolvePackageEntryPoint(packageDir: string): string {
   return pkg.main ?? "index.js";
 }
 
+/**
+ * Resolve the entry point relative to the package dir AND verify the
+ * canonical (realpath-resolved) entry file is still inside the
+ * canonical package dir. Without this check, a package whose
+ * `exports` / `main` is an absolute path (or a `../` escape) would
+ * import code from outside the managed plugins directory. Returns
+ * the canonical path on success.
+ *
+ * The packageDir MUST be the canonical realpath-resolved dir
+ * returned by `validateExternalPluginLoad` — passing a mutable path
+ * here would re-introduce the symlink containment bypass the
+ * validator fixed.
+ */
+function resolveCanonicalEntryPoint(packageDir: string, packageName: string): string {
+  const entryPoint = resolvePackageEntryPoint(packageDir);
+  // Reject absolute entry points outright. `path.resolve(abs, x)` discards
+  // `abs` when `x` is absolute, so absolute entry points could escape
+  // containment silently.
+  if (path.isAbsolute(entryPoint)) {
+    throw new Error(
+      `Package "${packageName}" entry point "${entryPoint}" is an absolute path; refusing to load`,
+    );
+  }
+  const joined = path.resolve(packageDir, entryPoint);
+  let canonicalJoined: string;
+  try {
+    canonicalJoined = fs.realpathSync(joined);
+  } catch (err) {
+    throw new Error(
+      `Package "${packageName}" entry point "${entryPoint}" is not resolvable on disk: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+  }
+  const canonicalDir = fs.realpathSync(packageDir);
+  const insideDir =
+    canonicalJoined === canonicalDir ||
+    canonicalJoined.startsWith(canonicalDir + path.sep);
+  if (!insideDir) {
+    throw new Error(
+      `Package "${packageName}" entry point "${entryPoint}" resolves to ${canonicalJoined} which is outside the canonical package dir ${canonicalDir}`,
+    );
+  }
+  return canonicalJoined;
+}
+
 // ---------------------------------------------------------------------------
 // UI parser extraction
 // ---------------------------------------------------------------------------
@@ -163,19 +209,36 @@ function validateAdapterModule(mod: unknown, packageName: string): ServerAdapter
   return adapterModule;
 }
 
+/**
+ * Load an external adapter package. The caller (the route handler)
+ * MUST pass `canonicalPackageDir` as the result of
+ * `validateExternalPluginLoad(...).canonicalDir` — passing a mutable
+ * path here re-introduces the TOCTOU race the validator was supposed
+ * to close. The legacy `localPath` arg is kept for backward
+ * compatibility with internal callers (e.g. the registry) that have
+ * already canonicalized via their own path, but the public
+ * agent-reachable routes MUST use the canonicalDir from the validator.
+ */
 export async function loadExternalAdapterPackage(
   packageName: string,
   localPath?: string,
+  canonicalPackageDir?: string,
 ): Promise<ServerAdapterModule> {
-  const packageDir = localPath
-    ? path.resolve(localPath)
-    : path.resolve(getAdapterPluginsDir(), "node_modules", packageName);
+  // Prefer the explicitly canonicalized dir from the validator; fall
+  // back to resolving localPath / node_modules ourselves for
+  // internal callers that bypass the route.
+  const packageDir =
+    canonicalPackageDir ??
+    fs.realpathSync(
+      localPath
+        ? path.resolve(localPath)
+        : path.resolve(getAdapterPluginsDir(), "node_modules", packageName),
+    );
 
-  const entryPoint = resolvePackageEntryPoint(packageDir);
-  const modulePath = path.resolve(packageDir, entryPoint);
+  const modulePath = resolveCanonicalEntryPoint(packageDir, packageName);
   const uiParserSource = extractUiParserSource(packageDir, packageName);
 
-  logger.info({ packageName, packageDir, entryPoint, modulePath, hasUiParser: !!uiParserSource }, "Loading external adapter package");
+  logger.info({ packageName, packageDir, modulePath, hasUiParser: !!uiParserSource }, "Loading external adapter package");
 
   const mod = await import(modulePath);
   const adapterModule = validateAdapterModule(mod, packageName);
@@ -202,16 +265,29 @@ async function loadFromRecord(record: AdapterPluginRecord): Promise<ServerAdapte
 /**
  * Reload an external adapter at runtime (dev iteration without server restart).
  * Busts the ESM module cache via a cache-busting query string.
+ *
+ * If `canonicalPackageDir` is provided, it MUST be the result of
+ * `validateExternalPluginLoad(...).canonicalDir` for the same package
+ * and we will use it as the package root. Otherwise we resolve the
+ * record's localPath / node_modules path ourselves. Both paths go
+ * through `resolveCanonicalEntryPoint` so an entry-point escape is
+ * rejected at load time.
  */
 export async function reloadExternalAdapter(
   type: string,
+  canonicalPackageDir?: string,
 ): Promise<ServerAdapterModule | null> {
   const record = getAdapterPluginByType(type);
   if (!record) return null;
 
-  const packageDir = resolvePackageDir(record);
-  const entryPoint = resolvePackageEntryPoint(packageDir);
-  const modulePath = path.resolve(packageDir, entryPoint);
+  const packageDir =
+    canonicalPackageDir ??
+    fs.realpathSync(
+      record.localPath
+        ? path.resolve(record.localPath)
+        : path.resolve(getAdapterPluginsDir(), "node_modules", record.packageName),
+    );
+  const modulePath = resolveCanonicalEntryPoint(packageDir, record.packageName);
   const fileUrl = `file://${modulePath}`;
 
   // Bust ESM module cache so re-import loads fresh code from disk.

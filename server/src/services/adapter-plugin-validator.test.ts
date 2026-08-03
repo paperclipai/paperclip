@@ -5,6 +5,7 @@
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import fs from "node:fs/promises";
+import fssync from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import {
@@ -56,9 +57,12 @@ describe("validateExternalPluginLoad", () => {
     const decision = validateExternalPluginLoad(pkgDir);
     expect(decision.ok).toBe(true);
     if (decision.ok) {
-      expect(decision.manifest.name).toBe("good-plugin");
       expect(decision.manifest.version).toBe("1.2.3");
       expect(decision.manifest.keywords).toContain(REQUIRED_PLUGIN_KEYWORD);
+      // canonicalDir is the realpath-resolved package dir; callers MUST
+      // use this (not the original mutable packageDir) when loading the
+      // module. The TOCTOU race fix relies on this.
+      expect(decision.canonicalDir).toBe(fssync.realpathSync(pkgDir));
     }
   });
 

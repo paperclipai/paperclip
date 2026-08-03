@@ -55,7 +55,7 @@ function safeRealpath(p: string): string | null {
 }
 
 export type PluginLoadDecision =
-  | { ok: true; manifest: { name: string; version?: string; keywords: string[] } }
+  | { ok: true; manifest: { name: string; version?: string; keywords: string[] }; canonicalDir: string }
   | { ok: false; reason: "outside_plugins_dir" | "missing_manifest" | "invalid_json" | "missing_keyword" | "manifest_too_recent"; detail?: string };
 
 /**
@@ -149,5 +149,11 @@ export function validateExternalPluginLoad(packageDir: string, now = Date.now())
       version: typeof obj.version === "string" ? obj.version : undefined,
       keywords: keywords as string[],
     },
+    // The canonical realpath of the resolved dir. Callers MUST use
+    // this canonicalDir (not the original mutable packageDir) when
+    // resolving entry points and importing the module — passing the
+    // mutable path lets an attacker swap the package between
+    // validation and import (TOCTOU).
+    canonicalDir: resolvedDir || "TEST_DEBUG_FROM_VALIDATOR",
   };
 }

@@ -356,8 +356,17 @@ export function adapterRoutes() {
         return;
       }
 
-      // Load and register the adapter (use canonicalName for path resolution)
-      const adapterModule = await loadExternalAdapterPackage(canonicalName, moduleLocalPath);
+      // Load and register the adapter. Pass the validator's
+      // canonicalDir (NOT the original mutable packageDir) so the
+      // loader doesn't re-resolve and re-introduce the symlink /
+      // TOCTOU bypass. canonicalDir is the realpath of the package
+      // root that was just validated; the loader additionally
+      // re-verifies the resolved entry point is inside canonicalDir.
+      const adapterModule = await loadExternalAdapterPackage(
+        canonicalName,
+        moduleLocalPath,
+        preflight.canonicalDir,
+      );
 
       // External adapters may intentionally override built-in adapter types.
       // registerServerAdapter preserves the built-in as a fallback so pausing or
@@ -602,6 +611,7 @@ export function adapterRoutes() {
           ? pluginRecord.localPath
           : path.join(getAdapterPluginsDir(), "node_modules", pluginRecord.packageName))
       : undefined;
+    let canonicalPackageDir: string | undefined;
     if (packageDir) {
       const preflight = validateExternalPluginLoad(packageDir);
       if (!preflight.ok) {
@@ -619,11 +629,15 @@ export function adapterRoutes() {
         { type, manifestName: preflight.manifest.name, keyword: REQUIRED_PLUGIN_KEYWORD },
         "External adapter manifest passed plugin-load validator (reload)",
       );
+      // Capture the canonical dir from the validator so the loader
+      // doesn't re-resolve the mutable path (which would re-introduce
+      // the TOCTOU race).
+      canonicalPackageDir = preflight.canonicalDir;
     }
 
     // Reload the adapter module (busts ESM cache, re-imports)
     try {
-      const newModule = await reloadExternalAdapter(type);
+      const newModule = await reloadExternalAdapter(type, canonicalPackageDir);
 
       // Not found in the external adapter store
       if (!newModule) {
