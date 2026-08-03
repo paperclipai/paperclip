@@ -11,6 +11,7 @@ import {
   isClaudeUnknownSessionError,
   isClaudeImageProcessingError,
   isClaudeModelNotFoundError,
+  isClaudeContextOverflowError,
 } from "./parse.js";
 
 describe("detectClaudeLoginRequired", () => {
@@ -51,6 +52,54 @@ describe("isClaudeModelNotFoundError", () => {
     expect(isClaudeModelNotFoundError({
       errorMessage: "API Error: 503 service unavailable",
     })).toBe(false);
+  });
+});
+
+describe("isClaudeContextOverflowError", () => {
+  // Verbatim from a failed run on a production host: the CLI reports the
+  // overflow as a *successful* result subtype, so `subtype` cannot be used to
+  // detect it — only the result text can.
+  const overflowResult = { subtype: "success", result: "Prompt is too long" };
+
+  it("classifies the CLI's prompt overflow result", () => {
+    expect(isClaudeContextOverflowError(overflowResult)).toBe(true);
+  });
+
+  it("classifies the API-shaped context limit errors", () => {
+    expect(
+      isClaudeContextOverflowError({
+        result: "input length and `max_tokens` exceed context limit: 203241 + 32000 > 204698",
+      }),
+    ).toBe(true);
+    expect(
+      isClaudeContextOverflowError({ errors: [{ message: "context_length_exceeded" }] }),
+    ).toBe(true);
+  });
+
+  it("does not claim usage-limit failures", () => {
+    expect(
+      isClaudeContextOverflowError({
+        result: "You've hit your weekly limit · resets Aug 3, 7am (Europe/Zurich)",
+      }),
+    ).toBe(false);
+    expect(isClaudeContextOverflowError(null)).toBe(false);
+  });
+
+  it("keeps prompt overflow out of the transient bucket even when the stream carries rate-limit telemetry", () => {
+    // Every Claude CLI stream carries a `rate_limit_info` block, and
+    // `rateLimitType` alone matches CLAUDE_TRANSIENT_UPSTREAM_RE. Because the
+    // transient haystack reads the whole stdout, an overflow used to be
+    // reclassified as a transient upstream blip and retried until the attempt
+    // budget was gone. Measured on a real host: 617 runs, all retried.
+    const stdout = JSON.stringify({
+      type: "result",
+      rate_limit_info: { status: "rejected", rateLimitType: "seven_day" },
+    });
+
+    expect(isClaudeTransientUpstreamError({ parsed: overflowResult, stdout })).toBe(false);
+    // The contamination itself is real and out of scope here: without a
+    // deterministic classifier in front, the same stdout still decides.
+    expect(isClaudeTransientUpstreamError({ parsed: { result: "disk full" }, stdout })).toBe(true);
   });
 });
 
