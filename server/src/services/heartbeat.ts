@@ -70,6 +70,12 @@ import {
 import { conflict, HttpError, notFound } from "../errors.js";
 import { getStartupTraceContext } from "../instrumentation.js";
 import { logger } from "../middleware/logger.js";
+import {
+  createGitRemoteAuthProvider,
+  describeGitAuthFailure,
+  scrubGitCredentialText,
+  type GitRemoteAuthProvider,
+} from "./git-credentials.js";
 import { publishLiveEvent } from "./live-events.js";
 import { normalizeResponsibleUserDenialCode } from "./responsible-user-denial-run-outcomes.js";
 import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
@@ -1489,10 +1495,12 @@ function deriveRepoNameFromRepoUrl(repoUrl: string | null): string | null {
   }
 }
 
-async function ensureManagedProjectWorkspace(input: {
+export async function ensureManagedProjectWorkspace(input: {
   companyId: string;
   projectId: string;
   repoUrl: string | null;
+  /** Optional git credential source for cloning private repos; null/absent preserves ambient behavior. */
+  resolveGitAuth?: GitRemoteAuthProvider | null;
 }): Promise<{ cwd: string; warning: string | null }> {
   const cwd = resolveManagedProjectWorkspaceDir({
     companyId: input.companyId,
@@ -1528,15 +1536,34 @@ async function ensureManagedProjectWorkspace(input: {
     await fs.rm(cwd, { recursive: true, force: true });
   }
 
+  const auth = input.resolveGitAuth ? await input.resolveGitAuth(input.repoUrl) : null;
   try {
-    await execFile("git", ["clone", input.repoUrl, cwd], {
-      env: sanitizeRuntimeServiceBaseEnv(process.env),
+    await execFile("git", [...(auth?.configArgs ?? []), "clone", input.repoUrl, cwd], {
+      env: {
+        // Spread order matters: the sanitizer strips PAPERCLIP_*, which would remove the
+        // credential-helper token env if it came first. GIT_TERMINAL_PROMPT=0 fails a
+        // credential-less private clone immediately instead of hanging on a prompt until
+        // the clone timeout.
+        ...sanitizeRuntimeServiceBaseEnv(process.env),
+        GIT_TERMINAL_PROMPT: "0",
+        ...(auth?.env ?? {}),
+      },
       timeout: MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS,
     });
     return { cwd, warning: null };
   } catch (error) {
+    // The clone only ever starts from a missing or just-emptied directory, so removing it on
+    // failure cannot destroy operator data — but leaving it would poison the next run: a
+    // timeout-killed clone leaves a partial .git that the gitDirExists probe above adopts.
+    await fs.rm(cwd, { recursive: true, force: true }).catch(() => undefined);
     const reason = error instanceof Error ? error.message : String(error);
-    throw new Error(`Failed to prepare managed checkout for "${input.repoUrl}" at "${cwd}": ${reason}`);
+    const authNote = describeGitAuthFailure({
+      error: reason,
+      used: auth ? { source: auth.source, secretName: auth.secretName } : null,
+    });
+    throw new Error(scrubGitCredentialText(
+      `Failed to prepare managed checkout for "${input.repoUrl}" at "${cwd}": ${reason}${authNote ? ` ${authNote}` : ""}`,
+    ));
   }
 }
 
@@ -1551,6 +1578,7 @@ async function resolveConfiguredOrManagedProjectCwd(input: {
   projectId: string;
   cwd: string | null;
   repoUrl: string | null;
+  resolveGitAuth?: GitRemoteAuthProvider | null;
 }): Promise<{ cwd: string; warning: string | null }> {
   const configuredCwd = readNonEmptyString(input.cwd);
   if (configuredCwd && configuredCwd !== REPO_ONLY_CWD_SENTINEL) {
@@ -1560,6 +1588,7 @@ async function resolveConfiguredOrManagedProjectCwd(input: {
     companyId: input.companyId,
     projectId: input.projectId,
     repoUrl: readNonEmptyString(input.repoUrl),
+    resolveGitAuth: input.resolveGitAuth ?? null,
   });
 }
 
@@ -1587,8 +1616,16 @@ function defaultAdditionalProjectWorkspaceDeps(db: Db): ResolveAdditionalProject
         .from(projectWorkspaces)
         .where(and(eq(projectWorkspaces.companyId, companyId), eq(projectWorkspaces.projectId, projectId)))
         .orderBy(asc(projectWorkspaces.createdAt), asc(projectWorkspaces.id)),
-    resolveConfiguredOrManagedProjectCwd,
-    ensureManagedProjectWorkspace,
+    resolveConfiguredOrManagedProjectCwd: (input) =>
+      resolveConfiguredOrManagedProjectCwd({
+        ...input,
+        resolveGitAuth: input.resolveGitAuth ?? createGitRemoteAuthProvider(db, input.companyId),
+      }),
+    ensureManagedProjectWorkspace: (input) =>
+      ensureManagedProjectWorkspace({
+        ...input,
+        resolveGitAuth: input.resolveGitAuth ?? createGitRemoteAuthProvider(db, input.companyId),
+      }),
     // A realized workspace must hold real content. An empty directory gives the agent an empty
     // referenced workspace, so treat an empty directory the same as a missing one.
     directoryHasContents: async (cwd) => {
@@ -8304,6 +8341,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         preferredWorkspaceWarning =
           `Selected project workspace "${preferredProjectWorkspaceId}" is not available on this project.`;
       }
+      const resolveGitAuth = createGitRemoteAuthProvider(db, agent.companyId, { issueId });
       for (const workspace of projectWorkspaceRows) {
         let projectCwd: string;
         let managedWorkspaceWarning: string | null = null;
@@ -8313,6 +8351,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             projectId: workspaceProjectId ?? resolvedProjectId ?? workspace.projectId,
             cwd: workspace.cwd,
             repoUrl: workspace.repoUrl,
+            resolveGitAuth,
           });
           projectCwd = resolvedCwd.cwd;
           managedWorkspaceWarning = resolvedCwd.warning;
@@ -13922,6 +13961,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         : null,
       issueId,
     });
+    // One credential provider per run: base-ref refreshes during workspace realization and
+    // restore authenticate against private GitHub remotes with the same company-secret token
+    // the managed clone uses.
+    const workspaceGitAuthProvider = createGitRemoteAuthProvider(db, agent.companyId, {
+      issueId,
+      heartbeatRunId: run.id,
+    });
     const { executionWorkspace, reusedExecutionWorkspace, policy: resolvedWorkspaceReusePolicy } =
       await provisionExecutionWorkspaceForFreshnessDecision<RealizedExecutionWorkspace>({
         requestedShouldReuseExisting,
@@ -13970,6 +14016,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               enableWorkspaceDirtyQuarantineRepair:
                 resolvedInstanceSettings.experimental.enableWorkspaceDirtyQuarantineRepair,
               recorder: workspaceOperationRecorder,
+              resolveGitAuth: workspaceGitAuthProvider,
             })
           : null,
         realizeWorkspace: () => realizeExecutionWorkspace({
@@ -13988,6 +14035,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           enableWorkspaceDirtyQuarantineRepair:
             resolvedInstanceSettings.experimental.enableWorkspaceDirtyQuarantineRepair,
           recorder: workspaceOperationRecorder,
+          resolveGitAuth: workspaceGitAuthProvider,
         }),
       });
     const resolvedProjectId = executionWorkspace.projectId ?? issueRef?.projectId ?? executionProjectId ?? null;

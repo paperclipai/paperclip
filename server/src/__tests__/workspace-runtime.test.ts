@@ -34,6 +34,7 @@ import {
   normalizeAdapterManagedRuntimeServices,
   reconcilePersistedRuntimeServicesOnStartup,
   realizeExecutionWorkspace,
+  refreshRemoteTrackingBaseRef,
   releaseRuntimeServicesForRun,
   resetRuntimeServicesForTests,
   resolveWorkspaceRuntimeReadinessTimeoutSec,
@@ -376,6 +377,42 @@ describe("sanitizeRuntimeServiceBaseEnv", () => {
     expect(sanitized.npm_config_tailscale_auth).toBeUndefined();
     expect(sanitized.npm_config_authenticated_private).toBeUndefined();
     expect(sanitized.HOST).toBe("0.0.0.0");
+  });
+});
+
+describe("refreshRemoteTrackingBaseRef git auth", () => {
+  it("offers the remote URL to the provider and keeps ambient behavior when it returns null", async () => {
+    const { remotePath, repoRoot } = await createClonedRepoWithRemote();
+    const offeredUrls: string[] = [];
+    const warnings = await refreshRemoteTrackingBaseRef(repoRoot, "origin/master", async (remoteUrl) => {
+      offeredUrls.push(remoteUrl);
+      return null;
+    });
+    expect(warnings).toEqual([]);
+    expect(offeredUrls).toEqual([remotePath]);
+  });
+
+  it("attributes a failed authenticated fetch to the credential that was used", async () => {
+    const { repoRoot } = await createClonedRepoWithRemote();
+    await runGit(repoRoot, ["remote", "set-url", "origin", path.join(os.tmpdir(), "paperclip-missing-remote", "repo.git")]);
+    const warnings = await refreshRemoteTrackingBaseRef(repoRoot, "origin/master", async () => ({
+      configArgs: [],
+      env: { GIT_TERMINAL_PROMPT: "0" },
+      source: "company_secret",
+      secretName: "GH_TOKEN",
+    }));
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("Could not refresh base ref origin/master");
+    expect(warnings[0]).toContain("the GH_TOKEN company-secret GitHub credential");
+  });
+
+  it("keeps the unauthenticated failure warning credential-free without a provider", async () => {
+    const { repoRoot } = await createClonedRepoWithRemote();
+    await runGit(repoRoot, ["remote", "set-url", "origin", path.join(os.tmpdir(), "paperclip-missing-remote", "repo.git")]);
+    const warnings = await refreshRemoteTrackingBaseRef(repoRoot, "origin/master");
+    expect(warnings).toHaveLength(1);
+    expect(warnings[0]).toContain("Could not refresh base ref origin/master");
+    expect(warnings[0]).not.toContain("GitHub credential");
   });
 });
 
