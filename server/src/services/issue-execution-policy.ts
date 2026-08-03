@@ -848,6 +848,24 @@ function applyIssueExecutionStageTransition(input: TransitionInput): TransitionR
         return { patch };
       }
 
+      if (requestedStatus === "blocked" || requestedStatus === "cancelled") {
+        // The active participant marking their own in-review issue blocked or
+        // cancelled is abandoning the review, not rendering a verdict on it.
+        // Clear the execution state so the requested status applies as a
+        // plain transition instead of falling through into either the
+        // changes-requested branch below (SQN-4446/SQN-5074: silently
+        // misclassified as a review verdict) or the stage-advance guard
+        // further down (would otherwise reject the active participant's own
+        // status change as an unauthorized "stage advance").
+        clearExecutionStatePatch({
+          patch,
+          issueStatus: input.issue.status,
+          requestedStatus,
+          returnAssignee: existingState?.returnAssignee ?? null,
+        });
+        return { patch };
+      }
+
       if (requestedStatus && requestedStatus !== "in_review") {
         if (!input.commentBody?.trim()) {
           throw unprocessable(`Requesting changes requires a comment. ${STAGE_DECISION_COMMENT_HINT}`);

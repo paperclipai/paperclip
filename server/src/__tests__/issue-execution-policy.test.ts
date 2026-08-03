@@ -2084,4 +2084,149 @@ describe("review round circuit breaker", () => {
       changesRequestedCount: 1,
     });
   });
+
+  describe("blocked/cancelled status is not a review verdict (SQN-4446/SQN-5074)", () => {
+    const policy = twoStagePolicy();
+    const reviewStageId = policy.stages[0].id;
+    const approvalStageId = policy.stages[1].id;
+
+    it("reviewer PATCHing status=blocked succeeds as a plain transition, not a review verdict", () => {
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_review",
+          assigneeAgentId: qaAgentId,
+          assigneeUserId: null,
+          executionPolicy: policy,
+          executionState: {
+            status: "pending",
+            currentStageId: reviewStageId,
+            currentStageIndex: 0,
+            currentStageType: "review",
+            currentParticipant: { type: "agent", agentId: qaAgentId },
+            returnAssignee: { type: "agent", agentId: coderAgentId },
+            completedStageIds: [],
+            lastDecisionId: null,
+            lastDecisionOutcome: null,
+          },
+        },
+        policy,
+        requestedStatus: "blocked",
+        requestedAssigneePatch: {},
+        actor: { agentId: qaAgentId },
+        // No comment provided — under the old (buggy) code path this alone would have
+        // thrown "Requesting changes requires a comment". It must not throw at all.
+        commentBody: null,
+      });
+
+      expect(result.decision).toBeUndefined();
+      expect(result.patch.status).not.toBe("in_progress");
+      expect(result.patch.assigneeAgentId).not.toBe(coderAgentId);
+      expect(result.patch.executionState).toBeNull();
+    });
+
+    it("reviewer PATCHing status=cancelled succeeds as a plain transition, not a review verdict", () => {
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_review",
+          assigneeAgentId: qaAgentId,
+          assigneeUserId: null,
+          executionPolicy: policy,
+          executionState: {
+            status: "pending",
+            currentStageId: reviewStageId,
+            currentStageIndex: 0,
+            currentStageType: "review",
+            currentParticipant: { type: "agent", agentId: qaAgentId },
+            returnAssignee: { type: "agent", agentId: coderAgentId },
+            completedStageIds: [],
+            lastDecisionId: null,
+            lastDecisionOutcome: null,
+          },
+        },
+        policy,
+        requestedStatus: "cancelled",
+        requestedAssigneePatch: {},
+        actor: { agentId: qaAgentId },
+        commentBody: null,
+      });
+
+      expect(result.decision).toBeUndefined();
+      expect(result.patch.status).not.toBe("in_progress");
+      expect(result.patch.assigneeAgentId).not.toBe(coderAgentId);
+      expect(result.patch.executionState).toBeNull();
+    });
+
+    it("approver PATCHing status=blocked during the approval stage succeeds as a plain transition", () => {
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_review",
+          assigneeAgentId: null,
+          assigneeUserId: ctoUserId,
+          executionPolicy: policy,
+          executionState: {
+            status: "pending",
+            currentStageId: approvalStageId,
+            currentStageIndex: 1,
+            currentStageType: "approval",
+            currentParticipant: { type: "user", userId: ctoUserId },
+            returnAssignee: { type: "agent", agentId: coderAgentId },
+            completedStageIds: [reviewStageId],
+            lastDecisionId: null,
+            lastDecisionOutcome: null,
+          },
+        },
+        policy,
+        requestedStatus: "blocked",
+        requestedAssigneePatch: {},
+        actor: { userId: ctoUserId },
+        commentBody: null,
+      });
+
+      expect(result.decision).toBeUndefined();
+      expect(result.patch.status).not.toBe("in_progress");
+      expect(result.patch.assigneeAgentId).not.toBe(coderAgentId);
+      expect(result.patch.executionState).toBeNull();
+    });
+
+    it("regression safety: a genuine changes-requested trigger (requestedStatus=in_progress) still works", () => {
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_review",
+          assigneeAgentId: qaAgentId,
+          assigneeUserId: null,
+          executionPolicy: policy,
+          executionState: {
+            status: "pending",
+            currentStageId: reviewStageId,
+            currentStageIndex: 0,
+            currentStageType: "review",
+            currentParticipant: { type: "agent", agentId: qaAgentId },
+            returnAssignee: { type: "agent", agentId: coderAgentId },
+            completedStageIds: [],
+            lastDecisionId: null,
+            lastDecisionOutcome: null,
+          },
+        },
+        policy,
+        requestedStatus: "in_progress",
+        requestedAssigneePatch: {},
+        actor: { agentId: qaAgentId },
+        commentBody: "Needs another pass on edge cases",
+      });
+
+      expect(result.patch.status).toBe("in_progress");
+      expect(result.patch.assigneeAgentId).toBe(coderAgentId);
+      expect(result.patch.executionState).toMatchObject({
+        status: "changes_requested",
+        currentStageType: "review",
+        returnAssignee: { type: "agent", agentId: coderAgentId },
+        lastDecisionOutcome: "changes_requested",
+      });
+      expect(result.decision).toMatchObject({
+        stageId: reviewStageId,
+        stageType: "review",
+        outcome: "changes_requested",
+      });
+    });
+  });
 });
