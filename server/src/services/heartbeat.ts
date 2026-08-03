@@ -1568,8 +1568,8 @@ async function materializeManagedProjectWorkspace(
   // is never created in a partial state and never removed on failure, so a concurrent
   // materialization (another process, or a run racing this one) can neither adopt a broken
   // checkout nor lose its own completed one.
-  const cloneTmpDir = await fs.mkdtemp(`${cwd}.clone-`);
   const auth = input.resolveGitAuth ? await input.resolveGitAuth(input.repoUrl) : null;
+  const cloneTmpDir = await fs.mkdtemp(`${cwd}.clone-`);
   try {
     await execFile("git", [...(auth?.configArgs ?? []), "clone", input.repoUrl, cloneTmpDir], {
       env: {
