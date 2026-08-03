@@ -837,9 +837,20 @@ describe("scrubGitCredentialText", () => {
     );
   });
 
+  it("masks credential-bearing query parameters", () => {
+    expect(scrubGitCredentialText(
+      "fatal: unable to access 'https://github.com/example/repo.git?access_token=ghs_secret&ref=main'",
+    )).toBe("fatal: unable to access 'https://github.com/example/repo.git?access_token=***&ref=main'");
+    expect(scrubGitCredentialText(
+      "clone https://gitlab.example/repo.git?ref=main&private_token=glpat-123 failed",
+    )).toBe("clone https://gitlab.example/repo.git?ref=main&private_token=*** failed");
+  });
+
   it("leaves credential-free text unchanged", () => {
     const text = 'Failed to clone "https://github.com/example/repo.git": exit code 128';
     expect(scrubGitCredentialText(text)).toBe(text);
+    const plain = "git clone failed with exit code=128 at key step ref=main";
+    expect(scrubGitCredentialText(plain)).toBe(plain);
   });
 });
 

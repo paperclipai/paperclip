@@ -2440,13 +2440,19 @@ export type WorkspaceMaterializationFailure = {
 };
 
 /**
- * Mask URL userinfo (`https://user:token@host`, `ssh://user:pass@host`, any
- * `scheme://…@` form) so credential material never reaches warnings, run errors, or
- * persisted payloads. Scp-style remotes (`git@host:path`) carry no password and are left
- * alone.
+ * Mask credential material embedded in URLs so it never reaches warnings, run errors, or
+ * persisted payloads: userinfo on any scheme (`https://user:token@host`,
+ * `ssh://user:pass@host`) and credential-bearing query parameters
+ * (`?access_token=…`, `&private_token=…`). Scp-style remotes (`git@host:path`) carry no
+ * password and are left alone.
  */
 export function scrubGitCredentialText(text: string): string {
-  return text.replace(/([a-z][a-z0-9+.-]*:\/\/)[^/@\s]+@/gi, "$1***@");
+  return text
+    .replace(/([a-z][a-z0-9+.-]*:\/\/)[^/@\s]+@/gi, "$1***@")
+    .replace(
+      /([?&](?:access_token|token|private_token|password|secret|client_secret|api_key|apikey|pat|authorization|auth)=)[^&\s"'#]+/gi,
+      "$1***",
+    );
 }
 
 export type ResolvedWorkspaceForRun = {
