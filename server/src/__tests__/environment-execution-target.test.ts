@@ -367,7 +367,7 @@ describe("resolveEnvironmentExecutionTarget", () => {
     expect(target).not.toHaveProperty("paperclipApiUrl");
   });
 
-  it("exposes a sandbox runner that counts round-trips and accumulates provider durations", async () => {
+  it("exposes a sandbox runner with single-stream stdin upload disabled", async () => {
     mockResolveEnvironmentDriverConfigForRuntime.mockResolvedValue({
       driver: "sandbox",
       config: {
@@ -377,8 +377,6 @@ describe("resolveEnvironmentExecutionTarget", () => {
       },
     });
 
-    // Each exec reports its provider-boundary durations on the free-form result
-    // metadata (the Daytona plugin does this); the runner accumulates them.
     const environmentRuntime = {
       execute: vi.fn().mockResolvedValue({
         exitCode: 0,
@@ -404,66 +402,18 @@ describe("resolveEnvironmentExecutionTarget", () => {
 
     const runner = (target as { runner?: {
       supportsSingleStreamStdinProgress?: boolean;
-      execCount(): number;
-      providerExecMs(): number;
-      providerGetMs(): number;
       execute(input: { command: string; args?: string[] }): Promise<unknown>;
     } }).runner;
     expect(runner).toBeTruthy();
-    // Single-stream stdin upload is enabled (research A1 / PAP-3159 #2): a
-    // ≤96 MiB writeFile collapses to one round-trip.
+    // Provider-backed sandbox RPCs do not surface bounded mid-stream progress
+    // for a single stdin upload, so the runner leaves the capability disabled.
     expect(runner!.supportsSingleStreamStdinProgress).toBe(false);
-    expect(runner!.execCount()).toBe(0);
-    expect(runner!.providerExecMs()).toBe(0);
-    expect(runner!.providerGetMs()).toBe(0);
 
+    // The exec seam still runs each command; the run-log no longer carries the
+    // detailed per-step round-trip or provider-duration counts.
     await runner!.execute({ command: "echo", args: ["a"] });
     await runner!.execute({ command: "echo", args: ["b"] });
-
-    expect(runner!.execCount()).toBe(2);
-    expect(runner!.providerExecMs()).toBe(1200);
-    expect(runner!.providerGetMs()).toBe(30);
-  });
-
-  it("tolerates a provider result with no timing metadata (counts the round-trip, accumulates nothing)", async () => {
-    mockResolveEnvironmentDriverConfigForRuntime.mockResolvedValue({
-      driver: "sandbox",
-      config: { provider: "fake-plugin", reuseLease: false, timeoutMs: 30_000 },
-    });
-
-    const environmentRuntime = {
-      execute: vi.fn().mockResolvedValue({
-        exitCode: 0,
-        signal: null,
-        timedOut: false,
-        stdout: "",
-        stderr: "",
-      }),
-      supportsSync: vi.fn().mockReturnValue(false),
-    };
-
-    const target = await resolveEnvironmentExecutionTarget({
-      db: {} as never,
-      companyId: "company-1",
-      adapterType: "codex_local",
-      environment: { id: "env-1", driver: "sandbox", config: { provider: "fake-plugin" } },
-      leaseId: "lease-1",
-      leaseMetadata: { remoteCwd: "/workspace" },
-      lease: { id: "lease-1" } as never,
-      environmentRuntime: environmentRuntime as never,
-    });
-
-    const runner = (target as { runner?: {
-      execCount(): number;
-      providerExecMs(): number;
-      providerGetMs(): number;
-      execute(input: { command: string }): Promise<unknown>;
-    } }).runner;
-    await runner!.execute({ command: "echo" });
-
-    expect(runner!.execCount()).toBe(1);
-    expect(runner!.providerExecMs()).toBe(0);
-    expect(runner!.providerGetMs()).toBe(0);
+    expect(environmentRuntime.execute).toHaveBeenCalledTimes(2);
   });
 
   // A recording tracer that captures each provider-exec span's name, attribute

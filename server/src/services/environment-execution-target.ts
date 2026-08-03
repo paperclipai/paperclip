@@ -214,20 +214,6 @@ export async function resolveEnvironmentExecutionTarget(input: {
         ? input.leaseMetadata.shellCommand
         : null;
 
-    // Per-lease-runner cumulative counters for startup-step attribution (Open
-    // Q1). Closed over by the `runner.execute` seam below and read back as
-    // deltas by `measureStartupStep`.
-    let execCount = 0;
-    let providerExecMs = 0;
-    let providerGetMs = 0;
-    const accumulateProviderDurations = (metadata: Record<string, unknown> | undefined): void => {
-      if (!metadata) return;
-      const exec = metadata.durationMs;
-      const get = metadata.getDurationMs;
-      if (typeof exec === "number" && Number.isFinite(exec)) providerExecMs += exec;
-      if (typeof get === "number" && Number.isFinite(get)) providerGetMs += get;
-    };
-
     // The low-cardinality public provider family. A plugin-backed / operator-
     // defined key maps to `plugin`, so a raw unbounded key never rides a span.
     const providerFamily = normalizeProviderFamily(parsed.config.provider);
@@ -255,17 +241,7 @@ export async function resolveEnvironmentExecutionTarget(input: {
             // here. The client falls back to the chunked upload path when this is
             // false.
             supportsSingleStreamStdinProgress: false,
-            // Round-trip counter + provider-duration accumulators on the single
-            // host→sandbox exec seam (Open Q1). `measureStartupStep` reads the
-            // per-step delta of each via the `() => number` closures below. The
-            // provider durations ride the exec result's free-form `metadata`
-            // (set by the Daytona plugin), so no protocol/schema change is
-            // needed and providers that omit them simply accumulate nothing.
-            execCount: () => execCount,
-            providerExecMs: () => providerExecMs,
-            providerGetMs: () => providerGetMs,
             execute: async (commandInput) => {
-              execCount += 1;
               // Record true start and stop timestamps around the provider await,
               // so the exec span and the result carry a real wall time.
               const startedAtMs = Date.now();
@@ -324,7 +300,6 @@ export async function resolveEnvironmentExecutionTarget(input: {
                 const finishedAtMs = Date.now();
                 const finishedAt = new Date(finishedAtMs).toISOString();
                 const durationMs = finishedAtMs - startedAtMs;
-                accumulateProviderDurations(result.metadata);
                 // `setSandboxExecSpanAttributes` sets ONLY the closed
                 // `paperclip.sandbox.startup.exec.*` allowlist: the normalized
                 // provider family, the clamped command label, the numeric exit

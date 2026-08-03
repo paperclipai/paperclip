@@ -53,7 +53,6 @@ export const SANDBOX_STARTUP_SPAN_ATTR_PREFIX = "paperclip.sandbox.startup.";
  * the `paperclip.sandbox.startup.` prefix and a type suffix:
  *
  * - `*.wall_ms` — one wall-clock time in float milliseconds.
- * - `*.sum_ms` — a sum of wall-clock times in float milliseconds.
  * - `*.count` — a count.
  *
  * The producer sets only these keys. It never sets a free-form key, so a
@@ -66,12 +65,6 @@ export const SANDBOX_STARTUP_SPAN_ATTRS = {
   outcome: `${SANDBOX_STARTUP_SPAN_ATTR_PREFIX}outcome`,
   /** The wall-clock time of one measured step. */
   stepWallMs: `${SANDBOX_STARTUP_SPAN_ATTR_PREFIX}step.wall_ms`,
-  /** The number of host-to-sandbox round trips a step made. */
-  roundTripsCount: `${SANDBOX_STARTUP_SPAN_ATTR_PREFIX}round_trips.count`,
-  /** The sum of provider `executeCommand` wall time a step made. */
-  providerExecSumMs: `${SANDBOX_STARTUP_SPAN_ATTR_PREFIX}provider_exec.sum_ms`,
-  /** The sum of provider handle-refetch wall time a step made. */
-  providerGetSumMs: `${SANDBOX_STARTUP_SPAN_ATTR_PREFIX}provider_get.sum_ms`,
   /** The clamped `argv[0]` command label of one execution. */
   execCommand: `${SANDBOX_STARTUP_SPAN_ATTR_PREFIX}exec.command`,
   /** The numeric process exit code of one execution. */
@@ -368,47 +361,20 @@ function setFiniteNumberAttr(
 }
 
 /**
- * Compute a counter delta from a reader. Return `undefined` when the reader is
- * absent, or when either the start or the end snapshot is not a finite number.
- * A `undefined` result yields no payload field and no span attribute.
- */
-function finiteDelta(
-  read: (() => number) | undefined,
-  start: number | undefined,
-): number | undefined {
-  if (!read) return undefined;
-  const end = read();
-  if (typeof end !== "number" || !Number.isFinite(end)) return undefined;
-  const base = typeof start === "number" && Number.isFinite(start) ? start : 0;
-  return end - base;
-}
-
-/**
- * Optional per-step attribution attached to a `run.startup.step` event, all
- * additive to the free-form jsonb payload (no schema change). Each reader is a
- * plain `() => number` closure so the timing helper stays decoupled from the
- * runner/provider it reads (Risk R1): `measureStartupStep` snapshots the reader
- * before `fn` and again in `finally`, emitting the delta.
+ * Optional per-step attribution for a `run.startup.step` event and its span.
+ * The event payload carries only the high-level fields (`step`, `durationMs`,
+ * `outcome`). The detailed per-step round-trip and provider-duration numbers
+ * ride the OTel spans (the per-execution `sandbox.exec` child spans and the
+ * step span), not the payload. These options configure the span path and the
+ * step context.
  *
- * - `roundTrips` — cumulative host→sandbox `runner.execute` count; the delta is
- *   how many round-trips the step performed (Open Q1, host boundary).
- * - `providerExecMs` / `providerGetMs` — cumulative provider-reported wall-time
- *   (ms) for the `executeCommand` REST call vs the `client.get` sandbox
- *   re-fetch; the delta attributes the step's round-trip time to its parts
- *   (Open Q1, finer provider attribution).
- * - `extra` — a reader (called once in `finally`, after `fn` settles) returning
- *   any additional numeric fields to merge into the payload; used by
- *   `acp.handshake` to carry its `createRuntimeMs` / `ensureSessionMs` sub-split
- *   (Open Q2), which are measured by the caller rather than read from a counter.
- *   The `extra` map feeds the EVENT payload only. Its keys never become span
- *   attributes, so a free-form key cannot widen the closed span allowlist.
  * - `tracer` — an injected structural tracer. It defaults to a no-op, so the
  *   span path changes no runtime behavior until the server injects a real
  *   tracer. The span carries only the closed attribute allowlist from
  *   `SANDBOX_STARTUP_SPAN_ATTRS`: the normalized `provider`, the step wall time,
  *   and the outcome. The step name rides the span name, not an attribute. The
- *   round-trip and provider-duration detail stays on the payload and on the
- *   per-execution `sandbox.exec` child spans.
+ *   round-trip and provider-duration detail rides the per-execution
+ *   `sandbox.exec` child spans.
  * - `parentContext` — an opaque parent-context token from the root span. When
  *   set, the step's span parents to that root. `measureStartupStep` forwards it
  *   to `startSpan` and never inspects it, so parenting stays explicit and does
@@ -418,10 +384,6 @@ function finiteDelta(
  *   low-cardinality `provider` span attribute. It never sets the raw key.
  */
 export interface StartupStepMeasureOptions {
-  roundTrips?: () => number;
-  providerExecMs?: () => number;
-  providerGetMs?: () => number;
-  extra?: () => Record<string, number>;
   tracer?: StartupTracer;
   parentContext?: StartupSpanContext;
   provider?: string;
@@ -477,8 +439,8 @@ function buildStepEvent(payload: Record<string, unknown>): AdapterRuntimeEvent {
 
 /**
  * Time `fn` with the injected `now` clock and emit exactly one
- * `run.startup.step` event carrying `{ step, durationMs }` plus any counters
- * supplied via `options`. The event fires in a `finally`, so a throwing step
+ * `run.startup.step` event carrying only the high-level `{ step, durationMs,
+ * outcome }`. The event fires in a `finally`, so a throwing step
  * still reports its duration before the error is re-thrown. `now` is injected
  * (never `Date.now()` here) so callers/tests stay deterministic, and
  * `ctx.onEvent` is optional — a missing sink is a no-op that neither throws nor
@@ -490,7 +452,8 @@ function buildStepEvent(payload: Record<string, unknown>): AdapterRuntimeEvent {
  * from `SANDBOX_STARTUP_SPAN_ATTRS`: the normalized `provider`, the step wall
  * time, and the outcome (`ok` or `failed`). The step name rides the span name.
  * A throwing `fn` sets the span error status before the span ends and the
- * outcome is `failed`. The counter deltas stay on the event payload. The tracer
+ * outcome is `failed`. The round-trip and provider-duration detail rides the
+ * spans, not the payload. The tracer
  * defaults to a no-op, so a caller with no tracer changes nothing. Every span
  * call sits inside the same error swallow as the event sink, so a throwing
  * tracer never changes startup control flow.
@@ -503,9 +466,6 @@ export async function measureStartupStep<T>(
   options: StartupStepMeasureOptions = {},
 ): Promise<T> {
   const start = now();
-  const roundTripsStart = options.roundTrips?.();
-  const providerExecStart = options.providerExecMs?.();
-  const providerGetStart = options.providerGetMs?.();
 
   // Open the span with only the low-cardinality allowlisted attributes known at
   // the start: the normalized provider family. The span name already carries
@@ -554,28 +514,16 @@ export async function measureStartupStep<T>(
   } finally {
     const durationMs = now() - start;
 
-    // One attribute-build block feeds both the event payload and the span, so
-    // the two paths never drift. `undefined` deltas produce neither a payload
-    // field nor a span attribute (fail open — never `NaN`, never `0`).
-    const roundTrips = finiteDelta(options.roundTrips, roundTripsStart);
-    const providerExecMs = finiteDelta(options.providerExecMs, providerExecStart);
-    const providerGetMs = finiteDelta(options.providerGetMs, providerGetStart);
-
     // The step outcome. A throwing `fn` is `failed`; a settled `fn` is `ok`. A
     // step that a warm cache skips uses `emitSkippedStartupStep` instead.
     const outcome: SandboxStartupOutcome = stepFailed
       ? SANDBOX_STARTUP_OUTCOME.failed
       : SANDBOX_STARTUP_OUTCOME.ok;
 
+    // The payload carries only the high-level fields. The detailed per-step
+    // round-trip and provider-duration numbers ride the OTel spans now, so the
+    // run-log copy is gone.
     const payload: Record<string, unknown> = { step, durationMs, outcome };
-    if (roundTrips !== undefined) payload.roundTrips = roundTrips;
-    if (providerExecMs !== undefined) payload.providerExecMs = providerExecMs;
-    if (providerGetMs !== undefined) payload.providerGetMs = providerGetMs;
-    if (options.extra) {
-      // `extra` feeds the EVENT payload only. Its keys never become span
-      // attributes, so it cannot widen the closed span allowlist.
-      Object.assign(payload, options.extra());
-    }
 
     try {
       if (stepFailed) span.setStatus({ code: SPAN_STATUS_CODE_ERROR });

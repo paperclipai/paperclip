@@ -92,16 +92,7 @@ function createLocalSandboxRunner(
   }) => void,
 ) {
   let counter = 0;
-  // Synthetic provider-duration accumulators so per-step payload assertions can
-  // verify the `providerExecMs`/`providerGetMs` threading end-to-end (the real
-  // sandbox runner sources these from the Daytona plugin's result metadata; this
-  // double stands in for that with a fixed per-exec cost).
-  let providerExecMs = 0;
-  let providerGetMs = 0;
   return {
-    execCount: () => counter,
-    providerExecMs: () => providerExecMs,
-    providerGetMs: () => providerGetMs,
     execute: async (input: {
       command: string;
       args?: string[];
@@ -113,8 +104,6 @@ function createLocalSandboxRunner(
       onSpawn?: (meta: { pid: number; startedAt: string }) => Promise<void>;
     }) => {
       counter += 1;
-      providerExecMs += 600;
-      providerGetMs += 15;
       onExecute?.(input);
       const command = input.command === "bash" ? "/bin/bash" : input.command;
       return await runChildProcess(`acpx-sandbox-run-${counter}`, command, input.args ?? [], {
@@ -3605,7 +3594,7 @@ describe("ACPX engine per-step startup timing (run.startup.step events)", () => 
     }
   });
 
-  it("carries roundTrips + provider durations for sequential startup steps and keeps concurrent bridge steps duration-only", async () => {
+  it("emits only the high-level fields on every startup-step payload, never the detailed timing or counts", async () => {
     const root = await makeTempRoot();
     const stateDir = path.join(root, "state");
     const localCwd = path.join(root, "worktree");
@@ -3626,65 +3615,20 @@ describe("ACPX engine per-step startup timing (run.startup.step events)", () => 
     );
 
     const steps = stepEvents(events);
-    const seen = new Map(steps.map((event) => [String(event.payload?.step), event]));
+    expect(steps.length).toBeGreaterThan(0);
 
-    // Every timed boundary still records duration.
+    // Every timed boundary still records the high-level duration and outcome.
+    // The detailed per-step round-trip and provider-duration numbers ride the
+    // OTel spans now, so no payload carries them.
     for (const event of steps) {
-      expect(typeof event.payload?.durationMs).toBe("number");
+      const payload = event.payload ?? {};
+      expect(typeof payload.durationMs).toBe("number");
+      expect(payload).not.toHaveProperty("roundTrips");
+      expect(payload).not.toHaveProperty("providerExecMs");
+      expect(payload).not.toHaveProperty("providerGetMs");
+      expect(payload).not.toHaveProperty("createRuntimeMs");
+      expect(payload).not.toHaveProperty("ensureSessionMs");
     }
-    // Sequential boundaries retain runner-counter attribution.
-    for (const step of ["workspace.resolve", "stage.sync", "acp.handshake"]) {
-      expect(typeof seen.get(step)?.payload?.roundTrips).toBe("number");
-    }
-    // workspace.resolve is host-only → zero host→sandbox execs.
-    expect(seen.get("workspace.resolve")?.payload?.roundTrips).toBe(0);
-    // stage.sync ships the workspace over the exec seam → at least one round-trip,
-    // and the accumulated provider durations scale with it.
-    const stageSync = seen.get("stage.sync");
-    expect(stageSync?.payload?.roundTrips as number).toBeGreaterThan(0);
-    expect(stageSync?.payload?.providerExecMs).toBe(
-      (stageSync?.payload?.roundTrips as number) * 600,
-    );
-    expect(stageSync?.payload?.providerGetMs).toBe(
-      (stageSync?.payload?.roundTrips as number) * 15,
-    );
-    // Concurrent bridge steps are duration-only so they do not double-count
-    // shared runner counters while their lifecycles overlap.
-    for (const step of ["bridge.paperclip", "bridge.process-session"]) {
-      expect(seen.get(step)?.payload?.roundTrips).toBeUndefined();
-      expect(seen.get(step)?.payload?.providerExecMs).toBeUndefined();
-      expect(seen.get(step)?.payload?.providerGetMs).toBeUndefined();
-    }
-    // The external ACP client crosses no host exec seam.
-    expect(seen.get("acp.handshake")?.payload?.roundTrips).toBe(0);
-  });
-
-  it("splits acp.handshake into createRuntimeMs and ensureSessionMs sub-phases", async () => {
-    const root = await makeTempRoot();
-    const stateDir = path.join(root, "state");
-    const localCwd = path.join(root, "worktree");
-    const remoteCwd = path.join(root, "remote-workspace");
-    await fs.mkdir(localCwd, { recursive: true });
-    await fs.mkdir(remoteCwd, { recursive: true });
-    const executionTarget = {
-      kind: "remote",
-      transport: "sandbox",
-      providerKey: "fake-plugin",
-      remoteCwd,
-      runner: createLocalSandboxRunner(),
-    };
-
-    const { events } = await runExecutor(
-      { agent: "custom", agentCommand: "node ./fake-acp.js", stateDir, cwd: localCwd },
-      { authToken: "real-run-jwt", executionTarget },
-    );
-
-    const handshake = stepEvents(events).find((event) => event.payload?.step === "acp.handshake");
-    expect(handshake).toBeTruthy();
-    expect(typeof handshake!.payload?.createRuntimeMs).toBe("number");
-    expect(handshake!.payload?.createRuntimeMs as number).toBeGreaterThanOrEqual(0);
-    expect(typeof handshake!.payload?.ensureSessionMs).toBe("number");
-    expect(handshake!.payload?.ensureSessionMs as number).toBeGreaterThanOrEqual(0);
   });
 
   it("emits a skipped acp.handshake event when a warm-handle hit skips the handshake", async () => {
