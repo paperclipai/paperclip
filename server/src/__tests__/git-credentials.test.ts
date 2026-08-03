@@ -199,6 +199,15 @@ describe("scrubGitCredentialText", () => {
     );
   });
 
+  it("masks userinfo on non-HTTP schemes, leaving scp-style remotes alone", () => {
+    expect(scrubGitCredentialText("ssh://deploy:hunter2@internal.example/repo.git")).toBe(
+      "ssh://***@internal.example/repo.git",
+    );
+    expect(scrubGitCredentialText("git@github.com:example/repo.git")).toBe(
+      "git@github.com:example/repo.git",
+    );
+  });
+
   it("leaves credential-free text unchanged", () => {
     expect(scrubGitCredentialText("fatal: repository not found")).toBe("fatal: repository not found");
   });

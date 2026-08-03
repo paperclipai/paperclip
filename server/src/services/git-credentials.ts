@@ -64,9 +64,14 @@ export function isGitHubHttpsRemoteUrl(remoteUrl: string): boolean {
   return isGitHubDotCom(parsed.hostname);
 }
 
-/** Mask URL userinfo (`https://user:token@host`) so credential material never reaches warnings, run errors, or persisted payloads. */
+/**
+ * Mask URL userinfo (`https://user:token@host`, `ssh://user:pass@host`, any
+ * `scheme://…@` form) so credential material never reaches warnings, run errors, or
+ * persisted payloads. Scp-style remotes (`git@host:path`) carry no password and are left
+ * alone.
+ */
 export function scrubGitCredentialText(text: string): string {
-  return text.replace(/(https?:\/\/)[^/@\s]+@/gi, "$1***@");
+  return text.replace(/([a-z][a-z0-9+.-]*:\/\/)[^/@\s]+@/gi, "$1***@");
 }
 
 export function buildGitAuthInvocation(credential: GitCredential): GitAuthInvocation {

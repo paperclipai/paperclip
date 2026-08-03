@@ -638,8 +638,8 @@ export async function refreshRemoteTrackingBaseRef(
     return [];
   } catch (error) {
     const rawMessage = error instanceof Error ? error.message : String(error);
-    // Mask URL userinfo before the message rides warnings that reach run logs.
-    const message = rawMessage.replace(/(https?:\/\/)[^/@\s]+@/gi, "$1***@");
+    // Mask URL userinfo (any scheme) before the message rides warnings that reach run logs.
+    const message = rawMessage.replace(/([a-z][a-z0-9+.-]*:\/\/)[^/@\s]+@/gi, "$1***@");
     const authNote = auth
       ? ` The fetch authenticated with ${auth.secretName ? `the ${auth.secretName} company-secret GitHub credential` : "the server-environment GitHub credential"}, which may have been rejected.`
       : "";
