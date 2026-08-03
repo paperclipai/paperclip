@@ -47,6 +47,7 @@ import { forbidden } from "../errors.js";
 import { isCloudManagedInstance } from "../services/cloud-instance.js";
 import { assertBoardOrgAccess, assertInstanceAdmin, assertAgentReachableInstanceAdmin } from "./authz.js";
 import { REQUIRED_PLUGIN_KEYWORD, validateExternalPluginLoad } from "../services/adapter-plugin-validator.js";
+import type { FileFingerprint } from "../services/adapter-plugin-validator.js";
 import { BUILTIN_ADAPTER_TYPES } from "../adapters/builtin-adapter-types.js";
 
 const execFileAsync = promisify(execFile);
@@ -362,17 +363,29 @@ export function adapterRoutes() {
       // TOCTOU bypass. canonicalDir is the realpath of the package
       // root that was just validated; the loader additionally
       // re-verifies the resolved entry point is inside canonicalDir.
-      // canonicalDirIdentity is a multi-field fingerprint
-      // (dev/ino/ctime/mtime/size) captured by the validator at
-      // validation time and re-checked at load time. Rejecting on
-      // any mismatch closes the path-name TOCTOU on filesystems
-      // (e.g. ext4 with inode recycling) where st_ino alone is
-      // insufficient.
+      // The four fingerprints (canonicalDirIdentity,
+      // canonicalManifestIdentity, canonicalEntryIdentity, optional
+      // canonicalUiParserIdentity) are multi-field
+      // (dev/ino/ctime/mtime/size) identities captured by the
+      // validator at validation time and re-checked at load time.
+      // Rejecting on any mismatch closes BOTH the path-name TOCTOU
+      // (round 3/4) AND the file-mutation bypass (round 5) where
+      // the agent overwrites package.json or the entry file inside
+      // the same directory. canonicalEntryPath is the validator's
+      // pre-resolved entry path; the loader uses it directly
+      // instead of re-resolving from the manifest, so a manifest
+      // mutation between validation and load cannot redirect the
+      // import.
       const adapterModule = await loadExternalAdapterPackage(
         canonicalName,
         moduleLocalPath,
         preflight.canonicalDir,
         preflight.canonicalDirIdentity,
+        preflight.canonicalManifestIdentity,
+        preflight.canonicalEntryIdentity,
+        preflight.canonicalEntryPath,
+        preflight.canonicalUiParserPath,
+        preflight.canonicalUiParserIdentity,
       );
 
       // External adapters may intentionally override built-in adapter types.
@@ -619,7 +632,12 @@ export function adapterRoutes() {
           : path.join(getAdapterPluginsDir(), "node_modules", pluginRecord.packageName))
       : undefined;
     let canonicalPackageDir: string | undefined;
-    let canonicalDirIdentity: { dev: number; ino: number; ctime: number; mtime: number; size: number } | undefined;
+    let canonicalDirIdentity: FileFingerprint | undefined;
+    let canonicalManifestIdentity: FileFingerprint | undefined;
+    let canonicalEntryIdentity: FileFingerprint | undefined;
+    let canonicalEntryPath: string | undefined;
+    let canonicalUiParserPath: string | undefined;
+    let canonicalUiParserIdentity: FileFingerprint | undefined;
     if (packageDir) {
       const preflight = validateExternalPluginLoad(packageDir);
       if (!preflight.ok) {
@@ -637,18 +655,31 @@ export function adapterRoutes() {
         { type, manifestName: preflight.manifest.name, keyword: REQUIRED_PLUGIN_KEYWORD },
         "External adapter manifest passed plugin-load validator (reload)",
       );
-      // Capture the canonical dir from the validator so the loader
-      // doesn't re-resolve the mutable path (which would re-introduce
-      // the TOCTOU race). Also capture the inode so the loader can
-      // detect a replace-at-same-pathname between validation and
-      // reload.
+      // Capture the canonical dir + fingerprints from the validator
+      // so the loader doesn't re-resolve the mutable path (which
+      // would re-introduce the TOCTOU race) AND so the loader can
+      // detect file mutations between validation and reload.
       canonicalPackageDir = preflight.canonicalDir;
       canonicalDirIdentity = preflight.canonicalDirIdentity;
+      canonicalManifestIdentity = preflight.canonicalManifestIdentity;
+      canonicalEntryIdentity = preflight.canonicalEntryIdentity;
+      canonicalEntryPath = preflight.canonicalEntryPath;
+      canonicalUiParserPath = preflight.canonicalUiParserPath;
+      canonicalUiParserIdentity = preflight.canonicalUiParserIdentity;
     }
 
     // Reload the adapter module (busts ESM cache, re-imports)
     try {
-      const newModule = await reloadExternalAdapter(type, canonicalPackageDir, canonicalDirIdentity);
+      const newModule = await reloadExternalAdapter(
+        type,
+        canonicalPackageDir,
+        canonicalDirIdentity,
+        canonicalManifestIdentity,
+        canonicalEntryIdentity,
+        canonicalEntryPath,
+        canonicalUiParserPath,
+        canonicalUiParserIdentity,
+      );
 
       // Not found in the external adapter store
       if (!newModule) {

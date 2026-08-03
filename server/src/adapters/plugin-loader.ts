@@ -20,6 +20,93 @@ import {
   getAdapterPluginByType,
 } from "../services/adapter-plugin-store.js";
 import type { AdapterPluginRecord } from "../services/adapter-plugin-store.js";
+import type { FileFingerprint } from "../services/adapter-plugin-validator.js";
+import { fingerprintFromStats } from "../services/adapter-plugin-validator.js";
+
+/**
+ * Compare a captured fingerprint against a fresh stat and return a
+ * list of `"field before -> after"` mismatches (empty if equal).
+ * Multi-field (dev/ino/ctime/mtime/size) — any difference is a
+ * mismatch. Used for all three fingerprints (directory, manifest,
+ * entry file, ui-parser file) so the rejection message is uniform.
+ */
+function fingerprintMismatches(
+  label: string,
+  captured: FileFingerprint,
+  stat: fs.Stats,
+): string[] {
+  const current = fingerprintFromStats(stat);
+  const mismatches: string[] = [];
+  if (current.dev !== captured.dev) mismatches.push(`${label}.dev ${captured.dev} -> ${current.dev}`);
+  if (current.ino !== captured.ino) mismatches.push(`${label}.ino ${captured.ino} -> ${current.ino}`);
+  if (current.ctime !== captured.ctime) mismatches.push(`${label}.ctime ${captured.ctime} -> ${current.ctime}`);
+  if (current.mtime !== captured.mtime) mismatches.push(`${label}.mtime ${captured.mtime} -> ${current.mtime}`);
+  if (current.size !== captured.size) mismatches.push(`${label}.size ${captured.size} -> ${current.size}`);
+  return mismatches;
+}
+
+/**
+ * Run all four fingerprint checks (directory, manifest, entry file,
+ * ui-parser file) against fresh stats. Returns a list of mismatch
+ * descriptions (empty if everything matches). The caller is expected
+ * to throw on a non-empty result.
+ */
+function verifyAllFingerprints(
+  packageName: string,
+  packageDir: string,
+  pkgJsonPath: string,
+  entryPath: string,
+  uiParserPath: string | undefined,
+  canonicalDirIdentity: FileFingerprint | undefined,
+  canonicalManifestIdentity: FileFingerprint | undefined,
+  canonicalEntryIdentity: FileFingerprint | undefined,
+  canonicalUiParserIdentity: FileFingerprint | undefined,
+): string[] {
+  const mismatches: string[] = [];
+  if (canonicalDirIdentity !== undefined) {
+    try {
+      mismatches.push(...fingerprintMismatches("dir", canonicalDirIdentity, fs.statSync(packageDir)));
+    } catch (err) {
+      mismatches.push(`dir: cannot re-stat ${packageDir} at load time: ${
+        err instanceof Error ? err.message : String(err)
+      }`);
+    }
+  }
+  if (canonicalManifestIdentity !== undefined) {
+    try {
+      mismatches.push(...fingerprintMismatches("manifest", canonicalManifestIdentity, fs.statSync(pkgJsonPath)));
+    } catch (err) {
+      mismatches.push(`manifest: cannot re-stat ${pkgJsonPath} at load time: ${
+        err instanceof Error ? err.message : String(err)
+      }`);
+    }
+  }
+  if (canonicalEntryIdentity !== undefined) {
+    try {
+      mismatches.push(...fingerprintMismatches("entry", canonicalEntryIdentity, fs.statSync(entryPath)));
+    } catch (err) {
+      mismatches.push(`entry: cannot re-stat ${entryPath} at load time: ${
+        err instanceof Error ? err.message : String(err)
+      }`);
+    }
+  }
+  if (canonicalUiParserIdentity !== undefined && uiParserPath !== undefined) {
+    try {
+      mismatches.push(...fingerprintMismatches("ui-parser", canonicalUiParserIdentity, fs.statSync(uiParserPath)));
+    } catch (err) {
+      mismatches.push(`ui-parser: cannot re-stat ${uiParserPath} at load time: ${
+        err instanceof Error ? err.message : String(err)
+      }`);
+    }
+  }
+  if (mismatches.length > 0) {
+    logger.warn(
+      { packageName, packageDir, mismatches },
+      "Plugin file fingerprint mismatch — refusing to load (file mutation between validation and load)",
+    );
+  }
+  return mismatches;
+}
 
 // ---------------------------------------------------------------------------
 // In-memory UI parser cache
@@ -121,6 +208,86 @@ function resolveCanonicalEntryPoint(packageDir: string, packageName: string): st
   return canonicalJoined;
 }
 
+/**
+ * Resolve the optional `./ui-parser` export to an absolute path on
+ * disk, or undefined if the manifest doesn't declare one. Used by
+ * the legacy loader path (no captured ui-parser path from the
+ * validator).
+ */
+function resolveUiParserPath(packageDir: string): string | undefined {
+  const pkgJsonPath = path.join(packageDir, "package.json");
+  let pkg: { exports?: unknown };
+  try {
+    pkg = JSON.parse(fs.readFileSync(pkgJsonPath, "utf-8"));
+  } catch {
+    return undefined;
+  }
+  if (!pkg.exports || typeof pkg.exports !== "object") return undefined;
+  const ui = (pkg.exports as Record<string, unknown>)["./ui-parser"];
+  if (!ui) return undefined;
+  let file: unknown;
+  if (typeof ui === "string") {
+    if (path.isAbsolute(ui)) return undefined;
+    file = ui;
+  } else if (typeof ui === "object" && ui !== null) {
+    const u = ui as Record<string, unknown>;
+    file = u.import ?? u.default;
+  }
+  if (typeof file !== "string") return undefined;
+  return path.resolve(packageDir, file);
+}
+
+/**
+ * Read the ui-parser source from a known canonical path (the one
+ * captured by the validator). Used when `canonicalUiParserPath` is
+ * supplied so we don't re-read package.json at load time (the
+ * validator's fingerprint on package.json has already ensured the
+ * manifest hasn't changed).
+ */
+function extractUiParserSourceAt(
+  packageDir: string,
+  packageName: string,
+  canonicalUiParserPath: string,
+): string | undefined {
+  // Re-check the ui-parser contract version from package.json. This
+  // is still safe because the manifest fingerprint (if supplied)
+  // has already verified package.json hasn't been mutated.
+  const pkgJsonPath = path.join(packageDir, "package.json");
+  let pkg: { paperclip?: { adapterUiParser?: unknown } };
+  try {
+    pkg = JSON.parse(fs.readFileSync(pkgJsonPath, "utf-8"));
+  } catch {
+    return undefined;
+  }
+  const contractVersion = pkg.paperclip?.adapterUiParser;
+  if (typeof contractVersion === "string") {
+    const major = contractVersion.split(".")[0];
+    if (major !== SUPPORTED_PARSER_CONTRACT) {
+      logger.warn(
+        { packageName, contractVersion, supported: `${SUPPORTED_PARSER_CONTRACT}.x` },
+        "Adapter declares unsupported UI parser contract version — skipping UI parser",
+      );
+      return undefined;
+    }
+  } else {
+    logger.info(
+      { packageName },
+      "Adapter has ./ui-parser export but no paperclip.adapterUiParser version — loading anyway (future versions may require it)",
+    );
+  }
+  try {
+    const source = fs.readFileSync(canonicalUiParserPath, "utf-8");
+    logger.info(
+      { packageName, uiParserPath: canonicalUiParserPath, size: source.length },
+      `Loaded UI parser from adapter package${contractVersion ? "" : " (no version declared)"}`,
+    );
+    return source;
+  } catch (err) {
+    logger.warn({ err, packageName, canonicalUiParserPath }, "Failed to read UI parser from adapter package");
+    return undefined;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // UI parser extraction
 // ---------------------------------------------------------------------------
@@ -211,29 +378,37 @@ function validateAdapterModule(mod: unknown, packageName: string): ServerAdapter
 
 /**
  * Load an external adapter package. The caller (the route handler)
- * MUST pass `canonicalPackageDir` (the result of
- * `validateExternalPluginLoad(...).canonicalDir`) AND
- * `canonicalDirIdentity` (the result of
- * `validateExternalPluginLoad(...).canonicalDirIdentity`) — passing
- * only the path string lets an attacker replace the package
- * directory at the canonical pathname between validation and load
- * and defeat the manifest/age/path checks. The fingerprint is a
- * multi-field (dev/ino/ctime/mtime/size) identity — st_ino alone is
- * not sufficient because ext4's inode-recycle cache can return the
- * same inode number to a recreated directory at the same pathname,
- * which CI empirically observed (see PHA-1659 round-4 test failure
- * on `paperclipai:master`).
+ * MUST pass the four fingerprints + canonicalEntryPath from
+ * `validateExternalPluginLoad(...)` — passing only the path string
+ * lets an attacker rewrite the package directory, the manifest, or
+ * the entry file between validation and load and defeat the
+ * manifest/age/path checks. The fingerprints are a multi-field
+ * (dev/ino/ctime/mtime/size) identity — st_ino alone is not
+ * sufficient because ext4's inode-recycle cache can return the same
+ * inode number to a recreated directory at the same pathname, which
+ * CI empirically observed (see PHA-1659 round-4 test failure on
+ * `paperclipai:master`). The entry path is the canonical realpath
+ * resolved by the validator — the loader uses it directly instead
+ * of re-resolving from the manifest, so a manifest mutation between
+ * validation and load cannot redirect the import.
  *
  * The legacy `localPath` arg is kept for backward compatibility with
  * internal callers (e.g. the registry) that have already
  * canonicalized via their own path; the public agent-reachable
- * routes MUST use the canonicalDir from the validator.
+ * routes MUST use the canonicalDir from the validator. Internal
+ * callers without the fingerprint args fall through to the legacy
+ * realpath path (no fingerprint check).
  */
 export async function loadExternalAdapterPackage(
   packageName: string,
   localPath?: string,
   canonicalPackageDir?: string,
-  canonicalDirIdentity?: { dev: number; ino: number; ctime: number; mtime: number; size: number },
+  canonicalDirIdentity?: FileFingerprint,
+  canonicalManifestIdentity?: FileFingerprint,
+  canonicalEntryIdentity?: FileFingerprint,
+  canonicalEntryPath?: string,
+  canonicalUiParserPath?: string,
+  canonicalUiParserIdentity?: FileFingerprint,
 ): Promise<ServerAdapterModule> {
   // Prefer the explicitly canonicalized dir from the validator; fall
   // back to resolving localPath / node_modules ourselves for
@@ -246,46 +421,57 @@ export async function loadExternalAdapterPackage(
         : path.resolve(getAdapterPluginsDir(), "node_modules", packageName),
     );
 
-  // Multi-field fingerprint check (dev/ino/ctime/mtime/size). If ANY
-  // field has changed, the directory at canonicalDir has been
-  // replaced since validation; reject before any import. st_ino
-  // alone is insufficient on ext4 with inode recycling — ctime and
-  // mtime get reset on inode reuse, so checking them catches the
-  // case where the inode number happens to match.
-  if (canonicalDirIdentity !== undefined) {
-    let current: { dev: number; ino: number; ctime: number; mtime: number; size: number };
-    try {
-      const stat = fs.statSync(packageDir);
-      current = {
-        dev: stat.dev,
-        ino: stat.ino,
-        ctime: stat.ctimeMs,
-        mtime: stat.mtimeMs,
-        size: stat.size,
-      };
-    } catch (err) {
-      throw new Error(
-        `Package "${packageName}" canonical dir ${packageDir} cannot be re-stated at load time: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
-      );
-    }
-    const mismatches: string[] = [];
-    if (current.dev !== canonicalDirIdentity.dev) mismatches.push(`dev ${canonicalDirIdentity.dev} -> ${current.dev}`);
-    if (current.ino !== canonicalDirIdentity.ino) mismatches.push(`ino ${canonicalDirIdentity.ino} -> ${current.ino}`);
-    if (current.ctime !== canonicalDirIdentity.ctime) mismatches.push(`ctime ${canonicalDirIdentity.ctime} -> ${current.ctime}`);
-    if (current.mtime !== canonicalDirIdentity.mtime) mismatches.push(`mtime ${canonicalDirIdentity.mtime} -> ${current.mtime}`);
-    if (current.size !== canonicalDirIdentity.size) mismatches.push(`size ${canonicalDirIdentity.size} -> ${current.size}`);
+  // Run all available fingerprints (directory, manifest, entry file,
+  // optional ui-parser) against fresh stats. ANY mismatch rejects
+  // before any import. The directory check closes path-name TOCTOU
+  // (round 3/4); the manifest + entry + ui-parser checks close the
+  // file-mutation bypass (round 5) where the agent overwrites files
+  // inside the same directory.
+  if (
+    canonicalDirIdentity !== undefined ||
+    canonicalManifestIdentity !== undefined ||
+    canonicalEntryIdentity !== undefined ||
+    canonicalUiParserIdentity !== undefined
+  ) {
+    const pkgJsonPath = path.join(packageDir, "package.json");
+    // If the validator already captured the entry path, use it for
+    // the entry-file stat. Otherwise derive the entry path from the
+    // current packageDir (legacy path — no entry fingerprint, so
+    // file mutation would not be detected; but the legacy path is
+    // only used by internal callers that bypass the validator).
+    const entryPathForStat =
+      canonicalEntryPath ??
+      resolveCanonicalEntryPoint(packageDir, packageName);
+    const uiParserPathForStat =
+      canonicalUiParserPath ?? resolveUiParserPath(packageDir);
+
+    const mismatches = verifyAllFingerprints(
+      packageName,
+      packageDir,
+      pkgJsonPath,
+      entryPathForStat,
+      uiParserPathForStat,
+      canonicalDirIdentity,
+      canonicalManifestIdentity,
+      canonicalEntryIdentity,
+      canonicalUiParserIdentity,
+    );
     if (mismatches.length > 0) {
       throw new Error(
-        `Package "${packageName}" canonical dir ${packageDir} was replaced between validation and load ` +
+        `Package "${packageName}" files were mutated between validation and load ` +
           `(fingerprint mismatches: ${mismatches.join(", ")})`,
       );
     }
   }
 
-  const modulePath = resolveCanonicalEntryPoint(packageDir, packageName);
-  const uiParserSource = extractUiParserSource(packageDir, packageName);
+  // Use the canonical entry path captured at validation time if
+  // available; otherwise re-resolve from the manifest (legacy path).
+  const modulePath =
+    canonicalEntryPath ?? resolveCanonicalEntryPoint(packageDir, packageName);
+  const uiParserSource =
+    canonicalUiParserPath !== undefined
+      ? extractUiParserSourceAt(packageDir, packageName, canonicalUiParserPath)
+      : extractUiParserSource(packageDir, packageName);
 
   logger.info({ packageName, packageDir, modulePath, hasUiParser: !!uiParserSource }, "Loading external adapter package");
 
@@ -317,20 +503,26 @@ async function loadFromRecord(record: AdapterPluginRecord): Promise<ServerAdapte
  *
  * If `canonicalPackageDir` is provided, it MUST be the result of
  * `validateExternalPluginLoad(...).canonicalDir` for the same package
- * and we will use it as the package root. If `canonicalDirIdentity`
- * is provided, it MUST be the result of
- * `validateExternalPluginLoad(...).canonicalDirIdentity` for the
- * same package; the loader will re-stat the dir and reject if any
- * of the fingerprint fields has changed (path-name TOCTOU closure,
- * multi-field to defeat ext4 inode recycling). Otherwise we resolve
- * the record's localPath / node_modules path ourselves. Both paths
- * go through `resolveCanonicalEntryPoint` so an entry-point escape
- * is rejected at load time.
+ * and we will use it as the package root. The other fingerprint args
+ * MUST also come from the validator's `ok: true` decision for the
+ * same package; the loader will re-stat the dir / manifest / entry
+ * file / ui-parser file and reject if any fingerprint field has
+ * changed (path-name TOCTOU closure on the directory, file-mutation
+ * bypass closure on the manifest / entry / ui-parser). Otherwise we
+ * resolve the record's localPath / node_modules path ourselves.
+ * Both paths go through `resolveCanonicalEntryPoint` (or the
+ * captured canonicalEntryPath) so an entry-point escape is rejected
+ * at reload time.
  */
 export async function reloadExternalAdapter(
   type: string,
   canonicalPackageDir?: string,
-  canonicalDirIdentity?: { dev: number; ino: number; ctime: number; mtime: number; size: number },
+  canonicalDirIdentity?: FileFingerprint,
+  canonicalManifestIdentity?: FileFingerprint,
+  canonicalEntryIdentity?: FileFingerprint,
+  canonicalEntryPath?: string,
+  canonicalUiParserPath?: string,
+  canonicalUiParserIdentity?: FileFingerprint,
 ): Promise<ServerAdapterModule | null> {
   const record = getAdapterPluginByType(type);
   if (!record) return null;
@@ -343,43 +535,44 @@ export async function reloadExternalAdapter(
         : path.resolve(getAdapterPluginsDir(), "node_modules", record.packageName),
     );
 
-  // Same multi-field fingerprint check as loadExternalAdapterPackage.
-  // Closes the path-name TOCTOU for the reload path. If the
-  // fingerprint check fires, we never bust the ESM cache or run the
+  // Same fingerprint check as loadExternalAdapterPackage. Closes the
+  // path-name TOCTOU (directory fingerprint) AND the file-mutation
+  // bypass (manifest + entry + ui-parser fingerprints). If any
+  // fingerprint fires, we never bust the ESM cache or run the
   // import — fail closed.
-  if (canonicalDirIdentity !== undefined) {
-    let current: { dev: number; ino: number; ctime: number; mtime: number; size: number };
-    try {
-      const stat = fs.statSync(packageDir);
-      current = {
-        dev: stat.dev,
-        ino: stat.ino,
-        ctime: stat.ctimeMs,
-        mtime: stat.mtimeMs,
-        size: stat.size,
-      };
-    } catch (err) {
-      throw new Error(
-        `Adapter "${type}" canonical dir ${packageDir} cannot be re-stated at reload time: ${
-          err instanceof Error ? err.message : String(err)
-        }`,
-      );
-    }
-    const mismatches: string[] = [];
-    if (current.dev !== canonicalDirIdentity.dev) mismatches.push(`dev ${canonicalDirIdentity.dev} -> ${current.dev}`);
-    if (current.ino !== canonicalDirIdentity.ino) mismatches.push(`ino ${canonicalDirIdentity.ino} -> ${current.ino}`);
-    if (current.ctime !== canonicalDirIdentity.ctime) mismatches.push(`ctime ${canonicalDirIdentity.ctime} -> ${current.ctime}`);
-    if (current.mtime !== canonicalDirIdentity.mtime) mismatches.push(`mtime ${canonicalDirIdentity.mtime} -> ${current.mtime}`);
-    if (current.size !== canonicalDirIdentity.size) mismatches.push(`size ${canonicalDirIdentity.size} -> ${current.size}`);
+  if (
+    canonicalDirIdentity !== undefined ||
+    canonicalManifestIdentity !== undefined ||
+    canonicalEntryIdentity !== undefined ||
+    canonicalUiParserIdentity !== undefined
+  ) {
+    const pkgJsonPath = path.join(packageDir, "package.json");
+    const entryPathForStat =
+      canonicalEntryPath ?? resolveCanonicalEntryPoint(packageDir, record.packageName);
+    const uiParserPathForStat =
+      canonicalUiParserPath ?? resolveUiParserPath(packageDir);
+
+    const mismatches = verifyAllFingerprints(
+      record.packageName,
+      packageDir,
+      pkgJsonPath,
+      entryPathForStat,
+      uiParserPathForStat,
+      canonicalDirIdentity,
+      canonicalManifestIdentity,
+      canonicalEntryIdentity,
+      canonicalUiParserIdentity,
+    );
     if (mismatches.length > 0) {
       throw new Error(
-        `Adapter "${type}" canonical dir ${packageDir} was replaced between validation and reload ` +
+        `Adapter "${type}" files were mutated between validation and reload ` +
           `(fingerprint mismatches: ${mismatches.join(", ")})`,
       );
     }
   }
 
-  const modulePath = resolveCanonicalEntryPoint(packageDir, record.packageName);
+  const modulePath =
+    canonicalEntryPath ?? resolveCanonicalEntryPoint(packageDir, record.packageName);
   const fileUrl = `file://${modulePath}`;
 
   // Bust ESM module cache so re-import loads fresh code from disk.
