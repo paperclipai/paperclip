@@ -113,9 +113,33 @@ Weg ist der eigenständige MLX-Port `dgrauet/ltx-2-mlx` (MIT).
 - Gewichte `dgrauet/ltx-2.3-mlx-q8` (ohne die redundanten `*-1.1`-Dubletten)
   plus Text-Encoder `mlx-community/gemma-3-12b-it-4bit`
 
-### Offen
+### Gemessen am 03.08. (Erstlauf, `--two-stage`)
 
-- Testclip und Laufzeitmessung auf dem M5 Max
+Clip: 704×448, 97 Frames, 24 fps = 4,04 s, **mit synchronem Ton** (AAC).
+Qualität überzeugend: kohärente Kamerafahrt, stabile Personen und
+Beleuchtung über alle Frames.
+
+| Abschnitt | Zeit |
+|---|---|
+| Denoising Stufe 1 (30 Schritte, 6,08 s/Schritt) | 2:52 |
+| Denoising Stufe 2 (3 Schritte) | 0:21 |
+| **Rechnen gesamt** | **~3:13** |
+| **Wanduhr gesamt** | **41:28** (2488 s) |
+
+**Das ist der entscheidende Befund:** Das Erzeugen dauert gut drei Minuten,
+die restlichen ~38 Minuten gehen fürs **Laden der Gewichte** drauf. Die CLI
+lädt bei jedem Aufruf über 20 GB frisch von der Platte.
+
+→ **Video darf nicht als Ein-Schuss-CLI je Auftrag laufen.** Es braucht einen
+**residenten Prozess**, der die Gewichte einmal lädt und danach Aufträge
+entgegennimmt — genau wie ComfyUI es für Bilder tut. Dann liegt ein Clip bei
+rund drei bis vier Minuten statt bei vierzig.
+
+Zur Einordnung: Die im Netz zitierten „152 s für 5 Sekunden auf einem M4 Max"
+beziehen sich auf die **reine Denoising-Zeit** und decken sich mit unseren
+3:13 — nicht auf die Wanduhr eines Kaltstarts.
+
+### Offen
 - Anbindung an Paperclip (eigenes Label oder `modell: ltx` im Bilddienst)
 - Alternative: `dgrauet/ComfyUI-LTXVideo-mlx` brächte Video in denselben
   ComfyUI-Knoten und damit in die bestehende Dienst-Mechanik — zieht aber
