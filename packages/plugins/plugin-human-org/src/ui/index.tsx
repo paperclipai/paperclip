@@ -14,6 +14,36 @@ type IssueRecord = { id: string; identifier?: string | null; title: string; stat
 function createRequestId(): string {
   return globalThis.crypto?.randomUUID?.() ?? `${Date.now()}-${Math.random().toString(36).slice(2)}`;
 }
+
+export interface NewTaskRequestInput {
+  companyId: string;
+  humanExternalId: string;
+  projectId?: string;
+  title: string;
+  description: string;
+  priority: string;
+}
+
+export interface NewTaskRequestIdentity {
+  requestId: string;
+  input: NewTaskRequestInput;
+}
+
+export function resolveNewTaskRequestIdentity(
+  current: NewTaskRequestIdentity | null,
+  input: NewTaskRequestInput,
+  nextRequestId: () => string = createRequestId,
+): NewTaskRequestIdentity {
+  const unchanged = current
+    && current.input.companyId === input.companyId
+    && current.input.humanExternalId === input.humanExternalId
+    && current.input.projectId === input.projectId
+    && current.input.title === input.title
+    && current.input.description === input.description
+    && current.input.priority === input.priority;
+  return unchanged ? current : { requestId: nextRequestId(), input: { ...input } };
+}
+
 type AssignmentRecord = { issueId: string; humanExternalId: string; linkedUserId: string | null; notificationState: string };
 type WorkCard = { assignment: AssignmentRecord; human: HumanProfile; issue: IssueRecord };
 type RosterData = { profiles: HumanProfile[]; roots: OrgTreeNode[]; inactiveCount: number };
@@ -157,7 +187,7 @@ function NewTaskPanel({ companyId, profiles, projects, onCreated }: { companyId:
   const [busy, setBusy] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
-  const requestIdRef = useRef<string | null>(null);
+  const requestIdentityRef = useRef<NewTaskRequestIdentity | null>(null);
 
   async function submit(event: FormEvent) {
     event.preventDefault();
@@ -165,17 +195,20 @@ function NewTaskPanel({ companyId, profiles, projects, onCreated }: { companyId:
     setMessage(null);
     setError(null);
     try {
-      requestIdRef.current ??= createRequestId();
-      const result = await createTask({
+      const requestIdentity = resolveNewTaskRequestIdentity(requestIdentityRef.current, {
         companyId,
-        requestId: requestIdRef.current,
         humanExternalId,
         projectId: projectId || undefined,
         title,
         description,
         priority,
+      });
+      requestIdentityRef.current = requestIdentity;
+      const result = await createTask({
+        ...requestIdentity.input,
+        requestId: requestIdentity.requestId,
       }) as { issue?: IssueRecord; notification?: { state?: string; reason?: string } };
-      requestIdRef.current = null;
+      requestIdentityRef.current = null;
       setMessage(`Created ${result.issue?.identifier ?? result.issue?.id ?? "task"}. Mattermost: ${result.notification?.state ?? "skipped"}.`);
       setTitle("");
       setDescription("");
