@@ -1,6 +1,6 @@
 import type { Meta, StoryObj } from "@storybook/react-vite";
 import type { Issue } from "@paperclipai/shared";
-import { IssueMonitorActivityCard } from "@/components/IssueMonitorActivityCard";
+import { IssueMonitorBanner, IssueMonitorComposerStrip } from "@/components/IssueMonitorBanner";
 import { IssueProperties } from "@/components/IssueProperties";
 import {
   storybookExecutionWorkspaces,
@@ -34,24 +34,6 @@ const monitoredIssue: Issue = {
       scheduledBy: "assignee",
       serviceName: "Greptile",
       externalRef: "https://app.greptile.com/runs/abc123",
-    },
-  },
-};
-
-const longerWaitIssue: Issue = {
-  ...baseIssue,
-  monitorNextCheckAt: inTwoHours(),
-  monitorNotes: null,
-  monitorAttemptCount: 0,
-  executionPolicy: {
-    ...(baseIssue.executionPolicy ?? { mode: "normal", commentRequired: true, stages: [] }),
-    monitor: {
-      nextCheckAt: inTwoHours().toISOString(),
-      notes: null,
-      kind: null,
-      scheduledBy: "assignee",
-      serviceName: null,
-      externalRef: null,
     },
   },
 };
@@ -123,39 +105,150 @@ const clearedIssue: Issue = {
   },
 };
 
+const executionStateStub = baseIssue.executionState ?? {
+  status: "pending" as const,
+  currentStageId: null,
+  currentStageIndex: null,
+  currentStageType: null,
+  currentParticipant: null,
+  returnAssignee: null,
+  reviewRequest: null,
+  completedStageIds: [],
+  lastDecisionId: null,
+  lastDecisionOutcome: null,
+};
+
+type StoryMonitor = NonNullable<NonNullable<Issue["executionState"]>["monitor"]>;
+
+function withMonitor(monitor: StoryMonitor | null): Issue {
+  return {
+    ...baseIssue,
+    monitorNextCheckAt: monitor?.nextCheckAt ? new Date(monitor.nextCheckAt) : null,
+    monitorAttemptCount: monitor?.attemptCount ?? 0,
+    executionState: { ...executionStateStub, monitor },
+    scheduledRetry: null,
+  };
+}
+
+const scheduledMonitorIssue = withMonitor({
+  status: "scheduled",
+  nextCheckAt: inTwoHours().toISOString(),
+  lastTriggeredAt: null,
+  attemptCount: 1,
+  notes: null,
+  scheduledBy: "assignee",
+  kind: "external_service",
+  serviceName: "vercel-deploy",
+  externalRef: null,
+  timeoutAt: null,
+  maxAttempts: null,
+  recoveryPolicy: null,
+  clearedAt: null,
+  clearReason: null,
+});
+
+const retryingMonitorIssue = withMonitor({
+  status: "scheduled",
+  nextCheckAt: new Date(Date.now() + 90 * 60_000).toISOString(),
+  lastTriggeredAt: new Date(Date.now() - 5 * 60_000).toISOString(),
+  attemptCount: 3,
+  notes: null,
+  scheduledBy: "assignee",
+  kind: "external_service",
+  serviceName: "deploy health",
+  externalRef: null,
+  timeoutAt: null,
+  maxAttempts: null,
+  recoveryPolicy: null,
+  clearedAt: null,
+  clearReason: null,
+});
+
+const dueNowMonitorIssue = withMonitor({
+  status: "scheduled",
+  nextCheckAt: new Date(Date.now() - 10_000).toISOString(),
+  lastTriggeredAt: null,
+  attemptCount: 1,
+  notes: null,
+  scheduledBy: "assignee",
+  kind: null,
+  serviceName: "vercel-deploy",
+  externalRef: null,
+  timeoutAt: null,
+  maxAttempts: null,
+  recoveryPolicy: null,
+  clearedAt: null,
+  clearReason: null,
+});
+
+const overdueMonitorIssue = withMonitor({
+  status: "scheduled",
+  nextCheckAt: new Date(Date.now() - 18 * 60_000).toISOString(),
+  lastTriggeredAt: null,
+  attemptCount: 2,
+  notes: null,
+  scheduledBy: "assignee",
+  kind: null,
+  serviceName: "vercel-deploy",
+  externalRef: null,
+  timeoutAt: null,
+  maxAttempts: null,
+  recoveryPolicy: null,
+  clearedAt: null,
+  clearReason: null,
+});
+
 function MonitorSurfaceStories() {
   return (
     <div className="space-y-8 p-6">
-      <section className="space-y-2">
+      <section className="space-y-3">
         <div className="text-xs uppercase tracking-wide text-muted-foreground">
-          IssueMonitorActivityCard - external service (Greptile)
+          Pinned top banner — scheduled (2h wait, external service)
         </div>
-        <IssueMonitorActivityCard
-          issue={monitoredIssue}
+        <IssueMonitorBanner
+          issue={scheduledMonitorIssue}
           onCheckNow={() => undefined}
           checkingNow={false}
         />
-      </section>
 
-      <section className="space-y-2">
         <div className="text-xs uppercase tracking-wide text-muted-foreground">
-          IssueMonitorActivityCard - generic 2h wait, no service metadata
+          Pinned top banner — retrying (attempt 3)
         </div>
-        <IssueMonitorActivityCard
-          issue={longerWaitIssue}
-          onCheckNow={() => undefined}
-          checkingNow={false}
-        />
-      </section>
+        <IssueMonitorBanner issue={retryingMonitorIssue} onCheckNow={() => undefined} />
 
-      <section className="space-y-2">
         <div className="text-xs uppercase tracking-wide text-muted-foreground">
-          IssueMonitorActivityCard - returns null when no monitor is set
+          Pinned top banner — due now
+        </div>
+        <IssueMonitorBanner issue={dueNowMonitorIssue} onCheckNow={() => undefined} />
+
+        <div className="text-xs uppercase tracking-wide text-muted-foreground">
+          Pinned top banner — overdue (warning tone)
+        </div>
+        <IssueMonitorBanner issue={overdueMonitorIssue} onCheckNow={() => undefined} />
+
+        <div className="text-xs uppercase tracking-wide text-muted-foreground">
+          Pinned top banner — cleared / none (renders nothing)
         </div>
         <div className="rounded-lg border border-dashed border-border px-3 py-2 text-xs text-muted-foreground">
-          (intentionally renders nothing for issues without a scheduled monitor)
+          (banner + strip hide entirely for cleared / no-monitor issues)
         </div>
-        <IssueMonitorActivityCard issue={baseIssue} onCheckNow={() => undefined} />
+        <IssueMonitorBanner issue={clearedIssue} onCheckNow={() => undefined} />
+        <IssueMonitorBanner issue={baseIssue} onCheckNow={() => undefined} />
+      </section>
+
+      <section className="space-y-3">
+        <div className="text-xs uppercase tracking-wide text-muted-foreground">
+          Composer strip — scheduled (inline, above the reply composer)
+        </div>
+        <IssueMonitorComposerStrip
+          issue={scheduledMonitorIssue}
+          onCheckNow={() => undefined}
+        />
+
+        <div className="text-xs uppercase tracking-wide text-muted-foreground">
+          Composer strip — overdue
+        </div>
+        <IssueMonitorComposerStrip issue={overdueMonitorIssue} onCheckNow={() => undefined} />
       </section>
 
       <div className="grid gap-6 lg:grid-cols-2">
@@ -222,7 +315,7 @@ const meta = {
     docs: {
       description: {
         component:
-          "Surfaces the IssueMonitorActivityCard and IssueProperties Monitor row in scheduled / not-scheduled / external-service variants for UX review.",
+          "Surfaces the pinned monitor banner, composer strip, and IssueProperties Monitor row across the wireframe-04 states (scheduled / retrying / due / overdue / cleared) for UX review.",
       },
     },
   },

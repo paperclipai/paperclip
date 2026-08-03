@@ -13,7 +13,7 @@ describe("mapCommentMetadataToSystemNoticeSections", () => {
             title: "Required action",
             rows: [
               { type: "issue_link", label: "Source issue", issueId: "i1", identifier: "PAP-3440", title: "Recovery" },
-              { type: "agent_link", label: "Assignee", agentId: "agent-1", name: "CodexCoder" },
+              { type: "agent_link", label: "Responsible", agentId: "agent-1", name: "CodexCoder" },
               { type: "key_value", label: "Status before", value: "in_progress" },
               { type: "code", label: "Cause code", code: "missing_disposition" },
               { type: "text", label: "Notes", text: "Pick a disposition." },
@@ -37,7 +37,7 @@ describe("mapCommentMetadataToSystemNoticeSections", () => {
         href: "/issues/PAP-3440",
         title: "Recovery",
       },
-      { kind: "agent", label: "Assignee", name: "CodexCoder", href: "/agents/agent-1" },
+      { kind: "agent", label: "Responsible", name: "CodexCoder", href: "/agents/agent-1" },
       { kind: "text", label: "Status before", value: "in_progress" },
       { kind: "code", label: "Cause code", value: "missing_disposition" },
       { kind: "text", label: "Notes", value: "Pick a disposition." },

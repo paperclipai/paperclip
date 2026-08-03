@@ -74,6 +74,7 @@ const listIssuesSchema = z.object({
   originKind: z.string().optional(),
   originId: z.string().optional(),
   includeRoutineExecutions: z.boolean().optional(),
+  includeLiveDescendantSummary: z.boolean().optional(),
   q: z.string().optional(),
 });
 

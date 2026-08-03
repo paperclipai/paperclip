@@ -133,6 +133,7 @@ function makeRun(id: string, status: HeartbeatRun["status"], createdAt: string, 
     id,
     companyId: "company-1",
     agentId,
+    responsibleUserId: null,
     invocationSource: "assignment",
     triggerDetail: null,
     status,
@@ -190,6 +191,7 @@ function makeIssue(id: string, isUnreadForMe: boolean): Issue {
     priority: "medium",
     assigneeAgentId: null,
     assigneeUserId: null,
+    responsibleUserId: null,
     createdByAgentId: null,
     createdByUserId: null,
     issueNumber: 1,
@@ -385,7 +387,9 @@ describe("inbox helpers", () => {
         companyId: "company-1",
         userId: "user-1",
         itemKey: "approval:approval-1",
+        kind: "dismiss",
         dismissedAt: new Date("2026-03-11T01:00:00.000Z"),
+        snoozedUntil: null,
         createdAt: new Date("2026-03-11T01:00:00.000Z"),
         updatedAt: new Date("2026-03-11T01:00:00.000Z"),
       },
@@ -1050,6 +1054,25 @@ describe("inbox helpers", () => {
     ).toEqual(["inbox", "archived", "other"]);
   });
 
+  it("omits empty archived and other ungrouped search sections", () => {
+    expect(
+      buildGroupedInboxSections(
+        [],
+        "none",
+        {},
+        { keyPrefix: "archived-search:", searchSection: "archived" },
+      ),
+    ).toEqual([]);
+    expect(
+      buildGroupedInboxSections(
+        [],
+        "none",
+        {},
+        { keyPrefix: "other-search:", searchSection: "other" },
+      ),
+    ).toEqual([]);
+  });
+
   it("defaults the remembered inbox tab to mine and persists all", () => {
     localStorage.clear();
     expect(loadLastInboxTab()).toBe("mine");
@@ -1192,11 +1215,21 @@ describe("inbox helpers", () => {
   });
 
   it("hides the workspace column option unless isolated workspaces are enabled", () => {
-    expect(getAvailableInboxIssueColumns(false)).toEqual(["status", "id", "assignee", "project", "parent", "labels", "updated"]);
+    expect(getAvailableInboxIssueColumns(false)).toEqual([
+      "status",
+      "id",
+      "assignee",
+      "kickedOffBy",
+      "project",
+      "parent",
+      "labels",
+      "updated",
+    ]);
     expect(getAvailableInboxIssueColumns(true)).toEqual([
       "status",
       "id",
       "assignee",
+      "kickedOffBy",
       "project",
       "workspace",
       "parent",

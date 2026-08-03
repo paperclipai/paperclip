@@ -18,6 +18,8 @@ import {
   PLUGIN_API_ROUTE_METHODS,
   ISSUE_PRIORITIES,
   ROUTINE_CATCH_UP_POLICIES,
+  ROUTINE_ACTIVITY_GATE_POLICIES,
+  ROUTINE_ACTIVITY_GATE_SCOPES,
   ROUTINE_CONCURRENCY_POLICIES,
   ROUTINE_STATUSES,
   ROUTINE_TRIGGER_KINDS,
@@ -167,6 +169,7 @@ export const pluginEnvironmentDriverDeclarationSchema = z.object({
   supportsTemplateCapture: z.boolean().optional(),
   templateRefKind: z.string().min(1).max(100).optional(),
   templateConfigBinding: pluginEnvironmentTemplateConfigBindingSchema.optional(),
+  templateIdentityPaths: z.array(z.string().min(1).max(200)).max(20).optional(),
   supportsTemplateDelete: z.boolean().optional(),
   configSchema: jsonSchemaSchema,
 });
@@ -237,6 +240,8 @@ export const pluginManagedRoutineDeclarationSchema = z.object({
   priority: z.enum(ISSUE_PRIORITIES).optional(),
   concurrencyPolicy: z.enum(ROUTINE_CONCURRENCY_POLICIES).optional(),
   catchUpPolicy: z.enum(ROUTINE_CATCH_UP_POLICIES).optional(),
+  activityGatePolicy: z.enum(ROUTINE_ACTIVITY_GATE_POLICIES).optional(),
+  activityGateScope: z.enum(ROUTINE_ACTIVITY_GATE_SCOPES).optional(),
   variables: z.array(routineVariableSchema).optional(),
   triggers: z.array(z.object({
     kind: z.enum(ROUTINE_TRIGGER_KINDS),
@@ -1134,25 +1139,27 @@ export const installPluginSchema = z.object({
 export type InstallPlugin = z.infer<typeof installPluginSchema>;
 
 // ---------------------------------------------------------------------------
-// Plugin config (instance configuration) schemas
+// Plugin config (company-scoped configuration) schemas
 // ---------------------------------------------------------------------------
 
 /**
- * Schema for creating or updating a plugin's instance configuration.
+ * Schema for creating or updating a plugin's company-scoped configuration.
  * configJson is validated permissively here; runtime validation against
  * the plugin's instanceConfigSchema is done at the service layer.
  */
 export const upsertPluginConfigSchema = z.object({
+  companyId: z.string().uuid(),
   configJson: z.record(z.string(), z.unknown()),
 });
 
 export type UpsertPluginConfig = z.infer<typeof upsertPluginConfigSchema>;
 
 /**
- * Schema for partially updating a plugin's instance configuration.
+ * Schema for partially updating a plugin's company-scoped configuration.
  * Allows a partial merge of config values.
  */
 export const patchPluginConfigSchema = z.object({
+  companyId: z.string().uuid(),
   configJson: z.record(z.string(), z.unknown()),
 });
 

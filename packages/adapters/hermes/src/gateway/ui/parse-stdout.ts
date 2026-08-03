@@ -1,5 +1,15 @@
 import type { TranscriptEntry } from "@paperclipai/adapter-utils";
 
+/**
+ * Strip ANSI escape sequences (CSI, OSC) from terminal text.
+ * Same pattern used in claude-local adapter quota.ts.
+ */
+function stripAnsi(text: string): string {
+  return text
+    .replace(/\u001B\][^\u0007]*(?:\u0007|\u001B\\)/g, "")
+    .replace(/\u001B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])/g, "");
+}
+
 function safeJsonParse(text: string): unknown {
   try {
     return JSON.parse(text);
@@ -18,7 +28,8 @@ function asString(value: unknown): string {
 }
 
 export function parseHermesGatewayStdoutLine(line: string, ts: string): TranscriptEntry[] {
-  const trimmed = line.trim();
+  const cleaned = stripAnsi(line);
+  const trimmed = cleaned.trim();
   if (!trimmed) return [];
 
   const eventMatch = trimmed.match(/^\[hermes-gateway:event\]\s+run=([^\s]+)\s+event=([^\s]+)\s+data=(.*)$/s);
@@ -27,7 +38,7 @@ export function parseHermesGatewayStdoutLine(line: string, ts: string): Transcri
     const data = asRecord(safeJsonParse(eventMatch[3]));
     if (eventName === "message.delta") {
       const delta = asString(data?.delta) || asString(data?.text_delta);
-      return delta ? [{ kind: "assistant", ts, text: delta, delta: true }] : [];
+      return delta ? [{ kind: "assistant", ts, text: stripAnsi(delta), delta: true }] : [];
     }
     if (eventName === "run.failed" || eventName === "run.error") {
       const message = asString(data?.error) || asString(data?.message) || "Hermes run failed";
@@ -43,5 +54,5 @@ export function parseHermesGatewayStdoutLine(line: string, ts: string): Transcri
     return [{ kind: "system", ts, text: trimmed.replace(/^\[hermes-gateway\]\s*/, "") }];
   }
 
-  return [{ kind: "stdout", ts, text: line }];
+  return [{ kind: "stdout", ts, text: cleaned }];
 }

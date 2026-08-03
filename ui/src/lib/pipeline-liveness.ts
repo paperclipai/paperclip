@@ -28,7 +28,7 @@ export interface LivenessBannerView {
   blockerLink: LivenessBannerLink | null;
   /** Secondary link to the linked automation/work task, when one is known. */
   automationLink: LivenessBannerLink | null;
-  /** Permission key the configured assignee is missing (e.g. `pipelines:write`). */
+  /** Permission key the configured responsible is missing (e.g. `pipelines:write`). */
   permissionKey: string | null;
   /** Whether a retry call-to-action should render. */
   showRetry: boolean;
@@ -145,7 +145,7 @@ export function derivePipelineLivenessBanner(
         retryKind: null,
         retryLabel: "",
         helperNote:
-          "Grant the access above to the configured assignee, then Paperclip retries automatically.",
+          "Grant the access above to the configured responsible, then Paperclip retries automatically.",
       };
 
     case "automation_failed": {

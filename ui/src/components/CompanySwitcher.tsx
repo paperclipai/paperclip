@@ -55,7 +55,7 @@ export function CompanySwitcher({ open: controlledOpen, onOpenChange }: CompanyS
           <ChevronsUpDown className="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" className="w-[220px]">
+      <DropdownMenuContent align="start" className="w-(--sz-220px)">
         <DropdownMenuLabel>Companies</DropdownMenuLabel>
         <DropdownMenuSeparator />
         {sidebarCompanies.map((company) => (

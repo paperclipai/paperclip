@@ -3,6 +3,8 @@ import { redactSensitiveText } from "../redaction.js";
 
 export const HEARTBEAT_RUN_RUNTIME_STATUS_TTL_MS = 90_000;
 export const MAX_HEARTBEAT_RUN_RUNTIME_STATUS_MESSAGE_CHARS = 180;
+export const MAX_HEARTBEAT_RUN_RUNTIME_TOOL_NAME_CHARS = 80;
+export const MAX_HEARTBEAT_RUN_RUNTIME_ASSISTANT_SNIPPET_CHARS = 220;
 
 export interface HeartbeatRunRuntimeStatus {
   companyId: string;
@@ -12,6 +14,9 @@ export interface HeartbeatRunRuntimeStatus {
   phase: HeartbeatRunStatusPhase;
   message: string;
   updatedAt: Date;
+  currentToolName: string | null;
+  lastAssistantSnippet: string | null;
+  lastEventAt: Date | null;
 }
 
 const runtimeStatusesByRunId = new Map<string, HeartbeatRunRuntimeStatus>();
@@ -20,14 +25,27 @@ function cloneStatus(status: HeartbeatRunRuntimeStatus): HeartbeatRunRuntimeStat
   return {
     ...status,
     updatedAt: new Date(status.updatedAt),
+    lastEventAt: status.lastEventAt ? new Date(status.lastEventAt) : null,
   };
 }
 
-export function sanitizeHeartbeatRunRuntimeStatusMessage(message: string): string {
-  const normalized = message.replace(/\s+/g, " ").trim();
+function sanitizeRuntimeStatusText(value: string, maxChars: number): string {
+  const normalized = value.replace(/\s+/g, " ").trim();
   const redacted = redactSensitiveText(normalized);
-  if (redacted.length <= MAX_HEARTBEAT_RUN_RUNTIME_STATUS_MESSAGE_CHARS) return redacted;
-  return `${redacted.slice(0, MAX_HEARTBEAT_RUN_RUNTIME_STATUS_MESSAGE_CHARS - 3)}...`;
+  if (redacted.length <= maxChars) return redacted;
+  return `${redacted.slice(0, maxChars - 3)}...`;
+}
+
+export function sanitizeHeartbeatRunRuntimeStatusMessage(message: string): string {
+  return sanitizeRuntimeStatusText(message, MAX_HEARTBEAT_RUN_RUNTIME_STATUS_MESSAGE_CHARS);
+}
+
+export function sanitizeHeartbeatRunRuntimeToolName(toolName: string): string {
+  return sanitizeRuntimeStatusText(toolName, MAX_HEARTBEAT_RUN_RUNTIME_TOOL_NAME_CHARS);
+}
+
+export function sanitizeHeartbeatRunRuntimeAssistantSnippet(snippet: string): string {
+  return sanitizeRuntimeStatusText(snippet, MAX_HEARTBEAT_RUN_RUNTIME_ASSISTANT_SNIPPET_CHARS);
 }
 
 function isExpired(status: HeartbeatRunRuntimeStatus, now: Date, ttlMs: number) {
@@ -35,9 +53,15 @@ function isExpired(status: HeartbeatRunRuntimeStatus, now: Date, ttlMs: number) 
 }
 
 export function setHeartbeatRunRuntimeStatus(
-  input: Omit<HeartbeatRunRuntimeStatus, "message" | "updatedAt"> & {
+  input: Omit<
+    HeartbeatRunRuntimeStatus,
+    "message" | "updatedAt" | "currentToolName" | "lastAssistantSnippet" | "lastEventAt"
+  > & {
     message: string;
     updatedAt?: Date;
+    currentToolName?: string | null;
+    lastAssistantSnippet?: string | null;
+    lastEventAt?: Date | null;
   },
 ): HeartbeatRunRuntimeStatus | null {
   const message = sanitizeHeartbeatRunRuntimeStatusMessage(input.message);
@@ -54,9 +78,60 @@ export function setHeartbeatRunRuntimeStatus(
     phase: input.phase,
     message,
     updatedAt: input.updatedAt ? new Date(input.updatedAt) : new Date(),
+    currentToolName: input.currentToolName
+      ? sanitizeHeartbeatRunRuntimeToolName(input.currentToolName)
+      : null,
+    lastAssistantSnippet: input.lastAssistantSnippet
+      ? sanitizeHeartbeatRunRuntimeAssistantSnippet(input.lastAssistantSnippet)
+      : null,
+    lastEventAt: input.lastEventAt ? new Date(input.lastEventAt) : null,
   };
   runtimeStatusesByRunId.set(status.runId, status);
   return cloneStatus(status);
+}
+
+/**
+ * Refresh the activity timestamps of an existing runtime status without
+ * discarding its message/tool context, so streamed run-log output keeps the
+ * "Working... / X ago" line fresh between structured events. When no live
+ * status exists (first output, or the previous one expired past the TTL), a
+ * fallback `run_activity` status is created instead.
+ */
+export function touchHeartbeatRunRuntimeStatus(input: {
+  companyId: string;
+  issueId: string | null;
+  agentId: string;
+  runId: string;
+  at?: Date;
+  fallbackPhase?: HeartbeatRunStatusPhase;
+  fallbackMessage?: string;
+}): HeartbeatRunRuntimeStatus | null {
+  const at = input.at ?? new Date();
+  const existing = runtimeStatusesByRunId.get(input.runId);
+  if (
+    existing &&
+    !isExpired(existing, at, HEARTBEAT_RUN_RUNTIME_STATUS_TTL_MS) &&
+    existing.companyId === input.companyId &&
+    existing.agentId === input.agentId
+  ) {
+    if (at.getTime() > existing.updatedAt.getTime()) {
+      existing.updatedAt = new Date(at);
+    }
+    if (!existing.lastEventAt || at.getTime() > existing.lastEventAt.getTime()) {
+      existing.lastEventAt = new Date(at);
+    }
+    return cloneStatus(existing);
+  }
+  return setHeartbeatRunRuntimeStatus({
+    companyId: input.companyId,
+    issueId: input.issueId,
+    agentId: input.agentId,
+    runId: input.runId,
+    phase: input.fallbackPhase ?? "run_activity",
+    message: input.fallbackMessage ?? "Receiving agent output",
+    updatedAt: at,
+    lastEventAt: at,
+  });
 }
 
 export function getHeartbeatRunRuntimeStatus(

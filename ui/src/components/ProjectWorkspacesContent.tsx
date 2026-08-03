@@ -45,7 +45,7 @@ export function ProjectWorkspacesContent({
       queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.list(companyId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.list(companyId, { projectId }) });
       queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(projectId) });
-      queryClient.invalidateQueries({ queryKey: queryKeys.projects.list(companyId) });
+      queryClient.invalidateQueries({ queryKey: queryKeys.projects.all(companyId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(companyId) });
       queryClient.invalidateQueries({ queryKey: queryKeys.issues.listByProject(companyId, projectId) });
     },
@@ -76,7 +76,7 @@ export function ProjectWorkspacesContent({
         </div>
         {cleanupFailedSummaries.length > 0 ? (
           <div className="space-y-2">
-            <div className="text-xs font-medium uppercase tracking-[0.18em] text-muted-foreground">
+            <div className="text-xs font-medium uppercase tracking-(--tracking-caps) text-muted-foreground">
               Cleanup attention needed
             </div>
             <div className="space-y-3">
@@ -109,7 +109,7 @@ export function ProjectWorkspacesContent({
             queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.list(companyId) });
             queryClient.invalidateQueries({ queryKey: queryKeys.executionWorkspaces.list(companyId, { projectId }) });
             queryClient.invalidateQueries({ queryKey: queryKeys.projects.detail(projectId) });
-            queryClient.invalidateQueries({ queryKey: queryKeys.projects.list(companyId) });
+            queryClient.invalidateQueries({ queryKey: queryKeys.projects.all(companyId) });
             queryClient.invalidateQueries({ queryKey: queryKeys.issues.list(companyId) });
             queryClient.invalidateQueries({ queryKey: queryKeys.issues.listByProject(companyId, projectId) });
             setClosingWorkspace(null);

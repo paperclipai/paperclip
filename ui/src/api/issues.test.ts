@@ -63,11 +63,33 @@ describe("issuesApi.list", () => {
     );
   });
 
+  it("requests the compact issue list view explicitly", async () => {
+    await issuesApi.listCompact("company-1", {
+      touchedByUserId: "me",
+      includeLiveDescendantSummary: true,
+      limit: 100,
+      sortField: "updated",
+      sortDir: "desc",
+    });
+
+    expect(mockApi.get).toHaveBeenCalledWith(
+      "/companies/company-1/issues?touchedByUserId=me&includeLiveDescendantSummary=true&limit=100&sortField=updated&sortDir=desc&view=compact",
+    );
+  });
+
   it("passes plan document filters through to the company issues endpoint", async () => {
     await issuesApi.list("company-1", { hasPlanDocument: false, limit: 25 });
 
     expect(mockApi.get).toHaveBeenCalledWith(
       "/companies/company-1/issues?hasPlanDocument=false&limit=25",
+    );
+  });
+
+  it("passes live descendant summary opt-in through to the company issues endpoint", async () => {
+    await issuesApi.list("company-1", { includeLiveDescendantSummary: true, limit: 25 });
+
+    expect(mockApi.get).toHaveBeenCalledWith(
+      "/companies/company-1/issues?includeLiveDescendantSummary=true&limit=25",
     );
   });
 

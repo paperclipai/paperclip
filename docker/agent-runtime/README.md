@@ -10,7 +10,7 @@ Container images for running coding-agent harnesses in sandboxed environments (f
 - **`agent-runtime-codex`**: Extends base with `@openai/codex`.
 - **`agent-runtime-gemini`**: Extends base with `@google/gemini-cli` plus headless auth-mode settings.
 - **`agent-runtime-claude`**: Extends base with `@anthropic-ai/claude-code` (symlinked as `claude-code`).
-- **`agent-runtime-acpx`** / **`agent-runtime-hermes`**: Dockerfiles included in the bake group, not in the default publish scope (hermes is a stub until a CLI package exists).
+- **`agent-runtime-hermes`**: Dockerfile included in the bake group, not in the default publish scope (stub until a CLI package exists).
 
 ## Base Image Contents
 
@@ -20,6 +20,14 @@ Container images for running coding-agent harnesses in sandboxed environments (f
 - git
 - tini (PID-1 init, ensures signal propagation)
 - Non-root user `paperclip` (uid/gid 1000)
+
+The NodeSource install puts `node` on the default `PATH`. The agent shim in this
+image runs the harness directly with that `PATH`. The shim does not source a
+login profile, and the runtime never writes a profile or an rc file. Some
+sandbox providers instead wrap each command in a login shell. That shell sources
+`/etc/profile` and the user profile files to read an owner-supplied `PATH`. No
+exec path sources `nvm`. For the full exec-path contract, see
+`packages/plugins/sandbox-providers/SANDBOX-REQUIREMENTS.md`.
 
 **Paperclip Binaries:**
 - `/usr/local/bin/paperclip-agent-shim`: Go binary compiled from `tools/agent-shim/`. Reads `/run/paperclip/runtime-command.json` and `syscall.Exec`s the harness CLI.

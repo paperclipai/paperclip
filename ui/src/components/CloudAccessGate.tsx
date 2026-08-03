@@ -6,11 +6,13 @@ import { authApi } from "@/api/auth";
 import { healthApi } from "@/api/health";
 import { queryKeys } from "@/lib/queryKeys";
 import { BootstrapPendingPage } from "@/components/BootstrapPendingPage";
+import { PaperclipLoading } from "@/components/AnimatedPaperclipIcon";
+import { Card } from "@/components/ui/card";
 
 function NoBoardAccessPage() {
   return (
     <div className="mx-auto max-w-xl py-10">
-      <div className="rounded-lg border border-border bg-card p-6">
+      <Card className="block p-6">
         <h1 className="text-xl font-semibold">No company access</h1>
         <p className="mt-2 text-sm text-muted-foreground">
           This account is signed in, but it does not have an active company membership or instance-admin access on
@@ -19,7 +21,7 @@ function NoBoardAccessPage() {
         <p className="mt-2 text-sm text-muted-foreground">
           Use a company invite or sign in with an account that already belongs to this org.
         </p>
-      </div>
+      </Card>
     </div>
   );
 }
@@ -73,7 +75,7 @@ export function CloudAccessGate() {
     (isAuthenticatedMode && sessionQuery.isLoading) ||
     (isAuthenticatedMode && !isBootstrapPending && !!sessionQuery.data && boardAccessQuery.isLoading)
   ) {
-    return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">Loading...</div>;
+    return <PaperclipLoading />;
   }
 
   if (healthQuery.error || boardAccessQuery.error) {
@@ -91,7 +93,7 @@ export function CloudAccessGate() {
   if (isBootstrapPending) {
     const health = healthQuery.data;
     if (!health) {
-      return <div className="mx-auto max-w-xl py-10 text-sm text-muted-foreground">Loading...</div>;
+      return <PaperclipLoading />;
     }
     const claimError = claimMutation.error instanceof ApiError
       ? { status: claimMutation.error.status, message: claimMutation.error.message }

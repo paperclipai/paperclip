@@ -327,4 +327,28 @@ describe("IssueAttachmentsSection", () => {
       "/api/attachments/pdf-attachment/content?download=1",
     );
   });
+
+  it("can render read-only attachments without destructive controls", async () => {
+    const attachment = makeAttachment({
+      id: "read-only-pdf",
+      originalFilename: "stored-report.pdf",
+      contentType: "application/pdf",
+      contentPath: "/api/attachments/read-only-pdf/content",
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <IssueAttachmentsSection attachments={[attachment]} onImageClick={vi.fn()} />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    expect(container.textContent).toContain("stored-report.pdf");
+    expect(container.querySelector('a[aria-label="Open stored-report.pdf"]')).toBeTruthy();
+    expect(container.querySelector('a[aria-label="Download stored-report.pdf"]')).toBeTruthy();
+    expect(container.querySelector('button[title="Delete attachment"]')).toBeNull();
+    expect(container.textContent).not.toContain("Delete this attachment?");
+  });
 });

@@ -1,4 +1,4 @@
-import type { BillingType } from "../constants.js";
+import type { BillingType, CostStatus } from "../constants.js";
 
 export interface CostEvent {
   id: string;
@@ -12,6 +12,7 @@ export interface CostEvent {
   provider: string;
   biller: string;
   billingType: BillingType;
+  costStatus: CostStatus;
   model: string;
   inputTokens: number;
   cachedInputTokens: number;

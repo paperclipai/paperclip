@@ -65,7 +65,13 @@ export interface AdapterRuntimeServiceReport {
   healthStatus?: "unknown" | "healthy" | "unhealthy";
 }
 
-export type AdapterExecutionErrorFamily = "transient_upstream" | "model_refusal";
+export type AdapterExecutionErrorFamily =
+  | "transient_upstream"
+  | "provider_quota"
+  | "model_refusal"
+  | "refresh_token_reused"
+  | "refresh_token_expired"
+  | "refresh_token_invalidated";
 
 export interface AdapterExecutionResult {
   exitCode: number | null;
@@ -78,6 +84,13 @@ export interface AdapterExecutionResult {
   errorMeta?: Record<string, unknown>;
   usage?: UsageSummary;
   /**
+   * How `usage` totals are scoped. "per_run" means the tokens cover only this
+   * execution; "session_cumulative" means they are running totals for the
+   * persisted session, and the server must delta consecutive runs. Absent
+   * means unknown — the server applies its legacy session-delta heuristic.
+   */
+  usageBasis?: "per_run" | "session_cumulative" | null;
+  /**
    * Legacy single session id output. Prefer `sessionParams` + `sessionDisplayId`.
    */
   sessionId?: string | null;
@@ -88,8 +101,22 @@ export interface AdapterExecutionResult {
   model?: string | null;
   billingType?: AdapterBillingType | null;
   costUsd?: number | null;
+  /**
+   * Provider-billed cost after prompt-cache discounts. Adapters should set
+   * this when they expose it separately; otherwise the server treats a
+   * provider-reported `costUsd` as the cache-adjusted billed amount.
+   */
+  cacheAdjustedCostUsd?: number | null;
   resultJson?: Record<string, unknown> | null;
   runtimeServices?: AdapterRuntimeServiceReport[];
+  /**
+   * Each referenced (mentioned) project that failed to stage into the remote sandbox for this run,
+   * by `projectId`. The run continues without a failed project (per-project failure isolation); this
+   * field carries the failure back so the server counts it in the requested-vs-synced observability
+   * instead of losing it to a warning line. Absent or empty on a local target, or when every staged
+   * referenced project succeeded.
+   */
+  referencedProjectStagingFailures?: Array<{ projectId: string }>;
   summary?: string | null;
   clearSession?: boolean;
   question?: {
@@ -120,6 +147,26 @@ export interface AdapterInvocationMeta {
   context?: Record<string, unknown>;
 }
 
+export interface AdapterRuntimeMcpServer {
+  name: string;
+  url: string;
+  token: string;
+  connectionId: string;
+}
+
+export interface AdapterRuntimeMcpAccess {
+  getServers(): AdapterRuntimeMcpServer[];
+}
+
+export interface AdapterRuntimeEvent {
+  eventType: string;
+  stream?: "system" | "stdout" | "stderr";
+  level?: "info" | "warn" | "error";
+  color?: string;
+  message?: string;
+  payload?: Record<string, unknown>;
+}
+
 export interface AdapterExecutionContext {
   runId: string;
   agent: AdapterAgent;
@@ -135,11 +182,21 @@ export interface AdapterExecutionContext {
   executionTransport?: {
     remoteExecution?: Record<string, unknown> | null;
   };
+  runtimeMcp?: AdapterRuntimeMcpAccess;
   onLog: (stream: "stdout" | "stderr", chunk: string) => Promise<void>;
   onMeta?: (meta: AdapterInvocationMeta) => Promise<void>;
+  onEvent?: (event: AdapterRuntimeEvent) => Promise<void>;
   onRuntimeProgress?: RuntimeStatusSink;
   onSpawn?: (meta: { pid: number; processGroupId: number | null; startedAt: string }) => Promise<void>;
   authToken?: string;
+  /**
+   * The injected OpenTelemetry startup trace context (tracer + root
+   * parent-context helper). The server passes the real, endpoint-gated
+   * implementation; when absent, the ACPX engine uses a no-op, so the whole
+   * span path stays inert. The type is an inline import so this module keeps no
+   * top-level dependency on the timing helper.
+   */
+  startupTraceContext?: import("./acpx-engine/startup-timing.js").StartupTraceContext;
 }
 
 export interface AdapterModel {
@@ -298,6 +355,8 @@ export interface ProviderQuotaResult {
   source?: string | null;
   /** true when the fetch succeeded and windows is populated */
   ok: boolean;
+  /** machine-readable error family when ok is false */
+  errorFamily?: AdapterExecutionErrorFamily | null;
   /** error message when ok is false */
   error?: string;
   windows: QuotaWindow[];
@@ -348,10 +407,20 @@ export interface AdapterRuntimeCommandSpec {
   installCommand?: string | null;
 }
 
+export interface AcpTargetDescriptor {
+  agentId: "claude" | "codex" | "gemini" | "custom" | (string & {});
+  skillsMode: "ephemeral" | "unsupported";
+  prerequisites: {
+    nodeRange?: string;
+    packages?: string[];
+  };
+}
+
 export interface ServerAdapterModule {
   type: string;
   execute(ctx: AdapterExecutionContext): Promise<AdapterExecutionResult>;
   testEnvironment(ctx: AdapterEnvironmentTestContext): Promise<AdapterEnvironmentTestResult>;
+  acp?: AcpTargetDescriptor;
   listSkills?: (ctx: AdapterSkillContext) => Promise<AdapterSkillSnapshot>;
   syncSkills?: (ctx: AdapterSkillContext, desiredSkills: string[]) => Promise<AdapterSkillSnapshot>;
   sessionCodec?: AdapterSessionCodec;
@@ -441,7 +510,7 @@ export type TranscriptEntry =
   | { kind: "assistant"; ts: string; text: string; delta?: boolean }
   | { kind: "thinking"; ts: string; text: string; delta?: boolean }
   | { kind: "user"; ts: string; text: string }
-  | { kind: "tool_call"; ts: string; name: string; input: unknown; toolUseId?: string }
+  | { kind: "tool_call"; ts: string; name: string; input: unknown; toolUseId?: string; invocationId?: string; actionRequestId?: string }
   | { kind: "tool_result"; ts: string; toolUseId: string; toolName?: string; content: string; isError: boolean }
   | { kind: "init"; ts: string; model: string; sessionId: string }
   | { kind: "result"; ts: string; text: string; inputTokens: number; outputTokens: number; cachedTokens: number; costUsd: number; subtype: string; isError: boolean; errors: string[] }
@@ -482,6 +551,24 @@ export interface CreateConfigValues {
   cheapModelEnabled?: boolean;
   chrome: boolean;
   dangerouslySkipPermissions: boolean;
+  claudeEngine?: "auto" | "cli" | "acp";
+  claudeAcpAgentCommand?: string;
+  claudeAcpMode?: "persistent" | "oneshot";
+  claudeAcpNonInteractivePermissions?: "deny" | "fail";
+  claudeAcpStateDir?: string;
+  claudeAcpWarmHandleIdleMs?: number;
+  codexEngine?: "auto" | "cli" | "acp";
+  codexAcpAgentCommand?: string;
+  codexAcpMode?: "persistent" | "oneshot";
+  codexAcpNonInteractivePermissions?: "deny" | "fail";
+  codexAcpStateDir?: string;
+  codexAcpWarmHandleIdleMs?: number;
+  geminiEngine?: "auto" | "cli" | "acp";
+  geminiAcpAgentCommand?: string;
+  geminiAcpMode?: "persistent" | "oneshot";
+  geminiAcpNonInteractivePermissions?: "deny" | "fail";
+  geminiAcpStateDir?: string;
+  geminiAcpWarmHandleIdleMs?: number;
   search: boolean;
   fastMode: boolean;
   dangerouslyBypassSandbox: boolean;

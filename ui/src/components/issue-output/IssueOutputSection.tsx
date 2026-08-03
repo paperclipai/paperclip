@@ -65,7 +65,7 @@ function OutputMediaPreview({
       )}
       <div className="absolute inset-x-0 bottom-0 bg-black/65 px-2 py-1.5 text-left">
         <p className="truncate text-xs font-medium text-white" title={filename}>{filename}</p>
-        <p className="truncate text-[10px] text-white/65">{metaBits.join(" · ")}</p>
+        <p className="truncate text-(length:--text-nano) text-white/65">{metaBits.join(" · ")}</p>
       </div>
     </>
   );
@@ -135,7 +135,7 @@ export function IssueOutputSection({ workProducts, resolveCreatorName, onMediaCl
 
       {rest.length > 0 ? (
         <div className="space-y-2">
-          <p className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">Also produced</p>
+          <p className="text-(length:--text-micro) font-medium uppercase tracking-wide text-muted-foreground">Also produced</p>
           {mediaRest.length > 0 ? (
             <div className="grid grid-cols-4 gap-2">
               {mediaRest.map((item) => (

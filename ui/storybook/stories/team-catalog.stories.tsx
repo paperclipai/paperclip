@@ -353,6 +353,7 @@ export const InstallSuccess: Story = {
               { slug: "cmo", id: "a3", action: "created", name: "CMO (from Core Exec Team)", reason: null },
             ],
             projects: [{ slug: "launch", id: "p1", action: "created", name: "Launch", reason: null }],
+            routines: [],
             envInputs: [],
             warnings: [],
           },

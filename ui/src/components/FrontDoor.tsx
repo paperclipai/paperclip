@@ -7,7 +7,7 @@ interface FrontDoorProps {
 
 export function FrontDoor({ onChoose }: FrontDoorProps) {
   return (
-    <div className="flex flex-col items-center justify-center min-h-[60vh] px-8">
+    <div className="flex flex-col items-center justify-center min-h-(--sz-60vh) px-8">
       <div className="text-center mb-10">
         <h2 className="text-2xl font-bold tracking-tight">
           Welcome to Paperclip

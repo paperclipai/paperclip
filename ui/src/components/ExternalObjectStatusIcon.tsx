@@ -64,7 +64,7 @@ export function ExternalObjectStatusIcon({
   // The clock overlay needs a positioned wrapper. Inline mode keeps the icon
   // tight to the surrounding text; pill mode expects to size by sizeClassName.
   const wrapperBase = inline
-    ? "relative mr-1 inline-flex shrink-0 align-[-0.125em]"
+    ? "relative mr-1 inline-flex shrink-0 align-(--va-0_125em)"
     : "relative inline-flex shrink-0";
   const iconSize = inline ? "h-3 w-3" : sizeClassName;
   const isSpinner = category === "running";

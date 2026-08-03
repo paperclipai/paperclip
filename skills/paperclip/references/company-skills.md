@@ -22,7 +22,7 @@ set.
 ## Permission Model
 
 - Company skill reads: any same-company actor
-- Company skill mutations: board, a human/agent principal with an explicit `skills:create` grant, or an agent whose `canCreateSkills` permission is enabled. `canCreateSkills` defaults on for agents unless explicitly disabled.
+- Company skill mutations: open to same-company actors by default. Missing `skills:create` grants and `canCreateSkills` settings do not deny ordinary skill work; only an explicit company skill policy restriction does. Core safety and company-boundary checks always remain enforced.
 - Agent skill assignment: same permission model as updating that agent
 - Team installs continue to require `agents:create` because they import or create agents in addition to attaching skills.
 
