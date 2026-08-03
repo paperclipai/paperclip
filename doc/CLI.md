@@ -971,7 +971,7 @@ npx paperclipai environment get <environment-id>
 npx paperclipai environment leases <environment-id>
 npx paperclipai environment lease <lease-id>
 npx paperclipai environment update <environment-id> --payload-json '{...}'
-npx paperclipai environment delete <environment-id>
+npx paperclipai environment delete <environment-id> --yes
 npx paperclipai environment probe <environment-id>
 npx paperclipai environment probe-config --company-id <company-id> --payload-json '{...}'
 ```
@@ -980,7 +980,7 @@ npx paperclipai environment probe-config --company-id <company-id> --payload-jso
 npx paperclipai project-workspace list <project-id>
 npx paperclipai project-workspace create <project-id> --payload-json '{...}'
 npx paperclipai project-workspace update <project-id> <workspace-id> --payload-json '{...}'
-npx paperclipai project-workspace delete <project-id> <workspace-id>
+npx paperclipai project-workspace delete <project-id> <workspace-id> --yes
 npx paperclipai project-workspace runtime-service <project-id> <workspace-id> restart --payload-json '{...}'
 npx paperclipai project-workspace runtime-command <project-id> <workspace-id> run --payload-json '{...}'
 ```
