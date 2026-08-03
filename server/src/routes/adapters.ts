@@ -362,10 +362,15 @@ export function adapterRoutes() {
       // TOCTOU bypass. canonicalDir is the realpath of the package
       // root that was just validated; the loader additionally
       // re-verifies the resolved entry point is inside canonicalDir.
+      // canonicalDirInode is captured by the validator at validation
+      // time and re-checked at load time to close the path-name
+      // TOCTOU (an attacker replacing the directory at the same
+      // pathname between validation and load).
       const adapterModule = await loadExternalAdapterPackage(
         canonicalName,
         moduleLocalPath,
         preflight.canonicalDir,
+        preflight.canonicalDirInode,
       );
 
       // External adapters may intentionally override built-in adapter types.
@@ -612,6 +617,7 @@ export function adapterRoutes() {
           : path.join(getAdapterPluginsDir(), "node_modules", pluginRecord.packageName))
       : undefined;
     let canonicalPackageDir: string | undefined;
+    let canonicalPackageDirInode: number | undefined;
     if (packageDir) {
       const preflight = validateExternalPluginLoad(packageDir);
       if (!preflight.ok) {
@@ -631,13 +637,16 @@ export function adapterRoutes() {
       );
       // Capture the canonical dir from the validator so the loader
       // doesn't re-resolve the mutable path (which would re-introduce
-      // the TOCTOU race).
+      // the TOCTOU race). Also capture the inode so the loader can
+      // detect a replace-at-same-pathname between validation and
+      // reload.
       canonicalPackageDir = preflight.canonicalDir;
+      canonicalPackageDirInode = preflight.canonicalDirInode;
     }
 
     // Reload the adapter module (busts ESM cache, re-imports)
     try {
-      const newModule = await reloadExternalAdapter(type, canonicalPackageDir);
+      const newModule = await reloadExternalAdapter(type, canonicalPackageDir, canonicalPackageDirInode);
 
       // Not found in the external adapter store
       if (!newModule) {

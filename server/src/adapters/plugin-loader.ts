@@ -211,18 +211,25 @@ function validateAdapterModule(mod: unknown, packageName: string): ServerAdapter
 
 /**
  * Load an external adapter package. The caller (the route handler)
- * MUST pass `canonicalPackageDir` as the result of
- * `validateExternalPluginLoad(...).canonicalDir` — passing a mutable
- * path here re-introduces the TOCTOU race the validator was supposed
- * to close. The legacy `localPath` arg is kept for backward
- * compatibility with internal callers (e.g. the registry) that have
- * already canonicalized via their own path, but the public
- * agent-reachable routes MUST use the canonicalDir from the validator.
+ * MUST pass `canonicalPackageDir` (the result of
+ * `validateExternalPluginLoad(...).canonicalDir`) AND
+ * `canonicalPackageDirInode` (the result of
+ * `validateExternalPluginLoad(...).canonicalDirInode`) — passing only
+ * the path string lets an attacker replace the package directory at
+ * the canonical pathname between validation and load and defeat the
+ * manifest/age/path checks. The inode is the filesystem-object
+ * identity and survives rename/replace at the same pathname.
+ *
+ * The legacy `localPath` arg is kept for backward compatibility with
+ * internal callers (e.g. the registry) that have already
+ * canonicalized via their own path; the public agent-reachable
+ * routes MUST use the canonicalDir from the validator.
  */
 export async function loadExternalAdapterPackage(
   packageName: string,
   localPath?: string,
   canonicalPackageDir?: string,
+  canonicalPackageDirInode?: number,
 ): Promise<ServerAdapterModule> {
   // Prefer the explicitly canonicalized dir from the validator; fall
   // back to resolving localPath / node_modules ourselves for
@@ -234,6 +241,30 @@ export async function loadExternalAdapterPackage(
         ? path.resolve(localPath)
         : path.resolve(getAdapterPluginsDir(), "node_modules", packageName),
     );
+
+  // If the validator passed the canonical inode, re-stat canonicalDir
+  // and reject if the inode has changed. This closes the path-name
+  // TOCTOU: an attacker who replaces the package directory at
+  // canonicalDir after validation cannot make the loader load the
+  // replacement because the inode check fails first.
+  if (canonicalPackageDirInode !== undefined) {
+    let currentInode: number;
+    try {
+      currentInode = fs.statSync(packageDir).ino;
+    } catch (err) {
+      throw new Error(
+        `Package "${packageName}" canonical dir ${packageDir} cannot be re-stated at load time: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+    if (currentInode !== canonicalPackageDirInode) {
+      throw new Error(
+        `Package "${packageName}" canonical dir ${packageDir} was replaced between validation and load ` +
+          `(inode changed from ${canonicalPackageDirInode} to ${currentInode})`,
+      );
+    }
+  }
 
   const modulePath = resolveCanonicalEntryPoint(packageDir, packageName);
   const uiParserSource = extractUiParserSource(packageDir, packageName);
@@ -268,7 +299,11 @@ async function loadFromRecord(record: AdapterPluginRecord): Promise<ServerAdapte
  *
  * If `canonicalPackageDir` is provided, it MUST be the result of
  * `validateExternalPluginLoad(...).canonicalDir` for the same package
- * and we will use it as the package root. Otherwise we resolve the
+ * and we will use it as the package root. If `canonicalPackageDirInode`
+ * is provided, it MUST be the result of
+ * `validateExternalPluginLoad(...).canonicalDirInode` for the same
+ * package; the loader will re-stat the dir and reject if the inode
+ * changed (path-name TOCTOU closure). Otherwise we resolve the
  * record's localPath / node_modules path ourselves. Both paths go
  * through `resolveCanonicalEntryPoint` so an entry-point escape is
  * rejected at load time.
@@ -276,6 +311,7 @@ async function loadFromRecord(record: AdapterPluginRecord): Promise<ServerAdapte
 export async function reloadExternalAdapter(
   type: string,
   canonicalPackageDir?: string,
+  canonicalPackageDirInode?: number,
 ): Promise<ServerAdapterModule | null> {
   const record = getAdapterPluginByType(type);
   if (!record) return null;
@@ -287,6 +323,29 @@ export async function reloadExternalAdapter(
         ? path.resolve(record.localPath)
         : path.resolve(getAdapterPluginsDir(), "node_modules", record.packageName),
     );
+
+  // Same inode check as loadExternalAdapterPackage. Closes the
+  // path-name TOCTOU for the reload path. If the inode check fires,
+  // we never bust the ESM cache or run the import — fail closed.
+  if (canonicalPackageDirInode !== undefined) {
+    let currentInode: number;
+    try {
+      currentInode = fs.statSync(packageDir).ino;
+    } catch (err) {
+      throw new Error(
+        `Adapter "${type}" canonical dir ${packageDir} cannot be re-stated at reload time: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
+      );
+    }
+    if (currentInode !== canonicalPackageDirInode) {
+      throw new Error(
+        `Adapter "${type}" canonical dir ${packageDir} was replaced between validation and reload ` +
+          `(inode changed from ${canonicalPackageDirInode} to ${currentInode})`,
+      );
+    }
+  }
+
   const modulePath = resolveCanonicalEntryPoint(packageDir, record.packageName);
   const fileUrl = `file://${modulePath}`;
 
