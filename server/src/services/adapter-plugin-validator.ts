@@ -145,7 +145,7 @@ export function validateExternalPluginLoad(packageDir: string, now = Date.now())
   return {
     ok: true,
     manifest: {
-      name: typeof obj.name === "string" ? obj.name : path.basename(resolvedDir),
+      name: typeof obj.name === "string" ? obj.name : path.basename(resolvedDir as string),
       version: typeof obj.version === "string" ? obj.version : undefined,
       keywords: keywords as string[],
     },
@@ -154,6 +154,6 @@ export function validateExternalPluginLoad(packageDir: string, now = Date.now())
     // resolving entry points and importing the module — passing the
     // mutable path lets an attacker swap the package between
     // validation and import (TOCTOU).
-    canonicalDir: resolvedDir || "TEST_DEBUG_FROM_VALIDATOR",
+    canonicalDir: resolvedDir as string,
   };
 }
