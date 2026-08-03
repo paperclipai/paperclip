@@ -80,6 +80,22 @@ import {
 // git-credentials module became its canonical home; existing importers keep working.
 export { scrubGitCredentialText };
 import { publishLiveEvent } from "./live-events.js";
+import {
+  RESTART_BATCH_PROCESS_LOSS_REAP_THRESHOLD,
+  RESTART_BATCH_PROCESS_LOSS_STAGGER_MAX_MS,
+  RESTART_BATCH_STAGGER_RETRY_REASON,
+  RESTART_BATCH_STAGGER_WAKE_REASON,
+  computeRestartBatchStaggerDelayMs,
+} from "./restart-batch-stagger.js";
+// Re-exported so existing imports of these symbols from "./heartbeat.js" keep
+// working after the RENA-54203 move to a shared module.
+export {
+  RESTART_BATCH_PROCESS_LOSS_REAP_THRESHOLD,
+  RESTART_BATCH_PROCESS_LOSS_STAGGER_MAX_MS,
+  RESTART_BATCH_STAGGER_RETRY_REASON,
+  RESTART_BATCH_STAGGER_WAKE_REASON,
+  computeRestartBatchStaggerDelayMs,
+};
 import { normalizeResponsibleUserDenialCode } from "./responsible-user-denial-run-outcomes.js";
 import { getRunLogStore, type RunLogHandle } from "./run-log-store.js";
 import { getServerAdapter, listAdapterModelProfiles, runningProcesses } from "../adapters/index.js";
@@ -377,23 +393,11 @@ const INTERACTION_CONTINUATION_INFRA_MAX_ATTEMPTS = 3;
 const RESOLVED_INTERACTION_CONTINUATION_STATUSES = new Set(["accepted", "answered", "rejected"]);
 const WORKSPACE_VALIDATION_FAILURE_CODE = "workspace_validation_failed";
 const WORKSPACE_VALIDATION_RECOVERY_CAUSE = "workspace_validation_failed";
-// Global thundering-herd damping (RENA-54107): a control-plane restart (crash or
-// graceful redeploy) resets in-memory process tracking, so a single reap/drain
-// sweep can find many runs "orphaned" at once and would otherwise re-queue all of
-// them immediately, flooding the API. When a sweep's batch size crosses this
-// threshold, each retry gets an additional uniform-random stagger before its
-// automatic re-queue. This is additive to, and independent of, the per-run bounded
-// backoff in computeBoundedTransientHeartbeatRetrySchedule above.
-export const RESTART_BATCH_PROCESS_LOSS_REAP_THRESHOLD = Math.max(
-  1,
-  Math.floor(Number(process.env.HEARTBEAT_RESTART_BATCH_REAP_THRESHOLD)) || 8,
-);
-export const RESTART_BATCH_PROCESS_LOSS_STAGGER_MAX_MS = Math.max(
-  0,
-  Math.floor(Number(process.env.HEARTBEAT_RESTART_BATCH_STAGGER_MAX_MS)) || 5 * 60 * 1000,
-);
-export const RESTART_BATCH_STAGGER_RETRY_REASON = "restart_batch_stagger";
-export const RESTART_BATCH_STAGGER_WAKE_REASON = "restart_batch_stagger_retry";
+// RESTART_BATCH_PROCESS_LOSS_REAP_THRESHOLD, RESTART_BATCH_PROCESS_LOSS_STAGGER_MAX_MS,
+// RESTART_BATCH_STAGGER_RETRY_REASON, RESTART_BATCH_STAGGER_WAKE_REASON, and
+// computeRestartBatchStaggerDelayMs (RENA-54107 thundering-herd damping, shared with
+// recovery/service.ts per RENA-54203) now live in ./restart-batch-stagger.js and are
+// re-exported below to keep existing imports of this module working.
 const CONFIGURATION_INCOMPLETE_FAILURE_CODE = "configuration_incomplete";
 const CONFIGURATION_INCOMPLETE_RECOVERY_CAUSE = "configuration_incomplete";
 const EXECUTION_REVIEW_PARTICIPANT_RECOVERY_RETRY_REASON = "execution_review_participant_recovery";
@@ -1195,17 +1199,6 @@ export function computeBoundedTransientHeartbeatRetrySchedule(
     dueAt: new Date(now.getTime() + delayMs),
     maxAttempts: BOUNDED_TRANSIENT_HEARTBEAT_RETRY_MAX_ATTEMPTS,
   };
-}
-
-// Uniform-random delay in [0, maxDelayMs], used to spread automatic re-queues of
-// a restart-triggered batch of process-lost runs instead of firing them all at once.
-export function computeRestartBatchStaggerDelayMs(
-  random: () => number = Math.random,
-  maxDelayMs: number = RESTART_BATCH_PROCESS_LOSS_STAGGER_MAX_MS,
-): number {
-  if (!(maxDelayMs > 0)) return 0;
-  const sample = Math.min(1, Math.max(0, random()));
-  return Math.round(sample * maxDelayMs);
 }
 
 async function resolveRunScopedMentionedSkillKeys(input: {
@@ -2459,6 +2452,12 @@ interface WakeupOptions {
   requestedByActorType?: "user" | "agent" | "system";
   requestedByActorId?: string | null;
   contextSnapshot?: Record<string, unknown>;
+  // RENA-54203: an optional additional delay (ms) before this wake's run becomes
+  // eligible to execute. When set, the new run is created with status
+  // "scheduled_retry" (promoted later by promoteDueScheduledRetries) instead of
+  // "queued", so restart-triggered batches of recovery wakes can be spread out
+  // instead of firing all at once. See ./restart-batch-stagger.js.
+  staggerMs?: number;
 }
 
 type UsageTotals = {
@@ -16986,6 +16985,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     const contextSnapshot: Record<string, unknown> = { ...(opts.contextSnapshot ?? {}) };
     const reason = opts.reason ?? null;
     const payload = opts.payload ?? null;
+    const staggerMs = Math.max(0, Math.floor(opts.staggerMs ?? 0));
+    const staggeredDueAt = staggerMs > 0 ? new Date(Date.now() + staggerMs) : null;
     const {
       contextSnapshot: enrichedContextSnapshot,
       issueIdFromPayload,
@@ -18012,12 +18013,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             agentId,
             invocationSource: source,
             triggerDetail,
-            status: "queued",
+            status: staggeredDueAt ? "scheduled_retry" : "queued",
             responsibleUserId: await resolveQueuedResponsibleUserId(),
             wakeupRequestId: wakeupRequest.id,
             contextSnapshot: enrichedContextSnapshot,
             sessionIdBefore: sessionBefore,
             continuationAttempt,
+            ...(staggeredDueAt
+              ? {
+                  scheduledRetryAt: staggeredDueAt,
+                  scheduledRetryAttempt: 1,
+                  scheduledRetryReason: RESTART_BATCH_STAGGER_RETRY_REASON,
+                }
+              : {}),
           })
           .returning()
           .then((rows) => rows[0]);
@@ -18044,17 +18052,29 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       }
 
       const newRun = outcome.run;
-      publishLiveEvent({
-        companyId: newRun.companyId,
-        type: "heartbeat.run.queued",
-        payload: {
-          runId: newRun.id,
-          agentId: newRun.agentId,
-          invocationSource: newRun.invocationSource,
-          triggerDetail: newRun.triggerDetail,
-          wakeupRequestId: newRun.wakeupRequestId,
-        },
-      });
+      if (staggeredDueAt) {
+        logger.warn(
+          {
+            runId: newRun.id,
+            agentId: newRun.agentId,
+            staggerMs,
+            scheduledRetryAt: staggeredDueAt.toISOString(),
+          },
+          "restart-batch wake staggered instead of queuing immediately",
+        );
+      } else {
+        publishLiveEvent({
+          companyId: newRun.companyId,
+          type: "heartbeat.run.queued",
+          payload: {
+            runId: newRun.id,
+            agentId: newRun.agentId,
+            invocationSource: newRun.invocationSource,
+            triggerDetail: newRun.triggerDetail,
+            wakeupRequestId: newRun.wakeupRequestId,
+          },
+        });
+      }
 
       await startNextQueuedRunForAgent(agent.id);
       return newRun;
@@ -18186,12 +18206,19 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           agentId,
           invocationSource: source,
           triggerDetail,
-          status: "queued",
+          status: staggeredDueAt ? "scheduled_retry" : "queued",
           responsibleUserId: await resolveQueuedResponsibleUserId(),
           wakeupRequestId: wakeupRequest.id,
           contextSnapshot: enrichedContextSnapshot,
           sessionIdBefore: sessionBefore,
           continuationAttempt,
+          ...(staggeredDueAt
+            ? {
+                scheduledRetryAt: staggeredDueAt,
+                scheduledRetryAttempt: 1,
+                scheduledRetryReason: RESTART_BATCH_STAGGER_RETRY_REASON,
+              }
+            : {}),
         })
         .returning()
         .then((rows) => rows[0]);
@@ -18210,17 +18237,29 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     if (queueOutcome.kind === "skipped") return null;
     const newRun = queueOutcome.run;
 
-    publishLiveEvent({
-      companyId: newRun.companyId,
-      type: "heartbeat.run.queued",
-      payload: {
-        runId: newRun.id,
-        agentId: newRun.agentId,
-        invocationSource: newRun.invocationSource,
-        triggerDetail: newRun.triggerDetail,
-        wakeupRequestId: newRun.wakeupRequestId,
-      },
-    });
+    if (staggeredDueAt) {
+      logger.warn(
+        {
+          runId: newRun.id,
+          agentId: newRun.agentId,
+          staggerMs,
+          scheduledRetryAt: staggeredDueAt.toISOString(),
+        },
+        "restart-batch wake staggered instead of queuing immediately",
+      );
+    } else {
+      publishLiveEvent({
+        companyId: newRun.companyId,
+        type: "heartbeat.run.queued",
+        payload: {
+          runId: newRun.id,
+          agentId: newRun.agentId,
+          invocationSource: newRun.invocationSource,
+          triggerDetail: newRun.triggerDetail,
+          wakeupRequestId: newRun.wakeupRequestId,
+        },
+      });
+    }
 
     await startNextQueuedRunForAgent(agent.id);
 
