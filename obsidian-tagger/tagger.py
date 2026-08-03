@@ -170,6 +170,53 @@ NOTIZ:
 """
 
 
+class LLMResponseError(ValueError):
+    """Das Modell hat geantwortet, aber ohne verwertbaren Inhalt."""
+
+
+# Fehler, die nur die einzelne Datei überspringen — nicht den ganzen Lauf.
+LLM_ERRORS = (
+    urllib.error.URLError,
+    urllib.error.HTTPError,
+    json.JSONDecodeError,
+    TimeoutError,
+    LLMResponseError,
+)
+
+
+def extract_json_object(text: str) -> str:
+    """Schneidet das erste vollständige JSON-Objekt aus einem Text heraus.
+
+    Reasoning-Modelle verpacken ihre Antwort gern in Fließtext. Klammern
+    innerhalb von Strings zählen nicht mit.
+    """
+    start = text.find("{")
+    if start < 0:
+        return ""
+    depth = 0
+    in_string = False
+    escaped = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start:i + 1]
+    return ""
+
+
 def llm_extract(text: str, filename: str, tpl: Template, timeout: int = 180) -> dict:
     schema = {
         "name": "frontmatter",
@@ -213,7 +260,21 @@ def llm_extract(text: str, filename: str, tpl: Template, timeout: int = 180) -> 
     )
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         payload = json.loads(resp.read().decode("utf-8"))
-    content = payload["choices"][0]["message"]["content"]
+    choice = payload["choices"][0]
+    msg = choice.get("message") or {}
+    content = (msg.get("content") or "").strip()
+    if not content:
+        # Reasoning-Modelle (z.B. qwen3.6-35b-a3b) legen die fertige Antwort in
+        # reasoning_content ab und lassen content leer. Ohne diesen Rückfall
+        # scheiterte jede Datei an einem nichtssagenden JSONDecodeError.
+        reasoning = msg.get("reasoning_content") or msg.get("reasoning") or ""
+        content = extract_json_object(reasoning.strip())
+    if not content:
+        raise LLMResponseError(
+            f"Modell '{tpl.modell}' lieferte eine leere Antwort "
+            f"(finish_reason={choice.get('finish_reason')}). "
+            "Antwortet das Modell nur mit Reasoning oder ist der Kontext zu klein?"
+        )
     return json.loads(content)
 
 
@@ -292,7 +353,7 @@ def backup_file(path: Path, vault: Path, backup_root: Path) -> Path:
 
 
 def write_with_frontmatter(path: Path, meta: dict) -> None:
-    original = path.read_text(encoding="utf-8")
+    original = path.read_text(encoding="utf-8", errors="replace")
     fm = render_frontmatter(meta)
     new = fm + "\n" + original.lstrip("\n")
     tmp = path.with_suffix(path.suffix + ".tagger.tmp")
@@ -399,7 +460,7 @@ def main() -> int:
             t0 = time.time()
             meta = llm_extract(text, path.name, tpl)
             dt = time.time() - t0
-        except (urllib.error.URLError, urllib.error.HTTPError, json.JSONDecodeError, TimeoutError) as e:
+        except LLM_ERRORS as e:
             log(f"  LLM-FEHLER: {e}")
             fail += 1
             failures.append({"path": str(path), "stage": "llm", "error": str(e)})

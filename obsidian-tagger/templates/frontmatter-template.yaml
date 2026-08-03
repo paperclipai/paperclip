@@ -129,9 +129,13 @@ llm:
   modell: "qwen3.6-35b-a3b-mlx"
   # Begründung: bestes Verhältnis Qualität/Speed für strukturierte
   # Extraktion auf Deutsch; folgt JSON-Schemas zuverlässig.
+  # WICHTIG: Der nächtliche Lauf (01:00) braucht ein Modell auf einem
+  # 24/7-Gerät. qwen3.6 liegt lokal (ctx 98304); mistral-small-3.2-24b
+  # liegt auf der RTX Pro 6000 (ctx 8192), die nachts nicht sicher läuft.
+  # qwen3.6 antwortet nur in reasoning_content — tagger.py fängt das ab.
   # Alternativen falls zu langsam:
-  #   - google/gemma-4-26b-a4b  (MoE, schneller)
-  #   - qwen3.6-35b             (etwas stärker, langsamer)
+  #   - google/gemma-4-12b      (ebenfalls lokal)
+  #   - mistral-small-3.2-24b-instruct-2506  (RTX, nur wenn Gerät läuft)
   endpoint: "http://127.0.0.1:1234/v1/chat/completions"
   temperatur: 0.2
   max_input_chars: 8000   # Notiz wird ggf. gekürzt
