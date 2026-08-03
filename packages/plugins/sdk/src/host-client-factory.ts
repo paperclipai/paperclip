@@ -131,9 +131,11 @@ export interface HostServices {
     execute(params: WorkerToHostMethods["db.execute"][0]): Promise<WorkerToHostMethods["db.execute"][1]>;
   };
 
-  /** Provides `entities.upsert`, `entities.list`. */
+  /** Provides plugin-owned entity persistence. */
   entities: {
+    create(params: WorkerToHostMethods["entities.create"][0]): Promise<WorkerToHostMethods["entities.create"][1]>;
     upsert(params: WorkerToHostMethods["entities.upsert"][0]): Promise<WorkerToHostMethods["entities.upsert"][1]>;
+    upsertMany(params: WorkerToHostMethods["entities.upsertMany"][0]): Promise<WorkerToHostMethods["entities.upsertMany"][1]>;
     list(params: WorkerToHostMethods["entities.list"][0]): Promise<WorkerToHostMethods["entities.list"][1]>;
   };
 
@@ -227,6 +229,7 @@ export interface HostServices {
     get(params: WorkerToHostMethods["issues.get"][0]): Promise<WorkerToHostMethods["issues.get"][1]>;
     create(params: WorkerToHostMethods["issues.create"][0]): Promise<WorkerToHostMethods["issues.create"][1]>;
     update(params: WorkerToHostMethods["issues.update"][0]): Promise<WorkerToHostMethods["issues.update"][1]>;
+    transitionAssigneeEntity(params: WorkerToHostMethods["issues.transitionAssigneeEntity"][0]): Promise<WorkerToHostMethods["issues.transitionAssigneeEntity"][1]>;
     getRelations(params: WorkerToHostMethods["issues.relations.get"][0]): Promise<WorkerToHostMethods["issues.relations.get"][1]>;
     setBlockedBy(params: WorkerToHostMethods["issues.relations.setBlockedBy"][0]): Promise<WorkerToHostMethods["issues.relations.setBlockedBy"][1]>;
     addBlockers(params: WorkerToHostMethods["issues.relations.addBlockers"][0]): Promise<WorkerToHostMethods["issues.relations.addBlockers"][1]>;
@@ -391,7 +394,9 @@ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | n
   "db.execute": "database.namespace.write",
 
   // Entities — no specific capability required (plugin-scoped by design)
+  "entities.create": null,
   "entities.upsert": null,
+  "entities.upsertMany": null,
   "entities.list": null,
 
   // Events
@@ -444,6 +449,7 @@ const METHOD_CAPABILITY_MAP: Record<WorkerToHostMethodName, PluginCapability | n
   "issues.get": "issues.read",
   "issues.create": "issues.create",
   "issues.update": "issues.update",
+  "issues.transitionAssigneeEntity": "issues.update",
   "issues.relations.get": "issue.relations.read",
   "issues.relations.setBlockedBy": "issue.relations.write",
   "issues.relations.addBlockers": "issue.relations.write",
@@ -544,6 +550,7 @@ export function createHostClientHandlers(
   type CompanyScopeRequest =
     | { kind: "none" }
     | { kind: "single"; companyId: string }
+    | { kind: "conflict"; companyIds: string[] }
     | { kind: "all" };
 
   const noCompanyScope: CompanyScopeRequest = { kind: "none" };
@@ -563,20 +570,67 @@ export function createHostClientHandlers(
     if (method === "companies.list") return { kind: "all" };
     if (!isRecord(params)) return noCompanyScope;
 
+    const requestedCompanyIds: string[] = [];
+    if (method === "entities.upsertMany") {
+      if (!Array.isArray(params.inputs) || params.inputs.length === 0) return { kind: "all" };
+      for (const input of params.inputs) {
+        if (!isRecord(input)) return { kind: "all" };
+        if (input.scopeKind !== "company") continue;
+        const scopeId = readNonEmptyString(input.scopeId);
+        if (!scopeId) return { kind: "all" };
+        requestedCompanyIds.push(scopeId);
+      }
+    }
+    if (method === "issues.transitionAssigneeEntity") {
+      if (!isRecord(params.entity)) return { kind: "all" };
+      if (params.entity.scopeKind === "company") {
+        const scopeId = readNonEmptyString(params.entity.scopeId);
+        if (!scopeId) return { kind: "all" };
+        requestedCompanyIds.push(scopeId);
+      }
+    }
     const companyId = readNonEmptyString(params.companyId);
-    if (companyId) return { kind: "single", companyId };
+    if (companyId) requestedCompanyIds.push(companyId);
 
     if (params.scopeKind === "company") {
       const scopeId = readNonEmptyString(params.scopeId);
-      return scopeId ? { kind: "single", companyId: scopeId } : { kind: "all" };
+      if (!scopeId) return { kind: "all" };
+      requestedCompanyIds.push(scopeId);
+    }
+
+    if ((method === "entities.list" || method === "entities.upsert" || method === "entities.create") && !params.scopeKind && !companyId) {
+      return { kind: "all" };
     }
 
     if (method === "events.subscribe" && isRecord(params.filter)) {
       const filterCompanyId = readNonEmptyString(params.filter.companyId);
-      if (filterCompanyId) return { kind: "single", companyId: filterCompanyId };
+      if (filterCompanyId) requestedCompanyIds.push(filterCompanyId);
     }
 
+    const uniqueCompanyIds = [...new Set(requestedCompanyIds)];
+    if (uniqueCompanyIds.length > 1) return { kind: "conflict", companyIds: uniqueCompanyIds };
+    if (uniqueCompanyIds.length === 1) return { kind: "single", companyId: uniqueCompanyIds[0]! };
+
     return noCompanyScope;
+  }
+
+  function requestsNonCompanyScope(
+    method: WorkerToHostMethodName,
+    params: unknown,
+  ): boolean {
+    if (!isRecord(params)) return false;
+    if (method === "entities.upsertMany") {
+      return Array.isArray(params.inputs) && params.inputs.some((input) =>
+        isRecord(input) && input.scopeKind !== "company",
+      );
+    }
+    if (method === "issues.transitionAssigneeEntity") {
+      return !isRecord(params.entity) || params.entity.scopeKind !== "company";
+    }
+    return (
+      Object.prototype.hasOwnProperty.call(params, "scopeKind")
+      && params.scopeKind !== "company"
+    );
   }
 
   function requireInvocationCompanyScope(
@@ -585,6 +639,16 @@ export function createHostClientHandlers(
     context?: WorkerHostCallContext,
   ): void {
     const requested = requestedCompanyScope(method, params);
+    const allowedCompanyId = readNonEmptyString(context?.invocationScope?.companyId);
+
+    if (allowedCompanyId && requestsNonCompanyScope(method, params)) {
+      throw new InvocationScopeDeniedError(
+        pluginId,
+        method,
+        `the current invocation is scoped to company "${allowedCompanyId}"`,
+      );
+    }
+
     if (requested.kind === "none") return;
 
     if (context?.invalidInvocationScope) {
@@ -595,7 +659,13 @@ export function createHostClientHandlers(
       );
     }
 
-    const allowedCompanyId = readNonEmptyString(context?.invocationScope?.companyId);
+    if (requested.kind === "conflict") {
+      throw new InvocationScopeDeniedError(
+        pluginId,
+        method,
+        `conflicting company scopes were requested: ${requested.companyIds.join(", ")}`,
+      );
+    }
 
     if (requested.kind === "all") {
       if (method === "companies.list") return;
@@ -742,8 +812,14 @@ export function createHostClientHandlers(
     }),
 
     // Entities
+    "entities.create": gated("entities.create", async (params) => {
+      return services.entities.create(params);
+    }),
     "entities.upsert": gated("entities.upsert", async (params) => {
       return services.entities.upsert(params);
+    }),
+    "entities.upsertMany": gated("entities.upsertMany", async (params) => {
+      return services.entities.upsertMany(params);
     }),
     "entities.list": gated("entities.list", async (params) => {
       return services.entities.list(params);
@@ -870,6 +946,9 @@ export function createHostClientHandlers(
     }),
     "issues.update": gated("issues.update", async (params) => {
       return services.issues.update(params);
+    }),
+    "issues.transitionAssigneeEntity": gated("issues.transitionAssigneeEntity", async (params) => {
+      return services.issues.transitionAssigneeEntity(params);
     }),
     "issues.relations.get": gated("issues.relations.get", async (params) => {
       return services.issues.getRelations(params);

@@ -65,6 +65,23 @@ describe("createTestHarness action context", () => {
     expect(result.actorFrozen).toBe(true);
   });
 
+  it("does not derive trusted action context from caller-controlled params", async () => {
+    const harness = createTestHarness({ manifest });
+    harness.ctx.actions.register("inspect-untrusted", async (params, context) => ({
+      paramsCompanyId: params.companyId,
+      actorCompanyId: context.actor.companyId,
+      companyId: context.companyId,
+    }));
+
+    await expect(harness.performAction("inspect-untrusted", {
+      companyId: "spoofed-company",
+    })).resolves.toEqual({
+      paramsCompanyId: "spoofed-company",
+      actorCompanyId: null,
+      companyId: null,
+    });
+  });
+
   it("keeps existing one-argument action handlers compatible", async () => {
     const harness = createTestHarness({ manifest });
     harness.ctx.actions.register("legacy", async (params) => ({ ok: params.ok }));

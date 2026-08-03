@@ -1,0 +1,4 @@
+external_id,name,email,title,reports_to_external_id,capabilities,responsibilities,mattermost_username,paperclip_user_id,status
+exec-1,Asha Patel,asha@example.com,CEO,,strategy|budget,Set direction|Approve budget,asha,,active
+eng-1,Diego Ruiz,diego@example.com,Engineer,exec-1,typescript|aws,Build services|Review code,diego,,active
+ops-1,Maya Chen,maya@example.com,Revenue Cycle Lead,exec-1,rcm|payer-operations,Own payer operations|Escalate denials,maya,,active

@@ -9,6 +9,7 @@ import {
   heartbeatRuns,
   invites,
   issues as issuesTable,
+  pluginEntities,
   pluginLogs,
   principalPermissionGrants,
   projects as projectsTable,
@@ -44,6 +45,7 @@ import { approvalService } from "./approvals.js";
 import { getStorageService } from "../storage/index.js";
 import { subscribeCompanyLiveEvents } from "./live-events.js";
 import { createHash, randomBytes, randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import path from "node:path";
 import { pluginRegistryService } from "./plugin-registry.js";
 import { pluginStateStore } from "./plugin-state-store.js";
@@ -78,6 +80,7 @@ import { getTelemetryClient } from "../telemetry.js";
 import { accessService } from "./access.js";
 import { authorizationService, type AuthorizationActor } from "./authorization.js";
 import { redactEventPayload, sanitizeRecord } from "../redaction.js";
+import { conflict } from "../errors.js";
 
 // ---------------------------------------------------------------------------
 // SSRF protection for plugin HTTP fetch
@@ -156,13 +159,11 @@ async function validateAndResolveFetchUrl(urlString: string): Promise<ValidatedF
   try {
     parsed = new URL(urlString);
   } catch {
-    throw new Error(`Invalid URL: ${urlString}`);
+    throw new Error("Invalid outbound HTTP URL");
   }
 
   if (!ALLOWED_PROTOCOLS.has(parsed.protocol)) {
-    throw new Error(
-      `Disallowed protocol "${parsed.protocol}" — only http: and https: are permitted`,
-    );
+    throw new Error("Disallowed outbound HTTP URL protocol; only http: and https: are permitted");
   }
 
   // Resolve the hostname to an IP and check for private ranges.
@@ -176,7 +177,7 @@ async function validateAndResolveFetchUrl(urlString: string): Promise<ValidatedF
   const dnsPromise = dnsLookup(originalHostname, { all: true });
   const timeoutPromise = new Promise<never>((_, reject) => {
     setTimeout(
-      () => reject(new Error(`DNS lookup timed out after ${DNS_LOOKUP_TIMEOUT_MS}ms for ${originalHostname}`)),
+      () => reject(new Error("Outbound HTTP DNS lookup timed out")),
       DNS_LOOKUP_TIMEOUT_MS,
     );
   });
@@ -184,7 +185,7 @@ async function validateAndResolveFetchUrl(urlString: string): Promise<ValidatedF
   try {
     const results = await Promise.race([dnsPromise, timeoutPromise]);
     if (results.length === 0) {
-      throw new Error(`DNS resolution returned no results for ${originalHostname}`);
+      throw new Error("Outbound HTTP DNS resolution returned no results");
     }
 
     // Filter to only non-private IPs instead of rejecting the entire request
@@ -192,9 +193,7 @@ async function validateAndResolveFetchUrl(urlString: string): Promise<ValidatedF
     // to both private and public addresses.
     const safeResults = results.filter((entry) => !isPrivateIP(entry.address));
     if (safeResults.length === 0) {
-      throw new Error(
-        `All resolved IPs for ${originalHostname} are in private/reserved ranges`,
-      );
+      throw new Error("Outbound HTTP URL resolves only to private/reserved ranges");
     }
 
     const resolved = safeResults[0]!;
@@ -209,12 +208,8 @@ async function validateAndResolveFetchUrl(urlString: string): Promise<ValidatedF
     };
   } catch (err) {
     // Re-throw our own errors; wrap DNS failures
-    if (err instanceof Error && (
-      err.message.startsWith("All resolved IPs") ||
-      err.message.startsWith("DNS resolution returned") ||
-      err.message.startsWith("DNS lookup timed out")
-    )) throw err;
-    throw new Error(`DNS resolution failed for ${originalHostname}: ${(err as Error).message}`);
+    if (err instanceof Error && err.message.startsWith("Outbound HTTP")) throw err;
+    throw new Error("Outbound HTTP DNS resolution failed");
   }
 }
 
@@ -1340,11 +1335,33 @@ export function buildHostServices(
     },
 
     entities: {
+      async create(params) {
+        const companyId = params.scopeKind === "company"
+          ? ensureCompanyId(params.scopeId)
+          : null;
+        return registry.createEntity(pluginId, { ...params, companyId } as any) as any;
+      },
       async upsert(params) {
-        return registry.upsertEntity(pluginId, params as any) as any;
+        const companyId = params.scopeKind === "company"
+          ? ensureCompanyId(params.scopeId)
+          : null;
+        return registry.upsertEntity(pluginId, { ...params, companyId } as any) as any;
+      },
+      async upsertMany(params) {
+        if (params.inputs.length === 0 || params.inputs.length > 10_000) {
+          throw new Error("Plugin entity batches must contain between 1 and 10000 items");
+        }
+        const inputs = params.inputs.map((input) => ({
+          ...input,
+          companyId: input.scopeKind === "company" ? ensureCompanyId(input.scopeId) : null,
+        }));
+        return registry.upsertEntities(pluginId, inputs as any) as any;
       },
       async list(params) {
-        return registry.listEntities(pluginId, params as any) as any;
+        const companyId = params.scopeKind === "company"
+          ? ensureCompanyId(params.scopeId)
+          : null;
+        return registry.listEntities(pluginId, { ...params, companyId } as any) as any;
       },
     },
 
@@ -1685,7 +1702,7 @@ export function buildHostServices(
         const companyId = ensureCompanyId(params.companyId);
         await ensurePluginAvailableForCompany(companyId);
         assertReadableOriginFilter(params.originKind);
-        return applyWindow((await issues.list(companyId, params as any)) as Issue[], params);
+        return (await issues.list(companyId, params as any)) as Issue[];
       },
       async get(params) {
         const companyId = ensureCompanyId(params.companyId);
@@ -1765,6 +1782,107 @@ export function buildHostServices(
           },
         });
         return updated;
+      },
+      async transitionAssigneeEntity(params) {
+        const companyId = ensureCompanyId(params.companyId);
+        await ensurePluginAvailableForCompany(companyId);
+        if (
+          params.entity.scopeKind !== "company"
+          || params.entity.scopeId !== companyId
+        ) {
+          throw conflict("Assignment entity must use the issue company scope");
+        }
+        const actorAgentId = params.actor?.actorAgentId ?? null;
+        const actorUserId = params.actor?.actorUserId ?? null;
+        const actorRunId = params.actor?.actorRunId ?? null;
+        const transition = await db.transaction(async (tx) => {
+          const [currentIssue] = await tx
+            .select()
+            .from(issuesTable)
+            .where(and(eq(issuesTable.id, params.issueId), eq(issuesTable.companyId, companyId)))
+            .for("update");
+          if (!currentIssue) throw conflict("Issue assignment changed concurrently");
+          if (
+            (currentIssue.assigneeAgentId ?? null) !== params.expectedAssigneeAgentId
+            || (currentIssue.assigneeUserId ?? null) !== params.expectedAssigneeUserId
+          ) {
+            throw conflict("Issue assignment changed concurrently");
+          }
+
+          const [currentEntity] = await tx
+            .select()
+            .from(pluginEntities)
+            .where(and(
+              eq(pluginEntities.pluginId, pluginId),
+              eq(pluginEntities.companyId, companyId),
+              eq(pluginEntities.entityType, params.entity.entityType),
+              eq(pluginEntities.externalId, params.entity.externalId),
+            ))
+            .for("update");
+          if (
+            currentEntity
+            && (currentEntity.scopeKind !== "company" || currentEntity.scopeId !== companyId)
+          ) {
+            throw conflict("Assignment entity scope conflict");
+          }
+          if (
+            (currentEntity?.id ?? null) !== params.expectedEntity.id
+            || (currentEntity?.updatedAt.toISOString() ?? null) !== params.expectedEntity.updatedAt
+            || (currentEntity?.status ?? null) !== params.expectedEntity.status
+            || !isDeepStrictEqual(currentEntity?.data ?? null, params.expectedEntity.data)
+          ) {
+            throw conflict("Assignment entity changed concurrently");
+          }
+
+          const updatedIssue = await issues.update(params.issueId, {
+            assigneeAgentId: params.assigneeAgentId,
+            assigneeUserId: params.assigneeUserId,
+            actorAgentId,
+            actorUserId,
+          }, tx) as Issue;
+          const [updatedEntity] = currentEntity
+            ? await tx
+              .update(pluginEntities)
+              .set({
+                title: params.entity.title ?? null,
+                status: params.entity.status ?? null,
+                data: params.entity.data,
+                updatedAt: new Date(),
+              })
+              .where(eq(pluginEntities.id, currentEntity.id))
+              .returning()
+            : await tx
+              .insert(pluginEntities)
+              .values({
+                companyId,
+                pluginId,
+                entityType: params.entity.entityType,
+                scopeKind: "company",
+                scopeId: companyId,
+                externalId: params.entity.externalId,
+                title: params.entity.title ?? null,
+                status: params.entity.status ?? null,
+                data: params.entity.data,
+              })
+              .returning();
+          return { issue: updatedIssue, entity: updatedEntity! };
+        });
+        await logPluginActivity({
+          companyId,
+          action: "issue.updated",
+          entityType: "issue",
+          entityId: transition.issue.id,
+          actor: { actorAgentId, actorUserId, actorRunId },
+          details: {
+            identifier: transition.issue.identifier,
+            patch: {
+              assigneeAgentId: params.assigneeAgentId,
+              assigneeUserId: params.assigneeUserId,
+            },
+            atomicPluginEntityId: transition.entity.id,
+          },
+        });
+        return transition as any;
       },
       async getRelations(params) {
         const companyId = ensureCompanyId(params.companyId);

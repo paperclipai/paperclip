@@ -494,6 +494,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
   const routines = new Map<string, Routine>();
   const routineRuns = new Map<string, RoutineRun>();
   const issues = new Map<string, Issue>();
+  const issueIdempotencyIndex = new Map<string, string>();
   const blockedByIssueIds = new Map<string, string[]>();
   const issueComments = new Map<string, IssueComment[]>();
   const issueInteractions = new Map<string, IssueThreadInteraction[]>();
@@ -600,7 +601,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
     options?: TestHarnessPerformActionOptions,
   ): PluginPerformActionContext {
     const actorInput = options?.actor ?? null;
-    const companyId = stringOrNull(options?.companyId) ?? stringOrNull(actorInput?.companyId) ?? stringOrNull(params.companyId);
+    const companyId = stringOrNull(options?.companyId) ?? stringOrNull(actorInput?.companyId);
     const actor = Object.freeze({
       type: actorTypeOrSystem(actorInput?.type),
       userId: stringOrNull(actorInput?.userId),
@@ -934,6 +935,14 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       },
     },
     entities: {
+      async create(input: PluginEntityUpsert) {
+        if (!input.externalId) throw new Error("entities.create requires externalId");
+        const externalKey = `${input.entityType}|${input.scopeKind}|${input.scopeId ?? ""}|${input.externalId}`;
+        const existingId = entityExternalIndex.get(externalKey);
+        const existing = existingId ? entities.get(existingId) : undefined;
+        if (existing) return { created: false, entity: existing };
+        return { created: true, entity: await this.upsert(input) };
+      },
       async upsert(input: PluginEntityUpsert) {
         const externalKey = input.externalId
           ? `${input.entityType}|${input.scopeKind}|${input.scopeId ?? ""}|${input.externalId}`
@@ -974,6 +983,21 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
         }
         if (externalKey) entityExternalIndex.set(externalKey, record.id);
         return record;
+      },
+      async upsertMany(inputs) {
+        const entitySnapshot = new Map(entities);
+        const externalIndexSnapshot = new Map(entityExternalIndex);
+        try {
+          const records = [];
+          for (const input of inputs) records.push(await this.upsert(input));
+          return records;
+        } catch (error) {
+          entities.clear();
+          for (const [key, value] of entitySnapshot) entities.set(key, value);
+          entityExternalIndex.clear();
+          for (const [key, value] of externalIndexSnapshot) entityExternalIndex.set(key, value);
+          throw error;
+        }
       },
       async list(query) {
         let out = [...entities.values()];
@@ -1584,6 +1608,12 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
       },
       async create(input) {
         requireCapability(manifest, capabilitySet, "issues.create");
+        const idempotencyKey = input.idempotencyKey?.trim();
+        if (idempotencyKey) {
+          const existingIssueId = issueIdempotencyIndex.get(`${input.companyId}:${idempotencyKey}`);
+          const existingIssue = existingIssueId ? issues.get(existingIssueId) : undefined;
+          if (existingIssue) return existingIssue;
+        }
         const now = new Date();
         const originKind = normalizePluginOriginKind(
           input.surfaceVisibility === "plugin_operation" && !input.originKind
@@ -1630,6 +1660,7 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
           updatedAt: now,
         };
         issues.set(record.id, record);
+        if (idempotencyKey) issueIdempotencyIndex.set(`${input.companyId}:${idempotencyKey}`, record.id);
         if (input.blockedByIssueIds) blockedByIssueIds.set(record.id, [...new Set(input.blockedByIssueIds)]);
         return record;
       },
@@ -1651,6 +1682,70 @@ export function createTestHarness(options: TestHarnessOptions): TestHarness {
           blockedByIssueIds.set(issueId, [...new Set(nextBlockedByIssueIds)]);
         }
         return updated;
+      },
+      async transitionAssigneeEntity(input) {
+        requireCapability(manifest, capabilitySet, "issues.update");
+        const record = issues.get(input.issueId);
+        if (!isInCompany(record, input.companyId)) throw new Error(`Issue not found: ${input.issueId}`);
+        if (
+          (record.assigneeAgentId ?? null) !== input.expectedAssigneeAgentId
+          || (record.assigneeUserId ?? null) !== input.expectedAssigneeUserId
+        ) {
+          throw new Error("Issue assignment changed concurrently");
+        }
+        if (
+          input.entity.scopeKind !== "company"
+          || input.entity.scopeId !== input.companyId
+        ) {
+          throw new Error("Assignment entity must use the issue company scope");
+        }
+        const externalKey = `${input.entity.entityType}|company|${input.companyId}|${input.entity.externalId}`;
+        const currentEntityId = entityExternalIndex.get(externalKey);
+        const currentEntity = currentEntityId ? entities.get(currentEntityId) : undefined;
+        if (
+          (currentEntity?.id ?? null) !== input.expectedEntity.id
+          || (currentEntity?.updatedAt ?? null) !== input.expectedEntity.updatedAt
+          || (currentEntity?.status ?? null) !== input.expectedEntity.status
+          || JSON.stringify(currentEntity?.data ?? null) !== JSON.stringify(input.expectedEntity.data)
+        ) {
+          throw new Error("Assignment entity changed concurrently");
+        }
+        const now = new Date();
+        const nowIso = now.toISOString();
+        const updatedIssue: Issue = {
+          ...record,
+          assigneeAgentId: input.assigneeAgentId,
+          assigneeUserId: input.assigneeUserId,
+          updatedAt: now,
+        };
+        const updatedEntity: PluginEntityRecord = currentEntity
+          ? {
+            ...currentEntity,
+            entityType: input.entity.entityType,
+            scopeKind: "company",
+            scopeId: input.companyId,
+            externalId: input.entity.externalId,
+            title: input.entity.title ?? null,
+            status: input.entity.status ?? null,
+            data: input.entity.data,
+            updatedAt: nowIso,
+          }
+          : {
+            id: randomUUID(),
+            entityType: input.entity.entityType,
+            scopeKind: "company",
+            scopeId: input.companyId,
+            externalId: input.entity.externalId,
+            title: input.entity.title ?? null,
+            status: input.entity.status ?? null,
+            data: input.entity.data,
+            createdAt: nowIso,
+            updatedAt: nowIso,
+          };
+        issues.set(input.issueId, updatedIssue);
+        entities.set(updatedEntity.id, updatedEntity);
+        entityExternalIndex.set(externalKey, updatedEntity.id);
+        return { issue: updatedIssue, entity: updatedEntity };
       },
       async assertCheckoutOwner(input) {
         requireCapability(manifest, capabilitySet, "issues.checkout");

@@ -801,6 +801,9 @@ export interface PluginStateClient {
  * @see PLUGIN_SPEC.md §21.3 `plugin_entities`
  */
 export interface PluginEntitiesClient {
+  /** Create an entity only if its scoped external ID does not already exist. */
+  create(input: PluginEntityUpsert): Promise<{ created: boolean; entity: PluginEntityRecord }>;
+
   /**
    * Create or update a plugin entity record (upsert by `externalId` within
    * the given scope, or by `id` if provided).
@@ -808,6 +811,9 @@ export interface PluginEntitiesClient {
    * @param input - Entity data to upsert
    */
   upsert(input: PluginEntityUpsert): Promise<PluginEntityRecord>;
+
+  /** Atomically apply all entity upserts, rolling back the whole batch on failure. */
+  upsertMany(inputs: PluginEntityUpsert[]): Promise<PluginEntityRecord[]>;
 
   /**
    * Query plugin entity records.
@@ -1335,6 +1341,28 @@ export interface PluginIssueAttachmentContent {
   contentBase64: string;
 }
 
+export interface PluginIssueAssigneeEntityTransitionInput {
+  issueId: string;
+  companyId: string;
+  expectedAssigneeAgentId: string | null;
+  expectedAssigneeUserId: string | null;
+  expectedEntity: {
+    id: string | null;
+    updatedAt: string | null;
+    status: string | null;
+    data: Record<string, unknown> | null;
+  };
+  assigneeAgentId: string | null;
+  assigneeUserId: string | null;
+  entity: PluginEntityUpsert & { externalId: string };
+  actor?: PluginIssueMutationActor;
+}
+
+export interface PluginIssueAssigneeEntityTransitionResult {
+  issue: Issue;
+  entity: PluginEntityRecord;
+}
+
 /**
  * `ctx.issues` — read and mutate issues plus comments.
  *
@@ -1388,6 +1416,8 @@ export interface PluginIssuesClient {
     originKind?: PluginIssueOriginKind;
     originId?: string | null;
     originRunId?: string | null;
+    /** Company-scoped key used by the host to atomically deduplicate issue creation. */
+    idempotencyKey?: string | null;
     blockedByIssueIds?: string[];
     labelIds?: string[];
     executionWorkspaceId?: string | null;
@@ -1420,6 +1450,13 @@ export interface PluginIssuesClient {
     companyId: string,
     actor?: PluginIssueMutationActor,
   ): Promise<Issue>;
+  /**
+   * Atomically compare-and-swap an issue assignee and one plugin-owned entity.
+   * The host rejects stale issue or entity observations and commits neither write.
+   */
+  transitionAssigneeEntity(
+    input: PluginIssueAssigneeEntityTransitionInput,
+  ): Promise<PluginIssueAssigneeEntityTransitionResult>;
   assertCheckoutOwner(input: {
     issueId: string;
     companyId: string;

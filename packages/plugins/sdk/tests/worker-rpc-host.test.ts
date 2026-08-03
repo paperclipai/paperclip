@@ -297,6 +297,150 @@ describe("worker invocation scope propagation", () => {
   });
 });
 
+describe("worker issue RPC forwarding", () => {
+  it("forwards issue idempotency keys to the production host RPC", async () => {
+    const hostToWorker = new PassThrough();
+    const workerToHost = new PassThrough();
+    const hostReadline = createInterface({ input: workerToHost });
+    const pending = new Map<string, (response: JsonRpcResponse) => void>();
+    let nextRequestId = 1;
+    let capturedCreateParams: Record<string, unknown> | null = null;
+    const capturedEntityMethods: string[] = [];
+    const plugin = definePlugin({
+      async setup(ctx) {
+        ctx.actions.register("create-issue", async () => ctx.issues.create({
+          companyId: "company-a",
+          title: "Atomic human task",
+          originId: "human-task:req-1:exec-1",
+          idempotencyKey: "paperclipai.plugin-human-org:create:req-1",
+        }));
+        ctx.actions.register("entity-primitives", async () => ({
+          claim: await ctx.entities.create({
+            entityType: "claim",
+            scopeKind: "company",
+            scopeId: "company-a",
+            externalId: "claim-1",
+            data: {},
+          }),
+          batch: await ctx.entities.upsertMany([{
+            entityType: "profile",
+            scopeKind: "company",
+            scopeId: "company-a",
+            externalId: "profile-1",
+            data: {},
+          }]),
+        }));
+      },
+    });
+    const worker = startWorkerRpcHost({
+      plugin,
+      stdin: hostToWorker,
+      stdout: workerToHost,
+    });
+
+    function callWorker(method: string, params: unknown, invocation?: PluginInvocationContext) {
+      const id = `host-${nextRequestId++}`;
+      const request = {
+        ...createRequest(method, params, id),
+        ...(invocation ? { paperclipInvocation: invocation } : {}),
+      };
+      const result = new Promise<unknown>((resolve, reject) => {
+        pending.set(id, (response) => {
+          if ("error" in response && response.error) {
+            reject(new Error(response.error.message));
+            return;
+          }
+          resolve((response as { result?: unknown }).result);
+        });
+      });
+      hostToWorker.write(serializeMessage(request));
+      return result;
+    }
+
+    hostReadline.on("line", (line) => {
+      const message = parseMessage(line);
+      if (isJsonRpcResponse(message)) {
+        pending.get(String(message.id))?.(message);
+        pending.delete(String(message.id));
+        return;
+      }
+      if (!isJsonRpcRequest(message)) return;
+      if (message.method === "issues.create") {
+        capturedCreateParams = message.params as Record<string, unknown>;
+        hostToWorker.write(serializeMessage(createSuccessResponse(message.id, {
+          id: "issue-1",
+          companyId: "company-a",
+          title: "Atomic human task",
+          status: "todo",
+          priority: "medium",
+        })));
+        return;
+      }
+      if (message.method !== "entities.create" && message.method !== "entities.upsertMany") return;
+      capturedEntityMethods.push(message.method);
+      const entity = {
+        id: "entity-1",
+        entityType: "claim",
+        scopeKind: "company",
+        scopeId: "company-a",
+        externalId: "claim-1",
+        title: null,
+        status: null,
+        data: {},
+        createdAt: "2026-08-03T00:00:00.000Z",
+        updatedAt: "2026-08-03T00:00:00.000Z",
+      };
+      hostToWorker.write(serializeMessage(createSuccessResponse(
+        message.id,
+        message.method === "entities.create" ? { created: true, entity } : [entity],
+      )));
+    });
+
+    try {
+      await callWorker("initialize", {
+        manifest: {
+          id: "paperclip.issue-forwarding-test",
+          apiVersion: 1,
+          version: "1.0.0",
+          displayName: "Issue forwarding test",
+          description: "Issue forwarding test",
+          author: "Paperclip",
+          categories: ["automation"],
+          capabilities: ["issues.create"],
+          entrypoints: { worker: "dist/worker.js" },
+        },
+        config: {},
+        instanceInfo: { instanceId: "test", hostVersion: "0.0.0" },
+        apiVersion: 1,
+      });
+
+      await callWorker(
+        "performAction",
+        { key: "create-issue", params: {} },
+        { id: "invocation-a", scope: { companyId: "company-a" } },
+      );
+
+      expect(capturedCreateParams).toMatchObject({
+        companyId: "company-a",
+        title: "Atomic human task",
+        originId: "human-task:req-1:exec-1",
+        idempotencyKey: "paperclipai.plugin-human-org:create:req-1",
+      });
+      await callWorker(
+        "performAction",
+        { key: "entity-primitives", params: {} },
+        { id: "invocation-a", scope: { companyId: "company-a" } },
+      );
+      expect(capturedEntityMethods).toEqual(["entities.create", "entities.upsertMany"]);
+    } finally {
+      worker.stop();
+      hostReadline.close();
+      hostToWorker.destroy();
+      workerToHost.destroy();
+    }
+  });
+});
+
 describe("worker configChanged cross-tenant guard", () => {
   // Spin up a worker-rpc-host wired to in-memory streams and expose a
   // request/response `callWorker` plus `initialize`/`stop` helpers.

@@ -19,6 +19,7 @@ import type {
   PluginCompanySettings,
   PluginEntityRecord,
   PluginEntityQuery,
+  PluginStateScopeKind,
   PluginJobRecord,
   PluginJobRunRecord,
   PluginWebhookDeliveryRecord,
@@ -28,6 +29,19 @@ import type {
   PluginWebhookDeliveryStatus,
 } from "@paperclipai/shared";
 import { conflict, notFound } from "../errors.js";
+
+type PluginEntityWrite = {
+  companyId?: string | null;
+  entityType: string;
+  scopeKind: PluginStateScopeKind;
+  scopeId?: string | null;
+  externalId?: string | null;
+  title?: string | null;
+  status?: string | null;
+  data: Record<string, unknown>;
+};
+
+type PluginEntityDb = Pick<Db, "select" | "insert" | "update">;
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -86,6 +100,60 @@ export function pluginRegistryService(db: Db) {
       .select({ maxOrder: sql<number>`coalesce(max(${plugins.installOrder}), 0)` })
       .from(plugins);
     return (result[0]?.maxOrder ?? 0) + 1;
+  }
+
+  async function writeEntity(
+    executor: PluginEntityDb,
+    pluginId: string,
+    input: PluginEntityWrite,
+  ) {
+    let existing: typeof pluginEntities.$inferSelect | undefined;
+    if (input.externalId) {
+      [existing] = await executor
+        .select()
+        .from(pluginEntities)
+        .where(
+          and(
+            input.companyId == null
+              ? isNull(pluginEntities.companyId)
+              : eq(pluginEntities.companyId, input.companyId),
+            eq(pluginEntities.pluginId, pluginId),
+            eq(pluginEntities.entityType, input.entityType),
+            eq(pluginEntities.externalId, input.externalId),
+          ),
+        );
+    }
+
+    if (existing) {
+      const [updated] = await executor
+        .update(pluginEntities)
+        .set({
+          companyId: input.companyId ?? existing.companyId,
+          title: input.title ?? existing.title,
+          status: input.status ?? existing.status,
+          data: input.data,
+          updatedAt: new Date(),
+        })
+        .where(eq(pluginEntities.id, existing.id))
+        .returning();
+      return updated!;
+    }
+
+    const [created] = await executor
+      .insert(pluginEntities)
+      .values({
+        companyId: input.companyId ?? null,
+        pluginId,
+        entityType: input.entityType,
+        scopeKind: input.scopeKind,
+        scopeId: input.scopeId ?? null,
+        externalId: input.externalId ?? null,
+        title: input.title ?? null,
+        status: input.status ?? null,
+        data: input.data,
+      })
+      .returning();
+    return created!;
   }
 
   // -----------------------------------------------------------------------
@@ -482,7 +550,16 @@ export function pluginRegistryService(db: Db) {
      */
     listEntities: (pluginId: string, query?: PluginEntityQuery) => {
       const conditions = [eq(pluginEntities.pluginId, pluginId)];
+      if (query && "companyId" in query) {
+        conditions.push(
+          query.companyId == null
+            ? isNull(pluginEntities.companyId)
+            : eq(pluginEntities.companyId, query.companyId),
+        );
+      }
       if (query?.entityType) conditions.push(eq(pluginEntities.entityType, query.entityType));
+      if (query?.scopeKind) conditions.push(eq(pluginEntities.scopeKind, query.scopeKind));
+      if (query?.scopeId) conditions.push(eq(pluginEntities.scopeId, query.scopeId));
       if (query?.externalId) conditions.push(eq(pluginEntities.externalId, query.externalId));
 
       return db
@@ -533,63 +610,55 @@ export function pluginRegistryService(db: Db) {
         .then((rows) => rows[0] ?? null);
     },
 
-    /**
-     * Create or update a persistent mapping between a Paperclip object and an
-     * external entity.
-     *
-     * @param pluginId - The UUID of the plugin.
-     * @param input - The entity data to persist.
-     * @returns The newly created or updated `PluginEntityRecord`.
-     */
-    upsertEntity: async (
-      pluginId: string,
-      input: Omit<typeof pluginEntities.$inferInsert, "id" | "pluginId" | "createdAt" | "updatedAt">,
-    ) => {
-      // Drizzle doesn't support pg-specific onConflictDoUpdate easily in the insert() call
-      // with complex where clauses, so we do it manually.
-      // Match the per-tenant uniqueness of `plugin_entities_external_idx`
-      // (companyId, pluginId, entityType, externalId) with NULLS NOT DISTINCT
-      // semantics: two companies (and instance-scope NULLs across each other)
-      // may share the same (pluginId, entityType, externalId) tuple, so the
-      // lookup MUST scope by companyId — `isNull` for instance-scope, `eq`
-      // otherwise — to avoid returning and overwriting another tenant's row.
-      const companyIdPredicate =
-        input.companyId == null
-          ? isNull(pluginEntities.companyId)
-          : eq(pluginEntities.companyId, input.companyId);
-      const existing = await db
-        .select()
-        .from(pluginEntities)
-        .where(
-          and(
-            companyIdPredicate,
-            eq(pluginEntities.pluginId, pluginId),
-            eq(pluginEntities.entityType, input.entityType),
-            eq(pluginEntities.externalId, input.externalId ?? ""),
-          ),
-        )
-        .then((rows) => rows[0] ?? null);
-
-      if (existing) {
-        return db
-          .update(pluginEntities)
-          .set({
-            ...input,
-            updatedAt: new Date(),
-          })
-          .where(eq(pluginEntities.id, existing.id))
-          .returning()
-          .then((rows) => rows[0]);
-      }
-
-      return db
+    /** Create an entity only when its tenant-scoped external ID is unused. */
+    createEntity: async (pluginId: string, input: PluginEntityWrite) => {
+      if (!input.externalId) throw conflict("entities.create requires externalId");
+      const [created] = await db
         .insert(pluginEntities)
         .values({
-          ...input,
+          companyId: input.companyId ?? null,
           pluginId,
-        } as any)
-        .returning()
-        .then((rows) => rows[0]);
+          entityType: input.entityType,
+          scopeKind: input.scopeKind,
+          scopeId: input.scopeId ?? null,
+          externalId: input.externalId,
+          title: input.title ?? null,
+          status: input.status ?? null,
+          data: input.data,
+        } as typeof pluginEntities.$inferInsert)
+        .onConflictDoNothing()
+        .returning();
+      if (created) return { created: true, entity: created };
+
+      const companyIdPredicate = input.companyId == null
+        ? isNull(pluginEntities.companyId)
+        : eq(pluginEntities.companyId, input.companyId);
+      const [existing] = await db
+        .select()
+        .from(pluginEntities)
+        .where(and(
+          companyIdPredicate,
+          eq(pluginEntities.pluginId, pluginId),
+          eq(pluginEntities.entityType, input.entityType),
+          eq(pluginEntities.externalId, input.externalId),
+        ));
+      if (!existing) throw conflict("Entity claim conflict could not be resolved");
+      return { created: false, entity: existing };
+    },
+
+    /** Create or update one persistent plugin entity mapping. */
+    upsertEntity: async (pluginId: string, input: PluginEntityWrite) =>
+      writeEntity(db, pluginId, input),
+
+    /** Apply a set of entity upserts in one database transaction. */
+    upsertEntities: async (pluginId: string, inputs: PluginEntityWrite[]) => {
+      if (inputs.length === 0) return [];
+      if (inputs.length > 10_000) throw conflict("Entity upsert batch exceeds 10000 records");
+      return db.transaction(async (tx) => {
+        const records = [];
+        for (const input of inputs) records.push(await writeEntity(tx, pluginId, input));
+        return records;
+      });
     },
 
     /**

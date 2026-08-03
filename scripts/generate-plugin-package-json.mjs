@@ -17,10 +17,15 @@ if (!existsSync(packageJsonPath)) {
 const packageJson = JSON.parse(readFileSync(packageJsonPath, "utf8"));
 const sdkPackageJson = JSON.parse(readFileSync(sdkPackageJsonPath, "utf8"));
 const publishConfig = packageJson.publishConfig ?? {};
-const dependencies = {
-  ...(packageJson.dependencies ?? {}),
-  "@paperclipai/plugin-sdk": sdkPackageJson.version,
-};
+const sdkRuntimeBundled = packageJson.paperclipPlugin?.sdkRuntime === "bundled";
+const dependencies = sdkRuntimeBundled
+  ? Object.fromEntries(Object.entries(packageJson.dependencies ?? {}).filter(
+      ([, version]) => !String(version).startsWith("workspace:"),
+    ))
+  : {
+      ...(packageJson.dependencies ?? {}),
+      "@paperclipai/plugin-sdk": sdkPackageJson.version,
+    };
 
 const publishPackageJson = {
   name: packageJson.name,
