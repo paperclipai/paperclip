@@ -785,7 +785,7 @@ pnpm paperclipai environment get <environment-id>
 pnpm paperclipai environment leases <environment-id>
 pnpm paperclipai environment lease <lease-id>
 pnpm paperclipai environment update <environment-id> --payload-json '{...}'
-pnpm paperclipai environment delete <environment-id>
+pnpm paperclipai environment delete <environment-id> --yes
 pnpm paperclipai environment probe <environment-id>
 pnpm paperclipai environment probe-config --company-id <company-id> --payload-json '{...}'
 ```
@@ -794,7 +794,7 @@ pnpm paperclipai environment probe-config --company-id <company-id> --payload-js
 pnpm paperclipai project-workspace list <project-id>
 pnpm paperclipai project-workspace create <project-id> --payload-json '{...}'
 pnpm paperclipai project-workspace update <project-id> <workspace-id> --payload-json '{...}'
-pnpm paperclipai project-workspace delete <project-id> <workspace-id>
+pnpm paperclipai project-workspace delete <project-id> <workspace-id> --yes
 pnpm paperclipai project-workspace runtime-service <project-id> <workspace-id> restart --payload-json '{...}'
 pnpm paperclipai project-workspace runtime-command <project-id> <workspace-id> run --payload-json '{...}'
 ```
