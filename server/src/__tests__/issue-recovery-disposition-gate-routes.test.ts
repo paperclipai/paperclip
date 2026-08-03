@@ -277,7 +277,11 @@ function boardActor() {
   };
 }
 
-function createSimpleDb() {
+function createSimpleDb(agentRows = [
+  { id: recoveryOwnerAgentId },
+  { id: originalAgentId },
+  { id: tamperedOriginalAgentId },
+]) {
   const query = {
     innerJoin: vi.fn(() => query),
     leftJoin: vi.fn(() => query),
@@ -285,16 +289,12 @@ function createSimpleDb() {
     where: vi.fn(() => ({
       limit: vi.fn(() => ({
         then: async (resolve: (rows: unknown[]) => unknown) => resolve([
-          { id: recoveryOwnerAgentId },
-          { id: originalAgentId },
-          { id: tamperedOriginalAgentId },
+          ...agentRows,
         ]),
       })),
       orderBy: vi.fn(async () => []),
       then: async (resolve: (rows: unknown[]) => unknown) => resolve([
-        { id: recoveryOwnerAgentId },
-        { id: originalAgentId },
-        { id: tamperedOriginalAgentId },
+        ...agentRows,
       ]),
     })),
   };
@@ -306,7 +306,7 @@ function createSimpleDb() {
   };
 }
 
-async function createApp(actor: Record<string, unknown>) {
+async function createApp(actor: Record<string, unknown>, db = createSimpleDb()) {
   const [{ errorHandler }, { issueRoutes }] = await Promise.all([
     vi.importActual<typeof import("../middleware/index.js")>("../middleware/index.js"),
     vi.importActual<typeof import("../routes/issues.js")>("../routes/issues.js"),
@@ -317,7 +317,7 @@ async function createApp(actor: Record<string, unknown>) {
     (req as any).actor = actor;
     next();
   });
-  app.use("/api", issueRoutes(createSimpleDb() as any, mockStorageService as any));
+  app.use("/api", issueRoutes(db as any, mockStorageService as any));
   app.use(errorHandler);
   return app;
 }
@@ -583,14 +583,14 @@ describe("§14 recovery disposition gate (SAG-3377)", () => {
       expect(mockIssueService.update).not.toHaveBeenCalled();
     });
 
-    it("rejects a cross-company previous assignee in a same-call handoff", async () => {
+    it("rejects a cross-company previous assignee for a board actor", async () => {
       mockIssueService.getById.mockResolvedValue(
         makeRecoveryIssue({
           assigneeAgentId: originalAgentId,
           previousAssigneeAgentId: null,
         }),
       );
-      const app = await createApp(originalAgentActor());
+      const app = await createApp(boardActor(), createSimpleDb([]));
 
       const res = await request(app)
         .patch(`/api/issues/${issueId}`)
@@ -601,7 +601,7 @@ describe("§14 recovery disposition gate (SAG-3377)", () => {
         });
 
       expect(res.status).toBe(422);
-      expect(res.body.code).toBe("recovery_previous_assignee_mismatch");
+      expect(res.body.code).toBe("recovery_previous_assignee_invalid");
       expect(mockIssueService.update).not.toHaveBeenCalled();
     });
 

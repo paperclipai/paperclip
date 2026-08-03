@@ -3430,8 +3430,6 @@ export function issueRoutes(
     actorAgentId: string | null | undefined;
   }, res: Response): Promise<boolean> {
     const actorAgentId = input.actorAgentId;
-    if (!actorAgentId) return true;
-
     const nextStatus = typeof input.updateFields.status === "string" ? input.updateFields.status : null;
     const isTerminalDisposition = nextStatus === "done" || nextStatus === "cancelled";
     const suppliedPreviousAssigneeAgentId =
@@ -3467,6 +3465,10 @@ export function issueRoutes(
         return false;
       }
     }
+
+    // Board actors must still use a company-scoped previous-assignee lookup,
+    // but the identity and immutability rules below are agent-only.
+    if (!actorAgentId) return true;
 
     if (
       suppliedPreviousAssigneeAgentId &&
@@ -8430,21 +8432,21 @@ export function issueRoutes(
       actorType: req.actor.type,
     });
 
-    if (req.actor.type === "agent") {
-      if (!(await assertRecoveryPreviousAssigneePatchAllowed(
-        {
-          existing: {
-            id: existing.id,
-            companyId: existing.companyId,
-            assigneeAgentId: existing.assigneeAgentId,
-            previousAssigneeAgentId: existing.previousAssigneeAgentId ?? null,
-          },
-          updateFields,
-          actorAgentId: req.actor.agentId,
+    if (!(await assertRecoveryPreviousAssigneePatchAllowed(
+      {
+        existing: {
+          id: existing.id,
+          companyId: existing.companyId,
+          assigneeAgentId: existing.assigneeAgentId,
+          previousAssigneeAgentId: existing.previousAssigneeAgentId ?? null,
         },
-        res,
-      ))) return;
+        updateFields,
+        actorAgentId: req.actor.type === "agent" ? req.actor.agentId : null,
+      },
+      res,
+    ))) return;
 
+    if (req.actor.type === "agent") {
       if (!assertRecoveryDispositionGate(
         {
           existing: {

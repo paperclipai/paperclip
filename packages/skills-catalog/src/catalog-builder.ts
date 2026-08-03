@@ -409,6 +409,7 @@ async function buildReferencedCatalogSkill(
     }
     return null;
   }
+
   return {
     id,
     key,
