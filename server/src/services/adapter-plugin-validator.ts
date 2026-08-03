@@ -59,12 +59,13 @@ export type PluginLoadDecision =
       ok: true;
       manifest: { name: string; version?: string; keywords: string[] };
       canonicalDir: string;
-      // Inode (st_ino) of the canonical package directory at validation
-      // time. The loader MUST re-stat canonicalDir at load time and
-      // verify the inode matches; otherwise an attacker who replaces
-      // the package directory at its canonical pathname between
-      // validation and load would defeat the manifest/age/path checks.
-      canonicalDirInode: number;
+      // Filesystem-identity fingerprint (dev/ino/ctime/mtime/size)
+      // of the canonical package directory at validation time. The
+      // loader MUST re-stat the canonical dir and reject if ANY of
+      // these fields has changed — this closes the path-name TOCTOU
+      // even on filesystems where st_ino alone is insufficient
+      // (e.g. ext4 with inode-recycle cache).
+      canonicalDirIdentity: { dev: number; ino: number; ctime: number; mtime: number; size: number };
     }
   | { ok: false; reason: "outside_plugins_dir" | "missing_manifest" | "invalid_json" | "missing_keyword" | "manifest_too_recent"; detail?: string };
 
@@ -152,15 +153,26 @@ export function validateExternalPluginLoad(packageDir: string, now = Date.now())
     };
   }
 
-  // Capture the inode of the canonical package directory so the
-  // loader can verify the directory has not been replaced between
-  // validation and import. st_ino is the filesystem-object identity
-  // and is the only field that survives a rename/replace at the
-  // same pathname. If statSync throws (race between our prior reads
-  // and this one), treat it as a missing-dir failure — fail closed.
-  let canonicalDirInode: number;
+  // Capture a filesystem-identity fingerprint of the canonical package
+  // directory so the loader can verify the directory has not been
+  // replaced between validation and import. We capture multiple
+  // fields (ino, ctime, mtime, dev, size) and the loader checks ALL
+  // of them. st_ino alone is not sufficient — ext4's inode-recycle
+  // cache can return the same inode number to a recreated directory
+  // (Empirically observed in CI: rm + mkdir at the same pathname
+  // returned the same st_ino on the test runner's filesystem.)
+  // ctime/mtime get reset on inode reuse, so combining them with
+  // st_ino gives a stable multi-field identity.
+  let canonicalDirIdentity: { dev: number; ino: number; ctime: number; mtime: number; size: number };
   try {
-    canonicalDirInode = fs.statSync(resolvedDir as string).ino;
+    const stat = fs.statSync(resolvedDir as string);
+    canonicalDirIdentity = {
+      dev: stat.dev,
+      ino: stat.ino,
+      ctime: stat.ctimeMs,
+      mtime: stat.mtimeMs,
+      size: stat.size,
+    };
   } catch (err) {
     return {
       ok: false,
@@ -184,10 +196,11 @@ export function validateExternalPluginLoad(packageDir: string, now = Date.now())
     // mutable path lets an attacker swap the package between
     // validation and import (TOCTOU).
     canonicalDir: resolvedDir as string,
-    // The inode at validation time. Paired with canonicalDir this
-    // closes the path-name TOCTOU: even if the directory at
-    // canonicalDir is swapped between validation and load, the
-    // inode check at load time rejects the new directory.
-    canonicalDirInode,
+    // The filesystem-identity fingerprint (dev/ino/ctime/mtime/size)
+    // captured at validation time. The loader re-stats the canonical
+    // dir and rejects if ANY of these fields has changed — this
+    // closes the path-name TOCTOU even on filesystems (ext4 with
+    // inode recycling) where st_ino alone is insufficient.
+    canonicalDirIdentity,
   };
 }

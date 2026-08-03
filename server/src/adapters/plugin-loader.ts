@@ -213,12 +213,16 @@ function validateAdapterModule(mod: unknown, packageName: string): ServerAdapter
  * Load an external adapter package. The caller (the route handler)
  * MUST pass `canonicalPackageDir` (the result of
  * `validateExternalPluginLoad(...).canonicalDir`) AND
- * `canonicalPackageDirInode` (the result of
- * `validateExternalPluginLoad(...).canonicalDirInode`) — passing only
- * the path string lets an attacker replace the package directory at
- * the canonical pathname between validation and load and defeat the
- * manifest/age/path checks. The inode is the filesystem-object
- * identity and survives rename/replace at the same pathname.
+ * `canonicalDirIdentity` (the result of
+ * `validateExternalPluginLoad(...).canonicalDirIdentity`) — passing
+ * only the path string lets an attacker replace the package
+ * directory at the canonical pathname between validation and load
+ * and defeat the manifest/age/path checks. The fingerprint is a
+ * multi-field (dev/ino/ctime/mtime/size) identity — st_ino alone is
+ * not sufficient because ext4's inode-recycle cache can return the
+ * same inode number to a recreated directory at the same pathname,
+ * which CI empirically observed (see PHA-1659 round-4 test failure
+ * on `paperclipai:master`).
  *
  * The legacy `localPath` arg is kept for backward compatibility with
  * internal callers (e.g. the registry) that have already
@@ -229,7 +233,7 @@ export async function loadExternalAdapterPackage(
   packageName: string,
   localPath?: string,
   canonicalPackageDir?: string,
-  canonicalPackageDirInode?: number,
+  canonicalDirIdentity?: { dev: number; ino: number; ctime: number; mtime: number; size: number },
 ): Promise<ServerAdapterModule> {
   // Prefer the explicitly canonicalized dir from the validator; fall
   // back to resolving localPath / node_modules ourselves for
@@ -242,15 +246,23 @@ export async function loadExternalAdapterPackage(
         : path.resolve(getAdapterPluginsDir(), "node_modules", packageName),
     );
 
-  // If the validator passed the canonical inode, re-stat canonicalDir
-  // and reject if the inode has changed. This closes the path-name
-  // TOCTOU: an attacker who replaces the package directory at
-  // canonicalDir after validation cannot make the loader load the
-  // replacement because the inode check fails first.
-  if (canonicalPackageDirInode !== undefined) {
-    let currentInode: number;
+  // Multi-field fingerprint check (dev/ino/ctime/mtime/size). If ANY
+  // field has changed, the directory at canonicalDir has been
+  // replaced since validation; reject before any import. st_ino
+  // alone is insufficient on ext4 with inode recycling — ctime and
+  // mtime get reset on inode reuse, so checking them catches the
+  // case where the inode number happens to match.
+  if (canonicalDirIdentity !== undefined) {
+    let current: { dev: number; ino: number; ctime: number; mtime: number; size: number };
     try {
-      currentInode = fs.statSync(packageDir).ino;
+      const stat = fs.statSync(packageDir);
+      current = {
+        dev: stat.dev,
+        ino: stat.ino,
+        ctime: stat.ctimeMs,
+        mtime: stat.mtimeMs,
+        size: stat.size,
+      };
     } catch (err) {
       throw new Error(
         `Package "${packageName}" canonical dir ${packageDir} cannot be re-stated at load time: ${
@@ -258,10 +270,16 @@ export async function loadExternalAdapterPackage(
         }`,
       );
     }
-    if (currentInode !== canonicalPackageDirInode) {
+    const mismatches: string[] = [];
+    if (current.dev !== canonicalDirIdentity.dev) mismatches.push(`dev ${canonicalDirIdentity.dev} -> ${current.dev}`);
+    if (current.ino !== canonicalDirIdentity.ino) mismatches.push(`ino ${canonicalDirIdentity.ino} -> ${current.ino}`);
+    if (current.ctime !== canonicalDirIdentity.ctime) mismatches.push(`ctime ${canonicalDirIdentity.ctime} -> ${current.ctime}`);
+    if (current.mtime !== canonicalDirIdentity.mtime) mismatches.push(`mtime ${canonicalDirIdentity.mtime} -> ${current.mtime}`);
+    if (current.size !== canonicalDirIdentity.size) mismatches.push(`size ${canonicalDirIdentity.size} -> ${current.size}`);
+    if (mismatches.length > 0) {
       throw new Error(
         `Package "${packageName}" canonical dir ${packageDir} was replaced between validation and load ` +
-          `(inode changed from ${canonicalPackageDirInode} to ${currentInode})`,
+          `(fingerprint mismatches: ${mismatches.join(", ")})`,
       );
     }
   }
@@ -299,19 +317,20 @@ async function loadFromRecord(record: AdapterPluginRecord): Promise<ServerAdapte
  *
  * If `canonicalPackageDir` is provided, it MUST be the result of
  * `validateExternalPluginLoad(...).canonicalDir` for the same package
- * and we will use it as the package root. If `canonicalPackageDirInode`
+ * and we will use it as the package root. If `canonicalDirIdentity`
  * is provided, it MUST be the result of
- * `validateExternalPluginLoad(...).canonicalDirInode` for the same
- * package; the loader will re-stat the dir and reject if the inode
- * changed (path-name TOCTOU closure). Otherwise we resolve the
- * record's localPath / node_modules path ourselves. Both paths go
- * through `resolveCanonicalEntryPoint` so an entry-point escape is
- * rejected at load time.
+ * `validateExternalPluginLoad(...).canonicalDirIdentity` for the
+ * same package; the loader will re-stat the dir and reject if any
+ * of the fingerprint fields has changed (path-name TOCTOU closure,
+ * multi-field to defeat ext4 inode recycling). Otherwise we resolve
+ * the record's localPath / node_modules path ourselves. Both paths
+ * go through `resolveCanonicalEntryPoint` so an entry-point escape
+ * is rejected at load time.
  */
 export async function reloadExternalAdapter(
   type: string,
   canonicalPackageDir?: string,
-  canonicalPackageDirInode?: number,
+  canonicalDirIdentity?: { dev: number; ino: number; ctime: number; mtime: number; size: number },
 ): Promise<ServerAdapterModule | null> {
   const record = getAdapterPluginByType(type);
   if (!record) return null;
@@ -324,13 +343,21 @@ export async function reloadExternalAdapter(
         : path.resolve(getAdapterPluginsDir(), "node_modules", record.packageName),
     );
 
-  // Same inode check as loadExternalAdapterPackage. Closes the
-  // path-name TOCTOU for the reload path. If the inode check fires,
-  // we never bust the ESM cache or run the import — fail closed.
-  if (canonicalPackageDirInode !== undefined) {
-    let currentInode: number;
+  // Same multi-field fingerprint check as loadExternalAdapterPackage.
+  // Closes the path-name TOCTOU for the reload path. If the
+  // fingerprint check fires, we never bust the ESM cache or run the
+  // import — fail closed.
+  if (canonicalDirIdentity !== undefined) {
+    let current: { dev: number; ino: number; ctime: number; mtime: number; size: number };
     try {
-      currentInode = fs.statSync(packageDir).ino;
+      const stat = fs.statSync(packageDir);
+      current = {
+        dev: stat.dev,
+        ino: stat.ino,
+        ctime: stat.ctimeMs,
+        mtime: stat.mtimeMs,
+        size: stat.size,
+      };
     } catch (err) {
       throw new Error(
         `Adapter "${type}" canonical dir ${packageDir} cannot be re-stated at reload time: ${
@@ -338,10 +365,16 @@ export async function reloadExternalAdapter(
         }`,
       );
     }
-    if (currentInode !== canonicalPackageDirInode) {
+    const mismatches: string[] = [];
+    if (current.dev !== canonicalDirIdentity.dev) mismatches.push(`dev ${canonicalDirIdentity.dev} -> ${current.dev}`);
+    if (current.ino !== canonicalDirIdentity.ino) mismatches.push(`ino ${canonicalDirIdentity.ino} -> ${current.ino}`);
+    if (current.ctime !== canonicalDirIdentity.ctime) mismatches.push(`ctime ${canonicalDirIdentity.ctime} -> ${current.ctime}`);
+    if (current.mtime !== canonicalDirIdentity.mtime) mismatches.push(`mtime ${canonicalDirIdentity.mtime} -> ${current.mtime}`);
+    if (current.size !== canonicalDirIdentity.size) mismatches.push(`size ${canonicalDirIdentity.size} -> ${current.size}`);
+    if (mismatches.length > 0) {
       throw new Error(
         `Adapter "${type}" canonical dir ${packageDir} was replaced between validation and reload ` +
-          `(inode changed from ${canonicalPackageDirInode} to ${currentInode})`,
+          `(fingerprint mismatches: ${mismatches.join(", ")})`,
       );
     }
   }

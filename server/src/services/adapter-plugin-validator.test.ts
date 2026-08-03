@@ -63,10 +63,17 @@ describe("validateExternalPluginLoad", () => {
       // use this (not the original mutable packageDir) when loading the
       // module. The TOCTOU race fix relies on this.
       expect(decision.canonicalDir).toBe(fssync.realpathSync(pkgDir));
-      // canonicalDirInode is the st_ino of the canonical package dir at
-      // validation time. The loader uses it to detect a replace-at-
-      // same-pathname between validation and load.
-      expect(decision.canonicalDirInode).toBe(fssync.statSync(pkgDir).ino);
+      // canonicalDirIdentity is the multi-field fingerprint
+      // (dev/ino/ctime/mtime/size) captured at validation time. The
+      // loader compares all five fields to detect a replace-at-
+      // same-pathname between validation and load. st_ino alone is
+      // not sufficient on ext4 with inode recycling.
+      const expectedStat = fssync.statSync(pkgDir);
+      expect(decision.canonicalDirIdentity.ino).toBe(expectedStat.ino);
+      expect(decision.canonicalDirIdentity.dev).toBe(expectedStat.dev);
+      expect(decision.canonicalDirIdentity.ctime).toBe(expectedStat.ctimeMs);
+      expect(decision.canonicalDirIdentity.mtime).toBe(expectedStat.mtimeMs);
+      expect(decision.canonicalDirIdentity.size).toBe(expectedStat.size);
     }
   });
 

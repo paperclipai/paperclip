@@ -88,7 +88,7 @@ describe("plugin-loader entry-point containment guard", () => {
         "abs-entry",
         pkgDir,
         preflight.canonicalDir,
-        preflight.canonicalDirInode,
+        preflight.canonicalDirIdentity,
       ),
     ).rejects.toThrow(/absolute path/i);
   });
@@ -133,7 +133,7 @@ describe("plugin-loader entry-point containment guard", () => {
         "escape-entry",
         pkgDir,
         preflight.canonicalDir,
-        preflight.canonicalDirInode,
+        preflight.canonicalDirIdentity,
       ),
     ).rejects.toThrow(/outside the canonical package dir/i);
   });
@@ -171,7 +171,7 @@ describe("plugin-loader entry-point containment guard", () => {
       "good-entry",
       pkgDir,
       preflight.canonicalDir,
-      preflight.canonicalDirInode,
+      preflight.canonicalDirIdentity,
     );
     expect(mod.type).toBe("good_entry_test");
   });
@@ -238,7 +238,7 @@ describe("plugin-loader entry-point containment guard", () => {
         "swap-attempt",
         pkgDir,
         preflight.canonicalDir,
-        preflight.canonicalDirInode,
+        preflight.canonicalDirIdentity,
       ),
     ).rejects.toThrow(/was replaced between validation and load/);
   });
