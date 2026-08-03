@@ -466,6 +466,215 @@ describe("issue execution policy transitions", () => {
     });
   });
 
+  // SQN-4446: a PATCH with status:"blocked" (or "cancelled") from the active stage
+  // participant is a legitimate, unrelated status marker (e.g. an external-dependency
+  // note) — it must never be misclassified as a "changes requested" review verdict.
+  // Before the fix, any requestedStatus other than "in_review" (including "blocked")
+  // hit the same branch as a genuine changes-requested decision: it required a comment,
+  // reassigned the issue back to the return assignee, and recorded a changes_requested
+  // decision. That is exactly what happened in production: a `blocked` PATCH on an
+  // in-review issue silently bounced it back to the implementer.
+  describe("blocked/cancelled status is not a review verdict (SQN-4446)", () => {
+    const policy = twoStagePolicy();
+    const reviewStageId = policy.stages[0].id;
+    const approvalStageId = policy.stages[1].id;
+
+    it("reviewer PATCHing status=blocked is not misclassified as changes-requested", () => {
+      const call = () =>
+        applyIssueExecutionPolicyTransition({
+          issue: {
+            status: "in_review",
+            assigneeAgentId: qaAgentId,
+            assigneeUserId: null,
+            executionPolicy: policy,
+            executionState: {
+              status: "pending",
+              currentStageId: reviewStageId,
+              currentStageIndex: 0,
+              currentStageType: "review",
+              currentParticipant: { type: "agent", agentId: qaAgentId },
+              returnAssignee: { type: "agent", agentId: coderAgentId },
+              completedStageIds: [],
+              lastDecisionId: null,
+              lastDecisionOutcome: null,
+            },
+          },
+          policy,
+          requestedStatus: "blocked",
+          requestedAssigneePatch: {},
+          actor: { agentId: qaAgentId },
+          // No comment provided — under the old (buggy) code path this alone would have
+          // thrown "Requesting changes requires a comment". It must not do that either.
+          commentBody: null,
+        });
+
+      // Proven-defect assertions (SQN-4446): none of the "changes requested" side effects
+      // may occur for a plain status:"blocked" PATCH.
+      let result: ReturnType<typeof call> | undefined;
+      let thrown: unknown;
+      try {
+        result = call();
+      } catch (error) {
+        thrown = error;
+      }
+
+      if (thrown instanceof Error) {
+        expect(thrown.message).not.toBe("Requesting changes requires a comment");
+      }
+      if (result) {
+        expect(result.decision?.outcome).not.toBe("changes_requested");
+        expect(result.patch.status).not.toBe("in_progress");
+        expect(result.patch.assigneeAgentId).not.toBe(coderAgentId);
+        expect(result.patch.executionState).not.toMatchObject({ status: "changes_requested" });
+      }
+
+      // KNOWN FOLLOW-UP (flagged, not fixed here — see PR description): excluding
+      // "blocked"/"cancelled" from the changes-requested branch means this request now
+      // falls through into the stage-advance guard below it, which throws because the
+      // active reviewer's own status PATCH looks like an "attempted stage advance" with
+      // no other drift. That guard was not part of the proven SQN-4446 defect and is out
+      // of scope for this fix; this assertion locks down the *current* fallthrough
+      // behavior (so it can't silently change again) without endorsing it as correct.
+      expect(thrown).toBeInstanceOf(Error);
+      expect((thrown as Error).message).toBe(
+        "Only the active reviewer or approver can advance the current execution stage",
+      );
+    });
+
+    it("reviewer PATCHing status=cancelled is not misclassified as changes-requested", () => {
+      const call = () =>
+        applyIssueExecutionPolicyTransition({
+          issue: {
+            status: "in_review",
+            assigneeAgentId: qaAgentId,
+            assigneeUserId: null,
+            executionPolicy: policy,
+            executionState: {
+              status: "pending",
+              currentStageId: reviewStageId,
+              currentStageIndex: 0,
+              currentStageType: "review",
+              currentParticipant: { type: "agent", agentId: qaAgentId },
+              returnAssignee: { type: "agent", agentId: coderAgentId },
+              completedStageIds: [],
+              lastDecisionId: null,
+              lastDecisionOutcome: null,
+            },
+          },
+          policy,
+          requestedStatus: "cancelled",
+          requestedAssigneePatch: {},
+          actor: { agentId: qaAgentId },
+          commentBody: null,
+        });
+
+      let result: ReturnType<typeof call> | undefined;
+      let thrown: unknown;
+      try {
+        result = call();
+      } catch (error) {
+        thrown = error;
+      }
+
+      if (thrown instanceof Error) {
+        expect(thrown.message).not.toBe("Requesting changes requires a comment");
+      }
+      if (result) {
+        expect(result.decision?.outcome).not.toBe("changes_requested");
+        expect(result.patch.status).not.toBe("in_progress");
+        expect(result.patch.assigneeAgentId).not.toBe(coderAgentId);
+        expect(result.patch.executionState).not.toMatchObject({ status: "changes_requested" });
+      }
+    });
+
+    it("approver PATCHing status=blocked during the approval stage is not misclassified as changes-requested", () => {
+      const call = () =>
+        applyIssueExecutionPolicyTransition({
+          issue: {
+            status: "in_review",
+            assigneeAgentId: null,
+            assigneeUserId: ctoUserId,
+            executionPolicy: policy,
+            executionState: {
+              status: "pending",
+              currentStageId: approvalStageId,
+              currentStageIndex: 1,
+              currentStageType: "approval",
+              currentParticipant: { type: "user", userId: ctoUserId },
+              returnAssignee: { type: "agent", agentId: coderAgentId },
+              completedStageIds: [reviewStageId],
+              lastDecisionId: null,
+              lastDecisionOutcome: null,
+            },
+          },
+          policy,
+          requestedStatus: "blocked",
+          requestedAssigneePatch: {},
+          actor: { userId: ctoUserId },
+          commentBody: null,
+        });
+
+      let result: ReturnType<typeof call> | undefined;
+      let thrown: unknown;
+      try {
+        result = call();
+      } catch (error) {
+        thrown = error;
+      }
+
+      if (thrown instanceof Error) {
+        expect(thrown.message).not.toBe("Requesting changes requires a comment");
+      }
+      if (result) {
+        expect(result.decision?.outcome).not.toBe("changes_requested");
+        expect(result.patch.status).not.toBe("in_progress");
+        expect(result.patch.assigneeAgentId).not.toBe(coderAgentId);
+        expect(result.patch.executionState).not.toMatchObject({ status: "changes_requested" });
+      }
+    });
+
+    it("regression safety: a genuine changes-requested trigger (requestedStatus=in_progress) still works", () => {
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_review",
+          assigneeAgentId: qaAgentId,
+          assigneeUserId: null,
+          executionPolicy: policy,
+          executionState: {
+            status: "pending",
+            currentStageId: reviewStageId,
+            currentStageIndex: 0,
+            currentStageType: "review",
+            currentParticipant: { type: "agent", agentId: qaAgentId },
+            returnAssignee: { type: "agent", agentId: coderAgentId },
+            completedStageIds: [],
+            lastDecisionId: null,
+            lastDecisionOutcome: null,
+          },
+        },
+        policy,
+        requestedStatus: "in_progress",
+        requestedAssigneePatch: {},
+        actor: { agentId: qaAgentId },
+        commentBody: "Needs another pass on edge cases",
+      });
+
+      expect(result.patch.status).toBe("in_progress");
+      expect(result.patch.assigneeAgentId).toBe(coderAgentId);
+      expect(result.patch.executionState).toMatchObject({
+        status: "changes_requested",
+        currentStageType: "review",
+        returnAssignee: { type: "agent", agentId: coderAgentId },
+        lastDecisionOutcome: "changes_requested",
+      });
+      expect(result.decision).toMatchObject({
+        stageId: reviewStageId,
+        stageType: "review",
+        outcome: "changes_requested",
+      });
+    });
+  });
+
   describe("review-only policy (no approval stage)", () => {
     const policy = reviewOnlyPolicy();
     const reviewStageId = policy.stages[0].id;
