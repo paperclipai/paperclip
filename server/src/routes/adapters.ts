@@ -288,13 +288,21 @@ export function adapterRoutes() {
       let moduleLocalPath: string | undefined;
 
       if (!isLocalPath) {
-        // npm install into the managed directory
+        // npm install into the managed directory.
+        //
+        // --ignore-scripts is REQUIRED for agent-reachable installs: any
+        // lifecycle script (preinstall / install / postinstall) executes
+        // arbitrary code in the server process before our plugin-load
+        // validator ever runs, which defeats the confused-deputy gates.
+        // Instance-admin / reinstall endpoints can opt back into scripts
+        // because they require Board credentials and are the explicitly-
+        // trusted path; this route is the cheap, agent-reachable one.
         const pluginsDir = getAdapterPluginsDir();
         const spec = explicitVersion ? `${canonicalName}@${explicitVersion}` : canonicalName;
 
-        logger.info({ spec, pluginsDir }, "Installing adapter package via npm");
+        logger.info({ spec, pluginsDir }, "Installing adapter package via npm (ignore-scripts)");
 
-        await execFileAsync("npm", ["install", "--no-save", spec], {
+        await execFileAsync("npm", ["install", "--no-save", "--ignore-scripts", spec], {
           cwd: pluginsDir,
           timeout: 120_000,
         });

@@ -170,4 +170,54 @@ describe("validateExternalPluginLoad", () => {
     expect(REQUIRED_PLUGIN_KEYWORD).toBe("paperclip-adapter-plugin");
     expect(MTIME_FLOOR_MS).toBe(2000);
   });
+
+  it("rejects a symlink inside the plugins dir that points outside (symlink containment bypass)", async () => {
+    // Repro for Greptile P1/Security finding on PR review:
+    // an agent plants a symlink at ~/.paperclip/adapter-plugins/innocent
+    // pointing to /tmp/evil-package/. A lexical path.startsWith() check
+    // accepts the symlink because its lexical path IS inside the plugins
+    // dir, but the manifest read follows the link to /tmp/evil-package/
+    // and a dynamic import would execute code there. The fix is to
+    // canonicalize via realpath BEFORE containment testing.
+    const evilDir = path.join(os.tmpdir(), `evil-${process.pid}-${Math.random().toString(36).slice(2)}`);
+    await fs.mkdir(evilDir, { recursive: true });
+    await fs.writeFile(
+      path.join(evilDir, "package.json"),
+      JSON.stringify({
+        name: "evil",
+        version: "1.0.0",
+        keywords: [REQUIRED_PLUGIN_KEYWORD],
+      }),
+    );
+    const old = Date.now() / 1000 - 60;
+    await fs.utimes(path.join(evilDir, "package.json"), old, old);
+
+    const symlinkPath = path.join(pluginsDir, "innocent-symlink");
+    await fs.symlink(evilDir, symlinkPath, "dir");
+
+    const decision = validateExternalPluginLoad(symlinkPath);
+    expect(decision.ok).toBe(false);
+    if (!decision.ok) {
+      // Could be outside_plugins_dir (realpath canonicalized to evilDir)
+      // OR missing_manifest (realpath failed on the symlink) — both are
+      // acceptable rejection reasons for a symlink bypass attempt.
+      expect(["outside_plugins_dir", "missing_manifest"]).toContain(decision.reason);
+    }
+
+    await fs.rm(symlinkPath, { force: true });
+    await fs.rm(evilDir, { recursive: true, force: true });
+  });
+
+  it("rejects an unresolvable path (realpath failure)", async () => {
+    // A path that doesn't exist should be rejected, not crash the
+    // validator. realpathSync throws ENOENT; safeRealpath converts to
+    // null; the containment check then fails closed.
+    const ghostDir = path.join(pluginsDir, "does-not-exist-" + Math.random().toString(36).slice(2));
+
+    const decision = validateExternalPluginLoad(ghostDir);
+    expect(decision.ok).toBe(false);
+    if (!decision.ok) {
+      expect(["outside_plugins_dir", "missing_manifest"]).toContain(decision.reason);
+    }
+  });
 });

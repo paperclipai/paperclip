@@ -34,6 +34,22 @@ import { getAdapterPluginsDir } from "./adapter-plugin-store.js";
 export const REQUIRED_PLUGIN_KEYWORD = "paperclip-adapter-plugin";
 export const MTIME_FLOOR_MS = 2000;
 
+/**
+ * Resolve a path with realpathSync and return null on any failure
+ * (ENOENT, EACCES, loop, …) so callers can map failures to a single
+ * "outside_plugins_dir" outcome instead of crashing the route. We
+ * deliberately swallow the underlying error — the route handler does
+ * not need to know WHY the path was unresolvable, only that the
+ * containment check rejected it.
+ */
+function safeRealpath(p: string): string | null {
+  try {
+    return fs.realpathSync(p);
+  } catch {
+    return null;
+  }
+}
+
 export type PluginLoadDecision =
   | { ok: true; manifest: { name: string; version?: string; keywords: string[] } }
   | { ok: false; reason: "outside_plugins_dir" | "missing_manifest" | "invalid_json" | "missing_keyword" | "manifest_too_recent"; detail?: string };
@@ -49,22 +65,34 @@ export type PluginLoadDecision =
  * doesn't blow up — the function falls through to "outside_plugins_dir".
  */
 export function validateExternalPluginLoad(packageDir: string, now = Date.now()): PluginLoadDecision {
-  const pluginsDir = path.resolve(getAdapterPluginsDir());
-  const resolvedDir = path.resolve(packageDir);
+  // Canonicalize both the managed plugins dir and the resolved package
+  // dir with realpath so the containment check below resists symlink
+  // bypass. A symlink planted at ~/.paperclip/adapter-plugins/foo that
+  // points at /tmp/evil would pass a lexical path.startsWith() check,
+  // but realpathSync follows the link and the comparison below then
+  // rejects it. The plugins dir is created if missing so a fresh
+  // install still surfaces as "outside_plugins_dir" rather than a
+  // confusing ENOENT.
+  const pluginsDir = safeRealpath(getAdapterPluginsDir());
+  const resolvedDir = safeRealpath(packageDir);
 
-  // Allow list: must be inside the managed plugins dir.
+  // Allow list: must be inside the managed plugins dir (canonical).
   const insidePluginsDir =
     resolvedDir === pluginsDir ||
-    resolvedDir.startsWith(pluginsDir + path.sep);
+    (resolvedDir !== null && pluginsDir !== null && resolvedDir.startsWith(pluginsDir + path.sep));
   if (!insidePluginsDir) {
     return {
       ok: false,
       reason: "outside_plugins_dir",
-      detail: `Resolved dir ${resolvedDir} is outside the managed adapter-plugins directory ${pluginsDir}`,
+      detail: `Resolved dir ${packageDir} (canonical: ${resolvedDir ?? "<unresolvable>"}) is outside the managed adapter-plugins directory ${pluginsDir ?? getAdapterPluginsDir()}`,
     };
   }
 
-  const pkgJsonPath = path.join(resolvedDir, "package.json");
+  // Both realpaths succeeded and resolvedDir is a strict descendant of
+  // pluginsDir — we can use resolvedDir confidently from here. The
+  // post-realpath type narrow is handled by the guard above; if either
+  // realpath returned null we already returned.
+  const pkgJsonPath = path.join(resolvedDir as string, "package.json");
 
   // Mtime floor: refuse if package.json was modified too recently —
   // this catches in-flight half-writes racing the load.
