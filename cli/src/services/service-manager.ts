@@ -83,7 +83,32 @@ export function launchdServiceName(instanceId: string): string {
   return instanceId === "default" ? "ing.paperclip.paperclipai" : `ing.paperclip.paperclipai.${instanceId}`;
 }
 
-export function renderSystemdUnit(input: { instanceId: string; shimPath: string; homeDir: string }): string {
+// launchd hands a user agent `PATH=/usr/bin:/bin:/usr/sbin:/sbin`, and a systemd
+// user unit gets an equally bare default. Neither contains a Node.js install on a
+// typical machine — Node lives in a version manager's directory, Homebrew, or
+// `~/.local/bin`. The server itself survives that, because the managed shim
+// invokes Node by absolute path, but the agent binaries the server spawns start
+// with `#!/usr/bin/env node`, so every agent run dies with
+// `env: node: No such file or directory` while the server keeps reporting healthy.
+//
+// Both derived entries come from values the definition already carries, so the
+// rendered file stays byte-stable between runs. That matters: `doctor` compares
+// the rendered definition against the on-disk copy to detect drift, and seeding
+// this from the installing shell's own PATH would make every definition report as
+// drifted the moment that shell changed.
+const BASE_SERVICE_PATH = ["/usr/local/bin", "/usr/bin", "/bin", "/usr/sbin", "/sbin"];
+
+export function resolveServicePath(input: { shimPath: string; execPath?: string }): string {
+  const candidates = [
+    path.dirname(input.execPath ?? process.execPath),
+    path.dirname(input.shimPath),
+    ...BASE_SERVICE_PATH,
+  ];
+  return candidates.filter((entry, index) => entry.length > 0 && candidates.indexOf(entry) === index).join(":");
+}
+
+export function renderSystemdUnit(input: { instanceId: string; shimPath: string; homeDir: string; servicePath?: string }): string {
+  const servicePath = input.servicePath ?? resolveServicePath({ shimPath: input.shimPath });
   return `[Unit]
 Description=Paperclip AI (${escapeSystemd(input.instanceId)})
 After=network.target
@@ -97,6 +122,7 @@ ExecStart="${escapeSystemd(input.shimPath)}" run --instance "${escapeSystemd(inp
 Environment="PAPERCLIP_SERVICE_MANAGED=1"
 Environment="PAPERCLIP_INSTANCE_ID=${escapeSystemd(input.instanceId)}"
 Environment="PAPERCLIP_HOME=${escapeSystemd(input.homeDir)}"
+Environment="PATH=${escapeSystemd(servicePath)}"
 WorkingDirectory=%h
 Restart=always
 RestartSec=5
@@ -107,8 +133,9 @@ WantedBy=default.target
 `;
 }
 
-export function renderLaunchdPlist(input: { instanceId: string; shimPath: string; homeDir: string; stdoutPath: string; stderrPath: string }): string {
+export function renderLaunchdPlist(input: { instanceId: string; shimPath: string; homeDir: string; stdoutPath: string; stderrPath: string; servicePath?: string }): string {
   const label = launchdServiceName(input.instanceId);
+  const servicePath = input.servicePath ?? resolveServicePath({ shimPath: input.shimPath });
   return `<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
@@ -123,6 +150,7 @@ export function renderLaunchdPlist(input: { instanceId: string; shimPath: string
     <key>PAPERCLIP_SERVICE_MANAGED</key><string>1</string>
     <key>PAPERCLIP_INSTANCE_ID</key><string>${escapeXml(input.instanceId)}</string>
     <key>PAPERCLIP_HOME</key><string>${escapeXml(input.homeDir)}</string>
+    <key>PATH</key><string>${escapeXml(servicePath)}</string>
   </dict>
   <key>RunAtLoad</key><true/>
   <key>KeepAlive</key><true/>
