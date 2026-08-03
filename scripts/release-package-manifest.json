@@ -45,6 +45,11 @@
     "publishFromCi": false
   },
   {
+    "dir": "packages/adapters/jcode-local",
+    "name": "@paperclipai/adapter-jcode-local",
+    "publishFromCi": true
+  },
+  {
     "dir": "packages/adapters/opencode-local",
     "name": "@paperclipai/adapter-opencode-local",
     "publishFromCi": true

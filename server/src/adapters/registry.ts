@@ -121,6 +121,18 @@ import {
   agentConfigurationDoc as piAgentConfigurationDoc,
   modelProfiles as piModelProfiles,
 } from "@paperclipai/adapter-pi-local";
+import {
+  execute as jcodeExecute,
+  testEnvironment as jcodeTestEnvironment,
+  sessionCodec as jcodeSessionCodec,
+  listJcodeModels,
+  listJcodeSkills,
+  syncJcodeSkills,
+  detectJcodeModel,
+} from "@paperclipai/adapter-jcode-local/server";
+import {
+  agentConfigurationDoc as jcodeAgentConfigurationDoc,
+} from "@paperclipai/adapter-jcode-local";
 import { BUILTIN_ADAPTER_TYPES } from "./builtin-adapter-types.js";
 import { buildExternalAdapters } from "./plugin-loader.js";
 import { getDisabledAdapterTypes } from "../services/adapter-plugin-store.js";
@@ -421,6 +433,25 @@ const piLocalAdapter: ServerAdapterModule = {
   agentConfigurationDoc: piAgentConfigurationDoc,
 };
 
+const jcodeLocalAdapter: ServerAdapterModule = {
+  type: "jcode_local",
+  execute: jcodeExecute,
+  testEnvironment: jcodeTestEnvironment,
+  listSkills: listJcodeSkills,
+  syncSkills: syncJcodeSkills,
+  sessionCodec: jcodeSessionCodec,
+  sessionManagement: getAdapterSessionManagement("jcode_local") ?? undefined,
+  models: [],
+  modelProfiles: [],
+  listModels: listJcodeModels,
+  detectModel: detectJcodeModel,
+  supportsLocalAgentJwt: true,
+  supportsInstructionsBundle: true,
+  instructionsPathKey: "instructionsFilePath",
+  requiresMaterializedRuntimeSkills: true,
+  agentConfigurationDoc: jcodeAgentConfigurationDoc,
+};
+
 const adaptersByType = new Map<string, ServerAdapterModule>();
 
 // For builtin types that are overridden by an external adapter, we keep the
@@ -437,6 +468,7 @@ function registerBuiltInAdapters() {
     acpxLocalAdapter,
     claudeLocalAdapter,
     codexLocalAdapter,
+    jcodeLocalAdapter,
     openCodeLocalAdapter,
     piLocalAdapter,
     cursorCloudAdapter,

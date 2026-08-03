@@ -6,6 +6,7 @@ import {
   detectAdapterModel,
   findActiveServerAdapter,
   findServerAdapter,
+  getServerAdapter,
   listAdapterModels,
   listAdapterModelProfiles,
   registerServerAdapter,
@@ -210,6 +211,19 @@ describe("server adapter registry", () => {
     unregisterServerAdapter("hermes_gateway");
 
     expect(requireServerAdapter("hermes_gateway")).toBe(builtInGateway);
+  });
+
+  it("ships JCode as a built-in server adapter", () => {
+    const builtIn = requireServerAdapter("jcode_local");
+
+    expect(builtIn.type).toBe("jcode_local");
+    expect(getServerAdapter("jcode_local")).toBe(builtIn);
+    expect(builtIn.supportsLocalAgentJwt).toBe(true);
+    expect(builtIn.supportsInstructionsBundle).toBe(true);
+    expect(builtIn.requiresMaterializedRuntimeSkills).toBe(true);
+    expect(builtIn.sessionCodec).toBeDefined();
+    expect(builtIn.listModels).toBeTypeOf("function");
+    expect(builtIn.detectModel).toBeTypeOf("function");
   });
 
   it("exposes capability flags from registered adapters", () => {

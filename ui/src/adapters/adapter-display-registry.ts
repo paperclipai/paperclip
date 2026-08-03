@@ -110,6 +110,12 @@ const adapterDisplayMap: Record<string, AdapterDisplayInfo> = {
     description: "Pi harness",
     icon: Terminal,
   },
+  jcode_local: {
+    label: "JCode",
+    description: "JCode CLI harness",
+    icon: Cpu,
+    experimental: true,
+  },
   cursor: {
     label: "Cursor",
     description: "Cursor CLI harness",

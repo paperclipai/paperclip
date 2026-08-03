@@ -12,6 +12,7 @@ describe("adapter display registry", () => {
     expect(getAdapterLabel("grok_local")).toBe("Grok Build");
     expect(getAdapterLabel("hermes_local")).toBe("Hermes");
     expect(getAdapterLabel("hermes_gateway")).toBe("Hermes Gateway");
+    expect(getAdapterLabel("jcode_local")).toBe("JCode");
     expect(getAdapterLabel("opencode_local")).toBe("OpenCode");
     expect(getAdapterLabel("pi_local")).toBe("Pi");
 
@@ -24,6 +25,7 @@ describe("adapter display registry", () => {
       grok_local: "Grok Build",
       hermes_local: "Hermes",
       hermes_gateway: "Hermes Gateway",
+      jcode_local: "JCode",
       opencode_local: "OpenCode",
       pi_local: "Pi",
     });
