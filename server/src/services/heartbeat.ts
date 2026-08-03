@@ -6124,6 +6124,32 @@ export function computeIssueMonitorFailedDispatchBackoffDelayMs(consecutiveFailu
   );
 }
 
+type IssueMonitorDispatchStreakRun = Pick<
+  typeof heartbeatRuns.$inferSelect,
+  "id" | "status" | "finishedAt" | "error" | "errorCode" | "resultJson" | "contextSnapshot"
+>;
+
+export function countConsecutiveFailedIssueMonitorDispatches(input: {
+  recentRuns: IssueMonitorDispatchStreakRun[];
+  runIdsWithIssueProgress: ReadonlySet<string>;
+  hasNewIssueInputSinceLastRun: boolean;
+  now: Date;
+}) {
+  if (input.hasNewIssueInputSinceLastRun) return 0;
+  let consecutiveFailures = 0;
+  for (const run of input.recentRuns) {
+    if (!run.finishedAt) break;
+    if (readNonEmptyString(parseObject(run.contextSnapshot).wakeReason) !== "issue_monitor_due") break;
+    if (!UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES.includes(
+      run.status as (typeof UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES)[number],
+    )) break;
+    if (input.runIdsWithIssueProgress.has(run.id)) break;
+    if (classifyAdapterFailureForRecovery(run, input.now)?.kind === "configuration_incomplete") break;
+    consecutiveFailures += 1;
+  }
+  return consecutiveFailures;
+}
+
 function requiresCanonicalSessionIds(adapterType: string | null | undefined) {
   return adapterType === HERMES_ADAPTER_TYPE;
 }
@@ -7346,7 +7372,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     });
   }
 
-  async function countConsecutiveFailedIssueMonitorDispatches(input: {
+  async function loadConsecutiveFailedIssueMonitorDispatchCount(input: {
     companyId: string;
     issueId: string;
     agentId: string;
@@ -7403,24 +7429,17 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         .limit(1)
       : [];
 
-    if (newInputRows.length > 0) return 0;
     const runIdsWithIssueProgress = new Set(
       progressRows
         .map((row) => row.runId)
         .filter((runId): runId is string => Boolean(runId)),
     );
-    let consecutiveFailures = 0;
-    for (const run of recentRuns) {
-      if (!run.finishedAt) break;
-      if (readNonEmptyString(parseObject(run.contextSnapshot).wakeReason) !== "issue_monitor_due") break;
-      if (!UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES.includes(
-        run.status as (typeof UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES)[number],
-      )) break;
-      if (runIdsWithIssueProgress.has(run.id)) break;
-      if (classifyAdapterFailureForRecovery(run, input.now)?.kind === "configuration_incomplete") break;
-      consecutiveFailures += 1;
-    }
-    return consecutiveFailures;
+    return countConsecutiveFailedIssueMonitorDispatches({
+      recentRuns,
+      runIdsWithIssueProgress,
+      hasNewIssueInputSinceLastRun: newInputRows.length > 0,
+      now: input.now,
+    });
   }
 
   async function resolveFailedIssueMonitorRearmAt(input: {
@@ -7445,7 +7464,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       return classifiedRecovery.retryAt;
     }
 
-    const consecutiveFailures = await countConsecutiveFailedIssueMonitorDispatches({
+    const consecutiveFailures = await loadConsecutiveFailedIssueMonitorDispatchCount({
       companyId: input.issue.companyId,
       issueId: input.issue.id,
       agentId: input.run.agentId,
