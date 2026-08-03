@@ -230,9 +230,12 @@ describe("scrubGitCredentialText", () => {
     );
   });
 
-  it("masks credential-bearing query parameters", () => {
+  it("masks entire URL query strings regardless of parameter names", () => {
     expect(scrubGitCredentialText("https://github.com/a/b.git?access_token=ghs_secret&ref=main")).toBe(
-      "https://github.com/a/b.git?access_token=***&ref=main",
+      "https://github.com/a/b.git?***",
+    );
+    expect(scrubGitCredentialText("https://host.example/r.git?obscure_cred_name=secret")).toBe(
+      "https://host.example/r.git?***",
     );
   });
 
