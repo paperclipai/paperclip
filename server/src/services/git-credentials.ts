@@ -110,24 +110,25 @@ const GIT_AUTH_FAILURE_PATTERN =
   /authentication failed|could not read username|could not read password|invalid username or password|terminal prompts disabled|repository not found|not accessible|permission denied|HTTP 40[13]|The requested URL returned error: 40[13]/i;
 
 /**
- * Turn a failed authenticated (or unauthenticated) git network operation into an actionable
- * suffix for the error message. Returns null when the failure does not look auth-related and
- * no credential was in play.
+ * Turn a failed git network operation into an actionable suffix for the error message.
+ * Returns null when the failure does not look auth-related — a credential that was merely
+ * present during an unrelated failure (network outage, target-path collision) must not be
+ * blamed for it.
  */
 export function describeGitAuthFailure(input: {
   error: string;
   used: { source: GitCredential["source"]; secretName: string | null } | null;
 }): string | null {
+  if (!GIT_AUTH_FAILURE_PATTERN.test(input.error)) {
+    return null;
+  }
   if (input.used) {
     const label = input.used.secretName
       ? `the ${input.used.secretName} company-secret GitHub credential`
       : "the server-environment GitHub credential";
     return `The operation authenticated with ${label}, which was rejected or lacks access to this repository.`;
   }
-  if (GIT_AUTH_FAILURE_PATTERN.test(input.error)) {
-    return "No GitHub credential is configured — add a GITHUB_TOKEN or GH_TOKEN company secret in Settings → Secrets, or configure a local checkout cwd for this project workspace.";
-  }
-  return null;
+  return "No GitHub credential is configured — add a GITHUB_TOKEN or GH_TOKEN company secret in Settings → Secrets, or configure a local checkout cwd for this project workspace.";
 }
 
 type SecretServiceLike = ReturnType<typeof secretService>;

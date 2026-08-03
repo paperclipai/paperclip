@@ -72,22 +72,56 @@ describe("ensureManagedProjectWorkspace clone credentials", () => {
     }
   });
 
-  it("names the company-secret credential when an authenticated clone fails", async () => {
+  it("does not blame the credential when an authenticated clone fails for non-auth reasons", async () => {
+    // The failure here is a missing local path, not an auth rejection — the error must not
+    // claim the credential "was rejected". Attribution for genuinely auth-shaped failures is
+    // covered by the describeGitAuthFailure unit tests in git-credentials.test.ts.
     const missingRepo = path.join(os.tmpdir(), "paperclip-definitely-missing", "repo.git");
     const resolveGitAuth = vi.fn(async () => ({
-      // Empty configArgs keep this offline: the failure comes from the missing local path,
-      // the message must still attribute the credential that was in play.
       configArgs: [],
       env: { [GIT_CREDENTIAL_TOKEN_ENV_KEY]: "token", GIT_TERMINAL_PROMPT: "0" },
       source: "company_secret" as const,
       secretName: "GH_TOKEN",
     }));
-    await expect(ensureManagedProjectWorkspace({
+    const error = await ensureManagedProjectWorkspace({
       companyId: "company-authfail",
       projectId: "project-1",
       repoUrl: missingRepo,
       resolveGitAuth,
-    })).rejects.toThrow(/the GH_TOKEN company-secret GitHub credential/);
+    }).then(
+      () => { throw new Error("expected the clone to fail"); },
+      (err: unknown) => err as Error,
+    );
+    expect(error.message).toContain("Failed to prepare managed checkout");
+    expect(error.message).not.toContain("GH_TOKEN company-secret GitHub credential");
+  });
+
+  it("serializes concurrent materializations of the same managed checkout", async () => {
+    const sourceRepo = await createLocalSourceRepo();
+    try {
+      const [first, second] = await Promise.all([
+        ensureManagedProjectWorkspace({
+          companyId: "company-concurrent",
+          projectId: "project-1",
+          repoUrl: sourceRepo,
+        }),
+        ensureManagedProjectWorkspace({
+          companyId: "company-concurrent",
+          projectId: "project-1",
+          repoUrl: sourceRepo,
+        }),
+      ]);
+      expect(first.cwd).toBe(second.cwd);
+      expect(first.warning).toBeNull();
+      expect(second.warning).toBeNull();
+      const gitDir = await fs.stat(path.join(first.cwd, ".git"));
+      expect(gitDir.isDirectory()).toBe(true);
+      // No temp clone directories left behind next to the target.
+      const siblings = await fs.readdir(path.dirname(first.cwd));
+      expect(siblings.filter((name) => name.includes(".clone-"))).toEqual([]);
+    } finally {
+      await fs.rm(sourceRepo, { recursive: true, force: true });
+    }
   });
 
   it("does not mention credentials when an unauthenticated clone fails for non-auth reasons", async () => {
@@ -106,7 +140,7 @@ describe("ensureManagedProjectWorkspace clone credentials", () => {
     expect(error.message).not.toContain("company secret");
   });
 
-  it("removes the partially created directory when the clone fails", async () => {
+  it("leaves neither the target nor temp directories behind when the clone fails", async () => {
     const missingRepo = path.join(os.tmpdir(), "paperclip-definitely-missing", "repo.git");
     const companyId = "company-cleanup";
     const projectId = "project-1";
@@ -118,6 +152,8 @@ describe("ensureManagedProjectWorkspace clone credentials", () => {
     // Filesystem-path repo "URLs" derive no repo name, so the managed dir is the _default slot.
     const cwd = resolveManagedProjectWorkspaceDir({ companyId, projectId });
     await expect(fs.stat(cwd)).rejects.toMatchObject({ code: "ENOENT" });
+    const siblings = await fs.readdir(path.dirname(cwd));
+    expect(siblings.filter((name) => name.includes(".clone-"))).toEqual([]);
   });
 
   it("keeps using a pre-existing non-git directory as-is without attempting a clone", async () => {
