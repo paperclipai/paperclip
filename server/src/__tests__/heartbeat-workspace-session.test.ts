@@ -837,13 +837,13 @@ describe("scrubGitCredentialText", () => {
     );
   });
 
-  it("masks credential-bearing query parameters", () => {
+  it("masks entire URL query strings regardless of parameter names", () => {
     expect(scrubGitCredentialText(
       "fatal: unable to access 'https://github.com/example/repo.git?access_token=ghs_secret&ref=main'",
-    )).toBe("fatal: unable to access 'https://github.com/example/repo.git?access_token=***&ref=main'");
+    )).toBe("fatal: unable to access 'https://github.com/example/repo.git?***'");
     expect(scrubGitCredentialText(
-      "clone https://gitlab.example/repo.git?ref=main&private_token=glpat-123 failed",
-    )).toBe("clone https://gitlab.example/repo.git?ref=main&private_token=*** failed");
+      "clone https://gitlab.example/repo.git?anything=glpat-123 failed",
+    )).toBe("clone https://gitlab.example/repo.git?*** failed");
   });
 
   it("leaves credential-free text unchanged", () => {
