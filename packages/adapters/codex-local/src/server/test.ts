@@ -218,6 +218,7 @@ export async function testEnvironment(
   const command = asString(config.command, "codex");
   const target = ctx.executionTarget ?? null;
   const targetIsRemote = target?.kind === "remote";
+  const callerControlsHost = ctx.callerControlsHost !== false;
   const targetIsSandbox = target?.kind === "remote" && target.transport === "sandbox";
   const cwd = resolveAdapterExecutionTargetCwd(target, asString(config.cwd, ""), process.cwd());
   const targetLabel = targetIsRemote
@@ -293,6 +294,19 @@ export async function testEnvironment(
       level: "info",
       message: "OPENAI_API_KEY is set for Codex authentication.",
       detail: `Detected in ${source}.`,
+    });
+  } else if (!callerControlsHost) {
+    // Hosted multi-tenant: the host's auth.json is not this user's and
+    // `codex auth` is not a command they can run, so both halves of the advice
+    // in the local branch below would be dead ends. Skipping the auth-file
+    // read matters as much as the wording: a credential that IS on the host
+    // belongs to the operator or another tenant, and reporting it as this
+    // user's would be worse than saying nothing.
+    checks.push({
+      code: "codex_openai_api_key_missing",
+      level: "warn",
+      message: "No OpenAI API key is configured for this agent. Codex runs will fail until one is added.",
+      hint: "Add an OpenAI API key to this agent's credentials. A ChatGPT Plus or Pro plan cannot be used here: it signs in through a local `codex login`, which only works on your own machine.",
     });
   } else if (!targetIsRemote) {
     // Local-only auth file check. On remote targets, the probe will surface
@@ -421,7 +435,9 @@ export async function testEnvironment(
             ...(detail ? { detail } : {}),
             hint: probeApiKey
               ? "OPENAI_API_KEY was provided but Codex still rejected the request. Verify the key is valid for the OpenAI Responses API (e.g. `curl -H \"Authorization: Bearer $OPENAI_API_KEY\" https://api.openai.com/v1/models`), or run `codex login` and seed `~/.codex/auth.json`."
-              : "Codex CLI does not read OPENAI_API_KEY from the environment; set OPENAI_API_KEY in this adapter's config (so Paperclip writes it to `$CODEX_HOME/auth.json`) or run `codex login` on the host first.",
+              : callerControlsHost
+                ? "Codex CLI does not read OPENAI_API_KEY from the environment; set OPENAI_API_KEY in this adapter's config (so Paperclip writes it to `$CODEX_HOME/auth.json`) or run `codex login` on the host first."
+                : "Add an OpenAI API key to this agent's credentials. A ChatGPT Plus or Pro plan cannot be used here: it signs in through a local `codex login`, which only works on your own machine.",
           });
           if (targetIsSandbox) {
             // Emit the neutral canonical check so the user interface can decide

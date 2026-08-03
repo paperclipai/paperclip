@@ -318,6 +318,25 @@ export interface AdapterEnvironmentTestContext {
    * Surfaced in check messages so users see which environment the probe ran in.
    */
   environmentName?: string | null;
+  /**
+   * Whether the person reading this probe's result can reach the Paperclip
+   * host's shell and filesystem.
+   *
+   * Defaults to `true`, which is the single-operator install every adapter was
+   * written for: the host is the user's own machine, so "run `codex login`" or
+   * "run `claude login`" is advice they can act on, and a credential file
+   * sitting in `~/.codex` is theirs.
+   *
+   * Set to `false` for a hosted multi-tenant deployment, where BOTH halves of
+   * that assumption are wrong. The user has no shell on the host, so host-login
+   * advice is unfollowable and reads as a broken product; and any credential
+   * that does sit on the host belongs to the operator or another tenant, so
+   * reporting it as "you are authenticated" would be actively misleading.
+   * Adapters must then confine themselves to credentials the user can supply
+   * through Paperclip: an API key, or a subscription token they mint on their
+   * own machine and paste in.
+   */
+  callerControlsHost?: boolean;
   deployment?: {
     mode?: "local_trusted" | "authenticated";
     exposure?: "private" | "public";

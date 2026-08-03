@@ -3134,6 +3134,12 @@ export function agentRoutes(
           config: effectiveAdapterConfig,
           executionTarget,
           environmentName,
+          // A cloud tenant reaches this server through the gateway and has no
+          // shell on it, so adapters must not answer with host-login advice
+          // ("run `codex login`") or report a host credential file as theirs.
+          // Every other actor source is a local/self-hosted operator for whom
+          // the host genuinely is their own machine.
+          callerControlsHost: req.actor?.source !== "cloud_tenant",
         });
 
         const prefixChecks = [
