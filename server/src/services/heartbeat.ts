@@ -33,6 +33,7 @@ import {
   agentRuntimeState,
   agentTaskSessions,
   agentWakeupRequests,
+  IDEMPOTENT_AGENT_WAKEUP_STATUSES,
   activityLog,
   approvals,
   companyMemberships,
@@ -16850,6 +16851,40 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     await startNextQueuedRunForAgent(promotedRun.agentId);
   }
 
+  type LiveWakeupByIdempotencyKey = {
+    id: string;
+    status: string;
+    runId: string | null;
+  };
+
+  /**
+   * Finds a wake request that still represents a wake that took effect. Rows
+   * whose status says the wake did NOT happen (skipped, coalesced, failed,
+   * cancelled) are excluded so a suppressed wake never blocks a later, real one
+   * that reuses the key.
+   */
+  async function findLiveWakeupByIdempotencyKey(
+    companyId: string,
+    idempotencyKey: string,
+  ): Promise<LiveWakeupByIdempotencyKey | null> {
+    return await db
+      .select({
+        id: agentWakeupRequests.id,
+        status: agentWakeupRequests.status,
+        runId: agentWakeupRequests.runId,
+      })
+      .from(agentWakeupRequests)
+      .where(
+        and(
+          eq(agentWakeupRequests.companyId, companyId),
+          eq(agentWakeupRequests.idempotencyKey, idempotencyKey),
+          inArray(agentWakeupRequests.status, [...IDEMPOTENT_AGENT_WAKEUP_STATUSES]),
+        ),
+      )
+      .limit(1)
+      .then((rows) => rows[0] ?? null);
+  }
+
   async function enqueueWakeup(agentId: string, opts: WakeupOptions = {}) {
     const source = opts.source ?? "on_demand";
     const triggerDetail = opts.triggerDetail ?? null;
@@ -16900,6 +16935,29 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         },
       });
     };
+
+    // An idempotency key means "this wake already exists, don't make another".
+    // The lookup catches the settled cases; the partial unique index behind the
+    // inserts below catches the concurrent one the lookup cannot see.
+    const idempotencyKey = opts.idempotencyKey ?? null;
+    const resolveDuplicateWake = async (existing: LiveWakeupByIdempotencyKey | null) => {
+      await writeSkippedHeartbeatRequest("wake.duplicate_idempotency_key", {
+        reason: "A wake with this idempotency key already exists for this company.",
+        existingWakeupRequestId: existing?.id ?? null,
+        existingWakeupStatus: existing?.status ?? null,
+        existingRunId: existing?.runId ?? null,
+      });
+      if (!existing?.runId) return null;
+      return await db
+        .select()
+        .from(heartbeatRuns)
+        .where(eq(heartbeatRuns.id, existing.runId))
+        .then((rows) => rows[0] ?? null);
+    };
+    if (idempotencyKey) {
+      const existingWake = await findLiveWakeupByIdempotencyKey(agent.companyId, idempotencyKey);
+      if (existingWake) return await resolveDuplicateWake(existingWake);
+    }
 
     const schedulingSuppression = await getSchedulingSuppression();
     if (schedulingSuppression.suppressed) {
@@ -17699,6 +17757,8 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               return { kind: "deferred" as const };
             }
 
+            // A concurrent enqueue with the same key may already have written
+            // this row; losing that race is the same outcome as deferring.
             await tx.insert(agentWakeupRequests).values({
               companyId: agent.companyId,
               agentId,
@@ -17710,7 +17770,7 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
               requestedByActorType: opts.requestedByActorType ?? null,
               requestedByActorId: opts.requestedByActorId ?? null,
               idempotencyKey: opts.idempotencyKey ?? null,
-            });
+            }).onConflictDoNothing();
 
             return { kind: "deferred" as const };
           }
@@ -17872,8 +17932,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
             requestedByActorId: opts.requestedByActorId ?? null,
             idempotencyKey: opts.idempotencyKey ?? null,
           })
+          .onConflictDoNothing()
           .returning()
-          .then((rows) => rows[0]);
+          .then((rows) => rows[0] ?? null);
+
+        // A concurrent enqueue with the same idempotency key won the race; its
+        // run is the one this call asked for.
+        if (!wakeupRequest) return { kind: "duplicate_idempotency_key" as const };
 
         const newRun = await tx
           .insert(heartbeatRuns)
@@ -17908,6 +17973,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       });
 
       if (outcome.kind === "deferred" || outcome.kind === "skipped") return null;
+      if (outcome.kind === "duplicate_idempotency_key") {
+        return await resolveDuplicateWake(
+          idempotencyKey ? await findLiveWakeupByIdempotencyKey(agent.companyId, idempotencyKey) : null,
+        );
+      }
       if (outcome.kind === "coalesced") {
         await startNextQueuedRunForAgent(agent.id);
         return outcome.run;
@@ -18046,8 +18116,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
           requestedByActorId: opts.requestedByActorId ?? null,
           idempotencyKey: opts.idempotencyKey ?? null,
         })
+        .onConflictDoNothing()
         .returning()
-        .then((rows) => rows[0]);
+        .then((rows) => rows[0] ?? null);
+
+      // A concurrent enqueue with the same idempotency key won the race; its
+      // run is the one this call asked for.
+      if (!wakeupRequest) return { kind: "duplicate_idempotency_key" as const };
 
       const newRun = await tx
         .insert(heartbeatRuns)
@@ -18078,6 +18153,11 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     });
 
     if (queueOutcome.kind === "skipped") return null;
+    if (queueOutcome.kind === "duplicate_idempotency_key") {
+      return await resolveDuplicateWake(
+        idempotencyKey ? await findLiveWakeupByIdempotencyKey(agent.companyId, idempotencyKey) : null,
+      );
+    }
     const newRun = queueOutcome.run;
 
     publishLiveEvent({
