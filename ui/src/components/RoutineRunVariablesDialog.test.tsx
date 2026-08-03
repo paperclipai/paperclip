@@ -322,9 +322,9 @@ describe("RoutineRunVariablesDialog", () => {
     });
 
     const dialogContent = Array.from(document.body.querySelectorAll("div")).find((element) =>
-      typeof element.className === "string" && element.className.includes("max-h-[calc(100dvh-2rem)]"),
+      typeof element.className === "string" && element.className.includes("max-h-(--sz-calc-18)"),
     );
-    expect(dialogContent?.className).toContain("h-[calc(100dvh-2rem)]");
+    expect(dialogContent?.className).toContain("h-(--sz-calc-18)");
     expect(dialogContent?.className).toContain("overflow-hidden");
 
     const notesInput = document.querySelector("textarea");
@@ -337,7 +337,7 @@ describe("RoutineRunVariablesDialog", () => {
     expect(formScrollRegion?.contains(notesInput)).toBe(true);
 
     const footer = Array.from(document.body.querySelectorAll("div")).find((element) =>
-      typeof element.className === "string" && element.className.includes("pb-[calc(1rem+env(safe-area-inset-bottom))]"),
+      typeof element.className === "string" && element.className.includes("pb-(--sz-calc-19)"),
     );
     expect(footer?.className).toContain("shrink-0");
     expect(footer?.contains(formScrollRegion ?? null)).toBe(false);
@@ -393,7 +393,15 @@ describe("RoutineRunVariablesDialog", () => {
       );
     });
 
-    for (let i = 0; i < 10 && !document.querySelector('[data-testid="workspace-card"]'); i += 1) {
+    // The workspace card mounts once experimental settings resolve, then reports its
+    // branch name through an effect callback. That callback triggers a follow-up render,
+    // so wait for the branch value itself to land — not merely for the card to appear —
+    // otherwise we assert against the intermediate render before the branch propagates.
+    const hasBranchInput = () =>
+      Array.from(document.querySelectorAll("input")).some(
+        (input) => input.value === "pap-1634-routine-branch",
+      );
+    for (let i = 0; i < 20 && !hasBranchInput(); i += 1) {
       await settleEffects();
     }
 

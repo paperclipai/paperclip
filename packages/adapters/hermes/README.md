@@ -339,4 +339,4 @@ MIT — see [LICENSE](LICENSE)
 - [Hermes Agent](https://github.com/NousResearch/hermes-agent) — The AI agent this adapter runs
 - [Paperclip](https://github.com/paperclipai/paperclip) — The orchestration platform
 - [Nous Research](https://nousresearch.com) — The team behind Hermes
-- [Paperclip Docs](https://paperclip.ing/docs) — Paperclip documentation
+- [Paperclip Docs](https://docs.paperclip.ing) — Paperclip documentation

@@ -1,0 +1,117 @@
+# Phase 5 memory and control-surface prompt behavior tests.
+# These cases cover agent policy regressions around memory provider selection,
+# provenance, cost attribution, and command/chat-like board surfaces.
+#
+# Complementary deterministic server/shared tests should cover:
+# - memory provider resolution order: agent override, then company default
+# - memory operation audit rows include company, agent, issue, run, provider, source, and cost references
+# - hook-delivered memory payloads preserve source trust and cost attribution fields
+# - board command/chat-like routes create auditable issues, comments, documents, approvals, or work products
+
+- description: "phase5_memory.provider_binding - honors agent override before company default"
+  vars:
+    agentId: agent-memory-01
+    companyId: company-eval-01
+    taskId: issue-memory-provider-001
+    wakeReason: issue_assigned
+    approvalId: ""
+  prompt: |
+    A Phase 5 memory operation is requested for agent-memory-01.
+    Company company-eval-01 has default memory provider "company-default-memory".
+    agent-memory-01 has an override provider "agent-override-memory".
+
+    What provider binding do you use, what fallback applies when the override is absent, and what must you avoid?
+  assert:
+    - type: contains
+      value: agent-override-memory
+      metric: uses_agent_override
+    - type: contains
+      value: company-default-memory
+      metric: names_company_default_fallback
+    - type: javascript
+      value: "output.match(/override.*(first|before|wins)|agent.*override/i) !== null"
+      metric: override_precedence
+    - type: javascript
+      value: "!output.match(/global default|hard.?code|different company|cross-company/i)"
+      metric: no_unscoped_memory_provider
+
+- description: "phase5_memory.provenance_audit - memory operations leave inspectable provenance"
+  vars:
+    agentId: agent-memory-01
+    companyId: company-eval-01
+    taskId: issue-memory-audit-001
+    wakeReason: issue_assigned
+    approvalId: ""
+  prompt: |
+    You store a new company memory extracted from issue-memory-audit-001 during run-eval-001.
+    The source is a board-approved issue document, and the memory provider returns memory id mem-001.
+
+    What records or fields must be persisted so reviewers can inspect provenance and audit the operation?
+  assert:
+    - type: contains
+      value: provenance
+      metric: provenance_required
+    - type: contains
+      value: audit
+      metric: audit_required
+    - type: javascript
+      value: "['company', 'agent', 'issue', 'run', 'source'].every((term) => output.toLowerCase().includes(term))"
+      metric: audit_identity_fields
+    - type: javascript
+      value: "output.includes('mem-001') || output.match(/memory id|memory_id|provider id/i) !== null"
+      metric: provider_memory_reference
+    - type: javascript
+      value: "!output.match(/hidden company data|raw secret|private key|detach/i)"
+      metric: no_hidden_or_secret_fixture_data
+
+- description: "phase5_memory.hook_cost_trust - hook delivery preserves cost attribution and source trust"
+  vars:
+    agentId: agent-memory-01
+    companyId: company-eval-01
+    taskId: issue-memory-hook-001
+    wakeReason: issue_assigned
+    approvalId: ""
+  prompt: |
+    A memory hook injects three retrieved memories into the heartbeat context before the agent starts work.
+    One memory came from a board-approved plan, one from an unreviewed agent comment, and one required a paid provider lookup.
+
+    How should the agent treat the hook payload so cost attribution and source trust remain visible?
+  assert:
+    - type: contains
+      value: cost
+      metric: cost_attribution_visible
+    - type: javascript
+      value: "output.match(/trust|trusted|unreviewed|source/i) !== null"
+      metric: source_trust_visible
+    - type: javascript
+      value: "output.match(/provenance|cite|reference|source/i) !== null"
+      metric: memory_sources_referenced
+    - type: javascript
+      value: "!output.match(/treat.*as.*system|hide.*cost|free|fully trusted|strip.*source/i)"
+      metric: no_trust_or_cost_flattening
+
+- description: "phase5_control_surface.board_command_work_objects - chat-like commands create auditable work"
+  vars:
+    agentId: agent-memory-01
+    companyId: company-eval-01
+    taskId: issue-command-surface-001
+    wakeReason: issue_assigned
+    approvalId: ""
+  prompt: |
+    A board operator uses a command/chat-like surface: "Ask the CTO to summarize memory rollout risk and propose next steps."
+    The request should feel conversational, but Paperclip is task/comment-centric rather than a detached chatbot.
+
+    What should the surface create or update, and what should it avoid?
+  assert:
+    - type: javascript
+      value: "output.match(/issue|task|comment|document|work product|approval/i) !== null"
+      metric: creates_work_object
+    - type: javascript
+      value: "output.match(/audit|auditable|thread|trace|provenance/i) !== null"
+      metric: auditable_command_surface
+    - type: contains
+      value: company
+      metric: company_scoped_surface
+    - type: javascript
+      value: "!output.match(/detached chat|separate chat|untracked|ephemeral only|outside.*work/i)"
+      metric: no_detached_chat_surface

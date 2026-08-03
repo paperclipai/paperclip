@@ -32,6 +32,9 @@ export type RuntimeStatusPhase =
 export interface RuntimeStatusUpdate {
   phase: RuntimeStatusPhase;
   message: string;
+  currentToolName?: string | null;
+  lastAssistantSnippet?: string | null;
+  lastEventAt?: Date | string | null;
 }
 
 export type RuntimeStatusSink = (update: RuntimeStatusUpdate) => void | Promise<void>;

@@ -93,7 +93,7 @@ export function ImageGalleryModal({
         >
           {/* Top bar */}
           <div className="flex items-center justify-between px-5 py-3 text-white/80 text-sm shrink-0">
-            <span className="truncate max-w-[50%] font-medium" title={filename}>
+            <span className="truncate max-w-(--pct-50) font-medium" title={filename}>
               {filename}
             </span>
             <div className="flex items-center gap-4">

@@ -51,7 +51,7 @@ const BOARD_CHAT_MARKDOWN_CLASS =
   "max-w-full overflow-visible [&>*:first-child]:mt-0 [&>*:last-child]:mb-0 [&_pre]:max-w-full [&_pre]:overflow-x-auto [&_table]:block [&_table]:max-w-full [&_table]:overflow-x-auto";
 
 const boardChatBubbleShell =
-  "min-w-0 max-w-[85%] break-words px-3 py-2 text-sm overflow-x-auto overflow-y-visible";
+  "min-w-0 max-w-(--pct-85) break-words px-3 py-2 text-sm overflow-x-auto overflow-y-visible";
 
 /** First-letter(s) fallback for an agent with no icon. */
 function agentInitials(name: string): string {
@@ -668,7 +668,7 @@ export function BoardChat() {
   }
 
   return (
-    <div className="flex h-[calc(100%+3rem)] flex-col -m-6">
+    <div className="flex h-(--sz-calc-29) flex-col -m-6">
       <div
         ref={splitContainerRef}
         className="flex min-h-0 min-w-0 flex-1 flex-row"
@@ -796,6 +796,7 @@ export function BoardChat() {
                               setInput(chip.prompt);
                               composerRef.current?.focus();
                             }}
+                            // design-allow(card-pattern): interactive suggestion-pill <button>, not a content card (C5a Run 3)
                             className="rounded-full border border-border bg-card px-3 py-1.5 text-xs text-muted-foreground transition-colors duration-150 hover:bg-accent hover:text-foreground"
                           >
                             {chip.label}
@@ -941,6 +942,7 @@ export function BoardChat() {
               type="button"
               onClick={() => scrollToLatest("smooth")}
               aria-label="Jump to latest messages"
+              // design-allow(card-pattern): floating scroll-to-bottom <button>, not a content card (C5a Run 3)
               className="absolute bottom-24 left-1/2 z-20 grid h-8 w-8 -translate-x-1/2 place-items-center rounded-full border border-border bg-card text-foreground shadow-md transition-colors duration-150 hover:bg-accent hover:border-muted-foreground/30"
             >
               <ArrowDown className="h-4 w-4" />
@@ -1010,7 +1012,7 @@ export function BoardChat() {
               <Activity className="h-4 w-4" />
             </Button>
           </SheetTrigger>
-          <SheetContent side="bottom" className="h-[70vh] p-0 rounded-t-xl">
+          <SheetContent side="bottom" className="h-(--sz-70vh) p-0 rounded-t-xl">
             <ActivityFeed />
           </SheetContent>
         </Sheet>

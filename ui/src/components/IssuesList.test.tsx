@@ -1,12 +1,17 @@
 // @vitest-environment jsdom
 
-import { act } from "react";
 import { createRoot } from "react-dom/client";
+import { flushSync } from "react-dom";
 import type { AnchorHTMLAttributes, ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import type { Issue, Project } from "@paperclipai/shared";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { IssuesList } from "./IssuesList";
+import {
+  IssuesList,
+  issueAgeBucket,
+  issueAgeBucketsCrossed,
+  issueAgeSeparatorLabel,
+} from "./IssuesList";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
 const companyState = vi.hoisted(() => ({
@@ -56,6 +61,7 @@ vi.mock("../context/DialogContext", () => ({
 }));
 
 vi.mock("@/lib/router", () => ({
+  useNavigate: () => vi.fn(),
   Link: ({
     children,
     to,
@@ -72,7 +78,10 @@ vi.mock("@/lib/router", () => ({
 }));
 
 vi.mock("../api/issues", () => ({
-  issuesApi: mockIssuesApi,
+  issuesApi: {
+    ...mockIssuesApi,
+    listCompact: mockIssuesApi.list,
+  },
 }));
 
 vi.mock("../api/auth", () => ({
@@ -80,6 +89,10 @@ vi.mock("../api/auth", () => ({
 }));
 
 vi.mock("../api/access", () => ({
+  accessApi: mockAccessApi,
+}));
+
+vi.mock("@/api/access", () => ({
   accessApi: mockAccessApi,
 }));
 
@@ -94,6 +107,17 @@ vi.mock("../api/instanceSettings", () => ({
 vi.mock("../api/externalObjects", () => ({
   externalObjectsApi: mockExternalObjectsApi,
 }));
+
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+(globalThis as any).IS_REACT_ACT_ENVIRONMENT = true;
+
+async function act(callback: () => void | Promise<void>) {
+  let result: void | Promise<void> = undefined;
+  flushSync(() => {
+    result = callback();
+  });
+  await result;
+}
 
 vi.mock("./IssueRow", () => ({
   IssueRow: ({
@@ -176,6 +200,7 @@ function createIssue(overrides: Partial<Issue> = {}): Issue {
     priority: "medium",
     assigneeAgentId: null,
     assigneeUserId: null,
+    responsibleUserId: null,
     createdByAgentId: null,
     createdByUserId: null,
     issueNumber: 1,
@@ -209,6 +234,13 @@ function createIssue(overrides: Partial<Issue> = {}): Issue {
 async function flush() {
   await act(async () => {
     await new Promise((resolve) => setTimeout(resolve, 0));
+  });
+}
+
+async function flushAnimationFrame() {
+  await act(async () => {
+    await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+    await Promise.resolve();
   });
 }
 
@@ -468,7 +500,7 @@ describe("IssuesList", () => {
         q: "server",
         projectId: undefined,
         limit: 200,
-      });
+      }, { signal: expect.any(AbortSignal) });
       expect(container.textContent).toContain("Server result");
       expect(container.textContent).not.toContain("Local issue");
     });
@@ -503,7 +535,7 @@ describe("IssuesList", () => {
         projectId: undefined,
         parentId: "parent-1",
         limit: 200,
-      });
+      }, { signal: expect.any(AbortSignal) });
       expect(container.textContent).toContain("Server result");
       expect(container.textContent).not.toContain("Local issue");
     });
@@ -1087,7 +1119,7 @@ describe("IssuesList", () => {
       container,
     );
 
-    await waitForMicrotaskAssertion(() => {
+    await waitForAssertion(() => {
       expect(container.textContent).toContain("Showing up to 200 matches. Refine the search to narrow further.");
     });
 
@@ -1141,12 +1173,12 @@ describe("IssuesList", () => {
         status: "backlog",
         limit: 200,
         includeRoutineExecutions: true,
-      }));
+      }), { signal: expect.any(AbortSignal) });
       expect(mockIssuesApi.list).toHaveBeenCalledWith("company-1", expect.objectContaining({
         status: "done",
         limit: 200,
         includeRoutineExecutions: true,
-      }));
+      }), { signal: expect.any(AbortSignal) });
       expect(mockKanbanBoard).toHaveBeenLastCalledWith(expect.objectContaining({
         issues: expect.arrayContaining([
           expect.objectContaining({ id: "issue-backlog" }),
@@ -1361,10 +1393,13 @@ describe("IssuesList", () => {
       expect(container.querySelectorAll('[data-testid="issue-row"]')).toHaveLength(100);
     });
 
+    await flush();
+
     act(() => {
       setDocumentScrollMetrics({ innerHeight: 600, scrollY: 1500, scrollHeight: 2000 });
       window.dispatchEvent(new Event("scroll"));
     });
+    await flushAnimationFrame();
 
     await waitForAssertion(() => {
       expect(container.querySelectorAll('[data-testid="issue-row"]')).toHaveLength(250);
@@ -1417,6 +1452,7 @@ describe("IssuesList", () => {
       main.scrollTop = 1500;
       main.dispatchEvent(new Event("scroll"));
     });
+    await flushAnimationFrame();
 
     await waitForAssertion(() => {
       expect(container.querySelectorAll('[data-testid="issue-row"]').length).toBeGreaterThan(100);
@@ -1464,6 +1500,7 @@ describe("IssuesList", () => {
       setDocumentScrollMetrics({ innerHeight: 600, scrollY: 1500, scrollHeight: 2000 });
       window.dispatchEvent(new Event("scroll"));
     });
+    await flushAnimationFrame();
 
     await waitForAssertion(() => {
       expect(onLoadMoreIssues).toHaveBeenCalledTimes(2);
@@ -1894,12 +1931,11 @@ describe("IssuesList", () => {
     });
   });
 
-  // PAP-246 (QA of PAP-245/PAP-243a): the desktop row status glyph must render
-  // at lg (20px). The earlier IssueRow unit test passed because it rendered
-  // IssueRow WITHOUT IssuesList's own leading slots, hitting the
-  // `?? <StatusIcon size="lg">` fallback — but the live list always supplies its
-  // own `statusSlot`. This asserts the real list-supplied slot is lg.
-  it("renders the desktop row status glyph at lg (20px)", async () => {
+  // Run 3 review (Jul 8) reversed PAP-243's lg enlargement: task rows in the
+  // list and inbox standardize on md (16px). The live list always supplies its
+  // own `statusSlot` (the PAP-246 slot-override gotcha), so assert the real
+  // slot size here.
+  it("renders the desktop row status glyph at md (16px)", async () => {
     const { root } = renderWithQueryClient(
       <IssuesList
         issues={[createIssue({ status: "in_progress" })]}
@@ -1913,18 +1949,163 @@ describe("IssuesList", () => {
 
     await waitForAssertion(() => {
       const glyphs = Array.from(container.querySelectorAll("svg")).filter(
-        (svg) => svg.getAttribute("width") === "20" && svg.getAttribute("height") === "20",
-      );
-      expect(glyphs.length).toBeGreaterThan(0);
-      // No 16px (md) status glyph should leak through from the list's slot.
-      const mdGlyphs = Array.from(container.querySelectorAll("svg")).filter(
         (svg) => svg.getAttribute("width") === "16" && svg.getAttribute("height") === "16",
       );
-      expect(mdGlyphs.length).toBe(0);
+      expect(glyphs.length).toBeGreaterThan(0);
+      // No 20px (lg) status glyph should leak through from the list's slot.
+      const lgGlyphs = Array.from(container.querySelectorAll("svg")).filter(
+        (svg) => svg.getAttribute("width") === "20" && svg.getAttribute("height") === "20",
+      );
+      expect(lgGlyphs.length).toBe(0);
     });
 
     act(() => {
       root.unmount();
     });
+  });
+
+  it("draws day and week separators between recency-sorted rows", async () => {
+    const now = Date.now();
+    const hourAgo = new Date(now - 60 * 60 * 1000);
+    const threeDaysAgo = new Date(now - 3 * 24 * 60 * 60 * 1000);
+    const tenDaysAgo = new Date(now - 10 * 24 * 60 * 60 * 1000);
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[
+          createIssue({ id: "issue-recent", identifier: "PAP-1", title: "Just updated", updatedAt: hourAgo }),
+          createIssue({ id: "issue-mid", identifier: "PAP-2", title: "A few days old", updatedAt: threeDaysAgo }),
+          createIssue({ id: "issue-old", identifier: "PAP-3", title: "Over a week old", updatedAt: tenDaysAgo }),
+        ]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      const separators = Array.from(container.querySelectorAll("[data-issues-date-separator]"));
+      const labels = separators.map((el) => el.getAttribute("aria-label"));
+      expect(labels).toEqual(["Older than a day", "Older than a week"]);
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("draws both separators when adjacent rows skip the middle age bucket", async () => {
+    const now = Date.now();
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[
+          createIssue({ id: "issue-recent", identifier: "PAP-1", title: "Just updated", updatedAt: new Date(now - 60 * 60 * 1000) }),
+          createIssue({ id: "issue-old", identifier: "PAP-2", title: "Over a week old", updatedAt: new Date(now - 10 * 24 * 60 * 60 * 1000) }),
+        ]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      const labels = Array.from(container.querySelectorAll("[data-issues-date-separator]"))
+        .map((el) => el.getAttribute("aria-label"));
+      expect(labels).toEqual(["Older than a day", "Older than a week"]);
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("places separators around expanded nested rows in visible order", async () => {
+    const now = Date.now();
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[
+          createIssue({ id: "issue-parent", identifier: "PAP-1", title: "Recent parent", updatedAt: new Date(now - 60 * 60 * 1000) }),
+          createIssue({ id: "issue-child", identifier: "PAP-2", parentId: "issue-parent", title: "Older child", updatedAt: new Date(now - 3 * 24 * 60 * 60 * 1000) }),
+          createIssue({ id: "issue-old", identifier: "PAP-3", title: "Old root", updatedAt: new Date(now - 10 * 24 * 60 * 60 * 1000) }),
+        ]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      const visibleOrder = Array.from(
+        container.querySelectorAll("[data-testid='issue-row'], [data-issues-date-separator]"),
+      ).map((element) => element.getAttribute("aria-label") ?? element.firstElementChild?.textContent);
+      expect(visibleOrder).toEqual([
+        "Recent parent",
+        "Older than a day",
+        "Older child",
+        "Older than a week",
+        "Old root",
+      ]);
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("omits date separators when all rows share a recency bucket", async () => {
+    const now = Date.now();
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[
+          createIssue({ id: "issue-a", identifier: "PAP-1", title: "One", updatedAt: new Date(now - 60 * 60 * 1000) }),
+          createIssue({ id: "issue-b", identifier: "PAP-2", title: "Two", updatedAt: new Date(now - 2 * 60 * 60 * 1000) }),
+        ]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      expect(container.querySelector("[data-testid='issue-row']")).not.toBeNull();
+    });
+    expect(container.querySelectorAll("[data-issues-date-separator]").length).toBe(0);
+
+    act(() => {
+      root.unmount();
+    });
+  });
+});
+
+describe("issueAgeBucket", () => {
+  const now = new Date("2026-04-10T12:00:00.000Z").getTime();
+
+  it("buckets by day and week boundaries", () => {
+    expect(issueAgeBucket(new Date(now - 60 * 60 * 1000), now)).toBe(0);
+    expect(issueAgeBucket(new Date(now - 3 * 24 * 60 * 60 * 1000), now)).toBe(1);
+    expect(issueAgeBucket(new Date(now - 10 * 24 * 60 * 60 * 1000), now)).toBe(2);
+  });
+
+  it("labels the day and week separators", () => {
+    expect(issueAgeSeparatorLabel(1)).toBe("Older than a day");
+    expect(issueAgeSeparatorLabel(2)).toBe("Older than a week");
+  });
+
+  it("returns every boundary crossed between adjacent rows", () => {
+    expect(issueAgeBucketsCrossed(0, 1)).toEqual([1]);
+    expect(issueAgeBucketsCrossed(1, 2)).toEqual([2]);
+    expect(issueAgeBucketsCrossed(0, 2)).toEqual([1, 2]);
+    expect(issueAgeBucketsCrossed(2, 1)).toEqual([]);
   });
 });

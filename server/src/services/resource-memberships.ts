@@ -1,8 +1,10 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agentMemberships,
   agents,
+  documentMemberships,
+  documents,
   projectMemberships,
   projects,
 } from "@paperclipai/db";
@@ -41,10 +43,19 @@ export type ResourceMembershipPolicyHook = (input: {
   resourceType: ResourceMembershipResourceType;
   resourceId: string;
   state: ResourceMembershipState;
+  starred?: boolean;
 }) => Promise<PolicyDecision> | PolicyDecision;
 
 type ResourceMembershipServiceOptions = {
   policyHook?: ResourceMembershipPolicyHook | null;
+};
+
+type MembershipChangeKind = ResourceMembershipState | "starred" | "unstarred";
+
+type MembershipUpdateResult = ResourceMembershipUpdateResult & {
+  changed: boolean;
+  changeKind: MembershipChangeKind | null;
+  policySource: string;
 };
 
 function defaultJoinedMap<T extends { projectId?: string; agentId?: string; state: string }>(
@@ -58,6 +69,30 @@ function defaultJoinedMap<T extends { projectId?: string; agentId?: string; stat
     result[id] = row.state === "left" ? "left" : "joined";
   }
   return result;
+}
+
+function starredAtMap<T extends { projectId?: string; agentId?: string; starredAt: Date | null }>(
+  rows: T[],
+  key: "projectId" | "agentId",
+): Record<string, Date> {
+  const result: Record<string, Date> = {};
+  for (const row of rows) {
+    const id = row[key];
+    if (typeof id !== "string" || !row.starredAt) continue;
+    result[id] = row.starredAt;
+  }
+  return result;
+}
+
+function starredIds<T extends { projectId?: string; agentId?: string; starredAt: Date | null }>(
+  rows: T[],
+  key: "projectId" | "agentId",
+): string[] {
+  return rows
+    .filter((row) => row.starredAt)
+    .sort((a, b) => b.starredAt!.getTime() - a.starredAt!.getTime())
+    .map((row) => row[key])
+    .filter((id): id is string => typeof id === "string");
 }
 
 function latestDate(...dates: Array<Date | null | undefined>): Date | null {
@@ -116,6 +151,7 @@ export function resourceMembershipService(db: Db, options: ResourceMembershipSer
     resourceType: ResourceMembershipResourceType;
     resourceId: string;
     state: ResourceMembershipState;
+    starred?: boolean;
   }): Promise<PolicyDecision> {
     assertBoardSelfMembershipAccess(input.actor, input.companyId, input.userId);
     const decision = await evaluatePolicy(policyHook, input);
@@ -139,14 +175,20 @@ export function resourceMembershipService(db: Db, options: ResourceMembershipSer
   return {
     async listForUser(companyId: string, userId: string, actor: BoardActor): Promise<ResourceMemberships> {
       assertBoardSelfMembershipAccess(actor, companyId, userId);
-      const [projectRows, agentRows] = await Promise.all([
+      const [projectRows, agentRows, documentRows] = await Promise.all([
         db
           .select({
             projectId: projectMemberships.projectId,
             state: projectMemberships.state,
+            starredAt: projectMemberships.starredAt,
             updatedAt: projectMemberships.updatedAt,
+            projectArchivedAt: projects.archivedAt,
           })
           .from(projectMemberships)
+          .innerJoin(projects, and(
+            eq(projects.id, projectMemberships.projectId),
+            eq(projects.companyId, projectMemberships.companyId),
+          ))
           .where(and(
             eq(projectMemberships.companyId, companyId),
             eq(projectMemberships.userId, userId),
@@ -155,20 +197,55 @@ export function resourceMembershipService(db: Db, options: ResourceMembershipSer
           .select({
             agentId: agentMemberships.agentId,
             state: agentMemberships.state,
+            starredAt: agentMemberships.starredAt,
             updatedAt: agentMemberships.updatedAt,
+            agentStatus: agents.status,
           })
           .from(agentMemberships)
+          .innerJoin(agents, and(
+            eq(agents.id, agentMemberships.agentId),
+            eq(agents.companyId, agentMemberships.companyId),
+          ))
           .where(and(
             eq(agentMemberships.companyId, companyId),
             eq(agentMemberships.userId, userId),
           )),
+        db
+          .select({
+            documentId: documentMemberships.documentId,
+            starredAt: documentMemberships.starredAt,
+            updatedAt: documentMemberships.updatedAt,
+          })
+          .from(documentMemberships)
+          .innerJoin(documents, and(
+            eq(documents.id, documentMemberships.documentId),
+            eq(documents.companyId, documentMemberships.companyId),
+          ))
+          .where(and(
+            eq(documentMemberships.companyId, companyId),
+            eq(documentMemberships.userId, userId),
+          )),
       ]);
+      const starEligibleProjectRows = projectRows.filter((row) => row.starredAt && !row.projectArchivedAt);
+      const starEligibleAgentRows = agentRows.filter((row) => row.starredAt && row.agentStatus !== "terminated");
+      const starredDocumentRows = documentRows
+        .filter((row): row is typeof row & { starredAt: Date } => row.starredAt !== null)
+        .sort((a, b) => b.starredAt.getTime() - a.starredAt.getTime());
       return {
         projectMemberships: defaultJoinedMap(projectRows, "projectId"),
         agentMemberships: defaultJoinedMap(agentRows, "agentId"),
+        starredProjectIds: starredIds(starEligibleProjectRows, "projectId"),
+        starredAgentIds: starredIds(starEligibleAgentRows, "agentId"),
+        starredDocumentIds: starredDocumentRows.map((row) => row.documentId),
+        projectStarredAt: starredAtMap(starEligibleProjectRows, "projectId"),
+        agentStarredAt: starredAtMap(starEligibleAgentRows, "agentId"),
+        documentStarredAt: Object.fromEntries(
+          starredDocumentRows.map((row) => [row.documentId, row.starredAt.toISOString()]),
+        ),
         updatedAt: latestDate(
           ...projectRows.map((row) => row.updatedAt),
           ...agentRows.map((row) => row.updatedAt),
+          ...documentRows.map((row) => row.updatedAt),
         ),
       };
     },
@@ -177,24 +254,17 @@ export function resourceMembershipService(db: Db, options: ResourceMembershipSer
       companyId: string;
       userId: string;
       projectId: string;
-      state: ResourceMembershipState;
+      state?: ResourceMembershipState;
+      starred?: boolean;
       actor: BoardActor;
-    }): Promise<ResourceMembershipUpdateResult & { changed: boolean; policySource: string }> {
+    }): Promise<MembershipUpdateResult> {
       const project = await db.query.projects.findFirst({
         where: and(
           eq(projects.id, input.projectId),
           eq(projects.companyId, input.companyId),
         ),
       });
-      if (!project) throw notFound("Project not found");
-      const decision = await assertMutationAllowed({
-        actor: input.actor,
-        companyId: input.companyId,
-        userId: input.userId,
-        resourceType: "project",
-        resourceId: input.projectId,
-        state: input.state,
-      });
+      if (!project || project.archivedAt) throw notFound("Project not found");
 
       const existing = await db.query.projectMemberships.findFirst({
         where: and(
@@ -204,13 +274,36 @@ export function resourceMembershipService(db: Db, options: ResourceMembershipSer
         ),
       });
       const previousState: ResourceMembershipState = existing?.state === "left" ? "left" : "joined";
-      if (previousState === input.state) {
+      const previousStarredAt = existing?.starredAt ?? null;
+      const nextState: ResourceMembershipState = input.starred === true ? "joined" : input.state ?? previousState;
+      const nextStarredAt = nextState === "left"
+        ? null
+        : input.starred === true
+          ? previousStarredAt ?? new Date()
+          : input.starred === false
+            ? null
+            : previousStarredAt;
+      const stateChanged = previousState !== nextState;
+      const starredChanged = (previousStarredAt?.getTime() ?? null) !== (nextStarredAt?.getTime() ?? null);
+      const decision = await assertMutationAllowed({
+        actor: input.actor,
+        companyId: input.companyId,
+        userId: input.userId,
+        resourceType: "project",
+        resourceId: input.projectId,
+        state: nextState,
+        starred: input.starred,
+      });
+
+      if (!stateChanged && !starredChanged) {
         return {
           resourceType: "project",
           resourceId: input.projectId,
-          state: input.state,
+          state: nextState,
+          starredAt: previousStarredAt,
           updatedAt: existing?.updatedAt ?? new Date(),
           changed: false,
+          changeKind: null,
           policySource: decision.source ?? "oss_default",
         };
       }
@@ -222,13 +315,15 @@ export function resourceMembershipService(db: Db, options: ResourceMembershipSer
           companyId: input.companyId,
           projectId: input.projectId,
           userId: input.userId,
-          state: input.state,
+          state: nextState,
+          starredAt: nextStarredAt,
           updatedAt: now,
         })
         .onConflictDoUpdate({
           target: [projectMemberships.companyId, projectMemberships.userId, projectMemberships.projectId],
           set: {
-            state: input.state,
+            state: nextState,
+            starredAt: nextStarredAt,
             updatedAt: now,
           },
         })
@@ -238,8 +333,12 @@ export function resourceMembershipService(db: Db, options: ResourceMembershipSer
         resourceType: "project",
         resourceId: input.projectId,
         state: row?.state === "left" ? "left" : "joined",
+        starredAt: row?.starredAt ?? null,
         updatedAt: row?.updatedAt ?? now,
         changed: true,
+        changeKind: input.starred !== undefined && starredChanged
+          ? input.starred ? "starred" : "unstarred"
+          : stateChanged ? nextState : nextStarredAt ? "starred" : "unstarred",
         policySource: decision.source ?? "oss_default",
       };
     },
@@ -248,24 +347,17 @@ export function resourceMembershipService(db: Db, options: ResourceMembershipSer
       companyId: string;
       userId: string;
       agentId: string;
-      state: ResourceMembershipState;
+      state?: ResourceMembershipState;
+      starred?: boolean;
       actor: BoardActor;
-    }): Promise<ResourceMembershipUpdateResult & { changed: boolean; policySource: string }> {
+    }): Promise<MembershipUpdateResult> {
       const agent = await db.query.agents.findFirst({
         where: and(
           eq(agents.id, input.agentId),
           eq(agents.companyId, input.companyId),
         ),
       });
-      if (!agent) throw notFound("Agent not found");
-      const decision = await assertMutationAllowed({
-        actor: input.actor,
-        companyId: input.companyId,
-        userId: input.userId,
-        resourceType: "agent",
-        resourceId: input.agentId,
-        state: input.state,
-      });
+      if (!agent || agent.status === "terminated") throw notFound("Agent not found");
 
       const existing = await db.query.agentMemberships.findFirst({
         where: and(
@@ -275,13 +367,36 @@ export function resourceMembershipService(db: Db, options: ResourceMembershipSer
         ),
       });
       const previousState: ResourceMembershipState = existing?.state === "left" ? "left" : "joined";
-      if (previousState === input.state) {
+      const previousStarredAt = existing?.starredAt ?? null;
+      const nextState: ResourceMembershipState = input.starred === true ? "joined" : input.state ?? previousState;
+      const nextStarredAt = nextState === "left"
+        ? null
+        : input.starred === true
+          ? previousStarredAt ?? new Date()
+          : input.starred === false
+            ? null
+            : previousStarredAt;
+      const stateChanged = previousState !== nextState;
+      const starredChanged = (previousStarredAt?.getTime() ?? null) !== (nextStarredAt?.getTime() ?? null);
+      const decision = await assertMutationAllowed({
+        actor: input.actor,
+        companyId: input.companyId,
+        userId: input.userId,
+        resourceType: "agent",
+        resourceId: input.agentId,
+        state: nextState,
+        starred: input.starred,
+      });
+
+      if (!stateChanged && !starredChanged) {
         return {
           resourceType: "agent",
           resourceId: input.agentId,
-          state: input.state,
+          state: nextState,
+          starredAt: previousStarredAt,
           updatedAt: existing?.updatedAt ?? new Date(),
           changed: false,
+          changeKind: null,
           policySource: decision.source ?? "oss_default",
         };
       }
@@ -293,13 +408,15 @@ export function resourceMembershipService(db: Db, options: ResourceMembershipSer
           companyId: input.companyId,
           agentId: input.agentId,
           userId: input.userId,
-          state: input.state,
+          state: nextState,
+          starredAt: nextStarredAt,
           updatedAt: now,
         })
         .onConflictDoUpdate({
           target: [agentMemberships.companyId, agentMemberships.userId, agentMemberships.agentId],
           set: {
-            state: input.state,
+            state: nextState,
+            starredAt: nextStarredAt,
             updatedAt: now,
           },
         })
@@ -309,8 +426,117 @@ export function resourceMembershipService(db: Db, options: ResourceMembershipSer
         resourceType: "agent",
         resourceId: input.agentId,
         state: row?.state === "left" ? "left" : "joined",
+        starredAt: row?.starredAt ?? null,
         updatedAt: row?.updatedAt ?? now,
         changed: true,
+        changeKind: input.starred !== undefined && starredChanged
+          ? input.starred ? "starred" : "unstarred"
+          : stateChanged ? nextState : nextStarredAt ? "starred" : "unstarred",
+        policySource: decision.source ?? "oss_default",
+      };
+    },
+
+    async updateDocument(input: {
+      companyId: string;
+      userId: string;
+      documentId: string;
+      starred: boolean;
+      actor: BoardActor;
+    }): Promise<MembershipUpdateResult> {
+      const document = await db.query.documents.findFirst({
+        where: eq(documents.id, input.documentId),
+      });
+      if (!document || document.companyId !== input.companyId) throw notFound("Document not found");
+
+      const decision = await assertMutationAllowed({
+        actor: input.actor,
+        companyId: input.companyId,
+        userId: input.userId,
+        resourceType: "document",
+        resourceId: input.documentId,
+        state: "joined",
+        starred: input.starred,
+      });
+      const existing = await db.query.documentMemberships.findFirst({
+        where: and(
+          eq(documentMemberships.companyId, input.companyId),
+          eq(documentMemberships.userId, input.userId),
+          eq(documentMemberships.documentId, input.documentId),
+        ),
+      });
+
+      if (input.starred) {
+        if (existing?.starredAt) {
+          return {
+            resourceType: "document",
+            resourceId: input.documentId,
+            state: "joined",
+            starredAt: existing.starredAt,
+            updatedAt: existing.updatedAt,
+            changed: false,
+            changeKind: null,
+            policySource: decision.source ?? "oss_default",
+          };
+        }
+        const now = new Date();
+        const [row] = await db
+          .insert(documentMemberships)
+          .values({
+            companyId: input.companyId,
+            documentId: input.documentId,
+            userId: input.userId,
+            starredAt: now,
+            updatedAt: now,
+          })
+          .onConflictDoUpdate({
+            target: [documentMemberships.companyId, documentMemberships.userId, documentMemberships.documentId],
+            set: {
+              starredAt: sql`${documentMemberships.starredAt}`,
+              updatedAt: sql`${documentMemberships.updatedAt}`,
+            },
+          })
+          .returning({
+            starredAt: documentMemberships.starredAt,
+            updatedAt: documentMemberships.updatedAt,
+            inserted: sql<boolean>`xmax = 0`,
+          });
+        return {
+          resourceType: "document",
+          resourceId: input.documentId,
+          state: "joined",
+          starredAt: row?.starredAt ?? now,
+          updatedAt: row?.updatedAt ?? now,
+          changed: row?.inserted === true,
+          changeKind: row?.inserted === true ? "starred" : null,
+          policySource: decision.source ?? "oss_default",
+        };
+      }
+
+      if (!existing) {
+        return {
+          resourceType: "document",
+          resourceId: input.documentId,
+          state: "joined",
+          starredAt: null,
+          updatedAt: new Date(),
+          changed: false,
+          changeKind: null,
+          policySource: decision.source ?? "oss_default",
+        };
+      }
+      const [deleted] = await db
+        .delete(documentMemberships)
+        .where(eq(documentMemberships.id, existing.id))
+        .returning({ id: documentMemberships.id });
+      const changed = deleted !== undefined;
+      return {
+        resourceType: "document",
+        resourceId: input.documentId,
+        state: "joined",
+        starredAt: null,
+        updatedAt: new Date(),
+        changed,
+        changeKind: changed ? "unstarred" : null,
         policySource: decision.source ?? "oss_default",
       };
     },

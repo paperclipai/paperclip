@@ -1,7 +1,21 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { and, eq } from "drizzle-orm";
-import { agents, companies, createDb, environmentLeases, environments, heartbeatRuns } from "@paperclipai/db";
+import {
+  agents,
+  companies,
+  companySecretBindings,
+  companySecrets,
+  createDb,
+  environmentCustomImageSetupSessions,
+  environmentLeases,
+  environments,
+  executionWorkspaces,
+  heartbeatRuns,
+  instanceSettings,
+  issues,
+  projects,
+} from "@paperclipai/db";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -30,10 +44,17 @@ describeEmbeddedPostgres("environmentService leases", () => {
   });
 
   afterEach(async () => {
+    await db.delete(companySecretBindings);
+    await db.delete(environmentCustomImageSetupSessions);
     await db.delete(environmentLeases);
     await db.delete(heartbeatRuns);
+    await db.delete(issues);
+    await db.delete(executionWorkspaces);
+    await db.delete(projects);
     await db.delete(agents);
+    await db.delete(instanceSettings);
     await db.delete(environments);
+    await db.delete(companySecrets);
     await db.delete(companies);
   });
 
@@ -146,6 +167,312 @@ describeEmbeddedPostgres("environmentService leases", () => {
     expect(stillActive.map((lease) => lease.id)).toEqual([otherLease.id]);
   });
 
+  it("aggregates delete blast radius counts into static and active tiers", async () => {
+    const companyId = randomUUID();
+    const otherCompanyId = randomUUID();
+    const environmentId = randomUUID();
+    const otherEnvironmentId = randomUUID();
+    const projectId = randomUUID();
+    const issueId = randomUUID();
+    const workspaceId = randomUUID();
+    const secretId = randomUUID();
+    const otherSecretId = randomUUID();
+    const now = new Date();
+
+    await db.insert(companies).values([
+      {
+        id: companyId,
+        name: "Acme",
+        status: "active",
+        issuePrefix: "ACM",
+        createdAt: now,
+        updatedAt: now,
+      },
+      {
+        id: otherCompanyId,
+        name: "Other Co",
+        status: "active",
+        issuePrefix: "OTH",
+        createdAt: now,
+        updatedAt: now,
+      },
+    ]);
+    await db.insert(environments).values([
+      {
+        id: environmentId,
+        name: "Shared SSH",
+        driver: "ssh",
+        status: "active",
+        config: {
+          host: "fixture.example.test",
+          port: 22,
+          username: "fixture",
+          remoteWorkspacePath: "/srv/paperclip",
+        },
+        createdAt: now,
+        updatedAt: now,
+      },
+      {
+        id: otherEnvironmentId,
+        name: "Other SSH",
+        driver: "ssh",
+        status: "active",
+        config: {
+          host: "other.example.test",
+          port: 22,
+          username: "fixture",
+          remoteWorkspacePath: "/srv/paperclip",
+        },
+        createdAt: now,
+        updatedAt: now,
+      },
+    ]);
+    await db.insert(instanceSettings).values({
+      singletonKey: "default",
+      defaultEnvironmentId: environmentId,
+      general: {},
+      experimental: {},
+      createdAt: now,
+      updatedAt: now,
+    });
+    await db.insert(agents).values([
+      {
+        companyId,
+        name: "CodexCoder",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        defaultEnvironmentId: environmentId,
+        permissions: {},
+        createdAt: now,
+        updatedAt: now,
+      },
+      {
+        companyId,
+        name: "OtherCoder",
+        role: "engineer",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        defaultEnvironmentId: otherEnvironmentId,
+        permissions: {},
+        createdAt: now,
+        updatedAt: now,
+      },
+    ]);
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Project",
+      status: "in_progress",
+      executionWorkspacePolicy: {
+        enabled: true,
+        defaultMode: "isolated_workspace",
+        environmentId,
+      },
+      createdAt: now,
+      updatedAt: now,
+    });
+    await db.insert(issues).values({
+      id: issueId,
+      companyId,
+      projectId,
+      title: "Issue",
+      status: "todo",
+      priority: "medium",
+      executionWorkspaceSettings: {
+        mode: "isolated_workspace",
+        environmentId,
+      },
+      createdAt: now,
+      updatedAt: now,
+    });
+    await db.insert(executionWorkspaces).values({
+      id: workspaceId,
+      companyId,
+      projectId,
+      sourceIssueId: issueId,
+      mode: "isolated_workspace",
+      strategyType: "git_worktree",
+      name: "Workspace",
+      status: "active",
+      providerType: "git_worktree",
+      metadata: {
+        config: {
+          environmentId,
+        },
+      },
+      createdAt: now,
+      updatedAt: now,
+    });
+    await db.insert(companySecrets).values([
+      {
+        id: secretId,
+        companyId,
+        key: "env-secret",
+        name: "Env Secret",
+        provider: "local_encrypted",
+        createdAt: now,
+        updatedAt: now,
+      },
+      {
+        id: otherSecretId,
+        companyId: otherCompanyId,
+        key: "other-env-secret",
+        name: "Other Env Secret",
+        provider: "local_encrypted",
+        createdAt: now,
+        updatedAt: now,
+      },
+    ]);
+    await db.insert(companySecretBindings).values([
+      {
+        companyId,
+        secretId,
+        targetType: "environment",
+        targetId: environmentId,
+        configPath: "env.OPENAI_API_KEY",
+        createdAt: now,
+        updatedAt: now,
+      },
+      {
+        companyId: otherCompanyId,
+        secretId: otherSecretId,
+        targetType: "environment",
+        targetId: environmentId,
+        configPath: "env.ANTHROPIC_API_KEY",
+        createdAt: now,
+        updatedAt: now,
+      },
+      {
+        companyId,
+        secretId,
+        targetType: "agent",
+        targetId: "agent-1",
+        configPath: "env.OPENAI_API_KEY",
+        createdAt: now,
+        updatedAt: now,
+      },
+    ]);
+    await svc.acquireLease({
+      companyId,
+      environmentId,
+    });
+    const releasedLease = await svc.acquireLease({
+      companyId,
+      environmentId,
+    });
+    await svc.releaseLease(releasedLease.id);
+    await db.insert(environmentCustomImageSetupSessions).values([
+      {
+        environmentId,
+        provider: "fake-plugin",
+        status: "waiting_for_user",
+        createdAt: now,
+        updatedAt: now,
+      },
+    ]);
+
+    const impact = await svc.getDeleteBlastRadius(environmentId);
+
+    expect(impact).toEqual({
+      environmentId,
+      canDelete: false,
+      deleteBlockedReasons: ["instance_default"],
+      staticReferences: {
+        isManagedLocal: false,
+        isInstanceDefault: true,
+        agentDefaultCount: 1,
+        executionWorkspaceSelectionCount: 1,
+        issueSelectionCount: 1,
+        projectSelectionCount: 1,
+        secretBindingCount: 2,
+      },
+      activeRuntimeUse: {
+        activeLeaseCount: 1,
+        activeCustomImageSetupSessionCount: 1,
+        hasActiveRuntimeUse: true,
+      },
+    });
+  });
+
+  it("guards removeIfDeletable with atomic local/default predicates", async () => {
+    const localEnvId = randomUUID();
+    const defaultEnvId = randomUUID();
+    const deletableEnvId = randomUUID();
+    const now = new Date();
+
+    await db.insert(environments).values([
+      {
+        id: localEnvId,
+        name: "Local Guard",
+        driver: "local",
+        status: "active",
+        config: {},
+        createdAt: now,
+        updatedAt: now,
+      },
+      {
+        id: defaultEnvId,
+        name: "Default SSH Guard",
+        driver: "ssh",
+        status: "active",
+        config: {
+          host: "default.example.test",
+          port: 22,
+          username: "fixture",
+          remoteWorkspacePath: "/srv/paperclip",
+        },
+        createdAt: now,
+        updatedAt: now,
+      },
+      {
+        id: deletableEnvId,
+        name: "Deletable SSH Guard",
+        driver: "ssh",
+        status: "active",
+        config: {
+          host: "delete.example.test",
+          port: 22,
+          username: "fixture",
+          remoteWorkspacePath: "/srv/paperclip",
+        },
+        createdAt: now,
+        updatedAt: now,
+      },
+    ]);
+    await db.insert(instanceSettings).values({
+      singletonKey: "default",
+      defaultEnvironmentId: defaultEnvId,
+      general: {},
+      experimental: {},
+      createdAt: now,
+      updatedAt: now,
+    });
+
+    const removedLocal = await svc.removeIfDeletable(localEnvId);
+    const localRows = await db.select().from(environments).where(eq(environments.id, localEnvId));
+
+    expect(removedLocal).toBeNull();
+    expect(localRows).toHaveLength(1);
+    expect(localRows[0]?.driver).toBe("local");
+
+    const removedDefault = await svc.removeIfDeletable(defaultEnvId);
+    const defaultRows = await db.select().from(environments).where(eq(environments.id, defaultEnvId));
+
+    expect(removedDefault).toBeNull();
+    expect(defaultRows).toHaveLength(1);
+
+    const removedDeletable = await svc.removeIfDeletable(deletableEnvId);
+    const deletedRows = await db.select().from(environments).where(eq(environments.id, deletableEnvId));
+
+    expect(removedDeletable?.id).toBe(deletableEnvId);
+    expect(deletedRows).toHaveLength(0);
+  });
+
   it("creates and then reuses the default local environment for a company", async () => {
     const companyId = randomUUID();
     await db.insert(companies).values({
@@ -201,6 +528,79 @@ describeEmbeddedPostgres("environmentService leases", () => {
     const rows = await db.select().from(environments).where(eq(environments.driver, "local"));
     expect(rows).toHaveLength(1);
     expect(rows[0]?.updatedAt.toISOString()).toBe(archivedAt.toISOString());
+  });
+
+  it("adopts a pre-existing local row on a cloud-managed instance by stamping the platform marker", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Acme",
+      status: "active",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    const [existing] = await db
+      .insert(environments)
+      .values({
+        name: "Tenant Local",
+        driver: "local",
+        status: "active",
+        config: { shell: "zsh" },
+        metadata: { owner: "operator" },
+        createdAt: new Date("2025-01-01T00:00:00.000Z"),
+        updatedAt: new Date("2025-01-01T00:00:00.000Z"),
+      })
+      .returning();
+
+    process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN = "test-server-token";
+    try {
+      const adopted = await svc.ensureLocalEnvironment(companyId);
+
+      expect(adopted.id).toBe(existing?.id);
+      expect(adopted.name).toBe("Tenant Local");
+      expect(adopted.metadata).toEqual({ owner: "operator", managedByPaperclip: true });
+
+      // Re-ensuring an already-adopted row must not rewrite it.
+      const adoptedRow = await db
+        .select()
+        .from(environments)
+        .where(eq(environments.driver, "local"))
+        .then((rows) => rows[0]);
+      const reused = await svc.ensureLocalEnvironment(companyId);
+      expect(reused.metadata).toEqual({ owner: "operator", managedByPaperclip: true });
+      const reusedRow = await db
+        .select()
+        .from(environments)
+        .where(eq(environments.driver, "local"))
+        .then((rows) => rows[0]);
+      expect(reusedRow?.updatedAt.toISOString()).toBe(adoptedRow?.updatedAt.toISOString());
+    } finally {
+      delete process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN;
+    }
+  });
+
+  it("does not stamp the platform marker on self-hosted instances (regression)", async () => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Acme",
+      status: "active",
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+    await db.insert(environments).values({
+      name: "Tenant Local",
+      driver: "local",
+      status: "active",
+      config: {},
+      metadata: { owner: "operator" },
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    });
+
+    const ensured = await svc.ensureLocalEnvironment(companyId);
+
+    expect(ensured.metadata).toEqual({ owner: "operator" });
   });
 
   it("deduplicates concurrent default local environment creation", async () => {
@@ -301,6 +701,147 @@ describeEmbeddedPostgres("environmentService leases", () => {
       .where(eq(environments.driver, "sandbox"));
     expect(rows).toHaveLength(1);
     expect((rows[0]?.metadata as Record<string, unknown>)?.managedKubernetesSandbox).toBe(true);
+  });
+
+  it("ensures and refreshes a managed sandbox environment for an arbitrary provider", async () => {
+    const created = await svc.ensureManagedSandboxEnvironment({
+      name: "Daytona",
+      description: "Managed Daytona sandbox environment.",
+      provider: "daytona",
+      config: { target: "us" },
+    });
+
+    expect(created.driver).toBe("sandbox");
+    expect(created.name).toBe("Daytona");
+    expect(created.config.provider).toBe("daytona");
+    expect(created.config.target).toBe("us");
+    expect(created.metadata?.managedByPaperclip).toBe(true);
+    expect(created.metadata?.managedSandboxProvider).toBe("daytona");
+
+    // Idempotent: a second call refreshes config and name in place, and a
+    // description omitted from the spec is cleared, not pinned forever.
+    const refreshed = await svc.ensureManagedSandboxEnvironment({
+      name: "Daytona (EU)",
+      provider: "daytona",
+      config: { target: "eu" },
+    });
+    expect(refreshed.id).toBe(created.id);
+    expect(refreshed.name).toBe("Daytona (EU)");
+    expect(refreshed.config.target).toBe("eu");
+    expect(refreshed.description).toBeNull();
+
+    const rows = await db
+      .select()
+      .from(environments)
+      .where(eq(environments.driver, "sandbox"));
+    expect(rows).toHaveLength(1);
+  });
+
+  it("adopts the managed slot on a provider switch and drops the stale kubernetes marker", async () => {
+    const kubernetes = await svc.ensureKubernetesEnvironment({ inCluster: true, backend: "job" });
+    expect(kubernetes.metadata?.managedKubernetesSandbox).toBe(true);
+
+    const daytona = await svc.ensureManagedSandboxEnvironment({
+      name: "Daytona",
+      provider: "daytona",
+      config: { target: "us" },
+    });
+
+    expect(daytona.id).toBe(kubernetes.id);
+    expect(daytona.name).toBe("Daytona");
+    expect(daytona.config.provider).toBe("daytona");
+    expect(daytona.config.backend).toBeUndefined();
+    expect(daytona.metadata?.managedSandboxProvider).toBe("daytona");
+    expect(daytona.metadata?.managedKubernetesSandbox).toBeUndefined();
+    expect(await svc.findKubernetesEnvironment()).toBeNull();
+
+    // And back: the kubernetes wrapper re-adopts the same row.
+    const restored = await svc.ensureKubernetesEnvironment({ inCluster: true, backend: "job" });
+    expect(restored.id).toBe(kubernetes.id);
+    expect(restored.metadata?.managedKubernetesSandbox).toBe(true);
+  });
+
+  it("archives the managed sandbox row only for its own provider and reactivates on ensure", async () => {
+    // Nothing provisioned yet: archiving is a no-op.
+    expect(await svc.archiveManagedSandboxEnvironment({ provider: "daytona" })).toBeNull();
+
+    const created = await svc.ensureManagedSandboxEnvironment({
+      name: "Daytona",
+      provider: "daytona",
+      config: { target: "us" },
+    });
+    expect(created.status).toBe("active");
+
+    // Another provider's unavailability leaves this provider's row alone.
+    expect(await svc.archiveManagedSandboxEnvironment({ provider: "kubernetes" })).toBeNull();
+
+    const archived = await svc.archiveManagedSandboxEnvironment({ provider: "daytona" });
+    expect(archived?.id).toBe(created.id);
+    expect(archived?.status).toBe("archived");
+
+    // Already archived: a repeat call is a no-op.
+    expect(await svc.archiveManagedSandboxEnvironment({ provider: "daytona" })).toBeNull();
+
+    // The next healthy boot's ensure re-activates the same row.
+    const restored = await svc.ensureManagedSandboxEnvironment({
+      name: "Daytona",
+      provider: "daytona",
+      config: { target: "us" },
+    });
+    expect(restored.id).toBe(created.id);
+    expect(restored.status).toBe("active");
+  });
+
+  it("adopts an existing unmanaged sandbox row holding the desired name", async () => {
+    const handMade = await svc.create({
+      name: "Daytona",
+      driver: "sandbox",
+      status: "active",
+      config: { provider: "daytona", target: "us" },
+    });
+    expect(handMade.metadata?.managedByPaperclip).toBeUndefined();
+
+    const adopted = await svc.ensureManagedSandboxEnvironment({
+      name: "Daytona",
+      provider: "daytona",
+      config: { target: "eu" },
+    });
+    expect(adopted.id).toBe(handMade.id);
+    expect(adopted.config.target).toBe("eu");
+    expect(adopted.metadata?.managedByPaperclip).toBe(true);
+    expect(adopted.metadata?.managedSandboxProvider).toBe("daytona");
+
+    const rows = await db
+      .select()
+      .from(environments)
+      .where(eq(environments.driver, "sandbox"));
+    expect(rows).toHaveLength(1);
+  });
+
+  it("keeps the current name when the desired name belongs to another row", async () => {
+    await svc.create({
+      name: "Daytona",
+      driver: "ssh",
+      status: "active",
+      config: {
+        host: "fixture.example.test",
+        port: 22,
+        username: "fixture",
+        remoteWorkspacePath: "/srv/paperclip",
+      },
+    });
+    const kubernetes = await svc.ensureKubernetesEnvironment({ inCluster: true });
+
+    // The managed slot is adopted, but the rename would collide with the ssh
+    // row on environments_name_idx; the ensure keeps the existing name.
+    const adopted = await svc.ensureManagedSandboxEnvironment({
+      name: "Daytona",
+      provider: "daytona",
+      config: { target: "us" },
+    });
+    expect(adopted.id).toBe(kubernetes.id);
+    expect(adopted.name).toBe(kubernetes.name);
+    expect(adopted.config.provider).toBe("daytona");
   });
 
   it("returns a conflict when creating a second environment with the same name", async () => {

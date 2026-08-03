@@ -14,6 +14,7 @@ const dialogState = vi.hoisted(() => ({
 }));
 
 const dialogContentState = vi.hoisted(() => ({
+  onEscapeKeyDown: null as null | ((event: KeyboardEvent) => void),
   onPointerDownOutside: null as null | ((event: {
     detail: { originalEvent: { target: EventTarget | null } };
     preventDefault: () => void;
@@ -75,6 +76,7 @@ const mockAssetsApi = vi.hoisted(() => ({
 const mockInstanceSettingsApi = vi.hoisted(() => ({
   getExperimental: vi.fn(),
 }));
+const mockMissingUserSecretsBannerRender = vi.hoisted(() => vi.fn());
 
 vi.mock("../context/DialogContext", () => ({
   useDialog: () => dialogState,
@@ -115,6 +117,20 @@ vi.mock("../api/assets", () => ({
 vi.mock("../api/instanceSettings", () => ({
   instanceSettingsApi: mockInstanceSettingsApi,
 }));
+
+vi.mock("../pages/secrets/MissingUserSecretsBanner", async () => {
+  const React = await import("react");
+  return {
+    MissingUserSecretsBanner: (props: { definitionKeys?: string[] }) => {
+      mockMissingUserSecretsBannerRender(props);
+      return React.createElement(
+        "div",
+        { "data-testid": "missing-user-secrets-banner" },
+        props.definitionKeys?.join(",") ?? "",
+      );
+    },
+  };
+});
 
 vi.mock("../hooks/useProjectOrder", () => ({
   useProjectOrder: ({ projects }: { projects: unknown[] }) => ({
@@ -193,14 +209,15 @@ vi.mock("@/components/ui/dialog", () => ({
   DialogContent: ({
     children,
     showCloseButton: _showCloseButton,
-    onEscapeKeyDown: _onEscapeKeyDown,
+    onEscapeKeyDown,
     onPointerDownOutside,
     ...props
   }: ComponentProps<"div"> & {
     showCloseButton?: boolean;
-    onEscapeKeyDown?: (event: unknown) => void;
+    onEscapeKeyDown?: (event: KeyboardEvent) => void;
     onPointerDownOutside?: (event: unknown) => void;
   }) => {
+    dialogContentState.onEscapeKeyDown = onEscapeKeyDown ?? null;
     dialogContentState.onPointerDownOutside = onPointerDownOutside as typeof dialogContentState.onPointerDownOutside;
     return <div {...props}>{children}</div>;
   },
@@ -315,6 +332,7 @@ describe("NewIssueDialog", () => {
     dialogState.newIssueOpen = true;
     dialogState.newIssueDefaults = {};
     dialogState.closeNewIssue.mockReset();
+    dialogContentState.onEscapeKeyDown = null;
     dialogContentState.onPointerDownOutside = null;
     toastState.pushToast.mockReset();
     mockIssuesApi.create.mockReset();
@@ -337,6 +355,7 @@ describe("NewIssueDialog", () => {
     mockAuthApi.getSession.mockResolvedValue({ user: { id: "user-1" } });
     mockAssetsApi.uploadImage.mockResolvedValue({ contentPath: "/uploads/asset.png" });
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableIsolatedWorkspaces: false });
+    mockMissingUserSecretsBannerRender.mockReset();
     localStorage.clear();
     mockIssuesApi.create.mockResolvedValue({
       id: "issue-2",
@@ -453,6 +472,64 @@ describe("NewIssueDialog", () => {
         workMode: "standard",
       }),
     );
+
+    act(() => root.unmount());
+  });
+
+  it("does not show user-secret warnings when the draft will not run an env binding that needs them", async () => {
+    const { root } = renderDialog(container);
+    await flush();
+
+    expect(mockMissingUserSecretsBannerRender).not.toHaveBeenCalled();
+
+    act(() => root.unmount());
+  });
+
+  it("scopes user-secret warnings to selected runnable agent and project env bindings", async () => {
+    dialogState.newIssueDefaults = {
+      title: "Run with scoped secrets",
+      assigneeAgentId: "agent-1",
+      projectId: "project-1",
+    };
+    mockAgentsApi.list.mockResolvedValue([
+      {
+        id: "agent-1",
+        name: "CodexCoder",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {
+          env: {
+            AGENT_TOKEN: { type: "user_secret_ref", key: "agent_token", required: true },
+            OPTIONAL_TOKEN: { type: "user_secret_ref", key: "optional_token", required: false },
+          },
+        },
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+    mockProjectsApi.list.mockResolvedValue([
+      {
+        id: "project-1",
+        name: "Alpha",
+        description: null,
+        archivedAt: null,
+        color: "#445566",
+        env: {
+          PROJECT_TOKEN: { type: "user_secret_ref", key: "project_token", required: true },
+        },
+      },
+    ]);
+
+    const { root } = renderDialog(container);
+    await waitForAssertion(() => {
+      expect(mockMissingUserSecretsBannerRender).toHaveBeenCalledWith(
+        expect.objectContaining({
+          definitionKeys: ["agent_token", "project_token"],
+        }),
+      );
+    });
+
+    expect(container.textContent).toContain("agent_token,project_token");
 
     act(() => root.unmount());
   });
@@ -849,7 +926,7 @@ describe("NewIssueDialog", () => {
     await act(async () => {
       modeChip()?.dispatchEvent(new KeyboardEvent("keydown", {
         bubbles: true,
-        code: "Period",
+        code: "",
         key: ".",
         metaKey: true,
       }));
@@ -875,6 +952,76 @@ describe("NewIssueDialog", () => {
       }));
     });
     expect(modeChip()?.getAttribute("data-issue-work-mode-chip")).toBe("standard");
+
+    act(() => root.unmount());
+  });
+
+  it("cycles work modes when iOS reports cmd-period as Escape", async () => {
+    const { root } = renderDialog(container);
+    await flush();
+
+    const modeChip = () => container.querySelector("[data-issue-work-mode-chip]");
+    expect(modeChip()?.getAttribute("data-issue-work-mode-chip")).toBe("standard");
+    expect(dialogContentState.onEscapeKeyDown).not.toBeNull();
+
+    const commandPeriodAsEscape = new KeyboardEvent("keydown", {
+      bubbles: true,
+      cancelable: true,
+      key: "Escape",
+      metaKey: true,
+    });
+    await act(async () => {
+      dialogContentState.onEscapeKeyDown?.(commandPeriodAsEscape);
+    });
+
+    expect(commandPeriodAsEscape.defaultPrevented).toBe(true);
+    expect(modeChip()?.getAttribute("data-issue-work-mode-chip")).toBe("planning");
+    expect(dialogState.closeNewIssue).not.toHaveBeenCalled();
+
+    const plainEscape = new KeyboardEvent("keydown", {
+      bubbles: true,
+      cancelable: true,
+      key: "Escape",
+    });
+    await act(async () => {
+      dialogContentState.onEscapeKeyDown?.(plainEscape);
+    });
+
+    expect(plainEscape.defaultPrevented).toBe(false);
+    expect(modeChip()?.getAttribute("data-issue-work-mode-chip")).toBe("planning");
+
+    const controlEscape = new KeyboardEvent("keydown", {
+      bubbles: true,
+      cancelable: true,
+      ctrlKey: true,
+      key: "Escape",
+    });
+    await act(async () => {
+      dialogContentState.onEscapeKeyDown?.(controlEscape);
+    });
+
+    expect(controlEscape.defaultPrevented).toBe(false);
+    expect(modeChip()?.getAttribute("data-issue-work-mode-chip")).toBe("planning");
+
+    act(() => root.unmount());
+  });
+
+  it("cycles work modes with ctrl-period", async () => {
+    const { root } = renderDialog(container);
+    await flush();
+
+    const modeChip = () => container.querySelector("[data-issue-work-mode-chip]");
+    expect(modeChip()?.getAttribute("data-issue-work-mode-chip")).toBe("standard");
+
+    await act(async () => {
+      modeChip()?.dispatchEvent(new KeyboardEvent("keydown", {
+        bubbles: true,
+        code: "Period",
+        key: ".",
+        ctrlKey: true,
+      }));
+    });
+    expect(modeChip()?.getAttribute("data-issue-work-mode-chip")).toBe("planning");
 
     act(() => root.unmount());
   });
@@ -921,9 +1068,9 @@ describe("NewIssueDialog", () => {
     await flush();
 
     const dialogContent = Array.from(container.querySelectorAll("div")).find((element) =>
-      typeof element.className === "string" && element.className.includes("max-h-[var(--new-issue-dialog-height)]"),
+      typeof element.className === "string" && element.className.includes("max-h-(--new-issue-dialog-height)"),
     );
-    expect(dialogContent?.className).toContain("h-[var(--new-issue-dialog-height)]");
+    expect(dialogContent?.className).toContain("h-(--new-issue-dialog-height)");
     expect(dialogContent?.className).toContain("overflow-hidden");
     expect(dialogContent?.getAttribute("style")).toContain("env(safe-area-inset-top)");
     expect(dialogContent?.getAttribute("style")).toContain("env(safe-area-inset-bottom)");
@@ -1161,7 +1308,7 @@ describe("NewIssueDialog", () => {
       expect(workModeOption("ask")?.textContent).toContain("Ask mode");
       expect(workModeOption("planning")?.textContent).toContain("Plan mode");
 
-      expect(statusOptionIconClass("Todo", "Executable — assignee will be woken")).toContain("text-amber-600");
+      expect(statusOptionIconClass("Todo", "Executable - assignee will be woken")).toContain("text-amber-600");
       expect(statusOptionIconClass("In Progress")).toContain("text-blue-600");
 
       act(() => root.unmount());

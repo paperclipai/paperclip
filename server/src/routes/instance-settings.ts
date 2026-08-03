@@ -7,6 +7,7 @@ import {
   patchInstanceGeneralSettingsSchema,
 } from "@paperclipai/shared";
 import { forbidden } from "../errors.js";
+import { isCloudManagedInstance } from "../middleware/auth.js";
 import { validate } from "../middleware/validate.js";
 import { heartbeatService, instanceSettingsService, logActivity } from "../services/index.js";
 import { environmentService } from "../services/environments.js";
@@ -57,6 +58,7 @@ export function instanceSettingsRoutes(db: Db) {
             actorId: actor.actorId,
             agentId: actor.agentId,
             runId: actor.runId,
+            agentApiKeyId: actor.agentApiKeyId,
             action: "instance.settings.updated",
             entityType: "instance_settings",
             entityId: updated.id,
@@ -83,6 +85,24 @@ export function instanceSettingsRoutes(db: Db) {
     validate(patchInstanceGeneralSettingsSchema),
     async (req, res) => {
       assertCanManageInstanceSettings(req);
+      // Floor: on cloud-managed instances the execution mode is pinned by the
+      // platform (the execution-policy bootstrap writes it at boot). No
+      // instance admin — including a computed owner-admin — may change it: a
+      // forced provider switch would strand runs on a provider the platform
+      // never provisioned. Same-value writes pass so settings forms that echo
+      // the full general-settings object keep working. Absent and "any" both
+      // mean unrestricted, so they compare equal.
+      if (
+        isCloudManagedInstance() &&
+        Object.prototype.hasOwnProperty.call(req.body, "executionMode")
+      ) {
+        const current = await svc.getGeneral();
+        if ((req.body.executionMode ?? "any") !== (current.executionMode ?? "any")) {
+          throw forbidden("executionMode is platform-managed on cloud-managed instances", {
+            code: "execution_mode_platform_managed",
+          });
+        }
+      }
       const updated = await svc.updateGeneral(req.body);
       const actor = getActorInfo(req);
       const companyIds = await svc.listCompanyIds();
@@ -94,6 +114,7 @@ export function instanceSettingsRoutes(db: Db) {
             actorId: actor.actorId,
             agentId: actor.agentId,
             runId: actor.runId,
+            agentApiKeyId: actor.agentApiKeyId,
             action: "instance.settings.general_updated",
             entityType: "instance_settings",
             entityId: updated.id,
@@ -132,6 +153,7 @@ export function instanceSettingsRoutes(db: Db) {
             actorId: actor.actorId,
             agentId: actor.agentId,
             runId: actor.runId,
+            agentApiKeyId: actor.agentApiKeyId,
             action: "instance.settings.experimental_updated",
             entityType: "instance_settings",
             entityId: updated.id,
@@ -177,6 +199,7 @@ export function instanceSettingsRoutes(db: Db) {
             actorId: actor.actorId,
             agentId: actor.agentId,
             runId: actor.runId,
+            agentApiKeyId: actor.agentApiKeyId,
             action: "instance.settings.issue_graph_liveness_auto_recovery_run",
             entityType: "instance_settings",
             entityId: "default",

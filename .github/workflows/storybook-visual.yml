@@ -1,0 +1,102 @@
+name: Storybook Visual
+
+on:
+  workflow_dispatch:
+    inputs:
+      update_snapshots:
+        description: "Generate updated snapshots and a baseline review bundle"
+        required: false
+        type: boolean
+        default: false
+  pull_request:
+    branches:
+      - master
+    types:
+      - opened
+      - reopened
+      - synchronize
+      - labeled
+
+concurrency:
+  group: storybook-visual-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  visual:
+    name: Storybook visual regression
+    if: >-
+      github.event_name == 'workflow_dispatch' ||
+      (github.event_name == 'pull_request' && contains(github.event.pull_request.labels.*.name, 'storybook-visual'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v7
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v6
+        with:
+          version: 9.15.4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v7
+        with:
+          node-version: 24
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: Cache Storybook visual baseline archive
+        uses: actions/cache@v6
+        with:
+          path: tests/storybook-visual/.cache
+          key: storybook-visual-baseline-${{ runner.os }}-${{ hashFiles('tests/storybook-visual/baseline-manifest.json') }}
+
+      - name: Download Storybook visual baseline
+        run: pnpm storybook-visual:baseline download
+
+      - name: Verify Storybook visual baseline
+        run: pnpm storybook-visual:baseline verify
+
+      - name: Build Storybook
+        run: pnpm build-storybook
+
+      - name: Run Storybook visual tests
+        if: ${{ github.event.inputs.update_snapshots != 'true' }}
+        run: npx playwright test --config tests/storybook-visual/playwright.config.ts
+
+      - name: Generate updated snapshots for review
+        if: ${{ github.event.inputs.update_snapshots == 'true' }}
+        run: npx playwright test --config tests/storybook-visual/playwright.config.ts --update-snapshots
+
+      - name: Pack updated baseline review bundle
+        if: ${{ github.event.inputs.update_snapshots == 'true' }}
+        run: pnpm storybook-visual:baseline pack
+
+      - name: Upload Storybook visual report
+        uses: actions/upload-artifact@v7
+        if: always()
+        with:
+          name: storybook-visual-report-${{ github.run_id }}
+          path: |
+            tests/storybook-visual/playwright-report/
+            tests/storybook-visual/test-results/
+          retention-days: 30
+          if-no-files-found: warn
+
+      - name: Upload updated baseline review bundle
+        uses: actions/upload-artifact@v7
+        if: ${{ github.event.inputs.update_snapshots == 'true' }}
+        with:
+          name: storybook-visual-baseline-review-${{ github.run_id }}
+          path: tests/storybook-visual/baseline-review/snapshots.tgz
+          retention-days: 30
+          if-no-files-found: error

@@ -93,3 +93,19 @@ export const cancelEnvironmentCustomImageSetupSessionSchema = z.object({
 }).strict();
 export type CancelEnvironmentCustomImageSetupSession =
   z.infer<typeof cancelEnvironmentCustomImageSetupSessionSchema>;
+
+export const createEnvironmentCustomImageTerminalSessionTokenSchema = z.object({}).strict().default({});
+export type CreateEnvironmentCustomImageTerminalSessionToken =
+  z.infer<typeof createEnvironmentCustomImageTerminalSessionTokenSchema>;
+
+export const environmentCustomImageTerminalSessionTokenSchema = z.object({
+  id: z.string().min(1),
+  token: z.string().min(32),
+  expiresAt: isoDateTime,
+  setupSessionId: z.string().min(1),
+  environmentId: z.string().min(1),
+  connectionType: z.literal("ssh"),
+  websocketPath: z.string().min(1),
+}).strict();
+export type EnvironmentCustomImageTerminalSessionToken =
+  z.infer<typeof environmentCustomImageTerminalSessionTokenSchema>;

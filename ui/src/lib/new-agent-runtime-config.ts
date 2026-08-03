@@ -12,6 +12,7 @@ export function buildNewAgentRuntimeConfig(input?: {
       enabled: input?.heartbeatEnabled ?? defaultCreateValues.heartbeatEnabled,
       intervalSec: input?.intervalSec ?? defaultCreateValues.intervalSec,
       wakeOnDemand: true,
+      skipTimerWhenNoActionableWork: true,
       cooldownSec: 10,
       maxConcurrentRuns: AGENT_DEFAULT_MAX_CONCURRENT_RUNS,
     },
@@ -19,11 +20,11 @@ export function buildNewAgentRuntimeConfig(input?: {
 
   const cheapModel = input?.cheapModel?.trim() ?? "";
   const cheapEnabled = input?.cheapModelEnabled ?? false;
-  if (cheapModel && cheapEnabled) {
+  if (cheapEnabled) {
     config.modelProfiles = {
       cheap: {
         enabled: true,
-        adapterConfig: { model: cheapModel },
+        adapterConfig: cheapModel ? { model: cheapModel } : {},
       },
     };
   }

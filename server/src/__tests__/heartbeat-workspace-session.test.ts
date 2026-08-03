@@ -3,13 +3,14 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { promisify } from "node:util";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { agents } from "@paperclipai/db";
 import { sessionCodec as codexSessionCodec } from "@paperclipai/adapter-codex-local/server";
 import { resolveDefaultAgentWorkspaceDir } from "../home-paths.js";
 import {
   applyPersistedExecutionWorkspaceConfig,
   assertGitSensitiveAdapterWorkspaceValid,
+  assertGitWorktreeBaseWorkspaceReady,
   assertPushCapabilityCheckoutValid,
   buildExplicitResumeSessionOverride,
   buildEffectiveRunSessionConfigMetadata,
@@ -23,9 +24,14 @@ import {
   preflightLowTrustWorkspaceIsolation,
   prioritizeProjectWorkspaceCandidatesForRun,
   parseSessionCompactionPolicy,
+  provisionExecutionWorkspaceForFreshnessDecision,
   resolveExecutionWorkspaceConfigFreshness,
+  resolveExecutionWorkspaceReuseRequestForIssue,
+  resolveExecutionWorkspaceReuseProvisioningPolicy,
   resolveNextSessionState,
   resolveTaskSessionConfigFreshness,
+  issueTextImpliesPrDeliverable,
+  isWorkspaceSyncConflictFailure,
   requiresPushCapabilityPreflight,
   resolveWorkspaceAfterLowTrustPreflight,
   resolveRuntimeSessionParamsForWorkspace,
@@ -37,6 +43,8 @@ import {
   stripPaperclipSessionMetadataFromSessionParams,
   normalizeSessionParams,
   shouldResetTaskSessionForWake,
+  scrubGitCredentialText,
+  buildAnchorFallbackWorkspaceNotes,
   type ResolvedWorkspaceForRun,
 } from "../services/heartbeat.ts";
 import type { TrustPresetResolution } from "../services/trust-preset-resolver.ts";
@@ -53,6 +61,8 @@ function buildResolvedWorkspace(overrides: Partial<ResolvedWorkspaceForRun> = {}
     repoRef: null,
     workspaceHints: [],
     warnings: [],
+    baseCwdFallback: false,
+    materializationFailures: [],
     ...overrides,
   };
 }
@@ -449,6 +459,475 @@ describe("assertGitSensitiveAdapterWorkspaceValid", () => {
   });
 });
 
+describe("assertGitWorktreeBaseWorkspaceReady", () => {
+  it("rejects projectless isolated git worktrees that resolved to agent_home", async () => {
+    const fallbackCwd = resolveDefaultAgentWorkspaceDir("agent-1");
+
+    await expect(assertGitWorktreeBaseWorkspaceReady({
+      requestedExecutionWorkspaceMode: "isolated_workspace",
+      config: { workspaceStrategy: { type: "git_worktree" } },
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-1",
+        projectId: null,
+        projectWorkspaceId: null,
+        executionWorkspaceId: null,
+        executionWorkspacePreference: "isolated_workspace",
+      },
+      base: {
+        baseCwd: fallbackCwd,
+        source: "agent_home",
+        projectId: null,
+        workspaceId: null,
+        repoUrl: null,
+        repoRef: null,
+      },
+    })).rejects.toMatchObject({
+      code: "workspace_validation_failed",
+      message: expect.stringContaining("needs a project / project workspace or a reusable execution workspace"),
+      resultJson: {
+        workspaceValidation: expect.objectContaining({
+          reason: "git_worktree_base_agent_home",
+          issueId: "issue-1",
+          resolvedWorkspaceSource: "agent_home",
+          requestedExecutionWorkspaceMode: "isolated_workspace",
+          workspaceStrategyType: "git_worktree",
+        }),
+      },
+    });
+  });
+
+  it("rejects operator-branch git worktrees that resolved to agent_home", async () => {
+    const fallbackCwd = resolveDefaultAgentWorkspaceDir("agent-1");
+
+    await expect(assertGitWorktreeBaseWorkspaceReady({
+      requestedExecutionWorkspaceMode: "operator_branch",
+      config: { workspaceStrategy: { type: "git_worktree" } },
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-1",
+        projectId: null,
+        projectWorkspaceId: null,
+      },
+      base: {
+        baseCwd: fallbackCwd,
+        source: "agent_home",
+        projectId: null,
+        workspaceId: null,
+        repoUrl: null,
+        repoRef: null,
+      },
+    })).rejects.toMatchObject({
+      code: "workspace_validation_failed",
+      resultJson: {
+        workspaceValidation: expect.objectContaining({
+          reason: "git_worktree_base_agent_home",
+          requestedExecutionWorkspaceMode: "operator_branch",
+        }),
+      },
+    });
+  });
+
+  it("rejects isolated git worktrees when the resolved base is not a git checkout", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-non-git-workspace-"));
+    try {
+      await expect(assertGitWorktreeBaseWorkspaceReady({
+        requestedExecutionWorkspaceMode: "isolated_workspace",
+        config: { workspaceStrategy: { type: "git_worktree" } },
+        issue: {
+          id: "issue-1",
+          identifier: "PAP-1",
+          projectId: "project-1",
+          projectWorkspaceId: "workspace-1",
+        },
+        base: {
+          baseCwd: cwd,
+          source: "project_primary",
+          projectId: "project-1",
+          workspaceId: "workspace-1",
+          repoUrl: "https://github.com/example/repo.git",
+          repoRef: "origin/master",
+        },
+      })).rejects.toMatchObject({
+        code: "workspace_validation_failed",
+        message: expect.stringContaining("is not a git checkout"),
+        resultJson: {
+          workspaceValidation: expect.objectContaining({
+            reason: "git_worktree_base_not_git_checkout",
+            issueId: "issue-1",
+            resolvedWorkspaceSource: "project_primary",
+            resolvedWorkspaceCwd: cwd,
+          }),
+        },
+      });
+    } finally {
+      await fs.rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects isolated git worktrees when the project workspace could not be materialized, even if the fallback cwd is a git checkout", async () => {
+    // The fallback agent-home dir being a git repo must not let the run proceed: it would be an
+    // unrelated repository, and the not-a-git-checkout probe would mask the real clone failure.
+    const cwd = await createGitCheckout({ withRemote: false });
+    try {
+      await expect(assertGitWorktreeBaseWorkspaceReady({
+        requestedExecutionWorkspaceMode: "isolated_workspace",
+        config: { workspaceStrategy: { type: "git_worktree" } },
+        issue: {
+          id: "issue-1",
+          identifier: "PAP-1",
+          projectId: "project-1",
+          projectWorkspaceId: "workspace-1",
+        },
+        base: {
+          baseCwd: cwd,
+          source: "project_primary",
+          projectId: "project-1",
+          workspaceId: "workspace-1",
+          repoUrl: "https://github.com/example/private-repo.git",
+          repoRef: "origin/master",
+        },
+        anchor: {
+          baseCwdFallback: true,
+          materializationFailures: [{
+            projectWorkspaceId: "workspace-1",
+            repoUrl: "https://github.com/example/private-repo.git",
+            error: 'Failed to prepare managed checkout for "https://github.com/example/private-repo.git": fatal: could not read Username',
+          }],
+        },
+      })).rejects.toMatchObject({
+        code: "workspace_validation_failed",
+        message: expect.stringContaining("could not be prepared: Failed to prepare managed checkout"),
+        resultJson: {
+          workspaceValidation: expect.objectContaining({
+            reason: "git_worktree_base_materialization_failed",
+            issueId: "issue-1",
+            baseCwdFallback: true,
+            materializationFailures: [expect.objectContaining({
+              projectWorkspaceId: "workspace-1",
+              error: expect.stringContaining("could not read Username"),
+            })],
+          }),
+        },
+      });
+    } finally {
+      await fs.rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("keeps the not-a-git-checkout reason for a fallback with no failed materialization attempt", async () => {
+    // A configured path that is simply unavailable is not a clone failure; the message must
+    // not steer the operator toward repairing clone access.
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-unavailable-path-fallback-"));
+    try {
+      await expect(assertGitWorktreeBaseWorkspaceReady({
+        requestedExecutionWorkspaceMode: "isolated_workspace",
+        config: { workspaceStrategy: { type: "git_worktree" } },
+        issue: {
+          id: "issue-1",
+          identifier: "PAP-1",
+          projectId: "project-1",
+          projectWorkspaceId: "workspace-1",
+        },
+        base: {
+          baseCwd: cwd,
+          source: "project_primary",
+          projectId: "project-1",
+          workspaceId: "workspace-1",
+          repoUrl: null,
+          repoRef: null,
+        },
+        anchor: { baseCwdFallback: true },
+      })).rejects.toMatchObject({
+        code: "workspace_validation_failed",
+        message: expect.stringContaining("is not a git checkout"),
+        resultJson: {
+          workspaceValidation: expect.objectContaining({
+            reason: "git_worktree_base_not_git_checkout",
+          }),
+        },
+      });
+    } finally {
+      await fs.rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses a git-checkout fallback cwd that is not the project workspace, without claiming a clone failed", async () => {
+    const cwd = await createGitCheckout({ withRemote: false });
+    try {
+      await expect(assertGitWorktreeBaseWorkspaceReady({
+        requestedExecutionWorkspaceMode: "isolated_workspace",
+        config: { workspaceStrategy: { type: "git_worktree" } },
+        issue: {
+          id: "issue-1",
+          identifier: "PAP-1",
+          projectId: "project-1",
+          projectWorkspaceId: "workspace-1",
+        },
+        base: {
+          baseCwd: cwd,
+          source: "project_primary",
+          projectId: "project-1",
+          workspaceId: "workspace-1",
+          repoUrl: null,
+          repoRef: null,
+        },
+        anchor: { baseCwdFallback: true, materializationFailures: [] },
+      })).rejects.toMatchObject({
+        code: "workspace_validation_failed",
+        message: expect.stringContaining("configured project workspace path is not available"),
+        resultJson: {
+          workspaceValidation: expect.objectContaining({
+            reason: "git_worktree_base_fallback_not_project_workspace",
+            baseCwdFallback: true,
+            materializationFailures: [],
+          }),
+        },
+      });
+    } finally {
+      await fs.rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("allows isolated git worktrees when the anchor reports no fallback", async () => {
+    const cwd = await createGitCheckout({ withRemote: false });
+    try {
+      await expect(assertGitWorktreeBaseWorkspaceReady({
+        requestedExecutionWorkspaceMode: "isolated_workspace",
+        config: { workspaceStrategy: { type: "git_worktree" } },
+        issue: {
+          id: "issue-1",
+          identifier: "PAP-1",
+          projectId: "project-1",
+          projectWorkspaceId: "workspace-1",
+        },
+        base: {
+          baseCwd: cwd,
+          source: "project_primary",
+          projectId: "project-1",
+          workspaceId: "workspace-1",
+          repoUrl: "https://github.com/example/repo.git",
+          repoRef: "origin/master",
+        },
+        anchor: { baseCwdFallback: false, materializationFailures: [] },
+      })).resolves.toBeUndefined();
+    } finally {
+      await fs.rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("allows isolated git worktrees when the resolved base is a git checkout", async () => {
+    const cwd = await createGitCheckout({ withRemote: false });
+    try {
+      await expect(assertGitWorktreeBaseWorkspaceReady({
+        requestedExecutionWorkspaceMode: "isolated_workspace",
+        config: { workspaceStrategy: { type: "git_worktree" } },
+        issue: {
+          id: "issue-1",
+          identifier: "PAP-1",
+          projectId: "project-1",
+          projectWorkspaceId: "workspace-1",
+        },
+        base: {
+          baseCwd: cwd,
+          source: "project_primary",
+          projectId: "project-1",
+          workspaceId: "workspace-1",
+          repoUrl: "https://github.com/example/repo.git",
+          repoRef: "origin/master",
+        },
+      })).resolves.toBeUndefined();
+    } finally {
+      await fs.rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("does not require git for shared project-primary workspaces", async () => {
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-shared-workspace-"));
+    try {
+      await expect(assertGitWorktreeBaseWorkspaceReady({
+        requestedExecutionWorkspaceMode: "shared_workspace",
+        config: { workspaceStrategy: { type: "git_worktree" } },
+        issue: {
+          id: "issue-1",
+          identifier: "PAP-1",
+          projectId: "project-1",
+          projectWorkspaceId: "workspace-1",
+        },
+        base: {
+          baseCwd: cwd,
+          source: "project_primary",
+          projectId: "project-1",
+          workspaceId: "workspace-1",
+          repoUrl: null,
+          repoRef: null,
+        },
+      })).resolves.toBeUndefined();
+    } finally {
+      await fs.rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("allows isolated workspace with no explicit strategy type even when base is agent_home", async () => {
+    // No workspaceStrategy.type → realizeExecutionWorkspace defaults to project_primary (not git_worktree),
+    // so the guard must not fire. This prevents false workspace_validation_failed for configs that omit type.
+    const fallbackCwd = resolveDefaultAgentWorkspaceDir("agent-1");
+    await expect(assertGitWorktreeBaseWorkspaceReady({
+      requestedExecutionWorkspaceMode: "isolated_workspace",
+      config: {},
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-1",
+        projectId: null,
+        projectWorkspaceId: null,
+      },
+      base: {
+        baseCwd: fallbackCwd,
+        source: "agent_home",
+        projectId: null,
+        workspaceId: null,
+        repoUrl: null,
+        repoRef: null,
+      },
+    })).resolves.toBeUndefined();
+  });
+
+  it("allows operator-branch workspace with no explicit strategy type even when base is agent_home", async () => {
+    const fallbackCwd = resolveDefaultAgentWorkspaceDir("agent-1");
+    await expect(assertGitWorktreeBaseWorkspaceReady({
+      requestedExecutionWorkspaceMode: "operator_branch",
+      config: {},
+      issue: {
+        id: "issue-1",
+        identifier: "PAP-1",
+        projectId: null,
+        projectWorkspaceId: null,
+      },
+      base: {
+        baseCwd: fallbackCwd,
+        source: "agent_home",
+        projectId: null,
+        workspaceId: null,
+        repoUrl: null,
+        repoRef: null,
+      },
+    })).resolves.toBeUndefined();
+  });
+});
+
+describe("scrubGitCredentialText", () => {
+  it("masks URL userinfo including tokens", () => {
+    expect(scrubGitCredentialText(
+      'fatal: unable to access "https://x-access-token:ghp_abc123@github.com/example/repo.git"',
+    )).toBe('fatal: unable to access "https://***@github.com/example/repo.git"');
+  });
+
+  it("masks bare-username userinfo and multiple occurrences", () => {
+    expect(scrubGitCredentialText(
+      "clone https://alice@github.com/a.git then http://token@internal.example/b.git",
+    )).toBe("clone https://***@github.com/a.git then http://***@internal.example/b.git");
+  });
+
+  it("masks userinfo on non-HTTP schemes, leaving scp-style remotes alone", () => {
+    expect(scrubGitCredentialText(
+      "fatal: cannot clone ssh://deploy:hunter2@internal.example/repo.git or git+ssh://bob@host/x.git",
+    )).toBe("fatal: cannot clone ssh://***@internal.example/repo.git or git+ssh://***@host/x.git");
+    expect(scrubGitCredentialText("fetch from git@github.com:example/repo.git failed")).toBe(
+      "fetch from git@github.com:example/repo.git failed",
+    );
+  });
+
+  it("masks entire URL query strings regardless of parameter names", () => {
+    expect(scrubGitCredentialText(
+      "fatal: unable to access 'https://github.com/example/repo.git?access_token=ghs_secret&ref=main'",
+    )).toBe("fatal: unable to access 'https://github.com/example/repo.git?***'");
+    expect(scrubGitCredentialText(
+      "clone https://gitlab.example/repo.git?anything=glpat-123 failed",
+    )).toBe("clone https://gitlab.example/repo.git?*** failed");
+  });
+
+  it("leaves credential-free text unchanged", () => {
+    const text = 'Failed to clone "https://github.com/example/repo.git": exit code 128';
+    expect(scrubGitCredentialText(text)).toBe(text);
+    const plain = "git clone failed with exit code=128 at key step ref=main";
+    expect(scrubGitCredentialText(plain)).toBe(plain);
+  });
+});
+
+describe("buildAnchorFallbackWorkspaceNotes", () => {
+  it("reports materialization failures ahead of the generic no-cwd note", () => {
+    expect(buildAnchorFallbackWorkspaceNotes({
+      fallbackCwd: "/paperclip/workspaces/agent-1",
+      preferredWorkspaceWarning: null,
+      materializationFailures: [{
+        projectWorkspaceId: "workspace-1",
+        repoUrl: "https://github.com/example/private.git",
+        error: "fatal: could not read Username",
+      }],
+      missingProjectCwds: [],
+      hasConfiguredProjectCwd: false,
+    })).toEqual([
+      'Failed to prepare the project workspace checkout: fatal: could not read Username. Using fallback workspace "/paperclip/workspaces/agent-1" for this run.',
+    ]);
+  });
+
+  it("counts additional failed candidates", () => {
+    const failure = {
+      projectWorkspaceId: "workspace-1",
+      repoUrl: null,
+      error: "clone timed out",
+    };
+    expect(buildAnchorFallbackWorkspaceNotes({
+      fallbackCwd: "/fallback",
+      preferredWorkspaceWarning: null,
+      materializationFailures: [failure, { ...failure, projectWorkspaceId: "workspace-2" }],
+      missingProjectCwds: [],
+      hasConfiguredProjectCwd: false,
+    })).toEqual([
+      'Failed to prepare the project workspace checkout (clone timed out), and 1 other candidate workspace(s) also failed. Using fallback workspace "/fallback" for this run.',
+    ]);
+  });
+
+  it("preserves the existing missing-path and no-cwd notes when nothing failed to materialize", () => {
+    expect(buildAnchorFallbackWorkspaceNotes({
+      fallbackCwd: "/fallback",
+      preferredWorkspaceWarning: "Selected project workspace \"workspace-9\" is not available on this project.",
+      materializationFailures: [],
+      missingProjectCwds: ["/missing/path"],
+      hasConfiguredProjectCwd: true,
+    })).toEqual([
+      'Selected project workspace "workspace-9" is not available on this project.',
+      'Project workspace path "/missing/path" is not available yet. Using fallback workspace "/fallback" for this run.',
+    ]);
+    expect(buildAnchorFallbackWorkspaceNotes({
+      fallbackCwd: "/fallback",
+      preferredWorkspaceWarning: null,
+      materializationFailures: [],
+      missingProjectCwds: [],
+      hasConfiguredProjectCwd: false,
+    })).toEqual([
+      'Project workspace has no local cwd configured. Using fallback workspace "/fallback" for this run.',
+    ]);
+  });
+
+  it("emits both failure and missing-path notes when a project has both kinds of candidates", () => {
+    expect(buildAnchorFallbackWorkspaceNotes({
+      fallbackCwd: "/fallback",
+      preferredWorkspaceWarning: null,
+      materializationFailures: [{
+        projectWorkspaceId: "workspace-1",
+        repoUrl: "https://github.com/example/private.git",
+        error: "authentication failed",
+      }],
+      missingProjectCwds: ["/missing/path"],
+      hasConfiguredProjectCwd: true,
+    })).toEqual([
+      'Failed to prepare the project workspace checkout: authentication failed. Using fallback workspace "/fallback" for this run.',
+      'Project workspace path "/missing/path" is not available yet. Using fallback workspace "/fallback" for this run.',
+    ]);
+  });
+});
+
 describe("assertPushCapabilityCheckoutValid", () => {
   it("rejects a GitHub PR workflow checkout without a configured push remote", async () => {
     const cwd = await createGitCheckout({ withRemote: false });
@@ -493,7 +972,58 @@ describe("assertPushCapabilityCheckoutValid", () => {
   });
 });
 
+describe("issueTextImpliesPrDeliverable", () => {
+  it("matches verb-anchored PR deliverables", () => {
+    expect(issueTextImpliesPrDeliverable("Review and open PR for the CI shard split")).toBe(true);
+    expect(issueTextImpliesPrDeliverable("Push the branch and open a pull request")).toBe(true);
+    expect(issueTextImpliesPrDeliverable("Each run: make the change and open a draft PR")).toBe(true);
+    expect(issueTextImpliesPrDeliverable("push feature work to origin when done")).toBe(true);
+  });
+
+  it("ignores passing mentions and unrelated text", () => {
+    expect(issueTextImpliesPrDeliverable("The PR merged yesterday; investigate the regression")).toBe(false);
+    expect(issueTextImpliesPrDeliverable("PR feedback addressed")).toBe(false);
+    expect(issueTextImpliesPrDeliverable("Update the pricing page copy")).toBe(false);
+    expect(issueTextImpliesPrDeliverable("a proper approach to pushing back on scope")).toBe(false);
+    expect(issueTextImpliesPrDeliverable(null)).toBe(false);
+    expect(issueTextImpliesPrDeliverable("")).toBe(false);
+  });
+
+  it("ignores non-git uses of push", () => {
+    expect(issueTextImpliesPrDeliverable("push back on the upstream dependency change")).toBe(false);
+    expect(issueTextImpliesPrDeliverable("push back the branch cut date")).toBe(false);
+    expect(issueTextImpliesPrDeliverable("push notifications for mobile")).toBe(false);
+    // Git shapes still match.
+    expect(issueTextImpliesPrDeliverable("pushing the release branch")).toBe(true);
+    expect(issueTextImpliesPrDeliverable("push feature work to origin when done")).toBe(true);
+  });
+});
+
 describe("requiresPushCapabilityPreflight", () => {
+  it("enables the guard when the issue text states the PR deliverable", () => {
+    expect(requiresPushCapabilityPreflight({
+      adapterType: "codex_local",
+      issueId: "issue-1",
+      explicitRunScopedSkillKeys: [],
+      issueText: "Push ci/shard-split and open PR",
+    })).toBe(true);
+
+    expect(requiresPushCapabilityPreflight({
+      adapterType: "codex_local",
+      issueId: "issue-1",
+      explicitRunScopedSkillKeys: [],
+      issueText: "Investigate why the PR checks were slow",
+    })).toBe(false);
+
+    // Without an issue there is nothing to preflight.
+    expect(requiresPushCapabilityPreflight({
+      adapterType: "codex_local",
+      issueId: null,
+      explicitRunScopedSkillKeys: [],
+      issueText: "open a PR",
+    })).toBe(false);
+  });
+
   it("only enables the guard when the issue explicitly mentions the GitHub PR workflow skill", () => {
     expect(requiresPushCapabilityPreflight({
       adapterType: "codex_local",
@@ -806,6 +1336,7 @@ describe("mergeExecutionWorkspaceMetadataForPersistence", () => {
       config: {
         environmentId: "env-new",
         provisionCommand: "bash ./scripts/provision.sh",
+        runtimeProvisionCommand: null,
         teardownCommand: null,
         cleanupCommand: null,
         desiredState: null,
@@ -1060,6 +1591,161 @@ describe("effective run execution workspace config freshness", () => {
     expect(decision.action).toBe("replace");
     expect(decision.shouldReuseExisting).toBe(false);
     expect(decision.changedCategories).toContain(category);
+  });
+
+  it("keeps replacement-class drift visible when explicit reuse restores the old workspace", () => {
+    const base = buildWorkspaceConfigMetadata();
+    const next = buildWorkspaceConfigMetadata({
+      repoRef: "origin/release",
+      workspaceStrategy: {
+        type: "git_worktree",
+        baseRef: "origin/release",
+        branchTemplate: "{{issue.identifier}}-{{slug}}",
+        worktreeParentDir: ".paperclip/worktrees",
+      },
+      configSnapshot: {
+        provisionCommand: "pnpm install --frozen-lockfile",
+      },
+    });
+
+    const decision = resolveExecutionWorkspaceConfigFreshness({
+      hasExistingWorkspace: true,
+      existingWorkspaceMetadata: persistedWorkspaceConfigFingerprint(base),
+      nextMetadata: next,
+    });
+    const policy = resolveExecutionWorkspaceReuseProvisioningPolicy({
+      requestedShouldReuseExisting: true,
+      workspaceConfigFreshness: decision,
+    });
+
+    expect(decision.action).toBe("replace");
+    expect(policy).toEqual({
+      shouldRestoreExistingWorkspace: true,
+      shouldRefreshWorkspaceConfigSnapshot: false,
+      shouldPersistLatestWorkspaceConfigMetadata: false,
+    });
+
+    const metadata = mergeExecutionWorkspaceMetadataForPersistence({
+      existingMetadata: {
+        config: {
+          provisionCommand: "pnpm install",
+        },
+        ...persistedWorkspaceConfigFingerprint(base),
+      },
+      source: "task_session",
+      createdByRuntime: false,
+      configSnapshot: {
+        provisionCommand: "pnpm install --frozen-lockfile",
+      },
+      shouldReuseExisting: policy.shouldRestoreExistingWorkspace,
+      shouldRefreshConfigSnapshot: policy.shouldRefreshWorkspaceConfigSnapshot,
+      workspaceConfigMetadata: policy.shouldPersistLatestWorkspaceConfigMetadata ? next : null,
+      baseRef: "origin/release",
+      baseRefSha: "release-sha",
+    });
+
+    expect(metadata?.config).toEqual({
+      provisionCommand: "pnpm install",
+    });
+    expect(metadata?.configFingerprint).toMatchObject({
+      workspaceHash: base.fingerprint,
+      categories: base.categories,
+    });
+    expect(metadata?.configFingerprint).not.toMatchObject({
+      workspaceHash: next.fingerprint,
+    });
+  });
+
+  it("fails loudly when explicit reuse restore errors", async () => {
+    const base = buildWorkspaceConfigMetadata();
+    const next = buildWorkspaceConfigMetadata({
+      repoRef: "origin/release",
+      workspaceStrategy: {
+        type: "git_worktree",
+        baseRef: "origin/release",
+        branchTemplate: "{{issue.identifier}}-{{slug}}",
+        worktreeParentDir: ".paperclip/worktrees",
+      },
+    });
+    const decision = resolveExecutionWorkspaceConfigFreshness({
+      hasExistingWorkspace: true,
+      existingWorkspaceMetadata: persistedWorkspaceConfigFingerprint(base),
+      nextMetadata: next,
+    });
+    const realizeWorkspace = vi.fn(async () => ({ id: "fallback-workspace", warnings: [] }));
+
+    await expect(provisionExecutionWorkspaceForFreshnessDecision({
+      requestedShouldReuseExisting: true,
+      existingExecutionWorkspaceId: "workspace-old",
+      issueRef: { id: "issue-1", identifier: "PAP-42" },
+      runId: "run-1",
+      workspaceConfigFreshness: decision,
+      restoreExistingWorkspace: async () => {
+        throw new Error("restore command failed");
+      },
+      realizeWorkspace,
+    })).rejects.toThrow(/restore command failed/);
+    expect(realizeWorkspace).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { name: "missing", status: null },
+    { name: "archived", status: "archived" },
+  ])("fails loudly when the inherited workspace row is $name", async ({ status }) => {
+    const reuseRequest = resolveExecutionWorkspaceReuseRequestForIssue({
+      issueExecutionWorkspaceId: "workspace-old",
+      issueExecutionWorkspacePreference: "reuse_existing",
+      existingExecutionWorkspaceStatus: status,
+    });
+
+    expect(reuseRequest).toEqual({
+      requestedExecutionWorkspaceId: "workspace-old",
+      requestedShouldReuseExisting: true,
+      existingExecutionWorkspaceAvailable: false,
+    });
+
+    const metadata = buildWorkspaceConfigMetadata();
+    const decision = resolveExecutionWorkspaceConfigFreshness({
+      hasExistingWorkspace: reuseRequest.requestedShouldReuseExisting &&
+        reuseRequest.existingExecutionWorkspaceAvailable,
+      existingWorkspaceMetadata: null,
+      nextMetadata: metadata,
+    });
+    const realizeWorkspace = vi.fn(async () => ({ id: "fallback-workspace", warnings: [] }));
+
+    await expect(provisionExecutionWorkspaceForFreshnessDecision({
+      requestedShouldReuseExisting: reuseRequest.requestedShouldReuseExisting,
+      existingExecutionWorkspaceId: reuseRequest.requestedExecutionWorkspaceId,
+      issueRef: { id: "issue-1", identifier: "PAP-42" },
+      runId: "run-1",
+      workspaceConfigFreshness: decision,
+      restoreExistingWorkspace: reuseRequest.existingExecutionWorkspaceAvailable
+        ? async () => ({ id: "workspace-old", warnings: [] })
+        : null,
+      realizeWorkspace,
+    })).rejects.toThrow(/could not be restored/);
+    expect(realizeWorkspace).not.toHaveBeenCalled();
+  });
+
+  it("fails loudly when explicit reuse restore returns no workspace", async () => {
+    const metadata = buildWorkspaceConfigMetadata();
+    const decision = resolveExecutionWorkspaceConfigFreshness({
+      hasExistingWorkspace: true,
+      existingWorkspaceMetadata: persistedWorkspaceConfigFingerprint(metadata),
+      nextMetadata: metadata,
+    });
+    const realizeWorkspace = vi.fn(async () => ({ id: "fallback-workspace", warnings: [] }));
+
+    await expect(provisionExecutionWorkspaceForFreshnessDecision({
+      requestedShouldReuseExisting: true,
+      existingExecutionWorkspaceId: "workspace-old",
+      issueRef: { id: "issue-1", identifier: "PAP-42" },
+      runId: "run-1",
+      workspaceConfigFreshness: decision,
+      restoreExistingWorkspace: async () => null,
+      realizeWorkspace,
+    })).rejects.toThrow(/could not be restored/);
+    expect(realizeWorkspace).not.toHaveBeenCalled();
   });
 
   it("formats a safe workspace operation payload for config drift decisions", () => {
@@ -1489,6 +2175,21 @@ describe("effective run session config freshness", () => {
     expect(decision.reset).toBe(true);
     expect(decision.changedCategories).toEqual(metadata.categories);
     expect(decision.reasons).toEqual(["effective run configuration fingerprint metadata is missing"]);
+  });
+
+  it("uses persisted fingerprint metadata even when an adapter codec omits it from resume params", async () => {
+    const metadata = await buildSessionConfigMetadata();
+    const persistedParams = sessionParamsWithConfigMetadata(metadata);
+
+    const decision = resolveTaskSessionConfigFreshness({
+      hasTaskSession: true,
+      configuredModel: "gpt-5.4-mini",
+      taskSessionParams: persistedParams,
+      configMetadata: metadata,
+    });
+
+    expect(decision.reset).toBe(false);
+    expect(decision.reasons).toEqual([]);
   });
 
   it("preserves legacy metadata gaps only for active accepted-plan continuation sessions", async () => {
@@ -2209,5 +2910,29 @@ describe("parseSessionCompactionPolicy", () => {
       maxRawInputTokens: 500_000,
       maxSessionAgeHours: 0,
     });
+  });
+});
+
+describe("isWorkspaceSyncConflictFailure", () => {
+  it("matches the git workspace reconciliation failure signatures", () => {
+    expect(isWorkspaceSyncConflictFailure(
+      "Failed to merge concurrent remote git histories for a5d46a8005b3 and c1042c11774a: Command failed: git merge-tree --write-tree",
+    )).toBe(true);
+    expect(isWorkspaceSyncConflictFailure(
+      "Failed to integrate concurrent remote git history for a5d46a8005b3 after multiple retries.",
+    )).toBe(true);
+    expect(isWorkspaceSyncConflictFailure(
+      "error: /tmp/restore/git-delta.bundle did not send all necessary objects",
+    )).toBe(true);
+    expect(isWorkspaceSyncConflictFailure(
+      "error: Repository lacks these prerequisite commits: 4c631700",
+    )).toBe(true);
+  });
+
+  it("ignores unrelated adapter failures", () => {
+    expect(isWorkspaceSyncConflictFailure("Codex exited with code 2")).toBe(false);
+    expect(isWorkspaceSyncConflictFailure("no Codex credentials provisioned for managed home")).toBe(false);
+    expect(isWorkspaceSyncConflictFailure(null)).toBe(false);
+    expect(isWorkspaceSyncConflictFailure("")).toBe(false);
   });
 });

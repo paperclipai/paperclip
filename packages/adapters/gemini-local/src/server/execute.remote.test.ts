@@ -272,6 +272,9 @@ describe("gemini remote execution", () => {
         taskKey: null,
       },
       config: {
+        // Pin the CLI lane: sandbox targets with a runner now default to ACP,
+        // and this test covers the CLI lane's managed-HOME auth flow.
+        engine: "cli",
         command: "gemini",
         env: { GEMINI_API_KEY: "test-key" },
       },
