@@ -916,8 +916,10 @@ Resolver governance:
 
 Rules:
 
-- `continuationPolicy: "wake_assignee"` wakes the assignee only after a `request_confirmation` is accepted.
-- Rejection does not wake the assignee by default. The board/user can add a normal comment when revisions are needed.
+- `continuationPolicy: "wake_assignee"` wakes the assignee on **both** outcomes of a `request_confirmation` — acceptance *and* rejection. A declined proposal is exactly what the asking agent has to revise, so the rejection queues a continuation wake too.
+- `continuationPolicy: "wake_assignee_on_accept"` wakes **only** on acceptance. A rejection under this policy is silent: no continuation wake is queued, and the reject route writes no issue comment, so nothing else surfaces the decision either — the card simply stops being `pending` and the assignee is never told. Choose it only when a "no" genuinely needs no follow-up; when in doubt use `wake_assignee`. The two policies are not interchangeable.
+- **No policy wakes on expiry.** `outcome: "superseded_by_comment"`, `"stale_target"`, and `"issue_closed"` resolve the interaction with status `expired`, and the continuation guard drops every expired resolution regardless of `continuationPolicy` — only the board/user comment itself brings the assignee back. A withdrawal is different: it resolves with status `cancelled`, which still wakes under `wake_assignee`.
+- `continuationPolicy: "none"` (the `request_confirmation` default) never wakes you. Set a policy explicitly whenever you need to resume.
 - Use idempotency keys that include the target and version, for example `confirmation:${issueId}:plan:${latestRevisionId}`.
 - Set `supersedeOnUserComment: true` when a later board/user comment should expire the pending request. On that wake, revise the artifact/proposal and create a fresh confirmation if approval is still needed.
 - A pending interaction is an explicit waiting path. Before ending the heartbeat, update the source issue into a visible waiting posture, normally `in_review`, and leave a comment that names the response needed and the effective audience.
