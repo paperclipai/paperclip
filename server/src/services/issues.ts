@@ -576,6 +576,50 @@ type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId"> & {
   actorResponsibleUserId?: string | null;
   trustExplicitResponsibleUserId?: boolean;
 };
+
+type AccountableIssueState = Pick<typeof issues.$inferSelect,
+  "status" | "assigneeAgentId" | "assigneeUserId" | "responsibleUserId" | "executionPolicy"> & {
+  blockedByIssueIds?: string[];
+};
+
+function externalWaitFromPolicy(executionPolicy: unknown) {
+  const policy = executionPolicy && typeof executionPolicy === "object"
+    ? executionPolicy as Record<string, unknown>
+    : null;
+  const wait = policy?.externalWait;
+  if (!wait || typeof wait !== "object" || Array.isArray(wait)) return null;
+  const record = wait as Record<string, unknown>;
+  const owner = typeof record.owner === "string" ? record.owner.trim() : "";
+  const action = typeof record.action === "string" ? record.action.trim() : "";
+  const monitorOwner = typeof record.monitorOwner === "string" ? record.monitorOwner.trim() : "";
+  const nextCheckAt = typeof record.nextCheckAt === "string" ? record.nextCheckAt.trim() : "";
+  return owner && action && monitorOwner && nextCheckAt && !Number.isNaN(Date.parse(nextCheckAt))
+    ? { owner, action, monitorOwner, nextCheckAt }
+    : null;
+}
+
+function assertAccountableIssueState(input: AccountableIssueState) {
+  if (input.status === "done" || input.status === "cancelled") return;
+  const externalWait = externalWaitFromPolicy(input.executionPolicy);
+  const blockers = input.blockedByIssueIds ?? [];
+  if (input.status === "blocked" && blockers.length === 0 && !externalWait) {
+    throw unprocessable("Blocked issues require unresolved blockedByIssueIds or executionPolicy.externalWait", {
+      code: "blocked_state_requires_wait_path",
+      required: ["blockedByIssueIds", "executionPolicy.externalWait.owner", "executionPolicy.externalWait.action", "executionPolicy.externalWait.nextCheckAt", "executionPolicy.externalWait.monitorOwner"],
+    });
+  }
+  // Legacy todo/backlog rows remain readable and migratable. The states that
+  // can actively strand work must carry an accountable path at write time.
+  if (
+    (input.status === "in_progress" || input.status === "in_review") &&
+    !input.assigneeAgentId && !input.assigneeUserId && !input.responsibleUserId && !externalWait
+  ) {
+    throw unprocessable("Nonterminal issues require an assignee, responsible user, or executionPolicy.externalWait", {
+      code: "nonterminal_issue_requires_accountable_owner",
+      required: ["assigneeAgentId", "assigneeUserId", "responsibleUserId", "executionPolicy.externalWait"],
+    });
+  }
+}
 type IssueChildCreateInput = IssueCreateInput & {
   acceptanceCriteria?: string[];
   blockParentUntilDone?: boolean;
@@ -6152,6 +6196,17 @@ export function issueService(db: Db) {
           actorResponsibleUserId: actorResponsibleUserId ?? null,
           trustExplicitResponsibleUserId: trustExplicitResponsibleUserId === true,
         });
+        const unresolvedBlockedByIssueIds = blockedByIssueIds === undefined
+          ? []
+          : await listUnresolvedBlockerIssueIds(tx, companyId, blockedByIssueIds);
+        assertAccountableIssueState({
+          status: data.status ?? "backlog",
+          assigneeAgentId: data.assigneeAgentId ?? null,
+          assigneeUserId: data.assigneeUserId ?? null,
+          responsibleUserId,
+          executionPolicy: data.executionPolicy ?? null,
+          blockedByIssueIds: unresolvedBlockedByIssueIds,
+        });
 
         const values = {
           ...issueData,
@@ -6277,6 +6332,24 @@ export function issueService(db: Db) {
       }
       if (patch.status === "in_progress" && !nextAssigneeAgentId && !nextAssigneeUserId) {
         throw unprocessable("in_progress issues require an assignee");
+      }
+      const accountabilityFieldsChanged =
+        issueData.status !== undefined ||
+        issueData.assigneeAgentId !== undefined ||
+        issueData.assigneeUserId !== undefined ||
+        issueData.executionPolicy !== undefined ||
+        blockedByIssueIds !== undefined;
+      if (accountabilityFieldsChanged) {
+        assertAccountableIssueState({
+          status: patch.status ?? existing.status,
+          assigneeAgentId: nextAssigneeAgentId ?? null,
+          assigneeUserId: nextAssigneeUserId ?? null,
+          responsibleUserId: existing.responsibleUserId ?? null,
+          executionPolicy: issueData.executionPolicy !== undefined ? issueData.executionPolicy : existing.executionPolicy,
+          blockedByIssueIds: blockedByIssueIds !== undefined
+            ? blockedByIssueIds
+            : (await listIssueDependencyReadinessMap(dbOrTx, existing.companyId, [id])).get(id)?.unresolvedBlockerIssueIds ?? [],
+        });
       }
       if (patch.status === "in_progress") {
         const unresolvedBlockerIssueIds = blockedByIssueIds !== undefined

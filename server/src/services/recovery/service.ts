@@ -2827,11 +2827,31 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
       recoveryOwnerAgentId: input.recoveryOwnerAgentId,
       successfulRunHandoffEvidence: input.successfulRunHandoffEvidence,
     });
+    // A recovery action without an invokable owner is not a valid board
+    // escalation. Leave the source untouched so the normal liveness sweep can
+    // route it once an accountable owner exists.
+    if (!recoveryAction.ownerAgentId) return null;
     const blockerIds = await existingUnresolvedBlockerIssueIds(input.issue.companyId, input.issue.id);
+    const recoveryExternalWait = blockerIds.length === 0
+      ? {
+        owner: "Paperclip recovery",
+        action: "Restore a live execution path or record the manual resolution.",
+        nextCheckAt: new Date(Date.now() + 60 * 60 * 1000).toISOString(),
+        monitorOwner: recoveryAction.ownerAgentId,
+      }
+      : null;
     const updated = await issuesSvc.update(input.issue.id, {
       status: "blocked",
       blockedByIssueIds: blockerIds,
       assigneeAgentId: recoveryAction.ownerAgentId ?? input.issue.assigneeAgentId,
+      ...(recoveryExternalWait
+        ? {
+          executionPolicy: {
+            ...((input.issue.executionPolicy as Record<string, unknown> | null) ?? {}),
+            externalWait: recoveryExternalWait,
+          },
+        }
+        : {}),
     });
     if (!updated) return null;
 

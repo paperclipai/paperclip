@@ -197,11 +197,19 @@ export const issueExecutionMonitorPolicySchema = z.object({
   recoveryPolicy: z.enum(ISSUE_EXECUTION_MONITOR_RECOVERY_POLICIES).optional().nullable().default(null),
 });
 
+export const issueExternalWaitSchema = z.object({
+  owner: z.string().trim().min(1).max(200),
+  action: z.string().trim().min(1).max(500),
+  nextCheckAt: z.string().datetime(),
+  monitorOwner: z.string().trim().min(1).max(200),
+}).strict();
+
 export const issueExecutionPolicySchema = z.object({
   mode: z.enum(ISSUE_EXECUTION_POLICY_MODES).optional().default("normal"),
   commentRequired: z.boolean().optional().default(true),
   stages: z.array(issueExecutionStageSchema).default([]),
   monitor: issueExecutionMonitorPolicySchema.optional().nullable(),
+  externalWait: issueExternalWaitSchema.optional().nullable(),
   reviewPreset: lowTrustReviewPresetPolicySchema.optional(),
   authorizationPolicy: trustAuthorizationPolicySchema.optional(),
 });
