@@ -1007,7 +1007,11 @@ export function issueThreadInteractionService(db: Db) {
     throw conflict(
       "Cannot accept interaction: the run that created this interaction has not finished syncing its workspace. "
         + "Retry once the local worktree has finished syncing.",
-      { executionWorkspaceId, sourceRunId: args.sourceRunId },
+      {
+        code: "workspace_sync_pending",
+        executionWorkspaceId,
+        sourceRunId: args.sourceRunId,
+      },
     );
   }
 

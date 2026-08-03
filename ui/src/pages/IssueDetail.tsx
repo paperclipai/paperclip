@@ -950,6 +950,7 @@ type IssueDetailChatTabProps = {
     selectedClientKeys?: string[],
     selectedOptionIds?: string[],
   ) => Promise<void>;
+  onRefreshInteraction: () => Promise<void> | void;
   onRejectInteraction: (interaction: ActionableIssueThreadInteraction, reason?: string) => Promise<void>;
   onSubmitInteractionAnswers: (
     interaction: IssueThreadInteraction,
@@ -1032,6 +1033,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   pausingWorkRunId,
   onImageClick,
   onAcceptInteraction,
+  onRefreshInteraction,
   onRejectInteraction,
   onSubmitInteractionAnswers,
   onCancelInteraction,
@@ -1685,7 +1687,7 @@ export function IssueDetail() {
       }),
     [comments.length, commentsLoading, commentsLoadingOlder, detailTab, hasOlderComments],
   );
-  const { data: interactions = [] } = useQuery({
+  const { data: interactions = [], refetch: refetchInteractions } = useQuery({
     queryKey: queryKeys.issues.interactions(issueId!),
     queryFn: () => issuesApi.listInteractions(issueId!),
     enabled: !!issueId,
@@ -4962,6 +4964,7 @@ export function IssueDetail() {
               pausingWorkRunId={pauseIssueWorkRun.isPending ? pauseIssueWorkRun.variables?.runId ?? null : null}
               onImageClick={handleChatImageClick}
               onAcceptInteraction={handleAcceptInteraction}
+              onRefreshInteraction={() => refetchInteractions().then(() => undefined)}
               onRejectInteraction={handleRejectInteraction}
               onSubmitInteractionAnswers={handleSubmitInteractionAnswers}
               onCancelInteraction={handleCancelInteraction}

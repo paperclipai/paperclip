@@ -121,4 +121,29 @@ describe("errorHandler", () => {
       code: "RESPONSIBLE_USER_UNAUTHORIZED",
     });
   });
+
+  it("serializes workspace sync pending conflicts with a stable code and details", () => {
+    const req = makeReq();
+    const res = makeRes();
+    const next = vi.fn() as unknown as NextFunction;
+    const details = {
+      code: "workspace_sync_pending",
+      executionWorkspaceId: "workspace-1",
+      sourceRunId: "run-1",
+    };
+
+    errorHandler(
+      new HttpError(409, "Cannot accept interaction: workspace sync is still pending", details),
+      req,
+      res,
+      next,
+    );
+
+    expect(res.status).toHaveBeenCalledWith(409);
+    expect(res.json).toHaveBeenCalledWith({
+      error: "Cannot accept interaction: workspace sync is still pending",
+      code: "workspace_sync_pending",
+      details,
+    });
+  });
 });
