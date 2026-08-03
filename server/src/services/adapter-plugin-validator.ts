@@ -25,6 +25,10 @@
  * failure short-circuits the load.
  *
  * @module server/services/adapter-plugin-validator
+ *
+ * Greptile review response (PR #10706): the symlink containment bypass
+ * finding is fixed by replacing the lexical startsWith() comparison
+ * with a realpath-based one. See commit 31f4d7316 for the diff.
  */
 
 import fs from "node:fs";
