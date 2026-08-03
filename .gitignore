@@ -57,3 +57,7 @@ tests/release-smoke/playwright-report/
 .superset/
 .claude/worktrees/
 .worktrees/
+
+# Python-Bytecode (u.a. obsidian-tagger-Tests)
+__pycache__/
+*.pyc
