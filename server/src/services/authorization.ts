@@ -2030,6 +2030,13 @@ export function authorizationService(db: Db) {
       ) {
         return allowIssueMentionGrant(input.action);
       }
+      if (input.action === "issue:comment") {
+        return allow({
+          action: input.action,
+          reason: "allow_company_agent",
+          explanation: "Allowed because any active company agent may comment on any company issue.",
+        });
+      }
     }
     if (
       input.action === "agent_config:update" &&

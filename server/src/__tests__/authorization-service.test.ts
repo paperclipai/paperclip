@@ -1219,6 +1219,46 @@ describeEmbeddedPostgres("authorization service", () => {
     })).resolves.toMatchObject({ allowed: false, reason: "deny_low_trust_boundary" });
   });
 
+  it("allows any standard-trust company agent to comment on an issue owned by another agent without a grant", async () => {
+    const company = await createCompany(db, "CrossAgentComment");
+    const ownerAgent = await createAgent(db, company.id, { role: "engineer" });
+    const commenterAgent = await createAgent(db, company.id, { role: "designer" });
+    const issue = await createIssue(db, company.id, {
+      title: "Owner-only issue",
+      assigneeAgentId: ownerAgent.id,
+    });
+
+    const authorization = authorizationService(db);
+    const resource = {
+      type: "issue",
+      companyId: company.id,
+      issueId: issue.id,
+      projectId: issue.projectId,
+      assigneeAgentId: ownerAgent.id,
+      status: issue.status,
+    } as const;
+    const actor = {
+      type: "agent",
+      agentId: commenterAgent.id,
+      companyId: company.id,
+      source: "agent_key",
+    } as const;
+
+    // A non-owning, non-mentioned agent with no explicit grant may comment.
+    await expect(authorization.decide({
+      actor,
+      action: "issue:comment",
+      resource,
+    })).resolves.toMatchObject({ allowed: true, reason: "allow_company_agent" });
+
+    // ...but mutation (reassign/close/status) still requires ownership or a grant.
+    await expect(authorization.decide({
+      actor,
+      action: "issue:mutate",
+      resource,
+    })).resolves.toMatchObject({ allowed: false });
+  });
+
   it("allows a mentioned non-assignee to comment when the mention author is the issue assignee", async () => {
     const company = await createCompany(db, "MentionCommentAssigneeGrant");
     const allowedProject = await createProject(db, company.id, "MentionAssigneeAllowed");
