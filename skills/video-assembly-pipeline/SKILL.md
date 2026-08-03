@@ -63,7 +63,7 @@ The retention script prunes TSM directories literally named `work` under work-pr
 ## Temporal QA closeout contract
 Attach `assets/final/cut-map/cut-map.json` beside the final MP4 and cite it in the issue closeout.
 The artifact is pipeline-native evidence, not an optional reviewer aid. If it fails, fix the timeline
-and rerun export+QA; do not ask the operator to catch obvious looping. When [TSBC-1586](/TSBC/issues/TSBC-1586)
+and rerun export+QA; do not ask the operator to catch obvious looping. When the historical vision-judge example
 validates the vision judge, wire that judge into this same closeout as the second mandatory gate after
 the cut-map.
 

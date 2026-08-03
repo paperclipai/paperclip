@@ -241,7 +241,7 @@ PY
 
 Required pass conditions: no source clip >2 uses, no adjacent repeats, repeated use separated by
 >=90s, no segment >20s without a detected visual change, and zero black/frozen spans. If the future
-[TSBC-1586](/TSBC/issues/TSBC-1586) vision judge is validated, run it as the second mandatory QA gate
+historical vision-judge example is validated, run it as the second mandatory QA gate
 after this cut-map and attach its verdict beside the JSON.
 
 ## Re-encode discipline

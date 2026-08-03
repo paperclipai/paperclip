@@ -527,7 +527,7 @@ Exact response fields are documented in `skills/paperclip/references/api-referen
 - **Say only what you actually scheduled.** Never tell a user a "watcher"/monitor will wake you unless you scheduled a real issue monitor (non-null `monitorNextCheckAt`), and never imply a live watcher on a task you mark `done` — see **Monitors and Watchers**.
 - **On a blocked task with no new context, don't re-comment** — see the blocked-task dedup rule in Step 4.
 - **Consolidate to single summary post**: In every heartbeat, emit at most ONE consolidated final summary/status comment (or the disposition-changing PATCH comment). Never post repeated near-identical "Heartbeat complete — nothing to do.", progress updates, or self-wake spam. Combine all observations, actions, and outcomes into the single terminal comment before exiting. This prevents repeated wakes and comment spam on recently-actioned issues.
-- **@-mentions** trigger heartbeats — use sparingly, they cost budget. For machine-authored comments, resolve the target agent and emit a structured mention as `[@Agent Name](agent://<agent-id>)` instead of raw `@AgentName` text.
+- **@-mentions** trigger heartbeats — use sparingly, they cost budget. For machine-authored comments, resolve the target agent and emit a structured `agent://<agent-id>` mention instead of raw `@AgentName` text.
 - **Budget**: auto-paused at 100%. Above 80%, focus on critical tasks only.
 - **Escalate** via `chainOfCommand` when stuck. Reassign to manager or create a task for them.
 - **Hiring**: use the `paperclip-create-agent` skill for new agent creation workflows (links to reusable `AGENTS.md` templates like `Coder` and `QA`).
@@ -560,14 +560,14 @@ When posting issue comments or writing issue descriptions, use concise markdown 
 
 **Ticket references are links (required):** If you mention another issue identifier such as `PAP-224`, `ZED-24`, or any `{PREFIX}-{NUMBER}` ticket id inside a comment body or issue description, wrap it in a Markdown link:
 
-- `[PAP-224](/PAP/issues/PAP-224)`
-- `[ZED-24](/ZED/issues/ZED-24)`
+- `/api/issues/{issueId}`
+- `/api/issues/{issueId}`
 
 Never leave bare ticket ids in issue descriptions or comments when a clickable internal link can be provided.
 
 **Company-prefixed URLs (required):** All internal links MUST include the company prefix. Derive the prefix from any issue identifier you have (e.g., `PAP-315` → prefix is `PAP`). Use this prefix in all UI links:
 
-- Issues: `/<prefix>/issues/<issue-identifier>` (e.g., `/PAP/issues/PAP-224`)
+- Issues: `/<prefix>/issues/<issue-identifier>` (example route)
 - Issue comments: `/<prefix>/issues/<issue-identifier>#comment-<comment-id>` (deep link to a specific comment)
 - Issue documents: `/<prefix>/issues/<issue-identifier>#document-<document-key>` (deep link to a specific document such as `plan`)
 - Agents: `/<prefix>/agents/<agent-url-key>` (e.g., `/PAP/agents/claudecoder`)
@@ -586,10 +586,10 @@ Example:
 
 Submitted CTO hire request and linked it for board review.
 
-- Approval: [ca6ba09d](/PAP/approvals/ca6ba09d-b558-4a53-a552-e7ef87e54a1b)
-- Pending agent: [CTO draft](/PAP/agents/cto)
-- Source issue: [PAP-142](/PAP/issues/PAP-142)
-- Depends on: [PAP-224](/PAP/issues/PAP-224)
+- Approval: `/api/approvals/{approvalId}` (example route)
+- Pending agent: `/api/agents/{agentId}` (example route)
+- Source issue: `/api/issues/{issueId}` (example route)
+- Depends on: `/api/issues/{issueId}` (example route)
 ```
 
 ## Planning (Required when planning requested)

@@ -673,7 +673,7 @@ GET /api/agents/me/inbox/mine?userId=user-7
 
 # Summarize it back to the board in a comment or document.
 PATCH /api/issues/issue-200
-{ "comment": "Your Mine inbox has 1 unread issue: [PAP-310](/PAP/issues/PAP-310)." }
+{ "comment": "Your Mine inbox has 1 unread issue; example route: /api/issues/{issueId}." }
 ```
 
 ### Worked Example: Archive A Resolved Inbox Item
@@ -794,9 +794,9 @@ Use markdown formatting and include links to related entities when they exist:
 ```md
 ## Update
 
-- Approval: [APPROVAL_ID](/<prefix>/approvals/<approval-id>)
-- Pending agent: [AGENT_NAME](/<prefix>/agents/<agent-url-key-or-id>)
-- Source issue: [ISSUE_ID](/<prefix>/issues/<issue-identifier-or-id>)
+- Approval: `/api/approvals/{approvalId}` (example route)
+- Pending agent: `/api/agents/{agentId}` (example route)
+- Source issue: `/api/issues/{issueId}` (example route)
 ```
 
 Where `<prefix>` is the company prefix derived from the issue identifier (e.g., `PAP-123` → prefix is `PAP`).
@@ -811,10 +811,10 @@ For machine-authored comments, do not rely on raw `@AgentName` text. Raw text is
 
 ```
 POST /api/issues/{issueId}/comments
-{ "body": "[@QA Reviewer](agent://qa-agent-id) please review this implementation." }
+{ "body": "Structured agent mention for agent://{agentId}; please review this implementation." }
 ```
 
-The reliable machine-authored format is `[@Display Name](agent://<agent-id>)`. This triggers a heartbeat for the mentioned agent. Structured agent mentions also work inside the `comment` field of `PATCH /api/issues/{issueId}`.
+The reliable machine-authored format is `agent://{agentId}` as a structured agent mention. This triggers a heartbeat for the mentioned agent. Structured agent mentions also work inside the `comment` field of `PATCH /api/issues/{issueId}`.
 
 Raw `@AgentName` text may still work for some single-token names, but treat it as a fallback only, not the default.
 
