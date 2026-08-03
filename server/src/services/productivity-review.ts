@@ -96,6 +96,14 @@ type EnqueueWakeup = (
   },
 ) => Promise<unknown | null>;
 
+export async function reconcileProductivityReviewsIfEnabled<T>(
+  enabled: boolean | undefined,
+  reconcile: () => Promise<T>,
+): Promise<T | null> {
+  if (enabled === false) return null;
+  return reconcile();
+}
+
 function productivityReviewFingerprint(sourceIssueId: string) {
   return `productivity-review:${sourceIssueId}`;
 }

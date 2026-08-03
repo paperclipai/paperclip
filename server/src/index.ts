@@ -55,6 +55,7 @@ import {
   reconcileBuiltInAgentsOnStartup,
   reconcileCodexLocalManagedHomesOnStartup,
   reconcilePersistedRuntimeServicesOnStartup,
+  reconcileProductivityReviewsIfEnabled,
   routineService,
   statusCardService,
   toolAccessService,
@@ -1030,8 +1031,11 @@ export async function startServer(): Promise<StartedServer> {
           logger.warn({ ...swept }, "startup stale-lock sweeper cleared issue locks");
         }
 
-        const reviewed = await heartbeat.reconcileProductivityReviews();
-        if (reviewed.created > 0 || reviewed.updated > 0 || reviewed.failed > 0) {
+        const reviewed = await reconcileProductivityReviewsIfEnabled(
+          config.productivityReviewEnabled,
+          () => heartbeat.reconcileProductivityReviews(),
+        );
+        if (reviewed && (reviewed.created > 0 || reviewed.updated > 0 || reviewed.failed > 0)) {
           logger.warn({ ...reviewed }, "startup productivity reconciliation created or updated review work");
         }
       })().catch((err) => {
@@ -1220,8 +1224,11 @@ export async function startServer(): Promise<StartedServer> {
               }
             })
             .then(async () => {
-              const reviewed = await heartbeat.reconcileProductivityReviews();
-              if (reviewed.created > 0 || reviewed.updated > 0 || reviewed.failed > 0) {
+              const reviewed = await reconcileProductivityReviewsIfEnabled(
+                config.productivityReviewEnabled,
+                () => heartbeat.reconcileProductivityReviews(),
+              );
+              if (reviewed && (reviewed.created > 0 || reviewed.updated > 0 || reviewed.failed > 0)) {
                 logger.warn({ ...reviewed }, "periodic productivity reconciliation created or updated review work");
               }
             })
