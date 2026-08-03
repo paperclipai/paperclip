@@ -5607,6 +5607,59 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     }
   });
 
+  it("does not re-enqueue terminalization after a verified issue-bound operator interrupt", async () => {
+    const { agentId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "todo",
+      runStatus: "cancelled",
+      runErrorCode: "operator_interrupted",
+    });
+    await db
+      .update(heartbeatRuns)
+      .set({
+        resultJson: {
+          operatorInterrupted: true,
+          interruptionSource: "issue_comment_interrupt",
+          interruptedIssueId: issueId,
+        },
+      })
+      .where(eq(heartbeatRuns.id, runId));
+
+    const result = await heartbeatService(db).reconcileStrandedAssignedIssues();
+
+    expect(result.dispatchRequeued).toBe(0);
+    expect(result.escalated).toBe(0);
+    expect(result.operatorCancelExempted).toBe(1);
+    expect(result.issueIds).toEqual([]);
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(1);
+  });
+
+  it("keeps ordinary unfinished recovery when operator-interrupt metadata is not verified for the issue", async () => {
+    const { agentId, issueId, runId } = await seedStrandedIssueFixture({
+      status: "todo",
+      runStatus: "cancelled",
+      runErrorCode: "operator_interrupted",
+    });
+    await db
+      .update(heartbeatRuns)
+      .set({
+        resultJson: {
+          operatorInterrupted: true,
+          interruptionSource: "issue_comment_interrupt",
+          interruptedIssueId: randomUUID(),
+        },
+      })
+      .where(eq(heartbeatRuns.id, runId));
+
+    const result = await heartbeatService(db).reconcileStrandedAssignedIssues();
+
+    expect(result.dispatchRequeued).toBe(1);
+    expect(result.escalated).toBe(0);
+    expect(result.issueIds).toEqual([issueId]);
+    const runs = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.agentId, agentId));
+    expect(runs).toHaveLength(2);
+  });
+
   it("re-enqueues an already stranded execution-review participant during reconciliation", async () => {
     const { agentId, issueId, runId, wakeupRequestId, stageId } = await seedInReviewParticipantRunFixture();
     const finishedAt = new Date("2026-03-19T00:05:00.000Z");

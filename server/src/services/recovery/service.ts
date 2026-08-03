@@ -403,6 +403,17 @@ function didAutomaticRecoveryFail(
     );
 }
 
+function isVerifiedOperatorInterruptedRunForIssue(latestRun: LatestIssueRun, issueId: string) {
+  if (latestRun?.status !== "cancelled" || latestRun.errorCode !== "operator_interrupted") return false;
+
+  const result = parseObject(latestRun.resultJson);
+  return (
+    asBoolean(result.operatorInterrupted) === true &&
+    readNonEmptyString(result.interruptionSource) === "issue_comment_interrupt" &&
+    readNonEmptyString(result.interruptedIssueId) === issueId
+  );
+}
+
 function isTerminalIssueRun(latestRun: LatestIssueRun) {
   if (!latestRun) return false;
   return TERMINAL_HEARTBEAT_RUN_STATUSES.has(latestRun.status);
@@ -744,19 +755,8 @@ function isStrandedIssueRecoveryIssue(issue: Pick<typeof issues.$inferSelect, "o
   return isStrandedIssueRecoveryOriginKind(issue.originKind);
 }
 
-/**
- * True when the issue's latest run was cancelled by a board operator (the
- * board cancel route stamps the attribution; interrupt-by-comment uses the
- * operator_interrupted error code). While such a run is the latest activity
- * on an issue, recovery stands down entirely: the operator deliberately
- * stopped the agent, and re-waking it — or escalating "stranding" — would
- * fight the human. Any newer run or wake supersedes the exemption.
- */
-function isOperatorCancelledRun(latestRun: LatestIssueRun): boolean {
-  if (!latestRun || latestRun.status !== "cancelled") return false;
-  if (latestRun.errorCode === "operator_interrupted") return true;
-  const result = parseObject(latestRun.resultJson);
-  return result.cancelledByActorType === "user" || result.cancelledByActorType === "board";
+function isOperatorCancelledRun(latestRun: LatestIssueRun, issueId: string): boolean {
+  return isVerifiedOperatorInterruptedRunForIssue(latestRun, issueId);
 }
 
 function isUnsuccessfulTerminalIssueRun(latestRun: LatestIssueRun) {
@@ -3938,6 +3938,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         sourceIssueId: issueRecoveryActions.sourceIssueId,
         kind: issueRecoveryActions.kind,
         sourceStatus: issues.status,
+        recoveryIssueId: issueRecoveryActions.recoveryIssueId,
         recoveryIssueStatus: recoveryIssue.status,
       })
       .from(issueRecoveryActions)
@@ -3990,6 +3991,19 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             : `Recovery action swept because the source issue is now terminal (${candidate.sourceStatus}).`,
       });
       if (!folded) continue;
+
+      // A source that already has a terminal disposition is authoritative.  Do
+      // not leave its visible recovery wrapper open merely because the action
+      // row was folded by this background pass: that wrapper is otherwise seen
+      // as fresh liveness work and can be re-escalated.  Cancel rather than
+      // complete it when the source's normal execution path was restored; use
+      // done only for a source that itself reached a terminal disposition.
+      if (candidate.recoveryIssueId && !recoveryIssueTerminal) {
+        const wrapperStatus = candidate.sourceStatus === "done" || candidate.sourceStatus === "cancelled"
+          ? "done"
+          : "cancelled";
+        await issuesSvc.update(candidate.recoveryIssueId, { status: wrapperStatus });
+      }
 
       result.folded += 1;
       result.actionIds.push(candidate.actionId);
@@ -4938,7 +4952,7 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
         }
 
         let latestRun = await getLatestIssueRun(freshIssue.companyId, freshIssue.id);
-        if (isOperatorCancelledRun(latestRun)) {
+        if (isOperatorCancelledRun(latestRun, freshIssue.id)) {
           result.operatorCancelExempted += 1;
           continue;
         }
@@ -5334,6 +5348,14 @@ export function recoveryService(db: Db, deps: { enqueueWakeup: RecoveryWakeup })
             latestRun.status === "succeeded" &&
             !(await wasTodoHandedBackDuringOrAfterLatestRun(issue, latestRun))
           ) {
+            result.skipped += 1;
+            continue;
+          }
+
+          // An operator interruption is an explicit stop decision, not a lost
+          // execution path. Its issue-bound metadata prevents an unrelated
+          // cancelled run from disabling ordinary assignment recovery.
+          if (isVerifiedOperatorInterruptedRunForIssue(latestRun, issue.id)) {
             result.skipped += 1;
             continue;
           }
