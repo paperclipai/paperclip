@@ -1,6 +1,6 @@
 import fs from "node:fs";
 import path from "node:path";
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import * as p from "@clack/prompts";
 import pc from "picocolors";
@@ -36,7 +36,103 @@ interface StartedServer {
   listenPort: number;
 }
 
+type WindowsRunShutdownSignal = "SIGINT" | "SIGTERM" | "SIGBREAK";
+type WindowsRunSupervisorMessage = {
+  type: "paperclip-windows-run-shutdown";
+  signal: WindowsRunShutdownSignal;
+};
+
+const WINDOWS_RUN_CHILD_ENV = "PAPERCLIP_WINDOWS_RUN_CHILD";
+const WINDOWS_RUN_SHUTDOWN_SIGNALS = ["SIGINT", "SIGTERM", "SIGBREAK"] as const;
+let windowsRunShutdownListenerInstalled = false;
+let pendingWindowsRunShutdownSignal: WindowsRunShutdownSignal | null = null;
+let windowsRunShutdownRequest: ((signal: WindowsRunShutdownSignal) => boolean) | null = null;
+
+function isWindowsRunSupervisorMessage(message: unknown): message is WindowsRunSupervisorMessage {
+  if (!message || typeof message !== "object") return false;
+  const record = message as Record<string, unknown>;
+  return record.type === "paperclip-windows-run-shutdown"
+    && WINDOWS_RUN_SHUTDOWN_SIGNALS.includes(record.signal as WindowsRunShutdownSignal);
+}
+
+function installWindowsRunChildShutdownListener(): void {
+  if (windowsRunShutdownListenerInstalled || process.env[WINDOWS_RUN_CHILD_ENV] !== "1") return;
+  windowsRunShutdownListenerInstalled = true;
+  const requestOrQueue = (signal: WindowsRunShutdownSignal) => {
+    if (!windowsRunShutdownRequest?.(signal)) pendingWindowsRunShutdownSignal = signal;
+  };
+  process.on("message", (message: unknown) => {
+    if (!isWindowsRunSupervisorMessage(message)) return;
+    requestOrQueue(message.signal);
+  });
+  // Windows .cmd launchers may be terminated by a console-control broadcast
+  // before their Node signal listener can forward it. The detached server child
+  // observes that loss through IPC and still enters the normal shutdown path.
+  process.on("disconnect", () => requestOrQueue("SIGBREAK"));
+}
+
+function attachWindowsRunShutdownRequest(request: (signal: WindowsRunShutdownSignal) => boolean): void {
+  windowsRunShutdownRequest = request;
+  if (!pendingWindowsRunShutdownSignal) return;
+  const signal = pendingWindowsRunShutdownSignal;
+  if (request(signal)) pendingWindowsRunShutdownSignal = null;
+}
+
+type WindowsRunSupervisorProcess = Pick<
+  NodeJS.Process,
+  "argv" | "execArgv" | "execPath" | "env" | "on" | "off"
+>;
+
+export async function superviseWindowsRun(
+  input: {
+    process?: WindowsRunSupervisorProcess;
+    spawnChild?: typeof spawn;
+  } = {},
+): Promise<void> {
+  const supervisorProcess = input.process ?? process;
+  const spawnChild = input.spawnChild ?? spawn;
+  const child = spawnChild(
+    supervisorProcess.execPath,
+    [...supervisorProcess.execArgv, ...supervisorProcess.argv.slice(1)],
+    {
+      detached: true,
+      windowsHide: true,
+      env: { ...supervisorProcess.env, [WINDOWS_RUN_CHILD_ENV]: "1" },
+      stdio: ["inherit", "inherit", "inherit", "ipc"],
+    },
+  );
+
+  await new Promise<void>((resolve, reject) => {
+    const handlers = new Map<WindowsRunShutdownSignal, () => void>();
+    const cleanup = () => {
+      for (const [signal, handler] of handlers) supervisorProcess.off(signal, handler);
+    };
+    for (const signal of WINDOWS_RUN_SHUTDOWN_SIGNALS) {
+      const handler = () => {
+        if (!child.connected || typeof child.send !== "function") return;
+        child.send({ type: "paperclip-windows-run-shutdown", signal } satisfies WindowsRunSupervisorMessage);
+      };
+      handlers.set(signal, handler);
+      supervisorProcess.on(signal, handler);
+    }
+    child.once("error", (error) => {
+      cleanup();
+      reject(error);
+    });
+    child.once("exit", (code, signal) => {
+      cleanup();
+      if (code === 0) resolve();
+      else reject(new Error(`Windows Paperclip run child exited with ${signal ?? `code ${code ?? "unknown"}`}`));
+    });
+  });
+}
+
 export async function runCommand(opts: RunOptions): Promise<void> {
+  if (process.platform === "win32" && process.env[WINDOWS_RUN_CHILD_ENV] !== "1") {
+    await superviseWindowsRun();
+    return;
+  }
+  installWindowsRunChildShutdownListener();
   const instanceId = resolvePaperclipInstanceId(opts.instance);
   process.env.PAPERCLIP_INSTANCE_ID = instanceId;
   await assertForegroundRunAllowed(instanceId, opts.force);
@@ -219,9 +315,20 @@ function shouldGenerateBootstrapInviteAfterStart(config: PaperclipConfig): boole
 }
 
 async function startServerFromModule(mod: unknown, label: string): Promise<StartedServer> {
-  const startServer = (mod as { startServer?: () => Promise<StartedServer> }).startServer;
+  const serverModule = mod as {
+    startServer?: () => Promise<StartedServer>;
+    requestServerShutdown?: (signal: WindowsRunShutdownSignal) => boolean;
+  };
+  const startServer = serverModule.startServer;
   if (typeof startServer !== "function") {
     throw new Error(`Paperclip server entrypoint did not export startServer(): ${label}`);
   }
-  return await startServer();
+  const startedServer = await startServer();
+  if (process.env[WINDOWS_RUN_CHILD_ENV] === "1") {
+    if (typeof serverModule.requestServerShutdown !== "function") {
+      throw new Error(`Paperclip server entrypoint does not support Windows supervisor shutdown: ${label}`);
+    }
+    attachWindowsRunShutdownRequest(serverModule.requestServerShutdown);
+  }
+  return startedServer;
 }

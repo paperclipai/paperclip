@@ -869,7 +869,7 @@ function runProcessCommand(command: string, args: string[]) {
       args,
       {
         encoding: "utf8",
-        timeout: 1_500,
+        timeout: 10_000,
         windowsHide: true,
       },
       (error, stdout) => {

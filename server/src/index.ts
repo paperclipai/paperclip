@@ -167,6 +167,12 @@ function installShutdownSignalHandler(handler: (signal: ServerShutdownSignal) =>
   }
 }
 
+export function requestServerShutdown(signal: ServerShutdownSignal): boolean {
+  if (!activeShutdownSignalHandler) return false;
+  activeShutdownSignalHandler(signal);
+  return true;
+}
+
 export async function startServer(): Promise<StartedServer> {
   const serverStartedAtEpochMs = SERVER_STARTED_AT_EPOCH_MS;
   const lifecycleBoot = await beginServerLifecycle({

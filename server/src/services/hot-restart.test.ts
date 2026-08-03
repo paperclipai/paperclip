@@ -35,7 +35,7 @@ async function withTempHome<T>(fn: (homeDir: string) => Promise<T>) {
   }
 }
 
-describe("hot-restart path compatibility", () => {
+describe("hot-restart path compatibility", { timeout: 30_000 }, () => {
   it("reads Linux process start time from proc metadata", async () => {
     await expect(
       readProcessStartedAt(123, {

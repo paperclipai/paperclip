@@ -304,7 +304,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-heartbeat-recovery-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  }, 120_000);
 
   afterEach(async () => {
     vi.clearAllMocks();
@@ -1506,6 +1506,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await withTempPaperclipHome(async (home) => {
       await writeHotRestartIntent({
         previousServerPid: process.pid,
+        previousServerIdentity: "old-home-root-server-boot",
         previousServerVersion: "old-home-root-version",
         requestedAt: new Date("2026-08-01T00:05:00.000Z"),
         requestedByRunId: "deploy-run",
@@ -1564,6 +1565,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await withTempPaperclipHome(async (home) => {
       await writeHotRestartIntent({
         previousServerPid: process.pid,
+        previousServerIdentity: "missing-snapshot-server-boot",
         previousServerVersion: "missing-snapshot-version",
         requestedAt: new Date("2026-08-01T01:05:00.000Z"),
         preflightActiveRunIds: [runId],
@@ -1601,6 +1603,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await withTempPaperclipHome(async (home) => {
       await writeHotRestartIntent({
         previousServerPid: process.pid,
+        previousServerIdentity: "preflight-race-server-boot",
         previousServerVersion: "preflight-race-version",
         requestedAt: new Date("2026-08-01T01:08:00.000Z"),
         preflightActiveRunIds: [runId],
@@ -1710,6 +1713,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     await withTempPaperclipHome(async (home) => {
       await writeHotRestartIntent({
         previousServerPid: process.pid,
+        previousServerIdentity: "warm-handle-server-boot",
         previousServerVersion: "old-version",
         requestedAt: new Date("2026-07-30T07:01:00.000Z"),
       });

@@ -6,7 +6,12 @@ import { describe, expect, it } from "vitest";
 
 const repoRoot = fileURLToPath(new URL("../../../", import.meta.url));
 
-function backgroundChildWindowsHideOptions(relativePath: string): boolean[] {
+interface BackgroundChildOptions {
+  detached: boolean;
+  windowsHide: boolean;
+}
+
+function backgroundChildOptions(relativePath: string): BackgroundChildOptions[] {
   const sourcePath = path.join(repoRoot, relativePath);
   const source = ts.createSourceFile(
     sourcePath,
@@ -15,7 +20,7 @@ function backgroundChildWindowsHideOptions(relativePath: string): boolean[] {
     true,
     ts.ScriptKind.TS,
   );
-  const results: boolean[] = [];
+  const results: BackgroundChildOptions[] = [];
 
   function visit(node: ts.Node) {
     if (
@@ -35,11 +40,25 @@ function backgroundChildWindowsHideOptions(relativePath: string): boolean[] {
           && property.name.text === "windowsHide"
         )
         : undefined;
-      results.push(Boolean(
-        windowsHide
-        && ts.isPropertyAssignment(windowsHide)
-        && windowsHide.initializer.kind === ts.SyntaxKind.TrueKeyword,
-      ));
+      const detached = options && ts.isObjectLiteralExpression(options)
+        ? options.properties.find((property) =>
+          ts.isPropertyAssignment(property)
+          && ts.isIdentifier(property.name)
+          && property.name.text === "detached"
+        )
+        : undefined;
+      results.push({
+        detached: Boolean(
+          detached
+          && ts.isPropertyAssignment(detached)
+          && detached.initializer.kind === ts.SyntaxKind.TrueKeyword,
+        ),
+        windowsHide: Boolean(
+          windowsHide
+          && ts.isPropertyAssignment(windowsHide)
+          && windowsHide.initializer.kind === ts.SyntaxKind.TrueKeyword,
+        ),
+      });
     }
     ts.forEachChild(node, visit);
   }
@@ -56,8 +75,24 @@ describe("Windows background process spawn options", () => {
     ["server/src/services/tool-gateway.ts", 1],
     ["server/src/services/plugin-worker-manager.ts", 1],
   ])("hides every enumerated background child in %s", (relativePath, expectedChildCount) => {
-    const options = backgroundChildWindowsHideOptions(relativePath);
+    const options = backgroundChildOptions(relativePath);
     expect(options).toHaveLength(expectedChildCount);
-    expect(options).not.toContain(false);
+    expect(options.map((entry) => entry.windowsHide)).not.toContain(false);
+  });
+
+  it("isolates adapter children from Windows console-control broadcasts", () => {
+    expect(backgroundChildOptions("packages/adapter-utils/src/server-utils.ts")).toEqual([
+      { detached: true, windowsHide: true },
+    ]);
+  });
+
+  it("isolates the embedded Windows postmaster from launcher console-control broadcasts", () => {
+    const patch = fs.readFileSync(
+      path.join(repoRoot, "patches/embedded-postgres@18.1.0-beta.16.patch"),
+      "utf8",
+    );
+    expect(patch).toContain(
+      "detached: globalThis.process.platform === 'win32', windowsHide: true",
+    );
   });
 });
