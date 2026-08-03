@@ -1861,14 +1861,16 @@ export async function assertGitWorktreeBaseWorkspaceReady(input: {
   // Checked before isGitCheckout: when materialization failed and the base cwd is the
   // agent-home fallback, a git checkout at that path would be an unrelated repository —
   // proceeding would build worktrees off the wrong repo, and failing on the checkout probe
-  // would mask the real cause (for example a clone that could not authenticate).
-  if (input.anchor?.baseCwdFallback) {
-    const failures = input.anchor.materializationFailures ?? [];
-    const failureDetail = failures[0] ? `: ${failures[0].error.replace(/\s+/g, " ")}` : "";
+  // would mask the real cause (for example a clone that could not authenticate). The reason
+  // is reserved for genuine materialization failures; a fallback with no failed attempt
+  // (a configured path that is simply unavailable) keeps its accurate reporting below.
+  const materializationFailures = input.anchor?.materializationFailures ?? [];
+  if (input.anchor?.baseCwdFallback && materializationFailures.length > 0) {
+    const failureDetail = `: ${materializationFailures[0].error.replace(/\s+/g, " ")}`;
     fail(
       "git_worktree_base_materialization_failed",
       `Issue ${issueLabel} requested ${input.requestedExecutionWorkspaceMode} with git_worktree, but the project workspace checkout could not be prepared${failureDetail}. Repair the project workspace repository URL, clone access, or configured local cwd, then retry.`,
-      { baseCwdFallback: true, materializationFailures: failures },
+      { baseCwdFallback: true, materializationFailures },
     );
   }
 
@@ -1876,6 +1878,18 @@ export async function assertGitWorktreeBaseWorkspaceReady(input: {
     fail(
       "git_worktree_base_not_git_checkout",
       `Issue ${issueLabel} requested ${input.requestedExecutionWorkspaceMode} with git_worktree, but base workspace "${input.base.baseCwd}" is not a git checkout. ${remediation}`,
+    );
+  }
+
+  // A fallback cwd that happens to be a git checkout is still not the configured project
+  // workspace — building worktrees there would target an unrelated repository. No
+  // materialization attempt failed here (that case failed above); the configured path is
+  // simply unavailable, so the message points at the path rather than clone access.
+  if (input.anchor?.baseCwdFallback) {
+    fail(
+      "git_worktree_base_fallback_not_project_workspace",
+      `Issue ${issueLabel} requested ${input.requestedExecutionWorkspaceMode} with git_worktree, but the configured project workspace path is not available and the fallback cwd "${input.base.baseCwd}" is not the project workspace checkout. Make the configured project workspace path available on this host, or repair the project workspace configuration, then retry.`,
+      { baseCwdFallback: true, materializationFailures },
     );
   }
 }
@@ -2425,9 +2439,14 @@ export type WorkspaceMaterializationFailure = {
   error: string;
 };
 
-/** Mask URL userinfo (`https://user:token@host`) so credential material never reaches warnings, run errors, or persisted payloads. */
+/**
+ * Mask URL userinfo (`https://user:token@host`, `ssh://user:pass@host`, any
+ * `scheme://…@` form) so credential material never reaches warnings, run errors, or
+ * persisted payloads. Scp-style remotes (`git@host:path`) carry no password and are left
+ * alone.
+ */
 export function scrubGitCredentialText(text: string): string {
-  return text.replace(/(https?:\/\/)[^/@\s]+@/gi, "$1***@");
+  return text.replace(/([a-z][a-z0-9+.-]*:\/\/)[^/@\s]+@/gi, "$1***@");
 }
 
 export type ResolvedWorkspaceForRun = {

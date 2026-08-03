@@ -615,35 +615,78 @@ describe("assertGitWorktreeBaseWorkspaceReady", () => {
     }
   });
 
-  it("reports materialization failure even without failure detail entries", async () => {
-    const fallbackCwd = resolveDefaultAgentWorkspaceDir("agent-1");
-    await expect(assertGitWorktreeBaseWorkspaceReady({
-      requestedExecutionWorkspaceMode: "isolated_workspace",
-      config: { workspaceStrategy: { type: "git_worktree" } },
-      issue: {
-        id: "issue-1",
-        identifier: "PAP-1",
-        projectId: "project-1",
-        projectWorkspaceId: "workspace-1",
-      },
-      base: {
-        baseCwd: fallbackCwd,
-        source: "project_primary",
-        projectId: "project-1",
-        workspaceId: "workspace-1",
-        repoUrl: null,
-        repoRef: null,
-      },
-      anchor: { baseCwdFallback: true },
-    })).rejects.toMatchObject({
-      code: "workspace_validation_failed",
-      resultJson: {
-        workspaceValidation: expect.objectContaining({
-          reason: "git_worktree_base_materialization_failed",
-          materializationFailures: [],
-        }),
-      },
-    });
+  it("keeps the not-a-git-checkout reason for a fallback with no failed materialization attempt", async () => {
+    // A configured path that is simply unavailable is not a clone failure; the message must
+    // not steer the operator toward repairing clone access.
+    const cwd = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-unavailable-path-fallback-"));
+    try {
+      await expect(assertGitWorktreeBaseWorkspaceReady({
+        requestedExecutionWorkspaceMode: "isolated_workspace",
+        config: { workspaceStrategy: { type: "git_worktree" } },
+        issue: {
+          id: "issue-1",
+          identifier: "PAP-1",
+          projectId: "project-1",
+          projectWorkspaceId: "workspace-1",
+        },
+        base: {
+          baseCwd: cwd,
+          source: "project_primary",
+          projectId: "project-1",
+          workspaceId: "workspace-1",
+          repoUrl: null,
+          repoRef: null,
+        },
+        anchor: { baseCwdFallback: true },
+      })).rejects.toMatchObject({
+        code: "workspace_validation_failed",
+        message: expect.stringContaining("is not a git checkout"),
+        resultJson: {
+          workspaceValidation: expect.objectContaining({
+            reason: "git_worktree_base_not_git_checkout",
+          }),
+        },
+      });
+    } finally {
+      await fs.rm(cwd, { recursive: true, force: true });
+    }
+  });
+
+  it("refuses a git-checkout fallback cwd that is not the project workspace, without claiming a clone failed", async () => {
+    const cwd = await createGitCheckout({ withRemote: false });
+    try {
+      await expect(assertGitWorktreeBaseWorkspaceReady({
+        requestedExecutionWorkspaceMode: "isolated_workspace",
+        config: { workspaceStrategy: { type: "git_worktree" } },
+        issue: {
+          id: "issue-1",
+          identifier: "PAP-1",
+          projectId: "project-1",
+          projectWorkspaceId: "workspace-1",
+        },
+        base: {
+          baseCwd: cwd,
+          source: "project_primary",
+          projectId: "project-1",
+          workspaceId: "workspace-1",
+          repoUrl: null,
+          repoRef: null,
+        },
+        anchor: { baseCwdFallback: true, materializationFailures: [] },
+      })).rejects.toMatchObject({
+        code: "workspace_validation_failed",
+        message: expect.stringContaining("configured project workspace path is not available"),
+        resultJson: {
+          workspaceValidation: expect.objectContaining({
+            reason: "git_worktree_base_fallback_not_project_workspace",
+            baseCwdFallback: true,
+            materializationFailures: [],
+          }),
+        },
+      });
+    } finally {
+      await fs.rm(cwd, { recursive: true, force: true });
+    }
   });
 
   it("allows isolated git worktrees when the anchor reports no fallback", async () => {
@@ -783,6 +826,15 @@ describe("scrubGitCredentialText", () => {
     expect(scrubGitCredentialText(
       "clone https://alice@github.com/a.git then http://token@internal.example/b.git",
     )).toBe("clone https://***@github.com/a.git then http://***@internal.example/b.git");
+  });
+
+  it("masks userinfo on non-HTTP schemes, leaving scp-style remotes alone", () => {
+    expect(scrubGitCredentialText(
+      "fatal: cannot clone ssh://deploy:hunter2@internal.example/repo.git or git+ssh://bob@host/x.git",
+    )).toBe("fatal: cannot clone ssh://***@internal.example/repo.git or git+ssh://***@host/x.git");
+    expect(scrubGitCredentialText("fetch from git@github.com:example/repo.git failed")).toBe(
+      "fetch from git@github.com:example/repo.git failed",
+    );
   });
 
   it("leaves credential-free text unchanged", () => {
