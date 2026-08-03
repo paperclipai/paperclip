@@ -1102,7 +1102,11 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       .then((rows) => rows.map((row) => row.blockerIssueId));
   }
 
-  async function seedQueuedIssueRunFixture() {
+  async function seedQueuedIssueRunFixture(input?: {
+    adapterType?: string;
+    adapterConfig?: Record<string, unknown>;
+    metadata?: Record<string, unknown>;
+  }) {
     const companyId = randomUUID();
     const agentId = randomUUID();
     const runId = randomUUID();
@@ -1125,8 +1129,8 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       name: "CodexCoder",
       role: "engineer",
       status: "idle",
-      adapterType: "codex_local",
-      adapterConfig: {},
+      adapterType: input?.adapterType ?? "codex_local",
+      adapterConfig: input?.adapterConfig ?? {},
       runtimeConfig: {
         heartbeat: {
           wakeOnDemand: true,
@@ -1134,6 +1138,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
         },
       },
       permissions: {},
+      metadata: input?.metadata,
     });
 
     await db.insert(agentWakeupRequests).values({
@@ -1185,6 +1190,84 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
 
     return { companyId, agentId, runId, wakeupRequestId, issueId };
   }
+
+  async function runQueuedTimeoutFixture(input?: {
+    adapterType?: string;
+    adapterConfig?: Record<string, unknown>;
+    metadata?: Record<string, unknown>;
+  }) {
+    mockAdapterExecute.mockResolvedValueOnce({
+      exitCode: 130,
+      signal: "SIGINT",
+      timedOut: true,
+      errorMessage: null,
+      summary: "Timed out fixture.",
+      provider: "test",
+      model: "test-model",
+    });
+    const fixture = await seedQueuedIssueRunFixture(input);
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, fixture.runId);
+    const [agent] = await db.select().from(agents).where(eq(agents.id, fixture.agentId));
+    const run = await heartbeat.getRun(fixture.runId);
+    return { ...fixture, agent, run };
+  }
+
+  it("records the computed timeout reason when an opted-out local adapter times out cleanly", async () => {
+    const { agent, run } = await runQueuedTimeoutFixture({
+      adapterConfig: { keepIdleOnTimeout: false },
+    });
+
+    expect(run).toMatchObject({ status: "timed_out", error: "Timed out", errorCode: "timeout" });
+    expect(agent).toMatchObject({ status: "error", errorReason: "Timed out" });
+  });
+
+  it("keeps sessioned local adapters idle through their first three consecutive timeouts", async () => {
+    const { agent } = await runQueuedTimeoutFixture();
+
+    expect(agent).toMatchObject({ status: "idle" });
+    expect(agent?.metadata).toMatchObject({ consecutiveTimeoutCount: 1 });
+  });
+
+  it("latches a sessioned local adapter in error on its fourth consecutive timeout", async () => {
+    const { agent } = await runQueuedTimeoutFixture({
+      metadata: { consecutiveTimeoutCount: 3 },
+    });
+
+    expect(agent).toMatchObject({ status: "error" });
+    expect(agent?.errorReason).toBe("Timed out (4 consecutive timeouts; latching error)");
+    expect(agent?.metadata).toMatchObject({ consecutiveTimeoutCount: 4 });
+  });
+
+  it("resets the timeout counter after a non-timeout outcome", async () => {
+    const { agentId, runId } = await seedQueuedIssueRunFixture({
+      metadata: { consecutiveTimeoutCount: 3 },
+    });
+    const heartbeat = heartbeatService(db);
+    await heartbeat.resumeQueuedRuns();
+    await waitForRunToSettle(heartbeat, runId);
+    const [agent] = await db.select().from(agents).where(eq(agents.id, agentId));
+
+    expect(agent).toMatchObject({ status: "idle" });
+    expect(agent?.metadata).toMatchObject({ consecutiveTimeoutCount: 0 });
+  });
+
+  it("honors an explicit keepIdleOnTimeout opt-out for sessioned local adapters", async () => {
+    const { agent } = await runQueuedTimeoutFixture({
+      adapterConfig: { keepIdleOnTimeout: false },
+    });
+
+    expect(agent).toMatchObject({ status: "error" });
+    expect(agent?.metadata).toMatchObject({ consecutiveTimeoutCount: 1 });
+  });
+
+  it("keeps non-local adapters on the existing timeout-to-error path", async () => {
+    const { agent } = await runQueuedTimeoutFixture({ adapterType: "process" });
+
+    expect(agent).toMatchObject({ status: "error" });
+    expect(agent?.metadata).toMatchObject({ consecutiveTimeoutCount: 1 });
+  });
 
   it("keeps a local run active when the recorded pid is still alive", async () => {
     const child = spawnAliveProcess();
