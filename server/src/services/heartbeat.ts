@@ -333,6 +333,7 @@ const PAPERCLIP_HARNESS_CHECKOUT_KEY = "paperclipHarnessCheckedOut";
 const DETACHED_PROCESS_ERROR_CODE = "process_detached";
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
 const MANAGED_WORKSPACE_GIT_CLONE_TIMEOUT_MS = 10 * 60 * 1000;
+const DEFAULT_MAX_QUEUED_RUN_AGE_MS = 24 * 60 * 60 * 1000;
 const MAX_INLINE_WAKE_COMMENTS = 8;
 const MAX_INLINE_WAKE_COMMENT_BODY_CHARS = 4_000;
 const MAX_INLINE_WAKE_COMMENT_BODY_TOTAL_CHARS = 12_000;
@@ -8663,6 +8664,47 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
     return { run: current, updated: false as const };
   }
 
+  // Mirrors setRunStatusIfRunning's guarded-update idiom (and claimQueuedRun's
+  // queued -> running flip) for the queued -> cancelled transition: the UPDATE
+  // itself carries the precondition (status = 'queued') so a concurrent claim
+  // of the same row (another scheduler pass, or a manual resume flipping it to
+  // "running") between the SELECT and this UPDATE cannot be clobbered back to
+  // "cancelled". `updated: false` tells the caller the row had already moved
+  // on, so it must not touch the run's wakeup or append a lifecycle event.
+  async function setRunStatusIfQueued(
+    runId: string,
+    status: string,
+    patch?: Partial<typeof heartbeatRuns.$inferInsert>,
+  ) {
+    const updated = await db
+      .update(heartbeatRuns)
+      .set({ status, ...patch, updatedAt: new Date() })
+      .where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.status, "queued")))
+      .returning()
+      .then((rows) => rows[0] ?? null);
+
+    if (updated) {
+      if (isHeartbeatRunTerminalStatus(updated.status)) {
+        clearHeartbeatRunRuntimeStatus(updated.id);
+      }
+      publishLiveEvent({
+        companyId: updated.companyId,
+        type: "heartbeat.run.status",
+        payload: buildHeartbeatRunStatusLiveEventPayload(updated),
+      });
+      publishRunLifecyclePluginEvent(updated);
+      return { run: updated, updated: true as const };
+    }
+
+    const current = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.id, runId))
+      .then((rows) => rows[0] ?? null);
+
+    return { run: current, updated: false as const };
+  }
+
   function publishRunLifecyclePluginEvent(run: typeof heartbeatRuns.$inferSelect) {
     const eventType =
       run.status === "running"
@@ -12640,11 +12682,12 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       .then((rows) => rows[0] ?? null);
   }
 
-  async function reapOrphanedRuns(opts?: { staleThresholdMs?: number }) {
+  async function reapOrphanedRuns(opts?: { staleThresholdMs?: number; maxQueuedAgeMs?: number }) {
     const staleThresholdMs = opts?.staleThresholdMs ?? 0;
+    const maxQueuedAgeMs = opts?.maxQueuedAgeMs ?? DEFAULT_MAX_QUEUED_RUN_AGE_MS;
     const now = new Date();
 
-    // Find all runs stuck in "running" state (queued runs are legitimately waiting; resumeQueuedRuns handles them)
+    // Find all runs stuck in "running" state (queued runs get a bounded wait below; resumeQueuedRuns handles normal dequeue)
     const activeRuns = await db
       .select({
         run: heartbeatRuns,
@@ -12828,6 +12871,58 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       await startNextQueuedRunForAgent(run.agentId);
       runningProcesses.delete(run.id);
       reaped.push(run.id);
+    }
+
+    // Backstop for any cause of queue stranding (pause races, concurrency starvation,
+    // invokability edge cases): a run should never wait in "queued" forever.
+    // This loop only cancels the run and its wakeup; for issue-linked runs it
+    // deliberately does not touch the issue's checkoutRunId/executionRunId
+    // lock columns. Releasing that lock is left to the same-sweep
+    // reconcileStrandedAssignedIssues() (and the enqueueWakeup self-heal it
+    // triggers), mirroring how sweepStaleIssueLocks documents its own
+    // reliance on that same reconciliation pass.
+    const expiredQueuedRuns = await db
+      .select()
+      .from(heartbeatRuns)
+      .where(
+        and(
+          eq(heartbeatRuns.status, "queued"),
+          lt(heartbeatRuns.createdAt, new Date(now.getTime() - maxQueuedAgeMs)),
+        ),
+      );
+
+    const maxQueuedAgeHours = maxQueuedAgeMs / (60 * 60 * 1000);
+    const maxQueuedAgeHoursLabel = Number.isInteger(maxQueuedAgeHours)
+      ? String(maxQueuedAgeHours)
+      : maxQueuedAgeHours.toFixed(2);
+    const queueExpiredMessage = `Cancelled because the run waited in queue longer than ${maxQueuedAgeHoursLabel} hours`;
+
+    for (const run of expiredQueuedRuns) {
+      // Guard the cancellation on the row still being "queued": another
+      // scheduler pass or a manual resume can claim this exact run (queued ->
+      // running) between the SELECT above and this UPDATE. Without the guard
+      // we would blindly stamp a now-running/finished run back to
+      // "cancelled" and cancel its wakeup out from under it. Only touch the
+      // wakeup and append the lifecycle event when the guarded update
+      // actually transitioned the row.
+      const cancelResult = await setRunStatusIfQueued(run.id, "cancelled", {
+        finishedAt: now,
+        error: queueExpiredMessage,
+        errorCode: "queue_expired",
+      });
+      if (!cancelResult.updated || !cancelResult.run) continue;
+      const cancelledRun = cancelResult.run;
+      await setWakeupStatus(cancelledRun.wakeupRequestId, "cancelled", {
+        finishedAt: now,
+        error: queueExpiredMessage,
+      });
+      await appendRunEvent(cancelledRun, await nextRunEventSeq(cancelledRun.id), {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "warn",
+        message: queueExpiredMessage,
+      });
+      reaped.push(cancelledRun.id);
     }
 
     if (reaped.length > 0) {
