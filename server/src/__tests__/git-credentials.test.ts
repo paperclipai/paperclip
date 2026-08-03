@@ -208,6 +208,12 @@ describe("scrubGitCredentialText", () => {
     );
   });
 
+  it("masks credential-bearing query parameters", () => {
+    expect(scrubGitCredentialText("https://github.com/a/b.git?access_token=ghs_secret&ref=main")).toBe(
+      "https://github.com/a/b.git?access_token=***&ref=main",
+    );
+  });
+
   it("leaves credential-free text unchanged", () => {
     expect(scrubGitCredentialText("fatal: repository not found")).toBe("fatal: repository not found");
   });
