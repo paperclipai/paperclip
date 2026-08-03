@@ -1214,20 +1214,30 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     return { ...fixture, agent, run };
   }
 
+  async function countRunsForAgent(agentId: string) {
+    return db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(eq(heartbeatRuns.agentId, agentId))
+      .then((rows) => rows.length);
+  }
+
   it("records the computed timeout reason when an opted-out local adapter times out cleanly", async () => {
-    const { agent, run } = await runQueuedTimeoutFixture({
+    const { agent, agentId, run } = await runQueuedTimeoutFixture({
       adapterConfig: { keepIdleOnTimeout: false },
     });
 
     expect(run).toMatchObject({ status: "timed_out", error: "Timed out", errorCode: "timeout" });
     expect(agent).toMatchObject({ status: "error", errorReason: "Timed out" });
+    expect(await countRunsForAgent(agentId)).toBe(1);
   });
 
   it("keeps sessioned local adapters idle through their first three consecutive timeouts", async () => {
-    const { agent } = await runQueuedTimeoutFixture();
+    const { agent, agentId } = await runQueuedTimeoutFixture();
 
     expect(agent).toMatchObject({ status: "idle" });
     expect(agent?.metadata).toMatchObject({ consecutiveTimeoutCount: 1 });
+    expect(await countRunsForAgent(agentId)).toBe(1);
   });
 
   it("latches a sessioned local adapter in error on its fourth consecutive timeout", async () => {

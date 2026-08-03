@@ -16108,7 +16108,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
         (issue.status === "todo" || issue.status === "in_progress") &&
         !issue.assigneeUserId &&
         issue.assigneeAgentId === run.agentId &&
-        (run.status === "failed" || run.status === "timed_out" || run.status === "cancelled");
+        // A timeout has its own availability policy in finalizeAgentStatus:
+        // sessioned local adapters remain idle through the bounded timeout
+        // streak, so their normal scheduler can retry them on the next tick.
+        // Do not promote an immediate issue-continuation run here, because that
+        // new run claims the agent as running before the terminal timeout state
+        // can be observed or persisted.
+        (run.status === "failed" || run.status === "cancelled");
 
       if (!issueNeedsImmediateRecovery) {
         return { kind: "released" as const };
