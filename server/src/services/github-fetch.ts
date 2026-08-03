@@ -16,6 +16,17 @@ export function resolveRawGitHubUrl(hostname: string, owner: string, repo: strin
     : `https://${hostname}/raw/${owner}/${repo}/${ref}/${p}`;
 }
 
+/**
+ * Build the Authorization header for an authenticated GitHub request. Returns an
+ * empty object when no token is provided so callers can spread it unconditionally
+ * and preserve unauthenticated behavior for public repositories. The token is only
+ * ever placed in a header, never in a URL or error message.
+ */
+export function gitHubAuthHeaders(token?: string | null): Record<string, string> {
+  const trimmed = token?.trim();
+  return trimmed ? { authorization: `Bearer ${trimmed}` } : {};
+}
+
 export async function ghFetch(url: string, init?: RequestInit): Promise<Response> {
   try {
     return await fetch(url, init);
