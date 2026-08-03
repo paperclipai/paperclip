@@ -65,6 +65,46 @@ describe("isClaudeContextOverflowError", () => {
     expect(isClaudeContextOverflowError(overflowResult)).toBe(true);
   });
 
+  it("classifies the full result payload the CLI actually emits", () => {
+    // Captured verbatim from a run log. Two fields matter: `subtype` is
+    // "success" — so it carries no signal — and `is_error` is true, which is
+    // what puts the run behind execute.ts's `failed` gate in the first place.
+    expect(
+      isClaudeContextOverflowError({
+        type: "result",
+        subtype: "success",
+        is_error: true,
+        stop_reason: "stop_sequence",
+        terminal_reason: "blocking_limit",
+        num_turns: 1,
+        total_cost_usd: 0,
+        result: "Prompt is too long",
+      }),
+    ).toBe(true);
+  });
+
+  it("reads free-form result text and therefore must stay behind the failure gate", () => {
+    // This classifier is text-only by design — like the sibling deterministic
+    // classifiers, it never reads stdout, which is what keeps it immune to the
+    // rate-limit telemetry below. The price is that it cannot tell an overflow
+    // apart from an agent *writing about* an overflow, so execute.ts only
+    // consults it once the run has already failed.
+    //
+    // The gate costs nothing in coverage: every payload carrying
+    // `is_error: true` already makes `failed` true, so the only shape it
+    // excludes is a run the CLI reported as fully clean (exit 0, is_error
+    // false) — where the result text is the agent's own message, not an error.
+    // Not hypothetical: in a 1000-run sample from one fleet, 7 *succeeded*
+    // runs had this phrase in their final message.
+    expect(
+      isClaudeContextOverflowError({
+        subtype: "success",
+        result:
+          "The no-comment streak was caused by a session-pin loop (`Prompt is too long`), not genuine inactivity.",
+      }),
+    ).toBe(true);
+  });
+
   it("classifies the API-shaped context limit errors", () => {
     expect(
       isClaudeContextOverflowError({
