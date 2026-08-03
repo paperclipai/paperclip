@@ -303,10 +303,12 @@ function exhaustedMonitorClearReason(input: {
   if (timeoutAt && input.now.getTime() >= timeoutAt.getTime()) {
     return "timeout_exceeded";
   }
-  // A monitor that names neither bound still terminates: recurring re-arm means
-  // an unbounded monitor would otherwise wake its assignee forever.
-  const maxAttempts = input.monitor.maxAttempts ?? DEFAULT_ISSUE_MONITOR_MAX_ATTEMPTS;
-  if (input.attemptCount >= maxAttempts) {
+  // A monitor that names no bound at all still terminates: recurring re-arm
+  // means it would otherwise wake its assignee forever. A timeoutAt is already
+  // a bound, so the default ceiling must not cut that monitor short.
+  const maxAttempts = input.monitor.maxAttempts ??
+    (timeoutAt ? null : DEFAULT_ISSUE_MONITOR_MAX_ATTEMPTS);
+  if (maxAttempts !== null && input.attemptCount >= maxAttempts) {
     return "max_attempts_exhausted";
   }
   return null;

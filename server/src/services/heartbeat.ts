@@ -7668,10 +7668,13 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       return "timeout_exceeded";
     }
     // Monitors re-arm themselves after each dispatch, so the attempt ceiling is
-    // what stops an otherwise unbounded monitor. Falling back to the default
-    // keeps that termination guarantee for policies that name neither bound.
-    const maxAttempts = input.monitor?.maxAttempts ?? DEFAULT_ISSUE_MONITOR_MAX_ATTEMPTS;
-    if (input.nextAttemptCount > maxAttempts) {
+    // what stops an otherwise unbounded monitor. The default only applies when
+    // the policy names no bound at all — a timeoutAt already terminates the
+    // monitor, and cutting it off at the ceiling would end it before its
+    // declared deadline.
+    const maxAttempts = input.monitor?.maxAttempts ??
+      (timeoutAt ? null : DEFAULT_ISSUE_MONITOR_MAX_ATTEMPTS);
+    if (maxAttempts !== null && input.nextAttemptCount > maxAttempts) {
       return "max_attempts_exhausted";
     }
     return null;
