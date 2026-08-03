@@ -68,6 +68,7 @@ const originalNodeVersion = process.version;
 const originalPaperclipHome = process.env.PAPERCLIP_HOME;
 const originalPaperclipInstanceId = process.env.PAPERCLIP_INSTANCE_ID;
 const originalCodexHome = process.env.CODEX_HOME;
+const originalOpenAiApiKey = process.env.OPENAI_API_KEY;
 
 // Older/newer ISO timestamps for the copy-back monotonic (strictly-newer)
 // decision predicate, plus a subscription-shaped auth.json fixture matching the
@@ -118,6 +119,8 @@ afterEach(async () => {
   else process.env.PAPERCLIP_INSTANCE_ID = originalPaperclipInstanceId;
   if (originalCodexHome === undefined) delete process.env.CODEX_HOME;
   else process.env.CODEX_HOME = originalCodexHome;
+  if (originalOpenAiApiKey === undefined) delete process.env.OPENAI_API_KEY;
+  else process.env.OPENAI_API_KEY = originalOpenAiApiKey;
   await Promise.all(tempRoots.splice(0).map((root) => fs.rm(root, { recursive: true, force: true })));
 });
 
@@ -517,6 +520,99 @@ describe("codex_local ACP lane", () => {
       expect.objectContaining({
         code: "codex_acp_runtime_scaffold",
         level: "info",
+      }),
+    );
+  });
+
+  it("detects shared managed Codex auth in ACP environment tests", async () => {
+    const root = await makeTempRoot("paperclip-codex-acp-managed-auth-");
+    const commandPath = path.join(root, "bin", "codex-acp");
+    const sharedCodexHome = path.join(root, "shared-codex-home");
+    const managedAgentHome = path.join(
+      root,
+      "paperclip-home",
+      "instances",
+      "test",
+      "companies",
+      "company-1",
+      "agents",
+      "agent-1",
+      "codex-home",
+    );
+    await fs.mkdir(path.dirname(commandPath), { recursive: true });
+    await fs.writeFile(commandPath, "#!/usr/bin/env sh\n", "utf8");
+    await fs.mkdir(sharedCodexHome, { recursive: true });
+    await fs.writeFile(path.join(sharedCodexHome, "auth.json"), '{"OPENAI_API_KEY":"sk-shared"}', "utf8");
+    setNodeVersion("v22.13.0");
+    process.env.CODEX_HOME = sharedCodexHome;
+    delete process.env.OPENAI_API_KEY;
+
+    const result = await testCodexAcpEnvironment({
+      adapterType: "codex_local",
+      companyId: "company-1",
+      config: {
+        engine: "acp",
+        cwd: root,
+        agentCommand: commandPath,
+        env: { CODEX_HOME: managedAgentHome, OPENAI_API_KEY: "" },
+      },
+    });
+
+    expect(result.status).toBe("pass");
+    expect(result.checks).toContainEqual(
+      expect.objectContaining({
+        code: "codex_acp_native_auth_detected",
+        level: "info",
+        detail: expect.stringContaining(sharedCodexHome),
+      }),
+    );
+    expect(result.checks).not.toContainEqual(
+      expect.objectContaining({
+        code: "codex_acp_credentials_missing",
+      }),
+    );
+  });
+
+  it("explains the Paperclip server credential boundary when ACP auth is missing", async () => {
+    const root = await makeTempRoot("paperclip-codex-acp-missing-auth-");
+    const commandPath = path.join(root, "bin", "codex-acp");
+    const sharedCodexHome = path.join(root, "shared-codex-home");
+    const managedAgentHome = path.join(
+      root,
+      "paperclip-home",
+      "instances",
+      "test",
+      "companies",
+      "company-1",
+      "agents",
+      "agent-1",
+      "codex-home",
+    );
+    await fs.mkdir(path.dirname(commandPath), { recursive: true });
+    await fs.writeFile(commandPath, "#!/usr/bin/env sh\n", "utf8");
+    await fs.mkdir(sharedCodexHome, { recursive: true });
+    setNodeVersion("v22.13.0");
+    process.env.CODEX_HOME = sharedCodexHome;
+    delete process.env.OPENAI_API_KEY;
+
+    const result = await testCodexAcpEnvironment({
+      adapterType: "codex_local",
+      companyId: "company-1",
+      config: {
+        engine: "acp",
+        cwd: root,
+        agentCommand: commandPath,
+        env: { CODEX_HOME: managedAgentHome, OPENAI_API_KEY: "" },
+      },
+    });
+
+    expect(result.status).toBe("warn");
+    expect(result.checks).toContainEqual(
+      expect.objectContaining({
+        code: "codex_acp_credentials_missing",
+        level: "warn",
+        message: expect.stringContaining("Paperclip server"),
+        hint: expect.stringContaining("separate Codex/chat session"),
       }),
     );
   });

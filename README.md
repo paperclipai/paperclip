@@ -409,6 +409,8 @@ By default, agents run on scheduled heartbeats and event-based triggers (task as
 pnpm dev              # Full dev (API + UI, watch mode)
 pnpm dev:once         # Full dev without file watching
 pnpm dev:server       # Server only
+pnpm dev:mobile       # Serve prebuilt UI on :3101 for phones/tablets (proxies /api → :3100)
+pnpm dev:both         # Run `pnpm dev` and `pnpm dev:mobile` together
 pnpm build            # Build all
 pnpm typecheck        # Type checking
 pnpm test             # Cheap default test run (Vitest only)

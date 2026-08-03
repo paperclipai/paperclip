@@ -1054,6 +1054,25 @@ describe("inbox helpers", () => {
     ).toEqual(["inbox", "archived", "other"]);
   });
 
+  it("omits empty archived and other ungrouped search sections", () => {
+    expect(
+      buildGroupedInboxSections(
+        [],
+        "none",
+        {},
+        { keyPrefix: "archived-search:", searchSection: "archived" },
+      ),
+    ).toEqual([]);
+    expect(
+      buildGroupedInboxSections(
+        [],
+        "none",
+        {},
+        { keyPrefix: "other-search:", searchSection: "other" },
+      ),
+    ).toEqual([]);
+  });
+
   it("defaults the remembered inbox tab to mine and persists all", () => {
     localStorage.clear();
     expect(loadLastInboxTab()).toBe("mine");

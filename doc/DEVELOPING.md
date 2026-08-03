@@ -45,6 +45,15 @@ This starts:
 
 Issue execution may also use project execution workspace policies and workspace runtime services for per-project worktrees, preview servers, and managed dev commands. Configure those through the project workspace/runtime surfaces rather than starting long-running unmanaged processes when a task needs a reusable service.
 
+### Mobile-friendly preview (`pnpm dev:mobile`)
+
+The vite dev server serves an unbundled module graph. This is fast to reload on a local machine but too heavy for phones and tablets on slow links (airplane wifi, mobile data, distant tailnet peers). `pnpm dev:mobile` builds the UI once and serves the small production bundle on port `3101` via `vite preview`, proxying `/api` requests to the dev API on `3100`.
+
+- `pnpm dev:mobile` — build the UI and start the preview server on `:3101`. Rebuild manually to pick up UI source changes.
+- `pnpm dev:both` — run `pnpm dev` and `pnpm dev:mobile` together with prefixed output and shared signal handling.
+
+The preview server binds `0.0.0.0` and accepts any Host, so a tailnet or LAN address (e.g. `http://<host>.ts.net:3101/`) works out of the box. The `/api` proxy sets `x-forwarded-host` and `x-forwarded-proto`, which the server's board mutation guard uses to trust the browser's Origin — mutations from `:3101` succeed against the API on `:3100` without further configuration. An HTTPS tunnel in front of the preview server (ngrok, tailscale funnel) is also supported: the tunnel's `x-forwarded-proto` header is preserved when set.
+
 ## Storybook
 
 The board UI Storybook keeps stories and Storybook config under `ui/storybook/` so component review files stay out of the app source routes.

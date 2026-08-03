@@ -57,8 +57,8 @@ interface IssueRowProps {
    * not crossed out by it.
    */
   chevronInGuide?: boolean;
-  /** Suppress the row divider (parents with expanded children keep visual attachment to their subtree). */
-  hideDivider?: boolean;
+  /** Opt in to a bottom divider on this row (default off; used by views that intentionally keep separators). */
+  showDivider?: boolean;
 }
 
 export function IssueRow({
@@ -86,7 +86,7 @@ export function IssueRow({
   onMouseEnter,
   treeGuides = 0,
   chevronInGuide = false,
-  hideDivider = false,
+  showDivider = false,
 }: IssueRowProps) {
   const issuePathId = issue.identifier ?? issue.id;
   const identifier = issue.identifier ?? issue.id.slice(0, 8);
@@ -170,6 +170,13 @@ export function IssueRow({
         // when scrubbing the mouse fast across the list.
         "group relative flex items-start gap-2 rounded-lg py-2.5 pl-2 pr-3 text-sm no-underline text-inherit sm:items-center sm:py-2 sm:pl-1",
         "[&_button]:relative [&_button]:z-10",
+        // Divider + hover/selected/checklist wash live on the ROOT row band so
+        // the tint paints BEHIND the content and `last:border-b-0` matches the
+        // real last row. Keeping these on the overlay Link (PR #10526) made the
+        // last row keep its border and the hover wash paint over the text.
+        showDivider && "border-b border-border last:border-b-0",
+        selected ? "hover:bg-transparent" : "hover:bg-accent/50",
+        checklistCurrentStep ? "bg-primary/5" : null,
         className,
       )}
     >
@@ -183,11 +190,9 @@ export function IssueRow({
         aria-current={checklistCurrentStep ? "step" : undefined}
         onClickCapture={() => rememberIssueDetailLocationState(issuePathId, detailState)}
         className={cn(
+          // Overlay Link keeps ONLY positioning + focus ring so header controls
+          // stay clickable above it; visual washes belong on the root above.
           "absolute inset-0 rounded-lg no-underline text-inherit focus-visible:z-10 focus-visible:outline-none focus-visible:ring-(length:--rad-3) focus-visible:ring-ring",
-          !hideDivider && "border-b border-border last:border-b-0",
-          selected ? "hover:bg-transparent" : "hover:bg-accent/50",
-          checklistCurrentStep ? "bg-primary/5" : null,
-          className,
         )}
       >
         <span className="sr-only">Open {identifier}: {issue.title}</span>

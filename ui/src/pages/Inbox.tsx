@@ -2689,7 +2689,6 @@ export function Inbox() {
                       issue={issue}
                       issueLinkState={issueLinkState}
                       treeGuides={depth}
-                      hideDivider={hasChildren && isExpanded}
                       selected={selected}
                       className={
                         isArchiving
