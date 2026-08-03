@@ -1148,8 +1148,9 @@ function isCompatibleSession(
 function buildSessionParams(input: {
   prepared: AcpxPreparedRuntime;
   handle: AcpRuntimeHandle;
+  resolvedModelId?: string | null;
 }): Record<string, unknown> {
-  const { prepared, handle } = input;
+  const { prepared, handle, resolvedModelId } = input;
   return {
     sessionKey: prepared.sessionKey,
     runtimeSessionName: handle.runtimeSessionName,
@@ -1170,6 +1171,7 @@ function buildSessionParams(input: {
     ...(prepared.workspaceRepoUrl ? { repoUrl: prepared.workspaceRepoUrl } : {}),
     ...(prepared.workspaceRepoRef ? { repoRef: prepared.workspaceRepoRef } : {}),
     ...(prepared.remoteExecutionIdentity ? { remoteExecution: prepared.remoteExecutionIdentity } : {}),
+    ...(resolvedModelId ? { resolvedModelId } : {}),
   };
 }
 
@@ -3081,10 +3083,15 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
     const textParts: string[] = [];
     let eventBreakdown: AcpRuntimeUsageBreakdown | null = null;
     let eventCostUsd: number | null = null;
+    // Track the last known model id so error-path returns can attribute tokens
+    // to the correct model even when postTurnStatus is unavailable (e.g. a
+    // process crash that fires the catch block before the turn completes).
+    let lastKnownModelId: string | null = null;
     try {
       // Snapshot pre-turn usage so cumulative agent-reported cost can be
       // attributed to this run alone.
       const preTurnStatus = await readRuntimeStatus(runtime, sessionHandle);
+      lastKnownModelId = preTurnStatus?.models?.currentModelId ?? null;
       const timeoutMs = prepared.timeoutSec > 0 ? prepared.timeoutSec * 1000 : undefined;
       controller = new AbortController();
       if (timeoutMs) {
@@ -3216,7 +3223,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         sessionParams: buildSessionParams({ prepared, handle: sessionHandle }),
         sessionDisplayId: sessionHandle.agentSessionId ?? sessionHandle.backendSessionId ?? sessionHandle.runtimeSessionName,
         ...billingFields,
-        model: prepared.requestedModel || null,
+        model: postTurnStatus?.models?.currentModelId || lastKnownModelId || prepared.requestedModel || null,
         ...(turnUsage.usage ? { usage: turnUsage.usage, usageBasis: "per_run" as const } : {}),
         costUsd: turnUsage.costUsd,
         resultJson: {
@@ -3272,7 +3279,7 @@ export function createAcpxEngineExecutor(deps: AcpxEngineExecutorOptions = {}) {
         errorCode: timedOut ? "acpx_timeout" : classified.errorCode,
         errorMeta: classified.errorMeta,
         ...billingFields,
-        model: prepared.requestedModel || null,
+        model: lastKnownModelId || prepared.requestedModel || null,
         clearSession: clearSession || timedOut,
         resultJson: { phase: "turn" },
         summary: message,
