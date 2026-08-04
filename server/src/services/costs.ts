@@ -2,6 +2,7 @@ import { and, desc, eq, gte, isNotNull, isNull, lt, lte, sql } from "drizzle-orm
 import { alias } from "drizzle-orm/pg-core";
 import type { Db } from "@paperclipai/db";
 import { activityLog, agents, companies, costEvents, heartbeatRuns, issues, projects } from "@paperclipai/db";
+import { SUBSCRIPTION_BILLING_TYPES } from "@paperclipai/shared";
 import { notFound, unprocessable } from "../errors.js";
 import { budgetService, type BudgetServiceHooks } from "./budgets.js";
 import { visibleIssueCondition } from "./issue-visibility.js";
@@ -12,7 +13,6 @@ export interface CostDateRange {
 }
 
 const METERED_BILLING_TYPE = "metered_api";
-const SUBSCRIPTION_BILLING_TYPES = ["subscription_included", "subscription_overage"] as const;
 
 function sumAsNumber(
   column:
@@ -530,6 +530,7 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
       if (range?.to) conditions.push(lte(costEvents.occurredAt, range.to));
 
       const costCentsExpr = sumAsNumber(costEvents.costCents);
+      const subscriptionRateCardExpr = sql<number>`coalesce(sum(case when ${costEvents.billingType} in (${sql.join(SUBSCRIPTION_BILLING_TYPES.map((value) => sql`${value}`), sql`, `)}) then ${costEvents.rateCardCents} else 0 end), 0)::double precision`;
 
       return db
         .select({
@@ -541,13 +542,17 @@ export function costService(db: Db, budgetHooks: BudgetServiceHooks = {}) {
           outputTokens: sumAsNumber(costEvents.outputTokens),
           cacheWriteTokens: sumAsNumber(costEvents.cacheWriteTokens),
           rateCardCents: sumAsNumber(costEvents.rateCardCents),
+          subscriptionRateCardCents: subscriptionRateCardExpr,
         })
         .from(costEvents)
         .leftJoin(runProjectLinks, eq(costEvents.heartbeatRunId, runProjectLinks.runId))
         .innerJoin(projects, sql`${projects.id} = ${effectiveProjectId}`)
         .where(and(...conditions, sql`${effectiveProjectId} is not null`))
         .groupBy(effectiveProjectId, projects.name)
-        .orderBy(desc(costCentsExpr));
+        // Rank on cash + rate card. Ordering on cash alone sent every
+        // subscription-funded project to the bottom at $0.00, which is the
+        // ranking this whole change exists to stop telling.
+        .orderBy(desc(sql`${costCentsExpr} + ${subscriptionRateCardExpr}`));
     },
   };
 }
