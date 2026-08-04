@@ -365,6 +365,44 @@ export function runWithoutActiveStep<T>(work: () => T): T {
 }
 
 /**
+ * Build the minimal active step context that the store publishes. The step path
+ * and `runWithRuntimeParent` share this builder, so both write the same shape.
+ */
+function buildActiveStepContext(
+  span: StartupSpan,
+  parentContext: StartupSpanContext,
+  criticalPath: boolean,
+): ActiveStepContext {
+  return { span, parentContext, criticalPath };
+}
+
+/**
+ * Run `work` under a given parent-context token, then restore the previous
+ * store. A run-time exec that reads `getActiveStepContext()` inside `work`
+ * parents its span to `parentContext`, not to a startup step. The store carries
+ * the no-op span, because there is no open step span at run time. It sets
+ * `criticalPath` to `false`, because a run-time exec is not on the startup
+ * critical path.
+ *
+ * When `parentContext` is `undefined`, the helper empties the store, exactly
+ * like `runWithoutActiveStep`. Inner code then reads `null` and opens an
+ * unparented span.
+ *
+ * The helper forwards only the opaque token, so this package stays free of
+ * `@opentelemetry/api`.
+ */
+export function runWithRuntimeParent<T>(
+  parentContext: StartupSpanContext,
+  work: () => T,
+): T {
+  if (parentContext === undefined) {
+    return activeStepContextStorage.run(undefined, work);
+  }
+  const activeStep = buildActiveStepContext(NOOP_SPAN, parentContext, false);
+  return activeStepContextStorage.run(activeStep, work);
+}
+
+/**
  * Set a numeric span attribute only when the value is a finite number. A reader
  * that returns `undefined` (the counter is unavailable) yields no attribute,
  * never `NaN` and never a misleading `0`. This mirrors the host counter guard
@@ -519,11 +557,11 @@ export async function measureStartupStep<T>(
   } catch {
     stepChildContext = undefined;
   }
-  const activeStep: ActiveStepContext = {
+  const activeStep = buildActiveStepContext(
     span,
-    parentContext: stepChildContext,
-    criticalPath: options.criticalPath ?? true,
-  };
+    stepChildContext,
+    options.criticalPath ?? true,
+  );
 
   let stepFailed = false;
   try {
