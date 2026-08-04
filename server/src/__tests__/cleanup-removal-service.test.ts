@@ -297,6 +297,9 @@ describeEmbeddedPostgres("cleanup removal services", () => {
     const { companyId, runId } = await seedFixture();
     await db.update(companies).set({ status: "archived" }).where(eq(companies.id, companyId));
     const order: string[] = [];
+    const drainActiveRunExecutions = vi.fn(async () => {
+      order.push("global-drain");
+    });
     const waitForRunExecutionDrain = vi.fn(async () => {
       order.push("drain");
     });
@@ -305,12 +308,14 @@ describeEmbeddedPostgres("cleanup removal services", () => {
     });
 
     const removed = await companyService(db, {
+      drainActiveRunExecutions,
       removeManagedFiles,
       waitForRunExecutionDrain,
     }).remove(companyId, { deleteFiles: true });
 
+    expect(drainActiveRunExecutions).toHaveBeenCalledOnce();
     expect(waitForRunExecutionDrain).toHaveBeenCalledWith(runId);
-    expect(order).toEqual(["drain", "cleanup"]);
+    expect(order).toEqual(["global-drain", "drain", "cleanup"]);
     expect(removed?.fileCleanup).toBe("succeeded");
   });
 
