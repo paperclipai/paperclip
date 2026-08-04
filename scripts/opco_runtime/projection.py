@@ -28,10 +28,13 @@ def missing_artifacts(runtime_dir: Path = RUNTIME_DIR) -> list[str]:
 def create_repair_issue(missing: list[str]) -> None:
     """Create an idempotent platform repair issue without reading secret values."""
     api_url = os.environ.get("PAPERCLIP_API_URL", "").rstrip("/")
+    if api_url.endswith("/api"):
+        api_url = api_url[:-4]
     api_key = os.environ.get("PAPERCLIP_API_KEY")
     company_id = os.environ.get("PAPERCLIP_COMPANY_ID")
     run_id = os.environ.get("PAPERCLIP_RUN_ID")
-    if not all((api_url, api_key, company_id, run_id)):
+    agent_id = os.environ.get("PAPERCLIP_AGENT_ID")
+    if not all((api_url, api_key, company_id, run_id, agent_id)):
         print("repair issue not created: Paperclip runtime metadata unavailable", file=sys.stderr)
         return
 
@@ -43,6 +46,7 @@ def create_repair_issue(missing: list[str]) -> None:
         ),
         "priority": "high",
         "status": "todo",
+        "assigneeAgentId": agent_id,
         "idempotencyKey": "platform:opco-runtime-projection:repair:v1",
     }
     request = urllib.request.Request(

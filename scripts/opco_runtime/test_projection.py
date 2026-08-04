@@ -40,6 +40,29 @@ class ProjectionTests(unittest.TestCase):
             self.assertFalse(marker.exists())
             self.assertIn("projection incomplete", result.stderr)
 
+    def test_dispatches_bounded_kiss_and_capital_commands(self) -> None:
+        for company in ("kiss", "capital"):
+            result = subprocess.run(
+                [sys.executable, str(RUNTIME / "dispatch.py"), "--company", company,
+                 "--routine-command", sys.executable, "-c", "print('bounded routine ok')"],
+                capture_output=True,
+                text=True,
+            )
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn("bounded routine ok", result.stdout)
+
+    def test_swap_back_and_mc_inbound_are_gated_and_reachable(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            payload = Path(temp) / "payload.json"
+            payload.write_text('{"company":"kiss"}')
+            for script, args in (
+                ("swap_back.py", ["--swap-command", sys.executable, "-c", "print('swap ok')"]),
+                ("mc_inbound.py", ["--payload", str(payload), "--dispatch-command", sys.executable,
+                                   "-c", "print('inbound ok')"]),
+            ):
+                result = subprocess.run([sys.executable, str(RUNTIME / script), *args], capture_output=True, text=True)
+                self.assertEqual(result.returncode, 0, result.stderr)
+
 
 if __name__ == "__main__":
     unittest.main()
