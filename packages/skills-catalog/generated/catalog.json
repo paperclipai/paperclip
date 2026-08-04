@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "packageName": "@paperclipai/skills-catalog",
   "packageVersion": "0.3.1",
-  "generatedAt": "2026-07-28T22:35:25.645Z",
+  "generatedAt": "2026-08-04T18:54:11.791Z",
   "skills": [
     {
       "id": "paperclipai:bundled:docs:doc-maintenance",
@@ -32,11 +32,11 @@
         {
           "path": "SKILL.md",
           "kind": "skill",
-          "sizeBytes": 4478,
-          "sha256": "fb0353386c5e5e5e13bcbb3233f044e3dccecf371f429d6328f26c26d7cb6169"
+          "sizeBytes": 4553,
+          "sha256": "57e4886f07b13f24edfb63de660018fb65966d24ebc87a6a53c9cec3dbcb25e3"
         }
       ],
-      "contentHash": "sha256:2e02299210fd17c1fe1867b4ee8c144a11b6fe1fe481f83b8268cfbaaf10f9aa"
+      "contentHash": "sha256:1342a654c400bd5dc5756340bda7883b448fcfb9e56f9dace0473016f781f374"
     },
     {
       "id": "paperclipai:bundled:paperclip-operations:issue-triage",
@@ -67,11 +67,11 @@
         {
           "path": "SKILL.md",
           "kind": "skill",
-          "sizeBytes": 4042,
-          "sha256": "df5bdc8bf5e017b7ba5f70a4b5323fad51d0c323278f386580f26cf43ad09160"
+          "sizeBytes": 4116,
+          "sha256": "7ce619ff7c61fd2eaf650b352aac587190705412fdda3a4935b056c6d7403c25"
         }
       ],
-      "contentHash": "sha256:88dc13560371fb364963782cb4f6eeb4090fcde92ee3774479428ed6b90e11c1"
+      "contentHash": "sha256:3325f9ecf004298caea90a0ce500b71e21b5c7a231a1057c886ab3ddb024cada"
     },
     {
       "id": "paperclipai:bundled:paperclip-operations:reflection-coach",
@@ -102,11 +102,11 @@
         {
           "path": "SKILL.md",
           "kind": "skill",
-          "sizeBytes": 11837,
-          "sha256": "86d6e382c32c626213b46c010cc7fc1ec460821a8c777cfa5b8e86fa9d6a86b2"
+          "sizeBytes": 12039,
+          "sha256": "313e037ccf8c304920a0bafa695f71f8cb07ae441d625314105dafd668dbdd26"
         }
       ],
-      "contentHash": "sha256:1c7a82cd9638a1d845b238032da3ff4ad80c5b6a87dca46082f501fa4583db55"
+      "contentHash": "sha256:5c489e9517a303cbeb25b7eb15c47e5f9d3e41e797d591432c88fb4fceccb4c0"
     },
     {
       "id": "paperclipai:bundled:paperclip-operations:status-card-query",
@@ -137,11 +137,11 @@
         {
           "path": "SKILL.md",
           "kind": "skill",
-          "sizeBytes": 6368,
-          "sha256": "0c6140f51d503cbadc98723ce54c0def48e7e31ea159b0935b8ad6369291498a"
+          "sizeBytes": 6505,
+          "sha256": "f2c9c60ba25dcf6138fed3de0f73f959b1f6b1137062793b6e1dc529513d437b"
         }
       ],
-      "contentHash": "sha256:2b6e53bf8491f027afdbd6961ad84f677cfd385a0a6a73616ea84111ca8886ed"
+      "contentHash": "sha256:7d7c18469ea2e055062b575180b09d9f506bd9b97ce520dd3c997174401758bf"
     },
     {
       "id": "paperclipai:bundled:paperclip-operations:summarize-status",
@@ -172,11 +172,11 @@
         {
           "path": "SKILL.md",
           "kind": "skill",
-          "sizeBytes": 8682,
-          "sha256": "c5f459ced4e97e6ae33c3ffbe7b3fb7d4c1fe7bfb0121187f0c2f9000a670b37"
+          "sizeBytes": 8802,
+          "sha256": "162a3a646a52697b17c5560765bd5635bfc0e140a86b3aa91a8b154dd7272620"
         }
       ],
-      "contentHash": "sha256:32d2f231a35fc3a658b244f13dd726b2f2bc642db6d3512559fdf9a2b680838d"
+      "contentHash": "sha256:2f8e3bb11f7e11acaea0055476fae55ed53192335fb9ae578f60034107b5c665"
     },
     {
       "id": "paperclipai:bundled:paperclip-operations:task-planning",
@@ -207,11 +207,11 @@
         {
           "path": "SKILL.md",
           "kind": "skill",
-          "sizeBytes": 4938,
-          "sha256": "9c52a44a30ec8d306119da51bf298e9e3e6c382a9a9559ffd3054bf5e0c75f36"
+          "sizeBytes": 5022,
+          "sha256": "5d61ba7fa3601827eb9fb0beb6dc630ad1384d553facfd02d48be07d8bb821a2"
         }
       ],
-      "contentHash": "sha256:487c3116eead89fef4f71c984329c41836bd69951b7ef9ed8736c69435e02438"
+      "contentHash": "sha256:e6d7c05eb6eefbba687770a00bf19d4094d77f3b495a9cf1d2fa66619d448563"
     },
     {
       "id": "paperclipai:bundled:product:paperclip-capsules",
@@ -245,35 +245,35 @@
         {
           "path": "SKILL.md",
           "kind": "skill",
-          "sizeBytes": 5831,
-          "sha256": "dd659ccb46e105336eb00fbe689b1d5531347fc69493c3156390d40ee413c93e"
+          "sizeBytes": 5930,
+          "sha256": "11627a3fe84a97ec839f308b84d58c3552085fab378dabb1881c729b5d462511"
         },
         {
           "path": "references/generator-workflows.md",
           "kind": "reference",
-          "sizeBytes": 4356,
-          "sha256": "b5f72e5b6683e8f93f2d852e84c2cc19e6ab438b250bf777dfb2480dd4f6e1b6"
+          "sizeBytes": 4476,
+          "sha256": "cc4756cb494778c8514818659259ad93f642ef99c466ea379be1dedc13b8c591"
         },
         {
           "path": "references/hero-capsule-bank.md",
           "kind": "reference",
-          "sizeBytes": 5981,
-          "sha256": "ec3d34113aa7bb527560d1eb4d8ab7667c73e18284c85a2019122743a767525a"
+          "sizeBytes": 6170,
+          "sha256": "05d16a7408ef6fb3fcb35ce5eeba943ae2fb09fd846470b700c5997579c383f8"
         },
         {
           "path": "references/identicon-prototyper.md",
           "kind": "reference",
-          "sizeBytes": 6669,
-          "sha256": "0b19419efa1396a402097decabe24ea9ae649678569449c8ce855e0678df6bfe"
+          "sizeBytes": 6882,
+          "sha256": "8933c4bef80ddd67850b0ad0083688bf9ba46654d35845d33c5000bd127e67ab"
         },
         {
           "path": "references/individual-status-capsules.md",
           "kind": "reference",
-          "sizeBytes": 5031,
-          "sha256": "be1f2eccf96b4d2deefe45b3bc1dd0a3597278472c2ffedadc43c57161e9103d"
+          "sizeBytes": 5144,
+          "sha256": "532e1b1b3385041ec03e14c7ac88f75294f197d9634fdce4b2a84f08afa3baff"
         }
       ],
-      "contentHash": "sha256:a2b26cf6895affeeb70c85567a061094450a59bd3c4fdcf28ee65858599ac12c"
+      "contentHash": "sha256:d692e17867de66e701e757cb12312ffd87d09214098c903c7e940e511639d6e6"
     },
     {
       "id": "paperclipai:bundled:product:wireframe",
@@ -305,47 +305,95 @@
         {
           "path": "SKILL.md",
           "kind": "skill",
-          "sizeBytes": 11509,
-          "sha256": "6992047cc97b67211cc8c1183718ab9aa26b8afc34c70d54d20558c215daaf48"
+          "sizeBytes": 11702,
+          "sha256": "aef4aa71ac5b1cc5e911daf5e0bd5157bc61eb2693b3d39c96bc061c0939de7c"
         },
         {
           "path": "assets/site-template.html",
           "kind": "asset",
-          "sizeBytes": 14791,
-          "sha256": "8886ad77c386c17b0457f11624aab136c33db7f28dcd6f10fc18e9d833d0950f"
+          "sizeBytes": 15147,
+          "sha256": "1a8f00bf7cfdc6ad8190b1384997ccb7d932c267d25e4bacb7292e7a18d22dea"
         },
         {
           "path": "assets/template-mobile.svg",
           "kind": "asset",
-          "sizeBytes": 925,
-          "sha256": "dc32af257df1f986b87a7b30a6104de825057dc4d6f12b381f5a28308f0002f0"
+          "sizeBytes": 946,
+          "sha256": "ee8841865f83c2d44b39899b3b877fc3a25f85e90cab1acbefc56fac92d4f83d"
         },
         {
           "path": "assets/template.svg",
           "kind": "asset",
-          "sizeBytes": 1262,
-          "sha256": "63f8adb8eb4b21dea6fd442b9e9312704c419535eb577d4ef0bfb54410fd576b"
+          "sizeBytes": 1286,
+          "sha256": "a21daf45a4b4908a5d2eeafee44a4dd34543762b1cb4f3cb5b6be390e6ef23c9"
         },
         {
           "path": "references/components.md",
           "kind": "reference",
-          "sizeBytes": 14806,
-          "sha256": "4ce18f418d78b13cdfa6fe8070173044a631576cd2b999571e6703f58894496c"
+          "sizeBytes": 15288,
+          "sha256": "1fba5ad8e6f678ab01c1bb8af9f8c71a203c6b7fcefd267936951d2dd213be88"
         },
         {
           "path": "references/examples.md",
           "kind": "reference",
-          "sizeBytes": 16108,
-          "sha256": "18f486e95a578a50cf6c9f93394b82534392771320692e4876edf17054bfae55"
+          "sizeBytes": 16470,
+          "sha256": "07f4093670f9cdb4bb6a3f27d275bbe76c49e44c97e88c3f632f7a550ad3a7fc"
         },
         {
           "path": "references/grid-system.md",
           "kind": "reference",
-          "sizeBytes": 4581,
-          "sha256": "017260d2216859d57e5fa869e0efc6b88c7ed4d8a8a4f5af04fe89a3ef2445bd"
+          "sizeBytes": 4688,
+          "sha256": "fcb8010755fc443e6ab1a1de4fdaa5954908d7923db554677fadd71194a6cc19"
         }
       ],
-      "contentHash": "sha256:7106d84fc9db2053090f692706e41cfc586e7dd85a44f568e3319c4eefbdde46"
+      "contentHash": "sha256:8662f0aea696f150d57a9d49aa3865e990bc213e2386bc872ba1368a2c331094"
+    },
+    {
+      "id": "paperclipai:bundled:quality:browser-go-no-go",
+      "key": "paperclipai/bundled/quality/browser-go-no-go",
+      "kind": "bundled",
+      "category": "quality",
+      "slug": "browser-go-no-go",
+      "name": "browser-go-no-go",
+      "description": "Run a deterministic Paperclip Browser GO/NO-GO review for UI-visible work. Use when QA must launch the isolated browser context, exercise user journeys, capture screenshot/DOM evidence, classify each journey pass/fail/quarantined, and emit a machine-readable verdict record for Security or release handoff.",
+      "path": "catalog/bundled/quality/browser-go-no-go",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "markdown_only",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "qa",
+        "engineer",
+        "security"
+      ],
+      "requires": [],
+      "tags": [
+        "qa",
+        "browser",
+        "go-no-go",
+        "evidence",
+        "verdict"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 4703,
+          "sha256": "b1627fb288da412f3418d01bd882a3163173a5ee1fbe8c28d09ad7022ef67106"
+        },
+        {
+          "path": "references/verdict-example.json",
+          "kind": "reference",
+          "sizeBytes": 1699,
+          "sha256": "0b19d8a592057d40428afdbe4de0f735b2e06e51d3fa12402942b01dde2b34dc"
+        },
+        {
+          "path": "references/verdict-schema.json",
+          "kind": "reference",
+          "sizeBytes": 5468,
+          "sha256": "7b34317f867c80e8adaccec5a42a7b2fd71456b9d9f5c82c1d24041a1d6f968e"
+        }
+      ],
+      "contentHash": "sha256:1bec4ca03a1064e963c0c6491b505c3cc288cf5587a3c8a18c44cdc9df028fc5"
     },
     {
       "id": "paperclipai:bundled:quality:qa-acceptance",
@@ -376,11 +424,11 @@
         {
           "path": "SKILL.md",
           "kind": "skill",
-          "sizeBytes": 3861,
-          "sha256": "c631b437ab26d104af6cdb963d8f679a9341439041b3cb3ec8835f4ff551b378"
+          "sizeBytes": 3954,
+          "sha256": "b34e40a4ed4ffa0a65ca3c942e820dbd8bee4e8ba89b1cc35cdd81c458535c3f"
         }
       ],
-      "contentHash": "sha256:32372dacaf62e93454b9855968c4eec96456ba78b509f450b3dfaa48e31ef356"
+      "contentHash": "sha256:a4399a3f57325f1efd3b37064c6c7313295e5081c823b21631f140f7e80ddb01"
     },
     {
       "id": "paperclipai:bundled:software-development:github-pr-workflow",
@@ -409,11 +457,11 @@
         {
           "path": "SKILL.md",
           "kind": "skill",
-          "sizeBytes": 3970,
-          "sha256": "f498ec4ebb1779dea37adeb1db8a8b22316282798e35ee02e2fc5ff627d7e261"
+          "sizeBytes": 4063,
+          "sha256": "30364fb90972118fc28c25cb0e5d6ff5777a40d2f143c2695bd13f09adc4e8a5"
         }
       ],
-      "contentHash": "sha256:90f278c89aa0711be150c1cd2456ca25620d02f36995b113ca9837d756a37f6c"
+      "contentHash": "sha256:328a47b66440e5318cc2511ca9c4ed7a05b3816c709b22fe6b5662bd1e45f48e"
     },
     {
       "id": "paperclipai:optional:browser:agent-browser",
@@ -444,11 +492,11 @@
         {
           "path": "SKILL.md",
           "kind": "skill",
-          "sizeBytes": 5133,
-          "sha256": "362f7b9d02297782bc6f0c093f495b8a0304a75bcf4b42e5c280a42b1f757b7d"
+          "sizeBytes": 5226,
+          "sha256": "a747752e8feb0bce65ed8fe8874a478f4d72505dad8509281393a8b6b4ec3d0e"
         }
       ],
-      "contentHash": "sha256:eabb2c9f7b5e1a27ebb1e05a711d61433a266478154cd671a685e99e67aadea2"
+      "contentHash": "sha256:0a193bd50a39c50364ad9849b0bd1b69ceb45c29f9a4f0ae6fd99dd9c9efd2d4"
     },
     {
       "id": "paperclipai:optional:content:release-announcement",
@@ -479,11 +527,11 @@
         {
           "path": "SKILL.md",
           "kind": "skill",
-          "sizeBytes": 6945,
-          "sha256": "d745cca96350518fabae14f5c407d779e1df2c5d091b5b4a5c55bb888b569e5f"
+          "sizeBytes": 7163,
+          "sha256": "d943494a9ca5afe93429f11a1fea62935a5f33eaa17fbc339691e483c3451993"
         }
       ],
-      "contentHash": "sha256:efe8ea89b552df95222609867c9c75f1b40e16f457d34e7e4a124f54daa33efa"
+      "contentHash": "sha256:2015db96bc7f480908b34dbca1ea983a1e7da5ad850966528b9d8e4ca216b087"
     },
     {
       "id": "paperclipai:optional:content:simplified-english",
@@ -515,11 +563,11 @@
         {
           "path": "SKILL.md",
           "kind": "skill",
-          "sizeBytes": 1578,
-          "sha256": "a0f7385599873910e2fabf400346016a07dacbc7ece27c0e3616ae8fd94ebfbb"
+          "sizeBytes": 1618,
+          "sha256": "1c4d662e7ca843d77c6340674e1b8298853c81b851df370d72e1399629dde81d"
         }
       ],
-      "contentHash": "sha256:642321f40d51e0125df05c6fbace49aeb07ec30392058756909c259c9c5eac6a"
+      "contentHash": "sha256:2edae5550096a411bbb0bc93f2c90da97cfbc7cfc716ab73003b9af6c58d47bb"
     },
     {
       "id": "paperclipai:optional:finance:ramp",
@@ -552,11 +600,11 @@
         {
           "path": "SKILL.md",
           "kind": "skill",
-          "sizeBytes": 7016,
-          "sha256": "698cd69ebf2f2481ed83c8e9477b56ae78288cc4c751d7d35f649ff2483802a3"
+          "sizeBytes": 7114,
+          "sha256": "3d6a18c4b968a463778d63552e76e65d5d9784d1328a742b9c462dae7f8fed2f"
         }
       ],
-      "contentHash": "sha256:276d85e98a4732f278204e26438aa95fde158dd2d15c1e427c4c7c7d492e769d"
+      "contentHash": "sha256:d7fa293de65b3e62460bd598331d81975f4900cc87cffe83dba8a4b8de711c6e"
     },
     {
       "id": "paperclipai:optional:product:design-critique",
@@ -587,11 +635,11 @@
         {
           "path": "SKILL.md",
           "kind": "skill",
-          "sizeBytes": 4851,
-          "sha256": "022e619baf6cc25725946279cb8052d22af090dd6cd6dc8c20f17867f71a5d8e"
+          "sizeBytes": 4972,
+          "sha256": "5a9b2e6124c1c6e9e8ab80bdba117de378f1ef4048803cf0cac3240a0994bf0c"
         }
       ],
-      "contentHash": "sha256:429f94df398a0697042b5bbe4755b1ff1a230aa5f41d99118ad37493ac65d21c"
+      "contentHash": "sha256:1e4b3ed46828038f8205fa6babc8d2d593e57e59f91019b7c4b6a4c3ef987b5c"
     },
     {
       "id": "paperclipai:optional:research:last30days",
