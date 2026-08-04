@@ -3426,6 +3426,39 @@ export function issueRoutes(
     await assertCanAssignTasks(req, companyId, assignmentScope);
   }
 
+  type BlockerEdgeMutationScope = {
+    addedBlockerIssueIds: string[];
+    removesExistingBlockers: boolean;
+  };
+
+  // Item 4 — the load-bearing guard for the widened blocker-edge grant.
+  //
+  // The grant is available ONLY when the request body mutates the blocker set
+  // and nothing else. Narrowing is proven here, at the one place that can see
+  // the whole body, so the ordering verb cannot smuggle a content edit
+  // alongside it. Anything this function does not positively recognise returns
+  // null, which leaves the ordinary `issue:mutate` boundary untouched.
+  function resolveBlockerEdgeMutationScope(
+    body: Record<string, unknown>,
+    currentBlockedByIssueIds: string[],
+  ): BlockerEdgeMutationScope | null {
+    const keys = Object.keys(body);
+    if (keys.length !== 1 || keys[0] !== "blockedByIssueIds") return null;
+    const requested = body.blockedByIssueIds;
+    if (!Array.isArray(requested)) return null;
+    if (!requested.every((value) => typeof value === "string" && value.length > 0)) return null;
+    const requestedIds = [...new Set(requested as string[])];
+    const current = new Set(currentBlockedByIssueIds);
+    return {
+      addedBlockerIssueIds: requestedIds.filter((id) => !current.has(id)),
+      // `blockedByIssueIds` is a whole-set replacement, so a caller adding one
+      // edge must resend the edges already there. Dropping an existing blocker
+      // is a different act from stating an ordering, and the ownership basis
+      // refuses it — see agentOwnsProposedBlockerIssues in authorization.ts.
+      removesExistingBlockers: currentBlockedByIssueIds.some((id) => !requestedIds.includes(id)),
+    };
+  }
+
   async function decideIssueAccess(
     req: Request,
     issue: {
@@ -3438,6 +3471,7 @@ export function issueRoutes(
       status: string;
     },
     action: "issue:comment" | "issue:read" | "issue:mutate",
+    blockerEdge?: BlockerEdgeMutationScope | null,
   ) {
     return access.decide({
       actor: req.actor,
@@ -3458,6 +3492,13 @@ export function issueRoutes(
         parentIssueId: issue.parentId,
         assigneeAgentId: issue.assigneeAgentId,
         assigneeUserId: issue.assigneeUserId,
+        ...(blockerEdge
+          ? {
+            blockerEdgeOnly: true,
+            addedBlockerIssueIds: blockerEdge.addedBlockerIssueIds,
+            blockerEdgeRemovesExisting: blockerEdge.removesExistingBlockers,
+          }
+          : {}),
       },
     });
   }
@@ -3515,6 +3556,13 @@ export function issueRoutes(
     return decision !== true && decision.reason === "allow_issue_mention_grant";
   }
 
+  // Either grant basis admits a blocker-edge write across the ownership
+  // boundary: the mention grant, and the ownership-of-the-added-blockers grant.
+  function isIssueBlockerEdgeGrantDecision(decision: true | Awaited<ReturnType<typeof decideIssueAccess>>) {
+    return decision !== true
+      && (decision.reason === "allow_issue_mention_grant" || decision.reason === "allow_issue_blocker_edge_grant");
+  }
+
   function isDirectParentReportDecision(decision: true | Awaited<ReturnType<typeof decideIssueAccess>>) {
     return decision !== true && decision.reason === "allow_direct_parent_report";
   }
@@ -3566,6 +3614,7 @@ export function issueRoutes(
       assigneeAgentId: string | null;
       assigneeUserId: string | null;
     },
+    blockerEdge?: BlockerEdgeMutationScope | null,
   ) {
     if (req.actor.type !== "agent") return true;
     const actorAgentId = req.actor.agentId;
@@ -3596,10 +3645,23 @@ export function issueRoutes(
       }
       return assertFreshTaskWatchdogSourceMutation(res, watchdogScope, issue);
     }
-    const boundaryDecision = await decideIssueAccess(req, issue, "issue:mutate");
+    const boundaryDecision = await decideIssueAccess(req, issue, "issue:mutate", blockerEdge);
     if (!boundaryDecision.allowed) {
       res.status(403).json({ error: "Issue is outside this actor's authorization boundary" });
       return false;
+    }
+    // A blocker-edge write admitted by the mention or ownership grant is, by
+    // construction, a write onto *another* agent's row — that is the whole point
+    // of the grant. The assignee-ownership boundary below would refuse exactly
+    // the case the grant exists to permit, so it is skipped here and only here.
+    // Nothing else is skipped: the body was already narrowed to
+    // `blockedByIssueIds` (resolveBlockerEdgeMutationScope), and the blocker
+    // validation, cycle checks and low-trust control-plane guard in the handler
+    // still run. The checked-out 409 is skipped with it: an ordering edge does
+    // not contend with the assignee's content edits, and refusing it while the
+    // target is in_progress would defeat the grant in its primary case.
+    if (blockerEdge && isIssueBlockerEdgeGrantDecision(boundaryDecision)) {
+      return { admittedByBlockerEdgeGrant: true };
     }
     if (issue.assigneeAgentId === null) {
       return true;
@@ -7821,7 +7883,31 @@ export function issueRoutes(
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
     if (!existing) return;
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
-    if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
+    // Resolve the blocker-edge seam before the mutation gate: the gate needs to
+    // know whether this body is a pure ordering write in order to admit the
+    // mention/ownership grant for it. A body carrying anything else resolves to
+    // null and takes the ordinary `issue:mutate` path unchanged.
+    const priorRelationsForBlockerEdge =
+      Array.isArray(req.body.blockedByIssueIds) && Object.keys(req.body).length === 1
+        ? await svc.getRelationSummaries(existing.id)
+        : null;
+    const blockerEdgeScope = priorRelationsForBlockerEdge
+      ? resolveBlockerEdgeMutationScope(
+        req.body as Record<string, unknown>,
+        priorRelationsForBlockerEdge.blockedBy.map((relation) => relation.id),
+      )
+      : null;
+    const mutationAllowed = await assertAgentIssueMutationAllowed(req, res, existing, blockerEdgeScope);
+    if (!mutationAllowed) return;
+    // A grant-admitted blocker write is authorized against the snapshot read
+    // above, outside the write transaction. Carry that snapshot down as a
+    // precondition so the whole-set replacement refuses rather than silently
+    // clobbering an edge that landed in between — the removal guard is only
+    // meaningful if the set it was computed against is still the set on the row.
+    const expectedCurrentBlockerIssueIds =
+      mutationAllowed !== true && mutationAllowed.admittedByBlockerEdgeGrant && priorRelationsForBlockerEdge
+        ? priorRelationsForBlockerEdge.blockedBy.map((relation) => relation.id)
+        : null;
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, existing, req.body))) return;
 
     const actor = getActorInfo(req);
@@ -7835,7 +7921,7 @@ export function issueRoutes(
     const titleOrDescriptionChanged = req.body.title !== undefined || req.body.description !== undefined;
     const existingRelations =
       Array.isArray(req.body.blockedByIssueIds)
-        ? await svc.getRelationSummaries(existing.id)
+        ? priorRelationsForBlockerEdge ?? await svc.getRelationSummaries(existing.id)
         : null;
     const {
       comment: commentBody,
@@ -8210,6 +8296,7 @@ export function issueRoutes(
     const postCommitActivityPublications: ActivityPublication[] = [];
     const issueUpdateData = {
       ...updateFields,
+      ...(expectedCurrentBlockerIssueIds ? { expectedCurrentBlockerIssueIds } : {}),
       actorAgentId: actor.agentId ?? null,
       actorUserId: actor.actorType === "user" ? actor.actorId : null,
     };

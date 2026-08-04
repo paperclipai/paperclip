@@ -3703,6 +3703,45 @@ describeEmbeddedPostgres("issueService blockers and dependency wake readiness", 
     };
   }
 
+  // A blocker write authorized outside the write transaction carries the set it
+  // was authorized against. The replacement is whole-set, so without this the
+  // caller silently deletes any edge that landed in between — including one it
+  // was never allowed to remove.
+  it("refuses a blocker replacement whose authorization snapshot went stale", async () => {
+    const seeded = await seedSharedWorkspaceDependency();
+    const concurrentBlockerId = randomUUID();
+    await db.insert(issues).values({
+      id: concurrentBlockerId,
+      companyId: seeded.companyId,
+      projectId: seeded.projectId,
+      identifier: "PAP-15901",
+      title: "Concurrently added blocker",
+      status: "todo",
+      priority: "medium",
+    });
+
+    // A concurrent writer adds an edge after the stale snapshot was taken.
+    await svc.update(seeded.dependentId, {
+      blockedByIssueIds: [seeded.blockerId, concurrentBlockerId],
+    });
+
+    await expect(svc.update(seeded.dependentId, {
+      blockedByIssueIds: [seeded.blockerId],
+      expectedCurrentBlockerIssueIds: [seeded.blockerId],
+    })).rejects.toMatchObject({ status: 409 });
+
+    const afterRefusal = await svc.getRelationSummaries(seeded.dependentId);
+    expect(afterRefusal.blockedBy.map((relation) => relation.id).sort())
+      .toEqual([seeded.blockerId, concurrentBlockerId].sort());
+
+    // The same write succeeds once the precondition matches what is on the row.
+    const applied = await svc.update(seeded.dependentId, {
+      blockedByIssueIds: [seeded.blockerId],
+      expectedCurrentBlockerIssueIds: [concurrentBlockerId, seeded.blockerId],
+    });
+    expect(applied?.blockedByIssueIds).toEqual([seeded.blockerId]);
+  });
+
   it("returns authoritative update receipts for row fields and blocker relations", async () => {
     const companyId = randomUUID();
     const issueId = randomUUID();

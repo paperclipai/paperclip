@@ -105,6 +105,7 @@ export type AuthorizationDecision = {
     | "allow_consented_change"
     | "allow_legacy_agent_creator"
     | "allow_issue_mention_grant"
+    | "allow_issue_blocker_edge_grant"
     | "allow_direct_parent_report"
     | "allow_self"
     | "allow_company_agent"
@@ -517,6 +518,25 @@ function activeResponsibleUserCanAuthorizeAgentGrantedSkillChange(
 
 function scopeBoolean(scope: Record<string, unknown> | null | undefined, key: string) {
   return scope?.[key] === true;
+}
+
+function scopeIssueIdList(scope: Record<string, unknown> | null | undefined, key: string) {
+  const raw = scope?.[key];
+  if (!Array.isArray(raw)) return [];
+  return [...new Set(raw.filter((value): value is string => typeof value === "string" && value.length > 0))];
+}
+
+// A blocker-edge mutation is an `issue:mutate` whose request body was already
+// narrowed by the caller to the single `blockedByIssueIds` field. It is a
+// routing/ordering write, not a content edit, so it may be admitted by the
+// mention grant that `issue:mutate` is otherwise withheld from. The caller is
+// responsible for proving the narrowing before setting this scope flag — see
+// `assertAgentIssueMutationAllowed` in routes/issues.ts.
+function isBlockerEdgeOnlyIssueMutation(
+  action: AuthorizationAction,
+  scope: Record<string, unknown> | null | undefined,
+) {
+  return action === "issue:mutate" && scopeBoolean(scope, "blockerEdgeOnly");
 }
 
 export function authorizationDeniedDetails(decision: AuthorizationDecision) {
@@ -949,6 +969,7 @@ export function authorizationService(db: Db) {
     resource: AuthorizationResource;
     resolution: TrustPresetResolution;
     directParentReportTarget: boolean;
+    scope?: Record<string, unknown> | null;
   }): Promise<AuthorizationDecision | null> {
     if (input.resolution.kind === "standard") return null;
     if (input.resolution.kind === "denied") {
@@ -1033,18 +1054,27 @@ export function authorizationService(db: Db) {
       if (await issueResourceWithinLowTrustBoundary(boundary, input.resource)) {
         return lowTrustAllow("Allowed inside the low-trust issue boundary.");
       }
+      // `issue:mutate` is withheld from the mention grant here because a content
+      // edit is not something a mention can license. A blocker-edge-only mutate
+      // is not a content edit, so it is admitted on the same footing as
+      // `issue:comment` — the caller has already proven the body carries no
+      // other field.
+      const blockerEdgeOnly = isBlockerEdgeOnlyIssueMutation(input.action, input.scope);
       if (
-        input.action !== "issue:mutate" &&
-        input.resource.issueId &&
-        await agentHasMentionGrantOnIssue({
+        (input.action !== "issue:mutate" || blockerEdgeOnly) &&
+        input.resource.issueId
+      ) {
+        const basis = await resolveIssueMentionScopedGrant({
           action: input.action,
           companyId: boundary.companyId,
           issueId: input.resource.issueId,
           issueAssigneeAgentId: input.resource.assigneeAgentId ?? null,
           actorAgentId: input.actorAgentId,
-        })
-      ) {
-        return allowIssueMentionGrant(input.action);
+          blockerEdgeOnly,
+          addedBlockerIssueIds: scopeIssueIdList(input.scope, "addedBlockerIssueIds"),
+          removesExistingBlockers: scopeBoolean(input.scope, "blockerEdgeRemovesExisting"),
+        });
+        if (basis) return allowIssueMentionGrant(input.action, basis);
       }
       return lowTrustDeny("Issue is outside this low-trust boundary.");
     }
@@ -1388,7 +1418,90 @@ export function authorizationService(db: Db) {
     return false;
   }
 
-  function allowIssueMentionGrant(action: AuthorizationAction): AuthorizationDecision {
+  // Second basis for a blocker-edge write: the actor already owns every issue it
+  // is proposing to add as a blocker. Pointing your own work at another agent's
+  // row states an ordering; it cannot edit that row's content, and it cannot add
+  // a blocker the actor does not own. Removals are never admitted on this basis
+  // — dropping someone else's blocker is not an ordering you own.
+  async function agentOwnsProposedBlockerIssues(input: {
+    companyId: string;
+    actorAgentId: string;
+    addedBlockerIssueIds: string[];
+    removesExistingBlockers: boolean;
+  }) {
+    if (input.removesExistingBlockers) return false;
+    if (input.addedBlockerIssueIds.length === 0) return false;
+    const rows = await db
+      .select({
+        id: issues.id,
+        assigneeAgentId: issues.assigneeAgentId,
+        createdByAgentId: issues.createdByAgentId,
+      })
+      .from(issues)
+      .where(and(
+        eq(issues.companyId, input.companyId),
+        inArray(issues.id, input.addedBlockerIssueIds),
+      ));
+    // Every proposed blocker must resolve, inside this company, to an issue the
+    // actor created or is assigned. A blocker that does not resolve fails the
+    // count check below, so an unreadable or cross-company id denies rather than
+    // silently dropping out of the set.
+    if (rows.length !== input.addedBlockerIssueIds.length) return false;
+    return rows.every((row) =>
+      row.assigneeAgentId === input.actorAgentId || row.createdByAgentId === input.actorAgentId
+    );
+  }
+
+  // Resolves the grant basis that admits a mention-scoped issue write, or null.
+  // `blockerEdgeOnly` widens the set of admissible bases; it never narrows it.
+  async function resolveIssueMentionScopedGrant(input: {
+    action: AuthorizationAction;
+    companyId: string;
+    issueId: string;
+    issueAssigneeAgentId: string | null;
+    actorAgentId: string;
+    blockerEdgeOnly: boolean;
+    addedBlockerIssueIds: string[];
+    removesExistingBlockers: boolean;
+  }): Promise<"mention" | "blocker_edge" | null> {
+    if (await agentHasMentionGrantOnIssue({
+      action: input.action,
+      companyId: input.companyId,
+      issueId: input.issueId,
+      issueAssigneeAgentId: input.issueAssigneeAgentId,
+      actorAgentId: input.actorAgentId,
+    })) {
+      return "mention";
+    }
+    if (input.blockerEdgeOnly && await agentOwnsProposedBlockerIssues({
+      companyId: input.companyId,
+      actorAgentId: input.actorAgentId,
+      addedBlockerIssueIds: input.addedBlockerIssueIds,
+      removesExistingBlockers: input.removesExistingBlockers,
+    })) {
+      logger.info({
+        actorAgentId: input.actorAgentId,
+        issueId: input.issueId,
+        companyId: input.companyId,
+        grantedAction: input.action,
+        grant: "issue_blocker_edge",
+      }, "authorized issue blocker-edge grant");
+      return "blocker_edge";
+    }
+    return null;
+  }
+
+  function allowIssueMentionGrant(
+    action: AuthorizationAction,
+    basis: "mention" | "blocker_edge" = "mention",
+  ): AuthorizationDecision {
+    if (basis === "blocker_edge") {
+      return allow({
+        action,
+        reason: "allow_issue_blocker_edge_grant",
+        explanation: "Allowed by a blocker-edge grant over issues the actor owns.",
+      });
+    }
     return allow({
       action,
       reason: "allow_issue_mention_grant",
@@ -1791,6 +1904,7 @@ export function authorizationService(db: Db) {
       resource: input.resource,
       resolution: trustResolution,
       directParentReportTarget,
+      scope: input.scope,
     });
     if (lowTrustDecision) {
       if (!lowTrustDecision.allowed) return lowTrustDecision;
@@ -2017,18 +2131,22 @@ export function authorizationService(db: Db) {
           explanation: "Allowed because the issue has no agent assignee.",
         });
       }
+      const blockerEdgeOnly = isBlockerEdgeOnlyIssueMutation(input.action, input.scope);
       if (
-        input.action === "issue:comment" &&
-        resource?.issueId &&
-        await agentHasMentionGrantOnIssue({
+        (input.action === "issue:comment" || blockerEdgeOnly) &&
+        resource?.issueId
+      ) {
+        const basis = await resolveIssueMentionScopedGrant({
           action: input.action,
           companyId,
           issueId: resource.issueId,
           issueAssigneeAgentId: resource.assigneeAgentId ?? null,
           actorAgentId,
-        })
-      ) {
-        return allowIssueMentionGrant(input.action);
+          blockerEdgeOnly,
+          addedBlockerIssueIds: scopeIssueIdList(input.scope, "addedBlockerIssueIds"),
+          removesExistingBlockers: scopeBoolean(input.scope, "blockerEdgeRemovesExisting"),
+        });
+        if (basis) return allowIssueMentionGrant(input.action, basis);
       }
     }
     if (
