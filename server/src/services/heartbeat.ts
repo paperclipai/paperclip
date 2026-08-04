@@ -17493,6 +17493,9 @@ export function heartbeatService(
               // run becomes running, a concurrent discard must observe the
               // claimed wake and return an explicit conflict; if discard wins,
               // this claim observes the cancelled queue and does no work.
+              if (!(await lockActiveCompanyForClaim(tx as unknown as Db))) {
+                return { kind: "stale" as const, run: null };
+              }
               const issueClaim = await lockIssueExecutionClaim(tx as unknown as Db);
               if (issueClaim.blocked) return { kind: "stale" as const, run: null };
               const wake = await tx
@@ -17811,6 +17814,7 @@ export function heartbeatService(
             });
           }
           return tx.transaction(async (claimTx) => {
+            if (!(await lockActiveCompanyForClaim(claimTx as unknown as Db))) return null;
             const issueClaim = await lockIssueExecutionClaim(claimTx as unknown as Db);
             if (issueClaim.blocked) return null;
             const claimedRun = await claimTx.update(heartbeatRuns).set(claimValues).where(and(
@@ -18088,6 +18092,14 @@ export function heartbeatService(
           outcome,
         },
       });
+    }
+    async function lockActiveCompanyForClaim(tx: Db) {
+      const [company] = await tx
+        .select({ status: companies.status })
+        .from(companies)
+        .where(eq(companies.id, run.companyId))
+        .for("update");
+      return company?.status === "active";
     }
   }
 
