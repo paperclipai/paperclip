@@ -10,6 +10,7 @@ vi.mock("../services/environment-config.js", () => ({
 
 import {
   measureStartupStep,
+  runWithoutActiveStep,
   SANDBOX_STARTUP_SPAN_ATTRS,
 } from "@paperclipai/adapter-utils/acpx-engine/startup-timing";
 import {
@@ -846,5 +847,117 @@ describe("resolveEnvironmentExecutionTarget", () => {
     expect(span!.attributes[A.execExitCode]).toBe(0);
     // The seam reached the log callback exactly once (the stdout delivery).
     expect(onLog).toHaveBeenCalledTimes(1);
+  });
+
+  // Fire one run-time exec from a bridge continuation that runs after the step
+  // span ended. Each bridge step (`bridge.paperclip`, `bridge.process-session`)
+  // starts long-lived work with `criticalPath: false`. The bridge boundary wraps
+  // that long-lived work in `runWithoutActiveStep`, exactly as modeled here, so
+  // the continuation reads an empty active step. Return the recorded exec span.
+  async function runContinuationExec(step: string, options: { wrap: boolean }) {
+    const { tracer, contextWithSpan, spans } = createRecordingTrace();
+    const runner = await runnerFor({
+      provider: "daytona",
+      execResult: { exitCode: 0, signal: null, timedOut: false, stdout: "", stderr: "" },
+      tracer,
+    });
+
+    let resolveExec!: () => void;
+    const execDone = new Promise<void>((resolve) => {
+      resolveExec = resolve;
+    });
+
+    // Schedule the exec from a timer inside the step body, so it fires after the
+    // step span ends. The `wrap` flag models the fix: when true, the boundary
+    // wraps the long-lived work in `runWithoutActiveStep`; when false, it models
+    // the pre-fix leak.
+    const scheduleContinuation = () => {
+      setTimeout(() => {
+        void runner.execute({ command: "echo" }).then(() => resolveExec());
+      }, 0);
+    };
+
+    await measureStartupStep(
+      {},
+      () => 0,
+      step,
+      async () => {
+        if (options.wrap) {
+          runWithoutActiveStep(scheduleContinuation);
+        } else {
+          scheduleContinuation();
+        }
+        return "started";
+      },
+      { tracer, contextWithSpan, criticalPath: false },
+    );
+
+    await execDone;
+    return spans.find((span) => span.name === "sandbox.exec");
+  }
+
+  it("opens an unparented exec span for a process-session bridge continuation", async () => {
+    const execSpan = await runContinuationExec("bridge.process-session", { wrap: true });
+    expect(execSpan).toBeTruthy();
+    // The step span ended and the boundary emptied the store, so the continuation
+    // exec opens a root span, not one under the dead bridge step.
+    expect(execSpan!.parent).toBeNull();
+  });
+
+  it("opens an unparented exec span for a paperclip bridge continuation", async () => {
+    const execSpan = await runContinuationExec("bridge.paperclip", { wrap: true });
+    expect(execSpan).toBeTruthy();
+    expect(execSpan!.parent).toBeNull();
+  });
+
+  it("does not copy the stale criticalPath = false flag onto a continuation exec", async () => {
+    const execSpan = await runContinuationExec("bridge.process-session", { wrap: true });
+    expect(execSpan).toBeTruthy();
+    // The bridge step set `criticalPath: false`. The continuation reads an empty
+    // store, so the exec span records the default `true`, never the stale `false`.
+    expect(execSpan!.attributes[A.execCriticalPath]).toBe(true);
+    expect(execSpan!.attributes[A.execCriticalPath]).not.toBe(false);
+  });
+
+  it("leaks the ended step onto a continuation exec without the boundary wrap", async () => {
+    // The mechanism guard: an unwrapped continuation keeps the ended bridge step
+    // store, so the exec span parents to the dead step and copies its
+    // `criticalPath: false`. The boundary wrap in the two tests above removes both
+    // defects, so this suite fails if a future edit drops the wrap.
+    const { tracer, contextWithSpan, spans } = createRecordingTrace();
+    const runner = await runnerFor({
+      provider: "daytona",
+      execResult: { exitCode: 0, signal: null, timedOut: false, stdout: "", stderr: "" },
+      tracer,
+    });
+
+    let resolveExec!: () => void;
+    const execDone = new Promise<void>((resolve) => {
+      resolveExec = resolve;
+    });
+
+    await measureStartupStep(
+      {},
+      () => 0,
+      "bridge.process-session",
+      async () => {
+        setTimeout(() => {
+          void runner.execute({ command: "echo" }).then(() => resolveExec());
+        }, 0);
+        return "started";
+      },
+      { tracer, contextWithSpan, criticalPath: false },
+    );
+
+    await execDone;
+
+    const stepSpan = spans.find((span) => span.name === "bridge.process-session");
+    const execSpan = spans.find((span) => span.name === "sandbox.exec");
+    expect(stepSpan).toBeTruthy();
+    expect(execSpan).toBeTruthy();
+    // The unwrapped continuation parents the exec span to the ended step and
+    // copies the stale flag.
+    expect(execSpan!.parent).toBe(stepSpan);
+    expect(execSpan!.attributes[A.execCriticalPath]).toBe(false);
   });
 });
