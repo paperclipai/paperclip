@@ -550,6 +550,35 @@ If the blocker is not one of those four, it is **agent-doable — do NOT escalat
 
 A false board ask is not free: it sits in the operator queue, blocks the work behind it, and trains the operator to ignore the label. When unsure, do the work or escalate to an agent — never default to a human.
 
+#### ⛔ `delegation_cycle` is NEVER a board gate
+
+If Paperclip rejects an assignment with `delegation_cycle`, **do not open a board ask to "authorize routing".** A cycle is an assignment-graph constraint, not authority you lack — it is none of the four categories above. Asking a human to approve it is a false ask by definition, because a human approving changes nothing about the graph.
+
+Fix it yourself by rooting the work **outside the offending ancestry**:
+
+- Create the child under a **different parent** — typically the card you are working, not the ancestor whose creator collides with your intended assignee.
+- Or create it **parentless at root** and cross-link. A card with no ancestry cannot cycle.
+
+Verified live: a card blocked because its ancestor was created by the very lane it needed to assign to was resolved by re-parenting the child one level down; another by creating a parentless review card. Neither needed the board. **Three of nine** open board asks in one company on one day were this exact pattern.
+
+Scope stays intact when you do this: put the real prohibitions in the child's description (no deletion, no credential access, no policy change) so the genuinely G-class residue is still gated. Breaking a cycle is a routing fix, not a grant of authority.
+
+#### Before opening any credential-shaped ask, CHECK whether the credential already exists
+
+"The runtime lacks credential X" is usually an **assignment** problem, not a missing secret. Check all three, in order:
+
+1. **Does the secret exist?** `company_secrets` for the company.
+2. **Is it bound to the lane doing the work?** ⚠ Query the agent's `adapterConfig.env` directly — the `company_secret_bindings` table **under-reports**. It lists only `secret_ref` bindings, so anything stored as a `plain` value is invisible there.
+3. **Is the work on the right lane?** A specialist lane often already holds the credential and the skill.
+
+Same day, three credential-shaped asks were all false, each for a different reason:
+
+- a host var was present as a `plain` value on the specialist lane, while the work sat on a general lane whose `env` was empty `{}` — an assignment problem wearing a credential costume;
+- an id var was absent from the bindings table but present on the agent — the table under-reported;
+- a URL var "needed binding" when it exists in no company at all, because the script defaults it (`process.env.X || DEFAULT`) and only the paired bearer is required.
+
+Binding an **already-existing** secret reference to a lane is agent-doable. Only *creating, rotating or pasting* a credential is a board gate.
+
 ## Comment Style (Required)
 
 When posting issue comments or writing issue descriptions, use concise markdown with:
