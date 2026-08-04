@@ -546,11 +546,21 @@ DEST="$HOME/.paperclip/scripts/signatur"
 
 mkdir -p "$DEST/logos"
 
-cp "$SRC"/signatur.py "$SRC"/signatur_build.py "$SRC"/logos_bauen.py "$DEST/"
-cp "$SRC"/relay_signatur.js "$DEST/" 2>/dev/null || true
-cp "$SRC"/patch_relay.py "$DEST/" 2>/dev/null || true
+# Pflichtdateien — fehlen sie, ist das ein Fehler und set -e soll greifen.
+cp "$SRC"/signatur_build.py "$SRC"/logos_bauen.py "$DEST/"
 cp "$SRC"/bereiche.json "$SRC"/vorlage.html "$DEST/"
 cp "$SRC"/logos/*.png "$DEST/logos/"
+
+# Optionale Dateien: entstehen erst in Aufgabe 3, 4 und 5. Fehlen ist in
+# Ordnung, wird aber gemeldet — ein Deploy, das stillschweigend etwas
+# auslaesst, ist genau der Drift, den dieses Skript verhindern soll.
+for f in signatur.py relay_signatur.js patch_relay.py; do
+  if [ -f "$SRC/$f" ]; then
+    cp "$SRC/$f" "$DEST/"
+  else
+    echo "  uebersprungen (noch nicht vorhanden): $f"
+  fi
+done"
 
 # Bausteine am Zielort erzeugen statt kopieren: sie sind abgeleitet und gross.
 ( cd "$DEST" && /usr/bin/python3 signatur_build.py )
@@ -565,9 +575,14 @@ tools/signatur/deploy.sh
 ```
 Erwartet: sechs Bausteinzeilen und `Deployt nach /Users/.../signatur`.
 
-Die `2>/dev/null || true` bei `relay_signatur.js` und `patch_relay.py` sind
-Absicht: die Dateien entstehen erst in Aufgabe 4 und 5, das Deploy muss aber
-schon jetzt funktionieren.
+Die Schleife über die optionalen Dateien ist Absicht: `signatur.py`,
+`relay_signatur.js` und `patch_relay.py` entstehen erst in Aufgabe 3, 4 und 5,
+das Deploy muss aber schon jetzt funktionieren. Wichtig ist der Unterschied
+zwischen `[ -f ]` und `|| true` — Ersteres prüft gezielt auf Nichtvorhandensein
+und meldet es, Letzteres schluckt jede beliebige Fehlerursache dauerhaft.
+
+Erwartete Ausgabe jetzt: drei `uebersprungen`-Zeilen, danach die sechs
+Bausteinzeilen und `Deployt nach …`.
 
 - [ ] **Schritt 10: Erzeugte Bausteine von der Versionierung ausnehmen**
 
