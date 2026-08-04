@@ -1,6 +1,16 @@
 import { describe, expect, it } from "vitest";
-import { applyIssueExecutionPolicyTransition, normalizeIssueExecutionPolicy, parseIssueExecutionState } from "../services/issue-execution-policy.ts";
-import type { IssueExecutionPolicy, IssueExecutionState } from "@paperclipai/shared";
+import {
+  applyIssueExecutionPolicyTransition,
+  buildIssueMonitorTriggeredPatch,
+  normalizeIssueExecutionPolicy,
+  parseIssueExecutionState,
+} from "../services/issue-execution-policy.ts";
+import {
+  DEFAULT_ISSUE_MONITOR_INTERVAL_SECONDS,
+  DEFAULT_ISSUE_MONITOR_MAX_ATTEMPTS,
+  type IssueExecutionPolicy,
+  type IssueExecutionState,
+} from "@paperclipai/shared";
 
 const coderAgentId = "11111111-1111-4111-8111-111111111111";
 const qaAgentId = "22222222-2222-4222-8222-222222222222";
@@ -1625,6 +1635,120 @@ describe("issue execution policy transitions", () => {
           currentParticipant: { type: "agent", agentId: ctoAgentId },
           returnAssignee: { type: "agent", agentId: coderAgentId },
         },
+      });
+    });
+  });
+
+  describe("monitor re-arm on trigger", () => {
+    const triggeredAt = new Date("2026-04-11T12:31:00.000Z");
+
+    function monitoredIssue(monitor: Record<string, unknown>, attemptCount = 0) {
+      const policy = normalizeIssueExecutionPolicy({ stages: [], monitor })!;
+      return {
+        issue: {
+          status: "in_review",
+          assigneeAgentId: coderAgentId,
+          assigneeUserId: null,
+          executionPolicy: { stages: [], monitor },
+          executionState: null,
+          monitorAttemptCount: attemptCount,
+          monitorNextCheckAt: new Date(monitor.nextCheckAt as string),
+          monitorLastTriggeredAt: null,
+          monitorNotes: null,
+          monitorScheduledBy: null,
+        },
+        policy,
+      };
+    }
+
+    it("re-arms at the default interval so a failed woken run cannot strand the issue", () => {
+      const { issue, policy } = monitoredIssue({ nextCheckAt: "2026-04-11T12:30:00.000Z" });
+
+      const patch = buildIssueMonitorTriggeredPatch({ issue, policy, triggeredAt });
+
+      expect(patch.monitorNextCheckAt?.toISOString())
+        .toBe(new Date(triggeredAt.getTime() + DEFAULT_ISSUE_MONITOR_INTERVAL_SECONDS * 1000).toISOString());
+      expect(patch.monitorAttemptCount).toBe(1);
+      expect(patch.monitorLastTriggeredAt).toEqual(triggeredAt);
+      expect(patch.executionState).toMatchObject({
+        monitor: {
+          status: "scheduled",
+          nextCheckAt: patch.monitorNextCheckAt?.toISOString(),
+          lastTriggeredAt: triggeredAt.toISOString(),
+          attemptCount: 1,
+        },
+      });
+    });
+
+    it("honors intervalSeconds and preserves the stored external ref", () => {
+      const { issue, policy } = monitoredIssue({
+        nextCheckAt: "2026-04-11T12:30:00.000Z",
+        intervalSeconds: 3600,
+        externalRef: "https://github.com/paperclipai/paperclip/pull/1",
+      });
+
+      const patch = buildIssueMonitorTriggeredPatch({ issue, policy, triggeredAt });
+
+      expect(patch.monitorNextCheckAt?.toISOString()).toBe("2026-04-11T13:31:00.000Z");
+      // Normalization redacts externalRef, so the re-armed policy has to be
+      // built from the stored policy or the real reference would be lost.
+      expect(patch.executionPolicy).toMatchObject({
+        monitor: {
+          nextCheckAt: "2026-04-11T13:31:00.000Z",
+          externalRef: "https://github.com/paperclipai/paperclip/pull/1",
+        },
+      });
+    });
+
+    it("clamps the re-armed check to timeoutAt instead of overshooting the deadline", () => {
+      const { issue, policy } = monitoredIssue({
+        nextCheckAt: "2026-04-11T12:30:00.000Z",
+        timeoutAt: "2026-04-11T14:00:00.000Z",
+      });
+
+      const patch = buildIssueMonitorTriggeredPatch({ issue, policy, triggeredAt });
+
+      expect(patch.monitorNextCheckAt?.toISOString()).toBe("2026-04-11T14:00:00.000Z");
+    });
+
+    it("drops the schedule when the deadline has already passed", () => {
+      const { issue, policy } = monitoredIssue({
+        nextCheckAt: "2026-04-11T12:30:00.000Z",
+        timeoutAt: "2026-04-11T12:00:00.000Z",
+      });
+
+      const patch = buildIssueMonitorTriggeredPatch({ issue, policy, triggeredAt });
+
+      expect(patch.monitorNextCheckAt).toBeNull();
+      expect(patch.executionState).toMatchObject({ monitor: { status: "triggered", nextCheckAt: null } });
+    });
+
+    it("refuses to re-arm a monitor that has reached the default attempt ceiling", () => {
+      const monitor = { nextCheckAt: "2026-04-11T12:30:00.000Z" };
+      const policy = normalizeIssueExecutionPolicy({ stages: [], monitor })!;
+
+      const result = applyIssueExecutionPolicyTransition({
+        issue: {
+          status: "in_review",
+          assigneeAgentId: coderAgentId,
+          assigneeUserId: null,
+          executionPolicy: null,
+          executionState: null,
+          monitorAttemptCount: DEFAULT_ISSUE_MONITOR_MAX_ATTEMPTS,
+          monitorNextCheckAt: null,
+          monitorLastTriggeredAt: null,
+          monitorNotes: null,
+          monitorScheduledBy: null,
+        },
+        policy,
+        previousPolicy: null,
+        requestedAssigneePatch: {},
+        actor: { agentId: coderAgentId },
+      });
+
+      expect(result.patch.monitorNextCheckAt).toBeNull();
+      expect(result.patch.executionState).toMatchObject({
+        monitor: { status: "cleared", clearReason: "max_attempts_exhausted" },
       });
     });
   });

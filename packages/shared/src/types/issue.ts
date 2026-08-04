@@ -625,6 +625,11 @@ export interface IssueExecutionMonitorPolicy {
   externalRef?: string | null;
   timeoutAt?: string | null;
   maxAttempts?: number | null;
+  /**
+   * Cadence the monitor re-arms itself with after each dispatch. Null uses
+   * `DEFAULT_ISSUE_MONITOR_INTERVAL_SECONDS`.
+   */
+  intervalSeconds?: number | null;
   recoveryPolicy?: IssueExecutionMonitorRecoveryPolicy | null;
 }
 
@@ -655,6 +660,7 @@ export interface IssueExecutionMonitorState {
   externalRef?: string | null;
   timeoutAt?: string | null;
   maxAttempts?: number | null;
+  intervalSeconds?: number | null;
   recoveryPolicy?: IssueExecutionMonitorRecoveryPolicy | null;
   clearedAt: string | null;
   clearReason: IssueExecutionMonitorClearReason | null;
