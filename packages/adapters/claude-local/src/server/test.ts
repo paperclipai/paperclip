@@ -48,6 +48,24 @@ function isNonEmpty(value: unknown): value is string {
   return typeof value === "string" && value.trim().length > 0;
 }
 
+// Pure decision for the (non-Bedrock) auth advice check: given the adapter's
+// config env, is there a recognizable auth signal beyond ANTHROPIC_API_KEY
+// (handled by the caller) that we should surface to the operator? Extracted
+// so the CLAUDE_CODE_OAUTH_TOKEN detection contract can be unit tested
+// without exercising the full probe pipeline.
+export function resolveClaudeAuthAdvice(env: Record<string, unknown>): AdapterEnvironmentCheck | null {
+  if (isNonEmpty(env.ANTHROPIC_API_KEY)) return null;
+  if (isNonEmpty(env.CLAUDE_CODE_OAUTH_TOKEN)) {
+    return {
+      code: "claude_subscription_token_detected",
+      level: "info",
+      message:
+        "CLAUDE_CODE_OAUTH_TOKEN is set; Claude will authenticate with the configured subscription token.",
+    };
+  }
+  return null;
+}
+
 function firstNonEmptyLine(text: string): string {
   return (
     text
@@ -278,12 +296,17 @@ export async function testEnvironment(
       detail: `Detected in ${source}.`,
       hint: "Unset ANTHROPIC_API_KEY if you want subscription-based Claude login behavior.",
     });
-  } else if (!targetIsRemote) {
-    checks.push({
-      code: "claude_subscription_mode_possible",
-      level: "info",
-      message: "ANTHROPIC_API_KEY is not set; subscription-based auth can be used if Claude is logged in.",
-    });
+  } else {
+    const authAdvice = resolveClaudeAuthAdvice(env);
+    if (authAdvice) {
+      checks.push(authAdvice);
+    } else if (!targetIsRemote) {
+      checks.push({
+        code: "claude_subscription_mode_possible",
+        level: "info",
+        message: "ANTHROPIC_API_KEY is not set; subscription-based auth can be used if Claude is logged in.",
+      });
+    }
   }
 
   const canRunProbe =
