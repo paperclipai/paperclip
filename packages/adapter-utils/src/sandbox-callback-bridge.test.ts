@@ -5,6 +5,7 @@ import path from "node:path";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
+import { getActiveStepContext, measureStartupStep } from "./acpx-engine/startup-timing.js";
 import { prepareCommandManagedRuntime } from "./command-managed-runtime.js";
 import {
   authorizeSandboxCallbackBridgeRequestWithRoutes,
@@ -469,6 +470,73 @@ describe("sandbox callback bridge", () => {
     } finally {
       process.off("unhandledRejection", onUnhandledRejection);
     }
+  });
+
+  it("keeps the queue-directory setup on the startup step but resets the poll loop store", async () => {
+    // The worker starts inside the measured `bridge.paperclip` step. Its awaited
+    // queue-directory setup is startup work, so a `makeDir` `sandbox.exec` span
+    // must keep the active step and its `criticalPath` flag. The long-lived poll
+    // loop runs run-time execs for the whole run, so a loop `sandbox.exec` span
+    // must open unparented with no stale flag. This test reads the active step in
+    // both places and proves the boundary sits at the loop, not the whole worker.
+    let setupStep: ReturnType<typeof getActiveStepContext> | "unset" = "unset";
+    let loopStep: ReturnType<typeof getActiveStepContext> | "unset" = "unset";
+    let resolveFirstPoll: () => void = () => {};
+    const firstPoll = new Promise<void>((resolve) => {
+      resolveFirstPoll = resolve;
+    });
+
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-bridge-step-store-"));
+    cleanupDirs.push(rootDir);
+    const queueDir = path.posix.join(rootDir, "queue");
+
+    const worker = await measureStartupStep(
+      {},
+      () => 0,
+      "bridge.paperclip",
+      () =>
+        startSandboxCallbackBridgeWorker({
+          client: {
+            makeDir: async () => {
+              setupStep = getActiveStepContext();
+            },
+            makeDirs: async () => {
+              setupStep = getActiveStepContext();
+            },
+            listJsonFiles: async () => {
+              loopStep = getActiveStepContext();
+              resolveFirstPoll();
+              return [];
+            },
+            readTextFile: async () => {
+              throw new Error("unexpected readTextFile");
+            },
+            writeTextFile: async () => {
+              throw new Error("unexpected writeTextFile");
+            },
+            rename: async () => {
+              throw new Error("unexpected rename");
+            },
+            remove: async () => {},
+          },
+          queueDir,
+          authorizeRequest: async () => null,
+          handleRequest: async () => ({ status: 200, body: "ok" }),
+        }),
+      { criticalPath: false },
+    );
+
+    await firstPoll;
+    await worker.stop();
+
+    // The setup ran on the active step, so its exec span parents to the step.
+    expect(setupStep).not.toBe("unset");
+    expect(setupStep).not.toBeNull();
+    expect((setupStep as { criticalPath?: boolean }).criticalPath).toBe(false);
+
+    // The loop ran outside that store, so its exec span opens unparented with no
+    // stale `criticalPath` flag.
+    expect(loopStep).toBeNull();
   });
 
   it("serializes remote response writes so stop does not recreate a late orphaned response", async () => {

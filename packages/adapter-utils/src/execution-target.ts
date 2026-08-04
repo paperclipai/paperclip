@@ -1799,13 +1799,12 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
     // this flag is enabled. Only intended for active debugging in trusted
     // environments.
     const bridgeDebugEnabled = isBridgeDebugEnabled(process.env);
-    // Start the long-lived callback-bridge worker loop outside the measured
-    // bridge step store. The loop reads and writes queue files with run-time
-    // execs for the whole run, not startup work, so a worker `sandbox.exec` span
-    // must not parent to the ended `bridge.paperclip` step or copy its
-    // `criticalPath` flag. `runWithoutActiveStep` empties the store for the loop
-    // that the worker start schedules, so every later poll tick stays unparented.
-    worker = await runWithoutActiveStep(() => startSandboxCallbackBridgeWorker({
+    // `startSandboxCallbackBridgeWorker` keeps its awaited queue-directory
+    // setup on the active `bridge.paperclip` step, and resets the store only
+    // for its long-lived poll loop (see `runWithoutActiveStep` inside that
+    // function). So the startup `mkdir` execs stay parented and every later
+    // loop `sandbox.exec` span stays unparented with no stale `criticalPath`.
+    worker = await startSandboxCallbackBridgeWorker({
       client,
       queueDir,
       maxBodyBytes,
@@ -1842,7 +1841,7 @@ export async function startAdapterExecutionTargetPaperclipBridge(input: {
           body: await readBridgeForwardResponseBody(response, maxBodyBytes),
         };
       },
-    }));
+    });
     server = await startSandboxCallbackBridgeServer({
       runner,
       remoteCwd: target.remoteCwd,
