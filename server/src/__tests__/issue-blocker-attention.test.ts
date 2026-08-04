@@ -172,6 +172,70 @@ describeEmbeddedPostgres("issue blocker attention", () => {
     });
   });
 
+  it("separates a blocked issue whose blockers are all satisfied from one a live blocker holds", async () => {
+    const { companyId } = await createCompany("PBS");
+    const heldId = await insertIssue({ companyId, identifier: "PBS-1", title: "Genuinely held", status: "blocked" });
+    const satisfiedId = await insertIssue({ companyId, identifier: "PBS-2", title: "Nothing holds it", status: "blocked" });
+    const liveBlockerId = await insertIssue({ companyId, identifier: "PBS-3", title: "Live blocker", status: "todo" });
+    const doneBlockerId = await insertIssue({ companyId, identifier: "PBS-4", title: "Done blocker", status: "done" });
+    await block({ companyId, blockerIssueId: liveBlockerId, blockedIssueId: heldId });
+    await block({ companyId, blockerIssueId: doneBlockerId, blockedIssueId: satisfiedId });
+
+    const rows = await svc.list(companyId, { status: "blocked" });
+    const held = rows.find((issue) => issue.id === heldId);
+    const satisfied = rows.find((issue) => issue.id === satisfiedId);
+
+    // Positive control: a row a live blocker really holds is untouched.
+    expect(held?.blockerAttention).toMatchObject({
+      state: "needs_attention",
+      reason: "attention_required",
+      unresolvedBlockerCount: 1,
+      satisfiedBlockerCount: 0,
+    });
+    // The defect: this used to report `attention_required` with every count at
+    // zero, which renders identically to the row above.
+    expect(satisfied?.blockerAttention).toMatchObject({
+      state: "needs_attention",
+      reason: "no_live_blocker",
+      unresolvedBlockerCount: 0,
+      satisfiedBlockerCount: 1,
+    });
+  });
+
+  it("distinguishes a blocked issue with no blocker edge at all from one whose blockers finished", async () => {
+    const { companyId } = await createCompany("PBG");
+    const ghostId = await insertIssue({ companyId, identifier: "PBG-1", title: "Undriven ghost", status: "blocked" });
+
+    const ghost = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === ghostId);
+
+    expect(ghost?.blockerAttention).toMatchObject({
+      state: "needs_attention",
+      reason: "no_live_blocker",
+      unresolvedBlockerCount: 0,
+      // Zero satisfied edges is what separates this from a finished chain: the
+      // remedy is to record the missing blocker, not to move the row on.
+      satisfiedBlockerCount: 0,
+    });
+  });
+
+  it("counts satisfied blockers alongside the ones still holding a partially-resolved chain", async () => {
+    const { companyId } = await createCompany("PBP");
+    const rootId = await insertIssue({ companyId, identifier: "PBP-1", title: "Root", status: "blocked" });
+    const doneBlockerId = await insertIssue({ companyId, identifier: "PBP-2", title: "Done", status: "done" });
+    const openBlockerId = await insertIssue({ companyId, identifier: "PBP-3", title: "Open", status: "todo" });
+    await block({ companyId, blockerIssueId: doneBlockerId, blockedIssueId: rootId });
+    await block({ companyId, blockerIssueId: openBlockerId, blockedIssueId: rootId });
+
+    const root = (await svc.list(companyId, { status: "blocked" })).find((issue) => issue.id === rootId);
+
+    expect(root?.blockerAttention).toMatchObject({
+      state: "needs_attention",
+      reason: "attention_required",
+      unresolvedBlockerCount: 1,
+      satisfiedBlockerCount: 1,
+    });
+  });
+
   it("classifies an assigned backlog blocker leaf without a waiting path as attention-needed", async () => {
     const { companyId, agentId } = await createCompany("PBB");
     const parentId = await insertIssue({ companyId, identifier: "PBB-1", title: "Parent", status: "blocked" });

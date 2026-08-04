@@ -2,6 +2,7 @@ import type { CSSProperties } from "react";
 import {
   Ban,
   Circle,
+  CircleAlert,
   CircleCheck,
   CircleDashed,
   CircleDot,
@@ -20,7 +21,8 @@ import { taskStatusIconVar, taskStatusIconVarDefault } from "../lib/status-color
  *
  *   backlog → circle-dashed · todo → circle · in_progress → rotate-cw ·
  *   in_review → circle-dot · done → circle-check · blocked → circle-minus ·
- *   cancelled → ban · in_queue → circle-minus (blocked recoloured blue).
+ *   cancelled → ban · in_queue → circle-minus (blocked recoloured blue) ·
+ *   blocked_unheld → circle-alert (blocked with nothing holding it, amber).
  *
  * Colour comes from the `--status-task-icon-*` CSS vars (AA-tuned, mode-aware;
  * see `index.css`). The glyph paints in `currentColor`, and the component
@@ -42,9 +44,16 @@ export type StatusGlyphStatus =
   | "done"
   | "blocked"
   | "cancelled"
-  | "in_queue";
+  | "in_queue"
+  | "blocked_unheld";
 
-/** Status → Lucide icon. `in_queue` borrows the blocked icon; its colour var resolves to blue. */
+/**
+ * Status → Lucide icon. `in_queue` borrows the blocked icon; its colour var
+ * resolves to blue. `blocked_unheld` takes its own shape *and* its own hue: a
+ * blocked row with no live blocker is actionable now, and reading it as held is
+ * the failure this glyph exists to stop, so shape alone (color-blind safety)
+ * must carry it.
+ */
 const STATUS_ICON: Record<string, LucideIcon> = {
   backlog: CircleDashed,
   todo: Circle,
@@ -54,6 +63,7 @@ const STATUS_ICON: Record<string, LucideIcon> = {
   blocked: CircleMinus,
   cancelled: Ban,
   in_queue: CircleMinus,
+  blocked_unheld: CircleAlert,
 };
 
 /** Unknown statuses fall back to the backlog icon (matches the colour-var fallback). */

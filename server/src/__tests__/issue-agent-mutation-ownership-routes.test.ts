@@ -816,7 +816,10 @@ describe("agent issue mutation checkout ownership", () => {
       .send({ body: "I was not mentioned." });
 
     expect(res.status, JSON.stringify(res.body)).toBe(403);
-    expect(res.body.error).toBe("Issue is outside this actor's authorization boundary");
+    expect(res.body.error).toBe(
+      "Issue comment is outside this actor's authorization boundary: Missing permission.",
+    );
+    expect(res.body.details).toMatchObject({ action: "issue:comment", reason: "deny_missing_grant", issueId });
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
   });
 
@@ -832,7 +835,10 @@ describe("agent issue mutation checkout ownership", () => {
       .get(`/api/issues/${issueId}/comments`);
 
     expect(res.status, JSON.stringify(res.body)).toBe(403);
-    expect(res.body.error).toBe("Issue is outside this actor's authorization boundary");
+    expect(res.body.error).toBe(
+      "Issue read is outside this actor's authorization boundary: Issue is outside this low-trust boundary.",
+    );
+    expect(res.body.details).toMatchObject({ action: "issue:read", reason: "deny_low_trust_boundary", issueId });
     expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({ action: "issue:read" }));
   });
 
@@ -848,7 +854,10 @@ describe("agent issue mutation checkout ownership", () => {
       .get(`/api/issues/${issueId}/interactions`);
 
     expect(res.status, JSON.stringify(res.body)).toBe(403);
-    expect(res.body.error).toBe("Issue is outside this actor's authorization boundary");
+    expect(res.body.error).toBe(
+      "Issue read is outside this actor's authorization boundary: Issue is outside this low-trust boundary.",
+    );
+    expect(res.body.details).toMatchObject({ action: "issue:read", reason: "deny_low_trust_boundary", issueId });
     expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({ action: "issue:read" }));
     expect(mockIssueThreadInteractionService.listForIssue).not.toHaveBeenCalled();
   });
@@ -894,7 +903,10 @@ describe("agent issue mutation checkout ownership", () => {
       .get(`/api/issues/${issueId}/comments/comment-1`);
 
     expect(res.status, JSON.stringify(res.body)).toBe(403);
-    expect(res.body.error).toBe("Issue is outside this actor's authorization boundary");
+    expect(res.body.error).toBe(
+      "Issue read is outside this actor's authorization boundary: Issue is outside this low-trust boundary.",
+    );
+    expect(res.body.details).toMatchObject({ action: "issue:read", reason: "deny_low_trust_boundary", issueId });
     expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({ action: "issue:read" }));
     expect(mockIssueService.getComment).not.toHaveBeenCalled();
   });
@@ -925,6 +937,58 @@ describe("agent issue mutation checkout ownership", () => {
     expect(res.status, JSON.stringify(res.body)).toBe(403);
     expect(res.body.error).toBe("Agent cannot mutate another agent's issue");
     expect(mockIssueService.update).not.toHaveBeenCalled();
+  });
+
+  it("makes a denied comment, a denied mutation and a denied blocker write tell themselves apart", async () => {
+    // The whole point of the refusal: all three of these used to answer with the
+    // byte-identical string `Issue is outside this actor's authorization
+    // boundary`, so a caller holding a 403 could not tell which verb was
+    // withheld, which field triggered it, or a policy decision from a bug.
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "todo", assigneeAgentId: ownerAgentId }));
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: input.action === "issue:read",
+      action: input.action,
+      reason: input.action === "issue:read" ? "allow_explicit_grant" : "deny_missing_grant",
+      explanation:
+        input.action === "issue:read"
+          ? "Allowed by test read grant."
+          : `Missing permission: ${input.action}.`,
+    }));
+
+    const app = await createApp(peerActor());
+    const comment = await request(app)
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "Not mentioned." });
+    const contentEdit = await request(app)
+      .patch(`/api/issues/${issueId}`)
+      .send({ title: "Renamed by a peer" });
+    const blockerWrite = await request(app)
+      .patch(`/api/issues/${issueId}`)
+      .send({ blockedByIssueIds: ["33333333-3333-4333-8333-333333333333"] });
+
+    expect(comment.status, JSON.stringify(comment.body)).toBe(403);
+    expect(contentEdit.status, JSON.stringify(contentEdit.body)).toBe(403);
+    expect(blockerWrite.status, JSON.stringify(blockerWrite.body)).toBe(403);
+
+    expect(comment.body.error).toBe(
+      "Issue comment is outside this actor's authorization boundary: Missing permission: issue:comment.",
+    );
+    expect(contentEdit.body.error).toBe(
+      "Issue mutation is outside this actor's authorization boundary: Missing permission: issue:mutate.",
+    );
+    // Same verb, same message — but the requested field set separates them, so a
+    // routing write is localisable without bisecting the request body.
+    expect(blockerWrite.body.error).toBe(contentEdit.body.error);
+    expect(contentEdit.body.details).toMatchObject({ action: "issue:mutate", fields: ["title"] });
+    expect(blockerWrite.body.details).toMatchObject({
+      action: "issue:mutate",
+      reason: "deny_missing_grant",
+      issueId,
+      fields: ["blockedByIssueIds"],
+    });
+    expect(comment.body.error).not.toBe(contentEdit.body.error);
+    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).not.toHaveBeenCalled();
   });
 
   it("denies cross-company agents before comment authorization is evaluated", async () => {

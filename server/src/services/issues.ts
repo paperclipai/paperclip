@@ -2046,6 +2046,7 @@ function createIssueBlockerAttention(input: Partial<IssueBlockerAttention> = {})
     coveredBlockerCount: input.coveredBlockerCount ?? 0,
     stalledBlockerCount: input.stalledBlockerCount ?? 0,
     attentionBlockerCount: input.attentionBlockerCount ?? 0,
+    satisfiedBlockerCount: input.satisfiedBlockerCount ?? 0,
     pendingFinalizeBlockerIssueIds: input.pendingFinalizeBlockerIssueIds ?? [],
     sampleBlockerIdentifier: input.sampleBlockerIdentifier ?? null,
     sampleStalledBlockerIdentifier: input.sampleStalledBlockerIdentifier ?? null,
@@ -2305,6 +2306,8 @@ async function listIssueBlockerAttentionMap(
   let frontier = roots.map((root) => root.id);
   let truncated = false;
   const pendingFinalizeBlockerIssueIds = new Set<string>();
+  /** issue id → resolved `blocks` edges pointing at it (see the loop below). */
+  const satisfiedBlockerIdsByIssueId = new Map<string, Set<string>>();
   for (let depth = 0; frontier.length > 0 && depth < BLOCKER_ATTENTION_MAX_DEPTH; depth += 1) {
     const nextFrontier = new Set<string>();
 
@@ -2366,9 +2369,21 @@ async function listIssueBlockerAttentionMap(
         childRowsPromise,
       ]);
 
-      const unresolvedExplicitBlockerRows = explicitBlockerRows.filter(
-        (row) => row.status !== "done" || pendingFinalizeBlockerIssueIds.has(row.blockerIssueId),
-      );
+      const isUnresolvedBlockerRow = (row: IssueBlockerAttentionQueryRow) =>
+        row.status !== "done" || pendingFinalizeBlockerIssueIds.has(row.blockerIssueId);
+      const unresolvedExplicitBlockerRows = explicitBlockerRows.filter(isUnresolvedBlockerRow);
+      // `edgesByIssueId` deliberately keeps only unresolved edges, so a resolved
+      // blocker leaves no trace there. Count them here instead: it is the only
+      // thing that tells a chain that finished apart from a row that never had
+      // a blocker recorded, and the two need different remedies.
+      for (const row of explicitBlockerRows) {
+        if (row.issueId === null || isUnresolvedBlockerRow(row)) continue;
+        const satisfied = satisfiedBlockerIdsByIssueId.get(row.issueId) ?? new Set<string>();
+        // A set, not a counter: an issue can be re-queried at a later BFS depth
+        // (or through a cycle), and a counter would double-count it there.
+        satisfied.add(row.blockerIssueId);
+        satisfiedBlockerIdsByIssueId.set(row.issueId, satisfied);
+      }
       appendBlockerAttentionEdges(edgesByIssueId, [
         ...unresolvedExplicitBlockerRows
           .filter((row): row is IssueBlockerAttentionQueryRow & { issueId: string } => row.issueId !== null)
@@ -2681,14 +2696,22 @@ async function listIssueBlockerAttentionMap(
   };
 
   for (const root of roots) {
+    const satisfiedBlockerCount = satisfiedBlockerIdsByIssueId.get(root.id)?.size ?? 0;
     const topLevelEdges = (edgesByIssueId.get(root.id) ?? []).filter((edge) => {
       const blocker = nodesById.get(edge.blockerIssueId);
       return blocker?.status !== "done" || pendingFinalizeBlockerIssueIds.has(edge.blockerIssueId);
     });
     if (topLevelEdges.length === 0) {
+      // Nothing is holding this row: every blocker edge is resolved, or it never
+      // had one. Both used to report `attention_required` with all counts at
+      // zero, which rendered as a plain "Blocked" — indistinguishable from a row
+      // a live dependency is genuinely holding, and failing toward "someone else
+      // is still working on this", the reading that stops nobody from
+      // proceeding. `satisfiedBlockerCount` separates the two cases for callers.
       attentionMap.set(root.id, createIssueBlockerAttention({
         state: "needs_attention",
-        reason: "attention_required",
+        reason: "no_live_blocker",
+        satisfiedBlockerCount,
         terminalBlockerIssueId: root.id,
       }));
       continue;
@@ -2737,6 +2760,7 @@ async function listIssueBlockerAttentionMap(
       coveredBlockerCount,
       stalledBlockerCount,
       attentionBlockerCount,
+      satisfiedBlockerCount,
       pendingFinalizeBlockerIssueIds: topLevelEdges
         .map((edge) => edge.blockerIssueId)
         .filter((blockerIssueId) => pendingFinalizeBlockerIssueIds.has(blockerIssueId)),

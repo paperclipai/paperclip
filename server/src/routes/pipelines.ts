@@ -53,7 +53,7 @@ import {
   type AttentionCaller,
 } from "../services/pipelines-aggregation.js";
 import { accessService } from "../services/access.js";
-import { authorizationService } from "../services/authorization.js";
+import { authorizationDeniedDetails, authorizationService } from "../services/authorization.js";
 import { issueService } from "../services/issues.js";
 import { assertCompanyAccess } from "./authz.js";
 import {
@@ -788,7 +788,12 @@ async function assertIssueLinkMutationAllowed(
     },
   });
   if (!decision.allowed) {
-    throw forbidden("Issue is outside this actor's authorization boundary");
+    // Same refusal the issue routes emit; same reason for naming the verb and
+    // the policy decision rather than flattening every denial to one string.
+    throw forbidden(
+      `Issue mutation is outside this actor's authorization boundary: ${decision.explanation}`,
+      { ...authorizationDeniedDetails(decision), issueId: input.issue.id, action: decision.action },
+    );
   }
   if (req.actor.type !== "agent") return;
   const actorAgentId = req.actor.agentId;

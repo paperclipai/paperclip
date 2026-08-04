@@ -3462,10 +3462,60 @@ export function issueRoutes(
     });
   }
 
+  /** Noun for the withheld verb, so the refusal reads as a sentence. */
+  const ISSUE_BOUNDARY_ACTION_NOUN: Record<string, string> = {
+    "issue:read": "read",
+    "issue:comment": "comment",
+    "issue:mutate": "mutation",
+  };
+
+  /**
+   * 403 for an issue-boundary denial that names *which* action was withheld and
+   * *why*.
+   *
+   * This refusal used to be a bare `Issue is outside this actor's authorization
+   * boundary`, emitted identically for a read, a comment and a mutation — so a
+   * caller holding a 403 could not tell which verb the boundary had withheld,
+   * nor a deliberate policy decision from a bug. Every other route family
+   * already surfaces the decision itself (`throw forbidden(decision.explanation,
+   * authorizationDeniedDetails(decision))` in built-in-agents, decision-queues,
+   * status-cards, company-skills and agents); the issue routes were the outlier,
+   * discarding the `action`, the stable `reason` enum and the human
+   * `explanation` the decision already carries. This brings them onto that
+   * pattern and additionally names the action, which the message alone does not
+   * always imply.
+   *
+   * No new disclosure: the explanations on every deny path are statements about
+   * the *actor's own* grants and policy preset ("Missing permission:
+   * issues:update.", "Agent is outside this low-trust boundary.") — none
+   * describes the resource.
+   */
+  function respondIssueBoundaryDenied(
+    res: Response,
+    input: {
+      issueId: string;
+      decision: Awaited<ReturnType<typeof decideIssueAccess>>;
+      /** Body keys that triggered the check, when the refusal is field-scoped. */
+      fields?: string[];
+    },
+  ) {
+    const { action, explanation } = input.decision;
+    const noun = ISSUE_BOUNDARY_ACTION_NOUN[action] ?? action;
+    res.status(403).json({
+      error: `Issue ${noun} is outside this actor's authorization boundary: ${explanation}`,
+      details: {
+        ...authorizationDeniedDetails(input.decision),
+        issueId: input.issueId,
+        action,
+        ...(input.fields && input.fields.length > 0 ? { fields: input.fields } : {}),
+      },
+    });
+  }
+
   async function assertIssueReadAllowed(req: Request, res: Response, issue: Parameters<typeof decideIssueAccess>[1]) {
     const decision = await decideIssueAccess(req, issue, "issue:read");
     if (decision.allowed) return true;
-    res.status(403).json({ error: "Issue is outside this actor's authorization boundary" });
+    respondIssueBoundaryDenied(res, { issueId: issue.id, decision });
     return false;
   }
 
@@ -3505,7 +3555,7 @@ export function issueRoutes(
     }
     const boundaryDecision = await decideIssueAccess(req, issue, "issue:comment");
     if (!boundaryDecision.allowed) {
-      res.status(403).json({ error: "Issue is outside this actor's authorization boundary" });
+      respondIssueBoundaryDenied(res, { issueId: issue.id, decision: boundaryDecision });
       return false;
     }
     return boundaryDecision;
@@ -3566,6 +3616,11 @@ export function issueRoutes(
       assigneeAgentId: string | null;
       assigneeUserId: string | null;
     },
+    /**
+     * Body keys the caller is trying to write, surfaced on a boundary refusal so
+     * a field-scoped denial is diagnosable without bisecting the request.
+     */
+    mutatedFields?: string[],
   ) {
     if (req.actor.type !== "agent") return true;
     const actorAgentId = req.actor.agentId;
@@ -3598,7 +3653,7 @@ export function issueRoutes(
     }
     const boundaryDecision = await decideIssueAccess(req, issue, "issue:mutate");
     if (!boundaryDecision.allowed) {
-      res.status(403).json({ error: "Issue is outside this actor's authorization boundary" });
+      respondIssueBoundaryDenied(res, { issueId: issue.id, decision: boundaryDecision, fields: mutatedFields });
       return false;
     }
     if (issue.assigneeAgentId === null) {
@@ -3764,7 +3819,7 @@ export function issueRoutes(
     }
     const boundaryDecision = await decideIssueAccess(req, issue, "issue:mutate");
     if (!boundaryDecision.allowed) {
-      res.status(403).json({ error: "Issue is outside this actor's authorization boundary" });
+      respondIssueBoundaryDenied(res, { issueId: issue.id, decision: boundaryDecision });
       return false;
     }
     if (await assertLowTrustControlPlaneDenied(req, res, issue.companyId, issue)) return false;
@@ -7821,7 +7876,12 @@ export function issueRoutes(
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Issue not found");
     if (!existing) return;
     assertNoAgentHostWorkspaceCommandMutation(req, collectIssueWorkspaceCommandPaths(req.body));
-    if (!(await assertAgentIssueMutationAllowed(req, res, existing))) return;
+    // Name the requested keys on a boundary refusal. This route gates the whole
+    // body through one `issue:mutate` check, so a caller writing only
+    // `blockedByIssueIds` and a caller rewriting the description previously got
+    // byte-identical 403s.
+    const requestedFields = req.body && typeof req.body === "object" ? Object.keys(req.body) : [];
+    if (!(await assertAgentIssueMutationAllowed(req, res, existing, requestedFields))) return;
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, existing, req.body))) return;
 
     const actor = getActorInfo(req);

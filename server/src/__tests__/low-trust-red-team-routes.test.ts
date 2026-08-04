@@ -966,7 +966,13 @@ describeEmbeddedPostgres("low-trust red-team HTTP route regression suite", () =>
       .post(`/api/issues/${targetIssue!.id}/comments`)
       .send({ body: "I was not mentioned." });
     expect(unmentionedComment.status, JSON.stringify(unmentionedComment.body)).toBe(403);
-    expect(unmentionedComment.body.error).toBe("Issue is outside this actor's authorization boundary");
+    expect(unmentionedComment.body.error).toBe(
+      "Issue comment is outside this actor's authorization boundary: Issue is outside this low-trust boundary.",
+    );
+    expect(unmentionedComment.body.details).toMatchObject({
+      action: "issue:comment",
+      reason: "deny_low_trust_boundary",
+    });
   });
 
   it("propagates denied low-trust policy conflicts on control-plane guards", async () => {

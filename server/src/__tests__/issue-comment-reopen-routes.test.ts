@@ -635,7 +635,17 @@ describe.sequential("issue comment reopen routes", () => {
         .send({ body: "Please continue this closed issue.", ...intent });
 
       expect(res.status, JSON.stringify(res.body)).toBe(403);
-      expect(res.body).toEqual({ error: "Issue is outside this actor's authorization boundary" });
+      // The refusal names the verb the boundary withheld. This route asks for
+      // both `issue:comment` and `issue:mutate`, and the mutate is the one that
+      // fails — previously indistinguishable from a denied comment.
+      expect(res.body).toEqual({
+        error: "Issue mutation is outside this actor's authorization boundary: Missing permission.",
+        details: {
+          action: "issue:mutate",
+          reason: "deny_missing_grant",
+          issueId: "11111111-1111-4111-8111-111111111111",
+        },
+      });
       expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({ action: "issue:comment" }));
       expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({ action: "issue:mutate" }));
       expect(mockIssueService.update).not.toHaveBeenCalled();

@@ -172,8 +172,10 @@
      blocked, light violet review) the icon var simply re-points at it; the
      gray / amber / green statuses are pinned to the board-approved AA hexes.
      `in_queue` is the BLOCKED shape recoloured to the in_progress blue
-     (replaces the bespoke teal "covered" state). Light values here; the
-     `.dark` block below overrides the four that need a mode-specific hue. */
+     (replaces the bespoke teal "covered" state); `blocked_unheld` is a distinct
+     shape in the todo amber — a blocked row with no live blocker is actionable,
+     not held. Light values here; the `.dark` block below overrides the four
+     that need a mode-specific hue (both aliases track their target). */
   --status-task-icon-backlog: #52585d;   /* gray darkened — 7.21:1 on paper */
   --status-task-icon-todo: #cc7a00;       /* amber darkened — clears 3:1 */
   --status-task-icon-in_progress: var(--status-task-in_progress); /* #2563eb both modes */
@@ -182,6 +184,7 @@
   --status-task-icon-blocked: var(--status-task-blocked);         /* #dc2626 both modes */
   --status-task-icon-cancelled: #52585d;
   --status-task-icon-in_queue: var(--status-task-in_progress);    /* blocked shape, blue */
+  --status-task-icon-blocked_unheld: var(--status-task-icon-todo); /* alert shape, amber */
 
   --folder-color-indigo: #6366f1;
   --folder-color-violet: #8b5cf6;
@@ -319,7 +322,9 @@
 
   /* Dark-mode AA overrides for the status-icon hues that need a mode-specific
      value (PAP-238). in_progress / blocked stay identical (same blue / red both
-     modes) and in_queue tracks in_progress, so they need no override. */
+     modes); in_queue tracks in_progress and blocked_unheld tracks todo, and both
+     aliases resolve in the element's context, so they pick up the override below
+     and need none of their own. */
   --status-task-icon-backlog: #9a958a;
   --status-task-icon-todo: #fbbf24;
   --status-task-icon-in_review: #9474f0;  /* deeper than violet-400, reads purple */

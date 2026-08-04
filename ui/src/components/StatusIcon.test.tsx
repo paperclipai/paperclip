@@ -67,6 +67,89 @@ describe("StatusIcon", () => {
     expect(html).not.toContain("var(--status-task-icon-in_queue)");
   });
 
+  it("renders a blocked row whose blockers are all resolved differently from a held one", () => {
+    const satisfied = renderToStaticMarkup(
+      <StatusIcon
+        status="blocked"
+        blockerAttention={{
+          state: "needs_attention",
+          reason: "no_live_blocker",
+          unresolvedBlockerCount: 0,
+          coveredBlockerCount: 0,
+          stalledBlockerCount: 0,
+          attentionBlockerCount: 0,
+          satisfiedBlockerCount: 2,
+          sampleBlockerIdentifier: null,
+          sampleStalledBlockerIdentifier: null,
+        }}
+      />,
+    );
+    // Positive control: the row a live blocker really holds, same status.
+    const held = renderToStaticMarkup(
+      <StatusIcon
+        status="blocked"
+        blockerAttention={{
+          state: "needs_attention",
+          reason: "attention_required",
+          unresolvedBlockerCount: 1,
+          coveredBlockerCount: 0,
+          stalledBlockerCount: 0,
+          attentionBlockerCount: 1,
+          satisfiedBlockerCount: 0,
+          sampleBlockerIdentifier: "PAP-77",
+          sampleStalledBlockerIdentifier: null,
+        }}
+      />,
+    );
+
+    // Shape and hue both differ, so the distinction survives colour blindness.
+    expect(satisfied).toContain("var(--status-task-icon-blocked_unheld)");
+    expect(satisfied).toContain("Blocked · all 2 blockers are resolved — nothing is holding this task");
+    expect(held).toContain("var(--status-task-icon-blocked)");
+    expect(satisfied).not.toEqual(held);
+  });
+
+  it("names an edgeless blocked row as having no blocker recorded, not zero blockers needing attention", () => {
+    const html = renderToStaticMarkup(
+      <StatusIcon
+        status="blocked"
+        blockerAttention={{
+          state: "needs_attention",
+          reason: "no_live_blocker",
+          unresolvedBlockerCount: 0,
+          coveredBlockerCount: 0,
+          stalledBlockerCount: 0,
+          attentionBlockerCount: 0,
+          satisfiedBlockerCount: 0,
+          sampleBlockerIdentifier: null,
+          sampleStalledBlockerIdentifier: null,
+        }}
+      />,
+    );
+    expect(html).toContain("Blocked · no blockers recorded — nothing is holding this task");
+    expect(html).not.toContain("0 blockers need attention");
+  });
+
+  it("singularises the copy when exactly one blocker resolved", () => {
+    const html = renderToStaticMarkup(
+      <StatusIcon
+        status="blocked"
+        blockerAttention={{
+          state: "needs_attention",
+          reason: "no_live_blocker",
+          unresolvedBlockerCount: 0,
+          coveredBlockerCount: 0,
+          stalledBlockerCount: 0,
+          attentionBlockerCount: 0,
+          satisfiedBlockerCount: 1,
+          sampleBlockerIdentifier: null,
+          sampleStalledBlockerIdentifier: null,
+        }}
+      />,
+    );
+    expect(html).toContain("Blocked · its blocker is resolved — nothing is holding this task");
+  });
+
   it("surfaces stalled-review blocked copy on the accessible label", () => {
     const html = renderToStaticMarkup(
       <StatusIcon

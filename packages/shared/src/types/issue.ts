@@ -391,6 +391,14 @@ export type IssueBlockerAttentionReason =
   | "active_dependency"
   | "stalled_review"
   | "attention_required"
+  /**
+   * The issue is `blocked` but nothing is holding it: either every blocker edge
+   * is resolved, or it never had one. Distinct from `attention_required`, which
+   * means live blockers exist and need someone. Read alongside
+   * {@link IssueBlockerAttention.satisfiedBlockerCount} to tell the two apart:
+   * `> 0` is a satisfied chain, `0` is a row driven to `blocked` with no edge.
+   */
+  | "no_live_blocker"
   | null;
 
 export interface IssueBlockerAttention {
@@ -400,6 +408,8 @@ export interface IssueBlockerAttention {
   coveredBlockerCount: number;
   stalledBlockerCount: number;
   attentionBlockerCount: number;
+  /** Blocker edges that are already resolved and no longer hold this issue. */
+  satisfiedBlockerCount?: number;
   pendingFinalizeBlockerIssueIds?: string[];
   sampleBlockerIdentifier: string | null;
   sampleStalledBlockerIdentifier: string | null;
