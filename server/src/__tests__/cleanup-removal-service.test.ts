@@ -299,16 +299,22 @@ describeEmbeddedPostgres("cleanup removal services", () => {
     const cancelRun = vi.fn(async () => {
       order.push("cancel");
     });
+    const waitForRunExecutionDrain = vi.fn(async () => {
+      order.push("drain");
+    });
     const removeManagedFiles = vi.fn(async () => {
       order.push("cleanup");
     });
 
-    const removed = await companyService(db, { cancelRun, removeManagedFiles }).remove(companyId, {
-      deleteFiles: true,
-    });
+    const removed = await companyService(db, {
+      cancelRun,
+      removeManagedFiles,
+      waitForRunExecutionDrain,
+    }).remove(companyId, { deleteFiles: true });
 
     expect(cancelRun).toHaveBeenCalledWith(runId, "Cancelled because the company was deleted");
-    expect(order).toEqual(["cancel", "cleanup"]);
+    expect(waitForRunExecutionDrain).toHaveBeenCalledWith(runId);
+    expect(order).toEqual(["cancel", "drain", "cleanup"]);
     expect(removed?.fileCleanup).toBe("succeeded");
   });
 
