@@ -4,6 +4,7 @@ Das Parsen der Antworten liegt in eigenen, netzfreien Funktionen, damit es
 ohne laufenden Server testbar bleibt.
 """
 import json
+import uuid
 import urllib.parse
 import urllib.request
 import urllib.error
@@ -106,3 +107,46 @@ def poll(prompt_id):
 
 def fetch_image(image):
     return _get(view_path(image), timeout=60)
+
+
+def parse_upload_response(data):
+    name = (data or {}).get("name")
+    if not name:
+        raise ComfyError("ComfyUI lieferte keinen Dateinamen beim Upload: %s"
+                         % json.dumps(data)[:300])
+    sub = (data or {}).get("subfolder") or ""
+    # LoadImage erwartet den Unterordner im Namen, nicht als eigenes Feld.
+    return "%s/%s" % (sub, name) if sub else name
+
+
+def upload_image(filename, content):
+    """Quellbild in den input-Ordner des Knotens legen.
+
+    Rueckgabe ist der Name, den der Knoten VERGEBEN hat -- nicht der
+    uebergebene: bei Namensgleichheit haengt ComfyUI eine Nummer an, und
+    LoadImage findet die Datei sonst nicht.
+    """
+    boundary = "----bild" + uuid.uuid4().hex
+    pre = ("--%s\r\n"
+           'Content-Disposition: form-data; name="image"; filename="%s"\r\n'
+           "Content-Type: application/octet-stream\r\n\r\n" % (boundary, filename)).encode()
+    mid = ("\r\n--%s\r\n"
+           'Content-Disposition: form-data; name="type"\r\n\r\ninput' % boundary).encode()
+    post = ("\r\n--%s--\r\n" % boundary).encode()
+    body = pre + content + mid + post
+    req = urllib.request.Request(
+        COMFY_BASE + "/upload/image", data=body,
+        headers={"Content-Type": "multipart/form-data; boundary=%s" % boundary},
+        method="POST")
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            raw = resp.read()
+            try:
+                return parse_upload_response(json.loads(raw))
+            except ValueError:
+                raise ComfyError("ComfyUI antwortet ungültiges JSON auf /upload/image: %s"
+                                 % raw.decode(errors="replace")[:200])
+    except urllib.error.HTTPError as e:
+        raise ComfyError("ComfyUI HTTP %s beim Upload von %s" % (e.code, filename))
+    except (urllib.error.URLError, OSError) as e:
+        raise ComfyError("ComfyUI nicht erreichbar (/upload/image): %s" % e)
