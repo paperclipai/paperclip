@@ -30,6 +30,7 @@ import {
   LOW_TRUST_REVIEW_PRESET,
 } from "@paperclipai/shared";
 import {
+  pruneManagerOnlySkillEntriesForRole,
   resolvePaperclipInstanceRootForAdapter,
   readPaperclipSkillSyncPreference,
   writePaperclipSkillSyncPreference,
@@ -1620,6 +1621,7 @@ export function agentRoutes(
     companyId: string,
     adapterType: string,
     adapterConfig: Record<string, unknown>,
+    agentRole: string | null,
     requestedDesiredSkills: AgentDesiredSkillEntry[] | undefined,
     options: { tolerateUnknownDesiredSkills?: boolean } = {},
   ) {
@@ -1649,14 +1651,21 @@ export function agentRoutes(
       materializeMissing: shouldMaterializeRuntimeSkillsForAdapter(adapterType),
       versionSelections: skillVersionSelectionMap(resolvedRequestedSkillEntries),
     });
-    const resolvedDesiredSkillEntries = resolvedRequestedSkillEntries.filter(
-      (entry, index, entries) => entries.findIndex((candidate) => candidate.key === entry.key) === index,
+    const resolvedDesiredSkillEntries = pruneManagerOnlySkillEntriesForRole(
+      resolvedRequestedSkillEntries.filter(
+        (entry, index, entries) => entries.findIndex((candidate) => candidate.key === entry.key) === index,
+      ),
+      agentRole,
+    );
+    const unresolvedDesiredSkillEntries = pruneManagerOnlySkillEntriesForRole(
+      unresolvedDesiredSkillKeys.map((key) => ({ key, versionId: null })),
+      agentRole,
     );
     // Preserve stale/unresolvable keys in the persisted desired set so they stay
     // visible (and explicitly removable) instead of vanishing on the next save.
     const desiredSkillEntries: AgentDesiredSkillEntry[] = [
       ...resolvedDesiredSkillEntries,
-      ...unresolvedDesiredSkillKeys.map((key) => ({ key, versionId: null })),
+      ...unresolvedDesiredSkillEntries,
     ];
     const desiredSkills = desiredSkillEntries.map((entry) => entry.key);
 
@@ -1939,6 +1948,7 @@ export function agentRoutes(
         agent.companyId,
         agent.adapterType,
         agent.adapterConfig as Record<string, unknown>,
+        agent.role ?? "general",
         requestedSkills,
         // Toggling a resolvable skill must not fail just because the agent
         // already carries stale desired keys (e.g. a skill removed from the
@@ -2419,10 +2429,12 @@ export function agentRoutes(
         rawHireAdapterConfig,
       ),
     );
+    const effectiveHireRole = hireInput.role ?? "general";
     const desiredSkillAssignment = await resolveDesiredSkillAssignment(
       companyId,
       hireInput.adapterType,
       requestedAdapterConfig,
+      effectiveHireRole,
       normalizeDesiredSkillSelections(Array.isArray(requestedDesiredSkills) ? requestedDesiredSkills : undefined),
     );
     const normalizedAdapterConfig = await normalizeMediatedAdapterConfigForPersistence({
@@ -2614,10 +2626,12 @@ export function agentRoutes(
         rawCreateAdapterConfig,
       ),
     );
+    const effectiveCreateRole = createInput.role ?? "general";
     const desiredSkillAssignment = await resolveDesiredSkillAssignment(
       companyId,
       createInput.adapterType,
       requestedAdapterConfig,
+      effectiveCreateRole,
       normalizeDesiredSkillSelections(Array.isArray(requestedDesiredSkills) ? requestedDesiredSkills : undefined),
     );
     const normalizedAdapterConfig = await normalizeMediatedAdapterConfigForPersistence({
@@ -3632,6 +3646,7 @@ export function agentRoutes(
         id: agent.id,
         companyId: agent.companyId,
         name: agent.name,
+        role: agent.role,
         adapterType: agent.adapterType,
         adapterConfig: agent.adapterConfig,
       },
