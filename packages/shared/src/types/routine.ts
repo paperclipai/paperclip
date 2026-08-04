@@ -215,6 +215,8 @@ export interface RoutineRun {
   triggerPayload: Record<string, unknown> | null;
   dispatchFingerprint: string | null;
   linkedIssueId: string | null;
+  /** Durable acknowledgement for an idempotent public-courier delivery. */
+  deliveryReceipt: Record<string, unknown> | null;
   /**
    * @deprecated Use linkedIssueId. Kept as a backwards-compatible alias for
    * routine-run issue lookups.

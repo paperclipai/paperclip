@@ -150,6 +150,50 @@ type Actor = { agentId?: string | null; userId?: string | null; runId?: string |
 type RoutineRow = typeof routines.$inferSelect;
 type RoutineTriggerRow = typeof routineTriggers.$inferSelect;
 
+type CourierDeliveryReceipt = {
+  version: 1;
+  idempotencyKey: string;
+  destinationIssueId: string;
+  destinationIssueIdentifier: string;
+  createReceipt: {
+    routineRunId: string;
+    destinationIssueId: string;
+    destinationIssueIdentifier: string;
+  };
+};
+
+function makeCourierDeliveryReceipt(input: {
+  runId: string;
+  idempotencyKey: string;
+  issue: { id: string; identifier: string | null };
+}): CourierDeliveryReceipt {
+  const destinationIssueIdentifier = input.issue.identifier ?? input.issue.id;
+  return {
+    version: 1,
+    idempotencyKey: input.idempotencyKey,
+    destinationIssueId: input.issue.id,
+    destinationIssueIdentifier,
+    createReceipt: {
+      routineRunId: input.runId,
+      destinationIssueId: input.issue.id,
+      destinationIssueIdentifier,
+    },
+  };
+}
+
+function isCourierDeliveryPayload(raw: Record<string, unknown> | null | undefined) {
+  if (!raw) return false;
+  // Routine webhooks also use portfolio_* event labels for normal status and
+  // directive traffic. A courier is the narrower cross-company envelope: it
+  // must name its source issue, which is what lets the returned receipt be
+  // correlated to a retryable source delivery.
+  const labels = [raw.kind, raw.type]
+    .filter((value): value is string => typeof value === "string")
+    .map((value) => value.trim().toLowerCase());
+  const courierLabel = labels.some((value) => value === "portfolio_directive" || value === "courier_delivery");
+  return courierLabel && typeof raw.sourceIssue === "string" && raw.sourceIssue.trim().length > 0;
+}
+
 const ROUTINE_DESCRIPTION_DOCUMENT_KEY = "description" as const;
 const ROUTINE_ISSUE_MODE_ENV_KEY = "PAPERCLIP_ROUTINE_ISSUE_MODE";
 const ROUTINE_PARENT_LIFECYCLE_BINDING_ENV_KEY = "PAPERCLIP_ROUTINE_PARENT_LIFECYCLE_BINDING";
@@ -1362,6 +1406,7 @@ export function routineService(
         linkedIssueId: routineRuns.linkedIssueId,
         coalescedIntoRunId: routineRuns.coalescedIntoRunId,
         failureReason: routineRuns.failureReason,
+        deliveryReceipt: routineRuns.deliveryReceipt,
         completedAt: routineRuns.completedAt,
         createdAt: routineRuns.createdAt,
         updatedAt: routineRuns.updatedAt,
@@ -1396,6 +1441,7 @@ export function routineService(
         linkedIssueId: row.linkedIssueId,
         coalescedIntoRunId: row.coalescedIntoRunId,
         failureReason: row.failureReason,
+        deliveryReceipt: row.deliveryReceipt,
         completedAt: row.completedAt,
         createdAt: row.createdAt,
         updatedAt: row.updatedAt,
@@ -2528,6 +2574,7 @@ export function routineService(
     executionWorkspacePreference?: string | null;
     executionWorkspaceSettings?: Record<string, unknown> | null;
     descriptionAppendix?: string | null;
+    courierDelivery?: boolean;
     nextRunAtOverride?: Date | null;
     actor?: Actor;
   }) {
@@ -2639,7 +2686,10 @@ export function routineService(
           .orderBy(desc(routineRuns.createdAt))
           .limit(1)
           .then((rows) => rows[0] ?? null);
-        if (existing) return existing;
+        // A failed create/receipt callback is retryable.  Do not replay its
+        // failed run forever; the destination issue create key below prevents
+        // a later attempt from creating a second destination issue.
+        if (existing && existing.status !== "failed") return existing;
       }
 
       const triggeredAt = new Date();
@@ -2838,6 +2888,13 @@ export function routineService(
               originKind: issueOriginKind,
               originId: issueOriginId,
               originRunId: createdRun.id,
+              // Tie an actionable public courier to the platform's durable
+              // issue-create idempotency guard.  A retry after a receipt
+              // persistence/callback failure therefore recovers the same
+              // destination issue rather than creating another one.
+              idempotencyKey: input.courierDelivery && input.idempotencyKey
+                ? `courier:${input.routine.id}:${input.idempotencyKey}`
+                : null,
               // Manual always_enqueue runs store a per-run-unique fingerprint so
               // re-runs from the same user can coexist. Automated always_enqueue
               // fires must persist the raw dispatchFingerprint so the next fire's
@@ -2925,9 +2982,19 @@ export function routineService(
             rethrowOnError: true,
           });
         }
+        const deliveryReceipt = input.courierDelivery && input.idempotencyKey
+          ? makeCourierDeliveryReceipt({
+              runId: createdRun.id,
+              idempotencyKey: input.idempotencyKey,
+              issue: executionIssue,
+            })
+          : null;
+        // The receipt write is deliberately part of the dispatch transaction.
+        // A run cannot be recorded as delivered/issue_created without it.
         const updated = await finalizeRun(createdRun.id, {
           status: dispatchStatus,
           linkedIssueId: executionIssue.id,
+          deliveryReceipt,
         }, txDb);
         await updateRoutineTouchedState({
           routineId: input.routine.id,
@@ -3084,6 +3151,7 @@ export function routineService(
             linkedIssueId: routineRuns.linkedIssueId,
             coalescedIntoRunId: routineRuns.coalescedIntoRunId,
             failureReason: routineRuns.failureReason,
+            deliveryReceipt: routineRuns.deliveryReceipt,
             completedAt: routineRuns.completedAt,
             createdAt: routineRuns.createdAt,
             updatedAt: routineRuns.updatedAt,
@@ -3117,6 +3185,7 @@ export function routineService(
               linkedIssueId: run.linkedIssueId,
               coalescedIntoRunId: run.coalescedIntoRunId,
               failureReason: run.failureReason,
+              deliveryReceipt: run.deliveryReceipt,
               completedAt: run.completedAt,
               createdAt: run.createdAt,
               updatedAt: run.updatedAt,
@@ -3960,6 +4029,11 @@ export function routineService(
         });
       }
 
+      const courierDelivery = isCourierDeliveryPayload(input.payload);
+      if (courierDelivery && !input.idempotencyKey?.trim()) {
+        throw unprocessable("Courier delivery requires an Idempotency-Key before it can be routed");
+      }
+
       const eligibility = await getAutomaticRoutineDispatchEligibility(routine);
       if (!eligibility.eligible) {
         return recordSuppressedAutomaticRun({
@@ -3979,6 +4053,7 @@ export function routineService(
           ? input.payload.variables
           : null,
         idempotencyKey: input.idempotencyKey,
+        courierDelivery,
       });
     },
 
@@ -4000,6 +4075,7 @@ export function routineService(
           linkedIssueId: routineRuns.linkedIssueId,
           coalescedIntoRunId: routineRuns.coalescedIntoRunId,
           failureReason: routineRuns.failureReason,
+          deliveryReceipt: routineRuns.deliveryReceipt,
           completedAt: routineRuns.completedAt,
           createdAt: routineRuns.createdAt,
           updatedAt: routineRuns.updatedAt,
@@ -4033,6 +4109,7 @@ export function routineService(
         linkedIssueId: row.linkedIssueId,
         coalescedIntoRunId: row.coalescedIntoRunId,
         failureReason: row.failureReason,
+        deliveryReceipt: row.deliveryReceipt,
         completedAt: row.completedAt,
         createdAt: row.createdAt,
         updatedAt: row.updatedAt,

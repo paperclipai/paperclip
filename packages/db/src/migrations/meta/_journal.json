@@ -1450,6 +1450,13 @@
       "when": 1785537600000,
       "tag": "9008_issue_close_contract",
       "breakpoints": true
+    },
+    {
+      "idx": 207,
+      "version": "7",
+      "when": 1785804000000,
+      "tag": "9009_transactional_courier_receipts",
+      "breakpoints": true
     }
   ]
 }

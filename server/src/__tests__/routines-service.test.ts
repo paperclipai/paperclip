@@ -2283,6 +2283,72 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(routineIssues).toHaveLength(0);
   });
 
+  it("returns a durable idempotent courier receipt only after one destination issue exists", async () => {
+    const { companyId, routine, svc } = await seedFixture();
+    await svc.update(routine.id, { concurrencyPolicy: "always_enqueue" }, {});
+    const { trigger } = await svc.createTrigger(routine.id, { kind: "webhook", signingMode: "none" }, {});
+
+    const ignored = await svc.firePublicTrigger(trigger.publicId!, {
+      idempotencyKey: "phorest-TSMC-18772",
+      payload: { kind: "handshake", sourceIssue: "TSMC-18772" },
+    });
+    expect(ignored).toMatchObject({ status: "skipped", linkedIssueId: null, deliveryReceipt: null });
+
+    const payload = { kind: "portfolio_directive", ask: "Create the corrected TSR-4927 route.", sourceIssue: "TSMC-18772" };
+    const first = await svc.firePublicTrigger(trigger.publicId!, {
+      idempotencyKey: "phorest-TSMC-18772",
+      payload,
+    });
+    const second = await svc.firePublicTrigger(trigger.publicId!, {
+      idempotencyKey: "phorest-TSMC-18772",
+      payload,
+    });
+
+    expect(first.status).toBe("issue_created");
+    expect(first.deliveryReceipt).toMatchObject({
+      idempotencyKey: "phorest-TSMC-18772",
+      destinationIssueId: first.linkedIssueId,
+      createReceipt: { destinationIssueId: first.linkedIssueId },
+    });
+    expect(second.deliveryReceipt).toEqual(first.deliveryReceipt);
+
+    const destinationIssues = await db
+      .select({ id: issues.id })
+      .from(issues)
+      .where(eq(issues.originId, routine.id));
+    expect(destinationIssues).toHaveLength(1);
+    expect(first.deliveryReceipt).not.toBeNull();
+  });
+
+  it("keeps failed courier delivery retryable and never marks an unreceipted courier routed", async () => {
+    const { companyId, routine, svc } = await seedFixture();
+    await svc.update(routine.id, { concurrencyPolicy: "always_enqueue" }, {});
+    const { trigger } = await svc.createTrigger(routine.id, { kind: "webhook", signingMode: "none" }, {});
+    const idempotencyKey = "TSR-4927-corrected-route";
+    const payload = {
+      kind: "portfolio_directive",
+      ask: "Deliver corrected route.",
+      sourceIssue: "TSMC-18772",
+    };
+
+    await expect(svc.firePublicTrigger(trigger.publicId!, { payload })).rejects.toThrow("Idempotency-Key");
+    expect(await db.select({ id: issues.id }).from(issues).where(eq(issues.originId, routine.id))).toHaveLength(0);
+
+    await db.insert(routineRuns).values({
+      companyId,
+      routineId: routine.id,
+      triggerId: trigger.id,
+      source: "webhook",
+      status: "failed",
+      idempotencyKey,
+      failureReason: "receipt callback unavailable",
+    });
+    const retry = await svc.firePublicTrigger(trigger.publicId!, { idempotencyKey, payload });
+    expect(retry).toMatchObject({ status: "issue_created", failureReason: null });
+    expect(retry.deliveryReceipt).toMatchObject({ idempotencyKey, destinationIssueId: retry.linkedIssueId });
+    expect(await db.select({ id: issues.id }).from(issues).where(eq(issues.originId, routine.id))).toHaveLength(1);
+  });
+
   it("ignores preflight and handshake webhook payloads instead of creating execution issues", async () => {
     const { routine, svc } = await seedFixture();
     await svc.update(routine.id, { concurrencyPolicy: "always_enqueue" }, {});
