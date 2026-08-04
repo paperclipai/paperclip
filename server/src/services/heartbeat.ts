@@ -12376,17 +12376,30 @@ export function heartbeatService(db: Db, options: HeartbeatServiceOptions = {}) 
       issueContext: issueId ? await getIssueExecutionContext(run.companyId, issueId) : null,
       routineEnvContext: { routineId: null, env: null, responsibleUserId: null },
     });
-    const claimed = await db
-      .update(heartbeatRuns)
-      .set({
-        status: "running",
-        responsibleUserId,
-        startedAt: run.startedAt ?? claimedAt,
-        updatedAt: claimedAt,
-      })
-      .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "queued")))
-      .returning()
-      .then((rows) => rows[0] ?? null);
+    const claimed = await db.transaction(async (tx) => {
+      // Pair the queued-to-running transition with managed company deletion.
+      // If deletion owns the lifecycle lock, this claim observes an inactive or
+      // missing company; if the claim owns it, deletion observes the live run.
+      const company = await tx
+        .select({ status: companies.status })
+        .from(companies)
+        .where(eq(companies.id, run.companyId))
+        .for("update")
+        .then((rows) => rows[0] ?? null);
+      if (company?.status !== "active") return null;
+
+      return tx
+        .update(heartbeatRuns)
+        .set({
+          status: "running",
+          responsibleUserId,
+          startedAt: run.startedAt ?? claimedAt,
+          updatedAt: claimedAt,
+        })
+        .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.status, "queued")))
+        .returning()
+        .then((rows) => rows[0] ?? null);
+    });
     if (!claimed) return null;
 
     publishLiveEvent({
