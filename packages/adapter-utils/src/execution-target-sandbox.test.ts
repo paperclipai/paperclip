@@ -378,6 +378,109 @@ describe("sandbox adapter execution targets", () => {
     }
   });
 
+  it("test_process_session_stdin_exec_reads_send_time_run_parent", async () => {
+    // A persistent socket can open under one run parent and receive stdin later,
+    // under a different parent. The stdin-write `sandbox.exec` span must parent
+    // to the parent that is live at send time, not to the parent that was live
+    // when the socket opened. The bridge reads `getRuntimeParentContext` per
+    // message in the `data` handler, not once at connect time. This test opens a
+    // socket while `connectParent` is live, switches the getter to `turnParent`,
+    // sends one stdin line, and proves the stdin write ran under `turnParent`.
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-process-session-stdin-parent-"));
+    cleanupDirs.push(rootDir);
+    const childPath = path.join(rootDir, "noop-acp-child.mjs");
+    await writeFile(childPath, "process.stdin.on('data', () => {});\n", "utf8");
+
+    const connectParent = { marker: "process-session-connect-parent" };
+    const turnParent = { marker: "process-session-turn-parent" };
+    let currentParent: unknown = connectParent;
+
+    let stdinWriteStep: ReturnType<typeof getActiveStepContext> | "unset" = "unset";
+    let resolveStdinWrite: () => void = () => {};
+    const stdinWriteObserved = new Promise<void>((resolve) => {
+      resolveStdinWrite = resolve;
+    });
+
+    const delegate = createLocalSandboxRunner();
+    const runner = {
+      execute: async (input: Parameters<typeof delegate.execute>[0]) => {
+        // Record the active step for the first exec that writes the stdin file.
+        // The `.paperclip-upload` temp path under the `stdin` directory is unique
+        // to the stdin-write path; the poll loop reads the `events` directory.
+        const script = (input.args ?? []).join("\n");
+        if (stdinWriteStep === "unset" && /\/stdin\/[^\s']*paperclip-upload/.test(script)) {
+          stdinWriteStep = getActiveStepContext();
+          resolveStdinWrite();
+        }
+        return delegate.execute(input);
+      },
+    };
+    const target: AdapterSandboxExecutionTarget = {
+      kind: "remote",
+      transport: "sandbox",
+      providerKey: "local-test",
+      remoteCwd: rootDir,
+      timeoutMs: 30_000,
+      runner,
+    };
+
+    const bridge = await startAdapterExecutionTargetProcessSessionBridge({
+      runId: "run-process-session-stdin-parent",
+      target,
+      runtimeRootDir: path.posix.join(rootDir, ".paperclip-runtime", "acpx"),
+      adapterKey: "acpx",
+      command: process.execPath,
+      args: [childPath],
+      cwd: rootDir,
+      env: {},
+      timeoutSec: 5,
+      onLog: async () => {},
+      getRuntimeParentContext: () => currentParent as never,
+    });
+    expect(bridge).not.toBeNull();
+
+    let peer: net.Socket | null = null;
+    try {
+      const proxySource = await readFile(bridge!.agentCommand, "utf8");
+      const port = Number(/port: (\d+)/.exec(proxySource)?.[1] ?? Number.NaN);
+      const tokenLiteral = /const token = (".*?");/.exec(proxySource)?.[1];
+      expect(Number.isFinite(port)).toBe(true);
+      expect(typeof tokenLiteral).toBe("string");
+      const token = JSON.parse(tokenLiteral as string) as string;
+
+      // Open the socket while `connectParent` is the live run parent.
+      const peerSocket = net.createConnection({ host: "127.0.0.1", port });
+      peer = peerSocket;
+      peerSocket.on("error", () => undefined);
+      await new Promise<void>((resolve, reject) => {
+        peerSocket.once("connect", () => resolve());
+        peerSocket.once("error", reject);
+      });
+      // Let the server accept the connection and register the `data` handler
+      // under the connect-time parent before the getter switches.
+      await new Promise<void>((resolve) => setImmediate(resolve));
+
+      // The run enters an agent turn: the live run parent switches.
+      currentParent = turnParent;
+
+      // Send one stdin line. The first token-bearing message authenticates and
+      // writes the stdin file. That write must read `turnParent` at send time.
+      peerSocket.write(`${JSON.stringify({ token, type: "stdin", data: Buffer.from("hi").toString("base64") })}\n`);
+
+      await stdinWriteObserved;
+      // The stdin write ran under the send-time parent, not the connect-time
+      // parent captured when the socket opened.
+      expect(stdinWriteStep).not.toBe("unset");
+      expect(stdinWriteStep).not.toBeNull();
+      expect((stdinWriteStep as { parentContext?: unknown }).parentContext).toBe(turnParent);
+      expect((stdinWriteStep as { parentContext?: unknown }).parentContext).not.toBe(connectParent);
+      expect((stdinWriteStep as { criticalPath?: boolean }).criticalPath).toBe(false);
+    } finally {
+      peer?.destroy();
+      await bridge?.stop();
+    }
+  });
+
   it("bridges bidirectional sandbox process sessions through a local ACPX-spawnable proxy", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-process-session-"));
     cleanupDirs.push(rootDir);

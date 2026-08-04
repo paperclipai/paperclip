@@ -1498,13 +1498,14 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
   };
 
   const liveSockets = new Set<net.Socket>();
-  // Register the per-connection socket handlers under the current-run parent
-  // context. A stdin write from a socket handler is a run-time exec, not startup
-  // work, so its `sandbox.exec` span parents to the live run span, not to the
-  // ended bridge step. Read the getter per connection: the live parent switches
-  // to `agent.turn` during the turn and back to `task.run` after it. With no
-  // getter the store stays empty, exactly like the earlier unparented behavior.
-  const server = net.createServer((nextSocket) => runWithRuntimeParent(input.getRuntimeParentContext?.(), () => {
+  // Register the per-connection socket handlers with no run parent context.
+  // A stdin write from a socket handler is a run-time exec, not startup work.
+  // The connection can open under `task.run` and receive stdin later, during an
+  // `agent.turn`. So the handler must read the current-run parent at send time,
+  // not at connect time. A connect-time read captures the parent that was live
+  // when the socket opened, and every later exec span parents to that stale
+  // parent. The `data` handler below reads the getter per message instead.
+  const server = net.createServer((nextSocket) => {
     liveSockets.add(nextSocket);
     nextSocket.setEncoding("utf8");
     nextSocket.on("error", () => undefined);
@@ -1547,23 +1548,29 @@ export async function startAdapterExecutionTargetProcessSessionBridge(input: {
           socket = nextSocket;
           flushPendingRemoteEvents();
         }
-        void (async () => {
-          if (message.type === "stdin" && typeof message.data === "string") {
-            stdinSeq += 1;
-            const name = `${String(stdinSeq).padStart(12, "0")}.json`;
-            await client.writeTextFile(path.posix.join(stdinDir, name), jsonLine({ type: "stdin", data: message.data }));
-          } else if (message.type === "stdinEnd") {
-            stdinSeq += 1;
-            const name = `${String(stdinSeq).padStart(12, "0")}.json`;
-            await client.writeTextFile(path.posix.join(stdinDir, name), jsonLine({ type: "stdinEnd" }));
-          }
-        })().catch((error) => {
-          nextSocket.write(jsonLine({ type: "error", message: error instanceof Error ? error.message : String(error) }));
-          nextSocket.destroy();
+        // Read the current-run parent now, at send time. The live parent
+        // switches to `agent.turn` during the turn and back to `task.run`
+        // after it. With no getter the store stays empty, exactly like the
+        // earlier unparented behavior.
+        runWithRuntimeParent(input.getRuntimeParentContext?.(), () => {
+          void (async () => {
+            if (message.type === "stdin" && typeof message.data === "string") {
+              stdinSeq += 1;
+              const name = `${String(stdinSeq).padStart(12, "0")}.json`;
+              await client.writeTextFile(path.posix.join(stdinDir, name), jsonLine({ type: "stdin", data: message.data }));
+            } else if (message.type === "stdinEnd") {
+              stdinSeq += 1;
+              const name = `${String(stdinSeq).padStart(12, "0")}.json`;
+              await client.writeTextFile(path.posix.join(stdinDir, name), jsonLine({ type: "stdinEnd" }));
+            }
+          })().catch((error) => {
+            nextSocket.write(jsonLine({ type: "error", message: error instanceof Error ? error.message : String(error) }));
+            nextSocket.destroy();
+          });
         });
       }
     });
-  }));
+  });
 
   const poll = async () => {
     if (stopping) return;
