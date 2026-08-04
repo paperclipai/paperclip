@@ -21,7 +21,10 @@ const mockEnvironmentService = vi.hoisted(() => ({
   getById: vi.fn(),
 }));
 const mockWorkspaceOperationService = vi.hoisted(() => ({}));
-const mockHeartbeatService = vi.hoisted(() => ({ cancelRun: vi.fn() }));
+const mockHeartbeatService = vi.hoisted(() => ({
+  cancelRun: vi.fn(),
+  waitForRunExecutionDrain: vi.fn(),
+}));
 const mockLogActivity = vi.hoisted(() => vi.fn());
 const mockGetTelemetryClient = vi.hoisted(() => vi.fn());
 const mockAccessService = vi.hoisted(() => ({
