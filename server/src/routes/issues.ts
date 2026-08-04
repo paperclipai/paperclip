@@ -129,6 +129,7 @@ import {
   workProductService,
 } from "../services/index.js";
 import { buildPlanReviewContext } from "../services/plan-review-context.js";
+import { approvalService } from "../services/approvals.js";
 import { hydrateSuccessfulRunHandoffLiveness } from "../services/successful-run-handoff-state.js";
 import {
   TASK_WATCHDOG_ORIGIN_KIND,
@@ -2660,6 +2661,7 @@ export function issueRoutes(
   const projectsSvc = projectService(db);
   const goalsSvc = goalService(db);
   const issueApprovalsSvc = issueApprovalService(db);
+  const approvalsSvc = approvalService(db);
   const recoveryActionsSvc = issueRecoveryActionService(db);
   const executionWorkspacesSvc = executionWorkspaceServiceDirect(db);
   const workProductsSvc = workProductService(db);
@@ -2708,6 +2710,40 @@ export function issueRoutes(
       .catch((err) => {
         logger.warn({ err, issueId: issue.id }, "task watchdog evaluation hook failed");
       });
+  }
+
+  async function reconcileObsoleteApprovalsForIssue(
+    issue: { id: string; companyId: string },
+    source: string,
+  ) {
+    let results: Awaited<ReturnType<typeof approvalsSvc.reconcileObsoleteForIssue>>;
+    try {
+      results = await approvalsSvc.reconcileObsoleteForIssue(issue.id);
+    } catch (err) {
+      // Only swallow reconciliation failures. Applied cancellations must still
+      // emit audit evidence — logActivity errors propagate below.
+      logger.warn({ err, issueId: issue.id, source }, "failed to reconcile obsolete linked approvals");
+      return;
+    }
+
+    for (const { approval, applied } of results) {
+      if (!applied) continue;
+      await logActivity(db, {
+        companyId: issue.companyId,
+        actorType: "system",
+        actorId: "approval_lifecycle",
+        action: "approval.cancelled",
+        entityType: "approval",
+        entityId: approval.id,
+        details: {
+          type: approval.type,
+          reason: "linked_issues_terminal",
+          decisionNote: approval.decisionNote,
+          sourceIssueId: issue.id,
+          source,
+        },
+      });
+    }
   }
 
   async function sourceTrustForActorWrite(
@@ -7214,6 +7250,7 @@ export function issueRoutes(
     if (!issue) return;
     if (await assertLowTrustControlPlaneDenied(req, res, issue.companyId, issue)) return;
     if (!(await assertIssueReadAllowed(req, res, issue))) return;
+    await reconcileObsoleteApprovalsForIssue(issue, "issue.approvals.read");
     const approvals = await issueApprovalsSvc.listApprovalsForIssue(id);
     res.json(approvals);
   });
@@ -7245,6 +7282,7 @@ export function issueRoutes(
       details: { approvalId: req.body.approvalId },
     });
 
+    await reconcileObsoleteApprovalsForIssue(issue, "issue.approval_linked");
     const approvals = await issueApprovalsSvc.listApprovalsForIssue(id);
     res.status(201).json(approvals);
   });
@@ -9281,6 +9319,7 @@ export function issueRoutes(
           source: "issue.status_transition.issue_closed",
         });
         await destroyReusableSandboxLeasesForTerminalIssue(issue);
+        await reconcileObsoleteApprovalsForIssue(issue, "issue.update");
       }
       if (becameTerminal && issue.parentId) {
         const parent = await svc.getWakeableParentAfterChildCompletion(issue.parentId);
@@ -10992,6 +11031,7 @@ export function issueRoutes(
           source: "issue.status_transition.issue_closed",
         });
         await destroyReusableSandboxLeasesForTerminalIssue(currentIssue);
+        await reconcileObsoleteApprovalsForIssue(currentIssue, "issue.comment");
       }
       if (becameTerminal && currentIssue.parentId) {
         const parent = await svc.getWakeableParentAfterChildCompletion(currentIssue.parentId);
