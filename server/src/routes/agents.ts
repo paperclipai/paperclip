@@ -85,6 +85,7 @@ import {
 } from "../adapters/index.js";
 import { redactEventPayload } from "../redaction.js";
 import { redactCurrentUserValue } from "../log-redaction.js";
+import { redactTranscriptDiagnosticValue } from "../transcript-security.js";
 import { renderOrgChartSvg, renderOrgChartPng, type OrgNode, type OrgChartStyle, ORG_CHART_STYLES } from "./org-chart-svg.js";
 import {
   instanceSettingsService,
@@ -3717,7 +3718,7 @@ export function agentRoutes(
     const limit = limitParam ? Math.max(1, Math.min(1000, parseInt(limitParam, 10) || 200)) : undefined;
     const summary = req.query.summary === "true" || req.query.summary === "1";
     const runs = await heartbeat.list(companyId, agentId, limit, { summary });
-    res.json(runs);
+    res.json(redactTranscriptDiagnosticValue(runs));
   });
 
   router.get("/companies/:companyId/live-runs", async (req, res) => {
@@ -3792,17 +3793,17 @@ export function agentRoutes(
         .limit(targetRunCount - liveRuns.length);
 
       const rows = [...liveRuns, ...recentRuns];
-      res.json(await Promise.all(rows.map(async (run) => ({
+      res.json(redactTranscriptDiagnosticValue(await Promise.all(rows.map(async (run) => ({
         ...heartbeat.decorateActiveRunStatus(run),
         outputSilence: await heartbeat.buildRunOutputSilence(run),
-      }))));
+      })))));
       return;
     }
 
-    res.json(await Promise.all(liveRuns.map(async (run) => ({
+    res.json(redactTranscriptDiagnosticValue(await Promise.all(liveRuns.map(async (run) => ({
       ...heartbeat.decorateActiveRunStatus(run),
       outputSilence: await heartbeat.buildRunOutputSilence(run),
-    }))));
+    })))));
   });
 
   router.get("/heartbeat-runs/:runId", async (req, res) => {
@@ -3812,9 +3813,11 @@ export function agentRoutes(
     const retryExhaustedReason = await heartbeat.getRetryExhaustedReason(runId);
     const decoratedRun = heartbeat.decorateActiveRunStatus(run);
     res.json(
-      redactCurrentUserValue(
-        { ...decoratedRun, retryExhaustedReason, outputSilence: await heartbeat.buildRunOutputSilence(run) },
-        await getCurrentUserRedactionOptions(),
+      redactTranscriptDiagnosticValue(
+        redactCurrentUserValue(
+          { ...decoratedRun, retryExhaustedReason, outputSilence: await heartbeat.buildRunOutputSilence(run) },
+          await getCurrentUserRedactionOptions(),
+        ),
       ),
     );
   });
@@ -3891,10 +3894,12 @@ export function agentRoutes(
     const events = await heartbeat.listEvents(runId, Number.isFinite(afterSeq) ? afterSeq : 0, Number.isFinite(limit) ? limit : 200);
     const currentUserRedactionOptions = await getCurrentUserRedactionOptions();
     const redactedEvents = events.map((event) =>
-      redactCurrentUserValue({
-        ...event,
-        payload: redactEventPayload(event.payload),
-      }, currentUserRedactionOptions),
+      redactTranscriptDiagnosticValue(
+        redactCurrentUserValue({
+          ...event,
+          payload: redactEventPayload(event.payload),
+        }, currentUserRedactionOptions),
+      ),
     );
     res.json(redactedEvents);
   });
