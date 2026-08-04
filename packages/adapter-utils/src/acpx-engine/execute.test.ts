@@ -216,6 +216,10 @@ interface RecordingSpan {
   name: string;
   attributes: Record<string, string | number | boolean>;
   parent: RecordingSpan | null;
+  // The raw third `startSpan` argument — the parent-context token — before the
+  // recorder resolves it to a parent span. A root span receives `undefined`
+  // here, so a test asserts the trace-root shape from the argument itself.
+  parentContextArg: unknown;
   status: { code: number } | null;
   ended: boolean;
   setAttribute(key: string, value: string | number | boolean): void;
@@ -245,6 +249,7 @@ function createRecordingStartupTrace() {
           name,
           attributes: { ...(options?.attributes ?? {}) },
           parent,
+          parentContextArg: context,
           status: null,
           ended: false,
           setAttribute(key: string, value: string | number | boolean) {
@@ -3235,6 +3240,39 @@ describe("ACPX engine sandbox-start spans (opt-in root + child parenting)", () =
       expect(span.parent, `span "${span.name}" must parent to the root`).toBe(rootSpan);
       expect(span.ended, `span "${span.name}" must end`).toBe(true);
     }
+  });
+
+  it("test_sandbox_startup_span_is_trace_root_today", async () => {
+    const root = await makeTempRoot();
+    const stateDir = path.join(root, "state");
+    const localCwd = path.join(root, "worktree");
+    const codexHome = path.join(root, "codex-home");
+    await fs.mkdir(localCwd, { recursive: true });
+    await fs.mkdir(codexHome, { recursive: true });
+    const executionTarget = await remoteSandboxTarget(root);
+    const { traceContext, spans } = createRecordingStartupTrace();
+
+    // Run the executor startup path with a fake remote-sandbox tracer. The
+    // startup root opens the `sandbox.startup` span with no third `startSpan`
+    // argument today.
+    await runExecutor(
+      {
+        agent: "codex",
+        agentCommand: "node ./fake-acp.js",
+        stateDir,
+        cwd: localCwd,
+        env: { CODEX_HOME: codexHome },
+      },
+      { authToken: "real-run-jwt", executionTarget, startupTraceContext: traceContext },
+    );
+
+    const startupSpan = spans.find((span) => span.name === "sandbox.startup");
+    expect(startupSpan).toBeTruthy();
+    // The `sandbox.startup` `startSpan` call receives `undefined` as its third
+    // argument, so the parent-context token is `undefined` and the span starts a
+    // new trace root.
+    expect(startupSpan!.parentContextArg).toBeUndefined();
+    expect(startupSpan!.parent).toBeNull();
   });
 
   it("records root wall / work / diff times and the bounded context on the root span", async () => {
