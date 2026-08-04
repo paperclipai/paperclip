@@ -1,3 +1,5 @@
+import { rm } from "node:fs/promises";
+import path from "node:path";
 import { and, count, eq, gte, inArray, isNull, lt, notInArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
@@ -38,6 +40,37 @@ import { environmentService } from "./environments.js";
 import { heartbeatService } from "./heartbeat.js";
 import { logActivity } from "./activity-log.js";
 import { builtInAgentService } from "./built-in-agents.js";
+import { loadConfig } from "../config.js";
+import { resolvePaperclipInstanceRoot } from "../home-paths.js";
+import { logger } from "../middleware/logger.js";
+
+export type FileCleanupStatus = "not_requested" | "succeeded" | "failed";
+
+const SAFE_PATH_SEGMENT = /^[a-zA-Z0-9_-]+$/;
+
+async function removeCompanyManagedFiles(companyId: string): Promise<void> {
+  if (!SAFE_PATH_SEGMENT.test(companyId)) {
+    throw new Error("Invalid company id for managed-file cleanup");
+  }
+
+  const instanceRoot = resolvePaperclipInstanceRoot();
+  const config = loadConfig();
+  const targets = [
+    path.resolve(instanceRoot, "companies", companyId),
+    path.resolve(instanceRoot, "projects", companyId),
+    path.resolve(instanceRoot, "skills", companyId),
+    path.resolve(instanceRoot, "data", "run-logs", companyId),
+  ];
+  if (config.storageProvider === "local_disk") {
+    targets.push(path.resolve(config.storageLocalDiskBaseDir, companyId));
+  }
+
+  const results = await Promise.allSettled(
+    targets.map((target) => rm(target, { recursive: true, force: true })),
+  );
+  const failure = results.find((result) => result.status === "rejected");
+  if (failure?.status === "rejected") throw failure.reason;
+}
 
 export interface CompanyActivityActor {
   actorType: "user" | "agent" | "system" | "plugin";
@@ -53,7 +86,10 @@ const SYSTEM_COMPANY_ACTOR: CompanyActivityActor = {
   runId: null,
 };
 
-export function companyService(db: Db) {
+export function companyService(
+  db: Db,
+  options: { removeManagedFiles?: (companyId: string) => Promise<void> } = {},
+) {
   const ISSUE_PREFIX_FALLBACK = "CMP";
   const environmentsSvc = environmentService(db);
   const heartbeat = heartbeatService(db);
@@ -430,8 +466,8 @@ export function companyService(db: Db) {
       return result.company;
     },
 
-    remove: (id: string) =>
-      db.transaction(async (tx) => {
+    remove: async (id: string, removeOptions: { deleteFiles?: boolean } = {}) => {
+      const company = await db.transaction(async (tx) => {
         // Delete from child tables in dependency order
         const companyRunIds = await tx
           .select({ id: heartbeatRuns.id })
@@ -478,7 +514,22 @@ export function companyService(db: Db) {
           .where(eq(companies.id, id))
           .returning();
         return rows[0] ?? null;
-      }),
+      });
+      if (!company) return null;
+
+      let fileCleanup: FileCleanupStatus = "not_requested";
+      if (removeOptions.deleteFiles) {
+        try {
+          await (options.removeManagedFiles ?? removeCompanyManagedFiles)(id);
+          fileCleanup = "succeeded";
+        } catch (err) {
+          fileCleanup = "failed";
+          logger.warn({ err, companyId: id }, "company deleted but managed-file cleanup failed");
+        }
+      }
+
+      return { ...company, fileCleanup };
+    },
 
     stats: () =>
       Promise.all([

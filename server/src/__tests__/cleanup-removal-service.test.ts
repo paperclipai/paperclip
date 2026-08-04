@@ -1,6 +1,6 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
   agents,
@@ -277,6 +277,40 @@ describeEmbeddedPostgres("cleanup removal services", () => {
     expect(removed?.id).toBe(companyId);
     await expect(db.select().from(routines).where(eq(routines.id, routineId))).resolves.toHaveLength(0);
     await expect(db.select().from(agents).where(eq(agents.id, agentId))).resolves.toHaveLength(0);
+    await expect(db.select().from(companies).where(eq(companies.id, companyId))).resolves.toHaveLength(0);
+  });
+
+  it("deletes managed files only when explicitly requested", async () => {
+    const { companyId } = await seedFixture();
+    const removeManagedFiles = vi.fn().mockResolvedValue(undefined);
+
+    const removed = await companyService(db, { removeManagedFiles }).remove(companyId, {
+      deleteFiles: true,
+    });
+
+    expect(removeManagedFiles).toHaveBeenCalledWith(companyId);
+    expect(removed?.fileCleanup).toBe("succeeded");
+  });
+
+  it("does not delete managed files by default", async () => {
+    const { companyId } = await seedFixture();
+    const removeManagedFiles = vi.fn().mockResolvedValue(undefined);
+
+    const removed = await companyService(db, { removeManagedFiles }).remove(companyId);
+
+    expect(removeManagedFiles).not.toHaveBeenCalled();
+    expect(removed?.fileCleanup).toBe("not_requested");
+  });
+
+  it("reports cleanup failure after completing database deletion", async () => {
+    const { companyId } = await seedFixture();
+    const removeManagedFiles = vi.fn().mockRejectedValue(new Error("permission denied"));
+
+    const removed = await companyService(db, { removeManagedFiles }).remove(companyId, {
+      deleteFiles: true,
+    });
+
+    expect(removed?.fileCleanup).toBe("failed");
     await expect(db.select().from(companies).where(eq(companies.id, companyId))).resolves.toHaveLength(0);
   });
 });
