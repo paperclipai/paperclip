@@ -60,6 +60,7 @@ import {
   issueCommentAuthorTypeSchema,
   issueCommentMetadataSchema,
   issueCommentPresentationSchema,
+  isIssueProductivityReviewOriginKind,
   isUuidLike,
   normalizeIssueIdentifier as normalizeIssueReferenceIdentifier,
 } from "@paperclipai/shared";
@@ -7555,7 +7556,7 @@ export function issueService(db: Db) {
 
     checkout: async (id: string, agentId: string, expectedStatuses: string[], checkoutRunId: string | null) => {
       const issueCompany = await db
-        .select({ companyId: issues.companyId })
+        .select({ companyId: issues.companyId, originKind: issues.originKind })
         .from(issues)
         .where(eq(issues.id, id))
         .then((rows) => rows[0] ?? null);
@@ -7563,18 +7564,20 @@ export function issueService(db: Db) {
       await assertAssignableAgent(db, issueCompany.companyId, agentId, { kind: "work" });
 
       const now = new Date();
-      const activePauseHold = await treeControlSvc.getActivePauseHoldGate(issueCompany.companyId, id);
-      if (
-        activePauseHold &&
-        !(await isTreeHoldInteractionCheckoutAllowed(issueCompany.companyId, checkoutRunId, activePauseHold))
-      ) {
-        throw conflict("Issue checkout blocked by active subtree pause hold", {
-          issueId: id,
-          holdId: activePauseHold.holdId,
-          rootIssueId: activePauseHold.rootIssueId,
-          mode: activePauseHold.mode,
-          securityPrinciples: ["Complete Mediation", "Fail Securely", "Secure Defaults"],
-        });
+      if (!isIssueProductivityReviewOriginKind(issueCompany.originKind)) {
+        const activePauseHold = await treeControlSvc.getActivePauseHoldGate(issueCompany.companyId, id);
+        if (
+          activePauseHold &&
+          !(await isTreeHoldInteractionCheckoutAllowed(issueCompany.companyId, checkoutRunId, activePauseHold))
+        ) {
+          throw conflict("Issue checkout blocked by active subtree pause hold", {
+            issueId: id,
+            holdId: activePauseHold.holdId,
+            rootIssueId: activePauseHold.rootIssueId,
+            mode: activePauseHold.mode,
+            securityPrinciples: ["Complete Mediation", "Fail Securely", "Secure Defaults"],
+          });
+        }
       }
 
       await clearExecutionRunIfTerminal(id);

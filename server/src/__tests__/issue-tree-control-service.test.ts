@@ -688,4 +688,81 @@ describeEmbeddedPostgres("issueTreeControlService", () => {
       resumeMode: "subtree",
     });
   });
+
+  it("exempts productivity-review child issues from subtree pause hold on checkout", async () => {
+    const companyId = randomUUID();
+    const agentId = randomUUID();
+    const parentIssueId = randomUUID();
+    const reviewChildId = randomUUID();
+    const normalChildId = randomUUID();
+
+    await db.insert(companies).values({
+      id: companyId,
+      name: "Paperclip",
+      issuePrefix: `T${companyId.replace(/-/g, "").slice(0, 6).toUpperCase()}`,
+      requireBoardApprovalForNewAgents: false,
+    });
+    await db.insert(agents).values({
+      id: agentId,
+      companyId,
+      name: "ReviewAgent",
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await db.insert(issues).values([
+      {
+        id: parentIssueId,
+        companyId,
+        title: "Parent (held)",
+        status: "in_progress",
+        priority: "medium",
+        assigneeAgentId: agentId,
+      },
+      {
+        id: reviewChildId,
+        companyId,
+        parentId: parentIssueId,
+        title: "Productivity review child",
+        status: "todo",
+        priority: "medium",
+        originKind: "issue_productivity_review",
+        assigneeAgentId: agentId,
+      },
+      {
+        id: normalChildId,
+        companyId,
+        parentId: parentIssueId,
+        title: "Normal child",
+        status: "todo",
+        priority: "medium",
+        assigneeAgentId: agentId,
+      },
+    ]);
+
+    const treeSvc = issueTreeControlService(db);
+    await treeSvc.createHold(companyId, parentIssueId, {
+      mode: "pause",
+      reason: "test pause hold",
+      actor: { actorType: "user", actorId: "board-user", userId: "board-user" },
+    });
+
+    const issueSvc = issueService(db);
+
+    // Regression: normal child still gets 409
+    await expect(
+      issueSvc.checkout(normalChildId, agentId, ["todo"], null),
+    ).rejects.toMatchObject({
+      status: 409,
+      details: expect.objectContaining({ rootIssueId: parentIssueId, mode: "pause" }),
+    });
+
+    // Fix: productivity-review child can checkout despite the hold
+    const checked = await issueSvc.checkout(reviewChildId, agentId, ["todo"], null);
+    expect(checked.status).toBe("in_progress");
+    expect(checked.id).toBe(reviewChildId);
+  });
 });
