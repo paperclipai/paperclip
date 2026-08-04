@@ -2418,6 +2418,65 @@ describeEmbeddedPostgres("routine service live-execution coalescing", () => {
     expect(routineIssues).toHaveLength(0);
   });
 
+  it("filters CTO MC inbound triggerPayloads before any CEO handoff", async () => {
+    const { agentId, companyId, routine, svc, wakeups } = await seedFixture();
+    const ceoId = randomUUID();
+    await db.update(agents).set({ role: "cto" }).where(eq(agents.id, agentId));
+    await db.insert(agents).values({
+      id: ceoId,
+      companyId,
+      name: "CEO",
+      role: "ceo",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    });
+    await svc.update(routine.id, { concurrencyPolicy: "always_enqueue" }, {});
+    const { trigger } = await svc.createTrigger(routine.id, { kind: "webhook", signingMode: "none" }, {});
+
+    for (const payload of [
+      { type: "handshake" },
+      { type: "binding_probe" },
+      { _binding_probe: true },
+      { type: "keepalive" },
+    ]) {
+      const run = await svc.firePublicTrigger(trigger.publicId!, { payload });
+      const executionIssue = await db.select().from(issues).where(eq(issues.id, run.linkedIssueId!)).then((rows) => rows[0]);
+      expect(run).toMatchObject({ status: "issue_created", linkedIssueId: expect.any(String) });
+      expect(executionIssue?.status).toBe("done");
+      expect(await db.select({ id: issues.id }).from(issues).where(eq(issues.parentId, run.linkedIssueId!))).toHaveLength(0);
+    }
+
+    const secretUrl = "https://hooks.example.internal/callback?token=never-leak";
+    const secretToken = "pc_live_secret_should_never_leak_to_ceo";
+    for (const type of ["portfolio_directive", "portfolio_input_request", "approval_request", "escalation", "clarification"]) {
+      const run = await svc.firePublicTrigger(trigger.publicId!, {
+        payload: {
+          type,
+          summary: `CEO action: ${type}`,
+          callbackUrl: secretUrl,
+          bearerToken: secretToken,
+        },
+      });
+      const executionIssue = await db.select().from(issues).where(eq(issues.id, run.linkedIssueId!)).then((rows) => rows[0]);
+      const handoffs = await db.select().from(issues).where(eq(issues.parentId, run.linkedIssueId!));
+      expect(executionIssue?.status).toBe("done");
+      expect(handoffs).toHaveLength(1);
+      expect(handoffs[0]).toMatchObject({ assigneeAgentId: ceoId, originKind: "mc_inbound_ceo_handoff" });
+      expect(handoffs[0]?.description).toContain(executionIssue?.identifier);
+      expect(handoffs[0]?.description).not.toContain(secretUrl);
+      expect(handoffs[0]?.description).not.toContain(secretToken);
+    }
+
+    const unknown = await svc.firePublicTrigger(trigger.publicId!, { payload: { type: "runtime_diagnostic" } });
+    const unknownExecution = await db.select().from(issues).where(eq(issues.id, unknown.linkedIssueId!)).then((rows) => rows[0]);
+    expect(unknownExecution?.status).toBe("todo");
+    expect(await db.select({ id: issues.id }).from(issues).where(eq(issues.parentId, unknown.linkedIssueId!))).toHaveLength(0);
+    expect(wakeups.every((wakeup) => wakeup.agentId === ceoId || wakeup.agentId === agentId)).toBe(true);
+  });
+
   it("ignores receipt-ack traffic and loosely encoded probe flags instead of creating execution issues", async () => {
     const { routine, svc } = await seedFixture();
     await svc.update(routine.id, { concurrencyPolicy: "always_enqueue" }, {});

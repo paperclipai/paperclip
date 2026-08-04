@@ -81,6 +81,7 @@ import {
 import { queueIssueAssignmentWakeup, type IssueAssignmentWakeupDeps } from "./issue-assignment-wakeup.js";
 import { logActivity } from "./activity-log.js";
 import { classifyNonActionableWebhookPayload, type NonActionableWebhookPayloadKind } from "./non-actionable-webhook-payload.js";
+import { evaluateMcInboundTriggerPayloadFilter } from "./mc-inbound-trigger-payload.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 
 const OPEN_ISSUE_STATUSES = ["backlog", "todo", "in_progress", "in_review", "blocked"];
@@ -222,6 +223,7 @@ const ROUTINE_PARENT_LIFECYCLE_BINDING_ENV_KEY = "PAPERCLIP_ROUTINE_PARENT_LIFEC
 const ROUTINE_ISSUE_MODE_REUSE_TERMINAL = "reuse_terminal";
 const ROUTINE_HEALTH_ISSUE_ORIGIN_KIND = "routine_health";
 const ROUTINE_HEALTH_STREAK_THRESHOLD = 3;
+const MC_INBOUND_CEO_HANDOFF_ORIGIN_KIND = "mc_inbound_ceo_handoff";
 const ROUTINE_ISSUE_MODE_ALIASES = new Set([
   ROUTINE_ISSUE_MODE_REUSE_TERMINAL,
   "terminal_reuse",
@@ -2607,6 +2609,11 @@ export function routineService(
       throw unprocessable("Default agent required");
     }
     await assertRoutineAssignableAgent(input.routine.companyId, assigneeAgentId);
+    const assignee = await db
+      .select({ role: agents.role })
+      .from(agents)
+      .where(and(eq(agents.id, assigneeAgentId), eq(agents.companyId, input.routine.companyId)))
+      .then((rows) => rows[0] ?? null);
     const automaticVariables: Record<string, string | number | boolean> = {};
     if (input.executionWorkspaceId && routineUsesWorkspaceBranch(input.routine)) {
       const workspace = await db
@@ -2982,10 +2989,72 @@ export function routineService(
           throw new Error("Routine dispatch did not produce an execution issue");
         }
 
+        // MC inbound payloads assigned to the CTO are filtered from the
+        // persisted originating routine run, never from the issue title/body.
+        // Do this before queueing the CTO wake so liveness probes cannot create
+        // CEO noise and actionable traffic gets one durable CEO handoff.
+        const mcInbound = assignee?.role === "cto" && executionIssue.originKind === "routine_execution"
+          ? evaluateMcInboundTriggerPayloadFilter({
+              triggerPayload: createdRun.triggerPayload,
+              sourceExecutionIssueId: executionIssue.id,
+              sourceExecutionIssueIdentifier: executionIssue.identifier,
+            })
+          : null;
+        if (mcInbound?.classification.route === "liveness_done") {
+          executionIssue = (await issueSvc.update(executionIssue.id, { status: "done" }, txDb)) ?? executionIssue;
+          dispatchStatus = "issue_created";
+        } else if (mcInbound?.ceoHandoff) {
+          const ceo = await txDb
+            .select({ id: agents.id })
+            .from(agents)
+            .where(and(eq(agents.companyId, input.routine.companyId), eq(agents.role, "ceo")))
+            .orderBy(asc(agents.createdAt))
+            .limit(1)
+            .then((rows) => rows[0] ?? null);
+          const plan = mcInbound.ceoHandoff;
+          const handoff = await issueSvc.create(input.routine.companyId, {
+            projectId,
+            goalId: input.routine.goalId,
+            parentId: executionIssue.id,
+            title: plan.titleHint || "MC inbound CEO handoff",
+            description: [
+              `MC inbound ${plan.payloadType} requires CEO handling.`,
+              `Source CTO execution issue: ${plan.sourceExecutionIssueIdentifier ?? plan.sourceExecutionIssueId ?? "unknown"}.`,
+              "",
+              "Sanitized operational content:",
+              "```json",
+              JSON.stringify(plan.sanitizedContent, null, 2),
+              "```",
+            ].join("\n"),
+            status: "todo",
+            priority: input.routine.priority,
+            assigneeAgentId: ceo?.id ?? null,
+            responsibleUserId,
+            trustExplicitResponsibleUserId: true,
+            originKind: MC_INBOUND_CEO_HANDOFF_ORIGIN_KIND,
+            originId: executionIssue.id,
+            originRunId: createdRun.id,
+            idempotencyKey: `mc-inbound-ceo-handoff:${executionIssue.id}`,
+          });
+          if (handoff.assigneeAgentId) {
+            await queueIssueAssignmentWakeup({
+              heartbeat,
+              issue: handoff,
+              reason: "issue_assigned",
+              mutation: "create",
+              contextSource: "routine.mc_inbound_ceo_handoff",
+              requestedByActorType: "system",
+              rethrowOnError: true,
+            });
+          }
+          executionIssue = (await issueSvc.update(executionIssue.id, { status: "done" }, txDb)) ?? executionIssue;
+          dispatchStatus = "issue_created";
+        }
+
         // Scheduled terminal-issue reuse must enqueue after commit so the wakeup
         // service reads the reused issue as todo instead of the stale pre-commit
         // terminal row. Fresh issue creation keeps the in-transaction fast path.
-        if (input.source === "schedule" && dispatchStatus === "issue_reused") {
+        if (executionIssue.status !== "done" && input.source === "schedule" && dispatchStatus === "issue_reused") {
           deferredReuseWake.current = {
             issue: {
               id: executionIssue.id,
@@ -2993,7 +3062,7 @@ export function routineService(
               status: executionIssue.status,
             },
           };
-        } else {
+        } else if (executionIssue.status !== "done") {
           await queueIssueAssignmentWakeup({
             heartbeat,
             issue: executionIssue,
@@ -4042,7 +4111,18 @@ export function routineService(
       }
 
       const ignoredKind = classifyNonActionableWebhookPayload(input.payload ?? null);
-      if (ignoredKind) {
+      // CTO-targeted MC inbound liveness must create and close the execution
+      // issue in dispatchRoutineRun. That runtime path records the originating
+      // triggerPayload and runs before any CEO handoff; short-circuiting here
+      // would leave no terminal execution issue to audit.
+      const isCtoTarget = routine.assigneeAgentId
+        ? await db
+            .select({ role: agents.role })
+            .from(agents)
+            .where(and(eq(agents.id, routine.assigneeAgentId), eq(agents.companyId, routine.companyId)))
+            .then((rows) => rows[0]?.role === "cto")
+        : false;
+      if (ignoredKind && !isCtoTarget) {
         return recordIgnoredWebhookRun({
           routine,
           trigger,
