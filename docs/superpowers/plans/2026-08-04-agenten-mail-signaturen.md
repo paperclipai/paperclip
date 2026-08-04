@@ -1266,6 +1266,10 @@ function signiere(json, leseDatei) {
 
     if (!json.html) return json;
 
+    // Der Lookbehind (?<=[\s"']) verlangt eine echte Attributgrenze vor src.
+    // Ohne ihn traefe die Regex auch das Ende eines anderen Attributnamens
+    // (z.B. data-src) und schriebe das falsche Attribut um — still falsch
+    // statt still abwesend. Muss identisch zu signatur.py bleiben.
     // Logo ans ENDE des attachments-Arrays. Der Index muss die endgueltige
     // Position treffen: "Build Binary Attachments" benennt die Binaerfelder
     // attachment_<index>, und nodemailer nimmt genau diesen Namen als
@@ -1274,7 +1278,7 @@ function signiere(json, leseDatei) {
     const anhaenge = Array.isArray(json.attachments) ? json.attachments : [];
     const index = anhaenge.length;
     const mitCid = sig.replace(
-      /<img([^>]*?)src="data:(image\/[a-zA-Z0-9.+-]+);base64,([^"]+)"([^>]*)>/,
+      /<img([^>]*?)(?<=[\s"'])src="data:(image\/[a-zA-Z0-9.+-]+);base64,([^"]+)"([^>]*)>/,
       (_m, vor, mime, daten, nach) => {
         anhaenge.push({
           filename: `logo-${index}.${mime.split('/')[1]}`,
