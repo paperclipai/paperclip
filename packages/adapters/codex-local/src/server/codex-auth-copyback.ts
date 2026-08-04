@@ -5,6 +5,11 @@ import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { randomUUID } from "node:crypto";
 import { withDirectoryMergeLock } from "@paperclipai/adapter-utils/workspace-restore-merge";
+import {
+  isCodexAuthCacheEnabled,
+  readSubscriptionAccountId,
+  writeCodexAuthCacheEntry,
+} from "./codex-auth-cache.js";
 
 const execFile = promisify(execFileCallback);
 
@@ -41,6 +46,19 @@ export interface CopyBackCodexAuthInput {
   hostAuthPath: string;
   /** Non-leaking progress sink: receives decision/outcome lines only. */
   log: (line: string) => void | Promise<void>;
+  /**
+   * Resolves and ensures the per-identity cache slot path for a sandbox
+   * `account_id`. When this is provided AND the cache off-switch is on, the
+   * copy-back also writes the fresher, usable subscription credential into its
+   * per-identity cache slot as a second, additive write, keyed by the real
+   * `account_id`. This is independent of the host default overwrite: it can
+   * write a cache slot for a different identity than the host holds (matrix rows
+   * 1b, 3), and it never touches the host default store. When absent, no cache
+   * write happens.
+   */
+  resolveCacheEntryPath?: (accountId: string) => Promise<string>;
+  /** Environment for the cache off-switch read. Defaults to `process.env`. */
+  env?: NodeJS.ProcessEnv;
 }
 
 async function decideExitCode(sourcePath: string, destinationPath: string): Promise<number> {
@@ -93,7 +111,7 @@ async function decideExitCode(sourcePath: string, destinationPath: string): Prom
  * Never logs token bytes — only the decision outcome.
  */
 export async function copyBackCodexAuth(input: CopyBackCodexAuthInput): Promise<CopyBackCodexAuthOutcome> {
-  const { readSandboxAuth, hostAuthPath, log } = input;
+  const { readSandboxAuth, hostAuthPath, log, resolveCacheEntryPath, env } = input;
 
   // Read first (outside the lock) — a read never mutates the host, so there is
   // nothing to serialize yet. A genuinely absent sandbox `auth.json` (ENOENT —
@@ -116,7 +134,7 @@ export async function copyBackCodexAuth(input: CopyBackCodexAuthInput): Promise<
 
   const hostDir = path.dirname(hostAuthPath);
   await mkdir(hostDir, { recursive: true });
-  return withDirectoryMergeLock(hostDir, async () => {
+  const hostOutcome = await withDirectoryMergeLock(hostDir, async () => {
     // Stage on the same filesystem as the host target so both the predicate read
     // and the final rename stay device-local (rename across devices is not
     // atomic and would fail with EXDEV).
@@ -151,4 +169,21 @@ export async function copyBackCodexAuth(input: CopyBackCodexAuthInput): Promise<
       await rm(stagedTempPath, { force: true }).catch(() => undefined);
     }
   });
+
+  // Additive cache write (Phase 3). Independent of the host default overwrite
+  // above: it runs on its own directory lock, keys the slot by the real sandbox
+  // `account_id`, and can write a slot for a different identity than the host
+  // holds (matrix rows 1b, 3). It never touches the host default store. The
+  // off-switch (default on) makes this a no-op when disabled. Only a usable
+  // subscription credential has an identity to key; an api-key or unusable
+  // sandbox credential is skipped.
+  if (resolveCacheEntryPath && isCodexAuthCacheEnabled(env)) {
+    const sandboxAccountId = readSubscriptionAccountId(sandboxAuthBytes);
+    if (sandboxAccountId) {
+      const cacheEntryPath = await resolveCacheEntryPath(sandboxAccountId);
+      await writeCodexAuthCacheEntry({ sandboxAuthBytes, cacheEntryPath, log });
+    }
+  }
+
+  return hostOutcome;
 }
