@@ -599,3 +599,49 @@ def test_edit_knoten_weg_beim_upload_bleibt_liegen(monkeypatch, tmp_path):
     assert "issue-1" not in api.status
     assert api.comments == []
     assert cost_state.remaining_local_today("2026-08-04") == verbleibend_vorher
+
+
+def test_wiederholung_nutzt_die_gemerkten_quellen(monkeypatch, tmp_path):
+    """Der Dienst haengt sein eigenes Ergebnis ans selbe Issue. Wuerde der
+    Wiederholversuch die Anhangsliste neu lesen, bearbeitete er ab dem
+    zweiten Versuch sein eigenes Bild -- still und ohne Fehlermeldung."""
+    setup(monkeypatch, tmp_path)
+    job_state.add("issue-1", "prompt-1", "company-a", now=0.0,
+                  seed=42, modell="qwenedit", sources=["quelle.png"])
+    monkeypatch.setattr(bild_service.api, "get_issue",
+                        lambda iid: {"description": "prompt: x\nmodell: qwenedit"})
+    monkeypatch.setattr(bild_service.api, "list_attachments",
+                        lambda iid: pytest.fail("Anhänge dürfen NICHT neu gelesen werden"))
+    monkeypatch.setattr(comfy_client, "upload_image",
+                        lambda n, c: pytest.fail("nichts darf neu hochgeladen werden"))
+    monkeypatch.setattr(comfy_client, "poll", lambda pid: ("running", None))
+    gesendet = {}
+
+    def fake_submit(wf):
+        gesendet["wf"] = wf
+        return "prompt-2"
+
+    monkeypatch.setattr(comfy_client, "submit", fake_submit)
+
+    ergebnis = bild_service.collect_one("issue-1", job_state.get("issue-1"), now=700.0)
+
+    assert ergebnis == "timeout"
+    assert job_state.get("issue-1")["prompt_id"] == "prompt-2"
+    assert gesendet["wf"]["20"]["inputs"]["image"] == "quelle.png"
+    assert job_state.get("issue-1")["sources"] == ["quelle.png"]
+
+
+def test_wiederholung_ohne_quellen_bleibt_der_alte_weg(monkeypatch, tmp_path):
+    """Normale qwen-Auftraege haben keine sources und muessen weiterhin
+    ueber Breite/Hoehe aus dem Brief neu gebaut werden."""
+    setup(monkeypatch, tmp_path)
+    job_state.add("issue-1", "prompt-1", "company-a", now=0.0, seed=7, modell="qwen")
+    monkeypatch.setattr(bild_service.api, "get_issue",
+                        lambda iid: {"description": "prompt: Hirsch\nmodell: qwen"})
+    monkeypatch.setattr(comfy_client, "poll", lambda pid: ("running", None))
+    gesendet = {}
+    monkeypatch.setattr(comfy_client, "submit",
+                        lambda wf: (gesendet.update(wf=wf), "prompt-2")[1])
+    ergebnis = bild_service.collect_one("issue-1", job_state.get("issue-1"), now=400.0)
+    assert ergebnis == "timeout"
+    assert gesendet["wf"]["6"]["inputs"]["text"] == "Hirsch"

@@ -286,9 +286,16 @@ def collect_one(issue_id, job, now):
                 job_state.drop(issue_id)
                 return "error"
             seed = brief["seed"] if brief["seed"] is not None else random.randint(1, 2 ** 31 - 1)
-            workflow = wt.fill(wt.load_raw(_workflow_name(brief["modell"])),
-                               brief["prompt"], seed,
-                               brief["width"], brief["height"])
+            raw = wt.load_raw(_workflow_name(brief["modell"]))
+            quellen = job.get("sources") or []
+            if quellen:
+                # Bewusst die GEMERKTEN Quellen, nicht die Anhangsliste: das
+                # Ergebnis-PNG des ersten Versuchs haengt inzwischen selbst am
+                # Issue und wuerde sonst zum Quellbild.
+                workflow = wt.set_images(wt.fill(raw, brief["prompt"], seed), quellen)
+            else:
+                workflow = wt.fill(raw, brief["prompt"], seed,
+                                   brief["width"], brief["height"])
             try:
                 new_id = comfy_client.submit(workflow)
             except comfy_client.ComfyError:
