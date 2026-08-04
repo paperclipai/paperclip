@@ -1,0 +1,319 @@
+# Bild-, 360°- und Video-Aufträge an den CEO
+
+**Stand:** 2026-08-04 · geprüft gegen den laufenden Bilddienst, die Live-Instruktionen der Agenten und den Renderknoten
+
+Diese Anleitung beschreibt, wie du Bildaufträge in die Firma gibst — was der
+CEO daraus macht, welche Formulierungen funktionieren und wo die Kette heute
+noch endet.
+
+---
+
+## 1. Kurzfassung: was heute wirklich geht
+
+| Was du willst | Bestellbar? | Wie | Dauer |
+|---|---|---|---|
+| **Text → Bild** (flach) | **ja** | `modell: qwen` (lokal) oder `modell: openai` | ~14 s / ~20 s |
+| **Text → 360°-Panorama** | **ja** | `modell: qwen360` | ~5–6 min |
+| **Bild → Bild** (Variante, Retusche, Umstilisierung) | **nein** | Modell liegt auf dem Knoten, ist aber nicht angeschlossen | — |
+| **Text → Video** | **nein** | LTX-2.3 läuft, aber nur von Hand auf dem Knoten | ~3 min Rechnen, ~41 min Kaltstart |
+| **Bild → Video** | **nein** | dito (LTX kann `--image`, ist nicht angeschlossen) | — |
+| 360°-Video | **nein** | kein produktionsreifes freies Modell | — |
+
+Alles unter „nein" ist in Abschnitt 6 im Detail erklärt — inklusive dem, was
+jeweils fehlt.
+
+---
+
+## 2. Die drei Wege, einen Auftrag abzusetzen
+
+### Weg A — Paperclip-Oberfläche (empfohlen für alles Größere)
+
+<http://localhost:3100> → neues Issue → **Assignee: CEO**.
+Der CEO triagiert, delegiert und aggregiert. Das ist der Weg, wenn das Bild
+Teil einer größeren Sache ist („Social-Post zum Thema X, mit Bild").
+
+### Weg B — Telegram an Jarvis
+
+`@whitestag_jarvis_bot`, Text oder Sprachnachricht. Jarvis erkennt an deiner
+Formulierung, ob es eine Aufgabe ist, und legt daraus **ein Issue beim CEO**
+an. Du bekommst `✅ Task angelegt: WHI-xxxx` zurück.
+
+Damit Jarvis es als Auftrag versteht und nicht als Frage: **imperativ
+formulieren.** „Lass ein Bild erstellen von …" statt „Kannst du …?"
+
+### Weg C — Sprache am Studio
+
+„Hey Jarvis" → Auftrag diktieren. Gleicher Weg wie B, nur ohne Telefon.
+Bei Diktat gilt: **Fachbegriffe wie „equirektangular" verschluckt Whisper
+gern.** Sag stattdessen „Rundumblick" oder „360-Grad-Panorama".
+
+### Weg D — Abkürzung: direkt beim Bilddienst bestellen
+
+Brauchst du **nur** ein Bild und keine Firmenleistung drumherum, kannst du den
+CEO überspringen. Der Bilddienst pollt jede Minute **alle** Issues mit dem
+Label `bild` in Status `todo` oder `backlog` — unabhängig davon, wem sie
+zugewiesen sind.
+
+Also: Issue anlegen, Label **`bild`** setzen, den Brief (Abschnitt 3) in die
+**Beschreibung**, fertig. Nach spätestens einer Minute läuft der Render, das
+PNG hängt danach als Anhang am Issue und das Issue steht auf `done`.
+
+Das ist der schnellste und verlässlichste Weg für ein einzelnes Bild.
+
+---
+
+## 3. Text → Bild
+
+### Was du dem CEO sagst
+
+> Ich brauche ein Titelbild für den Blogartikel über KI-Videoproduktion.
+> Querformat, fotorealistisch, ein Schnittplatz mit zwei Monitoren im
+> Halbdunkel, warmes Licht von der Seite. Lass es vom Bilddienst rendern.
+
+Mehr braucht es nicht. Der CEO kennt den Bilddienst und legt daraus einen
+Subtask mit Label `bild` an. Du musst ihm weder Modellnamen noch Format
+nennen — aber wenn du es tust, übernimmt er es.
+
+### Was der CEO daraus baut (und was du bei Weg D selbst schreibst)
+
+Subtask mit Label `bild`, in der Beschreibung genau dieses Format —
+**eine Angabe pro Zeile, `schlüssel: wert`:**
+
+```
+prompt: Ein Schnittplatz mit zwei Monitoren im Halbdunkel, warmes Seitenlicht,
+        fotorealistisch, flache Schärfentiefe
+modell: qwen
+format: 1536x1024
+seed: 42
+```
+
+| Feld | Pflicht | Werte | Standard |
+|---|---|---|---|
+| `prompt` | **ja** | Freitext | — (fehlt er, wird der Auftrag abgebrochen) |
+| `modell` | nein | `qwen`, `qwen360`, `openai` | `qwen` |
+| `format` | nein | `1024x1024`, `1024x1536`, `1536x1024`, `1344x768`, `768x1344` | `1024x1024` |
+| `seed` | nein | 0 … sehr groß | zufällig |
+| `quality` | nur bei `openai` | `low`, `medium`, `high`, `auto` | `medium` |
+| `transparent` | nur bei `openai` | `true` / `false` | `false` |
+
+Ungültige Werte werden **stillschweigend auf den Standard zurückgesetzt** —
+ein Tippfehler bei `modell:` liefert dir also ein normales Bild statt einer
+Fehlermeldung. Der Abschlusskommentar nennt immer, was tatsächlich gelaufen
+ist; da lohnt der Blick.
+
+### `qwen` oder `openai`?
+
+**`qwen` ist der Standard und die richtige Wahl.** Läuft lokal auf dem
+MacBook-Renderknoten, kostet nichts, ~14 s pro Bild, 60 Bilder pro Tag.
+
+**`openai`** (gpt-image-1) nur, wenn du etwas brauchst, das das lokale Modell
+nicht kann — vor allem **Text im Bild** und **transparenter Hintergrund**.
+Es kostet echtes Geld und läuft gegen ein hartes Budget: 15 Bilder/Tag,
+4,50 USD/Monat. Ist das Budget erschöpft, wird der Auftrag `cancelled` mit
+Kommentar.
+
+### Reproduzieren und variieren
+
+Der verwendete `seed` steht im Abschlusskommentar. Gleicher Prompt + gleicher
+Seed = dasselbe Bild. Für Varianten: Seed weglassen (dann würfelt der Dienst)
+oder gezielt hochzählen.
+
+---
+
+## 4. Text → 360°-Panorama
+
+### Was du dem CEO sagst
+
+> Ich brauche ein 360-Grad-Panorama als Hintergrund für die VR-Szene:
+> ein leerer Konzertsaal am Vormittag, Sonnenlicht durch hohe Fenster,
+> fotografisch. Bilddienst, qwen360.
+
+### Der Brief
+
+```
+prompt: Ein leerer Konzertsaal am Vormittag, Sonnenlicht fällt durch hohe
+        Fenster auf rote Sitzreihen, Fotografie
+modell: qwen360
+format: 2048x1024
+```
+
+Ergebnis: ein equirektangulares Panorama im Seitenverhältnis 2:1, direkt in
+jedem 360-Viewer oder VR-Headset betrachtbar. Andere Formate als 2048×1024
+(erlaubt wären noch 1536×768 und 1024×512) verschlechtern das Ergebnis —
+das Modell ist auf 2048×1024 trainiert.
+
+### Fünf Regeln, die den Unterschied machen
+
+1. **Schreib „equirectangular" NICHT in den Prompt.** Das Auslösewort steht
+   bereits in der Workflow-Vorlage. Doppelt gemoppelt schadet hier.
+2. **Beschreibe den Raum, nicht den Bildausschnitt.** Es gibt keinen Rand und
+   keinen Blickwinkel — was du beschreibst, umgibt den Betrachter vollständig.
+   „Im Vordergrund links" und „Nahaufnahme" laufen ins Leere.
+3. **Nenne den Stil** (Fotografie, Ölgemälde, Illustration). Das verbessert
+   das Ergebnis deutlich.
+4. **Bei Personen: Kopf/Gesicht und Schuhwerk ausdrücklich erwähnen.** Sonst
+   werden Ganzkörperfiguren oben oder unten abgeschnitten oder verzerrt.
+5. **Nicht mehrere gleichzeitig bestellen.** Ein Panorama braucht 5–6 Minuten
+   statt 15 Sekunden.
+
+### Die Naht
+
+Auf großen, gleichmäßig hellen Flächen (Himmel, glatter Boden) bleibt an der
+Nahtstelle eine feine vertikale Linie erkennbar. In dunklen und texturierten
+Bereichen ist sie verschwunden. Für Skybox- und Hintergrundzwecke ist das
+tragbar — wenn du sie ganz weghaben willst, ist das ein zweiter Arbeitsschritt
+(Seam-Mask + Inpainting), den es heute noch nicht als Auftrag gibt.
+
+### Nebenwirkung bei gemischten Stapeln
+
+Der Knoten kann die beiden 19-GB-Modelle nicht gleichzeitig vorhalten.
+Wechselst du zwischen normalen Bildern und Panoramen, kommt jedes Mal ein
+Nachladen dazu — das Normalbild direkt nach einem 360-Lauf brauchte gemessen
+76 s statt 18 s. Kein Fehler, aber einplanen: **erst alle Panoramen, dann alle
+Normalbilder**, nicht abwechselnd.
+
+---
+
+## 5. Was du dem CEO zusätzlich mitgeben solltest
+
+Der Bilddienst kennt nur den Prompt — Marke, Zweck und Zielformat kennt er
+nicht. Diese Dinge gehören deshalb in **deinen** Auftrag an den CEO, damit er
+sie in den Prompt übersetzt:
+
+- **Wofür** — LinkedIn-Post, Blog-Header, Angebotsdeckblatt, VR-Skybox.
+  Daraus leitet er Format und Bildsprache ab.
+- **Stil** — fotorealistisch, illustrativ, technisch/diagrammartig.
+- **Was auf keinen Fall** — keine Menschen, keine Schrift, kein Logo.
+- **Wie viele Varianten** — sonst bekommst du genau eine.
+
+**Schrift im Bild:** Das lokale Modell schreibt unzuverlässig. Willst du
+Text im Bild, entweder `modell: openai` oder — besser — Bild ohne Text
+bestellen und die Typografie hinterher setzen lassen (Adobe-Agent /
+Web-Design).
+
+---
+
+## 6. Was heute nicht bestellbar ist
+
+Damit du nicht auf etwas wartest, das nicht kommt.
+
+### Bild → Bild (Variante, Retusche, Umstilisierung)
+
+**Nicht bestellbar.** Der Brief hat kein Feld für ein Eingangsbild, und die
+Workflow-Vorlage erzeugt ihr Latent immer leer (`EmptySD3LatentImage`) — es
+gibt keinen Weg, ein vorhandenes Bild hineinzugeben.
+
+Bemerkenswert: Das passende Modell **liegt bereits auf dem Renderknoten**
+(`qwen_image_edit_2511_int8_convrot.safetensors` plus die 4-Schritt-Lightning-
+LoRA). Es fehlt nur die Verdrahtung: eine Workflow-Vorlage, ein Modellname
+wie `qwenedit`, ein Brief-Feld für das Quellbild und der Upload des Anhangs
+zum Knoten. Das ist ein überschaubarer Ausbau — sag Bescheid, wenn er kommen
+soll.
+
+**Bis dahin:** Bildbearbeitung an den **Adobe-Agenten** geben (Photoshop-
+Automatisierung: Freistellen, Retusche, Compositing, Export). Das ist
+klassische Bearbeitung, keine generative Variante.
+
+### Text → Video und Bild → Video
+
+**Nicht bestellbar.** LTX-2.3 ist auf dem Renderknoten eingerichtet und
+funktioniert — der erste Testclip (704×448, 4 Sekunden, 24 fps, **mit
+synchronem Ton**) sieht überzeugend aus: kohärente Kamerafahrt, stabile
+Personen und Beleuchtung. Auch Bild→Video kann die CLI (`--image`), ebenso
+Keyframe-Interpolation zwischen zwei Bildern.
+
+Was fehlt, ist die Anbindung — und zwar aus einem konkreten Grund:
+
+| Abschnitt | Zeit |
+|---|---|
+| Rechnen (Denoising, zwei Stufen) | ~3:13 |
+| **Wanduhr gesamt** | **41:28** |
+
+Die restlichen ~38 Minuten sind reines **Laden der Gewichte**: die CLI liest
+bei jedem Aufruf über 20 GB frisch von der Platte. Ein Video-Auftrag als
+Ein-Schuss-Aufruf wäre damit unbrauchbar. Video braucht einen **residenten
+Prozess**, der die Gewichte einmal lädt — so wie ComfyUI es für Bilder tut.
+Dann liegt ein Clip bei drei bis vier Minuten.
+
+**Wenn du jetzt einen Clip brauchst:** als Einzelstück von Hand auf dem Knoten
+rendern lassen — sag es mir, dann mache ich das. Nicht als Serie: jeder Clip
+kostet dann 40 Minuten.
+
+**Warum LTX und nicht Wan oder Hunyuan:** HunyuanVideo scheidet aus
+Lizenzgründen aus (die Tencent-Lizenz schließt die EU ausdrücklich aus),
+Wan 2.2 hat die sauberste Lizenz, ist auf Apple Silicon aber unbrauchbar
+langsam. LTX ist frei für Firmen unter 10 Mio. $ Umsatz und läuft nativ auf
+Metal.
+
+### 360°-Video und Stereoskopie
+
+Kein produktionsreifes freies Modell. Zurückgestellt.
+
+---
+
+## 7. Grenzen, Kosten, Wartezeiten
+
+| Grenze | Wert | Was passiert beim Überschreiten |
+|---|---|---|
+| Lokale Bilder / Tag | 60 | Auftrag wird `cancelled`, Kommentar „morgen erneut" |
+| OpenAI-Bilder / Tag | 15 | dito |
+| OpenAI-Budget / Monat | 4,50 USD | dito, mit Angabe des Verbrauchs |
+| Gleichzeitige Renders | 3 | Auftrag wartet, einmaliger Kommentar „Warteschlange voll" |
+| Zeitlimit normales Bild | 300 s | ein automatischer zweiter Versuch, dann Abbruch + Alarmmail |
+| Zeitlimit 360° | 900 s | dito |
+| Poll-Takt des Dienstes | 60 s | — |
+
+Der Dienst bedient alle drei Firmen (WHITESTAG, Clara, Health) aus derselben
+Warteschlange — die Limits gelten **gemeinsam**.
+
+---
+
+## 8. Wenn nichts passiert
+
+Der Reihe nach:
+
+1. **Steht das Label `bild` am Issue?** Ohne Label sieht der Dienst es nicht.
+   Der Dienst pollt ausschließlich `todo` und `backlog` — ein Issue in
+   `in_progress` wird nicht abgeholt.
+2. **Ist eine Zeile `prompt: …` in der Beschreibung?** Ohne Prompt bricht der
+   Dienst ab und kommentiert das Format.
+3. **Steht ein Kommentar am Issue?** Der Dienst meldet jeden Abbruch mit
+   Grund. „Warteschlange voll" heißt: warten. „Renderknoten nicht erreichbar"
+   heißt: das MacBook (192.168.2.40) ist aus oder ComfyUI läuft nicht.
+4. **Ist der CEO überhaupt handlungsfähig?** Er steht aktuell auf `error` —
+   ein Agent in diesem Zustand nimmt keine neuen Aufträge an. Das ist ein
+   bekanntes Muster (Agenten finden nach einer LLM-Störung nicht von selbst
+   zurück). Kurzfristige Abhilfe: Weg D nutzen (direkt `bild`-Issue) oder mir
+   Bescheid geben.
+5. **Logs:** `~/.paperclip/instances/default/state/bild-service.out.log`
+   und `.err.log`.
+
+Bei echten Störungen (Knoten seit >30 Minuten weg, Auftrag hängengeblieben)
+schickt der Dienst von sich aus eine Mail an ws@whitestag.ai.
+
+---
+
+## 9. Zwei Dinge, die beim Schreiben dieser Anleitung auffielen
+
+Kein Teil deiner Anleitung, aber du solltest es wissen:
+
+1. **Der Adobe-Agent delegiert ins Leere.** Seine Instruktionen sagen: „KI-Bild
+   und KI-Video laufen ausschließlich über *Bild & Video*" — **diesen Agenten
+   gibt es in Paperclip nicht** (27 Agenten, keiner heißt so). Legt Adobe
+   einen Subtask dorthin, bleibt der für immer liegen. Der Block nennt
+   außerdem Modelle, die es hier nie gab (FLUX, Wan, Hunyuan). Sollte auf den
+   `bild`-Label-Weg umgeschrieben werden.
+2. **Der Lektor kennt 360° nicht.** 26 von 27 Agenten haben den qwen360-Block
+   in ihren Live-Instruktionen, der Lektor nur den alten Bild-Block. Für
+   seine Aufgabe unkritisch, aber beim nächsten Generator-Lauf mitziehen.
+
+---
+
+## Referenzen
+
+- Bilddienst: `~/.paperclip/scripts/bild-service/` (launchd `de.whitestag.bild-service`, 60-s-Takt)
+- Renderknoten: MacBook M5 Max, `192.168.2.40`, ComfyUI auf Port 8189
+- Label `bild`: WHITESTAG `9433325a-fa6e-43c2-bb09-b077a01843de` · Clara `f8212203-db94-4c20-9922-0078289e874e` · Health `36ad26e6-4ed8-4ac3-8f43-28c8600a1ab1`
+- CEO WHITESTAG: `506c873e-3a40-4483-9a45-0eb0fa1554bb`
+- Technische Details 360°/Video: [`specs/2026-08-03-360-panorama-und-video.md`](specs/2026-08-03-360-panorama-und-video.md)
+- Bilddienst-Design: [`specs/2026-08-02-comfyui-bild-renderer-design.md`](specs/2026-08-02-comfyui-bild-renderer-design.md)
