@@ -139,8 +139,13 @@ benchmark/work-products/**/*.ptr
 work-products/**/*headers.txt
 benchmark/work-products/**/*headers.txt
 # Non-portable operator shortcuts into the live instance work-product store.
+# These are symlinks holding ABSOLUTE local paths (/Users/<operator>/.paperclip/...)
+# and this fork is PUBLIC, so they must never be committed. None of the 17 such
+# links in the tree are tracked. They are listed individually as each appears,
+# so every new one surfaces as untracked noise until someone adds a line here.
 work-products/TSBC-1248/hermes-r1-1266-current-clean
 work-products/TSM-6048/stacklab-v5-contract-source-pack-r4-real-motion-forced-1437
+work-products/TSM-6048/stacklab-v5-contract-source-pack-r5-shared-route-forced-1437
 server/work-products/**/*.mp4
 server/work-products/**/*.png
 server/work-products/**/*.jpg
