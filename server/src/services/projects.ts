@@ -54,7 +54,6 @@ export async function removeProjectManagedFiles(input: {
     throw new Error("Invalid company or project id for managed-file cleanup");
   }
 
-  const projectsRoot = path.resolve(resolvePaperclipInstanceRoot(), "projects");
   const managedProjectRoot = path.dirname(
     resolveManagedProjectWorkspaceDir({
       companyId: input.companyId,
@@ -65,7 +64,7 @@ export async function removeProjectManagedFiles(input: {
   const targets = new Set([managedProjectRoot]);
   for (const cwd of input.workspaceCwds) {
     const resolved = path.resolve(cwd);
-    if (isPathInside(projectsRoot, resolved)) targets.add(resolved);
+    if (isPathInside(managedProjectRoot, resolved)) targets.add(resolved);
   }
 
   const results = await Promise.allSettled(

@@ -15,7 +15,7 @@ describe("project managed-file cleanup", () => {
     await Promise.all(tempRoots.splice(0).map((root) => rm(root, { recursive: true, force: true })));
   });
 
-  it("removes the managed project root without touching an external workspace", async () => {
+  it("removes the managed project root without touching external or sibling workspaces", async () => {
     const paperclipHome = await mkdtemp(path.join(os.tmpdir(), "paperclip-project-cleanup-"));
     tempRoots.push(paperclipHome);
     process.env.PAPERCLIP_HOME = paperclipHome;
@@ -28,19 +28,27 @@ describe("project managed-file cleanup", () => {
       repoName: "repo",
     });
     const externalWorkspace = path.join(paperclipHome, "external-workspace");
+    const siblingWorkspace = resolveManagedProjectWorkspaceDir({
+      companyId,
+      projectId: "33333333-3333-4333-8333-333333333333",
+      repoName: "sibling",
+    });
     await mkdir(managedWorkspace, { recursive: true });
     await mkdir(externalWorkspace, { recursive: true });
+    await mkdir(siblingWorkspace, { recursive: true });
     await writeFile(path.join(managedWorkspace, "managed.txt"), "managed");
     await writeFile(path.join(externalWorkspace, "external.txt"), "external");
+    await writeFile(path.join(siblingWorkspace, "sibling.txt"), "sibling");
 
     await removeProjectManagedFiles({
       companyId,
       projectId,
-      workspaceCwds: [externalWorkspace],
+      workspaceCwds: [externalWorkspace, siblingWorkspace],
     });
 
     await expect(access(managedWorkspace)).rejects.toThrow();
     await expect(access(path.join(externalWorkspace, "external.txt"))).resolves.toBeUndefined();
+    await expect(access(path.join(siblingWorkspace, "sibling.txt"))).resolves.toBeUndefined();
   });
 
   it("rejects unsafe path segments", async () => {

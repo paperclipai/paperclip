@@ -1,5 +1,6 @@
 import { Router, type Request, type Response } from "express";
-import type { Db } from "@paperclipai/db";
+import { executionWorkspaces, heartbeatRuns, issues, type Db } from "@paperclipai/db";
+import { and, eq, inArray, sql } from "drizzle-orm";
 import {
   createProjectSchema,
   createProjectWorkspaceSchema,
@@ -13,7 +14,13 @@ import {
 import type { WorkspaceRuntimeDesiredState, WorkspaceRuntimeServiceStateMap } from "@paperclipai/shared";
 import { trackProjectCreated } from "@paperclipai/shared/telemetry";
 import { validate } from "../middleware/validate.js";
-import { accessService, projectService, logActivity, workspaceOperationService } from "../services/index.js";
+import {
+  accessService,
+  heartbeatService,
+  projectService,
+  logActivity,
+  workspaceOperationService,
+} from "../services/index.js";
 import { conflict, forbidden } from "../errors.js";
 import { externalObjectService } from "../services/external-objects.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
@@ -23,6 +30,7 @@ import {
   listConfiguredRuntimeServiceEntries,
   runWorkspaceJobForControl,
   startRuntimeServicesForWorkspaceControl,
+  stopRuntimeServicesForExecutionWorkspace,
   stopRuntimeServicesForProjectWorkspace,
 } from "../services/workspace-runtime.js";
 import {
@@ -43,6 +51,7 @@ const SHARED_WORKSPACE_STOP_AND_RESTART_ACTIONS = new Set(["stop", "restart"]);
 export function projectRoutes(db: Db) {
   const router = Router();
   const svc = projectService(db);
+  const heartbeat = heartbeatService(db);
   const access = accessService(db);
   const secretsSvc = secretService(db);
   const workspaceOperations = workspaceOperationService(db);
@@ -58,6 +67,65 @@ export function projectRoutes(db: Db) {
     await assertEnvironmentSelectionForCompany(environmentsSvc, companyId, environmentId, {
       allowedDrivers: ["local", "ssh", "sandbox"],
     });
+  }
+
+  async function stopProjectDeletionActivity(project: Awaited<ReturnType<typeof svc.getById>>) {
+    if (!project) return;
+
+    const issueRunRefs = await db
+      .select({ checkoutRunId: issues.checkoutRunId, executionRunId: issues.executionRunId })
+      .from(issues)
+      .where(eq(issues.projectId, project.id));
+    const referencedRunIds = Array.from(
+      new Set(
+        issueRunRefs.flatMap((row) => [row.checkoutRunId, row.executionRunId]).filter(Boolean),
+      ),
+    ) as string[];
+    const referencedActiveRuns =
+      referencedRunIds.length > 0
+        ? await db
+            .select({ id: heartbeatRuns.id })
+            .from(heartbeatRuns)
+            .where(
+              and(
+                inArray(heartbeatRuns.id, referencedRunIds),
+                inArray(heartbeatRuns.status, ["queued", "running"]),
+              ),
+            )
+        : [];
+    const contextualActiveRuns = await db
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(and(
+        eq(heartbeatRuns.companyId, project.companyId),
+        inArray(heartbeatRuns.status, ["queued", "running"]),
+        sql`${heartbeatRuns.contextSnapshot} ->> 'projectId' = ${project.id}`,
+      ));
+
+    const activeRunIds = new Set([
+      ...referencedActiveRuns.map((row) => row.id),
+      ...contextualActiveRuns.map((row) => row.id),
+    ]);
+    for (const runId of activeRunIds) {
+      await heartbeat.cancelRun(runId, "Cancelled because the project was deleted");
+    }
+    for (const workspace of project.workspaces) {
+      await stopRuntimeServicesForProjectWorkspace({
+        db,
+        projectWorkspaceId: workspace.id,
+      });
+    }
+    const projectExecutionWorkspaces = await db
+      .select({ id: executionWorkspaces.id, cwd: executionWorkspaces.cwd })
+      .from(executionWorkspaces)
+      .where(eq(executionWorkspaces.projectId, project.id));
+    for (const workspace of projectExecutionWorkspaces) {
+      await stopRuntimeServicesForExecutionWorkspace({
+        db,
+        executionWorkspaceId: workspace.id,
+        workspaceCwd: workspace.cwd,
+      });
+    }
   }
 
   function readProjectPolicyEnvironmentId(policy: unknown): string | null | undefined {
@@ -667,8 +735,12 @@ export function projectRoutes(db: Db) {
     const id = req.params.id as string;
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Project not found");
     if (!existing) return;
-    const project = await svc.remove(id, {
-      deleteFiles: req.query.deleteFiles === "true" || req.query.deleteFiles === "1",
+    const deleteFiles = req.query.deleteFiles === "true" || req.query.deleteFiles === "1";
+    if (deleteFiles) {
+      await stopProjectDeletionActivity(existing);
+    }
+    const project = await svc.remove(existing.id, {
+      deleteFiles,
     });
     if (!project) {
       res.status(404).json({ error: "Project not found" });
