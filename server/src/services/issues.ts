@@ -8220,6 +8220,9 @@ export function issueService(db: Db) {
       },
       dbOrTx: any = db,
     ) => {
+      if (body.trim().length === 0) {
+        throw unprocessable("Comment body cannot be empty");
+      }
       const issue = await dbOrTx
         .select({ companyId: issues.companyId })
         .from(issues)

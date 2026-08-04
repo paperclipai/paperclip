@@ -565,6 +565,15 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
       summaryMarkdown: null,
     });
 
+    const comments = await db
+      .select()
+      .from(issueComments)
+      .where(eq(issueComments.issueId, issueId));
+    const reasonComment = comments.find((comment) => comment.body.includes("Questions cancelled"));
+    expect(reasonComment).toBeDefined();
+    expect(reasonComment?.body).toContain("Not needed anymore");
+    expect(reasonComment?.authorType).toBe("user");
+
     await expect(interactionsSvc.answerQuestions({
       id: issueId,
       companyId,
@@ -573,6 +582,78 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
     }, {
       userId: "local-board",
     })).rejects.toThrow("Interaction has already been resolved");
+  });
+
+  it("records a confirmation decline reason as an issue comment", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("Decline reason comment");
+
+    const created = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "request_confirmation",
+      continuationPolicy: "wake_assignee",
+      payload: {
+        version: 1,
+        prompt: "Proceed with the plan?",
+      },
+    }, {
+      userId: "local-board",
+    });
+
+    const rejected = await interactionsSvc.rejectInteraction({
+      id: issueId,
+      companyId,
+    }, created.id, {
+      reason: "Budget not approved",
+    }, {
+      userId: "local-board",
+    });
+
+    expect(rejected.status).toBe("rejected");
+
+    const comments = await db
+      .select()
+      .from(issueComments)
+      .where(eq(issueComments.issueId, issueId));
+    const reasonComment = comments.find((comment) => comment.body.includes("Confirmation declined"));
+    expect(reasonComment).toBeDefined();
+    expect(reasonComment?.body).toContain("Budget not approved");
+    expect(reasonComment?.authorType).toBe("user");
+
+    const withoutReason = await interactionsSvc.create({
+      id: issueId,
+      companyId,
+    }, {
+      kind: "request_confirmation",
+      payload: {
+        version: 1,
+        prompt: "Second confirmation",
+      },
+    }, {
+      userId: "local-board",
+    });
+
+    await interactionsSvc.rejectInteraction({
+      id: issueId,
+      companyId,
+    }, withoutReason.id, {}, {
+      userId: "local-board",
+    });
+
+    const after = await db
+      .select()
+      .from(issueComments)
+      .where(eq(issueComments.issueId, issueId));
+    expect(after.filter((comment) => comment.body.includes("Confirmation declined"))).toHaveLength(1);
+  });
+
+  it("rejects whitespace-only comment bodies at the service layer", async () => {
+    const { issueId } = await seedConfirmationIssue("Whitespace comment guard");
+
+    await expect(
+      issuesSvc.addComment(issueId, "   \n\t  ", { userId: "local-board" }),
+    ).rejects.toThrow("Comment body cannot be empty");
   });
 
   it("expires ask_user_questions interactions by default when a user comments after creation", async () => {
