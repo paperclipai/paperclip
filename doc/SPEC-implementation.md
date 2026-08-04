@@ -531,8 +531,9 @@ Detailed ownership, execution, blocker, active-run watchdog, crash-recovery, and
 - Bearer API key mapped to one agent and company
 - Agent key scope:
   - read org/task/company context for own company
-  - read/write own assigned tasks and comments
-  - create tasks/comments for delegation
+  - read company-visible tasks and comments
+  - comment on and update visible tasks under the shared write rule
+  - create child tasks and assign visible work for delegation under the same rule
   - report heartbeat status
   - report cost events
 - Agent cannot:
@@ -556,6 +557,21 @@ Detailed ownership, execution, blocker, active-run watchdog, crash-recovery, and
 | Manage responsible user's inbox state | yes | yes (default-open policy) |
 | Manage another user's inbox state | yes | scoped `inbox:manage` grant |
 | Set work-object visibility (issue/project) | no | no (pro gate) |
+
+### 9.3.1 Shared default-open issue writes
+
+For standard-trust agents, issue comments, issue field/status updates, child
+creation under a parent, and assignment share one authorization rule: the
+target issue must be visible to the agent and the responsible user represented
+by the run must also be authorized. In V1, issue visibility defaults to the
+whole company, so these writes are company-wide by default.
+
+The shared rule does not widen low-trust, `skill_test`, or `task_bridge` key
+scopes. It also does not replace run-lifecycle controls: checkout ownership,
+active-run conflicts, status-transition validation, interaction ownership,
+budget gates, and pause gates remain independently enforced. Comment access is
+structurally downstream of issue read access (`issue:comment` is a subset of
+`issue:read`).
 
 ## 9.4 Permission Terminology and Default Visibility Rule
 

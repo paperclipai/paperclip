@@ -68,6 +68,7 @@ const mockStorageService = vi.hoisted(() => ({
   deleteObject: vi.fn(),
 }));
 const mockIssueThreadInteractionService = vi.hoisted(() => ({
+  expirePendingInteractionsForTerminalIssue: vi.fn(async () => []),
   expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
   expireStaleRequestConfirmationsForIssueDocument: vi.fn(async () => []),
   expireRequestConfirmationsSupersededByHistoricalComments: vi.fn(async () => []),
@@ -803,21 +804,43 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
-  it("rejects non-mentioned peer agents from posting comments", async () => {
+  it("allows non-mentioned peer agents to post comments on visible issues", async () => {
     mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
-      allowed: input.action === "issue:read",
+      allowed: input.action === "issue:read" || input.action === "issue:comment",
       action: input.action,
-      reason: input.action === "issue:read" ? "allow_explicit_grant" : "deny_missing_grant",
-      explanation: input.action === "issue:read" ? "Allowed by test read grant." : "Missing permission.",
+      reason: input.action === "issue:comment" ? "allow_visible_issue_write" : "allow_explicit_grant",
+      explanation: "Allowed by the shared visible-issue write rule.",
     }));
 
     const res = await request(await createApp(peerActor()))
       .post(`/api/issues/${issueId}/comments`)
       .send({ body: "I was not mentioned." });
 
-    expect(res.status, JSON.stringify(res.body)).toBe(403);
-    expect(res.body.error).toBe("Issue is outside this actor's authorization boundary");
-    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockIssueService.addComment).toHaveBeenCalledWith(
+      issueId,
+      "I was not mentioned.",
+      expect.any(Object),
+      expect.any(Object),
+    );
+  });
+
+  it("keeps default-open peer comments on closed issues inert", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "done", assigneeAgentId: ownerAgentId }));
+    mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
+      allowed: input.action === "issue:comment" || input.action === "issue:read",
+      action: input.action,
+      reason: input.action === "issue:comment" ? "allow_visible_issue_write" : "allow_company_agent",
+      explanation: "Allowed by the shared visible-issue write rule.",
+    }));
+
+    const res = await request(await createApp(peerActor()))
+      .post(`/api/issues/${issueId}/comments`)
+      .send({ body: "Closed issue context only." });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockIssueService.addComment).toHaveBeenCalled();
+    expect(mockIssueService.update).not.toHaveBeenCalled();
   });
 
   it("rejects peer agents from listing comments when issue read is outside their boundary", async () => {
@@ -899,7 +922,7 @@ describe("agent issue mutation checkout ownership", () => {
     expect(mockIssueService.getComment).not.toHaveBeenCalled();
   });
 
-  it("keeps true issue mutations denied for mentioned peer agents", async () => {
+  it("allows visible issue field updates for peer agents", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue({ status: "todo", assigneeAgentId: ownerAgentId }));
     mockAccessService.decide.mockImplementation(async (input: { action: string }) => ({
       allowed: input.action === "issue:comment" || input.action === "issue:mutate",
@@ -922,9 +945,11 @@ describe("agent issue mutation checkout ownership", () => {
       .patch(`/api/issues/${issueId}`)
       .send({ status: "done" });
 
-    expect(res.status, JSON.stringify(res.body)).toBe(403);
-    expect(res.body.error).toBe("Agent cannot mutate another agent's issue");
-    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalledWith(
+      issueId,
+      expect.objectContaining({ status: "done" }),
+    );
   });
 
   it("denies cross-company agents before comment authorization is evaluated", async () => {
@@ -1204,6 +1229,24 @@ describe("agent issue mutation checkout ownership", () => {
         title: "Follow-up in same worktree",
         inheritExecutionWorkspaceFromIssueId: issueId,
       }),
+    );
+  });
+
+  it("authorizes child creation through the shared visible-issue write path", async () => {
+    mockIssueService.getById.mockResolvedValue(makeIssue({ status: "todo", assigneeAgentId: ownerAgentId }));
+
+    const res = await request(await createApp(peerActor()))
+      .post(`/api/issues/${issueId}/children`)
+      .send({ title: "Peer-created child" });
+
+    expect(res.status, JSON.stringify(res.body)).toBe(201);
+    expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({
+      action: "issue:mutate",
+      resource: expect.objectContaining({ issueId }),
+    }));
+    expect(mockIssueService.createChild).toHaveBeenCalledWith(
+      issueId,
+      expect.objectContaining({ title: "Peer-created child" }),
     );
   });
 
@@ -1492,17 +1535,35 @@ describe("agent issue mutation checkout ownership", () => {
   it.each([
     ["todo", "patch", (app: express.Express) => request(app).patch(`/api/issues/${issueId}`).send({ title: "Todo update" })],
     ["blocked", "patch", (app: express.Express) => request(app).patch(`/api/issues/${issueId}`).send({ title: "Blocked update" })],
-  ])("rejects peer agent %s issue %s mutations outside active checkout ownership", async (status, _kind, sendRequest) => {
+  ])("allows peer agent %s issue %s updates outside active checkout ownership", async (status, _kind, sendRequest) => {
     mockIssueService.getById.mockResolvedValue(makeIssue({ status: status as "todo" | "blocked", assigneeAgentId: ownerAgentId }));
 
     const res = await sendRequest(await createApp(peerActor()));
 
-    expect(res.status, JSON.stringify(res.body)).toBe(403);
-    expect(res.body.error).toBe("Agent cannot mutate another agent's issue");
+    expect(res.status, JSON.stringify(res.body)).toBe(200);
     expect(mockIssueService.assertCheckoutOwner).not.toHaveBeenCalled();
-    expect(mockIssueService.update).not.toHaveBeenCalled();
+    expect(mockIssueService.update).toHaveBeenCalled();
     expect(mockIssueService.addComment).not.toHaveBeenCalled();
   });
+
+  it.each([
+    ["done", "todo", 403, "Agent cannot request follow-up for another agent's issue"],
+    ["cancelled", "todo", 409, "Cancelled issues must be restored through the dedicated restore flow"],
+    ["blocked", "done", 403, "Agent cannot request follow-up for another agent's issue"],
+  ])(
+    "rejects peer agent direct status transitions from %s to %s",
+    async (status, nextStatus, expectedStatus, expectedError) => {
+      mockIssueService.getById.mockResolvedValue(makeIssue({ status, assigneeAgentId: ownerAgentId }));
+
+      const res = await request(await createApp(peerActor()))
+        .patch(`/api/issues/${issueId}`)
+        .send({ status: nextStatus });
+
+      expect(res.status, JSON.stringify(res.body)).toBe(expectedStatus);
+      expect(res.body.error).toBe(expectedError);
+      expect(mockIssueService.update).not.toHaveBeenCalled();
+    },
+  );
 
   it("allows same-company agent mutations on unassigned in-progress issues", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue({ assigneeAgentId: null }));

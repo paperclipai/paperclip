@@ -3,6 +3,7 @@ import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 
+import { runWithoutActiveStep } from "./acpx-engine/startup-timing.js";
 import type { CommandManagedRuntimeRunner } from "./command-managed-runtime.js";
 import { preferredShellForSandbox, shellCommandArgs } from "./sandbox-shell.js";
 import type { RunProcessResult } from "./server-utils.js";
@@ -72,10 +73,10 @@ export const DEFAULT_SANDBOX_CALLBACK_BRIDGE_ROUTE_ALLOWLIST: readonly SandboxCa
   { method: "POST", path: /^\/api\/issues\/[^/]+\/work-products$/ },
   { method: "PATCH", path: /^\/api\/work-products\/[^/]+$/ },
 
-  // Issue-thread interactions (suggest tasks, ask questions, request confirmation)
+  // Issue-thread interactions (create, resolve, verdict, and withdraw)
   { method: "GET", path: /^\/api\/issues\/[^/]+\/interactions(?:\/[^/]+)?$/ },
   { method: "POST", path: /^\/api\/issues\/[^/]+\/interactions$/ },
-  { method: "POST", path: /^\/api\/issues\/[^/]+\/interactions\/[^/]+\/(?:accept|reject|respond)$/ },
+  { method: "POST", path: /^\/api\/issues\/[^/]+\/interactions\/[^/]+\/(?:accept|reject|respond|verdicts|withdraw)$/ },
 
   // Subtasks / delegation
   { method: "POST", path: /^\/api\/companies\/[^/]+\/issues$/ },
@@ -745,7 +746,13 @@ export async function startSandboxCallbackBridgeWorker(input: {
     }
   };
 
-  const loop = (async () => {
+  // Start the long-lived poll loop outside the measured startup-step store.
+  // The `makeDir` calls above are startup work and must keep the active
+  // `bridge.paperclip` step. The loop runs run-time execs for the whole run,
+  // so each loop `sandbox.exec` span must not parent to the ended step or copy
+  // its `criticalPath` flag. `runWithoutActiveStep` empties the store for the
+  // loop only; Node keeps the empty store on every later poll continuation.
+  const loop = runWithoutActiveStep(() => (async () => {
     try {
       while (true) {
         const fileNames = await input.client.listJsonFiles(directories.requestsDir);
@@ -785,7 +792,7 @@ export async function startSandboxCallbackBridgeWorker(input: {
         settleResolve();
       }
     }
-  })();
+  })());
 
   void loop;
 

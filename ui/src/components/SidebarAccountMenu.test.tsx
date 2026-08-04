@@ -19,9 +19,14 @@ const mockInstanceSettingsApi = vi.hoisted(() => ({
 }));
 const mockToggleTheme = vi.hoisted(() => vi.fn());
 const mockSetSidebarOpen = vi.hoisted(() => vi.fn());
+const mockNavigateTopLevel = vi.hoisted(() => vi.fn());
 
 vi.mock("@/api/auth", () => ({
   authApi: mockAuthApi,
+}));
+
+vi.mock("@/lib/browserNavigation", () => ({
+  navigateTopLevel: mockNavigateTopLevel,
 }));
 
 vi.mock("@/api/instanceSettings", () => ({
@@ -86,7 +91,7 @@ describe("SidebarAccountMenu", () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
       enableIsolatedWorkspaces: false,
     });
-    mockAuthApi.signOut.mockResolvedValue(undefined);
+    mockAuthApi.signOut.mockResolvedValue({ success: true, redirectTo: "/cloud/logout" });
   });
 
   afterEach(() => {
@@ -162,7 +167,38 @@ describe("SidebarAccountMenu", () => {
     await flushReact();
 
     expect(mockAuthApi.signOut).toHaveBeenCalledOnce();
-    expect(queryClient.getQueryState(queryKeys.health)?.isInvalidated).toBe(true);
+    expect(mockNavigateTopLevel).toHaveBeenCalledWith("/cloud/logout");
+
+    await act(async () => {
+      root.unmount();
+    });
+  });
+
+  it("falls back to the managed logout route when sign-out omits a redirect", async () => {
+    mockAuthApi.signOut.mockResolvedValue({ success: true });
+    const root = createRoot(container);
+    const queryClient = new QueryClient({
+      defaultOptions: { queries: { retry: false } },
+    });
+
+    await act(async () => {
+      root.render(
+        <QueryClientProvider client={queryClient}>
+          <SidebarAccountMenu deploymentMode="authenticated" open />
+        </QueryClientProvider>,
+      );
+    });
+    await flushReact();
+
+    const signOutButton = Array.from(document.body.querySelectorAll("button")).find(
+      (button) => button.textContent?.includes("Sign out"),
+    );
+    await act(async () => {
+      signOutButton?.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+    });
+    await flushReact();
+
+    expect(mockNavigateTopLevel).toHaveBeenCalledWith("/cloud/logout");
 
     await act(async () => {
       root.unmount();

@@ -25,6 +25,7 @@ import type {
   ModelProfileKey,
   IssueThreadInteractionContinuationPolicy,
   IssueThreadInteractionKind,
+  IssueThreadInteractionResolverPolicy,
   IssueThreadInteractionStatus,
   IssueStatus,
 } from "../constants.js";
@@ -1019,6 +1020,7 @@ export interface IssueThreadInteractionActorFields {
   createdByAgentId?: string | null;
   createdByUserId?: string | null;
   resolvedByAgentId?: string | null;
+  resolvedByRunId?: string | null;
   resolvedByUserId?: string | null;
 }
 
@@ -1056,7 +1058,7 @@ export interface SuggestTasksResultCreatedTask {
 
 export interface SuggestTasksResult {
   version: 1;
-  outcome?: "withdrawn" | "issue_closed";
+  outcome?: "withdrawn" | "issue_closed" | "addressee_deleted";
   reason?: string | null;
   createdTasks?: SuggestTasksResultCreatedTask[];
   skippedClientKeys?: string[];
@@ -1094,7 +1096,7 @@ export interface AskUserQuestionsAnswer {
 
 export interface AskUserQuestionsResult {
   version: 1;
-  outcome?: "withdrawn" | "issue_closed";
+  outcome?: "withdrawn" | "issue_closed" | "addressee_deleted";
   reason?: string | null;
   answers: AskUserQuestionsAnswer[];
   cancelled?: true;
@@ -1237,7 +1239,8 @@ export interface RequestConfirmationResult {
     | "superseded_by_newer_request"
     | "stale_target"
     | "withdrawn"
-    | "issue_closed";
+    | "issue_closed"
+    | "addressee_deleted";
   reason?: string | null;
   commentId?: string | null;
   supersededByInteractionId?: string | null;
@@ -1270,7 +1273,7 @@ export interface RequestItemVerdictsResultItem {
 
 export interface RequestItemVerdictsResult {
   version: 1;
-  outcome: "resolved" | "superseded_by_comment" | "stale_target" | "cancelled" | "withdrawn" | "issue_closed";
+  outcome: "resolved" | "superseded_by_comment" | "stale_target" | "cancelled" | "withdrawn" | "issue_closed" | "addressee_deleted";
   reason?: string | null;
   complete: boolean;
   items: RequestItemVerdictsResultItem[];
@@ -1286,10 +1289,14 @@ export interface IssueThreadInteractionBase extends IssueThreadInteractionActorF
   idempotencyKey?: string | null;
   sourceCommentId?: string | null;
   sourceRunId?: string | null;
+  addresseeAgentId?: string | null;
   title?: string | null;
   summary?: string | null;
   status: IssueThreadInteractionStatus;
   continuationPolicy: IssueThreadInteractionContinuationPolicy;
+  resolverPolicy: IssueThreadInteractionResolverPolicy;
+  requestedResolverPolicy: IssueThreadInteractionResolverPolicy;
+  effectiveResolverPolicy: IssueThreadInteractionResolverPolicy;
   createdAt: Date | string;
   updatedAt: Date | string;
   resolvedAt?: Date | string | null;

@@ -27,6 +27,7 @@ import {
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { issueService } from "../services/issues.js";
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
+import { agentService } from "../services/agents.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -97,6 +98,307 @@ describeEmbeddedPostgres("issueThreadInteractionService", () => {
 
     return { companyId, goalId, issueId };
   }
+
+  it("persists addressees without allowing them to bypass board-only governance", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("Agent-addressed interaction");
+    const creatorAgentId = randomUUID();
+    const addresseeAgentId = randomUUID();
+    const unrelatedAgentId = randomUUID();
+    const addresseeRunId = randomUUID();
+    const unrelatedRunId = randomUUID();
+    const agentRows = [
+      { id: creatorAgentId, name: "Creator" },
+      { id: addresseeAgentId, name: "Addressee" },
+      { id: unrelatedAgentId, name: "Unrelated" },
+    ].map((agent) => ({
+      ...agent,
+      companyId,
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    }));
+    await db.insert(agents).values(agentRows);
+    await db.insert(heartbeatRuns).values([
+      {
+        id: addresseeRunId,
+        companyId,
+        agentId: addresseeAgentId,
+        invocationSource: "manual",
+        status: "running",
+        startedAt: new Date("2026-07-25T12:00:00.000Z"),
+      },
+      {
+        id: unrelatedRunId,
+        companyId,
+        agentId: unrelatedAgentId,
+        invocationSource: "manual",
+        status: "running",
+        startedAt: new Date("2026-07-25T12:01:00.000Z"),
+      },
+    ]);
+
+    const input = {
+      kind: "ask_user_questions" as const,
+      resolverPolicy: "board_or_agents" as const,
+      addresseeAgentId,
+      continuationPolicy: "wake_assignee" as const,
+      payload: {
+        version: 1 as const,
+        questions: [{
+          id: "scope",
+          prompt: "Which scope?",
+          selectionMode: "single" as const,
+          options: [{ id: "phase-1", label: "Phase 1" }],
+        }],
+      },
+    };
+    const created = await interactionsSvc.create(
+      { id: issueId, companyId },
+      input,
+      { agentId: creatorAgentId },
+    );
+    expect(created).toMatchObject({
+      addresseeAgentId,
+      requestedResolverPolicy: "board_or_agents",
+      effectiveResolverPolicy: "board_or_agents",
+    });
+
+    const answered = await interactionsSvc.answerQuestions(
+      { id: issueId, companyId },
+      created.id,
+      { answers: [{ questionId: "scope", optionIds: ["phase-1"] }] },
+      { agentId: addresseeAgentId, runId: addresseeRunId },
+    );
+    expect(answered).toMatchObject({
+      status: "answered",
+      addresseeAgentId,
+      resolvedByAgentId: addresseeAgentId,
+      resolvedByRunId: addresseeRunId,
+    });
+
+    const second = await interactionsSvc.create(
+      { id: issueId, companyId },
+      { ...input, idempotencyKey: "addressed:second" },
+      { agentId: creatorAgentId },
+    );
+    await expect(interactionsSvc.answerQuestions(
+      { id: issueId, companyId },
+      second.id,
+      { answers: [{ questionId: "scope", optionIds: ["phase-1"] }] },
+      { agentId: unrelatedAgentId, runId: unrelatedRunId },
+    )).rejects.toMatchObject({
+      status: 403,
+      message: expect.stringContaining("addressed agent"),
+    });
+
+    const boardOnly = await interactionsSvc.create(
+      { id: issueId, companyId },
+      {
+        ...input,
+        resolverPolicy: "board_only",
+        idempotencyKey: "addressed:board-only",
+      },
+      { agentId: creatorAgentId },
+    );
+    await expect(interactionsSvc.answerQuestions(
+      { id: issueId, companyId },
+      boardOnly.id,
+      { answers: [{ questionId: "scope", optionIds: ["phase-1"] }] },
+      { agentId: addresseeAgentId, runId: addresseeRunId },
+    )).rejects.toMatchObject({
+      status: 403,
+      message: expect.stringContaining("board-only"),
+    });
+
+    await expect(interactionsSvc.create(
+      { id: issueId, companyId },
+      { ...input, addresseeAgentId: creatorAgentId },
+      { agentId: creatorAgentId },
+    )).rejects.toMatchObject({
+      status: 422,
+      message: expect.stringContaining("themselves"),
+    });
+  });
+
+  it("cancels addressed interactions before deleting the addressee", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("Deleted interaction addressee");
+    const creatorAgentId = randomUUID();
+    const addresseeAgentId = randomUUID();
+    const unrelatedAgentId = randomUUID();
+    const unrelatedRunId = randomUUID();
+    await db.insert(agents).values([
+      { id: creatorAgentId, name: "Creator" },
+      { id: addresseeAgentId, name: "Addressee" },
+      { id: unrelatedAgentId, name: "Unrelated" },
+    ].map((agent) => ({
+      ...agent,
+      companyId,
+      role: "engineer",
+      status: "active",
+      adapterType: "codex_local",
+      adapterConfig: {},
+      runtimeConfig: {},
+      permissions: {},
+    })));
+    await db.insert(heartbeatRuns).values({
+      id: unrelatedRunId,
+      companyId,
+      agentId: unrelatedAgentId,
+      invocationSource: "manual",
+      status: "running",
+      startedAt: new Date("2026-07-25T12:02:00.000Z"),
+    });
+
+    const created = await interactionsSvc.create(
+      { id: issueId, companyId },
+      {
+        kind: "ask_user_questions",
+        resolverPolicy: "board_or_agents",
+        addresseeAgentId,
+        payload: {
+          version: 1,
+          questions: [{
+            id: "scope",
+            prompt: "Which scope?",
+            selectionMode: "single",
+            options: [{ id: "phase-1", label: "Phase 1" }],
+          }],
+        },
+      },
+      { agentId: creatorAgentId },
+    );
+
+    await agentService(db).remove(addresseeAgentId);
+
+    const cancelled = await interactionsSvc.getById(created.id);
+    expect(cancelled).toMatchObject({
+      status: "cancelled",
+      addresseeAgentId: null,
+      resolvedByAgentId: null,
+      resolvedByRunId: null,
+      resolvedByUserId: null,
+      result: {
+        version: 1,
+        outcome: "addressee_deleted",
+        reason: "Cancelled because the addressed agent was deleted",
+      },
+    });
+    await expect(interactionsSvc.answerQuestions(
+      { id: issueId, companyId },
+      created.id,
+      { answers: [{ questionId: "scope", optionIds: ["phase-1"] }] },
+      { agentId: unrelatedAgentId, runId: unrelatedRunId },
+    )).rejects.toMatchObject({
+      status: 409,
+      message: "Interaction has already been resolved",
+    });
+  });
+
+  it.each(["paused", "pending_approval", "terminated"])(
+    "rejects %s interaction addressees",
+    async (status) => {
+      const { companyId, issueId } = await seedConfirmationIssue(`Reject ${status} addressee`);
+      const creatorAgentId = randomUUID();
+      const addresseeAgentId = randomUUID();
+      await db.insert(agents).values([
+        {
+          id: creatorAgentId,
+          companyId,
+          name: "Creator",
+          role: "engineer",
+          status: "active",
+        },
+        {
+          id: addresseeAgentId,
+          companyId,
+          name: "Unavailable addressee",
+          role: "engineer",
+          status,
+        },
+      ]);
+
+      await expect(interactionsSvc.create(
+        { id: issueId, companyId },
+        {
+          kind: "ask_user_questions",
+          addresseeAgentId,
+          payload: {
+            version: 1,
+            questions: [{
+              id: "scope",
+              prompt: "Which scope?",
+              selectionMode: "single",
+              options: [{ id: "phase-1", label: "Phase 1" }],
+            }],
+          },
+        },
+        { agentId: creatorAgentId },
+      )).rejects.toMatchObject({
+        status: 422,
+        message: expect.stringContaining("invokable agent"),
+        details: expect.objectContaining({ reason: status }),
+      });
+    },
+  );
+
+  it("rejects interaction addressees with an invalid reporting chain", async () => {
+    const { companyId, issueId } = await seedConfirmationIssue("Reject uninvokable addressee chain");
+    const creatorAgentId = randomUUID();
+    const managerAgentId = randomUUID();
+    const addresseeAgentId = randomUUID();
+    await db.insert(agents).values([
+      {
+        id: creatorAgentId,
+        companyId,
+        name: "Creator",
+        role: "engineer",
+        status: "active",
+      },
+      {
+        id: managerAgentId,
+        companyId,
+        name: "Terminated manager",
+        role: "manager",
+        status: "terminated",
+      },
+      {
+        id: addresseeAgentId,
+        companyId,
+        name: "Unavailable addressee",
+        role: "engineer",
+        status: "active",
+        reportsTo: managerAgentId,
+      },
+    ]);
+
+    await expect(interactionsSvc.create(
+      { id: issueId, companyId },
+      {
+        kind: "ask_user_questions",
+        addresseeAgentId,
+        payload: {
+          version: 1,
+          questions: [{
+            id: "scope",
+            prompt: "Which scope?",
+            selectionMode: "single",
+            options: [{ id: "phase-1", label: "Phase 1" }],
+          }],
+        },
+      },
+      { agentId: creatorAgentId },
+    )).rejects.toMatchObject({
+      status: 422,
+      message: expect.stringContaining("invokable agent"),
+      details: expect.objectContaining({
+        reason: "manager_terminated",
+        managerId: managerAgentId,
+      }),
+    });
+  });
 
   it("accepts suggested tasks by creating a rooted issue tree under the current issue", async () => {
     const companyId = randomUUID();

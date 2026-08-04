@@ -34,6 +34,7 @@ import {
   builtInAgentMarkersEqual,
   readBuiltInAgentMarker,
 } from "./built-in-agent-metadata.js";
+import { issueThreadInteractionService } from "./issue-thread-interactions.js";
 
 function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
@@ -741,6 +742,13 @@ export function agentService(db: Db) {
       }
 
       return db.transaction(async (tx) => {
+        await tx
+          .select({ id: agents.id })
+          .from(agents)
+          .where(eq(agents.id, id))
+          .for("update");
+        await issueThreadInteractionService(tx as unknown as Db)
+          .cancelPendingForDeletedAddressee(existing.companyId, id);
         await tx.update(agents).set({ reportsTo: null }).where(eq(agents.reportsTo, id));
         await tx
           .update(issues)

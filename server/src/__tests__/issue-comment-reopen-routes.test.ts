@@ -70,6 +70,7 @@ const mockRoutineService = vi.hoisted(() => ({
   syncRunStatusForIssue: vi.fn(async () => undefined),
 }));
 const mockIssueThreadInteractionService = vi.hoisted(() => ({
+  expirePendingInteractionsForTerminalIssue: vi.fn(async () => []),
   expireRequestConfirmationsSupersededByComment: vi.fn(async () => []),
   expireStaleRequestConfirmationsForIssueDocument: vi.fn(async () => []),
 }));
@@ -537,7 +538,7 @@ describe.sequential("issue comment reopen routes", () => {
     ));
   });
 
-  it("rejects non-assignee agent POST comments on closed issues", async () => {
+  it("allows default-open non-assignee POST comments on closed issues without reopening", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("done"));
     mockIssueService.addComment.mockResolvedValue({
       id: "comment-1",
@@ -549,6 +550,12 @@ describe.sequential("issue comment reopen routes", () => {
       authorAgentId: "33333333-3333-4333-8333-333333333333",
       authorUserId: null,
     });
+    mockAccessService.decide.mockImplementation(async (input: { action?: string }) => ({
+      allowed: input.action !== "tasks:manage_active_checkouts",
+      action: input.action,
+      reason: input.action === "issue:comment" ? "allow_visible_issue_write" : "allow_explicit_grant",
+      explanation: "Allowed by the shared visible-issue write rule.",
+    }));
 
     const res = await request(await installActor(createApp(), {
       type: "agent",
@@ -560,10 +567,9 @@ describe.sequential("issue comment reopen routes", () => {
       .post("/api/issues/11111111-1111-4111-8111-111111111111/comments")
       .send({ body: "hello" });
 
-    expect(res.status).toBe(403);
-    expect(res.body.error).toBe("Agent cannot mutate another agent's issue");
+    expect(res.status).toBe(201);
     expect(mockIssueService.update).not.toHaveBeenCalled();
-    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+    expect(mockIssueService.addComment).toHaveBeenCalled();
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
@@ -1419,7 +1425,7 @@ describe.sequential("issue comment reopen routes", () => {
     );
   });
 
-  it("rejects non-assignee agent PATCH comments on closed issues", async () => {
+  it("allows default-open non-assignee PATCH comments on closed issues without reopening", async () => {
     mockIssueService.getById.mockResolvedValue(makeIssue("done"));
     mockIssueService.addComment.mockResolvedValue({
       id: "comment-1",
@@ -1446,10 +1452,9 @@ describe.sequential("issue comment reopen routes", () => {
       .patch("/api/issues/11111111-1111-4111-8111-111111111111")
       .send({ comment: "hello" });
 
-    expect(res.status).toBe(403);
-    expect(res.body.error).toBe("Agent cannot mutate another agent's issue");
-    expect(mockIssueService.update).not.toHaveBeenCalled();
-    expect(mockIssueService.addComment).not.toHaveBeenCalled();
+    expect(res.status).toBe(200);
+    expect(mockIssueService.update).toHaveBeenCalled();
+    expect(mockIssueService.addComment).toHaveBeenCalled();
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 

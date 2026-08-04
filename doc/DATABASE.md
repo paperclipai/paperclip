@@ -113,7 +113,18 @@ DATABASE_URL=postgres://postgres.[PROJECT-REF]:[PASSWORD]@aws-0-[REGION].pooler.
 DATABASE_MIGRATION_URL=postgres://postgres.[PROJECT-REF]:[PASSWORD]@aws-0-[REGION].pooler.supabase.com:5432/postgres
 ```
 
-If your hosted database requires transaction-pooling-only connections, use a direct or session-pooled connection for Paperclip until runtime pooling support is documented in this guide. Do not edit database client source files as part of deployment setup.
+If your hosted database requires transaction-pooling-only connections (pgbouncer transaction mode, Supavisor port 6543, Neon `-pooler` endpoints), set `DATABASE_PREPARED_STATEMENTS=false` so the client does not rely on session-scoped prepared statements, and keep `DATABASE_MIGRATION_URL` on a direct connection. Do not edit database client source files as part of deployment setup.
+
+### Client tuning (optional)
+
+All of these are optional; when unset, the driver defaults apply and behavior is unchanged — typical self-hosted setups need none of them:
+
+```sh
+DATABASE_PREPARED_STATEMENTS=false   # required for transaction-mode poolers; default: enabled
+DATABASE_POOL_MAX=25                 # connection pool size; default: 10
+DATABASE_IDLE_TIMEOUT_SECONDS=60     # close idle pooled connections; default: keep open
+DATABASE_CONNECT_TIMEOUT_SECONDS=10  # default: 30
+```
 
 ### Push the schema
 

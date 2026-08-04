@@ -332,7 +332,7 @@ export interface ActiveStepContext {
  * a module-level singleton, so the value propagates across `await` boundaries
  * and across package boundaries that share this module.
  */
-const activeStepContextStorage = new AsyncLocalStorage<ActiveStepContext>();
+const activeStepContextStorage = new AsyncLocalStorage<ActiveStepContext | undefined>();
 
 /**
  * Return the active step context, or `null` when no measured step is running.
@@ -342,6 +342,26 @@ const activeStepContextStorage = new AsyncLocalStorage<ActiveStepContext>();
  */
 export function getActiveStepContext(): ActiveStepContext | null {
   return activeStepContextStorage.getStore() ?? null;
+}
+
+/**
+ * Run `work` with no active step context, then restore the previous store. A
+ * bridge boundary uses this to start its long-lived poll timer and socket
+ * handlers outside the measured step store.
+ *
+ * Node snapshots the active store on each async resource at creation time. So a
+ * timer or a handler scheduled inside a measured step body keeps that step store
+ * after the step span ends. A later run-time exec then reads the ended step and
+ * parents its `sandbox.exec` span to a dead startup step, and it copies the
+ * step's `criticalPath` flag. This helper resets the store for the wrapped work,
+ * so each continuation reads an empty store. Each run-time exec then opens an
+ * unparented span with no stale `criticalPath` flag.
+ *
+ * The helper forwards only the opaque store, so this package stays free of
+ * `@opentelemetry/api`. It needs no Node version gate.
+ */
+export function runWithoutActiveStep<T>(work: () => T): T {
+  return activeStepContextStorage.run(undefined, work);
 }
 
 /**

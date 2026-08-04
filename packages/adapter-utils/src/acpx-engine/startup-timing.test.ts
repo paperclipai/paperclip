@@ -7,6 +7,7 @@ import {
   getActiveStepContext,
   measureStartupStep,
   normalizeProviderFamily,
+  runWithoutActiveStep,
   SANDBOX_STARTUP_SPAN_ATTR_PREFIX,
   SANDBOX_STARTUP_SPAN_ATTRS,
   setSandboxRootSpanAttributes,
@@ -494,6 +495,86 @@ describe("getActiveStepContext", () => {
       seen = getActiveStepContext();
     }, { criticalPath: false });
     expect(seen!.criticalPath).toBe(false);
+  });
+
+  it("keeps the ended step store in a timer scheduled inside the step body", async () => {
+    // Node snapshots the active store on each async resource at creation time.
+    // A timer scheduled inside a measured step body keeps that step store, even
+    // after the step span ends. A later run-time exec then reads the ended step
+    // and parents its `sandbox.exec` span to a dead startup step. This test locks
+    // that leak, so the fix and its guard test stay honest.
+    let storeInTimer: ReturnType<typeof getActiveStepContext> = null;
+    let fireTimer!: () => void;
+    const timerRan = new Promise<void>((resolve) => {
+      fireTimer = resolve;
+    });
+
+    await measureStartupStep(
+      { onEvent: vi.fn(async () => {}) },
+      () => 0,
+      "bridge.process-session",
+      async () => {
+        setTimeout(() => {
+          storeInTimer = getActiveStepContext();
+          fireTimer();
+        }, 0);
+        return "started";
+      },
+      { criticalPath: false },
+    );
+
+    // The step span already ended, so the main line reads no active step.
+    expect(getActiveStepContext()).toBeNull();
+
+    await timerRan;
+
+    // Yet the timer callback still reads the ended step context. This is the
+    // store leak the bridge boundary fix removes.
+    expect(storeInTimer).not.toBeNull();
+    expect(storeInTimer!.criticalPath).toBe(false);
+  });
+
+  it("clears the active step for a continuation wrapped in runWithoutActiveStep", async () => {
+    // The bridge boundary wraps its long-lived poll timer in `runWithoutActiveStep`.
+    // A timer scheduled inside that empty store scope reads no active step, so a
+    // later run-time exec opens an unparented span instead of one under the ended
+    // startup step.
+    let storeInTimer: ReturnType<typeof getActiveStepContext> = null;
+    let sawTimer = false;
+    let fireTimer!: () => void;
+    const timerRan = new Promise<void>((resolve) => {
+      fireTimer = resolve;
+    });
+
+    await measureStartupStep(
+      { onEvent: vi.fn(async () => {}) },
+      () => 0,
+      "bridge.process-session",
+      async () => {
+        runWithoutActiveStep(() => {
+          setTimeout(() => {
+            storeInTimer = getActiveStepContext();
+            sawTimer = true;
+            fireTimer();
+          }, 0);
+        });
+        return "started";
+      },
+      { criticalPath: false },
+    );
+
+    await timerRan;
+
+    expect(sawTimer).toBe(true);
+    expect(storeInTimer).toBeNull();
+  });
+
+  it("returns the work result and restores the previous active step", async () => {
+    // Outside any measured step the previous store is empty, so the helper both
+    // returns the work value and leaves the store empty afterward.
+    const value = runWithoutActiveStep(() => "value");
+    expect(value).toBe("value");
+    expect(getActiveStepContext()).toBeNull();
   });
 });
 

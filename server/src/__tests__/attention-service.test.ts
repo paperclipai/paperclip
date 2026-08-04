@@ -42,6 +42,7 @@ import {
 import { errorHandler } from "../middleware/index.js";
 import { attentionRoutes } from "../routes/attention.js";
 import { attentionService } from "../services/attention.js";
+import { agentService } from "../services/agents.js";
 import { ROUTABLE_BLOCKED_ROLLOUT_AT } from "../services/routable-blocked.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -377,6 +378,19 @@ describeEmbeddedPostgres("attention service", () => {
         id: randomUUID(),
         companyId,
         issueId: interactionIssueId,
+        kind: "ask_user_questions",
+        status: "pending",
+        continuationPolicy: "wake_assignee",
+        addresseeAgentId: reviewerId,
+        title: "Ask the reviewer privately",
+        payload: { version: 1, questions: [] },
+        createdAt: new Date("2026-07-09T12:03:15.000Z"),
+        updatedAt: new Date("2026-07-09T12:03:15.000Z"),
+      },
+      {
+        id: randomUUID(),
+        companyId,
+        issueId: interactionIssueId,
         kind: "request_confirmation",
         status: "accepted",
         continuationPolicy: "wake_assignee",
@@ -678,6 +692,102 @@ describeEmbeddedPostgres("attention service", () => {
       agentName: "Broken Agent",
       failureReasonExcerpt: "adapter config missing",
     });
+  });
+
+  it("returns addressed interactions to board attention after addressee pause or termination", async () => {
+    const { companyId, reviewerId } = await seedCompany("ATF");
+    const pausedReviewerId = randomUUID();
+    const terminatedReviewerId = randomUUID();
+    await db.insert(agents).values([
+      {
+        id: pausedReviewerId,
+        companyId,
+        name: "Paused Reviewer",
+        role: "qa",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+      {
+        id: terminatedReviewerId,
+        companyId,
+        name: "Terminated Reviewer",
+        role: "qa",
+        status: "active",
+        adapterType: "codex_local",
+        adapterConfig: {},
+        runtimeConfig: {},
+        permissions: {},
+      },
+    ]);
+    const issueId = await insertIssue({
+      companyId,
+      identifier: "ATF-1",
+      title: "Needs a decision",
+      status: "in_progress",
+    });
+    await db.insert(issueThreadInteractions).values([
+      {
+        id: randomUUID(),
+        companyId,
+        issueId,
+        kind: "ask_user_questions",
+        status: "pending",
+        continuationPolicy: "wake_assignee",
+        title: "Board question",
+        payload: { version: 1, questions: [] },
+      },
+      {
+        id: randomUUID(),
+        companyId,
+        issueId,
+        kind: "ask_user_questions",
+        status: "pending",
+        continuationPolicy: "wake_assignee",
+        addresseeAgentId: reviewerId,
+        title: "Active reviewer question",
+        payload: { version: 1, questions: [] },
+      },
+      {
+        id: randomUUID(),
+        companyId,
+        issueId,
+        kind: "ask_user_questions",
+        status: "pending",
+        continuationPolicy: "wake_assignee",
+        addresseeAgentId: pausedReviewerId,
+        title: "Paused reviewer question",
+        payload: { version: 1, questions: [] },
+      },
+      {
+        id: randomUUID(),
+        companyId,
+        issueId,
+        kind: "ask_user_questions",
+        status: "pending",
+        continuationPolicy: "wake_assignee",
+        addresseeAgentId: terminatedReviewerId,
+        title: "Terminated reviewer question",
+        payload: { version: 1, questions: [] },
+      },
+    ]);
+
+    await agentService(db).pause(pausedReviewerId);
+    await agentService(db).terminate(terminatedReviewerId);
+
+    const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+    const interactionTitles = feed.items
+      .filter((item) => item.sourceKind === "issue_thread_interaction")
+      .map((item) => item.subject.title);
+
+    expect(interactionTitles).toEqual(expect.arrayContaining([
+      "Board question",
+      "Paused reviewer question",
+      "Terminated reviewer question",
+    ]));
+    expect(interactionTitles).not.toContain("Active reviewer question");
   });
 
   it("suppresses failed-run attention after a newer run for the same issue", async () => {

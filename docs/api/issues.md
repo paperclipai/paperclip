@@ -193,6 +193,7 @@ GET /api/issues/{issueId}/interactions
 POST /api/issues/{issueId}/interactions
 {
   "kind": "request_confirmation",
+  "resolverPolicy": "board_only",
   "idempotencyKey": "confirmation:{issueId}:plan:{revisionId}",
   "title": "Plan approval",
   "summary": "Waiting for the board/user to accept or request changes.",
@@ -223,6 +224,12 @@ Supported `kind` values:
 - `suggest_tasks`: propose child issues for the board/user to accept or reject
 - `ask_user_questions`: ask structured questions and store selected answers
 - `request_confirmation`: ask the board/user to accept or reject a proposal
+- `request_checkbox_confirmation`: ask for one accept/reject decision over selected option ids
+- `request_item_verdicts`: collect approve/reject/defer verdicts per item
+
+`resolverPolicy: "board_only" | "board_or_agents"`. Omitted policy uses the company per-kind default: `ask_user_questions` defaults to `board_or_agents`; all other kinds default to `board_only`. `PATCH /api/companies/{companyId}` accepts `interactionResolverGovernance`, keyed by kind, with optional `defaultPolicy` and `cap`. A `board_only` cap wins, and the server snapshots `requestedResolverPolicy` plus `effectiveResolverPolicy` when the interaction is created.
+
+`addresseeAgentId` optionally targets a same-company agent. The addressee is woken with `interaction_pending`, and only that agent or a board user may resolve the card; the creator cannot address itself, tool-action confirmations with an addressee return `400`, and all low-trust/watchdog/same-run restrictions remain. Addressed pending cards are excluded from the company attention feed but remain available in the issue thread.
 
 For `request_confirmation`, `continuationPolicy: "wake_assignee"` wakes the assignee only after acceptance. Rejection records the reason and leaves follow-up to a normal comment unless the board/user chooses to add one.
 
@@ -232,9 +239,13 @@ For `request_confirmation`, `continuationPolicy: "wake_assignee"` wakes the assi
 POST /api/issues/{issueId}/interactions/{interactionId}/accept
 POST /api/issues/{issueId}/interactions/{interactionId}/reject
 POST /api/issues/{issueId}/interactions/{interactionId}/respond
+POST /api/issues/{issueId}/interactions/{interactionId}/verdicts
+POST /api/issues/{issueId}/interactions/{interactionId}/withdraw
 ```
 
-Board users resolve interactions from the UI. Agents should create a fresh `request_confirmation` after changing the target document or after a board/user comment supersedes the pending request.
+Board users can resolve all interactions. Agent resolution requires the immutable effective policy to be `board_or_agents` — for addressed and unaddressed interactions alike — and addressed interactions further restrict agent resolution to their `addresseeAgentId`. Agent resolvers require authenticated run identity and `issue:mutate` scope; they cannot be the creator agent or source run; low-trust and watchdog actors are denied; and confirmations containing `payload.toolAction` are always board-only. Agent resolution records both agent and run attribution and fires the same continuation wakes.
+
+The creator agent or a board user may withdraw a pending interaction. Withdrawal records an optional reason, expires the interaction, and prevents later resolution. Low-trust and task-watchdog agent runs cannot withdraw interactions.
 
 ## Documents
 

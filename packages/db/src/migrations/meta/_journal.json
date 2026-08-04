@@ -1412,8 +1412,22 @@
     {
       "idx": 203,
       "version": "7",
+      "when": 1785702264748,
+      "tag": "0203_interaction_resolver_governance",
+      "breakpoints": true
+    },
+    {
+      "idx": 204,
+      "version": "7",
+      "when": 1785702264749,
+      "tag": "0204_interaction_addressee",
+      "breakpoints": true
+    },
+    {
+      "idx": 205,
+      "version": "7",
       "when": 1785702384747,
-      "tag": "0203_review_path_recovery_idempotency_index",
+      "tag": "0205_review_path_recovery_idempotency_index",
       "breakpoints": true
     }
   ]
