@@ -32,6 +32,7 @@ import {
   parseObject,
 } from "@paperclipai/adapter-utils/server-utils";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "../index.js";
+import { buildGeminiAuthSelectorCommand } from "./auth-settings.js";
 
 const moduleDir = path.dirname(fileURLToPath(import.meta.url));
 const packageRootDir = path.resolve(moduleDir, "../..");
@@ -194,33 +195,17 @@ async function prepareGeminiRemoteManagedHome(
     );
   }
 
-  // Pre-select api-key auth (file-only; no key bytes) so headless Gemini does not
-  // fail with "Invalid auth method selected". Only the credential's PRESENCE is
-  // used as a signal — no key bytes are written to settings.json.
-  //
-  // The presence check reads ONLY the resolved run `env` — the credential state
-  // this seam actually provisions into the sandbox (adapter-config env + resolved
-  // secret refs, repointed onto the in-sandbox HOME). A key that exists only in
-  // the host `process.env` is NOT a reliable signal: the remote sandbox does not
-  // inherit the host environment, so persisting a `gemini-api-key` selector off a
-  // host-only key would start headless Gemini with an auth method whose credential
-  // is unavailable in-sandbox and fail authentication. We therefore select api-key
-  // auth only when the key is present in the run env that reaches the sandbox. An
-  // existing settings.json (user-shipped via workspace) is left untouched.
-  const hasGeminiApiKey = Boolean(env.GEMINI_API_KEY || env.GOOGLE_API_KEY);
-  if (hasGeminiApiKey) {
-    const remoteSettingsPath = path.posix.join(managedRemoteHomeDir, ".gemini", "settings.json");
-    const authSettingsJson = JSON.stringify({
-      selectedAuthType: "gemini-api-key",
-      security: { auth: { selectedType: "gemini-api-key" } },
-    });
-    await runAdapterExecutionTargetShellCommand(
-      runId,
-      executionTarget,
-      `mkdir -p ${JSON.stringify(path.posix.dirname(remoteSettingsPath))} && { [ -f ${JSON.stringify(remoteSettingsPath)} ] || printf '%s' ${JSON.stringify(authSettingsJson)} > ${JSON.stringify(remoteSettingsPath)}; }`,
-      shellOptions,
-    );
-  }
+  // Pre-select api-key auth (file-only; no key bytes) so headless Gemini does
+  // not fail with "Invalid auth method selected". The command decides inside
+  // the target, where the credential is actually readable, because neither the
+  // run env nor the host env is a reliable signal on its own. See
+  // buildGeminiAuthSelectorCommand.
+  await runAdapterExecutionTargetShellCommand(
+    runId,
+    executionTarget,
+    buildGeminiAuthSelectorCommand(managedRemoteHomeDir),
+    shellOptions,
+  );
 
   return { stagedRuntime };
 }

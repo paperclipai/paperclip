@@ -16,7 +16,14 @@ import {
 // A local stand-in for a sandbox runner: runs the managed-runtime staging
 // scripts (mkdir/tar/find) as real child processes so the remote ACP lane can
 // be exercised end-to-end against the host filesystem.
-function createLocalSandboxRunner() {
+//
+// The commands are spawned with ONLY the env the caller passes. A real sandbox
+// does not inherit the host environment, and anything the host happens to
+// export must not silently satisfy an in-sandbox credential check, so the fake
+// has to isolate the same way or it stops modelling the thing under test.
+const SANDBOX_BASE_ENV = { PATH: process.env.PATH ?? "/usr/bin:/bin" };
+
+function createLocalSandboxRunner(injectedEnv: Record<string, string> = {}) {
   let counter = 0;
   return {
     execute: async (input: {
@@ -32,7 +39,18 @@ function createLocalSandboxRunner() {
       const command = input.command === "bash" ? "/bin/bash" : input.command;
       return await runChildProcess(`gemini-acp-sandbox-run-${counter}`, command, input.args ?? [], {
         cwd: input.cwd ?? process.cwd(),
-        env: input.env ?? {},
+        // runChildProcess merges process.env under the supplied env, so blank
+        // the credential vars the sandbox is not supposed to inherit rather
+        // than letting the host's leak in.
+        env: {
+          GEMINI_API_KEY: "",
+          GOOGLE_API_KEY: "",
+          ...SANDBOX_BASE_ENV,
+          ...(input.env ?? {}),
+          // Modelled last, the way a provider injects secrets into the sandbox
+          // itself rather than through the adapter's run env.
+          ...injectedEnv,
+        },
         stdin: input.stdin,
         timeoutSec: Math.max(1, Math.ceil((input.timeoutMs ?? 30_000) / 1000)),
         graceSec: 5,
@@ -558,11 +576,13 @@ describe("gemini_local ACP lane", () => {
     const hostHome = path.join(root, "home");
     await fs.mkdir(localCwd, { recursive: true });
     await fs.mkdir(remoteCwd, { recursive: true });
-    // The key exists ONLY in the host process env — never in the adapter-config env
-    // — so the remote sandbox (which does not inherit the host environment) will not
-    // receive it. Selecting api-key auth off this host-only signal would start
-    // headless Gemini with a credential it cannot see and fail authentication, so
-    // the seam must NOT persist a selector here.
+    // The key exists ONLY in the host process env — never in the adapter-config
+    // env and never injected into the sandbox — so the agent process cannot read
+    // it. Selecting api-key auth off this host-only signal would start headless
+    // Gemini with a credential it cannot see and fail authentication, so no
+    // selector may be persisted. The selector command tests the credential
+    // inside the target, so this now holds because the key is genuinely absent
+    // there, not because the host-side heuristic happened to guess right.
     const SECRET_KEY = "AIza-host-only-key-SENTINEL";
     process.env.HOME = hostHome;
     process.env.GEMINI_API_KEY = SECRET_KEY;
@@ -616,6 +636,78 @@ describe("gemini_local ACP lane", () => {
     for (const value of Object.values(meta[0]?.env ?? {})) {
       expect(String(value)).not.toContain(SECRET_KEY);
     }
+  });
+
+  it("persists an api-key auth selector for a credential injected straight into the sandbox", async () => {
+    const root = await makeTempRoot("paperclip-gemini-acp-injectedkey-");
+    const localCwd = path.join(root, "worktree");
+    const remoteCwd = path.join(root, "remote-workspace");
+    const hostHome = path.join(root, "home");
+    await fs.mkdir(localCwd, { recursive: true });
+    await fs.mkdir(remoteCwd, { recursive: true });
+    // The production shape this regressed on: a sandbox provider injects the key
+    // straight into the sandbox (the Kubernetes provider copies process.env
+    // values named by its per-adapter envKeys into the pod), so the key is
+    // readable by the agent but appears in NEITHER the adapter-config env nor
+    // any host-side signal the seam used to consult. Without a selector the
+    // Gemini CLI refuses the headless run and the ACP agent idles until the
+    // sandbox backstop fires hours later, so a selector MUST be persisted here.
+    const SECRET_KEY = "AIza-injected-key-SENTINEL";
+    process.env.HOME = hostHome;
+    delete process.env.GEMINI_API_KEY;
+    delete process.env.GOOGLE_API_KEY;
+
+    const meta: AdapterInvocationMeta[] = [];
+    const runtime = new FakeRuntime({});
+    const execute = createGeminiAcpExecutor({
+      createRuntime: (options) => {
+        Object.assign(runtime.options, options);
+        return runtime as never;
+      },
+    });
+
+    const result = await execute(
+      buildContext(localCwd, {
+        config: {
+          engine: "acp",
+          cwd: localCwd,
+          agentCommand: "node ./fake-acp.js",
+          stateDir: path.join(root, "state"),
+          env: { HOME: hostHome },
+          promptTemplate: "Do the assigned work.",
+        },
+        context: {
+          issueId: "issue-1",
+          paperclipWorkspace: { cwd: localCwd, source: "project_workspace", workspaceId: "workspace-1" },
+        },
+        executionTarget: {
+          kind: "remote",
+          transport: "sandbox",
+          providerKey: "fake-plugin",
+          remoteCwd,
+          runner: createLocalSandboxRunner({ GEMINI_API_KEY: SECRET_KEY }),
+        } as never,
+        authToken: "real-run-jwt",
+        onMeta: async (payload) => {
+          meta.push(payload);
+        },
+      }),
+    );
+
+    expect(result.exitCode).toBe(0);
+    const remappedHome = String(meta[0]?.env?.HOME ?? "");
+    expect(remappedHome).toContain(".paperclip-runtime");
+    // The selector IS written, because the credential is readable where the
+    // agent runs, and it carries no key bytes.
+    const settingsRaw = await fs.readFile(
+      path.join(remappedHome, ".gemini", "settings.json"),
+      "utf8",
+    );
+    expect(JSON.parse(settingsRaw)).toEqual({
+      selectedAuthType: "gemini-api-key",
+      security: { auth: { selectedType: "gemini-api-key" } },
+    });
+    expect(settingsRaw).not.toContain(SECRET_KEY);
   });
 
   it("falls back to the CLI lane for a runner-less sandbox even when the ACP command is set", async () => {
