@@ -194,9 +194,16 @@ export async function copyBackCodexAuth(input: CopyBackCodexAuthInput): Promise<
       // (for example EACCES or ENOSPC) makes the failure diagnosable without a
       // leak. Token bytes never reach the log.
       const code = (error as NodeJS.ErrnoException | null)?.code ?? "unknown";
-      await log(
-        `[paperclip] Codex auth cache: additive cache write failed (${code}); host copy-back result kept.`,
-      );
+      // The host copy-back above already finished and set `hostOutcome`. This
+      // diagnostic log is the last step, so a rejecting logger must not throw
+      // and turn that successful result into a failed copy-back. Guard the log:
+      // a rejection here is swallowed, and the function still returns
+      // `hostOutcome` below.
+      await Promise.resolve(
+        log(
+          `[paperclip] Codex auth cache: additive cache write failed (${code}); host copy-back result kept.`,
+        ),
+      ).catch(() => undefined);
     }
   }
 

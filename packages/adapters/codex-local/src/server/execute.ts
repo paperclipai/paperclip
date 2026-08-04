@@ -1507,11 +1507,29 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
         await paperclipBridge.stop();
       }
       if (restoreRemoteWorkspace) {
-        await onLog(
-          "stdout",
-          `[paperclip] Restoring workspace changes from ${describeAdapterExecutionTarget(executionTarget)}.\n`,
-        );
-        await restoreRemoteWorkspace();
+        // This teardown runs in a `finally`, so a throw here replaces the
+        // already-computed run result (`return toResult(...)`) and turns a
+        // successful Codex run into a failure. The workspace restore — and the
+        // host credential copy-back inside it — is a best-effort teardown step.
+        // Keep it rejection-safe: log a fault loudly and keep the pending
+        // result. The host copy-back installs the credential on disk before any
+        // diagnostic log runs, so it is already durable when this block returns.
+        try {
+          await onLog(
+            "stdout",
+            `[paperclip] Restoring workspace changes from ${describeAdapterExecutionTarget(executionTarget)}.\n`,
+          );
+          await restoreRemoteWorkspace();
+        } catch (error) {
+          await Promise.resolve(
+            onLog(
+              "stderr",
+              `[paperclip] Failed to restore workspace changes from ${describeAdapterExecutionTarget(
+                executionTarget,
+              )}: ${error instanceof Error ? error.message : String(error)}\n`,
+            ),
+          ).catch(() => undefined);
+        }
       }
     }
   } finally {

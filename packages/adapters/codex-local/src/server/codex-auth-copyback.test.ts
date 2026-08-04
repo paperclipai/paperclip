@@ -565,4 +565,53 @@ describe("copyBackCodexAuth identity-keyed cache write", () => {
     expect(combined).toContain("additive cache write failed (EACCES)");
     expect(combined).not.toContain("acct-x");
   });
+
+  it("a rejecting cache-failure log does not override the successful host copy-back result", async () => {
+    const { env, sharedHomeAuthPath } = await makeEnv();
+    const sandboxAuth = subscriptionAuth({ accountId: "acct-x", lastRefresh: NEWER, marker: "sandbox" });
+    const hostAuth = subscriptionAuth({ accountId: "acct-x", lastRefresh: OLDER, marker: "host" });
+    await writeFile(sharedHomeAuthPath, hostAuth, { mode: 0o600 });
+
+    // Force the additive cache write to fail: pre-create the slot directory,
+    // then make it read-only so the slot temp create fails with EACCES.
+    const entryPath = await ensureCodexAuthCacheEntryDir(env, "acct-x", COMPANY_ID);
+    const slotDir = path.dirname(entryPath);
+    await chmod(slotDir, 0o500);
+
+    // The logger rejects for the cache-failure diagnostic line only. The host
+    // copy-back already installed the sandbox credential on disk, so this
+    // rejection must not propagate and must not override the "copied" result.
+    const logs: string[] = [];
+    let outcome: Awaited<ReturnType<typeof copyBackCodexAuth>> | undefined;
+    let thrown: unknown;
+    try {
+      outcome = await copyBackCodexAuth({
+        readSandboxAuth: async () => Buffer.from(sandboxAuth, "utf8"),
+        hostAuthPath: sharedHomeAuthPath,
+        log: (line) => {
+          logs.push(line);
+          if (line.includes("additive cache write failed")) {
+            return Promise.reject(new Error("log sink boom"));
+          }
+        },
+        resolveCacheEntryPath: (accountId) => ensureCodexAuthCacheEntryDir(env, accountId, COMPANY_ID),
+        env,
+      }).catch((error: unknown) => {
+        thrown = error;
+        return undefined;
+      });
+    } finally {
+      await chmod(slotDir, 0o700);
+    }
+
+    // The rejecting cache-failure log never surfaces as a thrown error.
+    expect(thrown).toBeUndefined();
+    // The host copy-back result is kept intact.
+    expect(outcome).toBe("copied");
+    expect(await readFile(sharedHomeAuthPath, "utf8")).toBe(sandboxAuth);
+    // No partial slot file remains after the failed cache write.
+    expect(await readdir(slotDir)).toEqual([]);
+    // The cache-failure diagnostic was attempted even though the sink rejected.
+    expect(logs.some((line) => line.includes("additive cache write failed (EACCES)"))).toBe(true);
+  });
 });
