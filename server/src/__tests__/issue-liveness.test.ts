@@ -46,6 +46,65 @@ const manager = agent({
 const blocks = [{ companyId, blockerIssueId: blockerId, blockedIssueId: blockedId }];
 
 describe("issue graph liveness classifier", () => {
+  it("detects a blocked issue with no dependency or explicit action path", () => {
+    const findings = classifyIssueGraphLiveness({
+      issues: [issue()],
+      relations: [],
+      agents: [agent(), manager],
+    });
+
+    expect(findings).toHaveLength(1);
+    expect(findings[0]).toMatchObject({
+      issueId: blockedId,
+      identifier: "PAP-1703",
+      state: "blocked_without_dependency",
+      recoveryIssueId: blockedId,
+      recommendedOwnerAgentId: coderId,
+      dependencyPath: [expect.objectContaining({ issueId: blockedId })],
+      incidentKey: `harness_liveness:${companyId}:${blockedId}:blocked_without_dependency:${blockedId}`,
+    });
+  });
+
+  it("leaves completed dependency edges to the resolved-dependency wake backstop", () => {
+    const findings = classifyIssueGraphLiveness({
+      issues: [
+        issue(),
+        issue({
+          id: blockerId,
+          identifier: "PAP-1704",
+          title: "Completed dependency",
+          status: "done",
+        }),
+      ],
+      relations: blocks,
+      agents: [agent(), manager],
+    });
+
+    expect(findings).toEqual([]);
+  });
+
+  it("preserves blocked issues with a user-owned waiting path", () => {
+    const findings = classifyIssueGraphLiveness({
+      issues: [issue({ assigneeAgentId: null, assigneeUserId: "board-user-1" })],
+      relations: [],
+      agents: [agent(), manager],
+    });
+
+    expect(findings).toEqual([]);
+  });
+
+  it("preserves blocked issues with a structured unblock descriptor", () => {
+    const findings = classifyIssueGraphLiveness({
+      issues: [issue({
+        unblockDescriptor: { owner: "board", action: "Review the exception" },
+      })],
+      relations: [],
+      agents: [agent(), manager],
+    });
+
+    expect(findings).toEqual([]);
+  });
+
   it("detects a PAP-1703-style blocked chain with an unassigned blocker and stable incident key", () => {
     const findings = classifyIssueGraphLiveness({
       issues: [
