@@ -216,6 +216,7 @@ function makeIssue(status: "todo" | "done" | "blocked" | "cancelled" | "in_progr
     createdByUserId: "local-board",
     identifier: "PAP-580",
     title: "Comment reopen default",
+    description: "Kind: no-code",
   };
 }
 

@@ -163,6 +163,7 @@ import { executionWorkspaceService as executionWorkspaceServiceDirect } from "..
 import { decisionTrainingService } from "../services/decision-training.js";
 import { feedbackService } from "../services/feedback.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
+import { assertClosureAllowed, resolveClosureGateInput } from "../services/closure-gate.js";
 import {
   ISSUE_BLOCKER_DIAGNOSTICS_MAX_BLOCKERS,
   ISSUE_WAKE_DIAGNOSTICS_LOOKBACK_DAYS,
@@ -7825,6 +7826,7 @@ export function issueRoutes(
     if (!(await assertCheapRecoveryIssueAssigneeProfileAllowed(req, res, existing, req.body))) return;
 
     const actor = getActorInfo(req);
+
     const isClosed = isClosedIssueStatus(existing.status);
     const isBlocked = existing.status === "blocked";
     const normalizedAssigneeAgentId = await normalizeIssueAssigneeAgentReference(
@@ -7848,6 +7850,23 @@ export function issueRoutes(
     } = req.body;
     const shouldCancelActiveRunForCancelledStatus =
       existing.status !== "cancelled" && updateFields.status === "cancelled";
+    const requestedClosureStatus = isClosedIssueStatus(updateFields.status) ? updateFields.status : null;
+    let pendingClosureEscapeHatchAudit: string | null = null;
+    if (requestedClosureStatus) {
+      const resolved = resolveClosureGateInput({
+        body: req.body,
+        existing: { title: existing.title, description: existing.description ?? null },
+      });
+      const closureVerdict = assertClosureAllowed({
+        closureComment: resolved.closureComment,
+        issueTitle: resolved.issueTitle,
+        issueDescription: resolved.issueDescription,
+        knownUpstreamShas: [],
+      });
+      if (closureVerdict.ok && closureVerdict.reason === "no_code_escape_hatch") {
+        pendingClosureEscapeHatchAudit = closureVerdict.kind;
+      }
+    }
     if (resumeRequested === true && !commentBody) {
       res.status(400).json({ error: "Follow-up intent requires a comment" });
       return;
@@ -7889,6 +7908,23 @@ export function issueRoutes(
       ))
     ) {
       return;
+    }
+    if (pendingClosureEscapeHatchAudit !== null) {
+      await logActivity(db, {
+        companyId: existing.companyId,
+        actorType: actor.actorType,
+        actorId: actor.actorId,
+        agentId: actor.agentId,
+        runId: actor.runId,
+        action: "issue.closure_gate.escape_hatch",
+        entityType: "issue",
+        entityId: existing.id,
+        details: {
+          kind: pendingClosureEscapeHatchAudit,
+          requestedStatus: requestedClosureStatus,
+          source: "PATCH /api/issues/:id",
+        },
+      });
     }
     const scheduledRetryForHumanComment =
       shouldHumanCommentResumeInProgressScheduledRetry({
