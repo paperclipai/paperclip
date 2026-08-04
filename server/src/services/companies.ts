@@ -146,6 +146,68 @@ export function companyService(
     return { agentsPaused: pausedAgentRows.length, activeRunIds };
   }
 
+  async function prepareCompanyDeletionInTx(tx: CompanyTx, id: string) {
+    const agentsToPause = await tx
+      .select({
+        id: agents.id,
+        status: agents.status,
+        pauseReason: agents.pauseReason,
+        pausedAt: agents.pausedAt,
+      })
+      .from(agents)
+      .where(and(
+        eq(agents.companyId, id),
+        notInArray(agents.status, ["paused", "terminated", "pending_approval"]),
+      ));
+
+    if (agentsToPause.length > 0) {
+      await tx
+        .update(agents)
+        .set({
+          status: "paused",
+          pauseReason: "company_deleted",
+          pausedAt: new Date(),
+          updatedAt: new Date(),
+        })
+        .where(inArray(agents.id, agentsToPause.map((agent) => agent.id)));
+    }
+
+    const activeRunIds = await tx
+      .select({ id: heartbeatRuns.id })
+      .from(heartbeatRuns)
+      .where(and(
+        eq(heartbeatRuns.companyId, id),
+        inArray(heartbeatRuns.status, ["queued", "running"]),
+      ))
+      .then((rows) => rows.map((row) => row.id));
+
+    return { agentsToPause, activeRunIds };
+  }
+
+  async function rollbackCompanyDeletionPreparation(
+    id: string,
+    agentsToRestore: Awaited<ReturnType<typeof prepareCompanyDeletionInTx>>["agentsToPause"],
+  ) {
+    await db.transaction(async (tx) => {
+      for (const agent of agentsToRestore) {
+        await tx
+          .update(agents)
+          .set({
+            status: agent.status,
+            pauseReason: agent.pauseReason,
+            pausedAt: agent.pausedAt,
+            updatedAt: new Date(),
+          })
+          .where(and(
+            eq(agents.id, agent.id),
+            eq(agents.companyId, id),
+            eq(agents.status, "paused"),
+            eq(agents.pauseReason, "company_deleted"),
+          ));
+      }
+    });
+  }
+
   async function finalizeArchive(
     id: string,
     actor: CompanyActivityActor,
@@ -486,18 +548,18 @@ export function companyService(
 
     remove: async (id: string, removeOptions: { deleteFiles?: boolean } = {}) => {
       if (removeOptions.deleteFiles) {
-        const cascade = await db.transaction((tx) =>
-          applyCompanyStopCascadeInTx(tx, id, {
-            pauseReason: "company_deleted",
-            wakeupCancellationReason: "Cancelled because the company was deleted",
-          }),
-        );
-        for (const runId of cascade.activeRunIds) {
-          await (options.cancelRun ?? heartbeat.cancelRun)(
-            runId,
-            "Cancelled because the company was deleted",
-          );
-          await (options.waitForRunExecutionDrain ?? heartbeat.waitForRunExecutionDrain)(runId);
+        const preparation = await db.transaction((tx) => prepareCompanyDeletionInTx(tx, id));
+        try {
+          for (const runId of preparation.activeRunIds) {
+            await (options.cancelRun ?? heartbeat.cancelRun)(
+              runId,
+              "Cancelled because the company was deleted",
+            );
+            await (options.waitForRunExecutionDrain ?? heartbeat.waitForRunExecutionDrain)(runId);
+          }
+        } catch (err) {
+          await rollbackCompanyDeletionPreparation(id, preparation.agentsToPause);
+          throw err;
         }
       }
 

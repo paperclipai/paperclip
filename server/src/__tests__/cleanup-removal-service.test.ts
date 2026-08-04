@@ -318,6 +318,27 @@ describeEmbeddedPostgres("cleanup removal services", () => {
     expect(removed?.fileCleanup).toBe("succeeded");
   });
 
+  it("restores paused agents when execution drain fails", async () => {
+    const { agentId, companyId, runId } = await seedFixture();
+    await db.update(heartbeatRuns).set({ status: "running" }).where(eq(heartbeatRuns.id, runId));
+    const removeManagedFiles = vi.fn().mockResolvedValue(undefined);
+    const waitForRunExecutionDrain = vi.fn().mockRejectedValue(new Error("drain timeout"));
+
+    await expect(
+      companyService(db, {
+        cancelRun: vi.fn().mockResolvedValue(undefined),
+        removeManagedFiles,
+        waitForRunExecutionDrain,
+      }).remove(companyId, { deleteFiles: true }),
+    ).rejects.toThrow("drain timeout");
+
+    expect(removeManagedFiles).not.toHaveBeenCalled();
+    await expect(db.select().from(companies).where(eq(companies.id, companyId))).resolves.toHaveLength(1);
+    const [agent] = await db.select().from(agents).where(eq(agents.id, agentId));
+    expect(agent?.status).toBe("active");
+    expect(agent?.pauseReason).toBeNull();
+  });
+
   it("does not delete managed files by default", async () => {
     const { companyId } = await seedFixture();
     const removeManagedFiles = vi.fn().mockResolvedValue(undefined);
