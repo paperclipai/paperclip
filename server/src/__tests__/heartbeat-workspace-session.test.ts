@@ -34,6 +34,7 @@ import {
   requiresPushCapabilityPreflight,
   resolveWorkspaceAfterLowTrustPreflight,
   resolveRuntimeSessionParamsForWorkspace,
+  sanitizeSessionWorkspaceReferenceForRun,
   shouldDeferFollowupWakeForSameIssue,
   stripHostWorkspaceProvisionForLowTrustSandbox,
   stripWorkspaceRuntimeFromExecutionRunConfig,
@@ -455,6 +456,69 @@ describe("assertGitSensitiveAdapterWorkspaceValid", () => {
         }),
       ),
     ).resolves.toBeUndefined();
+  });
+
+  it("does not require a persisted execution workspace from a stale resolvedWorkspace.workspaceId when no project resolved for the run (RENA-54683)", async () => {
+    const cwd = "/tmp/paperclip-projectless-session-cwd";
+    const input = buildWorkspaceValidationInput();
+
+    await expect(
+      assertGitSensitiveAdapterWorkspaceValid(
+        buildWorkspaceValidationInput({
+          issue: {
+            id: "issue-1",
+            identifier: "PAP-1",
+            projectId: null,
+            projectWorkspaceId: null,
+          },
+          resolvedWorkspace: buildResolvedWorkspace({
+            source: "task_session",
+            projectId: null,
+            // Orphaned reference left over from an earlier, project-bound session for this
+            // issue -- must not force a persisted-workspace expectation on its own.
+            workspaceId: "workspace-from-earlier-session",
+            cwd,
+          }),
+          executionWorkspace: {
+            ...input.executionWorkspace,
+            projectId: null,
+            workspaceId: null,
+            strategy: "project_primary",
+            baseCwd: cwd,
+            cwd,
+          },
+          persistedExecutionWorkspace: null,
+        }),
+      ),
+    ).resolves.toBeUndefined();
+  });
+});
+
+describe("sanitizeSessionWorkspaceReferenceForRun", () => {
+  it("discards the prior session's workspace reference when no project resolved for the run", () => {
+    expect(
+      sanitizeSessionWorkspaceReferenceForRun({
+        resolvedProjectId: null,
+        workspaceId: "workspace-from-earlier-session",
+        repoUrl: "https://github.com/example/repo.git",
+        repoRef: "origin/main",
+      }),
+    ).toEqual({ workspaceId: null, repoUrl: null, repoRef: null });
+  });
+
+  it("keeps the prior session's workspace reference when a project resolved for the run", () => {
+    expect(
+      sanitizeSessionWorkspaceReferenceForRun({
+        resolvedProjectId: "project-1",
+        workspaceId: "workspace-1",
+        repoUrl: "https://github.com/example/repo.git",
+        repoRef: "origin/main",
+      }),
+    ).toEqual({
+      workspaceId: "workspace-1",
+      repoUrl: "https://github.com/example/repo.git",
+      repoRef: "origin/main",
+    });
   });
 });
 
